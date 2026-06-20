@@ -8,7 +8,7 @@
     "dev": "electron-vite dev",
     "build": "electron-vite build",
     "preview": "electron-vite preview",
-    "package": "electron-vite build && electron-builder --win",
+    "package": "electron-vite build && electron-builder --win --publish never",
     "test": "bun test test/unit test/integration",
     "test:e2e": "playwright test",
     "test:exa": "bun test test/integration/exa.live.test.ts",
