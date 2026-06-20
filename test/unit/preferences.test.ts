@@ -1,0 +1,58 @@
+import { describe, expect, test } from "bun:test";
+import { mkdtempSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+import { DatabaseClient } from "../../src/db/client";
+import { ThreadRepository } from "../../src/db/repositories/threads";
+import { buildPreferenceContext, formatPreferencePrompt } from "../../src/core/preferences";
+import { buildIdeaPrompt } from "../../src/core/ideas";
+import type { ProjectBrief } from "../../src/shared/schemas";
+
+const brief: ProjectBrief = {
+  projectName: "Test",
+  theme: "Widgets",
+  description: "Build better widgets",
+  desiredOutput: "Ideas",
+  successDefinition: "Useful ideas",
+  constraints: [],
+  resources: [],
+  avoidList: [],
+  researchNeeds: "Market scan",
+  finalDecision: "Pick one idea",
+  deadline: "Soon",
+  availableEffort: "Medium",
+  ideaStylePreference: "Balanced",
+};
+
+describe("preference feedback loop", () => {
+  test("includes rated examples in idea prompt context", () => {
+    const dir = mkdtempSync(join(tmpdir(), "scraply-prefs-"));
+    const db = new DatabaseClient(join(dir, "scraply.db"));
+    const threads = new ThreadRepository(db);
+    const thread = threads.createThread("Prefs");
+    const ideaId = "idea-1";
+    db.db.prepare(`
+      INSERT INTO ideas (id, thread_id, title, description, bucket, scores_json, supporting_claim_ids_json, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      ideaId,
+      thread.id,
+      "High-signal idea",
+      "A specific niche workflow assistant",
+      "strong-fit",
+      JSON.stringify({ relevance: 9, novelty: 8, evidenceStrength: 7, feasibility: 8, demand: 8, saturation: 4 }),
+      "[]",
+      new Date().toISOString(),
+    );
+    db.db.prepare("INSERT INTO ratings (idea_id, rating, notes, created_at) VALUES (?, ?, ?, ?)")
+      .run(ideaId, 5, null, new Date().toISOString());
+
+    const context = buildPreferenceContext(db);
+    const prompt = buildIdeaPrompt(brief, formatPreferencePrompt(context), [], 3, "direct gaps");
+
+    expect(context.positiveExamples).toHaveLength(1);
+    expect(prompt).toContain("Highly rated examples:");
+    expect(prompt).toContain("High-signal idea");
+    db.close();
+  });
+});

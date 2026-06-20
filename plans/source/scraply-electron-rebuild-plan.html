@@ -1,0 +1,487 @@
+<article>
+  <header>
+    <p><strong>Implementation handoff · clean rebuild</strong></p>
+    <h1>Scraply Electron Idea-Research Studio</h1>
+    <p>
+      Rebuild Scraply as a private, installable desktop product where a user opens the app,
+      starts an idea-generation conversation, answers one intake question at a time, chooses
+      models and research settings, watches six research agents work, and receives a curated,
+      explorable set of ideas.
+    </p>
+    <p><strong>Plan status:</strong> ready for implementation after explicit approval.</p>
+    <p><strong>Provider check:</strong> Exa authentication and search were verified successfully on 20 June 2026.</p>
+  </header>
+
+  <nav aria-label="Plan sections">
+    <ol>
+      <li><a href="#outcome">Target outcome</a></li>
+      <li><a href="#decisions">Locked decisions</a></li>
+      <li><a href="#experience">Product experience</a></li>
+      <li><a href="#architecture">Desktop architecture</a></li>
+      <li><a href="#workflow">Research workflow</a></li>
+      <li><a href="#data">Data model</a></li>
+      <li><a href="#design">Interface system</a></li>
+      <li><a href="#security">Security and privacy</a></li>
+      <li><a href="#phases">Implementation phases</a></li>
+      <li><a href="#acceptance">Acceptance criteria</a></li>
+    </ol>
+  </nav>
+
+  <section id="outcome">
+    <h2>1. Target outcome</h2>
+    <p>
+      Scraply is a ChatGPT-like desktop workspace dedicated to universal project ideation.
+      It is not limited to startups: a thread may target software, research, mathematics,
+      ecology, competitions, content, personal systems, business, experiments, or any other domain.
+    </p>
+    <ul>
+      <li>Windows-first Electron application with an installer and portable build.</li>
+      <li>Backend starts and stops automatically with Electron; no terminal is needed.</li>
+      <li>Dark, polished conversation UI with a persistent thread sidebar.</li>
+      <li>One-question-at-a-time intake that becomes a confirmed project brief.</li>
+      <li>Selectable orchestrator, worker, and idea-generation models.</li>
+      <li>Six parallel research streams with visible progress and readable reports.</li>
+      <li>Orchestrator reflection loops that can request targeted follow-up research.</li>
+      <li>Batch idea generation, cross-thread duplicate detection, scoring, buckets, ratings, and deeper branches.</li>
+      <li>Private local data and a private GitHub source repository.</li>
+    </ul>
+  </section>
+
+  <section id="decisions">
+    <h2>2. Locked decisions</h2>
+    <table>
+      <thead>
+        <tr><th>Concern</th><th>Decision</th><th>Reason</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>Desktop</td><td>Electron + Svelte 5 + Vite</td><td>Installable native shell, fast renderer, and direct local lifecycle control.</td></tr>
+        <tr><td>Backend</td><td>TypeScript service launched by Electron</td><td>One language and an automatically managed local runtime.</td></tr>
+        <tr><td>Persistence</td><td>SQLite with migrations</td><td>Reliable conversations, jobs, reports, ideas, and resumable runs.</td></tr>
+        <tr><td>Model API</td><td>OpenCode Go, OpenAI-compatible Chat Completions</td><td>One API key and selectable economical models.</td></tr>
+        <tr><td>Optional strong director</td><td>Locally installed Codex CLI adapter</td><td>Uses the user's existing Codex session without adding another application API key.</td></tr>
+        <tr><td>Search and contents</td><td>Exa</td><td>Verified key, semantic search, and page contents through one API.</td></tr>
+        <tr><td>Embeddings</td><td>OpenCode model-based similarity plus local lexical fallback</td><td>No Google dependency. Exact embedding support is discovered from OpenCode before relying on it.</td></tr>
+        <tr><td>Reports</td><td>Sanitized semantic HTML</td><td>Readable inside Electron and compatible with the existing plan publisher.</td></tr>
+        <tr><td>Repository</td><td>New private GitHub repository</td><td>The rebuilt product starts with clean history and excludes secrets and local data.</td></tr>
+      </tbody>
+    </table>
+
+    <h3>Required environment</h3>
+    <p>The rebuild must require exactly these two values and no Google variables:</p>
+    <pre><code>OPENCODE_API_KEY=...
+EXA_API_KEY=...</code></pre>
+    <p>
+      Development reads <code>C:\Business\scraply\.env</code>. The packaged app imports those
+      values into Electron's protected local settings on first run and also provides a settings
+      screen for replacing them. The file is never committed or packaged.
+    </p>
+
+    <h3>Explicit removals</h3>
+    <ul>
+      <li>Remove Google embeddings and every Google environment variable.</li>
+      <li>Remove the current browser-first SvelteKit product shell.</li>
+      <li>Remove the requirement to manually start a development server.</li>
+      <li>Do not require Docker, Python, SearXNG, or a paid search provider beyond the verified Exa account.</li>
+      <li>Do not expose raw JSON as a user-facing report.</li>
+    </ul>
+  </section>
+
+  <section id="experience">
+    <h2>3. Product experience</h2>
+
+    <h3>3.1 First launch</h3>
+    <ol>
+      <li>Electron acquires a single-instance lock and starts the local service.</li>
+      <li>A compact setup screen validates OpenCode and Exa without revealing keys.</li>
+      <li>The app fetches available OpenCode model IDs and records whether Codex is installed and authenticated.</li>
+      <li>After both required checks pass, the user enters the workspace.</li>
+    </ol>
+
+    <h3>3.2 Workspace layout</h3>
+    <ul>
+      <li><strong>Left sidebar:</strong> New research button, searchable thread history, status, rename, archive, and delete.</li>
+      <li><strong>Main conversation:</strong> assistant questions, user answers, brief review, research events, reports, and idea batches.</li>
+      <li><strong>Composer:</strong> multiline input, submit, stop, retry, and context-aware suggested replies.</li>
+      <li><strong>Research drawer:</strong> six live stream lanes, search counts, current task, costs, errors, and follow-up requests.</li>
+      <li><strong>Idea workspace:</strong> bucket tabs, filters, score details, ratings, comparison, and deeper-dive actions.</li>
+    </ul>
+
+    <h3>3.3 Conversation intake</h3>
+    <p>Ask one question at a time. Persist every answer immediately and allow Back, Edit, Skip optional, and Resume.</p>
+    <ol>
+      <li>What are we trying to generate ideas for?</li>
+      <li>What is the broad theme or area, and what is your rough description?</li>
+      <li>What would make an idea good in this context?</li>
+      <li>What final output do you want?</li>
+      <li>Who or what decides whether this succeeds?</li>
+      <li>Why do you want to do this, and what main reward matters?</li>
+      <li>What is the deadline or ideal window, and how much time is available each week?</li>
+      <li>What skills, tools, resources, people, or data are available?</li>
+      <li>What must be avoided?</li>
+      <li>What decision must be made at the end?</li>
+    </ol>
+    <p>After the required questions, offer optional questions individually:</p>
+    <ul>
+      <li>safe versus weird/high-upside balance;</li>
+      <li>existing examples or problems to inspect;</li>
+      <li>specific research requirements;</li>
+      <li>important scoring criteria;</li>
+      <li>anything material that is still missing.</li>
+    </ul>
+
+    <h3>3.4 Brief confirmation</h3>
+    <p>Generate an editable brief containing:</p>
+    <ul>
+      <li>project name, theme, and description;</li>
+      <li>desired output and success definition;</li>
+      <li>constraints, resources, and avoid list;</li>
+      <li>research needs and final decision;</li>
+      <li>deadline, available effort, and idea-style preference.</li>
+    </ul>
+    <p>The user must confirm or edit the brief before any research cost is incurred.</p>
+
+    <h3>3.5 Run configuration</h3>
+    <p>Present a focused setup step after the brief:</p>
+    <ul>
+      <li>orchestrator provider: OpenCode or Codex when detected;</li>
+      <li>orchestrator model;</li>
+      <li>research worker model;</li>
+      <li>idea-generation provider and model;</li>
+      <li>ideas requested and batch size;</li>
+      <li>maximum follow-up rounds;</li>
+      <li>per-stream search result and page limits;</li>
+      <li>parallelism and maximum estimated spend;</li>
+      <li>automatic plan publishing on or off.</li>
+    </ul>
+    <p>Save named presets while keeping sensible defaults for a one-click run.</p>
+  </section>
+
+  <section id="architecture">
+    <h2>4. Desktop architecture</h2>
+    <pre><code>Electron main process
+├── window and application lifecycle
+├── automatic backend startup and health supervision
+├── secure key storage/import
+├── Codex executable discovery and subprocess adapter
+├── plan publisher subprocess adapter
+└── signed IPC bridge through preload
+
+Local TypeScript service
+├── conversation and intake engine
+├── deterministic research state machine
+├── OpenCode provider and model catalog
+├── Exa search/content provider
+├── six stream workers
+├── orchestrator reflection and follow-up planner
+├── idea generation, dedup, scoring, and branching
+├── semantic HTML report renderer
+└── SQLite repositories and job event log
+
+Svelte renderer
+├── thread sidebar
+├── conversational intake
+├── model/run configuration
+├── live research dashboard
+├── report reader
+└── idea workspace</code></pre>
+
+    <h3>4.1 Process boundary</h3>
+    <ul>
+      <li>Run the backend in an Electron utility process so a model or parsing crash cannot take down the UI.</li>
+      <li>Bind any HTTP transport to <code>127.0.0.1</code> on an ephemeral port with a per-launch bearer token.</li>
+      <li>Prefer typed IPC for renderer commands and Server-Sent Events for streaming run events.</li>
+      <li>Set <code>contextIsolation: true</code>, <code>nodeIntegration: false</code>, and a strict Content Security Policy.</li>
+      <li>Electron owns startup, health checks, restart-once recovery, graceful shutdown, and stale-job recovery.</li>
+    </ul>
+
+    <h3>4.2 Suggested source structure</h3>
+    <pre><code>src/
+  main/           Electron lifecycle, windows, secure settings, subprocesses
+  preload/        Narrow typed IPC surface
+  renderer/       Svelte UI, routes, components, stores
+  core/           Intake, orchestration, ideas, scoring, reports
+  providers/      OpenCode, Codex, Exa
+  research/       Stream definitions, worker loop, synthesis
+  db/             SQLite migrations and repositories
+  shared/         Zod contracts and event types
+test/
+  unit/
+  integration/
+  e2e/
+build/            Electron Builder assets and installer config
+plans/source/     Generated semantic HTML reports</code></pre>
+
+    <h3>4.3 Model adapters</h3>
+    <h4>OpenCode</h4>
+    <ul>
+      <li>Use the configured OpenAI-compatible base URL as a code constant.</li>
+      <li>Fetch <code>/models</code> after key validation and populate selectors from the returned IDs.</li>
+      <li>Use Chat Completions for structured planning, extraction, reflection, synthesis, and ideas.</li>
+      <li>Validate every structured response with Zod; retry once with a repair prompt, then surface a typed failure.</li>
+      <li>Record model, latency, attempts, and estimated tokens for each call.</li>
+    </ul>
+    <h4>Codex</h4>
+    <ul>
+      <li>Make Codex optional and detect it locally; the app remains usable with OpenCode alone.</li>
+      <li>Before implementation, verify the installed Codex version's supported non-interactive and structured-output contract.</li>
+      <li>Spawn the executable directly without a shell, use an isolated working directory, stream structured events, and support cancellation.</li>
+      <li>Use Codex only for orchestrator or final idea-generation roles in the first release; keep high-volume research on OpenCode.</li>
+      <li>Never assume undocumented CLI flags. Gate the adapter behind an automated compatibility probe.</li>
+    </ul>
+
+    <h3>4.4 Packaging</h3>
+    <ul>
+      <li>Use Electron Builder with NSIS and portable Windows targets.</li>
+      <li>Bundle compiled renderer and backend assets; do not bundle development sources, secrets, or local databases.</li>
+      <li>Write mutable data under Electron's <code>userData</code> directory.</li>
+      <li>Include a first-run health screen and an in-app “Open data folder” action.</li>
+      <li>Add crash-safe updates later; automatic update infrastructure is not required for the first usable release.</li>
+    </ul>
+  </section>
+
+  <section id="workflow">
+    <h2>5. Research and idea workflow</h2>
+
+    <h3>5.1 Canonical research streams</h3>
+    <table>
+      <thead><tr><th>Stream</th><th>Mission</th><th>Expected evidence</th></tr></thead>
+      <tbody>
+        <tr><td>Landscape</td><td>Map topic state, key concepts, constraints, and current approaches.</td><td>Definitions, current methods, trends, and limiting conditions.</td></tr>
+        <tr><td>Exemplars</td><td>Find related people, projects, products, papers, demos, and entries.</td><td>Concrete examples, what worked, and what has already been attempted.</td></tr>
+        <tr><td>Pain and Gaps</td><td>Find complaints, missing pieces, weak points, and unsolved problems.</td><td>Direct unmet-need signals and recurring failure modes.</td></tr>
+        <tr><td>Resources</td><td>Find usable datasets, APIs, libraries, tools, communities, and methods.</td><td>Accessible building blocks with constraints and licenses.</td></tr>
+        <tr><td>Analogies</td><td>Find adjacent fields solving similarly shaped problems.</td><td>Transferable patterns and non-obvious combinations.</td></tr>
+        <tr><td>Evaluation</td><td>Find rubrics, benchmarks, judging criteria, and quality signals.</td><td>Ways to distinguish an exciting idea from a merely plausible one.</td></tr>
+      </tbody>
+    </table>
+
+    <h3>5.2 Worker loop</h3>
+    <ol>
+      <li>Orchestrator turns the confirmed brief into stream-specific subquestions.</li>
+      <li>Six workers start concurrently, one per canonical stream.</li>
+      <li>Each worker searches Exa, fetches bounded page content, and extracts source-linked claims.</li>
+      <li>Each worker writes a readable semantic HTML report and a structured evidence index.</li>
+      <li>Orchestrator reviews all reports against an explicit coverage rubric.</li>
+      <li>If evidence is weak, the orchestrator sends a targeted follow-up task only to the relevant worker.</li>
+      <li>Stop when coverage is sufficient or the configured round, time, search, or spend cap is reached.</li>
+      <li>Preserve partial reports and clearly label failed or uncertain streams.</li>
+    </ol>
+
+    <h3>5.3 Exa adapter</h3>
+    <ul>
+      <li>Use <code>POST https://api.exa.ai/search</code> with <code>x-api-key</code>.</li>
+      <li>Request search results and bounded text contents together when possible.</li>
+      <li>Normalize title, canonical URL, publication date, author, text, and stream/query provenance.</li>
+      <li>Cache normalized results by query and options to avoid paying twice for retries or resumed jobs.</li>
+      <li>Deduplicate canonical URLs across all six streams while retaining which streams requested them.</li>
+      <li>Apply per-stream and global concurrency limits, exponential backoff, and clear quota errors.</li>
+      <li>Never expose the Exa key to the renderer or logs.</li>
+    </ul>
+
+    <h3>5.4 Stream report format</h3>
+    <p>Every stream returns semantic HTML with:</p>
+    <ul>
+      <li>brief summary;</li>
+      <li>what was researched;</li>
+      <li>key findings;</li>
+      <li>useful examples and linked sources;</li>
+      <li>opportunities noticed;</li>
+      <li>weak spots and uncertainty;</li>
+      <li>suggested next search.</li>
+    </ul>
+    <p>
+      Sanitize model-authored HTML before storage and rendering. Optionally publish a stream or composite report with
+      <code>C:\Business\planning\publish-plan.cmd &lt;path-to-fragment.html&gt;</code> when the command is available.
+    </p>
+
+    <h3>5.5 Idea generation</h3>
+    <ol>
+      <li>Build a compact evidence pack from the brief, synthesis, stream reports, and user preference history.</li>
+      <li>Generate ideas in batches through distinct creative lenses: direct gaps, analogies, combinations, constraint relaxation, and inversion.</li>
+      <li>Reject near-duplicates across the entire workspace using provider-supported embeddings if verified; otherwise use local BM25/token similarity plus a model duplicate critic.</li>
+      <li>Keep relevance, novelty, evidence strength, feasibility, demand, and saturation as separate axes.</li>
+      <li>Assign presentation buckets rather than one destructive weighted rank: strong fit, creative outlier, safe bet, and needs evidence.</li>
+      <li>Let the user compare, rate, pin, reject, export, or open a deeper research branch from any idea.</li>
+    </ol>
+  </section>
+
+  <section id="data">
+    <h2>6. Persistence model</h2>
+    <table>
+      <thead><tr><th>Entity</th><th>Purpose</th></tr></thead>
+      <tbody>
+        <tr><td>threads</td><td>Conversation identity, title, lifecycle, active branch, and timestamps.</td></tr>
+        <tr><td>messages</td><td>User, assistant, system, report, and event messages with streaming state.</td></tr>
+        <tr><td>intake_answers</td><td>Question ID, answer, skipped state, and edit history.</td></tr>
+        <tr><td>briefs</td><td>Versioned confirmed project briefs.</td></tr>
+        <tr><td>run_configs</td><td>Provider/model selections, caps, counts, and preset references.</td></tr>
+        <tr><td>research_runs</td><td>Overall status, budget, spend estimate, rounds, cancellation, and recovery.</td></tr>
+        <tr><td>stream_runs</td><td>One record per stream per round, including coverage and errors.</td></tr>
+        <tr><td>queries</td><td>Planned searches and the orchestrator reason for each.</td></tr>
+        <tr><td>sources</td><td>Canonical URLs and normalized source metadata.</td></tr>
+        <tr><td>claims</td><td>Atomic evidence with source, stream, confidence, and verification state.</td></tr>
+        <tr><td>reports</td><td>Sanitized semantic HTML, local path, and optional published URL.</td></tr>
+        <tr><td>ideas</td><td>Idea content, supporting claims, separate scores, bucket, and branch relation.</td></tr>
+        <tr><td>ratings</td><td>User preference signals used in future idea prompts.</td></tr>
+        <tr><td>job_events</td><td>Append-only events for progress streaming, audit, and crash recovery.</td></tr>
+        <tr><td>settings</td><td>Non-secret app preferences and model presets.</td></tr>
+      </tbody>
+    </table>
+    <p>Use foreign keys, transactions, WAL mode, migrations, and crash-safe state transitions. Never store secrets in SQLite.</p>
+  </section>
+
+  <section id="design">
+    <h2>7. Interface system</h2>
+    <h3>7.1 Visual direction</h3>
+    <ul>
+      <li>Near-black canvas, charcoal surfaces, restrained desaturated green accent, and no purple gradients.</li>
+      <li>Geist or Satoshi for UI text and Geist Mono for model names, costs, and technical state.</li>
+      <li>Thin separators and negative space instead of a wall of rounded cards.</li>
+      <li>Soft elevation only for overlays, menus, and the floating composer.</li>
+      <li>Motion limited to transform and opacity; honor reduced-motion preferences.</li>
+    </ul>
+
+    <h3>7.2 Required UI states</h3>
+    <ul>
+      <li>first-run setup and key-validation states;</li>
+      <li>empty thread workspace with a clear new-thread action;</li>
+      <li>question typing, submitted, editing, and validation-error states;</li>
+      <li>brief draft, changed, confirmed, and stale states;</li>
+      <li>model catalog loading, unavailable, and changed states;</li>
+      <li>queued, running, reflecting, follow-up, completed, partial, failed, cancelled, and resumable research states;</li>
+      <li>empty, loading, populated, duplicate-dropped, and generation-failed idea states;</li>
+      <li>inline provider/quota errors with retry and settings actions.</li>
+    </ul>
+
+    <h3>7.3 Accessibility and responsiveness</h3>
+    <ul>
+      <li>Full keyboard operation, visible focus, semantic controls, and screen-reader progress announcements.</li>
+      <li>Sidebar collapses below desktop width; research drawer becomes a full-height sheet.</li>
+      <li>Composer remains reachable without covering the latest message.</li>
+      <li>Score visualizations include text values and do not rely on color alone.</li>
+    </ul>
+  </section>
+
+  <section id="security">
+    <h2>8. Security, privacy, and operational rules</h2>
+    <ul>
+      <li>Keep the app local-only; do not add analytics, telemetry, accounts, or cloud sync.</li>
+      <li>Never send user data anywhere except the explicitly selected OpenCode/Codex model path and Exa searches.</li>
+      <li>Redact keys and authorization headers from logs, errors, exports, reports, and crash dumps.</li>
+      <li>Use Electron <code>safeStorage</code> for imported secrets and expose only validation state to the renderer.</li>
+      <li>Validate all IPC payloads with shared Zod schemas.</li>
+      <li>Do not enable arbitrary renderer shell execution or unrestricted filesystem access.</li>
+      <li>Sanitize all model-authored HTML before display.</li>
+      <li>Use explicit cancellation and caps for model calls, Exa requests, follow-up loops, and report publishing.</li>
+      <li>Back up the SQLite file before migrations and provide an in-app export.</li>
+    </ul>
+  </section>
+
+  <section id="github">
+    <h2>9. Private GitHub repository</h2>
+    <p>Create the repository only when implementation begins, not while approving this plan.</p>
+    <ol>
+      <li>Stop the current dev server and archive or delete obsolete generated/runtime files.</li>
+      <li>Initialize a fresh Git repository in <code>C:\Business\scraply</code>.</li>
+      <li>Add a strict <code>.gitignore</code> for <code>.env</code>, databases, user data, reports containing private content, logs, caches, builds, and installers.</li>
+      <li>Run a secret scan before the first commit.</li>
+      <li>Create a private GitHub repository through the authenticated account.</li>
+      <li>Push a deliberate initial commit containing only source, tests, configuration templates without secrets, and this plan.</li>
+      <li>Verify repository visibility is <strong>PRIVATE</strong> through the GitHub API or CLI.</li>
+      <li>Add CI for typecheck, tests, Electron build, and artifact smoke tests; do not publish installer artifacts publicly.</li>
+    </ol>
+  </section>
+
+  <section id="phases">
+    <h2>10. Implementation phases</h2>
+
+    <h3>Phase 0 — Destructive reset and proof spikes</h3>
+    <ul>
+      <li>Archive the old implementation outside the new source tree.</li>
+      <li>Verify OpenCode authentication, model listing, and structured-response behavior.</li>
+      <li>Retain the passing Exa live probe as an opt-in integration test.</li>
+      <li>Probe the installed Codex CLI and freeze a tested adapter contract; keep Codex disabled if compatibility fails.</li>
+      <li>Scaffold Electron, Svelte, preload, backend utility process, SQLite, and tests.</li>
+    </ul>
+    <p><strong>Gate:</strong> packaged shell opens, backend starts automatically, both keys validate, model list loads, and local persistence survives restart.</p>
+
+    <h3>Phase 1 — Conversation and intake product</h3>
+    <ul>
+      <li>Build sidebar, new thread, message stream, composer, and one-at-a-time intake.</li>
+      <li>Implement editable brief generation and confirmation.</li>
+      <li>Implement model/run configuration and presets.</li>
+    </ul>
+    <p><strong>Gate:</strong> a fresh user can move from New Thread to a confirmed brief and configured run without touching a terminal.</p>
+
+    <h3>Phase 2 — One-stream vertical slice</h3>
+    <ul>
+      <li>Run one stream through plan, Exa search, extraction, report, orchestration review, and targeted follow-up.</li>
+      <li>Render progress in the conversation and research drawer.</li>
+      <li>Support cancellation, retry, partial results, and crash recovery.</li>
+    </ul>
+    <p><strong>Gate:</strong> one stream produces a useful cited HTML report from the Electron UI.</p>
+
+    <h3>Phase 3 — Six-stream research</h3>
+    <ul>
+      <li>Add the six canonical workers and deterministic concurrency/budget accounting.</li>
+      <li>Add orchestrator coverage review and selective follow-up rounds.</li>
+      <li>Add composite synthesis, report browsing, and optional plan publishing.</li>
+    </ul>
+    <p><strong>Gate:</strong> all six reports remain readable and useful, partial failures do not erase successful work, and caps cannot be exceeded.</p>
+
+    <h3>Phase 4 — Idea workspace and deeper branches</h3>
+    <ul>
+      <li>Add batched idea generation, dedup, separate scores, buckets, comparison, ratings, and exports.</li>
+      <li>Add deeper-dive branches that inherit the brief, selected idea, ancestor reports, and user preferences.</li>
+      <li>Add OpenCode/Codex role switching where the validated adapters support it.</li>
+    </ul>
+    <p><strong>Gate:</strong> ideas are genuinely distinct, evidence-linked, actionable, and improve after user ratings.</p>
+
+    <h3>Phase 5 — Product hardening and private delivery</h3>
+    <ul>
+      <li>Run Electron security review, accessibility pass, responsive pass, and long-run cancellation tests.</li>
+      <li>Build NSIS and portable artifacts and test on a clean Windows account.</li>
+      <li>Create and verify the private GitHub repository and CI.</li>
+      <li>Write a short user guide inside the app, not as a pile of external setup documents.</li>
+    </ul>
+    <p><strong>Gate:</strong> install, enter two keys, start a thread, complete research, generate ideas, restart, and resume—all without a terminal.</p>
+  </section>
+
+  <section id="acceptance">
+    <h2>11. Final acceptance criteria</h2>
+    <ol>
+      <li>The installer launches a real Electron app and automatically manages its backend.</li>
+      <li>The only required secrets are <code>OPENCODE_API_KEY</code> and <code>EXA_API_KEY</code>.</li>
+      <li>Google code, variables, documentation, and dependencies are absent.</li>
+      <li>The first screen is a useful dark conversation workspace, not an empty developer dashboard.</li>
+      <li>New Thread immediately starts the one-at-a-time universal intake.</li>
+      <li>Every answer, brief, run, report, idea, rating, and branch survives restart.</li>
+      <li>Model selectors are populated from live OpenCode data; unavailable models cannot be selected silently.</li>
+      <li>Codex is optional, detected, compatibility-tested, and never blocks OpenCode-only operation.</li>
+      <li>Exactly six canonical research streams run with visible progress and selective follow-up work.</li>
+      <li>Exa search failures and quota errors are explicit, retryable, and never fabricated as successful research.</li>
+      <li>Every stream and composite report is readable sanitized semantic HTML with linked sources.</li>
+      <li>Idea batches are deduplicated workspace-wide and keep separate quality axes.</li>
+      <li>Users can rate, compare, export, and dive deeper into ideas entirely from the desktop UI.</li>
+      <li>Cancellation, budget caps, partial failures, crash recovery, and resume are tested.</li>
+      <li>The GitHub repository is verified private and contains no secrets or user data.</li>
+      <li>Automated unit, integration, Electron end-to-end, packaging, and clean-install smoke tests pass.</li>
+    </ol>
+  </section>
+
+  <section id="risks">
+    <h2>12. Known risks and honest constraints</h2>
+    <ul>
+      <li>OpenCode model IDs and structured-output quality must be live-tested; selectors cannot rely on remembered names.</li>
+      <li>The exact Codex non-interactive interface must be probed against the installed version before it is treated as supported.</li>
+      <li>Exa is verified now but still has external quotas and availability; caching and clear quota UX remain necessary.</li>
+      <li>Electron plus native SQLite packaging requires ABI-aware builds and clean-machine installer tests.</li>
+      <li>Generating hundreds of strong ideas in one call will degrade quality; batches and dedup are mandatory.</li>
+      <li>A polished UI does not rescue weak research. Phase gates must judge report and idea quality, not only passing code.</li>
+    </ul>
+  </section>
+
+  <footer>
+    <p>Prepared for the Scraply rebuild on 20 June 2026.</p>
+  </footer>
+</article>

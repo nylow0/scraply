@@ -1,0 +1,4 @@
+interface:
+  display_name: "HTML Plan"
+  short_description: "Publish and read shared llm-plans links"
+  default_prompt: "Use $html-plan to publish this plan as a styled link."

@@ -1,0 +1,31 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  check:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - run: bun install --ignore-scripts
+      - run: node node_modules/electron/install.js
+      - run: bun run typecheck
+      - run: bun test test/unit test/integration
+      - run: bun run build
+      - run: bunx playwright install chromium
+      - run: bun run test:e2e
+
+  package-smoke:
+    runs-on: windows-latest
+    needs: check
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - run: bun install --ignore-scripts
+      - run: node node_modules/electron/install.js
+      - run: bun run package
+      - run: Test-Path release/Scraply*.exe
