@@ -1,0 +1,61 @@
+{
+  "name": "scraply",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "main": "out/main/index.js",
+  "scripts": {
+    "dev": "electron-vite dev",
+    "build": "electron-vite build",
+    "preview": "electron-vite preview",
+    "package": "electron-vite build && electron-builder --win",
+    "test": "bun test test/unit test/integration",
+    "test:e2e": "playwright test",
+    "test:exa": "bun test test/integration/exa.live.test.ts",
+    "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.renderer.json",
+    "check": "bun run typecheck && bun test test/unit test/integration"
+  },
+  "dependencies": {
+    "dompurify": "^3.2.6",
+    "jsdom": "^26.1.0",
+    "zod": "^3.25.76"
+  },
+  "devDependencies": {
+    "@sveltejs/vite-plugin-svelte": "^5.1.0",
+    "@tailwindcss/vite": "^4.3.1",
+    "@types/bun": "^1.2.22",
+    "@types/jsdom": "^21.1.7",
+    "electron": "^35.7.5",
+    "electron-builder": "^26.0.12",
+    "electron-vite": "^3.1.0",
+    "@playwright/test": "^1.55.0",
+    "svelte": "^5.56.3",
+    "svelte-check": "^4.6.0",
+    "tailwindcss": "^4.3.1",
+    "typescript": "^5.9.2",
+    "vite": "^6.3.5"
+  },
+  "build": {
+    "appId": "com.scraply.app",
+    "productName": "Scraply",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "out/**/*",
+      "build/icon.png",
+      "package.json"
+    ],
+    "icon": "build/icon.png",
+    "win": {
+      "target": [
+        { "target": "nsis", "arch": ["x64"] },
+        { "target": "portable", "arch": ["x64"] }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    }
+  }
+}
