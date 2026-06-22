@@ -198,6 +198,20 @@
     }
   }
 
+  async function saveDraft(brief: ProjectBrief, config: RunConfig) {
+    const threadId = state.workspace?.activeThreadId;
+    if (!threadId) return;
+    try {
+      state.workspace = await window.scraply.saveDraft({
+        threadId,
+        brief: ipcPayload(brief),
+        config: ipcPayload(config),
+      });
+    } catch {
+      /* best-effort auto-save */
+    }
+  }
+
   async function generateIdeas() {
     const threadId = state.workspace?.activeThreadId;
     if (!threadId) return;
@@ -248,7 +262,7 @@
 
   function closeGuide() {
     state.showGuide = false;
-    if (guideAutoOpened) {
+    if (setupComplete) {
       markGuideSeen();
       guideAutoOpened = false;
     }
@@ -378,6 +392,7 @@
         {:else if isConfigPhase}
           {#key activeThread.id}
             <Configurator
+              threadId={activeThread.id}
               brief={state.workspace?.brief ?? null}
               config={state.workspace?.runConfig ?? null}
               models={state.workspace?.models ?? []}
@@ -388,6 +403,7 @@
               onTest={(models) => testModels(models)}
               onLaunch={launch}
               onSavePreset={saveConfigPreset}
+              onSaveDraft={saveDraft}
             />
           {/key}
         {:else if status === "ideas-ready"}
@@ -396,6 +412,7 @@
               ideas={state.workspace?.ideas ?? []}
               threadId={activeThread.id}
               reportCount={reports.length}
+              ideaRatings={state.workspace?.ideaRatings ?? {}}
               onRefresh={refresh}
             />
           {/await}

@@ -226,7 +226,7 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
     const row = db.db.prepare("SELECT id, title, html FROM reports WHERE id = ?").get(reportId) as
       | { id: string; title: string; html: string }
       | undefined;
-    if (!row) throw new Error("Report not found");
+    if (!row) throw new HttpError(404, "Report not found");
     return ReportDetailSchema.parse(row);
   }
 
@@ -292,7 +292,11 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
       }
 
       if (method === "GET" && url.pathname.startsWith("/reports/")) {
-        const reportId = decodeURIComponent(url.pathname.slice("/reports/".length));
+        const reportId = decodeURIComponent(url.pathname.slice("/reports/".length)).trim();
+        if (!reportId) {
+          sendJson(res, 400, { error: "Report id required" });
+          return;
+        }
         sendJson(res, 200, getReportDetail(reportId));
         return;
       }
@@ -486,10 +490,22 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
         if (url.pathname === "/threads/branch") {
           const input = CreateBranchRequestSchema.parse(body);
           const parentBrief = threads.getLatestBrief(input.parentThreadId);
+          const parentConfig = threads.getLatestRunConfig(input.parentThreadId);
           const thread = threads.createThread(`Deeper: ${input.ideaTitle.slice(0, 48)}`);
           db.db.prepare("UPDATE threads SET parent_thread_id = ? WHERE id = ?").run(input.parentThreadId, thread.id);
-          if (parentBrief) threads.saveBrief(thread.id, parentBrief, true);
-          threads.addMessage(thread.id, "assistant", `Branching deeper into “${input.ideaTitle}”. What specific angle should this branch explore?`);
+          if (parentBrief) {
+            const branchBrief = {
+              ...parentBrief,
+              projectName: `Deeper: ${input.ideaTitle.slice(0, 48)}`,
+              goal: `Explore and refine: ${input.ideaTitle}`,
+              description: `Follow-up branch on “${input.ideaTitle}” from the parent research run.`,
+            };
+            threads.saveBrief(thread.id, branchBrief, true);
+          }
+          if (parentConfig) {
+            threads.saveRunConfig(thread.id, parentConfig, undefined, { preserveStatus: true });
+          }
+          threads.updateThreadStatus(thread.id, "configuring");
           activeThreadId = thread.id;
           db.setSetting("active_thread_id", thread.id);
           sendJson(res, 200, { thread, workspace: await workspaceState() });
