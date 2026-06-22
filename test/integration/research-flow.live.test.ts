@@ -110,6 +110,8 @@ describe("research flow live", () => {
   }, 60000);
 
   test("launch flow runs a minimal pipeline end to end and produces ideas", async () => {
+    if (process.env.SCRAPLY_LIVE_E2E !== "1") return;
+
     const keys = loadEnvKeys();
     if (!keys) {
       console.warn("Skipping: .env keys not found");
@@ -194,4 +196,68 @@ describe("research flow live", () => {
       }
     }
   }, 200000);
+
+  test("launch flow rejects research without enabled researchers", async () => {
+    const keys = loadEnvKeys();
+    if (!keys) return;
+
+    const dir = mkdtempSync(join(tmpdir(), "scraply-launch-invalid-"));
+    const handle = await startBackend(
+      {
+        dataDir: dir,
+        dbPath: join(dir, "scraply.db"),
+        getSecrets: () => ({ opencodeApiKey: keys.opencode, exaApiKey: keys.exa }),
+      },
+      () => {},
+    );
+
+    try {
+      const headers = { authorization: `Bearer ${handle.token}`, "content-type": "application/json" };
+      const threadId = (await (await fetch(`http://127.0.0.1:${handle.port}/threads`, {
+        method: "POST",
+        headers,
+        body: "{}",
+      })).json()).thread.id as string;
+
+      const launchRes = await fetch(`http://127.0.0.1:${handle.port}/research/launch`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({
+          threadId,
+          brief: {
+            projectName: "Disabled researchers",
+            goal: "Should fail fast",
+            theme: "Validation",
+            description: "No researchers enabled",
+            successDefinition: "Error returned",
+            desiredOutput: "Ideas",
+            successDecider: "Test",
+            motivation: "Coverage",
+            constraints: [],
+            resources: [],
+            avoidList: [],
+            researchNeeds: "None",
+            finalDecision: "N/A",
+            deadline: "Flexible",
+            availableEffort: "Low",
+            ideaStylePreference: "Balanced",
+          },
+          config: RunConfigSchema.parse({
+            ...DEFAULT_RUN_CONFIG,
+            researchers: DEFAULT_RESEARCHERS.map((r) => ({ ...r, enabled: false })),
+          }),
+        }),
+      });
+      const launchBody = await launchRes.json();
+      expect(launchRes.ok).toBe(false);
+      expect(String(launchBody.error ?? "")).toContain("Enable at least one researcher");
+    } finally {
+      await handle.close();
+      try {
+        rmSync(dir, { recursive: true, force: true });
+      } catch {
+        // Windows may keep WAL files locked briefly
+      }
+    }
+  }, 30000);
 });

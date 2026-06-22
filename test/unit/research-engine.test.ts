@@ -6,9 +6,10 @@ import { tmpdir } from "node:os";
 import { DatabaseClient } from "../../src/db/client";
 import { ThreadRepository } from "../../src/db/repositories/threads";
 import { ResearchEngine } from "../../src/core/research-engine";
-import { loadStoredRunState } from "../../src/core/research-recovery";
+import { listPendingRuns, loadStoredRunState } from "../../src/core/research-recovery";
 import { DEFAULT_RUN_CONFIG } from "../../src/shared/intake";
 import { DEFAULT_RESEARCHERS, RunConfigSchema, type Source } from "../../src/shared/schemas";
+import type { ResearchEvent } from "../../src/shared/ipc";
 import type { ExaClient } from "../../src/providers/exa";
 import type { OpenCodeClient } from "../../src/providers/opencode";
 
@@ -230,4 +231,67 @@ describe("ResearchEngine", () => {
 
     db.close();
   });
+
+  test("marks all-provider-failed runs as resumable instead of complete", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "scraply-engine-fail-"));
+    tempDirs.push(dir);
+    const db = new DatabaseClient(join(dir, "scraply.db"));
+    const threads = new ThreadRepository(db);
+    const thread = threads.createThread("Provider outage");
+    const events: ResearchEvent[] = [];
+    const config = RunConfigSchema.parse({
+      ...DEFAULT_RUN_CONFIG,
+      parallelism: 1,
+      researchers: [DEFAULT_RESEARCHERS[0]!],
+    });
+
+    const engine = new ResearchEngine({
+      db,
+      opencode: {} as unknown as OpenCodeClient,
+      exa: {
+        search: async () => {
+          throw new Error("Exa unavailable");
+        },
+      } as unknown as ExaClient,
+      onEvent: (event) => events.push(event),
+    });
+
+    const runId = await engine.startRun(thread.id, {
+      projectName: "Resilience test",
+      goal: "Find reliable research ideas",
+      theme: "Reliability",
+      description: "Exercise research engine failure paths",
+      successDefinition: "Run can recover",
+      desiredOutput: "Ideas",
+      successDecider: "Founder",
+      motivation: "Avoid data loss",
+      constraints: [],
+      resources: [],
+      avoidList: [],
+      researchNeeds: "Provider failure handling",
+      finalDecision: "Ship",
+      deadline: "Soon",
+      availableEffort: "Low",
+      ideaStylePreference: "Balanced",
+      examples: "",
+      scoringCriteria: "",
+      anythingElse: "",
+    }, config);
+
+    await waitFor(() => events.some((event) => event.type === "run-failed"));
+
+    expect(db.db.prepare("SELECT status FROM research_runs WHERE id = ?").get(runId)).toEqual({ status: "failed" });
+    expect(db.db.prepare("SELECT status FROM threads WHERE id = ?").get(thread.id)).toEqual({ status: "configuring" });
+    expect(listPendingRuns(db)[0]).toMatchObject({ runId, status: "failed", completedStreams: 0 });
+
+    db.close();
+  });
 });
+
+async function waitFor(predicate: () => boolean, timeoutMs = 5000): Promise<void> {
+  const started = Date.now();
+  while (!predicate()) {
+    if (Date.now() - started > timeoutMs) throw new Error("Timed out waiting for research event");
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+}

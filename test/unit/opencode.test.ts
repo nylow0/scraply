@@ -84,4 +84,37 @@ describe("OpenCodeClient", () => {
     });
     await expect(client.listModels()).resolves.toEqual(["glm-5.2", "mimo-v2.5"]);
   });
+
+  test("validateKey returns models on success and error message on failure", async () => {
+    server = Bun.serve({
+      port: 0,
+      fetch() {
+        return Response.json({ data: [{ id: "glm-5.2" }] });
+      },
+    });
+
+    const client = new OpenCodeClient({
+      apiKey: "test-key",
+      baseUrl: `http://127.0.0.1:${server.port}/v1`,
+    });
+    await expect(client.validateKey()).resolves.toEqual({ valid: true, models: ["glm-5.2"] });
+
+    server.stop(true);
+    server = Bun.serve({
+      port: 0,
+      fetch() {
+        return new Response("Unauthorized", { status: 401 });
+      },
+    });
+
+    const failingClient = new OpenCodeClient({
+      apiKey: "bad-key",
+      baseUrl: `http://127.0.0.1:${server.port}/v1`,
+    });
+    const result = await failingClient.validateKey();
+    expect(result.valid).toBe(false);
+    if (!result.valid) {
+      expect(result.error).toContain("401");
+    }
+  });
 });

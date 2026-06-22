@@ -61,4 +61,35 @@ describe("preference feedback loop", () => {
     expect(prompt).toContain("High-signal idea");
     db.close();
   });
+
+  test("surfaces negative examples and weak-signal guidance", () => {
+    const dir = mkdtempSync(join(tmpdir(), "scraply-prefs-neg-"));
+    const db = new DatabaseClient(join(dir, "scraply.db"));
+    const threads = new ThreadRepository(db);
+    const thread = threads.createThread("Prefs negative");
+    db.db.prepare(`
+      INSERT INTO ideas (id, thread_id, title, description, bucket, scores_json, supporting_claim_ids_json, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      "idea-bad",
+      thread.id,
+      "Generic AI wrapper",
+      "Description",
+      "strong-fit",
+      JSON.stringify({ relevance: 3, novelty: 2, evidenceStrength: 2, feasibility: 4, demand: 3, saturation: 9 }),
+      "[]",
+      new Date().toISOString(),
+    );
+    db.db.prepare("INSERT INTO ratings (idea_id, rating, notes, created_at) VALUES (?, ?, ?, ?)")
+      .run("idea-bad", 1, null, new Date().toISOString());
+
+    const context = buildPreferenceContext(db);
+    const prompt = formatPreferencePrompt(context);
+
+    expect(context.negativeExamples).toHaveLength(1);
+    expect(prompt).toContain("Low-rated examples to avoid resembling:");
+    expect(prompt).toContain("fewer than three ideas have been rated");
+
+    db.close();
+  });
 });
