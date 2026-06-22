@@ -2,7 +2,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { randomBytes } from "node:crypto";
 import { DatabaseClient } from "../db/client";
 import { ThreadRepository } from "../db/repositories/threads";
-import { buildBriefFromAnswers, generateBriefWithModel, intakeAssistantMessage, newThreadTitle } from "../core/intake";
+import { generateBriefWithModel, newThreadTitle } from "../core/intake";
 import { generateIdeas } from "../core/ideas";
 import { ResearchEngine } from "../core/research-engine";
 import { cancelIncompleteRun, listPendingRuns } from "../core/research-recovery";
@@ -112,8 +112,8 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
     const messages = activeThreadId ? threads.getMessages(activeThreadId) : [];
     const brief = activeThreadId ? threads.getLatestBrief(activeThreadId) : null;
     const runConfig = activeThreadId ? threads.getLatestRunConfig(activeThreadId) : null;
-    const ideas = activeThreadId ? listIdeas(activeThreadId) : [];
-    const reports = activeThreadId ? listReports(activeThreadId) : [];
+    const ideas = activeThreadId ? threads.listIdeas(activeThreadId) : [];
+    const reports = activeThreadId ? threads.listReports(activeThreadId) : [];
     return WorkspaceStateSchema.parse({
       validation,
       threads: threadList,
@@ -127,34 +127,6 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
       reports,
       pendingRuns: listPendingRuns(db),
     });
-  }
-
-  function listIdeas(threadId: string) {
-    const rows = db.db.prepare("SELECT * FROM ideas WHERE thread_id = ? ORDER BY created_at DESC").all(threadId) as Array<Record<string, unknown>>;
-    return rows.map((row) => ({
-      id: row.id,
-      threadId: row.thread_id,
-      title: row.title,
-      description: row.description,
-      bucket: row.bucket,
-      scores: JSON.parse(String(row.scores_json)),
-      supportingClaimIds: JSON.parse(String(row.supporting_claim_ids_json)),
-      createdAt: row.created_at,
-    }));
-  }
-
-  function listReports(threadId: string) {
-    return db.db.prepare("SELECT id, stream_id, title, html FROM reports WHERE thread_id = ? ORDER BY created_at ASC")
-      .all(threadId)
-      .map((row) => {
-        const record = row as { id: string; stream_id: string | null; title: string; html: string };
-        return {
-          id: record.id,
-          streamId: record.stream_id,
-          title: record.title,
-          html: record.html,
-        };
-      });
   }
 
   const subscribers = new Set<(event: ResearchEvent) => void>();
@@ -335,7 +307,7 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
 
         if (url.pathname === "/ideas/export") {
           const threadId = String((body as { threadId: string }).threadId);
-          sendJson(res, 200, { ideas: listIdeas(threadId) });
+          sendJson(res, 200, { ideas: threads.listIdeas(threadId) });
           return;
         }
 

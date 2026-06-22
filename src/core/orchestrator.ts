@@ -1,6 +1,6 @@
 import { z } from "zod";
 import type { OpenCodeClient } from "../providers/opencode";
-import { wrapReportHtml } from "./sanitize";
+import { escapeHtml, stripHtml, wrapReportHtml } from "./sanitize";
 import { RESEARCH_STREAMS } from "../research/streams";
 import type { ProjectBrief, RunConfig } from "../shared/schemas";
 
@@ -179,16 +179,4 @@ export function renderSynthesisReportHtml(
   `;
 
   return wrapReportHtml(`${brief.projectName} — Research synthesis`, body);
-}
-
-function stripHtml(html: string): string {
-  return html.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
-}
-
-function escapeHtml(value: string): string {
-  return value
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;");
 }

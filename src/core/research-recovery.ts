@@ -1,16 +1,9 @@
 import type { DatabaseClient } from "../db/client";
 import { RESEARCH_STREAMS } from "../research/streams";
+import type { PendingRun } from "../shared/ipc";
 import { RunConfigSchema, type ProjectBrief, type RunConfig } from "../shared/schemas";
 
-export interface PendingRun {
-  runId: string;
-  threadId: string;
-  threadTitle: string;
-  status: string;
-  completedStreams: number;
-  totalStreams: number;
-  hasSynthesis: boolean;
-}
+export type { PendingRun };
 
 export interface StoredRunState {
   runId: string;

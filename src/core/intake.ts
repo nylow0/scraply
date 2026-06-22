@@ -1,35 +1,6 @@
-import { randomUUID } from "node:crypto";
 import type { OpenCodeClient } from "../providers/opencode";
-import { ALL_INTAKE_QUESTIONS, nextIntakeQuestion } from "../shared/intake";
+import { ALL_INTAKE_QUESTIONS } from "../shared/intake";
 import { ProjectBriefSchema, type ProjectBrief } from "../shared/schemas";
-
-export function buildBriefFromAnswers(
-  answers: Array<{ questionId: string; answer: string; skipped: boolean }>,
-): ProjectBrief {
-  const map = new Map(answers.filter((a) => !a.skipped && a.answer.trim()).map((a) => [a.questionId, a.answer.trim()]));
-  const firstLine = map.get("goal") ?? "Untitled project";
-  const projectName = firstLine.split(/[.!?]/)[0]?.slice(0, 80) || "Untitled project";
-  return ProjectBriefSchema.parse({
-    projectName,
-    theme: map.get("theme") ?? firstLine,
-    description: map.get("theme") ?? firstLine,
-    desiredOutput: map.get("output") ?? "A shortlist of strong ideas with evidence",
-    successDefinition: map.get("success-decider") ?? "The user decides what succeeds",
-    constraints: splitLines(map.get("deadline")),
-    resources: splitLines(map.get("resources")),
-    avoidList: splitLines(map.get("avoid")),
-    researchNeeds: map.get("research-needs") ?? map.get("examples") ?? "",
-    finalDecision: map.get("final-decision") ?? "Choose the best next idea to pursue",
-    deadline: map.get("deadline") ?? "Flexible",
-    availableEffort: map.get("deadline") ?? "Not specified",
-    ideaStylePreference: map.get("style-balance") ?? map.get("good-idea") ?? "Balanced",
-  });
-}
-
-function splitLines(value: string | undefined): string[] {
-  if (!value?.trim()) return [];
-  return value.split(/\n|;/).map((part) => part.trim()).filter(Boolean);
-}
 
 export async function generateBriefWithModel(
   client: OpenCodeClient,
@@ -73,19 +44,7 @@ export async function generateBriefWithModel(
   );
 }
 
-export function intakeAssistantMessage(answeredIds: Set<string>): string | null {
-  const next = nextIntakeQuestion(answeredIds);
-  if (!next) return null;
-  return next.optional
-    ? `${next.prompt}\n\n(This question is optional — you can skip it.)`
-    : next.prompt;
-}
-
 export function newThreadTitle(goalAnswer?: string): string {
   if (!goalAnswer?.trim()) return "New research";
   return goalAnswer.trim().slice(0, 60);
-}
-
-export function createId(): string {
-  return randomUUID();
 }

@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { DatabaseClient } from "../db/client";
-import { wrapReportHtml } from "../core/sanitize";
+import { escapeHtml, wrapReportHtml } from "../core/sanitize";
 import {
   renderSynthesisReportHtml,
   reviewCoverage,
@@ -362,12 +362,4 @@ async function runWithConcurrency<T>(
   }
   await Promise.all(Array.from({ length: Math.min(limit, items.length) }, () => next()));
   return results;
-}
-
-function escapeHtml(value: string): string {
-  return value
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;");
 }

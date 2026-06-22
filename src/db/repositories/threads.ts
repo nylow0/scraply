@@ -1,15 +1,24 @@
 import { randomUUID } from "node:crypto";
 import type { DatabaseClient } from "../client";
 import {
+  IdeaSchema,
   MessageSchema,
   ProjectBriefSchema,
   RunConfigSchema,
   ThreadSchema,
+  type Idea,
   type Message,
   type ProjectBrief,
   type RunConfig,
   type Thread,
 } from "../../shared/schemas";
+
+export interface ReportSummary {
+  id: string;
+  streamId: string | null;
+  title: string;
+  html: string;
+}
 
 export class ThreadRepository {
   constructor(private readonly db: DatabaseClient) {}
@@ -148,6 +157,34 @@ export class ThreadRepository {
       SELECT config_json FROM run_configs WHERE thread_id = ? ORDER BY created_at DESC LIMIT 1
     `).get(threadId) as { config_json: string } | undefined;
     return row ? RunConfigSchema.parse(JSON.parse(row.config_json)) : null;
+  }
+
+  listIdeas(threadId: string): Idea[] {
+    const rows = this.db.db.prepare(
+      "SELECT * FROM ideas WHERE thread_id = ? ORDER BY created_at DESC",
+    ).all(threadId) as Array<Record<string, unknown>>;
+    return rows.map((row) => IdeaSchema.parse({
+      id: row.id,
+      threadId: row.thread_id,
+      title: row.title,
+      description: row.description,
+      bucket: row.bucket,
+      scores: JSON.parse(String(row.scores_json)),
+      supportingClaimIds: JSON.parse(String(row.supporting_claim_ids_json)),
+      createdAt: row.created_at,
+    }));
+  }
+
+  listReports(threadId: string): ReportSummary[] {
+    const rows = this.db.db.prepare(
+      "SELECT id, stream_id, title, html FROM reports WHERE thread_id = ? ORDER BY created_at ASC",
+    ).all(threadId) as Array<{ id: string; stream_id: string | null; title: string; html: string }>;
+    return rows.map((row) => ({
+      id: row.id,
+      streamId: row.stream_id,
+      title: row.title,
+      html: row.html,
+    }));
   }
 
   listPresets(): Array<{ name: string; config: RunConfig }> {

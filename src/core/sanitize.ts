@@ -21,10 +21,16 @@ export function wrapReportHtml(title: string, body: string): string {
   return sanitizeReportHtml(`<article><header><h1>${escapeHtml(title)}</h1></header><section>${body}</section></article>`);
 }
 
-function escapeHtml(value: string): string {
+/** Escape text for safe interpolation into report HTML templates. */
+export function escapeHtml(value: string): string {
   return value
     .replaceAll("&", "&amp;")
     .replaceAll("<", "&lt;")
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;");
+}
+
+/** Reduce HTML to a whitespace-normalized plain-text excerpt. */
+export function stripHtml(html: string): string {
+  return html.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
 }
