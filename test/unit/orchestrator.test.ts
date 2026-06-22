@@ -1,14 +1,17 @@
 import { describe, expect, test } from "bun:test";
-import { renderSynthesisReportHtml } from "../../src/core/orchestrator";
+import { reviewCoverage, renderSynthesisReportHtml } from "../../src/core/orchestrator";
 import { DEFAULT_RUN_CONFIG } from "../../src/shared/intake";
 import type { ProjectBrief } from "../../src/shared/schemas";
 
 const brief: ProjectBrief = {
   projectName: "Widget Studio",
+  goal: "Find widget product ideas",
   theme: "Widgets",
   description: "Explore widget opportunities",
-  desiredOutput: "Actionable ideas",
   successDefinition: "Clear next steps",
+  desiredOutput: "Actionable ideas",
+  successDecider: "Founder",
+  motivation: "Grow revenue",
   constraints: [],
   resources: [],
   avoidList: [],
@@ -17,6 +20,9 @@ const brief: ProjectBrief = {
   deadline: "Q3",
   availableEffort: "Medium",
   ideaStylePreference: "Balanced",
+  examples: "",
+  scoringCriteria: "",
+  anythingElse: "",
 };
 
 describe("orchestrator synthesis report", () => {
@@ -54,5 +60,10 @@ describe("orchestrator synthesis report", () => {
     expect(html).toContain("Executive summary");
     expect(html).toContain("Workflow friction");
     expect(html).toContain("Pricing benchmarks");
+  });
+
+  test("reviewCoverage rejects empty stream reports", async () => {
+    const client = { structuredCompletion: async () => ({}) } as never;
+    await expect(reviewCoverage(client, "test-model", brief, [], [])).rejects.toThrow("No stream reports");
   });
 });

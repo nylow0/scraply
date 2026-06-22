@@ -33,10 +33,13 @@ describe("research recovery", () => {
 
     threads.saveBrief(thread.id, {
       projectName: "Recovery test",
+      goal: "Test recovery",
       theme: "Recovery",
       description: "Test resume",
-      desiredOutput: "Ideas",
       successDefinition: "Resume works",
+      desiredOutput: "Ideas",
+      successDecider: "Me",
+      motivation: "Reliability",
       constraints: [],
       resources: [],
       avoidList: [],
@@ -45,6 +48,9 @@ describe("research recovery", () => {
       deadline: "Soon",
       availableEffort: "Low",
       ideaStylePreference: "Safe",
+      examples: "",
+      scoringCriteria: "",
+      anythingElse: "",
     }, true);
     threads.saveRunConfig(thread.id, RunConfigSchema.parse(DEFAULT_RUN_CONFIG));
 
@@ -69,6 +75,7 @@ describe("research recovery", () => {
 
     const stored = loadStoredRunState(db, runId);
     expect(stored?.completedStreamIds.has("landscape")).toBe(true);
+    expect(stored?.spendEstimate).toBe(0.2);
 
     cancelIncompleteRun(db, runId);
     expect(listPendingRuns(db)).toHaveLength(0);

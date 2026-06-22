@@ -63,6 +63,60 @@ export class OpenCodeClient {
     }
   }
 
+  async testModelCapabilities(model: string): Promise<{
+    model: string;
+    chatOk: boolean;
+    chatError?: string;
+    chatReply?: string;
+    structuredOk: boolean;
+    structuredError?: string;
+    latencyMs: number;
+  }> {
+    const started = Date.now();
+    let chatOk = false;
+    let chatError: string | undefined;
+    let chatReply: string | undefined;
+    let structuredOk = false;
+    let structuredError: string | undefined;
+
+    try {
+      chatReply = await this.chatCompletion(model, [
+        { role: "system", content: "Reply with one short sentence confirming the model is reachable." },
+        { role: "user", content: "Ping" },
+      ]);
+      chatOk = true;
+    } catch (error) {
+      chatError = error instanceof Error ? error.message : String(error);
+    }
+
+    try {
+      await this.structuredCompletion(
+        model,
+        "Return JSON only.",
+        "Set ok to true.",
+        z.object({ ok: z.boolean() }),
+        {
+          type: "object",
+          properties: { ok: { type: "boolean" } },
+          required: ["ok"],
+        },
+      );
+      structuredOk = true;
+    } catch (error) {
+      structuredError = error instanceof Error ? error.message : String(error);
+    }
+
+    return {
+      model,
+      chatOk,
+      ...(chatError !== undefined ? { chatError } : {}),
+      ...(chatReply !== undefined ? { chatReply: chatReply.trim().slice(0, 120) } : {}),
+      structuredOk,
+      ...(structuredError !== undefined ? { structuredError } : {}),
+      latencyMs: Date.now() - started,
+    };
+  }
+
   async chatCompletion(model: string, messages: Array<{ role: string; content: string }>, jsonSchema?: object): Promise<string> {
     const body: Record<string, unknown> = { model, messages };
     if (jsonSchema) {
@@ -77,7 +131,8 @@ export class OpenCodeClient {
       body: JSON.stringify(body),
     });
     if (!response.ok) {
-      throw new Error(`OpenCode chat failed (${response.status})`);
+      const errorBody = await response.text().catch(() => "");
+      throw new Error(`OpenCode chat failed (${response.status})${errorBody ? `: ${errorBody.slice(0, 300)}` : ""}`);
     }
     const parsed = ChatCompletionSchema.parse(await response.json());
     const content = parsed.choices[0]?.message.content;
@@ -103,7 +158,12 @@ export class OpenCodeClient {
         { role: "system", content: "Return only valid JSON matching the requested schema." },
         { role: "user", content: `Fix this JSON:\n${raw}` },
       ], jsonSchema);
-      return schema.parse(JSON.parse(repair));
+      try {
+        return schema.parse(JSON.parse(repair));
+      } catch (repairError) {
+        const detail = repairError instanceof Error ? repairError.message : "Invalid JSON";
+        throw new Error(`OpenCode structured output failed validation: ${detail}`);
+      }
     }
   }
 

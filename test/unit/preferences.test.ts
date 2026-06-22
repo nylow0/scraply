@@ -10,10 +10,13 @@ import type { ProjectBrief } from "../../src/shared/schemas";
 
 const brief: ProjectBrief = {
   projectName: "Test",
+  goal: "Find widget ideas",
   theme: "Widgets",
   description: "Build better widgets",
-  desiredOutput: "Ideas",
   successDefinition: "Useful ideas",
+  desiredOutput: "Ideas",
+  successDecider: "Me",
+  motivation: "Learning",
   constraints: [],
   resources: [],
   avoidList: [],
@@ -22,6 +25,9 @@ const brief: ProjectBrief = {
   deadline: "Soon",
   availableEffort: "Medium",
   ideaStylePreference: "Balanced",
+  examples: "",
+  scoringCriteria: "",
+  anythingElse: "",
 };
 
 describe("preference feedback loop", () => {

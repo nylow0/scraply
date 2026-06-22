@@ -1,6 +1,7 @@
 {
   "name": "scraply",
   "version": "0.2.0",
+  "description": "Explorable research and idea generation",
   "private": true,
   "type": "module",
   "main": "out/main/index.js",
@@ -9,6 +10,10 @@
     "build": "electron-vite build",
     "preview": "electron-vite preview",
     "package": "electron-vite build && electron-builder --win --publish never",
+    "install:win": "npm run package && powershell -NoProfile -ExecutionPolicy Bypass -Command \"Start-Process -FilePath (Get-ChildItem release -Filter 'Scraply Setup *.exe' | Select-Object -First 1 -ExpandProperty FullName) -ArgumentList '/S' -Wait; npm run register:start-menu\"",
+    "register:start-menu": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/register-start-menu.ps1",
+    "setup:win": "npm run install:win",
+    "setup:keys": "echo Place OPENCODE_API_KEY and EXA_API_KEY in a .env file in your Scraply data folder, then use Import from .env on first launch.",
     "test": "bun test test/unit test/integration",
     "test:e2e": "playwright test",
     "test:exa": "bun test test/integration/exa.live.test.ts",
@@ -48,6 +53,7 @@
     ],
     "icon": "build/icon.png",
     "win": {
+      "executableName": "Scraply",
       "target": [
         { "target": "nsis", "arch": ["x64"] },
         { "target": "portable", "arch": ["x64"] }
@@ -55,7 +61,11 @@
     },
     "nsis": {
       "oneClick": false,
-      "allowToChangeInstallationDirectory": true
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Scraply",
+      "uninstallDisplayName": "Scraply"
     }
   }
 }

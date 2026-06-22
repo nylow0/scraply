@@ -125,7 +125,14 @@ export class ThreadRepository {
       INSERT INTO briefs (id, thread_id, version, brief_json, confirmed, created_at)
       VALUES (?, ?, ?, ?, ?, ?)
     `).run(randomUUID(), threadId, version, JSON.stringify(brief), confirmed ? 1 : 0, new Date().toISOString());
-    this.updateThreadStatus(threadId, confirmed ? "brief-confirmed" : "brief-draft");
+    if (confirmed) {
+      this.updateThreadStatus(threadId, "brief-confirmed");
+      return;
+    }
+    const thread = this.listThreads().find((item) => item.id === threadId);
+    if (thread && (thread.status === "draft" || thread.status === "intake" || thread.status === "brief-draft")) {
+      this.updateThreadStatus(threadId, "brief-draft");
+    }
   }
 
   getLatestBrief(threadId: string): ProjectBrief | null {
@@ -135,12 +142,14 @@ export class ThreadRepository {
     return row ? ProjectBriefSchema.parse(JSON.parse(row.brief_json)) : null;
   }
 
-  saveRunConfig(threadId: string, config: RunConfig, presetName?: string): void {
+  saveRunConfig(threadId: string, config: RunConfig, presetName?: string, options?: { preserveStatus?: boolean }): void {
     this.db.db.prepare(`
       INSERT INTO run_configs (id, thread_id, config_json, preset_name, created_at)
       VALUES (?, ?, ?, ?, ?)
     `).run(randomUUID(), threadId, JSON.stringify(config), presetName ?? null, new Date().toISOString());
-    this.updateThreadStatus(threadId, "configuring");
+    if (!options?.preserveStatus) {
+      this.updateThreadStatus(threadId, "configuring");
+    }
   }
 
   getLatestRunConfig(threadId: string): RunConfig | null {

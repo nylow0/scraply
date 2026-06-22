@@ -2,17 +2,68 @@
 
 :root {
   color-scheme: dark;
-  --bg: #090909;
-  --surface: #121212;
-  --surface-2: #171717;
-  --border: #242424;
-  --text: #ececec;
-  --muted: #9a9a9a;
-  --accent: #6f8f7a;
-  --accent-strong: #86a990;
-  --danger: #b86b6b;
-  --mono: "Geist Mono", ui-monospace, monospace;
-  --sans: Inter, system-ui, sans-serif;
+
+  /* Surfaces — near-black canvas through charcoal elevation */
+  --bg: #0a0b0a;
+  --surface: #101210;
+  --surface-2: #161916;
+  --surface-3: #1d201d;
+  --overlay: #1a1d1a;
+
+  /* Borders — subtle separators, stronger for emphasis */
+  --border: #232624;
+  --border-strong: #313531;
+  --hairline: color-mix(in srgb, var(--border) 70%, transparent);
+
+  /* Text tiers */
+  --text: #eef1ed;
+  --text-2: #b4bbb2;
+  --muted: #7d847c;
+  --faint: #565b55;
+
+  /* Accent — vivid yellow */
+  --accent: #d4b32c;
+  --accent-strong: #f2d544;
+  --accent-bg: color-mix(in srgb, var(--accent) 14%, var(--surface));
+  --accent-bg-hover: color-mix(in srgb, var(--accent) 22%, var(--surface));
+  --accent-border: color-mix(in srgb, var(--accent) 42%, var(--border));
+  --accent-faint: color-mix(in srgb, var(--accent) 9%, var(--surface));
+
+  /* Status */
+  --danger: #c07a7a;
+  --danger-bg: color-mix(in srgb, var(--danger) 12%, var(--surface));
+  --warn: #c0a26f;
+
+  /* Typography */
+  --mono: "Geist Mono", ui-monospace, "SFMono-Regular", monospace;
+  --sans: "Geist", "Geist Variable", "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
+
+  /* Spacing scale (4px base) */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --space-10: 40px;
+
+  /* Radius — restrained, no pill bloat */
+  --r-sm: 6px;
+  --r-md: 8px;
+  --r-lg: 12px;
+  --r-xl: 16px;
+
+  /* Elevation — soft, background-tinted, overlays only */
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --shadow-md: 0 8px 24px -8px rgba(0, 0, 0, 0.55);
+  --shadow-lg: 0 18px 50px -12px rgba(0, 0, 0, 0.65);
+  --shadow-inset: inset 0 1px 0 color-mix(in srgb, var(--text) 4%, transparent);
+
+  /* Motion */
+  --ease: cubic-bezier(0.16, 1, 0.3, 1);
+  --dur-fast: 120ms;
+  --dur: 180ms;
 }
 
 * {
@@ -22,7 +73,13 @@
 html,
 body,
 #app {
+  width: 100%;
   height: 100%;
+  overflow: hidden;
+}
+
+#app {
+  position: relative;
 }
 
 body {
@@ -32,6 +89,16 @@ body {
   font-family: var(--sans);
   font-size: 14px;
   line-height: 1.5;
+  font-feature-settings: "cv01", "ss01";
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+h1,
+h2,
+h3,
+h4 {
+  letter-spacing: -0.02em;
 }
 
 button,
@@ -45,14 +112,67 @@ button {
   cursor: pointer;
 }
 
+::selection {
+  background: color-mix(in srgb, var(--accent) 38%, transparent);
+}
+
 :focus-visible {
   outline: 2px solid var(--accent-strong);
   outline-offset: 2px;
+  border-radius: 3px;
+}
+
+textarea:focus,
+textarea:focus-visible {
+  outline: none;
+}
+
+/* Scrollbars — slim and unobtrusive */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-strong) transparent;
+}
+
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+*::-webkit-scrollbar-thumb {
+  background: var(--border-strong);
+  border: 3px solid transparent;
+  background-clip: padding-box;
+  border-radius: 999px;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in srgb, var(--accent) 40%, var(--border-strong));
+  background-clip: padding-box;
+}
+
+@keyframes boot-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.boot-spinner {
+  width: 22px;
+  height: 22px;
+  border: 2px solid var(--border-strong);
+  border-top-color: var(--accent-strong);
+  border-radius: 50%;
+  animation: boot-spin 0.75s linear infinite;
+  margin-bottom: var(--space-3);
 }
 
 @media (prefers-reduced-motion: reduce) {
-  * {
-    animation: none !important;
-    transition: none !important;
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
   }
 }

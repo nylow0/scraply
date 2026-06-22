@@ -66,4 +66,82 @@ describe("Backend health", () => {
       await handle.close();
     }
   });
+
+  test("rejects invalid JSON with 400", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "scraply-backend-json-"));
+    tempDirs.push(dir);
+    const handle = await startBackend({
+      dataDir: dir,
+      dbPath: join(dir, "scraply.db"),
+      getSecrets: () => ({ opencodeApiKey: null, exaApiKey: null }),
+    }, () => {});
+
+    try {
+      const response = await fetch(`http://127.0.0.1:${handle.port}/threads/select`, {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${handle.token}`,
+          "content-type": "application/json",
+        },
+        body: "{not-json",
+      });
+      expect(response.status).toBe(400);
+      const body = await response.json();
+      expect(body.error).toBe("Invalid JSON body");
+    } finally {
+      await handle.close();
+    }
+  });
+
+  test("rejects missing threadId with validation error", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "scraply-backend-select-"));
+    tempDirs.push(dir);
+    const handle = await startBackend({
+      dataDir: dir,
+      dbPath: join(dir, "scraply.db"),
+      getSecrets: () => ({ opencodeApiKey: null, exaApiKey: null }),
+    }, () => {});
+
+    try {
+      const response = await fetch(`http://127.0.0.1:${handle.port}/threads/select`, {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${handle.token}`,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({}),
+      });
+      expect(response.status).toBe(400);
+      const body = await response.json();
+      expect(body.error).toContain("threadId");
+    } finally {
+      await handle.close();
+    }
+  });
+
+  test("invalidateValidation clears cached provider state", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "scraply-backend-cache-"));
+    tempDirs.push(dir);
+    const handle = await startBackend({
+      dataDir: dir,
+      dbPath: join(dir, "scraply.db"),
+      getSecrets: () => ({ opencodeApiKey: null, exaApiKey: null }),
+    }, () => {});
+
+    try {
+      const first = await fetch(`http://127.0.0.1:${handle.port}/validation`, {
+        headers: { authorization: `Bearer ${handle.token}` },
+      });
+      expect(first.ok).toBe(true);
+
+      handle.invalidateValidation();
+
+      const second = await fetch(`http://127.0.0.1:${handle.port}/validation`, {
+        headers: { authorization: `Bearer ${handle.token}` },
+      });
+      expect(second.ok).toBe(true);
+    } finally {
+      await handle.close();
+    }
+  });
 });

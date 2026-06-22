@@ -30,20 +30,57 @@ export function buildIdeaPrompt(
   existing: Array<{ title: string; description: string }>,
   batchSize: number,
   lens: string,
+  evidenceContext?: string,
 ): string {
   return [
     `Project: ${brief.projectName}`,
+    brief.goal ? `Generating ideas for: ${brief.goal}` : "",
     `Theme: ${brief.theme}`,
     `Description: ${brief.description}`,
+    brief.successDefinition ? `What makes an idea good: ${brief.successDefinition}` : "",
     `Desired output: ${brief.desiredOutput}`,
+    brief.motivation ? `Motivation / reward that matters: ${brief.motivation}` : "",
+    brief.scoringCriteria ? `Weight these scoring criteria: ${brief.scoringCriteria}` : "",
+    brief.examples ? `Examples to take into account: ${brief.examples}` : "",
+    brief.constraints.length ? `Hard constraints: ${brief.constraints.join("; ")}` : "",
+    brief.resources.length ? `Available resources: ${brief.resources.join("; ")}` : "",
     `Avoid: ${brief.avoidList.join("; ") || "none"}`,
     `Creative lens: ${lens}`,
     `Generate ${batchSize} distinct ideas.`,
     existing.length ? `Avoid duplicating: ${existing.map((i) => i.title).slice(0, 20).join("; ")}` : "",
+    evidenceContext ? ["", "Research evidence (ground ideas in this):", evidenceContext].join("\n") : "",
     "",
     "User preference history:",
     preferencePrompt,
   ].join("\n");
+}
+
+/** Pull report excerpts from completed research to ground idea generation. */
+export function buildResearchEvidenceContext(
+  db: DatabaseClient,
+  threadId: string,
+  maxChars = 6000,
+): string {
+  const rows = db.db.prepare(`
+    SELECT stream_id, title, html FROM reports
+    WHERE thread_id = ?
+    ORDER BY CASE WHEN stream_id = 'synthesis' THEN 0 ELSE 1 END, created_at ASC
+  `).all(threadId) as Array<{ stream_id: string | null; title: string; html: string }>;
+
+  if (rows.length === 0) return "";
+
+  const parts: string[] = [];
+  let used = 0;
+  for (const row of rows) {
+    const label = row.stream_id === "synthesis" ? "Synthesis" : row.title;
+    const excerpt = stripHtml(row.html).slice(0, 1200);
+    if (!excerpt) continue;
+    const block = `[${label}]\n${excerpt}`;
+    if (used + block.length > maxChars) break;
+    parts.push(block);
+    used += block.length;
+  }
+  return parts.join("\n\n");
 }
 
 export async function generateIdeas(
@@ -54,10 +91,13 @@ export async function generateIdeas(
   model: string,
   count: number,
   batchSize: number,
+  evidenceContext?: string,
 ): Promise<Idea[]> {
-  const existing = db.db.prepare("SELECT title, description FROM ideas").all() as Array<{ title: string; description: string }>;
+  const existing = db.db.prepare("SELECT title, description FROM ideas WHERE thread_id = ?")
+    .all(threadId) as Array<{ title: string; description: string }>;
   const preferenceContext = buildPreferenceContext(db);
   const preferencePrompt = formatPreferencePrompt(preferenceContext);
+  const researchEvidence = evidenceContext ?? buildResearchEvidenceContext(db, threadId);
   const ideas: Idea[] = [];
   const batches = Math.ceil(count / batchSize);
 
@@ -69,6 +109,7 @@ export async function generateIdeas(
       existing,
       Math.min(batchSize, count - ideas.length),
       lens,
+      researchEvidence || undefined,
     );
 
     const generated = await client.structuredCompletion(
@@ -156,4 +197,8 @@ function jaccard(a: string, b: string): number {
   const intersection = [...setA].filter((token) => setB.has(token)).length;
   const union = new Set([...setA, ...setB]).size;
   return union === 0 ? 0 : intersection / union;
+}
+
+function stripHtml(html: string): string {
+  return html.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
 }

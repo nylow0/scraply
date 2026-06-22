@@ -45,6 +45,31 @@ describe("OpenCodeClient", () => {
     expect(requestBody?.response_format).toMatchObject({ type: "json_schema" });
   });
 
+  test("reports chat and structured capability checks", async () => {
+    server = Bun.serve({
+      port: 0,
+      async fetch(request) {
+        const body = await request.json() as Record<string, unknown>;
+        const structured = Boolean(body.response_format);
+        return Response.json({
+          choices: [{
+            message: {
+              content: structured ? JSON.stringify({ ok: true }) : "Scraply model OK",
+            },
+          }],
+        });
+      },
+    });
+
+    const client = new OpenCodeClient({
+      apiKey: "test-key",
+      baseUrl: `http://127.0.0.1:${server.port}/v1`,
+    });
+    const result = await client.testModelCapabilities("glm-5.2");
+    expect(result.chatOk).toBe(true);
+    expect(result.structuredOk).toBe(true);
+  });
+
   test("lists models from /models", async () => {
     server = Bun.serve({
       port: 0,

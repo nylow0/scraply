@@ -1,9 +1,11 @@
 import { contextBridge, ipcRenderer } from "electron";
-import { IPC_CHANNELS, type BackendReady, type ResearchEvent, type ValidationState, type WorkspaceState } from "../shared/ipc";
+import { IPC_CHANNELS, type BackendReady, type ModelTestResult, type ReportDetail, type ResearchEvent, type ValidationState, type WorkspaceState } from "../shared/ipc";
 
 const api = {
   getBackend: (): Promise<BackendReady | null> => ipcRenderer.invoke(IPC_CHANNELS.GET_BACKEND),
   getValidation: (): Promise<ValidationState> => ipcRenderer.invoke(IPC_CHANNELS.GET_VALIDATION),
+  testModels: (models: string[]): Promise<{ results: ModelTestResult[] }> =>
+    ipcRenderer.invoke(IPC_CHANNELS.TEST_MODELS, { models }),
   getWorkspace: (): Promise<WorkspaceState> => ipcRenderer.invoke(IPC_CHANNELS.GET_WORKSPACE),
   saveSecrets: (opencodeApiKey: string, exaApiKey: string): Promise<ValidationState> =>
     ipcRenderer.invoke(IPC_CHANNELS.SAVE_SECRETS, { opencodeApiKey, exaApiKey }),
@@ -11,6 +13,8 @@ const api = {
   openDataFolder: (): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.OPEN_DATA_FOLDER),
   createThread: (title?: string) => ipcRenderer.invoke(IPC_CHANNELS.CREATE_THREAD, { title }),
   selectThread: (threadId: string) => ipcRenderer.invoke(IPC_CHANNELS.SELECT_THREAD, { threadId }),
+  deleteThread: async (threadId: string): Promise<WorkspaceState> =>
+    ipcRenderer.invoke(IPC_CHANNELS.DELETE_THREAD, { threadId }),
   submitIntake: (payload: { threadId: string; questionId: string; answer: string; skipped?: boolean }) =>
     ipcRenderer.invoke(IPC_CHANNELS.SUBMIT_INTAKE, payload),
   confirmBrief: (payload: { threadId: string; brief: WorkspaceState["brief"] }) =>
@@ -18,6 +22,10 @@ const api = {
   saveRunConfig: (payload: { threadId: string; config: NonNullable<WorkspaceState["runConfig"]>; presetName?: string }) =>
     ipcRenderer.invoke(IPC_CHANNELS.SAVE_RUN_CONFIG, payload),
   startResearch: (threadId: string) => ipcRenderer.invoke(IPC_CHANNELS.START_RESEARCH, { threadId }),
+  launchResearch: (payload: { threadId: string; brief: NonNullable<WorkspaceState["brief"]>; config: NonNullable<WorkspaceState["runConfig"]> }) =>
+    ipcRenderer.invoke(IPC_CHANNELS.LAUNCH_RESEARCH, payload),
+  saveDraft: (payload: { threadId: string; brief: NonNullable<WorkspaceState["brief"]>; config: NonNullable<WorkspaceState["runConfig"]> }) =>
+    ipcRenderer.invoke(IPC_CHANNELS.SAVE_DRAFT, payload),
   cancelResearch: (runId: string) => ipcRenderer.invoke(IPC_CHANNELS.CANCEL_RESEARCH, { runId }),
   resumeResearch: async (runId: string): Promise<WorkspaceState> => {
     const result = await ipcRenderer.invoke(IPC_CHANNELS.RESUME_RESEARCH, { runId }) as { workspace: WorkspaceState };
@@ -33,6 +41,8 @@ const api = {
   exportIdeas: (threadId: string) => ipcRenderer.invoke(IPC_CHANNELS.EXPORT_IDEAS, { threadId }),
   createBranch: (payload: { parentThreadId: string; ideaTitle: string }) =>
     ipcRenderer.invoke(IPC_CHANNELS.CREATE_BRANCH, payload),
+  getReport: (reportId: string): Promise<ReportDetail> =>
+    ipcRenderer.invoke(IPC_CHANNELS.GET_REPORT, { reportId }),
   onBackendEvent: (listener: (event: ResearchEvent) => void) => {
     const handler = (_: unknown, event: ResearchEvent) => listener(event);
     ipcRenderer.on(IPC_CHANNELS.BACKEND_EVENT, handler);

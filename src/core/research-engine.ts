@@ -8,11 +8,16 @@ import {
   type StreamReportSummary,
 } from "../core/orchestrator";
 import { loadStoredRunState, logJobEvent } from "../core/research-recovery";
+import { generateIdeas } from "../core/ideas";
 import type { ExaClient } from "../providers/exa";
 import type { OpenCodeClient } from "../providers/opencode";
-import { RESEARCH_STREAMS, type CanonicalStream } from "../research/streams";
-import type { ProjectBrief, RunConfig } from "../shared/schemas";
+import type { ProjectBrief, Researcher, RunConfig } from "../shared/schemas";
 import type { ResearchEvent } from "../shared/ipc";
+
+/** Researchers that actually run for a config: enabled only. */
+function activeResearchers(config: RunConfig): Researcher[] {
+  return config.researchers.filter((researcher) => researcher.enabled);
+}
 
 export interface ResearchEngineOptions {
   db: DatabaseClient;
@@ -40,6 +45,11 @@ export class ResearchEngine {
   constructor(private readonly options: ResearchEngineOptions) {}
 
   async startRun(threadId: string, brief: ProjectBrief, config: RunConfig): Promise<string> {
+    const researchers = activeResearchers(config);
+    if (researchers.length === 0) {
+      throw new Error("Enable at least one researcher before starting a run");
+    }
+
     const runId = randomUUID();
     const now = new Date().toISOString();
     this.options.db.db.prepare(`
@@ -77,7 +87,7 @@ export class ResearchEngine {
       config: stored.config,
       brief: stored.brief,
       cancelled: false,
-      spendEstimate: 0,
+      spendEstimate: stored.spendEstimate,
       completedStreamIds: stored.completedStreamIds,
       hasSynthesis: stored.hasSynthesis,
     });
@@ -92,8 +102,13 @@ export class ResearchEngine {
     this.globalCancelled.add(runId);
     const active = this.activeRuns.get(runId);
     if (active) active.cancelled = true;
+    const now = new Date().toISOString();
     this.options.db.db.prepare("UPDATE research_runs SET status = 'cancelled', cancelled = 1, updated_at = ? WHERE id = ?")
-      .run(new Date().toISOString(), runId);
+      .run(now, runId);
+    if (active?.threadId) {
+      this.options.db.db.prepare("UPDATE threads SET status = ?, updated_at = ? WHERE id = ?")
+        .run("configuring", now, active.threadId);
+    }
     this.emitJob(runId, active?.threadId ?? null, "run-cancelled", { runId });
     this.options.onEvent({ type: "run-cancelled", runId });
   }
@@ -103,39 +118,134 @@ export class ResearchEngine {
     if (!active) return;
     const { config, brief, threadId } = active;
 
-    const pendingStreams = RESEARCH_STREAMS.filter((stream) => !active.completedStreamIds.has(stream.id));
-    if (pendingStreams.length > 0) {
-      await runWithConcurrency(
-        pendingStreams,
-        config.parallelism,
-        (stream) => this.runStream(runId, threadId, brief, config, stream),
-      );
-    }
+    try {
+      const researchers = activeResearchers(config);
+      const pendingStreams = researchers.filter((stream) => !active.completedStreamIds.has(stream.id));
+      if (pendingStreams.length > 0) {
+        await runWithConcurrency(
+          pendingStreams,
+          config.parallelism,
+          (stream) => this.runStream(runId, threadId, brief, config, stream),
+        );
+      }
 
-    if (active.cancelled || this.globalCancelled.has(runId)) {
+      if (this.isRunCancelled(runId, active)) {
+        this.persistSpendEstimate(runId, active.spendEstimate);
+        this.options.db.db.prepare(`
+          UPDATE research_runs SET status = 'cancelled', spend_estimate = ?, updated_at = ? WHERE id = ?
+        `).run(active.spendEstimate, new Date().toISOString(), runId);
+        return;
+      }
+
+      const streamReports = this.loadStreamReports(runId, researchers);
+      if (streamReports.length > 0 && !active.hasSynthesis && this.hasSpendBudget(active, config)) {
+        await this.runOrchestrator(runId, threadId, brief, config, streamReports, active);
+      }
+
+      const finalReports = this.loadStreamReports(runId, researchers);
+      const hasEvidence = finalReports.some((report) => report.status === "completed" && report.reportHtml.trim());
+      const partial = finalReports.some((report) => report.status !== "completed");
+      const status = active.cancelled ? "cancelled" : !hasEvidence ? "failed" : partial ? "partial" : "completed";
+      this.persistSpendEstimate(runId, active.spendEstimate);
+      this.options.db.db.prepare(`
+        UPDATE research_runs SET status = ?, spend_estimate = ?, updated_at = ? WHERE id = ?
+      `).run(status, active.spendEstimate, new Date().toISOString(), runId);
+
+      if (!active.cancelled) {
+        if (!hasEvidence) {
+          const message = "Research ended before any stream saved usable evidence. Check provider connectivity, then resume the run.";
+          this.emitJob(runId, threadId, "run-failed", { runId, error: message });
+          this.options.onEvent({ type: "run-failed", runId, error: message });
+          this.options.db.db.prepare("UPDATE threads SET status = ?, updated_at = ? WHERE id = ?")
+            .run("configuring", new Date().toISOString(), threadId);
+          return;
+        }
+        this.emitJob(runId, threadId, "run-completed", { runId, partial });
+        this.options.onEvent({ type: "run-completed", runId, partial });
+        this.options.db.db.prepare("UPDATE threads SET status = ?, updated_at = ? WHERE id = ?")
+          .run("research-complete", new Date().toISOString(), threadId);
+        await this.generateIdeasForRun(runId, threadId, brief, config, hasEvidence);
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Research run failed unexpectedly";
+      this.persistSpendEstimate(runId, active.spendEstimate);
+      this.options.db.db.prepare(`
+        UPDATE research_runs SET status = 'failed', spend_estimate = ?, updated_at = ? WHERE id = ?
+      `).run(active.spendEstimate, new Date().toISOString(), runId);
+      this.options.db.db.prepare("UPDATE threads SET status = ?, updated_at = ? WHERE id = ?")
+        .run(this.hasSavedEvidence(runId) ? "research-complete" : "configuring", new Date().toISOString(), threadId);
+      this.emitJob(runId, threadId, "run-failed", { runId, error: message });
+      this.options.onEvent({ type: "run-failed", runId, error: message });
+    } finally {
+      this.globalCancelled.delete(runId);
       this.activeRuns.delete(runId);
-      return;
     }
+  }
 
-    const streamReports = this.loadStreamReports(runId, threadId);
-    if (streamReports.length > 0 && !active.hasSynthesis) {
-      await this.runOrchestrator(runId, threadId, brief, config, streamReports, active);
+  private isRunCancelled(runId: string, active: ActiveRun): boolean {
+    return active.cancelled || this.globalCancelled.has(runId);
+  }
+
+  private hasSpendBudget(active: ActiveRun, config: RunConfig): boolean {
+    if (active.spendEstimate >= config.maxSpendUsd) {
+      this.options.onEvent({
+        type: "run-failed",
+        runId: active.runId,
+        error: `Spend cap of $${config.maxSpendUsd.toFixed(2)} reached before synthesis`,
+      });
+      return false;
     }
+    return true;
+  }
 
-    const finalReports = this.loadStreamReports(runId, threadId);
-    const partial = finalReports.some((report) => report.status !== "completed");
-    const status = active.cancelled ? "cancelled" : partial ? "partial" : "completed";
+  private persistSpendEstimate(runId: string, spendEstimate: number): void {
     this.options.db.db.prepare(`
-      UPDATE research_runs SET status = ?, spend_estimate = ?, updated_at = ? WHERE id = ?
-    `).run(status, active.spendEstimate, new Date().toISOString(), runId);
+      UPDATE research_runs SET spend_estimate = ?, updated_at = ? WHERE id = ?
+    `).run(spendEstimate, new Date().toISOString(), runId);
+  }
 
-    if (!active.cancelled) {
-      this.emitJob(runId, threadId, "run-completed", { runId, partial });
-      this.options.onEvent({ type: "run-completed", runId, partial });
+  private hasSavedEvidence(runId: string): boolean {
+    const row = this.options.db.db.prepare(`
+      SELECT COUNT(*) as count
+      FROM stream_runs
+      WHERE research_run_id = ? AND status = 'completed' AND report_id IS NOT NULL
+    `).get(runId) as { count: number };
+    return row.count > 0;
+  }
+
+  /** Auto-generate the idea shortlist once research finishes so the user gets a result, not just reports. */
+  private async generateIdeasForRun(
+    runId: string,
+    threadId: string,
+    brief: ProjectBrief,
+    config: RunConfig,
+    hasEvidence: boolean,
+  ): Promise<void> {
+    if (!hasEvidence) return;
+    this.options.db.db.prepare("UPDATE threads SET status = ?, updated_at = ? WHERE id = ?")
+      .run("ideas-generating", new Date().toISOString(), threadId);
+    try {
+      const ideas = await generateIdeas(
+        this.options.db,
+        this.options.opencode,
+        threadId,
+        brief,
+        config.ideaModel,
+        config.ideasRequested,
+        config.batchSize,
+      );
+      this.options.db.db.prepare("UPDATE threads SET status = ?, updated_at = ? WHERE id = ?")
+        .run("ideas-ready", new Date().toISOString(), threadId);
+      this.emitJob(runId, threadId, "ideas-generated", { threadId, count: ideas.length });
+      this.options.onEvent({ type: "ideas-generated", threadId, ideaCount: ideas.length });
+    } catch (error) {
+      // Leave the thread at research-complete so the user can retry idea generation manually.
       this.options.db.db.prepare("UPDATE threads SET status = ?, updated_at = ? WHERE id = ?")
         .run("research-complete", new Date().toISOString(), threadId);
+      const message = error instanceof Error ? error.message : "Idea generation failed";
+      this.emitJob(runId, threadId, "ideas-failed", { threadId, error: message });
+      this.options.onEvent({ type: "ideas-failed", threadId, error: message });
     }
-    this.activeRuns.delete(runId);
   }
 
   private async runOrchestrator(
@@ -149,10 +259,12 @@ export class ResearchEngine {
     this.options.onEvent({ type: "coverage-review-started", runId });
     this.emitJob(runId, threadId, "coverage-review-started", { runId });
 
+    const researchers = activeResearchers(config);
     let coverageReview;
     try {
-      coverageReview = await reviewCoverage(this.options.opencode, config.orchestratorModel, brief, streamReports);
+      coverageReview = await reviewCoverage(this.options.opencode, config.orchestratorModel, brief, streamReports, researchers);
       active.spendEstimate += 0.06;
+      this.persistSpendEstimate(runId, active.spendEstimate);
       this.options.onEvent({
         type: "coverage-review-completed",
         runId,
@@ -164,6 +276,7 @@ export class ResearchEngine {
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : "Coverage review failed";
+      this.options.onEvent({ type: "coverage-review-failed", runId, error: message });
       this.emitJob(runId, threadId, "coverage-review-failed", { runId, error: message });
       return;
     }
@@ -173,13 +286,14 @@ export class ResearchEngine {
       .slice(0, config.maxFollowUpRounds);
 
     for (const target of followUpTargets) {
-      const stream = RESEARCH_STREAMS.find((item) => item.id === target.streamId);
-      if (!stream || active.cancelled) continue;
+      const stream = researchers.find((item) => item.id === target.streamId);
+      if (!stream || this.isRunCancelled(runId, active)) continue;
+      if (!this.hasSpendBudget(active, config)) break;
       this.options.onEvent({ type: "follow-up-started", runId, streamId: stream.id, round: 1 });
       await this.runStream(runId, threadId, brief, config, stream, true);
     }
 
-    const refreshedReports = this.loadStreamReports(runId, threadId);
+    const refreshedReports = this.loadStreamReports(runId, researchers);
     this.options.onEvent({ type: "synthesis-started", runId });
     this.emitJob(runId, threadId, "synthesis-started", { runId });
 
@@ -192,6 +306,7 @@ export class ResearchEngine {
         coverageReview,
       );
       active.spendEstimate += 0.08;
+      this.persistSpendEstimate(runId, active.spendEstimate);
       const reportId = randomUUID();
       const html = renderSynthesisReportHtml(brief, config, refreshedReports, coverageReview, synthesis);
       this.options.db.db.prepare(`
@@ -202,40 +317,37 @@ export class ResearchEngine {
       this.options.onEvent({ type: "synthesis-completed", runId, reportId });
       this.emitJob(runId, threadId, "synthesis-completed", { runId, reportId });
       this.options.onReport?.(threadId, "Research synthesis", reportId);
-      this.options.db.db.prepare(`
-        INSERT INTO messages (id, thread_id, role, content, metadata_json, created_at)
-        VALUES (?, ?, 'report', ?, ?, ?)
-      `).run(
-        randomUUID(),
-        threadId,
-        "Composite research synthesis is ready.",
-        JSON.stringify({ reportId, streamName: "Research synthesis", synthesis: true }),
-        new Date().toISOString(),
-      );
     } catch (error) {
       const message = error instanceof Error ? error.message : "Synthesis failed";
+      this.options.onEvent({ type: "synthesis-failed", runId, error: message });
       this.emitJob(runId, threadId, "synthesis-failed", { runId, error: message });
     }
   }
 
-  private loadStreamReports(runId: string, threadId: string): StreamReportSummary[] {
+  private loadStreamReports(runId: string, researchers: Researcher[]): StreamReportSummary[] {
     const rows = this.options.db.db.prepare(`
-      SELECT sr.stream_id, sr.status, sr.coverage, sr.error, sr.report_id, r.html
+      SELECT sr.stream_id, sr.status, sr.coverage, sr.error, sr.report_id, sr.round, r.html
       FROM stream_runs sr
       LEFT JOIN reports r ON r.id = sr.report_id
       WHERE sr.research_run_id = ?
-      ORDER BY sr.created_at ASC
+      ORDER BY sr.stream_id ASC, sr.round DESC, sr.updated_at DESC
     `).all(runId) as Array<{
       stream_id: string;
       status: string;
       coverage: number | null;
       error: string | null;
       report_id: string | null;
+      round: number;
       html: string | null;
     }>;
 
-    return rows.map((row) => {
-      const stream = RESEARCH_STREAMS.find((item) => item.id === row.stream_id);
+    const latestByStream = new Map<string, (typeof rows)[number]>();
+    for (const row of rows) {
+      if (!latestByStream.has(row.stream_id)) latestByStream.set(row.stream_id, row);
+    }
+
+    return [...latestByStream.values()].map((row) => {
+      const stream = researchers.find((item) => item.id === row.stream_id);
       return {
         streamId: row.stream_id,
         streamName: stream?.name ?? row.stream_id,
@@ -252,12 +364,22 @@ export class ResearchEngine {
     threadId: string,
     brief: ProjectBrief,
     config: RunConfig,
-    stream: CanonicalStream,
+    stream: Researcher,
     isFollowUp = false,
   ): Promise<void> {
     const active = this.activeRuns.get(runId);
-    if (!active || active.cancelled || this.globalCancelled.has(runId)) return;
+    if (!active || this.isRunCancelled(runId, active)) return;
     if (!isFollowUp && active.completedStreamIds.has(stream.id)) return;
+
+    if (active.spendEstimate >= config.maxSpendUsd) {
+      this.options.onEvent({
+        type: "stream-failed",
+        runId,
+        streamId: stream.id,
+        error: `Spend cap of $${config.maxSpendUsd.toFixed(2)} reached`,
+      });
+      return;
+    }
 
     const existing = this.options.db.db.prepare(`
       SELECT id FROM stream_runs
@@ -280,21 +402,35 @@ export class ResearchEngine {
     this.options.onEvent({ type: "stream-progress", runId, streamId: stream.id, message: "Planning searches" });
 
     try {
-      const query = `${brief.theme}: ${stream.focus}`;
+      const queryParts = [`${brief.theme}: ${stream.focus}`];
+      if (stream.instructions.trim()) queryParts.push(stream.instructions.trim());
+      const query = queryParts.join(". ");
       this.options.onEvent({ type: "stream-progress", runId, streamId: stream.id, message: "Searching Exa" });
       const sources = await this.options.exa.search(query, {
         numResults: config.searchResultsPerStream,
         maxCharacters: config.pageCharLimit,
       });
       active.spendEstimate += 0.05;
+      this.persistSpendEstimate(runId, active.spendEstimate);
 
-      if (active.spendEstimate > config.maxSpendUsd) {
-        throw new Error("Spend cap reached");
+      if (sources.length === 0) {
+        throw new Error("Exa returned no sources — try broadening the theme or increasing search results");
       }
 
+      if (active.spendEstimate > config.maxSpendUsd) {
+        throw new Error(`Spend cap of $${config.maxSpendUsd.toFixed(2)} reached`);
+      }
+
+      this.options.onEvent({
+        type: "stream-progress",
+        runId,
+        streamId: stream.id,
+        message: `Found ${sources.length} source${sources.length === 1 ? "" : "s"}`,
+      });
       this.options.onEvent({ type: "stream-progress", runId, streamId: stream.id, message: "Extracting claims" });
       const claims = await this.options.opencode.extractClaims(config.workerModel, query, sources);
       active.spendEstimate += 0.08;
+      this.persistSpendEstimate(runId, active.spendEstimate);
 
       this.options.onEvent({ type: "stream-progress", runId, streamId: stream.id, message: "Writing report" });
       const findings = claims.claims.slice(0, 8).map((claim) =>

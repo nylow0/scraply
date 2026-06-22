@@ -1,3 +1,5 @@
+import { DEFAULT_RESEARCHERS } from "./schemas";
+
 export const REQUIRED_INTAKE_QUESTIONS = [
   { id: "goal", prompt: "What are we trying to generate ideas for?" },
   { id: "theme", prompt: "What is the broad theme or area, and what is your rough description?" },
@@ -54,4 +56,5 @@ export const DEFAULT_RUN_CONFIG = {
   parallelism: 3,
   maxSpendUsd: 5,
   autoPublishPlans: false,
+  researchers: DEFAULT_RESEARCHERS,
 };

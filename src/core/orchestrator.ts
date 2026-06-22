@@ -1,8 +1,7 @@
 import { z } from "zod";
 import type { OpenCodeClient } from "../providers/opencode";
 import { wrapReportHtml } from "./sanitize";
-import { RESEARCH_STREAMS } from "../research/streams";
-import type { ProjectBrief, RunConfig } from "../shared/schemas";
+import type { ProjectBrief, Researcher, RunConfig } from "../shared/schemas";
 
 export const StreamCoverageReviewSchema = z.object({
   streamId: z.string().min(1),
@@ -76,8 +75,12 @@ export async function reviewCoverage(
   model: string,
   brief: ProjectBrief,
   streamReports: StreamReportSummary[],
+  researchers: Researcher[],
 ): Promise<CoverageReview> {
-  const rubric = RESEARCH_STREAMS.map((stream) => `- ${stream.id}: ${stream.focus}`).join("\n");
+  if (streamReports.length === 0) {
+    throw new Error("No stream reports available for coverage review");
+  }
+  const rubric = researchers.map((stream) => `- ${stream.id}: ${stream.focus}`).join("\n");
   const evidence = streamReports.map((report) => [
     `Stream: ${report.streamName} (${report.streamId})`,
     `Status: ${report.status}`,
@@ -91,8 +94,12 @@ export async function reviewCoverage(
     "Assess evidence coverage against the brief using an explicit rubric. Return calibrated coverage from 0 to 1, explicit gaps, and whether each stream needs follow-up research. Do not generate final ideas.",
     [
       `Project: ${brief.projectName}`,
+      brief.goal ? `Generating ideas for: ${brief.goal}` : "",
       `Theme: ${brief.theme}`,
       `Description: ${brief.description}`,
+      brief.successDefinition ? `What makes an idea good: ${brief.successDefinition}` : "",
+      brief.constraints.length ? `Constraints: ${brief.constraints.join("; ")}` : "",
+      brief.avoidList.length ? `Avoid: ${brief.avoidList.join("; ")}` : "",
       `Research needs: ${brief.researchNeeds}`,
       "",
       "Coverage rubric:",
@@ -123,6 +130,8 @@ export async function synthesizeResearch(
     [
       `Project: ${brief.projectName}`,
       `Theme: ${brief.theme}`,
+      brief.goal ? `Goal: ${brief.goal}` : "",
+      brief.constraints.length ? `Constraints: ${brief.constraints.join("; ")}` : "",
       `Overall coverage: ${Math.round(coverageReview.overallCoverage * 100)}%`,
       `Coverage summary: ${coverageReview.summary}`,
       "",

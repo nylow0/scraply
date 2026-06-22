@@ -2,26 +2,37 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { randomBytes } from "node:crypto";
 import { DatabaseClient } from "../db/client";
 import { ThreadRepository } from "../db/repositories/threads";
-import { buildBriefFromAnswers, generateBriefWithModel, intakeAssistantMessage, newThreadTitle } from "../core/intake";
+import { buildBriefFromAnswers, newThreadTitle } from "../core/intake";
 import { generateIdeas } from "../core/ideas";
 import { ResearchEngine } from "../core/research-engine";
 import { cancelIncompleteRun, listPendingRuns } from "../core/research-recovery";
 import { probeCodexCli } from "../providers/codex";
 import { ExaClient } from "../providers/exa";
 import { OpenCodeClient } from "../providers/opencode";
+import { ZodError } from "zod";
 import {
   CancelIncompleteResearchSchema,
   CancelResearchSchema,
   ConfirmBriefSchema,
+  CreateBranchRequestSchema,
   CreateThreadRequestSchema,
+  DeleteThreadRequestSchema,
+  formatZodError,
   HealthResponseSchema,
+  LaunchResearchSchema,
   RateIdeaSchema,
   ResumeResearchSchema,
+  SaveDraftSchema,
   SaveRunConfigSchema,
+  SelectThreadRequestSchema,
   StartResearchSchema,
   SubmitIntakeAnswerSchema,
+  TestModelsRequestSchema,
+  TestModelsResponseSchema,
+  ThreadIdRequestSchema,
   ValidationStateSchema,
   WorkspaceStateSchema,
+  ReportDetailSchema,
   type ResearchEvent,
   type ValidationState,
 } from "../shared/ipc";
@@ -39,6 +50,16 @@ export interface BackendHandle {
   token: string;
   close: () => Promise<void>;
   emitEvent: (event: ResearchEvent) => void;
+  invalidateValidation: () => void;
+}
+
+const MAX_BODY_BYTES = 1_048_576;
+
+class HttpError extends Error {
+  constructor(readonly status: number, message: string) {
+    super(message);
+    this.name = "HttpError";
+  }
 }
 
 export async function startBackend(context: BackendContext, onEvent: (event: ResearchEvent) => void): Promise<BackendHandle> {
@@ -51,6 +72,11 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
   let cachedModels: string[] = [];
   let activeThreadId: string | null = db.getSetting("active_thread_id");
   let researchEngine: ResearchEngine | null = null;
+
+  function invalidateValidation(): void {
+    cachedValidation = null;
+    cachedModels = [];
+  }
 
   function ensureResearchEngine(): ResearchEngine {
     const { opencode, exa } = clients();
@@ -106,27 +132,67 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
     return cachedValidation;
   }
 
+  function repairIntakeThread(threadId: string): void {
+    const thread = threads.listThreads().find((item) => item.id === threadId);
+    if (!thread || thread.status !== "intake") return;
+
+    const answers = threads.getIntakeAnswers(threadId);
+    const answered = new Set(answers.map((answer) => answer.questionId));
+    if (nextIntakeQuestion(answered)) return;
+
+    const brief = threads.getLatestBrief(threadId) ?? buildBriefFromAnswers(answers);
+    if (!threads.getLatestBrief(threadId)) {
+      threads.saveBrief(threadId, brief, false);
+    }
+    threads.updateThreadStatus(threadId, "brief-draft");
+    const messages = threads.getMessages(threadId);
+    const hasBriefMessage = messages.some((message) =>
+      message.role === "assistant" && message.content.includes("drafted your project brief"),
+    );
+    if (!hasBriefMessage) {
+      threads.addMessage(threadId, "assistant", "I've drafted your project brief. Review and edit it below, then confirm to continue.");
+    }
+  }
+
   async function workspaceState() {
     const validation = cachedValidation ?? await validateProviders();
+    if (activeThreadId) {
+      repairIntakeThread(activeThreadId);
+    }
     const threadList = threads.listThreads();
-    const messages = activeThreadId ? threads.getMessages(activeThreadId) : [];
     const brief = activeThreadId ? threads.getLatestBrief(activeThreadId) : null;
     const runConfig = activeThreadId ? threads.getLatestRunConfig(activeThreadId) : null;
     const ideas = activeThreadId ? listIdeas(activeThreadId) : [];
-    const reports = activeThreadId ? listReports(activeThreadId) : [];
+    const reports = activeThreadId ? listReportSummaries(activeThreadId) : [];
     return WorkspaceStateSchema.parse({
       validation,
       threads: threadList,
       activeThreadId,
-      messages,
+      messages: [],
       brief,
       runConfig,
       models: cachedModels,
       presets: threads.listPresets(),
       ideas,
+      ideaRatings: activeThreadId ? listIdeaRatings(activeThreadId) : {},
       reports,
       pendingRuns: listPendingRuns(db),
     });
+  }
+
+  function listIdeaRatings(threadId: string): Record<string, number> {
+    const rows = db.db.prepare(`
+      SELECT r.idea_id, r.rating
+      FROM ratings r
+      INNER JOIN ideas i ON i.id = r.idea_id
+      WHERE i.thread_id = ?
+      ORDER BY r.created_at DESC
+    `).all(threadId) as Array<{ idea_id: string; rating: number }>;
+    const ratings: Record<string, number> = {};
+    for (const row of rows) {
+      if (!(row.idea_id in ratings)) ratings[row.idea_id] = row.rating;
+    }
+    return ratings;
   }
 
   function listIdeas(threadId: string) {
@@ -143,18 +209,25 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
     }));
   }
 
-  function listReports(threadId: string) {
-    return db.db.prepare("SELECT id, stream_id, title, html FROM reports WHERE thread_id = ? ORDER BY created_at ASC")
+  function listReportSummaries(threadId: string) {
+    return db.db.prepare("SELECT id, stream_id, title FROM reports WHERE thread_id = ? ORDER BY created_at ASC")
       .all(threadId)
       .map((row) => {
-        const record = row as { id: string; stream_id: string | null; title: string; html: string };
+        const record = row as { id: string; stream_id: string | null; title: string };
         return {
           id: record.id,
           streamId: record.stream_id,
           title: record.title,
-          html: record.html,
         };
       });
+  }
+
+  function getReportDetail(reportId: string) {
+    const row = db.db.prepare("SELECT id, title, html FROM reports WHERE id = ?").get(reportId) as
+      | { id: string; title: string; html: string }
+      | undefined;
+    if (!row) throw new Error("Report not found");
+    return ReportDetailSchema.parse(row);
   }
 
   const subscribers = new Set<(event: ResearchEvent) => void>();
@@ -200,8 +273,27 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
         return;
       }
 
+      if (method === "POST" && url.pathname === "/validation/test-models") {
+        const body = await readBody(req);
+        const input = TestModelsRequestSchema.parse(body);
+        const { opencode } = clients();
+        const uniqueModels = [...new Set(input.models)];
+        const results = [];
+        for (const model of uniqueModels) {
+          results.push(await opencode.testModelCapabilities(model));
+        }
+        sendJson(res, 200, TestModelsResponseSchema.parse({ results }));
+        return;
+      }
+
       if (method === "GET" && url.pathname === "/workspace") {
         sendJson(res, 200, await workspaceState());
+        return;
+      }
+
+      if (method === "GET" && url.pathname.startsWith("/reports/")) {
+        const reportId = decodeURIComponent(url.pathname.slice("/reports/".length));
+        sendJson(res, 200, getReportDetail(reportId));
         return;
       }
 
@@ -210,19 +302,43 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
         if (url.pathname === "/threads") {
           const input = CreateThreadRequestSchema.parse(body);
           const thread = threads.createThread(input.title ?? "New research");
+          threads.updateThreadStatus(thread.id, "draft");
           activeThreadId = thread.id;
           db.setSetting("active_thread_id", thread.id);
-          const first = nextIntakeQuestion(new Set());
-          if (first) {
-            threads.addMessage(thread.id, "assistant", first.prompt);
-          }
           sendJson(res, 200, { thread, workspace: await workspaceState() });
           return;
         }
 
         if (url.pathname === "/threads/select") {
-          activeThreadId = String((body as { threadId: string }).threadId);
+          const input = SelectThreadRequestSchema.parse(body);
+          activeThreadId = input.threadId;
           db.setSetting("active_thread_id", activeThreadId);
+          repairIntakeThread(activeThreadId);
+          sendJson(res, 200, await workspaceState());
+          return;
+        }
+
+        if (url.pathname === "/threads/delete") {
+          const input = DeleteThreadRequestSchema.parse(body);
+          const runs = db.db.prepare(`
+            SELECT id FROM research_runs
+            WHERE thread_id = ? AND status = 'running'
+          `).all(input.threadId) as Array<{ id: string }>;
+          for (const run of runs) {
+            researchEngine?.cancelRun(run.id);
+            cancelIncompleteRun(db, run.id);
+          }
+          db.db.prepare("UPDATE threads SET parent_thread_id = NULL WHERE parent_thread_id = ?").run(input.threadId);
+          threads.deleteThread(input.threadId);
+          if (activeThreadId === input.threadId) {
+            const remaining = threads.listThreads();
+            activeThreadId = remaining[0]?.id ?? null;
+            if (activeThreadId) {
+              db.setSetting("active_thread_id", activeThreadId);
+            } else {
+              db.db.prepare("DELETE FROM settings WHERE key = ?").run("active_thread_id");
+            }
+          }
           sendJson(res, 200, await workspaceState());
           return;
         }
@@ -241,8 +357,7 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
             threads.addMessage(input.threadId, "assistant", next.optional ? `${next.prompt}\n\n(Optional — you can skip.)` : next.prompt);
             threads.updateThreadStatus(input.threadId, "intake");
           } else {
-            const { opencode } = clients();
-            const brief = await generateBriefWithModel(opencode, cachedModels[0] ?? DEFAULT_RUN_CONFIG.orchestratorModel, answers);
+            const brief = buildBriefFromAnswers(answers);
             threads.saveBrief(input.threadId, brief, false);
             threads.addMessage(input.threadId, "assistant", "I've drafted your project brief. Review and edit it below, then confirm to continue.");
             threads.updateThreadStatus(input.threadId, "brief-draft");
@@ -264,6 +379,20 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
           return;
         }
 
+        if (url.pathname === "/draft/save") {
+          const input = SaveDraftSchema.parse(body);
+          threads.saveBrief(input.threadId, input.brief, false);
+          threads.saveRunConfig(input.threadId, input.config, undefined, { preserveStatus: true });
+          const title = input.brief.projectName.trim().slice(0, 60);
+          if (title) threads.renameThread(input.threadId, title);
+          const thread = threads.listThreads().find((item) => item.id === input.threadId);
+          if (thread && (thread.status === "draft" || thread.status === "brief-draft" || thread.status === "intake")) {
+            threads.updateThreadStatus(input.threadId, "configuring");
+          }
+          sendJson(res, 200, await workspaceState());
+          return;
+        }
+
         if (url.pathname === "/run-config") {
           const input = SaveRunConfigSchema.parse(body);
           threads.saveRunConfig(input.threadId, input.config, input.presetName);
@@ -279,6 +408,20 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
           if (!brief) throw new Error("Brief must be confirmed before research");
           const engine = ensureResearchEngine();
           const runId = await engine.startRun(input.threadId, brief, config);
+          threads.updateThreadStatus(input.threadId, "research-running");
+          threads.addMessage(input.threadId, "event", `Research run ${runId} started.`);
+          sendJson(res, 200, { runId, workspace: await workspaceState() });
+          return;
+        }
+
+        if (url.pathname === "/research/launch") {
+          const input = LaunchResearchSchema.parse(body);
+          threads.saveBrief(input.threadId, input.brief, true);
+          threads.saveRunConfig(input.threadId, input.config);
+          const title = input.brief.projectName.trim().slice(0, 60);
+          if (title) threads.renameThread(input.threadId, title);
+          const engine = ensureResearchEngine();
+          const runId = await engine.startRun(input.threadId, input.brief, input.config);
           threads.updateThreadStatus(input.threadId, "research-running");
           threads.addMessage(input.threadId, "event", `Research run ${runId} started.`);
           sendJson(res, 200, { runId, workspace: await workspaceState() });
@@ -313,14 +456,15 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
         }
 
         if (url.pathname === "/ideas/generate") {
-          const threadId = String((body as { threadId: string }).threadId);
+          const input = ThreadIdRequestSchema.parse(body);
+          const threadId = input.threadId;
           const brief = threads.getLatestBrief(threadId);
           const config = threads.getLatestRunConfig(threadId) ?? RunConfigSchema.parse(DEFAULT_RUN_CONFIG);
           if (!brief) throw new Error("Brief required");
           const { opencode } = clients();
           const ideas = await generateIdeas(db, opencode, threadId, brief, config.ideaModel, config.ideasRequested, config.batchSize);
           threads.updateThreadStatus(threadId, "ideas-ready");
-          emitEvent({ type: "ideas-generated", threadId, ideas });
+          emitEvent({ type: "ideas-generated", threadId, ideaCount: ideas.length });
           sendJson(res, 200, { ideas, workspace: await workspaceState() });
           return;
         }
@@ -334,13 +478,13 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
         }
 
         if (url.pathname === "/ideas/export") {
-          const threadId = String((body as { threadId: string }).threadId);
-          sendJson(res, 200, { ideas: listIdeas(threadId) });
+          const input = ThreadIdRequestSchema.parse(body);
+          sendJson(res, 200, { ideas: listIdeas(input.threadId) });
           return;
         }
 
         if (url.pathname === "/threads/branch") {
-          const input = body as { parentThreadId: string; ideaTitle: string };
+          const input = CreateBranchRequestSchema.parse(body);
           const parentBrief = threads.getLatestBrief(input.parentThreadId);
           const thread = threads.createThread(`Deeper: ${input.ideaTitle.slice(0, 48)}`);
           db.db.prepare("UPDATE threads SET parent_thread_id = ? WHERE id = ?").run(input.parentThreadId, thread.id);
@@ -355,6 +499,14 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
 
       sendJson(res, 404, { error: "Not found" });
     } catch (error) {
+      if (error instanceof HttpError) {
+        sendJson(res, error.status, { error: error.message });
+        return;
+      }
+      if (error instanceof ZodError) {
+        sendJson(res, 400, { error: formatZodError(error) });
+        return;
+      }
       sendJson(res, 500, { error: error instanceof Error ? error.message : "Internal error" });
     }
   });
@@ -362,12 +514,16 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   const address = server.address();
   if (!address || typeof address === "string") throw new Error("Failed to bind backend port");
-  await validateProviders();
+  // Validation runs on first /validation or /workspace request — not during startup.
+  void validateProviders().catch(() => {
+    /* surfaced via /validation */
+  });
 
   return {
     port: address.port,
     token,
     emitEvent,
+    invalidateValidation,
     close: async () => {
       server.close();
       db.close();
@@ -382,9 +538,20 @@ function authorize(req: IncomingMessage, token: string): boolean {
 
 async function readBody(req: IncomingMessage): Promise<unknown> {
   const chunks: Buffer[] = [];
-  for await (const chunk of req) chunks.push(Buffer.from(chunk));
+  let size = 0;
+  for await (const chunk of req) {
+    size += chunk.length;
+    if (size > MAX_BODY_BYTES) {
+      throw new HttpError(413, "Request body too large");
+    }
+    chunks.push(Buffer.from(chunk));
+  }
   if (chunks.length === 0) return {};
-  return JSON.parse(Buffer.concat(chunks).toString("utf8"));
+  try {
+    return JSON.parse(Buffer.concat(chunks).toString("utf8"));
+  } catch {
+    throw new HttpError(400, "Invalid JSON body");
+  }
 }
 
 function sendJson(res: ServerResponse, status: number, payload: unknown): void {
