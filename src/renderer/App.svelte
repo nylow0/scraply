@@ -7,6 +7,7 @@
   import ResumeBanner from "./components/ResumeBanner.svelte";
   import type { AppState } from "./lib/state";
   import { initialState, isRunActive, shouldHighlightActivity } from "./lib/state";
+  import { hasSeenGuide, markGuideSeen } from "./lib/onboarding";
   import { threadStatusLabel, threadStatusTone } from "./lib/thread-status";
   import { ipcPayload } from "./lib/ipc-payload";
   import type { ProjectBrief, RunConfig } from "@shared/schemas";
