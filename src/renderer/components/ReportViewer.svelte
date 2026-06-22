@@ -1,4 +1,7 @@
 <script lang="ts">
+  import { untrack } from "svelte";
+  import { sanitizeReportHtml } from "../lib/sanitize";
+
   let {
     reportId,
     title,
@@ -9,21 +12,19 @@
     defaultCollapsed?: boolean;
   } = $props();
 
-  let collapsed = $state(false);
+  let collapsed = $state(untrack(() => defaultCollapsed));
   let copied = $state(false);
   let html = $state<string | null>(null);
   let loadError = $state<string | null>(null);
-  let loading = $state(true);
+  let loading = $state(false);
+
+  const safeHtml = $derived(html ? sanitizeReportHtml(html) : "");
 
   $effect(() => {
-    collapsed = defaultCollapsed;
-  });
-
-  $effect(() => {
+    if (collapsed || html !== null || loading) return;
     const id = reportId;
     loading = true;
     loadError = null;
-    html = null;
     void window.scraply
       .getReport(id)
       .then((report) => {
@@ -73,7 +74,7 @@
   {:else if loadError}
     <p class="error-hint" role="alert">{loadError}</p>
   {:else if html}
-    <div class="body">{@html html}</div>
+    <div class="body">{@html safeHtml}</div>
   {/if}
 </article>
 
