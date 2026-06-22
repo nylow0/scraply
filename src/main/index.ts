@@ -1,7 +1,7 @@
 import { app, BrowserWindow, ipcMain, safeStorage, shell, utilityProcess } from "electron";
 import { readFileSync, existsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { IPC_CHANNELS, SaveSecretsRequestSchema, type BackendReady, type ResearchEvent } from "../shared/ipc";
+import { IPC_CHANNELS, GetReportRequestSchema, SaveSecretsRequestSchema, type BackendReady, type ResearchEvent } from "../shared/ipc";
 
 const isDev = !app.isPackaged;
 const APP_USER_MODEL_ID = "com.scraply.app";
@@ -264,8 +264,10 @@ function registerIpc(): void {
   ipcMain.handle(IPC_CHANNELS.RATE_IDEA, (_e, body) => proxyJson("/ideas/rate", { method: "POST", body: JSON.stringify(body) }));
   ipcMain.handle(IPC_CHANNELS.EXPORT_IDEAS, (_e, body) => proxyJson("/ideas/export", { method: "POST", body: JSON.stringify(body) }));
   ipcMain.handle(IPC_CHANNELS.CREATE_BRANCH, (_e, body) => proxyJson("/threads/branch", { method: "POST", body: JSON.stringify(body) }));
-  ipcMain.handle(IPC_CHANNELS.GET_REPORT, async (_e, body: { reportId: string }) =>
-    proxyJson(`/reports/${encodeURIComponent(body.reportId)}`));
+  ipcMain.handle(IPC_CHANNELS.GET_REPORT, async (_e, body: unknown) => {
+    const input = GetReportRequestSchema.parse(body);
+    return proxyJson(`/reports/${encodeURIComponent(input.reportId)}`);
+  });
 }
 
 if (process.platform === "win32") {

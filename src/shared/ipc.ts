@@ -203,6 +203,10 @@ export const ReportDetailSchema = z.object({
 
 export type ReportDetail = z.infer<typeof ReportDetailSchema>;
 
+export const GetReportRequestSchema = z.object({
+  reportId: z.string().min(1),
+});
+
 /** Messages from the Electron main process to the backend utility process. */
 export const BackendStartMessageSchema = z.object({
   type: z.literal("start"),
