@@ -199,9 +199,14 @@ export class ResearchEngine {
   }
 
   private persistSpendEstimate(runId: string, spendEstimate: number): void {
-    this.options.db.db.prepare(`
-      UPDATE research_runs SET spend_estimate = ?, updated_at = ? WHERE id = ?
-    `).run(spendEstimate, new Date().toISOString(), runId);
+    try {
+      this.options.db.db.prepare(`
+        UPDATE research_runs SET spend_estimate = ?, updated_at = ? WHERE id = ?
+      `).run(spendEstimate, new Date().toISOString(), runId);
+    } catch (error) {
+      if (error instanceof Error && error.message.includes("closed database")) return;
+      throw error;
+    }
   }
 
   private hasSavedEvidence(runId: string): boolean {

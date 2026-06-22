@@ -23,6 +23,27 @@ export interface OpenCodeClientOptions {
   fetcher?: Fetcher;
 }
 
+function formatChatError(status: number, body: string): string {
+  let detail = body.trim();
+  try {
+    const parsed = JSON.parse(body) as { error?: unknown; message?: unknown };
+    if (typeof parsed.error === "string") detail = parsed.error;
+    else if (typeof parsed.message === "string") detail = parsed.message;
+  } catch {
+    // keep raw body
+  }
+  if (status === 429 && /rate limit/i.test(detail)) {
+    return `OpenCode chat failed (${status}): rate limit exceeded for account. Try again in a moment.`;
+  }
+  return `OpenCode chat failed (${status})${detail ? `: ${detail.slice(0, 300)}` : ""}`;
+}
+
+function parseJsonContent(raw: string): unknown {
+  const trimmed = raw.trim();
+  const fenced = trimmed.match(/^```(?:json)?\s*([\s\S]*?)```$/i);
+  return JSON.parse(fenced?.[1]?.trim() ?? trimmed);
+}
+
 export class OpenCodeClient {
   readonly baseUrl: string;
   private readonly apiKey: string;
@@ -132,7 +153,7 @@ export class OpenCodeClient {
     });
     if (!response.ok) {
       const errorBody = await response.text().catch(() => "");
-      throw new Error(`OpenCode chat failed (${response.status})${errorBody ? `: ${errorBody.slice(0, 300)}` : ""}`);
+      throw new Error(formatChatError(response.status, errorBody));
     }
     const parsed = ChatCompletionSchema.parse(await response.json());
     const content = parsed.choices[0]?.message.content;
@@ -152,14 +173,14 @@ export class OpenCodeClient {
       { role: "user", content: user },
     ], jsonSchema);
     try {
-      return schema.parse(JSON.parse(raw));
+      return schema.parse(parseJsonContent(raw));
     } catch {
       const repair = await this.chatCompletion(model, [
         { role: "system", content: "Return only valid JSON matching the requested schema." },
         { role: "user", content: `Fix this JSON:\n${raw}` },
       ], jsonSchema);
       try {
-        return schema.parse(JSON.parse(repair));
+        return schema.parse(parseJsonContent(repair));
       } catch (repairError) {
         const detail = repairError instanceof Error ? repairError.message : "Invalid JSON";
         throw new Error(`OpenCode structured output failed validation: ${detail}`);
