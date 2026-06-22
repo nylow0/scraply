@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import { z } from "zod";
 import { OpenCodeClient } from "../../src/providers/opencode";
 
 let server: ReturnType<typeof Bun.serve> | undefined;
@@ -83,5 +84,48 @@ describe("OpenCodeClient", () => {
       baseUrl: `http://127.0.0.1:${server.port}/v1`,
     });
     await expect(client.listModels()).resolves.toEqual(["glm-5.2", "mimo-v2.5"]);
+  });
+
+  test("normalizes retryable OpenCode HTTP errors", async () => {
+    server = Bun.serve({
+      port: 0,
+      fetch() {
+        return Response.json({ error: "rate limit exceeded for account" }, { status: 429 });
+      },
+    });
+
+    const client = new OpenCodeClient({
+      apiKey: "test-key",
+      baseUrl: `http://127.0.0.1:${server.port}/v1`,
+    });
+
+    await expect(client.chatCompletion("glm-5.2", [{ role: "user", content: "Ping" }]))
+      .rejects.toThrow("OpenCode chat failed (429): rate limit exceeded for account. Try again in a moment.");
+  });
+
+  test("accepts structured JSON wrapped in a markdown fence", async () => {
+    server = Bun.serve({
+      port: 0,
+      fetch() {
+        return Response.json({
+          choices: [{
+            message: { content: "```json\n{\"ok\":true}\n```" },
+          }],
+        });
+      },
+    });
+
+    const client = new OpenCodeClient({
+      apiKey: "test-key",
+      baseUrl: `http://127.0.0.1:${server.port}/v1`,
+    });
+
+    await expect(client.structuredCompletion(
+      "glm-5.2",
+      "Return JSON only.",
+      "Set ok to true.",
+      z.object({ ok: z.boolean() }),
+      { type: "object", properties: { ok: { type: "boolean" } }, required: ["ok"] },
+    )).resolves.toEqual({ ok: true });
   });
 });

@@ -84,4 +84,58 @@ describe("research recovery", () => {
 
     db.close();
   });
+
+  test("lists failed runs with corrupt config without breaking workspace recovery", () => {
+    const dir = mkdtempSync(join(tmpdir(), "scraply-recovery-"));
+    tempDirs.push(dir);
+    const db = new DatabaseClient(join(dir, "scraply.db"));
+    const threads = new ThreadRepository(db);
+    const thread = threads.createThread("Failed run");
+    const runId = randomUUID();
+    const now = new Date().toISOString();
+
+    db.db.prepare(`
+      INSERT INTO research_runs (id, thread_id, status, config_json, spend_estimate, round, cancelled, created_at, updated_at)
+      VALUES (?, ?, 'failed', ?, 0, 0, 0, ?, ?)
+    `).run(runId, thread.id, "{not-json", now, now);
+
+    expect(listPendingRuns(db)[0]).toMatchObject({ runId, status: "failed", totalStreams: 1 });
+
+    db.close();
+  });
+
+  test("cancels running streams without erasing failed stream diagnostics", () => {
+    const dir = mkdtempSync(join(tmpdir(), "scraply-recovery-"));
+    tempDirs.push(dir);
+    const db = new DatabaseClient(join(dir, "scraply.db"));
+    const threads = new ThreadRepository(db);
+    const thread = threads.createThread("Cancel failed run");
+    const runId = randomUUID();
+    const now = new Date().toISOString();
+
+    db.db.prepare(`
+      INSERT INTO research_runs (id, thread_id, status, config_json, spend_estimate, round, cancelled, created_at, updated_at)
+      VALUES (?, ?, 'running', ?, 0, 0, 0, ?, ?)
+    `).run(runId, thread.id, JSON.stringify(DEFAULT_RUN_CONFIG), now, now);
+    db.db.prepare(`
+      INSERT INTO stream_runs (id, research_run_id, stream_id, round, status, error, created_at, updated_at)
+      VALUES (?, ?, 'landscape', 0, 'failed', 'OpenCode unavailable', ?, ?)
+    `).run(randomUUID(), runId, now, now);
+    db.db.prepare(`
+      INSERT INTO stream_runs (id, research_run_id, stream_id, round, status, created_at, updated_at)
+      VALUES (?, ?, 'exemplars', 0, 'running', ?, ?)
+    `).run(randomUUID(), runId, now, now);
+
+    cancelIncompleteRun(db, runId);
+
+    expect(db.db.prepare("SELECT status, error FROM stream_runs WHERE stream_id = 'landscape'").get()).toEqual({
+      status: "failed",
+      error: "OpenCode unavailable",
+    });
+    expect(db.db.prepare("SELECT status FROM stream_runs WHERE stream_id = 'exemplars'").get()).toEqual({
+      status: "cancelled",
+    });
+
+    db.close();
+  });
 });
