@@ -1,4 +1,6 @@
 <script lang="ts">
+  import { untrack } from "svelte";
+
   let {
     reportId,
     title,
@@ -9,21 +11,17 @@
     defaultCollapsed?: boolean;
   } = $props();
 
-  let collapsed = $state(false);
+  let collapsed = $state(untrack(() => defaultCollapsed));
   let copied = $state(false);
   let html = $state<string | null>(null);
   let loadError = $state<string | null>(null);
-  let loading = $state(true);
+  let loading = $state(false);
 
   $effect(() => {
-    collapsed = defaultCollapsed;
-  });
-
-  $effect(() => {
+    if (collapsed || html !== null || loading) return;
     const id = reportId;
     loading = true;
     loadError = null;
-    html = null;
     void window.scraply
       .getReport(id)
       .then((report) => {
