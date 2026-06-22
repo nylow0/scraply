@@ -144,4 +144,25 @@ describe("Backend health", () => {
       await handle.close();
     }
   });
+
+  test("returns 404 for missing report", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "scraply-backend-report-"));
+    tempDirs.push(dir);
+    const handle = await startBackend({
+      dataDir: dir,
+      dbPath: join(dir, "scraply.db"),
+      getSecrets: () => ({ opencodeApiKey: null, exaApiKey: null }),
+    }, () => {});
+
+    try {
+      const response = await fetch(`http://127.0.0.1:${handle.port}/reports/missing-id`, {
+        headers: { authorization: `Bearer ${handle.token}` },
+      });
+      expect(response.status).toBe(404);
+      const body = await response.json();
+      expect(body.error).toBe("Report not found");
+    } finally {
+      await handle.close();
+    }
+  });
 });
