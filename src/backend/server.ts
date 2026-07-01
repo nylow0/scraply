@@ -6,7 +6,7 @@ import { buildBriefFromAnswers, generateBriefWithModel, intakeAssistantMessage, 
 import { generateIdeas } from "../core/ideas";
 import { ResearchEngine } from "../core/research-engine";
 import { cancelIncompleteRun, listPendingRuns } from "../core/research-recovery";
-import { probeCodexCli } from "../providers/codex";
+import { CodexClient, listCodexModels, probeCodexCli } from "../providers/codex";
 import { ExaClient } from "../providers/exa";
 import { OpenCodeClient } from "../providers/opencode";
 import {
@@ -18,6 +18,7 @@ import {
   RateIdeaSchema,
   ResumeResearchSchema,
   SaveRunConfigSchema,
+  SaveFavoriteModelSchema,
   StartResearchSchema,
   SubmitIntakeAnswerSchema,
   ValidationStateSchema,
@@ -26,7 +27,7 @@ import {
   type ValidationState,
 } from "../shared/ipc";
 import { DEFAULT_RUN_CONFIG, intakeProgress, nextIntakeQuestion } from "../shared/intake";
-import { RunConfigSchema } from "../shared/schemas";
+import { ModelCatalogSchema, type ModelCatalog, type ModelRef, RunConfigSchema } from "../shared/schemas";
 
 export interface BackendContext {
   dataDir: string;
@@ -49,6 +50,7 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
 
   let cachedValidation: ValidationState | null = null;
   let cachedModels: string[] = [];
+  let cachedCodexModels: string[] = [];
   let activeThreadId: string | null = db.getSetting("active_thread_id");
   let researchEngine: ResearchEngine | null = null;
 
@@ -81,7 +83,8 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
 
   async function validateProviders(): Promise<ValidationState> {
     const secrets = context.getSecrets();
-    const codex = await probeCodexCli();
+    const [codex, codexModels] = await Promise.all([probeCodexCli(), listCodexModels()]);
+    cachedCodexModels = codexModels;
     if (!secrets.opencodeApiKey || !secrets.exaApiKey) {
       cachedValidation = ValidationStateSchema.parse({
         opencode: { valid: false, modelCount: 0, models: [], error: "OpenCode key missing" },
@@ -122,11 +125,38 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
       brief,
       runConfig,
       models: cachedModels,
+      modelCatalog: buildModelCatalog(),
       presets: threads.listPresets(),
       ideas,
       reports,
       pendingRuns: listPendingRuns(db),
     });
+  }
+
+  function buildModelCatalog(): ModelCatalog {
+    return ModelCatalogSchema.parse({
+      opencode: cachedModels,
+      codex: cachedCodexModels,
+      favorites: readFavoriteModels(),
+    });
+  }
+
+  function readFavoriteModels(): ModelRef[] {
+    const raw = db.getSetting("favorite_models");
+    if (!raw) return [];
+    try {
+      const parsed = JSON.parse(raw) as unknown;
+      return ModelCatalogSchema.shape.favorites.parse(parsed);
+    } catch {
+      return [];
+    }
+  }
+
+  function saveFavoriteModel(model: ModelRef, favorite: boolean): void {
+    const favorites = readFavoriteModels();
+    const next = favorites.filter((item) => item.provider !== model.provider || item.id !== model.id);
+    if (favorite) next.push(model);
+    db.setSetting("favorite_models", JSON.stringify(next));
   }
 
   function listIdeas(threadId: string) {
@@ -272,6 +302,13 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
           return;
         }
 
+        if (url.pathname === "/models/favorite") {
+          const input = SaveFavoriteModelSchema.parse(body);
+          saveFavoriteModel(input.model, input.favorite);
+          sendJson(res, 200, await workspaceState());
+          return;
+        }
+
         if (url.pathname === "/research/start") {
           const input = StartResearchSchema.parse(body);
           const brief = threads.getLatestBrief(input.threadId);
@@ -318,7 +355,8 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
           const config = threads.getLatestRunConfig(threadId) ?? RunConfigSchema.parse(DEFAULT_RUN_CONFIG);
           if (!brief) throw new Error("Brief required");
           const { opencode } = clients();
-          const ideas = await generateIdeas(db, opencode, threadId, brief, config.ideaModel, config.ideasRequested, config.batchSize);
+          const ideaClient = config.ideaProvider === "codex" ? new CodexClient() : opencode;
+          const ideas = await generateIdeas(db, ideaClient, threadId, brief, config.ideaModel, config.ideasRequested, config.batchSize);
           threads.updateThreadStatus(threadId, "ideas-ready");
           emitEvent({ type: "ideas-generated", threadId, ideas });
           sendJson(res, 200, { ideas, workspace: await workspaceState() });

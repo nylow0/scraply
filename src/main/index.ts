@@ -3,6 +3,12 @@ import { readFileSync, existsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { IPC_CHANNELS, type BackendReady, type ResearchEvent } from "../shared/ipc";
 
+app.commandLine.appendSwitch("disable-gpu");
+app.commandLine.appendSwitch("disable-gpu-compositing");
+app.commandLine.appendSwitch("in-process-gpu");
+app.commandLine.appendSwitch("use-gl", "swiftshader");
+app.disableHardwareAcceleration();
+
 const isDev = !app.isPackaged;
 let mainWindow: BrowserWindow | null = null;
 let backendReady: BackendReady | null = null;
@@ -196,8 +202,15 @@ if (!gotLock) {
     loadStoredSecrets();
     loadDevEnv();
     registerIpc();
-    backendReady = await startBackendProcess();
     createWindow();
+    try {
+      backendReady = await startBackendProcess();
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.reload();
+      }
+    } catch (error) {
+      console.error("Backend startup failed", error);
+    }
   });
 
   app.on("window-all-closed", () => {
