@@ -2,15 +2,15 @@
 
 :root {
   color-scheme: dark;
-  --bg: #090909;
-  --surface: #121212;
-  --surface-2: #171717;
-  --border: #242424;
-  --text: #ececec;
-  --muted: #9a9a9a;
-  --accent: #6f8f7a;
-  --accent-strong: #86a990;
-  --danger: #b86b6b;
+  --bg: #0a0b0a;
+  --surface: #101210;
+  --surface-2: #161916;
+  --border: #232624;
+  --text: #eef1ed;
+  --muted: #7d847c;
+  --accent: #d4b32c;
+  --accent-strong: #f2d544;
+  --danger: #c07a7a;
   --mono: "Geist Mono", ui-monospace, monospace;
   --sans: Inter, system-ui, sans-serif;
 }

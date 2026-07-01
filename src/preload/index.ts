@@ -11,6 +11,7 @@ const api = {
   openDataFolder: (): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.OPEN_DATA_FOLDER),
   createThread: (title?: string) => ipcRenderer.invoke(IPC_CHANNELS.CREATE_THREAD, { title }),
   selectThread: (threadId: string) => ipcRenderer.invoke(IPC_CHANNELS.SELECT_THREAD, { threadId }),
+  deleteThread: (threadId: string): Promise<WorkspaceState> => ipcRenderer.invoke(IPC_CHANNELS.DELETE_THREAD, { threadId }),
   submitIntake: (payload: { threadId: string; questionId: string; answer: string; skipped?: boolean }) =>
     ipcRenderer.invoke(IPC_CHANNELS.SUBMIT_INTAKE, payload),
   confirmBrief: (payload: { threadId: string; brief: WorkspaceState["brief"] }) =>
