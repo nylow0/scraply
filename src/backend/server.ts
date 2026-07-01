@@ -257,6 +257,18 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
           return;
         }
 
+        if (url.pathname === "/threads/delete") {
+          const threadId = String((body as { threadId: string }).threadId);
+          db.db.prepare("UPDATE threads SET parent_thread_id = NULL WHERE parent_thread_id = ?").run(threadId);
+          threads.deleteThread(threadId);
+          if (activeThreadId === threadId) {
+            activeThreadId = threads.listThreads()[0]?.id ?? null;
+            db.setSetting("active_thread_id", activeThreadId ?? "");
+          }
+          sendJson(res, 200, await workspaceState());
+          return;
+        }
+
         if (url.pathname === "/intake") {
           const input = SubmitIntakeAnswerSchema.parse(body);
           threads.saveIntakeAnswer(input.threadId, input.questionId, input.answer, input.skipped ?? false);

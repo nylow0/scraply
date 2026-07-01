@@ -181,6 +181,7 @@ function registerIpc(): void {
   const proxy = async (path: string, init?: RequestInit) => (await backendFetch(path, init)).json();
   ipcMain.handle(IPC_CHANNELS.CREATE_THREAD, (_e, body) => proxy("/threads", { method: "POST", body: JSON.stringify(body ?? {}) }));
   ipcMain.handle(IPC_CHANNELS.SELECT_THREAD, (_e, body) => proxy("/threads/select", { method: "POST", body: JSON.stringify(body) }));
+  ipcMain.handle(IPC_CHANNELS.DELETE_THREAD, (_e, body) => proxy("/threads/delete", { method: "POST", body: JSON.stringify(body) }));
   ipcMain.handle(IPC_CHANNELS.SUBMIT_INTAKE, (_e, body) => proxy("/intake", { method: "POST", body: JSON.stringify(body) }));
   ipcMain.handle(IPC_CHANNELS.CONFIRM_BRIEF, (_e, body) => proxy("/brief/confirm", { method: "POST", body: JSON.stringify(body) }));
   ipcMain.handle(IPC_CHANNELS.SAVE_RUN_CONFIG, (_e, body) => proxy("/run-config", { method: "POST", body: JSON.stringify(body) }));
