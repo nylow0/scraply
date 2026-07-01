@@ -1,9 +1,19 @@
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import type { DatabaseClient } from "../db/client";
+import { loadPrompt } from "./prompts";
 import { buildPreferenceContext, formatPreferencePrompt } from "./preferences";
-import type { OpenCodeClient } from "../providers/opencode";
 import { IdeaBucketSchema, IdeaSchema, IdeaScoresSchema, type Idea, type ProjectBrief } from "../shared/schemas";
+
+export interface StructuredIdeaClient {
+  structuredCompletion<T>(
+    model: string,
+    system: string,
+    user: string,
+    schema: z.ZodType<T>,
+    jsonSchema: object,
+  ): Promise<T>;
+}
 
 const LENSES = [
   "direct gaps",
@@ -48,7 +58,7 @@ export function buildIdeaPrompt(
 
 export async function generateIdeas(
   db: DatabaseClient,
-  client: OpenCodeClient,
+  client: StructuredIdeaClient,
   threadId: string,
   brief: ProjectBrief,
   model: string,
@@ -73,7 +83,10 @@ export async function generateIdeas(
 
     const generated = await client.structuredCompletion(
       model,
-      "Generate distinct, evidence-informed project ideas with separate quality scores from 0-10.",
+      loadPrompt(
+        "idea-generator",
+        "Generate distinct, evidence-informed project ideas with separate quality scores from 0-10.",
+      ),
       prompt,
       IdeaBatchSchema,
       {

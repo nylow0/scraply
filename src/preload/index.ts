@@ -17,6 +17,8 @@ const api = {
     ipcRenderer.invoke(IPC_CHANNELS.CONFIRM_BRIEF, payload),
   saveRunConfig: (payload: { threadId: string; config: NonNullable<WorkspaceState["runConfig"]>; presetName?: string }) =>
     ipcRenderer.invoke(IPC_CHANNELS.SAVE_RUN_CONFIG, payload),
+  saveFavoriteModel: (payload: { model: WorkspaceState["modelCatalog"]["favorites"][number]; favorite: boolean }) =>
+    ipcRenderer.invoke(IPC_CHANNELS.SAVE_FAVORITE_MODEL, payload),
   startResearch: (threadId: string) => ipcRenderer.invoke(IPC_CHANNELS.START_RESEARCH, { threadId }),
   cancelResearch: (runId: string) => ipcRenderer.invoke(IPC_CHANNELS.CANCEL_RESEARCH, { runId }),
   resumeResearch: async (runId: string): Promise<WorkspaceState> => {

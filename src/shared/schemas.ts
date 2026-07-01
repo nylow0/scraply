@@ -103,6 +103,19 @@ export const RunConfigSchema = z.object({
   autoPublishPlans: z.boolean().default(false),
 });
 
+export const ModelProviderSchema = z.enum(["opencode", "codex"]);
+
+export const ModelRefSchema = z.object({
+  provider: ModelProviderSchema,
+  id: z.string().min(1),
+});
+
+export const ModelCatalogSchema = z.object({
+  opencode: z.array(z.string()),
+  codex: z.array(z.string()),
+  favorites: z.array(ModelRefSchema),
+});
+
 export const ThreadStatusSchema = z.enum([
   "intake",
   "brief-draft",
@@ -168,6 +181,9 @@ export type ClaimExtraction = z.infer<typeof ClaimExtractionSchema>;
 export type ResearchStream = z.infer<typeof ResearchStreamSchema>;
 export type ProjectBrief = z.infer<typeof ProjectBriefSchema>;
 export type RunConfig = z.infer<typeof RunConfigSchema>;
+export type ModelProvider = z.infer<typeof ModelProviderSchema>;
+export type ModelRef = z.infer<typeof ModelRefSchema>;
+export type ModelCatalog = z.infer<typeof ModelCatalogSchema>;
 export type Thread = z.infer<typeof ThreadSchema>;
 export type Message = z.infer<typeof MessageSchema>;
 export type Idea = z.infer<typeof IdeaSchema>;

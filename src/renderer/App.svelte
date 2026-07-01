@@ -12,7 +12,7 @@
   import ResumeBanner from "./components/ResumeBanner.svelte";
   import type { AppState } from "./lib/state";
   import { initialState } from "./lib/state";
-  import type { ProjectBrief } from "@shared/schemas";
+  import type { ModelRef, ProjectBrief } from "@shared/schemas";
   import { DEFAULT_RUN_CONFIG } from "@shared/intake";
 
   let state: AppState = $state({ ...initialState });
@@ -137,6 +137,10 @@
     state.workspace = await window.scraply.saveRunConfig({ threadId, config, presetName });
   }
 
+  async function saveFavoriteModel(model: ModelRef, favorite: boolean) {
+    state.workspace = await window.scraply.saveFavoriteModel({ model, favorite });
+  }
+
   async function startResearch() {
     const threadId = state.workspace?.activeThreadId;
     if (!threadId) return;
@@ -224,9 +228,11 @@
       {#if activeThread?.status === "brief-confirmed" || activeThread?.status === "configuring"}
         <RunConfigPanel
           models={state.workspace?.models ?? []}
+          modelCatalog={state.workspace?.modelCatalog}
           config={state.workspace?.runConfig ?? DEFAULT_RUN_CONFIG}
           presets={state.workspace?.presets ?? []}
           onSave={(config, presetName) => saveRunConfig(config, presetName)}
+          onFavorite={saveFavoriteModel}
         />
       {/if}
 
