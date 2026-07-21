@@ -1,4 +1,0 @@
-interface:
-  display_name: "Deep Research"
-  short_description: "Explore research trees and generate ideas"
-  default_prompt: "Use $deep-research to research a topic, generate deduplicated ideas, and dive into the best branch."
