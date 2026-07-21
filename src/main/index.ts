@@ -185,6 +185,7 @@ function registerIpc(): void {
   ipcMain.handle(IPC_CHANNELS.SUBMIT_INTAKE, (_e, body) => proxy("/intake", { method: "POST", body: JSON.stringify(body) }));
   ipcMain.handle(IPC_CHANNELS.CONFIRM_BRIEF, (_e, body) => proxy("/brief/confirm", { method: "POST", body: JSON.stringify(body) }));
   ipcMain.handle(IPC_CHANNELS.SAVE_RUN_CONFIG, (_e, body) => proxy("/run-config", { method: "POST", body: JSON.stringify(body) }));
+  ipcMain.handle(IPC_CHANNELS.SAVE_FAVORITE_MODEL, (_e, body) => proxy("/models/favorite", { method: "POST", body: JSON.stringify(body) }));
   ipcMain.handle(IPC_CHANNELS.START_RESEARCH, (_e, body) => proxy("/research/start", { method: "POST", body: JSON.stringify(body) }));
   ipcMain.handle(IPC_CHANNELS.CANCEL_RESEARCH, (_e, body) => proxy("/research/cancel", { method: "POST", body: JSON.stringify(body) }));
   ipcMain.handle(IPC_CHANNELS.RESUME_RESEARCH, (_e, body) => proxy("/research/resume", { method: "POST", body: JSON.stringify(body) }));
