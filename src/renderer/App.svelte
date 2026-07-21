@@ -1,5 +1,4 @@
 <script lang="ts">
-  import SetupScreen from "./components/SetupScreen.svelte";
   import Sidebar from "./components/Sidebar.svelte";
   import Conversation from "./components/Conversation.svelte";
   import ResearchSetupForm from "./components/ResearchSetupForm.svelte";
@@ -18,13 +17,13 @@
   import { DEFAULT_RUN_CONFIG } from "@shared/intake";
 
   let state: AppState = $state({ ...initialState });
-  let setupKeys = $state({ opencode: "", exa: "" });
   let intakeSubmitting = $state(false);
   let briefConfirming = $state(false);
   let researchStarting = $state(false);
   let ideasGenerating = $state(false);
   let partialIdeaNotice = $state<IdeaGenerationCompleteness | null>(null);
   let deletingThreadId = $state<string | null>(null);
+  let intakeView: "questions" | "models" = $state("questions");
   let reconcileTimer: ReturnType<typeof setTimeout> | null = null;
 
   async function refreshWorkspace() {
@@ -77,26 +76,12 @@
     };
   });
 
-  async function saveSetup() {
-    state.error = null;
-    try {
-      state.validation = await window.scraply.saveSecrets(setupKeys.opencode.trim(), setupKeys.exa.trim());
-      await refreshWorkspace();
-    } catch (error) {
-      state.error = error instanceof Error ? error.message : "Failed to save keys";
-    }
-  }
-
-  async function importEnv() {
-    state.validation = await window.scraply.importEnv();
-    await refreshWorkspace();
-  }
-
   async function newThread() {
     state.error = null;
     try {
       const result = await window.scraply.createThread();
       state.workspace = result.workspace;
+      intakeView = "questions";
     } catch (error) {
       state.error = error instanceof Error ? error.message : "Failed to create research";
     }
@@ -108,6 +93,7 @@
       state.workspace = await window.scraply.selectThread(threadId);
       state.researchEvents = [];
       state.activeRunId = null;
+      intakeView = "questions";
     } catch (error) {
       state.error = error instanceof Error ? error.message : "Failed to open research";
     }
@@ -241,20 +227,11 @@
     && ["partial", "failed"].includes(state.workspace.latestResearchRun.status)
     && (state.workspace.latestResearchRun.missingLenses.length > 0 || state.workspace.latestResearchRun.gaps.length > 0),
   ));
-  const setupComplete = $derived(Boolean(state.validation?.setupComplete));
+  const providersReady = $derived(Boolean(state.validation?.setupComplete));
 </script>
 
 {#if state.loading}
-  <div class="boot">Starting Scraply…</div>
-{:else if !setupComplete}
-  <SetupScreen
-    validation={state.validation}
-    bind:opencode={setupKeys.opencode}
-    bind:exa={setupKeys.exa}
-    error={state.error}
-    onSave={saveSetup}
-    onImportEnv={importEnv}
-  />
+  <div class="boot"><span class="boot-mark" aria-hidden="true"></span><span>Connecting Scraply…</span></div>
 {:else}
   <div class="shell">
     <Sidebar
@@ -282,6 +259,9 @@
           <p class="status">{activeThread?.status ?? "ready"}</p>
         </div>
         <div class="top-actions">
+          <span class:ready={providersReady} class="connection" role="status">
+            <span aria-hidden="true"></span>{providersReady ? "Providers ready" : "Limited connection"}
+          </span>
           <button class="ghost" aria-label="Toggle research progress drawer" onclick={() => (state.showDrawer = !state.showDrawer)}>Research</button>
           {#if activeThread?.status === "brief-confirmed" || activeThread?.status === "configuring"}
             <button class="ghost" onclick={() => saveRunConfig()}>Save config</button>
@@ -314,11 +294,38 @@
       {/if}
 
       {#if activeThread?.status === "intake"}
-        <ResearchSetupForm
-          submitting={intakeSubmitting}
-          error={state.error}
-          onSubmit={submitIntakeAnswers}
-        />
+        <section class="intake-workspace" aria-label="Research setup">
+          <nav class="intake-tabs" aria-label="Research setup sections">
+            <button
+              class:active={intakeView === "questions"}
+              aria-current={intakeView === "questions" ? "page" : undefined}
+              onclick={() => (intakeView = "questions")}
+            ><span>01</span>Brief questions</button>
+            <button
+              class:active={intakeView === "models"}
+              aria-current={intakeView === "models" ? "page" : undefined}
+              onclick={() => (intakeView = "models")}
+            ><span>02</span>Models & limits</button>
+          </nav>
+          <div class="intake-pane" hidden={intakeView !== "questions"}>
+            <ResearchSetupForm
+              submitting={intakeSubmitting}
+              error={state.error}
+              onSubmit={submitIntakeAnswers}
+            />
+          </div>
+          <div class="intake-pane" hidden={intakeView !== "models"}>
+            <RunConfigPanel
+              models={state.workspace?.models ?? []}
+              modelCatalog={state.workspace?.modelCatalog}
+              config={state.workspace?.runConfig ?? DEFAULT_RUN_CONFIG}
+              presets={state.workspace?.presets ?? []}
+              onSave={(config, presetName) => saveRunConfig(config, presetName)}
+              onFavorite={saveFavoriteModel}
+              setupOnly
+            />
+          </div>
+        </section>
       {:else}
         <Conversation messages={state.workspace?.messages ?? []} />
       {/if}
@@ -364,22 +371,41 @@
 <style>
   .boot {
     height: 100%;
-    display: grid;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
     place-items: center;
     color: var(--muted);
+    font-size: 13px;
+  }
+
+  .boot-mark {
+    width: 10px;
+    height: 10px;
+    border: 2px solid var(--accent);
+    border-radius: 3px 3px 3px 1px;
+    animation: boot-pulse 1.2s var(--ease) infinite alternate;
+  }
+
+  @keyframes boot-pulse {
+    to { transform: rotate(12deg) scale(0.84); opacity: 0.55; }
   }
 
   .shell {
     height: 100%;
     display: grid;
-    grid-template-columns: 280px 1fr;
+    grid-template-columns: 248px minmax(0, 1fr);
     background: var(--bg);
+    overflow: hidden;
   }
 
   .main {
     display: grid;
     grid-template-rows: auto 1fr auto auto auto auto;
     min-width: 0;
+    min-height: 0;
+    overflow: hidden;
     border-left: 1px solid var(--border);
   }
 
@@ -388,21 +414,23 @@
     justify-content: space-between;
     align-items: center;
     gap: 16px;
-    padding: 16px 20px;
+    min-height: 60px;
+    padding: 10px clamp(20px, 3vw, 36px);
     border-bottom: 1px solid var(--border);
-    background: rgba(18, 18, 18, 0.8);
-    backdrop-filter: blur(8px);
+    background: color-mix(in srgb, var(--surface) 88%, transparent);
+    backdrop-filter: blur(14px);
   }
 
   h1 {
     margin: 0;
-    font-size: 16px;
-    font-weight: 600;
+    font-size: 15px;
+    font-weight: 650;
+    letter-spacing: -0.02em;
   }
 
   .status {
     margin: 4px 0 0;
-    color: var(--muted);
+    color: var(--subtle);
     font-family: var(--mono);
     font-size: 12px;
     text-transform: lowercase;
@@ -410,7 +438,90 @@
 
   .top-actions {
     display: flex;
+    flex-wrap: wrap;
+    justify-content: flex-end;
     gap: 8px;
+  }
+
+  .intake-workspace {
+    min-height: 0;
+    display: grid;
+    grid-template-rows: auto minmax(0, 1fr);
+    background: var(--bg);
+  }
+
+  .intake-tabs {
+    display: flex;
+    gap: 4px;
+    padding: 6px clamp(20px, 3vw, 36px) 0;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .intake-tabs button {
+    position: relative;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 9px 12px 12px;
+    border: 0;
+    border-radius: 7px 7px 0 0;
+    background: transparent;
+    color: var(--muted);
+    font-size: 12px;
+  }
+
+  .intake-tabs button::after {
+    content: "";
+    position: absolute;
+    right: 10px;
+    bottom: -1px;
+    left: 10px;
+    height: 2px;
+    transform: scaleX(0);
+    background: var(--accent);
+    transition: transform 180ms var(--ease);
+  }
+
+  .intake-tabs button:hover,
+  .intake-tabs button.active {
+    color: var(--text);
+  }
+
+  .intake-tabs button.active::after {
+    transform: scaleX(1);
+  }
+
+  .intake-tabs button span {
+    color: var(--subtle);
+    font-family: var(--mono);
+    font-size: 9px;
+  }
+
+  .intake-pane {
+    min-height: 0;
+    overflow: hidden;
+  }
+
+  .connection {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    min-height: 34px;
+    padding: 0 10px;
+    color: var(--muted);
+    font-size: 11px;
+    white-space: nowrap;
+  }
+
+  .connection > span {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--danger);
+  }
+
+  .connection.ready > span {
+    background: var(--success);
   }
 
   .global-error {
@@ -433,10 +544,11 @@
 
   button {
     border: 1px solid var(--border);
-    background: var(--surface);
+    background: var(--surface-2);
     color: var(--text);
-    border-radius: 8px;
-    padding: 8px 12px;
+    border-radius: 9px;
+    padding: 8px 13px;
+    font-weight: 600;
   }
 
   button:focus-visible {
@@ -445,12 +557,18 @@
   }
 
   button.primary {
-    background: color-mix(in srgb, var(--accent) 24%, var(--surface));
-    border-color: color-mix(in srgb, var(--accent) 50%, var(--border));
+    background: var(--accent-strong);
+    border-color: var(--accent-strong);
+    color: var(--accent-ink);
   }
 
   button.ghost {
     background: transparent;
+  }
+
+  button.ghost:hover:not(:disabled) {
+    background: var(--surface-2);
+    border-color: var(--border-strong);
   }
 
   button:disabled {

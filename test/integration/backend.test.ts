@@ -59,6 +59,11 @@ describe("Backend health", () => {
     expect(clients.opencode).toBeUndefined();
     expect(clients.exa).toBeDefined();
     expect(isSetupComplete({ valid: true }, { detected: true, compatible: true })).toBe(true);
+    expect(isSetupComplete(
+      { valid: true },
+      { detected: true, compatible: false },
+      { valid: true },
+    )).toBe(true);
   });
 
   test("marks Exa plus compatible Codex as setup-complete without validating OpenCode", async () => {

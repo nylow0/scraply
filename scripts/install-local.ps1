@@ -1,7 +1,9 @@
 $ErrorActionPreference = "Stop"
 
 $root = Split-Path -Parent $PSScriptRoot
-$setupPath = Join-Path $root "release\Scraply Setup 0.2.0.exe"
+$packagePath = Join-Path $root "package.json"
+$package = Get-Content -Raw -LiteralPath $packagePath | ConvertFrom-Json
+$setupPath = Join-Path $root "release\Scraply Setup $($package.version).exe"
 $installedExe = Join-Path $env:LOCALAPPDATA "Programs\Scraply\Scraply.exe"
 
 if (-not (Test-Path $setupPath)) {

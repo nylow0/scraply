@@ -14,6 +14,8 @@ interface MockState {
   ideas: unknown[];
   reports: Array<{ id: string; researchRunId?: string; streamId: string | null; title: string }>;
   pendingRuns: unknown[];
+  favorites: string[];
+  presets: Array<{ name: string; config: typeof DEFAULT_RUN_CONFIG }>;
 }
 
 export interface MockBackend {
@@ -72,7 +74,7 @@ const idea = {
   createdAt: now,
 };
 
-export async function startMockBackend(scenario: Scenario = "fresh"): Promise<MockBackend> {
+export async function startMockBackend(scenario: Scenario = "fresh", port = 0): Promise<MockBackend> {
   const requests: MockBackend["requests"] = [];
   const thread = {
     id: "thread-1",
@@ -99,6 +101,8 @@ export async function startMockBackend(scenario: Scenario = "fresh"): Promise<Mo
       totalStreams: 6,
       hasSynthesis: false,
     }] : [],
+    favorites: [],
+    presets: [],
   };
   const token = "scraply-e2e-token";
 
@@ -133,8 +137,21 @@ export async function startMockBackend(scenario: Scenario = "fresh"): Promise<Mo
       return send(res, 200, ok(workspace(state)));
     }
     if (req.method === "POST" && url.pathname === "/run-config") {
-      state.runConfig = (body as { config?: typeof DEFAULT_RUN_CONFIG }).config ?? DEFAULT_RUN_CONFIG;
+      const input = body as { config?: typeof DEFAULT_RUN_CONFIG; presetName?: string };
+      state.runConfig = input.config ?? DEFAULT_RUN_CONFIG;
+      if (input.presetName) {
+        state.presets = [...state.presets.filter((item) => item.name !== input.presetName), { name: input.presetName, config: state.runConfig }];
+      }
       thread.status = "configuring";
+      return send(res, 200, ok(workspace(state)));
+    }
+    if (req.method === "POST" && url.pathname === "/models/favorite") {
+      const input = body as { model?: string; favorite?: boolean };
+      if (input.model) {
+        state.favorites = input.favorite
+          ? [...new Set([...state.favorites, input.model])]
+          : state.favorites.filter((model) => model !== input.model);
+      }
       return send(res, 200, ok(workspace(state)));
     }
     if (req.method === "POST" && url.pathname === "/research/start") {
@@ -149,12 +166,19 @@ export async function startMockBackend(scenario: Scenario = "fresh"): Promise<Mo
     if (req.method === "POST" && url.pathname === "/ideas/generate") {
       thread.status = "ideas-ready";
       state.ideas = [idea];
-      return send(res, 200, ok({ workspace: workspace(state) }));
+      return send(res, 200, ok({
+        ideas: state.ideas,
+        completeness: { mode: "complete", synthesisReportId: "report-synthesis", missingLenses: [], gaps: [] },
+        workspace: workspace(state),
+      }));
     }
     if (req.method === "POST" && url.pathname === "/ideas/rate") {
       const rating = Number((body as { rating?: number }).rating);
       (idea as { currentRating: unknown }).currentRating = { rating, updatedAt: now };
       return send(res, 200, ok({ ideaId: idea.id, rating, updatedAt: now }));
+    }
+    if (req.method === "POST" && url.pathname === "/ideas/export") {
+      return send(res, 200, ok({ ideas: state.ideas }));
     }
     if (req.method === "POST" && url.pathname === "/threads/branch") {
       const child = { id: "thread-child", title: `Explore: ${(body as { seedIdeaTitle?: string }).seedIdeaTitle}`, status: "brief-confirmed", parentThreadId: thread.id, createdAt: now, updatedAt: now };
@@ -172,6 +196,11 @@ export async function startMockBackend(scenario: Scenario = "fresh"): Promise<Mo
     }
     if (req.method === "POST" && url.pathname === "/research/resume") {
       state.pendingRuns = [];
+      thread.status = "research-complete";
+      state.reports = [
+        { id: "report-market", researchRunId: "run-1", streamId: "market", title: "Market evidence" },
+        { id: "report-synthesis", researchRunId: "run-1", streamId: "synthesis", title: "Composite synthesis" },
+      ];
       return send(res, 200, ok({ workspace: workspace(state) }));
     }
     if (req.method === "GET" && url.pathname.startsWith("/reports/")) {
@@ -181,7 +210,7 @@ export async function startMockBackend(scenario: Scenario = "fresh"): Promise<Mo
     return send(res, 404, error("not_found", `No mock route for ${req.method} ${url.pathname}`));
   });
 
-  server.listen(0, "127.0.0.1");
+  server.listen(port, "127.0.0.1");
   await once(server, "listening");
   const address = server.address();
   if (!address || typeof address === "string") throw new Error("Mock backend did not bind a TCP port");
@@ -202,9 +231,9 @@ function workspace(state: MockState) {
     brief: state.brief,
     runConfig: state.runConfig,
     models: ["gpt-5.6-luna"],
-    modelCatalog: { opencode: [], codex: ["gpt-5.6-luna"], favorites: [] },
+    modelCatalog: { opencode: [], codex: ["gpt-5.6-luna"], favorites: state.favorites },
     branchContext: null,
-    presets: [],
+    presets: state.presets,
     ideas: state.ideas,
     reports: state.reports,
     latestResearchRun: state.reports.some((report) => report.id === "report-synthesis")

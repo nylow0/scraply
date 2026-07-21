@@ -29,8 +29,9 @@
 </script>
 
 <aside class="sidebar">
-  <div class="brand">Scraply</div>
-  <button class="new" aria-label="Create new research thread" onclick={onNew}>New research</button>
+  <div class="brand"><span class="brand-mark" aria-hidden="true"></span><span>Scraply</span></div>
+  <button class="new" aria-label="Create new research thread" onclick={onNew}><span aria-hidden="true">+</span>New research</button>
+  <div class="list-head"><span>Workspace</span><span>{threads.length}</span></div>
   <div class="list" role="list" aria-label="Research threads">
     {#each threads as thread (thread.id)}
       <div class="thread-row" class:active={thread.id === activeThreadId} role="listitem">
@@ -49,7 +50,11 @@
           aria-label={`Delete research ${thread.title}`}
           disabled={deletingThreadId !== null}
           onclick={() => confirmDelete(thread)}
-        >🗑</button>
+        >
+          <svg aria-hidden="true" viewBox="0 0 20 20" width="15" height="15" fill="none">
+            <path d="M4.75 6.25h10.5M8 3.75h4M6.25 6.25l.5 9h6.5l.5-9M8.25 8.5v4.5M11.75 8.5v4.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+          </svg>
+        </button>
       </div>
     {:else}
       <p class="empty">No threads yet</p>
@@ -64,25 +69,67 @@
 <style>
   .sidebar {
     display: grid;
-    grid-template-rows: auto auto 1fr auto;
-    gap: 12px;
-    padding: 16px;
+    grid-template-rows: auto auto auto 1fr auto;
+    gap: 14px;
+    padding: 20px 16px 16px;
     background: var(--surface);
     min-height: 0;
   }
 
   .brand {
-    font-weight: 600;
-    letter-spacing: -0.02em;
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    padding: 0 4px 4px;
+    font-size: 15px;
+    font-weight: 650;
+    letter-spacing: -0.025em;
+  }
+
+  .brand-mark {
+    width: 12px;
+    height: 12px;
+    border: 3px solid var(--accent);
+    border-radius: 4px 4px 4px 1px;
+    transform: rotate(-8deg);
   }
 
   .new {
     width: 100%;
-    border: 1px solid color-mix(in srgb, var(--accent) 40%, var(--border));
-    background: color-mix(in srgb, var(--accent) 16%, var(--surface));
+    display: flex;
+    align-items: center;
+    justify-content: flex-start;
+    gap: 9px;
+    border: 1px solid color-mix(in srgb, var(--accent) 50%, var(--border));
+    background: color-mix(in srgb, var(--accent) 13%, var(--surface));
     color: var(--text);
-    border-radius: 8px;
-    padding: 10px 12px;
+    border-radius: 9px;
+    padding: 10px 11px;
+    font-weight: 600;
+  }
+
+  .new:hover {
+    border-color: var(--accent);
+    background: color-mix(in srgb, var(--accent) 19%, var(--surface));
+  }
+
+  .new span {
+    color: var(--accent-strong);
+    font-size: 18px;
+    font-weight: 400;
+    line-height: 0;
+  }
+
+  .list-head {
+    display: flex;
+    justify-content: space-between;
+    padding: 8px 5px 0;
+    color: var(--subtle);
+    font-family: var(--mono);
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
   }
 
   .list {
@@ -102,12 +149,12 @@
   }
 
   .thread-row:hover {
-    background: color-mix(in srgb, var(--surface-2) 60%, transparent);
+    background: var(--surface-2);
   }
 
   .thread-row.active {
     background: var(--surface-2);
-    border-color: var(--border);
+    border-color: var(--border-strong);
   }
 
   .thread {
@@ -132,9 +179,11 @@
     border: none;
     background: transparent;
     color: var(--muted);
-    font-size: 13px;
-    line-height: 1;
-    padding: 6px 10px;
+    display: grid;
+    width: 32px;
+    height: 32px;
+    place-items: center;
+    padding: 0;
     margin-right: 4px;
     border-radius: 6px;
     opacity: 0;
@@ -178,6 +227,8 @@
   .footer {
     display: grid;
     gap: 6px;
+    padding-top: 12px;
+    border-top: 1px solid var(--border);
   }
 
   .link {
@@ -185,6 +236,11 @@
     border: none;
     color: var(--muted);
     text-align: left;
-    padding: 4px 0;
+    padding: 5px 4px;
+    font-size: 12px;
+  }
+
+  .link:hover {
+    color: var(--text);
   }
 </style>
