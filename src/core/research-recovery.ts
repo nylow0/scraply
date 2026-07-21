@@ -1,4 +1,6 @@
 import type { DatabaseClient } from "../db/client";
+import { CostLedgerRepository } from "../db/repositories/cost-ledger";
+import { ResearchRunRepository } from "../db/repositories/research-runs";
 import { RESEARCH_STREAMS } from "../research/streams";
 import { RunConfigSchema, type ProjectBrief, type RunConfig } from "../shared/schemas";
 
@@ -17,6 +19,7 @@ export interface StoredRunState {
   threadId: string;
   brief: ProjectBrief;
   config: RunConfig;
+  startedAt: string;
   completedStreamIds: Set<string>;
   hasSynthesis: boolean;
 }
@@ -26,7 +29,7 @@ export function listPendingRuns(db: DatabaseClient): PendingRun[] {
     SELECT rr.id, rr.thread_id, rr.status, t.title as thread_title
     FROM research_runs rr
     JOIN threads t ON t.id = rr.thread_id
-    WHERE rr.status = 'running'
+    WHERE rr.status IN ('queued', 'running')
     ORDER BY rr.updated_at DESC
   `).all() as Array<{ id: string; thread_id: string; status: string; thread_title: string }>;
 
@@ -36,8 +39,8 @@ export function listPendingRuns(db: DatabaseClient): PendingRun[] {
     `).all(row.id) as Array<{ stream_id: string; status: string }>;
     const completedStreams = streamRows.filter((stream) => stream.status === "completed").length;
     const synthesis = db.db.prepare(`
-      SELECT id FROM reports WHERE thread_id = ? AND stream_id = 'synthesis' LIMIT 1
-    `).get(row.thread_id) as { id: string } | undefined;
+      SELECT id FROM reports WHERE research_run_id = ? AND report_kind = 'synthesis' LIMIT 1
+    `).get(row.id) as { id: string } | undefined;
 
     return {
       runId: row.id,
@@ -53,11 +56,17 @@ export function listPendingRuns(db: DatabaseClient): PendingRun[] {
 
 export function loadStoredRunState(db: DatabaseClient, runId: string): StoredRunState | null {
   const row = db.db.prepare(`
-    SELECT id, thread_id, config_json FROM research_runs WHERE id = ?
-  `).get(runId) as { id: string; thread_id: string; config_json: string } | undefined;
+    SELECT id, thread_id, config_json, brief_json, created_at FROM research_runs WHERE id = ?
+  `).get(runId) as {
+    id: string;
+    thread_id: string;
+    config_json: string;
+    brief_json: string | null;
+    created_at: string;
+  } | undefined;
   if (!row) return null;
 
-  const briefRow = db.db.prepare(`
+  const briefRow = row.brief_json ? { brief_json: row.brief_json } : db.db.prepare(`
     SELECT brief_json FROM briefs WHERE thread_id = ? ORDER BY version DESC LIMIT 1
   `).get(row.thread_id) as { brief_json: string } | undefined;
   if (!briefRow) return null;
@@ -67,14 +76,15 @@ export function loadStoredRunState(db: DatabaseClient, runId: string): StoredRun
   `).all(runId) as Array<{ stream_id: string }>;
 
   const synthesis = db.db.prepare(`
-    SELECT id FROM reports WHERE thread_id = ? AND stream_id = 'synthesis' LIMIT 1
-  `).get(row.thread_id) as { id: string } | undefined;
+    SELECT id FROM reports WHERE research_run_id = ? AND report_kind = 'synthesis' LIMIT 1
+  `).get(runId) as { id: string } | undefined;
 
   return {
     runId: row.id,
     threadId: row.thread_id,
     brief: JSON.parse(briefRow.brief_json) as ProjectBrief,
     config: RunConfigSchema.parse(JSON.parse(row.config_json)),
+    startedAt: row.created_at,
     completedStreamIds: new Set(completed.map((item) => item.stream_id)),
     hasSynthesis: Boolean(synthesis),
   };
@@ -84,11 +94,8 @@ export function cancelIncompleteRun(db: DatabaseClient, runId: string): void {
   const row = db.db.prepare("SELECT thread_id FROM research_runs WHERE id = ?").get(runId) as { thread_id: string } | undefined;
   if (!row) return;
   const now = new Date().toISOString();
-  db.db.prepare("UPDATE research_runs SET status = 'cancelled', cancelled = 1, updated_at = ? WHERE id = ?").run(now, runId);
-  db.db.prepare(`
-    UPDATE stream_runs SET status = 'cancelled', updated_at = ?
-    WHERE research_run_id = ? AND status IN ('running', 'failed')
-  `).run(now, runId);
+  new ResearchRunRepository(db).cancel(runId, "Cancelled during recovery");
+  new CostLedgerRepository(db).settleUncertain(runId, "Interrupted operation could not be reconciled");
 
   const completedReports = db.db.prepare(`
     SELECT COUNT(*) as count FROM stream_runs WHERE research_run_id = ? AND status = 'completed'

@@ -1,8 +1,18 @@
 import { contextBridge, ipcRenderer } from "electron";
-import { IPC_CHANNELS, type BackendReady, type ResearchEvent, type ValidationState, type WorkspaceState } from "../shared/ipc";
+import {
+  IPC_CHANNELS,
+  ResearchEventSchema,
+  type IdeaGenerationResponse,
+  type IdeaRating,
+  type ReportDetail,
+  type ResearchEvent,
+  type SourceDetail,
+  type ValidationState,
+  type WorkspaceState,
+} from "../shared/ipc";
+import type { Idea } from "../shared/schemas";
 
 const api = {
-  getBackend: (): Promise<BackendReady | null> => ipcRenderer.invoke(IPC_CHANNELS.GET_BACKEND),
   getValidation: (): Promise<ValidationState> => ipcRenderer.invoke(IPC_CHANNELS.GET_VALIDATION),
   getWorkspace: (): Promise<WorkspaceState> => ipcRenderer.invoke(IPC_CHANNELS.GET_WORKSPACE),
   saveSecrets: (opencodeApiKey: string, exaApiKey: string): Promise<ValidationState> =>
@@ -30,14 +40,32 @@ const api = {
     const result = await ipcRenderer.invoke(IPC_CHANNELS.CANCEL_INCOMPLETE_RESEARCH, { runId }) as { workspace: WorkspaceState };
     return result.workspace;
   },
-  generateIdeas: (threadId: string) => ipcRenderer.invoke(IPC_CHANNELS.GENERATE_IDEAS, { threadId }),
-  rateIdea: (payload: { ideaId: string; rating: number; notes?: string }) =>
+  generateIdeas: (runId: string, allowPartial = false): Promise<IdeaGenerationResponse & { workspace: WorkspaceState }> =>
+    ipcRenderer.invoke(IPC_CHANNELS.GENERATE_IDEAS, { runId, allowPartial }),
+  rateIdea: (payload: { ideaId: string; rating: number; notes?: string }): Promise<IdeaRating> =>
     ipcRenderer.invoke(IPC_CHANNELS.RATE_IDEA, payload),
   exportIdeas: (threadId: string) => ipcRenderer.invoke(IPC_CHANNELS.EXPORT_IDEAS, { threadId }),
-  createBranch: (payload: { parentThreadId: string; ideaTitle: string }) =>
+  createBranch: (payload: {
+    parentThreadId: string;
+    seedIdeaId: string;
+    seedIdeaTitle: string;
+    explorationAngle: string;
+    selectedClaimIds: string[];
+  }) =>
     ipcRenderer.invoke(IPC_CHANNELS.CREATE_BRANCH, payload),
+  getReportDetail: (reportId: string): Promise<ReportDetail> =>
+    ipcRenderer.invoke(IPC_CHANNELS.GET_REPORT_DETAIL, { reportId }),
+  getSourceDetail: (sourceId: string): Promise<SourceDetail> =>
+    ipcRenderer.invoke(IPC_CHANNELS.GET_SOURCE_DETAIL, { sourceId }),
+  getIdeaDetail: (ideaId: string): Promise<Idea> =>
+    ipcRenderer.invoke(IPC_CHANNELS.GET_IDEA_DETAIL, { ideaId }),
+  openExternalUrl: (url: string): Promise<void> =>
+    ipcRenderer.invoke(IPC_CHANNELS.OPEN_EXTERNAL_URL, { url }),
   onBackendEvent: (listener: (event: ResearchEvent) => void) => {
-    const handler = (_: unknown, event: ResearchEvent) => listener(event);
+    const handler = (_: unknown, event: unknown) => {
+      const parsed = ResearchEventSchema.safeParse(event);
+      if (parsed.success) listener(parsed.data);
+    };
     ipcRenderer.on(IPC_CHANNELS.BACKEND_EVENT, handler);
     return () => ipcRenderer.removeListener(IPC_CHANNELS.BACKEND_EVENT, handler);
   },

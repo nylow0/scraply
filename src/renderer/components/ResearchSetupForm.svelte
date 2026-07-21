@@ -1,52 +1,38 @@
 <script lang="ts">
   import { REQUIRED_INTAKE_QUESTIONS, OPTIONAL_INTAKE_QUESTIONS } from "../../shared/intake";
-  import type { ModelCatalog, ModelRef, RunConfig } from "../../shared/schemas";
-  import RunConfigPanel from "./RunConfigPanel.svelte";
-
   type IntakeAnswer = { questionId: string; answer: string; skipped: boolean };
 
   let {
-    models,
-    modelCatalog,
-    config,
-    presets,
-    onFavorite,
     submitting,
     error,
-    onLaunch,
+    onSubmit,
   }: {
-    models: string[];
-    modelCatalog?: ModelCatalog;
-    config: RunConfig;
-    presets: Array<{ name: string; config: RunConfig }>;
-    onFavorite: (model: ModelRef, favorite: boolean) => void;
     submitting: boolean;
     error: string | null;
-    onLaunch: (answers: IntakeAnswer[], config: RunConfig) => void;
+    onSubmit: (answers: IntakeAnswer[]) => void;
   } = $props();
 
   let values = $state<Record<string, string>>({});
-  let runConfig = $state<RunConfig>({ ...config });
 
   const missingRequired = $derived(
     REQUIRED_INTAKE_QUESTIONS.filter((q) => !(values[q.id] ?? "").trim()).map((q) => q.id),
   );
-  const canLaunch = $derived(missingRequired.length === 0 && !submitting);
+  const canSubmit = $derived(missingRequired.length === 0 && !submitting);
 
-  function launch() {
-    if (!canLaunch) return;
+  function submit() {
+    if (!canSubmit) return;
     const answers: IntakeAnswer[] = [...REQUIRED_INTAKE_QUESTIONS, ...OPTIONAL_INTAKE_QUESTIONS].map((q) => {
       const value = (values[q.id] ?? "").trim();
       return value ? { questionId: q.id, answer: value, skipped: false } : { questionId: q.id, answer: "", skipped: true };
     });
-    onLaunch(answers, runConfig);
+    onSubmit(answers);
   }
 </script>
 
 <section class="setup">
   <div class="head">
     <h2>New research</h2>
-    <p>Fill in the questions and pick your models, then hit <strong>Start research</strong> — Scraply drafts the brief and launches the run in one go. Optional questions can be left blank.</p>
+    <p>Answer the questions first. Scraply will draft an editable brief for you to review before any paid research starts.</p>
   </div>
 
   {#if error}
@@ -71,25 +57,12 @@
     {/each}
   </div>
 
-  <div class="config">
-    <p class="group-label">Models &amp; research settings</p>
-    <RunConfigPanel
-      {models}
-      {modelCatalog}
-      {config}
-      presets={presets}
-      onFavorite={onFavorite}
-      embedded={true}
-      onChange={(next) => (runConfig = next)}
-    />
-  </div>
-
   <div class="actions">
     {#if missingRequired.length > 0}
       <span class="hint">{missingRequired.length} required {missingRequired.length === 1 ? "question" : "questions"} left</span>
     {/if}
-    <button class="primary" onclick={launch} disabled={!canLaunch}>
-      {submitting ? "Working… drafting brief & launching" : "Start research"}
+    <button class="primary" onclick={submit} disabled={!canSubmit}>
+      {submitting ? "Drafting brief…" : "Review brief"}
     </button>
   </div>
 </section>
@@ -163,10 +136,6 @@
 
   textarea:disabled {
     opacity: 0.6;
-  }
-
-  .config :global(.panel) {
-    margin: 8px 0 0;
   }
 
   .actions {

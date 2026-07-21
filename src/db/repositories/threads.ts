@@ -1,11 +1,13 @@
 import { randomUUID } from "node:crypto";
 import type { DatabaseClient } from "../client";
 import {
+  BranchContextSchema,
   MessageSchema,
   ProjectBriefSchema,
   RunConfigSchema,
   ThreadSchema,
   type Message,
+  type BranchContext,
   type ProjectBrief,
   type RunConfig,
   type Thread,
@@ -133,6 +135,51 @@ export class ThreadRepository {
       SELECT brief_json FROM briefs WHERE thread_id = ? ORDER BY version DESC LIMIT 1
     `).get(threadId) as { brief_json: string } | undefined;
     return row ? ProjectBriefSchema.parse(JSON.parse(row.brief_json)) : null;
+  }
+
+  getLatestBriefSnapshot(threadId: string): { brief: ProjectBrief; version: number } | null {
+    const row = this.db.db.prepare(`
+      SELECT brief_json, version FROM briefs WHERE thread_id = ? ORDER BY version DESC LIMIT 1
+    `).get(threadId) as { brief_json: string; version: number } | undefined;
+    return row ? { brief: ProjectBriefSchema.parse(JSON.parse(row.brief_json)), version: row.version } : null;
+  }
+
+  saveBranchContext(context: BranchContext): void {
+    const parsed = BranchContextSchema.parse(context);
+    this.db.db.prepare(`
+      INSERT INTO branch_contexts (
+        thread_id, parent_thread_id, seed_idea_id, seed_idea_title, exploration_angle,
+        inherited_brief_json, inherited_brief_version, selected_claim_ids_json, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      parsed.threadId,
+      parsed.parentThreadId,
+      parsed.seedIdeaId,
+      parsed.seedIdeaTitle,
+      parsed.explorationAngle,
+      JSON.stringify(parsed.inheritedBriefSnapshot),
+      parsed.inheritedBriefVersion,
+      JSON.stringify(parsed.selectedClaimIds),
+      parsed.createdAt,
+    );
+  }
+
+  getBranchContext(threadId: string): BranchContext | null {
+    const row = this.db.db.prepare("SELECT * FROM branch_contexts WHERE thread_id = ?").get(threadId) as
+      | Record<string, unknown>
+      | undefined;
+    if (!row) return null;
+    return BranchContextSchema.parse({
+      threadId: row.thread_id,
+      parentThreadId: row.parent_thread_id,
+      seedIdeaId: row.seed_idea_id,
+      seedIdeaTitle: row.seed_idea_title,
+      explorationAngle: row.exploration_angle,
+      inheritedBriefSnapshot: JSON.parse(String(row.inherited_brief_json)),
+      inheritedBriefVersion: row.inherited_brief_version,
+      selectedClaimIds: JSON.parse(String(row.selected_claim_ids_json)),
+      createdAt: row.created_at,
+    });
   }
 
   saveRunConfig(threadId: string, config: RunConfig, presetName?: string): void {

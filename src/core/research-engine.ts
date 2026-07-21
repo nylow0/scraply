@@ -1,5 +1,9 @@
 import { randomUUID } from "node:crypto";
+import { z } from "zod";
 import type { DatabaseClient } from "../db/client";
+import { CostLedgerRepository } from "../db/repositories/cost-ledger";
+import { EvidenceRepository } from "../db/repositories/evidence";
+import { ResearchRunRepository } from "../db/repositories/research-runs";
 import { wrapReportHtml } from "../core/sanitize";
 import { loadPrompt } from "../core/prompts";
 import {
@@ -11,13 +15,17 @@ import {
 import { loadStoredRunState, logJobEvent } from "../core/research-recovery";
 import type { ExaClient } from "../providers/exa";
 import type { OpenCodeClient } from "../providers/opencode";
+import type { StructuredModelClient } from "../providers/structured";
+import { ProviderFailure } from "../providers/structured";
 import { RESEARCH_STREAMS, type CanonicalStream } from "../research/streams";
-import type { ProjectBrief, RunConfig } from "../shared/schemas";
+import type { ModelProvider, ProjectBrief, RunConfig } from "../shared/schemas";
 import type { ResearchEvent } from "../shared/ipc";
+import { extractClaims } from "./claim-extraction";
 
 export interface ResearchEngineOptions {
   db: DatabaseClient;
-  opencode: OpenCodeClient;
+  opencode?: OpenCodeClient;
+  modelClients?: Partial<Record<ModelProvider, StructuredModelClient>>;
   exa: ExaClient;
   onEvent: (event: ResearchEvent) => void;
   onReport?: (threadId: string, streamName: string, reportId: string) => void;
@@ -28,8 +36,11 @@ interface ActiveRun {
   threadId: string;
   config: RunConfig;
   brief: ProjectBrief;
-  cancelled: boolean;
-  spendEstimate: number;
+  abortController: AbortController;
+  startedAt: number;
+  deadlineTimer?: ReturnType<typeof setTimeout>;
+  codexCalls: number;
+  exaSearches: number;
   completedStreamIds: Set<string>;
   hasSynthesis: boolean;
 }
@@ -38,28 +49,37 @@ export class ResearchEngine {
   private activeRuns = new Map<string, ActiveRun>();
   private globalCancelled = new Set<string>();
 
-  constructor(private readonly options: ResearchEngineOptions) {}
+  private readonly runs: ResearchRunRepository;
+  private readonly ledger: CostLedgerRepository;
+  private readonly evidence: EvidenceRepository;
 
-  async startRun(threadId: string, brief: ProjectBrief, config: RunConfig): Promise<string> {
-    const runId = randomUUID();
-    const now = new Date().toISOString();
-    this.options.db.db.prepare(`
-      INSERT INTO research_runs (id, thread_id, status, config_json, spend_estimate, round, cancelled, created_at, updated_at)
-      VALUES (?, ?, 'running', ?, 0, 0, 0, ?, ?)
-    `).run(runId, threadId, JSON.stringify(config), now, now);
-    this.activeRuns.set(runId, {
+  constructor(private readonly options: ResearchEngineOptions) {
+    this.runs = new ResearchRunRepository(options.db);
+    this.ledger = new CostLedgerRepository(options.db);
+    this.evidence = new EvidenceRepository(options.db);
+  }
+
+  async startRun(threadId: string, brief: ProjectBrief, config: RunConfig, idempotencyKey?: string): Promise<string> {
+    const created = this.runs.create(threadId, brief, config, idempotencyKey);
+    const runId = created.runId;
+    if (!created.created) return runId;
+    const active: ActiveRun = {
       runId,
       threadId,
       config,
       brief,
-      cancelled: false,
-      spendEstimate: 0,
+      abortController: new AbortController(),
+      startedAt: Date.now(),
+      codexCalls: 0,
+      exaSearches: 0,
       completedStreamIds: new Set(),
       hasSynthesis: false,
-    });
+    };
+    this.activeRuns.set(runId, active);
+    this.scheduleDeadline(active);
     this.emitJob(runId, threadId, "run-started", { runId, threadId });
     this.options.onEvent({ type: "run-started", runId, threadId });
-    void this.executeRun(runId);
+    void this.executeRun(runId).catch((error) => this.failRun(runId, error));
     return runId;
   }
 
@@ -72,29 +92,34 @@ export class ResearchEngine {
     this.options.db.db.prepare(`
       UPDATE research_runs SET status = 'running', cancelled = 0, updated_at = ? WHERE id = ?
     `).run(now, runId);
-    this.activeRuns.set(runId, {
+    const active: ActiveRun = {
       runId,
       threadId: stored.threadId,
       config: stored.config,
       brief: stored.brief,
-      cancelled: false,
-      spendEstimate: 0,
+      abortController: new AbortController(),
+      startedAt: Date.parse(stored.startedAt),
+      codexCalls: 0,
+      exaSearches: 0,
       completedStreamIds: stored.completedStreamIds,
       hasSynthesis: stored.hasSynthesis,
-    });
+    };
+    this.activeRuns.set(runId, active);
+    this.scheduleDeadline(active);
     this.options.db.db.prepare("UPDATE threads SET status = ?, updated_at = ? WHERE id = ?")
       .run("research-running", now, stored.threadId);
     this.emitJob(runId, stored.threadId, "run-resumed", { runId });
     this.options.onEvent({ type: "run-resumed", runId, threadId: stored.threadId });
-    void this.executeRun(runId);
+    void this.executeRun(runId).catch((error) => this.failRun(runId, error));
   }
 
   cancelRun(runId: string): void {
     this.globalCancelled.add(runId);
     const active = this.activeRuns.get(runId);
-    if (active) active.cancelled = true;
-    this.options.db.db.prepare("UPDATE research_runs SET status = 'cancelled', cancelled = 1, updated_at = ? WHERE id = ?")
-      .run(new Date().toISOString(), runId);
+    if (active?.deadlineTimer) clearTimeout(active.deadlineTimer);
+    active?.abortController.abort(new Error("Cancelled by user"));
+    this.runs.cancel(runId);
+    this.ledger.settleUncertain(runId, "Run cancelled while operations were in flight");
     this.emitJob(runId, active?.threadId ?? null, "run-cancelled", { runId });
     this.options.onEvent({ type: "run-cancelled", runId });
   }
@@ -113,7 +138,8 @@ export class ResearchEngine {
       );
     }
 
-    if (active.cancelled || this.globalCancelled.has(runId)) {
+    if (this.isStopped(active)) {
+      if (active.deadlineTimer) clearTimeout(active.deadlineTimer);
       this.activeRuns.delete(runId);
       return;
     }
@@ -125,17 +151,16 @@ export class ResearchEngine {
 
     const finalReports = this.loadStreamReports(runId, threadId);
     const partial = finalReports.some((report) => report.status !== "completed");
-    const status = active.cancelled ? "cancelled" : partial ? "partial" : "completed";
-    this.options.db.db.prepare(`
-      UPDATE research_runs SET status = ?, spend_estimate = ?, updated_at = ? WHERE id = ?
-    `).run(status, active.spendEstimate, new Date().toISOString(), runId);
+    const status = !active.hasSynthesis ? "failed" : partial ? "partial" : "completed";
+    this.runs.finish(runId, status, !active.hasSynthesis ? "Required synthesis was not produced" : undefined);
 
-    if (!active.cancelled) {
+    if (!this.isStopped(active)) {
       this.emitJob(runId, threadId, "run-completed", { runId, partial });
       this.options.onEvent({ type: "run-completed", runId, partial });
       this.options.db.db.prepare("UPDATE threads SET status = ?, updated_at = ? WHERE id = ?")
         .run("research-complete", new Date().toISOString(), threadId);
     }
+    if (active.deadlineTimer) clearTimeout(active.deadlineTimer);
     this.activeRuns.delete(runId);
   }
 
@@ -151,9 +176,14 @@ export class ResearchEngine {
     this.emitJob(runId, threadId, "coverage-review-started", { runId });
 
     let coverageReview;
+    const orchestrator = this.getModelClient(config.orchestratorProvider);
+    const coverageReservation = this.reserveModel(active, "coverage-review", config.orchestratorProvider, config.orchestratorModel, 0.06);
     try {
-      coverageReview = await reviewCoverage(this.options.opencode, config.orchestratorModel, brief, streamReports);
-      active.spendEstimate += 0.06;
+      coverageReview = await reviewCoverage(orchestrator, config.orchestratorModel, brief, streamReports, {
+        signal: active.abortController.signal,
+        timeoutMs: 120_000,
+      });
+      this.throwIfStopped(active);
       this.options.onEvent({
         type: "coverage-review-completed",
         runId,
@@ -167,6 +197,8 @@ export class ResearchEngine {
       const message = error instanceof Error ? error.message : "Coverage review failed";
       this.emitJob(runId, threadId, "coverage-review-failed", { runId, error: message });
       return;
+    } finally {
+      this.ledger.commit(coverageReservation.id);
     }
 
     const followUpTargets = coverageReview.streamReviews
@@ -175,30 +207,32 @@ export class ResearchEngine {
 
     for (const target of followUpTargets) {
       const stream = RESEARCH_STREAMS.find((item) => item.id === target.streamId);
-      if (!stream || active.cancelled) continue;
+      if (!stream || this.isStopped(active)) continue;
       this.options.onEvent({ type: "follow-up-started", runId, streamId: stream.id, round: 1 });
-      await this.runStream(runId, threadId, brief, config, stream, true);
+      await this.runStream(runId, threadId, brief, config, stream, true, target.gaps[0]);
     }
 
     const refreshedReports = this.loadStreamReports(runId, threadId);
     this.options.onEvent({ type: "synthesis-started", runId });
     this.emitJob(runId, threadId, "synthesis-started", { runId });
 
+    const synthesisReservation = this.reserveModel(active, "synthesis", config.orchestratorProvider, config.orchestratorModel, 0.08);
     try {
       const synthesis = await synthesizeResearch(
-        this.options.opencode,
+        orchestrator,
         config.orchestratorModel,
         brief,
         refreshedReports,
         coverageReview,
+        { signal: active.abortController.signal, timeoutMs: 120_000 },
       );
-      active.spendEstimate += 0.08;
+      this.throwIfStopped(active);
       const reportId = randomUUID();
       const html = renderSynthesisReportHtml(brief, config, refreshedReports, coverageReview, synthesis);
       this.options.db.db.prepare(`
-        INSERT INTO reports (id, thread_id, stream_id, title, html, created_at)
-        VALUES (?, ?, 'synthesis', ?, ?, ?)
-      `).run(reportId, threadId, `${brief.projectName} — Research synthesis`, html, new Date().toISOString());
+        INSERT INTO reports (id, thread_id, research_run_id, stream_id, report_kind, title, html, created_at)
+        VALUES (?, ?, ?, 'synthesis', 'synthesis', ?, ?, ?)
+      `).run(reportId, threadId, runId, `${brief.projectName} — Research synthesis`, html, new Date().toISOString());
       active.hasSynthesis = true;
       this.options.onEvent({ type: "synthesis-completed", runId, reportId });
       this.emitJob(runId, threadId, "synthesis-completed", { runId, reportId });
@@ -216,6 +250,8 @@ export class ResearchEngine {
     } catch (error) {
       const message = error instanceof Error ? error.message : "Synthesis failed";
       this.emitJob(runId, threadId, "synthesis-failed", { runId, error: message });
+    } finally {
+      this.ledger.commit(synthesisReservation.id);
     }
   }
 
@@ -255,9 +291,10 @@ export class ResearchEngine {
     config: RunConfig,
     stream: CanonicalStream,
     isFollowUp = false,
+    followUpQuery?: string,
   ): Promise<void> {
     const active = this.activeRuns.get(runId);
-    if (!active || active.cancelled || this.globalCancelled.has(runId)) return;
+    if (!active || this.isStopped(active)) return;
     if (!isFollowUp && active.completedStreamIds.has(stream.id)) return;
 
     const existing = this.options.db.db.prepare(`
@@ -272,16 +309,19 @@ export class ResearchEngine {
 
     const streamRunId = randomUUID();
     const now = new Date().toISOString();
+    const query = followUpQuery?.trim() || [brief.theme, brief.description, brief.researchNeeds, stream.focus]
+      .filter(Boolean).join(": ").slice(0, 1500);
     this.options.db.db.prepare(`
-      INSERT INTO stream_runs (id, research_run_id, stream_id, round, status, created_at, updated_at)
-      VALUES (?, ?, ?, ?, 'running', ?, ?)
-    `).run(streamRunId, runId, stream.id, isFollowUp ? 1 : 0, now, now);
+      INSERT INTO stream_runs (
+        id, research_run_id, stream_id, lens, round, planned_query, status,
+        provider_started_at, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, 'running', ?, ?, ?)
+    `).run(streamRunId, runId, stream.id, stream.lens, isFollowUp ? 1 : 0, query, now, now, now);
     this.options.onEvent({ type: "stream-started", runId, streamId: stream.id });
     this.emitJob(runId, threadId, "stream-started", { runId, streamId: stream.id });
     this.options.onEvent({ type: "stream-progress", runId, streamId: stream.id, message: "Planning searches" });
 
     try {
-      const query = `${brief.theme}: ${stream.focus}`;
       const researcherPrompt = loadPrompt(`researcher-${stream.id}`, [
         "Extract only useful atomic factual claims that directly answer the research query.",
         "Every claim must cite source IDs with short evidence quotes.",
@@ -291,22 +331,40 @@ export class ResearchEngine {
         `Stream instructions: ${stream.instructions ?? "Use the stream focus."}`,
       ].join("\n"));
       this.options.onEvent({ type: "stream-progress", runId, streamId: stream.id, message: "Searching Exa" });
-      const sources = await this.options.exa.search(query, {
-        numResults: config.searchResultsPerStream,
-        maxCharacters: config.pageCharLimit,
-      });
-      active.spendEstimate += 0.05;
-
-      if (active.spendEstimate > config.maxSpendUsd) {
-        throw new Error("Spend cap reached");
+      this.consumeExaSearch(active);
+      const searchReservation = this.ledger.reserve(runId, "exa-search", "exa", null, 0.05);
+      let searchedSources: Awaited<ReturnType<ExaClient["search"]>>;
+      try {
+        searchedSources = await this.options.exa.search(query, {
+          numResults: config.searchResultsPerStream,
+          maxCharacters: config.pageCharLimit,
+          signal: active.abortController.signal,
+          timeoutMs: 30_000,
+        });
+        this.throwIfStopped(active);
+      } finally {
+        this.ledger.commit(searchReservation.id);
       }
+      const sources = this.evidence.persistSources(runId, streamRunId, searchedSources);
 
       this.options.onEvent({ type: "stream-progress", runId, streamId: stream.id, message: "Extracting claims" });
-      const claims = await this.options.opencode.extractClaims(config.workerModel, query, sources, researcherPrompt);
-      active.spendEstimate += 0.08;
+      const workerProvider = config.workerProvider ?? config.orchestratorProvider;
+      const worker = this.getModelClient(workerProvider);
+      const extractionReservation = this.reserveModel(active, "claim-extraction", workerProvider, config.workerModel, 0.08);
+      let claims;
+      try {
+        claims = await extractClaims(worker, config.workerModel, query, sources, researcherPrompt, {
+          signal: active.abortController.signal,
+          timeoutMs: 120_000,
+        });
+        this.throwIfStopped(active);
+      } finally {
+        this.ledger.commit(extractionReservation.id);
+      }
+      const persistedClaims = this.evidence.validateAndPersistClaims(runId, streamRunId, claims.claims);
 
       this.options.onEvent({ type: "stream-progress", runId, streamId: stream.id, message: "Writing report" });
-      const findings = claims.claims.slice(0, 8).map((claim) =>
+      const findings = persistedClaims.valid.slice(0, 8).map(({ claim }) =>
         `<li><strong>${escapeHtml(claim.text)}</strong> (${Math.round(claim.confidence * 100)}% confidence)</li>`,
       ).join("");
       const sourceList = sources.map((s) =>
@@ -318,29 +376,38 @@ export class ResearchEngine {
         <h2>Key findings</h2><ul>${findings || "<li>No strong claims extracted.</li>"}</ul>
         <h2>Sources</h2><ul>${sourceList || "<li>No sources returned.</li>"}</ul>
         <h2>Opportunities noticed</h2><p>Review gaps between user constraints and current landscape.</p>
-        <h2>Weak spots and uncertainty</h2><p>${claims.claims.length === 0 ? "Limited evidence from search results." : "Some claims may need follow-up verification."}</p>
+        <h2>Weak spots and uncertainty</h2><p>${persistedClaims.valid.length === 0 ? "Limited validated evidence from search results." : `${persistedClaims.rejected.length} unsupported claims were excluded.`}</p>
         <h2>Suggested next search</h2><p>Deepen ${escapeHtml(stream.name)} with narrower subquestions.</p>
       `;
       const reportId = randomUUID();
       const html = wrapReportHtml(`${stream.name} — ${brief.projectName}`, body);
       this.options.db.db.prepare(`
-        INSERT INTO reports (id, thread_id, stream_id, title, html, created_at)
-        VALUES (?, ?, ?, ?, ?, ?)
-      `).run(reportId, threadId, stream.id, `${stream.name} report`, html, new Date().toISOString());
+        INSERT INTO reports (
+          id, thread_id, research_run_id, stream_run_id, stream_id, report_kind,
+          title, html, created_at
+        ) VALUES (?, ?, ?, ?, ?, 'stream', ?, ?, ?)
+      `).run(reportId, threadId, runId, streamRunId, stream.id, `${stream.name} report`, html, new Date().toISOString());
 
-      const coverage = Math.min(1, claims.claims.length / 5);
+      const evidenceSourceCount = new Set(persistedClaims.valid.flatMap(({ claim }) => claim.sourceIds)).size;
+      const coverage = Math.min(1, (persistedClaims.valid.length / 5) * 0.7 + (evidenceSourceCount / 3) * 0.3);
       this.options.db.db.prepare(`
-        UPDATE stream_runs SET status = 'completed', report_id = ?, coverage = ?, updated_at = ? WHERE id = ?
-      `).run(reportId, coverage, new Date().toISOString(), streamRunId);
+        UPDATE stream_runs
+        SET status = 'completed', report_id = ?, coverage = ?, provider_finished_at = ?,
+            gap_stop_reason = ?, updated_at = ? WHERE id = ?
+      `).run(reportId, coverage, new Date().toISOString(), coverage >= stream.coverageThreshold ? "coverage-threshold" : "round-limit", new Date().toISOString(), streamRunId);
       active.completedStreamIds.add(stream.id);
       this.options.onEvent({ type: "stream-completed", runId, streamId: stream.id, reportId });
       this.emitJob(runId, threadId, "stream-completed", { runId, streamId: stream.id, reportId });
       this.options.onReport?.(threadId, stream.name, reportId);
     } catch (error) {
       const message = error instanceof Error ? error.message : "Stream failed";
+      const stopped = this.isStopped(active);
       this.options.db.db.prepare(`
-        UPDATE stream_runs SET status = 'failed', error = ?, updated_at = ? WHERE id = ?
-      `).run(message, new Date().toISOString(), streamRunId);
+        UPDATE stream_runs
+        SET status = ?, error = ?, gap_stop_reason = ?, provider_finished_at = ?, updated_at = ?
+        WHERE id = ?
+      `).run(stopped ? "cancelled" : "failed", message, stopped ? "cancelled" : "provider-failure", new Date().toISOString(), new Date().toISOString(), streamRunId);
+      if (stopped) return;
       this.options.onEvent({ type: "stream-failed", runId, streamId: stream.id, error: message });
       this.emitJob(runId, threadId, "stream-failed", { runId, streamId: stream.id, error: message });
     }
@@ -348,6 +415,76 @@ export class ResearchEngine {
 
   private emitJob(runId: string | null, threadId: string | null, type: string, payload: Record<string, unknown>): void {
     logJobEvent(this.options.db, runId, threadId, type, payload);
+  }
+
+  private getModelClient(provider: ModelProvider): StructuredModelClient {
+    const configured = this.options.modelClients?.[provider];
+    if (configured) return configured;
+    if (provider === "opencode" && this.options.opencode) return this.options.opencode;
+    throw new ProviderFailure("unavailable", `${provider} model client is not configured`, false);
+  }
+
+  private reserveModel(
+    active: ActiveRun,
+    operation: string,
+    provider: ModelProvider,
+    model: string,
+    conservativeUsd: number,
+  ) {
+    this.throwIfStopped(active);
+    if (provider === "codex") {
+      if (active.codexCalls >= active.config.maxCodexCalls) {
+        throw new ProviderFailure("failed", "Codex call limit reached", false);
+      }
+      active.codexCalls++;
+    }
+    return this.ledger.reserve(active.runId, operation, provider, model, provider === "codex" ? 0 : conservativeUsd);
+  }
+
+  private consumeExaSearch(active: ActiveRun): void {
+    this.throwIfStopped(active);
+    if (active.exaSearches >= active.config.maxExaSearches) {
+      throw new ProviderFailure("failed", "Exa search limit reached", false);
+    }
+    active.exaSearches++;
+  }
+
+  private isStopped(active: ActiveRun): boolean {
+    if (active.abortController.signal.aborted || this.globalCancelled.has(active.runId)) return true;
+    return Date.now() - active.startedAt >= active.config.maxRunMinutes * 60_000;
+  }
+
+  private throwIfStopped(active: ActiveRun): void {
+    if (!this.isStopped(active)) return;
+    if (!active.abortController.signal.aborted) active.abortController.abort(new Error("Run time limit reached"));
+    throw new ProviderFailure("cancelled", "Research run was stopped", false);
+  }
+
+  private failRun(runId: string, error: unknown): void {
+    const active = this.activeRuns.get(runId);
+    if (!active) return;
+    if (!this.globalCancelled.has(runId)) {
+      const message = error instanceof Error ? error.message : "Research run failed";
+      this.ledger.settleUncertain(runId, message);
+      this.runs.finish(runId, "failed", message);
+      this.emitJob(runId, active.threadId, "run-failed", {
+        runId,
+        error: message,
+        ...(error instanceof ProviderFailure ? { code: error.code } : {}),
+      });
+    }
+    if (active.deadlineTimer) clearTimeout(active.deadlineTimer);
+    this.activeRuns.delete(runId);
+  }
+
+  private scheduleDeadline(active: ActiveRun): void {
+    const remainingMs = Math.max(0, active.config.maxRunMinutes * 60_000 - (Date.now() - active.startedAt));
+    active.deadlineTimer = setTimeout(() => {
+      if (!this.activeRuns.has(active.runId)) return;
+      const error = new ProviderFailure("timeout", "Research run wall-clock limit reached", false);
+      active.abortController.abort(error);
+      this.failRun(active.runId, error);
+    }, remainingMs);
   }
 }
 

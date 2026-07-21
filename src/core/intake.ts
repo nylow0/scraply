@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { OpenCodeClient } from "../providers/opencode";
+import type { StructuredModelClient } from "../providers/structured";
 import { loadPrompt } from "./prompts";
 import { ALL_INTAKE_QUESTIONS, nextIntakeQuestion } from "../shared/intake";
 import { ProjectBriefSchema, type ProjectBrief } from "../shared/schemas";
@@ -33,7 +33,7 @@ function splitLines(value: string | undefined): string[] {
 }
 
 export async function generateBriefWithModel(
-  client: OpenCodeClient,
+  client: StructuredModelClient,
   model: string,
   answers: Array<{ questionId: string; answer: string; skipped: boolean }>,
 ): Promise<ProjectBrief> {

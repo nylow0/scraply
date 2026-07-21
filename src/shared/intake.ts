@@ -41,11 +41,12 @@ export function intakeProgress(answeredIds: Set<string>): { answered: number; re
 }
 
 export const DEFAULT_RUN_CONFIG = {
-  orchestratorProvider: "opencode" as const,
-  orchestratorModel: "glm-5.2",
-  workerModel: "mimo-v2.5",
-  ideaProvider: "opencode" as const,
-  ideaModel: "glm-5.2",
+  orchestratorProvider: "codex" as const,
+  orchestratorModel: "gpt-5.6-luna",
+  workerProvider: "codex" as const,
+  workerModel: "gpt-5.6-luna",
+  ideaProvider: "codex" as const,
+  ideaModel: "gpt-5.6-luna",
   ideasRequested: 24,
   batchSize: 6,
   maxFollowUpRounds: 2,
@@ -53,5 +54,7 @@ export const DEFAULT_RUN_CONFIG = {
   pageCharLimit: 6000,
   parallelism: 3,
   maxSpendUsd: 5,
-  autoPublishPlans: false,
+  maxCodexCalls: 40,
+  maxExaSearches: 20,
+  maxRunMinutes: 30,
 };

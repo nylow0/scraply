@@ -1,84 +1,167 @@
-import { test, expect } from "@playwright/test";
-import { spawn, type ChildProcess } from "node:child_process";
+import { test, expect, _electron, type ElectronApplication, type Page } from "@playwright/test";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { startMockBackend, type MockBackend } from "./mock-backend";
 
 interface LaunchedApp {
-  process: ChildProcess;
+  electronApp: ElectronApplication;
+  page: Page;
   targetUrl: string;
   close: () => Promise<void>;
 }
 
-async function launchIsolatedApp(): Promise<LaunchedApp> {
+async function launchIsolatedApp(mock: MockBackend): Promise<LaunchedApp> {
   const userDataDir = mkdtempSync(path.join(tmpdir(), "scraply-e2e-"));
-  const port = 50_000 + Math.floor(Math.random() * 10_000);
-  const env: NodeJS.ProcessEnv = { ...process.env };
+  const env: Record<string, string> = Object.fromEntries(
+    Object.entries(process.env).filter((entry): entry is [string, string] => entry[1] !== undefined),
+  );
   delete env.ELECTRON_RENDERER_URL;
   env.SCRAPLY_E2E = "1";
+  env.SCRAPLY_E2E_BACKEND_URL = mock.url;
+  env.SCRAPLY_E2E_BACKEND_TOKEN = mock.token;
   env.ELECTRON_DISABLE_SECURITY_WARNINGS = "true";
 
   const electronExe = process.platform === "win32"
     ? path.join(process.cwd(), "node_modules/electron/dist/electron.exe")
     : path.join(process.cwd(), "node_modules/electron/dist/electron");
+  const appEntryArgs = [path.join(process.cwd(), "out/main/index.js")];
 
-  const logs: string[] = [];
-  const child = spawn(electronExe, [
-    "--disable-gpu",
-    "--disable-gpu-compositing",
-    "--in-process-gpu",
-    "--use-gl=swiftshader",
-    `--remote-debugging-port=${port}`,
-    path.join(process.cwd(), "out/main/index.js"),
-    `--user-data-dir=${userDataDir}`,
-  ], {
+  const electronApp = await _electron.launch({
+    executablePath: electronExe,
+    args: [
+      ...appEntryArgs,
+      `--user-data-dir=${userDataDir}`,
+    ],
     env,
-    stdio: ["ignore", "pipe", "pipe"],
-    windowsHide: true,
+    timeout: 30_000,
   });
-  child.stdout?.on("data", (chunk) => logs.push(String(chunk)));
-  child.stderr?.on("data", (chunk) => logs.push(String(chunk)));
-
-  const targetUrl = await waitForRendererTarget(port, child, logs);
+  let page: Page | undefined;
+  try {
+    page = await electronApp.firstWindow({ timeout: 30_000 });
+  } catch (error) {
+    if (!electronApp.process().killed) electronApp.process().kill();
+    throw error;
+  }
+  const targetUrl = page.url();
+  const close = async (): Promise<void> => {
+    await Promise.race([
+      electronApp.close().catch(() => undefined),
+      new Promise<void>((resolve) => setTimeout(resolve, 5_000)),
+    ]);
+    if (!electronApp.process().killed) electronApp.process().kill();
+  };
   return {
-    process: child,
+    electronApp,
+    page,
     targetUrl,
-    close: async () => {
-      if (!child.killed) child.kill();
-    },
+    close,
   };
 }
 
-test("electron app opens the renderer window", async () => {
-  const app = await launchIsolatedApp();
-
+test("completes setup, approved research, synthesis, ideas, rating, restart, and a child branch", async () => {
+  const mock = await startMockBackend();
+  let app: LaunchedApp | null = null;
   try {
-    expect(app.targetUrl).toContain("/out/renderer/index.html");
+    app = await launchIsolatedApp(mock);
+    await expect(app.page.getByRole("heading", { name: "Connect Scraply" })).toBeVisible();
+    await app.page.getByLabel("Exa API key").fill("exa-local-e2e-key");
+    await app.page.getByRole("button", { name: "Validate API keys and continue" }).click();
+
+    await expect(app.page.getByRole("button", { name: "Create new research thread" })).toBeVisible();
+    await app.page.getByRole("button", { name: "Create new research thread" }).click();
+    await expect(app.page.getByRole("heading", { name: "New research" })).toBeVisible();
+
+    const requiredAnswers = app.page.locator("section.setup textarea");
+    await expect(requiredAnswers).toHaveCount(15);
+    for (let index = 0; index < 10; index += 1) await requiredAnswers.nth(index).fill(`Deterministic answer ${index + 1}`);
+    await app.page.getByRole("button", { name: "Review brief" }).click();
+
+    await expect(app.page.getByRole("heading", { name: "Project brief" })).toBeVisible();
+    await app.page.getByLabel("Project name").fill("Student Income Lab E2E");
+    await app.page.getByRole("button", { name: "Confirm brief & review cost" }).click();
+
+    await expect(app.page.getByRole("heading", { name: "Run configuration" })).toBeVisible();
+    await expect(app.page.getByLabel("Research approval summary")).toContainText("6 research lenses");
+    await app.page.getByRole("button", { name: "Approve & start research" }).click();
+
+    await expect(app.page.getByLabel("Research progress")).toBeVisible();
+    await expect(app.page.getByLabel("Report: Composite synthesis")).toBeVisible();
+    await app.page.getByLabel("Report: Composite synthesis").getByText("Composite synthesis").click();
+    await expect(app.page.getByText("Demand is supported by deterministic local evidence.")).toBeVisible();
+
+    await app.close();
+    app = await launchIsolatedApp(mock);
+    await expect(app.page.getByRole("heading", { name: "Student Income Lab" })).toBeVisible();
+    await expect(app.page.getByLabel("Report: Composite synthesis")).toBeVisible();
+
+    await app.page.getByRole("button", { name: "Generate ideas" }).click();
+    await expect(app.page.getByRole("heading", { name: "Idea workspace" })).toBeVisible();
+    await expect(app.page.getByRole("heading", { name: "Exam Feedback Copilot" })).toBeVisible();
+    await app.page.getByRole("button", { name: "Rate 4" }).click();
+    await expect(app.page.getByText("Saved: 4/5")).toBeVisible();
+    await app.page.getByRole("button", { name: "Dive deeper" }).click();
+    await expect(app.page.getByRole("dialog", { name: /Explore/ })).toBeVisible();
+    await app.page.getByLabel("Exploration angle").fill("Validate demand before implementation");
+    await app.page.getByRole("button", { name: "Create focused branch" }).click();
+    await expect(app.page.getByRole("heading", { name: "Explore: Exam Feedback Copilot" })).toBeVisible();
+
+    expect(mock.requests.filter((request) => request.path === "/research/start")).toHaveLength(1);
+    expect(mock.requests.some((request) => request.path === "/ideas/rate" && (request.body as { rating?: number }).rating === 4)).toBe(true);
+    expect(mock.requests.some((request) => request.path === "/threads/branch")).toBe(true);
+  } finally {
+    await app?.close();
+    await mock.close();
+  }
+});
+
+test("keeps partial reports when an interrupted run is cancelled", async () => {
+  const mock = await startMockBackend("interrupted");
+  const app = await launchIsolatedApp(mock);
+  try {
+    await expect(app.page.getByText("Interrupted research")).toBeVisible();
+    await app.page.getByRole("button", { name: "Cancel interrupted research and keep partial reports" }).click();
+    await expect(app.page.getByText("Interrupted research")).toBeHidden();
+    await expect(app.page.getByLabel("Report: Partial market evidence")).toBeVisible();
+    expect(mock.requests.some((request) => request.path === "/research/cancel-incomplete")).toBe(true);
   } finally {
     await app.close();
+    await mock.close();
   }
 });
 
-test("creates a thread when setup is already complete", async () => {
-  test.skip(!process.env.SCRAPLY_E2E_CONFIGURED, "Set SCRAPLY_E2E_CONFIGURED=1 with saved keys to run the full thread smoke path");
+test("surfaces a typed provider failure without claiming the run completed", async () => {
+  const mock = await startMockBackend("provider-failure");
+  const app = await launchIsolatedApp(mock);
+  try {
+    await expect(app.page.getByRole("heading", { name: "Run configuration" })).toBeVisible();
+    await app.page.getByRole("button", { name: "Approve & start research" }).click();
+    await expect(app.page.getByRole("alert")).toContainText("Deterministic provider timeout");
+    await expect(app.page.getByRole("button", { name: "Generate ideas" })).toBeHidden();
+    expect(mock.requests.filter((request) => request.path === "/research/start")).toHaveLength(1);
+  } finally {
+    await app.close();
+    await mock.close();
+  }
 });
 
-async function waitForRendererTarget(port: number, child: ChildProcess, logs: string[]): Promise<string> {
-  const deadline = Date.now() + 30_000;
-  let lastError = "";
-  while (Date.now() < deadline) {
-    if (child.exitCode !== null) throw new Error(`Electron exited early with code ${child.exitCode}`);
-    try {
-      const response = await fetch(`http://127.0.0.1:${port}/json/list`);
-      if (response.ok) {
-        const targets = await response.json() as Array<{ type?: string; url?: string }>;
-        const page = targets.find((target) => target.type === "page" && target.url?.includes("/out/renderer/index.html"));
-        if (page?.url) return page.url;
-      }
-    } catch (error) {
-      lastError = error instanceof Error ? error.message : String(error);
-    }
-    await new Promise((resolve) => setTimeout(resolve, 250));
+test("blocks remote navigation and new windows in the Electron shell", async () => {
+  const mock = await startMockBackend("interrupted");
+  const app = await launchIsolatedApp(mock);
+  try {
+    expect(app.targetUrl).toContain("/out/renderer/index.html");
+    const originalUrl = app.page.url();
+    await app.page.evaluate(() => window.location.assign("https://example.com/blocked"));
+    await app.page.waitForTimeout(250);
+    expect(app.page.url()).toBe(originalUrl);
+
+    const context = app.page.context();
+    const pageCount = context.pages().length;
+    await app.page.evaluate(() => window.open("https://example.com/new-window", "_blank"));
+    await app.page.waitForTimeout(250);
+    expect(context.pages()).toHaveLength(pageCount);
+  } finally {
+    await app.close();
+    await mock.close();
   }
-  throw new Error(`Timed out waiting for Electron renderer target. Last error: ${lastError}\nElectron output:\n${logs.join("").slice(-2000)}`);
-}
+});
