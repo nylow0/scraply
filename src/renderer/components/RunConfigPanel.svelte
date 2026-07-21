@@ -26,6 +26,7 @@
   let customProvider: ModelProvider = $state("codex");
   let customModel = $state("");
   let modelSearch = $state("");
+  let modelListOpen = $state(false);
 
   $effect(() => {
     draft = { ...config };
@@ -43,17 +44,19 @@
   const catalog = $derived(modelCatalog ?? { opencode: models, codex: [], favorites: [] });
   const favoriteKeys = $derived(new Set(catalog.favorites.map((model) => modelKey(model.provider, model.id))));
   const favoriteOptions = $derived(catalog.favorites);
-
+  const catalogModels = $derived([
+    ...catalog.codex.map((id): ModelRef => ({ provider: "codex", id })),
+    ...catalog.opencode.map((id): ModelRef => ({ provider: "opencode", id })),
+  ]);
+  const availableModels = $derived(catalogModels.filter((model) => !isFavorite(model.provider, model.id)));
   const search = $derived(modelSearch.trim().toLowerCase());
-  const codexMatches = $derived(catalog.codex.filter((model) => model.toLowerCase().includes(search)));
-  const opencodeMatches = $derived(catalog.opencode.filter((model) => model.toLowerCase().includes(search)));
+  const filteredModels = $derived(availableModels.filter((model) => `${model.provider} ${model.id}`.toLowerCase().includes(search)));
+  const codexMatches = $derived(filteredModels.filter((model) => model.provider === "codex"));
+  const opencodeMatches = $derived(filteredModels.filter((model) => model.provider === "opencode"));
+  const availableCount = $derived(availableModels.length);
 
   function modelKey(provider: ModelProvider, id: string) {
     return `${provider}:${id}`;
-  }
-
-  function providerModels(provider: ModelProvider) {
-    return provider === "codex" ? catalog.codex : catalog.opencode;
   }
 
   function isFavorite(provider: ModelProvider, id: string) {
@@ -136,68 +139,102 @@
 
   <div class="models">
     <div class="models-head">
-      <h3>Models</h3>
-      <p class="sub">Star the ones you use — favorites appear first in the pickers above.</p>
+      <div>
+        <h3>Models</h3>
+        <p class="sub">{favoriteOptions.length} starred / {availableCount} in list</p>
+      </div>
     </div>
 
-    <div class="fav-bar">
+    <div class="starred-strip" aria-label="Starred models">
       {#if favoriteOptions.length}
         {#each favoriteOptions as model (modelKey(model.provider, model.id))}
-          <span class="chip">
-            <span class="chip-star">★</span>
-            <span class="chip-name">{optionLabel(model.provider, model.id)}</span>
+          <span class="starred-chip">
+            <span class="provider-tag">{model.provider === "codex" ? "Codex" : "OpenCode"}</span>
+            <span class="chip-name">{model.id}</span>
             <button
-              class="chip-x"
+              type="button"
+              class="starred-remove"
               aria-label={`Remove ${model.id} from favorites`}
               title="Remove favorite"
               onclick={() => onFavorite(model, false)}
-            >✕</button>
+            ><span class="remove-mark" aria-hidden="true"></span></button>
           </span>
         {/each}
       {:else}
-        <span class="fav-empty">No favorites yet — star a model below or add your own.</span>
+        <span class="starred-empty">No starred models yet.</span>
       {/if}
     </div>
 
     <div class="model-tools">
-      <input class="search" bind:value={modelSearch} placeholder="Search models…" aria-label="Search models" />
+      <label class="search-field">
+        <span>Search</span>
+        <input class="search" bind:value={modelSearch} placeholder="Search models..." aria-label="Search models" />
+      </label>
       <div class="custom-model">
-        <select bind:value={customProvider} aria-label="Custom model provider">
-          <option value="codex">Codex</option>
-          <option value="opencode">OpenCode</option>
-        </select>
-        <input bind:value={customModel} placeholder="Add your own, e.g. gpt-5.5" />
-        <button
-          class="ghost"
-          onclick={() => {
-            const id = customModel.trim();
-            if (!id) return;
-            onFavorite({ provider: customProvider, id }, true);
-            customModel = "";
-          }}
-        >Add</button>
+        <span class="tool-label">Custom model</span>
+        <div class="custom-row">
+          <select bind:value={customProvider} aria-label="Custom model provider">
+            <option value="codex">Codex</option>
+            <option value="opencode">OpenCode</option>
+          </select>
+          <input bind:value={customModel} placeholder="Add your own, e.g. gpt-5.5" />
+          <button
+            type="button"
+            class="ghost add-button"
+            onclick={() => {
+              const id = customModel.trim();
+              if (!id) return;
+              onFavorite({ provider: customProvider, id }, true);
+              customModel = "";
+            }}
+          >Add</button>
+        </div>
       </div>
     </div>
 
-    {#if codexMatches.length}
-      <p class="prov-label">Codex</p>
-      <div class="pill-wrap">
-        {#each codexMatches as model (model)}
-          {@render ModelPill("codex", model)}
-        {/each}
-      </div>
-    {/if}
-    {#if opencodeMatches.length}
-      <p class="prov-label">OpenCode</p>
-      <div class="pill-wrap">
-        {#each opencodeMatches as model (model)}
-          {@render ModelPill("opencode", model)}
-        {/each}
-      </div>
-    {/if}
-    {#if !codexMatches.length && !opencodeMatches.length}
-      <p class="no-match">No models match “{modelSearch}”.</p>
-    {/if}
+    <div class="model-dropdown">
+      <button
+        type="button"
+        class="dropdown-trigger"
+        aria-expanded={modelListOpen}
+        aria-controls="unstarred-model-list"
+        onclick={() => (modelListOpen = !modelListOpen)}
+      >
+        <span>
+          <strong>All other models</strong>
+          <small>{filteredModels.length} shown</small>
+        </span>
+        <span class="chevron" class:open={modelListOpen} aria-hidden="true"></span>
+      </button>
+
+      {#if modelListOpen}
+        <div class="dropdown-panel" id="unstarred-model-list">
+          {#if codexMatches.length}
+            <div class="dropdown-group">
+              <p class="prov-label">Codex</p>
+              {#each codexMatches as model (modelKey(model.provider, model.id))}
+                {@render ModelRow(model)}
+              {/each}
+            </div>
+          {/if}
+          {#if opencodeMatches.length}
+            <div class="dropdown-group">
+              <p class="prov-label">OpenCode</p>
+              {#each opencodeMatches as model (modelKey(model.provider, model.id))}
+                {@render ModelRow(model)}
+              {/each}
+            </div>
+          {/if}
+          {#if !codexMatches.length && !opencodeMatches.length}
+            {#if search}
+              <p class="no-match">No models match "{modelSearch}".</p>
+            {:else}
+              <p class="no-match">No unstarred models left.</p>
+            {/if}
+          {/if}
+        </div>
+      {/if}
+    </div>
   </div>
 
   {#if !embedded}
@@ -233,18 +270,17 @@
   </optgroup>
 {/snippet}
 
-{#snippet ModelPill(provider: ModelProvider, model: string)}
-  {@const favorite = isFavorite(provider, model)}
+{#snippet ModelRow(model: ModelRef)}
   <button
-    class="pill"
-    class:fav={favorite}
-    title={favorite ? "Remove from favorites" : "Add to favorites"}
-    aria-label={favorite ? `Remove ${model} from favorites` : `Add ${model} to favorites`}
-    aria-pressed={favorite}
-    onclick={() => onFavorite({ provider, id: model }, !favorite)}
+    type="button"
+    class="model-row"
+    title="Add to starred models"
+    aria-label={`Add ${model.id} to starred models`}
+    onclick={() => onFavorite(model, true)}
   >
-    <span class="pill-star">{favorite ? "★" : "☆"}</span>
-    <span class="pill-name">{model}</span>
+    <span class="model-provider">{model.provider === "codex" ? "Codex" : "OpenCode"}</span>
+    <span class="model-name">{model.id}</span>
+    <span class="model-action">Star</span>
   </button>
 {/snippet}
 
@@ -306,7 +342,16 @@
   .models {
     margin-top: 16px;
     display: grid;
-    gap: 10px;
+    gap: 12px;
+    padding-top: 14px;
+    border-top: 1px solid var(--border);
+  }
+
+  .models-head {
+    display: flex;
+    align-items: flex-end;
+    justify-content: space-between;
+    gap: 12px;
   }
 
   h3 {
@@ -321,114 +366,243 @@
     color: var(--muted);
   }
 
-  .fav-bar {
+  .starred-strip {
     display: flex;
     flex-wrap: wrap;
-    gap: 6px;
-    min-height: 30px;
+    gap: 8px;
+    min-height: 44px;
     align-items: center;
-    padding: 8px;
-    border: 1px dashed var(--border);
+    padding: 10px;
+    border: 1px solid color-mix(in srgb, var(--accent) 24%, var(--border));
     border-radius: 10px;
-    background: color-mix(in srgb, var(--accent) 6%, var(--bg));
+    background: color-mix(in srgb, var(--accent) 8%, var(--bg));
   }
 
-  .fav-empty {
+  .starred-empty {
     color: var(--muted);
     font-size: 12px;
     padding: 0 2px;
   }
 
-  .chip {
+  .starred-chip {
     display: inline-flex;
     align-items: center;
-    gap: 6px;
-    padding: 4px 6px 4px 10px;
+    max-width: 260px;
+    min-width: 0;
+    gap: 8px;
+    padding: 5px 6px 5px 8px;
     border-radius: 999px;
     font-size: 12px;
     border: 1px solid color-mix(in srgb, var(--accent) 45%, var(--border));
-    background: color-mix(in srgb, var(--accent) 20%, var(--surface));
+    background: color-mix(in srgb, var(--accent) 16%, var(--surface));
     color: var(--text);
   }
 
-  .chip-star {
+  .provider-tag {
+    flex: 0 0 auto;
+    border-radius: 999px;
+    padding: 2px 6px;
+    background: color-mix(in srgb, var(--accent) 16%, var(--bg));
     color: var(--accent-strong);
+    font-size: 10px;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
   }
 
-  .chip-x {
+  .chip-name,
+  .model-name {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .chip-name {
+    flex: 1 1 auto;
+  }
+
+  .starred-remove {
+    flex: 0 0 auto;
     border: none;
     background: transparent;
     color: var(--muted);
-    padding: 2px 4px;
-    font-size: 11px;
+    display: grid;
+    place-items: center;
+    width: 22px;
+    height: 22px;
+    padding: 0;
     line-height: 1;
     border-radius: 999px;
   }
 
-  .chip-x:hover {
+  .remove-mark {
+    position: relative;
+    width: 9px;
+    height: 9px;
+  }
+
+  .remove-mark::before,
+  .remove-mark::after {
+    content: "";
+    position: absolute;
+    top: 4px;
+    left: 0;
+    width: 9px;
+    height: 1px;
+    border-radius: 999px;
+    background: currentColor;
+  }
+
+  .remove-mark::before {
+    transform: rotate(45deg);
+  }
+
+  .remove-mark::after {
+    transform: rotate(-45deg);
+  }
+
+  .starred-remove:hover {
     color: var(--danger);
     background: color-mix(in srgb, var(--danger) 18%, transparent);
   }
 
   .model-tools {
     display: grid;
-    grid-template-columns: minmax(160px, 1fr) minmax(0, 2fr);
-    gap: 8px;
+    grid-template-columns: minmax(220px, 0.8fr) minmax(360px, 1.2fr);
+    align-items: end;
+    gap: 10px;
   }
 
   .search {
     width: 100%;
   }
 
+  .search-field,
   .custom-model {
+    display: grid;
+    gap: 6px;
+  }
+
+  .tool-label,
+  .search-field span {
+    font-size: 12px;
+    color: var(--muted);
+  }
+
+  .custom-row {
     display: grid;
     grid-template-columns: 120px minmax(0, 1fr) auto;
     gap: 8px;
   }
 
+  .add-button {
+    white-space: nowrap;
+  }
+
+  .model-dropdown {
+    display: grid;
+    gap: 0;
+  }
+
+  .dropdown-trigger {
+    width: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    text-align: left;
+    padding: 10px 12px;
+    background: color-mix(in srgb, var(--surface-2) 70%, var(--bg));
+    transition: border-color 140ms ease, background 140ms ease, transform 140ms ease;
+  }
+
+  .dropdown-trigger:hover {
+    border-color: color-mix(in srgb, var(--accent) 42%, var(--border));
+    background: color-mix(in srgb, var(--accent) 8%, var(--surface-2));
+  }
+
+  .dropdown-trigger strong {
+    display: block;
+    font-size: 12px;
+    font-weight: 600;
+  }
+
+  .dropdown-trigger small {
+    display: block;
+    margin-top: 2px;
+    font-size: 11px;
+  }
+
+  .chevron {
+    width: 8px;
+    height: 8px;
+    border-right: 1px solid var(--muted);
+    border-bottom: 1px solid var(--muted);
+    transform: rotate(45deg);
+    transition: transform 140ms ease;
+  }
+
+  .chevron.open {
+    transform: rotate(-135deg);
+  }
+
+  .dropdown-panel {
+    display: grid;
+    gap: 10px;
+    max-height: 280px;
+    overflow: auto;
+    padding: 8px;
+    border: 1px solid var(--border);
+    border-top: 0;
+    border-radius: 0 0 10px 10px;
+    background: var(--bg);
+  }
+
+  .dropdown-group {
+    display: grid;
+    gap: 5px;
+  }
+
   .prov-label {
-    margin: 4px 0 0;
+    margin: 2px 4px;
     font-size: 11px;
     letter-spacing: 0.06em;
     text-transform: uppercase;
     color: var(--muted);
   }
 
-  .pill-wrap {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 6px;
-  }
-
-  .pill {
-    display: inline-flex;
+  .model-row {
+    width: 100%;
+    display: grid;
+    grid-template-columns: 92px minmax(0, 1fr) auto;
     align-items: center;
-    gap: 6px;
-    padding: 6px 12px;
-    border-radius: 999px;
+    gap: 10px;
+    padding: 8px 10px;
+    text-align: left;
+    border-radius: 8px;
     border: 1px solid var(--border);
-    background: var(--bg);
+    background: color-mix(in srgb, var(--surface) 55%, var(--bg));
     color: var(--text);
     font-size: 12px;
-    transition: border-color 120ms ease, background 120ms ease;
+    transition: border-color 140ms ease, background 140ms ease, transform 140ms ease;
   }
 
-  .pill:hover {
-    border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
+  .model-row:hover {
+    border-color: color-mix(in srgb, var(--accent) 42%, var(--border));
+    background: color-mix(in srgb, var(--accent) 7%, var(--surface));
   }
 
-  .pill-star {
+  .model-provider {
     color: var(--muted);
-    font-size: 13px;
+    font-size: 10px;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
   }
 
-  .pill.fav {
-    border-color: color-mix(in srgb, var(--accent) 55%, var(--border));
-    background: color-mix(in srgb, var(--accent) 16%, var(--surface));
-  }
-
-  .pill.fav .pill-star {
+  .model-action {
     color: var(--accent-strong);
+    font-size: 11px;
+    font-weight: 600;
   }
 
   .no-match {
@@ -450,6 +624,17 @@
     padding: 8px 12px;
   }
 
+  button:focus-visible,
+  input:focus-visible,
+  select:focus-visible {
+    outline: 2px solid var(--accent-strong);
+    outline-offset: 2px;
+  }
+
+  button:active {
+    transform: translateY(1px);
+  }
+
   button.primary {
     background: color-mix(in srgb, var(--accent) 24%, var(--surface));
   }
@@ -459,9 +644,29 @@
   }
 
   @media (max-width: 980px) {
-    .model-groups,
-    .grid {
+    .grid,
+    .model-tools,
+    .custom-row {
       grid-template-columns: 1fr;
+    }
+
+    .model-row {
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 4px 8px;
+    }
+
+    .model-provider {
+      grid-column: 1 / -1;
+    }
+  }
+
+  @media (max-width: 640px) {
+    .panel {
+      margin-inline: 12px;
+    }
+
+    .starred-chip {
+      max-width: 100%;
     }
   }
 </style>
