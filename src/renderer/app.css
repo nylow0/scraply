@@ -2,17 +2,23 @@
 
 :root {
   color-scheme: dark;
-  --bg: #0a0b0a;
-  --surface: #101210;
-  --surface-2: #161916;
-  --border: #232624;
-  --text: #eef1ed;
-  --muted: #7d847c;
-  --accent: #d4b32c;
-  --accent-strong: #f2d544;
-  --danger: #c07a7a;
-  --mono: "Geist Mono", ui-monospace, monospace;
-  --sans: Inter, system-ui, sans-serif;
+  --bg: #101210;
+  --surface: #151815;
+  --surface-2: #1b1f1b;
+  --surface-3: #222722;
+  --border: #2d332e;
+  --border-strong: #414941;
+  --text: #f2f4f0;
+  --muted: #a3aba3;
+  --subtle: #737c74;
+  --accent: #b89a4b;
+  --accent-strong: #d2b45e;
+  --accent-ink: #1b170b;
+  --danger: #df9292;
+  --success: #79b98f;
+  --mono: "Geist Mono", "Cascadia Code", ui-monospace, monospace;
+  --sans: "Segoe UI Variable Text", "Aptos", system-ui, sans-serif;
+  --ease: cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 * {
@@ -31,7 +37,9 @@ body {
   color: var(--text);
   font-family: var(--sans);
   font-size: 14px;
-  line-height: 1.5;
+  line-height: 1.45;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
 }
 
 button,
@@ -43,11 +51,54 @@ select {
 
 button {
   cursor: pointer;
+  transition:
+    transform 180ms var(--ease),
+    background-color 180ms var(--ease),
+    border-color 180ms var(--ease),
+    color 180ms var(--ease),
+    opacity 180ms var(--ease);
+}
+
+button:not(:disabled):active {
+  transform: translateY(1px) scale(0.985);
+}
+
+button:disabled,
+input:disabled,
+textarea:disabled,
+select:disabled {
+  cursor: not-allowed;
 }
 
 :focus-visible {
   outline: 2px solid var(--accent-strong);
-  outline-offset: 2px;
+  outline-offset: 3px;
+}
+
+::selection {
+  color: var(--text);
+  background: color-mix(in srgb, var(--accent) 38%, transparent);
+}
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-strong) transparent;
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--border-strong);
+  border: 3px solid transparent;
+  border-radius: 999px;
+  background-clip: padding-box;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background-color: var(--muted);
 }
 
 @media (prefers-reduced-motion: reduce) {

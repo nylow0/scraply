@@ -68,8 +68,9 @@ export function createBackendClients(secrets: { opencodeApiKey: string | null; e
 export function isSetupComplete(
   exa: { valid: boolean },
   codex: { detected: boolean; compatible: boolean },
+  opencode: { valid: boolean } = { valid: false },
 ): boolean {
-  return exa.valid && codex.detected && codex.compatible;
+  return exa.valid && ((codex.detected && codex.compatible) || opencode.valid);
 }
 
 export interface BackendHandle {
@@ -156,7 +157,7 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
         : { valid: false, modelCount: 0, models: [], error: open.error },
       exa: exaResult.valid ? { valid: true } : { valid: false, error: exaResult.error },
       codex,
-      setupComplete: isSetupComplete(exaResult, codex),
+      setupComplete: isSetupComplete(exaResult, codex, open),
     });
     return cachedValidation;
   }

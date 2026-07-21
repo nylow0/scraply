@@ -11,6 +11,7 @@
     onStart,
     onFavorite,
     starting = false,
+    setupOnly = false,
   }: {
     models: string[];
     modelCatalog?: ModelCatalog;
@@ -20,6 +21,7 @@
     onStart?: (config: RunConfig) => void;
     onFavorite: (model: ModelRef, favorite: boolean) => void;
     starting?: boolean;
+    setupOnly?: boolean;
   } = $props();
 
   let draft = $state({ ...untrack(() => config) });
@@ -62,6 +64,7 @@
 
   function selectModel(field: "orchestratorModel" | "workerModel" | "ideaModel", provider: ModelProvider, model: string) {
     if (field === "orchestratorModel") draft.orchestratorProvider = provider;
+    if (field === "workerModel") draft.workerProvider = provider;
     if (field === "ideaModel") draft.ideaProvider = provider;
     draft[field] = model;
   }
@@ -71,8 +74,12 @@
   }
 </script>
 
-<section class="panel">
-  <h2>Run configuration</h2>
+<section class="panel" class:setup-only={setupOnly}>
+  <header class="panel-head">
+    <p class="eyebrow">Research engine</p>
+    <h2>Models & research limits</h2>
+    <p>Choose who plans, researches, and generates ideas. Set hard limits before anything runs.</p>
+  </header>
   <div class="grid">
     <div class="field">
       <span>Orchestrator model</span>
@@ -85,15 +92,13 @@
     </div>
     <div class="field">
       <span>Worker model</span>
-      <select bind:value={draft.workerModel}>
-        {#each favoriteOptions.filter((model) => model.provider === "opencode") as favorite}
-          <option value={favorite.id}>Favorite / {favorite.id}</option>
-        {/each}
-        <optgroup label="OpenCode">
-          {#each catalog.opencode as model}<option value={model}>{model}</option>{/each}
-        </optgroup>
+      <select value={modelKey(draft.workerProvider, draft.workerModel)} onchange={(event) => {
+        const [provider, model] = (event.currentTarget as HTMLSelectElement).value.split(":");
+        selectModel("workerModel", provider as ModelProvider, model);
+      }}>
+        {@render ModelOptions(catalog, favoriteOptions, true)}
       </select>
-      <small>Researchers stay on OpenCode for now.</small>
+      <small>Used by each parallel research stream.</small>
     </div>
     <div class="field">
       <span>Idea model</span>
@@ -130,13 +135,12 @@
     </label>
   </div>
 
-  <div class="models">
-    <div class="models-head">
-      <div>
-        <h3>Models</h3>
-        <p class="sub">{favoriteOptions.length} starred / {availableCount} in list</p>
-      </div>
-    </div>
+  <details class="model-library">
+    <summary>
+      <span><strong>Model library</strong><small>{favoriteOptions.length} starred · {availableCount} available</small></span>
+      <span class="summary-mark" aria-hidden="true"></span>
+    </summary>
+    <div class="models">
 
     <div class="starred-strip" aria-label="Starred models">
       {#if favoriteOptions.length}
@@ -229,8 +233,9 @@
       {/if}
     </div>
   </div>
+  </details>
 
-  <div class="approval" aria-label="Research approval summary">
+  {#if !setupOnly}<div class="approval" aria-label="Research approval summary">
     <div>
       <strong>Final review</strong>
       <p>6 research lenses · up to ${draft.maxSpendUsd.toFixed(2)} · {draft.ideasRequested} ideas</p>
@@ -238,10 +243,10 @@
     <button class="primary" onclick={() => onStart?.(draft)} disabled={starting}>
       {starting ? "Starting research…" : "Approve & start research"}
     </button>
-  </div>
+  </div>{/if}
 
   <div class="actions">
-      <button class="primary" onclick={() => onSave?.(draft)}>Save configuration</button>
+      <button class="primary" onclick={() => onSave?.(draft)}>{setupOnly ? "Save settings" : "Save configuration"}</button>
       <input placeholder="Preset name" bind:value={presetName} />
       <button class="ghost" onclick={() => presetName && onSave?.(draft, presetName)}>Save preset</button>
       {#if presets.length}
@@ -250,7 +255,7 @@
           {#each presets as preset}<option value={preset.name}>{preset.name}</option>{/each}
         </select>
       {/if}
-  </div>
+    </div>
 </section>
 
 {#snippet ModelOptions(catalog: ModelCatalog, favorites: ModelRef[], allowCodex: boolean)}
@@ -287,30 +292,62 @@
 
 <style>
   .panel {
-    margin: 0 20px 12px;
-    padding: 16px;
-    border: 1px solid var(--border);
-    border-radius: 12px;
-    background: var(--surface);
+    height: 100%;
+    overflow-y: auto;
+    margin: 0;
+    padding: 28px clamp(24px, 4vw, 52px) 32px;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+  }
+
+  .panel > * {
+    width: min(100%, 1040px);
+  }
+
+  .panel-head {
+    margin-bottom: 24px;
+  }
+
+  .panel-head .eyebrow {
+    margin: 0 0 8px;
+    color: var(--accent);
+    font-family: var(--mono);
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
   }
 
   h2 {
-    margin: 0 0 12px;
-    font-size: 14px;
+    margin: 0 0 8px;
+    font-size: clamp(22px, 2.4vw, 30px);
+    font-weight: 650;
+    letter-spacing: -0.04em;
+    line-height: 1.1;
+  }
+
+  .panel-head > p:last-child {
+    max-width: 65ch;
+    margin: 0;
+    color: var(--muted);
+    font-size: 13px;
   }
 
   .grid {
     display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 10px;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 16px;
+    padding-bottom: 24px;
+    border-bottom: 1px solid var(--border);
   }
 
   label,
   .field {
     display: grid;
-    gap: 6px;
+    gap: 8px;
     font-size: 12px;
-    color: var(--muted);
+    color: var(--text);
   }
 
   small {
@@ -319,18 +356,44 @@
 
   input,
   select {
-    background: var(--bg);
+    min-height: 40px;
+    background: var(--surface);
     border: 1px solid var(--border);
-    border-radius: 8px;
+    border-radius: 9px;
     color: var(--text);
-    padding: 8px 10px;
+    padding: 9px 11px;
+    transition: border-color 180ms var(--ease), background 180ms var(--ease), box-shadow 180ms var(--ease);
+  }
+
+  input:hover,
+  select:hover {
+    border-color: var(--border-strong);
+  }
+
+  input:focus,
+  select:focus {
+    outline: none;
+    border-color: color-mix(in srgb, var(--accent) 68%, var(--border));
+    background: var(--surface-2);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 12%, transparent);
   }
 
   .actions {
     display: flex;
     flex-wrap: wrap;
     gap: 8px;
-    margin-top: 12px;
+    margin-top: 20px;
+    padding-top: 18px;
+    border-top: 1px solid var(--border);
+  }
+
+  .setup-only .actions {
+    position: sticky;
+    bottom: 0;
+    z-index: 1;
+    padding: 16px 0 20px;
+    background: color-mix(in srgb, var(--bg) 92%, transparent);
+    backdrop-filter: blur(12px);
   }
 
   .approval {
@@ -352,30 +415,63 @@
   }
 
   .models {
-    margin-top: 16px;
+    margin-top: 0;
     display: grid;
     gap: 12px;
-    padding-top: 14px;
-    border-top: 1px solid var(--border);
+    padding-top: 0;
+    border-top: 0;
   }
 
-  .models-head {
+  .model-library {
+    margin-top: 20px;
+    border: 1px solid var(--border);
+    border-radius: 11px;
+    background: color-mix(in srgb, var(--surface) 70%, transparent);
+  }
+
+  .model-library > summary {
     display: flex;
-    align-items: flex-end;
+    align-items: center;
     justify-content: space-between;
-    gap: 12px;
+    gap: 16px;
+    padding: 13px 14px;
+    cursor: pointer;
+    list-style: none;
   }
 
-  h3 {
-    margin: 0;
+  .model-library > summary::-webkit-details-marker {
+    display: none;
+  }
+
+  .model-library > summary > span:first-child {
+    display: grid;
+    gap: 2px;
+  }
+
+  .model-library > summary strong {
     font-size: 13px;
-    color: var(--text);
   }
 
-  .models-head .sub {
-    margin: 2px 0 0;
-    font-size: 12px;
-    color: var(--muted);
+  .model-library > summary small {
+    font-size: 11px;
+  }
+
+  .summary-mark {
+    width: 8px;
+    height: 8px;
+    border-right: 1px solid var(--muted);
+    border-bottom: 1px solid var(--muted);
+    transform: rotate(45deg);
+    transition: transform 180ms var(--ease);
+  }
+
+  .model-library[open] .summary-mark {
+    transform: rotate(-135deg);
+  }
+
+  .model-library .models {
+    padding: 14px;
+    border-top: 1px solid var(--border);
   }
 
   .starred-strip {
@@ -385,9 +481,9 @@
     min-height: 44px;
     align-items: center;
     padding: 10px;
-    border: 1px solid color-mix(in srgb, var(--accent) 24%, var(--border));
+    border: 1px solid var(--border);
     border-radius: 10px;
-    background: color-mix(in srgb, var(--accent) 8%, var(--bg));
+    background: var(--surface);
   }
 
   .starred-empty {
@@ -648,7 +744,10 @@
   }
 
   button.primary {
-    background: color-mix(in srgb, var(--accent) 24%, var(--surface));
+    border-color: var(--accent-strong);
+    background: var(--accent-strong);
+    color: var(--accent-ink);
+    font-weight: 700;
   }
 
   button.ghost {
@@ -659,7 +758,7 @@
     .grid,
     .model-tools,
     .custom-row {
-      grid-template-columns: 1fr;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
     }
 
     .model-row {
@@ -674,7 +773,13 @@
 
   @media (max-width: 640px) {
     .panel {
-      margin-inline: 12px;
+      padding: 24px 16px;
+    }
+
+    .grid,
+    .model-tools,
+    .custom-row {
+      grid-template-columns: 1fr;
     }
 
     .starred-chip {

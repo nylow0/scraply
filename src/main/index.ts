@@ -32,8 +32,6 @@ import {
 import { AppError } from "../shared/errors";
 import { isAllowedRendererUrl, parseExternalHttpsUrl, rendererEntryUrl } from "./security";
 
-app.disableHardwareAcceleration();
-
 const isDev = !app.isPackaged;
 let mainWindow: BrowserWindow | null = null;
 let backendReady: BackendReady | null = null;
@@ -153,6 +151,7 @@ function createWindow(): void {
     minHeight: 640,
     backgroundColor: "#0a0a0a",
     title: "Scraply",
+    autoHideMenuBar: true,
     ...(existsSync(iconPath) ? { icon: iconPath } : {}),
     webPreferences: {
       preload: join(__dirname, "../preload/index.js"),
@@ -243,7 +242,7 @@ function registerIpc(): void {
   };
   const post = <T>(path: string, body: T) => backendRequest(path, { method: "POST", body: JSON.stringify(body) });
 
-  handle(IPC_CHANNELS.GET_VALIDATION, () => backendRequest("/validation"));
+  handle(IPC_CHANNELS.GET_VALIDATION, () => backendRequest("/validation?validateOptional=1"));
   handle(IPC_CHANNELS.GET_WORKSPACE, () => backendRequest("/workspace"));
   handle(IPC_CHANNELS.SAVE_SECRETS, async (rawPayload) => {
     const payload = SaveSecretsRequestSchema.parse(rawPayload);
