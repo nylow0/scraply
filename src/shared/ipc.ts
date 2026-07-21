@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { IdeaSchema, MessageSchema, ProjectBriefSchema, RunConfigSchema, ThreadSchema } from "./schemas";
+import { IdeaSchema, MessageSchema, ModelRefSchema, ModelCatalogSchema, ProjectBriefSchema, RunConfigSchema, ThreadSchema } from "./schemas";
 
 export const BackendReadySchema = z.object({
   port: z.number().int().positive(),
@@ -59,6 +59,11 @@ export const SaveRunConfigSchema = z.object({
   presetName: z.string().optional(),
 });
 
+export const SaveFavoriteModelSchema = z.object({
+  model: ModelRefSchema,
+  favorite: z.boolean(),
+});
+
 export const StartResearchSchema = z.object({
   threadId: z.string().min(1),
 });
@@ -99,6 +104,7 @@ export const WorkspaceStateSchema = z.object({
   brief: ProjectBriefSchema.nullable(),
   runConfig: RunConfigSchema.nullable(),
   models: z.array(z.string()),
+  modelCatalog: ModelCatalogSchema,
   presets: z.array(z.object({ name: z.string(), config: RunConfigSchema })),
   ideas: z.array(IdeaSchema).default([]),
   reports: z.array(z.object({
@@ -146,6 +152,7 @@ export const IPC_CHANNELS = {
   GENERATE_BRIEF: "scraply:generate-brief",
   CONFIRM_BRIEF: "scraply:confirm-brief",
   SAVE_RUN_CONFIG: "scraply:save-run-config",
+  SAVE_FAVORITE_MODEL: "scraply:save-favorite-model",
   START_RESEARCH: "scraply:start-research",
   CANCEL_RESEARCH: "scraply:cancel-research",
   RESUME_RESEARCH: "scraply:resume-research",

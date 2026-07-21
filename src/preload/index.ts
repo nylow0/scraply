@@ -11,12 +11,15 @@ const api = {
   openDataFolder: (): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.OPEN_DATA_FOLDER),
   createThread: (title?: string) => ipcRenderer.invoke(IPC_CHANNELS.CREATE_THREAD, { title }),
   selectThread: (threadId: string) => ipcRenderer.invoke(IPC_CHANNELS.SELECT_THREAD, { threadId }),
+  deleteThread: (threadId: string): Promise<WorkspaceState> => ipcRenderer.invoke(IPC_CHANNELS.DELETE_THREAD, { threadId }),
   submitIntake: (payload: { threadId: string; questionId: string; answer: string; skipped?: boolean }) =>
     ipcRenderer.invoke(IPC_CHANNELS.SUBMIT_INTAKE, payload),
   confirmBrief: (payload: { threadId: string; brief: WorkspaceState["brief"] }) =>
     ipcRenderer.invoke(IPC_CHANNELS.CONFIRM_BRIEF, payload),
   saveRunConfig: (payload: { threadId: string; config: NonNullable<WorkspaceState["runConfig"]>; presetName?: string }) =>
     ipcRenderer.invoke(IPC_CHANNELS.SAVE_RUN_CONFIG, payload),
+  saveFavoriteModel: (payload: { model: WorkspaceState["modelCatalog"]["favorites"][number]; favorite: boolean }) =>
+    ipcRenderer.invoke(IPC_CHANNELS.SAVE_FAVORITE_MODEL, payload),
   startResearch: (threadId: string) => ipcRenderer.invoke(IPC_CHANNELS.START_RESEARCH, { threadId }),
   cancelResearch: (runId: string) => ipcRenderer.invoke(IPC_CHANNELS.CANCEL_RESEARCH, { runId }),
   resumeResearch: async (runId: string): Promise<WorkspaceState> => {

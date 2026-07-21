@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { OpenCodeClient } from "../providers/opencode";
+import { loadPrompt } from "./prompts";
 import { ALL_INTAKE_QUESTIONS, nextIntakeQuestion } from "../shared/intake";
 import { ProjectBriefSchema, type ProjectBrief } from "../shared/schemas";
 
@@ -44,7 +45,10 @@ export async function generateBriefWithModel(
     .join("\n");
   return client.structuredCompletion(
     model,
-    "Turn intake answers into a concise confirmed project brief. Use arrays for list fields.",
+    loadPrompt(
+      "brief-agent",
+      "Turn intake answers into a concise confirmed project brief. Use arrays for list fields.",
+    ),
     transcript,
     ProjectBriefSchema,
     {
