@@ -3,6 +3,12 @@ import { readFileSync, existsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { IPC_CHANNELS, type BackendReady, type ResearchEvent } from "../shared/ipc";
 
+app.commandLine.appendSwitch("disable-gpu");
+app.commandLine.appendSwitch("disable-gpu-compositing");
+app.commandLine.appendSwitch("in-process-gpu");
+app.commandLine.appendSwitch("use-gl", "swiftshader");
+app.disableHardwareAcceleration();
+
 const isDev = !app.isPackaged;
 let mainWindow: BrowserWindow | null = null;
 let backendReady: BackendReady | null = null;
@@ -175,9 +181,11 @@ function registerIpc(): void {
   const proxy = async (path: string, init?: RequestInit) => (await backendFetch(path, init)).json();
   ipcMain.handle(IPC_CHANNELS.CREATE_THREAD, (_e, body) => proxy("/threads", { method: "POST", body: JSON.stringify(body ?? {}) }));
   ipcMain.handle(IPC_CHANNELS.SELECT_THREAD, (_e, body) => proxy("/threads/select", { method: "POST", body: JSON.stringify(body) }));
+  ipcMain.handle(IPC_CHANNELS.DELETE_THREAD, (_e, body) => proxy("/threads/delete", { method: "POST", body: JSON.stringify(body) }));
   ipcMain.handle(IPC_CHANNELS.SUBMIT_INTAKE, (_e, body) => proxy("/intake", { method: "POST", body: JSON.stringify(body) }));
   ipcMain.handle(IPC_CHANNELS.CONFIRM_BRIEF, (_e, body) => proxy("/brief/confirm", { method: "POST", body: JSON.stringify(body) }));
   ipcMain.handle(IPC_CHANNELS.SAVE_RUN_CONFIG, (_e, body) => proxy("/run-config", { method: "POST", body: JSON.stringify(body) }));
+  ipcMain.handle(IPC_CHANNELS.SAVE_FAVORITE_MODEL, (_e, body) => proxy("/models/favorite", { method: "POST", body: JSON.stringify(body) }));
   ipcMain.handle(IPC_CHANNELS.START_RESEARCH, (_e, body) => proxy("/research/start", { method: "POST", body: JSON.stringify(body) }));
   ipcMain.handle(IPC_CHANNELS.CANCEL_RESEARCH, (_e, body) => proxy("/research/cancel", { method: "POST", body: JSON.stringify(body) }));
   ipcMain.handle(IPC_CHANNELS.RESUME_RESEARCH, (_e, body) => proxy("/research/resume", { method: "POST", body: JSON.stringify(body) }));
@@ -196,8 +204,15 @@ if (!gotLock) {
     loadStoredSecrets();
     loadDevEnv();
     registerIpc();
-    backendReady = await startBackendProcess();
     createWindow();
+    try {
+      backendReady = await startBackendProcess();
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.reload();
+      }
+    } catch (error) {
+      console.error("Backend startup failed", error);
+    }
   });
 
   app.on("window-all-closed", () => {

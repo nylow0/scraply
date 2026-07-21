@@ -3,6 +3,7 @@
   import Sidebar from "./components/Sidebar.svelte";
   import Conversation from "./components/Conversation.svelte";
   import Composer from "./components/Composer.svelte";
+  import ResearchSetupForm from "./components/ResearchSetupForm.svelte";
   import BriefPanel from "./components/BriefPanel.svelte";
   import RunConfigPanel from "./components/RunConfigPanel.svelte";
   import ResearchDrawer from "./components/ResearchDrawer.svelte";
@@ -12,11 +13,12 @@
   import ResumeBanner from "./components/ResumeBanner.svelte";
   import type { AppState } from "./lib/state";
   import { initialState } from "./lib/state";
-  import type { ProjectBrief } from "@shared/schemas";
+  import type { ModelRef, ProjectBrief, RunConfig } from "@shared/schemas";
   import { DEFAULT_RUN_CONFIG } from "@shared/intake";
 
   let state: AppState = $state({ ...initialState });
   let setupKeys = $state({ opencode: "", exa: "" });
+  let intakeSubmitting = $state(false);
 
   async function refresh() {
     state.error = null;
@@ -74,6 +76,10 @@
     state.workspace = await window.scraply.selectThread(threadId);
   }
 
+  async function deleteThread(threadId: string) {
+    state.workspace = await window.scraply.deleteThread(threadId);
+  }
+
   async function submitMessage() {
     const threadId = state.workspace?.activeThreadId;
     const text = state.composer.trim();
@@ -99,6 +105,38 @@
     }
 
     state.composer = "";
+  }
+
+  async function launchResearch(
+    answers: Array<{ questionId: string; answer: string; skipped: boolean }>,
+    config: RunConfig,
+  ) {
+    const threadId = state.workspace?.activeThreadId;
+    if (!threadId || intakeSubmitting) return;
+    intakeSubmitting = true;
+    state.error = null;
+    try {
+      for (const answer of answers) {
+        const result = await window.scraply.submitIntake({
+          threadId,
+          questionId: answer.questionId,
+          answer: answer.answer,
+          skipped: answer.skipped,
+        });
+        state.workspace = result.workspace;
+      }
+      const brief = state.workspace?.brief;
+      if (!brief) throw new Error("Brief was not generated from your answers");
+      state.workspace = await window.scraply.confirmBrief({ threadId, brief });
+      state.workspace = await window.scraply.saveRunConfig({ threadId, config });
+      const result = await window.scraply.startResearch(threadId);
+      state.workspace = result.workspace;
+      state.showDrawer = true;
+    } catch (error) {
+      state.error = error instanceof Error ? error.message : "Failed to start research";
+    } finally {
+      intakeSubmitting = false;
+    }
   }
 
   function mapPromptToQuestion(content: string): string | null {
@@ -135,6 +173,10 @@
     const threadId = state.workspace?.activeThreadId;
     if (!threadId) return;
     state.workspace = await window.scraply.saveRunConfig({ threadId, config, presetName });
+  }
+
+  async function saveFavoriteModel(model: ModelRef, favorite: boolean) {
+    state.workspace = await window.scraply.saveFavoriteModel({ model, favorite });
   }
 
   async function startResearch() {
@@ -184,6 +226,7 @@
       activeThreadId={state.workspace?.activeThreadId ?? null}
       onNew={newThread}
       onSelect={selectThread}
+      onDelete={deleteThread}
       onOpenGuide={() => (state.showGuide = true)}
       onOpenData={() => window.scraply.openDataFolder()}
     />
@@ -215,7 +258,20 @@
         </div>
       </header>
 
-      <Conversation messages={state.workspace?.messages ?? []} />
+      {#if activeThread?.status === "intake"}
+        <ResearchSetupForm
+          models={state.workspace?.models ?? []}
+          modelCatalog={state.workspace?.modelCatalog}
+          config={state.workspace?.runConfig ?? DEFAULT_RUN_CONFIG}
+          presets={state.workspace?.presets ?? []}
+          onFavorite={saveFavoriteModel}
+          submitting={intakeSubmitting}
+          error={state.error}
+          onLaunch={launchResearch}
+        />
+      {:else}
+        <Conversation messages={state.workspace?.messages ?? []} />
+      {/if}
 
       {#if activeThread?.status === "brief-draft" && state.workspace?.brief}
         <BriefPanel brief={state.workspace.brief} onConfirm={confirmBrief} />
@@ -224,9 +280,11 @@
       {#if activeThread?.status === "brief-confirmed" || activeThread?.status === "configuring"}
         <RunConfigPanel
           models={state.workspace?.models ?? []}
+          modelCatalog={state.workspace?.modelCatalog}
           config={state.workspace?.runConfig ?? DEFAULT_RUN_CONFIG}
           presets={state.workspace?.presets ?? []}
           onSave={(config, presetName) => saveRunConfig(config, presetName)}
+          onFavorite={saveFavoriteModel}
         />
       {/if}
 
@@ -240,13 +298,15 @@
         <IdeaWorkspace ideas={state.workspace?.ideas ?? []} threadId={activeThread?.id ?? ""} onRefresh={refresh} />
       {/if}
 
-      <Composer
-        value={state.composer}
-        disabled={!activeThread || !["intake"].includes(activeThread.status)}
-        placeholder={activeThread?.status === "intake" ? "Answer the question… (type skip for optional questions)" : "Research controls are in the header"}
-        onChange={(value) => (state.composer = value)}
-        onSubmit={submitMessage}
-      />
+      {#if activeThread && activeThread.status !== "intake"}
+        <Composer
+          value={state.composer}
+          disabled={true}
+          placeholder="Research controls are in the header"
+          onChange={(value) => (state.composer = value)}
+          onSubmit={submitMessage}
+        />
+      {/if}
     </main>
 
     {#if state.showDrawer}

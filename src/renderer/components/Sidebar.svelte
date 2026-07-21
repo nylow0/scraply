@@ -6,6 +6,7 @@
     activeThreadId,
     onNew,
     onSelect,
+    onDelete,
     onOpenGuide,
     onOpenData,
   }: {
@@ -13,9 +14,16 @@
     activeThreadId: string | null;
     onNew: () => void;
     onSelect: (id: string) => void;
+    onDelete: (id: string) => void;
     onOpenGuide: () => void;
     onOpenData: () => void;
   } = $props();
+
+  function confirmDelete(thread: Thread) {
+    if (confirm(`Delete "${thread.title}"?\n\nThis permanently removes its brief, reports, and ideas.`)) {
+      onDelete(thread.id);
+    }
+  }
 </script>
 
 <aside class="sidebar">
@@ -23,16 +31,23 @@
   <button class="new" aria-label="Create new research thread" onclick={onNew}>New research</button>
   <div class="list" role="list" aria-label="Research threads">
     {#each threads as thread (thread.id)}
-      <button
-        class="thread"
-        class:active={thread.id === activeThreadId}
-        aria-current={thread.id === activeThreadId ? "true" : undefined}
-        aria-label={`Open thread ${thread.title}`}
-        onclick={() => onSelect(thread.id)}
-      >
-        <span class="title">{thread.title}</span>
-        <span class="meta">{thread.status}</span>
-      </button>
+      <div class="thread-row" class:active={thread.id === activeThreadId} role="listitem">
+        <button
+          class="thread"
+          aria-current={thread.id === activeThreadId ? "true" : undefined}
+          aria-label={`Open thread ${thread.title}`}
+          onclick={() => onSelect(thread.id)}
+        >
+          <span class="title">{thread.title}</span>
+          <span class="meta">{thread.status}</span>
+        </button>
+        <button
+          class="delete"
+          title="Delete research"
+          aria-label={`Delete research ${thread.title}`}
+          onclick={() => confirmDelete(thread)}
+        >🗑</button>
+      </div>
     {:else}
       <p class="empty">No threads yet</p>
     {/each}
@@ -74,23 +89,67 @@
     align-content: start;
   }
 
+  .thread-row {
+    position: relative;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    border: 1px solid transparent;
+    border-radius: 8px;
+  }
+
+  .thread-row:hover {
+    background: color-mix(in srgb, var(--surface-2) 60%, transparent);
+  }
+
+  .thread-row.active {
+    background: var(--surface-2);
+    border-color: var(--border);
+  }
+
   .thread {
     text-align: left;
-    border: 1px solid transparent;
+    border: none;
     background: transparent;
     color: var(--text);
     border-radius: 8px;
     padding: 10px 12px;
     display: grid;
     gap: 4px;
+    min-width: 0;
   }
 
-  .thread.active {
-    background: var(--surface-2);
-    border-color: var(--border);
+  .thread .title {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .delete {
+    border: none;
+    background: transparent;
+    color: var(--muted);
+    font-size: 13px;
+    line-height: 1;
+    padding: 6px 10px;
+    margin-right: 4px;
+    border-radius: 6px;
+    opacity: 0;
+    transition: opacity 150ms ease, color 150ms ease, background 150ms ease;
+  }
+
+  .thread-row:hover .delete,
+  .thread-row:focus-within .delete {
+    opacity: 1;
+  }
+
+  .delete:hover {
+    color: var(--danger);
+    background: color-mix(in srgb, var(--danger) 18%, transparent);
   }
 
   .thread:focus-visible,
+  .delete:focus-visible,
   .new:focus-visible,
   .link:focus-visible {
     outline: 2px solid var(--accent-strong);

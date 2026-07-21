@@ -1,5 +1,6 @@
 import { z } from "zod";
 import type { OpenCodeClient } from "../providers/opencode";
+import { loadPrompt } from "./prompts";
 import { wrapReportHtml } from "./sanitize";
 import { RESEARCH_STREAMS } from "../research/streams";
 import type { ProjectBrief, RunConfig } from "../shared/schemas";
@@ -88,7 +89,10 @@ export async function reviewCoverage(
 
   return client.structuredCompletion(
     model,
-    "Assess evidence coverage against the brief using an explicit rubric. Return calibrated coverage from 0 to 1, explicit gaps, and whether each stream needs follow-up research. Do not generate final ideas.",
+    loadPrompt(
+      "coverage-reviewer",
+      "Assess evidence coverage against the brief using an explicit rubric. Return calibrated coverage from 0 to 1, explicit gaps, and whether each stream needs follow-up research. Do not generate final ideas.",
+    ),
     [
       `Project: ${brief.projectName}`,
       `Theme: ${brief.theme}`,
@@ -119,7 +123,10 @@ export async function synthesizeResearch(
 
   return client.structuredCompletion(
     model,
-    "Synthesize cross-stream research into a coherent narrative. Highlight convergent themes, actionable opportunities, risks, and next steps grounded in the evidence.",
+    loadPrompt(
+      "synthesis-agent",
+      "Synthesize cross-stream research into a coherent narrative. Highlight convergent themes, actionable opportunities, risks, and next steps grounded in the evidence.",
+    ),
     [
       `Project: ${brief.projectName}`,
       `Theme: ${brief.theme}`,

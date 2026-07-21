@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { DatabaseClient } from "../db/client";
 import { wrapReportHtml } from "../core/sanitize";
+import { loadPrompt } from "../core/prompts";
 import {
   renderSynthesisReportHtml,
   reviewCoverage,
@@ -281,6 +282,14 @@ export class ResearchEngine {
 
     try {
       const query = `${brief.theme}: ${stream.focus}`;
+      const researcherPrompt = loadPrompt(`researcher-${stream.id}`, [
+        "Extract only useful atomic factual claims that directly answer the research query.",
+        "Every claim must cite source IDs with short evidence quotes.",
+        "",
+        `Research stream: ${stream.name}`,
+        `Stream focus: ${stream.focus}`,
+        `Stream instructions: ${stream.instructions ?? "Use the stream focus."}`,
+      ].join("\n"));
       this.options.onEvent({ type: "stream-progress", runId, streamId: stream.id, message: "Searching Exa" });
       const sources = await this.options.exa.search(query, {
         numResults: config.searchResultsPerStream,
@@ -293,7 +302,7 @@ export class ResearchEngine {
       }
 
       this.options.onEvent({ type: "stream-progress", runId, streamId: stream.id, message: "Extracting claims" });
-      const claims = await this.options.opencode.extractClaims(config.workerModel, query, sources);
+      const claims = await this.options.opencode.extractClaims(config.workerModel, query, sources, researcherPrompt);
       active.spendEstimate += 0.08;
 
       this.options.onEvent({ type: "stream-progress", runId, streamId: stream.id, message: "Writing report" });

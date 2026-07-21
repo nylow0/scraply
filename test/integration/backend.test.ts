@@ -66,4 +66,34 @@ describe("Backend health", () => {
       await handle.close();
     }
   });
+
+  test("persists favorite models in workspace state", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "scraply-backend-"));
+    tempDirs.push(dir);
+    const handle = await startBackend({
+      dataDir: dir,
+      dbPath: join(dir, "scraply.db"),
+      getSecrets: () => ({ opencodeApiKey: null, exaApiKey: null }),
+    }, () => {});
+
+    try {
+      const save = await fetch(`http://127.0.0.1:${handle.port}/models/favorite`, {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${handle.token}`,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ model: { provider: "codex", id: "gpt-5.5" }, favorite: true }),
+      });
+      expect(save.ok).toBe(true);
+
+      const workspace = await fetch(`http://127.0.0.1:${handle.port}/workspace`, {
+        headers: { authorization: `Bearer ${handle.token}` },
+      });
+      const body = await workspace.json() as { modelCatalog: { favorites: Array<{ provider: string; id: string }> } };
+      expect(body.modelCatalog.favorites).toContainEqual({ provider: "codex", id: "gpt-5.5" });
+    } finally {
+      await handle.close();
+    }
+  });
 });
