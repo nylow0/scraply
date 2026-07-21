@@ -129,4 +129,146 @@ export const MIGRATIONS = [
       CREATE INDEX IF NOT EXISTS idx_job_events_run ON job_events(run_id, created_at);
     `,
   },
+  {
+    id: 2,
+    sql: `
+      ALTER TABLE research_runs ADD COLUMN brief_json TEXT;
+      ALTER TABLE research_runs ADD COLUMN idempotency_key TEXT;
+      ALTER TABLE research_runs ADD COLUMN completion_reason TEXT;
+      ALTER TABLE research_runs ADD COLUMN budget_limit REAL NOT NULL DEFAULT 0;
+      ALTER TABLE research_runs ADD COLUMN reserved_cost REAL NOT NULL DEFAULT 0;
+      ALTER TABLE research_runs ADD COLUMN committed_cost REAL NOT NULL DEFAULT 0;
+
+      ALTER TABLE stream_runs ADD COLUMN lens TEXT;
+      ALTER TABLE stream_runs ADD COLUMN planned_query TEXT;
+      ALTER TABLE stream_runs ADD COLUMN gap_stop_reason TEXT;
+      ALTER TABLE stream_runs ADD COLUMN provider_started_at TEXT;
+      ALTER TABLE stream_runs ADD COLUMN provider_finished_at TEXT;
+
+      ALTER TABLE reports ADD COLUMN research_run_id TEXT REFERENCES research_runs(id) ON DELETE CASCADE;
+      ALTER TABLE reports ADD COLUMN stream_run_id TEXT REFERENCES stream_runs(id) ON DELETE CASCADE;
+      ALTER TABLE reports ADD COLUMN report_kind TEXT NOT NULL DEFAULT 'stream';
+
+      ALTER TABLE ideas ADD COLUMN research_run_id TEXT REFERENCES research_runs(id) ON DELETE CASCADE;
+      ALTER TABLE ideas ADD COLUMN synthesis_report_id TEXT REFERENCES reports(id) ON DELETE SET NULL;
+      ALTER TABLE ideas ADD COLUMN generation_mode TEXT NOT NULL DEFAULT 'complete';
+      ALTER TABLE ideas ADD COLUMN preference_context_version INTEGER NOT NULL DEFAULT 1;
+
+      CREATE TABLE IF NOT EXISTS sources (
+        id TEXT PRIMARY KEY,
+        research_run_id TEXT NOT NULL REFERENCES research_runs(id) ON DELETE CASCADE,
+        originating_stream_run_id TEXT REFERENCES stream_runs(id) ON DELETE SET NULL,
+        provider_source_id TEXT,
+        canonical_url TEXT NOT NULL,
+        title TEXT NOT NULL,
+        retrieved_text TEXT NOT NULL,
+        author TEXT,
+        published_at TEXT,
+        content_hash TEXT NOT NULL,
+        retrieved_at TEXT NOT NULL,
+        UNIQUE(research_run_id, canonical_url)
+      );
+
+      CREATE TABLE IF NOT EXISTS claims (
+        id TEXT PRIMARY KEY,
+        research_run_id TEXT NOT NULL REFERENCES research_runs(id) ON DELETE CASCADE,
+        originating_stream_run_id TEXT REFERENCES stream_runs(id) ON DELETE SET NULL,
+        text TEXT NOT NULL,
+        confidence REAL NOT NULL CHECK(confidence >= 0 AND confidence <= 1),
+        validation_status TEXT NOT NULL,
+        validation_reason TEXT,
+        created_at TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS claim_evidence (
+        claim_id TEXT NOT NULL REFERENCES claims(id) ON DELETE CASCADE,
+        source_id TEXT NOT NULL REFERENCES sources(id) ON DELETE CASCADE,
+        quote TEXT NOT NULL,
+        source_location TEXT,
+        evidence_quality REAL NOT NULL CHECK(evidence_quality >= 0 AND evidence_quality <= 1),
+        PRIMARY KEY (claim_id, source_id, quote)
+      );
+
+      CREATE TABLE IF NOT EXISTS idea_claims (
+        idea_id TEXT NOT NULL REFERENCES ideas(id) ON DELETE CASCADE,
+        claim_id TEXT NOT NULL REFERENCES claims(id) ON DELETE RESTRICT,
+        PRIMARY KEY (idea_id, claim_id)
+      );
+
+      CREATE TABLE IF NOT EXISTS idea_ratings (
+        idea_id TEXT PRIMARY KEY REFERENCES ideas(id) ON DELETE CASCADE,
+        rating INTEGER NOT NULL CHECK(rating >= 1 AND rating <= 5),
+        notes TEXT,
+        updated_at TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS rating_history (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        idea_id TEXT NOT NULL REFERENCES ideas(id) ON DELETE CASCADE,
+        rating INTEGER NOT NULL CHECK(rating >= 1 AND rating <= 5),
+        notes TEXT,
+        created_at TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS cost_ledger (
+        id TEXT PRIMARY KEY,
+        research_run_id TEXT NOT NULL REFERENCES research_runs(id) ON DELETE CASCADE,
+        operation TEXT NOT NULL,
+        provider TEXT NOT NULL,
+        model TEXT,
+        reservation_usd REAL NOT NULL CHECK(reservation_usd >= 0),
+        committed_usd REAL,
+        status TEXT NOT NULL,
+        usage_json TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_research_runs_idempotency
+        ON research_runs(thread_id, idempotency_key)
+        WHERE idempotency_key IS NOT NULL;
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_research_runs_one_active
+        ON research_runs(thread_id)
+        WHERE status IN ('queued', 'running');
+      CREATE INDEX IF NOT EXISTS idx_research_runs_thread_history
+        ON research_runs(thread_id, created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_stream_runs_history
+        ON stream_runs(research_run_id, stream_id, round);
+      CREATE INDEX IF NOT EXISTS idx_sources_run_url
+        ON sources(research_run_id, canonical_url);
+      CREATE INDEX IF NOT EXISTS idx_sources_run_hash
+        ON sources(research_run_id, content_hash);
+      CREATE INDEX IF NOT EXISTS idx_claims_run_validation
+        ON claims(research_run_id, validation_status);
+      CREATE INDEX IF NOT EXISTS idx_claim_evidence_source
+        ON claim_evidence(source_id);
+      CREATE INDEX IF NOT EXISTS idx_idea_claims_claim
+        ON idea_claims(claim_id);
+      CREATE INDEX IF NOT EXISTS idx_cost_ledger_run_status
+        ON cost_ledger(research_run_id, status, created_at);
+      CREATE INDEX IF NOT EXISTS idx_reports_run_kind
+        ON reports(research_run_id, report_kind, created_at);
+      CREATE INDEX IF NOT EXISTS idx_job_events_thread
+        ON job_events(thread_id, created_at);
+    `,
+  },
+  {
+    id: 3,
+    sql: `
+      CREATE TABLE IF NOT EXISTS branch_contexts (
+        thread_id TEXT PRIMARY KEY REFERENCES threads(id) ON DELETE CASCADE,
+        parent_thread_id TEXT NOT NULL,
+        seed_idea_id TEXT NOT NULL,
+        seed_idea_title TEXT NOT NULL,
+        exploration_angle TEXT NOT NULL,
+        inherited_brief_json TEXT NOT NULL,
+        inherited_brief_version INTEGER NOT NULL,
+        selected_claim_ids_json TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_branch_contexts_parent
+        ON branch_contexts(parent_thread_id, created_at);
+    `,
+  },
 ] as const;

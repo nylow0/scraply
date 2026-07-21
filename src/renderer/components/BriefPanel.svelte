@@ -1,15 +1,18 @@
 <script lang="ts">
+  import { untrack } from "svelte";
   import type { ProjectBrief } from "../../shared/schemas";
 
   let {
     brief,
     onConfirm,
+    confirming = false,
   }: {
     brief: ProjectBrief;
     onConfirm: (brief: ProjectBrief) => void;
+    confirming?: boolean;
   } = $props();
 
-  let draft = $state({ ...brief });
+  let draft = $state({ ...untrack(() => brief) });
 
   $effect(() => {
     draft = { ...brief };
@@ -26,7 +29,9 @@
     <label class="full"><span>Success definition</span><textarea bind:value={draft.successDefinition} rows="2"></textarea></label>
     <label class="full"><span>Final decision</span><textarea bind:value={draft.finalDecision} rows="2"></textarea></label>
   </div>
-  <button class="primary" onclick={() => onConfirm(draft)}>Confirm brief</button>
+  <button class="primary" disabled={confirming} onclick={() => onConfirm(draft)}>
+    {confirming ? "Confirming…" : "Confirm brief & review cost"}
+  </button>
 </section>
 
 <style>

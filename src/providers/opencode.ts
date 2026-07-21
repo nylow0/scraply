@@ -2,6 +2,7 @@ import { z } from "zod";
 import { loadPrompt } from "../core/prompts";
 import { OPENCODE_BASE_URL } from "../shared/schemas";
 import { ClaimExtractionSchema, type ClaimExtraction, type Source } from "../shared/schemas";
+import { ProviderFailure, type StructuredCallOptions, type StructuredModelClient } from "./structured";
 
 type Fetcher = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
 
@@ -32,7 +33,7 @@ export interface OpenCodeClientOptions {
   fetcher?: Fetcher;
 }
 
-export class OpenCodeClient {
+export class OpenCodeClient implements StructuredModelClient {
   readonly baseUrl: string;
   private readonly apiKey: string;
   private readonly fetcher: Fetcher;
@@ -72,7 +73,12 @@ export class OpenCodeClient {
     }
   }
 
-  async chatCompletion(model: string, messages: Array<{ role: string; content: string }>, jsonSchema?: object): Promise<string> {
+  async chatCompletion(
+    model: string,
+    messages: Array<{ role: string; content: string }>,
+    jsonSchema?: object,
+    options: StructuredCallOptions = {},
+  ): Promise<string> {
     const body: Record<string, unknown> = { model, messages };
     if (jsonSchema) {
       body.response_format = {
@@ -84,9 +90,9 @@ export class OpenCodeClient {
       method: "POST",
       headers: this.authHeaders(),
       body: JSON.stringify(body),
-    });
+    }, options);
     if (!response.ok) {
-      throw new Error(`OpenCode chat failed (${response.status})`);
+      throw classifyHttpFailure(response.status);
     }
     const parsed = ChatCompletionSchema.parse(await response.json());
     const message = parsed.choices[0]?.message;
@@ -100,23 +106,34 @@ export class OpenCodeClient {
     return text;
   }
 
-  private async fetchWithRetry(input: string, init: RequestInit): Promise<Response> {
+  private async fetchWithRetry(input: string, init: RequestInit, options: StructuredCallOptions): Promise<Response> {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(new Error("timeout")), options.timeoutMs ?? 120_000);
+    const onAbort = () => controller.abort(options.signal?.reason);
+    options.signal?.addEventListener("abort", onAbort, { once: true });
     let lastResponse: Response | undefined;
     let lastError: unknown;
-    for (let attempt = 0; attempt < 3; attempt++) {
-      try {
-        const response = await this.fetcher(input, init);
-        if (!isRetryableStatus(response.status) || attempt === 2) return response;
-        lastResponse = response;
-      } catch (error) {
-        lastError = error;
-        if (attempt === 2) break;
+    try {
+      for (let attempt = 0; attempt < 3; attempt++) {
+        try {
+          const response = await this.fetcher(input, { ...init, signal: controller.signal });
+          if (!isRetryableStatus(response.status) || attempt === 2) return response;
+          lastResponse = response;
+        } catch (error) {
+          if (options.signal?.aborted) throw new ProviderFailure("cancelled", "OpenCode request was cancelled", false, { cause: error });
+          if (controller.signal.aborted) throw new ProviderFailure("timeout", "OpenCode request timed out", true, { cause: error });
+          lastError = error;
+          if (attempt === 2) break;
+        }
+        await sleep(750 * 2 ** attempt, controller.signal);
       }
-      await sleep(750 * 2 ** attempt);
+    } finally {
+      clearTimeout(timeout);
+      options.signal?.removeEventListener("abort", onAbort);
     }
 
     if (lastResponse) return lastResponse;
-    throw lastError instanceof Error ? lastError : new Error("OpenCode chat request failed");
+    throw new ProviderFailure("failed", "OpenCode request failed", true, { cause: lastError });
   }
 
   async structuredCompletion<T>(
@@ -125,12 +142,13 @@ export class OpenCodeClient {
     user: string,
     schema: z.ZodType<T>,
     jsonSchema: object,
+    options: StructuredCallOptions = {},
   ): Promise<T> {
     const strictSchema = strictJsonSchema(jsonSchema);
     const raw = await this.chatCompletion(model, [
       { role: "system", content: system },
       { role: "user", content: user },
-    ], strictSchema);
+    ], strictSchema, options);
     try {
       return parseStructured(raw, schema);
     } catch (firstError) {
@@ -161,11 +179,11 @@ export class OpenCodeClient {
             formatValidationError(firstError),
           ].join("\n"),
         },
-      ], strictSchema);
+      ], strictSchema, options);
       try {
         return parseStructured(repair, schema);
       } catch (repairError) {
-        throw new Error(`OpenCode structured output failed validation after repair: ${formatValidationError(repairError)}`);
+        throw new ProviderFailure("schema", "OpenCode returned output that did not match the schema", false, { cause: repairError });
       }
     }
   }
@@ -285,6 +303,22 @@ function isRetryableStatus(status: number): boolean {
   return status === 408 || status === 409 || status === 425 || status === 429 || status >= 500;
 }
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(new ProviderFailure("cancelled", "OpenCode request was cancelled", false));
+      return;
+    }
+    const timer = setTimeout(resolve, ms);
+    signal?.addEventListener("abort", () => {
+      clearTimeout(timer);
+      reject(new ProviderFailure("cancelled", "OpenCode request was cancelled", false));
+    }, { once: true });
+  });
+}
+
+function classifyHttpFailure(status: number): ProviderFailure {
+  if (status === 401 || status === 403) return new ProviderFailure("auth", "OpenCode authentication failed", false);
+  if (status === 429) return new ProviderFailure("rate-limit", "OpenCode rate limit reached", true);
+  return new ProviderFailure("failed", `OpenCode request failed (${status})`, status >= 500);
 }

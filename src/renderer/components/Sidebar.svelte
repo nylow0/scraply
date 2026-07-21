@@ -4,6 +4,7 @@
   let {
     threads,
     activeThreadId,
+    deletingThreadId = null,
     onNew,
     onSelect,
     onDelete,
@@ -12,6 +13,7 @@
   }: {
     threads: Thread[];
     activeThreadId: string | null;
+    deletingThreadId?: string | null;
     onNew: () => void;
     onSelect: (id: string) => void;
     onDelete: (id: string) => void;
@@ -45,6 +47,7 @@
           class="delete"
           title="Delete research"
           aria-label={`Delete research ${thread.title}`}
+          disabled={deletingThreadId !== null}
           onclick={() => confirmDelete(thread)}
         >🗑</button>
       </div>

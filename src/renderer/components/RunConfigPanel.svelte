@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { untrack } from "svelte";
   import type { ModelCatalog, ModelProvider, ModelRef, RunConfig } from "../../shared/schemas";
 
   let {
@@ -7,21 +8,21 @@
     config,
     presets,
     onSave,
+    onStart,
     onFavorite,
-    embedded = false,
-    onChange,
+    starting = false,
   }: {
     models: string[];
     modelCatalog?: ModelCatalog;
     config: RunConfig;
     presets: Array<{ name: string; config: RunConfig }>;
     onSave?: (config: RunConfig, presetName?: string) => void;
+    onStart?: (config: RunConfig) => void;
     onFavorite: (model: ModelRef, favorite: boolean) => void;
-    embedded?: boolean;
-    onChange?: (config: RunConfig) => void;
+    starting?: boolean;
   } = $props();
 
-  let draft = $state({ ...config });
+  let draft = $state({ ...untrack(() => config) });
   let presetName = $state("");
   let customProvider: ModelProvider = $state("codex");
   let customModel = $state("");
@@ -30,10 +31,6 @@
 
   $effect(() => {
     draft = { ...config };
-  });
-
-  $effect(() => {
-    onChange?.($state.snapshot(draft) as RunConfig);
   });
 
   function applyPreset(name: string) {
@@ -130,10 +127,6 @@
     <label>
       <span>Max spend (USD)</span>
       <input type="number" min="0" step="0.1" bind:value={draft.maxSpendUsd} />
-    </label>
-    <label class="check">
-      <input type="checkbox" bind:checked={draft.autoPublishPlans} />
-      <span>Auto-publish plans when available</span>
     </label>
   </div>
 
@@ -237,8 +230,17 @@
     </div>
   </div>
 
-  {#if !embedded}
-    <div class="actions">
+  <div class="approval" aria-label="Research approval summary">
+    <div>
+      <strong>Final review</strong>
+      <p>6 research lenses · up to ${draft.maxSpendUsd.toFixed(2)} · {draft.ideasRequested} ideas</p>
+    </div>
+    <button class="primary" onclick={() => onStart?.(draft)} disabled={starting}>
+      {starting ? "Starting research…" : "Approve & start research"}
+    </button>
+  </div>
+
+  <div class="actions">
       <button class="primary" onclick={() => onSave?.(draft)}>Save configuration</button>
       <input placeholder="Preset name" bind:value={presetName} />
       <button class="ghost" onclick={() => presetName && onSave?.(draft, presetName)}>Save preset</button>
@@ -248,8 +250,7 @@
           {#each presets as preset}<option value={preset.name}>{preset.name}</option>{/each}
         </select>
       {/if}
-    </div>
-  {/if}
+  </div>
 </section>
 
 {#snippet ModelOptions(catalog: ModelCatalog, favorites: ModelRef[], allowCodex: boolean)}
@@ -316,13 +317,6 @@
     color: var(--muted);
   }
 
-  .check {
-    grid-column: 1 / -1;
-    display: flex;
-    align-items: center;
-    gap: 8px;
-  }
-
   input,
   select {
     background: var(--bg);
@@ -337,6 +331,24 @@
     flex-wrap: wrap;
     gap: 8px;
     margin-top: 12px;
+  }
+
+  .approval {
+    margin-top: 16px;
+    padding: 14px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    border: 1px solid color-mix(in srgb, var(--accent) 45%, var(--border));
+    border-radius: 10px;
+    background: color-mix(in srgb, var(--accent) 10%, var(--bg));
+  }
+
+  .approval p {
+    margin: 4px 0 0;
+    color: var(--muted);
+    font-size: 12px;
   }
 
   .models {

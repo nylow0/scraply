@@ -1,5 +1,5 @@
 import { z } from "zod";
-import type { OpenCodeClient } from "../providers/opencode";
+import type { StructuredCallOptions, StructuredModelClient } from "../providers/structured";
 import { loadPrompt } from "./prompts";
 import { wrapReportHtml } from "./sanitize";
 import { RESEARCH_STREAMS } from "../research/streams";
@@ -73,10 +73,11 @@ const synthesisJsonSchema = {
 } as const;
 
 export async function reviewCoverage(
-  client: OpenCodeClient,
+  client: StructuredModelClient,
   model: string,
   brief: ProjectBrief,
   streamReports: StreamReportSummary[],
+  options: StructuredCallOptions = {},
 ): Promise<CoverageReview> {
   const rubric = RESEARCH_STREAMS.map((stream) => `- ${stream.id}: ${stream.focus}`).join("\n");
   const evidence = streamReports.map((report) => [
@@ -107,15 +108,17 @@ export async function reviewCoverage(
     ].join("\n"),
     CoverageReviewSchema,
     coverageJsonSchema,
+    options,
   );
 }
 
 export async function synthesizeResearch(
-  client: OpenCodeClient,
+  client: StructuredModelClient,
   model: string,
   brief: ProjectBrief,
   streamReports: StreamReportSummary[],
   coverageReview: CoverageReview,
+  options: StructuredCallOptions = {},
 ): Promise<SynthesisOutput> {
   const evidence = streamReports.map((report) =>
     `${report.streamName}: ${Math.round(report.coverage * 100)}% coverage — ${stripHtml(report.reportHtml).slice(0, 800)}`,
@@ -138,6 +141,7 @@ export async function synthesizeResearch(
     ].join("\n"),
     SynthesisOutputSchema,
     synthesisJsonSchema,
+    options,
   );
 }
 

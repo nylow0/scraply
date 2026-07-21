@@ -1,36 +1,102 @@
 <script lang="ts">
   import type { Idea } from "../../shared/schemas";
+  import BranchSetupDialog from "./BranchSetupDialog.svelte";
+
+  type Rating = { rating: number; notes?: string | null; updatedAt?: string };
+  type Evidence = { claimId: string; sourceId: string; sourceTitle?: string; url?: string; quote?: string };
+  type IdeaWithDetails = Idea & { currentRating?: Rating | null; evidence?: Evidence[] };
+  type RatingResult = { ideaId: string; rating: number; notes?: string | null; updatedAt?: string };
+  type IdeaApi = typeof window.scraply & {
+    rateIdea: (payload: { ideaId: string; rating: number; notes?: string }) => Promise<RatingResult>;
+    openExternalUrl: (url: string) => Promise<void>;
+  };
 
   let {
     ideas = [],
     threadId = "",
     onRefresh,
   }: {
-    ideas?: Idea[];
+    ideas?: IdeaWithDetails[];
     threadId?: string;
     onRefresh?: () => void;
   } = $props();
 
+  let ratings = $state<Record<string, number>>({});
+  let ratingPending = $state<Record<string, boolean>>({});
+  let ratingSaved = $state<Record<string, boolean>>({});
+  let branchPending = $state<Record<string, boolean>>({});
+  let branchIdea = $state<Idea | null>(null);
+  let exporting = $state(false);
+  let error = $state<string | null>(null);
+
+  $effect(() => {
+    const next = { ...ratings };
+    for (const idea of ideas) {
+      if (next[idea.id] === undefined && idea.currentRating) next[idea.id] = idea.currentRating.rating;
+    }
+    ratings = next;
+  });
+
   async function rate(ideaId: string, rating: number) {
-    await window.scraply.rateIdea({ ideaId, rating });
+    if (ratingPending[ideaId]) return;
+    ratingPending[ideaId] = true;
+    ratingSaved[ideaId] = false;
+    error = null;
+    try {
+      const saved = await (window.scraply as IdeaApi).rateIdea({ ideaId, rating });
+      ratings[ideaId] = saved.rating;
+      ratingSaved[ideaId] = true;
+    } catch (reason) {
+      error = reason instanceof Error ? reason.message : "Failed to save rating";
+    } finally {
+      ratingPending[ideaId] = false;
+    }
   }
 
   async function exportIdeas() {
-    if (!threadId) return;
-    const payload = await window.scraply.exportIdeas(threadId);
-    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
-    const url = URL.createObjectURL(blob);
-    const anchor = document.createElement("a");
-    anchor.href = url;
-    anchor.download = "scraply-ideas.json";
-    anchor.click();
-    URL.revokeObjectURL(url);
+    if (!threadId || exporting) return;
+    exporting = true;
+    error = null;
+    try {
+      const payload = await window.scraply.exportIdeas(threadId);
+      const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = "scraply-ideas.json";
+      anchor.click();
+      URL.revokeObjectURL(url);
+    } catch (reason) {
+      error = reason instanceof Error ? reason.message : "Failed to export ideas";
+    } finally {
+      exporting = false;
+    }
   }
 
-  async function diveDeeper(title: string) {
-    if (!threadId) return;
-    await window.scraply.createBranch({ parentThreadId: threadId, ideaTitle: title });
-    onRefresh?.();
+  function diveDeeper(idea: Idea) {
+    if (!threadId || branchPending[idea.id]) return;
+    branchIdea = idea;
+  }
+
+  async function createFocusedBranch(idea: Idea, explorationAngle: string, selectedClaimIds: string[]) {
+    if (!threadId || branchPending[idea.id]) return;
+    branchPending[idea.id] = true;
+    error = null;
+    try {
+      await window.scraply.createBranch({
+        parentThreadId: threadId,
+        seedIdeaId: idea.id,
+        seedIdeaTitle: idea.title,
+        explorationAngle,
+        selectedClaimIds,
+      });
+      branchIdea = null;
+      onRefresh?.();
+    } catch (reason) {
+      error = reason instanceof Error ? reason.message : "Failed to create branch";
+    } finally {
+      branchPending[idea.id] = false;
+    }
   }
 </script>
 
@@ -38,10 +104,16 @@
   <header>
     <div>
       <h2>Idea workspace</h2>
-      <p>Compare, rate, export, and branch into deeper research.</p>
+      <p>Compare, rate, inspect evidence, export, and branch into deeper research.</p>
     </div>
-    <button class="ghost" onclick={exportIdeas}>Export JSON</button>
+    <button class="ghost" onclick={exportIdeas} disabled={exporting}>
+      {exporting ? "Exporting…" : "Export JSON"}
+    </button>
   </header>
+
+  {#if error}
+    <p class="error" role="alert">{error}</p>
+  {/if}
 
   {#if ideas.length === 0}
     <p class="muted">Generate ideas from the header once research completes.</p>
@@ -59,17 +131,60 @@
               <div><dt>{axis}</dt><dd>{value}/10</dd></div>
             {/each}
           </dl>
-          <div class="rating">
+
+          {#if idea.evidence?.length}
+            <details class="evidence">
+              <summary>{idea.evidence.length} supporting evidence {idea.evidence.length === 1 ? "link" : "links"}</summary>
+              <ul>
+                {#each idea.evidence as item (`${item.claimId}:${item.sourceId}`)}
+                  <li>
+                    {#if item.url}
+                      <button class="evidence-link" onclick={() => void (window.scraply as IdeaApi).openExternalUrl(item.url!)}>
+                        {item.sourceTitle ?? item.url}
+                      </button>
+                    {:else}
+                      <strong>{item.sourceTitle ?? `Source ${item.sourceId}`}</strong>
+                    {/if}
+                    {#if item.quote}<blockquote>{item.quote}</blockquote>{/if}
+                  </li>
+                {/each}
+              </ul>
+            </details>
+          {/if}
+
+          <div class="rating" aria-label={`Current rating ${ratings[idea.id] ?? "not rated"}`}>
             {#each [1, 2, 3, 4, 5] as star}
-              <button onclick={() => rate(idea.id, star)} aria-label={`Rate ${star}`}>{star}</button>
+              <button
+                class:active={ratings[idea.id] === star}
+                disabled={ratingPending[idea.id]}
+                onclick={() => rate(idea.id, star)}
+                aria-label={`Rate ${star}`}
+                aria-pressed={ratings[idea.id] === star}
+              >{star}</button>
             {/each}
-            <button class="branch" onclick={() => diveDeeper(idea.title)}>Dive deeper</button>
+            {#if ratingPending[idea.id]}
+              <span class="saved">Saving…</span>
+            {:else if ratingSaved[idea.id] || ratings[idea.id]}
+              <span class="saved">Saved: {ratings[idea.id]}/5</span>
+            {/if}
+            <button class="branch" disabled={branchPending[idea.id]} onclick={() => diveDeeper(idea)}>
+              {branchPending[idea.id] ? "Creating branch…" : "Dive deeper"}
+            </button>
           </div>
         </article>
       {/each}
     </div>
   {/if}
 </section>
+
+{#if branchIdea}
+  <BranchSetupDialog
+    idea={branchIdea}
+    pending={branchPending[branchIdea.id] ?? false}
+    onCancel={() => (branchIdea = null)}
+    onSubmit={(angle, claimIds) => createFocusedBranch(branchIdea!, angle, claimIds)}
+  />
+{/if}
 
 <style>
   .ideas {
@@ -80,106 +195,96 @@
     background: var(--surface);
   }
 
-  header {
+  header,
+  .row,
+  .rating {
     display: flex;
-    justify-content: space-between;
-    gap: 12px;
-    align-items: start;
-  }
-
-  header h2 {
-    margin: 0 0 4px;
-    font-size: 14px;
-  }
-
-  header p,
-  .muted {
-    color: var(--muted);
-    margin: 0;
-  }
-
-  .grid {
-    margin-top: 12px;
-    display: grid;
+    align-items: center;
     gap: 10px;
   }
 
-  .card {
-    border: 1px solid var(--border);
-    border-radius: 10px;
-    padding: 12px;
-    background: var(--surface-2);
-  }
-
+  header,
   .row {
-    display: flex;
     justify-content: space-between;
-    gap: 8px;
   }
 
+  header h2,
   h3 {
     margin: 0;
     font-size: 14px;
   }
 
+  header p,
+  .card > p {
+    margin: 4px 0 0;
+    color: var(--muted);
+    font-size: 12px;
+  }
+
+  .grid {
+    margin-top: 14px;
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+    gap: 12px;
+  }
+
+  .card {
+    padding: 14px;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    background: var(--bg);
+  }
+
   .bucket {
-    font-family: var(--mono);
-    font-size: 11px;
     color: var(--accent-strong);
+    font: 11px var(--mono);
   }
 
   .scores {
     display: grid;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-    gap: 8px;
-    margin: 12px 0 0;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 6px;
+    margin: 12px 0;
   }
 
   .scores div {
-    display: grid;
-    gap: 2px;
+    padding: 6px;
+    border-radius: 6px;
+    background: var(--surface);
   }
 
-  dt {
+  dt { color: var(--muted); font-size: 10px; }
+  dd { margin: 2px 0 0; font: 11px var(--mono); }
+
+  .evidence {
+    margin: 10px 0;
     color: var(--muted);
-    font-size: 11px;
-    text-transform: capitalize;
-  }
-
-  dd {
-    margin: 0;
-    font-family: var(--mono);
     font-size: 12px;
   }
 
-  .rating {
-    display: flex;
-    gap: 6px;
-    margin-top: 10px;
-    align-items: center;
-  }
+  .evidence summary { cursor: pointer; }
+  .evidence ul { padding-left: 18px; }
+  .evidence li + li { margin-top: 8px; }
+  .evidence-link { padding: 0; border: 0; color: var(--accent-strong); background: transparent; text-align: left; }
+  blockquote { margin: 4px 0 0; padding-left: 8px; border-left: 2px solid var(--border); }
 
-  .rating button {
+  .rating { flex-wrap: wrap; margin-top: 12px; }
+  .rating button { min-width: 32px; }
+  .rating button.active { border-color: var(--accent-strong); color: var(--accent-strong); }
+  .rating .branch { margin-left: auto; min-width: auto; }
+  .saved { color: var(--muted); font-size: 11px; }
+
+  button {
     border: 1px solid var(--border);
-    background: transparent;
-    color: var(--muted);
-    border-radius: 6px;
-    width: 28px;
-    height: 28px;
-  }
-
-  .rating button.branch {
-    width: auto;
-    padding: 0 10px;
-    margin-left: auto;
-    color: var(--accent-strong);
-  }
-
-  button.ghost {
-    border: 1px solid var(--border);
-    background: transparent;
+    border-radius: 7px;
+    padding: 7px 10px;
+    background: var(--surface);
     color: var(--text);
-    border-radius: 8px;
-    padding: 8px 12px;
+    cursor: pointer;
   }
+
+  button:disabled { cursor: wait; opacity: 0.6; }
+  .ghost { background: transparent; }
+  .error { color: var(--danger); }
+  .muted { color: var(--muted); }
 </style>

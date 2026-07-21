@@ -1,12 +1,37 @@
-import { app, BrowserWindow, ipcMain, safeStorage, shell, utilityProcess } from "electron";
+import { app, BrowserWindow, ipcMain, safeStorage, shell, utilityProcess, type IpcMainInvokeEvent } from "electron";
 import { readFileSync, existsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { IPC_CHANNELS, type BackendReady, type ResearchEvent } from "../shared/ipc";
+import { z } from "zod";
+import {
+  ApiErrorResponseSchema,
+  ApiResponseSchema,
+  CancelIncompleteResearchSchema,
+  CancelResearchSchema,
+  ConfirmBriefSchema,
+  CreateBranchRequestSchema,
+  CreateThreadRequestSchema,
+  DeleteThreadRequestSchema,
+  ExportIdeasRequestSchema,
+  GenerateIdeasRequestSchema,
+  GetIdeaDetailRequestSchema,
+  GetReportDetailRequestSchema,
+  GetSourceDetailRequestSchema,
+  IPC_CHANNELS,
+  RateIdeaSchema,
+  ResearchEventSchema,
+  ResumeResearchSchema,
+  SaveFavoriteModelSchema,
+  SaveRunConfigSchema,
+  SaveSecretsRequestSchema,
+  SelectThreadRequestSchema,
+  StartResearchSchema,
+  SubmitIntakeAnswerSchema,
+  type BackendReady,
+  type ResearchEvent,
+} from "../shared/ipc";
+import { AppError } from "../shared/errors";
+import { isAllowedRendererUrl, parseExternalHttpsUrl, rendererEntryUrl } from "./security";
 
-app.commandLine.appendSwitch("disable-gpu");
-app.commandLine.appendSwitch("disable-gpu-compositing");
-app.commandLine.appendSwitch("in-process-gpu");
-app.commandLine.appendSwitch("use-gl", "swiftshader");
 app.disableHardwareAcceleration();
 
 const isDev = !app.isPackaged;
@@ -24,7 +49,9 @@ let secrets: StoredSecrets = { opencodeApiKey: null, exaApiKey: null };
 function getPaths() {
   const dataDir = join(app.getPath("userData"), "scraply");
   const dbPath = join(dataDir, "scraply.db");
-  return { dataDir, dbPath };
+  const bundledPromptsDir = join(app.getAppPath(), "prompts");
+  const promptOverridesDir = join(dataDir, "prompts");
+  return { dataDir, dbPath, bundledPromptsDir, promptOverridesDir };
 }
 
 function loadDevEnv(): void {
@@ -56,15 +83,25 @@ function loadStoredSecrets(): void {
   }
 }
 
-function persistSecrets(): void {
-  if (!safeStorage.isEncryptionAvailable()) return;
+function persistSecrets(nextSecrets = secrets): void {
+  if (!safeStorage.isEncryptionAvailable()) throw new AppError("secure_storage_unavailable");
   const settingsPath = join(app.getPath("userData"), "secrets.bin");
-  const encrypted = safeStorage.encryptString(JSON.stringify(secrets));
+  const encrypted = safeStorage.encryptString(JSON.stringify(nextSecrets));
   writeFileSync(settingsPath, encrypted);
 }
 
 async function startBackendProcess(): Promise<BackendReady> {
-  const { dataDir, dbPath } = getPaths();
+  const e2eBackendUrl = process.env.SCRAPLY_E2E_BACKEND_URL;
+  const e2eBackendToken = process.env.SCRAPLY_E2E_BACKEND_TOKEN;
+  if (process.env.SCRAPLY_E2E === "1" && e2eBackendUrl && e2eBackendToken) {
+    const url = new URL(e2eBackendUrl);
+    if (url.protocol !== "http:" || url.hostname !== "127.0.0.1" || !url.port) {
+      throw new Error("SCRAPLY_E2E_BACKEND_URL must be an http://127.0.0.1 URL with an explicit port");
+    }
+    return { port: Number(url.port), token: e2eBackendToken };
+  }
+
+  const { dataDir, dbPath, bundledPromptsDir, promptOverridesDir } = getPaths();
   const backendEntry = join(__dirname, "backend.js");
 
   backendProcess = utilityProcess.fork(backendEntry, [], { serviceName: "scraply-backend" });
@@ -75,8 +112,9 @@ async function startBackendProcess(): Promise<BackendReady> {
 
   backendProcess.on("message", (message) => {
     const payload = message as { type: string; event?: ResearchEvent };
-    if (payload.type === "event" && payload.event && mainWindow) {
-      mainWindow.webContents.send(IPC_CHANNELS.BACKEND_EVENT, payload.event);
+    const event = ResearchEventSchema.safeParse(payload.event);
+    if (payload.type === "event" && event.success && mainWindow) {
+      mainWindow.webContents.send(IPC_CHANNELS.BACKEND_EVENT, event.data);
     }
   });
 
@@ -84,6 +122,8 @@ async function startBackendProcess(): Promise<BackendReady> {
     type: "start",
     dataDir,
     dbPath,
+    bundledPromptsDir,
+    promptOverridesDir,
     opencodeApiKey: secrets.opencodeApiKey,
     exaApiKey: secrets.exaApiKey,
   });
@@ -102,6 +142,10 @@ async function startBackendProcess(): Promise<BackendReady> {
 
 function createWindow(): void {
   const iconPath = join(process.cwd(), "build/icon.png");
+  const expectedRendererUrl = rendererEntryUrl(
+    join(__dirname, "../renderer/index.html"),
+    isDev ? process.env.ELECTRON_RENDERER_URL : undefined,
+  );
   mainWindow = new BrowserWindow({
     width: 1280,
     height: 860,
@@ -136,6 +180,13 @@ function createWindow(): void {
     });
   });
 
+  mainWindow.webContents.session.setPermissionRequestHandler((_webContents, _permission, callback) => callback(false));
+  mainWindow.webContents.session.setPermissionCheckHandler(() => false);
+  mainWindow.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
+  mainWindow.webContents.on("will-navigate", (event, url) => {
+    if (!isAllowedRendererUrl(url, expectedRendererUrl)) event.preventDefault();
+  });
+
   if (isDev && process.env.ELECTRON_RENDERER_URL) {
     mainWindow.loadURL(process.env.ELECTRON_RENDERER_URL);
     if (process.env.SCRAPLY_E2E !== "1") {
@@ -146,25 +197,62 @@ function createWindow(): void {
   }
 }
 
-async function backendFetch(path: string, init?: RequestInit): Promise<Response> {
-  if (!backendReady) throw new Error("Backend is not ready");
+async function backendRequest<T>(path: string, init?: RequestInit): Promise<T> {
+  if (!backendReady) throw new AppError("backend_unavailable");
   const headers = new Headers(init?.headers);
   headers.set("authorization", `Bearer ${backendReady.token}`);
   headers.set("content-type", "application/json");
-  return fetch(`http://127.0.0.1:${backendReady.port}${path}`, { ...init, headers });
+  let response: Response;
+  try {
+    response = await fetch(`http://127.0.0.1:${backendReady.port}${path}`, { ...init, headers });
+  } catch {
+    throw new AppError("backend_unavailable");
+  }
+
+  const payload: unknown = await response.json().catch(() => null);
+  if (!response.ok) {
+    const parsedError = ApiErrorResponseSchema.safeParse(payload);
+    if (parsedError.success) {
+      throw new AppError(parsedError.data.error.code, parsedError.data.error.message, response.status);
+    }
+    throw new AppError("internal_error");
+  }
+
+  const parsed = ApiResponseSchema(z.unknown()).safeParse(payload);
+  if (!parsed.success || !parsed.data.ok) throw new AppError("internal_error");
+  return parsed.data.data as T;
+}
+
+function assertTrustedSender(event: IpcMainInvokeEvent): void {
+  const senderUrl = event.senderFrame?.url ?? "";
+  const expectedRendererUrl = rendererEntryUrl(
+    join(__dirname, "../renderer/index.html"),
+    isDev ? process.env.ELECTRON_RENDERER_URL : undefined,
+  );
+  if (!mainWindow || event.sender !== mainWindow.webContents || !isAllowedRendererUrl(senderUrl, expectedRendererUrl)) {
+    throw new AppError("unauthorized");
+  }
 }
 
 function registerIpc(): void {
-  ipcMain.handle(IPC_CHANNELS.GET_BACKEND, () => backendReady);
-  ipcMain.handle(IPC_CHANNELS.GET_VALIDATION, async () => (await backendFetch("/validation")).json());
-  ipcMain.handle(IPC_CHANNELS.GET_WORKSPACE, async () => (await backendFetch("/workspace")).json());
-  ipcMain.handle(IPC_CHANNELS.SAVE_SECRETS, async (_event, payload: { opencodeApiKey: string; exaApiKey: string }) => {
-    secrets = { opencodeApiKey: payload.opencodeApiKey, exaApiKey: payload.exaApiKey };
-    persistSecrets();
+  const handle = (channel: string, handler: (...args: unknown[]) => unknown): void => {
+    ipcMain.handle(channel, (event, ...args) => {
+      assertTrustedSender(event);
+      return handler(...args);
+    });
+  };
+  const post = <T>(path: string, body: T) => backendRequest(path, { method: "POST", body: JSON.stringify(body) });
+
+  handle(IPC_CHANNELS.GET_VALIDATION, () => backendRequest("/validation"));
+  handle(IPC_CHANNELS.GET_WORKSPACE, () => backendRequest("/workspace"));
+  handle(IPC_CHANNELS.SAVE_SECRETS, async (rawPayload) => {
+    const payload = SaveSecretsRequestSchema.parse(rawPayload);
+    persistSecrets(payload);
+    secrets = payload;
     backendProcess?.postMessage({ type: "update-secrets", ...payload });
-    return (await backendFetch("/validation")).json();
+    return backendRequest("/validation?validateOptional=1");
   });
-  ipcMain.handle(IPC_CHANNELS.IMPORT_ENV, async () => {
+  handle(IPC_CHANNELS.IMPORT_ENV, async () => {
     loadDevEnv();
     persistSecrets();
     backendProcess?.postMessage({
@@ -172,31 +260,44 @@ function registerIpc(): void {
       opencodeApiKey: secrets.opencodeApiKey ?? "",
       exaApiKey: secrets.exaApiKey ?? "",
     });
-    return (await backendFetch("/validation")).json();
+    return backendRequest("/validation?validateOptional=1");
   });
-  ipcMain.handle(IPC_CHANNELS.OPEN_DATA_FOLDER, async () => {
+  handle(IPC_CHANNELS.OPEN_DATA_FOLDER, async () => {
     await shell.openPath(getPaths().dataDir);
   });
-
-  const proxy = async (path: string, init?: RequestInit) => (await backendFetch(path, init)).json();
-  ipcMain.handle(IPC_CHANNELS.CREATE_THREAD, (_e, body) => proxy("/threads", { method: "POST", body: JSON.stringify(body ?? {}) }));
-  ipcMain.handle(IPC_CHANNELS.SELECT_THREAD, (_e, body) => proxy("/threads/select", { method: "POST", body: JSON.stringify(body) }));
-  ipcMain.handle(IPC_CHANNELS.DELETE_THREAD, (_e, body) => proxy("/threads/delete", { method: "POST", body: JSON.stringify(body) }));
-  ipcMain.handle(IPC_CHANNELS.SUBMIT_INTAKE, (_e, body) => proxy("/intake", { method: "POST", body: JSON.stringify(body) }));
-  ipcMain.handle(IPC_CHANNELS.CONFIRM_BRIEF, (_e, body) => proxy("/brief/confirm", { method: "POST", body: JSON.stringify(body) }));
-  ipcMain.handle(IPC_CHANNELS.SAVE_RUN_CONFIG, (_e, body) => proxy("/run-config", { method: "POST", body: JSON.stringify(body) }));
-  ipcMain.handle(IPC_CHANNELS.SAVE_FAVORITE_MODEL, (_e, body) => proxy("/models/favorite", { method: "POST", body: JSON.stringify(body) }));
-  ipcMain.handle(IPC_CHANNELS.START_RESEARCH, (_e, body) => proxy("/research/start", { method: "POST", body: JSON.stringify(body) }));
-  ipcMain.handle(IPC_CHANNELS.CANCEL_RESEARCH, (_e, body) => proxy("/research/cancel", { method: "POST", body: JSON.stringify(body) }));
-  ipcMain.handle(IPC_CHANNELS.RESUME_RESEARCH, (_e, body) => proxy("/research/resume", { method: "POST", body: JSON.stringify(body) }));
-  ipcMain.handle(IPC_CHANNELS.CANCEL_INCOMPLETE_RESEARCH, (_e, body) => proxy("/research/cancel-incomplete", { method: "POST", body: JSON.stringify(body) }));
-  ipcMain.handle(IPC_CHANNELS.GENERATE_IDEAS, (_e, body) => proxy("/ideas/generate", { method: "POST", body: JSON.stringify(body) }));
-  ipcMain.handle(IPC_CHANNELS.RATE_IDEA, (_e, body) => proxy("/ideas/rate", { method: "POST", body: JSON.stringify(body) }));
-  ipcMain.handle(IPC_CHANNELS.EXPORT_IDEAS, (_e, body) => proxy("/ideas/export", { method: "POST", body: JSON.stringify(body) }));
-  ipcMain.handle(IPC_CHANNELS.CREATE_BRANCH, (_e, body) => proxy("/threads/branch", { method: "POST", body: JSON.stringify(body) }));
+  handle(IPC_CHANNELS.CREATE_THREAD, (body) => post("/threads", CreateThreadRequestSchema.parse(body ?? {})));
+  handle(IPC_CHANNELS.SELECT_THREAD, (body) => post("/threads/select", SelectThreadRequestSchema.parse(body)));
+  handle(IPC_CHANNELS.DELETE_THREAD, (body) => post("/threads/delete", DeleteThreadRequestSchema.parse(body)));
+  handle(IPC_CHANNELS.SUBMIT_INTAKE, (body) => post("/intake", SubmitIntakeAnswerSchema.parse(body)));
+  handle(IPC_CHANNELS.CONFIRM_BRIEF, (body) => post("/brief/confirm", ConfirmBriefSchema.parse(body)));
+  handle(IPC_CHANNELS.SAVE_RUN_CONFIG, (body) => post("/run-config", SaveRunConfigSchema.parse(body)));
+  handle(IPC_CHANNELS.SAVE_FAVORITE_MODEL, (body) => post("/models/favorite", SaveFavoriteModelSchema.parse(body)));
+  handle(IPC_CHANNELS.START_RESEARCH, (body) => post("/research/start", StartResearchSchema.parse(body)));
+  handle(IPC_CHANNELS.CANCEL_RESEARCH, (body) => post("/research/cancel", CancelResearchSchema.parse(body)));
+  handle(IPC_CHANNELS.RESUME_RESEARCH, (body) => post("/research/resume", ResumeResearchSchema.parse(body)));
+  handle(IPC_CHANNELS.CANCEL_INCOMPLETE_RESEARCH, (body) => post("/research/cancel-incomplete", CancelIncompleteResearchSchema.parse(body)));
+  handle(IPC_CHANNELS.GENERATE_IDEAS, (body) => post("/ideas/generate", GenerateIdeasRequestSchema.parse(body)));
+  handle(IPC_CHANNELS.RATE_IDEA, (body) => post("/ideas/rate", RateIdeaSchema.parse(body)));
+  handle(IPC_CHANNELS.EXPORT_IDEAS, (body) => post("/ideas/export", ExportIdeasRequestSchema.parse(body)));
+  handle(IPC_CHANNELS.CREATE_BRANCH, (body) => post("/threads/branch", CreateBranchRequestSchema.parse(body)));
+  handle(IPC_CHANNELS.GET_REPORT_DETAIL, (body) => {
+    const { reportId } = GetReportDetailRequestSchema.parse(body);
+    return backendRequest(`/reports/${encodeURIComponent(reportId)}`);
+  });
+  handle(IPC_CHANNELS.GET_SOURCE_DETAIL, (body) => {
+    const { sourceId } = GetSourceDetailRequestSchema.parse(body);
+    return backendRequest(`/sources/${encodeURIComponent(sourceId)}`);
+  });
+  handle(IPC_CHANNELS.GET_IDEA_DETAIL, (body) => {
+    const { ideaId } = GetIdeaDetailRequestSchema.parse(body);
+    return backendRequest(`/ideas/${encodeURIComponent(ideaId)}`);
+  });
+  handle(IPC_CHANNELS.OPEN_EXTERNAL_URL, async (body) => {
+    await shell.openExternal(parseExternalHttpsUrl(body));
+  });
 }
 
-const gotLock = app.requestSingleInstanceLock();
+const gotLock = process.env.SCRAPLY_E2E === "1" || app.requestSingleInstanceLock();
 if (!gotLock) {
   app.quit();
 } else {

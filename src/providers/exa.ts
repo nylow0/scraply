@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { SourceSchema, type Source } from "../shared/schemas";
+import { ProviderFailure } from "./structured";
 
 type Fetcher = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
 
@@ -17,6 +18,8 @@ const ExaResponseSchema = z.object({
 export interface ExaSearchOptions {
   numResults?: number;
   maxCharacters?: number;
+  signal?: AbortSignal;
+  timeoutMs?: number;
 }
 
 export class ExaClient {
@@ -27,16 +30,31 @@ export class ExaClient {
   ) {}
 
   async search(query: string, options: ExaSearchOptions = {}): Promise<Source[]> {
-    const response = await this.fetcher(`${this.baseUrl}/search`, {
-      method: "POST",
-      headers: { "content-type": "application/json", "x-api-key": this.apiKey },
-      body: JSON.stringify({
-        query,
-        type: "auto",
-        numResults: options.numResults ?? 5,
-        contents: { text: { maxCharacters: options.maxCharacters ?? 6000 } },
-      }),
-    });
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(new Error("timeout")), options.timeoutMs ?? 30_000);
+    const onAbort = () => controller.abort(options.signal?.reason);
+    options.signal?.addEventListener("abort", onAbort, { once: true });
+    let response: Response;
+    try {
+      response = await this.fetcher(`${this.baseUrl}/search`, {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-api-key": this.apiKey },
+        body: JSON.stringify({
+          query,
+          type: "auto",
+          numResults: options.numResults ?? 5,
+          contents: { text: { maxCharacters: options.maxCharacters ?? 6000 } },
+        }),
+        signal: controller.signal,
+      });
+    } catch (error) {
+      if (options.signal?.aborted) throw new ProviderFailure("cancelled", "Exa search was cancelled", false, { cause: error });
+      if (controller.signal.aborted) throw new ProviderFailure("timeout", "Exa search timed out", true, { cause: error });
+      throw new ProviderFailure("failed", "Exa search failed", true, { cause: error });
+    } finally {
+      clearTimeout(timeout);
+      options.signal?.removeEventListener("abort", onAbort);
+    }
 
     if (!response.ok) {
       throw new Error(`Exa search failed (${response.status})`);
@@ -57,7 +75,7 @@ export class ExaClient {
 
   async validateKey(): Promise<{ valid: true } | { valid: false; error: string }> {
     try {
-      await this.search("test connectivity", { numResults: 1, maxCharacters: 500 });
+      await this.search("test connectivity", { numResults: 1, maxCharacters: 500, timeoutMs: 10_000 });
       return { valid: true };
     } catch (error) {
       return { valid: false, error: error instanceof Error ? error.message : "Exa validation failed" };

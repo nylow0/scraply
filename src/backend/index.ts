@@ -1,9 +1,12 @@
 import { startBackend, type BackendContext } from "./server";
+import { configurePromptPaths } from "../core/prompts";
 
 interface UtilityMessage {
   type: "start";
   dataDir: string;
   dbPath: string;
+  bundledPromptsDir: string;
+  promptOverridesDir: string;
   opencodeApiKey: string | null;
   exaApiKey: string | null;
 }
@@ -22,8 +25,12 @@ process.parentPort?.on("message", async (event) => {
   const context: BackendContext = {
     dataDir: message.dataDir,
     dbPath: message.dbPath,
+    bundledPromptsDir: message.bundledPromptsDir,
+    promptOverridesDir: message.promptOverridesDir,
     getSecrets: () => secrets,
   };
+
+  configurePromptPaths({ bundledDir: context.bundledPromptsDir, overrideDir: context.promptOverridesDir });
 
   const handle = await startBackend(context, (researchEvent) => {
     process.parentPort?.postMessage({ type: "event", event: researchEvent });
@@ -39,6 +46,7 @@ process.parentPort?.on("message", async (event) => {
     const update = updateEvent.data as { type: "update-secrets"; opencodeApiKey: string; exaApiKey: string };
     if (update.type === "update-secrets") {
       secrets = { opencodeApiKey: update.opencodeApiKey, exaApiKey: update.exaApiKey };
+      handle.secretsChanged();
     }
   });
 });
