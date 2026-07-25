@@ -1,4 +1,3 @@
-import { z } from "zod";
 import { ResearchStreamSchema, type ResearchStream } from "../shared/schemas";
 
 const settings = { maxHops: 3, coverageThreshold: 0.8, maxQueriesPerHop: 3 } as const;

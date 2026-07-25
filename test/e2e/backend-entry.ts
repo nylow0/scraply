@@ -1,6 +1,6 @@
-import { startBackend, type BackendContext, type BackendHandle } from "./server";
-import { configurePromptPaths } from "../core/prompts";
-import { MainToBackendMessageSchema, type BackendSecrets, type BackendToMainMessage } from "../shared/backend-process";
+import { startBackend, type BackendContext, type BackendHandle } from "../../src/backend/server";
+import { configurePromptPaths } from "../../src/core/prompts";
+import { MainToBackendMessageSchema, type BackendSecrets, type BackendToMainMessage } from "../../src/shared/backend-process";
 
 let secrets: BackendSecrets = { opencodeApiKey: null, exaApiKey: null };
 let handle: BackendHandle | null = null;
@@ -10,31 +10,8 @@ function post(message: BackendToMainMessage): void {
 }
 
 function failureMessage(error: unknown): string {
-  return error instanceof Error ? error.message : "The local backend failed to start.";
+  return error instanceof Error ? error.message : "The E2E backend failed to start.";
 }
-
-function serializeError(error: unknown) {
-  if (!(error instanceof Error)) return undefined;
-  return {
-    name: error.name,
-    message: error.message,
-    ...(error.stack ? { stack: error.stack } : {}),
-  };
-}
-
-function postProcessError(event: string, error: unknown): void {
-  const serialized = serializeError(error);
-  post({
-    type: "log",
-    level: "error",
-    event,
-    message: failureMessage(error),
-    ...(serialized ? { error: serialized } : {}),
-  });
-}
-
-process.on("uncaughtExceptionMonitor", (error) => postProcessError("backend-uncaught-exception", error));
-process.on("unhandledRejection", (error) => postProcessError("backend-unhandled-rejection", error));
 
 process.parentPort?.on("message", async (event) => {
   const parsed = MainToBackendMessageSchema.safeParse(event.data);
@@ -58,16 +35,13 @@ process.parentPort?.on("message", async (event) => {
     promptOverridesDir: message.promptOverridesDir,
     appVersion: message.appVersion,
     getSecrets: () => secrets,
-    log: (input) => {
-      const error = serializeError(input.error);
-      post({
-        type: "log",
-        level: input.level,
-        event: input.event,
-        ...(input.message ? { message: input.message } : {}),
-        ...(input.context ? { context: input.context } : {}),
-        ...(error ? { error } : {}),
-      });
+    providerValidation: {
+      probeCodex: async () => ({ detected: true, compatible: true, version: "codex-e2e" }),
+      listCodexModels: async () => ["gpt-5.6-luna"],
+      validateExa: async (apiKey) => apiKey === "invalid-e2e-key"
+        ? { valid: false, error: "Deterministic invalid Exa key" }
+        : { valid: true },
+      validateOpenCode: async () => ({ valid: false, models: [], error: "OpenCode disabled in E2E" }),
     },
   };
 

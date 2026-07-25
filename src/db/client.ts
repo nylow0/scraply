@@ -11,7 +11,12 @@ export class DatabaseClient {
     this.db = openDatabase(dbPath);
     this.db.exec("PRAGMA journal_mode = WAL;");
     this.db.exec("PRAGMA foreign_keys = ON;");
-    this.migrate();
+    try {
+      this.migrate();
+    } catch (error) {
+      this.db.close();
+      throw error;
+    }
   }
 
   migrate(): void {
@@ -26,6 +31,7 @@ export class DatabaseClient {
     );
     for (const migration of MIGRATIONS) {
       if (applied.has(migration.id)) continue;
+      this.assertMigrationPreconditions(migration.id);
       this.db.exec("BEGIN");
       try {
         this.db.exec(migration.sql);
@@ -38,6 +44,20 @@ export class DatabaseClient {
         this.db.exec("ROLLBACK");
         throw error;
       }
+    }
+  }
+
+  private assertMigrationPreconditions(migrationId: number): void {
+    if (migrationId !== 4) return;
+    const invalid = this.db.prepare(`
+      SELECT
+        (SELECT COUNT(*) FROM ratings WHERE rating < 1 OR rating > 5) AS invalid_count,
+        (SELECT COUNT(*) FROM ratings r LEFT JOIN ideas i ON i.id = r.idea_id WHERE i.id IS NULL) AS orphan_count
+    `).get() as { invalid_count: number; orphan_count: number };
+    if (invalid.invalid_count > 0 || invalid.orphan_count > 0) {
+      throw new Error(
+        `Legacy ratings require repair before migration (${invalid.invalid_count} invalid, ${invalid.orphan_count} orphaned)`,
+      );
     }
   }
 

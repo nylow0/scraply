@@ -3,12 +3,14 @@
 
   let {
     pendingRuns,
+    pendingRunId = null,
     onResume,
     onCancel,
   }: {
     pendingRuns: PendingRun[];
-    onResume: (runId: string) => void;
-    onCancel: (runId: string) => void;
+    pendingRunId?: string | null;
+    onResume: (runId: string) => void | Promise<void>;
+    onCancel: (runId: string) => void | Promise<void>;
   } = $props();
 </script>
 
@@ -27,11 +29,21 @@
       </p>
     </div>
     <div class="actions">
-      <button class="primary" aria-label="Resume interrupted research" onclick={() => onResume(pendingRuns[0]!.runId)}>
-        Resume
+      <button
+        class="primary"
+        aria-label="Resume interrupted research"
+        disabled={pendingRunId !== null}
+        onclick={() => onResume(pendingRuns[0]!.runId)}
+      >
+        {pendingRunId === pendingRuns[0]!.runId ? "Resuming…" : "Resume"}
       </button>
-      <button class="ghost" aria-label="Cancel interrupted research and keep partial reports" onclick={() => onCancel(pendingRuns[0]!.runId)}>
-        Cancel run
+      <button
+        class="ghost"
+        aria-label="Cancel interrupted research and keep partial reports"
+        disabled={pendingRunId !== null}
+        onclick={() => onCancel(pendingRuns[0]!.runId)}
+      >
+        {pendingRunId === pendingRuns[0]!.runId ? "Working…" : "Cancel run"}
       </button>
     </div>
   </section>

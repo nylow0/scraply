@@ -25,7 +25,9 @@ bun run test:e2e
 bun run build:installed
 ```
 
-`bun run build:installed` builds the Windows installers and installs the local package. Release files are written to `release/`.
+`bun run build:installed` cleans and rebuilds the Windows installers, verifies their source/hash manifest, installs the exact package, and verifies the installed executable and ASAR. Release files are written to `release/`.
+
+Branch roles, exact-SHA stage promotion, RC tags, and production GitHub Releases are documented in [RELEASE.md](RELEASE.md). `stage` and `master` are release pointers only; fixes always return to `dev`.
 
 ## Using Scraply
 
@@ -62,6 +64,7 @@ Deleting or resetting data is irreversible unless you made a backup first.
 - **A report is blank or slow:** collapse and reopen it to retry the on-demand detail request. Reports are intentionally excluded from routine workspace refreshes.
 - **An interrupted run appears after restart:** use Resume to continue it or Cancel to keep completed partial artifacts without scheduling more work.
 - **Database errors after a crash:** close every Scraply process before copying, restoring, or resetting SQLite files.
+- **Unexpected startup or process failure:** use **Open logs folder** and keep the correlation reference shown by the app. Logs are local, rotated, and sanitized; Scraply does not upload telemetry.
 
 ## Privacy and links
 

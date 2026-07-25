@@ -1,22 +1,14 @@
 <script lang="ts">
   import type { Idea } from "../../shared/schemas";
+  import { toCreateBranchPayload } from "../lib/ipc-payloads";
   import BranchSetupDialog from "./BranchSetupDialog.svelte";
-
-  type Rating = { rating: number; notes?: string | null; updatedAt?: string };
-  type Evidence = { claimId: string; sourceId: string; sourceTitle?: string; url?: string; quote?: string };
-  type IdeaWithDetails = Idea & { currentRating?: Rating | null; evidence?: Evidence[] };
-  type RatingResult = { ideaId: string; rating: number; notes?: string | null; updatedAt?: string };
-  type IdeaApi = typeof window.scraply & {
-    rateIdea: (payload: { ideaId: string; rating: number; notes?: string }) => Promise<RatingResult>;
-    openExternalUrl: (url: string) => Promise<void>;
-  };
 
   let {
     ideas = [],
     threadId = "",
     onRefresh,
   }: {
-    ideas?: IdeaWithDetails[];
+    ideas?: Idea[];
     threadId?: string;
     onRefresh?: () => void;
   } = $props();
@@ -24,6 +16,9 @@
   let ratings = $state<Record<string, number>>({});
   let ratingPending = $state<Record<string, boolean>>({});
   let ratingSaved = $state<Record<string, boolean>>({});
+  let ideaDetails = $state<Record<string, Idea>>({});
+  let detailPending = $state<Record<string, boolean>>({});
+  let detailErrors = $state<Record<string, string | null>>({});
   let branchPending = $state<Record<string, boolean>>({});
   let branchIdea = $state<Idea | null>(null);
   let exporting = $state(false);
@@ -31,25 +26,47 @@
 
   $effect(() => {
     const next = { ...ratings };
+    let changed = false;
     for (const idea of ideas) {
-      if (next[idea.id] === undefined && idea.currentRating) next[idea.id] = idea.currentRating.rating;
+      if (next[idea.id] === undefined && idea.currentRating) {
+        next[idea.id] = idea.currentRating.rating;
+        changed = true;
+      }
     }
-    ratings = next;
+    if (changed) ratings = next;
   });
 
   async function rate(ideaId: string, rating: number) {
     if (ratingPending[ideaId]) return;
-    ratingPending[ideaId] = true;
-    ratingSaved[ideaId] = false;
+    ratingPending = { ...ratingPending, [ideaId]: true };
+    ratingSaved = { ...ratingSaved, [ideaId]: false };
     error = null;
     try {
-      const saved = await (window.scraply as IdeaApi).rateIdea({ ideaId, rating });
-      ratings[ideaId] = saved.rating;
-      ratingSaved[ideaId] = true;
+      const saved = await window.scraply.rateIdea({ ideaId, rating });
+      ratings = { ...ratings, [ideaId]: saved.rating };
+      ratingSaved = { ...ratingSaved, [ideaId]: true };
     } catch (reason) {
       error = reason instanceof Error ? reason.message : "Failed to save rating";
     } finally {
-      ratingPending[ideaId] = false;
+      ratingPending = { ...ratingPending, [ideaId]: false };
+    }
+  }
+
+  async function loadIdeaDetail(ideaId: string) {
+    if (ideaDetails[ideaId] || detailPending[ideaId]) return;
+    detailPending = { ...detailPending, [ideaId]: true };
+    detailErrors = { ...detailErrors, [ideaId]: null };
+    try {
+      const detail = await window.scraply.getIdeaDetail(ideaId);
+      ideaDetails = { ...ideaDetails, [ideaId]: detail };
+      if (detail.currentRating) ratings = { ...ratings, [ideaId]: detail.currentRating.rating };
+    } catch (reason) {
+      detailErrors = {
+        ...detailErrors,
+        [ideaId]: reason instanceof Error ? reason.message : "Failed to load idea evidence",
+      };
+    } finally {
+      detailPending = { ...detailPending, [ideaId]: false };
     }
   }
 
@@ -83,13 +100,13 @@
     branchPending[idea.id] = true;
     error = null;
     try {
-      await window.scraply.createBranch({
+      await window.scraply.createBranch(toCreateBranchPayload({
         parentThreadId: threadId,
         seedIdeaId: idea.id,
         seedIdeaTitle: idea.title,
         explorationAngle,
         selectedClaimIds,
-      });
+      }));
       branchIdea = null;
       onRefresh?.();
     } catch (reason) {
@@ -120,6 +137,7 @@
   {:else}
     <div class="grid">
       {#each ideas as idea (idea.id)}
+        {@const detail = ideaDetails[idea.id] ?? idea}
         <article class="card">
           <div class="row">
             <h3>{idea.title}</h3>
@@ -132,25 +150,36 @@
             {/each}
           </dl>
 
-          {#if idea.evidence?.length}
-            <details class="evidence">
-              <summary>{idea.evidence.length} supporting evidence {idea.evidence.length === 1 ? "link" : "links"}</summary>
+          <details
+            class="evidence"
+            ontoggle={(event) => {
+              if ((event.currentTarget as HTMLDetailsElement).open) void loadIdeaDetail(idea.id);
+            }}
+          >
+            <summary>
+              {detail.evidence?.length
+                ? `${detail.evidence.length} supporting evidence ${detail.evidence.length === 1 ? "link" : "links"}`
+                : "Inspect supporting evidence"}
+            </summary>
+            {#if detailPending[idea.id]}
+              <p>Loading evidence…</p>
+            {:else if detailErrors[idea.id]}
+              <p class="error" role="alert">{detailErrors[idea.id]}</p>
+            {:else if detail.evidence?.length}
               <ul>
-                {#each idea.evidence as item (`${item.claimId}:${item.sourceId}`)}
+                {#each detail.evidence as item (`${item.claimId}:${item.sourceId}`)}
                   <li>
-                    {#if item.url}
-                      <button class="evidence-link" onclick={() => void (window.scraply as IdeaApi).openExternalUrl(item.url!)}>
-                        {item.sourceTitle ?? item.url}
-                      </button>
-                    {:else}
-                      <strong>{item.sourceTitle ?? `Source ${item.sourceId}`}</strong>
-                    {/if}
-                    {#if item.quote}<blockquote>{item.quote}</blockquote>{/if}
+                    <button class="evidence-link" onclick={() => void window.scraply.openExternalUrl(item.url)}>
+                      {item.sourceTitle}
+                    </button>
+                    <blockquote>{item.quote}</blockquote>
                   </li>
                 {/each}
               </ul>
-            </details>
-          {/if}
+            {:else}
+              <p>No supporting evidence was found for this idea.</p>
+            {/if}
+          </details>
 
           <div class="rating" aria-label={`Current rating ${ratings[idea.id] ?? "not rated"}`}>
             {#each [1, 2, 3, 4, 5] as star}

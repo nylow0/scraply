@@ -8,23 +8,31 @@
   "main": "out/main/index.js",
   "scripts": {
     "dev": "electron-vite dev",
-    "build": "electron-vite build",
+    "clean:out": "bun -e \"import { rmSync } from 'node:fs'; for (const path of ['out/main', 'out/preload', 'out/renderer']) rmSync(path, { recursive: true, force: true })\"",
+    "clean:release": "bun -e \"import { rmSync } from 'node:fs'; rmSync('release', { recursive: true, force: true })\"",
+    "build": "bun run clean:out && electron-vite build",
     "preview": "electron-vite preview",
-    "package": "electron-vite build && electron-builder --win --publish never",
-    "install:local": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/install-local.ps1",
+    "package": "bun run clean:release && bun run clean:out && electron-vite build && electron-builder --win --publish never && bun run verify:package",
+    "package:e2e": "bun run clean:release && bun run clean:out && electron-vite build --mode e2e && electron-builder --win --dir --publish never",
+    "verify:package": "bun scripts/verify-package.ts",
+    "install:local": "powershell -NoProfile -File scripts/install-local.ps1",
     "build:installed": "bun run package && bun run install:local",
-    "test": "bun test test/unit test/integration/backend.test.ts test/integration/recovery.test.ts test/integration/evidence-model.test.ts test/integration/idea-generation.test.ts test/integration/research-limits.test.ts",
-    "test:e2e": "playwright test",
+    "test": "bun test test/unit test/integration/backend.test.ts test/integration/recovery.test.ts test/integration/evidence-model.test.ts test/integration/idea-generation.test.ts test/integration/research-limits.test.ts test/integration/migrations.test.ts",
+    "test:e2e": "bun run package:e2e && playwright test",
+    "test:e2e:production": "bun scripts/run-e2e.ts production",
+    "test:e2e:portable": "bun scripts/smoke-portable.ts",
+    "test:e2e:installed": "bun scripts/run-e2e.ts installed",
     "test:exa": "bun test test/integration/exa.live.test.ts",
     "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.renderer.json",
     "check": "bun run typecheck && svelte-check --tsconfig ./tsconfig.renderer.json && bun run test"
   },
   "dependencies": {
-    "dompurify": "^3.2.6",
+    "dompurify": "3.4.12",
     "jsdom": "^26.1.0",
     "zod": "^3.25.76"
   },
   "devDependencies": {
+    "@electron/asar": "3.4.1",
     "@playwright/test": "1.61.0",
     "@sveltejs/vite-plugin-svelte": "^5.1.0",
     "@tailwindcss/vite": "^4.3.1",
@@ -40,8 +48,11 @@
     "vite": "^6.3.5"
   },
   "overrides": {
+    "brace-expansion": "5.0.8",
+    "fast-uri": "3.1.4",
     "js-yaml": "4.3.0",
-    "tar": "7.5.20"
+    "postcss": "8.5.18",
+    "tar": "7.5.21"
   },
   "build": {
     "appId": "com.scraply.app",
@@ -50,7 +61,9 @@
       "output": "release"
     },
     "files": [
-      "out/**/*",
+      "out/main/**/*",
+      "out/preload/**/*",
+      "out/renderer/**/*",
       "build/icon.png",
       "prompts/**/*",
       "package.json"

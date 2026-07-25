@@ -10,6 +10,7 @@
     onDelete,
     onOpenGuide,
     onOpenData,
+    onOpenLogs,
   }: {
     threads: Thread[];
     activeThreadId: string | null;
@@ -18,7 +19,8 @@
     onSelect: (id: string) => void;
     onDelete: (id: string) => void;
     onOpenGuide: () => void;
-    onOpenData: () => void;
+    onOpenData: () => void | Promise<void>;
+    onOpenLogs: () => void | Promise<void>;
   } = $props();
 
   function confirmDelete(thread: Thread) {
@@ -63,6 +65,7 @@
   <div class="footer">
     <button class="link" onclick={onOpenGuide}>User guide</button>
     <button class="link" onclick={onOpenData}>Open data folder</button>
+    <button class="link" onclick={onOpenLogs}>Open logs folder</button>
   </div>
 </aside>
 

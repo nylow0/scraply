@@ -271,4 +271,61 @@ export const MIGRATIONS = [
         ON branch_contexts(parent_thread_id, created_at);
     `,
   },
+  {
+    id: 4,
+    sql: `
+      INSERT INTO rating_history (idea_id, rating, notes, created_at)
+      SELECT r.idea_id, r.rating, r.notes, r.created_at
+      FROM ratings r
+      WHERE NOT EXISTS (
+        SELECT 1
+        FROM rating_history h
+        WHERE h.idea_id = r.idea_id
+          AND h.rating = r.rating
+          AND h.notes IS r.notes
+          AND h.created_at = r.created_at
+      );
+
+      INSERT INTO idea_ratings (idea_id, rating, notes, updated_at)
+      SELECT r.idea_id, r.rating, r.notes, r.created_at
+      FROM ratings r
+      WHERE r.created_at = (
+        SELECT MAX(latest.created_at)
+        FROM ratings latest
+        WHERE latest.idea_id = r.idea_id
+      )
+      ON CONFLICT(idea_id) DO UPDATE SET
+        rating = excluded.rating,
+        notes = excluded.notes,
+        updated_at = excluded.updated_at
+      WHERE excluded.updated_at > idea_ratings.updated_at;
+
+      CREATE INDEX IF NOT EXISTS idx_rating_history_idea_created
+        ON rating_history(idea_id, created_at DESC);
+    `,
+  },
+  {
+    id: 5,
+    sql: `
+      DELETE FROM job_events
+      WHERE run_id IS NOT NULL
+        AND NOT EXISTS (SELECT 1 FROM research_runs WHERE research_runs.id = job_events.run_id);
+
+      DELETE FROM job_events
+      WHERE thread_id IS NOT NULL
+        AND NOT EXISTS (SELECT 1 FROM threads WHERE threads.id = job_events.thread_id);
+
+      CREATE TRIGGER IF NOT EXISTS delete_job_events_for_run
+      AFTER DELETE ON research_runs
+      BEGIN
+        DELETE FROM job_events WHERE run_id = OLD.id;
+      END;
+
+      CREATE TRIGGER IF NOT EXISTS delete_job_events_for_thread
+      AFTER DELETE ON threads
+      BEGIN
+        DELETE FROM job_events WHERE thread_id = OLD.id;
+      END;
+    `,
+  },
 ] as const;

@@ -4,18 +4,28 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { DatabaseClient } from "../../src/db/client";
 import { ThreadRepository } from "../../src/db/repositories/threads";
-import { createBackendClients, isSetupComplete, startBackend } from "../../src/backend/server";
+import { createBackendClients, isSetupComplete, startBackend, type BackendContext } from "../../src/backend/server";
+import { buildPreferenceContext } from "../../src/core/preferences";
+import { DEFAULT_RUN_CONFIG } from "../../src/shared/intake";
 import type { BranchContext, ProjectBrief } from "../../src/shared/schemas";
+import packageMetadata from "../../package.json";
 
 const tempDirs: string[] = [];
 
-function backendContext(dir: string) {
+function backendContext(dir: string): BackendContext {
   return {
     dataDir: dir,
     dbPath: join(dir, "scraply.db"),
     bundledPromptsDir: join(process.cwd(), "prompts"),
     promptOverridesDir: join(dir, "prompts"),
+    appVersion: packageMetadata.version,
     getSecrets: () => ({ opencodeApiKey: null, exaApiKey: null }),
+    providerValidation: {
+      probeCodex: async () => ({ detected: false, compatible: false, error: "Disabled in tests" }),
+      listCodexModels: async () => [],
+      validateExa: async () => ({ valid: false, error: "Disabled in tests" }),
+      validateOpenCode: async () => ({ valid: false, models: [], error: "Disabled in tests" }),
+    },
   };
 }
 
@@ -120,9 +130,10 @@ describe("Backend health", () => {
         headers: { authorization: `Bearer ${handle.token}` },
       });
       expect(health.ok).toBe(true);
-      const body = await health.json() as { ok: true; data: { ok: boolean; persistenceCheck: string } };
+      const body = await health.json() as { ok: true; data: { ok: boolean; version: string; persistenceCheck: string } };
       expect(body.ok).toBe(true);
       expect(body.data.ok).toBe(true);
+      expect(body.data.version).toBe(packageMetadata.version);
       expect(body.data.persistenceCheck).toStartWith("ok-");
     } finally {
       await handle.close();
@@ -150,6 +161,119 @@ describe("Backend health", () => {
       });
       const body = await workspace.json() as { ok: true; data: { modelCatalog: { favorites: Array<{ provider: string; id: string }> } } };
       expect(body.data.modelCatalog.favorites).toContainEqual({ provider: "codex", id: "gpt-5.5" });
+    } finally {
+      await handle.close();
+    }
+  });
+
+  test("feeds ratings saved through the API into preference context", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "scraply-backend-"));
+    tempDirs.push(dir);
+    const db = new DatabaseClient(join(dir, "scraply.db"));
+    const thread = new ThreadRepository(db).createThread("Preferences");
+    db.db.prepare(`
+      INSERT INTO ideas (id, thread_id, title, description, bucket, scores_json, supporting_claim_ids_json, created_at)
+      VALUES ('idea-rated', ?, 'Rated through API', 'Preference signal', 'strong-fit', ?, '[]', ?)
+    `).run(
+      thread.id,
+      JSON.stringify({ relevance: 8, novelty: 7, evidenceStrength: 8, feasibility: 7, demand: 8, saturation: 4 }),
+      new Date().toISOString(),
+    );
+    db.close();
+
+    const handle = await startBackend(backendContext(dir), () => {});
+    const headers = { authorization: `Bearer ${handle.token}`, "content-type": "application/json" };
+    try {
+      for (const rating of [2, 5]) {
+        const response = await fetch(`http://127.0.0.1:${handle.port}/ideas/rate`, {
+          method: "POST",
+          headers,
+          body: JSON.stringify({ ideaId: "idea-rated", rating }),
+        });
+        expect(response.ok).toBe(true);
+      }
+    } finally {
+      await handle.close();
+    }
+
+    const reopened = new DatabaseClient(join(dir, "scraply.db"));
+    const context = buildPreferenceContext(reopened);
+    expect(context.positiveExamples.map((idea) => idea.title)).toEqual(["Rated through API"]);
+    expect(context.negativeExamples).toEqual([]);
+    expect((reopened.db.prepare("SELECT COUNT(*) AS count FROM rating_history WHERE idea_id = 'idea-rated'").get() as { count: number }).count).toBe(2);
+    reopened.close();
+  });
+
+  test("keeps idea summaries light while restoring ratings and evidence by ID", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "scraply-backend-idea-detail-"));
+    tempDirs.push(dir);
+    const context = backendContext(dir);
+    const db = new DatabaseClient(context.dbPath);
+    const thread = new ThreadRepository(db).createThread("Idea detail");
+    const now = new Date().toISOString();
+    db.setSetting("active_thread_id", thread.id);
+    db.db.prepare(`
+      INSERT INTO research_runs (id, thread_id, status, config_json, spend_estimate, round, cancelled, created_at, updated_at)
+      VALUES ('run-detail', ?, 'completed', '{}', 0, 0, 0, ?, ?)
+    `).run(thread.id, now, now);
+    db.db.prepare(`
+      INSERT INTO sources (
+        id, research_run_id, canonical_url, title, retrieved_text, content_hash, retrieved_at
+      ) VALUES ('source-detail', 'run-detail', 'https://example.com/detail', 'Detail source', 'Source body', 'hash-detail', ?)
+    `).run(now);
+    db.db.prepare(`
+      INSERT INTO claims (
+        id, research_run_id, text, confidence, validation_status, created_at
+      ) VALUES ('claim-detail', 'run-detail', 'Validated claim', 0.9, 'valid', ?)
+    `).run(now);
+    db.db.prepare(`
+      INSERT INTO claim_evidence (claim_id, source_id, quote, evidence_quality)
+      VALUES ('claim-detail', 'source-detail', 'Evidence quote', 0.9)
+    `).run();
+    db.db.prepare(`
+      INSERT INTO ideas (
+        id, thread_id, research_run_id, generation_mode, title, description, bucket,
+        scores_json, supporting_claim_ids_json, created_at
+      ) VALUES ('idea-detail', ?, 'run-detail', 'complete', 'Detailed idea', 'Description', 'strong-fit', ?, '["claim-detail"]', ?)
+    `).run(
+      thread.id,
+      JSON.stringify({ relevance: 8, novelty: 7, evidenceStrength: 9, feasibility: 8, demand: 7, saturation: 4 }),
+      now,
+    );
+    db.db.prepare("INSERT INTO idea_claims (idea_id, claim_id) VALUES ('idea-detail', 'claim-detail')").run();
+    db.db.prepare(`
+      INSERT INTO idea_ratings (idea_id, rating, notes, updated_at)
+      VALUES ('idea-detail', 4, 'Persisted', ?)
+    `).run(now);
+    db.close();
+
+    const handle = await startBackend(context, () => {});
+    const headers = { authorization: `Bearer ${handle.token}`, "content-type": "application/json" };
+    try {
+      const workspaceResponse = await fetch(`http://127.0.0.1:${handle.port}/workspace`, { headers });
+      const workspace = await workspaceResponse.json() as {
+        ok: true;
+        data: { ideas: Array<Record<string, unknown>> };
+      };
+      expect(workspace.data.ideas[0]).toMatchObject({
+        id: "idea-detail",
+        researchRunId: "run-detail",
+        generationMode: "complete",
+        currentRating: { rating: 4, notes: "Persisted" },
+      });
+      expect(workspace.data.ideas[0]).not.toHaveProperty("evidence");
+
+      const detailResponse = await fetch(`http://127.0.0.1:${handle.port}/ideas/idea-detail`, { headers });
+      const detail = await detailResponse.json() as { ok: true; data: { evidence: Array<{ quote: string }> } };
+      expect(detail.data.evidence).toEqual([expect.objectContaining({ quote: "Evidence quote" })]);
+
+      const exportResponse = await fetch(`http://127.0.0.1:${handle.port}/ideas/export`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ threadId: thread.id }),
+      });
+      const exported = await exportResponse.json() as { ok: true; data: { ideas: Array<{ evidence: unknown[] }> } };
+      expect(exported.data.ideas[0]?.evidence).toHaveLength(1);
     } finally {
       await handle.close();
     }
@@ -183,6 +307,91 @@ describe("Backend health", () => {
         ok: false,
         error: { code: "not_found", message: "Thread not found." },
       });
+    } finally {
+      await handle.close();
+    }
+  });
+
+  test("returns a safe correlation reference and logs unexpected route failures", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "scraply-backend-correlation-"));
+    tempDirs.push(dir);
+    const context = backendContext(dir);
+    const setup = new DatabaseClient(context.dbPath);
+    const thread = new ThreadRepository(setup).createThread("Broken workspace");
+    setup.setSetting("active_thread_id", thread.id);
+    setup.close();
+    const logs: Array<Parameters<NonNullable<BackendContext["log"]>>[0]> = [];
+    context.log = (entry) => logs.push(entry);
+    const handle = await startBackend(context, () => {});
+    const sabotaged = new DatabaseClient(context.dbPath);
+    sabotaged.db.exec("DROP TABLE ideas");
+    sabotaged.close();
+
+    try {
+      const response = await fetch(`http://127.0.0.1:${handle.port}/workspace`, {
+        headers: { authorization: `Bearer ${handle.token}` },
+      });
+      expect(response.status).toBe(500);
+      const payload = await response.json() as {
+        ok: false;
+        error: { code: string; message: string; reference?: string };
+      };
+      expect(payload.error.code).toBe("internal_error");
+      expect(payload.error.message).toBe("Something went wrong. Please try again.");
+      expect(payload.error.reference).toBeString();
+      expect(logs).toContainEqual(expect.objectContaining({
+        level: "error",
+        event: "backend-request-failed",
+        context: expect.objectContaining({ correlationId: payload.error.reference, route: "/workspace" }),
+      }));
+    } finally {
+      await handle.close();
+    }
+  });
+
+  test("returns conflicts for repeated terminal resume and cancel actions", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "scraply-backend-terminal-run-"));
+    tempDirs.push(dir);
+    const context = backendContext(dir);
+    const db = new DatabaseClient(context.dbPath);
+    const thread = new ThreadRepository(db).createThread("Terminal run");
+    const now = new Date().toISOString();
+    const brief: ProjectBrief = {
+      projectName: "Terminal",
+      theme: "Recovery",
+      description: "Verify terminal lifecycle guards",
+      desiredOutput: "Typed conflicts",
+      successDefinition: "Repeated actions stay safe",
+      constraints: [],
+      resources: [],
+      avoidList: [],
+      researchNeeds: "Lifecycle state",
+      finalDecision: "Whether to retry",
+      deadline: "",
+      availableEffort: "",
+      ideaStylePreference: "",
+    };
+    db.db.prepare(`
+      INSERT INTO research_runs (
+        id, thread_id, status, config_json, brief_json, spend_estimate, round, cancelled, created_at, updated_at
+      ) VALUES ('terminal-run', ?, 'cancelled', ?, ?, 0, 0, 1, ?, ?)
+    `).run(thread.id, JSON.stringify(DEFAULT_RUN_CONFIG), JSON.stringify(brief), now, now);
+    db.close();
+
+    const handle = await startBackend(context, () => {});
+    const headers = { authorization: `Bearer ${handle.token}`, "content-type": "application/json" };
+    try {
+      for (const path of ["/research/resume", "/research/cancel"]) {
+        const response = await fetch(`http://127.0.0.1:${handle.port}${path}`, {
+          method: "POST",
+          headers,
+          body: JSON.stringify({ runId: "terminal-run" }),
+        });
+        expect(response.status).toBe(409);
+        const payload = await response.json() as { ok: false; error: { code: string; message: string } };
+        expect(payload.error.code).toBe("conflict");
+        expect(payload.error.message).toContain("already ended");
+      }
     } finally {
       await handle.close();
     }

@@ -62,6 +62,10 @@ describe("research recovery", () => {
       INSERT INTO stream_runs (id, research_run_id, stream_id, round, status, report_id, coverage, created_at, updated_at)
       VALUES (?, ?, 'landscape', 0, 'completed', ?, 0.7, ?, ?)
     `).run(randomUUID(), runId, reportId, now, now);
+    db.db.prepare(`
+      INSERT INTO stream_runs (id, research_run_id, stream_id, round, status, report_id, coverage, created_at, updated_at)
+      VALUES (?, ?, 'landscape', 1, 'completed', ?, 0.9, ?, ?)
+    `).run(randomUUID(), runId, reportId, now, now);
 
     const pending = listPendingRuns(db);
     expect(pending).toHaveLength(1);

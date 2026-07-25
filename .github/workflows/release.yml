@@ -1,0 +1,197 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "stage-v*-rc.*"
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  build-release-candidate:
+    if: startsWith(github.ref_name, 'stage-v')
+    runs-on: windows-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.13
+      - run: bun install --frozen-lockfile
+      - run: bun scripts/check-promotion.ts rc ${{ github.sha }} ${{ github.ref_name }}
+      - run: bun audit
+      - run: bun run check
+      - run: bun run test:e2e
+      - name: Build, install, and verify the release candidate
+        run: bun run build:installed
+        env:
+          SCRAPLY_RELEASE_STRICT: "1"
+          SCRAPLY_ALLOW_UNSIGNED: ${{ github.event.repository.private && '1' || '0' }}
+      - run: bun run test:e2e:production
+      - run: bun run test:e2e:portable
+      - run: bun run test:e2e:installed
+      - name: Collect the verified bundle
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $version = (Get-Content -Raw package.json | ConvertFrom-Json).version
+          New-Item -ItemType Directory -Path bundle | Out-Null
+          Copy-Item -LiteralPath "release/Scraply Setup $version.exe" -Destination bundle
+          Copy-Item -LiteralPath "release/Scraply $version.exe" -Destination bundle
+          Copy-Item -LiteralPath "release/manifest.json" -Destination bundle
+          Copy-Item -LiteralPath "release/SHA256SUMS.txt" -Destination bundle
+      - name: Verify the collected bundle
+        run: >
+          bun scripts/verify-promoted-assets.ts bundle ${{ github.sha }} ${{ github.ref_name }}
+          ${{ github.event.repository.private && '--allow-unsigned' || '' }}
+      - name: Upload the release-candidate bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: scraply-rc-${{ github.sha }}
+          if-no-files-found: error
+          retention-days: 90
+          path: bundle/
+      - name: Upload Playwright traces on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-candidate-failure-${{ github.sha }}
+          if-no-files-found: ignore
+          retention-days: 7
+          path: test-results/
+
+  publish-release-candidate:
+    needs: build-release-candidate
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.13
+      - uses: actions/download-artifact@v4
+        with:
+          name: scraply-rc-${{ github.sha }}
+          path: bundle
+      - name: Verify the bundle before publication
+        run: >
+          bun scripts/verify-promoted-assets.ts bundle ${{ github.sha }} ${{ github.ref_name }}
+          ${{ github.event.repository.private && '--allow-unsigned' || '' }}
+      - name: Publish the verified prerelease
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          version="$(bun --print "require('./package.json').version")"
+          gh release create "$GITHUB_REF_NAME" \
+            "bundle/Scraply Setup ${version}.exe" \
+            "bundle/Scraply ${version}.exe" \
+            "bundle/manifest.json" \
+            "bundle/SHA256SUMS.txt" \
+            --verify-tag \
+            --prerelease \
+            --generate-notes \
+            --title "Scraply $GITHUB_REF_NAME"
+
+  verify-production-candidate:
+    if: startsWith(github.ref_name, 'v') && !contains(github.ref_name, '-rc.')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.13
+      - run: bun scripts/check-promotion.ts production ${{ github.sha }} ${{ github.ref_name }}
+      - name: Resolve the single approved release candidate
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          version="$(bun --print "require('./package.json').version")"
+          escaped="${version//./\\.}"
+          candidates="$(git tag --points-at "$GITHUB_SHA" | grep -E "^stage-v${escaped}-rc\.[0-9]+$" || true)"
+          count="$(printf '%s' "$candidates" | grep -c . || true)"
+          if [ "$count" -ne 1 ]; then
+            echo "Exactly one release-candidate tag must point to $GITHUB_SHA; found ${count}: ${candidates}" >&2
+            exit 1
+          fi
+          if [ "$(gh release view "$candidates" --json isPrerelease --jq '.isPrerelease')" != "true" ]; then
+            echo "$candidates is not a GitHub prerelease." >&2
+            exit 1
+          fi
+          echo "SCRAPLY_RC_TAG=$candidates" >>"$GITHUB_ENV"
+      - name: Download the approved release-candidate bundle
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir promoted
+          gh release download "$SCRAPLY_RC_TAG" --dir promoted
+      - name: Verify the promoted bytes against the approved candidate
+        run: >
+          bun scripts/verify-promoted-assets.ts promoted ${{ github.sha }} ${{ env.SCRAPLY_RC_TAG }}
+          ${{ github.event.repository.private && '--allow-unsigned' || '' }}
+      - name: Upload the verified production bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: scraply-production-${{ github.sha }}
+          if-no-files-found: error
+          retention-days: 90
+          path: promoted/
+      - name: Record the approved candidate
+        run: echo "rc_tag=${{ env.SCRAPLY_RC_TAG }}" >>"$GITHUB_OUTPUT"
+        id: candidate
+    outputs:
+      rc_tag: ${{ steps.candidate.outputs.rc_tag }}
+
+  publish-production-release:
+    needs: verify-production-candidate
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.13
+      - uses: actions/download-artifact@v4
+        with:
+          name: scraply-production-${{ github.sha }}
+          path: promoted
+      - name: Verify the bundle before publication
+        run: >
+          bun scripts/verify-promoted-assets.ts promoted ${{ github.sha }}
+          ${{ needs.verify-production-candidate.outputs.rc_tag }}
+          ${{ github.event.repository.private && '--allow-unsigned' || '' }}
+      - name: Publish the approved bytes as production
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          version="$(bun --print "require('./package.json').version")"
+          gh release create "$GITHUB_REF_NAME" \
+            "promoted/Scraply Setup ${version}.exe" \
+            "promoted/Scraply ${version}.exe" \
+            "promoted/manifest.json" \
+            "promoted/SHA256SUMS.txt" \
+            --verify-tag \
+            --generate-notes \
+            --title "Scraply $GITHUB_REF_NAME"

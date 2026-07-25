@@ -105,6 +105,7 @@ export async function startMockBackend(scenario: Scenario = "fresh", port = 0): 
     presets: [],
   };
   const token = "scraply-e2e-token";
+  let validationRequests = 0;
 
   const server = createServer(async (req, res) => {
     const url = new URL(req.url ?? "/", "http://127.0.0.1");
@@ -113,7 +114,8 @@ export async function startMockBackend(scenario: Scenario = "fresh", port = 0): 
     if (req.headers.authorization !== `Bearer ${token}`) return send(res, 401, error("unauthorized", "Missing test token"));
 
     if (req.method === "GET" && url.pathname === "/validation") {
-      if (url.searchParams.get("validateOptional") === "1") state.configured = true;
+      validationRequests += 1;
+      if (scenario === "fresh" && validationRequests > 1) state.configured = true;
       return send(res, 200, ok(state.configured ? validationReady : validationMissing));
     }
     if (req.method === "GET" && url.pathname === "/workspace") return send(res, 200, ok(workspace(state)));
@@ -203,6 +205,11 @@ export async function startMockBackend(scenario: Scenario = "fresh", port = 0): 
       ];
       return send(res, 200, ok({ workspace: workspace(state) }));
     }
+    if (req.method === "GET" && url.pathname.startsWith("/ideas/")) {
+      const ideaId = url.pathname.split("/").at(-1);
+      if (ideaId !== idea.id) return send(res, 404, error("not_found", "Idea not found"));
+      return send(res, 200, ok(idea));
+    }
     if (req.method === "GET" && url.pathname.startsWith("/reports/")) {
       const id = url.pathname.split("/").at(-1) ?? "report";
       return send(res, 200, ok({ id, researchRunId: "run-1", streamId: id === "report-synthesis" ? "synthesis" : "market", title: id === "report-synthesis" ? "Composite synthesis" : "Market evidence", html: "<h2>Finding</h2><p>Demand is supported by deterministic local evidence.</p>" }));
@@ -234,13 +241,18 @@ function workspace(state: MockState) {
     modelCatalog: { opencode: [], codex: ["gpt-5.6-luna"], favorites: state.favorites },
     branchContext: null,
     presets: state.presets,
-    ideas: state.ideas,
+    ideas: state.ideas.map(toIdeaSummary),
     reports: state.reports,
     latestResearchRun: state.reports.some((report) => report.id === "report-synthesis")
       ? { runId: "run-1", status: "completed", synthesisReportId: "report-synthesis", missingLenses: [], gaps: [] }
       : null,
     pendingRuns: state.pendingRuns,
   };
+}
+
+function toIdeaSummary(value: unknown) {
+  const record = value as typeof idea;
+  return Object.fromEntries(Object.entries(record).filter(([key]) => key !== "evidence"));
 }
 
 async function readBody(req: IncomingMessage): Promise<unknown> {

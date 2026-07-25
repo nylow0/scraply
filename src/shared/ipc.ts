@@ -23,6 +23,7 @@ export const AppErrorCodeSchema = z.enum([
 export const AppErrorPayloadSchema = z.object({
   code: AppErrorCodeSchema,
   message: z.string().min(1).max(512),
+  reference: z.string().min(1).max(128).optional(),
 });
 
 export const ApiErrorResponseSchema = z.object({
@@ -39,7 +40,6 @@ export function ApiResponseSchema<T extends z.ZodTypeAny>(dataSchema: T) {
 
 export type AppErrorCode = z.infer<typeof AppErrorCodeSchema>;
 export type AppErrorPayload = z.infer<typeof AppErrorPayloadSchema>;
-export type ApiResponse<T> = { ok: true; data: T } | { ok: false; error: AppErrorPayload };
 
 export const ValidationStateSchema = z.object({
   opencode: z.object({
@@ -177,6 +177,7 @@ export const LatestResearchRunSchema = z.object({
   runId: EntityIdSchema,
   status: z.enum(["queued", "running", "partial", "completed", "failed", "cancelled"]),
   synthesisReportId: EntityIdSchema.nullable(),
+  canGeneratePartialIdeas: z.boolean().default(false),
   missingLenses: z.array(z.string()),
   gaps: z.array(z.string()),
 });
@@ -213,18 +214,19 @@ export const WorkspaceStateSchema = z.object({
 
 export const ResearchEventSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("run-started"), runId: z.string(), threadId: z.string() }),
-  z.object({ type: z.literal("stream-started"), runId: z.string(), streamId: z.string() }),
-  z.object({ type: z.literal("stream-progress"), runId: z.string(), streamId: z.string(), message: z.string() }),
-  z.object({ type: z.literal("stream-completed"), runId: z.string(), streamId: z.string(), reportId: z.string() }),
-  z.object({ type: z.literal("stream-failed"), runId: z.string(), streamId: z.string(), error: z.string() }),
-  z.object({ type: z.literal("follow-up-started"), runId: z.string(), streamId: z.string(), round: z.number() }),
-  z.object({ type: z.literal("coverage-review-started"), runId: z.string() }),
-  z.object({ type: z.literal("coverage-review-completed"), runId: z.string(), overallCoverage: z.number() }),
-  z.object({ type: z.literal("synthesis-started"), runId: z.string() }),
-  z.object({ type: z.literal("synthesis-completed"), runId: z.string(), reportId: z.string() }),
+  z.object({ type: z.literal("stream-started"), runId: z.string(), threadId: z.string(), streamId: z.string() }),
+  z.object({ type: z.literal("stream-progress"), runId: z.string(), threadId: z.string(), streamId: z.string(), message: z.string() }),
+  z.object({ type: z.literal("stream-completed"), runId: z.string(), threadId: z.string(), streamId: z.string(), reportId: z.string() }),
+  z.object({ type: z.literal("stream-failed"), runId: z.string(), threadId: z.string(), streamId: z.string(), error: z.string() }),
+  z.object({ type: z.literal("follow-up-started"), runId: z.string(), threadId: z.string(), streamId: z.string(), round: z.number() }),
+  z.object({ type: z.literal("coverage-review-started"), runId: z.string(), threadId: z.string() }),
+  z.object({ type: z.literal("coverage-review-completed"), runId: z.string(), threadId: z.string(), overallCoverage: z.number() }),
+  z.object({ type: z.literal("synthesis-started"), runId: z.string(), threadId: z.string() }),
+  z.object({ type: z.literal("synthesis-completed"), runId: z.string(), threadId: z.string(), reportId: z.string() }),
   z.object({ type: z.literal("run-resumed"), runId: z.string(), threadId: z.string() }),
-  z.object({ type: z.literal("run-completed"), runId: z.string(), partial: z.boolean() }),
-  z.object({ type: z.literal("run-cancelled"), runId: z.string() }),
+  z.object({ type: z.literal("run-completed"), runId: z.string(), threadId: z.string(), partial: z.boolean() }),
+  z.object({ type: z.literal("run-cancelled"), runId: z.string(), threadId: z.string() }),
+  z.object({ type: z.literal("run-failed"), runId: z.string(), threadId: z.string(), error: z.string() }),
   z.object({
     type: z.literal("ideas-generated"),
     threadId: z.string(),
@@ -250,11 +252,11 @@ export const IPC_CHANNELS = {
   SAVE_SECRETS: "scraply:save-secrets",
   IMPORT_ENV: "scraply:import-env",
   OPEN_DATA_FOLDER: "scraply:open-data-folder",
+  OPEN_LOGS_FOLDER: "scraply:open-logs-folder",
   GET_WORKSPACE: "scraply:get-workspace",
   CREATE_THREAD: "scraply:create-thread",
   SELECT_THREAD: "scraply:select-thread",
   SUBMIT_INTAKE: "scraply:submit-intake",
-  GENERATE_BRIEF: "scraply:generate-brief",
   CONFIRM_BRIEF: "scraply:confirm-brief",
   SAVE_RUN_CONFIG: "scraply:save-run-config",
   SAVE_FAVORITE_MODEL: "scraply:save-favorite-model",
@@ -264,7 +266,6 @@ export const IPC_CHANNELS = {
   CANCEL_INCOMPLETE_RESEARCH: "scraply:cancel-incomplete-research",
   GENERATE_IDEAS: "scraply:generate-ideas",
   RATE_IDEA: "scraply:rate-idea",
-  RENAME_THREAD: "scraply:rename-thread",
   DELETE_THREAD: "scraply:delete-thread",
   EXPORT_IDEAS: "scraply:export-ideas",
   CREATE_BRANCH: "scraply:create-branch",
