@@ -1,4 +1,5 @@
 import { app, BrowserWindow, ipcMain, safeStorage, shell, utilityProcess, type IpcMainInvokeEvent } from "electron";
+import { randomUUID } from "node:crypto";
 import { readFileSync, existsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { z } from "zod";
@@ -18,7 +19,6 @@ import {
   GetSourceDetailRequestSchema,
   IPC_CHANNELS,
   RateIdeaSchema,
-  ResearchEventSchema,
   ResumeResearchSchema,
   SaveFavoriteModelSchema,
   SaveRunConfigSchema,
@@ -27,35 +27,47 @@ import {
   StartResearchSchema,
   SubmitIntakeAnswerSchema,
   type BackendReady,
-  type ResearchEvent,
+  type ValidationState,
 } from "../shared/ipc";
+import { BackendToMainMessageSchema, type BackendSecrets } from "../shared/backend-process";
 import { AppError } from "../shared/errors";
+import { createFileLogger, type FileLogger } from "./logging";
 import { isAllowedRendererUrl, parseExternalHttpsUrl, rendererEntryUrl } from "./security";
 
 const isDev = !app.isPackaged;
 let mainWindow: BrowserWindow | null = null;
 let backendReady: BackendReady | null = null;
 let backendProcess: Electron.UtilityProcess | null = null;
+let backendStartupFailure: string | null = null;
+let logger: FileLogger | null = null;
 
-interface StoredSecrets {
-  opencodeApiKey: string | null;
-  exaApiKey: string | null;
+interface PendingSecretUpdate {
+  resolve: () => void;
+  reject: (error: Error) => void;
+  timer: ReturnType<typeof setTimeout>;
 }
 
-let secrets: StoredSecrets = { opencodeApiKey: null, exaApiKey: null };
+const pendingSecretUpdates = new Map<string, PendingSecretUpdate>();
+let secrets: BackendSecrets = { opencodeApiKey: null, exaApiKey: null };
+
+function secretValues(): string[] {
+  return [secrets.opencodeApiKey, secrets.exaApiKey].filter((value): value is string => Boolean(value));
+}
 
 function getPaths() {
   const dataDir = join(app.getPath("userData"), "scraply");
   const dbPath = join(dataDir, "scraply.db");
+  const logsDir = join(dataDir, "logs");
   const bundledPromptsDir = join(app.getAppPath(), "prompts");
   const promptOverridesDir = join(dataDir, "prompts");
-  return { dataDir, dbPath, bundledPromptsDir, promptOverridesDir };
+  return { dataDir, dbPath, logsDir, bundledPromptsDir, promptOverridesDir };
 }
 
-function loadDevEnv(): void {
-  if (!isDev || process.env.SCRAPLY_E2E === "1") return;
+function readDevEnvSecrets(): Partial<BackendSecrets> {
+  if (!isDev || process.env.SCRAPLY_E2E === "1") return {};
   const envPath = join(process.cwd(), ".env");
-  if (!existsSync(envPath)) return;
+  if (!existsSync(envPath)) return {};
+  const candidate: Partial<BackendSecrets> = {};
   const text = readFileSync(envPath, "utf8");
   for (const line of text.split(/\r?\n/)) {
     const trimmed = line.trim();
@@ -64,9 +76,10 @@ function loadDevEnv(): void {
     if (idx <= 0) continue;
     const key = trimmed.slice(0, idx).trim();
     const value = trimmed.slice(idx + 1).trim();
-    if (key === "OPENCODE_API_KEY" && value) secrets.opencodeApiKey = value;
-    if (key === "EXA_API_KEY" && value) secrets.exaApiKey = value;
+    if (key === "OPENCODE_API_KEY" && value) candidate.opencodeApiKey = value;
+    if (key === "EXA_API_KEY" && value) candidate.exaApiKey = value;
   }
+  return candidate;
 }
 
 function loadStoredSecrets(): void {
@@ -74,7 +87,7 @@ function loadStoredSecrets(): void {
   if (!existsSync(settingsPath) || !safeStorage.isEncryptionAvailable()) return;
   try {
     const raw = safeStorage.decryptString(readFileSync(settingsPath));
-    const parsed = JSON.parse(raw) as StoredSecrets;
+    const parsed = JSON.parse(raw) as BackendSecrets;
     secrets = parsed;
   } catch {
     // ignore corrupt secrets file
@@ -96,44 +109,120 @@ async function startBackendProcess(): Promise<BackendReady> {
     if (url.protocol !== "http:" || url.hostname !== "127.0.0.1" || !url.port) {
       throw new Error("SCRAPLY_E2E_BACKEND_URL must be an http://127.0.0.1 URL with an explicit port");
     }
+    backendStartupFailure = null;
     return { port: Number(url.port), token: e2eBackendToken };
   }
 
   const { dataDir, dbPath, bundledPromptsDir, promptOverridesDir } = getPaths();
-  const backendEntry = join(__dirname, "backend.js");
-
-  backendProcess = utilityProcess.fork(backendEntry, [], { serviceName: "scraply-backend" });
-  backendProcess.on("exit", (code) => {
-    console.error("Backend exited", code);
-    backendReady = null;
-  });
-
-  backendProcess.on("message", (message) => {
-    const payload = message as { type: string; event?: ResearchEvent };
-    const event = ResearchEventSchema.safeParse(payload.event);
-    if (payload.type === "event" && event.success && mainWindow) {
-      mainWindow.webContents.send(IPC_CHANNELS.BACKEND_EVENT, event.data);
-    }
-  });
-
-  backendProcess.postMessage({
-    type: "start",
-    dataDir,
-    dbPath,
-    bundledPromptsDir,
-    promptOverridesDir,
-    opencodeApiKey: secrets.opencodeApiKey,
-    exaApiKey: secrets.exaApiKey,
-  });
+  const useE2eBackend = process.env.SCRAPLY_E2E === "1" && process.env.SCRAPLY_E2E_REAL_BACKEND === "1";
+  const backendEntry = join(__dirname, useE2eBackend ? "backend-e2e.js" : "backend.js");
+  logger?.log({ level: "info", component: "main", event: "backend-starting" });
+  const processHandle = utilityProcess.fork(backendEntry, [], { serviceName: "scraply-backend" });
+  backendProcess = processHandle;
 
   return await new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error("Backend startup timed out")), 15000);
-    backendProcess?.on("message", (message) => {
-      const payload = message as { type: string; port?: number; token?: string };
-      if (payload.type === "ready" && payload.port && payload.token) {
-        clearTimeout(timer);
-        resolve({ port: payload.port, token: payload.token });
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      reject(new Error("Backend startup timed out"));
+    }, 15_000);
+
+    const rejectPendingUpdates = (message: string): void => {
+      for (const [requestId, pending] of pendingSecretUpdates) {
+        clearTimeout(pending.timer);
+        pending.reject(new Error(message));
+        pendingSecretUpdates.delete(requestId);
       }
+    };
+
+    processHandle.on("message", (rawMessage) => {
+      const parsed = BackendToMainMessageSchema.safeParse(rawMessage);
+      if (!parsed.success) return;
+      const message = parsed.data;
+
+      if (message.type === "event" && mainWindow) {
+        mainWindow.webContents.send(IPC_CHANNELS.BACKEND_EVENT, message.event);
+        return;
+      }
+      if (message.type === "secrets-updated") {
+        const pending = pendingSecretUpdates.get(message.requestId);
+        if (!pending) return;
+        clearTimeout(pending.timer);
+        pendingSecretUpdates.delete(message.requestId);
+        pending.resolve();
+        return;
+      }
+      if (message.type === "log") {
+        let error: Error | undefined;
+        if (message.error) {
+          error = new Error(message.error.message);
+          error.name = message.error.name;
+          if (message.error.stack) error.stack = message.error.stack;
+        }
+        logger?.log({
+          level: message.level,
+          component: "backend",
+          event: message.event,
+          ...(message.message ? { message: message.message } : {}),
+          ...(message.context ? { context: message.context } : {}),
+          ...(error ? { error } : {}),
+        });
+        return;
+      }
+      if (settled) return;
+      if (message.type === "ready") {
+        settled = true;
+        clearTimeout(timer);
+        backendStartupFailure = null;
+        logger?.log({ level: "info", component: "main", event: "backend-ready" });
+        resolve({ port: message.port, token: message.token });
+      } else if (message.type === "startup-failed") {
+        settled = true;
+        clearTimeout(timer);
+        backendStartupFailure = message.message;
+        logger?.log({ level: "error", component: "backend", event: "backend-startup-failed", message: message.message });
+        reject(new Error(message.message));
+      }
+    });
+
+    processHandle.on("error", (error) => {
+      const message = `The local backend process failed: ${error}.`;
+      backendStartupFailure = message;
+      logger?.log({ level: "error", component: "main", event: "backend-process-error", message });
+      rejectPendingUpdates(message);
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      reject(new Error(message));
+    });
+
+    processHandle.on("exit", (code) => {
+      const message = backendStartupFailure ?? `The local backend exited unexpectedly (code ${code}).`;
+      backendStartupFailure = message;
+      logger?.log({
+        level: code === 0 ? "info" : "error",
+        component: "main",
+        event: "backend-exit",
+        message,
+        context: { exitCode: code },
+      });
+      backendReady = null;
+      rejectPendingUpdates(message);
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      reject(new Error(message));
+    });
+
+    processHandle.postMessage({
+      type: "start",
+      dataDir,
+      dbPath,
+      bundledPromptsDir,
+      promptOverridesDir,
+      appVersion: app.getVersion(),
+      secrets,
     });
   });
 }
@@ -185,6 +274,29 @@ function createWindow(): void {
   mainWindow.webContents.on("will-navigate", (event, url) => {
     if (!isAllowedRendererUrl(url, expectedRendererUrl)) event.preventDefault();
   });
+  mainWindow.webContents.on("did-fail-load", (_event, errorCode, errorDescription) => {
+    logger?.log({
+      level: "error",
+      component: "renderer",
+      event: "renderer-load-failed",
+      message: errorDescription,
+      context: { code: errorCode },
+    });
+  });
+  mainWindow.webContents.on("preload-error", (_event, _preloadPath, error) => {
+    logger?.log({ level: "error", component: "renderer", event: "preload-error", error });
+  });
+  mainWindow.webContents.on("render-process-gone", (_event, details) => {
+    logger?.log({
+      level: "error",
+      component: "renderer",
+      event: "renderer-process-gone",
+      context: { reason: details.reason, exitCode: details.exitCode },
+    });
+  });
+  mainWindow.on("unresponsive", () => {
+    logger?.log({ level: "warn", component: "renderer", event: "renderer-unresponsive" });
+  });
 
   if (isDev && process.env.ELECTRON_RENDERER_URL) {
     mainWindow.loadURL(process.env.ELECTRON_RENDERER_URL);
@@ -197,7 +309,9 @@ function createWindow(): void {
 }
 
 async function backendRequest<T>(path: string, init?: RequestInit): Promise<T> {
-  if (!backendReady) throw new AppError("backend_unavailable");
+  if (!backendReady) {
+    throw new AppError("backend_unavailable", backendStartupFailure ?? "The local backend is unavailable.");
+  }
   const headers = new Headers(init?.headers);
   headers.set("authorization", `Bearer ${backendReady.token}`);
   headers.set("content-type", "application/json");
@@ -212,7 +326,13 @@ async function backendRequest<T>(path: string, init?: RequestInit): Promise<T> {
   if (!response.ok) {
     const parsedError = ApiErrorResponseSchema.safeParse(payload);
     if (parsedError.success) {
-      throw new AppError(parsedError.data.error.code, parsedError.data.error.message, response.status);
+      const { code, message, reference } = parsedError.data.error;
+      throw new AppError(
+        code,
+        reference ? `${message} Reference: ${reference}` : message,
+        response.status,
+        reference,
+      );
     }
     throw new AppError("internal_error");
   }
@@ -220,6 +340,48 @@ async function backendRequest<T>(path: string, init?: RequestInit): Promise<T> {
   const parsed = ApiResponseSchema(z.unknown()).safeParse(payload);
   if (!parsed.success || !parsed.data.ok) throw new AppError("internal_error");
   return parsed.data.data as T;
+}
+
+function normalizeSecrets(value: { opencodeApiKey: string; exaApiKey: string }): BackendSecrets {
+  return {
+    opencodeApiKey: value.opencodeApiKey.trim() || null,
+    exaApiKey: value.exaApiKey.trim() || null,
+  };
+}
+
+async function updateBackendSecrets(nextSecrets: BackendSecrets): Promise<void> {
+  if (!backendProcess) {
+    if (process.env.SCRAPLY_E2E_BACKEND_URL) return;
+    throw new AppError("backend_unavailable", backendStartupFailure ?? "The local backend is unavailable.");
+  }
+  if (!backendReady) throw new AppError("backend_unavailable", backendStartupFailure ?? "The local backend is unavailable.");
+  const requestId = randomUUID();
+  await new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      pendingSecretUpdates.delete(requestId);
+      reject(new AppError("backend_unavailable", "The local backend did not acknowledge the credential update."));
+    }, 5_000);
+    pendingSecretUpdates.set(requestId, { resolve, reject, timer });
+    backendProcess?.postMessage({ type: "update-secrets", requestId, secrets: nextSecrets });
+  });
+}
+
+async function validateAndPersistSecrets(candidate: BackendSecrets): Promise<ValidationState> {
+  const previous = secrets;
+  await updateBackendSecrets(candidate);
+  try {
+    const validation = await backendRequest<ValidationState>("/validation?validateOptional=1");
+    if (!validation.setupComplete) {
+      await updateBackendSecrets(previous);
+      return validation;
+    }
+    persistSecrets(candidate);
+    secrets = candidate;
+    return validation;
+  } catch (error) {
+    await updateBackendSecrets(previous).catch(() => undefined);
+    throw error;
+  }
 }
 
 function assertTrustedSender(event: IpcMainInvokeEvent): void {
@@ -246,23 +408,21 @@ function registerIpc(): void {
   handle(IPC_CHANNELS.GET_WORKSPACE, () => backendRequest("/workspace"));
   handle(IPC_CHANNELS.SAVE_SECRETS, async (rawPayload) => {
     const payload = SaveSecretsRequestSchema.parse(rawPayload);
-    persistSecrets(payload);
-    secrets = payload;
-    backendProcess?.postMessage({ type: "update-secrets", ...payload });
-    return backendRequest("/validation?validateOptional=1");
+    return validateAndPersistSecrets(normalizeSecrets(payload));
   });
   handle(IPC_CHANNELS.IMPORT_ENV, async () => {
-    loadDevEnv();
-    persistSecrets();
-    backendProcess?.postMessage({
-      type: "update-secrets",
-      opencodeApiKey: secrets.opencodeApiKey ?? "",
-      exaApiKey: secrets.exaApiKey ?? "",
+    const envSecrets = readDevEnvSecrets();
+    const candidate = SaveSecretsRequestSchema.parse({
+      opencodeApiKey: envSecrets.opencodeApiKey ?? secrets.opencodeApiKey ?? "",
+      exaApiKey: envSecrets.exaApiKey ?? secrets.exaApiKey ?? "",
     });
-    return backendRequest("/validation?validateOptional=1");
+    return validateAndPersistSecrets(normalizeSecrets(candidate));
   });
   handle(IPC_CHANNELS.OPEN_DATA_FOLDER, async () => {
     await shell.openPath(getPaths().dataDir);
+  });
+  handle(IPC_CHANNELS.OPEN_LOGS_FOLDER, async () => {
+    await shell.openPath(getPaths().logsDir);
   });
   handle(IPC_CHANNELS.CREATE_THREAD, (body) => post("/threads", CreateThreadRequestSchema.parse(body ?? {})));
   handle(IPC_CHANNELS.SELECT_THREAD, (body) => post("/threads/select", SelectThreadRequestSchema.parse(body)));
@@ -296,23 +456,49 @@ function registerIpc(): void {
   });
 }
 
+process.on("uncaughtExceptionMonitor", (error) => {
+  logger?.log({ level: "error", component: "main", event: "uncaught-exception", error });
+});
+
+process.on("unhandledRejection", (error) => {
+  logger?.log({ level: "error", component: "main", event: "unhandled-rejection", error });
+});
+
+app.on("child-process-gone", (_event, details) => {
+  logger?.log({
+    level: "error",
+    component: "main",
+    event: "child-process-gone",
+    context: { processType: details.type, reason: details.reason, exitCode: details.exitCode },
+  });
+});
+
 const gotLock = process.env.SCRAPLY_E2E === "1" || app.requestSingleInstanceLock();
 if (!gotLock) {
   app.quit();
 } else {
   app.whenReady().then(async () => {
+    logger = createFileLogger({
+      logsDir: getPaths().logsDir,
+      appVersion: app.getVersion(),
+      getSecrets: secretValues,
+    });
+    logger.log({
+      level: "info",
+      component: "main",
+      event: "app-startup",
+      context: { version: app.getVersion() },
+    });
     loadStoredSecrets();
-    loadDevEnv();
+    secrets = { ...secrets, ...readDevEnvSecrets() };
     registerIpc();
-    createWindow();
     try {
       backendReady = await startBackendProcess();
-      if (mainWindow && !mainWindow.isDestroyed()) {
-        mainWindow.webContents.reload();
-      }
     } catch (error) {
+      backendStartupFailure = error instanceof Error ? error.message : "The local backend failed to start.";
       console.error("Backend startup failed", error);
     }
+    createWindow();
   });
 
   app.on("window-all-closed", () => {
@@ -320,6 +506,7 @@ if (!gotLock) {
   });
 
   app.on("before-quit", () => {
+    logger?.log({ level: "info", component: "main", event: "app-shutdown" });
     backendProcess?.kill();
   });
 }

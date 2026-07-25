@@ -4,17 +4,26 @@
 
   let {
     events,
+    activeRunId = null,
+    cancelling = false,
+    onCancel,
     onClose,
   }: {
     events: ResearchEvent[];
+    activeRunId?: string | null;
+    cancelling?: boolean;
+    onCancel: () => void | Promise<void>;
     onClose: () => void;
   } = $props();
 
   const streamState = $derived.by(() => {
-    const map = new Map(RESEARCH_STREAMS.map((stream) => [stream.id, { name: stream.name, status: "idle", detail: "" }]));
+    const map = new Map<string, { name: string; status: string; detail: string }>(
+      RESEARCH_STREAMS.map((stream) => [stream.id, { name: stream.name, status: "idle", detail: "" }]),
+    );
     for (const event of events) {
-      const current = map.get(event.streamId ?? "");
-      if (!current || !event.streamId) continue;
+      if (!("streamId" in event)) continue;
+      const current = map.get(event.streamId);
+      if (!current) continue;
       if (event.type === "stream-started") current.status = "running";
       if (event.type === "stream-progress") current.detail = event.message;
       if (event.type === "stream-completed") current.status = "completed";
@@ -28,6 +37,8 @@
 
   const orchestratorPhase = $derived.by(() => {
     for (const event of [...events].reverse()) {
+      if (event.type === "run-failed") return `Run failed · ${event.error}`;
+      if (event.type === "run-cancelled") return "Run cancelled";
       if (event.type === "synthesis-completed") return "Synthesis complete";
       if (event.type === "synthesis-started") return "Generating composite synthesis…";
       if (event.type === "coverage-review-completed") return `Coverage review · ${Math.round(event.overallCoverage * 100)}%`;
@@ -41,7 +52,14 @@
 <aside class="drawer" aria-label="Research progress">
   <header>
     <h2>Research</h2>
-    <button aria-label="Close research drawer" onclick={onClose}>Close</button>
+    <div class="header-actions">
+      {#if activeRunId}
+        <button class="danger" disabled={cancelling} onclick={onCancel}>
+          {cancelling ? "Cancelling…" : "Cancel run"}
+        </button>
+      {/if}
+      <button aria-label="Close research drawer" onclick={onClose}>Close</button>
+    </div>
   </header>
   <p class="phase" aria-live="polite">{orchestratorPhase}</p>
   <div class="lanes">
@@ -81,6 +99,16 @@
   h2 {
     margin: 0;
     font-size: 14px;
+  }
+
+  .header-actions {
+    display: flex;
+    gap: 8px;
+  }
+
+  .danger {
+    border-color: color-mix(in srgb, var(--danger) 45%, var(--border));
+    color: var(--danger);
   }
 
   .phase {

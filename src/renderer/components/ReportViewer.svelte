@@ -7,12 +7,6 @@
     title: string;
   } = $props();
 
-  type ReportDetail = { id: string; streamId: string | null; title: string; html: string };
-  type DetailApi = typeof window.scraply & {
-    getReportDetail: (reportId: string) => Promise<ReportDetail>;
-    openExternalUrl: (url: string) => Promise<void>;
-  };
-
   let html = $state<string | null>(null);
   let loading = $state(false);
   let error = $state<string | null>(null);
@@ -22,7 +16,7 @@
     loading = true;
     error = null;
     try {
-      const detail = await (window.scraply as DetailApi).getReportDetail(reportId);
+      const detail = await window.scraply.getReportDetail(reportId);
       html = detail.html;
     } catch (reason) {
       error = reason instanceof Error ? reason.message : "Failed to load report";
@@ -36,7 +30,7 @@
     const anchor = target?.closest("a[href]") as HTMLAnchorElement | null;
     if (!anchor) return;
     event.preventDefault();
-    void (window.scraply as DetailApi).openExternalUrl(anchor.href);
+    void window.scraply.openExternalUrl(anchor.href);
   }
 
   function interceptLinks(node: HTMLElement) {

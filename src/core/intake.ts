@@ -1,7 +1,6 @@
-import { randomUUID } from "node:crypto";
 import type { StructuredModelClient } from "../providers/structured";
 import { loadPrompt } from "./prompts";
-import { ALL_INTAKE_QUESTIONS, nextIntakeQuestion } from "../shared/intake";
+import { ALL_INTAKE_QUESTIONS } from "../shared/intake";
 import { ProjectBriefSchema, type ProjectBrief } from "../shared/schemas";
 
 export function buildBriefFromAnswers(
@@ -77,19 +76,7 @@ export async function generateBriefWithModel(
   );
 }
 
-export function intakeAssistantMessage(answeredIds: Set<string>): string | null {
-  const next = nextIntakeQuestion(answeredIds);
-  if (!next) return null;
-  return next.optional
-    ? `${next.prompt}\n\n(This question is optional — you can skip it.)`
-    : next.prompt;
-}
-
 export function newThreadTitle(goalAnswer?: string): string {
   if (!goalAnswer?.trim()) return "New research";
   return goalAnswer.trim().slice(0, 60);
-}
-
-export function createId(): string {
-  return randomUUID();
 }

@@ -28,17 +28,12 @@ interface RatedIdeaRow {
 export function buildPreferenceContext(db: DatabaseClient): PreferenceContext {
   const rows = db.db.prepare(`
     SELECT i.title, i.description, i.bucket, i.scores_json, r.rating
-    FROM ratings r
+    FROM idea_ratings r
     JOIN ideas i ON i.id = r.idea_id
-    ORDER BY r.created_at DESC
+    ORDER BY r.updated_at DESC
   `).all() as RatedIdeaRow[];
 
-  const latestByTitle = new Map<string, RatedIdeaRow>();
-  for (const row of rows) {
-    const key = row.title.toLowerCase();
-    if (!latestByTitle.has(key)) latestByTitle.set(key, row);
-  }
-  const rated = [...latestByTitle.values()].map((row) => ({
+  const rated = rows.map((row) => ({
     title: row.title,
     description: row.description,
     bucket: row.bucket,
@@ -48,8 +43,8 @@ export function buildPreferenceContext(db: DatabaseClient): PreferenceContext {
 
   const positive = rated.filter((idea) => idea.rating >= 0.8);
   const negative = rated.filter((idea) => idea.rating <= 0.4);
-  const positiveExamples = strongest(rated, "high");
-  const negativeExamples = strongest(rated, "low");
+  const positiveExamples = strongest(positive, "high");
+  const negativeExamples = strongest(negative, "low");
   const instructions: string[] = [];
 
   if (positiveExamples.length > 0) {

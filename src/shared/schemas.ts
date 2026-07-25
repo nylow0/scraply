@@ -53,30 +53,6 @@ export const ResearchStreamSchema = z.object({
   maxQueriesPerHop: z.number().int().min(1).max(10).default(3),
 });
 
-export const IntakeQuestionIdSchema = z.enum([
-  "goal",
-  "theme",
-  "good-idea",
-  "output",
-  "success-decider",
-  "motivation",
-  "deadline",
-  "resources",
-  "avoid",
-  "final-decision",
-  "style-balance",
-  "examples",
-  "research-needs",
-  "scoring-criteria",
-  "anything-else",
-]);
-
-export const IntakeAnswerSchema = z.object({
-  questionId: IntakeQuestionIdSchema,
-  answer: z.string(),
-  skipped: z.boolean().default(false),
-});
-
 export const ProjectBriefSchema = z.object({
   projectName: z.string().min(1),
   theme: z.string().min(1),
@@ -111,15 +87,6 @@ export const RunConfigSchema = z.object({
   maxExaSearches: z.number().int().min(1).max(100).default(20),
   maxRunMinutes: z.number().int().min(1).max(240).default(30),
 });
-
-export const ResearchRunStatusSchema = z.enum([
-  "queued",
-  "running",
-  "partial",
-  "completed",
-  "failed",
-  "cancelled",
-]);
 
 export const ModelProviderSchema = z.enum(["opencode", "codex"]);
 

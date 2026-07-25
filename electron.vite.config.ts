@@ -3,7 +3,7 @@ import { svelte } from "@sveltejs/vite-plugin-svelte";
 import tailwindcss from "@tailwindcss/vite";
 import { resolve } from "node:path";
 
-export default defineConfig({
+export default defineConfig(({ mode }) => ({
   main: {
     plugins: [externalizeDepsPlugin({ exclude: ["zod"] })],
     build: {
@@ -11,6 +11,7 @@ export default defineConfig({
         input: {
           index: resolve("src/main/index.ts"),
           backend: resolve("src/backend/index.ts"),
+          ...(mode === "e2e" ? { "backend-e2e": resolve("test/e2e/backend-entry.ts") } : {}),
         },
       },
     },
@@ -40,4 +41,4 @@ export default defineConfig({
     },
     plugins: [tailwindcss(), svelte()],
   },
-});
+}));

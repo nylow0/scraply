@@ -1,31 +1,58 @@
 name: CI
 
 on:
-  push:
-    branches: [main]
   pull_request:
+    branches: [dev]
+  push:
+    branches: [dev, stage, master]
+
+permissions:
+  contents: read
 
 jobs:
-  check:
+  verify:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: oven-sh/setup-bun@v2
-      - run: bun install --ignore-scripts
-      - run: node node_modules/electron/install.js
-      - run: bun run typecheck
-      - run: bun test test/unit test/integration
-      - run: bun run build
-      - run: bunx playwright install chromium
+        with:
+          bun-version: 1.3.13
+      - run: bun install --frozen-lockfile
+      - name: Validate stage ref policy
+        if: github.event_name == 'push' && github.ref == 'refs/heads/stage'
+        run: bun scripts/check-promotion.ts stage ${{ github.sha }} ${{ github.event.before }}
+      - name: Validate master ref policy
+        if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+        run: bun scripts/check-promotion.ts master ${{ github.sha }} ${{ github.event.before }}
+      - run: bun audit
+      - run: bun run check
       - run: bun run test:e2e
-
-  package-smoke:
-    runs-on: windows-latest
-    needs: check
-    steps:
-      - uses: actions/checkout@v4
-      - uses: oven-sh/setup-bun@v2
-      - run: bun install --ignore-scripts
-      - run: node node_modules/electron/install.js
-      - run: bun run package
-      - run: Test-Path release/Scraply*.exe
+      - name: Build, install, and verify production package
+        run: bun run build:installed
+        env:
+          SCRAPLY_RELEASE_STRICT: "1"
+          SCRAPLY_ALLOW_UNSIGNED: ${{ github.event.repository.private && '1' || '0' }}
+      - run: bun run test:e2e:production
+      - run: bun run test:e2e:portable
+      - run: bun run test:e2e:installed
+      - name: Upload verified package
+        uses: actions/upload-artifact@v4
+        with:
+          name: scraply-${{ github.sha }}
+          if-no-files-found: error
+          retention-days: 14
+          path: |
+            release/Scraply Setup *.exe
+            release/Scraply *.exe
+            release/manifest.json
+            release/SHA256SUMS.txt
+      - name: Upload Playwright traces on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-failure-${{ github.sha }}
+          if-no-files-found: ignore
+          retention-days: 7
+          path: test-results/

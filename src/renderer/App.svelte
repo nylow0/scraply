@@ -10,62 +10,98 @@
   import ReportViewer from "./components/ReportViewer.svelte";
   import ResumeBanner from "./components/ResumeBanner.svelte";
   import FocusedBranchSetup from "./components/FocusedBranchSetup.svelte";
+  import SetupScreen from "./components/SetupScreen.svelte";
   import type { AppState } from "./lib/state";
   import { initialState } from "./lib/state";
+  import { toFavoriteModelPayload, toProjectBriefPayload, toRunConfigPayload } from "./lib/ipc-payloads";
   import type { ModelRef, ProjectBrief, RunConfig } from "@shared/schemas";
   import type { IdeaGenerationCompleteness } from "@shared/ipc";
   import { DEFAULT_RUN_CONFIG } from "@shared/intake";
 
-  let state: AppState = $state({ ...initialState });
+  let appState: AppState = $state({ ...initialState });
   let intakeSubmitting = $state(false);
   let briefConfirming = $state(false);
   let researchStarting = $state(false);
   let ideasGenerating = $state(false);
-  let partialIdeaNotice = $state<IdeaGenerationCompleteness | null>(null);
-  let deletingThreadId = $state<string | null>(null);
+  let setupSaving = $state(false);
+  let recoveryPendingRunId: string | null = $state(null);
+  let runCancelling = $state(false);
+  let partialIdeaNotice: IdeaGenerationCompleteness | null = $state(null);
+  let deletingThreadId: string | null = $state(null);
   let intakeView: "questions" | "models" = $state("questions");
   let reconcileTimer: ReturnType<typeof setTimeout> | null = null;
 
-  async function refreshWorkspace() {
-    state.error = null;
+  async function refreshWorkspace(options: { preserveError?: boolean } = {}) {
     try {
-      state.workspace = await window.scraply.getWorkspace();
+      const workspace = await window.scraply.getWorkspace();
+      appState.workspace = workspace;
+      appState.validation = workspace.validation;
+      if (!options.preserveError) appState.error = null;
     } catch (error) {
-      state.error = error instanceof Error ? error.message : "Failed to load workspace";
+      appState.error = error instanceof Error ? error.message : "Failed to load workspace";
     } finally {
-      state.loading = false;
+      appState.loading = false;
     }
   }
 
   async function initialLoad() {
     try {
-      state.validation = await window.scraply.getValidation();
+      appState.validation = await window.scraply.getValidation();
     } catch (error) {
-      state.error = error instanceof Error ? error.message : "Failed to validate setup";
+      appState.error = error instanceof Error ? error.message : "Failed to validate setup";
     }
-    await refreshWorkspace();
+    await refreshWorkspace({ preserveError: Boolean(appState.error) });
+  }
+
+  async function saveSetup(opencodeApiKey: string, exaApiKey: string) {
+    if (setupSaving) return;
+    setupSaving = true;
+    appState.error = null;
+    try {
+      appState.validation = await window.scraply.saveSecrets(opencodeApiKey, exaApiKey);
+      if (appState.validation.setupComplete) await refreshWorkspace();
+    } catch (error) {
+      appState.error = error instanceof Error ? error.message : "Failed to save provider keys";
+    } finally {
+      setupSaving = false;
+    }
+  }
+
+  async function importSetupFromEnv() {
+    if (setupSaving) return;
+    setupSaving = true;
+    appState.error = null;
+    try {
+      appState.validation = await window.scraply.importEnv();
+      if (appState.validation.setupComplete) await refreshWorkspace();
+    } catch (error) {
+      appState.error = error instanceof Error ? error.message : "Failed to import development keys";
+    } finally {
+      setupSaving = false;
+    }
   }
 
   function reconcileSoon() {
     if (reconcileTimer) clearTimeout(reconcileTimer);
-    reconcileTimer = setTimeout(() => void refreshWorkspace(), 150);
+    reconcileTimer = setTimeout(() => void refreshWorkspace({ preserveError: true }), 150);
   }
 
   $effect(() => {
     void initialLoad();
     const unsubscribe = window.scraply.onBackendEvent((event) => {
-      if ("threadId" in event && event.threadId !== state.workspace?.activeThreadId) return;
-      if ("runId" in event && state.activeRunId && event.runId !== state.activeRunId) return;
-      state.researchEvents = [...state.researchEvents, event];
-      if (event.type === "run-started") state.activeRunId = event.runId;
-      if (event.type === "run-completed" || event.type === "run-cancelled") {
-        state.activeRunId = null;
+      if (event.threadId !== appState.workspace?.activeThreadId) return;
+      if (appState.activeRunId && event.runId !== appState.activeRunId) return;
+      appState.researchEvents = [...appState.researchEvents, event];
+      if (event.type === "run-started") appState.activeRunId = event.runId;
+      if (event.type === "run-completed" || event.type === "run-cancelled" || event.type === "run-failed") {
+        appState.activeRunId = null;
+        if (event.type === "run-failed") appState.error = event.error;
         reconcileSoon();
       }
       if (event.type === "stream-completed" || event.type === "synthesis-completed") reconcileSoon();
       if (event.type === "run-resumed") {
-        state.activeRunId = event.runId;
-        state.showDrawer = true;
+        appState.activeRunId = event.runId;
+        appState.showDrawer = true;
         reconcileSoon();
       }
       if (event.type === "ideas-generated") reconcileSoon();
@@ -77,46 +113,46 @@
   });
 
   async function newThread() {
-    state.error = null;
+    appState.error = null;
     try {
       const result = await window.scraply.createThread();
-      state.workspace = result.workspace;
+      appState.workspace = result.workspace;
       intakeView = "questions";
     } catch (error) {
-      state.error = error instanceof Error ? error.message : "Failed to create research";
+      appState.error = error instanceof Error ? error.message : "Failed to create research";
     }
   }
 
   async function selectThread(threadId: string) {
-    state.error = null;
+    appState.error = null;
     try {
-      state.workspace = await window.scraply.selectThread(threadId);
-      state.researchEvents = [];
-      state.activeRunId = null;
+      appState.workspace = await window.scraply.selectThread(threadId);
+      appState.researchEvents = [];
+      appState.activeRunId = null;
       intakeView = "questions";
     } catch (error) {
-      state.error = error instanceof Error ? error.message : "Failed to open research";
+      appState.error = error instanceof Error ? error.message : "Failed to open research";
     }
   }
 
   async function deleteThread(threadId: string) {
     if (deletingThreadId) return;
     deletingThreadId = threadId;
-    state.error = null;
+    appState.error = null;
     try {
-      state.workspace = await window.scraply.deleteThread(threadId);
+      appState.workspace = await window.scraply.deleteThread(threadId);
     } catch (error) {
-      state.error = error instanceof Error ? error.message : "Failed to delete research";
+      appState.error = error instanceof Error ? error.message : "Failed to delete research";
     } finally {
       deletingThreadId = null;
     }
   }
 
   async function submitIntakeAnswers(answers: Array<{ questionId: string; answer: string; skipped: boolean }>) {
-    const threadId = state.workspace?.activeThreadId;
+    const threadId = appState.workspace?.activeThreadId;
     if (!threadId || intakeSubmitting) return;
     intakeSubmitting = true;
-    state.error = null;
+    appState.error = null;
     try {
       for (const answer of answers) {
         const result = await window.scraply.submitIntake({
@@ -125,130 +161,177 @@
           answer: answer.answer,
           skipped: answer.skipped,
         });
-        state.workspace = result.workspace;
+        appState.workspace = result.workspace;
       }
-      if (!state.workspace?.brief) throw new Error("Brief was not generated from your answers");
+      if (!appState.workspace?.brief) throw new Error("Brief was not generated from your answers");
     } catch (error) {
-      state.error = error instanceof Error ? error.message : "Failed to draft brief";
+      appState.error = error instanceof Error ? error.message : "Failed to draft brief";
     } finally {
       intakeSubmitting = false;
     }
   }
 
   async function confirmBrief(brief: ProjectBrief) {
-    const threadId = state.workspace?.activeThreadId;
+    const threadId = appState.workspace?.activeThreadId;
     if (!threadId || briefConfirming) return;
     briefConfirming = true;
-    state.error = null;
+    appState.error = null;
     try {
-      state.workspace = await window.scraply.confirmBrief({ threadId, brief });
+      appState.workspace = await window.scraply.confirmBrief({ threadId, brief: toProjectBriefPayload(brief) });
     } catch (error) {
-      state.error = error instanceof Error ? error.message : "Failed to confirm brief";
+      appState.error = error instanceof Error ? error.message : "Failed to confirm brief";
     } finally {
       briefConfirming = false;
     }
   }
 
-  async function saveRunConfig(config = state.workspace?.runConfig ?? DEFAULT_RUN_CONFIG, presetName?: string) {
-    const threadId = state.workspace?.activeThreadId;
+  async function saveRunConfig(config = appState.workspace?.runConfig ?? DEFAULT_RUN_CONFIG, presetName?: string) {
+    const threadId = appState.workspace?.activeThreadId;
     if (!threadId) return;
+    appState.error = null;
     try {
-      state.workspace = await window.scraply.saveRunConfig({ threadId, config, presetName });
+      appState.workspace = await window.scraply.saveRunConfig({
+        threadId,
+        config: toRunConfigPayload(config),
+        ...(presetName ? { presetName } : {}),
+      });
     } catch (error) {
-      state.error = error instanceof Error ? error.message : "Failed to save configuration";
+      appState.error = error instanceof Error ? error.message : "Failed to save configuration";
     }
   }
 
   async function saveFavoriteModel(model: ModelRef, favorite: boolean) {
+    appState.error = null;
     try {
-      state.workspace = await window.scraply.saveFavoriteModel({ model, favorite });
+      appState.workspace = await window.scraply.saveFavoriteModel(toFavoriteModelPayload({ model, favorite }));
     } catch (error) {
-      state.error = error instanceof Error ? error.message : "Failed to update favorite";
+      appState.error = error instanceof Error ? error.message : "Failed to update favorite";
     }
   }
 
   async function startResearch(config: RunConfig) {
-    const threadId = state.workspace?.activeThreadId;
+    const threadId = appState.workspace?.activeThreadId;
     if (!threadId || researchStarting) return;
     researchStarting = true;
-    state.error = null;
+    appState.error = null;
     try {
-      state.workspace = await window.scraply.saveRunConfig({ threadId, config });
+      appState.workspace = await window.scraply.saveRunConfig({ threadId, config: toRunConfigPayload(config) });
       const result = await window.scraply.startResearch(threadId);
-      state.workspace = result.workspace;
-      state.activeRunId = result.runId;
-      state.showDrawer = true;
+      appState.workspace = result.workspace;
+      appState.activeRunId = result.runId;
+      appState.showDrawer = true;
     } catch (error) {
-      state.error = error instanceof Error ? error.message : "Failed to start research";
+      appState.error = error instanceof Error ? error.message : "Failed to start research";
     } finally {
       researchStarting = false;
     }
   }
 
   async function generateIdeas(allowPartial = false) {
-    const runId = state.workspace?.latestResearchRun?.runId;
+    const runId = appState.workspace?.latestResearchRun?.runId;
     if (!runId || ideasGenerating) {
-      state.error = "A completed research synthesis is required before generating ideas.";
+      appState.error = "A completed research synthesis is required before generating ideas.";
       return;
     }
     ideasGenerating = true;
-    state.error = null;
+    appState.error = null;
     try {
       const result = await window.scraply.generateIdeas(runId, allowPartial);
-      state.workspace = result.workspace;
+      appState.workspace = result.workspace;
       partialIdeaNotice = result.completeness.mode === "partial" ? result.completeness : null;
     } catch (error) {
-      state.error = error instanceof Error ? error.message : "Failed to generate ideas";
+      appState.error = error instanceof Error ? error.message : "Failed to generate ideas";
     } finally {
       ideasGenerating = false;
     }
   }
 
   async function generatePartialIdeas() {
-    const run = state.workspace?.latestResearchRun;
+    const run = appState.workspace?.latestResearchRun;
     if (!run || !partialRunAvailable) return;
-    const coverage = [...run.missingLenses, ...run.gaps].join("; ");
+    const coverage = [...run.missingLenses, ...run.gaps].join("; ") || "Synthesis was not completed.";
     if (!window.confirm(`Generate ideas from partial research? Missing coverage: ${coverage}`)) return;
     await generateIdeas(true);
   }
 
   async function resumeResearch(runId: string) {
-    state.workspace = await window.scraply.resumeResearch(runId);
-    state.showDrawer = true;
+    if (recoveryPendingRunId) return;
+    recoveryPendingRunId = runId;
+    appState.error = null;
+    try {
+      appState.workspace = await window.scraply.resumeResearch(runId);
+      appState.showDrawer = true;
+    } catch (error) {
+      appState.error = error instanceof Error ? error.message : "Failed to resume research";
+    } finally {
+      recoveryPendingRunId = null;
+    }
   }
 
   async function cancelIncompleteResearch(runId: string) {
-    state.workspace = await window.scraply.cancelIncompleteResearch(runId);
+    if (recoveryPendingRunId) return;
+    recoveryPendingRunId = runId;
+    appState.error = null;
+    try {
+      appState.workspace = await window.scraply.cancelIncompleteResearch(runId);
+    } catch (error) {
+      appState.error = error instanceof Error ? error.message : "Failed to cancel interrupted research";
+    } finally {
+      recoveryPendingRunId = null;
+    }
   }
 
-  const activeThread = $derived(state.workspace?.threads.find((t) => t.id === state.workspace?.activeThreadId) ?? null);
-  const partialRunAvailable = $derived(Boolean(
-    state.workspace?.latestResearchRun
-    && ["partial", "failed"].includes(state.workspace.latestResearchRun.status)
-    && (state.workspace.latestResearchRun.missingLenses.length > 0 || state.workspace.latestResearchRun.gaps.length > 0),
-  ));
-  const providersReady = $derived(Boolean(state.validation?.setupComplete));
+  async function cancelResearch() {
+    if (!appState.activeRunId || runCancelling) return;
+    runCancelling = true;
+    appState.error = null;
+    try {
+      appState.workspace = await window.scraply.cancelResearch(appState.activeRunId);
+      appState.activeRunId = null;
+    } catch (error) {
+      appState.error = error instanceof Error ? error.message : "Failed to cancel research";
+    } finally {
+      runCancelling = false;
+    }
+  }
+
+  const activeThread = $derived(appState.workspace?.threads.find((t) => t.id === appState.workspace?.activeThreadId) ?? null);
+  const partialRunAvailable = $derived(Boolean(appState.workspace?.latestResearchRun?.canGeneratePartialIdeas));
+  const providersReady = $derived(Boolean(appState.validation?.setupComplete));
 </script>
 
-{#if state.loading}
+{#if appState.loading}
   <div class="boot"><span class="boot-mark" aria-hidden="true"></span><span>Connecting Scraply…</span></div>
+{:else if !appState.validation?.setupComplete}
+  <SetupScreen
+    validation={appState.validation}
+    error={appState.error}
+    saving={setupSaving}
+    canImportEnv={window.scraply.canImportEnv}
+    onSave={saveSetup}
+    onImportEnv={importSetupFromEnv}
+    onOpenData={() => window.scraply.openDataFolder()}
+    onOpenLogs={() => window.scraply.openLogsFolder()}
+  />
 {:else}
   <div class="shell">
     <Sidebar
-      threads={state.workspace?.threads ?? []}
-      activeThreadId={state.workspace?.activeThreadId ?? null}
+      threads={appState.workspace?.threads ?? []}
+      activeThreadId={appState.workspace?.activeThreadId ?? null}
       {deletingThreadId}
       onNew={newThread}
       onSelect={selectThread}
       onDelete={deleteThread}
-      onOpenGuide={() => (state.showGuide = true)}
+      onOpenGuide={() => (appState.showGuide = true)}
       onOpenData={() => window.scraply.openDataFolder()}
+      onOpenLogs={() => window.scraply.openLogsFolder()}
     />
 
     <main class="main">
-      {#if (state.workspace?.pendingRuns?.length ?? 0) > 0}
+      {#if (appState.workspace?.pendingRuns?.length ?? 0) > 0}
         <ResumeBanner
-          pendingRuns={state.workspace?.pendingRuns ?? []}
+          pendingRuns={appState.workspace?.pendingRuns ?? []}
+          pendingRunId={recoveryPendingRunId}
           onResume={resumeResearch}
           onCancel={cancelIncompleteResearch}
         />
@@ -262,11 +345,11 @@
           <span class:ready={providersReady} class="connection" role="status">
             <span aria-hidden="true"></span>{providersReady ? "Providers ready" : "Limited connection"}
           </span>
-          <button class="ghost" aria-label="Toggle research progress drawer" onclick={() => (state.showDrawer = !state.showDrawer)}>Research</button>
+          <button class="ghost" aria-label="Toggle research progress drawer" onclick={() => (appState.showDrawer = !appState.showDrawer)}>Research</button>
           {#if activeThread?.status === "brief-confirmed" || activeThread?.status === "configuring"}
             <button class="ghost" onclick={() => saveRunConfig()}>Save config</button>
           {/if}
-          {#if state.workspace?.latestResearchRun?.synthesisReportId}
+          {#if appState.workspace?.latestResearchRun?.synthesisReportId}
             <button class="primary" disabled={ideasGenerating} onclick={() => generateIdeas(false)}>
               {ideasGenerating ? "Generating…" : "Generate ideas"}
             </button>
@@ -279,8 +362,8 @@
         </div>
       </header>
 
-      {#if state.error}
-        <p class="global-error" role="alert">{state.error}</p>
+      {#if appState.error}
+        <p class="global-error" role="alert">{appState.error}</p>
       {/if}
       {#if partialIdeaNotice}
         <p class="partial-notice" role="status">
@@ -289,8 +372,8 @@
         </p>
       {/if}
 
-      {#if state.workspace?.branchContext}
-        <FocusedBranchSetup context={state.workspace.branchContext} />
+      {#if appState.workspace?.branchContext}
+        <FocusedBranchSetup context={appState.workspace.branchContext} />
       {/if}
 
       {#if activeThread?.status === "intake"}
@@ -310,16 +393,16 @@
           <div class="intake-pane" hidden={intakeView !== "questions"}>
             <ResearchSetupForm
               submitting={intakeSubmitting}
-              error={state.error}
+              error={appState.error}
               onSubmit={submitIntakeAnswers}
             />
           </div>
           <div class="intake-pane" hidden={intakeView !== "models"}>
             <RunConfigPanel
-              models={state.workspace?.models ?? []}
-              modelCatalog={state.workspace?.modelCatalog}
-              config={state.workspace?.runConfig ?? DEFAULT_RUN_CONFIG}
-              presets={state.workspace?.presets ?? []}
+              models={appState.workspace?.models ?? []}
+              modelCatalog={appState.workspace?.modelCatalog}
+              config={appState.workspace?.runConfig ?? DEFAULT_RUN_CONFIG}
+              presets={appState.workspace?.presets ?? []}
               onSave={(config, presetName) => saveRunConfig(config, presetName)}
               onFavorite={saveFavoriteModel}
               setupOnly
@@ -327,19 +410,19 @@
           </div>
         </section>
       {:else}
-        <Conversation messages={state.workspace?.messages ?? []} />
+        <Conversation messages={appState.workspace?.messages ?? []} />
       {/if}
 
-      {#if activeThread?.status === "brief-draft" && state.workspace?.brief}
-        <BriefPanel brief={state.workspace.brief} confirming={briefConfirming} onConfirm={confirmBrief} />
+      {#if activeThread?.status === "brief-draft" && appState.workspace?.brief}
+        <BriefPanel brief={appState.workspace.brief} confirming={briefConfirming} onConfirm={confirmBrief} />
       {/if}
 
       {#if activeThread?.status === "brief-confirmed" || activeThread?.status === "configuring"}
         <RunConfigPanel
-          models={state.workspace?.models ?? []}
-          modelCatalog={state.workspace?.modelCatalog}
-          config={state.workspace?.runConfig ?? DEFAULT_RUN_CONFIG}
-          presets={state.workspace?.presets ?? []}
+          models={appState.workspace?.models ?? []}
+          modelCatalog={appState.workspace?.modelCatalog}
+          config={appState.workspace?.runConfig ?? DEFAULT_RUN_CONFIG}
+          presets={appState.workspace?.presets ?? []}
           onSave={(config, presetName) => saveRunConfig(config, presetName)}
           onStart={startResearch}
           starting={researchStarting}
@@ -347,23 +430,29 @@
         />
       {/if}
 
-      {#if (state.workspace?.reports?.length ?? 0) > 0}
-        {#each state.workspace?.reports ?? [] as report (report.id)}
+      {#if (appState.workspace?.reports?.length ?? 0) > 0}
+        {#each appState.workspace?.reports ?? [] as report (report.id)}
           <ReportViewer reportId={report.id} title={report.title} />
         {/each}
       {/if}
 
       {#if activeThread?.status === "ideas-ready"}
-        <IdeaWorkspace ideas={state.workspace?.ideas ?? []} threadId={activeThread?.id ?? ""} onRefresh={refreshWorkspace} />
+        <IdeaWorkspace ideas={appState.workspace?.ideas ?? []} threadId={activeThread?.id ?? ""} onRefresh={refreshWorkspace} />
       {/if}
     </main>
 
-    {#if state.showDrawer}
-      <ResearchDrawer events={state.researchEvents} onClose={() => (state.showDrawer = false)} />
+    {#if appState.showDrawer}
+      <ResearchDrawer
+        events={appState.researchEvents}
+        activeRunId={appState.activeRunId}
+        cancelling={runCancelling}
+        onCancel={cancelResearch}
+        onClose={() => (appState.showDrawer = false)}
+      />
     {/if}
 
-    {#if state.showGuide}
-      <UserGuide onClose={() => (state.showGuide = false)} />
+    {#if appState.showGuide}
+      <UserGuide onClose={() => (appState.showGuide = false)} />
     {/if}
   </div>
 {/if}

@@ -4,11 +4,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { z } from "zod";
 import { ResearchEngine } from "../../src/core/research-engine";
+import { listPendingRuns } from "../../src/core/research-recovery";
 import { DatabaseClient } from "../../src/db/client";
 import { ThreadRepository } from "../../src/db/repositories/threads";
 import { ExaClient } from "../../src/providers/exa";
 import type { StructuredModelClient } from "../../src/providers/structured";
 import { DEFAULT_RUN_CONFIG } from "../../src/shared/intake";
+import type { ResearchEvent } from "../../src/shared/ipc";
 import { RunConfigSchema, type ProjectBrief } from "../../src/shared/schemas";
 
 const dirs: string[] = [];
@@ -64,13 +66,16 @@ describe("research hard limits", () => {
       availableEffort: "Low",
       ideaStylePreference: "Safe",
     };
+    const events: ResearchEvent[] = [];
     const engine = new ResearchEngine({
       db,
       exa,
       modelClients: { opencode: unusedModel },
-      onEvent: () => undefined,
+      onEvent: (event) => events.push(event),
     });
     const runId = await engine.startRun(thread.id, brief, config);
+    expect(listPendingRuns(db, engine.getActiveRunIds())).toEqual([]);
+    expect(listPendingRuns(db).map((pending) => pending.runId)).toEqual([runId]);
 
     let run: { status: string; completion_reason: string | null } | undefined;
     for (let attempt = 0; attempt < 50; attempt++) {
@@ -85,6 +90,74 @@ describe("research hard limits", () => {
       SELECT payload_json FROM job_events WHERE run_id = ? AND type = 'run-failed' ORDER BY id DESC LIMIT 1
     `).get(runId) as { payload_json: string };
     expect(JSON.parse(event.payload_json).code).toBe("timeout");
+    expect(events.filter((item) => item.type === "run-completed")).toEqual([]);
+    expect(events.at(-1)).toEqual({
+      type: "run-failed",
+      runId,
+      threadId: thread.id,
+      error: "Research run wall-clock limit reached",
+    });
+    const storedThread = db.db.prepare("SELECT status FROM threads WHERE id = ?").get(thread.id) as { status: string };
+    expect(storedThread.status).toBe("configuring");
+    db.close();
+  });
+
+  test("active cancellation keeps run, thread, and live event state consistent", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "scraply-cancel-"));
+    dirs.push(dir);
+    const db = new DatabaseClient(join(dir, "scraply.db"));
+    const thread = new ThreadRepository(db).createThread();
+    const exa = new ExaClient("test", async (_input, init) => new Promise<Response>((_resolve, reject) => {
+      const signal = init?.signal;
+      const abort = () => reject(signal?.reason ?? new DOMException("Aborted", "AbortError"));
+      if (signal?.aborted) abort();
+      else signal?.addEventListener("abort", abort, { once: true });
+    }));
+    const unusedModel: StructuredModelClient = {
+      async structuredCompletion<T>(_m: string, _s: string, _u: string, schema: z.ZodType<T>): Promise<T> {
+        return schema.parse({});
+      },
+    };
+    const config = RunConfigSchema.parse({
+      ...DEFAULT_RUN_CONFIG,
+      orchestratorProvider: "opencode",
+      workerProvider: "opencode",
+      ideaProvider: "opencode",
+      parallelism: 1,
+      maxRunMinutes: 1,
+    });
+    const brief: ProjectBrief = {
+      projectName: "Cancellation",
+      theme: "Cancellation",
+      description: "Verify explicit cancellation",
+      desiredOutput: "Evidence",
+      successDefinition: "Stops cleanly",
+      constraints: [],
+      resources: [],
+      avoidList: [],
+      researchNeeds: "One search",
+      finalDecision: "Stop",
+      deadline: "Now",
+      availableEffort: "Low",
+      ideaStylePreference: "Safe",
+    };
+    const events: ResearchEvent[] = [];
+    const engine = new ResearchEngine({
+      db,
+      exa,
+      modelClients: { opencode: unusedModel },
+      onEvent: (event) => events.push(event),
+    });
+    const runId = await engine.startRun(thread.id, brief, config);
+    await Bun.sleep(10);
+
+    engine.cancelRun(runId);
+    await Bun.sleep(20);
+
+    expect(db.db.prepare("SELECT status FROM research_runs WHERE id = ?").get(runId)).toEqual({ status: "cancelled" });
+    expect(db.db.prepare("SELECT status FROM threads WHERE id = ?").get(thread.id)).toEqual({ status: "configuring" });
+    expect(events.at(-1)).toEqual({ type: "run-cancelled", runId, threadId: thread.id });
+    expect(engine.getActiveRunIds().has(runId)).toBe(false);
     db.close();
   });
 });

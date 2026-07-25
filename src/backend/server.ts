@@ -1,8 +1,9 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { randomBytes } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { DatabaseClient } from "../db/client";
 import { ThreadRepository } from "../db/repositories/threads";
-import { buildBriefFromAnswers, generateBriefWithModel, intakeAssistantMessage, newThreadTitle } from "../core/intake";
+import { ActiveRunConflictError } from "../db/repositories/research-runs";
+import { generateBriefWithModel, newThreadTitle } from "../core/intake";
 import { generateIdeas, IdeaGenerationBlockedError } from "../core/ideas";
 import { ResearchEngine } from "../core/research-engine";
 import { cancelIncompleteRun, listPendingRuns } from "../core/research-recovery";
@@ -39,6 +40,7 @@ import {
 } from "../shared/ipc";
 import { AppError, toErrorPayload } from "../shared/errors";
 import { DEFAULT_RUN_CONFIG, intakeProgress, nextIntakeQuestion } from "../shared/intake";
+import type { LogInput } from "../shared/logging";
 import { IdeaSchema, ModelCatalogSchema, type ModelCatalog, type ModelProvider, type ModelRef, RunConfigSchema } from "../shared/schemas";
 
 export interface BackendContext {
@@ -46,7 +48,9 @@ export interface BackendContext {
   dbPath: string;
   bundledPromptsDir: string;
   promptOverridesDir: string;
+  appVersion: string;
   getSecrets: () => { opencodeApiKey: string | null; exaApiKey: string | null };
+  log?: (input: Omit<LogInput, "component">) => void;
   providerValidation?: {
     probeCodex?: () => Promise<{ detected: boolean; compatible: boolean; version?: string; error?: string }>;
     listCodexModels?: () => Promise<string[]>;
@@ -77,7 +81,6 @@ export interface BackendHandle {
   port: number;
   token: string;
   close: () => Promise<void>;
-  emitEvent: (event: ResearchEvent) => void;
   secretsChanged: () => void;
 }
 
@@ -86,6 +89,12 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
   const db = new DatabaseClient(context.dbPath);
   const threads = new ThreadRepository(db);
   db.setMeta("persistence_probe", `ok-${Date.now()}`);
+  const migration = db.db.prepare("SELECT MAX(id) AS id FROM schema_migrations").get() as { id: number | null };
+  context.log?.({
+    level: "info",
+    event: "database-opened",
+    context: { migration: migration.id ?? 0 },
+  });
 
   let cachedValidation: ValidationState | null = null;
   let cachedModels: string[] = [];
@@ -186,7 +195,7 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
       ideas,
       reports,
       latestResearchRun,
-      pendingRuns: listPendingRuns(db),
+      pendingRuns: listPendingRuns(db, researchEngine?.getActiveRunIds()),
     });
   }
 
@@ -216,9 +225,22 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
     db.setSetting("favorite_models", JSON.stringify(next));
   }
 
-  function listIdeas(threadId: string) {
-    const rows = db.db.prepare("SELECT * FROM ideas WHERE thread_id = ? ORDER BY created_at DESC").all(threadId) as Array<Record<string, unknown>>;
-    return rows.map((row) => ({
+  function getIdeaDetail(ideaId: string) {
+    const row = db.db.prepare("SELECT * FROM ideas WHERE id = ?").get(ideaId) as Record<string, unknown> | undefined;
+    if (!row) throw new AppError("not_found", "Idea not found.");
+    const rating = db.db.prepare("SELECT rating, notes, updated_at FROM idea_ratings WHERE idea_id = ?").get(ideaId) as
+      { rating: number; notes: string | null; updated_at: string } | undefined;
+    const evidence = db.db.prepare(`
+      SELECT ic.claim_id, s.id AS source_id, s.title AS source_title, s.canonical_url, ce.quote
+      FROM idea_claims ic
+      JOIN claim_evidence ce ON ce.claim_id = ic.claim_id
+      JOIN sources s ON s.id = ce.source_id
+      WHERE ic.idea_id = ?
+      ORDER BY ic.claim_id, s.id
+    `).all(ideaId) as Array<{
+      claim_id: string; source_id: string; source_title: string; canonical_url: string; quote: string;
+    }>;
+    return IdeaSchema.parse({
       id: row.id,
       threadId: row.thread_id,
       title: row.title,
@@ -226,6 +248,41 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
       bucket: row.bucket,
       scores: JSON.parse(String(row.scores_json)),
       supportingClaimIds: JSON.parse(String(row.supporting_claim_ids_json)),
+      researchRunId: row.research_run_id ?? undefined,
+      generationMode: row.generation_mode ?? undefined,
+      currentRating: rating ? { rating: rating.rating, notes: rating.notes, updatedAt: rating.updated_at } : null,
+      evidence: evidence.map((item) => ({
+        claimId: item.claim_id,
+        sourceId: item.source_id,
+        sourceTitle: item.source_title,
+        url: item.canonical_url,
+        quote: item.quote,
+      })),
+      createdAt: row.created_at,
+    });
+  }
+
+  function listIdeas(threadId: string) {
+    const rows = db.db.prepare(`
+      SELECT i.*, ir.rating, ir.notes, ir.updated_at AS rating_updated_at
+      FROM ideas i
+      LEFT JOIN idea_ratings ir ON ir.idea_id = i.id
+      WHERE i.thread_id = ?
+      ORDER BY i.created_at DESC
+    `).all(threadId) as Array<Record<string, unknown>>;
+    return rows.map((row) => IdeaSchema.parse({
+      id: row.id,
+      threadId: row.thread_id,
+      title: row.title,
+      description: row.description,
+      bucket: row.bucket,
+      scores: JSON.parse(String(row.scores_json)),
+      supportingClaimIds: JSON.parse(String(row.supporting_claim_ids_json)),
+      researchRunId: row.research_run_id ?? undefined,
+      generationMode: row.generation_mode ?? undefined,
+      currentRating: row.rating
+        ? { rating: row.rating, notes: row.notes ?? null, updatedAt: row.rating_updated_at }
+        : null,
       createdAt: row.created_at,
     }));
   }
@@ -267,10 +324,17 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
       .filter((lens) => !completed.has(lens));
     const gaps = [...new Set(streams.flatMap((stream) => [stream.error, stream.gap_stop_reason]
       .filter((value): value is string => Boolean(value))))];
+    const validClaims = db.db.prepare(`
+      SELECT COUNT(*) AS count FROM claims
+      WHERE research_run_id = ? AND validation_status = 'valid'
+    `).get(run.id) as { count: number };
     return {
       runId: run.id,
       status: run.status,
       synthesisReportId: synthesis?.id ?? null,
+      canGeneratePartialIdeas: !synthesis
+        && ["partial", "failed", "cancelled"].includes(run.status)
+        && validClaims.count > 0,
       missingLenses,
       gaps,
     };
@@ -288,18 +352,21 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
   }
 
   const server = createServer(async (req, res) => {
+    const startedAt = Date.now();
+    const method = req.method ?? "GET";
+    let route = req.url ?? "/";
     try {
       if (!authorize(req, token)) {
         sendError(res, new AppError("unauthorized"));
         return;
       }
       const url = new URL(req.url ?? "/", "http://127.0.0.1");
-      const method = req.method ?? "GET";
+      route = url.pathname;
 
       if (method === "GET" && url.pathname === "/health") {
         sendJson(res, 200, HealthResponseSchema.parse({
           ok: true,
-          version: "0.2.0",
+          version: context.appVersion,
           persistenceCheck: db.getMeta("persistence_probe") ?? undefined,
         }));
         return;
@@ -364,40 +431,7 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
 
       if (method === "GET" && url.pathname.startsWith("/ideas/")) {
         const input = GetIdeaDetailRequestSchema.parse({ ideaId: url.pathname.slice("/ideas/".length) });
-        const row = db.db.prepare("SELECT * FROM ideas WHERE id = ?").get(input.ideaId) as Record<string, unknown> | undefined;
-        if (!row) throw new AppError("not_found", "Idea not found.");
-        const rating = db.db.prepare("SELECT rating, notes, updated_at FROM idea_ratings WHERE idea_id = ?").get(input.ideaId) as
-          { rating: number; notes: string | null; updated_at: string } | undefined;
-        const evidence = db.db.prepare(`
-          SELECT ic.claim_id, s.id AS source_id, s.title AS source_title, s.canonical_url, ce.quote
-          FROM idea_claims ic
-          JOIN claim_evidence ce ON ce.claim_id = ic.claim_id
-          JOIN sources s ON s.id = ce.source_id
-          WHERE ic.idea_id = ?
-          ORDER BY ic.claim_id, s.id
-        `).all(input.ideaId) as Array<{
-          claim_id: string; source_id: string; source_title: string; canonical_url: string; quote: string;
-        }>;
-        sendJson(res, 200, IdeaSchema.parse({
-          id: row.id,
-          threadId: row.thread_id,
-          title: row.title,
-          description: row.description,
-          bucket: row.bucket,
-          scores: JSON.parse(String(row.scores_json)),
-          supportingClaimIds: JSON.parse(String(row.supporting_claim_ids_json)),
-          researchRunId: row.research_run_id ?? undefined,
-          generationMode: row.generation_mode ?? undefined,
-          currentRating: rating ? { rating: rating.rating, notes: rating.notes, updatedAt: rating.updated_at } : null,
-          evidence: evidence.map((item) => ({
-            claimId: item.claim_id,
-            sourceId: item.source_id,
-            sourceTitle: item.source_title,
-            url: item.canonical_url,
-            quote: item.quote,
-          })),
-          createdAt: row.created_at,
-        }));
+        sendJson(res, 200, getIdeaDetail(input.ideaId));
         return;
       }
 
@@ -511,7 +545,15 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
           const config = threads.getLatestRunConfig(input.threadId) ?? RunConfigSchema.parse(DEFAULT_RUN_CONFIG);
           if (!brief) throw new AppError("conflict", "Confirm the brief before starting research.");
           const engine = ensureResearchEngine();
-          const runId = await engine.startRun(input.threadId, brief, config);
+          let runId: string;
+          try {
+            runId = await engine.startRun(input.threadId, brief, config);
+          } catch (error) {
+            if (error instanceof ActiveRunConflictError) {
+              throw new AppError("conflict", "This research already has an active run.");
+            }
+            throw error;
+          }
           threads.updateThreadStatus(input.threadId, "research-running");
           threads.addMessage(input.threadId, "event", `Research run ${runId} started.`);
           sendJson(res, 200, { runId, workspace: await workspaceState() });
@@ -520,8 +562,12 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
 
         if (url.pathname === "/research/resume") {
           const input = ResumeResearchSchema.parse(body);
-          const existing = db.db.prepare("SELECT 1 FROM research_runs WHERE id = ?").get(input.runId);
+          const existing = db.db.prepare("SELECT thread_id, status FROM research_runs WHERE id = ?").get(input.runId) as
+            { thread_id: string; status: string } | undefined;
           if (!existing) throw new AppError("not_found", "Research run not found.");
+          if (!["queued", "running"].includes(existing.status)) {
+            throw new AppError("conflict", "This research run has already ended and cannot be resumed.");
+          }
           const engine = ensureResearchEngine();
           await engine.resumeRun(input.runId);
           const row = db.db.prepare("SELECT thread_id FROM research_runs WHERE id = ?").get(input.runId) as { thread_id: string } | undefined;
@@ -536,8 +582,8 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
           const input = CancelIncompleteResearchSchema.parse(body);
           const existing = db.db.prepare("SELECT 1 FROM research_runs WHERE id = ?").get(input.runId);
           if (!existing) throw new AppError("not_found", "Research run not found.");
-          researchEngine?.cancelRun(input.runId);
-          cancelIncompleteRun(db, input.runId);
+          if (researchEngine?.getActiveRunIds().has(input.runId)) researchEngine.cancelRun(input.runId);
+          else cancelIncompleteRun(db, input.runId);
           sendJson(res, 200, { ok: true, workspace: await workspaceState() });
           return;
         }
@@ -546,7 +592,8 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
           const input = CancelResearchSchema.parse(body);
           const existing = db.db.prepare("SELECT 1 FROM research_runs WHERE id = ?").get(input.runId);
           if (!existing) throw new AppError("not_found", "Research run not found.");
-          researchEngine?.cancelRun(input.runId);
+          if (researchEngine?.getActiveRunIds().has(input.runId)) researchEngine.cancelRun(input.runId);
+          else cancelIncompleteRun(db, input.runId);
           sendJson(res, 200, { ok: true, workspace: await workspaceState() });
           return;
         }
@@ -597,7 +644,9 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
         if (url.pathname === "/ideas/export") {
           const { threadId } = ExportIdeasRequestSchema.parse(body);
           requireThread(threadId);
-          sendJson(res, 200, { ideas: listIdeas(threadId) });
+          const ideaIds = db.db.prepare("SELECT id FROM ideas WHERE thread_id = ? ORDER BY created_at DESC")
+            .all(threadId) as Array<{ id: string }>;
+          sendJson(res, 200, { ideas: ideaIds.map((idea) => getIdeaDetail(idea.id)) });
           return;
         }
 
@@ -654,7 +703,26 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
 
       sendError(res, new AppError("not_found", "Route not found."));
     } catch (error) {
-      sendError(res, error);
+      const normalized = toErrorPayload(error);
+      if (normalized.error.code === "internal_error") {
+        const reference = randomUUID();
+        context.log?.({
+          level: "error",
+          event: "backend-request-failed",
+          message: "An unexpected backend request error occurred.",
+          context: {
+            correlationId: reference,
+            method,
+            route,
+            status: normalized.status,
+            durationMs: Date.now() - startedAt,
+          },
+          error,
+        });
+        sendError(res, new AppError("internal_error", undefined, normalized.status, reference));
+      } else {
+        sendError(res, error);
+      }
     }
   });
 
@@ -666,7 +734,6 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
   return {
     port: address.port,
     token,
-    emitEvent,
     secretsChanged: () => {
       cachedValidation = null;
       cachedModels = [];

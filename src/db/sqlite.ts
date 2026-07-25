@@ -12,7 +12,6 @@ export interface SqlDatabase {
 
 export function openDatabase(dbPath: string): SqlDatabase {
   if (typeof Bun !== "undefined") {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
     const { Database } = require("bun:sqlite") as typeof import("bun:sqlite");
     const db = new Database(dbPath);
     return {

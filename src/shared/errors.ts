@@ -26,12 +26,19 @@ const DEFAULT_MESSAGES: Record<AppErrorCode, string> = {
 export class AppError extends Error {
   readonly code: AppErrorCode;
   readonly status: number;
+  readonly reference: string | undefined;
 
-  constructor(code: AppErrorCode, message = DEFAULT_MESSAGES[code], status = STATUS_BY_CODE[code]) {
+  constructor(
+    code: AppErrorCode,
+    message = DEFAULT_MESSAGES[code],
+    status = STATUS_BY_CODE[code],
+    reference?: string,
+  ) {
     super(message);
     this.name = "AppError";
     this.code = code;
     this.status = status;
+    this.reference = reference;
   }
 }
 
@@ -48,6 +55,10 @@ export function toErrorPayload(error: unknown): { status: number; error: AppErro
   const normalized = normalizeAppError(error);
   return {
     status: normalized.status,
-    error: { code: normalized.code, message: normalized.message },
+    error: {
+      code: normalized.code,
+      message: normalized.message,
+      ...(normalized.reference ? { reference: normalized.reference } : {}),
+    },
   };
 }

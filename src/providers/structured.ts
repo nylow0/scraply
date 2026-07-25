@@ -36,12 +36,3 @@ export interface StructuredModelClient {
     options?: StructuredCallOptions,
   ): Promise<T>;
 }
-
-export function toProviderFailure(error: unknown, fallback = "Provider request failed"): ProviderFailure {
-  if (error instanceof ProviderFailure) return error;
-  if (error instanceof DOMException && error.name === "AbortError") {
-    return new ProviderFailure("cancelled", "Provider request was cancelled", false, { cause: error });
-  }
-  const message = error instanceof Error ? error.message : fallback;
-  return new ProviderFailure("failed", message, false, { cause: error });
-}

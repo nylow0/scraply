@@ -14,7 +14,7 @@
     setupOnly = false,
   }: {
     models: string[];
-    modelCatalog?: ModelCatalog;
+    modelCatalog?: ModelCatalog | undefined;
     config: RunConfig;
     presets: Array<{ name: string; config: RunConfig }>;
     onSave?: (config: RunConfig, presetName?: string) => void;
@@ -58,6 +58,15 @@
     return `${provider}:${id}`;
   }
 
+  function parseModelKey(value: string): { provider: ModelProvider; model: string } {
+    const separator = value.indexOf(":");
+    if (separator <= 0 || separator === value.length - 1) throw new Error("Invalid model selection");
+    return {
+      provider: value.slice(0, separator) as ModelProvider,
+      model: value.slice(separator + 1),
+    };
+  }
+
   function isFavorite(provider: ModelProvider, id: string) {
     return favoriteKeys.has(modelKey(provider, id));
   }
@@ -84,29 +93,29 @@
     <div class="field">
       <span>Orchestrator model</span>
       <select value={modelKey(draft.orchestratorProvider, draft.orchestratorModel)} onchange={(event) => {
-        const [provider, model] = (event.currentTarget as HTMLSelectElement).value.split(":");
-        selectModel("orchestratorModel", provider as ModelProvider, model);
+        const { provider, model } = parseModelKey((event.currentTarget as HTMLSelectElement).value);
+        selectModel("orchestratorModel", provider, model);
       }}>
-        {@render ModelOptions(catalog, favoriteOptions, true)}
+        {@render ModelOptions(catalog, favoriteOptions)}
       </select>
     </div>
     <div class="field">
       <span>Worker model</span>
       <select value={modelKey(draft.workerProvider, draft.workerModel)} onchange={(event) => {
-        const [provider, model] = (event.currentTarget as HTMLSelectElement).value.split(":");
-        selectModel("workerModel", provider as ModelProvider, model);
+        const { provider, model } = parseModelKey((event.currentTarget as HTMLSelectElement).value);
+        selectModel("workerModel", provider, model);
       }}>
-        {@render ModelOptions(catalog, favoriteOptions, true)}
+        {@render ModelOptions(catalog, favoriteOptions)}
       </select>
       <small>Used by each parallel research stream.</small>
     </div>
     <div class="field">
       <span>Idea model</span>
       <select value={modelKey(draft.ideaProvider, draft.ideaModel)} onchange={(event) => {
-        const [provider, model] = (event.currentTarget as HTMLSelectElement).value.split(":");
-        selectModel("ideaModel", provider as ModelProvider, model);
+        const { provider, model } = parseModelKey((event.currentTarget as HTMLSelectElement).value);
+        selectModel("ideaModel", provider, model);
       }}>
-        {@render ModelOptions(catalog, favoriteOptions, true)}
+        {@render ModelOptions(catalog, favoriteOptions)}
       </select>
     </div>
     <label>
@@ -258,7 +267,7 @@
     </div>
 </section>
 
-{#snippet ModelOptions(catalog: ModelCatalog, favorites: ModelRef[], allowCodex: boolean)}
+{#snippet ModelOptions(catalog: ModelCatalog, favorites: ModelRef[])}
   {#if favorites.length}
     <optgroup label="All favorites">
       {#each favorites as favorite}
@@ -266,7 +275,7 @@
       {/each}
     </optgroup>
   {/if}
-  {#if allowCodex && catalog.codex.length}
+  {#if catalog.codex.length}
     <optgroup label="Codex">
       {#each catalog.codex as model}<option value={modelKey("codex", model)}>{model}</option>{/each}
     </optgroup>
