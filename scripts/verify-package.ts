@@ -115,7 +115,11 @@ function executableMetadata(path: string): ExecutableMetadata {
     Object.entries(process.env).filter((entry): entry is [string, string] => entry[1] !== undefined),
   );
   env.SCRAPLY_VERIFY_EXE = path;
+  // CI runners export PowerShell 7 module paths that break module autoloading in
+  // Windows PowerShell 5.1; dropping the variable restores the 5.1 defaults.
+  delete env.PSModulePath;
   const script = [
+    "$ErrorActionPreference = 'Stop'",
     "$item = Get-Item -LiteralPath $env:SCRAPLY_VERIFY_EXE",
     "$signature = Get-AuthenticodeSignature -LiteralPath $env:SCRAPLY_VERIFY_EXE",
     "[PSCustomObject]@{ productName = $item.VersionInfo.ProductName; productVersion = $item.VersionInfo.ProductVersion; fileVersion = $item.VersionInfo.FileVersion; signatureStatus = $signature.Status.ToString() } | ConvertTo-Json -Compress",

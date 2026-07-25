@@ -1,5 +1,9 @@
 $ErrorActionPreference = "Stop"
 
+# CI runners export PowerShell 7 module paths that break module autoloading in
+# Windows PowerShell 5.1; resetting the variable restores the 5.1 defaults.
+$env:PSModulePath = "$PSHOME\Modules;$env:ProgramFiles\WindowsPowerShell\Modules;$env:windir\System32\WindowsPowerShell\v1.0\Modules"
+
 $root = Split-Path -Parent $PSScriptRoot
 $packagePath = Join-Path $root "package.json"
 $manifestPath = Join-Path $root "release\manifest.json"
