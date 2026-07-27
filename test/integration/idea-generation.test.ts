@@ -11,6 +11,7 @@ import { ThreadRepository } from "../../src/db/repositories/threads";
 import type { StructuredModelClient } from "../../src/providers/structured";
 import { DEFAULT_RUN_CONFIG } from "../../src/shared/intake";
 import { RunConfigSchema, type ProjectBrief } from "../../src/shared/schemas";
+import { makeProjectBrief } from "../helpers/project-brief";
 
 const dirs: string[] = [];
 afterEach(() => {
@@ -19,21 +20,18 @@ afterEach(() => {
   }
 });
 
-const brief: ProjectBrief = {
-  projectName: "Claim-linked ideas",
-  theme: "Evidence",
-  description: "Generate only grounded ideas",
-  desiredOutput: "Ideas",
-  successDefinition: "Every idea has evidence",
-  constraints: [],
-  resources: [],
-  avoidList: [],
-  researchNeeds: "Validate claims",
-  finalDecision: "Choose one",
+const brief: ProjectBrief = makeProjectBrief({
+  title: "Claim-linked ideas",
+  objective: "Evidence",
+  context: "Generate only grounded ideas",
+  desiredOutput: { type: "options", notes: "Ideas" },
+  successCriteria: ["Every idea has evidence"],
+  evidenceRequirements: ["Validate claims"],
+  decisionToSupport: "Choose one",
   deadline: "Soon",
   availableEffort: "Low",
-  ideaStylePreference: "Practical",
-};
+  ideaStyle: "safe",
+});
 
 function setup(withSynthesis: boolean) {
   const dir = mkdtempSync(join(tmpdir(), "scraply-ideas-"));

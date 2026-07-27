@@ -1,13 +1,13 @@
-import { CreateBranchRequestSchema, SaveFavoriteModelSchema } from "@shared/ipc";
+import { CreateBranchRequestSchema, SaveFavoriteModelSchema, StartBriefIntakeSchema } from "@shared/ipc";
+import { parseAndNormalizeBrief } from "@shared/brief-normalizer";
 import {
-  ProjectBriefSchema,
   RunConfigSchema,
   type ProjectBrief,
   type RunConfig,
 } from "@shared/schemas";
 
 export function toProjectBriefPayload(value: unknown): ProjectBrief {
-  return ProjectBriefSchema.parse(value);
+  return parseAndNormalizeBrief(value);
 }
 
 export function toRunConfigPayload(value: unknown): RunConfig {
@@ -20,4 +20,8 @@ export function toFavoriteModelPayload(value: unknown) {
 
 export function toCreateBranchPayload(value: unknown) {
   return CreateBranchRequestSchema.parse(value);
+}
+
+export function toStartBriefIntakePayload(value: unknown) {
+  return StartBriefIntakeSchema.parse(value);
 }

@@ -24,6 +24,7 @@ import {
   SaveRunConfigSchema,
   SaveSecretsRequestSchema,
   SelectThreadRequestSchema,
+  StartBriefIntakeSchema,
   StartResearchSchema,
   SubmitIntakeAnswerSchema,
   type BackendReady,
@@ -428,6 +429,7 @@ function registerIpc(): void {
   handle(IPC_CHANNELS.SELECT_THREAD, (body) => post("/threads/select", SelectThreadRequestSchema.parse(body)));
   handle(IPC_CHANNELS.DELETE_THREAD, (body) => post("/threads/delete", DeleteThreadRequestSchema.parse(body)));
   handle(IPC_CHANNELS.SUBMIT_INTAKE, (body) => post("/intake", SubmitIntakeAnswerSchema.parse(body)));
+  handle(IPC_CHANNELS.START_BRIEF_INTAKE, (body) => post("/intake/brief", StartBriefIntakeSchema.parse(body)));
   handle(IPC_CHANNELS.CONFIRM_BRIEF, (body) => post("/brief/confirm", ConfirmBriefSchema.parse(body)));
   handle(IPC_CHANNELS.SAVE_RUN_CONFIG, (body) => post("/run-config", SaveRunConfigSchema.parse(body)));
   handle(IPC_CHANNELS.SAVE_FAVORITE_MODEL, (body) => post("/models/favorite", SaveFavoriteModelSchema.parse(body)));

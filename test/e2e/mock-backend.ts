@@ -39,19 +39,26 @@ const validationMissing = {
   setupComplete: false,
 };
 const brief = {
-  projectName: "Student Income Lab",
-  theme: "small software products",
-  description: "Find evidence-backed software ideas a student can ship.",
-  desiredOutput: "A ranked product direction",
-  successDefinition: "A validated path to first revenue",
-  constraints: ["10 hours per week"],
+  schemaVersion: 2,
+  title: "Student Income Lab",
+  objective: "small software products",
+  context: "Find evidence-backed software ideas a student can ship.",
+  decisionToSupport: "Which product to build first",
+  audience: ["Students"],
+  desiredOutput: { type: "ranked-shortlist", notes: "A ranked product direction" },
+  successCriteria: ["A validated path to first revenue"],
+  hardConstraints: ["10 hours per week"],
+  preferences: [],
+  antiGoals: ["regulated markets"],
   resources: ["TypeScript", "student communities"],
-  avoidList: ["regulated markets"],
-  researchNeeds: "Demand and competitive evidence",
-  finalDecision: "Which product to build first",
   deadline: "Six weeks",
   availableEffort: "10 hours per week",
-  ideaStylePreference: "practical with one high-upside outlier",
+  evidenceRequirements: ["Demand and competitive evidence"],
+  examplesToInspect: [],
+  ideaStyle: "balanced",
+  assumptions: [],
+  openQuestions: [],
+  contradictions: [],
 };
 const idea = {
   id: "idea-1",
@@ -123,6 +130,17 @@ export async function startMockBackend(scenario: Scenario = "fresh", port = 0): 
       state.threads = [thread];
       state.activeThreadId = thread.id;
       return send(res, 200, ok({ workspace: workspace(state) }));
+    }
+    if (req.method === "POST" && url.pathname === "/intake/brief") {
+      thread.status = "brief-draft";
+      state.brief = brief;
+      return send(res, 200, ok({
+        brief,
+        missingFields: [],
+        assumptions: [],
+        contradictions: [],
+        workspace: workspace(state),
+      }));
     }
     if (req.method === "POST" && url.pathname === "/intake") {
       const answer = body as { questionId?: string };
@@ -271,8 +289,13 @@ function error(code: string, message: string) {
 }
 
 function send(res: import("node:http").ServerResponse, status: number, payload: unknown): void {
-  res.writeHead(status, { "content-type": "application/json" });
-  res.end(JSON.stringify(payload));
+  const body = JSON.stringify(payload);
+  res.writeHead(status, {
+    "content-type": "application/json",
+    "content-length": Buffer.byteLength(body),
+    "connection": "close",
+  });
+  res.end(body);
 }
 
 async function closeServer(server: Server): Promise<void> {

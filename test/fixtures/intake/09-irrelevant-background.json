@@ -1,0 +1,27 @@
+{
+  "id": "irrelevant-background",
+  "scenario": "prompt-with-irrelevant-background",
+  "input": "I grew up near the sea, collect mechanical keyboards, and spent last weekend repainting my kitchen. My brother has a golden retriever named Pixel. The actual task: compare hosted status-page services for our B2B SaaS. We need a shortlist of three options that support a custom domain, private subscriber groups, Slack incident updates, and EU data residency. Keep the software cost below €150 per month. The recommendation is for our head of engineering.",
+  "expected": {
+    "objective": "Compare hosted status-page services for a B2B SaaS.",
+    "decisionToSupport": "Which hosted status-page service to adopt.",
+    "desiredOutputType": "ranked-shortlist",
+    "successCriteria": [
+      "Support a custom domain.",
+      "Support private subscriber groups.",
+      "Support Slack incident updates.",
+      "Support EU data residency."
+    ],
+    "hardConstraints": [
+      "Software cost must stay below €150 per month."
+    ],
+    "deadline": null,
+    "evidenceRequirements": [],
+    "examplesToInspect": [],
+    "antiGoals": [],
+    "contradictions": [],
+    "importantUnknowns": [
+      "deadline"
+    ]
+  }
+}

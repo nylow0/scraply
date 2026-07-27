@@ -7,22 +7,19 @@ import { ThreadRepository } from "../../src/db/repositories/threads";
 import { buildPreferenceContext, formatPreferencePrompt } from "../../src/core/preferences";
 import { buildIdeaPrompt } from "../../src/core/ideas";
 import type { ProjectBrief } from "../../src/shared/schemas";
+import { makeProjectBrief } from "../helpers/project-brief";
 
-const brief: ProjectBrief = {
-  projectName: "Test",
-  theme: "Widgets",
-  description: "Build better widgets",
-  desiredOutput: "Ideas",
-  successDefinition: "Useful ideas",
-  constraints: [],
-  resources: [],
-  avoidList: [],
-  researchNeeds: "Market scan",
-  finalDecision: "Pick one idea",
+const brief: ProjectBrief = makeProjectBrief({
+  title: "Test",
+  objective: "Widgets",
+  context: "Build better widgets",
+  desiredOutput: { type: "options", notes: "Ideas" },
+  successCriteria: ["Useful ideas"],
+  evidenceRequirements: ["Market scan"],
+  decisionToSupport: "Pick one idea",
   deadline: "Soon",
   availableEffort: "Medium",
-  ideaStylePreference: "Balanced",
-};
+});
 
 describe("preference feedback loop", () => {
   test("includes rated examples in idea prompt context", () => {

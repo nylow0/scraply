@@ -2,8 +2,9 @@
   import Sidebar from "./components/Sidebar.svelte";
   import Conversation from "./components/Conversation.svelte";
   import ResearchSetupForm from "./components/ResearchSetupForm.svelte";
-  import BriefPanel from "./components/BriefPanel.svelte";
-  import RunConfigPanel from "./components/RunConfigPanel.svelte";
+  import SmartBriefEntry from "./components/SmartBriefEntry.svelte";
+  import BriefReviewPanel from "./components/BriefReviewPanel.svelte";
+  import RunReviewPanel from "./components/RunReviewPanel.svelte";
   import ResearchDrawer from "./components/ResearchDrawer.svelte";
   import IdeaWorkspace from "./components/IdeaWorkspace.svelte";
   import UserGuide from "./components/UserGuide.svelte";
@@ -28,7 +29,9 @@
   let runCancelling = $state(false);
   let partialIdeaNotice: IdeaGenerationCompleteness | null = $state(null);
   let deletingThreadId: string | null = $state(null);
-  let intakeView: "questions" | "models" = $state("questions");
+  let intakeMode: "smart" | "guided" = $state("smart");
+  let starterText = $state("");
+  let editingConfirmedBrief = $state(false);
   let reconcileTimer: ReturnType<typeof setTimeout> | null = null;
 
   async function refreshWorkspace(options: { preserveError?: boolean } = {}) {
@@ -86,6 +89,12 @@
     reconcileTimer = setTimeout(() => void refreshWorkspace({ preserveError: true }), 150);
   }
 
+  function resetIntakeEntry() {
+    intakeMode = "smart";
+    starterText = "";
+    editingConfirmedBrief = false;
+  }
+
   $effect(() => {
     void initialLoad();
     const unsubscribe = window.scraply.onBackendEvent((event) => {
@@ -117,7 +126,7 @@
     try {
       const result = await window.scraply.createThread();
       appState.workspace = result.workspace;
-      intakeView = "questions";
+      resetIntakeEntry();
     } catch (error) {
       appState.error = error instanceof Error ? error.message : "Failed to create research";
     }
@@ -129,7 +138,7 @@
       appState.workspace = await window.scraply.selectThread(threadId);
       appState.researchEvents = [];
       appState.activeRunId = null;
-      intakeView = "questions";
+      resetIntakeEntry();
     } catch (error) {
       appState.error = error instanceof Error ? error.message : "Failed to open research";
     }
@@ -140,11 +149,29 @@
     deletingThreadId = threadId;
     appState.error = null;
     try {
+      const previousActiveThreadId = appState.workspace?.activeThreadId;
       appState.workspace = await window.scraply.deleteThread(threadId);
+      if (appState.workspace.activeThreadId !== previousActiveThreadId) resetIntakeEntry();
     } catch (error) {
       appState.error = error instanceof Error ? error.message : "Failed to delete research";
     } finally {
       deletingThreadId = null;
+    }
+  }
+
+  async function submitStarterBrief(text: string) {
+    const threadId = appState.workspace?.activeThreadId;
+    if (!threadId || intakeSubmitting) return;
+    intakeSubmitting = true;
+    appState.error = null;
+    try {
+      const result = await window.scraply.startBriefIntake({ threadId, text });
+      if (!result.workspace?.brief) throw new Error("Brief was not generated from your prompt");
+      appState.workspace = result.workspace;
+    } catch (error) {
+      appState.error = error instanceof Error ? error.message : "Failed to build research brief";
+    } finally {
+      intakeSubmitting = false;
     }
   }
 
@@ -178,6 +205,7 @@
     appState.error = null;
     try {
       appState.workspace = await window.scraply.confirmBrief({ threadId, brief: toProjectBriefPayload(brief) });
+      editingConfirmedBrief = false;
     } catch (error) {
       appState.error = error instanceof Error ? error.message : "Failed to confirm brief";
     } finally {
@@ -346,9 +374,6 @@
             <span aria-hidden="true"></span>{providersReady ? "Providers ready" : "Limited connection"}
           </span>
           <button class="ghost" aria-label="Toggle research progress drawer" onclick={() => (appState.showDrawer = !appState.showDrawer)}>Research</button>
-          {#if activeThread?.status === "brief-confirmed" || activeThread?.status === "configuring"}
-            <button class="ghost" onclick={() => saveRunConfig()}>Save config</button>
-          {/if}
           {#if appState.workspace?.latestResearchRun?.synthesisReportId}
             <button class="primary" disabled={ideasGenerating} onclick={() => generateIdeas(false)}>
               {ideasGenerating ? "Generating…" : "Generate ideas"}
@@ -362,7 +387,7 @@
         </div>
       </header>
 
-      {#if appState.error}
+      {#if appState.error && activeThread?.status !== "intake"}
         <p class="global-error" role="alert">{appState.error}</p>
       {/if}
       {#if partialIdeaNotice}
@@ -378,56 +403,69 @@
 
       {#if activeThread?.status === "intake"}
         <section class="intake-workspace" aria-label="Research setup">
-          <nav class="intake-tabs" aria-label="Research setup sections">
-            <button
-              class:active={intakeView === "questions"}
-              aria-current={intakeView === "questions" ? "page" : undefined}
-              onclick={() => (intakeView = "questions")}
-            ><span>01</span>Brief questions</button>
-            <button
-              class:active={intakeView === "models"}
-              aria-current={intakeView === "models" ? "page" : undefined}
-              onclick={() => (intakeView = "models")}
-            ><span>02</span>Models & limits</button>
-          </nav>
-          <div class="intake-pane" hidden={intakeView !== "questions"}>
+          <div class="intake-pane">
+            {#if intakeMode === "smart"}
+              <SmartBriefEntry
+                value={starterText}
+                submitting={intakeSubmitting}
+                error={appState.error}
+                onChange={(value) => (starterText = value)}
+                onSubmit={submitStarterBrief}
+                onUseGuidedSetup={() => {
+                  appState.error = null;
+                  intakeMode = "guided";
+                }}
+              />
+            {:else}
             <ResearchSetupForm
               submitting={intakeSubmitting}
               error={appState.error}
               onSubmit={submitIntakeAnswers}
+              onBack={() => {
+                appState.error = null;
+                intakeMode = "smart";
+              }}
             />
-          </div>
-          <div class="intake-pane" hidden={intakeView !== "models"}>
-            <RunConfigPanel
-              models={appState.workspace?.models ?? []}
-              modelCatalog={appState.workspace?.modelCatalog}
-              config={appState.workspace?.runConfig ?? DEFAULT_RUN_CONFIG}
-              presets={appState.workspace?.presets ?? []}
-              onSave={(config, presetName) => saveRunConfig(config, presetName)}
-              onFavorite={saveFavoriteModel}
-              setupOnly
-            />
+            {/if}
           </div>
         </section>
+      {:else if activeThread?.status === "brief-draft" && appState.workspace?.brief}
+        <BriefReviewPanel
+          brief={appState.workspace.brief}
+          submitting={briefConfirming}
+          onSubmit={confirmBrief}
+        />
+      {:else if (activeThread?.status === "brief-confirmed" || activeThread?.status === "configuring") && appState.workspace?.brief}
+        {#if editingConfirmedBrief}
+          <BriefReviewPanel
+            brief={appState.workspace.brief}
+            submitting={briefConfirming}
+            mode="save"
+            onSubmit={confirmBrief}
+            onCancel={() => {
+              appState.error = null;
+              editingConfirmedBrief = false;
+            }}
+          />
+        {:else}
+          <RunReviewPanel
+            brief={appState.workspace.brief}
+            models={appState.workspace?.models ?? []}
+            modelCatalog={appState.workspace?.modelCatalog}
+            config={appState.workspace?.runConfig ?? DEFAULT_RUN_CONFIG}
+            presets={appState.workspace?.presets ?? []}
+            onEditBrief={() => {
+              appState.error = null;
+              editingConfirmedBrief = true;
+            }}
+            onSaveConfig={(config, presetName) => saveRunConfig(config, presetName)}
+            onFavorite={saveFavoriteModel}
+            onStart={startResearch}
+            starting={researchStarting}
+          />
+        {/if}
       {:else}
         <Conversation messages={appState.workspace?.messages ?? []} />
-      {/if}
-
-      {#if activeThread?.status === "brief-draft" && appState.workspace?.brief}
-        <BriefPanel brief={appState.workspace.brief} confirming={briefConfirming} onConfirm={confirmBrief} />
-      {/if}
-
-      {#if activeThread?.status === "brief-confirmed" || activeThread?.status === "configuring"}
-        <RunConfigPanel
-          models={appState.workspace?.models ?? []}
-          modelCatalog={appState.workspace?.modelCatalog}
-          config={appState.workspace?.runConfig ?? DEFAULT_RUN_CONFIG}
-          presets={appState.workspace?.presets ?? []}
-          onSave={(config, presetName) => saveRunConfig(config, presetName)}
-          onStart={startResearch}
-          starting={researchStarting}
-          onFavorite={saveFavoriteModel}
-        />
       {/if}
 
       {#if (appState.workspace?.reports?.length ?? 0) > 0}
@@ -534,59 +572,12 @@
 
   .intake-workspace {
     min-height: 0;
-    display: grid;
-    grid-template-rows: auto minmax(0, 1fr);
+    display: block;
     background: var(--bg);
   }
 
-  .intake-tabs {
-    display: flex;
-    gap: 4px;
-    padding: 6px clamp(20px, 3vw, 36px) 0;
-    border-bottom: 1px solid var(--border);
-  }
-
-  .intake-tabs button {
-    position: relative;
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    padding: 9px 12px 12px;
-    border: 0;
-    border-radius: 7px 7px 0 0;
-    background: transparent;
-    color: var(--muted);
-    font-size: 12px;
-  }
-
-  .intake-tabs button::after {
-    content: "";
-    position: absolute;
-    right: 10px;
-    bottom: -1px;
-    left: 10px;
-    height: 2px;
-    transform: scaleX(0);
-    background: var(--accent);
-    transition: transform 180ms var(--ease);
-  }
-
-  .intake-tabs button:hover,
-  .intake-tabs button.active {
-    color: var(--text);
-  }
-
-  .intake-tabs button.active::after {
-    transform: scaleX(1);
-  }
-
-  .intake-tabs button span {
-    color: var(--subtle);
-    font-family: var(--mono);
-    font-size: 9px;
-  }
-
   .intake-pane {
+    height: 100%;
     min-height: 0;
     overflow: hidden;
   }

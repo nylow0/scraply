@@ -12,6 +12,7 @@ import type { StructuredModelClient } from "../../src/providers/structured";
 import { DEFAULT_RUN_CONFIG } from "../../src/shared/intake";
 import type { ResearchEvent } from "../../src/shared/ipc";
 import { RunConfigSchema, type ProjectBrief } from "../../src/shared/schemas";
+import { makeProjectBrief } from "../helpers/project-brief";
 
 const dirs: string[] = [];
 afterEach(() => {
@@ -51,21 +52,18 @@ describe("research hard limits", () => {
       }),
       maxRunMinutes: 0.001,
     };
-    const brief: ProjectBrief = {
-      projectName: "Deadline",
-      theme: "Timeout",
-      description: "Verify immediate cancellation",
-      desiredOutput: "Evidence",
-      successDefinition: "Stops quickly",
-      constraints: [],
-      resources: [],
-      avoidList: [],
-      researchNeeds: "One search",
-      finalDecision: "Stop",
+    const brief: ProjectBrief = makeProjectBrief({
+      title: "Deadline",
+      objective: "Timeout",
+      context: "Verify immediate cancellation",
+      desiredOutput: { type: "research-brief", notes: "Evidence" },
+      successCriteria: ["Stops quickly"],
+      evidenceRequirements: ["One search"],
+      decisionToSupport: "Stop",
       deadline: "Now",
       availableEffort: "Low",
-      ideaStylePreference: "Safe",
-    };
+      ideaStyle: "safe",
+    });
     const events: ResearchEvent[] = [];
     const engine = new ResearchEngine({
       db,
@@ -126,21 +124,18 @@ describe("research hard limits", () => {
       parallelism: 1,
       maxRunMinutes: 1,
     });
-    const brief: ProjectBrief = {
-      projectName: "Cancellation",
-      theme: "Cancellation",
-      description: "Verify explicit cancellation",
-      desiredOutput: "Evidence",
-      successDefinition: "Stops cleanly",
-      constraints: [],
-      resources: [],
-      avoidList: [],
-      researchNeeds: "One search",
-      finalDecision: "Stop",
+    const brief: ProjectBrief = makeProjectBrief({
+      title: "Cancellation",
+      objective: "Cancellation",
+      context: "Verify explicit cancellation",
+      desiredOutput: { type: "research-brief", notes: "Evidence" },
+      successCriteria: ["Stops cleanly"],
+      evidenceRequirements: ["One search"],
+      decisionToSupport: "Stop",
       deadline: "Now",
       availableEffort: "Low",
-      ideaStylePreference: "Safe",
-    };
+      ideaStyle: "safe",
+    });
     const events: ResearchEvent[] = [];
     const engine = new ResearchEngine({
       db,

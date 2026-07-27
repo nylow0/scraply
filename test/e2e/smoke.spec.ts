@@ -138,29 +138,46 @@ test("completes setup, approved research, synthesis, ideas, rating, restart, and
     await expect(app.page.getByRole("button", { name: "Create new research thread" })).toBeVisible();
     expect(existsSync(path.join(userDataDir, "secrets.bin"))).toBe(true);
     await app.page.getByRole("button", { name: "Create new research thread" }).click();
+    await expect(app.page.getByRole("heading", { name: "What are you trying to decide, create, or improve?" })).toBeVisible();
+
+    const starterText = "Find an evidence-backed software product a student can ship in six weeks.";
+    await app.page.getByLabel("Your brief").fill(starterText);
+    await app.page.getByRole("button", { name: "Use guided setup" }).click();
     await expect(app.page.getByRole("heading", { name: "Build the research brief" })).toBeVisible();
+    await app.page.getByRole("button", { name: "Back to smart input" }).click();
+    await expect(app.page.getByLabel("Your brief")).toHaveValue(starterText);
+    await app.page.getByRole("button", { name: "Build research brief" }).click();
+    await expect.poll(() => mock.requests.filter((request) => request.path === "/intake/brief").length).toBe(1);
+    expect(mock.requests.find((request) => request.path === "/intake/brief")?.body).toEqual({
+      threadId: "thread-1",
+      text: starterText,
+    });
 
-    const requiredAnswers = app.page.locator("form.setup textarea");
-    await expect(requiredAnswers).toHaveCount(15);
-    for (let index = 0; index < 10; index += 1) await requiredAnswers.nth(index).fill(`Deterministic answer ${index + 1}`);
-    await app.page.getByRole("button", { name: "Review brief" }).click();
-
-    await expect(app.page.getByRole("heading", { name: "Project brief" })).toBeVisible();
-    await app.page.getByLabel("Project name").fill("");
-    await app.page.getByRole("button", { name: "Confirm brief & review cost" }).click();
+    await expect(app.page.getByRole("heading", { name: "Inspect the inferred brief" })).toBeVisible({ timeout: 15_000 });
+    await app.page.getByLabel("Objective").fill("");
+    await app.page.getByRole("button", { name: "Confirm brief & review run" }).click();
     await expect(app.page.getByRole("alert")).toBeVisible();
     expect(mock.requests.filter((request) => request.path === "/brief/confirm")).toHaveLength(0);
-    await app.page.getByLabel("Project name").fill("Student Income Lab E2E");
-    await app.page.getByRole("button", { name: "Confirm brief & review cost" }).click();
+    await app.page.getByLabel("Objective").fill("Find evidence-backed software ideas a student can ship.");
+    await app.page.getByRole("button", { name: "Confirm brief & review run" }).click();
 
-    await expect(app.page.getByRole("heading", { name: "Models & research limits" })).toBeVisible();
-    await expect(app.page.getByLabel("Research approval summary")).toContainText("6 research lenses");
+    await expect(app.page.getByRole("heading", { name: "Know what Scraply will execute" })).toBeVisible();
+    await expect(app.page.getByText("Fixed for this version")).toBeVisible();
+    await expect(app.page.locator("section.streams ol > li")).toHaveCount(6);
+    await app.page.getByRole("button", { name: "Edit brief" }).click();
+    await expect(app.page.getByRole("heading", { name: "Edit the research brief" })).toBeVisible();
+    await app.page.getByLabel("Title").fill("Student Income Lab E2E");
+    await app.page.getByRole("button", { name: "Save brief" }).click();
+    await expect(app.page.getByRole("heading", { name: "Know what Scraply will execute" })).toBeVisible();
+    await expect(app.page.getByRole("heading", { name: "Student Income Lab E2E" })).toBeVisible();
+    await expect(app.page.getByLabel("Research approval summary")).toContainText("6 fixed streams");
+    await expect(app.page.getByRole("button", { name: "Start research" })).toHaveCount(1);
     await app.page.getByLabel("Parallelism").fill("0");
-    await app.page.getByRole("button", { name: "Approve & start research" }).click();
     await expect(app.page.getByRole("alert")).toBeVisible();
+    await expect(app.page.getByRole("button", { name: "Start research" })).toBeDisabled();
     expect(mock.requests.filter((request) => request.path === "/research/start")).toHaveLength(0);
     await app.page.getByLabel("Parallelism").fill("2");
-    await app.page.getByRole("button", { name: "Approve & start research" }).click();
+    await app.page.getByRole("button", { name: "Start research" }).click();
 
     await expect(app.page.getByRole("complementary", { name: "Research progress" })).toBeVisible();
     await expect(app.page.getByLabel("Report: Composite synthesis")).toBeVisible();
@@ -250,7 +267,7 @@ test("persists setup and threads through the real utility backend and SQLite", a
     expect(existsSync(path.join(userDataDir, "secrets.bin"))).toBe(true);
     expect(existsSync(path.join(userDataDir, "scraply", "scraply.db"))).toBe(true);
     await app.page.getByRole("button", { name: "Create new research thread" }).click();
-    await expect(app.page.getByRole("heading", { name: "Build the research brief" })).toBeVisible();
+    await expect(app.page.getByRole("heading", { name: "What are you trying to decide, create, or improve?" })).toBeVisible();
 
     await app.close();
     app = await launchIsolatedApp(null, userDataDir);
@@ -284,8 +301,8 @@ test("surfaces a typed provider failure without claiming the run completed", asy
   const userDataDir = mkdtempSync(path.join(tmpdir(), "scraply-e2e-"));
   const app = await launchIsolatedApp(mock, userDataDir);
   try {
-    await expect(app.page.getByRole("heading", { name: "Models & research limits" })).toBeVisible();
-    await app.page.getByRole("button", { name: "Approve & start research" }).click();
+    await expect(app.page.getByRole("heading", { name: "Know what Scraply will execute" })).toBeVisible();
+    await app.page.getByRole("button", { name: "Start research" }).click();
     await expect(app.page.getByRole("alert")).toContainText("Deterministic provider timeout");
     await expect(app.page.getByRole("button", { name: "Generate ideas" })).toBeHidden();
     expect(mock.requests.filter((request) => request.path === "/research/start")).toHaveLength(1);

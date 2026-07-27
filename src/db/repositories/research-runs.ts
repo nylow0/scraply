@@ -1,4 +1,6 @@
 import { randomUUID } from "node:crypto";
+import { RESEARCH_STREAMS } from "../../research/streams";
+import { parseAndNormalizeBrief } from "../../shared/brief-normalizer";
 import type { ProjectBrief, RunConfig } from "../../shared/schemas";
 import type { DatabaseClient } from "../client";
 
@@ -25,6 +27,8 @@ export class ResearchRunRepository {
     config: RunConfig,
     idempotencyKey?: string,
   ): CreatedResearchRun {
+    const normalizedBrief = parseAndNormalizeBrief(brief);
+    const selectedStreamIds = RESEARCH_STREAMS.map((stream) => stream.id);
     const key = idempotencyKey ?? randomUUID();
     const db = this.client.db;
     db.exec("BEGIN IMMEDIATE");
@@ -50,15 +54,16 @@ export class ResearchRunRepository {
         INSERT INTO research_runs (
           id, thread_id, status, config_json, brief_json, idempotency_key,
           spend_estimate, round, cancelled, budget_limit, reserved_cost,
-          committed_cost, created_at, updated_at
-        ) VALUES (?, ?, 'running', ?, ?, ?, 0, 0, 0, ?, 0, 0, ?, ?)
+          committed_cost, selected_stream_ids_json, created_at, updated_at
+        ) VALUES (?, ?, 'running', ?, ?, ?, 0, 0, 0, ?, 0, 0, ?, ?, ?)
       `).run(
         runId,
         threadId,
         JSON.stringify(config),
-        JSON.stringify(brief),
+        JSON.stringify(normalizedBrief),
         key,
         config.maxSpendUsd,
+        JSON.stringify(selectedStreamIds),
         now,
         now,
       );

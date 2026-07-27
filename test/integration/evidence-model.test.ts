@@ -9,6 +9,7 @@ import { ActiveRunConflictError, ResearchRunRepository } from "../../src/db/repo
 import { ThreadRepository } from "../../src/db/repositories/threads";
 import { DEFAULT_RUN_CONFIG } from "../../src/shared/intake";
 import { RunConfigSchema, type ProjectBrief } from "../../src/shared/schemas";
+import { makeProjectBrief } from "../helpers/project-brief";
 
 const tempDirs: string[] = [];
 
@@ -22,21 +23,18 @@ afterEach(() => {
   }
 });
 
-const brief: ProjectBrief = {
-  projectName: "Evidence test",
-  theme: "Research integrity",
-  description: "Verify persisted evidence",
-  desiredOutput: "Reliable ideas",
-  successDefinition: "Unsupported claims are rejected",
-  constraints: [],
-  resources: [],
-  avoidList: [],
-  researchNeeds: "Validate sources",
-  finalDecision: "Ship",
+const brief: ProjectBrief = makeProjectBrief({
+  title: "Evidence test",
+  objective: "Research integrity",
+  context: "Verify persisted evidence",
+  desiredOutput: { type: "options", notes: "Reliable ideas" },
+  successCriteria: ["Unsupported claims are rejected"],
+  evidenceRequirements: ["Validate sources"],
+  decisionToSupport: "Ship",
   deadline: "Soon",
   availableEffort: "Low",
-  ideaStylePreference: "Evidence-first",
-};
+  ideaStyle: "safe",
+});
 
 function setup() {
   const dir = mkdtempSync(join(tmpdir(), "scraply-evidence-"));

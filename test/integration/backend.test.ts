@@ -6,8 +6,12 @@ import { DatabaseClient } from "../../src/db/client";
 import { ThreadRepository } from "../../src/db/repositories/threads";
 import { createBackendClients, isSetupComplete, startBackend, type BackendContext } from "../../src/backend/server";
 import { buildPreferenceContext } from "../../src/core/preferences";
+import type { StructuredModelClient } from "../../src/providers/structured";
 import { DEFAULT_RUN_CONFIG } from "../../src/shared/intake";
+import type { BriefExtractionResponse } from "../../src/shared/ipc";
 import type { BranchContext, ProjectBrief } from "../../src/shared/schemas";
+import { loadIntakeParserFixtures } from "../fixtures/intake/load-fixtures";
+import { makeProjectBrief } from "../helpers/project-brief";
 import packageMetadata from "../../package.json";
 
 const tempDirs: string[] = [];
@@ -38,6 +42,99 @@ afterEach(async () => {
       // Windows may keep WAL files locked briefly
     }
   }
+});
+
+describe("Smart brief intake", () => {
+  test("persists one complete starter text, uncertainty, and the inferred thread title", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "scraply-brief-intake-"));
+    tempDirs.push(dir);
+    const fixture = loadIntakeParserFixtures().find((item) => item.id === "contradictory-constraints")!;
+    const modelCalls: string[] = [];
+    const extraction: BriefExtractionResponse = {
+      brief: makeProjectBrief({
+        title: "CRM selection",
+        objective: fixture.expected.objective,
+        decisionToSupport: fixture.expected.decisionToSupport ?? "",
+        desiredOutput: {
+          type: fixture.expected.desiredOutputType ?? "other",
+          notes: "Ranked shortlist of three products",
+        },
+        hardConstraints: fixture.expected.hardConstraints,
+        deadline: fixture.expected.deadline,
+        openQuestions: ["Confirm which conflicting requirements take priority"],
+      }),
+      missingFields: ["migration owner"],
+      assumptions: ["The eight-person team are all CRM users"],
+      contradictions: fixture.expected.contradictions,
+    };
+    const fakeModel: StructuredModelClient = {
+      async structuredCompletion(_model, _system, user) {
+        modelCalls.push(user);
+        return extraction as never;
+      },
+    };
+    const handle = await startBackend({
+      ...backendContext(dir),
+      modelClients: { codex: fakeModel },
+    }, () => {});
+    const headers = {
+      authorization: `Bearer ${handle.token}`,
+      "content-type": "application/json",
+    };
+
+    try {
+      const createdResponse = await fetch(`http://127.0.0.1:${handle.port}/threads`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({}),
+      });
+      const created = await createdResponse.json() as {
+        ok: true;
+        data: { thread: { id: string } };
+      };
+      const threadId = created.data.thread.id;
+
+      const response = await fetch(`http://127.0.0.1:${handle.port}/intake/brief`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ threadId, text: fixture.input }),
+      });
+      expect(response.ok).toBe(true);
+      const payload = await response.json() as {
+        ok: true;
+        data: BriefExtractionResponse & {
+          workspace: {
+            brief: ProjectBrief;
+            threads: Array<{ id: string; title: string; status: string }>;
+          };
+        };
+      };
+
+      expect(modelCalls).toEqual([fixture.input]);
+      expect(payload.data.brief.openQuestions).toContain("migration owner");
+      expect(payload.data.brief.assumptions).toContain("The eight-person team are all CRM users");
+      expect(payload.data.brief.contradictions).toEqual(fixture.expected.contradictions);
+      expect(payload.data.workspace.brief).toEqual(payload.data.brief);
+      expect(payload.data.workspace.threads.find((thread) => thread.id === threadId)).toMatchObject({
+        title: "CRM selection",
+        status: "brief-draft",
+      });
+    } finally {
+      await handle.close();
+    }
+
+    const reopened = new DatabaseClient(join(dir, "scraply.db"));
+    const repository = new ThreadRepository(reopened);
+    const thread = repository.listThreads()[0]!;
+    const persistedBrief = repository.getLatestBrief(thread.id)!;
+    const userMessages = repository.getMessages(thread.id).filter((message) => message.role === "user");
+
+    expect(userMessages.map((message) => message.content)).toEqual([fixture.input]);
+    expect(persistedBrief.openQuestions).toContain("migration owner");
+    expect(persistedBrief.assumptions).toContain("The eight-person team are all CRM users");
+    expect(persistedBrief.contradictions).toEqual(fixture.expected.contradictions);
+    reopened.close();
+  });
 });
 
 describe("SQLite persistence", () => {
@@ -356,21 +453,15 @@ describe("Backend health", () => {
     const db = new DatabaseClient(context.dbPath);
     const thread = new ThreadRepository(db).createThread("Terminal run");
     const now = new Date().toISOString();
-    const brief: ProjectBrief = {
-      projectName: "Terminal",
-      theme: "Recovery",
-      description: "Verify terminal lifecycle guards",
-      desiredOutput: "Typed conflicts",
-      successDefinition: "Repeated actions stay safe",
-      constraints: [],
-      resources: [],
-      avoidList: [],
-      researchNeeds: "Lifecycle state",
-      finalDecision: "Whether to retry",
-      deadline: "",
-      availableEffort: "",
-      ideaStylePreference: "",
-    };
+    const brief: ProjectBrief = makeProjectBrief({
+      title: "Terminal",
+      objective: "Recovery",
+      context: "Verify terminal lifecycle guards",
+      desiredOutput: { type: "other", notes: "Typed conflicts" },
+      successCriteria: ["Repeated actions stay safe"],
+      evidenceRequirements: ["Lifecycle state"],
+      decisionToSupport: "Whether to retry",
+    });
     db.db.prepare(`
       INSERT INTO research_runs (
         id, thread_id, status, config_json, brief_json, spend_estimate, round, cancelled, created_at, updated_at
@@ -482,21 +573,17 @@ describe("focused child branches", () => {
     const db = new DatabaseClient(dbPath);
     const threads = new ThreadRepository(db);
     const parent = threads.createThread("Parent research");
-    const brief: ProjectBrief = {
-      projectName: "Scraply",
-      theme: "Research workflows",
-      description: "Find evidence-backed workflow opportunities",
-      desiredOutput: "Focused product ideas",
-      successDefinition: "A testable direction",
-      constraints: [],
-      resources: [],
-      avoidList: [],
-      researchNeeds: "Validate the workflow and buyer demand.",
-      finalDecision: "Choose whether to prototype the focused workflow.",
-      deadline: "No deadline",
+    const brief: ProjectBrief = makeProjectBrief({
+      title: "Scraply",
+      objective: "Research workflows",
+      context: "Find evidence-backed workflow opportunities",
+      desiredOutput: { type: "options", notes: "Focused product ideas" },
+      successCriteria: ["A testable direction"],
+      evidenceRequirements: ["Validate the workflow and buyer demand."],
+      decisionToSupport: "Choose whether to prototype the focused workflow.",
       availableEffort: "One week",
-      ideaStylePreference: "Practical",
-    };
+      ideaStyle: "safe",
+    });
     threads.saveBrief(parent.id, brief, true);
     db.db.prepare(`
       INSERT INTO ideas (id, thread_id, title, description, bucket, scores_json, supporting_claim_ids_json, created_at)
