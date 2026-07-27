@@ -1,0 +1,28 @@
+{
+  "id": "contradictory-constraints",
+  "scenario": "brief-with-contradictory-constraints",
+  "input": "Find a CRM for our eight-person sales team. It must cost no more than $25 per user each month, but HubSpot Professional at its normal price is also acceptable. We need to migrate and launch within two weeks, although there is no fixed launch date and implementation speed does not matter. The CRM must work entirely offline and must sync live updates across the remote team. Give me a ranked shortlist of three products.",
+  "expected": {
+    "objective": "Find a CRM for an eight-person sales team.",
+    "decisionToSupport": "Which CRM the sales team should adopt.",
+    "desiredOutputType": "ranked-shortlist",
+    "successCriteria": [],
+    "hardConstraints": [
+      "Cost no more than $25 per user each month.",
+      "Must work entirely offline.",
+      "Must sync live updates across the remote team."
+    ],
+    "deadline": "within two weeks",
+    "evidenceRequirements": [],
+    "examplesToInspect": [
+      "HubSpot Professional"
+    ],
+    "antiGoals": [],
+    "contradictions": [
+      "The $25 per-user monthly cap conflicts with accepting HubSpot Professional at its normal price.",
+      "Launching within two weeks conflicts with having no fixed launch date and implementation speed not mattering.",
+      "Working entirely offline conflicts with syncing live updates across a remote team."
+    ],
+    "importantUnknowns": []
+  }
+}

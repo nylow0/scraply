@@ -7,10 +7,12 @@
     submitting,
     error,
     onSubmit,
+    onBack,
   }: {
     submitting: boolean;
     error: string | null;
     onSubmit: (answers: IntakeAnswer[]) => void;
+    onBack: () => void;
   } = $props();
 
   let values = $state<Record<string, string>>({});
@@ -62,6 +64,7 @@
 <form class="setup" onsubmit={(event) => { event.preventDefault(); submit(); }}>
   <div class="head">
     <div>
+      <button class="back" type="button" disabled={submitting} onclick={onBack}>Back to smart input</button>
       <p class="eyebrow">Research intake</p>
       <h2>Build the research brief</h2>
       <p>Answer the ten required questions, add any optional context, then review the generated brief.</p>
@@ -158,6 +161,24 @@
     font-weight: 700;
     letter-spacing: 0.12em;
     text-transform: uppercase;
+  }
+
+  button.back {
+    margin: 0 0 16px;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    color: var(--muted);
+    font-size: 11px;
+    font-weight: 600;
+  }
+
+  button.back:hover:not(:disabled) {
+    color: var(--text);
+  }
+
+  button.back:disabled {
+    opacity: 0.5;
   }
 
   .head h2 {

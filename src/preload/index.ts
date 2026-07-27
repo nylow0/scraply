@@ -7,6 +7,8 @@ import {
   ResearchEventSchema,
   SaveFavoriteModelSchema,
   SaveRunConfigSchema,
+  StartBriefIntakeSchema,
+  type BriefExtractionResponse,
   type IdeaGenerationResponse,
   type IdeaRating,
   type ReportDetail,
@@ -31,6 +33,10 @@ const api = {
   deleteThread: (threadId: string): Promise<WorkspaceState> => ipcRenderer.invoke(IPC_CHANNELS.DELETE_THREAD, { threadId }),
   submitIntake: (payload: { threadId: string; questionId: string; answer: string; skipped?: boolean }) =>
     ipcRenderer.invoke(IPC_CHANNELS.SUBMIT_INTAKE, payload),
+  startBriefIntake: (
+    payload: { threadId: string; text: string },
+  ): Promise<BriefExtractionResponse & { workspace: WorkspaceState }> =>
+    ipcRenderer.invoke(IPC_CHANNELS.START_BRIEF_INTAKE, StartBriefIntakeSchema.parse(payload)),
   confirmBrief: (payload: { threadId: string; brief: NonNullable<WorkspaceState["brief"]> }) =>
     ipcRenderer.invoke(IPC_CHANNELS.CONFIRM_BRIEF, ConfirmBriefSchema.parse(payload)),
   saveRunConfig: (payload: { threadId: string; config: NonNullable<WorkspaceState["runConfig"]>; presetName?: string }) =>

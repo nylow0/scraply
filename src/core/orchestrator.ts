@@ -2,6 +2,7 @@ import { z } from "zod";
 import type { StructuredCallOptions, StructuredModelClient } from "../providers/structured";
 import { loadPrompt } from "./prompts";
 import { wrapReportHtml } from "./sanitize";
+import { buildCoverageContext, buildSynthesisContext } from "./brief-context";
 import { RESEARCH_STREAMS } from "../research/streams";
 import type { ProjectBrief, RunConfig } from "../shared/schemas";
 
@@ -95,10 +96,7 @@ export async function reviewCoverage(
       "Assess evidence coverage against the brief using an explicit rubric. Return calibrated coverage from 0 to 1, explicit gaps, and whether each stream needs follow-up research. Do not generate final ideas.",
     ),
     [
-      `Project: ${brief.projectName}`,
-      `Theme: ${brief.theme}`,
-      `Description: ${brief.description}`,
-      `Research needs: ${brief.researchNeeds}`,
+      buildCoverageContext(brief),
       "",
       "Coverage rubric:",
       rubric,
@@ -131,8 +129,7 @@ export async function synthesizeResearch(
       "Synthesize cross-stream research into a coherent narrative. Highlight convergent themes, actionable opportunities, risks, and next steps grounded in the evidence.",
     ),
     [
-      `Project: ${brief.projectName}`,
-      `Theme: ${brief.theme}`,
+      buildSynthesisContext(brief),
       `Overall coverage: ${Math.round(coverageReview.overallCoverage * 100)}%`,
       `Coverage summary: ${coverageReview.summary}`,
       "",
@@ -189,7 +186,7 @@ export function renderSynthesisReportHtml(
     <p>Orchestrator: ${escapeHtml(config.orchestratorModel)} · Worker: ${escapeHtml(config.workerModel)}</p>
   `;
 
-  return wrapReportHtml(`${brief.projectName} — Research synthesis`, body);
+  return wrapReportHtml(`${brief.title} — Research synthesis`, body);
 }
 
 function stripHtml(html: string): string {

@@ -4,25 +4,26 @@ import {
   toFavoriteModelPayload,
   toProjectBriefPayload,
   toRunConfigPayload,
+  toStartBriefIntakePayload,
 } from "../../src/renderer/lib/ipc-payloads";
 import { DEFAULT_RUN_CONFIG } from "../../src/shared/intake";
 import type { ProjectBrief } from "../../src/shared/schemas";
+import { makeProjectBrief } from "../helpers/project-brief";
 
-const brief: ProjectBrief = {
-  projectName: "Student Income Lab",
-  theme: "Student businesses",
-  description: "Find practical business opportunities for students.",
-  desiredOutput: "A ranked idea shortlist",
-  successDefinition: "Evidence-backed ideas that can launch quickly",
-  constraints: ["Low startup cost"],
+const brief: ProjectBrief = makeProjectBrief({
+  title: "Student Income Lab",
+  objective: "Student businesses",
+  context: "Find practical business opportunities for students.",
+  desiredOutput: { type: "ranked-shortlist", notes: "A ranked idea shortlist" },
+  successCriteria: ["Evidence-backed ideas that can launch quickly"],
+  hardConstraints: ["Low startup cost"],
   resources: ["Software skills"],
-  avoidList: ["Regulated markets"],
-  researchNeeds: "Validate demand and competition",
-  finalDecision: "Choose one idea to validate",
+  antiGoals: ["Regulated markets"],
+  evidenceRequirements: ["Validate demand and competition"],
+  decisionToSupport: "Choose one idea to validate",
   deadline: "This semester",
   availableEffort: "10 hours per week",
-  ideaStylePreference: "Balanced",
-};
+});
 
 describe("renderer IPC payloads", () => {
   test("creates a cloneable brief payload so Svelte proxies never cross Electron IPC", () => {
@@ -59,7 +60,16 @@ describe("renderer IPC payloads", () => {
   });
 
   test("rejects malformed renderer state before invoking privileged IPC", () => {
-    expect(() => toProjectBriefPayload({ ...brief, projectName: "" })).toThrow();
+    expect(() => toProjectBriefPayload({ ...brief, objective: "" })).toThrow();
     expect(() => toRunConfigPayload({ ...DEFAULT_RUN_CONFIG, parallelism: 0 })).toThrow();
+    expect(() => toStartBriefIntakePayload({ threadId: "thread-1", text: " " })).toThrow();
+  });
+
+  test("sends the complete starter brief in one strict IPC payload", () => {
+    const text = "Decide which product to build.\nConstraints: offline-first and no ads.";
+    const payload = toStartBriefIntakePayload({ threadId: "thread-1", text });
+
+    expect(payload).toEqual({ threadId: "thread-1", text });
+    expect(structuredClone(payload)).toEqual(payload);
   });
 });

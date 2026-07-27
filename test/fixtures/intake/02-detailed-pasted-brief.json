@@ -1,0 +1,33 @@
+{
+  "id": "detailed-pasted-brief",
+  "scenario": "detailed-pasted-brief",
+  "input": "We run a three-person web agency serving independent fitness studios in the UK. Decide which productized service we should launch next. Produce a ranked shortlist of five options with a one-page rationale for the top choice. Success means the offer can reach £8,000 in monthly recurring revenue within six months, can be delivered by our current team, and needs no more than £1,500 in new software. We have strong TypeScript, design, paid-search, and client-interview skills, plus access to 12 studio owners. Avoid services that require regulated health advice, a mobile app, or 24/7 support. Use current market examples and direct customer pain evidence. We need the recommendation by 30 September 2026 and can spend two weeks researching it.",
+  "expected": {
+    "objective": "Choose the next productized service for a UK web agency serving independent fitness studios.",
+    "decisionToSupport": "Which productized service to launch next.",
+    "desiredOutputType": "ranked-shortlist",
+    "successCriteria": [
+      "Can reach £8,000 in monthly recurring revenue within six months.",
+      "Can be delivered by the current three-person team."
+    ],
+    "hardConstraints": [
+      "No more than £1,500 in new software.",
+      "Must not require regulated health advice.",
+      "Must not require a mobile app.",
+      "Must not require 24/7 support."
+    ],
+    "deadline": "30 September 2026",
+    "evidenceRequirements": [
+      "Use current market examples.",
+      "Use direct evidence of customer pain."
+    ],
+    "examplesToInspect": [],
+    "antiGoals": [
+      "Services requiring regulated health advice.",
+      "Services requiring a mobile app.",
+      "Services requiring 24/7 support."
+    ],
+    "contradictions": [],
+    "importantUnknowns": []
+  }
+}

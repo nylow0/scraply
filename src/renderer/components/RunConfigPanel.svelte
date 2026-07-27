@@ -1,6 +1,12 @@
 <script lang="ts">
   import { untrack } from "svelte";
-  import type { ModelCatalog, ModelProvider, ModelRef, RunConfig } from "../../shared/schemas";
+  import {
+    RunConfigSchema,
+    type ModelCatalog,
+    type ModelProvider,
+    type ModelRef,
+    type RunConfig,
+  } from "../../shared/schemas";
 
   let {
     models,
@@ -12,6 +18,7 @@
     onFavorite,
     starting = false,
     setupOnly = false,
+    embedded = false,
   }: {
     models: string[];
     modelCatalog?: ModelCatalog | undefined;
@@ -22,9 +29,10 @@
     onFavorite: (model: ModelRef, favorite: boolean) => void;
     starting?: boolean;
     setupOnly?: boolean;
+    embedded?: boolean;
   } = $props();
 
-  let draft = $state({ ...untrack(() => config) });
+  let draft = $state<RunConfig>({ ...untrack(() => config) });
   let presetName = $state("");
   let customProvider: ModelProvider = $state("codex");
   let customModel = $state("");
@@ -53,6 +61,10 @@
   const codexMatches = $derived(filteredModels.filter((model) => model.provider === "codex"));
   const opencodeMatches = $derived(filteredModels.filter((model) => model.provider === "opencode"));
   const availableCount = $derived(availableModels.length);
+  const parsedConfig = $derived(RunConfigSchema.safeParse({ ...draft }));
+  const validationMessage = $derived(
+    parsedConfig.success ? null : parsedConfig.error.issues[0]?.message ?? "Review the research limits.",
+  );
 
   function modelKey(provider: ModelProvider, id: string) {
     return `${provider}:${id}`;
@@ -81,14 +93,26 @@
   function optionLabel(provider: ModelProvider, model: string) {
     return `${provider === "codex" ? "Codex" : "OpenCode"} / ${model}`;
   }
+
+  function saveConfig(name?: string) {
+    const parsed = RunConfigSchema.safeParse({ ...draft });
+    if (parsed.success) onSave?.(parsed.data, name);
+  }
+
+  function startResearch() {
+    const parsed = RunConfigSchema.safeParse({ ...draft });
+    if (parsed.success) onStart?.(parsed.data);
+  }
 </script>
 
-<section class="panel" class:setup-only={setupOnly}>
-  <header class="panel-head">
-    <p class="eyebrow">Research engine</p>
-    <h2>Models & research limits</h2>
-    <p>Choose who plans, researches, and generates ideas. Set hard limits before anything runs.</p>
-  </header>
+<section class="panel" class:setup-only={setupOnly} class:embedded>
+  {#if !embedded}
+    <header class="panel-head">
+      <p class="eyebrow">Research engine</p>
+      <h2>Models & research limits</h2>
+      <p>Choose who plans, researches, and generates ideas. Set hard limits before anything runs.</p>
+    </header>
+  {/if}
   <div class="grid">
     <div class="field">
       <span>Orchestrator model</span>
@@ -135,12 +159,29 @@
       <input type="number" min="1" max="20" bind:value={draft.searchResultsPerStream} />
     </label>
     <label>
+      <span>Page character limit</span>
+      <input type="number" min="500" max="20000" step="100" bind:value={draft.pageCharLimit} />
+      <small>Maximum retrieved text processed per page.</small>
+    </label>
+    <label>
       <span>Parallelism</span>
       <input type="number" min="1" max="6" bind:value={draft.parallelism} />
     </label>
     <label>
       <span>Max spend (USD)</span>
-      <input type="number" min="0" step="0.1" bind:value={draft.maxSpendUsd} />
+      <input type="number" min="0" max="100" step="0.1" bind:value={draft.maxSpendUsd} />
+    </label>
+    <label>
+      <span>Max Codex calls</span>
+      <input type="number" min="1" max="500" bind:value={draft.maxCodexCalls} />
+    </label>
+    <label>
+      <span>Max Exa searches</span>
+      <input type="number" min="1" max="100" bind:value={draft.maxExaSearches} />
+    </label>
+    <label>
+      <span>Runtime limit (minutes)</span>
+      <input type="number" min="1" max="240" bind:value={draft.maxRunMinutes} />
     </label>
   </div>
 
@@ -244,20 +285,24 @@
   </div>
   </details>
 
+  {#if validationMessage}
+    <p class="config-error" role="alert">{validationMessage}</p>
+  {/if}
+
   {#if !setupOnly}<div class="approval" aria-label="Research approval summary">
     <div>
-      <strong>Final review</strong>
-      <p>6 research lenses · up to ${draft.maxSpendUsd.toFixed(2)} · {draft.ideasRequested} ideas</p>
+      <strong>Execution caps</strong>
+      <p>6 fixed streams · up to ${Number(draft.maxSpendUsd || 0).toFixed(2)} · {draft.maxRunMinutes} min · {draft.ideasRequested} ideas</p>
     </div>
-    <button class="primary" onclick={() => onStart?.(draft)} disabled={starting}>
-      {starting ? "Starting research…" : "Approve & start research"}
+    <button class="primary" onclick={startResearch} disabled={starting || Boolean(validationMessage)}>
+      {starting ? "Starting research…" : "Start research"}
     </button>
   </div>{/if}
 
-  <div class="actions">
-      <button class="primary" onclick={() => onSave?.(draft)}>{setupOnly ? "Save settings" : "Save configuration"}</button>
+  {#if onSave}<div class="actions">
+      <button class="ghost" disabled={Boolean(validationMessage)} onclick={() => saveConfig()}>{setupOnly ? "Save settings" : "Save configuration"}</button>
       <input placeholder="Preset name" bind:value={presetName} />
-      <button class="ghost" onclick={() => presetName && onSave?.(draft, presetName)}>Save preset</button>
+      <button class="ghost" disabled={!presetName.trim() || Boolean(validationMessage)} onclick={() => presetName && saveConfig(presetName)}>Save preset</button>
       {#if presets.length}
         <select onchange={(event) => applyPreset((event.currentTarget as HTMLSelectElement).value)}>
           <option value="">Load preset…</option>
@@ -265,6 +310,7 @@
         </select>
       {/if}
     </div>
+  {/if}
 </section>
 
 {#snippet ModelOptions(catalog: ModelCatalog, favorites: ModelRef[])}
@@ -308,6 +354,12 @@
     border: 0;
     border-radius: 0;
     background: transparent;
+  }
+
+  .panel.embedded {
+    height: auto;
+    overflow: visible;
+    padding: 4px 0 22px;
   }
 
   .panel > * {
@@ -394,6 +446,16 @@
     margin-top: 20px;
     padding-top: 18px;
     border-top: 1px solid var(--border);
+  }
+
+  .config-error {
+    margin: 16px 0 0;
+    padding: 10px 12px;
+    border: 1px solid color-mix(in srgb, var(--danger) 45%, var(--border));
+    border-radius: 8px;
+    background: color-mix(in srgb, var(--danger) 8%, var(--surface));
+    color: var(--danger);
+    font-size: 11px;
   }
 
   .setup-only .actions {
@@ -783,6 +845,10 @@
   @media (max-width: 640px) {
     .panel {
       padding: 24px 16px;
+    }
+
+    .panel.embedded {
+      padding: 4px 0 20px;
     }
 
     .grid,

@@ -1,9 +1,9 @@
 import { randomUUID } from "node:crypto";
 import type { DatabaseClient } from "../client";
+import { parseAndNormalizeBrief } from "../../shared/brief-normalizer";
 import {
   BranchContextSchema,
   MessageSchema,
-  ProjectBriefSchema,
   RunConfigSchema,
   ThreadSchema,
   type Message,
@@ -121,12 +121,13 @@ export class ThreadRepository {
   }
 
   saveBrief(threadId: string, brief: ProjectBrief, confirmed: boolean): void {
+    const normalizedBrief = parseAndNormalizeBrief(brief);
     const versionRow = this.db.db.prepare("SELECT MAX(version) as v FROM briefs WHERE thread_id = ?").get(threadId) as { v: number | null };
     const version = (versionRow.v ?? 0) + 1;
     this.db.db.prepare(`
       INSERT INTO briefs (id, thread_id, version, brief_json, confirmed, created_at)
       VALUES (?, ?, ?, ?, ?, ?)
-    `).run(randomUUID(), threadId, version, JSON.stringify(brief), confirmed ? 1 : 0, new Date().toISOString());
+    `).run(randomUUID(), threadId, version, JSON.stringify(normalizedBrief), confirmed ? 1 : 0, new Date().toISOString());
     this.updateThreadStatus(threadId, confirmed ? "brief-confirmed" : "brief-draft");
   }
 
@@ -134,18 +135,21 @@ export class ThreadRepository {
     const row = this.db.db.prepare(`
       SELECT brief_json FROM briefs WHERE thread_id = ? ORDER BY version DESC LIMIT 1
     `).get(threadId) as { brief_json: string } | undefined;
-    return row ? ProjectBriefSchema.parse(JSON.parse(row.brief_json)) : null;
+    return row ? parseAndNormalizeBrief(JSON.parse(row.brief_json)) : null;
   }
 
   getLatestBriefSnapshot(threadId: string): { brief: ProjectBrief; version: number } | null {
     const row = this.db.db.prepare(`
       SELECT brief_json, version FROM briefs WHERE thread_id = ? ORDER BY version DESC LIMIT 1
     `).get(threadId) as { brief_json: string; version: number } | undefined;
-    return row ? { brief: ProjectBriefSchema.parse(JSON.parse(row.brief_json)), version: row.version } : null;
+    return row ? { brief: parseAndNormalizeBrief(JSON.parse(row.brief_json)), version: row.version } : null;
   }
 
   saveBranchContext(context: BranchContext): void {
-    const parsed = BranchContextSchema.parse(context);
+    const parsed = BranchContextSchema.parse({
+      ...context,
+      inheritedBriefSnapshot: parseAndNormalizeBrief(context.inheritedBriefSnapshot),
+    });
     this.db.db.prepare(`
       INSERT INTO branch_contexts (
         thread_id, parent_thread_id, seed_idea_id, seed_idea_title, exploration_angle,
@@ -175,7 +179,7 @@ export class ThreadRepository {
       seedIdeaId: row.seed_idea_id,
       seedIdeaTitle: row.seed_idea_title,
       explorationAngle: row.exploration_angle,
-      inheritedBriefSnapshot: JSON.parse(String(row.inherited_brief_json)),
+      inheritedBriefSnapshot: parseAndNormalizeBrief(JSON.parse(String(row.inherited_brief_json))),
       inheritedBriefVersion: row.inherited_brief_version,
       selectedClaimIds: JSON.parse(String(row.selected_claim_ids_json)),
       createdAt: row.created_at,

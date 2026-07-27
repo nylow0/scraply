@@ -5,6 +5,7 @@ import { EvidenceRepository } from "../db/repositories/evidence";
 import { ResearchRunRepository } from "../db/repositories/research-runs";
 import { wrapReportHtml } from "../core/sanitize";
 import { loadPrompt } from "../core/prompts";
+import { buildQueryContext, buildResearcherContext } from "../core/brief-context";
 import {
   renderSynthesisReportHtml,
   reviewCoverage,
@@ -41,6 +42,7 @@ interface ActiveRun {
   deadlineTimer?: ReturnType<typeof setTimeout>;
   codexCalls: number;
   exaSearches: number;
+  selectedStreamIds: string[];
   completedStreamIds: Set<string>;
   hasSynthesis: boolean;
 }
@@ -76,6 +78,7 @@ export class ResearchEngine {
       startedAt: Date.now(),
       codexCalls: 0,
       exaSearches: 0,
+      selectedStreamIds: RESEARCH_STREAMS.map((stream) => stream.id),
       completedStreamIds: new Set(),
       hasSynthesis: false,
     };
@@ -110,6 +113,7 @@ export class ResearchEngine {
       startedAt: Date.parse(stored.startedAt),
       codexCalls: 0,
       exaSearches: 0,
+      selectedStreamIds: stored.selectedStreamIds,
       completedStreamIds: stored.completedStreamIds,
       hasSynthesis: stored.hasSynthesis,
     };
@@ -149,7 +153,10 @@ export class ResearchEngine {
     if (!active) return;
     const { config, brief, threadId } = active;
 
-    const pendingStreams = RESEARCH_STREAMS.filter((stream) => !active.completedStreamIds.has(stream.id));
+    const selectedStreamIds = new Set(active.selectedStreamIds);
+    const pendingStreams = RESEARCH_STREAMS.filter(
+      (stream) => selectedStreamIds.has(stream.id) && !active.completedStreamIds.has(stream.id),
+    );
     if (pendingStreams.length > 0) {
       await runWithConcurrency(
         pendingStreams,
@@ -231,7 +238,7 @@ export class ResearchEngine {
 
     for (const target of followUpTargets) {
       const stream = RESEARCH_STREAMS.find((item) => item.id === target.streamId);
-      if (!stream || this.isStopped(active)) continue;
+      if (!stream || !active.selectedStreamIds.includes(stream.id) || this.isStopped(active)) continue;
       this.options.onEvent({ type: "follow-up-started", runId, threadId, streamId: stream.id, round: 1 });
       await this.runStream(runId, threadId, brief, config, stream, true, target.gaps[0]);
     }
@@ -256,7 +263,7 @@ export class ResearchEngine {
       this.options.db.db.prepare(`
         INSERT INTO reports (id, thread_id, research_run_id, stream_id, report_kind, title, html, created_at)
         VALUES (?, ?, ?, 'synthesis', 'synthesis', ?, ?, ?)
-      `).run(reportId, threadId, runId, `${brief.projectName} — Research synthesis`, html, new Date().toISOString());
+      `).run(reportId, threadId, runId, `${brief.title} — Research synthesis`, html, new Date().toISOString());
       active.hasSynthesis = true;
       this.options.onEvent({ type: "synthesis-completed", runId, threadId, reportId });
       this.emitJob(runId, threadId, "synthesis-completed", { runId, reportId });
@@ -334,8 +341,11 @@ export class ResearchEngine {
 
     const streamRunId = randomUUID();
     const now = new Date().toISOString();
-    const query = followUpQuery?.trim() || [brief.theme, brief.description, brief.researchNeeds, stream.focus]
-      .filter(Boolean).join(": ").slice(0, 1500);
+    const query = followUpQuery?.trim() || [
+      buildQueryContext(brief),
+      `Research stream: ${stream.name}`,
+      `Stream focus: ${stream.focus}`,
+    ].join("\n").slice(0, 1500);
     this.options.db.db.prepare(`
       INSERT INTO stream_runs (
         id, research_run_id, stream_id, lens, round, planned_query, status,
@@ -354,6 +364,9 @@ export class ResearchEngine {
         `Research stream: ${stream.name}`,
         `Stream focus: ${stream.focus}`,
         `Stream instructions: ${stream.instructions ?? "Use the stream focus."}`,
+        "",
+        "Brief context:",
+        buildResearcherContext(brief),
       ].join("\n"));
       this.options.onEvent({ type: "stream-progress", runId, threadId, streamId: stream.id, message: "Searching Exa" });
       this.consumeExaSearch(active);
@@ -405,7 +418,7 @@ export class ResearchEngine {
         <h2>Suggested next search</h2><p>Deepen ${escapeHtml(stream.name)} with narrower subquestions.</p>
       `;
       const reportId = randomUUID();
-      const html = wrapReportHtml(`${stream.name} — ${brief.projectName}`, body);
+      const html = wrapReportHtml(`${stream.name} — ${brief.title}`, body);
       this.options.db.db.prepare(`
         INSERT INTO reports (
           id, thread_id, research_run_id, stream_run_id, stream_id, report_kind,

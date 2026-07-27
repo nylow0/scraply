@@ -1,0 +1,34 @@
+{
+  "id": "examples-and-anti-examples",
+  "scenario": "brief-with-examples-and-anti-examples",
+  "input": "Explore concepts for a lightweight issue tracker for student software teams. Inspect Linear, GitHub Projects, and Height for good interaction patterns. I like Linear's keyboard-first speed and GitHub's tight connection to code. Do not copy Jira's administration-heavy workflows, Trello-style board clutter, or tools that make every user configure a complex process before creating an issue. Return six distinct product directions, not polished feature specs.",
+  "expected": {
+    "objective": "Explore concepts for a lightweight issue tracker for student software teams.",
+    "decisionToSupport": null,
+    "desiredOutputType": "options",
+    "successCriteria": [
+      "Lightweight for student software teams.",
+      "Keyboard-first speed.",
+      "Tight connection to code."
+    ],
+    "hardConstraints": [],
+    "deadline": null,
+    "evidenceRequirements": [],
+    "examplesToInspect": [
+      "Linear",
+      "GitHub Projects",
+      "Height"
+    ],
+    "antiGoals": [
+      "Jira-style administration-heavy workflows.",
+      "Trello-style board clutter.",
+      "Complex process configuration before an issue can be created.",
+      "Polished feature specifications."
+    ],
+    "contradictions": [],
+    "importantUnknowns": [
+      "deadline",
+      "available resources"
+    ]
+  }
+}

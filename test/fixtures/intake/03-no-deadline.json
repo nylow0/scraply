@@ -1,0 +1,33 @@
+{
+  "id": "no-deadline",
+  "scenario": "brief-with-no-deadline",
+  "input": "Compare self-hosted error-tracking tools for a privacy-sensitive SaaS team. I want a comparison of Sentry, GlitchTip, and SigNoz focused on setup effort, TypeScript support, alert quality, and ongoing maintenance. Recommend one only if the evidence clearly supports it. We can run Docker and Kubernetes, but customer event data must stay on infrastructure we control.",
+  "expected": {
+    "objective": "Compare self-hosted error-tracking tools for a privacy-sensitive SaaS team.",
+    "decisionToSupport": "Whether Sentry, GlitchTip, or SigNoz is the best fit.",
+    "desiredOutputType": "comparison",
+    "successCriteria": [
+      "Low setup effort.",
+      "Strong TypeScript support.",
+      "Useful alert quality.",
+      "Manageable ongoing maintenance."
+    ],
+    "hardConstraints": [
+      "Customer event data must stay on infrastructure controlled by the team."
+    ],
+    "deadline": null,
+    "evidenceRequirements": [
+      "Recommend one only if the evidence clearly supports it."
+    ],
+    "examplesToInspect": [
+      "Sentry",
+      "GlitchTip",
+      "SigNoz"
+    ],
+    "antiGoals": [],
+    "contradictions": [],
+    "importantUnknowns": [
+      "deadline"
+    ]
+  }
+}

@@ -5,7 +5,9 @@ import { CostLedgerRepository } from "../db/repositories/cost-ledger";
 import type { StructuredModelClient } from "../providers/structured";
 import { ProviderFailure } from "../providers/structured";
 import { loadPrompt } from "./prompts";
+import { parseAndNormalizeBrief } from "../shared/brief-normalizer";
 import { buildPreferenceContext, formatPreferencePrompt } from "./preferences";
+import { buildIdeaContext } from "./brief-context";
 import {
   IdeaBucketSchema,
   IdeaSchema,
@@ -47,11 +49,7 @@ export function buildIdeaPrompt(
   missingCoverage: string[] = [],
 ): string {
   return [
-    `Project: ${brief.projectName}`,
-    `Theme: ${brief.theme}`,
-    `Description: ${brief.description}`,
-    `Desired output: ${brief.desiredOutput}`,
-    `Avoid: ${brief.avoidList.join("; ") || "none"}`,
+    buildIdeaContext(brief),
     `Creative lens: ${lens}`,
     `Generate ${batchSize} distinct ideas.`,
     `Research mode: ${missingCoverage.length ? "partial" : "complete"}`,
@@ -102,7 +100,7 @@ export async function generateIdeas(
     config_json: string;
   } | undefined;
   if (!run) throw new IdeaGenerationBlockedError("Research run not found");
-  const brief = run.brief_json ? JSON.parse(run.brief_json) as ProjectBrief : null;
+  const brief = run.brief_json ? parseAndNormalizeBrief(JSON.parse(run.brief_json)) : null;
   if (!brief) throw new IdeaGenerationBlockedError("The research run is missing its immutable brief snapshot");
   const config = RunConfigSchema.parse(JSON.parse(run.config_json));
   const synthesis = db.db.prepare(`

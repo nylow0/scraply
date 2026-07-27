@@ -125,3 +125,32 @@ describe("job event cleanup migration", () => {
     migrated.close();
   });
 });
+
+describe("research plan snapshot migration", () => {
+  test("adds a nullable stream snapshot without rewriting legacy runs", () => {
+    const dir = mkdtempSync(join(tmpdir(), "scraply-stream-snapshot-"));
+    const dbPath = join(dir, "scraply.db");
+    const legacy = createDatabaseAtVersion(dbPath, 5);
+    legacy.prepare(`
+      INSERT INTO threads (id, title, status, created_at, updated_at)
+      VALUES ('thread-plan', 'Plan', 'research-running', '2026-07-01T00:00:00.000Z', '2026-07-01T00:00:00.000Z')
+    `).run();
+    legacy.prepare(`
+      INSERT INTO research_runs (
+        id, thread_id, status, config_json, spend_estimate, round, cancelled, created_at, updated_at
+      ) VALUES (
+        'run-plan', 'thread-plan', 'running', '{}', 0, 0, 0,
+        '2026-07-01T00:00:00.000Z', '2026-07-01T00:00:00.000Z'
+      )
+    `).run();
+    legacy.close();
+
+    const migrated = new DatabaseClient(dbPath);
+    expect(migrated.db.prepare(
+      "SELECT selected_stream_ids_json FROM research_runs WHERE id = 'run-plan'",
+    ).get()).toEqual({ selected_stream_ids_json: null });
+    expect(migrated.db.prepare("SELECT id FROM schema_migrations ORDER BY id").all())
+      .toEqual(MIGRATIONS.map((migration) => ({ id: migration.id })));
+    migrated.close();
+  });
+});

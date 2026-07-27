@@ -1,0 +1,34 @@
+{
+  "id": "strict-evidence-requirement",
+  "scenario": "brief-with-strict-evidence-requirement",
+  "input": "Assess whether four-day school weeks improve student outcomes in rural US districts. Produce a research brief, not advocacy. Every factual claim must be supported by a primary source or peer-reviewed study published from 2021 onward. Separate correlation from causal evidence, include sample sizes and study limitations, and flag claims where credible studies disagree. Do not use vendor blogs, unsourced summaries, or social-media anecdotes as evidence.",
+  "expected": {
+    "objective": "Assess whether four-day school weeks improve student outcomes in rural US districts.",
+    "decisionToSupport": null,
+    "desiredOutputType": "research-brief",
+    "successCriteria": [
+      "Distinguish correlation from causal evidence.",
+      "Show where credible studies disagree."
+    ],
+    "hardConstraints": [],
+    "deadline": null,
+    "evidenceRequirements": [
+      "Support every factual claim with a primary source or peer-reviewed study.",
+      "Use studies published from 2021 onward.",
+      "Include sample sizes.",
+      "Include study limitations.",
+      "Do not use vendor blogs, unsourced summaries, or social-media anecdotes as evidence."
+    ],
+    "examplesToInspect": [],
+    "antiGoals": [
+      "Advocacy.",
+      "Treating vendor blogs as evidence.",
+      "Treating unsourced summaries as evidence.",
+      "Treating social-media anecdotes as evidence."
+    ],
+    "contradictions": [],
+    "importantUnknowns": [
+      "deadline"
+    ]
+  }
+}

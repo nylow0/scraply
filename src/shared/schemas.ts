@@ -53,7 +53,7 @@ export const ResearchStreamSchema = z.object({
   maxQueriesPerHop: z.number().int().min(1).max(10).default(3),
 });
 
-export const ProjectBriefSchema = z.object({
+export const LegacyProjectBriefSchema = z.object({
   projectName: z.string().min(1),
   theme: z.string().min(1),
   description: z.string().min(1),
@@ -67,7 +67,46 @@ export const ProjectBriefSchema = z.object({
   deadline: z.string(),
   availableEffort: z.string(),
   ideaStylePreference: z.string(),
-});
+}).passthrough();
+
+export const DesiredOutputTypeSchema = z.enum([
+  "options",
+  "ranked-shortlist",
+  "decision-memo",
+  "research-brief",
+  "comparison",
+  "other",
+]);
+
+export const ProjectBriefV2Schema = z.object({
+  schemaVersion: z.literal(2),
+  title: z.string(),
+  objective: z.string().min(1),
+  context: z.string(),
+  decisionToSupport: z.string(),
+  audience: z.array(z.string()),
+  desiredOutput: z.object({
+    type: DesiredOutputTypeSchema,
+    notes: z.string(),
+  }).strict(),
+  successCriteria: z.array(z.string()),
+  hardConstraints: z.array(z.string()),
+  preferences: z.array(z.string()),
+  antiGoals: z.array(z.string()),
+  resources: z.array(z.string()),
+  deadline: z.string().nullable(),
+  availableEffort: z.string().nullable(),
+  evidenceRequirements: z.array(z.string()),
+  examplesToInspect: z.array(z.string()),
+  ideaStyle: z.enum(["safe", "balanced", "bold"]),
+  assumptions: z.array(z.string()),
+  openQuestions: z.array(z.string()),
+  contradictions: z.array(z.string()),
+}).strict();
+
+// Runtime code only operates on V2. Legacy data is accepted exclusively through
+// parseAndNormalizeBrief at persistence and IPC boundaries.
+export const ProjectBriefSchema = ProjectBriefV2Schema;
 
 export const RunConfigSchema = z.object({
   orchestratorProvider: z.enum(["opencode", "codex"]),
@@ -196,6 +235,8 @@ export type SourceDetail = z.infer<typeof SourceDetailSchema>;
 export type ClaimExtraction = z.infer<typeof ClaimExtractionSchema>;
 export type ResearchStream = z.infer<typeof ResearchStreamSchema>;
 export type ProjectBrief = z.infer<typeof ProjectBriefSchema>;
+export type LegacyProjectBrief = z.infer<typeof LegacyProjectBriefSchema>;
+export type ProjectBriefV2 = z.infer<typeof ProjectBriefV2Schema>;
 export type RunConfig = z.infer<typeof RunConfigSchema>;
 export type ModelProvider = z.infer<typeof ModelProviderSchema>;
 export type ModelRef = z.infer<typeof ModelRefSchema>;

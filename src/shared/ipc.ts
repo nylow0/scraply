@@ -1,5 +1,16 @@
 import { z } from "zod";
-import { BranchContextSchema, IdeaSchema, MessageSchema, ModelRefSchema, ModelCatalogSchema, ProjectBriefSchema, RunConfigSchema, SourceDetailSchema as SharedSourceDetailSchema, ThreadSchema } from "./schemas";
+import { NormalizedProjectBriefSchema } from "./brief-normalizer";
+import {
+  BranchContextSchema,
+  IdeaSchema,
+  MessageSchema,
+  ModelRefSchema,
+  ModelCatalogSchema,
+  ProjectBriefV2Schema,
+  RunConfigSchema,
+  SourceDetailSchema as SharedSourceDetailSchema,
+  ThreadSchema,
+} from "./schemas";
 
 export const BackendReadySchema = z.object({
   port: z.number().int().positive(),
@@ -86,10 +97,22 @@ export const SubmitIntakeAnswerSchema = z.object({
   skipped: z.boolean().optional(),
 });
 
+export const StartBriefIntakeSchema = z.object({
+  threadId: EntityIdSchema,
+  text: z.string().trim().min(1).max(100_000),
+}).strict();
+
+export const BriefExtractionResponseSchema = z.object({
+  brief: ProjectBriefV2Schema,
+  missingFields: z.array(z.string().trim().min(1)),
+  assumptions: z.array(z.string().trim().min(1)),
+  contradictions: z.array(z.string().trim().min(1)),
+}).strict();
+
 export const ConfirmBriefSchema = z.object({
   threadId: z.string().min(1),
-  brief: ProjectBriefSchema,
-});
+  brief: NormalizedProjectBriefSchema,
+}).strict();
 
 export const SaveRunConfigSchema = z.object({
   threadId: z.string().min(1),
@@ -187,6 +210,9 @@ export const ReportDetailSchema = ReportSummarySchema.extend({
 });
 
 export const SourceDetailSchema = SharedSourceDetailSchema;
+const NormalizedBranchContextSchema = BranchContextSchema.omit({ inheritedBriefSnapshot: true }).extend({
+  inheritedBriefSnapshot: NormalizedProjectBriefSchema,
+});
 
 export const IdeaRatingResponseSchema = z.object({
   ideaId: EntityIdSchema,
@@ -200,9 +226,9 @@ export const WorkspaceStateSchema = z.object({
   threads: z.array(ThreadSchema),
   activeThreadId: z.string().nullable(),
   messages: z.array(MessageSchema),
-  brief: ProjectBriefSchema.nullable(),
+  brief: NormalizedProjectBriefSchema.nullable(),
   runConfig: RunConfigSchema.nullable(),
-  branchContext: BranchContextSchema.nullable(),
+  branchContext: NormalizedBranchContextSchema.nullable(),
   models: z.array(z.string()),
   modelCatalog: ModelCatalogSchema,
   presets: z.array(z.object({ name: z.string(), config: RunConfigSchema })),
@@ -246,6 +272,7 @@ export type SourceDetail = z.infer<typeof SourceDetailSchema>;
 export type IdeaRating = z.infer<typeof IdeaRatingResponseSchema>;
 export type IdeaGenerationCompleteness = z.infer<typeof IdeaGenerationCompletenessSchema>;
 export type IdeaGenerationResponse = z.infer<typeof IdeaGenerationResponseSchema>;
+export type BriefExtractionResponse = z.infer<typeof BriefExtractionResponseSchema>;
 
 export const IPC_CHANNELS = {
   GET_VALIDATION: "scraply:get-validation",
@@ -257,6 +284,7 @@ export const IPC_CHANNELS = {
   CREATE_THREAD: "scraply:create-thread",
   SELECT_THREAD: "scraply:select-thread",
   SUBMIT_INTAKE: "scraply:submit-intake",
+  START_BRIEF_INTAKE: "scraply:start-brief-intake",
   CONFIRM_BRIEF: "scraply:confirm-brief",
   SAVE_RUN_CONFIG: "scraply:save-run-config",
   SAVE_FAVORITE_MODEL: "scraply:save-favorite-model",

@@ -328,4 +328,10 @@ export const MIGRATIONS = [
       END;
     `,
   },
+  {
+    id: 6,
+    sql: `
+      ALTER TABLE research_runs ADD COLUMN selected_stream_ids_json TEXT;
+    `,
+  },
 ] as const;

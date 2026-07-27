@@ -1,0 +1,28 @@
+{
+  "id": "important-values-unknown",
+  "scenario": "incomplete-prompt-with-important-values-unknown",
+  "input": "Help us choose a customer-support platform. We know it must handle email and in-app chat, but we do not yet know the budget, expected ticket volume, required integrations, migration deadline, or whether data residency is a requirement. The support team size is also undecided. Give us a comparison framework and clearly mark what we still need to answer before choosing a vendor.",
+  "expected": {
+    "objective": "Choose a customer-support platform.",
+    "decisionToSupport": "Which customer-support platform to adopt.",
+    "desiredOutputType": "comparison",
+    "successCriteria": [
+      "Handle email.",
+      "Handle in-app chat."
+    ],
+    "hardConstraints": [],
+    "deadline": null,
+    "evidenceRequirements": [],
+    "examplesToInspect": [],
+    "antiGoals": [],
+    "contradictions": [],
+    "importantUnknowns": [
+      "budget",
+      "expected ticket volume",
+      "required integrations",
+      "migration deadline",
+      "data residency requirement",
+      "support team size"
+    ]
+  }
+}

@@ -3,13 +3,14 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { DatabaseClient } from "../db/client";
 import { ThreadRepository } from "../db/repositories/threads";
 import { ActiveRunConflictError } from "../db/repositories/research-runs";
-import { generateBriefWithModel, newThreadTitle } from "../core/intake";
+import { generateBriefFromText, generateBriefWithModel, newThreadTitle } from "../core/intake";
 import { generateIdeas, IdeaGenerationBlockedError } from "../core/ideas";
 import { ResearchEngine } from "../core/research-engine";
 import { cancelIncompleteRun, listPendingRuns } from "../core/research-recovery";
 import { CodexClient, listCodexModels, probeCodexCli } from "../providers/codex";
 import { ExaClient } from "../providers/exa";
 import { OpenCodeClient } from "../providers/opencode";
+import type { StructuredModelClient } from "../providers/structured";
 import {
   CancelIncompleteResearchSchema,
   CancelResearchSchema,
@@ -31,6 +32,7 @@ import {
   SaveFavoriteModelSchema,
   SelectThreadRequestSchema,
   SourceDetailSchema,
+  StartBriefIntakeSchema,
   StartResearchSchema,
   SubmitIntakeAnswerSchema,
   ValidationStateSchema,
@@ -50,6 +52,7 @@ export interface BackendContext {
   promptOverridesDir: string;
   appVersion: string;
   getSecrets: () => { opencodeApiKey: string | null; exaApiKey: string | null };
+  modelClients?: Partial<Record<ModelProvider, StructuredModelClient>>;
   log?: (input: Omit<LogInput, "component">) => void;
   providerValidation?: {
     probeCodex?: () => Promise<{ detected: boolean; compatible: boolean; version?: string; error?: string }>;
@@ -127,6 +130,8 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
   }
 
   function modelClient(provider: ModelProvider) {
+    const injected = context.modelClients?.[provider];
+    if (injected) return injected;
     const configured = clients();
     if (provider === "codex") return configured.codex;
     if (configured.opencode) return configured.opencode;
@@ -505,6 +510,31 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
             threads.updateThreadStatus(input.threadId, "brief-draft");
           }
           sendJson(res, 200, { progress: intakeProgress(answered), workspace: await workspaceState() });
+          return;
+        }
+
+        if (url.pathname === "/intake/brief") {
+          const input = StartBriefIntakeSchema.parse(body);
+          requireThread(input.threadId);
+          const config = threads.getLatestRunConfig(input.threadId) ?? RunConfigSchema.parse(DEFAULT_RUN_CONFIG);
+          const extraction = await generateBriefFromText(
+            modelClient(config.orchestratorProvider),
+            config.orchestratorModel,
+            input.text,
+          );
+          threads.addMessage(input.threadId, "user", input.text);
+          threads.renameThread(
+            input.threadId,
+            newThreadTitle(extraction.brief.title || extraction.brief.objective),
+          );
+          threads.saveBrief(input.threadId, extraction.brief, false);
+          threads.updateThreadStatus(input.threadId, "brief-draft");
+          threads.addMessage(
+            input.threadId,
+            "assistant",
+            "I've interpreted your brief. Review every field, assumption, contradiction, and open question before continuing.",
+          );
+          sendJson(res, 200, { ...extraction, workspace: await workspaceState() });
           return;
         }
 
