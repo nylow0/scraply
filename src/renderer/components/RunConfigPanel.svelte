@@ -39,8 +39,16 @@
   let modelSearch = $state("");
   let modelListOpen = $state(false);
 
+  // Background workspace reconciles hand us a new `config` object on every
+  // backend event. Comparing content, not identity, keeps unsaved edits alive
+  // and still resyncs when the stored configuration genuinely changes.
+  let syncedConfig = JSON.stringify(untrack(() => config));
+
   $effect(() => {
-    draft = { ...config };
+    const incoming = JSON.stringify(config);
+    if (incoming === syncedConfig) return;
+    syncedConfig = incoming;
+    draft = { ...untrack(() => config) };
   });
 
   function applyPreset(name: string) {
@@ -403,9 +411,12 @@
     border-bottom: 1px solid var(--border);
   }
 
+  /* align-content:start stops a taller neighbour (one with a hint) from
+     stretching this field's rows and inflating its input height. */
   label,
   .field {
     display: grid;
+    align-content: start;
     gap: 8px;
     font-size: 12px;
     color: var(--text);

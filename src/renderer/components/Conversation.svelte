@@ -17,16 +17,16 @@
     </article>
   {:else}
     <div class="empty">
-      <h2>Start a research thread</h2>
-      <p>Click <strong>New research</strong> in the sidebar to begin the one-question intake.</p>
+      <h2>Nothing to show yet</h2>
+      <p>Click <strong>New research</strong> in the sidebar to describe what you want to decide, create, or improve.</p>
     </div>
   {/each}
 </section>
 
 <style>
   .conversation {
-    overflow: auto;
-    padding: 20px;
+    width: min(100%, var(--page-max));
+    padding: var(--page-top) var(--page-inline) 44px;
     display: grid;
     gap: 14px;
     align-content: start;

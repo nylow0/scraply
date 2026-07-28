@@ -6,6 +6,7 @@
   import BriefReviewPanel from "./components/BriefReviewPanel.svelte";
   import RunReviewPanel from "./components/RunReviewPanel.svelte";
   import ResearchDrawer from "./components/ResearchDrawer.svelte";
+  import RunProgressPanel from "./components/RunProgressPanel.svelte";
   import IdeaWorkspace from "./components/IdeaWorkspace.svelte";
   import UserGuide from "./components/UserGuide.svelte";
   import ReportViewer from "./components/ReportViewer.svelte";
@@ -15,6 +16,7 @@
   import type { AppState } from "./lib/state";
   import { initialState } from "./lib/state";
   import { toFavoriteModelPayload, toProjectBriefPayload, toRunConfigPayload } from "./lib/ipc-payloads";
+  import { isResearchStatus, statusLabel, statusTone } from "./lib/status";
   import type { ModelRef, ProjectBrief, RunConfig } from "@shared/schemas";
   import type { IdeaGenerationCompleteness } from "@shared/ipc";
   import { DEFAULT_RUN_CONFIG } from "@shared/intake";
@@ -33,6 +35,7 @@
   let starterText = $state("");
   let editingConfirmedBrief = $state(false);
   let reconcileTimer: ReturnType<typeof setTimeout> | null = null;
+  let mainContent: HTMLDivElement | undefined = $state();
 
   async function refreshWorkspace(options: { preserveError?: boolean } = {}) {
     try {
@@ -93,6 +96,7 @@
     intakeMode = "smart";
     starterText = "";
     editingConfirmedBrief = false;
+    partialIdeaNotice = null;
   }
 
   $effect(() => {
@@ -100,6 +104,8 @@
     const unsubscribe = window.scraply.onBackendEvent((event) => {
       if (event.threadId !== appState.workspace?.activeThreadId) return;
       if (appState.activeRunId && event.runId !== appState.activeRunId) return;
+      // A fresh run replaces the timeline so stream lanes never mix two runs.
+      if (event.type === "run-started" && event.runId !== appState.activeRunId) appState.researchEvents = [];
       appState.researchEvents = [...appState.researchEvents, event];
       if (event.type === "run-started") appState.activeRunId = event.runId;
       if (event.type === "run-completed" || event.type === "run-cancelled" || event.type === "run-failed") {
@@ -110,7 +116,6 @@
       if (event.type === "stream-completed" || event.type === "synthesis-completed") reconcileSoon();
       if (event.type === "run-resumed") {
         appState.activeRunId = event.runId;
-        appState.showDrawer = true;
         reconcileSoon();
       }
       if (event.type === "ideas-generated") reconcileSoon();
@@ -244,10 +249,10 @@
     appState.error = null;
     try {
       appState.workspace = await window.scraply.saveRunConfig({ threadId, config: toRunConfigPayload(config) });
+      appState.researchEvents = [];
       const result = await window.scraply.startResearch(threadId);
       appState.workspace = result.workspace;
       appState.activeRunId = result.runId;
-      appState.showDrawer = true;
     } catch (error) {
       appState.error = error instanceof Error ? error.message : "Failed to start research";
     } finally {
@@ -256,8 +261,9 @@
   }
 
   async function generateIdeas(allowPartial = false) {
+    if (ideasGenerating) return;
     const runId = appState.workspace?.latestResearchRun?.runId;
-    if (!runId || ideasGenerating) {
+    if (!runId) {
       appState.error = "A completed research synthesis is required before generating ideas.";
       return;
     }
@@ -275,20 +281,26 @@
   }
 
   async function generatePartialIdeas() {
-    const run = appState.workspace?.latestResearchRun;
-    if (!run || !partialRunAvailable) return;
-    const coverage = [...run.missingLenses, ...run.gaps].join("; ") || "Synthesis was not completed.";
+    const coverage = partialCoverage;
+    if (!coverage) return;
     if (!window.confirm(`Generate ideas from partial research? Missing coverage: ${coverage}`)) return;
     await generateIdeas(true);
   }
 
   async function resumeResearch(runId: string) {
     if (recoveryPendingRunId) return;
+    const pending = appState.workspace?.pendingRuns.find((run) => run.runId === runId) ?? null;
     recoveryPendingRunId = runId;
     appState.error = null;
     try {
+      appState.researchEvents = [];
       appState.workspace = await window.scraply.resumeResearch(runId);
-      appState.showDrawer = true;
+      // Resuming never moves the active thread, so follow the run to the thread that owns it.
+      if (pending && pending.threadId !== appState.workspace.activeThreadId) {
+        appState.workspace = await window.scraply.selectThread(pending.threadId);
+        resetIntakeEntry();
+      }
+      appState.activeRunId = runId;
     } catch (error) {
       appState.error = error instanceof Error ? error.message : "Failed to resume research";
     } finally {
@@ -326,6 +338,57 @@
   const activeThread = $derived(appState.workspace?.threads.find((t) => t.id === appState.workspace?.activeThreadId) ?? null);
   const partialRunAvailable = $derived(Boolean(appState.workspace?.latestResearchRun?.canGeneratePartialIdeas));
   const providersReady = $derived(Boolean(appState.validation?.setupComplete));
+  const synthesisReady = $derived(Boolean(appState.workspace?.latestResearchRun?.synthesisReportId));
+  const runSnapshot = $derived(appState.workspace?.latestResearchRun ?? null);
+  const onRunPage = $derived(isResearchStatus(activeThread?.status));
+  // The run page already shows the lanes, so the side panel would only duplicate
+  // it. It exists for the pages that don't show progress themselves.
+  const drawerOpen = $derived(appState.showDrawer && !onRunPage);
+  // Cancelling needs both a run to target and a run that has not already ended.
+  const canCancelRun = $derived(
+    Boolean(appState.activeRunId) &&
+      (activeThread?.status === "research-queued" || activeThread?.status === "research-running"),
+  );
+  const reports = $derived(appState.workspace?.reports ?? []);
+  /**
+   * Identifies which page is rendered, so the shared scroll container can be
+   * reset when the page changes without yanking the user when only the run
+   * status advances underneath the same page.
+   */
+  const pageId = $derived.by(() => {
+    const status = activeThread?.status;
+    if (status === "intake") return `intake:${intakeMode}`;
+    if (status === "brief-draft") return "brief-draft";
+    if (status === "brief-confirmed" || status === "configuring") {
+      return editingConfirmedBrief ? "brief-edit" : "run-review";
+    }
+    if (onRunPage) return "run";
+    if (status === "ideas-ready") return "ideas";
+    return "conversation";
+  });
+
+  $effect(() => {
+    const key = `${appState.workspace?.activeThreadId ?? ""}:${pageId}`;
+    void key;
+    mainContent?.scrollTo({ top: 0 });
+  });
+
+  // Missing coverage for a run that ended without a synthesis. Surfaced as a
+  // notice because a failed run resets the thread to "configuring", so the run
+  // page is not where the user lands.
+  const partialCoverage = $derived.by(() => {
+    const run = appState.workspace?.latestResearchRun;
+    if (!run || !partialRunAvailable) return null;
+    return [...run.missingLenses, ...run.gaps].join("; ") || "Synthesis was not completed.";
+  });
+
+  const hasNotices = $derived(
+    (appState.workspace?.pendingRuns?.length ?? 0) > 0 ||
+      Boolean(appState.error && activeThread?.status !== "intake") ||
+      Boolean(partialIdeaNotice) ||
+      Boolean(partialCoverage) ||
+      Boolean(appState.workspace?.branchContext),
+  );
 </script>
 
 {#if appState.loading}
@@ -342,7 +405,7 @@
     onOpenLogs={() => window.scraply.openLogsFolder()}
   />
 {:else}
-  <div class="shell">
+  <div class="shell" class:with-drawer={drawerOpen}>
     <Sidebar
       threads={appState.workspace?.threads ?? []}
       activeThreadId={appState.workspace?.activeThreadId ?? null}
@@ -356,80 +419,100 @@
     />
 
     <main class="main">
-      {#if (appState.workspace?.pendingRuns?.length ?? 0) > 0}
-        <ResumeBanner
-          pendingRuns={appState.workspace?.pendingRuns ?? []}
-          pendingRunId={recoveryPendingRunId}
-          onResume={resumeResearch}
-          onCancel={cancelIncompleteResearch}
-        />
-      {/if}
       <header class="topbar">
-        <div>
+        <div class="topbar-title">
           <h1>{activeThread?.title ?? "Scraply"}</h1>
-          <p class="status">{activeThread?.status ?? "ready"}</p>
+          <span class="status-pill" data-tone={statusTone(activeThread?.status)}>
+            <span class="status-dot" aria-hidden="true"></span>{statusLabel(activeThread?.status)}
+          </span>
         </div>
         <div class="top-actions">
           <span class:ready={providersReady} class="connection" role="status">
             <span aria-hidden="true"></span>{providersReady ? "Providers ready" : "Limited connection"}
           </span>
-          <button class="ghost" aria-label="Toggle research progress drawer" onclick={() => (appState.showDrawer = !appState.showDrawer)}>Research</button>
-          {#if appState.workspace?.latestResearchRun?.synthesisReportId}
-            <button class="primary" disabled={ideasGenerating} onclick={() => generateIdeas(false)}>
-              {ideasGenerating ? "Generating…" : "Generate ideas"}
-            </button>
+          {#if !onRunPage && runSnapshot}
+            <button
+              class="ghost"
+              aria-pressed={drawerOpen}
+              aria-label="Toggle research progress panel"
+              onclick={() => (appState.showDrawer = !appState.showDrawer)}
+            >Progress</button>
           {/if}
-          {#if partialRunAvailable}
-            <button class="ghost" disabled={ideasGenerating} onclick={generatePartialIdeas}>
-              Generate from partial research
+          {#if activeThread?.status === "ideas-ready" && synthesisReady}
+            <button class="ghost" disabled={ideasGenerating} onclick={() => generateIdeas(false)}>
+              {ideasGenerating ? "Generating…" : "Regenerate ideas"}
             </button>
           {/if}
         </div>
       </header>
 
-      <div class="main-content">
-      {#if appState.error && activeThread?.status !== "intake"}
-        <p class="global-error" role="alert">{appState.error}</p>
-      {/if}
-      {#if partialIdeaNotice}
-        <p class="partial-notice" role="status">
-          <strong>Partial ideas</strong> · Missing: {partialIdeaNotice.missingLenses.join(", ") || "none"}
-          {#if partialIdeaNotice.gaps.length} · Gaps: {partialIdeaNotice.gaps.join("; ")}{/if}
-        </p>
-      {/if}
-
-      {#if appState.workspace?.branchContext}
-        <FocusedBranchSetup context={appState.workspace.branchContext} />
+      <div class="main-content" bind:this={mainContent}>
+      {#if hasNotices}
+        <div class="notices">
+          {#if (appState.workspace?.pendingRuns?.length ?? 0) > 0}
+            <ResumeBanner
+              pendingRuns={appState.workspace?.pendingRuns ?? []}
+              pendingRunId={recoveryPendingRunId}
+              onResume={resumeResearch}
+              onCancel={cancelIncompleteResearch}
+            />
+          {/if}
+          {#if appState.error && activeThread?.status !== "intake"}
+            <div class="notice error" role="alert">
+              <p>{appState.error}</p>
+              <button class="dismiss" aria-label="Dismiss error" onclick={() => (appState.error = null)}>Dismiss</button>
+            </div>
+          {/if}
+          {#if partialCoverage}
+            <div class="notice warn" role="status">
+              <p>
+                <strong>This run ended without a full synthesis.</strong>
+                You can still generate ideas from the evidence that was collected. Missing: {partialCoverage}
+              </p>
+              <button class="dismiss" disabled={ideasGenerating} onclick={generatePartialIdeas}>
+                {ideasGenerating ? "Generating…" : "Generate from partial research"}
+              </button>
+            </div>
+          {/if}
+          {#if partialIdeaNotice}
+            <div class="notice warn" role="status">
+              <p>
+                <strong>Ideas generated from partial research.</strong>
+                Missing: {partialIdeaNotice.missingLenses.join(", ") || "none"}{#if partialIdeaNotice.gaps.length} · Gaps: {partialIdeaNotice.gaps.join("; ")}{/if}
+              </p>
+              <button class="dismiss" aria-label="Dismiss partial research notice" onclick={() => (partialIdeaNotice = null)}>Dismiss</button>
+            </div>
+          {/if}
+          {#if appState.workspace?.branchContext}
+            <FocusedBranchSetup context={appState.workspace.branchContext} />
+          {/if}
+        </div>
       {/if}
 
       {#if activeThread?.status === "intake"}
-        <section class="intake-workspace" aria-label="Research setup">
-          <div class="intake-pane">
-            {#if intakeMode === "smart"}
-              <SmartBriefEntry
-                value={starterText}
-                submitting={intakeSubmitting}
-                error={appState.error}
-                onChange={(value) => (starterText = value)}
-                onSubmit={submitStarterBrief}
-                onUseGuidedSetup={() => {
-                  appState.error = null;
-                  intakeMode = "guided";
-                }}
-              />
-            {:else}
-            <ResearchSetupForm
-              submitting={intakeSubmitting}
-              error={appState.error}
-              onSubmit={submitIntakeAnswers}
-              onBack={() => {
-                appState.error = null;
-                intakeMode = "smart";
-              }}
-            />
-            {/if}
-          </div>
-        </section>
+        {#if intakeMode === "smart"}
+          <SmartBriefEntry
+            value={starterText}
+            submitting={intakeSubmitting}
+            error={appState.error}
+            onChange={(value) => (starterText = value)}
+            onSubmit={submitStarterBrief}
+            onUseGuidedSetup={() => {
+              appState.error = null;
+              intakeMode = "guided";
+            }}
+          />
+        {:else}
+          <ResearchSetupForm
+            submitting={intakeSubmitting}
+            error={appState.error}
+            onSubmit={submitIntakeAnswers}
+            onBack={() => {
+              appState.error = null;
+              intakeMode = "smart";
+            }}
+          />
+        {/if}
       {:else if activeThread?.status === "brief-draft" && appState.workspace?.brief}
         <BriefReviewPanel
           brief={appState.workspace.brief}
@@ -465,13 +548,25 @@
             starting={researchStarting}
           />
         {/if}
+      {:else if onRunPage && activeThread}
+        <RunProgressPanel
+          events={appState.researchEvents}
+          status={activeThread.status}
+          snapshot={runSnapshot}
+          canCancel={canCancelRun}
+          cancelling={runCancelling}
+          {ideasGenerating}
+          canGenerateIdeas={synthesisReady && activeThread.status !== "ideas-generating"}
+          onCancel={cancelResearch}
+          onGenerateIdeas={() => generateIdeas(false)}
+        />
       {:else if activeThread?.status !== "ideas-ready"}
         <Conversation messages={appState.workspace?.messages ?? []} />
       {/if}
 
       {#if activeThread?.status === "ideas-ready"}
         <div class="results-workspace">
-          {#if (appState.workspace?.reports?.length ?? 0) > 0}
+          {#if reports.length > 0}
             <section class="report-library" aria-labelledby="report-library-title">
               <div class="section-heading">
                 <p class="eyebrow">Source material</p>
@@ -479,7 +574,7 @@
                 <p>Open a report when you need to trace an idea back to the underlying research.</p>
               </div>
               <div class="report-list">
-                {#each appState.workspace?.reports ?? [] as report (report.id)}
+                {#each reports as report (report.id)}
                   <ReportViewer reportId={report.id} title={report.title} />
                 {/each}
               </div>
@@ -488,20 +583,22 @@
 
           <IdeaWorkspace ideas={appState.workspace?.ideas ?? []} threadId={activeThread?.id ?? ""} onRefresh={refreshWorkspace} />
         </div>
-      {:else if (appState.workspace?.reports?.length ?? 0) > 0}
-        <div class="report-stack">
-          {#each appState.workspace?.reports ?? [] as report (report.id)}
+      {:else if reports.length > 0}
+        <section class="report-stack" aria-labelledby="report-stack-title">
+          <h2 id="report-stack-title">Reports so far</h2>
+          {#each reports as report (report.id)}
             <ReportViewer reportId={report.id} title={report.title} />
           {/each}
-        </div>
+        </section>
       {/if}
       </div>
     </main>
 
-    {#if appState.showDrawer}
+    {#if drawerOpen}
       <ResearchDrawer
         events={appState.researchEvents}
-        activeRunId={appState.activeRunId}
+        snapshot={runSnapshot}
+        canCancel={canCancelRun}
         cancelling={runCancelling}
         onCancel={cancelResearch}
         onClose={() => (appState.showDrawer = false)}
@@ -521,7 +618,6 @@
     align-items: center;
     justify-content: center;
     gap: 10px;
-    place-items: center;
     color: var(--muted);
     font-size: 13px;
   }
@@ -546,6 +642,11 @@
     overflow: hidden;
   }
 
+  /* The progress panel docks as a third column so it never covers the page. */
+  .shell.with-drawer {
+    grid-template-columns: 248px minmax(0, 1fr) 380px;
+  }
+
   .main {
     display: flex;
     flex-direction: column;
@@ -555,59 +656,145 @@
     border-left: 1px solid var(--border);
   }
 
+  /* Single scroll owner for every page. Pages must not scroll themselves. */
   .main-content {
     flex: 1;
     min-height: 0;
     overflow: auto;
     display: flex;
     flex-direction: column;
+    align-items: start;
   }
 
   .topbar {
+    flex: 0 0 auto;
     display: flex;
     justify-content: space-between;
     align-items: center;
     gap: 16px;
     min-height: 60px;
-    padding: 10px clamp(20px, 3vw, 36px);
+    padding: 10px var(--page-inline);
     border-bottom: 1px solid var(--border);
     background: color-mix(in srgb, var(--surface) 88%, transparent);
     backdrop-filter: blur(14px);
   }
 
+  .topbar-title {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-width: 0;
+  }
+
   h1 {
     margin: 0;
+    overflow: hidden;
     font-size: 15px;
     font-weight: 650;
     letter-spacing: -0.02em;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
-  .status {
-    margin: 4px 0 0;
-    color: var(--subtle);
-    font-family: var(--mono);
-    font-size: 12px;
-    text-transform: lowercase;
+  .status-pill {
+    flex: 0 0 auto;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 3px 9px;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    color: var(--muted);
+    font-size: 11px;
+    white-space: nowrap;
+  }
+
+  .status-dot {
+    width: 5px;
+    height: 5px;
+    border-radius: 50%;
+    background: var(--subtle);
+  }
+
+  .status-pill[data-tone="active"] {
+    border-color: color-mix(in srgb, var(--accent) 40%, var(--border));
+    color: var(--accent-strong);
+  }
+
+  .status-pill[data-tone="active"] .status-dot {
+    background: var(--accent-strong);
+    animation: status-pulse 1.4s var(--ease) infinite alternate;
+  }
+
+  .status-pill[data-tone="done"] {
+    border-color: color-mix(in srgb, var(--success) 35%, var(--border));
+    color: var(--success);
+  }
+
+  .status-pill[data-tone="done"] .status-dot {
+    background: var(--success);
+  }
+
+  @keyframes status-pulse {
+    to { opacity: 0.3; }
   }
 
   .top-actions {
+    flex: 0 0 auto;
     display: flex;
     flex-wrap: wrap;
     justify-content: flex-end;
     gap: 8px;
   }
 
-  .intake-workspace {
-    flex: 1;
-    min-height: 0;
-    display: block;
-    background: var(--bg);
+  .notices {
+    width: min(100%, var(--page-max));
+    display: grid;
+    gap: 10px;
+    padding: 16px var(--page-inline) 0;
   }
 
-  .intake-pane {
-    height: 100%;
-    min-height: 0;
-    overflow: hidden;
+  .notice {
+    display: flex;
+    align-items: start;
+    justify-content: space-between;
+    gap: 14px;
+    padding: 11px 13px;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+  }
+
+  .notice p {
+    margin: 0;
+    font-size: 12px;
+    line-height: 1.5;
+  }
+
+  .notice.error {
+    border-color: color-mix(in srgb, var(--danger) 45%, var(--border));
+    background: color-mix(in srgb, var(--danger) 8%, var(--surface));
+    color: var(--danger);
+  }
+
+  .notice.warn {
+    border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
+    background: color-mix(in srgb, var(--accent) 9%, var(--surface));
+    color: var(--text);
+  }
+
+  .dismiss {
+    flex: 0 0 auto;
+    padding: 4px 9px;
+    border-color: currentColor;
+    border-radius: 7px;
+    background: transparent;
+    color: inherit;
+    font-size: 11px;
+    opacity: 0.75;
+  }
+
+  .dismiss:hover {
+    opacity: 1;
   }
 
   .connection {
@@ -632,28 +819,9 @@
     background: var(--success);
   }
 
-  .global-error {
-    margin: 12px 20px 0;
-    padding: 10px 12px;
-    border: 1px solid color-mix(in srgb, var(--danger) 45%, var(--border));
-    border-radius: 8px;
-    color: var(--danger);
-    background: color-mix(in srgb, var(--danger) 8%, var(--surface));
-  }
-
-  .partial-notice {
-    margin: 12px 20px 0;
-    padding: 10px 12px;
-    border: 1px solid color-mix(in srgb, #d89b2b 45%, var(--border));
-    border-radius: 8px;
-    color: var(--text);
-    background: color-mix(in srgb, #d89b2b 9%, var(--surface));
-  }
-
   .results-workspace {
-    width: min(100%, 1440px);
-    margin: 0 auto;
-    padding: clamp(22px, 3vw, 38px);
+    width: min(100%, var(--page-max));
+    padding: var(--page-top) var(--page-inline) 48px;
   }
 
   .report-library {
@@ -699,7 +867,18 @@
   }
 
   .report-stack {
-    padding: 12px 20px 20px;
+    width: min(100%, var(--page-max));
+    padding: 4px var(--page-inline) 48px;
+  }
+
+  .report-stack h2 {
+    margin: 0;
+    color: var(--muted);
+    font-family: var(--mono);
+    font-size: 10px;
+    font-weight: 650;
+    letter-spacing: 0.09em;
+    text-transform: uppercase;
   }
 
   button {
@@ -716,12 +895,6 @@
     outline-offset: 2px;
   }
 
-  button.primary {
-    background: var(--accent-strong);
-    border-color: var(--accent-strong);
-    color: var(--accent-ink);
-  }
-
   button.ghost {
     background: transparent;
   }
@@ -736,9 +909,13 @@
     opacity: 0.6;
   }
 
-  @media (max-width: 960px) {
-    .shell {
-      grid-template-columns: 1fr;
+  /* The window cannot go below 960px (main/index.ts minWidth), so the sidebar
+     stays a column at every reachable size. Below this width there is no room
+     to dock the progress panel, so it overlays instead. */
+  @media (max-width: 1180px) {
+    .shell,
+    .shell.with-drawer {
+      grid-template-columns: 216px minmax(0, 1fr);
     }
 
     .report-library {

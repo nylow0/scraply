@@ -14,6 +14,8 @@ interface MockState {
   ideas: unknown[];
   reports: Array<{ id: string; researchRunId?: string; streamId: string | null; title: string }>;
   pendingRuns: unknown[];
+  /** A run that ended without a synthesis but still has usable evidence. */
+  partialRunAvailable: boolean;
   favorites: string[];
   presets: Array<{ name: string; config: typeof DEFAULT_RUN_CONFIG }>;
 }
@@ -108,6 +110,7 @@ export async function startMockBackend(scenario: Scenario = "fresh", port = 0): 
       totalStreams: 6,
       hasSynthesis: false,
     }] : [],
+    partialRunAvailable: scenario === "interrupted",
     favorites: [],
     presets: [],
   };
@@ -184,11 +187,16 @@ export async function startMockBackend(scenario: Scenario = "fresh", port = 0): 
       return send(res, 200, ok({ runId: "run-1", workspace: workspace(state) }));
     }
     if (req.method === "POST" && url.pathname === "/ideas/generate") {
+      const allowPartial = Boolean((body as { allowPartial?: boolean }).allowPartial);
       thread.status = "ideas-ready";
       state.ideas = [idea];
+      state.pendingRuns = [];
+      if (allowPartial) state.partialRunAvailable = false;
       return send(res, 200, ok({
         ideas: state.ideas,
-        completeness: { mode: "complete", synthesisReportId: "report-synthesis", missingLenses: [], gaps: [] },
+        completeness: allowPartial
+          ? { mode: "partial", synthesisReportId: null, missingLenses: ["analogies"], gaps: ["Exa quota exceeded"] }
+          : { mode: "complete", synthesisReportId: "report-synthesis", missingLenses: [], gaps: [] },
         workspace: workspace(state),
       }));
     }
@@ -262,8 +270,24 @@ function workspace(state: MockState) {
     ideas: state.ideas.map(toIdeaSummary),
     reports: state.reports,
     latestResearchRun: state.reports.some((report) => report.id === "report-synthesis")
-      ? { runId: "run-1", status: "completed", synthesisReportId: "report-synthesis", missingLenses: [], gaps: [] }
-      : null,
+      ? {
+          runId: "run-1",
+          status: "completed",
+          synthesisReportId: "report-synthesis",
+          canGeneratePartialIdeas: false,
+          missingLenses: [],
+          gaps: [],
+        }
+      : state.partialRunAvailable
+        ? {
+            runId: "run-interrupted",
+            status: "failed",
+            synthesisReportId: null,
+            canGeneratePartialIdeas: true,
+            missingLenses: ["analogies", "evaluation"],
+            gaps: ["Exa quota exceeded"],
+          }
+        : null,
     pendingRuns: state.pendingRuns,
   };
 }

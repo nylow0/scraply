@@ -242,6 +242,7 @@ export type ModelProvider = z.infer<typeof ModelProviderSchema>;
 export type ModelRef = z.infer<typeof ModelRefSchema>;
 export type ModelCatalog = z.infer<typeof ModelCatalogSchema>;
 export type Thread = z.infer<typeof ThreadSchema>;
+export type ThreadStatus = z.infer<typeof ThreadStatusSchema>;
 export type BranchContext = z.infer<typeof BranchContextSchema>;
 export type Message = z.infer<typeof MessageSchema>;
 export type Idea = z.infer<typeof IdeaSchema>;

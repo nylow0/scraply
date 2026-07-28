@@ -204,17 +204,12 @@
 
 <style>
   .run-review {
-    height: 100%;
-    min-height: 0;
-    overflow-y: auto;
-    display: grid;
-    align-content: start;
+    width: min(100%, var(--page-max));
+    min-height: 100%;
+    display: flex;
+    flex-direction: column;
     gap: 30px;
-    padding: 30px clamp(24px, 5vw, 64px) 40px;
-  }
-
-  .run-review > * {
-    width: min(100%, 1100px);
+    padding: var(--page-top) var(--page-inline) 44px;
   }
 
   .review-head {
@@ -389,7 +384,7 @@
 
   .execution-summary {
     position: sticky;
-    top: 0;
+    top: 12px;
     padding-left: 24px;
     border-left: 1px solid var(--border);
   }
@@ -534,10 +529,6 @@
   }
 
   @media (max-width: 860px) {
-    .run-review {
-      padding: 26px 20px 36px;
-    }
-
     .overview {
       grid-template-columns: 1fr;
     }

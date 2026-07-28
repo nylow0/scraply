@@ -94,18 +94,15 @@
 </form>
 
 <style>
+  /* Flex column, not grid: a sticky action bar inside a grid item is confined
+     to its own grid area and never sticks. */
   .smart-entry {
-    height: 100%;
-    min-height: 0;
-    overflow-y: auto;
-    display: grid;
-    align-content: start;
+    width: min(100%, var(--page-max));
+    min-height: 100%;
+    display: flex;
+    flex-direction: column;
     gap: 30px;
-    padding: clamp(30px, 6vh, 72px) clamp(24px, 5vw, 68px) 0;
-  }
-
-  .smart-entry > * {
-    width: min(100%, 1060px);
+    padding: var(--page-top) var(--page-inline) 0;
   }
 
   .entry-head {
@@ -308,6 +305,7 @@
   .actions {
     position: sticky;
     bottom: 0;
+    margin-top: auto;
     display: flex;
     justify-content: flex-end;
     gap: 10px;
@@ -354,10 +352,6 @@
   }
 
   @media (max-width: 800px) {
-    .smart-entry {
-      padding: 30px 20px 0;
-    }
-
     .entry-layout {
       grid-template-columns: 1fr;
     }
