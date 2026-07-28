@@ -70,17 +70,26 @@
 
 <style>
   .report {
-    margin: 0 20px 12px;
+    margin: 0;
     border: 1px solid var(--border);
-    border-radius: 12px;
+    border-radius: 10px;
     overflow: hidden;
-    background: var(--surface);
+    background: var(--surface-2);
   }
 
   summary {
-    padding: 12px 16px;
+    padding: 11px 14px;
     cursor: pointer;
-    font-weight: 500;
+    font-size: 12px;
+    font-weight: 650;
+    transition:
+      background-color 180ms var(--ease),
+      color 180ms var(--ease);
+  }
+
+  summary:hover {
+    color: var(--accent-strong);
+    background: color-mix(in srgb, var(--accent) 7%, transparent);
   }
 
   .report[open] summary {
@@ -101,8 +110,9 @@
   }
 
   .body {
-    padding: 16px;
+    padding: 14px;
     color: var(--text);
+    background: var(--surface);
   }
 
   .body :global(a) {
