@@ -133,22 +133,15 @@
 </form>
 
 <style>
+  /* Flex column, not grid: a sticky action bar inside a grid item is confined
+     to its own grid area and never sticks. */
   .setup {
-    height: 100%;
-    min-height: 0;
-    overflow-y: auto;
-    padding: 28px clamp(24px, 4vw, 52px) 0;
-    display: grid;
+    width: min(100%, var(--page-max));
+    min-height: 100%;
+    padding: var(--page-top) var(--page-inline) 0;
+    display: flex;
+    flex-direction: column;
     gap: 16px;
-    align-content: start;
-  }
-
-  .head,
-  .progress-track,
-  .form-body,
-  .actions,
-  .error {
-    width: min(100%, 960px);
   }
 
   .head {
@@ -404,6 +397,7 @@
   .actions {
     position: sticky;
     bottom: 0;
+    margin-top: auto;
     display: flex;
     align-items: center;
     gap: 12px;
@@ -430,10 +424,6 @@
   }
 
   @media (max-width: 840px) {
-    .setup {
-      padding: 24px 20px 0;
-    }
-
     .question-grid {
       grid-template-columns: 1fr;
     }

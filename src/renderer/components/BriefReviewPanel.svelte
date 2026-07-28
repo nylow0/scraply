@@ -36,9 +36,16 @@
   const errors = $derived(validateBriefForReview(draft));
   const errorCount = $derived(Object.keys(errors).length);
 
+  // Background workspace reconciles hand us a new `brief` object on every
+  // backend event. Comparing content, not identity, keeps unsaved edits alive
+  // and still resyncs when the stored brief genuinely changes.
+  let syncedBrief = JSON.stringify(untrack(() => brief));
+
   $effect(() => {
-    const source = brief;
-    draft = cloneBriefForReview(untrack(() => source));
+    const incoming = JSON.stringify(brief);
+    if (incoming === syncedBrief) return;
+    syncedBrief = incoming;
+    draft = cloneBriefForReview(untrack(() => brief));
     attempted = false;
   });
 
@@ -307,18 +314,15 @@
 </form>
 
 <style>
+  /* Flex column, not grid: a sticky action bar inside a grid item is confined
+     to its own grid area and never sticks. */
   .brief-review {
-    height: 100%;
-    min-height: 0;
-    overflow-y: auto;
-    display: grid;
-    align-content: start;
+    width: min(100%, var(--page-max));
+    min-height: 100%;
+    display: flex;
+    flex-direction: column;
     gap: 24px;
-    padding: 30px clamp(24px, 5vw, 64px) 0;
-  }
-
-  .brief-review > * {
-    width: min(100%, 1080px);
+    padding: var(--page-top) var(--page-inline) 0;
   }
 
   .review-head {
@@ -515,6 +519,7 @@
   .actions {
     position: sticky;
     bottom: 0;
+    margin-top: auto;
     display: flex;
     align-items: center;
     justify-content: flex-end;
@@ -561,10 +566,6 @@
   }
 
   @media (max-width: 840px) {
-    .brief-review {
-      padding: 26px 20px 0;
-    }
-
     section {
       grid-template-columns: 1fr;
       gap: 20px;

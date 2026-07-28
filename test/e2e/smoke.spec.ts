@@ -159,9 +159,14 @@ test("completes setup, approved research, synthesis, ideas, rating, restart, and
     await expect(app.page.getByRole("alert")).toBeVisible();
     expect(mock.requests.filter((request) => request.path === "/brief/confirm")).toHaveLength(0);
     await app.page.getByLabel("Objective").fill("Find evidence-backed software ideas a student can ship.");
+    // Scroll to the bottom before navigating: pages share one scroll container,
+    // so the next page must start at the top rather than mid-content.
+    await app.page.mouse.wheel(0, 4000);
     await app.page.getByRole("button", { name: "Confirm brief & review run" }).click();
 
     await expect(app.page.getByRole("heading", { name: "Know what Scraply will execute" })).toBeVisible();
+    const reviewPage = app.page;
+    await expect.poll(() => reviewPage.evaluate(() => document.querySelector(".main-content")?.scrollTop ?? -1)).toBe(0);
     await expect(app.page.getByText("Fixed for this version")).toBeVisible();
     await expect(app.page.locator("section.streams ol > li")).toHaveCount(6);
     await app.page.getByRole("button", { name: "Edit brief" }).click();
@@ -179,7 +184,12 @@ test("completes setup, approved research, synthesis, ideas, rating, restart, and
     await app.page.getByLabel("Parallelism").fill("2");
     await app.page.getByRole("button", { name: "Start research" }).click();
 
-    await expect(app.page.getByRole("complementary", { name: "Research progress" })).toBeVisible();
+    // Starting a run replaces the page with the live six-stream progress view,
+    // so the user sees state without having to open the side panel. The panel
+    // itself is redundant here and stays hidden.
+    await expect(app.page.getByRole("progressbar", { name: "Research streams complete" })).toHaveAttribute("aria-valuemax", "6");
+    await expect(app.page.getByRole("button", { name: "Toggle research progress panel" })).toBeHidden();
+
     await expect(app.page.getByLabel("Report: Composite synthesis")).toBeVisible();
     await app.page.getByLabel("Report: Composite synthesis").getByText("Composite synthesis").click();
     await expect(app.page.getByText("Demand is supported by deterministic local evidence.")).toBeVisible();
@@ -199,6 +209,13 @@ test("completes setup, approved research, synthesis, ideas, rating, restart, and
     await app.page.getByText("Inspect supporting evidence").click();
     await expect(app.page.getByText("Students repeatedly requested actionable feedback.")).toBeVisible();
     expect(mock.requests.some((request) => request.path === "/ideas/idea-1")).toBe(true);
+
+    // On pages that don't show progress themselves the side panel is available,
+    // docks beside the content, and closes with Escape.
+    await app.page.getByRole("button", { name: "Toggle research progress panel" }).click();
+    await expect(app.page.getByRole("complementary", { name: "Research progress" })).toBeVisible();
+    await app.page.keyboard.press("Escape");
+    await expect(app.page.getByRole("complementary", { name: "Research progress" })).toBeHidden();
 
     await app.close();
     app = await launchIsolatedApp(mock, userDataDir);
@@ -285,10 +302,34 @@ test("keeps partial reports when an interrupted run is cancelled", async () => {
   const app = await launchIsolatedApp(mock, userDataDir);
   try {
     await expect(app.page.getByText("Interrupted research")).toBeVisible();
-    await app.page.getByRole("button", { name: "Cancel interrupted research and keep partial reports" }).click();
+    await app.page.getByRole("button", { name: /^Cancel interrupted research for .+ and keep partial reports$/ }).click();
     await expect(app.page.getByText("Interrupted research")).toBeHidden();
     await expect(app.page.getByLabel("Report: Partial market evidence")).toBeVisible();
     expect(mock.requests.some((request) => request.path === "/research/cancel-incomplete")).toBe(true);
+  } finally {
+    await app.close();
+    await mock.close();
+    await removeUserDataDir(userDataDir);
+  }
+});
+
+test("offers partial idea generation for a run that ended without a synthesis", async () => {
+  const mock = await startMockBackend("interrupted");
+  const userDataDir = mkdtempSync(path.join(tmpdir(), "scraply-e2e-"));
+  const app = await launchIsolatedApp(mock, userDataDir);
+  try {
+    // A failed run resets the thread to "configuring", so this recovery action
+    // has to be reachable from whatever page the user lands on.
+    await expect(app.page.getByText("This run ended without a full synthesis.")).toBeVisible();
+    await expect(app.page.getByText(/Missing: analogies; evaluation; Exa quota exceeded/)).toBeVisible();
+
+    app.page.on("dialog", (dialog) => void dialog.accept());
+    await app.page.getByRole("button", { name: "Generate from partial research" }).click();
+
+    await expect(app.page.getByRole("heading", { name: "Idea workspace" })).toBeVisible();
+    await expect(app.page.getByText("Ideas generated from partial research.")).toBeVisible();
+    expect(mock.requests.find((request) => request.path === "/ideas/generate")?.body)
+      .toMatchObject({ allowPartial: true });
   } finally {
     await app.close();
     await mock.close();

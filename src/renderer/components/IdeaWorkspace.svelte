@@ -81,8 +81,11 @@
       const anchor = document.createElement("a");
       anchor.href = url;
       anchor.download = "scraply-ideas.json";
+      document.body.append(anchor);
       anchor.click();
-      URL.revokeObjectURL(url);
+      anchor.remove();
+      // Revoking in the same tick can cancel the download before it starts.
+      setTimeout(() => URL.revokeObjectURL(url), 10_000);
     } catch (reason) {
       error = reason instanceof Error ? reason.message : "Failed to export ideas";
     } finally {
@@ -93,6 +96,8 @@
   function diveDeeper(idea: Idea) {
     if (!threadId || branchPending[idea.id]) return;
     branchIdea = idea;
+    // Loads the evidence so the dialog can label claims by source, not raw ID.
+    void loadIdeaDetail(idea.id);
   }
 
   function formatScoreLabel(axis: string) {
@@ -222,6 +227,7 @@
 {#if branchIdea}
   <BranchSetupDialog
     idea={branchIdea}
+    evidence={ideaDetails[branchIdea.id]?.evidence ?? branchIdea.evidence ?? []}
     pending={branchPending[branchIdea.id] ?? false}
     onCancel={() => (branchIdea = null)}
     onSubmit={(angle, claimIds) => createFocusedBranch(branchIdea!, angle, claimIds)}
@@ -333,6 +339,12 @@
     padding: 9px 8px;
   }
 
+  .scores > div {
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+  }
+
   .scores div:not(:nth-child(3n + 1)) {
     border-left: 1px solid var(--border);
   }
@@ -341,12 +353,12 @@
     border-top: 1px solid var(--border);
   }
 
+  /* Labels wrap instead of truncating: "evidence strength" must stay readable. */
   dt {
-    overflow: hidden;
     color: var(--muted);
     font-size: 9px;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+    line-height: 1.35;
+    text-transform: capitalize;
   }
 
   dd {
@@ -376,7 +388,9 @@
     color: var(--text);
   }
 
-  .evidence ul { padding-left: 18px; }
+  /* Tailwind preflight resets list-style, so the bullets need restating. */
+  .evidence ul { padding-left: 18px; list-style: disc outside; }
+  .evidence li::marker { color: var(--border-strong); }
   .evidence li + li { margin-top: 8px; }
   .evidence-link { padding: 0; border: 0; color: var(--accent-strong); background: transparent; text-align: left; }
   blockquote { margin: 4px 0 0; padding-left: 8px; border-left: 2px solid var(--border); }

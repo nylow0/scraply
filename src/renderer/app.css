@@ -18,6 +18,12 @@
   --mono: "Geist Mono", "Cascadia Code", ui-monospace, monospace;
   --sans: "Segoe UI Variable Text", "Aptos", system-ui, sans-serif;
   --ease: cubic-bezier(0.16, 1, 0.3, 1);
+
+  /* Shared page metrics. Every main-area page uses these so the left edge,
+     max width, and top offset line up when switching between them. */
+  --page-inline: clamp(20px, 4vw, 56px);
+  --page-top: 30px;
+  --page-max: 1180px;
 }
 
 * {

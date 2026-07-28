@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { Thread } from "../../shared/schemas";
+  import { statusLabel, statusTone } from "../lib/status";
 
   let {
     threads,
@@ -44,18 +45,25 @@
           onclick={() => onSelect(thread.id)}
         >
           <span class="title">{thread.title}</span>
-          <span class="meta">{thread.status}</span>
+          <span class="meta" data-tone={statusTone(thread.status)}>
+            <span class="meta-dot" aria-hidden="true"></span>{statusLabel(thread.status)}
+          </span>
         </button>
         <button
           class="delete"
+          class:busy={deletingThreadId === thread.id}
           title="Delete research"
           aria-label={`Delete research ${thread.title}`}
           disabled={deletingThreadId !== null}
           onclick={() => confirmDelete(thread)}
         >
-          <svg aria-hidden="true" viewBox="0 0 20 20" width="15" height="15" fill="none">
-            <path d="M4.75 6.25h10.5M8 3.75h4M6.25 6.25l.5 9h6.5l.5-9M8.25 8.5v4.5M11.75 8.5v4.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
-          </svg>
+          {#if deletingThreadId === thread.id}
+            <span class="spinner" aria-hidden="true"></span>
+          {:else}
+            <svg aria-hidden="true" viewBox="0 0 20 20" width="15" height="15" fill="none">
+              <path d="M4.75 6.25h10.5M8 3.75h4M6.25 6.25l.5 9h6.5l.5-9M8.25 8.5v4.5M11.75 8.5v4.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+            </svg>
+          {/if}
         </button>
       </div>
     {:else}
@@ -194,8 +202,22 @@
   }
 
   .thread-row:hover .delete,
-  .thread-row:focus-within .delete {
+  .thread-row:focus-within .delete,
+  .delete.busy {
     opacity: 1;
+  }
+
+  .spinner {
+    width: 12px;
+    height: 12px;
+    border: 1.5px solid color-mix(in srgb, var(--muted) 40%, transparent);
+    border-top-color: var(--muted);
+    border-radius: 50%;
+    animation: spin 700ms linear infinite;
+  }
+
+  @keyframes spin {
+    to { transform: rotate(360deg); }
   }
 
   .delete:hover {
@@ -216,10 +238,40 @@
   }
 
   .meta {
+    display: flex;
+    align-items: center;
+    gap: 6px;
     color: var(--muted);
-    font-family: var(--mono);
     font-size: 11px;
-    text-transform: lowercase;
+  }
+
+  .meta-dot {
+    flex: 0 0 auto;
+    width: 5px;
+    height: 5px;
+    border-radius: 50%;
+    background: var(--subtle);
+  }
+
+  .meta[data-tone="active"] {
+    color: var(--accent-strong);
+  }
+
+  .meta[data-tone="active"] .meta-dot {
+    background: var(--accent-strong);
+    animation: meta-pulse 1.4s var(--ease) infinite alternate;
+  }
+
+  .meta[data-tone="done"] {
+    color: var(--success);
+  }
+
+  .meta[data-tone="done"] .meta-dot {
+    background: var(--success);
+  }
+
+  @keyframes meta-pulse {
+    to { opacity: 0.3; }
   }
 
   .empty {

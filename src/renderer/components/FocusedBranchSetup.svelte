@@ -21,15 +21,14 @@
     display: flex;
     justify-content: space-between;
     gap: 24px;
-    margin-bottom: 18px;
-    padding: 20px;
+    padding: 16px;
     border: 1px solid color-mix(in srgb, var(--accent-strong) 35%, var(--border));
-    border-radius: 14px;
+    border-radius: 10px;
     background: color-mix(in srgb, var(--accent-strong) 7%, var(--surface));
   }
-  .eyebrow { margin: 0 0 5px; color: var(--accent-strong); font-size: 11px; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; }
-  h2 { margin: 0 0 8px; font-size: 19px; }
-  .angle { max-width: 680px; margin: 0; color: var(--muted); line-height: 1.5; }
+  .eyebrow { margin: 0 0 5px; color: var(--accent-strong); font-family: var(--mono); font-size: 10px; font-weight: 700; letter-spacing: .09em; text-transform: uppercase; }
+  h2 { margin: 0 0 8px; font-size: 15px; letter-spacing: -0.02em; }
+  .angle { max-width: 72ch; margin: 0; color: var(--muted); font-size: 12px; line-height: 1.5; }
   dl { display: grid; min-width: 150px; margin: 0; }
   dl div { padding: 4px 0; }
   dt { color: var(--muted); font-size: 11px; }
