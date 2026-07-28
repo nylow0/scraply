@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { spawn, type SpawnOptionsWithoutStdio } from "node:child_process";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { constants } from "node:fs";
 import { access } from "node:fs/promises";
@@ -48,7 +48,7 @@ async function canExecute(path: string): Promise<boolean> {
 
 function runCommand(command: string, args: string[], timeoutMs = 8000): Promise<{ code: number | null; stdout: string; stderr: string }> {
   return new Promise((resolve, reject) => {
-    const child = spawn(command, args, { shell: false, windowsHide: true });
+    const child = spawnCodex(command, args, { windowsHide: true });
     let stdout = "";
     let stderr = "";
     const timer = setTimeout(() => {
@@ -79,7 +79,7 @@ function runCommandWithInput(
       reject(new ProviderFailure("cancelled", "Codex request was cancelled", false));
       return;
     }
-    const child = spawn(command, args, { shell: false, windowsHide: true, cwd: options.cwd });
+    const child = spawnCodex(command, args, { windowsHide: true, cwd: options.cwd });
     let stdout = "";
     let stderr = "";
     let settled = false;
@@ -117,6 +117,32 @@ function runCommandWithInput(
     });
     child.stdin.end(input);
   });
+}
+
+function spawnCodex(command: string, args: string[], options: SpawnOptionsWithoutStdio) {
+  const needsWindowsLauncher = process.platform === "win32"
+    && (/[\\/]WindowsApps[\\/]/i.test(command) || /\.cmd$/i.test(command));
+  if (!needsWindowsLauncher) {
+    return spawn(command, args, { ...options, shell: false });
+  }
+
+  const alias = command.split(/[\\/]/).at(-1)?.replace(/\.(?:cmd|exe)$/i, "") || "codex";
+  const payload = Buffer.from(JSON.stringify({ command: alias, args }), "utf8").toString("base64");
+  const script = [
+    "$ErrorActionPreference = 'Stop'",
+    `$payloadJson = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${payload}'))`,
+    "$payload = $payloadJson | ConvertFrom-Json",
+    "$commandArgs = @($payload.args)",
+    "& $payload.command @commandArgs",
+    "exit $LASTEXITCODE",
+  ].join("\n");
+  const encoded = Buffer.from(script, "utf16le").toString("base64");
+
+  return spawn(
+    "powershell.exe",
+    ["-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded],
+    { ...options, shell: false },
+  );
 }
 
 export async function probeCodexCli(): Promise<CodexProbeResult> {
@@ -234,6 +260,7 @@ export function buildCodexExecArgs(model: string, cwd: string, schemaPath: strin
     "--cd", cwd,
     "--sandbox", "read-only",
     "--ephemeral",
+    "--skip-git-repo-check",
     "--output-schema", schemaPath,
     "--output-last-message", outputPath,
     "--color", "never",
@@ -295,5 +322,12 @@ function classifyCodexFailure(output: string, code: number | null): ProviderFail
   if (/rate.?limit|too many requests|\b429\b/.test(normalized)) {
     return new ProviderFailure("rate-limit", "Codex rate limit reached", true);
   }
-  return new ProviderFailure("failed", `Codex execution failed (${code ?? "unknown"})`, true);
+  const diagnostic = output.match(/\bError:[^\r\n<]*/i)?.[0]?.trim()
+    ?? output.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim().slice(0, 500);
+  return new ProviderFailure(
+    "failed",
+    `Codex execution failed (${code ?? "unknown"})`,
+    true,
+    diagnostic ? { cause: new Error(diagnostic.slice(0, 500)) } : undefined,
+  );
 }

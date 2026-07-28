@@ -95,6 +95,13 @@
     branchIdea = idea;
   }
 
+  function formatScoreLabel(axis: string) {
+    return axis
+      .replace(/([a-z])([A-Z])/g, "$1 $2")
+      .replace(/[-_]+/g, " ")
+      .toLowerCase();
+  }
+
   async function createFocusedBranch(idea: Idea, explorationAngle: string, selectedClaimIds: string[]) {
     if (!threadId || branchPending[idea.id]) return;
     branchPending[idea.id] = true;
@@ -117,11 +124,12 @@
   }
 </script>
 
-<section class="ideas">
+<section class="ideas" aria-labelledby="idea-workspace-title">
   <header>
     <div>
-      <h2>Idea workspace</h2>
-      <p>Compare, rate, inspect evidence, export, and branch into deeper research.</p>
+      <p class="eyebrow">Decision workspace</p>
+      <h2 id="idea-workspace-title">Idea workspace</h2>
+      <p>Compare the strongest directions, inspect their evidence, and choose what deserves deeper research.</p>
     </div>
     <button class="ghost" onclick={exportIdeas} disabled={exporting}>
       {exporting ? "Exporting…" : "Export JSON"}
@@ -146,7 +154,7 @@
           <p>{idea.description}</p>
           <dl class="scores">
             {#each Object.entries(idea.scores) as [axis, value]}
-              <div><dt>{axis}</dt><dd>{value}/10</dd></div>
+              <div><dt>{formatScoreLabel(axis)}</dt><dd>{value}<span>/10</span></dd></div>
             {/each}
           </dl>
 
@@ -181,21 +189,26 @@
             {/if}
           </details>
 
-          <div class="rating" aria-label={`Current rating ${ratings[idea.id] ?? "not rated"}`}>
-            {#each [1, 2, 3, 4, 5] as star}
-              <button
-                class:active={ratings[idea.id] === star}
-                disabled={ratingPending[idea.id]}
-                onclick={() => rate(idea.id, star)}
-                aria-label={`Rate ${star}`}
-                aria-pressed={ratings[idea.id] === star}
-              >{star}</button>
-            {/each}
-            {#if ratingPending[idea.id]}
-              <span class="saved">Saving…</span>
-            {:else if ratingSaved[idea.id] || ratings[idea.id]}
-              <span class="saved">Saved: {ratings[idea.id]}/5</span>
-            {/if}
+          <div class="card-footer">
+            <div class="rating" aria-label={`Current rating ${ratings[idea.id] ?? "not rated"}`}>
+              <span class="rating-label">Your rating</span>
+              <div class="rating-buttons">
+                {#each [1, 2, 3, 4, 5] as star}
+                  <button
+                    class:active={ratings[idea.id] === star}
+                    disabled={ratingPending[idea.id]}
+                    onclick={() => rate(idea.id, star)}
+                    aria-label={`Rate ${star}`}
+                    aria-pressed={ratings[idea.id] === star}
+                  >{star}</button>
+                {/each}
+              </div>
+              {#if ratingPending[idea.id]}
+                <span class="saved">Saving…</span>
+              {:else if ratingSaved[idea.id] || ratings[idea.id]}
+                <span class="saved">Saved: {ratings[idea.id]}/5</span>
+              {/if}
+            </div>
             <button class="branch" disabled={branchPending[idea.id]} onclick={() => diveDeeper(idea)}>
               {branchPending[idea.id] ? "Creating branch…" : "Dive deeper"}
             </button>
@@ -217,16 +230,13 @@
 
 <style>
   .ideas {
-    margin: 0 20px 12px;
-    padding: 16px;
-    border: 1px solid var(--border);
-    border-radius: 12px;
-    background: var(--surface);
+    padding-top: clamp(26px, 3vw, 40px);
   }
 
   header,
   .row,
-  .rating {
+  .rating,
+  .card-footer {
     display: flex;
     align-items: center;
     gap: 10px;
@@ -237,70 +247,170 @@
     justify-content: space-between;
   }
 
-  header h2,
-  h3 {
+  header h2 {
     margin: 0;
-    font-size: 14px;
+    font-size: clamp(20px, 2vw, 27px);
+    letter-spacing: -0.035em;
   }
 
-  header p,
+  h3 {
+    margin: 0;
+    font-size: 15px;
+    line-height: 1.3;
+    letter-spacing: -0.015em;
+  }
+
+  header > div > p:last-child,
   .card > p {
-    margin: 4px 0 0;
+    margin: 6px 0 0;
     color: var(--muted);
     font-size: 12px;
+    line-height: 1.55;
+  }
+
+  header > div > p:last-child {
+    max-width: 64ch;
+  }
+
+  .eyebrow {
+    margin: 0 0 8px;
+    color: var(--accent-strong);
+    font-family: var(--mono);
+    font-size: 10px;
+    font-weight: 650;
+    letter-spacing: 0.09em;
+    text-transform: uppercase;
   }
 
   .grid {
-    margin-top: 14px;
+    margin-top: 22px;
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
-    gap: 12px;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 14px;
   }
 
   .card {
-    padding: 14px;
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    padding: clamp(16px, 2vw, 20px);
     border: 1px solid var(--border);
-    border-radius: 10px;
-    background: var(--bg);
+    border-radius: 12px;
+    background: var(--surface);
+    transition:
+      transform 180ms var(--ease),
+      border-color 180ms var(--ease),
+      background-color 180ms var(--ease);
+  }
+
+  .card:hover {
+    transform: translateY(-2px);
+    border-color: var(--border-strong);
+    background: color-mix(in srgb, var(--surface) 92%, var(--accent));
   }
 
   .bucket {
+    flex: 0 0 auto;
+    padding: 4px 7px;
+    border: 1px solid color-mix(in srgb, var(--accent) 28%, var(--border));
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--accent) 8%, transparent);
     color: var(--accent-strong);
-    font: 11px var(--mono);
+    font: 10px var(--mono);
+    white-space: nowrap;
   }
 
   .scores {
     display: grid;
     grid-template-columns: repeat(3, 1fr);
-    gap: 6px;
-    margin: 12px 0;
+    margin: 16px 0 12px;
+    border-top: 1px solid var(--border);
+    border-bottom: 1px solid var(--border);
   }
 
   .scores div {
-    padding: 6px;
-    border-radius: 6px;
-    background: var(--surface);
+    min-width: 0;
+    padding: 9px 8px;
   }
 
-  dt { color: var(--muted); font-size: 10px; }
-  dd { margin: 2px 0 0; font: 11px var(--mono); }
+  .scores div:not(:nth-child(3n + 1)) {
+    border-left: 1px solid var(--border);
+  }
+
+  .scores div:nth-child(n + 4) {
+    border-top: 1px solid var(--border);
+  }
+
+  dt {
+    overflow: hidden;
+    color: var(--muted);
+    font-size: 9px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  dd {
+    margin: 3px 0 0;
+    font: 600 13px var(--mono);
+  }
+
+  dd span {
+    color: var(--subtle);
+    font-size: 9px;
+    font-weight: 400;
+  }
 
   .evidence {
-    margin: 10px 0;
+    margin: 0 0 14px;
     color: var(--muted);
     font-size: 12px;
   }
 
-  .evidence summary { cursor: pointer; }
+  .evidence summary {
+    width: fit-content;
+    cursor: pointer;
+    transition: color 180ms var(--ease);
+  }
+
+  .evidence summary:hover {
+    color: var(--text);
+  }
+
   .evidence ul { padding-left: 18px; }
   .evidence li + li { margin-top: 8px; }
   .evidence-link { padding: 0; border: 0; color: var(--accent-strong); background: transparent; text-align: left; }
   blockquote { margin: 4px 0 0; padding-left: 8px; border-left: 2px solid var(--border); }
 
-  .rating { flex-wrap: wrap; margin-top: 12px; }
-  .rating button { min-width: 32px; }
+  .card-footer {
+    align-items: flex-end;
+    justify-content: space-between;
+    margin-top: auto;
+    padding-top: 14px;
+    border-top: 1px solid var(--border);
+  }
+
+  .rating {
+    align-items: flex-start;
+    flex-wrap: wrap;
+  }
+
+  .rating-label {
+    flex-basis: 100%;
+    color: var(--muted);
+    font-size: 10px;
+  }
+
+  .rating-buttons {
+    display: flex;
+    gap: 5px;
+  }
+
+  .rating button {
+    min-width: 30px;
+    padding-inline: 8px;
+  }
+
   .rating button.active { border-color: var(--accent-strong); color: var(--accent-strong); }
-  .rating .branch { margin-left: auto; min-width: auto; }
   .saved { color: var(--muted); font-size: 11px; }
 
   button {
@@ -316,4 +426,30 @@
   .ghost { background: transparent; }
   .error { color: var(--danger); }
   .muted { color: var(--muted); }
+
+  @media (max-width: 1180px) {
+    .grid {
+      grid-template-columns: 1fr;
+    }
+  }
+
+  @media (max-width: 680px) {
+    header {
+      align-items: flex-start;
+      flex-direction: column;
+    }
+
+    .row {
+      align-items: flex-start;
+    }
+
+    .card-footer {
+      align-items: stretch;
+      flex-direction: column;
+    }
+
+    .branch {
+      width: 100%;
+    }
+  }
 </style>

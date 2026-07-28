@@ -5,6 +5,7 @@ describe("Codex structured adapter", () => {
   test("uses the bounded read-only Luna execution contract", () => {
     const args = buildCodexExecArgs("gpt-5.6-luna", "C:\\tmp\\call", "schema.json", "last.json");
     expect(args).toContain("--ephemeral");
+    expect(args).toContain("--skip-git-repo-check");
     expect(args).toContain("read-only");
     expect(args).toContain("--output-schema");
     expect(args).toContain("--output-last-message");

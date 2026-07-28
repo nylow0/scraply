@@ -387,6 +387,7 @@
         </div>
       </header>
 
+      <div class="main-content">
       {#if appState.error && activeThread?.status !== "intake"}
         <p class="global-error" role="alert">{appState.error}</p>
       {/if}
@@ -464,19 +465,37 @@
             starting={researchStarting}
           />
         {/if}
-      {:else}
+      {:else if activeThread?.status !== "ideas-ready"}
         <Conversation messages={appState.workspace?.messages ?? []} />
       {/if}
 
-      {#if (appState.workspace?.reports?.length ?? 0) > 0}
-        {#each appState.workspace?.reports ?? [] as report (report.id)}
-          <ReportViewer reportId={report.id} title={report.title} />
-        {/each}
-      {/if}
-
       {#if activeThread?.status === "ideas-ready"}
-        <IdeaWorkspace ideas={appState.workspace?.ideas ?? []} threadId={activeThread?.id ?? ""} onRefresh={refreshWorkspace} />
+        <div class="results-workspace">
+          {#if (appState.workspace?.reports?.length ?? 0) > 0}
+            <section class="report-library" aria-labelledby="report-library-title">
+              <div class="section-heading">
+                <p class="eyebrow">Source material</p>
+                <h2 id="report-library-title">Research reports</h2>
+                <p>Open a report when you need to trace an idea back to the underlying research.</p>
+              </div>
+              <div class="report-list">
+                {#each appState.workspace?.reports ?? [] as report (report.id)}
+                  <ReportViewer reportId={report.id} title={report.title} />
+                {/each}
+              </div>
+            </section>
+          {/if}
+
+          <IdeaWorkspace ideas={appState.workspace?.ideas ?? []} threadId={activeThread?.id ?? ""} onRefresh={refreshWorkspace} />
+        </div>
+      {:else if (appState.workspace?.reports?.length ?? 0) > 0}
+        <div class="report-stack">
+          {#each appState.workspace?.reports ?? [] as report (report.id)}
+            <ReportViewer reportId={report.id} title={report.title} />
+          {/each}
+        </div>
       {/if}
+      </div>
     </main>
 
     {#if appState.showDrawer}
@@ -528,12 +547,20 @@
   }
 
   .main {
-    display: grid;
-    grid-template-rows: auto 1fr auto auto auto auto;
+    display: flex;
+    flex-direction: column;
     min-width: 0;
     min-height: 0;
     overflow: hidden;
     border-left: 1px solid var(--border);
+  }
+
+  .main-content {
+    flex: 1;
+    min-height: 0;
+    overflow: auto;
+    display: flex;
+    flex-direction: column;
   }
 
   .topbar {
@@ -571,6 +598,7 @@
   }
 
   .intake-workspace {
+    flex: 1;
     min-height: 0;
     display: block;
     background: var(--bg);
@@ -622,6 +650,58 @@
     background: color-mix(in srgb, #d89b2b 9%, var(--surface));
   }
 
+  .results-workspace {
+    width: min(100%, 1440px);
+    margin: 0 auto;
+    padding: clamp(22px, 3vw, 38px);
+  }
+
+  .report-library {
+    display: grid;
+    grid-template-columns: minmax(220px, 0.72fr) minmax(0, 1.6fr);
+    gap: clamp(24px, 4vw, 56px);
+    align-items: start;
+    padding-bottom: clamp(24px, 3vw, 36px);
+    border-bottom: 1px solid var(--border);
+  }
+
+  .section-heading h2,
+  .section-heading p {
+    margin: 0;
+  }
+
+  .section-heading h2 {
+    font-size: 17px;
+    letter-spacing: -0.02em;
+  }
+
+  .section-heading > p:last-child {
+    max-width: 44ch;
+    margin-top: 7px;
+    color: var(--muted);
+    font-size: 12px;
+  }
+
+  .section-heading .eyebrow {
+    margin-bottom: 7px;
+    color: var(--accent-strong);
+    font-family: var(--mono);
+    font-size: 10px;
+    font-weight: 650;
+    letter-spacing: 0.09em;
+    text-transform: uppercase;
+  }
+
+  .report-list,
+  .report-stack {
+    display: grid;
+    gap: 8px;
+  }
+
+  .report-stack {
+    padding: 12px 20px 20px;
+  }
+
   button {
     border: 1px solid var(--border);
     background: var(--surface-2);
@@ -658,6 +738,10 @@
 
   @media (max-width: 960px) {
     .shell {
+      grid-template-columns: 1fr;
+    }
+
+    .report-library {
       grid-template-columns: 1fr;
     }
   }

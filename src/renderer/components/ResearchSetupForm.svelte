@@ -64,7 +64,12 @@
 <form class="setup" onsubmit={(event) => { event.preventDefault(); submit(); }}>
   <div class="head">
     <div>
-      <button class="back" type="button" disabled={submitting} onclick={onBack}>Back to smart input</button>
+      <button class="back" type="button" disabled={submitting} onclick={onBack}>
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M10 6 4 12l6 6M5 12h15"></path>
+        </svg>
+        <span>Back to smart input</span>
+      </button>
       <p class="eyebrow">Research intake</p>
       <h2>Build the research brief</h2>
       <p>Answer the ten required questions, add any optional context, then review the generated brief.</p>
@@ -164,21 +169,57 @@
   }
 
   button.back {
-    margin: 0 0 16px;
-    padding: 0;
-    border: 0;
-    background: transparent;
-    color: var(--muted);
-    font-size: 11px;
-    font-weight: 600;
+    width: fit-content;
+    min-height: 44px;
+    margin: 0 0 22px;
+    padding: 10px 15px 10px 12px;
+    display: inline-flex;
+    align-items: center;
+    gap: 9px;
+    border: 1px solid var(--border-strong);
+    border-radius: 10px;
+    background: var(--surface);
+    color: var(--text);
+    font-size: 13px;
+    font-weight: 700;
+    box-shadow: 0 8px 22px color-mix(in srgb, var(--bg) 72%, transparent);
+    transition:
+      transform 180ms var(--ease),
+      border-color 180ms var(--ease),
+      background 180ms var(--ease),
+      box-shadow 180ms var(--ease);
+  }
+
+  button.back svg {
+    width: 19px;
+    height: 19px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 2;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    color: var(--accent);
   }
 
   button.back:hover:not(:disabled) {
-    color: var(--text);
+    transform: translateX(-2px);
+    border-color: color-mix(in srgb, var(--accent) 58%, var(--border-strong));
+    background: var(--surface-2);
+    box-shadow: 0 10px 26px color-mix(in srgb, var(--bg) 64%, transparent);
+  }
+
+  button.back:active:not(:disabled) {
+    transform: translateX(-1px) scale(0.98);
+  }
+
+  button.back:focus-visible {
+    outline: 3px solid color-mix(in srgb, var(--accent) 22%, transparent);
+    outline-offset: 3px;
   }
 
   button.back:disabled {
     opacity: 0.5;
+    cursor: not-allowed;
   }
 
   .head h2 {
