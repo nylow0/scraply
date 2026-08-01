@@ -11,7 +11,7 @@ The release is successful when Scraply can safely complete this loop: review a b
 - Product: Electron-first, local-only, personal Windows application.
 - Scope: full stabilization—security, correctness, research quality, cost controls, UX reliability, tests, and measurable runtime performance.
 - Research: retain six canonical lenses, but plan targeted queries and follow-ups adaptively per lens.
-- Research test model: route planning, extraction, coverage review, synthesis, and idea generation through Codex CLI using the explicit `gpt-5.6-luna` slug. Do not require or call OpenCode during this testing phase.
+- Research test model: route planning, extraction, coverage review, synthesis, and idea generation through Codex CLI using the explicit `gpt-5.6-luna` slug.
 - Paid work: require brief/config review and enforce a conservative hard cap before every paid call.
 - Ideas: require completed synthesis by default; an advanced override may use partial research only when the UI labels the result as partial.
 - Data: current local records are test data and may be deleted; no legacy-data migration is required.
@@ -23,7 +23,7 @@ The release is successful when Scraply can safely complete this loop: review a b
 2. Merge that snapshot into `dev`, which retains the retired `main` branch's unique CI packaging commit. Do not move `stage` or `master` during development.
 3. Treat `dev` as the only integration branch. Prohibit direct feature commits to `stage` and `master`.
 4. Do not merge the existing `improve/*` branches wholesale. Most contain the large experimental `aa06d22` UI rewrite and are based before current `master`. Port and test only the useful focused changes:
-   - OpenCode parsing and research resilience from `7577f4f` and `4efabb5`.
+- Research parsing and resilience improvements from `7577f4f` and `4efabb5`.
    - Lazy report loading from `41c702a`.
    - HTTP/IPC error handling from `66abf91` and `80c1f83`.
    - Critical-path tests from `8081a43`.
@@ -47,7 +47,7 @@ The release is successful when Scraply can safely complete this loop: review a b
 - Map validation failures to `400`, missing entities to `404`, conflicts such as duplicate active runs to `409`, provider timeouts to `504`, and unexpected failures to `500`.
 - Bound backend request bodies and report payloads. Use one shared response envelope for success and typed errors.
 - Rebuild cached provider clients immediately when secrets change. If Windows secure storage is unavailable, show a blocking setup error instead of claiming secrets were persisted.
-- In Codex test mode, setup is complete when Exa validates and the Codex CLI is authenticated, compatible, and can complete a small schema-constrained Luna probe. OpenCode credentials are optional and must not be validated in the background.
+- Setup is complete when Exa validates and the Codex CLI is authenticated, compatible, and can complete a small schema-constrained Luna probe.
 
 ### Run state integrity
 
@@ -77,11 +77,11 @@ Keep foreign keys enabled, cascade only genuinely owned records, and add indexes
 
 ### Codex GPT-5.6 Luna test route
 
-- Introduce a provider-neutral `StructuredModelClient` used by brief generation, query planning, claim extraction, coverage review, synthesis, and ideas. Move `extractClaims` orchestration out of `OpenCodeClient` so the research engine does not depend on an OpenCode-specific class.
+- Use a shared `StructuredModelClient` contract across brief generation, query planning, claim extraction, coverage review, synthesis, and ideas.
 - Add `workerProvider` to `RunConfig`; keep the existing orchestrator and idea provider fields. The testing defaults for all three roles are `provider: "codex"` and `model: "gpt-5.6-luna"`.
 - Invoke Luna non-interactively with `codex exec -`, `--model gpt-5.6-luna`, `--sandbox read-only`, `--ephemeral`, `--output-schema`, `--output-last-message`, and an explicit `model_reasoning_effort="medium"` config override. Use the same prompts and strict Zod/JSON Schema contracts as other providers.
 - Give every Codex call its own bounded temporary directory, clean it in `finally`, cap captured output, propagate cancellation, and report timeout/auth/rate-limit/schema errors as typed provider failures.
-- Keep the OpenCode adapter available behind explicit provider selection, but exclude it from default configuration, setup requirements, automated live tests, and stage acceptance. Add a guard test that fails if Codex test mode sends any request to the OpenCode base URL.
+- Keep Codex as the sole structured-model adapter in configuration, setup, live tests, and stage acceptance.
 - Establish the Luna baseline at medium effort. After correctness evals pass, compare low effort on extraction and classification only; adopt it per role only when schema validity, evidence accuracy, and completion rate remain within the accepted baseline.
 
 ### Planning and search
@@ -155,7 +155,7 @@ Performance acceptance targets on Dany's current Windows machine:
 - Integration: clean database creation, cascades, one-active-run constraint, idempotent start, run-scoped reports, accurate resume spending, cancellation during each provider phase, key rotation, typed errors, partial/failed completion, and thread deletion during a run.
 - Electron E2E with deterministic local mock providers: setup → intake → brief review → approved research → synthesis → ideas → rating → focused child branch; also cancellation, restart/resume, provider failure, remote-link blocking, and advanced partial generation.
 - Live smoke tests remain explicit/manual and never run in ordinary CI. They verify one bounded real-provider run and record actual versus reserved cost.
-- The research live smoke uses Exa plus the authenticated Codex CLI with `gpt-5.6-luna`; it runs successfully with no `OPENCODE_API_KEY` and asserts that no OpenCode endpoint was contacted. Record Codex invocation count, elapsed time, schema-repair count, and Exa usage instead of inventing a Codex dollar cost.
+- The research live smoke uses Exa plus the authenticated Codex CLI with `gpt-5.6-luna`. Record Codex invocation count, elapsed time, schema-repair count, and Exa usage instead of inventing a Codex dollar cost.
 - Packaging gate: typecheck, `svelte-check`, unit/integration tests, E2E, production build, NSIS/portable smoke, vulnerability audit, and `bun run build:installed`.
 
 ### Branch promotion
@@ -171,7 +171,7 @@ Performance acceptance targets on Dany's current Windows machine:
 - No untrusted page can navigate inside the privileged window or access Scraply IPC.
 - Research and idea generation share persisted, inspectable evidence with valid claim links.
 - The hard budget accounts for every paid step and survives concurrency, cancellation, and restart.
-- The default research test path uses Codex GPT-5.6 Luna end-to-end and performs zero OpenCode calls.
+- The default research test path uses Codex GPT-5.6 Luna end-to-end.
 - Run status never says complete without the required synthesis.
 - The normal workflow cannot skip brief review or accidentally create duplicate runs.
 - Branch research inherits explicit context and does not restart generic intake.

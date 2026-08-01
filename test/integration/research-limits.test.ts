@@ -45,9 +45,9 @@ describe("research hard limits", () => {
     const config = {
       ...RunConfigSchema.parse({
         ...DEFAULT_RUN_CONFIG,
-        orchestratorProvider: "opencode",
-        workerProvider: "opencode",
-        ideaProvider: "opencode",
+        orchestratorProvider: "codex",
+        workerProvider: "codex",
+        ideaProvider: "codex",
         parallelism: 1,
       }),
       maxRunMinutes: 0.001,
@@ -68,7 +68,7 @@ describe("research hard limits", () => {
     const engine = new ResearchEngine({
       db,
       exa,
-      modelClients: { opencode: unusedModel },
+      modelClients: { codex: unusedModel },
       onEvent: (event) => events.push(event),
     });
     const runId = await engine.startRun(thread.id, brief, config);
@@ -118,9 +118,9 @@ describe("research hard limits", () => {
     };
     const config = RunConfigSchema.parse({
       ...DEFAULT_RUN_CONFIG,
-      orchestratorProvider: "opencode",
-      workerProvider: "opencode",
-      ideaProvider: "opencode",
+        orchestratorProvider: "codex",
+        workerProvider: "codex",
+        ideaProvider: "codex",
       parallelism: 1,
       maxRunMinutes: 1,
     });
@@ -140,7 +140,7 @@ describe("research hard limits", () => {
     const engine = new ResearchEngine({
       db,
       exa,
-      modelClients: { opencode: unusedModel },
+      modelClients: { codex: unusedModel },
       onEvent: (event) => events.push(event),
     });
     const runId = await engine.startRun(thread.id, brief, config);

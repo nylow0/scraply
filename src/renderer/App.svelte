@@ -12,7 +12,6 @@
   import ReportViewer from "./components/ReportViewer.svelte";
   import ResumeBanner from "./components/ResumeBanner.svelte";
   import FocusedBranchSetup from "./components/FocusedBranchSetup.svelte";
-  import SetupScreen from "./components/SetupScreen.svelte";
   import type { AppState } from "./lib/state";
   import { initialState } from "./lib/state";
   import { toFavoriteModelPayload, toProjectBriefPayload, toRunConfigPayload } from "./lib/ipc-payloads";
@@ -26,7 +25,6 @@
   let briefConfirming = $state(false);
   let researchStarting = $state(false);
   let ideasGenerating = $state(false);
-  let setupSaving = $state(false);
   let recoveryPendingRunId: string | null = $state(null);
   let runCancelling = $state(false);
   let partialIdeaNotice: IdeaGenerationCompleteness | null = $state(null);
@@ -50,41 +48,54 @@
     }
   }
 
+  function errorMessage(error: unknown, fallback: string): string {
+    if (!(error instanceof Error)) return fallback;
+    return error.message.replace(/^Error invoking remote method '[^']+':\s*(?:AppError:\s*)?/, "");
+  }
+
+  function providerError(): string {
+    const validation = appState.validation;
+    if (!validation?.exa.valid) {
+      return `Exa failed to connect: ${validation?.exa.error ?? "EXA_API_KEY is missing or invalid."}`;
+    }
+    if (!validation.codex.compatible) {
+      return `Codex failed to connect: ${validation.codex.error ?? "A compatible local Codex installation was not detected."}`;
+    }
+    return "Scraply could not connect to its required services.";
+  }
+
   async function initialLoad() {
+    appState.loading = true;
+    appState.error = null;
     try {
       appState.validation = await window.scraply.getValidation();
+      if (!appState.validation.setupComplete) {
+        appState.workspace = null;
+        appState.error = providerError();
+        return;
+      }
+      const workspace = await window.scraply.getWorkspace();
+      appState.workspace = workspace;
+      appState.validation = workspace.validation;
     } catch (error) {
-      appState.error = error instanceof Error ? error.message : "Failed to validate setup";
-    }
-    await refreshWorkspace({ preserveError: Boolean(appState.error) });
-  }
-
-  async function saveSetup(opencodeApiKey: string, exaApiKey: string) {
-    if (setupSaving) return;
-    setupSaving = true;
-    appState.error = null;
-    try {
-      appState.validation = await window.scraply.saveSecrets(opencodeApiKey, exaApiKey);
-      if (appState.validation.setupComplete) await refreshWorkspace();
-    } catch (error) {
-      appState.error = error instanceof Error ? error.message : "Failed to save provider keys";
+      appState.workspace = null;
+      appState.error = errorMessage(error, "Scraply failed to start.");
     } finally {
-      setupSaving = false;
+      appState.loading = false;
     }
   }
 
-  async function importSetupFromEnv() {
-    if (setupSaving) return;
-    setupSaving = true;
+  async function retryStartup() {
+    appState.loading = true;
     appState.error = null;
     try {
-      appState.validation = await window.scraply.importEnv();
-      if (appState.validation.setupComplete) await refreshWorkspace();
+      await window.scraply.retryConnection();
     } catch (error) {
-      appState.error = error instanceof Error ? error.message : "Failed to import development keys";
-    } finally {
-      setupSaving = false;
+      appState.error = errorMessage(error, "Scraply failed to reconnect.");
+      appState.loading = false;
+      return;
     }
+    await initialLoad();
   }
 
   function reconcileSoon() {
@@ -392,18 +403,12 @@
 </script>
 
 {#if appState.loading}
-  <div class="boot"><span class="boot-mark" aria-hidden="true"></span><span>Connecting Scraply…</span></div>
-{:else if !appState.validation?.setupComplete}
-  <SetupScreen
-    validation={appState.validation}
-    error={appState.error}
-    saving={setupSaving}
-    canImportEnv={window.scraply.canImportEnv}
-    onSave={saveSetup}
-    onImportEnv={importSetupFromEnv}
-    onOpenData={() => window.scraply.openDataFolder()}
-    onOpenLogs={() => window.scraply.openLogsFolder()}
-  />
+  <div class="startup" role="status">Loading…</div>
+{:else if !appState.workspace}
+  <div class="startup startup-failed">
+    <p role="alert">{appState.error ?? providerError()}</p>
+    <button class="refresh" onclick={retryStartup}>Refresh</button>
+  </div>
 {:else}
   <div class="shell" class:with-drawer={drawerOpen}>
     <Sidebar
@@ -612,26 +617,39 @@
 {/if}
 
 <style>
-  .boot {
+  .startup {
     height: 100%;
     display: flex;
     align-items: center;
     justify-content: center;
-    gap: 10px;
     color: var(--muted);
     font-size: 13px;
   }
 
-  .boot-mark {
-    width: 10px;
-    height: 10px;
-    border: 2px solid var(--accent);
-    border-radius: 3px 3px 3px 1px;
-    animation: boot-pulse 1.2s var(--ease) infinite alternate;
+  .startup-failed {
+    flex-direction: column;
+    gap: 14px;
+    padding: 24px;
+    text-align: center;
   }
 
-  @keyframes boot-pulse {
-    to { transform: rotate(12deg) scale(0.84); opacity: 0.55; }
+  .startup-failed p {
+    max-width: 560px;
+    margin: 0;
+    color: var(--danger);
+  }
+
+  .refresh {
+    padding: 9px 14px;
+    border: 1px solid var(--border);
+    border-radius: 9px;
+    background: var(--surface);
+    color: var(--text);
+    font-weight: 650;
+  }
+
+  .refresh:active {
+    transform: translateY(1px);
   }
 
   .shell {

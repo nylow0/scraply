@@ -53,12 +53,6 @@ export type AppErrorCode = z.infer<typeof AppErrorCodeSchema>;
 export type AppErrorPayload = z.infer<typeof AppErrorPayloadSchema>;
 
 export const ValidationStateSchema = z.object({
-  opencode: z.object({
-    valid: z.boolean(),
-    modelCount: z.number().int().nonnegative(),
-    models: z.array(z.string()),
-    error: z.string().optional(),
-  }),
   exa: z.object({
     valid: z.boolean(),
     error: z.string().optional(),
@@ -76,11 +70,6 @@ export const HealthResponseSchema = z.object({
   ok: z.boolean(),
   version: z.string(),
   persistenceCheck: z.string().optional(),
-});
-
-export const SaveSecretsRequestSchema = z.object({
-  opencodeApiKey: z.string().trim().max(512).default(""),
-  exaApiKey: z.string().trim().min(1).max(512),
 });
 
 export const CreateThreadRequestSchema = z.object({
@@ -276,8 +265,7 @@ export type BriefExtractionResponse = z.infer<typeof BriefExtractionResponseSche
 
 export const IPC_CHANNELS = {
   GET_VALIDATION: "scraply:get-validation",
-  SAVE_SECRETS: "scraply:save-secrets",
-  IMPORT_ENV: "scraply:import-env",
+  RETRY_CONNECTION: "scraply:retry-connection",
   OPEN_DATA_FOLDER: "scraply:open-data-folder",
   OPEN_LOGS_FOLDER: "scraply:open-logs-folder",
   GET_WORKSPACE: "scraply:get-workspace",

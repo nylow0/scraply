@@ -16,7 +16,7 @@ interface LaunchedApp {
 async function launchIsolatedApp(
   mock: MockBackend | null,
   userDataDir: string,
-  options: { productionBackend?: boolean } = {},
+  options: { productionBackend?: boolean; exaApiKey?: string | null } = {},
 ): Promise<LaunchedApp> {
   const env: Record<string, string> = Object.fromEntries(
     Object.entries(process.env).filter((entry): entry is [string, string] => entry[1] !== undefined),
@@ -26,6 +26,8 @@ async function launchIsolatedApp(
   delete env.SCRAPLY_E2E_BACKEND_TOKEN;
   delete env.SCRAPLY_E2E_REAL_BACKEND;
   env.SCRAPLY_E2E = "1";
+  if (options.exaApiKey === null) delete env.EXA_API_KEY;
+  else env.EXA_API_KEY = options.exaApiKey ?? "exa-local-e2e-key";
   if (mock) {
     env.SCRAPLY_E2E_BACKEND_URL = mock.url;
     env.SCRAPLY_E2E_BACKEND_TOKEN = mock.token;
@@ -125,16 +127,12 @@ async function removeUserDataDir(userDataDir: string): Promise<void> {
   throw lastError;
 }
 
-test("completes setup, approved research, synthesis, ideas, rating, restart, and a child branch", async () => {
+test("auto-connects providers, then completes research, ideas, restart, and a child branch", async () => {
   const mock = await startMockBackend();
   const userDataDir = mkdtempSync(path.join(tmpdir(), "scraply-e2e-"));
   let app: LaunchedApp | null = null;
   try {
     app = await launchIsolatedApp(mock, userDataDir);
-    await expect(app.page.getByRole("heading", { name: "Connect Scraply" })).toBeVisible();
-    await app.page.getByLabel("Exa API key").fill("exa-local-e2e-key");
-    await app.page.getByRole("button", { name: "Validate API keys and continue" }).click();
-
     await expect(app.page.getByRole("button", { name: "Create new research thread" })).toBeVisible();
     expect(existsSync(path.join(userDataDir, "secrets.bin"))).toBe(true);
     await app.page.getByRole("button", { name: "Create new research thread" }).click();
@@ -255,13 +253,10 @@ test("surfaces an actionable migration failure during packaged startup", async (
 test("does not persist provider keys that fail validation", async () => {
   test.skip(process.env.SCRAPLY_E2E_SKIP_REAL_BACKEND === "1", "Requires the deterministic E2E utility backend");
   const userDataDir = mkdtempSync(path.join(tmpdir(), "scraply-e2e-invalid-keys-"));
-  const app = await launchIsolatedApp(null, userDataDir);
+  const app = await launchIsolatedApp(null, userDataDir, { exaApiKey: "invalid-e2e-key" });
   try {
-    await expect(app.page.getByRole("heading", { name: "Connect Scraply" })).toBeVisible();
-    await app.page.getByLabel("Exa API key").fill("invalid-e2e-key");
-    await app.page.getByRole("button", { name: "Validate API keys and continue" }).click();
-    await expect(app.page.getByText("Exa · Deterministic invalid Exa key")).toBeVisible();
-    await expect(app.page.getByRole("heading", { name: "Connect Scraply" })).toBeVisible();
+    await expect(app.page.getByRole("alert")).toContainText("Deterministic invalid Exa key");
+    await expect(app.page.getByRole("button", { name: "Refresh" })).toBeVisible();
     expect(existsSync(path.join(userDataDir, "secrets.bin"))).toBe(false);
   } finally {
     await app.close();
@@ -269,17 +264,13 @@ test("does not persist provider keys that fail validation", async () => {
   }
 });
 
-test("persists setup and threads through the real utility backend and SQLite", async () => {
+test("persists the automatic Exa connection and threads through the real utility backend and SQLite", async () => {
   test.skip(process.env.SCRAPLY_E2E_SKIP_REAL_BACKEND === "1", "Requires the deterministic E2E utility backend");
   const userDataDir = mkdtempSync(path.join(tmpdir(), "scraply-e2e-real-"));
   let app: LaunchedApp | null = null;
   try {
     app = await launchIsolatedApp(null, userDataDir);
-    await expect(app.page.getByRole("heading", { name: "Connect Scraply" })).toBeVisible();
     expect(existsSync(path.join(userDataDir, "scraply", "logs", "scraply.log"))).toBe(true);
-    await app.page.getByLabel("Exa API key").fill("exa-local-e2e-key");
-    await app.page.getByRole("button", { name: "Validate API keys and continue" }).click();
-
     await expect(app.page.getByRole("button", { name: "Create new research thread" })).toBeVisible();
     expect(existsSync(path.join(userDataDir, "secrets.bin"))).toBe(true);
     expect(existsSync(path.join(userDataDir, "scraply", "scraply.db"))).toBe(true);
@@ -288,7 +279,6 @@ test("persists setup and threads through the real utility backend and SQLite", a
 
     await app.close();
     app = await launchIsolatedApp(null, userDataDir);
-    await expect(app.page.getByRole("heading", { name: "Connect Scraply" })).toBeHidden();
     await expect(app.page.getByRole("button", { name: "Open thread New research" })).toBeVisible();
   } finally {
     await app?.close();
@@ -386,13 +376,18 @@ test("starts and restarts the packaged production utility backend", async () => 
   let app: LaunchedApp | null = null;
   try {
     app = await launchIsolatedApp(null, userDataDir, { productionBackend: true });
-    await expect(app.page.getByRole("heading", { name: "Connect Scraply" })).toBeVisible();
-    expect(existsSync(path.join(userDataDir, "scraply", "scraply.db"))).toBe(true);
+    await expect.poll(
+      () => existsSync(path.join(userDataDir, "scraply", "scraply.db")),
+      { timeout: 30_000 },
+    ).toBe(true);
     expect(existsSync(path.join(userDataDir, "scraply", "logs", "scraply.log"))).toBe(true);
     await app.close();
 
     app = await launchIsolatedApp(null, userDataDir, { productionBackend: true });
-    await expect(app.page.getByRole("heading", { name: "Connect Scraply" })).toBeVisible();
+    await expect.poll(
+      () => existsSync(path.join(userDataDir, "scraply", "scraply.db")),
+      { timeout: 30_000 },
+    ).toBe(true);
   } finally {
     await app?.close();
     await removeUserDataDir(userDataDir);

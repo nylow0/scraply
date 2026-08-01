@@ -34,7 +34,6 @@
 
   let draft = $state<RunConfig>({ ...untrack(() => config) });
   let presetName = $state("");
-  let customProvider: ModelProvider = $state("codex");
   let customModel = $state("");
   let modelSearch = $state("");
   let modelListOpen = $state(false);
@@ -56,18 +55,16 @@
     if (preset) draft = { ...preset.config };
   }
 
-  const catalog = $derived(modelCatalog ?? { opencode: models, codex: [], favorites: [] });
+  const catalog = $derived(modelCatalog ?? { codex: models, favorites: [] });
   const favoriteKeys = $derived(new Set(catalog.favorites.map((model) => modelKey(model.provider, model.id))));
   const favoriteOptions = $derived(catalog.favorites);
   const catalogModels = $derived([
     ...catalog.codex.map((id): ModelRef => ({ provider: "codex", id })),
-    ...catalog.opencode.map((id): ModelRef => ({ provider: "opencode", id })),
   ]);
   const availableModels = $derived(catalogModels.filter((model) => !isFavorite(model.provider, model.id)));
   const search = $derived(modelSearch.trim().toLowerCase());
   const filteredModels = $derived(availableModels.filter((model) => `${model.provider} ${model.id}`.toLowerCase().includes(search)));
   const codexMatches = $derived(filteredModels.filter((model) => model.provider === "codex"));
-  const opencodeMatches = $derived(filteredModels.filter((model) => model.provider === "opencode"));
   const availableCount = $derived(availableModels.length);
   const parsedConfig = $derived(RunConfigSchema.safeParse({ ...draft }));
   const validationMessage = $derived(
@@ -98,8 +95,8 @@
     draft[field] = model;
   }
 
-  function optionLabel(provider: ModelProvider, model: string) {
-    return `${provider === "codex" ? "Codex" : "OpenCode"} / ${model}`;
+  function optionLabel(model: string) {
+    return `Codex / ${model}`;
   }
 
   function saveConfig(name?: string) {
@@ -204,7 +201,7 @@
       {#if favoriteOptions.length}
         {#each favoriteOptions as model (modelKey(model.provider, model.id))}
           <span class="starred-chip">
-            <span class="provider-tag">{model.provider === "codex" ? "Codex" : "OpenCode"}</span>
+            <span class="provider-tag">Codex</span>
             <span class="chip-name">{model.id}</span>
             <button
               type="button"
@@ -228,10 +225,6 @@
       <div class="custom-model">
         <span class="tool-label">Custom model</span>
         <div class="custom-row">
-          <select bind:value={customProvider} aria-label="Custom model provider">
-            <option value="codex">Codex</option>
-            <option value="opencode">OpenCode</option>
-          </select>
           <input bind:value={customModel} placeholder="Add your own, e.g. gpt-5.5" />
           <button
             type="button"
@@ -239,7 +232,7 @@
             onclick={() => {
               const id = customModel.trim();
               if (!id) return;
-              onFavorite({ provider: customProvider, id }, true);
+              onFavorite({ provider: "codex", id }, true);
               customModel = "";
             }}
           >Add</button>
@@ -272,15 +265,7 @@
               {/each}
             </div>
           {/if}
-          {#if opencodeMatches.length}
-            <div class="dropdown-group">
-              <p class="prov-label">OpenCode</p>
-              {#each opencodeMatches as model (modelKey(model.provider, model.id))}
-                {@render ModelRow(model)}
-              {/each}
-            </div>
-          {/if}
-          {#if !codexMatches.length && !opencodeMatches.length}
+          {#if !codexMatches.length}
             {#if search}
               <p class="no-match">No models match "{modelSearch}".</p>
             {:else}
@@ -325,7 +310,7 @@
   {#if favorites.length}
     <optgroup label="All favorites">
       {#each favorites as favorite}
-        <option value={modelKey(favorite.provider, favorite.id)}>{optionLabel(favorite.provider, favorite.id)}</option>
+        <option value={modelKey(favorite.provider, favorite.id)}>{optionLabel(favorite.id)}</option>
       {/each}
     </optgroup>
   {/if}
@@ -334,9 +319,6 @@
       {#each catalog.codex as model}<option value={modelKey("codex", model)}>{model}</option>{/each}
     </optgroup>
   {/if}
-  <optgroup label="OpenCode">
-    {#each catalog.opencode as model}<option value={modelKey("opencode", model)}>{model}</option>{/each}
-  </optgroup>
 {/snippet}
 
 {#snippet ModelRow(model: ModelRef)}
@@ -347,7 +329,7 @@
     aria-label={`Add ${model.id} to starred models`}
     onclick={() => onFavorite(model, true)}
   >
-    <span class="model-provider">{model.provider === "codex" ? "Codex" : "OpenCode"}</span>
+    <span class="model-provider">Codex</span>
     <span class="model-name">{model.id}</span>
     <span class="model-action">Star</span>
   </button>

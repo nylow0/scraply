@@ -20,12 +20,9 @@ import {
 import type { Idea } from "../shared/schemas";
 
 const api = {
-  canImportEnv: Boolean(process.env.ELECTRON_RENDERER_URL) && process.env.SCRAPLY_E2E !== "1",
   getValidation: (): Promise<ValidationState> => ipcRenderer.invoke(IPC_CHANNELS.GET_VALIDATION),
+  retryConnection: (): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.RETRY_CONNECTION),
   getWorkspace: (): Promise<WorkspaceState> => ipcRenderer.invoke(IPC_CHANNELS.GET_WORKSPACE),
-  saveSecrets: (opencodeApiKey: string, exaApiKey: string): Promise<ValidationState> =>
-    ipcRenderer.invoke(IPC_CHANNELS.SAVE_SECRETS, { opencodeApiKey, exaApiKey }),
-  importEnv: (): Promise<ValidationState> => ipcRenderer.invoke(IPC_CHANNELS.IMPORT_ENV),
   openDataFolder: (): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.OPEN_DATA_FOLDER),
   openLogsFolder: (): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.OPEN_LOGS_FOLDER),
   createThread: (title?: string) => ipcRenderer.invoke(IPC_CHANNELS.CREATE_THREAD, { title }),

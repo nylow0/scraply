@@ -69,7 +69,7 @@ describe("evidence model", () => {
     const runId = new ResearchRunRepository(db).create(thread.id, brief, config).runId;
     const ledger = new CostLedgerRepository(db);
     const reservation = ledger.reserve(runId, "search", "exa", null, 3);
-    expect(() => ledger.reserve(runId, "extraction", "opencode", "model", 3)).toThrow(BudgetExceededError);
+    expect(() => ledger.reserve(runId, "extraction", "codex", "model", 3)).toThrow(BudgetExceededError);
     ledger.commit(reservation.id);
     expect(db.db.prepare(`
       SELECT reserved_cost, committed_cost FROM research_runs WHERE id = ?

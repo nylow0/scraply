@@ -19,7 +19,7 @@
       <button onclick={onClose}>Close</button>
     </header>
     <ol>
-      <li>Validate Exa on first launch, plus Codex or OpenCode as the model provider. Keys stay encrypted locally.</li>
+      <li>Connect Exa for research and use your local Codex installation as the model provider.</li>
       <li>Start <strong>New research</strong> and describe what you want to decide, create, or improve — one sentence or a full brief.</li>
       <li>Inspect the inferred brief. Assumptions and open questions stay visible instead of being silently filled in.</li>
       <li>Review the run: six fixed streams, models, and hard caps. Nothing is spent before you start it.</li>

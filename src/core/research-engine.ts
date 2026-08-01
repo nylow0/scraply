@@ -14,7 +14,6 @@ import {
 } from "../core/orchestrator";
 import { loadStoredRunState, logJobEvent } from "../core/research-recovery";
 import type { ExaClient } from "../providers/exa";
-import type { OpenCodeClient } from "../providers/opencode";
 import type { StructuredModelClient } from "../providers/structured";
 import { ProviderFailure } from "../providers/structured";
 import { RESEARCH_STREAMS, type CanonicalStream } from "../research/streams";
@@ -25,7 +24,6 @@ import { extractClaims } from "./claim-extraction";
 
 export interface ResearchEngineOptions {
   db: DatabaseClient;
-  opencode?: OpenCodeClient;
   modelClients?: Partial<Record<ModelProvider, StructuredModelClient>>;
   exa: ExaClient;
   onEvent: (event: ResearchEvent) => void;
@@ -458,7 +456,6 @@ export class ResearchEngine {
   private getModelClient(provider: ModelProvider): StructuredModelClient {
     const configured = this.options.modelClients?.[provider];
     if (configured) return configured;
-    if (provider === "opencode" && this.options.opencode) return this.options.opencode;
     throw new ProviderFailure("unavailable", `${provider} model client is not configured`, false);
   }
 
