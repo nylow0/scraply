@@ -8,7 +8,6 @@ Scraply is a local-first Windows desktop app for evidence-backed research and id
 - [Bun](https://bun.sh/) for development
 - An Exa API key for web research
 - An authenticated Codex CLI for the default structured-model workflow
-- Optional: an OpenCode API key when explicitly selecting an OpenCode model
 
 ## Development
 
@@ -16,6 +15,8 @@ Scraply is a local-first Windows desktop app for evidence-backed research and id
 bun install
 bun run dev
 ```
+
+Set `EXA_API_KEY` in `.env` for development or in the environment that launches the installed app. Scraply connects automatically and stores the key with Windows-backed encryption after the first successful validation.
 
 Useful checks:
 
@@ -31,12 +32,11 @@ Branch roles, exact-SHA stage promotion, RC tags, and production GitHub Releases
 
 ## Using Scraply
 
-1. Complete setup and validate the requested credentials.
-2. Create a research project and answer the intake questions.
-3. Review and edit the generated brief.
-4. Review models, the six planned research lenses, and the conservative maximum cost.
-5. Approve the run, watch run-scoped progress, and inspect reports as they become available.
-6. Generate ideas after synthesis, inspect their evidence, rate them, export them, or create a focused child branch.
+1. Create a research project and answer the intake questions.
+2. Review and edit the generated brief.
+3. Review models, the six planned research lenses, and the conservative maximum cost.
+4. Approve the run, watch run-scoped progress, and inspect reports as they become available.
+5. Generate ideas after synthesis, inspect their evidence, rate them, export them, or create a focused child branch.
 
 Paid work does not begin during intake or brief editing. The approval screen shows the configured ceiling before research starts. Codex subscription usage is tracked by invocation/limits rather than presented as an invented dollar charge; accountable provider/search spend is reserved conservatively and committed as the run proceeds.
 
@@ -52,13 +52,13 @@ Credentials are stored separately in `secrets.bin` using Electron's Windows-back
 - For a full backup, close Scraply completely and copy the entire data folder, including the database and any WAL/SHM files that remain.
 - To restore, close Scraply and replace the data folder with a consistent backup from the same app version.
 - To reset local research data, close Scraply, back up anything important, and remove the `scraply` data subfolder. The app creates a fresh database on next launch.
-- To reset saved credentials, close Scraply and remove `secrets.bin` from the Electron user-data directory, then complete setup again.
+- To reset the saved Exa credential, close Scraply and remove `secrets.bin` from the Electron user-data directory. The next launch imports `EXA_API_KEY` again.
 
 Deleting or resetting data is irreversible unless you made a backup first.
 
 ## Troubleshooting
 
-- **Setup cannot save credentials:** Windows secure storage is unavailable. Do not continue until it is available; Scraply intentionally blocks insecure persistence.
+- **Exa does not connect:** confirm `EXA_API_KEY` exists in `.env` during development or in the installed app's launch environment, then use **Refresh** on the startup error.
 - **Codex validation fails:** confirm `codex` is installed, authenticated, and available in the same Windows user environment that launches Scraply.
 - **Research cannot start:** confirm the brief is approved, the configuration is saved, and no active run already exists for the project.
 - **A report is blank or slow:** collapse and reopen it to retry the on-demand detail request. Reports are intentionally excluded from routine workspace refreshes.

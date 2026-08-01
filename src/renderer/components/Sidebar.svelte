@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { Thread } from "../../shared/schemas";
   import { statusLabel, statusTone } from "../lib/status";
+  import BrandMark from "./BrandMark.svelte";
 
   let {
     threads,
@@ -32,7 +33,7 @@
 </script>
 
 <aside class="sidebar">
-  <div class="brand"><span class="brand-mark" aria-hidden="true"></span><span>Scraply</span></div>
+  <div class="brand"><BrandMark size={21} /><span>Scraply</span></div>
   <button class="new" aria-label="Create new research thread" onclick={onNew}><span aria-hidden="true">+</span>New research</button>
   <div class="list-head"><span>Workspace</span><span>{threads.length}</span></div>
   <div class="list" role="list" aria-label="Research threads">
@@ -95,14 +96,6 @@
     font-size: 15px;
     font-weight: 650;
     letter-spacing: -0.025em;
-  }
-
-  .brand-mark {
-    width: 12px;
-    height: 12px;
-    border: 3px solid var(--accent);
-    border-radius: 4px 4px 4px 1px;
-    transform: rotate(-8deg);
   }
 
   .new {

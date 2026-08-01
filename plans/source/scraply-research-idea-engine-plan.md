@@ -22,8 +22,8 @@ Scope is domain-agnostic (software projects, business, marketing, Instagram post
 | Role | Who | Responsibility |
 |---|---|---|
 | Director | Codex (user's existing subscription) | Intake to brief, plan research directions, generate ideas, navigate/expand the tree, final creative curation |
-| Research labor | MiMo v2.5 (non-pro) via OpenCode Go | Fetch + summarize + extract claims, at volume |
-| Smart sub-steps | GLM-5.2 via OpenCode Go | Sub-question planning, gap analysis, verification critic, qualitative scoring |
+| Research labor | Codex | Fetch + summarize + extract claims, at volume |
+| Smart sub-steps | Codex | Sub-question planning, gap analysis, verification critic, qualitative scoring |
 | Embeddings | Google `text-embedding-004` (free tier) | Dedup + novelty distance |
 | Web fetch | Exa API | Search + page contents |
 | Research context bus | `share` publisher (`llm-plans.com`) | Research reports as links for agent-to-agent handoff |
@@ -37,10 +37,10 @@ Scope is domain-agnostic (software projects, business, marketing, Instagram post
 |---|---|---|
 | Language / runtime | TypeScript + Bun | User preference; integrates with the TS `share` publisher |
 | Agent runtime | OpenAI Agents SDK (TS, `@openai/agents`) | Provider-agnostic; points at any OpenAI-compatible endpoint; built-in tools, handoffs, MCP, Zod structured output |
-| Worker model backend | OpenCode Go | OpenAI-compatible API, ~$10/month, dollar-capped, bundles MiMo/GLM/DeepSeek/Kimi/Qwen |
+| Worker model backend | Codex CLI | Uses the authenticated local Codex installation |
 | Structured output | Zod via Agents SDK `outputType` | Native to the SDK. (BAML is an acceptable alternative if MiMo's structured output proves unreliable.) |
 | Web search/contents | Exa | Semantic, research-grade source discovery; first 10 results' contents free |
-| Embeddings | Google `text-embedding-004` | Free tier; OpenCode Go has no embedding endpoint |
+| Embeddings | Google `text-embedding-004` | Free tier |
 | Director integration | Codex Skill + MCP server | Codex's native extension points |
 | Research presentation | `share` skill (existing) | Already deployed |
 | Idea UI | SvelteKit + Tailwind | User preference; reads local store |
@@ -54,7 +54,7 @@ scraply/
   package.json
   src/
     models/
-      opencode.ts        # OpenAI client pointed at OpenCode Go + Agents SDK wiring
+      codex.ts           # Local Codex CLI adapter
       embeddings.ts      # Google text-embedding-004 client
       routing.ts         # task -> model map
     search/
@@ -240,36 +240,15 @@ command = "bun"
 args = ["run", "C:/Business/scraply/src/mcp/server.ts"]
 ```
 
-**Worker swarm on OpenCode Go via the Agents SDK** (`src/models/opencode.ts`):
+**Worker model through the local Codex adapter** (`src/models/codex.ts`):
 
 ```ts
-import OpenAI from "openai";
-import {
-  setDefaultOpenAIClient,
-  setOpenAIAPI,
-  Agent,
-} from "@openai/agents";
+const codex = new CodexClient();
 
-// OpenCode Go is OpenAI-compatible.
-const opencode = new OpenAI({
-  baseURL: "https://opencode.ai/zen/go/v1",
-  apiKey: process.env.OPENCODE_GO_KEY,
-});
-
-setDefaultOpenAIClient(opencode);
-setOpenAIAPI("chat_completions"); // use Chat Completions, not Responses
-
-export const extractor = new Agent({
-  name: "Extractor",
-  model: "mimo-v2.5",          // exact id from GET /zen/go/v1/models
-  instructions: "Extract atomic, source-attributed factual claims as JSON ...",
-  // outputType: z.array(ClaimSchema)  // Zod structured output
-});
-
-export const planner = new Agent({
-  name: "Planner",
-  model: "glm-5.2",
-  instructions: "Plan sub-questions and identify research gaps ...",
+const claims = await codex.complete({
+  model: "gpt-5.6-luna",
+  prompt: "Extract atomic, source-attributed factual claims as JSON ...",
+  schema: ClaimListSchema,
 });
 ```
 
@@ -282,16 +261,15 @@ export const planner = new Agent({
 | Task | Model | Backend |
 |---|---|---|
 | Intake -> brief, research direction, idea generation, tree navigation | Codex | User subscription |
-| Fetch + summarize + extract claims | MiMo v2.5 (non-pro) | OpenCode Go |
-| Sub-question planning, gap analysis, verification, qualitative scoring | GLM-5.2 | OpenCode Go |
+| Fetch + summarize + extract claims | Codex | Local Codex CLI |
+| Sub-question planning, gap analysis, verification, qualitative scoring | Codex | Local Codex CLI |
 | Embeddings (dedup, novelty) | text-embedding-004 | Google (free) |
 | Numeric scoring + bucketing | none (engine math) | local |
 
-MiMo v2.5 quality is **unverified** and must be validated in Phase 0. Swapping the worker model is a one-line `model` change (e.g. to `deepseek-v4-flash` or `glm-5.2`).
+Model quality and structured-output reliability must be validated in Phase 0.
 
 ## 12. Cost model
 
-- **OpenCode Go**: ~$10/month flat, dollar-capped ($12 / 5h, $30 / week, $60 / month).
 - **Exa**: ~$7 per 1k searches; first 10 results' contents free. A deep run (~100 searches) is well under $1.
 - **Google embeddings**: free tier.
 - **Codex**: existing subscription; the main constraint is its usage limits, which is why the mechanical loop runs on workers, not in Codex.
@@ -300,7 +278,7 @@ Per-node `budgetUsd` caps enforce this; a run stops and reports rather than over
 
 ## 13. Build phases
 
-**Phase 0 — Plumbing & MiMo validation.** OpenCode Go client + Exa + embeddings. A CLI that takes a query, searches, has MiMo extract claims, embeds them. *Success: grounded, source-attributed claims of acceptable quality. If MiMo is sloppy, switch worker model now.* Also confirm OpenCode Go auth (API key vs OAuth) — blocking unknown.
+**Phase 0 — Plumbing and model validation.** Codex client + Exa + embeddings. A CLI takes a query, searches, has Codex extract claims, and embeds them. *Success: grounded, source-attributed claims of acceptable quality.*
 
 **Phase 1 — Single-node vertical slice.** One brief -> one stream multi-hop loop -> knowledge store -> Codex generates ideas -> `add_ideas` scores/buckets -> publish report via `share`. *Success: ideas the user would actually act on. This is the make-or-break gate.*
 
@@ -312,8 +290,7 @@ Per-node `budgetUsd` caps enforce this; a run stops and reports rather than over
 
 ## 14. Open questions and risks (resolve before or during Phase 0)
 
-- **OpenCode Go auth**: does the $10 plan expose a plain API key for the `apiKey` field, or an OAuth/device flow? Blocking for Phase 0.
-- **MiMo v2.5 extraction quality**: unverified. Validate early; swap if poor.
+- **Codex extraction quality**: validate early and tune prompts if results are weak.
 - **Codex idea volume**: hundreds of ideas in one context degrade — director must batch and lean on engine dedup.
 - **Exa free-tier limits**: confirm the monthly free allowance and whether a card is required.
 - **Embeddings provider**: Google free tier vs a local model (bge / MiniLM). Local removes a dependency and rate limits; decide in Phase 0.
@@ -321,7 +298,6 @@ Per-node `budgetUsd` caps enforce this; a run stops and reports rather than over
 
 ## 15. Reference links
 
-- OpenCode Go API: `https://opencode.ai/docs/go/` — endpoints `https://opencode.ai/zen/go/v1/chat/completions`, `/messages`, `/models`
 - Codex Skills: `https://developers.openai.com/codex/skills`
 - Codex customization / MCP: `https://developers.openai.com/codex/concepts/customization`
 - Codex with Agents SDK: `https://developers.openai.com/codex/guides/agents-sdk`

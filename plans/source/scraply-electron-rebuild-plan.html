@@ -57,19 +57,18 @@
         <tr><td>Desktop</td><td>Electron + Svelte 5 + Vite</td><td>Installable native shell, fast renderer, and direct local lifecycle control.</td></tr>
         <tr><td>Backend</td><td>TypeScript service launched by Electron</td><td>One language and an automatically managed local runtime.</td></tr>
         <tr><td>Persistence</td><td>SQLite with migrations</td><td>Reliable conversations, jobs, reports, ideas, and resumable runs.</td></tr>
-        <tr><td>Model API</td><td>OpenCode Go, OpenAI-compatible Chat Completions</td><td>One API key and selectable economical models.</td></tr>
+        <tr><td>Model runtime</td><td>Local Codex CLI</td><td>Uses the authenticated local Codex installation.</td></tr>
         <tr><td>Optional strong director</td><td>Locally installed Codex CLI adapter</td><td>Uses the user's existing Codex session without adding another application API key.</td></tr>
         <tr><td>Search and contents</td><td>Exa</td><td>Verified key, semantic search, and page contents through one API.</td></tr>
-        <tr><td>Embeddings</td><td>OpenCode model-based similarity plus local lexical fallback</td><td>No Google dependency. Exact embedding support is discovered from OpenCode before relying on it.</td></tr>
+        <tr><td>Embeddings</td><td>Local lexical similarity</td><td>No additional provider dependency.</td></tr>
         <tr><td>Reports</td><td>Sanitized semantic HTML</td><td>Readable inside Electron and compatible with the existing plan publisher.</td></tr>
         <tr><td>Repository</td><td>New private GitHub repository</td><td>The rebuilt product starts with clean history and excludes secrets and local data.</td></tr>
       </tbody>
     </table>
 
     <h3>Required environment</h3>
-    <p>The rebuild must require exactly these two values and no Google variables:</p>
-    <pre><code>OPENCODE_API_KEY=...
-EXA_API_KEY=...</code></pre>
+    <p>The rebuild requires one external service credential:</p>
+    <pre><code>EXA_API_KEY=...</code></pre>
     <p>
       Development reads <code>C:\Business\scraply\.env</code>. The packaged app imports those
       values into Electron's protected local settings on first run and also provides a settings
@@ -92,8 +91,8 @@ EXA_API_KEY=...</code></pre>
     <h3>3.1 First launch</h3>
     <ol>
       <li>Electron acquires a single-instance lock and starts the local service.</li>
-      <li>A compact setup screen validates OpenCode and Exa without revealing keys.</li>
-      <li>The app fetches available OpenCode model IDs and records whether Codex is installed and authenticated.</li>
+      <li>Startup validates Exa without revealing the key.</li>
+      <li>The app records whether Codex is installed and authenticated, then loads its available model IDs.</li>
       <li>After both required checks pass, the user enters the workspace.</li>
     </ol>
 
@@ -143,7 +142,7 @@ EXA_API_KEY=...</code></pre>
     <h3>3.5 Run configuration</h3>
     <p>Present a focused setup step after the brief:</p>
     <ul>
-      <li>orchestrator provider: OpenCode or Codex when detected;</li>
+      <li>orchestrator provider: Codex;</li>
       <li>orchestrator model;</li>
       <li>research worker model;</li>
       <li>idea-generation provider and model;</li>
@@ -169,7 +168,7 @@ EXA_API_KEY=...</code></pre>
 Local TypeScript service
 ├── conversation and intake engine
 ├── deterministic research state machine
-├── OpenCode provider and model catalog
+├── Codex provider and model catalog
 ├── Exa search/content provider
 ├── six stream workers
 ├── orchestrator reflection and follow-up planner
@@ -200,7 +199,7 @@ Svelte renderer
   preload/        Narrow typed IPC surface
   renderer/       Svelte UI, routes, components, stores
   core/           Intake, orchestration, ideas, scoring, reports
-  providers/      OpenCode, Codex, Exa
+providers/      Codex, Exa
   research/       Stream definitions, worker loop, synthesis
   db/             SQLite migrations and repositories
   shared/         Zod contracts and event types
@@ -212,20 +211,12 @@ build/            Electron Builder assets and installer config
 plans/source/     Generated semantic HTML reports</code></pre>
 
     <h3>4.3 Model adapters</h3>
-    <h4>OpenCode</h4>
-    <ul>
-      <li>Use the configured OpenAI-compatible base URL as a code constant.</li>
-      <li>Fetch <code>/models</code> after key validation and populate selectors from the returned IDs.</li>
-      <li>Use Chat Completions for structured planning, extraction, reflection, synthesis, and ideas.</li>
-      <li>Validate every structured response with Zod; retry once with a repair prompt, then surface a typed failure.</li>
-      <li>Record model, latency, attempts, and estimated tokens for each call.</li>
-    </ul>
     <h4>Codex</h4>
     <ul>
-      <li>Make Codex optional and detect it locally; the app remains usable with OpenCode alone.</li>
+      <li>Detect Codex locally and require a compatible authenticated installation.</li>
       <li>Before implementation, verify the installed Codex version's supported non-interactive and structured-output contract.</li>
       <li>Spawn the executable directly without a shell, use an isolated working directory, stream structured events, and support cancellation.</li>
-      <li>Use Codex only for orchestrator or final idea-generation roles in the first release; keep high-volume research on OpenCode.</li>
+      <li>Use Codex for orchestrator, research, synthesis, and idea-generation roles.</li>
       <li>Never assume undocumented CLI flags. Gate the adapter behind an automated compatibility probe.</li>
     </ul>
 
@@ -366,7 +357,7 @@ plans/source/     Generated semantic HTML reports</code></pre>
     <h2>8. Security, privacy, and operational rules</h2>
     <ul>
       <li>Keep the app local-only; do not add analytics, telemetry, accounts, or cloud sync.</li>
-      <li>Never send user data anywhere except the explicitly selected OpenCode/Codex model path and Exa searches.</li>
+      <li>Never send user data anywhere except the local Codex model path and Exa searches.</li>
       <li>Redact keys and authorization headers from logs, errors, exports, reports, and crash dumps.</li>
       <li>Use Electron <code>safeStorage</code> for imported secrets and expose only validation state to the renderer.</li>
       <li>Validate all IPC payloads with shared Zod schemas.</li>
@@ -398,7 +389,7 @@ plans/source/     Generated semantic HTML reports</code></pre>
     <h3>Phase 0 — Destructive reset and proof spikes</h3>
     <ul>
       <li>Archive the old implementation outside the new source tree.</li>
-      <li>Verify OpenCode authentication, model listing, and structured-response behavior.</li>
+      <li>Verify Codex authentication, model listing, and structured-response behavior.</li>
       <li>Retain the passing Exa live probe as an opt-in integration test.</li>
       <li>Probe the installed Codex CLI and freeze a tested adapter contract; keep Codex disabled if compatibility fails.</li>
       <li>Scaffold Electron, Svelte, preload, backend utility process, SQLite, and tests.</li>
@@ -433,7 +424,7 @@ plans/source/     Generated semantic HTML reports</code></pre>
     <ul>
       <li>Add batched idea generation, dedup, separate scores, buckets, comparison, ratings, and exports.</li>
       <li>Add deeper-dive branches that inherit the brief, selected idea, ancestor reports, and user preferences.</li>
-      <li>Add OpenCode/Codex role switching where the validated adapters support it.</li>
+      <li>Add Codex role-specific model selection where the validated adapter supports it.</li>
     </ul>
     <p><strong>Gate:</strong> ideas are genuinely distinct, evidence-linked, actionable, and improve after user ratings.</p>
 
@@ -451,13 +442,13 @@ plans/source/     Generated semantic HTML reports</code></pre>
     <h2>11. Final acceptance criteria</h2>
     <ol>
       <li>The installer launches a real Electron app and automatically manages its backend.</li>
-      <li>The only required secrets are <code>OPENCODE_API_KEY</code> and <code>EXA_API_KEY</code>.</li>
+      <li>The only required secret is <code>EXA_API_KEY</code>.</li>
       <li>Google code, variables, documentation, and dependencies are absent.</li>
       <li>The first screen is a useful dark conversation workspace, not an empty developer dashboard.</li>
       <li>New Thread immediately starts the one-at-a-time universal intake.</li>
       <li>Every answer, brief, run, report, idea, rating, and branch survives restart.</li>
-      <li>Model selectors are populated from live OpenCode data; unavailable models cannot be selected silently.</li>
-      <li>Codex is optional, detected, compatibility-tested, and never blocks OpenCode-only operation.</li>
+      <li>Model selectors are populated from Codex model discovery; unavailable models cannot be selected silently.</li>
+      <li>Codex is detected and compatibility-tested before research starts.</li>
       <li>Exactly six canonical research streams run with visible progress and selective follow-up work.</li>
       <li>Exa search failures and quota errors are explicit, retryable, and never fabricated as successful research.</li>
       <li>Every stream and composite report is readable sanitized semantic HTML with linked sources.</li>
@@ -472,7 +463,7 @@ plans/source/     Generated semantic HTML reports</code></pre>
   <section id="risks">
     <h2>12. Known risks and honest constraints</h2>
     <ul>
-      <li>OpenCode model IDs and structured-output quality must be live-tested; selectors cannot rely on remembered names.</li>
+      <li>Codex model IDs and structured-output quality must be live-tested; selectors cannot rely on remembered names.</li>
       <li>The exact Codex non-interactive interface must be probed against the installed version before it is treated as supported.</li>
       <li>Exa is verified now but still has external quotas and availability; caching and clear quota UX remain necessary.</li>
       <li>Electron plus native SQLite packaging requires ABI-aware builds and clean-machine installer tests.</li>

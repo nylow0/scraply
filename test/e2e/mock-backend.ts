@@ -29,13 +29,11 @@ export interface MockBackend {
 
 const now = "2026-07-21T12:00:00.000Z";
 const validationReady = {
-  opencode: { valid: false, modelCount: 0, models: [], error: "Optional" },
   exa: { valid: true },
   codex: { detected: true, compatible: true, version: "codex-e2e" },
   setupComplete: true,
 };
 const validationMissing = {
-  opencode: { valid: false, modelCount: 0, models: [], error: "Optional" },
   exa: { valid: false, error: "Exa key missing" },
   codex: { detected: true, compatible: true, version: "codex-e2e" },
   setupComplete: false,
@@ -93,7 +91,7 @@ export async function startMockBackend(scenario: Scenario = "fresh", port = 0): 
     updatedAt: now,
   };
   const state: MockState = {
-    configured: scenario !== "fresh",
+    configured: true,
     threads: scenario === "fresh" ? [] : [thread],
     activeThreadId: scenario === "fresh" ? null : thread.id,
     messages: [],
@@ -115,7 +113,6 @@ export async function startMockBackend(scenario: Scenario = "fresh", port = 0): 
     presets: [],
   };
   const token = "scraply-e2e-token";
-  let validationRequests = 0;
 
   const server = createServer(async (req, res) => {
     const url = new URL(req.url ?? "/", "http://127.0.0.1");
@@ -124,8 +121,6 @@ export async function startMockBackend(scenario: Scenario = "fresh", port = 0): 
     if (req.headers.authorization !== `Bearer ${token}`) return send(res, 401, error("unauthorized", "Missing test token"));
 
     if (req.method === "GET" && url.pathname === "/validation") {
-      validationRequests += 1;
-      if (scenario === "fresh" && validationRequests > 1) state.configured = true;
       return send(res, 200, ok(state.configured ? validationReady : validationMissing));
     }
     if (req.method === "GET" && url.pathname === "/workspace") return send(res, 200, ok(workspace(state)));
@@ -264,7 +259,7 @@ function workspace(state: MockState) {
     brief: state.brief,
     runConfig: state.runConfig,
     models: ["gpt-5.6-luna"],
-    modelCatalog: { opencode: [], codex: ["gpt-5.6-luna"], favorites: state.favorites },
+    modelCatalog: { codex: ["gpt-5.6-luna"], favorites: state.favorites },
     branchContext: null,
     presets: state.presets,
     ideas: state.ideas.map(toIdeaSummary),

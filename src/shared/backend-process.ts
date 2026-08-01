@@ -2,7 +2,6 @@ import { z } from "zod";
 import { ResearchEventSchema } from "./ipc";
 
 const SecretsSchema = z.object({
-  opencodeApiKey: z.string().nullable(),
   exaApiKey: z.string().nullable(),
 });
 

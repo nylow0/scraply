@@ -40,9 +40,9 @@ function setup(withSynthesis: boolean) {
   const thread = new ThreadRepository(db).createThread();
   const config = RunConfigSchema.parse({
     ...DEFAULT_RUN_CONFIG,
-    orchestratorProvider: "opencode",
-    workerProvider: "opencode",
-    ideaProvider: "opencode",
+    orchestratorProvider: "codex",
+    workerProvider: "codex",
+    ideaProvider: "codex",
     ideasRequested: 1,
     batchSize: 1,
   });
@@ -110,7 +110,7 @@ describe("run-scoped idea generation", () => {
     db.close();
   });
 
-  test("persists only in-run claim links and reserves each paid idea batch", async () => {
+  test("persists only in-run claim links and records each Codex idea batch without estimated spend", async () => {
     const { db, runId, claimId, synthesisId } = setup(true);
     const result = await generateIdeas(db, clientWithClaim(claimId), runId);
     const idea = result.ideas[0]!;
@@ -120,7 +120,7 @@ describe("run-scoped idea generation", () => {
     expect(db.db.prepare(`
       SELECT status, reservation_usd, committed_usd FROM cost_ledger
       WHERE research_run_id = ? AND operation = 'idea-generation'
-    `).get(runId)).toEqual({ status: "committed", reservation_usd: 0.08, committed_usd: 0.08 });
+    `).get(runId)).toEqual({ status: "committed", reservation_usd: 0, committed_usd: 0 });
     db.close();
   });
 

@@ -23,12 +23,11 @@ function backendContext(dir: string): BackendContext {
     bundledPromptsDir: join(process.cwd(), "prompts"),
     promptOverridesDir: join(dir, "prompts"),
     appVersion: packageMetadata.version,
-    getSecrets: () => ({ opencodeApiKey: null, exaApiKey: null }),
+    getSecrets: () => ({ exaApiKey: null }),
     providerValidation: {
       probeCodex: async () => ({ detected: false, compatible: false, error: "Disabled in tests" }),
       listCodexModels: async () => [],
       validateExa: async () => ({ valid: false, error: "Disabled in tests" }),
-      validateOpenCode: async () => ({ valid: false, models: [], error: "Disabled in tests" }),
     },
   };
 }
@@ -160,34 +159,27 @@ describe("SQLite persistence", () => {
 });
 
 describe("Backend health", () => {
-  test("constructs a Codex model client without an OpenCode credential", () => {
-    const clients = createBackendClients({ opencodeApiKey: null, exaApiKey: "exa-test" });
+  test("constructs Codex and Exa clients", () => {
+    const clients = createBackendClients({ exaApiKey: "exa-test" });
     expect(clients.codex).toBeDefined();
-    expect(clients.opencode).toBeUndefined();
     expect(clients.exa).toBeDefined();
     expect(isSetupComplete({ valid: true }, { detected: true, compatible: true })).toBe(true);
     expect(isSetupComplete(
       { valid: true },
       { detected: true, compatible: false },
-      { valid: true },
-    )).toBe(true);
+    )).toBe(false);
   });
 
-  test("marks Exa plus compatible Codex as setup-complete without validating OpenCode", async () => {
+  test("marks Exa plus compatible Codex as setup-complete", async () => {
     const dir = mkdtempSync(join(tmpdir(), "scraply-backend-"));
     tempDirs.push(dir);
-    let openCodeValidations = 0;
     const context = {
       ...backendContext(dir),
-      getSecrets: () => ({ opencodeApiKey: null, exaApiKey: "exa-test" }),
+      getSecrets: () => ({ exaApiKey: "exa-test" }),
       providerValidation: {
         probeCodex: async () => ({ detected: true, compatible: true, version: "test" }),
         listCodexModels: async () => ["gpt-5.6-luna"],
         validateExa: async () => ({ valid: true }),
-        validateOpenCode: async () => {
-          openCodeValidations += 1;
-          return { valid: true, models: ["optional-model"] };
-        },
       },
     };
     const handle = await startBackend(context, () => {});
@@ -198,13 +190,11 @@ describe("Backend health", () => {
       });
       const body = await response.json() as {
         ok: true;
-        data: { setupComplete: boolean; opencode: { valid: boolean }; exa: { valid: boolean }; codex: { compatible: boolean } };
+        data: { setupComplete: boolean; exa: { valid: boolean }; codex: { compatible: boolean } };
       };
       expect(body.data.setupComplete).toBe(true);
       expect(body.data.exa.valid).toBe(true);
       expect(body.data.codex.compatible).toBe(true);
-      expect(body.data.opencode.valid).toBe(false);
-      expect(openCodeValidations).toBe(0);
     } finally {
       await handle.close();
     }

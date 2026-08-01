@@ -22,7 +22,6 @@ import {
   ResumeResearchSchema,
   SaveFavoriteModelSchema,
   SaveRunConfigSchema,
-  SaveSecretsRequestSchema,
   SelectThreadRequestSchema,
   StartBriefIntakeSchema,
   StartResearchSchema,
@@ -39,6 +38,7 @@ const isDev = !app.isPackaged;
 let mainWindow: BrowserWindow | null = null;
 let backendReady: BackendReady | null = null;
 let backendProcess: Electron.UtilityProcess | null = null;
+let backendStartPromise: Promise<BackendReady> | null = null;
 let backendStartupFailure: string | null = null;
 let logger: FileLogger | null = null;
 
@@ -49,10 +49,10 @@ interface PendingSecretUpdate {
 }
 
 const pendingSecretUpdates = new Map<string, PendingSecretUpdate>();
-let secrets: BackendSecrets = { opencodeApiKey: null, exaApiKey: null };
+let secrets: BackendSecrets = { exaApiKey: null };
 
 function secretValues(): string[] {
-  return [secrets.opencodeApiKey, secrets.exaApiKey].filter((value): value is string => Boolean(value));
+  return [secrets.exaApiKey].filter((value): value is string => Boolean(value));
 }
 
 function getPaths() {
@@ -64,11 +64,13 @@ function getPaths() {
   return { dataDir, dbPath, logsDir, bundledPromptsDir, promptOverridesDir };
 }
 
-function readDevEnvSecrets(): Partial<BackendSecrets> {
-  if (!isDev || process.env.SCRAPLY_E2E === "1") return {};
-  const envPath = join(process.cwd(), ".env");
-  if (!existsSync(envPath)) return {};
+function readAutomaticSecrets(): Partial<BackendSecrets> {
   const candidate: Partial<BackendSecrets> = {};
+  const environmentKey = process.env.EXA_API_KEY?.trim();
+  if (environmentKey) candidate.exaApiKey = environmentKey;
+  if (!isDev || process.env.SCRAPLY_E2E === "1") return candidate;
+  const envPath = join(process.cwd(), ".env");
+  if (!existsSync(envPath)) return candidate;
   const text = readFileSync(envPath, "utf8");
   for (const line of text.split(/\r?\n/)) {
     const trimmed = line.trim();
@@ -77,7 +79,6 @@ function readDevEnvSecrets(): Partial<BackendSecrets> {
     if (idx <= 0) continue;
     const key = trimmed.slice(0, idx).trim();
     const value = trimmed.slice(idx + 1).trim();
-    if (key === "OPENCODE_API_KEY" && value) candidate.opencodeApiKey = value;
     if (key === "EXA_API_KEY" && value) candidate.exaApiKey = value;
   }
   return candidate;
@@ -88,8 +89,8 @@ function loadStoredSecrets(): void {
   if (!existsSync(settingsPath) || !safeStorage.isEncryptionAvailable()) return;
   try {
     const raw = safeStorage.decryptString(readFileSync(settingsPath));
-    const parsed = JSON.parse(raw) as BackendSecrets;
-    secrets = parsed;
+    const parsed = JSON.parse(raw) as Partial<BackendSecrets>;
+    secrets = { exaApiKey: typeof parsed.exaApiKey === "string" ? parsed.exaApiKey : null };
   } catch {
     // ignore corrupt secrets file
   }
@@ -126,7 +127,11 @@ async function startBackendProcess(): Promise<BackendReady> {
     const timer = setTimeout(() => {
       if (settled) return;
       settled = true;
-      reject(new Error("Backend startup timed out"));
+      const message = "Backend startup timed out";
+      backendStartupFailure = message;
+      if (backendProcess === processHandle) backendProcess = null;
+      processHandle.kill();
+      reject(new Error(message));
     }, 15_000);
 
     const rejectPendingUpdates = (message: string): void => {
@@ -189,7 +194,7 @@ async function startBackendProcess(): Promise<BackendReady> {
 
     processHandle.on("error", (error) => {
       const message = `The local backend process failed: ${error}.`;
-      backendStartupFailure = message;
+      if (backendProcess === processHandle) backendStartupFailure = message;
       logger?.log({ level: "error", component: "main", event: "backend-process-error", message });
       rejectPendingUpdates(message);
       if (settled) return;
@@ -200,7 +205,12 @@ async function startBackendProcess(): Promise<BackendReady> {
 
     processHandle.on("exit", (code) => {
       const message = backendStartupFailure ?? `The local backend exited unexpectedly (code ${code}).`;
-      backendStartupFailure = message;
+      const isCurrentProcess = backendProcess === processHandle;
+      if (isCurrentProcess) {
+        backendProcess = null;
+        backendReady = null;
+        backendStartupFailure = message;
+      }
       logger?.log({
         level: code === 0 ? "info" : "error",
         component: "main",
@@ -208,8 +218,7 @@ async function startBackendProcess(): Promise<BackendReady> {
         message,
         context: { exitCode: code },
       });
-      backendReady = null;
-      rejectPendingUpdates(message);
+      if (isCurrentProcess) rejectPendingUpdates(message);
       if (settled) return;
       settled = true;
       clearTimeout(timer);
@@ -226,6 +235,25 @@ async function startBackendProcess(): Promise<BackendReady> {
       secrets,
     });
   });
+}
+
+async function ensureBackend(): Promise<BackendReady> {
+  if (backendReady) return backendReady;
+  if (!backendStartPromise) {
+    backendStartPromise = startBackendProcess()
+      .then((ready) => {
+        backendReady = ready;
+        return ready;
+      })
+      .catch((error) => {
+        backendStartupFailure = error instanceof Error ? error.message : "The local backend failed to start.";
+        throw error;
+      })
+      .finally(() => {
+        backendStartPromise = null;
+      });
+  }
+  return backendStartPromise;
 }
 
 function createWindow(): void {
@@ -310,15 +338,20 @@ function createWindow(): void {
 }
 
 async function backendRequest<T>(path: string, init?: RequestInit): Promise<T> {
-  if (!backendReady) {
-    throw new AppError("backend_unavailable", backendStartupFailure ?? "The local backend is unavailable.");
+  let ready = backendReady;
+  if (!ready) {
+    try {
+      ready = await ensureBackend();
+    } catch {
+      throw new AppError("backend_unavailable", backendStartupFailure ?? "The local backend is unavailable.");
+    }
   }
   const headers = new Headers(init?.headers);
-  headers.set("authorization", `Bearer ${backendReady.token}`);
+  headers.set("authorization", `Bearer ${ready.token}`);
   headers.set("content-type", "application/json");
   let response: Response;
   try {
-    response = await fetch(`http://127.0.0.1:${backendReady.port}${path}`, { ...init, headers });
+    response = await fetch(`http://127.0.0.1:${ready.port}${path}`, { ...init, headers });
   } catch {
     throw new AppError("backend_unavailable");
   }
@@ -343,13 +376,6 @@ async function backendRequest<T>(path: string, init?: RequestInit): Promise<T> {
   return parsed.data.data as T;
 }
 
-function normalizeSecrets(value: { opencodeApiKey: string; exaApiKey: string }): BackendSecrets {
-  return {
-    opencodeApiKey: value.opencodeApiKey.trim() || null,
-    exaApiKey: value.exaApiKey.trim() || null,
-  };
-}
-
 async function updateBackendSecrets(nextSecrets: BackendSecrets): Promise<void> {
   if (!backendProcess) {
     if (process.env.SCRAPLY_E2E_BACKEND_URL) return;
@@ -371,7 +397,7 @@ async function validateAndPersistSecrets(candidate: BackendSecrets): Promise<Val
   const previous = secrets;
   await updateBackendSecrets(candidate);
   try {
-    const validation = await backendRequest<ValidationState>("/validation?validateOptional=1");
+    const validation = await backendRequest<ValidationState>("/validation");
     if (!validation.setupComplete) {
       await updateBackendSecrets(previous);
       return validation;
@@ -383,6 +409,23 @@ async function validateAndPersistSecrets(candidate: BackendSecrets): Promise<Val
     await updateBackendSecrets(previous).catch(() => undefined);
     throw error;
   }
+}
+
+async function retryAutomaticConnection(): Promise<void> {
+  const automaticSecrets = readAutomaticSecrets();
+  const candidate: BackendSecrets = {
+    exaApiKey: automaticSecrets.exaApiKey ?? secrets.exaApiKey,
+  };
+
+  if (!backendReady) {
+    const staleProcess = backendProcess;
+    backendProcess = null;
+    staleProcess?.kill();
+    secrets = candidate;
+    await ensureBackend();
+  }
+
+  await validateAndPersistSecrets(candidate);
 }
 
 function assertTrustedSender(event: IpcMainInvokeEvent): void {
@@ -405,20 +448,9 @@ function registerIpc(): void {
   };
   const post = <T>(path: string, body: T) => backendRequest(path, { method: "POST", body: JSON.stringify(body) });
 
-  handle(IPC_CHANNELS.GET_VALIDATION, () => backendRequest("/validation?validateOptional=1"));
+  handle(IPC_CHANNELS.GET_VALIDATION, () => backendRequest("/validation"));
+  handle(IPC_CHANNELS.RETRY_CONNECTION, retryAutomaticConnection);
   handle(IPC_CHANNELS.GET_WORKSPACE, () => backendRequest("/workspace"));
-  handle(IPC_CHANNELS.SAVE_SECRETS, async (rawPayload) => {
-    const payload = SaveSecretsRequestSchema.parse(rawPayload);
-    return validateAndPersistSecrets(normalizeSecrets(payload));
-  });
-  handle(IPC_CHANNELS.IMPORT_ENV, async () => {
-    const envSecrets = readDevEnvSecrets();
-    const candidate = SaveSecretsRequestSchema.parse({
-      opencodeApiKey: envSecrets.opencodeApiKey ?? secrets.opencodeApiKey ?? "",
-      exaApiKey: envSecrets.exaApiKey ?? secrets.exaApiKey ?? "",
-    });
-    return validateAndPersistSecrets(normalizeSecrets(candidate));
-  });
   handle(IPC_CHANNELS.OPEN_DATA_FOLDER, async () => {
     await shell.openPath(getPaths().dataDir);
   });
@@ -492,15 +524,19 @@ if (!gotLock) {
       context: { version: app.getVersion() },
     });
     loadStoredSecrets();
-    secrets = { ...secrets, ...readDevEnvSecrets() };
+    const automaticSecrets = readAutomaticSecrets();
+    secrets = { ...secrets, ...automaticSecrets };
     registerIpc();
-    try {
-      backendReady = await startBackendProcess();
-    } catch (error) {
-      backendStartupFailure = error instanceof Error ? error.message : "The local backend failed to start.";
-      console.error("Backend startup failed", error);
-    }
     createWindow();
+    void ensureBackend()
+      .then(async () => {
+        if (!automaticSecrets.exaApiKey) return;
+        const validation = await backendRequest<ValidationState>("/validation");
+        if (validation.setupComplete) persistSecrets(secrets);
+      })
+      .catch((error) => {
+        console.error("Backend startup failed", error);
+      });
   });
 
   app.on("window-all-closed", () => {

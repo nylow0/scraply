@@ -9,7 +9,6 @@ import { ResearchEngine } from "../core/research-engine";
 import { cancelIncompleteRun, listPendingRuns } from "../core/research-recovery";
 import { CodexClient, listCodexModels, probeCodexCli } from "../providers/codex";
 import { ExaClient } from "../providers/exa";
-import { OpenCodeClient } from "../providers/opencode";
 import type { StructuredModelClient } from "../providers/structured";
 import {
   CancelIncompleteResearchSchema,
@@ -51,23 +50,20 @@ export interface BackendContext {
   bundledPromptsDir: string;
   promptOverridesDir: string;
   appVersion: string;
-  getSecrets: () => { opencodeApiKey: string | null; exaApiKey: string | null };
+  getSecrets: () => { exaApiKey: string | null };
   modelClients?: Partial<Record<ModelProvider, StructuredModelClient>>;
   log?: (input: Omit<LogInput, "component">) => void;
   providerValidation?: {
     probeCodex?: () => Promise<{ detected: boolean; compatible: boolean; version?: string; error?: string }>;
     listCodexModels?: () => Promise<string[]>;
     validateExa?: (apiKey: string) => Promise<{ valid: boolean; error?: string }>;
-    validateOpenCode?: (apiKey: string) => Promise<{ valid: boolean; models: string[]; error?: string }>;
   };
 }
 
-export function createBackendClients(secrets: { opencodeApiKey: string | null; exaApiKey: string | null }) {
+export function createBackendClients(secrets: { exaApiKey: string | null }) {
   if (!secrets.exaApiKey) throw new AppError("conflict", "Configure Exa before starting research.");
-  const opencode = secrets.opencodeApiKey ? new OpenCodeClient({ apiKey: secrets.opencodeApiKey }) : undefined;
   return {
     codex: new CodexClient(),
-    opencode,
     exa: new ExaClient(secrets.exaApiKey),
   };
 }
@@ -75,9 +71,8 @@ export function createBackendClients(secrets: { opencodeApiKey: string | null; e
 export function isSetupComplete(
   exa: { valid: boolean },
   codex: { detected: boolean; compatible: boolean },
-  opencode: { valid: boolean } = { valid: false },
 ): boolean {
-  return exa.valid && ((codex.detected && codex.compatible) || opencode.valid);
+  return exa.valid && codex.detected && codex.compatible;
 }
 
 export interface BackendHandle {
@@ -100,21 +95,16 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
   });
 
   let cachedValidation: ValidationState | null = null;
-  let cachedModels: string[] = [];
   let cachedCodexModels: string[] = [];
   let activeThreadId: string | null = db.getSetting("active_thread_id");
   let researchEngine: ResearchEngine | null = null;
 
   function ensureResearchEngine(): ResearchEngine {
-    const { opencode, codex, exa } = clients();
+    const { codex, exa } = clients();
     if (!researchEngine) {
       researchEngine = new ResearchEngine({
         db,
-        ...(opencode ? { opencode } : {}),
-        modelClients: {
-          codex,
-          ...(opencode ? { opencode } : {}),
-        },
+        modelClients: { codex },
         exa,
         onEvent: emitEvent,
         onReport: (threadId, streamName, reportId) => {
@@ -132,46 +122,24 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
   function modelClient(provider: ModelProvider) {
     const injected = context.modelClients?.[provider];
     if (injected) return injected;
-    const configured = clients();
-    if (provider === "codex") return configured.codex;
-    if (configured.opencode) return configured.opencode;
-    throw new AppError("conflict", "Configure OpenCode before selecting an OpenCode model.");
+    return clients().codex;
   }
 
-  async function validateProviders(validateOptionalOpenCode = false): Promise<ValidationState> {
+  async function validateProviders(): Promise<ValidationState> {
     const secrets = context.getSecrets();
     const probeCodex = context.providerValidation?.probeCodex ?? probeCodexCli;
     const loadCodexModels = context.providerValidation?.listCodexModels ?? listCodexModels;
     const validateExa = context.providerValidation?.validateExa ?? (async (apiKey: string) => new ExaClient(apiKey).validateKey());
-    const validateOpenCode = context.providerValidation?.validateOpenCode
-      ?? (async (apiKey: string) => {
-        const result = await new OpenCodeClient({ apiKey }).validateKey();
-        return result.valid
-          ? { valid: true, models: result.models }
-          : { valid: false, models: [], error: result.error };
-      });
     const [codex, codexModels, exaResult] = await Promise.all([
       probeCodex(),
       loadCodexModels(),
       secrets.exaApiKey ? validateExa(secrets.exaApiKey) : Promise.resolve({ valid: false, error: "Exa key missing" }),
     ]);
     cachedCodexModels = codexModels;
-    let open: { valid: boolean; models: string[]; error?: string };
-    if (!secrets.opencodeApiKey) {
-      open = { valid: false, models: [], error: "OpenCode key not configured (optional)" };
-    } else if (validateOptionalOpenCode) {
-      open = await validateOpenCode(secrets.opencodeApiKey);
-    } else {
-      open = { valid: false, models: [], error: "OpenCode validation is optional" };
-    }
-    cachedModels = open.valid ? open.models : [];
     cachedValidation = ValidationStateSchema.parse({
-      opencode: open.valid
-        ? { valid: true, modelCount: open.models.length, models: open.models }
-        : { valid: false, modelCount: 0, models: [], error: open.error },
       exa: exaResult.valid ? { valid: true } : { valid: false, error: exaResult.error },
       codex,
-      setupComplete: isSetupComplete(exaResult, codex, open),
+      setupComplete: isSetupComplete(exaResult, codex),
     });
     return cachedValidation;
   }
@@ -194,7 +162,7 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
       brief,
       branchContext,
       runConfig,
-      models: cachedModels,
+      models: cachedCodexModels,
       modelCatalog: buildModelCatalog(),
       presets: threads.listPresets(),
       ideas,
@@ -206,7 +174,6 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
 
   function buildModelCatalog(): ModelCatalog {
     return ModelCatalogSchema.parse({
-      opencode: cachedModels,
       codex: cachedCodexModels,
       favorites: readFavoriteModels(),
     });
@@ -392,7 +359,7 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
       }
 
       if (method === "GET" && url.pathname === "/validation") {
-        sendJson(res, 200, await validateProviders(url.searchParams.get("validateOptional") === "1"));
+      sendJson(res, 200, await validateProviders());
         return;
       }
 
@@ -766,7 +733,6 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
     token,
     secretsChanged: () => {
       cachedValidation = null;
-      cachedModels = [];
       researchEngine = null;
     },
     close: async () => {

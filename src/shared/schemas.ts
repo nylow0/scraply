@@ -1,7 +1,5 @@
 import { z } from "zod";
 
-export const OPENCODE_BASE_URL = "https://opencode.ai/zen/go/v1";
-
 export const SourceSchema = z.object({
   id: z.string().min(1),
   url: z.string().url(),
@@ -109,11 +107,11 @@ export const ProjectBriefV2Schema = z.object({
 export const ProjectBriefSchema = ProjectBriefV2Schema;
 
 export const RunConfigSchema = z.object({
-  orchestratorProvider: z.enum(["opencode", "codex"]),
+  orchestratorProvider: z.literal("codex"),
   orchestratorModel: z.string().min(1),
-  workerProvider: z.enum(["opencode", "codex"]).default("codex"),
+  workerProvider: z.literal("codex").default("codex"),
   workerModel: z.string().min(1),
-  ideaProvider: z.enum(["opencode", "codex"]),
+  ideaProvider: z.literal("codex"),
   ideaModel: z.string().min(1),
   ideasRequested: z.number().int().min(1).max(200).default(24),
   batchSize: z.number().int().min(1).max(20).default(6),
@@ -127,7 +125,7 @@ export const RunConfigSchema = z.object({
   maxRunMinutes: z.number().int().min(1).max(240).default(30),
 });
 
-export const ModelProviderSchema = z.enum(["opencode", "codex"]);
+export const ModelProviderSchema = z.literal("codex");
 
 export const ModelRefSchema = z.object({
   provider: ModelProviderSchema,
@@ -135,7 +133,6 @@ export const ModelRefSchema = z.object({
 });
 
 export const ModelCatalogSchema = z.object({
-  opencode: z.array(z.string()),
   codex: z.array(z.string()),
   favorites: z.array(ModelRefSchema),
 });
