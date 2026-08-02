@@ -6,13 +6,13 @@ import type { StructuredModelClient } from "../providers/structured";
 import { ProviderFailure } from "../providers/structured";
 import { loadPrompt } from "./prompts";
 import { parseAndNormalizeBrief } from "../shared/brief-normalizer";
+import { parseAndNormalizeRunConfig } from "../shared/run-config-normalizer";
 import { buildPreferenceContext, formatPreferencePrompt } from "./preferences";
 import { buildIdeaContext } from "./brief-context";
 import {
   IdeaBucketSchema,
   IdeaSchema,
   IdeaScoresSchema,
-  RunConfigSchema,
   type Idea,
   type ModelProvider,
   type ProjectBrief,
@@ -102,7 +102,7 @@ export async function generateIdeas(
   if (!run) throw new IdeaGenerationBlockedError("Research run not found");
   const brief = run.brief_json ? parseAndNormalizeBrief(JSON.parse(run.brief_json)) : null;
   if (!brief) throw new IdeaGenerationBlockedError("The research run is missing its immutable brief snapshot");
-  const config = RunConfigSchema.parse(JSON.parse(run.config_json));
+  const config = parseAndNormalizeRunConfig(JSON.parse(run.config_json));
   const synthesis = db.db.prepare(`
     SELECT id, html FROM reports
     WHERE research_run_id = ? AND report_kind = 'synthesis'

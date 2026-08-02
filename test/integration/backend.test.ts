@@ -242,6 +242,54 @@ describe("Backend health", () => {
     }
   });
 
+  test("rejects research starts until required providers are ready", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "scraply-backend-offline-research-"));
+    tempDirs.push(dir);
+    const handle = await startBackend(backendContext(dir), () => {});
+    const headers = {
+      authorization: `Bearer ${handle.token}`,
+      "content-type": "application/json",
+    };
+
+    try {
+      const createdResponse = await fetch(`http://127.0.0.1:${handle.port}/threads`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({}),
+      });
+      const created = await createdResponse.json() as { ok: true; data: { thread: { id: string } } };
+      const threadId = created.data.thread.id;
+
+      const confirmed = await fetch(`http://127.0.0.1:${handle.port}/brief/confirm`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ threadId, brief: makeProjectBrief() }),
+      });
+      expect(confirmed.ok).toBe(true);
+
+      const response = await fetch(`http://127.0.0.1:${handle.port}/research/start`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ threadId }),
+      });
+      expect(response.status).toBe(409);
+      expect(await response.json()).toEqual({
+        ok: false,
+        error: {
+          code: "conflict",
+          message: "Connect Exa and a compatible Codex CLI before starting research.",
+        },
+      });
+    } finally {
+      await handle.close();
+    }
+
+    const reopened = new DatabaseClient(join(dir, "scraply.db"));
+    const runCount = reopened.db.prepare("SELECT COUNT(*) AS count FROM research_runs").get() as { count: number };
+    expect(runCount.count).toBe(0);
+    reopened.close();
+  });
+
   test("starts on localhost with bearer auth", async () => {
     const dir = mkdtempSync(join(tmpdir(), "scraply-backend-"));
     tempDirs.push(dir);

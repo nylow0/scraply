@@ -4,7 +4,8 @@ import { ResearchRunRepository } from "../db/repositories/research-runs";
 import { RESEARCH_STREAMS } from "../research/streams";
 import { parseAndNormalizeBrief } from "../shared/brief-normalizer";
 import { AppError } from "../shared/errors";
-import { RunConfigSchema, type ProjectBrief, type RunConfig } from "../shared/schemas";
+import { parseAndNormalizeRunConfig } from "../shared/run-config-normalizer";
+import type { ProjectBrief, RunConfig } from "../shared/schemas";
 
 export interface PendingRun {
   runId: string;
@@ -96,7 +97,7 @@ export function loadStoredRunState(db: DatabaseClient, runId: string): StoredRun
     runId: row.id,
     threadId: row.thread_id,
     brief: parseAndNormalizeBrief(JSON.parse(briefRow.brief_json)),
-    config: RunConfigSchema.parse(JSON.parse(row.config_json)),
+    config: parseAndNormalizeRunConfig(JSON.parse(row.config_json)),
     startedAt: row.created_at,
     selectedStreamIds: parseSelectedStreamIds(row.selected_stream_ids_json),
     completedStreamIds: new Set(completed.map((item) => item.stream_id)),

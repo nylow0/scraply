@@ -1,10 +1,10 @@
 import { randomUUID } from "node:crypto";
 import type { DatabaseClient } from "../client";
 import { parseAndNormalizeBrief } from "../../shared/brief-normalizer";
+import { parseAndNormalizeRunConfig } from "../../shared/run-config-normalizer";
 import {
   BranchContextSchema,
   MessageSchema,
-  RunConfigSchema,
   ThreadSchema,
   type Message,
   type BranchContext,
@@ -198,7 +198,7 @@ export class ThreadRepository {
     const row = this.db.db.prepare(`
       SELECT config_json FROM run_configs WHERE thread_id = ? ORDER BY created_at DESC LIMIT 1
     `).get(threadId) as { config_json: string } | undefined;
-    return row ? RunConfigSchema.parse(JSON.parse(row.config_json)) : null;
+    return row ? parseAndNormalizeRunConfig(JSON.parse(row.config_json)) : null;
   }
 
   listPresets(): Array<{ name: string; config: RunConfig }> {
@@ -212,7 +212,7 @@ export class ThreadRepository {
     for (const row of rows) {
       if (seen.has(row.preset_name)) continue;
       seen.add(row.preset_name);
-      presets.push({ name: row.preset_name, config: RunConfigSchema.parse(JSON.parse(row.config_json)) });
+      presets.push({ name: row.preset_name, config: parseAndNormalizeRunConfig(JSON.parse(row.config_json)) });
     }
     return presets;
   }
