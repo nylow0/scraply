@@ -200,6 +200,48 @@ describe("Backend health", () => {
     }
   });
 
+  test("serves the local workspace before checking internet providers", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "scraply-backend-offline-start-"));
+    tempDirs.push(dir);
+    let providerChecks = 0;
+    const context: BackendContext = {
+      ...backendContext(dir),
+      getSecrets: () => ({ exaApiKey: "exa-test" }),
+      providerValidation: {
+        probeCodex: async () => {
+          providerChecks += 1;
+          return { detected: true, compatible: true, version: "test" };
+        },
+        listCodexModels: async () => {
+          providerChecks += 1;
+          return ["gpt-5.6-luna"];
+        },
+        validateExa: async () => {
+          providerChecks += 1;
+          return { valid: true };
+        },
+      },
+    };
+    const handle = await startBackend(context, () => {});
+
+    try {
+      const response = await fetch(`http://127.0.0.1:${handle.port}/workspace`, {
+        headers: { authorization: `Bearer ${handle.token}` },
+      });
+      const body = await response.json() as {
+        ok: true;
+        data: { validation: { setupComplete: boolean; exa: { error?: string }; codex: { error?: string } } };
+      };
+      expect(response.ok).toBe(true);
+      expect(body.data.validation.setupComplete).toBe(false);
+      expect(body.data.validation.exa.error).toBe("Checking Exa connection");
+      expect(body.data.validation.codex.error).toBe("Checking Codex connection");
+      expect(providerChecks).toBe(0);
+    } finally {
+      await handle.close();
+    }
+  });
+
   test("starts on localhost with bearer auth", async () => {
     const dir = mkdtempSync(join(tmpdir(), "scraply-backend-"));
     tempDirs.push(dir);

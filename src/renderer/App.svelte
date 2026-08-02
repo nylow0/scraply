@@ -25,6 +25,7 @@
   let briefConfirming = $state(false);
   let researchStarting = $state(false);
   let ideasGenerating = $state(false);
+  let providerCheckPending = $state(false);
   let recoveryPendingRunId: string | null = $state(null);
   let runCancelling = $state(false);
   let partialIdeaNotice: IdeaGenerationCompleteness | null = $state(null);
@@ -53,35 +54,37 @@
     return error.message.replace(/^Error invoking remote method '[^']+':\s*(?:AppError:\s*)?/, "");
   }
 
-  function providerError(): string {
-    const validation = appState.validation;
-    if (!validation?.exa.valid) {
-      return `Exa failed to connect: ${validation?.exa.error ?? "EXA_API_KEY is missing or invalid."}`;
-    }
-    if (!validation.codex.compatible) {
-      return `Codex failed to connect: ${validation.codex.error ?? "A compatible local Codex installation was not detected."}`;
-    }
-    return "Scraply could not connect to its required services.";
-  }
-
   async function initialLoad() {
     appState.loading = true;
     appState.error = null;
     try {
-      appState.validation = await window.scraply.getValidation();
-      if (!appState.validation.setupComplete) {
-        appState.workspace = null;
-        appState.error = providerError();
-        return;
-      }
       const workspace = await window.scraply.getWorkspace();
       appState.workspace = workspace;
       appState.validation = workspace.validation;
+      void refreshProviderConnection();
     } catch (error) {
       appState.workspace = null;
       appState.error = errorMessage(error, "Scraply failed to start.");
     } finally {
       appState.loading = false;
+    }
+  }
+
+  async function refreshProviderConnection(retry = false) {
+    if (providerCheckPending) return;
+    providerCheckPending = true;
+    try {
+      if (retry) await window.scraply.retryConnection();
+      appState.validation = await window.scraply.getValidation();
+      if (appState.workspace) {
+        const workspace = await window.scraply.getWorkspace();
+        appState.workspace = workspace;
+        appState.validation = workspace.validation;
+      }
+    } catch {
+      // The local workspace remains usable when provider checks fail.
+    } finally {
+      providerCheckPending = false;
     }
   }
 
@@ -406,8 +409,12 @@
   <div class="startup" role="status">Loading…</div>
 {:else if !appState.workspace}
   <div class="startup startup-failed">
-    <p role="alert">{appState.error ?? providerError()}</p>
-    <button class="refresh" onclick={retryStartup}>Refresh</button>
+    <p role="alert">{appState.error ?? "Scraply failed to start."}</p>
+    <div class="startup-actions">
+      <button class="refresh" onclick={retryStartup}>Refresh</button>
+      <button class="refresh" onclick={() => window.scraply.openDataFolder()}>Open data folder</button>
+      <button class="refresh" onclick={() => window.scraply.openLogsFolder()}>Open logs folder</button>
+    </div>
   </div>
 {:else}
   <div class="shell" class:with-drawer={drawerOpen}>
@@ -432,9 +439,20 @@
           </span>
         </div>
         <div class="top-actions">
-          <span class:ready={providersReady} class="connection" role="status">
-            <span aria-hidden="true"></span>{providersReady ? "Providers ready" : "Limited connection"}
-          </span>
+          {#if providersReady}
+            <span class="connection ready" role="status">
+              <span aria-hidden="true"></span>Providers ready
+            </span>
+          {:else}
+            <button
+              class="connection"
+              disabled={providerCheckPending}
+              aria-label="Retry provider connection"
+              onclick={() => refreshProviderConnection(true)}
+            >
+              <span aria-hidden="true"></span>{providerCheckPending ? "Checking connection…" : "Limited connection"}
+            </button>
+          {/if}
           {#if !onRunPage && runSnapshot}
             <button
               class="ghost"
@@ -639,6 +657,13 @@
     color: var(--danger);
   }
 
+  .startup-actions {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 8px;
+  }
+
   .refresh {
     padding: 9px 14px;
     border: 1px solid var(--border);
@@ -824,6 +849,20 @@
     color: var(--muted);
     font-size: 11px;
     white-space: nowrap;
+  }
+
+  button.connection {
+    border: 0;
+    background: transparent;
+    font-weight: 500;
+  }
+
+  button.connection:not(:disabled):hover {
+    color: var(--text);
+  }
+
+  button.connection:not(:disabled):active {
+    transform: translateY(1px);
   }
 
   .connection > span {

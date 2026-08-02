@@ -16,7 +16,7 @@ bun install
 bun run dev
 ```
 
-Set `EXA_API_KEY` in `.env` for development or in the environment that launches the installed app. Scraply connects automatically and stores the key with Windows-backed encryption after the first successful validation.
+Set `EXA_API_KEY` in `.env` for development or in the environment that launches the installed app. Scraply opens the local workspace immediately, checks Exa and Codex in the background, and stores the key with Windows-backed encryption after the first successful validation.
 
 Useful checks:
 
@@ -58,7 +58,7 @@ Deleting or resetting data is irreversible unless you made a backup first.
 
 ## Troubleshooting
 
-- **Exa does not connect:** confirm `EXA_API_KEY` exists in `.env` during development or in the installed app's launch environment, then use **Refresh** on the startup error.
+- **Exa does not connect:** the local workspace remains available. Confirm `EXA_API_KEY` exists in `.env` during development or in the installed app's launch environment, then select **Limited connection** to retry.
 - **Codex validation fails:** confirm `codex` is installed, authenticated, and available in the same Windows user environment that launches Scraply.
 - **Research cannot start:** confirm the brief is approved, the configuration is saved, and no active run already exists for the project.
 - **A report is blank or slow:** collapse and reopen it to retry the on-demand detail request. Reports are intentionally excluded from routine workspace refreshes.
