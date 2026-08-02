@@ -5,6 +5,7 @@ coverage/
 test-results/
 out/
 release/
+previous-builds/
 dist/
 build/*
 !build/icon.png

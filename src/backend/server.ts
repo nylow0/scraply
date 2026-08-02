@@ -95,6 +95,8 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
   });
 
   let cachedValidation: ValidationState | null = null;
+  let validationPromise: Promise<ValidationState> | null = null;
+  let validationGeneration = 0;
   let cachedCodexModels: string[] = [];
   let activeThreadId: string | null = db.getSetting("active_thread_id");
   let researchEngine: ResearchEngine | null = null;
@@ -126,26 +128,54 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
   }
 
   async function validateProviders(): Promise<ValidationState> {
-    const secrets = context.getSecrets();
-    const probeCodex = context.providerValidation?.probeCodex ?? probeCodexCli;
-    const loadCodexModels = context.providerValidation?.listCodexModels ?? listCodexModels;
-    const validateExa = context.providerValidation?.validateExa ?? (async (apiKey: string) => new ExaClient(apiKey).validateKey());
-    const [codex, codexModels, exaResult] = await Promise.all([
-      probeCodex(),
-      loadCodexModels(),
-      secrets.exaApiKey ? validateExa(secrets.exaApiKey) : Promise.resolve({ valid: false, error: "Exa key missing" }),
-    ]);
-    cachedCodexModels = codexModels;
-    cachedValidation = ValidationStateSchema.parse({
-      exa: exaResult.valid ? { valid: true } : { valid: false, error: exaResult.error },
-      codex,
-      setupComplete: isSetupComplete(exaResult, codex),
+    if (validationPromise) return validationPromise;
+    const generation = validationGeneration;
+    const currentValidation = (async () => {
+      const secrets = context.getSecrets();
+      const probeCodex = context.providerValidation?.probeCodex ?? probeCodexCli;
+      const loadCodexModels = context.providerValidation?.listCodexModels ?? listCodexModels;
+      const validateExa = context.providerValidation?.validateExa ?? (async (apiKey: string) => new ExaClient(apiKey).validateKey());
+      const [codex, codexModels, exaResult] = await Promise.all([
+        probeCodex(),
+        loadCodexModels(),
+        secrets.exaApiKey ? validateExa(secrets.exaApiKey) : Promise.resolve({ valid: false, error: "Exa key missing" }),
+      ]);
+      const nextValidation = ValidationStateSchema.parse({
+        exa: exaResult.valid ? { valid: true } : { valid: false, error: exaResult.error },
+        codex,
+        setupComplete: isSetupComplete(exaResult, codex),
+      });
+      if (generation === validationGeneration) {
+        cachedCodexModels = codexModels;
+        cachedValidation = nextValidation;
+      }
+      return nextValidation;
+    })();
+    validationPromise = currentValidation;
+    try {
+      return await currentValidation;
+    } finally {
+      if (validationPromise === currentValidation) validationPromise = null;
+    }
+  }
+
+  function pendingValidation(): ValidationState {
+    return ValidationStateSchema.parse({
+      exa: {
+        valid: false,
+        error: context.getSecrets().exaApiKey ? "Checking Exa connection" : "Exa key missing",
+      },
+      codex: {
+        detected: false,
+        compatible: false,
+        error: "Checking Codex connection",
+      },
+      setupComplete: false,
     });
-    return cachedValidation;
   }
 
   async function workspaceState() {
-    const validation = cachedValidation ?? await validateProviders();
+    const validation = cachedValidation ?? pendingValidation();
     const threadList = threads.listThreads();
     const messages = activeThreadId ? threads.getMessages(activeThreadId) : [];
     const brief = activeThreadId ? threads.getLatestBrief(activeThreadId) : null;
@@ -726,13 +756,13 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   const address = server.address();
   if (!address || typeof address === "string") throw new Error("Failed to bind backend port");
-  await validateProviders();
-
   return {
     port: address.port,
     token,
     secretsChanged: () => {
       cachedValidation = null;
+      validationGeneration += 1;
+      validationPromise = null;
       researchEngine = null;
     },
     close: async () => {

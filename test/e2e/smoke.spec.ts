@@ -250,13 +250,13 @@ test("surfaces an actionable migration failure during packaged startup", async (
   }
 });
 
-test("does not persist provider keys that fail validation", async () => {
+test("keeps the workspace available when automatic provider validation fails", async () => {
   test.skip(process.env.SCRAPLY_E2E_SKIP_REAL_BACKEND === "1", "Requires the deterministic E2E utility backend");
   const userDataDir = mkdtempSync(path.join(tmpdir(), "scraply-e2e-invalid-keys-"));
   const app = await launchIsolatedApp(null, userDataDir, { exaApiKey: "invalid-e2e-key" });
   try {
-    await expect(app.page.getByRole("alert")).toContainText("Deterministic invalid Exa key");
-    await expect(app.page.getByRole("button", { name: "Refresh" })).toBeVisible();
+    await expect(app.page.getByRole("button", { name: "Create new research thread" })).toBeVisible();
+    await expect(app.page.getByRole("button", { name: "Retry provider connection" })).toBeVisible();
     expect(existsSync(path.join(userDataDir, "secrets.bin"))).toBe(false);
   } finally {
     await app.close();
