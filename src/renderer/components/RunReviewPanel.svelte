@@ -10,6 +10,7 @@
     modelCatalog,
     presets,
     starting,
+    providersReady,
     onEditBrief,
     onSaveConfig,
     onFavorite,
@@ -21,6 +22,7 @@
     modelCatalog?: ModelCatalog | undefined;
     presets: Array<{ name: string; config: RunConfig }>;
     starting: boolean;
+    providersReady: boolean;
     onEditBrief: () => void;
     onSaveConfig: (config: RunConfig, presetName?: string) => void;
     onFavorite: (model: ModelRef, favorite: boolean) => void;
@@ -197,6 +199,7 @@
       onStart={onStart}
       onFavorite={onFavorite}
       {starting}
+      startDisabled={!providersReady}
       embedded
     />
   </details>

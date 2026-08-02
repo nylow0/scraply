@@ -17,6 +17,7 @@
     onStart,
     onFavorite,
     starting = false,
+    startDisabled = false,
     setupOnly = false,
     embedded = false,
   }: {
@@ -28,6 +29,7 @@
     onStart?: (config: RunConfig) => void;
     onFavorite: (model: ModelRef, favorite: boolean) => void;
     starting?: boolean;
+    startDisabled?: boolean;
     setupOnly?: boolean;
     embedded?: boolean;
   } = $props();
@@ -287,7 +289,7 @@
       <strong>Execution caps</strong>
       <p>6 fixed streams · up to ${Number(draft.maxSpendUsd || 0).toFixed(2)} · {draft.maxRunMinutes} min · {draft.ideasRequested} ideas</p>
     </div>
-    <button class="primary" onclick={startResearch} disabled={starting || Boolean(validationMessage)}>
+    <button class="primary" onclick={startResearch} disabled={starting || startDisabled || Boolean(validationMessage)}>
       {starting ? "Starting research…" : "Start research"}
     </button>
   </div>{/if}

@@ -569,6 +569,7 @@
             onFavorite={saveFavoriteModel}
             onStart={startResearch}
             starting={researchStarting}
+            {providersReady}
           />
         {/if}
       {:else if onRunPage && activeThread}

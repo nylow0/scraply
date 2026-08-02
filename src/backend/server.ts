@@ -10,6 +10,7 @@ import { cancelIncompleteRun, listPendingRuns } from "../core/research-recovery"
 import { CodexClient, listCodexModels, probeCodexCli } from "../providers/codex";
 import { ExaClient } from "../providers/exa";
 import type { StructuredModelClient } from "../providers/structured";
+import { parseAndNormalizeRunConfig } from "../shared/run-config-normalizer";
 import {
   CancelIncompleteResearchSchema,
   CancelResearchSchema,
@@ -568,6 +569,10 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
         if (url.pathname === "/research/start") {
           const input = StartResearchSchema.parse(body);
           requireThread(input.threadId);
+          const validation = cachedValidation ?? await validateProviders();
+          if (!validation.setupComplete) {
+            throw new AppError("conflict", "Connect Exa and a compatible Codex CLI before starting research.");
+          }
           const brief = threads.getLatestBrief(input.threadId);
           const config = threads.getLatestRunConfig(input.threadId) ?? RunConfigSchema.parse(DEFAULT_RUN_CONFIG);
           if (!brief) throw new AppError("conflict", "Confirm the brief before starting research.");
@@ -631,7 +636,7 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
             SELECT thread_id, config_json FROM research_runs WHERE id = ?
           `).get(runId) as { thread_id: string; config_json: string } | undefined;
           if (!run) throw new AppError("not_found", "Research run not found.");
-          const config = RunConfigSchema.parse(JSON.parse(run.config_json));
+          const config = parseAndNormalizeRunConfig(JSON.parse(run.config_json));
           const ideaClient = modelClient(config.ideaProvider);
           let result;
           try {
