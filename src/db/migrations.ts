@@ -444,4 +444,46 @@ export const MIGRATIONS = [
       CREATE INDEX idx_research_runs_problem ON research_runs(problem_id, created_at);
     `,
   },
+  {
+    id: 8,
+    sql: `
+      ALTER TABLE solutions
+        ADD COLUMN research_run_id TEXT REFERENCES research_runs(id) ON DELETE CASCADE;
+
+      UPDATE solutions
+      SET research_run_id = (
+        SELECT MIN(rr.id)
+        FROM research_runs rr
+        WHERE rr.problem_id = solutions.problem_id
+      )
+      WHERE (
+        SELECT COUNT(*)
+        FROM research_runs rr
+        WHERE rr.problem_id = solutions.problem_id
+      ) = 1;
+
+      CREATE INDEX idx_solutions_run
+        ON solutions(research_run_id, created_at, id);
+
+      CREATE TRIGGER validate_solution_research_run_insert
+      BEFORE INSERT ON solutions
+      WHEN NEW.research_run_id IS NULL OR NOT EXISTS (
+        SELECT 1 FROM research_runs rr
+        WHERE rr.id = NEW.research_run_id AND rr.problem_id = NEW.problem_id
+      )
+      BEGIN
+        SELECT RAISE(ABORT, 'solution research run must target its problem');
+      END;
+
+      CREATE TRIGGER validate_solution_research_run_update
+      BEFORE UPDATE OF research_run_id, problem_id ON solutions
+      WHEN NEW.research_run_id IS NULL OR NOT EXISTS (
+        SELECT 1 FROM research_runs rr
+        WHERE rr.id = NEW.research_run_id AND rr.problem_id = NEW.problem_id
+      )
+      BEGIN
+        SELECT RAISE(ABORT, 'solution research run must target its problem');
+      END;
+    `,
+  },
 ] as const;
