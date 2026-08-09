@@ -1,0 +1,14 @@
+{
+  "title": "Choose a small software product for a solo student developer to launch",
+  "audience": "Students, freelancers, and small online businesses with recurring software or workflow needs",
+  "domain": "Low-cost software workflows and online business operations suitable for a solo TypeScript developer",
+  "observations": "The developer has strong TypeScript skills, about 10 hours per week, and a six-week target. Research should inspect recent credible sources, existing products, and direct user complaints for evidence of demand and plausible first customers.",
+  "offLimits": [
+    "Regulated industries",
+    "Hardware products",
+    "Crypto products",
+    "Generic AI wrappers",
+    "Products requiring large proprietary datasets",
+    "Products that cannot reach a realistic paid launch or validated MVP within six weeks at about 10 hours per week"
+  ]
+}

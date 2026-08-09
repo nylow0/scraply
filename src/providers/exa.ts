@@ -15,9 +15,26 @@ const ExaResponseSchema = z.object({
   })),
 });
 
+export const EXA_CATEGORIES = [
+  "company",
+  "research paper",
+  "news",
+  "pdf",
+  "github",
+  "tweet",
+  "personal site",
+  "linkedin profile",
+  "financial report",
+] as const;
+
+export type ExaCategory = (typeof EXA_CATEGORIES)[number];
+
 export interface ExaSearchOptions {
   numResults?: number;
   maxCharacters?: number;
+  includeDomains?: string[];
+  category?: ExaCategory;
+  startPublishedDate?: string;
   signal?: AbortSignal;
   timeoutMs?: number;
 }
@@ -43,6 +60,9 @@ export class ExaClient {
           query,
           type: "auto",
           numResults: options.numResults ?? 5,
+          ...(options.includeDomains ? { includeDomains: options.includeDomains } : {}),
+          ...(options.category ? { category: options.category } : {}),
+          ...(options.startPublishedDate ? { startPublishedDate: options.startPublishedDate } : {}),
           contents: { text: { maxCharacters: options.maxCharacters ?? 6000 } },
         }),
         signal: controller.signal,
