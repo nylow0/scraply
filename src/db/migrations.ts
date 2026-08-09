@@ -334,4 +334,114 @@ export const MIGRATIONS = [
       ALTER TABLE research_runs ADD COLUMN selected_stream_ids_json TEXT;
     `,
   },
+  {
+    id: 7,
+    sql: `
+      CREATE TABLE scopes (
+        id TEXT PRIMARY KEY,
+        research_run_id TEXT NOT NULL UNIQUE REFERENCES research_runs(id) ON DELETE CASCADE,
+        title TEXT NOT NULL,
+        audience TEXT NOT NULL,
+        domain TEXT NOT NULL,
+        observations TEXT NOT NULL,
+        off_limits_json TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+
+      CREATE TABLE factors (
+        id TEXT PRIMARY KEY,
+        research_run_id TEXT NOT NULL REFERENCES research_runs(id) ON DELETE CASCADE,
+        subject TEXT NOT NULL,
+        behavior TEXT NOT NULL,
+        quote TEXT NOT NULL,
+        source_id TEXT NOT NULL REFERENCES sources(id) ON DELETE CASCADE,
+        harvest_mode TEXT NOT NULL CHECK(harvest_mode IN ('domain', 'audience')),
+        model_confidence REAL NOT NULL,
+        created_at TEXT NOT NULL
+      );
+
+      CREATE TABLE problems (
+        id TEXT PRIMARY KEY,
+        discovery_run_id TEXT NOT NULL REFERENCES research_runs(id) ON DELETE CASCADE,
+        statement TEXT NOT NULL,
+        why_it_persists TEXT NOT NULL,
+        affected TEXT NOT NULL,
+        scale_estimate TEXT NOT NULL,
+        scale_basis_factor_id TEXT REFERENCES factors(id) ON DELETE SET NULL,
+        verdict TEXT NOT NULL CHECK(verdict IN (
+          'confirmed', 'overstated', 'already-solved', 'insufficient-evidence',
+          'attempted-and-failed', 'user-asserted'
+        )),
+        verdict_reason TEXT NOT NULL,
+        verdict_source_ids_json TEXT NOT NULL,
+        selected_at TEXT,
+        created_at TEXT NOT NULL
+      );
+
+      CREATE TABLE problem_factors (
+        problem_id TEXT NOT NULL REFERENCES problems(id) ON DELETE CASCADE,
+        factor_id TEXT NOT NULL REFERENCES factors(id) ON DELETE CASCADE,
+        PRIMARY KEY (problem_id, factor_id)
+      );
+
+      CREATE TABLE solutions (
+        id TEXT PRIMARY KEY,
+        problem_id TEXT NOT NULL REFERENCES problems(id) ON DELETE CASCADE,
+        mechanism TEXT NOT NULL,
+        description TEXT NOT NULL,
+        respects_off_limits INTEGER NOT NULL CHECK(respects_off_limits IN (0, 1)),
+        respects_off_limits_why TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      );
+
+      CREATE TABLE outcomes (
+        id TEXT PRIMARY KEY,
+        solution_id TEXT NOT NULL REFERENCES solutions(id) ON DELETE CASCADE,
+        description TEXT NOT NULL,
+        direction TEXT NOT NULL CHECK(direction IN ('positive', 'negative')),
+        affects TEXT NOT NULL,
+        addresses_core INTEGER NOT NULL CHECK(addresses_core IN (0, 1)),
+        created_at TEXT NOT NULL
+      );
+
+      CREATE TABLE risks (
+        id TEXT PRIMARY KEY,
+        solution_id TEXT NOT NULL REFERENCES solutions(id) ON DELETE CASCADE,
+        description TEXT NOT NULL,
+        likelihood TEXT NOT NULL CHECK(likelihood IN ('rare', 'possible', 'likely')),
+        impact TEXT NOT NULL CHECK(impact IN ('≤3 days lost', '~2 weeks', '~2 months', 'project ends')),
+        sort_key INTEGER NOT NULL,
+        created_at TEXT NOT NULL
+      );
+
+      CREATE TABLE mitigations (
+        id TEXT PRIMARY KEY,
+        solution_id TEXT NOT NULL REFERENCES solutions(id) ON DELETE CASCADE,
+        approach TEXT NOT NULL,
+        cost TEXT NOT NULL,
+        fails_if TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      );
+
+      CREATE TABLE risk_mitigations (
+        risk_id TEXT NOT NULL REFERENCES risks(id) ON DELETE CASCADE,
+        mitigation_id TEXT NOT NULL REFERENCES mitigations(id) ON DELETE CASCADE,
+        PRIMARY KEY (risk_id, mitigation_id)
+      );
+
+      ALTER TABLE research_runs
+        ADD COLUMN problem_id TEXT REFERENCES problems(id) ON DELETE CASCADE;
+
+      CREATE INDEX idx_factors_run ON factors(research_run_id, created_at);
+      CREATE INDEX idx_problems_discovery_order ON problems(discovery_run_id, created_at, id);
+      CREATE INDEX idx_problem_factors_factor ON problem_factors(factor_id);
+      CREATE INDEX idx_solutions_problem ON solutions(problem_id, created_at);
+      CREATE INDEX idx_outcomes_solution ON outcomes(solution_id, created_at);
+      CREATE INDEX idx_risks_solution_sort ON risks(solution_id, sort_key DESC, created_at);
+      CREATE INDEX idx_mitigations_solution ON mitigations(solution_id, created_at);
+      CREATE INDEX idx_risk_mitigations_mitigation ON risk_mitigations(mitigation_id);
+      CREATE INDEX idx_research_runs_problem ON research_runs(problem_id, created_at);
+    `,
+  },
 ] as const;

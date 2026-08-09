@@ -154,3 +154,65 @@ describe("research plan snapshot migration", () => {
     migrated.close();
   });
 });
+
+describe("additive idea-chain migration", () => {
+  test("creates the new graph tables in a fresh database", () => {
+    const dir = mkdtempSync(join(tmpdir(), "scraply-fresh-graph-"));
+    const dbPath = join(dir, "scraply.db");
+    const db = new DatabaseClient(dbPath);
+    const tables = db.db.prepare(`
+      SELECT name FROM sqlite_master
+      WHERE type = 'table' AND name IN (
+        'scopes', 'factors', 'problems', 'problem_factors', 'solutions',
+        'outcomes', 'risks', 'mitigations', 'risk_mitigations'
+      )
+      ORDER BY name
+    `).all() as Array<{ name: string }>;
+
+    expect(tables.map((row) => row.name)).toEqual([
+      "factors",
+      "mitigations",
+      "outcomes",
+      "problem_factors",
+      "problems",
+      "risk_mitigations",
+      "risks",
+      "scopes",
+      "solutions",
+    ]);
+    expect(db.db.prepare("PRAGMA table_info(research_runs)").all())
+      .toContainEqual(expect.objectContaining({ name: "problem_id" }));
+    expect(db.db.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
+    db.close();
+  });
+
+  test("opens a migrations 1-6 database without rewriting legacy rows", () => {
+    const dir = mkdtempSync(join(tmpdir(), "scraply-existing-graph-"));
+    const dbPath = join(dir, "scraply.db");
+    const legacy = createDatabaseAtVersion(dbPath, 6);
+    legacy.prepare(`
+      INSERT INTO threads (id, title, status, created_at, updated_at)
+      VALUES ('thread-existing', 'Existing', 'research-complete', ?, ?)
+    `).run("2026-07-01T00:00:00.000Z", "2026-07-01T00:00:00.000Z");
+    legacy.prepare(`
+      INSERT INTO research_runs (
+        id, thread_id, status, config_json, spend_estimate, round, cancelled, created_at, updated_at
+      ) VALUES ('run-existing', 'thread-existing', 'completed', '{}', 0, 0, 0, ?, ?)
+    `).run("2026-07-01T00:00:00.000Z", "2026-07-01T00:00:00.000Z");
+    legacy.close();
+
+    const migrated = new DatabaseClient(dbPath);
+    expect(migrated.db.prepare(
+      "SELECT id, thread_id, status, problem_id FROM research_runs WHERE id = 'run-existing'",
+    ).get()).toEqual({
+      id: "run-existing",
+      thread_id: "thread-existing",
+      status: "completed",
+      problem_id: null,
+    });
+    expect(migrated.db.prepare("SELECT id FROM schema_migrations ORDER BY id").all())
+      .toEqual(MIGRATIONS.map((migration) => ({ id: migration.id })));
+    expect(migrated.db.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
+    migrated.close();
+  });
+});
