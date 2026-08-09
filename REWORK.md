@@ -68,7 +68,7 @@ Named defects, all verified:
 | `orchestrator.ts:89,122` | Structured data → HTML → `stripHtml()` → back into a prompt. A lossy round trip for nothing. |
 | `ideas.ts:231` | `evidenceStrength` = model self-score × 0.5 + `linkedQuality` × 10 × 0.5, where `linkedQuality` is itself `evidence.ts:148-151`'s `confidence*0.7 + quoteLength/160*0.3`. Fake precision compounded, rendered as "7.35/10" at `IdeaWorkspace.svelte:160-164`. |
 | `ideas.ts:21-27` | Five "creative lenses" rotated by `batch % 5`. |
-| `streams.ts:63` | Literally `throw` if there are not exactly six streams. A taxonomy hardcoded into a runtime assertion. |
+| `streams.ts:56` | Literally `throw` if there are not exactly six streams. A taxonomy hardcoded into a runtime assertion. |
 
 The deeper problem: **ideas are an afterthought.** The app is a report generator with one idea call
 bolted on the end. The vision inverts that — the idea is the artifact and research exists to feed it.
@@ -111,7 +111,8 @@ the model authors is a **displayed signal for the human**, not a gate.
 ### P3 — Flag, never hide.
 
 This is a single-user local tool. It must never refuse to show its owner something it produced.
-Killed problems, ineffective solutions, blocked ideas — all visible, sorted last, labeled with why.
+Killed problems, ineffective solutions, and ideas carrying serious risks — all visible and labeled
+with why. Risk information can change ordering, but never hides an idea or decides for the owner.
 A code-level silent drop keyed on one model judgment is exactly the hidden arbitrary logic being
 removed.
 
@@ -133,7 +134,7 @@ A graph, not a document. Rendered views are generated on demand and never read b
 
 ```
 Scope       title, audience (required), domain (required),
-            observations, offLimits[], capacity
+            observations, offLimits[]
 
 Factor      subject        — who/what
             behavior       — ONE verb clause
@@ -158,12 +159,18 @@ Risk        solutionId, description
             impact     — ≤3 days lost | ~2 weeks | ~2 months | project ends
             sortKey    — computed in code from the label pair
 
-Mitigation  riskId, approach, cost, failsIf (free text, always visible)
+ProposedMitigation
+            solutionId, riskIds[]
+            approach, cost, failsIf (free text, always visible)
 ```
 
 **An idea is a Solution row with its Problem, Outcomes, and Risks.** There is no separate `ideas`
 table — that would mean two ids for one concept and a synchronization problem leaking into IPC, the
 workspace, and every view.
+
+`riskIds[]` is a real many-to-many relationship, persisted through `risk_mitigations`. One proposed
+mitigation can address several overlapping risks without being duplicated or making the other risks
+look unanswered.
 
 ### Notes on specific fields
 
@@ -171,6 +178,11 @@ workspace, and every view.
 does what the word "atomic" in a prompt cannot: a model cannot fit a whole problem statement into a
 one-verb-clause field without the shape visibly bulging. Enforce the length ceiling in **code**, as
 an explicit rejection with a logged reason — never as `maxLength` in a schema (see Section 8).
+
+**A factor carries exactly one verified evidence tuple.** `sourceId` and `quote` live directly on the
+factor row; there is no `factor_evidence` join table. If the same observation appears in two sources,
+they remain two factors. That keeps provenance mechanical, makes rejection accounting unambiguous,
+and lets the stage-2 hostname check operate directly over the factors a problem cites.
 
 **`harvestMode` is provenance, not classification.** It records *where the factor came from*, not
 what kind of thing it is. A domain-shaped query can return a Reddit thread. Do not ask the model to
@@ -335,28 +347,36 @@ Code maps labels to numbers and multiplies for the sort key. Present this table 
 **Known limitation, stated plainly:** correlated risks are double-counted. Fewer, unpadded risks is
 the only mitigation, and that is why the count floor is gone.
 
-Then **one mitigation call that sees the whole ranked list at once**, so overlapping risks collapse
-into a shared mitigation with no clustering machinery. Every mitigation carries `failsIf` — what
-would have to be true for it to fail — rendered beside the risk, always visible, never behind a
-click. Do not try to code-evaluate whether a `failsIf` is "outside the builder's control."
+Then **one proposed-mitigation call that sees the whole ranked list at once**, so overlapping risks
+can collapse into a shared response with no clustering machinery. Every proposed mitigation names
+the `riskIds[]` it addresses and carries `failsIf` — what would have to be true for it to fail —
+rendered beside each linked risk, always visible, never behind a click. Do not try to code-evaluate
+whether a `failsIf` is "outside the builder's control."
 
-**Any `project ends` risk is always mitigated regardless of rank.** That preserves the tail-risk
-intent that `fatal` was going to serve.
+**Any `project ends` risk is always included in the mitigation request regardless of rank.** That
+preserves the tail-risk intent that `fatal` was going to serve. It guarantees an attempt to find a
+response, not that the risk has been handled.
 
-### Verdict
+### Risk evaluation — information, not a decision
 
-Computed in code, from structural conditions only:
+There is **no computed idea verdict** of `blocked`, `high-risk`, or `viable`. Risk analysis answers
+what could go wrong, what deserves attention first, and what might reduce it. It cannot decide
+whether the upside justifies proceeding for this owner.
 
-- **`blocked`** — a `project ends` risk with **no mitigation attached at all**. Structural, not
-  numeric.
-- **`high-risk`** — by two split-invariant signals: count of unmitigated `project ends` risks, and
-  highest single risk cell.
-- **`viable`** — otherwise.
+Show an explicit risk summary instead:
+
+- highest single risk cell;
+- total risks and `project ends` risks;
+- `project ends` risks with no proposed mitigation attached;
+- proposed mitigations and their `failsIf` conditions.
+
+A `project ends` risk with no proposed mitigation gets the visible flag **unaddressed catastrophic
+risk**. This is information, never a filter or an automatic build/drop decision. The existence of a
+mitigation row is also not evidence that the risk is solved: it is model-authored proposed prose,
+and `failsIf` must remain beside it so the owner can judge it.
 
 A top-N *sum* was rejected: it is gameable by risk-splitting, so it measures padding enthusiasm.
 Counting bucket membership is the only arithmetic that is honest on ordinal inputs.
-
-**`blocked` is a label, never a filter.** Blocked ideas sort last and name the risk that blocked them.
 
 ---
 
@@ -381,14 +401,20 @@ Servicing that state is five edits to preserve a status whose only meaning is "n
 
 - A **discovery run** executes stages 1–2, persists problems with verdicts, and reaches a terminal
   status normally.
-- Selecting problems is a plain UI action that stamps `problems.selected_at` and opens a **new
-  development run per selected problem**, executing stages 3–5.
+- Committing a selection stamps `problems.selected_at`. The backend starts a **new development run
+  for the first selected problem**, then starts the next selected problem only after the prior run
+  completes. Order is the checkpoint display order, made deterministic by `problems.created_at, id`.
 - The two kinds are distinguished by `research_runs.problem_id` — `NULL` means discovery. Do not add
   a `kind` column.
 - **Development runs are sequential**, one active run per thread. This keeps
   `idx_research_runs_one_active` and `ResearchRunRepository.create`'s conflict guard
   (`research-runs.ts:44-49`) untouched, and it bounds spend: `budget_limit` is per-run
   (`research-runs.ts:58`), so concurrent runs would silently multiply the cap.
+- The committed selection is the durable queue. On restart, resume an active run first; if none is
+  active and selected problems from the latest discovery run remain without a completed development
+  run, start the next one. A failed or cancelled development run stops the queue visibly; continuing
+  requires an explicit retry or a changed selection. Never spend provider calls merely because an
+  uncommitted checkbox was ticked.
 
 This one decision also fixes, for free: the resume-clock bug, the ledger status gate, the
 ResumeBanner destroy-by-misclick hazard, and the "55 Codex calls inside a synchronous IPC handler"
@@ -431,10 +457,11 @@ filled from count-of-completed-stages is fine.) Delete the 3×2 score grid at
 `IdeaBucketSchema` explicitly — they look like a finished feature and will otherwise survive a
 rewrite by accident.
 
-**Order.** Refuse the composite, not the ordering. Two sort keys: verdict class
-(viable → high-risk → blocked), then count of independently-confirmed `addressesCore` outcomes,
-descending. Print the rule above the list in one muted sentence. Refusing a default order offloads
-ranking onto the user on every visit.
+**Order.** Refuse the composite, not the ordering. Sort by count of independently-confirmed
+`addressesCore` outcomes, descending. Keep the full risk summary visible on every item and provide a
+filter for **unaddressed catastrophic risk**, but do not turn model-estimated risk into an automatic
+idea verdict. Print the sort rule above the list in one muted sentence. Refusing a default order
+offloads ranking onto the user on every visit.
 
 **Trust — exactly two visual levels plus one legend line.** A dotted underline on any model-estimated
 span (scale claims, likelihood/impact words); an amber left border on the container when the verdict
@@ -514,7 +541,7 @@ hash-recording machinery.
 New names: `query-plan.md`, `factor-harvest.md`, `problem-candidates.md`, `problem-kill.md`,
 `solutions.md`, `outcomes.md`, `outcome-judge.md`, `risks.md`, `risk-score.md`, `mitigations.md`.
 All 12 existing prompt files die. (`researcher-default.md` and `structured-output-repair.md` are
-already dead — zero references anywhere in the repo. `intake.ts:192` loads `brief-interpreter`, for
+already dead — zero references anywhere in the repo. `intake.ts:193` loads `brief-interpreter`, for
 which no file has ever existed; it silently uses the inline fallback.)
 
 **Ten files is not ten copies of one file.** Today six of twelve prompts are `researcher-*` variants
@@ -573,9 +600,9 @@ leaves the array, and rewrite the e2e assertion on its error string (`smoke.spec
 
 ### Tables
 
-- **New (7):** `scopes`, `factors`, `factor_evidence`, `problems`, `problem_factors`, `solutions`,
-  `outcomes`, `risks`, `mitigations`; plus `research_runs.problem_id`.
-- **Dropped (8):** `intake_answers`, `briefs`, `stream_runs`, `claims`, `claim_evidence`,
+- **New (9):** `scopes`, `factors`, `problems`, `problem_factors`, `solutions`,
+  `outcomes`, `risks`, `mitigations`, `risk_mitigations`; plus `research_runs.problem_id`.
+- **Dropped (12):** `intake_answers`, `briefs`, `stream_runs`, `claims`, `claim_evidence`,
   `idea_claims`, `ideas`, `reports`, `branch_contexts`, `ratings`, `idea_ratings`, `rating_history`.
 - **Modified:** `sources` (drop `originating_stream_run_id` — written at `evidence.ts:50,94` and
   never `SELECT`ed); `research_runs` (drop `brief_json`, `selected_stream_ids_json`, `round`);
@@ -583,24 +610,29 @@ leaves the array, and rewrite the e2e assertion on its error string (`smoke.spec
 - **Unchanged:** `app_meta`, `settings`, `messages`, `run_configs`, `job_events` + its two delete
   triggers, `cost_ledger`, `schema_migrations`.
 
-Use `CASCADE` uniformly down the new chain (run → factors → factor_evidence; problem → solutions →
-outcomes → risks → mitigations). **Never mix `RESTRICT` into a cascading path** —
+Use `CASCADE` uniformly down the new chain (run → factors; problem → solutions;
+solution → outcomes, risks, and mitigations; risks/mitigations → `risk_mitigations`). **Never mix
+`RESTRICT` into a cascading path** —
 `migrations.ts:192-196` currently has `idea_claims.claim_id ON DELETE RESTRICT` under a cascading
 parent, which is a live nondeterministic failure since foreign keys are enforced.
 
 **Factors stay scoped to their run.** `sources` is keyed `UNIQUE(research_run_id, canonical_url)` and
 the quote check compares against the *stored* retrieved text — a global cross-run source pool with
 refetched content would silently degrade the app's only anti-hallucination check. Development runs
-read factors by reference through `problems.discovery_run_id`. Use `research_run_id` as the column
-name throughout, matching `sources`/`claims`/`cost_ledger`.
+read factors by reference through `problems.discovery_run_id`, which is named for the run kind it is
+guaranteed to point at. Every other new table that references a run uses `research_run_id`, matching
+`sources`/`claims`/`cost_ledger`.
 
 ### Stage idempotency
 
 Derive it from the output rows the pipeline already writes: solutions exist for problem P → stage 3
-is done; outcomes exist for solution S → stage 4 is done; risks exist for S → stage 5 is done. Each
-subject's writes go in a single SQLite transaction after the model returns. Per-subject failures go
-to `job_events`, which already exists with its delete triggers (`migrations.ts:318-328`) and is
-already how the engine logs `stream-failed`.
+is done; outcomes exist for solution S → stage 4 is done; risks exist for S → stage 5 is done. A
+stage is persisted only after all calls that make its rows complete have returned: stage 4 writes
+the outcomes and their independently judged `addressesCore` values in one transaction; stage 5
+writes risks, scores, mitigations, and `risk_mitigations` links in one transaction. A crash before
+that transaction retries the whole subject rather than mistaking partial rows for completion.
+Per-subject failures go to `job_events`, which already exists with its delete triggers
+(`migrations.ts:318-328`) and is already how the engine logs `stream-failed`.
 
 **No `run_steps` table.** Zero new tables, and it covers resume, cost avoidance, and "why did stage 4
 not run for solution 2." The "re-run stage 5 with a better prompt" case is already served by opening
@@ -869,6 +901,10 @@ actually used.
 2. **Every** problem in Arm A cites at least one factor whose evidence quote passed the verbatim
    check.
 
+Arm overlap is a human product judgment made by reading the paired Markdown artifacts. Do not add a
+string-similarity score or model grader to automate it; either would invent the quality metric this
+gate exists to test.
+
 Record and read, but do not threshold: factor utilization rate, and the per-harvest-mode
 quote-rejection rate.
 
@@ -884,7 +920,8 @@ Cost: ~2–4 extra Codex calls, run once.
 
 Run one selected problem end to end and read the whole chain: solutions with free-text mechanisms,
 outcomes with at least one negative and independently-judged `addressesCore`, risks with word-valued
-likelihood and impact, mitigations with `failsIf`.
+likelihood and impact, and proposed mitigations with linked `riskIds[]` and `failsIf`. Confirm that
+the output presents a risk summary without pronouncing the idea `blocked`, `high-risk`, or `viable`.
 
 Measure the **real** per-problem call count here. That number is what the checkpoint footer projects
 per ticked problem — it is a projection, not a cap.
@@ -942,22 +979,19 @@ Recorded so they are not reopened mid-implementation.
 | A projected USD cost at the checkpoint | Codex reserves $0. Any dollar figure is invented — the same false-precision sin. Project call counts. |
 | Prompt-file hash recording | The new-filenames rule prevents the scenario entirely. |
 | A second human checkpoint after stage 4 | Under per-problem sequential runs, picking 2 of 4 solutions saves ~12 of ~55 development calls (~20%) at the cost of **three** extra interruptions for three problems. Bad trade, and it breaks the requirement that an idea *is* the full five-part structure — unpicked solutions would sit permanently half-analyzed. Adding it later reuses the same run-boundary mechanism, so it stays cheap. |
+| Blocking selection for `attempted-and-failed` | It warns only. A failed prior attempt is important evidence, but a new mechanism may still be the idea; blocking would violate P3 and remove the owner's judgment. |
+| Creating a new thread when a scope is edited | A rerun stays on the same thread. The checkpoint shows only the latest discovery run; earlier runs remain history. |
+| A separate queued-run table for selected problems | The committed `selected_at` rows are the durable queue. One development run is created at a time, preserving the existing one-active-run invariant. |
+| A `factor_evidence` join table | Every factor is one observation copied from one verified source quote. Direct `sourceId` and `quote` fields are simpler and make provenance and rejection accounting explicit. |
 
 ---
 
-## 13. Open
+## 13. Deferred measurement
 
-1. **Does `attempted-and-failed` block selection, or only warn?** The recommendation is warn — P3 says
-   flag, never hide, and a graveyard problem with a new mechanism is sometimes exactly the idea. But
-   it is the one verdict where blocking is arguable.
-
-2. **Discovery-run scope reuse.** When he edits a scope and reruns, is that a new thread or a new
-   discovery run on the same thread? Affects how `problems-ready` and the checkpoint history read.
-   Leaning: same thread, new run, checkpoint shows the latest discovery run's candidates.
-
-3. **The three discovery-depth levels' numbers.** The table in Section 10 is a starting point, not a
-   measurement. Phase 1 sets `standard` from what actually produced a usable factor pool; Phase 2
-   measures the real per-problem call count so the checkpoint projection is honest.
+There are no unresolved product semantics. The three discovery-depth levels' numbers remain
+provisional by design: the table in Section 10 is a starting point, not a claim. Phase 1 sets
+`standard` from what actually produced a usable factor pool; Phase 2 measures the real per-problem
+call count so the checkpoint projection is honest.
 
 ---
 
