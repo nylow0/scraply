@@ -22,7 +22,6 @@ export interface StoredRunState {
   threadId: string;
   brief: ProjectBrief;
   config: RunConfig;
-  startedAt: string;
   selectedStreamIds: string[];
   completedStreamIds: Set<string>;
   hasSynthesis: boolean;
@@ -68,7 +67,7 @@ export function listPendingRuns(db: DatabaseClient, activeRunIds: ReadonlySet<st
 
 export function loadStoredRunState(db: DatabaseClient, runId: string): StoredRunState | null {
   const row = db.db.prepare(`
-    SELECT id, thread_id, config_json, brief_json, selected_stream_ids_json, created_at
+    SELECT id, thread_id, config_json, brief_json, selected_stream_ids_json
     FROM research_runs WHERE id = ?
   `).get(runId) as {
     id: string;
@@ -76,7 +75,6 @@ export function loadStoredRunState(db: DatabaseClient, runId: string): StoredRun
     config_json: string;
     brief_json: string | null;
     selected_stream_ids_json: string | null;
-    created_at: string;
   } | undefined;
   if (!row) return null;
 
@@ -98,7 +96,6 @@ export function loadStoredRunState(db: DatabaseClient, runId: string): StoredRun
     threadId: row.thread_id,
     brief: parseAndNormalizeBrief(JSON.parse(briefRow.brief_json)),
     config: parseAndNormalizeRunConfig(JSON.parse(row.config_json)),
-    startedAt: row.created_at,
     selectedStreamIds: parseSelectedStreamIds(row.selected_stream_ids_json),
     completedStreamIds: new Set(completed.map((item) => item.stream_id)),
     hasSynthesis: Boolean(synthesis),

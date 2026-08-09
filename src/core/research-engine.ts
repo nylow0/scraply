@@ -38,8 +38,6 @@ interface ActiveRun {
   abortController: AbortController;
   startedAt: number;
   deadlineTimer?: ReturnType<typeof setTimeout>;
-  codexCalls: number;
-  exaSearches: number;
   selectedStreamIds: string[];
   completedStreamIds: Set<string>;
   hasSynthesis: boolean;
@@ -74,8 +72,6 @@ export class ResearchEngine {
       brief,
       abortController: new AbortController(),
       startedAt: Date.now(),
-      codexCalls: 0,
-      exaSearches: 0,
       selectedStreamIds: RESEARCH_STREAMS.map((stream) => stream.id),
       completedStreamIds: new Set(),
       hasSynthesis: false,
@@ -98,6 +94,8 @@ export class ResearchEngine {
     if (this.activeRuns.has(runId)) return;
     this.globalCancelled.delete(runId);
 
+    this.ledger.settleUncertain(runId, "Reservation was in flight when the run stopped");
+
     const now = new Date().toISOString();
     this.options.db.db.prepare(`
       UPDATE research_runs SET status = 'running', cancelled = 0, updated_at = ? WHERE id = ?
@@ -108,9 +106,7 @@ export class ResearchEngine {
       config: stored.config,
       brief: stored.brief,
       abortController: new AbortController(),
-      startedAt: Date.parse(stored.startedAt),
-      codexCalls: 0,
-      exaSearches: 0,
+      startedAt: Date.now(),
       selectedStreamIds: stored.selectedStreamIds,
       completedStreamIds: stored.completedStreamIds,
       hasSynthesis: stored.hasSynthesis,
@@ -467,21 +463,20 @@ export class ResearchEngine {
     conservativeUsd: number,
   ) {
     this.throwIfStopped(active);
-    if (provider === "codex") {
-      if (active.codexCalls >= active.config.maxCodexCalls) {
-        throw new ProviderFailure("failed", "Codex call limit reached", false);
-      }
-      active.codexCalls++;
-    }
+    if (provider === "codex") this.enforceProviderCallLimit(active, provider, active.config.maxCodexCalls);
     return this.ledger.reserve(active.runId, operation, provider, model, provider === "codex" ? 0 : conservativeUsd);
   }
 
   private consumeExaSearch(active: ActiveRun): void {
     this.throwIfStopped(active);
-    if (active.exaSearches >= active.config.maxExaSearches) {
-      throw new ProviderFailure("failed", "Exa search limit reached", false);
+    this.enforceProviderCallLimit(active, "exa", active.config.maxExaSearches);
+  }
+
+  private enforceProviderCallLimit(active: ActiveRun, provider: string, maxCalls: number): void {
+    if (this.ledger.countProviderCalls(active.runId, provider) >= maxCalls) {
+      const name = provider === "exa" ? "Exa search" : "Codex call";
+      throw new ProviderFailure("failed", `${name} limit reached`, false);
     }
-    active.exaSearches++;
   }
 
   private isStopped(active: ActiveRun): boolean {

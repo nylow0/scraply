@@ -164,7 +164,7 @@ export async function generateIdeas(
       mode === "partial" ? [...missingLenses, ...gaps] : [],
     );
 
-    enforceCodexCallLimit(db, runId, config.ideaProvider, config.maxCodexCalls);
+    enforceCodexCallLimit(ledger, runId, config.ideaProvider, config.maxCodexCalls);
     const reservation = ledger.reserve(
       runId,
       "idea-generation",
@@ -301,17 +301,15 @@ function jaccard(a: string, b: string): number {
 }
 
 function enforceCodexCallLimit(
-  db: DatabaseClient,
+  ledger: CostLedgerRepository,
   runId: string,
   provider: ModelProvider,
   maxCalls: number,
 ): void {
   if (provider !== "codex") return;
-  const row = db.db.prepare(`
-    SELECT COUNT(*) AS count FROM cost_ledger
-    WHERE research_run_id = ? AND provider = 'codex'
-  `).get(runId) as { count: number };
-  if (row.count >= maxCalls) throw new IdeaGenerationBlockedError("Codex call limit reached");
+  if (ledger.countProviderCalls(runId, provider) >= maxCalls) {
+    throw new IdeaGenerationBlockedError("Codex call limit reached");
+  }
 }
 
 function stripHtml(value: string): string {

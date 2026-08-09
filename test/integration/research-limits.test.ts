@@ -6,6 +6,8 @@ import type { z } from "zod";
 import { ResearchEngine } from "../../src/core/research-engine";
 import { listPendingRuns } from "../../src/core/research-recovery";
 import { DatabaseClient } from "../../src/db/client";
+import { CostLedgerRepository } from "../../src/db/repositories/cost-ledger";
+import { ResearchRunRepository } from "../../src/db/repositories/research-runs";
 import { ThreadRepository } from "../../src/db/repositories/threads";
 import { ExaClient } from "../../src/providers/exa";
 import type { StructuredModelClient } from "../../src/providers/structured";
@@ -22,6 +24,106 @@ afterEach(() => {
 });
 
 describe("research hard limits", () => {
+  test("resuming a two-hour-old run starts a fresh wall-clock attempt", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "scraply-aged-resume-"));
+    dirs.push(dir);
+    const db = new DatabaseClient(join(dir, "scraply.db"));
+    const thread = new ThreadRepository(db).createThread();
+    const config = RunConfigSchema.parse({
+      ...DEFAULT_RUN_CONFIG,
+      orchestratorProvider: "codex",
+      workerProvider: "codex",
+      ideaProvider: "codex",
+      parallelism: 1,
+      maxRunMinutes: 1,
+    });
+    const brief = makeProjectBrief({ title: "Aged resume", objective: "Resume safely" });
+    const { runId } = new ResearchRunRepository(db).create(thread.id, brief, config);
+    db.db.prepare("UPDATE research_runs SET created_at = ? WHERE id = ?")
+      .run(new Date(Date.now() - 2 * 60 * 60_000).toISOString(), runId);
+
+    let searchStarted = false;
+    let searchAborted = false;
+    const exa = new ExaClient("test", async (_input, init) => new Promise<Response>((_resolve, reject) => {
+      searchStarted = true;
+      const signal = init?.signal;
+      const abort = () => {
+        searchAborted = true;
+        reject(signal?.reason ?? new DOMException("Aborted", "AbortError"));
+      };
+      if (signal?.aborted) abort();
+      else signal?.addEventListener("abort", abort, { once: true });
+    }));
+    const engine = new ResearchEngine({ db, exa, onEvent: () => {} });
+
+    await engine.resumeRun(runId);
+    await Bun.sleep(20);
+
+    expect(searchStarted).toBe(true);
+    expect(searchAborted).toBe(false);
+    expect(engine.getActiveRunIds().has(runId)).toBe(true);
+    expect(db.db.prepare("SELECT status FROM research_runs WHERE id = ?").get(runId)).toEqual({ status: "running" });
+
+    engine.cancelRun(runId);
+    await Bun.sleep(10);
+    db.close();
+  });
+
+  test("resuming preserves the durable Codex call budget and never refunds an interrupted call", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "scraply-durable-calls-"));
+    dirs.push(dir);
+    const db = new DatabaseClient(join(dir, "scraply.db"));
+    const thread = new ThreadRepository(db).createThread();
+    const config = RunConfigSchema.parse({
+      ...DEFAULT_RUN_CONFIG,
+      orchestratorProvider: "codex",
+      workerProvider: "codex",
+      ideaProvider: "codex",
+      parallelism: 1,
+      maxCodexCalls: 1,
+      maxExaSearches: 1,
+      maxRunMinutes: 1,
+    });
+    const brief = makeProjectBrief({ title: "Durable calls", objective: "Keep provider limits" });
+    const { runId } = new ResearchRunRepository(db).create(thread.id, brief, config);
+    const ledger = new CostLedgerRepository(db);
+    const completed = ledger.reserve(runId, "previous-model-call", "codex", config.workerModel, 0);
+    ledger.commit(completed.id);
+    const orphaned = ledger.reserve(runId, "interrupted-model-call", "codex", config.workerModel, 0);
+
+    const exa = new ExaClient("test", async () => new Response(JSON.stringify({
+      results: [{ id: "source-1", url: "https://example.com/source", title: "Source", text: "Useful evidence." }],
+    }), { status: 200 }));
+    let modelCalls = 0;
+    const model: StructuredModelClient = {
+      async structuredCompletion<T>(_m: string, _s: string, _u: string, schema: z.ZodType<T>): Promise<T> {
+        modelCalls++;
+        return schema.parse({});
+      },
+    };
+    const engine = new ResearchEngine({ db, exa, modelClients: { codex: model }, onEvent: () => {} });
+
+    await engine.resumeRun(runId);
+    let status = "running";
+    for (let attempt = 0; attempt < 50; attempt++) {
+      status = (db.db.prepare("SELECT status FROM research_runs WHERE id = ?").get(runId) as { status: string }).status;
+      if (status === "failed") break;
+      await Bun.sleep(10);
+    }
+
+    expect(status).toBe("failed");
+    expect(modelCalls).toBe(0);
+    // A call that was in flight when the process died still spent a provider call. Refunding it
+    // would let a crash-resume loop exceed maxCodexCalls without bound.
+    expect(ledger.countProviderCalls(runId, "codex")).toBe(2);
+    expect(db.db.prepare("SELECT status, usage_json FROM cost_ledger WHERE id = ?").get(orphaned.id))
+      .toEqual({
+        status: "committed",
+        usage_json: JSON.stringify({ uncertain: true, reason: "Reservation was in flight when the run stopped" }),
+      });
+    db.close();
+  });
+
   test("wall-clock deadline aborts in-flight search and persists a typed timeout failure", async () => {
     const dir = mkdtempSync(join(tmpdir(), "scraply-deadline-"));
     dirs.push(dir);
