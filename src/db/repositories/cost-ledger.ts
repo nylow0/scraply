@@ -18,6 +18,14 @@ export interface CostReservation {
 export class CostLedgerRepository {
   constructor(private readonly client: DatabaseClient) {}
 
+  countProviderCalls(runId: string, provider: string): number {
+    const row = this.client.db.prepare(`
+      SELECT COUNT(*) AS count FROM cost_ledger
+      WHERE research_run_id = ? AND provider = ? AND status IN ('reserved', 'committed')
+    `).get(runId, provider) as { count: number };
+    return row.count;
+  }
+
   reserve(
     runId: string,
     operation: string,
