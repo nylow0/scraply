@@ -216,3 +216,61 @@ describe("additive idea-chain migration", () => {
     migrated.close();
   });
 });
+
+describe("development run scoping migration", () => {
+  test("backfills only unambiguous legacy graphs and leaves ambiguous graphs unclaimed", () => {
+    const dir = mkdtempSync(join(tmpdir(), "scraply-development-run-scope-"));
+    const dbPath = join(dir, "scraply.db");
+    const legacy = createDatabaseAtVersion(dbPath, 7);
+    const now = "2026-07-01T00:00:00.000Z";
+    legacy.prepare(`
+      INSERT INTO threads (id, title, status, created_at, updated_at)
+      VALUES ('thread-development', 'Development', 'research-complete', ?, ?)
+    `).run(now, now);
+    legacy.prepare(`
+      INSERT INTO research_runs (id, thread_id, status, config_json, created_at, updated_at)
+      VALUES ('discovery-run', 'thread-development', 'completed', '{}', ?, ?)
+    `).run(now, now);
+    for (const problemId of ["problem-unique", "problem-ambiguous"]) {
+      legacy.prepare(`
+        INSERT INTO problems (
+          id, discovery_run_id, statement, why_it_persists, affected, scale_estimate,
+          scale_basis_factor_id, verdict, verdict_reason, verdict_source_ids_json, created_at
+        ) VALUES (?, 'discovery-run', ?, 'Legacy reason', 'Users', 'Weekly', NULL, 'confirmed', 'Verified', '[]', ?)
+      `).run(problemId, problemId, now);
+      legacy.prepare(`
+        INSERT INTO solutions (
+          id, problem_id, mechanism, description, respects_off_limits,
+          respects_off_limits_why, created_at
+        ) VALUES (?, ?, 'Legacy mechanism', 'Legacy solution', 1, 'Allowed', ?)
+      `).run(`solution-${problemId}`, problemId, now);
+    }
+    legacy.prepare(`
+      INSERT INTO research_runs (id, thread_id, status, config_json, problem_id, created_at, updated_at)
+      VALUES ('development-unique', 'thread-development', 'completed', '{}', 'problem-unique', ?, ?)
+    `).run(now, now);
+    for (const runId of ["development-ambiguous-a", "development-ambiguous-b"]) {
+      legacy.prepare(`
+        INSERT INTO research_runs (id, thread_id, status, config_json, problem_id, created_at, updated_at)
+        VALUES (?, 'thread-development', 'completed', '{}', 'problem-ambiguous', ?, ?)
+      `).run(runId, now, now);
+    }
+    legacy.close();
+
+    const migrated = new DatabaseClient(dbPath);
+    expect(migrated.db.prepare(`
+      SELECT id, research_run_id FROM solutions ORDER BY id
+    `).all()).toEqual([
+      { id: "solution-problem-ambiguous", research_run_id: null },
+      { id: "solution-problem-unique", research_run_id: "development-unique" },
+    ]);
+    expect(() => migrated.db.prepare(`
+      INSERT INTO solutions (
+        id, problem_id, mechanism, description, respects_off_limits,
+        respects_off_limits_why, created_at
+      ) VALUES ('unscoped-new', 'problem-unique', 'Mechanism', 'Description', 1, 'Allowed', ?)
+    `).run(now)).toThrow("solution research run must target its problem");
+    expect(migrated.db.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
+    migrated.close();
+  });
+});
