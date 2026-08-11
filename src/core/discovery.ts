@@ -1,5 +1,4 @@
 import { createHash, randomUUID } from "node:crypto";
-import { canonicalizeUrl } from "../db/repositories/evidence";
 import type {
   DiscoveryFactorRecord,
   DiscoveryProblemRecord,
@@ -15,24 +14,29 @@ import {
   QueryPlanOutputSchema,
   type Scope,
 } from "../shared/structured-output-schemas";
-import type { Source } from "../shared/schemas";
+import type { DiscoveryDepth, Source } from "../shared/schemas";
+import {
+  DEFAULT_PROBLEM_CANDIDATE_LIMIT,
+  DISCOVERY_DEPTHS,
+  SOURCE_BATCH_CHARACTERS,
+  SOURCE_MAX_CHARACTERS,
+} from "../shared/discovery-projection";
 import { loadPrompt } from "./prompts";
 
-export type DiscoveryDepth = "quick" | "standard" | "deep";
+export {
+  DEFAULT_PROBLEM_CANDIDATE_LIMIT,
+  DISCOVERY_DEPTHS,
+  SOURCE_BATCH_CHARACTERS,
+  SOURCE_MAX_CHARACTERS,
+  discoveryRunProjection,
+} from "../shared/discovery-projection";
+
+export type { DiscoveryDepth };
 export type HarvestMode = "domain" | "audience";
 export type DiscoveryArm = "A" | "C";
 
-export const DISCOVERY_DEPTHS = {
-  quick: { queriesPerMode: 3, searchResultsPerQuery: 4, factorCap: 30 },
-  standard: { queriesPerMode: 6, searchResultsPerQuery: 5, factorCap: 80 },
-  deep: { queriesPerMode: 10, searchResultsPerQuery: 6, factorCap: 150 },
-} as const;
-
-export const SOURCE_BATCH_CHARACTERS = 60_000;
-export const SOURCE_MAX_CHARACTERS = 6_000;
 export const FACTOR_SUBJECT_MAX_CHARACTERS = 160;
 export const FACTOR_BEHAVIOR_MAX_CHARACTERS = 280;
-export const DEFAULT_PROBLEM_CANDIDATE_LIMIT = 4;
 export const DEFAULT_AUDIENCE_DOMAINS = ["reddit.com", "news.ycombinator.com"];
 
 export interface HarvestedSource extends DiscoverySourceRecord {
@@ -440,7 +444,18 @@ function resolveSources(
 
 function safeCanonicalizeUrl(value: string): string | null {
   try {
-    return canonicalizeUrl(value);
+    const url = new URL(value);
+    url.hash = "";
+    url.hostname = url.hostname.toLowerCase();
+    if ((url.protocol === "https:" && url.port === "443") || (url.protocol === "http:" && url.port === "80")) {
+      url.port = "";
+    }
+    for (const key of [...url.searchParams.keys()]) {
+      if (key.toLowerCase().startsWith("utm_") || ["fbclid", "gclid"].includes(key.toLowerCase())) url.searchParams.delete(key);
+    }
+    url.searchParams.sort();
+    if (url.pathname.length > 1) url.pathname = url.pathname.replace(/\/+$/, "");
+    return url.toString();
   } catch {
     return null;
   }

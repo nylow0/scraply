@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, safeStorage, shell, utilityProcess, type IpcMainInvokeEvent } from "electron";
+import { app, BrowserWindow, dialog, ipcMain, safeStorage, shell, utilityProcess, type IpcMainInvokeEvent } from "electron";
 import { randomUUID } from "node:crypto";
 import { readFileSync, existsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -6,26 +6,20 @@ import { z } from "zod";
 import {
   ApiErrorResponseSchema,
   ApiResponseSchema,
-  CancelIncompleteResearchSchema,
   CancelResearchSchema,
-  ConfirmBriefSchema,
-  CreateBranchRequestSchema,
   CreateThreadRequestSchema,
   DeleteThreadRequestSchema,
   ExportIdeasRequestSchema,
-  GenerateIdeasRequestSchema,
   GetIdeaDetailRequestSchema,
-  GetReportDetailRequestSchema,
   GetSourceDetailRequestSchema,
   IPC_CHANNELS,
-  RateIdeaSchema,
   ResumeResearchSchema,
   SaveFavoriteModelSchema,
   SaveRunConfigSchema,
+  SaveScopeSchema,
+  SelectProblemsSchema,
   SelectThreadRequestSchema,
-  StartBriefIntakeSchema,
   StartResearchSchema,
-  SubmitIntakeAnswerSchema,
   type BackendReady,
   type ValidationState,
 } from "../shared/ipc";
@@ -460,22 +454,29 @@ function registerIpc(): void {
   handle(IPC_CHANNELS.CREATE_THREAD, (body) => post("/threads", CreateThreadRequestSchema.parse(body ?? {})));
   handle(IPC_CHANNELS.SELECT_THREAD, (body) => post("/threads/select", SelectThreadRequestSchema.parse(body)));
   handle(IPC_CHANNELS.DELETE_THREAD, (body) => post("/threads/delete", DeleteThreadRequestSchema.parse(body)));
-  handle(IPC_CHANNELS.SUBMIT_INTAKE, (body) => post("/intake", SubmitIntakeAnswerSchema.parse(body)));
-  handle(IPC_CHANNELS.START_BRIEF_INTAKE, (body) => post("/intake/brief", StartBriefIntakeSchema.parse(body)));
-  handle(IPC_CHANNELS.CONFIRM_BRIEF, (body) => post("/brief/confirm", ConfirmBriefSchema.parse(body)));
+  handle(IPC_CHANNELS.SAVE_SCOPE, (body) => post("/scope", SaveScopeSchema.parse(body)));
   handle(IPC_CHANNELS.SAVE_RUN_CONFIG, (body) => post("/run-config", SaveRunConfigSchema.parse(body)));
   handle(IPC_CHANNELS.SAVE_FAVORITE_MODEL, (body) => post("/models/favorite", SaveFavoriteModelSchema.parse(body)));
   handle(IPC_CHANNELS.START_RESEARCH, (body) => post("/research/start", StartResearchSchema.parse(body)));
   handle(IPC_CHANNELS.CANCEL_RESEARCH, (body) => post("/research/cancel", CancelResearchSchema.parse(body)));
   handle(IPC_CHANNELS.RESUME_RESEARCH, (body) => post("/research/resume", ResumeResearchSchema.parse(body)));
-  handle(IPC_CHANNELS.CANCEL_INCOMPLETE_RESEARCH, (body) => post("/research/cancel-incomplete", CancelIncompleteResearchSchema.parse(body)));
-  handle(IPC_CHANNELS.GENERATE_IDEAS, (body) => post("/ideas/generate", GenerateIdeasRequestSchema.parse(body)));
-  handle(IPC_CHANNELS.RATE_IDEA, (body) => post("/ideas/rate", RateIdeaSchema.parse(body)));
-  handle(IPC_CHANNELS.EXPORT_IDEAS, (body) => post("/ideas/export", ExportIdeasRequestSchema.parse(body)));
-  handle(IPC_CHANNELS.CREATE_BRANCH, (body) => post("/threads/branch", CreateBranchRequestSchema.parse(body)));
-  handle(IPC_CHANNELS.GET_REPORT_DETAIL, (body) => {
-    const { reportId } = GetReportDetailRequestSchema.parse(body);
-    return backendRequest(`/reports/${encodeURIComponent(reportId)}`);
+  handle(IPC_CHANNELS.SELECT_PROBLEMS, (body) => post("/research/select-problems", SelectProblemsSchema.parse(body)));
+  handle(IPC_CHANNELS.EXPORT_IDEAS, async (body) => {
+    const payload = ExportIdeasRequestSchema.parse(body);
+    const bundle = await post("/ideas/export", payload) as { files: Array<{ filename: string; content: string }> };
+    if (!mainWindow) throw new AppError("backend_unavailable");
+    const selection = await dialog.showOpenDialog(mainWindow, {
+      title: "Export solution files",
+      properties: ["openDirectory", "createDirectory"],
+    });
+    if (selection.canceled || !selection.filePaths[0]) return { cancelled: true, files: [] };
+    const directory = selection.filePaths[0];
+    const files = bundle.files.map((file) => {
+      const filename = file.filename.replace(/[^a-zA-Z0-9._-]/g, "-");
+      writeFileSync(join(directory, filename), file.content, "utf8");
+      return filename;
+    });
+    return { cancelled: false, directory, files };
   });
   handle(IPC_CHANNELS.GET_SOURCE_DETAIL, (body) => {
     const { sourceId } = GetSourceDetailRequestSchema.parse(body);

@@ -291,6 +291,34 @@ describe("Phase 1 discovery", () => {
     expect(skipped.some((message) => message.includes("not a url"))).toBe(true);
   });
 
+  test("treats trivially different URLs for one page as a single source", async () => {
+    // Each variant differs only in casing, default port, trailing slash, query order,
+    // tracking params, or fragment. Fetching and harvesting the same page more than
+    // once inflates factor counts and burns model calls.
+    const variants = [
+      "https://Example.test/a/?b=2&a=1",
+      "https://example.test:443/a?a=1&b=2&utm_source=news",
+      "https://example.test/a?a=1&b=2#section",
+    ];
+    const result = await harvestFactors(scope(), {
+      model: "test-model",
+      depth: "quick",
+      modelClient: modelClient(async (_user, schema) => {
+        if (schema._def === QueryPlanOutputSchema._def) {
+          return schema.parse({ queries: ["one", "two", "three"] });
+        }
+        return schema.parse({ factors: [] });
+      }),
+      exa: {
+        async search() {
+          return variants.map((url) => ({ id: url, url, title: url, text: "text" }));
+        },
+      },
+    });
+
+    expect(result.sources.map((source) => source.canonicalUrl)).toEqual(["https://example.test/a?a=1&b=2"]);
+  });
+
   test("projects kill searches and per-batch model calls, not just the harvest floor", () => {
     const projection = discoveryProjection("standard", 4);
     expect(projection).toEqual({

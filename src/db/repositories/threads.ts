@@ -1,219 +1,87 @@
 import { randomUUID } from "node:crypto";
-import type { DatabaseClient } from "../client";
-import { parseAndNormalizeBrief } from "../../shared/brief-normalizer";
-import { parseAndNormalizeRunConfig } from "../../shared/run-config-normalizer";
+import type { Scope } from "../../shared/structured-output-schemas";
 import {
-  BranchContextSchema,
-  MessageSchema,
-  ThreadSchema,
-  type Message,
-  type BranchContext,
-  type ProjectBrief,
-  type RunConfig,
-  type Thread,
+  DEFAULT_RUN_CONFIG, MessageSchema, RunConfigSchema, ThreadSchema,
+  type Message, type RunConfig, type Thread,
 } from "../../shared/schemas";
+import { AppError } from "../../shared/errors";
+import type { DatabaseClient } from "../client";
 
 export class ThreadRepository {
   constructor(private readonly db: DatabaseClient) {}
 
   listThreads(): Thread[] {
-    const rows = this.db.db.prepare("SELECT * FROM threads ORDER BY updated_at DESC").all() as Array<Record<string, unknown>>;
-    return rows.map((row) => ThreadSchema.parse({
-      id: row.id,
-      title: row.title,
-      status: row.status,
-      ...(row.parent_thread_id ? { parentThreadId: row.parent_thread_id } : {}),
-      createdAt: row.created_at,
-      updatedAt: row.updated_at,
-    }));
+    return (this.db.db.prepare("SELECT * FROM threads ORDER BY updated_at DESC").all() as Array<Record<string, unknown>>)
+      .map((row) => ThreadSchema.parse({ id: row.id, title: row.title, status: row.status, createdAt: row.created_at, updatedAt: row.updated_at }));
   }
 
   createThread(title = "New research"): Thread {
     const now = new Date().toISOString();
-    const thread: Thread = {
-      id: randomUUID(),
-      title,
-      status: "intake",
-      createdAt: now,
-      updatedAt: now,
-    };
-    this.db.db.prepare(`
-      INSERT INTO threads (id, title, status, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?)
-    `).run(thread.id, thread.title, thread.status, thread.createdAt, thread.updatedAt);
+    const thread = ThreadSchema.parse({ id: randomUUID(), title, status: "configuring", createdAt: now, updatedAt: now });
+    this.db.db.prepare("INSERT INTO threads (id, title, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?)")
+      .run(thread.id, thread.title, thread.status, now, now);
+    this.saveRunConfig(thread.id, DEFAULT_RUN_CONFIG);
     return thread;
   }
 
   updateThreadStatus(threadId: string, status: Thread["status"]): void {
-    this.db.db.prepare("UPDATE threads SET status = ?, updated_at = ? WHERE id = ?").run(
-      status,
-      new Date().toISOString(),
-      threadId,
-    );
+    this.db.db.prepare("UPDATE threads SET status = ?, updated_at = ? WHERE id = ?")
+      .run(status, new Date().toISOString(), threadId);
   }
-
   renameThread(threadId: string, title: string): void {
-    this.db.db.prepare("UPDATE threads SET title = ?, updated_at = ? WHERE id = ?").run(
-      title,
-      new Date().toISOString(),
-      threadId,
-    );
+    this.db.db.prepare("UPDATE threads SET title = ?, updated_at = ? WHERE id = ?").run(title, new Date().toISOString(), threadId);
   }
-
-  deleteThread(threadId: string): void {
-    this.db.db.prepare("DELETE FROM threads WHERE id = ?").run(threadId);
-  }
-
-  saveIntakeAnswer(threadId: string, questionId: string, answer: string, skipped = false): void {
-    this.db.db.prepare(`
-      INSERT INTO intake_answers (thread_id, question_id, answer, skipped, updated_at)
-      VALUES (?, ?, ?, ?, ?)
-      ON CONFLICT(thread_id, question_id) DO UPDATE SET
-        answer = excluded.answer,
-        skipped = excluded.skipped,
-        updated_at = excluded.updated_at
-    `).run(threadId, questionId, answer, skipped ? 1 : 0, new Date().toISOString());
-    this.db.db.prepare("UPDATE threads SET updated_at = ? WHERE id = ?").run(new Date().toISOString(), threadId);
-  }
-
-  getIntakeAnswers(threadId: string): Array<{ questionId: string; answer: string; skipped: boolean }> {
-    const rows = this.db.db.prepare("SELECT * FROM intake_answers WHERE thread_id = ?").all(threadId) as Array<Record<string, unknown>>;
-    return rows.map((row) => ({
-      questionId: String(row.question_id),
-      answer: String(row.answer),
-      skipped: Boolean(row.skipped),
-    }));
-  }
+  deleteThread(threadId: string): void { this.db.db.prepare("DELETE FROM threads WHERE id = ?").run(threadId); }
 
   addMessage(threadId: string, role: Message["role"], content: string, metadata?: Record<string, unknown>): Message {
-    const message: Message = {
-      id: randomUUID(),
-      threadId,
-      role,
-      content,
-      ...(metadata ? { metadata } : {}),
-      createdAt: new Date().toISOString(),
-    };
-    this.db.db.prepare(`
-      INSERT INTO messages (id, thread_id, role, content, metadata_json, created_at)
-      VALUES (?, ?, ?, ?, ?, ?)
-    `).run(
-      message.id,
-      message.threadId,
-      message.role,
-      message.content,
-      metadata ? JSON.stringify(metadata) : null,
-      message.createdAt,
-    );
-    return MessageSchema.parse(message);
+    const message = MessageSchema.parse({ id: randomUUID(), threadId, role, content, ...(metadata ? { metadata } : {}), createdAt: new Date().toISOString() });
+    this.db.db.prepare("INSERT INTO messages (id, thread_id, role, content, metadata_json, created_at) VALUES (?, ?, ?, ?, ?, ?)")
+      .run(message.id, threadId, role, content, metadata ? JSON.stringify(metadata) : null, message.createdAt);
+    return message;
   }
-
   getMessages(threadId: string): Message[] {
-    const rows = this.db.db.prepare("SELECT * FROM messages WHERE thread_id = ? ORDER BY created_at ASC").all(threadId) as Array<Record<string, unknown>>;
-    return rows.map((row) => MessageSchema.parse({
-      id: row.id,
-      threadId: row.thread_id,
-      role: row.role,
-      content: row.content,
-      ...(row.metadata_json ? { metadata: JSON.parse(String(row.metadata_json)) } : {}),
-      createdAt: row.created_at,
-    }));
+    return (this.db.db.prepare("SELECT * FROM messages WHERE thread_id = ? ORDER BY created_at").all(threadId) as Array<Record<string, unknown>>)
+      .map((row) => MessageSchema.parse({ id: row.id, threadId: row.thread_id, role: row.role, content: row.content,
+        ...(row.metadata_json ? { metadata: JSON.parse(String(row.metadata_json)) } : {}), createdAt: row.created_at }));
   }
 
-  saveBrief(threadId: string, brief: ProjectBrief, confirmed: boolean): void {
-    const normalizedBrief = parseAndNormalizeBrief(brief);
-    const versionRow = this.db.db.prepare("SELECT MAX(version) as v FROM briefs WHERE thread_id = ?").get(threadId) as { v: number | null };
-    const version = (versionRow.v ?? 0) + 1;
-    this.db.db.prepare(`
-      INSERT INTO briefs (id, thread_id, version, brief_json, confirmed, created_at)
-      VALUES (?, ?, ?, ?, ?, ?)
-    `).run(randomUUID(), threadId, version, JSON.stringify(normalizedBrief), confirmed ? 1 : 0, new Date().toISOString());
-    this.updateThreadStatus(threadId, confirmed ? "brief-confirmed" : "brief-draft");
+  saveScope(threadId: string, scope: Scope): void {
+    const active = this.db.db.prepare(`SELECT id FROM research_runs WHERE thread_id = ? AND problem_id IS NULL AND status IN ('queued','running') LIMIT 1`)
+      .get(threadId);
+    if (active) throw new AppError("conflict", "The scope cannot change while discovery is running.");
+    this.db.setSetting(`scope:${threadId}`, JSON.stringify(scope));
+    this.renameThread(threadId, scope.title);
+    this.updateThreadStatus(threadId, "configuring");
   }
-
-  getLatestBrief(threadId: string): ProjectBrief | null {
-    const row = this.db.db.prepare(`
-      SELECT brief_json FROM briefs WHERE thread_id = ? ORDER BY version DESC LIMIT 1
-    `).get(threadId) as { brief_json: string } | undefined;
-    return row ? parseAndNormalizeBrief(JSON.parse(row.brief_json)) : null;
-  }
-
-  getLatestBriefSnapshot(threadId: string): { brief: ProjectBrief; version: number } | null {
-    const row = this.db.db.prepare(`
-      SELECT brief_json, version FROM briefs WHERE thread_id = ? ORDER BY version DESC LIMIT 1
-    `).get(threadId) as { brief_json: string; version: number } | undefined;
-    return row ? { brief: parseAndNormalizeBrief(JSON.parse(row.brief_json)), version: row.version } : null;
-  }
-
-  saveBranchContext(context: BranchContext): void {
-    const parsed = BranchContextSchema.parse({
-      ...context,
-      inheritedBriefSnapshot: parseAndNormalizeBrief(context.inheritedBriefSnapshot),
-    });
-    this.db.db.prepare(`
-      INSERT INTO branch_contexts (
-        thread_id, parent_thread_id, seed_idea_id, seed_idea_title, exploration_angle,
-        inherited_brief_json, inherited_brief_version, selected_claim_ids_json, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(
-      parsed.threadId,
-      parsed.parentThreadId,
-      parsed.seedIdeaId,
-      parsed.seedIdeaTitle,
-      parsed.explorationAngle,
-      JSON.stringify(parsed.inheritedBriefSnapshot),
-      parsed.inheritedBriefVersion,
-      JSON.stringify(parsed.selectedClaimIds),
-      parsed.createdAt,
-    );
-  }
-
-  getBranchContext(threadId: string): BranchContext | null {
-    const row = this.db.db.prepare("SELECT * FROM branch_contexts WHERE thread_id = ?").get(threadId) as
-      | Record<string, unknown>
-      | undefined;
-    if (!row) return null;
-    return BranchContextSchema.parse({
-      threadId: row.thread_id,
-      parentThreadId: row.parent_thread_id,
-      seedIdeaId: row.seed_idea_id,
-      seedIdeaTitle: row.seed_idea_title,
-      explorationAngle: row.exploration_angle,
-      inheritedBriefSnapshot: parseAndNormalizeBrief(JSON.parse(String(row.inherited_brief_json))),
-      inheritedBriefVersion: row.inherited_brief_version,
-      selectedClaimIds: JSON.parse(String(row.selected_claim_ids_json)),
-      createdAt: row.created_at,
-    });
+  getScope(threadId: string): Scope | null {
+    const value = this.db.getSetting(`scope:${threadId}`);
+    if (!value) return null;
+    const { ScopeSchema } = requireStructuredSchemas();
+    return ScopeSchema.parse(JSON.parse(value));
   }
 
   saveRunConfig(threadId: string, config: RunConfig, presetName?: string): void {
-    this.db.db.prepare(`
-      INSERT INTO run_configs (id, thread_id, config_json, preset_name, created_at)
-      VALUES (?, ?, ?, ?, ?)
-    `).run(randomUUID(), threadId, JSON.stringify(config), presetName ?? null, new Date().toISOString());
-    this.updateThreadStatus(threadId, "configuring");
+    const parsed = RunConfigSchema.parse(config);
+    this.db.db.prepare("INSERT INTO run_configs (id, thread_id, config_json, preset_name, created_at) VALUES (?, ?, ?, ?, ?)")
+      .run(randomUUID(), threadId, JSON.stringify(parsed), presetName ?? null, new Date().toISOString());
   }
-
   getLatestRunConfig(threadId: string): RunConfig | null {
-    const row = this.db.db.prepare(`
-      SELECT config_json FROM run_configs WHERE thread_id = ? ORDER BY created_at DESC LIMIT 1
-    `).get(threadId) as { config_json: string } | undefined;
-    return row ? parseAndNormalizeRunConfig(JSON.parse(row.config_json)) : null;
+    const row = this.db.db.prepare("SELECT config_json FROM run_configs WHERE thread_id = ? ORDER BY created_at DESC LIMIT 1")
+      .get(threadId) as { config_json: string } | undefined;
+    return row ? RunConfigSchema.parse(JSON.parse(row.config_json)) : null;
   }
-
   listPresets(): Array<{ name: string; config: RunConfig }> {
-    const rows = this.db.db.prepare(`
-      SELECT preset_name, config_json FROM run_configs
-      WHERE preset_name IS NOT NULL
-      ORDER BY created_at DESC
-    `).all() as Array<{ preset_name: string; config_json: string }>;
+    const rows = this.db.db.prepare("SELECT preset_name, config_json FROM run_configs WHERE preset_name IS NOT NULL ORDER BY created_at DESC")
+      .all() as Array<{ preset_name: string; config_json: string }>;
     const seen = new Set<string>();
-    const presets: Array<{ name: string; config: RunConfig }> = [];
-    for (const row of rows) {
-      if (seen.has(row.preset_name)) continue;
+    return rows.flatMap((row) => {
+      if (seen.has(row.preset_name)) return [];
       seen.add(row.preset_name);
-      presets.push({ name: row.preset_name, config: parseAndNormalizeRunConfig(JSON.parse(row.config_json)) });
-    }
-    return presets;
+      return [{ name: row.preset_name, config: RunConfigSchema.parse(JSON.parse(row.config_json)) }];
+    });
   }
 }
+
+// Kept behind a tiny function to avoid a second copy of the schema while preserving ESM imports.
+import { ScopeSchema } from "../../shared/structured-output-schemas";
+function requireStructuredSchemas() { return { ScopeSchema }; }

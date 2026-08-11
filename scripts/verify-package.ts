@@ -75,8 +75,16 @@ const requiredEntries = [
   "/out/main/backend.js",
   "/out/preload/index.js",
   "/out/renderer/index.html",
-  "/prompts/brief-agent.md",
-  "/prompts/synthesis-agent.md",
+  "/prompts/query-plan.md",
+  "/prompts/factor-harvest.md",
+  "/prompts/problem-candidates.md",
+  "/prompts/problem-kill.md",
+  "/prompts/solutions.md",
+  "/prompts/outcomes.md",
+  "/prompts/outcome-judge.md",
+  "/prompts/risks.md",
+  "/prompts/risk-score.md",
+  "/prompts/mitigations.md",
   "/package.json",
 ];
 const missingEntries = requiredEntries.filter((path) => !archiveEntries.has(path));

@@ -3,15 +3,12 @@ import type { ThreadStatus } from "../../shared/schemas";
 export type StatusTone = "neutral" | "active" | "done" | "muted";
 
 const STATUS_DISPLAY: Record<ThreadStatus, { label: string; tone: StatusTone }> = {
-  intake: { label: "Intake", tone: "neutral" },
-  "brief-draft": { label: "Brief draft", tone: "neutral" },
-  "brief-confirmed": { label: "Brief confirmed", tone: "neutral" },
-  configuring: { label: "Configuring run", tone: "neutral" },
-  "research-queued": { label: "Research queued", tone: "active" },
-  "research-running": { label: "Research running", tone: "active" },
-  "research-complete": { label: "Research complete", tone: "done" },
-  "ideas-generating": { label: "Generating ideas", tone: "active" },
-  "ideas-ready": { label: "Ideas ready", tone: "done" },
+  configuring: { label: "Configure scope", tone: "neutral" },
+  "discovery-running": { label: "Discovering", tone: "active" },
+  "problems-ready": { label: "Problems ready", tone: "done" },
+  "development-running": { label: "Developing", tone: "active" },
+  "solutions-ready": { label: "Solutions ready", tone: "done" },
+  failed: { label: "Needs attention", tone: "neutral" },
   archived: { label: "Archived", tone: "muted" },
 };
 
@@ -27,10 +24,5 @@ export function statusTone(status: ThreadStatus | null | undefined): StatusTone 
 
 /** Statuses where the thread's own page is the live research progress view. */
 export function isResearchStatus(status: ThreadStatus | null | undefined): boolean {
-  return (
-    status === "research-queued" ||
-    status === "research-running" ||
-    status === "research-complete" ||
-    status === "ideas-generating"
-  );
+  return status === "discovery-running" || status === "development-running";
 }
