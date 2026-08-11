@@ -142,10 +142,10 @@ export class DiscoveryRepository {
   private insertSource(researchRunId: string, source: DiscoverySourceRecord): void {
     this.client.db.prepare(`
       INSERT INTO sources (
-        id, research_run_id, originating_stream_run_id, provider_source_id,
+        id, research_run_id, provider_source_id,
         canonical_url, title, retrieved_text, author, published_at,
         content_hash, retrieved_at
-      ) VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       source.id,
       researchRunId,

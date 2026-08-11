@@ -26,7 +26,7 @@
   } = $props();
 
   function confirmDelete(thread: Thread) {
-    if (confirm(`Delete "${thread.title}"?\n\nThis permanently removes its brief, reports, and ideas.`)) {
+    if (confirm(`Delete "${thread.title}"?\n\nThis permanently removes its scope, evidence, problems, and solutions.`)) {
       onDelete(thread.id);
     }
   }

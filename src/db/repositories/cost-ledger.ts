@@ -114,4 +114,24 @@ export class CostLedgerRepository {
     `).all(runId) as Array<{ id: string }>;
     for (const row of rows) this.commit(row.id, undefined, { uncertain: true, reason });
   }
+
+  release(reservationId: string): void {
+    const db = this.client.db;
+    db.exec("BEGIN IMMEDIATE");
+    try {
+      const entry = db.prepare("SELECT research_run_id, reservation_usd, status FROM cost_ledger WHERE id = ?")
+        .get(reservationId) as { research_run_id: string; reservation_usd: number; status: string } | undefined;
+      if (!entry || entry.status !== "reserved") {
+        db.exec("COMMIT");
+        return;
+      }
+      db.prepare("DELETE FROM cost_ledger WHERE id = ?").run(reservationId);
+      db.prepare("UPDATE research_runs SET reserved_cost = MAX(0, reserved_cost - ?), updated_at = ? WHERE id = ?")
+        .run(entry.reservation_usd, new Date().toISOString(), entry.research_run_id);
+      db.exec("COMMIT");
+    } catch (error) {
+      db.exec("ROLLBACK");
+      throw error;
+    }
+  }
 }

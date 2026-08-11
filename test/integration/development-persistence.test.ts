@@ -159,7 +159,7 @@ function setup(): DatabaseClient {
   const now = new Date().toISOString();
   client.db.prepare(`
     INSERT INTO threads (id, title, status, created_at, updated_at)
-    VALUES ('thread-1', 'Claims', 'research-running', ?, ?)
+    VALUES ('thread-1', 'Claims', 'development-running', ?, ?)
   `).run(now, now);
   client.db.prepare(`
     INSERT INTO research_runs (id, thread_id, status, config_json, created_at, updated_at)

@@ -102,7 +102,7 @@ function createGateRun(
   const now = new Date().toISOString();
   client.db.prepare(`
     INSERT INTO threads (id, title, status, created_at, updated_at)
-    VALUES (?, ?, 'research-running', ?, ?)
+    VALUES (?, ?, 'discovery-running', ?, ?)
   `).run(threadId, title, now, now);
   client.db.prepare(`
     INSERT INTO research_runs (id, thread_id, status, config_json, created_at, updated_at)

@@ -17,7 +17,7 @@
     "verify:package": "bun scripts/verify-package.ts",
     "install:local": "powershell -NoProfile -File scripts/install-local.ps1",
     "build:installed": "bun run package && bun run install:local",
-    "test": "bun test test/unit test/integration/backend.test.ts test/integration/recovery.test.ts test/integration/evidence-model.test.ts test/integration/idea-generation.test.ts test/integration/research-limits.test.ts test/integration/migrations.test.ts test/integration/discovery-persistence.test.ts test/integration/development-persistence.test.ts",
+    "test": "bun test test/unit test/integration/backend.test.ts test/integration/migrations.test.ts test/integration/discovery-persistence.test.ts test/integration/development-persistence.test.ts test/integration/research-engine-deadline.test.ts",
     "test:e2e": "bun run package:e2e && playwright test",
     "test:e2e:production": "bun scripts/run-e2e.ts production",
     "test:e2e:portable": "bun scripts/smoke-portable.ts",
@@ -29,8 +29,6 @@
     "check": "bun run typecheck && svelte-check --tsconfig ./tsconfig.renderer.json && bun run test"
   },
   "dependencies": {
-    "dompurify": "3.4.12",
-    "jsdom": "^26.1.0",
     "zod": "^3.25.76"
   },
   "devDependencies": {
@@ -39,7 +37,6 @@
     "@sveltejs/vite-plugin-svelte": "^5.1.0",
     "@tailwindcss/vite": "^4.3.1",
     "@types/bun": "^1.2.22",
-    "@types/jsdom": "^21.1.7",
     "electron": "42.7.0",
     "electron-builder": "^26.0.12",
     "electron-vite": "^3.1.0",

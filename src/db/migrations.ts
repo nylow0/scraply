@@ -486,4 +486,48 @@ export const MIGRATIONS = [
       END;
     `,
   },
+  {
+    // Migration 8 was consumed by the Phase 2 persistence work. The destructive
+    // cutover therefore has to be 9 for already-installed development databases.
+    id: 9,
+    sql: `
+      PRAGMA defer_foreign_keys = ON;
+
+      DELETE FROM messages WHERE role = 'report';
+      DELETE FROM run_configs;
+
+      ALTER TABLE sources DROP COLUMN originating_stream_run_id;
+      ALTER TABLE research_runs DROP COLUMN brief_json;
+      ALTER TABLE research_runs DROP COLUMN selected_stream_ids_json;
+      ALTER TABLE research_runs DROP COLUMN round;
+
+      DROP TABLE idea_claims;
+      DROP TABLE claim_evidence;
+      DROP TABLE idea_ratings;
+      DROP TABLE rating_history;
+      DROP TABLE ratings;
+      DROP TABLE branch_contexts;
+      DROP TABLE claims;
+      DROP TABLE reports;
+      DROP TABLE ideas;
+      DROP TABLE stream_runs;
+      DROP TABLE intake_answers;
+      DROP TABLE briefs;
+
+      DELETE FROM research_runs
+      WHERE problem_id IS NULL
+        AND NOT EXISTS (SELECT 1 FROM scopes WHERE scopes.research_run_id = research_runs.id);
+
+      ALTER TABLE threads DROP COLUMN parent_thread_id;
+
+      UPDATE threads SET status = CASE
+        WHEN status = 'archived' THEN 'archived'
+        WHEN EXISTS (
+          SELECT 1 FROM research_runs rr
+          WHERE rr.thread_id = threads.id AND rr.status IN ('queued', 'running')
+        ) THEN 'failed'
+        ELSE 'configuring'
+      END;
+    `,
+  },
 ] as const;
