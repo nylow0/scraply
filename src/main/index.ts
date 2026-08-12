@@ -35,6 +35,7 @@ let backendProcess: Electron.UtilityProcess | null = null;
 let backendStartPromise: Promise<BackendReady> | null = null;
 let backendStartupFailure: string | null = null;
 let logger: FileLogger | null = null;
+let isQuitting = false;
 
 interface PendingSecretUpdate {
   resolve: () => void;
@@ -198,12 +199,15 @@ async function startBackendProcess(): Promise<BackendReady> {
     });
 
     processHandle.on("exit", (code) => {
-      const message = backendStartupFailure ?? `The local backend exited unexpectedly (code ${code}).`;
+      const expectedShutdown = isQuitting && code === 0;
+      const message = expectedShutdown
+        ? "The local backend stopped during app shutdown."
+        : backendStartupFailure ?? `The local backend exited unexpectedly (code ${code}).`;
       const isCurrentProcess = backendProcess === processHandle;
       if (isCurrentProcess) {
         backendProcess = null;
         backendReady = null;
-        backendStartupFailure = message;
+        backendStartupFailure = expectedShutdown ? null : message;
       }
       logger?.log({
         level: code === 0 ? "info" : "error",
@@ -212,7 +216,7 @@ async function startBackendProcess(): Promise<BackendReady> {
         message,
         context: { exitCode: code },
       });
-      if (isCurrentProcess) rejectPendingUpdates(message);
+      if (isCurrentProcess && !expectedShutdown) rejectPendingUpdates(message);
       if (settled) return;
       settled = true;
       clearTimeout(timer);
@@ -545,6 +549,7 @@ if (!gotLock) {
   });
 
   app.on("before-quit", () => {
+    isQuitting = true;
     logger?.log({ level: "info", component: "main", event: "app-shutdown" });
     backendProcess?.kill();
   });

@@ -16,17 +16,30 @@ export const SourceDetailSchema = SourceSchema.extend({
 });
 
 export const DiscoveryDepthSchema = z.enum(["quick", "standard", "deep"]);
+export const ReasoningEffortSchema = z.string().trim().min(1).regex(/^[a-z0-9_-]+$/);
 export const RunConfigSchema = z.object({
   model: z.string().trim().min(1),
+  reasoningEffort: ReasoningEffortSchema,
   discoveryDepth: DiscoveryDepthSchema,
   maxRunMinutes: z.number().int().min(5).max(240),
 }).strict();
 
 export const DEFAULT_RUN_CONFIG = {
-  model: "gpt-5.2-codex",
+  model: "gpt-5.6-luna",
+  reasoningEffort: "medium",
   discoveryDepth: "standard",
   maxRunMinutes: 90,
 } satisfies RunConfig;
+
+export const ModelOptionSchema = z.object({
+  id: z.string().min(1),
+  displayName: z.string().min(1),
+  defaultReasoningEffort: ReasoningEffortSchema,
+  reasoningEfforts: z.array(z.object({
+    id: ReasoningEffortSchema,
+    description: z.string(),
+  })).min(1),
+});
 
 export const ModelProviderSchema = z.literal("codex");
 export const ModelRefSchema = z.object({ provider: ModelProviderSchema, id: z.string().min(1) });
@@ -66,7 +79,9 @@ export const ThreadSchema = z.object({
 export type Source = z.infer<typeof SourceSchema>;
 export type SourceDetail = z.infer<typeof SourceDetailSchema>;
 export type DiscoveryDepth = z.infer<typeof DiscoveryDepthSchema>;
+export type ReasoningEffort = z.infer<typeof ReasoningEffortSchema>;
 export type RunConfig = z.infer<typeof RunConfigSchema>;
+export type ModelOption = z.infer<typeof ModelOptionSchema>;
 export type ModelProvider = z.infer<typeof ModelProviderSchema>;
 export type ModelRef = z.infer<typeof ModelRefSchema>;
 export type ModelCatalog = z.infer<typeof ModelCatalogSchema>;

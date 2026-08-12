@@ -8,6 +8,7 @@ import { CodexClient, listCodexModels, probeCodexCli } from "../providers/codex"
 import { ExaClient } from "../providers/exa";
 import type { StructuredModelClient } from "../providers/structured";
 import { AppError, toErrorPayload } from "../shared/errors";
+import { MAX_DEVELOPMENT_PROJECTED_CALLS } from "../shared/development-projection";
 import {
   CreateThreadRequestSchema, DeleteThreadRequestSchema, ExportIdeasRequestSchema,
   GetIdeaDetailRequestSchema, GetSourceDetailRequestSchema, HealthResponseSchema,
@@ -18,7 +19,7 @@ import {
 } from "../shared/ipc";
 import {
   DEFAULT_RUN_CONFIG, ModelCatalogSchema, RunConfigSchema,
-  type ModelCatalog, type ModelProvider, type ModelRef, type RunConfig,
+  type ModelCatalog, type ModelOption, type ModelProvider, type ModelRef, type RunConfig,
 } from "../shared/schemas";
 import type { LogInput } from "../shared/logging";
 import { discoveryRunProjection } from "../core/discovery";
@@ -34,7 +35,7 @@ export interface BackendContext {
   log?: (input: Omit<LogInput, "component">) => void;
   providerValidation?: {
     probeCodex?: () => Promise<{ detected: boolean; compatible: boolean; version?: string; error?: string }>;
-    listCodexModels?: () => Promise<string[]>;
+    listCodexModels?: () => Promise<ModelOption[]>;
     validateExa?: (apiKey: string) => Promise<{ valid: boolean; error?: string }>;
   };
 }
@@ -42,6 +43,15 @@ export interface BackendContext {
 export function createBackendClients(secrets: { exaApiKey: string | null }) {
   if (!secrets.exaApiKey) throw new AppError("conflict", "Configure Exa before starting research.");
   return { codex: new CodexClient(), exa: new ExaClient(secrets.exaApiKey) };
+}
+
+function fallbackModelOption(): ModelOption {
+  return {
+    id: DEFAULT_RUN_CONFIG.model,
+    displayName: DEFAULT_RUN_CONFIG.model,
+    defaultReasoningEffort: DEFAULT_RUN_CONFIG.reasoningEffort,
+    reasoningEfforts: [{ id: DEFAULT_RUN_CONFIG.reasoningEffort, description: "" }],
+  };
 }
 export function isSetupComplete(exa: { valid: boolean }, codex: { detected: boolean; compatible: boolean }): boolean {
   return exa.valid && codex.detected && codex.compatible;
@@ -57,6 +67,7 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
   let cachedValidation: ValidationState | null = null;
   let validationPromise: Promise<ValidationState> | null = null;
   let cachedCodexModels: string[] = [];
+  let cachedModelOptions: ModelOption[] = [];
   let validationGeneration = 0;
   let engine: ResearchEngine | null = null;
   const subscribers = new Set<(event: ResearchEvent) => void>();
@@ -79,6 +90,17 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
     return engine;
   };
 
+  async function ensureCodexModels(): Promise<ModelOption[]> {
+    if (cachedModelOptions.length > 0) return cachedModelOptions;
+    const generation = validationGeneration;
+    const listed = await (context.providerValidation?.listCodexModels ?? listCodexModels)();
+    if (generation === validationGeneration) {
+      cachedModelOptions = listed;
+      cachedCodexModels = listed.map((model) => model.id);
+    }
+    return listed;
+  }
+
   async function validateProviders(): Promise<ValidationState> {
     if (validationPromise) return validationPromise;
     const generation = validationGeneration;
@@ -86,13 +108,27 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
       const secrets = context.getSecrets();
       const [codex, models, exa] = await Promise.all([
         (context.providerValidation?.probeCodex ?? probeCodexCli)(),
-        (context.providerValidation?.listCodexModels ?? listCodexModels)(),
+        ensureCodexModels(),
         secrets.exaApiKey
           ? (context.providerValidation?.validateExa ?? ((key: string) => new ExaClient(key).validateKey()))(secrets.exaApiKey)
           : Promise.resolve({ valid: false, error: "Exa key missing" }),
       ]);
       const value = ValidationStateSchema.parse({ exa, codex, setupComplete: isSetupComplete(exa, codex) });
-      if (generation === validationGeneration) { cachedValidation = value; cachedCodexModels = models; }
+      context.log?.({
+        level: value.setupComplete ? "info" : "warn",
+        event: "provider-validation-completed",
+        message: value.setupComplete ? "Research providers are ready" : "Research providers need attention",
+        context: {
+          setupComplete: value.setupComplete,
+          exaValid: value.exa.valid,
+          exaError: value.exa.error,
+          codexDetected: value.codex.detected,
+          codexCompatible: value.codex.compatible,
+          codexVersion: value.codex.version,
+          codexError: value.codex.error,
+        },
+      });
+      if (generation === validationGeneration) { cachedValidation = value; cachedModelOptions = models; cachedCodexModels = models.map((model) => model.id); }
       return value;
     })();
     try { return await validationPromise; }
@@ -120,6 +156,12 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
   }
 
   async function workspaceState() {
+    if (cachedCodexModels.length === 0) {
+      await ensureCodexModels().catch(() => {
+        cachedModelOptions = [fallbackModelOption()];
+        cachedCodexModels = [DEFAULT_RUN_CONFIG.model];
+      });
+    }
     const threadList = threads.listThreads();
     if (activeThreadId && !threadList.some((thread) => thread.id === activeThreadId)) activeThreadId = threadList[0]?.id ?? null;
     const runConfig = activeThreadId ? threads.getLatestRunConfig(activeThreadId) : null;
@@ -131,6 +173,7 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
       scope: activeThreadId ? threads.getScope(activeThreadId) : null,
       runConfig,
       models: cachedCodexModels,
+      modelOptions: cachedModelOptions,
       modelCatalog: modelCatalog(),
       presets: threads.listPresets(),
       problemCandidates: activeThreadId ? listProblems(activeThreadId) : [],
@@ -213,7 +256,7 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
     if (!row) return null;
     const counts = db.db.prepare(`SELECT provider, COUNT(*) AS count FROM cost_ledger WHERE research_run_id = ? AND status IN ('reserved','committed') GROUP BY provider`)
       .all(row.id) as Array<{ provider: string; count: number }>;
-    const projection = row.problem_id ? { modelCalls: 18, searches: 0 } : discoveryRunProjection(config.discoveryDepth);
+    const projection = row.problem_id ? { modelCalls: MAX_DEVELOPMENT_PROJECTED_CALLS, searches: 0 } : discoveryRunProjection(config.discoveryDepth);
     const activity = db.db.prepare("SELECT payload_json FROM job_events WHERE run_id = ? AND type = 'run-progress' ORDER BY id DESC LIMIT 1")
       .get(row.id) as { payload_json: string } | undefined;
     return {
@@ -390,7 +433,7 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
   return {
     port: address.port, token,
     close: async () => { cancelActiveRuns(engine); await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve())); db.close(); },
-    secretsChanged: () => { cancelActiveRuns(engine); engine = null; validationGeneration += 1; cachedValidation = null; cachedCodexModels = []; void validateProviders().catch(() => undefined); },
+    secretsChanged: () => { cancelActiveRuns(engine); engine = null; validationGeneration += 1; cachedValidation = null; cachedCodexModels = []; cachedModelOptions = []; void validateProviders().catch(() => undefined); },
   };
 }
 

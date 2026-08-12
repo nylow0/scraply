@@ -1,6 +1,8 @@
 import { randomUUID } from "node:crypto";
 import type { DevelopmentRepository } from "../db/repositories/development";
 import { ProviderFailure, type StructuredModelClient } from "../providers/structured";
+import { developmentProjection } from "../shared/development-projection";
+export { developmentProjection } from "../shared/development-projection";
 import { deriveJsonSchema } from "../shared/json-schema";
 import {
   MitigationsOutputSchema,
@@ -73,14 +75,6 @@ export interface PersistedDevelopmentDependencies extends DevelopmentDependencie
 
 const LIKELIHOOD_ORDER = { rare: 1, possible: 2, likely: 3 } as const;
 const IMPACT_ORDER = { "≤3 days lost": 1, "~2 weeks": 2, "~2 months": 3, "project ends": 4 } as const;
-
-export function developmentProjection(solutionCount: number): number {
-  if (!Number.isInteger(solutionCount) || solutionCount < 0) {
-    throw new Error("solutionCount must be a non-negative integer");
-  }
-  // Solutions + batched outcome judge, then outcomes/risks/scores/mitigations per solution.
-  return 2 + solutionCount * 4;
-}
 
 export function riskSortKey(
   likelihood: keyof typeof LIKELIHOOD_ORDER,

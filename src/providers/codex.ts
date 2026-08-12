@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { z } from "zod";
 import { ProviderFailure, type StructuredCallOptions, type StructuredModelClient } from "./structured";
+import { ModelOptionSchema, type ModelOption } from "../shared/schemas";
 
 export interface CodexProbeResult {
   detected: boolean;
@@ -17,7 +18,6 @@ export interface CodexProbeResult {
 const CODEX_CANDIDATES = process.platform === "win32"
   ? ["codex.exe", "codex.cmd", "codex"]
   : ["codex"];
-const DEFAULT_CODEX_MODELS = ["gpt-5.6-luna", "gpt-5.5", "gpt-5", "gpt-5-codex", "o4-mini", "o3"];
 const MAX_CAPTURED_OUTPUT = 1_000_000;
 const PROBE_CACHE_MS = 60_000;
 let probeCache: { expiresAt: number; result: CodexProbeResult } | null = null;
@@ -202,9 +202,10 @@ function cacheProbe(result: CodexProbeResult): CodexProbeResult {
   return result;
 }
 
-export async function listCodexModels(): Promise<string[]> {
-  const configured = await readConfiguredModel().catch(() => null);
-  return unique([configured, ...DEFAULT_CODEX_MODELS].filter(Boolean) as string[]);
+export async function listCodexModels(): Promise<ModelOption[]> {
+  const executable = await findCodexExecutable();
+  if (!executable) throw new Error("Codex CLI not found on PATH");
+  return listModelsFromAppServer(executable);
 }
 
 export class CodexClient implements StructuredModelClient {
@@ -234,7 +235,7 @@ export class CodexClient implements StructuredModelClient {
         user,
       ].join("\n");
 
-      const result = await runCommandWithInput(executable, buildCodexExecArgs(model, dir, schemaPath, outputPath), prompt, {
+      const result = await runCommandWithInput(executable, buildCodexExecArgs(model, options.reasoningEffort ?? "medium", dir, schemaPath, outputPath), prompt, {
         ...options,
         cwd: dir,
       });
@@ -252,7 +253,7 @@ export class CodexClient implements StructuredModelClient {
   }
 }
 
-export function buildCodexExecArgs(model: string, cwd: string, schemaPath: string, outputPath: string): string[] {
+export function buildCodexExecArgs(model: string, reasoningEffort: string, cwd: string, schemaPath: string, outputPath: string): string[] {
   return [
     "exec",
     "-",
@@ -264,16 +265,88 @@ export function buildCodexExecArgs(model: string, cwd: string, schemaPath: strin
     "--output-schema", schemaPath,
     "--output-last-message", outputPath,
     "--color", "never",
-    "-c", 'model_reasoning_effort="medium"',
+    "-c", `model_reasoning_effort=${JSON.stringify(reasoningEffort)}`,
   ];
 }
 
-async function readConfiguredModel(): Promise<string | null> {
-  const home = process.env.USERPROFILE ?? process.env.HOME;
-  if (!home) return null;
-  const text = await readFile(join(home, ".codex", "config.toml"), "utf8");
-  const match = text.match(/^\s*model\s*=\s*"([^"]+)"/m);
-  return match?.[1] ?? null;
+async function listModelsFromAppServer(executable: string): Promise<ModelOption[]> {
+  return new Promise((resolve, reject) => {
+    const child = spawnCodex(executable, ["app-server"], { windowsHide: true });
+    let stdout = "";
+    let stderr = "";
+    let settled = false;
+    let nextId = 2;
+    const models: ModelOption[] = [];
+    const timer = setTimeout(() => finish(new Error("Codex model discovery timed out")), 15_000);
+
+    const send = (message: object) => child.stdin.write(`${JSON.stringify(message)}\n`);
+    const finish = (error?: Error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      child.kill();
+      if (error) reject(error);
+      else resolve(uniqueModels(models));
+    };
+    const requestPage = (cursor?: string | null) => {
+      const id = nextId++;
+      send({ method: "model/list", id, params: { limit: 100, includeHidden: false, ...(cursor ? { cursor } : {}) } });
+    };
+    const handleLine = (line: string) => {
+      if (!line.trim()) return;
+      let message: { id?: number; result?: unknown; error?: { message?: string } };
+      try { message = JSON.parse(line); } catch { return; }
+      if (message.error) return finish(new Error(message.error.message ?? "Codex model discovery failed"));
+      if (message.id === 1) {
+        send({ method: "initialized", params: {} });
+        requestPage();
+        return;
+      }
+      if (typeof message.id !== "number" || message.id < 2) return;
+      const page = z.object({
+        data: z.array(z.object({
+          id: z.string().min(1),
+          displayName: z.string().min(1).optional(),
+          defaultReasoningEffort: z.string().min(1).optional(),
+          supportedReasoningEfforts: z.array(z.object({
+            reasoningEffort: z.string().min(1),
+            description: z.string().optional(),
+          })).optional(),
+        })),
+        nextCursor: z.string().nullable().optional(),
+      }).parse(message.result);
+      for (const item of page.data) {
+        const efforts = item.supportedReasoningEfforts?.length
+          ? item.supportedReasoningEfforts.map((effort) => ({ id: effort.reasoningEffort, description: effort.description ?? "" }))
+          : [{ id: item.defaultReasoningEffort ?? "medium", description: "" }];
+        models.push(ModelOptionSchema.parse({
+          id: item.id,
+          displayName: item.displayName ?? item.id,
+          defaultReasoningEffort: item.defaultReasoningEffort ?? efforts[0]!.id,
+          reasoningEfforts: efforts,
+        }));
+      }
+      if (page.nextCursor) requestPage(page.nextCursor);
+      else finish();
+    };
+
+    child.stdout.on("data", (chunk) => {
+      stdout += String(chunk);
+      const lines = stdout.split(/\r?\n/);
+      stdout = lines.pop() ?? "";
+      for (const line of lines) handleLine(line);
+    });
+    child.stderr.on("data", (chunk) => { stderr = appendBounded(stderr, chunk); });
+    child.on("error", (error) => finish(error));
+    child.on("close", (code) => {
+      if (!settled) finish(new Error(stderr.trim() || `Codex app-server exited with code ${code}`));
+    });
+    send({ method: "initialize", id: 1, params: { clientInfo: { name: "scraply", title: "Scraply", version: "0.3.0" } } });
+  });
+}
+
+function uniqueModels(models: ModelOption[]): ModelOption[] {
+  return [...new Map(models.map((model) => [model.id, model])).values()];
 }
 
 function parseStructured<T>(raw: string, schema: z.ZodType<T>): T {
@@ -303,10 +376,6 @@ function strictJsonSchema(value: unknown): unknown {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function unique(values: string[]): string[] {
-  return [...new Set(values)];
 }
 
 function appendBounded(current: string, chunk: unknown): string {

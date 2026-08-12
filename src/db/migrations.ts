@@ -530,4 +530,24 @@ export const MIGRATIONS = [
       END;
     `,
   },
+  {
+    id: 10,
+    sql: `
+      UPDATE run_configs
+      SET config_json = json_set(config_json, '$.model', 'gpt-5.6-luna')
+      WHERE json_extract(config_json, '$.model') = 'gpt-5.2-codex';
+    `,
+  },
+  {
+    id: 11,
+    sql: `
+      UPDATE run_configs
+      SET config_json = json_set(config_json, '$.reasoningEffort', 'medium')
+      WHERE json_extract(config_json, '$.reasoningEffort') IS NULL;
+
+      UPDATE research_runs
+      SET config_json = json_set(config_json, '$.reasoningEffort', 'medium')
+      WHERE json_extract(config_json, '$.reasoningEffort') IS NULL;
+    `,
+  },
 ] as const;

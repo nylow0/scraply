@@ -3,6 +3,7 @@ import { ScopeSchema } from "./structured-output-schemas";
 import {
   MessageSchema,
   ModelCatalogSchema,
+  ModelOptionSchema,
   ModelRefSchema,
   RunConfigSchema,
   SourceDetailSchema as SharedSourceDetailSchema,
@@ -104,6 +105,7 @@ export const WorkspaceStateSchema = z.object({
   validation: ValidationStateSchema,
   threads: z.array(ThreadSchema), activeThreadId: z.string().nullable(), messages: z.array(MessageSchema),
   scope: ScopeSchema.nullable(), runConfig: RunConfigSchema.nullable(), models: z.array(z.string()),
+  modelOptions: z.array(ModelOptionSchema),
   modelCatalog: ModelCatalogSchema, presets: z.array(z.object({ name: z.string(), config: RunConfigSchema })),
   problemCandidates: z.array(ProblemCandidateSchema), solutions: z.array(SolutionViewSchema),
   latestResearchRun: LatestResearchRunSchema.nullable(), pendingRuns: z.array(PendingRunSchema),

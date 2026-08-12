@@ -7,6 +7,7 @@ import type { ExaClient, ExaSearchOptions } from "../providers/exa";
 import type { StructuredCallOptions, StructuredModelClient } from "../providers/structured";
 import type { z } from "zod";
 import { AppError } from "../shared/errors";
+import { MAX_DEVELOPMENT_PROJECTED_CALLS } from "../shared/development-projection";
 import type { ResearchEvent } from "../shared/ipc";
 import { RunConfigSchema, type ModelProvider, type RunConfig } from "../shared/schemas";
 import { ScopeSchema, type Scope } from "../shared/structured-output-schemas";
@@ -116,7 +117,7 @@ export class ResearchEngine {
 
   private begin(runId: string, threadId: string, problemId: string | null, config: RunConfig, resumed = false): void {
     const projection = problemId
-      ? { modelCalls: 18, searches: 0 }
+      ? { modelCalls: MAX_DEVELOPMENT_PROJECTED_CALLS, searches: 0 }
       : discoveryRunProjection(config.discoveryDepth);
     const active: ActiveRun = {
       runId, threadId, problemId, config, abortController: new AbortController(), startedAt: Date.now(),
@@ -239,7 +240,7 @@ export class ResearchEngine {
       structuredCompletion: async <T>(model: string, system: string, user: string, schema: z.ZodType<T>, jsonSchema: object, options?: StructuredCallOptions): Promise<T> => {
         this.enforceRunawayBackstop(active, "codex", active.projectedCodexCalls);
         const reservation = this.ledger.reserve(active.runId, "structured-completion", "codex", active.config.model, 0);
-        try { return await client.structuredCompletion(model, system, user, schema, jsonSchema, options); }
+        try { return await client.structuredCompletion(model, system, user, schema, jsonSchema, { ...options, reasoningEffort: active.config.reasoningEffort }); }
         finally { this.ledger.commit(reservation.id, 0); this.progress(active, "Codex call completed"); }
       },
     };
