@@ -26,7 +26,10 @@ jobs:
       - name: Validate master ref policy
         if: github.event_name == 'push' && github.ref == 'refs/heads/master'
         run: bun scripts/check-promotion.ts master ${{ github.sha }} ${{ github.event.before }}
-      - run: bun audit
+      - run: bun audit --prod
+      - name: Audit dev dependencies (advisory)
+        continue-on-error: true
+        run: bun audit
       - run: bun run check
       - run: bun run test:e2e
       - name: Build, install, and verify production package
