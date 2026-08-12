@@ -26,7 +26,7 @@ describe("destructive graph cutover", () => {
     const tables = tableNames(client.db as unknown as Database);
     for (const name of ["threads", "messages", "run_configs", "research_runs", "sources", "cost_ledger", "scopes", "factors", "problems", "problem_factors", "solutions", "outcomes", "risks", "mitigations", "risk_mitigations"]) expect(tables).toContain(name);
     for (const name of ["intake_answers", "briefs", "stream_runs", "claims", "claim_evidence", "ideas", "reports", "branch_contexts", "ratings", "idea_ratings", "rating_history"]) expect(tables).not.toContain(name);
-    expect(client.db.prepare("SELECT MAX(id) AS id FROM schema_migrations").get()).toEqual({ id: 9 });
+    expect(client.db.prepare("SELECT MAX(id) AS id FROM schema_migrations").get()).toEqual({ id: 11 });
     client.close();
   });
 
@@ -56,6 +56,22 @@ describe("destructive graph cutover", () => {
     expect(runColumns).not.toContain("brief_json"); expect(runColumns).not.toContain("selected_stream_ids_json"); expect(runColumns).not.toContain("round");
     const threadColumns = (migrated.db.prepare("PRAGMA table_info(threads)").all() as Array<{ name: string }>).map((row) => row.name);
     expect(threadColumns).not.toContain("parent_thread_id");
+    migrated.close();
+  });
+
+  test("replaces the legacy 5.2 default in saved run configurations", () => {
+    const dbPath = pathForTest();
+    const current = new DatabaseClient(dbPath);
+    const now = "2026-08-12T00:00:00.000Z";
+    current.db.prepare("INSERT INTO threads (id, title, status, created_at, updated_at) VALUES ('thread-1','Legacy model','configuring',?,?)").run(now, now);
+    current.db.prepare("INSERT INTO run_configs (id, thread_id, config_json, created_at) VALUES ('config-1','thread-1',?,?)")
+      .run(JSON.stringify({ model: "gpt-5.2-codex", discoveryDepth: "standard", maxRunMinutes: 90 }), now);
+    current.db.prepare("DELETE FROM schema_migrations WHERE id = 10").run();
+    current.close();
+
+    const migrated = new DatabaseClient(dbPath);
+    const row = migrated.db.prepare("SELECT config_json FROM run_configs WHERE id = 'config-1'").get() as { config_json: string };
+    expect(JSON.parse(row.config_json).model).toBe("gpt-5.6-luna");
     migrated.close();
   });
 });

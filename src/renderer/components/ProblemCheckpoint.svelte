@@ -1,11 +1,12 @@
 <script lang="ts">
   import type { ProblemCandidate } from "../../shared/ipc";
+  import { MAX_DEVELOPMENT_PROJECTED_CALLS } from "../../shared/development-projection";
   import { untrack } from "svelte";
   let { problems, busy, onCommit }:{ problems:ProblemCandidate[];busy:boolean;onCommit:(ids:string[],userProblem:string|null)=>Promise<void> }=$props();
   const initialProblems=untrack(()=>problems);
   let selected=$state(new Set(initialProblems.filter((item)=>item.selected).map((item)=>item.id)));
   let userProblem=$state("");
-  let projected=$derived((selected.size+(userProblem.trim()?1:0))*18);
+  let projected=$derived((selected.size+(userProblem.trim()?1:0))*MAX_DEVELOPMENT_PROJECTED_CALLS);
   function toggle(id:string){const next=new Set(selected);next.has(id)?next.delete(id):next.add(id);selected=next}
 </script>
 <section class="checkpoint">

@@ -24,6 +24,7 @@ export class ProviderFailure extends Error {
 export interface StructuredCallOptions {
   signal?: AbortSignal;
   timeoutMs?: number;
+  reasoningEffort?: string;
 }
 
 export interface StructuredModelClient {

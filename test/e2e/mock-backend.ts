@@ -22,7 +22,7 @@ export async function startMockBackend(_scenario: "fresh" | "interrupted" | "pro
   let status = "configuring";
   const workspace = () => ({
     validation, threads: threads.map((thread) => ({ ...thread, status })), activeThreadId, messages: [], scope,
-    runConfig: activeThreadId ? DEFAULT_RUN_CONFIG : null, models: ["gpt-5.6-luna"], modelCatalog: { codex: ["gpt-5.6-luna"], favorites: [] }, presets: [],
+    runConfig: activeThreadId ? DEFAULT_RUN_CONFIG : null, models: ["gpt-5.6-luna"], modelOptions: [{ id: "gpt-5.6-luna", displayName: "GPT-5.6-Luna", defaultReasoningEffort: "medium", reasoningEfforts: [{ id: "medium", description: "Balanced reasoning" }] }], modelCatalog: { codex: ["gpt-5.6-luna"], favorites: [] }, presets: [],
     problemCandidates: status === "problems-ready" ? [problem] : [], solutions: status === "solutions-ready" ? [solution] : [],
     latestResearchRun: status === "configuring" ? null : { runId: "run-1", status: "completed", problemId: status === "solutions-ready" ? "problem-1" : null, codexCalls: 8, exaSearches: 10, projectedCodexCalls: 20, projectedExaSearches: 20, lastActivity: "Problem verification completed" }, pendingRuns: [],
   });

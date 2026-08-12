@@ -70,6 +70,12 @@
     if (!workspace?.activeThreadId) return;
     await action(async () => { const result = await window.scraply.startResearch(workspace!.activeThreadId!); workspace = result.workspace; editingScopeThreadId = null; });
   }
+  async function retryConnections() {
+    await action(async () => {
+      await window.scraply.retryConnection();
+      workspace = await window.scraply.getWorkspace();
+    });
+  }
   async function selectProblems(ids: string[], userProblem: string | null) {
     if (!workspace?.activeThreadId) return;
     await action(async () => { workspace = await window.scraply.selectProblems({ threadId: workspace!.activeThreadId!, problemIds: ids, userProblem }); reviewSelection = false; });
@@ -128,7 +134,7 @@
       <section class="failed"><p class="eyebrow">Run stopped</p><h1>The queue needs your attention.</h1><p>{activeRun?.lastActivity ?? "The last run failed or was cancelled. Review the scope, then retry explicitly."}</p>{#if activeRun && ["queued","running"].includes(activeRun.status)}<button onclick={() => action(async () => { workspace = await window.scraply.resumeResearch(activeRun!.runId); })}>Resume attempt</button>{/if}{#if workspace.problemCandidates.length > 0}<button class="secondary" onclick={() => reviewSelection = true}>Review problem selection</button>{/if}<button class="secondary" onclick={() => { editingScopeThreadId = activeThread?.id ?? null; }}>Edit scope</button></section>
     {:else}
       {#key workspace.activeThreadId}
-        <ScopeForm {workspace} {busy} onSave={saveScope} onStart={startResearch} />
+        <ScopeForm {workspace} {busy} onSave={saveScope} onStart={startResearch} onRetry={retryConnections} />
       {/key}
     {/if}
   </main>

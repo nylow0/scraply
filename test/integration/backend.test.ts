@@ -7,6 +7,12 @@ import { DatabaseClient } from "../../src/db/client";
 
 const dirs: string[] = [];
 const handles: BackendHandle[] = [];
+const modelOption = (id: string) => ({
+  id,
+  displayName: id,
+  defaultReasoningEffort: "medium",
+  reasoningEfforts: [{ id: "medium", description: "Balanced reasoning" }],
+});
 afterEach(async () => {
   for (const handle of handles.splice(0)) await handle.close();
   for (const dir of dirs.splice(0)) {
@@ -23,15 +29,20 @@ describe("cutover backend", () => {
     const handle = await startBackend({
       dataDir: dir, dbPath: join(dir, "scraply.db"), bundledPromptsDir: join(process.cwd(), "prompts"),
       promptOverridesDir: join(dir, "prompts"), appVersion: "test", getSecrets: () => ({ exaApiKey: "test-key" }),
-      providerValidation: { probeCodex: async () => ({ detected: true, compatible: true }), listCodexModels: async () => ["gpt-test"], validateExa: async () => ({ valid: true }) },
+      providerValidation: { probeCodex: async () => ({ detected: true, compatible: true }), listCodexModels: async () => [modelOption("gpt-5.6-luna"), modelOption("gpt-test")], validateExa: async () => ({ valid: true }) },
     }, () => undefined); handles.push(handle);
 
     const post = async (path: string, body: unknown) => {
       const response = await fetch(`http://127.0.0.1:${handle.port}${path}`, { method: "POST", headers: { authorization: `Bearer ${handle.token}`, "content-type": "application/json" }, body: JSON.stringify(body) });
       return (await response.json() as { data: unknown }).data;
     };
-    const created = await post("/threads", {}) as { thread: { id: string; status: string } };
+    const created = await post("/threads", {}) as {
+      thread: { id: string; status: string };
+      workspace: { models: string[]; runConfig: { model: string } };
+    };
     expect(created.thread.status).toBe("configuring");
+    expect(created.workspace.models).toEqual(["gpt-5.6-luna", "gpt-test"]);
+    expect(created.workspace.runConfig.model).toBe("gpt-5.6-luna");
     const workspace = await post("/scope", { threadId: created.thread.id, scope: { title: "Repair shops", audience: "Independent shops", domain: "Parts sourcing", observations: "", offLimits: ["Inventory"] } }) as { scope: { title: string; audience: string; domain: string; observations: string; offLimits: string[] } };
     expect(workspace.scope).toEqual({ title: "Repair shops", audience: "Independent shops", domain: "Parts sourcing", observations: "", offLimits: ["Inventory"] });
   });
@@ -42,7 +53,7 @@ describe("cutover backend", () => {
     const handle = await startBackend({
       dataDir: dir, dbPath, bundledPromptsDir: join(process.cwd(), "prompts"), promptOverridesDir: join(dir, "prompts"),
       appVersion: "test", getSecrets: () => ({ exaApiKey: "test-key" }),
-      providerValidation: { probeCodex: async () => ({ detected: true, compatible: true }), listCodexModels: async () => ["gpt-test"], validateExa: async () => ({ valid: true }) },
+      providerValidation: { probeCodex: async () => ({ detected: true, compatible: true }), listCodexModels: async () => [modelOption("gpt-test")], validateExa: async () => ({ valid: true }) },
     }, () => undefined); handles.push(handle);
     const post = async (path: string, body: unknown) => {
       const response = await fetch(`http://127.0.0.1:${handle.port}${path}`, { method: "POST", headers: { authorization: `Bearer ${handle.token}`, "content-type": "application/json" }, body: JSON.stringify(body) });

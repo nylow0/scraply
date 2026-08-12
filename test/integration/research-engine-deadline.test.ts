@@ -27,13 +27,15 @@ afterEach(() => {
 
 describe("research engine deadlines", () => {
   test("resumes a two-hour-old run with a fresh attempt deadline", async () => {
-    const { db, directory, runId } = createPersistedDiscoveryRun();
+    const { db, directory, runId, config } = createPersistedDiscoveryRun();
     tempDirectories.push(directory);
     const events: ResearchEvent[] = [];
     let modelCalls = 0;
+    const selectedModels: string[] = [];
     const modelClient: StructuredModelClient = {
-      async structuredCompletion(_model, _system, _user, schema) {
+      async structuredCompletion(model, _system, _user, schema) {
         modelCalls += 1;
+        selectedModels.push(model);
         await new Promise((resolve) => setTimeout(resolve, 20));
         return schema.parse({ problems: [] });
       },
@@ -50,6 +52,7 @@ describe("research engine deadlines", () => {
       const run = db.db.prepare("SELECT status FROM research_runs WHERE id = ?").get(runId) as { status: string };
       expect(run.status).toBe("completed");
       expect(modelCalls).toBe(1);
+      expect(selectedModels).toEqual([config.model]);
       expect(events.some((event) => event.type === "run-resumed" && event.runId === runId)).toBe(true);
       expect(events.some((event) => event.type === "run-completed" && event.runId === runId)).toBe(true);
     } finally {
@@ -118,6 +121,7 @@ describe("research engine deadlines", () => {
       `).run(now, now);
       const config: RunConfig = {
         model: "test-model",
+        reasoningEffort: "medium",
         discoveryDepth: "quick",
         maxRunMinutes: 0.001,
       };
@@ -163,7 +167,7 @@ function createPersistedDiscoveryRun(): {
     INSERT INTO threads (id, title, status, created_at, updated_at)
     VALUES ('thread-1', 'Resume', 'discovery-running', ?, ?)
   `).run(now, now);
-  const config: RunConfig = { model: "test-model", discoveryDepth: "quick", maxRunMinutes: 5 };
+  const config: RunConfig = { model: "test-model", reasoningEffort: "medium", discoveryDepth: "quick", maxRunMinutes: 5 };
   const runId = new ResearchRunRepository(db).create("thread-1", config).runId;
   const discovery = new DiscoveryRepository(db);
   discovery.persistScope(runId, {
