@@ -1,6 +1,8 @@
 # Scraply — Rework
 
-**Status:** guiding document. Not yet implemented.
+**Status:** implemented. The Phase 1 and Phase 2 live gates still require provider credentials and
+the human judgments described in Section 11; automated coverage does not substitute for those gates.
+
 **Audience:** Dany, and any AI agent asked to execute this.
 **Supersedes:** the current pipeline, not the current infrastructure.
 
@@ -588,7 +590,8 @@ error.
 
 - **Migration 7 (Phase 0) — additive only.** `CREATE` the new tables alongside the old ones; `ALTER
   research_runs ADD COLUMN problem_id`. No drops. The existing app keeps booting.
-- **Migration 8 (Phase 3) — destructive cutover.** Must either begin with
+- **Migration 9 (Phase 3) — destructive cutover.** Migration 8 was consumed by the Phase 2
+  persistence graph. Migration 9 must either begin with
   `PRAGMA defer_foreign_keys = ON;` (this one *does* work inside a transaction; `PRAGMA foreign_keys`
   does not) or order drops children-first — `client.ts:13` enforces foreign keys and migrations run
   inside `BEGIN`/`COMMIT` (`client.ts:35-42`).
@@ -931,7 +934,7 @@ reads in under a minute.
 
 ### Phase 3 — Cutover, one landable change
 
-Migration 8 drops the old tables. Delete the old modules **and** land the new UI **and** rewrite
+Migration 9 drops the old tables. Delete the old modules **and** land the new UI **and** rewrite
 `test/e2e/{mock-backend.ts, smoke.spec.ts}` **and** update `package.json`'s test script — all in the
 same commit.
 

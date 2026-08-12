@@ -1,13 +1,20 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { renderPhase1AblationMarkdown } from "../src/core/discovery-markdown";
-import { runPhase1Ablation, type DiscoveryDepth } from "../src/core/discovery";
+import { discoveryProjection, runPhase1Ablation, type DiscoveryDepth } from "../src/core/discovery";
 import { configurePromptPaths } from "../src/core/prompts";
 import { DatabaseClient } from "../src/db/client";
 import { DiscoveryRepository } from "../src/db/repositories/discovery";
 import { CodexClient } from "../src/providers/codex";
 import { EXA_CATEGORIES, ExaClient, type ExaCategory } from "../src/providers/exa";
 import { ScopeSchema, type Scope } from "../src/shared/structured-output-schemas";
+import {
+  CountingModelClient,
+  CountingSearchClient,
+  phase1ObjectiveChecks,
+  renderPhase1Review,
+  resetPromptCache,
+} from "./gate-support";
 
 const [scopeArgument, outputArgument] = process.argv.slice(2);
 if (!scopeArgument) {
@@ -15,7 +22,8 @@ if (!scopeArgument) {
 }
 if (process.env.SCRAPLY_PHASE1_GATE_AUTHORIZED !== "1") {
   throw new Error(
-    "Live provider use is disabled. Clear the prompt cache with explicit approval, then set SCRAPLY_PHASE1_GATE_AUTHORIZED=1.",
+    "Live provider use is disabled. This gate permanently deletes every prompt override in"
+    + " %APPDATA%/scraply/scraply/prompts before it runs; set SCRAPLY_PHASE1_GATE_AUTHORIZED=1 to accept that.",
   );
 }
 
@@ -26,15 +34,15 @@ if (!appData) throw new Error("APPDATA is required to resolve Scraply's prompt c
 
 const scopePath = resolve(scopeArgument);
 const outputDirectory = resolve(outputArgument ?? join("artifacts", `phase1-gate-${timestamp()}`));
-const promptCache = join(appData, "scraply", "scraply", "prompts");
 const scope = ScopeSchema.parse(JSON.parse(await readFile(scopePath, "utf8"))) as Scope;
 const depth = parseDepth(process.env.SCRAPLY_DISCOVERY_DEPTH);
 const model = process.env.SCRAPLY_CODEX_MODEL ?? "gpt-5.2-codex";
 const seed = parseSeed(process.env.SCRAPLY_DISCOVERY_SEED);
 
 await mkdir(outputDirectory, { recursive: true });
+const promptCache = await resetPromptCache(appData);
 configurePromptPaths({ bundledDir: resolve("prompts"), overrideDir: promptCache });
-console.log(`Prompt cache: ${promptCache}`);
+console.log(`Prompt cache cleared: ${promptCache}`);
 console.log(`Output directory: ${outputDirectory}`);
 console.log(`Factor shuffle seed: ${seed} (replay with SCRAPLY_DISCOVERY_SEED=${seed})`);
 
@@ -42,18 +50,24 @@ const database = new DatabaseClient(join(outputDirectory, "phase1-gate.sqlite"))
 const repository = new DiscoveryRepository(database);
 const armARunId = crypto.randomUUID();
 const armCRunId = crypto.randomUUID();
+/** A tripped checkbox is a gate verdict, not a run failure; the run rows must keep saying which one happened. */
+let gateFailure: string | null = null;
 try {
   createGateRun(database, armARunId, "Phase 1 Arm A", depth, model);
   createGateRun(database, armCRunId, "Phase 1 Arm C", depth, model);
   repository.persistScope(armARunId, scope);
   repository.persistScope(armCRunId, scope);
 
+  const modelClient = new CountingModelClient(new CodexClient());
+  const exa = new CountingSearchClient(new ExaClient(exaKey));
+  const audienceSearch = parseAudienceSearch();
+  const projection = discoveryProjection(depth);
   const result = await runPhase1Ablation(scope, {
-    modelClient: new CodexClient(),
-    exa: new ExaClient(exaKey),
+    modelClient,
+    exa,
     model,
     depth,
-    audienceSearch: parseAudienceSearch(),
+    audienceSearch,
     random: seededRandom(seed),
     onProjection: (message) => console.log(message),
   });
@@ -69,20 +83,30 @@ try {
   finishGateRun(database, armCRunId, "completed");
 
   const artifacts = renderPhase1AblationMarkdown(result);
+  const checks = phase1ObjectiveChecks(result);
   await Promise.all([
     writeFile(join(outputDirectory, "arm-a.md"), artifacts.armA, "utf8"),
     writeFile(join(outputDirectory, "arm-c.md"), artifacts.armC, "utf8"),
+    writeFile(join(outputDirectory, "gate-review.md"), renderPhase1Review(checks), "utf8"),
     writeFile(join(outputDirectory, "metrics.json"), JSON.stringify({
       depth,
       model,
       seed,
+      audienceSearch,
+      projection,
+      actual: { modelCalls: modelClient.calls, searches: exa.searches },
       harvest: result.harvest.metrics,
       rejections: result.harvest.rejections,
       armAFactorUtilizationRate: result.armA.factorUtilizationRate,
+      objectiveChecks: checks,
     }, null, 2), "utf8"),
   ]);
-  console.log("Gate artifacts written: arm-a.md, arm-c.md, metrics.json, phase1-gate.sqlite");
+  console.log("Gate artifacts written: arm-a.md, arm-c.md, gate-review.md, metrics.json, phase1-gate.sqlite");
+  console.log(`Measured provider use: ${modelClient.calls} model calls · ${exa.searches} Exa searches`);
   console.log("PASS/FAIL requires human comparison of Arm A with Arm C; no overlap score was computed.");
+  if (!checks.objectiveChecksPassed) {
+    gateFailure = "Phase 1 automated evidence checks failed; inspect gate-review.md and the paired arm artifacts.";
+  }
 } catch (error) {
   finishGateRun(database, armARunId, "failed");
   finishGateRun(database, armCRunId, "failed");
@@ -90,6 +114,8 @@ try {
 } finally {
   database.close();
 }
+
+if (gateFailure) throw new Error(gateFailure);
 
 function createGateRun(
   client: DatabaseClient,
