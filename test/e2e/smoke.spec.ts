@@ -16,8 +16,9 @@ test("the renderer restores the problem-selection step after a restart", async (
     let page = await electron.firstWindow();
     await page.getByRole("button", { name: "Create research" }).click();
     await page.getByLabel("Research name").fill("Repair delays");
-    await page.getByRole("textbox", { name: "Audience", exact: true }).fill("Independent repair shops");
-    await page.getByRole("textbox", { name: "Market or domain", exact: true }).fill("Parts sourcing");
+    // Discovery must start from the context alone: the audience field is optional and is left blank here
+    // on purpose, so reinstating an audience requirement fails this test instead of shipping.
+    await page.getByLabel("What do you want to explore?").fill("Parts sourcing");
     await page.getByRole("button", { name: "Discover problems" }).click();
     await expect(page.getByText("Which problems deserve development?")).toBeVisible();
     await expect(page.getByRole("button", { name: "Export research JSON" })).toBeVisible();

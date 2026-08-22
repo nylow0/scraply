@@ -21,10 +21,10 @@
   {#if scope && config}
     <div class="fields">
       <div class="primary"><span>Research name</span><strong>{scope.title}</strong></div>
-      <div><span>Starting point</span><strong>{config.researchMode === "known-problem" ? "Known problem" : "Market exploration"}</strong></div>
+      <div><span>Starting point</span><strong>{config.researchMode === "known-problem" ? "Known problem" : "Problem discovery"}</strong></div>
       {#if config.researchMode === "known-problem"}<div class="wide"><span>Problem statement</span><strong>{config.knownProblem}</strong></div>{/if}
-      <div><span>Market or domain</span><strong>{scope.domain || "Not specified"}</strong></div>
-      <div><span>Audience</span><strong>{scope.audience || "Not specified"}</strong></div>
+      <div><span>{config.researchMode === "known-problem" ? "Market or domain" : "Starting context"}</span><strong>{scope.domain || "Not specified"}</strong></div>
+      <div><span>{config.researchMode === "known-problem" ? "Audience" : "People or groups"}</span><strong>{scope.audience || "Not specified"}</strong></div>
       <div class="wide"><span>Context</span><p>{scope.observations || "No additional context."}</p></div>
       <div class="wide"><span>Boundaries</span>{#if scope.offLimits.length}<ul>{#each scope.offLimits as item}<li>{item}</li>{/each}</ul>{:else}<p>No boundaries specified.</p>{/if}</div>
     </div>

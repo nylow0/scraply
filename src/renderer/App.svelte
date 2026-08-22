@@ -129,7 +129,7 @@
     onNew={createThread}
     onSelect={selectThread}
     onDelete={deleteThread}
-    onOpenGuide={() => { error = "Workflow: explore a market and choose discovered problems, or start with a known problem and go directly to solutions."; }}
+    onOpenGuide={() => { error = "Workflow: start from any context and choose discovered problems, or start with a known problem and go directly to solutions."; }}
     onOpenData={() => window.scraply.openDataFolder()}
     onOpenLogs={() => window.scraply.openLogsFolder()}
   />
@@ -167,7 +167,7 @@
     {#if loading}
       <div class="skeleton" aria-label="Loading workspace"><i></i><i></i><i></i></div>
     {:else if !workspace || !activeThread}
-      <section class="welcome"><p class="eyebrow">Local-first research</p><h1>Find problems worth solving before generating solutions.</h1><p>Start with a domain and an audience. Scraply will gather evidence, try to kill each candidate, and stop for your judgment.</p><button onclick={createThread}>Create research</button></section>
+      <section class="welcome"><p class="eyebrow">Local-first research</p><h1>Find problems worth solving before generating solutions.</h1><p>Start with whatever context you have. Scraply will gather evidence, try to kill each candidate, and stop for your judgment.</p><button onclick={createThread}>Create research</button></section>
     {:else if activeStep === "setup"}
       {#if activeThread.status === "configuring" || editingScope || !workspace.scope}
         <div id="workflow-panel-setup" role="tabpanel" aria-label="Research setup">

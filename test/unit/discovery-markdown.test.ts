@@ -175,6 +175,14 @@ describe("Phase 1 discovery Markdown", () => {
     expect(markdown).toContain("<https://counter.example.com/original/kill-1>");
   });
 
+  test("labels an omitted audience rather than leaving the field blank", () => {
+    // The audience is optional now, so a blank one must read as a deliberate "None" in the artifact
+    // instead of a dangling label a reader would mistake for a rendering bug.
+    const markdown = renderDiscoveryArmMarkdown({ ...result, scope: { ...result.scope, audience: "" } }, result.armA);
+
+    expect(markdown).toContain("- **Audience:** None");
+  });
+
   test("makes missing factor evidence explicit in the control arm", () => {
     const markdown = renderDiscoveryArmMarkdown(result, result.armC);
 

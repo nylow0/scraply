@@ -87,7 +87,7 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
         modelClients: { codex: context.modelClients?.codex ?? new CodexClient() },
         exa: exaApiKey
           ? new ExaClient(exaApiKey)
-          : { search: async () => { throw new AppError("conflict", "Connect Exa before exploring a market."); } },
+          : { search: async () => { throw new AppError("conflict", "Connect Exa before discovering problems."); } },
         onEvent: emitEvent,
       });
     }
@@ -424,7 +424,7 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
         const config = threads.getLatestRunConfig(threadId) ?? RunConfigSchema.parse(DEFAULT_RUN_CONFIG);
         if (!isResearchModeReady(config.researchMode, validation.exa, validation.codex)) {
           if (!validation.codex.detected || !validation.codex.compatible) throw new AppError("conflict", "Connect a compatible Codex CLI before starting research.");
-          throw new AppError("conflict", "Connect Exa before exploring a market.");
+          throw new AppError("conflict", "Connect Exa before discovering problems.");
         }
         if (config.researchMode === "known-problem" && !config.knownProblem.trim()) throw new AppError("validation_error", "Problem statement is required.");
         try {
