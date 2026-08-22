@@ -35,6 +35,8 @@ test("the renderer restores the problem-selection step after a restart", async (
     await expect(page.getByText("Scan the list first. Expand only the idea and evidence you want to inspect.")).toBeVisible();
     await page.getByRole("tab", { name: /Research/ }).click();
     await expect(page.getByText("The evidence behind the ideas.")).toBeVisible();
+    // Cited factors stay collapsed so the archive can be scanned; the evidence must survive one expand.
+    await page.getByText("cited factors").click();
     await expect(page.getByText("Backorders add days to routine repairs.")).toBeVisible();
     await page.getByRole("tab", { name: /Setup/ }).click();
     await expect(page.getByText("Where this work started.")).toBeVisible();
