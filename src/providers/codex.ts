@@ -294,8 +294,10 @@ async function listModelsFromAppServer(executable: string): Promise<ModelOption[
     };
     const handleLine = (line: string) => {
       if (!line.trim()) return;
-      let message: { id?: number; result?: unknown; error?: { message?: string } };
+      let message: { id?: number; method?: string; result?: unknown; error?: { message?: string } };
       try { message = JSON.parse(line); } catch { return; }
+      // Server-to-client requests and notifications carry a method; only responses to our own ids matter here.
+      if (typeof message.method === "string") return;
       if (message.error) return finish(new Error(message.error.message ?? "Codex model discovery failed"));
       if (message.id === 1) {
         send({ method: "initialized", params: {} });
@@ -319,12 +321,13 @@ async function listModelsFromAppServer(executable: string): Promise<ModelOption[
         const efforts = item.supportedReasoningEfforts?.length
           ? item.supportedReasoningEfforts.map((effort) => ({ id: effort.reasoningEffort, description: effort.description ?? "" }))
           : [{ id: item.defaultReasoningEffort ?? "medium", description: "" }];
-        models.push(ModelOptionSchema.parse({
+        const option = ModelOptionSchema.safeParse({
           id: item.id,
           displayName: item.displayName ?? item.id,
           defaultReasoningEffort: item.defaultReasoningEffort ?? efforts[0]!.id,
           reasoningEfforts: efforts,
-        }));
+        });
+        if (option.success) models.push(option.data);
       }
       if (page.nextCursor) requestPage(page.nextCursor);
       else finish();
@@ -334,7 +337,10 @@ async function listModelsFromAppServer(executable: string): Promise<ModelOption[
       stdout += String(chunk);
       const lines = stdout.split(/\r?\n/);
       stdout = lines.pop() ?? "";
-      for (const line of lines) handleLine(line);
+      for (const line of lines) {
+        try { handleLine(line); }
+        catch (error) { finish(error instanceof Error ? error : new Error(String(error))); return; }
+      }
     });
     child.stderr.on("data", (chunk) => { stderr = appendBounded(stderr, chunk); });
     child.on("error", (error) => finish(error));

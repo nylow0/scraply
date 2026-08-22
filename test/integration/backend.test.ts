@@ -98,6 +98,32 @@ describe("cutover backend", () => {
     client.close();
   });
 
+  test("still reports the codex probe when model discovery fails", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "scraply-model-listing-")); dirs.push(dir);
+    const handle = await startBackend({
+      dataDir: dir, dbPath: join(dir, "scraply.db"), bundledPromptsDir: join(process.cwd(), "prompts"), promptOverridesDir: join(dir, "prompts"),
+      appVersion: "test", getSecrets: () => ({ exaApiKey: "test-key" }),
+      providerValidation: {
+        probeCodex: async () => ({ detected: true, compatible: false, error: "Codex 0.1.0 is too old." }),
+        listCodexModels: async () => { throw new Error("Codex CLI not found on PATH"); },
+        validateExa: async () => ({ valid: true }),
+      },
+    }, () => undefined); handles.push(handle);
+    const get = async <T>(path: string) => {
+      const response = await fetch(`http://127.0.0.1:${handle.port}${path}`, { headers: { authorization: `Bearer ${handle.token}` } });
+      return { status: response.status, body: (await response.json() as { data: T }).data };
+    };
+
+    // A thrown listing must not sink validation, or the UI never leaves its "Checking Codex connection" state.
+    const validation = await get<{ setupComplete: boolean; codex: { detected: boolean; compatible: boolean; error?: string } }>("/validation");
+    expect(validation.status).toBe(200);
+    expect(validation.body).toMatchObject({ setupComplete: false, codex: { detected: true, compatible: false, error: "Codex 0.1.0 is too old." } });
+
+    const workspace = await get<{ validation: { codex: { error?: string } }; models: string[] }>("/workspace");
+    expect(workspace.body.validation.codex.error).toBe("Codex 0.1.0 is too old.");
+    expect(workspace.body.models).toEqual([DEFAULT_RUN_CONFIG.model]);
+  });
+
   test("rejects a start that the configured research mode cannot satisfy", async () => {
     const dir = mkdtempSync(join(tmpdir(), "scraply-start-guard-")); dirs.push(dir);
     const handle = await startBackend({
