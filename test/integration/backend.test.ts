@@ -151,7 +151,7 @@ describe("cutover backend", () => {
     await send("/run-config", { threadId, config: { ...base, researchMode: "explore-market" } });
     const withoutExa = await send("/research/start", { threadId });
     expect(withoutExa.status).toBe(409);
-    expect(withoutExa.body.error?.message).toBe("Connect Exa before exploring a market.");
+    expect(withoutExa.body.error?.message).toBe("Connect Exa before discovering problems.");
   });
 
   test("reuses an undeveloped known-problem root instead of stacking duplicates", () => {

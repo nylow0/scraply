@@ -52,7 +52,7 @@ function renderScope(result: Phase1AblationResult): string {
   return [
     "## Scope",
     `- **Title:** ${inline(scope.title)}`,
-    `- **Audience:** ${inline(scope.audience)}`,
+    `- **Audience:** ${inline(scope.audience) || "None"}`,
     `- **Domain:** ${inline(scope.domain)}`,
     `- **Observations:** ${inline(scope.observations) || "None"}`,
     "- **Off limits:**",

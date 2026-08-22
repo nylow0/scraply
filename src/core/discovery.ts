@@ -162,6 +162,9 @@ export async function harvestFactors(
   const rejections: FactorRejection[] = [];
   const extracted: Record<HarvestMode, number> = { domain: 0, audience: 0 };
 
+  // Audience mode runs even when the scope supplies no audience: the community sources it is
+  // restricted to are where lived complaints live, so the query planner infers who to look at from
+  // the starting context rather than the run losing half its evidence.
   for (const mode of ["domain", "audience"] as const) {
     const queries = await planQueries(scope, mode, depthConfig.queriesPerMode, dependencies);
     const searchedSources = await searchQueries(queries, mode, depthConfig.searchResultsPerQuery, dependencies);
