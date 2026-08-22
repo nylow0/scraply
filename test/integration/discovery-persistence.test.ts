@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseClient } from "../../src/db/client";
 import { DiscoveryRepository } from "../../src/db/repositories/discovery";
+import { DEFAULT_RUN_CONFIG } from "../../src/shared/schemas";
 
 const tempDirectories: string[] = [];
 
@@ -77,6 +78,26 @@ describe("discovery persistence", () => {
     }])).toThrow();
     expect(count(client, "sources")).toBe(0);
     expect(count(client, "factors")).toBe(0);
+    client.close();
+  });
+
+  test("atomically rolls back a known-problem root when graph persistence fails", () => {
+    const directory = mkdtempSync(join(tmpdir(), "scraply-known-root-"));
+    tempDirectories.push(directory);
+    const client = new DatabaseClient(join(directory, "scraply.db"));
+    const now = new Date().toISOString();
+    client.db.prepare("INSERT INTO threads (id, title, status, created_at, updated_at) VALUES ('thread-1', 'Known', 'configuring', ?, ?)").run(now, now);
+    client.db.exec(`
+      CREATE TRIGGER reject_known_problem BEFORE INSERT ON problems
+      BEGIN SELECT RAISE(ABORT, 'simulated problem write failure'); END;
+    `);
+    const repository = new DiscoveryRepository(client);
+    expect(() => repository.createKnownProblemRoot("thread-1", {
+      title: "Known", audience: "Operators", domain: "Operations", observations: "Manual work", offLimits: [],
+    }, "Operators lose time to manual work.", { ...DEFAULT_RUN_CONFIG, researchMode: "known-problem", knownProblem: "Operators lose time to manual work." })).toThrow("simulated problem write failure");
+    expect(count(client, "research_runs")).toBe(0);
+    expect(count(client, "scopes")).toBe(0);
+    expect(count(client, "problems")).toBe(0);
     client.close();
   });
 });

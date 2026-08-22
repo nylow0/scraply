@@ -19,11 +19,12 @@ export async function startMockBackend(_scenario: "fresh" | "interrupted" | "pro
   const threads: Array<Record<string, unknown>> = [];
   let activeThreadId: string | null = null;
   let scope: Record<string, unknown> | null = null;
+  let runConfig = DEFAULT_RUN_CONFIG;
   let status = "configuring";
   const workspace = () => ({
     validation, threads: threads.map((thread) => ({ ...thread, status })), activeThreadId, messages: [], scope,
-    runConfig: activeThreadId ? DEFAULT_RUN_CONFIG : null, models: ["gpt-5.6-luna"], modelOptions: [{ id: "gpt-5.6-luna", displayName: "GPT-5.6-Luna", defaultReasoningEffort: "medium", reasoningEfforts: [{ id: "medium", description: "Balanced reasoning" }] }], modelCatalog: { codex: ["gpt-5.6-luna"], favorites: [] }, presets: [],
-    problemCandidates: status === "problems-ready" ? [problem] : [], solutions: status === "solutions-ready" ? [solution] : [],
+    runConfig: activeThreadId ? runConfig : null, models: ["gpt-5.6-luna"], modelOptions: [{ id: "gpt-5.6-luna", displayName: "GPT-5.6-Luna", defaultReasoningEffort: "medium", reasoningEfforts: [{ id: "medium", description: "Balanced reasoning" }] }], modelCatalog: { codex: ["gpt-5.6-luna"], favorites: [] }, presets: [],
+    problemCandidates: status !== "configuring" ? [problem] : [], solutions: status === "solutions-ready" ? [solution] : [],
     latestResearchRun: status === "configuring" ? null : { runId: "run-1", status: "completed", problemId: status === "solutions-ready" ? "problem-1" : null, codexCalls: 8, exaSearches: 10, projectedCodexCalls: 20, projectedExaSearches: 20, lastActivity: "Problem verification completed" }, pendingRuns: [],
   });
   const server = createServer(async (req, res) => {
@@ -38,9 +39,11 @@ export async function startMockBackend(_scenario: "fresh" | "interrupted" | "pro
     if (url.pathname === "/threads/select") return ok(res, workspace());
     if (url.pathname === "/threads/delete") { threads.length = 0; activeThreadId = null; return ok(res, workspace()); }
     if (url.pathname === "/scope") { scope = (body as { scope: Record<string, unknown> }).scope; threads[0]!.title = String(scope.title); return ok(res, workspace()); }
-    if (url.pathname === "/run-config" || url.pathname === "/models/favorite") return ok(res, workspace());
+    if (url.pathname === "/run-config") { runConfig = (body as { config: typeof DEFAULT_RUN_CONFIG }).config; return ok(res, workspace()); }
+    if (url.pathname === "/models/favorite") return ok(res, workspace());
     if (url.pathname === "/research/start") { status = "problems-ready"; return ok(res, { runId: "run-1", workspace: workspace() }); }
     if (url.pathname === "/research/select-problems") { status = "solutions-ready"; return ok(res, workspace()); }
+    if (url.pathname === "/research/export") return ok(res, { filename: "repair-delays-research.json", content: JSON.stringify({ schemaVersion: 1, problems: [problem] }) });
     if (url.pathname === "/ideas/export") return ok(res, { files: [{ filename: "repair-delays.md", content: "# Repair delays" }] });
     return reply(res, 404, { ok: false, error: { code: "not_found", message: "Not found" } });
   });

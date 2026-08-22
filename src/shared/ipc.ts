@@ -50,6 +50,7 @@ export const SelectProblemsSchema = z.object({
   userProblem: z.string().trim().max(2_000).nullable(),
 }).strict();
 export const ExportIdeasRequestSchema = z.object({ threadId: EntityIdSchema, format: z.enum(["markdown", "json"]).default("markdown") });
+export const ExportResearchRequestSchema = z.object({ threadId: EntityIdSchema });
 export const GetSourceDetailRequestSchema = z.object({ sourceId: EntityIdSchema });
 export const GetIdeaDetailRequestSchema = z.object({ ideaId: EntityIdSchema });
 export const OpenExternalUrlRequestSchema = z.object({ url: z.string().trim().min(1).max(2_048) });
@@ -138,7 +139,7 @@ export const IPC_CHANNELS = {
   DELETE_THREAD: "scraply:delete-thread", SAVE_SCOPE: "scraply:save-scope", SAVE_RUN_CONFIG: "scraply:save-run-config",
   SAVE_FAVORITE_MODEL: "scraply:save-favorite-model", START_RESEARCH: "scraply:start-research",
   CANCEL_RESEARCH: "scraply:cancel-research", RESUME_RESEARCH: "scraply:resume-research",
-  SELECT_PROBLEMS: "scraply:select-problems", EXPORT_IDEAS: "scraply:export-ideas",
+  SELECT_PROBLEMS: "scraply:select-problems", EXPORT_RESEARCH: "scraply:export-research", EXPORT_IDEAS: "scraply:export-ideas",
   GET_SOURCE_DETAIL: "scraply:get-source-detail", GET_IDEA_DETAIL: "scraply:get-idea-detail",
   OPEN_EXTERNAL_URL: "scraply:open-external-url", BACKEND_EVENT: "scraply:backend-event",
 } as const;

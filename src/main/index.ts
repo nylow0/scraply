@@ -10,6 +10,7 @@ import {
   CreateThreadRequestSchema,
   DeleteThreadRequestSchema,
   ExportIdeasRequestSchema,
+  ExportResearchRequestSchema,
   GetIdeaDetailRequestSchema,
   GetSourceDetailRequestSchema,
   IPC_CHANNELS,
@@ -465,6 +466,20 @@ function registerIpc(): void {
   handle(IPC_CHANNELS.CANCEL_RESEARCH, (body) => post("/research/cancel", CancelResearchSchema.parse(body)));
   handle(IPC_CHANNELS.RESUME_RESEARCH, (body) => post("/research/resume", ResumeResearchSchema.parse(body)));
   handle(IPC_CHANNELS.SELECT_PROBLEMS, (body) => post("/research/select-problems", SelectProblemsSchema.parse(body)));
+  handle(IPC_CHANNELS.EXPORT_RESEARCH, async (body) => {
+    const payload = ExportResearchRequestSchema.parse(body);
+    const bundle = await post("/research/export", payload) as { filename: string; content: string };
+    if (!mainWindow) throw new AppError("backend_unavailable");
+    const filename = bundle.filename.replace(/[^a-zA-Z0-9._-]/g, "-");
+    const selection = await dialog.showSaveDialog(mainWindow, {
+      title: "Export research JSON",
+      defaultPath: filename,
+      filters: [{ name: "JSON", extensions: ["json"] }],
+    });
+    if (selection.canceled || !selection.filePath) return { cancelled: true };
+    writeFileSync(selection.filePath, bundle.content, "utf8");
+    return { cancelled: false, file: selection.filePath };
+  });
   handle(IPC_CHANNELS.EXPORT_IDEAS, async (body) => {
     const payload = ExportIdeasRequestSchema.parse(body);
     const bundle = await post("/ideas/export", payload) as { files: Array<{ filename: string; content: string }> };

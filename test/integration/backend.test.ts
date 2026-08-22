@@ -4,6 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { startBackend, type BackendHandle } from "../../src/backend/server";
 import { DatabaseClient } from "../../src/db/client";
+import { DiscoveryRepository } from "../../src/db/repositories/discovery";
+import { DEFAULT_RUN_CONFIG } from "../../src/shared/schemas";
 
 const dirs: string[] = [];
 const handles: BackendHandle[] = [];
@@ -47,6 +49,106 @@ describe("cutover backend", () => {
     expect(workspace.scope).toEqual({ title: "Repair shops", audience: "Independent shops", domain: "Parts sourcing", observations: "", offLimits: ["Inventory"] });
   });
 
+  test("starts a known problem without Exa and persists a synthetic discovery root", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "scraply-known-problem-")); dirs.push(dir);
+    const dbPath = join(dir, "scraply.db");
+    let modelCalls = 0;
+    const handle = await startBackend({
+      dataDir: dir, dbPath, bundledPromptsDir: join(process.cwd(), "prompts"), promptOverridesDir: join(dir, "prompts"),
+      appVersion: "test", getSecrets: () => ({ exaApiKey: null }),
+      modelClients: { codex: { structuredCompletion: async (_model, _system, _user, schema) => {
+        modelCalls += 1;
+        const shape = schema.safeParse({ solutions: [] });
+        if (shape.success) throw new Error("stop after development starts");
+        throw new Error("unexpected model call");
+      } } },
+      providerValidation: {
+        probeCodex: async () => ({ detected: true, compatible: true }),
+        listCodexModels: async () => [modelOption("gpt-5.6-luna")],
+        validateExa: async () => { throw new Error("Exa validation must not run without a key"); },
+      },
+    }, () => undefined); handles.push(handle);
+    const post = async (path: string, body: unknown) => {
+      const response = await fetch(`http://127.0.0.1:${handle.port}${path}`, { method: "POST", headers: { authorization: `Bearer ${handle.token}`, "content-type": "application/json" }, body: JSON.stringify(body) });
+      expect(response.status).toBe(200);
+      return (await response.json() as { data: unknown }).data;
+    };
+    const created = await post("/threads", {}) as { thread: { id: string } };
+    const threadId = created.thread.id;
+    await post("/scope", { threadId, scope: { title: "Known delay", audience: "", domain: "", observations: "", offLimits: [] } });
+    const config = {
+      model: "gpt-5.6-luna", reasoningEffort: "medium", discoveryDepth: "standard", maxRunMinutes: 90,
+      researchMode: "known-problem", knownProblem: "Repair shops cannot predict parts arrival times.",
+    } as const;
+    await post("/run-config", { threadId, config });
+    await post("/research/start", { threadId });
+
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    const client = new DatabaseClient(dbPath);
+    const runs = client.db.prepare("SELECT status, problem_id FROM research_runs WHERE thread_id = ? ORDER BY created_at, rowid").all(threadId) as Array<{ status: string; problem_id: string | null }>;
+    expect(runs).toHaveLength(2);
+    expect(runs[0]).toEqual({ status: "completed", problem_id: null });
+    expect(runs[1]!.problem_id).not.toBeNull();
+    expect(client.db.prepare("SELECT statement, verdict, selected_at IS NOT NULL AS selected FROM problems").get()).toEqual({
+      statement: "Repair shops cannot predict parts arrival times.", verdict: "user-asserted", selected: 1,
+    });
+    expect(client.db.prepare("SELECT COUNT(*) AS count FROM cost_ledger WHERE provider = 'exa'").get()).toEqual({ count: 0 });
+    expect(client.db.prepare("SELECT COUNT(*) AS count FROM factors").get()).toEqual({ count: 0 });
+    expect(modelCalls).toBeGreaterThan(0);
+    client.close();
+  });
+
+  test("rejects a start that the configured research mode cannot satisfy", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "scraply-start-guard-")); dirs.push(dir);
+    const handle = await startBackend({
+      dataDir: dir, dbPath: join(dir, "scraply.db"), bundledPromptsDir: join(process.cwd(), "prompts"), promptOverridesDir: join(dir, "prompts"),
+      appVersion: "test", getSecrets: () => ({ exaApiKey: null }),
+      providerValidation: {
+        probeCodex: async () => ({ detected: true, compatible: true }),
+        listCodexModels: async () => [modelOption("gpt-5.6-luna")],
+        validateExa: async () => { throw new Error("Exa validation must not run without a key"); },
+      },
+    }, () => undefined); handles.push(handle);
+    const send = async (path: string, body: unknown) => {
+      const response = await fetch(`http://127.0.0.1:${handle.port}${path}`, { method: "POST", headers: { authorization: `Bearer ${handle.token}`, "content-type": "application/json" }, body: JSON.stringify(body) });
+      return { status: response.status, body: await response.json() as { data?: { thread: { id: string } }; error?: { message: string } } };
+    };
+    const threadId = (await send("/threads", {})).body.data!.thread.id;
+    await send("/scope", { threadId, scope: { title: "Known delay", audience: "", domain: "", observations: "", offLimits: [] } });
+
+    const base = { model: "gpt-5.6-luna", reasoningEffort: "medium", discoveryDepth: "standard", maxRunMinutes: 90 } as const;
+    await send("/run-config", { threadId, config: { ...base, researchMode: "known-problem", knownProblem: "   " } });
+    const blankStatement = await send("/research/start", { threadId });
+    expect(blankStatement.status).toBe(400);
+    expect(blankStatement.body.error?.message).toBe("Problem statement is required.");
+
+    await send("/run-config", { threadId, config: { ...base, researchMode: "explore-market" } });
+    const withoutExa = await send("/research/start", { threadId });
+    expect(withoutExa.status).toBe(409);
+    expect(withoutExa.body.error?.message).toBe("Connect Exa before exploring a market.");
+  });
+
+  test("reuses an undeveloped known-problem root instead of stacking duplicates", () => {
+    const dir = mkdtempSync(join(tmpdir(), "scraply-known-reuse-")); dirs.push(dir);
+    const client = new DatabaseClient(join(dir, "scraply.db"));
+    const now = new Date().toISOString();
+    client.db.prepare("INSERT INTO threads (id, title, status, created_at, updated_at) VALUES ('thread-1', 'Known', 'configuring', ?, ?)").run(now, now);
+    const repository = new DiscoveryRepository(client);
+    const scope = { title: "Known", audience: "", domain: "", observations: "", offLimits: [] };
+    const config = { ...DEFAULT_RUN_CONFIG, researchMode: "known-problem" as const, knownProblem: "Parts arrival is unpredictable." };
+
+    const first = repository.createKnownProblemRoot("thread-1", scope, config.knownProblem, config);
+    // The same statement re-submitted before development completes must resolve to the existing root.
+    const second = repository.createKnownProblemRoot("thread-1", scope, `  ${config.knownProblem}  `, config);
+    expect(second).toEqual(first);
+
+    // A different statement is a different problem and earns its own root.
+    const other = repository.createKnownProblemRoot("thread-1", scope, "Suppliers batch their shipments.", config);
+    expect(other.problemId).not.toBe(first.problemId);
+    expect((client.db.prepare("SELECT COUNT(*) AS count FROM research_runs").get() as { count: number }).count).toBe(2);
+    client.close();
+  });
+
   test("shows and exports solutions only for selected problems in the latest discovery", async () => {
     const dir = mkdtempSync(join(tmpdir(), "scraply-backend-")); dirs.push(dir);
     const dbPath = join(dir, "scraply.db");
@@ -76,26 +178,72 @@ describe("cutover backend", () => {
       INSERT INTO solutions (id, problem_id, mechanism, description, respects_off_limits, respects_off_limits_why, created_at, research_run_id)
       VALUES (?, ?, ?, '', 1, '', ?, ?)
     `);
-    insertRun.run("discovery-old", created.thread.id, null, "2026-01-01T00:00:01.000Z", now);
+    insertRun.run("discovery-old", created.thread.id, null, now, now);
     insertProblem.run("problem-old", "discovery-old", "Superseded problem", now, now);
-    insertRun.run("development-old", created.thread.id, "problem-old", "2026-01-01T00:00:02.000Z", now);
+    insertRun.run("development-old", created.thread.id, "problem-old", now, now);
     insertSolution.run("solution-old", "problem-old", "Superseded solution", now, "development-old");
-    insertRun.run("discovery-latest", created.thread.id, null, "2026-01-01T00:00:03.000Z", now);
+    insertRun.run("discovery-latest", created.thread.id, null, now, now);
     insertProblem.run("problem-selected", "discovery-latest", "Selected problem", now, now);
     insertProblem.run("problem-deselected", "discovery-latest", "Deselected problem", null, now);
-    insertRun.run("development-selected", created.thread.id, "problem-selected", "2026-01-01T00:00:04.000Z", now);
-    insertRun.run("development-deselected", created.thread.id, "problem-deselected", "2026-01-01T00:00:05.000Z", now);
+    insertRun.run("development-selected", created.thread.id, "problem-selected", now, now);
+    insertRun.run("development-deselected", created.thread.id, "problem-deselected", now, now);
     insertSolution.run("solution-selected", "problem-selected", "Current solution", now, "development-selected");
     insertSolution.run("solution-deselected", "problem-deselected", "Deselected solution", now, "development-deselected");
     client.close();
 
     const workspaceResponse = await fetch(`http://127.0.0.1:${handle.port}/workspace`, { headers: { authorization: `Bearer ${handle.token}` } });
     expect(workspaceResponse.status).toBe(200);
-    const workspace = (await workspaceResponse.json() as { data: { solutions: Array<{ id: string }> } }).data;
+    const workspace = (await workspaceResponse.json() as { data: { solutions: Array<{ id: string }>; latestResearchRun: { problemId: string | null } } }).data;
     expect(workspace.solutions.map((solution) => solution.id)).toEqual(["solution-selected"]);
+    expect(workspace.latestResearchRun.problemId).toBe("problem-deselected");
     const exported = await post("/ideas/export", { threadId: created.thread.id, format: "json" }) as { files: Array<{ filename: string; content: string }> };
     expect(exported.files).toHaveLength(1);
     expect(JSON.parse(exported.files[0]!.content).map((solution: { id: string }) => solution.id)).toEqual(["solution-selected"]);
+  });
+
+  test("exports completed research before solution development", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "scraply-research-export-")); dirs.push(dir);
+    const dbPath = join(dir, "scraply.db");
+    const handle = await startBackend({
+      dataDir: dir, dbPath, bundledPromptsDir: join(process.cwd(), "prompts"), promptOverridesDir: join(dir, "prompts"),
+      appVersion: "test", getSecrets: () => ({ exaApiKey: "test-key" }),
+      providerValidation: { probeCodex: async () => ({ detected: true, compatible: true }), listCodexModels: async () => [modelOption("gpt-test")], validateExa: async () => ({ valid: true }) },
+    }, () => undefined); handles.push(handle);
+    const post = async (path: string, body: unknown) => {
+      const response = await fetch(`http://127.0.0.1:${handle.port}${path}`, { method: "POST", headers: { authorization: `Bearer ${handle.token}`, "content-type": "application/json" }, body: JSON.stringify(body) });
+      expect(response.status).toBe(200);
+      return (await response.json() as { data: unknown }).data;
+    };
+    const created = await post("/threads", {}) as { thread: { id: string } };
+    const scope = { title: "Repair evidence", audience: "Independent shops", domain: "Parts sourcing", observations: "", offLimits: ["Inventory"] };
+    await post("/scope", { threadId: created.thread.id, scope });
+    const client = new DatabaseClient(dbPath);
+    const config = { ...DEFAULT_RUN_CONFIG, model: "gpt-test" };
+    const now = "2026-08-21T12:00:00.000Z";
+    client.db.prepare(`INSERT INTO research_runs (id, thread_id, status, config_json, completion_reason, problem_id, created_at, updated_at) VALUES (?, ?, 'completed', ?, 'Discovery completed.', NULL, ?, ?)`)
+      .run("discovery-export", created.thread.id, JSON.stringify(config), now, now);
+    client.db.prepare(`INSERT INTO scopes (id, research_run_id, title, audience, domain, observations, off_limits_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      .run("scope-export", "discovery-export", scope.title, scope.audience, scope.domain, scope.observations, JSON.stringify(scope.offLimits), now, now);
+    client.db.prepare(`INSERT INTO sources (id, research_run_id, provider_source_id, canonical_url, title, retrieved_text, content_hash, retrieved_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
+      .run("source-export", "discovery-export", "provider-1", "https://example.com/evidence", "Repair evidence", "Observed delivery delays.", "hash-1", now);
+    client.db.prepare(`INSERT INTO factors (id, research_run_id, subject, behavior, quote, source_id, harvest_mode, model_confidence, created_at) VALUES (?, ?, ?, ?, ?, ?, 'domain', 0.83, ?)`)
+      .run("factor-export", "discovery-export", "Repair shops", "wait for parts", "Observed delivery delays.", "source-export", now);
+    client.db.prepare(`INSERT INTO problems (id, discovery_run_id, statement, why_it_persists, affected, scale_estimate, verdict, verdict_reason, verdict_source_ids_json, selected_at, created_at) VALUES (?, ?, ?, ?, ?, ?, 'confirmed', ?, ?, NULL, ?)`)
+      .run("problem-export", "discovery-export", "Parts arrival is unpredictable.", "Supplier data is fragmented.", "Independent shops", "Thousands", "Evidence confirms recurring delays.", JSON.stringify(["source-export"]), now);
+    client.db.prepare("INSERT INTO problem_factors (problem_id, factor_id) VALUES (?, ?)").run("problem-export", "factor-export");
+    client.close();
+
+    // Editing the scope after the run must not rewrite what the completed run is exported as having used.
+    await post("/scope", { threadId: created.thread.id, scope: { ...scope, title: "Edited later", domain: "Something else" } });
+
+    const bundle = await post("/research/export", { threadId: created.thread.id }) as { filename: string; content: string };
+    const exported = JSON.parse(bundle.content) as { schemaVersion: number; scope: typeof scope; sources: Array<{ text: string }>; factors: Array<{ sourceId: string }>; problems: Array<{ id: string }> };
+    expect(bundle.filename).toBe("edited-later-research.json");
+    expect(exported.schemaVersion).toBe(1);
+    expect(exported.scope).toEqual(scope);
+    expect(exported.sources[0]?.text).toBe("Observed delivery delays.");
+    expect(exported.factors[0]?.sourceId).toBe("source-export");
+    expect(exported.problems.map((problem) => problem.id)).toEqual(["problem-export"]);
   });
 
   test("cancels and deletes stale runs without provider credentials", async () => {

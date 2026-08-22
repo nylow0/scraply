@@ -16,19 +16,31 @@ export const SourceDetailSchema = SourceSchema.extend({
 });
 
 export const DiscoveryDepthSchema = z.enum(["quick", "standard", "deep"]);
+export const ResearchModeSchema = z.enum(["explore-market", "known-problem"]);
 export const ReasoningEffortSchema = z.string().trim().min(1).regex(/^[a-z0-9_-]+$/);
-export const RunConfigSchema = z.object({
+const RunConfigInputSchema = z.object({
   model: z.string().trim().min(1),
   reasoningEffort: ReasoningEffortSchema,
   discoveryDepth: DiscoveryDepthSchema,
   maxRunMinutes: z.number().int().min(5).max(240),
+  researchMode: ResearchModeSchema.optional(),
+  knownProblem: z.string().trim().max(2_000).optional(),
 }).strict();
+// Backfills configs persisted before research modes existed. The transform makes this a ZodEffects, so build
+// derived schemas (.extend/.partial/.shape) from RunConfigInputSchema instead.
+export const RunConfigSchema = RunConfigInputSchema.transform((value) => ({
+  ...value,
+  researchMode: value.researchMode ?? "explore-market" as const,
+  knownProblem: value.knownProblem ?? "",
+}));
 
 export const DEFAULT_RUN_CONFIG = {
   model: "gpt-5.6-luna",
   reasoningEffort: "medium",
   discoveryDepth: "standard",
   maxRunMinutes: 90,
+  researchMode: "explore-market",
+  knownProblem: "",
 } satisfies RunConfig;
 
 export const ModelOptionSchema = z.object({
@@ -79,6 +91,7 @@ export const ThreadSchema = z.object({
 export type Source = z.infer<typeof SourceSchema>;
 export type SourceDetail = z.infer<typeof SourceDetailSchema>;
 export type DiscoveryDepth = z.infer<typeof DiscoveryDepthSchema>;
+export type ResearchMode = z.infer<typeof ResearchModeSchema>;
 export type ReasoningEffort = z.infer<typeof ReasoningEffortSchema>;
 export type RunConfig = z.infer<typeof RunConfigSchema>;
 export type ModelOption = z.infer<typeof ModelOptionSchema>;

@@ -1,26 +1,185 @@
 <script lang="ts">
   import type { SolutionView } from "../../shared/ipc";
-  let { solutions, busy, onExport, onReview }:{solutions:SolutionView[];busy:boolean;onExport:(format:"markdown"|"json")=>Promise<void>;onReview:()=>void}=$props();
-  let catastrophicOnly=$state(false);
-  let visible=$derived(catastrophicOnly?solutions.filter((item)=>item.unaddressedCatastrophicRisks>0):solutions);
+  import SolutionListItem from "./SolutionListItem.svelte";
+
+  let {
+    solutions,
+    busy,
+    onExport,
+    onReview,
+  }: {
+    solutions: SolutionView[];
+    busy: boolean;
+    onExport: (format: "markdown" | "json") => Promise<void>;
+    onReview: () => void;
+  } = $props();
+
+  let catastrophicOnly = $state(false);
+  let visible = $derived(
+    catastrophicOnly
+      ? solutions.filter((item) => item.unaddressedCatastrophicRisks > 0)
+      : solutions,
+  );
 </script>
+
 <section class="workspace">
-  <header><div><p class="eyebrow">Development output</p><h1>Solutions, consequences, and failure modes.</h1><p>Sorted by independently confirmed core outcomes, descending. Risk never decides viability for you.</p></div><div class="actions"><button onclick={onReview}>Review problem selection</button><button class:active={catastrophicOnly} onclick={()=>catastrophicOnly=!catastrophicOnly}>Unaddressed catastrophic risk</button><button disabled={busy} onclick={()=>onExport("markdown")}>Export Markdown</button><button disabled={busy} onclick={()=>onExport("json")}>JSON</button></div></header>
-  <p class="legend">Dotted values are model-estimated. Amber borders mark weak or adverse problem verdicts.</p>
-  <div class="solutions">
-    {#each visible as idea,index (idea.id)}
-      <article class:warning={["insufficient-evidence","overstated","attempted-and-failed"].includes(idea.problemVerdict)} style={`--index:${index}`}>
-        <div class="rank">{String(index+1).padStart(2,"0")}</div><div class="content">
-          <p class="problem">For: {idea.problemStatement}</p><h2>{idea.mechanism}</h2><p class="description">{idea.description}</p>
-          <p class="offlimits" data-ok={idea.respectsOffLimits}>{idea.respectsOffLimits?"Respects off-limits":"Possible off-limits conflict"} · {idea.respectsOffLimitsWhy}</p>
-          <div class="summary"><span><strong>{idea.confirmedCoreOutcomes}</strong> core outcomes</span><span><strong>{idea.risks.length}</strong> risks</span><span><strong>{idea.risks.filter((r)=>r.impact==="project ends").length}</strong> project-ending</span><span class:danger={idea.unaddressedCatastrophicRisks>0}><strong>{idea.unaddressedCatastrophicRisks}</strong> unaddressed catastrophic</span></div>
-          <details open><summary>Outcomes</summary><div class="outcomes">{#each idea.outcomes as outcome}<div class:negative={outcome.direction==="negative"}><span>{outcome.direction}</span><p>{outcome.description}</p><small>{outcome.affects} · {outcome.addressesCore?"addresses core":"indirect"}</small></div>{/each}</div></details>
-          <details open><summary>Risks and proposed responses</summary><div class="risks">{#each idea.risks as risk}<div class:catastrophic={risk.impact==="project ends"&&risk.mitigations.length===0}><div class="risk-head"><span class="estimated">{risk.likelihood}</span><span class="estimated">{risk.impact}</span></div><p>{risk.description}</p>{#if risk.mitigations.length}{#each risk.mitigations as mitigation}<div class="mitigation"><strong>Proposed response</strong><p>{mitigation.approach}</p><small>Cost: {mitigation.cost}</small><small>Fails if: {mitigation.failsIf}</small></div>{/each}{:else if risk.impact==="project ends"}<strong class="flag">Unaddressed catastrophic risk</strong>{/if}</div>{/each}</div></details>
-        </div>
-      </article>
-    {:else}<div class="empty"><h2>No solutions match this filter.</h2><p>Clear the catastrophic-risk filter to see the full set.</p></div>{/each}
+  <header>
+    <div>
+      <p class="eyebrow">Development output</p>
+      <h1>{solutions.length} solution {solutions.length === 1 ? "idea" : "ideas"}</h1>
+      <p class="intro">Scan the list first. Expand only the idea and evidence you want to inspect.</p>
+    </div>
+    <div class="actions" aria-label="Solution actions">
+      <button onclick={onReview}>Review problems</button>
+      <button
+        class:active={catastrophicOnly}
+        aria-pressed={catastrophicOnly}
+        onclick={() => catastrophicOnly = !catastrophicOnly}
+      >Catastrophic gaps</button>
+      <button disabled={busy} onclick={() => onExport("markdown")}>Export Markdown</button>
+      <button disabled={busy} onclick={() => onExport("json")}>JSON</button>
+    </div>
+  </header>
+
+  <div class="list-heading" aria-hidden="true">
+    <span>Rank and idea</span>
+    <span>Evaluation snapshot</span>
+    <span></span>
   </div>
+
+  <div class="solutions">
+    {#each visible as idea, index (idea.id)}
+      <SolutionListItem {idea} rank={index + 1} />
+    {:else}
+      <div class="empty">
+        <h2>No ideas match this filter.</h2>
+        <p>Clear “Catastrophic gaps” to return to the complete solution list.</p>
+        <button onclick={() => catastrophicOnly = false}>Show every idea</button>
+      </div>
+    {/each}
+  </div>
+
+  <p class="legend">Dotted labels are model-estimated. Amber marks ideas developed from weak or adverse problem evidence.</p>
 </section>
+
 <style>
-  .workspace{max-width:1180px;margin:0 auto;padding:42px var(--page-inline) 100px}.eyebrow{font:600 11px var(--mono);letter-spacing:.12em;text-transform:uppercase;color:var(--accent-strong)}header{display:grid;grid-template-columns:1.5fr 1fr;gap:40px;align-items:end}h1{font-size:clamp(30px,4vw,46px);letter-spacing:-.04em;line-height:1.05;margin:9px 0}header p,.legend{color:var(--muted)}.actions{display:flex;flex-wrap:wrap;gap:8px;justify-content:flex-end}.actions button{border:1px solid var(--border-strong);background:var(--surface);color:var(--text);border-radius:8px;padding:9px 11px}.actions button.active{border-color:#b98645;color:#e4b46f}.legend{margin:26px 0 14px;border-top:1px solid var(--border);padding-top:14px;font-size:12px}.solutions{display:grid;gap:18px}article{display:grid;grid-template-columns:56px 1fr;border-top:1px solid var(--border-strong);padding:26px 0;animation:enter .45s var(--ease) both;animation-delay:calc(var(--index)*70ms)}article.warning{border-left:3px solid #b98645;padding-left:16px}.rank{font:500 12px var(--mono);color:var(--subtle)}.problem{font:600 11px var(--mono);color:var(--muted)}h2{font-size:25px;letter-spacing:-.03em;margin:7px 0}.description{max-width:760px;color:var(--muted);font-size:15px}.offlimits{font-size:12px;color:#d6a66a}.offlimits[data-ok="true"]{color:var(--success)}.summary{display:grid;grid-template-columns:repeat(4,1fr);gap:1px;background:var(--border);margin:22px 0}.summary span{background:var(--surface);padding:14px;color:var(--muted)}.summary strong{display:block;font:650 20px var(--mono);color:var(--text)}.summary .danger strong{color:var(--danger)}details{border-top:1px solid var(--border);padding:16px 0}summary{font-weight:650;cursor:pointer}.outcomes,.risks{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:14px}.outcomes>div,.risks>div{padding:14px;border:1px solid var(--border);background:var(--surface)}.outcomes span,.risk-head span{font:600 10px var(--mono);text-transform:uppercase;color:var(--success)}.outcomes .negative span{color:var(--danger)}.outcomes p,.risks p{margin:6px 0}.outcomes small,.mitigation small{display:block;color:var(--subtle)}.risk-head{display:flex;gap:7px}.risk-head span{color:var(--muted);border:1px solid var(--border-strong);border-radius:99px;padding:3px 7px}.estimated{text-decoration:underline dotted;text-underline-offset:3px}.catastrophic{border-left:3px solid var(--danger)!important}.mitigation{border-top:1px solid var(--border);margin-top:12px;padding-top:12px}.mitigation strong,.flag{font-size:11px;text-transform:uppercase;color:var(--accent-strong)}.flag{color:var(--danger)}@keyframes enter{from{opacity:0;transform:translateY(8px)}}@media(max-width:850px){.workspace{padding:28px 20px 70px}header{grid-template-columns:1fr}.actions{justify-content:flex-start}.summary{grid-template-columns:1fr 1fr}.outcomes,.risks{grid-template-columns:1fr}article{grid-template-columns:36px 1fr}}
+  .workspace {
+    max-width: var(--page-max);
+    margin: 0 auto;
+    padding: var(--page-top) var(--page-inline) 100px;
+  }
+
+  header {
+    display: grid;
+    grid-template-columns: minmax(280px, 1fr) auto;
+    gap: 28px;
+    align-items: end;
+    padding-bottom: 24px;
+  }
+
+  .eyebrow {
+    margin: 0;
+    font: 600 11px var(--mono);
+    letter-spacing: .12em;
+    text-transform: uppercase;
+    color: var(--accent-strong);
+  }
+
+  h1 {
+    margin: 7px 0 5px;
+    font-size: clamp(28px, 3.3vw, 40px);
+    line-height: 1.05;
+    letter-spacing: -.04em;
+  }
+
+  .intro {
+    max-width: 620px;
+    margin: 0;
+    color: var(--muted);
+  }
+
+  .actions {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    gap: 7px;
+  }
+
+  .actions button,
+  .empty button {
+    min-height: 36px;
+    padding: 8px 11px;
+    border: 1px solid var(--border-strong);
+    border-radius: 7px;
+    background: var(--surface);
+    color: var(--text);
+  }
+
+  .actions button:hover,
+  .empty button:hover {
+    border-color: var(--muted);
+    background: var(--surface-2);
+  }
+
+  .actions button.active {
+    border-color: #b98645;
+    color: #e4b46f;
+    background: color-mix(in srgb, #b98645 10%, var(--surface));
+  }
+
+  .list-heading {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto 20px;
+    gap: 24px;
+    padding: 10px 18px 9px 64px;
+    border-block: 1px solid var(--border);
+    font: 600 10px var(--mono);
+    letter-spacing: .08em;
+    text-transform: uppercase;
+    color: var(--subtle);
+  }
+
+  .solutions {
+    border-bottom: 1px solid var(--border);
+  }
+
+  .empty {
+    display: grid;
+    justify-items: start;
+    gap: 8px;
+    padding: 44px 20px;
+  }
+
+  .empty h2,
+  .empty p {
+    margin: 0;
+  }
+
+  .empty p,
+  .legend {
+    color: var(--muted);
+  }
+
+  .legend {
+    margin: 14px 0 0;
+    font-size: 11px;
+  }
+
+  @media (max-width: 850px) {
+    .workspace {
+      padding: 26px 20px 72px;
+    }
+
+    header {
+      grid-template-columns: 1fr;
+    }
+
+    .actions {
+      justify-content: flex-start;
+    }
+
+    .list-heading {
+      display: none;
+    }
+  }
 </style>

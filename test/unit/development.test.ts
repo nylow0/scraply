@@ -18,9 +18,13 @@ import {
 describe("Phase 2 development", () => {
   test("builds the complete chain with an independent outcome judgment", async () => {
     const judgeInputs: string[] = [];
+    let solutionInput = "";
     const result = await runDevelopment(scope(), problem(), factors(), {
       model: "test-model",
-      modelClient: modelClient((user, schema) => successfulCompletion(user, schema, judgeInputs)),
+      modelClient: modelClient((user, schema) => {
+        if (schema._def === SolutionsOutputSchema._def) solutionInput = user;
+        return successfulCompletion(user, schema, judgeInputs);
+      }),
     });
 
     expect(result.modelCalls).toBe(14);
@@ -33,6 +37,9 @@ describe("Phase 2 development", () => {
     expect(judgeInputs[0]).toContain(problem().statement);
     expect(judgeInputs[0]).not.toContain("Mechanism 1");
     expect(judgeInputs[0]).not.toContain("Build approach 1");
+    expect(solutionInput).toContain('"audience":"Independent sellers"');
+    expect(solutionInput).toContain('"domain":"Claims operations"');
+    expect(solutionInput).toContain('"observations":"Claims are repeatedly filed."');
   });
 
   test("retries when a response fails a stage-level semantic constraint", async () => {

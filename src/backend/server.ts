@@ -10,7 +10,7 @@ import type { StructuredModelClient } from "../providers/structured";
 import { AppError, toErrorPayload } from "../shared/errors";
 import { MAX_DEVELOPMENT_PROJECTED_CALLS } from "../shared/development-projection";
 import {
-  CreateThreadRequestSchema, DeleteThreadRequestSchema, ExportIdeasRequestSchema,
+  CreateThreadRequestSchema, DeleteThreadRequestSchema, ExportIdeasRequestSchema, ExportResearchRequestSchema,
   GetIdeaDetailRequestSchema, GetSourceDetailRequestSchema, HealthResponseSchema,
   ResumeResearchSchema, SaveFavoriteModelSchema, SaveRunConfigSchema, SaveScopeSchema,
   SelectProblemsSchema, SelectThreadRequestSchema, SourceDetailSchema, StartResearchSchema,
@@ -40,11 +40,6 @@ export interface BackendContext {
   };
 }
 
-export function createBackendClients(secrets: { exaApiKey: string | null }) {
-  if (!secrets.exaApiKey) throw new AppError("conflict", "Configure Exa before starting research.");
-  return { codex: new CodexClient(), exa: new ExaClient(secrets.exaApiKey) };
-}
-
 function fallbackModelOption(): ModelOption {
   return {
     id: DEFAULT_RUN_CONFIG.model,
@@ -55,6 +50,13 @@ function fallbackModelOption(): ModelOption {
 }
 export function isSetupComplete(exa: { valid: boolean }, codex: { detected: boolean; compatible: boolean }): boolean {
   return exa.valid && codex.detected && codex.compatible;
+}
+export function isResearchModeReady(
+  mode: RunConfig["researchMode"],
+  exa: { valid: boolean },
+  codex: { detected: boolean; compatible: boolean },
+): boolean {
+  return codex.detected && codex.compatible && (mode === "known-problem" || exa.valid);
 }
 export interface BackendHandle { port: number; token: string; close: () => Promise<void>; secretsChanged: () => void }
 
@@ -72,18 +74,20 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
   let engine: ResearchEngine | null = null;
   const subscribers = new Set<(event: ResearchEvent) => void>();
 
-  const clients = () => createBackendClients(context.getSecrets());
   const emitEvent = (event: ResearchEvent) => {
     onEvent(event);
     for (const subscriber of subscribers) subscriber(event);
   };
   const ensureEngine = () => {
     if (!engine) {
-      const built = clients();
+      // Known-problem runs never search, so the engine is usable without an Exa key; discovery fails loudly instead.
+      const exaApiKey = context.getSecrets().exaApiKey;
       engine = new ResearchEngine({
         db,
-        modelClients: { codex: context.modelClients?.codex ?? built.codex },
-        exa: built.exa,
+        modelClients: { codex: context.modelClients?.codex ?? new CodexClient() },
+        exa: exaApiKey
+          ? new ExaClient(exaApiKey)
+          : { search: async () => { throw new AppError("conflict", "Connect Exa before exploring a market."); } },
         onEvent: emitEvent,
       });
     }
@@ -185,7 +189,7 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
   }
 
   function latestDiscoveryRun(threadId: string): string | null {
-    const row = db.db.prepare(`SELECT id FROM research_runs WHERE thread_id = ? AND problem_id IS NULL AND status = 'completed' ORDER BY created_at DESC LIMIT 1`)
+    const row = db.db.prepare(`SELECT id FROM research_runs WHERE thread_id = ? AND problem_id IS NULL AND status = 'completed' ORDER BY created_at DESC, rowid DESC LIMIT 1`)
       .get(threadId) as { id: string } | undefined;
     return row?.id ?? null;
   }
@@ -222,7 +226,7 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
         AND p.discovery_run_id = (
           SELECT id FROM research_runs
           WHERE thread_id = ? AND problem_id IS NULL AND status = 'completed'
-          ORDER BY created_at DESC LIMIT 1
+          ORDER BY created_at DESC, rowid DESC LIMIT 1
         )
       ORDER BY s.created_at, s.id
     `).all(threadId, threadId) as Array<Record<string, unknown>>;
@@ -250,8 +254,56 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
     });
     return result.sort((left, right) => right.confirmedCoreOutcomes - left.confirmedCoreOutcomes);
   }
+  function researchExport(threadId: string) {
+    const runId = latestDiscoveryRun(threadId);
+    if (!runId) throw new AppError("conflict", "Research must finish before it can be exported.");
+    const thread = db.db.prepare("SELECT id, title FROM threads WHERE id = ?").get(threadId) as { id: string; title: string };
+    const run = db.db.prepare(`
+      SELECT id, status, config_json, completion_reason, created_at, updated_at
+      FROM research_runs WHERE id = ?
+    `).get(runId) as Record<string, unknown>;
+    const sources = (db.db.prepare(`
+      SELECT id, provider_source_id, canonical_url, title, retrieved_text, author, published_at, content_hash, retrieved_at
+      FROM sources WHERE research_run_id = ? ORDER BY retrieved_at, id
+    `).all(runId) as Array<Record<string, unknown>>).map((source) => ({
+      id: String(source.id), providerSourceId: source.provider_source_id === null ? null : String(source.provider_source_id),
+      url: String(source.canonical_url), title: String(source.title), text: String(source.retrieved_text),
+      author: source.author === null ? null : String(source.author), publishedAt: source.published_at === null ? null : String(source.published_at),
+      contentHash: String(source.content_hash), retrievedAt: String(source.retrieved_at),
+    }));
+    const factors = (db.db.prepare(`
+      SELECT id, subject, behavior, quote, source_id, harvest_mode, model_confidence, created_at
+      FROM factors WHERE research_run_id = ? ORDER BY created_at, id
+    `).all(runId) as Array<Record<string, unknown>>).map((factor) => ({
+      id: String(factor.id), subject: String(factor.subject), behavior: String(factor.behavior), quote: String(factor.quote),
+      sourceId: String(factor.source_id), harvestMode: String(factor.harvest_mode), modelConfidence: Number(factor.model_confidence),
+      createdAt: String(factor.created_at),
+    }));
+    // The archived scope is the one this run actually used; the thread's live scope may have been edited since.
+    const archivedScope = db.db.prepare(`
+      SELECT title, audience, domain, observations, off_limits_json FROM scopes WHERE research_run_id = ?
+    `).get(runId) as { title: string; audience: string; domain: string; observations: string; off_limits_json: string } | undefined;
+    return {
+      schemaVersion: 1,
+      exportedAt: new Date().toISOString(),
+      thread,
+      researchRun: {
+        id: String(run.id), status: String(run.status), completionReason: run.completion_reason === null ? null : String(run.completion_reason),
+        createdAt: String(run.created_at), completedAt: String(run.updated_at), config: RunConfigSchema.parse(JSON.parse(String(run.config_json))),
+      },
+      scope: archivedScope
+        ? {
+          title: archivedScope.title, audience: archivedScope.audience, domain: archivedScope.domain,
+          observations: archivedScope.observations, offLimits: JSON.parse(archivedScope.off_limits_json) as string[],
+        }
+        : threads.getScope(threadId),
+      sources,
+      factors,
+      problems: listProblems(threadId),
+    };
+  }
   function latestRun(threadId: string, config: RunConfig) {
-    const row = db.db.prepare("SELECT id, status, problem_id FROM research_runs WHERE thread_id = ? ORDER BY created_at DESC LIMIT 1")
+    const row = db.db.prepare("SELECT id, status, problem_id FROM research_runs WHERE thread_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1")
       .get(threadId) as { id: string; status: string; problem_id: string | null } | undefined;
     if (!row) return null;
     const counts = db.db.prepare(`SELECT provider, COUNT(*) AS count FROM cost_ledger WHERE research_run_id = ? AND status IN ('reserved','committed') GROUP BY provider`)
@@ -364,10 +416,19 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
       if (route === "/research/start") {
         const { threadId } = StartResearchSchema.parse(body); requireThread(threadId);
         const validation = cachedValidation ?? await validateProviders();
-        if (!validation.setupComplete) throw new AppError("conflict", "Connect Exa and a compatible Codex CLI before starting research.");
         const scope = threads.getScope(threadId); if (!scope) throw new AppError("conflict", "Save the research scope first.");
         const config = threads.getLatestRunConfig(threadId) ?? RunConfigSchema.parse(DEFAULT_RUN_CONFIG);
-        try { const runId = await ensureEngine().startDiscovery(threadId, scope, config); return sendJson(res, 200, { runId, workspace: await workspaceState() }); }
+        if (!isResearchModeReady(config.researchMode, validation.exa, validation.codex)) {
+          if (!validation.codex.detected || !validation.codex.compatible) throw new AppError("conflict", "Connect a compatible Codex CLI before starting research.");
+          throw new AppError("conflict", "Connect Exa before exploring a market.");
+        }
+        if (config.researchMode === "known-problem" && !config.knownProblem.trim()) throw new AppError("validation_error", "Problem statement is required.");
+        try {
+          const runId = config.researchMode === "known-problem"
+            ? await ensureEngine().startKnownProblem(threadId, scope, config.knownProblem, config)
+            : await ensureEngine().startDiscovery(threadId, scope, config);
+          return sendJson(res, 200, { runId, workspace: await workspaceState() });
+        }
         catch (error) { if (error instanceof ActiveRunConflictError) throw new AppError("conflict", "This research already has an active run."); throw error; }
       }
       if (route === "/research/select-problems") {
@@ -408,6 +469,11 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
       }
       if (route === "/research/cancel") {
         const { runId } = ResumeResearchSchema.parse(body); cancelRun(runId); return sendJson(res, 200, { workspace: await workspaceState() });
+      }
+      if (route === "/research/export") {
+        const input = ExportResearchRequestSchema.parse(body); requireThread(input.threadId);
+        const thread = db.db.prepare("SELECT title FROM threads WHERE id = ?").get(input.threadId) as { title: string };
+        return sendJson(res, 200, { filename: `${slug(thread.title)}-research.json`, content: JSON.stringify(researchExport(input.threadId), null, 2) });
       }
       if (route === "/ideas/export") {
         const input = ExportIdeasRequestSchema.parse(body); requireThread(input.threadId); const ideas = listSolutions(input.threadId);

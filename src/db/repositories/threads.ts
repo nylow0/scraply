@@ -66,7 +66,7 @@ export class ThreadRepository {
       .run(randomUUID(), threadId, JSON.stringify(parsed), presetName ?? null, new Date().toISOString());
   }
   getLatestRunConfig(threadId: string): RunConfig | null {
-    const row = this.db.db.prepare("SELECT config_json FROM run_configs WHERE thread_id = ? ORDER BY created_at DESC LIMIT 1")
+    const row = this.db.db.prepare("SELECT config_json FROM run_configs WHERE thread_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1")
       .get(threadId) as { config_json: string } | undefined;
     return row ? RunConfigSchema.parse(JSON.parse(row.config_json)) : null;
   }
