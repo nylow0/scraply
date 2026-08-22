@@ -7,3 +7,4 @@
 - Work in the dev branch unless told not to.
 
 - Dev branch should be used as the main one
+- There is no `main` branch. When Dany says "main branch", he means `master`, which is production.
