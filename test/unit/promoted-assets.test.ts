@@ -9,7 +9,7 @@ const version = packageMetadata.version;
 const installerName = `Scraply Setup ${version}.exe`;
 const portableName = `Scraply ${version}.exe`;
 const approvedSha = "a".repeat(40);
-const approvedRef = `stage-v${version}-rc.1`;
+const approvedRef = `v${version}-rc.1`;
 const bundles: string[] = [];
 
 interface BundleOverrides {
@@ -109,7 +109,7 @@ describe("promoted release assets", () => {
     expect(verify(createBundle({ manifest: { sourceSha: "b".repeat(40) } })).message)
       .toContain("SHA does not match the approved source SHA");
     expect(verify(createBundle({ manifest: { dirty: true } })).message).toContain("dirty source tree");
-    expect(verify(createBundle({ manifest: { sourceRef: "stage-v0.0.1-rc.9" } })).message)
+    expect(verify(createBundle({ manifest: { sourceRef: "v0.0.1-rc.9" } })).message)
       .toContain("source ref does not match the approved candidate");
   });
 
