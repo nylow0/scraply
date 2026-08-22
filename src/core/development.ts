@@ -173,6 +173,11 @@ async function generateSolutions(
     loadPrompt("solutions", "Propose distinct mechanisms for the supplied problem."),
     [
       `Problem: ${problem.statement}`,
+      `Research context: ${JSON.stringify({
+        ...(scope.audience.trim() ? { audience: scope.audience.trim() } : {}),
+        ...(scope.domain.trim() ? { domain: scope.domain.trim() } : {}),
+        ...(scope.observations.trim() ? { observations: scope.observations.trim() } : {}),
+      })}`,
       `Off limits: ${JSON.stringify(scope.offLimits)}`,
       `Optional factors: ${JSON.stringify(factors.map(({ id, subject, behavior, quote, sourceId }) => ({ id, subject, behavior, quote, sourceId })))}`,
     ].join("\n\n"),

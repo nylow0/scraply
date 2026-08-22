@@ -17,7 +17,7 @@ import { discoveryRunProjection, harvestFactors, runDiscoveryArm, type Harvested
 export interface ResearchEngineOptions {
   db: DatabaseClient;
   modelClients?: Partial<Record<ModelProvider, StructuredModelClient>>;
-  exa: ExaClient;
+  exa: Pick<ExaClient, "search">;
   onEvent: (event: ResearchEvent) => void;
 }
 
@@ -58,6 +58,14 @@ export class ResearchEngine {
     return created.runId;
   }
 
+  async startKnownProblem(threadId: string, scope: Scope, problemStatement: string, config: RunConfig): Promise<string> {
+    const parsedScope = ScopeSchema.parse(scope);
+    const statement = problemStatement.trim();
+    if (!statement) throw new AppError("validation_error", "Problem statement is required.");
+    const root = this.discovery.createKnownProblemRoot(threadId, parsedScope, statement, config);
+    return this.startProblem(threadId, root.problemId, config);
+  }
+
   async startNextSelected(threadId: string, config: RunConfig): Promise<string | null> {
     const problem = this.options.db.db.prepare(`
       SELECT p.id
@@ -65,7 +73,7 @@ export class ResearchEngine {
       WHERE p.selected_at IS NOT NULL
         AND p.discovery_run_id = (
           SELECT id FROM research_runs WHERE thread_id = ? AND problem_id IS NULL AND status = 'completed'
-          ORDER BY created_at DESC LIMIT 1
+          ORDER BY created_at DESC, rowid DESC LIMIT 1
         )
         AND NOT EXISTS (
           SELECT 1 FROM research_runs rr WHERE rr.problem_id = p.id AND rr.status = 'completed'
@@ -76,9 +84,12 @@ export class ResearchEngine {
       this.updateThread(threadId, "solutions-ready");
       return null;
     }
-    const created = this.runs.create(threadId, config, problem.id);
-    if (!created.created) return created.runId;
-    this.begin(created.runId, threadId, problem.id, config);
+    return this.startProblem(threadId, problem.id, config);
+  }
+
+  private startProblem(threadId: string, problemId: string, config: RunConfig): string {
+    const created = this.runs.create(threadId, config, problemId);
+    if (created.created) this.begin(created.runId, threadId, problemId, config);
     return created.runId;
   }
 

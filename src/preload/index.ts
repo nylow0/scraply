@@ -1,6 +1,6 @@
 import { contextBridge, ipcRenderer } from "electron";
 import {
-  ExportIdeasRequestSchema, IPC_CHANNELS, ResearchEventSchema, SaveFavoriteModelSchema,
+  ExportIdeasRequestSchema, ExportResearchRequestSchema, IPC_CHANNELS, ResearchEventSchema, SaveFavoriteModelSchema,
   SaveRunConfigSchema, SaveScopeSchema, SelectProblemsSchema,
   type ResearchEvent, type SolutionView, type SourceDetail, type ValidationState, type WorkspaceState,
 } from "../shared/ipc";
@@ -25,6 +25,8 @@ const api = {
   resumeResearch: async (runId: string): Promise<WorkspaceState> => (await ipcRenderer.invoke(IPC_CHANNELS.RESUME_RESEARCH, { runId })).workspace,
   selectProblems: (payload: { threadId: string; problemIds: string[]; userProblem: string | null }): Promise<WorkspaceState> =>
     ipcRenderer.invoke(IPC_CHANNELS.SELECT_PROBLEMS, SelectProblemsSchema.parse(payload)),
+  exportResearch: (threadId: string) =>
+    ipcRenderer.invoke(IPC_CHANNELS.EXPORT_RESEARCH, ExportResearchRequestSchema.parse({ threadId })),
   exportIdeas: (threadId: string, format: "markdown" | "json" = "markdown") =>
     ipcRenderer.invoke(IPC_CHANNELS.EXPORT_IDEAS, ExportIdeasRequestSchema.parse({ threadId, format })),
   getSourceDetail: (sourceId: string): Promise<SourceDetail> => ipcRenderer.invoke(IPC_CHANNELS.GET_SOURCE_DETAIL, { sourceId }),

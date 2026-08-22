@@ -18,4 +18,13 @@ describe("renderer IPC payloads", () => {
     expect(() => toRunConfigPayload("thread-1", { ...DEFAULT_RUN_CONFIG, discoveryDepth: "wide" as never })).toThrow();
     expect(() => toFavoriteModelPayload({ provider: "codex", id: "" }, true)).toThrow();
   });
+
+  test("defaults legacy configurations to market exploration", () => {
+    const legacy = {
+      model: "gpt-5.6-luna", reasoningEffort: "medium", discoveryDepth: "standard" as const, maxRunMinutes: 90,
+    };
+    expect(toRunConfigPayload("thread-1", legacy as never).config).toMatchObject({
+      researchMode: "explore-market", knownProblem: "",
+    });
+  });
 });

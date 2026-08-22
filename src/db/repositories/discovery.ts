@@ -1,6 +1,8 @@
 import { randomUUID } from "node:crypto";
 import type { Scope } from "../../shared/structured-output-schemas";
+import type { RunConfig } from "../../shared/schemas";
 import type { DatabaseClient } from "../client";
+import { ActiveRunConflictError } from "./research-runs";
 
 export interface DiscoverySourceRecord {
   id: string;
@@ -133,6 +135,55 @@ export class DiscoveryRepository {
         for (const factorId of problem.factorIds) insertFactor.run(problem.id, factorId);
       }
       db.exec("COMMIT");
+    } catch (error) {
+      db.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
+  createKnownProblemRoot(threadId: string, scope: Scope, statement: string, config: RunConfig): { runId: string; problemId: string } {
+    const db = this.client.db;
+    const trimmedStatement = statement.trim();
+    db.exec("BEGIN IMMEDIATE");
+    try {
+      const active = db.prepare(`SELECT id FROM research_runs WHERE thread_id = ? AND status IN ('queued', 'running') LIMIT 1`)
+        .get(threadId) as { id: string } | undefined;
+      if (active) throw new ActiveRunConflictError(active.id);
+
+      const existing = db.prepare(`
+        SELECT rr.id AS run_id, p.id AS problem_id
+        FROM research_runs rr
+        JOIN scopes s ON s.research_run_id = rr.id
+        JOIN problems p ON p.discovery_run_id = rr.id
+        WHERE rr.thread_id = ? AND rr.problem_id IS NULL AND rr.status = 'completed'
+          AND p.verdict = 'user-asserted' AND p.selected_at IS NOT NULL AND p.statement = ?
+          AND s.title = ? AND s.audience = ? AND s.domain = ? AND s.observations = ? AND s.off_limits_json = ?
+          AND NOT EXISTS (SELECT 1 FROM research_runs development WHERE development.problem_id = p.id AND development.status = 'completed')
+        ORDER BY rr.created_at DESC, rr.rowid DESC LIMIT 1
+      `).get(threadId, trimmedStatement, scope.title, scope.audience, scope.domain, scope.observations, JSON.stringify(scope.offLimits)) as
+        { run_id: string; problem_id: string } | undefined;
+      if (existing) {
+        db.exec("COMMIT");
+        return { runId: existing.run_id, problemId: existing.problem_id };
+      }
+
+      const runId = randomUUID();
+      const problemId = randomUUID();
+      const now = new Date().toISOString();
+      db.prepare(`
+        INSERT INTO research_runs (id, thread_id, status, config_json, cancelled, completion_reason, problem_id, created_at, updated_at)
+        VALUES (?, ?, 'completed', ?, 0, 'Known problem supplied; discovery bypassed.', NULL, ?, ?)
+      `).run(runId, threadId, JSON.stringify(config), now, now);
+      this.persistScope(runId, scope);
+      db.prepare(`
+        INSERT INTO problems (
+          id, discovery_run_id, statement, why_it_persists, affected,
+          scale_estimate, scale_basis_factor_id, verdict, verdict_reason,
+          verdict_source_ids_json, selected_at, created_at
+        ) VALUES (?, ?, ?, '', '', '', NULL, 'user-asserted', 'Stated directly by the user.', '[]', ?, ?)
+      `).run(problemId, runId, trimmedStatement, now, now);
+      db.exec("COMMIT");
+      return { runId, problemId };
     } catch (error) {
       db.exec("ROLLBACK");
       throw error;

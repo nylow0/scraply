@@ -124,6 +124,8 @@ describe("research engine deadlines", () => {
         reasoningEffort: "medium",
         discoveryDepth: "quick",
         maxRunMinutes: 0.001,
+        researchMode: "explore-market",
+        knownProblem: "",
       };
       const engine = new ResearchEngine({ db, modelClients: { codex: modelClient }, exa, onEvent: (event) => events.push(event) });
       const runId = await engine.startDiscovery("thread-1", {
@@ -167,7 +169,7 @@ function createPersistedDiscoveryRun(): {
     INSERT INTO threads (id, title, status, created_at, updated_at)
     VALUES ('thread-1', 'Resume', 'discovery-running', ?, ?)
   `).run(now, now);
-  const config: RunConfig = { model: "test-model", reasoningEffort: "medium", discoveryDepth: "quick", maxRunMinutes: 5 };
+  const config: RunConfig = { model: "test-model", reasoningEffort: "medium", discoveryDepth: "quick", maxRunMinutes: 5, researchMode: "explore-market", knownProblem: "" };
   const runId = new ResearchRunRepository(db).create("thread-1", config).runId;
   const discovery = new DiscoveryRepository(db);
   discovery.persistScope(runId, {

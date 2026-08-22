@@ -15,12 +15,12 @@ test("the renderer restores the problem-selection step after a restart", async (
   try {
     let page = await electron.firstWindow();
     await page.getByRole("button", { name: "Create research" }).click();
-    await page.getByLabel("Working title").fill("Repair delays");
-    await page.getByLabel("Audience").fill("Independent repair shops");
-    await page.getByLabel("Domain").fill("Parts sourcing");
-    await page.getByRole("button", { name: "Save scope" }).click();
-    await page.getByRole("button", { name: "Start discovery" }).click();
+    await page.getByLabel("Research name").fill("Repair delays");
+    await page.getByRole("textbox", { name: "Audience", exact: true }).fill("Independent repair shops");
+    await page.getByRole("textbox", { name: "Market or domain", exact: true }).fill("Parts sourcing");
+    await page.getByRole("button", { name: "Discover problems" }).click();
     await expect(page.getByText("Which problems deserve development?")).toBeVisible();
+    await expect(page.getByRole("button", { name: "Export research JSON" })).toBeVisible();
 
     await electron.close();
     electron = undefined;
@@ -31,7 +31,14 @@ test("the renderer restores the problem-selection step after a restart", async (
     await page.getByRole("checkbox", { name: "Develop this problem" }).check();
     await page.getByRole("button", { name: "Commit selection" }).click();
     await expect(page.getByText("Supplier reliability ledger")).toBeVisible();
-    await expect(page.getByText("Risk never decides viability for you.")).toBeVisible();
+    await expect(page.getByText("Scan the list first. Expand only the idea and evidence you want to inspect.")).toBeVisible();
+    await page.getByRole("tab", { name: /Research/ }).click();
+    await expect(page.getByText("The evidence behind the ideas.")).toBeVisible();
+    await expect(page.getByText("Backorders add days to routine repairs.")).toBeVisible();
+    await page.getByRole("tab", { name: /Setup/ }).click();
+    await expect(page.getByText("Where this work started.")).toBeVisible();
+    await page.getByRole("tab", { name: /Ideas/ }).click();
+    await expect(page.getByText("Supplier reliability ledger")).toBeVisible();
   } finally {
     await electron?.close(); await mock.close(); rmSync(userDataDir, { recursive: true, force: true });
   }
