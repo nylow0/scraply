@@ -98,11 +98,13 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
     if (cachedModelOptions.length > 0) return cachedModelOptions;
     const generation = validationGeneration;
     const listed = await (context.providerValidation?.listCodexModels ?? listCodexModels)();
+    // An empty catalogue would leave cachedCodexModels empty and re-spawn discovery on every workspace read.
+    const options = listed.length > 0 ? listed : [fallbackModelOption()];
     if (generation === validationGeneration) {
-      cachedModelOptions = listed;
-      cachedCodexModels = listed.map((model) => model.id);
+      cachedModelOptions = options;
+      cachedCodexModels = options.map((model) => model.id);
     }
-    return listed;
+    return options;
   }
 
   async function validateProviders(): Promise<ValidationState> {
@@ -112,7 +114,9 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
       const secrets = context.getSecrets();
       const [codex, models, exa] = await Promise.all([
         (context.providerValidation?.probeCodex ?? probeCodexCli)(),
-        ensureCodexModels(),
+        // Model discovery must not sink validation: the codex probe carries the diagnostic the user can act on,
+        // and a thrown listing would leave cachedValidation null so the UI never leaves "Checking Codex connection".
+        ensureCodexModels().catch(() => [fallbackModelOption()]),
         secrets.exaApiKey
           ? (context.providerValidation?.validateExa ?? ((key: string) => new ExaClient(key).validateKey()))(secrets.exaApiKey)
           : Promise.resolve({ valid: false, error: "Exa key missing" }),
