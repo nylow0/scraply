@@ -14,15 +14,10 @@ const STATUS_DISPLAY: Record<ThreadStatus, { label: string; tone: StatusTone }> 
 
 export function statusLabel(status: ThreadStatus | null | undefined): string {
   if (!status) return "Ready";
-  return STATUS_DISPLAY[status]?.label ?? status;
+  return STATUS_DISPLAY[status].label;
 }
 
 export function statusTone(status: ThreadStatus | null | undefined): StatusTone {
   if (!status) return "muted";
-  return STATUS_DISPLAY[status]?.tone ?? "neutral";
-}
-
-/** Statuses where the thread's own page is the live research progress view. */
-export function isResearchStatus(status: ThreadStatus | null | undefined): boolean {
-  return status === "discovery-running" || status === "development-running";
+  return STATUS_DISPLAY[status].tone;
 }

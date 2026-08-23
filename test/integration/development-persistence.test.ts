@@ -13,7 +13,7 @@ afterEach(() => {
     try {
       rmSync(temporaryDirectories.pop()!, { recursive: true, force: true });
     } catch {
-      // Windows can retain a SQLite WAL handle briefly.
+      // Bun can retain a SQLite WAL handle until the test process exits on Windows.
     }
   }
 });
@@ -25,6 +25,7 @@ describe("development persistence", () => {
     const context = repository.loadContext("problem-1");
     expect(context?.scope.title).toBe("Claims");
     expect(context?.problem.factorIds).toEqual(["factor-1"]);
+    expect(context?.problem.verdictSourceIds).toEqual(["source-1"]);
     expect(context?.factors[0]?.quote).toBe("Sellers repeat claims.");
 
     const solution = {
@@ -202,7 +203,7 @@ function setup(): DatabaseClient {
     factorIds: ["factor-1"],
     verdict: "confirmed",
     verdictReason: "Evidence survived.",
-    verdictSourceIds: [],
+    verdictSourceIds: ["source-1"],
   }]);
   client.db.prepare(`
     INSERT INTO research_runs (id, thread_id, status, config_json, problem_id, created_at, updated_at)

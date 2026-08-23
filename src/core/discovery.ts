@@ -290,7 +290,7 @@ export async function runDiscoveryArm(
       buildProblemKillInput(candidate, candidateSources),
       ProblemKillOutputSchema,
     );
-    const validVerdictSourceIds = kill.verdictSourceIds.filter((id) => candidateSources.some((source) => source.id === id));
+    const validVerdictSourceIds = [...new Set(kill.verdictSourceIds.filter((id) => candidateSources.some((source) => source.id === id)))];
     const factorIds = citedFactors.map((factor) => factor.id);
     problems.push({
       id: randomUUID(),
@@ -448,6 +448,7 @@ function resolveSources(
 function safeCanonicalizeUrl(value: string): string | null {
   try {
     const url = new URL(value);
+    if (!["http:", "https:"].includes(url.protocol) || url.username || url.password) return null;
     url.hash = "";
     url.hostname = url.hostname.toLowerCase();
     if ((url.protocol === "https:" && url.port === "443") || (url.protocol === "http:" && url.port === "80")) {
@@ -542,7 +543,9 @@ function buildProblemCandidatesInput(scope: Scope, factors: HarvestedFactor[]): 
   };
   return [
     `Scope: ${JSON.stringify(stage2Scope)}`,
-    `Factors: ${JSON.stringify(factors.map(({ source: _source, ...factor }) => factor))}`,
+    `Factors: ${JSON.stringify(factors.map(({ id, subject, behavior, quote, sourceId, harvestMode, modelConfidence }) => ({
+      id, subject, behavior, quote, sourceId, harvestMode, modelConfidence,
+    })))}`,
   ].join("\n\n");
 }
 

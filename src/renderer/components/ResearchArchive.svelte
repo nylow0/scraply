@@ -5,10 +5,12 @@
     problems,
     busy,
     onExport,
+    onOpenSource,
   }: {
     problems: ProblemCandidate[];
     busy: boolean;
     onExport: () => Promise<void>;
+    onOpenSource: (url: string) => Promise<void>;
   } = $props();
 
   let sourceCount = $derived(new Set(problems.flatMap((problem) => problem.factors.map((factor) => factor.sourceId))).size);
@@ -52,11 +54,11 @@
         <p class="reason">{problem.verdictReason}</p>
         <details>
           <summary>{problem.factors.length} cited factors</summary>
-          {#each problem.factors as factor}
+          {#each problem.factors as factor (factor.id)}
             <blockquote>
               <p>{factor.subject} — {factor.behavior}</p>
               <q>{factor.quote}</q>
-              <button onclick={() => window.scraply.openExternalUrl(factor.sourceUrl)}>{factor.sourceTitle}</button>
+              <button disabled={busy} onclick={() => onOpenSource(factor.sourceUrl)}>{factor.sourceTitle}</button>
             </blockquote>
           {/each}
         </details>

@@ -30,7 +30,13 @@ export function ApiResponseSchema<T extends z.ZodTypeAny>(dataSchema: T) {
 export const BackendReadySchema = z.object({ port: z.number().int().positive(), token: z.string().min(1) });
 export const ValidationStateSchema = z.object({
   exa: z.object({ valid: z.boolean(), error: z.string().optional() }),
-  codex: z.object({ detected: z.boolean(), compatible: z.boolean(), version: z.string().optional(), error: z.string().optional() }),
+  codex: z.object({
+    detected: z.boolean(),
+    compatible: z.boolean(),
+    authenticated: z.boolean(),
+    version: z.string().optional(),
+    error: z.string().optional(),
+  }),
   setupComplete: z.boolean(),
 });
 export const HealthResponseSchema = z.object({ ok: z.boolean(), version: z.string(), persistenceCheck: z.string().optional() });

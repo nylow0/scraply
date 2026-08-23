@@ -26,7 +26,7 @@
       <div><span>{config.researchMode === "known-problem" ? "Market or domain" : "Starting context"}</span><strong>{scope.domain || "Not specified"}</strong></div>
       <div><span>{config.researchMode === "known-problem" ? "Audience" : "People or groups"}</span><strong>{scope.audience || "Not specified"}</strong></div>
       <div class="wide"><span>Context</span><p>{scope.observations || "No additional context."}</p></div>
-      <div class="wide"><span>Boundaries</span>{#if scope.offLimits.length}<ul>{#each scope.offLimits as item}<li>{item}</li>{/each}</ul>{:else}<p>No boundaries specified.</p>{/if}</div>
+      <div class="wide"><span>Boundaries</span>{#if scope.offLimits.length}<ul>{#each scope.offLimits as item, index (`${item}-${index}`)}<li>{item}</li>{/each}</ul>{:else}<p>No boundaries specified.</p>{/if}</div>
     </div>
     <dl class="run-settings">
       <div><dt>Model</dt><dd>{config.model}</dd></div>

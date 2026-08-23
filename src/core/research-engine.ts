@@ -35,6 +35,7 @@ interface ActiveRun {
 
 export class ResearchEngine {
   private readonly activeRuns = new Map<string, ActiveRun>();
+  private readonly executions = new Map<string, Promise<void>>();
   private readonly runs: ResearchRunRepository;
   private readonly ledger: CostLedgerRepository;
   private readonly discovery: DiscoveryRepository;
@@ -48,6 +49,13 @@ export class ResearchEngine {
   }
 
   getActiveRunIds(): ReadonlySet<string> { return new Set(this.activeRuns.keys()); }
+
+  async shutdown(): Promise<void> {
+    for (const runId of this.getActiveRunIds()) {
+      try { this.cancelRun(runId); } catch { /* the run ended before shutdown reached it */ }
+    }
+    await Promise.allSettled([...this.executions.values()]);
+  }
 
   async startDiscovery(threadId: string, scope: Scope, config: RunConfig): Promise<string> {
     const parsedScope = ScopeSchema.parse(scope);
@@ -140,7 +148,12 @@ export class ResearchEngine {
     this.emit(resumed
       ? { type: "run-resumed", runId, threadId }
       : { type: "run-started", runId, threadId, problemId });
-    void this.execute(active).catch((error) => this.fail(active, error));
+    const execution = this.execute(active)
+      .catch((error) => this.fail(active, error))
+      .finally(() => {
+        if (this.executions.get(runId) === execution) this.executions.delete(runId);
+      });
+    this.executions.set(runId, execution);
   }
 
   private async execute(active: ActiveRun): Promise<void> {
@@ -252,7 +265,12 @@ export class ResearchEngine {
         this.enforceRunawayBackstop(active, "codex", active.projectedCodexCalls);
         const reservation = this.ledger.reserve(active.runId, "structured-completion", "codex", active.config.model, 0);
         try { return await client.structuredCompletion(model, system, user, schema, jsonSchema, { ...options, reasoningEffort: active.config.reasoningEffort }); }
-        finally { this.ledger.commit(reservation.id, 0); this.progress(active, "Codex call completed"); }
+        finally {
+          if (this.activeRuns.get(active.runId) === active) {
+            this.ledger.commit(reservation.id, 0);
+            this.progress(active, "Codex call completed");
+          }
+        }
       },
     };
   }
@@ -263,7 +281,12 @@ export class ResearchEngine {
         this.enforceRunawayBackstop(active, "exa", active.projectedExaSearches);
         const reservation = this.ledger.reserve(active.runId, "search", "exa", null, 0.05);
         try { return await this.options.exa.search(query, options); }
-        finally { this.ledger.commit(reservation.id); this.progress(active, `Search: ${query}`); }
+        finally {
+          if (this.activeRuns.get(active.runId) === active) {
+            this.ledger.commit(reservation.id);
+            this.progress(active, `Search: ${query}`);
+          }
+        }
       },
     };
   }
