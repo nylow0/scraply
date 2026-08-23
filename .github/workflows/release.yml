@@ -3,7 +3,7 @@ name: Release
 on:
   push:
     tags:
-      - "stage-v*-rc.*"
+      - "v*-rc.*"
       - "v*"
 
 permissions:
@@ -11,7 +11,7 @@ permissions:
 
 jobs:
   build-release-candidate:
-    if: startsWith(github.ref_name, 'stage-v')
+    if: startsWith(github.ref_name, 'v') && contains(github.ref_name, '-rc.')
     runs-on: windows-latest
     permissions:
       contents: read
@@ -123,7 +123,7 @@ jobs:
           set -euo pipefail
           version="$(bun --print "require('./package.json').version")"
           escaped="${version//./\\.}"
-          candidates="$(git tag --points-at "$GITHUB_SHA" | grep -E "^stage-v${escaped}-rc\.[0-9]+$" || true)"
+          candidates="$(git tag --points-at "$GITHUB_SHA" | grep -E "^v${escaped}-rc\.[0-9]+$" || true)"
           count="$(printf '%s' "$candidates" | grep -c . || true)"
           if [ "$count" -ne 1 ]; then
             echo "Exactly one release-candidate tag must point to $GITHUB_SHA; found ${count}: ${candidates}" >&2

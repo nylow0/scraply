@@ -2,9 +2,9 @@ name: CI
 
 on:
   pull_request:
-    branches: [dev]
+    branches: [dev, master]
   push:
-    branches: [dev, stage, master]
+    branches: [dev, master]
 
 permissions:
   contents: read
@@ -20,12 +20,6 @@ jobs:
         with:
           bun-version: 1.3.13
       - run: bun install --frozen-lockfile
-      - name: Validate stage ref policy
-        if: github.event_name == 'push' && github.ref == 'refs/heads/stage'
-        run: bun scripts/check-promotion.ts stage ${{ github.sha }} ${{ github.event.before }}
-      - name: Validate master ref policy
-        if: github.event_name == 'push' && github.ref == 'refs/heads/master'
-        run: bun scripts/check-promotion.ts master ${{ github.sha }} ${{ github.event.before }}
       - run: bun audit --prod
       - name: Audit dev dependencies (advisory)
         continue-on-error: true
