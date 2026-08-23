@@ -20,7 +20,7 @@ afterEach(() => {
     try {
       rmSync(tempDirectories.pop()!, { recursive: true, force: true });
     } catch {
-      // Windows can retain a SQLite WAL handle briefly.
+      // Bun can retain a SQLite WAL handle until the test process exits on Windows.
     }
   }
 });
@@ -150,6 +150,50 @@ describe("research engine deadlines", () => {
       expect(db.db.prepare("SELECT status FROM cost_ledger WHERE research_run_id = ?").all(runId))
         .toEqual([{ status: "committed" }]);
       expect(events.filter((event) => event.type === "run-failed")).toHaveLength(1);
+    } finally {
+      db.close();
+    }
+  });
+
+  test("waits for aborted provider work before shutdown returns", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "scraply-shutdown-"));
+    tempDirectories.push(directory);
+    const db = new DatabaseClient(join(directory, "scraply.db"));
+    let providerStarted = false;
+    let providerSettled = false;
+    const modelClient: StructuredModelClient = {
+      structuredCompletion: (_model, _system, _user, _schema, _jsonSchema, options) => new Promise((_resolve, reject) => {
+        providerStarted = true;
+        const abort = () => {
+          providerSettled = true;
+          reject(options?.signal?.reason ?? new Error("cancelled"));
+        };
+        if (options?.signal?.aborted) abort();
+        else options?.signal?.addEventListener("abort", abort, { once: true });
+      }),
+    };
+    const exa = { search: async () => [] } as unknown as ExaClient;
+
+    try {
+      const now = new Date().toISOString();
+      db.db.prepare(`
+        INSERT INTO threads (id, title, status, created_at, updated_at)
+        VALUES ('thread-shutdown', 'Shutdown', 'configuring', ?, ?)
+      `).run(now, now);
+      const engine = new ResearchEngine({ db, modelClients: { codex: modelClient }, exa, onEvent: () => undefined });
+      const runId = await engine.startDiscovery("thread-shutdown", {
+        title: "Shutdown", audience: "Operators", domain: "Operations", observations: "", offLimits: [],
+      }, {
+        model: "test-model", reasoningEffort: "medium", discoveryDepth: "quick", maxRunMinutes: 90,
+        researchMode: "explore-market", knownProblem: "",
+      });
+      await waitFor(() => providerStarted);
+
+      await engine.shutdown();
+
+      expect(providerSettled).toBe(true);
+      expect(engine.getActiveRunIds().size).toBe(0);
+      expect(db.db.prepare("SELECT status FROM research_runs WHERE id = ?").get(runId)).toEqual({ status: "cancelled" });
     } finally {
       db.close();
     }

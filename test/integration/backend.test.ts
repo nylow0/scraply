@@ -15,6 +15,7 @@ const modelOption = (id: string) => ({
   defaultReasoningEffort: "medium",
   reasoningEfforts: [{ id: "medium", description: "Balanced reasoning" }],
 });
+const codexInspection = (models = [modelOption("gpt-5.6-luna")]) => ({ detected: true, compatible: true, authenticated: true, models });
 afterEach(async () => {
   for (const handle of handles.splice(0)) await handle.close();
   for (const dir of dirs.splice(0)) {
@@ -31,7 +32,7 @@ describe("cutover backend", () => {
     const handle = await startBackend({
       dataDir: dir, dbPath: join(dir, "scraply.db"), bundledPromptsDir: join(process.cwd(), "prompts"),
       promptOverridesDir: join(dir, "prompts"), appVersion: "test", getSecrets: () => ({ exaApiKey: "test-key" }),
-      providerValidation: { probeCodex: async () => ({ detected: true, compatible: true }), listCodexModels: async () => [modelOption("gpt-5.6-luna"), modelOption("gpt-test")], validateExa: async () => ({ valid: true }) },
+      providerValidation: { inspectCodex: async () => codexInspection([modelOption("gpt-5.6-luna"), modelOption("gpt-test")]), validateExa: async () => ({ valid: true }) },
     }, () => undefined); handles.push(handle);
 
     const post = async (path: string, body: unknown) => {
@@ -45,6 +46,8 @@ describe("cutover backend", () => {
     expect(created.thread.status).toBe("configuring");
     expect(created.workspace.models).toEqual(["gpt-5.6-luna", "gpt-test"]);
     expect(created.workspace.runConfig.model).toBe("gpt-5.6-luna");
+    const removedEventsEndpoint = await fetch(`http://127.0.0.1:${handle.port}/events`, { headers: { authorization: `Bearer ${handle.token}` } });
+    expect(removedEventsEndpoint.status).toBe(404);
     const workspace = await post("/scope", { threadId: created.thread.id, scope: { title: "Repair shops", audience: "Independent shops", domain: "Parts sourcing", observations: "", offLimits: ["Inventory"] } }) as { scope: { title: string; audience: string; domain: string; observations: string; offLimits: string[] } };
     expect(workspace.scope).toEqual({ title: "Repair shops", audience: "Independent shops", domain: "Parts sourcing", observations: "", offLimits: ["Inventory"] });
   });
@@ -53,6 +56,7 @@ describe("cutover backend", () => {
     const dir = mkdtempSync(join(tmpdir(), "scraply-known-problem-")); dirs.push(dir);
     const dbPath = join(dir, "scraply.db");
     let modelCalls = 0;
+    const events: Array<{ type: string }> = [];
     const handle = await startBackend({
       dataDir: dir, dbPath, bundledPromptsDir: join(process.cwd(), "prompts"), promptOverridesDir: join(dir, "prompts"),
       appVersion: "test", getSecrets: () => ({ exaApiKey: null }),
@@ -63,11 +67,10 @@ describe("cutover backend", () => {
         throw new Error("unexpected model call");
       } } },
       providerValidation: {
-        probeCodex: async () => ({ detected: true, compatible: true }),
-        listCodexModels: async () => [modelOption("gpt-5.6-luna")],
+        inspectCodex: async () => codexInspection(),
         validateExa: async () => { throw new Error("Exa validation must not run without a key"); },
       },
-    }, () => undefined); handles.push(handle);
+    }, (event) => events.push(event)); handles.push(handle);
     const post = async (path: string, body: unknown) => {
       const response = await fetch(`http://127.0.0.1:${handle.port}${path}`, { method: "POST", headers: { authorization: `Bearer ${handle.token}`, "content-type": "application/json" }, body: JSON.stringify(body) });
       expect(response.status).toBe(200);
@@ -95,17 +98,17 @@ describe("cutover backend", () => {
     expect(client.db.prepare("SELECT COUNT(*) AS count FROM cost_ledger WHERE provider = 'exa'").get()).toEqual({ count: 0 });
     expect(client.db.prepare("SELECT COUNT(*) AS count FROM factors").get()).toEqual({ count: 0 });
     expect(modelCalls).toBeGreaterThan(0);
+    expect(events.some((event) => event.type === "run-started")).toBe(true);
     client.close();
   });
 
-  test("still reports the codex probe when model discovery fails", async () => {
+  test("reports a failed Codex inspection without inventing model availability", async () => {
     const dir = mkdtempSync(join(tmpdir(), "scraply-model-listing-")); dirs.push(dir);
     const handle = await startBackend({
       dataDir: dir, dbPath: join(dir, "scraply.db"), bundledPromptsDir: join(process.cwd(), "prompts"), promptOverridesDir: join(dir, "prompts"),
       appVersion: "test", getSecrets: () => ({ exaApiKey: "test-key" }),
       providerValidation: {
-        probeCodex: async () => ({ detected: true, compatible: false, error: "Codex 0.1.0 is too old." }),
-        listCodexModels: async () => { throw new Error("Codex CLI not found on PATH"); },
+        inspectCodex: async () => ({ detected: true, compatible: false, authenticated: false, models: [], error: "Installed Codex version is incompatible" }),
         validateExa: async () => ({ valid: true }),
       },
     }, () => undefined); handles.push(handle);
@@ -114,14 +117,92 @@ describe("cutover backend", () => {
       return { status: response.status, body: (await response.json() as { data: T }).data };
     };
 
-    // A thrown listing must not sink validation, or the UI never leaves its "Checking Codex connection" state.
-    const validation = await get<{ setupComplete: boolean; codex: { detected: boolean; compatible: boolean; error?: string } }>("/validation");
+    const validation = await get<{ setupComplete: boolean; codex: { detected: boolean; compatible: boolean; authenticated: boolean; error?: string } }>("/validation");
     expect(validation.status).toBe(200);
-    expect(validation.body).toMatchObject({ setupComplete: false, codex: { detected: true, compatible: false, error: "Codex 0.1.0 is too old." } });
+    expect(validation.body).toMatchObject({ setupComplete: false, codex: { detected: true, compatible: false, authenticated: false, error: "Installed Codex version is incompatible" } });
 
     const workspace = await get<{ validation: { codex: { error?: string } }; models: string[] }>("/workspace");
-    expect(workspace.body.validation.codex.error).toBe("Codex 0.1.0 is too old.");
-    expect(workspace.body.models).toEqual([DEFAULT_RUN_CONFIG.model]);
+    expect(workspace.body.validation.codex.error).toBe("Installed Codex version is incompatible");
+    expect(workspace.body.models).toEqual([]);
+  });
+
+  test("forces a fresh Codex inspection when secrets change", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "scraply-validation-refresh-")); dirs.push(dir);
+    const forceFlags: Array<boolean | undefined> = [];
+    let resolveForced!: () => void;
+    const forced = new Promise<void>((resolve) => { resolveForced = resolve; });
+    const handle = await startBackend({
+      dataDir: dir, dbPath: join(dir, "scraply.db"), bundledPromptsDir: join(process.cwd(), "prompts"), promptOverridesDir: join(dir, "prompts"),
+      appVersion: "test", getSecrets: () => ({ exaApiKey: null }),
+      providerValidation: {
+        inspectCodex: async (options) => {
+          forceFlags.push(options?.force);
+          if (options?.force) resolveForced();
+          return codexInspection();
+        },
+      },
+    }, () => undefined); handles.push(handle);
+
+    handle.secretsChanged();
+    await forced;
+
+    expect(forceFlags).toContain(true);
+  });
+
+  test("keeps authentication separate from compatibility and blocks unauthenticated research", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "scraply-auth-guard-")); dirs.push(dir);
+    const handle = await startBackend({
+      dataDir: dir, dbPath: join(dir, "scraply.db"), bundledPromptsDir: join(process.cwd(), "prompts"), promptOverridesDir: join(dir, "prompts"),
+      appVersion: "test", getSecrets: () => ({ exaApiKey: null }),
+      providerValidation: {
+        inspectCodex: async () => ({ ...codexInspection(), authenticated: false, error: "Codex is not signed in" }),
+      },
+    }, () => undefined); handles.push(handle);
+    const request = async (path: string, body?: unknown) => {
+      const response = await fetch(`http://127.0.0.1:${handle.port}${path}`, {
+        method: body === undefined ? "GET" : "POST",
+        headers: { authorization: `Bearer ${handle.token}`, ...(body === undefined ? {} : { "content-type": "application/json" }) },
+        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+      });
+      return { status: response.status, body: await response.json() as {
+        data: { codex: ReturnType<typeof codexInspection>; thread: { id: string } };
+        error?: { message: string };
+      } };
+    };
+
+    const validation = await request("/validation");
+    expect(validation.body.data.codex).toMatchObject({ detected: true, compatible: true, authenticated: false });
+    const threadId = (await request("/threads", {})).body.data.thread.id as string;
+    await request("/scope", { threadId, scope: { title: "Known delay", audience: "", domain: "", observations: "", offLimits: [] } });
+    await request("/run-config", { threadId, config: { ...DEFAULT_RUN_CONFIG, researchMode: "known-problem", knownProblem: "Parts arrive late." } });
+    const start = await request("/research/start", { threadId });
+    expect(start.status).toBe(409);
+    expect(start.body.error?.message).toBe("Codex is not signed in");
+  });
+
+  test("blocks a selected model that the inspected account cannot access", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "scraply-model-guard-")); dirs.push(dir);
+    const handle = await startBackend({
+      dataDir: dir, dbPath: join(dir, "scraply.db"), bundledPromptsDir: join(process.cwd(), "prompts"), promptOverridesDir: join(dir, "prompts"),
+      appVersion: "test", getSecrets: () => ({ exaApiKey: null }),
+      providerValidation: { inspectCodex: async () => codexInspection([modelOption("gpt-available")]) },
+    }, () => undefined); handles.push(handle);
+    const post = async (path: string, body: unknown) => {
+      const response = await fetch(`http://127.0.0.1:${handle.port}${path}`, {
+        method: "POST", headers: { authorization: `Bearer ${handle.token}`, "content-type": "application/json" }, body: JSON.stringify(body),
+      });
+      return { status: response.status, body: await response.json() as {
+        data: { thread: { id: string } };
+        error?: { message: string };
+      } };
+    };
+
+    const threadId = (await post("/threads", {})).body.data.thread.id as string;
+    await post("/scope", { threadId, scope: { title: "Known delay", audience: "", domain: "", observations: "", offLimits: [] } });
+    await post("/run-config", { threadId, config: { ...DEFAULT_RUN_CONFIG, model: "gpt-unavailable", researchMode: "known-problem", knownProblem: "Parts arrive late." } });
+    const start = await post("/research/start", { threadId });
+    expect(start.status).toBe(409);
+    expect(start.body.error?.message).toBe("Selected model is unavailable");
   });
 
   test("rejects a start that the configured research mode cannot satisfy", async () => {
@@ -130,8 +211,7 @@ describe("cutover backend", () => {
       dataDir: dir, dbPath: join(dir, "scraply.db"), bundledPromptsDir: join(process.cwd(), "prompts"), promptOverridesDir: join(dir, "prompts"),
       appVersion: "test", getSecrets: () => ({ exaApiKey: null }),
       providerValidation: {
-        probeCodex: async () => ({ detected: true, compatible: true }),
-        listCodexModels: async () => [modelOption("gpt-5.6-luna")],
+        inspectCodex: async () => codexInspection(),
         validateExa: async () => { throw new Error("Exa validation must not run without a key"); },
       },
     }, () => undefined); handles.push(handle);
@@ -181,7 +261,7 @@ describe("cutover backend", () => {
     const handle = await startBackend({
       dataDir: dir, dbPath, bundledPromptsDir: join(process.cwd(), "prompts"), promptOverridesDir: join(dir, "prompts"),
       appVersion: "test", getSecrets: () => ({ exaApiKey: "test-key" }),
-      providerValidation: { probeCodex: async () => ({ detected: true, compatible: true }), listCodexModels: async () => [modelOption("gpt-test")], validateExa: async () => ({ valid: true }) },
+      providerValidation: { inspectCodex: async () => codexInspection([modelOption("gpt-test")]), validateExa: async () => ({ valid: true }) },
     }, () => undefined); handles.push(handle);
     const post = async (path: string, body: unknown) => {
       const response = await fetch(`http://127.0.0.1:${handle.port}${path}`, { method: "POST", headers: { authorization: `Bearer ${handle.token}`, "content-type": "application/json" }, body: JSON.stringify(body) });
@@ -233,7 +313,7 @@ describe("cutover backend", () => {
     const handle = await startBackend({
       dataDir: dir, dbPath, bundledPromptsDir: join(process.cwd(), "prompts"), promptOverridesDir: join(dir, "prompts"),
       appVersion: "test", getSecrets: () => ({ exaApiKey: "test-key" }),
-      providerValidation: { probeCodex: async () => ({ detected: true, compatible: true }), listCodexModels: async () => [modelOption("gpt-test")], validateExa: async () => ({ valid: true }) },
+      providerValidation: { inspectCodex: async () => codexInspection([modelOption("gpt-test")]), validateExa: async () => ({ valid: true }) },
     }, () => undefined); handles.push(handle);
     const post = async (path: string, body: unknown) => {
       const response = await fetch(`http://127.0.0.1:${handle.port}${path}`, { method: "POST", headers: { authorization: `Bearer ${handle.token}`, "content-type": "application/json" }, body: JSON.stringify(body) });
@@ -254,8 +334,10 @@ describe("cutover backend", () => {
       .run("source-export", "discovery-export", "provider-1", "https://example.com/evidence", "Repair evidence", "Observed delivery delays.", "hash-1", now);
     client.db.prepare(`INSERT INTO factors (id, research_run_id, subject, behavior, quote, source_id, harvest_mode, model_confidence, created_at) VALUES (?, ?, ?, ?, ?, ?, 'domain', 0.83, ?)`)
       .run("factor-export", "discovery-export", "Repair shops", "wait for parts", "Observed delivery delays.", "source-export", now);
-    client.db.prepare(`INSERT INTO problems (id, discovery_run_id, statement, why_it_persists, affected, scale_estimate, verdict, verdict_reason, verdict_source_ids_json, selected_at, created_at) VALUES (?, ?, ?, ?, ?, ?, 'confirmed', ?, ?, NULL, ?)`)
-      .run("problem-export", "discovery-export", "Parts arrival is unpredictable.", "Supplier data is fragmented.", "Independent shops", "Thousands", "Evidence confirms recurring delays.", JSON.stringify(["source-export"]), now);
+    client.db.prepare(`INSERT INTO problems (id, discovery_run_id, statement, why_it_persists, affected, scale_estimate, verdict, verdict_reason, verdict_source_ids_json, selected_at, created_at) VALUES (?, ?, ?, ?, ?, ?, 'confirmed', ?, '[]', NULL, ?)`)
+      .run("problem-export", "discovery-export", "Parts arrival is unpredictable.", "Supplier data is fragmented.", "Independent shops", "Thousands", "Evidence confirms recurring delays.", now);
+    client.db.prepare(`INSERT INTO problem_verdict_sources (problem_id, source_id, research_run_id, position) VALUES (?, ?, ?, 0)`)
+      .run("problem-export", "source-export", "discovery-export");
     client.db.prepare("INSERT INTO problem_factors (problem_id, factor_id) VALUES (?, ?)").run("problem-export", "factor-export");
     client.close();
 
@@ -279,7 +361,7 @@ describe("cutover backend", () => {
     const handle = await startBackend({
       dataDir: dir, dbPath, bundledPromptsDir: join(process.cwd(), "prompts"), promptOverridesDir: join(dir, "prompts"),
       appVersion: "test", getSecrets: () => ({ exaApiKey: null }),
-      providerValidation: { probeCodex: async () => ({ detected: false, compatible: false }), listCodexModels: async () => [] },
+      providerValidation: { inspectCodex: async () => ({ detected: false, compatible: false, authenticated: false, models: [] }) },
     }, (event) => events.push(event)); handles.push(handle);
     const post = async (path: string, body: unknown) => {
       const response = await fetch(`http://127.0.0.1:${handle.port}${path}`, { method: "POST", headers: { authorization: `Bearer ${handle.token}`, "content-type": "application/json" }, body: JSON.stringify(body) });

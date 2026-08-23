@@ -1,8 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import { isResearchModeReady, isSetupComplete } from "../../src/backend/server";
 
-const codexReady = { detected: true, compatible: true };
-const codexUnavailable = { detected: false, compatible: false };
+const codexReady = { detected: true, compatible: true, authenticated: true };
+const codexUnavailable = { detected: false, compatible: false, authenticated: false };
 
 describe("provider setup requirements", () => {
   test("accepts Exa with compatible Codex", () => {
@@ -15,6 +15,10 @@ describe("provider setup requirements", () => {
 
   test("requires a usable Codex installation", () => {
     expect(isSetupComplete({ valid: true }, codexUnavailable)).toBe(false);
+  });
+
+  test("requires Codex authentication separately from compatibility", () => {
+    expect(isSetupComplete({ valid: true }, { detected: true, compatible: true, authenticated: false })).toBe(false);
   });
 
   test("known-problem mode requires Codex but not Exa", () => {

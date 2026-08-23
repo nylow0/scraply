@@ -4,7 +4,7 @@ import { ResearchEngine } from "../core/research-engine";
 import { DatabaseClient } from "../db/client";
 import { ActiveRunConflictError } from "../db/repositories/research-runs";
 import { ThreadRepository } from "../db/repositories/threads";
-import { CodexClient, listCodexModels, probeCodexCli } from "../providers/codex";
+import { CodexClient, inspectCodexCli, type CodexInspectionOptions, type CodexInspectionResult } from "../providers/codex";
 import { ExaClient } from "../providers/exa";
 import type { StructuredModelClient } from "../providers/structured";
 import { AppError, toErrorPayload } from "../shared/errors";
@@ -34,29 +34,20 @@ export interface BackendContext {
   modelClients?: Partial<Record<ModelProvider, StructuredModelClient>>;
   log?: (input: Omit<LogInput, "component">) => void;
   providerValidation?: {
-    probeCodex?: () => Promise<{ detected: boolean; compatible: boolean; version?: string; error?: string }>;
-    listCodexModels?: () => Promise<ModelOption[]>;
+    inspectCodex?: (options?: CodexInspectionOptions) => Promise<CodexInspectionResult>;
     validateExa?: (apiKey: string) => Promise<{ valid: boolean; error?: string }>;
   };
 }
 
-function fallbackModelOption(): ModelOption {
-  return {
-    id: DEFAULT_RUN_CONFIG.model,
-    displayName: DEFAULT_RUN_CONFIG.model,
-    defaultReasoningEffort: DEFAULT_RUN_CONFIG.reasoningEffort,
-    reasoningEfforts: [{ id: DEFAULT_RUN_CONFIG.reasoningEffort, description: "" }],
-  };
-}
-export function isSetupComplete(exa: { valid: boolean }, codex: { detected: boolean; compatible: boolean }): boolean {
-  return exa.valid && codex.detected && codex.compatible;
+export function isSetupComplete(exa: { valid: boolean }, codex: { detected: boolean; compatible: boolean; authenticated: boolean }): boolean {
+  return exa.valid && codex.detected && codex.compatible && codex.authenticated;
 }
 export function isResearchModeReady(
   mode: RunConfig["researchMode"],
   exa: { valid: boolean },
-  codex: { detected: boolean; compatible: boolean },
+  codex: { detected: boolean; compatible: boolean; authenticated: boolean },
 ): boolean {
-  return codex.detected && codex.compatible && (mode === "known-problem" || exa.valid);
+  return codex.detected && codex.compatible && codex.authenticated && (mode === "known-problem" || exa.valid);
 }
 export interface BackendHandle { port: number; token: string; close: () => Promise<void>; secretsChanged: () => void }
 
@@ -72,11 +63,12 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
   let cachedModelOptions: ModelOption[] = [];
   let validationGeneration = 0;
   let engine: ResearchEngine | null = null;
-  const subscribers = new Set<(event: ResearchEvent) => void>();
-
   const emitEvent = (event: ResearchEvent) => {
-    onEvent(event);
-    for (const subscriber of subscribers) subscriber(event);
+    try {
+      onEvent(event);
+    } catch (error) {
+      context.log?.({ level: "error", event: "backend-event-delivery-failed", error });
+    }
   };
   const ensureEngine = () => {
     if (!engine) {
@@ -94,33 +86,24 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
     return engine;
   };
 
-  async function ensureCodexModels(): Promise<ModelOption[]> {
-    if (cachedModelOptions.length > 0) return cachedModelOptions;
-    const generation = validationGeneration;
-    const listed = await (context.providerValidation?.listCodexModels ?? listCodexModels)();
-    // An empty catalogue would leave cachedCodexModels empty and re-spawn discovery on every workspace read.
-    const options = listed.length > 0 ? listed : [fallbackModelOption()];
-    if (generation === validationGeneration) {
-      cachedModelOptions = options;
-      cachedCodexModels = options.map((model) => model.id);
-    }
-    return options;
-  }
-
-  async function validateProviders(): Promise<ValidationState> {
+  async function validateProviders(forceCodex = false): Promise<ValidationState> {
     if (validationPromise) return validationPromise;
     const generation = validationGeneration;
-    validationPromise = (async () => {
+    const pending = (async () => {
       const secrets = context.getSecrets();
-      const [codex, models, exa] = await Promise.all([
-        (context.providerValidation?.probeCodex ?? probeCodexCli)(),
-        // Model discovery must not sink validation: the codex probe carries the diagnostic the user can act on,
-        // and a thrown listing would leave cachedValidation null so the UI never leaves "Checking Codex connection".
-        ensureCodexModels().catch(() => [fallbackModelOption()]),
+      const [inspection, exa] = await Promise.all([
+        (context.providerValidation?.inspectCodex ?? inspectCodexCli)({ force: forceCodex }).catch((): CodexInspectionResult => ({
+          detected: false,
+          compatible: false,
+          authenticated: false,
+          models: [],
+          error: "Codex CLI inspection failed",
+        })),
         secrets.exaApiKey
           ? (context.providerValidation?.validateExa ?? ((key: string) => new ExaClient(key).validateKey()))(secrets.exaApiKey)
           : Promise.resolve({ valid: false, error: "Exa key missing" }),
       ]);
+      const { models, ...codex } = inspection;
       const value = ValidationStateSchema.parse({ exa, codex, setupComplete: isSetupComplete(exa, codex) });
       context.log?.({
         level: value.setupComplete ? "info" : "warn",
@@ -132,19 +115,25 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
           exaError: value.exa.error,
           codexDetected: value.codex.detected,
           codexCompatible: value.codex.compatible,
+          codexAuthenticated: value.codex.authenticated,
           codexVersion: value.codex.version,
           codexError: value.codex.error,
         },
       });
-      if (generation === validationGeneration) { cachedValidation = value; cachedModelOptions = models; cachedCodexModels = models.map((model) => model.id); }
+      if (generation === validationGeneration) {
+        cachedValidation = value;
+        cachedModelOptions = models;
+        cachedCodexModels = models.map((model) => model.id);
+      }
       return value;
     })();
-    try { return await validationPromise; }
-    finally { validationPromise = null; }
+    validationPromise = pending;
+    try { return await pending; }
+    finally { if (validationPromise === pending) validationPromise = null; }
   }
   const pendingValidation = () => ValidationStateSchema.parse({
     exa: { valid: false, error: context.getSecrets().exaApiKey ? "Checking Exa connection" : "Exa key missing" },
-    codex: { detected: false, compatible: false, error: "Checking Codex connection" }, setupComplete: false,
+    codex: { detected: false, compatible: false, authenticated: false, error: "Checking Codex connection" }, setupComplete: false,
   });
 
   function modelCatalog(): ModelCatalog {
@@ -154,8 +143,12 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
   function readFavoriteModels(): ModelRef[] {
     const raw = db.getSetting("favorite_models");
     if (!raw) return [];
-    const parsed = ModelCatalogSchema.shape.favorites.safeParse(JSON.parse(raw));
-    return parsed.success ? parsed.data : [];
+    try {
+      const parsed = ModelCatalogSchema.shape.favorites.safeParse(JSON.parse(raw));
+      return parsed.success ? parsed.data : [];
+    } catch {
+      return [];
+    }
   }
   function saveFavoriteModel(model: ModelRef, favorite: boolean): void {
     const current = readFavoriteModels().filter((item) => !(item.provider === model.provider && item.id === model.id));
@@ -164,12 +157,7 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
   }
 
   async function workspaceState() {
-    if (cachedCodexModels.length === 0) {
-      await ensureCodexModels().catch(() => {
-        cachedModelOptions = [fallbackModelOption()];
-        cachedCodexModels = [DEFAULT_RUN_CONFIG.model];
-      });
-    }
+    if (!cachedValidation) await validateProviders();
     const threadList = threads.listThreads();
     if (activeThreadId && !threadList.some((thread) => thread.id === activeThreadId)) activeThreadId = threadList[0]?.id ?? null;
     const runConfig = activeThreadId ? threads.getLatestRunConfig(activeThreadId) : null;
@@ -360,7 +348,8 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
     emitEvent({ type: "run-cancelled", runId, threadId: row.thread_id });
   }
 
-  const server = createServer(async (req, res) => {
+  const pendingRequests = new Set<Promise<void>>();
+  const handleRequest = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
     const startedAt = Date.now();
     const method = req.method ?? "GET";
     let route = req.url ?? "/";
@@ -369,11 +358,6 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
       const url = new URL(req.url ?? "/", "http://127.0.0.1");
       route = url.pathname;
       if (method === "GET" && route === "/health") return sendJson(res, 200, HealthResponseSchema.parse({ ok: true, version: context.appVersion, persistenceCheck: db.getMeta("persistence_probe") ?? undefined }));
-      if (method === "GET" && route === "/events") {
-        res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache", connection: "keep-alive" });
-        const listener = (event: ResearchEvent) => res.write(`data: ${JSON.stringify(event)}\n\n`);
-        subscribers.add(listener); req.on("close", () => subscribers.delete(listener)); return;
-      }
       if (method === "GET" && route === "/validation") return sendJson(res, 200, await validateProviders());
       if (method === "GET" && route === "/workspace") return sendJson(res, 200, await workspaceState());
       if (method === "GET" && route.startsWith("/sources/")) {
@@ -423,9 +407,12 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
         const scope = threads.getScope(threadId); if (!scope) throw new AppError("conflict", "Save the research scope first.");
         const config = threads.getLatestRunConfig(threadId) ?? RunConfigSchema.parse(DEFAULT_RUN_CONFIG);
         if (!isResearchModeReady(config.researchMode, validation.exa, validation.codex)) {
-          if (!validation.codex.detected || !validation.codex.compatible) throw new AppError("conflict", "Connect a compatible Codex CLI before starting research.");
+          if (!validation.codex.detected) throw new AppError("conflict", "Codex CLI not found");
+          if (!validation.codex.compatible) throw new AppError("conflict", "Installed Codex version is incompatible");
+          if (!validation.codex.authenticated) throw new AppError("conflict", "Codex is not signed in");
           throw new AppError("conflict", "Connect Exa before discovering problems.");
         }
+        if (!cachedCodexModels.includes(config.model)) throw new AppError("conflict", "Selected model is unavailable");
         if (config.researchMode === "known-problem" && !config.knownProblem.trim()) throw new AppError("validation_error", "Problem statement is required.");
         try {
           const runId = config.researchMode === "known-problem"
@@ -494,16 +481,60 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
       if (normalized.error.code === "internal_error") context.log?.({ level: "error", event: "backend-request-failed", message: "Unexpected backend request failure", context: { method, route, durationMs: Date.now() - startedAt }, error });
       sendError(res, error);
     }
+  };
+  const server = createServer((req, res) => {
+    const pending = handleRequest(req, res);
+    pendingRequests.add(pending);
+    void pending.then(
+      () => pendingRequests.delete(pending),
+      () => pendingRequests.delete(pending),
+    );
   });
 
-  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const onError = (error: Error) => reject(error);
+      server.once("error", onError);
+      server.listen(0, "127.0.0.1", () => {
+        server.off("error", onError);
+        resolve();
+      });
+    });
+  } catch (error) {
+    db.close();
+    throw error;
+  }
   const address = server.address();
   if (!address || typeof address === "string") throw new Error("Backend failed to bind");
   void validateProviders().catch(() => undefined);
   return {
     port: address.port, token,
-    close: async () => { cancelActiveRuns(engine); await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve())); db.close(); },
-    secretsChanged: () => { cancelActiveRuns(engine); engine = null; validationGeneration += 1; cachedValidation = null; cachedCodexModels = []; cachedModelOptions = []; void validateProviders().catch(() => undefined); },
+    close: async () => {
+      let closeError: unknown;
+      try {
+        await new Promise<void>((resolve, reject) => {
+          server.close((error) => error ? reject(error) : resolve());
+          server.closeAllConnections();
+        });
+      } catch (error) {
+        closeError = error;
+      } finally {
+        await Promise.allSettled([...pendingRequests]);
+        await engine?.shutdown();
+        db.close();
+      }
+      if (closeError) throw closeError;
+    },
+    secretsChanged: () => {
+      cancelActiveRuns(engine);
+      engine = null;
+      validationGeneration += 1;
+      validationPromise = null;
+      cachedValidation = null;
+      cachedCodexModels = [];
+      cachedModelOptions = [];
+      void validateProviders(true).catch(() => undefined);
+    },
   };
 }
 

@@ -6,6 +6,7 @@ import { configurePromptPaths } from "../src/core/prompts";
 import { DatabaseClient } from "../src/db/client";
 import { DevelopmentRepository } from "../src/db/repositories/development";
 import { CodexClient } from "../src/providers/codex";
+import { DEFAULT_RUN_CONFIG, RunConfigSchema } from "../src/shared/schemas";
 import {
   CountingModelClient,
   phase2ObjectiveChecks,
@@ -26,7 +27,7 @@ if (process.env.SCRAPLY_PHASE2_GATE_AUTHORIZED !== "1") {
 
 const databasePath = resolve(databaseArgument);
 const outputDirectory = resolve(outputArgument ?? join(dirname(databasePath), `phase2-gate-${timestamp()}`));
-const model = process.env.SCRAPLY_CODEX_MODEL ?? "gpt-5.6-luna";
+const model = process.env.SCRAPLY_CODEX_MODEL ?? DEFAULT_RUN_CONFIG.model;
 const appData = process.env.APPDATA;
 if (!appData) throw new Error("APPDATA is required to resolve Scraply's prompt cache");
 
@@ -91,18 +92,26 @@ if (gateFailure) throw new Error(gateFailure);
 
 function createDevelopmentRun(client: DatabaseClient, runId: string, selectedProblemId: string, selectedModel: string): void {
   const row = client.db.prepare(`
-    SELECT rr.thread_id
+    SELECT rr.thread_id, rr.config_json
     FROM problems p
     JOIN research_runs rr ON rr.id = p.discovery_run_id
     WHERE p.id = ?
-  `).get(selectedProblemId) as { thread_id: string } | undefined;
+  `).get(selectedProblemId) as { thread_id: string; config_json: string } | undefined;
   if (!row) throw new Error(`Problem not found: ${selectedProblemId}`);
   releaseInterruptedRuns(client, row.thread_id);
   const now = new Date().toISOString();
+  const config = { ...RunConfigSchema.parse(JSON.parse(row.config_json)), model: selectedModel };
   client.db.prepare(`
     INSERT INTO research_runs (id, thread_id, status, config_json, problem_id, created_at, updated_at)
     VALUES (?, ?, 'running', ?, ?, ?, ?)
-  `).run(runId, row.thread_id, JSON.stringify({ model: selectedModel }), selectedProblemId, now, now);
+  `).run(
+    runId,
+    row.thread_id,
+    JSON.stringify(config),
+    selectedProblemId,
+    now,
+    now,
+  );
 }
 
 /**

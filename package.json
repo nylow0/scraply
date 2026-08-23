@@ -17,7 +17,8 @@
     "verify:package": "bun scripts/verify-package.ts",
     "install:local": "powershell -NoProfile -File scripts/install-local.ps1",
     "build:installed": "bun run package && bun run install:local",
-    "test": "bun test test/unit test/integration/backend.test.ts test/integration/migrations.test.ts test/integration/discovery-persistence.test.ts test/integration/development-persistence.test.ts test/integration/research-engine-deadline.test.ts",
+    "test": "bun test test/unit test/integration",
+    "test:renderer": "vitest run",
     "test:e2e": "bun run package:e2e && playwright test",
     "test:e2e:production": "bun scripts/run-e2e.ts production",
     "test:e2e:portable": "bun scripts/smoke-portable.ts",
@@ -25,8 +26,9 @@
     "test:exa": "bun test test/integration/exa.live.test.ts",
     "phase1:gate": "bun scripts/run-phase1-gate.ts",
     "phase2:gate": "bun scripts/run-phase2-gate.ts",
+    "lint": "eslint .",
     "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.renderer.json",
-    "check": "bun run typecheck && svelte-check --tsconfig ./tsconfig.renderer.json && bun run test"
+    "check": "bun run lint && bun run typecheck && svelte-check --tsconfig ./tsconfig.renderer.json && bun run test && bun run test:renderer"
   },
   "dependencies": {
     "zod": "^3.25.76"
@@ -36,15 +38,21 @@
     "@playwright/test": "1.61.0",
     "@sveltejs/vite-plugin-svelte": "^5.1.0",
     "@tailwindcss/vite": "^4.3.1",
+    "@testing-library/svelte": "^5.4.2",
     "@types/bun": "^1.2.22",
     "electron": "42.7.0",
     "electron-builder": "^26.0.12",
     "electron-vite": "^3.1.0",
+    "eslint": "^10.9.0",
+    "eslint-plugin-svelte": "^3.23.0",
+    "jsdom": "^30.0.1",
     "svelte": "^5.56.3",
     "svelte-check": "^4.6.0",
     "tailwindcss": "^4.3.1",
     "typescript": "^5.9.2",
-    "vite": "^6.3.5"
+    "typescript-eslint": "^8.67.0",
+    "vite": "^6.3.5",
+    "vitest": "^4.1.11"
   },
   "overrides": {
     "brace-expansion": "5.0.9",

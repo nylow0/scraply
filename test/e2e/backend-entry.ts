@@ -36,8 +36,13 @@ process.parentPort?.on("message", async (event) => {
     appVersion: message.appVersion,
     getSecrets: () => secrets,
     providerValidation: {
-      probeCodex: async () => ({ detected: true, compatible: true, version: "codex-e2e" }),
-      listCodexModels: async () => [{ id: "gpt-5.6-luna", displayName: "GPT-5.6-Luna", defaultReasoningEffort: "medium", reasoningEfforts: [{ id: "medium", description: "Balanced reasoning" }] }],
+      inspectCodex: async () => ({
+        detected: true,
+        compatible: true,
+        authenticated: true,
+        version: "codex-e2e",
+        models: [{ id: "gpt-5.6-luna", displayName: "GPT-5.6-Luna", defaultReasoningEffort: "medium", reasoningEfforts: [{ id: "medium", description: "Balanced reasoning" }] }],
+      }),
       validateExa: async (apiKey) => apiKey === "invalid-e2e-key"
         ? { valid: false, error: "Deterministic invalid Exa key" }
         : { valid: true },

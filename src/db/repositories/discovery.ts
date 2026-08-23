@@ -79,6 +79,7 @@ export class DiscoveryRepository {
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
       `);
       for (const factor of factors) {
+        this.assertSourceBelongsToRun(researchRunId, factor.sourceId);
         insert.run(
           factor.id,
           researchRunId,
@@ -113,12 +114,21 @@ export class DiscoveryRepository {
           id, discovery_run_id, statement, why_it_persists, affected,
           scale_estimate, scale_basis_factor_id, verdict, verdict_reason,
           verdict_source_ids_json, selected_at, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '[]', NULL, ?)
       `);
       const insertFactor = db.prepare(`
         INSERT INTO problem_factors (problem_id, factor_id) VALUES (?, ?)
       `);
+      const insertVerdictSource = db.prepare(`
+        INSERT INTO problem_verdict_sources (problem_id, source_id, research_run_id, position)
+        VALUES (?, ?, ?, ?)
+      `);
       for (const problem of problems) {
+        if (problem.scaleBasisFactorId !== null) {
+          this.assertFactorBelongsToRun(researchRunId, problem.scaleBasisFactorId);
+        }
+        for (const factorId of problem.factorIds) this.assertFactorBelongsToRun(researchRunId, factorId);
+        for (const sourceId of problem.verdictSourceIds) this.assertSourceBelongsToRun(researchRunId, sourceId);
         insertProblem.run(
           problem.id,
           researchRunId,
@@ -129,9 +139,11 @@ export class DiscoveryRepository {
           problem.scaleBasisFactorId,
           problem.verdict,
           problem.verdictReason,
-          JSON.stringify(problem.verdictSourceIds),
           now,
         );
+        problem.verdictSourceIds.forEach((sourceId, position) => {
+          insertVerdictSource.run(problem.id, sourceId, researchRunId, position);
+        });
         for (const factorId of problem.factorIds) insertFactor.run(problem.id, factorId);
       }
       db.exec("COMMIT");
@@ -144,6 +156,7 @@ export class DiscoveryRepository {
   createKnownProblemRoot(threadId: string, scope: Scope, statement: string, config: RunConfig): { runId: string; problemId: string } {
     const db = this.client.db;
     const trimmedStatement = statement.trim();
+    if (!trimmedStatement) throw new Error("Known problem statement cannot be empty");
     db.exec("BEGIN IMMEDIATE");
     try {
       const active = db.prepare(`SELECT id FROM research_runs WHERE thread_id = ? AND status IN ('queued', 'running') LIMIT 1`)
@@ -209,5 +222,17 @@ export class DiscoveryRepository {
       source.contentHash,
       source.retrievedAt,
     );
+  }
+
+  private assertFactorBelongsToRun(researchRunId: string, factorId: string): void {
+    const row = this.client.db.prepare("SELECT 1 FROM factors WHERE id = ? AND research_run_id = ?")
+      .get(factorId, researchRunId);
+    if (!row) throw new Error(`Factor ${factorId} does not belong to research run ${researchRunId}`);
+  }
+
+  private assertSourceBelongsToRun(researchRunId: string, sourceId: string): void {
+    const row = this.client.db.prepare("SELECT 1 FROM sources WHERE id = ? AND research_run_id = ?")
+      .get(sourceId, researchRunId);
+    if (!row) throw new Error(`Source ${sourceId} does not belong to research run ${researchRunId}`);
   }
 }

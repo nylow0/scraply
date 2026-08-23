@@ -33,6 +33,12 @@ export class DevelopmentRepository {
       WHERE pf.problem_id = ?
       ORDER BY f.created_at, f.id
     `).all(problemId) as Array<Record<string, unknown>>;
+    const verdictSourceRows = this.client.db.prepare(`
+      SELECT source_id
+      FROM problem_verdict_sources
+      WHERE problem_id = ?
+      ORDER BY position
+    `).all(problemId) as Array<{ source_id: string }>;
     const factorIds = factorRows.map((row) => String(row.id));
     return {
       scope: {
@@ -52,7 +58,7 @@ export class DevelopmentRepository {
         factorIds,
         verdict: String(problemRow.verdict) as DevelopmentProblem["verdict"],
         verdictReason: String(problemRow.verdict_reason),
-        verdictSourceIds: parseStringArray(problemRow.verdict_source_ids_json),
+        verdictSourceIds: verdictSourceRows.map((row) => row.source_id),
       },
       factors: factorRows.map((row) => ({
         id: String(row.id),

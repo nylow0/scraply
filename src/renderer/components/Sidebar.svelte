@@ -6,6 +6,7 @@
   let {
     threads,
     activeThreadId,
+    busy,
     deletingThreadId = null,
     onNew,
     onSelect,
@@ -16,6 +17,7 @@
   }: {
     threads: Thread[];
     activeThreadId: string | null;
+    busy: boolean;
     deletingThreadId?: string | null;
     onNew: () => void;
     onSelect: (id: string) => void;
@@ -34,7 +36,7 @@
 
 <aside class="sidebar">
   <div class="brand"><BrandMark size={21} /><span>Scraply</span></div>
-  <button class="new" aria-label="Create new research thread" onclick={onNew}><span aria-hidden="true">+</span>New research</button>
+  <button class="new" aria-label="Create new research thread" disabled={busy} onclick={onNew}><span aria-hidden="true">+</span>New research</button>
   <div class="list-head"><span>Workspace</span><span>{threads.length}</span></div>
   <div class="list" role="list" aria-label="Research threads">
     {#each threads as thread (thread.id)}
@@ -43,6 +45,7 @@
           class="thread"
           aria-current={thread.id === activeThreadId ? "true" : undefined}
           aria-label={`Open thread ${thread.title}`}
+          disabled={busy}
           onclick={() => onSelect(thread.id)}
         >
           <span class="title">{thread.title}</span>
@@ -55,7 +58,7 @@
           class:busy={deletingThreadId === thread.id}
           title="Delete research"
           aria-label={`Delete research ${thread.title}`}
-          disabled={deletingThreadId !== null}
+          disabled={busy || deletingThreadId !== null}
           onclick={() => confirmDelete(thread)}
         >
           {#if deletingThreadId === thread.id}
@@ -72,9 +75,9 @@
     {/each}
   </div>
   <div class="footer">
-    <button class="link" onclick={onOpenGuide}>User guide</button>
-    <button class="link" onclick={onOpenData}>Open data folder</button>
-    <button class="link" onclick={onOpenLogs}>Open logs folder</button>
+    <button class="link" disabled={busy} onclick={onOpenGuide}>User guide</button>
+    <button class="link" disabled={busy} onclick={onOpenData}>Open data folder</button>
+    <button class="link" disabled={busy} onclick={onOpenLogs}>Open logs folder</button>
   </div>
 </aside>
 
@@ -112,9 +115,16 @@
     font-weight: 600;
   }
 
-  .new:hover {
+  .new:not(:disabled):hover {
     border-color: var(--accent);
     background: color-mix(in srgb, var(--accent) 19%, var(--surface));
+  }
+
+  .new:disabled,
+  .thread:disabled,
+  .link:disabled {
+    cursor: not-allowed;
+    opacity: .5;
   }
 
   .new span {
@@ -288,7 +298,7 @@
     font-size: 12px;
   }
 
-  .link:hover {
+  .link:not(:disabled):hover {
     color: var(--text);
   }
 </style>

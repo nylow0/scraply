@@ -7,6 +7,7 @@ import { DatabaseClient } from "../src/db/client";
 import { DiscoveryRepository } from "../src/db/repositories/discovery";
 import { CodexClient } from "../src/providers/codex";
 import { EXA_CATEGORIES, ExaClient, type ExaCategory } from "../src/providers/exa";
+import { DEFAULT_RUN_CONFIG } from "../src/shared/schemas";
 import { ScopeSchema, type Scope } from "../src/shared/structured-output-schemas";
 import {
   CountingModelClient,
@@ -36,7 +37,7 @@ const scopePath = resolve(scopeArgument);
 const outputDirectory = resolve(outputArgument ?? join("artifacts", `phase1-gate-${timestamp()}`));
 const scope = ScopeSchema.parse(JSON.parse(await readFile(scopePath, "utf8"))) as Scope;
 const depth = parseDepth(process.env.SCRAPLY_DISCOVERY_DEPTH);
-const model = process.env.SCRAPLY_CODEX_MODEL ?? "gpt-5.2-codex";
+const model = process.env.SCRAPLY_CODEX_MODEL ?? DEFAULT_RUN_CONFIG.model;
 const seed = parseSeed(process.env.SCRAPLY_DISCOVERY_SEED);
 
 await mkdir(outputDirectory, { recursive: true });
@@ -133,7 +134,7 @@ function createGateRun(
   client.db.prepare(`
     INSERT INTO research_runs (id, thread_id, status, config_json, created_at, updated_at)
     VALUES (?, ?, 'running', ?, ?, ?)
-  `).run(runId, threadId, JSON.stringify({ model, discoveryDepth: depth }), now, now);
+  `).run(runId, threadId, JSON.stringify({ ...DEFAULT_RUN_CONFIG, model, discoveryDepth: depth }), now, now);
 }
 
 function finishGateRun(client: DatabaseClient, runId: string, status: "completed" | "failed"): void {
