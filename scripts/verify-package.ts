@@ -154,7 +154,7 @@ if (strict && process.env.GITHUB_SHA && process.env.GITHUB_SHA !== headSha) {
 if (strict && dirty) throw new Error("Release verification requires a clean Git worktree.");
 const sourceSha = headSha;
 
-const tagVersion = sourceRef.match(/^(?:stage-)?v(\d+\.\d+\.\d+)(?:-rc\.\d+)?$/)?.[1];
+const tagVersion = sourceRef.match(/^v(\d+\.\d+\.\d+)(?:-rc\.\d+)?$/)?.[1];
 if (strict && tagVersion && tagVersion !== metadata.version) {
   throw new Error(`Tag ${sourceRef} does not match package version ${metadata.version}.`);
 }
