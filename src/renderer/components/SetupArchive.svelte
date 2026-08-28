@@ -32,6 +32,7 @@
       <div><dt>Model</dt><dd>{config.model}</dd></div>
       <div><dt>Reasoning</dt><dd>{config.reasoningEffort}</dd></div>
       {#if config.researchMode === "explore-market"}<div><dt>Research depth</dt><dd>{config.discoveryDepth}</dd></div>{/if}
+      {#if config.researchMode === "explore-market"}<div><dt>Search provider</dt><dd>{config.searchProvider}</dd></div>{/if}
     </dl>
   {:else}
     <div class="empty"><h2>No setup has been saved.</h2><p>Complete this step to begin the workflow.</p></div>

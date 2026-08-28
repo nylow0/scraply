@@ -52,6 +52,28 @@ describe("cutover backend", () => {
     expect(workspace.scope).toEqual({ title: "Repair shops", audience: "Independent shops", domain: "Parts sourcing", observations: "", offLimits: ["Inventory"] });
   });
 
+  test("defaults a new thread to Perplexity when it is the only connected search provider", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "scraply-perplexity-default-")); dirs.push(dir);
+    const handle = await startBackend({
+      dataDir: dir, dbPath: join(dir, "scraply.db"), bundledPromptsDir: join(process.cwd(), "prompts"),
+      promptOverridesDir: join(dir, "prompts"), appVersion: "test",
+      getSecrets: () => ({ exaApiKey: null, perplexityApiKey: "perplexity-test" }),
+      providerValidation: {
+        inspectCodex: async () => codexInspection(),
+        validatePerplexity: async () => ({ valid: true }),
+      },
+    }, () => undefined); handles.push(handle);
+
+    const response = await fetch(`http://127.0.0.1:${handle.port}/threads`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${handle.token}`, "content-type": "application/json" },
+      body: "{}",
+    });
+    const result = await response.json() as { data: { workspace: { runConfig: { searchProvider: string } } } };
+    expect(response.status).toBe(200);
+    expect(result.data.workspace.runConfig.searchProvider).toBe("perplexity");
+  });
+
   test("starts a known problem without Exa and persists a synthetic discovery root", async () => {
     const dir = mkdtempSync(join(tmpdir(), "scraply-known-problem-")); dirs.push(dir);
     const dbPath = join(dir, "scraply.db");
@@ -232,6 +254,11 @@ describe("cutover backend", () => {
     const withoutExa = await send("/research/start", { threadId });
     expect(withoutExa.status).toBe(409);
     expect(withoutExa.body.error?.message).toBe("Connect Exa before discovering problems.");
+
+    await send("/run-config", { threadId, config: { ...base, researchMode: "explore-market", searchProvider: "perplexity" } });
+    const withoutPerplexity = await send("/research/start", { threadId });
+    expect(withoutPerplexity.status).toBe(409);
+    expect(withoutPerplexity.body.error?.message).toBe("Connect Perplexity before discovering problems.");
   });
 
   test("reuses an undeveloped known-problem root instead of stacking duplicates", () => {
@@ -273,7 +300,7 @@ describe("cutover backend", () => {
     const now = "2026-01-01T00:00:00.000Z";
     const insertRun = client.db.prepare(`
       INSERT INTO research_runs (id, thread_id, status, config_json, problem_id, created_at, updated_at)
-      VALUES (?, ?, 'completed', '{}', ?, ?, ?)
+      VALUES (?, ?, 'completed', ?, ?, ?, ?)
     `);
     const insertProblem = client.db.prepare(`
       INSERT INTO problems (id, discovery_run_id, statement, why_it_persists, affected, scale_estimate, verdict,
@@ -284,15 +311,16 @@ describe("cutover backend", () => {
       INSERT INTO solutions (id, problem_id, mechanism, description, respects_off_limits, respects_off_limits_why, created_at, research_run_id)
       VALUES (?, ?, ?, '', 1, '', ?, ?)
     `);
-    insertRun.run("discovery-old", created.thread.id, null, now, now);
+    const persistedConfig = JSON.stringify(DEFAULT_RUN_CONFIG);
+    insertRun.run("discovery-old", created.thread.id, persistedConfig, null, now, now);
     insertProblem.run("problem-old", "discovery-old", "Superseded problem", now, now);
-    insertRun.run("development-old", created.thread.id, "problem-old", now, now);
+    insertRun.run("development-old", created.thread.id, persistedConfig, "problem-old", now, now);
     insertSolution.run("solution-old", "problem-old", "Superseded solution", now, "development-old");
-    insertRun.run("discovery-latest", created.thread.id, null, now, now);
+    insertRun.run("discovery-latest", created.thread.id, persistedConfig, null, now, now);
     insertProblem.run("problem-selected", "discovery-latest", "Selected problem", now, now);
     insertProblem.run("problem-deselected", "discovery-latest", "Deselected problem", null, now);
-    insertRun.run("development-selected", created.thread.id, "problem-selected", now, now);
-    insertRun.run("development-deselected", created.thread.id, "problem-deselected", now, now);
+    insertRun.run("development-selected", created.thread.id, persistedConfig, "problem-selected", now, now);
+    insertRun.run("development-deselected", created.thread.id, persistedConfig, "problem-deselected", now, now);
     insertSolution.run("solution-selected", "problem-selected", "Current solution", now, "development-selected");
     insertSolution.run("solution-deselected", "problem-deselected", "Deselected solution", now, "development-deselected");
     client.close();
@@ -373,11 +401,12 @@ describe("cutover backend", () => {
     const client = new DatabaseClient(dbPath);
     const insertRun = client.db.prepare(`
       INSERT INTO research_runs (id, thread_id, status, config_json, created_at, updated_at)
-      VALUES (?, ?, 'running', '{}', ?, ?)
+      VALUES (?, ?, 'running', ?, ?, ?)
     `);
     const now = new Date().toISOString();
-    insertRun.run("stale-cancel", cancellable.thread.id, now, now);
-    insertRun.run("stale-delete", deletable.thread.id, now, now);
+    const persistedConfig = JSON.stringify(DEFAULT_RUN_CONFIG);
+    insertRun.run("stale-cancel", cancellable.thread.id, persistedConfig, now, now);
+    insertRun.run("stale-delete", deletable.thread.id, persistedConfig, now, now);
     client.close();
 
     await post("/research/cancel", { runId: "stale-cancel" });
@@ -391,5 +420,39 @@ describe("cutover backend", () => {
     expect(deleted.db.prepare("SELECT 1 FROM research_runs WHERE id = ?").get("stale-delete")).toBeNull();
     deleted.close();
     expect(events.filter((event) => event.type === "run-cancelled").map((event) => event.runId)).toEqual(["stale-cancel", "stale-delete"]);
+  });
+
+  test("loads a legacy latest run whose config predates required fields", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "scraply-legacy-run-")); dirs.push(dir);
+    const dbPath = join(dir, "scraply.db");
+    const handle = await startBackend({
+      dataDir: dir, dbPath, bundledPromptsDir: join(process.cwd(), "prompts"), promptOverridesDir: join(dir, "prompts"),
+      appVersion: "test", getSecrets: () => ({ exaApiKey: null }),
+      providerValidation: { inspectCodex: async () => ({ detected: false, compatible: false, authenticated: false, models: [] }) },
+    }, () => undefined); handles.push(handle);
+    const post = async (path: string, body: unknown) => {
+      const response = await fetch(`http://127.0.0.1:${handle.port}${path}`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${handle.token}`, "content-type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      expect(response.status).toBe(200);
+      return (await response.json() as { data: unknown }).data;
+    };
+    const created = await post("/threads", {}) as { thread: { id: string } };
+    const client = new DatabaseClient(dbPath);
+    const now = new Date().toISOString();
+    client.db.prepare(`
+      INSERT INTO research_runs (id, thread_id, status, config_json, created_at, updated_at)
+      VALUES ('legacy-run', ?, 'completed', '{}', ?, ?)
+    `).run(created.thread.id, now, now);
+    client.close();
+
+    const response = await fetch(`http://127.0.0.1:${handle.port}/workspace`, {
+      headers: { authorization: `Bearer ${handle.token}` },
+    });
+    expect(response.status).toBe(200);
+    const workspace = await response.json() as { data: { latestResearchRun: { runId: string; searches: number } } };
+    expect(workspace.data.latestResearchRun).toMatchObject({ runId: "legacy-run", searches: 0 });
   });
 });

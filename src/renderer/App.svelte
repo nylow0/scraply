@@ -238,7 +238,7 @@
     {#if workspace && activeThread}
       <div class="topbar">
         <div><span class="status-dot" class:live={activeThread.status.endsWith("running")}></span>{activeThread.title}</div>
-        {#if activeRun}<div class="calls"><strong>{activeRun.codexCalls}</strong> Codex calls / ~{activeRun.projectedCodexCalls} · <strong>{activeRun.exaSearches}</strong> Exa searches / ~{activeRun.projectedExaSearches}</div>{/if}
+        {#if activeRun}<div class="calls"><strong>{activeRun.codexCalls}</strong> Codex calls / ~{activeRun.projectedCodexCalls} · <strong>{activeRun.searches}</strong> searches / ~{activeRun.projectedSearches}</div>{/if}
       </div>
       <WorkflowTabs
         active={activeStep}

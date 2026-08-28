@@ -33,7 +33,7 @@ describe("App workspace coordination", () => {
       threadId: "alpha",
       message: "Progress",
       codexCalls: 1,
-      exaSearches: 1,
+      searches: 1,
     });
     await waitFor(() => expect(getWorkspace).toHaveBeenCalledTimes(2), { timeout: 1_000 });
     await fireEvent.click(betaButton);
@@ -67,7 +67,7 @@ describe("App workspace coordination", () => {
 function workspace(activeThreadId: "alpha" | "beta"): WorkspaceState {
   const now = "2026-08-23T00:00:00.000Z";
   return {
-    validation: { exa: { valid: true }, codex: { detected: true, compatible: true, authenticated: true }, setupComplete: true },
+    validation: { exa: { valid: true }, perplexity: { valid: false, error: "Perplexity key missing" }, codex: { detected: true, compatible: true, authenticated: true }, setupComplete: true },
     threads: [
       { id: "alpha", title: "Alpha", status: "configuring", createdAt: now, updatedAt: now },
       { id: "beta", title: "Beta", status: "configuring", createdAt: now, updatedAt: now },

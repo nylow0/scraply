@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { SourceSchema, type Source } from "../shared/schemas";
 import { ProviderFailure } from "./structured";
+import type { SearchClient, SearchOptions, ValidationResult } from "./search";
 
 type Fetcher = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
 
@@ -29,17 +30,13 @@ export const EXA_CATEGORIES = [
 
 export type ExaCategory = (typeof EXA_CATEGORIES)[number];
 
-export interface ExaSearchOptions {
-  numResults?: number;
-  maxCharacters?: number;
-  includeDomains?: string[];
+export interface ExaSearchOptions extends SearchOptions {
   category?: ExaCategory;
-  startPublishedDate?: string;
-  signal?: AbortSignal;
-  timeoutMs?: number;
 }
 
-export class ExaClient {
+export class ExaClient implements SearchClient {
+  readonly provider = "exa" as const;
+
   constructor(
     private readonly apiKey: string,
     private readonly fetcher: Fetcher = fetch,
@@ -97,7 +94,7 @@ export class ExaClient {
           id: result.id ?? `source-${index + 1}`,
           url: result.url,
           title: result.title?.trim() || result.url,
-          text: result.text.trim(),
+          text: result.text.trim().slice(0, options.maxCharacters ?? 6000),
           ...(result.author ? { author: result.author } : {}),
           ...(result.publishedDate ? { publishedDate: result.publishedDate } : {}),
         }));
@@ -112,7 +109,7 @@ export class ExaClient {
     }
   }
 
-  async validateKey(): Promise<{ valid: true } | { valid: false; error: string }> {
+  async validateKey(): Promise<ValidationResult> {
     try {
       await this.search("test connectivity", { numResults: 1, maxCharacters: 500, timeoutMs: 10_000 });
       return { valid: true };

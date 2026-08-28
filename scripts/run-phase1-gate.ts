@@ -65,7 +65,7 @@ try {
   const projection = discoveryProjection(depth);
   const result = await runPhase1Ablation(scope, {
     modelClient,
-    exa,
+    search: exa,
     model,
     depth,
     audienceSearch,
