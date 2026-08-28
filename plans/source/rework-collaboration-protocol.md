@@ -2,7 +2,7 @@
 
 ## Recommendation
 
-Do not ask Codex to implement all of `REWORK.md` in one task. Use one fresh Codex task per phase, keep `REWORK.md` as the source of truth, and do not start the next phase until the current phase has passed its stated success criteria and been committed on `dev`.
+Do not ask Codex to implement all of `REWORK.md` in one task. Use one fresh Codex task and one short-lived branch based on the latest `master` for each phase. Keep `REWORK.md` as the source of truth, and do not start the next phase until the current phase has passed its stated success criteria and been merged into `master` through a pull request.
 
 The product priority is the readable idea chain:
 
@@ -43,7 +43,7 @@ Before implementation, ask Codex for a read-only implementation audit. It should
 - Identify conflicts between the specification and current code.
 - Produce a phase/file/test matrix.
 - Run the current baseline checks without modifying code.
-- Confirm the branch is `dev` and report unrelated working-tree changes.
+- Confirm the work is on a dedicated branch based on the latest `master`, and report unrelated working-tree changes.
 
 Once the audit is accepted, commit the finalized `REWORK.md` and this protocol separately. That gives every later task a stable specification revision to cite.
 
@@ -96,7 +96,7 @@ Every implementation request should authorize only one phase. Tell Codex to stop
 At the beginning of every phase, ask Codex to:
 
 1. Read `AGENTS.md` and the relevant parts of `REWORK.md` completely.
-2. Confirm it is on `dev`.
+2. Confirm it is on a dedicated branch based on the latest `master`.
 3. Inspect and preserve unrelated working-tree changes.
 4. Re-verify referenced code because line numbers may have moved.
 5. State the exact files and tests expected to change.
@@ -115,7 +115,8 @@ Codex should not call a phase complete until it has:
 - Run `bun run build:installed` from the project root, as required by the project instructions.
 - Reviewed the diff for accidental scope expansion, stale concepts, debug code, and unhandled migrations.
 - Reported remaining risks and anything intentionally deferred.
-- Committed only that phase on `dev`, using one clear phase-level commit, after Dany asks for the commit.
+- Committed only that phase on its short-lived branch, using one clear phase-level commit, after Dany asks for the commit.
+- Opened a pull request into `master` after Dany asks for it.
 
 If a check fails, Codex should report the actual error and keep the phase open. It should not weaken or delete a test merely to make the boundary green.
 
@@ -129,7 +130,7 @@ Ask for the aged-resume test first, then the deadline fix. Ask for durable provi
 
 Suggested request:
 
-> Implement only Phase −1 from `REWORK.md` on `dev`. Re-verify every cited location first. Add the aged-resume and durable-call-budget regression tests, make the smallest implementation changes, run the relevant tests and `bun run build:installed`, then report evidence against each Phase −1 success criterion. Do not start Phase 0 and do not commit until I ask.
+> Implement only Phase −1 from `REWORK.md` on a dedicated branch based on the latest `master`. Re-verify every cited location first. Add the aged-resume and durable-call-budget regression tests, make the smallest implementation changes, run the relevant tests and `bun run build:installed`, then report evidence against each Phase −1 success criterion. Do not start Phase 0 and do not commit until I ask.
 
 ### Phase 0 — additive schema and types
 
@@ -139,7 +140,7 @@ Migration 7 must be additive. Test both a fresh database and an existing databas
 
 Suggested request:
 
-> Implement only Phase 0 from `REWORK.md` on `dev`. Keep Migration 7 purely additive and preserve current app behavior. Add the new schemas, JSON-Schema derivation coverage, schema-shape tests, and new prompt files. Verify fresh and existing database startup, run `bun run check`, relevant migration tests, and `bun run build:installed`. Report evidence and stop before Phase 1. Do not commit until I ask.
+> Implement only Phase 0 from `REWORK.md` on a dedicated branch based on the latest `master`. Keep Migration 7 purely additive and preserve current app behavior. Add the new schemas, JSON-Schema derivation coverage, schema-shape tests, and new prompt files. Verify fresh and existing database startup, run `bun run check`, relevant migration tests, and `bun run build:installed`. Report evidence and stop before Phase 1. Do not commit until I ask.
 
 ### Phase 1 — headless go/no-go gate
 
@@ -161,7 +162,7 @@ If the gate fails, stop the rework. Diagnose factor harvest or normalization; do
 
 Suggested request:
 
-> Implement only Phase 1 from `REWORK.md`, headless, on `dev`. Build plain functions and the Markdown gate artifact; add focused tests for normalization, quote verification, provenance gates, stage transactions, and resume/idempotency. Do not add IPC or renderer code. Once local checks and `bun run build:installed` pass, stop and ask me before wiping the prompt cache or spending provider calls. For the live gate, use the same scope for Arms A and C and report the two hard pass criteria plus the recorded non-threshold metrics. Do not start Phase 2.
+> Implement only Phase 1 from `REWORK.md`, headless, on a dedicated branch based on the latest `master`. Build plain functions and the Markdown gate artifact; add focused tests for normalization, quote verification, provenance gates, stage transactions, and resume/idempotency. Do not add IPC or renderer code. Once local checks and `bun run build:installed` pass, stop and ask me before wiping the prompt cache or spending provider calls. For the live gate, use the same scope for Arms A and C and report the two hard pass criteria plus the recorded non-threshold metrics. Do not start Phase 2.
 
 ### Phase 2 — headless full-chain validation
 
@@ -173,7 +174,7 @@ Measure actual per-problem call count. Use that measurement to set honest checkp
 
 Suggested request:
 
-> Implement only Phase 2 from `REWORK.md`, headless, on `dev`, using the accepted Phase 1 implementation. Run one selected problem through Stages 3–5, add transaction/idempotency and structured-rendering tests, and verify all governing principles. Measure the actual call count and produce the complete readable chain. Run relevant tests and `bun run build:installed`; stop before Phase 3 and do not commit until I ask.
+> Implement only Phase 2 from `REWORK.md`, headless, on a dedicated branch based on the latest `master`, using the accepted Phase 1 implementation. Run one selected problem through Stages 3–5, add transaction/idempotency and structured-rendering tests, and verify all governing principles. Measure the actual call count and produce the complete readable chain. Run relevant tests and `bun run build:installed`; stop before Phase 3 and do not commit until I ask.
 
 ### Phase 3 — atomic cutover
 
@@ -193,7 +194,7 @@ Before editing, require a concrete cutover checklist derived from the current im
 
 Suggested request:
 
-> Implement only Phase 3 from `REWORK.md` as one atomic cutover on `dev`. First re-derive the cutover checklist from current imports and tests. Implement Migration 8, delete the old pipeline, land the new UI and IPC/server payloads, rewrite E2E mocks and flows, and update the enumerated test script in the same change. Keep the repository compileable at the final boundary; do not retain compatibility shims unless `REWORK.md` explicitly requires them. Run fresh/existing migration tests, the full check and test suites, E2E, deletion/untouched-area audits, and `bun run build:installed`. Report evidence against every Phase 3 success criterion and do not commit until I ask.
+> Implement only Phase 3 from `REWORK.md` as one atomic cutover on a dedicated branch based on the latest `master`. First re-derive the cutover checklist from current imports and tests. Implement Migration 8, delete the old pipeline, land the new UI and IPC/server payloads, rewrite E2E mocks and flows, and update the enumerated test script in the same change. Keep the repository compileable at the final boundary; do not retain compatibility shims unless `REWORK.md` explicitly requires them. Run fresh/existing migration tests, the full check and test suites, E2E, deletion/untouched-area audits, and `bun run build:installed`. Report evidence against every Phase 3 success criterion and do not commit until I ask.
 
 ## How Dany should review each phase
 
