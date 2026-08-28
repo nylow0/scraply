@@ -6,5 +6,6 @@
       "@shared/*": ["src/shared/*"]
     }
   },
-  "include": ["src/renderer/**/*", "src/shared/**/*"]
+  "include": ["src/renderer/**/*", "src/shared/**/*", "test/renderer/**/*"],
+  "exclude": ["node_modules", "out", "release", "archive/**/*"]
 }

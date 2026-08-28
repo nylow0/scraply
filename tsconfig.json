@@ -28,12 +28,9 @@
     "src/research/**/*",
     "src/shared/**/*",
     "test/**/*",
-    "scripts/verify-package.ts",
-    "scripts/run-e2e.ts",
-    "scripts/check-promotion.ts",
-    "scripts/verify-promoted-assets.ts",
-    "scripts/smoke-portable.ts",
-    "electron.vite.config.ts"
+    "scripts/**/*.ts",
+    "electron.vite.config.ts",
+    "vitest.config.ts"
   ],
-  "exclude": ["node_modules", "out", "release", "archive/**/*"]
+  "exclude": ["node_modules", "out", "release", "archive/**/*", "test/renderer/**/*"]
 }

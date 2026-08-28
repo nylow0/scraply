@@ -96,7 +96,7 @@
               </div>
               {#if risk.mitigations.length > 0}
                 <div class="responses">
-                  {#each risk.mitigations as mitigation, mitigationIndex}
+                  {#each risk.mitigations as mitigation, mitigationIndex (mitigationIndex)}
                     <div class="response">
                       <span class="response-number">Response {mitigationIndex + 1}</span>
                       <p>{mitigation.approach}</p>

@@ -13,7 +13,7 @@ afterEach(() => {
     try {
       rmSync(tempDirectories.pop()!, { recursive: true, force: true });
     } catch {
-      // Windows can retain a SQLite WAL handle briefly.
+      // Bun can retain a SQLite WAL handle until the test process exits on Windows.
     }
   }
 });
@@ -48,19 +48,27 @@ describe("discovery persistence", () => {
       factorIds: ["factor-1"],
       verdict: "confirmed",
       verdictReason: "Contrary evidence did not kill it.",
-      verdictSourceIds: [],
+      verdictSourceIds: ["source-1"],
     }]);
 
     expect(count(client, "scopes")).toBe(1);
     expect(count(client, "factors")).toBe(1);
     expect(count(client, "problems")).toBe(1);
     expect(count(client, "problem_factors")).toBe(1);
+    expect(client.db.prepare(`
+      SELECT problem_id, source_id, research_run_id, position FROM problem_verdict_sources
+    `).all()).toEqual([{
+      problem_id: "problem-1", source_id: "source-1", research_run_id: runId, position: 0,
+    }]);
+    expect(client.db.prepare("SELECT verdict_source_ids_json FROM problems WHERE id = 'problem-1'").get())
+      .toEqual({ verdict_source_ids_json: "[]" });
     expect(client.db.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
 
     client.db.prepare("DELETE FROM research_runs WHERE id = ?").run(runId);
     expect(count(client, "scopes")).toBe(0);
     expect(count(client, "factors")).toBe(0);
     expect(count(client, "problems")).toBe(0);
+    expect(count(client, "problem_verdict_sources")).toBe(0);
     client.close();
   });
 
