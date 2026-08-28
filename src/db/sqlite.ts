@@ -22,7 +22,6 @@ export function openDatabase(dbPath: string): SqlDatabase {
   }
 
   // Electron / Node runtime
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
   const { DatabaseSync } = require("node:sqlite") as typeof import("node:sqlite");
   const db = new DatabaseSync(dbPath);
   return {

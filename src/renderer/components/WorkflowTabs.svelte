@@ -24,20 +24,41 @@
   function ready(step: WorkflowStep): boolean {
     return step === "setup" ? setupReady : step === "research" ? researchReady : ideasReady;
   }
+
+  function handleKeydown(event: KeyboardEvent, current: WorkflowStep) {
+    if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+
+    const available = steps.filter((step) => ready(step.id));
+    const currentIndex = available.findIndex((step) => step.id === current);
+    const nextIndex = event.key === "Home"
+      ? 0
+      : event.key === "End"
+        ? available.length - 1
+        : (currentIndex + (event.key === "ArrowRight" ? 1 : -1) + available.length) % available.length;
+    const next = available[nextIndex];
+    if (!next) return;
+
+    event.preventDefault();
+    onSelect(next.id);
+    requestAnimationFrame(() => document.getElementById(`workflow-tab-${next.id}`)?.focus());
+  }
 </script>
 
 <nav class="workflow-tabs" aria-label="Research workflow">
   <div role="tablist" aria-label="Workflow steps">
-    {#each steps as step}
+    {#each steps as step (step.id)}
       <button
+        id={`workflow-tab-${step.id}`}
         type="button"
         role="tab"
         aria-selected={active === step.id}
         aria-controls={`workflow-panel-${step.id}`}
+        tabindex={active === step.id ? 0 : -1}
         disabled={!ready(step.id)}
         class:active={active === step.id}
         class:complete={ready(step.id) && active !== step.id}
         onclick={() => onSelect(step.id)}
+        onkeydown={(event) => handleKeydown(event, step.id)}
       >
         <span class="number">{step.number}</span>
         <span>{step.label}</span>

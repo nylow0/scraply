@@ -18,10 +18,17 @@ export class ThreadRepository {
   createThread(title = "New research"): Thread {
     const now = new Date().toISOString();
     const thread = ThreadSchema.parse({ id: randomUUID(), title, status: "configuring", createdAt: now, updatedAt: now });
-    this.db.db.prepare("INSERT INTO threads (id, title, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?)")
-      .run(thread.id, thread.title, thread.status, now, now);
-    this.saveRunConfig(thread.id, DEFAULT_RUN_CONFIG);
-    return thread;
+    this.db.db.exec("BEGIN IMMEDIATE");
+    try {
+      this.db.db.prepare("INSERT INTO threads (id, title, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?)")
+        .run(thread.id, thread.title, thread.status, now, now);
+      this.saveRunConfig(thread.id, DEFAULT_RUN_CONFIG);
+      this.db.db.exec("COMMIT");
+      return thread;
+    } catch (error) {
+      this.db.db.exec("ROLLBACK");
+      throw error;
+    }
   }
 
   updateThreadStatus(threadId: string, status: Thread["status"]): void {
