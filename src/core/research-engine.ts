@@ -3,7 +3,7 @@ import { CostLedgerRepository } from "../db/repositories/cost-ledger";
 import { DevelopmentRepository } from "../db/repositories/development";
 import { DiscoveryRepository } from "../db/repositories/discovery";
 import { ResearchRunRepository } from "../db/repositories/research-runs";
-import type { ExaClient, ExaSearchOptions } from "../providers/exa";
+import type { SearchClient, SearchOptions, SearchProvider } from "../providers/search";
 import type { StructuredCallOptions, StructuredModelClient } from "../providers/structured";
 import type { z } from "zod";
 import { AppError } from "../shared/errors";
@@ -17,7 +17,7 @@ import { discoveryRunProjection, harvestFactors, runDiscoveryArm, type Harvested
 export interface ResearchEngineOptions {
   db: DatabaseClient;
   modelClients?: Partial<Record<ModelProvider, StructuredModelClient>>;
-  exa: Pick<ExaClient, "search">;
+  searchClients?: Partial<Record<SearchProvider, SearchClient>>;
   onEvent: (event: ResearchEvent) => void;
 }
 
@@ -30,7 +30,7 @@ interface ActiveRun {
   startedAt: number;
   deadlineTimer?: ReturnType<typeof setTimeout>;
   projectedCodexCalls: number;
-  projectedExaSearches: number;
+  projectedSearches: number;
 }
 
 export class ResearchEngine {
@@ -140,7 +140,7 @@ export class ResearchEngine {
       : discoveryRunProjection(config.discoveryDepth);
     const active: ActiveRun = {
       runId, threadId, problemId, config, abortController: new AbortController(), startedAt: Date.now(),
-      projectedCodexCalls: projection.modelCalls, projectedExaSearches: projection.searches,
+      projectedCodexCalls: projection.modelCalls, projectedSearches: projection.searches,
     };
     this.activeRuns.set(runId, active);
     this.scheduleDeadline(active);
@@ -249,7 +249,7 @@ export class ResearchEngine {
   private dependencies(active: ActiveRun) {
     return {
       modelClient: this.instrumentedModel(active),
-      exa: this.instrumentedExa(active),
+      search: this.instrumentedSearch(active),
       model: active.config.model,
       depth: active.config.discoveryDepth,
       signal: active.abortController.signal,
@@ -275,12 +275,15 @@ export class ResearchEngine {
     };
   }
 
-  private instrumentedExa(active: ActiveRun): Pick<ExaClient, "search"> {
+  private instrumentedSearch(active: ActiveRun): Pick<SearchClient, "search"> {
+    const provider = active.config.searchProvider;
+    const client = this.options.searchClients?.[provider];
     return {
-      search: async (query: string, options?: ExaSearchOptions) => {
-        this.enforceRunawayBackstop(active, "exa", active.projectedExaSearches);
-        const reservation = this.ledger.reserve(active.runId, "search", "exa", null, 0.05);
-        try { return await this.options.exa.search(query, options); }
+      search: async (query: string, options?: SearchOptions) => {
+        if (!client) throw new AppError("conflict", `Connect ${provider === "exa" ? "Exa" : "Perplexity"} before discovering problems.`);
+        this.enforceRunawayBackstop(active, provider, active.projectedSearches);
+        const reservation = this.ledger.reserve(active.runId, "search", provider, null, provider === "exa" ? 0.02 : 0.005);
+        try { return await client.search(query, options); }
         finally {
           if (this.activeRuns.get(active.runId) === active) {
             this.ledger.commit(reservation.id);
@@ -298,9 +301,9 @@ export class ResearchEngine {
 
   private progress(active: ActiveRun, message: string): void {
     const codexCalls = this.ledger.countProviderCalls(active.runId, "codex");
-    const exaSearches = this.ledger.countProviderCalls(active.runId, "exa");
-    this.logJob(active.runId, active.threadId, "run-progress", { message, codexCalls, exaSearches });
-    this.emit({ type: "run-progress", runId: active.runId, threadId: active.threadId, message, codexCalls, exaSearches });
+    const searches = this.ledger.countProviderCalls(active.runId, active.config.searchProvider);
+    this.logJob(active.runId, active.threadId, "run-progress", { message, codexCalls, searches });
+    this.emit({ type: "run-progress", runId: active.runId, threadId: active.threadId, message, codexCalls, searches });
   }
 
   private fail(active: ActiveRun, error: unknown, status?: "failed" | "cancelled"): void {

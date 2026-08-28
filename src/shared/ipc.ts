@@ -30,6 +30,7 @@ export function ApiResponseSchema<T extends z.ZodTypeAny>(dataSchema: T) {
 export const BackendReadySchema = z.object({ port: z.number().int().positive(), token: z.string().min(1) });
 export const ValidationStateSchema = z.object({
   exa: z.object({ valid: z.boolean(), error: z.string().optional() }),
+  perplexity: z.object({ valid: z.boolean(), error: z.string().optional() }),
   codex: z.object({
     detected: z.boolean(),
     compatible: z.boolean(),
@@ -103,8 +104,8 @@ export const SolutionViewSchema = z.object({
 });
 export const LatestResearchRunSchema = z.object({
   runId: EntityIdSchema, status: z.enum(["queued", "running", "completed", "failed", "cancelled"]),
-  problemId: EntityIdSchema.nullable(), codexCalls: z.number().int().nonnegative(), exaSearches: z.number().int().nonnegative(),
-  projectedCodexCalls: z.number().int().nonnegative(), projectedExaSearches: z.number().int().nonnegative(),
+  problemId: EntityIdSchema.nullable(), codexCalls: z.number().int().nonnegative(), searches: z.number().int().nonnegative(),
+  projectedCodexCalls: z.number().int().nonnegative(), projectedSearches: z.number().int().nonnegative(),
   lastActivity: z.string().nullable(),
 });
 
@@ -120,7 +121,7 @@ export const WorkspaceStateSchema = z.object({
 
 export const ResearchEventSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("run-started"), runId: EntityIdSchema, threadId: EntityIdSchema, problemId: EntityIdSchema.nullable() }),
-  z.object({ type: z.literal("run-progress"), runId: EntityIdSchema, threadId: EntityIdSchema, message: z.string(), codexCalls: z.number().int(), exaSearches: z.number().int() }),
+  z.object({ type: z.literal("run-progress"), runId: EntityIdSchema, threadId: EntityIdSchema, message: z.string(), codexCalls: z.number().int(), searches: z.number().int() }),
   z.object({ type: z.literal("run-resumed"), runId: EntityIdSchema, threadId: EntityIdSchema }),
   z.object({ type: z.literal("run-completed"), runId: EntityIdSchema, threadId: EntityIdSchema, problemId: EntityIdSchema.nullable() }),
   z.object({ type: z.literal("run-cancelled"), runId: EntityIdSchema, threadId: EntityIdSchema }),
