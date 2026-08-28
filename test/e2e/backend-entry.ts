@@ -2,7 +2,7 @@ import { startBackend, type BackendContext, type BackendHandle } from "../../src
 import { configurePromptPaths } from "../../src/core/prompts";
 import { MainToBackendMessageSchema, type BackendSecrets, type BackendToMainMessage } from "../../src/shared/backend-process";
 
-let secrets: BackendSecrets = { exaApiKey: null };
+let secrets: BackendSecrets = { exaApiKey: null, perplexityApiKey: null };
 let handle: BackendHandle | null = null;
 
 function post(message: BackendToMainMessage): void {
@@ -45,6 +45,9 @@ process.parentPort?.on("message", async (event) => {
       }),
       validateExa: async (apiKey) => apiKey === "invalid-e2e-key"
         ? { valid: false, error: "Deterministic invalid Exa key" }
+        : { valid: true },
+      validatePerplexity: async (apiKey) => apiKey === "invalid-e2e-key"
+        ? { valid: false, error: "Deterministic invalid Perplexity key" }
         : { valid: true },
     },
   };

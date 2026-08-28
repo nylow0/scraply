@@ -1,7 +1,11 @@
 import { describe, expect, test } from "bun:test";
-import { BackendToMainMessageSchema, MainToBackendMessageSchema } from "../../src/shared/backend-process";
+import {
+  BackendToMainMessageSchema,
+  configuredProviderSecretsAreValid,
+  MainToBackendMessageSchema,
+} from "../../src/shared/backend-process";
 
-const secrets = { exaApiKey: "exa-test" };
+const secrets = { exaApiKey: "exa-test", perplexityApiKey: "perplexity-test" };
 
 describe("backend utility protocol", () => {
   test("requires request IDs for acknowledged secret updates", () => {
@@ -32,5 +36,20 @@ describe("backend utility protocol", () => {
       type: "event",
       event: { type: "run-failed", runId: "run-1", error: "missing thread" },
     }).success).toBe(false);
+  });
+
+  test("requires every configured provider key to validate before persistence", () => {
+    expect(configuredProviderSecretsAreValid(secrets, {
+      exa: { valid: true },
+      perplexity: { valid: true },
+    })).toBe(true);
+    expect(configuredProviderSecretsAreValid(secrets, {
+      exa: { valid: true },
+      perplexity: { valid: false, error: "Rejected" },
+    })).toBe(false);
+    expect(configuredProviderSecretsAreValid({ exaApiKey: "exa-test", perplexityApiKey: null }, {
+      exa: { valid: true },
+      perplexity: { valid: false, error: "Missing" },
+    })).toBe(true);
   });
 });

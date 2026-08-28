@@ -9,7 +9,7 @@ import {
   developmentProjection,
   type DevelopmentResult,
 } from "../src/core/development";
-import type { ExaSearchOptions } from "../src/providers/exa";
+import type { SearchOptions } from "../src/providers/search";
 import type {
   StructuredCallOptions,
   StructuredModelClient,
@@ -50,10 +50,10 @@ export class CountingSearchClient {
   searches = 0;
 
   constructor(
-    private readonly delegate: { search(query: string, options?: ExaSearchOptions): Promise<Source[]> },
+    private readonly delegate: { search(query: string, options?: SearchOptions): Promise<Source[]> },
   ) {}
 
-  async search(query: string, options?: ExaSearchOptions): Promise<Source[]> {
+  async search(query: string, options?: SearchOptions): Promise<Source[]> {
     this.searches += 1;
     return this.delegate.search(query, options);
   }

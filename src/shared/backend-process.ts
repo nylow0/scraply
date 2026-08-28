@@ -1,8 +1,9 @@
 import { z } from "zod";
-import { ResearchEventSchema } from "./ipc";
+import { ResearchEventSchema, type ValidationState } from "./ipc";
 
 const SecretsSchema = z.object({
   exaApiKey: z.string().nullable(),
+  perplexityApiKey: z.string().nullable(),
 });
 
 export const BackendStartMessageSchema = z.object({
@@ -65,3 +66,11 @@ export type BackendUpdateSecretsMessage = z.infer<typeof BackendUpdateSecretsMes
 export type MainToBackendMessage = z.infer<typeof MainToBackendMessageSchema>;
 export type BackendToMainMessage = z.infer<typeof BackendToMainMessageSchema>;
 export type BackendSecrets = z.infer<typeof SecretsSchema>;
+
+export function configuredProviderSecretsAreValid(
+  secrets: BackendSecrets,
+  validation: Pick<ValidationState, "exa" | "perplexity">,
+): boolean {
+  return (!secrets.exaApiKey || validation.exa.valid)
+    && (!secrets.perplexityApiKey || validation.perplexity.valid);
+}

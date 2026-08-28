@@ -15,14 +15,14 @@ export class ThreadRepository {
       .map((row) => ThreadSchema.parse({ id: row.id, title: row.title, status: row.status, createdAt: row.created_at, updatedAt: row.updated_at }));
   }
 
-  createThread(title = "New research"): Thread {
+  createThread(title = "New research", config: RunConfig = DEFAULT_RUN_CONFIG): Thread {
     const now = new Date().toISOString();
     const thread = ThreadSchema.parse({ id: randomUUID(), title, status: "configuring", createdAt: now, updatedAt: now });
     this.db.db.exec("BEGIN IMMEDIATE");
     try {
       this.db.db.prepare("INSERT INTO threads (id, title, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?)")
         .run(thread.id, thread.title, thread.status, now, now);
-      this.saveRunConfig(thread.id, DEFAULT_RUN_CONFIG);
+      this.saveRunConfig(thread.id, config);
       this.db.db.exec("COMMIT");
       return thread;
     } catch (error) {

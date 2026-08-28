@@ -43,7 +43,7 @@ describe("research engine deadlines", () => {
     const exa = { search: async () => { throw new Error("Persisted factors should skip Stage 1"); } } as unknown as ExaClient;
 
     try {
-      const engine = new ResearchEngine({ db, modelClients: { codex: modelClient }, exa, onEvent: (event) => events.push(event) });
+      const engine = new ResearchEngine({ db, modelClients: { codex: modelClient }, searchClients: { exa }, onEvent: (event) => events.push(event) });
       await engine.resumeRun(runId);
       await waitFor(() => !engine.getActiveRunIds().has(runId));
 
@@ -84,7 +84,7 @@ describe("research engine deadlines", () => {
     const exa = { search: async () => [] } as unknown as ExaClient;
 
     try {
-      const engine = new ResearchEngine({ db, modelClients: { codex: modelClient }, exa, onEvent: () => undefined });
+      const engine = new ResearchEngine({ db, modelClients: { codex: modelClient }, searchClients: { exa }, onEvent: () => undefined });
       await engine.resumeRun(runId);
       await waitFor(() => !engine.getActiveRunIds().has(runId));
 
@@ -120,6 +120,7 @@ describe("research engine deadlines", () => {
         VALUES ('thread-1', 'Deadline', 'configuring', ?, ?)
       `).run(now, now);
       const config: RunConfig = {
+        searchProvider: "exa",
         model: "test-model",
         reasoningEffort: "medium",
         discoveryDepth: "quick",
@@ -127,7 +128,7 @@ describe("research engine deadlines", () => {
         researchMode: "explore-market",
         knownProblem: "",
       };
-      const engine = new ResearchEngine({ db, modelClients: { codex: modelClient }, exa, onEvent: (event) => events.push(event) });
+      const engine = new ResearchEngine({ db, modelClients: { codex: modelClient }, searchClients: { exa }, onEvent: (event) => events.push(event) });
       const runId = await engine.startDiscovery("thread-1", {
         title: "Deadline",
         audience: "Operators",
@@ -180,11 +181,11 @@ describe("research engine deadlines", () => {
         INSERT INTO threads (id, title, status, created_at, updated_at)
         VALUES ('thread-shutdown', 'Shutdown', 'configuring', ?, ?)
       `).run(now, now);
-      const engine = new ResearchEngine({ db, modelClients: { codex: modelClient }, exa, onEvent: () => undefined });
+      const engine = new ResearchEngine({ db, modelClients: { codex: modelClient }, searchClients: { exa }, onEvent: () => undefined });
       const runId = await engine.startDiscovery("thread-shutdown", {
         title: "Shutdown", audience: "Operators", domain: "Operations", observations: "", offLimits: [],
       }, {
-        model: "test-model", reasoningEffort: "medium", discoveryDepth: "quick", maxRunMinutes: 90,
+        model: "test-model", reasoningEffort: "medium", discoveryDepth: "quick", maxRunMinutes: 90, searchProvider: "exa",
         researchMode: "explore-market", knownProblem: "",
       });
       await waitFor(() => providerStarted);
@@ -194,6 +195,62 @@ describe("research engine deadlines", () => {
       expect(providerSettled).toBe(true);
       expect(engine.getActiveRunIds().size).toBe(0);
       expect(db.db.prepare("SELECT status FROM research_runs WHERE id = ?").get(runId)).toEqual({ status: "cancelled" });
+    } finally {
+      db.close();
+    }
+  });
+
+  test("routes discovery and metering through the provider saved on the run", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "scraply-search-provider-"));
+    tempDirectories.push(directory);
+    const db = new DatabaseClient(join(directory, "scraply.db"));
+    let perplexitySearches = 0;
+    const modelClient: StructuredModelClient = {
+      async structuredCompletion(_model, _system, _user, schema) {
+        for (const payload of [
+          { queries: ["query one", "query two", "query three"] },
+          { factors: [] },
+          { problems: [] },
+        ]) {
+          const parsed = schema.safeParse(payload);
+          if (parsed.success) return parsed.data;
+        }
+        throw new Error("Unexpected discovery schema");
+      },
+    };
+    const exa = {
+      provider: "exa" as const,
+      validateKey: async () => ({ valid: true as const }),
+      search: async () => { throw new Error("Exa must not receive a Perplexity run"); },
+    };
+    const perplexity = {
+      provider: "perplexity" as const,
+      validateKey: async () => ({ valid: true as const }),
+      search: async () => { perplexitySearches += 1; return []; },
+    };
+
+    try {
+      const now = new Date().toISOString();
+      db.db.prepare("INSERT INTO threads (id, title, status, created_at, updated_at) VALUES ('thread-provider', 'Provider', 'configuring', ?, ?)")
+        .run(now, now);
+      const engine = new ResearchEngine({
+        db,
+        modelClients: { codex: modelClient },
+        searchClients: { exa, perplexity },
+        onEvent: () => undefined,
+      });
+      const runId = await engine.startDiscovery("thread-provider", {
+        title: "Provider", audience: "Operators", domain: "Operations", observations: "", offLimits: [],
+      }, {
+        model: "test-model", reasoningEffort: "medium", discoveryDepth: "quick", maxRunMinutes: 90,
+        searchProvider: "perplexity", researchMode: "explore-market", knownProblem: "",
+      });
+      await waitFor(() => !engine.getActiveRunIds().has(runId));
+
+      expect(perplexitySearches).toBe(6);
+      expect(db.db.prepare("SELECT status FROM research_runs WHERE id = ?").get(runId)).toEqual({ status: "completed" });
+      expect(db.db.prepare("SELECT provider, reservation_usd, committed_usd, status FROM cost_ledger WHERE research_run_id = ? AND operation = 'search' ORDER BY created_at, id").all(runId))
+        .toEqual(Array.from({ length: 6 }, () => ({ provider: "perplexity", reservation_usd: 0.005, committed_usd: 0.005, status: "committed" })));
     } finally {
       db.close();
     }
@@ -213,7 +270,7 @@ function createPersistedDiscoveryRun(): {
     INSERT INTO threads (id, title, status, created_at, updated_at)
     VALUES ('thread-1', 'Resume', 'discovery-running', ?, ?)
   `).run(now, now);
-  const config: RunConfig = { model: "test-model", reasoningEffort: "medium", discoveryDepth: "quick", maxRunMinutes: 5, researchMode: "explore-market", knownProblem: "" };
+  const config: RunConfig = { model: "test-model", reasoningEffort: "medium", discoveryDepth: "quick", maxRunMinutes: 5, searchProvider: "exa", researchMode: "explore-market", knownProblem: "" };
   const runId = new ResearchRunRepository(db).create("thread-1", config).runId;
   const discovery = new DiscoveryRepository(db);
   discovery.persistScope(runId, {

@@ -43,7 +43,7 @@ describe("Phase 1 discovery", () => {
         }
         return schema.parse({ factors: [] });
       }),
-      exa: {
+      search: {
         async search() {
           searches += 1;
           return [];
@@ -65,7 +65,7 @@ describe("Phase 1 discovery", () => {
         plannerCalls += 1;
         return schema.parse({ queries: ["one", " one "] });
       }),
-      exa: { async search() { return []; } },
+      search: { async search() { return []; } },
     });
 
     await expect(run).rejects.toEqual(expect.objectContaining({
@@ -94,7 +94,7 @@ describe("Phase 1 discovery", () => {
           modelConfidence: 0.8,
         })) });
       }),
-      exa: {
+      search: {
         async search(query) {
           return [{
             id: query,
@@ -169,7 +169,7 @@ describe("Phase 1 discovery", () => {
       model: "test-model",
       depth: "quick",
       random: () => 0.5,
-      exa: {
+      search: {
         async search(_query, options = {}) {
           searchIndex += 1;
           const hostname = searchIndex % 2 === 0 ? "other.test" : "example.test";
@@ -243,7 +243,7 @@ describe("Phase 1 discovery", () => {
           verdictSourceIds: duplicated,
         });
       }),
-      exa: {
+      search: {
         // Every query — harvest and kill, both arms — returns the same two URLs.
         async search() {
           return ["https://example.test/shared", "https://other.test/shared"].map((url) => ({
@@ -281,7 +281,7 @@ describe("Phase 1 discovery", () => {
         return schema.parse({ factors: [] });
       }),
       onProjection: (message) => skipped.push(message),
-      exa: {
+      search: {
         async search() {
           return [
             { id: "bad", url: "not a url", title: "Bad", text: "text" },
@@ -313,7 +313,7 @@ describe("Phase 1 discovery", () => {
         }
         return schema.parse({ factors: [] });
       }),
-      exa: {
+      search: {
         async search() {
           return variants.map((url) => ({ id: url, url, title: url, text: "text" }));
         },

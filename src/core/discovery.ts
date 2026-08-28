@@ -4,7 +4,8 @@ import type {
   DiscoveryProblemRecord,
   DiscoverySourceRecord,
 } from "../db/repositories/discovery";
-import type { ExaClient, ExaSearchOptions } from "../providers/exa";
+import type { ExaCategory } from "../providers/exa";
+import type { SearchClient, SearchOptions } from "../providers/search";
 import { ProviderFailure, type StructuredModelClient } from "../providers/structured";
 import { deriveJsonSchema } from "../shared/json-schema";
 import {
@@ -97,10 +98,10 @@ export interface Phase1AblationResult {
 
 export interface DiscoveryDependencies {
   modelClient: StructuredModelClient;
-  exa: Pick<ExaClient, "search">;
+  search: Pick<SearchClient, "search">;
   model: string;
   depth?: DiscoveryDepth;
-  audienceSearch?: Pick<ExaSearchOptions, "includeDomains" | "category" | "startPublishedDate">;
+  audienceSearch?: Pick<SearchOptions, "includeDomains" | "startPublishedDate"> & { category?: ExaCategory };
   candidateLimit?: number;
   signal?: AbortSignal;
   random?: () => number;
@@ -274,7 +275,7 @@ export async function runDiscoveryArm(
       continue;
     }
 
-    const searched = await dependencies.exa.search(buildKillQuery(candidate.statement), {
+    const searched = await dependencies.search.search(buildKillQuery(candidate.statement), {
       numResults: DISCOVERY_DEPTHS[dependencies.depth ?? "standard"].searchResultsPerQuery,
       maxCharacters: SOURCE_MAX_CHARACTERS,
       ...(dependencies.signal ? { signal: dependencies.signal } : {}),
@@ -388,7 +389,7 @@ async function searchQueries(
 ): Promise<HarvestedSource[]> {
   const gathered: Source[] = [];
   for (const query of queries) {
-    gathered.push(...await dependencies.exa.search(query, {
+    gathered.push(...await dependencies.search.search(query, {
       numResults: resultsPerQuery,
       maxCharacters: SOURCE_MAX_CHARACTERS,
       ...(mode === "audience"

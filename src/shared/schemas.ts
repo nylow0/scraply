@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { SearchProviderSchema } from "../providers/search";
 
 export const SourceSchema = z.object({
   id: z.string().min(1),
@@ -23,6 +24,7 @@ const RunConfigInputSchema = z.object({
   reasoningEffort: ReasoningEffortSchema,
   discoveryDepth: DiscoveryDepthSchema,
   maxRunMinutes: z.number().int().min(5).max(240),
+  searchProvider: SearchProviderSchema.optional(),
   researchMode: ResearchModeSchema.optional(),
   knownProblem: z.string().trim().max(2_000).optional(),
 }).strict();
@@ -32,6 +34,7 @@ export const RunConfigSchema = RunConfigInputSchema.transform((value) => ({
   ...value,
   researchMode: value.researchMode ?? "explore-market" as const,
   knownProblem: value.knownProblem ?? "",
+  searchProvider: value.searchProvider ?? "exa" as const,
 }));
 
 export const DEFAULT_RUN_CONFIG = {
@@ -39,6 +42,7 @@ export const DEFAULT_RUN_CONFIG = {
   reasoningEffort: "medium",
   discoveryDepth: "standard",
   maxRunMinutes: 90,
+  searchProvider: "exa",
   researchMode: "explore-market",
   knownProblem: "",
 } satisfies RunConfig;
@@ -94,6 +98,7 @@ export type DiscoveryDepth = z.infer<typeof DiscoveryDepthSchema>;
 export type ResearchMode = z.infer<typeof ResearchModeSchema>;
 export type ReasoningEffort = z.infer<typeof ReasoningEffortSchema>;
 export type RunConfig = z.infer<typeof RunConfigSchema>;
+export type SearchProvider = z.infer<typeof SearchProviderSchema>;
 export type ModelOption = z.infer<typeof ModelOptionSchema>;
 export type ModelProvider = z.infer<typeof ModelProviderSchema>;
 export type ModelRef = z.infer<typeof ModelRefSchema>;
