@@ -8,12 +8,12 @@ export interface MockBackend {
 }
 
 const now = "2026-08-10T12:00:00.000Z";
-const validation = { exa: { valid: true }, codex: { detected: true, compatible: true, version: "codex-e2e" }, setupComplete: true };
+const validation = { exa: { valid: true }, codex: { detected: true, compatible: true, authenticated: true, version: "codex-e2e" }, setupComplete: true };
 const factor = { id: "factor-1", subject: "Small repair shops", behavior: "wait for backordered parts", quote: "Backorders add days to routine repairs.", sourceId: "source-1", sourceTitle: "Repair trade survey", sourceUrl: "https://example.com/repair", harvestMode: "domain", modelConfidence: 0.8 };
 const problem = { id: "problem-1", statement: "Small repair shops cannot reliably predict parts arrival times.", whyItPersists: "Supplier data remains fragmented.", affected: "Independent repair shops", scaleEstimate: "Thousands of shops", verdict: "confirmed", verdictReason: "Multiple sources describe recurring delays.", selected: false, factors: [factor], singleHarvestModeWarning: true };
 const solution = { id: "solution-1", problemId: "problem-1", problemStatement: problem.statement, problemVerdict: "confirmed", mechanism: "Supplier reliability ledger", description: "Pool observed delivery windows by supplier and part category.", respectsOffLimits: true, respectsOffLimitsWhy: "Does not hold inventory.", outcomes: [{ id: "outcome-1", description: "Shops quote narrower delivery windows.", direction: "positive", affects: "Scheduling", addressesCore: true }, { id: "outcome-2", description: "Sparse suppliers remain hard to estimate.", direction: "negative", affects: "Coverage", addressesCore: false }], risks: [{ id: "risk-1", description: "Suppliers change behavior faster than the ledger updates.", likelihood: "possible", impact: "~2 weeks", sortKey: 4, mitigations: [{ id: "mitigation-1", approach: "Decay old observations", cost: "One maintenance rule", failsIf: "Volume is too sparse", riskIds: ["risk-1"] }] }], confirmedCoreOutcomes: 1, unaddressedCatastrophicRisks: 0 };
 
-export async function startMockBackend(_scenario: "fresh" | "interrupted" | "provider-failure" = "fresh"): Promise<MockBackend> {
+export async function startMockBackend(): Promise<MockBackend> {
   const token = "e2e-token";
   const requests: MockBackend["requests"] = [];
   const threads: Array<Record<string, unknown>> = [];

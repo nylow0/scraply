@@ -28,7 +28,7 @@ bun run build:installed
 
 `bun run build:installed` cleans and rebuilds the Windows installers, verifies their source/hash manifest, installs the exact package, and verifies the installed executable and ASAR. Release files are written to `release/`.
 
-Branch roles, `dev`-to-`master` promotion, RC tags, and production GitHub Releases are documented in [RELEASE.md](RELEASE.md). Feature and fix work stays on `dev`; `master` is production.
+The branch and release workflow is documented in [RELEASE.md](RELEASE.md). `master` is the only long-lived branch. Every feature, fix, documentation change, and maintenance task uses a short-lived branch and a pull request into `master`.
 
 ## Using Scraply
 

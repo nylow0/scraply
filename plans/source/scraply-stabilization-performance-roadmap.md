@@ -2,7 +2,7 @@
 
 ## Summary
 
-Turn Scraply into a dependable personal Windows research application before adding more product surface. The roadmap keeps the current Electron architecture, upgrades the six research lenses into an adaptive evidence pipeline, fixes the security and cost-control failures found in the audit, and makes `dev → stage → master` a strict promotion path.
+Turn Scraply into a dependable personal Windows research application before adding more product surface. The roadmap keeps the current Electron architecture, upgrades the six research lenses into an adaptive evidence pipeline, fixes the security and cost-control failures found in the audit, and requires every change to reach `master` through a pull request from a short-lived branch.
 
 The release is successful when Scraply can safely complete this loop: review a brief, approve a bounded run, gather and persist source-backed claims, synthesize them, generate claim-linked ideas, rate an idea, and open a focused child branch—without duplicate spend, stale state, misleading completion, or remote-content access to Electron privileges.
 
@@ -15,20 +15,20 @@ The release is successful when Scraply can safely complete this loop: review a b
 - Paid work: require brief/config review and enforce a conservative hard cap before every paid call.
 - Ideas: require completed synthesis by default; an advanced override may use partial research only when the UI labels the result as partial.
 - Data: current local records are test data and may be deleted; no legacy-data migration is required.
-- Delivery: work on `dev`; promote the exact passing commit to `stage`; promote `stage` to `master` only after Dany explicitly approves it.
+- Delivery: use a dedicated branch based on the latest `master` for each change, then merge it into `master` through a pull request after CI passes and Dany approves it.
 
 ## Phase 0 — Reconcile the Repository Safely
 
-1. Preserve the current dirty `master` work on a named safety branch and commit it without altering its contents. Tag the pre-stabilization state so it is always recoverable.
-2. Merge that snapshot into `dev`, which retains the retired `main` branch's unique CI packaging commit. Do not move `stage` or `master` during development.
-3. Treat `dev` as the only integration branch. Prohibit direct feature commits to `stage` and `master`.
+1. Keep `master` as the default, production, and only long-lived branch.
+2. Create each work branch from the latest `master` and keep it limited to one focused change.
+3. Prohibit direct feature commits to `master`. Require a pull request and passing CI.
 4. Do not merge the existing `improve/*` branches wholesale. Most contain the large experimental `aa06d22` UI rewrite and are based before current `master`. Port and test only the useful focused changes:
 - Research parsing and resilience improvements from `7577f4f` and `4efabb5`.
    - Lazy report loading from `41c702a`.
    - HTTP/IPC error handling from `66abf91` and `80c1f83`.
    - Critical-path tests from `8081a43`.
    - Module-boundary cleanup from standalone `adbbc70` after behavior is stable.
-5. Keep `master` as the default and production branch. After the first approved `stage → master` promotion, archive the pre-stabilization `master` commit with a tag; do not recreate a `main` branch.
+5. Do not use the retired `dev`, `stage`, or `main` branches for new work.
 
 ## Phase 1 — Close Security and Correctness Gaps
 
@@ -38,7 +38,7 @@ The release is successful when Scraply can safely complete this loop: review a b
 - Add a deny-by-default session permission handler and validate the sender frame/origin for every IPC handler.
 - Remove `getBackend` from the preload API so renderer code never receives the backend bearer token.
 - Keep `contextIsolation`, renderer sandboxing, Node integration disabled, and the restrictive CSP. Add automated checks for all of these invariants.
-- Upgrade Electron to a currently supported patched version, rerun `bun audit`, and require zero known high-severity production advisories before stage promotion.
+- Upgrade Electron to a currently supported patched version, rerun `bun audit`, and require zero known high-severity production advisories before release-candidate approval.
 
 ### Request and error contracts
 
@@ -81,7 +81,7 @@ Keep foreign keys enabled, cascade only genuinely owned records, and add indexes
 - Add `workerProvider` to `RunConfig`; keep the existing orchestrator and idea provider fields. The testing defaults for all three roles are `provider: "codex"` and `model: "gpt-5.6-luna"`.
 - Invoke Luna non-interactively with `codex exec -`, `--model gpt-5.6-luna`, `--sandbox read-only`, `--ephemeral`, `--output-schema`, `--output-last-message`, and an explicit `model_reasoning_effort="medium"` config override. Use the same prompts and strict Zod/JSON Schema contracts as other providers.
 - Give every Codex call its own bounded temporary directory, clean it in `finally`, cap captured output, propagate cancellation, and report timeout/auth/rate-limit/schema errors as typed provider failures.
-- Keep Codex as the sole structured-model adapter in configuration, setup, live tests, and stage acceptance.
+- Keep Codex as the sole structured-model adapter in configuration, setup, live tests, and release-candidate acceptance.
 - Establish the Luna baseline at medium effort. After correctness evals pass, compare low effort on extraction and classification only; adopt it per role only when schema validity, evidence accuracy, and completion rate remain within the accepted baseline.
 
 ### Planning and search
@@ -158,13 +158,13 @@ Performance acceptance targets on Dany's current Windows machine:
 - The research live smoke uses Exa plus the authenticated Codex CLI with `gpt-5.6-luna`. Record Codex invocation count, elapsed time, schema-repair count, and Exa usage instead of inventing a Codex dollar cost.
 - Packaging gate: typecheck, `svelte-check`, unit/integration tests, E2E, production build, NSIS/portable smoke, vulnerability audit, and `bun run build:installed`.
 
-### Branch promotion
+### Branch and release workflow
 
-1. Every change lands on `dev` in small, reviewable commits. `dev` must pass the complete automated gate and a clean vulnerability audit.
-2. When the stabilization milestone is finished, promote the exact commit with a fast-forward-only `dev → stage` push and tag it `stage-v0.3.0-rc.N`. Do not rebuild from a different source commit.
-3. Install the stage artifact and manually verify the complete workflow, cancellation, restart recovery, spend ceiling, external links, and data deletion on Dany's machine.
-4. Fix failures on `dev`, rerun all gates, and promote a new exact commit to `stage`; never patch `stage` directly.
-5. Only after Dany explicitly approves the tested stage commit, fast-forward `stage → master`, tag `v0.3.0`, and build/install from that same commit. Never recreate or promote to a `main` branch.
+1. Make every change in a short-lived branch based on the latest `master`, using small, reviewable commits.
+2. Open a pull request into `master`. Merge only after the complete automated gate and vulnerability audit pass.
+3. When the stabilization milestone is ready, tag the merged `master` commit as `v0.3.0-rc.N`. Do not rebuild from a different source commit.
+4. Install the release-candidate artifact and manually verify the complete workflow, cancellation, restart recovery, spend ceiling, external links, and data deletion on Dany's machine.
+5. Fix failures on a new short-lived branch, merge through another pull request, and tag a new release candidate. After Dany approves an RC, tag the same `master` commit as `v0.3.0`.
 
 ## Definition of Done
 
@@ -176,4 +176,4 @@ Performance acceptance targets on Dany's current Windows machine:
 - The normal workflow cannot skip brief review or accidentally create duplicate runs.
 - Branch research inherits explicit context and does not restart generic intake.
 - Routine UI updates do not reload report bodies or revalidate providers.
-- All automated and manual stage gates pass from one exact commit, and `master` changes only after Dany's approval.
+- All automated and manual release-candidate gates pass from one exact commit, and `master` changes only through approved pull requests.

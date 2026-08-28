@@ -550,4 +550,241 @@ export const MIGRATIONS = [
       WHERE json_extract(config_json, '$.reasoningEffort') IS NULL;
     `,
   },
+  {
+    id: 12,
+    sql: `
+      CREATE UNIQUE INDEX idx_problems_id_discovery_run
+        ON problems(id, discovery_run_id);
+      CREATE UNIQUE INDEX idx_sources_id_research_run
+        ON sources(id, research_run_id);
+
+      CREATE TABLE problem_verdict_sources (
+        problem_id TEXT NOT NULL,
+        source_id TEXT NOT NULL,
+        research_run_id TEXT NOT NULL,
+        position INTEGER NOT NULL CHECK(position >= 0),
+        PRIMARY KEY (problem_id, source_id),
+        UNIQUE (problem_id, position),
+        FOREIGN KEY (problem_id, research_run_id)
+          REFERENCES problems(id, discovery_run_id) ON DELETE CASCADE,
+        FOREIGN KEY (source_id, research_run_id)
+          REFERENCES sources(id, research_run_id) ON DELETE CASCADE
+      );
+
+      INSERT INTO problem_verdict_sources (
+        problem_id, source_id, research_run_id, position
+      )
+      SELECT p.id, s.id, p.discovery_run_id, MIN(CAST(verdict.key AS INTEGER))
+      FROM problems p
+      JOIN json_each(
+        CASE WHEN json_valid(p.verdict_source_ids_json)
+          THEN CASE WHEN json_type(p.verdict_source_ids_json) = 'array'
+            THEN p.verdict_source_ids_json ELSE '[]' END
+          ELSE '[]' END
+      ) verdict
+      JOIN sources s
+        ON s.id = verdict.value AND s.research_run_id = p.discovery_run_id
+      WHERE verdict.type = 'text'
+      GROUP BY p.id, s.id, p.discovery_run_id;
+
+      UPDATE problems SET verdict_source_ids_json = '[]';
+
+      CREATE TRIGGER require_normalized_problem_verdict_sources_insert
+      BEFORE INSERT ON problems
+      WHEN NEW.verdict_source_ids_json <> '[]'
+      BEGIN
+        SELECT RAISE(ABORT, 'problem verdict sources must use problem_verdict_sources');
+      END;
+
+      CREATE TRIGGER require_normalized_problem_verdict_sources_update
+      BEFORE UPDATE OF verdict_source_ids_json ON problems
+      WHEN NEW.verdict_source_ids_json <> '[]'
+      BEGIN
+        SELECT RAISE(ABORT, 'problem verdict sources must use problem_verdict_sources');
+      END;
+
+      CREATE INDEX idx_problem_verdict_sources_run
+        ON problem_verdict_sources(research_run_id, problem_id, position);
+      CREATE INDEX idx_problem_verdict_sources_source
+        ON problem_verdict_sources(source_id);
+    `,
+  },
+  {
+    id: 13,
+    sql: `
+      CREATE UNIQUE INDEX idx_research_runs_id_thread
+        ON research_runs(id, thread_id);
+      CREATE UNIQUE INDEX idx_research_runs_id_problem
+        ON research_runs(id, problem_id);
+
+      DROP TRIGGER IF EXISTS delete_job_events_for_run;
+      DROP TRIGGER IF EXISTS delete_job_events_for_thread;
+
+      CREATE TABLE normalized_job_events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        run_id TEXT REFERENCES research_runs(id) ON DELETE CASCADE,
+        thread_id TEXT REFERENCES threads(id) ON DELETE CASCADE,
+        problem_id TEXT REFERENCES problems(id) ON DELETE CASCADE,
+        type TEXT NOT NULL,
+        payload_json TEXT NOT NULL CHECK(
+          json_valid(payload_json) AND json_type(payload_json) = 'object'
+        ),
+        created_at TEXT NOT NULL,
+        CHECK(run_id IS NULL OR thread_id IS NOT NULL),
+        CHECK(problem_id IS NULL OR run_id IS NOT NULL),
+        FOREIGN KEY (run_id, thread_id)
+          REFERENCES research_runs(id, thread_id) ON DELETE CASCADE,
+        FOREIGN KEY (run_id, problem_id)
+          REFERENCES research_runs(id, problem_id) ON DELETE CASCADE
+      );
+
+      INSERT INTO normalized_job_events (
+        id, run_id, thread_id, problem_id, type, payload_json, created_at
+      )
+      SELECT
+        event.id,
+        event.run_id,
+        event.thread_id,
+        CASE
+          WHEN event.run_id IS NOT NULL
+            AND json_valid(event.payload_json)
+            AND json_type(event.payload_json) = 'object'
+            AND json_type(event.payload_json, '$.problemId') = 'text'
+            AND EXISTS (
+              SELECT 1 FROM research_runs run
+              WHERE run.id = event.run_id
+                AND run.problem_id = json_extract(event.payload_json, '$.problemId')
+            )
+          THEN json_extract(event.payload_json, '$.problemId')
+          ELSE NULL
+        END,
+        event.type,
+        CASE
+          WHEN json_valid(event.payload_json) AND json_type(event.payload_json) = 'object'
+          THEN json_remove(event.payload_json, '$.runId', '$.threadId', '$.problemId')
+          ELSE '{}'
+        END,
+        event.created_at
+      FROM job_events event
+      WHERE (event.run_id IS NULL OR EXISTS (
+          SELECT 1 FROM research_runs run WHERE run.id = event.run_id
+        ))
+        AND (event.thread_id IS NULL OR EXISTS (
+          SELECT 1 FROM threads thread WHERE thread.id = event.thread_id
+        ))
+        AND (event.run_id IS NULL OR event.thread_id IS NOT NULL)
+        AND (event.run_id IS NULL OR EXISTS (
+          SELECT 1 FROM research_runs run
+          WHERE run.id = event.run_id AND run.thread_id = event.thread_id
+        ));
+
+      DROP TABLE job_events;
+      ALTER TABLE normalized_job_events RENAME TO job_events;
+
+      CREATE INDEX idx_job_events_run ON job_events(run_id, created_at);
+      CREATE INDEX idx_job_events_thread ON job_events(thread_id, created_at);
+
+      CREATE TRIGGER validate_job_event_entity_ids_insert
+      BEFORE INSERT ON job_events
+      WHEN (
+        json_type(NEW.payload_json, '$.runId') IS NOT NULL
+        AND (
+          json_type(NEW.payload_json, '$.runId') <> 'text'
+          OR json_extract(NEW.payload_json, '$.runId') IS NOT NEW.run_id
+        )
+      ) OR (
+        json_type(NEW.payload_json, '$.threadId') IS NOT NULL
+        AND (
+          json_type(NEW.payload_json, '$.threadId') <> 'text'
+          OR json_extract(NEW.payload_json, '$.threadId') IS NOT NEW.thread_id
+        )
+      ) OR (
+        json_type(NEW.payload_json, '$.problemId') NOT IN ('null', 'text')
+      ) OR (
+        json_type(NEW.payload_json, '$.problemId') = 'text'
+        AND (
+          NEW.run_id IS NULL
+          OR (NEW.problem_id IS NOT NULL
+            AND NEW.problem_id IS NOT json_extract(NEW.payload_json, '$.problemId'))
+          OR NOT EXISTS (
+            SELECT 1 FROM research_runs run
+            WHERE run.id = NEW.run_id
+              AND run.problem_id = json_extract(NEW.payload_json, '$.problemId')
+          )
+        )
+      )
+      BEGIN
+        SELECT RAISE(ABORT, 'job event payload entity IDs do not match relational columns');
+      END;
+
+      CREATE TRIGGER validate_job_event_entity_ids_update
+      BEFORE UPDATE OF run_id, thread_id, problem_id, payload_json ON job_events
+      WHEN (
+        json_type(NEW.payload_json, '$.runId') IS NOT NULL
+        AND (
+          json_type(NEW.payload_json, '$.runId') <> 'text'
+          OR json_extract(NEW.payload_json, '$.runId') IS NOT NEW.run_id
+        )
+      ) OR (
+        json_type(NEW.payload_json, '$.threadId') IS NOT NULL
+        AND (
+          json_type(NEW.payload_json, '$.threadId') <> 'text'
+          OR json_extract(NEW.payload_json, '$.threadId') IS NOT NEW.thread_id
+        )
+      ) OR (
+        json_type(NEW.payload_json, '$.problemId') NOT IN ('null', 'text')
+      ) OR (
+        json_type(NEW.payload_json, '$.problemId') = 'text'
+        AND (
+          NEW.run_id IS NULL
+          OR (NEW.problem_id IS NOT NULL
+            AND NEW.problem_id IS NOT json_extract(NEW.payload_json, '$.problemId'))
+          OR NOT EXISTS (
+            SELECT 1 FROM research_runs run
+            WHERE run.id = NEW.run_id
+              AND run.problem_id = json_extract(NEW.payload_json, '$.problemId')
+          )
+        )
+      )
+      BEGIN
+        SELECT RAISE(ABORT, 'job event payload entity IDs do not match relational columns');
+      END;
+
+      CREATE TRIGGER normalize_job_event_payload_insert
+      AFTER INSERT ON job_events
+      WHEN json_type(NEW.payload_json, '$.runId') IS NOT NULL
+        OR json_type(NEW.payload_json, '$.threadId') IS NOT NULL
+        OR json_type(NEW.payload_json, '$.problemId') IS NOT NULL
+      BEGIN
+        UPDATE job_events
+        SET problem_id = CASE
+              WHEN json_type(NEW.payload_json, '$.problemId') = 'text'
+              THEN json_extract(NEW.payload_json, '$.problemId')
+              ELSE NEW.problem_id
+            END,
+            payload_json = json_remove(
+              NEW.payload_json, '$.runId', '$.threadId', '$.problemId'
+            )
+        WHERE id = NEW.id;
+      END;
+
+      CREATE TRIGGER normalize_job_event_payload_update
+      AFTER UPDATE OF payload_json ON job_events
+      WHEN json_type(NEW.payload_json, '$.runId') IS NOT NULL
+        OR json_type(NEW.payload_json, '$.threadId') IS NOT NULL
+        OR json_type(NEW.payload_json, '$.problemId') IS NOT NULL
+      BEGIN
+        UPDATE job_events
+        SET problem_id = CASE
+              WHEN json_type(NEW.payload_json, '$.problemId') = 'text'
+              THEN json_extract(NEW.payload_json, '$.problemId')
+              ELSE NEW.problem_id
+            END,
+            payload_json = json_remove(
+              NEW.payload_json, '$.runId', '$.threadId', '$.problemId'
+            )
+        WHERE id = NEW.id;
+      END;
+    `,
+  },
 ] as const;

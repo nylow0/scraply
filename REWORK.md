@@ -940,7 +940,7 @@ same commit.
 
 **This cannot be split.** `App.svelte` imports the components being deleted, `run-progress.ts` and
 `RunReviewPanel.svelte` import `RESEARCH_STREAMS`, and `.github/workflows/ci.yml` runs
-`bun run check` plus `bun run test:e2e` on every PR to dev. A standalone delete commit leaves the
+`bun run check` plus `bun run test:e2e` on every PR to `master`. A standalone delete commit leaves the
 repo uncompilable and CI red.
 
 **Success:** CI green; a fresh install migrates; an existing install migrates; one full run reaches

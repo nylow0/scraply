@@ -47,7 +47,7 @@ export class CostLedgerRepository {
         committed_cost: number;
       } | undefined;
       if (!run) throw new Error("Research run not found");
-      if (!["queued", "running", "partial", "completed"].includes(run.status)) {
+      if (!["queued", "running"].includes(run.status)) {
         throw new Error("Research run cannot accept new paid operations");
       }
       const available = Math.max(0, run.budget_limit - run.reserved_cost - run.committed_cost);
