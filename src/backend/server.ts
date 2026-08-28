@@ -315,7 +315,7 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
     const row = db.db.prepare("SELECT id, status, problem_id, config_json FROM research_runs WHERE thread_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1")
       .get(threadId) as { id: string; status: string; problem_id: string | null; config_json: string } | undefined;
     if (!row) return null;
-    const runConfig = RunConfigSchema.parse(JSON.parse(row.config_json));
+    const runConfig = RunConfigSchema.parse({ ...DEFAULT_RUN_CONFIG, ...JSON.parse(row.config_json) });
     const counts = db.db.prepare(`SELECT provider, COUNT(*) AS count FROM cost_ledger WHERE research_run_id = ? AND status IN ('reserved','committed') GROUP BY provider`)
       .all(row.id) as Array<{ provider: string; count: number }>;
     const projection = row.problem_id ? { modelCalls: MAX_DEVELOPMENT_PROJECTED_CALLS, searches: 0 } : discoveryRunProjection(runConfig.discoveryDepth);

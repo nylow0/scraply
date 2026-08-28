@@ -421,4 +421,38 @@ describe("cutover backend", () => {
     deleted.close();
     expect(events.filter((event) => event.type === "run-cancelled").map((event) => event.runId)).toEqual(["stale-cancel", "stale-delete"]);
   });
+
+  test("loads a legacy latest run whose config predates required fields", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "scraply-legacy-run-")); dirs.push(dir);
+    const dbPath = join(dir, "scraply.db");
+    const handle = await startBackend({
+      dataDir: dir, dbPath, bundledPromptsDir: join(process.cwd(), "prompts"), promptOverridesDir: join(dir, "prompts"),
+      appVersion: "test", getSecrets: () => ({ exaApiKey: null }),
+      providerValidation: { inspectCodex: async () => ({ detected: false, compatible: false, authenticated: false, models: [] }) },
+    }, () => undefined); handles.push(handle);
+    const post = async (path: string, body: unknown) => {
+      const response = await fetch(`http://127.0.0.1:${handle.port}${path}`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${handle.token}`, "content-type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      expect(response.status).toBe(200);
+      return (await response.json() as { data: unknown }).data;
+    };
+    const created = await post("/threads", {}) as { thread: { id: string } };
+    const client = new DatabaseClient(dbPath);
+    const now = new Date().toISOString();
+    client.db.prepare(`
+      INSERT INTO research_runs (id, thread_id, status, config_json, created_at, updated_at)
+      VALUES ('legacy-run', ?, 'completed', '{}', ?, ?)
+    `).run(created.thread.id, now, now);
+    client.close();
+
+    const response = await fetch(`http://127.0.0.1:${handle.port}/workspace`, {
+      headers: { authorization: `Bearer ${handle.token}` },
+    });
+    expect(response.status).toBe(200);
+    const workspace = await response.json() as { data: { latestResearchRun: { runId: string; searches: number } } };
+    expect(workspace.data.latestResearchRun).toMatchObject({ runId: "legacy-run", searches: 0 });
+  });
 });

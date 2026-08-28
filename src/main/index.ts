@@ -24,7 +24,11 @@ import {
   type BackendReady,
   type ValidationState,
 } from "../shared/ipc";
-import { BackendToMainMessageSchema, type BackendSecrets } from "../shared/backend-process";
+import {
+  BackendToMainMessageSchema,
+  configuredProviderSecretsAreValid,
+  type BackendSecrets,
+} from "../shared/backend-process";
 import { AppError } from "../shared/errors";
 import { createFileLogger, type FileLogger } from "./logging";
 import { isAllowedRendererUrl, parseExternalHttpsUrl, rendererEntryUrl } from "./security";
@@ -407,7 +411,7 @@ async function validateAndPersistSecrets(candidate: BackendSecrets): Promise<Val
   await updateBackendSecrets(candidate);
   try {
     const validation = await backendRequest<ValidationState>("/validation");
-    if (!validation.setupComplete) {
+    if (!validation.setupComplete || !configuredProviderSecretsAreValid(candidate, validation)) {
       await updateBackendSecrets(previous);
       return validation;
     }
@@ -577,7 +581,7 @@ if (!gotLock) {
       .then(async () => {
         if (!automaticSecrets.exaApiKey && !automaticSecrets.perplexityApiKey) return;
         const validation = await backendRequest<ValidationState>("/validation");
-        if (validation.setupComplete) persistSecrets(secrets);
+        if (validation.setupComplete && configuredProviderSecretsAreValid(secrets, validation)) persistSecrets(secrets);
       })
       .catch((error) => {
         console.error("Backend startup failed", error);

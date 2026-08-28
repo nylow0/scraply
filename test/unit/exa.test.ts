@@ -14,6 +14,7 @@ describe("ExaClient", () => {
       numResults: 3,
       maxCharacters: 1234,
       includeDomains: ["reddit.com"],
+      category: "tweet",
       startPublishedDate: "2025-01-01T00:00:00.000Z",
     });
     expect(request?.url).toBe("https://exa.test/search");
@@ -23,6 +24,7 @@ describe("ExaClient", () => {
       type: "auto",
       numResults: 3,
       includeDomains: ["reddit.com"],
+      category: "tweet",
       startPublishedDate: "2025-01-01T00:00:00.000Z",
       contents: { text: { maxCharacters: 1234 } },
     });

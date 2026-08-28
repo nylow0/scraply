@@ -4,6 +4,7 @@ import type {
   DiscoveryProblemRecord,
   DiscoverySourceRecord,
 } from "../db/repositories/discovery";
+import type { ExaCategory } from "../providers/exa";
 import type { SearchClient, SearchOptions } from "../providers/search";
 import { ProviderFailure, type StructuredModelClient } from "../providers/structured";
 import { deriveJsonSchema } from "../shared/json-schema";
@@ -100,7 +101,7 @@ export interface DiscoveryDependencies {
   search: Pick<SearchClient, "search">;
   model: string;
   depth?: DiscoveryDepth;
-  audienceSearch?: Pick<SearchOptions, "includeDomains" | "startPublishedDate">;
+  audienceSearch?: Pick<SearchOptions, "includeDomains" | "startPublishedDate"> & { category?: ExaCategory };
   candidateLimit?: number;
   signal?: AbortSignal;
   random?: () => number;
