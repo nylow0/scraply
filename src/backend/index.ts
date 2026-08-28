@@ -2,7 +2,7 @@ import { startBackend, type BackendContext, type BackendHandle } from "./server"
 import { configurePromptPaths } from "../core/prompts";
 import { MainToBackendMessageSchema, type BackendSecrets, type BackendToMainMessage } from "../shared/backend-process";
 
-let secrets: BackendSecrets = { exaApiKey: null };
+let secrets: BackendSecrets = { exaApiKey: null, perplexityApiKey: null };
 let handle: BackendHandle | null = null;
 
 function post(message: BackendToMainMessage): void {

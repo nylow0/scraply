@@ -3,6 +3,7 @@ import { ResearchEventSchema } from "./ipc";
 
 const SecretsSchema = z.object({
   exaApiKey: z.string().nullable(),
+  perplexityApiKey: z.string().nullable(),
 });
 
 export const BackendStartMessageSchema = z.object({

@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { BackendToMainMessageSchema, MainToBackendMessageSchema } from "../../src/shared/backend-process";
 
-const secrets = { exaApiKey: "exa-test" };
+const secrets = { exaApiKey: "exa-test", perplexityApiKey: "perplexity-test" };
 
 describe("backend utility protocol", () => {
   test("requires request IDs for acknowledged secret updates", () => {

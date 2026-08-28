@@ -6,6 +6,8 @@ import { ActiveRunConflictError } from "../db/repositories/research-runs";
 import { ThreadRepository } from "../db/repositories/threads";
 import { CodexClient, inspectCodexCli, type CodexInspectionOptions, type CodexInspectionResult } from "../providers/codex";
 import { ExaClient } from "../providers/exa";
+import { PerplexityClient } from "../providers/perplexity";
+import type { SearchClient, SearchProvider, ValidationResult } from "../providers/search";
 import type { StructuredModelClient } from "../providers/structured";
 import { AppError, toErrorPayload } from "../shared/errors";
 import { MAX_DEVELOPMENT_PROJECTED_CALLS } from "../shared/development-projection";
@@ -30,24 +32,32 @@ export interface BackendContext {
   bundledPromptsDir: string;
   promptOverridesDir: string;
   appVersion: string;
-  getSecrets: () => { exaApiKey: string | null };
+  getSecrets: () => { exaApiKey: string | null; perplexityApiKey?: string | null };
   modelClients?: Partial<Record<ModelProvider, StructuredModelClient>>;
   log?: (input: Omit<LogInput, "component">) => void;
   providerValidation?: {
     inspectCodex?: (options?: CodexInspectionOptions) => Promise<CodexInspectionResult>;
-    validateExa?: (apiKey: string) => Promise<{ valid: boolean; error?: string }>;
+    validateExa?: (apiKey: string) => Promise<ValidationResult>;
+    validatePerplexity?: (apiKey: string) => Promise<ValidationResult>;
   };
 }
 
-export function isSetupComplete(exa: { valid: boolean }, codex: { detected: boolean; compatible: boolean; authenticated: boolean }): boolean {
-  return exa.valid && codex.detected && codex.compatible && codex.authenticated;
+interface SearchValidation {
+  exa: { valid: boolean };
+  perplexity: { valid: boolean };
+}
+
+export function isSetupComplete(search: SearchValidation, codex: { detected: boolean; compatible: boolean; authenticated: boolean }): boolean {
+  return (search.exa.valid || search.perplexity.valid) && codex.detected && codex.compatible && codex.authenticated;
 }
 export function isResearchModeReady(
-  mode: RunConfig["researchMode"],
-  exa: { valid: boolean },
+  config: Pick<RunConfig, "researchMode" | "searchProvider">,
+  search: SearchValidation,
   codex: { detected: boolean; compatible: boolean; authenticated: boolean },
 ): boolean {
-  return codex.detected && codex.compatible && codex.authenticated && (mode === "known-problem" || exa.valid);
+  const selectedSearchReady = search[config.searchProvider].valid;
+  return codex.detected && codex.compatible && codex.authenticated
+    && (config.researchMode === "known-problem" || selectedSearchReady);
 }
 export interface BackendHandle { port: number; token: string; close: () => Promise<void>; secretsChanged: () => void }
 
@@ -72,14 +82,15 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
   };
   const ensureEngine = () => {
     if (!engine) {
-      // Known-problem runs never search, so the engine is usable without an Exa key; discovery fails loudly instead.
-      const exaApiKey = context.getSecrets().exaApiKey;
+      // Known-problem runs never search, so the engine is usable without either search credential.
+      const { exaApiKey, perplexityApiKey } = context.getSecrets();
+      const searchClients: Partial<Record<SearchProvider, SearchClient>> = {};
+      if (exaApiKey) searchClients.exa = new ExaClient(exaApiKey);
+      if (perplexityApiKey) searchClients.perplexity = new PerplexityClient(perplexityApiKey);
       engine = new ResearchEngine({
         db,
         modelClients: { codex: context.modelClients?.codex ?? new CodexClient() },
-        exa: exaApiKey
-          ? new ExaClient(exaApiKey)
-          : { search: async () => { throw new AppError("conflict", "Connect Exa before discovering problems."); } },
+        searchClients,
         onEvent: emitEvent,
       });
     }
@@ -91,7 +102,7 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
     const generation = validationGeneration;
     const pending = (async () => {
       const secrets = context.getSecrets();
-      const [inspection, exa] = await Promise.all([
+      const [inspection, exa, perplexity] = await Promise.all([
         (context.providerValidation?.inspectCodex ?? inspectCodexCli)({ force: forceCodex }).catch((): CodexInspectionResult => ({
           detected: false,
           compatible: false,
@@ -102,9 +113,12 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
         secrets.exaApiKey
           ? (context.providerValidation?.validateExa ?? ((key: string) => new ExaClient(key).validateKey()))(secrets.exaApiKey)
           : Promise.resolve({ valid: false, error: "Exa key missing" }),
+        secrets.perplexityApiKey
+          ? (context.providerValidation?.validatePerplexity ?? ((key: string) => new PerplexityClient(key).validateKey()))(secrets.perplexityApiKey)
+          : Promise.resolve({ valid: false, error: "Perplexity key missing" }),
       ]);
       const { models, ...codex } = inspection;
-      const value = ValidationStateSchema.parse({ exa, codex, setupComplete: isSetupComplete(exa, codex) });
+      const value = ValidationStateSchema.parse({ exa, perplexity, codex, setupComplete: isSetupComplete({ exa, perplexity }, codex) });
       context.log?.({
         level: value.setupComplete ? "info" : "warn",
         event: "provider-validation-completed",
@@ -113,6 +127,8 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
           setupComplete: value.setupComplete,
           exaValid: value.exa.valid,
           exaError: value.exa.error,
+          perplexityValid: value.perplexity.valid,
+          perplexityError: value.perplexity.error,
           codexDetected: value.codex.detected,
           codexCompatible: value.codex.compatible,
           codexAuthenticated: value.codex.authenticated,
@@ -133,6 +149,7 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
   }
   const pendingValidation = () => ValidationStateSchema.parse({
     exa: { valid: false, error: context.getSecrets().exaApiKey ? "Checking Exa connection" : "Exa key missing" },
+    perplexity: { valid: false, error: context.getSecrets().perplexityApiKey ? "Checking Perplexity connection" : "Perplexity key missing" },
     codex: { detected: false, compatible: false, authenticated: false, error: "Checking Codex connection" }, setupComplete: false,
   });
 
@@ -174,7 +191,7 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
       presets: threads.listPresets(),
       problemCandidates: activeThreadId ? listProblems(activeThreadId) : [],
       solutions: activeThreadId ? listSolutions(activeThreadId) : [],
-      latestResearchRun: activeThreadId ? latestRun(activeThreadId, runConfig ?? DEFAULT_RUN_CONFIG) : null,
+      latestResearchRun: activeThreadId ? latestRun(activeThreadId) : null,
       pendingRuns: listPendingRuns(),
     };
     return WorkspaceStateSchema.parse(state);
@@ -294,20 +311,21 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
       problems: listProblems(threadId),
     };
   }
-  function latestRun(threadId: string, config: RunConfig) {
-    const row = db.db.prepare("SELECT id, status, problem_id FROM research_runs WHERE thread_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1")
-      .get(threadId) as { id: string; status: string; problem_id: string | null } | undefined;
+  function latestRun(threadId: string) {
+    const row = db.db.prepare("SELECT id, status, problem_id, config_json FROM research_runs WHERE thread_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1")
+      .get(threadId) as { id: string; status: string; problem_id: string | null; config_json: string } | undefined;
     if (!row) return null;
+    const runConfig = RunConfigSchema.parse(JSON.parse(row.config_json));
     const counts = db.db.prepare(`SELECT provider, COUNT(*) AS count FROM cost_ledger WHERE research_run_id = ? AND status IN ('reserved','committed') GROUP BY provider`)
       .all(row.id) as Array<{ provider: string; count: number }>;
-    const projection = row.problem_id ? { modelCalls: MAX_DEVELOPMENT_PROJECTED_CALLS, searches: 0 } : discoveryRunProjection(config.discoveryDepth);
+    const projection = row.problem_id ? { modelCalls: MAX_DEVELOPMENT_PROJECTED_CALLS, searches: 0 } : discoveryRunProjection(runConfig.discoveryDepth);
     const activity = db.db.prepare("SELECT payload_json FROM job_events WHERE run_id = ? AND type = 'run-progress' ORDER BY id DESC LIMIT 1")
       .get(row.id) as { payload_json: string } | undefined;
     return {
       runId: row.id, status: row.status, problemId: row.problem_id,
       codexCalls: counts.find((item) => item.provider === "codex")?.count ?? 0,
-      exaSearches: counts.find((item) => item.provider === "exa")?.count ?? 0,
-      projectedCodexCalls: projection.modelCalls, projectedExaSearches: projection.searches,
+      searches: counts.find((item) => item.provider === runConfig.searchProvider)?.count ?? 0,
+      projectedCodexCalls: projection.modelCalls, projectedSearches: projection.searches,
       lastActivity: activity ? String(JSON.parse(activity.payload_json).message ?? "") : null,
     };
   }
@@ -377,7 +395,10 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
       if (method !== "POST") throw new AppError("not_found", "Route not found.");
       const body = await readBody(req);
       if (route === "/threads") {
-        const input = CreateThreadRequestSchema.parse(body); const thread = threads.createThread(input.title ?? "New research");
+        const input = CreateThreadRequestSchema.parse(body);
+        const validation = cachedValidation ?? await validateProviders();
+        const searchProvider = validation.exa.valid ? "exa" : validation.perplexity.valid ? "perplexity" : "exa";
+        const thread = threads.createThread(input.title ?? "New research", { ...DEFAULT_RUN_CONFIG, searchProvider });
         activeThreadId = thread.id; db.setSetting("active_thread_id", thread.id); return sendJson(res, 200, { thread, workspace: await workspaceState() });
       }
       if (route === "/threads/select") {
@@ -406,11 +427,11 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
         const validation = cachedValidation ?? await validateProviders();
         const scope = threads.getScope(threadId); if (!scope) throw new AppError("conflict", "Save the research scope first.");
         const config = threads.getLatestRunConfig(threadId) ?? RunConfigSchema.parse(DEFAULT_RUN_CONFIG);
-        if (!isResearchModeReady(config.researchMode, validation.exa, validation.codex)) {
+        if (!isResearchModeReady(config, validation, validation.codex)) {
           if (!validation.codex.detected) throw new AppError("conflict", "Codex CLI not found");
           if (!validation.codex.compatible) throw new AppError("conflict", "Installed Codex version is incompatible");
           if (!validation.codex.authenticated) throw new AppError("conflict", "Codex is not signed in");
-          throw new AppError("conflict", "Connect Exa before discovering problems.");
+          throw new AppError("conflict", `Connect ${config.searchProvider === "exa" ? "Exa" : "Perplexity"} before discovering problems.`);
         }
         if (!cachedCodexModels.includes(config.model)) throw new AppError("conflict", "Selected model is unavailable");
         if (config.researchMode === "known-problem" && !config.knownProblem.trim()) throw new AppError("validation_error", "Problem statement is required.");

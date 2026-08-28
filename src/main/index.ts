@@ -45,10 +45,10 @@ interface PendingSecretUpdate {
 }
 
 const pendingSecretUpdates = new Map<string, PendingSecretUpdate>();
-let secrets: BackendSecrets = { exaApiKey: null };
+let secrets: BackendSecrets = { exaApiKey: null, perplexityApiKey: null };
 
 function secretValues(): string[] {
-  return [secrets.exaApiKey].filter((value): value is string => Boolean(value));
+  return [secrets.exaApiKey, secrets.perplexityApiKey].filter((value): value is string => Boolean(value));
 }
 
 function getPaths() {
@@ -64,6 +64,8 @@ function readAutomaticSecrets(): Partial<BackendSecrets> {
   const candidate: Partial<BackendSecrets> = {};
   const environmentKey = process.env.EXA_API_KEY?.trim();
   if (environmentKey) candidate.exaApiKey = environmentKey;
+  const perplexityEnvironmentKey = process.env.PERPLEXITY_API_KEY?.trim();
+  if (perplexityEnvironmentKey) candidate.perplexityApiKey = perplexityEnvironmentKey;
   if (!isDev || process.env.SCRAPLY_E2E === "1") return candidate;
   const envPath = join(process.cwd(), ".env");
   if (!existsSync(envPath)) return candidate;
@@ -76,6 +78,7 @@ function readAutomaticSecrets(): Partial<BackendSecrets> {
     const key = trimmed.slice(0, idx).trim();
     const value = trimmed.slice(idx + 1).trim();
     if (key === "EXA_API_KEY" && value) candidate.exaApiKey = value;
+    if (key === "PERPLEXITY_API_KEY" && value) candidate.perplexityApiKey = value;
   }
   return candidate;
 }
@@ -86,7 +89,10 @@ function loadStoredSecrets(): void {
   try {
     const raw = safeStorage.decryptString(readFileSync(settingsPath));
     const parsed = JSON.parse(raw) as Partial<BackendSecrets>;
-    secrets = { exaApiKey: typeof parsed.exaApiKey === "string" ? parsed.exaApiKey : null };
+    secrets = {
+      exaApiKey: typeof parsed.exaApiKey === "string" ? parsed.exaApiKey : null,
+      perplexityApiKey: typeof parsed.perplexityApiKey === "string" ? parsed.perplexityApiKey : null,
+    };
   } catch {
     // ignore corrupt secrets file
   }
@@ -418,6 +424,7 @@ async function retryAutomaticConnection(): Promise<void> {
   const automaticSecrets = readAutomaticSecrets();
   const candidate: BackendSecrets = {
     exaApiKey: automaticSecrets.exaApiKey ?? secrets.exaApiKey,
+    perplexityApiKey: automaticSecrets.perplexityApiKey ?? secrets.perplexityApiKey,
   };
 
   if (!backendReady) {
@@ -568,7 +575,7 @@ if (!gotLock) {
     createWindow();
     void ensureBackend()
       .then(async () => {
-        if (!automaticSecrets.exaApiKey) return;
+        if (!automaticSecrets.exaApiKey && !automaticSecrets.perplexityApiKey) return;
         const validation = await backendRequest<ValidationState>("/validation");
         if (validation.setupComplete) persistSecrets(secrets);
       })

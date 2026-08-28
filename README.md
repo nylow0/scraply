@@ -6,7 +6,7 @@ Scraply is a local-first Windows desktop app for evidence-backed research and id
 
 - Windows 10 or 11
 - [Bun](https://bun.sh/) for development
-- An Exa API key for web research
+- An Exa or Perplexity API key for web research
 - An authenticated Codex CLI for the default structured-model workflow
 
 ## Development
@@ -16,7 +16,7 @@ bun install
 bun run dev
 ```
 
-Set `EXA_API_KEY` in `.env` for development or in the environment that launches the installed app. Scraply opens the local workspace immediately, checks Exa and Codex in the background, and stores the key with Windows-backed encryption after the first successful validation.
+Set `EXA_API_KEY`, `PERPLEXITY_API_KEY`, or both in `.env` for development or in the environment that launches the installed app. Each discovery run uses the search provider selected in its setup. Scraply checks configured providers and Codex in the background, then stores the keys with Windows-backed encryption after validation.
 
 Useful checks:
 
@@ -52,13 +52,13 @@ Credentials are stored separately in `secrets.bin` using Electron's Windows-back
 - For a full backup, close Scraply completely and copy the entire data folder, including the database and any WAL/SHM files that remain.
 - To restore, close Scraply and replace the data folder with a consistent backup from the same app version.
 - To reset local research data, close Scraply, back up anything important, and remove the `scraply` data subfolder. The app creates a fresh database on next launch.
-- To reset the saved Exa credential, close Scraply and remove `secrets.bin` from the Electron user-data directory. The next launch imports `EXA_API_KEY` again.
+- To reset saved provider credentials, close Scraply and remove `secrets.bin` from the Electron user-data directory. The next launch imports configured environment keys again.
 
 Deleting or resetting data is irreversible unless you made a backup first.
 
 ## Troubleshooting
 
-- **Exa does not connect:** the local workspace remains available. Confirm `EXA_API_KEY` exists in `.env` during development or in the installed app's launch environment, then select **Limited connection** to retry.
+- **Search does not connect:** the local workspace remains available. Confirm the selected provider's `EXA_API_KEY` or `PERPLEXITY_API_KEY` exists in `.env` during development or in the installed app's launch environment, then retry connections.
 - **Codex validation fails:** confirm `codex` is installed, authenticated, and available in the same Windows user environment that launches Scraply.
 - **Research cannot start:** confirm the brief is approved, the configuration is saved, and no active run already exists for the project.
 - **A report is blank or slow:** collapse and reopen it to retry the on-demand detail request. Reports are intentionally excluded from routine workspace refreshes.

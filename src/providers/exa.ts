@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { SourceSchema, type Source } from "../shared/schemas";
 import { ProviderFailure } from "./structured";
+import type { SearchClient, SearchOptions, ValidationResult } from "./search";
 
 type Fetcher = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
 
@@ -15,38 +16,16 @@ const ExaResponseSchema = z.object({
   })),
 });
 
-export const EXA_CATEGORIES = [
-  "company",
-  "research paper",
-  "news",
-  "pdf",
-  "github",
-  "tweet",
-  "personal site",
-  "linkedin profile",
-  "financial report",
-] as const;
+export class ExaClient implements SearchClient {
+  readonly provider = "exa" as const;
 
-export type ExaCategory = (typeof EXA_CATEGORIES)[number];
-
-export interface ExaSearchOptions {
-  numResults?: number;
-  maxCharacters?: number;
-  includeDomains?: string[];
-  category?: ExaCategory;
-  startPublishedDate?: string;
-  signal?: AbortSignal;
-  timeoutMs?: number;
-}
-
-export class ExaClient {
   constructor(
     private readonly apiKey: string,
     private readonly fetcher: Fetcher = fetch,
     private readonly baseUrl = "https://api.exa.ai",
   ) {}
 
-  async search(query: string, options: ExaSearchOptions = {}): Promise<Source[]> {
+  async search(query: string, options: SearchOptions = {}): Promise<Source[]> {
     if (options.signal?.aborted) {
       throw new ProviderFailure("cancelled", "Exa search was cancelled", false, { cause: options.signal.reason });
     }
@@ -63,7 +42,6 @@ export class ExaClient {
           type: "auto",
           numResults: options.numResults ?? 5,
           ...(options.includeDomains ? { includeDomains: options.includeDomains } : {}),
-          ...(options.category ? { category: options.category } : {}),
           ...(options.startPublishedDate ? { startPublishedDate: options.startPublishedDate } : {}),
           contents: { text: { maxCharacters: options.maxCharacters ?? 6000 } },
         }),
@@ -97,7 +75,7 @@ export class ExaClient {
           id: result.id ?? `source-${index + 1}`,
           url: result.url,
           title: result.title?.trim() || result.url,
-          text: result.text.trim(),
+          text: result.text.trim().slice(0, options.maxCharacters ?? 6000),
           ...(result.author ? { author: result.author } : {}),
           ...(result.publishedDate ? { publishedDate: result.publishedDate } : {}),
         }));
@@ -112,7 +90,7 @@ export class ExaClient {
     }
   }
 
-  async validateKey(): Promise<{ valid: true } | { valid: false; error: string }> {
+  async validateKey(): Promise<ValidationResult> {
     try {
       await this.search("test connectivity", { numResults: 1, maxCharacters: 500, timeoutMs: 10_000 });
       return { valid: true };
