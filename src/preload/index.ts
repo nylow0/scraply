@@ -35,7 +35,7 @@ const api = {
   onBackendEvent: (listener: (event: ResearchEvent) => void) => {
     const handler = (_: unknown, event: unknown) => { const parsed = ResearchEventSchema.safeParse(event); if (parsed.success) listener(parsed.data); };
     ipcRenderer.on(IPC_CHANNELS.BACKEND_EVENT, handler);
-    return () => ipcRenderer.removeListener(IPC_CHANNELS.BACKEND_EVENT, handler);
+    return () => { ipcRenderer.removeListener(IPC_CHANNELS.BACKEND_EVENT, handler); };
   },
 };
 

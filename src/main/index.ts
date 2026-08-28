@@ -143,7 +143,7 @@ async function startBackendProcess(): Promise<BackendReady> {
       if (!parsed.success) return;
       const message = parsed.data;
 
-      if (message.type === "event" && mainWindow) {
+      if (message.type === "event" && mainWindow && !mainWindow.isDestroyed()) {
         mainWindow.webContents.send(IPC_CHANNELS.BACKEND_EVENT, message.event);
         return;
       }
@@ -276,6 +276,10 @@ function createWindow(): void {
       nodeIntegration: false,
       sandbox: true,
     },
+  });
+  const createdWindow = mainWindow;
+  createdWindow.on("closed", () => {
+    if (mainWindow === createdWindow) mainWindow = null;
   });
 
   const csp = [
@@ -492,8 +496,7 @@ function registerIpc(): void {
     const directory = selection.filePaths[0];
     const files = bundle.files.map((file) => {
       const filename = file.filename.replace(/[^a-zA-Z0-9._-]/g, "-");
-      writeFileSync(join(directory, filename), file.content, "utf8");
-      return filename;
+      return writeUniqueExportFile(directory, filename, file.content);
     });
     return { cancelled: false, directory, files };
   });
@@ -508,6 +511,21 @@ function registerIpc(): void {
   handle(IPC_CHANNELS.OPEN_EXTERNAL_URL, async (body) => {
     await shell.openExternal(parseExternalHttpsUrl(body));
   });
+}
+
+function writeUniqueExportFile(directory: string, filename: string, content: string): string {
+  const dotIndex = filename.lastIndexOf(".");
+  const stem = dotIndex > 0 ? filename.slice(0, dotIndex) : filename;
+  const extension = dotIndex > 0 ? filename.slice(dotIndex) : "";
+  for (let suffix = 0; ; suffix += 1) {
+    const candidate = suffix === 0 ? filename : `${stem}-${suffix + 1}${extension}`;
+    try {
+      writeFileSync(join(directory, candidate), content, { encoding: "utf8", flag: "wx" });
+      return candidate;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+    }
+  }
 }
 
 process.on("uncaughtExceptionMonitor", (error) => {
@@ -561,6 +579,10 @@ if (!gotLock) {
 
   app.on("window-all-closed", () => {
     if (process.platform !== "darwin") app.quit();
+  });
+
+  app.on("activate", () => {
+    if (!mainWindow) createWindow();
   });
 
   app.on("before-quit", () => {

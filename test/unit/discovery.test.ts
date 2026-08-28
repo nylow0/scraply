@@ -9,7 +9,7 @@ import {
   runPhase1Ablation,
   type HarvestedSource,
 } from "../../src/core/discovery";
-import type { StructuredCallOptions, StructuredModelClient } from "../../src/providers/structured";
+import type { StructuredModelClient } from "../../src/providers/structured";
 import { ProviderFailure } from "../../src/providers/structured";
 import { QueryPlanOutputSchema } from "../../src/shared/structured-output-schemas";
 
@@ -123,8 +123,6 @@ describe("Phase 1 discovery", () => {
         _system: string,
         user: string,
         schema: z.ZodType<T>,
-        _jsonSchema: object,
-        _options?: StructuredCallOptions,
       ): Promise<T> {
         if (schema._def === QueryPlanOutputSchema._def) {
           return schema.parse({ queries: ["one", "two", "three"] });
@@ -202,6 +200,7 @@ describe("Phase 1 discovery", () => {
     // dropped from the prompt, Arm A would judge its candidates on less contrary evidence than the
     // control, which would confound the only comparison the ablation exists to make.
     const killInputs: string[] = [];
+    const expectedVerdictSourceIds: string[][] = [];
     const result = await runPhase1Ablation(scope(), {
       model: "test-model",
       depth: "quick",
@@ -233,11 +232,15 @@ describe("Phase 1 discovery", () => {
           }] });
         }
         killInputs.push(user);
-        const verdictSourceId = user.match(/\[([0-9a-f-]{36})\]/)?.[1];
+        const verdictSourceIds = [...user.matchAll(/\[([0-9a-f-]{36})\]/g)].map((match) => match[1]!);
+        const duplicated = verdictSourceIds.length > 1
+          ? [verdictSourceIds[1]!, verdictSourceIds[0]!, verdictSourceIds[1]!]
+          : verdictSourceIds;
+        expectedVerdictSourceIds.push([...new Set(duplicated)]);
         return schema.parse({
           verdict: "confirmed",
           verdictReason: "Contrary search did not find a complete solution.",
-          verdictSourceIds: verdictSourceId ? [verdictSourceId] : [],
+          verdictSourceIds: duplicated,
         });
       }),
       exa: {
@@ -262,7 +265,8 @@ describe("Phase 1 discovery", () => {
     // Only genuinely new sources are queued for insertion, so the run-scoped URL uniqueness holds.
     expect(result.armA.killSources).toEqual([]);
     expect(result.armC.killSources).toHaveLength(2);
-    expect(result.armA.problems[0]?.verdictSourceIds).toHaveLength(1);
+    expect(result.armA.problems[0]?.verdictSourceIds).toEqual(expectedVerdictSourceIds[0]);
+    expect(result.armC.problems[0]?.verdictSourceIds).toEqual(expectedVerdictSourceIds[1]);
   });
 
   test("skips a search result whose URL cannot be parsed instead of failing the run", async () => {

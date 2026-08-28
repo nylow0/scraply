@@ -18,11 +18,10 @@
   let observations = $state(initial.scope?.observations ?? "");
   let offLimits = $state(initial.scope?.offLimits.join("\n") ?? "");
   let knownProblem = $state(initial.runConfig?.knownProblem ?? "");
-  let model = $state(initial.runConfig && initial.models.includes(initial.runConfig.model)
-    ? initial.runConfig.model
-    : initial.models.includes(DEFAULT_RUN_CONFIG.model)
+  let model = $state(initial.runConfig?.model
+    ?? (initial.models.includes(DEFAULT_RUN_CONFIG.model)
       ? DEFAULT_RUN_CONFIG.model
-      : initial.models[0] ?? DEFAULT_RUN_CONFIG.model);
+      : initial.models[0] ?? DEFAULT_RUN_CONFIG.model));
   let initialModelOption = initial.modelOptions.find((item) => item.id === model);
   let reasoningEffort = $state(initial.runConfig?.reasoningEffort
     && initialModelOption?.reasoningEfforts.some((item) => item.id === initial.runConfig?.reasoningEffort)
@@ -54,8 +53,19 @@
     && initial.runConfig?.researchMode === researchMode
     && initial.runConfig?.knownProblem === knownProblem ? draftFingerprint : null));
   let saved = $derived(savedFingerprint === draftFingerprint);
-  let codexReady = $derived(workspace.validation.codex.detected && workspace.validation.codex.compatible);
-  let providersReady = $derived(codexReady && (researchMode === "known-problem" || workspace.validation.exa.valid));
+  let codexReady = $derived(workspace.validation.codex.detected && workspace.validation.codex.compatible && workspace.validation.codex.authenticated);
+  let selectedModelAvailable = $derived(workspace.models.includes(model));
+  let providersReady = $derived(codexReady && selectedModelAvailable && (researchMode === "known-problem" || workspace.validation.exa.valid));
+  let codexStatus = $derived(workspace.validation.codex.error === "Checking Codex connection"
+    ? "Checking Codex connection"
+    : !workspace.validation.codex.detected
+      ? "Codex CLI not found"
+      : !workspace.validation.codex.compatible
+        ? "Installed Codex version is incompatible"
+        : !workspace.validation.codex.authenticated
+          ? workspace.validation.codex.error ?? "Codex is not signed in"
+          : workspace.validation.codex.error
+            ?? (!selectedModelAvailable ? "Selected model is unavailable" : null));
   let locked = $derived(busy || submitting);
   let errors = $derived(validationAttempted ? missingFields() : {});
 
@@ -115,11 +125,11 @@
     </fieldset>
 
     <div class="primary-fields">
-      <label><span>Research name</span><input bind:value={title} aria-invalid={Boolean(errors.title)} placeholder={researchMode === "explore-market" ? "Project ideas" : "Solution ideas"} />{#if errors.title}<small class="field-error">{errors.title}</small>{/if}</label>
+      <label><span>Research name</span><input bind:value={title} aria-invalid={Boolean(errors.title)} aria-describedby={errors.title ? "title-error" : undefined} placeholder={researchMode === "explore-market" ? "Project ideas" : "Solution ideas"} />{#if errors.title}<small id="title-error" class="field-error">{errors.title}</small>{/if}</label>
       {#if researchMode === "known-problem"}
-        <label class="problem-field"><span>Problem statement</span><small>State the problem directly. This becomes a user-asserted problem and goes straight to solution development.</small><textarea bind:value={knownProblem} aria-invalid={Boolean(errors.knownProblem)} rows="4" placeholder="Small repair shops cannot reliably predict parts arrival times."></textarea>{#if errors.knownProblem}<small class="field-error">{errors.knownProblem}</small>{/if}</label>
+        <label class="problem-field"><span>Problem statement</span><small>State the problem directly. This becomes a user-asserted problem and goes straight to solution development.</small><textarea bind:value={knownProblem} aria-invalid={Boolean(errors.knownProblem)} aria-describedby={errors.knownProblem ? "known-problem-error" : undefined} rows="4" placeholder="Small repair shops cannot reliably predict parts arrival times."></textarea>{#if errors.knownProblem}<small id="known-problem-error" class="field-error">{errors.knownProblem}</small>{/if}</label>
       {/if}
-      <label class:discovery-context={researchMode === "explore-market"}><span>{researchMode === "explore-market" ? "What do you want to explore?" : "Market or domain (optional)"}</span>{#if researchMode === "explore-market"}<small>Use whatever starting point you have: a goal, competition, topic, audience, market, rough idea, or something more specific.</small>{/if}<textarea bind:value={domain} aria-invalid={Boolean(errors.domain)} rows={researchMode === "explore-market" ? 4 : 2} placeholder={researchMode === "explore-market" ? "Describe your goal, topic, audience, or starting idea." : "Add any relevant market or domain context."}></textarea>{#if errors.domain}<small class="field-error">{errors.domain}</small>{/if}</label>
+      <label class:discovery-context={researchMode === "explore-market"}><span>{researchMode === "explore-market" ? "What do you want to explore?" : "Market or domain (optional)"}</span>{#if researchMode === "explore-market"}<small>Use whatever starting point you have: a goal, competition, topic, audience, market, rough idea, or something more specific.</small>{/if}<textarea bind:value={domain} aria-invalid={Boolean(errors.domain)} aria-describedby={errors.domain ? "domain-error" : undefined} rows={researchMode === "explore-market" ? 4 : 2} placeholder={researchMode === "explore-market" ? "Describe your goal, topic, audience, or starting idea." : "Add any relevant market or domain context."}></textarea>{#if errors.domain}<small id="domain-error" class="field-error">{errors.domain}</small>{/if}</label>
       <label><span>{researchMode === "explore-market" ? "People or groups (optional)" : "Audience (optional)"}</span><input bind:value={audience} placeholder={researchMode === "explore-market" ? "Students, local communities, or leave blank" : "Owners of small repair shops"} /></label>
     </div>
 
@@ -127,13 +137,13 @@
       <summary>Context and boundaries <span>Optional</span></summary>
       <div>
         <label><span>{researchMode === "explore-market" ? "Anything else to consider" : "Context"}</span><small>{researchMode === "explore-market" ? "Add useful details without needing to structure them." : "Useful background for solution generation."}</small><textarea bind:value={observations} rows="4" placeholder="Constraints, interests, experience, resources, or early observations"></textarea></label>
-        <label><span>Boundaries</span><small>One boundary per line. Applied when solutions are proposed.</small><textarea bind:value={offLimits} rows="4" placeholder={"Marketplace business model\nRequires regulated inventory"}></textarea></label>
+        <label><span>Boundaries</span><small>One boundary per line. Applied when solutions are proposed.</small><textarea bind:value={offLimits} rows="4" placeholder="Marketplace business model&#10;Requires regulated inventory"></textarea></label>
       </div>
     </details>
 
     <div class="run-settings" class:known={researchMode === "known-problem"}>
-      <label class="run-setting"><span>Model</span><select bind:value={model} onchange={selectModel}>{#each workspace.modelOptions as item}<option value={item.id}>{item.displayName}</option>{/each}{#if workspace.modelOptions.length === 0}<option value={model}>{model}</option>{/if}</select><small>The model used throughout this research.</small></label>
-      <label class="run-setting"><span>Reasoning</span><select bind:value={reasoningEffort}>{#each (selectedModelOption?.reasoningEfforts ?? [{ id: reasoningEffort, description: "" }]) as effort}<option value={effort.id}>{effort.id.charAt(0).toUpperCase() + effort.id.slice(1)}</option>{/each}</select><small>{reasoningDescription}</small></label>
+      <label class="run-setting"><span>Model</span><select bind:value={model} onchange={selectModel}>{#if !selectedModelAvailable}<option value={model}>{model} (unavailable)</option>{/if}{#each workspace.modelOptions as item (item.id)}<option value={item.id}>{item.displayName}</option>{/each}</select><small>The model used throughout this research.</small></label>
+      <label class="run-setting"><span>Reasoning</span><select bind:value={reasoningEffort}>{#each (selectedModelOption?.reasoningEfforts ?? [{ id: reasoningEffort, description: "" }]) as effort (effort.id)}<option value={effort.id}>{effort.id.charAt(0).toUpperCase() + effort.id.slice(1)}</option>{/each}</select><small>{reasoningDescription}</small></label>
       {#if researchMode === "explore-market"}<label class="run-setting"><span>Research depth</span><select bind:value={discoveryDepth}><option value="quick">Quick</option><option value="standard">Standard</option><option value="deep">Deep</option></select><small>{depthDescription}</small></label>{/if}
     </div>
 
@@ -141,7 +151,7 @@
       <div class="connection-warning" role="status">
         <div>
           <strong>Required connection needs attention</strong>
-          {#if !codexReady}<span>Codex: {workspace.validation.codex.error ?? "Compatible CLI unavailable"}</span>{/if}
+          {#if codexStatus}<span>Codex: {codexStatus}</span>{/if}
           {#if researchMode === "explore-market" && !workspace.validation.exa.valid}<span>Exa: {workspace.validation.exa.error ?? "Connection unavailable"}</span>{/if}
         </div>
         <button type="button" class="secondary" disabled={locked} onclick={() => onRetry()}>{locked ? "Checking…" : "Retry connections"}</button>

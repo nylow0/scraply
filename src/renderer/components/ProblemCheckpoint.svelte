@@ -2,12 +2,13 @@
   import type { ProblemCandidate } from "../../shared/ipc";
   import { MAX_DEVELOPMENT_PROJECTED_CALLS } from "../../shared/development-projection";
   import { untrack } from "svelte";
-  let { problems, busy, onCommit, onExport }:{ problems:ProblemCandidate[];busy:boolean;onCommit:(ids:string[],userProblem:string|null)=>Promise<void>;onExport:()=>Promise<void> }=$props();
+  import { SvelteSet } from "svelte/reactivity";
+  let { problems, busy, onCommit, onExport, onOpenSource }:{ problems:ProblemCandidate[];busy:boolean;onCommit:(ids:string[],userProblem:string|null)=>Promise<void>;onExport:()=>Promise<void>;onOpenSource:(url:string)=>Promise<void> }=$props();
   const initialProblems=untrack(()=>problems);
-  let selected=$state(new Set(initialProblems.filter((item)=>item.selected).map((item)=>item.id)));
+  const selected=new SvelteSet(initialProblems.filter((item)=>item.selected).map((item)=>item.id));
   let userProblem=$state("");
   let projected=$derived((selected.size+(userProblem.trim()?1:0))*MAX_DEVELOPMENT_PROJECTED_CALLS);
-  function toggle(id:string){const next=new Set(selected);next.has(id)?next.delete(id):next.add(id);selected=next}
+  function toggle(id:string){if(selected.has(id))selected.delete(id);else selected.add(id)}
 </script>
 <section class="checkpoint">
   <header><div><p class="eyebrow">Human checkpoint</p><h1>Which problems deserve development?</h1><p>Killed candidates stay selectable. Evidence warnings are visible; nothing is silently hidden.</p></div><button class="export" disabled={busy} onclick={onExport}>Export research JSON</button></header>
@@ -15,16 +16,16 @@
   <div class="problems">
     {#each problems as problem,index (problem.id)}
       <article class:warning={["insufficient-evidence","overstated","attempted-and-failed"].includes(problem.verdict)} style={`--index:${index}`}>
-        <label class="pick"><input type="checkbox" checked={selected.has(problem.id)} onchange={()=>toggle(problem.id)} /><span>Develop this problem</span></label>
+        <label class="pick"><input type="checkbox" checked={selected.has(problem.id)} disabled={busy} onchange={()=>toggle(problem.id)} /><span>Develop this problem</span></label>
         <div class="verdict"><span>{problem.verdict}</span>{#if problem.singleHarvestModeWarning}<span>one harvest mode</span>{/if}</div>
         <h2>{problem.statement}</h2><p>{problem.whyItPersists}</p>
         <dl><div><dt>Affected</dt><dd>{problem.affected}</dd></div><div><dt>Scale</dt><dd class="estimated">{problem.scaleEstimate}</dd></div></dl>
         <p class="reason">{problem.verdictReason}</p>
-        <details><summary>{problem.factors.length} cited factors</summary>{#each problem.factors as factor}<blockquote><p>{factor.subject} — {factor.behavior}</p><q>{factor.quote}</q><button onclick={()=>window.scraply.openExternalUrl(factor.sourceUrl)}>{factor.sourceTitle}</button></blockquote>{/each}</details>
+        <details><summary>{problem.factors.length} cited factors</summary>{#each problem.factors as factor (factor.id)}<blockquote><p>{factor.subject} — {factor.behavior}</p><q>{factor.quote}</q><button disabled={busy} onclick={()=>onOpenSource(factor.sourceUrl)}>{factor.sourceTitle}</button></blockquote>{/each}</details>
       </article>
     {:else}<div class="empty"><h2>No candidates survived.</h2><p>State the problem yourself below, or edit the scope and run discovery again.</p></div>{/each}
   </div>
-  <div class="escape"><label><span>Or state the problem yourself.</span><textarea bind:value={userProblem} rows="3" placeholder="Describe the problem in one direct sentence."></textarea></label></div>
+  <div class="escape"><label><span>Or state the problem yourself.</span><textarea bind:value={userProblem} disabled={busy} rows="3" placeholder="Describe the problem in one direct sentence."></textarea></label></div>
   <footer><p><strong>{selected.size+(userProblem.trim()?1:0)}</strong> problems selected · ~{projected} Codex calls projected</p><button disabled={busy||(!selected.size&&!userProblem.trim())} onclick={()=>onCommit([...selected],userProblem.trim()||null)}>{busy?"Starting…":"Commit selection"}</button></footer>
 </section>
 <style>

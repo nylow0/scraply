@@ -15,10 +15,11 @@
   } = $props();
 
   let catastrophicOnly = $state(false);
+  let rankedSolutions = $derived(solutions.map((idea, index) => ({ idea, rank: index + 1 })));
   let visible = $derived(
     catastrophicOnly
-      ? solutions.filter((item) => item.unaddressedCatastrophicRisks > 0)
-      : solutions,
+      ? rankedSolutions.filter(({ idea }) => idea.unaddressedCatastrophicRisks > 0)
+      : rankedSolutions,
   );
 </script>
 
@@ -48,8 +49,8 @@
   </div>
 
   <div class="solutions">
-    {#each visible as idea, index (idea.id)}
-      <SolutionListItem {idea} rank={index + 1} />
+    {#each visible as item (item.idea.id)}
+      <SolutionListItem idea={item.idea} rank={item.rank} />
     {:else}
       <div class="empty">
         <h2>No ideas match this filter.</h2>
