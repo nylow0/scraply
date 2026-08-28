@@ -6,7 +6,7 @@ import { configurePromptPaths } from "../src/core/prompts";
 import { DatabaseClient } from "../src/db/client";
 import { DiscoveryRepository } from "../src/db/repositories/discovery";
 import { CodexClient } from "../src/providers/codex";
-import { ExaClient } from "../src/providers/exa";
+import { EXA_CATEGORIES, ExaClient, type ExaCategory } from "../src/providers/exa";
 import { DEFAULT_RUN_CONFIG } from "../src/shared/schemas";
 import { ScopeSchema, type Scope } from "../src/shared/structured-output-schemas";
 import {
@@ -151,6 +151,7 @@ function parseDepth(value: string | undefined): DiscoveryDepth {
 
 function parseAudienceSearch(): {
   includeDomains?: string[];
+  category?: ExaCategory;
   startPublishedDate?: string;
 } {
   const includeDomains = process.env.SCRAPLY_AUDIENCE_DOMAINS
@@ -159,10 +160,23 @@ function parseAudienceSearch(): {
     .filter(Boolean);
   return {
     ...(includeDomains?.length ? { includeDomains } : {}),
+    ...(process.env.SCRAPLY_AUDIENCE_CATEGORY
+      ? { category: parseCategory(process.env.SCRAPLY_AUDIENCE_CATEGORY) }
+      : {}),
     ...(process.env.SCRAPLY_AUDIENCE_START_DATE
       ? { startPublishedDate: process.env.SCRAPLY_AUDIENCE_START_DATE }
       : {}),
   };
+}
+
+function parseCategory(value: string): ExaCategory {
+  const category = EXA_CATEGORIES.find((candidate) => candidate === value);
+  if (!category) {
+    throw new Error(
+      `SCRAPLY_AUDIENCE_CATEGORY must be one of: ${EXA_CATEGORIES.join(", ")}; received ${value}`,
+    );
+  }
+  return category;
 }
 
 function parseSeed(value: string | undefined): number {

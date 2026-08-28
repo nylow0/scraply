@@ -16,6 +16,24 @@ const ExaResponseSchema = z.object({
   })),
 });
 
+export const EXA_CATEGORIES = [
+  "company",
+  "research paper",
+  "news",
+  "pdf",
+  "github",
+  "tweet",
+  "personal site",
+  "linkedin profile",
+  "financial report",
+] as const;
+
+export type ExaCategory = (typeof EXA_CATEGORIES)[number];
+
+export interface ExaSearchOptions extends SearchOptions {
+  category?: ExaCategory;
+}
+
 export class ExaClient implements SearchClient {
   readonly provider = "exa" as const;
 
@@ -25,7 +43,7 @@ export class ExaClient implements SearchClient {
     private readonly baseUrl = "https://api.exa.ai",
   ) {}
 
-  async search(query: string, options: SearchOptions = {}): Promise<Source[]> {
+  async search(query: string, options: ExaSearchOptions = {}): Promise<Source[]> {
     if (options.signal?.aborted) {
       throw new ProviderFailure("cancelled", "Exa search was cancelled", false, { cause: options.signal.reason });
     }
@@ -42,6 +60,7 @@ export class ExaClient implements SearchClient {
           type: "auto",
           numResults: options.numResults ?? 5,
           ...(options.includeDomains ? { includeDomains: options.includeDomains } : {}),
+          ...(options.category ? { category: options.category } : {}),
           ...(options.startPublishedDate ? { startPublishedDate: options.startPublishedDate } : {}),
           contents: { text: { maxCharacters: options.maxCharacters ?? 6000 } },
         }),
