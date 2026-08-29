@@ -2,18 +2,18 @@ import { describe, expect, test } from "bun:test";
 import { z } from "zod";
 import {
   batchSources,
-  discoveryProjection,
+  discoverProblems,
   harvestFactors,
   normalizeEvidenceText,
   quoteAppearsVerbatim,
-  runPhase1Ablation,
+  type HarvestedFactor,
   type HarvestedSource,
 } from "../../src/core/discovery";
 import type { StructuredModelClient } from "../../src/providers/structured";
 import { ProviderFailure } from "../../src/providers/structured";
 import { QueryPlanOutputSchema } from "../../src/shared/structured-output-schemas";
 
-describe("Phase 1 discovery", () => {
+describe("discovery", () => {
   test("normalizes typography and whitespace before checking a quote", () => {
     const source = "People said “this\u00a0takes — far too long” after filing.";
     expect(normalizeEvidenceText(source)).toBe('People said "this takes - far too long" after filing.');
@@ -115,158 +115,49 @@ describe("Phase 1 discovery", () => {
     });
   });
 
-  test("runs factor-backed and scope-only arms without leaking observations into stage 2", async () => {
-    const candidateInputs: string[] = [];
-    const client: StructuredModelClient = {
-      async structuredCompletion<T>(
-        _model: string,
-        _system: string,
-        user: string,
-        schema: z.ZodType<T>,
-      ): Promise<T> {
-        if (schema._def === QueryPlanOutputSchema._def) {
-          return schema.parse({ queries: ["one", "two", "three"] });
-        }
-        if (user.startsWith("Harvest mode:")) {
-          const sourceId = user.match(/\[([0-9a-f-]{36})\]/)?.[1];
-          return schema.parse({ factors: [{
-            subject: "Operators",
-            behavior: "repeat manual filing",
-            quote: "repeat manual filing every week",
-            sourceId,
-            modelConfidence: 0.8,
-          }] });
-        }
-        if (user.startsWith("Scope:")) {
-          candidateInputs.push(user);
-          const factorIds = [...user.matchAll(/"id":"([0-9a-f-]{36})"/g)].map((match) => match[1]);
-          return schema.parse({ problems: [{
-            statement: factorIds.length > 0 ? "Operators duplicate recurring filings." : "The scope may contain a generic bottleneck.",
-            whyItPersists: "Systems do not share state.",
-            affected: "Operators",
-            scaleEstimate: "Recurring",
-            scaleBasisFactorId: factorIds[0] ?? null,
-            factorIds,
-          }] });
-        }
-        const verdictSourceId = user.match(/\[([0-9a-f-]{36})\]/)?.[1];
-        return schema.parse({
-          verdict: "confirmed",
-          verdictReason: "Contrary search did not find a complete solution.",
-          verdictSourceIds: verdictSourceId ? [verdictSourceId] : [],
-        });
-      },
+  test("keeps a rediscovered harvest source in the kill prompt without reinserting it", async () => {
+    const existing = source("existing", "Contrary evidence.");
+    const other = {
+      ...source("other", "Supporting evidence."),
+      canonicalUrl: "https://other.test/context",
+      url: "https://other.test/context",
     };
-    let searchIndex = 0;
-    const result = await runPhase1Ablation({
-      title: "Filing workflow",
-      audience: "small operators",
-      domain: "regulated filing",
-      observations: "PRIVATE OBSERVATION MUST NOT REACH STAGE TWO",
-      offLimits: [],
-    }, {
-      modelClient: client,
+    const factors: HarvestedFactor[] = [
+      { id: "factor-1", subject: "Operators", behavior: "repeat filing", quote: "Contrary evidence.", sourceId: existing.id, harvestMode: "domain", modelConfidence: 0.8, source: existing },
+      { id: "factor-2", subject: "Operators", behavior: "repeat filing", quote: "Supporting evidence.", sourceId: other.id, harvestMode: "audience", modelConfidence: 0.8, source: other },
+    ];
+    let killPrompt = "";
+    const result = await discoverProblems(scope(), factors, [existing, other], {
       model: "test-model",
       depth: "quick",
-      random: () => 0.5,
-      search: {
-        async search(_query, options = {}) {
-          searchIndex += 1;
-          const hostname = searchIndex % 2 === 0 ? "other.test" : "example.test";
-          return [{
-            id: `provider-${searchIndex}`,
-            url: `https://${hostname}/${searchIndex}`,
-            title: `Source ${searchIndex}`,
-            text: "Operators repeat manual filing every week.",
-            ...(options.includeDomains ? { author: "Audience" } : {}),
-          }];
-        },
-      },
-    });
-
-    expect(result.harvest.factors).toHaveLength(2);
-    expect(result.harvest.factors.map((factor) => factor.harvestMode).sort()).toEqual(["audience", "domain"]);
-    expect(result.armA.problems).toHaveLength(1);
-    expect(result.armA.problems[0]?.sourceHostnames).toHaveLength(2);
-    expect(result.armC.problems).toHaveLength(1);
-    expect(result.armC.problems[0]?.factorIds).toEqual([]);
-    expect(candidateInputs).toHaveLength(2);
-    expect(candidateInputs.every((input) => !input.includes("PRIVATE OBSERVATION"))).toBe(true);
-    expect(result.armA.factorUtilizationRate).toBe(1);
-  });
-
-  test("a kill source already in the harvest corpus still reaches the kill prompt", async () => {
-    // Arm A holds the whole harvest corpus and Arm C holds nothing. If a rediscovered URL were
-    // dropped from the prompt, Arm A would judge its candidates on less contrary evidence than the
-    // control, which would confound the only comparison the ablation exists to make.
-    const killInputs: string[] = [];
-    const expectedVerdictSourceIds: string[][] = [];
-    const result = await runPhase1Ablation(scope(), {
-      model: "test-model",
-      depth: "quick",
-      random: () => 0.5,
       modelClient: modelClient(async (user, schema) => {
-        if (schema._def === QueryPlanOutputSchema._def) {
-          return schema.parse({ queries: ["one", "two", "three"] });
-        }
-        if (user.startsWith("Harvest mode:")) {
-          // One factor per source, so Arm A's candidate clears the two-hostname diversity gate.
-          const sourceIds = [...user.matchAll(/^\[([0-9a-f-]{36})\] /gm)].map((match) => match[1]);
-          return schema.parse({ factors: sourceIds.map((sourceId) => ({
-            subject: "Operators",
-            behavior: "repeat manual filing",
-            quote: "repeat manual filing every week",
-            sourceId,
-            modelConfidence: 0.8,
-          })) });
-        }
         if (user.startsWith("Scope:")) {
-          const factorIds = [...user.matchAll(/"id":"([0-9a-f-]{36})"/g)].map((match) => match[1]);
           return schema.parse({ problems: [{
             statement: "Operators duplicate recurring filings.",
             whyItPersists: "Systems do not share state.",
             affected: "Operators",
             scaleEstimate: "Recurring",
             scaleBasisFactorId: null,
-            factorIds,
+            factorIds: factors.map((factor) => factor.id),
           }] });
         }
-        killInputs.push(user);
-        const verdictSourceIds = [...user.matchAll(/\[([0-9a-f-]{36})\]/g)].map((match) => match[1]!);
-        const duplicated = verdictSourceIds.length > 1
-          ? [verdictSourceIds[1]!, verdictSourceIds[0]!, verdictSourceIds[1]!]
-          : verdictSourceIds;
-        expectedVerdictSourceIds.push([...new Set(duplicated)]);
+        killPrompt = user;
         return schema.parse({
           verdict: "confirmed",
-          verdictReason: "Contrary search did not find a complete solution.",
-          verdictSourceIds: duplicated,
+          verdictReason: "Contrary evidence does not resolve the problem.",
+          verdictSourceIds: [existing.id],
         });
       }),
       search: {
-        // Every query — harvest and kill, both arms — returns the same two URLs.
         async search() {
-          return ["https://example.test/shared", "https://other.test/shared"].map((url) => ({
-            id: url,
-            url,
-            title: url,
-            text: "Operators repeat manual filing every week.",
-          }));
+          return [{ id: "rediscovered", url: existing.url, title: existing.title, text: existing.retrievedText }];
         },
       },
     });
 
-    expect(killInputs).toHaveLength(2);
-    const [armAKill, armCKill] = killInputs;
-    expect(armAKill).toContain("https://example.test/shared");
-    expect(armAKill).toContain("https://other.test/shared");
-    // Arm C is the control: it must see the same number of kill sources as Arm A.
-    expect(countRenderedSources(armAKill!)).toBe(countRenderedSources(armCKill!));
-    // Only genuinely new sources are queued for insertion, so the run-scoped URL uniqueness holds.
-    expect(result.armA.killSources).toEqual([]);
-    expect(result.armC.killSources).toHaveLength(2);
-    expect(result.armA.problems[0]?.verdictSourceIds).toEqual(expectedVerdictSourceIds[0]);
-    expect(result.armC.problems[0]?.verdictSourceIds).toEqual(expectedVerdictSourceIds[1]);
+    expect(killPrompt).toContain(existing.canonicalUrl);
+    expect(result.killSources).toEqual([]);
+    expect(result.problems[0]?.verdictSourceIds).toEqual([existing.id]);
   });
 
   test("skips a search result whose URL cannot be parsed instead of failing the run", async () => {
@@ -322,23 +213,7 @@ describe("Phase 1 discovery", () => {
 
     expect(result.sources.map((source) => source.canonicalUrl)).toEqual(["https://example.test/a?a=1&b=2"]);
   });
-
-  test("projects kill searches and per-batch model calls, not just the harvest floor", () => {
-    const projection = discoveryProjection("standard", 4);
-    expect(projection).toEqual({
-      harvestSearches: 12,
-      killSearches: 8,
-      searches: 20,
-      // 2 query plans + 3 harvest batches per mode + 1 candidate call per arm + 8 kill calls.
-      modelCalls: 18,
-      factorCap: 80,
-    });
-  });
 });
-
-function countRenderedSources(prompt: string): number {
-  return [...prompt.matchAll(/^\[[0-9a-f-]{36}\] /gm)].length;
-}
 
 function source(id: string, text: string): HarvestedSource {
   return {
