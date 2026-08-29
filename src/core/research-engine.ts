@@ -12,7 +12,7 @@ import type { ResearchEvent } from "../shared/ipc";
 import { RunConfigSchema, type ModelProvider, type RunConfig } from "../shared/schemas";
 import { ScopeSchema, type Scope } from "../shared/structured-output-schemas";
 import { runPersistedDevelopment } from "./development";
-import { discoveryRunProjection, harvestFactors, runDiscoveryArm, type HarvestedFactor, type HarvestedSource } from "./discovery";
+import { discoverProblems, discoveryRunProjection, harvestFactors, type HarvestedFactor, type HarvestedSource } from "./discovery";
 
 export interface ResearchEngineOptions {
   db: DatabaseClient;
@@ -219,7 +219,7 @@ export class ResearchEngine {
       factors = harvest.factors; sources = harvest.sources;
       this.progress(active, `Factors: ${factors.length} (${harvest.metrics.retained.domain} domain, ${harvest.metrics.retained.audience} audience) · ${sources.length} sources`);
     }
-    const result = await runDiscoveryArm("A", scope, factors, sources, deps);
+    const result = await discoverProblems(scope, factors, sources, deps);
     this.discovery.persistProblems(active.runId, result.killSources, result.problems);
     this.progress(active, `Problem candidates: ${result.problems.length} · killed ${result.blockedCandidates.length} · factor utilization ${Math.round(result.factorUtilizationRate * 100)}%`);
   }

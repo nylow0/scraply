@@ -15,7 +15,7 @@ import {
   SolutionsOutputSchema,
 } from "../../src/shared/structured-output-schemas";
 
-describe("Phase 2 development", () => {
+describe("development", () => {
   test("builds the complete chain with an independent outcome judgment", async () => {
     const judgeInputs: string[] = [];
     let solutionInput = "";
