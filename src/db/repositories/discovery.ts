@@ -39,6 +39,11 @@ export interface DiscoveryProblemRecord {
   verdictSourceIds: string[];
 }
 
+export interface RejectedProblemCandidateRecord {
+  statement: string;
+  reason: string;
+}
+
 export class DiscoveryRepository {
   constructor(private readonly client: DatabaseClient) {}
 
@@ -103,6 +108,7 @@ export class DiscoveryRepository {
     researchRunId: string,
     sources: DiscoverySourceRecord[],
     problems: DiscoveryProblemRecord[],
+    rejectedCandidates: RejectedProblemCandidateRecord[] = [],
   ): void {
     const db = this.client.db;
     db.exec("BEGIN IMMEDIATE");
@@ -123,6 +129,12 @@ export class DiscoveryRepository {
         INSERT INTO problem_verdict_sources (problem_id, source_id, research_run_id, position)
         VALUES (?, ?, ?, ?)
       `);
+      const insertRejectedCandidate = db.prepare(`
+        INSERT INTO rejected_problem_candidates (
+          id, discovery_run_id, statement, reason, created_at
+        ) VALUES (?, ?, ?, ?, ?)
+      `);
+      db.prepare("DELETE FROM rejected_problem_candidates WHERE discovery_run_id = ?").run(researchRunId);
       for (const problem of problems) {
         if (problem.scaleBasisFactorId !== null) {
           this.assertFactorBelongsToRun(researchRunId, problem.scaleBasisFactorId);
@@ -145,6 +157,15 @@ export class DiscoveryRepository {
           insertVerdictSource.run(problem.id, sourceId, researchRunId, position);
         });
         for (const factorId of problem.factorIds) insertFactor.run(problem.id, factorId);
+      }
+      for (const candidate of rejectedCandidates) {
+        insertRejectedCandidate.run(
+          randomUUID(),
+          researchRunId,
+          candidate.statement.trim(),
+          candidate.reason.trim(),
+          now,
+        );
       }
       db.exec("COMMIT");
     } catch (error) {

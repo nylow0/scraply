@@ -6,18 +6,20 @@
     solutions,
     busy,
     onExport,
+    onOpenSource,
     onReview,
   }: {
     solutions: SolutionView[];
     busy: boolean;
     onExport: (format: "markdown" | "json") => Promise<void>;
+    onOpenSource: (url: string) => Promise<void>;
     onReview: () => void;
   } = $props();
 
-  let catastrophicOnly = $state(false);
+  let unaddressedOnly = $state(false);
   let rankedSolutions = $derived(solutions.map((idea, index) => ({ idea, rank: index + 1 })));
   let visible = $derived(
-    catastrophicOnly
+    unaddressedOnly
       ? rankedSolutions.filter(({ idea }) => idea.unaddressedCatastrophicRisks > 0)
       : rankedSolutions,
   );
@@ -28,15 +30,15 @@
     <div>
       <p class="eyebrow">Development output</p>
       <h1>{solutions.length} solution {solutions.length === 1 ? "idea" : "ideas"}</h1>
-      <p class="intro">Scan the list first. Expand only the idea and evidence you want to inspect.</p>
+      <p class="intro">Ideas are ordered by independently confirmed outcomes that address the core problem.</p>
     </div>
     <div class="actions" aria-label="Solution actions">
       <button onclick={onReview}>Review problems</button>
       <button
-        class:active={catastrophicOnly}
-        aria-pressed={catastrophicOnly}
-        onclick={() => catastrophicOnly = !catastrophicOnly}
-      >Catastrophic gaps</button>
+        class:active={unaddressedOnly}
+        aria-pressed={unaddressedOnly}
+        onclick={() => unaddressedOnly = !unaddressedOnly}
+      >Unaddressed project-ending</button>
       <button disabled={busy} onclick={() => onExport("markdown")}>Export Markdown</button>
       <button disabled={busy} onclick={() => onExport("json")}>JSON</button>
     </div>
@@ -44,18 +46,19 @@
 
   <div class="list-heading" aria-hidden="true">
     <span>Rank and idea</span>
+    <span>Highest risk</span>
     <span>Evaluation snapshot</span>
     <span></span>
   </div>
 
   <div class="solutions">
     {#each visible as item (item.idea.id)}
-      <SolutionListItem idea={item.idea} rank={item.rank} />
+      <SolutionListItem idea={item.idea} rank={item.rank} {onOpenSource} />
     {:else}
       <div class="empty">
         <h2>No ideas match this filter.</h2>
-        <p>Clear “Catastrophic gaps” to return to the complete solution list.</p>
-        <button onclick={() => catastrophicOnly = false}>Show every idea</button>
+        <p>Clear "Unaddressed project-ending" to return to the complete solution list.</p>
+        <button onclick={() => unaddressedOnly = false}>Show every idea</button>
       </div>
     {/each}
   </div>
@@ -130,8 +133,8 @@
 
   .list-heading {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) auto 20px;
-    gap: 24px;
+    grid-template-columns: minmax(210px, 1fr) minmax(260px, .9fr) auto 20px;
+    gap: 16px;
     padding: 10px 18px 9px 64px;
     border-block: 1px solid var(--border);
     font: 600 10px var(--mono);

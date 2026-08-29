@@ -24,9 +24,9 @@ describe("destructive graph cutover", () => {
   test("creates only the surviving runtime and graph tables on a fresh database", () => {
     const client = new DatabaseClient(pathForTest());
     const tables = tableNames(client.db as unknown as Database);
-    for (const name of ["threads", "messages", "run_configs", "research_runs", "job_events", "sources", "cost_ledger", "scopes", "factors", "problems", "problem_factors", "problem_verdict_sources", "solutions", "outcomes", "risks", "mitigations", "risk_mitigations"]) expect(tables).toContain(name);
+    for (const name of ["threads", "messages", "run_configs", "research_runs", "job_events", "sources", "cost_ledger", "scopes", "factors", "problems", "problem_factors", "problem_verdict_sources", "rejected_problem_candidates", "solutions", "outcomes", "risks", "mitigations", "risk_mitigations"]) expect(tables).toContain(name);
     for (const name of ["intake_answers", "briefs", "stream_runs", "claims", "claim_evidence", "ideas", "reports", "branch_contexts", "ratings", "idea_ratings", "rating_history"]) expect(tables).not.toContain(name);
-    expect(client.db.prepare("SELECT MAX(id) AS id FROM schema_migrations").get()).toEqual({ id: 13 });
+    expect(client.db.prepare("SELECT MAX(id) AS id FROM schema_migrations").get()).toEqual({ id: 14 });
     client.close();
   });
 

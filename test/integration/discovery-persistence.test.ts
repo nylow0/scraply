@@ -49,6 +49,9 @@ describe("discovery persistence", () => {
       verdict: "confirmed",
       verdictReason: "Contrary evidence did not kill it.",
       verdictSourceIds: ["source-1"],
+    }], [{
+      statement: "A weak candidate",
+      reason: "Cited factors span one source hostname; two are required.",
     }]);
 
     expect(count(client, "scopes")).toBe(1);
@@ -62,6 +65,10 @@ describe("discovery persistence", () => {
     }]);
     expect(client.db.prepare("SELECT verdict_source_ids_json FROM problems WHERE id = 'problem-1'").get())
       .toEqual({ verdict_source_ids_json: "[]" });
+    expect(client.db.prepare("SELECT statement, reason FROM rejected_problem_candidates").all()).toEqual([{
+      statement: "A weak candidate",
+      reason: "Cited factors span one source hostname; two are required.",
+    }]);
     expect(client.db.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
 
     client.db.prepare("DELETE FROM research_runs WHERE id = ?").run(runId);
@@ -69,6 +76,7 @@ describe("discovery persistence", () => {
     expect(count(client, "factors")).toBe(0);
     expect(count(client, "problems")).toBe(0);
     expect(count(client, "problem_verdict_sources")).toBe(0);
+    expect(count(client, "rejected_problem_candidates")).toBe(0);
     client.close();
   });
 
@@ -86,6 +94,31 @@ describe("discovery persistence", () => {
     }])).toThrow();
     expect(count(client, "sources")).toBe(0);
     expect(count(client, "factors")).toBe(0);
+    client.close();
+  });
+
+  test("rolls back rejected candidates when the problem graph cannot be persisted", () => {
+    const { client, runId } = setup();
+    const repository = new DiscoveryRepository(client);
+
+    expect(() => repository.persistProblems(runId, [], [{
+      id: "problem-invalid",
+      statement: "Invalid graph",
+      whyItPersists: "",
+      affected: "",
+      scaleEstimate: "",
+      scaleBasisFactorId: null,
+      factorIds: ["missing-factor"],
+      verdict: "confirmed",
+      verdictReason: "",
+      verdictSourceIds: [],
+    }], [{
+      statement: "Rejected candidate",
+      reason: "It failed the evidence gate.",
+    }])).toThrow();
+
+    expect(count(client, "problems")).toBe(0);
+    expect(count(client, "rejected_problem_candidates")).toBe(0);
     client.close();
   });
 

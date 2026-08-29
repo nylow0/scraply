@@ -56,6 +56,7 @@ function workspace(): WorkspaceState {
     modelCatalog: { codex: [DEFAULT_RUN_CONFIG.model], favorites: [] },
     presets: [],
     problemCandidates: [],
+    rejectedProblemCandidates: [],
     solutions: [],
     latestResearchRun: null,
     pendingRuns: [],
