@@ -1,11 +1,12 @@
 <script lang="ts">
   import type { SolutionView } from "../../shared/ipc";
 
-  let { idea, rank }: { idea: SolutionView; rank: number } = $props();
+  let { idea, rank, onOpenSource }: { idea: SolutionView; rank: number; onOpenSource: (url: string) => Promise<void> } = $props();
 
   let positiveOutcomes = $derived(idea.outcomes.filter((outcome) => outcome.direction === "positive").length);
   let negativeOutcomes = $derived(idea.outcomes.length - positiveOutcomes);
   let projectEndingRisks = $derived(idea.risks.filter((risk) => risk.impact === "project ends").length);
+  let highestRisk = $derived([...idea.risks].sort((left, right) => right.sortKey - left.sortKey)[0]);
   let warning = $derived(["insufficient-evidence", "overstated", "attempted-and-failed"].includes(idea.problemVerdict));
 </script>
 
@@ -16,12 +17,18 @@
       <strong>{idea.mechanism}</strong>
       <small>{idea.problemStatement}</small>
     </span>
+    <span class="risk-preview">
+      {#if highestRisk}
+        <span class="top-risk-label estimated">Highest risk: {highestRisk.likelihood} · {highestRisk.impact}</span>
+        <span class="top-risk-statement">{highestRisk.description}</span>
+      {:else}
+        <span class="top-risk-label">No risks identified</span>
+      {/if}
+    </span>
     <span class="metrics" aria-label="Solution evaluation snapshot">
       <span><strong>{idea.confirmedCoreOutcomes}</strong> core</span>
-      <span><strong>{idea.risks.length}</strong> risks</span>
-      {#if projectEndingRisks > 0}
-        <span class:danger={idea.unaddressedCatastrophicRisks > 0}><strong>{projectEndingRisks}</strong> fatal</span>
-      {/if}
+      <span><strong>{projectEndingRisks}</strong> project-ending</span>
+      <span class:danger={idea.unaddressedCatastrophicRisks > 0}><strong>{idea.unaddressedCatastrophicRisks}</strong> unaddressed</span>
     </span>
     <span class="chevron" aria-hidden="true"></span>
   </summary>
@@ -52,6 +59,29 @@
 
     <details class="category">
       <summary>
+        <span><strong>Evidence behind this problem</strong><small>{idea.factors.length} source-backed {idea.factors.length === 1 ? "factor" : "factors"}</small></span>
+        <span class="chevron" aria-hidden="true"></span>
+      </summary>
+      <div class="category-body evidence-list">
+        {#each idea.factors as factor (factor.id)}
+          <article class="evidence-item">
+            <p><strong>{factor.subject}</strong> {factor.behavior}</p>
+            <blockquote>{factor.quote}</blockquote>
+            <a href={factor.sourceUrl} onclick={(event) => { event.preventDefault(); void onOpenSource(factor.sourceUrl); }}>{factor.sourceTitle}</a>
+          </article>
+        {:else}
+          <div class="no-evidence">
+            <strong>{idea.problemVerdict === "user-asserted" ? "User-asserted problem" : "No source-backed evidence"}</strong>
+            <p>{idea.problemVerdict === "user-asserted"
+              ? "This problem was stated directly. Discovery did not gather source-backed factors for it."
+              : "No source-backed factors are attached to this idea."}</p>
+          </div>
+        {/each}
+      </div>
+    </details>
+
+    <details class="category">
+      <summary>
         <span><strong>Outcomes</strong><small>{positiveOutcomes} positive · {negativeOutcomes} negative · {idea.confirmedCoreOutcomes} confirmed core</small></span>
         <span class="chevron" aria-hidden="true"></span>
       </summary>
@@ -77,19 +107,18 @@
 
     <details class="category">
       <summary>
-        <span><strong>Risks and responses</strong><small>{idea.risks.length} risks · {projectEndingRisks} project-ending · {idea.unaddressedCatastrophicRisks} unaddressed</small></span>
+        <span><strong>Review all risks and responses</strong><small>{idea.risks.length} risks · {projectEndingRisks} project-ending · {idea.unaddressedCatastrophicRisks} unaddressed</small></span>
         <span class="chevron" aria-hidden="true"></span>
       </summary>
-      <div class="category-body nested-list">
+      <div class="category-body risk-list">
         {#each idea.risks as risk, index (risk.id)}
-          <details class:catastrophic={risk.impact === "project ends" && risk.mitigations.length === 0} class="nested-item risk-item">
-            <summary>
+          <article class:project-ending={risk.impact === "project ends" && risk.mitigations.length === 0} class="risk-item" aria-labelledby={`risk-${risk.id}`}>
+            <header>
               <span class="item-number">{String(index + 1).padStart(2, "0")}</span>
-              <span class="item-title">{risk.description}</span>
-              <span class="risk-count">{risk.mitigations.length} {risk.mitigations.length === 1 ? "response" : "responses"}</span>
-              <span class="chevron" aria-hidden="true"></span>
-            </summary>
-            <div class="item-detail">
+              <span class="item-title" id={`risk-${risk.id}`}>{risk.description}</span>
+              <span class="risk-count">{risk.mitigations.length} proposed {risk.mitigations.length === 1 ? "response" : "responses"}</span>
+            </header>
+            <div class="risk-detail">
               <div class="risk-meta">
                 <span class="estimated">Likelihood: {risk.likelihood}</span>
                 <span class="estimated">Impact: {risk.impact}</span>
@@ -98,7 +127,7 @@
                 <div class="responses">
                   {#each risk.mitigations as mitigation, mitigationIndex (mitigationIndex)}
                     <div class="response">
-                      <span class="response-number">Response {mitigationIndex + 1}</span>
+                      <span class="response-number">Proposed response {mitigationIndex + 1}</span>
                       <p>{mitigation.approach}</p>
                       <dl>
                         <div><dt>Cost</dt><dd>{mitigation.cost}</dd></div>
@@ -110,10 +139,10 @@
               {:else if risk.impact === "project ends"}
                 <p class="flag">No proposed response for this project-ending risk.</p>
               {:else}
-                <p class="no-response">No response was generated for this risk.</p>
+                <p class="no-response">No proposed response was generated for this risk.</p>
               {/if}
             </div>
-          </details>
+          </article>
         {/each}
       </div>
     </details>
@@ -147,10 +176,10 @@
 
   .solution-summary {
     display: grid;
-    grid-template-columns: 30px minmax(240px, 1fr) auto 20px;
+    grid-template-columns: 30px minmax(210px, 1fr) minmax(260px, .9fr) auto 20px;
     gap: 16px;
     align-items: center;
-    min-height: 82px;
+    min-height: 106px;
     padding: 14px 18px;
     transition: background-color 180ms var(--ease);
   }
@@ -189,6 +218,28 @@
   .identity small {
     overflow: hidden;
     color: var(--muted);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .risk-preview {
+    display: grid;
+    gap: 4px;
+    min-width: 0;
+  }
+
+  .top-risk-label {
+    color: var(--danger);
+    font: 600 10px var(--mono);
+    letter-spacing: .04em;
+    text-transform: uppercase;
+  }
+
+  .top-risk-statement {
+    overflow: hidden;
+    color: var(--muted);
+    font-size: 11px;
+    line-height: 1.35;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
@@ -318,8 +369,54 @@
   }
 
   .nested-item.negative,
-  .nested-item.catastrophic {
+  .risk-item.project-ending {
     box-shadow: inset 2px 0 var(--danger);
+  }
+
+  .evidence-list {
+    display: grid;
+    gap: 1px;
+    padding-bottom: 18px;
+    border-top: 1px solid var(--border);
+    background: var(--border);
+  }
+
+  .evidence-item,
+  .no-evidence {
+    padding: 16px;
+    background: var(--bg);
+  }
+
+  .evidence-item p,
+  .evidence-item blockquote,
+  .no-evidence p {
+    margin: 0;
+  }
+
+  .evidence-item p {
+    color: var(--muted);
+  }
+
+  .evidence-item p strong {
+    color: var(--text);
+  }
+
+  .evidence-item blockquote {
+    margin-top: 12px;
+    padding-left: 14px;
+    border-left: 1px solid var(--border-strong);
+    color: var(--text);
+  }
+
+  .evidence-item a {
+    display: inline-block;
+    margin-top: 10px;
+    color: var(--accent-strong);
+  }
+
+  .no-evidence p {
+    margin-top: 6px;
+    color: var(--muted);
   }
 
   .nested-item > summary {
@@ -357,6 +454,33 @@
   .item-detail {
     padding: 14px 18px 18px 56px;
     background: var(--surface);
+  }
+
+  .risk-list {
+    display: grid;
+    gap: 1px;
+    padding-bottom: 18px;
+    border-top: 1px solid var(--border);
+    background: var(--border);
+  }
+
+  .risk-item {
+    min-width: 0;
+    background: var(--surface);
+    box-shadow: inset 2px 0 var(--border-strong);
+  }
+
+  .risk-item > header {
+    display: grid;
+    grid-template-columns: 30px minmax(180px, 1fr) auto;
+    gap: 12px;
+    align-items: center;
+    min-height: 58px;
+    padding: 12px 14px 8px;
+  }
+
+  .risk-detail {
+    padding: 6px 18px 18px 56px;
   }
 
   dl {
@@ -436,9 +560,13 @@
       gap: 12px;
     }
 
+    .risk-preview {
+      grid-column: 2;
+    }
+
     .solution-summary > .chevron {
       grid-column: 3;
-      grid-row: 1 / span 2;
+      grid-row: 1 / span 3;
     }
 
     .solution-body {
@@ -465,6 +593,18 @@
 
     .item-detail {
       padding-left: 46px;
+    }
+
+    .risk-item > header {
+      grid-template-columns: 24px minmax(0, 1fr);
+    }
+
+    .risk-item .risk-count {
+      grid-column: 2;
+    }
+
+    .risk-detail {
+      padding-left: 50px;
     }
   }
 

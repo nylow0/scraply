@@ -187,9 +187,12 @@ export class ResearchEngine {
       offLimits: JSON.parse(scopeRow.off_limits_json),
     });
     const deps = this.dependencies(active);
-    const existingProblems = this.options.db.db.prepare("SELECT COUNT(*) AS count FROM problems WHERE discovery_run_id = ?")
-      .get(active.runId) as { count: number };
-    if (existingProblems.count > 0) return;
+    const existingCandidates = this.options.db.db.prepare(`
+      SELECT
+        (SELECT COUNT(*) FROM problems WHERE discovery_run_id = ?) +
+        (SELECT COUNT(*) FROM rejected_problem_candidates WHERE discovery_run_id = ?) AS count
+    `).get(active.runId, active.runId) as { count: number };
+    if (existingCandidates.count > 0) return;
     const persistedFactors = this.options.db.db.prepare(`
       SELECT f.*, s.provider_source_id, s.canonical_url, s.title, s.retrieved_text, s.author, s.published_at,
              s.content_hash, s.retrieved_at
@@ -220,8 +223,8 @@ export class ResearchEngine {
       this.progress(active, `Factors: ${factors.length} (${harvest.metrics.retained.domain} domain, ${harvest.metrics.retained.audience} audience) · ${sources.length} sources`);
     }
     const result = await runDiscoveryArm("A", scope, factors, sources, deps);
-    this.discovery.persistProblems(active.runId, result.killSources, result.problems);
-    this.progress(active, `Problem candidates: ${result.problems.length} · killed ${result.blockedCandidates.length} · factor utilization ${Math.round(result.factorUtilizationRate * 100)}%`);
+    this.discovery.persistProblems(active.runId, result.killSources, result.problems, result.blockedCandidates);
+    this.progress(active, `Evidence-backed problems: ${result.problems.length} · failed evidence gate ${result.blockedCandidates.length} · factor utilization ${Math.round(result.factorUtilizationRate * 100)}%`);
   }
 
   private async executeDevelopment(active: ActiveRun): Promise<void> {

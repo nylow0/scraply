@@ -317,7 +317,16 @@ describe("cutover backend", () => {
     insertRun.run("development-old", created.thread.id, persistedConfig, "problem-old", now, now);
     insertSolution.run("solution-old", "problem-old", "Superseded solution", now, "development-old");
     insertRun.run("discovery-latest", created.thread.id, persistedConfig, null, now, now);
+    client.db.prepare(`
+      INSERT INTO sources (id, research_run_id, canonical_url, title, retrieved_text, content_hash, retrieved_at)
+      VALUES ('source-selected', 'discovery-latest', 'https://example.com/selected', 'Selected evidence', 'Source body stays in the source record.', 'hash-selected', ?)
+    `).run(now);
+    client.db.prepare(`
+      INSERT INTO factors (id, research_run_id, subject, behavior, quote, source_id, harvest_mode, model_confidence, created_at)
+      VALUES ('factor-selected', 'discovery-latest', 'Repair shops', 'wait for deliveries', 'Parts arrive several days late.', 'source-selected', 'domain', 0.82, ?)
+    `).run(now);
     insertProblem.run("problem-selected", "discovery-latest", "Selected problem", now, now);
+    client.db.prepare("INSERT INTO problem_factors (problem_id, factor_id) VALUES ('problem-selected', 'factor-selected')").run();
     insertProblem.run("problem-deselected", "discovery-latest", "Deselected problem", null, now);
     insertRun.run("development-selected", created.thread.id, persistedConfig, "problem-selected", now, now);
     insertRun.run("development-deselected", created.thread.id, persistedConfig, "problem-deselected", now, now);
@@ -327,12 +336,23 @@ describe("cutover backend", () => {
 
     const workspaceResponse = await fetch(`http://127.0.0.1:${handle.port}/workspace`, { headers: { authorization: `Bearer ${handle.token}` } });
     expect(workspaceResponse.status).toBe(200);
-    const workspace = (await workspaceResponse.json() as { data: { solutions: Array<{ id: string }>; latestResearchRun: { problemId: string | null } } }).data;
+    const workspace = (await workspaceResponse.json() as { data: { solutions: Array<{ id: string; factors: Array<{ quote: string; sourceTitle: string; retrievedText?: string }> }>; latestResearchRun: { problemId: string | null } } }).data;
     expect(workspace.solutions.map((solution) => solution.id)).toEqual(["solution-selected"]);
+    expect(workspace.solutions[0]!.factors).toEqual([expect.objectContaining({
+      quote: "Parts arrive several days late.",
+      sourceTitle: "Selected evidence",
+    })]);
+    expect(workspace.solutions[0]!.factors[0]!.retrievedText).toBeUndefined();
     expect(workspace.latestResearchRun.problemId).toBe("problem-deselected");
     const exported = await post("/ideas/export", { threadId: created.thread.id, format: "json" }) as { files: Array<{ filename: string; content: string }> };
     expect(exported.files).toHaveLength(1);
-    expect(JSON.parse(exported.files[0]!.content).map((solution: { id: string }) => solution.id)).toEqual(["solution-selected"]);
+    const jsonIdeas = JSON.parse(exported.files[0]!.content) as Array<{ id: string; factors: Array<{ quote: string; retrievedText?: string }> }>;
+    expect(jsonIdeas.map((solution) => solution.id)).toEqual(["solution-selected"]);
+    expect(jsonIdeas[0]!.factors[0]!.quote).toBe("Parts arrive several days late.");
+    expect(jsonIdeas[0]!.factors[0]!.retrievedText).toBeUndefined();
+    const markdown = await post("/ideas/export", { threadId: created.thread.id, format: "markdown" }) as { files: Array<{ content: string }> };
+    expect(markdown.files[0]!.content).toContain("## Evidence behind the problem");
+    expect(markdown.files[0]!.content).toContain("> Parts arrive several days late.");
   });
 
   test("exports completed research before solution development", async () => {
@@ -367,19 +387,94 @@ describe("cutover backend", () => {
     client.db.prepare(`INSERT INTO problem_verdict_sources (problem_id, source_id, research_run_id, position) VALUES (?, ?, ?, 0)`)
       .run("problem-export", "source-export", "discovery-export");
     client.db.prepare("INSERT INTO problem_factors (problem_id, factor_id) VALUES (?, ?)").run("problem-export", "factor-export");
+    client.db.prepare(`
+      INSERT INTO rejected_problem_candidates (id, discovery_run_id, statement, reason, created_at)
+      VALUES ('rejected-export', 'discovery-export', 'One-source candidate', 'Cited factors span one source hostname; two are required.', ?)
+    `).run(now);
     client.close();
+
+    const workspaceResponse = await fetch(`http://127.0.0.1:${handle.port}/workspace`, {
+      headers: { authorization: `Bearer ${handle.token}` },
+    });
+    const workspace = (await workspaceResponse.json() as { data: { rejectedProblemCandidates: Array<{ id: string; statement: string; reason: string }> } }).data;
+    expect(workspace.rejectedProblemCandidates).toEqual([{
+      id: "rejected-export",
+      statement: "One-source candidate",
+      reason: "Cited factors span one source hostname; two are required.",
+    }]);
 
     // Editing the scope after the run must not rewrite what the completed run is exported as having used.
     await post("/scope", { threadId: created.thread.id, scope: { ...scope, title: "Edited later", domain: "Something else" } });
 
     const bundle = await post("/research/export", { threadId: created.thread.id }) as { filename: string; content: string };
-    const exported = JSON.parse(bundle.content) as { schemaVersion: number; scope: typeof scope; sources: Array<{ text: string }>; factors: Array<{ sourceId: string }>; problems: Array<{ id: string }> };
+    const exported = JSON.parse(bundle.content) as { schemaVersion: number; scope: typeof scope; sources: Array<{ text: string }>; factors: Array<{ sourceId: string }>; problems: Array<{ id: string }>; rejectedProblemCandidates: Array<{ id: string; statement: string; reason: string }> };
     expect(bundle.filename).toBe("edited-later-research.json");
     expect(exported.schemaVersion).toBe(1);
     expect(exported.scope).toEqual(scope);
     expect(exported.sources[0]?.text).toBe("Observed delivery delays.");
     expect(exported.factors[0]?.sourceId).toBe("source-export");
     expect(exported.problems.map((problem) => problem.id)).toEqual(["problem-export"]);
+    expect(exported.rejectedProblemCandidates).toEqual([{
+      id: "rejected-export",
+      statement: "One-source candidate",
+      reason: "Cited factors span one source hostname; two are required.",
+    }]);
+  });
+
+  test("keeps evidence-gate failures separate until the user asserts the statement", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "scraply-rejected-candidate-")); dirs.push(dir);
+    const dbPath = join(dir, "scraply.db");
+    const handle = await startBackend({
+      dataDir: dir, dbPath, bundledPromptsDir: join(process.cwd(), "prompts"), promptOverridesDir: join(dir, "prompts"),
+      appVersion: "test", getSecrets: () => ({ exaApiKey: "test-key" }),
+      modelClients: { codex: { structuredCompletion: async () => { throw new Error("stop after selection"); } } },
+      providerValidation: { inspectCodex: async () => codexInspection([modelOption("gpt-test")]), validateExa: async () => ({ valid: true }) },
+    }, () => undefined); handles.push(handle);
+    const request = async (path: string, body: unknown) => {
+      const response = await fetch(`http://127.0.0.1:${handle.port}${path}`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${handle.token}`, "content-type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      return { status: response.status, body: await response.json() as { data?: {
+        thread?: { id: string };
+        problemCandidates?: Array<{ statement: string; verdict: string }>;
+        rejectedProblemCandidates?: Array<{ id: string; statement: string; reason: string }>;
+      }; error?: { message: string } } };
+    };
+    const created = await request("/threads", {});
+    const threadId = created.body.data?.thread?.id;
+    if (!threadId) throw new Error("Thread creation did not return an id");
+    const client = new DatabaseClient(dbPath);
+    const now = new Date().toISOString();
+    client.db.prepare(`
+      INSERT INTO research_runs (id, thread_id, status, config_json, problem_id, created_at, updated_at)
+      VALUES ('discovery-rejected', ?, 'completed', ?, NULL, ?, ?)
+    `).run(threadId, JSON.stringify({ ...DEFAULT_RUN_CONFIG, model: "gpt-test" }), now, now);
+    client.db.prepare(`
+      INSERT INTO rejected_problem_candidates (id, discovery_run_id, statement, reason, created_at)
+      VALUES ('rejected-1', 'discovery-rejected', 'One-source candidate', 'Only one source hostname.', ?)
+    `).run(now);
+    client.close();
+
+    const fakeEvidenceSelection = await request("/research/select-problems", {
+      threadId,
+      problemIds: ["rejected-1"],
+      userProblem: null,
+    });
+    expect(fakeEvidenceSelection.status).toBe(409);
+
+    const asserted = await request("/research/select-problems", {
+      threadId,
+      problemIds: [],
+      userProblem: "One-source candidate",
+    });
+    expect(asserted.status).toBe(200);
+    expect(asserted.body.data?.problemCandidates).toEqual([expect.objectContaining({
+      statement: "One-source candidate",
+      verdict: "user-asserted",
+    })]);
+    expect(asserted.body.data?.rejectedProblemCandidates).toEqual([{ id: "rejected-1", statement: "One-source candidate", reason: "Only one source hostname." }]);
   });
 
   test("cancels and deletes stale runs without provider credentials", async () => {

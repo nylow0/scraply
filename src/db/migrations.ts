@@ -787,4 +787,19 @@ export const MIGRATIONS = [
       END;
     `,
   },
+  {
+    id: 14,
+    sql: `
+      CREATE TABLE rejected_problem_candidates (
+        id TEXT PRIMARY KEY,
+        discovery_run_id TEXT NOT NULL REFERENCES research_runs(id) ON DELETE CASCADE,
+        statement TEXT NOT NULL,
+        reason TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      );
+
+      CREATE INDEX idx_rejected_problem_candidates_run
+        ON rejected_problem_candidates(discovery_run_id, created_at, id);
+    `,
+  },
 ] as const;

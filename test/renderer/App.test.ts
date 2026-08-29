@@ -62,6 +62,22 @@ describe("App workspace coordination", () => {
     selection.resolve(workspace("beta"));
     await waitFor(() => expect(betaButton.getAttribute("aria-current")).toBe("true"));
   });
+
+  test("routes an all-rejected discovery result to the research checkpoint", async () => {
+    const state = workspace("alpha");
+    state.threads[0]!.status = "problems-ready";
+    state.rejectedProblemCandidates = [{
+      id: "rejected-1",
+      statement: "Independent shops cannot compare supplier reliability.",
+      reason: "The candidate cited factors from only one source hostname.",
+    }];
+    installApi({ getWorkspace: vi.fn().mockResolvedValue(state) });
+    const view = render(App);
+
+    expect(await view.findByText("Which problems deserve development?")).toBeTruthy();
+    expect(view.getByText("Failed evidence requirements")).toBeTruthy();
+    expect(view.getByText("No candidates passed the evidence requirements.")).toBeTruthy();
+  });
 });
 
 function workspace(activeThreadId: "alpha" | "beta"): WorkspaceState {
@@ -86,6 +102,7 @@ function workspace(activeThreadId: "alpha" | "beta"): WorkspaceState {
     modelCatalog: { codex: [DEFAULT_RUN_CONFIG.model], favorites: [] },
     presets: [],
     problemCandidates: [],
+    rejectedProblemCandidates: [],
     solutions: [],
     latestResearchRun: null,
     pendingRuns: [],
