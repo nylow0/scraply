@@ -34,7 +34,6 @@ export {
 
 export type { DiscoveryDepth };
 export type HarvestMode = "domain" | "audience";
-export type DiscoveryArm = "A" | "C";
 
 export const FACTOR_SUBJECT_MAX_CHARACTERS = 160;
 export const FACTOR_BEHAVIOR_MAX_CHARACTERS = 280;
@@ -81,19 +80,11 @@ export interface BlockedProblemCandidate {
   reason: string;
 }
 
-export interface DiscoveryArmResult {
-  arm: DiscoveryArm;
+export interface ProblemDiscoveryResult {
   problems: DiscoveryProblem[];
   blockedCandidates: BlockedProblemCandidate[];
   killSources: HarvestedSource[];
   factorUtilizationRate: number;
-}
-
-export interface Phase1AblationResult {
-  scope: Scope;
-  harvest: HarvestResult;
-  armA: DiscoveryArmResult;
-  armC: DiscoveryArmResult;
 }
 
 export interface DiscoveryDependencies {
@@ -106,50 +97,6 @@ export interface DiscoveryDependencies {
   signal?: AbortSignal;
   random?: () => number;
   onProjection?: (message: string) => void;
-}
-
-export function discoveryProjection(
-  depth: DiscoveryDepth,
-  candidateLimit = DEFAULT_PROBLEM_CANDIDATE_LIMIT,
-): {
-  harvestSearches: number;
-  killSearches: number;
-  searches: number;
-  modelCalls: number;
-  factorCap: number;
-} {
-  const config = DISCOVERY_DEPTHS[depth];
-  const harvestSearches = config.queriesPerMode * 2;
-  // Both arms run one kill search per surviving candidate.
-  const killSearches = candidateLimit * 2;
-  const batchesPerMode = Math.max(1, Math.ceil(
-    (config.queriesPerMode * config.searchResultsPerQuery * SOURCE_MAX_CHARACTERS) / SOURCE_BATCH_CHARACTERS,
-  ));
-  // 2 query plans + harvest batches per mode + 1 candidate call per arm + 1 kill call per candidate.
-  const modelCalls = 2 + batchesPerMode * 2 + 2 + killSearches;
-  return {
-    harvestSearches,
-    killSearches,
-    searches: harvestSearches + killSearches,
-    modelCalls,
-    factorCap: config.factorCap,
-  };
-}
-
-export async function runPhase1Ablation(
-  scope: Scope,
-  dependencies: DiscoveryDependencies,
-): Promise<Phase1AblationResult> {
-  const depth = dependencies.depth ?? "standard";
-  const projection = discoveryProjection(depth, dependencies.candidateLimit);
-  dependencies.onProjection?.(
-    `~${projection.searches} searches (${projection.harvestSearches} harvest + up to ${projection.killSearches} kill)`
-    + ` · ~${projection.modelCalls} model calls before schema retries · factor cap ${projection.factorCap}`,
-  );
-  const harvest = await harvestFactors(scope, dependencies);
-  const armA = await runDiscoveryArm("A", scope, harvest.factors, harvest.sources, dependencies);
-  const armC = await runDiscoveryArm("C", scope, [], [], dependencies);
-  return { scope, harvest, armA, armC };
 }
 
 export async function harvestFactors(
@@ -237,23 +184,22 @@ export async function harvestFactors(
   };
 }
 
-export async function runDiscoveryArm(
-  arm: DiscoveryArm,
+export async function discoverProblems(
   scope: Scope,
   factors: HarvestedFactor[],
   existingSources: HarvestedSource[],
   dependencies: DiscoveryDependencies,
-): Promise<DiscoveryArmResult> {
+): Promise<ProblemDiscoveryResult> {
   const response = await structuredCall(
     dependencies,
     loadPrompt("problem-candidates", "Find direct problem statements from the supplied scope and factors."),
-    buildProblemCandidatesInput(scope, arm === "A" ? factors : []),
+    buildProblemCandidatesInput(scope, factors),
     ProblemCandidatesOutputSchema,
   );
   const candidateLimit = dependencies.candidateLimit ?? DEFAULT_PROBLEM_CANDIDATE_LIMIT;
   const candidates = response.problems.slice(0, candidateLimit);
   dependencies.onProjection?.(
-    `Arm ${arm}: ${candidates.length} kill searches · ${candidates.length + 1} model calls`,
+    `${candidates.length} problem candidates · ${candidates.length} kill searches · ${candidates.length + 1} model calls`,
   );
 
   const factorById = new Map(factors.map((factor) => [factor.id, factor]));
@@ -263,11 +209,11 @@ export async function runDiscoveryArm(
   const blockedCandidates: BlockedProblemCandidate[] = [];
 
   for (const candidate of candidates) {
-    const citedFactors = arm === "A"
-      ? [...new Set(candidate.factorIds)].map((id) => factorById.get(id)).filter(Boolean) as HarvestedFactor[]
-      : [];
+    const citedFactors = [...new Set(candidate.factorIds)]
+      .map((id) => factorById.get(id))
+      .filter(Boolean) as HarvestedFactor[];
     const hostnames = [...new Set(citedFactors.map((factor) => new URL(factor.source.canonicalUrl).hostname))];
-    if (arm === "A" && hostnames.length < 2) {
+    if (hostnames.length < 2) {
       blockedCandidates.push({
         statement: candidate.statement,
         reason: `Corpus diversity failed: cited factors span ${hostnames.length} source hostname(s); 2 required.`,
@@ -312,11 +258,10 @@ export async function runDiscoveryArm(
 
   const usedFactorIds = new Set(problems.flatMap((problem) => problem.factorIds));
   return {
-    arm,
     problems,
     blockedCandidates,
     killSources,
-    factorUtilizationRate: arm === "A" ? rate(usedFactorIds.size, factors.length) : 0,
+    factorUtilizationRate: rate(usedFactorIds.size, factors.length),
   };
 }
 
@@ -402,9 +347,8 @@ async function searchQueries(
 }
 
 /**
- * `all` is what the model must see; `fresh` is what may still be inserted. A source that is already
- * known stays in `all` so that a run holding a large corpus does not get a thinner prompt than one
- * holding none — which would silently bias Arm A against the Arm C control.
+ * `all` is what the model must see; `fresh` is what may still be inserted. Rediscovered sources
+ * stay in the kill prompt even though their existing records must not be inserted again.
  */
 function resolveSources(
   sources: Source[],

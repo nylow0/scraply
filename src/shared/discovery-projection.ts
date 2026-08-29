@@ -10,11 +10,7 @@ export const SOURCE_BATCH_CHARACTERS = 60_000;
 export const SOURCE_MAX_CHARACTERS = 6_000;
 export const DEFAULT_PROBLEM_CANDIDATE_LIMIT = 4;
 
-/**
- * Runtime projection for the factor-backed arm only. The two-arm ablation gate in
- * `src/core/discovery.ts` intentionally costs more. Kept here, free of node-only imports, so the
- * renderer setup screen and the backend read the same numbers.
- */
+/** Kept free of node-only imports so the renderer and backend use the same runtime estimate. */
 export function discoveryRunProjection(
   depth: DiscoveryDepth,
   candidateLimit = DEFAULT_PROBLEM_CANDIDATE_LIMIT,

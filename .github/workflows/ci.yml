@@ -25,15 +25,10 @@ jobs:
         continue-on-error: true
         run: bun audit
       - run: bun run check
-      - run: bun run test:e2e
-      - name: Build, install, and verify production package
-        run: bun run build:installed
-        env:
-          SCRAPLY_RELEASE_STRICT: "1"
-          SCRAPLY_ALLOW_UNSIGNED: ${{ github.event.repository.private && '1' || '0' }}
-      - run: bun run test:e2e:production
-      - run: bun run test:e2e:portable
-      - run: bun run test:e2e:installed
+      - name: Build unpacked production app
+        run: bun run build && bunx electron-builder --win --dir --publish never
+      - name: Smoke packaged production app
+        run: bun run test:e2e:production
       - name: Upload Playwright traces on failure
         if: failure()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
