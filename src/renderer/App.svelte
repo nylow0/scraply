@@ -30,7 +30,7 @@
   let activeRun = $derived(workspace?.latestResearchRun ?? null);
   // Local-only override: lets the user reopen the scope form from a failed run without touching server state.
   let editingScope = $derived(editingScopeThreadId !== null && editingScopeThreadId === activeThread?.id);
-  let researchReady = $derived(Boolean(activeThread && (workspace?.problemCandidates.length || activeThread.status === "discovery-running")));
+  let researchReady = $derived(Boolean(activeThread && (workspace?.problemCandidates.length || workspace?.rejectedProblemCandidates.length || activeThread.status === "discovery-running")));
   let ideasReady = $derived(Boolean(activeThread && (workspace?.solutions.length || activeThread.status === "development-running" || activeThread.status === "solutions-ready")));
 
   onMount(() => {
@@ -89,7 +89,7 @@
   function defaultStep(state: WorkspaceState): WorkflowStep {
     const thread = state.threads.find((item) => item.id === state.activeThreadId);
     if (thread?.status === "development-running" || thread?.status === "solutions-ready" || state.solutions.length > 0) return "ideas";
-    if (thread?.status === "discovery-running" || state.problemCandidates.length > 0) return "research";
+    if (thread?.status === "discovery-running" || state.problemCandidates.length > 0 || state.rejectedProblemCandidates.length > 0) return "research";
     return "setup";
   }
   function openStep(step: WorkflowStep) {
@@ -255,7 +255,7 @@
               <button disabled={busy} onclick={() => resumeResearch(activeRun.runId)}>Resume attempt</button>
               <button class="cancel" disabled={busy} onclick={() => cancelResearch(activeRun.runId)}>Cancel run</button>
             {/if}
-            {#if workspace.problemCandidates.length > 0}<button disabled={busy} onclick={() => { activeStep = "research"; reviewSelection = true; }}>Review problems</button>{/if}
+            {#if workspace.problemCandidates.length > 0 || workspace.rejectedProblemCandidates.length > 0}<button disabled={busy} onclick={() => { activeStep = "research"; reviewSelection = true; }}>Review problems</button>{/if}
             <button disabled={busy} onclick={() => { activeStep = "setup"; editingScopeThreadId = activeThread?.id ?? null; }}>Edit setup</button>
           </div>
         </div>
@@ -290,14 +290,14 @@
           <div class="activity"><span></span><p>{latestEvent?.type === "run-progress" ? latestEvent.message : activeRun?.lastActivity ?? "Preparing the next provider call…"}</p></div>
           {#if activeRun}<div class="run-actions"><button disabled={busy} onclick={() => resumeResearch(activeRun.runId)}>Resume attempt</button><button class="cancel" disabled={busy} onclick={() => cancelResearch(activeRun.runId)}>Cancel run</button></div>{/if}
         </div>
-      {:else if (activeThread.status === "problems-ready" || reviewSelection) && workspace.problemCandidates.length > 0}
+      {:else if (activeThread.status === "problems-ready" || reviewSelection) && (workspace.problemCandidates.length > 0 || workspace.rejectedProblemCandidates.length > 0)}
         <div id="workflow-panel-research" role="tabpanel" aria-label="Research">
           {#key workspace.activeThreadId}
-            <ProblemCheckpoint problems={workspace.problemCandidates} {busy} onCommit={selectProblems} onExport={exportResearch} onOpenSource={openExternalUrl} />
+            <ProblemCheckpoint problems={workspace.problemCandidates} rejectedCandidates={workspace.rejectedProblemCandidates} {busy} onCommit={selectProblems} onExport={exportResearch} onOpenSource={openExternalUrl} />
           {/key}
         </div>
-      {:else if workspace.problemCandidates.length > 0}
-        <ResearchArchive problems={workspace.problemCandidates} {busy} onExport={exportResearch} onOpenSource={openExternalUrl} />
+      {:else if workspace.problemCandidates.length > 0 || workspace.rejectedProblemCandidates.length > 0}
+        <ResearchArchive problems={workspace.problemCandidates} rejectedCandidates={workspace.rejectedProblemCandidates} {busy} onExport={exportResearch} onOpenSource={openExternalUrl} />
       {:else}
         <div class="failed" id="workflow-panel-research" role="tabpanel" aria-label="Research" tabindex="0"><p class="eyebrow">Research unavailable</p><h1>No completed research is ready yet.</h1><p>Return to setup and start a research run.</p></div>
       {/if}
@@ -311,7 +311,7 @@
       </div>
     {:else if activeThread.status === "solutions-ready" || workspace.solutions.length > 0}
       <div id="workflow-panel-ideas" role="tabpanel" aria-label="Ideas">
-        <SolutionWorkspace solutions={workspace.solutions} {busy} onExport={exportIdeas} onReview={() => { activeStep = "research"; reviewSelection = true; }} />
+        <SolutionWorkspace solutions={workspace.solutions} {busy} onExport={exportIdeas} onOpenSource={openExternalUrl} onReview={() => { activeStep = "research"; reviewSelection = true; }} />
       </div>
     {:else if activeThread.status === "failed"}
       <div class="failed" id="workflow-panel-ideas" role="tabpanel" aria-label="Ideas" tabindex="0"><p class="eyebrow">No ideas</p><h1>The run stopped before any ideas were built.</h1><p>Use the controls above to resume the attempt or edit the setup.</p></div>
