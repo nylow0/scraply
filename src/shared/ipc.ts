@@ -84,6 +84,11 @@ export const ProblemCandidateSchema = z.object({
   verdictReason: z.string(), selected: z.boolean(), factors: z.array(FactorViewSchema),
   singleHarvestModeWarning: z.boolean(),
 });
+export const RejectedProblemCandidateSchema = z.object({
+  id: EntityIdSchema,
+  statement: z.string(),
+  reason: z.string(),
+});
 export const MitigationViewSchema = z.object({
   id: EntityIdSchema, approach: z.string(), cost: z.string(), failsIf: z.string(), riskIds: z.array(EntityIdSchema),
 });
@@ -98,6 +103,7 @@ export const OutcomeViewSchema = z.object({
 });
 export const SolutionViewSchema = z.object({
   id: EntityIdSchema, problemId: EntityIdSchema, problemStatement: z.string(), problemVerdict: ProblemCandidateSchema.shape.verdict,
+  factors: z.array(FactorViewSchema),
   mechanism: z.string(), description: z.string(), respectsOffLimits: z.boolean(), respectsOffLimitsWhy: z.string(),
   outcomes: z.array(OutcomeViewSchema), risks: z.array(RiskViewSchema),
   confirmedCoreOutcomes: z.number().int().nonnegative(), unaddressedCatastrophicRisks: z.number().int().nonnegative(),
@@ -115,7 +121,8 @@ export const WorkspaceStateSchema = z.object({
   scope: ScopeSchema.nullable(), runConfig: RunConfigSchema.nullable(), models: z.array(z.string()),
   modelOptions: z.array(ModelOptionSchema),
   modelCatalog: ModelCatalogSchema, presets: z.array(z.object({ name: z.string(), config: RunConfigSchema })),
-  problemCandidates: z.array(ProblemCandidateSchema), solutions: z.array(SolutionViewSchema),
+  problemCandidates: z.array(ProblemCandidateSchema), rejectedProblemCandidates: z.array(RejectedProblemCandidateSchema),
+  solutions: z.array(SolutionViewSchema),
   latestResearchRun: LatestResearchRunSchema.nullable(), pendingRuns: z.array(PendingRunSchema),
 });
 
@@ -136,7 +143,9 @@ export type WorkspaceState = z.infer<typeof WorkspaceStateSchema>;
 export type ResearchEvent = z.infer<typeof ResearchEventSchema>;
 export type PendingRun = z.infer<typeof PendingRunSchema>;
 export type SourceDetail = z.infer<typeof SharedSourceDetailSchema>;
+export type FactorView = z.infer<typeof FactorViewSchema>;
 export type ProblemCandidate = z.infer<typeof ProblemCandidateSchema>;
+export type RejectedProblemCandidate = z.infer<typeof RejectedProblemCandidateSchema>;
 export type SolutionView = z.infer<typeof SolutionViewSchema>;
 
 export const IPC_CHANNELS = {

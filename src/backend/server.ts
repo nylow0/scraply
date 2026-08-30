@@ -16,7 +16,7 @@ import {
   GetIdeaDetailRequestSchema, GetSourceDetailRequestSchema, HealthResponseSchema,
   ResumeResearchSchema, SaveFavoriteModelSchema, SaveRunConfigSchema, SaveScopeSchema,
   SelectProblemsSchema, SelectThreadRequestSchema, SourceDetailSchema, StartResearchSchema,
-  ValidationStateSchema, WorkspaceStateSchema, type ProblemCandidate, type ResearchEvent,
+  ValidationStateSchema, WorkspaceStateSchema, type FactorView, type ProblemCandidate, type RejectedProblemCandidate, type ResearchEvent,
   type SolutionView, type ValidationState,
 } from "../shared/ipc";
 import {
@@ -190,6 +190,7 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
       modelCatalog: modelCatalog(),
       presets: threads.listPresets(),
       problemCandidates: activeThreadId ? listProblems(activeThreadId) : [],
+      rejectedProblemCandidates: activeThreadId ? listRejectedProblemCandidates(activeThreadId) : [],
       solutions: activeThreadId ? listSolutions(activeThreadId) : [],
       latestResearchRun: activeThreadId ? latestRun(activeThreadId) : null,
       pendingRuns: listPendingRuns(),
@@ -207,23 +208,41 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
     if (!runId) return [];
     const rows = db.db.prepare("SELECT * FROM problems WHERE discovery_run_id = ? ORDER BY created_at, id").all(runId) as Array<Record<string, unknown>>;
     return rows.map((row) => {
-      const factors = db.db.prepare(`
-        SELECT f.*, s.title AS source_title, s.canonical_url
-        FROM problem_factors pf JOIN factors f ON f.id = pf.factor_id JOIN sources s ON s.id = f.source_id
-        WHERE pf.problem_id = ? ORDER BY f.created_at, f.id
-      `).all(row.id) as Array<Record<string, unknown>>;
+      const factors = listProblemFactors(String(row.id));
       return {
         id: String(row.id), statement: String(row.statement), whyItPersists: String(row.why_it_persists),
         affected: String(row.affected), scaleEstimate: String(row.scale_estimate), verdict: String(row.verdict) as ProblemCandidate["verdict"],
         verdictReason: String(row.verdict_reason), selected: row.selected_at !== null,
-        factors: factors.map((factor) => ({
-          id: String(factor.id), subject: String(factor.subject), behavior: String(factor.behavior), quote: String(factor.quote),
-          sourceId: String(factor.source_id), sourceTitle: String(factor.source_title), sourceUrl: String(factor.canonical_url),
-          harvestMode: String(factor.harvest_mode) as "domain" | "audience", modelConfidence: Number(factor.model_confidence),
-        })),
-        singleHarvestModeWarning: factors.length > 0 && new Set(factors.map((factor) => factor.harvest_mode)).size === 1,
+        factors,
+        singleHarvestModeWarning: factors.length > 0 && new Set(factors.map((factor) => factor.harvestMode)).size === 1,
       };
     });
+  }
+  function listProblemFactors(problemId: string): FactorView[] {
+    const rows = db.db.prepare(`
+      SELECT f.*, s.title AS source_title, s.canonical_url
+      FROM problem_factors pf JOIN factors f ON f.id = pf.factor_id JOIN sources s ON s.id = f.source_id
+      WHERE pf.problem_id = ? ORDER BY f.created_at, f.id
+    `).all(problemId) as Array<Record<string, unknown>>;
+    return rows.map((factor) => ({
+      id: String(factor.id), subject: String(factor.subject), behavior: String(factor.behavior), quote: String(factor.quote),
+      sourceId: String(factor.source_id), sourceTitle: String(factor.source_title), sourceUrl: String(factor.canonical_url),
+      harvestMode: String(factor.harvest_mode) as "domain" | "audience", modelConfidence: Number(factor.model_confidence),
+    }));
+  }
+  function listRejectedProblemCandidates(threadId: string): RejectedProblemCandidate[] {
+    const runId = latestDiscoveryRun(threadId);
+    if (!runId) return [];
+    return (db.db.prepare(`
+      SELECT id, statement, reason
+      FROM rejected_problem_candidates
+      WHERE discovery_run_id = ?
+      ORDER BY created_at, id
+    `).all(runId) as Array<{ id: string; statement: string; reason: string }>).map((candidate) => ({
+      id: candidate.id,
+      statement: candidate.statement,
+      reason: candidate.reason,
+    }));
   }
   function listSolutions(threadId: string): SolutionView[] {
     const rows = db.db.prepare(`
@@ -256,6 +275,7 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
       return {
         id: String(row.id), problemId: String(row.problem_id), problemStatement: String(row.problem_statement),
         problemVerdict: String(row.problem_verdict) as SolutionView["problemVerdict"], mechanism: String(row.mechanism),
+        factors: listProblemFactors(String(row.problem_id)),
         description: String(row.description), respectsOffLimits: Boolean(row.respects_off_limits), respectsOffLimitsWhy: String(row.respects_off_limits_why),
         outcomes, risks, confirmedCoreOutcomes: outcomes.filter((outcome) => outcome.addressesCore).length,
         unaddressedCatastrophicRisks: risks.filter((risk) => risk.impact === "project ends" && risk.mitigations.length === 0).length,
@@ -309,6 +329,7 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
       sources,
       factors,
       problems: listProblems(threadId),
+      rejectedProblemCandidates: listRejectedProblemCandidates(threadId),
     };
   }
   function latestRun(threadId: string) {
@@ -465,7 +486,7 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
             else db.db.prepare(`
               INSERT INTO problems (id, discovery_run_id, statement, why_it_persists, affected, scale_estimate, scale_basis_factor_id,
                 verdict, verdict_reason, verdict_source_ids_json, selected_at, created_at)
-              VALUES (?, ?, ?, '', '', '', NULL, 'user-asserted', 'Stated directly by the user.', '[]', ?, ?)
+              VALUES (?, ?, ?, '', '', '', NULL, 'user-asserted', 'Selected by the user.', '[]', ?, ?)
             `).run(randomUUID(), runId, input.userProblem, selectedAt, selectedAt);
           }
           db.db.exec("COMMIT");
@@ -561,7 +582,21 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
 
 function renderMarkdown(ideas: SolutionView[]): string {
   const first = ideas[0]!;
-  return [`# ${first.problemStatement}`, "", ...ideas.flatMap((idea, index) => [
+  const evidence = first.factors.length > 0
+    ? first.factors.flatMap((factor) => [
+      `### ${factor.subject}`,
+      "",
+      factor.behavior,
+      "",
+      `> ${factor.quote}`,
+      "",
+      `Source: [${factor.sourceTitle}](${factor.sourceUrl})`,
+      "",
+    ])
+    : [first.problemVerdict === "user-asserted"
+      ? "No source-backed factors. This problem was user-asserted."
+      : "No source-backed factors are attached to this problem.", ""];
+  return [`# ${first.problemStatement}`, "", "## Evidence behind the problem", "", ...evidence, ...ideas.flatMap((idea, index) => [
     `## ${index + 1}. ${idea.mechanism}`, "", idea.description, "",
     `Off-limits check: ${idea.respectsOffLimits ? "respects" : "possible conflict"} — ${idea.respectsOffLimitsWhy}`, "",
     "### Outcomes", "", ...idea.outcomes.map((outcome) => `- ${outcome.direction}: ${outcome.description} (${outcome.addressesCore ? "addresses core" : "indirect"})`), "",

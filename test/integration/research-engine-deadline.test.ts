@@ -26,6 +26,37 @@ afterEach(() => {
 });
 
 describe("research engine deadlines", () => {
+  test("does not regenerate a resumed discovery when every candidate already failed the evidence gate", async () => {
+    const { db, directory, runId } = createPersistedDiscoveryRun();
+    tempDirectories.push(directory);
+    const now = new Date().toISOString();
+    db.db.prepare(`
+      INSERT INTO rejected_problem_candidates (id, discovery_run_id, statement, reason, created_at)
+      VALUES ('rejected-1', ?, 'One-source candidate', 'Cited factors span one source hostname; two are required.', ?)
+    `).run(runId, now);
+    let modelCalls = 0;
+    const modelClient: StructuredModelClient = {
+      async structuredCompletion() {
+        modelCalls += 1;
+        throw new Error("A persisted evidence-gate result must not be regenerated");
+      },
+    };
+    const exa = { search: async () => { throw new Error("A persisted evidence-gate result must not be searched again"); } } as unknown as ExaClient;
+
+    try {
+      const engine = new ResearchEngine({ db, modelClients: { codex: modelClient }, searchClients: { exa }, onEvent: () => undefined });
+      await engine.resumeRun(runId);
+      await waitFor(() => !engine.getActiveRunIds().has(runId));
+
+      expect(db.db.prepare("SELECT status FROM research_runs WHERE id = ?").get(runId)).toEqual({ status: "completed" });
+      expect(modelCalls).toBe(0);
+      expect(db.db.prepare("SELECT statement FROM rejected_problem_candidates WHERE discovery_run_id = ?").all(runId))
+        .toEqual([{ statement: "One-source candidate" }]);
+    } finally {
+      db.close();
+    }
+  });
+
   test("resumes a two-hour-old run with a fresh attempt deadline", async () => {
     const { db, directory, runId, config } = createPersistedDiscoveryRun();
     tempDirectories.push(directory);
