@@ -18,11 +18,21 @@ bun run dev
 
 Set `EXA_API_KEY`, `PERPLEXITY_API_KEY`, or both in `.env` for development or in the environment that launches the installed app. Each discovery run uses the search provider selected in its setup. Scraply checks configured providers and Codex in the background, then stores the keys with Windows-backed encryption after validation.
 
-Useful checks:
+Run the code checks before handing off a change:
 
 ```powershell
 bun run check
+```
+
+When a change affects the desktop workflow, run its packaged E2E check:
+
+```powershell
 bun run test:e2e
+```
+
+After completing an application change, build and install it for hands-on testing:
+
+```powershell
 bun run build:installed
 ```
 

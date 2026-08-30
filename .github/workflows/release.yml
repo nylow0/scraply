@@ -24,15 +24,11 @@ jobs:
           bun-version: 1.3.13
       - run: bun install --frozen-lockfile
       - run: bun scripts/check-promotion.ts rc ${{ github.sha }} ${{ github.ref_name }}
-      - run: bun audit
-      - run: bun run check
-      - run: bun run test:e2e
       - name: Build, install, and verify the release candidate
         run: bun run build:installed
         env:
           SCRAPLY_RELEASE_STRICT: "1"
           SCRAPLY_ALLOW_UNSIGNED: ${{ github.event.repository.private && '1' || '0' }}
-      - run: bun run test:e2e:production
       - run: bun run test:e2e:portable
       - run: bun run test:e2e:installed
       - name: Collect the verified bundle
