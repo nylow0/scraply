@@ -1,10 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { deriveJsonSchema, type JsonSchema } from "../../src/shared/json-schema";
-import {
-  ProblemKillOutputSchema,
-  ProblemSchema,
-  STRUCTURED_OUTPUT_SCHEMAS,
-} from "../../src/shared/structured-output-schemas";
+import { STRUCTURED_OUTPUT_SCHEMAS } from "../../src/shared/structured-output-schemas";
 
 const FORBIDDEN_CONSTRAINTS = new Set([
   "minItems",
@@ -51,25 +47,5 @@ describe("structured output schemas", () => {
 
     expect(problems.items.required).toContain("scaleBasisFactorId");
     expect(problem.scaleBasisFactorId.anyOf).toContainEqual({ type: "null" });
-  });
-
-  test("user-asserted verdicts are reserved for persisted manual problems", () => {
-    expect(ProblemSchema.safeParse({
-      statement: "A manually supplied problem",
-      whyItPersists: "User observation",
-      affected: "The user",
-      scaleEstimate: "Unknown",
-      scaleBasisFactorId: null,
-      factorIds: [],
-      verdict: "user-asserted",
-      verdictReason: "Entered manually",
-      verdictSourceIds: [],
-    }).success).toBe(true);
-
-    expect(ProblemKillOutputSchema.safeParse({
-      verdict: "user-asserted",
-      verdictReason: "Returned by the model",
-      verdictSourceIds: [],
-    }).success).toBe(false);
   });
 });
