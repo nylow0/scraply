@@ -42,13 +42,13 @@ The branch and release workflow is documented in [RELEASE.md](RELEASE.md). `mast
 
 ## Using Scraply
 
-1. Create a research project and answer the intake questions.
-2. Review and edit the generated brief.
-3. Review models, the six planned research lenses, and the conservative maximum cost.
-4. Approve the run, watch run-scoped progress, and inspect reports as they become available.
-5. Generate ideas after synthesis, inspect their evidence, rate them, export them, or create a focused child branch.
+1. Create a research project and choose whether to discover a problem or start from a known problem.
+2. Enter the starting context, audience, optional constraints, model, reasoning effort, and (for discovery) research depth and search provider.
+3. Submit the setup to discover evidence-backed problem candidates, or generate solutions directly for a known problem.
+4. Review discovered problems and their evidence, select the problems worth developing, and inspect the resulting solutions and risks.
+5. Export research as JSON or solutions as Markdown/JSON when you need a portable copy.
 
-Paid work does not begin during intake or brief editing. The approval screen shows the configured ceiling before research starts. Codex subscription usage is tracked by invocation/limits rather than presented as an invented dollar charge; accountable provider/search spend is reserved conservatively and committed as the run proceeds.
+Provider readiness is checked before a run can start. Codex subscription usage is tracked by invocation/limits rather than presented as an invented dollar charge; accountable provider/search spend is reserved conservatively and committed as the run proceeds.
 
 ## Local data and credentials
 
@@ -70,7 +70,7 @@ Deleting or resetting data is irreversible unless you made a backup first.
 
 - **Search does not connect:** the local workspace remains available. Confirm the selected provider's `EXA_API_KEY` or `PERPLEXITY_API_KEY` exists in `.env` during development or in the installed app's launch environment, then retry connections.
 - **Codex validation fails:** confirm `codex` is installed, authenticated, and available in the same Windows user environment that launches Scraply.
-- **Research cannot start:** confirm the brief is approved, the configuration is saved, and no active run already exists for the project.
+- **Research cannot start:** confirm the setup is saved, the selected model and required search provider are connected, and no active run already exists for the project.
 - **A report is blank or slow:** collapse and reopen it to retry the on-demand detail request. Reports are intentionally excluded from routine workspace refreshes.
 - **An interrupted run appears after restart:** use Resume to continue it or Cancel to keep completed partial artifacts without scheduling more work.
 - **Database errors after a crash:** close every Scraply process before copying, restoring, or resetting SQLite files.
