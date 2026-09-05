@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
+import { runtimePackageLockSchema } from "./runtime-package";
 
 interface ExecutableMetadata {
   productName: string;
@@ -51,29 +52,6 @@ interface RuntimeManifest {
   checksums: RuntimeFileManifest;
 }
 
-interface RuntimePackageLock {
-  schemaVersion: number;
-  platform: string;
-  executable: string;
-  version: string;
-  protocolVersions: string[];
-  sourceRepository: string;
-  sourceCommit: string;
-  upstreamCommit: string;
-  sha256: string;
-  sizeBytes: number;
-  notices: Array<{
-    target: string;
-    sha256: string;
-    sizeBytes: number;
-  }>;
-  checksums: {
-    path: string;
-    sha256: string;
-    sizeBytes: number;
-  };
-}
-
 const allowUnsigned = process.argv.includes("--allow-unsigned");
 const [directory, expectedSha, expectedSourceRef] = process.argv.slice(2).filter((arg) => !arg.startsWith("--"));
 if (!directory || !expectedSha || !expectedSourceRef) {
@@ -84,7 +62,9 @@ if (!/^[a-f0-9]{40}$/i.test(expectedSha)) throw new Error("Promotion verificatio
 const expectedVersion = (JSON.parse(readFileSync("package.json", "utf8")) as { version: string }).version;
 const runtimeLockPath = process.env.SCRAPLY_RUNTIME_LOCK_PATH
   ?? join("runtime-artifacts", "scraply-agent.windows-x64.lock.json");
-const runtimeLock = JSON.parse(readFileSync(runtimeLockPath, "utf8")) as RuntimePackageLock;
+const runtimeLock = runtimePackageLockSchema.parse(
+  JSON.parse(readFileSync(runtimeLockPath, "utf8")),
+);
 const installerName = `Scraply Setup ${expectedVersion}.exe`;
 const portableName = `Scraply ${expectedVersion}.exe`;
 
@@ -112,19 +92,6 @@ if (allowUnsigned) {
   }
 } else if (!manifest.signed || manifest.signingPolicy !== "signed") {
   throw new Error("The public release policy requires validly signed executables.");
-}
-
-if (
-  runtimeLock.schemaVersion !== 1
-  || runtimeLock.platform !== "windows-x64"
-  || runtimeLock.executable !== "scraply-agent.exe"
-  || runtimeLock.sourceRepository !== "https://github.com/nylow0/scraply-agent"
-  || !/^[a-f0-9]{40}$/.test(runtimeLock.sourceCommit)
-  || !/^[a-f0-9]{40}$/.test(runtimeLock.upstreamCommit)
-  || !/^\d+\.\d+\.\d+$/.test(runtimeLock.version)
-  || JSON.stringify(runtimeLock.protocolVersions) !== JSON.stringify(["1.1"])
-) {
-  throw new Error("The tracked runtime lock has invalid identity or protocol metadata.");
 }
 
 const expectedRuntime = {
