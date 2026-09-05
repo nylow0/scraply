@@ -884,4 +884,98 @@ export const MIGRATIONS = [
         WHERE generation_attempt_id IS NOT NULL;
     `,
   },
+  {
+    id: 16,
+    sql: `
+      ALTER TABLE solutions ADD COLUMN option_position INTEGER CHECK(
+        option_position IS NULL OR option_position BETWEEN 0 AND 2
+      );
+      ALTER TABLE solutions ADD COLUMN key_assumption TEXT;
+      ALTER TABLE solutions ADD COLUMN why_current_approach_may_suffice TEXT;
+      ALTER TABLE solutions ADD COLUMN supporting_evidence_ids_json TEXT CHECK(
+        supporting_evidence_ids_json IS NULL OR json_valid(supporting_evidence_ids_json)
+      );
+      ALTER TABLE solutions ADD COLUMN contrary_evidence_ids_json TEXT CHECK(
+        contrary_evidence_ids_json IS NULL OR json_valid(contrary_evidence_ids_json)
+      );
+      ALTER TABLE solutions ADD COLUMN unknowns_json TEXT CHECK(
+        unknowns_json IS NULL OR json_valid(unknowns_json)
+      );
+      ALTER TABLE solutions ADD COLUMN selected_at TEXT;
+
+      CREATE UNIQUE INDEX idx_solutions_id_run
+        ON solutions(id, research_run_id);
+      CREATE UNIQUE INDEX idx_solutions_one_selected_per_run
+        ON solutions(research_run_id)
+        WHERE selected_at IS NOT NULL;
+
+      CREATE TABLE stage_results (
+        id TEXT PRIMARY KEY,
+        research_run_id TEXT NOT NULL REFERENCES research_runs(id) ON DELETE CASCADE,
+        stage_id TEXT NOT NULL CHECK(stage_id IN (
+          'query-plan', 'factor-harvest', 'problem-candidates',
+          'problem-kill', 'solutions', 'decision-analysis'
+        )),
+        selection_key TEXT NOT NULL DEFAULT '',
+        workflow_version INTEGER NOT NULL CHECK(workflow_version = 2),
+        stage_revision INTEGER NOT NULL CHECK(stage_revision > 0),
+        context_json TEXT NOT NULL CHECK(json_valid(context_json)),
+        context_sha256 TEXT NOT NULL,
+        output_json TEXT NOT NULL CHECK(json_valid(output_json)),
+        output_sha256 TEXT NOT NULL,
+        prompt_filename TEXT NOT NULL,
+        prompt_source TEXT NOT NULL CHECK(prompt_source IN ('bundled', 'override')),
+        prompt_text TEXT NOT NULL,
+        prompt_sha256 TEXT NOT NULL,
+        current_bundled_prompt_sha256 TEXT NOT NULL,
+        override_baseline_revision INTEGER,
+        override_baseline_sha256 TEXT,
+        schema_json TEXT NOT NULL CHECK(json_valid(schema_json)),
+        schema_sha256 TEXT NOT NULL,
+        input_json TEXT NOT NULL CHECK(json_valid(input_json)),
+        input_sha256 TEXT NOT NULL,
+        evidence_json TEXT NOT NULL CHECK(json_valid(evidence_json)),
+        evidence_ids_json TEXT NOT NULL CHECK(json_valid(evidence_ids_json)),
+        evidence_ids_sha256 TEXT NOT NULL,
+        evidence_sha256 TEXT NOT NULL,
+        runtime_prompt_id TEXT NOT NULL,
+        runtime_prompt_sha256 TEXT NOT NULL,
+        effective_request_json TEXT NOT NULL CHECK(json_valid(effective_request_json)),
+        effective_request_sha256 TEXT NOT NULL,
+        completed_at TEXT NOT NULL,
+        UNIQUE(research_run_id, stage_id, selection_key),
+        CHECK(
+          (override_baseline_revision IS NULL AND override_baseline_sha256 IS NULL)
+          OR (override_baseline_revision = 1 AND override_baseline_sha256 IS NOT NULL)
+        )
+      );
+
+      CREATE INDEX idx_stage_results_run_completed
+        ON stage_results(research_run_id, completed_at, stage_id);
+
+      CREATE TRIGGER prevent_stage_result_update
+      BEFORE UPDATE ON stage_results
+      BEGIN
+        SELECT RAISE(ABORT, 'completed stage results are immutable');
+      END;
+
+      CREATE TABLE decision_analyses (
+        id TEXT PRIMARY KEY,
+        research_run_id TEXT NOT NULL REFERENCES research_runs(id) ON DELETE CASCADE,
+        solution_id TEXT NOT NULL,
+        stage_result_id TEXT NOT NULL UNIQUE REFERENCES stage_results(id) ON DELETE CASCADE,
+        analysis_json TEXT NOT NULL CHECK(json_valid(analysis_json)),
+        user_decision TEXT,
+        observed_result TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        UNIQUE(research_run_id, solution_id),
+        FOREIGN KEY (solution_id, research_run_id)
+          REFERENCES solutions(id, research_run_id) ON DELETE CASCADE
+      );
+
+      CREATE INDEX idx_decision_analyses_run_created
+        ON decision_analyses(research_run_id, created_at, id);
+    `,
+  },
 ] as const;
