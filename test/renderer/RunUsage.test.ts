@@ -31,11 +31,13 @@ describe("RunUsage", () => {
   test("keeps small reported amounts precise and labels missing currency", () => {
     const usage = sampleUsage();
     usage.costs = {
-      status: "mixed", reported: [{ currency: "EUR", amount: 0.000001 }], reportedWithoutCurrencyAttempts: 1,
+      status: "mixed", reported: [{ currency: "EUR", amount: 0.000001 }, { currency: "EUR", amount: 0.00000000000000000001 }], reportedWithoutCurrencyAttempts: 1,
       reportedWithoutCurrencyAmounts: [7], notReportedAttempts: 0, unknownAttempts: 1,
     };
     const view = render(RunUsage, { usage });
-    expect(view.getAllByText(/0\.000001 EUR, 7 \(currency not reported\)/).length).toBeGreaterThan(0);
+    expect(view.getAllByText(/0\.000001 EUR/).length).toBeGreaterThan(0);
+    expect(view.getAllByText(/currency not reported\) plus unknown amounts/).length).toBeGreaterThan(0);
+    expect(view.getAllByText(/1e-20|0\.00000000000000000001/).length).toBeGreaterThan(0);
   });
 });
 

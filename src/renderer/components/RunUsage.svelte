@@ -15,18 +15,23 @@
   function costLabel(value: RunUsage["costs"]): string {
     if (value.status === "not_reported") return "Not reported";
     if (value.status === "unknown") return "Unknown";
-    if (value.reported.length > 0) {
-      const unlabelled = value.reportedWithoutCurrencyAmounts.map(formatAmount).map((amount) => `${amount} (currency not reported)`);
-      const amounts = [...value.reported.map((item) => `${formatAmount(item.amount)} ${item.currency}`), ...unlabelled].join(", ");
-      if (value.status === "reported") return amounts;
-      return `${amounts} plus unknown or unreported amounts`;
+    const unlabelled = value.reportedWithoutCurrencyAmounts.map(formatAmount).map((amount) => `${amount} (currency not reported)`);
+    const amounts = [...value.reported.map((item) => `${formatAmount(item.amount)} ${item.currency}`), ...unlabelled];
+    if (amounts.length > 0) {
+      const qualifiers = [
+        ...(value.unknownAttempts > 0 ? ["unknown"] : []),
+        ...(value.notReportedAttempts > 0 ? ["unreported"] : []),
+      ];
+      return qualifiers.length > 0 ? `${amounts.join(", ")} plus ${qualifiers.join(" or ")} amounts` : amounts.join(", ");
     }
-    if (value.reportedWithoutCurrencyAmounts.length > 0) return value.reportedWithoutCurrencyAmounts.map(formatAmount).map((amount) => `${amount} (currency not reported)`).join(", ");
+    if (value.notReportedAttempts > 0 && value.unknownAttempts > 0) return "Unknown or not reported";
+    if (value.notReportedAttempts > 0) return "Not reported";
     return "Unknown";
   }
 
   function formatAmount(amount: number): string {
-    return amount.toLocaleString(undefined, { maximumFractionDigits: 10 });
+    const formatted = amount.toLocaleString(undefined, { maximumSignificantDigits: 12 });
+    return amount !== 0 && /^-?0(?:[.,]0+)?$/.test(formatted) ? amount.toExponential(6) : formatted;
   }
 </script>
 
