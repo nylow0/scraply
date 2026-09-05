@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { z } from "zod";
 import { RuntimeClient } from "../../src/providers/runtime";
+import { ProviderFailure } from "../../src/providers/structured";
 import { harvestFactors } from "../../src/core/discovery";
 import { DatabaseClient } from "../../src/db/client";
 import { ResearchEngine } from "../../src/core/research-engine";
@@ -82,6 +83,41 @@ describe("persistent native runtime client", () => {
     await expect(completion).rejects.toThrow("cancellation terminal metadata");
   });
 
+  test("observes a pre-acceptance process failure without leaking a terminal rejection", async () => {
+    const runtime = client("exit-before-acceptance", { requestTimeoutMs: 1_000, controlTimeoutMs: 50, terminalGraceMs: 50 });
+    const unhandled: unknown[] = [];
+    const listener = (reason: unknown) => unhandled.push(reason);
+    process.on("unhandledRejection", listener);
+    try {
+      await expect(runtime.structuredCompletion(request("generation-exit"))).rejects.toThrow("stopped before completing");
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(unhandled).toEqual([]);
+    } finally {
+      process.off("unhandledRejection", listener);
+    }
+  });
+
+  test("waits for terminal metadata after a prompt mismatch before releasing the generation queue", async () => {
+    const runtime = client("prompt-mismatch", { requestTimeoutMs: 1_000, controlTimeoutMs: 100, terminalGraceMs: 100 });
+    const started = Date.now();
+    let failure: unknown;
+    try { await runtime.structuredCompletion(request("generation-mismatch")); }
+    catch (error) { failure = error; }
+    expect(Date.now() - started).toBeGreaterThanOrEqual(60);
+    expect(failure).toBeInstanceOf(ProviderFailure);
+    expect((failure as ProviderFailure).attempts).toHaveLength(1);
+  });
+
+  test("keeps paid-attempt metadata when completed output fails the requested schema", async () => {
+    const runtime = client("invalid-output");
+    let failure: unknown;
+    try { await runtime.structuredCompletion(request("generation-invalid")); }
+    catch (error) { failure = error; }
+    expect(failure).toBeInstanceOf(ProviderFailure);
+    expect((failure as ProviderFailure).code).toBe("schema");
+    expect((failure as ProviderFailure).attempts?.[0]?.providerRequestId).toBe("fixture-provider-request");
+  });
+
   test("bounds hung shutdown and rejects a response whose operation does not match", async () => {
     const hung = client("hang-shutdown", { controlTimeoutMs: 50 });
     await hung.start();
@@ -103,6 +139,22 @@ describe("persistent native runtime client", () => {
     });
     await expect(runtime.start()).rejects.toThrow("invalid protocol message");
     expect(await runtime.listAccounts()).toEqual([]);
+  });
+
+  test("kills an incompatible handshake process before starting a replacement", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "scraply-runtime-handshake-"));
+    scratchDirectories.push(directory);
+    const marker = join(directory, "incompatible-seen");
+    const pidCapture = join(directory, "pids.txt");
+    const runtime = client("incompatible-once", {
+      requestTimeoutMs: 1_000,
+      environment: { SCRAPLY_RUNTIME_MARKER: marker, SCRAPLY_RUNTIME_PID_CAPTURE: pidCapture },
+    });
+    await expect(runtime.start()).rejects.toThrow("version does not match");
+    expect(await runtime.listAccounts()).toEqual([]);
+    const pids = readFileSync(pidCapture, "utf8").trim().split("\n").map(Number);
+    expect(pids).toHaveLength(2);
+    await waitUntil(() => !processExists(pids[0]!));
   });
 
   test("keeps hostile research text in evidence in the exact native request", async () => {
@@ -176,4 +228,24 @@ async function waitUntil(predicate: () => boolean): Promise<void> {
     if (Date.now() >= deadline) throw new Error("Timed out waiting for runtime fixture state");
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
+}
+
+function request(generationId: string) {
+  return {
+    generationId,
+    stage: "fixture",
+    deadlineMs: 1_000,
+    model: { providerId: "openai-subscription", modelId: "gpt-fixture" },
+    reasoningEffort: "medium" as const,
+    workOrder: { stage: "fixture", instruction: "Return the answer.", goal: "Exercise runtime safety.", definitionOfDone: ["One answer"] },
+    evidence: [],
+    schema: z.object({ answer: z.string() }).strict(),
+    jsonSchema: { type: "object", required: ["answer"], properties: { answer: { type: "string" } } },
+    repairPolicy: "one_retry" as const,
+  };
+}
+
+function processExists(pid: number): boolean {
+  try { process.kill(pid, 0); return true; }
+  catch { return false; }
 }

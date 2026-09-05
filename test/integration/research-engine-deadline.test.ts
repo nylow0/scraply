@@ -2,11 +2,14 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { z } from "zod";
 import { ResearchEngine } from "../../src/core/research-engine";
 import { discoveryRunProjection } from "../../src/core/discovery";
 import { DatabaseClient } from "../../src/db/client";
 import { CostLedgerRepository } from "../../src/db/repositories/cost-ledger";
 import { DiscoveryRepository } from "../../src/db/repositories/discovery";
+import { DevelopmentRepository } from "../../src/db/repositories/development";
+import { GenerationAttemptRepository } from "../../src/db/repositories/generation-attempts";
 import { ResearchRunRepository } from "../../src/db/repositories/research-runs";
 import type { ExaClient } from "../../src/providers/exa";
 import { ProviderFailure, type StructuredModelClient, type StructuredStageRequest } from "../../src/providers/structured";
@@ -187,6 +190,81 @@ describe("research engine deadlines", () => {
     } finally {
       db.close();
     }
+  });
+
+  test("does not replay a request that was sent before acceptance was durably observed", async () => {
+    const { db, directory, runId, config } = createPersistedDiscoveryRun();
+    tempDirectories.push(directory);
+    const attempts = new GenerationAttemptRepository(db);
+    const request: StructuredStageRequest<{ answer: string }> = {
+      generationId: "sent-generation",
+      stage: "fixture",
+      model: config.model,
+      reasoningEffort: config.reasoningEffort,
+      deadlineMs: 1_000,
+      repairPolicy: "one_retry",
+      workOrder: { stage: "fixture", instruction: "Answer.", goal: "Exercise resume safety.", definitionOfDone: ["One answer"] },
+      evidence: [],
+      schema: z.object({ answer: z.string() }).strict(),
+      jsonSchema: { type: "object" },
+    };
+    const attempt = attempts.prepare(runId, request);
+    const ledger = new CostLedgerRepository(db);
+    const reservation = ledger.reserve(runId, "structured-completion", config.model.providerId, config.model.modelId, 0, attempt.id);
+    attempts.markDispatched(attempt.id);
+    attempts.interruptInFlight("simulated process loss");
+    let modelCalls = 0;
+    const engine = new ResearchEngine({
+      db,
+      modelClients: { [TEST_PROVIDER]: { async structuredCompletion() { modelCalls += 1; throw new Error("must not replay"); } } },
+      onEvent: () => undefined,
+    });
+
+    await expect(engine.resumeRun(runId)).rejects.toThrow("may have completed");
+    expect(modelCalls).toBe(0);
+    expect(db.db.prepare("SELECT status, terminal_kind FROM generation_attempts WHERE id = ?").get(attempt.id))
+      .toEqual({ status: "interrupted", terminal_kind: "process-lost" });
+    expect(db.db.prepare("SELECT status, committed_usd FROM cost_ledger WHERE id = ?").get(reservation.id))
+      .toEqual({ status: "committed", committed_usd: null });
+    db.close();
+  });
+
+  test("retains partial development rows and fails closed instead of deleting and replaying", async () => {
+    const { db, directory, runId: discoveryRunId, config } = createPersistedDiscoveryRun();
+    tempDirectories.push(directory);
+    const now = new Date().toISOString();
+    db.db.prepare("UPDATE research_runs SET status = 'completed' WHERE id = ?").run(discoveryRunId);
+    db.db.prepare(`
+      INSERT INTO problems (
+        id, discovery_run_id, statement, why_it_persists, affected, scale_estimate,
+        verdict, verdict_reason, verdict_source_ids_json, selected_at, created_at
+      ) VALUES ('problem-partial', ?, 'Parts arrive late', '', '', '', 'user-asserted', 'Selected by user', '[]', ?, ?)
+    `).run(discoveryRunId, now, now);
+    const developmentRunId = new ResearchRunRepository(db).create("thread-1", config, "problem-partial").runId;
+    new DevelopmentRepository(db).persistSolutions(developmentRunId, "problem-partial", [{
+      id: "saved-solution",
+      problemId: "problem-partial",
+      mechanism: "Retained mechanism",
+      description: "This partial result must remain on disk.",
+      respectsOffLimits: true,
+      respectsOffLimitsWhy: "No restricted action.",
+      outcomes: [], risks: [], mitigations: [],
+    }]);
+    let modelCalls = 0;
+    const engine = new ResearchEngine({
+      db,
+      modelClients: { [TEST_PROVIDER]: { async structuredCompletion() { modelCalls += 1; throw new Error("must not replay"); } } },
+      onEvent: () => undefined,
+    });
+
+    await engine.resumeRun(developmentRunId);
+    await waitFor(() => !engine.getActiveRunIds().has(developmentRunId));
+    expect(modelCalls).toBe(0);
+    expect(db.db.prepare("SELECT id, mechanism FROM solutions WHERE research_run_id = ?").all(developmentRunId))
+      .toEqual([{ id: "saved-solution", mechanism: "Retained mechanism" }]);
+    expect(db.db.prepare("SELECT status, completion_reason FROM research_runs WHERE id = ?").get(developmentRunId))
+      .toEqual(expect.objectContaining({ status: "failed", completion_reason: expect.stringContaining("partial saved results") }));
+    db.close();
   });
 
   test("fails without reserving spend when its provider never dispatches", async () => {

@@ -1,7 +1,7 @@
 import { contextBridge, ipcRenderer } from "electron";
 import {
   ExportIdeasRequestSchema, ExportResearchRequestSchema, IPC_CHANNELS, ResearchEventSchema, SaveFavoriteModelSchema,
-  NativeLoginCompleteSchema, NativeLoginStartSchema, NativeProviderSchema,
+  NativeLoginCancelSchema, NativeLoginCompleteSchema, NativeLoginStartSchema, NativeProviderSchema,
   SaveRunConfigSchema, SaveScopeSchema, SelectProblemsSchema,
   type NativeLoginCompleteResult, type NativeLoginStartResult, type ResearchEvent,
   type SolutionView, type SourceDetail, type ValidationState, type WorkspaceState,
@@ -26,6 +26,8 @@ const api = {
     ipcRenderer.invoke(IPC_CHANNELS.NATIVE_LOGIN_START, NativeLoginStartSchema.parse(payload)),
   completeNativeLogin: (payload: { loginId: string }): Promise<NativeLoginCompleteResult> =>
     ipcRenderer.invoke(IPC_CHANNELS.NATIVE_LOGIN_COMPLETE, NativeLoginCompleteSchema.parse(payload)),
+  cancelNativeLogin: (payload: { loginId: string; providerId: string }): Promise<WorkspaceState> =>
+    ipcRenderer.invoke(IPC_CHANNELS.NATIVE_LOGIN_CANCEL, NativeLoginCancelSchema.parse(payload)),
   refreshNativeAccount: (providerId: string): Promise<WorkspaceState> =>
     ipcRenderer.invoke(IPC_CHANNELS.NATIVE_ACCOUNT_REFRESH, NativeProviderSchema.parse({ providerId })),
   logoutNativeAccount: (providerId: string): Promise<WorkspaceState> =>

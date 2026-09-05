@@ -245,8 +245,10 @@ export class ResearchEngine {
     `).get(active.runId) as { count: number; missing_outcomes: number | null; missing_risks: number | null };
     if (existing.count > 0 && existing.missing_outcomes === 0 && existing.missing_risks === 0) return;
     if (existing.count > 0) {
-      this.progress(active, "An incomplete development stage was found; restarting this problem from its last complete run boundary.");
-      this.options.db.db.prepare("DELETE FROM solutions WHERE research_run_id = ?").run(active.runId);
+      throw new AppError(
+        "conflict",
+        "This development run contains partial saved results and cannot be replayed safely. The saved records were retained. Cancel this run and start a new development run for the problem.",
+      );
     }
     await runPersistedDevelopment(active.problemId!, {
       repository: this.development,

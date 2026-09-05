@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import type { ResearchEvent, WorkspaceState } from "../shared/ipc";
+  import type { NativeLoginStartResult, ResearchEvent, WorkspaceState } from "../shared/ipc";
   import Sidebar from "./components/Sidebar.svelte";
   import ScopeForm from "./components/ScopeForm.svelte";
   import ProblemCheckpoint from "./components/ProblemCheckpoint.svelte";
@@ -23,6 +23,8 @@
   let reviewSelection = $state(false);
   let activeStep = $state<WorkflowStep>("setup");
   let editingScopeThreadId = $state<string | null>(null);
+  let nativeLogin = $state<NativeLoginStartResult | null>(null);
+  let nativeLoginEpoch = 0;
   let reconcileTimer: ReturnType<typeof setTimeout> | null = null;
   let reconcilePending = false;
   let loadEpoch = 0;
@@ -52,6 +54,7 @@
       workspace = next;
       if (changedThread) activeStep = defaultStep(next);
       if (feedback?.source === "workspace-load") feedback = null;
+      if (validationPending(next)) reconcileSoon(500);
     }
     catch (cause) {
       if (requestEpoch === loadEpoch) feedback = { text: message(cause), tone: "error", source: "workspace-load" };
@@ -65,7 +68,7 @@
     loading = false;
     workspace = next;
   }
-  function reconcileSoon() {
+  function reconcileSoon(delayMs = 180) {
     reconcilePending = true;
     if (reconcileTimer) clearTimeout(reconcileTimer);
     reconcileTimer = setTimeout(() => {
@@ -73,7 +76,11 @@
       if (busy) return;
       reconcilePending = false;
       void load();
-    }, 180);
+    }, delayMs);
+  }
+  function validationPending(state: WorkspaceState): boolean {
+    return [state.validation.exa.error, state.validation.perplexity.error, state.validation.codex.error, state.validation.native.error]
+      .some((error) => error?.startsWith("Checking ") || error === "Native runtime is starting");
   }
   async function action(work: () => Promise<void>) {
     if (busy) return;
@@ -172,12 +179,22 @@
       setWorkspace(await window.scraply.getWorkspace());
     });
   }
-  async function connectNativeAccount(providerId: string) {
-    await action(async () => {
-      const login = await window.scraply.startNativeLogin({ providerId, method: "browser" });
-      feedback = { text: "Finish signing in in your browser. Scraply is waiting for the account callback.", tone: "info" };
+  async function connectNativeAccount(providerId: string, method: "browser" | "device") {
+    if (busy) return;
+    busy = true;
+    feedback = null;
+    const epoch = ++nativeLoginEpoch;
+    try {
+      const login = await window.scraply.startNativeLogin({ providerId, method });
+      if (epoch !== nativeLoginEpoch) return;
+      nativeLogin = login;
+      feedback = { text: login.method === "device"
+        ? `Enter code ${login.userCode} in the browser to finish signing in.`
+        : "Finish signing in in your browser. Scraply is waiting for the account callback.", tone: "info" };
       for (let attempt = 0; attempt < 300; attempt += 1) {
+        if (epoch !== nativeLoginEpoch) return;
         const result = await window.scraply.completeNativeLogin({ loginId: login.loginId });
+        if (epoch !== nativeLoginEpoch) return;
         if (!result.pending) {
           setWorkspace(result.workspace);
           feedback = { text: "Native model account connected.", tone: "info" };
@@ -186,7 +203,40 @@
         await new Promise<void>((resolve) => setTimeout(resolve, 1_000));
       }
       throw new Error("Account sign-in timed out. Start the connection again.");
-    });
+    } catch (cause) {
+      if (epoch !== nativeLoginEpoch) return;
+      feedback = { text: message(cause), tone: "error" };
+      if (nativeLogin) {
+        try {
+          setWorkspace(await window.scraply.cancelNativeLogin({
+            loginId: nativeLogin.loginId,
+            providerId: nativeLogin.providerId,
+          }));
+        } catch { /* preserve the original sign-in error */ }
+      }
+    } finally {
+      if (epoch === nativeLoginEpoch) {
+        nativeLogin = null;
+        busy = false;
+        if (reconcilePending) reconcileSoon();
+      }
+    }
+  }
+  async function cancelNativeLogin() {
+    const login = nativeLogin;
+    if (!login) return;
+    nativeLoginEpoch += 1;
+    nativeLogin = null;
+    feedback = { text: "Cancelling native account sign-in…", tone: "info" };
+    try {
+      setWorkspace(await window.scraply.cancelNativeLogin({ loginId: login.loginId, providerId: login.providerId }));
+      feedback = { text: "Native account sign-in cancelled.", tone: "info" };
+    } catch (cause) {
+      feedback = { text: message(cause), tone: "error" };
+    } finally {
+      busy = false;
+      if (reconcilePending) reconcileSoon();
+    }
   }
   async function refreshNativeAccount(providerId: string) {
     await action(async () => setWorkspace(await window.scraply.refreshNativeAccount(providerId)));
@@ -294,8 +344,9 @@
       {#if activeThread.status === "configuring" || editingScope || !workspace.scope}
         <div id="workflow-panel-setup" role="tabpanel" aria-label="Research setup">
           {#key workspace.activeThreadId}
-            <ScopeForm {workspace} {busy} onSave={saveScope} onStart={startResearch} onRetry={retryConnections}
-              onConnectNative={connectNativeAccount} onRefreshNative={refreshNativeAccount} onLogoutNative={logoutNativeAccount} />
+            <ScopeForm {workspace} {busy} {nativeLogin} onSave={saveScope} onStart={startResearch} onRetry={retryConnections}
+              onConnectNative={connectNativeAccount} onCancelNative={cancelNativeLogin}
+              onRefreshNative={refreshNativeAccount} onLogoutNative={logoutNativeAccount} />
           {/key}
         </div>
       {:else}

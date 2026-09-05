@@ -75,6 +75,7 @@ export const NativeLoginStartSchema = z.object({
   method: z.enum(["browser", "device"]),
 }).strict();
 export const NativeLoginCompleteSchema = z.object({ loginId: EntityIdSchema }).strict();
+export const NativeLoginCancelSchema = z.object({ loginId: EntityIdSchema, providerId: EntityIdSchema }).strict();
 export const NativeProviderSchema = z.object({ providerId: z.string().trim().min(1) }).strict();
 export const NativeLoginLaunchSchema = z.discriminatedUnion("method", [
   z.object({ loginId: EntityIdSchema, providerId: EntityIdSchema, method: z.literal("browser"), authorizationUrl: z.string().url(), callbackPort: z.number().int().positive() }).strict(),
@@ -160,7 +161,9 @@ export type AppErrorPayload = z.infer<typeof AppErrorPayloadSchema>;
 export type BackendReady = z.infer<typeof BackendReadySchema>;
 export type ValidationState = z.infer<typeof ValidationStateSchema>;
 export type WorkspaceState = z.infer<typeof WorkspaceStateSchema>;
-export type NativeLoginStartResult = { loginId: string; providerId: string; method: "browser" | "device"; userCode?: string };
+export type NativeLoginStartResult =
+  | { loginId: string; providerId: string; method: "browser" }
+  | { loginId: string; providerId: string; method: "device"; verificationUrl: string; userCode: string };
 export type NativeLoginCompleteResult = { pending: true } | { pending: false; workspace: WorkspaceState };
 export type ResearchEvent = z.infer<typeof ResearchEventSchema>;
 export type PendingRun = z.infer<typeof PendingRunSchema>;
@@ -180,6 +183,7 @@ export const IPC_CHANNELS = {
   SELECT_PROBLEMS: "scraply:select-problems", EXPORT_RESEARCH: "scraply:export-research", EXPORT_IDEAS: "scraply:export-ideas",
   GET_SOURCE_DETAIL: "scraply:get-source-detail", GET_IDEA_DETAIL: "scraply:get-idea-detail",
   NATIVE_LOGIN_START: "scraply:native-login-start", NATIVE_LOGIN_COMPLETE: "scraply:native-login-complete",
+  NATIVE_LOGIN_CANCEL: "scraply:native-login-cancel",
   NATIVE_ACCOUNT_REFRESH: "scraply:native-account-refresh", NATIVE_LOGOUT: "scraply:native-logout",
   OPEN_EXTERNAL_URL: "scraply:open-external-url", BACKEND_EVENT: "scraply:backend-event",
 } as const;

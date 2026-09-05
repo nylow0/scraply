@@ -78,6 +78,35 @@ describe("App workspace coordination", () => {
     expect(view.getByText("Failed evidence requirements")).toBeTruthy();
     expect(view.getByText("No candidates passed the evidence requirements.")).toBeTruthy();
   });
+
+  test("cancels an in-flight device-code poll from the setup UI", async () => {
+    const state = workspace("alpha");
+    state.validation.native = { available: true, connected: false, version: "0.1.0", accounts: [] };
+    const neverCompletes = new Promise<never>(() => undefined);
+    const cancelNativeLogin = vi.fn().mockResolvedValue(state);
+    installApi({
+      getWorkspace: vi.fn().mockResolvedValue(state),
+      startNativeLogin: vi.fn().mockResolvedValue({
+        loginId: "login-device",
+        providerId: "openai-subscription",
+        method: "device" as const,
+        verificationUrl: "https://example.test/device",
+        userCode: "ABCD-1234",
+      }),
+      completeNativeLogin: vi.fn().mockReturnValue(neverCompletes),
+      cancelNativeLogin,
+    });
+    const view = render(App);
+    await fireEvent.click(await view.findByRole("button", { name: "Use device code" }));
+    expect(await view.findByText("ABCD-1234")).toBeTruthy();
+
+    await fireEvent.click(view.getByRole("button", { name: "Cancel sign-in" }));
+    await waitFor(() => expect(cancelNativeLogin).toHaveBeenCalledWith({
+      loginId: "login-device",
+      providerId: "openai-subscription",
+    }));
+    expect(await view.findByText("Native account sign-in cancelled.")).toBeTruthy();
+  });
 });
 
 function workspace(activeThreadId: "alpha" | "beta"): WorkspaceState {
@@ -125,6 +154,7 @@ function installApi(overrides: Partial<ScraplyApi>): void {
     saveFavoriteModel: noWorkspace,
     startNativeLogin: async () => ({ loginId: "login-1", providerId: "openai-subscription", method: "browser" as const }),
     completeNativeLogin: async () => ({ pending: true as const }),
+    cancelNativeLogin: noWorkspace,
     refreshNativeAccount: noWorkspace,
     logoutNativeAccount: noWorkspace,
     startResearch: async () => ({ workspace: workspace("alpha") }),
