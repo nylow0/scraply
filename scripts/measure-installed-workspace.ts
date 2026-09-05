@@ -157,6 +157,7 @@ const switchSamples: JsonObject[] = [];
 const localDetailSamples: JsonObject[] = [];
 const ideaDetailSamples: JsonObject[] = [];
 const sourceDetailSamples: JsonObject[] = [];
+const memoryDiagnostics: JsonObject[] = [];
 const ipcObserved = {
   workspace: { count: 0, responseBytes: 0 },
   ideaDetail: { count: 0, responseBytes: 0 },
@@ -312,6 +313,33 @@ async function detailIpc<T>(cdp: CdpClient, kind: "ideaDetail" | "sourceDetail",
   ipcObserved[kind].count += 1;
   ipcObserved[kind].responseBytes += sample.responseBytes;
   return sample;
+}
+
+async function sampleRendererMemory(
+  cdp: CdpClient,
+  rootPid: number,
+  checkpoint: string,
+  collectGarbage = false,
+): Promise<void> {
+  if (collectGarbage) await bounded("HeapProfiler.collectGarbage", 5_000, cdp.call("HeapProfiler.collectGarbage"));
+  const [heap, dom, renderedDom] = await Promise.all([
+    bounded("Runtime.getHeapUsage", 5_000, cdp.call("Runtime.getHeapUsage")),
+    bounded("Memory.getDOMCounters", 5_000, cdp.call("Memory.getDOMCounters")),
+    evaluate(cdp, `({
+      elements: document.querySelectorAll('*').length,
+      solutions: document.querySelectorAll('details.solution').length,
+      categories: document.querySelectorAll('details.category').length,
+    })`),
+  ]);
+  memoryDiagnostics.push({
+    checkpoint,
+    collectedGarbage: collectGarbage,
+    sampledAtMs: measurementElapsedMs(),
+    heap,
+    dom,
+    renderedDom,
+    processes: memorySummary(processMemory(rootPid)),
+  });
 }
 
 async function launch(mode: Mode, index: number, fixture: InstalledPerformanceFixture): Promise<LaunchSession> {
@@ -533,6 +561,7 @@ function writeRaw(): void {
     localDetailSamples,
     ideaDetailSamples,
     sourceDetailSamples,
+    memoryDiagnostics,
   }, null, 2)}\n`, "utf8");
 }
 
@@ -567,6 +596,7 @@ try {
   if (!retainedSynthetic) throw new Error("No retained synthetic session was available for warm measurements");
   const session = retainedSynthetic;
   const initialMemory = memorySummary(processMemory(session.process.pid));
+  await sampleRendererMemory(session.cdp, session.process.pid, "warm-start");
   record("warm-measurement-started", { pid: session.process.pid, initialMemory });
 
   for (let index = 0; index < WARM_WORKSPACE_SAMPLES; index += 1) {
@@ -708,11 +738,16 @@ try {
     });
     if ((index + 1) % 10 === 0) {
       record("switch-detail-progress", { completed: index + 1, total: SWITCH_AND_DETAIL_SAMPLES });
+      if ((index + 1) % 20 === 0) {
+        await sampleRendererMemory(session.cdp, session.process.pid, `after-${index + 1}-switches`);
+      }
       writeRaw();
     }
   }
 
   const finalMemory = memorySummary(processMemory(session.process.pid));
+  await sampleRendererMemory(session.cdp, session.process.pid, "final-before-gc");
+  await sampleRendererMemory(session.cdp, session.process.pid, "final-after-gc", true);
   const initialPids = initialMemory.processes.map((process) => `${process.role}:${process.pid}`).sort();
   const finalPids = finalMemory.processes.map((process) => `${process.role}:${process.pid}`).sort();
   const sameProcessRolesAndPids = JSON.stringify(initialPids) === JSON.stringify(finalPids);
@@ -792,6 +827,7 @@ try {
     memory: {
       initial: initialMemory,
       final: finalMemory,
+      diagnostics: memoryDiagnostics,
       sameProcessRolesAndPids,
       workingSetDeltaBytes: finalMemory.workingSetBytes - initialMemory.workingSetBytes,
       privateDeltaBytes: finalMemory.privateBytes - initialMemory.privateBytes,
