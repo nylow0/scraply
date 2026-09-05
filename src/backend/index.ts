@@ -89,7 +89,8 @@ process.parentPort?.on("message", async (event) => {
     secrets = { ...secrets, providerCredentials: { ...secrets.providerCredentials, [providerId]: credential } };
   };
   const forgetProviderCredential = (providerId: string) => {
-    const { [providerId]: _removed, ...providerCredentials } = secrets.providerCredentials;
+    const providerCredentials = { ...secrets.providerCredentials };
+    delete providerCredentials[providerId];
     secrets = { ...secrets, providerCredentials };
   };
   const context: BackendContext = {

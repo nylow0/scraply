@@ -545,7 +545,8 @@ function registerIpc(): void {
   handle(IPC_CHANNELS.NATIVE_LOGIN_CANCEL, async (body) => {
     const input = NativeLoginCancelSchema.parse(body);
     blockedProviderCredentialWrites.add(input.providerId);
-    const { [input.providerId]: _removed, ...providerCredentials } = secrets.providerCredentials;
+    const providerCredentials = { ...secrets.providerCredentials };
+    delete providerCredentials[input.providerId];
     const nextSecrets = { ...secrets, providerCredentials };
     let persistenceError: unknown;
     try {
@@ -566,7 +567,8 @@ function registerIpc(): void {
   handle(IPC_CHANNELS.NATIVE_LOGOUT, async (body) => {
     const input = NativeProviderSchema.parse(body);
     blockedProviderCredentialWrites.add(input.providerId);
-    const { [input.providerId]: _removed, ...providerCredentials } = secrets.providerCredentials;
+    const providerCredentials = { ...secrets.providerCredentials };
+    delete providerCredentials[input.providerId];
     const nextSecrets = { ...secrets, providerCredentials };
     persistSecrets(nextSecrets);
     secrets = nextSecrets;
