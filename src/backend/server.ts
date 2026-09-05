@@ -514,11 +514,12 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
       contentHash: String(source.content_hash), retrievedAt: String(source.retrieved_at),
     }));
     const factors = (db.db.prepare(`
-      SELECT id, subject, behavior, quote, source_id, harvest_mode, model_confidence, created_at
+      SELECT id, subject, behavior, quote, source_id, harvest_mode, model_confidence, uncertainty, created_at
       FROM factors WHERE research_run_id = ? ORDER BY created_at, id
     `).all(runId) as Array<Record<string, unknown>>).map((factor) => ({
       id: String(factor.id), subject: String(factor.subject), behavior: String(factor.behavior), quote: String(factor.quote),
       sourceId: String(factor.source_id), harvestMode: String(factor.harvest_mode), modelConfidence: Number(factor.model_confidence),
+      ...(factor.uncertainty === null || factor.uncertainty === undefined ? {} : { uncertainty: String(factor.uncertainty) }),
       createdAt: String(factor.created_at),
     }));
     // The archived scope is the one this run actually used; the thread's live scope may have been edited since.
@@ -1028,6 +1029,7 @@ function renderMarkdown(ideas: SolutionView[]): string {
       "",
       `> ${factor.quote}`,
       "",
+      ...(factor.uncertainty ? [`Uncertainty: ${factor.uncertainty}`, ""] : []),
       `Source: [${factor.sourceTitle}](${factor.sourceUrl})`,
       "",
     ])
@@ -1049,7 +1051,10 @@ function renderDecisionMarkdown(ideas: SolutionView[]): string {
       `Workflow: v2. ${idea.selected ? "Selected by the user." : "Not selected."} Problem evidence: ${idea.problemVerdict}.`, "",
       `Key assumption: ${idea.keyAssumption}`, "", `Current approach may suffice: ${idea.whyCurrentApproachMaySuffice}`, "",
       `Constraints: ${idea.respectsOffLimitsWhy}`, "", "## Uncertainty", "", ...(idea.unknowns ?? []).map((item) => `- ${item}`), "",
-      "## Supporting observations", "", ...idea.factors.flatMap((factor) => [`> ${factor.quote}`, "", `[${factor.sourceTitle}](${factor.sourceUrl})`, ""]),
+      "## Supporting observations", "", ...idea.factors.flatMap((factor) => [
+        `> ${factor.quote}`, "", ...(factor.uncertainty ? [`Uncertainty: ${factor.uncertainty}`, ""] : []),
+        `[${factor.sourceTitle}](${factor.sourceUrl})`, "",
+      ]),
       "## Contrary evidence considered", "", ...(idea.contrarySources ?? []).flatMap((source) => [`[${source.title}](${source.url})`, "", source.text, ""]),
       ...(analysis ? [
         "## Model analysis, not observed results", "", ...analysis.consequences.map((item) => `- ${item.direction}: ${item.description}. Affects ${item.affects}. ${item.rationale}`), "",
@@ -1075,6 +1080,7 @@ function renderEvidenceFollowUpMarkdown(followUp: {
     ...(followUp.error ? [`Error: ${followUp.error}`, ""] : []),
     ...factors.flatMap((factor) => [
       `### ${String(factor.subject)}`, "", String(factor.behavior), "", `> ${String(factor.quote)}`, "",
+      ...(factor.uncertainty === null || factor.uncertainty === undefined ? [] : [`Uncertainty: ${String(factor.uncertainty)}`, ""]),
       `Source ID: ${String(factor.sourceId)}`, "",
     ]),
     ...sources.flatMap((source) => [

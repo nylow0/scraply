@@ -328,8 +328,8 @@ describe("cutover backend", () => {
       VALUES ('source-selected', 'discovery-latest', 'https://example.com/selected', 'Selected evidence', 'Source body stays in the source record.', 'hash-selected', ?)
     `).run(now);
     client.db.prepare(`
-      INSERT INTO factors (id, research_run_id, subject, behavior, quote, source_id, harvest_mode, model_confidence, created_at)
-      VALUES ('factor-selected', 'discovery-latest', 'Repair shops', 'wait for deliveries', 'Parts arrive several days late.', 'source-selected', 'domain', 0.82, ?)
+      INSERT INTO factors (id, research_run_id, subject, behavior, quote, source_id, harvest_mode, model_confidence, uncertainty, created_at)
+      VALUES ('factor-selected', 'discovery-latest', 'Repair shops', 'wait for deliveries', 'Parts arrive several days late.', 'source-selected', 'domain', 0.82, 'Holiday demand was not sampled.', ?)
     `).run(now);
     insertProblem.run("problem-selected", "discovery-latest", "Selected problem", now, now);
     client.db.prepare("INSERT INTO problem_factors (problem_id, factor_id) VALUES ('problem-selected', 'factor-selected')").run();
@@ -390,6 +390,16 @@ describe("cutover backend", () => {
     const markdown = await post("/ideas/export", { threadId: created.thread.id, format: "markdown" }) as { files: Array<{ content: string }> };
     expect(markdown.files[0]!.content).toContain("## Evidence behind the problem");
     expect(markdown.files[0]!.content).toContain("> Parts arrive several days late.");
+    expect(markdown.files[0]!.content.match(/Uncertainty: Holiday demand was not sampled\./g)).toHaveLength(2);
+
+    const v2Client = new DatabaseClient(dbPath);
+    v2Client.db.prepare("UPDATE research_runs SET workflow_version = 2 WHERE id = 'development-selected'").run();
+    v2Client.close();
+    const v2Markdown = await post("/ideas/export", { threadId: created.thread.id, format: "markdown" }) as { files: Array<{ content: string }> };
+    const [decisionMarkdown, followUpMarkdown] = v2Markdown.files[0]!.content.split("\n## Evidence follow-up");
+    expect(decisionMarkdown).toContain("## Supporting observations");
+    expect(decisionMarkdown?.match(/Uncertainty: Holiday demand was not sampled\./g)).toHaveLength(5);
+    expect(followUpMarkdown).toContain("Uncertainty: Holiday demand was not sampled.");
 
     await handle.close();
     handles.splice(handles.indexOf(handle), 1);
@@ -443,8 +453,8 @@ describe("cutover backend", () => {
       .run("scope-export", "discovery-export", scope.title, scope.audience, scope.domain, scope.observations, JSON.stringify(scope.offLimits), now, now);
     client.db.prepare(`INSERT INTO sources (id, research_run_id, provider_source_id, canonical_url, title, retrieved_text, content_hash, retrieved_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
       .run("source-export", "discovery-export", "provider-1", "https://example.com/evidence", "Repair evidence", "Observed delivery delays.", "hash-1", now);
-    client.db.prepare(`INSERT INTO factors (id, research_run_id, subject, behavior, quote, source_id, harvest_mode, model_confidence, created_at) VALUES (?, ?, ?, ?, ?, ?, 'domain', 0.83, ?)`)
-      .run("factor-export", "discovery-export", "Repair shops", "wait for parts", "Observed delivery delays.", "source-export", now);
+    client.db.prepare(`INSERT INTO factors (id, research_run_id, subject, behavior, quote, source_id, harvest_mode, model_confidence, uncertainty, created_at) VALUES (?, ?, ?, ?, ?, ?, 'domain', 0.83, ?, ?)`)
+      .run("factor-export", "discovery-export", "Repair shops", "wait for parts", "Observed delivery delays.", "source-export", "Seasonality was not measured.", now);
     client.db.prepare(`INSERT INTO problems (id, discovery_run_id, statement, why_it_persists, affected, scale_estimate, verdict, verdict_reason, verdict_source_ids_json, selected_at, created_at) VALUES (?, ?, ?, ?, ?, ?, 'confirmed', ?, '[]', NULL, ?)`)
       .run("problem-export", "discovery-export", "Parts arrival is unpredictable.", "Supplier data is fragmented.", "Independent shops", "Thousands", "Evidence confirms recurring delays.", now);
     client.db.prepare(`INSERT INTO problem_verdict_sources (problem_id, source_id, research_run_id, position) VALUES (?, ?, ?, 0)`)
@@ -470,12 +480,13 @@ describe("cutover backend", () => {
     await post("/scope", { threadId: created.thread.id, scope: { ...scope, title: "Edited later", domain: "Something else" } });
 
     const bundle = await post("/research/export", { threadId: created.thread.id }) as { filename: string; content: string };
-    const exported = JSON.parse(bundle.content) as { schemaVersion: number; scope: typeof scope; sources: Array<{ text: string }>; factors: Array<{ sourceId: string }>; problems: Array<{ id: string }>; rejectedProblemCandidates: Array<{ id: string; statement: string; reason: string }> };
+    const exported = JSON.parse(bundle.content) as { schemaVersion: number; scope: typeof scope; sources: Array<{ text: string }>; factors: Array<{ sourceId: string; uncertainty?: string }>; problems: Array<{ id: string }>; rejectedProblemCandidates: Array<{ id: string; statement: string; reason: string }> };
     expect(bundle.filename).toBe("edited-later-research.json");
     expect(exported.schemaVersion).toBe(1);
     expect(exported.scope).toEqual(scope);
     expect(exported.sources[0]?.text).toBe("Observed delivery delays.");
     expect(exported.factors[0]?.sourceId).toBe("source-export");
+    expect(exported.factors[0]?.uncertainty).toBe("Seasonality was not measured.");
     expect(exported.problems.map((problem) => problem.id)).toEqual(["problem-export"]);
     expect(exported.rejectedProblemCandidates).toEqual([{
       id: "rejected-export",
