@@ -69,6 +69,22 @@ describe("workflow v2 persistence", () => {
     client.close();
   });
 
+  test("reads and resumes a nonempty solution checkpoint with stored evidence roles", () => {
+    const client = database();
+    const repository = new WorkflowV2Repository(client);
+    const candidate = solutionOption();
+    client.immediateTransaction(() => repository.saveStageResult(stageResult({ options: [candidate] })));
+
+    const saved = repository.findStageResult("run-v2", "solutions");
+    expect(saved?.output).toEqual({ options: [candidate] });
+    expect(repository.getStageResumeState({
+      researchRunId: "run-v2",
+      stageId: "solutions",
+      context: { problemId: "problem-1", revision: 1 },
+    }).kind).toBe("reusable");
+    client.close();
+  });
+
   test("keeps a completed zero-option result idempotent and rejects later options", () => {
     const client = database();
     const repository = new WorkflowV2Repository(client);
@@ -82,6 +98,22 @@ describe("workflow v2 persistence", () => {
     expect(() => client.immediateTransaction(() => {
       repository.saveSolutionOptions("run-v2", "problem-1", [solution("solution-1")]);
     })).toThrow(WorkflowV2ConflictError);
+    client.close();
+  });
+
+  test("rejects semantically invalid solution and decision checkpoints", () => {
+    const client = database();
+    const repository = new WorkflowV2Repository(client);
+    expect(() => client.immediateTransaction(() => repository.saveStageResult(stageResult({
+      options: Array.from({ length: 4 }, () => solutionOption()),
+    })))).toThrow("more than three options");
+
+    const duplicateRisks = decisionAnalysis();
+    duplicateRisks.risks.push({ ...duplicateRisks.risks[0]! });
+    expect(() => client.immediateTransaction(() => repository.saveStageResult(
+      decisionStageResult("solution-1", duplicateRisks),
+    ))).toThrow("Duplicate decision risk ID");
+    expect(client.db.prepare("SELECT COUNT(*) AS count FROM stage_results").get()).toEqual({ count: 0 });
     client.close();
   });
 
@@ -112,6 +144,16 @@ describe("workflow v2 persistence", () => {
       });
     });
     expect(stored.created).toBe(true);
+    const unknownRisk = {
+      ...analysis,
+      proposedResponses: [{ ...analysis.proposedResponses[0]!, riskIds: ["unknown-risk"] }],
+    };
+    expect(() => client.immediateTransaction(() => repository.saveDecisionAnalysis({
+      researchRunId: "run-v2",
+      solutionId: "solution-1",
+      stageResultId: "stage-analysis",
+      analysis: unknownRisk,
+    }))).toThrow("empty or unknown risk set");
     expect(client.db.prepare("SELECT user_decision, observed_result FROM decision_analyses").get())
       .toEqual({ user_decision: null, observed_result: null });
     client.close();
@@ -179,6 +221,12 @@ function database(): DatabaseClient {
 function solution(id: string, mechanism = "Synchronize state") {
   return {
     id,
+    ...solutionOption(mechanism),
+  };
+}
+
+function solutionOption(mechanism = "Synchronize state") {
+  return {
     mechanism,
     description: "Read shared state before filing.",
     keyAssumption: "State is available.",
@@ -201,7 +249,10 @@ function stageResult(output: unknown) {
     prompt: prompt("solutions" as const),
     schema: deriveJsonSchema(WORKFLOW_V2_STAGE_REGISTRY.solutions.schema),
     inputs: { problemId: "problem-1" },
-    evidence: [{ sourceId: "source-1", content: { quote: "Repeated filing" } }],
+    evidence: [
+      { sourceId: "source-1", content: { categories: ["supporting"], evidence: { quote: "Repeated filing" } } },
+      { sourceId: "source-2", content: { categories: ["contrary"], evidence: { quote: "Existing tools work" } } },
+    ],
     runtimePrompt: { id: "scraply.stage-worker.v1", sha256: hash("runtime-prompt") },
     effectiveRequest: { stage: "solutions", model: { providerId: "test", modelId: "test" } },
   };

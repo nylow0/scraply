@@ -117,14 +117,35 @@ describe("workflow v2 foundation", () => {
       .rejects.toThrow("conflicting content");
   });
 
+  test("requires evidence references to match their supplied category", async () => {
+    const roleSwapped = produceDevelopmentOptions(context(), dependencies({
+      options: [option({
+        supportingEvidenceIds: ["contrary-1"],
+        contraryEvidenceIds: ["support-1"],
+      })],
+    }));
+
+    await expect(roleSwapped).rejects.toMatchObject({
+      code: "schema",
+      retryable: false,
+      attempts: [{ providerRequestId: "provider-request-1" }],
+    });
+  });
+
   test("coalesces one source used as both support and contrary evidence", async () => {
     const shared = context();
     shared.contraryEvidence = [{ sourceId: "support-1", content: { quote: "Repeated filing" } }];
     let evidence: Array<{ sourceId: string; content: unknown }> = [];
-    await produceDevelopmentOptions(shared, dependencies({ options: [] }, (request) => {
+    const result = await produceDevelopmentOptions(shared, dependencies({
+      options: [option({
+        supportingEvidenceIds: ["support-1"],
+        contraryEvidenceIds: ["support-1"],
+      })],
+    }, (request) => {
       evidence = request.evidence.map((item) => ({ sourceId: item.sourceId, content: item.content }));
     }));
 
+    expect(result.options).toHaveLength(1);
     expect(evidence).toHaveLength(2);
     expect(evidence[1]?.content).toEqual({
       categories: ["supporting", "contrary"],
