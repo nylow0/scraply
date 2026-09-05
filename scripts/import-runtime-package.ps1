@@ -1,7 +1,9 @@
 [CmdletBinding()]
 param(
   [Parameter(Mandatory)]
-  [string] $RuntimeRepository
+  [string] $RuntimeRepository,
+
+  [string] $BuiltPackageDirectory
 )
 
 Set-StrictMode -Version Latest
@@ -38,26 +40,29 @@ if (-not [string]::IsNullOrWhiteSpace($sourceState)) {
   throw "Runtime package import requires a clean runtime repository."
 }
 
-$packageScript = Join-Path $runtimeRoot "scripts\package.ps1"
-if (-not (Test-Path -LiteralPath $packageScript -PathType Leaf)) {
-  throw "Runtime package script not found: $packageScript"
-}
-$packageOutput = & powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File $packageScript
-if ($LASTEXITCODE -ne 0) {
-  throw "Runtime packaging failed with exit code $LASTEXITCODE."
+if ([string]::IsNullOrWhiteSpace($BuiltPackageDirectory)) {
+  $packageScript = Join-Path $runtimeRoot "scripts\package.ps1"
+  if (-not (Test-Path -LiteralPath $packageScript -PathType Leaf)) {
+    throw "Runtime package script not found: $packageScript"
+  }
+  $packageOutput = & powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File $packageScript
+  if ($LASTEXITCODE -ne 0) {
+    throw "Runtime packaging failed with exit code $LASTEXITCODE."
+  }
+  $reportedDirectories = @($packageOutput |
+    Where-Object { $_ -is [string] -and (Test-Path -LiteralPath $_ -PathType Container) } |
+    Select-Object -Last 1)
+  if ($reportedDirectories.Count -ne 1) {
+    throw "Runtime packaging did not report exactly one package directory."
+  }
+  $BuiltPackageDirectory = [string]$reportedDirectories[0]
 }
 $sourceStateAfterPackage = Invoke-Git -Arguments @("status", "--porcelain", "--untracked-files=normal")
 if (-not [string]::IsNullOrWhiteSpace($sourceStateAfterPackage)) {
-  throw "Runtime packaging changed the runtime repository. Refusing to import an unpinned result."
+  throw "Runtime package import requires a clean runtime repository after packaging."
 }
 
-$packageDirectory = @($packageOutput |
-  Where-Object { $_ -is [string] -and (Test-Path -LiteralPath $_ -PathType Container) } |
-  Select-Object -Last 1)
-if ($packageDirectory.Count -ne 1) {
-  throw "Runtime packaging did not report exactly one package directory."
-}
-$packageDirectory = [IO.Path]::GetFullPath([string]$packageDirectory[0])
+$packageDirectory = [IO.Path]::GetFullPath($BuiltPackageDirectory)
 $distRoot = [IO.Path]::GetFullPath((Join-Path $runtimeRoot "dist"))
 $distPrefix = $distRoot.TrimEnd([IO.Path]::DirectorySeparatorChar) + [IO.Path]::DirectorySeparatorChar
 if (-not $packageDirectory.StartsWith($distPrefix, [StringComparison]::OrdinalIgnoreCase)) {

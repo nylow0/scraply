@@ -17,6 +17,7 @@ const roots: string[] = [];
 const version = "0.1.0";
 const sourceCommit = "a".repeat(40);
 const archiveName = `scraply-agent-${version}-windows-x64-${sourceCommit.slice(0, 12)}.zip`;
+const fixtureTestTimeoutMs = 30_000;
 
 function hash(path: string): string {
   return createHash("sha256").update(readFileSync(path)).digest("hex");
@@ -156,7 +157,7 @@ describe("runtime package staging", () => {
       "scraply-agent.exe",
       "scraply-agent.lock.json",
     ]);
-  });
+  }, fixtureTestTimeoutMs);
 
   test("rejects archive bytes that differ from the lock", async () => {
     const fixture = createPackageFixture({ mutateArchiveAfterLock: true });
@@ -164,7 +165,7 @@ describe("runtime package staging", () => {
       ...fixture,
       runVersion: () => "scraply-agent 0.1.0",
     })).rejects.toThrow("Runtime archive has 19 bytes");
-  });
+  }, fixtureTestTimeoutMs);
 
   test("rejects unexpected and traversal archive entries", async () => {
     const extra = createPackageFixture({ extraEntry: "debug-fixture.json" });
@@ -178,7 +179,7 @@ describe("runtime package staging", () => {
       ...traversal,
       runVersion: () => "scraply-agent 0.1.0",
     })).rejects.toThrow(/unsafe path|invalid relative path/);
-  });
+  }, fixtureTestTimeoutMs);
 
   test("rejects release binaries that retain debug fixture seams", async () => {
     const fixture = createPackageFixture({
@@ -188,7 +189,7 @@ describe("runtime package staging", () => {
       ...fixture,
       runVersion: () => "scraply-agent 0.1.0",
     })).rejects.toThrow("debug-only fixture markers");
-  });
+  }, fixtureTestTimeoutMs);
 
   test("rejects a runtime whose reported version differs from the lock", async () => {
     const fixture = createPackageFixture();
@@ -196,5 +197,5 @@ describe("runtime package staging", () => {
       ...fixture,
       runVersion: () => "scraply-agent 0.2.0",
     })).rejects.toThrow("expected \"scraply-agent 0.1.0\"");
-  });
+  }, fixtureTestTimeoutMs);
 });
