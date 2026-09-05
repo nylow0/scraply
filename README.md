@@ -21,6 +21,8 @@ Set `EXA_API_KEY`, `PERPLEXITY_API_KEY`, or both in `.env` for development or in
 
 Connect OpenAI through Scraply's native account controls. The app bundles a pinned `scraply-agent` executable and keeps native credentials separate from neighboring Codex installations. Native failures do not silently switch to the legacy CLI. Live acceptance of the native integration is still in progress.
 
+Native OpenAI does not support output-token ceilings. Scraply omits that field for this provider; request deadlines and the runtime output-size limit still apply, but they do not guarantee a token or billing ceiling. Other providers retain the configured token ceiling.
+
 Run the code checks before handing off a change:
 
 ```powershell

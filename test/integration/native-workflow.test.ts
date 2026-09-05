@@ -93,7 +93,8 @@ describe("native v1 research workflow through the production backend", () => {
     for (const request of requests) {
       expect(request.repairPolicy).toBe("one_retry");
       expect(JSON.stringify(request.workOrder)).not.toContain(untrusted);
-      expect(request.maxOutputTokens).toBeLessThanOrEqual(8192);
+      expect(request.maxOutputTokens).toBeUndefined();
+      expect(request.deadlineMs).toBe(120_000);
       const promptName = request.workOrder.stage.split(":")[0]!;
       expect(request.workOrder.instruction.startsWith(readFileSync(join(process.cwd(), "prompts", `${promptName}.md`), "utf8").trim())).toBe(true);
     }

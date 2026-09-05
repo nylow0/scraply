@@ -17,6 +17,7 @@ function assertCodexCompatible(schema: JsonSchema, path = "$"): void {
   }
 
   if (schema.type === "object") {
+    expect(schema, `${path} must reject extra properties for native strict output`).toHaveProperty("additionalProperties", false);
     const propertyNames = Object.keys(schema.properties ?? {});
     expect(schema.required, `${path}.required must contain every property`).toEqual(propertyNames);
     for (const [name, child] of Object.entries(schema.properties ?? {})) {

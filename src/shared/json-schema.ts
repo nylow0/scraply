@@ -4,6 +4,7 @@ export type JsonSchema = {
   type?: "object" | "array" | "string" | "number" | "integer" | "boolean" | "null";
   properties?: Record<string, JsonSchema>;
   required?: string[];
+  additionalProperties?: false;
   items?: JsonSchema;
   enum?: Array<string | number | boolean>;
   anyOf?: JsonSchema[];
@@ -18,7 +19,7 @@ export function deriveJsonSchema(schema: z.ZodTypeAny): JsonSchema {
       const properties = Object.fromEntries(
         Object.entries(shape).map(([key, value]) => [key, deriveJsonSchema(value)]),
       );
-      return { type: "object", properties, required: Object.keys(properties) };
+      return { type: "object", properties, required: Object.keys(properties), additionalProperties: false };
     }
     case z.ZodFirstPartyTypeKind.ZodArray:
       return { type: "array", items: deriveJsonSchema(definition.type) };
