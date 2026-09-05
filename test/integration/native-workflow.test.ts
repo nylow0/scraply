@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { z } from "zod";
@@ -25,6 +25,34 @@ afterEach(async () => {
 });
 
 describe("native v1 research workflow through the production backend", () => {
+  test("fails before provider spend on an empty override, then runs and snapshots a deliberate edit", async () => {
+    const item = await fixture({ searchEnabled: false });
+    const overridePath = join(item.directory, "prompts", "solutions.md");
+    writeFileSync(overridePath, " \n");
+    const brokenThread = await item.createThread("known-problem");
+    await item.post("/research/start", { threadId: brokenThread }, z.object({ runId: z.string() }));
+    await item.waitFor((state) => state.threads.find((thread) => thread.id === brokenThread)?.status === "failed");
+    expect(item.requests()).toHaveLength(0);
+    item.assertAccounting(0);
+
+    const instruction = `${readFileSync(join(process.cwd(), "prompts", "solutions.md"), "utf8").trim()}\n\nExplain the maintenance burden of each mechanism.`;
+    writeFileSync(overridePath, instruction);
+    const threadId = await item.createThread("known-problem");
+    await item.post("/research/start", { threadId }, z.object({ runId: z.string() }));
+    await item.waitFor((state) => state.threads.find((thread) => thread.id === threadId)?.status === "solutions-ready");
+    expect(item.requests()[0]?.workOrder.instruction).toBe(instruction);
+    item.assertAccounting(14);
+    await item.restart();
+    expect(readFileSync(overridePath, "utf8")).toBe(instruction);
+    expect((await item.workspace()).solutions).toHaveLength(3);
+    const db = new DatabaseClient(item.dbPath);
+    try {
+      const row = db.db.prepare("SELECT request_json FROM generation_attempts WHERE stage_key = 'solutions'").get() as { request_json: string };
+      expect(z.object({ workOrder: z.object({ instruction: z.string() }) }).parse(JSON.parse(row.request_json)).workOrder.instruction).toBe(instruction);
+    } finally { db.close(); }
+    expect(item.requests()).toHaveLength(14);
+  }, 15_000);
+
   test("discovers, selects an adverse premise, develops, exports, and reopens without replay", async () => {
     const item = await fixture();
     const threadId = await item.createThread("explore-market");

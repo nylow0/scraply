@@ -1,5 +1,6 @@
 import { expect, test, _electron, type ElectronApplication } from "@playwright/test";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawn } from "node:child_process";
@@ -10,6 +11,10 @@ import { IPC_CHANNELS, BackendReadySchema, ResearchEventSchema, type ResearchEve
 // child and Exa HTTP responses are fixtures. Live bundled-runtime parity is a separate gate.
 test("native research survives the installed selection, development, and reopen interaction", async ({}, testInfo) => {
   const directory = mkdtempSync(join(tmpdir(), "scraply-native-ui-"));
+  const managedPrompt = readFileSync(join(process.cwd(), "prompts", "solutions.md"), "utf8");
+  const managedHash = createHash("sha256").update(managedPrompt).digest("hex");
+  mkdirSync(join(directory, "prompts"));
+  writeFileSync(join(directory, "prompts", "solutions.md"), managedPrompt);
   let electron: ElectronApplication | undefined;
   let events = Promise.resolve();
   const eventErrors: unknown[] = [];
@@ -61,6 +66,8 @@ test("native research survives the installed selection, development, and reopen 
     await expect(page.getByText("Parts delivery windows are uncertain.", { exact: true }).first()).toBeVisible();
     await page.screenshot({ path: testInfo.outputPath("native-reopened-evidence.png") });
     expect(readFileSync(join(directory, "requests.jsonl"), "utf8").trim().split("\n")).toHaveLength(20);
+    expect(existsSync(join(directory, "prompts", "solutions.md"))).toBe(false);
+    expect(readFileSync(join(directory, "prompts", "bundled-copy-backups", managedHash, "solutions.md"), "utf8")).toBe(managedPrompt);
   } finally {
     await events;
     await electron?.close();
