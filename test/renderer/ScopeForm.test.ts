@@ -2,7 +2,7 @@ import { fireEvent, render, waitFor } from "@testing-library/svelte";
 import { describe, expect, test, vi } from "vitest";
 import ScopeForm from "../../src/renderer/components/ScopeForm.svelte";
 import type { WorkspaceState } from "../../src/shared/ipc";
-import { DEFAULT_RUN_CONFIG } from "../../src/shared/schemas";
+import { DEFAULT_RUN_CONFIG, RunConfigSchema } from "../../src/shared/schemas";
 
 describe("ScopeForm search provider selection", () => {
   test("warns for only the selected provider and saves a connected replacement", async () => {
@@ -27,7 +27,11 @@ describe("ScopeForm search provider selection", () => {
     await fireEvent.click(submit);
 
     await waitFor(() => expect(onSave).toHaveBeenCalledTimes(1));
-    expect(onSave.mock.calls[0]?.[1]).toMatchObject({ searchProvider: "perplexity" });
+    const submittedConfig = onSave.mock.calls[0]?.[1];
+    expect(RunConfigSchema.parse(submittedConfig)).toMatchObject({
+      configVersion: 2,
+      searchProvider: "perplexity",
+    });
     expect(onStart).toHaveBeenCalledTimes(1);
   });
 

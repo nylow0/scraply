@@ -564,13 +564,18 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
           throw new AppError("conflict", context.nativeRuntimeStatus?.().error ?? "Native runtime is unavailable");
         }
         const { providerId } = NativeProviderSchema.parse(body);
+        let cleanupError: unknown;
         for (const [loginId, loginProviderId] of pendingNativeLogins) {
           if (loginProviderId !== providerId) continue;
-          try { await context.nativeRuntime.cancelLogin(loginId); } finally { pendingNativeLogins.delete(loginId); }
+          try { await context.nativeRuntime.cancelLogin(loginId); }
+          catch (error) { cleanupError ??= error; }
+          finally { pendingNativeLogins.delete(loginId); }
         }
         try { await context.nativeRuntime.logout(providerId); }
+        catch (error) { cleanupError ??= error; }
         finally { context.forgetProviderCredential?.(providerId); }
         invalidateProviderCache();
+        if (cleanupError) throw cleanupError;
         return sendJson(res, 200, await workspaceState());
       }
       if (route === "/native/retry") {

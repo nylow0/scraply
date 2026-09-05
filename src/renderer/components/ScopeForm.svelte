@@ -35,14 +35,15 @@
       ? DEFAULT_RUN_CONFIG.model
       : initial.models[0] ?? DEFAULT_RUN_CONFIG.model);
   let modelKey = $state(modelRefKey(initialModel));
-  let model = $derived<ModelRef>(workspace.modelOptions.find((item) => modelRefKey(item) === modelKey)
+  let selectedModelOption = $derived(workspace.modelOptions.find((item) => modelRefKey(item) === modelKey));
+  let resolvedModel = $derived(selectedModelOption
     ?? (modelRefKey(initialModel) === modelKey ? initialModel : DEFAULT_RUN_CONFIG.model));
+  let model = $derived<ModelRef>({ providerId: resolvedModel.providerId, modelId: resolvedModel.modelId });
   let initialModelOption = initial.modelOptions.find((item) => sameModelRef(item, initialModel));
   let reasoningEffort = $state(initial.runConfig?.reasoningEffort
     && initialModelOption?.reasoningEfforts.some((item) => item.id === initial.runConfig?.reasoningEffort)
       ? initial.runConfig.reasoningEffort
       : initialModelOption?.defaultReasoningEffort ?? DEFAULT_RUN_CONFIG.reasoningEffort);
-  let selectedModelOption = $derived(workspace.modelOptions.find((item) => sameModelRef(item, model)));
   let discoveryDepth = $state(initial.runConfig?.discoveryDepth ?? DEFAULT_RUN_CONFIG.discoveryDepth);
   let searchProvider = $state<SearchProvider>(initial.runConfig?.searchProvider
     ?? (initial.validation.exa.valid ? "exa" : initial.validation.perplexity.valid ? "perplexity" : "exa"));
@@ -124,7 +125,7 @@
       await onSave({
         title: title.trim(), audience: audience.trim(), domain: domain.trim(), observations: observations.trim(),
         offLimits: offLimits.split("\n").map((item) => item.trim()).filter(Boolean),
-      }, { model, reasoningEffort, discoveryDepth, searchProvider, maxRunMinutes, researchMode, knownProblem: knownProblem.trim() });
+      }, { configVersion: 2, model, reasoningEffort, discoveryDepth, searchProvider, maxRunMinutes, researchMode, knownProblem: knownProblem.trim() });
       savedFingerprint = submittedFingerprint;
       await onStart();
     } catch {
