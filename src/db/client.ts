@@ -5,6 +5,7 @@ import { openDatabase, type SqlDatabase } from "./sqlite";
 
 export class DatabaseClient {
   readonly db: SqlDatabase;
+  private transactionActive = false;
 
   constructor(dbPath: string) {
     mkdirSync(dirname(dbPath), { recursive: true });
@@ -70,7 +71,44 @@ export class DatabaseClient {
     `).run(key, value, new Date().toISOString());
   }
 
+  immediateTransaction<T>(
+    operation: () => T & (T extends PromiseLike<unknown> ? never : unknown),
+  ): T {
+    if (this.transactionActive) throw new Error("Nested immediate transactions are not supported");
+    if (operation.constructor.name === "AsyncFunction") {
+      throw new Error("DatabaseClient.immediateTransaction callback must be synchronous");
+    }
+    this.db.exec("BEGIN IMMEDIATE");
+    this.transactionActive = true;
+    try {
+      const result = operation();
+      if (isPromiseLike(result)) {
+        throw new Error("DatabaseClient.immediateTransaction callback must be synchronous");
+      }
+      this.db.exec("COMMIT");
+      return result;
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    } finally {
+      this.transactionActive = false;
+    }
+  }
+
+  requireImmediateTransaction(): void {
+    if (!this.transactionActive) {
+      throw new Error("This mutation requires a caller-owned immediate transaction");
+    }
+  }
+
   close(): void {
     this.db.close();
   }
+}
+
+function isPromiseLike(value: unknown): value is PromiseLike<unknown> {
+  return typeof value === "object"
+    && value !== null
+    && "then" in value
+    && typeof value.then === "function";
 }
