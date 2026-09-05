@@ -117,7 +117,8 @@ export async function runDevelopment(
         schema,
         jsonSchema: deriveJsonSchema(schema),
         repairPolicy: "one_retry",
-        maxOutputTokens: 8_192,
+        // The subscription endpoint rejects token ceilings; its deadline and byte limit still apply.
+        ...(dependencies.model.providerId !== "openai-subscription" ? { maxOutputTokens: 8_192 } : {}),
         deadlineMs: 120_000,
         ...(dependencies.signal ? { signal: dependencies.signal } : {}),
       });

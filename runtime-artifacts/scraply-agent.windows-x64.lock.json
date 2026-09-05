@@ -7,15 +7,15 @@
                              "1.1"
                          ],
     "sourceRepository":  "https://github.com/nylow0/scraply-agent",
-    "sourceCommit":  "ab9fcfc859ee19fff8dfd4c05c854ab5d145baf8",
+    "sourceCommit":  "5fea3f217e9fea54c0d4f88c6ef51ab001b07520",
     "upstreamCommit":  "8c68d4c87dc54d38861f5114e920c3de2efa5876",
     "artifactPath":  "scraply-agent.exe",
-    "sha256":  "20e081268d6e932a97b3d5574e7b4e7f1c9d0ee49562007cfcdfe3effc1678b2",
+    "sha256":  "9fcab15f6efe518f198d32af08aa7aef024eff34d600d1ff5902ea9d021f0c01",
     "sizeBytes":  13539840,
     "archive":  {
-                    "fileName":  "scraply-agent-0.1.0-windows-x64-ab9fcfc859ee.zip",
-                    "sha256":  "3a6666dbe649af0fa4bf50240e1513c1c6e964a74afe4959ce085e27d24da598",
-                    "sizeBytes":  5992976
+                    "fileName":  "scraply-agent-0.1.0-windows-x64-5fea3f217e9f.zip",
+                    "sha256":  "3772056265c193f9344a3ba3fa468f6ab6c474ec8e0c0f165cf484527e56a1ee",
+                    "sizeBytes":  5992939
                 },
     "notices":  [
                     {
@@ -39,7 +39,7 @@
                 ],
     "checksums":  {
                       "path":  "SHA256SUMS.txt",
-                      "sha256":  "fdfa8c424a57b54433f003c7877b010beea85efcbee77be68b3024617993dd09",
+                      "sha256":  "eb7b2fec0fbf9f2ff3eb4d28337500cdc0d702fc0af784c92153c4b546de2a9d",
                       "sizeBytes":  316
                   }
 }
