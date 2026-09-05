@@ -28,6 +28,7 @@ import {
 } from "../shared/schemas";
 import type { LogInput } from "../shared/logging";
 import { discoveryRunProjection } from "../core/discovery";
+import { summarizeRunUsage, type GenerationAttemptUsageRow } from "./run-usage";
 
 export interface BackendContext {
   dataDir: string;
@@ -362,6 +363,7 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
       researchRun: {
         id: String(run.id), status: String(run.status), completionReason: run.completion_reason === null ? null : String(run.completion_reason),
         createdAt: String(run.created_at), completedAt: String(run.updated_at), config: RunConfigSchema.parse(JSON.parse(String(run.config_json))),
+        usage: runUsage(runId),
       },
       scope: archivedScope
         ? {
@@ -374,6 +376,32 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
       problems: listProblems(threadId),
       rejectedProblemCandidates: listRejectedProblemCandidates(threadId),
     };
+  }
+  function runUsage(runId: string) {
+    const rows = db.db.prepare(`
+      SELECT status, provider_id, model_id, attempt_metadata_json, usage_json
+      FROM generation_attempts WHERE research_run_id = ? ORDER BY created_at, id
+    `).all(runId) as GenerationAttemptUsageRow[];
+    if (rows.length === 0) {
+      const ledgerRows = db.db.prepare(`
+        SELECT provider, model, COUNT(*) AS count
+        FROM cost_ledger
+        WHERE research_run_id = ? AND operation = 'structured-completion' AND status IN ('reserved', 'committed')
+        GROUP BY provider, model
+      `).all(runId) as Array<{ provider: string; model: string | null; count: number }>;
+      for (const item of ledgerRows) {
+        for (let index = 0; index < item.count; index += 1) {
+          rows.push({ status: "completed", provider_id: item.provider, model_id: item.model ?? "unknown", attempt_metadata_json: null, usage_json: null });
+        }
+      }
+    }
+    return summarizeRunUsage(rows);
+  }
+  function solutionRunUsage(solutionId: string) {
+    const row = db.db.prepare(`
+      SELECT research_run_id FROM solutions WHERE id = ?
+    `).get(solutionId) as { research_run_id: string } | undefined;
+    return row ? { runId: row.research_run_id, summary: runUsage(row.research_run_id) } : null;
   }
   function latestRun(threadId: string) {
     const row = db.db.prepare("SELECT id, status, problem_id, config_json FROM research_runs WHERE thread_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1")
@@ -391,6 +419,7 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
       searches: counts.find((item) => item.provider === runConfig.searchProvider)?.count ?? 0,
       projectedCodexCalls: projection.modelCalls, projectedSearches: projection.searches,
       lastActivity: activity ? String(JSON.parse(activity.payload_json).message ?? "") : null,
+      usage: runUsage(row.id),
     };
   }
   function listPendingRuns(): Array<{ runId: string; threadId: string; threadTitle: string; status: "queued" | "running"; problemId: string | null }> {
@@ -661,7 +690,13 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
         const files = [...new Set(ideas.map((idea) => idea.problemId))].map((problemId, index) => {
           const group = ideas.filter((idea) => idea.problemId === problemId);
           const filename = `${slug(group[0]!.problemStatement)}-${index + 1}.${input.format === "json" ? "json" : "md"}`;
-          return { filename, content: input.format === "json" ? JSON.stringify(group, null, 2) : renderMarkdown(group) };
+          const exportedGroup = input.format === "json"
+            ? group.map((idea) => {
+              const usage = solutionRunUsage(idea.id);
+              return usage ? { ...idea, usage } : idea;
+            })
+            : group;
+          return { filename, content: input.format === "json" ? JSON.stringify(exportedGroup, null, 2) : renderMarkdown(group) };
         });
         return sendJson(res, 200, { files });
       }

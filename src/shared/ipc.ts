@@ -129,11 +129,31 @@ export const SolutionViewSchema = z.object({
   outcomes: z.array(OutcomeViewSchema), risks: z.array(RiskViewSchema),
   confirmedCoreOutcomes: z.number().int().nonnegative(), unaddressedCatastrophicRisks: z.number().int().nonnegative(),
 });
+const UsageDimensionSchema = z.object({ known: z.number().int().nonnegative(), unknownAttempts: z.number().int().nonnegative() }).strict();
+const UsageCostTotalSchema = z.object({ currency: z.string().min(1), amount: z.number().nonnegative() }).strict();
+export const RunUsageSchema = z.object({
+  schemaVersion: z.literal(1),
+  availability: z.enum(["available", "unavailable"]),
+  attemptCount: z.number().int().nonnegative(),
+  unknownAttemptCount: z.number().int().nonnegative(),
+  models: z.array(ModelRefSchema),
+  tokens: z.object({ input: UsageDimensionSchema, output: UsageDimensionSchema, total: UsageDimensionSchema, cachedInput: UsageDimensionSchema, reasoning: UsageDimensionSchema }).strict(),
+  latencyMs: UsageDimensionSchema,
+  repairCount: UsageDimensionSchema,
+  costs: z.object({
+    status: z.enum(["reported", "not_reported", "unknown", "mixed"]),
+    reported: z.array(UsageCostTotalSchema),
+    reportedWithoutCurrencyAttempts: z.number().int().nonnegative(),
+    reportedWithoutCurrencyAmounts: z.array(z.number().nonnegative()),
+    notReportedAttempts: z.number().int().nonnegative(),
+    unknownAttempts: z.number().int().nonnegative(),
+  }).strict(),
+}).strict();
 export const LatestResearchRunSchema = z.object({
   runId: EntityIdSchema, status: z.enum(["queued", "running", "completed", "failed", "cancelled"]),
   problemId: EntityIdSchema.nullable(), codexCalls: z.number().int().nonnegative(), searches: z.number().int().nonnegative(),
   projectedCodexCalls: z.number().int().nonnegative(), projectedSearches: z.number().int().nonnegative(),
-  lastActivity: z.string().nullable(),
+  lastActivity: z.string().nullable(), usage: RunUsageSchema.optional(),
 });
 
 export const WorkspaceStateSchema = z.object({
@@ -172,6 +192,7 @@ export type FactorView = z.infer<typeof FactorViewSchema>;
 export type ProblemCandidate = z.infer<typeof ProblemCandidateSchema>;
 export type RejectedProblemCandidate = z.infer<typeof RejectedProblemCandidateSchema>;
 export type SolutionView = z.infer<typeof SolutionViewSchema>;
+export type RunUsage = z.infer<typeof RunUsageSchema>;
 
 export const IPC_CHANNELS = {
   GET_VALIDATION: "scraply:get-validation", RETRY_CONNECTION: "scraply:retry-connection",
