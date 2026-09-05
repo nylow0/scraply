@@ -25,6 +25,8 @@ jobs:
         continue-on-error: true
         run: bun audit
       - run: bun run check
+      - name: Prepare pinned native runtime
+        run: bun run prepare:runtime
       - name: Build unpacked production app
         run: bun run build && bunx electron-builder --win --dir --publish never
       - name: Smoke packaged production app

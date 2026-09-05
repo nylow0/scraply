@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import packageMetadata from "../../package.json";
@@ -18,11 +18,16 @@ interface BundleOverrides {
   checksums?: string;
 }
 
-function hash(value: string): string {
+interface BundleFixture {
+  directory: string;
+  runtimeLockPath: string;
+}
+
+function hash(value: string | Buffer): string {
   return createHash("sha256").update(Buffer.from(value)).digest("hex");
 }
 
-function createBundle(overrides: BundleOverrides = {}): string {
+function createBundle(overrides: BundleOverrides = {}): BundleFixture {
   const dir = mkdtempSync(join(tmpdir(), "scraply-promoted-"));
   bundles.push(dir);
   const installerBody = overrides.installerBytes ?? "installer-bytes";
@@ -36,14 +41,77 @@ function createBundle(overrides: BundleOverrides = {}): string {
     fileVersion: version,
     signatureStatus: "NotSigned",
   };
-  const manifest = {
+  const runtimeFiles = {
+    executable: "runtime-bytes",
+    LICENSE: "runtime-license",
+    "OPENAI-NOTICE": "runtime-openai-notice",
+    "UPSTREAM.md": "runtime-upstream",
+    checksums: "runtime-checksums",
+  };
+  const runtimeLock = {
     schemaVersion: 1,
+    platform: "windows-x64",
+    executable: "scraply-agent.exe",
+    version: "0.1.0",
+    protocolVersions: ["1.1"],
+    sourceRepository: "https://github.com/nylow0/scraply-agent",
+    sourceCommit: "c".repeat(40),
+    upstreamCommit: "8c68d4c87dc54d38861f5114e920c3de2efa5876",
+    sha256: hash(runtimeFiles.executable),
+    sizeBytes: Buffer.byteLength(runtimeFiles.executable),
+    notices: ["LICENSE", "OPENAI-NOTICE", "UPSTREAM.md"].map((target) => ({
+      target,
+      sha256: hash(runtimeFiles[target as keyof typeof runtimeFiles]),
+      sizeBytes: Buffer.byteLength(runtimeFiles[target as keyof typeof runtimeFiles]),
+    })),
+    checksums: {
+      path: "SHA256SUMS.txt",
+      sha256: hash(runtimeFiles.checksums),
+      sizeBytes: Buffer.byteLength(runtimeFiles.checksums),
+    },
+  };
+  const runtimeLockPath = `${dir}.runtime-lock.json`;
+  bundles.push(runtimeLockPath);
+  writeFileSync(runtimeLockPath, `${JSON.stringify(runtimeLock, null, 2)}\n`);
+  const runtime = {
+    platform: runtimeLock.platform,
+    version: runtimeLock.version,
+    protocolVersions: runtimeLock.protocolVersions,
+    sourceRepository: runtimeLock.sourceRepository,
+    sourceCommit: runtimeLock.sourceCommit,
+    upstreamCommit: runtimeLock.upstreamCommit,
+    executable: {
+      path: "runtime/scraply-agent.exe",
+      bytes: runtimeLock.sizeBytes,
+      sha256: runtimeLock.sha256,
+      versionOutput: "scraply-agent 0.1.0",
+      signatureStatus: "NotSigned",
+    },
+    lock: {
+      path: "runtime/scraply-agent.lock.json",
+      bytes: Buffer.byteLength(readFileSync(runtimeLockPath)),
+      sha256: hash(readFileSync(runtimeLockPath)),
+    },
+    notices: runtimeLock.notices.map((notice) => ({
+      path: `runtime/${notice.target}`,
+      bytes: notice.sizeBytes,
+      sha256: notice.sha256,
+    })),
+    checksums: {
+      path: "runtime/SHA256SUMS.txt",
+      bytes: runtimeLock.checksums.sizeBytes,
+      sha256: runtimeLock.checksums.sha256,
+    },
+  };
+  const manifest = {
+    schemaVersion: 2,
     appVersion: version,
     sourceSha: approvedSha,
     sourceRef: approvedRef,
     dirty: false,
     signed: false,
     signingPolicy: "private-unsigned",
+    runtime,
     artifacts: [
       {
         name: "installer",
@@ -67,13 +135,21 @@ function createBundle(overrides: BundleOverrides = {}): string {
     join(dir, "SHA256SUMS.txt"),
     overrides.checksums ?? `${hash("installer-bytes")}  ${installerName}\n${hash(portableBody)}  ${portableName}\n`,
   );
-  return dir;
+  return { directory: dir, runtimeLockPath };
 }
 
-function verify(dir: string, args: string[] = ["--allow-unsigned"]): { ok: boolean; message: string } {
+function verify(
+  fixture: BundleFixture,
+  args: string[] = ["--allow-unsigned"],
+): { ok: boolean; message: string } {
   const result = Bun.spawnSync(
-    ["bun", "scripts/verify-promoted-assets.ts", dir, approvedSha, approvedRef, ...args],
-    { cwd: process.cwd(), stdout: "pipe", stderr: "pipe" },
+    ["bun", "scripts/verify-promoted-assets.ts", fixture.directory, approvedSha, approvedRef, ...args],
+    {
+      cwd: process.cwd(),
+      env: { ...process.env, SCRAPLY_RUNTIME_LOCK_PATH: fixture.runtimeLockPath },
+      stdout: "pipe",
+      stderr: "pipe",
+    },
   );
   return {
     ok: result.exitCode === 0,
@@ -111,6 +187,20 @@ describe("promoted release assets", () => {
     expect(verify(createBundle({ manifest: { dirty: true } })).message).toContain("dirty source tree");
     expect(verify(createBundle({ manifest: { sourceRef: "v0.0.1-rc.9" } })).message)
       .toContain("source ref does not match the approved candidate");
+  });
+
+  test("rejects runtime metadata that differs from the tracked lock", () => {
+    const fixture = createBundle();
+    const manifestPath = join(fixture.directory, "manifest.json");
+    const manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as {
+      runtime: { sourceCommit: string };
+    };
+    manifest.runtime.sourceCommit = "d".repeat(40);
+    writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
+
+    const result = verify(fixture);
+    expect(result.ok).toBe(false);
+    expect(result.message).toContain("does not match the tracked runtime lock");
   });
 
   test("rejects stale checksums and unsigned bytes outside the private policy", () => {
