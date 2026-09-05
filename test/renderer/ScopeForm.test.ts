@@ -2,9 +2,32 @@ import { fireEvent, render, waitFor } from "@testing-library/svelte";
 import { describe, expect, test, vi } from "vitest";
 import ScopeForm from "../../src/renderer/components/ScopeForm.svelte";
 import type { WorkspaceState } from "../../src/shared/ipc";
-import { DEFAULT_RUN_CONFIG, RunConfigSchema } from "../../src/shared/schemas";
+import { DEFAULT_RUN_CONFIG, RunConfigSchema, modelRefKey } from "../../src/shared/schemas";
 
 describe("ScopeForm search provider selection", () => {
+  test("distinguishes identical model names and saves the explicitly selected native route", async () => {
+    const state = workspace();
+    const nativeModel = { providerId: "openai-subscription", modelId: DEFAULT_RUN_CONFIG.model.modelId };
+    state.validation.native = { available: true, connected: true, accounts: [{ providerId: nativeModel.providerId }] };
+    state.runConfig = { ...DEFAULT_RUN_CONFIG, searchProvider: "perplexity" };
+    state.models = [nativeModel, DEFAULT_RUN_CONFIG.model];
+    state.modelOptions = [
+      { ...state.modelOptions[0]!, ...nativeModel, displayName: "Luna" },
+      { ...state.modelOptions[0]!, displayName: "Luna" },
+    ];
+    const onSave = vi.fn().mockResolvedValue(undefined);
+    const onStart = vi.fn().mockResolvedValue(undefined);
+    const view = render(ScopeForm, { workspace: state, busy: false, onSave, onStart, onRetry: vi.fn() });
+    expect(view.getByRole("option", { name: "Luna (Legacy Codex CLI)" })).toBeTruthy();
+    expect(view.getByRole("option", { name: "Luna (Native OpenAI)" })).toBeTruthy();
+    const select = view.getByRole("combobox", { name: /Model/ }) as HTMLSelectElement;
+    expect(select.value).toBe(modelRefKey(DEFAULT_RUN_CONFIG.model));
+    await fireEvent.change(select, { target: { value: modelRefKey(nativeModel) } });
+    await fireEvent.click(view.getByRole("button", { name: "Discover problems" }));
+    await waitFor(() => expect(onStart).toHaveBeenCalledTimes(1));
+    expect(RunConfigSchema.parse(onSave.mock.calls[0]?.[1]).model).toEqual(nativeModel);
+  });
+
   test("warns for only the selected provider and saves a connected replacement", async () => {
     const onSave = vi.fn().mockResolvedValue(undefined);
     const onStart = vi.fn().mockResolvedValue(undefined);
