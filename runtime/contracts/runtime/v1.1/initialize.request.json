@@ -1,0 +1,1 @@
+{"protocolVersion":"1.1","id":"initialize-1","operation":"runtime.initialize","payload":{"supportedProtocolVersions":["1.1"],"requiredCapabilities":["envelope_limits","account_refresh","credential_persistence_ack","generation_attempt_metadata","exactly_one_terminal"],"client":{"name":"scraply","version":"0.1.0"}}}

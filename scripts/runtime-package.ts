@@ -50,7 +50,7 @@ export const runtimePackageLockSchema = z.object({
   executable: z.literal("scraply-agent.exe"),
   version: semverSchema,
   protocolVersions: z.tuple([z.literal("1.1")]),
-  sourceRepository: z.literal("https://github.com/nylow0/scraply-agent"),
+  sourceRepository: z.enum(["https://github.com/nylow0/scraply", "https://github.com/nylow0/scraply-agent"]),
   sourceCommit: sourceCommitSchema,
   upstreamCommit: sourceCommitSchema,
   artifactPath: z.literal("scraply-agent.exe"),
@@ -92,6 +92,7 @@ export type RuntimePackageLock = z.infer<typeof runtimePackageLockSchema>;
 
 export const packagedRuntimeLockName = "scraply-agent.lock.json";
 export const runtimeLockRelativePath = join(
+  "build",
   "runtime-artifacts",
   "scraply-agent.windows-x64.lock.json",
 );

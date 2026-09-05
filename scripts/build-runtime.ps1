@@ -1,30 +1,29 @@
 [CmdletBinding()]
-param(
-  [Parameter(Mandatory)]
-  [string] $RuntimeRepository,
-
-  [string] $BuiltPackageDirectory
-)
+param()
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
 if ([Environment]::OSVersion.Platform -ne [PlatformID]::Win32NT -or
     -not [Environment]::Is64BitProcess) {
-  throw "Runtime package import requires x64 Windows."
+  throw "Runtime source build requires x64 Windows."
 }
 
 $root = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot ".."))
-$runtimeRoot = [IO.Path]::GetFullPath($RuntimeRepository)
-$runtimeGit = Join-Path $runtimeRoot ".git"
-if (-not (Test-Path -LiteralPath $runtimeGit)) {
-  throw "Runtime repository not found: $runtimeRoot"
+$runtimeRoot = Join-Path $root "runtime"
+$BuiltPackageDirectory = ""
+$upstreamRoot = Join-Path $runtimeRoot "vendor\openai-codex"
+$upstreamCommit = (& git -C $upstreamRoot rev-parse HEAD | Out-String).Trim()
+if ($LASTEXITCODE -ne 0 -or $upstreamCommit -ne "8c68d4c87dc54d38861f5114e920c3de2efa5876") {
+  throw "Initialize the pinned upstream dependency with git submodule update --init --recursive."
 }
+$upstreamChanges = (& git -C $upstreamRoot status --porcelain | Out-String).Trim()
+if ($LASTEXITCODE -ne 0 -or $upstreamChanges) { throw "The pinned upstream dependency must be clean." }
 
 function Invoke-Git {
   param([Parameter(Mandatory)] [string[]] $Arguments)
 
-  $output = & git -c "safe.directory=$($runtimeRoot.Replace('\', '/'))" -C $runtimeRoot @Arguments
+  $output = & git -c "safe.directory=$($root.Replace('\', '/'))" -C $root @Arguments
   if ($LASTEXITCODE -ne 0) {
     throw "git $($Arguments -join ' ') failed with exit code $LASTEXITCODE."
   }
@@ -34,10 +33,6 @@ function Invoke-Git {
 $sourceCommit = Invoke-Git -Arguments @("rev-parse", "HEAD")
 if ($sourceCommit -notmatch '^[a-f0-9]{40}$') {
   throw "Runtime repository returned an invalid source commit: $sourceCommit"
-}
-$sourceState = Invoke-Git -Arguments @("status", "--porcelain", "--untracked-files=normal")
-if (-not [string]::IsNullOrWhiteSpace($sourceState)) {
-  throw "Runtime package import requires a clean runtime repository."
 }
 
 if ([string]::IsNullOrWhiteSpace($BuiltPackageDirectory)) {
@@ -50,17 +45,14 @@ if ([string]::IsNullOrWhiteSpace($BuiltPackageDirectory)) {
     throw "Runtime packaging failed with exit code $LASTEXITCODE."
   }
   $reportedDirectories = @($packageOutput |
-    Where-Object { $_ -is [string] -and (Test-Path -LiteralPath $_ -PathType Container) } |
+    Where-Object { $_ -is [string] -and -not [string]::IsNullOrWhiteSpace($_) -and (Test-Path -LiteralPath $_ -PathType Container) } |
     Select-Object -Last 1)
   if ($reportedDirectories.Count -ne 1) {
     throw "Runtime packaging did not report exactly one package directory."
   }
   $BuiltPackageDirectory = [string]$reportedDirectories[0]
 }
-$sourceStateAfterPackage = Invoke-Git -Arguments @("status", "--porcelain", "--untracked-files=normal")
-if (-not [string]::IsNullOrWhiteSpace($sourceStateAfterPackage)) {
-  throw "Runtime package import requires a clean runtime repository after packaging."
-}
+if ((Invoke-Git -Arguments @("rev-parse", "HEAD")) -ne $sourceCommit) { throw "Source commit changed during the runtime build." }
 
 $packageDirectory = [IO.Path]::GetFullPath($BuiltPackageDirectory)
 $distRoot = [IO.Path]::GetFullPath((Join-Path $runtimeRoot "dist"))
@@ -136,11 +128,11 @@ try {
   )
   Compress-Archive -CompressionLevel Optimal -Path (Join-Path $temporaryRoot "*") -DestinationPath $temporaryArchive
 
-  $artifactDirectory = Join-Path $root "runtime-artifacts"
+  $artifactDirectory = Join-Path $root "build\runtime-artifacts"
   $null = New-Item -ItemType Directory -Force -Path $artifactDirectory
   $archivePath = Join-Path $artifactDirectory $archiveName
   if (Test-Path -LiteralPath $archivePath) {
-    throw "Immutable runtime archive already exists: $archivePath"
+    Remove-Item -LiteralPath $archivePath -Force
   }
   Move-Item -LiteralPath $temporaryArchive -Destination $archivePath
 
@@ -159,9 +151,9 @@ try {
     executable = "scraply-agent.exe"
     version = $version
     protocolVersions = @("1.1")
-    sourceRepository = "https://github.com/nylow0/scraply-agent"
+    sourceRepository = "https://github.com/nylow0/scraply"
     sourceCommit = $sourceCommit
-    upstreamCommit = "8c68d4c87dc54d38861f5114e920c3de2efa5876"
+    upstreamCommit = $upstreamCommit
     artifactPath = "scraply-agent.exe"
     sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $temporaryRoot "scraply-agent.exe")).Hash.ToLowerInvariant()
     sizeBytes = (Get-Item -LiteralPath (Join-Path $temporaryRoot "scraply-agent.exe")).Length
@@ -181,7 +173,7 @@ try {
   $lockJson = ($lock | ConvertTo-Json -Depth 6) + "`n"
   [IO.File]::WriteAllText($lockPath, $lockJson, [Text.UTF8Encoding]::new($false))
 
-  Write-Output "Imported $versionOutput from $sourceCommit."
+  Write-Output "Built $versionOutput from Scraply commit $sourceCommit."
   Write-Output "Archive: $archivePath"
   Write-Output "Lock: $lockPath"
 }

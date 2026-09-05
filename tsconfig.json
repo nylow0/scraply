@@ -29,6 +29,7 @@
     "src/shared/**/*",
     "test/**/*",
     "scripts/**/*.ts",
+    "runtime/tests/**/*.ts",
     "electron.vite.config.ts",
     "vitest.config.ts"
   ],

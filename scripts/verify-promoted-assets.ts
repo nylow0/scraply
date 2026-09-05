@@ -60,8 +60,7 @@ if (!directory || !expectedSha || !expectedSourceRef) {
 if (!/^[a-f0-9]{40}$/i.test(expectedSha)) throw new Error("Promotion verification requires a full 40-character commit SHA.");
 
 const expectedVersion = (JSON.parse(readFileSync("package.json", "utf8")) as { version: string }).version;
-const runtimeLockPath = process.env.SCRAPLY_RUNTIME_LOCK_PATH
-  ?? join("runtime-artifacts", "scraply-agent.windows-x64.lock.json");
+const runtimeLockPath = join(directory, "scraply-agent.lock.json");
 const runtimeLock = runtimePackageLockSchema.parse(
   JSON.parse(readFileSync(runtimeLockPath, "utf8")),
 );
@@ -72,7 +71,7 @@ function sha256(path: string): string {
   return createHash("sha256").update(readFileSync(path)).digest("hex");
 }
 
-const expectedFiles = [installerName, portableName, "manifest.json", "SHA256SUMS.txt"].sort();
+const expectedFiles = [installerName, portableName, "manifest.json", "SHA256SUMS.txt", "scraply-agent.lock.json"].sort();
 const actualFiles = readdirSync(directory).sort();
 if (JSON.stringify(actualFiles) !== JSON.stringify(expectedFiles)) {
   throw new Error(`The promoted bundle must contain exactly:\n${expectedFiles.join("\n")}\nFound:\n${actualFiles.join("\n")}`);
@@ -82,6 +81,9 @@ const manifest = JSON.parse(readFileSync(join(directory, "manifest.json"), "utf8
 if (manifest.schemaVersion !== 2) throw new Error(`Unsupported manifest schema version: ${manifest.schemaVersion}`);
 if (manifest.appVersion !== expectedVersion) throw new Error("The promoted manifest version does not match package.json.");
 if (manifest.sourceSha !== expectedSha) throw new Error("The promoted manifest SHA does not match the approved source SHA.");
+if (runtimeLock.sourceRepository !== "https://github.com/nylow0/scraply" || runtimeLock.sourceCommit !== expectedSha) {
+  throw new Error("The promoted runtime must originate from the approved Scraply commit.");
+}
 if (manifest.sourceRef !== expectedSourceRef) throw new Error("The promoted manifest source ref does not match the approved candidate.");
 if (manifest.dirty !== false) throw new Error("The promoted manifest was produced from a dirty source tree.");
 if (!Array.isArray(manifest.artifacts)) throw new Error("The promoted manifest has no artifact records.");
@@ -105,7 +107,7 @@ const expectedRuntime = {
 for (const [field, expected] of Object.entries(expectedRuntime)) {
   const actual = manifest.runtime[field as keyof typeof expectedRuntime];
   if (JSON.stringify(actual) !== JSON.stringify(expected)) {
-    throw new Error(`The promoted runtime ${field} does not match the tracked runtime lock.`);
+    throw new Error(`The promoted runtime ${field} does not match the bundled runtime lock.`);
   }
 }
 
@@ -118,7 +120,7 @@ const expectedRuntimeExecutable = {
 for (const [field, expected] of Object.entries(expectedRuntimeExecutable)) {
   const actual = manifest.runtime.executable[field as keyof typeof expectedRuntimeExecutable];
   if (actual !== expected) {
-    throw new Error(`The promoted runtime executable ${field} does not match the tracked runtime lock.`);
+    throw new Error(`The promoted runtime executable ${field} does not match the bundled runtime lock.`);
   }
 }
 if (
@@ -136,7 +138,7 @@ const expectedRuntimeLockFile = {
   sha256: sha256(runtimeLockPath),
 };
 if (JSON.stringify(manifest.runtime.lock) !== JSON.stringify(expectedRuntimeLockFile)) {
-  throw new Error("The promoted runtime lock file does not match the tracked runtime lock.");
+  throw new Error("The promoted runtime lock file does not match the bundled runtime lock.");
 }
 
 const expectedNotices = runtimeLock.notices
@@ -149,7 +151,7 @@ const expectedNotices = runtimeLock.notices
 const actualNotices = [...manifest.runtime.notices]
   .sort((left, right) => left.path < right.path ? -1 : left.path > right.path ? 1 : 0);
 if (JSON.stringify(actualNotices) !== JSON.stringify(expectedNotices)) {
-  throw new Error("The promoted runtime notices do not match the tracked runtime lock.");
+  throw new Error("The promoted runtime notices do not match the bundled runtime lock.");
 }
 
 const expectedRuntimeChecksums = {
@@ -158,7 +160,7 @@ const expectedRuntimeChecksums = {
   sha256: runtimeLock.checksums.sha256,
 };
 if (JSON.stringify(manifest.runtime.checksums) !== JSON.stringify(expectedRuntimeChecksums)) {
-  throw new Error("The promoted runtime checksums do not match the tracked runtime lock.");
+  throw new Error("The promoted runtime checksums do not match the bundled runtime lock.");
 }
 
 const checksumLines: string[] = [];
