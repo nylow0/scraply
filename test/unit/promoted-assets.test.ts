@@ -54,14 +54,14 @@ function createBundle(overrides: BundleOverrides = {}): BundleFixture {
     executable: "scraply-agent.exe",
     version: "0.1.0",
     protocolVersions: ["1.1"],
-    sourceRepository: "https://github.com/nylow0/scraply-agent",
-    sourceCommit: "c".repeat(40),
+    sourceRepository: "https://github.com/nylow0/scraply",
+    sourceCommit: approvedSha,
     upstreamCommit: "8c68d4c87dc54d38861f5114e920c3de2efa5876",
     artifactPath: "scraply-agent.exe",
     sha256: hash(runtimeFiles.executable),
     sizeBytes: Buffer.byteLength(runtimeFiles.executable),
     archive: {
-      fileName: `scraply-agent-0.1.0-windows-x64-${"c".repeat(12)}.zip`,
+      fileName: `scraply-agent-0.1.0-windows-x64-${approvedSha.slice(0, 12)}.zip`,
       sha256: hash("runtime-archive"),
       sizeBytes: Buffer.byteLength("runtime-archive"),
     },
@@ -77,8 +77,7 @@ function createBundle(overrides: BundleOverrides = {}): BundleFixture {
       sizeBytes: Buffer.byteLength(runtimeFiles.checksums),
     },
   };
-  const runtimeLockPath = `${dir}.runtime-lock.json`;
-  bundles.push(runtimeLockPath);
+  const runtimeLockPath = join(dir, "scraply-agent.lock.json");
   writeFileSync(runtimeLockPath, `${JSON.stringify(runtimeLock, null, 2)}\n`);
   const runtime = {
     platform: runtimeLock.platform,
@@ -153,7 +152,6 @@ function verify(
     ["bun", "scripts/verify-promoted-assets.ts", fixture.directory, approvedSha, approvedRef, ...args],
     {
       cwd: process.cwd(),
-      env: { ...process.env, SCRAPLY_RUNTIME_LOCK_PATH: fixture.runtimeLockPath },
       stdout: "pipe",
       stderr: "pipe",
     },
@@ -196,7 +194,26 @@ describe("promoted release assets", () => {
       .toContain("source ref does not match the approved candidate");
   });
 
-  test("rejects runtime metadata that differs from the tracked lock", () => {
+  test("rejects a runtime lock from another source commit", () => {
+    const fixture = createBundle();
+    const lock = JSON.parse(readFileSync(fixture.runtimeLockPath, "utf8")) as {
+      sourceCommit: string; archive: { fileName: string };
+    };
+    lock.sourceCommit = "b".repeat(40);
+    lock.archive.fileName = `scraply-agent-0.1.0-windows-x64-${"b".repeat(12)}.zip`;
+    writeFileSync(fixture.runtimeLockPath, JSON.stringify(lock));
+    expect(verify(fixture).message).toContain("approved Scraply commit");
+  });
+
+  test("requires the bundled lock and its exact accepted bytes", () => {
+    const fixture = createBundle();
+    writeFileSync(fixture.runtimeLockPath, `${readFileSync(fixture.runtimeLockPath, "utf8")}\n`);
+    expect(verify(fixture).message).toContain("runtime lock file does not match");
+    rmSync(fixture.runtimeLockPath);
+    expect(verify(fixture).ok).toBe(false);
+  });
+
+  test("rejects runtime metadata that differs from the bundled lock", () => {
     const fixture = createBundle();
     const manifestPath = join(fixture.directory, "manifest.json");
     const manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as {
@@ -207,7 +224,7 @@ describe("promoted release assets", () => {
 
     const result = verify(fixture);
     expect(result.ok).toBe(false);
-    expect(result.message).toContain("does not match the tracked runtime lock");
+    expect(result.message).toContain("does not match the bundled runtime lock");
   });
 
   test("rejects stale checksums and unsigned bytes outside the private policy", () => {

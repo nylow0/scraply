@@ -189,6 +189,9 @@ const runtime = verifyStagedRuntime(
   join(root, runtimeLockRelativePath),
 );
 const runtimeSignatureStatus = executableMetadata(runtime.executablePath).signatureStatus;
+if (runtime.lock.sourceRepository !== "https://github.com/nylow0/scraply" || runtime.lock.sourceCommit !== sourceSha) {
+  throw new Error("The runtime must be built from this Scraply checkout. Run bun run prepare:runtime.");
+}
 if (!["Valid", "NotSigned"].includes(runtimeSignatureStatus)) {
   throw new Error(`Invalid Authenticode status for ${runtime.executablePath}: ${runtimeSignatureStatus}`);
 }

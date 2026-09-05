@@ -43,7 +43,9 @@ Private builds may be unsigned only when the workflow explicitly sets `SCRAPLY_A
 
 Scraply packages one tested `scraply-agent` executable at `resources/runtime/scraply-agent.exe`, outside `app.asar`. Native mode requires protocol 1.1. Runtime native protocol 1.0 is explicitly incompatible; the separate legacy commands remain migration-only behavior.
 
-The checked-in `runtime-artifacts/scraply-agent.windows-x64.lock.json` pins the runtime version, source commit, vendored upstream commit, archive, executable, notices, sizes, and SHA-256 hashes. Its immutable archive name includes the runtime version and the first 12 characters of the source commit. The archive contains only:
+The runtime source lives in `runtime/` in this repository. The separate `nylow0/scraply-agent` repository is legacy. Initialize the pinned public OpenAI Codex submodule with `git submodule update --init --recursive`. Windows builds require Rust's `stable-x86_64-pc-windows-msvc` toolchain (including rustfmt and clippy) and Visual Studio C++ build tools.
+
+`bun run prepare:runtime` runs the runtime's formatting, source budget, locked Rust tests, strict clippy, app adapter compatibility, and release packaging checks. It generates `build/runtime-artifacts/scraply-agent.windows-x64.lock.json`, recording this Scraply commit, the upstream commit, executable, notices, sizes, and hashes. Generated archives and locks are ignored build outputs. The archive contains only:
 
 - `scraply-agent.exe`
 - `LICENSE`
@@ -51,15 +53,11 @@ The checked-in `runtime-artifacts/scraply-agent.windows-x64.lock.json` pins the 
 - `UPSTREAM.md`
 - `SHA256SUMS.txt`
 
-`bun run prepare:runtime` verifies the archive and every member before staging those files plus the lock in `build/runtime`. Verification rejects extra or unsafe archive paths, links, oversized files, non-x64 executables, incorrect version output, hash mismatches, and the debug-only fixture markers. Electron Builder copies the verified stage to application resources. Production never searches `PATH` or substitutes another runtime after failure.
+After building, `bun run prepare:runtime` verifies the archive and every member before staging those files plus the lock in `build/runtime`. Verification rejects extra or unsafe archive paths, links, oversized files, non-x64 executables, incorrect version output, hash mismatches, and the debug-only fixture markers. Electron Builder copies the verified stage to application resources. Production never searches `PATH` or substitutes another runtime after failure.
 
-To update the pin, start from a clean `scraply-agent` commit and run:
+Commit runtime and app changes together. CI and release-candidate builds initialize the submodule and build Rust from the same checkout as the app. The Cargo cache defaults to `build/cargo`. Development builds may use a dirty checkout, which the application manifest records; release builds require a clean checkout and matching app/runtime source commits.
 
-```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/import-runtime-package.ps1 -RuntimeRepository ..\scraply-agent
-```
-
-The import runs the runtime repository's own package checks, consumes its exact release executable and required notices, then writes the immutable compressed archive and lock. Review and commit both files with the app change. Do not replace an existing version-and-source archive with different bytes. A normal app package or CI run consumes the tracked archive and never rebuilds Rust.
+The release bundle contains exactly five files: installer, portable executable, `manifest.json`, `SHA256SUMS.txt`, and `scraply-agent.lock.json`. The last file is copied from `build/runtime` and its hash must match the manifest. Promotion verifies that the runtime came from the approved Scraply commit and publishes these same five files without rebuilding Rust or the app. Historical releases retain their original app/runtime pair for rollback.
 
 ## Rollback
 

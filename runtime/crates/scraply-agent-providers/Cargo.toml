@@ -1,0 +1,31 @@
+[package]
+name = "scraply-agent-providers"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+description = "Direct model provider adapters for Scraply Agent"
+
+[dependencies]
+async-trait = "0.1"
+base64 = "0.22"
+codex-api = { path = "../../vendor/openai-codex/codex-rs/codex-api" }
+codex-login = { path = "../../vendor/openai-codex/codex-rs/login" }
+codex-utils-home-dir = { path = "../../vendor/openai-codex/codex-rs/utils/home-dir" }
+futures-util = "0.3"
+getrandom = "0.3"
+http = "1"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls-native-roots"] }
+scraply-agent-core = { path = "../scraply-agent-core" }
+serde.workspace = true
+serde_json.workspace = true
+sha2 = "0.10"
+thiserror.workspace = true
+tokio = { version = "1", features = ["macros", "rt", "sync", "time"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["io-util", "macros", "net", "rt-multi-thread", "sync", "time"] }
+
+[lib]
+doctest = false
