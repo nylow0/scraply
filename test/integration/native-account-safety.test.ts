@@ -63,6 +63,21 @@ describe("native account safety", () => {
     expect(runtime.loggedIn).toBe(false);
   });
 
+  test("revokes the runtime account when cancellation cleanup fails during logout", async () => {
+    const runtime = new FakeRuntime();
+    runtime.loggedIn = true;
+    runtime.cancelError = new Error("login cancellation failed");
+    const handle = await backend(runtime);
+    await request(handle, "/native/login/start", { providerId: "openai-subscription", method: "browser" });
+
+    const response = await request(handle, "/native/logout", { providerId: "openai-subscription" });
+
+    expect(response.status).toBe(500);
+    expect(runtime.cancelCalls).toBe(1);
+    expect(runtime.logoutCalls).toBe(1);
+    expect(runtime.loggedIn).toBe(false);
+  });
+
   test("returns saved workspace data without waiting for provider startup", async () => {
     const directory = mkdtempSync(join(tmpdir(), "scraply-workspace-startup-"));
     directories.push(directory);
@@ -99,6 +114,7 @@ class FakeRuntime {
   completeCalls = 0;
   cancelCalls = 0;
   logoutCalls = 0;
+  cancelError: Error | null = null;
 
   async start() { return { runtime: { version: "0.1.0" } }; }
   async listAccounts() {
@@ -116,7 +132,10 @@ class FakeRuntime {
     await persist("openai-subscription", "rotated-credential");
     return credentialResult();
   }
-  async cancelLogin() { this.cancelCalls += 1; }
+  async cancelLogin() {
+    this.cancelCalls += 1;
+    if (this.cancelError) throw this.cancelError;
+  }
   async refreshAccount(_providerId: string, persist: (providerId: string, credential: string) => Promise<void>) {
     await persist("openai-subscription", "rotated-credential");
     return credentialResult();

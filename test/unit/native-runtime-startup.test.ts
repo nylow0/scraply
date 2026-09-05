@@ -51,4 +51,39 @@ describe("native runtime startup", () => {
     await Promise.all([background, loginPreparation]);
     expect(startup.status()).toEqual({ ready: true });
   });
+
+  test("restores saved credentials whenever a replacement runtime session starts", async () => {
+    let activeSession = false;
+    let initializeSession: ((session: {
+      restoreCredential(providerId: string, credential: string): Promise<void>;
+      logout(providerId: string): Promise<void>;
+    }) => Promise<void>) | undefined;
+    const restored: Array<{ providerId: string; credential: string }> = [];
+    const runtime = {
+      setSessionInitializer(initializer: typeof initializeSession) { initializeSession = initializer; },
+      async start() {
+        if (activeSession) return;
+        activeSession = true;
+        await initializeSession?.({
+          async restoreCredential(providerId, credential) { restored.push({ providerId, credential }); },
+          async logout() {},
+        });
+      },
+      async restoreCredential() { throw new Error("fallback restoration should not run"); },
+    };
+    const startup = createNativeRuntimeStartup(
+      runtime,
+      () => ({ "openai-subscription": "saved-credential" }),
+      () => undefined,
+    );
+
+    await startup.prepare();
+    activeSession = false;
+    await runtime.start();
+
+    expect(restored).toEqual([
+      { providerId: "openai-subscription", credential: "saved-credential" },
+      { providerId: "openai-subscription", credential: "saved-credential" },
+    ]);
+  });
 });

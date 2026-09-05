@@ -18,6 +18,10 @@ const CONTROL_TIMEOUT_MS = 2_000;
 const TERMINAL_GRACE_MS = 2_000;
 
 export interface RuntimeArtifactIdentity { version: string; sourceCommit: string; sha256: string }
+export interface RuntimeSessionOperations {
+  restoreCredential(providerId: string, credential: string): Promise<void>;
+  logout(providerId: string): Promise<void>;
+}
 export interface RuntimeClientOptions {
   executablePath: string;
   /** Prepended to runtime and identity arguments for explicit host launchers. */
@@ -60,8 +64,16 @@ export class RuntimeClient implements StructuredModelClient {
   private readonly generationWaiters: GenerationWaiter[] = [];
   private readonly pendingRequests = new Map<string, PendingRequest>();
   private readonly pendingGenerations = new Map<string, PendingGeneration>();
+  private sessionInitializer: ((session: RuntimeSessionOperations) => Promise<void>) | null = null;
 
   constructor(private readonly options: RuntimeClientOptions) {}
+
+  setSessionInitializer(
+    initializer: (session: RuntimeSessionOperations) => Promise<void>,
+  ): void {
+    if (this.child || this.initializePromise || this.initialized) throw new Error("Native runtime session initialization is already in progress");
+    this.sessionInitializer = initializer;
+  }
 
   preparedIdentity() {
     if (!this.initialized) throw new ProviderFailure("unavailable", "Native runtime is not ready", true);
@@ -82,8 +94,24 @@ export class RuntimeClient implements StructuredModelClient {
   async start(): Promise<InitializeResult> {
     if (this.initialized) return this.initialized;
     if (this.initializePromise) return this.initializePromise;
-    this.initializePromise = this.startProcess();
-    try { this.initialized = await this.initializePromise; return this.initialized; }
+    this.initializePromise = (async () => {
+      const initialized = await this.startProcess();
+      this.initialized = initialized;
+      try {
+        await this.sessionInitializer?.({
+          restoreCredential: (providerId, credential) => this.request("credential.session.set", { providerId, credential }).then(() => undefined),
+          logout: (providerId) => this.request("account.logout", { providerId }).then(() => undefined),
+        });
+        if (this.initialized !== initialized || !this.child) {
+          throw new ProviderFailure("interrupted", "Native runtime stopped while restoring its session", true);
+        }
+        return initialized;
+      } catch (error) {
+        this.failProcess(error instanceof Error ? error : new Error("Native runtime session initialization failed"), this.child);
+        throw error;
+      }
+    })();
+    try { return await this.initializePromise; }
     finally { this.initializePromise = null; }
   }
 

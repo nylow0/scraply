@@ -38,6 +38,7 @@ import { AppError } from "../shared/errors";
 import { resolveRuntimeLaunch } from "../shared/runtime-artifact";
 import { createFileLogger, type FileLogger } from "./logging";
 import { writeFileAtomically } from "./atomic-file";
+import { revokeNativeAccount } from "./native-account";
 import { isAllowedRendererUrl, parseExternalHttpsUrl, rendererEntryUrl } from "./security";
 
 const isDev = !app.isPackaged;
@@ -548,20 +549,10 @@ function registerIpc(): void {
     const providerCredentials = { ...secrets.providerCredentials };
     delete providerCredentials[input.providerId];
     const nextSecrets = { ...secrets, providerCredentials };
-    let persistenceError: unknown;
-    try {
-      persistSecrets(nextSecrets);
-      secrets = nextSecrets;
-    } catch (error) {
-      persistenceError = error;
-    }
-    let workspace: unknown;
-    let cancellationError: unknown;
-    try { workspace = await post("/native/login/cancel", input); }
-    catch (error) { cancellationError = error; }
-    if (persistenceError) throw persistenceError;
-    if (cancellationError) throw cancellationError;
-    return workspace;
+    return revokeNativeAccount(() => {
+      try { persistSecrets(nextSecrets); }
+      finally { secrets = nextSecrets; }
+    }, () => post("/native/login/cancel", input));
   });
   handle(IPC_CHANNELS.NATIVE_ACCOUNT_REFRESH, (body) => post("/native/account/refresh", NativeProviderSchema.parse(body)));
   handle(IPC_CHANNELS.NATIVE_LOGOUT, async (body) => {
@@ -570,9 +561,10 @@ function registerIpc(): void {
     const providerCredentials = { ...secrets.providerCredentials };
     delete providerCredentials[input.providerId];
     const nextSecrets = { ...secrets, providerCredentials };
-    persistSecrets(nextSecrets);
-    secrets = nextSecrets;
-    return post("/native/logout", input);
+    return revokeNativeAccount(() => {
+      try { persistSecrets(nextSecrets); }
+      finally { secrets = nextSecrets; }
+    }, () => post("/native/logout", input));
   });
   handle(IPC_CHANNELS.START_RESEARCH, (body) => post("/research/start", StartResearchSchema.parse(body)));
   handle(IPC_CHANNELS.CANCEL_RESEARCH, (body) => post("/research/cancel", CancelResearchSchema.parse(body)));

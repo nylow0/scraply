@@ -130,6 +130,21 @@ describe("persistent native runtime client", () => {
     expect(await mismatched.listAccounts()).toEqual([]);
   });
 
+  test("restores credentials before using a replacement process", async () => {
+    const runtime = client("wrong-operation", { requestTimeoutMs: 1_000 });
+    let initializedSessions = 0;
+    runtime.setSessionInitializer(async (session) => {
+      await session.restoreCredential("openai-subscription", "saved-credential");
+      initializedSessions += 1;
+    });
+
+    await runtime.start();
+    expect(initializedSessions).toBe(1);
+    await expect(runtime.listModels("openai-subscription")).rejects.toBeInstanceOf(ProviderFailure);
+    expect(await runtime.listAccounts()).toEqual([]);
+    expect(initializedSessions).toBe(2);
+  });
+
   test("rejects invalid UTF-8 and can start a clean replacement process", async () => {
     const directory = mkdtempSync(join(tmpdir(), "scraply-runtime-client-"));
     scratchDirectories.push(directory);
