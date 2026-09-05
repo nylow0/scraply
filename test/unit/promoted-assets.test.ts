@@ -57,9 +57,16 @@ function createBundle(overrides: BundleOverrides = {}): BundleFixture {
     sourceRepository: "https://github.com/nylow0/scraply-agent",
     sourceCommit: "c".repeat(40),
     upstreamCommit: "8c68d4c87dc54d38861f5114e920c3de2efa5876",
+    artifactPath: "scraply-agent.exe",
     sha256: hash(runtimeFiles.executable),
     sizeBytes: Buffer.byteLength(runtimeFiles.executable),
+    archive: {
+      fileName: `scraply-agent-0.1.0-windows-x64-${"c".repeat(12)}.zip`,
+      sha256: hash("runtime-archive"),
+      sizeBytes: Buffer.byteLength("runtime-archive"),
+    },
     notices: ["LICENSE", "OPENAI-NOTICE", "UPSTREAM.md"].map((target) => ({
+      source: target,
       target,
       sha256: hash(runtimeFiles[target as keyof typeof runtimeFiles]),
       sizeBytes: Buffer.byteLength(runtimeFiles[target as keyof typeof runtimeFiles]),
