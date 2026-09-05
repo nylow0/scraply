@@ -98,6 +98,9 @@ export interface DiscoveryDependencies {
   signal?: AbortSignal;
   random?: () => number;
   onProjection?: (message: string) => void;
+  workflowVersion?: 1 | 2;
+  idFactory?: () => string;
+  prompt?: (name: string) => string;
 }
 
 export async function harvestFactors(
@@ -111,9 +114,7 @@ export async function harvestFactors(
   const rejections: FactorRejection[] = [];
   const extracted: Record<HarvestMode, number> = { domain: 0, audience: 0 };
 
-  // Audience mode runs even when the scope supplies no audience: the community sources it is
-  // restricted to are where lived complaints live, so the query planner infers who to look at from
-  // the starting context rather than the run losing half its evidence.
+  // The chosen source policy applies to audience searches; community complaints are one option.
   for (const mode of ["domain", "audience"] as const) {
     const queries = await planQueries(scope, mode, depthConfig.queriesPerMode, dependencies);
     const searchedSources = await searchQueries(queries, mode, depthConfig.searchResultsPerQuery, dependencies);
@@ -124,7 +125,7 @@ export async function harvestFactors(
       const response = await structuredCall(
         dependencies,
         `factor-harvest:${mode}:${batch.map((source) => source.id).join(",")}`,
-        loadPrompt("factor-harvest"),
+        (dependencies.prompt ?? loadPrompt)("factor-harvest"),
         buildFactorHarvestInput(scope, mode, batch),
         FactorHarvestOutputSchema,
       );
@@ -137,7 +138,7 @@ export async function harvestFactors(
         }
         const source = sourceById.get(candidate.sourceId)!;
         rawFactors.push({
-          id: randomUUID(),
+          id: (dependencies.idFactory ?? randomUUID)(),
           subject: candidate.subject.trim(),
           behavior: candidate.behavior.trim(),
           quote: candidate.quote.trim(),
@@ -195,7 +196,7 @@ export async function discoverProblems(
   const response = await structuredCall(
     dependencies,
     "problem-candidates",
-    loadPrompt("problem-candidates"),
+    (dependencies.prompt ?? loadPrompt)("problem-candidates"),
     buildProblemCandidatesInput(scope, factors),
     ProblemCandidatesOutputSchema,
   );
@@ -212,11 +213,14 @@ export async function discoverProblems(
   const blockedCandidates: BlockedProblemCandidate[] = [];
 
   for (const candidate of candidates) {
+    if (dependencies.workflowVersion === 2 && candidate.factorIds.some((id) => !factorById.has(id))) {
+      throw new ProviderFailure("schema", "A problem candidate referenced an unknown factor ID", false);
+    }
     const citedFactors = [...new Set(candidate.factorIds)]
       .map((id) => factorById.get(id))
       .filter(Boolean) as HarvestedFactor[];
     const hostnames = [...new Set(citedFactors.map((factor) => new URL(factor.source.canonicalUrl).hostname))];
-    if (hostnames.length < 2) {
+    if (hostnames.length < 2 && dependencies.workflowVersion !== 2) {
       blockedCandidates.push({
         statement: candidate.statement,
         reason: `Corpus diversity failed: cited factors span ${hostnames.length} source hostname(s); 2 required.`,
@@ -229,7 +233,7 @@ export async function discoverProblems(
       maxCharacters: SOURCE_MAX_CHARACTERS,
       ...(dependencies.signal ? { signal: dependencies.signal } : {}),
     });
-    const { all: candidateSources, fresh } = resolveSources(searched, sourcesByUrl, dependencies.onProjection);
+    const { all: candidateSources, fresh } = resolveSources(searched, sourcesByUrl, dependencies.onProjection, dependencies.idFactory);
     for (const source of fresh) {
       sourcesByUrl.set(source.canonicalUrl, source);
       killSources.push(source);
@@ -238,24 +242,28 @@ export async function discoverProblems(
       dependencies,
       `problem-kill:${createHash("sha256").update(JSON.stringify(candidate)).digest("hex")}`,
       [
-        loadPrompt("problem-kill"),
+        (dependencies.prompt ?? loadPrompt)("problem-kill"),
         "Look for contrary evidence: already solved, overstated scale, self-correction, and prior attempts that failed.",
       ].join("\n\n"),
-      buildProblemKillInput(candidate, candidateSources),
+      { inputs: {}, evidence: { ...buildProblemKillInput(candidate, candidateSources).evidence, scope, supportingFactors: citedFactors } },
       ProblemKillOutputSchema,
     );
     const validVerdictSourceIds = [...new Set(kill.verdictSourceIds.filter((id) => candidateSources.some((source) => source.id === id)))];
+    if (dependencies.workflowVersion === 2 && validVerdictSourceIds.length !== new Set(kill.verdictSourceIds).size) {
+      throw new ProviderFailure("schema", "Evidence assessment referenced an unknown contrary source ID", false);
+    }
     const factorIds = citedFactors.map((factor) => factor.id);
     problems.push({
-      id: randomUUID(),
+      id: (dependencies.idFactory ?? randomUUID)(),
       statement: candidate.statement.trim(),
       whyItPersists: candidate.whyItPersists.trim(),
       affected: candidate.affected.trim(),
       scaleEstimate: candidate.scaleEstimate.trim(),
       scaleBasisFactorId: factorIds.includes(candidate.scaleBasisFactorId ?? "") ? candidate.scaleBasisFactorId : null,
       factorIds,
-      verdict: kill.verdict,
-      verdictReason: kill.verdictReason.trim(),
+      verdict: dependencies.workflowVersion === 2 && hostnames.length < 2 && kill.verdict === "confirmed" ? "insufficient-evidence" : kill.verdict,
+      verdictReason: dependencies.workflowVersion === 2 && hostnames.length < 2
+        ? `Support spans ${hostnames.length} independent source hosts. ${kill.verdictReason.trim()}` : kill.verdictReason.trim(),
       verdictSourceIds: validVerdictSourceIds,
       factors: citedFactors,
       sourceHostnames: hostnames,
@@ -314,7 +322,7 @@ async function planQueries(
   const response = await structuredCall(
     dependencies,
     `query-plan:${mode}`,
-    loadPrompt("query-plan"),
+    (dependencies.prompt ?? loadPrompt)("query-plan"),
     {
       inputs: {
         harvestMode: mode,
@@ -361,7 +369,7 @@ async function searchQueries(
       ...(dependencies.signal ? { signal: dependencies.signal } : {}),
     }));
   }
-  return resolveSources(gathered, new Map(), dependencies.onProjection).fresh;
+  return resolveSources(gathered, new Map(), dependencies.onProjection, dependencies.idFactory).fresh;
 }
 
 /**
@@ -372,6 +380,7 @@ function resolveSources(
   sources: Source[],
   known: Map<string, HarvestedSource>,
   onSkipped?: (message: string) => void,
+  idFactory: () => string = randomUUID,
 ): { all: HarvestedSource[]; fresh: HarvestedSource[] } {
   const all: HarvestedSource[] = [];
   const fresh: HarvestedSource[] = [];
@@ -391,7 +400,7 @@ function resolveSources(
     }
     const retrievedText = source.text.trim();
     const prepared: HarvestedSource = {
-      id: randomUUID(),
+      id: idFactory(),
       providerSourceId: source.id,
       canonicalUrl,
       url: source.url,
@@ -511,6 +520,7 @@ function buildProblemCandidatesInput(scope: Scope, factors: HarvestedFactor[]) {
     audience: scope.audience,
     domain: scope.domain,
     offLimits: scope.offLimits,
+    observations: scope.observations,
   };
   return {
     inputs: {},

@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import type { NativeLoginStartResult, ResearchEvent, WorkspaceState } from "../shared/ipc";
+  import type { NativeLoginStartResult, ResearchEvent, SolutionView, WorkspaceState } from "../shared/ipc";
   import Sidebar from "./components/Sidebar.svelte";
   import ScopeForm from "./components/ScopeForm.svelte";
   import ProblemCheckpoint from "./components/ProblemCheckpoint.svelte";
@@ -29,6 +29,7 @@
   let reconcileTimer: ReturnType<typeof setTimeout> | null = null;
   let reconcilePending = false;
   let loadEpoch = 0;
+  let workspaceInFlight = false;
   let activeThread = $derived(workspace?.threads.find((item) => item.id === workspace?.activeThreadId) ?? null);
   let activeRun = $derived(workspace?.latestResearchRun ?? null);
   // Local-only override: lets the user reopen the scope form from a failed run without touching server state.
@@ -41,12 +42,21 @@
     const dispose = window.scraply.onBackendEvent((event) => {
       if (event.threadId !== workspace?.activeThreadId) return;
       latestEvent = event;
+      if (event.type === "run-progress" && workspace?.latestResearchRun?.runId === event.runId) {
+        workspace.latestResearchRun.lastActivity = event.message;
+        workspace.latestResearchRun.codexCalls = event.codexCalls;
+        workspace.latestResearchRun.searches = event.searches;
+        return;
+      }
       reconcileSoon();
     });
     return () => { dispose(); if (reconcileTimer) clearTimeout(reconcileTimer); };
   });
 
   async function load() {
+    if (workspaceInFlight) { reconcilePending = true; return; }
+    workspaceInFlight = true;
+    reconcilePending = false;
     const requestEpoch = ++loadEpoch;
     try {
       const next = await window.scraply.getWorkspace();
@@ -61,7 +71,9 @@
       if (requestEpoch === loadEpoch) feedback = { text: message(cause), tone: "error", source: "workspace-load" };
     }
     finally {
+      workspaceInFlight = false;
       if (requestEpoch === loadEpoch) loading = false;
+      if (reconcilePending) reconcileSoon();
     }
   }
   function setWorkspace(next: WorkspaceState) {
@@ -71,7 +83,7 @@
   }
   function reconcileSoon(delayMs = 180) {
     reconcilePending = true;
-    if (reconcileTimer) clearTimeout(reconcileTimer);
+    if (reconcileTimer) return;
     reconcileTimer = setTimeout(() => {
       reconcileTimer = null;
       if (busy) return;
@@ -260,6 +272,19 @@
       reviewSelection = false;
     });
   }
+  async function selectOption(idea: SolutionView) {
+    const threadId = workspace?.activeThreadId;
+    if (!threadId || !idea.runId) return;
+    const runId = idea.runId;
+    await action(async () => setWorkspace(await window.scraply.selectOption({ threadId, runId, solutionId: idea.id })));
+  }
+  async function saveDecision(solutionId: string, userDecision: string, observedResult: string) {
+    const threadId = workspace?.activeThreadId;
+    if (!threadId || busy) throw new Error("Wait for the current action before saving.");
+    busy = true;
+    try { setWorkspace(await window.scraply.saveDecision({ threadId, solutionId, userDecision, observedResult })); }
+    finally { busy = false; if (reconcilePending) reconcileSoon(); }
+  }
   async function exportResearch() {
     const threadId = workspace?.activeThreadId;
     if (!threadId) return;
@@ -325,9 +350,9 @@
         <div class="run-stopped" role="status">
           <div><strong>Run stopped</strong><span>{activeRun?.lastActivity ?? "The last run failed or was cancelled. Review the setup, then retry explicitly."}</span></div>
           <div class="run-stopped-actions">
-            {#if activeRun && ["queued", "running"].includes(activeRun.status)}
+            {#if activeRun && (["queued", "running"].includes(activeRun.status) || activeRun.workflowVersion === 2)}
               <button disabled={busy} onclick={() => resumeResearch(activeRun.runId)}>Resume attempt</button>
-              <button class="cancel" disabled={busy} onclick={() => cancelResearch(activeRun.runId)}>Cancel run</button>
+              {#if ["queued", "running"].includes(activeRun.status)}<button class="cancel" disabled={busy} onclick={() => cancelResearch(activeRun.runId)}>Cancel run</button>{/if}
             {/if}
             {#if workspace.problemCandidates.length > 0 || workspace.rejectedProblemCandidates.length > 0}<button disabled={busy} onclick={() => { activeStep = "research"; reviewSelection = true; }}>Review problems</button>{/if}
             <button disabled={busy} onclick={() => { activeStep = "setup"; editingScopeThreadId = activeThread?.id ?? null; }}>Edit setup</button>
@@ -387,7 +412,7 @@
       </div>
     {:else if activeThread.status === "solutions-ready" || workspace.solutions.length > 0}
       <div id="workflow-panel-ideas" role="tabpanel" aria-label="Ideas">
-        <SolutionWorkspace solutions={workspace.solutions} {busy} onExport={exportIdeas} onOpenSource={openExternalUrl} onReview={() => { activeStep = "research"; reviewSelection = true; }} />
+        <SolutionWorkspace solutions={workspace.solutions} {busy} onSelect={selectOption} onSave={saveDecision} onExport={exportIdeas} onOpenSource={openExternalUrl} onReview={() => { activeStep = "research"; reviewSelection = true; }} />
       </div>
     {:else if activeThread.status === "failed"}
       <div class="failed" id="workflow-panel-ideas" role="tabpanel" aria-label="Ideas" tabindex="0"><p class="eyebrow">No ideas</p><h1>The run stopped before any ideas were built.</h1><p>Use the controls above to resume the attempt or edit the setup.</p></div>

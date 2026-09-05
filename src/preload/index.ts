@@ -2,12 +2,16 @@ import { contextBridge, ipcRenderer } from "electron";
 import {
   ExportIdeasRequestSchema, ExportResearchRequestSchema, IPC_CHANNELS, ResearchEventSchema, SaveFavoriteModelSchema,
   NativeLoginCancelSchema, NativeLoginCompleteSchema, NativeLoginStartSchema, NativeProviderSchema,
-  SaveRunConfigSchema, SaveScopeSchema, SelectProblemsSchema,
+  SaveRunConfigSchema, SaveScopeSchema, SelectProblemsSchema, SelectOptionSchema, SaveDecisionSchema,
   type NativeLoginCompleteResult, type NativeLoginStartResult, type ResearchEvent,
   type SolutionView, type SourceDetail, type ValidationState, type WorkspaceState,
 } from "../shared/ipc";
 
 const api = {
+  selectOption: (payload: { threadId: string; runId: string; solutionId: string }): Promise<WorkspaceState> =>
+    ipcRenderer.invoke(IPC_CHANNELS.SELECT_OPTION, SelectOptionSchema.parse(payload)),
+  saveDecision: (payload: { threadId: string; solutionId: string; userDecision: string; observedResult: string }): Promise<WorkspaceState> =>
+    ipcRenderer.invoke(IPC_CHANNELS.SAVE_DECISION, SaveDecisionSchema.parse(payload)),
   getValidation: (): Promise<ValidationState> => ipcRenderer.invoke(IPC_CHANNELS.GET_VALIDATION),
   retryConnection: (): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.RETRY_CONNECTION),
   getWorkspace: (): Promise<WorkspaceState> => ipcRenderer.invoke(IPC_CHANNELS.GET_WORKSPACE),

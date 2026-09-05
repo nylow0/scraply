@@ -11,8 +11,10 @@ import { MAX_DEVELOPMENT_PROJECTED_CALLS } from "../shared/development-projectio
 import type { ResearchEvent } from "../shared/ipc";
 import { RunConfigSchema, sameModelRef, type RunConfig } from "../shared/schemas";
 import { ScopeSchema, type Scope } from "../shared/structured-output-schemas";
-import { runPersistedDevelopment } from "./development";
-import { discoverProblems, discoveryRunProjection, harvestFactors, type HarvestedFactor, type HarvestedSource } from "./discovery";
+import { analyzeSelectedOption, produceDevelopmentOptions, runPersistedDevelopment } from "./development";
+import { discoverProblems, discoveryRunProjection, harvestFactors, type HarvestResult, type HarvestedFactor, type HarvestedSource } from "./discovery";
+import { WorkflowExecution } from "./workflow-execution";
+import type { WorkflowV2StageId } from "./stages";
 
 export interface ResearchEngineOptions {
   db: DatabaseClient;
@@ -31,6 +33,7 @@ interface ActiveRun {
   deadlineTimer?: ReturnType<typeof setTimeout>;
   projectedCodexCalls: number;
   projectedSearches: number;
+  workflow?: WorkflowExecution;
 }
 
 export class ResearchEngine {
@@ -107,7 +110,8 @@ export class ResearchEngine {
     if (this.activeRuns.has(runId)) return;
     const row = this.options.db.db.prepare(`SELECT thread_id, status, config_json, problem_id FROM research_runs WHERE id = ?`)
       .get(runId) as { thread_id: string; status: string; config_json: string; problem_id: string | null } | undefined;
-    if (!row || !["queued", "running"].includes(row.status)) {
+    const config = row ? RunConfigSchema.parse(JSON.parse(row.config_json)) : null;
+    if (!row || !config || !["queued", "running", ...(config.workflowVersion === 2 ? ["failed", "cancelled"] : [])].includes(row.status)) {
       throw new AppError("conflict", "This research run has already ended and cannot be resumed.");
     }
     const uncertain = this.options.db.db.prepare(`
@@ -119,11 +123,33 @@ export class ResearchEngine {
       this.ledger.settleUncertain(runId, "A dispatched generation lost its terminal result during restart");
       throw new AppError("conflict", "A previous model request may have completed before the app restarted. Cancel this run and start a new one to avoid an automatic duplicate charge.");
     }
+    this.assertThreadIdle(row.thread_id, runId);
     this.ledger.settleUncertain(runId, "The app restarted before an operation reached a durable result");
     this.options.db.db.prepare("UPDATE research_runs SET status = 'running', cancelled = 0, updated_at = ? WHERE id = ?")
       .run(new Date().toISOString(), runId);
-    const config = RunConfigSchema.parse(JSON.parse(row.config_json));
+    this.options.db.db.prepare("UPDATE research_runs SET interrupted = 0 WHERE id = ?").run(runId);
     this.begin(runId, row.thread_id, row.problem_id, config, true);
+  }
+
+  async selectOption(threadId: string, runId: string, solutionId: string): Promise<void> {
+    const row = this.options.db.db.prepare("SELECT thread_id, problem_id, config_json, awaiting_selection FROM research_runs WHERE id = ? AND workflow_version = 2")
+      .get(runId) as { thread_id: string; problem_id: string; config_json: string; awaiting_selection: number } | undefined;
+    if (!row || row.thread_id !== threadId) throw new AppError("not_found", "Option run does not belong to this project.");
+    if (this.activeRuns.has(runId)) return;
+    if (!row.awaiting_selection) throw new AppError("conflict", "This run is not awaiting an option selection.");
+    this.assertThreadIdle(threadId, runId);
+    const workflow = new WorkflowExecution(this.options.db, runId);
+    this.options.db.immediateTransaction(() => {
+      workflow.repository.selectSolution(runId, solutionId);
+      this.options.db.db.prepare("UPDATE research_runs SET status = 'running', awaiting_selection = 0, interrupted = 0 WHERE id = ?").run(runId);
+    });
+    this.begin(runId, threadId, row.problem_id, RunConfigSchema.parse(JSON.parse(row.config_json)), true);
+  }
+
+  private assertThreadIdle(threadId: string, exceptRunId: string): void {
+    const other = this.options.db.db.prepare("SELECT id FROM research_runs WHERE thread_id = ? AND id != ? AND status IN ('queued','running')")
+      .get(threadId, exceptRunId);
+    if (other) throw new AppError("conflict", "This project already has another active run.");
   }
 
   cancelRun(runId: string): void {
@@ -145,7 +171,7 @@ export class ResearchEngine {
 
   private begin(runId: string, threadId: string, problemId: string | null, config: RunConfig, resumed = false): void {
     const projection = problemId
-      ? { modelCalls: MAX_DEVELOPMENT_PROJECTED_CALLS, searches: 0 }
+      ? { modelCalls: config.workflowVersion === 2 ? 2 : MAX_DEVELOPMENT_PROJECTED_CALLS, searches: 0 }
       : discoveryRunProjection(config.discoveryDepth);
     const active: ActiveRun = {
       runId, threadId, problemId, config, abortController: new AbortController(), startedAt: Date.now(),
@@ -166,6 +192,7 @@ export class ResearchEngine {
   }
 
   private async execute(active: ActiveRun): Promise<void> {
+    if (active.config.workflowVersion === 2) active.workflow = new WorkflowExecution(this.options.db, active.runId);
     if (active.problemId) await this.executeDevelopment(active);
     else await this.executeDiscovery(active);
     if (active.abortController.signal.aborted || !this.activeRuns.has(active.runId)) return;
@@ -174,6 +201,10 @@ export class ResearchEngine {
     this.activeRuns.delete(active.runId);
     this.emit({ type: "run-completed", runId: active.runId, threadId: active.threadId, problemId: active.problemId });
     if (!active.problemId) { this.updateThread(active.threadId, "problems-ready"); return; }
+    if (active.workflow) {
+      const waiting = this.options.db.db.prepare("SELECT awaiting_selection FROM research_runs WHERE id = ?").get(active.runId) as { awaiting_selection: number };
+      if (waiting.awaiting_selection) { this.updateThread(active.threadId, "solutions-ready"); return; }
+    }
     // This run is already completed and out of activeRuns, so fail() would no-op; a queue handoff
     // that throws has to move the thread off development-running here or it stays stuck there.
     try { await this.startNextSelected(active.threadId, active.config); }
@@ -196,6 +227,22 @@ export class ResearchEngine {
       offLimits: JSON.parse(scopeRow.off_limits_json),
     });
     const deps = this.dependencies(active);
+    if (active.workflow) {
+      const workflow = active.workflow;
+      if (workflow.read("discovery-completed")) return;
+      let harvest = workflow.read<HarvestResult>("harvest");
+      if (!harvest) {
+        harvest = await harvestFactors(scope, { ...deps, idFactory: workflow.idFactory("harvest"), random: () => 0.5 });
+        const snapshot = harvest;
+        this.discovery.persistFactors(active.runId, harvest.sources, harvest.factors, () => workflow.save("harvest", snapshot));
+      }
+      this.progress(active, `${harvest.factors.length} observations from ${harvest.sources.length} sources`);
+      const result = await discoverProblems(scope, harvest.factors, harvest.sources, { ...deps, idFactory: workflow.idFactory("problems") });
+      this.discovery.persistProblems(active.runId, result.killSources, result.problems, result.blockedCandidates,
+        () => workflow.save("discovery-completed", result));
+      this.progress(active, `${result.problems.length} problems ready for your review`);
+      return;
+    }
     const existingCandidates = this.options.db.db.prepare(`
       SELECT
         (SELECT COUNT(*) FROM problems WHERE discovery_run_id = ?) +
@@ -237,6 +284,44 @@ export class ResearchEngine {
   }
 
   private async executeDevelopment(active: ActiveRun): Promise<void> {
+    if (active.workflow) {
+      const workflow = active.workflow;
+      const context = workflow.developmentContext(active.problemId!);
+      const deps = {
+        modelClient: this.instrumentedModel(active), model: active.config.model,
+        reasoningEffort: active.config.reasoningEffort, signal: active.abortController.signal,
+        resolvePrompt: workflow.resolvePrompt,
+      };
+      if (!workflow.repository.findStageResult(active.runId, "solutions")) {
+        this.progress(active, "Generating up to three options");
+        const result = await produceDevelopmentOptions(context, deps);
+        active.abortController.signal.throwIfAborted();
+        this.options.db.immediateTransaction(() => {
+          workflow.repository.saveSolutionOptions(active.runId, active.problemId!, result.options.map(({ problemId, ...option }) => { void problemId; return option; }));
+          workflow.commitStage("solutions", result.request, result.resolvedPrompt, result.metadata,
+            { options: result.options.map(({ id, problemId, ...option }) => { void id; void problemId; return option; }) }, context);
+        });
+      }
+      const option = workflow.selectedOption(active.problemId!);
+      if (!option) {
+        const count = this.options.db.db.prepare("SELECT COUNT(*) AS count FROM solutions WHERE research_run_id = ?").get(active.runId) as { count: number };
+        this.options.db.db.prepare("UPDATE research_runs SET awaiting_selection = ? WHERE id = ?").run(count.count > 0 ? 1 : 0, active.runId);
+        this.progress(active, count.count ? "Options saved. Choose one to analyze." : "No useful new option was proposed. Review the problem or keep the current approach.");
+        return;
+      }
+      if (workflow.repository.findStageResult(active.runId, "decision-analysis", option.id)) return;
+      this.progress(active, "Analyzing the selected option and its next experiment");
+      const result = await analyzeSelectedOption(context, option, deps);
+      active.abortController.signal.throwIfAborted();
+      this.options.db.immediateTransaction(() => {
+        const checkpoint = workflow.commitStage("decision-analysis", result.request, result.resolvedPrompt,
+          result.metadata, result.analysis, context, option.id);
+        workflow.repository.saveDecisionAnalysis({ researchRunId: active.runId, solutionId: option.id,
+          stageResultId: checkpoint.id, analysis: result.analysis });
+      });
+      this.progress(active, "Analysis saved. Record your decision and the observed test result when available.");
+      return;
+    }
     const existing = this.options.db.db.prepare(`
       SELECT COUNT(*) AS count,
         SUM(CASE WHEN NOT EXISTS (SELECT 1 FROM outcomes o WHERE o.solution_id = s.id) THEN 1 ELSE 0 END) AS missing_outcomes,
@@ -262,14 +347,21 @@ export class ResearchEngine {
   }
 
   private dependencies(active: ActiveRun) {
+    const modelClient = this.instrumentedModel(active);
+    const search = this.instrumentedSearch(active);
     return {
-      modelClient: this.instrumentedModel(active),
-      search: this.instrumentedSearch(active),
+      modelClient: active.workflow ? active.workflow.discoveryClient(modelClient) : modelClient,
+      search: active.workflow ? active.workflow.search(search) : search,
       model: active.config.model,
       reasoningEffort: active.config.reasoningEffort,
       depth: active.config.discoveryDepth,
       signal: active.abortController.signal,
       onProjection: (message: string) => this.progress(active, message),
+      ...(active.workflow ? {
+        workflowVersion: 2 as const,
+        prompt: (name: string) => active.workflow!.resolvePrompt(name as WorkflowV2StageId).text,
+        audienceSearch: { includeDomains: active.config.audienceSourcePolicy === "communities" ? ["reddit.com", "news.ycombinator.com"] : [] },
+      } : {}),
     };
   }
 
@@ -280,7 +372,6 @@ export class ResearchEngine {
       structuredCompletion: async <T>(request: StructuredStageRequest<T>) => {
         if (!sameModelRef(request.model, active.config.model)) throw new Error("Stage model does not match the active run configuration");
         const providerId = active.config.model.providerId;
-        this.enforceRunawayBackstop(active, providerId, active.projectedCodexCalls);
         const preparedIdentity = client.prepareIdentity
           ? await client.prepareIdentity()
           : client.preparedIdentity?.();
@@ -288,6 +379,7 @@ export class ResearchEngine {
         if (reusable) {
           return { output: reusable.output, metadata: reusable.metadata as GenerationMetadata };
         }
+        this.enforceRunawayBackstop(active, providerId, active.projectedCodexCalls);
         const attempt = this.generationAttempts.prepare(active.runId, request, preparedIdentity);
         let reservation: ReturnType<CostLedgerRepository["reserve"]> | null = null;
         let accepted = false;
