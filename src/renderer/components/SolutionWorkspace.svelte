@@ -11,6 +11,8 @@
     onReview,
     onSelect,
     onSave,
+    workflowVersion,
+    onEvidenceFollowUp,
   }: {
     solutions: SolutionView[];
     busy: boolean;
@@ -19,10 +21,12 @@
     onReview: () => void;
     onSelect?: (idea: SolutionView) => Promise<void>;
     onSave?: (solutionId: string, decision: string, observed: string) => Promise<void>;
+    workflowVersion?: 1 | 2 | undefined;
+    onEvidenceFollowUp?: ((runId: string, question: string) => Promise<void>) | undefined;
   } = $props();
 
   let unaddressedOnly = $state(false);
-  let hasV2 = $derived(solutions.some((idea) => idea.workflowVersion === 2));
+  let hasV2 = $derived(workflowVersion === 2 || solutions.some((idea) => idea.workflowVersion === 2));
   let rankedSolutions = $derived(solutions.map((idea, index) => ({ idea, rank: index + 1 })));
   let visible = $derived(
     unaddressedOnly
@@ -60,13 +64,12 @@
   <div class="solutions">
     {#each visible as item (item.idea.id)}
       {#if item.idea.workflowVersion === 2 && onSelect && onSave}
-        <DecisionOption idea={item.idea} {busy} {onSelect} {onSave} {onOpenSource} />
+        <DecisionOption idea={item.idea} {busy} {onSelect} {onSave} {onOpenSource} {onEvidenceFollowUp} />
       {:else}<SolutionListItem idea={item.idea} rank={item.rank} {onOpenSource} />{/if}
     {:else}
       <div class="empty">
-        <h2>{solutions.length ? "No ideas match this filter." : "No useful new option was proposed."}</h2>
-        <p>Clear "Unaddressed project-ending" to return to the complete solution list.</p>
-        <button onclick={() => unaddressedOnly = false}>Show every idea</button>
+        <h2>{solutions.length ? "No ideas match this filter." : hasV2 ? "No solution options were returned." : "No useful new option was proposed."}</h2>
+        {#if solutions.length}<p>Clear "Unaddressed project-ending" to return to the complete solution list.</p><button onclick={() => unaddressedOnly = false}>Show every idea</button>{:else if hasV2}<p>The model returned zero options for the selected problem. Review the evidence and try another problem or run.</p>{/if}
       </div>
     {/each}
   </div>

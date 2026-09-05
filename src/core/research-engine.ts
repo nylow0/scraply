@@ -1,20 +1,22 @@
 import type { DatabaseClient } from "../db/client";
-import { CostLedgerRepository } from "../db/repositories/cost-ledger";
+import { CostLedgerRepository, type CostReservation } from "../db/repositories/cost-ledger";
 import { DevelopmentRepository } from "../db/repositories/development";
 import { DiscoveryRepository } from "../db/repositories/discovery";
+import { EvidenceFollowUpRepository } from "../db/repositories/evidence-follow-ups";
 import { GenerationAttemptRepository } from "../db/repositories/generation-attempts";
 import { ResearchRunRepository } from "../db/repositories/research-runs";
 import type { SearchClient, SearchOptions, SearchProvider } from "../providers/search";
 import { ProviderFailure, type GenerationMetadata, type StructuredModelClient, type StructuredStageRequest } from "../providers/structured";
 import { AppError } from "../shared/errors";
+import { deriveJsonSchema } from "../shared/json-schema";
 import { MAX_DEVELOPMENT_PROJECTED_CALLS } from "../shared/development-projection";
 import type { ResearchEvent } from "../shared/ipc";
 import { RunConfigSchema, sameModelRef, type RunConfig } from "../shared/schemas";
 import { ScopeSchema, type Scope } from "../shared/structured-output-schemas";
 import { analyzeSelectedOption, produceDevelopmentOptions, runPersistedDevelopment } from "./development";
-import { discoverProblems, discoveryRunProjection, harvestFactors, type HarvestResult, type HarvestedFactor, type HarvestedSource } from "./discovery";
+import { discoverProblems, discoveryRunProjection, harvestEvidenceFollowUp, harvestFactors, type HarvestResult, type HarvestedFactor, type HarvestedSource } from "./discovery";
 import { WorkflowExecution } from "./workflow-execution";
-import type { WorkflowV2StageId } from "./stages";
+import { WORKFLOW_V2_STAGE_REGISTRY, type WorkflowV2StageId } from "./stages";
 
 export interface ResearchEngineOptions {
   db: DatabaseClient;
@@ -34,6 +36,26 @@ interface ActiveRun {
   projectedCodexCalls: number;
   projectedSearches: number;
   workflow?: WorkflowExecution;
+  followUpModelReservation: CostReservation | null;
+  followUpSearchReservation: CostReservation | null;
+}
+
+export function recoverInterruptedEvidenceFollowUps(db: DatabaseClient): string[] {
+  const followUps = new EvidenceFollowUpRepository(db);
+  const ledger = new CostLedgerRepository(db);
+  const runIds = followUps.interruptedRunIds();
+  for (const runId of runIds) {
+    const unusedModelAllowances = db.db.prepare(`
+      SELECT id FROM cost_ledger
+      WHERE research_run_id = ? AND operation = 'evidence-follow-up'
+        AND status = 'reserved' AND generation_attempt_id IS NULL
+    `).all(runId) as Array<{ id: string }>;
+    for (const allowance of unusedModelAllowances) ledger.release(allowance.id);
+    ledger.settleUncertain(runId, "The app restarted during an evidence follow-up provider operation");
+  }
+  return db.immediateTransaction(() => followUps.failInterrupted(
+    "The app restarted during this follow-up. It was not replayed.",
+  ));
 }
 
 export class ResearchEngine {
@@ -42,6 +64,7 @@ export class ResearchEngine {
   private readonly runs: ResearchRunRepository;
   private readonly ledger: CostLedgerRepository;
   private readonly generationAttempts: GenerationAttemptRepository;
+  private readonly followUps: EvidenceFollowUpRepository;
   private readonly discovery: DiscoveryRepository;
   private readonly development: DevelopmentRepository;
 
@@ -49,8 +72,10 @@ export class ResearchEngine {
     this.runs = new ResearchRunRepository(options.db);
     this.ledger = new CostLedgerRepository(options.db);
     this.generationAttempts = new GenerationAttemptRepository(options.db);
+    this.followUps = new EvidenceFollowUpRepository(options.db);
     this.discovery = new DiscoveryRepository(options.db);
     this.development = new DevelopmentRepository(options.db);
+    recoverInterruptedEvidenceFollowUps(options.db);
   }
 
   getActiveRunIds(): ReadonlySet<string> { return new Set(this.activeRuns.keys()); }
@@ -114,14 +139,10 @@ export class ResearchEngine {
     if (!row || !config || !["queued", "running", ...(config.workflowVersion === 2 ? ["failed", "cancelled"] : [])].includes(row.status)) {
       throw new AppError("conflict", "This research run has already ended and cannot be resumed.");
     }
-    const uncertain = this.options.db.db.prepare(`
-      SELECT 1 FROM generation_attempts
-      WHERE research_run_id = ? AND status = 'interrupted' AND terminal_kind = 'process-lost'
-      LIMIT 1
-    `).get(runId);
-    if (uncertain) {
+    const resumeSafety = this.generationAttempts.getResumeSafety(runId);
+    if (!resumeSafety.canResume) {
       this.ledger.settleUncertain(runId, "A dispatched generation lost its terminal result during restart");
-      throw new AppError("conflict", "A previous model request may have completed before the app restarted. Cancel this run and start a new one to avoid an automatic duplicate charge.");
+      throw new AppError("conflict", `${resumeSafety.resumeBlockedReason} Cancel this run and start a new one to avoid an automatic duplicate charge.`);
     }
     this.assertThreadIdle(row.thread_id, runId);
     this.ledger.settleUncertain(runId, "The app restarted before an operation reached a durable result");
@@ -146,6 +167,56 @@ export class ResearchEngine {
     this.begin(runId, threadId, row.problem_id, RunConfigSchema.parse(JSON.parse(row.config_json)), true);
   }
 
+  async requestEvidenceFollowUp(threadId: string, runId: string, question: string): Promise<void> {
+    if (this.activeRuns.has(runId)) throw new AppError("conflict", "This research run is already active.");
+    const row = this.options.db.db.prepare(`
+      SELECT rr.thread_id, rr.problem_id, rr.config_json, s.id AS solution_id
+      FROM research_runs rr
+      JOIN solutions s ON s.research_run_id = rr.id AND s.selected_at IS NOT NULL
+      WHERE rr.id = ? AND rr.workflow_version = 2 AND rr.status = 'completed'
+    `).get(runId) as {
+      thread_id: string;
+      problem_id: string;
+      config_json: string;
+      solution_id: string;
+    } | undefined;
+    if (!row || row.thread_id !== threadId) throw new AppError("not_found", "Completed v2 analysis run not found.");
+    const config = RunConfigSchema.parse(JSON.parse(row.config_json));
+    if (config.workflowVersion !== 2) throw new AppError("conflict", "The saved run configuration is not workflow v2.");
+    this.assertThreadIdle(threadId, runId);
+    this.options.db.immediateTransaction(() => {
+      try {
+        this.followUps.request(runId, row.solution_id, question);
+      } catch (error) {
+        throw new AppError("conflict", error instanceof Error ? error.message : "Evidence follow-up cannot be requested.");
+      }
+      this.options.db.db.prepare("UPDATE research_runs SET status = 'running', cancelled = 0, updated_at = ? WHERE id = ?")
+        .run(new Date().toISOString(), runId);
+    });
+    const active: ActiveRun = {
+      runId,
+      threadId,
+      problemId: row.problem_id,
+      config,
+      abortController: new AbortController(),
+      startedAt: Date.now(),
+      projectedCodexCalls: 1,
+      projectedSearches: 1,
+      workflow: new WorkflowExecution(this.options.db, runId),
+      followUpModelReservation: null,
+      followUpSearchReservation: null,
+    };
+    this.activeRuns.set(runId, active);
+    this.scheduleDeadline(active);
+    this.emit({ type: "run-resumed", runId, threadId });
+    const execution = this.executeEvidenceFollowUp(active)
+      .catch((error) => this.failEvidenceFollowUp(active, error))
+      .finally(() => {
+        if (this.executions.get(runId) === execution) this.executions.delete(runId);
+      });
+    this.executions.set(runId, execution);
+  }
+
   private assertThreadIdle(threadId: string, exceptRunId: string): void {
     const other = this.options.db.db.prepare("SELECT id FROM research_runs WHERE thread_id = ? AND id != ? AND status IN ('queued','running')")
       .get(threadId, exceptRunId);
@@ -158,12 +229,28 @@ export class ResearchEngine {
     if (!row) throw new AppError("not_found", "Research run not found.");
     if (!["queued", "running"].includes(row.status)) throw new AppError("conflict", "This research run has already ended.");
     const active = this.activeRuns.get(runId);
+    const followUp = this.followUps.find(runId);
     if (active) {
       if (active.deadlineTimer) clearTimeout(active.deadlineTimer);
       active.abortController.abort(new Error("Cancelled by user"));
+      if (active.followUpModelReservation) {
+        this.ledger.release(active.followUpModelReservation.id);
+        active.followUpModelReservation = null;
+      }
       this.activeRuns.delete(runId);
     }
     this.ledger.settleUncertain(runId, "Run cancelled while operations were in flight");
+    if (followUp && ["requested", "running"].includes(followUp.status)) {
+      this.options.db.immediateTransaction(() => {
+        this.followUps.fail(runId, "Cancelled by user");
+        this.options.db.db.prepare(`
+          UPDATE research_runs SET status = 'completed', completion_reason = ?, cancelled = 0, updated_at = ? WHERE id = ?
+        `).run("Analysis completed; evidence follow-up cancelled", new Date().toISOString(), runId);
+      });
+      this.updateThread(row.thread_id, "solutions-ready");
+      this.emit({ type: "run-cancelled", runId, threadId: row.thread_id });
+      return;
+    }
     this.runs.cancel(runId);
     this.updateThread(row.thread_id, "failed");
     this.emit({ type: "run-cancelled", runId, threadId: row.thread_id });
@@ -176,6 +263,7 @@ export class ResearchEngine {
     const active: ActiveRun = {
       runId, threadId, problemId, config, abortController: new AbortController(), startedAt: Date.now(),
       projectedCodexCalls: projection.modelCalls, projectedSearches: projection.searches,
+      followUpModelReservation: null, followUpSearchReservation: null,
     };
     this.activeRuns.set(runId, active);
     this.scheduleDeadline(active);
@@ -233,13 +321,19 @@ export class ResearchEngine {
       let harvest = workflow.read<HarvestResult>("harvest");
       if (!harvest) {
         harvest = await harvestFactors(scope, { ...deps, idFactory: workflow.idFactory("harvest"), random: () => 0.5 });
+        harvest = { ...harvest, factors: workflow.withFactorUncertainty(harvest.factors) };
         const snapshot = harvest;
-        this.discovery.persistFactors(active.runId, harvest.sources, harvest.factors, () => workflow.save("harvest", snapshot));
+        this.discovery.persistFactors(active.runId, harvest.sources, harvest.factors, () => {
+          workflow.flushPendingStages(["query-plan", "factor-harvest"]);
+          workflow.save("harvest", snapshot);
+        });
       }
       this.progress(active, `${harvest.factors.length} observations from ${harvest.sources.length} sources`);
       const result = await discoverProblems(scope, harvest.factors, harvest.sources, { ...deps, idFactory: workflow.idFactory("problems") });
-      this.discovery.persistProblems(active.runId, result.killSources, result.problems, result.blockedCandidates,
-        () => workflow.save("discovery-completed", result));
+      this.discovery.persistProblems(active.runId, result.killSources, result.problems, result.blockedCandidates, () => {
+        workflow.flushPendingStages(["problem-candidates", "problem-kill"]);
+        workflow.save("discovery-completed", result);
+      });
       this.progress(active, `${result.problems.length} problems ready for your review`);
       return;
     }
@@ -292,7 +386,20 @@ export class ResearchEngine {
         reasoningEffort: active.config.reasoningEffort, signal: active.abortController.signal,
         resolvePrompt: workflow.resolvePrompt,
       };
-      if (!workflow.repository.findStageResult(active.runId, "solutions")) {
+      const savedSolutions = workflow.repository.findStageResult(active.runId, "solutions");
+      if (savedSolutions) {
+        workflow.repository.getStageResumeState({
+          researchRunId: active.runId,
+          stageId: "solutions",
+          context,
+          identity: {
+            promptSha256: savedSolutions.prompt.resolvedSha256,
+            schema: deriveJsonSchema(WORKFLOW_V2_STAGE_REGISTRY.solutions.schema),
+            inputs: savedSolutions.inputs,
+            evidence: savedSolutions.evidence,
+          },
+        });
+      } else {
         this.progress(active, "Generating up to three options");
         const result = await produceDevelopmentOptions(context, deps);
         active.abortController.signal.throwIfAborted();
@@ -309,7 +416,22 @@ export class ResearchEngine {
         this.progress(active, count.count ? "Options saved. Choose one to analyze." : "No useful new option was proposed. Review the problem or keep the current approach.");
         return;
       }
-      if (workflow.repository.findStageResult(active.runId, "decision-analysis", option.id)) return;
+      const savedAnalysis = workflow.repository.findStageResult(active.runId, "decision-analysis", option.id);
+      if (savedAnalysis) {
+        workflow.repository.getStageResumeState({
+          researchRunId: active.runId,
+          stageId: "decision-analysis",
+          selectionId: option.id,
+          context,
+          identity: {
+            promptSha256: savedAnalysis.prompt.resolvedSha256,
+            schema: deriveJsonSchema(WORKFLOW_V2_STAGE_REGISTRY["decision-analysis"].schema),
+            inputs: savedAnalysis.inputs,
+            evidence: savedAnalysis.evidence,
+          },
+        });
+        return;
+      }
       this.progress(active, "Analyzing the selected option and its next experiment");
       const result = await analyzeSelectedOption(context, option, deps);
       active.abortController.signal.throwIfAborted();
@@ -386,10 +508,15 @@ export class ResearchEngine {
         let dispatched = false;
         let terminalRecorded = false;
         try {
+          if (active.followUpModelReservation) {
+            reservation = active.followUpModelReservation;
+            active.followUpModelReservation = null;
+            this.ledger.attachGenerationAttempt(reservation.id, attempt.id);
+          }
           const result = await client.structuredCompletion({
             ...request,
             onDispatched: () => {
-              reservation = this.ledger.reserve(active.runId, "structured-completion", providerId, active.config.model.modelId, 0, attempt.id);
+              reservation ??= this.ledger.reserve(active.runId, "structured-completion", providerId, active.config.model.modelId, 0, attempt.id);
               dispatched = true;
               this.generationAttempts.markDispatched(attempt.id);
               request.onDispatched?.();
@@ -460,7 +587,9 @@ export class ResearchEngine {
       search: async (query: string, options?: SearchOptions) => {
         if (!client) throw new AppError("conflict", `Connect ${provider === "exa" ? "Exa" : "Perplexity"} before discovering problems.`);
         this.enforceRunawayBackstop(active, provider, active.projectedSearches);
-        const reservation = this.ledger.reserve(active.runId, "search", provider, null, provider === "exa" ? 0.02 : 0.005);
+        const reservation = active.followUpSearchReservation
+          ?? this.ledger.reserve(active.runId, "search", provider, null, provider === "exa" ? 0.02 : 0.005);
+        active.followUpSearchReservation = null;
         try { return await client.search(query, options); }
         finally {
           if (this.activeRuns.get(active.runId) === active) {
@@ -500,7 +629,9 @@ export class ResearchEngine {
       if (this.activeRuns.get(active.runId) !== active) return;
       const error = new Error("Run attempt exceeded its hang-detection deadline");
       active.abortController.abort(error);
-      this.fail(active, error, "failed");
+      const followUp = this.followUps.find(active.runId);
+      if (followUp && ["requested", "running"].includes(followUp.status)) this.failEvidenceFollowUp(active, error);
+      else this.fail(active, error, "failed");
     }, active.config.maxRunMinutes * 60_000);
   }
 
@@ -515,6 +646,94 @@ export class ResearchEngine {
   private logJob(runId: string | null, threadId: string | null, type: string, payload: Record<string, unknown>): void {
     this.options.db.db.prepare("INSERT INTO job_events (run_id, thread_id, type, payload_json, created_at) VALUES (?, ?, ?, ?, ?)")
       .run(runId, threadId, type, JSON.stringify(payload), new Date().toISOString());
+  }
+
+  private async executeEvidenceFollowUp(active: ActiveRun): Promise<void> {
+    const row = this.options.db.db.prepare(`
+      SELECT s.title, s.audience, s.domain, s.observations, s.off_limits_json
+      FROM problems p JOIN scopes s ON s.research_run_id = p.discovery_run_id
+      WHERE p.id = ?
+    `).get(active.problemId) as {
+      title: string;
+      audience: string;
+      domain: string;
+      observations: string;
+      off_limits_json: string;
+    } | undefined;
+    const followUp = this.followUps.find(active.runId);
+    if (!row || !followUp) throw new Error("Evidence follow-up context is missing");
+    const scope = ScopeSchema.parse({
+      title: row.title,
+      audience: row.audience,
+      domain: row.domain,
+      observations: row.observations,
+      offLimits: JSON.parse(row.off_limits_json),
+    });
+    const providerId = active.config.model.providerId;
+    this.enforceRunawayBackstop(active, providerId, 1);
+    this.enforceRunawayBackstop(active, active.config.searchProvider, 1);
+    active.followUpModelReservation = this.ledger.reserve(
+      active.runId, "evidence-follow-up", providerId, active.config.model.modelId, 0,
+    );
+    try {
+      active.followUpSearchReservation = this.ledger.reserve(
+        active.runId,
+        "evidence-follow-up-search",
+        active.config.searchProvider,
+        null,
+        active.config.searchProvider === "exa" ? 0.02 : 0.005,
+      );
+    } catch (error) {
+      this.ledger.release(active.followUpModelReservation.id);
+      active.followUpModelReservation = null;
+      throw error;
+    }
+    this.options.db.immediateTransaction(() => this.followUps.markRunning(active.runId));
+    this.progress(active, `Investigating one question: ${followUp.question}`);
+    const result = await harvestEvidenceFollowUp(scope, followUp.question, {
+      ...this.dependencies(active),
+      depth: active.config.discoveryDepth,
+      idFactory: active.workflow!.idFactory("evidence-follow-up"),
+    });
+    active.abortController.signal.throwIfAborted();
+    if (active.followUpModelReservation) {
+      this.ledger.release(active.followUpModelReservation.id);
+      active.followUpModelReservation = null;
+    }
+    const factors = active.workflow!.withFactorUncertainty(result.factors);
+    this.discovery.persistFactors(active.runId, result.sources, factors, () => {
+      active.workflow!.flushPendingStages(["factor-harvest"]);
+      this.followUps.complete(
+        active.runId,
+        result.sources.map((source) => source.id),
+        factors.map((factor) => factor.id),
+      );
+    });
+    this.runs.finish(active.runId, "completed", "Evidence follow-up completed");
+    if (active.deadlineTimer) clearTimeout(active.deadlineTimer);
+    this.activeRuns.delete(active.runId);
+    this.progress(active, `${result.factors.length} quote-verified follow-up observations saved`);
+    this.updateThread(active.threadId, "solutions-ready");
+    this.emit({ type: "run-completed", runId: active.runId, threadId: active.threadId, problemId: active.problemId });
+  }
+
+  private failEvidenceFollowUp(active: ActiveRun, error: unknown): void {
+    const saved = this.followUps.find(active.runId);
+    if (!saved || ["completed", "failed"].includes(saved.status)) return;
+    if (active.deadlineTimer) clearTimeout(active.deadlineTimer);
+    this.activeRuns.delete(active.runId);
+    if (active.followUpModelReservation) this.ledger.release(active.followUpModelReservation.id);
+    if (active.followUpSearchReservation) this.ledger.release(active.followUpSearchReservation.id);
+    this.ledger.settleUncertain(active.runId, "Evidence follow-up ended while a provider operation was in flight");
+    const message = error instanceof Error ? error.message : "Evidence follow-up failed";
+    this.options.db.immediateTransaction(() => {
+      this.followUps.fail(active.runId, message);
+      this.options.db.db.prepare(`
+        UPDATE research_runs SET status = 'completed', completion_reason = ?, updated_at = ? WHERE id = ?
+      `).run("Analysis completed; evidence follow-up failed", new Date().toISOString(), active.runId);
+    });
+    this.updateThread(active.threadId, "solutions-ready");
+    this.emit({ type: "run-failed", runId: active.runId, threadId: active.threadId, error: message });
   }
 }
 

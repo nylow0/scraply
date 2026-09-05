@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { spawn } from "node:child_process";
 import { createInterface } from "node:readline";
 import { IPC_CHANNELS, BackendReadySchema, ResearchEventSchema, type ResearchEvent } from "../../src/shared/ipc";
+import type { ScraplyApi } from "../../src/preload/index";
 
 // Installed renderer/preload/main with the production backend loaded from source. Only the native
 // child and Exa HTTP responses are fixtures. Live bundled-runtime parity is a separate gate.
@@ -53,10 +54,38 @@ for (const workflowVersion of [1, 2]) test(`native v${workflowVersion} research 
       await expect(page.getByText("Your selected option", { exact: false })).toBeVisible();
       await page.getByText("Evidence, analysis and your decision", { exact: true }).click();
       await expect(page.getByText("Next experiment", { exact: true })).toBeVisible();
+      await page.getByLabel("Question", { exact: true }).fill("Which suppliers publish arrival histories?");
+      await page.getByRole("button", { name: "Check evidence", exact: true }).click();
+      const followUp = page.getByRole("region", { name: "Evidence follow-up result" });
+      await expect(followUp.getByText("This option has used its one evidence follow-up.", { exact: true })).toBeVisible();
+      await expect(followUp.getByText("Parts delivery windows are uncertain.", { exact: true })).toHaveCount(2);
+      await expect(followUp.getByRole("link", { name: "Synthetic delivery report 0" })).toBeVisible();
+      await expect(page.getByRole("button", { name: "Check evidence", exact: true })).toHaveCount(0);
       await page.getByLabel("Your decision", { exact: true }).fill("Pilot with one supplier");
       await page.getByLabel("Observed test result", { exact: true }).fill("Nine of ten estimates matched arrivals");
       await page.getByRole("button", { name: "Save decision and result", exact: true }).click();
       await expect(page.getByText("Saved", { exact: true })).toBeVisible();
+      const progressTarget = await page.evaluate(async () => {
+        performance.clearMeasures("scraply-progress-visible");
+        const state = await (window as unknown as { scraply: ScraplyApi }).scraply.getWorkspace();
+        return { threadId: state.activeThreadId!, runId: state.latestResearchRun!.runId };
+      });
+      await electron.evaluate(async ({ BrowserWindow }, target) => {
+        const contents = BrowserWindow.getAllWindows()[0]!.webContents;
+        for (let index = 0; index < 35; index += 1) {
+          contents.send("scraply:backend-event", {
+            type: "run-progress", threadId: target.threadId, runId: target.runId,
+            message: `Deterministic renderer progress ${index}`, codexCalls: index, searches: index,
+          });
+          await new Promise((resolve) => setTimeout(resolve, 10));
+        }
+      }, progressTarget);
+      await page.waitForFunction(() => performance.getEntriesByName("scraply-progress-visible").length >= 30);
+      await expect(page.locator(".calls strong").first()).toHaveText("34");
+      await expect(page.locator(".calls strong").nth(1)).toHaveText("34");
+      const samplesMs = await page.evaluate(() => performance.getEntriesByName("scraply-progress-visible").map((entry) => entry.duration));
+      expect(samplesMs).toHaveLength(35);
+      writeFileSync(testInfo.outputPath("progress-samples.json"), JSON.stringify({ samplesMs }, null, 2));
     } else {
     await page.getByText("Supplier reliability ledger", { exact: true }).click();
     const solution = page.locator("details.solution").filter({ has: page.getByText("Supplier reliability ledger", { exact: true }) });
@@ -76,13 +105,17 @@ for (const workflowVersion of [1, 2]) test(`native v${workflowVersion} research 
     if (workflowVersion === 2) {
       await page.getByText("Evidence, analysis and your decision", { exact: true }).click();
       await expect(page.getByLabel("Observed test result", { exact: true })).toHaveValue("Nine of ten estimates matched arrivals");
+      const reopenedFollowUp = page.getByRole("region", { name: "Evidence follow-up result" });
+      await expect(reopenedFollowUp.getByText("Which suppliers publish arrival histories?", { exact: true })).toBeVisible();
+      await expect(reopenedFollowUp.getByRole("link", { name: "Synthetic delivery report 1" })).toBeVisible();
+      await expect(page.getByRole("button", { name: "Check evidence", exact: true })).toHaveCount(0);
     }
     await page.getByRole("tab", { name: /Research/ }).click();
     await expect(page.getByText("The evidence behind the ideas.", { exact: true })).toBeVisible();
     await page.getByText(`${workflowVersion === 1 ? 4 : 2} cited factors`, { exact: true }).click();
     await expect(page.getByText("Parts delivery windows are uncertain.", { exact: true }).first()).toBeVisible();
     await page.screenshot({ path: testInfo.outputPath("native-reopened-evidence.png") });
-    expect(readFileSync(join(directory, "requests.jsonl"), "utf8").trim().split("\n")).toHaveLength(workflowVersion === 1 ? 20 : 7);
+    expect(readFileSync(join(directory, "requests.jsonl"), "utf8").trim().split("\n")).toHaveLength(workflowVersion === 1 ? 20 : 8);
     expect(existsSync(join(directory, "prompts", "solutions.md"))).toBe(false);
     expect(readFileSync(join(directory, "prompts", "bundled-copy-backups", managedHash, "solutions.md"), "utf8")).toBe(managedPrompt);
   } finally {

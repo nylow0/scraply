@@ -9,6 +9,7 @@ import {
   CancelResearchSchema,
   CreateThreadRequestSchema,
   DeleteThreadRequestSchema,
+  EvidenceFollowUpRequestSchema,
   ExportIdeasRequestSchema,
   ExportResearchRequestSchema,
   GetIdeaDetailRequestSchema,
@@ -574,6 +575,7 @@ function registerIpc(): void {
   handle(IPC_CHANNELS.SELECT_PROBLEMS, (body) => post("/research/select-problems", SelectProblemsSchema.parse(body)));
   handle(IPC_CHANNELS.SELECT_OPTION, (body) => post("/research/select-option", SelectOptionSchema.parse(body)));
   handle(IPC_CHANNELS.SAVE_DECISION, (body) => post("/research/decision", SaveDecisionSchema.parse(body)));
+  handle(IPC_CHANNELS.EVIDENCE_FOLLOW_UP, (body) => post("/research/evidence-follow-up", EvidenceFollowUpRequestSchema.parse(body)));
   handle(IPC_CHANNELS.EXPORT_RESEARCH, async (body) => {
     const payload = ExportResearchRequestSchema.parse(body);
     const bundle = await post("/research/export", payload) as { filename: string; content: string };

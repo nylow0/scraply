@@ -302,23 +302,35 @@ export class WorkflowV2Repository {
     stageId: WorkflowV2StageId;
     selectionId?: string | null;
     context: unknown;
+    identity?: {
+      promptSha256: string;
+      schema: unknown;
+      inputs: unknown;
+      evidence: WorkflowV2EvidenceSnapshot[];
+    };
   }): WorkflowV2StageResumeState {
     const saved = this.findStageResult(input.researchRunId, input.stageId, input.selectionId);
     if (saved) {
       if (sha256(canonicalJson(input.context)) !== sha256(canonicalJson(saved.context))) {
         throw new WorkflowV2ContextMismatchError();
       }
+      if (input.identity && (
+        saved.prompt.resolvedSha256 !== input.identity.promptSha256
+        || sha256(canonicalJson(saved.schema)) !== sha256(canonicalJson(input.identity.schema))
+        || sha256(canonicalJson(saved.inputs)) !== sha256(canonicalJson(input.identity.inputs))
+        || sha256(canonicalJson(saved.evidence)) !== sha256(canonicalJson(input.identity.evidence))
+      )) throw new WorkflowV2ContextMismatchError();
       return { kind: "reusable", result: saved };
     }
     const ambiguous = this.client.db.prepare(`
       SELECT 1 FROM generation_attempts
-      WHERE research_run_id = ? AND stage_key = ?
+      WHERE research_run_id = ? AND (stage_key = ? OR stage_key LIKE ?)
         AND (
           status IN ('dispatched', 'accepted')
           OR (status = 'interrupted' AND terminal_kind IS NOT 'never-dispatched')
         )
       LIMIT 1
-    `).get(input.researchRunId, input.stageId);
+    `).get(input.researchRunId, input.stageId, `${input.stageId}:%`);
     return ambiguous ? { kind: "unknown-completion" } : { kind: "not-started" };
   }
 

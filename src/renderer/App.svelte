@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount } from "svelte";
+  import { onMount, tick } from "svelte";
   import type { NativeLoginStartResult, ResearchEvent, SolutionView, WorkspaceState } from "../shared/ipc";
   import Sidebar from "./components/Sidebar.svelte";
   import ScopeForm from "./components/ScopeForm.svelte";
@@ -30,6 +30,7 @@
   let reconcilePending = false;
   let loadEpoch = 0;
   let workspaceInFlight = false;
+  let progressMeasureId = 0;
   let activeThread = $derived(workspace?.threads.find((item) => item.id === workspace?.activeThreadId) ?? null);
   let activeRun = $derived(workspace?.latestResearchRun ?? null);
   // Local-only override: lets the user reopen the scope form from a failed run without touching server state.
@@ -43,9 +44,30 @@
       if (event.threadId !== workspace?.activeThreadId) return;
       latestEvent = event;
       if (event.type === "run-progress" && workspace?.latestResearchRun?.runId === event.runId) {
+        const measureId = progressMeasureId++;
+        const startMark = `scraply-progress-received-${measureId}`;
+        const visibleMark = `scraply-progress-rendered-${measureId}`;
+        performance.mark(startMark);
         workspace.latestResearchRun.lastActivity = event.message;
         workspace.latestResearchRun.codexCalls = event.codexCalls;
         workspace.latestResearchRun.searches = event.searches;
+        void tick().then(() => {
+          try {
+            const values = document.querySelectorAll(".calls strong");
+            if (values[0]?.textContent !== String(event.codexCalls) || values[1]?.textContent !== String(event.searches)) return;
+            performance.mark(visibleMark);
+            performance.measure("scraply-progress-visible", startMark, visibleMark);
+            const measures = performance.getEntriesByName("scraply-progress-visible");
+            if (measures.length > 100) {
+              const latest = measures.slice(-100).map((entry) => entry.duration);
+              performance.clearMeasures("scraply-progress-visible");
+              for (const duration of latest) performance.measure("scraply-progress-visible", { start: 0, duration });
+            }
+          } finally {
+            performance.clearMarks(startMark);
+            performance.clearMarks(visibleMark);
+          }
+        });
         return;
       }
       reconcileSoon();
@@ -306,6 +328,11 @@
       }
     });
   }
+  async function requestEvidenceFollowUp(runId: string, question: string) {
+    const threadId = activeThread?.id;
+    if (!threadId || !runId || !question.trim()) return;
+    await action(async () => setWorkspace(await window.scraply.requestEvidenceFollowUp({ threadId, runId, question })));
+  }
   async function openExternalUrl(url: string) {
     await action(() => window.scraply.openExternalUrl(url));
   }
@@ -336,7 +363,7 @@
     {#if workspace && activeThread}
       <div class="topbar">
         <div><span class="status-dot" class:live={activeThread.status.endsWith("running")}></span>{activeThread.title}</div>
-        {#if activeRun}<div class="calls"><strong>{activeRun.codexCalls}</strong> Codex calls / ~{activeRun.projectedCodexCalls} · <strong>{activeRun.searches}</strong> searches / ~{activeRun.projectedSearches}</div>{/if}
+        {#if activeRun}<div class="calls"><strong>{activeRun.codexCalls}</strong> model calls / ~{activeRun.projectedCodexCalls} · <strong>{activeRun.searches}</strong> searches / ~{activeRun.projectedSearches}</div>{/if}
       </div>
       <RunUsage usage={activeRun?.usage} />
       <WorkflowTabs
@@ -348,12 +375,12 @@
       />
       {#if activeThread.status === "failed"}
         <div class="run-stopped" role="status">
-          <div><strong>Run stopped</strong><span>{activeRun?.lastActivity ?? "The last run failed or was cancelled. Review the setup, then retry explicitly."}</span></div>
+          <div><strong>Run stopped</strong><span>{activeRun?.resumeBlockedReason ?? activeRun?.lastActivity ?? "The last run failed or was cancelled. Review the setup, then retry explicitly."}</span></div>
           <div class="run-stopped-actions">
-            {#if activeRun && (["queued", "running"].includes(activeRun.status) || activeRun.workflowVersion === 2)}
+            {#if activeRun?.canResume}
               <button disabled={busy} onclick={() => resumeResearch(activeRun.runId)}>Resume attempt</button>
-              {#if ["queued", "running"].includes(activeRun.status)}<button class="cancel" disabled={busy} onclick={() => cancelResearch(activeRun.runId)}>Cancel run</button>{/if}
             {/if}
+            {#if activeRun && ["queued", "running"].includes(activeRun.status)}<button class="cancel" disabled={busy} onclick={() => cancelResearch(activeRun.runId)}>Cancel run</button>{/if}
             {#if workspace.problemCandidates.length > 0 || workspace.rejectedProblemCandidates.length > 0}<button disabled={busy} onclick={() => { activeStep = "research"; reviewSelection = true; }}>Review problems</button>{/if}
             <button disabled={busy} onclick={() => { activeStep = "setup"; editingScopeThreadId = activeThread?.id ?? null; }}>Edit setup</button>
           </div>
@@ -412,10 +439,10 @@
       </div>
     {:else if activeThread.status === "solutions-ready" || workspace.solutions.length > 0}
       <div id="workflow-panel-ideas" role="tabpanel" aria-label="Ideas">
-        <SolutionWorkspace solutions={workspace.solutions} {busy} onSelect={selectOption} onSave={saveDecision} onExport={exportIdeas} onOpenSource={openExternalUrl} onReview={() => { activeStep = "research"; reviewSelection = true; }} />
+        <SolutionWorkspace solutions={workspace.solutions} {busy} workflowVersion={activeRun?.workflowVersion} onSelect={selectOption} onSave={saveDecision} onExport={exportIdeas} onOpenSource={openExternalUrl} onEvidenceFollowUp={requestEvidenceFollowUp} onReview={() => { activeStep = "research"; reviewSelection = true; }} />
       </div>
     {:else if activeThread.status === "failed"}
-      <div class="failed" id="workflow-panel-ideas" role="tabpanel" aria-label="Ideas" tabindex="0"><p class="eyebrow">No ideas</p><h1>The run stopped before any ideas were built.</h1><p>Use the controls above to resume the attempt or edit the setup.</p></div>
+      <div class="failed" id="workflow-panel-ideas" role="tabpanel" aria-label="Ideas" tabindex="0"><p class="eyebrow">No ideas</p><h1>The run stopped before any ideas were built.</h1><p>{activeRun?.canResume ? "Resume the saved attempt or edit the setup." : "Edit the setup to start a new run."}</p></div>
     {:else}
       <div class="failed" id="workflow-panel-ideas" role="tabpanel" aria-label="Ideas" tabindex="0"><p class="eyebrow">Ideas not ready</p><h1>Complete the research step first.</h1></div>
     {/if}

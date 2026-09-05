@@ -991,4 +991,23 @@ export const MIGRATIONS = [
       ALTER TABLE research_runs ADD COLUMN interrupted INTEGER NOT NULL DEFAULT 0;
     `,
   },
+  {
+    id: 18,
+    sql: `
+      ALTER TABLE factors ADD COLUMN uncertainty TEXT;
+
+      CREATE TABLE evidence_follow_ups (
+        research_run_id TEXT PRIMARY KEY REFERENCES research_runs(id) ON DELETE CASCADE,
+        solution_id TEXT NOT NULL REFERENCES solutions(id) ON DELETE CASCADE,
+        question TEXT NOT NULL CHECK(length(trim(question)) BETWEEN 1 AND 500),
+        status TEXT NOT NULL CHECK(status IN ('requested', 'running', 'completed', 'failed')),
+        source_ids_json TEXT NOT NULL DEFAULT '[]' CHECK(json_valid(source_ids_json)),
+        factor_ids_json TEXT NOT NULL DEFAULT '[]' CHECK(json_valid(factor_ids_json)),
+        error_message TEXT,
+        requested_at TEXT NOT NULL,
+        completed_at TEXT,
+        updated_at TEXT NOT NULL
+      );
+    `,
+  },
 ] as const;

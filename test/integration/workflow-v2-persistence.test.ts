@@ -4,8 +4,11 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { WORKFLOW_V2_STAGE_REGISTRY } from "../../src/core/stages";
+import { recoverInterruptedEvidenceFollowUps } from "../../src/core/research-engine";
 import { DatabaseClient } from "../../src/db/client";
+import { CostLedgerRepository } from "../../src/db/repositories/cost-ledger";
 import { GenerationAttemptRepository } from "../../src/db/repositories/generation-attempts";
+import { EvidenceFollowUpRepository } from "../../src/db/repositories/evidence-follow-ups";
 import {
   WorkflowV2ConflictError,
   WorkflowV2ContextMismatchError,
@@ -159,13 +162,13 @@ describe("workflow v2 persistence", () => {
     client.close();
   });
 
-  test("marks an interrupted dispatched generation as unknown instead of replayable", () => {
-    const client = database();
-    const attempts = new GenerationAttemptRepository(client);
-    const stage = WORKFLOW_V2_STAGE_REGISTRY["problem-kill"];
-    const prepared = attempts.prepare("run-v2", {
-      generationId: "generation-1",
-      stage: stage.id,
+  test("marks interrupted dispatched generations at every v2 stage as unknown instead of replayable", () => {
+    for (const [index, stage] of Object.values(WORKFLOW_V2_STAGE_REGISTRY).entries()) {
+      const client = database();
+      const attempts = new GenerationAttemptRepository(client);
+      const prepared = attempts.prepare<unknown>("run-v2", {
+      generationId: `generation-${index}`,
+      stage: `${stage.id}:fixture-selection`,
       model: { providerId: "test", modelId: "test" },
       reasoningEffort: "medium",
       workOrder: {
@@ -175,19 +178,91 @@ describe("workflow v2 persistence", () => {
         definitionOfDone: ["Return the schema."],
       },
       evidence: [],
-      schema: stage.schema,
+      schema: stage.schema as import("zod").z.ZodType<unknown>,
       jsonSchema: deriveJsonSchema(stage.schema),
       repairPolicy: "one_retry",
       deadlineMs: stage.deadlineMs,
     });
-    attempts.markDispatched(prepared.id);
-    attempts.interruptInFlight("process ended");
+      attempts.markDispatched(prepared.id);
+      attempts.interruptInFlight("process ended");
 
-    expect(new WorkflowV2Repository(client).getStageResumeState({
+      expect(new WorkflowV2Repository(client).getStageResumeState({
+        researchRunId: "run-v2",
+        stageId: stage.id,
+        selectionId: "fixture-selection",
+        context: { problemId: "problem-1" },
+      })).toEqual({ kind: "unknown-completion" });
+      client.close();
+    }
+  });
+
+  test("consumes the one-question follow-up cap before work and never reopens it after failure", () => {
+    const client = database();
+    const workflow = new WorkflowV2Repository(client);
+    const followUps = new EvidenceFollowUpRepository(client);
+    const analysis = decisionAnalysis();
+    client.immediateTransaction(() => {
+      workflow.saveSolutionOptions("run-v2", "problem-1", [solution("solution-1")]);
+      workflow.selectSolution("run-v2", "solution-1");
+      const checkpoint = workflow.saveStageResult(decisionStageResult("solution-1", analysis));
+      workflow.saveDecisionAnalysis({
+        researchRunId: "run-v2",
+        solutionId: "solution-1",
+        stageResultId: checkpoint.id,
+        analysis,
+      });
+      client.db.prepare("UPDATE research_runs SET status = 'completed' WHERE id = 'run-v2'").run();
+    });
+
+    client.immediateTransaction(() => followUps.request("run-v2", "solution-1", "  Does the export preserve state?  "));
+    expect(followUps.find("run-v2")).toEqual(expect.objectContaining({
+      question: "Does the export preserve state?",
+      status: "requested",
+      sourceIds: [],
+      factorIds: [],
+    }));
+    expect(() => client.immediateTransaction(() => followUps.request("run-v2", "solution-1", "Try again")))
+      .toThrow("already used");
+    client.db.prepare("UPDATE research_runs SET status = 'running', budget_limit = 1 WHERE id = 'run-v2'").run();
+    const ledger = new CostLedgerRepository(client);
+    ledger.reserve("run-v2", "evidence-follow-up", "test", "test", 0);
+    ledger.reserve("run-v2", "evidence-follow-up-search", "exa", null, 0.02);
+    expect(recoverInterruptedEvidenceFollowUps(client)).toEqual(["run-v2"]);
+    expect(followUps.find("run-v2")).toEqual(expect.objectContaining({
+      status: "failed",
+      error: "The app restarted during this follow-up. It was not replayed.",
+    }));
+    expect(client.db.prepare("SELECT status FROM threads WHERE id = 'thread-1'").get()).toEqual({ status: "solutions-ready" });
+    expect(client.db.prepare("SELECT operation, status, committed_usd FROM cost_ledger").all())
+      .toEqual([{ operation: "evidence-follow-up-search", status: "committed", committed_usd: null }]);
+    expect(() => client.immediateTransaction(() => followUps.request("run-v2", "solution-1", "Try again")))
+      .toThrow("already used");
+    client.close();
+  });
+
+  test("rejects changed schema, input, evidence, and context identities on checkpoint reuse", () => {
+    const client = database();
+    const repository = new WorkflowV2Repository(client);
+    const stage = stageResult({ options: [solutionOption()] });
+    client.immediateTransaction(() => repository.saveStageResult(stage));
+    const baseline = {
       researchRunId: "run-v2",
-      stageId: "problem-kill",
-      context: { problemId: "problem-1" },
-    })).toEqual({ kind: "unknown-completion" });
+      stageId: "solutions" as const,
+      context: stage.context,
+      identity: {
+        promptSha256: stage.prompt.resolvedSha256,
+        schema: stage.schema,
+        inputs: stage.inputs,
+        evidence: stage.evidence,
+      },
+    };
+    expect(repository.getStageResumeState(baseline).kind).toBe("reusable");
+    for (const changed of [
+      { ...baseline, context: { problemId: "changed" } },
+      { ...baseline, identity: { ...baseline.identity, schema: { type: "changed" } } },
+      { ...baseline, identity: { ...baseline.identity, inputs: { problemId: "changed" } } },
+      { ...baseline, identity: { ...baseline.identity, evidence: [] } },
+    ]) expect(() => repository.getStageResumeState(changed)).toThrow(WorkflowV2ContextMismatchError);
     client.close();
   });
 });

@@ -57,9 +57,10 @@ The branch and release workflow is documented in [RELEASE.md](RELEASE.md). `mast
 3. Submit the setup to discover evidence-backed problem candidates, or generate solutions directly for a known problem.
 4. Review discovered problems and their evidence, then select the problems worth developing. The v2 workflow generates up to three unranked options and waits for your choice.
 5. Choose one option to analyze its consequences, decisive risks, proposed responses, and next experiment. Record your own decision and observed test result separately from the model's judgments.
-6. Export research as JSON or options and analyses as Markdown/JSON. The legacy comparison workflow remains explicitly selectable, and saved v1 projects remain readable.
+6. If one decisive fact is still missing, request one evidence follow-up. Scraply runs the exact question once, quote-checks the extracted observations, and keeps the result separate from the original analysis. Completed and failed follow-ups both consume the run's one-question limit.
+7. Export research as JSON or options and analyses as Markdown/JSON. The legacy comparison workflow remains explicitly selectable, and saved v1 projects remain readable.
 
-V2 saves run-local prompts, search results, and completed stages. Reopening a project does not generate more work. Continuing a saved run uses its original prompts, even after an override changes. A request whose completion was lost is not automatically replayed. Start a new run when you want changed setup or instructions. The one-question evidence follow-up and final migration acceptance are still pending in PR #17.
+V2 saves run-local prompts, search results, completed stages, and evidence follow-ups. Reopening a project does not generate more work. Continuing a saved run uses its original prompts, even after an override changes. A request whose completion was lost is not automatically replayed. Start a new run when you want changed setup or instructions. Live provider acceptance and the accepted migration release still gate removal of the legacy comparison path.
 
 Provider readiness is checked before a run can start. Native generation attempts retain reported tokens and usage, with unknown usage shown explicitly when the provider does not supply it. Subscription calls do not receive an invented dollar charge. Accountable provider/search spend is reserved conservatively and committed as the run proceeds.
 

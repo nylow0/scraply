@@ -107,6 +107,23 @@ describe("App workspace coordination", () => {
     }));
     expect(await view.findByText("Native account sign-in cancelled.")).toBeTruthy();
   });
+
+  test("shows the saved reason and hides resume when completion is unknown", async () => {
+    const state = workspace("alpha");
+    state.threads[0]!.status = "failed";
+    state.latestResearchRun = {
+      runId: "run-alpha", status: "failed", problemId: null, workflowVersion: 2,
+      codexCalls: 1, searches: 0, projectedCodexCalls: 2, projectedSearches: 0,
+      lastActivity: "Request interrupted", canResume: false,
+      resumeBlockedReason: "A previous model request may have completed before its terminal result was saved.",
+    };
+    installApi({ getWorkspace: vi.fn().mockResolvedValue(state) });
+    const view = render(App);
+
+    expect(await view.findByText("A previous model request may have completed before its terminal result was saved.")).toBeTruthy();
+    expect(view.queryByRole("button", { name: "Resume attempt" })).toBeNull();
+    expect(view.getByRole("button", { name: "Edit setup" })).toBeTruthy();
+  });
 });
 
 function workspace(activeThreadId: "alpha" | "beta"): WorkspaceState {
@@ -163,6 +180,7 @@ function installApi(overrides: Partial<ScraplyApi>): void {
     selectProblems: noWorkspace,
     selectOption: noWorkspace,
     saveDecision: noWorkspace,
+    requestEvidenceFollowUp: noWorkspace,
     exportResearch: async () => ({ cancelled: true as const }),
     exportIdeas: async () => ({ cancelled: true as const, files: [] }),
     getSourceDetail: async () => { throw new Error("unused"); },

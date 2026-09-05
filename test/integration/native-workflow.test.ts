@@ -232,11 +232,70 @@ describe("native v2 decisions through the production backend", () => {
     expect(JSON.stringify(analysis.evidence)).toContain("Most deliveries arrived on time.");
     expect(JSON.stringify(analysis.evidence)).toContain("disagrees");
     expect(JSON.stringify(analysis.evidence)).toContain("Delays may cluster");
+    expect(JSON.stringify(analysis.evidence)).toContain("This source may not represent other shops");
+    expect(JSON.stringify(analysis.evidence)).not.toContain('"researchAssessments"');
     expect(item.requests().filter((request) => ["solutions", "decision-analysis"].includes(request.workOrder.stage))).toHaveLength(2);
+
+    const question = "Do representative delivery logs contradict the selected option?";
+    const requestsBeforeFollowUp = item.requests().length;
+    const searchesBeforeFollowUp = item.searches.length;
+    await item.post("/research/evidence-follow-up", { threadId, runId: selected.runId, question }, WorkspaceStateSchema);
+    const followedUp = await item.waitFor((state) => state.latestResearchRun?.status === "completed");
+    const detail = await item.post(`/ideas/${selected.id}`, undefined, SolutionViewSchema);
+    expect(detail.evidenceFollowUp).toEqual(expect.objectContaining({ status: "completed", question, error: null }));
+    expect(detail.evidenceFollowUp?.sources).toHaveLength(2);
+    expect(detail.evidenceFollowUp?.factors).toHaveLength(2);
+    const followUpRequest = item.requests().find((request) => request.workOrder.stage === "factor-harvest:follow-up")!;
+    expect(followUpRequest.workOrder.inputs).toEqual({ routing: { harvestMode: "domain", followUp: true }, workflowVersion: 2 });
+    expect(JSON.stringify(followUpRequest.workOrder)).not.toContain(question);
+    expect(JSON.stringify(followUpRequest.evidence)).toContain(question);
+    expect(item.searches.at(-1)).toEqual(expect.objectContaining({ query: question }));
+    expect(item.searches).toHaveLength(searchesBeforeFollowUp + 1);
+    expect(item.requests()).toHaveLength(requestsBeforeFollowUp + 1);
+    item.assertAccounting(requestsBeforeFollowUp + 1);
+    expect((await item.raw("/research/evidence-follow-up", { threadId, runId: selected.runId, question: "Try twice" })).status).toBe(409);
+    await item.restart();
+    const reopened = await item.post(`/ideas/${selected.id}`, undefined, SolutionViewSchema);
+    expect(reopened.evidenceFollowUp).toEqual(detail.evidenceFollowUp);
+    expect(followedUp.solutions.find((solution) => solution.id === selected.id)?.decisionAnalysis).toBeUndefined();
+  }, 20_000);
+
+  test("cancels a pending follow-up without losing analysis or reopening its cap", async () => {
+    const item = await fixture({ workflowVersion: 2, hangFollowUpSearch: true });
+    const threadId = await item.createThread("known-problem");
+    await item.post("/research/start", { threadId }, z.object({ runId: z.string() }));
+    const options = await item.waitFor((state) => state.latestResearchRun?.awaitingSelection === true);
+    const selected = options.solutions[0]!;
+    await item.post("/research/select-option", { threadId, runId: selected.runId, solutionId: selected.id }, WorkspaceStateSchema);
+    await item.waitFor((state) => state.latestResearchRun?.status === "completed" && !state.latestResearchRun.awaitingSelection);
+    await item.post("/research/evidence-follow-up", {
+      threadId, runId: selected.runId, question: "Will this search be cancelled?",
+    }, WorkspaceStateSchema);
+    await item.waitFor((state) => state.latestResearchRun?.status === "running");
+    await item.post("/research/cancel", { runId: selected.runId }, z.object({ workspace: WorkspaceStateSchema }));
+    const detail = await item.post(`/ideas/${selected.id}`, undefined, SolutionViewSchema);
+    expect(detail.decisionAnalysis).not.toBeNull();
+    expect(detail.evidenceFollowUp).toEqual(expect.objectContaining({ status: "failed", error: "Cancelled by user" }));
+    expect((await item.raw("/research/evidence-follow-up", {
+      threadId, runId: selected.runId, question: "Try again",
+    })).status).toBe(409);
+    const db = new DatabaseClient(item.dbPath);
+    try {
+      expect(db.db.prepare("SELECT 1 FROM cost_ledger WHERE operation = 'evidence-follow-up'").all()).toEqual([]);
+      expect(db.db.prepare("SELECT status, committed_usd FROM cost_ledger WHERE operation = 'evidence-follow-up-search'").all())
+        .toEqual([{ status: "committed", committed_usd: null }]);
+      expect(db.db.prepare("SELECT status FROM research_runs WHERE id = ?").get(selected.runId)).toEqual({ status: "completed" });
+    } finally { db.close(); }
+    await item.restart();
+    expect((await item.post(`/ideas/${selected.id}`, undefined, SolutionViewSchema)).evidenceFollowUp)
+      .toEqual(detail.evidenceFollowUp);
+    expect(item.requests()).toHaveLength(2);
   }, 20_000);
 });
 
-async function fixture({ mode = "workflow", searchEnabled = true, workflowVersion = 1 }: { mode?: string; searchEnabled?: boolean; workflowVersion?: 1 | 2 } = {}) {
+async function fixture({ mode = "workflow", searchEnabled = true, workflowVersion = 1, hangFollowUpSearch = false }: {
+  mode?: string; searchEnabled?: boolean; workflowVersion?: 1 | 2; hangFollowUpSearch?: boolean;
+} = {}) {
   const directory = mkdtempSync(join(tmpdir(), "scraply-native-workflow-"));
   const dbPath = join(directory, "scraply.db");
   const capture = join(directory, "requests.jsonl");
@@ -248,7 +307,7 @@ async function fixture({ mode = "workflow", searchEnabled = true, workflowVersio
   const lines = (path: string) => existsSync(path) ? readFileSync(path, "utf8").trim().split("\n").filter(Boolean) : [];
 
   async function open() {
-    backend = await startNativeWorkflowBackend(directory, { mode, searchEnabled, searches });
+    backend = await startNativeWorkflowBackend(directory, { mode, searchEnabled, searches, hangFollowUpSearch });
     closed = false;
   }
   async function close() {

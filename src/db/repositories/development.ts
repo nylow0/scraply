@@ -68,6 +68,7 @@ export class DevelopmentRepository {
         sourceId: String(row.source_id),
         harvestMode: String(row.harvest_mode) as DevelopmentFactor["harvestMode"],
         modelConfidence: Number(row.model_confidence),
+        ...(row.uncertainty === null ? {} : { uncertainty: String(row.uncertainty) }),
       })),
     };
   }
