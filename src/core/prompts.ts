@@ -1,9 +1,15 @@
 import { createHash } from "node:crypto";
 import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { getWorkflowV2Stage, type WorkflowV2StageId } from "./stages";
 
 const PROMPT_STATE_FILE = ".prompt-versions.json";
-interface PromptState { version: 1; prompts: Record<string, string> }
+export interface PromptBaseline { revision: 1; sha256: string }
+interface PromptState {
+  version: 1;
+  prompts: Record<string, string>;
+  workflowV2Baselines: Record<string, PromptBaseline>;
+}
 
 // Exact SHA-256 hashes of every bundled prompt blob present in repository history. These let the
 // first metadata-aware release upgrade old untouched copies without ever guessing about custom text.
@@ -52,6 +58,14 @@ export function configurePromptPaths(options: { bundledDir: string; overrideDir:
     const source = join(bundledPromptDir, entry.name);
     const target = join(overridePromptDir, entry.name);
     const bundledHash = fileHash(source);
+    if (entry.name.startsWith("workflow-v2-")) {
+      // V2 bundled prompts remain package assets. An override exists only after a user creates it.
+      // An exact copy gives us a trustworthy baseline before any later user edit.
+      if (existsSync(target) && fileHash(target) === bundledHash && !state.workflowV2Baselines[entry.name]) {
+        state.workflowV2Baselines[entry.name] = { revision: 1, sha256: bundledHash };
+      }
+      continue;
+    }
     const previousBundledHash = state.prompts[entry.name];
     if (!existsSync(target)) {
       copyFileSync(source, target);
@@ -76,6 +90,60 @@ export function configurePromptPaths(options: { bundledDir: string; overrideDir:
   writeFileSync(statePath, `${JSON.stringify(state, null, 2)}\n`, "utf8");
 }
 
+export class PromptPackagingError extends Error {
+  readonly code = "PROMPT_PACKAGING_ERROR";
+
+  constructor(readonly filename: string, detail: string) {
+    super(`Required bundled prompt ${filename} ${detail}`);
+    this.name = "PromptPackagingError";
+  }
+}
+
+export interface ResolvedWorkflowV2Prompt {
+  stageId: WorkflowV2StageId;
+  filename: string;
+  revision: 1;
+  source: "bundled" | "override";
+  currentBundledSha256: string;
+  overrideBaseline: PromptBaseline | null;
+  resolvedSha256: string;
+  text: string;
+}
+
+export function resolveWorkflowV2Prompt(stageId: WorkflowV2StageId): ResolvedWorkflowV2Prompt {
+  const stage = getWorkflowV2Stage(stageId);
+  const bundledPath = join(bundledPromptDir, stage.promptFilename);
+  if (!existsSync(bundledPath)) {
+    throw new PromptPackagingError(stage.promptFilename, "is missing from the application package");
+  }
+  const bundledText = readFileSync(bundledPath, "utf8");
+  if (!bundledText.trim()) {
+    throw new PromptPackagingError(stage.promptFilename, "is empty in the application package");
+  }
+
+  const overridePath = overridePromptDir ? join(overridePromptDir, stage.promptFilename) : null;
+  const hasOverride = overridePath !== null && existsSync(overridePath);
+  const text = hasOverride ? readFileSync(overridePath, "utf8") : bundledText;
+  if (!text.trim()) throw new Error(`Prompt override ${stage.promptFilename} is empty`);
+  const state = overridePromptDir
+    ? readPromptState(join(overridePromptDir, PROMPT_STATE_FILE))
+    : null;
+
+  return {
+    stageId,
+    filename: stage.promptFilename,
+    revision: stage.promptRevision,
+    source: hasOverride ? "override" : "bundled",
+    currentBundledSha256: textHash(bundledText),
+    overrideBaseline: hasOverride ? state?.workflowV2Baselines[stage.promptFilename] ?? null : {
+      revision: stage.promptRevision,
+      sha256: textHash(bundledText),
+    },
+    resolvedSha256: textHash(text),
+    text,
+  };
+}
+
 export function loadPrompt(name: string, fallback: string): string {
   const filename = `${name}.md`;
   const paths = [overridePromptDir ? join(overridePromptDir, filename) : null, join(bundledPromptDir, filename)];
@@ -91,19 +159,46 @@ export function loadPrompt(name: string, fallback: string): string {
 }
 
 function readPromptState(path: string): PromptState | null {
-  if (!existsSync(path)) return { version: 1, prompts: {} };
+  if (!existsSync(path)) return { version: 1, prompts: {}, workflowV2Baselines: {} };
   try {
-    const parsed = JSON.parse(readFileSync(path, "utf8")) as { version?: unknown; prompts?: unknown };
+    const parsed = JSON.parse(readFileSync(path, "utf8")) as {
+      version?: unknown;
+      prompts?: unknown;
+      workflowV2Baselines?: unknown;
+    };
     if (typeof parsed.version === "number" && parsed.version !== 1) return null;
     if (parsed.version === 1 && parsed.prompts && typeof parsed.prompts === "object") {
-      return { version: 1, prompts: Object.fromEntries(Object.entries(parsed.prompts).filter((entry): entry is [string, string] => typeof entry[1] === "string")) };
+      const baselines = parsed.workflowV2Baselines && typeof parsed.workflowV2Baselines === "object"
+        ? Object.fromEntries(Object.entries(parsed.workflowV2Baselines).filter(
+          (entry): entry is [string, PromptBaseline] => isPromptBaseline(entry[1]),
+        ))
+        : {};
+      return {
+        version: 1,
+        prompts: Object.fromEntries(Object.entries(parsed.prompts).filter(
+          (entry): entry is [string, string] => typeof entry[1] === "string",
+        )),
+        workflowV2Baselines: baselines,
+      };
     }
   } catch { /* corrupt state is treated as an unversioned legacy installation */ }
-  return { version: 1, prompts: {} };
+  return { version: 1, prompts: {}, workflowV2Baselines: {} };
+}
+
+function isPromptBaseline(value: unknown): value is PromptBaseline {
+  if (!value || typeof value !== "object") return false;
+  const candidate = value as { revision?: unknown; sha256?: unknown };
+  return candidate.revision === 1
+    && typeof candidate.sha256 === "string"
+    && /^[a-f0-9]{64}$/.test(candidate.sha256);
 }
 
 function fileHash(path: string): string {
   return createHash("sha256").update(readFileSync(path)).digest("hex");
+}
+
+function textHash(text: string): string {
+  return createHash("sha256").update(text, "utf8").digest("hex");
 }
 
 function isKnownBundledPrompt(name: string, path: string, rawHash: string): boolean {
