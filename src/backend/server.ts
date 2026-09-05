@@ -38,6 +38,7 @@ export interface BackendContext {
   appVersion: string;
   getSecrets: () => { exaApiKey: string | null; perplexityApiKey?: string | null };
   modelClients?: Partial<Record<string, StructuredModelClient>>;
+  searchClients?: Partial<Record<SearchProvider, SearchClient>>;
   nativeRuntime?: RuntimeClient;
   nativeRuntimeError?: string;
   nativeRuntimeStatus?: () => { ready: boolean; error?: string };
@@ -118,9 +119,9 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
     if (!engine) {
       // Known-problem runs never search, so the engine is usable without either search credential.
       const { exaApiKey, perplexityApiKey } = context.getSecrets();
-      const searchClients: Partial<Record<SearchProvider, SearchClient>> = {};
-      if (exaApiKey) searchClients.exa = new ExaClient(exaApiKey);
-      if (perplexityApiKey) searchClients.perplexity = new PerplexityClient(perplexityApiKey);
+      const searchClients = { ...context.searchClients };
+      if (exaApiKey && !searchClients.exa) searchClients.exa = new ExaClient(exaApiKey);
+      if (perplexityApiKey && !searchClients.perplexity) searchClients.perplexity = new PerplexityClient(perplexityApiKey);
       engine = new ResearchEngine({
         db,
         modelClients: {

@@ -8,6 +8,9 @@ if (process.argv[2] === "--version") {
 }
 
 const mode = process.env.SCRAPLY_RUNTIME_CHILD_MODE || "normal";
+const workflow = mode.startsWith("workflow");
+let connected = false;
+let heldGeneration;
 if (process.env.SCRAPLY_RUNTIME_PID_CAPTURE) fs.appendFileSync(process.env.SCRAPLY_RUNTIME_PID_CAPTURE, `${process.pid}\n`);
 const prompt = { id: "scraply.stage-worker.v1", sha256: "277d724f20acb1f32fa0a8b7c454c670971e3c40bfc921db40c044caa760e6f1" };
 const model = { providerId: "openai-subscription", modelId: "gpt-fixture" };
@@ -16,6 +19,9 @@ const reply = (request, result) => send({ protocolVersion: "1.1", id: request.id
 
 readline.createInterface({ input: process.stdin }).on("line", (line) => {
   const request = JSON.parse(line);
+  if (process.env.SCRAPLY_RUNTIME_OPERATIONS_CAPTURE) {
+    fs.appendFileSync(process.env.SCRAPLY_RUNTIME_OPERATIONS_CAPTURE, `${request.operation}\n`);
+  }
   if (request.operation === "runtime.initialize") {
     if (mode === "malformed-once" && process.env.SCRAPLY_RUNTIME_MARKER && !fs.existsSync(process.env.SCRAPLY_RUNTIME_MARKER)) {
       fs.writeFileSync(process.env.SCRAPLY_RUNTIME_MARKER, "seen");
@@ -34,7 +40,9 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
     });
     return;
   }
-  if (request.operation === "account.list") { reply(request, { accounts: [] }); return; }
+  if (request.operation === "credential.session.set") { connected = true; reply(request, {}); return; }
+  if (request.operation === "account.logout") { connected = false; reply(request, {}); return; }
+  if (request.operation === "account.list") { reply(request, { accounts: workflow && connected ? [{ providerId: model.providerId, accountId: "synthetic-account" }] : [] }); return; }
   if (request.operation === "model.list") {
     if (mode === "wrong-operation") {
       send({ protocolVersion: "1.1", id: request.id, operation: "account.list", error: { code: "operation_unavailable", retryable: true, detail: "wrong operation" } });
@@ -53,13 +61,23 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
       generationId: request.payload.generationId,
       prompt: mode === "prompt-mismatch" ? { ...prompt, sha256: "f".repeat(64) } : prompt,
     });
+    if (workflow && !connected) throw new Error("Workflow generation arrived before session restoration");
+    if (mode === "workflow-crash" && request.payload.workOrder.stage.startsWith("outcomes:")) {
+      process.exit(7);
+      return;
+    }
+    if (mode === "workflow-cancel" && request.payload.workOrder.stage === "solutions") {
+      heldGeneration = request;
+      return;
+    }
     if (mode === "hang-cancel") return;
     const metadata = {
       model, prompt, usage: { status: "unknown" }, finishReason: "stop", latencyMs: 1,
       repairCount: 0, providerRequestIds: ["fixture-provider-request"],
       attempts: [{ attempt: "initial", outcome: "completed", providerCompletion: "confirmed", model, usage: { status: "unknown" }, cost: { status: "not_reported" }, finishReason: "stop", latencyMs: 1, providerRequestId: "fixture-provider-request" }],
     };
-    const output = mode === "invalid-output" ? { invalid: true } : request.payload.workOrder.stage.startsWith("query-plan")
+    const output = workflow ? require("./runtime-workflow.cjs")(request.payload)
+      : mode === "invalid-output" ? { invalid: true } : request.payload.workOrder.stage.startsWith("query-plan")
       ? { queries: ["one", "two", "three"] }
       : request.payload.workOrder.stage.startsWith("factor-harvest") ? { factors: [] } : { answer: "right" };
     const wrong = { protocolVersion: "1.1", requestId: "unrelated-request", operation: "generation.start", event: { kind: "generation.completed", generationId: request.payload.generationId, result: { output: { answer: "wrong" }, metadata } } };
@@ -69,7 +87,17 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
     else writeTerminal();
     return;
   }
-  if (request.operation === "generation.cancel") { reply(request, { generationId: request.payload.generationId, cancelled: true }); return; }
+  if (request.operation === "generation.cancel") {
+    reply(request, { generationId: request.payload.generationId, cancelled: true });
+    if (heldGeneration) {
+      send({ protocolVersion: "1.1", requestId: heldGeneration.id, operation: "generation.start", event: {
+        kind: "generation.cancelled", generationId: heldGeneration.payload.generationId,
+        attempts: [],
+      } });
+      heldGeneration = undefined;
+    }
+    return;
+  }
   if (request.operation === "runtime.shutdown") {
     if (mode === "hang-shutdown") return;
     reply(request, {});
