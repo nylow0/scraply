@@ -12,8 +12,9 @@
     "clean:release": "bun -e \"import { rmSync } from 'node:fs'; rmSync('release', { recursive: true, force: true })\"",
     "build": "bun run clean:out && electron-vite build",
     "preview": "electron-vite preview",
-    "package": "bun run clean:release && bun run clean:out && electron-vite build && electron-builder --win --publish never && bun run verify:package",
-    "package:e2e": "bun run clean:release && bun run clean:out && electron-vite build --mode e2e && electron-builder --win --dir --publish never",
+    "prepare:runtime": "bun scripts/prepare-runtime.ts",
+    "package": "bun run clean:release && bun run clean:out && bun run prepare:runtime && electron-vite build && electron-builder --win --publish never && bun run verify:package",
+    "package:e2e": "bun run clean:release && bun run clean:out && bun run prepare:runtime && electron-vite build --mode e2e && electron-builder --win --dir --publish never",
     "verify:package": "bun scripts/verify-package.ts",
     "install:local": "powershell -NoProfile -File scripts/install-local.ps1",
     "build:installed": "bun run package && bun run install:local",
@@ -43,6 +44,7 @@
     "electron-vite": "^3.1.0",
     "eslint": "^10.9.0",
     "eslint-plugin-svelte": "^3.23.0",
+    "extract-zip": "2.0.1",
     "jsdom": "^30.0.1",
     "svelte": "^5.56.3",
     "svelte-check": "^4.6.0",
@@ -74,6 +76,13 @@
       "build/icon.png",
       "prompts/**/*",
       "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "build/runtime",
+        "to": "runtime",
+        "filter": ["**/*"]
+      }
     ],
     "icon": "build/icon.png",
     "win": {
