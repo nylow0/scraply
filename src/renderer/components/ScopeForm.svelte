@@ -1,13 +1,23 @@
 <script lang="ts">
   import type { WorkspaceState } from "../../shared/ipc";
-  import { DEFAULT_RUN_CONFIG, type ResearchMode, type SearchProvider } from "../../shared/schemas";
+  import {
+    DEFAULT_RUN_CONFIG,
+    modelRefKey,
+    sameModelRef,
+    type ModelRef,
+    type ResearchMode,
+    type SearchProvider,
+  } from "../../shared/schemas";
   import { untrack } from "svelte";
 
-  let { workspace, busy, onSave, onStart, onRetry } : {
+  let { workspace, busy, onSave, onStart, onRetry, onConnectNative, onRefreshNative, onLogoutNative } : {
     workspace: WorkspaceState; busy: boolean;
     onSave: (scope: NonNullable<WorkspaceState["scope"]>, config: NonNullable<WorkspaceState["runConfig"]>) => Promise<void>;
     onStart: () => Promise<void>;
     onRetry: () => Promise<void>;
+    onConnectNative?: (providerId: string) => Promise<void>;
+    onRefreshNative?: (providerId: string) => Promise<void>;
+    onLogoutNative?: (providerId: string) => Promise<void>;
   } = $props();
 
   const initial = untrack(() => workspace);
@@ -18,16 +28,19 @@
   let observations = $state(initial.scope?.observations ?? "");
   let offLimits = $state(initial.scope?.offLimits.join("\n") ?? "");
   let knownProblem = $state(initial.runConfig?.knownProblem ?? "");
-  let model = $state(initial.runConfig?.model
-    ?? (initial.models.includes(DEFAULT_RUN_CONFIG.model)
+  let initialModel = initial.runConfig?.model
+    ?? (initial.models.some((model) => sameModelRef(model, DEFAULT_RUN_CONFIG.model))
       ? DEFAULT_RUN_CONFIG.model
-      : initial.models[0] ?? DEFAULT_RUN_CONFIG.model));
-  let initialModelOption = initial.modelOptions.find((item) => item.id === model);
+      : initial.models[0] ?? DEFAULT_RUN_CONFIG.model);
+  let modelKey = $state(modelRefKey(initialModel));
+  let model = $derived<ModelRef>(workspace.modelOptions.find((item) => modelRefKey(item) === modelKey)
+    ?? (modelRefKey(initialModel) === modelKey ? initialModel : DEFAULT_RUN_CONFIG.model));
+  let initialModelOption = initial.modelOptions.find((item) => sameModelRef(item, initialModel));
   let reasoningEffort = $state(initial.runConfig?.reasoningEffort
     && initialModelOption?.reasoningEfforts.some((item) => item.id === initial.runConfig?.reasoningEffort)
       ? initial.runConfig.reasoningEffort
       : initialModelOption?.defaultReasoningEffort ?? DEFAULT_RUN_CONFIG.reasoningEffort);
-  let selectedModelOption = $derived(workspace.modelOptions.find((item) => item.id === model));
+  let selectedModelOption = $derived(workspace.modelOptions.find((item) => sameModelRef(item, model)));
   let discoveryDepth = $state(initial.runConfig?.discoveryDepth ?? DEFAULT_RUN_CONFIG.discoveryDepth);
   let searchProvider = $state<SearchProvider>(initial.runConfig?.searchProvider
     ?? (initial.validation.exa.valid ? "exa" : initial.validation.perplexity.valid ? "perplexity" : "exa"));
@@ -48,7 +61,8 @@
   // Only pre-mark as saved when a persisted run config exists and still matches the draft; a model that is no
   // longer offered falls back to the default, and the badge must not claim that fallback was ever saved.
   let savedFingerprint = $state<string | null>(untrack(() => initial.scope
-    && initial.runConfig?.model === model
+    && initial.runConfig
+    && sameModelRef(initial.runConfig.model, model)
     && initial.runConfig?.reasoningEffort === reasoningEffort
     && initial.runConfig?.discoveryDepth === discoveryDepth
     && initial.runConfig?.searchProvider === searchProvider
@@ -57,10 +71,13 @@
     && initial.runConfig?.knownProblem === knownProblem ? draftFingerprint : null));
   let saved = $derived(savedFingerprint === draftFingerprint);
   let codexReady = $derived(workspace.validation.codex.detected && workspace.validation.codex.compatible && workspace.validation.codex.authenticated);
-  let selectedModelAvailable = $derived(workspace.models.includes(model));
+  let selectedModelReady = $derived(model.providerId === "legacy-codex-cli"
+    ? codexReady
+    : workspace.validation.native.available && workspace.validation.native.connected);
+  let selectedModelAvailable = $derived(workspace.models.some((item) => sameModelRef(item, model)));
   let selectedSearchValidation = $derived(workspace.validation[searchProvider]);
   let selectedSearchName = $derived(searchProvider === "exa" ? "Exa" : "Perplexity");
-  let providersReady = $derived(codexReady && selectedModelAvailable && (researchMode === "known-problem" || selectedSearchValidation.valid));
+  let providersReady = $derived(selectedModelReady && selectedModelAvailable && (researchMode === "known-problem" || selectedSearchValidation.valid));
   let codexStatus = $derived(workspace.validation.codex.error === "Checking Codex connection"
     ? "Checking Codex connection"
     : !workspace.validation.codex.detected
@@ -71,11 +88,18 @@
           ? workspace.validation.codex.error ?? "Codex is not signed in"
           : workspace.validation.codex.error
             ?? (!selectedModelAvailable ? "Selected model is unavailable" : null));
+  let modelStatus = $derived(model.providerId === "legacy-codex-cli"
+    ? codexStatus
+    : !workspace.validation.native.available
+      ? workspace.validation.native.error ?? "Native runtime is unavailable"
+      : !workspace.validation.native.connected
+        ? "Connect a native model account"
+        : !selectedModelAvailable ? "Selected model is unavailable" : null);
   let locked = $derived(busy || submitting);
   let errors = $derived(validationAttempted ? missingFields() : {});
 
   function selectModel(event: Event) {
-    const selected = workspace.modelOptions.find((item) => item.id === (event.currentTarget as HTMLSelectElement).value);
+    const selected = workspace.modelOptions.find((item) => modelRefKey(item) === (event.currentTarget as HTMLSelectElement).value);
     reasoningEffort = selected?.defaultReasoningEffort ?? DEFAULT_RUN_CONFIG.reasoningEffort;
   }
 
@@ -147,17 +171,40 @@
     </details>
 
     <div class="run-settings" class:known={researchMode === "known-problem"}>
-      <label class="run-setting"><span>Model</span><select bind:value={model} onchange={selectModel}>{#if !selectedModelAvailable}<option value={model}>{model} (unavailable)</option>{/if}{#each workspace.modelOptions as item (item.id)}<option value={item.id}>{item.displayName}</option>{/each}</select><small>The model used throughout this research.</small></label>
+      <label class="run-setting"><span>Model</span><select bind:value={modelKey} onchange={selectModel}>{#if !selectedModelAvailable}<option value={modelKey}>{model.modelId} (unavailable)</option>{/if}{#each workspace.modelOptions as item (modelRefKey(item))}<option value={modelRefKey(item)}>{item.displayName}</option>{/each}</select><small>The model used throughout this research.</small></label>
       <label class="run-setting"><span>Reasoning</span><select bind:value={reasoningEffort}>{#each (selectedModelOption?.reasoningEfforts ?? [{ id: reasoningEffort, description: "" }]) as effort (effort.id)}<option value={effort.id}>{effort.id.charAt(0).toUpperCase() + effort.id.slice(1)}</option>{/each}</select><small>{reasoningDescription}</small></label>
       {#if researchMode === "explore-market"}<label class="run-setting"><span>Research depth</span><select bind:value={discoveryDepth}><option value="quick">Quick</option><option value="standard">Standard</option><option value="deep">Deep</option></select><small>{depthDescription}</small></label>{/if}
       {#if researchMode === "explore-market"}<label class="run-setting"><span>Search provider</span><select aria-label="Search provider" bind:value={searchProvider}><option value="exa">Exa</option><option value="perplexity">Perplexity</option></select><small>{selectedSearchName}: {selectedSearchValidation.valid ? "Connected" : selectedSearchValidation.error ?? "Connection unavailable"}</small></label>{/if}
     </div>
 
+    {#if workspace.validation.native.available}
+      <div class="native-account" aria-label="Native model account">
+        <div>
+          <strong>Native model account</strong>
+          {#if workspace.validation.native.accounts.length === 0}
+            <span>Connect your OpenAI account to discover subscription models. Credentials stay encrypted in the main process.</span>
+          {:else}
+            {#each workspace.validation.native.accounts as account (account.providerId)}
+              <span>{account.email ?? account.accountId ?? account.providerId}{account.plan ? ` · ${account.plan}` : ""}</span>
+            {/each}
+          {/if}
+        </div>
+        {#if workspace.validation.native.accounts.length === 0}
+          <button type="button" class="secondary" disabled={locked || !onConnectNative} onclick={() => onConnectNative?.("openai-subscription")}>{locked ? "Waiting…" : "Connect OpenAI"}</button>
+        {:else}
+          <div class="account-actions">
+            <button type="button" class="secondary" disabled={locked || !onRefreshNative} onclick={() => onRefreshNative?.(workspace.validation.native.accounts[0]!.providerId)}>Refresh</button>
+            <button type="button" class="secondary" disabled={locked || !onLogoutNative} onclick={() => onLogoutNative?.(workspace.validation.native.accounts[0]!.providerId)}>Sign out</button>
+          </div>
+        {/if}
+      </div>
+    {/if}
+
     {#if !providersReady}
       <div class="connection-warning" role="status">
         <div>
           <strong>Required connection needs attention</strong>
-          {#if codexStatus}<span>Codex: {codexStatus}</span>{/if}
+          {#if modelStatus}<span>Model: {modelStatus}</span>{/if}
           {#if researchMode === "explore-market" && !selectedSearchValidation.valid}<span>{selectedSearchName}: {selectedSearchValidation.error ?? "Connection unavailable"}</span>{/if}
         </div>
         <button type="button" class="secondary" disabled={locked} onclick={() => onRetry()}>{locked ? "Checking…" : "Retry connections"}</button>
@@ -174,5 +221,6 @@
 <style>
   .scope-page{max-width:920px;margin:0 auto;padding:42px var(--page-inline) 80px}.eyebrow{font:600 11px var(--mono);letter-spacing:.12em;text-transform:uppercase;color:var(--accent-strong)}h1{font-size:clamp(30px,4vw,48px);letter-spacing:-.045em;line-height:1.02;max-width:720px;margin:10px 0 14px}header>p:last-child{color:var(--muted);max-width:650px;font-size:15px}form{margin-top:36px;border-top:1px solid var(--border)}fieldset{border:0;padding:0;margin:0}legend{padding:22px 0 10px;font-weight:650;font-size:12px}.mode-picker{border-bottom:1px solid var(--border)}.mode-picker label{display:grid;grid-template-columns:18px 1fr;align-items:start;gap:12px;padding:15px 4px;border-top:1px solid var(--border);cursor:pointer;transition:background .25s var(--ease),padding .25s var(--ease)}.mode-picker label.active{padding-left:12px;background:var(--surface)}.mode-picker input{margin-top:3px;accent-color:var(--accent-strong)}.mode-picker label span{display:grid;gap:3px}.mode-picker strong{font-size:13px}.primary-fields{display:grid;grid-template-columns:1fr 1fr;gap:18px;padding:24px 0}.primary-fields .problem-field,.primary-fields .discovery-context{grid-column:1/-1}label{display:grid;align-content:start;gap:7px}label>span{font-weight:650;font-size:12px}small{color:var(--subtle);font-size:11px;line-height:1.45}.field-error{color:var(--danger)}input,textarea,select{width:100%;border:1px solid var(--border-strong);background:var(--surface);color:var(--text);border-radius:8px;padding:11px 12px}input[aria-invalid="true"],textarea[aria-invalid="true"]{border-color:var(--danger)}textarea{resize:vertical}.optional-fields{border-top:1px solid var(--border);padding:18px 0}.optional-fields summary{cursor:pointer;font-weight:650;font-size:12px}.optional-fields summary span{margin-left:7px;color:var(--subtle);font-weight:500}.optional-fields>div{display:grid;grid-template-columns:1fr 1fr;gap:18px;padding-top:18px}.run-settings{display:grid;grid-template-columns:1.2fr 1fr 1fr;align-items:start;gap:24px;padding:26px 0 28px;border-top:1px solid var(--border)}.run-settings.known{grid-template-columns:1.2fr 1fr}.run-setting{grid-template-rows:auto 48px minmax(32px,auto);gap:8px}.run-setting select{height:48px;padding-block:0}.run-setting small{max-width:34ch}.connection-warning{display:flex;align-items:center;justify-content:space-between;gap:24px;padding:16px;border:1px solid color-mix(in srgb,var(--danger) 45%,var(--border));border-radius:8px;background:color-mix(in srgb,var(--danger) 7%,var(--surface))}.connection-warning>div{display:grid;gap:4px}.connection-warning strong{font-size:13px}.connection-warning span{color:var(--muted);font-size:12px}footer{display:flex;justify-content:flex-end;align-items:center;gap:12px;padding-top:24px;border-top:1px solid var(--border)}footer>span{font:500 11px var(--mono);color:var(--subtle)}button{border-radius:8px;padding:11px 16px;font-weight:650;transition:transform .2s var(--ease)}button:active:not(:disabled){transform:scale(.98)}button:disabled{cursor:not-allowed;opacity:.45}.secondary{border:1px solid var(--border-strong);background:transparent;color:var(--text)}.primary{border:1px solid var(--accent);background:var(--accent-strong);color:var(--accent-ink)}@media(max-width:700px){.primary-fields,.optional-fields>div,.run-settings,.run-settings.known{grid-template-columns:1fr}.primary-fields .problem-field,.primary-fields .discovery-context{grid-column:auto}.run-settings{gap:20px}.connection-warning{align-items:stretch;flex-direction:column}.scope-page{padding:28px 20px 64px}}
   .run-settings:not(.known){grid-template-columns:1.2fr 1fr 1fr 1fr;gap:20px}
+  .native-account{display:flex;align-items:center;justify-content:space-between;gap:20px;padding:16px;border-top:1px solid var(--border)}.native-account>div:first-child{display:grid;gap:4px}.native-account strong{font-size:13px}.native-account span{font-size:12px;color:var(--muted)}.account-actions{display:flex;gap:8px}
   @media(max-width:700px){.run-settings:not(.known){grid-template-columns:1fr;gap:20px}}
 </style>

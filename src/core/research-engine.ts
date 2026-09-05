@@ -2,21 +2,21 @@ import type { DatabaseClient } from "../db/client";
 import { CostLedgerRepository } from "../db/repositories/cost-ledger";
 import { DevelopmentRepository } from "../db/repositories/development";
 import { DiscoveryRepository } from "../db/repositories/discovery";
+import { GenerationAttemptRepository } from "../db/repositories/generation-attempts";
 import { ResearchRunRepository } from "../db/repositories/research-runs";
 import type { SearchClient, SearchOptions, SearchProvider } from "../providers/search";
-import type { StructuredCallOptions, StructuredModelClient } from "../providers/structured";
-import type { z } from "zod";
+import { ProviderFailure, type GenerationMetadata, type StructuredModelClient, type StructuredStageRequest } from "../providers/structured";
 import { AppError } from "../shared/errors";
 import { MAX_DEVELOPMENT_PROJECTED_CALLS } from "../shared/development-projection";
 import type { ResearchEvent } from "../shared/ipc";
-import { RunConfigSchema, type ModelProvider, type RunConfig } from "../shared/schemas";
+import { RunConfigSchema, sameModelRef, type RunConfig } from "../shared/schemas";
 import { ScopeSchema, type Scope } from "../shared/structured-output-schemas";
 import { runPersistedDevelopment } from "./development";
 import { discoverProblems, discoveryRunProjection, harvestFactors, type HarvestedFactor, type HarvestedSource } from "./discovery";
 
 export interface ResearchEngineOptions {
   db: DatabaseClient;
-  modelClients?: Partial<Record<ModelProvider, StructuredModelClient>>;
+  modelClients?: Partial<Record<string, StructuredModelClient>>;
   searchClients?: Partial<Record<SearchProvider, SearchClient>>;
   onEvent: (event: ResearchEvent) => void;
 }
@@ -38,12 +38,14 @@ export class ResearchEngine {
   private readonly executions = new Map<string, Promise<void>>();
   private readonly runs: ResearchRunRepository;
   private readonly ledger: CostLedgerRepository;
+  private readonly generationAttempts: GenerationAttemptRepository;
   private readonly discovery: DiscoveryRepository;
   private readonly development: DevelopmentRepository;
 
   constructor(private readonly options: ResearchEngineOptions) {
     this.runs = new ResearchRunRepository(options.db);
     this.ledger = new CostLedgerRepository(options.db);
+    this.generationAttempts = new GenerationAttemptRepository(options.db);
     this.discovery = new DiscoveryRepository(options.db);
     this.development = new DevelopmentRepository(options.db);
   }
@@ -108,9 +110,16 @@ export class ResearchEngine {
     if (!row || !["queued", "running"].includes(row.status)) {
       throw new AppError("conflict", "This research run has already ended and cannot be resumed.");
     }
-    for (const reservation of this.options.db.db.prepare("SELECT id FROM cost_ledger WHERE research_run_id = ? AND status = 'reserved'").all(runId) as Array<{ id: string }>) {
-      this.ledger.release(reservation.id);
+    const uncertain = this.options.db.db.prepare(`
+      SELECT 1 FROM generation_attempts
+      WHERE research_run_id = ? AND status = 'interrupted' AND terminal_kind = 'process-lost'
+      LIMIT 1
+    `).get(runId);
+    if (uncertain) {
+      this.ledger.settleUncertain(runId, "A dispatched generation lost its terminal result during restart");
+      throw new AppError("conflict", "A previous model request may have completed before the app restarted. Cancel this run and start a new one to avoid an automatic duplicate charge.");
     }
+    this.ledger.settleUncertain(runId, "The app restarted before an operation reached a durable result");
     this.options.db.db.prepare("UPDATE research_runs SET status = 'running', cancelled = 0, updated_at = ? WHERE id = ?")
       .run(new Date().toISOString(), runId);
     const config = RunConfigSchema.parse(JSON.parse(row.config_json));
@@ -244,6 +253,7 @@ export class ResearchEngine {
       researchRunId: active.runId,
       modelClient: this.instrumentedModel(active),
       model: active.config.model,
+      reasoningEffort: active.config.reasoningEffort,
       signal: active.abortController.signal,
       onProgress: (message) => this.progress(active, message),
     });
@@ -254,6 +264,7 @@ export class ResearchEngine {
       modelClient: this.instrumentedModel(active),
       search: this.instrumentedSearch(active),
       model: active.config.model,
+      reasoningEffort: active.config.reasoningEffort,
       depth: active.config.discoveryDepth,
       signal: active.abortController.signal,
       onProjection: (message: string) => this.progress(active, message),
@@ -261,18 +272,88 @@ export class ResearchEngine {
   }
 
   private instrumentedModel(active: ActiveRun): StructuredModelClient {
-    const client = this.options.modelClients?.codex;
-    if (!client) throw new Error("Codex client is unavailable");
+    const client = this.options.modelClients?.[active.config.model.providerId];
+    if (!client) throw new Error(`Model provider ${active.config.model.providerId} is unavailable`);
     return {
-      structuredCompletion: async <T>(model: string, system: string, user: string, schema: z.ZodType<T>, jsonSchema: object, options?: StructuredCallOptions): Promise<T> => {
-        this.enforceRunawayBackstop(active, "codex", active.projectedCodexCalls);
-        const reservation = this.ledger.reserve(active.runId, "structured-completion", "codex", active.config.model, 0);
-        try { return await client.structuredCompletion(model, system, user, schema, jsonSchema, { ...options, reasoningEffort: active.config.reasoningEffort }); }
-        finally {
-          if (this.activeRuns.get(active.runId) === active) {
-            this.ledger.commit(reservation.id, 0);
-            this.progress(active, "Codex call completed");
+      structuredCompletion: async <T>(request: StructuredStageRequest<T>) => {
+        if (!sameModelRef(request.model, active.config.model)) throw new Error("Stage model does not match the active run configuration");
+        const providerId = active.config.model.providerId;
+        this.enforceRunawayBackstop(active, providerId, active.projectedCodexCalls);
+        const preparedIdentity = client.prepareIdentity
+          ? await client.prepareIdentity()
+          : client.preparedIdentity?.();
+        const reusable = this.generationAttempts.findCompleted(active.runId, request, preparedIdentity);
+        if (reusable) {
+          return { output: reusable.output, metadata: reusable.metadata as GenerationMetadata };
+        }
+        const attempt = this.generationAttempts.prepare(active.runId, request, preparedIdentity);
+        let reservation: ReturnType<CostLedgerRepository["reserve"]> | null = null;
+        let accepted = false;
+        let dispatched = false;
+        let terminalRecorded = false;
+        try {
+          const result = await client.structuredCompletion({
+            ...request,
+            onDispatched: () => {
+              reservation = this.ledger.reserve(active.runId, "structured-completion", providerId, active.config.model.modelId, 0, attempt.id);
+              dispatched = true;
+              this.generationAttempts.markDispatched(attempt.id);
+              request.onDispatched?.();
+            },
+            onAccepted: (metadata) => {
+              accepted = true;
+              this.generationAttempts.markAccepted(attempt.id, metadata);
+              request.onAccepted?.(metadata);
+            },
+          });
+          if (!reservation) {
+            reservation = this.ledger.reserve(active.runId, "structured-completion", providerId, active.config.model.modelId, 0, attempt.id);
+            dispatched = true;
+            this.generationAttempts.markDispatched(attempt.id);
           }
+          this.generationAttempts.recordTerminal(attempt.id, {
+            status: "completed",
+            terminalKind: "completed",
+            output: result.output,
+            attemptMetadata: result.metadata,
+            usage: result.metadata.attempts.map((item) => item.usage ?? null),
+            ...(reportedCost(result.metadata) === null ? {} : { reportedCostUsd: reportedCost(result.metadata)! }),
+          });
+          terminalRecorded = true;
+          if (!reservation) throw new Error("Model completed without a recorded dispatch");
+          this.ledger.commit(reservation.id, reportedCost(result.metadata), { generation: result.metadata });
+          if (this.activeRuns.get(active.runId) === active) this.progress(active, "Model call completed");
+          return result;
+        } catch (error) {
+          const failedAttempts = error instanceof ProviderFailure ? error.attempts : undefined;
+          const failedCostUsd = failedAttempts ? reportedAttemptCost(failedAttempts) : null;
+          if (!reservation && failedAttempts?.length) {
+            reservation = this.ledger.reserve(active.runId, "structured-completion", providerId, active.config.model.modelId, 0, attempt.id);
+            dispatched = true;
+            this.generationAttempts.markDispatched(attempt.id);
+          }
+          if (!terminalRecorded) {
+            const code = error instanceof ProviderFailure ? error.code : "failed";
+            this.generationAttempts.recordTerminal(attempt.id, {
+              status: code === "cancelled" ? "cancelled" : code === "interrupted" ? "interrupted" : "failed",
+              terminalKind: code,
+              errorCode: code,
+              errorMessage: error instanceof Error ? error.message : "Model generation failed",
+              ...(failedAttempts ? {
+                attemptMetadata: { attempts: failedAttempts },
+                usage: failedAttempts.map((item) => item.usage),
+              } : {}),
+              ...(failedCostUsd === null ? {} : { reportedCostUsd: failedCostUsd }),
+            });
+          }
+          if (reservation && (accepted || dispatched || failedAttempts?.length)) {
+            this.ledger.commit(reservation.id, failedCostUsd, {
+              ...(failedAttempts ? { attempts: failedAttempts } : {}),
+              ...(failedCostUsd === null ? { uncertain: true, reason: "Generation ended without an explicit USD cost" } : {}),
+            });
+          }
+          else if (reservation) this.ledger.release(reservation.id);
+          throw error;
         }
       },
     };
@@ -289,7 +370,7 @@ export class ResearchEngine {
         try { return await client.search(query, options); }
         finally {
           if (this.activeRuns.get(active.runId) === active) {
-            this.ledger.commit(reservation.id);
+            this.ledger.commit(reservation.id, reservation.reservedUsd);
             this.progress(active, `Search: ${query}`);
           }
         }
@@ -303,7 +384,7 @@ export class ResearchEngine {
   }
 
   private progress(active: ActiveRun, message: string): void {
-    const codexCalls = this.ledger.countProviderCalls(active.runId, "codex");
+    const codexCalls = this.ledger.countProviderCalls(active.runId, active.config.model.providerId);
     const searches = this.ledger.countProviderCalls(active.runId, active.config.searchProvider);
     this.logJob(active.runId, active.threadId, "run-progress", { message, codexCalls, searches });
     this.emit({ type: "run-progress", runId: active.runId, threadId: active.threadId, message, codexCalls, searches });
@@ -341,4 +422,18 @@ export class ResearchEngine {
     this.options.db.db.prepare("INSERT INTO job_events (run_id, thread_id, type, payload_json, created_at) VALUES (?, ?, ?, ?, ?)")
       .run(runId, threadId, type, JSON.stringify(payload), new Date().toISOString());
   }
+}
+
+function reportedCost(metadata: GenerationMetadata): number | null {
+  return reportedAttemptCost(metadata.attempts);
+}
+
+function reportedAttemptCost(attempts: GenerationMetadata["attempts"]): number | null {
+  if (attempts.length === 0 || attempts.some((attempt) => attempt.cost.status !== "reported")) return null;
+  const reported = attempts.map((attempt) => {
+    if (attempt.cost.status !== "reported") throw new Error("Unreachable attempt cost state");
+    return attempt.cost.value;
+  });
+  if (reported.some((cost) => cost.currency?.toUpperCase() !== "USD")) return null;
+  return reported.reduce((total, cost) => total + cost.amount, 0);
 }

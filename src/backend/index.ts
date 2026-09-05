@@ -1,9 +1,12 @@
 import { startBackend, type BackendContext, type BackendHandle } from "./server";
 import { configurePromptPaths } from "../core/prompts";
 import { MainToBackendMessageSchema, type BackendSecrets, type BackendToMainMessage } from "../shared/backend-process";
+import { RuntimeClient } from "../providers/runtime";
+import { randomUUID } from "node:crypto";
 
-let secrets: BackendSecrets = { exaApiKey: null, perplexityApiKey: null };
+let secrets: BackendSecrets = { exaApiKey: null, perplexityApiKey: null, providerCredentials: {} };
 let handle: BackendHandle | null = null;
+const pendingCredentialWrites = new Map<string, { resolve: () => void; reject: (error: Error) => void; timer: ReturnType<typeof setTimeout> }>();
 
 function post(message: BackendToMainMessage): void {
   process.parentPort?.postMessage(message);
@@ -41,6 +44,16 @@ process.parentPort?.on("message", async (event) => {
   if (!parsed.success) return;
   const message = parsed.data;
 
+  if (message.type === "provider-credential-persisted") {
+    const pending = pendingCredentialWrites.get(message.requestId);
+    if (!pending) return;
+    clearTimeout(pending.timer);
+    pendingCredentialWrites.delete(message.requestId);
+    if (message.ok) pending.resolve();
+    else pending.reject(new Error(message.error ?? "Credential persistence failed"));
+    return;
+  }
+
   if (message.type === "update-secrets") {
     if (!handle) return;
     secrets = message.secrets;
@@ -51,6 +64,36 @@ process.parentPort?.on("message", async (event) => {
 
   if (handle) return;
   secrets = message.secrets;
+  const nativeRuntime = message.runtime ? new RuntimeClient({
+    ...message.runtime,
+    appVersion: message.appVersion,
+  }) : undefined;
+  if (nativeRuntime) {
+    try {
+      await nativeRuntime.start();
+      for (const [providerId, credential] of Object.entries(secrets.providerCredentials)) {
+        await nativeRuntime.restoreCredential(providerId, credential);
+      }
+    } catch (error) {
+      postProcessError("native-runtime-startup-failed", error);
+    }
+  }
+  const persistProviderCredential = async (providerId: string, credential: string): Promise<void> => {
+    const requestId = randomUUID();
+    await new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        pendingCredentialWrites.delete(requestId);
+        reject(new Error("Main process did not acknowledge encrypted credential persistence"));
+      }, 10_000);
+      pendingCredentialWrites.set(requestId, { resolve, reject, timer });
+      post({ type: "persist-provider-credential", requestId, providerId, credential });
+    });
+    secrets = { ...secrets, providerCredentials: { ...secrets.providerCredentials, [providerId]: credential } };
+  };
+  const forgetProviderCredential = (providerId: string) => {
+    const { [providerId]: _removed, ...providerCredentials } = secrets.providerCredentials;
+    secrets = { ...secrets, providerCredentials };
+  };
   const context: BackendContext = {
     dataDir: message.dataDir,
     dbPath: message.dbPath,
@@ -58,6 +101,13 @@ process.parentPort?.on("message", async (event) => {
     promptOverridesDir: message.promptOverridesDir,
     appVersion: message.appVersion,
     getSecrets: () => secrets,
+    ...(message.runtimeError ? { nativeRuntimeError: message.runtimeError } : {}),
+    ...(nativeRuntime ? {
+      nativeRuntime,
+      modelClients: { "openai-subscription": nativeRuntime, openrouter: nativeRuntime },
+      persistProviderCredential,
+      forgetProviderCredential,
+    } : {}),
     log: (input) => {
       const error = serializeError(input.error);
       post({

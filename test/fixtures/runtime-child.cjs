@@ -1,0 +1,69 @@
+const fs = require("node:fs");
+const readline = require("node:readline");
+
+if (process.argv[2] === "--version") {
+  process.stdout.write("scraply-agent 0.1.0\n");
+  process.exit(0);
+}
+
+const mode = process.env.SCRAPLY_RUNTIME_CHILD_MODE || "normal";
+const prompt = { id: "scraply.stage-worker.v1", sha256: "277d724f20acb1f32fa0a8b7c454c670971e3c40bfc921db40c044caa760e6f1" };
+const model = { providerId: "openai-subscription", modelId: "gpt-fixture" };
+const send = (value) => process.stdout.write(`${JSON.stringify(value)}\n`);
+const reply = (request, result) => send({ protocolVersion: "1.1", id: request.id, operation: request.operation, result });
+
+readline.createInterface({ input: process.stdin }).on("line", (line) => {
+  const request = JSON.parse(line);
+  if (request.operation === "runtime.initialize") {
+    if (mode === "malformed-once" && process.env.SCRAPLY_RUNTIME_MARKER && !fs.existsSync(process.env.SCRAPLY_RUNTIME_MARKER)) {
+      fs.writeFileSync(process.env.SCRAPLY_RUNTIME_MARKER, "seen");
+      process.stdout.write(Buffer.from([0xc3, 0x28, 0x0a]));
+      return;
+    }
+    reply(request, {
+      selectedProtocolVersion: "1.1", sessionId: "fixture-session",
+      runtime: { name: "scraply-agent", version: "0.1.0" }, prompt,
+      operations: ["runtime.initialize", "account.list", "account.login.start", "account.login.complete", "account.login.cancel", "account.logout", "account.refresh", "credential.session.set", "credential.session.persisted", "model.list", "generation.start", "generation.cancel", "runtime.shutdown"],
+      capabilities: ["envelope_limits", "account_refresh", "credential_persistence_ack", "generation_attempt_metadata", "exactly_one_terminal"],
+      limits: { maxEnvelopeBytes: 16777216, maxInputBytes: 2097152, maxSchemaBytes: 262144, maxOutputBytes: 2097152 },
+    });
+    return;
+  }
+  if (request.operation === "account.list") { reply(request, { accounts: [] }); return; }
+  if (request.operation === "model.list") {
+    if (mode === "wrong-operation") {
+      send({ protocolVersion: "1.1", id: request.id, operation: "account.list", error: { code: "operation_unavailable", retryable: true, detail: "wrong operation" } });
+      return;
+    }
+    const bytes = Buffer.from(`${JSON.stringify({ protocolVersion: "1.1", id: request.id, operation: request.operation, result: { models: [{ identity: model, displayName: "Modèle", supportsStructuredOutput: true }] } })}\n`);
+    const split = bytes.indexOf(Buffer.from([0xc3, 0xa8])) + 1;
+    process.stdout.write(bytes.subarray(0, split));
+    setTimeout(() => process.stdout.write(bytes.subarray(split)), 5);
+    return;
+  }
+  if (request.operation === "generation.start") {
+    if (process.env.SCRAPLY_RUNTIME_CAPTURE) fs.appendFileSync(process.env.SCRAPLY_RUNTIME_CAPTURE, `${JSON.stringify(request)}\n`);
+    reply(request, { generationId: request.payload.generationId, prompt });
+    if (mode === "hang-cancel") return;
+    const metadata = {
+      model, prompt, usage: { status: "unknown" }, finishReason: "stop", latencyMs: 1,
+      repairCount: 0, providerRequestIds: ["fixture-provider-request"],
+      attempts: [{ attempt: "initial", outcome: "completed", providerCompletion: "confirmed", model, usage: { status: "unknown" }, cost: { status: "not_reported" }, finishReason: "stop", latencyMs: 1, providerRequestId: "fixture-provider-request" }],
+    };
+    const output = request.payload.workOrder.stage.startsWith("query-plan")
+      ? { queries: ["one", "two", "three"] }
+      : request.payload.workOrder.stage.startsWith("factor-harvest") ? { factors: [] } : { answer: "right" };
+    const wrong = { protocolVersion: "1.1", requestId: "unrelated-request", operation: "generation.start", event: { kind: "generation.completed", generationId: request.payload.generationId, result: { output: { answer: "wrong" }, metadata } } };
+    const correct = { protocolVersion: "1.1", requestId: request.id, operation: "generation.start", event: { kind: "generation.completed", generationId: request.payload.generationId, result: { output, metadata } } };
+    process.stdout.write(`${JSON.stringify(wrong)}\n${JSON.stringify(correct)}\n${JSON.stringify(correct)}\n`);
+    return;
+  }
+  if (request.operation === "generation.cancel") { reply(request, { generationId: request.payload.generationId, cancelled: true }); return; }
+  if (request.operation === "runtime.shutdown") {
+    if (mode === "hang-shutdown") return;
+    reply(request, {});
+    setTimeout(() => process.exit(0), 5);
+    return;
+  }
+  reply(request, {});
+});

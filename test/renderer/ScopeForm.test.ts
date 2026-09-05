@@ -30,6 +30,40 @@ describe("ScopeForm search provider selection", () => {
     expect(onSave.mock.calls[0]?.[1]).toMatchObject({ searchProvider: "perplexity" });
     expect(onStart).toHaveBeenCalledTimes(1);
   });
+
+  test("offers main-owned native account setup and account maintenance", async () => {
+    const disconnected = workspace();
+    disconnected.validation.native = { available: true, connected: false, version: "0.1.0", accounts: [] };
+    const connect = vi.fn().mockResolvedValue(undefined);
+    const view = render(ScopeForm, {
+      workspace: disconnected,
+      busy: false,
+      onSave: vi.fn(), onStart: vi.fn(), onRetry: vi.fn(),
+      onConnectNative: connect,
+    });
+
+    await fireEvent.click(view.getByRole("button", { name: "Connect OpenAI" }));
+    expect(connect).toHaveBeenCalledWith("openai-subscription");
+
+    const connected = workspace();
+    connected.validation.native = {
+      available: true, connected: true, version: "0.1.0",
+      accounts: [{ providerId: "openai-subscription", email: "dany@example.test", plan: "plus" }],
+    };
+    const refresh = vi.fn().mockResolvedValue(undefined);
+    const logout = vi.fn().mockResolvedValue(undefined);
+    const accountView = render(ScopeForm, {
+      workspace: connected,
+      busy: false,
+      onSave: vi.fn(), onStart: vi.fn(), onRetry: vi.fn(),
+      onRefreshNative: refresh, onLogoutNative: logout,
+    });
+    expect(accountView.getByText("dany@example.test · plus")).toBeTruthy();
+    await fireEvent.click(accountView.getByRole("button", { name: "Refresh" }));
+    await fireEvent.click(accountView.getByRole("button", { name: "Sign out" }));
+    expect(refresh).toHaveBeenCalledWith("openai-subscription");
+    expect(logout).toHaveBeenCalledWith("openai-subscription");
+  });
 });
 
 function workspace(): WorkspaceState {
@@ -39,6 +73,7 @@ function workspace(): WorkspaceState {
       exa: { valid: false, error: "Exa unavailable" },
       perplexity: { valid: true },
       codex: { detected: true, compatible: true, authenticated: true },
+      native: { available: false, connected: false, accounts: [] },
       setupComplete: true,
     },
     threads: [{ id: "thread-1", title: "Research", status: "configuring", createdAt: now, updatedAt: now }],
@@ -48,12 +83,12 @@ function workspace(): WorkspaceState {
     runConfig: DEFAULT_RUN_CONFIG,
     models: [DEFAULT_RUN_CONFIG.model],
     modelOptions: [{
-      id: DEFAULT_RUN_CONFIG.model,
-      displayName: DEFAULT_RUN_CONFIG.model,
+      ...DEFAULT_RUN_CONFIG.model,
+      displayName: DEFAULT_RUN_CONFIG.model.modelId,
       defaultReasoningEffort: "medium",
       reasoningEfforts: [{ id: "medium", description: "Balanced reasoning" }],
     }],
-    modelCatalog: { codex: [DEFAULT_RUN_CONFIG.model], favorites: [] },
+    modelCatalog: { models: [DEFAULT_RUN_CONFIG.model], favorites: [] },
     presets: [],
     problemCandidates: [],
     rejectedProblemCandidates: [],

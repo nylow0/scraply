@@ -14,6 +14,10 @@ import {
   GetIdeaDetailRequestSchema,
   GetSourceDetailRequestSchema,
   IPC_CHANNELS,
+  NativeLoginCompleteSchema,
+  NativeLoginLaunchSchema,
+  NativeLoginStartSchema,
+  NativeProviderSchema,
   ResumeResearchSchema,
   SaveFavoriteModelSchema,
   SaveRunConfigSchema,
@@ -30,6 +34,7 @@ import {
   type BackendSecrets,
 } from "../shared/backend-process";
 import { AppError } from "../shared/errors";
+import { resolveRuntimeLaunch } from "../shared/runtime-artifact";
 import { createFileLogger, type FileLogger } from "./logging";
 import { isAllowedRendererUrl, parseExternalHttpsUrl, rendererEntryUrl } from "./security";
 
@@ -41,6 +46,7 @@ let backendStartPromise: Promise<BackendReady> | null = null;
 let backendStartupFailure: string | null = null;
 let logger: FileLogger | null = null;
 let isQuitting = false;
+const blockedProviderCredentialWrites = new Set<string>();
 
 interface PendingSecretUpdate {
   resolve: () => void;
@@ -49,10 +55,11 @@ interface PendingSecretUpdate {
 }
 
 const pendingSecretUpdates = new Map<string, PendingSecretUpdate>();
-let secrets: BackendSecrets = { exaApiKey: null, perplexityApiKey: null };
+let secrets: BackendSecrets = { exaApiKey: null, perplexityApiKey: null, providerCredentials: {} };
 
 function secretValues(): string[] {
-  return [secrets.exaApiKey, secrets.perplexityApiKey].filter((value): value is string => Boolean(value));
+  return [secrets.exaApiKey, secrets.perplexityApiKey, ...Object.values(secrets.providerCredentials)]
+    .filter((value): value is string => Boolean(value));
 }
 
 function getPaths() {
@@ -96,6 +103,9 @@ function loadStoredSecrets(): void {
     secrets = {
       exaApiKey: typeof parsed.exaApiKey === "string" ? parsed.exaApiKey : null,
       perplexityApiKey: typeof parsed.perplexityApiKey === "string" ? parsed.perplexityApiKey : null,
+      providerCredentials: parsed.providerCredentials && typeof parsed.providerCredentials === "object"
+        ? Object.fromEntries(Object.entries(parsed.providerCredentials).filter((entry): entry is [string, string] => typeof entry[1] === "string"))
+        : {},
     };
   } catch {
     // ignore corrupt secrets file
@@ -122,6 +132,14 @@ async function startBackendProcess(): Promise<BackendReady> {
   }
 
   const { dataDir, dbPath, bundledPromptsDir, promptOverridesDir } = getPaths();
+  let runtime: ReturnType<typeof resolveRuntimeLaunch>;
+  let runtimeError: string | undefined;
+  try {
+    runtime = resolveRuntimeLaunch({ packaged: app.isPackaged, resourcesPath: process.resourcesPath });
+  } catch (error) {
+    runtimeError = error instanceof Error ? error.message : "Native runtime package validation failed";
+    logger?.log({ level: "error", component: "main", event: "native-runtime-unavailable", message: runtimeError });
+  }
   const useE2eBackend = process.env.SCRAPLY_E2E === "1" && process.env.SCRAPLY_E2E_REAL_BACKEND === "1";
   const backendEntry = join(__dirname, useE2eBackend ? "backend-e2e.js" : "backend.js");
   logger?.log({ level: "info", component: "main", event: "backend-starting" });
@@ -155,6 +173,32 @@ async function startBackendProcess(): Promise<BackendReady> {
 
       if (message.type === "event" && mainWindow && !mainWindow.isDestroyed()) {
         mainWindow.webContents.send(IPC_CHANNELS.BACKEND_EVENT, message.event);
+        return;
+      }
+      if (message.type === "persist-provider-credential") {
+        if (blockedProviderCredentialWrites.has(message.providerId)) {
+          processHandle.postMessage({
+            type: "provider-credential-persisted", requestId: message.requestId, ok: false,
+            error: "The account was signed out before this credential could be saved",
+          });
+          return;
+        }
+        try {
+          const nextSecrets = {
+            ...secrets,
+            providerCredentials: { ...secrets.providerCredentials, [message.providerId]: message.credential },
+          };
+          persistSecrets(nextSecrets);
+          secrets = nextSecrets;
+          processHandle.postMessage({ type: "provider-credential-persisted", requestId: message.requestId, ok: true });
+        } catch (error) {
+          processHandle.postMessage({
+            type: "provider-credential-persisted",
+            requestId: message.requestId,
+            ok: false,
+            error: error instanceof Error ? error.message : "Credential persistence failed",
+          });
+        }
         return;
       }
       if (message.type === "secrets-updated") {
@@ -242,6 +286,8 @@ async function startBackendProcess(): Promise<BackendReady> {
       promptOverridesDir,
       appVersion: app.getVersion(),
       secrets,
+      ...(runtimeError ? { runtimeError } : {}),
+      ...(runtime ? { runtime } : {}),
     });
   });
 }
@@ -429,6 +475,7 @@ async function retryAutomaticConnection(): Promise<void> {
   const candidate: BackendSecrets = {
     exaApiKey: automaticSecrets.exaApiKey ?? secrets.exaApiKey,
     perplexityApiKey: automaticSecrets.perplexityApiKey ?? secrets.perplexityApiKey,
+    providerCredentials: secrets.providerCredentials,
   };
 
   if (!backendReady) {
@@ -477,6 +524,30 @@ function registerIpc(): void {
   handle(IPC_CHANNELS.SAVE_SCOPE, (body) => post("/scope", SaveScopeSchema.parse(body)));
   handle(IPC_CHANNELS.SAVE_RUN_CONFIG, (body) => post("/run-config", SaveRunConfigSchema.parse(body)));
   handle(IPC_CHANNELS.SAVE_FAVORITE_MODEL, (body) => post("/models/favorite", SaveFavoriteModelSchema.parse(body)));
+  handle(IPC_CHANNELS.NATIVE_LOGIN_START, async (body) => {
+    const input = NativeLoginStartSchema.parse(body);
+    blockedProviderCredentialWrites.delete(input.providerId);
+    const launch = NativeLoginLaunchSchema.parse(await post("/native/login/start", input));
+    const authorizationUrl = launch.method === "device" ? launch.verificationUrl : launch.authorizationUrl;
+    await shell.openExternal(parseExternalHttpsUrl({ url: authorizationUrl }));
+    return {
+      loginId: launch.loginId,
+      providerId: launch.providerId,
+      method: launch.method,
+      ...(launch.method === "device" ? { userCode: launch.userCode } : {}),
+    };
+  });
+  handle(IPC_CHANNELS.NATIVE_LOGIN_COMPLETE, (body) => post("/native/login/complete", NativeLoginCompleteSchema.parse(body)));
+  handle(IPC_CHANNELS.NATIVE_ACCOUNT_REFRESH, (body) => post("/native/account/refresh", NativeProviderSchema.parse(body)));
+  handle(IPC_CHANNELS.NATIVE_LOGOUT, async (body) => {
+    const input = NativeProviderSchema.parse(body);
+    blockedProviderCredentialWrites.add(input.providerId);
+    const { [input.providerId]: _removed, ...providerCredentials } = secrets.providerCredentials;
+    const nextSecrets = { ...secrets, providerCredentials };
+    persistSecrets(nextSecrets);
+    secrets = nextSecrets;
+    return post("/native/logout", input);
+  });
   handle(IPC_CHANNELS.START_RESEARCH, (body) => post("/research/start", StartResearchSchema.parse(body)));
   handle(IPC_CHANNELS.CANCEL_RESEARCH, (body) => post("/research/cancel", CancelResearchSchema.parse(body)));
   handle(IPC_CHANNELS.RESUME_RESEARCH, (body) => post("/research/resume", ResumeResearchSchema.parse(body)));

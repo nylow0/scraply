@@ -29,7 +29,8 @@
       <div class="wide"><span>Boundaries</span>{#if scope.offLimits.length}<ul>{#each scope.offLimits as item, index (`${item}-${index}`)}<li>{item}</li>{/each}</ul>{:else}<p>No boundaries specified.</p>{/if}</div>
     </div>
     <dl class="run-settings">
-      <div><dt>Model</dt><dd>{config.model}</dd></div>
+      <div><dt>Model</dt><dd>{config.model.modelId}</dd></div>
+      <div><dt>Provider</dt><dd>{config.model.providerId}</dd></div>
       <div><dt>Reasoning</dt><dd>{config.reasoningEffort}</dd></div>
       {#if config.researchMode === "explore-market"}<div><dt>Research depth</dt><dd>{config.discoveryDepth}</dd></div>{/if}
       {#if config.researchMode === "explore-market"}<div><dt>Search provider</dt><dd>{config.searchProvider}</dd></div>{/if}

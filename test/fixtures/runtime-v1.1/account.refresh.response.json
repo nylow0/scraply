@@ -1,0 +1,1 @@
+{"protocolVersion":"1.1","id":"refresh-1","operation":"account.refresh","result":{"account":{"providerId":"openai-subscription","email":"fixture@example.test","accountId":"fixture-account","plan":"plus"},"credential":"opaque-session-credential","persistence":{"providerId":"openai-subscription","sessionId":"session-fixture","rotationId":"rotation-1"}}}

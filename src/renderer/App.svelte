@@ -172,6 +172,28 @@
       setWorkspace(await window.scraply.getWorkspace());
     });
   }
+  async function connectNativeAccount(providerId: string) {
+    await action(async () => {
+      const login = await window.scraply.startNativeLogin({ providerId, method: "browser" });
+      feedback = { text: "Finish signing in in your browser. Scraply is waiting for the account callback.", tone: "info" };
+      for (let attempt = 0; attempt < 300; attempt += 1) {
+        const result = await window.scraply.completeNativeLogin({ loginId: login.loginId });
+        if (!result.pending) {
+          setWorkspace(result.workspace);
+          feedback = { text: "Native model account connected.", tone: "info" };
+          return;
+        }
+        await new Promise<void>((resolve) => setTimeout(resolve, 1_000));
+      }
+      throw new Error("Account sign-in timed out. Start the connection again.");
+    });
+  }
+  async function refreshNativeAccount(providerId: string) {
+    await action(async () => setWorkspace(await window.scraply.refreshNativeAccount(providerId)));
+  }
+  async function logoutNativeAccount(providerId: string) {
+    await action(async () => setWorkspace(await window.scraply.logoutNativeAccount(providerId)));
+  }
   async function resumeResearch(runId: string) {
     await action(async () => setWorkspace(await window.scraply.resumeResearch(runId)));
   }
@@ -272,7 +294,8 @@
       {#if activeThread.status === "configuring" || editingScope || !workspace.scope}
         <div id="workflow-panel-setup" role="tabpanel" aria-label="Research setup">
           {#key workspace.activeThreadId}
-            <ScopeForm {workspace} {busy} onSave={saveScope} onStart={startResearch} onRetry={retryConnections} />
+            <ScopeForm {workspace} {busy} onSave={saveScope} onStart={startResearch} onRetry={retryConnections}
+              onConnectNative={connectNativeAccount} onRefreshNative={refreshNativeAccount} onLogoutNative={logoutNativeAccount} />
           {/key}
         </div>
       {:else}

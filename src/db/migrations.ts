@@ -802,4 +802,86 @@ export const MIGRATIONS = [
         ON rejected_problem_candidates(discovery_run_id, created_at, id);
     `,
   },
+  {
+    id: 15,
+    sql: `
+      UPDATE run_configs
+      SET config_json = json_set(
+        config_json,
+        '$.configVersion', 2,
+        '$.model', json_object(
+          'providerId', 'legacy-codex-cli',
+          'modelId', json_extract(config_json, '$.model')
+        )
+      )
+      WHERE json_type(config_json, '$.model') = 'text';
+
+      UPDATE research_runs
+      SET config_json = json_set(
+        config_json,
+        '$.configVersion', 2,
+        '$.model', json_object(
+          'providerId', 'legacy-codex-cli',
+          'modelId', json_extract(config_json, '$.model')
+        )
+      )
+      WHERE json_type(config_json, '$.model') = 'text';
+
+      UPDATE cost_ledger
+      SET provider = 'legacy-codex-cli'
+      WHERE provider = 'codex' AND operation = 'structured-completion';
+
+      ALTER TABLE research_runs ADD COLUMN workflow_version INTEGER NOT NULL DEFAULT 1;
+
+      CREATE TABLE generation_attempts (
+        id TEXT PRIMARY KEY,
+        generation_id TEXT NOT NULL UNIQUE,
+        research_run_id TEXT NOT NULL REFERENCES research_runs(id) ON DELETE CASCADE,
+        stage_key TEXT NOT NULL,
+        provider_id TEXT NOT NULL,
+        model_id TEXT NOT NULL,
+        reasoning_effort TEXT NOT NULL,
+        status TEXT NOT NULL CHECK(status IN (
+          'prepared', 'dispatched', 'accepted', 'completed', 'failed', 'cancelled', 'interrupted'
+        )),
+        request_json TEXT NOT NULL CHECK(json_valid(request_json)),
+        wire_request_sha256 TEXT NOT NULL,
+        request_sha256 TEXT NOT NULL,
+        work_order_sha256 TEXT NOT NULL,
+        inputs_sha256 TEXT NOT NULL,
+        evidence_sha256 TEXT NOT NULL,
+        schema_sha256 TEXT NOT NULL,
+        protocol_version TEXT,
+        runtime_version TEXT,
+        runtime_source_sha TEXT,
+        runtime_executable_sha256 TEXT,
+        runtime_prompt_id TEXT,
+        runtime_prompt_sha256 TEXT,
+        terminal_kind TEXT,
+        output_json TEXT CHECK(output_json IS NULL OR json_valid(output_json)),
+        error_code TEXT,
+        error_message TEXT,
+        attempt_metadata_json TEXT CHECK(
+          attempt_metadata_json IS NULL OR json_valid(attempt_metadata_json)
+        ),
+        usage_json TEXT CHECK(usage_json IS NULL OR json_valid(usage_json)),
+        reported_cost_usd REAL CHECK(reported_cost_usd IS NULL OR reported_cost_usd >= 0),
+        accepted_at TEXT,
+        terminal_at TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+
+      CREATE INDEX idx_generation_attempts_run_stage
+        ON generation_attempts(research_run_id, stage_key, created_at);
+      CREATE INDEX idx_generation_attempts_status
+        ON generation_attempts(status, updated_at);
+
+      ALTER TABLE cost_ledger
+        ADD COLUMN generation_attempt_id TEXT REFERENCES generation_attempts(id) ON DELETE SET NULL;
+      CREATE UNIQUE INDEX idx_cost_ledger_generation_attempt
+        ON cost_ledger(generation_attempt_id)
+        WHERE generation_attempt_id IS NOT NULL;
+    `,
+  },
 ] as const;
