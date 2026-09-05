@@ -132,8 +132,18 @@ describe("persistent native runtime client", () => {
 
   test("restores credentials before using a replacement process", async () => {
     const runtime = client("wrong-operation", { requestTimeoutMs: 1_000 });
+    let initializationAttempts = 0;
     let initializedSessions = 0;
+    let enterSecondInitialization!: () => void;
+    const secondInitializationEntered = new Promise<void>((resolve) => { enterSecondInitialization = resolve; });
+    let releaseSecondInitialization!: () => void;
+    const secondInitializationRelease = new Promise<void>((resolve) => { releaseSecondInitialization = resolve; });
     runtime.setSessionInitializer(async (session) => {
+      initializationAttempts += 1;
+      if (initializationAttempts === 2) {
+        enterSecondInitialization();
+        await secondInitializationRelease;
+      }
       await session.restoreCredential("openai-subscription", "saved-credential");
       initializedSessions += 1;
     });
@@ -141,7 +151,17 @@ describe("persistent native runtime client", () => {
     await runtime.start();
     expect(initializedSessions).toBe(1);
     await expect(runtime.listModels("openai-subscription")).rejects.toBeInstanceOf(ProviderFailure);
-    expect(await runtime.listAccounts()).toEqual([]);
+    const replacementInspection = runtime.listAccounts();
+    await secondInitializationEntered;
+    let concurrentInspectionFinished = false;
+    const concurrentInspection = runtime.listAccounts().then((accounts) => {
+      concurrentInspectionFinished = true;
+      return accounts;
+    });
+    await Promise.resolve();
+    expect(concurrentInspectionFinished).toBe(false);
+    releaseSecondInitialization();
+    expect(await Promise.all([replacementInspection, concurrentInspection])).toEqual([[], []]);
     expect(initializedSessions).toBe(2);
   });
 

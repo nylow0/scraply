@@ -92,8 +92,8 @@ export class RuntimeClient implements StructuredModelClient {
   }
 
   async start(): Promise<InitializeResult> {
-    if (this.initialized) return this.initialized;
     if (this.initializePromise) return this.initializePromise;
+    if (this.initialized) return this.initialized;
     this.initializePromise = (async () => {
       const initialized = await this.startProcess();
       this.initialized = initialized;
