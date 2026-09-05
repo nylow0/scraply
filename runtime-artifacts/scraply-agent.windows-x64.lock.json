@@ -1,0 +1,45 @@
+{
+    "schemaVersion":  1,
+    "platform":  "windows-x64",
+    "executable":  "scraply-agent.exe",
+    "version":  "0.1.0",
+    "protocolVersions":  [
+                             "1.1"
+                         ],
+    "sourceRepository":  "https://github.com/nylow0/scraply-agent",
+    "sourceCommit":  "ab9fcfc859ee19fff8dfd4c05c854ab5d145baf8",
+    "upstreamCommit":  "8c68d4c87dc54d38861f5114e920c3de2efa5876",
+    "artifactPath":  "scraply-agent.exe",
+    "sha256":  "20e081268d6e932a97b3d5574e7b4e7f1c9d0ee49562007cfcdfe3effc1678b2",
+    "sizeBytes":  13539840,
+    "archive":  {
+                    "fileName":  "scraply-agent-0.1.0-windows-x64-ab9fcfc859ee.zip",
+                    "sha256":  "3a6666dbe649af0fa4bf50240e1513c1c6e964a74afe4959ce085e27d24da598",
+                    "sizeBytes":  5992976
+                },
+    "notices":  [
+                    {
+                        "source":  "LICENSE",
+                        "target":  "LICENSE",
+                        "sha256":  "4c17e3030a9099310cee8debeb48713290e9d67e718242dd763888e0db08f14f",
+                        "sizeBytes":  567
+                    },
+                    {
+                        "source":  "OPENAI-NOTICE",
+                        "target":  "OPENAI-NOTICE",
+                        "sha256":  "3c505dc54be731583470ef3584e5cb96d60df7add3e7e36294cf4dea8316a5cb",
+                        "sizeBytes":  248
+                    },
+                    {
+                        "source":  "UPSTREAM.md",
+                        "target":  "UPSTREAM.md",
+                        "sha256":  "0c6a39b53d7af5d99e842627208ea472bcd3da09a590a924894da5b5a79efeaa",
+                        "sizeBytes":  1769
+                    }
+                ],
+    "checksums":  {
+                      "path":  "SHA256SUMS.txt",
+                      "sha256":  "fdfa8c424a57b54433f003c7877b010beea85efcbee77be68b3024617993dd09",
+                      "sizeBytes":  316
+                  }
+}
