@@ -38,6 +38,15 @@ export const ValidationStateSchema = z.object({
     version: z.string().optional(),
     error: z.string().optional(),
   }),
+  native: z.object({
+    available: z.boolean(),
+    connected: z.boolean(),
+    version: z.string().optional(),
+    accounts: z.array(z.object({
+      providerId: z.string(), email: z.string().optional(), accountId: z.string().optional(), plan: z.string().optional(),
+    }).strict()),
+    error: z.string().optional(),
+  }),
   setupComplete: z.boolean(),
 });
 export const HealthResponseSchema = z.object({ ok: z.boolean(), version: z.string(), persistenceCheck: z.string().optional() });
@@ -61,6 +70,17 @@ export const ExportResearchRequestSchema = z.object({ threadId: EntityIdSchema }
 export const GetSourceDetailRequestSchema = z.object({ sourceId: EntityIdSchema });
 export const GetIdeaDetailRequestSchema = z.object({ ideaId: EntityIdSchema });
 export const OpenExternalUrlRequestSchema = z.object({ url: z.string().trim().min(1).max(2_048) });
+export const NativeLoginStartSchema = z.object({
+  providerId: z.string().trim().min(1),
+  method: z.enum(["browser", "device"]),
+}).strict();
+export const NativeLoginCompleteSchema = z.object({ loginId: EntityIdSchema }).strict();
+export const NativeProviderSchema = z.object({ providerId: z.string().trim().min(1) }).strict();
+export const NativeLoginLaunchSchema = z.discriminatedUnion("method", [
+  z.object({ loginId: EntityIdSchema, providerId: EntityIdSchema, method: z.literal("browser"), authorizationUrl: z.string().url(), callbackPort: z.number().int().positive() }).strict(),
+  z.object({ loginId: EntityIdSchema, providerId: EntityIdSchema, method: z.literal("device"), verificationUrl: z.string().url(), userCode: z.string().min(1) }).strict(),
+  z.object({ loginId: EntityIdSchema, providerId: EntityIdSchema, method: z.literal("pkce"), authorizationUrl: z.string().url() }).strict(),
+]);
 
 export const PendingRunSchema = z.object({
   runId: EntityIdSchema,
@@ -118,7 +138,7 @@ export const LatestResearchRunSchema = z.object({
 export const WorkspaceStateSchema = z.object({
   validation: ValidationStateSchema,
   threads: z.array(ThreadSchema), activeThreadId: z.string().nullable(), messages: z.array(MessageSchema),
-  scope: ScopeSchema.nullable(), runConfig: RunConfigSchema.nullable(), models: z.array(z.string()),
+  scope: ScopeSchema.nullable(), runConfig: RunConfigSchema.nullable(), models: z.array(ModelRefSchema),
   modelOptions: z.array(ModelOptionSchema),
   modelCatalog: ModelCatalogSchema, presets: z.array(z.object({ name: z.string(), config: RunConfigSchema })),
   problemCandidates: z.array(ProblemCandidateSchema), rejectedProblemCandidates: z.array(RejectedProblemCandidateSchema),
@@ -140,6 +160,8 @@ export type AppErrorPayload = z.infer<typeof AppErrorPayloadSchema>;
 export type BackendReady = z.infer<typeof BackendReadySchema>;
 export type ValidationState = z.infer<typeof ValidationStateSchema>;
 export type WorkspaceState = z.infer<typeof WorkspaceStateSchema>;
+export type NativeLoginStartResult = { loginId: string; providerId: string; method: "browser" | "device"; userCode?: string };
+export type NativeLoginCompleteResult = { pending: true } | { pending: false; workspace: WorkspaceState };
 export type ResearchEvent = z.infer<typeof ResearchEventSchema>;
 export type PendingRun = z.infer<typeof PendingRunSchema>;
 export type SourceDetail = z.infer<typeof SharedSourceDetailSchema>;
@@ -157,5 +179,7 @@ export const IPC_CHANNELS = {
   CANCEL_RESEARCH: "scraply:cancel-research", RESUME_RESEARCH: "scraply:resume-research",
   SELECT_PROBLEMS: "scraply:select-problems", EXPORT_RESEARCH: "scraply:export-research", EXPORT_IDEAS: "scraply:export-ideas",
   GET_SOURCE_DETAIL: "scraply:get-source-detail", GET_IDEA_DETAIL: "scraply:get-idea-detail",
+  NATIVE_LOGIN_START: "scraply:native-login-start", NATIVE_LOGIN_COMPLETE: "scraply:native-login-complete",
+  NATIVE_ACCOUNT_REFRESH: "scraply:native-account-refresh", NATIVE_LOGOUT: "scraply:native-logout",
   OPEN_EXTERNAL_URL: "scraply:open-external-url", BACKEND_EVENT: "scraply:backend-event",
 } as const;

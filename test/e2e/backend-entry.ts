@@ -1,8 +1,9 @@
 import { startBackend, type BackendContext, type BackendHandle } from "../../src/backend/server";
 import { configurePromptPaths } from "../../src/core/prompts";
 import { MainToBackendMessageSchema, type BackendSecrets, type BackendToMainMessage } from "../../src/shared/backend-process";
+import { LEGACY_CODEX_PROVIDER_ID } from "../../src/shared/schemas";
 
-let secrets: BackendSecrets = { exaApiKey: null, perplexityApiKey: null };
+let secrets: BackendSecrets = { exaApiKey: null, perplexityApiKey: null, providerCredentials: {} };
 let handle: BackendHandle | null = null;
 
 function post(message: BackendToMainMessage): void {
@@ -17,6 +18,8 @@ process.parentPort?.on("message", async (event) => {
   const parsed = MainToBackendMessageSchema.safeParse(event.data);
   if (!parsed.success) return;
   const message = parsed.data;
+
+  if (message.type === "provider-credential-persisted") return;
 
   if (message.type === "update-secrets") {
     if (!handle) return;
@@ -41,7 +44,7 @@ process.parentPort?.on("message", async (event) => {
         compatible: true,
         authenticated: true,
         version: "codex-e2e",
-        models: [{ id: "gpt-5.6-luna", displayName: "GPT-5.6-Luna", defaultReasoningEffort: "medium", reasoningEfforts: [{ id: "medium", description: "Balanced reasoning" }] }],
+        models: [{ providerId: LEGACY_CODEX_PROVIDER_ID, modelId: "gpt-5.6-luna", displayName: "GPT-5.6-Luna", defaultReasoningEffort: "medium", reasoningEfforts: [{ id: "medium", description: "Balanced reasoning" }] }],
       }),
       validateExa: async (apiKey) => apiKey === "invalid-e2e-key"
         ? { valid: false, error: "Deterministic invalid Exa key" }

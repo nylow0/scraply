@@ -83,7 +83,7 @@ describe("App workspace coordination", () => {
 function workspace(activeThreadId: "alpha" | "beta"): WorkspaceState {
   const now = "2026-08-23T00:00:00.000Z";
   return {
-    validation: { exa: { valid: true }, perplexity: { valid: false, error: "Perplexity key missing" }, codex: { detected: true, compatible: true, authenticated: true }, setupComplete: true },
+    validation: { exa: { valid: true }, perplexity: { valid: false, error: "Perplexity key missing" }, codex: { detected: true, compatible: true, authenticated: true }, native: { available: false, connected: false, accounts: [] }, setupComplete: true },
     threads: [
       { id: "alpha", title: "Alpha", status: "configuring", createdAt: now, updatedAt: now },
       { id: "beta", title: "Beta", status: "configuring", createdAt: now, updatedAt: now },
@@ -94,12 +94,12 @@ function workspace(activeThreadId: "alpha" | "beta"): WorkspaceState {
     runConfig: DEFAULT_RUN_CONFIG,
     models: [DEFAULT_RUN_CONFIG.model],
     modelOptions: [{
-      id: DEFAULT_RUN_CONFIG.model,
-      displayName: DEFAULT_RUN_CONFIG.model,
+      ...DEFAULT_RUN_CONFIG.model,
+      displayName: DEFAULT_RUN_CONFIG.model.modelId,
       defaultReasoningEffort: "medium",
       reasoningEfforts: [{ id: "medium", description: "Balanced reasoning" }],
     }],
-    modelCatalog: { codex: [DEFAULT_RUN_CONFIG.model], favorites: [] },
+    modelCatalog: { models: [DEFAULT_RUN_CONFIG.model], favorites: [] },
     presets: [],
     problemCandidates: [],
     rejectedProblemCandidates: [],
@@ -123,6 +123,10 @@ function installApi(overrides: Partial<ScraplyApi>): void {
     saveScope: noWorkspace,
     saveRunConfig: noWorkspace,
     saveFavoriteModel: noWorkspace,
+    startNativeLogin: async () => ({ loginId: "login-1", providerId: "openai-subscription", method: "browser" as const }),
+    completeNativeLogin: async () => ({ pending: true as const }),
+    refreshNativeAccount: noWorkspace,
+    logoutNativeAccount: noWorkspace,
     startResearch: async () => ({ workspace: workspace("alpha") }),
     cancelResearch: noWorkspace,
     resumeResearch: noWorkspace,

@@ -1,11 +1,10 @@
 import { describe, expect, test } from "bun:test";
-import type { z } from "zod";
 import {
   developmentProjection,
   riskSortKey,
   runDevelopment,
 } from "../../src/core/development";
-import type { StructuredModelClient } from "../../src/providers/structured";
+import type { StructuredModelClient, StructuredStageRequest } from "../../src/providers/structured";
 import {
   MitigationsOutputSchema,
   OutcomeJudgeOutputSchema,
@@ -16,14 +15,17 @@ import {
 } from "../../src/shared/structured-output-schemas";
 
 describe("development", () => {
+  const model = { providerId: "test-provider", modelId: "test-model" };
+  const reasoningEffort = "medium" as const;
   test("builds the complete chain with an independent outcome judgment", async () => {
-    const judgeInputs: string[] = [];
-    let solutionInput = "";
+    const judgeInputs: unknown[] = [];
+    let solutionInput: unknown;
     const result = await runDevelopment(scope(), problem(), factors(), {
-      model: "test-model",
-      modelClient: modelClient((user, schema) => {
-        if (schema._def === SolutionsOutputSchema._def) solutionInput = user;
-        return successfulCompletion(user, schema, judgeInputs);
+      model,
+      reasoningEffort,
+      modelClient: modelClient((request) => {
+        if (request.schema._def === SolutionsOutputSchema._def) solutionInput = request.evidence[0]!.content;
+        return successfulCompletion(request, judgeInputs);
       }),
     });
 
@@ -34,55 +36,59 @@ describe("development", () => {
     expect(result.solutions.every((solution) => solution.risks[0]?.impact === "project ends")).toBe(true);
     expect(result.solutions.every((solution) => solution.mitigations[0]?.riskIds.length === 2)).toBe(true);
     expect(judgeInputs).toHaveLength(1);
-    expect(judgeInputs[0]).toContain(problem().statement);
-    expect(judgeInputs[0]).not.toContain("Mechanism 1");
-    expect(judgeInputs[0]).not.toContain("Build approach 1");
-    expect(solutionInput).toContain('"audience":"Independent sellers"');
-    expect(solutionInput).toContain('"domain":"Claims operations"');
-    expect(solutionInput).toContain('"observations":"Claims are repeatedly filed."');
+    expect(JSON.stringify(judgeInputs[0])).toContain(problem().statement);
+    expect(JSON.stringify(judgeInputs[0])).not.toContain("Mechanism 1");
+    expect(JSON.stringify(judgeInputs[0])).not.toContain("Build approach 1");
+    expect(solutionInput).toMatchObject({ researchContext: {
+      audience: "Independent sellers",
+      domain: "Claims operations",
+      observations: "Claims are repeatedly filed.",
+    } });
   });
 
-  test("retries when a response fails a stage-level semantic constraint", async () => {
+  test("surfaces a stage semantic failure without an app-owned retry", async () => {
     let solutionCalls = 0;
-    const result = await runDevelopment(scope(), problem(), factors(), {
-      model: "test-model",
-      modelClient: modelClient((user, schema) => {
-        if (schema._def === SolutionsOutputSchema._def && solutionCalls++ === 0) {
-          return schema.parse({ solutions: Array.from({ length: 2 }, (_, index) => ({
+    const run = runDevelopment(scope(), problem(), factors(), {
+      model,
+      reasoningEffort,
+      modelClient: modelClient((request) => {
+        if (request.schema._def === SolutionsOutputSchema._def) {
+          solutionCalls += 1;
+          return request.schema.parse({ solutions: Array.from({ length: 2 }, (_, index) => ({
             mechanism: `Incomplete mechanism ${index + 1}`,
             description: `Incomplete approach ${index + 1}`,
             respectsOffLimits: true,
             respectsOffLimitsWhy: "It does not require lending.",
           })) });
         }
-        return successfulCompletion(user, schema);
+        return successfulCompletion(request);
       }),
     });
 
-    expect(solutionCalls).toBe(2);
-    expect(result.modelCalls).toBe(15);
-    expect(result.solutions).toHaveLength(3);
+    await expect(run).rejects.toMatchObject({ code: "schema" });
+    expect(solutionCalls).toBe(1);
   });
 
-  test("retries when dynamic outcome IDs do not match", async () => {
+  test("surfaces mismatched dynamic outcome IDs without an app-owned retry", async () => {
     let judgeCalls = 0;
-    const result = await runDevelopment(scope(), problem(), factors(), {
-      model: "test-model",
-      modelClient: modelClient((user, schema) => {
-        if (schema._def === OutcomeJudgeOutputSchema._def && judgeCalls++ === 0) {
-          const outcomes = parseAfter<Array<{ id: string }>>(user, "Outcomes: ");
-          return schema.parse({ judgments: outcomes.map((_, index) => ({
+    const run = runDevelopment(scope(), problem(), factors(), {
+      model,
+      reasoningEffort,
+      modelClient: modelClient((request) => {
+        if (request.schema._def === OutcomeJudgeOutputSchema._def) {
+          judgeCalls += 1;
+          const outcomes = (request.evidence[0]!.content as { outcomes: Array<{ id: string }> }).outcomes;
+          return request.schema.parse({ judgments: outcomes.map((_, index) => ({
             outcomeId: `unknown-${index}`,
             addressesCore: false,
           })) });
         }
-        return successfulCompletion(user, schema);
+        return successfulCompletion(request);
       }),
     });
 
-    expect(judgeCalls).toBe(2);
-    expect(result.modelCalls).toBe(15);
-    expect(result.solutions.every((solution) => solution.outcomes.every((outcome) => typeof outcome.addressesCore === "boolean"))).toBe(true);
+    await expect(run).rejects.toMatchObject({ code: "schema" });
+    expect(judgeCalls).toBe(1);
   });
 
   test("uses a stipulated ordering and projects the real call fan-out", () => {
@@ -95,10 +101,10 @@ describe("development", () => {
 });
 
 function successfulCompletion(
-  user: string,
-  schema: z.ZodTypeAny,
-  judgeInputs?: string[],
+  request: StructuredStageRequest<unknown>,
+  judgeInputs?: unknown[],
 ): unknown {
+  const schema = request.schema;
   if (schema._def === SolutionsOutputSchema._def) {
     return schema.parse({ solutions: Array.from({ length: 3 }, (_, index) => ({
       mechanism: `Mechanism ${index + 1}`,
@@ -116,8 +122,8 @@ function successfulCompletion(
     ] });
   }
   if (schema._def === OutcomeJudgeOutputSchema._def) {
-    judgeInputs?.push(user);
-    const outcomes = parseAfter<Array<{ id: string }>>(user, "Outcomes: ");
+    judgeInputs?.push(request.evidence[0]!.content);
+    const outcomes = (request.evidence[0]!.content as { outcomes: Array<{ id: string }> }).outcomes;
     return schema.parse({ judgments: outcomes.map((outcome, index) => ({
       outcomeId: outcome.id,
       addressesCore: index % 2 === 0,
@@ -130,14 +136,14 @@ function successfulCompletion(
     ] });
   }
   if (schema._def === RiskScoreOutputSchema._def) {
-    const risks = parseAfter<Array<{ id: string }>>(user, "Risks: ");
+    const risks = (request.evidence[0]!.content as { risks: Array<{ id: string }> }).risks;
     return schema.parse({ scores: [
       { riskId: risks[0]!.id, likelihood: "possible", impact: "project ends" },
       { riskId: risks[1]!.id, likelihood: "likely", impact: "~2 weeks" },
     ] });
   }
   if (schema._def === MitigationsOutputSchema._def) {
-    const risks = parseAfter<Array<{ id: string }>>(user, "Ranked risks (all project-ends risks included): ");
+    const risks = (request.evidence[0]!.content as { rankedRisks: Array<{ id: string }> }).rankedRisks;
     return schema.parse({ mitigations: [{
       riskIds: risks.map((risk) => risk.id),
       approach: "Keep a manual export path",
@@ -149,24 +155,16 @@ function successfulCompletion(
 }
 
 function modelClient(
-  completion: (user: string, schema: z.ZodTypeAny) => unknown | Promise<unknown>,
+  completion: (request: StructuredStageRequest<unknown>) => unknown | Promise<unknown>,
 ): StructuredModelClient {
   return {
-    async structuredCompletion<T>(
-      _model: string,
-      _system: string,
-      user: string,
-      schema: z.ZodType<T>,
-    ): Promise<T> {
-      return await completion(user, schema) as T;
+    async structuredCompletion<T>(request: StructuredStageRequest<T>) {
+      return {
+        output: await completion(request as StructuredStageRequest<unknown>) as T,
+        metadata: { model: request.model, usage: { status: "unknown" }, latencyMs: 1, repairCount: 0, providerRequestIds: [], attempts: [] },
+      };
     },
   };
-}
-
-function parseAfter<T>(value: string, marker: string): T {
-  const start = value.indexOf(marker);
-  if (start < 0) throw new Error(`Marker not found: ${marker}`);
-  return JSON.parse(value.slice(start + marker.length)) as T;
 }
 
 function scope() {

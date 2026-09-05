@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { z } from "zod";
 import { buildCodexExecArgs, buildCodexLaunchSpec, CodexClient, inspectCodexCli, invalidateCodexInspectionCache } from "../../src/providers/codex";
-import { ProviderFailure } from "../../src/providers/structured";
+import { ProviderFailure, type StructuredStageRequest } from "../../src/providers/structured";
 
 describe("Codex structured adapter", () => {
   test("uses the bounded read-only Luna execution contract", () => {
@@ -60,7 +60,7 @@ if (args[0] === "exec") {
     try {
       await expect(inspectCodexCli({ force: true })).resolves.toMatchObject({
         detected: true, compatible: true, authenticated: true, version: "codex-cli 1.2.3",
-        models: [{ id: "fake-model", displayName: "Fake Model", defaultReasoningEffort: "medium" }],
+        models: [{ providerId: "legacy-codex-cli", modelId: "fake-model", displayName: "Fake Model", defaultReasoningEffort: "medium" }],
       });
       expect(completion).not.toHaveBeenCalled();
     } finally {
@@ -110,10 +110,10 @@ await Bun.write(output, JSON.stringify({ ok: true }));
     const schema = z.object({ ok: z.boolean() });
     const jsonSchema = { type: "object", properties: { ok: { type: "boolean" } }, required: ["ok"], additionalProperties: false };
     try {
-      await expect(client.structuredCompletion("success", "system", "user", schema, jsonSchema)).resolves.toEqual({ ok: true });
-      await expect(client.structuredCompletion("auth-fail", "system", "user", schema, jsonSchema)).rejects.toMatchObject({ code: "auth", retryable: false });
+      await expect(client.structuredCompletion(stageRequest("success", schema, jsonSchema))).resolves.toMatchObject({ output: { ok: true } });
+      await expect(client.structuredCompletion(stageRequest("auth-fail", schema, jsonSchema))).rejects.toMatchObject({ code: "auth", retryable: false });
       const controller = new AbortController();
-      const pending = client.structuredCompletion("slow", "system", "user", schema, jsonSchema, { signal: controller.signal });
+      const pending = client.structuredCompletion(stageRequest("slow", schema, jsonSchema, controller.signal));
       setTimeout(() => controller.abort(new Error("test abort")), 50);
       await expect(pending).rejects.toMatchObject({ code: "cancelled", retryable: false });
     } finally {
@@ -135,9 +135,9 @@ await Bun.write(output, JSON.stringify({ ok: true }));
     process.env.CODEX_CLI_PATH = executable;
     try {
       const schema = z.object({ ok: z.boolean() });
-      await expect(new CodexClient().structuredCompletion("test", "system", "user", schema, {
+      await expect(new CodexClient().structuredCompletion(stageRequest("test", schema, {
         type: "object", properties: { ok: { type: "boolean" } }, required: ["ok"], additionalProperties: false,
-      }, { timeoutMs: 25 })).rejects.toMatchObject({ code: "timeout" } satisfies Partial<ProviderFailure>);
+      }, undefined, 25))).rejects.toMatchObject({ code: "timeout" } satisfies Partial<ProviderFailure>);
       const leftovers = readdirSync(tmpdir()).filter((name) => name.startsWith("scraply-codex-") && !before.has(name));
       expect(leftovers).toEqual([]);
     } finally {
@@ -147,6 +147,34 @@ await Bun.write(output, JSON.stringify({ ok: true }));
     }
   }, 5_000);
 });
+
+function stageRequest<T>(
+  modelId: string,
+  schema: StructuredStageRequest<T>["schema"],
+  jsonSchema: object,
+  signal?: AbortSignal,
+  deadlineMs = 5_000,
+): StructuredStageRequest<T> {
+  return {
+    generationId: `generation-${modelId}`,
+    stage: "test",
+    model: { providerId: "legacy-codex-cli", modelId },
+    reasoningEffort: "medium",
+    workOrder: {
+      stage: "test",
+      instruction: "Return the requested test object.",
+      goal: "Exercise the adapter.",
+      inputs: {},
+      definitionOfDone: ["The output matches the schema."],
+    },
+    evidence: [{ sourceId: "test-input", content: { value: "user" } }],
+    schema,
+    jsonSchema,
+    repairPolicy: "disabled",
+    deadlineMs,
+    ...(signal ? { signal } : {}),
+  };
+}
 
 function inspectionProgram(authenticated: boolean): string {
   return `

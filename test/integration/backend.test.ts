@@ -5,12 +5,13 @@ import { join } from "node:path";
 import { startBackend, type BackendHandle } from "../../src/backend/server";
 import { DatabaseClient } from "../../src/db/client";
 import { DiscoveryRepository } from "../../src/db/repositories/discovery";
-import { DEFAULT_RUN_CONFIG } from "../../src/shared/schemas";
+import { DEFAULT_RUN_CONFIG, LEGACY_CODEX_PROVIDER_ID } from "../../src/shared/schemas";
 
 const dirs: string[] = [];
 const handles: BackendHandle[] = [];
 const modelOption = (id: string) => ({
-  id,
+  providerId: LEGACY_CODEX_PROVIDER_ID,
+  modelId: id,
   displayName: id,
   defaultReasoningEffort: "medium",
   reasoningEfforts: [{ id: "medium", description: "Balanced reasoning" }],
@@ -41,11 +42,14 @@ describe("cutover backend", () => {
     };
     const created = await post("/threads", {}) as {
       thread: { id: string; status: string };
-      workspace: { models: string[]; runConfig: { model: string } };
+      workspace: { models: Array<{ providerId: string; modelId: string }>; runConfig: { model: { providerId: string; modelId: string } } };
     };
     expect(created.thread.status).toBe("configuring");
-    expect(created.workspace.models).toEqual(["gpt-5.6-luna", "gpt-test"]);
-    expect(created.workspace.runConfig.model).toBe("gpt-5.6-luna");
+    expect(created.workspace.models).toEqual([
+      { providerId: LEGACY_CODEX_PROVIDER_ID, modelId: "gpt-5.6-luna" },
+      { providerId: LEGACY_CODEX_PROVIDER_ID, modelId: "gpt-test" },
+    ]);
+    expect(created.workspace.runConfig.model).toEqual({ providerId: LEGACY_CODEX_PROVIDER_ID, modelId: "gpt-5.6-luna" });
     const removedEventsEndpoint = await fetch(`http://127.0.0.1:${handle.port}/events`, { headers: { authorization: `Bearer ${handle.token}` } });
     expect(removedEventsEndpoint.status).toBe(404);
     const workspace = await post("/scope", { threadId: created.thread.id, scope: { title: "Repair shops", audience: "Independent shops", domain: "Parts sourcing", observations: "", offLimits: ["Inventory"] } }) as { scope: { title: string; audience: string; domain: string; observations: string; offLimits: string[] } };
@@ -82,9 +86,9 @@ describe("cutover backend", () => {
     const handle = await startBackend({
       dataDir: dir, dbPath, bundledPromptsDir: join(process.cwd(), "prompts"), promptOverridesDir: join(dir, "prompts"),
       appVersion: "test", getSecrets: () => ({ exaApiKey: null }),
-      modelClients: { codex: { structuredCompletion: async (_model, _system, _user, schema) => {
+      modelClients: { [LEGACY_CODEX_PROVIDER_ID]: { structuredCompletion: async (request) => {
         modelCalls += 1;
-        const shape = schema.safeParse({ solutions: [] });
+        const shape = request.schema.safeParse({ solutions: [] });
         if (shape.success) throw new Error("stop after development starts");
         throw new Error("unexpected model call");
       } } },
@@ -143,7 +147,7 @@ describe("cutover backend", () => {
     expect(validation.status).toBe(200);
     expect(validation.body).toMatchObject({ setupComplete: false, codex: { detected: true, compatible: false, authenticated: false, error: "Installed Codex version is incompatible" } });
 
-    const workspace = await get<{ validation: { codex: { error?: string } }; models: string[] }>("/workspace");
+    const workspace = await get<{ validation: { codex: { error?: string } }; models: Array<{ providerId: string; modelId: string }> }>("/workspace");
     expect(workspace.body.validation.codex.error).toBe("Installed Codex version is incompatible");
     expect(workspace.body.models).toEqual([]);
   });
@@ -221,7 +225,7 @@ describe("cutover backend", () => {
 
     const threadId = (await post("/threads", {})).body.data.thread.id as string;
     await post("/scope", { threadId, scope: { title: "Known delay", audience: "", domain: "", observations: "", offLimits: [] } });
-    await post("/run-config", { threadId, config: { ...DEFAULT_RUN_CONFIG, model: "gpt-unavailable", researchMode: "known-problem", knownProblem: "Parts arrive late." } });
+    await post("/run-config", { threadId, config: { ...DEFAULT_RUN_CONFIG, model: { providerId: LEGACY_CODEX_PROVIDER_ID, modelId: "gpt-unavailable" }, researchMode: "known-problem", knownProblem: "Parts arrive late." } });
     const start = await post("/research/start", { threadId });
     expect(start.status).toBe(409);
     expect(start.body.error?.message).toBe("Selected model is unavailable");
@@ -244,7 +248,7 @@ describe("cutover backend", () => {
     const threadId = (await send("/threads", {})).body.data!.thread.id;
     await send("/scope", { threadId, scope: { title: "Known delay", audience: "", domain: "", observations: "", offLimits: [] } });
 
-    const base = { model: "gpt-5.6-luna", reasoningEffort: "medium", discoveryDepth: "standard", maxRunMinutes: 90 } as const;
+    const base = { configVersion: 2, model: { providerId: LEGACY_CODEX_PROVIDER_ID, modelId: "gpt-5.6-luna" }, reasoningEffort: "medium", discoveryDepth: "standard", maxRunMinutes: 90 } as const;
     await send("/run-config", { threadId, config: { ...base, researchMode: "known-problem", knownProblem: "   " } });
     const blankStatement = await send("/research/start", { threadId });
     expect(blankStatement.status).toBe(400);
@@ -372,7 +376,7 @@ describe("cutover backend", () => {
     const scope = { title: "Repair evidence", audience: "Independent shops", domain: "Parts sourcing", observations: "", offLimits: ["Inventory"] };
     await post("/scope", { threadId: created.thread.id, scope });
     const client = new DatabaseClient(dbPath);
-    const config = { ...DEFAULT_RUN_CONFIG, model: "gpt-test" };
+    const config = { ...DEFAULT_RUN_CONFIG, model: { providerId: LEGACY_CODEX_PROVIDER_ID, modelId: "gpt-test" } };
     const now = "2026-08-21T12:00:00.000Z";
     client.db.prepare(`INSERT INTO research_runs (id, thread_id, status, config_json, completion_reason, problem_id, created_at, updated_at) VALUES (?, ?, 'completed', ?, 'Discovery completed.', NULL, ?, ?)`)
       .run("discovery-export", created.thread.id, JSON.stringify(config), now, now);

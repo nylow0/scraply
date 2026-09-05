@@ -32,6 +32,7 @@ export class CostLedgerRepository {
     provider: string,
     model: string | null,
     upperBoundUsd: number,
+    generationAttemptId?: string,
   ): CostReservation {
     if (!Number.isFinite(upperBoundUsd) || upperBoundUsd < 0) throw new Error("Invalid cost reservation");
     const db = this.client.db;
@@ -58,9 +59,9 @@ export class CostLedgerRepository {
       db.prepare(`
         INSERT INTO cost_ledger (
           id, research_run_id, operation, provider, model, reservation_usd,
-          committed_usd, status, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, NULL, 'reserved', ?, ?)
-      `).run(id, runId, operation, provider, model, upperBoundUsd, now, now);
+          committed_usd, status, generation_attempt_id, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, NULL, 'reserved', ?, ?, ?)
+      `).run(id, runId, operation, provider, model, upperBoundUsd, generationAttemptId ?? null, now, now);
       db.prepare(`
         UPDATE research_runs SET reserved_cost = reserved_cost + ?, updated_at = ? WHERE id = ?
       `).run(upperBoundUsd, now, runId);
@@ -72,7 +73,7 @@ export class CostLedgerRepository {
     }
   }
 
-  commit(reservationId: string, actualUsd?: number, usage?: Record<string, unknown>): void {
+  commit(reservationId: string, actualUsd: number | null, usage?: Record<string, unknown>): void {
     const db = this.client.db;
     db.exec("BEGIN IMMEDIATE");
     try {
@@ -85,8 +86,7 @@ export class CostLedgerRepository {
         return;
       }
       if (entry.status !== "reserved") throw new Error("Cost reservation is already settled");
-      const committed = actualUsd ?? entry.reservation_usd;
-      if (!Number.isFinite(committed) || committed < 0 || committed > entry.reservation_usd) {
+      if (actualUsd !== null && (!Number.isFinite(actualUsd) || actualUsd < 0 || actualUsd > entry.reservation_usd)) {
         throw new Error("Committed cost must be within the reservation");
       }
       const now = new Date().toISOString();
@@ -94,13 +94,13 @@ export class CostLedgerRepository {
         UPDATE cost_ledger
         SET committed_usd = ?, status = 'committed', usage_json = ?, updated_at = ?
         WHERE id = ?
-      `).run(committed, usage ? JSON.stringify(usage) : null, now, reservationId);
+      `).run(actualUsd, usage ? JSON.stringify(usage) : null, now, reservationId);
       db.prepare(`
         UPDATE research_runs
         SET reserved_cost = MAX(0, reserved_cost - ?), committed_cost = committed_cost + ?,
             spend_estimate = committed_cost + ?, updated_at = ?
         WHERE id = ?
-      `).run(entry.reservation_usd, committed, committed, now, entry.research_run_id);
+      `).run(entry.reservation_usd, actualUsd ?? 0, actualUsd ?? 0, now, entry.research_run_id);
       db.exec("COMMIT");
     } catch (error) {
       db.exec("ROLLBACK");
@@ -112,7 +112,7 @@ export class CostLedgerRepository {
     const rows = this.client.db.prepare(`
       SELECT id FROM cost_ledger WHERE research_run_id = ? AND status = 'reserved'
     `).all(runId) as Array<{ id: string }>;
-    for (const row of rows) this.commit(row.id, undefined, { uncertain: true, reason });
+    for (const row of rows) this.commit(row.id, null, { uncertain: true, reason });
   }
 
   release(reservationId: string): void {
