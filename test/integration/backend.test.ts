@@ -289,10 +289,12 @@ describe("cutover backend", () => {
   test("shows and exports solutions only for selected problems in the latest discovery", async () => {
     const dir = mkdtempSync(join(tmpdir(), "scraply-backend-")); dirs.push(dir);
     const dbPath = join(dir, "scraply.db");
+    const dataReads: Array<{ operation: string; queryCount: number; rowCount: number }> = [];
     const handle = await startBackend({
       dataDir: dir, dbPath, bundledPromptsDir: join(process.cwd(), "prompts"), promptOverridesDir: join(dir, "prompts"),
       appVersion: "test", getSecrets: () => ({ exaApiKey: "test-key" }),
       providerValidation: { inspectCodex: async () => codexInspection([modelOption("gpt-test")]), validateExa: async () => ({ valid: true }) },
+      observeDataRead: (read) => dataReads.push(read),
     }, () => undefined); handles.push(handle);
     const post = async (path: string, body: unknown) => {
       const response = await fetch(`http://127.0.0.1:${handle.port}${path}`, { method: "POST", headers: { authorization: `Bearer ${handle.token}`, "content-type": "application/json" }, body: JSON.stringify(body) });
@@ -335,32 +337,85 @@ describe("cutover backend", () => {
     insertRun.run("development-selected", created.thread.id, persistedConfig, "problem-selected", now, now);
     insertRun.run("development-deselected", created.thread.id, persistedConfig, "problem-deselected", now, now);
     insertSolution.run("solution-selected", "problem-selected", "Current solution", now, "development-selected");
+    for (let index = 2; index <= 5; index += 1) {
+      insertSolution.run(`solution-selected-${index}`, "problem-selected", `Current solution ${index}`, now, "development-selected");
+    }
     insertSolution.run("solution-deselected", "problem-deselected", "Deselected solution", now, "development-deselected");
+    client.db.prepare("UPDATE solutions SET selected_at = ? WHERE id = 'solution-selected'").run(now);
+    client.db.prepare(`
+      INSERT INTO evidence_follow_ups (
+        research_run_id, solution_id, question, status, source_ids_json, factor_ids_json,
+        requested_at, completed_at, updated_at
+      ) VALUES ('development-selected', 'solution-selected', 'Does the delay persist?', 'completed',
+        '["source-selected"]', '["factor-selected"]', ?, ?, ?)
+    `).run(now, now, now);
     client.close();
 
     const workspaceResponse = await fetch(`http://127.0.0.1:${handle.port}/workspace`, { headers: { authorization: `Bearer ${handle.token}` } });
     expect(workspaceResponse.status).toBe(200);
     const workspace = (await workspaceResponse.json() as { data: { solutions: Array<{ id: string; factors: Array<{ quote: string; sourceTitle: string; retrievedText?: string }> }>; latestResearchRun: { problemId: string | null } } }).data;
-    expect(workspace.solutions.map((solution) => solution.id)).toEqual(["solution-selected"]);
+    expect(workspace.solutions.map((solution) => solution.id)).toEqual([
+      "solution-selected", "solution-selected-2", "solution-selected-3", "solution-selected-4", "solution-selected-5",
+    ]);
+    expect([...dataReads].reverse().find((read) => read.operation === "solution-summaries")).toEqual({ operation: "solution-summaries", queryCount: 1, rowCount: 5 });
     expect(workspace.solutions[0]!.factors).toEqual([]);
     const detailResponse = await fetch(`http://127.0.0.1:${handle.port}/ideas/solution-selected`, { headers: { authorization: `Bearer ${handle.token}` } });
     expect(detailResponse.status).toBe(200);
-    const detail = (await detailResponse.json() as { data: { factors: Array<{ quote: string; sourceTitle: string; retrievedText?: string }> } }).data;
+    const detail = (await detailResponse.json() as { data: {
+      factors: Array<{ quote: string; sourceTitle: string; retrievedText?: string }>;
+      evidenceFollowUp: { status: string; question: string; sources: Array<{ text: string }>; factors: Array<{ quote: string }> };
+    } }).data;
     expect(detail.factors).toEqual([expect.objectContaining({
       quote: "Parts arrive several days late.",
       sourceTitle: "Selected evidence",
     })]);
     expect(detail.factors[0]!.retrievedText).toBeUndefined();
+    expect(detail.evidenceFollowUp).toEqual(expect.objectContaining({
+      status: "completed", question: "Does the delay persist?",
+      sources: [expect.objectContaining({ text: "Source body stays in the source record." })],
+      factors: [expect.objectContaining({ quote: "Parts arrive several days late." })],
+    }));
+    expect([...dataReads].reverse().find((read) => read.operation === "solution-details")).toEqual({ operation: "solution-details", queryCount: 8, rowCount: 1 });
     expect(workspace.latestResearchRun.problemId).toBe("problem-deselected");
     const exported = await post("/ideas/export", { threadId: created.thread.id, format: "json" }) as { files: Array<{ filename: string; content: string }> };
+    expect([...dataReads].reverse().find((read) => read.operation === "solution-details")).toEqual({ operation: "solution-details", queryCount: 8, rowCount: 5 });
     expect(exported.files).toHaveLength(1);
     const jsonIdeas = JSON.parse(exported.files[0]!.content) as Array<{ id: string; factors: Array<{ quote: string; retrievedText?: string }> }>;
-    expect(jsonIdeas.map((solution) => solution.id)).toEqual(["solution-selected"]);
+    expect(jsonIdeas.map((solution) => solution.id)).toEqual([
+      "solution-selected", "solution-selected-2", "solution-selected-3", "solution-selected-4", "solution-selected-5",
+    ]);
     expect(jsonIdeas[0]!.factors[0]!.quote).toBe("Parts arrive several days late.");
     expect(jsonIdeas[0]!.factors[0]!.retrievedText).toBeUndefined();
+    expect(JSON.stringify(jsonIdeas[0])).toContain("Does the delay persist?");
     const markdown = await post("/ideas/export", { threadId: created.thread.id, format: "markdown" }) as { files: Array<{ content: string }> };
     expect(markdown.files[0]!.content).toContain("## Evidence behind the problem");
     expect(markdown.files[0]!.content).toContain("> Parts arrive several days late.");
+
+    await handle.close();
+    handles.splice(handles.indexOf(handle), 1);
+    const interrupted = new DatabaseClient(dbPath);
+    interrupted.db.prepare("UPDATE evidence_follow_ups SET status = 'running', completed_at = NULL WHERE research_run_id = 'development-selected'").run();
+    interrupted.db.prepare("UPDATE research_runs SET status = 'running', created_at = '2026-01-02T00:00:00.000Z' WHERE id = 'development-selected'").run();
+    interrupted.db.prepare("UPDATE threads SET status = 'development-running' WHERE id = ?").run(created.thread.id);
+    interrupted.close();
+    const restarted = await startBackend({
+      dataDir: dir, dbPath, bundledPromptsDir: join(process.cwd(), "prompts"), promptOverridesDir: join(dir, "prompts"),
+      appVersion: "test", getSecrets: () => ({ exaApiKey: null }),
+      providerValidation: { inspectCodex: async () => ({ detected: false, compatible: false, authenticated: false, models: [] }) },
+    }, () => undefined); handles.push(restarted);
+    const reopened = await (await fetch(`http://127.0.0.1:${restarted.port}/workspace`, {
+      headers: { authorization: `Bearer ${restarted.token}` },
+    })).json() as { data: { latestResearchRun: { runId: string; status: string }; threads: Array<{ id: string; status: string }>; solutions: Array<{ id: string; evidenceFollowUpStatus?: string }> } };
+    expect(reopened.data.latestResearchRun).toMatchObject({ runId: "development-selected", status: "completed" });
+    expect(reopened.data.threads.find((thread) => thread.id === created.thread.id)?.status).toBe("solutions-ready");
+    expect(reopened.data.solutions.find((solution) => solution.id === "solution-selected")?.evidenceFollowUpStatus).toBe("failed");
+    const reopenedDetail = await (await fetch(`http://127.0.0.1:${restarted.port}/ideas/solution-selected`, {
+      headers: { authorization: `Bearer ${restarted.token}` },
+    })).json() as { data: { mechanism: string; evidenceFollowUp: { status: string; error: string } } };
+    expect(reopenedDetail.data).toMatchObject({
+      mechanism: "Current solution",
+      evidenceFollowUp: { status: "failed", error: "The app restarted during this follow-up. It was not replayed." },
+    });
   });
 
   test("exports completed research before solution development", async () => {

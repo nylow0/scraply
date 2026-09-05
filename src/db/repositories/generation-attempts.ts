@@ -34,6 +34,11 @@ export interface ReusableGeneration<T> {
   metadata: unknown;
 }
 
+export interface GenerationResumeSafety {
+  canResume: boolean;
+  resumeBlockedReason: string | null;
+}
+
 export class GenerationAttemptRepository {
   constructor(private readonly client: DatabaseClient) {}
 
@@ -100,6 +105,23 @@ export class GenerationAttemptRepository {
       output: request.schema.parse(JSON.parse(row.output_json)),
       metadata: JSON.parse(row.attempt_metadata_json),
     };
+  }
+
+  getResumeSafety(researchRunId: string): GenerationResumeSafety {
+    const ambiguous = this.client.db.prepare(`
+      SELECT 1 FROM generation_attempts
+      WHERE research_run_id = ? AND (
+        status IN ('dispatched', 'accepted')
+        OR (status = 'interrupted' AND terminal_kind IS NOT 'never-dispatched')
+      )
+      LIMIT 1
+    `).get(researchRunId);
+    return ambiguous
+      ? {
+          canResume: false,
+          resumeBlockedReason: "A previous model request may have completed before its terminal result was saved.",
+        }
+      : { canResume: true, resumeBlockedReason: null };
   }
 
   markDispatched(id: string): void {

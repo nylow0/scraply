@@ -1,41 +1,79 @@
 <script lang="ts">
   import type { SolutionView } from "../../shared/ipc";
   import { loadIdeaDetail } from "../lib/idea-details";
-  let { idea, busy, onSelect, onSave, onOpenSource }: {
+  let { idea, busy, onSelect, onSave, onOpenSource, onEvidenceFollowUp }: {
     idea: SolutionView; busy: boolean;
     onSelect: (idea: SolutionView) => Promise<void>;
     onSave: (solutionId: string, decision: string, observed: string) => Promise<void>;
     onOpenSource: (url: string) => Promise<void>;
+    onEvidenceFollowUp?: ((runId: string, question: string) => Promise<void>) | undefined;
   } = $props();
   let detail = $state<SolutionView | null>(null);
   let error = $state("");
   let loading = $state(false);
   let userDecision = $state("");
   let observedResult = $state("");
+  let savedDecision = $state("");
+  let savedObservedResult = $state("");
   let saved = $state(false);
   let open = $state(false);
   let revision = "";
+  let detailLoadEpoch = 0;
+  let wasOpen = false;
   let analysis = $derived(detail?.decisionAnalysis);
+  let followUpSourcesWithoutQuotes = $derived(detail?.evidenceFollowUp?.sources.filter(
+    (source) => !detail?.evidenceFollowUp?.factors.some((factor) => factor.sourceId === source.id),
+  ) ?? []);
+  let formDirty = $derived(userDecision !== savedDecision || observedResult !== savedObservedResult);
+  let followUpQuestion = $state("");
   $effect(() => {
     if (open && revision !== `${idea.id}:${idea.detailRevision}`) void loadDetail();
+    if (!open && wasOpen) {
+      detailLoadEpoch += 1;
+      detail = null;
+      revision = "";
+      loading = false;
+    }
+    wasOpen = open;
   });
   async function loadDetail() {
     const key = `${idea.id}:${idea.detailRevision}`;
+    const requestEpoch = ++detailLoadEpoch;
     revision = key;
     loading = true;
     error = "";
+    const draftDecision = userDecision;
+    const draftObservedResult = observedResult;
     try {
       const result = await loadIdeaDetail(idea);
-      if (key !== `${idea.id}:${idea.detailRevision}`) return;
+      if (requestEpoch !== detailLoadEpoch || !open || key !== `${idea.id}:${idea.detailRevision}`) return;
+      const preserveDraft = formDirty || userDecision !== draftDecision || observedResult !== draftObservedResult;
       detail = result;
-      userDecision = result.userDecision ?? "";
-      observedResult = result.observedResult ?? "";
-    } catch (cause) { error = cause instanceof Error ? cause.message : "Could not load this option"; }
-    finally { loading = false; }
+      const nextDecision = result.userDecision ?? "";
+      const nextObservedResult = result.observedResult ?? "";
+      savedDecision = nextDecision;
+      savedObservedResult = nextObservedResult;
+      if (!preserveDraft) {
+        userDecision = nextDecision;
+        observedResult = nextObservedResult;
+      }
+    } catch (cause) {
+      if (requestEpoch === detailLoadEpoch && open && key === `${idea.id}:${idea.detailRevision}`) error = cause instanceof Error ? cause.message : "Could not load this option";
+    }
+    finally { if (requestEpoch === detailLoadEpoch) loading = false; }
   }
   async function save() {
     saved = false;
-    try { await onSave(idea.id, userDecision, observedResult); saved = true; }
+    const submittedDecision = userDecision;
+    const submittedObservedResult = observedResult;
+    try {
+      await onSave(idea.id, submittedDecision, submittedObservedResult);
+      if (userDecision === submittedDecision && observedResult === submittedObservedResult) {
+        savedDecision = submittedDecision;
+        savedObservedResult = submittedObservedResult;
+        saved = true;
+      }
+    }
     catch (cause) { error = cause instanceof Error ? cause.message : "Could not save your decision"; }
   }
 </script>
@@ -60,7 +98,7 @@
     {#if detail}
       <h3>Supporting observations</h3>
       {#each detail.factors as factor (factor.id)}
-        <blockquote>{factor.quote}<footer><a href={factor.sourceUrl} onclick={(event) => { event.preventDefault(); void onOpenSource(factor.sourceUrl); }}>{factor.sourceTitle}</a></footer></blockquote>
+        <blockquote>{factor.quote}{#if factor.uncertainty}<p class="status">Uncertainty: {factor.uncertainty}</p>{/if}<small class="estimated">Model confidence is uncalibrated.</small><footer><a href={factor.sourceUrl} onclick={(event) => { event.preventDefault(); void onOpenSource(factor.sourceUrl); }}>{factor.sourceTitle}</a></footer></blockquote>
       {:else}<p>No source-backed observations. Treat the problem as an assertion to test.</p>{/each}
       <h3>Contrary evidence considered</h3>
       {#each detail.contrarySources ?? [] as source (source.id)}
@@ -77,6 +115,30 @@
         <section class="experiment"><h3>Next experiment</h3><strong>{analysis.experiment.question}</strong><p>{analysis.experiment.method}</p>
           <dl><div><dt>Cost</dt><dd>{analysis.experiment.cost}</dd></div><div><dt>Pass</dt><dd>{analysis.experiment.passCriterion}</dd></div><div><dt>Fail</dt><dd>{analysis.experiment.failCriterion}</dd></div></dl>
         </section>
+        {#if detail.evidenceFollowUp}
+          <section class="follow-up" aria-label="Evidence follow-up result">
+            <h3>Evidence follow-up</h3>
+            <p><strong>Question:</strong> {detail.evidenceFollowUp.question}</p>
+            {#if detail.evidenceFollowUp.status === "running"}<p role="status">Checking saved sources for this question...</p>{/if}
+            {#each detail.evidenceFollowUp.factors as factor (factor.id)}
+              <blockquote>{factor.quote}{#if factor.uncertainty}<p class="status">Uncertainty: {factor.uncertainty}</p>{/if}<footer><a href={factor.sourceUrl} onclick={(event) => { event.preventDefault(); void onOpenSource(factor.sourceUrl); }}>{factor.sourceTitle}</a></footer></blockquote>
+            {/each}
+            {#if followUpSourcesWithoutQuotes.length}
+              <p class="status">Other sources checked</p>
+              <ul>{#each followUpSourcesWithoutQuotes as source (source.id)}<li><a href={source.url} onclick={(event) => { event.preventDefault(); void onOpenSource(source.url); }}>{source.title}</a></li>{/each}</ul>
+            {/if}
+            {#if detail.evidenceFollowUp.status === "completed" && !detail.evidenceFollowUp.factors.length}<p role="status">The follow-up completed without a quote-verified observation.</p>{/if}
+            {#if detail.evidenceFollowUp.status === "failed"}<p role="alert">{detail.evidenceFollowUp.error ?? "The evidence follow-up failed."}</p>{/if}
+            {#if detail.evidenceFollowUp.status !== "running"}<p class="status">This option has used its one evidence follow-up.</p>{/if}
+          </section>
+        {:else if idea.selected && idea.runId && analysis && idea.canRequestEvidenceFollowUp && onEvidenceFollowUp}
+          <form onsubmit={(event) => { event.preventDefault(); void onEvidenceFollowUp(idea.runId!, followUpQuestion.trim()); }}>
+            <h3>Ask one evidence question</h3>
+            <p>Run one focused follow-up search. The saved result will appear here.</p>
+            <label>Question<textarea rows="2" maxlength="500" bind:value={followUpQuestion} placeholder="What should we verify next?"></textarea></label>
+            <button disabled={busy || !followUpQuestion.trim()}>Check evidence</button>
+          </form>
+        {/if}
         <form onsubmit={(event) => { event.preventDefault(); void save(); }}>
           <h3>Your decision and actual result</h3><p>Keep observations separate from the model's proposals.</p>
           <label>Your decision<textarea rows="3" maxlength="8000" bind:value={userDecision} oninput={() => saved = false}></textarea></label>

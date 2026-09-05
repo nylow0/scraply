@@ -65,6 +65,10 @@ export const SaveDecisionSchema = z.object({
   threadId: EntityIdSchema, solutionId: EntityIdSchema,
   userDecision: z.string().trim().max(8_000), observedResult: z.string().trim().max(8_000),
 }).strict();
+export const EvidenceFollowUpRequestSchema = z.object({
+  threadId: EntityIdSchema, runId: EntityIdSchema,
+  question: z.string().trim().min(1).max(500),
+}).strict();
 export const SelectProblemsSchema = z.object({
   threadId: EntityIdSchema,
   problemIds: z.array(EntityIdSchema),
@@ -101,7 +105,14 @@ export const FactorViewSchema = z.object({
   id: EntityIdSchema,
   subject: z.string(), behavior: z.string(), quote: z.string(), sourceId: EntityIdSchema,
   sourceTitle: z.string(), sourceUrl: z.string().url(), harvestMode: z.enum(["domain", "audience"]),
-  modelConfidence: z.number(),
+  modelConfidence: z.number(), uncertainty: z.string().optional(),
+});
+export const EvidenceFollowUpViewSchema = z.object({
+  status: z.enum(["running", "completed", "failed"]),
+  question: z.string(),
+  sources: z.array(SourceDetailSchema),
+  factors: z.array(FactorViewSchema),
+  error: z.string().nullable(),
 });
 export const ProblemCandidateSchema = z.object({
   id: EntityIdSchema,
@@ -134,10 +145,13 @@ export const SolutionViewSchema = z.object({
   projectEndingRiskCount: z.number().int().nonnegative().optional(),
   workflowVersion: z.union([z.literal(1), z.literal(2)]).optional(),
   runId: EntityIdSchema.optional(), selected: z.boolean().optional(), selectable: z.boolean().optional(),
+  evidenceFollowUpStatus: z.enum(["running", "completed", "failed"]).optional(),
+  canRequestEvidenceFollowUp: z.boolean().optional(),
   keyAssumption: z.string().optional(), whyCurrentApproachMaySuffice: z.string().optional(),
   unknowns: z.array(z.string()).optional(), supportingEvidenceIds: z.array(z.string()).optional(), contraryEvidenceIds: z.array(z.string()).optional(),
   contrarySources: z.array(z.object({ id: EntityIdSchema, title: z.string(), url: z.string().url(), text: z.string() })).optional(),
   decisionAnalysis: WorkflowV2DecisionAnalysisOutputSchema.nullable().optional(),
+  evidenceFollowUp: EvidenceFollowUpViewSchema.optional(),
   userDecision: z.string().nullable().optional(), observedResult: z.string().nullable().optional(), detailRevision: z.string().optional(),
   id: EntityIdSchema, problemId: EntityIdSchema, problemStatement: z.string(), problemVerdict: ProblemCandidateSchema.shape.verdict,
   factors: z.array(FactorViewSchema),
@@ -168,6 +182,7 @@ export const RunUsageSchema = z.object({
 export const LatestResearchRunSchema = z.object({
   workflowVersion: z.union([z.literal(1), z.literal(2)]).optional(),
   awaitingSelection: z.boolean().optional(), interrupted: z.boolean().optional(),
+  canResume: z.boolean().optional(), resumeBlockedReason: z.string().optional(),
   runId: EntityIdSchema, status: z.enum(["queued", "running", "completed", "failed", "cancelled"]),
   problemId: EntityIdSchema.nullable(), codexCalls: z.number().int().nonnegative(), searches: z.number().int().nonnegative(),
   projectedCodexCalls: z.number().int().nonnegative(), projectedSearches: z.number().int().nonnegative(),
@@ -213,7 +228,7 @@ export type SolutionView = z.infer<typeof SolutionViewSchema>;
 export type RunUsage = z.infer<typeof RunUsageSchema>;
 
 export const IPC_CHANNELS = {
-  SELECT_OPTION: "scraply:select-option", SAVE_DECISION: "scraply:save-decision",
+  SELECT_OPTION: "scraply:select-option", SAVE_DECISION: "scraply:save-decision", EVIDENCE_FOLLOW_UP: "scraply:evidence-follow-up",
   GET_VALIDATION: "scraply:get-validation", RETRY_CONNECTION: "scraply:retry-connection",
   OPEN_DATA_FOLDER: "scraply:open-data-folder", OPEN_LOGS_FOLDER: "scraply:open-logs-folder",
   GET_WORKSPACE: "scraply:get-workspace", CREATE_THREAD: "scraply:create-thread", SELECT_THREAD: "scraply:select-thread",

@@ -73,6 +73,15 @@ export class CostLedgerRepository {
     }
   }
 
+  attachGenerationAttempt(reservationId: string, generationAttemptId: string): void {
+    this.client.db.prepare(`
+      UPDATE cost_ledger SET generation_attempt_id = ?, updated_at = ?
+      WHERE id = ? AND status = 'reserved' AND generation_attempt_id IS NULL
+    `).run(generationAttemptId, new Date().toISOString(), reservationId);
+    const changed = this.client.db.prepare("SELECT changes() AS count").get() as { count: number };
+    if (changed.count !== 1) throw new Error("Generation reservation cannot be attached to this attempt");
+  }
+
   commit(reservationId: string, actualUsd: number | null, usage?: Record<string, unknown>): void {
     const db = this.client.db;
     db.exec("BEGIN IMMEDIATE");

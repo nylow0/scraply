@@ -4,7 +4,7 @@ import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { createInstalledPerformanceFixture, type InstalledPerformanceFixture } from "./create-installed-performance-fixture";
+import { convertInstalledPerformanceFixtureToV2, createInstalledPerformanceFixture, type InstalledPerformanceFixture } from "./create-installed-performance-fixture";
 
 const BASELINE_EXECUTABLE_SHA256 = "96c932430384ed31b9494d7a92c229cbc4be619346333799e6afe5d6401e125e";
 const COLD_SAMPLES_PER_MODE = 10;
@@ -132,6 +132,9 @@ const executablePath = join(process.env.LOCALAPPDATA ?? "", "Programs", "Scraply
 const executableSha256 = sha256(executablePath);
 const expectedSha256 = argument("--expected-exe-sha") ?? BASELINE_EXECUTABLE_SHA256;
 const label = argument("--label") ?? "baseline076";
+const progressSamplesPath = argument("--progress-samples");
+const historyMode = argument("--history") ?? "legacy-v1";
+if (historyMode !== "legacy-v1" && historyMode !== "representative-v2") throw new Error("--history must be legacy-v1 or representative-v2");
 if (!/^[a-f0-9]{64}$/i.test(expectedSha256)) throw new Error("--expected-exe-sha must be a 64-character SHA-256 hash");
 if (!/^[a-zA-Z0-9._-]+$/.test(label)) throw new Error("--label may contain only letters, numbers, dots, underscores, and hyphens");
 if (executableSha256.toLowerCase() !== expectedSha256.toLowerCase()) {
@@ -157,6 +160,14 @@ const switchSamples: JsonObject[] = [];
 const localDetailSamples: JsonObject[] = [];
 const ideaDetailSamples: JsonObject[] = [];
 const sourceDetailSamples: JsonObject[] = [];
+const progressLatencySamples: JsonObject[] = [];
+if (progressSamplesPath) {
+  const parsed = JSON.parse(readFileSync(resolve(progressSamplesPath), "utf8")) as { samplesMs?: unknown };
+  if (!Array.isArray(parsed.samplesMs) || parsed.samplesMs.some((value) => typeof value !== "number" || !Number.isFinite(value) || value < 0)) {
+    throw new Error("--progress-samples must contain { samplesMs: number[] } with non-negative finite millisecond durations");
+  }
+  progressLatencySamples.push(...parsed.samplesMs.map((durationMs, index) => ({ sequence: index + 1, durationMs, source: "installed-deterministic-e2e" })));
+}
 const memoryDiagnostics: JsonObject[] = [];
 const ipcObserved = {
   workspace: { count: 0, responseBytes: 0 },
@@ -561,6 +572,7 @@ function writeRaw(): void {
     localDetailSamples,
     ideaDetailSamples,
     sourceDetailSamples,
+    progressLatencySamples,
     memoryDiagnostics,
   }, null, 2)}\n`, "utf8");
 }
@@ -571,7 +583,8 @@ if (preexistingProcesses.length > 0) {
 }
 
 record("fixture-creation-started");
-const fixture = createInstalledPerformanceFixture(fixturePath);
+const baseFixture = createInstalledPerformanceFixture(fixturePath);
+const fixture = historyMode === "representative-v2" ? convertInstalledPerformanceFixtureToV2(baseFixture) : baseFixture;
 record("fixture-created", {
   sha256: fixture.databaseSha256,
   bytes: fixture.databaseBytes,
@@ -595,9 +608,10 @@ try {
   }
   if (!retainedSynthetic) throw new Error("No retained synthetic session was available for warm measurements");
   const session = retainedSynthetic;
-  const initialMemory = memorySummary(processMemory(session.process.pid));
   await sampleRendererMemory(session.cdp, session.process.pid, "warm-start");
-  record("warm-measurement-started", { pid: session.process.pid, initialMemory });
+  await sampleRendererMemory(session.cdp, session.process.pid, "warm-start-after-gc", true);
+  const initialMemory = memorySummary(processMemory(session.process.pid));
+  record("warm-measurement-started", { pid: session.process.pid, initialMemoryAfterGc: initialMemory });
 
   for (let index = 0; index < WARM_WORKSPACE_SAMPLES; index += 1) {
     const sample = await workspaceIpc(session.cdp);
@@ -745,9 +759,16 @@ try {
     }
   }
 
-  const finalMemory = memorySummary(processMemory(session.process.pid));
   await sampleRendererMemory(session.cdp, session.process.pid, "final-before-gc");
   await sampleRendererMemory(session.cdp, session.process.pid, "final-after-gc", true);
+  const finalMemory = memorySummary(processMemory(session.process.pid));
+  const progressMeasures = await evaluate<Array<{ durationMs: number; startedAtMs: number }>>(session.cdp, `
+    performance.getEntriesByName('scraply-progress-visible', 'measure').map((entry) => ({
+      durationMs: entry.duration,
+      startedAtMs: entry.startTime,
+    }))
+  `);
+  progressLatencySamples.push(...progressMeasures.map((sample, index) => ({ sequence: progressLatencySamples.length + index + 1, ...sample, source: "saved-history-session" })));
   const initialPids = initialMemory.processes.map((process) => `${process.role}:${process.pid}`).sort();
   const finalPids = finalMemory.processes.map((process) => `${process.role}:${process.pid}`).sort();
   const sameProcessRolesAndPids = JSON.stringify(initialPids) === JSON.stringify(finalPids);
@@ -793,6 +814,9 @@ try {
       renderedDetailExpansion: summary(localDetailSamples.map((sample) => Number(sample.durationMs))),
       ideaDetailIpc: summary(ideaDetailSamples.map((sample) => Number(sample.durationMs))),
       sourceDetailIpc: summary(sourceDetailSamples.map((sample) => Number(sample.durationMs))),
+      ...(progressLatencySamples.length > 0 ? {
+        progressEventReceiptToVisible: summary(progressLatencySamples.map((sample) => Number(sample.durationMs))),
+      } : {}),
       workspaceResponseBytes: {
         samples: warmWorkspaceSamples.length,
         min: Math.min(...warmWorkspaceSamples.map((sample) => Number(sample.responseBytes))),
@@ -823,14 +847,30 @@ try {
         pass: summary(ideaDetailSamples.map((sample) => Number(sample.durationMs))).p95Ms < WARM_DETAIL_P95_TARGET_MS
           && summary(sourceDetailSamples.map((sample) => Number(sample.durationMs))).p95Ms < WARM_DETAIL_P95_TARGET_MS,
       },
+      progressVisibleUnder150Ms: progressLatencySamples.length >= 30 ? {
+        status: "measured",
+        sourceArtifact: progressSamplesPath ? resolve(progressSamplesPath) : null,
+        thresholdMs: 150,
+        p95Ms: summary(progressLatencySamples.map((sample) => Number(sample.durationMs))).p95Ms,
+        pass: summary(progressLatencySamples.map((sample) => Number(sample.durationMs))).p95Ms < 150,
+      } : {
+        status: progressLatencySamples.length === 0 ? "not-measured" : "insufficient-samples",
+        thresholdMs: 150,
+        samples: progressLatencySamples.length,
+        pass: false,
+        reason: progressLatencySamples.length === 0
+          ? "No deterministic run-progress event reached the visible active run during this measurement."
+          : "At least 30 deterministic progress samples are required for the p95 target.",
+      },
     },
     memory: {
-      initial: initialMemory,
-      final: finalMemory,
+      initialAfterGc: initialMemory,
+      finalAfterGc: finalMemory,
       diagnostics: memoryDiagnostics,
       sameProcessRolesAndPids,
       workingSetDeltaBytes: finalMemory.workingSetBytes - initialMemory.workingSetBytes,
       privateDeltaBytes: finalMemory.privateBytes - initialMemory.privateBytes,
+      interpretation: "Diagnostic only. Positive retained growth is reported for investigation; no constant-memory or garbage-collection claim is inferred from one interaction sequence.",
     },
     ipc: {
       observedProbeInvocations: ipcObserved,
@@ -844,7 +884,9 @@ try {
     unobservable: {
       sqliteQueryCounts: "The installed production build exposes no SQLite query counter or trace hook.",
       internalIpcCounts: "Direct probe calls and UI clicks are counted, but production-internal startup/reconciliation IPC is not observable through the immutable contextBridge API.",
-      fakeEventLatency: "Not measured: no real or synthetic backend events were injected.",
+      progressEventLatency: progressLatencySamples.length > 0
+        ? "Measured from renderer backend-event listener receipt through the visible Svelte update."
+        : "No deterministic run-progress event reached the visible active run; the target remains open.",
       providerValidationNetwork: "Renderer CDP cannot observe main-process/backend provider checks; provider credentials were absent and provider calls were not initiated.",
     },
     isolation: {
@@ -860,9 +902,12 @@ try {
     },
     artifacts: { rawPath, reportPath, eventsPath, screenshotPath },
   };
+  report.verdict = Object.values(report.targets).every((target) => target.pass) ? "pass" : "fail";
   writeRaw();
   writeFileSync(reportPath, `${JSON.stringify(report, null, 2)}\n`, "utf8");
-  record("measurement-passed", { reportPath, measurementElapsedMs: measurementElapsedMs(), targets: report.targets });
+  record(report.verdict === "pass" ? "measurement-passed" : "measurement-targets-failed", {
+    reportPath, measurementElapsedMs: measurementElapsedMs(), targets: report.targets,
+  });
   console.log(reportPath);
 } catch (error) {
   const message = error instanceof Error ? error.message : String(error);

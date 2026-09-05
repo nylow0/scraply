@@ -36,7 +36,7 @@
       {/if}
     </span>
     <span class="metrics" aria-label="Solution evaluation snapshot">
-      <span><strong>{idea.confirmedCoreOutcomes}</strong> core</span>
+      <span><strong>{idea.confirmedCoreOutcomes}</strong> model-judged core</span>
       <span><strong>{projectEndingRisks}</strong> project-ending</span>
       <span class:danger={idea.unaddressedCatastrophicRisks > 0}><strong>{idea.unaddressedCatastrophicRisks}</strong> unaddressed</span>
     </span>
@@ -93,7 +93,7 @@
 
     <details class="category">
       <summary>
-        <span><strong>Outcomes</strong><small>{positiveOutcomes} positive · {negativeOutcomes} negative · {idea.confirmedCoreOutcomes} confirmed core</small></span>
+        <span><strong>Outcomes</strong><small>{positiveOutcomes} positive · {negativeOutcomes} negative · {idea.confirmedCoreOutcomes} model-judged core</small></span>
         <span class="chevron" aria-hidden="true"></span>
       </summary>
       <div class="category-body nested-list">

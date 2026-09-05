@@ -1,6 +1,6 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { ResearchEngine } from "../core/research-engine";
+import { recoverInterruptedEvidenceFollowUps, ResearchEngine } from "../core/research-engine";
 import { DatabaseClient } from "../db/client";
 import { GenerationAttemptRepository } from "../db/repositories/generation-attempts";
 import { ActiveRunConflictError } from "../db/repositories/research-runs";
@@ -14,7 +14,7 @@ import { RuntimeClient } from "../providers/runtime";
 import { AppError, toErrorPayload } from "../shared/errors";
 import { MAX_DEVELOPMENT_PROJECTED_CALLS } from "../shared/development-projection";
 import {
-  CreateThreadRequestSchema, DeleteThreadRequestSchema, ExportIdeasRequestSchema, ExportResearchRequestSchema,
+  CreateThreadRequestSchema, DeleteThreadRequestSchema, EvidenceFollowUpRequestSchema, ExportIdeasRequestSchema, ExportResearchRequestSchema,
   GetIdeaDetailRequestSchema, GetSourceDetailRequestSchema, HealthResponseSchema,
   NativeLoginCancelSchema, NativeLoginCompleteSchema, NativeLoginStartSchema, NativeProviderSchema,
   ResumeResearchSchema, SaveFavoriteModelSchema, SaveRunConfigSchema, SaveScopeSchema,
@@ -46,6 +46,7 @@ export interface BackendContext {
   persistProviderCredential?: (providerId: string, credential: string) => Promise<void>;
   forgetProviderCredential?: (providerId: string) => void;
   log?: (input: Omit<LogInput, "component">) => void;
+  observeDataRead?: (read: { operation: "solution-summaries" | "solution-details"; queryCount: number; rowCount: number }) => void;
   providerValidation?: {
     inspectCodex?: (options?: CodexInspectionOptions) => Promise<CodexInspectionResult>;
     validateExa?: (apiKey: string) => Promise<ValidationResult>;
@@ -66,6 +67,7 @@ export function isSetupComplete(
   return (search.exa.valid || search.perplexity.valid)
     && ((codex.detected && codex.compatible && codex.authenticated) || (native.available && native.connected));
 }
+type DataRead = (sql: string, params: readonly unknown[]) => Array<Record<string, unknown>>;
 export function isResearchModeReady(
   config: Pick<RunConfig, "researchMode" | "searchProvider"> & { model?: ModelRef },
   search: SearchValidation,
@@ -90,7 +92,9 @@ export interface BackendHandle {
 export async function startBackend(context: BackendContext, onEvent: (event: ResearchEvent) => void): Promise<BackendHandle> {
   const token = randomBytes(24).toString("hex");
   const db = new DatabaseClient(context.dbPath);
-  new GenerationAttemptRepository(db).interruptInFlight("The backend restarted before the generation reached a durable terminal result");
+  const generationAttempts = new GenerationAttemptRepository(db);
+  generationAttempts.interruptInFlight("The backend restarted before the generation reached a durable terminal result");
+  recoverInterruptedEvidenceFollowUps(db);
   db.db.exec(`
     UPDATE research_runs SET interrupted = 1 WHERE status IN ('queued', 'running');
     UPDATE threads SET status = 'failed' WHERE id IN (
@@ -229,6 +233,7 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
     const threadList = threads.listThreads();
     if (activeThreadId && !threadList.some((thread) => thread.id === activeThreadId)) activeThreadId = threadList[0]?.id ?? null;
     const runConfig = activeThreadId ? threads.getLatestRunConfig(activeThreadId) : null;
+    const latestResearchRun = activeThreadId ? latestRun(activeThreadId) : null;
     const state = {
       validation: cachedValidation ?? pendingValidation(),
       threads: threadList,
@@ -243,7 +248,7 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
       problemCandidates: activeThreadId ? listProblems(activeThreadId) : [],
       rejectedProblemCandidates: activeThreadId ? listRejectedProblemCandidates(activeThreadId) : [],
       solutions: activeThreadId ? listSolutions(activeThreadId, false) : [],
-      latestResearchRun: activeThreadId ? latestRun(activeThreadId) : null,
+      latestResearchRun,
       pendingRuns: listPendingRuns(),
     };
     return WorkspaceStateSchema.parse(state);
@@ -258,8 +263,9 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
     const runId = latestDiscoveryRun(threadId);
     if (!runId) return [];
     const rows = db.db.prepare("SELECT * FROM problems WHERE discovery_run_id = ? ORDER BY created_at, id").all(runId) as Array<Record<string, unknown>>;
+    const factorsByProblem = listProblemFactorsForRun(runId);
     return rows.map((row) => {
-      const factors = listProblemFactors(String(row.id));
+      const factors = factorsByProblem.get(String(row.id)) ?? [];
       return {
         id: String(row.id), statement: String(row.statement), whyItPersists: String(row.why_it_persists),
         affected: String(row.affected), scaleEstimate: String(row.scale_estimate), verdict: String(row.verdict) as ProblemCandidate["verdict"],
@@ -269,17 +275,17 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
       };
     });
   }
-  function listProblemFactors(problemId: string): FactorView[] {
+  function listProblemFactorsForRun(runId: string): Map<string, FactorView[]> {
     const rows = db.db.prepare(`
-      SELECT f.*, s.title AS source_title, s.canonical_url
-      FROM problem_factors pf JOIN factors f ON f.id = pf.factor_id JOIN sources s ON s.id = f.source_id
-      WHERE pf.problem_id = ? ORDER BY f.created_at, f.id
-    `).all(problemId) as Array<Record<string, unknown>>;
-    return rows.map((factor) => ({
-      id: String(factor.id), subject: String(factor.subject), behavior: String(factor.behavior), quote: String(factor.quote),
-      sourceId: String(factor.source_id), sourceTitle: String(factor.source_title), sourceUrl: String(factor.canonical_url),
-      harvestMode: String(factor.harvest_mode) as "domain" | "audience", modelConfidence: Number(factor.model_confidence),
-    }));
+      SELECT pf.problem_id, f.*, s.title AS source_title, s.canonical_url
+      FROM problems p
+      JOIN problem_factors pf ON pf.problem_id = p.id
+      JOIN factors f ON f.id = pf.factor_id
+      JOIN sources s ON s.id = f.source_id
+      WHERE p.discovery_run_id = ?
+      ORDER BY f.created_at, f.id
+    `).all(runId) as Array<Record<string, unknown>>;
+    return groupRows(rows, "problem_id", mapFactor);
   }
   function listRejectedProblemCandidates(threadId: string): RejectedProblemCandidate[] {
     const runId = latestDiscoveryRun(threadId);
@@ -296,51 +302,88 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
     }));
   }
   function listSolutions(threadId: string, details = true, solutionId?: string): SolutionView[] {
-    const rows = db.db.prepare(`
+    let queryCount = 0;
+    const readAll: DataRead = (sql, params) => {
+      queryCount += 1;
+      return db.db.prepare(sql).all(...params) as Array<Record<string, unknown>>;
+    };
+    const rows = readAll(`
+      WITH relevant_solutions AS (
+        SELECT s2.id
+        FROM solutions s2
+        JOIN problems p2 ON p2.id = s2.problem_id
+        JOIN research_runs rr2 ON rr2.id = s2.research_run_id
+        WHERE rr2.thread_id = ? AND (rr2.status = 'completed' OR rr2.workflow_version = 2)
+          AND (? IS NULL OR s2.id = ?)
+          AND p2.selected_at IS NOT NULL
+          AND p2.discovery_run_id = (
+            SELECT id FROM research_runs
+            WHERE thread_id = ? AND problem_id IS NULL AND status = 'completed'
+            ORDER BY created_at DESC, rowid DESC LIMIT 1
+          )
+      ), outcome_counts AS (
+        SELECT solution_id, COUNT(*) AS outcome_count,
+          SUM(CASE WHEN addresses_core = 1 THEN 1 ELSE 0 END) AS core_count
+        FROM outcomes WHERE solution_id IN (SELECT id FROM relevant_solutions) GROUP BY solution_id
+      ), risk_counts AS (
+        SELECT r.solution_id, COUNT(*) AS risk_count,
+          SUM(CASE WHEN r.impact = 'project ends' THEN 1 ELSE 0 END) AS ending_count,
+          SUM(CASE WHEN r.impact = 'project ends' AND NOT EXISTS (
+            SELECT 1 FROM risk_mitigations rm WHERE rm.risk_id = r.id
+          ) THEN 1 ELSE 0 END) AS unaddressed_count
+        FROM risks r WHERE solution_id IN (SELECT id FROM relevant_solutions) GROUP BY r.solution_id
+      ), ranked_risks AS (
+        SELECT id, solution_id, description, likelihood, impact, sort_key,
+          ROW_NUMBER() OVER (PARTITION BY solution_id ORDER BY sort_key DESC, created_at, id) AS position
+        FROM risks WHERE solution_id IN (SELECT id FROM relevant_solutions)
+      )
       SELECT s.*, p.statement AS problem_statement, p.verdict AS problem_verdict,
-        rr.workflow_version, rr.awaiting_selection, rr.updated_at AS run_updated_at,
+        rr.workflow_version, rr.status AS run_status, rr.awaiting_selection, rr.updated_at AS run_updated_at,
         ${details ? "da.analysis_json, da.user_decision, da.observed_result," : ""} da.updated_at AS decision_updated_at,
-        (SELECT COUNT(*) FROM outcomes o WHERE o.solution_id = s.id) AS outcome_count,
-        (SELECT COUNT(*) FROM outcomes o WHERE o.solution_id = s.id AND o.addresses_core = 1) AS core_count,
-        (SELECT COUNT(*) FROM risks r WHERE r.solution_id = s.id) AS risk_count,
-        (SELECT COUNT(*) FROM risks r WHERE r.solution_id = s.id AND r.impact = 'project ends') AS ending_count,
-        (SELECT COUNT(*) FROM risks r WHERE r.solution_id = s.id AND r.impact = 'project ends'
-          AND NOT EXISTS (SELECT 1 FROM risk_mitigations rm WHERE rm.risk_id = r.id)) AS unaddressed_count
+        ef.status AS evidence_follow_up_status, ef.updated_at AS evidence_follow_up_updated_at,
+        COALESCE(oc.outcome_count, 0) AS outcome_count, COALESCE(oc.core_count, 0) AS core_count,
+        COALESCE(rc.risk_count, 0) AS risk_count, COALESCE(rc.ending_count, 0) AS ending_count,
+        COALESCE(rc.unaddressed_count, 0) AS unaddressed_count,
+        hr.id AS highest_risk_id, hr.description AS highest_risk_description,
+        hr.likelihood AS highest_risk_likelihood, hr.impact AS highest_risk_impact,
+        hr.sort_key AS highest_risk_sort_key
       FROM solutions s JOIN problems p ON p.id = s.problem_id
       JOIN research_runs rr ON rr.id = s.research_run_id
       LEFT JOIN decision_analyses da ON da.solution_id = s.id
-      WHERE rr.thread_id = ? AND (rr.status = 'completed' OR rr.workflow_version = 2)
-        AND (? IS NULL OR s.id = ?)
-        AND p.selected_at IS NOT NULL
-        AND p.discovery_run_id = (
-          SELECT id FROM research_runs
-          WHERE thread_id = ? AND problem_id IS NULL AND status = 'completed'
-          ORDER BY created_at DESC, rowid DESC LIMIT 1
-        )
+      LEFT JOIN evidence_follow_ups ef ON ef.research_run_id = rr.id AND ef.solution_id = s.id
+      LEFT JOIN outcome_counts oc ON oc.solution_id = s.id
+      LEFT JOIN risk_counts rc ON rc.solution_id = s.id
+      LEFT JOIN ranked_risks hr ON hr.solution_id = s.id AND hr.position = 1
+      WHERE s.id IN (SELECT id FROM relevant_solutions)
       ORDER BY s.created_at, s.option_position, s.id
-    `).all(threadId, solutionId ?? null, solutionId ?? null, threadId) as Array<Record<string, unknown>>;
+    `, [threadId, solutionId ?? null, solutionId ?? null, threadId]);
+    const solutionIds = rows.map((row) => String(row.id));
+    const problemIds = [...new Set(rows.map((row) => String(row.problem_id)))];
+    const outcomesBySolution = details ? readOutcomes(solutionIds, readAll) : new Map<string, SolutionView["outcomes"]>();
+    const risksBySolution = details ? readRisks(solutionIds, readAll) : new Map<string, SolutionView["risks"]>();
+    const factorsByProblem = details ? readProblemFactors(problemIds, readAll) : new Map<string, FactorView[]>();
+    const contrarySourcesByProblem = details ? readContrarySources(problemIds, readAll) : new Map<string, NonNullable<SolutionView["contrarySources"]>>();
+    const followUpsByRun = details ? readEvidenceFollowUps(rows.map((row) => String(row.research_run_id)), readAll) : new Map();
+    context.observeDataRead?.({ operation: details ? "solution-details" : "solution-summaries", queryCount, rowCount: rows.length });
     const result = rows.map((row): SolutionView => {
-      const outcomes = (details ? db.db.prepare("SELECT * FROM outcomes WHERE solution_id = ? ORDER BY created_at, id").all(row.id) as Array<Record<string, unknown>> : [])
-        .map((item) => ({ id: String(item.id), description: String(item.description), direction: String(item.direction) as "positive" | "negative", affects: String(item.affects), addressesCore: Boolean(item.addresses_core) }));
-      const risks = (details ? db.db.prepare("SELECT * FROM risks WHERE solution_id = ? ORDER BY sort_key DESC, created_at, id").all(row.id) as Array<Record<string, unknown>> : [])
-        .map((item) => {
-          const mitigations = (db.db.prepare(`
-            SELECT m.* FROM risk_mitigations rm JOIN mitigations m ON m.id = rm.mitigation_id WHERE rm.risk_id = ? ORDER BY m.created_at, m.id
-          `).all(item.id) as Array<Record<string, unknown>>).map((mitigation) => ({
-            id: String(mitigation.id), approach: String(mitigation.approach), cost: String(mitigation.cost), failsIf: String(mitigation.fails_if),
-            riskIds: (db.db.prepare("SELECT risk_id FROM risk_mitigations WHERE mitigation_id = ?").all(mitigation.id) as Array<{ risk_id: string }>).map((link) => link.risk_id),
-          }));
-          return { id: String(item.id), description: String(item.description), likelihood: String(item.likelihood) as "rare" | "possible" | "likely",
-            impact: String(item.impact) as "≤3 days lost" | "~2 weeks" | "~2 months" | "project ends", sortKey: Number(item.sort_key), mitigations };
-        });
-      const highest = db.db.prepare("SELECT id, description, likelihood, impact, sort_key AS sortKey FROM risks WHERE solution_id = ? ORDER BY sort_key DESC, created_at, id LIMIT 1")
-        .get(row.id) as NonNullable<SolutionView["highestRisk"]> | undefined;
+      const highest = row.highest_risk_id === null ? null : {
+        id: String(row.highest_risk_id), description: String(row.highest_risk_description),
+        likelihood: String(row.highest_risk_likelihood) as "rare" | "possible" | "likely",
+        impact: String(row.highest_risk_impact) as "≤3 days lost" | "~2 weeks" | "~2 months" | "project ends",
+        sortKey: Number(row.highest_risk_sort_key),
+      };
+      const evidenceFollowUp = followUpsByRun.get(String(row.research_run_id));
       return {
-        detailsLoaded: details, highestRisk: highest ?? null,
+        detailsLoaded: details, highestRisk: highest,
         outcomeCount: Number(row.outcome_count), riskCount: Number(row.risk_count), projectEndingRiskCount: Number(row.ending_count),
         workflowVersion: Number(row.workflow_version) as 1 | 2,
         runId: String(row.research_run_id), selected: row.selected_at !== null,
         selectable: Boolean(row.awaiting_selection),
+        ...(row.evidence_follow_up_status === null ? {} : {
+          evidenceFollowUpStatus: (row.evidence_follow_up_status === "requested" ? "running" : String(row.evidence_follow_up_status)) as "running" | "completed" | "failed",
+        }),
+        canRequestEvidenceFollowUp: Number(row.workflow_version) === 2 && row.selected_at !== null
+          && row.decision_updated_at !== null && row.evidence_follow_up_status === null && row.run_status === "completed",
         keyAssumption: row.key_assumption === null ? undefined : String(row.key_assumption),
         whyCurrentApproachMaySuffice: row.why_current_approach_may_suffice === null ? undefined : String(row.why_current_approach_may_suffice),
         unknowns: JSON.parse(String(row.unknowns_json ?? "[]")),
@@ -350,19 +393,108 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
           decisionAnalysis: row.analysis_json ? JSON.parse(String(row.analysis_json)) : null,
           userDecision: row.user_decision === null ? null : String(row.user_decision),
           observedResult: row.observed_result === null ? null : String(row.observed_result),
-          contrarySources: db.db.prepare(`SELECT s.id, s.title, s.canonical_url AS url, s.retrieved_text AS text
-            FROM problem_verdict_sources pvs JOIN sources s ON s.id = pvs.source_id WHERE pvs.problem_id = ? ORDER BY pvs.position`)
-            .all(row.problem_id) as Array<{ id: string; title: string; url: string; text: string }>,
+          contrarySources: contrarySourcesByProblem.get(String(row.problem_id)) ?? [],
+          ...(evidenceFollowUp ? { evidenceFollowUp } : {}),
         } : {}),
-        detailRevision: `${row.run_updated_at}:${row.decision_updated_at ?? ""}`,
+        detailRevision: `${row.run_updated_at}:${row.decision_updated_at ?? ""}:${row.evidence_follow_up_updated_at ?? ""}`,
         id: String(row.id), problemId: String(row.problem_id), problemStatement: String(row.problem_statement),
         problemVerdict: String(row.problem_verdict) as SolutionView["problemVerdict"], mechanism: String(row.mechanism),
-        factors: details ? listProblemFactors(String(row.problem_id)) : [],
+        factors: details ? factorsByProblem.get(String(row.problem_id)) ?? [] : [],
         description: String(row.description), respectsOffLimits: Boolean(row.respects_off_limits), respectsOffLimitsWhy: String(row.respects_off_limits_why),
-        outcomes, risks, confirmedCoreOutcomes: Number(row.core_count), unaddressedCatastrophicRisks: Number(row.unaddressed_count),
+        outcomes: outcomesBySolution.get(String(row.id)) ?? [], risks: risksBySolution.get(String(row.id)) ?? [],
+        confirmedCoreOutcomes: Number(row.core_count), unaddressedCatastrophicRisks: Number(row.unaddressed_count),
       };
     });
     return result;
+  }
+  function readOutcomes(solutionIds: string[], readAll: DataRead): Map<string, SolutionView["outcomes"]> {
+    if (solutionIds.length === 0) return new Map();
+    const rows = readAll(`SELECT * FROM outcomes WHERE solution_id IN (${placeholders(solutionIds)}) ORDER BY created_at, id`, solutionIds);
+    return groupRows(rows, "solution_id", (item) => ({
+      id: String(item.id), description: String(item.description), direction: String(item.direction) as "positive" | "negative",
+      affects: String(item.affects), addressesCore: Boolean(item.addresses_core),
+    }));
+  }
+  function readRisks(solutionIds: string[], readAll: DataRead): Map<string, SolutionView["risks"]> {
+    if (solutionIds.length === 0) return new Map();
+    const rows = readAll(`SELECT * FROM risks WHERE solution_id IN (${placeholders(solutionIds)}) ORDER BY sort_key DESC, created_at, id`, solutionIds);
+    const riskIds = rows.map((row) => String(row.id));
+    const mitigationRows = riskIds.length === 0 ? [] : readAll(`
+      SELECT owned.risk_id, m.*, linked.risk_id AS linked_risk_id
+      FROM risk_mitigations owned
+      JOIN mitigations m ON m.id = owned.mitigation_id
+      JOIN risk_mitigations linked ON linked.mitigation_id = m.id
+      WHERE owned.risk_id IN (${placeholders(riskIds)})
+      ORDER BY m.created_at, m.id, linked.risk_id
+    `, riskIds);
+    const mitigationsByRisk = new Map<string, SolutionView["risks"][number]["mitigations"]>();
+    for (const row of mitigationRows) {
+      const riskId = String(row.risk_id);
+      const mitigations = mitigationsByRisk.get(riskId) ?? [];
+      const mitigationId = String(row.id);
+      const existing = mitigations.find((item) => item.id === mitigationId);
+      if (existing) existing.riskIds.push(String(row.linked_risk_id));
+      else mitigations.push({
+        id: mitigationId, approach: String(row.approach), cost: String(row.cost), failsIf: String(row.fails_if),
+        riskIds: [String(row.linked_risk_id)],
+      });
+      mitigationsByRisk.set(riskId, mitigations);
+    }
+    return groupRows(rows, "solution_id", (item) => ({
+      id: String(item.id), description: String(item.description), likelihood: String(item.likelihood) as "rare" | "possible" | "likely",
+      impact: String(item.impact) as "≤3 days lost" | "~2 weeks" | "~2 months" | "project ends",
+      sortKey: Number(item.sort_key), mitigations: mitigationsByRisk.get(String(item.id)) ?? [],
+    }));
+  }
+  function readProblemFactors(problemIds: string[], readAll: DataRead): Map<string, FactorView[]> {
+    if (problemIds.length === 0) return new Map();
+    const rows = readAll(`
+      SELECT pf.problem_id, f.*, s.title AS source_title, s.canonical_url
+      FROM problem_factors pf JOIN factors f ON f.id = pf.factor_id JOIN sources s ON s.id = f.source_id
+      WHERE pf.problem_id IN (${placeholders(problemIds)}) ORDER BY f.created_at, f.id
+    `, problemIds);
+    return groupRows(rows, "problem_id", mapFactor);
+  }
+  function readContrarySources(problemIds: string[], readAll: DataRead): Map<string, NonNullable<SolutionView["contrarySources"]>> {
+    if (problemIds.length === 0) return new Map();
+    const rows = readAll(`
+      SELECT pvs.problem_id, s.id, s.title, s.canonical_url AS url, s.retrieved_text AS text
+      FROM problem_verdict_sources pvs JOIN sources s ON s.id = pvs.source_id
+      WHERE pvs.problem_id IN (${placeholders(problemIds)}) ORDER BY pvs.problem_id, pvs.position
+    `, problemIds);
+    return groupRows(rows, "problem_id", (row) => ({ id: String(row.id), title: String(row.title), url: String(row.url), text: String(row.text) }));
+  }
+  function readEvidenceFollowUps(runIds: string[], readAll: DataRead) {
+    if (runIds.length === 0) return new Map<string, {
+      status: "running" | "completed" | "failed"; question: string; sources: Array<Record<string, unknown>>;
+      factors: FactorView[]; error: string | null; updatedAt: string;
+    }>();
+    const uniqueRunIds = [...new Set(runIds)];
+    const rows = readAll(`SELECT * FROM evidence_follow_ups WHERE research_run_id IN (${placeholders(uniqueRunIds)})`, uniqueRunIds);
+    const sourceIds = [...new Set(rows.flatMap((row) => JSON.parse(String(row.source_ids_json)) as string[]))];
+    const factorIds = [...new Set(rows.flatMap((row) => JSON.parse(String(row.factor_ids_json)) as string[]))];
+    const sourceRows = sourceIds.length === 0 ? [] : readAll(`SELECT * FROM sources WHERE id IN (${placeholders(sourceIds)})`, sourceIds);
+    const factorRows = factorIds.length === 0 ? [] : readAll(`
+      SELECT f.*, s.title AS source_title, s.canonical_url FROM factors f JOIN sources s ON s.id = f.source_id
+      WHERE f.id IN (${placeholders(factorIds)}) ORDER BY f.created_at, f.id
+    `, factorIds);
+    const sourcesById = new Map(sourceRows.map((source) => [String(source.id), {
+      id: String(source.id), researchRunId: String(source.research_run_id), url: String(source.canonical_url), title: String(source.title),
+      text: String(source.retrieved_text), ...(source.author ? { author: String(source.author) } : {}),
+      ...(source.published_at ? { publishedDate: String(source.published_at) } : {}),
+      contentHash: String(source.content_hash), retrievedAt: String(source.retrieved_at),
+    }]));
+    const factorsById = new Map(factorRows.map((factor) => [String(factor.id), mapFactor(factor)]));
+    return new Map(rows.map((row) => {
+      const status = String(row.status);
+      return [String(row.research_run_id), {
+        status: status === "requested" ? "running" : status as "running" | "completed" | "failed",
+        question: String(row.question),
+        sources: (JSON.parse(String(row.source_ids_json)) as string[]).flatMap((id) => sourcesById.get(id) ?? []),
+        factors: (JSON.parse(String(row.factor_ids_json)) as string[]).flatMap((id) => factorsById.get(id) ?? []),
+        error: row.error_message === null ? null : String(row.error_message), updatedAt: String(row.updated_at),
+      }];
+    }));
   }
   function researchExport(threadId: string) {
     const runId = latestDiscoveryRun(threadId);
@@ -412,7 +544,21 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
       factors,
       problems: listProblems(threadId),
       rejectedProblemCandidates: listRejectedProblemCandidates(threadId),
+      evidenceFollowUps: listEvidenceFollowUpExports(threadId),
     };
+  }
+  function listEvidenceFollowUpExports(threadId: string) {
+    const rows = db.db.prepare(`
+      SELECT ef.research_run_id FROM evidence_follow_ups ef
+      JOIN research_runs rr ON rr.id = ef.research_run_id
+      WHERE rr.thread_id = ? ORDER BY ef.requested_at, ef.research_run_id
+    `).all(threadId) as Array<{ research_run_id: string }>;
+    const readAll: DataRead = (sql, params) => db.db.prepare(sql).all(...params) as Array<Record<string, unknown>>;
+    const byRun = readEvidenceFollowUps(rows.map((row) => row.research_run_id), readAll);
+    return rows.flatMap((row) => {
+      const followUp = byRun.get(row.research_run_id);
+      return followUp ? [{ researchRunId: row.research_run_id, ...followUp }] : [];
+    });
   }
   function runUsage(runId: string) {
     const rows = db.db.prepare(`
@@ -450,6 +596,7 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
     const projection = row.problem_id ? { modelCalls: row.workflow_version === 2 ? 2 : MAX_DEVELOPMENT_PROJECTED_CALLS, searches: 0 } : discoveryRunProjection(runConfig.discoveryDepth);
     const activity = db.db.prepare("SELECT payload_json FROM job_events WHERE run_id = ? AND type = 'run-progress' ORDER BY id DESC LIMIT 1")
       .get(row.id) as { payload_json: string } | undefined;
+    const resumeSafety = generationAttempts.getResumeSafety(row.id);
     return {
       runId: row.id, status: row.status, problemId: row.problem_id,
       workflowVersion: row.workflow_version, awaitingSelection: Boolean(row.awaiting_selection), interrupted: Boolean(row.interrupted),
@@ -457,6 +604,8 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
       searches: counts.find((item) => item.provider === runConfig.searchProvider)?.count ?? 0,
       projectedCodexCalls: projection.modelCalls, projectedSearches: projection.searches,
       lastActivity: activity ? String(JSON.parse(activity.payload_json).message ?? "") : null,
+      canResume: resumeSafety.canResume,
+      ...(resumeSafety.resumeBlockedReason ? { resumeBlockedReason: resumeSafety.resumeBlockedReason } : {}),
       usage: runUsage(row.id),
     };
   }
@@ -721,6 +870,12 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
         await ensureEngine().selectOption(input.threadId, input.runId, input.solutionId);
         return sendJson(res, 200, await workspaceState());
       }
+      if (route === "/research/evidence-follow-up") {
+        const input = EvidenceFollowUpRequestSchema.parse(body);
+        requireThread(input.threadId);
+        await ensureEngine().requestEvidenceFollowUp(input.threadId, input.runId, input.question);
+        return sendJson(res, 200, await workspaceState());
+      }
       if (route === "/research/decision") {
         const input = SaveDecisionSchema.parse(body);
         const belongs = db.db.prepare(`SELECT da.id FROM decision_analyses da JOIN research_runs rr ON rr.id = da.research_run_id
@@ -746,10 +901,14 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
           const exportedGroup = input.format === "json"
             ? group.map((idea) => {
               const usage = solutionRunUsage(idea.id);
-              return usage ? { ...idea, usage } : idea;
+              return { ...idea, ...(usage ? { usage } : {}) };
             })
             : group;
-          return { filename, content: input.format === "json" ? JSON.stringify(exportedGroup, null, 2) : renderMarkdown(group) };
+          const followUpMarkdown = input.format === "markdown"
+            ? [...new Map(group.flatMap((idea) => idea.runId && idea.evidenceFollowUp ? [[idea.runId, idea.evidenceFollowUp] as const] : [])).values()]
+              .map(renderEvidenceFollowUpMarkdown).join("\n")
+            : "";
+          return { filename, content: input.format === "json" ? JSON.stringify(exportedGroup, null, 2) : `${renderMarkdown(group)}${followUpMarkdown}` };
         });
         return sendJson(res, 200, { files });
       }
@@ -904,6 +1063,43 @@ function renderDecisionMarkdown(ideas: SolutionView[]): string {
       "## Observed test result", "", idea.observedResult || "Not recorded. Proposed responses remain untested.", "",
     ];
   }).join("\n");
+}
+function renderEvidenceFollowUpMarkdown(followUp: {
+  question: string; status: string; error: string | null;
+  sources: unknown[]; factors: unknown[];
+}): string {
+  const sources = followUp.sources as Array<Record<string, unknown>>;
+  const factors = followUp.factors as Array<Record<string, unknown>>;
+  return [
+    "", "## Evidence follow-up", "", `Question: ${followUp.question}`, "", `Status: ${followUp.status}`, "",
+    ...(followUp.error ? [`Error: ${followUp.error}`, ""] : []),
+    ...factors.flatMap((factor) => [
+      `### ${String(factor.subject)}`, "", String(factor.behavior), "", `> ${String(factor.quote)}`, "",
+      `Source ID: ${String(factor.sourceId)}`, "",
+    ]),
+    ...sources.flatMap((source) => [
+      `[${String(source.title)}](${String(source.url)})`, "", String(source.text), "",
+    ]),
+  ].join("\n");
+}
+function placeholders(values: readonly unknown[]): string { return values.map(() => "?").join(", "); }
+function groupRows<T>(rows: Array<Record<string, unknown>>, key: string, map: (row: Record<string, unknown>) => T): Map<string, T[]> {
+  const grouped = new Map<string, T[]>();
+  for (const row of rows) {
+    const id = String(row[key]);
+    const values = grouped.get(id) ?? [];
+    values.push(map(row));
+    grouped.set(id, values);
+  }
+  return grouped;
+}
+function mapFactor(factor: Record<string, unknown>): FactorView {
+  return {
+    id: String(factor.id), subject: String(factor.subject), behavior: String(factor.behavior), quote: String(factor.quote),
+    sourceId: String(factor.source_id), sourceTitle: String(factor.source_title), sourceUrl: String(factor.canonical_url),
+    harvestMode: String(factor.harvest_mode) as "domain" | "audience", modelConfidence: Number(factor.model_confidence),
+    ...(factor.uncertainty === null || factor.uncertainty === undefined ? {} : { uncertainty: String(factor.uncertainty) }),
+  };
 }
 function slug(value: string): string { return value.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 80) || "problem"; }
 function authorize(req: IncomingMessage, token: string): boolean { return req.headers.authorization === `Bearer ${token}`; }

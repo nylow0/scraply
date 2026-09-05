@@ -507,6 +507,68 @@ async function structuredCall<T>(
   return result.output;
 }
 
+/** Searches one user-chosen question and extracts only quote-verifiable factors from that result set. */
+export async function harvestEvidenceFollowUp(
+  scope: Scope,
+  question: string,
+  dependencies: DiscoveryDependencies,
+): Promise<HarvestResult> {
+  const query = question.trim();
+  if (!query) throw new Error("Evidence follow-up question is required");
+  const searched = await dependencies.search.search(query, {
+    numResults: DISCOVERY_DEPTHS[dependencies.depth ?? "standard"].searchResultsPerQuery,
+    maxCharacters: SOURCE_MAX_CHARACTERS,
+    ...(dependencies.signal ? { signal: dependencies.signal } : {}),
+  });
+  const sources = resolveSources(searched, new Map(), dependencies.onProjection, dependencies.idFactory).fresh;
+  const factors: HarvestedFactor[] = [];
+  const rejections: FactorRejection[] = [];
+  if (sources.length > 0) {
+    const response = await structuredCall(
+      dependencies,
+      "factor-harvest:follow-up",
+      (dependencies.prompt ?? loadPrompt)("factor-harvest"),
+      {
+        inputs: { harvestMode: "domain", followUp: true },
+        evidence: { scope, decisiveQuestion: query, sources: sources.map(toStageSource) },
+      },
+      FactorHarvestOutputSchema,
+    );
+    const sourceById = new Map(sources.map((source) => [source.id, source]));
+    for (const candidate of response.factors) {
+      const rejection = validateFactor(candidate, "domain", sourceById);
+      if (rejection) {
+        rejections.push(rejection);
+        continue;
+      }
+      factors.push({
+        id: (dependencies.idFactory ?? randomUUID)(),
+        subject: candidate.subject.trim(),
+        behavior: candidate.behavior.trim(),
+        quote: candidate.quote.trim(),
+        sourceId: candidate.sourceId,
+        harvestMode: "domain",
+        modelConfidence: candidate.modelConfidence,
+        source: sourceById.get(candidate.sourceId)!,
+      });
+    }
+  }
+  const quoteRejected = rejections.filter((item) => item.reason === "quote-mismatch").length;
+  return {
+    sources,
+    factors,
+    rejections,
+    metrics: {
+      extracted: { domain: factors.length + rejections.length, audience: 0 },
+      accepted: { domain: factors.length, audience: 0 },
+      retained: { domain: factors.length, audience: 0 },
+      rejected: { domain: rejections.length, audience: 0 },
+      quoteRejected: { domain: quoteRejected, audience: 0 },
+      quoteRejectionRate: { domain: rate(quoteRejected, factors.length + rejections.length), audience: 0 },
+    },
+  };
+}
+
 function buildFactorHarvestInput(scope: Scope, mode: HarvestMode, sources: HarvestedSource[]) {
   return {
     inputs: { harvestMode: mode },

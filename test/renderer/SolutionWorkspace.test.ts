@@ -94,6 +94,17 @@ describe("SolutionWorkspace ordering explanation", () => {
     expect(view.getByRole("button", { name: "Unaddressed project-ending" })).toBeTruthy();
     expect(view.queryByText(/catastrophic gaps/i)).toBeNull();
   });
+
+  test("explains a zero-option v2 result without relying on a returned option", () => {
+    const view = render(SolutionWorkspace, {
+      solutions: [], workflowVersion: 2, busy: false,
+      onExport: vi.fn(), onOpenSource: vi.fn(), onReview: vi.fn(),
+    });
+
+    expect(view.getByText("No solution options were returned.")).toBeTruthy();
+    expect(view.getByText(/zero options for the selected problem/)).toBeTruthy();
+    expect(view.queryByRole("button", { name: "Show every idea" })).toBeNull();
+  });
 });
 
 function solution(): SolutionView {

@@ -24,6 +24,7 @@ export interface DiscoveryFactorRecord {
   sourceId: string;
   harvestMode: "domain" | "audience";
   modelConfidence: number;
+  uncertainty?: string | null;
 }
 
 export interface DiscoveryProblemRecord {
@@ -74,15 +75,14 @@ export class DiscoveryRepository {
     checkpoint?: () => void,
   ): void {
     const db = this.client.db;
-    db.exec("BEGIN IMMEDIATE");
-    try {
+    this.client.immediateTransaction(() => {
       for (const source of sources) this.insertSource(researchRunId, source);
       const now = new Date().toISOString();
       const insert = db.prepare(`
         INSERT INTO factors (
           id, research_run_id, subject, behavior, quote, source_id,
-          harvest_mode, model_confidence, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+          harvest_mode, model_confidence, uncertainty, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `);
       for (const factor of factors) {
         this.assertSourceBelongsToRun(researchRunId, factor.sourceId);
@@ -95,15 +95,12 @@ export class DiscoveryRepository {
           factor.sourceId,
           factor.harvestMode,
           factor.modelConfidence,
+          factor.uncertainty ?? null,
           now,
         );
       }
       checkpoint?.();
-      db.exec("COMMIT");
-    } catch (error) {
-      db.exec("ROLLBACK");
-      throw error;
-    }
+    });
   }
 
   persistProblems(
@@ -114,8 +111,7 @@ export class DiscoveryRepository {
     checkpoint?: () => void,
   ): void {
     const db = this.client.db;
-    db.exec("BEGIN IMMEDIATE");
-    try {
+    this.client.immediateTransaction(() => {
       for (const source of sources) this.insertSource(researchRunId, source);
       const now = new Date().toISOString();
       const insertProblem = db.prepare(`
@@ -171,11 +167,7 @@ export class DiscoveryRepository {
         );
       }
       checkpoint?.();
-      db.exec("COMMIT");
-    } catch (error) {
-      db.exec("ROLLBACK");
-      throw error;
-    }
+    });
   }
 
   createKnownProblemRoot(threadId: string, scope: Scope, statement: string, config: RunConfig): { runId: string; problemId: string } {

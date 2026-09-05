@@ -9,6 +9,7 @@ import {
   type DevelopedWorkflowV2SolutionOption,
   type WorkflowV2DevelopmentDependencies,
 } from "../../src/core/development";
+import { harvestEvidenceFollowUp } from "../../src/core/discovery";
 import {
   configurePromptPaths,
   PromptPackagingError,
@@ -20,7 +21,7 @@ import {
   WORKFLOW_V2_STAGE_REGISTRY,
   WORKFLOW_VERSION_V2,
 } from "../../src/core/stages";
-import { ProviderFailure, type StructuredModelClient } from "../../src/providers/structured";
+import { ProviderFailure, type StructuredModelClient, type StructuredStageRequest } from "../../src/providers/structured";
 import { deriveJsonSchema } from "../../src/shared/json-schema";
 import { WorkflowV2SolutionOptionSchema } from "../../src/shared/structured-output-schemas";
 
@@ -204,6 +205,63 @@ describe("workflow v2 foundation", () => {
     expect(capturedEvidence).toContain(selected.mechanism);
     expect(capturedEvidence).toContain("spreadsheet failed");
     expect(JSON.stringify(result.analysis)).not.toContain("score");
+  });
+
+  test("keeps the one follow-up question in evidence and performs one search and one harvest", async () => {
+    const questions: string[] = [];
+    const captured: StructuredStageRequest<unknown>[] = [];
+    const result = await harvestEvidenceFollowUp(context().scope, "Does export preserve state?", {
+      search: { async search(query) {
+        questions.push(query);
+        return [{ id: "provider-1", url: "https://example.test/export", title: "Export study", text: "Nine exports preserved state." }];
+      } },
+      modelClient: { async structuredCompletion<T>(request: StructuredStageRequest<T>) {
+        captured.push(request as StructuredStageRequest<unknown>);
+        return {
+          output: request.schema.parse({ factors: [{
+            subject: "Exports", behavior: "preserved state", quote: "Nine exports preserved state.",
+            sourceId: "follow-source", modelConfidence: 0.8,
+          }] }),
+          metadata: {
+            model: { providerId: "test", modelId: "test" },
+            usage: { status: "unknown" }, latencyMs: 1, repairCount: 0, providerRequestIds: [], attempts: [],
+          },
+        };
+      } },
+      model: { providerId: "test", modelId: "test" },
+      reasoningEffort: "medium",
+      prompt: () => "Extract quote-verifiable observations.",
+      depth: "quick",
+      idFactory: (() => {
+        const ids = ["follow-source", "follow-factor"];
+        return () => ids.shift()!;
+      })(),
+    });
+
+    expect(questions).toEqual(["Does export preserve state?"]);
+    expect(result.factors.map((factor) => factor.id)).toEqual(["follow-factor"]);
+    expect(captured[0]!.workOrder.inputs).toEqual({ harvestMode: "domain", followUp: true });
+    expect(JSON.stringify(captured[0]!.workOrder.inputs)).not.toContain("Does export preserve state?");
+    expect(JSON.stringify(captured[0]!.evidence)).toContain("Does export preserve state?");
+  });
+
+  test("finishes an empty follow-up after one search without spending a model call", async () => {
+    let searches = 0;
+    let generations = 0;
+    const result = await harvestEvidenceFollowUp(context().scope, "Is there any contrary evidence?", {
+      search: { async search() { searches += 1; return []; } },
+      modelClient: { async structuredCompletion() {
+        generations += 1;
+        throw new Error("An empty search must not start factor harvest");
+      } },
+      model: { providerId: "test", modelId: "test" },
+      reasoningEffort: "medium",
+      depth: "quick",
+      prompt: () => "Unused",
+    });
+    expect(searches).toBe(1);
+    expect(generations).toBe(0);
+    expect(result).toEqual(expect.objectContaining({ sources: [], factors: [], rejections: [] }));
   });
 });
 

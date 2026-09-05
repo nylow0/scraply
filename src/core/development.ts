@@ -47,6 +47,7 @@ export interface DevelopmentProblem extends Problem {
 
 export interface DevelopmentFactor extends Factor {
   id: string;
+  uncertainty?: string;
 }
 
 export interface DevelopedOutcome extends Outcome {
@@ -373,6 +374,12 @@ export interface WorkflowV2DevelopmentContext {
   supportingEvidence: WorkflowV2EvidenceItem[];
   contraryEvidence: WorkflowV2EvidenceItem[];
   priorFailedAttempts: string[];
+  researchContext?: {
+    alternativeExplanations: string[];
+    unknowns: string[];
+    unresolvedAssumptions: string[];
+    wouldChangeConclusion: string[];
+  };
 }
 
 export interface DevelopedWorkflowV2SolutionOption extends WorkflowV2SolutionOption {
@@ -546,6 +553,7 @@ function developmentEvidence(
     scope: context.scope,
     originalProblem: context.problem,
     priorFailedAttempts: context.priorFailedAttempts,
+    ...(context.researchContext ? { researchContext: context.researchContext } : {}),
     ...(selectedOption ? { selectedOption } : {}),
     evidenceBudget: {
       sourceLimitPerCategory: WORKFLOW_V2_EVIDENCE_SOURCE_LIMIT_PER_CATEGORY,
@@ -585,7 +593,8 @@ function boundEvidenceCategory(
   let includedCharacters = 0;
   let omittedCharacters = 0;
   for (const [index, item] of items.entries()) {
-    const serialized = JSON.stringify(item.content);
+    const content = evidenceContentWithClaimsFirst(item.content);
+    const serialized = JSON.stringify(content);
     if (serialized === undefined) throw new Error(`Evidence ${item.sourceId} is not JSON-serializable`);
     if (index >= WORKFLOW_V2_EVIDENCE_SOURCE_LIMIT_PER_CATEGORY
       || includedCharacters >= WORKFLOW_V2_EVIDENCE_CHARACTER_LIMIT_PER_CATEGORY) {
@@ -607,7 +616,7 @@ function boundEvidenceCategory(
       includedCharacters += characterLimit;
       omittedCharacters += serialized.length - characterLimit;
     } else {
-      included.push({ sourceId: item.sourceId, content: { categories: [category], evidence: item.content } });
+      included.push({ sourceId: item.sourceId, content: { categories: [category], evidence: content } });
       includedCharacters += serialized.length;
     }
   }
@@ -620,6 +629,17 @@ function boundEvidenceCategory(
       includedCharacters,
       omittedCharacters,
     },
+  };
+}
+
+function evidenceContentWithClaimsFirst(content: unknown): unknown {
+  if (!content || typeof content !== "object" || Array.isArray(content)) return content;
+  const record = content as Record<string, unknown>;
+  if (!("factors" in record) || !("source" in record)) return content;
+  return {
+    factors: record.factors,
+    ...(record.uncertainty === undefined ? {} : { uncertainty: record.uncertainty }),
+    source: record.source,
   };
 }
 

@@ -61,7 +61,7 @@
           {#each problem.factors as factor (factor.id)}
             <blockquote>
               <p>{factor.subject} — {factor.behavior}</p>
-              <q>{factor.quote}</q>
+              <q>{factor.quote}</q>{#if factor.uncertainty}<p>Uncertainty: {factor.uncertainty}</p>{/if}<small class="estimated">Model confidence is uncalibrated.</small>
               <button disabled={busy} onclick={() => onOpenSource(factor.sourceUrl)}>{factor.sourceTitle}</button>
             </blockquote>
           {/each}

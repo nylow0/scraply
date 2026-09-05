@@ -2,7 +2,7 @@ import { contextBridge, ipcRenderer } from "electron";
 import {
   ExportIdeasRequestSchema, ExportResearchRequestSchema, IPC_CHANNELS, ResearchEventSchema, SaveFavoriteModelSchema,
   NativeLoginCancelSchema, NativeLoginCompleteSchema, NativeLoginStartSchema, NativeProviderSchema,
-  SaveRunConfigSchema, SaveScopeSchema, SelectProblemsSchema, SelectOptionSchema, SaveDecisionSchema,
+  SaveRunConfigSchema, SaveScopeSchema, SelectProblemsSchema, SelectOptionSchema, SaveDecisionSchema, EvidenceFollowUpRequestSchema,
   type NativeLoginCompleteResult, type NativeLoginStartResult, type ResearchEvent,
   type SolutionView, type SourceDetail, type ValidationState, type WorkspaceState,
 } from "../shared/ipc";
@@ -12,6 +12,8 @@ const api = {
     ipcRenderer.invoke(IPC_CHANNELS.SELECT_OPTION, SelectOptionSchema.parse(payload)),
   saveDecision: (payload: { threadId: string; solutionId: string; userDecision: string; observedResult: string }): Promise<WorkspaceState> =>
     ipcRenderer.invoke(IPC_CHANNELS.SAVE_DECISION, SaveDecisionSchema.parse(payload)),
+  requestEvidenceFollowUp: (payload: { threadId: string; runId: string; question: string }): Promise<WorkspaceState> =>
+    ipcRenderer.invoke(IPC_CHANNELS.EVIDENCE_FOLLOW_UP, EvidenceFollowUpRequestSchema.parse(payload)),
   getValidation: (): Promise<ValidationState> => ipcRenderer.invoke(IPC_CHANNELS.GET_VALIDATION),
   retryConnection: (): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.RETRY_CONNECTION),
   getWorkspace: (): Promise<WorkspaceState> => ipcRenderer.invoke(IPC_CHANNELS.GET_WORKSPACE),

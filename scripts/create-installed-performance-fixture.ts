@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { DatabaseClient } from "../src/db/client";
+import { WorkflowV2DecisionAnalysisOutputSchema } from "../src/shared/structured-output-schemas";
 
 const PROJECT_COUNT = 20;
 const RUNS_PER_PROJECT = 5;
@@ -28,6 +29,7 @@ export interface InstalledPerformanceFixture {
   schemaVersion: number;
   synthetic: true;
   redacted: true;
+  workflowCoverage: "legacy-v1" | "representative-v2";
   counts: Record<string, number>;
   expected: {
     projects: number;
@@ -344,11 +346,85 @@ export function createInstalledPerformanceFixture(outputPath: string): Installed
     schemaVersion: Math.max(...schemaMigrationIds),
     synthetic: true,
     redacted: true,
+    workflowCoverage: "legacy-v1",
     counts,
     expected,
   };
   writeFileSync(`${databasePath}.json`, `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
   return manifest;
+}
+
+export function convertInstalledPerformanceFixtureToV2(fixture: InstalledPerformanceFixture): InstalledPerformanceFixture {
+  const client = new DatabaseClient(fixture.databasePath);
+  const db = client.db;
+  const analysisValue = WorkflowV2DecisionAnalysisOutputSchema.parse({
+    consequences: [{ description: largeText("Synthetic v2 consequence", 1, 4_096), direction: "positive", affects: "Synthetic operators", rationale: largeText("Synthetic rationale", 1, 2_048) }],
+    risks: [{ riskId: "synthetic-v2-risk", description: largeText("Synthetic v2 risk", 1, 4_096), whyDecisive: largeText("Synthetic decisive rationale", 1, 2_048) }],
+    proposedResponses: [{ riskIds: ["synthetic-v2-risk"], approach: largeText("Synthetic proposed response", 1, 4_096), cost: "One synthetic hour", failsIf: "The deterministic fixture condition is false" }],
+    unknowns: ["Synthetic unresolved question"],
+    experiment: { question: "Does the synthetic mechanism pass?", method: "Inspect deterministic fixture rows", cost: "One synthetic hour", passCriterion: "All expected rows exist", failCriterion: "Any expected row is absent" },
+  });
+  const analysis = JSON.stringify(analysisValue);
+  const emptyJson = "{}";
+  const emptyArray = "[]";
+  const digest = createHash("sha256").update(emptyJson).digest("hex");
+  const promptText = "Synthetic deterministic performance fixture prompt. This fixture is not resume evidence.";
+  const promptDigest = createHash("sha256").update(promptText).digest("hex");
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    db.prepare("UPDATE factors SET uncertainty = 'Synthetic v2 uncertainty retained for display.'").run();
+    const insertStage = db.prepare(`INSERT INTO stage_results (
+      id, research_run_id, stage_id, selection_key, workflow_version, stage_revision,
+      context_json, context_sha256, output_json, output_sha256, prompt_filename, prompt_source,
+      prompt_text, prompt_sha256, current_bundled_prompt_sha256, schema_json, schema_sha256,
+      input_json, input_sha256, evidence_json, evidence_ids_json, evidence_ids_sha256,
+      evidence_sha256, runtime_prompt_id, runtime_prompt_sha256, effective_request_json,
+      effective_request_sha256, completed_at
+    ) VALUES (?, ?, 'decision-analysis', ?, 2, 1, ?, ?, ?, ?, 'decision-analysis.md', 'bundled',
+      ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'synthetic-runtime', ?, ?, ?, ?)`);
+    const insertAnalysis = db.prepare(`INSERT INTO decision_analyses (
+      id, research_run_id, solution_id, stage_result_id, analysis_json, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?)`);
+    for (let project = 0; project < PROJECT_COUNT; project += 1) {
+      const runId = id("run", project, DEVELOPMENT_RUNS_PER_PROJECT);
+      const solutionId = id("solution", project, DEVELOPMENT_RUNS_PER_PROJECT - 1, 0);
+      const completedAt = timestamp(200_000 + project);
+      db.prepare("UPDATE research_runs SET workflow_version = 2, awaiting_selection = 0 WHERE id = ?").run(runId);
+      db.prepare("DELETE FROM solutions WHERE research_run_id = ? AND CAST(substr(id, length(id) - 2) AS INTEGER) >= 3").run(runId);
+      db.prepare(`UPDATE solutions SET option_position = CASE WHEN CAST(substr(id, length(id) - 2) AS INTEGER) < 3
+          THEN CAST(substr(id, length(id) - 2) AS INTEGER) ELSE NULL END,
+        key_assumption = 'Synthetic v2 assumption', why_current_approach_may_suffice = 'Synthetic current approach may suffice',
+        unknowns_json = '["Synthetic uncertainty"]', supporting_evidence_ids_json = '[]', contrary_evidence_ids_json = '[]'
+        WHERE research_run_id = ?`).run(runId);
+      db.prepare("UPDATE solutions SET selected_at = ? WHERE id = ?").run(completedAt, solutionId);
+      const stageId = id("stage-v2", project);
+      insertStage.run(stageId, runId, solutionId, emptyJson, digest, analysis, createHash("sha256").update(analysis).digest("hex"), promptText, promptDigest, promptDigest,
+        emptyJson, digest, emptyJson, digest, emptyJson, emptyArray, createHash("sha256").update(emptyArray).digest("hex"), digest,
+        digest, emptyJson, digest, completedAt);
+      insertAnalysis.run(id("analysis-v2", project), runId, solutionId, stageId, analysis, completedAt, completedAt);
+    }
+    db.exec("COMMIT");
+  } catch (error) {
+    db.exec("ROLLBACK");
+    client.close();
+    throw error;
+  }
+  db.exec("PRAGMA wal_checkpoint(TRUNCATE)");
+  client.close();
+  const counterClient = new DatabaseClient(fixture.databasePath);
+  const convertedCounts = Object.fromEntries([
+    "threads", "messages", "research_runs", "sources", "factors", "problems", "solutions", "outcomes", "risks", "mitigations", "job_events",
+  ].map((table) => [table, tableCount(counterClient, table)]));
+  counterClient.close();
+  const converted = {
+    ...fixture,
+    databaseSha256: sha256(fixture.databasePath), databaseBytes: statSync(fixture.databasePath).size,
+    workflowCoverage: "representative-v2" as const,
+    counts: convertedCounts,
+    expected: { ...fixture.expected, solutions: Number(convertedCounts.solutions) },
+  };
+  writeFileSync(`${fixture.databasePath}.json`, `${JSON.stringify(converted, null, 2)}\n`, "utf8");
+  return converted;
 }
 
 if (import.meta.main) {
