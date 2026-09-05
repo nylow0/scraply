@@ -116,7 +116,9 @@ try {
     Copy-Item -LiteralPath (Join-Path $packageDirectory $name) -Destination $temporaryRoot
   }
 
-  $checksumLines = foreach ($name in ($requiredFiles | Sort-Object)) {
+  $checksumNames = [string[]]@($requiredFiles)
+  [Array]::Sort($checksumNames, [StringComparer]::Ordinal)
+  $checksumLines = foreach ($name in $checksumNames) {
     $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $temporaryRoot $name)).Hash.ToLowerInvariant()
     "$hash  $name"
   }
