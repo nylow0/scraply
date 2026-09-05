@@ -37,6 +37,7 @@ test("native research survives the installed selection, development, and reopen 
     electron = await launch();
     let page = await electron.firstWindow();
     await page.getByRole("button", { name: "Create research", exact: true }).click();
+    await expect(page.getByRole("option", { name: /Native OpenAI/ })).toHaveCount(1);
     await page.getByLabel("Research name", { exact: true }).fill("Native protocol UI fixture");
     await page.getByLabel("What do you want to explore?", { exact: false }).fill("Parts delivery uncertainty for repair shops");
     await page.getByLabel("Research depth", { exact: false }).selectOption("quick");
