@@ -34,7 +34,12 @@ import {
   resolveWorkflowV2Prompt,
   type ResolvedWorkflowV2Prompt,
 } from "./prompts";
-import { WORKFLOW_V2_STAGE_REGISTRY, WORKFLOW_VERSION_V2 } from "./stages";
+import {
+  assertWorkflowV2DecisionAnalysisSemantics,
+  assertWorkflowV2SolutionsSemantics,
+  WORKFLOW_V2_STAGE_REGISTRY,
+  WORKFLOW_VERSION_V2,
+} from "./stages";
 
 export interface DevelopmentProblem extends Problem {
   id: string;
@@ -448,10 +453,7 @@ export async function produceDevelopmentOptions(
   let output: { options: WorkflowV2SolutionOption[] };
   try {
     output = WorkflowV2SolutionsOutputSchema.parse(completion.output);
-    if (output.options.length > 3) {
-      throw new Error("The v2 solutions stage returned more than three options");
-    }
-    validateEvidenceReferences(output.options, boundedEvidence.actualEvidenceIds);
+    assertWorkflowV2SolutionsSemantics(output, boundedEvidence.evidence);
   } catch (error) {
     throw completedSchemaFailure(error, completion.metadata);
   }
@@ -511,7 +513,7 @@ export async function analyzeSelectedOption(
   let analysis: WorkflowV2DecisionAnalysis;
   try {
     analysis = WorkflowV2DecisionAnalysisOutputSchema.parse(completion.output);
-    validateResponseRiskIds(analysis);
+    assertWorkflowV2DecisionAnalysisSemantics(analysis);
   } catch (error) {
     throw completedSchemaFailure(error, completion.metadata);
   }
@@ -562,7 +564,6 @@ function developmentEvidence(
     },
       ...categorizedEvidence,
     ],
-    actualEvidenceIds: new Set(categorizedEvidence.map((item) => item.sourceId)),
   };
 }
 
@@ -634,33 +635,6 @@ function mergeEvidenceCategories(items: WorkflowV2EvidenceItem[]): WorkflowV2Evi
     previousContent.categories = [...new Set([...previousContent.categories, ...nextContent.categories])];
   }
   return [...merged.values()];
-}
-
-function validateEvidenceReferences(
-  options: WorkflowV2SolutionOption[],
-  knownIds: Set<string>,
-): void {
-  for (const option of options) {
-    const referencedIds = [...option.supportingEvidenceIds, ...option.contraryEvidenceIds];
-    if (referencedIds.some((id) => !knownIds.has(id))) {
-      throw new Error("A v2 solution option referenced evidence that was not supplied");
-    }
-  }
-}
-
-function validateResponseRiskIds(analysis: WorkflowV2DecisionAnalysis): void {
-  const riskIds = new Set<string>();
-  for (const risk of analysis.risks) {
-    if (riskIds.has(risk.riskId)) {
-      throw new Error(`Duplicate decision risk ID: ${risk.riskId}`);
-    }
-    riskIds.add(risk.riskId);
-  }
-  for (const response of analysis.proposedResponses) {
-    if (response.riskIds.length === 0 || response.riskIds.some((riskId) => !riskIds.has(riskId))) {
-      throw new Error("A proposed response linked an empty or unknown risk set");
-    }
-  }
 }
 
 function completedSchemaFailure(error: unknown, metadata: GenerationMetadata): ProviderFailure {

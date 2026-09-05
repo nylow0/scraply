@@ -261,7 +261,7 @@ export const WORKFLOW_V2_STRUCTURED_OUTPUT_SCHEMAS = {
   workflowV2ProblemKill: WorkflowV2ProblemKillOutputSchema,
   workflowV2Solutions: WorkflowV2SolutionsOutputSchema,
   workflowV2DecisionAnalysis: WorkflowV2DecisionAnalysisOutputSchema,
-} as const satisfies Record<string, z.ZodTypeAny>;
+} as const satisfies Record<string, z.ZodType<unknown>>;
 
 export type Scope = z.infer<typeof ScopeSchema>;
 export type Factor = z.infer<typeof FactorSchema>;

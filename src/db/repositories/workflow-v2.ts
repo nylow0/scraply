@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import {
+  assertWorkflowV2DecisionAnalysisSemantics,
   parseWorkflowV2StageOutput,
   WORKFLOW_VERSION_V2,
   type WorkflowV2StageId,
@@ -209,7 +210,7 @@ export class WorkflowV2Repository {
     assertSha256(stage.prompt.currentBundledSha256, "bundled prompt");
     assertSha256(stage.runtimePrompt.sha256, "runtime prompt");
     verifyHash(stage.prompt.text, stage.prompt.resolvedSha256, "resolved prompt");
-    const parsedOutput = parseWorkflowV2StageOutput(stage.stageId, 1, stage.output);
+    const parsedOutput = parseWorkflowV2StageOutput(stage.stageId, 1, stage.output, stage.evidence);
     const selectionKey = normalizeSelectionKey(stage.selectionId);
     const contextJson = canonicalJson(stage.context);
     const outputJson = canonicalJson(parsedOutput);
@@ -330,6 +331,7 @@ export class WorkflowV2Repository {
   }): SaveResult {
     this.client.requireImmediateTransaction();
     const analysis = WorkflowV2DecisionAnalysisOutputSchema.parse(input.analysis);
+    assertWorkflowV2DecisionAnalysisSemantics(analysis);
     const selected = this.client.db.prepare(`
       SELECT id FROM solutions WHERE research_run_id = ? AND selected_at IS NOT NULL
     `).get(input.researchRunId) as { id: string } | undefined;
@@ -429,7 +431,13 @@ function decodeStageRow(row: StageResultRow): SavedWorkflowV2Stage {
   verifyHash(row.evidence_json, row.evidence_sha256, "stored evidence");
   verifyHash(row.evidence_ids_json, row.evidence_ids_sha256, "stored evidence identities");
   verifyHash(row.effective_request_json, row.effective_request_sha256, "stored effective request");
-  const output = parseWorkflowV2StageOutput(row.stage_id, row.stage_revision, JSON.parse(row.output_json));
+  const evidence = JSON.parse(row.evidence_json) as WorkflowV2EvidenceSnapshot[];
+  const output = parseWorkflowV2StageOutput(
+    row.stage_id,
+    row.stage_revision,
+    JSON.parse(row.output_json),
+    evidence,
+  );
   return {
     id: row.id,
     researchRunId: row.research_run_id,
@@ -452,7 +460,7 @@ function decodeStageRow(row: StageResultRow): SavedWorkflowV2Stage {
     },
     schema: JSON.parse(row.schema_json),
     inputs: JSON.parse(row.input_json),
-    evidence: JSON.parse(row.evidence_json),
+    evidence,
     evidenceIdentities: JSON.parse(row.evidence_ids_json),
     runtimePrompt: { id: row.runtime_prompt_id, sha256: row.runtime_prompt_sha256 },
     effectiveRequest: JSON.parse(row.effective_request_json),

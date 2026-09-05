@@ -1,4 +1,4 @@
-import type { z } from "zod";
+import type { ZodType } from "zod";
 import {
   WorkflowV2DecisionAnalysisOutputSchema,
   WorkflowV2FactorHarvestOutputSchema,
@@ -6,6 +6,8 @@ import {
   WorkflowV2ProblemKillOutputSchema,
   WorkflowV2QueryPlanOutputSchema,
   WorkflowV2SolutionsOutputSchema,
+  type WorkflowV2DecisionAnalysis,
+  type WorkflowV2SolutionOption,
 } from "../shared/structured-output-schemas";
 
 export const WORKFLOW_VERSION_V2 = 2 as const;
@@ -26,7 +28,7 @@ export interface WorkflowV2StageDefinition {
   promptFilename: `workflow-v2-${WorkflowV2StageId}.md`;
   promptRevision: 1;
   schemaRevision: 1;
-  schema: z.ZodTypeAny;
+  schema: ZodType<unknown>;
   maxOutputTokens: number;
   deadlineMs: number;
 }
@@ -96,11 +98,82 @@ export function parseWorkflowV2StageOutput(
   stageId: WorkflowV2StageId,
   schemaRevision: number,
   value: unknown,
+  evidence: readonly WorkflowV2CategorizedEvidence[] = [],
 ): unknown {
   if (schemaRevision !== 1) {
     throw new Error(`Unsupported ${stageId} schema revision: ${schemaRevision}`);
   }
   // Keep this revision switch when adding schemas. Saved checkpoints must keep using the schema
   // version that created them instead of the currently bundled stage definition.
-  return WORKFLOW_V2_STAGE_REGISTRY[stageId].schema.parse(value);
+  const output = WORKFLOW_V2_STAGE_REGISTRY[stageId].schema.parse(value);
+  assertWorkflowV2StageOutputSemantics(stageId, output, evidence);
+  return output;
+}
+
+export interface WorkflowV2CategorizedEvidence {
+  sourceId: string;
+  content: unknown;
+}
+
+export function assertWorkflowV2SolutionsSemantics(
+  output: { options: WorkflowV2SolutionOption[] },
+  evidence: readonly WorkflowV2CategorizedEvidence[] = [],
+): void {
+  if (output.options.length > 3) {
+    throw new Error("The v2 solutions stage returned more than three options");
+  }
+  const categories = evidenceCategories(evidence);
+  for (const option of output.options) {
+    if (option.supportingEvidenceIds.some((id) => !categories.supporting.has(id))) {
+      throw new Error("A v2 solution option referenced evidence outside its supporting category");
+    }
+    if (option.contraryEvidenceIds.some((id) => !categories.contrary.has(id))) {
+      throw new Error("A v2 solution option referenced evidence outside its contrary category");
+    }
+  }
+}
+
+export function assertWorkflowV2DecisionAnalysisSemantics(
+  analysis: WorkflowV2DecisionAnalysis,
+): void {
+  const riskIds = new Set<string>();
+  for (const risk of analysis.risks) {
+    if (riskIds.has(risk.riskId)) {
+      throw new Error(`Duplicate decision risk ID: ${risk.riskId}`);
+    }
+    riskIds.add(risk.riskId);
+  }
+  for (const response of analysis.proposedResponses) {
+    if (response.riskIds.length === 0 || response.riskIds.some((riskId) => !riskIds.has(riskId))) {
+      throw new Error("A proposed response linked an empty or unknown risk set");
+    }
+  }
+}
+
+function assertWorkflowV2StageOutputSemantics(
+  stageId: WorkflowV2StageId,
+  output: unknown,
+  evidence: readonly WorkflowV2CategorizedEvidence[],
+): void {
+  if (stageId === "solutions") {
+    assertWorkflowV2SolutionsSemantics(
+      output as { options: WorkflowV2SolutionOption[] },
+      evidence,
+    );
+  } else if (stageId === "decision-analysis") {
+    assertWorkflowV2DecisionAnalysisSemantics(output as WorkflowV2DecisionAnalysis);
+  }
+}
+
+function evidenceCategories(evidence: readonly WorkflowV2CategorizedEvidence[]) {
+  const supporting = new Set<string>();
+  const contrary = new Set<string>();
+  for (const item of evidence) {
+    if (!item.content || typeof item.content !== "object" || Array.isArray(item.content)) continue;
+    const categories = (item.content as Record<string, unknown>).categories;
+    if (!Array.isArray(categories)) continue;
+    if (categories.includes("supporting")) supporting.add(item.sourceId);
+    if (categories.includes("contrary")) contrary.add(item.sourceId);
+  }
+  return { supporting, contrary };
 }
