@@ -2,7 +2,9 @@ import { fireEvent, render, waitFor } from "@testing-library/svelte";
 import { describe, expect, test, vi } from "vitest";
 import ScopeForm from "../../src/renderer/components/ScopeForm.svelte";
 import type { WorkspaceState } from "../../src/shared/ipc";
-import { DEFAULT_RUN_CONFIG, RunConfigSchema, modelRefKey } from "../../src/shared/schemas";
+import { DEFAULT_RUN_CONFIG as NATIVE_DEFAULT_RUN_CONFIG, RunConfigSchema, modelRefKey } from "../../src/shared/schemas";
+
+const DEFAULT_RUN_CONFIG = { ...NATIVE_DEFAULT_RUN_CONFIG, model: { providerId: "legacy-codex-cli", modelId: NATIVE_DEFAULT_RUN_CONFIG.model.modelId } };
 
 describe("ScopeForm search provider selection", () => {
   test("distinguishes identical model names and saves the explicitly selected native route", async () => {

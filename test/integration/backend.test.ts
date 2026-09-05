@@ -200,7 +200,7 @@ describe("cutover backend", () => {
     expect(validation.body.data.codex).toMatchObject({ detected: true, compatible: true, authenticated: false });
     const threadId = (await request("/threads", {})).body.data.thread.id as string;
     await request("/scope", { threadId, scope: { title: "Known delay", audience: "", domain: "", observations: "", offLimits: [] } });
-    await request("/run-config", { threadId, config: { ...DEFAULT_RUN_CONFIG, researchMode: "known-problem", knownProblem: "Parts arrive late." } });
+    await request("/run-config", { threadId, config: { ...DEFAULT_RUN_CONFIG, model: { providerId: "legacy-codex-cli", modelId: DEFAULT_RUN_CONFIG.model.modelId }, researchMode: "known-problem", knownProblem: "Parts arrive late." } });
     const start = await request("/research/start", { threadId });
     expect(start.status).toBe(409);
     expect(start.body.error?.message).toBe("Codex is not signed in");
@@ -342,11 +342,15 @@ describe("cutover backend", () => {
     expect(workspaceResponse.status).toBe(200);
     const workspace = (await workspaceResponse.json() as { data: { solutions: Array<{ id: string; factors: Array<{ quote: string; sourceTitle: string; retrievedText?: string }> }>; latestResearchRun: { problemId: string | null } } }).data;
     expect(workspace.solutions.map((solution) => solution.id)).toEqual(["solution-selected"]);
-    expect(workspace.solutions[0]!.factors).toEqual([expect.objectContaining({
+    expect(workspace.solutions[0]!.factors).toEqual([]);
+    const detailResponse = await fetch(`http://127.0.0.1:${handle.port}/ideas/solution-selected`, { headers: { authorization: `Bearer ${handle.token}` } });
+    expect(detailResponse.status).toBe(200);
+    const detail = (await detailResponse.json() as { data: { factors: Array<{ quote: string; sourceTitle: string; retrievedText?: string }> } }).data;
+    expect(detail.factors).toEqual([expect.objectContaining({
       quote: "Parts arrive several days late.",
       sourceTitle: "Selected evidence",
     })]);
-    expect(workspace.solutions[0]!.factors[0]!.retrievedText).toBeUndefined();
+    expect(detail.factors[0]!.retrievedText).toBeUndefined();
     expect(workspace.latestResearchRun.problemId).toBe("problem-deselected");
     const exported = await post("/ideas/export", { threadId: created.thread.id, format: "json" }) as { files: Array<{ filename: string; content: string }> };
     expect(exported.files).toHaveLength(1);

@@ -90,7 +90,7 @@ describe("SolutionWorkspace ordering explanation", () => {
       onReview: vi.fn(),
     });
 
-    expect(view.getByText("Ideas are ordered by independently confirmed outcomes that address the core problem.")).toBeTruthy();
+    expect(view.getByText(/options are not ranked/)).toBeTruthy();
     expect(view.getByRole("button", { name: "Unaddressed project-ending" })).toBeTruthy();
     expect(view.queryByText(/catastrophic gaps/i)).toBeNull();
   });

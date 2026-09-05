@@ -18,7 +18,7 @@ import {
   GetIdeaDetailRequestSchema, GetSourceDetailRequestSchema, HealthResponseSchema,
   NativeLoginCancelSchema, NativeLoginCompleteSchema, NativeLoginStartSchema, NativeProviderSchema,
   ResumeResearchSchema, SaveFavoriteModelSchema, SaveRunConfigSchema, SaveScopeSchema,
-  SelectProblemsSchema, SelectThreadRequestSchema, SourceDetailSchema, StartResearchSchema,
+  SelectProblemsSchema, SelectOptionSchema, SaveDecisionSchema, SelectThreadRequestSchema, SourceDetailSchema, StartResearchSchema,
   ValidationStateSchema, WorkspaceStateSchema, type FactorView, type ProblemCandidate, type RejectedProblemCandidate, type ResearchEvent,
   type SolutionView, type ValidationState,
 } from "../shared/ipc";
@@ -91,6 +91,12 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
   const token = randomBytes(24).toString("hex");
   const db = new DatabaseClient(context.dbPath);
   new GenerationAttemptRepository(db).interruptInFlight("The backend restarted before the generation reached a durable terminal result");
+  db.db.exec(`
+    UPDATE research_runs SET interrupted = 1 WHERE status IN ('queued', 'running');
+    UPDATE threads SET status = 'failed' WHERE id IN (
+      SELECT thread_id FROM research_runs WHERE interrupted = 1 AND status IN ('queued', 'running')
+    );
+  `);
   const threads = new ThreadRepository(db);
   db.setMeta("persistence_probe", `ok-${Date.now()}`);
   let activeThreadId: string | null = db.getSetting("active_thread_id") || null;
@@ -236,7 +242,7 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
       presets: threads.listPresets(),
       problemCandidates: activeThreadId ? listProblems(activeThreadId) : [],
       rejectedProblemCandidates: activeThreadId ? listRejectedProblemCandidates(activeThreadId) : [],
-      solutions: activeThreadId ? listSolutions(activeThreadId) : [],
+      solutions: activeThreadId ? listSolutions(activeThreadId, false) : [],
       latestResearchRun: activeThreadId ? latestRun(activeThreadId) : null,
       pendingRuns: listPendingRuns(),
     };
@@ -289,24 +295,34 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
       reason: candidate.reason,
     }));
   }
-  function listSolutions(threadId: string): SolutionView[] {
+  function listSolutions(threadId: string, details = true, solutionId?: string): SolutionView[] {
     const rows = db.db.prepare(`
-      SELECT s.*, p.statement AS problem_statement, p.verdict AS problem_verdict
+      SELECT s.*, p.statement AS problem_statement, p.verdict AS problem_verdict,
+        rr.workflow_version, rr.awaiting_selection, rr.updated_at AS run_updated_at,
+        ${details ? "da.analysis_json, da.user_decision, da.observed_result," : ""} da.updated_at AS decision_updated_at,
+        (SELECT COUNT(*) FROM outcomes o WHERE o.solution_id = s.id) AS outcome_count,
+        (SELECT COUNT(*) FROM outcomes o WHERE o.solution_id = s.id AND o.addresses_core = 1) AS core_count,
+        (SELECT COUNT(*) FROM risks r WHERE r.solution_id = s.id) AS risk_count,
+        (SELECT COUNT(*) FROM risks r WHERE r.solution_id = s.id AND r.impact = 'project ends') AS ending_count,
+        (SELECT COUNT(*) FROM risks r WHERE r.solution_id = s.id AND r.impact = 'project ends'
+          AND NOT EXISTS (SELECT 1 FROM risk_mitigations rm WHERE rm.risk_id = r.id)) AS unaddressed_count
       FROM solutions s JOIN problems p ON p.id = s.problem_id
       JOIN research_runs rr ON rr.id = s.research_run_id
-      WHERE rr.thread_id = ? AND rr.status = 'completed'
+      LEFT JOIN decision_analyses da ON da.solution_id = s.id
+      WHERE rr.thread_id = ? AND (rr.status = 'completed' OR rr.workflow_version = 2)
+        AND (? IS NULL OR s.id = ?)
         AND p.selected_at IS NOT NULL
         AND p.discovery_run_id = (
           SELECT id FROM research_runs
           WHERE thread_id = ? AND problem_id IS NULL AND status = 'completed'
           ORDER BY created_at DESC, rowid DESC LIMIT 1
         )
-      ORDER BY s.created_at, s.id
-    `).all(threadId, threadId) as Array<Record<string, unknown>>;
+      ORDER BY s.created_at, s.option_position, s.id
+    `).all(threadId, solutionId ?? null, solutionId ?? null, threadId) as Array<Record<string, unknown>>;
     const result = rows.map((row): SolutionView => {
-      const outcomes = (db.db.prepare("SELECT * FROM outcomes WHERE solution_id = ? ORDER BY created_at, id").all(row.id) as Array<Record<string, unknown>>)
+      const outcomes = (details ? db.db.prepare("SELECT * FROM outcomes WHERE solution_id = ? ORDER BY created_at, id").all(row.id) as Array<Record<string, unknown>> : [])
         .map((item) => ({ id: String(item.id), description: String(item.description), direction: String(item.direction) as "positive" | "negative", affects: String(item.affects), addressesCore: Boolean(item.addresses_core) }));
-      const risks = (db.db.prepare("SELECT * FROM risks WHERE solution_id = ? ORDER BY sort_key DESC, created_at, id").all(row.id) as Array<Record<string, unknown>>)
+      const risks = (details ? db.db.prepare("SELECT * FROM risks WHERE solution_id = ? ORDER BY sort_key DESC, created_at, id").all(row.id) as Array<Record<string, unknown>> : [])
         .map((item) => {
           const mitigations = (db.db.prepare(`
             SELECT m.* FROM risk_mitigations rm JOIN mitigations m ON m.id = rm.mitigation_id WHERE rm.risk_id = ? ORDER BY m.created_at, m.id
@@ -317,16 +333,36 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
           return { id: String(item.id), description: String(item.description), likelihood: String(item.likelihood) as "rare" | "possible" | "likely",
             impact: String(item.impact) as "≤3 days lost" | "~2 weeks" | "~2 months" | "project ends", sortKey: Number(item.sort_key), mitigations };
         });
+      const highest = db.db.prepare("SELECT id, description, likelihood, impact, sort_key AS sortKey FROM risks WHERE solution_id = ? ORDER BY sort_key DESC, created_at, id LIMIT 1")
+        .get(row.id) as NonNullable<SolutionView["highestRisk"]> | undefined;
       return {
+        detailsLoaded: details, highestRisk: highest ?? null,
+        outcomeCount: Number(row.outcome_count), riskCount: Number(row.risk_count), projectEndingRiskCount: Number(row.ending_count),
+        workflowVersion: Number(row.workflow_version) as 1 | 2,
+        runId: String(row.research_run_id), selected: row.selected_at !== null,
+        selectable: Boolean(row.awaiting_selection),
+        keyAssumption: row.key_assumption === null ? undefined : String(row.key_assumption),
+        whyCurrentApproachMaySuffice: row.why_current_approach_may_suffice === null ? undefined : String(row.why_current_approach_may_suffice),
+        unknowns: JSON.parse(String(row.unknowns_json ?? "[]")),
+        supportingEvidenceIds: JSON.parse(String(row.supporting_evidence_ids_json ?? "[]")),
+        contraryEvidenceIds: JSON.parse(String(row.contrary_evidence_ids_json ?? "[]")),
+        ...(details ? {
+          decisionAnalysis: row.analysis_json ? JSON.parse(String(row.analysis_json)) : null,
+          userDecision: row.user_decision === null ? null : String(row.user_decision),
+          observedResult: row.observed_result === null ? null : String(row.observed_result),
+          contrarySources: db.db.prepare(`SELECT s.id, s.title, s.canonical_url AS url, s.retrieved_text AS text
+            FROM problem_verdict_sources pvs JOIN sources s ON s.id = pvs.source_id WHERE pvs.problem_id = ? ORDER BY pvs.position`)
+            .all(row.problem_id) as Array<{ id: string; title: string; url: string; text: string }>,
+        } : {}),
+        detailRevision: `${row.run_updated_at}:${row.decision_updated_at ?? ""}`,
         id: String(row.id), problemId: String(row.problem_id), problemStatement: String(row.problem_statement),
         problemVerdict: String(row.problem_verdict) as SolutionView["problemVerdict"], mechanism: String(row.mechanism),
-        factors: listProblemFactors(String(row.problem_id)),
+        factors: details ? listProblemFactors(String(row.problem_id)) : [],
         description: String(row.description), respectsOffLimits: Boolean(row.respects_off_limits), respectsOffLimitsWhy: String(row.respects_off_limits_why),
-        outcomes, risks, confirmedCoreOutcomes: outcomes.filter((outcome) => outcome.addressesCore).length,
-        unaddressedCatastrophicRisks: risks.filter((risk) => risk.impact === "project ends" && risk.mitigations.length === 0).length,
+        outcomes, risks, confirmedCoreOutcomes: Number(row.core_count), unaddressedCatastrophicRisks: Number(row.unaddressed_count),
       };
     });
-    return result.sort((left, right) => right.confirmedCoreOutcomes - left.confirmedCoreOutcomes);
+    return result;
   }
   function researchExport(threadId: string) {
     const runId = latestDiscoveryRun(threadId);
@@ -405,17 +441,18 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
     return row ? { runId: row.research_run_id, summary: runUsage(row.research_run_id) } : null;
   }
   function latestRun(threadId: string) {
-    const row = db.db.prepare("SELECT id, status, problem_id, config_json FROM research_runs WHERE thread_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1")
-      .get(threadId) as { id: string; status: string; problem_id: string | null; config_json: string } | undefined;
+    const row = db.db.prepare("SELECT id, status, problem_id, config_json, workflow_version, awaiting_selection, interrupted FROM research_runs WHERE thread_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1")
+      .get(threadId) as { id: string; status: string; problem_id: string | null; config_json: string; workflow_version: 1 | 2; awaiting_selection: number; interrupted: number } | undefined;
     if (!row) return null;
     const runConfig = RunConfigSchema.parse({ ...DEFAULT_RUN_CONFIG, ...JSON.parse(row.config_json) });
     const counts = db.db.prepare(`SELECT provider, COUNT(*) AS count FROM cost_ledger WHERE research_run_id = ? AND status IN ('reserved','committed') GROUP BY provider`)
       .all(row.id) as Array<{ provider: string; count: number }>;
-    const projection = row.problem_id ? { modelCalls: MAX_DEVELOPMENT_PROJECTED_CALLS, searches: 0 } : discoveryRunProjection(runConfig.discoveryDepth);
+    const projection = row.problem_id ? { modelCalls: row.workflow_version === 2 ? 2 : MAX_DEVELOPMENT_PROJECTED_CALLS, searches: 0 } : discoveryRunProjection(runConfig.discoveryDepth);
     const activity = db.db.prepare("SELECT payload_json FROM job_events WHERE run_id = ? AND type = 'run-progress' ORDER BY id DESC LIMIT 1")
       .get(row.id) as { payload_json: string } | undefined;
     return {
       runId: row.id, status: row.status, problemId: row.problem_id,
+      workflowVersion: row.workflow_version, awaitingSelection: Boolean(row.awaiting_selection), interrupted: Boolean(row.interrupted),
       codexCalls: counts.find((item) => item.provider === runConfig.model.providerId)?.count ?? 0,
       searches: counts.find((item) => item.provider === runConfig.searchProvider)?.count ?? 0,
       projectedCodexCalls: projection.modelCalls, projectedSearches: projection.searches,
@@ -482,7 +519,7 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
       }
       if (method === "GET" && route.startsWith("/ideas/")) {
         const { ideaId } = GetIdeaDetailRequestSchema.parse({ ideaId: route.slice(7) });
-        const idea = listSolutions(activeThreadId ?? "").find((item) => item.id === ideaId);
+        const idea = listSolutions(activeThreadId ?? "", true, ideaId)[0];
         if (!idea) throw new AppError("not_found", "Solution not found.");
         return sendJson(res, 200, idea);
       }
@@ -678,6 +715,21 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
       if (route === "/research/resume") {
         const { runId } = ResumeResearchSchema.parse(body); await ensureEngine().resumeRun(runId); return sendJson(res, 200, { workspace: await workspaceState() });
       }
+      if (route === "/research/select-option") {
+        const input = SelectOptionSchema.parse(body);
+        requireThread(input.threadId);
+        await ensureEngine().selectOption(input.threadId, input.runId, input.solutionId);
+        return sendJson(res, 200, await workspaceState());
+      }
+      if (route === "/research/decision") {
+        const input = SaveDecisionSchema.parse(body);
+        const belongs = db.db.prepare(`SELECT da.id FROM decision_analyses da JOIN research_runs rr ON rr.id = da.research_run_id
+          WHERE rr.thread_id = ? AND da.solution_id = ?`).get(input.threadId, input.solutionId) as { id: string } | undefined;
+        if (!belongs) throw new AppError("not_found", "Selected analysis does not belong to this project.");
+        db.db.prepare("UPDATE decision_analyses SET user_decision = ?, observed_result = ?, updated_at = ? WHERE id = ?")
+          .run(input.userDecision, input.observedResult, new Date().toISOString(), belongs.id);
+        return sendJson(res, 200, await workspaceState());
+      }
       if (route === "/research/cancel") {
         const { runId } = ResumeResearchSchema.parse(body); cancelRun(runId); return sendJson(res, 200, { workspace: await workspaceState() });
       }
@@ -807,6 +859,7 @@ async function inspectNativeRuntime(
 }
 
 function renderMarkdown(ideas: SolutionView[]): string {
+  if (ideas.some((idea) => idea.workflowVersion === 2)) return renderDecisionMarkdown(ideas);
   const first = ideas[0]!;
   const evidence = first.factors.length > 0
     ? first.factors.flatMap((factor) => [
@@ -828,6 +881,29 @@ function renderMarkdown(ideas: SolutionView[]): string {
     "### Outcomes", "", ...idea.outcomes.map((outcome) => `- ${outcome.direction}: ${outcome.description} (${outcome.addressesCore ? "addresses core" : "indirect"})`), "",
     "### Risks", "", ...idea.risks.map((risk) => `- ${risk.likelihood} / ${risk.impact}: ${risk.description}${risk.mitigations.length ? `\n  - Proposed response: ${risk.mitigations.map((m) => `${m.approach}; fails if ${m.failsIf}`).join(" | ")}` : ""}`), "",
   ])].join("\n");
+}
+function renderDecisionMarkdown(ideas: SolutionView[]): string {
+  return ideas.flatMap((idea) => {
+    const analysis = idea.decisionAnalysis;
+    return [
+      `# ${idea.mechanism}`, "", idea.description, "", `Problem: ${idea.problemStatement}`, "",
+      `Workflow: v2. ${idea.selected ? "Selected by the user." : "Not selected."} Problem evidence: ${idea.problemVerdict}.`, "",
+      `Key assumption: ${idea.keyAssumption}`, "", `Current approach may suffice: ${idea.whyCurrentApproachMaySuffice}`, "",
+      `Constraints: ${idea.respectsOffLimitsWhy}`, "", "## Uncertainty", "", ...(idea.unknowns ?? []).map((item) => `- ${item}`), "",
+      "## Supporting observations", "", ...idea.factors.flatMap((factor) => [`> ${factor.quote}`, "", `[${factor.sourceTitle}](${factor.sourceUrl})`, ""]),
+      "## Contrary evidence considered", "", ...(idea.contrarySources ?? []).flatMap((source) => [`[${source.title}](${source.url})`, "", source.text, ""]),
+      ...(analysis ? [
+        "## Model analysis, not observed results", "", ...analysis.consequences.map((item) => `- ${item.direction}: ${item.description}. Affects ${item.affects}. ${item.rationale}`), "",
+        "## Decisive risks", "", ...analysis.risks.map((risk) => `- ${risk.description}: ${risk.whyDecisive}`), "",
+        "## Proposed responses, untested", "", ...analysis.proposedResponses.map((response) => `- ${response.approach}. Cost: ${response.cost}. Fails if: ${response.failsIf}`), "",
+        "## Open questions", "", ...analysis.unknowns.map((item) => `- ${item}`), "",
+        "## Next experiment", "", analysis.experiment.question, "", analysis.experiment.method, "",
+        `Cost: ${analysis.experiment.cost}`, "", `Pass: ${analysis.experiment.passCriterion}`, "", `Fail: ${analysis.experiment.failCriterion}`, "",
+      ] : ["No completed analysis for this option.", ""]),
+      "## User decision", "", idea.userDecision || "Not recorded.", "",
+      "## Observed test result", "", idea.observedResult || "Not recorded. Proposed responses remain untested.", "",
+    ];
+  }).join("\n");
 }
 function slug(value: string): string { return value.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 80) || "problem"; }
 function authorize(req: IncomingMessage, token: string): boolean { return req.headers.authorization === `Bearer ${token}`; }

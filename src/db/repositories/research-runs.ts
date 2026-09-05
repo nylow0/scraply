@@ -37,6 +37,7 @@ export class ResearchRunRepository {
           completion_reason, budget_limit, reserved_cost, committed_cost, problem_id, created_at, updated_at
         ) VALUES (?, ?, 'running', ?, ?, 0, 0, NULL, ?, 0, 0, ?, ?, ?)
       `).run(runId, threadId, JSON.stringify(config), idempotencyKey, ACCOUNTING_BUDGET_USD, problemId, now, now);
+      db.prepare("UPDATE research_runs SET workflow_version = ? WHERE id = ?").run(config.workflowVersion ?? 1, runId);
       db.exec("COMMIT");
       return { runId, created: true };
     } catch (error) {

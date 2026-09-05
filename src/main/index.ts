@@ -24,6 +24,8 @@ import {
   SaveRunConfigSchema,
   SaveScopeSchema,
   SelectProblemsSchema,
+  SelectOptionSchema,
+  SaveDecisionSchema,
   SelectThreadRequestSchema,
   StartResearchSchema,
   type BackendReady,
@@ -570,6 +572,8 @@ function registerIpc(): void {
   handle(IPC_CHANNELS.CANCEL_RESEARCH, (body) => post("/research/cancel", CancelResearchSchema.parse(body)));
   handle(IPC_CHANNELS.RESUME_RESEARCH, (body) => post("/research/resume", ResumeResearchSchema.parse(body)));
   handle(IPC_CHANNELS.SELECT_PROBLEMS, (body) => post("/research/select-problems", SelectProblemsSchema.parse(body)));
+  handle(IPC_CHANNELS.SELECT_OPTION, (body) => post("/research/select-option", SelectOptionSchema.parse(body)));
+  handle(IPC_CHANNELS.SAVE_DECISION, (body) => post("/research/decision", SaveDecisionSchema.parse(body)));
   handle(IPC_CHANNELS.EXPORT_RESEARCH, async (body) => {
     const payload = ExportResearchRequestSchema.parse(body);
     const bundle = await post("/research/export", payload) as { filename: string; content: string };

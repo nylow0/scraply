@@ -71,6 +71,7 @@ export class DiscoveryRepository {
     researchRunId: string,
     sources: DiscoverySourceRecord[],
     factors: DiscoveryFactorRecord[],
+    checkpoint?: () => void,
   ): void {
     const db = this.client.db;
     db.exec("BEGIN IMMEDIATE");
@@ -97,6 +98,7 @@ export class DiscoveryRepository {
           now,
         );
       }
+      checkpoint?.();
       db.exec("COMMIT");
     } catch (error) {
       db.exec("ROLLBACK");
@@ -109,6 +111,7 @@ export class DiscoveryRepository {
     sources: DiscoverySourceRecord[],
     problems: DiscoveryProblemRecord[],
     rejectedCandidates: RejectedProblemCandidateRecord[] = [],
+    checkpoint?: () => void,
   ): void {
     const db = this.client.db;
     db.exec("BEGIN IMMEDIATE");
@@ -167,6 +170,7 @@ export class DiscoveryRepository {
           now,
         );
       }
+      checkpoint?.();
       db.exec("COMMIT");
     } catch (error) {
       db.exec("ROLLBACK");
@@ -208,6 +212,7 @@ export class DiscoveryRepository {
         INSERT INTO research_runs (id, thread_id, status, config_json, cancelled, completion_reason, problem_id, created_at, updated_at)
         VALUES (?, ?, 'completed', ?, 0, 'Known problem supplied; discovery bypassed.', NULL, ?, ?)
       `).run(runId, threadId, JSON.stringify(config), now, now);
+      db.prepare("UPDATE research_runs SET workflow_version = ? WHERE id = ?").run(config.workflowVersion ?? 1, runId);
       this.persistScope(runId, scope);
       db.prepare(`
         INSERT INTO problems (

@@ -24,6 +24,8 @@
 
   const initial = untrack(() => workspace);
   let researchMode = $state<ResearchMode>(initial.runConfig?.researchMode ?? "explore-market");
+  let workflowVersion = $state<1 | 2>(initial.runConfig ? initial.runConfig.workflowVersion ?? 1 : 2);
+  let audienceSourcePolicy = $state<"web" | "communities">(initial.runConfig?.audienceSourcePolicy ?? "web");
   let title = $state(initial.scope?.title ?? "");
   let audience = $state(initial.scope?.audience ?? "");
   let domain = $state(initial.scope?.domain ?? "");
@@ -59,7 +61,7 @@
   let draftFingerprint = $derived(JSON.stringify({
     researchMode, title: title.trim(), audience: audience.trim(), domain: domain.trim(), observations: observations.trim(),
     offLimits: offLimits.split("\n").map((item) => item.trim()).filter(Boolean), knownProblem: knownProblem.trim(),
-    model, reasoningEffort, discoveryDepth, searchProvider, maxRunMinutes,
+    model, reasoningEffort, discoveryDepth, searchProvider, maxRunMinutes, workflowVersion, audienceSourcePolicy,
   }));
   // Only pre-mark as saved when a persisted run config exists and still matches the draft; a model that is no
   // longer offered falls back to the default, and the badge must not claim that fallback was ever saved.
@@ -125,7 +127,7 @@
       await onSave({
         title: title.trim(), audience: audience.trim(), domain: domain.trim(), observations: observations.trim(),
         offLimits: offLimits.split("\n").map((item) => item.trim()).filter(Boolean),
-      }, { configVersion: 2, model, reasoningEffort, discoveryDepth, searchProvider, maxRunMinutes, researchMode, knownProblem: knownProblem.trim() });
+      }, { configVersion: 2, workflowVersion, audienceSourcePolicy, model, reasoningEffort, discoveryDepth, searchProvider, maxRunMinutes, researchMode, knownProblem: knownProblem.trim() });
       savedFingerprint = submittedFingerprint;
       await onStart();
     } catch {
@@ -157,6 +159,8 @@
     </fieldset>
 
     <div class="primary-fields">
+      <label><span>Research workflow</span><select bind:value={workflowVersion}><option value={2}>Options and one selected analysis</option><option value={1}>Legacy research comparison</option></select><small>The shorter workflow pauses for your option choice before analyzing consequences and an experiment.</small></label>
+      {#if workflowVersion === 2 && researchMode === "explore-market"}<label><span>Audience sources</span><select bind:value={audienceSourcePolicy}><option value="web">Relevant sources across the web</option><option value="communities">Reddit and Hacker News</option></select><small>Choose communities only when they represent the people you want to understand.</small></label>{/if}
       <label><span>Research name</span><input bind:value={title} aria-invalid={Boolean(errors.title)} aria-describedby={errors.title ? "title-error" : undefined} placeholder={researchMode === "explore-market" ? "Project ideas" : "Solution ideas"} />{#if errors.title}<small id="title-error" class="field-error">{errors.title}</small>{/if}</label>
       {#if researchMode === "known-problem"}
         <label class="problem-field"><span>Problem statement</span><small>State the problem directly. This becomes a user-asserted problem and goes straight to solution development.</small><textarea bind:value={knownProblem} aria-invalid={Boolean(errors.knownProblem)} aria-describedby={errors.knownProblem ? "known-problem-error" : undefined} rows="4" placeholder="Small repair shops cannot reliably predict parts arrival times."></textarea>{#if errors.knownProblem}<small id="known-problem-error" class="field-error">{errors.knownProblem}</small>{/if}</label>

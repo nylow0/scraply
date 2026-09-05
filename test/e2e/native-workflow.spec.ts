@@ -9,7 +9,7 @@ import { IPC_CHANNELS, BackendReadySchema, ResearchEventSchema, type ResearchEve
 
 // Installed renderer/preload/main with the production backend loaded from source. Only the native
 // child and Exa HTTP responses are fixtures. Live bundled-runtime parity is a separate gate.
-test("native research survives the installed selection, development, and reopen interaction", async ({}, testInfo) => {
+for (const workflowVersion of [1, 2]) test(`native v${workflowVersion} research survives the installed selection, development, and reopen interaction`, async ({}, testInfo) => {
   const directory = mkdtempSync(join(tmpdir(), "scraply-native-ui-"));
   const managedPrompt = readFileSync(join(process.cwd(), "prompts", "solutions.md"), "utf8");
   const managedHash = createHash("sha256").update(managedPrompt).digest("hex");
@@ -37,6 +37,7 @@ test("native research survives the installed selection, development, and reopen 
     electron = await launch();
     let page = await electron.firstWindow();
     await page.getByRole("button", { name: "Create research", exact: true }).click();
+    await page.getByRole("combobox", { name: /Research workflow/ }).selectOption(String(workflowVersion));
     await expect(page.getByRole("option", { name: /Native OpenAI/ })).toHaveCount(1);
     await page.getByLabel("Research name", { exact: true }).fill("Native protocol UI fixture");
     await page.getByLabel("What do you want to explore?", { exact: false }).fill("Parts delivery uncertainty for repair shops");
@@ -47,10 +48,21 @@ test("native research survives the installed selection, development, and reopen 
     await page.getByRole("checkbox", { name: "Develop this problem" }).check();
     await page.getByRole("button", { name: "Commit selection", exact: true }).click();
     await expect(page.getByText("Supplier reliability ledger", { exact: true })).toBeVisible();
+    if (workflowVersion === 2) {
+      await page.getByRole("button", { name: "Choose and analyze", exact: true }).first().click();
+      await expect(page.getByText("Your selected option", { exact: false })).toBeVisible();
+      await page.getByText("Evidence, analysis and your decision", { exact: true }).click();
+      await expect(page.getByText("Next experiment", { exact: true })).toBeVisible();
+      await page.getByLabel("Your decision", { exact: true }).fill("Pilot with one supplier");
+      await page.getByLabel("Observed test result", { exact: true }).fill("Nine of ten estimates matched arrivals");
+      await page.getByRole("button", { name: "Save decision and result", exact: true }).click();
+      await expect(page.getByText("Saved", { exact: true })).toBeVisible();
+    } else {
     await page.getByText("Supplier reliability ledger", { exact: true }).click();
     const solution = page.locator("details.solution").filter({ has: page.getByText("Supplier reliability ledger", { exact: true }) });
     await solution.getByText("Review all risks and responses", { exact: true }).click();
     await expect(solution.getByText("Observed order volume stays too sparse", { exact: true }).first()).toBeVisible();
+    }
     await page.screenshot({ path: testInfo.outputPath("native-solutions.png") });
     await events;
     expect(eventErrors).toEqual([]);
@@ -61,12 +73,16 @@ test("native research survives the installed selection, development, and reopen 
     electron = await launch();
     page = await electron.firstWindow();
     await expect(page.getByText("Supplier reliability ledger", { exact: true })).toBeVisible();
+    if (workflowVersion === 2) {
+      await page.getByText("Evidence, analysis and your decision", { exact: true }).click();
+      await expect(page.getByLabel("Observed test result", { exact: true })).toHaveValue("Nine of ten estimates matched arrivals");
+    }
     await page.getByRole("tab", { name: /Research/ }).click();
     await expect(page.getByText("The evidence behind the ideas.", { exact: true })).toBeVisible();
-    await page.getByText("4 cited factors", { exact: true }).click();
+    await page.getByText(`${workflowVersion === 1 ? 4 : 2} cited factors`, { exact: true }).click();
     await expect(page.getByText("Parts delivery windows are uncertain.", { exact: true }).first()).toBeVisible();
     await page.screenshot({ path: testInfo.outputPath("native-reopened-evidence.png") });
-    expect(readFileSync(join(directory, "requests.jsonl"), "utf8").trim().split("\n")).toHaveLength(20);
+    expect(readFileSync(join(directory, "requests.jsonl"), "utf8").trim().split("\n")).toHaveLength(workflowVersion === 1 ? 20 : 7);
     expect(existsSync(join(directory, "prompts", "solutions.md"))).toBe(false);
     expect(readFileSync(join(directory, "prompts", "bundled-copy-backups", managedHash, "solutions.md"), "utf8")).toBe(managedPrompt);
   } finally {

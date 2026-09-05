@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { z } from "zod";
 import { DatabaseClient } from "../../src/db/client";
-import { WorkspaceStateSchema, type WorkspaceState } from "../../src/shared/ipc";
+import { WorkspaceStateSchema, SolutionViewSchema, type WorkspaceState } from "../../src/shared/ipc";
 import { GenerationStartPayloadSchema } from "../../src/shared/runtime-protocol";
 import { DEFAULT_RUN_CONFIG } from "../../src/shared/schemas";
 import { NATIVE_WORKFLOW_MODEL as model, UNTRUSTED_WORKFLOW_TEXT as untrusted, startNativeWorkflowBackend } from "../fixtures/native-workflow-backend";
@@ -67,7 +67,9 @@ describe("native v1 research workflow through the production backend", () => {
     await item.post("/research/select-problems", { threadId, problemIds: [discovered.problemCandidates[0]!.id], userProblem: null }, WorkspaceStateSchema);
     const developed = await item.waitFor((state) => state.threads.find((thread) => thread.id === threadId)?.status === "solutions-ready");
     expect(developed.solutions).toHaveLength(3);
-    for (const solution of developed.solutions) {
+    for (const summary of developed.solutions) {
+      expect(summary.outcomes).toHaveLength(0);
+      const solution = await item.post(`/ideas/${summary.id}`, undefined, SolutionViewSchema);
       expect(solution.outcomes).toHaveLength(4);
       expect(solution.risks).toHaveLength(2);
       expect(solution.risks.some((risk) => risk.impact === "project ends")).toBe(true);
@@ -175,7 +177,66 @@ describe("native v1 research workflow through the production backend", () => {
   }, 15_000);
 });
 
-async function fixture({ mode = "workflow", searchEnabled = true } = {}) {
+describe("native v2 decisions through the production backend", () => {
+  test("pauses after options, reopens under changed prompts, analyzes one option and records an observed result", async () => {
+    const item = await fixture({ searchEnabled: false, workflowVersion: 2 });
+    const threadId = await item.createThread("known-problem");
+    await item.post("/research/start", { threadId }, z.object({ runId: z.string() }));
+    const options = await item.waitFor((state) => state.latestResearchRun?.awaitingSelection === true);
+    expect(options.solutions).toHaveLength(2);
+    expect(item.requests()).toHaveLength(1);
+    expect(item.searches).toHaveLength(0);
+    const first = options.solutions[0]!;
+    const savedPrompt = readFileSync(join(process.cwd(), "prompts/workflow-v2-decision-analysis.md"), "utf8");
+    writeFileSync(join(item.directory, "prompts/workflow-v2-decision-analysis.md"), "This changed override must only affect a new run.");
+    await item.restart();
+    expect((await item.workspace()).solutions).toEqual(options.solutions);
+    expect(item.requests()).toHaveLength(1);
+    await item.post("/research/select-option", { threadId, runId: first.runId, solutionId: first.id }, WorkspaceStateSchema);
+    const completed = await item.waitFor((state) => state.latestResearchRun?.status === "completed" && !state.latestResearchRun.awaitingSelection);
+    expect(item.requests()).toHaveLength(2);
+    expect(item.requests()[1]!.workOrder.instruction).toBe(savedPrompt.trim());
+    expect(completed.solutions.filter((idea) => idea.selected)).toHaveLength(1);
+    const detail = await item.post(`/ideas/${first.id}`, undefined, z.object({ decisionAnalysis: z.object({ experiment: z.object({ passCriterion: z.string() }) }) }));
+    expect(detail.decisionAnalysis.experiment.passCriterion).toContain("eight");
+    await item.post("/research/decision", { threadId, solutionId: first.id, userDecision: "Try one supplier", observedResult: "Nine of ten arrivals met the estimate" }, WorkspaceStateSchema);
+    const exported = await item.post("/ideas/export", { threadId, format: "json" }, z.object({ files: z.array(z.object({ content: z.string() })) }));
+    expect(exported.files[0]!.content).toContain("Nine of ten");
+    expect(exported.files[0]!.content).toContain('"workflowVersion": 2');
+    const markdown = await item.post("/ideas/export", { threadId, format: "markdown" }, z.object({ files: z.array(z.object({ content: z.string() })) }));
+    expect(markdown.files[0]!.content).toContain("Next experiment");
+    await item.restart();
+    expect(item.requests()).toHaveLength(2);
+    item.assertAccounting(2);
+    const db = new DatabaseClient(item.dbPath);
+    try {
+      expect(db.db.prepare("SELECT stage_id FROM stage_results ORDER BY completed_at").all()).toEqual([{ stage_id: "solutions" }, { stage_id: "decision-analysis" }]);
+      expect(db.db.prepare("SELECT observed_result FROM decision_analyses").get()).toEqual({ observed_result: "Nine of ten arrivals met the estimate" });
+    } finally { db.close(); }
+  }, 20_000);
+
+  test("preserves contrary sources and untrusted observations through all six v2 stages", async () => {
+    const item = await fixture({ workflowVersion: 2 });
+    const threadId = await item.createThread("explore-market");
+    await item.post("/research/start", { threadId }, z.object({ runId: z.string() }));
+    const discovery = await item.waitFor((state) => state.threads.find((thread) => thread.id === threadId)?.status === "problems-ready");
+    const problem = discovery.problemCandidates[0]!;
+    expect(problem.verdict).toBe("overstated");
+    await item.post("/research/select-problems", { threadId, problemIds: [problem.id], userProblem: null }, WorkspaceStateSchema);
+    const options = await item.waitFor((state) => state.latestResearchRun?.awaitingSelection === true);
+    const selected = options.solutions[0]!;
+    await item.post("/research/select-option", { threadId, runId: selected.runId, solutionId: selected.id }, WorkspaceStateSchema);
+    await item.waitFor((state) => state.latestResearchRun?.status === "completed" && !state.latestResearchRun.awaitingSelection);
+    for (const request of item.requests()) expect(JSON.stringify(request.workOrder)).not.toContain(untrusted);
+    const analysis = item.requests().find((request) => request.workOrder.stage === "decision-analysis")!;
+    expect(JSON.stringify(analysis.evidence)).toContain("Most deliveries arrived on time.");
+    expect(JSON.stringify(analysis.evidence)).toContain("disagrees");
+    expect(JSON.stringify(analysis.evidence)).toContain("Delays may cluster");
+    expect(item.requests().filter((request) => ["solutions", "decision-analysis"].includes(request.workOrder.stage))).toHaveLength(2);
+  }, 20_000);
+});
+
+async function fixture({ mode = "workflow", searchEnabled = true, workflowVersion = 1 }: { mode?: string; searchEnabled?: boolean; workflowVersion?: 1 | 2 } = {}) {
   const directory = mkdtempSync(join(tmpdir(), "scraply-native-workflow-"));
   const dbPath = join(directory, "scraply.db");
   const capture = join(directory, "requests.jsonl");
@@ -218,7 +279,7 @@ async function fixture({ mode = "workflow", searchEnabled = true } = {}) {
       const created = await post("/threads", { title: scope.title }, z.object({ thread: z.object({ id: z.string() }) }));
       const threadId = created.thread.id;
       await post("/scope", { threadId, scope }, WorkspaceStateSchema);
-      await post("/run-config", { threadId, config: { ...DEFAULT_RUN_CONFIG, model, discoveryDepth: "quick", researchMode, knownProblem: researchMode === "known-problem" ? statement : "" } }, WorkspaceStateSchema);
+      await post("/run-config", { threadId, config: { ...DEFAULT_RUN_CONFIG, workflowVersion, model, discoveryDepth: "quick", researchMode, knownProblem: researchMode === "known-problem" ? statement : "" } }, WorkspaceStateSchema);
       return threadId;
     },
     async waitFor(predicate: (state: WorkspaceState) => boolean) {
@@ -226,7 +287,10 @@ async function fixture({ mode = "workflow", searchEnabled = true } = {}) {
       let state = await workspace();
       while (!predicate(state) && Date.now() < deadline) {
         if (state.threads.find((thread) => thread.id === state.activeThreadId)?.status === "failed") {
-          throw new Error(`Workflow failed: ${JSON.stringify(state.latestResearchRun)}`);
+          const db = new DatabaseClient(dbPath);
+          const failed = db.db.prepare("SELECT completion_reason FROM research_runs WHERE id = ?").get(state.latestResearchRun?.runId);
+          db.close();
+          throw new Error(`Workflow failed: ${JSON.stringify(failed)}`);
         }
         await new Promise((resolve) => setTimeout(resolve, 20));
         state = await workspace();

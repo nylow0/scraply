@@ -30,6 +30,8 @@ export const OPENAI_SUBSCRIPTION_PROVIDER_ID = "openai-subscription";
 
 const RunConfigInputSchema = z.object({
   configVersion: z.literal(2),
+  workflowVersion: z.union([z.literal(1), z.literal(2)]).optional(),
+  audienceSourcePolicy: z.enum(["web", "communities"]).optional(),
   model: ModelRefSchema,
   reasoningEffort: ReasoningEffortSchema,
   discoveryDepth: DiscoveryDepthSchema,
@@ -63,7 +65,9 @@ export const RunConfigSchema = z.union([
 
 export const DEFAULT_RUN_CONFIG = {
   configVersion: 2,
-  model: { providerId: LEGACY_CODEX_PROVIDER_ID, modelId: "gpt-5.6-luna" },
+  workflowVersion: 2,
+  audienceSourcePolicy: "web",
+  model: { providerId: OPENAI_SUBSCRIPTION_PROVIDER_ID, modelId: "gpt-5.6-luna" },
   reasoningEffort: "medium",
   discoveryDepth: "standard",
   maxRunMinutes: 90,

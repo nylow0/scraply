@@ -978,4 +978,17 @@ export const MIGRATIONS = [
         ON decision_analyses(research_run_id, created_at, id);
     `,
   },
+  {
+    id: 17,
+    sql: `
+      CREATE TABLE workflow_snapshots (
+        research_run_id TEXT NOT NULL REFERENCES research_runs(id) ON DELETE CASCADE,
+        snapshot_key TEXT NOT NULL,
+        value_json TEXT NOT NULL CHECK(json_valid(value_json)),
+        PRIMARY KEY(research_run_id, snapshot_key)
+      );
+      ALTER TABLE research_runs ADD COLUMN awaiting_selection INTEGER NOT NULL DEFAULT 0;
+      ALTER TABLE research_runs ADD COLUMN interrupted INTEGER NOT NULL DEFAULT 0;
+    `,
+  },
 ] as const;

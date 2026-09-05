@@ -1,16 +1,26 @@
 <script lang="ts">
   import type { SolutionView } from "../../shared/ipc";
+  import { loadIdeaDetail } from "../lib/idea-details";
 
-  let { idea, rank, onOpenSource }: { idea: SolutionView; rank: number; onOpenSource: (url: string) => Promise<void> } = $props();
+  let { idea: summary, rank, onOpenSource }: { idea: SolutionView; rank: number; onOpenSource: (url: string) => Promise<void> } = $props();
+  let detail = $state<SolutionView | null>(null);
+  let open = $state(false);
+  let error = $state("");
+  let idea = $derived(detail ?? summary);
+  $effect(() => {
+    if (open && summary.detailsLoaded === false && !detail) {
+      void loadIdeaDetail(summary).then((value) => detail = value).catch((cause: unknown) => error = cause instanceof Error ? cause.message : "Could not load saved details");
+    }
+  });
 
   let positiveOutcomes = $derived(idea.outcomes.filter((outcome) => outcome.direction === "positive").length);
   let negativeOutcomes = $derived(idea.outcomes.length - positiveOutcomes);
-  let projectEndingRisks = $derived(idea.risks.filter((risk) => risk.impact === "project ends").length);
-  let highestRisk = $derived([...idea.risks].sort((left, right) => right.sortKey - left.sortKey)[0]);
+  let projectEndingRisks = $derived(idea.projectEndingRiskCount ?? idea.risks.filter((risk) => risk.impact === "project ends").length);
+  let highestRisk = $derived(idea.highestRisk ?? [...idea.risks].sort((left, right) => right.sortKey - left.sortKey)[0]);
   let warning = $derived(["insufficient-evidence", "overstated", "attempted-and-failed"].includes(idea.problemVerdict));
 </script>
 
-<details class:warning class="solution" style={`--rank:${rank}`}>
+<details bind:open class:warning class="solution" style={`--rank:${rank}`}>
   <summary class="solution-summary">
     <span class="rank">{String(rank).padStart(2, "0")}</span>
     <span class="identity">
@@ -34,6 +44,7 @@
   </summary>
 
   <div class="solution-body">
+    {#if idea.detailsLoaded === false}<p role="status">{error || "Loading saved analysis…"}</p>{:else}
     <details class="category">
       <summary>
         <span><strong>Overview</strong><small>Mechanism, constraints, and source problem</small></span>
@@ -146,6 +157,7 @@
         {/each}
       </div>
     </details>
+    {/if}
   </div>
 </details>
 
@@ -166,8 +178,6 @@
 
   .solution {
     border-top: 1px solid var(--border);
-    animation: enter .38s var(--ease) both;
-    animation-delay: calc(var(--rank) * 55ms);
   }
 
   .solution.warning {
