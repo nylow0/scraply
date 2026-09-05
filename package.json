@@ -25,6 +25,7 @@
     "test:e2e:portable": "bun scripts/smoke-portable.ts",
     "test:e2e:installed": "bun scripts/run-e2e.ts installed",
     "test:exa": "bun test test/integration/exa.live.test.ts",
+    "evaluate:phase3": "bun scripts/phase3-evaluation.ts",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.renderer.json",
     "check": "bun run lint && bun run typecheck && svelte-check --tsconfig ./tsconfig.renderer.json && bun run test && bun run test:renderer"
