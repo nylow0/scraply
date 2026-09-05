@@ -1,5 +1,5 @@
-import { createHash } from "node:crypto";
-import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { createHash, randomUUID } from "node:crypto";
+import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 const PROMPT_STATE_FILE = ".prompt-versions.json";
@@ -38,9 +38,10 @@ const KNOWN_BUNDLED_PROMPT_HASHES: Readonly<Record<string, readonly string[]>> =
 let bundledPromptDir = join(__dirname, "..", "..", "prompts");
 let overridePromptDir: string | null = null;
 
-export function configurePromptPaths(options: { bundledDir: string; overrideDir: string }): void {
+export function configurePromptPaths(options: { bundledDir: string; overrideDir: string | null }): void {
   bundledPromptDir = options.bundledDir;
   overridePromptDir = options.overrideDir;
+  if (!overridePromptDir) return;
   mkdirSync(overridePromptDir, { recursive: true });
 
   if (!existsSync(bundledPromptDir)) return;
@@ -54,40 +55,50 @@ export function configurePromptPaths(options: { bundledDir: string; overrideDir:
     const bundledHash = fileHash(source);
     const previousBundledHash = state.prompts[entry.name];
     if (!existsSync(target)) {
-      copyFileSync(source, target);
       state.prompts[entry.name] = bundledHash;
       continue;
     }
 
     const overrideHash = fileHash(target);
-    if (overrideHash === bundledHash) {
-      state.prompts[entry.name] = bundledHash;
-    } else if ((previousBundledHash && overrideHash === previousBundledHash)
+    if (overrideHash === bundledHash || (previousBundledHash && overrideHash === previousBundledHash)
       || (!previousBundledHash && isKnownBundledPrompt(entry.name, target, overrideHash))) {
-      // An untouched managed copy follows bundled upgrades automatically.
-      copyFileSync(source, target);
+      // Only proven bundled copies leave the active override directory. Keep their exact bytes
+      // recoverable, including old line endings; unknown and retired custom files stay untouched.
+      const backupDir = join(overridePromptDir, "bundled-copy-backups", overrideHash);
+      mkdirSync(backupDir, { recursive: true });
+      const backup = join(backupDir, entry.name);
+      if (!existsSync(backup)) copyFileSync(target, backup);
+      if (fileHash(backup) !== overrideHash) throw new Error(`Prompt backup verification failed: ${entry.name}`);
+      unlinkSync(target);
       state.prompts[entry.name] = bundledHash;
     } else {
       // Conflict policy: any divergent override not proven to be a bundled version is a user edit.
       // Keep the last known bundled baseline so a later manual reset can rejoin automatic upgrades.
-      state.prompts[entry.name] = previousBundledHash ?? bundledHash;
+      // Unknown legacy edits have an unknown baseline, not the current bundled revision.
+      if (previousBundledHash) state.prompts[entry.name] = previousBundledHash;
     }
   }
-  writeFileSync(statePath, `${JSON.stringify(state, null, 2)}\n`, "utf8");
+  const temporaryStatePath = `${statePath}.${randomUUID()}.tmp`;
+  try {
+    writeFileSync(temporaryStatePath, `${JSON.stringify(state, null, 2)}\n`, "utf8");
+    renameSync(temporaryStatePath, statePath);
+  } finally {
+    if (existsSync(temporaryStatePath)) unlinkSync(temporaryStatePath);
+  }
 }
 
-export function loadPrompt(name: string, fallback: string): string {
+export function loadPrompt(name: string): string {
+  if (!/^[a-z][a-z0-9-]*$/.test(name)) throw new Error(`Invalid prompt name: ${name}`);
   const filename = `${name}.md`;
-  const paths = [overridePromptDir ? join(overridePromptDir, filename) : null, join(bundledPromptDir, filename)];
-
-  for (const path of paths) {
-    if (!path) continue;
-    if (!existsSync(path)) continue;
-    const text = readFileSync(path, "utf8").trim();
-    if (text) return text;
+  const bundledPath = join(bundledPromptDir, filename);
+  if (!existsSync(bundledPath) || !readFileSync(bundledPath, "utf8").trim()) {
+    throw new Error(`Required bundled prompt is missing or empty: ${filename}. Reinstall Scraply to restore its prompts.`);
   }
-
-  return fallback.trim();
+  const overridePath = overridePromptDir ? join(overridePromptDir, filename) : null;
+  const path = overridePath && existsSync(overridePath) ? overridePath : bundledPath;
+  const text = readFileSync(path, "utf8").trim();
+  if (!text) throw new Error(`Prompt override is empty: ${filename}. Edit it or remove it to use the bundled prompt.`);
+  return text;
 }
 
 function readPromptState(path: string): PromptState | null {

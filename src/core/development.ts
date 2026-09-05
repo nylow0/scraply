@@ -180,7 +180,7 @@ async function generateSolutions(
 ): Promise<Array<Solution & { id: string }>> {
   return call(
     "solutions",
-    loadPrompt("solutions", "Propose distinct mechanisms for the supplied problem."),
+    loadPrompt("solutions"),
     {
       inputs: {},
       evidence: {
@@ -213,7 +213,7 @@ async function generateOutcomes(
   for (const solution of solutions) {
     const outcomeDrafts = await call(
       `outcomes:${solution.id}`,
-      loadPrompt("outcomes", "Describe the important positive and negative outcomes."),
+      loadPrompt("outcomes"),
       { inputs: {}, evidence: { solution: { id: solution.id, mechanism: solution.mechanism, description: solution.description } } },
       OutcomesOutputSchema,
       (response) => {
@@ -236,7 +236,7 @@ async function generateOutcomes(
   const allOutcomes = [...unjudged.values()].flat();
   const judgments = await call(
     "outcome-judge",
-    loadPrompt("outcome-judge", "Judge whether each outcome makes the problem less true."),
+    loadPrompt("outcome-judge"),
     {
       inputs: {},
       evidence: {
@@ -265,7 +265,7 @@ async function generateRiskAnalysis(
 ): Promise<{ risks: DevelopedRisk[]; mitigations: DevelopedMitigation[] }> {
   const generated = await call(
     `risks:${solution.id}`,
-    loadPrompt("risks", "Generate consequential failure modes from three risk framings."),
+    loadPrompt("risks"),
     {
       inputs: {},
       evidence: {
@@ -280,7 +280,7 @@ async function generateRiskAnalysis(
 
   const scores = await call(
     `risk-score:${solution.id}`,
-    loadPrompt("risk-score", "Evaluate each supplied risk independently."),
+    loadPrompt("risk-score"),
     { inputs: {}, evidence: { risks: riskDrafts } },
     RiskScoreOutputSchema,
     (response) => exactIdMap(riskDrafts.map((risk) => risk.id), response.scores, (item) => item.riskId, "risk scores"),
@@ -300,7 +300,7 @@ async function generateRiskAnalysis(
   const mitigationDrafts = await call(
     `mitigations:${solution.id}`,
     [
-      loadPrompt("mitigations", "Propose responses to the ranked risk list."),
+      loadPrompt("mitigations"),
       "The ranked evidence includes every risk whose impact would end the project.",
     ].join("\n\n"),
     { inputs: { solutionId: solution.id }, evidence: { rankedRisks: risks } },

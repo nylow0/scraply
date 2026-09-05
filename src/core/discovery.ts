@@ -124,7 +124,7 @@ export async function harvestFactors(
       const response = await structuredCall(
         dependencies,
         `factor-harvest:${mode}:${batch.map((source) => source.id).join(",")}`,
-        loadPrompt("factor-harvest", "Extract concrete source-backed factors from the supplied sources."),
+        loadPrompt("factor-harvest"),
         buildFactorHarvestInput(scope, mode, batch),
         FactorHarvestOutputSchema,
       );
@@ -195,7 +195,7 @@ export async function discoverProblems(
   const response = await structuredCall(
     dependencies,
     "problem-candidates",
-    loadPrompt("problem-candidates", "Find direct problem statements from the supplied scope and factors."),
+    loadPrompt("problem-candidates"),
     buildProblemCandidatesInput(scope, factors),
     ProblemCandidatesOutputSchema,
   );
@@ -238,7 +238,7 @@ export async function discoverProblems(
       dependencies,
       `problem-kill:${createHash("sha256").update(JSON.stringify(candidate)).digest("hex")}`,
       [
-        loadPrompt("problem-kill", "Evaluate whether the candidate problem survives contrary evidence."),
+        loadPrompt("problem-kill"),
         "Look for contrary evidence: already solved, overstated scale, self-correction, and prior attempts that failed.",
       ].join("\n\n"),
       buildProblemKillInput(candidate, candidateSources),
@@ -314,7 +314,7 @@ async function planQueries(
   const response = await structuredCall(
     dependencies,
     `query-plan:${mode}`,
-    loadPrompt("query-plan", "Plan search queries for the supplied scope and harvest mode."),
+    loadPrompt("query-plan"),
     {
       inputs: {
         harvestMode: mode,
