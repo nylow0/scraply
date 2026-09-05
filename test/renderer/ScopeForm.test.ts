@@ -42,8 +42,10 @@ describe("ScopeForm search provider selection", () => {
       onConnectNative: connect,
     });
 
-    await fireEvent.click(view.getByRole("button", { name: "Connect OpenAI" }));
-    expect(connect).toHaveBeenCalledWith("openai-subscription");
+    await fireEvent.click(view.getByRole("button", { name: "Connect in browser" }));
+    expect(connect).toHaveBeenCalledWith("openai-subscription", "browser");
+    await fireEvent.click(view.getByRole("button", { name: "Use device code" }));
+    expect(connect).toHaveBeenCalledWith("openai-subscription", "device");
 
     const connected = workspace();
     connected.validation.native = {
@@ -63,6 +65,30 @@ describe("ScopeForm search provider selection", () => {
     await fireEvent.click(accountView.getByRole("button", { name: "Sign out" }));
     expect(refresh).toHaveBeenCalledWith("openai-subscription");
     expect(logout).toHaveBeenCalledWith("openai-subscription");
+  });
+
+  test("shows device-code instructions and leaves cancellation enabled while setup is busy", async () => {
+    const state = workspace();
+    state.validation.native = { available: true, connected: false, version: "0.1.0", accounts: [] };
+    const cancel = vi.fn().mockResolvedValue(undefined);
+    const view = render(ScopeForm, {
+      workspace: state,
+      busy: true,
+      nativeLogin: {
+        loginId: "login-device",
+        providerId: "openai-subscription",
+        method: "device" as const,
+        verificationUrl: "https://example.test/device",
+        userCode: "ABCD-1234",
+      },
+      onSave: vi.fn(), onStart: vi.fn(), onRetry: vi.fn(), onCancelNative: cancel,
+    });
+
+    expect(view.getByText("ABCD-1234")).toBeTruthy();
+    const button = view.getByRole("button", { name: "Cancel sign-in" }) as HTMLButtonElement;
+    expect(button.disabled).toBe(false);
+    await fireEvent.click(button);
+    expect(cancel).toHaveBeenCalledTimes(1);
   });
 });
 

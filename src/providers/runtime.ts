@@ -160,6 +160,10 @@ export class RuntimeClient implements StructuredModelClient {
       }, request.deadlineMs + this.terminalGraceMs);
       this.pendingGenerations.set(request.generationId, { requestId, timer, resolve, reject });
     });
+    const terminalOutcome = terminal.then(
+      (value) => ({ status: "fulfilled" as const, value }),
+      (reason: unknown) => ({ status: "rejected" as const, reason }),
+    );
     let cancelSent = false;
     const cancel = () => {
       if (cancelSent) return;
@@ -168,8 +172,10 @@ export class RuntimeClient implements StructuredModelClient {
     };
     request.signal?.addEventListener("abort", cancel, { once: true });
     try {
-      const accepted = z.object({ generationId: z.literal(request.generationId), prompt: PromptIdentitySchema }).strict().parse(
-        await this.request("generation.start", {
+      let accepted: { generationId: string; prompt: z.infer<typeof PromptIdentitySchema> };
+      try {
+        accepted = z.object({ generationId: z.literal(request.generationId), prompt: PromptIdentitySchema }).strict().parse(
+          await this.request("generation.start", {
           generationId: request.generationId,
           deadlineMs: request.deadlineMs,
           model: request.model,
@@ -180,17 +186,41 @@ export class RuntimeClient implements StructuredModelClient {
           reasoningEffort: request.reasoningEffort,
           ...(request.maxOutputTokens ? { maxOutputTokens: request.maxOutputTokens } : {}),
           repairPolicy: request.repairPolicy,
-        }, { id: requestId, ...(request.onDispatched ? { onDispatched: request.onDispatched } : {}) }),
-      );
-      if (accepted.prompt.sha256 !== initialized.prompt.sha256) {
-        throw new ProviderFailure("interrupted", "Runtime prompt identity changed after dispatch", false);
+          }, { id: requestId, ...(request.onDispatched ? { onDispatched: request.onDispatched } : {}) }),
+        );
+        if (accepted.prompt.sha256 !== initialized.prompt.sha256) {
+          throw new ProviderFailure("interrupted", "Runtime prompt identity changed after dispatch", false);
+        }
+      } catch (error) {
+        await this.cancelGeneration(request.generationId, "Generation acceptance failed and cancellation was not acknowledged");
+        const outcome = await terminalOutcome;
+        const attempts = outcome.status === "fulfilled" ? outcome.value.metadata.attempts : undefined;
+        if (error instanceof ProviderFailure) {
+          throw new ProviderFailure(error.code, error.message, error.retryable, {
+            cause: error,
+            ...(attempts ? { attempts } : {}),
+            ...(error.runtimeCode ? { runtimeCode: error.runtimeCode } : {}),
+          });
+        }
+        throw new ProviderFailure("interrupted", "Native runtime returned an invalid generation acceptance", false, {
+          cause: error,
+          ...(attempts ? { attempts } : {}),
+        });
       }
       request.onAccepted?.(this.preparedIdentity());
-      const completed = await terminal;
+      const outcome = await terminalOutcome;
+      if (outcome.status === "rejected") throw outcome.reason;
+      const completed = outcome.value;
       if (jsonByteLength(completed.output) > initialized.limits.maxOutputBytes) {
         throw new ProviderFailure("failed", "Native runtime output exceeds the protocol limit", false, { attempts: completed.metadata.attempts });
       }
-      return { output: request.schema.parse(completed.output), metadata: completed.metadata };
+      try { return { output: request.schema.parse(completed.output), metadata: completed.metadata }; }
+      catch (error) {
+        throw new ProviderFailure("schema", "Native runtime output did not match the requested schema", false, {
+          cause: error,
+          attempts: completed.metadata.attempts,
+        });
+      }
     } finally {
       request.signal?.removeEventListener("abort", cancel);
       this.removeGeneration(request.generationId, requestId);
@@ -254,16 +284,21 @@ export class RuntimeClient implements StructuredModelClient {
     child.stderr.on("data", () => undefined);
     child.on("error", (error) => this.failProcess(new ProviderFailure("unavailable", "Native runtime could not be started", true, { cause: error }), child));
     child.on("close", () => this.failProcess(new ProviderFailure("interrupted", "Native runtime stopped before completing its work", true), child));
-    const initialized = InitializeResultSchema.parse(await this.request("runtime.initialize", {
-      supportedProtocolVersions: [RUNTIME_PROTOCOL_VERSION],
-      requiredCapabilities: [...RUNTIME_REQUIRED_CAPABILITIES],
-      client: { name: "scraply", version: this.options.appVersion },
-    }));
-    for (const capability of RUNTIME_REQUIRED_CAPABILITIES) {
-      if (!initialized.capabilities.includes(capability)) throw new Error(`Native runtime lacks required capability: ${capability}`);
+    try {
+      const initialized = InitializeResultSchema.parse(await this.request("runtime.initialize", {
+        supportedProtocolVersions: [RUNTIME_PROTOCOL_VERSION],
+        requiredCapabilities: [...RUNTIME_REQUIRED_CAPABILITIES],
+        client: { name: "scraply", version: this.options.appVersion },
+      }));
+      for (const capability of RUNTIME_REQUIRED_CAPABILITIES) {
+        if (!initialized.capabilities.includes(capability)) throw new Error(`Native runtime lacks required capability: ${capability}`);
+      }
+      if (initialized.runtime.version !== this.options.artifact.version) throw new Error("Native runtime version does not match the packaged lock");
+      return initialized;
+    } catch (error) {
+      this.failProcess(error instanceof Error ? error : new Error("Native runtime handshake failed"), child);
+      throw error;
     }
-    if (initialized.runtime.version !== this.options.artifact.version) throw new Error("Native runtime version does not match the packaged lock");
-    return initialized;
   }
 
   private request(operation: RuntimeOperation, payload: object, options: RequestOptions = {}): Promise<unknown> {

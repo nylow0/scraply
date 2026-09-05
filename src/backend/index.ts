@@ -3,9 +3,11 @@ import { configurePromptPaths } from "../core/prompts";
 import { MainToBackendMessageSchema, type BackendSecrets, type BackendToMainMessage } from "../shared/backend-process";
 import { RuntimeClient } from "../providers/runtime";
 import { randomUUID } from "node:crypto";
+import { createNativeRuntimeStartup } from "./native-runtime-startup";
 
 let secrets: BackendSecrets = { exaApiKey: null, perplexityApiKey: null, providerCredentials: {} };
 let handle: BackendHandle | null = null;
+let starting = false;
 const pendingCredentialWrites = new Map<string, { resolve: () => void; reject: (error: Error) => void; timer: ReturnType<typeof setTimeout> }>();
 
 function post(message: BackendToMainMessage): void {
@@ -62,22 +64,18 @@ process.parentPort?.on("message", async (event) => {
     return;
   }
 
-  if (handle) return;
+  if (handle || starting) return;
+  starting = true;
   secrets = message.secrets;
   const nativeRuntime = message.runtime ? new RuntimeClient({
     ...message.runtime,
     appVersion: message.appVersion,
   }) : undefined;
-  if (nativeRuntime) {
-    try {
-      await nativeRuntime.start();
-      for (const [providerId, credential] of Object.entries(secrets.providerCredentials)) {
-        await nativeRuntime.restoreCredential(providerId, credential);
-      }
-    } catch (error) {
-      postProcessError("native-runtime-startup-failed", error);
-    }
-  }
+  const nativeStartup = nativeRuntime ? createNativeRuntimeStartup(
+    nativeRuntime,
+    () => secrets.providerCredentials,
+    (providerId, error) => postProcessError(`native-runtime-credential-restore-failed:${providerId}`, error),
+  ) : undefined;
   const persistProviderCredential = async (providerId: string, credential: string): Promise<void> => {
     const requestId = randomUUID();
     await new Promise<void>((resolve, reject) => {
@@ -104,6 +102,8 @@ process.parentPort?.on("message", async (event) => {
     ...(message.runtimeError ? { nativeRuntimeError: message.runtimeError } : {}),
     ...(nativeRuntime ? {
       nativeRuntime,
+      nativeRuntimeStatus: nativeStartup!.status,
+      prepareNativeRuntime: nativeStartup!.prepare,
       modelClients: { "openai-subscription": nativeRuntime, openrouter: nativeRuntime },
       persistProviderCredential,
       forgetProviderCredential,
@@ -127,8 +127,15 @@ process.parentPort?.on("message", async (event) => {
       post({ type: "event", event: researchEvent });
     });
     post({ type: "ready", port: handle.port, token: handle.token });
+    if (nativeRuntime) {
+      void nativeStartup!.prepare()
+        .catch((error) => postProcessError("native-runtime-startup-failed", error))
+        .finally(() => handle?.providersChanged());
+    }
   } catch (error) {
     post({ type: "startup-failed", message: failureMessage(error) });
     setImmediate(() => process.exit(1));
+  } finally {
+    starting = false;
   }
 });

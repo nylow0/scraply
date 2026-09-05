@@ -14,6 +14,7 @@ import {
   GetIdeaDetailRequestSchema,
   GetSourceDetailRequestSchema,
   IPC_CHANNELS,
+  NativeLoginCancelSchema,
   NativeLoginCompleteSchema,
   NativeLoginLaunchSchema,
   NativeLoginStartSchema,
@@ -36,6 +37,7 @@ import {
 import { AppError } from "../shared/errors";
 import { resolveRuntimeLaunch } from "../shared/runtime-artifact";
 import { createFileLogger, type FileLogger } from "./logging";
+import { writeFileAtomically } from "./atomic-file";
 import { isAllowedRendererUrl, parseExternalHttpsUrl, rendererEntryUrl } from "./security";
 
 const isDev = !app.isPackaged;
@@ -116,7 +118,7 @@ function persistSecrets(nextSecrets = secrets): void {
   if (!safeStorage.isEncryptionAvailable()) throw new AppError("secure_storage_unavailable");
   const settingsPath = join(app.getPath("userData"), "secrets.bin");
   const encrypted = safeStorage.encryptString(JSON.stringify(nextSecrets));
-  writeFileSync(settingsPath, encrypted);
+  writeFileAtomically(settingsPath, encrypted);
 }
 
 async function startBackendProcess(): Promise<BackendReady> {
@@ -192,6 +194,7 @@ async function startBackendProcess(): Promise<BackendReady> {
           secrets = nextSecrets;
           processHandle.postMessage({ type: "provider-credential-persisted", requestId: message.requestId, ok: true });
         } catch (error) {
+          blockedProviderCredentialWrites.add(message.providerId);
           processHandle.postMessage({
             type: "provider-credential-persisted",
             requestId: message.requestId,
@@ -487,6 +490,7 @@ async function retryAutomaticConnection(): Promise<void> {
   }
 
   await validateAndPersistSecrets(candidate);
+  if (backendProcess) await backendRequest("/native/retry", { method: "POST", body: "{}" });
 }
 
 function assertTrustedSender(event: IpcMainInvokeEvent): void {
@@ -534,10 +538,30 @@ function registerIpc(): void {
       loginId: launch.loginId,
       providerId: launch.providerId,
       method: launch.method,
-      ...(launch.method === "device" ? { userCode: launch.userCode } : {}),
+      ...(launch.method === "device" ? { verificationUrl: launch.verificationUrl, userCode: launch.userCode } : {}),
     };
   });
   handle(IPC_CHANNELS.NATIVE_LOGIN_COMPLETE, (body) => post("/native/login/complete", NativeLoginCompleteSchema.parse(body)));
+  handle(IPC_CHANNELS.NATIVE_LOGIN_CANCEL, async (body) => {
+    const input = NativeLoginCancelSchema.parse(body);
+    blockedProviderCredentialWrites.add(input.providerId);
+    const { [input.providerId]: _removed, ...providerCredentials } = secrets.providerCredentials;
+    const nextSecrets = { ...secrets, providerCredentials };
+    let persistenceError: unknown;
+    try {
+      persistSecrets(nextSecrets);
+      secrets = nextSecrets;
+    } catch (error) {
+      persistenceError = error;
+    }
+    let workspace: unknown;
+    let cancellationError: unknown;
+    try { workspace = await post("/native/login/cancel", input); }
+    catch (error) { cancellationError = error; }
+    if (persistenceError) throw persistenceError;
+    if (cancellationError) throw cancellationError;
+    return workspace;
+  });
   handle(IPC_CHANNELS.NATIVE_ACCOUNT_REFRESH, (body) => post("/native/account/refresh", NativeProviderSchema.parse(body)));
   handle(IPC_CHANNELS.NATIVE_LOGOUT, async (body) => {
     const input = NativeProviderSchema.parse(body);

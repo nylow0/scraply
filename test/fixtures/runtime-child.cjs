@@ -7,6 +7,7 @@ if (process.argv[2] === "--version") {
 }
 
 const mode = process.env.SCRAPLY_RUNTIME_CHILD_MODE || "normal";
+if (process.env.SCRAPLY_RUNTIME_PID_CAPTURE) fs.appendFileSync(process.env.SCRAPLY_RUNTIME_PID_CAPTURE, `${process.pid}\n`);
 const prompt = { id: "scraply.stage-worker.v1", sha256: "277d724f20acb1f32fa0a8b7c454c670971e3c40bfc921db40c044caa760e6f1" };
 const model = { providerId: "openai-subscription", modelId: "gpt-fixture" };
 const send = (value) => process.stdout.write(`${JSON.stringify(value)}\n`);
@@ -20,9 +21,12 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
       process.stdout.write(Buffer.from([0xc3, 0x28, 0x0a]));
       return;
     }
+    const incompatibleOnce = mode === "incompatible-once" && process.env.SCRAPLY_RUNTIME_MARKER
+      && !fs.existsSync(process.env.SCRAPLY_RUNTIME_MARKER);
+    if (incompatibleOnce) fs.writeFileSync(process.env.SCRAPLY_RUNTIME_MARKER, "seen");
     reply(request, {
       selectedProtocolVersion: "1.1", sessionId: "fixture-session",
-      runtime: { name: "scraply-agent", version: "0.1.0" }, prompt,
+      runtime: { name: "scraply-agent", version: incompatibleOnce ? "9.9.9" : "0.1.0" }, prompt,
       operations: ["runtime.initialize", "account.list", "account.login.start", "account.login.complete", "account.login.cancel", "account.logout", "account.refresh", "credential.session.set", "credential.session.persisted", "model.list", "generation.start", "generation.cancel", "runtime.shutdown"],
       capabilities: ["envelope_limits", "account_refresh", "credential_persistence_ack", "generation_attempt_metadata", "exactly_one_terminal"],
       limits: { maxEnvelopeBytes: 16777216, maxInputBytes: 2097152, maxSchemaBytes: 262144, maxOutputBytes: 2097152 },
@@ -43,19 +47,25 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
   }
   if (request.operation === "generation.start") {
     if (process.env.SCRAPLY_RUNTIME_CAPTURE) fs.appendFileSync(process.env.SCRAPLY_RUNTIME_CAPTURE, `${JSON.stringify(request)}\n`);
-    reply(request, { generationId: request.payload.generationId, prompt });
+    if (mode === "exit-before-acceptance") { process.exit(7); return; }
+    reply(request, {
+      generationId: request.payload.generationId,
+      prompt: mode === "prompt-mismatch" ? { ...prompt, sha256: "f".repeat(64) } : prompt,
+    });
     if (mode === "hang-cancel") return;
     const metadata = {
       model, prompt, usage: { status: "unknown" }, finishReason: "stop", latencyMs: 1,
       repairCount: 0, providerRequestIds: ["fixture-provider-request"],
       attempts: [{ attempt: "initial", outcome: "completed", providerCompletion: "confirmed", model, usage: { status: "unknown" }, cost: { status: "not_reported" }, finishReason: "stop", latencyMs: 1, providerRequestId: "fixture-provider-request" }],
     };
-    const output = request.payload.workOrder.stage.startsWith("query-plan")
+    const output = mode === "invalid-output" ? { invalid: true } : request.payload.workOrder.stage.startsWith("query-plan")
       ? { queries: ["one", "two", "three"] }
       : request.payload.workOrder.stage.startsWith("factor-harvest") ? { factors: [] } : { answer: "right" };
     const wrong = { protocolVersion: "1.1", requestId: "unrelated-request", operation: "generation.start", event: { kind: "generation.completed", generationId: request.payload.generationId, result: { output: { answer: "wrong" }, metadata } } };
     const correct = { protocolVersion: "1.1", requestId: request.id, operation: "generation.start", event: { kind: "generation.completed", generationId: request.payload.generationId, result: { output, metadata } } };
-    process.stdout.write(`${JSON.stringify(wrong)}\n${JSON.stringify(correct)}\n${JSON.stringify(correct)}\n`);
+    const writeTerminal = () => process.stdout.write(`${JSON.stringify(wrong)}\n${JSON.stringify(correct)}\n${JSON.stringify(correct)}\n`);
+    if (mode === "prompt-mismatch") setTimeout(writeTerminal, 75);
+    else writeTerminal();
     return;
   }
   if (request.operation === "generation.cancel") { reply(request, { generationId: request.payload.generationId, cancelled: true }); return; }
