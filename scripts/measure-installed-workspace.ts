@@ -135,6 +135,7 @@ const label = argument("--label") ?? "baseline076";
 const progressSamplesPath = argument("--progress-samples");
 const historyMode = argument("--history") ?? "legacy-v1";
 if (historyMode !== "legacy-v1" && historyMode !== "representative-v2") throw new Error("--history must be legacy-v1 or representative-v2");
+const expectedSyntheticSolutionCount = historyMode === "representative-v2" ? 18 : 20;
 if (!/^[a-f0-9]{64}$/i.test(expectedSha256)) throw new Error("--expected-exe-sha must be a 64-character SHA-256 hash");
 if (!/^[a-zA-Z0-9._-]+$/.test(label)) throw new Error("--label may contain only letters, numbers, dots, underscores, and hyphens");
 if (executableSha256.toLowerCase() !== expectedSha256.toLowerCase()) {
@@ -368,6 +369,9 @@ async function launch(mode: Mode, index: number, fixture: InstalledPerformanceFi
     executablePath,
     `--user-data-dir=${userDataDirectory}`,
     `--remote-debugging-port=${port}`,
+    "--disable-background-timer-throttling",
+    "--disable-renderer-backgrounding",
+    "--disable-backgrounding-occluded-windows",
   ], {
     env: isolatedEnvironment(),
     stdout: "ignore",
@@ -381,6 +385,7 @@ async function launch(mode: Mode, index: number, fixture: InstalledPerformanceFi
     cdp = await CdpClient.connect(endpoint);
     await bounded("Runtime.enable", 5_000, cdp.call("Runtime.enable"));
     await bounded("Page.enable", 5_000, cdp.call("Page.enable"));
+    await bounded("Page.bringToFront", 5_000, cdp.call("Page.bringToFront"));
     await bounded("Network.enable", 5_000, cdp.call("Network.enable"));
     const rendererConnectedMs = performance.now() - launchedAt;
     const network: NetworkObservation = { requestCount: 0, responseCount: 0, encodedResponseBytes: 0 };
@@ -397,11 +402,11 @@ async function launch(mode: Mode, index: number, fixture: InstalledPerformanceFi
       () => evaluate<{ body: string; projects: number; solutions: number }>(cdp!, `({
         body: document.body.innerText,
         projects: document.querySelectorAll('[aria-label^="Open thread "]').length,
-        solutions: document.querySelectorAll('details.solution').length,
+        solutions: document.querySelectorAll('.solutions > details.solution, .solutions > article').length,
       })`),
       (value) => mode === "empty"
         ? value.body.includes("Create research") && value.projects === 0
-        : value.body.includes("Synthetic project 01") && value.projects === 20 && value.solutions === 20,
+        : value.body.includes("Synthetic project 01") && value.projects === 20 && value.solutions === expectedSyntheticSolutionCount,
       deadline,
     );
     const usableUiMs = performance.now() - launchedAt;
@@ -424,7 +429,7 @@ async function launch(mode: Mode, index: number, fixture: InstalledPerformanceFi
     if (mode === "empty" && (projectCount !== 0 || solutionCount !== 0 || visibleFactorSourceCount !== 0)) {
       throw new Error(`Empty cold start loaded ${projectCount} projects, ${solutionCount} solutions, and ${visibleFactorSourceCount} factor sources`);
     }
-    if (mode === "synthetic" && (projectCount !== 20 || solutionCount !== 20 || visibleFactorSourceCount !== 20)) {
+    if (mode === "synthetic" && (projectCount !== 20 || solutionCount !== expectedSyntheticSolutionCount || visibleFactorSourceCount !== 20)) {
       throw new Error(`Synthetic cold start loaded ${projectCount} projects, ${solutionCount} solutions, and ${visibleFactorSourceCount} factor sources`);
     }
     const cold = {
@@ -652,10 +657,10 @@ try {
         const currentButton = [...document.querySelectorAll('button')]
           .find((item) => item.getAttribute('aria-label') === 'Open thread ' + title);
         const active = currentButton?.getAttribute('aria-current') === 'true';
-        const solutions = [...document.querySelectorAll('details.solution')];
+        const solutions = [...document.querySelectorAll('.solutions > details.solution, .solutions > article')];
         const heading = document.querySelector('.workspace h1')?.textContent?.trim() ?? '';
         observed = { topbar, active, solutionCount: solutions.length, heading };
-        if (topbar === title && active && solutions.length === 20 && heading.includes('20 solution ideas')) {
+        if (topbar === title && active && solutions.length === ${expectedSyntheticSolutionCount} && heading.includes('${expectedSyntheticSolutionCount} solution ideas')) {
           await new Promise((resolve) => setTimeout(resolve, 0));
           return {
             durationMs: performance.now() - started,
@@ -675,7 +680,7 @@ try {
 
     const workspace = await workspaceIpc(session.cdp);
     const selectedThread = workspace.value.threads.find((thread) => thread.title === title);
-    if (!selectedThread || workspace.value.activeThreadId !== selectedThread.id || workspace.value.solutions.length !== 20) {
+    if (!selectedThread || workspace.value.activeThreadId !== selectedThread.id || workspace.value.solutions.length !== expectedSyntheticSolutionCount) {
       throw new Error(`Workspace verification failed after rendering ${title}`);
     }
     const solutionId = workspace.value.solutions[0]?.id;
@@ -683,18 +688,48 @@ try {
     if (!solutionId || !sourceId) throw new Error(`Missing detail IDs after rendering ${title}`);
 
     const detailResult = await evaluate<{ durationMs: number; mechanism: string; overviewTextBytes: number }>(session.cdp, `(async () => {
-      const solution = document.querySelector('details.solution');
+      const v2 = ${historyMode === "representative-v2"};
+      const solution = document.querySelector(v2 ? 'article.selected > details' : 'details.solution');
       const solutionSummary = solution?.querySelector(':scope > summary');
-      const overview = solution?.querySelector('details.category');
-      const overviewSummary = overview?.querySelector(':scope > summary');
-      if (!(solution instanceof HTMLDetailsElement) || !(solutionSummary instanceof HTMLElement)
-        || !(overview instanceof HTMLDetailsElement) || !(overviewSummary instanceof HTMLElement)) {
-        throw new Error('Solution detail controls are missing');
+      if (!(solution instanceof HTMLDetailsElement) || !(solutionSummary instanceof HTMLElement)) {
+        throw new Error('Solution summary control is missing');
       }
       solution.open = false;
-      overview.open = false;
       const started = performance.now();
       solutionSummary.click();
+      if (v2) {
+        const deadline = started + ${READINESS_TIMEOUT_MS};
+        while (performance.now() < deadline) {
+          const article = solution.closest('article');
+          const text = article?.textContent ?? '';
+          if (solution.open && text.includes('Synthetic v2 consequence')) {
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            const rendered = solution.getBoundingClientRect();
+            if (rendered.height <= 0) throw new Error('Expanded v2 analysis has no rendered height');
+            return {
+              durationMs: performance.now() - started,
+              mechanism: article?.querySelector('h2')?.textContent?.trim() ?? '',
+              overviewTextBytes: new TextEncoder().encode(text).length,
+              detailKind: 'v2-selected-analysis',
+            };
+          }
+          await new Promise((resolve) => setTimeout(resolve, 10));
+        }
+        throw new Error('Rendered v2 decision analysis timed out');
+      }
+      const detailDeadline = performance.now() + ${READINESS_TIMEOUT_MS};
+      let overview;
+      let overviewSummary;
+      while (performance.now() < detailDeadline) {
+        overview = solution.querySelector('details.category');
+        overviewSummary = overview?.querySelector(':scope > summary');
+        if (overview instanceof HTMLDetailsElement && overviewSummary instanceof HTMLElement) break;
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      if (!(overview instanceof HTMLDetailsElement) || !(overviewSummary instanceof HTMLElement)) {
+        throw new Error('Lazy solution detail controls did not load');
+      }
+      overview.open = false;
       overviewSummary.click();
       const deadline = started + ${READINESS_TIMEOUT_MS};
       while (performance.now() < deadline) {
@@ -707,6 +742,7 @@ try {
             durationMs: performance.now() - started,
             mechanism: solution.querySelector('.identity strong')?.textContent?.trim() ?? '',
             overviewTextBytes: new TextEncoder().encode(overviewText).length,
+            detailKind: 'v1-solution-analysis',
           };
         }
         await new Promise((resolve) => setTimeout(resolve, 10));
@@ -793,6 +829,16 @@ try {
       executableBytes: statSync(executablePath).size,
       expectedRendererUrl,
       label,
+    },
+    executionSettings: {
+      rendererVisibility: "foreground",
+      pageBroughtToFrontWithCdp: true,
+      chromiumFlags: [
+        "--disable-background-timer-throttling",
+        "--disable-renderer-backgrounding",
+        "--disable-backgrounding-occluded-windows",
+      ],
+      rationale: "Keep DOM commit timing representative when the benchmark terminal or another cold-start window would otherwise occlude Electron.",
     },
     fixture,
     samplePlan: {

@@ -58,7 +58,8 @@ for (const workflowVersion of [1, 2]) test(`native v${workflowVersion} research 
       await page.getByRole("button", { name: "Check evidence", exact: true }).click();
       const followUp = page.getByRole("region", { name: "Evidence follow-up result" });
       await expect(followUp.getByText("This option has used its one evidence follow-up.", { exact: true })).toBeVisible();
-      await expect(followUp.getByText("Parts delivery windows are uncertain.", { exact: true })).toHaveCount(2);
+      await page.screenshot({ path: testInfo.outputPath("native-follow-up.png") });
+      await expect(followUp.locator("blockquote").filter({ hasText: "Parts delivery windows are uncertain." })).toHaveCount(2);
       await expect(followUp.getByRole("link", { name: "Synthetic delivery report 0" })).toBeVisible();
       await expect(page.getByRole("button", { name: "Check evidence", exact: true })).toHaveCount(0);
       await page.getByLabel("Your decision", { exact: true }).fill("Pilot with one supplier");
@@ -106,7 +107,7 @@ for (const workflowVersion of [1, 2]) test(`native v${workflowVersion} research 
       await page.getByText("Evidence, analysis and your decision", { exact: true }).click();
       await expect(page.getByLabel("Observed test result", { exact: true })).toHaveValue("Nine of ten estimates matched arrivals");
       const reopenedFollowUp = page.getByRole("region", { name: "Evidence follow-up result" });
-      await expect(reopenedFollowUp.getByText("Which suppliers publish arrival histories?", { exact: true })).toBeVisible();
+      await expect(reopenedFollowUp).toContainText("Which suppliers publish arrival histories?");
       await expect(reopenedFollowUp.getByRole("link", { name: "Synthetic delivery report 1" })).toBeVisible();
       await expect(page.getByRole("button", { name: "Check evidence", exact: true })).toHaveCount(0);
     }
