@@ -554,4 +554,89 @@ describe("cutover backend", () => {
     const workspace = await response.json() as { data: { latestResearchRun: { runId: string; searches: number } } };
     expect(workspace.data.latestResearchRun).toMatchObject({ runId: "legacy-run", searches: 0 });
   });
+
+  test("projects usage from the selected run and marks metadata-free history unavailable", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "scraply-usage-export-")); dirs.push(dir);
+    const dbPath = join(dir, "scraply.db");
+    const handle = await startBackend({
+      dataDir: dir, dbPath, bundledPromptsDir: join(process.cwd(), "prompts"), promptOverridesDir: join(dir, "prompts"),
+      appVersion: "test", getSecrets: () => ({ exaApiKey: null }),
+      providerValidation: { inspectCodex: async () => ({ detected: false, compatible: false, authenticated: false, models: [] }) },
+    }, () => undefined); handles.push(handle);
+    const post = async (path: string, body: unknown) => {
+      const response = await fetch(`http://127.0.0.1:${handle.port}${path}`, {
+        method: "POST", headers: { authorization: `Bearer ${handle.token}`, "content-type": "application/json" }, body: JSON.stringify(body),
+      });
+      if (response.status !== 200) throw new Error(`status ${response.status}: ${JSON.stringify(await response.json())}`);
+      return (await response.json() as { data: unknown }).data;
+    };
+    const created = await post("/threads", {}) as { thread: { id: string } };
+    const client = new DatabaseClient(dbPath);
+    const insertRun = client.db.prepare(`
+      INSERT INTO research_runs (id, thread_id, status, config_json, problem_id, created_at, updated_at)
+      VALUES (?, ?, 'completed', ?, NULL, ?, ?)
+    `);
+    const insertAttempt = client.db.prepare(`
+      INSERT INTO generation_attempts (
+        id, generation_id, research_run_id, stage_key, provider_id, model_id, reasoning_effort, status,
+        request_json, wire_request_sha256, request_sha256, work_order_sha256, inputs_sha256, evidence_sha256,
+        schema_sha256, attempt_metadata_json, usage_json, created_at, updated_at, terminal_at
+      ) VALUES (?, ?, ?, 'problem-candidates', 'legacy-codex-cli', 'old-model', 'medium', 'completed',
+        '{}', 'wire', 'request', 'work', 'inputs', 'evidence', 'schema', ?, ?, ?, ?, ?)
+    `);
+    insertRun.run("old-discovery", created.thread.id, JSON.stringify(DEFAULT_RUN_CONFIG), "2026-08-01T00:00:00.000Z", "2026-08-01T00:00:01.000Z");
+    insertRun.run("new-discovery", created.thread.id, JSON.stringify(DEFAULT_RUN_CONFIG), "2026-08-02T00:00:00.000Z", "2026-08-02T00:00:01.000Z");
+    const oldMetadata = JSON.stringify({ attempts: [{
+      attempt: "initial", model: { providerId: "legacy-codex-cli", modelId: "old-model" },
+      usage: { status: "known", value: { inputTokens: 90, outputTokens: 10, totalTokens: 100 } },
+      cost: { status: "unknown" }, latencyMs: 20,
+    }] });
+    const newMetadata = JSON.stringify({ attempts: [{
+      attempt: "initial", model: { providerId: "legacy-codex-cli", modelId: "new-model" },
+      usage: { status: "known", value: { inputTokens: 10, outputTokens: 4, totalTokens: 14 } },
+      cost: { status: "unknown" }, latencyMs: 12,
+    }] });
+    insertAttempt.run("old-attempt", "old-generation", "old-discovery", oldMetadata, JSON.stringify([{ status: "known", value: { inputTokens: 99, outputTokens: 1, totalTokens: 100 } }]), "2026-08-01T00:00:00.100Z", "2026-08-01T00:00:00.100Z", "2026-08-01T00:00:00.100Z");
+    insertAttempt.run("new-attempt", "new-generation", "new-discovery", newMetadata, JSON.stringify([{ status: "known", value: { inputTokens: 99, outputTokens: 1, totalTokens: 100 } }]), "2026-08-02T00:00:00.100Z", "2026-08-02T00:00:00.100Z", "2026-08-02T00:00:00.100Z");
+    const workspace = await (await fetch(`http://127.0.0.1:${handle.port}/workspace`, { headers: { authorization: `Bearer ${handle.token}` } })).json() as { data: { latestResearchRun: { runId: string; usage: { tokens: { total: { known: number } } } } } };
+    expect(workspace.data.latestResearchRun).toMatchObject({ runId: "new-discovery", usage: { tokens: { total: { known: 14 } } } });
+    const exported = await post("/research/export", { threadId: created.thread.id }) as { content: string };
+    const archive = JSON.parse(exported.content) as { researchRun: { id: string; usage: { tokens: { total: { known: number } } } }; usage?: unknown; sources?: unknown };
+    expect(archive.researchRun).toMatchObject({ id: "new-discovery", usage: { tokens: { total: { known: 14 } } } });
+    expect(exported.content).not.toContain("request_json");
+    expect(exported.content).not.toContain("attempt_metadata_json");
+    expect(archive.usage).toBeUndefined();
+
+    client.db.prepare(`
+      INSERT INTO problems (id, discovery_run_id, statement, why_it_persists, affected, scale_estimate, verdict, verdict_reason, verdict_source_ids_json, selected_at, created_at)
+      VALUES ('problem-usage', 'new-discovery', 'A selected problem', '', '', '', 'confirmed', '', '[]', ?, ?)
+    `).run("2026-08-02T00:00:02.000Z", "2026-08-02T00:00:02.000Z");
+    const insertDevelopment = client.db.prepare(`
+      INSERT INTO research_runs (id, thread_id, status, config_json, problem_id, created_at, updated_at)
+      VALUES (?, ?, 'completed', ?, ?, ?, ?)
+    `);
+    insertDevelopment.run("old-development", created.thread.id, JSON.stringify(DEFAULT_RUN_CONFIG), "problem-usage", "2026-08-04T00:00:00.000Z", "2026-08-04T00:00:01.000Z");
+    insertDevelopment.run("new-development", created.thread.id, JSON.stringify(DEFAULT_RUN_CONFIG), "problem-usage", "2026-08-05T00:00:00.000Z", "2026-08-05T00:00:01.000Z");
+    insertAttempt.run("old-development-attempt", "old-development-generation", "old-development", oldMetadata, null, "2026-08-04T00:00:00.100Z", "2026-08-04T00:00:00.100Z", "2026-08-04T00:00:00.100Z");
+    insertAttempt.run("new-development-attempt", "new-development-generation", "new-development", newMetadata, null, "2026-08-05T00:00:00.100Z", "2026-08-05T00:00:00.100Z", "2026-08-05T00:00:00.100Z");
+    const insertSolution = client.db.prepare(`
+      INSERT INTO solutions (id, problem_id, mechanism, description, respects_off_limits, respects_off_limits_why, created_at, research_run_id)
+      VALUES (?, 'problem-usage', ?, '', 1, '', ?, ?)
+    `);
+    insertSolution.run("solution-old", "Old mechanism", "2026-08-04T00:00:02.000Z", "old-development");
+    insertSolution.run("solution-new", "New mechanism", "2026-08-05T00:00:02.000Z", "new-development");
+    client.close();
+    const ideasExport = await post("/ideas/export", { threadId: created.thread.id, format: "json" }) as { files: Array<{ content: string }> };
+    const exportedIdeas = JSON.parse(ideasExport.files[0]!.content) as Array<{ id: string; usage?: { runId: string; summary: { tokens: { total: { known: number } } } } }>;
+    expect(exportedIdeas.find((idea) => idea.id === "solution-old")?.usage).toMatchObject({ runId: "old-development", summary: { tokens: { total: { known: 100 } } } });
+    expect(exportedIdeas.find((idea) => idea.id === "solution-new")?.usage).toMatchObject({ runId: "new-development", summary: { tokens: { total: { known: 14 } } } });
+
+    const legacyOnly = await post("/threads", { title: "No usage history" }) as { thread: { id: string } };
+    const legacyClient = new DatabaseClient(dbPath);
+    legacyClient.db.prepare(`INSERT INTO research_runs (id, thread_id, status, config_json, problem_id, created_at, updated_at) VALUES ('metadata-free', ?, 'completed', '{}', NULL, ?, ?)`)
+      .run(legacyOnly.thread.id, "2026-08-03T00:00:00.000Z", "2026-08-03T00:00:01.000Z");
+    legacyClient.close();
+    const legacyWorkspace = await (await fetch(`http://127.0.0.1:${handle.port}/workspace`, { headers: { authorization: `Bearer ${handle.token}` } })).json() as { data: { latestResearchRun: { usage: { availability: string } } } };
+    expect(legacyWorkspace.data.latestResearchRun.usage.availability).toBe("unavailable");
+  });
 });

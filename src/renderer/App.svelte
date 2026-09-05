@@ -8,6 +8,7 @@
   import SetupArchive from "./components/SetupArchive.svelte";
   import SolutionWorkspace from "./components/SolutionWorkspace.svelte";
   import WorkflowTabs, { type WorkflowStep } from "./components/WorkflowTabs.svelte";
+  import RunUsage from "./components/RunUsage.svelte";
 
   type Feedback = { text: string; tone: "error" | "info"; source?: "workspace-load" };
   type WorkspaceResult = { workspace: WorkspaceState };
@@ -312,6 +313,7 @@
         <div><span class="status-dot" class:live={activeThread.status.endsWith("running")}></span>{activeThread.title}</div>
         {#if activeRun}<div class="calls"><strong>{activeRun.codexCalls}</strong> Codex calls / ~{activeRun.projectedCodexCalls} · <strong>{activeRun.searches}</strong> searches / ~{activeRun.projectedSearches}</div>{/if}
       </div>
+      <RunUsage usage={activeRun?.usage} />
       <WorkflowTabs
         active={activeStep}
         setupReady={true}
