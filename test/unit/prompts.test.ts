@@ -111,7 +111,9 @@ describe("prompt loader", () => {
     writeFileSync(join(overrideDir, "factor.md"), "Unknown edit.\n");
     writeFileSync(join(overrideDir, "retired.md"), "Retired custom instruction.\n");
     configurePromptPaths({ bundledDir, overrideDir });
-    expect(JSON.parse(readFileSync(join(overrideDir, ".prompt-versions.json"), "utf8"))).toEqual({ version: 1, prompts: {} });
+    expect(JSON.parse(readFileSync(join(overrideDir, ".prompt-versions.json"), "utf8"))).toEqual({
+      version: 1, prompts: {}, workflowV2Baselines: {},
+    });
     expect(readFileSync(join(overrideDir, "retired.md"), "utf8")).toBe("Retired custom instruction.\n");
     expect(loadPrompt("factor")).toBe("Unknown edit.");
   });
