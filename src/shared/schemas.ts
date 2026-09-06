@@ -25,7 +25,9 @@ export const ModelRefSchema = z.object({
   modelId: z.string().trim().min(1),
 }).strict();
 
-export const LEGACY_CODEX_PROVIDER_ID = "legacy-codex-cli";
+// Historical records keep this provider ID so old runs remain attributable. Scraply no longer
+// offers or executes this provider.
+export const HISTORICAL_CODEX_CLI_PROVIDER_ID = "legacy-codex-cli";
 export const OPENAI_SUBSCRIPTION_PROVIDER_ID = "openai-subscription";
 
 const RunConfigInputSchema = z.object({
@@ -44,8 +46,8 @@ const LegacyRunConfigSchema = RunConfigInputSchema.omit({ configVersion: true, m
   model: z.string().trim().min(1),
 }).strict();
 
-// Bare model names came from the process-per-call Codex CLI adapter. Keep that route explicit when
-// old JSON is read so history cannot be mistaken for a native-runtime generation.
+// Bare model names came from the removed process-per-call Codex CLI adapter. Keep their origin
+// explicit when old JSON is read so history cannot be mistaken for a native-runtime generation.
 export const RunConfigSchema = z.union([
   RunConfigInputSchema.transform((value) => ({
     ...value,
@@ -56,7 +58,7 @@ export const RunConfigSchema = z.union([
   LegacyRunConfigSchema.transform((value) => ({
     ...value,
     configVersion: 2 as const,
-    model: { providerId: LEGACY_CODEX_PROVIDER_ID, modelId: value.model },
+    model: { providerId: HISTORICAL_CODEX_CLI_PROVIDER_ID, modelId: value.model },
     researchMode: value.researchMode ?? "explore-market" as const,
     knownProblem: value.knownProblem ?? "",
     searchProvider: value.searchProvider ?? "exa" as const,

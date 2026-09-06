@@ -120,12 +120,12 @@ describe("native v1 research workflow through the production backend", () => {
     expect(item.processIds()).toHaveLength(2);
   }, 20_000);
 
-  test("completes a known problem with neither Exa nor Codex available", async () => {
+  test("completes a known problem without a search provider", async () => {
     const item = await fixture({ searchEnabled: false });
     const threadId = await item.createThread("known-problem");
     await item.post("/research/start", { threadId }, z.object({ runId: z.string() }));
     const state = await item.waitFor((value) => value.threads.find((thread) => thread.id === threadId)?.status === "solutions-ready");
-    expect(state.validation.codex.detected).toBe(false);
+    expect(state.validation.native.connected).toBe(true);
     expect(state.validation.exa.valid).toBe(false);
     expect(state.solutions).toHaveLength(3);
     expect(item.searches).toHaveLength(0);

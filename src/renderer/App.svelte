@@ -114,7 +114,7 @@
     }, delayMs);
   }
   function validationPending(state: WorkspaceState): boolean {
-    return [state.validation.exa.error, state.validation.perplexity.error, state.validation.codex.error, state.validation.native.error]
+    return [state.validation.exa.error, state.validation.perplexity.error, state.validation.native.error]
       .some((error) => error?.startsWith("Checking ") || error === "Native runtime is starting");
   }
   async function action(work: () => Promise<void>) {
@@ -224,7 +224,7 @@
       if (epoch !== nativeLoginEpoch) return;
       nativeLogin = login;
       feedback = { text: login.method === "device"
-        ? `Enter code ${login.userCode} in the browser to finish signing in.`
+        ? "Enter the device code shown below in the browser to finish signing in."
         : "Finish signing in in your browser. Scraply is waiting for the account callback.", tone: "info" };
       for (let attempt = 0; attempt < 300; attempt += 1) {
         if (epoch !== nativeLoginEpoch) return;

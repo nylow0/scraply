@@ -1,8 +1,6 @@
 mod account;
 mod app_server;
 mod args;
-mod exec;
-mod legacy_app_server;
 mod protocol;
 mod runtime_handler;
 
@@ -31,13 +29,6 @@ async fn main() -> ExitCode {
                 ExitCode::from(1)
             }
         },
-        Ok(Command::AppServer) => match legacy_app_server::run().await {
-            Ok(()) => ExitCode::SUCCESS,
-            Err(error) => {
-                eprintln!("scraply-agent: {}", error.sanitized_message());
-                ExitCode::from(1)
-            }
-        },
         Ok(Command::Login(command)) => match account::login(command).await {
             Ok(()) => ExitCode::SUCCESS,
             Err(error) => {
@@ -52,15 +43,8 @@ async fn main() -> ExitCode {
                 ExitCode::from(1)
             }
         },
-        Ok(Command::Exec(options)) => match exec::run(options).await {
-            Ok(()) => ExitCode::SUCCESS,
-            Err(error) => {
-                eprintln!("scraply-agent: {error}");
-                ExitCode::from(1)
-            }
-        },
         Err(error) => {
-            eprintln!("scraply-agent: compatibility error: {error}");
+            eprintln!("scraply-agent: {error}");
             ExitCode::from(2)
         }
     }

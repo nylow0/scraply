@@ -48,7 +48,7 @@ impl fmt::Display for AppServerError {
     }
 }
 
-/// Interface at the app-server/runtime seam.
+/// Interface between the JSONL dispatcher and the runtime handler.
 ///
 /// The app server owns JSON protocol framing and dispatch. Runtime adapters parse
 /// operation payloads into domain types and serialize outcomes as protocol JSON.

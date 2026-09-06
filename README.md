@@ -9,7 +9,6 @@ Scraply is a local-first Windows desktop app for evidence-backed research and id
 - Rust's `stable-x86_64-pc-windows-msvc` toolchain and Visual Studio C++ build tools for native builds
 - An Exa or Perplexity API key for web research
 - An OpenAI subscription account connected inside Scraply for the bundled native runtime
-- An authenticated Codex CLI only if you explicitly select the legacy route during migration
 
 ## Development
 
@@ -22,9 +21,9 @@ bun run dev
 
 Set `EXA_API_KEY`, `PERPLEXITY_API_KEY`, or both in `.env` for development or in the environment that launches the installed app. Each discovery run uses the search provider selected in its setup. Scraply checks configured providers in the background, then stores the keys with Windows-backed encryption after validation. Known-problem development does not require web search.
 
-Connect OpenAI through Scraply's native account controls. The app bundles a pinned `scraply-agent` executable and keeps native credentials separate from neighboring Codex installations. Native failures do not silently switch to the legacy CLI. Live acceptance of the native integration is still in progress.
+Connect OpenAI through Scraply's account controls. The app opens OpenAI login in your browser and bundles the `scraply-agent` worker it needs. Scraply keeps these credentials separate from other Codex installations on the computer.
 
-The native agent source lives in [runtime/](runtime/README.md) and is built with the app. `nylow0/scraply-agent` is legacy; new runtime changes belong in this repository. The public OpenAI Codex submodule preserves the pinned upstream source and notices.
+The native agent source lives in [runtime/](runtime/README.md) and is built with the app. `nylow0/scraply-agent` is legacy; new runtime changes belong in this repository. The pinned upstream source supplies OpenAI login and Responses transport libraries. Scraply does not package or invoke the Codex CLI.
 
 Native OpenAI does not support output-token ceilings. Scraply omits that field for this provider; request deadlines and the runtime output-size limit still apply, but they do not guarantee a token or billing ceiling. Other providers retain the configured token ceiling.
 
@@ -58,9 +57,9 @@ The branch and release workflow is documented in [RELEASE.md](RELEASE.md). `mast
 4. Review discovered problems and their evidence, then select the problems worth developing. The v2 workflow generates up to three unranked options and waits for your choice.
 5. Choose one option to analyze its consequences, decisive risks, proposed responses, and next experiment. Record your own decision and observed test result separately from the model's judgments.
 6. If one decisive fact is still missing, request one evidence follow-up. Scraply runs the exact question once, quote-checks the extracted observations, and keeps the result separate from the original analysis. Completed and failed follow-ups both consume the run's one-question limit.
-7. Export research as JSON or options and analyses as Markdown/JSON. The legacy comparison workflow remains explicitly selectable, and saved v1 projects remain readable.
+7. Export research as JSON or options and analyses as Markdown/JSON. The v1 research workflow remains explicitly selectable for comparison, and saved v1 projects remain readable.
 
-V2 saves run-local prompts, search results, completed stages, and evidence follow-ups. Reopening a project does not generate more work. Continuing a saved run uses its original prompts, even after an override changes. A request whose completion was lost is not automatically replayed. Start a new run when you want changed setup or instructions. Live provider acceptance and the accepted migration release still gate removal of the legacy comparison path.
+V2 saves run-local prompts, search results, completed stages, and evidence follow-ups. Reopening a project does not generate more work. Continuing a saved run uses its original prompts, even after an override changes. A request whose completion was lost is not automatically replayed. Start a new run when you want changed setup or instructions. Live provider acceptance and the accepted migration release still gate removal of the v1 research workflow and its superseded prompts. This gate does not apply to the removed Codex CLI route.
 
 For the initial three-decision usefulness review, export research JSON plus ideas JSON and Markdown from matching v1 and v2 discovery runs. Start with `bun run evaluate:phase3 -- template <input.json>`; each case contains two `{ ideasPath, ideasMarkdownPath, researchPath, origin, timings? }` variants. Run `bun run evaluate:phase3 -- prepare <input.json> <output-directory>`, then give the reviewer the generated `*-A.md`/`*-B.md` files, `review-packet.json` for source auditing, and a copy of `review-template.json`. Keep `private-mapping.json` separate because it contains workflow identity, provenance (`generated`, `synthetic`, or `live`), original/blinded hashes, run metadata, and optional timings. The preparer removes only the `Workflow: v2.` prefix from Markdown; it preserves the selection and problem-evidence assessment, and the different output structure can still reveal a version. After the reviewer records unsupported claims, useful discoveries, reading/correction durations, and the action chosen, run `bun run evaluate:phase3 -- validate <packet.json> <mapping.json> <reviews.json> <result.json>`. Start with three cases and add up to two more when results are mixed. Validation checks complete, untampered records without declaring the Phase 3 gate accepted. Known-problem behavior is tested separately because it does not produce the paired discovery research export this review needs.
 
@@ -91,7 +90,6 @@ Deleting or resetting data is irreversible unless you made a backup first.
 ## Troubleshooting
 
 - **Search does not connect:** the local workspace remains available. Confirm the selected provider's `EXA_API_KEY` or `PERPLEXITY_API_KEY` exists in `.env` during development or in the installed app's launch environment, then retry connections.
-- **Codex validation fails:** confirm `codex` is installed, authenticated, and available in the same Windows user environment that launches Scraply.
 - **Native connection requires reconnection:** reconnect OpenAI inside Scraply. Cached model names alone do not establish that an account can run them.
 - **Research cannot start:** confirm the setup is saved, the selected model and required search provider are connected, and no active run already exists for the project.
 - **A report is blank or slow:** collapse and reopen it to retry the on-demand detail request. Reports are intentionally excluded from routine workspace refreshes.

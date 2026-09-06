@@ -1,7 +1,6 @@
 import { startBackend, type BackendContext, type BackendHandle } from "../../src/backend/server";
 import { configurePromptPaths } from "../../src/core/prompts";
 import { MainToBackendMessageSchema, type BackendSecrets, type BackendToMainMessage } from "../../src/shared/backend-process";
-import { LEGACY_CODEX_PROVIDER_ID } from "../../src/shared/schemas";
 
 let secrets: BackendSecrets = { exaApiKey: null, perplexityApiKey: null, providerCredentials: {} };
 let handle: BackendHandle | null = null;
@@ -39,12 +38,12 @@ process.parentPort?.on("message", async (event) => {
     appVersion: message.appVersion,
     getSecrets: () => secrets,
     providerValidation: {
-      inspectCodex: async () => ({
-        detected: true,
-        compatible: true,
-        authenticated: true,
-        version: "codex-e2e",
-        models: [{ providerId: LEGACY_CODEX_PROVIDER_ID, modelId: "gpt-5.6-luna", displayName: "GPT-5.6-Luna", defaultReasoningEffort: "medium", reasoningEfforts: [{ id: "medium", description: "Balanced reasoning" }] }],
+      inspectNative: async () => ({
+        available: true,
+        connected: true,
+        version: "0.2.0-e2e",
+        accounts: [{ providerId: "openai-subscription" }],
+        models: [{ providerId: "openai-subscription", modelId: "gpt-5.6-luna", displayName: "GPT-5.6-Luna", defaultReasoningEffort: "medium", reasoningEfforts: [{ id: "medium", description: "Balanced reasoning" }] }],
       }),
       validateExa: async (apiKey) => apiKey === "invalid-e2e-key"
         ? { valid: false, error: "Deterministic invalid Exa key" }

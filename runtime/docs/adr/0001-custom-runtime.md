@@ -19,4 +19,4 @@ Keeping the Codex app-server contract would reduce the first migration, but it w
 
 ## Consequences
 
-The executable has three code owners: CLI process lifecycle, core contracts and validation, and provider adapters. Exa stays in Scraply's accounted research pipeline. The old `exec` and app-server shapes may exist for one migration release behind an explicit compatibility switch, then must be deleted after installed-workflow parity.
+The executable has three code owners: CLI process lifecycle, core contracts and validation, and provider adapters. Exa stays in Scraply's accounted research pipeline. Runtime 0.2.0 removed the temporary `exec` and app-server shapes. Scraply now talks to the worker only through its owned runtime protocol.

@@ -2,26 +2,25 @@ import { fireEvent, render, waitFor } from "@testing-library/svelte";
 import { describe, expect, test, vi } from "vitest";
 import ScopeForm from "../../src/renderer/components/ScopeForm.svelte";
 import type { WorkspaceState } from "../../src/shared/ipc";
-import { DEFAULT_RUN_CONFIG as NATIVE_DEFAULT_RUN_CONFIG, RunConfigSchema, modelRefKey } from "../../src/shared/schemas";
-
-const DEFAULT_RUN_CONFIG = { ...NATIVE_DEFAULT_RUN_CONFIG, model: { providerId: "legacy-codex-cli", modelId: NATIVE_DEFAULT_RUN_CONFIG.model.modelId } };
+import { DEFAULT_RUN_CONFIG, RunConfigSchema, modelRefKey } from "../../src/shared/schemas";
 
 describe("ScopeForm search provider selection", () => {
-  test("distinguishes identical model names and saves the explicitly selected native route", async () => {
+  test("offers only native OpenAI models and saves the selected model", async () => {
     const state = workspace();
     const nativeModel = { providerId: "openai-subscription", modelId: DEFAULT_RUN_CONFIG.model.modelId };
     state.validation.native = { available: true, connected: true, accounts: [{ providerId: nativeModel.providerId }] };
     state.runConfig = { ...DEFAULT_RUN_CONFIG, searchProvider: "perplexity" };
-    state.models = [nativeModel, DEFAULT_RUN_CONFIG.model];
+    const legacyModel = { providerId: "legacy-codex-cli", modelId: DEFAULT_RUN_CONFIG.model.modelId };
+    state.models = [nativeModel, legacyModel];
     state.modelOptions = [
       { ...state.modelOptions[0]!, ...nativeModel, displayName: "Luna" },
-      { ...state.modelOptions[0]!, displayName: "Luna" },
+      { ...state.modelOptions[0]!, ...legacyModel, displayName: "Luna legacy" },
     ];
     const onSave = vi.fn().mockResolvedValue(undefined);
     const onStart = vi.fn().mockResolvedValue(undefined);
     const view = render(ScopeForm, { workspace: state, busy: false, onSave, onStart, onRetry: vi.fn() });
-    expect(view.getByRole("option", { name: "Luna (Legacy Codex CLI)" })).toBeTruthy();
-    expect(view.getByRole("option", { name: "Luna (Native OpenAI)" })).toBeTruthy();
+    expect(view.getByRole("option", { name: "Luna" })).toBeTruthy();
+    expect(view.queryByRole("option", { name: "Luna legacy" })).toBeNull();
     const select = view.getByRole("combobox", { name: /Model/ }) as HTMLSelectElement;
     expect(select.value).toBe(modelRefKey(DEFAULT_RUN_CONFIG.model));
     await fireEvent.change(select, { target: { value: modelRefKey(nativeModel) } });
@@ -71,7 +70,7 @@ describe("ScopeForm search provider selection", () => {
       onConnectNative: connect,
     });
 
-    await fireEvent.click(view.getByRole("button", { name: "Connect in browser" }));
+    await fireEvent.click(view.getByRole("button", { name: "Sign in with OpenAI" }));
     expect(connect).toHaveBeenCalledWith("openai-subscription", "browser");
     await fireEvent.click(view.getByRole("button", { name: "Use device code" }));
     expect(connect).toHaveBeenCalledWith("openai-subscription", "device");
@@ -94,6 +93,69 @@ describe("ScopeForm search provider selection", () => {
     await fireEvent.click(accountView.getByRole("button", { name: "Sign out" }));
     expect(refresh).toHaveBeenCalledWith("openai-subscription");
     expect(logout).toHaveBeenCalledWith("openai-subscription");
+  });
+
+  test("keeps sign-in recovery visible when the native runtime is unavailable", async () => {
+    const state = workspace();
+    state.validation.native = {
+      available: false, connected: false, accounts: [], error: "OpenAI runtime could not start",
+    };
+    state.models = [];
+    state.modelOptions = [];
+    const retry = vi.fn().mockResolvedValue(undefined);
+    const view = render(ScopeForm, {
+      workspace: state, busy: false, onSave: vi.fn(), onStart: vi.fn(), onRetry: retry,
+    });
+
+    expect(view.getByLabelText("OpenAI account")).toBeTruthy();
+    expect(view.getByText("OpenAI runtime could not start")).toBeTruthy();
+    expect(view.getByRole("option", { name: "Connect OpenAI to choose a model" })).toBeTruthy();
+    expect(view.queryByText(/Legacy Codex CLI/)).toBeNull();
+    await fireEvent.click(view.getByRole("button", { name: "Try again" }));
+    expect(retry).toHaveBeenCalledTimes(1);
+  });
+
+  test("explains an empty model list after account connection", () => {
+    const state = workspace();
+    state.validation.native = {
+      available: true, connected: true, accounts: [{ providerId: "openai-subscription", email: "dany@example.test" }],
+    };
+    state.models = [];
+    state.modelOptions = [];
+    const view = render(ScopeForm, {
+      workspace: state, busy: false, onSave: vi.fn(), onStart: vi.fn(), onRetry: vi.fn(),
+      onRefreshNative: vi.fn(), onLogoutNative: vi.fn(),
+    });
+
+    expect(view.getByText("Your available models appear here after you sign in.")).toBeTruthy();
+    expect(view.getByText("No compatible models were found. Refresh the account to try again.")).toBeTruthy();
+    expect((view.getByRole("combobox", { name: /Model/ }) as HTMLSelectElement).disabled).toBe(true);
+  });
+
+  test("requires an explicit model choice for a project saved with the removed CLI", async () => {
+    const state = workspace();
+    state.runConfig = {
+      ...DEFAULT_RUN_CONFIG,
+      model: { providerId: "legacy-codex-cli", modelId: "gpt-old" },
+    };
+    state.validation.exa = { valid: true };
+    const onSave = vi.fn();
+    const onStart = vi.fn();
+    const view = render(ScopeForm, {
+      workspace: state, busy: false, onSave, onStart, onRetry: vi.fn(),
+    });
+
+    const modelSelect = view.getByRole("combobox", { name: /Model/ }) as HTMLSelectElement;
+    expect(modelSelect.value).toBe("");
+    expect(view.getByRole("option", { name: "Choose an OpenAI model" })).toBeTruthy();
+    expect(view.getByText("This project used the removed CLI integration. Choose a model and save to start a new run.")).toBeTruthy();
+    expect((view.getByRole("button", { name: "Discover problems" }) as HTMLButtonElement).disabled).toBe(true);
+    await fireEvent.submit(view.container.querySelector("form")!);
+    expect(onSave).not.toHaveBeenCalled();
+    expect(onStart).not.toHaveBeenCalled();
+
+    await fireEvent.change(modelSelect, { target: { value: modelRefKey(DEFAULT_RUN_CONFIG.model) } });
+    expect((view.getByRole("button", { name: "Discover problems" }) as HTMLButtonElement).disabled).toBe(false);
   });
 
   test("shows device-code instructions and leaves cancellation enabled while setup is busy", async () => {
@@ -127,8 +189,7 @@ function workspace(): WorkspaceState {
     validation: {
       exa: { valid: false, error: "Exa unavailable" },
       perplexity: { valid: true },
-      codex: { detected: true, compatible: true, authenticated: true },
-      native: { available: false, connected: false, accounts: [] },
+      native: { available: true, connected: true, accounts: [{ providerId: "openai-subscription" }] },
       setupComplete: true,
     },
     threads: [{ id: "thread-1", title: "Research", status: "configuring", createdAt: now, updatedAt: now }],
