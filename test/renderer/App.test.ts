@@ -149,6 +149,36 @@ describe("App workspace coordination", () => {
     expect((view.getByRole("button", { name: "Sign in with OpenAI" }) as HTMLButtonElement).disabled).toBe(false);
   });
 
+  test("keeps reconciling a pending retry without resetting the setup draft", async () => {
+    const unavailable = workspace("alpha");
+    unavailable.validation.native = {
+      available: false, connected: false, accounts: [], error: "OpenAI runtime could not start",
+    };
+    const checking = workspace("alpha");
+    checking.validation.native = {
+      available: false, connected: false, accounts: [], error: "Checking native runtime",
+    };
+    checking.validation.exa = { valid: false, error: "Checking Exa connection" };
+    const ready = workspace("alpha");
+    ready.validation.native = { available: true, connected: false, accounts: [] };
+    const getWorkspace = vi.fn()
+      .mockResolvedValueOnce(unavailable)
+      .mockResolvedValueOnce(checking)
+      .mockResolvedValueOnce(ready);
+    installApi({ getWorkspace, retryConnection: vi.fn().mockResolvedValue(undefined) });
+    const view = render(App);
+
+    const title = await view.findByLabelText("Research name") as HTMLInputElement;
+    await fireEvent.input(title, { target: { value: "My unsaved research" } });
+    await fireEvent.click(view.getByRole("button", { name: "Try again" }));
+
+    expect(await view.findByText("Checking required connections")).toBeTruthy();
+    expect((view.getByRole("button", { name: "Checking connections" }) as HTMLButtonElement).disabled).toBe(true);
+    expect(await view.findByRole("button", { name: "Sign in with OpenAI" }, { timeout: 1_500 })).toBeTruthy();
+    expect(getWorkspace).toHaveBeenCalledTimes(3);
+    expect(title.value).toBe("My unsaved research");
+  });
+
   test("shows the saved reason and hides resume when completion is unknown", async () => {
     const state = workspace("alpha");
     state.threads[0]!.status = "failed";

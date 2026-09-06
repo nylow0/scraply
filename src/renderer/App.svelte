@@ -102,6 +102,7 @@
     loadEpoch += 1;
     loading = false;
     workspace = next;
+    if (validationPending(next)) reconcileSoon(500);
   }
   function reconcileSoon(delayMs = 180) {
     reconcilePending = true;

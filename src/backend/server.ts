@@ -102,6 +102,7 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
   db.setMeta("persistence_probe", `ok-${Date.now()}`);
   let activeThreadId: string | null = db.getSetting("active_thread_id") || null;
   let cachedValidation: ValidationState | null = null;
+  let cachedNativeValidation: ValidationState["native"] | null = null;
   let validationPromise: Promise<ValidationState> | null = null;
   let cachedModels: ModelRef[] = [];
   let cachedModelOptions: ModelOption[] = [];
@@ -112,6 +113,7 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
     validationGeneration += 1;
     validationPromise = null;
     cachedValidation = null;
+    cachedNativeValidation = null;
     cachedModels = [];
     cachedModelOptions = [];
   };
@@ -144,10 +146,20 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
     const generation = validationGeneration;
     const pending = (async () => {
       const secrets = context.getSecrets();
+      const nativeInspectionPromise = (context.providerValidation?.inspectNative
+        ? context.providerValidation.inspectNative()
+        : inspectNativeRuntime(context.nativeRuntime, context.nativeRuntimeError, context.nativeRuntimeStatus?.()))
+        .then((nativeInspection) => {
+          if (generation === validationGeneration) {
+            const { models: nativeModels, ...native } = nativeInspection;
+            cachedNativeValidation = native;
+            cachedModelOptions = nativeModels;
+            cachedModels = nativeModels.map(({ providerId, modelId }) => ({ providerId, modelId }));
+          }
+          return nativeInspection;
+        });
       const [nativeInspection, exa, perplexity] = await Promise.all([
-        context.providerValidation?.inspectNative
-          ? context.providerValidation.inspectNative()
-          : inspectNativeRuntime(context.nativeRuntime, context.nativeRuntimeError, context.nativeRuntimeStatus?.()),
+        nativeInspectionPromise,
         secrets.exaApiKey
           ? (context.providerValidation?.validateExa ?? ((key: string) => new ExaClient(key).validateKey()))(secrets.exaApiKey)
           : Promise.resolve({ valid: false, error: "Exa key missing" }),
@@ -175,6 +187,7 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
       });
       if (generation === validationGeneration) {
         cachedValidation = value;
+        cachedNativeValidation = value.native;
         cachedModelOptions = nativeModels;
         cachedModels = cachedModelOptions.map(({ providerId, modelId }) => ({ providerId, modelId }));
       }
@@ -221,8 +234,16 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
     if (activeThreadId && !threadList.some((thread) => thread.id === activeThreadId)) activeThreadId = threadList[0]?.id ?? null;
     const runConfig = activeThreadId ? threads.getLatestRunConfig(activeThreadId) : null;
     const latestResearchRun = activeThreadId ? latestRun(activeThreadId) : null;
+    const pending = pendingValidation();
+    const validation = cachedValidation ?? (cachedNativeValidation
+      ? ValidationStateSchema.parse({
+        ...pending,
+        native: cachedNativeValidation,
+        setupComplete: isSetupComplete(pending, cachedNativeValidation),
+      })
+      : pending);
     const state = {
-      validation: cachedValidation ?? pendingValidation(),
+      validation,
       threads: threadList,
       activeThreadId,
       messages: activeThreadId ? threads.getMessages(activeThreadId) : [],
