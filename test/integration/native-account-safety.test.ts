@@ -94,7 +94,6 @@ describe("native account safety", () => {
       promptOverridesDir: join(directory, "prompts"),
       appVersion: "test",
       getSecrets: () => ({ exaApiKey: null }),
-      providerValidation: { inspectCodex: () => new Promise(() => undefined) },
       nativeRuntimeError: "Native runtime package is missing",
     }, () => undefined);
     handles.push(handle);
@@ -166,7 +165,6 @@ async function backend(runtime: FakeRuntime, persist = async () => undefined): P
     nativeRuntimeStatus: () => ({ ready: true }),
     persistProviderCredential: persist,
     forgetProviderCredential: () => undefined,
-    providerValidation: { inspectCodex: async () => ({ detected: false, compatible: false, authenticated: false, models: [] }) },
   }, () => undefined);
   handles.push(handle);
   return handle;

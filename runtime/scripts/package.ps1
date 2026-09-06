@@ -39,7 +39,6 @@ Write-Verbose "Using external Cargo target directory: $cargoTargetDirectory"
 
 try {
 $cargo = (Get-Command cargo -ErrorAction Stop).Source
-$bun = (Get-Command bun -ErrorAction Stop).Source
 $toolchain = "stable-x86_64-pc-windows-msvc"
 $targetTriple = "x86_64-pc-windows-msvc"
 $localPackages = @(
@@ -79,35 +78,11 @@ function Invoke-Checked {
         "--target", $targetTriple, "--", "-D", "warnings"
     ) "strict MSVC clippy"
 
-    Invoke-Checked $cargo @(
-        "+$toolchain", "build", "-p", "scraply-agent", "--locked", "--target", $targetTriple
-    ) "debug contract binary build"
-
     $metadataJson = & $cargo "+$toolchain" metadata --no-deps --format-version 1
     if ($LASTEXITCODE -ne 0) {
         throw "cargo metadata failed with exit code $LASTEXITCODE."
     }
     $metadata = $metadataJson | ConvertFrom-Json
-    $debugBinary = Join-Path ([string]$metadata.target_directory) "$targetTriple\debug\scraply-agent.exe"
-
-    $priorCliPath = [Environment]::GetEnvironmentVariable("CODEX_CLI_PATH", "Process")
-    $priorFixture = [Environment]::GetEnvironmentVariable("SCRAPLY_AGENT_TEST_FIXTURE", "Process")
-    try {
-        [Environment]::SetEnvironmentVariable("CODEX_CLI_PATH", $debugBinary, "Process")
-        [Environment]::SetEnvironmentVariable(
-            "SCRAPLY_AGENT_TEST_FIXTURE",
-            '{"account":{"email":"fixture@example.invalid","account_id":"fixture-account","chatgpt_user_id":"fixture-user","plan":"plus"},"models":[{"id":"account-visible-model","display_name":"Account Visible Model","description":"fixture","default_reasoning_effort":"high","supported_reasoning_efforts":["medium","high"],"is_default":true}],"output":{"answer":"fixture"}}',
-            "Process"
-        )
-        Invoke-Checked $bun @(
-            "tests/integration/scraply-inspection.ts"
-        ) "read-only Scraply adapter contract"
-    }
-    finally {
-        [Environment]::SetEnvironmentVariable("CODEX_CLI_PATH", $priorCliPath, "Process")
-        [Environment]::SetEnvironmentVariable("SCRAPLY_AGENT_TEST_FIXTURE", $priorFixture, "Process")
-    }
-
         Invoke-Checked $cargo @(
             "+$toolchain", "build", "-p", "scraply-agent", "--release", "--locked",
             "--target", $targetTriple
@@ -165,7 +140,6 @@ $artifacts = @(
     @{ Source = (Join-Path $repositoryRoot "CONTEXT.md"); Relative = "CONTEXT.md" },
     @{ Source = (Join-Path $repositoryRoot "docs\adr\0001-custom-runtime.md"); Relative = "docs\adr\0001-custom-runtime.md" },
     @{ Source = (Join-Path $repositoryRoot "docs\auth-architecture.md"); Relative = "docs\auth-architecture.md" },
-    @{ Source = (Join-Path $repositoryRoot "docs\compatibility.md"); Relative = "docs\compatibility.md" },
     @{ Source = (Join-Path $repositoryRoot "docs\known-limitations.md"); Relative = "docs\known-limitations.md" }
 )
 

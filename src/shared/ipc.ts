@@ -9,6 +9,7 @@ import {
   SourceDetailSchema as SharedSourceDetailSchema,
   ThreadSchema,
 } from "./schemas";
+import { OPENAI_SUBSCRIPTION_PROVIDER_ID } from "./schemas";
 
 const EntityIdSchema = z.string().trim().min(1).max(128);
 const ShortTextSchema = z.string().trim().min(1).max(256);
@@ -31,13 +32,6 @@ export const BackendReadySchema = z.object({ port: z.number().int().positive(), 
 export const ValidationStateSchema = z.object({
   exa: z.object({ valid: z.boolean(), error: z.string().optional() }),
   perplexity: z.object({ valid: z.boolean(), error: z.string().optional() }),
-  codex: z.object({
-    detected: z.boolean(),
-    compatible: z.boolean(),
-    authenticated: z.boolean(),
-    version: z.string().optional(),
-    error: z.string().optional(),
-  }),
   native: z.object({
     available: z.boolean(),
     connected: z.boolean(),
@@ -80,12 +74,12 @@ export const GetSourceDetailRequestSchema = z.object({ sourceId: EntityIdSchema 
 export const GetIdeaDetailRequestSchema = z.object({ ideaId: EntityIdSchema });
 export const OpenExternalUrlRequestSchema = z.object({ url: z.string().trim().min(1).max(2_048) });
 export const NativeLoginStartSchema = z.object({
-  providerId: z.string().trim().min(1),
+  providerId: z.literal(OPENAI_SUBSCRIPTION_PROVIDER_ID),
   method: z.enum(["browser", "device"]),
 }).strict();
 export const NativeLoginCompleteSchema = z.object({ loginId: EntityIdSchema }).strict();
-export const NativeLoginCancelSchema = z.object({ loginId: EntityIdSchema, providerId: EntityIdSchema }).strict();
-export const NativeProviderSchema = z.object({ providerId: z.string().trim().min(1) }).strict();
+export const NativeLoginCancelSchema = z.object({ loginId: EntityIdSchema, providerId: z.literal(OPENAI_SUBSCRIPTION_PROVIDER_ID) }).strict();
+export const NativeProviderSchema = z.object({ providerId: z.literal(OPENAI_SUBSCRIPTION_PROVIDER_ID) }).strict();
 export const NativeLoginLaunchSchema = z.discriminatedUnion("method", [
   z.object({ loginId: EntityIdSchema, providerId: EntityIdSchema, method: z.literal("browser"), authorizationUrl: z.string().url(), callbackPort: z.number().int().positive() }).strict(),
   z.object({ loginId: EntityIdSchema, providerId: EntityIdSchema, method: z.literal("device"), verificationUrl: z.string().url(), userCode: z.string().min(1) }).strict(),

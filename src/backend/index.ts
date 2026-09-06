@@ -105,7 +105,7 @@ process.parentPort?.on("message", async (event) => {
       nativeRuntime,
       nativeRuntimeStatus: nativeStartup!.status,
       prepareNativeRuntime: nativeStartup!.prepare,
-      modelClients: { "openai-subscription": nativeRuntime, openrouter: nativeRuntime },
+      modelClients: { "openai-subscription": nativeRuntime },
       persistProviderCredential,
       forgetProviderCredential,
     } : {}),

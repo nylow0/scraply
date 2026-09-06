@@ -8,7 +8,11 @@ export interface MockBackend {
 }
 
 const now = "2026-08-10T12:00:00.000Z";
-const validation = { exa: { valid: true }, perplexity: { valid: false, error: "Perplexity key missing" }, codex: { detected: true, compatible: true, authenticated: true, version: "codex-e2e" }, setupComplete: true };
+const validation = {
+  exa: { valid: true }, perplexity: { valid: false, error: "Perplexity key missing" },
+  native: { available: true, connected: true, version: "0.2.0-e2e", accounts: [{ providerId: "openai-subscription" }] },
+  setupComplete: true,
+};
 const factor = { id: "factor-1", subject: "Small repair shops", behavior: "wait for backordered parts", quote: "Backorders add days to routine repairs.", sourceId: "source-1", sourceTitle: "Repair trade survey", sourceUrl: "https://example.com/repair", harvestMode: "domain", modelConfidence: 0.8 };
 const problem = { id: "problem-1", statement: "Small repair shops cannot reliably predict parts arrival times.", whyItPersists: "Supplier data remains fragmented.", affected: "Independent repair shops", scaleEstimate: "Thousands of shops", verdict: "confirmed", verdictReason: "Multiple sources describe recurring delays.", selected: false, factors: [factor], singleHarvestModeWarning: true };
 const rejectedProblem = { id: "rejected-1", statement: "Repair shops cannot compare every supplier on one marketplace.", reason: "The candidate cited factors from only one source hostname." };

@@ -31,7 +31,6 @@ interface WorkspaceShape {
   problemCandidates: Array<{ factors: Array<{ sourceId: string }> }>;
   solutions: Array<{ id: string }>;
   validation: {
-    codex: { detected: boolean };
     native: { available: boolean; connected: boolean; version?: string; accounts: unknown[] };
   };
 }
@@ -417,7 +416,6 @@ async function launch(mode: Mode, index: number, fixture: InstalledPerformanceFi
       deadline,
     );
     const nativeReadyMs = performance.now() - launchedAt;
-    if (readyWorkspace.value.validation.codex.detected) throw new Error("Codex was detected on the isolated probe PATH");
     if (readyWorkspace.value.validation.native.connected || readyWorkspace.value.validation.native.accounts.length > 0) {
       throw new Error("The isolated probe unexpectedly loaded a native provider account");
     }
@@ -944,7 +942,6 @@ try {
       providerLoginAttempted: false,
       providerGenerationAttempted: false,
       paidCallsAttempted: false,
-      codexAvailableOnPath: false,
     },
     artifacts: { rawPath, reportPath, eventsPath, screenshotPath },
   };

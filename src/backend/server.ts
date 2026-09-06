@@ -5,7 +5,6 @@ import { DatabaseClient } from "../db/client";
 import { GenerationAttemptRepository } from "../db/repositories/generation-attempts";
 import { ActiveRunConflictError } from "../db/repositories/research-runs";
 import { ThreadRepository } from "../db/repositories/threads";
-import { CodexClient, inspectCodexCli, type CodexInspectionOptions, type CodexInspectionResult } from "../providers/codex";
 import { ExaClient } from "../providers/exa";
 import { PerplexityClient } from "../providers/perplexity";
 import type { SearchClient, SearchProvider, ValidationResult } from "../providers/search";
@@ -23,7 +22,7 @@ import {
   type SolutionView, type ValidationState,
 } from "../shared/ipc";
 import {
-  DEFAULT_RUN_CONFIG, LEGACY_CODEX_PROVIDER_ID, ModelCatalogSchema, RunConfigSchema, sameModelRef,
+  DEFAULT_RUN_CONFIG, HISTORICAL_CODEX_CLI_PROVIDER_ID, ModelCatalogSchema, OPENAI_SUBSCRIPTION_PROVIDER_ID, RunConfigSchema, sameModelRef,
   type ModelCatalog, type ModelOption, type ModelRef, type RunConfig,
 } from "../shared/schemas";
 import type { LogInput } from "../shared/logging";
@@ -48,7 +47,7 @@ export interface BackendContext {
   log?: (input: Omit<LogInput, "component">) => void;
   observeDataRead?: (read: { operation: "solution-summaries" | "solution-details"; queryCount: number; rowCount: number }) => void;
   providerValidation?: {
-    inspectCodex?: (options?: CodexInspectionOptions) => Promise<CodexInspectionResult>;
+    inspectNative?: () => Promise<NativeInspectionResult>;
     validateExa?: (apiKey: string) => Promise<ValidationResult>;
     validatePerplexity?: (apiKey: string) => Promise<ValidationResult>;
   };
@@ -61,23 +60,21 @@ interface SearchValidation {
 
 export function isSetupComplete(
   search: SearchValidation,
-  codex: { detected: boolean; compatible: boolean; authenticated: boolean },
-  native: { available: boolean; connected: boolean } = { available: false, connected: false },
+  native: { available: boolean; connected: boolean },
 ): boolean {
   return (search.exa.valid || search.perplexity.valid)
-    && ((codex.detected && codex.compatible && codex.authenticated) || (native.available && native.connected));
+    && native.available && native.connected;
 }
+const REMOVED_CODEX_CLI_MESSAGE = "Codex CLI integration was removed. Start a new run using Native OpenAI.";
 type DataRead = (sql: string, params: readonly unknown[]) => Array<Record<string, unknown>>;
 export function isResearchModeReady(
   config: Pick<RunConfig, "researchMode" | "searchProvider"> & { model?: ModelRef },
   search: SearchValidation,
-  codex: { detected: boolean; compatible: boolean; authenticated: boolean },
-  native: { available: boolean; connected: boolean } = { available: false, connected: false },
+  native: { available: boolean; connected: boolean },
 ): boolean {
   const selectedSearchReady = search[config.searchProvider].valid;
-  const selectedModelReady = (config.model?.providerId ?? LEGACY_CODEX_PROVIDER_ID) === LEGACY_CODEX_PROVIDER_ID
-    ? codex.detected && codex.compatible && codex.authenticated
-    : native.available && native.connected;
+  const selectedModelReady = config.model?.providerId === OPENAI_SUBSCRIPTION_PROVIDER_ID
+    && native.available && native.connected;
   return selectedModelReady
     && (config.researchMode === "known-problem" || selectedSearchReady);
 }
@@ -134,10 +131,7 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
       if (perplexityApiKey && !searchClients.perplexity) searchClients.perplexity = new PerplexityClient(perplexityApiKey);
       engine = new ResearchEngine({
         db,
-        modelClients: {
-          [LEGACY_CODEX_PROVIDER_ID]: context.modelClients?.[LEGACY_CODEX_PROVIDER_ID] ?? new CodexClient(),
-          ...context.modelClients,
-        },
+        modelClients: context.modelClients ?? {},
         searchClients,
         onEvent: emitEvent,
       });
@@ -145,20 +139,15 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
     return engine;
   };
 
-  async function validateProviders(forceCodex = false): Promise<ValidationState> {
+  async function validateProviders(): Promise<ValidationState> {
     if (validationPromise) return validationPromise;
     const generation = validationGeneration;
     const pending = (async () => {
       const secrets = context.getSecrets();
-      const [inspection, nativeInspection, exa, perplexity] = await Promise.all([
-        (context.providerValidation?.inspectCodex ?? inspectCodexCli)({ force: forceCodex }).catch((): CodexInspectionResult => ({
-          detected: false,
-          compatible: false,
-          authenticated: false,
-          models: [],
-          error: "Codex CLI inspection failed",
-        })),
-        inspectNativeRuntime(context.nativeRuntime, context.nativeRuntimeError, context.nativeRuntimeStatus?.()),
+      const [nativeInspection, exa, perplexity] = await Promise.all([
+        context.providerValidation?.inspectNative
+          ? context.providerValidation.inspectNative()
+          : inspectNativeRuntime(context.nativeRuntime, context.nativeRuntimeError, context.nativeRuntimeStatus?.()),
         secrets.exaApiKey
           ? (context.providerValidation?.validateExa ?? ((key: string) => new ExaClient(key).validateKey()))(secrets.exaApiKey)
           : Promise.resolve({ valid: false, error: "Exa key missing" }),
@@ -166,9 +155,8 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
           ? (context.providerValidation?.validatePerplexity ?? ((key: string) => new PerplexityClient(key).validateKey()))(secrets.perplexityApiKey)
           : Promise.resolve({ valid: false, error: "Perplexity key missing" }),
       ]);
-      const { models, ...codex } = inspection;
       const { models: nativeModels, ...native } = nativeInspection;
-      const value = ValidationStateSchema.parse({ exa, perplexity, codex, native, setupComplete: isSetupComplete({ exa, perplexity }, codex, native) });
+      const value = ValidationStateSchema.parse({ exa, perplexity, native, setupComplete: isSetupComplete({ exa, perplexity }, native) });
       context.log?.({
         level: value.setupComplete ? "info" : "warn",
         event: "provider-validation-completed",
@@ -179,16 +167,15 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
           exaError: value.exa.error,
           perplexityValid: value.perplexity.valid,
           perplexityError: value.perplexity.error,
-          codexDetected: value.codex.detected,
-          codexCompatible: value.codex.compatible,
-          codexAuthenticated: value.codex.authenticated,
-          codexVersion: value.codex.version,
-          codexError: value.codex.error,
+          nativeAvailable: value.native.available,
+          nativeConnected: value.native.connected,
+          nativeVersion: value.native.version,
+          nativeError: value.native.error,
         },
       });
       if (generation === validationGeneration) {
         cachedValidation = value;
-        cachedModelOptions = [...nativeModels, ...models];
+        cachedModelOptions = nativeModels;
         cachedModels = cachedModelOptions.map(({ providerId, modelId }) => ({ providerId, modelId }));
       }
       return value;
@@ -200,7 +187,7 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
   const pendingValidation = () => ValidationStateSchema.parse({
     exa: { valid: false, error: context.getSecrets().exaApiKey ? "Checking Exa connection" : "Exa key missing" },
     perplexity: { valid: false, error: context.getSecrets().perplexityApiKey ? "Checking Perplexity connection" : "Perplexity key missing" },
-    codex: { detected: false, compatible: false, authenticated: false, error: "Checking Codex connection" }, setupComplete: false,
+    setupComplete: false,
     native: { available: false, connected: false, accounts: [], error: "Checking native runtime" },
   });
 
@@ -598,6 +585,7 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
     const activity = db.db.prepare("SELECT payload_json FROM job_events WHERE run_id = ? AND type = 'run-progress' ORDER BY id DESC LIMIT 1")
       .get(row.id) as { payload_json: string } | undefined;
     const resumeSafety = generationAttempts.getResumeSafety(row.id);
+    const providerRemoved = runConfig.model.providerId === HISTORICAL_CODEX_CLI_PROVIDER_ID;
     return {
       runId: row.id, status: row.status, problemId: row.problem_id,
       workflowVersion: row.workflow_version, awaitingSelection: Boolean(row.awaiting_selection), interrupted: Boolean(row.interrupted),
@@ -605,8 +593,10 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
       searches: counts.find((item) => item.provider === runConfig.searchProvider)?.count ?? 0,
       projectedCodexCalls: projection.modelCalls, projectedSearches: projection.searches,
       lastActivity: activity ? String(JSON.parse(activity.payload_json).message ?? "") : null,
-      canResume: resumeSafety.canResume,
-      ...(resumeSafety.resumeBlockedReason ? { resumeBlockedReason: resumeSafety.resumeBlockedReason } : {}),
+      canResume: !providerRemoved && resumeSafety.canResume,
+      ...(providerRemoved
+        ? { resumeBlockedReason: REMOVED_CODEX_CLI_MESSAGE }
+        : resumeSafety.resumeBlockedReason ? { resumeBlockedReason: resumeSafety.resumeBlockedReason } : {}),
       usage: runUsage(row.id),
     };
   }
@@ -622,6 +612,12 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
   }
   function requireThread(threadId: string): void {
     if (!db.db.prepare("SELECT 1 FROM threads WHERE id = ?").get(threadId)) throw new AppError("not_found", "Thread not found.");
+  }
+  function requireRunnableRunProvider(runId: string): void {
+    const row = db.db.prepare("SELECT config_json FROM research_runs WHERE id = ?").get(runId) as { config_json: string } | undefined;
+    if (!row) throw new AppError("not_found", "Research run not found.");
+    const config = RunConfigSchema.parse({ ...DEFAULT_RUN_CONFIG, ...JSON.parse(row.config_json) });
+    if (config.model.providerId === HISTORICAL_CODEX_CLI_PROVIDER_ID) throw new AppError("conflict", REMOVED_CODEX_CLI_MESSAGE);
   }
   function cancelActiveRuns(target: ResearchEngine | null): void {
     if (!target) return;
@@ -808,15 +804,12 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
         const validation = cachedValidation ?? await validateProviders();
         const scope = threads.getScope(threadId); if (!scope) throw new AppError("conflict", "Save the research scope first.");
         const config = threads.getLatestRunConfig(threadId) ?? RunConfigSchema.parse(DEFAULT_RUN_CONFIG);
-        if (!isResearchModeReady(config, validation, validation.codex, validation.native)) {
-          if (config.model.providerId === LEGACY_CODEX_PROVIDER_ID) {
-            if (!validation.codex.detected) throw new AppError("conflict", "Codex CLI not found");
-            if (!validation.codex.compatible) throw new AppError("conflict", "Installed Codex version is incompatible");
-            if (!validation.codex.authenticated) throw new AppError("conflict", "Codex is not signed in");
-          } else {
-            if (!validation.native.available) throw new AppError("conflict", validation.native.error ?? "Native runtime is unavailable");
-            if (!validation.native.connected) throw new AppError("conflict", "Connect the selected native model provider before starting research");
+        if (!isResearchModeReady(config, validation, validation.native)) {
+          if (config.model.providerId !== OPENAI_SUBSCRIPTION_PROVIDER_ID) {
+            throw new AppError("conflict", "Select a Native OpenAI model before starting research");
           }
+          if (!validation.native.available) throw new AppError("conflict", validation.native.error ?? "Native runtime is unavailable");
+          if (!validation.native.connected) throw new AppError("conflict", "Connect Native OpenAI before starting research");
           throw new AppError("conflict", `Connect ${config.searchProvider === "exa" ? "Exa" : "Perplexity"} before discovering problems.`);
         }
         if (!cachedModels.some((model) => sameModelRef(model, config.model))) throw new AppError("conflict", "Selected model is unavailable");
@@ -832,6 +825,7 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
       if (route === "/research/select-problems") {
         const input = SelectProblemsSchema.parse(body); requireThread(input.threadId);
         const runId = latestDiscoveryRun(input.threadId); if (!runId) throw new AppError("conflict", "No completed discovery run is ready for selection.");
+        requireRunnableRunProvider(runId);
         const known = new Set((db.db.prepare("SELECT id FROM problems WHERE discovery_run_id = ?").all(runId) as Array<{ id: string }>).map((item) => item.id));
         if (input.problemIds.some((id) => !known.has(id))) throw new AppError("conflict", "A selected problem no longer belongs to the latest discovery run.");
         db.db.exec("BEGIN IMMEDIATE");
@@ -863,17 +857,19 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
         return sendJson(res, 200, await workspaceState());
       }
       if (route === "/research/resume") {
-        const { runId } = ResumeResearchSchema.parse(body); await ensureEngine().resumeRun(runId); return sendJson(res, 200, { workspace: await workspaceState() });
+        const { runId } = ResumeResearchSchema.parse(body); requireRunnableRunProvider(runId); await ensureEngine().resumeRun(runId); return sendJson(res, 200, { workspace: await workspaceState() });
       }
       if (route === "/research/select-option") {
         const input = SelectOptionSchema.parse(body);
         requireThread(input.threadId);
+        requireRunnableRunProvider(input.runId);
         await ensureEngine().selectOption(input.threadId, input.runId, input.solutionId);
         return sendJson(res, 200, await workspaceState());
       }
       if (route === "/research/evidence-follow-up") {
         const input = EvidenceFollowUpRequestSchema.parse(body);
         requireThread(input.threadId);
+        requireRunnableRunProvider(input.runId);
         await ensureEngine().requestEvidenceFollowUp(input.threadId, input.runId, input.question);
         return sendJson(res, 200, await workspaceState());
       }
@@ -968,34 +964,36 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
       cancelActiveRuns(engine);
       engine = null;
       invalidateProviderCache();
-      void validateProviders(true).catch(() => undefined);
+      void validateProviders().catch(() => undefined);
     },
     providersChanged: () => {
       invalidateProviderCache();
-      void validateProviders(true).catch(() => undefined);
+      void validateProviders().catch(() => undefined);
     },
   };
 }
 
-async function inspectNativeRuntime(
-  runtime?: RuntimeClient,
-  unavailableReason?: string,
-  startup?: { ready: boolean; error?: string },
-): Promise<{
+interface NativeInspectionResult {
   available: boolean;
   connected: boolean;
   version?: string;
   accounts: Array<{ providerId: string; email?: string | undefined; accountId?: string | undefined; plan?: string | undefined }>;
   models: ModelOption[];
   error?: string;
-}> {
+}
+
+async function inspectNativeRuntime(
+  runtime?: RuntimeClient,
+  unavailableReason?: string,
+  startup?: { ready: boolean; error?: string },
+): Promise<NativeInspectionResult> {
   if (!runtime) return { available: false, connected: false, accounts: [], models: [], error: unavailableReason ?? "Native runtime is not installed" };
   if (startup && !startup.ready) {
     return { available: false, connected: false, accounts: [], models: [], error: startup.error ?? "Native runtime is starting" };
   }
   try {
     const initialized = await runtime.start();
-    const accounts = await runtime.listAccounts();
+    const accounts = (await runtime.listAccounts()).filter((account) => account.providerId === OPENAI_SUBSCRIPTION_PROVIDER_ID);
     const listed = (await Promise.all(accounts.map((account) => runtime.listModels(account.providerId)))).flat();
     const models = listed.filter((model) => model.supportsStructuredOutput).map((model) => {
       const efforts = model.supportedReasoningEfforts?.length ? model.supportedReasoningEfforts : [model.defaultReasoningEffort ?? "medium"];

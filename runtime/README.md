@@ -6,7 +6,7 @@ The core contains no tools, research client, Codex task type, fallback router, o
 
 ## Code layout
 
-- `scraply-agent-cli` owns process lifecycle, the JSONL protocol, request correlation, credential sessions, login flows, and one-release compatibility commands.
+- `scraply-agent-cli` owns process lifecycle, the JSONL protocol, request correlation, credential sessions, and login flows.
 - `scraply-agent-core` owns work orders, evidence boundaries, prompt identity, schema validation, cancellation, deadlines, repair policy, accounting, and stable failures.
 - `scraply-agent-providers` owns direct OpenAI subscription and OpenRouter adapters. It also has a Models.dev metadata overlay that cannot mark a model runnable.
 
@@ -57,7 +57,7 @@ Every request has a unique string or integer `id`. `runtime.initialize` must be 
 
 The `generation.start` payload contains a qualified `{ providerId, modelId }`, trusted `workOrder`, untrusted `evidence`, Scraply's `outputSchema`, a deadline, and the explicit repair policy. The immediate success response accepts the generation and echoes the compiler prompt identity. Later `generation.started`, `generation.completed`, `generation.failed`, or `generation.cancelled` events keep the start request ID. Terminal events retain per-attempt completion, usage, cost, latency, and provider request IDs when known; unknown accounting is never represented as zero.
 
-The frozen app-facing TypeScript declarations and JSON examples live under `contracts/runtime/v1.1`. Protocol `1.0` was an unreleased draft and is rejected. The separate legacy commands below remain the migration fallback.
+The frozen app-facing TypeScript declarations and JSON examples live under `contracts/runtime/v1.1`. Protocol `1.0` was an unreleased draft and is rejected.
 
 OpenAI subscription requests must omit `maxOutputTokens`: its endpoint rejects `max_output_tokens` with HTTP 400. The adapter rejects an explicit ceiling locally rather than silently ignoring it. Deadlines and the runtime output-byte limit still apply, but they are not token or billing ceilings. Providers that support token ceilings retain them.
 
@@ -73,15 +73,9 @@ OpenRouter supports PKCE S256 with a host-owned callback, manual API key session
 
 Credentials never belong in argv, environment variables, repository files, telemetry, or error bodies. The runtime stores session credentials only in memory. The debug test fixture is compiled out of release builds and packaging checks the binary for its marker.
 
-## Migration commands
-
-`app-server` and Scraply's exact `exec -` invocation remain for one migration release. Both use the new provider and core implementation. They no longer expose tools or run Exa. `app-server` preserves the old inspection messages, while `exec -` converts the compatibility prompt into a trusted work order plus one untrusted evidence item.
-
-Remove both commands after Scraply uses `runtime` for installed workflows.
-
 ## Package
 
-The package script runs formatting, the complete locked workspace tests, strict Clippy, the read-only Scraply adapter check, a release build, test-seam inspection, the 20 MiB binary budget, and a version smoke test.
+The package script runs formatting, the complete locked workspace tests, strict Clippy, a release build, test-seam inspection, the 20 MiB binary budget, and a version smoke test.
 
 ```powershell
 powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File .\scripts\package.ps1

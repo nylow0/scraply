@@ -54,7 +54,6 @@ export async function startNativeWorkflowBackend(directory: string, options: {
       searchClients: options.searchEnabled === false ? {} : { exa: search },
       modelClients: { [NATIVE_WORKFLOW_MODEL.providerId]: runtime }, nativeRuntime: runtime,
       providerValidation: {
-        inspectCodex: async () => ({ detected: false, compatible: false, authenticated: false, models: [] }),
         validateExa: async () => ({ valid: true }),
       },
     }, options.onEvent ?? (() => undefined));

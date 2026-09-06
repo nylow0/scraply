@@ -5,18 +5,20 @@ import { join } from "node:path";
 import { startBackend, type BackendHandle } from "../../src/backend/server";
 import { DatabaseClient } from "../../src/db/client";
 import { DiscoveryRepository } from "../../src/db/repositories/discovery";
-import { DEFAULT_RUN_CONFIG, LEGACY_CODEX_PROVIDER_ID } from "../../src/shared/schemas";
+import { DEFAULT_RUN_CONFIG } from "../../src/shared/schemas";
 
 const dirs: string[] = [];
 const handles: BackendHandle[] = [];
 const modelOption = (id: string) => ({
-  providerId: LEGACY_CODEX_PROVIDER_ID,
+  providerId: "openai-subscription",
   modelId: id,
   displayName: id,
   defaultReasoningEffort: "medium",
   reasoningEfforts: [{ id: "medium", description: "Balanced reasoning" }],
 });
-const codexInspection = (models = [modelOption("gpt-5.6-luna")]) => ({ detected: true, compatible: true, authenticated: true, models });
+const nativeInspection = (models = [modelOption("gpt-5.6-luna")]) => ({
+  available: true, connected: true, accounts: [{ providerId: "openai-subscription" }], models,
+});
 afterEach(async () => {
   for (const handle of handles.splice(0)) await handle.close();
   for (const dir of dirs.splice(0)) {
@@ -33,7 +35,7 @@ describe("cutover backend", () => {
     const handle = await startBackend({
       dataDir: dir, dbPath: join(dir, "scraply.db"), bundledPromptsDir: join(process.cwd(), "prompts"),
       promptOverridesDir: join(dir, "prompts"), appVersion: "test", getSecrets: () => ({ exaApiKey: "test-key" }),
-      providerValidation: { inspectCodex: async () => codexInspection([modelOption("gpt-5.6-luna"), modelOption("gpt-test")]), validateExa: async () => ({ valid: true }) },
+      providerValidation: { inspectNative: async () => nativeInspection([modelOption("gpt-5.6-luna"), modelOption("gpt-test")]), validateExa: async () => ({ valid: true }) },
     }, () => undefined); handles.push(handle);
 
     const post = async (path: string, body: unknown) => {
@@ -46,10 +48,10 @@ describe("cutover backend", () => {
     };
     expect(created.thread.status).toBe("configuring");
     expect(created.workspace.models).toEqual([
-      { providerId: LEGACY_CODEX_PROVIDER_ID, modelId: "gpt-5.6-luna" },
-      { providerId: LEGACY_CODEX_PROVIDER_ID, modelId: "gpt-test" },
+      { providerId: "openai-subscription", modelId: "gpt-5.6-luna" },
+      { providerId: "openai-subscription", modelId: "gpt-test" },
     ]);
-    expect(created.workspace.runConfig.model).toEqual({ providerId: LEGACY_CODEX_PROVIDER_ID, modelId: "gpt-5.6-luna" });
+    expect(created.workspace.runConfig.model).toEqual({ providerId: "openai-subscription", modelId: "gpt-5.6-luna" });
     const removedEventsEndpoint = await fetch(`http://127.0.0.1:${handle.port}/events`, { headers: { authorization: `Bearer ${handle.token}` } });
     expect(removedEventsEndpoint.status).toBe(404);
     const workspace = await post("/scope", { threadId: created.thread.id, scope: { title: "Repair shops", audience: "Independent shops", domain: "Parts sourcing", observations: "", offLimits: ["Inventory"] } }) as { scope: { title: string; audience: string; domain: string; observations: string; offLimits: string[] } };
@@ -63,7 +65,7 @@ describe("cutover backend", () => {
       promptOverridesDir: join(dir, "prompts"), appVersion: "test",
       getSecrets: () => ({ exaApiKey: null, perplexityApiKey: "perplexity-test" }),
       providerValidation: {
-        inspectCodex: async () => codexInspection(),
+        inspectNative: async () => nativeInspection(),
         validatePerplexity: async () => ({ valid: true }),
       },
     }, () => undefined); handles.push(handle);
@@ -86,14 +88,14 @@ describe("cutover backend", () => {
     const handle = await startBackend({
       dataDir: dir, dbPath, bundledPromptsDir: join(process.cwd(), "prompts"), promptOverridesDir: join(dir, "prompts"),
       appVersion: "test", getSecrets: () => ({ exaApiKey: null }),
-      modelClients: { [LEGACY_CODEX_PROVIDER_ID]: { structuredCompletion: async (request) => {
+      modelClients: { "openai-subscription": { structuredCompletion: async (request) => {
         modelCalls += 1;
         const shape = request.schema.safeParse({ solutions: [] });
         if (shape.success) throw new Error("stop after development starts");
         throw new Error("unexpected model call");
       } } },
       providerValidation: {
-        inspectCodex: async () => codexInspection(),
+        inspectNative: async () => nativeInspection(),
         validateExa: async () => { throw new Error("Exa validation must not run without a key"); },
       },
     }, (event) => events.push(event)); handles.push(handle);
@@ -106,7 +108,7 @@ describe("cutover backend", () => {
     const threadId = created.thread.id;
     await post("/scope", { threadId, scope: { title: "Known delay", audience: "", domain: "", observations: "", offLimits: [] } });
     const config = {
-      model: "gpt-5.6-luna", reasoningEffort: "medium", discoveryDepth: "standard", maxRunMinutes: 90,
+      ...DEFAULT_RUN_CONFIG,
       researchMode: "known-problem", knownProblem: "Repair shops cannot predict parts arrival times.",
     } as const;
     await post("/run-config", { threadId, config });
@@ -128,13 +130,13 @@ describe("cutover backend", () => {
     client.close();
   });
 
-  test("reports a failed Codex inspection without inventing model availability", async () => {
+  test("reports a failed native runtime inspection without inventing model availability", async () => {
     const dir = mkdtempSync(join(tmpdir(), "scraply-model-listing-")); dirs.push(dir);
     const handle = await startBackend({
       dataDir: dir, dbPath: join(dir, "scraply.db"), bundledPromptsDir: join(process.cwd(), "prompts"), promptOverridesDir: join(dir, "prompts"),
       appVersion: "test", getSecrets: () => ({ exaApiKey: "test-key" }),
       providerValidation: {
-        inspectCodex: async () => ({ detected: true, compatible: false, authenticated: false, models: [], error: "Installed Codex version is incompatible" }),
+        inspectNative: async () => ({ available: false, connected: false, accounts: [], models: [], error: "Native runtime is incompatible" }),
         validateExa: async () => ({ valid: true }),
       },
     }, () => undefined); handles.push(handle);
@@ -143,45 +145,39 @@ describe("cutover backend", () => {
       return { status: response.status, body: (await response.json() as { data: T }).data };
     };
 
-    const validation = await get<{ setupComplete: boolean; codex: { detected: boolean; compatible: boolean; authenticated: boolean; error?: string } }>("/validation");
+    const validation = await get<{ setupComplete: boolean; native: { available: boolean; connected: boolean; error?: string } }>("/validation");
     expect(validation.status).toBe(200);
-    expect(validation.body).toMatchObject({ setupComplete: false, codex: { detected: true, compatible: false, authenticated: false, error: "Installed Codex version is incompatible" } });
+    expect(validation.body).toMatchObject({ setupComplete: false, native: { available: false, connected: false, error: "Native runtime is incompatible" } });
 
-    const workspace = await get<{ validation: { codex: { error?: string } }; models: Array<{ providerId: string; modelId: string }> }>("/workspace");
-    expect(workspace.body.validation.codex.error).toBe("Installed Codex version is incompatible");
+    const workspace = await get<{ validation: { native: { error?: string } }; models: Array<{ providerId: string; modelId: string }> }>("/workspace");
+    expect(workspace.body.validation.native.error).toBe("Native runtime is incompatible");
     expect(workspace.body.models).toEqual([]);
   });
 
-  test("forces a fresh Codex inspection when secrets change", async () => {
+  test("refreshes native inspection when secrets change", async () => {
     const dir = mkdtempSync(join(tmpdir(), "scraply-validation-refresh-")); dirs.push(dir);
-    const forceFlags: Array<boolean | undefined> = [];
-    let resolveForced!: () => void;
-    const forced = new Promise<void>((resolve) => { resolveForced = resolve; });
+    let inspections = 0;
     const handle = await startBackend({
       dataDir: dir, dbPath: join(dir, "scraply.db"), bundledPromptsDir: join(process.cwd(), "prompts"), promptOverridesDir: join(dir, "prompts"),
       appVersion: "test", getSecrets: () => ({ exaApiKey: null }),
       providerValidation: {
-        inspectCodex: async (options) => {
-          forceFlags.push(options?.force);
-          if (options?.force) resolveForced();
-          return codexInspection();
-        },
+        inspectNative: async () => { inspections += 1; return nativeInspection(); },
       },
     }, () => undefined); handles.push(handle);
 
     handle.secretsChanged();
-    await forced;
+    await Bun.sleep(50);
 
-    expect(forceFlags).toContain(true);
+    expect(inspections).toBeGreaterThanOrEqual(2);
   });
 
-  test("keeps authentication separate from compatibility and blocks unauthenticated research", async () => {
+  test("blocks research until Native OpenAI is connected", async () => {
     const dir = mkdtempSync(join(tmpdir(), "scraply-auth-guard-")); dirs.push(dir);
     const handle = await startBackend({
       dataDir: dir, dbPath: join(dir, "scraply.db"), bundledPromptsDir: join(process.cwd(), "prompts"), promptOverridesDir: join(dir, "prompts"),
       appVersion: "test", getSecrets: () => ({ exaApiKey: null }),
       providerValidation: {
-        inspectCodex: async () => ({ ...codexInspection(), authenticated: false, error: "Codex is not signed in" }),
+        inspectNative: async () => ({ available: true, connected: false, accounts: [], models: [], error: "Native OpenAI is not connected" }),
       },
     }, () => undefined); handles.push(handle);
     const request = async (path: string, body?: unknown) => {
@@ -191,19 +187,19 @@ describe("cutover backend", () => {
         ...(body === undefined ? {} : { body: JSON.stringify(body) }),
       });
       return { status: response.status, body: await response.json() as {
-        data: { codex: ReturnType<typeof codexInspection>; thread: { id: string } };
+        data: { native: { available: boolean; connected: boolean }; thread: { id: string } };
         error?: { message: string };
       } };
     };
 
     const validation = await request("/validation");
-    expect(validation.body.data.codex).toMatchObject({ detected: true, compatible: true, authenticated: false });
+    expect(validation.body.data.native).toMatchObject({ available: true, connected: false });
     const threadId = (await request("/threads", {})).body.data.thread.id as string;
     await request("/scope", { threadId, scope: { title: "Known delay", audience: "", domain: "", observations: "", offLimits: [] } });
-    await request("/run-config", { threadId, config: { ...DEFAULT_RUN_CONFIG, model: { providerId: "legacy-codex-cli", modelId: DEFAULT_RUN_CONFIG.model.modelId }, researchMode: "known-problem", knownProblem: "Parts arrive late." } });
+    await request("/run-config", { threadId, config: { ...DEFAULT_RUN_CONFIG, researchMode: "known-problem", knownProblem: "Parts arrive late." } });
     const start = await request("/research/start", { threadId });
     expect(start.status).toBe(409);
-    expect(start.body.error?.message).toBe("Codex is not signed in");
+    expect(start.body.error?.message).toBe("Connect Native OpenAI before starting research");
   });
 
   test("blocks a selected model that the inspected account cannot access", async () => {
@@ -211,7 +207,7 @@ describe("cutover backend", () => {
     const handle = await startBackend({
       dataDir: dir, dbPath: join(dir, "scraply.db"), bundledPromptsDir: join(process.cwd(), "prompts"), promptOverridesDir: join(dir, "prompts"),
       appVersion: "test", getSecrets: () => ({ exaApiKey: null }),
-      providerValidation: { inspectCodex: async () => codexInspection([modelOption("gpt-available")]) },
+      providerValidation: { inspectNative: async () => nativeInspection([modelOption("gpt-available")]) },
     }, () => undefined); handles.push(handle);
     const post = async (path: string, body: unknown) => {
       const response = await fetch(`http://127.0.0.1:${handle.port}${path}`, {
@@ -225,7 +221,7 @@ describe("cutover backend", () => {
 
     const threadId = (await post("/threads", {})).body.data.thread.id as string;
     await post("/scope", { threadId, scope: { title: "Known delay", audience: "", domain: "", observations: "", offLimits: [] } });
-    await post("/run-config", { threadId, config: { ...DEFAULT_RUN_CONFIG, model: { providerId: LEGACY_CODEX_PROVIDER_ID, modelId: "gpt-unavailable" }, researchMode: "known-problem", knownProblem: "Parts arrive late." } });
+    await post("/run-config", { threadId, config: { ...DEFAULT_RUN_CONFIG, model: { providerId: "openai-subscription", modelId: "gpt-unavailable" }, researchMode: "known-problem", knownProblem: "Parts arrive late." } });
     const start = await post("/research/start", { threadId });
     expect(start.status).toBe(409);
     expect(start.body.error?.message).toBe("Selected model is unavailable");
@@ -237,7 +233,7 @@ describe("cutover backend", () => {
       dataDir: dir, dbPath: join(dir, "scraply.db"), bundledPromptsDir: join(process.cwd(), "prompts"), promptOverridesDir: join(dir, "prompts"),
       appVersion: "test", getSecrets: () => ({ exaApiKey: null }),
       providerValidation: {
-        inspectCodex: async () => codexInspection(),
+        inspectNative: async () => nativeInspection(),
         validateExa: async () => { throw new Error("Exa validation must not run without a key"); },
       },
     }, () => undefined); handles.push(handle);
@@ -248,7 +244,7 @@ describe("cutover backend", () => {
     const threadId = (await send("/threads", {})).body.data!.thread.id;
     await send("/scope", { threadId, scope: { title: "Known delay", audience: "", domain: "", observations: "", offLimits: [] } });
 
-    const base = { configVersion: 2, model: { providerId: LEGACY_CODEX_PROVIDER_ID, modelId: "gpt-5.6-luna" }, reasoningEffort: "medium", discoveryDepth: "standard", maxRunMinutes: 90 } as const;
+    const base = DEFAULT_RUN_CONFIG;
     await send("/run-config", { threadId, config: { ...base, researchMode: "known-problem", knownProblem: "   " } });
     const blankStatement = await send("/research/start", { threadId });
     expect(blankStatement.status).toBe(400);
@@ -293,7 +289,7 @@ describe("cutover backend", () => {
     const handle = await startBackend({
       dataDir: dir, dbPath, bundledPromptsDir: join(process.cwd(), "prompts"), promptOverridesDir: join(dir, "prompts"),
       appVersion: "test", getSecrets: () => ({ exaApiKey: "test-key" }),
-      providerValidation: { inspectCodex: async () => codexInspection([modelOption("gpt-test")]), validateExa: async () => ({ valid: true }) },
+      providerValidation: { inspectNative: async () => nativeInspection([modelOption("gpt-test")]), validateExa: async () => ({ valid: true }) },
       observeDataRead: (read) => dataReads.push(read),
     }, () => undefined); handles.push(handle);
     const post = async (path: string, body: unknown) => {
@@ -411,7 +407,6 @@ describe("cutover backend", () => {
     const restarted = await startBackend({
       dataDir: dir, dbPath, bundledPromptsDir: join(process.cwd(), "prompts"), promptOverridesDir: join(dir, "prompts"),
       appVersion: "test", getSecrets: () => ({ exaApiKey: null }),
-      providerValidation: { inspectCodex: async () => ({ detected: false, compatible: false, authenticated: false, models: [] }) },
     }, () => undefined); handles.push(restarted);
     const reopened = await (await fetch(`http://127.0.0.1:${restarted.port}/workspace`, {
       headers: { authorization: `Bearer ${restarted.token}` },
@@ -428,13 +423,54 @@ describe("cutover backend", () => {
     });
   });
 
+  test("never resumes a historical Codex CLI run or changes its accounting", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "scraply-removed-provider-")); dirs.push(dir);
+    const dbPath = join(dir, "scraply.db");
+    let modelCalls = 0;
+    const handle = await startBackend({
+      dataDir: dir, dbPath, bundledPromptsDir: join(process.cwd(), "prompts"), promptOverridesDir: join(dir, "prompts"),
+      appVersion: "test", getSecrets: () => ({ exaApiKey: null }),
+      modelClients: { "openai-subscription": { structuredCompletion: async () => { modelCalls += 1; throw new Error("must not run"); } } },
+      providerValidation: { inspectNative: async () => nativeInspection() },
+    }, () => undefined); handles.push(handle);
+    const request = async (path: string, body?: unknown) => {
+      const response = await fetch(`http://127.0.0.1:${handle.port}${path}`, {
+        method: body === undefined ? "GET" : "POST",
+        headers: { authorization: `Bearer ${handle.token}`, ...(body === undefined ? {} : { "content-type": "application/json" }) },
+        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+      });
+      return { status: response.status, body: await response.json() as { data?: { thread?: { id: string }; latestResearchRun?: { canResume: boolean; resumeBlockedReason?: string } }; error?: { message: string } } };
+    };
+    const threadId = (await request("/threads", {})).body.data!.thread!.id;
+    const client = new DatabaseClient(dbPath);
+    const now = new Date().toISOString();
+    const historicalConfig = { ...DEFAULT_RUN_CONFIG, model: { providerId: "legacy-codex-cli", modelId: "gpt-5.6-luna" } };
+    client.db.prepare(`INSERT INTO research_runs (id, thread_id, status, config_json, created_at, updated_at) VALUES (?, ?, 'queued', ?, ?, ?)`)
+      .run("historical-run", threadId, JSON.stringify(historicalConfig), now, now);
+    client.close();
+
+    const workspace = await request("/workspace");
+    expect(workspace.body.data?.latestResearchRun).toMatchObject({
+      canResume: false,
+      resumeBlockedReason: "Codex CLI integration was removed. Start a new run using Native OpenAI.",
+    });
+    const resumed = await request("/research/resume", { runId: "historical-run" });
+    expect(resumed.status).toBe(409);
+    expect(resumed.body.error?.message).toBe("Codex CLI integration was removed. Start a new run using Native OpenAI.");
+    const verification = new DatabaseClient(dbPath);
+    expect(verification.db.prepare("SELECT status FROM research_runs WHERE id = ?").get("historical-run")).toEqual({ status: "queued" });
+    expect(verification.db.prepare("SELECT COUNT(*) AS count FROM generation_attempts WHERE research_run_id = ?").get("historical-run")).toEqual({ count: 0 });
+    verification.close();
+    expect(modelCalls).toBe(0);
+  });
+
   test("exports completed research before solution development", async () => {
     const dir = mkdtempSync(join(tmpdir(), "scraply-research-export-")); dirs.push(dir);
     const dbPath = join(dir, "scraply.db");
     const handle = await startBackend({
       dataDir: dir, dbPath, bundledPromptsDir: join(process.cwd(), "prompts"), promptOverridesDir: join(dir, "prompts"),
       appVersion: "test", getSecrets: () => ({ exaApiKey: "test-key" }),
-      providerValidation: { inspectCodex: async () => codexInspection([modelOption("gpt-test")]), validateExa: async () => ({ valid: true }) },
+      providerValidation: { inspectNative: async () => nativeInspection([modelOption("gpt-test")]), validateExa: async () => ({ valid: true }) },
     }, () => undefined); handles.push(handle);
     const post = async (path: string, body: unknown) => {
       const response = await fetch(`http://127.0.0.1:${handle.port}${path}`, { method: "POST", headers: { authorization: `Bearer ${handle.token}`, "content-type": "application/json" }, body: JSON.stringify(body) });
@@ -445,7 +481,7 @@ describe("cutover backend", () => {
     const scope = { title: "Repair evidence", audience: "Independent shops", domain: "Parts sourcing", observations: "", offLimits: ["Inventory"] };
     await post("/scope", { threadId: created.thread.id, scope });
     const client = new DatabaseClient(dbPath);
-    const config = { ...DEFAULT_RUN_CONFIG, model: { providerId: LEGACY_CODEX_PROVIDER_ID, modelId: "gpt-test" } };
+    const config = { ...DEFAULT_RUN_CONFIG, model: { providerId: "openai-subscription", modelId: "gpt-test" } };
     const now = "2026-08-21T12:00:00.000Z";
     client.db.prepare(`INSERT INTO research_runs (id, thread_id, status, config_json, completion_reason, problem_id, created_at, updated_at) VALUES (?, ?, 'completed', ?, 'Discovery completed.', NULL, ?, ?)`)
       .run("discovery-export", created.thread.id, JSON.stringify(config), now, now);
@@ -501,8 +537,8 @@ describe("cutover backend", () => {
     const handle = await startBackend({
       dataDir: dir, dbPath, bundledPromptsDir: join(process.cwd(), "prompts"), promptOverridesDir: join(dir, "prompts"),
       appVersion: "test", getSecrets: () => ({ exaApiKey: "test-key" }),
-      modelClients: { codex: { structuredCompletion: async () => { throw new Error("stop after selection"); } } },
-      providerValidation: { inspectCodex: async () => codexInspection([modelOption("gpt-test")]), validateExa: async () => ({ valid: true }) },
+      modelClients: { "openai-subscription": { structuredCompletion: async () => { throw new Error("stop after selection"); } } },
+      providerValidation: { inspectNative: async () => nativeInspection([modelOption("gpt-test")]), validateExa: async () => ({ valid: true }) },
     }, () => undefined); handles.push(handle);
     const request = async (path: string, body: unknown) => {
       const response = await fetch(`http://127.0.0.1:${handle.port}${path}`, {
@@ -524,7 +560,7 @@ describe("cutover backend", () => {
     client.db.prepare(`
       INSERT INTO research_runs (id, thread_id, status, config_json, problem_id, created_at, updated_at)
       VALUES ('discovery-rejected', ?, 'completed', ?, NULL, ?, ?)
-    `).run(threadId, JSON.stringify({ ...DEFAULT_RUN_CONFIG, model: "gpt-test" }), now, now);
+    `).run(threadId, JSON.stringify({ ...DEFAULT_RUN_CONFIG, model: { providerId: "openai-subscription", modelId: "gpt-test" } }), now, now);
     client.db.prepare(`
       INSERT INTO rejected_problem_candidates (id, discovery_run_id, statement, reason, created_at)
       VALUES ('rejected-1', 'discovery-rejected', 'One-source candidate', 'Only one source hostname.', ?)
@@ -558,7 +594,6 @@ describe("cutover backend", () => {
     const handle = await startBackend({
       dataDir: dir, dbPath, bundledPromptsDir: join(process.cwd(), "prompts"), promptOverridesDir: join(dir, "prompts"),
       appVersion: "test", getSecrets: () => ({ exaApiKey: null }),
-      providerValidation: { inspectCodex: async () => ({ detected: false, compatible: false, authenticated: false, models: [] }) },
     }, (event) => events.push(event)); handles.push(handle);
     const post = async (path: string, body: unknown) => {
       const response = await fetch(`http://127.0.0.1:${handle.port}${path}`, { method: "POST", headers: { authorization: `Bearer ${handle.token}`, "content-type": "application/json" }, body: JSON.stringify(body) });
@@ -597,7 +632,6 @@ describe("cutover backend", () => {
     const handle = await startBackend({
       dataDir: dir, dbPath, bundledPromptsDir: join(process.cwd(), "prompts"), promptOverridesDir: join(dir, "prompts"),
       appVersion: "test", getSecrets: () => ({ exaApiKey: null }),
-      providerValidation: { inspectCodex: async () => ({ detected: false, compatible: false, authenticated: false, models: [] }) },
     }, () => undefined); handles.push(handle);
     const post = async (path: string, body: unknown) => {
       const response = await fetch(`http://127.0.0.1:${handle.port}${path}`, {
@@ -631,7 +665,6 @@ describe("cutover backend", () => {
     const handle = await startBackend({
       dataDir: dir, dbPath, bundledPromptsDir: join(process.cwd(), "prompts"), promptOverridesDir: join(dir, "prompts"),
       appVersion: "test", getSecrets: () => ({ exaApiKey: null }),
-      providerValidation: { inspectCodex: async () => ({ detected: false, compatible: false, authenticated: false, models: [] }) },
     }, () => undefined); handles.push(handle);
     const post = async (path: string, body: unknown) => {
       const response = await fetch(`http://127.0.0.1:${handle.port}${path}`, {

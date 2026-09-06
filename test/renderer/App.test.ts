@@ -108,6 +108,47 @@ describe("App workspace coordination", () => {
     expect(await view.findByText("Native account sign-in cancelled.")).toBeTruthy();
   });
 
+  test("shows discovered models as soon as browser sign-in completes", async () => {
+    const disconnected = workspace("alpha");
+    disconnected.models = [];
+    disconnected.modelOptions = [];
+    disconnected.validation.native = { available: true, connected: false, accounts: [] };
+    const connected = workspace("alpha");
+    connected.validation.native = {
+      available: true, connected: true,
+      accounts: [{ providerId: "openai-subscription", email: "dany@example.test" }],
+    };
+    installApi({
+      getWorkspace: vi.fn().mockResolvedValue(disconnected),
+      startNativeLogin: vi.fn().mockResolvedValue({
+        loginId: "login-browser", providerId: "openai-subscription", method: "browser" as const,
+      }),
+      completeNativeLogin: vi.fn().mockResolvedValue({ pending: false as const, workspace: connected }),
+    });
+    const view = render(App);
+
+    await fireEvent.click(await view.findByRole("button", { name: "Sign in with OpenAI" }));
+    expect(await view.findByText("Native model account connected.")).toBeTruthy();
+    expect(view.getByRole("option", { name: DEFAULT_RUN_CONFIG.model.modelId })).toBeTruthy();
+    expect(view.getByText("dany@example.test")).toBeTruthy();
+  });
+
+  test("shows a sign-in error and leaves the connection action available", async () => {
+    const state = workspace("alpha");
+    state.models = [];
+    state.modelOptions = [];
+    state.validation.native = { available: true, connected: false, accounts: [] };
+    installApi({
+      getWorkspace: vi.fn().mockResolvedValue(state),
+      startNativeLogin: vi.fn().mockRejectedValue(new Error("Browser sign-in could not start")),
+    });
+    const view = render(App);
+
+    await fireEvent.click(await view.findByRole("button", { name: "Sign in with OpenAI" }));
+    expect((await view.findByRole("alert")).textContent).toContain("Browser sign-in could not start");
+    expect((view.getByRole("button", { name: "Sign in with OpenAI" }) as HTMLButtonElement).disabled).toBe(false);
+  });
+
   test("shows the saved reason and hides resume when completion is unknown", async () => {
     const state = workspace("alpha");
     state.threads[0]!.status = "failed";
@@ -129,7 +170,7 @@ describe("App workspace coordination", () => {
 function workspace(activeThreadId: "alpha" | "beta"): WorkspaceState {
   const now = "2026-08-23T00:00:00.000Z";
   return {
-    validation: { exa: { valid: true }, perplexity: { valid: false, error: "Perplexity key missing" }, codex: { detected: true, compatible: true, authenticated: true }, native: { available: false, connected: false, accounts: [] }, setupComplete: true },
+    validation: { exa: { valid: true }, perplexity: { valid: false, error: "Perplexity key missing" }, native: { available: false, connected: false, accounts: [] }, setupComplete: true },
     threads: [
       { id: "alpha", title: "Alpha", status: "configuring", createdAt: now, updatedAt: now },
       { id: "beta", title: "Beta", status: "configuring", createdAt: now, updatedAt: now },

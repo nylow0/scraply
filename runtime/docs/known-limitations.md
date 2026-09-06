@@ -2,7 +2,6 @@
 
 - Live OpenAI and OpenRouter account tests require user credentials and were not run as part of the offline suite.
 - The deterministic provider fixture is available only in debug builds. Release binaries remove its environment-variable seams, so a live installed-provider result must be recorded separately from deterministic contract tests.
-- Scraply uses the persistent runtime protocol for native models. The `app-server` and `exec -` compatibility paths remain for one accepted migration release.
 - OpenRouter PKCE depends on Scraply to own the callback listener, open the browser, encrypt the returned key, and restore it after relaunch.
 - Models.dev enrichment exists in the provider layer, but the desktop must choose and supply the metadata cache location. Metadata never changes availability.
 - OpenCode Zen and Go remain disabled because the official direct gateway contract does not cover every required behavior.

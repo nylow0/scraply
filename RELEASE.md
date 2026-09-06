@@ -41,11 +41,11 @@ Private builds may be unsigned only when the workflow explicitly sets `SCRAPLY_A
 
 ## Bundled native runtime
 
-Scraply packages one tested `scraply-agent` executable at `resources/runtime/scraply-agent.exe`, outside `app.asar`. Native mode requires protocol 1.1. Runtime native protocol 1.0 is explicitly incompatible; the separate legacy commands remain migration-only behavior.
+Scraply packages one tested `scraply-agent` executable at `resources/runtime/scraply-agent.exe`, outside `app.asar`. Native mode requires protocol 1.1. Runtime native protocol 1.0 is explicitly incompatible. Runtime 0.2.0 removes the temporary `app-server` and `exec -` commands.
 
 The runtime source lives in `runtime/` in this repository. The separate `nylow0/scraply-agent` repository is legacy. Initialize the pinned public OpenAI Codex submodule with `git submodule update --init --recursive`. Windows builds require Rust's `stable-x86_64-pc-windows-msvc` toolchain (including rustfmt and clippy) and Visual Studio C++ build tools.
 
-`bun run prepare:runtime` runs the runtime's formatting, source budget, locked Rust tests, strict clippy, app adapter compatibility, and release packaging checks. It generates `build/runtime-artifacts/scraply-agent.windows-x64.lock.json`, recording this Scraply commit, the upstream commit, executable, notices, sizes, and hashes. Generated archives and locks are ignored build outputs. The archive contains only:
+`bun run prepare:runtime` runs the runtime's formatting, source budget, locked Rust tests, strict clippy, and release packaging checks. It generates `build/runtime-artifacts/scraply-agent.windows-x64.lock.json`, recording this Scraply commit, the upstream commit, executable, notices, sizes, and hashes. Generated archives and locks are ignored build outputs. The archive contains only:
 
 - `scraply-agent.exe`
 - `LICENSE`
