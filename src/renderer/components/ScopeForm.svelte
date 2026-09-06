@@ -81,6 +81,9 @@
   let selectedModelAvailable = $derived(Boolean(modelKey) && workspace.models.some((item) => item.providerId === "openai-subscription" && sameModelRef(item, model)));
   let selectedSearchValidation = $derived(workspace.validation[searchProvider]);
   let selectedSearchName = $derived(searchProvider === "exa" ? "Exa" : "Perplexity");
+  let nativeValidationPending = $derived(isValidationPending(workspace.validation.native.error));
+  let searchValidationPending = $derived(researchMode === "explore-market" && isValidationPending(selectedSearchValidation.error));
+  let connectionsChecking = $derived(nativeValidationPending || searchValidationPending);
   let providersReady = $derived(selectedModelReady && selectedModelAvailable && (researchMode === "known-problem" || selectedSearchValidation.valid));
   let modelStatus = $derived(!workspace.validation.native.available
       ? workspace.validation.native.error ?? "Native runtime is unavailable"
@@ -93,6 +96,10 @@
   function selectModel(event: Event) {
     const selected = workspace.modelOptions.find((item) => modelRefKey(item) === (event.currentTarget as HTMLSelectElement).value);
     reasoningEffort = selected?.defaultReasoningEffort ?? DEFAULT_RUN_CONFIG.reasoningEffort;
+  }
+
+  function isValidationPending(error: string | undefined): boolean {
+    return error?.startsWith("Checking ") === true || error === "Native runtime is starting";
   }
 
   function missingFields(): Record<string, string> {
@@ -133,11 +140,11 @@
   </header>
 
   <form onsubmit={(event) => { event.preventDefault(); void saveAndStart(); }}>
-    <div class="native-account" class:needs-connection={!workspace.validation.native.connected} aria-label="OpenAI account">
+    <div class="native-account" class:needs-connection={!workspace.validation.native.connected && !nativeValidationPending} class:checking={nativeValidationPending} aria-label="OpenAI account">
       <div>
         <strong>{workspace.validation.native.connected ? "OpenAI account" : "Connect OpenAI to start research"}</strong>
         {#if !workspace.validation.native.available}
-          <span class="account-error">{workspace.validation.native.error ?? "OpenAI sign-in is unavailable right now."}</span>
+          <span class:account-error={!nativeValidationPending}>{workspace.validation.native.error ?? "OpenAI sign-in is unavailable right now."}</span>
         {:else if workspace.validation.native.accounts.length === 0}
           <span>Sign in with your OpenAI account. Scraply opens the secure sign-in page in your browser.</span>
         {:else}
@@ -158,7 +165,7 @@
           <button type="button" class="secondary" disabled={!onCancelNative} onclick={() => onCancelNative?.()}>Cancel sign-in</button>
         </div>
       {:else if !workspace.validation.native.available}
-        <button type="button" class="secondary" disabled={locked} onclick={() => onRetry()}>{workspace.validation.native.error === "Native runtime is starting" ? "Starting…" : "Try again"}</button>
+        <button type="button" class="secondary" disabled={locked || nativeValidationPending} onclick={() => onRetry()}>{nativeValidationPending ? "Checking…" : "Try again"}</button>
       {:else if workspace.validation.native.accounts.length === 0}
         <div class="account-actions">
           <button type="button" class="primary" disabled={locked || !onConnectNative} onclick={() => onConnectNative?.("openai-subscription", "browser")}>Sign in with OpenAI</button>
@@ -213,13 +220,13 @@
     {#if legacyModelNeedsReplacement && !modelKey}<p class="model-migration">This project used the removed CLI integration. Choose a model and save to start a new run.</p>{/if}
 
     {#if !providersReady}
-      <div class="connection-warning" role="status">
+      <div class="connection-warning" class:checking={connectionsChecking} role="status">
         <div>
-          <strong>Required connection needs attention</strong>
+          <strong>{connectionsChecking ? "Checking required connections" : "Required connection needs attention"}</strong>
           {#if modelStatus}<span>Model: {modelStatus}</span>{/if}
           {#if researchMode === "explore-market" && !selectedSearchValidation.valid}<span>{selectedSearchName}: {selectedSearchValidation.error ?? "Connection unavailable"}</span>{/if}
         </div>
-        <button type="button" class="secondary" disabled={locked} onclick={() => onRetry()}>{locked ? "Checking…" : "Retry connections"}</button>
+        <button type="button" class="secondary" aria-label={connectionsChecking ? "Checking connections" : undefined} disabled={locked || connectionsChecking} onclick={() => onRetry()}>{locked || connectionsChecking ? "Checking…" : "Retry connections"}</button>
       </div>
     {/if}
 
@@ -231,8 +238,8 @@
 </section>
 
 <style>
-  .scope-page{max-width:920px;margin:0 auto;padding:42px var(--page-inline) 80px}.eyebrow{font:600 11px var(--mono);letter-spacing:.12em;text-transform:uppercase;color:var(--accent-strong)}h1{font-size:clamp(30px,4vw,48px);letter-spacing:-.045em;line-height:1.02;max-width:720px;margin:10px 0 14px}header>p:last-child{color:var(--muted);max-width:650px;font-size:15px}form{margin-top:36px;border-top:1px solid var(--border)}fieldset{border:0;padding:0;margin:0}legend{padding:22px 0 10px;font-weight:650;font-size:12px}.mode-picker{border-bottom:1px solid var(--border)}.mode-picker label{display:grid;grid-template-columns:18px 1fr;align-items:start;gap:12px;padding:15px 4px;border-top:1px solid var(--border);cursor:pointer;transition:background .25s var(--ease),padding .25s var(--ease)}.mode-picker label.active{padding-left:12px;background:var(--surface)}.mode-picker input{margin-top:3px;accent-color:var(--accent-strong)}.mode-picker label span{display:grid;gap:3px}.mode-picker strong{font-size:13px}.primary-fields{display:grid;grid-template-columns:1fr 1fr;gap:18px;padding:24px 0}.primary-fields .problem-field,.primary-fields .discovery-context{grid-column:1/-1}label{display:grid;align-content:start;gap:7px}label>span{font-weight:650;font-size:12px}small{color:var(--subtle);font-size:11px;line-height:1.45}.field-error{color:var(--danger)}input,textarea,select{width:100%;border:1px solid var(--border-strong);background:var(--surface);color:var(--text);border-radius:8px;padding:11px 12px}input[aria-invalid="true"],textarea[aria-invalid="true"]{border-color:var(--danger)}textarea{resize:vertical}.optional-fields{border-top:1px solid var(--border);padding:18px 0}.optional-fields summary{cursor:pointer;font-weight:650;font-size:12px}.optional-fields summary span{margin-left:7px;color:var(--subtle);font-weight:500}.optional-fields>div{display:grid;grid-template-columns:1fr 1fr;gap:18px;padding-top:18px}.run-settings{display:grid;grid-template-columns:1.2fr 1fr 1fr;align-items:start;gap:24px;padding:26px 0 28px;border-top:1px solid var(--border)}.run-settings.known{grid-template-columns:1.2fr 1fr}.run-setting{grid-template-rows:auto 48px minmax(32px,auto);gap:8px}.run-setting select{height:48px;padding-block:0}.run-setting small{max-width:34ch}.connection-warning{display:flex;align-items:center;justify-content:space-between;gap:24px;padding:16px;border:1px solid color-mix(in srgb,var(--danger) 45%,var(--border));border-radius:8px;background:color-mix(in srgb,var(--danger) 7%,var(--surface))}.connection-warning>div{display:grid;gap:4px}.connection-warning strong{font-size:13px}.connection-warning span{color:var(--muted);font-size:12px}footer{display:flex;justify-content:flex-end;align-items:center;gap:12px;padding-top:24px;border-top:1px solid var(--border)}footer>span{font:500 11px var(--mono);color:var(--subtle)}button{border-radius:8px;padding:11px 16px;font-weight:650;transition:transform .2s var(--ease)}button:active:not(:disabled){transform:scale(.98)}button:disabled{cursor:not-allowed;opacity:.45}.secondary{border:1px solid var(--border-strong);background:transparent;color:var(--text)}.primary{border:1px solid var(--accent);background:var(--accent-strong);color:var(--accent-ink)}@media(max-width:700px){.primary-fields,.optional-fields>div,.run-settings,.run-settings.known{grid-template-columns:1fr}.primary-fields .problem-field,.primary-fields .discovery-context{grid-column:auto}.run-settings{gap:20px}.connection-warning{align-items:stretch;flex-direction:column}.scope-page{padding:28px 20px 64px}}
+  .scope-page{max-width:920px;margin:0 auto;padding:42px var(--page-inline) 80px}.eyebrow{font:600 11px var(--mono);letter-spacing:.12em;text-transform:uppercase;color:var(--accent-strong)}h1{font-size:clamp(30px,4vw,48px);letter-spacing:-.045em;line-height:1.02;max-width:720px;margin:10px 0 14px}header>p:last-child{color:var(--muted);max-width:650px;font-size:15px}form{margin-top:36px;border-top:1px solid var(--border)}fieldset{border:0;padding:0;margin:0}legend{padding:22px 0 10px;font-weight:650;font-size:12px}.mode-picker{border-bottom:1px solid var(--border)}.mode-picker label{display:grid;grid-template-columns:18px 1fr;align-items:start;gap:12px;padding:15px 4px;border-top:1px solid var(--border);cursor:pointer;transition:background .25s var(--ease),padding .25s var(--ease)}.mode-picker label.active{padding-left:12px;background:var(--surface)}.mode-picker input{margin-top:3px;accent-color:var(--accent-strong)}.mode-picker label span{display:grid;gap:3px}.mode-picker strong{font-size:13px}.primary-fields{display:grid;grid-template-columns:1fr 1fr;gap:18px;padding:24px 0}.primary-fields .problem-field,.primary-fields .discovery-context{grid-column:1/-1}label{display:grid;align-content:start;gap:7px}label>span{font-weight:650;font-size:12px}small{color:var(--subtle);font-size:11px;line-height:1.45}.field-error{color:var(--danger)}input,textarea,select{width:100%;border:1px solid var(--border-strong);background:var(--surface);color:var(--text);border-radius:8px;padding:11px 12px}input[aria-invalid="true"],textarea[aria-invalid="true"]{border-color:var(--danger)}textarea{resize:vertical}.optional-fields{border-top:1px solid var(--border);padding:18px 0}.optional-fields summary{cursor:pointer;font-weight:650;font-size:12px}.optional-fields summary span{margin-left:7px;color:var(--subtle);font-weight:500}.optional-fields>div{display:grid;grid-template-columns:1fr 1fr;gap:18px;padding-top:18px}.run-settings{display:grid;grid-template-columns:1.2fr 1fr 1fr;align-items:start;gap:24px;padding:26px 0 28px;border-top:1px solid var(--border)}.run-settings.known{grid-template-columns:1.2fr 1fr}.run-setting{grid-template-rows:auto 48px minmax(32px,auto);gap:8px}.run-setting select{height:48px;padding-block:0}.run-setting small{max-width:34ch}.connection-warning{display:flex;align-items:center;justify-content:space-between;gap:24px;padding:16px;border:1px solid color-mix(in srgb,var(--danger) 45%,var(--border));border-radius:8px;background:color-mix(in srgb,var(--danger) 7%,var(--surface))}.connection-warning.checking{border-color:var(--border-strong);background:var(--surface)}.connection-warning>div{display:grid;gap:4px}.connection-warning strong{font-size:13px}.connection-warning span{color:var(--muted);font-size:12px}footer{display:flex;justify-content:flex-end;align-items:center;gap:12px;padding-top:24px;border-top:1px solid var(--border)}footer>span{font:500 11px var(--mono);color:var(--subtle)}button{border-radius:8px;padding:11px 16px;font-weight:650;transition:transform .2s var(--ease)}button:active:not(:disabled){transform:scale(.98)}button:disabled{cursor:not-allowed;opacity:.45}.secondary{border:1px solid var(--border-strong);background:transparent;color:var(--text)}.primary{border:1px solid var(--accent);background:var(--accent-strong);color:var(--accent-ink)}@media(max-width:700px){.primary-fields,.optional-fields>div,.run-settings,.run-settings.known{grid-template-columns:1fr}.primary-fields .problem-field,.primary-fields .discovery-context{grid-column:auto}.run-settings{gap:20px}.connection-warning{align-items:stretch;flex-direction:column}.scope-page{padding:28px 20px 64px}}
   .run-settings:not(.known){grid-template-columns:1.2fr 1fr 1fr 1fr;gap:20px}
-  .native-account{display:flex;align-items:center;justify-content:space-between;gap:20px;padding:18px 16px;border:1px solid var(--border);border-radius:8px;margin:20px 0 4px;background:var(--surface)}.native-account.needs-connection{border-color:color-mix(in srgb,var(--accent-strong) 55%,var(--border));background:color-mix(in srgb,var(--accent-strong) 6%,var(--surface))}.native-account>div:first-child{display:grid;gap:4px}.native-account strong{font-size:13px}.native-account span{font-size:12px;color:var(--muted)}.native-account .account-error{color:var(--danger)}.account-actions,.login-progress{display:flex;align-items:center;gap:8px}.login-progress code{padding:8px 10px;border:1px solid var(--border-strong);border-radius:6px;font:650 13px var(--mono);letter-spacing:.08em}.model-migration{margin:-12px 0 20px;color:var(--danger);font-size:12px}
+  .native-account{display:flex;align-items:center;justify-content:space-between;gap:20px;padding:18px 16px;border:1px solid var(--border);border-radius:8px;margin:20px 0 4px;background:var(--surface)}.native-account.needs-connection{border-color:color-mix(in srgb,var(--accent-strong) 55%,var(--border));background:color-mix(in srgb,var(--accent-strong) 6%,var(--surface))}.native-account.checking{border-color:var(--border-strong)}.native-account>div:first-child{display:grid;gap:4px}.native-account strong{font-size:13px}.native-account span{font-size:12px;color:var(--muted)}.native-account .account-error{color:var(--danger)}.account-actions,.login-progress{display:flex;align-items:center;gap:8px}.login-progress code{padding:8px 10px;border:1px solid var(--border-strong);border-radius:6px;font:650 13px var(--mono);letter-spacing:.08em}.model-migration{margin:-12px 0 20px;color:var(--danger);font-size:12px}
   @media(max-width:700px){.run-settings:not(.known){grid-template-columns:1fr;gap:20px}.native-account{align-items:stretch;flex-direction:column}.account-actions,.login-progress{align-items:stretch;flex-direction:column}}
 </style>

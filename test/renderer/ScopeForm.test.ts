@@ -115,6 +115,22 @@ describe("ScopeForm search provider selection", () => {
     expect(retry).toHaveBeenCalledTimes(1);
   });
 
+  test("presents pending validation as progress instead of a connection error", () => {
+    const state = workspace();
+    state.validation.native = {
+      available: false, connected: false, accounts: [], error: "Checking native runtime",
+    };
+    state.validation.exa = { valid: false, error: "Checking Exa connection" };
+    const view = render(ScopeForm, {
+      workspace: state, busy: false, onSave: vi.fn(), onStart: vi.fn(), onRetry: vi.fn(),
+    });
+
+    expect(view.getByText("Checking required connections")).toBeTruthy();
+    expect(view.queryByText("Required connection needs attention")).toBeNull();
+    expect((view.getByRole("button", { name: "Checking connections" }) as HTMLButtonElement).disabled).toBe(true);
+    expect(view.getByLabelText("OpenAI account").classList.contains("needs-connection")).toBe(false);
+  });
+
   test("explains an empty model list after account connection", () => {
     const state = workspace();
     state.validation.native = {

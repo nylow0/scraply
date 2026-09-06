@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { startBackend, type BackendHandle } from "../../src/backend/server";
 import { DatabaseClient } from "../../src/db/client";
 import { DiscoveryRepository } from "../../src/db/repositories/discovery";
+import type { ValidationResult } from "../../src/providers/search";
 import { DEFAULT_RUN_CONFIG } from "../../src/shared/schemas";
 
 const dirs: string[] = [];
@@ -157,18 +158,71 @@ describe("cutover backend", () => {
   test("refreshes native inspection when secrets change", async () => {
     const dir = mkdtempSync(join(tmpdir(), "scraply-validation-refresh-")); dirs.push(dir);
     let inspections = 0;
+    type TestNativeInspection = ReturnType<typeof nativeInspection> | {
+      available: false; connected: false; accounts: []; models: []; error: string;
+    };
+    let finishStaleInspection: ((result: TestNativeInspection) => void) | undefined;
+    const staleInspection = new Promise<TestNativeInspection>((resolve) => { finishStaleInspection = resolve; });
     const handle = await startBackend({
       dataDir: dir, dbPath: join(dir, "scraply.db"), bundledPromptsDir: join(process.cwd(), "prompts"), promptOverridesDir: join(dir, "prompts"),
       appVersion: "test", getSecrets: () => ({ exaApiKey: null }),
       providerValidation: {
-        inspectNative: async () => { inspections += 1; return nativeInspection(); },
+        inspectNative: async () => {
+          inspections += 1;
+          return inspections === 1 ? staleInspection : nativeInspection([modelOption("gpt-current")]);
+        },
       },
     }, () => undefined); handles.push(handle);
 
     handle.secretsChanged();
-    await Bun.sleep(50);
-
+    const validationResponse = await fetch(`http://127.0.0.1:${handle.port}/validation`, {
+      headers: { authorization: `Bearer ${handle.token}` },
+    });
+    const validation = await validationResponse.json() as { data: { native: { available: boolean; connected: boolean } } };
     expect(inspections).toBeGreaterThanOrEqual(2);
+    expect(validation.data.native).toMatchObject({ available: true, connected: true });
+
+    finishStaleInspection?.({ available: false, connected: false, accounts: [], models: [], error: "Stale startup result" });
+    await Bun.sleep(10);
+    const workspaceResponse = await fetch(`http://127.0.0.1:${handle.port}/workspace`, {
+      headers: { authorization: `Bearer ${handle.token}` },
+    });
+    const workspace = await workspaceResponse.json() as { data: { validation: { native: { error?: string } } } };
+    expect(workspace.data.validation.native.error).toBeUndefined();
+  });
+
+  test("publishes native readiness without waiting for a configured search provider", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "scraply-validation-independent-native-")); dirs.push(dir);
+    let finishExa: ((result: ValidationResult) => void) | undefined;
+    const exaValidation = new Promise<ValidationResult>((resolve) => { finishExa = resolve; });
+    const handle = await startBackend({
+      dataDir: dir, dbPath: join(dir, "scraply.db"), bundledPromptsDir: join(process.cwd(), "prompts"), promptOverridesDir: join(dir, "prompts"),
+      appVersion: "test", getSecrets: () => ({ exaApiKey: "saved-key" }),
+      providerValidation: {
+        inspectNative: async () => nativeInspection([modelOption("gpt-ready")]),
+        validateExa: async () => exaValidation,
+      },
+    }, () => undefined); handles.push(handle);
+
+    await Bun.sleep(10);
+    const response = await fetch(`http://127.0.0.1:${handle.port}/workspace`, {
+      headers: { authorization: `Bearer ${handle.token}` },
+    });
+    const workspace = await response.json() as { data: {
+      validation: { exa: { error?: string }; native: { available: boolean; connected: boolean; error?: string } };
+      models: Array<{ providerId: string; modelId: string }>;
+    } };
+    expect(workspace.data.validation.native).toMatchObject({ available: true, connected: true });
+    expect(workspace.data.validation.native.error).toBeUndefined();
+    expect(workspace.data.validation.exa.error).toBe("Checking Exa connection");
+    expect(workspace.data.models).toEqual([{ providerId: "openai-subscription", modelId: "gpt-ready" }]);
+
+    finishExa?.({ valid: true });
+    const validationResponse = await fetch(`http://127.0.0.1:${handle.port}/validation`, {
+      headers: { authorization: `Bearer ${handle.token}` },
+    });
+    const validation = await validationResponse.json() as { data: { setupComplete: boolean; exa: { valid: boolean } } };
+    expect(validation.data).toMatchObject({ setupComplete: true, exa: { valid: true } });
   });
 
   test("blocks research until Native OpenAI is connected", async () => {
