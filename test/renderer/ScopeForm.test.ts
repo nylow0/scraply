@@ -164,14 +164,55 @@ describe("ScopeForm search provider selection", () => {
     const modelSelect = view.getByRole("combobox", { name: /Model/ }) as HTMLSelectElement;
     expect(modelSelect.value).toBe("");
     expect(view.getByRole("option", { name: "Choose an OpenAI model" })).toBeTruthy();
-    expect(view.getByText("This project used the removed CLI integration. Choose a model and save to start a new run.")).toBeTruthy();
+    expect(view.getByText("This project used the removed CLI integration. Choose an OpenAI model to start a new run.")).toBeTruthy();
+    expect(view.queryByRole("button", { name: "Retry connections" })).toBeNull();
+    await fireEvent.click(view.getByRole("button", { name: "Choose model" }));
+    expect(document.activeElement).toBe(modelSelect);
     expect((view.getByRole("button", { name: "Discover problems" }) as HTMLButtonElement).disabled).toBe(true);
     await fireEvent.submit(view.container.querySelector("form")!);
     expect(onSave).not.toHaveBeenCalled();
     expect(onStart).not.toHaveBeenCalled();
 
     await fireEvent.change(modelSelect, { target: { value: modelRefKey(DEFAULT_RUN_CONFIG.model) } });
+    expect(view.queryByText("This project used the removed CLI integration.", { exact: false })).toBeNull();
     expect((view.getByRole("button", { name: "Discover problems" }) as HTMLButtonElement).disabled).toBe(false);
+    await fireEvent.click(view.getByRole("button", { name: "Discover problems" }));
+    await waitFor(() => expect(onSave).toHaveBeenCalledTimes(1));
+    expect(onSave.mock.calls[0]?.[1]).toMatchObject({ model: DEFAULT_RUN_CONFIG.model });
+    expect(onStart).toHaveBeenCalledTimes(1);
+  });
+
+  test("treats a retired native model as a selection problem while connections are healthy", async () => {
+    const state = workspace();
+    state.runConfig = {
+      ...DEFAULT_RUN_CONFIG,
+      model: { providerId: "openai-subscription", modelId: "gpt-retired" },
+    };
+    state.validation.exa = { valid: true };
+    const view = render(ScopeForm, {
+      workspace: state, busy: false, onSave: vi.fn(), onStart: vi.fn(), onRetry: vi.fn(),
+    });
+
+    expect(view.getByText("The model saved for this project is no longer available. Choose an available OpenAI model to start a new run.")).toBeTruthy();
+    expect(view.queryByRole("button", { name: "Retry connections" })).toBeNull();
+    expect(view.getByRole("button", { name: "Choose model" })).toBeTruthy();
+    expect((view.getByRole("button", { name: "Discover problems" }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  test("keeps a real search connection failure visible beside a required model choice", () => {
+    const state = workspace();
+    state.runConfig = {
+      ...DEFAULT_RUN_CONFIG,
+      model: { providerId: "legacy-codex-cli", modelId: "gpt-old" },
+    };
+    state.validation.exa = { valid: false, error: "Exa unavailable" };
+    const view = render(ScopeForm, {
+      workspace: state, busy: false, onSave: vi.fn(), onStart: vi.fn(), onRetry: vi.fn(),
+    });
+
+    expect(view.getByRole("button", { name: "Choose model" })).toBeTruthy();
+    expect(view.getAllByText("Exa: Exa unavailable")).toHaveLength(2);
+    expect(view.getByRole("button", { name: "Retry connections" })).toBeTruthy();
   });
 
   test("shows device-code instructions and leaves cancellation enabled while setup is busy", async () => {
