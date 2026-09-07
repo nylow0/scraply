@@ -37,8 +37,11 @@ test("recovers an expired native session through installed sign-in and restores 
 
     await page.getByRole("button", { name: "Use device code", exact: true }).click();
     await expect(page.getByText("FIXTURE-CODE", { exact: true })).toBeVisible();
+    const cancellationStartedAt = Date.now();
     await page.getByRole("button", { name: "Cancel sign-in", exact: true }).click();
-    await expect(page.getByText("Native account sign-in cancelled.", { exact: true })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Sign in with OpenAI", exact: true })).toBeEnabled({ timeout: 2_000 });
+    expect(Date.now() - cancellationStartedAt).toBeLessThan(2_000);
+    await expect(page.getByText("FIXTURE-CODE", { exact: true })).toHaveCount(0);
     await expect(page.getByLabel("Research name", { exact: true })).toHaveValue("Unsaved auth recovery draft");
 
     await page.getByRole("button", { name: "Sign in with OpenAI", exact: true }).click();
@@ -97,7 +100,7 @@ for (const workflowVersion of [1, 2]) test(`native v${workflowVersion} research 
     let page = await electron.firstWindow();
     await page.getByRole("button", { name: "Create research", exact: true }).click();
     await page.getByRole("combobox", { name: /Research workflow/ }).selectOption(String(workflowVersion));
-    await expect(page.getByRole("option", { name: /Native OpenAI/ })).toHaveCount(1);
+    await expect(page.getByRole("option", { name: /Mod/ })).toHaveCount(1);
     await page.getByLabel("Research name", { exact: true }).fill("Native protocol UI fixture");
     await page.getByLabel("What do you want to explore?", { exact: false }).fill("Parts delivery uncertainty for repair shops");
     await page.getByLabel("Research depth", { exact: false }).selectOption("quick");
