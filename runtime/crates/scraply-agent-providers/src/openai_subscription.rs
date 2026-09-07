@@ -9,8 +9,8 @@ use codex_api::{
 };
 use codex_login::{
     AuthCredentialsStoreMode, AuthDotJson, AuthKeyringBackendKind, AuthManager, CodexAuth,
-    DeviceCode, LoginServer, ServerOptions, complete_device_code_login, load_auth_dot_json,
-    oauth_client_id, request_device_code, run_login_server, save_auth,
+    DeviceCode, LoginServer, RefreshTokenError, ServerOptions, complete_device_code_login,
+    load_auth_dot_json, oauth_client_id, request_device_code, run_login_server, save_auth,
 };
 use futures_util::StreamExt;
 use http::{HeaderMap, HeaderValue, header::AUTHORIZATION};
@@ -249,7 +249,7 @@ impl OpenAiSubscription {
         self.auth
             .refresh_token_from_authority()
             .await
-            .map_err(|_| reconnect_required())?;
+            .map_err(refresh_error)?;
         let account = self.account().await?.ok_or_else(not_logged_in)?;
         let credential = self.session_credential()?;
         Ok((account, credential))
@@ -730,6 +730,18 @@ fn reconnect_required() -> ProviderError {
     )
 }
 
+fn refresh_error(error: RefreshTokenError) -> ProviderError {
+    match error {
+        RefreshTokenError::Permanent(_) => reconnect_required(),
+        RefreshTokenError::Transient(_) => ProviderError::new(
+            OPENAI_SUBSCRIPTION_PROVIDER_ID,
+            ProviderErrorCode::Transport,
+            true,
+            "OpenAI session refresh could not be completed",
+        ),
+    }
+}
+
 fn invalid_session_credential() -> ProviderError {
     ProviderError::new(
         OPENAI_SUBSCRIPTION_PROVIDER_ID,
@@ -1050,6 +1062,19 @@ mod tests {
             let error = resolve_models(catalog).unwrap_err();
             assert_eq!(error.code, ProviderErrorCode::InvalidResponse);
         }
+    }
+
+    #[test]
+    fn transient_token_refresh_error_remains_retryable_transport_failure() {
+        let error = refresh_error(RefreshTokenError::Transient(std::io::Error::other(
+            "temporary authority failure",
+        )));
+        assert_eq!(error.code, ProviderErrorCode::Transport);
+        assert!(error.retryable);
+        assert_eq!(
+            error.detail,
+            "OpenAI session refresh could not be completed"
+        );
     }
 
     #[test]

@@ -88,8 +88,8 @@
   let modelStatus = $derived(!workspace.validation.native.available
       ? workspace.validation.native.error ?? "Native runtime is unavailable"
       : !workspace.validation.native.connected
-        ? "Connect your OpenAI account"
-        : !selectedModelAvailable ? "Selected model is unavailable" : null);
+        ? workspace.validation.native.error ?? "Connect your OpenAI account"
+        : workspace.validation.native.error ?? (!selectedModelAvailable ? "Selected model is unavailable" : null));
   let locked = $derived(busy || submitting);
   let errors = $derived(validationAttempted ? missingFields() : {});
 
@@ -145,13 +145,21 @@
         <strong>{workspace.validation.native.connected ? "OpenAI account" : "Connect OpenAI to start research"}</strong>
         {#if !workspace.validation.native.available}
           <span class:account-error={!nativeValidationPending}>{workspace.validation.native.error ?? "OpenAI sign-in is unavailable right now."}</span>
-        {:else if workspace.validation.native.accounts.length === 0}
-          <span>Sign in with your OpenAI account. Scraply opens the secure sign-in page in your browser.</span>
+        {:else if !workspace.validation.native.connected}
+          {#if workspace.validation.native.error}
+            <span class="account-error">{workspace.validation.native.error}</span>
+          {:else}
+            <span>Sign in with your OpenAI account. Scraply opens the secure sign-in page in your browser.</span>
+          {/if}
         {:else}
           {#each workspace.validation.native.accounts as account (account.providerId)}
             <span>{account.email ?? account.accountId ?? account.providerId}{account.plan ? ` · ${account.plan}` : ""}</span>
           {/each}
-          {#if nativeModelOptions.length === 0}<span class="account-error">No compatible models were found. Refresh the account to try again.</span>{/if}
+          {#if workspace.validation.native.error}
+            <span class="account-error">{workspace.validation.native.error}</span>
+          {:else if nativeModelOptions.length === 0}
+            <span class="account-error">No compatible models were found. Refresh the account to try again.</span>
+          {/if}
         {/if}
       </div>
       {#if nativeLogin}
@@ -166,7 +174,7 @@
         </div>
       {:else if !workspace.validation.native.available}
         <button type="button" class="secondary" disabled={locked || nativeValidationPending} onclick={() => onRetry()}>{nativeValidationPending ? "Checking…" : "Try again"}</button>
-      {:else if workspace.validation.native.accounts.length === 0}
+      {:else if !workspace.validation.native.connected}
         <div class="account-actions">
           <button type="button" class="primary" disabled={locked || !onConnectNative} onclick={() => onConnectNative?.("openai-subscription", "browser")}>Sign in with OpenAI</button>
           <button type="button" class="secondary" disabled={locked || !onConnectNative} onclick={() => onConnectNative?.("openai-subscription", "device")}>Use device code</button>
