@@ -353,8 +353,13 @@ impl RuntimeHost {
                     credential.into_host_credential(),
                 ),
                 Err(error) => {
-                    self.disabled_providers
-                        .insert(OPENAI_SUBSCRIPTION_PROVIDER_ID.to_owned());
+                    if matches!(
+                        error.code,
+                        ProviderErrorCode::Authentication | ProviderErrorCode::ReconnectRequired
+                    ) {
+                        self.disabled_providers
+                            .insert(OPENAI_SUBSCRIPTION_PROVIDER_ID.to_owned());
+                    }
                     provider_failure(error)
                 }
             },

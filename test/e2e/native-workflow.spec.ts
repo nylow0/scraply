@@ -10,6 +10,64 @@ import type { ScraplyApi } from "../../src/preload/index";
 
 // Installed renderer/preload/main with the production backend loaded from source. Only the native
 // child and Exa HTTP responses are fixtures. Live bundled-runtime parity is a separate gate.
+test("recovers an expired native session through installed sign-in and restores it after reopen", async ({}, testInfo) => {
+  const directory = mkdtempSync(join(tmpdir(), "scraply-native-auth-ui-"));
+  let electron: ElectronApplication | undefined;
+  let backend = await startFixtureServer(directory, () => undefined, "auth-recovery");
+  const launch = async () => {
+    const app = await _electron.launch({
+      executablePath: process.env.SCRAPLY_E2E_EXECUTABLE ?? join(process.cwd(), "release/win-unpacked/Scraply.exe"),
+      args: [`--user-data-dir=${join(directory, "electron")}`],
+      env: { ...process.env, SCRAPLY_E2E: "1", SCRAPLY_E2E_BACKEND_URL: `http://127.0.0.1:${backend.port}`,
+        SCRAPLY_E2E_BACKEND_TOKEN: backend.token },
+    });
+    await app.evaluate(({ shell }) => { shell.openExternal = async () => undefined; });
+    return app;
+  };
+  try {
+    electron = await launch();
+    let page = await electron.firstWindow();
+    await page.getByRole("button", { name: "Create research", exact: true }).click();
+
+    const accountCard = page.getByLabel("OpenAI account");
+    await expect(accountCard.getByText(/OpenAI .*session.*Sign in again\./)).toBeVisible();
+    await expect(page.getByRole("button", { name: "Sign in with OpenAI", exact: true })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Try again", exact: true })).toHaveCount(0);
+    await page.getByLabel("Research name", { exact: true }).fill("Unsaved auth recovery draft");
+
+    await page.getByRole("button", { name: "Use device code", exact: true }).click();
+    await expect(page.getByText("FIXTURE-CODE", { exact: true })).toBeVisible();
+    await page.getByRole("button", { name: "Cancel sign-in", exact: true }).click();
+    await expect(page.getByText("Native account sign-in cancelled.", { exact: true })).toBeVisible();
+    await expect(page.getByLabel("Research name", { exact: true })).toHaveValue("Unsaved auth recovery draft");
+
+    await page.getByRole("button", { name: "Sign in with OpenAI", exact: true }).click();
+    await expect(page.getByText("synthetic-account", { exact: true })).toBeVisible();
+    await expect(page.getByRole("option", { name: /Mod/ })).toHaveCount(1);
+    await expect(page.getByLabel("Research name", { exact: true })).toHaveValue("Unsaved auth recovery draft");
+    await page.screenshot({ path: testInfo.outputPath("native-auth-recovered.png") });
+
+    const operations = readFileSync(join(directory, "operations.txt"), "utf8").trim().split("\n");
+    expect(operations.filter((operation) => operation === "account.refresh")).toHaveLength(1);
+    expect(operations).toContain("account.login.cancel");
+    expect(operations).toContain("credential.session.persisted");
+
+    await electron.close();
+    electron = undefined;
+    await backend.close();
+    backend = await startFixtureServer(directory, () => undefined, "auth-recovery");
+    electron = await launch();
+    page = await electron.firstWindow();
+    await expect(page.getByText("synthetic-account", { exact: true })).toBeVisible();
+    await expect(page.getByRole("option", { name: /Mod/ })).toHaveCount(1);
+    await expect(page.getByLabel("OpenAI account").getByText(/OpenAI .*session.*Sign in again\./)).toHaveCount(0);
+  } finally {
+    await electron?.close();
+    await backend.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 for (const workflowVersion of [1, 2]) test(`native v${workflowVersion} research survives the installed selection, development, and reopen interaction`, async ({}, testInfo) => {
   const directory = mkdtempSync(join(tmpdir(), "scraply-native-ui-"));
   const managedPrompt = readFileSync(join(process.cwd(), "prompts", "solutions.md"), "utf8");
@@ -127,8 +185,8 @@ for (const workflowVersion of [1, 2]) test(`native v${workflowVersion} research 
   }
 });
 
-async function startFixtureServer(directory: string, onEvent: (event: ResearchEvent) => void) {
-  const child = spawn("bun", [join(process.cwd(), "test/fixtures/native-workflow-server.ts"), directory], {
+async function startFixtureServer(directory: string, onEvent: (event: ResearchEvent) => void, scenario?: "auth-recovery") {
+  const child = spawn("bun", [join(process.cwd(), "test/fixtures/native-workflow-server.ts"), directory, ...(scenario ? [scenario] : [])], {
     stdio: ["pipe", "pipe", "inherit"], windowsHide: true,
   });
   const exited = new Promise<void>((resolve, reject) => {

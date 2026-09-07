@@ -232,8 +232,22 @@
         const result = await window.scraply.completeNativeLogin({ loginId: login.loginId });
         if (epoch !== nativeLoginEpoch) return;
         if (!result.pending) {
-          setWorkspace(result.workspace);
-          feedback = { text: "Native model account connected.", tone: "info" };
+          const next = result.workspace;
+          setWorkspace(next);
+          const nativeError = next.validation.native.error;
+          const nativeValidationPending = nativeError?.startsWith("Checking ") === true
+            || nativeError === "Native runtime is starting";
+          const hasNativeModel = next.models.some((model) => model.providerId === providerId);
+          feedback = next.validation.native.connected && hasNativeModel
+            ? { text: "Native model account connected.", tone: "info" }
+            : nativeValidationPending
+              ? { text: "OpenAI sign-in finished.", tone: "info" }
+              : {
+                  text: nativeError ?? (next.validation.native.connected
+                    ? "OpenAI connected, but no compatible models were found."
+                    : "OpenAI sign-in did not establish a usable connection."),
+                  tone: "error",
+                };
           return;
         }
         await new Promise<void>((resolve) => setTimeout(resolve, 1_000));

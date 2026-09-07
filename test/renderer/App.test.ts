@@ -108,6 +108,46 @@ describe("App workspace coordination", () => {
     expect(await view.findByText("Native account sign-in cancelled.")).toBeTruthy();
   });
 
+  test("replaces a rejected native session through sign-in and restores usable models", async () => {
+    const rejected = workspace("alpha");
+    rejected.models = [];
+    rejected.modelOptions = [];
+    rejected.validation.native = {
+      available: true,
+      connected: false,
+      version: "0.2.0",
+      accounts: [{ providerId: "openai-subscription", email: "dany@example.test" }],
+      error: "provider request failed with HTTP 401",
+    };
+    const connected = workspace("alpha");
+    connected.validation.native = {
+      available: true,
+      connected: true,
+      version: "0.2.0",
+      accounts: [{ providerId: "openai-subscription", email: "dany@example.test" }],
+    };
+    const startNativeLogin = vi.fn().mockResolvedValue({
+      loginId: "login-replacement",
+      providerId: "openai-subscription",
+      method: "browser" as const,
+    });
+    installApi({
+      getWorkspace: vi.fn().mockResolvedValue(rejected),
+      startNativeLogin,
+      completeNativeLogin: vi.fn().mockResolvedValue({ pending: false as const, workspace: connected }),
+    });
+    const view = render(App);
+
+    expect(await view.findByText("provider request failed with HTTP 401")).toBeTruthy();
+    expect(view.queryByRole("button", { name: "Try again" })).toBeNull();
+    await fireEvent.click(view.getByRole("button", { name: "Sign in with OpenAI" }));
+
+    expect(startNativeLogin).toHaveBeenCalledWith({ providerId: "openai-subscription", method: "browser" });
+    expect(await view.findByText("Native model account connected.")).toBeTruthy();
+    expect(view.queryByText("provider request failed with HTTP 401")).toBeNull();
+    expect(view.getByRole("option", { name: DEFAULT_RUN_CONFIG.model.modelId })).toBeTruthy();
+  });
+
   test("shows discovered models as soon as browser sign-in completes", async () => {
     const disconnected = workspace("alpha");
     disconnected.models = [];
@@ -133,6 +173,42 @@ describe("App workspace coordination", () => {
     expect(view.getByText("dany@example.test")).toBeTruthy();
   });
 
+  test("reconciles model discovery that is still pending when sign-in finishes", async () => {
+    const disconnected = workspace("alpha");
+    disconnected.models = [];
+    disconnected.modelOptions = [];
+    disconnected.validation.native = { available: true, connected: false, accounts: [] };
+    const checking = workspace("alpha");
+    checking.models = [];
+    checking.modelOptions = [];
+    checking.validation.native = {
+      available: true,
+      connected: true,
+      accounts: [{ providerId: "openai-subscription", email: "dany@example.test" }],
+      error: "Checking available OpenAI models",
+    };
+    const connected = workspace("alpha");
+    connected.validation.native = {
+      available: true,
+      connected: true,
+      accounts: [{ providerId: "openai-subscription", email: "dany@example.test" }],
+    };
+    installApi({
+      getWorkspace: vi.fn().mockResolvedValueOnce(disconnected).mockResolvedValue(connected),
+      startNativeLogin: vi.fn().mockResolvedValue({
+        loginId: "login-checking", providerId: "openai-subscription", method: "browser" as const,
+      }),
+      completeNativeLogin: vi.fn().mockResolvedValue({ pending: false as const, workspace: checking }),
+    });
+    const view = render(App);
+
+    await fireEvent.click(await view.findByRole("button", { name: "Sign in with OpenAI" }));
+
+    expect(await view.findByText("OpenAI sign-in finished.")).toBeTruthy();
+    expect(await view.findByRole("option", { name: DEFAULT_RUN_CONFIG.model.modelId }, { timeout: 1_500 })).toBeTruthy();
+    expect(view.queryByText("Checking available OpenAI models")).toBeNull();
+  });
+
   test("shows a sign-in error and leaves the connection action available", async () => {
     const state = workspace("alpha");
     state.models = [];
@@ -146,6 +222,36 @@ describe("App workspace coordination", () => {
 
     await fireEvent.click(await view.findByRole("button", { name: "Sign in with OpenAI" }));
     expect((await view.findByRole("alert")).textContent).toContain("Browser sign-in could not start");
+    expect((view.getByRole("button", { name: "Sign in with OpenAI" }) as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  test("does not report a connected account when post-login validation is rejected", async () => {
+    const disconnected = workspace("alpha");
+    disconnected.models = [];
+    disconnected.modelOptions = [];
+    disconnected.validation.native = { available: true, connected: false, accounts: [] };
+    const rejected = workspace("alpha");
+    rejected.models = [];
+    rejected.modelOptions = [];
+    rejected.validation.native = {
+      available: true,
+      connected: false,
+      accounts: [],
+      error: "provider request failed with HTTP 401",
+    };
+    installApi({
+      getWorkspace: vi.fn().mockResolvedValue(disconnected),
+      startNativeLogin: vi.fn().mockResolvedValue({
+        loginId: "login-rejected", providerId: "openai-subscription", method: "browser" as const,
+      }),
+      completeNativeLogin: vi.fn().mockResolvedValue({ pending: false as const, workspace: rejected }),
+    });
+    const view = render(App);
+
+    await fireEvent.click(await view.findByRole("button", { name: "Sign in with OpenAI" }));
+
+    expect((await view.findByRole("alert")).textContent).toContain("provider request failed with HTTP 401");
+    expect(view.queryByText("Native model account connected.")).toBeNull();
     expect((view.getByRole("button", { name: "Sign in with OpenAI" }) as HTMLButtonElement).disabled).toBe(false);
   });
 

@@ -10,6 +10,9 @@ if (process.argv[2] === "--version") {
 const mode = process.env.SCRAPLY_RUNTIME_CHILD_MODE || "normal";
 const workflow = mode.startsWith("workflow");
 let connected = false;
+let credential;
+let pendingLogin;
+let loginSequence = 0;
 let heldGeneration;
 if (process.env.SCRAPLY_RUNTIME_PID_CAPTURE) fs.appendFileSync(process.env.SCRAPLY_RUNTIME_PID_CAPTURE, `${process.pid}\n`);
 const prompt = { id: "scraply.stage-worker.v1", sha256: "277d724f20acb1f32fa0a8b7c454c670971e3c40bfc921db40c044caa760e6f1" };
@@ -40,10 +43,20 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
     });
     return;
   }
-  if (request.operation === "credential.session.set") { connected = true; reply(request, {}); return; }
+  if (request.operation === "credential.session.set") {
+    credential = request.payload.credential;
+    connected = true;
+    reply(request, {});
+    return;
+  }
   if (request.operation === "account.logout") { connected = false; reply(request, {}); return; }
   if (request.operation === "account.list") { reply(request, { accounts: workflow && connected ? [{ providerId: model.providerId, accountId: "synthetic-account" }] : [] }); return; }
   if (request.operation === "model.list") {
+    if (mode === "workflow-auth" && credential === "rejected-credential") {
+      send({ protocolVersion: "1.1", id: request.id, operation: request.operation,
+        error: { code: "authentication_failed", retryable: false, detail: "provider request failed with HTTP 401" } });
+      return;
+    }
     if (mode === "wrong-operation") {
       send({ protocolVersion: "1.1", id: request.id, operation: "account.list", error: { code: "operation_unavailable", retryable: true, detail: "wrong operation" } });
       return;
@@ -52,6 +65,47 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
     const split = bytes.indexOf(Buffer.from([0xc3, 0xa8])) + 1;
     process.stdout.write(bytes.subarray(0, split));
     setTimeout(() => process.stdout.write(bytes.subarray(split)), 5);
+    return;
+  }
+  if (request.operation === "account.refresh") {
+    if (mode === "workflow-auth" && credential === "rejected-credential") {
+      send({ protocolVersion: "1.1", id: request.id, operation: request.operation,
+        error: { code: "authentication_failed", retryable: false, detail: "provider request failed with HTTP 401" } });
+      return;
+    }
+    reply(request, {
+      account: { providerId: model.providerId, accountId: "synthetic-account" }, credential: "connected-credential",
+      persistence: { providerId: model.providerId, sessionId: "fixture-session", rotationId: "fixture-refresh" },
+    });
+    return;
+  }
+  if (request.operation === "account.login.start") {
+    const loginId = `fixture-login-${++loginSequence}`;
+    pendingLogin = { loginId, method: request.payload.method };
+    reply(request, request.payload.method === "device"
+      ? { loginId, providerId: model.providerId, method: "device", verificationUrl: "https://example.test/device", userCode: "FIXTURE-CODE" }
+      : { loginId, providerId: model.providerId, method: "browser", authorizationUrl: "https://example.test/login", callbackPort: 1455 });
+    return;
+  }
+  if (request.operation === "account.login.complete") {
+    if (!pendingLogin || pendingLogin.loginId !== request.payload.loginId || pendingLogin.method === "device") {
+      send({ protocolVersion: "1.1", id: request.id, operation: request.operation,
+        error: { code: "operation_unavailable", retryable: true, detail: "Sign-in is still pending" } });
+      return;
+    }
+    pendingLogin = undefined;
+    credential = "connected-credential";
+    connected = true;
+    reply(request, {
+      account: { providerId: model.providerId, accountId: "synthetic-account" }, credential,
+      persistence: { providerId: model.providerId, sessionId: "fixture-session", rotationId: "fixture-login" },
+    });
+    return;
+  }
+  if (request.operation === "credential.session.persisted") { reply(request, { ...request.payload, ready: true }); return; }
+  if (request.operation === "account.login.cancel") {
+    pendingLogin = undefined;
+    reply(request, { cancelled: true });
     return;
   }
   if (request.operation === "generation.start") {

@@ -8,7 +8,7 @@ import { ThreadRepository } from "../db/repositories/threads";
 import { ExaClient } from "../providers/exa";
 import { PerplexityClient } from "../providers/perplexity";
 import type { SearchClient, SearchProvider, ValidationResult } from "../providers/search";
-import type { StructuredModelClient } from "../providers/structured";
+import { ProviderFailure, type StructuredModelClient } from "../providers/structured";
 import { RuntimeClient } from "../providers/runtime";
 import { AppError, toErrorPayload } from "../shared/errors";
 import { MAX_DEVELOPMENT_PROJECTED_CALLS } from "../shared/development-projection";
@@ -107,6 +107,8 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
   let cachedModels: ModelRef[] = [];
   let cachedModelOptions: ModelOption[] = [];
   let validationGeneration = 0;
+  let nativeAuthRevision = 0;
+  let nativeAuthTail: Promise<void> = Promise.resolve();
   const pendingNativeLogins = new Map<string, string>();
   let engine: ResearchEngine | null = null;
   const invalidateProviderCache = () => {
@@ -117,6 +119,18 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
     cachedModels = [];
     cachedModelOptions = [];
   };
+  const runNativeAuthOperation = async <T>(operation: () => Promise<T>): Promise<T> => {
+    const previous = nativeAuthTail;
+    let release!: () => void;
+    nativeAuthTail = new Promise<void>((resolve) => { release = resolve; });
+    await previous;
+    try { return await operation(); }
+    finally { release(); }
+  };
+  const runUserNativeAuthOperation = <T>(operation: () => Promise<T>): Promise<T> => runNativeAuthOperation(() => {
+    nativeAuthRevision += 1;
+    return operation();
+  });
   const emitEvent = (event: ResearchEvent) => {
     try {
       onEvent(event);
@@ -146,9 +160,35 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
     const generation = validationGeneration;
     const pending = (async () => {
       const secrets = context.getSecrets();
+      const inspectedAuthRevision = nativeAuthRevision;
       const nativeInspectionPromise = (context.providerValidation?.inspectNative
         ? context.providerValidation.inspectNative()
-        : inspectNativeRuntime(context.nativeRuntime, context.nativeRuntimeError, context.nativeRuntimeStatus?.()))
+        : inspectNativeRuntime(
+          context.nativeRuntime,
+          context.nativeRuntimeError,
+          context.nativeRuntimeStatus?.(),
+          context.persistProviderCredential
+            ? (providerId) => runNativeAuthOperation(async () => {
+              if (nativeAuthRevision !== inspectedAuthRevision) {
+                throw new ProviderFailure("interrupted", "Native account changed while models were loading", true);
+              }
+              try { return await context.nativeRuntime!.refreshAccount(providerId, context.persistProviderCredential!); }
+              catch (error) {
+                if (!(error instanceof ProviderFailure)) {
+                  // The runtime rotated its in-memory credential, but the host
+                  // could not durably acknowledge it. Keep the old saved copy.
+                  await context.nativeRuntime!.logout(providerId);
+                }
+                throw error;
+              }
+            })
+            : undefined,
+          (providerId) => runNativeAuthOperation(async () => {
+            if (nativeAuthRevision !== inspectedAuthRevision) return;
+            await context.nativeRuntime!.logout(providerId);
+            context.forgetProviderCredential?.(providerId);
+          }),
+        ))
         .then((nativeInspection) => {
           if (generation === validationGeneration) {
             const { models: nativeModels, ...native } = nativeInspection;
@@ -731,7 +771,7 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
         }
         if (context.nativeRuntimeStatus?.().ready === false) throw new AppError("conflict", context.nativeRuntimeStatus().error ?? "Native runtime is starting");
         const input = NativeLoginStartSchema.parse(body);
-        const login = await context.nativeRuntime.startLogin(input.providerId, input.method);
+        const login = await runUserNativeAuthOperation(() => context.nativeRuntime!.startLogin(input.providerId, input.method));
         pendingNativeLogins.set(login.loginId, input.providerId);
         return sendJson(res, 200, login);
       }
@@ -744,15 +784,21 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
         if (!providerId) throw new AppError("conflict", "This native sign-in is no longer active");
         let result;
         try {
-          result = await context.nativeRuntime.completeLogin(input.loginId, async (persistedProviderId, credential) => {
-            if (pendingNativeLogins.get(input.loginId) !== providerId || persistedProviderId !== providerId) {
-              throw new Error("The native sign-in was cancelled before its credential could be saved");
+          result = await runUserNativeAuthOperation(async () => {
+            try {
+              return await context.nativeRuntime!.completeLogin(input.loginId, async (persistedProviderId, credential) => {
+                if (pendingNativeLogins.get(input.loginId) !== providerId || persistedProviderId !== providerId) {
+                  throw new Error("The native sign-in was cancelled before its credential could be saved");
+                }
+                await context.persistProviderCredential!(persistedProviderId, credential);
+              });
+            } catch (error) {
+              try { await context.nativeRuntime!.logout(providerId); } catch { /* persistence failure still leaves the account unusable */ }
+              throw error;
             }
-            await context.persistProviderCredential!(persistedProviderId, credential);
           });
         } catch (error) {
           pendingNativeLogins.delete(input.loginId);
-          try { await context.nativeRuntime.logout(providerId); } catch { /* persistence failure still leaves the account unusable */ }
           invalidateProviderCache();
           throw error;
         }
@@ -770,11 +816,13 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
           return sendJson(res, 200, await workspaceState());
         }
         pendingNativeLogins.delete(input.loginId);
-        try { await context.nativeRuntime.cancelLogin(input.loginId); }
-        finally {
-          try { await context.nativeRuntime.logout(input.providerId); }
-          finally { context.forgetProviderCredential?.(input.providerId); }
-        }
+        await runUserNativeAuthOperation(async () => {
+          try { await context.nativeRuntime!.cancelLogin(input.loginId); }
+          finally {
+            try { await context.nativeRuntime!.logout(input.providerId); }
+            finally { context.forgetProviderCredential?.(input.providerId); }
+          }
+        });
         invalidateProviderCache();
         return sendJson(res, 200, await workspaceState());
       }
@@ -783,10 +831,19 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
           throw new AppError("conflict", context.nativeRuntimeStatus?.().error ?? "Native account storage is unavailable");
         }
         const { providerId } = NativeProviderSchema.parse(body);
-        try { await context.nativeRuntime.refreshAccount(providerId, context.persistProviderCredential); }
+        try { await runUserNativeAuthOperation(async () => {
+          try { await context.nativeRuntime!.refreshAccount(providerId, context.persistProviderCredential!); }
+          catch (error) {
+            if (invalidatesCredential(error)) {
+              try { await context.nativeRuntime!.logout(providerId); }
+              finally { context.forgetProviderCredential?.(providerId); }
+            } else if (!(error instanceof ProviderFailure)) {
+              await context.nativeRuntime!.logout(providerId);
+            }
+            throw error;
+          }
+        }); }
         catch (error) {
-          try { await context.nativeRuntime.logout(providerId); }
-          finally { context.forgetProviderCredential?.(providerId); }
           invalidateProviderCache();
           throw error;
         }
@@ -798,16 +855,19 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
           throw new AppError("conflict", context.nativeRuntimeStatus?.().error ?? "Native runtime is unavailable");
         }
         const { providerId } = NativeProviderSchema.parse(body);
-        let cleanupError: unknown;
-        for (const [loginId, loginProviderId] of pendingNativeLogins) {
-          if (loginProviderId !== providerId) continue;
-          try { await context.nativeRuntime.cancelLogin(loginId); }
-          catch (error) { cleanupError ??= error; }
-          finally { pendingNativeLogins.delete(loginId); }
-        }
-        try { await context.nativeRuntime.logout(providerId); }
-        catch (error) { cleanupError ??= error; }
-        finally { context.forgetProviderCredential?.(providerId); }
+        const cleanupError = await runUserNativeAuthOperation(async () => {
+          let failure: unknown;
+          for (const [loginId, loginProviderId] of pendingNativeLogins) {
+            if (loginProviderId !== providerId) continue;
+            try { await context.nativeRuntime!.cancelLogin(loginId); }
+            catch (error) { failure ??= error; }
+            finally { pendingNativeLogins.delete(loginId); }
+          }
+          try { await context.nativeRuntime!.logout(providerId); }
+          catch (error) { failure ??= error; }
+          finally { context.forgetProviderCredential?.(providerId); }
+          return failure;
+        });
         invalidateProviderCache();
         if (cleanupError) throw cleanupError;
         return sendJson(res, 200, await workspaceState());
@@ -1003,19 +1063,46 @@ interface NativeInspectionResult {
   error?: string;
 }
 
-async function inspectNativeRuntime(
+export async function inspectNativeRuntime(
   runtime?: RuntimeClient,
   unavailableReason?: string,
   startup?: { ready: boolean; error?: string },
+  refresh?: (providerId: string) => Promise<unknown>,
+  invalidateCredential?: (providerId: string) => Promise<unknown>,
 ): Promise<NativeInspectionResult> {
   if (!runtime) return { available: false, connected: false, accounts: [], models: [], error: unavailableReason ?? "Native runtime is not installed" };
   if (startup && !startup.ready) {
     return { available: false, connected: false, accounts: [], models: [], error: startup.error ?? "Native runtime is starting" };
   }
+  let initialized;
+  try { initialized = await runtime.start(); }
+  catch (error) {
+    return { available: false, connected: false, accounts: [], models: [], error: errorMessage(error, "Native runtime validation failed") };
+  }
+  let accounts;
   try {
-    const initialized = await runtime.start();
-    const accounts = (await runtime.listAccounts()).filter((account) => account.providerId === OPENAI_SUBSCRIPTION_PROVIDER_ID);
-    const listed = (await Promise.all(accounts.map((account) => runtime.listModels(account.providerId)))).flat();
+    accounts = (await runtime.listAccounts()).filter((account) => account.providerId === OPENAI_SUBSCRIPTION_PROVIDER_ID);
+  } catch (error) {
+    return { available: true, connected: false, version: initialized.runtime.version, accounts: [], models: [], error: errorMessage(error, "Native account inspection failed") };
+  }
+  let sessionInvalidated = false;
+  try {
+    let listed;
+    try {
+      listed = (await Promise.all(accounts.map((account) => runtime.listModels(account.providerId)))).flat();
+    } catch (error) {
+      if (!invalidatesCredential(error) || accounts.length === 0 || !refresh) throw error;
+      try {
+        await Promise.all(accounts.map((account) => refresh(account.providerId)));
+        listed = (await Promise.all(accounts.map((account) => runtime.listModels(account.providerId)))).flat();
+      } catch (refreshError) {
+        sessionInvalidated = invalidatesCredential(refreshError) || !(refreshError instanceof ProviderFailure);
+        if (invalidatesCredential(refreshError)) {
+          await Promise.allSettled(accounts.map((account) => invalidateCredential?.(account.providerId)));
+        }
+        throw refreshError;
+      }
+    }
     const models = listed.filter((model) => model.supportsStructuredOutput).map((model) => {
       const efforts = model.supportedReasoningEfforts?.length ? model.supportedReasoningEfforts : [model.defaultReasoningEffort ?? "medium"];
       return {
@@ -1028,13 +1115,24 @@ async function inspectNativeRuntime(
     return { available: true, connected: accounts.length > 0, version: initialized.runtime.version, accounts, models };
   } catch (error) {
     return {
-      available: false,
-      connected: false,
-      accounts: [],
+      available: true,
+      connected: accounts.length > 0 && !sessionInvalidated && !invalidatesCredential(error),
+      version: initialized.runtime.version,
+      accounts: sessionInvalidated || invalidatesCredential(error) ? [] : accounts,
       models: [],
-      error: error instanceof Error ? error.message : "Native runtime validation failed",
+      error: errorMessage(error, "Native model discovery failed"),
     };
   }
+}
+
+function invalidatesCredential(error: unknown): boolean {
+  return error instanceof ProviderFailure
+    && (error.code === "auth" || error.runtimeCode === "reconnect_required");
+}
+
+function errorMessage(error: unknown, fallback: string): string {
+  if (invalidatesCredential(error)) return "OpenAI rejected this session. Sign in again.";
+  return error instanceof Error ? error.message : fallback;
 }
 
 function renderMarkdown(ideas: SolutionView[]): string {
