@@ -44,6 +44,7 @@
     ?? (modelRefKey(initialModel) === modelKey ? initialModel : DEFAULT_RUN_CONFIG.model));
   let model = $derived<ModelRef>({ providerId: resolvedModel.providerId, modelId: resolvedModel.modelId });
   let initialModelOption = initial.modelOptions.find((item) => sameModelRef(item, initialModel));
+  let modelSelect: HTMLSelectElement;
   let reasoningEffort = $state(initial.runConfig?.reasoningEffort
     && initialModelOption?.reasoningEfforts.some((item) => item.id === initial.runConfig?.reasoningEffort)
       ? initial.runConfig.reasoningEffort
@@ -85,11 +86,15 @@
   let searchValidationPending = $derived(researchMode === "explore-market" && isValidationPending(selectedSearchValidation.error));
   let connectionsChecking = $derived(nativeValidationPending || searchValidationPending);
   let providersReady = $derived(selectedModelReady && selectedModelAvailable && (researchMode === "known-problem" || selectedSearchValidation.valid));
+  let modelChoiceRequired = $derived(selectedModelReady && nativeModelOptions.length > 0 && !selectedModelAvailable);
+  let connectionNeedsAttention = $derived(!selectedModelReady
+    || nativeModelOptions.length === 0
+    || (researchMode === "explore-market" && !selectedSearchValidation.valid));
   let modelStatus = $derived(!workspace.validation.native.available
       ? workspace.validation.native.error ?? "Native runtime is unavailable"
       : !workspace.validation.native.connected
         ? workspace.validation.native.error ?? "Connect your OpenAI account"
-        : workspace.validation.native.error ?? (!selectedModelAvailable ? "Selected model is unavailable" : null));
+        : workspace.validation.native.error ?? (nativeModelOptions.length === 0 ? "No compatible models are available" : null));
   let locked = $derived(busy || submitting);
   let errors = $derived(validationAttempted ? missingFields() : {});
 
@@ -219,15 +224,22 @@
     </details>
 
     <div class="run-settings" class:known={researchMode === "known-problem"}>
-      <label class="run-setting"><span>Model</span><select bind:value={modelKey} onchange={selectModel} disabled={nativeModelOptions.length === 0}>{#if !selectedModelAvailable}<option value={modelKey}>{legacyModelNeedsReplacement && !modelKey ? "Choose an OpenAI model" : workspace.validation.native.connected ? `${model.modelId} (unavailable)` : "Connect OpenAI to choose a model"}</option>{/if}{#each nativeModelOptions as item (modelRefKey(item))}<option value={modelRefKey(item)}>{item.displayName}</option>{/each}</select><small>{nativeModelOptions.length === 0 ? "Your available models appear here after you sign in." : "The model used throughout this research."}</small></label>
+      <label class="run-setting"><span>Model</span><select bind:this={modelSelect} bind:value={modelKey} onchange={selectModel} disabled={nativeModelOptions.length === 0}>{#if !selectedModelAvailable}<option value={modelKey}>{legacyModelNeedsReplacement && !modelKey ? "Choose an OpenAI model" : workspace.validation.native.connected ? `${model.modelId} (unavailable)` : "Connect OpenAI to choose a model"}</option>{/if}{#each nativeModelOptions as item (modelRefKey(item))}<option value={modelRefKey(item)}>{item.displayName}</option>{/each}</select><small>{nativeModelOptions.length === 0 ? "Your available models appear here after you sign in." : "The model used throughout this research."}</small></label>
       <label class="run-setting"><span>Reasoning</span><select bind:value={reasoningEffort}>{#each (selectedModelOption?.reasoningEfforts ?? [{ id: reasoningEffort, description: "" }]) as effort (effort.id)}<option value={effort.id}>{effort.id.charAt(0).toUpperCase() + effort.id.slice(1)}</option>{/each}</select><small>{reasoningDescription}</small></label>
       {#if researchMode === "explore-market"}<label class="run-setting"><span>Research depth</span><select bind:value={discoveryDepth}><option value="quick">Quick</option><option value="standard">Standard</option><option value="deep">Deep</option></select><small>{depthDescription}</small></label>{/if}
       {#if researchMode === "explore-market"}<label class="run-setting"><span>Search provider</span><select aria-label="Search provider" bind:value={searchProvider}><option value="exa">Exa</option><option value="perplexity">Perplexity</option></select><small>{selectedSearchName}: {selectedSearchValidation.valid ? "Connected" : selectedSearchValidation.error ?? "Connection unavailable"}</small></label>{/if}
     </div>
 
-    {#if legacyModelNeedsReplacement && !modelKey}<p class="model-migration">This project used the removed CLI integration. Choose a model and save to start a new run.</p>{/if}
+    {#if modelChoiceRequired}
+      <div class="model-migration">
+        <span>{legacyModelNeedsReplacement && !modelKey
+          ? "This project used the removed CLI integration. Choose an OpenAI model to start a new run."
+          : "The model saved for this project is no longer available. Choose an available OpenAI model to start a new run."}</span>
+        <button type="button" class="secondary" onclick={() => { modelSelect.scrollIntoView?.({ block: "center" }); modelSelect.focus(); }}>Choose model</button>
+      </div>
+    {/if}
 
-    {#if !providersReady}
+    {#if connectionNeedsAttention}
       <div class="connection-warning" class:checking={connectionsChecking} role="status">
         <div>
           <strong>{connectionsChecking ? "Checking required connections" : "Required connection needs attention"}</strong>
@@ -248,6 +260,6 @@
 <style>
   .scope-page{max-width:920px;margin:0 auto;padding:42px var(--page-inline) 80px}.eyebrow{font:600 11px var(--mono);letter-spacing:.12em;text-transform:uppercase;color:var(--accent-strong)}h1{font-size:clamp(30px,4vw,48px);letter-spacing:-.045em;line-height:1.02;max-width:720px;margin:10px 0 14px}header>p:last-child{color:var(--muted);max-width:650px;font-size:15px}form{margin-top:36px;border-top:1px solid var(--border)}fieldset{border:0;padding:0;margin:0}legend{padding:22px 0 10px;font-weight:650;font-size:12px}.mode-picker{border-bottom:1px solid var(--border)}.mode-picker label{display:grid;grid-template-columns:18px 1fr;align-items:start;gap:12px;padding:15px 4px;border-top:1px solid var(--border);cursor:pointer;transition:background .25s var(--ease),padding .25s var(--ease)}.mode-picker label.active{padding-left:12px;background:var(--surface)}.mode-picker input{margin-top:3px;accent-color:var(--accent-strong)}.mode-picker label span{display:grid;gap:3px}.mode-picker strong{font-size:13px}.primary-fields{display:grid;grid-template-columns:1fr 1fr;gap:18px;padding:24px 0}.primary-fields .problem-field,.primary-fields .discovery-context{grid-column:1/-1}label{display:grid;align-content:start;gap:7px}label>span{font-weight:650;font-size:12px}small{color:var(--subtle);font-size:11px;line-height:1.45}.field-error{color:var(--danger)}input,textarea,select{width:100%;border:1px solid var(--border-strong);background:var(--surface);color:var(--text);border-radius:8px;padding:11px 12px}input[aria-invalid="true"],textarea[aria-invalid="true"]{border-color:var(--danger)}textarea{resize:vertical}.optional-fields{border-top:1px solid var(--border);padding:18px 0}.optional-fields summary{cursor:pointer;font-weight:650;font-size:12px}.optional-fields summary span{margin-left:7px;color:var(--subtle);font-weight:500}.optional-fields>div{display:grid;grid-template-columns:1fr 1fr;gap:18px;padding-top:18px}.run-settings{display:grid;grid-template-columns:1.2fr 1fr 1fr;align-items:start;gap:24px;padding:26px 0 28px;border-top:1px solid var(--border)}.run-settings.known{grid-template-columns:1.2fr 1fr}.run-setting{grid-template-rows:auto 48px minmax(32px,auto);gap:8px}.run-setting select{height:48px;padding-block:0}.run-setting small{max-width:34ch}.connection-warning{display:flex;align-items:center;justify-content:space-between;gap:24px;padding:16px;border:1px solid color-mix(in srgb,var(--danger) 45%,var(--border));border-radius:8px;background:color-mix(in srgb,var(--danger) 7%,var(--surface))}.connection-warning.checking{border-color:var(--border-strong);background:var(--surface)}.connection-warning>div{display:grid;gap:4px}.connection-warning strong{font-size:13px}.connection-warning span{color:var(--muted);font-size:12px}footer{display:flex;justify-content:flex-end;align-items:center;gap:12px;padding-top:24px;border-top:1px solid var(--border)}footer>span{font:500 11px var(--mono);color:var(--subtle)}button{border-radius:8px;padding:11px 16px;font-weight:650;transition:transform .2s var(--ease)}button:active:not(:disabled){transform:scale(.98)}button:disabled{cursor:not-allowed;opacity:.45}.secondary{border:1px solid var(--border-strong);background:transparent;color:var(--text)}.primary{border:1px solid var(--accent);background:var(--accent-strong);color:var(--accent-ink)}@media(max-width:700px){.primary-fields,.optional-fields>div,.run-settings,.run-settings.known{grid-template-columns:1fr}.primary-fields .problem-field,.primary-fields .discovery-context{grid-column:auto}.run-settings{gap:20px}.connection-warning{align-items:stretch;flex-direction:column}.scope-page{padding:28px 20px 64px}}
   .run-settings:not(.known){grid-template-columns:1.2fr 1fr 1fr 1fr;gap:20px}
-  .native-account{display:flex;align-items:center;justify-content:space-between;gap:20px;padding:18px 16px;border:1px solid var(--border);border-radius:8px;margin:20px 0 4px;background:var(--surface)}.native-account.needs-connection{border-color:color-mix(in srgb,var(--accent-strong) 55%,var(--border));background:color-mix(in srgb,var(--accent-strong) 6%,var(--surface))}.native-account.checking{border-color:var(--border-strong)}.native-account>div:first-child{display:grid;gap:4px}.native-account strong{font-size:13px}.native-account span{font-size:12px;color:var(--muted)}.native-account .account-error{color:var(--danger)}.account-actions,.login-progress{display:flex;align-items:center;gap:8px}.login-progress code{padding:8px 10px;border:1px solid var(--border-strong);border-radius:6px;font:650 13px var(--mono);letter-spacing:.08em}.model-migration{margin:-12px 0 20px;color:var(--danger);font-size:12px}
+  .native-account{display:flex;align-items:center;justify-content:space-between;gap:20px;padding:18px 16px;border:1px solid var(--border);border-radius:8px;margin:20px 0 4px;background:var(--surface)}.native-account.needs-connection{border-color:color-mix(in srgb,var(--accent-strong) 55%,var(--border));background:color-mix(in srgb,var(--accent-strong) 6%,var(--surface))}.native-account.checking{border-color:var(--border-strong)}.native-account>div:first-child{display:grid;gap:4px}.native-account strong{font-size:13px}.native-account span{font-size:12px;color:var(--muted)}.native-account .account-error{color:var(--danger)}.account-actions,.login-progress{display:flex;align-items:center;gap:8px}.login-progress code{padding:8px 10px;border:1px solid var(--border-strong);border-radius:6px;font:650 13px var(--mono);letter-spacing:.08em}.model-migration{display:flex;align-items:center;justify-content:space-between;gap:16px;margin:-12px 0 20px;padding:14px 16px;border:1px solid var(--border);border-radius:8px;background:var(--surface);color:var(--muted);font-size:12px}.model-migration button{flex:none}
   @media(max-width:700px){.run-settings:not(.known){grid-template-columns:1fr;gap:20px}.native-account{align-items:stretch;flex-direction:column}.account-actions,.login-progress{align-items:stretch;flex-direction:column}}
 </style>

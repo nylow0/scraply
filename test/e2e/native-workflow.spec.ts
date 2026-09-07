@@ -99,6 +99,28 @@ for (const workflowVersion of [1, 2]) test(`native v${workflowVersion} research 
     electron = await launch();
     let page = await electron.firstWindow();
     await page.getByRole("button", { name: "Create research", exact: true }).click();
+    if (workflowVersion === 2) {
+      await page.evaluate(async () => {
+        const api = (window as unknown as { scraply: ScraplyApi }).scraply;
+        const state = await api.getWorkspace();
+        await api.saveRunConfig({
+          threadId: state.activeThreadId!,
+          config: {
+            ...state.runConfig!,
+            model: { providerId: "legacy-codex-cli", modelId: "gpt-old" },
+          },
+        });
+      });
+      await page.reload();
+      await expect(page.getByText("This project used the removed CLI integration. Choose an OpenAI model to start a new run.", { exact: true })).toBeVisible();
+      await expect(page.getByRole("button", { name: "Retry connections", exact: true })).toHaveCount(0);
+      await page.screenshot({ path: testInfo.outputPath("legacy-model-choice.png") });
+      const modelSelect = page.getByRole("combobox", { name: /Model/ });
+      await page.getByRole("button", { name: "Choose model", exact: true }).click();
+      await expect(modelSelect).toBeFocused();
+      await modelSelect.selectOption("openai-subscription:gpt-fixture");
+      await expect(page.getByText("This project used the removed CLI integration.", { exact: false })).toHaveCount(0);
+    }
     await page.getByRole("combobox", { name: /Research workflow/ }).selectOption(String(workflowVersion));
     await expect(page.getByRole("option", { name: /Mod/ })).toHaveCount(1);
     await page.getByLabel("Research name", { exact: true }).fill("Native protocol UI fixture");
@@ -164,6 +186,10 @@ for (const workflowVersion of [1, 2]) test(`native v${workflowVersion} research 
     electron = await launch();
     page = await electron.firstWindow();
     await expect(page.getByText("Supplier reliability ledger", { exact: true })).toBeVisible();
+    if (workflowVersion === 2) {
+      const savedModel = await page.evaluate(async () => (await (window as unknown as { scraply: ScraplyApi }).scraply.getWorkspace()).runConfig?.model);
+      expect(savedModel).toEqual({ providerId: "openai-subscription", modelId: "gpt-fixture" });
+    }
     if (workflowVersion === 2) {
       await page.getByText("Evidence, analysis and your decision", { exact: true }).click();
       await expect(page.getByLabel("Observed test result", { exact: true })).toHaveValue("Nine of ten estimates matched arrivals");
