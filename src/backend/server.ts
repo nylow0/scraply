@@ -612,7 +612,7 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
   }
   function runUsage(runId: string) {
     const rows = db.db.prepare(`
-      SELECT status, provider_id, model_id, attempt_metadata_json, usage_json
+      SELECT status, terminal_kind, provider_id, model_id, attempt_metadata_json, usage_json
       FROM generation_attempts WHERE research_run_id = ? ORDER BY created_at, id
     `).all(runId) as GenerationAttemptUsageRow[];
     if (rows.length === 0) {
@@ -976,6 +976,25 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
       }
       if (route === "/ideas/export") {
         const input = ExportIdeasRequestSchema.parse(body); requireThread(input.threadId); const ideas = listSolutions(input.threadId);
+        const emptyResults = db.db.prepare(`
+            SELECT r.id, r.workflow_version, p.id AS problem_id, p.statement, p.discovery_run_id
+            FROM research_runs r JOIN problems p ON p.id = r.problem_id
+            WHERE r.thread_id = ? AND r.status = 'completed' AND r.awaiting_selection = 0
+              AND p.discovery_run_id = ? AND p.selected_at IS NOT NULL
+              AND NOT EXISTS (SELECT 1 FROM solutions s WHERE s.research_run_id = r.id)
+              AND NOT EXISTS (SELECT 1 FROM research_runs newer WHERE newer.problem_id = r.problem_id
+                AND newer.status = 'completed' AND (newer.created_at > r.created_at OR (newer.created_at = r.created_at AND newer.rowid > r.rowid)))
+            ORDER BY r.created_at, r.rowid
+          `).all(input.threadId, latestDiscoveryRun(input.threadId)) as
+            Array<{ id: string; workflow_version: 1 | 2; problem_id: string; statement: string; discovery_run_id: string }>;
+        const emptyFiles = emptyResults.map((empty) => {
+            const result = { kind: "no-options", status: "completed", workflowVersion: empty.workflow_version,
+              runId: empty.id, discoveryRunId: empty.discovery_run_id, problemId: empty.problem_id,
+              problemStatement: empty.statement, options: [], usage: runUsage(empty.id) };
+            const content = input.format === "json" ? JSON.stringify(result, null, 2)
+              : `# ${empty.statement}\n\nWorkflow: v${empty.workflow_version}. No options proposed.\n\nThis completed run produced no useful option. This is not evidence that the problem is solved.\n`;
+            return { filename: `${slug(empty.statement)}-no-options-${empty.problem_id}.${input.format === "json" ? "json" : "md"}`, content };
+        });
         const files = [...new Set(ideas.map((idea) => idea.problemId))].map((problemId, index) => {
           const group = ideas.filter((idea) => idea.problemId === problemId);
           const filename = `${slug(group[0]!.problemStatement)}-${index + 1}.${input.format === "json" ? "json" : "md"}`;
@@ -991,7 +1010,7 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
             : "";
           return { filename, content: input.format === "json" ? JSON.stringify(exportedGroup, null, 2) : `${renderMarkdown(group)}${followUpMarkdown}` };
         });
-        return sendJson(res, 200, { files });
+        return sendJson(res, 200, { files: [...files, ...emptyFiles] });
       }
       throw new AppError("not_found", "Route not found.");
     } catch (error) {

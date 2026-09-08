@@ -89,6 +89,18 @@ describe("run usage summaries", () => {
     expect(summary.attemptCount).toBe(1);
     expect(summary.unknownAttemptCount).toBe(1);
   });
+
+  test("excludes cancellation and restart recovery known to have occurred before dispatch", () => {
+    const summary = summarizeRunUsage([
+      usageRow({ status: "cancelled", terminal_kind: "never-dispatched" }),
+      usageRow({ status: "interrupted", terminal_kind: "never-dispatched" }),
+    ]);
+    expect(summary.attemptCount).toBe(0);
+    expect(summary.unknownAttemptCount).toBe(0);
+    expect(summary.tokens.total).toEqual({ known: 0, unknownAttempts: 0 });
+    const ambiguous = summarizeRunUsage([usageRow({ status: "interrupted", terminal_kind: "process-lost" })]);
+    expect(ambiguous.unknownAttemptCount).toBe(1);
+  });
 });
 
 function usageRow(overrides: Partial<GenerationAttemptUsageRow>): GenerationAttemptUsageRow {

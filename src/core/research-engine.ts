@@ -557,7 +557,7 @@ export class ResearchEngine {
             const code = error instanceof ProviderFailure ? error.code : "failed";
             this.generationAttempts.recordTerminal(attempt.id, {
               status: code === "cancelled" ? "cancelled" : code === "interrupted" ? "interrupted" : "failed",
-              terminalKind: code,
+              terminalKind: dispatched || accepted || failedAttempts?.length ? code : "never-dispatched",
               errorCode: code,
               errorMessage: error instanceof Error ? error.message : "Model generation failed",
               ...(failedAttempts ? {

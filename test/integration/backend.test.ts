@@ -488,6 +488,26 @@ describe("cutover backend", () => {
     expect(decisionMarkdown?.match(/Uncertainty: Holiday demand was not sampled\./g)).toHaveLength(5);
     expect(followUpMarkdown).toContain("Uncertainty: Holiday demand was not sampled.");
 
+    const emptyClient = new DatabaseClient(dbPath);
+    emptyClient.db.prepare(`INSERT INTO problems (id, discovery_run_id, statement, why_it_persists, affected, scale_estimate,
+      verdict, verdict_reason, verdict_source_ids_json, selected_at, created_at)
+      VALUES ('problem-empty', 'discovery-latest', 'No useful proposal', '', '', '', 'insufficient-evidence', '', '[]', ?, ?)`).run(now, now);
+    emptyClient.db.prepare(`INSERT INTO research_runs (id, thread_id, status, config_json, problem_id, workflow_version, created_at, updated_at)
+      VALUES ('development-cancelled', ?, 'cancelled', ?, 'problem-empty', 2, ?, ?)`).run(created.thread.id, persistedConfig, now, now);
+    emptyClient.db.prepare(`INSERT INTO solutions (id, problem_id, mechanism, description, respects_off_limits, respects_off_limits_why, created_at, research_run_id)
+      VALUES ('cancelled-option', 'problem-empty', 'Earlier option with cancelled analysis', '', 1, '', ?, 'development-cancelled')`).run(now);
+    emptyClient.db.prepare(`INSERT INTO research_runs (id, thread_id, status, config_json, problem_id, workflow_version, created_at, updated_at)
+      VALUES ('development-empty', ?, 'completed', ?, 'problem-empty', 2, ?, ?)`).run(created.thread.id, persistedConfig, now, now);
+    emptyClient.close();
+    const withEmpty = await post("/ideas/export", { threadId: created.thread.id, format: "json" }) as { files: Array<{ filename: string; content: string }> };
+    expect(withEmpty.files).toHaveLength(3);
+    expect(withEmpty.files.some((file) => file.content.includes("Earlier option with cancelled analysis"))).toBe(true);
+    const noOptions = withEmpty.files.find((file) => file.filename.includes("no-options"))!;
+    expect(JSON.parse(noOptions.content)).toMatchObject({ kind: "no-options", status: "completed", workflowVersion: 2,
+      runId: "development-empty", discoveryRunId: "discovery-latest", problemId: "problem-empty", options: [] });
+    const emptyMarkdown = await post("/ideas/export", { threadId: created.thread.id, format: "markdown" }) as { files: Array<{ content: string }> };
+    expect(emptyMarkdown.files.some((file) => file.content.includes("This is not evidence that the problem is solved."))).toBe(true);
+
     await handle.close();
     handles.splice(handles.indexOf(handle), 1);
     const interrupted = new DatabaseClient(dbPath);

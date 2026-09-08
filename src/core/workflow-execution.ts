@@ -90,6 +90,8 @@ export class WorkflowExecution {
         jsonSchema: deriveJsonSchema(stage.schema),
         deadlineMs: stage.deadlineMs,
       };
+      if (original.model.providerId === "openai-subscription") delete request.maxOutputTokens;
+      else request.maxOutputTokens = stage.maxOutputTokens;
       const context = { inputs: request.workOrder.inputs, evidence: request.evidence };
       const selectionId = selection.join(":") || null;
       const evidence = request.evidence.map((item) => ({ sourceId: item.sourceId, content: item.content }));
@@ -211,6 +213,7 @@ export class WorkflowExecution {
       })),
       contraryEvidence: base.problem.verdictSourceIds.map((sourceId) => ({ sourceId, content: evidenceForSource(sourceId) })),
       priorFailedAttempts: [],
+      recordedExperiments: this.recordedExperiments(base.problem.statement),
     };
     const candidateOutputs = stageEvidence.filter((stage) => stage.stage_id === "problem-candidates")
       .flatMap((stage) => WorkflowV2ProblemCandidatesOutputSchema.parse(JSON.parse(stage.output_json)).problems)
@@ -227,6 +230,31 @@ export class WorkflowExecution {
     };
     this.save("development-context", context);
     return context;
+  }
+
+  private recordedExperiments(statement: string): NonNullable<WorkflowV2DevelopmentContext["recordedExperiments"]> {
+    // Match the same problem within this project. User results remain reports, not an
+    // automatic success/failure judgment. The containing context is snapshotted per run.
+    const rows = this.db.db.prepare(`
+      SELECT s.mechanism, da.user_decision, da.observed_result, COUNT(*) OVER () AS total_count
+      FROM decision_analyses da JOIN solutions s ON s.id = da.solution_id
+      JOIN problems p ON p.id = s.problem_id JOIN research_runs previous ON previous.id = da.research_run_id
+      JOIN research_runs current ON current.id = ?
+      WHERE previous.thread_id = current.thread_id AND previous.rowid < current.rowid
+        AND previous.status = 'completed' AND trim(p.statement) = trim(?)
+        AND length(trim(COALESCE(da.observed_result, ''))) > 0
+      ORDER BY previous.rowid DESC, da.updated_at DESC LIMIT 5
+    `).all(this.runId, statement) as Array<{ mechanism: string; user_decision: string | null; observed_result: string; total_count: number }>;
+    const results: NonNullable<WorkflowV2DevelopmentContext["recordedExperiments"]>["results"] = [];
+    let characters = 0;
+    for (const row of rows) {
+      const result = { mechanism: row.mechanism, userDecision: row.user_decision, observedResult: row.observed_result };
+      const size = JSON.stringify(result).length;
+      if (characters + size > 12000) continue;
+      results.push(result);
+      characters += size;
+    }
+    return { results, omittedCount: (rows[0]?.total_count ?? 0) - results.length };
   }
 
   selectedOption(problemId: string) {

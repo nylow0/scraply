@@ -374,6 +374,10 @@ export interface WorkflowV2DevelopmentContext {
   supportingEvidence: WorkflowV2EvidenceItem[];
   contraryEvidence: WorkflowV2EvidenceItem[];
   priorFailedAttempts: string[];
+  recordedExperiments?: {
+    results: Array<{ mechanism: string; userDecision: string | null; observedResult: string }>;
+    omittedCount: number;
+  };
   researchContext?: {
     alternativeExplanations: string[];
     unknowns: string[];
@@ -553,6 +557,7 @@ function developmentEvidence(
     scope: context.scope,
     originalProblem: context.problem,
     priorFailedAttempts: context.priorFailedAttempts,
+    ...(context.recordedExperiments ? { recordedExperiments: context.recordedExperiments } : {}),
     ...(context.researchContext ? { researchContext: context.researchContext } : {}),
     ...(selectedOption ? { selectedOption } : {}),
     evidenceBudget: {
