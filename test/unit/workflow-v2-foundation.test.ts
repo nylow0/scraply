@@ -32,8 +32,9 @@ afterEach(() => {
 });
 
 describe("workflow v2 foundation", () => {
-  test("registers exactly six typed stages independent of config version", () => {
-    expect(Object.keys(WORKFLOW_V2_STAGE_REGISTRY)).toEqual([...WORKFLOW_V2_STAGE_IDS]);
+  test("registers exactly seven typed stages independent of config version", () => {
+    expect(Object.keys(WORKFLOW_V2_STAGE_REGISTRY).sort()).toEqual([...WORKFLOW_V2_STAGE_IDS].sort());
+    expect(WORKFLOW_V2_STAGE_IDS).toHaveLength(7);
     expect(WORKFLOW_VERSION_V2).toBe(2);
     expect(WORKFLOW_V2_STAGE_REGISTRY.solutions.schema).toBeDefined();
     for (const stage of Object.values(WORKFLOW_V2_STAGE_REGISTRY)) {
@@ -79,7 +80,7 @@ describe("workflow v2 foundation", () => {
       evidence: Array<{ sourceId: string; content: unknown }>;
     };
     expect(request.workOrder.instruction).toBe("exact prompt bytes");
-    expect(request.workOrder.inputs).toEqual({ workflowVersion: 2, problemId: "problem-1", evidenceSourceIds: ["support-1", "contrary-1"] });
+    expect(request.workOrder.inputs).toEqual({ workflowVersion: 2, problemId: "problem-1", ideaCount: 3, evidenceSourceIds: ["support-1", "contrary-1"] });
     expect(JSON.stringify(request.workOrder.inputs)).not.toContain("failed spreadsheet");
     expect(request.evidence[0]?.content).toMatchObject({ recordedExperiments: current.recordedExperiments });
     expect(request.evidence.map((item) => item.sourceId)).toEqual([

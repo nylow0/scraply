@@ -6877,7 +6877,6 @@ dependencies = [
  "base64 0.22.1",
  "codex-api",
  "codex-login",
- "codex-utils-home-dir",
  "futures-util",
  "getrandom 0.3.4",
  "http",

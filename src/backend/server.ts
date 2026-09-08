@@ -388,8 +388,8 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
       )
       SELECT s.*, p.statement AS problem_statement, p.verdict AS problem_verdict,
         rr.workflow_version, rr.status AS run_status, rr.awaiting_selection, rr.updated_at AS run_updated_at,
-        ${details ? "da.analysis_json, da.user_decision, da.observed_result, sc.risk_evaluation_criteria, review.value_json AS risk_evaluation_json," : ""} da.updated_at AS decision_updated_at,
-        review.snapshot_key AS risk_evaluation_key,
+        ${details ? "da.analysis_json, da.user_decision, da.observed_result, sc.risk_evaluation_criteria, review.output_json AS risk_evaluation_json," : ""} da.updated_at AS decision_updated_at,
+        review.id AS risk_evaluation_key,
         ef.status AS evidence_follow_up_status, ef.updated_at AS evidence_follow_up_updated_at,
         COALESCE(oc.outcome_count, 0) AS outcome_count, COALESCE(oc.core_count, 0) AS core_count,
         COALESCE(rc.risk_count, 0) AS risk_count, COALESCE(rc.ending_count, 0) AS ending_count,
@@ -401,7 +401,7 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
       JOIN research_runs rr ON rr.id = s.research_run_id
       LEFT JOIN decision_analyses da ON da.solution_id = s.id
       LEFT JOIN scopes sc ON sc.research_run_id = p.discovery_run_id
-      LEFT JOIN workflow_snapshots review ON review.research_run_id = rr.id AND review.snapshot_key = 'risk-evaluation:' || s.id
+      LEFT JOIN stage_results review ON review.research_run_id = rr.id AND review.stage_id = 'risk-evaluation' AND review.selection_key = s.id
       LEFT JOIN evidence_follow_ups ef ON ef.research_run_id = rr.id AND ef.solution_id = s.id
       LEFT JOIN outcome_counts oc ON oc.solution_id = s.id
       LEFT JOIN risk_counts rc ON rc.solution_id = s.id
@@ -443,7 +443,7 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
         contraryEvidenceIds: JSON.parse(String(row.contrary_evidence_ids_json ?? "[]")),
         ...(details ? {
           decisionAnalysis: row.analysis_json ? JSON.parse(String(row.analysis_json)) : null,
-          riskEvaluation: row.risk_evaluation_json ? JSON.parse(String(row.risk_evaluation_json)).evaluation : null,
+          riskEvaluation: row.risk_evaluation_json ? JSON.parse(String(row.risk_evaluation_json)) : null,
           riskEvaluationCriteria: String(row.risk_evaluation_criteria ?? ""),
           userDecision: row.user_decision === null ? null : String(row.user_decision),
           observedResult: row.observed_result === null ? null : String(row.observed_result),
@@ -580,13 +580,15 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
     const archivedScope = db.db.prepare(`
       SELECT title, audience, domain, observations, off_limits_json, risk_evaluation_criteria FROM scopes WHERE research_run_id = ?
     `).get(runId) as { title: string; audience: string; domain: string; observations: string; off_limits_json: string; risk_evaluation_criteria: string } | undefined;
+    const archivedConfig: unknown = JSON.parse(String(run.config_json));
+    const parsedConfig = RunConfigSchema.safeParse(archivedConfig);
     return {
       schemaVersion: 1,
       exportedAt: new Date().toISOString(),
       thread,
       researchRun: {
         id: String(run.id), status: String(run.status), completionReason: run.completion_reason === null ? null : String(run.completion_reason),
-        createdAt: String(run.created_at), completedAt: String(run.updated_at), config: RunConfigSchema.parse(JSON.parse(String(run.config_json))),
+        createdAt: String(run.created_at), completedAt: String(run.updated_at), config: parsedConfig.success ? parsedConfig.data : archivedConfig,
         usage: runUsage(runId),
       },
       scope: archivedScope
@@ -646,24 +648,27 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
     const row = db.db.prepare("SELECT id, status, problem_id, config_json, workflow_version, awaiting_selection, interrupted, completion_reason FROM research_runs WHERE thread_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1")
       .get(threadId) as { id: string; status: string; problem_id: string | null; config_json: string; workflow_version: 1 | 2; awaiting_selection: number; interrupted: number; completion_reason: string | null } | undefined;
     if (!row) return null;
-    const runConfig = RunConfigSchema.parse(JSON.parse(row.config_json));
+    // History predating the current required config fields is still readable.
+    // Missing model provenance must never make it resumable as a current run.
+    const parsedConfig = RunConfigSchema.safeParse(JSON.parse(row.config_json));
+    const runConfig = parsedConfig.success ? parsedConfig.data : null;
     const counts = db.db.prepare(`SELECT provider, COUNT(*) AS count FROM cost_ledger WHERE research_run_id = ? AND status IN ('reserved','committed') GROUP BY provider`)
       .all(row.id) as Array<{ provider: string; count: number }>;
     const promptSnapshot = db.db.prepare("SELECT value_json FROM workflow_snapshots WHERE research_run_id = ? AND snapshot_key = 'prompts'")
       .get(row.id) as { value_json: string } | undefined;
     const hasRiskEvaluator = promptSnapshot ? Boolean(JSON.parse(promptSnapshot.value_json)["risk-evaluation"]) : true;
-    const projection = row.problem_id ? { modelCalls: row.workflow_version === 2 ? (hasRiskEvaluator ? 3 : 2) : developmentProjection(runConfig.ideaCount ?? 5), searches: 0 } : discoveryRunProjection(runConfig.discoveryDepth);
+    const projection = row.problem_id ? { modelCalls: row.workflow_version === 2 ? (hasRiskEvaluator ? 3 : 2) : developmentProjection(runConfig?.ideaCount ?? 5), searches: 0 } : discoveryRunProjection(runConfig?.discoveryDepth ?? "standard");
     const activity = db.db.prepare("SELECT payload_json FROM job_events WHERE run_id = ? AND type = 'run-progress' ORDER BY id DESC LIMIT 1")
       .get(row.id) as { payload_json: string } | undefined;
     const resumeSafety = generationAttempts.getResumeSafety(row.id);
-    const providerRemoved = runConfig.model.providerId === HISTORICAL_CODEX_CLI_PROVIDER_ID;
+    const providerRemoved = !runConfig || runConfig.model.providerId === HISTORICAL_CODEX_CLI_PROVIDER_ID;
     // Match resumeRun: ended legacy runs have no resumable stage checkpoints.
     const resumableStatus = ["queued", "running", ...(row.workflow_version === 2 ? ["failed", "cancelled"] : [])].includes(row.status);
     return {
       runId: row.id, status: row.status, problemId: row.problem_id,
       workflowVersion: row.workflow_version, awaitingSelection: Boolean(row.awaiting_selection), interrupted: Boolean(row.interrupted),
-      codexCalls: counts.find((item) => item.provider === runConfig.model.providerId)?.count ?? 0,
-      searches: counts.find((item) => item.provider === runConfig.searchProvider)?.count ?? 0,
+      codexCalls: counts.find((item) => item.provider === runConfig?.model.providerId)?.count ?? 0,
+      searches: counts.find((item) => item.provider === runConfig?.searchProvider)?.count ?? 0,
       projectedCodexCalls: projection.modelCalls, projectedSearches: projection.searches,
       lastActivity: activity ? String(JSON.parse(activity.payload_json).message ?? "") : null,
       completionReason: row.completion_reason,

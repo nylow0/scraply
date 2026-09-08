@@ -34,6 +34,8 @@ describe("discovery", () => {
     let searches = 0;
     const plannerInputs: Array<Record<string, unknown>> = [];
     const result = await harvestFactors(scope(), {
+      prompt: () => "Fixture discovery instructions",
+      workflowVersion: 2,
       model,
       reasoningEffort,
       depth: "quick",
@@ -66,6 +68,8 @@ describe("discovery", () => {
     const harvestRequests: StructuredStageRequest<unknown>[] = [];
     let nextId = 0;
     await harvestFactors(scope(), {
+      prompt: () => "Fixture discovery instructions",
+      workflowVersion: 2,
       model, reasoningEffort, depth: "quick",
       idFactory: () => String(nextId++).padStart(64, "0"),
       modelClient: modelClient(async (request) => {
@@ -92,6 +96,8 @@ describe("discovery", () => {
   test("fails clearly without an app-owned retry when a query plan is underfilled", async () => {
     let plannerCalls = 0;
     const run = harvestFactors(scope(), {
+      prompt: () => "Fixture discovery instructions",
+      workflowVersion: 2,
       model,
       reasoningEffort,
       depth: "quick",
@@ -111,6 +117,8 @@ describe("discovery", () => {
 
   test("reports accepted factors separately from factors retained by the cap", async () => {
     const result = await harvestFactors(scope(), {
+      prompt: () => "Fixture discovery instructions",
+      workflowVersion: 2,
       model,
       reasoningEffort,
       depth: "quick",
@@ -164,6 +172,8 @@ describe("discovery", () => {
     ];
     let killEvidence: unknown;
     const result = await discoverProblems(scope(), factors, [existing, other], {
+      prompt: () => "Fixture discovery instructions",
+      workflowVersion: 2,
       model,
       reasoningEffort,
       depth: "quick",
@@ -200,6 +210,8 @@ describe("discovery", () => {
   test("skips a search result whose URL cannot be parsed instead of failing the run", async () => {
     const skipped: string[] = [];
     const result = await harvestFactors(scope(), {
+      prompt: () => "Fixture discovery instructions",
+      workflowVersion: 2,
       model,
       reasoningEffort,
       depth: "quick",
@@ -234,6 +246,8 @@ describe("discovery", () => {
       "https://example.test/a?a=1&b=2#section",
     ];
     const result = await harvestFactors(scope(), {
+      prompt: () => "Fixture discovery instructions",
+      workflowVersion: 2,
       model,
       reasoningEffort,
       depth: "quick",

@@ -10,13 +10,13 @@ const rejected = [{
 }];
 
 describe("rejected problem evidence", () => {
-  test.each([{ version: 1 as const, calls: 22 }, { version: 2 as const, calls: 2 }])("projects $calls development calls for workflow $version", async ({ version, calls }) => {
+  test.each([1, 2] as const)("projects the current three-stage development for saved workflow %s", async (version) => {
     const view = render(ProblemCheckpoint, {
       problems: [], rejectedCandidates: [], workflowVersion: version, busy: false,
       onCommit: vi.fn(), onExport: vi.fn(), onOpenSource: vi.fn(),
     });
     await fireEvent.input(view.getByRole("textbox", { name: "Or state the problem yourself." }), { target: { value: "A user-asserted problem." } });
-    expect(view.getByText(new RegExp(`~${calls} model calls projected`))).toBeTruthy();
+    expect(view.getByText(/~3 model calls projected/)).toBeTruthy();
   });
 
   test("keeps rejected candidates separate and can reuse one as a user-asserted problem", async () => {

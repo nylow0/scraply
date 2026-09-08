@@ -17,6 +17,7 @@ Manual keys and restored keys enter through `credential.session.set`. The runtim
 ## Credential rules
 
 - No key or token is accepted through argv or environment variables.
+- The desktop strips inherited Codex/OpenAI tokens and authentication endpoint overrides before launching the child. Direct runtime launches reject those settings before initializing the OpenAI adapter. Standalone `login` and `logout` commands are unsupported; account operations use the private JSONL session.
 - The runtime does not read OpenCode `auth.json`, neighboring `.env` files, or browser sessions.
 - Error values contain stable codes, retryability, safe detail, and an optional bounded provider request ID. They never include response bodies or credentials.
 - The release package contains no `.env` file.

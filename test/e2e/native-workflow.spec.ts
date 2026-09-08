@@ -71,9 +71,9 @@ test("recovers an expired native session through installed sign-in and restores 
   }
 });
 
-for (const workflowVersion of [1, 2]) test(`native v${workflowVersion} research survives the installed selection, development, and reopen interaction`, async ({}, testInfo) => {
+test("native v2 research survives the installed selection, risk evaluation, and reopen interaction", async ({}, testInfo) => {
   const directory = mkdtempSync(join(tmpdir(), "scraply-native-ui-"));
-  const managedPrompt = readFileSync(join(process.cwd(), "prompts", "solutions.md"), "utf8");
+  const managedPrompt = "Custom instructions from a retired workflow.\n";
   const managedHash = createHash("sha256").update(managedPrompt).digest("hex");
   mkdirSync(join(directory, "prompts"));
   writeFileSync(join(directory, "prompts", "solutions.md"), managedPrompt);
@@ -100,7 +100,7 @@ for (const workflowVersion of [1, 2]) test(`native v${workflowVersion} research 
     let page = await electron.firstWindow();
     await page.getByRole("button", { name: "Create research", exact: true }).click();
     await expect(page.getByRole("tabpanel", { name: "Research setup" })).toBeVisible();
-    if (workflowVersion === 2) {
+    {
       await page.evaluate(async () => {
         const api = (window as unknown as { scraply: ScraplyApi }).scraply;
         const state = await api.getWorkspace();
@@ -122,7 +122,9 @@ for (const workflowVersion of [1, 2]) test(`native v${workflowVersion} research 
       await modelSelect.selectOption("openai-subscription:gpt-fixture");
       await expect(page.getByText("This project used the removed CLI integration.", { exact: false })).toHaveCount(0);
     }
-    await page.getByRole("combobox", { name: /Research workflow/ }).selectOption(String(workflowVersion));
+    await expect(page.getByRole("combobox", { name: /Research workflow/ })).toHaveCount(0);
+    await page.getByLabel("Ideas to generate", { exact: false }).fill("5");
+    await page.getByLabel("What should we evaluate risk against?", { exact: false }).fill("Avoid losing a week of repair capacity");
     await expect(page.getByRole("option", { name: /Mod/ })).toHaveCount(1);
     await page.getByLabel("Research name", { exact: true }).fill("Native protocol UI fixture");
     await page.getByLabel("What do you want to explore?", { exact: false }).fill("Parts delivery uncertainty for repair shops");
@@ -133,7 +135,7 @@ for (const workflowVersion of [1, 2]) test(`native v${workflowVersion} research 
     await page.getByRole("checkbox", { name: "Develop this problem" }).check();
     await page.getByRole("button", { name: "Commit selection", exact: true }).click();
     await expect(page.getByText("Supplier reliability ledger", { exact: true })).toBeVisible();
-    if (workflowVersion === 2) {
+    {
       await page.getByRole("button", { name: "Choose and analyze", exact: true }).first().click();
       await expect(page.getByText("Your selected option", { exact: false })).toBeVisible();
       await page.getByText("Evidence, analysis and your decision", { exact: true }).click();
@@ -171,12 +173,8 @@ for (const workflowVersion of [1, 2]) test(`native v${workflowVersion} research 
       const samplesMs = await page.evaluate(() => performance.getEntriesByName("scraply-progress-visible").map((entry) => entry.duration));
       expect(samplesMs).toHaveLength(35);
       writeFileSync(testInfo.outputPath("progress-samples.json"), JSON.stringify({ samplesMs }, null, 2));
-    } else {
-    await page.getByText("Supplier reliability ledger", { exact: true }).click();
-    const solution = page.locator("details.solution").filter({ has: page.getByText("Supplier reliability ledger", { exact: true }) });
-    await solution.getByText("Review all risks and responses", { exact: true }).click();
-    await expect(solution.getByText("Observed order volume stays too sparse", { exact: true }).first()).toBeVisible();
     }
+    await expect(page.getByText("Observed order volume stays too sparse", { exact: true }).first()).toBeVisible();
     await page.screenshot({ path: testInfo.outputPath("native-solutions.png") });
     await events;
     expect(eventErrors).toEqual([]);
@@ -187,11 +185,11 @@ for (const workflowVersion of [1, 2]) test(`native v${workflowVersion} research 
     electron = await launch();
     page = await electron.firstWindow();
     await expect(page.getByText("Supplier reliability ledger", { exact: true })).toBeVisible();
-    if (workflowVersion === 2) {
+    {
       const savedModel = await page.evaluate(async () => (await (window as unknown as { scraply: ScraplyApi }).scraply.getWorkspace()).runConfig?.model);
       expect(savedModel).toEqual({ providerId: "openai-subscription", modelId: "gpt-fixture" });
     }
-    if (workflowVersion === 2) {
+    {
       await page.getByText("Evidence, analysis and your decision", { exact: true }).click();
       await expect(page.getByLabel("Observed test result", { exact: true })).toHaveValue("Nine of ten estimates matched arrivals");
       const reopenedFollowUp = page.getByRole("region", { name: "Evidence follow-up result" });
@@ -201,12 +199,12 @@ for (const workflowVersion of [1, 2]) test(`native v${workflowVersion} research 
     }
     await page.getByRole("tab", { name: /Research/ }).click();
     await expect(page.getByText("The evidence behind the ideas.", { exact: true })).toBeVisible();
-    await page.getByText(`${workflowVersion === 1 ? 4 : 2} cited factors`, { exact: true }).click();
+    await page.getByText("2 cited factors", { exact: true }).click();
     await expect(page.getByText("Parts delivery windows are uncertain.", { exact: true }).first()).toBeVisible();
     await page.screenshot({ path: testInfo.outputPath("native-reopened-evidence.png") });
-    expect(readFileSync(join(directory, "requests.jsonl"), "utf8").trim().split("\n")).toHaveLength(workflowVersion === 1 ? 20 : 8);
+    expect(readFileSync(join(directory, "requests.jsonl"), "utf8").trim().split("\n")).toHaveLength(9);
     expect(existsSync(join(directory, "prompts", "solutions.md"))).toBe(false);
-    expect(readFileSync(join(directory, "prompts", "bundled-copy-backups", managedHash, "solutions.md"), "utf8")).toBe(managedPrompt);
+    expect(readFileSync(join(directory, "prompts", "retired-prompt-backups", managedHash, "solutions.md"), "utf8")).toBe(managedPrompt);
   } finally {
     await events;
     await electron?.close();

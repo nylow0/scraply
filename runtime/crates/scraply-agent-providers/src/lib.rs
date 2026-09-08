@@ -19,7 +19,7 @@ pub use model::{ModelMetadata, ModelProvider, ProviderAccount};
 pub use models_dev::{ModelsDevOverlay, OverlayFreshness};
 pub use openai_subscription::{
     BrowserLogin, DeviceLogin, OPENAI_SUBSCRIPTION_PROVIDER_ID, OpenAiSessionCredential,
-    OpenAiSubscription, resolve_subscription_auth_home,
+    OpenAiSubscription,
 };
 pub use openrouter::{OPENROUTER_PROVIDER_ID, OpenRouter, OpenRouterSession};
 pub use pkce::{OpenRouterPkce, PendingPkce};

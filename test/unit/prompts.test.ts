@@ -27,27 +27,28 @@ describe("prompt loader", () => {
 
   test("backs up an untouched managed copy and uses the upgraded bundle across relaunch", () => {
     const { bundledDir, overrideDir } = promptFixture();
-    const bundled = join(bundledDir, "factor.md");
+    const bundled = join(bundledDir, "workflow-v2-factor-harvest.md");
     writeFileSync(bundled, "Bundled v1.\n", "utf8");
     configurePromptPaths({ bundledDir, overrideDir });
-    writeFileSync(join(overrideDir, "factor.md"), "Bundled v1.\n", "utf8");
+    writeFileSync(join(overrideDir, "workflow-v2-factor-harvest.md"), "Bundled v1.\n", "utf8");
+    writeFileSync(join(overrideDir, ".prompt-versions.json"), JSON.stringify({ version: 1, prompts: { "workflow-v2-factor-harvest.md": createHash("sha256").update("Bundled v1.\n").digest("hex") }, workflowV2Baselines: {} }));
     writeFileSync(bundled, "Bundled v2.\n", "utf8");
 
     configurePromptPaths({ bundledDir, overrideDir });
 
-    expect(existsSync(join(overrideDir, "factor.md"))).toBe(false);
+    expect(existsSync(join(overrideDir, "workflow-v2-factor-harvest.md"))).toBe(false);
     const hash = createHash("sha256").update("Bundled v1.\n").digest("hex");
-    expect(readFileSync(join(overrideDir, "bundled-copy-backups", hash, "factor.md"), "utf8")).toBe("Bundled v1.\n");
-    expect(loadPrompt("factor")).toBe("Bundled v2.");
+    expect(readFileSync(join(overrideDir, "bundled-copy-backups", hash, "workflow-v2-factor-harvest.md"), "utf8")).toBe("Bundled v1.\n");
+    expect(loadPrompt("workflow-v2-factor-harvest")).toBe("Bundled v2.");
     configurePromptPaths({ bundledDir, overrideDir });
-    expect(existsSync(join(overrideDir, "factor.md"))).toBe(false);
-    expect(loadPrompt("factor")).toBe("Bundled v2.");
+    expect(existsSync(join(overrideDir, "workflow-v2-factor-harvest.md"))).toBe(false);
+    expect(loadPrompt("workflow-v2-factor-harvest")).toBe("Bundled v2.");
   });
 
   test("preserves a user edit when the bundled prompt changes", () => {
     const { bundledDir, overrideDir } = promptFixture();
-    const bundled = join(bundledDir, "factor.md");
-    const override = join(overrideDir, "factor.md");
+    const bundled = join(bundledDir, "workflow-v2-factor-harvest.md");
+    const override = join(overrideDir, "workflow-v2-factor-harvest.md");
     writeFileSync(bundled, "Bundled v1.\n", "utf8");
     configurePromptPaths({ bundledDir, overrideDir });
     writeFileSync(override, "My custom prompt.\n", "utf8");
@@ -60,16 +61,16 @@ describe("prompt loader", () => {
 
   test("conservatively preserves a divergent legacy override without version metadata", () => {
     const { bundledDir, overrideDir } = promptFixture();
-    writeFileSync(join(bundledDir, "factor.md"), "Current bundled prompt.\n", "utf8");
-    writeFileSync(join(overrideDir, "factor.md"), "Unknown legacy customization.\n", "utf8");
+    writeFileSync(join(bundledDir, "workflow-v2-factor-harvest.md"), "Current bundled prompt.\n", "utf8");
+    writeFileSync(join(overrideDir, "workflow-v2-factor-harvest.md"), "Unknown legacy customization.\n", "utf8");
 
     configurePromptPaths({ bundledDir, overrideDir });
 
-    expect(loadPrompt("factor")).toBe("Unknown legacy customization.");
+    expect(loadPrompt("workflow-v2-factor-harvest")).toBe("Unknown legacy customization.");
     expect(existsSync(join(overrideDir, ".prompt-versions.json"))).toBe(true);
   });
 
-  test("upgrades an exact legacy bundled prompt without version metadata", () => {
+  test("archives an exact retired bundled prompt without version metadata", () => {
     const { bundledDir, overrideDir } = promptFixture();
     const current = "Current bundled prompt.\n";
     const legacy = [
@@ -86,47 +87,47 @@ describe("prompt loader", () => {
     configurePromptPaths({ bundledDir, overrideDir });
 
     expect(existsSync(join(overrideDir, "factor-harvest.md"))).toBe(false);
-    expect(loadPrompt("factor-harvest")).toBe(current.trim());
+    expect(() => loadPrompt("factor-harvest")).toThrow("retired workflow");
     const hash = createHash("sha256").update(legacy).digest("hex");
-    expect(readFileSync(join(overrideDir, "bundled-copy-backups", hash, "factor-harvest.md"), "utf8")).toBe(legacy);
+    expect(readFileSync(join(overrideDir, "retired-prompt-backups", hash, "factor-harvest.md"), "utf8")).toBe(legacy);
   });
 
   test("preserves future prompt metadata and overrides without rewriting either", () => {
     const { bundledDir, overrideDir } = promptFixture();
     const statePath = join(overrideDir, ".prompt-versions.json");
-    const futureState = '{"version":2,"prompts":{"factor.md":"future-baseline"},"futureField":true}\n';
-    writeFileSync(join(bundledDir, "factor.md"), "Current bundled prompt.\n", "utf8");
-    writeFileSync(join(overrideDir, "factor.md"), "Future managed or custom prompt.\n", "utf8");
+    const futureState = '{"version":2,"prompts":{"workflow-v2-factor-harvest.md":"future-baseline"},"futureField":true}\n';
+    writeFileSync(join(bundledDir, "workflow-v2-factor-harvest.md"), "Current bundled prompt.\n", "utf8");
+    writeFileSync(join(overrideDir, "workflow-v2-factor-harvest.md"), "Future managed or custom prompt.\n", "utf8");
     writeFileSync(statePath, futureState, "utf8");
 
     configurePromptPaths({ bundledDir, overrideDir });
 
-    expect(readFileSync(join(overrideDir, "factor.md"), "utf8")).toBe("Future managed or custom prompt.\n");
+    expect(readFileSync(join(overrideDir, "workflow-v2-factor-harvest.md"), "utf8")).toBe("Future managed or custom prompt.\n");
     expect(readFileSync(statePath, "utf8")).toBe(futureState);
   });
 
   test("preserves retired custom prompts and never invents a baseline for unknown edits", () => {
     const { bundledDir, overrideDir } = promptFixture();
-    writeFileSync(join(bundledDir, "factor.md"), "Bundle.\n");
-    writeFileSync(join(overrideDir, "factor.md"), "Unknown edit.\n");
+    writeFileSync(join(bundledDir, "workflow-v2-factor-harvest.md"), "Bundle.\n");
+    writeFileSync(join(overrideDir, "workflow-v2-factor-harvest.md"), "Unknown edit.\n");
     writeFileSync(join(overrideDir, "retired.md"), "Retired custom instruction.\n");
     configurePromptPaths({ bundledDir, overrideDir });
     expect(JSON.parse(readFileSync(join(overrideDir, ".prompt-versions.json"), "utf8"))).toEqual({
       version: 1, prompts: {}, workflowV2Baselines: {},
     });
     expect(readFileSync(join(overrideDir, "retired.md"), "utf8")).toBe("Retired custom instruction.\n");
-    expect(loadPrompt("factor")).toBe("Unknown edit.");
+    expect(loadPrompt("workflow-v2-factor-harvest")).toBe("Unknown edit.");
   });
 
   test("reports an empty override and does not hide a broken bundle behind a custom prompt", () => {
     const { bundledDir, overrideDir } = promptFixture();
-    writeFileSync(join(bundledDir, "factor.md"), "Bundle.\n");
+    writeFileSync(join(bundledDir, "workflow-v2-factor-harvest.md"), "Bundle.\n");
     configurePromptPaths({ bundledDir, overrideDir });
-    writeFileSync(join(overrideDir, "factor.md"), " \n");
-    expect(() => loadPrompt("factor")).toThrow("Prompt override is empty");
-    writeFileSync(join(overrideDir, "factor.md"), "Custom.\n");
-    writeFileSync(join(bundledDir, "factor.md"), " \n");
-    expect(() => loadPrompt("factor")).toThrow("Required bundled prompt is missing or empty");
+    writeFileSync(join(overrideDir, "workflow-v2-factor-harvest.md"), " \n");
+    expect(() => loadPrompt("workflow-v2-factor-harvest")).toThrow("Prompt override is empty");
+    writeFileSync(join(overrideDir, "workflow-v2-factor-harvest.md"), "Custom.\n");
+    writeFileSync(join(bundledDir, "workflow-v2-factor-harvest.md"), " \n");
+    expect(() => loadPrompt("workflow-v2-factor-harvest")).toThrow("Required bundled prompt is missing or empty");
     expect(() => loadPrompt("../factor")).toThrow("Invalid prompt name");
   });
 });

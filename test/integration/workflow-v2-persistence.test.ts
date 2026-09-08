@@ -1,4 +1,8 @@
 import { createHash } from "node:crypto";
+import { DEFAULT_RUN_CONFIG } from "../../src/shared/schemas";
+import { Database } from "bun:sqlite";
+import { MIGRATIONS } from "../../src/db/migrations";
+import { DevelopmentRepository } from "../../src/db/repositories/development";
 import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -29,6 +33,85 @@ afterEach(() => {
 });
 
 describe("workflow v2 persistence", () => {
+  test("migrates v19 risk snapshots without losing decisions, observations or historical child rows", () => {
+    const source = database();
+    const repository = new WorkflowV2Repository(source);
+    const analysis = decisionAnalysis();
+    const stage = decisionStageResult("solution-1", analysis);
+    const promptSnapshot = prompt("risk-evaluation");
+    try {
+      source.immediateTransaction(() => {
+        repository.saveSolutionOptions("run-v2", "problem-1", [solution("solution-1")]);
+        repository.selectSolution("run-v2", "solution-1");
+        const saved = repository.saveStageResult(stage);
+        repository.saveDecisionAnalysis({ researchRunId: "run-v2", solutionId: "solution-1", stageResultId: saved.id, analysis });
+      });
+      source.db.prepare("UPDATE decision_analyses SET user_decision = 'Pilot', observed_result = 'Nine of ten worked'").run();
+      const development = new DevelopmentRepository(source);
+      development.persistOutcomes("run-v2", [{ id: "outcome-1", solutionId: "solution-1", description: "Less rework", direction: "positive", affects: "Operators", addressesCore: true }]);
+      development.persistRiskAnalysis("run-v2", "solution-1", [{ id: "risk-1", solutionId: "solution-1", description: "Access fails", likelihood: "possible", impact: "project ends", sortKey: 8 }], [{ id: "mitigation-1", solutionId: "solution-1", approach: "Test export", cost: "One hour", failsIf: "Missing fields", riskIds: ["risk-1"] }]);
+      source.db.prepare("UPDATE research_runs SET status = 'completed' WHERE id = 'run-v2'").run();
+      source.immediateTransaction(() => new EvidenceFollowUpRepository(source).request("run-v2", "solution-1", "Do exports preserve state?"));
+      const execution = new WorkflowExecution(source, "run-v2");
+      execution.save("development-context", stage.context);
+      execution.save("risk-evaluation:solution-1", {
+        evaluation: { risks: analysis.risks, unknowns: analysis.unknowns },
+        request: { model: DEFAULT_RUN_CONFIG.model, reasoningEffort: "low", workOrder: { stage: "risk-evaluation", instruction: promptSnapshot.text, goal: "Evaluate risk", inputs: stage.inputs }, evidence: stage.evidence, jsonSchema: deriveJsonSchema(WORKFLOW_V2_STAGE_REGISTRY["risk-evaluation"].schema), deadlineMs: 120000, repairPolicy: "one_retry" },
+        prompt: promptSnapshot, metadata: { prompt: stage.runtimePrompt },
+      });
+      const directory = mkdtempSync(join(tmpdir(), "scraply-upgrade-v19-"));
+      directories.push(directory);
+      const path = join(directory, "scraply.db");
+      const legacy = new Database(path);
+      legacy.exec("CREATE TABLE schema_migrations (id INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)");
+      for (const migration of MIGRATIONS.filter(item => item.id <= 19)) {
+        legacy.exec(migration.sql);
+        legacy.prepare("INSERT INTO schema_migrations VALUES (?, ?)").run(migration.id, new Date().toISOString());
+      }
+      const tables = ["threads", "research_runs", "problems", "solutions", "outcomes", "risks", "mitigations", "risk_mitigations", "stage_results", "decision_analyses", "evidence_follow_ups", "workflow_snapshots"];
+      // Runs and problems reference each other; restore the complete fixture before checking it.
+      legacy.exec("PRAGMA foreign_keys = OFF");
+      const snapshots = new Map(tables.map(table => [table, source.db.prepare(`SELECT * FROM ${table}`).all()]));
+      for (const table of tables) {
+        for (const row of snapshots.get(table)!) {
+          const values = Object.entries(row as Record<string, string | number | null>);
+          legacy.prepare(`INSERT INTO ${table} (${values.map(([key]) => key).join(",")}) VALUES (${values.map(() => "?").join(",")})`).run(...values.map(([, value]) => value));
+        }
+      }
+      expect(legacy.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
+      legacy.close();
+      const upgraded = new DatabaseClient(path);
+      try {
+        for (const table of tables.filter(table => table !== "stage_results")) {
+          expect(upgraded.db.prepare(`SELECT * FROM ${table}`).all()).toEqual(snapshots.get(table)!);
+        }
+        const risk = new WorkflowV2Repository(upgraded).findStageResult("run-v2", "risk-evaluation", "solution-1")!;
+        expect(risk.output).toEqual({ risks: analysis.risks, unknowns: analysis.unknowns });
+        expect(risk.prompt).toEqual(promptSnapshot);
+        const resume = { researchRunId: "run-v2", stageId: "risk-evaluation" as const, selectionId: "solution-1", context: risk.context,
+          identity: { promptSha256: risk.prompt.resolvedSha256, schema: risk.schema, inputs: risk.inputs, evidence: risk.evidence } };
+        const restored = new WorkflowV2Repository(upgraded);
+        expect(restored.getStageResumeState(resume).kind).toBe("reusable");
+        for (const identity of [
+          { ...resume.identity, promptSha256: "0".repeat(64) },
+          { ...resume.identity, schema: {} },
+          { ...resume.identity, inputs: {} },
+          { ...resume.identity, evidence: [] },
+        ]) expect(() => restored.getStageResumeState({ ...resume, identity })).toThrow(WorkflowV2ContextMismatchError);
+        expect(() => restored.getStageResumeState({ ...resume, context: {} })).toThrow(WorkflowV2ContextMismatchError);
+        expect(() => upgraded.db.prepare("UPDATE stage_results SET output_json = '{}' WHERE id = ?").run(risk.id)).toThrow("immutable");
+        expect(upgraded.db.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
+        expect(upgraded.db.prepare("PRAGMA foreign_keys").get()).toEqual({ foreign_keys: 1 });
+        expect(() => upgraded.db.prepare("UPDATE solutions SET option_position = 20 WHERE id = 'solution-1'").run()).toThrow();
+        upgraded.db.prepare("UPDATE solutions SET option_position = 19 WHERE id = 'solution-1'").run();
+        upgraded.db.prepare("DELETE FROM solutions WHERE id = 'solution-1'").run();
+        for (const table of ["outcomes", "risks", "mitigations", "risk_mitigations", "decision_analyses", "evidence_follow_ups"]) {
+          expect(upgraded.db.prepare(`SELECT * FROM ${table}`).all()).toEqual([]);
+        }
+      } finally { upgraded.close(); }
+    } finally { source.close(); }
+  });
+
   test("snapshots earlier reported experiment results for a later run of the same problem", () => {
     configurePromptPaths({ bundledDir: join(process.cwd(), "prompts"), overrideDir: null });
     const client = database();
@@ -44,7 +127,7 @@ describe("workflow v2 persistence", () => {
       client.db.prepare("UPDATE decision_analyses SET user_decision = 'Stop prototype', observed_result = 'Five trials failed to synchronize.'").run();
       client.db.prepare("UPDATE research_runs SET status = 'completed' WHERE id = 'run-v2'").run();
       const now = new Date().toISOString();
-      client.db.prepare("INSERT INTO scopes VALUES ('scope-1', 'run-discovery', 'Filing', 'Operators', 'Filing', '', '[]', ?, ?)").run(now, now);
+      client.db.prepare("INSERT INTO scopes (id, research_run_id, title, audience, domain, observations, off_limits_json, created_at, updated_at) VALUES ('scope-1', 'run-discovery', 'Filing', 'Operators', 'Filing', '', '[]', ?, ?)").run(now, now);
       client.db.prepare(`INSERT INTO research_runs (id, thread_id, status, config_json, workflow_version, problem_id, created_at, updated_at)
         VALUES ('run-next', 'thread-1', 'running', '{}', 2, 'problem-1', ?, ?)`).run(now, now);
       const context = new WorkflowExecution(client, "run-next").developmentContext("problem-1");
@@ -115,6 +198,7 @@ describe("workflow v2 persistence", () => {
       }], [source], {
         model: { providerId: "test", modelId: "test" }, reasoningEffort: "low", depth: "quick", workflowVersion: 2,
         modelClient: execution.discoveryClient(modelClient),
+        prompt: (stage) => execution.resolvePrompt(stage as keyof typeof WORKFLOW_V2_STAGE_REGISTRY).text,
         search: { async search() { return [{ id: "contrary", url: "https://contrary.test/page", title: "Alternative", text: "Use a checklist." }]; } },
       });
       if (invented) await expect(result).rejects.toThrow("unknown source ID");
@@ -229,8 +313,8 @@ describe("workflow v2 persistence", () => {
     const client = database();
     const repository = new WorkflowV2Repository(client);
     expect(() => client.immediateTransaction(() => repository.saveStageResult(stageResult({
-      options: Array.from({ length: 4 }, () => solutionOption()),
-    })))).toThrow("more than three options");
+      options: Array.from({ length: 21 }, () => solutionOption()),
+    })))).toThrow("more than 20 options");
 
     const duplicateRisks = decisionAnalysis();
     duplicateRisks.risks.push({ ...duplicateRisks.risks[0]! });
@@ -409,8 +493,8 @@ function database(): DatabaseClient {
   client.db.prepare(`
     INSERT INTO research_runs (
       id, thread_id, status, config_json, workflow_version, problem_id, created_at, updated_at
-    ) VALUES ('run-v2', 'thread-1', 'running', '{}', 2, 'problem-1', ?, ?)
-  `).run(now, now);
+    ) VALUES ('run-v2', 'thread-1', 'running', ?, 2, 'problem-1', ?, ?)
+  `).run(JSON.stringify(DEFAULT_RUN_CONFIG), now, now);
   return client;
 }
 
@@ -466,7 +550,7 @@ function decisionStageResult(solutionId: string, output: unknown) {
   };
 }
 
-function prompt(stageId: "solutions" | "decision-analysis") {
+function prompt(stageId: "solutions" | "decision-analysis" | "risk-evaluation") {
   return {
     stageId,
     filename: `workflow-v2-${stageId}.md`,

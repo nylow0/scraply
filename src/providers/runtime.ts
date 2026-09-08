@@ -303,8 +303,16 @@ export class RuntimeClient implements StructuredModelClient {
 
   private async startProcess(): Promise<InitializeResult> {
     await verifyRuntimeArtifact(this.options);
+    // The pipe owns account credentials. Neighboring Codex login settings must not
+    // select an account or redirect a refresh/revocation request in this child.
+    const authEnvironment = new Set([
+      "CODEX_ACCESS_TOKEN", "CODEX_AUTHAPI_BASE_URL", "CODEX_REFRESH_TOKEN_URL_OVERRIDE",
+      "CODEX_REVOKE_TOKEN_URL_OVERRIDE", "CODEX_APP_SERVER_LOGIN_CLIENT_ID", "CODEX_API_KEY", "OPENAI_API_KEY",
+    ]);
+    const environment = Object.fromEntries(Object.entries(this.options.environment ?? process.env)
+      .filter(([name]) => !authEnvironment.has(name.toUpperCase())));
     const child = spawn(this.options.executablePath, [...(this.options.argumentPrefix ?? []), "runtime"], {
-      windowsHide: true, shell: false, env: this.options.environment ?? process.env,
+      windowsHide: true, shell: false, env: environment,
     });
     this.child = child;
     this.stdoutBuffer = Buffer.alloc(0);

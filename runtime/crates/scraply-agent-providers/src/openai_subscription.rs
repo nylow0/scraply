@@ -160,7 +160,6 @@ fn load_fixture() -> Result<Option<FixtureData>, ProviderError> {
 pub struct OpenAiSubscription {
     auth: Arc<AuthManager>,
     auth_home: PathBuf,
-    auth_credentials_store_mode: AuthCredentialsStoreMode,
     base_url: String,
     client: reqwest::Client,
     #[cfg(debug_assertions)]
@@ -168,23 +167,34 @@ pub struct OpenAiSubscription {
 }
 
 impl OpenAiSubscription {
-    pub async fn persistent(auth_home: PathBuf) -> Result<Self, ProviderError> {
-        Self::with_storage(auth_home, AuthCredentialsStoreMode::Auto).await
-    }
-
     pub async fn ephemeral() -> Result<Self, ProviderError> {
-        Self::with_storage(ephemeral_auth_home(), AuthCredentialsStoreMode::Ephemeral).await
-    }
-
-    async fn with_storage(
-        auth_home: PathBuf,
-        auth_credentials_store_mode: AuthCredentialsStoreMode,
-    ) -> Result<Self, ProviderError> {
+        // Check before AuthManager: upstream accepts environment tokens even in
+        // ephemeral mode and permits overrides of credential-bearing endpoints.
+        const AUTH_ENVIRONMENT: &[&str] = &[
+            "CODEX_ACCESS_TOKEN",
+            "CODEX_AUTHAPI_BASE_URL",
+            "CODEX_REFRESH_TOKEN_URL_OVERRIDE",
+            "CODEX_REVOKE_TOKEN_URL_OVERRIDE",
+            "CODEX_APP_SERVER_LOGIN_CLIENT_ID",
+            "CODEX_API_KEY",
+            "OPENAI_API_KEY",
+        ];
+        if std::env::vars_os().any(|(name, _)| {
+            AUTH_ENVIRONMENT.contains(&name.to_string_lossy().to_ascii_uppercase().as_str())
+        }) {
+            return Err(ProviderError::new(
+                OPENAI_SUBSCRIPTION_PROVIDER_ID,
+                ProviderErrorCode::InvalidRequest,
+                false,
+                "OpenAI credentials and authentication settings must be supplied through Scraply",
+            ));
+        }
+        let auth_home = ephemeral_auth_home();
         let auth = Arc::new(
             AuthManager::new(
                 auth_home.clone(),
                 false,
-                auth_credentials_store_mode,
+                AuthCredentialsStoreMode::Ephemeral,
                 None,
                 None,
                 AuthKeyringBackendKind::default(),
@@ -203,7 +213,6 @@ impl OpenAiSubscription {
         Ok(Self {
             auth,
             auth_home,
-            auth_credentials_store_mode,
             base_url: CHATGPT_CODEX_BASE_URL.to_owned(),
             client,
             #[cfg(debug_assertions)]
@@ -238,9 +247,6 @@ impl OpenAiSubscription {
                 .ok_or_else(reconnect_required)
                 .and_then(OpenAiSessionCredential::try_from)?;
             return Ok((fixture.account.metadata(), credential));
-        }
-        if self.auth_credentials_store_mode != AuthCredentialsStoreMode::Ephemeral {
-            return Err(reconnect_required());
         }
         let Some(auth) = self.current_auth().await else {
             return Err(not_logged_in());
@@ -294,9 +300,6 @@ impl OpenAiSubscription {
     }
 
     pub fn session_credential(&self) -> Result<OpenAiSessionCredential, ProviderError> {
-        if self.auth_credentials_store_mode != AuthCredentialsStoreMode::Ephemeral {
-            return Err(invalid_session_credential());
-        }
         let auth = load_auth_dot_json(
             &self.auth_home,
             AuthCredentialsStoreMode::Ephemeral,
@@ -311,14 +314,6 @@ impl OpenAiSubscription {
         &self,
         credential: OpenAiSessionCredential,
     ) -> Result<ProviderAccount, ProviderError> {
-        if self.auth_credentials_store_mode != AuthCredentialsStoreMode::Ephemeral {
-            return Err(ProviderError::new(
-                OPENAI_SUBSCRIPTION_PROVIDER_ID,
-                ProviderErrorCode::InvalidRequest,
-                false,
-                "persistent OpenAI adapters do not accept session credentials",
-            ));
-        }
         let auth = credential.deserialize_auth()?;
         save_auth(
             &self.auth_home,
@@ -351,7 +346,7 @@ impl OpenAiSubscription {
             self.auth_home.clone(),
             oauth_client_id(),
             None,
-            self.auth_credentials_store_mode,
+            AuthCredentialsStoreMode::Ephemeral,
             AuthKeyringBackendKind::default(),
             None,
         )
@@ -366,11 +361,7 @@ impl OpenAiSubscription {
     }
 
     async fn current_auth(&self) -> Option<CodexAuth> {
-        if self.auth_credentials_store_mode == AuthCredentialsStoreMode::Ephemeral {
-            self.auth.auth_cached()
-        } else {
-            self.auth.auth().await
-        }
+        self.auth.auth_cached()
     }
 
     async fn request_models(&self, auth: &CodexAuth) -> Result<reqwest::Response, ProviderError> {
@@ -608,19 +599,6 @@ impl GenerationProvider for OpenAiSubscription {
         control.check()?;
         Ok(controlled(self.generate_request(&request), control).await??)
     }
-}
-
-pub fn resolve_subscription_auth_home() -> Result<PathBuf, ProviderError> {
-    codex_utils_home_dir::find_codex_home()
-        .map(Into::into)
-        .map_err(|_| {
-            ProviderError::new(
-                OPENAI_SUBSCRIPTION_PROVIDER_ID,
-                ProviderErrorCode::Transport,
-                false,
-                "could not resolve the OpenAI subscription credential directory",
-            )
-        })
 }
 
 pub struct BrowserLogin {

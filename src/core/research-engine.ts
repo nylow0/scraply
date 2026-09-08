@@ -57,7 +57,8 @@ export function recoverInterruptedEvidenceFollowUps(db: DatabaseClient): string[
 
 export class ResearchEngine {
   private readonly activeRuns = new Map<string, ActiveRun>();
-  private readonly executions = new Map<string, Promise<void>>();
+  // A cancelled execution can still be unwinding when its replacement starts.
+  private readonly executions = new Set<Promise<void>>();
   private readonly runs: ResearchRunRepository;
   private readonly ledger: CostLedgerRepository;
   private readonly generationAttempts: GenerationAttemptRepository;
@@ -213,9 +214,9 @@ export class ResearchEngine {
     const execution = this.executeEvidenceFollowUp(active)
       .catch((error) => this.failEvidenceFollowUp(active, error))
       .finally(() => {
-        if (this.executions.get(runId) === execution) this.executions.delete(runId);
+        this.executions.delete(execution);
       });
-    this.executions.set(runId, execution);
+    this.executions.add(execution);
   }
 
   private assertThreadIdle(threadId: string, exceptRunId: string): void {
@@ -276,16 +277,16 @@ export class ResearchEngine {
     const execution = this.execute(active)
       .catch((error) => this.fail(active, error))
       .finally(() => {
-        if (this.executions.get(runId) === execution) this.executions.delete(runId);
+        this.executions.delete(execution);
       });
-    this.executions.set(runId, execution);
+    this.executions.add(execution);
   }
 
   private async execute(active: ActiveRun): Promise<void> {
     active.workflow = new WorkflowExecution(this.options.db, active.runId);
     if (active.problemId) await this.executeDevelopment(active);
     else await this.executeDiscovery(active);
-    if (active.abortController.signal.aborted || !this.activeRuns.has(active.runId)) return;
+    if (active.abortController.signal.aborted || this.activeRuns.get(active.runId) !== active) return;
     this.runs.finish(active.runId, "completed");
     if (active.deadlineTimer) clearTimeout(active.deadlineTimer);
     this.activeRuns.delete(active.runId);
@@ -403,23 +404,23 @@ export class ResearchEngine {
       }
       let riskEvaluation;
       if (workflow.hasRiskEvaluator()) {
-        const snapshotKey = `risk-evaluation:${option.id}`;
-        const saved = workflow.read<{ evaluation: unknown }>(snapshotKey);
+        const saved = workflow.repository.findStageResult(active.runId, "risk-evaluation", option.id);
         if (saved) {
-          riskEvaluation = WorkflowV2RiskEvaluationOutputSchema.parse(saved.evaluation);
+          workflow.repository.getStageResumeState({
+            researchRunId: active.runId, stageId: "risk-evaluation", selectionId: option.id, context,
+            identity: {
+              promptSha256: workflow.resolvePrompt("risk-evaluation").resolvedSha256,
+              schema: saved.schema, inputs: saved.inputs, evidence: saved.evidence,
+            },
+          });
+          riskEvaluation = WorkflowV2RiskEvaluationOutputSchema.parse(saved.output);
         } else {
           this.progress(active, "Risk evaluator: reviewing the selected idea against your criteria");
           const result = await evaluateSelectedOptionRisk(context, option, deps);
           active.abortController.signal.throwIfAborted();
-          // Snapshot the review and exact request together. Attempts already retain terminal usage.
-          // A separate snapshot avoids rewriting the historical stage table's six-stage constraint.
-          workflow.save(snapshotKey, {
-            evaluation: result.evaluation,
-            request: { model: result.request.model, reasoningEffort: result.request.reasoningEffort,
-              workOrder: result.request.workOrder, evidence: result.request.evidence, jsonSchema: result.request.jsonSchema,
-              deadlineMs: result.request.deadlineMs, repairPolicy: result.request.repairPolicy },
-            prompt: result.resolvedPrompt, metadata: result.metadata,
-          });
+          this.options.db.immediateTransaction(() => workflow.commitStage(
+            "risk-evaluation", result.request, result.resolvedPrompt, result.metadata, result.evaluation, context, option.id,
+          ));
           riskEvaluation = result.evaluation;
         }
       }
@@ -462,11 +463,13 @@ export class ResearchEngine {
     if (!client) throw new Error(`Model provider ${active.config.model.providerId} is unavailable`);
     return {
       structuredCompletion: async <T>(request: StructuredStageRequest<T>) => {
+        active.abortController.signal.throwIfAborted();
         if (!sameModelRef(request.model, active.config.model)) throw new Error("Stage model does not match the active run configuration");
         const providerId = active.config.model.providerId;
         const preparedIdentity = client.prepareIdentity
           ? await client.prepareIdentity()
           : client.preparedIdentity?.();
+        active.abortController.signal.throwIfAborted();
         const reusable = this.generationAttempts.findCompleted(active.runId, request, preparedIdentity);
         if (reusable) {
           return { output: reusable.output, metadata: reusable.metadata as GenerationMetadata };
@@ -550,11 +553,13 @@ export class ResearchEngine {
     };
   }
 
-  private instrumentedSearch(active: ActiveRun): Pick<SearchClient, "search"> {
+  private instrumentedSearch(active: ActiveRun): Pick<SearchClient, "provider" | "search"> {
     const provider = active.config.searchProvider;
     const client = this.options.searchClients?.[provider];
     return {
+      provider,
       search: async (query: string, options?: SearchOptions) => {
+        active.abortController.signal.throwIfAborted();
         if (!client) throw new AppError("conflict", `Connect ${provider === "exa" ? "Exa" : "Perplexity"} before discovering problems.`);
         this.enforceRunawayBackstop(active, provider, active.projectedSearches);
         const reservation = active.followUpSearchReservation
@@ -584,7 +589,7 @@ export class ResearchEngine {
   }
 
   private fail(active: ActiveRun, error: unknown, status?: "failed" | "cancelled"): void {
-    if (!this.activeRuns.has(active.runId)) return;
+    if (this.activeRuns.get(active.runId) !== active) return;
     if (active.deadlineTimer) clearTimeout(active.deadlineTimer);
     this.activeRuns.delete(active.runId);
     const message = error instanceof Error ? error.message : "Research failed";

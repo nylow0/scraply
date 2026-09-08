@@ -24,6 +24,30 @@ fn version_succeeds_with_expected_prefix() {
 }
 
 #[test]
+fn direct_runtime_rejects_inherited_auth_settings_before_provider_access() {
+    for name in [
+        "CODEX_ACCESS_TOKEN",
+        "CODEX_AUTHAPI_BASE_URL",
+        "CODEX_REFRESH_TOKEN_URL_OVERRIDE",
+        "CODEX_REVOKE_TOKEN_URL_OVERRIDE",
+        "CODEX_APP_SERVER_LOGIN_CLIENT_ID",
+        "CODEX_API_KEY",
+        "OPENAI_API_KEY",
+    ] {
+        let output = binary()
+            .env(name, "fixture-value-never-send")
+            .arg("runtime")
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(1));
+        assert!(output.stdout.is_empty());
+        let error = String::from_utf8(output.stderr).unwrap();
+        assert!(error.contains("must be supplied through Scraply"));
+        assert!(!error.contains("fixture-value-never-send"));
+    }
+}
+
+#[test]
 fn removed_and_unsupported_commands_fail_closed() {
     for arguments in [["app-server", ""], ["exec", "-"], ["shell", ""]] {
         let output = binary()
@@ -40,14 +64,31 @@ fn removed_and_unsupported_commands_fail_closed() {
 }
 
 #[test]
-fn login_status_reports_subscription_account_without_secrets() {
-    let output = binary().args(["login", "status"]).output().unwrap();
-
-    assert!(output.status.success());
-    assert!(output.stderr.is_empty());
-    let stdout = String::from_utf8(output.stdout).unwrap();
-    assert!(stdout.contains("Logged in with an OpenAI account."));
-    assert!(stdout.contains("fixture@example.test"));
-    assert!(stdout.contains("Plan: plus"));
-    assert!(!stdout.to_ascii_lowercase().contains("token"));
+fn standalone_account_commands_never_touch_codex_credentials() {
+    let directory = std::env::temp_dir().join(format!("scraply-cli-auth-{}", std::process::id()));
+    std::fs::create_dir_all(&directory).unwrap();
+    let credentials = directory.join("auth.json");
+    let marker = r#"{"OPENAI_API_KEY":"fixture-only-never-send"}"#;
+    std::fs::write(&credentials, marker).unwrap();
+    for arguments in [
+        vec!["login"],
+        vec!["login", "status"],
+        vec!["login", "--device-auth"],
+        vec!["logout"],
+    ] {
+        let output = binary()
+            .env("CODEX_HOME", &directory)
+            .args(arguments)
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(2));
+        assert!(output.stdout.is_empty());
+        assert!(
+            String::from_utf8(output.stderr)
+                .unwrap()
+                .contains("unsupported command")
+        );
+        assert_eq!(std::fs::read_to_string(&credentials).unwrap(), marker);
+    }
+    std::fs::remove_dir_all(directory).unwrap();
 }
