@@ -8,6 +8,7 @@ import {
 } from "node:fs";
 import { join, relative } from "node:path";
 import { listPackage } from "@electron/asar";
+import { WORKFLOW_V2_STAGE_REGISTRY } from "../src/core/stages";
 import {
   runtimeLockRelativePath,
   verifyStagedRuntime,
@@ -102,16 +103,7 @@ const requiredEntries = [
   "/out/main/backend.js",
   "/out/preload/index.js",
   "/out/renderer/index.html",
-  "/prompts/query-plan.md",
-  "/prompts/factor-harvest.md",
-  "/prompts/problem-candidates.md",
-  "/prompts/problem-kill.md",
-  "/prompts/solutions.md",
-  "/prompts/outcomes.md",
-  "/prompts/outcome-judge.md",
-  "/prompts/risks.md",
-  "/prompts/risk-score.md",
-  "/prompts/mitigations.md",
+  ...Object.values(WORKFLOW_V2_STAGE_REGISTRY).map((stage) => `/prompts/${stage.promptFilename}`),
   "/package.json",
 ];
 const missingEntries = requiredEntries.filter((path) => !archiveEntries.has(path));
@@ -131,6 +123,9 @@ const forbiddenFragments = [
   "scraply-agent",
 ];
 const forbiddenEntries = [...archiveEntries].filter((entry) => forbiddenFragments.some((fragment) => entry.includes(fragment)));
+for (const entry of archiveEntries) {
+  if (entry.startsWith("/prompts/") && entry.endsWith(".md") && !requiredEntries.includes(entry)) forbiddenEntries.push(entry);
+}
 if (forbiddenEntries.length > 0) {
   throw new Error(`Unexpected app.asar entries:\n${forbiddenEntries.join("\n")}`);
 }

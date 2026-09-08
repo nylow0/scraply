@@ -51,6 +51,8 @@ Private builds may be unsigned only when the workflow or local release process e
 
 ## Bundled native runtime
 
+The app package requires exactly the seven prompt filenames in `src/core/stages.ts`; package verification rejects missing stages and superseded Markdown prompts. Legacy v1 generation and its bundled prompts are retired at Dany's request, before release acceptance. Existing v1 results remain readable, and saved v2 runs retain their prompt snapshots. On startup, recognized retired overrides are backed up under `retired-prompt-backups`; proven bundled v2 copies move to `bundled-copy-backups`, while custom v2 overrides remain active. This retirement does not assert that release or human usefulness acceptance has passed.
+
 Scraply packages one tested `scraply-agent` executable at `resources/runtime/scraply-agent.exe`, outside `app.asar`. Native mode requires protocol 1.1. Runtime native protocol 1.0 is explicitly incompatible. Runtime 0.2.0 removes the temporary `app-server` and `exec -` commands.
 
 The runtime source lives in `runtime/` in this repository. The separate `nylow0/scraply-agent` repository is legacy. Initialize the pinned public OpenAI Codex submodule with `git submodule update --init --recursive`. Windows builds require Rust's `stable-x86_64-pc-windows-msvc` toolchain (including rustfmt and clippy) and Visual Studio C++ build tools.

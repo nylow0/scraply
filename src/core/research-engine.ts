@@ -1,6 +1,5 @@
 import type { DatabaseClient } from "../db/client";
 import { CostLedgerRepository, type CostReservation } from "../db/repositories/cost-ledger";
-import { DevelopmentRepository } from "../db/repositories/development";
 import { DiscoveryRepository } from "../db/repositories/discovery";
 import { EvidenceFollowUpRepository } from "../db/repositories/evidence-follow-ups";
 import { GenerationAttemptRepository } from "../db/repositories/generation-attempts";
@@ -8,12 +7,11 @@ import { ResearchRunRepository } from "../db/repositories/research-runs";
 import type { SearchClient, SearchOptions, SearchProvider } from "../providers/search";
 import { ProviderFailure, type GenerationMetadata, type StructuredModelClient, type StructuredStageRequest } from "../providers/structured";
 import { AppError } from "../shared/errors";
-import { developmentProjection } from "../shared/development-projection";
 import type { ResearchEvent } from "../shared/ipc";
 import { DEFAULT_IDEA_COUNT, RunConfigSchema, sameModelRef, type RunConfig } from "../shared/schemas";
 import { ScopeSchema, WorkflowV2RiskEvaluationOutputSchema, type Scope } from "../shared/structured-output-schemas";
-import { analyzeSelectedOption, evaluateSelectedOptionRisk, produceDevelopmentOptions, runPersistedDevelopment } from "./development";
-import { discoverProblems, discoveryRunProjection, harvestEvidenceFollowUp, harvestFactors, type HarvestResult, type HarvestedFactor, type HarvestedSource } from "./discovery";
+import { analyzeSelectedOption, evaluateSelectedOptionRisk, produceDevelopmentOptions } from "./development";
+import { discoverProblems, discoveryRunProjection, harvestEvidenceFollowUp, harvestFactors, type HarvestResult } from "./discovery";
 import { WorkflowExecution } from "./workflow-execution";
 import type { WorkflowV2StageId } from "./stages";
 
@@ -65,7 +63,6 @@ export class ResearchEngine {
   private readonly generationAttempts: GenerationAttemptRepository;
   private readonly followUps: EvidenceFollowUpRepository;
   private readonly discovery: DiscoveryRepository;
-  private readonly development: DevelopmentRepository;
 
   constructor(private readonly options: ResearchEngineOptions) {
     this.runs = new ResearchRunRepository(options.db);
@@ -73,7 +70,6 @@ export class ResearchEngine {
     this.generationAttempts = new GenerationAttemptRepository(options.db);
     this.followUps = new EvidenceFollowUpRepository(options.db);
     this.discovery = new DiscoveryRepository(options.db);
-    this.development = new DevelopmentRepository(options.db);
     recoverInterruptedEvidenceFollowUps(options.db);
   }
 
@@ -87,6 +83,7 @@ export class ResearchEngine {
   }
 
   async startDiscovery(threadId: string, scope: Scope, config: RunConfig): Promise<string> {
+    config = { ...config, workflowVersion: 2 };
     const parsedScope = ScopeSchema.parse(scope);
     const created = this.runs.create(threadId, config, null);
     if (!created.created) return created.runId;
@@ -96,6 +93,7 @@ export class ResearchEngine {
   }
 
   async startKnownProblem(threadId: string, scope: Scope, problemStatement: string, config: RunConfig): Promise<string> {
+    config = { ...config, workflowVersion: 2 };
     const parsedScope = ScopeSchema.parse(scope);
     const statement = problemStatement.trim();
     if (!statement) throw new AppError("validation_error", "Problem statement is required.");
@@ -125,6 +123,7 @@ export class ResearchEngine {
   }
 
   private startProblem(threadId: string, problemId: string, config: RunConfig): string {
+    config = { ...config, workflowVersion: 2 };
     const created = this.runs.create(threadId, config, problemId);
     if (created.created) this.begin(created.runId, threadId, problemId, config);
     return created.runId;
@@ -135,6 +134,9 @@ export class ResearchEngine {
     const row = this.options.db.db.prepare(`SELECT thread_id, status, config_json, problem_id FROM research_runs WHERE id = ?`)
       .get(runId) as { thread_id: string; status: string; config_json: string; problem_id: string | null } | undefined;
     const config = row ? RunConfigSchema.parse(JSON.parse(row.config_json)) : null;
+    if (config && config.workflowVersion !== 2) {
+      throw new AppError("conflict", "Legacy generation has been retired. Your saved results are preserved. Start a new run to use the current prompts.");
+    }
     if (!row || !config || !["queued", "running", ...(config.workflowVersion === 2 ? ["failed", "cancelled"] : [])].includes(row.status)) {
       throw new AppError("conflict", "This research run has already ended and cannot be resumed.");
     }
@@ -256,8 +258,9 @@ export class ResearchEngine {
   }
 
   private begin(runId: string, threadId: string, problemId: string | null, config: RunConfig, resumed = false): void {
+    if (config.workflowVersion !== 2) throw new AppError("conflict", "Legacy generation has been retired. Start a new run to use the current prompts.");
     const projection = problemId
-      ? { modelCalls: config.workflowVersion === 2 ? 3 : developmentProjection(config.ideaCount ?? 5), searches: 0 }
+      ? { modelCalls: 3, searches: 0 }
       : discoveryRunProjection(config.discoveryDepth);
     const active: ActiveRun = {
       runId, threadId, problemId, config, abortController: new AbortController(), startedAt: Date.now(),
@@ -279,7 +282,7 @@ export class ResearchEngine {
   }
 
   private async execute(active: ActiveRun): Promise<void> {
-    if (active.config.workflowVersion === 2) active.workflow = new WorkflowExecution(this.options.db, active.runId);
+    active.workflow = new WorkflowExecution(this.options.db, active.runId);
     if (active.problemId) await this.executeDevelopment(active);
     else await this.executeDiscovery(active);
     if (active.abortController.signal.aborted || !this.activeRuns.has(active.runId)) return;
@@ -337,44 +340,7 @@ export class ResearchEngine {
       this.progress(active, `${result.problems.length} problems ready for your review`);
       return;
     }
-    const existingCandidates = this.options.db.db.prepare(`
-      SELECT
-        (SELECT COUNT(*) FROM problems WHERE discovery_run_id = ?) +
-        (SELECT COUNT(*) FROM rejected_problem_candidates WHERE discovery_run_id = ?) AS count
-    `).get(active.runId, active.runId) as { count: number };
-    if (existingCandidates.count > 0) return;
-    const persistedFactors = this.options.db.db.prepare(`
-      SELECT f.*, s.provider_source_id, s.canonical_url, s.title, s.retrieved_text, s.author, s.published_at,
-             s.content_hash, s.retrieved_at
-      FROM factors f JOIN sources s ON s.id = f.source_id
-      WHERE f.research_run_id = ? ORDER BY f.created_at, f.id
-    `).all(active.runId) as Array<Record<string, unknown>>;
-    let factors: HarvestedFactor[];
-    let sources: HarvestedSource[];
-    if (persistedFactors.length > 0) {
-      const byId = new Map<string, HarvestedSource>();
-      factors = persistedFactors.map((row) => {
-        const source: HarvestedSource = {
-          id: String(row.source_id), providerSourceId: row.provider_source_id === null ? null : String(row.provider_source_id),
-          canonicalUrl: String(row.canonical_url), url: String(row.canonical_url), title: String(row.title), retrievedText: String(row.retrieved_text),
-          author: row.author === null ? null : String(row.author), publishedAt: row.published_at === null ? null : String(row.published_at),
-          contentHash: String(row.content_hash), retrievedAt: String(row.retrieved_at),
-        };
-        byId.set(source.id, source);
-        return { id: String(row.id), subject: String(row.subject), behavior: String(row.behavior), quote: String(row.quote), sourceId: source.id,
-          harvestMode: String(row.harvest_mode) as "domain" | "audience", modelConfidence: Number(row.model_confidence), source };
-      });
-      sources = [...byId.values()];
-      this.progress(active, `Resuming Stage 2 from ${factors.length} persisted factors · ${sources.length} sources`);
-    } else {
-      const harvest = await harvestFactors(scope, deps);
-      this.discovery.persistFactors(active.runId, harvest.sources, harvest.factors);
-      factors = harvest.factors; sources = harvest.sources;
-      this.progress(active, `Factors: ${factors.length} (${harvest.metrics.retained.domain} domain, ${harvest.metrics.retained.audience} audience) · ${sources.length} sources`);
-    }
-    const result = await discoverProblems(scope, factors, sources, deps);
-    this.discovery.persistProblems(active.runId, result.killSources, result.problems, result.blockedCandidates);
-    this.progress(active, `Evidence-backed problems: ${result.problems.length} · failed evidence gate ${result.blockedCandidates.length} · factor utilization ${Math.round(result.factorUtilizationRate * 100)}%`);
+    throw new AppError("conflict", "Legacy generation has been retired. Start a new run to use the current prompts.");
   }
 
   private async executeDevelopment(active: ActiveRun): Promise<void> {
@@ -469,47 +435,25 @@ export class ResearchEngine {
       this.progress(active, "Analysis saved. Record your decision and the observed test result when available.");
       return;
     }
-    const existing = this.options.db.db.prepare(`
-      SELECT COUNT(*) AS count,
-        SUM(CASE WHEN NOT EXISTS (SELECT 1 FROM outcomes o WHERE o.solution_id = s.id) THEN 1 ELSE 0 END) AS missing_outcomes,
-        SUM(CASE WHEN NOT EXISTS (SELECT 1 FROM risks r WHERE r.solution_id = s.id) THEN 1 ELSE 0 END) AS missing_risks
-      FROM solutions s WHERE s.research_run_id = ?
-    `).get(active.runId) as { count: number; missing_outcomes: number | null; missing_risks: number | null };
-    if (existing.count > 0 && existing.missing_outcomes === 0 && existing.missing_risks === 0) return;
-    if (existing.count > 0) {
-      throw new AppError(
-        "conflict",
-        "This development run contains partial saved results and cannot be replayed safely. The saved records were retained. Cancel this run and start a new development run for the problem.",
-      );
-    }
-    await runPersistedDevelopment(active.problemId!, {
-      repository: this.development,
-      researchRunId: active.runId,
-      modelClient: this.instrumentedModel(active),
-      model: active.config.model,
-      reasoningEffort: active.config.reasoningEffort,
-      ideaCount: active.config.ideaCount,
-      signal: active.abortController.signal,
-      onProgress: (message) => this.progress(active, message),
-    });
+    throw new AppError("conflict", "Legacy generation has been retired. Start a new run to use the current prompts.");
   }
 
   private dependencies(active: ActiveRun) {
+    const workflow = active.workflow;
+    if (!workflow) throw new Error("The current workflow must be initialized before research starts");
     const modelClient = this.instrumentedModel(active);
     const search = this.instrumentedSearch(active);
     return {
-      modelClient: active.workflow ? active.workflow.discoveryClient(modelClient) : modelClient,
-      search: active.workflow ? active.workflow.search(search) : search,
+      modelClient: workflow.discoveryClient(modelClient),
+      search: workflow.search(search),
       model: active.config.model,
       reasoningEffort: active.config.reasoningEffort,
       depth: active.config.discoveryDepth,
       signal: active.abortController.signal,
       onProjection: (message: string) => this.progress(active, message),
-      ...(active.workflow ? {
-        workflowVersion: 2 as const,
-        prompt: (name: string) => active.workflow!.resolvePrompt(name as WorkflowV2StageId).text,
-        audienceSearch: { includeDomains: active.config.audienceSourcePolicy === "communities" ? ["reddit.com", "news.ycombinator.com"] : [] },
-      } : {}),
+      workflowVersion: 2 as const,
+      prompt: (name: string) => workflow.resolvePrompt(name as WorkflowV2StageId).text,
+      audienceSearch: { includeDomains: active.config.audienceSourcePolicy === "communities" ? ["reddit.com", "news.ycombinator.com"] : [] },
     };
   }
 
