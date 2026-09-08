@@ -52,10 +52,10 @@ The branch and release workflow is documented in [RELEASE.md](RELEASE.md). `mast
 ## Using Scraply
 
 1. Create a research project and choose whether to discover a problem or start from a known problem.
-2. Enter the starting context, audience, optional constraints, model, reasoning effort, and (for discovery) research depth and search provider.
+2. Enter the starting context, audience, optional constraints, and what risks should be evaluated against. Choose 1–20 ideas per problem, a model, reasoning effort, and, for discovery, research depth and search provider. Astra appears in the model selector and is selectable when the connected account's live catalog offers it.
 3. Submit the setup to discover evidence-backed problem candidates, or generate solutions directly for a known problem.
-4. Review discovered problems and their evidence, then select the problems worth developing. The v2 workflow generates up to three unranked options and waits for your choice.
-5. Choose one option to analyze its consequences, decisive risks, proposed responses, and next experiment. Record your own decision and observed test result separately from the model's judgments.
+4. Review discovered problems and their evidence, then select the problems worth developing. The v2 workflow aims for your requested idea count, default three, and waits for your choice. It may return fewer or no ideas when useful alternatives are lacking.
+5. Choose one idea. An independent risk evaluator reviews it against your saved criteria, or the research goal and boundaries if you left the criteria blank. A separate analysis then adds consequences, proposed responses, and an experiment while retaining the risk findings. New v2 runs use three development calls in total. Record your own decision and observed test result separately from the model's judgments.
 6. If one decisive fact is still missing, request one evidence follow-up. Scraply runs the exact question once, quote-checks the extracted observations, and keeps the result separate from the original analysis. Completed and failed follow-ups both consume the run's one-question limit.
 7. Export research as JSON or options and analyses as Markdown/JSON. The v1 research workflow remains explicitly selectable for comparison, and saved v1 projects remain readable.
 
@@ -70,6 +70,8 @@ Provider readiness is checked before a run can start. Native generation attempts
 Cancelling while a project is still waiting for the runtime records no provider attempt. A dispatched request whose result was lost remains unknown. Completed runs that propose no options have explicit JSON and Markdown exports, so the usefulness comparison can include that outcome without inventing an idea.
 
 New v2 development runs include recorded experiment observations from earlier completed runs of the same problem in the same project. These remain user reports, with the original mechanism and decision attached. The run snapshots this context; later edits do not rewrite it. At most five recent results and 12,000 characters are included, with an explicit count of omitted results.
+
+Independent risk reviews are saved before final analysis and remain readable if that later call fails. Older runs retain their saved prompts and original stage sequence on resume. Starting a new run adopts the current prompts and independent evaluator. V2 discovery allows two Exa searches at a time, preserves query order, and settles each batch before continuing; Perplexity and model calls remain sequential.
 
 ## Local data and credentials
 

@@ -20,7 +20,7 @@ export class DevelopmentRepository {
 
   loadContext(problemId: string): DevelopmentContext | null {
     const problemRow = this.client.db.prepare(`
-      SELECT p.*, s.title AS scope_title, s.audience, s.domain, s.observations, s.off_limits_json
+      SELECT p.*, s.title AS scope_title, s.audience, s.domain, s.observations, s.off_limits_json, s.risk_evaluation_criteria
       FROM problems p
       JOIN scopes s ON s.research_run_id = p.discovery_run_id
       WHERE p.id = ?
@@ -46,6 +46,7 @@ export class DevelopmentRepository {
         audience: String(problemRow.audience),
         domain: String(problemRow.domain),
         observations: String(problemRow.observations),
+        ...(problemRow.risk_evaluation_criteria ? { riskEvaluationCriteria: String(problemRow.risk_evaluation_criteria) } : {}),
         offLimits: parseStringArray(problemRow.off_limits_json),
       },
       problem: {

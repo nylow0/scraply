@@ -29,11 +29,15 @@ export const ModelRefSchema = z.object({
 // offers or executes this provider.
 export const HISTORICAL_CODEX_CLI_PROVIDER_ID = "legacy-codex-cli";
 export const OPENAI_SUBSCRIPTION_PROVIDER_ID = "openai-subscription";
+export const MAX_IDEA_COUNT = 20;
+export const DEFAULT_IDEA_COUNT = 3;
+export const IdeaCountSchema = z.number().int().min(1).max(MAX_IDEA_COUNT);
 
 const RunConfigInputSchema = z.object({
   configVersion: z.literal(2),
   workflowVersion: z.union([z.literal(1), z.literal(2)]).optional(),
   audienceSourcePolicy: z.enum(["web", "communities"]).optional(),
+  ideaCount: IdeaCountSchema.optional(),
   model: ModelRefSchema,
   reasoningEffort: ReasoningEffortSchema,
   discoveryDepth: DiscoveryDepthSchema,
@@ -69,6 +73,7 @@ export const DEFAULT_RUN_CONFIG = {
   configVersion: 2,
   workflowVersion: 2,
   audienceSourcePolicy: "web",
+  ideaCount: DEFAULT_IDEA_COUNT,
   model: { providerId: OPENAI_SUBSCRIPTION_PROVIDER_ID, modelId: "gpt-5.6-luna" },
   reasoningEffort: "medium",
   discoveryDepth: "standard",

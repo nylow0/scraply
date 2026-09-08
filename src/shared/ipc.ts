@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { ScopeSchema, WorkflowV2DecisionAnalysisOutputSchema } from "./structured-output-schemas";
+import { ScopeSchema, WorkflowV2DecisionAnalysisOutputSchema, WorkflowV2RiskEvaluationOutputSchema } from "./structured-output-schemas";
 import {
   MessageSchema,
   ModelCatalogSchema,
@@ -145,6 +145,8 @@ export const SolutionViewSchema = z.object({
   unknowns: z.array(z.string()).optional(), supportingEvidenceIds: z.array(z.string()).optional(), contraryEvidenceIds: z.array(z.string()).optional(),
   contrarySources: z.array(z.object({ id: EntityIdSchema, title: z.string(), url: z.string().url(), text: z.string() })).optional(),
   decisionAnalysis: WorkflowV2DecisionAnalysisOutputSchema.nullable().optional(),
+  riskEvaluation: WorkflowV2RiskEvaluationOutputSchema.nullable().optional(),
+  riskEvaluationCriteria: z.string().optional(),
   evidenceFollowUp: EvidenceFollowUpViewSchema.optional(),
   userDecision: z.string().nullable().optional(), observedResult: z.string().nullable().optional(), detailRevision: z.string().optional(),
   id: EntityIdSchema, problemId: EntityIdSchema, problemStatement: z.string(), problemVerdict: ProblemCandidateSchema.shape.verdict,

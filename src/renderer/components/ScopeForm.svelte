@@ -2,6 +2,8 @@
   import type { NativeLoginStartResult, WorkspaceState } from "../../shared/ipc";
   import {
     DEFAULT_RUN_CONFIG,
+    DEFAULT_IDEA_COUNT,
+    MAX_IDEA_COUNT,
     modelRefKey,
     sameModelRef,
     type ModelRef,
@@ -30,6 +32,8 @@
   let audience = $state(initial.scope?.audience ?? "");
   let domain = $state(initial.scope?.domain ?? "");
   let observations = $state(initial.scope?.observations ?? "");
+  let riskEvaluationCriteria = $state(initial.scope?.riskEvaluationCriteria ?? "");
+  let ideaCount = $state<number | undefined>(initial.runConfig?.ideaCount ?? DEFAULT_IDEA_COUNT);
   let offLimits = $state(initial.scope?.offLimits.join("\n") ?? "");
   let knownProblem = $state(initial.runConfig?.knownProblem ?? "");
   const legacyModelNeedsReplacement = initial.runConfig?.model.providerId === "legacy-codex-cli";
@@ -39,6 +43,7 @@
       : initial.modelOptions.find((item) => item.providerId === "openai-subscription") ?? DEFAULT_RUN_CONFIG.model);
   let modelKey = $state(legacyModelNeedsReplacement ? "" : modelRefKey(initialModel));
   let nativeModelOptions = $derived(workspace.modelOptions.filter((item) => item.providerId === "openai-subscription"));
+  let astraAvailable = $derived(nativeModelOptions.some((item) => item.modelId === "gpt-6-astra"));
   let selectedModelOption = $derived(nativeModelOptions.find((item) => modelRefKey(item) === modelKey));
   let resolvedModel = $derived(selectedModelOption
     ?? (modelRefKey(initialModel) === modelKey ? initialModel : DEFAULT_RUN_CONFIG.model));
@@ -65,6 +70,7 @@
     researchMode, title: title.trim(), audience: audience.trim(), domain: domain.trim(), observations: observations.trim(),
     offLimits: offLimits.split("\n").map((item) => item.trim()).filter(Boolean), knownProblem: knownProblem.trim(),
     model, reasoningEffort, discoveryDepth, searchProvider, maxRunMinutes, workflowVersion, audienceSourcePolicy,
+    riskEvaluationCriteria: riskEvaluationCriteria.trim(), ideaCount,
   }));
   // Only pre-mark as saved when a persisted run config exists and still matches the draft; a model that is no
   // longer offered falls back to the default, and the badge must not claim that fallback was ever saved.
@@ -110,6 +116,9 @@
   function missingFields(): Record<string, string> {
     const next: Record<string, string> = {};
     if (!title.trim()) next.title = "Research name is required.";
+    if (!Number.isInteger(ideaCount) || ideaCount === undefined || ideaCount < 1 || ideaCount > MAX_IDEA_COUNT) {
+      next.ideaCount = `Choose a whole number from 1 to ${MAX_IDEA_COUNT}.`;
+    }
     if (researchMode === "explore-market") {
       if (!domain.trim()) next.domain = "A starting context is required.";
     } else if (!knownProblem.trim()) next.knownProblem = "Problem statement is required.";
@@ -125,8 +134,9 @@
       const submittedFingerprint = draftFingerprint;
       await onSave({
         title: title.trim(), audience: audience.trim(), domain: domain.trim(), observations: observations.trim(),
+        riskEvaluationCriteria: riskEvaluationCriteria.trim(),
         offLimits: offLimits.split("\n").map((item) => item.trim()).filter(Boolean),
-      }, { configVersion: 2, workflowVersion, audienceSourcePolicy, model, reasoningEffort, discoveryDepth, searchProvider, maxRunMinutes, researchMode, knownProblem: knownProblem.trim() });
+      }, { configVersion: 2, workflowVersion, audienceSourcePolicy, ideaCount, model, reasoningEffort, discoveryDepth, searchProvider, maxRunMinutes, researchMode, knownProblem: knownProblem.trim() });
       savedFingerprint = submittedFingerprint;
       await onStart();
     } catch {
@@ -205,7 +215,8 @@
     </fieldset>
 
     <div class="primary-fields">
-      <label><span>Research workflow</span><select bind:value={workflowVersion}><option value={2}>Options and one selected analysis</option><option value={1}>Legacy research comparison</option></select><small>{workflowVersion === 2 ? "The shorter workflow pauses for your option choice before analyzing consequences and an experiment." : "The legacy workflow analyzes every generated option through outcomes, risks, and proposed mitigations."}</small></label>
+      <label><span>Research workflow</span><select bind:value={workflowVersion}><option value={2}>Options and one selected analysis</option><option value={1}>Legacy research comparison</option></select><small>{workflowVersion === 2 ? "Choose an idea, then a separate risk evaluator reviews it before the final analysis and experiment." : "The legacy workflow analyzes every generated option through outcomes, risks, and proposed mitigations."}</small></label>
+      <label><span>Ideas to generate</span><input type="number" bind:value={ideaCount} min="1" max={MAX_IDEA_COUNT} step="1" required aria-invalid={Boolean(errors.ideaCount)} aria-describedby={errors.ideaCount ? "idea-count-error" : undefined} /><small>Per selected problem. The model may return fewer if it cannot find enough useful, distinct ideas.</small>{#if errors.ideaCount}<small id="idea-count-error" class="field-error">{errors.ideaCount}</small>{/if}</label>
       {#if workflowVersion === 2 && researchMode === "explore-market"}<label><span>Audience sources</span><select bind:value={audienceSourcePolicy}><option value="web">Relevant sources across the web</option><option value="communities">Reddit and Hacker News</option></select><small>Choose communities only when they represent the people you want to understand.</small></label>{/if}
       <label><span>Research name</span><input bind:value={title} aria-invalid={Boolean(errors.title)} aria-describedby={errors.title ? "title-error" : undefined} placeholder={researchMode === "explore-market" ? "Project ideas" : "Solution ideas"} />{#if errors.title}<small id="title-error" class="field-error">{errors.title}</small>{/if}</label>
       {#if researchMode === "known-problem"}
@@ -213,6 +224,7 @@
       {/if}
       <label class:discovery-context={researchMode === "explore-market"}><span>{researchMode === "explore-market" ? "What do you want to explore?" : "Market or domain (optional)"}</span>{#if researchMode === "explore-market"}<small>Use whatever starting point you have: a goal, competition, topic, audience, market, rough idea, or something more specific.</small>{/if}<textarea bind:value={domain} aria-invalid={Boolean(errors.domain)} aria-describedby={errors.domain ? "domain-error" : undefined} rows={researchMode === "explore-market" ? 4 : 2} placeholder={researchMode === "explore-market" ? "Describe your goal, topic, audience, or starting idea." : "Add any relevant market or domain context."}></textarea>{#if errors.domain}<small id="domain-error" class="field-error">{errors.domain}</small>{/if}</label>
       <label><span>{researchMode === "explore-market" ? "People or groups (optional)" : "Audience (optional)"}</span><input bind:value={audience} placeholder={researchMode === "explore-market" ? "Students, local communities, or leave blank" : "Owners of small repair shops"} /></label>
+      <label class="problem-field"><span>What should we evaluate risk against?</span><small>Describe what you need to protect or achieve. Leave blank to use the research goal and boundaries.</small><textarea bind:value={riskEvaluationCriteria} maxlength="4000" rows="3" placeholder="I have four weekends and $300. Evaluate risks to finishing a useful prototype, keeping costs within budget, and protecting customer data."></textarea></label>
     </div>
 
     <details class="optional-fields">
@@ -224,7 +236,7 @@
     </details>
 
     <div class="run-settings" class:known={researchMode === "known-problem"}>
-      <label class="run-setting"><span>Model</span><select bind:this={modelSelect} bind:value={modelKey} onchange={selectModel} disabled={nativeModelOptions.length === 0}>{#if !selectedModelAvailable}<option value={modelKey}>{legacyModelNeedsReplacement && !modelKey ? "Choose an OpenAI model" : workspace.validation.native.connected ? `${model.modelId} (unavailable)` : "Connect OpenAI to choose a model"}</option>{/if}{#each nativeModelOptions as item (modelRefKey(item))}<option value={modelRefKey(item)}>{item.displayName}</option>{/each}</select><small>{nativeModelOptions.length === 0 ? "Your available models appear here after you sign in." : "The model used throughout this research."}</small></label>
+      <label class="run-setting"><span>Model</span><select bind:this={modelSelect} bind:value={modelKey} onchange={selectModel} disabled={nativeModelOptions.length === 0}>{#if !selectedModelAvailable}<option value={modelKey}>{legacyModelNeedsReplacement && !modelKey ? "Choose an OpenAI model" : workspace.validation.native.connected ? `${model.modelId} (unavailable)` : "Connect OpenAI to choose a model"}</option>{/if}{#if !astraAvailable}<option value="openai-subscription:gpt-6-astra" disabled>Astra (unavailable for this account)</option>{/if}{#each nativeModelOptions as item (modelRefKey(item))}<option value={modelRefKey(item)}>{item.modelId === "gpt-6-astra" ? "Astra" : item.displayName}</option>{/each}</select><small>{nativeModelOptions.length === 0 ? "Your available models appear here after you sign in." : "The model used throughout this research, including the independent risk evaluator."}</small></label>
       <label class="run-setting"><span>Reasoning</span><select bind:value={reasoningEffort}>{#each (selectedModelOption?.reasoningEfforts ?? [{ id: reasoningEffort, description: "" }]) as effort (effort.id)}<option value={effort.id}>{effort.id.charAt(0).toUpperCase() + effort.id.slice(1)}</option>{/each}</select><small>{reasoningDescription}</small></label>
       {#if researchMode === "explore-market"}<label class="run-setting"><span>Research depth</span><select bind:value={discoveryDepth}><option value="quick">Quick</option><option value="standard">Standard</option><option value="deep">Deep</option></select><small>{depthDescription}</small></label>{/if}
       {#if researchMode === "explore-market"}<label class="run-setting"><span>Search provider</span><select aria-label="Search provider" bind:value={searchProvider}><option value="exa">Exa</option><option value="perplexity">Perplexity</option></select><small>{selectedSearchName}: {selectedSearchValidation.valid ? "Connected" : selectedSearchValidation.error ?? "Connection unavailable"}</small></label>{/if}

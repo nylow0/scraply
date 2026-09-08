@@ -53,8 +53,8 @@ export class DiscoveryRepository {
     this.client.db.prepare(`
       INSERT INTO scopes (
         id, research_run_id, title, audience, domain, observations,
-        off_limits_json, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        off_limits_json, risk_evaluation_criteria, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       randomUUID(),
       researchRunId,
@@ -63,6 +63,7 @@ export class DiscoveryRepository {
       scope.domain,
       scope.observations,
       JSON.stringify(scope.offLimits),
+      scope.riskEvaluationCriteria ?? "",
       now,
       now,
     );
@@ -188,9 +189,10 @@ export class DiscoveryRepository {
         WHERE rr.thread_id = ? AND rr.problem_id IS NULL AND rr.status = 'completed'
           AND p.verdict = 'user-asserted' AND p.selected_at IS NOT NULL AND p.statement = ?
           AND s.title = ? AND s.audience = ? AND s.domain = ? AND s.observations = ? AND s.off_limits_json = ?
+          AND s.risk_evaluation_criteria = ?
           AND NOT EXISTS (SELECT 1 FROM research_runs development WHERE development.problem_id = p.id AND development.status = 'completed')
         ORDER BY rr.created_at DESC, rr.rowid DESC LIMIT 1
-      `).get(threadId, trimmedStatement, scope.title, scope.audience, scope.domain, scope.observations, JSON.stringify(scope.offLimits)) as
+      `).get(threadId, trimmedStatement, scope.title, scope.audience, scope.domain, scope.observations, JSON.stringify(scope.offLimits), scope.riskEvaluationCriteria ?? "") as
         { run_id: string; problem_id: string } | undefined;
       if (existing) {
         db.exec("COMMIT");

@@ -40,6 +40,11 @@ export class WorkflowExecution {
 
   resolvePrompt = (stage: WorkflowV2StageId): ResolvedWorkflowV2Prompt => this.prompts[stage];
 
+  // Older runs keep their original six-stage contract when resumed.
+  hasRiskEvaluator(): boolean {
+    return Boolean(this.prompts["risk-evaluation"]);
+  }
+
   read<T>(key: string): T | null {
     const row = this.db.db.prepare("SELECT value_json FROM workflow_snapshots WHERE research_run_id = ? AND snapshot_key = ?")
       .get(this.runId, key) as { value_json: string } | undefined;
@@ -62,8 +67,8 @@ export class WorkflowExecution {
     return () => createHash("sha256").update(`${this.runId}:${phase}:${sequence++}`).digest("hex").slice(0, characters);
   }
 
-  search(client: Pick<SearchClient, "search">): Pick<SearchClient, "search"> {
-    return { search: async (query, options) => {
+  search(client: Pick<SearchClient, "search"> & Partial<Pick<SearchClient, "provider">>): Pick<SearchClient, "search"> & Partial<Pick<SearchClient, "provider">> {
+    return { ...(client.provider ? { provider: client.provider } : {}), search: async (query, options) => {
       options?.signal?.throwIfAborted();
       const { signal: _signal, ...parameters } = options ?? {};
       void _signal;

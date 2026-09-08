@@ -5,10 +5,12 @@ import {
   WorkflowV2ProblemCandidatesOutputSchema,
   WorkflowV2ProblemKillOutputSchema,
   WorkflowV2QueryPlanOutputSchema,
+  WorkflowV2RiskEvaluationOutputSchema,
   WorkflowV2SolutionsOutputSchema,
   type WorkflowV2DecisionAnalysis,
   type WorkflowV2SolutionOption,
 } from "../shared/structured-output-schemas";
+import { MAX_IDEA_COUNT } from "../shared/schemas";
 
 export const WORKFLOW_VERSION_V2 = 2 as const;
 
@@ -18,6 +20,7 @@ export const WORKFLOW_V2_STAGE_IDS = [
   "problem-candidates",
   "problem-kill",
   "solutions",
+  "risk-evaluation",
   "decision-analysis",
 ] as const;
 
@@ -88,6 +91,15 @@ export const WORKFLOW_V2_STAGE_REGISTRY = {
     maxOutputTokens: 6_144,
     deadlineMs: 120_000,
   },
+  "risk-evaluation": {
+    id: "risk-evaluation",
+    promptFilename: "workflow-v2-risk-evaluation.md",
+    promptRevision: 1,
+    schemaRevision: 1,
+    schema: WorkflowV2RiskEvaluationOutputSchema,
+    maxOutputTokens: 4_096,
+    deadlineMs: 120_000,
+  },
 } as const satisfies Record<WorkflowV2StageId, WorkflowV2StageDefinition>;
 
 export function getWorkflowV2Stage<TStageId extends WorkflowV2StageId>(stageId: TStageId) {
@@ -118,9 +130,10 @@ export interface WorkflowV2CategorizedEvidence {
 export function assertWorkflowV2SolutionsSemantics(
   output: { options: WorkflowV2SolutionOption[] },
   evidence: readonly WorkflowV2CategorizedEvidence[] = [],
+  ideaCount = MAX_IDEA_COUNT,
 ): void {
-  if (output.options.length > 3) {
-    throw new Error("The v2 solutions stage returned more than three options");
+  if (output.options.length > ideaCount) {
+    throw new Error(`The solutions stage returned more than ${ideaCount} options`);
   }
   const categories = evidenceCategories(evidence);
   // Discovery roles describe the problem. A source arguing against a new product can

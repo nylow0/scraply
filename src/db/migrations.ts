@@ -1010,4 +1010,8 @@ export const MIGRATIONS = [
       );
     `,
   },
+  {
+    id: 19,
+    sql: `ALTER TABLE scopes ADD COLUMN risk_evaluation_criteria TEXT NOT NULL DEFAULT '';`,
+  },
 ] as const;

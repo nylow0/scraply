@@ -880,7 +880,12 @@ fn resolve_models(catalog: ModelsResponse) -> Result<Vec<ModelMetadata>, Provide
     let mut models: Vec<_> = catalog
         .models
         .into_iter()
-        .filter(|model| !matches!(model.visibility.as_deref(), Some("hide" | "none")))
+        // Astra is an explicit Scraply choice even when the catalog hides it from default menus.
+        // It must still be present in this account's live catalog.
+        .filter(|model| {
+            model.slug == "gpt-6-astra"
+                || !matches!(model.visibility.as_deref(), Some("hide" | "none"))
+        })
         .collect();
     models.sort_by_key(|model| model.priority);
     let models: Vec<_> = models

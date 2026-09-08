@@ -89,7 +89,7 @@ export interface ProblemDiscoveryResult {
 
 export interface DiscoveryDependencies {
   modelClient: StructuredModelClient;
-  search: Pick<SearchClient, "search">;
+  search: Pick<SearchClient, "search"> & Partial<Pick<SearchClient, "provider">>;
   model: ModelRef;
   reasoningEffort: ReasoningEffort;
   depth?: DiscoveryDepth;
@@ -364,15 +364,24 @@ async function searchQueries(
   dependencies: DiscoveryDependencies,
 ): Promise<HarvestedSource[]> {
   const gathered: Source[] = [];
-  for (const query of queries) {
-    gathered.push(...await dependencies.search.search(query, {
+  const concurrency = dependencies.workflowVersion === 2 && dependencies.search.provider === "exa" ? 2 : 1;
+  for (let index = 0; index < queries.length; index += concurrency) {
+    dependencies.signal?.throwIfAborted();
+    // Wait for both reservations to settle before ending a failed batch. Flatten in query order
+    // so response timing cannot change deduplication, source IDs, or the evidence shown downstream.
+    const batch = await Promise.allSettled(queries.slice(index, index + concurrency).map((query) => dependencies.search.search(query, {
       numResults: resultsPerQuery,
       maxCharacters: SOURCE_MAX_CHARACTERS,
       ...(mode === "audience"
         ? { includeDomains: DEFAULT_AUDIENCE_DOMAINS, ...dependencies.audienceSearch }
         : {}),
       ...(dependencies.signal ? { signal: dependencies.signal } : {}),
-    }));
+    })));
+    const failure = batch.find((result) => result.status === "rejected");
+    if (failure?.status === "rejected") throw failure.reason;
+    for (const result of batch) {
+      if (result.status === "fulfilled") gathered.push(...result.value);
+    }
   }
   return resolveSources(gathered, new Map(), dependencies.onProjection, dependencies.idFactory).fresh;
 }

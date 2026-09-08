@@ -18,6 +18,7 @@ export const ScopeSchema = z.object({
   audience: z.string(),
   domain: z.string(),
   observations: z.string(),
+  riskEvaluationCriteria: z.string().trim().max(4_000).optional(),
   offLimits: z.array(z.string()),
 }).strict();
 
@@ -217,6 +218,13 @@ export const WorkflowV2DecisionRiskSchema = z.object({
   description: WorkflowV2RequiredTextSchema,
   whyDecisive: WorkflowV2RequiredTextSchema,
 }).strict();
+
+export const WorkflowV2RiskEvaluationOutputSchema = z.object({
+  risks: z.array(WorkflowV2DecisionRiskSchema),
+  unknowns: z.array(WorkflowV2RequiredTextSchema),
+}).strict();
+
+export type WorkflowV2RiskEvaluation = z.infer<typeof WorkflowV2RiskEvaluationOutputSchema>;
 
 export const WorkflowV2ProposedResponseSchema = z.object({
   riskIds: z.array(WorkflowV2RequiredTextSchema),
