@@ -57,7 +57,7 @@ After building, `bun run prepare:runtime` verifies the archive and every member 
 
 Commit runtime and app changes together. CI and release-candidate builds initialize the submodule and build Rust from the same checkout as the app. The Cargo cache defaults to `build/cargo`. Development builds may use a dirty checkout, which the application manifest records; release builds require a clean checkout and matching app/runtime source commits.
 
-Runtime preparation streams test and build output before checking the packaging process's exit code. If it fails, inspect the failing test or compiler diagnostic in that log; the final packaging error only identifies the failed gate.
+Runtime preparation streams test and build output before checking the packaging process's exit code. If it fails, inspect the failing test or compiler diagnostic in that log; the final packaging error only identifies the failed gate. Both runtime packaging entry points restore the current PowerShell's standard module paths so an inherited PowerShell 7 environment cannot hide Windows PowerShell's hashing and archive cmdlets.
 
 The release bundle contains exactly five files: installer, portable executable, `manifest.json`, `SHA256SUMS.txt`, and `scraply-agent.lock.json`. The last file is copied from `build/runtime` and its hash must match the manifest. Promotion verifies that the runtime came from the approved Scraply commit and publishes these same five files without rebuilding Rust or the app. Historical releases retain their original app/runtime pair for rollback.
 

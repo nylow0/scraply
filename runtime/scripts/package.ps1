@@ -4,6 +4,9 @@ param()
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
+# Hosted PowerShell 7 module paths can hide Windows PowerShell's built-in cmdlets.
+$env:PSModulePath = "$PSHOME\Modules;$env:ProgramFiles\WindowsPowerShell\Modules;$env:windir\System32\WindowsPowerShell\v1.0\Modules"
+
 if ([Environment]::OSVersion.Platform -ne [PlatformID]::Win32NT) {
     throw "Packaging is supported only on Windows."
 }
