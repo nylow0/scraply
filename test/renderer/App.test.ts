@@ -7,6 +7,20 @@ import type { ResearchEvent, WorkspaceState } from "../../src/shared/ipc";
 import { DEFAULT_RUN_CONFIG } from "../../src/shared/schemas";
 
 describe("App workspace coordination", () => {
+  test.each(["discovery-running", "development-running"] as const)("allows cancellation but does not offer resume during %s", async (status) => {
+    const state = workspace("alpha");
+    state.threads[0]!.status = status;
+    state.latestResearchRun = {
+      runId: "run-alpha", status: "running", problemId: status === "development-running" ? "problem-1" : null,
+      codexCalls: 1, searches: 0, projectedCodexCalls: 2, projectedSearches: 0,
+      lastActivity: "Generating options", canResume: true,
+    };
+    installApi({ getWorkspace: vi.fn().mockResolvedValue(state) });
+    const view = render(App);
+    expect(await view.findByRole("button", { name: "Cancel run" })).toBeTruthy();
+    expect(view.queryByRole("button", { name: "Resume attempt" })).toBeNull();
+  });
+
   test("shows the saved failure reason instead of the last progress message after reopening", async () => {
     const state = workspace("alpha");
     state.threads[0]!.status = "failed";

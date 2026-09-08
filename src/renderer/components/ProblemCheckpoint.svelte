@@ -3,12 +3,12 @@
   import { MAX_DEVELOPMENT_PROJECTED_CALLS } from "../../shared/development-projection";
   import { untrack } from "svelte";
   import { SvelteSet } from "svelte/reactivity";
-  let { problems, rejectedCandidates, busy, onCommit, onExport, onOpenSource }:{ problems:ProblemCandidate[];rejectedCandidates:RejectedProblemCandidate[];busy:boolean;onCommit:(ids:string[],userProblem:string|null)=>Promise<void>;onExport:()=>Promise<void>;onOpenSource:(url:string)=>Promise<void> }=$props();
+  let { problems, rejectedCandidates, workflowVersion, busy, onCommit, onExport, onOpenSource }:{ problems:ProblemCandidate[];rejectedCandidates:RejectedProblemCandidate[];workflowVersion?:1|2|undefined;busy:boolean;onCommit:(ids:string[],userProblem:string|null)=>Promise<void>;onExport:()=>Promise<void>;onOpenSource:(url:string)=>Promise<void> }=$props();
   const initialProblems=untrack(()=>problems);
   const selected=new SvelteSet(initialProblems.filter((item)=>item.selected).map((item)=>item.id));
   let userProblem=$state("");
   let userProblemTextarea: HTMLTextAreaElement | undefined;
-  let projected=$derived((selected.size+(userProblem.trim()?1:0))*MAX_DEVELOPMENT_PROJECTED_CALLS);
+  let projected=$derived((selected.size+(userProblem.trim()?1:0))*(workflowVersion===2?2:MAX_DEVELOPMENT_PROJECTED_CALLS));
   function toggle(id:string){if(selected.has(id))selected.delete(id);else selected.add(id)}
   function useAsUserAsserted(statement:string){userProblem=statement;userProblemTextarea?.focus()}
 </script>

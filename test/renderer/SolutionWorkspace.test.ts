@@ -92,6 +92,7 @@ describe("SolutionWorkspace ordering explanation", () => {
 
     expect(view.getByText(/options are not ranked/)).toBeTruthy();
     expect(view.getByRole("button", { name: "Unaddressed project-ending" })).toBeTruthy();
+    expect(view.getByText("Highest risk")).toBeTruthy();
     expect(view.queryByText(/catastrophic gaps/i)).toBeNull();
   });
 
@@ -103,6 +104,8 @@ describe("SolutionWorkspace ordering explanation", () => {
 
     expect(view.getByText("No solution options were returned.")).toBeTruthy();
     expect(view.getByText(/zero options for the selected problem/)).toBeTruthy();
+    expect(view.queryByText("Highest risk")).toBeNull();
+    expect(view.queryByText("Evaluation snapshot")).toBeNull();
     expect(view.queryByRole("button", { name: "Show every idea" })).toBeNull();
   });
 });
