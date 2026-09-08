@@ -1,0 +1,11 @@
+/target/
+/dist/
+*.pdb
+*.exe
+*.sha256
+*.log
+/.scraply-agent/
+/.env
+/.env.*
+!/.env.example
+/attachments/

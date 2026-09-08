@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { ScopeSchema } from "./structured-output-schemas";
+import { ScopeSchema, WorkflowV2DecisionAnalysisOutputSchema, WorkflowV2RiskEvaluationOutputSchema } from "./structured-output-schemas";
 import {
   MessageSchema,
   ModelCatalogSchema,
@@ -9,6 +9,7 @@ import {
   SourceDetailSchema as SharedSourceDetailSchema,
   ThreadSchema,
 } from "./schemas";
+import { OPENAI_SUBSCRIPTION_PROVIDER_ID } from "./schemas";
 
 const EntityIdSchema = z.string().trim().min(1).max(128);
 const ShortTextSchema = z.string().trim().min(1).max(256);
@@ -31,11 +32,13 @@ export const BackendReadySchema = z.object({ port: z.number().int().positive(), 
 export const ValidationStateSchema = z.object({
   exa: z.object({ valid: z.boolean(), error: z.string().optional() }),
   perplexity: z.object({ valid: z.boolean(), error: z.string().optional() }),
-  codex: z.object({
-    detected: z.boolean(),
-    compatible: z.boolean(),
-    authenticated: z.boolean(),
+  native: z.object({
+    available: z.boolean(),
+    connected: z.boolean(),
     version: z.string().optional(),
+    accounts: z.array(z.object({
+      providerId: z.string(), email: z.string().optional(), accountId: z.string().optional(), plan: z.string().optional(),
+    }).strict()),
     error: z.string().optional(),
   }),
   setupComplete: z.boolean(),
@@ -51,6 +54,15 @@ export const SaveFavoriteModelSchema = z.object({ model: ModelRefSchema, favorit
 export const StartResearchSchema = z.object({ threadId: EntityIdSchema });
 export const CancelResearchSchema = z.object({ runId: EntityIdSchema });
 export const ResumeResearchSchema = z.object({ runId: EntityIdSchema });
+export const SelectOptionSchema = z.object({ threadId: EntityIdSchema, runId: EntityIdSchema, solutionId: EntityIdSchema }).strict();
+export const SaveDecisionSchema = z.object({
+  threadId: EntityIdSchema, solutionId: EntityIdSchema,
+  userDecision: z.string().trim().max(8_000), observedResult: z.string().trim().max(8_000),
+}).strict();
+export const EvidenceFollowUpRequestSchema = z.object({
+  threadId: EntityIdSchema, runId: EntityIdSchema,
+  question: z.string().trim().min(1).max(500),
+}).strict();
 export const SelectProblemsSchema = z.object({
   threadId: EntityIdSchema,
   problemIds: z.array(EntityIdSchema),
@@ -61,6 +73,18 @@ export const ExportResearchRequestSchema = z.object({ threadId: EntityIdSchema }
 export const GetSourceDetailRequestSchema = z.object({ sourceId: EntityIdSchema });
 export const GetIdeaDetailRequestSchema = z.object({ ideaId: EntityIdSchema });
 export const OpenExternalUrlRequestSchema = z.object({ url: z.string().trim().min(1).max(2_048) });
+export const NativeLoginStartSchema = z.object({
+  providerId: z.literal(OPENAI_SUBSCRIPTION_PROVIDER_ID),
+  method: z.enum(["browser", "device"]),
+}).strict();
+export const NativeLoginCompleteSchema = z.object({ loginId: EntityIdSchema }).strict();
+export const NativeLoginCancelSchema = z.object({ loginId: EntityIdSchema, providerId: z.literal(OPENAI_SUBSCRIPTION_PROVIDER_ID) }).strict();
+export const NativeProviderSchema = z.object({ providerId: z.literal(OPENAI_SUBSCRIPTION_PROVIDER_ID) }).strict();
+export const NativeLoginLaunchSchema = z.discriminatedUnion("method", [
+  z.object({ loginId: EntityIdSchema, providerId: EntityIdSchema, method: z.literal("browser"), authorizationUrl: z.string().url(), callbackPort: z.number().int().positive() }).strict(),
+  z.object({ loginId: EntityIdSchema, providerId: EntityIdSchema, method: z.literal("device"), verificationUrl: z.string().url(), userCode: z.string().min(1) }).strict(),
+  z.object({ loginId: EntityIdSchema, providerId: EntityIdSchema, method: z.literal("pkce"), authorizationUrl: z.string().url() }).strict(),
+]);
 
 export const PendingRunSchema = z.object({
   runId: EntityIdSchema,
@@ -75,7 +99,14 @@ export const FactorViewSchema = z.object({
   id: EntityIdSchema,
   subject: z.string(), behavior: z.string(), quote: z.string(), sourceId: EntityIdSchema,
   sourceTitle: z.string(), sourceUrl: z.string().url(), harvestMode: z.enum(["domain", "audience"]),
-  modelConfidence: z.number(),
+  modelConfidence: z.number(), uncertainty: z.string().optional(),
+});
+export const EvidenceFollowUpViewSchema = z.object({
+  status: z.enum(["running", "completed", "failed"]),
+  question: z.string(),
+  sources: z.array(SourceDetailSchema),
+  factors: z.array(FactorViewSchema),
+  error: z.string().nullable(),
 });
 export const ProblemCandidateSchema = z.object({
   id: EntityIdSchema,
@@ -102,23 +133,62 @@ export const OutcomeViewSchema = z.object({
   affects: z.string(), addressesCore: z.boolean(),
 });
 export const SolutionViewSchema = z.object({
+  detailsLoaded: z.boolean().optional(),
+  highestRisk: RiskViewSchema.omit({ mitigations: true }).nullable().optional(),
+  outcomeCount: z.number().int().nonnegative().optional(), riskCount: z.number().int().nonnegative().optional(),
+  projectEndingRiskCount: z.number().int().nonnegative().optional(),
+  workflowVersion: z.union([z.literal(1), z.literal(2)]).optional(),
+  runId: EntityIdSchema.optional(), selected: z.boolean().optional(), selectable: z.boolean().optional(),
+  evidenceFollowUpStatus: z.enum(["running", "completed", "failed"]).optional(),
+  canRequestEvidenceFollowUp: z.boolean().optional(),
+  keyAssumption: z.string().optional(), whyCurrentApproachMaySuffice: z.string().optional(),
+  unknowns: z.array(z.string()).optional(), supportingEvidenceIds: z.array(z.string()).optional(), contraryEvidenceIds: z.array(z.string()).optional(),
+  contrarySources: z.array(z.object({ id: EntityIdSchema, title: z.string(), url: z.string().url(), text: z.string() })).optional(),
+  decisionAnalysis: WorkflowV2DecisionAnalysisOutputSchema.nullable().optional(),
+  riskEvaluation: WorkflowV2RiskEvaluationOutputSchema.nullable().optional(),
+  riskEvaluationCriteria: z.string().optional(),
+  evidenceFollowUp: EvidenceFollowUpViewSchema.optional(),
+  userDecision: z.string().nullable().optional(), observedResult: z.string().nullable().optional(), detailRevision: z.string().optional(),
   id: EntityIdSchema, problemId: EntityIdSchema, problemStatement: z.string(), problemVerdict: ProblemCandidateSchema.shape.verdict,
   factors: z.array(FactorViewSchema),
   mechanism: z.string(), description: z.string(), respectsOffLimits: z.boolean(), respectsOffLimitsWhy: z.string(),
   outcomes: z.array(OutcomeViewSchema), risks: z.array(RiskViewSchema),
   confirmedCoreOutcomes: z.number().int().nonnegative(), unaddressedCatastrophicRisks: z.number().int().nonnegative(),
 });
+const UsageDimensionSchema = z.object({ known: z.number().int().nonnegative(), unknownAttempts: z.number().int().nonnegative() }).strict();
+const UsageCostTotalSchema = z.object({ currency: z.string().min(1), amount: z.number().nonnegative() }).strict();
+export const RunUsageSchema = z.object({
+  schemaVersion: z.literal(1),
+  availability: z.enum(["available", "unavailable"]),
+  attemptCount: z.number().int().nonnegative(),
+  unknownAttemptCount: z.number().int().nonnegative(),
+  models: z.array(ModelRefSchema),
+  tokens: z.object({ input: UsageDimensionSchema, output: UsageDimensionSchema, total: UsageDimensionSchema, cachedInput: UsageDimensionSchema, reasoning: UsageDimensionSchema }).strict(),
+  latencyMs: UsageDimensionSchema,
+  repairCount: UsageDimensionSchema,
+  costs: z.object({
+    status: z.enum(["reported", "not_reported", "unknown", "mixed"]),
+    reported: z.array(UsageCostTotalSchema),
+    reportedWithoutCurrencyAttempts: z.number().int().nonnegative(),
+    reportedWithoutCurrencyAmounts: z.array(z.number().nonnegative()),
+    notReportedAttempts: z.number().int().nonnegative(),
+    unknownAttempts: z.number().int().nonnegative(),
+  }).strict(),
+}).strict();
 export const LatestResearchRunSchema = z.object({
+  workflowVersion: z.union([z.literal(1), z.literal(2)]).optional(),
+  awaitingSelection: z.boolean().optional(), interrupted: z.boolean().optional(),
+  canResume: z.boolean().optional(), resumeBlockedReason: z.string().optional(),
   runId: EntityIdSchema, status: z.enum(["queued", "running", "completed", "failed", "cancelled"]),
   problemId: EntityIdSchema.nullable(), codexCalls: z.number().int().nonnegative(), searches: z.number().int().nonnegative(),
   projectedCodexCalls: z.number().int().nonnegative(), projectedSearches: z.number().int().nonnegative(),
-  lastActivity: z.string().nullable(),
+  lastActivity: z.string().nullable(), completionReason: z.string().nullable().optional(), usage: RunUsageSchema.optional(),
 });
 
 export const WorkspaceStateSchema = z.object({
   validation: ValidationStateSchema,
   threads: z.array(ThreadSchema), activeThreadId: z.string().nullable(), messages: z.array(MessageSchema),
-  scope: ScopeSchema.nullable(), runConfig: RunConfigSchema.nullable(), models: z.array(z.string()),
+  scope: ScopeSchema.nullable(), runConfig: RunConfigSchema.nullable(), models: z.array(ModelRefSchema),
   modelOptions: z.array(ModelOptionSchema),
   modelCatalog: ModelCatalogSchema, presets: z.array(z.object({ name: z.string(), config: RunConfigSchema })),
   problemCandidates: z.array(ProblemCandidateSchema), rejectedProblemCandidates: z.array(RejectedProblemCandidateSchema),
@@ -128,7 +198,7 @@ export const WorkspaceStateSchema = z.object({
 
 export const ResearchEventSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("run-started"), runId: EntityIdSchema, threadId: EntityIdSchema, problemId: EntityIdSchema.nullable() }),
-  z.object({ type: z.literal("run-progress"), runId: EntityIdSchema, threadId: EntityIdSchema, message: z.string(), codexCalls: z.number().int(), searches: z.number().int() }),
+  z.object({ type: z.literal("run-progress"), runId: EntityIdSchema, threadId: EntityIdSchema, message: z.string(), codexCalls: z.number().int(), searches: z.number().int(), usage: RunUsageSchema.optional() }),
   z.object({ type: z.literal("run-resumed"), runId: EntityIdSchema, threadId: EntityIdSchema }),
   z.object({ type: z.literal("run-completed"), runId: EntityIdSchema, threadId: EntityIdSchema, problemId: EntityIdSchema.nullable() }),
   z.object({ type: z.literal("run-cancelled"), runId: EntityIdSchema, threadId: EntityIdSchema }),
@@ -140,6 +210,10 @@ export type AppErrorPayload = z.infer<typeof AppErrorPayloadSchema>;
 export type BackendReady = z.infer<typeof BackendReadySchema>;
 export type ValidationState = z.infer<typeof ValidationStateSchema>;
 export type WorkspaceState = z.infer<typeof WorkspaceStateSchema>;
+export type NativeLoginStartResult =
+  | { loginId: string; providerId: string; method: "browser" }
+  | { loginId: string; providerId: string; method: "device"; verificationUrl: string; userCode: string };
+export type NativeLoginCompleteResult = { pending: true } | { pending: false; workspace: WorkspaceState };
 export type ResearchEvent = z.infer<typeof ResearchEventSchema>;
 export type PendingRun = z.infer<typeof PendingRunSchema>;
 export type SourceDetail = z.infer<typeof SharedSourceDetailSchema>;
@@ -147,8 +221,10 @@ export type FactorView = z.infer<typeof FactorViewSchema>;
 export type ProblemCandidate = z.infer<typeof ProblemCandidateSchema>;
 export type RejectedProblemCandidate = z.infer<typeof RejectedProblemCandidateSchema>;
 export type SolutionView = z.infer<typeof SolutionViewSchema>;
+export type RunUsage = z.infer<typeof RunUsageSchema>;
 
 export const IPC_CHANNELS = {
+  SELECT_OPTION: "scraply:select-option", SAVE_DECISION: "scraply:save-decision", EVIDENCE_FOLLOW_UP: "scraply:evidence-follow-up",
   GET_VALIDATION: "scraply:get-validation", RETRY_CONNECTION: "scraply:retry-connection",
   OPEN_DATA_FOLDER: "scraply:open-data-folder", OPEN_LOGS_FOLDER: "scraply:open-logs-folder",
   GET_WORKSPACE: "scraply:get-workspace", CREATE_THREAD: "scraply:create-thread", SELECT_THREAD: "scraply:select-thread",
@@ -157,5 +233,8 @@ export const IPC_CHANNELS = {
   CANCEL_RESEARCH: "scraply:cancel-research", RESUME_RESEARCH: "scraply:resume-research",
   SELECT_PROBLEMS: "scraply:select-problems", EXPORT_RESEARCH: "scraply:export-research", EXPORT_IDEAS: "scraply:export-ideas",
   GET_SOURCE_DETAIL: "scraply:get-source-detail", GET_IDEA_DETAIL: "scraply:get-idea-detail",
+  NATIVE_LOGIN_START: "scraply:native-login-start", NATIVE_LOGIN_COMPLETE: "scraply:native-login-complete",
+  NATIVE_LOGIN_CANCEL: "scraply:native-login-cancel",
+  NATIVE_ACCOUNT_REFRESH: "scraply:native-account-refresh", NATIVE_LOGOUT: "scraply:native-logout",
   OPEN_EXTERNAL_URL: "scraply:open-external-url", BACKEND_EVENT: "scraply:backend-event",
 } as const;

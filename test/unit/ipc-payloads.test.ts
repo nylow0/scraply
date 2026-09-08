@@ -10,13 +10,13 @@ describe("renderer IPC payloads", () => {
   });
 
   test("validates favorite model changes", () => {
-    const payload = toFavoriteModelPayload(new Proxy({ provider: "codex" as const, id: "gpt-5.6" }, {}), true);
-    expect(payload).toEqual({ model: { provider: "codex", id: "gpt-5.6" }, favorite: true });
+    const payload = toFavoriteModelPayload(new Proxy({ providerId: "legacy-codex-cli", modelId: "gpt-5.6" }, {}), true);
+    expect(payload).toEqual({ model: { providerId: "legacy-codex-cli", modelId: "gpt-5.6" }, favorite: true });
   });
 
   test("rejects malformed depth and model data", () => {
     expect(() => toRunConfigPayload("thread-1", { ...DEFAULT_RUN_CONFIG, discoveryDepth: "wide" as never })).toThrow();
-    expect(() => toFavoriteModelPayload({ provider: "codex", id: "" }, true)).toThrow();
+    expect(() => toFavoriteModelPayload({ providerId: "legacy-codex-cli", modelId: "" }, true)).toThrow();
   });
 
   test("defaults legacy configurations to market exploration", () => {

@@ -24,9 +24,9 @@ describe("destructive graph cutover", () => {
   test("creates only the surviving runtime and graph tables on a fresh database", () => {
     const client = new DatabaseClient(pathForTest());
     const tables = tableNames(client.db as unknown as Database);
-    for (const name of ["threads", "messages", "run_configs", "research_runs", "job_events", "sources", "cost_ledger", "scopes", "factors", "problems", "problem_factors", "problem_verdict_sources", "rejected_problem_candidates", "solutions", "outcomes", "risks", "mitigations", "risk_mitigations"]) expect(tables).toContain(name);
+    for (const name of ["threads", "messages", "run_configs", "research_runs", "job_events", "sources", "cost_ledger", "generation_attempts", "scopes", "factors", "problems", "problem_factors", "problem_verdict_sources", "rejected_problem_candidates", "solutions", "outcomes", "risks", "mitigations", "risk_mitigations", "stage_results", "decision_analyses", "evidence_follow_ups"]) expect(tables).toContain(name);
     for (const name of ["intake_answers", "briefs", "stream_runs", "claims", "claim_evidence", "ideas", "reports", "branch_contexts", "ratings", "idea_ratings", "rating_history"]) expect(tables).not.toContain(name);
-    expect(client.db.prepare("SELECT MAX(id) AS id FROM schema_migrations").get()).toEqual({ id: 14 });
+    expect(client.db.prepare("SELECT MAX(id) AS id FROM schema_migrations").get()).toEqual({ id: 21 });
     client.close();
   });
 
@@ -93,17 +93,25 @@ describe("destructive graph cutover", () => {
 
   test("replaces the legacy 5.2 default in saved run configurations", () => {
     const dbPath = pathForTest();
-    const current = new DatabaseClient(dbPath);
+    const legacy = new Database(dbPath);
+    legacy.exec("CREATE TABLE schema_migrations (id INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)");
+    for (const migration of MIGRATIONS.filter((item) => item.id <= 9)) {
+      legacy.exec(migration.sql);
+      legacy.prepare("INSERT INTO schema_migrations (id, applied_at) VALUES (?, ?)")
+        .run(migration.id, "2026-08-12T00:00:00.000Z");
+    }
     const now = "2026-08-12T00:00:00.000Z";
-    current.db.prepare("INSERT INTO threads (id, title, status, created_at, updated_at) VALUES ('thread-1','Legacy model','configuring',?,?)").run(now, now);
-    current.db.prepare("INSERT INTO run_configs (id, thread_id, config_json, created_at) VALUES ('config-1','thread-1',?,?)")
+    legacy.prepare("INSERT INTO threads (id, title, status, created_at, updated_at) VALUES ('thread-1','Legacy model','configuring',?,?)").run(now, now);
+    legacy.prepare("INSERT INTO run_configs (id, thread_id, config_json, created_at) VALUES ('config-1','thread-1',?,?)")
       .run(JSON.stringify({ model: "gpt-5.2-codex", discoveryDepth: "standard", maxRunMinutes: 90 }), now);
-    current.db.prepare("DELETE FROM schema_migrations WHERE id = 10").run();
-    current.close();
+    legacy.close();
 
     const migrated = new DatabaseClient(dbPath);
     const row = migrated.db.prepare("SELECT config_json FROM run_configs WHERE id = 'config-1'").get() as { config_json: string };
-    expect(JSON.parse(row.config_json).model).toBe("gpt-5.6-luna");
+    expect(JSON.parse(row.config_json)).toMatchObject({
+      configVersion: 2,
+      model: { providerId: "legacy-codex-cli", modelId: "gpt-5.6-luna" },
+    });
     migrated.close();
   });
 });

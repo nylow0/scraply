@@ -26,11 +26,14 @@
       <div><span>{config.researchMode === "known-problem" ? "Market or domain" : "Starting context"}</span><strong>{scope.domain || "Not specified"}</strong></div>
       <div><span>{config.researchMode === "known-problem" ? "Audience" : "People or groups"}</span><strong>{scope.audience || "Not specified"}</strong></div>
       <div class="wide"><span>Context</span><p>{scope.observations || "No additional context."}</p></div>
+      <div class="wide"><span>Evaluate risk against</span><p>{scope.riskEvaluationCriteria || "The research goal and boundaries."}</p></div>
       <div class="wide"><span>Boundaries</span>{#if scope.offLimits.length}<ul>{#each scope.offLimits as item, index (`${item}-${index}`)}<li>{item}</li>{/each}</ul>{:else}<p>No boundaries specified.</p>{/if}</div>
     </div>
     <dl class="run-settings">
-      <div><dt>Model</dt><dd>{config.model}</dd></div>
+      <div><dt>Model</dt><dd>{config.model.modelId}</dd></div>
+      <div><dt>Provider</dt><dd>{config.model.providerId}</dd></div>
       <div><dt>Reasoning</dt><dd>{config.reasoningEffort}</dd></div>
+      <div><dt>Ideas per problem</dt><dd>{config.ideaCount ?? (config.workflowVersion === 2 ? 3 : "3–5")}</dd></div>
       {#if config.researchMode === "explore-market"}<div><dt>Research depth</dt><dd>{config.discoveryDepth}</dd></div>{/if}
       {#if config.researchMode === "explore-market"}<div><dt>Search provider</dt><dd>{config.searchProvider}</dd></div>{/if}
     </dl>

@@ -19,6 +19,9 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           fetch-depth: 0
+          submodules: recursive
+      - name: Install native toolchain
+        run: rustup toolchain install stable-x86_64-pc-windows-msvc --profile minimal --component clippy --component rustfmt
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version: 1.3.13
@@ -41,6 +44,7 @@ jobs:
           Copy-Item -LiteralPath "release/Scraply $version.exe" -Destination bundle
           Copy-Item -LiteralPath "release/manifest.json" -Destination bundle
           Copy-Item -LiteralPath "release/SHA256SUMS.txt" -Destination bundle
+          Copy-Item -LiteralPath "build/runtime/scraply-agent.lock.json" -Destination bundle
       - name: Verify the collected bundle
         run: >
           bun scripts/verify-promoted-assets.ts bundle ${{ github.sha }} ${{ github.ref_name }}
@@ -93,6 +97,7 @@ jobs:
             "bundle/Scraply ${version}.exe" \
             "bundle/manifest.json" \
             "bundle/SHA256SUMS.txt" \
+            "bundle/scraply-agent.lock.json" \
             --verify-tag \
             --prerelease \
             --generate-notes \
@@ -188,6 +193,7 @@ jobs:
             "promoted/Scraply ${version}.exe" \
             "promoted/manifest.json" \
             "promoted/SHA256SUMS.txt" \
+            "promoted/scraply-agent.lock.json" \
             --verify-tag \
             --generate-notes \
             --title "Scraply $GITHUB_REF_NAME"

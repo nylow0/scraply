@@ -1,0 +1,18 @@
+[package]
+name = "scraply-agent"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[[bin]]
+name = "scraply-agent"
+path = "src/main.rs"
+
+[dependencies]
+async-trait = "0.1"
+scraply-agent-core = { path = "../scraply-agent-core" }
+scraply-agent-providers = { path = "../scraply-agent-providers" }
+serde.workspace = true
+serde_json.workspace = true
+tokio = { version = "1", features = ["io-std", "io-util", "macros", "rt-multi-thread", "signal", "sync", "time"] }

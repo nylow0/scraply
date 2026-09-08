@@ -10,6 +10,15 @@ const rejected = [{
 }];
 
 describe("rejected problem evidence", () => {
+  test.each([1, 2] as const)("projects the current three-stage development for saved workflow %s", async (version) => {
+    const view = render(ProblemCheckpoint, {
+      problems: [], rejectedCandidates: [], workflowVersion: version, busy: false,
+      onCommit: vi.fn(), onExport: vi.fn(), onOpenSource: vi.fn(),
+    });
+    await fireEvent.input(view.getByRole("textbox", { name: "Or state the problem yourself." }), { target: { value: "A user-asserted problem." } });
+    expect(view.getByText(/~3 model calls projected/)).toBeTruthy();
+  });
+
   test("keeps rejected candidates separate and can reuse one as a user-asserted problem", async () => {
     const view = render(ProblemCheckpoint, {
       problems: [],

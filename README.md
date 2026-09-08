@@ -1,22 +1,31 @@
 # Scraply
 
-Scraply is a local-first Windows desktop app for evidence-backed research and idea exploration. It runs as an Electron application, stores projects in SQLite on your machine, and keeps sources, claims, reports, ideas, ratings, and research progress tied to the run that created them.
+Scraply is a local-first Windows desktop app for evidence-backed research and idea exploration. It runs as an Electron application and stores projects, source snapshots, options, analyses, and user decisions in SQLite on your machine.
 
 ## Requirements
 
 - Windows 10 or 11
 - [Bun](https://bun.sh/) for development
+- Rust's `stable-x86_64-pc-windows-msvc` toolchain and Visual Studio C++ build tools for native builds
 - An Exa or Perplexity API key for web research
-- An authenticated Codex CLI for the default structured-model workflow
+- An OpenAI subscription account connected inside Scraply for the bundled native runtime
 
 ## Development
 
 ```powershell
 bun install
+git submodule update --init --recursive
+bun run prepare:runtime
 bun run dev
 ```
 
-Set `EXA_API_KEY`, `PERPLEXITY_API_KEY`, or both in `.env` for development or in the environment that launches the installed app. Each discovery run uses the search provider selected in its setup. Scraply checks configured providers and Codex in the background, then stores the keys with Windows-backed encryption after validation.
+Set `EXA_API_KEY`, `PERPLEXITY_API_KEY`, or both in `.env` for development or in the environment that launches the installed app. Each discovery run uses the search provider selected in its setup. Scraply checks configured providers in the background, then stores the keys with Windows-backed encryption after validation. Known-problem development does not require web search.
+
+Connect OpenAI through Scraply's account controls. The app opens OpenAI login in your browser and bundles the `scraply-agent` worker it needs. Scraply keeps these credentials separate from other Codex installations on the computer.
+
+The native agent source lives in [runtime/](runtime/README.md) and is built with the app. `nylow0/scraply-agent` is legacy; new runtime changes belong in this repository. The pinned upstream source supplies OpenAI login and Responses transport libraries. Scraply does not package or invoke the Codex CLI.
+
+Native OpenAI does not support output-token ceilings. Scraply omits that field for this provider; request deadlines and the runtime output-size limit still apply, but they do not guarantee a token or billing ceiling. Other providers retain the configured token ceiling.
 
 Run the code checks before handing off a change:
 
@@ -42,19 +51,39 @@ The branch and release workflow is documented in [RELEASE.md](RELEASE.md). `mast
 
 ## Using Scraply
 
-1. Create a research project and answer the intake questions.
-2. Review and edit the generated brief.
-3. Review models, the six planned research lenses, and the conservative maximum cost.
-4. Approve the run, watch run-scoped progress, and inspect reports as they become available.
-5. Generate ideas after synthesis, inspect their evidence, rate them, export them, or create a focused child branch.
+1. Create a research project and choose whether to discover a problem or start from a known problem.
+2. Enter the starting context, audience, optional constraints, and what risks should be evaluated against. Choose 1–20 ideas per problem, a model, reasoning effort, and, for discovery, research depth and search provider. Astra appears in the model selector and is selectable when the connected account's live catalog offers it.
+3. Submit the setup to discover evidence-backed problem candidates, or generate solutions directly for a known problem.
+4. Review discovered problems and their evidence, then select the problems worth developing. The v2 workflow aims for your requested idea count, default three, and waits for your choice. It may return fewer or no ideas when useful alternatives are lacking.
+5. Choose one idea. An independent risk evaluator reviews it against your saved criteria, or the research goal and boundaries if you left the criteria blank. A separate analysis then adds consequences, proposed responses, and an experiment while retaining the risk findings. New v2 runs use three development calls in total. Record your own decision and observed test result separately from the model's judgments.
+6. If one decisive fact is still missing, request one evidence follow-up. Scraply runs the exact question once, quote-checks the extracted observations, and keeps the result separate from the original analysis. Completed and failed follow-ups both consume the run's one-question limit.
+7. Export research as JSON or options and analyses as Markdown/JSON. Saved v1 projects remain readable and exportable. New research always uses the current workflow, including when started from an old project's setup.
 
-Paid work does not begin during intake or brief editing. The approval screen shows the configured ceiling before research starts. Codex subscription usage is tracked by invocation/limits rather than presented as an invented dollar charge; accountable provider/search spend is reserved conservatively and committed as the run proceeds.
+V2 saves run-local prompts, search results, completed stages, and evidence follow-ups. Reopening a project does not generate more work. Continuing a saved v2 run uses its original prompts, even after an override changes. A request whose completion was lost is not automatically replayed. Start a new run when you want changed setup or instructions. Legacy v1 generation and its ten bundled prompts are retired at Dany's request; interrupted v1 runs cannot resume. Saved artifacts and v2 prompt snapshots are preserved.
+
+For the initial three-decision usefulness review, export research JSON plus ideas JSON and Markdown from matching v1 and v2 discovery runs. Start with `bun run evaluate:phase3 -- template <input.json>`; each case contains two `{ ideasPath, ideasMarkdownPath, researchPath, origin, timings? }` variants. Run `bun run evaluate:phase3 -- prepare <input.json> <output-directory>`, then give the reviewer the generated `*-A.md`/`*-B.md` files, `review-packet.json` for source auditing, and a copy of `review-template.json`. Keep `private-mapping.json` separate because it contains workflow identity, provenance (`generated`, `synthetic`, or `live`), original/blinded hashes, run metadata, and optional timings. The preparer removes only the `Workflow: v1.` or `Workflow: v2.` prefix from Markdown; it preserves the selection and problem-evidence assessment, and the different output structure can still reveal a version. After the reviewer records unsupported claims, useful discoveries, reading/correction durations, and the action chosen, run `bun run evaluate:phase3 -- validate <packet.json> <mapping.json> <reviews.json> <result.json>`. Start with three cases and add up to two more when results are mixed. Validation checks complete, untampered records without declaring the Phase 3 gate accepted. Known-problem behavior is tested separately because it does not produce the paired discovery research export this review needs.
+
+Cases default to `comparison: "selected-problem"`, which requires matching problem statements and archived scopes. For independent discovery runs, set `comparison: "research-scope"`: the original nonempty research question and every archived constraint must match, but the selected problems may differ. This compares the whole workflow, including which problem it discovers. Only the cosmetic research title is excluded from the scope check and replaced with the question in the blinded packet. The original exports and their hashes remain in the private mapping.
+
+Provider readiness is checked before a run can start. Native generation attempts retain reported tokens and usage, with unknown usage shown explicitly when the provider does not supply it. Subscription calls do not receive an invented dollar charge. Accountable provider/search spend is reserved conservatively and committed as the run proceeds.
+
+Cancelling while a project is still waiting for the runtime records no provider attempt. A dispatched request whose result was lost remains unknown. Completed runs that propose no options have explicit JSON and Markdown exports, so the usefulness comparison can include that outcome without inventing an idea.
+
+New v2 development runs include recorded experiment observations from earlier completed runs of the same problem in the same project. These remain user reports, with the original mechanism and decision attached. The run snapshots this context; later edits do not rewrite it. At most five recent results and 12,000 characters are included, with an explicit count of omitted results.
+
+Independent risk reviews are saved before final analysis and remain readable if that later call fails. Older runs retain their saved prompts and original stage sequence on resume. Starting a new run adopts the current prompts and independent evaluator. V2 discovery allows two Exa searches at a time, preserves query order, and settles each batch before continuing; Perplexity and model calls remain sequential.
 
 ## Local data and credentials
 
 Use **Open data folder** in the app to open the exact active location. On a standard Windows installation, Electron keeps the database under its user-data directory in a `scraply` folder, with the main database named `scraply.db`. SQLite may also create `scraply.db-wal` and `scraply.db-shm` while the app is running.
 
 Credentials are stored separately in `secrets.bin` using Electron's Windows-backed `safeStorage`. Scraply refuses to claim credentials were saved when secure storage is unavailable. Keys are sent only to the selected provider for the operation that needs them.
+
+## Prompt overrides
+
+Research loads seven bundled `prompts/workflow-v2-*.md` files by default. Each prompt uses English Role, Context, Task, Format, and Style / Tone sections. To customize a prompt, put a deliberately edited file with the same name in the data folder's `prompts` directory. Remove that file to return to the bundled instruction. Missing or empty bundled prompts produce a packaging error; an empty override must be edited or removed before its stage can run.
+
+On upgrade, Scraply moves proven bundled copies of v2 prompts to `prompts/bundled-copy-backups/<hash>/`, so new runs use the current bundle. Deliberate custom v2 overrides stay active. Every recognized retired prompt override, including custom text, moves to `prompts/retired-prompt-backups/<hash>/` after its backup is verified. Unknown filenames remain untouched. `.prompt-versions.json` retains known bundled baselines. Each generation's stored request includes the resolved instruction and evidence used for that call.
 
 ## Backup, export, and reset
 
@@ -69,10 +98,10 @@ Deleting or resetting data is irreversible unless you made a backup first.
 ## Troubleshooting
 
 - **Search does not connect:** the local workspace remains available. Confirm the selected provider's `EXA_API_KEY` or `PERPLEXITY_API_KEY` exists in `.env` during development or in the installed app's launch environment, then retry connections.
-- **Codex validation fails:** confirm `codex` is installed, authenticated, and available in the same Windows user environment that launches Scraply.
-- **Research cannot start:** confirm the brief is approved, the configuration is saved, and no active run already exists for the project.
+- **Native connection requires reconnection:** reconnect OpenAI inside Scraply. Cached model names alone do not establish that an account can run them.
+- **Research cannot start:** confirm the setup is saved, the selected model and required search provider are connected, and no active run already exists for the project.
 - **A report is blank or slow:** collapse and reopen it to retry the on-demand detail request. Reports are intentionally excluded from routine workspace refreshes.
-- **An interrupted run appears after restart:** use Resume to continue it or Cancel to keep completed partial artifacts without scheduling more work.
+- **An interrupted run appears after restart:** Resume is available only when the saved state permits it. If a dispatched request has unknown completion, Scraply blocks automatic replay. Keep the partial artifacts and explicitly start a new run if you want another attempt.
 - **Database errors after a crash:** close every Scraply process before copying, restoring, or resetting SQLite files.
 - **Unexpected startup or process failure:** use **Open logs folder** and keep the correlation reference shown by the app. Logs are local, rotated, and sanitized; Scraply does not upload telemetry.
 

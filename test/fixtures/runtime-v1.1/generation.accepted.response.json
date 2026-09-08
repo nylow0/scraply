@@ -1,0 +1,1 @@
+{"protocolVersion":"1.1","id":"generation-request-1","operation":"generation.start","result":{"generationId":"generation-1","prompt":{"id":"scraply.stage-worker.v1","sha256":"277d724f20acb1f32fa0a8b7c454c670971e3c40bfc921db40c044caa760e6f1"}}}

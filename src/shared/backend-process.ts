@@ -4,6 +4,7 @@ import { ResearchEventSchema, type ValidationState } from "./ipc";
 const SecretsSchema = z.object({
   exaApiKey: z.string().nullable(),
   perplexityApiKey: z.string().nullable(),
+  providerCredentials: z.record(z.string()).default({}),
 });
 
 export const BackendStartMessageSchema = z.object({
@@ -14,6 +15,11 @@ export const BackendStartMessageSchema = z.object({
   promptOverridesDir: z.string().min(1),
   appVersion: z.string().min(1),
   secrets: SecretsSchema,
+  runtimeError: z.string().min(1).optional(),
+  runtime: z.object({
+    executablePath: z.string().min(1),
+    artifact: z.object({ version: z.string(), sourceCommit: z.string(), sha256: z.string() }).strict(),
+  }).strict().optional(),
 });
 
 export const BackendUpdateSecretsMessageSchema = z.object({
@@ -25,6 +31,10 @@ export const BackendUpdateSecretsMessageSchema = z.object({
 export const MainToBackendMessageSchema = z.discriminatedUnion("type", [
   BackendStartMessageSchema,
   BackendUpdateSecretsMessageSchema,
+  z.object({
+    type: z.literal("provider-credential-persisted"), requestId: z.string().min(1),
+    ok: z.boolean(), error: z.string().optional(),
+  }).strict(),
 ]);
 
 export const BackendLogMessageSchema = z.object({
@@ -58,6 +68,10 @@ export const BackendToMainMessageSchema = z.discriminatedUnion("type", [
     type: z.literal("secrets-updated"),
     requestId: z.string().min(1),
   }),
+  z.object({
+    type: z.literal("persist-provider-credential"), requestId: z.string().min(1),
+    providerId: z.string().min(1), credential: z.string().min(1),
+  }).strict(),
   BackendLogMessageSchema,
 ]);
 
@@ -68,7 +82,7 @@ export type BackendToMainMessage = z.infer<typeof BackendToMainMessageSchema>;
 export type BackendSecrets = z.infer<typeof SecretsSchema>;
 
 export function configuredProviderSecretsAreValid(
-  secrets: BackendSecrets,
+  secrets: Pick<BackendSecrets, "exaApiKey" | "perplexityApiKey">,
   validation: Pick<ValidationState, "exa" | "perplexity">,
 ): boolean {
   return (!secrets.exaApiKey || validation.exa.valid)

@@ -31,6 +31,22 @@ export class ThreadRepository {
     }
   }
 
+  findEmptyDraft(): Thread | null {
+    // A saved scope, message, run, or deliberate name makes this a separate project. Reuse an
+    // untouched draft without deleting older entries or resetting its model preferences.
+    const row = this.db.db.prepare(`
+      SELECT t.* FROM threads t
+      WHERE t.status = 'configuring' AND t.title = 'New research'
+        AND NOT EXISTS (SELECT 1 FROM settings s WHERE s.key = 'scope:' || t.id)
+        AND NOT EXISTS (SELECT 1 FROM messages m WHERE m.thread_id = t.id)
+        AND NOT EXISTS (SELECT 1 FROM research_runs r WHERE r.thread_id = t.id)
+      ORDER BY t.updated_at DESC, t.rowid DESC LIMIT 1
+    `).get() as Record<string, unknown> | undefined;
+    return row ? ThreadSchema.parse({
+      id: row.id, title: row.title, status: row.status, createdAt: row.created_at, updatedAt: row.updated_at,
+    }) : null;
+  }
+
   updateThreadStatus(threadId: string, status: Thread["status"]): void {
     this.db.db.prepare("UPDATE threads SET status = ?, updated_at = ? WHERE id = ?")
       .run(status, new Date().toISOString(), threadId);
