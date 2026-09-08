@@ -4,7 +4,7 @@
 
 ## Publish a release candidate
 
-After the target commit lands on `master` and passes CI:
+After the target commit lands on `master` and passes the required checks, either in CI or locally as described below:
 
 ```powershell
 git fetch --prune origin
@@ -33,11 +33,21 @@ Production must promote the accepted RC files without rebuilding them. The workf
 
 Keep GitHub releases immutable so an accepted RC cannot be replaced.
 
+## Release while GitHub Actions is disabled
+
+CI and Release are manually disabled to avoid consuming Actions minutes. Keep them disabled unless Dany requests otherwise. A push or tag must not be used to start a hosted build.
+
+Run the same gates locally from a clean checkout at the exact current `origin/master` SHA: `bun install --frozen-lockfile`, `bun audit --prod`, and `bun run check`. Then run `bun run build:installed` with `SCRAPLY_RELEASE_STRICT=1`, followed by `bun run test:e2e:portable` and `bun run test:e2e:installed`. For a verified private repository only, set `SCRAPLY_ALLOW_UNSIGNED=1`; public releases still require valid signatures. Record the source SHA and actual results in the release notes.
+
+Collect the same five release files described below into an empty bundle directory. Run `bun scripts/check-promotion.ts rc <sha> <rc-tag>` and `bun scripts/verify-promoted-assets.ts <bundle-directory> <sha> <rc-tag>`; add `--allow-unsigned` to the latter only for the private unsigned policy. Create the RC tag at that SHA and publish those five verified files with `gh release create <rc-tag> --verify-tag --prerelease`, using explicit file paths. Install the published candidate and verify its affected workflows before accepting it.
+
+For production, download the accepted RC's five files into a new directory, run `check-promotion.ts production` and `verify-promoted-assets.ts` against the same SHA and RC tag, then publish those exact files under the production tag with `gh release create --verify-tag`. Do not rebuild or replace the accepted RC assets. Local execution changes where the checks run, not the release, signing, acceptance, or rollback requirements.
+
 ## Signing and hashes
 
 The package contains `release/manifest.json` with its source, artifact, and bundled-runtime metadata, plus `release/SHA256SUMS.txt` with installer and portable hashes. Manifest schema 2 records the runtime version, protocol versions, source commit, executable identity, notices, and SHA-256 hashes.
 
-Private builds may be unsigned only when the workflow explicitly sets `SCRAPLY_ALLOW_UNSIGNED=1`; the manifest then records `signingPolicy: "private-unsigned"`. Reject broken signatures. Public releases require valid signatures for Scraply and the bundled runtime.
+Private builds may be unsigned only when the workflow or local release process explicitly sets `SCRAPLY_ALLOW_UNSIGNED=1`; the manifest then records `signingPolicy: "private-unsigned"`. Reject broken signatures. Public releases require valid signatures for Scraply and the bundled runtime.
 
 ## Bundled native runtime
 
