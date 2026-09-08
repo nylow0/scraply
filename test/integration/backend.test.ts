@@ -567,7 +567,7 @@ describe("cutover backend", () => {
     const workspace = await request("/workspace");
     expect(workspace.body.data?.latestResearchRun).toMatchObject({
       canResume: false,
-      resumeBlockedReason: "Codex CLI integration was removed. Start a new run using Native OpenAI.",
+      resumeBlockedReason: "Legacy generation has been retired. Start a new run to use the current prompts. Saved results remain readable.",
     });
     const resumed = await request("/research/resume", { runId: "historical-run" });
     expect(resumed.status).toBe(409);

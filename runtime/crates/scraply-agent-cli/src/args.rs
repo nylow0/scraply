@@ -3,21 +3,12 @@ use std::ffi::OsString;
 pub enum Command {
     Version,
     Runtime,
-    Login(LoginCommand),
-    Logout,
-}
-
-#[derive(Debug, PartialEq, Eq)]
-pub enum LoginCommand {
-    Browser,
-    DeviceAuth,
-    Status,
 }
 
 pub fn parse(arguments: impl IntoIterator<Item = OsString>) -> Result<Command, &'static str> {
     let mut arguments = arguments.into_iter();
     let Some(command) = arguments.next() else {
-        return Err("expected --version, runtime, login, or logout");
+        return Err("expected --version or runtime");
     };
     if command == "--version" {
         ensure_finished(arguments)?;
@@ -27,31 +18,7 @@ pub fn parse(arguments: impl IntoIterator<Item = OsString>) -> Result<Command, &
         ensure_finished(arguments)?;
         return Ok(Command::Runtime);
     }
-    if command == "logout" {
-        ensure_finished(arguments)?;
-        return Ok(Command::Logout);
-    }
-    if command == "login" {
-        return parse_login(arguments).map(Command::Login);
-    }
     Err("unsupported command")
-}
-
-fn parse_login(
-    mut arguments: impl Iterator<Item = OsString>,
-) -> Result<LoginCommand, &'static str> {
-    match arguments.next() {
-        None => Ok(LoginCommand::Browser),
-        Some(argument) if argument == "--device-auth" => {
-            ensure_finished(arguments)?;
-            Ok(LoginCommand::DeviceAuth)
-        }
-        Some(argument) if argument == "status" => {
-            ensure_finished(arguments)?;
-            Ok(LoginCommand::Status)
-        }
-        Some(_) => Err("unsupported login argument"),
-    }
 }
 
 fn ensure_finished(mut arguments: impl Iterator<Item = OsString>) -> Result<(), &'static str> {
@@ -77,20 +44,11 @@ mod tests {
     }
 
     #[test]
-    fn accepts_account_commands() {
-        assert_eq!(
-            parse_strings(&["login"]),
-            Ok(Command::Login(LoginCommand::Browser))
-        );
-        assert_eq!(
-            parse_strings(&["login", "--device-auth"]),
-            Ok(Command::Login(LoginCommand::DeviceAuth))
-        );
-        assert_eq!(
-            parse_strings(&["login", "status"]),
-            Ok(Command::Login(LoginCommand::Status))
-        );
-        assert_eq!(parse_strings(&["logout"]), Ok(Command::Logout));
+    fn rejects_standalone_account_commands() {
+        assert!(parse_strings(&["login"]).is_err());
+        assert!(parse_strings(&["login", "--device-auth"]).is_err());
+        assert!(parse_strings(&["login", "status"]).is_err());
+        assert!(parse_strings(&["logout"]).is_err());
     }
 
     #[test]

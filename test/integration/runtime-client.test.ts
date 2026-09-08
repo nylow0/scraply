@@ -15,6 +15,15 @@ const fixtureScript = join(import.meta.dir, "..", "fixtures", "runtime-child.cjs
 const scratchDirectories: string[] = [];
 const clients: RuntimeClient[] = [];
 
+test("excludes inherited authentication tokens and endpoint overrides from the native child", async () => {
+  const runtime = client("auth-environment", { environment: {
+    CODEX_ACCESS_TOKEN: "fixture-only", CODEX_AUTHAPI_BASE_URL: "https://fixture.invalid",
+    CODEX_REFRESH_TOKEN_URL_OVERRIDE: "https://fixture.invalid", CODEX_REVOKE_TOKEN_URL_OVERRIDE: "https://fixture.invalid",
+    CODEX_APP_SERVER_LOGIN_CLIENT_ID: "fixture-only", codex_api_key: "fixture-only", OPENAI_API_KEY: "fixture-only",
+  } });
+  expect((await runtime.start()).selectedProtocolVersion).toBe("1.1");
+});
+
 function client(mode: string, overrides: {
   requestTimeoutMs?: number; controlTimeoutMs?: number; terminalGraceMs?: number; environment?: NodeJS.ProcessEnv;
 } = {}) {
@@ -205,6 +214,7 @@ describe("persistent native runtime client", () => {
     const runtime = client("normal", { environment: { SCRAPLY_RUNTIME_CAPTURE: capturePath } });
 
     await harvestFactors({ title: "Repair reliability", audience: "Repair shops", domain: "Parts delivery", observations: "", offLimits: [] }, {
+      prompt: () => "Fixture discovery instructions", workflowVersion: 2,
       model: { providerId: "openai-subscription", modelId: "gpt-fixture" }, reasoningEffort: "medium", depth: "quick",
       modelClient: runtime,
       search: { async search() { return [adversarial]; } },

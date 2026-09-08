@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { z } from "zod";
 import { ResearchEngine } from "../../src/core/research-engine";
+import { WorkflowExecution } from "../../src/core/workflow-execution";
 import { discoveryRunProjection } from "../../src/core/discovery";
 import { DatabaseClient } from "../../src/db/client";
 import { CostLedgerRepository } from "../../src/db/repositories/cost-ledger";
@@ -39,7 +40,7 @@ describe("research engine deadlines", () => {
     db.db.prepare("INSERT INTO threads (id, title, status, created_at, updated_at) VALUES ('thread-1', 'Repair', 'configuring', ?, ?)")
       .run(now, now);
     const config: RunConfig = {
-      configVersion: 2, searchProvider: "exa", model: TEST_MODEL, reasoningEffort: "medium",
+      configVersion: 2, workflowVersion: 2, searchProvider: "exa", model: TEST_MODEL, reasoningEffort: "medium",
       discoveryDepth: "quick", maxRunMinutes: 1, researchMode: "known-problem", knownProblem: "Parts arrive late.",
     };
     const attempts = [
@@ -92,6 +93,7 @@ describe("research engine deadlines", () => {
       INSERT INTO rejected_problem_candidates (id, discovery_run_id, statement, reason, created_at)
       VALUES ('rejected-1', ?, 'One-source candidate', 'Cited factors span one source hostname; two are required.', ?)
     `).run(runId, now);
+    new WorkflowExecution(db, runId).save("discovery-completed", { problems: [], blockedCandidates: [], killSources: [] });
     let modelCalls = 0;
     const modelClient: StructuredModelClient = {
       async structuredCompletion() {
@@ -257,13 +259,13 @@ describe("research engine deadlines", () => {
       onEvent: () => undefined,
     });
 
-    await engine.resumeRun(developmentRunId);
-    await waitFor(() => !engine.getActiveRunIds().has(developmentRunId));
+    db.db.prepare("UPDATE research_runs SET workflow_version = 1, config_json = ? WHERE id = ?").run(JSON.stringify({ ...config, workflowVersion: 1 }), developmentRunId);
+    await expect(engine.resumeRun(developmentRunId)).rejects.toThrow("Legacy generation has been retired");
     expect(modelCalls).toBe(0);
     expect(db.db.prepare("SELECT id, mechanism FROM solutions WHERE research_run_id = ?").all(developmentRunId))
       .toEqual([{ id: "saved-solution", mechanism: "Retained mechanism" }]);
     expect(db.db.prepare("SELECT status, completion_reason FROM research_runs WHERE id = ?").get(developmentRunId))
-      .toEqual(expect.objectContaining({ status: "failed", completion_reason: expect.stringContaining("partial saved results") }));
+      .toEqual(expect.objectContaining({ status: "running", completion_reason: null }));
     db.close();
   });
 
@@ -285,7 +287,7 @@ describe("research engine deadlines", () => {
         VALUES ('thread-1', 'Deadline', 'configuring', ?, ?)
       `).run(now, now);
       const config: RunConfig = {
-        configVersion: 2,
+        configVersion: 2, workflowVersion: 2,
         searchProvider: "exa",
         model: TEST_MODEL,
         reasoningEffort: "medium",
@@ -350,7 +352,7 @@ describe("research engine deadlines", () => {
       const runId = await engine.startDiscovery("thread-shutdown", {
         title: "Shutdown", audience: "Operators", domain: "Operations", observations: "", offLimits: [],
       }, {
-        configVersion: 2, model: TEST_MODEL, reasoningEffort: "medium", discoveryDepth: "quick", maxRunMinutes: 90, searchProvider: "exa",
+        configVersion: 2, workflowVersion: 2, model: TEST_MODEL, reasoningEffort: "medium", discoveryDepth: "quick", maxRunMinutes: 90, searchProvider: "exa",
         researchMode: "explore-market", knownProblem: "",
       });
       await waitFor(() => providerStarted);
@@ -373,7 +375,7 @@ describe("research engine deadlines", () => {
     const modelClient: StructuredModelClient = {
       async structuredCompletion(request) {
         for (const payload of [
-          { queries: ["query one", "query two", "query three"] },
+          { queries: ["query one", "query two", "query three"].map(query => ({ query, uncertainty: "Frequency", intendedSourceType: "Records" })) },
           { factors: [] },
           { problems: [] },
         ]) {
@@ -407,7 +409,7 @@ describe("research engine deadlines", () => {
       const runId = await engine.startDiscovery("thread-provider", {
         title: "Provider", audience: "Operators", domain: "Operations", observations: "", offLimits: [],
       }, {
-        configVersion: 2, model: TEST_MODEL, reasoningEffort: "medium", discoveryDepth: "quick", maxRunMinutes: 90,
+        configVersion: 2, workflowVersion: 2, model: TEST_MODEL, reasoningEffort: "medium", discoveryDepth: "quick", maxRunMinutes: 90,
         searchProvider: "perplexity", researchMode: "explore-market", knownProblem: "",
       });
       await waitFor(() => !engine.getActiveRunIds().has(runId));
@@ -435,7 +437,7 @@ function createPersistedDiscoveryRun(): {
     INSERT INTO threads (id, title, status, created_at, updated_at)
     VALUES ('thread-1', 'Resume', 'discovery-running', ?, ?)
   `).run(now, now);
-  const config: RunConfig = { configVersion: 2, model: TEST_MODEL, reasoningEffort: "medium", discoveryDepth: "quick", maxRunMinutes: 5, searchProvider: "exa", researchMode: "explore-market", knownProblem: "" };
+  const config: RunConfig = { configVersion: 2, workflowVersion: 2, model: TEST_MODEL, reasoningEffort: "medium", discoveryDepth: "quick", maxRunMinutes: 5, searchProvider: "exa", researchMode: "explore-market", knownProblem: "" };
   const runId = new ResearchRunRepository(db).create("thread-1", config).runId;
   const discovery = new DiscoveryRepository(db);
   discovery.persistScope(runId, {
@@ -445,7 +447,7 @@ function createPersistedDiscoveryRun(): {
     observations: "Manual work repeats",
     offLimits: [],
   });
-  discovery.persistFactors(runId, [{
+  const source = {
     id: "source-1",
     providerSourceId: "provider-source-1",
     canonicalUrl: "https://example.test/source-1",
@@ -455,15 +457,20 @@ function createPersistedDiscoveryRun(): {
     publishedAt: null,
     contentHash: "source-1-hash",
     retrievedAt: now,
-  }], [{
+    url: "https://example.test/source-1",
+  };
+  const factor = {
     id: "factor-1",
     subject: "Operators",
     behavior: "repeat manual work",
     quote: "repeat manual work every week",
     sourceId: "source-1",
-    harvestMode: "domain",
+    harvestMode: "domain" as const,
     modelConfidence: 0.8,
-  }]);
+    source,
+  };
+  discovery.persistFactors(runId, [source], [factor]);
+  new WorkflowExecution(db, runId).save("harvest", { sources: [source], factors: [factor], rejections: [], metrics: {} });
   const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60 * 1_000).toISOString();
   db.db.prepare("UPDATE research_runs SET created_at = ?, updated_at = ? WHERE id = ?").run(twoHoursAgo, twoHoursAgo, runId);
   return { db, directory, runId, config };
@@ -474,7 +481,7 @@ function result<T>(request: StructuredStageRequest<T>, value: unknown) {
 }
 
 function metadata(model: { providerId: string; modelId: string }) {
-  return { model, usage: { status: "unknown" as const }, latencyMs: 1, repairCount: 0, providerRequestIds: [], attempts: [] };
+  return { model, prompt: { id: "fixture", sha256: "a".repeat(64) }, usage: { status: "unknown" as const }, latencyMs: 1, repairCount: 0, providerRequestIds: [], attempts: [] };
 }
 
 async function waitFor(predicate: () => boolean): Promise<void> {

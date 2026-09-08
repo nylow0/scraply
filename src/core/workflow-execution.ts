@@ -76,6 +76,7 @@ export class WorkflowExecution {
       const saved = this.read<unknown>(key);
       if (saved) return SourceSchema.array().parse(saved);
       const results = await client.search(query, options);
+      options?.signal?.throwIfAborted();
       this.save(key, results);
       return results;
     } };

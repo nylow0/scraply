@@ -9,6 +9,10 @@ if (process.argv[2] === "--version") {
 
 const mode = process.env.SCRAPLY_RUNTIME_CHILD_MODE || "normal";
 const workflow = mode.startsWith("workflow");
+if (mode === "auth-environment") {
+  const blocked = new Set(["CODEX_ACCESS_TOKEN", "CODEX_AUTHAPI_BASE_URL", "CODEX_REFRESH_TOKEN_URL_OVERRIDE", "CODEX_REVOKE_TOKEN_URL_OVERRIDE", "CODEX_APP_SERVER_LOGIN_CLIENT_ID", "CODEX_API_KEY", "OPENAI_API_KEY"]);
+  if (Object.keys(process.env).some(name => blocked.has(name.toUpperCase()))) process.exit(9);
+}
 let connected = false;
 let credential;
 let pendingLogin;
@@ -62,6 +66,9 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
       return;
     }
     const bytes = Buffer.from(`${JSON.stringify({ protocolVersion: "1.1", id: request.id, operation: request.operation, result: { models: [{ identity: model, displayName: "Modèle", supportsStructuredOutput: true }] } })}\n`);
+    // Workflow requests overlap. Fragment only the dedicated framing fixture so
+    // another response cannot be spliced into the middle of this JSON envelope.
+    if (workflow) { process.stdout.write(bytes); return; }
     const split = bytes.indexOf(Buffer.from([0xc3, 0xa8])) + 1;
     process.stdout.write(bytes.subarray(0, split));
     setTimeout(() => process.stdout.write(bytes.subarray(split)), 5);
@@ -116,7 +123,7 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
       prompt: mode === "prompt-mismatch" ? { ...prompt, sha256: "f".repeat(64) } : prompt,
     });
     if (workflow && !connected) throw new Error("Workflow generation arrived before session restoration");
-    if (mode === "workflow-crash" && request.payload.workOrder.stage.startsWith("outcomes:")) {
+    if (mode === "workflow-crash" && request.payload.workOrder.stage === "risk-evaluation") {
       process.exit(7);
       return;
     }
@@ -130,7 +137,8 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
       repairCount: 0, providerRequestIds: ["fixture-provider-request"],
       attempts: [{ attempt: "initial", outcome: "completed", providerCompletion: "confirmed", model, usage: { status: "unknown" }, cost: { status: "not_reported" }, finishReason: "stop", latencyMs: 1, providerRequestId: "fixture-provider-request" }],
     };
-    const output = workflow ? require("./runtime-workflow.cjs")(request.payload)
+    const output = mode === "workflow-analysis-fail" && request.payload.workOrder.stage === "decision-analysis" ? { invalid: true }
+      : workflow ? require("./runtime-workflow.cjs")(request.payload)
       : mode === "invalid-output" ? { invalid: true } : request.payload.workOrder.stage.startsWith("query-plan")
       ? { queries: ["one", "two", "three"] }
       : request.payload.workOrder.stage.startsWith("factor-harvest") ? { factors: [] } : { answer: "right" };

@@ -32,9 +32,18 @@ export class DatabaseClient {
     );
     for (const migration of MIGRATIONS) {
       if (applied.has(migration.id)) continue;
+      const rebuild = "rebuildReferencedTable" in migration && migration.rebuildReferencedTable;
+      // SQLite requires this before BEGIN. Preserve child rows and references while
+      // replacing their parent, then validate the entire graph before committing.
+      if (rebuild) this.db.exec("PRAGMA foreign_keys = OFF; PRAGMA legacy_alter_table = ON;");
       this.db.exec("BEGIN");
+      this.transactionActive = true;
       try {
-        this.db.exec(migration.sql);
+        if (migration.sql) this.db.exec(migration.sql);
+        if ("afterSql" in migration) migration.afterSql(this);
+        if (rebuild && this.db.prepare("PRAGMA foreign_key_check").all().length > 0) {
+          throw new Error(`Migration ${migration.id} would break saved research references`);
+        }
         this.db.prepare("INSERT INTO schema_migrations (id, applied_at) VALUES (?, ?)").run(
           migration.id,
           new Date().toISOString(),
@@ -43,6 +52,9 @@ export class DatabaseClient {
       } catch (error) {
         this.db.exec("ROLLBACK");
         throw error;
+      } finally {
+        this.transactionActive = false;
+        if (rebuild) this.db.exec("PRAGMA legacy_alter_table = OFF; PRAGMA foreign_keys = ON;");
       }
     }
   }

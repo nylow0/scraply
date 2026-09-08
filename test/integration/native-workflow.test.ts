@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { z } from "zod";
 import { DatabaseClient } from "../../src/db/client";
+import { WORKFLOW_V2_STAGE_REGISTRY, type WorkflowV2StageId } from "../../src/core/stages";
 import { WorkspaceStateSchema, SolutionViewSchema, type WorkspaceState, type ResearchEvent } from "../../src/shared/ipc";
 import { GenerationStartPayloadSchema } from "../../src/shared/runtime-protocol";
 import { DEFAULT_RUN_CONFIG } from "../../src/shared/schemas";
@@ -24,10 +25,10 @@ afterEach(async () => {
   }
 });
 
-describe("native v1 research workflow through the production backend", () => {
+describe("native research workflow through the production backend", () => {
   test("fails before provider spend on an empty override, then runs and snapshots a deliberate edit", async () => {
     const item = await fixture({ searchEnabled: false });
-    const overridePath = join(item.directory, "prompts", "solutions.md");
+    const overridePath = join(item.directory, "prompts", "workflow-v2-solutions.md");
     writeFileSync(overridePath, " \n");
     const brokenThread = await item.createThread("known-problem");
     await item.post("/research/start", { threadId: brokenThread }, z.object({ runId: z.string() }));
@@ -35,22 +36,22 @@ describe("native v1 research workflow through the production backend", () => {
     expect(item.requests()).toHaveLength(0);
     item.assertAccounting(0);
 
-    const instruction = `${readFileSync(join(process.cwd(), "prompts", "solutions.md"), "utf8").trim()}\n\nExplain the maintenance burden of each mechanism.`;
+    const instruction = `${readFileSync(join(process.cwd(), "prompts", "workflow-v2-solutions.md"), "utf8").trim()}\n\nExplain the maintenance burden of each mechanism.`;
     writeFileSync(overridePath, instruction);
     const threadId = await item.createThread("known-problem");
     await item.post("/research/start", { threadId }, z.object({ runId: z.string() }));
     await item.waitFor((state) => state.threads.find((thread) => thread.id === threadId)?.status === "solutions-ready");
     expect(item.requests()[0]?.workOrder.instruction).toBe(instruction);
-    item.assertAccounting(14);
+    item.assertAccounting(1);
     await item.restart();
     expect(readFileSync(overridePath, "utf8")).toBe(instruction);
-    expect((await item.workspace()).solutions).toHaveLength(3);
+    expect((await item.workspace()).solutions).toHaveLength(2);
     const db = new DatabaseClient(item.dbPath);
     try {
       const row = db.db.prepare("SELECT request_json FROM generation_attempts WHERE stage_key = 'solutions'").get() as { request_json: string };
       expect(z.object({ workOrder: z.object({ instruction: z.string() }) }).parse(JSON.parse(row.request_json)).workOrder.instruction).toBe(instruction);
     } finally { db.close(); }
-    expect(item.requests()).toHaveLength(14);
+    expect(item.requests()).toHaveLength(1);
   }, 15_000);
 
   test("discovers, selects an adverse premise, develops, exports, and reopens without replay", async () => {
@@ -61,12 +62,15 @@ describe("native v1 research workflow through the production backend", () => {
     expect(discovered.problemCandidates).toHaveLength(1);
     expect(discovered.problemCandidates[0]?.verdict).toBe("overstated");
     expect(discovered.problemCandidates[0]?.verdictReason).toContain("disagrees");
-    expect(discovered.problemCandidates[0]?.factors).toHaveLength(4);
+    expect(discovered.problemCandidates[0]?.factors).toHaveLength(2);
     expect(item.searches).toHaveLength(7);
 
     await item.post("/research/select-problems", { threadId, problemIds: [discovered.problemCandidates[0]!.id], userProblem: null }, WorkspaceStateSchema);
-    const developed = await item.waitFor((state) => state.threads.find((thread) => thread.id === threadId)?.status === "solutions-ready");
-    expect(developed.solutions).toHaveLength(3);
+    const options = await item.waitFor((state) => state.threads.find((thread) => thread.id === threadId)?.status === "solutions-ready");
+    expect(options.solutions).toHaveLength(2);
+    const selected = options.solutions[0]!;
+    await item.post("/research/select-option", { threadId, runId: selected.runId, solutionId: selected.id }, WorkspaceStateSchema);
+    const developed = await item.waitFor((state) => state.latestResearchRun?.status === "completed" && !state.latestResearchRun.awaitingSelection);
     const progress = item.events.filter((event) => event.type === "run-progress")
       .filter((event) => event.runId === developed.latestResearchRun?.runId);
     expect(progress.at(-1)?.usage).toEqual(developed.latestResearchRun?.usage);
@@ -74,10 +78,11 @@ describe("native v1 research workflow through the production backend", () => {
     for (const summary of developed.solutions) {
       expect(summary.outcomes).toHaveLength(0);
       const solution = await item.post(`/ideas/${summary.id}`, undefined, SolutionViewSchema);
-      expect(solution.outcomes).toHaveLength(4);
-      expect(solution.risks).toHaveLength(2);
-      expect(solution.risks.some((risk) => risk.impact === "project ends")).toBe(true);
-      expect(solution.risks.every((risk) => risk.mitigations.length === 1)).toBe(true);
+      expect(solution.outcomes).toHaveLength(0);
+      if (solution.selected) {
+        expect(solution.riskEvaluation?.risks).toHaveLength(1);
+        expect(solution.decisionAnalysis?.proposedResponses[0]?.riskIds).toEqual(["sparse"]);
+      }
     }
 
     const exported = await item.post("/research/export", { threadId }, z.object({ content: z.string() }));
@@ -91,24 +96,24 @@ describe("native v1 research workflow through the production backend", () => {
     }
     expect(research.researchRun.config.model.providerId).toBe(model.providerId);
     const ideas = await item.post("/ideas/export", { threadId, format: "json" }, z.object({ files: z.array(z.object({ content: z.string() })) }));
-    expect(JSON.parse(ideas.files[0]!.content)).toHaveLength(3);
+    expect(JSON.parse(ideas.files[0]!.content)).toHaveLength(2);
 
     const requests = item.requests();
-    expect(requests).toHaveLength(20); // Six discovery generations plus the unchanged fourteen-call v1 development.
+    expect(requests).toHaveLength(8); // Five discovery generations, options, risk evaluation and analysis.
     expect(requests.filter((request) => request.workOrder.stage === "solutions")).toHaveLength(1);
     for (const request of requests) {
       expect(request.repairPolicy).toBe("one_retry");
       expect(JSON.stringify(request.workOrder)).not.toContain(untrusted);
       expect(request.maxOutputTokens).toBeUndefined();
-      expect(request.deadlineMs).toBe(120_000);
       const promptName = request.workOrder.stage.split(":")[0]!;
-      expect(request.workOrder.instruction.startsWith(readFileSync(join(process.cwd(), "prompts", `${promptName}.md`), "utf8").trim())).toBe(true);
+      expect(request.deadlineMs).toBe(WORKFLOW_V2_STAGE_REGISTRY[promptName as WorkflowV2StageId].deadlineMs);
+      expect(request.workOrder.instruction.startsWith(readFileSync(join(process.cwd(), "prompts", `workflow-v2-${promptName}.md`), "utf8").trim())).toBe(true);
     }
     expect(requests.some((request) => JSON.stringify(request.evidence).includes(untrusted))).toBe(true);
     expect(JSON.stringify(requests)).not.toContain("synthetic-credential");
     expect(exported.content).not.toContain("synthetic-credential");
     expect(ideas.files[0]?.content).not.toContain("synthetic-credential");
-    item.assertAccounting(20);
+    item.assertAccounting(8);
     expect(item.processIds()).toHaveLength(1);
 
     await item.restart();
@@ -117,8 +122,8 @@ describe("native v1 research workflow through the production backend", () => {
     expect(reopened.problemCandidates).toEqual(developed.problemCandidates);
     const replay = await item.raw("/research/resume", { runId });
     expect(replay.status).toBe(409);
-    expect(item.requests()).toHaveLength(20);
-    item.assertAccounting(20);
+    expect(item.requests()).toHaveLength(8);
+    item.assertAccounting(8);
     const validation = await item.post("/validation", undefined, z.object({ native: z.object({ connected: z.boolean() }) }));
     expect(validation.native.connected).toBe(true);
     expect(item.processIds()).toHaveLength(2);
@@ -131,10 +136,10 @@ describe("native v1 research workflow through the production backend", () => {
     const state = await item.waitFor((value) => value.threads.find((thread) => thread.id === threadId)?.status === "solutions-ready");
     expect(state.validation.native.connected).toBe(true);
     expect(state.validation.exa.valid).toBe(false);
-    expect(state.solutions).toHaveLength(3);
+    expect(state.solutions).toHaveLength(2);
     expect(item.searches).toHaveLength(0);
-    expect(item.requests()).toHaveLength(14);
-    item.assertAccounting(14);
+    expect(item.requests()).toHaveLength(1);
+    item.assertAccounting(1);
     const exported = await item.post("/ideas/export", { threadId, format: "markdown" }, z.object({ files: z.array(z.object({ content: z.string() })) }));
     expect(exported.files[0]?.content).toContain("Supplier reliability ledger");
   }, 15_000);
@@ -150,7 +155,7 @@ describe("native v1 research workflow through the production backend", () => {
     expect(item.requests()).toHaveLength(1);
     await item.restart();
     expect((await item.workspace()).solutions).toHaveLength(0);
-    expect((await item.raw("/research/resume", { runId })).status).toBe(409);
+    expect((await item.workspace()).latestResearchRun?.canResume).toBe(true);
     const db = new DatabaseClient(item.dbPath);
     try {
       expect(db.db.prepare("SELECT status, committed_usd FROM cost_ledger WHERE generation_attempt_id IS NOT NULL").all())
@@ -187,8 +192,10 @@ describe("native v1 research workflow through the production backend", () => {
     const item = await fixture({ mode: "workflow-crash", searchEnabled: false });
     const threadId = await item.createThread("known-problem");
     const { runId } = await item.post("/research/start", { threadId }, z.object({ runId: z.string() }));
+    const options = await item.waitFor((state) => state.latestResearchRun?.awaitingSelection === true);
+    await item.post("/research/select-option", { threadId, runId, solutionId: options.solutions[0]!.id }, WorkspaceStateSchema);
     const failed = await item.waitFor((state) => state.threads.find((thread) => thread.id === threadId)?.status === "failed");
-    expect(failed.solutions).toHaveLength(0); // Incomplete v1 runs are retained in SQLite, not presented as finished solutions.
+    expect(failed.solutions).toHaveLength(2);
     expect(item.requests()).toHaveLength(2);
     await item.restart();
     expect((await item.workspace()).solutions).toEqual(failed.solutions);
@@ -196,7 +203,7 @@ describe("native v1 research workflow through the production backend", () => {
     expect(item.requests()).toHaveLength(2);
     const db = new DatabaseClient(item.dbPath);
     try {
-      expect(db.db.prepare("SELECT COUNT(*) AS count FROM solutions WHERE research_run_id = ?").get(runId)).toEqual({ count: 3 });
+      expect(db.db.prepare("SELECT COUNT(*) AS count FROM solutions WHERE research_run_id = ?").get(runId)).toEqual({ count: 2 });
       expect(db.db.prepare("SELECT COUNT(*) AS count FROM outcomes").get()).toEqual({ count: 0 });
       expect(db.db.prepare("SELECT status FROM generation_attempts ORDER BY created_at, rowid").all())
         .toEqual([{ status: "completed" }, { status: "interrupted" }]);
@@ -206,6 +213,63 @@ describe("native v1 research workflow through the production backend", () => {
 });
 
 describe("native v2 decisions through the production backend", () => {
+  test("saves twenty configured ideas and selects the last one", async () => {
+    const item = await fixture({ mode: "workflow-many", searchEnabled: false });
+    const threadId = await item.createThread("known-problem", 20);
+    await item.post("/research/start", { threadId }, z.object({ runId: z.string() }));
+    const options = await item.waitFor(state => state.latestResearchRun?.awaitingSelection === true);
+    expect(options.solutions).toHaveLength(20);
+    const selected = options.solutions[19]!;
+    await item.post("/research/select-option", { threadId, runId: selected.runId, solutionId: selected.id }, WorkspaceStateSchema);
+    await item.waitFor(state => state.latestResearchRun?.status === "completed" && !state.latestResearchRun.awaitingSelection);
+    expect((await item.post(`/ideas/${selected.id}`, undefined, SolutionViewSchema)).decisionAnalysis).not.toBeNull();
+    await item.restart();
+    expect((await item.workspace()).solutions).toHaveLength(20);
+    item.assertAccounting(3);
+  });
+
+  test("retains and exports risk evaluation after analysis fails, then reuses it on resume", async () => {
+    const item = await fixture({ mode: "workflow-analysis-fail", searchEnabled: false });
+    const threadId = await item.createThread("known-problem");
+    await item.post("/research/start", { threadId }, z.object({ runId: z.string() }));
+    const options = await item.waitFor(state => state.latestResearchRun?.awaitingSelection === true);
+    const selected = options.solutions[0]!;
+    await item.post("/research/select-option", { threadId, runId: selected.runId, solutionId: selected.id }, WorkspaceStateSchema);
+    await item.waitFor(state => state.latestResearchRun?.status === "failed");
+    const failed = await item.post(`/ideas/${selected.id}`, undefined, SolutionViewSchema);
+    expect(failed.riskEvaluation?.risks[0]?.riskId).toBe("sparse");
+    expect(failed.decisionAnalysis).toBeNull();
+    const exported = await item.post("/ideas/export", { threadId, format: "markdown" }, z.object({ files: z.array(z.object({ content: z.string() })) }));
+    expect(exported.files[0]!.content).toContain("Observed order volume stays too sparse");
+    await item.restart("workflow");
+    await item.post("/research/resume", { runId: selected.runId }, z.unknown());
+    await item.waitFor(state => state.latestResearchRun?.status === "completed");
+    const resumed = await item.post(`/ideas/${selected.id}`, undefined, SolutionViewSchema);
+    expect(resumed.riskEvaluation).toEqual(failed.riskEvaluation);
+    expect(resumed.decisionAnalysis?.risks).toEqual(failed.riskEvaluation?.risks);
+    expect(item.requests().map(request => request.workOrder.stage)).toEqual(["solutions", "risk-evaluation", "decision-analysis", "decision-analysis"]);
+  });
+
+  test("continues a historical six-stage run without adding risk evaluation", async () => {
+    const item = await fixture({ searchEnabled: false });
+    const threadId = await item.createThread("known-problem");
+    await item.post("/research/start", { threadId }, z.object({ runId: z.string() }));
+    const options = await item.waitFor(state => state.latestResearchRun?.awaitingSelection === true);
+    const selected = options.solutions[0]!;
+    const db = new DatabaseClient(item.dbPath);
+    try {
+      const row = db.db.prepare("SELECT value_json FROM workflow_snapshots WHERE research_run_id = ? AND snapshot_key = 'prompts'").get(selected.runId) as { value_json: string };
+      const prompts = JSON.parse(row.value_json) as Record<string, unknown>;
+      delete prompts["risk-evaluation"];
+      db.db.prepare("UPDATE workflow_snapshots SET value_json = ? WHERE research_run_id = ? AND snapshot_key = 'prompts'").run(JSON.stringify(prompts), selected.runId);
+    } finally { db.close(); }
+    await item.restart();
+    await item.post("/research/select-option", { threadId, runId: selected.runId, solutionId: selected.id }, WorkspaceStateSchema);
+    await item.waitFor(state => state.latestResearchRun?.status === "completed" && !state.latestResearchRun.awaitingSelection);
+    expect(item.requests().map(request => request.workOrder.stage)).toEqual(["solutions", "decision-analysis"]);
+    item.assertAccounting(2);
+  });
+
   test("pauses after options, reopens under changed prompts, analyzes one option and records an observed result", async () => {
     const item = await fixture({ searchEnabled: false, workflowVersion: 2 });
     const threadId = await item.createThread("known-problem");
@@ -222,8 +286,8 @@ describe("native v2 decisions through the production backend", () => {
     expect(item.requests()).toHaveLength(1);
     await item.post("/research/select-option", { threadId, runId: first.runId, solutionId: first.id }, WorkspaceStateSchema);
     const completed = await item.waitFor((state) => state.latestResearchRun?.status === "completed" && !state.latestResearchRun.awaitingSelection);
-    expect(item.requests()).toHaveLength(2);
-    expect(item.requests()[1]!.workOrder.instruction).toBe(savedPrompt.trim());
+    expect(item.requests()).toHaveLength(3);
+    expect(item.requests()[2]!.workOrder.instruction).toBe(savedPrompt.trim());
     expect(completed.solutions.filter((idea) => idea.selected)).toHaveLength(1);
     const detail = await item.post(`/ideas/${first.id}`, undefined, z.object({ decisionAnalysis: z.object({ experiment: z.object({ passCriterion: z.string() }) }) }));
     expect(detail.decisionAnalysis.experiment.passCriterion).toContain("eight");
@@ -234,16 +298,16 @@ describe("native v2 decisions through the production backend", () => {
     const markdown = await item.post("/ideas/export", { threadId, format: "markdown" }, z.object({ files: z.array(z.object({ content: z.string() })) }));
     expect(markdown.files[0]!.content).toContain("Next experiment");
     await item.restart();
-    expect(item.requests()).toHaveLength(2);
-    item.assertAccounting(2);
+    expect(item.requests()).toHaveLength(3);
+    item.assertAccounting(3);
     const db = new DatabaseClient(item.dbPath);
     try {
-      expect(db.db.prepare("SELECT stage_id FROM stage_results ORDER BY completed_at").all()).toEqual([{ stage_id: "solutions" }, { stage_id: "decision-analysis" }]);
+      expect(db.db.prepare("SELECT stage_id FROM stage_results ORDER BY completed_at").all()).toEqual([{ stage_id: "solutions" }, { stage_id: "risk-evaluation" }, { stage_id: "decision-analysis" }]);
       expect(db.db.prepare("SELECT observed_result FROM decision_analyses").get()).toEqual({ observed_result: "Nine of ten arrivals met the estimate" });
     } finally { db.close(); }
   }, 20_000);
 
-  test("preserves contrary sources and untrusted observations through all six v2 stages", async () => {
+  test("preserves contrary sources and untrusted observations through all seven v2 stages", async () => {
     const item = await fixture({ workflowVersion: 2 });
     const threadId = await item.createThread("explore-market");
     await item.post("/research/start", { threadId }, z.object({ runId: z.string() }));
@@ -262,7 +326,7 @@ describe("native v2 decisions through the production backend", () => {
     expect(JSON.stringify(analysis.evidence)).toContain("Delays may cluster");
     expect(JSON.stringify(analysis.evidence)).toContain("This source may not represent other shops");
     expect(JSON.stringify(analysis.evidence)).not.toContain('"researchAssessments"');
-    expect(item.requests().filter((request) => ["solutions", "decision-analysis"].includes(request.workOrder.stage))).toHaveLength(2);
+    expect(item.requests().filter((request) => ["solutions", "risk-evaluation", "decision-analysis"].includes(request.workOrder.stage))).toHaveLength(3);
 
     const question = "Do representative delivery logs contradict the selected option?";
     const requestsBeforeFollowUp = item.requests().length;
@@ -317,11 +381,11 @@ describe("native v2 decisions through the production backend", () => {
     await item.restart();
     expect((await item.post(`/ideas/${selected.id}`, undefined, SolutionViewSchema)).evidenceFollowUp)
       .toEqual(detail.evidenceFollowUp);
-    expect(item.requests()).toHaveLength(2);
+    expect(item.requests()).toHaveLength(3);
   }, 20_000);
 });
 
-async function fixture({ mode = "workflow", searchEnabled = true, workflowVersion = 1, hangFollowUpSearch = false }: {
+async function fixture({ mode = "workflow", searchEnabled = true, workflowVersion = 2, hangFollowUpSearch = false }: {
   mode?: string; searchEnabled?: boolean; workflowVersion?: 1 | 2; hangFollowUpSearch?: boolean;
 } = {}) {
   const directory = mkdtempSync(join(tmpdir(), "scraply-native-workflow-"));
@@ -365,12 +429,12 @@ async function fixture({ mode = "workflow", searchEnabled = true, workflowVersio
     directory, dbPath, searches, events, raw, post, workspace, close,
     operations: () => lines(operationsCapture), processIds: () => lines(pids),
     requests: () => lines(capture).map((line) => z.object({ payload: GenerationStartPayloadSchema }).parse(JSON.parse(line)).payload),
-    async restart() { await close(); await open(); },
-    async createThread(researchMode: "explore-market" | "known-problem") {
+    async restart(nextMode = mode) { await close(); mode = nextMode; await open(); },
+    async createThread(researchMode: "explore-market" | "known-problem", ideaCount = 3) {
       const created = await post("/threads", { title: scope.title }, z.object({ thread: z.object({ id: z.string() }) }));
       const threadId = created.thread.id;
       await post("/scope", { threadId, scope }, WorkspaceStateSchema);
-      await post("/run-config", { threadId, config: { ...DEFAULT_RUN_CONFIG, workflowVersion, model, discoveryDepth: "quick", researchMode, knownProblem: researchMode === "known-problem" ? statement : "" } }, WorkspaceStateSchema);
+      await post("/run-config", { threadId, config: { ...DEFAULT_RUN_CONFIG, workflowVersion, ideaCount, model, discoveryDepth: "quick", researchMode, knownProblem: researchMode === "known-problem" ? statement : "" } }, WorkspaceStateSchema);
       return threadId;
     },
     async waitFor(predicate: (state: WorkspaceState) => boolean) {
