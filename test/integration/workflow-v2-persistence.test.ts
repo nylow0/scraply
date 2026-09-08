@@ -15,6 +15,8 @@ import {
   WorkflowV2Repository,
 } from "../../src/db/repositories/workflow-v2";
 import { deriveJsonSchema } from "../../src/shared/json-schema";
+import { WorkflowExecution } from "../../src/core/workflow-execution";
+import { configurePromptPaths } from "../../src/core/prompts";
 
 const directories: string[] = [];
 
@@ -25,6 +27,27 @@ afterEach(() => {
 });
 
 describe("workflow v2 persistence", () => {
+  test("uses compact references for new runs while reproducing legacy references exactly", () => {
+    configurePromptPaths({ bundledDir: join(process.cwd(), "prompts"), overrideDir: null });
+    const client = database();
+    const execution = new WorkflowExecution(client, "run-v2");
+    const next = execution.idFactory("harvest");
+    const ids = Array.from({ length: 100 }, () => next());
+    expect(new Set(ids).size).toBe(100);
+    expect(ids.every((id) => id.length === 24)).toBe(true);
+    expect(new WorkflowExecution(client, "run-v2").idFactory("harvest")()).toBe(ids[0]!);
+    expect(execution.idFactory("other-phase")()).not.toBe(ids[0]!);
+
+    const legacy = database();
+    legacy.db.prepare("INSERT INTO workflow_snapshots VALUES (?, ?, ?)")
+      .run("run-v2", "prompts", JSON.stringify(execution.read("prompts")));
+    const restored = new WorkflowExecution(legacy, "run-v2");
+    expect(restored.idFactory("harvest")()).toBe(hash("run-v2:harvest:0"));
+    expect(restored.read("identifier-characters")).toBeNull();
+    client.close();
+    legacy.close();
+  });
+
   test("requires caller-owned synchronous transactions and rolls failures back", () => {
     const client = database();
     const repository = new WorkflowV2Repository(client);

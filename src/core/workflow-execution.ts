@@ -30,7 +30,12 @@ export class WorkflowExecution {
     this.repository = new WorkflowV2Repository(db);
     const saved = this.read<Record<WorkflowV2StageId, ResolvedWorkflowV2Prompt>>("prompts");
     this.prompts = saved ?? Object.fromEntries(WORKFLOW_V2_STAGE_IDS.map((stage) => [stage, resolveWorkflowV2Prompt(stage)])) as Record<WorkflowV2StageId, ResolvedWorkflowV2Prompt>;
-    if (!saved) this.save("prompts", this.prompts);
+    if (!saved) {
+      this.save("prompts", this.prompts);
+      // 96-bit deterministic identifiers are easier for models to copy than full SHA-256 text.
+      // Save the format per run: an older run without this marker must still reproduce its IDs.
+      this.save("identifier-characters", 24);
+    }
   }
 
   resolvePrompt = (stage: WorkflowV2StageId): ResolvedWorkflowV2Prompt => this.prompts[stage];
@@ -52,7 +57,9 @@ export class WorkflowExecution {
   // Deterministic IDs make a replay of saved search/stage outputs refer to the same source/factor IDs.
   idFactory(phase: string): () => string {
     let sequence = 0;
-    return () => createHash("sha256").update(`${this.runId}:${phase}:${sequence++}`).digest("hex");
+    const characters = this.read<number>("identifier-characters") ?? 64;
+    if (characters !== 24 && characters !== 64) throw new Error("Unsupported saved identifier format");
+    return () => createHash("sha256").update(`${this.runId}:${phase}:${sequence++}`).digest("hex").slice(0, characters);
   }
 
   search(client: Pick<SearchClient, "search">): Pick<SearchClient, "search"> {
