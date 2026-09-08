@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { SolutionView } from "../../shared/ipc";
+  import { optionEvidenceReferences } from "../../shared/option-evidence";
   import { loadIdeaDetail } from "../lib/idea-details";
   let { idea, busy, onSelect, onSave, onOpenSource, onEvidenceFollowUp }: {
     idea: SolutionView; busy: boolean;
@@ -21,6 +22,8 @@
   let detailLoadEpoch = 0;
   let wasOpen = false;
   let analysis = $derived(detail?.decisionAnalysis);
+  let supportingReferences = $derived(detail ? optionEvidenceReferences(detail, detail.supportingEvidenceIds ?? []) : []);
+  let contraryReferences = $derived(detail ? optionEvidenceReferences(detail, detail.contraryEvidenceIds ?? []) : []);
   let followUpSourcesWithoutQuotes = $derived(detail?.evidenceFollowUp?.sources.filter(
     (source) => !detail?.evidenceFollowUp?.factors.some((factor) => factor.sourceId === source.id),
   ) ?? []);
@@ -96,11 +99,18 @@
     {#if loading}<p role="status">Loading saved details…</p>{/if}
     {#if error}<p role="alert">{error}</p><button onclick={loadDetail}>Retry details</button>{/if}
     {#if detail}
-      <h3>Supporting observations</h3>
+      <section aria-label="Sources supporting this option"><h3>Sources supporting this option</h3>
+        <ul>{#each supportingReferences as source (source.id)}<li>{#if source.url}<a href={source.url} onclick={(event) => { event.preventDefault(); void onOpenSource(source.url!); }}>{source.title}</a>{:else}{source.title}{/if}</li>{:else}<li>No supporting sources cited for this option.</li>{/each}</ul>
+      </section>
+      <section aria-label="Sources challenging this option"><h3>Sources challenging this option</h3>
+        <ul>{#each contraryReferences as source (source.id)}<li>{#if source.url}<a href={source.url} onclick={(event) => { event.preventDefault(); void onOpenSource(source.url!); }}>{source.title}</a>{:else}{source.title}{/if}</li>{:else}<li>No contrary sources cited for this option.</li>{/each}</ul>
+      </section>
+      <p class="status">These roles are the model's assessment of this option. The original problem evidence follows.</p>
+      <h3>Observations about the problem</h3>
       {#each detail.factors as factor (factor.id)}
         <blockquote>{factor.quote}{#if factor.uncertainty}<p class="status">Uncertainty: {factor.uncertainty}</p>{/if}<small class="estimated">Model confidence is uncalibrated.</small><footer><a href={factor.sourceUrl} onclick={(event) => { event.preventDefault(); void onOpenSource(factor.sourceUrl); }}>{factor.sourceTitle}</a></footer></blockquote>
       {:else}<p>No source-backed observations. Treat the problem as an assertion to test.</p>{/each}
-      <h3>Contrary evidence considered</h3>
+      <h3>Sources used to assess the problem</h3>
       {#each detail.contrarySources ?? [] as source (source.id)}
         <details><summary>{source.title}</summary><a href={source.url} onclick={(event) => { event.preventDefault(); void onOpenSource(source.url); }}>Open source</a><p class="source-text">{source.text}</p></details>
       {:else}<p>No contrary sources were collected. Their absence does not confirm the premise.</p>{/each}

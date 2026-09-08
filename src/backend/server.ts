@@ -12,6 +12,7 @@ import { ProviderFailure, type StructuredModelClient } from "../providers/struct
 import { RuntimeClient } from "../providers/runtime";
 import { AppError, toErrorPayload } from "../shared/errors";
 import { MAX_DEVELOPMENT_PROJECTED_CALLS } from "../shared/development-projection";
+import { optionEvidenceReferences } from "../shared/option-evidence";
 import {
   CreateThreadRequestSchema, DeleteThreadRequestSchema, EvidenceFollowUpRequestSchema, ExportIdeasRequestSchema, ExportResearchRequestSchema,
   GetIdeaDetailRequestSchema, GetSourceDetailRequestSchema, HealthResponseSchema,
@@ -1170,11 +1171,16 @@ function renderDecisionMarkdown(ideas: SolutionView[]): string {
       `Workflow: v2. ${idea.selected ? "Selected by the user." : "Not selected."} Problem evidence: ${idea.problemVerdict}.`, "",
       `Key assumption: ${idea.keyAssumption}`, "", `Current approach may suffice: ${idea.whyCurrentApproachMaySuffice}`, "",
       `Constraints: ${idea.respectsOffLimitsWhy}`, "", "## Uncertainty", "", ...(idea.unknowns ?? []).map((item) => `- ${item}`), "",
-      "## Supporting observations", "", ...idea.factors.flatMap((factor) => [
+      "## Sources supporting this option", "",
+      ...optionEvidenceReferences(idea, idea.supportingEvidenceIds ?? []).map((source) => source.url ? `- [${source.title}](${source.url})` : `- ${source.title}`), "",
+      "## Sources challenging this option", "",
+      ...optionEvidenceReferences(idea, idea.contraryEvidenceIds ?? []).map((source) => source.url ? `- [${source.title}](${source.url})` : `- ${source.title}`), "",
+      "These roles are the model's assessment of this option. The original problem evidence follows.", "",
+      "## Observations about the problem", "", ...idea.factors.flatMap((factor) => [
         `> ${factor.quote}`, "", ...(factor.uncertainty ? [`Uncertainty: ${factor.uncertainty}`, ""] : []),
         `[${factor.sourceTitle}](${factor.sourceUrl})`, "",
       ]),
-      "## Contrary evidence considered", "", ...(idea.contrarySources ?? []).flatMap((source) => [`[${source.title}](${source.url})`, "", source.text, ""]),
+      "## Sources used to assess the problem", "", ...(idea.contrarySources ?? []).flatMap((source) => [`[${source.title}](${source.url})`, "", source.text, ""]),
       ...(analysis ? [
         "## Model analysis, not observed results", "", ...analysis.consequences.map((item) => `- ${item.direction}: ${item.description}. Affects ${item.affects}. ${item.rationale}`), "",
         "## Decisive risks", "", ...analysis.risks.map((risk) => `- ${risk.description}: ${risk.whyDecisive}`), "",

@@ -478,10 +478,13 @@ describe("cutover backend", () => {
 
     const v2Client = new DatabaseClient(dbPath);
     v2Client.db.prepare("UPDATE research_runs SET workflow_version = 2 WHERE id = 'development-selected'").run();
+    v2Client.db.prepare("UPDATE solutions SET supporting_evidence_ids_json = ? WHERE id = 'solution-selected'")
+      .run(JSON.stringify(["source-selected"]));
     v2Client.close();
     const v2Markdown = await post("/ideas/export", { threadId: created.thread.id, format: "markdown" }) as { files: Array<{ content: string }> };
     const [decisionMarkdown, followUpMarkdown] = v2Markdown.files[0]!.content.split("\n## Evidence follow-up");
-    expect(decisionMarkdown).toContain("## Supporting observations");
+    expect(decisionMarkdown).toContain("## Observations about the problem");
+    expect(decisionMarkdown).toContain("## Sources supporting this option\n\n- [Selected evidence](https://example.com/selected)");
     expect(decisionMarkdown?.match(/Uncertainty: Holiday demand was not sampled\./g)).toHaveLength(5);
     expect(followUpMarkdown).toContain("Uncertainty: Holiday demand was not sampled.");
 

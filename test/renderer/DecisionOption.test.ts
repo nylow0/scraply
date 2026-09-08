@@ -1,9 +1,27 @@
-import { fireEvent, render, waitFor } from "@testing-library/svelte";
+import { fireEvent, render, waitFor, within } from "@testing-library/svelte";
 import { describe, expect, test, vi } from "vitest";
 import DecisionOption from "../../src/renderer/components/DecisionOption.svelte";
 import type { SolutionView } from "../../src/shared/ipc";
 
 describe("DecisionOption interactions", () => {
+  test("links each option's citations separately from the original problem evidence", async () => {
+    const idea = option("citation-roles");
+    const saved = detail(idea, "", "");
+    saved.contrarySources = [{ id: "manual-alternative", title: "Manual checklist", url: "https://example.com/checklist", text: "Existing checklists work." }];
+    saved.supportingEvidenceIds = ["manual-alternative"];
+    saved.contraryEvidenceIds = [idea.factors[0]!.sourceId];
+    installDetailApi(vi.fn().mockResolvedValue(saved));
+    const props = handlers(idea);
+    const view = render(DecisionOption, props);
+    await fireEvent.click(view.getByText("Evidence, analysis and your decision"));
+    const supporting = await view.findByRole("region", { name: "Sources supporting this option" });
+    await fireEvent.click(within(supporting).getByRole("link", { name: "Manual checklist" }));
+    expect(props.onOpenSource).toHaveBeenCalledWith("https://example.com/checklist");
+    const contrary = view.getByRole("region", { name: "Sources challenging this option" });
+    expect(within(contrary).getByRole("link", { name: "Shop interview" }).getAttribute("href")).toBe("https://example.com/interview");
+    expect(view.getByText("We call before quoting.")).toBeTruthy();
+  });
+
   test("keeps edits made before and during a detail refresh", async () => {
     const refresh = deferred<SolutionView>();
     const first = option("draft-refresh-1");
