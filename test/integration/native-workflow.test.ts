@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { z } from "zod";
 import { DatabaseClient } from "../../src/db/client";
-import { WorkspaceStateSchema, SolutionViewSchema, type WorkspaceState } from "../../src/shared/ipc";
+import { WorkspaceStateSchema, SolutionViewSchema, type WorkspaceState, type ResearchEvent } from "../../src/shared/ipc";
 import { GenerationStartPayloadSchema } from "../../src/shared/runtime-protocol";
 import { DEFAULT_RUN_CONFIG } from "../../src/shared/schemas";
 import { NATIVE_WORKFLOW_MODEL as model, UNTRUSTED_WORKFLOW_TEXT as untrusted, startNativeWorkflowBackend } from "../fixtures/native-workflow-backend";
@@ -67,6 +67,10 @@ describe("native v1 research workflow through the production backend", () => {
     await item.post("/research/select-problems", { threadId, problemIds: [discovered.problemCandidates[0]!.id], userProblem: null }, WorkspaceStateSchema);
     const developed = await item.waitFor((state) => state.threads.find((thread) => thread.id === threadId)?.status === "solutions-ready");
     expect(developed.solutions).toHaveLength(3);
+    const progress = item.events.filter((event) => event.type === "run-progress")
+      .filter((event) => event.runId === developed.latestResearchRun?.runId);
+    expect(progress.at(-1)?.usage).toEqual(developed.latestResearchRun?.usage);
+    expect(progress.some((event) => (event.usage?.attemptCount ?? 0) > 1)).toBe(true);
     for (const summary of developed.solutions) {
       expect(summary.outcomes).toHaveLength(0);
       const solution = await item.post(`/ideas/${summary.id}`, undefined, SolutionViewSchema);
@@ -326,12 +330,13 @@ async function fixture({ mode = "workflow", searchEnabled = true, workflowVersio
   const pids = join(directory, "pids.txt");
   const operationsCapture = join(directory, "operations.txt");
   const searches: unknown[] = [];
+  const events: ResearchEvent[] = [];
   let backend: Awaited<ReturnType<typeof startNativeWorkflowBackend>>;
   let closed = true;
   const lines = (path: string) => existsSync(path) ? readFileSync(path, "utf8").trim().split("\n").filter(Boolean) : [];
 
   async function open() {
-    backend = await startNativeWorkflowBackend(directory, { mode, searchEnabled, searches, hangFollowUpSearch });
+    backend = await startNativeWorkflowBackend(directory, { mode, searchEnabled, searches, hangFollowUpSearch, onEvent: (event) => events.push(event) });
     closed = false;
   }
   async function close() {
@@ -354,7 +359,7 @@ async function fixture({ mode = "workflow", searchEnabled = true, workflowVersio
   }
   async function workspace() { return post("/workspace", undefined, WorkspaceStateSchema); }
   const item = {
-    directory, dbPath, searches, raw, post, workspace, close,
+    directory, dbPath, searches, events, raw, post, workspace, close,
     operations: () => lines(operationsCapture), processIds: () => lines(pids),
     requests: () => lines(capture).map((line) => z.object({ payload: GenerationStartPayloadSchema }).parse(JSON.parse(line)).payload),
     async restart() { await close(); await open(); },

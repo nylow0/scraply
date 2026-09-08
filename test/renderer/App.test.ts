@@ -5,8 +5,34 @@ import type { ScraplyApi } from "../../src/preload/index";
 import App from "../../src/renderer/App.svelte";
 import type { ResearchEvent, WorkspaceState } from "../../src/shared/ipc";
 import { DEFAULT_RUN_CONFIG } from "../../src/shared/schemas";
+import { summarizeRunUsage } from "../../src/backend/run-usage";
 
 describe("App workspace coordination", () => {
+  test("updates live usage without loading the whole workspace on progress", async () => {
+    const state = workspace("alpha");
+    const usage = summarizeRunUsage([]);
+    usage.availability = "available";
+    usage.attemptCount = 1;
+    usage.tokens.total.known = 25;
+    state.threads[0]!.status = "discovery-running";
+    state.latestResearchRun = {
+      runId: "run-alpha", status: "running", problemId: null, codexCalls: 1, searches: 0,
+      projectedCodexCalls: 11, projectedSearches: 10, lastActivity: "Searching", usage,
+    };
+    let backendEvent: ((event: ResearchEvent) => void) | undefined;
+    const getWorkspace = vi.fn().mockResolvedValue(state);
+    installApi({ getWorkspace, onBackendEvent(listener) { backendEvent = listener; return () => { backendEvent = undefined; }; } });
+    const view = render(App);
+    expect(await view.findByText(/25 tokens/)).toBeTruthy();
+    const updated = structuredClone(usage);
+    updated.attemptCount = 2;
+    updated.tokens.total.known = 125;
+    backendEvent?.({ type: "run-progress", runId: "run-alpha", threadId: "alpha", message: "Model call completed", codexCalls: 2, searches: 1, usage: updated });
+    expect(await view.findByText(/125 tokens/)).toBeTruthy();
+    expect(view.getByText(/2 attempts/)).toBeTruthy();
+    expect(getWorkspace).toHaveBeenCalledTimes(1);
+  });
+
   test.each(["discovery-running", "development-running"] as const)("allows cancellation but does not offer resume during %s", async (status) => {
     const state = workspace("alpha");
     state.threads[0]!.status = status;

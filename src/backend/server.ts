@@ -134,7 +134,7 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
   });
   const emitEvent = (event: ResearchEvent) => {
     try {
-      onEvent(event);
+      onEvent(event.type === "run-progress" ? { ...event, usage: runUsage(event.runId) } : event);
     } catch (error) {
       context.log?.({ level: "error", event: "backend-event-delivery-failed", error });
     }

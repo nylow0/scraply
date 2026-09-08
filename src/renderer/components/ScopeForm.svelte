@@ -205,7 +205,7 @@
     </fieldset>
 
     <div class="primary-fields">
-      <label><span>Research workflow</span><select bind:value={workflowVersion}><option value={2}>Options and one selected analysis</option><option value={1}>Legacy research comparison</option></select><small>The shorter workflow pauses for your option choice before analyzing consequences and an experiment.</small></label>
+      <label><span>Research workflow</span><select bind:value={workflowVersion}><option value={2}>Options and one selected analysis</option><option value={1}>Legacy research comparison</option></select><small>{workflowVersion === 2 ? "The shorter workflow pauses for your option choice before analyzing consequences and an experiment." : "The legacy workflow analyzes every generated option through outcomes, risks, and proposed mitigations."}</small></label>
       {#if workflowVersion === 2 && researchMode === "explore-market"}<label><span>Audience sources</span><select bind:value={audienceSourcePolicy}><option value="web">Relevant sources across the web</option><option value="communities">Reddit and Hacker News</option></select><small>Choose communities only when they represent the people you want to understand.</small></label>{/if}
       <label><span>Research name</span><input bind:value={title} aria-invalid={Boolean(errors.title)} aria-describedby={errors.title ? "title-error" : undefined} placeholder={researchMode === "explore-market" ? "Project ideas" : "Solution ideas"} />{#if errors.title}<small id="title-error" class="field-error">{errors.title}</small>{/if}</label>
       {#if researchMode === "known-problem"}
