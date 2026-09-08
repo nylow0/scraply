@@ -8,7 +8,6 @@ import { ResearchRunRepository } from "../db/repositories/research-runs";
 import type { SearchClient, SearchOptions, SearchProvider } from "../providers/search";
 import { ProviderFailure, type GenerationMetadata, type StructuredModelClient, type StructuredStageRequest } from "../providers/structured";
 import { AppError } from "../shared/errors";
-import { deriveJsonSchema } from "../shared/json-schema";
 import { MAX_DEVELOPMENT_PROJECTED_CALLS } from "../shared/development-projection";
 import type { ResearchEvent } from "../shared/ipc";
 import { RunConfigSchema, sameModelRef, type RunConfig } from "../shared/schemas";
@@ -16,7 +15,7 @@ import { ScopeSchema, type Scope } from "../shared/structured-output-schemas";
 import { analyzeSelectedOption, produceDevelopmentOptions, runPersistedDevelopment } from "./development";
 import { discoverProblems, discoveryRunProjection, harvestEvidenceFollowUp, harvestFactors, type HarvestResult, type HarvestedFactor, type HarvestedSource } from "./discovery";
 import { WorkflowExecution } from "./workflow-execution";
-import { WORKFLOW_V2_STAGE_REGISTRY, type WorkflowV2StageId } from "./stages";
+import type { WorkflowV2StageId } from "./stages";
 
 export interface ResearchEngineOptions {
   db: DatabaseClient;
@@ -394,7 +393,9 @@ export class ResearchEngine {
           context,
           identity: {
             promptSha256: savedSolutions.prompt.resolvedSha256,
-            schema: deriveJsonSchema(WORKFLOW_V2_STAGE_REGISTRY.solutions.schema),
+            // Source enums belong to this request. Saved revision-1 output is
+            // validated on read; never replace its schema with today's prompt constraints.
+            schema: savedSolutions.schema,
             inputs: savedSolutions.inputs,
             evidence: savedSolutions.evidence,
           },
@@ -425,7 +426,7 @@ export class ResearchEngine {
           context,
           identity: {
             promptSha256: savedAnalysis.prompt.resolvedSha256,
-            schema: deriveJsonSchema(WORKFLOW_V2_STAGE_REGISTRY["decision-analysis"].schema),
+            schema: savedAnalysis.schema,
             inputs: savedAnalysis.inputs,
             evidence: savedAnalysis.evidence,
           },
