@@ -40,7 +40,7 @@
     <div>
       <p class="eyebrow">Development output</p>
       <h1>{solutions.length} solution {solutions.length === 1 ? "idea" : "ideas"}</h1>
-      <p class="intro">Choose a mechanism to analyze. Evidence and model judgments are available for inspection; options are not ranked.</p>
+      <p class="intro">{hasV2 ? "Choose a mechanism to analyze." : "Expand an option to inspect its completed analysis."} Evidence and model judgments are available for inspection; options are not ranked.</p>
     </div>
     <div class="actions" aria-label="Solution actions">
       <button onclick={onReview}>Review problems</button>
