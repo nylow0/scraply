@@ -180,7 +180,7 @@ export const LatestResearchRunSchema = z.object({
   runId: EntityIdSchema, status: z.enum(["queued", "running", "completed", "failed", "cancelled"]),
   problemId: EntityIdSchema.nullable(), codexCalls: z.number().int().nonnegative(), searches: z.number().int().nonnegative(),
   projectedCodexCalls: z.number().int().nonnegative(), projectedSearches: z.number().int().nonnegative(),
-  lastActivity: z.string().nullable(), usage: RunUsageSchema.optional(),
+  lastActivity: z.string().nullable(), completionReason: z.string().nullable().optional(), usage: RunUsageSchema.optional(),
 });
 
 export const WorkspaceStateSchema = z.object({

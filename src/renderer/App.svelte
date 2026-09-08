@@ -390,7 +390,7 @@
       />
       {#if activeThread.status === "failed"}
         <div class="run-stopped" role="status">
-          <div><strong>Run stopped</strong><span>{activeRun?.resumeBlockedReason ?? activeRun?.lastActivity ?? "The last run failed or was cancelled. Review the setup, then retry explicitly."}</span></div>
+          <div><strong>Run stopped</strong><span>{activeRun?.resumeBlockedReason ?? activeRun?.completionReason ?? activeRun?.lastActivity ?? "The last run failed or was cancelled. Review the setup, then retry explicitly."}</span></div>
           <div class="run-stopped-actions">
             {#if activeRun?.canResume}
               <button disabled={busy} onclick={() => resumeResearch(activeRun.runId)}>Resume attempt</button>

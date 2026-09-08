@@ -159,6 +159,9 @@ describe("cutover backend", () => {
     expect(client.db.prepare("SELECT COUNT(*) AS count FROM factors").get()).toEqual({ count: 0 });
     expect(modelCalls).toBeGreaterThan(0);
     expect(events.some((event) => event.type === "run-started")).toBe(true);
+    const response = await fetch(`http://127.0.0.1:${handle.port}/workspace`, { headers: { authorization: `Bearer ${handle.token}` } });
+    const stopped = await response.json() as { data: { latestResearchRun: { completionReason: string } } };
+    expect(stopped.data.latestResearchRun.completionReason).toBe("unexpected model call");
     client.close();
   });
 
