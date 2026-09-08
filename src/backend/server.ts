@@ -657,6 +657,8 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
       .get(row.id) as { payload_json: string } | undefined;
     const resumeSafety = generationAttempts.getResumeSafety(row.id);
     const providerRemoved = runConfig.model.providerId === HISTORICAL_CODEX_CLI_PROVIDER_ID;
+    // Match resumeRun: ended legacy runs have no resumable stage checkpoints.
+    const resumableStatus = ["queued", "running", ...(row.workflow_version === 2 ? ["failed", "cancelled"] : [])].includes(row.status);
     return {
       runId: row.id, status: row.status, problemId: row.problem_id,
       workflowVersion: row.workflow_version, awaitingSelection: Boolean(row.awaiting_selection), interrupted: Boolean(row.interrupted),
@@ -665,8 +667,10 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
       projectedCodexCalls: projection.modelCalls, projectedSearches: projection.searches,
       lastActivity: activity ? String(JSON.parse(activity.payload_json).message ?? "") : null,
       completionReason: row.completion_reason,
-      canResume: !providerRemoved && resumeSafety.canResume,
-      ...(providerRemoved
+      canResume: row.workflow_version === 2 && resumableStatus && !providerRemoved && resumeSafety.canResume,
+      ...(row.workflow_version !== 2
+        ? { resumeBlockedReason: "Legacy generation has been retired. Start a new run to use the current prompts. Saved results remain readable." }
+        : providerRemoved
         ? { resumeBlockedReason: REMOVED_CODEX_CLI_MESSAGE }
         : resumeSafety.resumeBlockedReason ? { resumeBlockedReason: resumeSafety.resumeBlockedReason } : {}),
       usage: runUsage(row.id),
@@ -769,7 +773,7 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
         return sendJson(res, 200, await workspaceState());
       }
       if (route === "/run-config") {
-        const input = SaveRunConfigSchema.parse(body); requireThread(input.threadId); threads.saveRunConfig(input.threadId, input.config, input.presetName);
+        const input = SaveRunConfigSchema.parse(body); requireThread(input.threadId); threads.saveRunConfig(input.threadId, { ...input.config, workflowVersion: 2 }, input.presetName);
         return sendJson(res, 200, await workspaceState());
       }
       if (route === "/models/favorite") {
