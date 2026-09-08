@@ -1183,7 +1183,9 @@ function renderMarkdown(ideas: SolutionView[]): string {
   ])].join("\n");
 }
 function renderDecisionMarkdown(ideas: SolutionView[]): string {
-  return ideas.flatMap((idea) => {
+  const factors = [...new Map(ideas.flatMap((idea) => idea.factors).map((factor) => [factor.id, factor])).values()];
+  const sources = [...new Map(ideas.flatMap((idea) => idea.contrarySources ?? []).map((source) => [source.id, source])).values()];
+  const options = ideas.flatMap((idea) => {
     const analysis = idea.decisionAnalysis;
     return [
       `# ${idea.mechanism}`, "", idea.description, "", `Problem: ${idea.problemStatement}`, "",
@@ -1194,12 +1196,7 @@ function renderDecisionMarkdown(ideas: SolutionView[]): string {
       ...optionEvidenceReferences(idea, idea.supportingEvidenceIds ?? []).map((source) => source.url ? `- [${source.title}](${source.url})` : `- ${source.title}`), "",
       "## Sources challenging this option", "",
       ...optionEvidenceReferences(idea, idea.contraryEvidenceIds ?? []).map((source) => source.url ? `- [${source.title}](${source.url})` : `- ${source.title}`), "",
-      "These roles are the model's assessment of this option. The original problem evidence follows.", "",
-      "## Observations about the problem", "", ...idea.factors.flatMap((factor) => [
-        `> ${factor.quote}`, "", ...(factor.uncertainty ? [`Uncertainty: ${factor.uncertainty}`, ""] : []),
-        `[${factor.sourceTitle}](${factor.sourceUrl})`, "",
-      ]),
-      "## Sources used to assess the problem", "", ...(idea.contrarySources ?? []).flatMap((source) => [`[${source.title}](${source.url})`, "", source.text, ""]),
+      "These roles are the model's assessment of this option. Shared problem evidence is in the appendix.", "",
       ...(analysis ? [
         "## Model analysis, not observed results", "", ...analysis.consequences.map((item) => `- ${item.direction}: ${item.description}. Affects ${item.affects}. ${item.rationale}`), "",
         "## Decisive risks", "", ...analysis.risks.map((risk) => `- ${risk.description}: ${risk.whyDecisive}`), "",
@@ -1211,7 +1208,17 @@ function renderDecisionMarkdown(ideas: SolutionView[]): string {
       "## User decision", "", idea.userDecision || "Not recorded.", "",
       "## Observed test result", "", idea.observedResult || "Not recorded. Proposed responses remain untested.", "",
     ];
-  }).join("\n");
+  });
+  return [...options,
+    "# Shared evidence appendix", "",
+    "## Observations about the problem", "", ...factors.flatMap((factor) => [
+      `> ${factor.quote}`, "", ...(factor.uncertainty ? [`Uncertainty: ${factor.uncertainty}`, ""] : []),
+      `[${factor.sourceTitle}](${factor.sourceUrl})`, "",
+    ]),
+    "## Sources used to assess the problem", "", ...sources.flatMap((source) => [
+      `### [${source.title}](${source.url})`, "", source.text.split("\n").map((line) => `> ${line}`).join("\n"), "",
+    ]),
+  ].join("\n");
 }
 function renderEvidenceFollowUpMarkdown(followUp: {
   question: string; status: string; error: string | null;
