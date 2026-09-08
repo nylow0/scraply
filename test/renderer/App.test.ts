@@ -7,6 +7,21 @@ import type { ResearchEvent, WorkspaceState } from "../../src/shared/ipc";
 import { DEFAULT_RUN_CONFIG } from "../../src/shared/schemas";
 
 describe("App workspace coordination", () => {
+  test("shows the saved failure reason instead of the last progress message after reopening", async () => {
+    const state = workspace("alpha");
+    state.threads[0]!.status = "failed";
+    state.latestResearchRun = {
+      runId: "run-alpha", status: "failed", problemId: null,
+      codexCalls: 2, searches: 3, projectedCodexCalls: 11, projectedSearches: 10,
+      lastActivity: "Search: study planning", completionReason: "Evidence identifiers exceeded the runtime limit.",
+      canResume: true,
+    };
+    installApi({ getWorkspace: vi.fn().mockResolvedValue(state) });
+    const view = render(App);
+    expect(await view.findByText("Evidence identifiers exceeded the runtime limit.")).toBeTruthy();
+    expect(view.getByRole("button", { name: "Resume attempt" })).toBeTruthy();
+  });
+
   test("ignores a stale reconciliation response after thread selection", async () => {
     const staleLoad = deferred<WorkspaceState>();
     let backendEvent: ((event: ResearchEvent) => void) | undefined;

@@ -636,8 +636,8 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
     return row ? { runId: row.research_run_id, summary: runUsage(row.research_run_id) } : null;
   }
   function latestRun(threadId: string) {
-    const row = db.db.prepare("SELECT id, status, problem_id, config_json, workflow_version, awaiting_selection, interrupted FROM research_runs WHERE thread_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1")
-      .get(threadId) as { id: string; status: string; problem_id: string | null; config_json: string; workflow_version: 1 | 2; awaiting_selection: number; interrupted: number } | undefined;
+    const row = db.db.prepare("SELECT id, status, problem_id, config_json, workflow_version, awaiting_selection, interrupted, completion_reason FROM research_runs WHERE thread_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1")
+      .get(threadId) as { id: string; status: string; problem_id: string | null; config_json: string; workflow_version: 1 | 2; awaiting_selection: number; interrupted: number; completion_reason: string | null } | undefined;
     if (!row) return null;
     const runConfig = RunConfigSchema.parse({ ...DEFAULT_RUN_CONFIG, ...JSON.parse(row.config_json) });
     const counts = db.db.prepare(`SELECT provider, COUNT(*) AS count FROM cost_ledger WHERE research_run_id = ? AND status IN ('reserved','committed') GROUP BY provider`)
@@ -654,6 +654,7 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
       searches: counts.find((item) => item.provider === runConfig.searchProvider)?.count ?? 0,
       projectedCodexCalls: projection.modelCalls, projectedSearches: projection.searches,
       lastActivity: activity ? String(JSON.parse(activity.payload_json).message ?? "") : null,
+      completionReason: row.completion_reason,
       canResume: !providerRemoved && resumeSafety.canResume,
       ...(providerRemoved
         ? { resumeBlockedReason: REMOVED_CODEX_CLI_MESSAGE }
