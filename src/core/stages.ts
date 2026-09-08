@@ -123,12 +123,12 @@ export function assertWorkflowV2SolutionsSemantics(
     throw new Error("The v2 solutions stage returned more than three options");
   }
   const categories = evidenceCategories(evidence);
+  // Discovery roles describe the problem. A source arguing against a new product can
+  // support an option to use the existing manual process instead.
+  const suppliedIds = new Set([...categories.supporting, ...categories.contrary]);
   for (const option of output.options) {
-    if (option.supportingEvidenceIds.some((id) => !categories.supporting.has(id))) {
-      throw new Error("A v2 solution option referenced evidence outside its supporting category");
-    }
-    if (option.contraryEvidenceIds.some((id) => !categories.contrary.has(id))) {
-      throw new Error("A v2 solution option referenced evidence outside its contrary category");
+    if ([...option.supportingEvidenceIds, ...option.contraryEvidenceIds].some((id) => !suppliedIds.has(id))) {
+      throw new Error("A v2 solution option referenced an unknown evidence source ID");
     }
   }
 }

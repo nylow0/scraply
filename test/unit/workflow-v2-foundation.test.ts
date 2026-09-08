@@ -133,15 +133,19 @@ describe("workflow v2 foundation", () => {
       .rejects.toThrow("conflicting content");
   });
 
-  test("requires evidence references to match their supplied category", async () => {
-    const roleSwapped = produceDevelopmentOptions(context(), dependencies({
-      options: [option({
-        supportingEvidenceIds: ["contrary-1"],
-        contraryEvidenceIds: ["support-1"],
-      })],
-    }));
+  test("lets an option use problem counterevidence as support for an existing alternative", async () => {
+    const manualOption = option({
+      supportingEvidenceIds: ["contrary-1"],
+      contraryEvidenceIds: ["support-1"],
+    });
+    const result = await produceDevelopmentOptions(context(), dependencies({ options: [manualOption] }));
+    expect(result.options).toEqual([expect.objectContaining(manualOption)]);
+  });
 
-    await expect(roleSwapped).rejects.toMatchObject({
+  test.each(["supportingEvidenceIds", "contraryEvidenceIds"] as const)("rejects invented %s with paid attempt metadata", async (field) => {
+    await expect(produceDevelopmentOptions(context(), dependencies({
+      options: [option({ [field]: ["invented"] })],
+    }))).rejects.toMatchObject({
       code: "schema",
       retryable: false,
       attempts: [{ providerRequestId: "provider-request-1" }],
