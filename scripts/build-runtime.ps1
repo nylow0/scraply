@@ -40,7 +40,10 @@ if ([string]::IsNullOrWhiteSpace($BuiltPackageDirectory)) {
   if (-not (Test-Path -LiteralPath $packageScript -PathType Leaf)) {
     throw "Runtime package script not found: $packageScript"
   }
-  $packageOutput = & powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File $packageScript
+  # Keep the final package-directory record while streaming test output, including
+  # failing assertions, to the build log before checking the child exit status.
+  $packageOutput = & powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File $packageScript |
+    ForEach-Object { Write-Host $_; $_ }
   if ($LASTEXITCODE -ne 0) {
     throw "Runtime packaging failed with exit code $LASTEXITCODE."
   }
