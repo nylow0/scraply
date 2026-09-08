@@ -64,7 +64,8 @@ describe("workflow v2 foundation", () => {
 
   test("produces unranked options from bounded labeled evidence and exposes the request before generation", async () => {
     let prepared: { request: unknown; prompt: ResolvedWorkflowV2Prompt } | undefined;
-    const result = await produceDevelopmentOptions(context(), dependencies({
+    const current = { ...context(), recordedExperiments: { results: [{ mechanism: "Manual export", userDecision: "Try another approach", observedResult: "Five exports omitted required fields." }], omittedCount: 0 } };
+    const result = await produceDevelopmentOptions(current, dependencies({
       options: [option()],
     }, (request, prompt) => {
       prepared = { request, prompt };
@@ -80,6 +81,7 @@ describe("workflow v2 foundation", () => {
     expect(request.workOrder.instruction).toBe("exact prompt bytes");
     expect(request.workOrder.inputs).toEqual({ workflowVersion: 2, problemId: "problem-1" });
     expect(JSON.stringify(request.workOrder.inputs)).not.toContain("failed spreadsheet");
+    expect(request.evidence[0]?.content).toMatchObject({ recordedExperiments: current.recordedExperiments });
     expect(request.evidence.map((item) => item.sourceId)).toEqual([
       "scraply:development-context", "support-1", "contrary-1",
     ]);

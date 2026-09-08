@@ -155,6 +155,30 @@ describe("native v1 research workflow through the production backend", () => {
     expect(item.requests()).toHaveLength(1);
   }, 15_000);
 
+  test("cancels a queued project without inventing provider usage after restart", async () => {
+    const item = await fixture({ mode: "workflow-cancel", searchEnabled: false });
+    const firstThread = await item.createThread("known-problem");
+    const first = await item.post("/research/start", { threadId: firstThread }, z.object({ runId: z.string() }));
+    await item.waitForAttempt("accepted");
+    const queuedThread = await item.createThread("known-problem");
+    const queued = await item.post("/research/start", { threadId: queuedThread }, z.object({ runId: z.string() }));
+    await item.waitForAttempt("prepared");
+    await item.post("/research/cancel", { runId: queued.runId }, z.object({ workspace: WorkspaceStateSchema }));
+    await item.waitForAttempt("cancelled");
+    expect(item.requests()).toHaveLength(1);
+    const db = new DatabaseClient(item.dbPath);
+    try {
+      expect(db.db.prepare("SELECT terminal_kind FROM generation_attempts WHERE research_run_id = ?").get(queued.runId))
+        .toEqual({ terminal_kind: "never-dispatched" });
+      expect(db.db.prepare("SELECT id FROM cost_ledger WHERE research_run_id = ?").all(queued.runId)).toEqual([]);
+    } finally { db.close(); }
+    expect((await item.workspace()).latestResearchRun?.usage).toMatchObject({ attemptCount: 0, unknownAttemptCount: 0 });
+    await item.post("/research/cancel", { runId: first.runId }, z.object({ workspace: WorkspaceStateSchema }));
+    await item.restart();
+    expect((await item.workspace()).latestResearchRun?.usage).toMatchObject({ attemptCount: 0, unknownAttemptCount: 0 });
+    expect(item.requests()).toHaveLength(1);
+  }, 30_000);
+
   test("retains partial results after pipe loss and never automatically replays ambiguous work", async () => {
     const item = await fixture({ mode: "workflow-crash", searchEnabled: false });
     const threadId = await item.createThread("known-problem");

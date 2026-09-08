@@ -4,6 +4,7 @@ import type { AttemptUsage, GenerationAttemptMetadata } from "../providers/struc
 
 export interface GenerationAttemptUsageRow {
   status: string;
+  terminal_kind?: string | null;
   provider_id: string;
   model_id: string;
   attempt_metadata_json: string | null;
@@ -104,6 +105,7 @@ export function summarizeRunUsage(rows: readonly GenerationAttemptUsageRow[]): R
 }
 
 function parseAttempts(row: GenerationAttemptUsageRow): ParsedAttempt[] {
+  if (row.terminal_kind === "never-dispatched") return [];
   const metadata = parseJson(row.attempt_metadata_json);
   if (isObject(metadata) && Array.isArray(metadata.attempts)) {
     if (metadata.attempts.length === 0) {

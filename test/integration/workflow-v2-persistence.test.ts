@@ -29,6 +29,62 @@ afterEach(() => {
 });
 
 describe("workflow v2 persistence", () => {
+  test("snapshots earlier reported experiment results for a later run of the same problem", () => {
+    configurePromptPaths({ bundledDir: join(process.cwd(), "prompts"), overrideDir: null });
+    const client = database();
+    const repository = new WorkflowV2Repository(client);
+    try {
+      client.immediateTransaction(() => {
+        repository.saveSolutionOptions("run-v2", "problem-1", [solution("solution-1")]);
+        repository.selectSolution("run-v2", "solution-1");
+        const analysis = decisionAnalysis();
+        const checkpoint = repository.saveStageResult(decisionStageResult("solution-1", analysis));
+        repository.saveDecisionAnalysis({ researchRunId: "run-v2", solutionId: "solution-1", stageResultId: checkpoint.id, analysis });
+      });
+      client.db.prepare("UPDATE decision_analyses SET user_decision = 'Stop prototype', observed_result = 'Five trials failed to synchronize.'").run();
+      client.db.prepare("UPDATE research_runs SET status = 'completed' WHERE id = 'run-v2'").run();
+      const now = new Date().toISOString();
+      client.db.prepare("INSERT INTO scopes VALUES ('scope-1', 'run-discovery', 'Filing', 'Operators', 'Filing', '', '[]', ?, ?)").run(now, now);
+      client.db.prepare(`INSERT INTO research_runs (id, thread_id, status, config_json, workflow_version, problem_id, created_at, updated_at)
+        VALUES ('run-next', 'thread-1', 'running', '{}', 2, 'problem-1', ?, ?)`).run(now, now);
+      const context = new WorkflowExecution(client, "run-next").developmentContext("problem-1");
+      expect(context.recordedExperiments).toEqual({ results: [{ mechanism: "Synchronize state", userDecision: "Stop prototype", observedResult: "Five trials failed to synchronize." }], omittedCount: 0 });
+      client.db.prepare("UPDATE decision_analyses SET observed_result = 'Later correction'").run();
+      expect(new WorkflowExecution(client, "run-next").developmentContext("problem-1").recordedExperiments).toEqual(context.recordedExperiments);
+      client.db.prepare("UPDATE decision_analyses SET user_decision = ?, observed_result = ?").run("d".repeat(8000), "r".repeat(8000));
+      client.db.prepare("UPDATE research_runs SET status = 'completed' WHERE id = 'run-next'").run();
+      client.db.prepare(`INSERT INTO research_runs (id, thread_id, status, config_json, workflow_version, problem_id, created_at, updated_at)
+        VALUES ('run-bounded', 'thread-1', 'running', '{}', 2, 'problem-1', ?, ?)`).run(now, now);
+      expect(new WorkflowExecution(client, "run-bounded").developmentContext("problem-1").recordedExperiments)
+        .toEqual({ results: [], omittedCount: 1 });
+    } finally { client.close(); }
+  });
+
+  test.each(["openrouter", "openai-subscription"])("uses each discovery stage's output ceiling for %s", async (providerId) => {
+    configurePromptPaths({ bundledDir: join(process.cwd(), "prompts"), overrideDir: null });
+    const client = database();
+    const execution = new WorkflowExecution(client, "run-v2");
+    try {
+      for (const stageId of ["query-plan", "factor-harvest", "problem-candidates", "problem-kill"] as const) {
+        const stage = WORKFLOW_V2_STAGE_REGISTRY[stageId];
+        let inspected = false;
+        const adapter = execution.discoveryClient({ async structuredCompletion(request) {
+          if (providerId === "openai-subscription") expect(request).not.toHaveProperty("maxOutputTokens");
+          else expect(request.maxOutputTokens).toBe(stage.maxOutputTokens);
+          inspected = true;
+          throw new Error("Inspected before provider dispatch");
+        } });
+        await expect(adapter.structuredCompletion<unknown>({
+          generationId: `generation-${stageId}`, stage: stageId, model: { providerId, modelId: "test" }, reasoningEffort: "low",
+          workOrder: { stage: stageId, instruction: "Legacy instruction", goal: "Review evidence", inputs: {}, requiredDecisions: [], definitionOfDone: [], constraints: [] },
+          evidence: [], schema: stage.schema, jsonSchema: deriveJsonSchema(stage.schema), repairPolicy: "one_retry",
+          maxOutputTokens: 8192, deadlineMs: 120000,
+        })).rejects.toThrow("Inspected before provider dispatch");
+        expect(inspected).toBe(true);
+      }
+    } finally { client.close(); }
+  });
+
   test.each([false, true])("assesses supplied supporting and contrary sources while rejecting invented citations (%s)", async (invented) => {
     configurePromptPaths({ bundledDir: join(process.cwd(), "prompts"), overrideDir: null });
     const client = database();

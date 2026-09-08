@@ -98,6 +98,30 @@ describe("Phase 3 evaluation artifacts", () => {
     expect(result.gateStatus).toBe("review-recorded-not-accepted");
   });
 
+  test.each([1, 2] as const)("compares a completed v%s no-option result without inventing an idea", (workflowVersion) => {
+    const { directory, input } = fixture();
+    const variant = input.cases[0]!.variants[workflowVersion - 1]!;
+    const path = join(directory, variant.ideasPath);
+    const result = { kind: "no-options", status: "completed", workflowVersion,
+      runId: "empty-development", discoveryRunId: `decision-1-v${workflowVersion}-run`, problemId: "problem-1",
+      problemStatement: "Should shop 1 adopt a supplier ledger?", options: [] };
+    writeFileSync(path, JSON.stringify(result));
+    writeFileSync(join(directory, variant.ideasMarkdownPath), `# ${result.problemStatement}\n\nWorkflow: v${workflowVersion}. No options proposed.\n\nThis completed run produced no useful option. This is not evidence that the problem is solved.\n`);
+    const artifacts = createEvaluationArtifacts(input, directory, () => false);
+    expect(artifacts.readingFiles.every((file) => !file.content.includes("Workflow: v"))).toBe(true);
+    expect(artifacts.readingFiles.some((file) => file.content.includes("No options proposed."))).toBe(true);
+    const empty = artifacts.packet.cases[0]!.candidates.find((candidate) => candidate.noOptions);
+    expect(empty?.ideas).toEqual([]);
+    expect(empty?.noOptions).toMatchObject({ kind: "no-options", options: [] });
+    expect(JSON.stringify(empty)).not.toContain("workflowVersion");
+    expect(validateEvaluationReviews(artifacts.packet, artifacts.mapping,
+      completeReviews(input.cases.map(({ caseId }) => caseId), artifacts.mapping.packetSha256)).gateStatus).toBe("review-recorded-not-accepted");
+    writeFileSync(path, JSON.stringify({ ...result, discoveryRunId: "unrelated" }));
+    expect(() => createEvaluationArtifacts(input, directory)).toThrow("different research export");
+    writeFileSync(path, JSON.stringify({ ...result, status: "failed" }));
+    expect(() => createEvaluationArtifacts(input, directory)).toThrow();
+  });
+
   test("rejects changed scope context and a swapped private label mapping", () => {
     const { directory, input } = fixture();
     const researchPath = join(directory, input.cases[0]!.variants[1]!.researchPath);

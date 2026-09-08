@@ -37,6 +37,12 @@ const IdeaSchema = z.object({
   factors: z.array(z.object({ sourceId: z.string().min(1) }).passthrough()),
 }).passthrough();
 const IdeasExportSchema = z.array(IdeaSchema).min(1);
+const NoOptionsExportSchema = z.object({
+  kind: z.literal("no-options"), status: z.literal("completed"),
+  workflowVersion: z.union([z.literal(1), z.literal(2)]),
+  runId: z.string().min(1), discoveryRunId: z.string().min(1), problemId: z.string().min(1),
+  problemStatement: z.string().min(1), options: z.tuple([]),
+}).passthrough();
 
 const CandidateIdSchema = z.enum(["A", "B"]);
 const CandidateReviewSchema = z.object({
@@ -64,6 +70,9 @@ type CandidateId = z.infer<typeof CandidateIdSchema>;
 
 interface LoadedVariant {
   ideas: z.infer<typeof IdeasExportSchema>;
+  noOptions: z.infer<typeof NoOptionsExportSchema> | null;
+  workflowVersion: 1 | 2;
+  decision: string;
   research: z.infer<typeof ResearchExportSchema>;
   ideasPath: string;
   ideasMarkdownPath: string;
@@ -106,25 +115,30 @@ function loadVariant(input: z.infer<typeof VariantInputSchema>, baseDirectory: s
   const ideasPath = resolveInputPath(baseDirectory, input.ideasPath);
   const ideasMarkdownPath = resolveInputPath(baseDirectory, input.ideasMarkdownPath);
   const researchPath = resolveInputPath(baseDirectory, input.researchPath);
-  const ideas = IdeasExportSchema.parse(readJson(ideasPath));
+  const rawIdeas = readJson(ideasPath);
+  const noOptions = Array.isArray(rawIdeas) ? null : NoOptionsExportSchema.parse(rawIdeas);
+  const ideas = noOptions ? [] : IdeasExportSchema.parse(rawIdeas);
   const ideasMarkdown = readFileSync(ideasMarkdownPath, "utf8");
   if (!ideasMarkdown.trim()) throw new Error(`${input.ideasMarkdownPath} is empty`);
   const research = ResearchExportSchema.parse(readJson(researchPath));
   const versions = new Set(ideas.map((idea) => idea.workflowVersion));
   const decisions = new Set(ideas.map((idea) => normalizeDecision(idea.problemStatement)));
-  if (versions.size !== 1) throw new Error(`${input.ideasPath} mixes workflow versions`);
-  if (decisions.size !== 1) throw new Error(`${input.ideasPath} mixes decisions`);
+  if (!noOptions && versions.size !== 1) throw new Error(`${input.ideasPath} mixes workflow versions`);
+  if (!noOptions && decisions.size !== 1) throw new Error(`${input.ideasPath} mixes decisions`);
+  if (noOptions && noOptions.discoveryRunId !== research.researchRun.id) throw new Error(`${input.ideasPath} belongs to a different research export`);
   const sourceIds = new Set(research.sources.map(({ id }) => id));
   for (const idea of ideas) {
     for (const factor of idea.factors) {
       if (!sourceIds.has(factor.sourceId)) throw new Error(`${input.ideasPath} cites a source absent from ${input.researchPath}`);
     }
   }
-  return { ideas, ideasMarkdown, research, ideasPath, ideasMarkdownPath, researchPath, origin: input.origin, ...(input.timings ? { timings: input.timings } : {}) };
+  return { ideas, noOptions, workflowVersion: noOptions?.workflowVersion ?? ideas[0]!.workflowVersion,
+    decision: noOptions?.problemStatement ?? ideas[0]!.problemStatement,
+    ideasMarkdown, research, ideasPath, ideasMarkdownPath, researchPath, origin: input.origin, ...(input.timings ? { timings: input.timings } : {}) };
 }
 
 function blindIdeasMarkdown(markdown: string): string {
-  return markdown.replace(/^Workflow: v2\. /gm, "");
+  return markdown.replace(/^Workflow: v[12]\. /gm, "");
 }
 
 function withoutBlindingMetadata(value: unknown): unknown {
@@ -147,15 +161,15 @@ export function createEvaluationArtifacts(
   const packetCases: Array<{
     caseId: string;
     decision: string;
-    candidates: Array<{ candidateId: CandidateId; readingFile: string; research: unknown; ideas: unknown }>;
+    candidates: Array<{ candidateId: CandidateId; readingFile: string; research: unknown; ideas: unknown; noOptions: unknown }>;
   }> = [];
   const mappingCases = [];
   const readingFiles: Array<{ filename: string; content: string }> = [];
   for (const evaluationCase of input.cases) {
     const variants = evaluationCase.variants.map((variant) => loadVariant(variant, baseDirectory));
-    const workflows = variants.map((variant) => variant.ideas[0]!.workflowVersion).sort();
+    const workflows = variants.map((variant) => variant.workflowVersion).sort();
     if (workflows[0] !== 1 || workflows[1] !== 2) throw new Error(`${evaluationCase.caseId} must contain one v1 and one v2 ideas export`);
-    const decisions = variants.map((variant) => normalizeDecision(variant.ideas[0]!.problemStatement));
+    const decisions = variants.map((variant) => normalizeDecision(variant.decision));
     if (decisions[0] !== decisions[1]) throw new Error(`${evaluationCase.caseId} variants do not describe the same decision`);
     if (JSON.stringify(variants[0]!.research.scope) !== JSON.stringify(variants[1]!.research.scope)) {
       throw new Error(`${evaluationCase.caseId} variants do not use the same archived scope and constraints`);
@@ -167,18 +181,19 @@ export function createEvaluationArtifacts(
       readingFile: `${evaluationCase.caseId}-${index === 0 ? "A" : "B"}.md`,
       research: withoutBlindingMetadata(variant.research),
       ideas: withoutBlindingMetadata(variant.ideas),
+      noOptions: withoutBlindingMetadata(variant.noOptions),
     }));
     readingFiles.push(...ordered.map((variant, index) => ({
       filename: `${evaluationCase.caseId}-${index === 0 ? "A" : "B"}.md`,
       content: blindIdeasMarkdown(variant.ideasMarkdown),
     })));
-    packetCases.push({ caseId: evaluationCase.caseId, decision: variants[0]!.ideas[0]!.problemStatement, candidates });
+    packetCases.push({ caseId: evaluationCase.caseId, decision: variants[0]!.decision, candidates });
     mappingCases.push({
       caseId: evaluationCase.caseId,
       candidates: ordered.map((variant, index) => ({
         candidateId: (index === 0 ? "A" : "B") as CandidateId,
         packetCandidateSha256: jsonSha256(candidates[index]),
-        workflowVersion: variant.ideas[0]!.workflowVersion,
+        workflowVersion: variant.workflowVersion,
         origin: variant.origin,
         timings: variant.timings ?? null,
         exportMetadata: { researchRun: variant.research.researchRun },
