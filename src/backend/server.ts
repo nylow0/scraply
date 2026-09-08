@@ -739,7 +739,8 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
         const defaultModel = cachedModels.some((model) => sameModelRef(model, DEFAULT_RUN_CONFIG.model))
           ? DEFAULT_RUN_CONFIG.model
           : cachedModels[0] ?? DEFAULT_RUN_CONFIG.model;
-        const thread = threads.createThread(input.title ?? "New research", { ...DEFAULT_RUN_CONFIG, model: defaultModel, searchProvider });
+        const draft = input.title === undefined ? threads.findEmptyDraft() : null;
+        const thread = draft ?? threads.createThread(input.title ?? "New research", { ...DEFAULT_RUN_CONFIG, model: defaultModel, searchProvider });
         activeThreadId = thread.id; db.setSetting("active_thread_id", thread.id); return sendJson(res, 200, { thread, workspace: await workspaceState() });
       }
       if (route === "/threads/select") {

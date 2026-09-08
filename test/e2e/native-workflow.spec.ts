@@ -99,6 +99,7 @@ for (const workflowVersion of [1, 2]) test(`native v${workflowVersion} research 
     electron = await launch();
     let page = await electron.firstWindow();
     await page.getByRole("button", { name: "Create research", exact: true }).click();
+    await expect(page.getByRole("tabpanel", { name: "Research setup" })).toBeVisible();
     if (workflowVersion === 2) {
       await page.evaluate(async () => {
         const api = (window as unknown as { scraply: ScraplyApi }).scraply;
