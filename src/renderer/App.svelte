@@ -51,6 +51,7 @@
         workspace.latestResearchRun.lastActivity = event.message;
         workspace.latestResearchRun.codexCalls = event.codexCalls;
         workspace.latestResearchRun.searches = event.searches;
+        if (event.usage) workspace.latestResearchRun.usage = event.usage;
         void tick().then(() => {
           try {
             const values = document.querySelectorAll(".calls strong");
