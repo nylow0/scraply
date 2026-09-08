@@ -248,9 +248,14 @@ export async function discoverProblems(
       { inputs: {}, evidence: { ...buildProblemKillInput(candidate, candidateSources).evidence, scope, supportingFactors: citedFactors } },
       ProblemKillOutputSchema,
     );
-    const validVerdictSourceIds = [...new Set(kill.verdictSourceIds.filter((id) => candidateSources.some((source) => source.id === id)))];
+    // V2 assesses both sides of the evidence, including support absent from the contrary search.
+    const suppliedSourceIds = new Set([
+      ...candidateSources.map((source) => source.id),
+      ...(dependencies.workflowVersion === 2 ? citedFactors.map((factor) => factor.sourceId) : []),
+    ]);
+    const validVerdictSourceIds = [...new Set(kill.verdictSourceIds.filter((id) => suppliedSourceIds.has(id)))];
     if (dependencies.workflowVersion === 2 && validVerdictSourceIds.length !== new Set(kill.verdictSourceIds).size) {
-      throw new ProviderFailure("schema", "Evidence assessment referenced an unknown contrary source ID", false);
+      throw new ProviderFailure("schema", "Evidence assessment referenced an unknown source ID", false);
     }
     const factorIds = citedFactors.map((factor) => factor.id);
     problems.push({

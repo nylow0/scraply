@@ -282,11 +282,13 @@ function assertDiscoveryStageSemantics<T>(
     return;
   }
   if (stageId === "problem-kill") {
-    const sourceIds = new Set(findRecords(evidence, "sources").flatMap((source) =>
-      typeof source.id === "string" ? [source.id] : []));
+    const sourceIds = new Set([
+      ...findRecords(evidence, "sources").flatMap((source) => typeof source.id === "string" ? [source.id] : []),
+      ...findRecords(evidence, "supportingFactors").flatMap((factor) => typeof factor.sourceId === "string" ? [factor.sourceId] : []),
+    ]);
     const assessment = WorkflowV2ProblemKillOutputSchema.parse(output);
     if (assessment.verdictSourceIds.some((id) => !sourceIds.has(id))) {
-      throw new Error("Evidence assessment referenced an unknown contrary source ID");
+      throw new Error("Evidence assessment referenced an unknown source ID");
     }
     if (assessment.verdict === "confirmed" && findRecords(evidence, "supportingFactors").length === 0) {
       throw new Error("Confirmed evidence assessment requires supplied supporting factors");

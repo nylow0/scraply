@@ -17,6 +17,8 @@ import {
 import { deriveJsonSchema } from "../../src/shared/json-schema";
 import { WorkflowExecution } from "../../src/core/workflow-execution";
 import { configurePromptPaths } from "../../src/core/prompts";
+import { discoverProblems, type HarvestedSource } from "../../src/core/discovery";
+import type { StructuredModelClient } from "../../src/providers/structured";
 
 const directories: string[] = [];
 
@@ -27,6 +29,46 @@ afterEach(() => {
 });
 
 describe("workflow v2 persistence", () => {
+  test.each([false, true])("assesses supplied supporting and contrary sources while rejecting invented citations (%s)", async (invented) => {
+    configurePromptPaths({ bundledDir: join(process.cwd(), "prompts"), overrideDir: null });
+    const client = database();
+    const execution = new WorkflowExecution(client, "run-v2");
+    const source: HarvestedSource = {
+      id: "support", providerSourceId: "support", canonicalUrl: "https://support.test/page", url: "https://support.test/page",
+      title: "Support", retrievedText: "Operators repeat filing.", author: null, publishedAt: null,
+      contentHash: "support", retrievedAt: "2026-01-01T00:00:00.000Z",
+    };
+    const modelClient: StructuredModelClient = { async structuredCompletion(request) {
+      const evidence = request.evidence[0]!.content as { sources?: Array<{ id: string }> };
+      const output = request.stage === "problem-candidates" ? { problems: [{
+        statement: "Operators repeat filing.", whyItPersists: "Systems disagree.", affected: "Operators",
+        scaleEstimate: "Unknown", scaleBasisFactorId: null, factorIds: ["factor"], alternativeExplanations: [], unknowns: [],
+      }] } : {
+        verdict: "already-solved", verdictReason: "A manual alternative addresses the supplied observation.",
+        verdictSourceIds: ["support", evidence.sources![0]!.id, ...(invented ? ["invented"] : [])],
+        unresolvedAssumptions: [], wouldChangeConclusion: [],
+      };
+      return { output: request.schema.parse(output), metadata: {
+        model: request.model, usage: { status: "unknown" }, latencyMs: 1, repairCount: 0, providerRequestIds: [], attempts: [],
+      } };
+    } };
+    try {
+      const result = discoverProblems({ title: "Filing", audience: "Operators", domain: "Filing", observations: "", offLimits: [] }, [{
+        id: "factor", subject: "Operators", behavior: "repeat filing", quote: source.retrievedText,
+        sourceId: source.id, harvestMode: "domain", modelConfidence: 0.8, source,
+      }], [source], {
+        model: { providerId: "test", modelId: "test" }, reasoningEffort: "low", depth: "quick", workflowVersion: 2,
+        modelClient: execution.discoveryClient(modelClient),
+        search: { async search() { return [{ id: "contrary", url: "https://contrary.test/page", title: "Alternative", text: "Use a checklist." }]; } },
+      });
+      if (invented) await expect(result).rejects.toThrow("unknown source ID");
+      else {
+        const discovery = await result;
+        expect(discovery.problems[0]!.verdictSourceIds).toEqual(["support", discovery.killSources[0]!.id]);
+      }
+    } finally { client.close(); }
+  });
+
   test("uses compact references for new runs while reproducing legacy references exactly", () => {
     configurePromptPaths({ bundledDir: join(process.cwd(), "prompts"), overrideDir: null });
     const client = database();
