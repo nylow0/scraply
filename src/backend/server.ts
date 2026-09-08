@@ -11,7 +11,7 @@ import type { SearchClient, SearchProvider, ValidationResult } from "../provider
 import { ProviderFailure, type StructuredModelClient } from "../providers/structured";
 import { RuntimeClient } from "../providers/runtime";
 import { AppError, toErrorPayload } from "../shared/errors";
-import { MAX_DEVELOPMENT_PROJECTED_CALLS } from "../shared/development-projection";
+import { developmentProjection } from "../shared/development-projection";
 import { optionEvidenceReferences } from "../shared/option-evidence";
 import {
   CreateThreadRequestSchema, DeleteThreadRequestSchema, EvidenceFollowUpRequestSchema, ExportIdeasRequestSchema, ExportResearchRequestSchema,
@@ -388,7 +388,8 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
       )
       SELECT s.*, p.statement AS problem_statement, p.verdict AS problem_verdict,
         rr.workflow_version, rr.status AS run_status, rr.awaiting_selection, rr.updated_at AS run_updated_at,
-        ${details ? "da.analysis_json, da.user_decision, da.observed_result," : ""} da.updated_at AS decision_updated_at,
+        ${details ? "da.analysis_json, da.user_decision, da.observed_result, sc.risk_evaluation_criteria, review.value_json AS risk_evaluation_json," : ""} da.updated_at AS decision_updated_at,
+        review.snapshot_key AS risk_evaluation_key,
         ef.status AS evidence_follow_up_status, ef.updated_at AS evidence_follow_up_updated_at,
         COALESCE(oc.outcome_count, 0) AS outcome_count, COALESCE(oc.core_count, 0) AS core_count,
         COALESCE(rc.risk_count, 0) AS risk_count, COALESCE(rc.ending_count, 0) AS ending_count,
@@ -399,6 +400,8 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
       FROM solutions s JOIN problems p ON p.id = s.problem_id
       JOIN research_runs rr ON rr.id = s.research_run_id
       LEFT JOIN decision_analyses da ON da.solution_id = s.id
+      LEFT JOIN scopes sc ON sc.research_run_id = p.discovery_run_id
+      LEFT JOIN workflow_snapshots review ON review.research_run_id = rr.id AND review.snapshot_key = 'risk-evaluation:' || s.id
       LEFT JOIN evidence_follow_ups ef ON ef.research_run_id = rr.id AND ef.solution_id = s.id
       LEFT JOIN outcome_counts oc ON oc.solution_id = s.id
       LEFT JOIN risk_counts rc ON rc.solution_id = s.id
@@ -440,12 +443,14 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
         contraryEvidenceIds: JSON.parse(String(row.contrary_evidence_ids_json ?? "[]")),
         ...(details ? {
           decisionAnalysis: row.analysis_json ? JSON.parse(String(row.analysis_json)) : null,
+          riskEvaluation: row.risk_evaluation_json ? JSON.parse(String(row.risk_evaluation_json)).evaluation : null,
+          riskEvaluationCriteria: String(row.risk_evaluation_criteria ?? ""),
           userDecision: row.user_decision === null ? null : String(row.user_decision),
           observedResult: row.observed_result === null ? null : String(row.observed_result),
           contrarySources: contrarySourcesByProblem.get(String(row.problem_id)) ?? [],
           ...(evidenceFollowUp ? { evidenceFollowUp } : {}),
         } : {}),
-        detailRevision: `${row.run_updated_at}:${row.decision_updated_at ?? ""}:${row.evidence_follow_up_updated_at ?? ""}`,
+        detailRevision: `${row.run_updated_at}:${row.decision_updated_at ?? ""}:${row.evidence_follow_up_updated_at ?? ""}:${row.risk_evaluation_key ?? ""}`,
         id: String(row.id), problemId: String(row.problem_id), problemStatement: String(row.problem_statement),
         problemVerdict: String(row.problem_verdict) as SolutionView["problemVerdict"], mechanism: String(row.mechanism),
         factors: details ? factorsByProblem.get(String(row.problem_id)) ?? [] : [],
@@ -573,8 +578,8 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
     }));
     // The archived scope is the one this run actually used; the thread's live scope may have been edited since.
     const archivedScope = db.db.prepare(`
-      SELECT title, audience, domain, observations, off_limits_json FROM scopes WHERE research_run_id = ?
-    `).get(runId) as { title: string; audience: string; domain: string; observations: string; off_limits_json: string } | undefined;
+      SELECT title, audience, domain, observations, off_limits_json, risk_evaluation_criteria FROM scopes WHERE research_run_id = ?
+    `).get(runId) as { title: string; audience: string; domain: string; observations: string; off_limits_json: string; risk_evaluation_criteria: string } | undefined;
     return {
       schemaVersion: 1,
       exportedAt: new Date().toISOString(),
@@ -588,6 +593,7 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
         ? {
           title: archivedScope.title, audience: archivedScope.audience, domain: archivedScope.domain,
           observations: archivedScope.observations, offLimits: JSON.parse(archivedScope.off_limits_json) as string[],
+          ...(archivedScope.risk_evaluation_criteria ? { riskEvaluationCriteria: archivedScope.risk_evaluation_criteria } : {}),
         }
         : threads.getScope(threadId),
       sources,
@@ -640,10 +646,13 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
     const row = db.db.prepare("SELECT id, status, problem_id, config_json, workflow_version, awaiting_selection, interrupted, completion_reason FROM research_runs WHERE thread_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1")
       .get(threadId) as { id: string; status: string; problem_id: string | null; config_json: string; workflow_version: 1 | 2; awaiting_selection: number; interrupted: number; completion_reason: string | null } | undefined;
     if (!row) return null;
-    const runConfig = RunConfigSchema.parse({ ...DEFAULT_RUN_CONFIG, ...JSON.parse(row.config_json) });
+    const runConfig = RunConfigSchema.parse(JSON.parse(row.config_json));
     const counts = db.db.prepare(`SELECT provider, COUNT(*) AS count FROM cost_ledger WHERE research_run_id = ? AND status IN ('reserved','committed') GROUP BY provider`)
       .all(row.id) as Array<{ provider: string; count: number }>;
-    const projection = row.problem_id ? { modelCalls: row.workflow_version === 2 ? 2 : MAX_DEVELOPMENT_PROJECTED_CALLS, searches: 0 } : discoveryRunProjection(runConfig.discoveryDepth);
+    const promptSnapshot = db.db.prepare("SELECT value_json FROM workflow_snapshots WHERE research_run_id = ? AND snapshot_key = 'prompts'")
+      .get(row.id) as { value_json: string } | undefined;
+    const hasRiskEvaluator = promptSnapshot ? Boolean(JSON.parse(promptSnapshot.value_json)["risk-evaluation"]) : true;
+    const projection = row.problem_id ? { modelCalls: row.workflow_version === 2 ? (hasRiskEvaluator ? 3 : 2) : developmentProjection(runConfig.ideaCount ?? 5), searches: 0 } : discoveryRunProjection(runConfig.discoveryDepth);
     const activity = db.db.prepare("SELECT payload_json FROM job_events WHERE run_id = ? AND type = 'run-progress' ORDER BY id DESC LIMIT 1")
       .get(row.id) as { payload_json: string } | undefined;
     const resumeSafety = generationAttempts.getResumeSafety(row.id);
@@ -1192,6 +1201,12 @@ function renderDecisionMarkdown(ideas: SolutionView[]): string {
       `Workflow: v2. ${idea.selected ? "Selected by the user." : "Not selected."} Problem evidence: ${idea.problemVerdict}.`, "",
       `Key assumption: ${idea.keyAssumption}`, "", `Current approach may suffice: ${idea.whyCurrentApproachMaySuffice}`, "",
       `Constraints: ${idea.respectsOffLimitsWhy}`, "", "## Uncertainty", "", ...(idea.unknowns ?? []).map((item) => `- ${item}`), "",
+      `Evaluate risk against: ${idea.riskEvaluationCriteria || "The research goal and boundaries."}`, "",
+      ...(idea.riskEvaluation && !analysis ? [
+        "## Independent risk evaluation", "",
+        ...idea.riskEvaluation.risks.map((risk) => `- ${risk.description}: ${risk.whyDecisive}`), "",
+        ...idea.riskEvaluation.unknowns.map((unknown) => `- Unknown: ${unknown}`), "",
+      ] : []),
       "## Sources supporting this option", "",
       ...optionEvidenceReferences(idea, idea.supportingEvidenceIds ?? []).map((source) => source.url ? `- [${source.title}](${source.url})` : `- ${source.title}`), "",
       "## Sources challenging this option", "",
@@ -1199,7 +1214,7 @@ function renderDecisionMarkdown(ideas: SolutionView[]): string {
       "These roles are the model's assessment of this option. Shared problem evidence is in the appendix.", "",
       ...(analysis ? [
         "## Model analysis, not observed results", "", ...analysis.consequences.map((item) => `- ${item.direction}: ${item.description}. Affects ${item.affects}. ${item.rationale}`), "",
-        "## Decisive risks", "", ...analysis.risks.map((risk) => `- ${risk.description}: ${risk.whyDecisive}`), "",
+        idea.riskEvaluation ? "## Independent risk evaluation" : "## Decisive risks", "", ...analysis.risks.map((risk) => `- ${risk.description}: ${risk.whyDecisive}`), "",
         "## Proposed responses, untested", "", ...analysis.proposedResponses.map((response) => `- ${response.approach}. Cost: ${response.cost}. Fails if: ${response.failsIf}`), "",
         "## Open questions", "", ...analysis.unknowns.map((item) => `- ${item}`), "",
         "## Next experiment", "", analysis.experiment.question, "", analysis.experiment.method, "",

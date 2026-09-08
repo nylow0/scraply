@@ -14,6 +14,7 @@ import {
   type WorkflowV2SolutionOption,
 } from "../../shared/structured-output-schemas";
 import type { DatabaseClient } from "../client";
+import { DEFAULT_IDEA_COUNT, RunConfigSchema } from "../../shared/schemas";
 
 export class WorkflowV2ConflictError extends Error {
   readonly code = "WORKFLOW_V2_CONFLICT";
@@ -122,7 +123,11 @@ export class WorkflowV2Repository {
     options: Array<WorkflowV2SolutionOption & { id: string }>,
   ): { created: boolean } {
     this.client.requireImmediateTransaction();
-    if (options.length > 3) throw new Error("A v2 run can persist at most three solution options");
+    const run = this.client.db.prepare("SELECT config_json FROM research_runs WHERE id = ?")
+      .get(researchRunId) as { config_json: string } | undefined;
+    if (!run) throw new Error("The development run is missing");
+    const ideaCount = RunConfigSchema.parse(JSON.parse(run.config_json)).ideaCount ?? DEFAULT_IDEA_COUNT;
+    if (options.length > ideaCount) throw new Error(`This run requested at most ${ideaCount} ideas`);
     const parsed = options.map((option) => {
       const { id, ...candidate } = option;
       return { ...WorkflowV2SolutionOptionSchema.parse(candidate), id };

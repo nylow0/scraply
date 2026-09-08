@@ -63,6 +63,8 @@ The runtime source lives in `runtime/` in this repository. The separate `nylow0/
 - `UPSTREAM.md`
 - `SHA256SUMS.txt`
 
+For an implementation-only local build, set `SCRAPLY_SKIP_RUNTIME_CHECKS=1` before `bun run build:installed`. This skips Rust formatting, source-budget checks, tests, and clippy while still compiling the runtime and verifying package hashes and installed files. It is rejected when `SCRAPLY_RELEASE_STRICT=1` or `CI=true`. Such a build provides no new test or release-acceptance evidence. Leave this setting unset for release verification.
+
 After building, `bun run prepare:runtime` verifies the archive and every member before staging those files plus the lock in `build/runtime`. Verification rejects extra or unsafe archive paths, links, oversized files, non-x64 executables, incorrect version output, hash mismatches, and the debug-only fixture markers. Electron Builder copies the verified stage to application resources. Production never searches `PATH` or substitutes another runtime after failure.
 
 Commit runtime and app changes together. CI and release-candidate builds initialize the submodule and build Rust from the same checkout as the app. The Cargo cache defaults to `build/cargo`. Development builds may use a dirty checkout, which the application manifest records; release builds require a clean checkout and matching app/runtime source commits.

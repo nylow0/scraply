@@ -4,6 +4,11 @@ param()
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
+$skipChecks = $env:SCRAPLY_SKIP_RUNTIME_CHECKS -eq "1"
+if ($skipChecks -and ($env:SCRAPLY_RELEASE_STRICT -eq "1" -or $env:CI -eq "true")) {
+    throw "SCRAPLY_SKIP_RUNTIME_CHECKS is only allowed for local development builds."
+}
+
 # Hosted PowerShell 7 module paths can hide Windows PowerShell's built-in cmdlets.
 $env:PSModulePath = "$PSHOME\Modules;$env:ProgramFiles\WindowsPowerShell\Modules;$env:windir\System32\WindowsPowerShell\v1.0\Modules"
 
@@ -64,6 +69,7 @@ function Invoke-Checked {
 
     Push-Location $repositoryRoot
     try {
+        if (-not $skipChecks) {
         $formatArguments = @("+$toolchain", "fmt", "--check")
         foreach ($package in $localPackages) {
             $formatArguments += @("-p", $package)
@@ -80,6 +86,10 @@ function Invoke-Checked {
         "+$toolchain", "clippy", "--workspace", "--all-targets", "--locked",
         "--target", $targetTriple, "--", "-D", "warnings"
     ) "strict MSVC clippy"
+        }
+        else {
+            Write-Host "Local development build: skipping Rust formatting, source budget, tests, and clippy by request."
+        }
 
     $metadataJson = & $cargo "+$toolchain" metadata --no-deps --format-version 1
     if ($LASTEXITCODE -ne 0) {

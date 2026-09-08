@@ -114,10 +114,20 @@
       {#each detail.contrarySources ?? [] as source (source.id)}
         <details><summary>{source.title}</summary><a href={source.url} onclick={(event) => { event.preventDefault(); void onOpenSource(source.url); }}>Open source</a><p class="source-text">{source.text}</p></details>
       {:else}<p>No contrary sources were collected. Their absence does not confirm the premise.</p>{/each}
+      {#if detail.riskEvaluation && !analysis}
+        <section aria-label="Independent risk evaluation">
+          <h3>Independent risk evaluation</h3>
+          <p class="status">Evaluated against: {detail.riskEvaluationCriteria || "The research goal and boundaries."}</p>
+          {#each detail.riskEvaluation.risks as risk (risk.riskId)}<div class="finding"><strong>{risk.description}</strong><p>{risk.whyDecisive}</p></div>{:else}<p>The evaluator identified no decisive risk.</p>{/each}
+          {#if detail.riskEvaluation.unknowns.length}<h3>Open questions</h3><ul>{#each detail.riskEvaluation.unknowns as unknown, index (index)}<li>{unknown}</li>{/each}</ul>{/if}
+          <p class="status">Risk review saved. The final analysis is not complete.</p>
+        </section>
+      {/if}
       {#if analysis}
         <h3>Possible consequences</h3><p class="status">Model judgments. These have not been observed.</p>
         {#each analysis.consequences as consequence, index (index)}<div class="finding"><strong>{consequence.direction}: {consequence.description}</strong><p>Affects {consequence.affects}. {consequence.rationale}</p></div>{/each}
-        <h3>Decisive risks</h3>
+        <h3>{detail.riskEvaluation ? "Independent risk evaluation" : "Decisive risks"}</h3>
+        <p class="status">Evaluated against: {detail.riskEvaluationCriteria || "The research goal and boundaries."}</p>
         {#each analysis.risks as risk (risk.riskId)}<div class="finding"><strong>{risk.description}</strong><p>{risk.whyDecisive}</p></div>{:else}<p>No decisive risk identified by the model. This is not a safety guarantee.</p>{/each}
         <h3>Proposed responses, untested</h3>
         {#each analysis.proposedResponses as response, index (index)}<div class="finding"><strong>{response.approach}</strong><p>Addresses: {analysis.risks.filter((risk) => response.riskIds.includes(risk.riskId)).map((risk) => risk.description).join("; ")}</p><p>Cost: {response.cost}</p><p>Fails if: {response.failsIf}</p></div>{/each}

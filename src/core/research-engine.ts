@@ -8,11 +8,11 @@ import { ResearchRunRepository } from "../db/repositories/research-runs";
 import type { SearchClient, SearchOptions, SearchProvider } from "../providers/search";
 import { ProviderFailure, type GenerationMetadata, type StructuredModelClient, type StructuredStageRequest } from "../providers/structured";
 import { AppError } from "../shared/errors";
-import { MAX_DEVELOPMENT_PROJECTED_CALLS } from "../shared/development-projection";
+import { developmentProjection } from "../shared/development-projection";
 import type { ResearchEvent } from "../shared/ipc";
-import { RunConfigSchema, sameModelRef, type RunConfig } from "../shared/schemas";
-import { ScopeSchema, type Scope } from "../shared/structured-output-schemas";
-import { analyzeSelectedOption, produceDevelopmentOptions, runPersistedDevelopment } from "./development";
+import { DEFAULT_IDEA_COUNT, RunConfigSchema, sameModelRef, type RunConfig } from "../shared/schemas";
+import { ScopeSchema, WorkflowV2RiskEvaluationOutputSchema, type Scope } from "../shared/structured-output-schemas";
+import { analyzeSelectedOption, evaluateSelectedOptionRisk, produceDevelopmentOptions, runPersistedDevelopment } from "./development";
 import { discoverProblems, discoveryRunProjection, harvestEvidenceFollowUp, harvestFactors, type HarvestResult, type HarvestedFactor, type HarvestedSource } from "./discovery";
 import { WorkflowExecution } from "./workflow-execution";
 import type { WorkflowV2StageId } from "./stages";
@@ -257,7 +257,7 @@ export class ResearchEngine {
 
   private begin(runId: string, threadId: string, problemId: string | null, config: RunConfig, resumed = false): void {
     const projection = problemId
-      ? { modelCalls: config.workflowVersion === 2 ? 2 : MAX_DEVELOPMENT_PROJECTED_CALLS, searches: 0 }
+      ? { modelCalls: config.workflowVersion === 2 ? 3 : developmentProjection(config.ideaCount ?? 5), searches: 0 }
       : discoveryRunProjection(config.discoveryDepth);
     const active: ActiveRun = {
       runId, threadId, problemId, config, abortController: new AbortController(), startedAt: Date.now(),
@@ -303,8 +303,8 @@ export class ResearchEngine {
   }
 
   private async executeDiscovery(active: ActiveRun): Promise<void> {
-    const scopeRow = this.options.db.db.prepare("SELECT title, audience, domain, observations, off_limits_json FROM scopes WHERE research_run_id = ?")
-      .get(active.runId) as { title: string; audience: string; domain: string; observations: string; off_limits_json: string } | undefined;
+    const scopeRow = this.options.db.db.prepare("SELECT title, audience, domain, observations, off_limits_json, risk_evaluation_criteria FROM scopes WHERE research_run_id = ?")
+      .get(active.runId) as { title: string; audience: string; domain: string; observations: string; off_limits_json: string; risk_evaluation_criteria: string } | undefined;
     if (!scopeRow) throw new Error("Discovery scope is missing");
     const scope = ScopeSchema.parse({
       title: scopeRow.title,
@@ -312,6 +312,7 @@ export class ResearchEngine {
       domain: scopeRow.domain,
       observations: scopeRow.observations,
       offLimits: JSON.parse(scopeRow.off_limits_json),
+      ...(scopeRow.risk_evaluation_criteria ? { riskEvaluationCriteria: scopeRow.risk_evaluation_criteria } : {}),
     });
     const deps = this.dependencies(active);
     if (active.workflow) {
@@ -382,6 +383,7 @@ export class ResearchEngine {
       const context = workflow.developmentContext(active.problemId!);
       const deps = {
         modelClient: this.instrumentedModel(active), model: active.config.model,
+        ideaCount: active.config.ideaCount,
         reasoningEffort: active.config.reasoningEffort, signal: active.abortController.signal,
         resolvePrompt: workflow.resolvePrompt,
       };
@@ -401,7 +403,7 @@ export class ResearchEngine {
           },
         });
       } else {
-        this.progress(active, "Generating up to three options");
+        this.progress(active, `Generating up to ${active.config.ideaCount ?? DEFAULT_IDEA_COUNT} ideas`);
         const result = await produceDevelopmentOptions(context, deps);
         active.abortController.signal.throwIfAborted();
         this.options.db.immediateTransaction(() => {
@@ -433,8 +435,30 @@ export class ResearchEngine {
         });
         return;
       }
+      let riskEvaluation;
+      if (workflow.hasRiskEvaluator()) {
+        const snapshotKey = `risk-evaluation:${option.id}`;
+        const saved = workflow.read<{ evaluation: unknown }>(snapshotKey);
+        if (saved) {
+          riskEvaluation = WorkflowV2RiskEvaluationOutputSchema.parse(saved.evaluation);
+        } else {
+          this.progress(active, "Risk evaluator: reviewing the selected idea against your criteria");
+          const result = await evaluateSelectedOptionRisk(context, option, deps);
+          active.abortController.signal.throwIfAborted();
+          // Snapshot the review and exact request together. Attempts already retain terminal usage.
+          // A separate snapshot avoids rewriting the historical stage table's six-stage constraint.
+          workflow.save(snapshotKey, {
+            evaluation: result.evaluation,
+            request: { model: result.request.model, reasoningEffort: result.request.reasoningEffort,
+              workOrder: result.request.workOrder, evidence: result.request.evidence, jsonSchema: result.request.jsonSchema,
+              deadlineMs: result.request.deadlineMs, repairPolicy: result.request.repairPolicy },
+            prompt: result.resolvedPrompt, metadata: result.metadata,
+          });
+          riskEvaluation = result.evaluation;
+        }
+      }
       this.progress(active, "Analyzing the selected option and its next experiment");
-      const result = await analyzeSelectedOption(context, option, deps);
+      const result = await analyzeSelectedOption(context, option, deps, riskEvaluation);
       active.abortController.signal.throwIfAborted();
       this.options.db.immediateTransaction(() => {
         const checkpoint = workflow.commitStage("decision-analysis", result.request, result.resolvedPrompt,
@@ -464,6 +488,7 @@ export class ResearchEngine {
       modelClient: this.instrumentedModel(active),
       model: active.config.model,
       reasoningEffort: active.config.reasoningEffort,
+      ideaCount: active.config.ideaCount,
       signal: active.abortController.signal,
       onProgress: (message) => this.progress(active, message),
     });
@@ -651,7 +676,7 @@ export class ResearchEngine {
 
   private async executeEvidenceFollowUp(active: ActiveRun): Promise<void> {
     const row = this.options.db.db.prepare(`
-      SELECT s.title, s.audience, s.domain, s.observations, s.off_limits_json
+      SELECT s.title, s.audience, s.domain, s.observations, s.off_limits_json, s.risk_evaluation_criteria
       FROM problems p JOIN scopes s ON s.research_run_id = p.discovery_run_id
       WHERE p.id = ?
     `).get(active.problemId) as {
@@ -660,6 +685,7 @@ export class ResearchEngine {
       domain: string;
       observations: string;
       off_limits_json: string;
+      risk_evaluation_criteria: string;
     } | undefined;
     const followUp = this.followUps.find(active.runId);
     if (!row || !followUp) throw new Error("Evidence follow-up context is missing");
@@ -669,6 +695,7 @@ export class ResearchEngine {
       domain: row.domain,
       observations: row.observations,
       offLimits: JSON.parse(row.off_limits_json),
+      ...(row.risk_evaluation_criteria ? { riskEvaluationCriteria: row.risk_evaluation_criteria } : {}),
     });
     const providerId = active.config.model.providerId;
     this.enforceRunawayBackstop(active, providerId, 1);
