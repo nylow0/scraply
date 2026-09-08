@@ -62,6 +62,33 @@ describe("discovery", () => {
     ]);
   });
 
+  test("keeps native envelope IDs bounded when a harvest batch contains many source IDs", async () => {
+    const harvestRequests: StructuredStageRequest<unknown>[] = [];
+    let nextId = 0;
+    await harvestFactors(scope(), {
+      model, reasoningEffort, depth: "quick",
+      idFactory: () => String(nextId++).padStart(64, "0"),
+      modelClient: modelClient(async (request) => {
+        if (request.schema._def === QueryPlanOutputSchema._def) return { queries: ["one", "two", "three"] };
+        harvestRequests.push(request);
+        return { factors: [] };
+      }),
+      search: { async search() {
+        return Array.from({ length: 12 }, (_, index) => ({
+          id: String(index), url: `https://example.test/source/${index}`, title: `Source ${index}`, text: "Observed evidence.",
+        }));
+      } },
+    });
+    expect(harvestRequests.length).toBeGreaterThan(0);
+    for (const request of harvestRequests) {
+      expect(request.stage.length).toBeGreaterThan(256);
+      expect(Buffer.byteLength(request.evidence[0]!.sourceId)).toBeLessThanOrEqual(256);
+      const content = request.evidence[0]!.content as { sources: Array<{ id: string }> };
+      expect(content.sources).toHaveLength(12);
+      expect(new Set(content.sources.map((source) => source.id)).size).toBe(12);
+    }
+  });
+
   test("fails clearly without an app-owned retry when a query plan is underfilled", async () => {
     let plannerCalls = 0;
     const run = harvestFactors(scope(), {

@@ -59,6 +59,37 @@ describe("cutover backend", () => {
     expect(workspace.scope).toEqual({ title: "Repair shops", audience: "Independent shops", domain: "Parts sourcing", observations: "", offLimits: ["Inventory"] });
   });
 
+  test("reuses empty drafts across repeated creation and preserves saved and named projects", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "scraply-draft-reuse-")); dirs.push(dir);
+    const handle = await startBackend({
+      dataDir: dir, dbPath: join(dir, "scraply.db"), bundledPromptsDir: join(process.cwd(), "prompts"),
+      promptOverridesDir: join(dir, "prompts"), appVersion: "test", getSecrets: () => ({ exaApiKey: null }),
+      providerValidation: { inspectNative: async () => nativeInspection() },
+    }, () => undefined); handles.push(handle);
+    const post = async (path: string, body: unknown) => {
+      const response = await fetch(`http://127.0.0.1:${handle.port}${path}`, {
+        method: "POST", headers: { authorization: `Bearer ${handle.token}`, "content-type": "application/json" }, body: JSON.stringify(body),
+      });
+      expect(response.status).toBe(200);
+      return (await response.json() as { data: { thread: { id: string }; workspace: { activeThreadId: string; threads: Array<{ id: string }> } } }).data;
+    };
+    const first = await post("/threads", {});
+    const repeated = await Promise.all(Array.from({ length: 5 }, () => post("/threads", {})));
+    for (const result of repeated) {
+      expect(result.thread.id).toBe(first.thread.id);
+      expect(result.workspace.threads).toHaveLength(1);
+    }
+    await post("/scope", { threadId: first.thread.id, scope: { title: "New research", audience: "Students", domain: "Coursework", observations: "", offLimits: [] } });
+    const next = await post("/threads", {});
+    expect(next.thread.id).not.toBe(first.thread.id);
+    const named = await post("/threads", { title: "Deliberate project" });
+    expect(named.thread.id).not.toBe(next.thread.id);
+    const reopened = await post("/threads", {});
+    expect(reopened.thread.id).toBe(next.thread.id);
+    expect(reopened.workspace.activeThreadId).toBe(next.thread.id);
+    expect(reopened.workspace.threads).toHaveLength(3);
+  });
+
   test("defaults a new thread to Perplexity when it is the only connected search provider", async () => {
     const dir = mkdtempSync(join(tmpdir(), "scraply-perplexity-default-")); dirs.push(dir);
     const handle = await startBackend({
