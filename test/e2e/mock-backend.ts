@@ -8,7 +8,11 @@ export interface MockBackend {
 }
 
 const now = "2026-08-10T12:00:00.000Z";
-const validation = { exa: { valid: true }, perplexity: { valid: false, error: "Perplexity key missing" }, codex: { detected: true, compatible: true, authenticated: true, version: "codex-e2e" }, setupComplete: true };
+const validation = {
+  exa: { valid: true }, perplexity: { valid: false, error: "Perplexity key missing" },
+  native: { available: true, connected: true, version: "0.2.0-e2e", accounts: [{ providerId: "openai-subscription" }] },
+  setupComplete: true,
+};
 const factor = { id: "factor-1", subject: "Small repair shops", behavior: "wait for backordered parts", quote: "Backorders add days to routine repairs.", sourceId: "source-1", sourceTitle: "Repair trade survey", sourceUrl: "https://example.com/repair", harvestMode: "domain", modelConfidence: 0.8 };
 const problem = { id: "problem-1", statement: "Small repair shops cannot reliably predict parts arrival times.", whyItPersists: "Supplier data remains fragmented.", affected: "Independent repair shops", scaleEstimate: "Thousands of shops", verdict: "confirmed", verdictReason: "Multiple sources describe recurring delays.", selected: false, factors: [factor], singleHarvestModeWarning: true };
 const rejectedProblem = { id: "rejected-1", statement: "Repair shops cannot compare every supplier on one marketplace.", reason: "The candidate cited factors from only one source hostname." };
@@ -24,7 +28,7 @@ export async function startMockBackend(): Promise<MockBackend> {
   let status = "configuring";
   const workspace = () => ({
     validation, threads: threads.map((thread) => ({ ...thread, status })), activeThreadId, messages: [], scope,
-    runConfig: activeThreadId ? runConfig : null, models: ["gpt-5.6-luna"], modelOptions: [{ id: "gpt-5.6-luna", displayName: "GPT-5.6-Luna", defaultReasoningEffort: "medium", reasoningEfforts: [{ id: "medium", description: "Balanced reasoning" }] }], modelCatalog: { codex: ["gpt-5.6-luna"], favorites: [] }, presets: [],
+    runConfig: activeThreadId ? runConfig : null, models: [DEFAULT_RUN_CONFIG.model], modelOptions: [{ ...DEFAULT_RUN_CONFIG.model, displayName: "GPT-5.6-Luna", defaultReasoningEffort: "medium", reasoningEfforts: [{ id: "medium", description: "Balanced reasoning" }] }], modelCatalog: { models: [DEFAULT_RUN_CONFIG.model], favorites: [] }, presets: [],
     problemCandidates: status !== "configuring" ? [problem] : [], rejectedProblemCandidates: status !== "configuring" ? [rejectedProblem] : [], solutions: status === "solutions-ready" ? [solution] : [],
     latestResearchRun: status === "configuring" ? null : { runId: "run-1", status: "completed", problemId: status === "solutions-ready" ? "problem-1" : null, codexCalls: 8, searches: 10, projectedCodexCalls: 20, projectedSearches: 20, lastActivity: "Problem verification completed" }, pendingRuns: [],
   });

@@ -12,18 +12,20 @@
     "clean:release": "bun -e \"import { rmSync } from 'node:fs'; rmSync('release', { recursive: true, force: true })\"",
     "build": "bun run clean:out && electron-vite build",
     "preview": "electron-vite preview",
-    "package": "bun run clean:release && bun run clean:out && electron-vite build && electron-builder --win --publish never && bun run verify:package",
-    "package:e2e": "bun run clean:release && bun run clean:out && electron-vite build --mode e2e && electron-builder --win --dir --publish never",
+    "prepare:runtime": "bun scripts/prepare-runtime.ts",
+    "package": "bun run clean:release && bun run clean:out && bun run prepare:runtime && electron-vite build && electron-builder --win --publish never && bun run verify:package",
+    "package:e2e": "bun run clean:release && bun run clean:out && bun run prepare:runtime && electron-vite build --mode e2e && electron-builder --win --dir --publish never",
     "verify:package": "bun scripts/verify-package.ts",
     "install:local": "powershell -NoProfile -File scripts/install-local.ps1",
     "build:installed": "bun run package && bun run install:local",
-    "test": "bun test test/unit test/integration",
+    "test": "bun test test/unit && bun test --timeout 30000 test/integration",
     "test:renderer": "vitest run --maxWorkers=1 --no-file-parallelism",
     "test:e2e": "bun run package:e2e && playwright test",
     "test:e2e:production": "bun scripts/run-e2e.ts production",
     "test:e2e:portable": "bun scripts/smoke-portable.ts",
     "test:e2e:installed": "bun scripts/run-e2e.ts installed",
     "test:exa": "bun test test/integration/exa.live.test.ts",
+    "evaluate:phase3": "bun scripts/phase3-evaluation.ts",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.renderer.json",
     "check": "bun run lint && bun run typecheck && svelte-check --tsconfig ./tsconfig.renderer.json && bun run test && bun run test:renderer"
@@ -43,6 +45,7 @@
     "electron-vite": "^3.1.0",
     "eslint": "^10.9.0",
     "eslint-plugin-svelte": "^3.23.0",
+    "extract-zip": "2.0.1",
     "jsdom": "^30.0.1",
     "svelte": "^5.56.3",
     "svelte-check": "^4.6.0",
@@ -74,6 +77,13 @@
       "build/icon.png",
       "prompts/**/*",
       "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "build/runtime",
+        "to": "runtime",
+        "filter": ["**/*"]
+      }
     ],
     "icon": "build/icon.png",
     "win": {

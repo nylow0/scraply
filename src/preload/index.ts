@@ -1,11 +1,19 @@
 import { contextBridge, ipcRenderer } from "electron";
 import {
   ExportIdeasRequestSchema, ExportResearchRequestSchema, IPC_CHANNELS, ResearchEventSchema, SaveFavoriteModelSchema,
-  SaveRunConfigSchema, SaveScopeSchema, SelectProblemsSchema,
-  type ResearchEvent, type SolutionView, type SourceDetail, type ValidationState, type WorkspaceState,
+  NativeLoginCancelSchema, NativeLoginCompleteSchema, NativeLoginStartSchema, NativeProviderSchema,
+  SaveRunConfigSchema, SaveScopeSchema, SelectProblemsSchema, SelectOptionSchema, SaveDecisionSchema, EvidenceFollowUpRequestSchema,
+  type NativeLoginCompleteResult, type NativeLoginStartResult, type ResearchEvent,
+  type SolutionView, type SourceDetail, type ValidationState, type WorkspaceState,
 } from "../shared/ipc";
 
 const api = {
+  selectOption: (payload: { threadId: string; runId: string; solutionId: string }): Promise<WorkspaceState> =>
+    ipcRenderer.invoke(IPC_CHANNELS.SELECT_OPTION, SelectOptionSchema.parse(payload)),
+  saveDecision: (payload: { threadId: string; solutionId: string; userDecision: string; observedResult: string }): Promise<WorkspaceState> =>
+    ipcRenderer.invoke(IPC_CHANNELS.SAVE_DECISION, SaveDecisionSchema.parse(payload)),
+  requestEvidenceFollowUp: (payload: { threadId: string; runId: string; question: string }): Promise<WorkspaceState> =>
+    ipcRenderer.invoke(IPC_CHANNELS.EVIDENCE_FOLLOW_UP, EvidenceFollowUpRequestSchema.parse(payload)),
   getValidation: (): Promise<ValidationState> => ipcRenderer.invoke(IPC_CHANNELS.GET_VALIDATION),
   retryConnection: (): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.RETRY_CONNECTION),
   getWorkspace: (): Promise<WorkspaceState> => ipcRenderer.invoke(IPC_CHANNELS.GET_WORKSPACE),
@@ -18,8 +26,18 @@ const api = {
     ipcRenderer.invoke(IPC_CHANNELS.SAVE_SCOPE, SaveScopeSchema.parse(payload)),
   saveRunConfig: (payload: { threadId: string; config: NonNullable<WorkspaceState["runConfig"]>; presetName?: string }): Promise<WorkspaceState> =>
     ipcRenderer.invoke(IPC_CHANNELS.SAVE_RUN_CONFIG, SaveRunConfigSchema.parse(payload)),
-  saveFavoriteModel: (payload: { model: { provider: "codex"; id: string }; favorite: boolean }): Promise<WorkspaceState> =>
+  saveFavoriteModel: (payload: { model: { providerId: string; modelId: string }; favorite: boolean }): Promise<WorkspaceState> =>
     ipcRenderer.invoke(IPC_CHANNELS.SAVE_FAVORITE_MODEL, SaveFavoriteModelSchema.parse(payload)),
+  startNativeLogin: (payload: { providerId: string; method: "browser" | "device" }): Promise<NativeLoginStartResult> =>
+    ipcRenderer.invoke(IPC_CHANNELS.NATIVE_LOGIN_START, NativeLoginStartSchema.parse(payload)),
+  completeNativeLogin: (payload: { loginId: string }): Promise<NativeLoginCompleteResult> =>
+    ipcRenderer.invoke(IPC_CHANNELS.NATIVE_LOGIN_COMPLETE, NativeLoginCompleteSchema.parse(payload)),
+  cancelNativeLogin: (payload: { loginId: string; providerId: string }): Promise<WorkspaceState> =>
+    ipcRenderer.invoke(IPC_CHANNELS.NATIVE_LOGIN_CANCEL, NativeLoginCancelSchema.parse(payload)),
+  refreshNativeAccount: (providerId: string): Promise<WorkspaceState> =>
+    ipcRenderer.invoke(IPC_CHANNELS.NATIVE_ACCOUNT_REFRESH, NativeProviderSchema.parse({ providerId })),
+  logoutNativeAccount: (providerId: string): Promise<WorkspaceState> =>
+    ipcRenderer.invoke(IPC_CHANNELS.NATIVE_LOGOUT, NativeProviderSchema.parse({ providerId })),
   startResearch: (threadId: string) => ipcRenderer.invoke(IPC_CHANNELS.START_RESEARCH, { threadId }),
   cancelResearch: async (runId: string): Promise<WorkspaceState> => (await ipcRenderer.invoke(IPC_CHANNELS.CANCEL_RESEARCH, { runId })).workspace,
   resumeResearch: async (runId: string): Promise<WorkspaceState> => (await ipcRenderer.invoke(IPC_CHANNELS.RESUME_RESEARCH, { runId })).workspace,

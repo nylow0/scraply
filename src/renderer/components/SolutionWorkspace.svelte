@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { SolutionView } from "../../shared/ipc";
   import SolutionListItem from "./SolutionListItem.svelte";
+  import DecisionOption from "./DecisionOption.svelte";
 
   let {
     solutions,
@@ -8,15 +9,24 @@
     onExport,
     onOpenSource,
     onReview,
+    onSelect,
+    onSave,
+    workflowVersion,
+    onEvidenceFollowUp,
   }: {
     solutions: SolutionView[];
     busy: boolean;
     onExport: (format: "markdown" | "json") => Promise<void>;
     onOpenSource: (url: string) => Promise<void>;
     onReview: () => void;
+    onSelect?: (idea: SolutionView) => Promise<void>;
+    onSave?: (solutionId: string, decision: string, observed: string) => Promise<void>;
+    workflowVersion?: 1 | 2 | undefined;
+    onEvidenceFollowUp?: ((runId: string, question: string) => Promise<void>) | undefined;
   } = $props();
 
   let unaddressedOnly = $state(false);
+  let hasV2 = $derived(workflowVersion === 2 || solutions.some((idea) => idea.workflowVersion === 2));
   let rankedSolutions = $derived(solutions.map((idea, index) => ({ idea, rank: index + 1 })));
   let visible = $derived(
     unaddressedOnly
@@ -30,35 +40,38 @@
     <div>
       <p class="eyebrow">Development output</p>
       <h1>{solutions.length} solution {solutions.length === 1 ? "idea" : "ideas"}</h1>
-      <p class="intro">Ideas are ordered by independently confirmed outcomes that address the core problem.</p>
+      <p class="intro">{hasV2 ? "Choose a mechanism to analyze." : "Expand an option to inspect its completed analysis."} Evidence and model judgments are available for inspection; options are not ranked.</p>
     </div>
     <div class="actions" aria-label="Solution actions">
       <button onclick={onReview}>Review problems</button>
-      <button
+      {#if !hasV2}<button
         class:active={unaddressedOnly}
         aria-pressed={unaddressedOnly}
         onclick={() => unaddressedOnly = !unaddressedOnly}
-      >Unaddressed project-ending</button>
+      >Unaddressed project-ending</button>{/if}
       <button disabled={busy} onclick={() => onExport("markdown")}>Export Markdown</button>
       <button disabled={busy} onclick={() => onExport("json")}>JSON</button>
     </div>
   </header>
 
-  <div class="list-heading" aria-hidden="true">
-    <span>Rank and idea</span>
-    <span>Highest risk</span>
-    <span>Evaluation snapshot</span>
-    <span></span>
-  </div>
+  {#if !hasV2}
+    <div class="list-heading" aria-hidden="true">
+      <span>Options</span>
+      <span>Highest risk</span>
+      <span>Evaluation snapshot</span>
+      <span></span>
+    </div>
+  {/if}
 
   <div class="solutions">
     {#each visible as item (item.idea.id)}
-      <SolutionListItem idea={item.idea} rank={item.rank} {onOpenSource} />
+      {#if item.idea.workflowVersion === 2 && onSelect && onSave}
+        <DecisionOption idea={item.idea} {busy} {onSelect} {onSave} {onOpenSource} {onEvidenceFollowUp} />
+      {:else}<SolutionListItem idea={item.idea} rank={item.rank} {onOpenSource} />{/if}
     {:else}
       <div class="empty">
-        <h2>No ideas match this filter.</h2>
-        <p>Clear "Unaddressed project-ending" to return to the complete solution list.</p>
-        <button onclick={() => unaddressedOnly = false}>Show every idea</button>
+        <h2>{solutions.length ? "No ideas match this filter." : hasV2 ? "No solution options were returned." : "No useful new option was proposed."}</h2>
+        {#if solutions.length}<p>Clear "Unaddressed project-ending" to return to the complete solution list.</p><button onclick={() => unaddressedOnly = false}>Show every idea</button>{:else if hasV2}<p>The model returned zero options for the selected problem. Review the evidence and try another problem or run.</p>{/if}
       </div>
     {/each}
   </div>

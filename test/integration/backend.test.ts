@@ -5,17 +5,21 @@ import { join } from "node:path";
 import { startBackend, type BackendHandle } from "../../src/backend/server";
 import { DatabaseClient } from "../../src/db/client";
 import { DiscoveryRepository } from "../../src/db/repositories/discovery";
+import type { ValidationResult } from "../../src/providers/search";
 import { DEFAULT_RUN_CONFIG } from "../../src/shared/schemas";
 
 const dirs: string[] = [];
 const handles: BackendHandle[] = [];
 const modelOption = (id: string) => ({
-  id,
+  providerId: "openai-subscription",
+  modelId: id,
   displayName: id,
   defaultReasoningEffort: "medium",
   reasoningEfforts: [{ id: "medium", description: "Balanced reasoning" }],
 });
-const codexInspection = (models = [modelOption("gpt-5.6-luna")]) => ({ detected: true, compatible: true, authenticated: true, models });
+const nativeInspection = (models = [modelOption("gpt-5.6-luna")]) => ({
+  available: true, connected: true, accounts: [{ providerId: "openai-subscription" }], models,
+});
 afterEach(async () => {
   for (const handle of handles.splice(0)) await handle.close();
   for (const dir of dirs.splice(0)) {
@@ -32,7 +36,7 @@ describe("cutover backend", () => {
     const handle = await startBackend({
       dataDir: dir, dbPath: join(dir, "scraply.db"), bundledPromptsDir: join(process.cwd(), "prompts"),
       promptOverridesDir: join(dir, "prompts"), appVersion: "test", getSecrets: () => ({ exaApiKey: "test-key" }),
-      providerValidation: { inspectCodex: async () => codexInspection([modelOption("gpt-5.6-luna"), modelOption("gpt-test")]), validateExa: async () => ({ valid: true }) },
+      providerValidation: { inspectNative: async () => nativeInspection([modelOption("gpt-5.6-luna"), modelOption("gpt-test")]), validateExa: async () => ({ valid: true }) },
     }, () => undefined); handles.push(handle);
 
     const post = async (path: string, body: unknown) => {
@@ -41,15 +45,49 @@ describe("cutover backend", () => {
     };
     const created = await post("/threads", {}) as {
       thread: { id: string; status: string };
-      workspace: { models: string[]; runConfig: { model: string } };
+      workspace: { models: Array<{ providerId: string; modelId: string }>; runConfig: { model: { providerId: string; modelId: string } } };
     };
     expect(created.thread.status).toBe("configuring");
-    expect(created.workspace.models).toEqual(["gpt-5.6-luna", "gpt-test"]);
-    expect(created.workspace.runConfig.model).toBe("gpt-5.6-luna");
+    expect(created.workspace.models).toEqual([
+      { providerId: "openai-subscription", modelId: "gpt-5.6-luna" },
+      { providerId: "openai-subscription", modelId: "gpt-test" },
+    ]);
+    expect(created.workspace.runConfig.model).toEqual({ providerId: "openai-subscription", modelId: "gpt-5.6-luna" });
     const removedEventsEndpoint = await fetch(`http://127.0.0.1:${handle.port}/events`, { headers: { authorization: `Bearer ${handle.token}` } });
     expect(removedEventsEndpoint.status).toBe(404);
     const workspace = await post("/scope", { threadId: created.thread.id, scope: { title: "Repair shops", audience: "Independent shops", domain: "Parts sourcing", observations: "", offLimits: ["Inventory"] } }) as { scope: { title: string; audience: string; domain: string; observations: string; offLimits: string[] } };
     expect(workspace.scope).toEqual({ title: "Repair shops", audience: "Independent shops", domain: "Parts sourcing", observations: "", offLimits: ["Inventory"] });
+  });
+
+  test("reuses empty drafts across repeated creation and preserves saved and named projects", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "scraply-draft-reuse-")); dirs.push(dir);
+    const handle = await startBackend({
+      dataDir: dir, dbPath: join(dir, "scraply.db"), bundledPromptsDir: join(process.cwd(), "prompts"),
+      promptOverridesDir: join(dir, "prompts"), appVersion: "test", getSecrets: () => ({ exaApiKey: null }),
+      providerValidation: { inspectNative: async () => nativeInspection() },
+    }, () => undefined); handles.push(handle);
+    const post = async (path: string, body: unknown) => {
+      const response = await fetch(`http://127.0.0.1:${handle.port}${path}`, {
+        method: "POST", headers: { authorization: `Bearer ${handle.token}`, "content-type": "application/json" }, body: JSON.stringify(body),
+      });
+      expect(response.status).toBe(200);
+      return (await response.json() as { data: { thread: { id: string }; workspace: { activeThreadId: string; threads: Array<{ id: string }> } } }).data;
+    };
+    const first = await post("/threads", {});
+    const repeated = await Promise.all(Array.from({ length: 5 }, () => post("/threads", {})));
+    for (const result of repeated) {
+      expect(result.thread.id).toBe(first.thread.id);
+      expect(result.workspace.threads).toHaveLength(1);
+    }
+    await post("/scope", { threadId: first.thread.id, scope: { title: "New research", audience: "Students", domain: "Coursework", observations: "", offLimits: [] } });
+    const next = await post("/threads", {});
+    expect(next.thread.id).not.toBe(first.thread.id);
+    const named = await post("/threads", { title: "Deliberate project" });
+    expect(named.thread.id).not.toBe(next.thread.id);
+    const reopened = await post("/threads", {});
+    expect(reopened.thread.id).toBe(next.thread.id);
+    expect(reopened.workspace.activeThreadId).toBe(next.thread.id);
+    expect(reopened.workspace.threads).toHaveLength(3);
   });
 
   test("defaults a new thread to Perplexity when it is the only connected search provider", async () => {
@@ -59,7 +97,7 @@ describe("cutover backend", () => {
       promptOverridesDir: join(dir, "prompts"), appVersion: "test",
       getSecrets: () => ({ exaApiKey: null, perplexityApiKey: "perplexity-test" }),
       providerValidation: {
-        inspectCodex: async () => codexInspection(),
+        inspectNative: async () => nativeInspection(),
         validatePerplexity: async () => ({ valid: true }),
       },
     }, () => undefined); handles.push(handle);
@@ -82,14 +120,14 @@ describe("cutover backend", () => {
     const handle = await startBackend({
       dataDir: dir, dbPath, bundledPromptsDir: join(process.cwd(), "prompts"), promptOverridesDir: join(dir, "prompts"),
       appVersion: "test", getSecrets: () => ({ exaApiKey: null }),
-      modelClients: { codex: { structuredCompletion: async (_model, _system, _user, schema) => {
+      modelClients: { "openai-subscription": { structuredCompletion: async (request) => {
         modelCalls += 1;
-        const shape = schema.safeParse({ solutions: [] });
+        const shape = request.schema.safeParse({ solutions: [] });
         if (shape.success) throw new Error("stop after development starts");
         throw new Error("unexpected model call");
       } } },
       providerValidation: {
-        inspectCodex: async () => codexInspection(),
+        inspectNative: async () => nativeInspection(),
         validateExa: async () => { throw new Error("Exa validation must not run without a key"); },
       },
     }, (event) => events.push(event)); handles.push(handle);
@@ -102,7 +140,7 @@ describe("cutover backend", () => {
     const threadId = created.thread.id;
     await post("/scope", { threadId, scope: { title: "Known delay", audience: "", domain: "", observations: "", offLimits: [] } });
     const config = {
-      model: "gpt-5.6-luna", reasoningEffort: "medium", discoveryDepth: "standard", maxRunMinutes: 90,
+      ...DEFAULT_RUN_CONFIG,
       researchMode: "known-problem", knownProblem: "Repair shops cannot predict parts arrival times.",
     } as const;
     await post("/run-config", { threadId, config });
@@ -121,16 +159,19 @@ describe("cutover backend", () => {
     expect(client.db.prepare("SELECT COUNT(*) AS count FROM factors").get()).toEqual({ count: 0 });
     expect(modelCalls).toBeGreaterThan(0);
     expect(events.some((event) => event.type === "run-started")).toBe(true);
+    const response = await fetch(`http://127.0.0.1:${handle.port}/workspace`, { headers: { authorization: `Bearer ${handle.token}` } });
+    const stopped = await response.json() as { data: { latestResearchRun: { completionReason: string } } };
+    expect(stopped.data.latestResearchRun.completionReason).toBe("unexpected model call");
     client.close();
   });
 
-  test("reports a failed Codex inspection without inventing model availability", async () => {
+  test("reports a failed native runtime inspection without inventing model availability", async () => {
     const dir = mkdtempSync(join(tmpdir(), "scraply-model-listing-")); dirs.push(dir);
     const handle = await startBackend({
       dataDir: dir, dbPath: join(dir, "scraply.db"), bundledPromptsDir: join(process.cwd(), "prompts"), promptOverridesDir: join(dir, "prompts"),
       appVersion: "test", getSecrets: () => ({ exaApiKey: "test-key" }),
       providerValidation: {
-        inspectCodex: async () => ({ detected: true, compatible: false, authenticated: false, models: [], error: "Installed Codex version is incompatible" }),
+        inspectNative: async () => ({ available: false, connected: false, accounts: [], models: [], error: "Native runtime is incompatible" }),
         validateExa: async () => ({ valid: true }),
       },
     }, () => undefined); handles.push(handle);
@@ -139,45 +180,92 @@ describe("cutover backend", () => {
       return { status: response.status, body: (await response.json() as { data: T }).data };
     };
 
-    const validation = await get<{ setupComplete: boolean; codex: { detected: boolean; compatible: boolean; authenticated: boolean; error?: string } }>("/validation");
+    const validation = await get<{ setupComplete: boolean; native: { available: boolean; connected: boolean; error?: string } }>("/validation");
     expect(validation.status).toBe(200);
-    expect(validation.body).toMatchObject({ setupComplete: false, codex: { detected: true, compatible: false, authenticated: false, error: "Installed Codex version is incompatible" } });
+    expect(validation.body).toMatchObject({ setupComplete: false, native: { available: false, connected: false, error: "Native runtime is incompatible" } });
 
-    const workspace = await get<{ validation: { codex: { error?: string } }; models: string[] }>("/workspace");
-    expect(workspace.body.validation.codex.error).toBe("Installed Codex version is incompatible");
+    const workspace = await get<{ validation: { native: { error?: string } }; models: Array<{ providerId: string; modelId: string }> }>("/workspace");
+    expect(workspace.body.validation.native.error).toBe("Native runtime is incompatible");
     expect(workspace.body.models).toEqual([]);
   });
 
-  test("forces a fresh Codex inspection when secrets change", async () => {
+  test("refreshes native inspection when secrets change", async () => {
     const dir = mkdtempSync(join(tmpdir(), "scraply-validation-refresh-")); dirs.push(dir);
-    const forceFlags: Array<boolean | undefined> = [];
-    let resolveForced!: () => void;
-    const forced = new Promise<void>((resolve) => { resolveForced = resolve; });
+    let inspections = 0;
+    type TestNativeInspection = ReturnType<typeof nativeInspection> | {
+      available: false; connected: false; accounts: []; models: []; error: string;
+    };
+    let finishStaleInspection: ((result: TestNativeInspection) => void) | undefined;
+    const staleInspection = new Promise<TestNativeInspection>((resolve) => { finishStaleInspection = resolve; });
     const handle = await startBackend({
       dataDir: dir, dbPath: join(dir, "scraply.db"), bundledPromptsDir: join(process.cwd(), "prompts"), promptOverridesDir: join(dir, "prompts"),
       appVersion: "test", getSecrets: () => ({ exaApiKey: null }),
       providerValidation: {
-        inspectCodex: async (options) => {
-          forceFlags.push(options?.force);
-          if (options?.force) resolveForced();
-          return codexInspection();
+        inspectNative: async () => {
+          inspections += 1;
+          return inspections === 1 ? staleInspection : nativeInspection([modelOption("gpt-current")]);
         },
       },
     }, () => undefined); handles.push(handle);
 
     handle.secretsChanged();
-    await forced;
+    const validationResponse = await fetch(`http://127.0.0.1:${handle.port}/validation`, {
+      headers: { authorization: `Bearer ${handle.token}` },
+    });
+    const validation = await validationResponse.json() as { data: { native: { available: boolean; connected: boolean } } };
+    expect(inspections).toBeGreaterThanOrEqual(2);
+    expect(validation.data.native).toMatchObject({ available: true, connected: true });
 
-    expect(forceFlags).toContain(true);
+    finishStaleInspection?.({ available: false, connected: false, accounts: [], models: [], error: "Stale startup result" });
+    await Bun.sleep(10);
+    const workspaceResponse = await fetch(`http://127.0.0.1:${handle.port}/workspace`, {
+      headers: { authorization: `Bearer ${handle.token}` },
+    });
+    const workspace = await workspaceResponse.json() as { data: { validation: { native: { error?: string } } } };
+    expect(workspace.data.validation.native.error).toBeUndefined();
   });
 
-  test("keeps authentication separate from compatibility and blocks unauthenticated research", async () => {
+  test("publishes native readiness without waiting for a configured search provider", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "scraply-validation-independent-native-")); dirs.push(dir);
+    let finishExa: ((result: ValidationResult) => void) | undefined;
+    const exaValidation = new Promise<ValidationResult>((resolve) => { finishExa = resolve; });
+    const handle = await startBackend({
+      dataDir: dir, dbPath: join(dir, "scraply.db"), bundledPromptsDir: join(process.cwd(), "prompts"), promptOverridesDir: join(dir, "prompts"),
+      appVersion: "test", getSecrets: () => ({ exaApiKey: "saved-key" }),
+      providerValidation: {
+        inspectNative: async () => nativeInspection([modelOption("gpt-ready")]),
+        validateExa: async () => exaValidation,
+      },
+    }, () => undefined); handles.push(handle);
+
+    await Bun.sleep(10);
+    const response = await fetch(`http://127.0.0.1:${handle.port}/workspace`, {
+      headers: { authorization: `Bearer ${handle.token}` },
+    });
+    const workspace = await response.json() as { data: {
+      validation: { exa: { error?: string }; native: { available: boolean; connected: boolean; error?: string } };
+      models: Array<{ providerId: string; modelId: string }>;
+    } };
+    expect(workspace.data.validation.native).toMatchObject({ available: true, connected: true });
+    expect(workspace.data.validation.native.error).toBeUndefined();
+    expect(workspace.data.validation.exa.error).toBe("Checking Exa connection");
+    expect(workspace.data.models).toEqual([{ providerId: "openai-subscription", modelId: "gpt-ready" }]);
+
+    finishExa?.({ valid: true });
+    const validationResponse = await fetch(`http://127.0.0.1:${handle.port}/validation`, {
+      headers: { authorization: `Bearer ${handle.token}` },
+    });
+    const validation = await validationResponse.json() as { data: { setupComplete: boolean; exa: { valid: boolean } } };
+    expect(validation.data).toMatchObject({ setupComplete: true, exa: { valid: true } });
+  });
+
+  test("blocks research until Native OpenAI is connected", async () => {
     const dir = mkdtempSync(join(tmpdir(), "scraply-auth-guard-")); dirs.push(dir);
     const handle = await startBackend({
       dataDir: dir, dbPath: join(dir, "scraply.db"), bundledPromptsDir: join(process.cwd(), "prompts"), promptOverridesDir: join(dir, "prompts"),
       appVersion: "test", getSecrets: () => ({ exaApiKey: null }),
       providerValidation: {
-        inspectCodex: async () => ({ ...codexInspection(), authenticated: false, error: "Codex is not signed in" }),
+        inspectNative: async () => ({ available: true, connected: false, accounts: [], models: [], error: "Native OpenAI is not connected" }),
       },
     }, () => undefined); handles.push(handle);
     const request = async (path: string, body?: unknown) => {
@@ -187,19 +275,19 @@ describe("cutover backend", () => {
         ...(body === undefined ? {} : { body: JSON.stringify(body) }),
       });
       return { status: response.status, body: await response.json() as {
-        data: { codex: ReturnType<typeof codexInspection>; thread: { id: string } };
+        data: { native: { available: boolean; connected: boolean }; thread: { id: string } };
         error?: { message: string };
       } };
     };
 
     const validation = await request("/validation");
-    expect(validation.body.data.codex).toMatchObject({ detected: true, compatible: true, authenticated: false });
+    expect(validation.body.data.native).toMatchObject({ available: true, connected: false });
     const threadId = (await request("/threads", {})).body.data.thread.id as string;
     await request("/scope", { threadId, scope: { title: "Known delay", audience: "", domain: "", observations: "", offLimits: [] } });
     await request("/run-config", { threadId, config: { ...DEFAULT_RUN_CONFIG, researchMode: "known-problem", knownProblem: "Parts arrive late." } });
     const start = await request("/research/start", { threadId });
     expect(start.status).toBe(409);
-    expect(start.body.error?.message).toBe("Codex is not signed in");
+    expect(start.body.error?.message).toBe("Connect Native OpenAI before starting research");
   });
 
   test("blocks a selected model that the inspected account cannot access", async () => {
@@ -207,7 +295,7 @@ describe("cutover backend", () => {
     const handle = await startBackend({
       dataDir: dir, dbPath: join(dir, "scraply.db"), bundledPromptsDir: join(process.cwd(), "prompts"), promptOverridesDir: join(dir, "prompts"),
       appVersion: "test", getSecrets: () => ({ exaApiKey: null }),
-      providerValidation: { inspectCodex: async () => codexInspection([modelOption("gpt-available")]) },
+      providerValidation: { inspectNative: async () => nativeInspection([modelOption("gpt-available")]) },
     }, () => undefined); handles.push(handle);
     const post = async (path: string, body: unknown) => {
       const response = await fetch(`http://127.0.0.1:${handle.port}${path}`, {
@@ -221,7 +309,7 @@ describe("cutover backend", () => {
 
     const threadId = (await post("/threads", {})).body.data.thread.id as string;
     await post("/scope", { threadId, scope: { title: "Known delay", audience: "", domain: "", observations: "", offLimits: [] } });
-    await post("/run-config", { threadId, config: { ...DEFAULT_RUN_CONFIG, model: "gpt-unavailable", researchMode: "known-problem", knownProblem: "Parts arrive late." } });
+    await post("/run-config", { threadId, config: { ...DEFAULT_RUN_CONFIG, model: { providerId: "openai-subscription", modelId: "gpt-unavailable" }, researchMode: "known-problem", knownProblem: "Parts arrive late." } });
     const start = await post("/research/start", { threadId });
     expect(start.status).toBe(409);
     expect(start.body.error?.message).toBe("Selected model is unavailable");
@@ -233,7 +321,7 @@ describe("cutover backend", () => {
       dataDir: dir, dbPath: join(dir, "scraply.db"), bundledPromptsDir: join(process.cwd(), "prompts"), promptOverridesDir: join(dir, "prompts"),
       appVersion: "test", getSecrets: () => ({ exaApiKey: null }),
       providerValidation: {
-        inspectCodex: async () => codexInspection(),
+        inspectNative: async () => nativeInspection(),
         validateExa: async () => { throw new Error("Exa validation must not run without a key"); },
       },
     }, () => undefined); handles.push(handle);
@@ -244,7 +332,7 @@ describe("cutover backend", () => {
     const threadId = (await send("/threads", {})).body.data!.thread.id;
     await send("/scope", { threadId, scope: { title: "Known delay", audience: "", domain: "", observations: "", offLimits: [] } });
 
-    const base = { model: "gpt-5.6-luna", reasoningEffort: "medium", discoveryDepth: "standard", maxRunMinutes: 90 } as const;
+    const base = DEFAULT_RUN_CONFIG;
     await send("/run-config", { threadId, config: { ...base, researchMode: "known-problem", knownProblem: "   " } });
     const blankStatement = await send("/research/start", { threadId });
     expect(blankStatement.status).toBe(400);
@@ -285,10 +373,12 @@ describe("cutover backend", () => {
   test("shows and exports solutions only for selected problems in the latest discovery", async () => {
     const dir = mkdtempSync(join(tmpdir(), "scraply-backend-")); dirs.push(dir);
     const dbPath = join(dir, "scraply.db");
+    const dataReads: Array<{ operation: string; queryCount: number; rowCount: number }> = [];
     const handle = await startBackend({
       dataDir: dir, dbPath, bundledPromptsDir: join(process.cwd(), "prompts"), promptOverridesDir: join(dir, "prompts"),
       appVersion: "test", getSecrets: () => ({ exaApiKey: "test-key" }),
-      providerValidation: { inspectCodex: async () => codexInspection([modelOption("gpt-test")]), validateExa: async () => ({ valid: true }) },
+      providerValidation: { inspectNative: async () => nativeInspection([modelOption("gpt-test")]), validateExa: async () => ({ valid: true }) },
+      observeDataRead: (read) => dataReads.push(read),
     }, () => undefined); handles.push(handle);
     const post = async (path: string, body: unknown) => {
       const response = await fetch(`http://127.0.0.1:${handle.port}${path}`, { method: "POST", headers: { authorization: `Bearer ${handle.token}`, "content-type": "application/json" }, body: JSON.stringify(body) });
@@ -322,8 +412,8 @@ describe("cutover backend", () => {
       VALUES ('source-selected', 'discovery-latest', 'https://example.com/selected', 'Selected evidence', 'Source body stays in the source record.', 'hash-selected', ?)
     `).run(now);
     client.db.prepare(`
-      INSERT INTO factors (id, research_run_id, subject, behavior, quote, source_id, harvest_mode, model_confidence, created_at)
-      VALUES ('factor-selected', 'discovery-latest', 'Repair shops', 'wait for deliveries', 'Parts arrive several days late.', 'source-selected', 'domain', 0.82, ?)
+      INSERT INTO factors (id, research_run_id, subject, behavior, quote, source_id, harvest_mode, model_confidence, uncertainty, created_at)
+      VALUES ('factor-selected', 'discovery-latest', 'Repair shops', 'wait for deliveries', 'Parts arrive several days late.', 'source-selected', 'domain', 0.82, 'Holiday demand was not sampled.', ?)
     `).run(now);
     insertProblem.run("problem-selected", "discovery-latest", "Selected problem", now, now);
     client.db.prepare("INSERT INTO problem_factors (problem_id, factor_id) VALUES ('problem-selected', 'factor-selected')").run();
@@ -331,28 +421,162 @@ describe("cutover backend", () => {
     insertRun.run("development-selected", created.thread.id, persistedConfig, "problem-selected", now, now);
     insertRun.run("development-deselected", created.thread.id, persistedConfig, "problem-deselected", now, now);
     insertSolution.run("solution-selected", "problem-selected", "Current solution", now, "development-selected");
+    for (let index = 2; index <= 5; index += 1) {
+      insertSolution.run(`solution-selected-${index}`, "problem-selected", `Current solution ${index}`, now, "development-selected");
+    }
     insertSolution.run("solution-deselected", "problem-deselected", "Deselected solution", now, "development-deselected");
+    client.db.prepare("UPDATE solutions SET selected_at = ? WHERE id = 'solution-selected'").run(now);
+    client.db.prepare(`
+      INSERT INTO evidence_follow_ups (
+        research_run_id, solution_id, question, status, source_ids_json, factor_ids_json,
+        requested_at, completed_at, updated_at
+      ) VALUES ('development-selected', 'solution-selected', 'Does the delay persist?', 'completed',
+        '["source-selected"]', '["factor-selected"]', ?, ?, ?)
+    `).run(now, now, now);
     client.close();
 
     const workspaceResponse = await fetch(`http://127.0.0.1:${handle.port}/workspace`, { headers: { authorization: `Bearer ${handle.token}` } });
     expect(workspaceResponse.status).toBe(200);
     const workspace = (await workspaceResponse.json() as { data: { solutions: Array<{ id: string; factors: Array<{ quote: string; sourceTitle: string; retrievedText?: string }> }>; latestResearchRun: { problemId: string | null } } }).data;
-    expect(workspace.solutions.map((solution) => solution.id)).toEqual(["solution-selected"]);
-    expect(workspace.solutions[0]!.factors).toEqual([expect.objectContaining({
+    expect(workspace.solutions.map((solution) => solution.id)).toEqual([
+      "solution-selected", "solution-selected-2", "solution-selected-3", "solution-selected-4", "solution-selected-5",
+    ]);
+    expect([...dataReads].reverse().find((read) => read.operation === "solution-summaries")).toEqual({ operation: "solution-summaries", queryCount: 1, rowCount: 5 });
+    expect(workspace.solutions[0]!.factors).toEqual([]);
+    const detailResponse = await fetch(`http://127.0.0.1:${handle.port}/ideas/solution-selected`, { headers: { authorization: `Bearer ${handle.token}` } });
+    expect(detailResponse.status).toBe(200);
+    const detail = (await detailResponse.json() as { data: {
+      factors: Array<{ quote: string; sourceTitle: string; retrievedText?: string }>;
+      evidenceFollowUp: { status: string; question: string; sources: Array<{ text: string }>; factors: Array<{ quote: string }> };
+    } }).data;
+    expect(detail.factors).toEqual([expect.objectContaining({
       quote: "Parts arrive several days late.",
       sourceTitle: "Selected evidence",
     })]);
-    expect(workspace.solutions[0]!.factors[0]!.retrievedText).toBeUndefined();
+    expect(detail.factors[0]!.retrievedText).toBeUndefined();
+    expect(detail.evidenceFollowUp).toEqual(expect.objectContaining({
+      status: "completed", question: "Does the delay persist?",
+      sources: [expect.objectContaining({ text: "Source body stays in the source record." })],
+      factors: [expect.objectContaining({ quote: "Parts arrive several days late." })],
+    }));
+    expect([...dataReads].reverse().find((read) => read.operation === "solution-details")).toEqual({ operation: "solution-details", queryCount: 8, rowCount: 1 });
     expect(workspace.latestResearchRun.problemId).toBe("problem-deselected");
     const exported = await post("/ideas/export", { threadId: created.thread.id, format: "json" }) as { files: Array<{ filename: string; content: string }> };
+    expect([...dataReads].reverse().find((read) => read.operation === "solution-details")).toEqual({ operation: "solution-details", queryCount: 8, rowCount: 5 });
     expect(exported.files).toHaveLength(1);
     const jsonIdeas = JSON.parse(exported.files[0]!.content) as Array<{ id: string; factors: Array<{ quote: string; retrievedText?: string }> }>;
-    expect(jsonIdeas.map((solution) => solution.id)).toEqual(["solution-selected"]);
+    expect(jsonIdeas.map((solution) => solution.id)).toEqual([
+      "solution-selected", "solution-selected-2", "solution-selected-3", "solution-selected-4", "solution-selected-5",
+    ]);
     expect(jsonIdeas[0]!.factors[0]!.quote).toBe("Parts arrive several days late.");
     expect(jsonIdeas[0]!.factors[0]!.retrievedText).toBeUndefined();
+    expect(JSON.stringify(jsonIdeas[0])).toContain("Does the delay persist?");
     const markdown = await post("/ideas/export", { threadId: created.thread.id, format: "markdown" }) as { files: Array<{ content: string }> };
     expect(markdown.files[0]!.content).toContain("## Evidence behind the problem");
     expect(markdown.files[0]!.content).toContain("> Parts arrive several days late.");
+    expect(markdown.files[0]!.content.match(/Uncertainty: Holiday demand was not sampled\./g)).toHaveLength(2);
+
+    const v2Client = new DatabaseClient(dbPath);
+    v2Client.db.prepare("UPDATE research_runs SET workflow_version = 2 WHERE id = 'development-selected'").run();
+    v2Client.db.prepare("UPDATE solutions SET supporting_evidence_ids_json = ? WHERE id = 'solution-selected'")
+      .run(JSON.stringify(["source-selected"]));
+    v2Client.db.prepare("INSERT INTO problem_verdict_sources (problem_id, source_id, research_run_id, position) VALUES ('problem-selected', 'source-selected', 'discovery-latest', 0)").run();
+    v2Client.close();
+    const v2Markdown = await post("/ideas/export", { threadId: created.thread.id, format: "markdown" }) as { files: Array<{ content: string }> };
+    const [decisionMarkdown, followUpMarkdown] = v2Markdown.files[0]!.content.split("\n## Evidence follow-up");
+    expect(decisionMarkdown).toContain("## Observations about the problem");
+    expect(decisionMarkdown).toContain("## Sources supporting this option\n\n- [Selected evidence](https://example.com/selected)");
+    expect(decisionMarkdown?.match(/Uncertainty: Holiday demand was not sampled\./g)).toHaveLength(1);
+    expect(decisionMarkdown?.match(/# Shared evidence appendix/g)).toHaveLength(1);
+    expect(decisionMarkdown?.match(/> Source body stays in the source record\./g)).toHaveLength(1);
+    expect(decisionMarkdown!.indexOf("# Shared evidence appendix")).toBeGreaterThan(decisionMarkdown!.lastIndexOf("## Observed test result"));
+    expect(followUpMarkdown).toContain("Uncertainty: Holiday demand was not sampled.");
+
+    const emptyClient = new DatabaseClient(dbPath);
+    emptyClient.db.prepare(`INSERT INTO problems (id, discovery_run_id, statement, why_it_persists, affected, scale_estimate,
+      verdict, verdict_reason, verdict_source_ids_json, selected_at, created_at)
+      VALUES ('problem-empty', 'discovery-latest', 'No useful proposal', '', '', '', 'insufficient-evidence', '', '[]', ?, ?)`).run(now, now);
+    emptyClient.db.prepare(`INSERT INTO research_runs (id, thread_id, status, config_json, problem_id, workflow_version, created_at, updated_at)
+      VALUES ('development-cancelled', ?, 'cancelled', ?, 'problem-empty', 2, ?, ?)`).run(created.thread.id, persistedConfig, now, now);
+    emptyClient.db.prepare(`INSERT INTO solutions (id, problem_id, mechanism, description, respects_off_limits, respects_off_limits_why, created_at, research_run_id)
+      VALUES ('cancelled-option', 'problem-empty', 'Earlier option with cancelled analysis', '', 1, '', ?, 'development-cancelled')`).run(now);
+    emptyClient.db.prepare(`INSERT INTO research_runs (id, thread_id, status, config_json, problem_id, workflow_version, created_at, updated_at)
+      VALUES ('development-empty', ?, 'completed', ?, 'problem-empty', 2, ?, ?)`).run(created.thread.id, persistedConfig, now, now);
+    emptyClient.close();
+    const withEmpty = await post("/ideas/export", { threadId: created.thread.id, format: "json" }) as { files: Array<{ filename: string; content: string }> };
+    expect(withEmpty.files).toHaveLength(3);
+    expect(withEmpty.files.some((file) => file.content.includes("Earlier option with cancelled analysis"))).toBe(true);
+    const noOptions = withEmpty.files.find((file) => file.filename.includes("no-options"))!;
+    expect(JSON.parse(noOptions.content)).toMatchObject({ kind: "no-options", status: "completed", workflowVersion: 2,
+      runId: "development-empty", discoveryRunId: "discovery-latest", problemId: "problem-empty", options: [] });
+    const emptyMarkdown = await post("/ideas/export", { threadId: created.thread.id, format: "markdown" }) as { files: Array<{ content: string }> };
+    expect(emptyMarkdown.files.some((file) => file.content.includes("This is not evidence that the problem is solved."))).toBe(true);
+
+    await handle.close();
+    handles.splice(handles.indexOf(handle), 1);
+    const interrupted = new DatabaseClient(dbPath);
+    interrupted.db.prepare("UPDATE evidence_follow_ups SET status = 'running', completed_at = NULL WHERE research_run_id = 'development-selected'").run();
+    interrupted.db.prepare("UPDATE research_runs SET status = 'running', created_at = '2026-01-02T00:00:00.000Z' WHERE id = 'development-selected'").run();
+    interrupted.db.prepare("UPDATE threads SET status = 'development-running' WHERE id = ?").run(created.thread.id);
+    interrupted.close();
+    const restarted = await startBackend({
+      dataDir: dir, dbPath, bundledPromptsDir: join(process.cwd(), "prompts"), promptOverridesDir: join(dir, "prompts"),
+      appVersion: "test", getSecrets: () => ({ exaApiKey: null }),
+    }, () => undefined); handles.push(restarted);
+    const reopened = await (await fetch(`http://127.0.0.1:${restarted.port}/workspace`, {
+      headers: { authorization: `Bearer ${restarted.token}` },
+    })).json() as { data: { latestResearchRun: { runId: string; status: string }; threads: Array<{ id: string; status: string }>; solutions: Array<{ id: string; evidenceFollowUpStatus?: string }> } };
+    expect(reopened.data.latestResearchRun).toMatchObject({ runId: "development-selected", status: "completed" });
+    expect(reopened.data.threads.find((thread) => thread.id === created.thread.id)?.status).toBe("solutions-ready");
+    expect(reopened.data.solutions.find((solution) => solution.id === "solution-selected")?.evidenceFollowUpStatus).toBe("failed");
+    const reopenedDetail = await (await fetch(`http://127.0.0.1:${restarted.port}/ideas/solution-selected`, {
+      headers: { authorization: `Bearer ${restarted.token}` },
+    })).json() as { data: { mechanism: string; evidenceFollowUp: { status: string; error: string } } };
+    expect(reopenedDetail.data).toMatchObject({
+      mechanism: "Current solution",
+      evidenceFollowUp: { status: "failed", error: "The app restarted during this follow-up. It was not replayed." },
+    });
+  });
+
+  test("never resumes a historical Codex CLI run or changes its accounting", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "scraply-removed-provider-")); dirs.push(dir);
+    const dbPath = join(dir, "scraply.db");
+    let modelCalls = 0;
+    const handle = await startBackend({
+      dataDir: dir, dbPath, bundledPromptsDir: join(process.cwd(), "prompts"), promptOverridesDir: join(dir, "prompts"),
+      appVersion: "test", getSecrets: () => ({ exaApiKey: null }),
+      modelClients: { "openai-subscription": { structuredCompletion: async () => { modelCalls += 1; throw new Error("must not run"); } } },
+      providerValidation: { inspectNative: async () => nativeInspection() },
+    }, () => undefined); handles.push(handle);
+    const request = async (path: string, body?: unknown) => {
+      const response = await fetch(`http://127.0.0.1:${handle.port}${path}`, {
+        method: body === undefined ? "GET" : "POST",
+        headers: { authorization: `Bearer ${handle.token}`, ...(body === undefined ? {} : { "content-type": "application/json" }) },
+        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+      });
+      return { status: response.status, body: await response.json() as { data?: { thread?: { id: string }; latestResearchRun?: { canResume: boolean; resumeBlockedReason?: string } }; error?: { message: string } } };
+    };
+    const threadId = (await request("/threads", {})).body.data!.thread!.id;
+    const client = new DatabaseClient(dbPath);
+    const now = new Date().toISOString();
+    const historicalConfig = { ...DEFAULT_RUN_CONFIG, model: { providerId: "legacy-codex-cli", modelId: "gpt-5.6-luna" } };
+    client.db.prepare(`INSERT INTO research_runs (id, thread_id, status, config_json, created_at, updated_at) VALUES (?, ?, 'queued', ?, ?, ?)`)
+      .run("historical-run", threadId, JSON.stringify(historicalConfig), now, now);
+    client.close();
+
+    const workspace = await request("/workspace");
+    expect(workspace.body.data?.latestResearchRun).toMatchObject({
+      canResume: false,
+      resumeBlockedReason: "Legacy generation has been retired. Start a new run to use the current prompts. Saved results remain readable.",
+    });
+    const resumed = await request("/research/resume", { runId: "historical-run" });
+    expect(resumed.status).toBe(409);
+    expect(resumed.body.error?.message).toBe("Codex CLI integration was removed. Start a new run using Native OpenAI.");
+    const verification = new DatabaseClient(dbPath);
+    expect(verification.db.prepare("SELECT status FROM research_runs WHERE id = ?").get("historical-run")).toEqual({ status: "queued" });
+    expect(verification.db.prepare("SELECT COUNT(*) AS count FROM generation_attempts WHERE research_run_id = ?").get("historical-run")).toEqual({ count: 0 });
+    verification.close();
+    expect(modelCalls).toBe(0);
   });
 
   test("exports completed research before solution development", async () => {
@@ -361,7 +585,7 @@ describe("cutover backend", () => {
     const handle = await startBackend({
       dataDir: dir, dbPath, bundledPromptsDir: join(process.cwd(), "prompts"), promptOverridesDir: join(dir, "prompts"),
       appVersion: "test", getSecrets: () => ({ exaApiKey: "test-key" }),
-      providerValidation: { inspectCodex: async () => codexInspection([modelOption("gpt-test")]), validateExa: async () => ({ valid: true }) },
+      providerValidation: { inspectNative: async () => nativeInspection([modelOption("gpt-test")]), validateExa: async () => ({ valid: true }) },
     }, () => undefined); handles.push(handle);
     const post = async (path: string, body: unknown) => {
       const response = await fetch(`http://127.0.0.1:${handle.port}${path}`, { method: "POST", headers: { authorization: `Bearer ${handle.token}`, "content-type": "application/json" }, body: JSON.stringify(body) });
@@ -372,7 +596,7 @@ describe("cutover backend", () => {
     const scope = { title: "Repair evidence", audience: "Independent shops", domain: "Parts sourcing", observations: "", offLimits: ["Inventory"] };
     await post("/scope", { threadId: created.thread.id, scope });
     const client = new DatabaseClient(dbPath);
-    const config = { ...DEFAULT_RUN_CONFIG, model: "gpt-test" };
+    const config = { ...DEFAULT_RUN_CONFIG, model: { providerId: "openai-subscription", modelId: "gpt-test" } };
     const now = "2026-08-21T12:00:00.000Z";
     client.db.prepare(`INSERT INTO research_runs (id, thread_id, status, config_json, completion_reason, problem_id, created_at, updated_at) VALUES (?, ?, 'completed', ?, 'Discovery completed.', NULL, ?, ?)`)
       .run("discovery-export", created.thread.id, JSON.stringify(config), now, now);
@@ -380,8 +604,8 @@ describe("cutover backend", () => {
       .run("scope-export", "discovery-export", scope.title, scope.audience, scope.domain, scope.observations, JSON.stringify(scope.offLimits), now, now);
     client.db.prepare(`INSERT INTO sources (id, research_run_id, provider_source_id, canonical_url, title, retrieved_text, content_hash, retrieved_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
       .run("source-export", "discovery-export", "provider-1", "https://example.com/evidence", "Repair evidence", "Observed delivery delays.", "hash-1", now);
-    client.db.prepare(`INSERT INTO factors (id, research_run_id, subject, behavior, quote, source_id, harvest_mode, model_confidence, created_at) VALUES (?, ?, ?, ?, ?, ?, 'domain', 0.83, ?)`)
-      .run("factor-export", "discovery-export", "Repair shops", "wait for parts", "Observed delivery delays.", "source-export", now);
+    client.db.prepare(`INSERT INTO factors (id, research_run_id, subject, behavior, quote, source_id, harvest_mode, model_confidence, uncertainty, created_at) VALUES (?, ?, ?, ?, ?, ?, 'domain', 0.83, ?, ?)`)
+      .run("factor-export", "discovery-export", "Repair shops", "wait for parts", "Observed delivery delays.", "source-export", "Seasonality was not measured.", now);
     client.db.prepare(`INSERT INTO problems (id, discovery_run_id, statement, why_it_persists, affected, scale_estimate, verdict, verdict_reason, verdict_source_ids_json, selected_at, created_at) VALUES (?, ?, ?, ?, ?, ?, 'confirmed', ?, '[]', NULL, ?)`)
       .run("problem-export", "discovery-export", "Parts arrival is unpredictable.", "Supplier data is fragmented.", "Independent shops", "Thousands", "Evidence confirms recurring delays.", now);
     client.db.prepare(`INSERT INTO problem_verdict_sources (problem_id, source_id, research_run_id, position) VALUES (?, ?, ?, 0)`)
@@ -407,12 +631,13 @@ describe("cutover backend", () => {
     await post("/scope", { threadId: created.thread.id, scope: { ...scope, title: "Edited later", domain: "Something else" } });
 
     const bundle = await post("/research/export", { threadId: created.thread.id }) as { filename: string; content: string };
-    const exported = JSON.parse(bundle.content) as { schemaVersion: number; scope: typeof scope; sources: Array<{ text: string }>; factors: Array<{ sourceId: string }>; problems: Array<{ id: string }>; rejectedProblemCandidates: Array<{ id: string; statement: string; reason: string }> };
+    const exported = JSON.parse(bundle.content) as { schemaVersion: number; scope: typeof scope; sources: Array<{ text: string }>; factors: Array<{ sourceId: string; uncertainty?: string }>; problems: Array<{ id: string }>; rejectedProblemCandidates: Array<{ id: string; statement: string; reason: string }> };
     expect(bundle.filename).toBe("edited-later-research.json");
     expect(exported.schemaVersion).toBe(1);
     expect(exported.scope).toEqual(scope);
     expect(exported.sources[0]?.text).toBe("Observed delivery delays.");
     expect(exported.factors[0]?.sourceId).toBe("source-export");
+    expect(exported.factors[0]?.uncertainty).toBe("Seasonality was not measured.");
     expect(exported.problems.map((problem) => problem.id)).toEqual(["problem-export"]);
     expect(exported.rejectedProblemCandidates).toEqual([{
       id: "rejected-export",
@@ -427,8 +652,8 @@ describe("cutover backend", () => {
     const handle = await startBackend({
       dataDir: dir, dbPath, bundledPromptsDir: join(process.cwd(), "prompts"), promptOverridesDir: join(dir, "prompts"),
       appVersion: "test", getSecrets: () => ({ exaApiKey: "test-key" }),
-      modelClients: { codex: { structuredCompletion: async () => { throw new Error("stop after selection"); } } },
-      providerValidation: { inspectCodex: async () => codexInspection([modelOption("gpt-test")]), validateExa: async () => ({ valid: true }) },
+      modelClients: { "openai-subscription": { structuredCompletion: async () => { throw new Error("stop after selection"); } } },
+      providerValidation: { inspectNative: async () => nativeInspection([modelOption("gpt-test")]), validateExa: async () => ({ valid: true }) },
     }, () => undefined); handles.push(handle);
     const request = async (path: string, body: unknown) => {
       const response = await fetch(`http://127.0.0.1:${handle.port}${path}`, {
@@ -450,7 +675,7 @@ describe("cutover backend", () => {
     client.db.prepare(`
       INSERT INTO research_runs (id, thread_id, status, config_json, problem_id, created_at, updated_at)
       VALUES ('discovery-rejected', ?, 'completed', ?, NULL, ?, ?)
-    `).run(threadId, JSON.stringify({ ...DEFAULT_RUN_CONFIG, model: "gpt-test" }), now, now);
+    `).run(threadId, JSON.stringify({ ...DEFAULT_RUN_CONFIG, model: { providerId: "openai-subscription", modelId: "gpt-test" } }), now, now);
     client.db.prepare(`
       INSERT INTO rejected_problem_candidates (id, discovery_run_id, statement, reason, created_at)
       VALUES ('rejected-1', 'discovery-rejected', 'One-source candidate', 'Only one source hostname.', ?)
@@ -484,7 +709,6 @@ describe("cutover backend", () => {
     const handle = await startBackend({
       dataDir: dir, dbPath, bundledPromptsDir: join(process.cwd(), "prompts"), promptOverridesDir: join(dir, "prompts"),
       appVersion: "test", getSecrets: () => ({ exaApiKey: null }),
-      providerValidation: { inspectCodex: async () => ({ detected: false, compatible: false, authenticated: false, models: [] }) },
     }, (event) => events.push(event)); handles.push(handle);
     const post = async (path: string, body: unknown) => {
       const response = await fetch(`http://127.0.0.1:${handle.port}${path}`, { method: "POST", headers: { authorization: `Bearer ${handle.token}`, "content-type": "application/json" }, body: JSON.stringify(body) });
@@ -523,7 +747,6 @@ describe("cutover backend", () => {
     const handle = await startBackend({
       dataDir: dir, dbPath, bundledPromptsDir: join(process.cwd(), "prompts"), promptOverridesDir: join(dir, "prompts"),
       appVersion: "test", getSecrets: () => ({ exaApiKey: null }),
-      providerValidation: { inspectCodex: async () => ({ detected: false, compatible: false, authenticated: false, models: [] }) },
     }, () => undefined); handles.push(handle);
     const post = async (path: string, body: unknown) => {
       const response = await fetch(`http://127.0.0.1:${handle.port}${path}`, {
@@ -549,5 +772,89 @@ describe("cutover backend", () => {
     expect(response.status).toBe(200);
     const workspace = await response.json() as { data: { latestResearchRun: { runId: string; searches: number } } };
     expect(workspace.data.latestResearchRun).toMatchObject({ runId: "legacy-run", searches: 0 });
+  });
+
+  test("projects usage from the selected run and marks metadata-free history unavailable", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "scraply-usage-export-")); dirs.push(dir);
+    const dbPath = join(dir, "scraply.db");
+    const handle = await startBackend({
+      dataDir: dir, dbPath, bundledPromptsDir: join(process.cwd(), "prompts"), promptOverridesDir: join(dir, "prompts"),
+      appVersion: "test", getSecrets: () => ({ exaApiKey: null }),
+    }, () => undefined); handles.push(handle);
+    const post = async (path: string, body: unknown) => {
+      const response = await fetch(`http://127.0.0.1:${handle.port}${path}`, {
+        method: "POST", headers: { authorization: `Bearer ${handle.token}`, "content-type": "application/json" }, body: JSON.stringify(body),
+      });
+      if (response.status !== 200) throw new Error(`status ${response.status}: ${JSON.stringify(await response.json())}`);
+      return (await response.json() as { data: unknown }).data;
+    };
+    const created = await post("/threads", {}) as { thread: { id: string } };
+    const client = new DatabaseClient(dbPath);
+    const insertRun = client.db.prepare(`
+      INSERT INTO research_runs (id, thread_id, status, config_json, problem_id, created_at, updated_at)
+      VALUES (?, ?, 'completed', ?, NULL, ?, ?)
+    `);
+    const insertAttempt = client.db.prepare(`
+      INSERT INTO generation_attempts (
+        id, generation_id, research_run_id, stage_key, provider_id, model_id, reasoning_effort, status,
+        request_json, wire_request_sha256, request_sha256, work_order_sha256, inputs_sha256, evidence_sha256,
+        schema_sha256, attempt_metadata_json, usage_json, created_at, updated_at, terminal_at
+      ) VALUES (?, ?, ?, 'problem-candidates', 'legacy-codex-cli', 'old-model', 'medium', 'completed',
+        '{}', 'wire', 'request', 'work', 'inputs', 'evidence', 'schema', ?, ?, ?, ?, ?)
+    `);
+    insertRun.run("old-discovery", created.thread.id, JSON.stringify(DEFAULT_RUN_CONFIG), "2026-08-01T00:00:00.000Z", "2026-08-01T00:00:01.000Z");
+    insertRun.run("new-discovery", created.thread.id, JSON.stringify(DEFAULT_RUN_CONFIG), "2026-08-02T00:00:00.000Z", "2026-08-02T00:00:01.000Z");
+    const oldMetadata = JSON.stringify({ attempts: [{
+      attempt: "initial", model: { providerId: "legacy-codex-cli", modelId: "old-model" },
+      usage: { status: "known", value: { inputTokens: 90, outputTokens: 10, totalTokens: 100 } },
+      cost: { status: "unknown" }, latencyMs: 20,
+    }] });
+    const newMetadata = JSON.stringify({ attempts: [{
+      attempt: "initial", model: { providerId: "legacy-codex-cli", modelId: "new-model" },
+      usage: { status: "known", value: { inputTokens: 10, outputTokens: 4, totalTokens: 14 } },
+      cost: { status: "unknown" }, latencyMs: 12,
+    }] });
+    insertAttempt.run("old-attempt", "old-generation", "old-discovery", oldMetadata, JSON.stringify([{ status: "known", value: { inputTokens: 99, outputTokens: 1, totalTokens: 100 } }]), "2026-08-01T00:00:00.100Z", "2026-08-01T00:00:00.100Z", "2026-08-01T00:00:00.100Z");
+    insertAttempt.run("new-attempt", "new-generation", "new-discovery", newMetadata, JSON.stringify([{ status: "known", value: { inputTokens: 99, outputTokens: 1, totalTokens: 100 } }]), "2026-08-02T00:00:00.100Z", "2026-08-02T00:00:00.100Z", "2026-08-02T00:00:00.100Z");
+    const workspace = await (await fetch(`http://127.0.0.1:${handle.port}/workspace`, { headers: { authorization: `Bearer ${handle.token}` } })).json() as { data: { latestResearchRun: { runId: string; usage: { tokens: { total: { known: number } } } } } };
+    expect(workspace.data.latestResearchRun).toMatchObject({ runId: "new-discovery", usage: { tokens: { total: { known: 14 } } } });
+    const exported = await post("/research/export", { threadId: created.thread.id }) as { content: string };
+    const archive = JSON.parse(exported.content) as { researchRun: { id: string; usage: { tokens: { total: { known: number } } } }; usage?: unknown; sources?: unknown };
+    expect(archive.researchRun).toMatchObject({ id: "new-discovery", usage: { tokens: { total: { known: 14 } } } });
+    expect(exported.content).not.toContain("request_json");
+    expect(exported.content).not.toContain("attempt_metadata_json");
+    expect(archive.usage).toBeUndefined();
+
+    client.db.prepare(`
+      INSERT INTO problems (id, discovery_run_id, statement, why_it_persists, affected, scale_estimate, verdict, verdict_reason, verdict_source_ids_json, selected_at, created_at)
+      VALUES ('problem-usage', 'new-discovery', 'A selected problem', '', '', '', 'confirmed', '', '[]', ?, ?)
+    `).run("2026-08-02T00:00:02.000Z", "2026-08-02T00:00:02.000Z");
+    const insertDevelopment = client.db.prepare(`
+      INSERT INTO research_runs (id, thread_id, status, config_json, problem_id, created_at, updated_at)
+      VALUES (?, ?, 'completed', ?, ?, ?, ?)
+    `);
+    insertDevelopment.run("old-development", created.thread.id, JSON.stringify(DEFAULT_RUN_CONFIG), "problem-usage", "2026-08-04T00:00:00.000Z", "2026-08-04T00:00:01.000Z");
+    insertDevelopment.run("new-development", created.thread.id, JSON.stringify(DEFAULT_RUN_CONFIG), "problem-usage", "2026-08-05T00:00:00.000Z", "2026-08-05T00:00:01.000Z");
+    insertAttempt.run("old-development-attempt", "old-development-generation", "old-development", oldMetadata, null, "2026-08-04T00:00:00.100Z", "2026-08-04T00:00:00.100Z", "2026-08-04T00:00:00.100Z");
+    insertAttempt.run("new-development-attempt", "new-development-generation", "new-development", newMetadata, null, "2026-08-05T00:00:00.100Z", "2026-08-05T00:00:00.100Z", "2026-08-05T00:00:00.100Z");
+    const insertSolution = client.db.prepare(`
+      INSERT INTO solutions (id, problem_id, mechanism, description, respects_off_limits, respects_off_limits_why, created_at, research_run_id)
+      VALUES (?, 'problem-usage', ?, '', 1, '', ?, ?)
+    `);
+    insertSolution.run("solution-old", "Old mechanism", "2026-08-04T00:00:02.000Z", "old-development");
+    insertSolution.run("solution-new", "New mechanism", "2026-08-05T00:00:02.000Z", "new-development");
+    client.close();
+    const ideasExport = await post("/ideas/export", { threadId: created.thread.id, format: "json" }) as { files: Array<{ content: string }> };
+    const exportedIdeas = JSON.parse(ideasExport.files[0]!.content) as Array<{ id: string; usage?: { runId: string; summary: { tokens: { total: { known: number } } } } }>;
+    expect(exportedIdeas.find((idea) => idea.id === "solution-old")?.usage).toMatchObject({ runId: "old-development", summary: { tokens: { total: { known: 100 } } } });
+    expect(exportedIdeas.find((idea) => idea.id === "solution-new")?.usage).toMatchObject({ runId: "new-development", summary: { tokens: { total: { known: 14 } } } });
+
+    const legacyOnly = await post("/threads", { title: "No usage history" }) as { thread: { id: string } };
+    const legacyClient = new DatabaseClient(dbPath);
+    legacyClient.db.prepare(`INSERT INTO research_runs (id, thread_id, status, config_json, problem_id, created_at, updated_at) VALUES ('metadata-free', ?, 'completed', '{}', NULL, ?, ?)`)
+      .run(legacyOnly.thread.id, "2026-08-03T00:00:00.000Z", "2026-08-03T00:00:01.000Z");
+    legacyClient.close();
+    const legacyWorkspace = await (await fetch(`http://127.0.0.1:${handle.port}/workspace`, { headers: { authorization: `Bearer ${handle.token}` } })).json() as { data: { latestResearchRun: { usage: { availability: string } } } };
+    expect(legacyWorkspace.data.latestResearchRun.usage.availability).toBe("unavailable");
   });
 });

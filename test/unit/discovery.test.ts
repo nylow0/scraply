@@ -1,5 +1,4 @@
 import { describe, expect, test } from "bun:test";
-import { z } from "zod";
 import {
   batchSources,
   discoverProblems,
@@ -9,11 +8,13 @@ import {
   type HarvestedFactor,
   type HarvestedSource,
 } from "../../src/core/discovery";
-import type { StructuredModelClient } from "../../src/providers/structured";
+import type { StructuredModelClient, StructuredStageRequest } from "../../src/providers/structured";
 import { ProviderFailure } from "../../src/providers/structured";
 import { QueryPlanOutputSchema } from "../../src/shared/structured-output-schemas";
 
 describe("discovery", () => {
+  const model = { providerId: "test-provider", modelId: "test-model" };
+  const reasoningEffort = "medium" as const;
   test("normalizes typography and whitespace before checking a quote", () => {
     const source = "People said “this\u00a0takes — far too long” after filing.";
     expect(normalizeEvidenceText(source)).toBe('People said "this takes - far too long" after filing.');
@@ -28,20 +29,23 @@ describe("discovery", () => {
     expect(batches.flat().map((item) => item.id)).toEqual(["one", "two"]);
   });
 
-  test("retries underfilled query plans and searches the requested count", async () => {
+  test("keeps query count and source policy in trusted inputs", async () => {
     let plannerCalls = 0;
     let searches = 0;
+    const plannerInputs: Array<Record<string, unknown>> = [];
     const result = await harvestFactors(scope(), {
-      model: "test-model",
+      prompt: () => "Fixture discovery instructions",
+      workflowVersion: 2,
+      model,
+      reasoningEffort,
       depth: "quick",
-      modelClient: modelClient(async (_user, schema) => {
-        if (schema._def === QueryPlanOutputSchema._def) {
+      modelClient: modelClient(async (request) => {
+        if (request.schema._def === QueryPlanOutputSchema._def) {
           plannerCalls += 1;
-          return schema.parse({
-            queries: plannerCalls % 2 === 1 ? ["one", " one ", ""] : ["one", "two", "three"],
-          });
+          plannerInputs.push(request.workOrder.inputs as Record<string, unknown>);
+          return request.schema.parse({ queries: ["one", "two", "three"] });
         }
-        return schema.parse({ factors: [] });
+        return request.schema.parse({ factors: [] });
       }),
       search: {
         async search() {
@@ -52,18 +56,54 @@ describe("discovery", () => {
     });
 
     expect(result.factors).toEqual([]);
-    expect(plannerCalls).toBe(4);
+    expect(plannerCalls).toBe(2);
     expect(searches).toBe(6);
+    expect(plannerInputs).toEqual([
+      { harvestMode: "domain", queryCount: 3, sourcePolicy: { includeDomains: [] } },
+      { harvestMode: "audience", queryCount: 3, sourcePolicy: { includeDomains: ["reddit.com", "news.ycombinator.com"] } },
+    ]);
   });
 
-  test("fails clearly when a retried query plan remains underfilled", async () => {
+  test("keeps native envelope IDs bounded when a harvest batch contains many source IDs", async () => {
+    const harvestRequests: StructuredStageRequest<unknown>[] = [];
+    let nextId = 0;
+    await harvestFactors(scope(), {
+      prompt: () => "Fixture discovery instructions",
+      workflowVersion: 2,
+      model, reasoningEffort, depth: "quick",
+      idFactory: () => String(nextId++).padStart(64, "0"),
+      modelClient: modelClient(async (request) => {
+        if (request.schema._def === QueryPlanOutputSchema._def) return { queries: ["one", "two", "three"] };
+        harvestRequests.push(request);
+        return { factors: [] };
+      }),
+      search: { async search() {
+        return Array.from({ length: 12 }, (_, index) => ({
+          id: String(index), url: `https://example.test/source/${index}`, title: `Source ${index}`, text: "Observed evidence.",
+        }));
+      } },
+    });
+    expect(harvestRequests.length).toBeGreaterThan(0);
+    for (const request of harvestRequests) {
+      expect(request.stage.length).toBeGreaterThan(256);
+      expect(Buffer.byteLength(request.evidence[0]!.sourceId)).toBeLessThanOrEqual(256);
+      const content = request.evidence[0]!.content as { sources: Array<{ id: string }> };
+      expect(content.sources).toHaveLength(12);
+      expect(new Set(content.sources.map((source) => source.id)).size).toBe(12);
+    }
+  });
+
+  test("fails clearly without an app-owned retry when a query plan is underfilled", async () => {
     let plannerCalls = 0;
     const run = harvestFactors(scope(), {
-      model: "test-model",
+      prompt: () => "Fixture discovery instructions",
+      workflowVersion: 2,
+      model,
+      reasoningEffort,
       depth: "quick",
-      modelClient: modelClient(async (_user, schema) => {
+      modelClient: modelClient(async (request) => {
         plannerCalls += 1;
-        return schema.parse({ queries: ["one", " one "] });
+        return request.schema.parse({ queries: ["one", " one "] });
       }),
       search: { async search() { return []; } },
     });
@@ -72,21 +112,25 @@ describe("discovery", () => {
       code: "schema",
       message: "Query planner returned 1 unique non-empty queries; expected 3",
     } satisfies Partial<ProviderFailure>));
-    expect(plannerCalls).toBe(2);
+    expect(plannerCalls).toBe(1);
   });
 
   test("reports accepted factors separately from factors retained by the cap", async () => {
     const result = await harvestFactors(scope(), {
-      model: "test-model",
+      prompt: () => "Fixture discovery instructions",
+      workflowVersion: 2,
+      model,
+      reasoningEffort,
       depth: "quick",
       random: () => 0.5,
-      modelClient: modelClient(async (user, schema) => {
-        if (schema._def === QueryPlanOutputSchema._def) {
-          return schema.parse({ queries: ["one", "two", "three"] });
+      modelClient: modelClient(async (request) => {
+        if (request.schema._def === QueryPlanOutputSchema._def) {
+          return request.schema.parse({ queries: ["one", "two", "three"] });
         }
-        const sourceId = user.match(/\[([0-9a-f-]{36})\]/)?.[1];
-        const count = user.includes("Harvest mode: domain") ? 31 : 0;
-        return schema.parse({ factors: Array.from({ length: count }, () => ({
+        const evidence = request.evidence[0]!.content as { sources: Array<{ id: string }> };
+        const sourceId = evidence.sources[0]?.id;
+        const count = (request.workOrder.inputs as { harvestMode: string }).harvestMode === "domain" ? 31 : 0;
+        return request.schema.parse({ factors: Array.from({ length: count }, () => ({
           subject: "Operators",
           behavior: "repeat manual filing",
           quote: "repeat manual filing every week",
@@ -126,13 +170,16 @@ describe("discovery", () => {
       { id: "factor-1", subject: "Operators", behavior: "repeat filing", quote: "Contrary evidence.", sourceId: existing.id, harvestMode: "domain", modelConfidence: 0.8, source: existing },
       { id: "factor-2", subject: "Operators", behavior: "repeat filing", quote: "Supporting evidence.", sourceId: other.id, harvestMode: "audience", modelConfidence: 0.8, source: other },
     ];
-    let killPrompt = "";
+    let killEvidence: unknown;
     const result = await discoverProblems(scope(), factors, [existing, other], {
-      model: "test-model",
+      prompt: () => "Fixture discovery instructions",
+      workflowVersion: 2,
+      model,
+      reasoningEffort,
       depth: "quick",
-      modelClient: modelClient(async (user, schema) => {
-        if (user.startsWith("Scope:")) {
-          return schema.parse({ problems: [{
+      modelClient: modelClient(async (request) => {
+        if (request.stage === "problem-candidates") {
+          return request.schema.parse({ problems: [{
             statement: "Operators duplicate recurring filings.",
             whyItPersists: "Systems do not share state.",
             affected: "Operators",
@@ -141,8 +188,8 @@ describe("discovery", () => {
             factorIds: factors.map((factor) => factor.id),
           }] });
         }
-        killPrompt = user;
-        return schema.parse({
+        killEvidence = request.evidence;
+        return request.schema.parse({
           verdict: "confirmed",
           verdictReason: "Contrary evidence does not resolve the problem.",
           verdictSourceIds: [existing.id],
@@ -155,7 +202,7 @@ describe("discovery", () => {
       },
     });
 
-    expect(killPrompt).toContain(existing.canonicalUrl);
+    expect(JSON.stringify(killEvidence)).toContain(existing.canonicalUrl);
     expect(result.killSources).toEqual([]);
     expect(result.problems[0]?.verdictSourceIds).toEqual([existing.id]);
   });
@@ -163,13 +210,16 @@ describe("discovery", () => {
   test("skips a search result whose URL cannot be parsed instead of failing the run", async () => {
     const skipped: string[] = [];
     const result = await harvestFactors(scope(), {
-      model: "test-model",
+      prompt: () => "Fixture discovery instructions",
+      workflowVersion: 2,
+      model,
+      reasoningEffort,
       depth: "quick",
-      modelClient: modelClient(async (_user, schema) => {
-        if (schema._def === QueryPlanOutputSchema._def) {
-          return schema.parse({ queries: ["one", "two", "three"] });
+      modelClient: modelClient(async (request) => {
+        if (request.schema._def === QueryPlanOutputSchema._def) {
+          return request.schema.parse({ queries: ["one", "two", "three"] });
         }
-        return schema.parse({ factors: [] });
+        return request.schema.parse({ factors: [] });
       }),
       onProjection: (message) => skipped.push(message),
       search: {
@@ -196,13 +246,16 @@ describe("discovery", () => {
       "https://example.test/a?a=1&b=2#section",
     ];
     const result = await harvestFactors(scope(), {
-      model: "test-model",
+      prompt: () => "Fixture discovery instructions",
+      workflowVersion: 2,
+      model,
+      reasoningEffort,
       depth: "quick",
-      modelClient: modelClient(async (_user, schema) => {
-        if (schema._def === QueryPlanOutputSchema._def) {
-          return schema.parse({ queries: ["one", "two", "three"] });
+      modelClient: modelClient(async (request) => {
+        if (request.schema._def === QueryPlanOutputSchema._def) {
+          return request.schema.parse({ queries: ["one", "two", "three"] });
         }
-        return schema.parse({ factors: [] });
+        return request.schema.parse({ factors: [] });
       }),
       search: {
         async search() {
@@ -241,16 +294,14 @@ function scope() {
 }
 
 function modelClient(
-  completion: (user: string, schema: z.ZodTypeAny) => unknown | Promise<unknown>,
+  completion: (request: StructuredStageRequest<unknown>) => unknown | Promise<unknown>,
 ): StructuredModelClient {
   return {
-    async structuredCompletion<T>(
-      _model: string,
-      _system: string,
-      user: string,
-      schema: z.ZodType<T>,
-    ): Promise<T> {
-      return await completion(user, schema) as T;
+    async structuredCompletion<T>(request: StructuredStageRequest<T>) {
+      return {
+        output: await completion(request as StructuredStageRequest<unknown>) as T,
+        metadata: { model: request.model, usage: { status: "unknown" }, latencyMs: 1, repairCount: 0, providerRequestIds: [], attempts: [] },
+      };
     },
   };
 }

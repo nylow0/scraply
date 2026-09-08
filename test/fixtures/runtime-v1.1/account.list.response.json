@@ -1,0 +1,1 @@
+{"protocolVersion":"1.1","id":"accounts-1","operation":"account.list","result":{"accounts":[{"providerId":"openai-subscription","email":"fixture@example.test","accountId":"fixture-account","plan":"plus"}]}}

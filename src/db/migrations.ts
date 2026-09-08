@@ -1,3 +1,6 @@
+import { migrateRiskEvaluationSnapshots } from "./migrate-risk-evaluations";
+import { migrateSolutionLimit } from "./migrate-solution-limit";
+
 export const MIGRATIONS = [
   {
     id: 1,
@@ -801,5 +804,299 @@ export const MIGRATIONS = [
       CREATE INDEX idx_rejected_problem_candidates_run
         ON rejected_problem_candidates(discovery_run_id, created_at, id);
     `,
+  },
+  {
+    id: 15,
+    sql: `
+      UPDATE run_configs
+      SET config_json = json_set(
+        config_json,
+        '$.configVersion', 2,
+        '$.model', json_object(
+          'providerId', 'legacy-codex-cli',
+          'modelId', json_extract(config_json, '$.model')
+        )
+      )
+      WHERE json_type(config_json, '$.model') = 'text';
+
+      UPDATE research_runs
+      SET config_json = json_set(
+        config_json,
+        '$.configVersion', 2,
+        '$.model', json_object(
+          'providerId', 'legacy-codex-cli',
+          'modelId', json_extract(config_json, '$.model')
+        )
+      )
+      WHERE json_type(config_json, '$.model') = 'text';
+
+      UPDATE cost_ledger
+      SET provider = 'legacy-codex-cli'
+      WHERE provider = 'codex' AND operation = 'structured-completion';
+
+      ALTER TABLE research_runs ADD COLUMN workflow_version INTEGER NOT NULL DEFAULT 1;
+
+      CREATE TABLE generation_attempts (
+        id TEXT PRIMARY KEY,
+        generation_id TEXT NOT NULL UNIQUE,
+        research_run_id TEXT NOT NULL REFERENCES research_runs(id) ON DELETE CASCADE,
+        stage_key TEXT NOT NULL,
+        provider_id TEXT NOT NULL,
+        model_id TEXT NOT NULL,
+        reasoning_effort TEXT NOT NULL,
+        status TEXT NOT NULL CHECK(status IN (
+          'prepared', 'dispatched', 'accepted', 'completed', 'failed', 'cancelled', 'interrupted'
+        )),
+        request_json TEXT NOT NULL CHECK(json_valid(request_json)),
+        wire_request_sha256 TEXT NOT NULL,
+        request_sha256 TEXT NOT NULL,
+        work_order_sha256 TEXT NOT NULL,
+        inputs_sha256 TEXT NOT NULL,
+        evidence_sha256 TEXT NOT NULL,
+        schema_sha256 TEXT NOT NULL,
+        protocol_version TEXT,
+        runtime_version TEXT,
+        runtime_source_sha TEXT,
+        runtime_executable_sha256 TEXT,
+        runtime_prompt_id TEXT,
+        runtime_prompt_sha256 TEXT,
+        terminal_kind TEXT,
+        output_json TEXT CHECK(output_json IS NULL OR json_valid(output_json)),
+        error_code TEXT,
+        error_message TEXT,
+        attempt_metadata_json TEXT CHECK(
+          attempt_metadata_json IS NULL OR json_valid(attempt_metadata_json)
+        ),
+        usage_json TEXT CHECK(usage_json IS NULL OR json_valid(usage_json)),
+        reported_cost_usd REAL CHECK(reported_cost_usd IS NULL OR reported_cost_usd >= 0),
+        accepted_at TEXT,
+        terminal_at TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+
+      CREATE INDEX idx_generation_attempts_run_stage
+        ON generation_attempts(research_run_id, stage_key, created_at);
+      CREATE INDEX idx_generation_attempts_status
+        ON generation_attempts(status, updated_at);
+
+      ALTER TABLE cost_ledger
+        ADD COLUMN generation_attempt_id TEXT REFERENCES generation_attempts(id) ON DELETE SET NULL;
+      CREATE UNIQUE INDEX idx_cost_ledger_generation_attempt
+        ON cost_ledger(generation_attempt_id)
+        WHERE generation_attempt_id IS NOT NULL;
+    `,
+  },
+  {
+    id: 16,
+    sql: `
+      ALTER TABLE solutions ADD COLUMN option_position INTEGER CHECK(
+        option_position IS NULL OR option_position BETWEEN 0 AND 2
+      );
+      ALTER TABLE solutions ADD COLUMN key_assumption TEXT;
+      ALTER TABLE solutions ADD COLUMN why_current_approach_may_suffice TEXT;
+      ALTER TABLE solutions ADD COLUMN supporting_evidence_ids_json TEXT CHECK(
+        supporting_evidence_ids_json IS NULL OR json_valid(supporting_evidence_ids_json)
+      );
+      ALTER TABLE solutions ADD COLUMN contrary_evidence_ids_json TEXT CHECK(
+        contrary_evidence_ids_json IS NULL OR json_valid(contrary_evidence_ids_json)
+      );
+      ALTER TABLE solutions ADD COLUMN unknowns_json TEXT CHECK(
+        unknowns_json IS NULL OR json_valid(unknowns_json)
+      );
+      ALTER TABLE solutions ADD COLUMN selected_at TEXT;
+
+      CREATE UNIQUE INDEX idx_solutions_id_run
+        ON solutions(id, research_run_id);
+      CREATE UNIQUE INDEX idx_solutions_one_selected_per_run
+        ON solutions(research_run_id)
+        WHERE selected_at IS NOT NULL;
+
+      CREATE TABLE stage_results (
+        id TEXT PRIMARY KEY,
+        research_run_id TEXT NOT NULL REFERENCES research_runs(id) ON DELETE CASCADE,
+        stage_id TEXT NOT NULL CHECK(stage_id IN (
+          'query-plan', 'factor-harvest', 'problem-candidates',
+          'problem-kill', 'solutions', 'decision-analysis'
+        )),
+        selection_key TEXT NOT NULL DEFAULT '',
+        workflow_version INTEGER NOT NULL CHECK(workflow_version = 2),
+        stage_revision INTEGER NOT NULL CHECK(stage_revision > 0),
+        context_json TEXT NOT NULL CHECK(json_valid(context_json)),
+        context_sha256 TEXT NOT NULL,
+        output_json TEXT NOT NULL CHECK(json_valid(output_json)),
+        output_sha256 TEXT NOT NULL,
+        prompt_filename TEXT NOT NULL,
+        prompt_source TEXT NOT NULL CHECK(prompt_source IN ('bundled', 'override')),
+        prompt_text TEXT NOT NULL,
+        prompt_sha256 TEXT NOT NULL,
+        current_bundled_prompt_sha256 TEXT NOT NULL,
+        override_baseline_revision INTEGER,
+        override_baseline_sha256 TEXT,
+        schema_json TEXT NOT NULL CHECK(json_valid(schema_json)),
+        schema_sha256 TEXT NOT NULL,
+        input_json TEXT NOT NULL CHECK(json_valid(input_json)),
+        input_sha256 TEXT NOT NULL,
+        evidence_json TEXT NOT NULL CHECK(json_valid(evidence_json)),
+        evidence_ids_json TEXT NOT NULL CHECK(json_valid(evidence_ids_json)),
+        evidence_ids_sha256 TEXT NOT NULL,
+        evidence_sha256 TEXT NOT NULL,
+        runtime_prompt_id TEXT NOT NULL,
+        runtime_prompt_sha256 TEXT NOT NULL,
+        effective_request_json TEXT NOT NULL CHECK(json_valid(effective_request_json)),
+        effective_request_sha256 TEXT NOT NULL,
+        completed_at TEXT NOT NULL,
+        UNIQUE(research_run_id, stage_id, selection_key),
+        CHECK(
+          (override_baseline_revision IS NULL AND override_baseline_sha256 IS NULL)
+          OR (override_baseline_revision = 1 AND override_baseline_sha256 IS NOT NULL)
+        )
+      );
+
+      CREATE INDEX idx_stage_results_run_completed
+        ON stage_results(research_run_id, completed_at, stage_id);
+
+      CREATE TRIGGER prevent_stage_result_update
+      BEFORE UPDATE ON stage_results
+      BEGIN
+        SELECT RAISE(ABORT, 'completed stage results are immutable');
+      END;
+
+      CREATE TABLE decision_analyses (
+        id TEXT PRIMARY KEY,
+        research_run_id TEXT NOT NULL REFERENCES research_runs(id) ON DELETE CASCADE,
+        solution_id TEXT NOT NULL,
+        stage_result_id TEXT NOT NULL UNIQUE REFERENCES stage_results(id) ON DELETE CASCADE,
+        analysis_json TEXT NOT NULL CHECK(json_valid(analysis_json)),
+        user_decision TEXT,
+        observed_result TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        UNIQUE(research_run_id, solution_id),
+        FOREIGN KEY (solution_id, research_run_id)
+          REFERENCES solutions(id, research_run_id) ON DELETE CASCADE
+      );
+
+      CREATE INDEX idx_decision_analyses_run_created
+        ON decision_analyses(research_run_id, created_at, id);
+    `,
+  },
+  {
+    id: 17,
+    sql: `
+      CREATE TABLE workflow_snapshots (
+        research_run_id TEXT NOT NULL REFERENCES research_runs(id) ON DELETE CASCADE,
+        snapshot_key TEXT NOT NULL,
+        value_json TEXT NOT NULL CHECK(json_valid(value_json)),
+        PRIMARY KEY(research_run_id, snapshot_key)
+      );
+      ALTER TABLE research_runs ADD COLUMN awaiting_selection INTEGER NOT NULL DEFAULT 0;
+      ALTER TABLE research_runs ADD COLUMN interrupted INTEGER NOT NULL DEFAULT 0;
+    `,
+  },
+  {
+    id: 18,
+    sql: `
+      ALTER TABLE factors ADD COLUMN uncertainty TEXT;
+
+      CREATE TABLE evidence_follow_ups (
+        research_run_id TEXT PRIMARY KEY REFERENCES research_runs(id) ON DELETE CASCADE,
+        solution_id TEXT NOT NULL REFERENCES solutions(id) ON DELETE CASCADE,
+        question TEXT NOT NULL CHECK(length(trim(question)) BETWEEN 1 AND 500),
+        status TEXT NOT NULL CHECK(status IN ('requested', 'running', 'completed', 'failed')),
+        source_ids_json TEXT NOT NULL DEFAULT '[]' CHECK(json_valid(source_ids_json)),
+        factor_ids_json TEXT NOT NULL DEFAULT '[]' CHECK(json_valid(factor_ids_json)),
+        error_message TEXT,
+        requested_at TEXT NOT NULL,
+        completed_at TEXT,
+        updated_at TEXT NOT NULL
+      );
+    `,
+  },
+  {
+    id: 19,
+    sql: `ALTER TABLE scopes ADD COLUMN risk_evaluation_criteria TEXT NOT NULL DEFAULT '';`,
+  },
+  {
+    id: 20,
+    // Rebuild both tables so dropping the old parent cannot cascade into saved analyses.
+    sql: `
+      CREATE TABLE stage_results_v20 (
+        id TEXT PRIMARY KEY,
+        research_run_id TEXT NOT NULL REFERENCES research_runs(id) ON DELETE CASCADE,
+        stage_id TEXT NOT NULL CHECK(stage_id IN (
+          'query-plan', 'factor-harvest', 'problem-candidates',
+          'problem-kill', 'solutions', 'risk-evaluation', 'decision-analysis'
+        )),
+        selection_key TEXT NOT NULL DEFAULT '',
+        workflow_version INTEGER NOT NULL CHECK(workflow_version = 2),
+        stage_revision INTEGER NOT NULL CHECK(stage_revision > 0),
+        context_json TEXT NOT NULL CHECK(json_valid(context_json)),
+        context_sha256 TEXT NOT NULL,
+        output_json TEXT NOT NULL CHECK(json_valid(output_json)),
+        output_sha256 TEXT NOT NULL,
+        prompt_filename TEXT NOT NULL,
+        prompt_source TEXT NOT NULL CHECK(prompt_source IN ('bundled', 'override')),
+        prompt_text TEXT NOT NULL,
+        prompt_sha256 TEXT NOT NULL,
+        current_bundled_prompt_sha256 TEXT NOT NULL,
+        override_baseline_revision INTEGER,
+        override_baseline_sha256 TEXT,
+        schema_json TEXT NOT NULL CHECK(json_valid(schema_json)),
+        schema_sha256 TEXT NOT NULL,
+        input_json TEXT NOT NULL CHECK(json_valid(input_json)),
+        input_sha256 TEXT NOT NULL,
+        evidence_json TEXT NOT NULL CHECK(json_valid(evidence_json)),
+        evidence_ids_json TEXT NOT NULL CHECK(json_valid(evidence_ids_json)),
+        evidence_ids_sha256 TEXT NOT NULL,
+        evidence_sha256 TEXT NOT NULL,
+        runtime_prompt_id TEXT NOT NULL,
+        runtime_prompt_sha256 TEXT NOT NULL,
+        effective_request_json TEXT NOT NULL CHECK(json_valid(effective_request_json)),
+        effective_request_sha256 TEXT NOT NULL,
+        completed_at TEXT NOT NULL,
+        UNIQUE(research_run_id, stage_id, selection_key),
+        CHECK(
+          (override_baseline_revision IS NULL AND override_baseline_sha256 IS NULL)
+          OR (override_baseline_revision = 1 AND override_baseline_sha256 IS NOT NULL)
+        )
+      );
+      INSERT INTO stage_results_v20 SELECT * FROM stage_results;
+      CREATE TABLE decision_analyses_v20 (
+        id TEXT PRIMARY KEY,
+        research_run_id TEXT NOT NULL REFERENCES research_runs(id) ON DELETE CASCADE,
+        solution_id TEXT NOT NULL,
+        stage_result_id TEXT NOT NULL UNIQUE REFERENCES stage_results_v20(id) ON DELETE CASCADE,
+        analysis_json TEXT NOT NULL CHECK(json_valid(analysis_json)),
+        user_decision TEXT,
+        observed_result TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        UNIQUE(research_run_id, solution_id),
+        FOREIGN KEY (solution_id, research_run_id)
+          REFERENCES solutions(id, research_run_id) ON DELETE CASCADE
+      );
+      INSERT INTO decision_analyses_v20 SELECT * FROM decision_analyses;
+      DROP TABLE decision_analyses;
+      DROP TABLE stage_results;
+      ALTER TABLE stage_results_v20 RENAME TO stage_results;
+      ALTER TABLE decision_analyses_v20 RENAME TO decision_analyses;
+      CREATE INDEX idx_stage_results_run_completed
+        ON stage_results(research_run_id, completed_at, stage_id);
+      CREATE INDEX idx_decision_analyses_run_created
+        ON decision_analyses(research_run_id, created_at, id);
+      CREATE TRIGGER prevent_stage_result_update
+      BEFORE UPDATE ON stage_results
+      BEGIN
+        SELECT RAISE(ABORT, 'completed stage results are immutable');
+      END;
+    `,
+    afterSql: migrateRiskEvaluationSnapshots,
+  },
+  {
+    id: 21,
+    rebuildReferencedTable: true,
+    sql: "",
+    afterSql: migrateSolutionLimit,
   },
 ] as const;

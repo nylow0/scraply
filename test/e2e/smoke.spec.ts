@@ -38,7 +38,8 @@ test("the renderer restores the problem-selection step after a restart", async (
     await page.getByRole("checkbox", { name: "Develop this problem" }).check();
     await page.getByRole("button", { name: "Commit selection" }).click();
     await expect(page.getByText("Supplier reliability ledger")).toBeVisible();
-    await expect(page.getByText("Ideas are ordered by independently confirmed outcomes that address the core problem.")).toBeVisible();
+    await expect(page.getByText(/options are not ranked/)).toBeVisible();
+    await expect(page.getByText(/independently confirmed outcomes/)).toHaveCount(0);
     await expect(page.getByText("Highest risk: likely · project ends")).toBeVisible();
     await expect(page.locator(".solution-summary").getByText("The only data supplier can leave the market.")).toBeVisible();
     await page.getByText("Supplier reliability ledger").click();

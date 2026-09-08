@@ -8,6 +8,11 @@ import {
 } from "node:fs";
 import { join, relative } from "node:path";
 import { listPackage } from "@electron/asar";
+import { WORKFLOW_V2_STAGE_REGISTRY } from "../src/core/stages";
+import {
+  runtimeLockRelativePath,
+  verifyStagedRuntime,
+} from "./runtime-package";
 
 interface PackageMetadata {
   version: string;
@@ -29,7 +34,7 @@ interface ManifestArtifact {
 }
 
 interface ReleaseManifest {
-  schemaVersion: 1;
+  schemaVersion: 2;
   appVersion: string;
   sourceSha: string;
   sourceRef: string;
@@ -38,6 +43,29 @@ interface ReleaseManifest {
   signed: boolean;
   signingPolicy: "signed" | "private-unsigned";
   artifacts: ManifestArtifact[];
+  runtime: RuntimeManifest;
+}
+
+interface RuntimeFileManifest {
+  path: string;
+  bytes: number;
+  sha256: string;
+}
+
+interface RuntimeManifest {
+  platform: "windows-x64";
+  version: string;
+  protocolVersions: string[];
+  sourceRepository: string;
+  sourceCommit: string;
+  upstreamCommit: string;
+  executable: RuntimeFileManifest & {
+    versionOutput: string;
+    signatureStatus: string;
+  };
+  lock: RuntimeFileManifest;
+  notices: RuntimeFileManifest[];
+  checksums: RuntimeFileManifest;
 }
 
 const root = process.cwd();
@@ -75,16 +103,7 @@ const requiredEntries = [
   "/out/main/backend.js",
   "/out/preload/index.js",
   "/out/renderer/index.html",
-  "/prompts/query-plan.md",
-  "/prompts/factor-harvest.md",
-  "/prompts/problem-candidates.md",
-  "/prompts/problem-kill.md",
-  "/prompts/solutions.md",
-  "/prompts/outcomes.md",
-  "/prompts/outcome-judge.md",
-  "/prompts/risks.md",
-  "/prompts/risk-score.md",
-  "/prompts/mitigations.md",
+  ...Object.values(WORKFLOW_V2_STAGE_REGISTRY).map((stage) => `/prompts/${stage.promptFilename}`),
   "/package.json",
 ];
 const missingEntries = requiredEntries.filter((path) => !archiveEntries.has(path));
@@ -100,8 +119,13 @@ const forbiddenFragments = [
   "/.env",
   "/.scraply/",
   "question-workflow-review-and-deep-research-prompt.md",
+  "/runtime/",
+  "scraply-agent",
 ];
 const forbiddenEntries = [...archiveEntries].filter((entry) => forbiddenFragments.some((fragment) => entry.includes(fragment)));
+for (const entry of archiveEntries) {
+  if (entry.startsWith("/prompts/") && entry.endsWith(".md") && !requiredEntries.includes(entry)) forbiddenEntries.push(entry);
+}
 if (forbiddenEntries.length > 0) {
   throw new Error(`Unexpected app.asar entries:\n${forbiddenEntries.join("\n")}`);
 }
@@ -154,6 +178,22 @@ if (strict && process.env.GITHUB_SHA && process.env.GITHUB_SHA !== headSha) {
 if (strict && dirty) throw new Error("Release verification requires a clean Git worktree.");
 const sourceSha = headSha;
 
+const runtimeResourceDirectory = join(releaseDir, "win-unpacked", "resources", "runtime");
+const runtime = verifyStagedRuntime(
+  runtimeResourceDirectory,
+  join(root, runtimeLockRelativePath),
+);
+const runtimeSignatureStatus = executableMetadata(runtime.executablePath).signatureStatus;
+if (runtime.lock.sourceRepository !== "https://github.com/nylow0/scraply" || runtime.lock.sourceCommit !== sourceSha) {
+  throw new Error("The runtime must be built from this Scraply checkout. Run bun run prepare:runtime.");
+}
+if (!["Valid", "NotSigned"].includes(runtimeSignatureStatus)) {
+  throw new Error(`Invalid Authenticode status for ${runtime.executablePath}: ${runtimeSignatureStatus}`);
+}
+if (strict && runtimeSignatureStatus === "NotSigned" && !allowUnsigned) {
+  throw new Error(`Unsigned runtime is not allowed by the current release policy: ${runtime.executablePath}`);
+}
+
 const tagVersion = sourceRef.match(/^v(\d+\.\d+\.\d+)(?:-rc\.\d+)?$/)?.[1];
 if (strict && tagVersion && tagVersion !== metadata.version) {
   throw new Error(`Tag ${sourceRef} does not match package version ${metadata.version}.`);
@@ -185,15 +225,48 @@ const artifacts = artifactPaths.map((artifact): ManifestArtifact => {
 
 const publishedArtifacts = artifacts.filter((artifact) => artifact.name === "installer" || artifact.name === "portable");
 const manifest: ReleaseManifest = {
-  schemaVersion: 1,
+  schemaVersion: 2,
   appVersion: metadata.version,
   sourceSha,
   sourceRef,
   dirty,
   generatedAt: new Date().toISOString(),
-  signed: publishedArtifacts.every((artifact) => artifact.executable?.signatureStatus === "Valid"),
+  signed: (
+    publishedArtifacts.every((artifact) => artifact.executable?.signatureStatus === "Valid")
+    && runtimeSignatureStatus === "Valid"
+  ),
   signingPolicy: allowUnsigned ? "private-unsigned" : "signed",
   artifacts,
+  runtime: {
+    platform: runtime.lock.platform,
+    version: runtime.lock.version,
+    protocolVersions: runtime.lock.protocolVersions,
+    sourceRepository: runtime.lock.sourceRepository,
+    sourceCommit: runtime.lock.sourceCommit,
+    upstreamCommit: runtime.lock.upstreamCommit,
+    executable: {
+      path: `runtime/${runtime.lock.executable}`,
+      bytes: runtime.lock.sizeBytes,
+      sha256: runtime.lock.sha256,
+      versionOutput: runtime.versionOutput,
+      signatureStatus: runtimeSignatureStatus,
+    },
+    lock: {
+      path: `runtime/${runtime.lockPath}`,
+      bytes: runtime.lockBytes,
+      sha256: runtime.lockSha256,
+    },
+    notices: runtime.notices.map((notice) => ({
+      path: `runtime/${notice.path}`,
+      bytes: notice.bytes,
+      sha256: notice.sha256,
+    })),
+    checksums: {
+      path: `runtime/${runtime.checksums.path}`,
+      bytes: runtime.checksums.bytes,
+      sha256: runtime.checksums.sha256,
+    },
+  },
 };
 const manifestPath = join(releaseDir, "manifest.json");
 const checksumsPath = join(releaseDir, "SHA256SUMS.txt");
