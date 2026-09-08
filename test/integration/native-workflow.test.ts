@@ -352,8 +352,11 @@ async function fixture({ mode = "workflow", searchEnabled = true, workflowVersio
     });
   }
   async function post<T>(path: string, body: unknown, schema: z.ZodType<T, z.ZodTypeDef, unknown>): Promise<T> {
+    const startedAt = Date.now();
     const response = await raw(path, body);
-    const result: unknown = await response.json();
+    const text = await response.text();
+    if (!text) throw new Error(`${path}: empty HTTP ${response.status} response after ${Date.now() - startedAt} ms (${response.headers.get("content-type") ?? "no content type"})`);
+    const result: unknown = JSON.parse(text);
     if (response.status !== 200) throw new Error(`${path}: ${JSON.stringify(result)}`);
     return schema.parse(z.object({ data: z.unknown() }).parse(result).data);
   }
