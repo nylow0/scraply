@@ -31,6 +31,7 @@ function fixture(caseCount = 3) {
         ].join("\n"));
         writeFileSync(join(directory, `${stem}-research.json`), JSON.stringify({
           schemaVersion: 1, exportedAt: "2026-09-06T00:00:00.000Z",
+          thread: { id: `${stem}-thread`, title: `Run v${workflowVersion}` },
           scope: { title: decision },
           researchRun: { id: `${stem}-run`, config: { model: "hidden" }, usage: { latencyMs: workflowVersion * 100 } },
           sources: [{ id: "source-1", text: "Observed evidence" }],
@@ -71,6 +72,7 @@ describe("Phase 3 evaluation artifacts", () => {
     expect(packetText).not.toContain("timings");
     expect(packetText).not.toContain("private-mapping");
     expect(packetText).not.toContain("hidden");
+    expect(packetText).not.toContain("Run v");
     expect(packetText).toContain("Observed evidence");
     expect(artifacts.readingFiles[0]!.content).toContain("Not selected. Problem evidence: weak premise.");
     expect(artifacts.readingFiles[0]!.content).not.toContain("Workflow: v2.");
@@ -96,6 +98,36 @@ describe("Phase 3 evaluation artifacts", () => {
     const artifacts = createEvaluationArtifacts(input, directory, () => false);
     const result = validateEvaluationReviews(artifacts.packet, artifacts.mapping, completeReviews(input.cases.map(({ caseId }) => caseId), artifacts.mapping.packetSha256));
     expect(result.gateStatus).toBe("review-recorded-not-accepted");
+  });
+
+  test("compares independent discoveries only with explicit matching research scope", () => {
+    const { directory, input } = fixture();
+    const firstCase = input.cases[0]!;
+    for (const [index, variant] of firstCase.variants.entries()) {
+      const researchPath = join(directory, variant.researchPath);
+      const research = JSON.parse(readFileSync(researchPath, "utf8")) as { scope: Record<string, unknown> };
+      research.scope = { title: `Run v${index + 1}`, domain: "Should we test a supplier ledger?", offLimits: ["No inventory"] };
+      writeFileSync(researchPath, JSON.stringify(research));
+    }
+    const ideasPath = join(directory, firstCase.variants[1]!.ideasPath);
+    const ideas = JSON.parse(readFileSync(ideasPath, "utf8")) as Array<Record<string, unknown>>;
+    ideas[0]!.problemStatement = "Shops cannot get reliable part delivery estimates.";
+    writeFileSync(ideasPath, JSON.stringify(ideas));
+    expect(() => createEvaluationArtifacts(input, directory)).toThrow("same decision");
+    const scopeInput = { ...input, cases: input.cases.map((item) => ({ ...item, comparison: item === firstCase ? "research-scope" : "selected-problem" })) };
+    const artifacts = createEvaluationArtifacts(scopeInput, directory, () => false);
+    expect(artifacts.packet.cases[0]).toMatchObject({ comparison: "research-scope", decision: "Should we test a supplier ledger?" });
+    expect(JSON.stringify(artifacts.packet)).not.toContain("Run v");
+    expect(JSON.stringify(artifacts.packet)).toContain("Shops cannot get reliable part delivery estimates.");
+
+    const researchPath = join(directory, firstCase.variants[1]!.researchPath);
+    const research = JSON.parse(readFileSync(researchPath, "utf8")) as { scope: Record<string, unknown> };
+    research.scope.offLimits = ["Inventory allowed"];
+    writeFileSync(researchPath, JSON.stringify(research));
+    expect(() => createEvaluationArtifacts(scopeInput, directory)).toThrow("same archived scope and constraints");
+    delete research.scope.domain;
+    writeFileSync(researchPath, JSON.stringify(research));
+    expect(() => createEvaluationArtifacts(scopeInput, directory)).toThrow();
   });
 
   test.each([1, 2] as const)("compares a completed v%s no-option result without inventing an idea", (workflowVersion) => {

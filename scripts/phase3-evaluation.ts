@@ -16,6 +16,7 @@ const EvaluationInputSchema = z.object({
   schemaVersion: z.literal(1),
   cases: z.array(z.object({
     caseId: z.string().regex(/^[a-z0-9][a-z0-9._-]*$/),
+    comparison: z.enum(["selected-problem", "research-scope"]).default("selected-problem"),
     variants: z.array(VariantInputSchema).length(2),
   }).strict()).min(3).max(5),
 }).strict();
@@ -144,7 +145,7 @@ function blindIdeasMarkdown(markdown: string): string {
 function withoutBlindingMetadata(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(withoutBlindingMetadata);
   if (!value || typeof value !== "object") return value;
-  const hidden = new Set(["workflowVersion", "runId", "researchRun", "usage", "exportedAt", "detailRevision"]);
+  const hidden = new Set(["workflowVersion", "runId", "researchRun", "thread", "usage", "exportedAt", "detailRevision"]);
   return Object.fromEntries(Object.entries(value)
     .filter(([key]) => !hidden.has(key))
     .map(([key, child]) => [key, withoutBlindingMetadata(child)]));
@@ -161,6 +162,7 @@ export function createEvaluationArtifacts(
   const packetCases: Array<{
     caseId: string;
     decision: string;
+    comparison: "selected-problem" | "research-scope";
     candidates: Array<{ candidateId: CandidateId; readingFile: string; research: unknown; ideas: unknown; noOptions: unknown }>;
   }> = [];
   const mappingCases = [];
@@ -169,9 +171,15 @@ export function createEvaluationArtifacts(
     const variants = evaluationCase.variants.map((variant) => loadVariant(variant, baseDirectory));
     const workflows = variants.map((variant) => variant.workflowVersion).sort();
     if (workflows[0] !== 1 || workflows[1] !== 2) throw new Error(`${evaluationCase.caseId} must contain one v1 and one v2 ideas export`);
-    const decisions = variants.map((variant) => normalizeDecision(variant.decision));
-    if (decisions[0] !== decisions[1]) throw new Error(`${evaluationCase.caseId} variants do not describe the same decision`);
-    if (JSON.stringify(variants[0]!.research.scope) !== JSON.stringify(variants[1]!.research.scope)) {
+    const scopeComparison = evaluationCase.comparison === "research-scope";
+    const scopes = variants.map((variant) => scopeComparison
+      ? Object.fromEntries(Object.entries(variant.research.scope).filter(([key]) => key !== "title"))
+      : variant.research.scope);
+    const decisions = variants.map((variant) => scopeComparison
+      ? z.string().trim().min(1).parse(variant.research.scope.domain)
+      : variant.decision);
+    if (normalizeDecision(decisions[0]!) !== normalizeDecision(decisions[1]!)) throw new Error(`${evaluationCase.caseId} variants do not describe the same decision`);
+    if (canonicalJson(scopes[0]) !== canonicalJson(scopes[1])) {
       throw new Error(`${evaluationCase.caseId} variants do not use the same archived scope and constraints`);
     }
 
@@ -179,7 +187,9 @@ export function createEvaluationArtifacts(
     const candidates = ordered.map((variant, index) => ({
       candidateId: (index === 0 ? "A" : "B") as CandidateId,
       readingFile: `${evaluationCase.caseId}-${index === 0 ? "A" : "B"}.md`,
-      research: withoutBlindingMetadata(variant.research),
+      research: withoutBlindingMetadata(scopeComparison
+        ? { ...variant.research, scope: { ...variant.research.scope, title: decisions[0] } }
+        : variant.research),
       ideas: withoutBlindingMetadata(variant.ideas),
       noOptions: withoutBlindingMetadata(variant.noOptions),
     }));
@@ -187,7 +197,7 @@ export function createEvaluationArtifacts(
       filename: `${evaluationCase.caseId}-${index === 0 ? "A" : "B"}.md`,
       content: blindIdeasMarkdown(variant.ideasMarkdown),
     })));
-    packetCases.push({ caseId: evaluationCase.caseId, decision: variants[0]!.decision, candidates });
+    packetCases.push({ caseId: evaluationCase.caseId, comparison: evaluationCase.comparison, decision: decisions[0]!, candidates });
     mappingCases.push({
       caseId: evaluationCase.caseId,
       candidates: ordered.map((variant, index) => ({

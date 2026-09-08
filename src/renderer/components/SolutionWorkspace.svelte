@@ -54,12 +54,14 @@
     </div>
   </header>
 
-  <div class="list-heading" aria-hidden="true">
-    <span>Options</span>
-    <span>Highest risk</span>
-    <span>Evaluation snapshot</span>
-    <span></span>
-  </div>
+  {#if !hasV2}
+    <div class="list-heading" aria-hidden="true">
+      <span>Options</span>
+      <span>Highest risk</span>
+      <span>Evaluation snapshot</span>
+      <span></span>
+    </div>
+  {/if}
 
   <div class="solutions">
     {#each visible as item (item.idea.id)}
