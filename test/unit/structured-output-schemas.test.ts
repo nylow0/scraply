@@ -4,7 +4,6 @@ import { STRUCTURED_OUTPUT_SCHEMAS } from "../../src/shared/structured-output-sc
 
 const FORBIDDEN_CONSTRAINTS = new Set([
   "minItems",
-  "maxItems",
   "minLength",
   "maxLength",
   "minimum",

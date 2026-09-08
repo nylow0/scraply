@@ -79,7 +79,7 @@ describe("workflow v2 foundation", () => {
       evidence: Array<{ sourceId: string; content: unknown }>;
     };
     expect(request.workOrder.instruction).toBe("exact prompt bytes");
-    expect(request.workOrder.inputs).toEqual({ workflowVersion: 2, problemId: "problem-1" });
+    expect(request.workOrder.inputs).toEqual({ workflowVersion: 2, problemId: "problem-1", evidenceSourceIds: ["support-1", "contrary-1"] });
     expect(JSON.stringify(request.workOrder.inputs)).not.toContain("failed spreadsheet");
     expect(request.evidence[0]?.content).toMatchObject({ recordedExperiments: current.recordedExperiments });
     expect(request.evidence.map((item) => item.sourceId)).toEqual([
@@ -106,6 +106,38 @@ describe("workflow v2 foundation", () => {
       retryable: false,
       attempts: [{ providerRequestId: "provider-request-1" }],
     });
+  });
+
+  test("allows tentative known-problem options while excluding context IDs from the provider schema", async () => {
+    const knownProblem = {
+      ...context(),
+      problem: { ...context().problem, verdict: "user-asserted" as const },
+      supportingEvidence: [],
+      contraryEvidence: [],
+    };
+    const tentative = option({ supportingEvidenceIds: [], contraryEvidenceIds: [] });
+    const result = await produceDevelopmentOptions(knownProblem, dependencies({ options: [tentative] }, (request) => {
+      expect(request.workOrder.inputs).toMatchObject({ evidenceSourceIds: [] });
+      expect(request.schema.safeParse({ options: [tentative] }).success).toBe(true);
+      for (const field of ["supportingEvidenceIds", "contraryEvidenceIds"] as const) {
+        expect(request.schema.safeParse({ options: [{ ...tentative, [field]: ["scraply:development-context"] }] }).success).toBe(false);
+      }
+      expect(request.jsonSchema).toEqual(expect.objectContaining({
+        properties: expect.objectContaining({ options: expect.objectContaining({
+          items: expect.objectContaining({ properties: expect.objectContaining({
+            supportingEvidenceIds: expect.objectContaining({ maxItems: 0 }),
+          }) }),
+        }) }),
+      }));
+    }));
+    expect(result.options).toEqual([expect.objectContaining(tentative)]);
+  });
+
+  test("constrains provider citations to the supplied research sources", async () => {
+    await produceDevelopmentOptions(context(), dependencies({ options: [option()] }, (request) => {
+      expect(request.schema.safeParse({ options: [option()] }).success).toBe(true);
+      expect(request.schema.safeParse({ options: [option({ supportingEvidenceIds: ["invented"] })] }).success).toBe(false);
+    }));
   });
 
   test("keeps v2 requests compatible with subscription token-limit rules", async () => {

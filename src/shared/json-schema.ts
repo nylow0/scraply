@@ -6,6 +6,7 @@ export type JsonSchema = {
   required?: string[];
   additionalProperties?: false;
   items?: JsonSchema;
+  maxItems?: number;
   enum?: Array<string | number | boolean>;
   anyOf?: JsonSchema[];
 };
@@ -22,7 +23,12 @@ export function deriveJsonSchema(schema: z.ZodTypeAny): JsonSchema {
       return { type: "object", properties, required: Object.keys(properties), additionalProperties: false };
     }
     case z.ZodFirstPartyTypeKind.ZodArray:
-      return { type: "array", items: deriveJsonSchema(definition.type) };
+      return {
+        type: "array",
+        items: deriveJsonSchema(definition.type),
+        // Preserve zero: known-problem requests have no citable research sources.
+        ...(definition.maxLength ? { maxItems: definition.maxLength.value } : {}),
+      };
     case z.ZodFirstPartyTypeKind.ZodString:
       return { type: "string" };
     case z.ZodFirstPartyTypeKind.ZodNumber: {
