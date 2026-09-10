@@ -15,7 +15,7 @@ import { AppError, toErrorPayload } from "../shared/errors";
 import { developmentProjection } from "../shared/development-projection";
 import { optionEvidenceReferences } from "../shared/option-evidence";
 import {
-  ArchiveThreadRequestSchema, GenerateTitleRequestSchema, GenerateTitleResultSchema,
+  DiscardIdeaRequestSchema, ArchiveThreadRequestSchema, GenerateTitleRequestSchema, GenerateTitleResultSchema,
   CreateThreadRequestSchema, DeleteThreadRequestSchema, EvidenceFollowUpRequestSchema, ExportIdeasRequestSchema, ExportResearchRequestSchema,
   GetIdeaDetailRequestSchema, GetSourceDetailRequestSchema, HealthResponseSchema,
   NativeLoginCancelSchema, NativeLoginCompleteSchema, NativeLoginStartSchema, NativeProviderSchema,
@@ -419,6 +419,7 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
     const contrarySourcesByProblem = details ? readContrarySources(problemIds, readAll) : new Map<string, NonNullable<SolutionView["contrarySources"]>>();
     const followUpsByRun = details ? readEvidenceFollowUps(rows.map((row) => String(row.research_run_id)), readAll) : new Map();
     context.observeDataRead?.({ operation: details ? "solution-details" : "solution-summaries", queryCount, rowCount: rows.length });
+    const discardedIds = new Set(JSON.parse(db.getSetting(`discarded-ideas:${threadId}`) ?? "[]") as string[]);
     const result = rows.map((row): SolutionView => {
       const highest = row.highest_risk_id === null ? null : {
         id: String(row.highest_risk_id), description: String(row.highest_risk_description),
@@ -428,7 +429,7 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
       };
       const evidenceFollowUp = followUpsByRun.get(String(row.research_run_id));
       return {
-        detailsLoaded: details, highestRisk: highest,
+        discarded: discardedIds.has(String(row.id)), detailsLoaded: details, highestRisk: highest,
         outcomeCount: Number(row.outcome_count), riskCount: Number(row.risk_count), projectEndingRiskCount: Number(row.ending_count),
         workflowVersion: Number(row.workflow_version) as 1 | 2,
         runId: String(row.research_run_id), selected: row.selected_at !== null,
@@ -768,6 +769,16 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
       if (route === "/threads/select") {
         const { threadId } = SelectThreadRequestSchema.parse(body); requireThread(threadId); activeThreadId = threadId;
         db.setSetting("active_thread_id", threadId); return sendJson(res, 200, await workspaceState());
+      }
+      if (route === "/ideas/discard") {
+        const input = DiscardIdeaRequestSchema.parse(body);
+        requireThread(input.threadId);
+        if (!db.db.prepare("SELECT 1 FROM solutions s JOIN research_runs r ON r.id = s.research_run_id WHERE s.id = ? AND r.thread_id = ?").get(input.ideaId, input.threadId)) throw new AppError("not_found", "Idea not found in this research.");
+        const key = `discarded-ideas:${input.threadId}`;
+        const ids = new Set(JSON.parse(db.getSetting(key) ?? "[]") as string[]);
+        if (input.discarded) ids.add(input.ideaId); else ids.delete(input.ideaId);
+        db.setSetting(key, JSON.stringify([...ids]));
+        return sendJson(res, 200, await workspaceState());
       }
       if (route === "/threads/archive") {
         const { threadId, archived } = ArchiveThreadRequestSchema.parse(body);

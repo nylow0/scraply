@@ -140,9 +140,9 @@
 <style>
   .settings-screen { position:fixed;inset:36px 0 0;z-index:10;background:#000;color:var(--text); }
   .settings-layout { display:grid;grid-template-columns:248px minmax(0,1fr);height:100%; }
-  .settings-brand { display:flex;align-items:center;gap:10px;padding:4px 8px 28px;color:var(--text);font-size:28px;font-weight:700;letter-spacing:-.03em; }
+  .settings-brand { display:flex;align-items:center;gap:10px;padding:4px 8px 16px;color:var(--text);font-size:26px;font-weight:700;letter-spacing:-.03em; }
   .settings-brand :global(svg) { color:var(--accent); }
-  nav { display:flex;flex-direction:column;gap:5px;background:#000;padding:36px 16px 28px;min-height:0; }
+  nav { display:flex;flex-direction:column;gap:5px;background:#000;padding:16px 12px 28px;min-height:0; }
   nav h1 { margin:0 12px 20px;font-size:18px;font-weight:650;letter-spacing:-.03em; }
   nav button { display:flex;gap:10px;align-items:center;border:0;background:transparent;text-align:left;color:var(--muted);padding:12px;font-size:12px; }
   nav button.active { background:var(--surface-2);color:var(--text); }

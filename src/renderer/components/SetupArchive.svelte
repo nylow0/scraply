@@ -14,10 +14,7 @@
 </script>
 
 <div class="setup" id="workflow-panel-setup" role="tabpanel" aria-label="Research setup" tabindex="0">
-  <header>
-    <div><h1>Where this work started.</h1></div>
-    {#if onEdit}<button onclick={onEdit}>Edit setup</button>{/if}
-  </header>
+  {#if onEdit}<div class="edit-action"><button onclick={onEdit}>Edit setup</button></div>{/if}
   {#if scope && config}
     <div class="fields">
       <div class="primary"><span>Research name</span><strong>{scope.title}</strong></div>
@@ -44,9 +41,8 @@
 
 <style>
   .setup { max-width:1080px;margin:auto;padding:38px var(--page-inline) 70px; }
-  header { display:flex;justify-content:space-between;align-items:center;gap:24px;margin-bottom:30px; }
-  h1 { margin:0 0 10px;font-size:32px;font-weight:650;letter-spacing:-.045em;line-height:1.2; }
-  header button { border:1px solid var(--border-strong);background:var(--surface);color:var(--text);border-radius:8px;padding:10px 14px;white-space:nowrap;font-size:11px; }
+  .edit-action { display:flex;justify-content:space-between;align-items:center;gap:24px;margin-bottom:30px; }
+  button { border:1px solid var(--border-strong);background:var(--surface);color:var(--text);border-radius:8px;padding:10px 14px;white-space:nowrap;font-size:11px; }
   .fields { display:grid;grid-template-columns:1fr 1fr;border:1px solid var(--border);border-radius:16px;padding:8px 26px;background:linear-gradient(145deg,#1b202355,transparent); }
   .fields > div { padding:22px 0;border-bottom:1px solid var(--border); }
   .fields > div:nth-child(even):not(.wide) { padding-right:24px; }
@@ -57,5 +53,12 @@
   .run-settings { display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:24px;background:var(--surface);border:1px solid var(--border);border-radius:13px;padding:24px;margin:20px 0 0; }
   dd { margin:0;font-size:12px;color:var(--muted);overflow-wrap:anywhere; }
   .empty { padding:40px 0;color:var(--muted); }.empty h2 { font-size:18px; }
-  @media(max-width:700px) { .setup { padding:28px 22px; }header { flex-direction:column;align-items:start; }.fields { grid-template-columns:1fr;padding:8px 20px; }.fields > div:nth-child(even):not(.wide) { padding-right:0; }.run-settings { grid-template-columns:1fr 1fr; } }
+  @media(max-width:700px) { .setup { padding:28px 22px; }.fields { grid-template-columns:1fr;padding:8px 20px; }.fields > div:nth-child(even):not(.wide) { padding-right:0; }.run-settings { grid-template-columns:1fr 1fr; } }
+  .setup { max-width:none;width:100%;margin:0;padding:26px var(--page-inline) 56px; }
+  .fields { border:0;border-radius:0;background:none;padding:0;grid-template-columns:minmax(0,1fr) minmax(0,2fr);gap:0 40px; }
+  .fields > div { min-width:0;padding:20px 0; }.fields > div:nth-child(even):not(.wide) { padding-right:0; }
+  .fields .primary { padding-top:0;padding-bottom:24px; }.fields .primary strong { font-size:26px;line-height:1.4;overflow-wrap:anywhere; }
+  .fields span,dt { font-size:12px; }.fields strong,.fields p,.fields ul { font-size:14px;max-width:none; }
+  .run-settings { border:0;border-radius:0;background:none;padding:24px 0 0;margin:0; }
+  @media(max-width:800px) { .fields { grid-template-columns:minmax(0,1fr); } }
 </style>

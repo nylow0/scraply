@@ -94,7 +94,8 @@ test("the renderer restores the problem-selection step after a restart", async (
     await expect(page.getByText(/independently confirmed outcomes/)).toHaveCount(0);
     await expect(page.getByText("Highest risk: likely · project ends")).not.toBeVisible();
     await page.getByText("Supplier reliability ledger").click();
-    await expect(page.getByText("Highest risk: likely · project ends")).toBeVisible();
+    await expect(page.getByText("Pool observed delivery windows by supplier and part category.")).toBeVisible();
+    await expect(page.getByText("Highest risk: likely · project ends")).not.toBeVisible();
     await page.getByText("Review all risks and responses").click();
     await expect(page.getByText("Volume is too sparse")).toBeVisible();
     await page.getByText("Evidence behind this problem").click();
@@ -106,7 +107,7 @@ test("the renderer restores the problem-selection step after a restart", async (
     await page.getByText("1 cited factors", { exact: true }).click();
     await expect(page.getByText("Backorders add days to routine repairs.")).toBeVisible();
     await page.getByRole("tab", { name: /Setup/ }).click();
-    await expect(page.getByText("Where this work started.")).toBeVisible();
+    await expect(page.locator(".fields .primary strong")).toHaveText("Repair delays");
     await page.getByRole("tab", { name: /Ideas/ }).click();
     await expect(page.getByText("Supplier reliability ledger")).toBeVisible();
     await page.setViewportSize({ width: 960, height: 640 });

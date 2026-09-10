@@ -27,27 +27,7 @@
 
   <div class="solution-body">
     {#if idea.detailsLoaded === false}<p role="status">{error || "Loading saved analysis…"}</p>{:else}
-    <div class="expanded-snapshot">
-    <span class="risk-preview">
-      {#if highestRisk}
-        <span class="top-risk-label estimated">Highest risk: {highestRisk.likelihood} · {highestRisk.impact}</span>
-        <span class="top-risk-statement">{highestRisk.description}</span>
-      {:else}
-        <span class="top-risk-label">No risks identified</span>
-      {/if}
-    </span>
-    <span class="metrics" aria-label="Solution evaluation snapshot">
-      <span><strong>{idea.confirmedCoreOutcomes}</strong> model-judged core</span>
-      <span><strong>{projectEndingRisks}</strong> project-ending</span>
-      <span class:danger={idea.unaddressedCatastrophicRisks > 0}><strong>{idea.unaddressedCatastrophicRisks}</strong> unaddressed</span>
-    </span>
-    </div>
-    <details class="category">
-      <summary>
-        <span><strong>Overview</strong><small>Mechanism, constraints, and source problem</small></span>
-        <span class="chevron" aria-hidden="true"></span>
-      </summary>
-      <div class="category-body overview">
+    <section class="overview">
         <div>
           <span class="label">How it works</span>
           <p>{idea.description}</p>
@@ -62,8 +42,7 @@
           <p>{idea.respectsOffLimitsWhy}</p>
           <small>{idea.respectsOffLimits ? "Within the stated off-limits rules" : "Possible off-limits conflict"}</small>
         </div>
-      </div>
-    </details>
+    </section>
 
     <details class="category">
       <summary>
@@ -118,6 +97,21 @@
         <span><strong>Review all risks and responses</strong><small>{idea.risks.length} risks · {projectEndingRisks} project-ending · {idea.unaddressedCatastrophicRisks} unaddressed</small></span>
         <span class="chevron" aria-hidden="true"></span>
       </summary>
+    <div class="expanded-snapshot">
+    <span class="risk-preview">
+      {#if highestRisk}
+        <span class="top-risk-label estimated">Highest risk: {highestRisk.likelihood} · {highestRisk.impact}</span>
+        <span class="top-risk-statement">{highestRisk.description}</span>
+      {:else}
+        <span class="top-risk-label">No risks identified</span>
+      {/if}
+    </span>
+    <span class="metrics" aria-label="Solution evaluation snapshot">
+      <span><strong>{idea.confirmedCoreOutcomes}</strong> model-judged core</span>
+      <span><strong>{projectEndingRisks}</strong> project-ending</span>
+      <span class:danger={idea.unaddressedCatastrophicRisks > 0}><strong>{idea.unaddressedCatastrophicRisks}</strong> unaddressed</span>
+    </span>
+    </div>
       <div class="category-body risk-list">
         {#each idea.risks as risk, index (risk.id)}
           <article class:project-ending={risk.impact === "project ends" && risk.mitigations.length === 0} class="risk-item" aria-labelledby={`risk-${risk.id}`}>
@@ -189,7 +183,7 @@
     gap: 16px;
     align-items: center;
     min-height: 56px;
-    padding: 21px 22px;
+    padding: 18px 22px;
     transition: background-color 180ms var(--ease);
   }
 
@@ -227,7 +221,7 @@
     font-size: 11px;
     line-height: 1.35;
     text-overflow: ellipsis;
-    white-space: nowrap;
+    overflow-wrap: anywhere;
   }
 
   .metrics {
@@ -235,6 +229,7 @@
     align-items: center;
     justify-content: flex-end;
     gap: 16px;
+    flex-wrap:wrap;
     color: var(--subtle);
     font: 500 10px var(--sans);
     text-transform: none;
@@ -306,20 +301,22 @@
 
   .overview {
     display: grid;
-    grid-template-columns: 1.4fr 1fr 1fr;
+    grid-template-columns: repeat(2,minmax(0,1fr));
     gap: 20px;
-    padding:20px;
-    border:1px solid var(--border);
+    padding:20px 0;
+    border:0;
     border-radius:12px;
     background:var(--surface);
   }
 
   .overview > div {
-    padding: 14px;
-    border-radius:10px;
-    background:var(--surface);
+    padding: 0;
+    min-width:0;
+    overflow-wrap:anywhere;
   }
 
+  .overview > div:first-child { grid-column:1/-1; }
+  .overview > div:first-child p { font-size:16px;line-height:1.8;color:var(--text);max-width:85ch; }
   .overview p {
     margin: 7px 0;
     color: var(--muted);

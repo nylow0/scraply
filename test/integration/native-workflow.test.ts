@@ -52,6 +52,25 @@ describe("native research workflow through the production backend", () => {
     expect(removed.threads.some((thread) => thread.id === threadId)).toBe(false);
   });
 
+  test("discarding an idea persists without removing its saved analysis", async () => {
+    const item = await fixture({ searchEnabled: false });
+    const threadId = await item.createThread("known-problem");
+    await item.post("/research/start", { threadId }, z.object({ runId: z.string() }));
+    const ready = await item.waitFor((state) => state.threads.find((thread) => thread.id === threadId)?.status === "solutions-ready");
+    const ideaId = ready.solutions[0]!.id;
+    const dismissed = await item.post("/ideas/discard", { threadId, ideaId, discarded: true }, WorkspaceStateSchema);
+    expect(dismissed.solutions.find((idea) => idea.id === ideaId)?.discarded).toBe(true);
+    await item.restart();
+    expect((await item.workspace()).solutions.find((idea) => idea.id === ideaId)?.discarded).toBe(true);
+    expect((await item.post(`/ideas/${ideaId}`, undefined, SolutionViewSchema)).description).toBeTruthy();
+    const otherThread = await item.createThread("known-problem");
+    expect((await item.raw("/ideas/discard", { threadId: otherThread, ideaId, discarded: false })).status).toBe(404);
+    await item.post("/threads/select", { threadId }, WorkspaceStateSchema);
+    const restored = await item.post("/ideas/discard", { threadId, ideaId, discarded: false }, WorkspaceStateSchema);
+    expect(restored.solutions.find((idea) => idea.id === ideaId)?.discarded).toBe(false);
+    expect(restored.solutions).toHaveLength(ready.solutions.length);
+  }, 15_000);
+
   test("fails before provider spend on an empty override, then runs and snapshots a deliberate edit", async () => {
     const item = await fixture({ searchEnabled: false });
     const overridePath = join(item.directory, "prompts", "workflow-v2-solutions.md");

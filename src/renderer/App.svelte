@@ -1,7 +1,8 @@
 <script lang="ts">
-  import { onMount, tick } from "svelte";
+  import { onMount, tick, untrack } from "svelte";
   import type { NativeLoginStartResult, ResearchEvent, SolutionView, WorkspaceState } from "../shared/ipc";
   import { readResearchDefaults } from "./lib/research-defaults";
+  import DesktopBar from "./components/DesktopBar.svelte";
   import Icon from "./components/Icon.svelte";
   import Settings from "./components/Settings.svelte";
   import Sidebar from "./components/Sidebar.svelte";
@@ -31,6 +32,39 @@
   let nativeLoginEpoch = 0;
   let settings: Settings | undefined;
   let settingsOpen = $state(false);
+  let sidebarVisible = $state(true);
+  type NavigationTarget = { threadId: string; step: WorkflowStep; settings: boolean };
+  let navigation = $state<NavigationTarget[]>([]);
+  let navigationIndex = $state(-1);
+  let traversingHistory = false;
+  $effect(() => {
+    const route = { threadId: workspace?.activeThreadId, step: activeStep, settings: settingsOpen };
+    if (loading || busy || !route.threadId) return;
+    untrack(() => {
+      if (traversingHistory) return;
+      const previous = navigation[navigationIndex];
+      if (previous && previous.threadId === route.threadId && previous.step === route.step && previous.settings === route.settings) return;
+      navigation = [...navigation.slice(0, navigationIndex + 1), { ...route, threadId: route.threadId! }];
+      navigationIndex = navigation.length - 1;
+    });
+  });
+  async function navigateHistory(offset: number) {
+    const index = navigationIndex + offset;
+    const route = navigation[index];
+    if (!route || busy || traversingHistory) return;
+    if (!workspace?.threads.some((thread) => thread.id === route.threadId && !thread.archivedAt)) return;
+    traversingHistory = true;
+    try {
+      if (route.threadId !== workspace.activeThreadId) await selectThread(route.threadId);
+      if (workspace?.activeThreadId !== route.threadId) return;
+      activeStep = route.step; settingsOpen = route.settings; navigationIndex = index;
+      await tick();
+    } finally { traversingHistory = false; }
+  }
+  async function discardIdea(ideaId: string, discarded: boolean) {
+    const threadId = workspace?.activeThreadId;
+    if (threadId) await action(async () => setWorkspace(await window.scraply.discardIdea(threadId, ideaId, discarded)));
+  }
   let reconcileTimer: ReturnType<typeof setTimeout> | null = null;
   let reconcilePending = false;
   let loadEpoch = 0;
@@ -45,6 +79,14 @@
 
   onMount(() => {
     void load();
+    const stopCommands = window.scraply.onAppCommand((command) => {
+      if (command === "toggle-sidebar") sidebarVisible = !sidebarVisible;
+      else if (command === "back") void navigateHistory(-1);
+      else if (command === "forward") void navigateHistory(1);
+      else if (command === "settings") void settings?.show();
+      else if (command === "new-research") { settingsOpen = false; void createThread(); }
+      else if (command === "export-research" && workspace?.activeThreadId) void exportResearch();
+    });
     const dispose = window.scraply.onBackendEvent((event) => {
       if (event.threadId !== workspace?.activeThreadId) return;
       latestEvent = event;
@@ -78,7 +120,7 @@
       }
       reconcileSoon();
     });
-    return () => { dispose(); if (reconcileTimer) clearTimeout(reconcileTimer); };
+    return () => { stopCommands(); dispose(); if (reconcileTimer) clearTimeout(reconcileTimer); };
   });
 
   async function load() {
@@ -383,9 +425,9 @@
   function message(value: unknown) { return value instanceof Error ? value.message : "Something went wrong."; }
 </script>
 
-<div class="window-drag-region" aria-hidden="true"></div>
-<div class="app-shell">
-  <div class="sidebar-area" inert={settingsOpen}>
+<DesktopBar canBack={navigationIndex > 0 && !busy} canForward={navigationIndex < navigation.length - 1 && !busy} onBack={() => navigateHistory(-1)} onForward={() => navigateHistory(1)} onToggle={() => sidebarVisible = !sidebarVisible} />
+<div class="app-shell" class:sidebar-hidden={!sidebarVisible}>
+  <div class="sidebar-area" hidden={!sidebarVisible} inert={settingsOpen}>
   <Sidebar
     threads={workspace?.threads.filter((thread) => !thread.archivedAt) ?? []}
     activeThreadId={workspace?.activeThreadId ?? null}
@@ -484,7 +526,7 @@
       </div>
     {:else if activeThread.status === "solutions-ready" || workspace.solutions.length > 0}
       <div id="workflow-panel-ideas" role="tabpanel" aria-label="Ideas">
-        <SolutionWorkspace solutions={workspace.solutions} {busy} workflowVersion={activeRun?.workflowVersion} onSelect={selectOption} onSave={saveDecision} onExport={exportIdeas} onOpenSource={openExternalUrl} onEvidenceFollowUp={requestEvidenceFollowUp} onReview={() => { activeStep = "research"; reviewSelection = true; }} />
+        <SolutionWorkspace solutions={workspace.solutions} {busy} onDiscard={discardIdea} workflowVersion={activeRun?.workflowVersion} onSelect={selectOption} onSave={saveDecision} onExport={exportIdeas} onOpenSource={openExternalUrl} onEvidenceFollowUp={requestEvidenceFollowUp} onReview={() => { activeStep = "research"; reviewSelection = true; }} />
       </div>
     {:else if activeThread.status === "failed"}
       <div class="failed" id="workflow-panel-ideas" role="tabpanel" aria-label="Ideas" tabindex="0"><p class="eyebrow">No ideas</p><h1>The run stopped before any ideas were built.</h1><p>{activeRun?.canResume ? "Resume the saved attempt or edit the setup." : "Edit the setup to start a new run."}</p></div>
@@ -499,13 +541,13 @@
 </div>
 
 <style>
-  .window-drag-region { height:36px;background:#000;-webkit-app-region:drag; }
-  .sidebar-area { display:contents; }
+  .sidebar-area { display:contents; }.sidebar-area[hidden] { display:none; }
+  .app-shell.sidebar-hidden { grid-template-columns:minmax(0,1fr); }
   .settings-button { display:flex;align-items:center;gap:12px;width:100%;padding:12px 8px;border:0;border-radius:8px;background:transparent;color:var(--muted);font-size:13px;text-align:left; }
   .settings-button:hover { background:var(--surface-2);color:var(--text); }
 
   .app-shell { height:calc(100% - 36px);display:grid;grid-template-columns:248px minmax(0,1fr);background:#000;padding:10px 10px 10px 0; }
-  .main-content { min-width:0;overflow:auto;scrollbar-gutter:stable;position:relative;border:1px solid var(--border);border-radius:18px;background:var(--bg); }
+  .main-content { min-width:0;overflow-y:auto;overflow-x:hidden;scrollbar-gutter:stable;position:relative;border:1px solid var(--border);border-radius:18px;background:var(--bg); }
   .topbar { position:sticky;top:0;z-index:3;height:54px;padding:0 24px;display:flex;align-items:center;justify-content:space-between;background:color-mix(in srgb,var(--bg) 94%,transparent);backdrop-filter:blur(18px);border-bottom:1px solid var(--border);font-size:12px;color:var(--muted); }
   .location { display:block;color:var(--text);font-size:15px;font-weight:600;letter-spacing:0;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis; }
   .calls { white-space:nowrap;margin-left:16px;font:500 10px var(--sans); }.calls strong { color:var(--text);font-weight:600; }

@@ -141,7 +141,12 @@ test("native v2 research survives the installed selection, risk evaluation, and 
     {
       await page.getByRole("button", { name: "Supplier reliability ledger", exact: true }).click();
       await page.getByRole("button", { name: "Choose and analyze", exact: true }).first().click();
-      await page.getByRole("button", { name: "Supplier reliability ledger", exact: true }).click();
+      await expect.poll(async () => page.evaluate(async () => {
+        const state = await (window as unknown as { scraply: ScraplyApi }).scraply.getWorkspace();
+        return state.latestResearchRun?.status === "completed" && !state.latestResearchRun.awaitingSelection;
+      })).toBe(true);
+      const analyzedIdea = page.getByRole("button", { name: "Supplier reliability ledger", exact: true });
+      if (await analyzedIdea.getAttribute("aria-expanded") === "false") await analyzedIdea.click();
       await expect(page.getByText("Your selected option", { exact: false })).toBeVisible();
       await expect(page.getByText("Next experiment", { exact: true })).toBeVisible();
       await page.getByLabel("Question", { exact: true }).fill("Which suppliers publish arrival histories?");
@@ -184,8 +189,11 @@ test("native v2 research survives the installed selection, risk evaluation, and 
       expect(samplesMs).toHaveLength(35);
       writeFileSync(testInfo.outputPath("progress-samples.json"), JSON.stringify({ samplesMs }, null, 2));
     }
+    await page.getByText("Risks and responses", { exact: true }).click();
     await expect(page.getByText("Observed order volume stays too sparse", { exact: true }).first()).toBeVisible();
     await page.screenshot({ animations: "disabled", path: testInfo.outputPath("native-solutions.png") });
+    await page.getByRole("button", { name: "Discard idea: Supplier reliability ledger", exact: true }).click();
+    await expect(page.getByRole("button", { name: "Supplier reliability ledger", exact: true })).not.toBeVisible();
     await events;
     expect(eventErrors).toEqual([]);
     await electron.close();
@@ -194,6 +202,10 @@ test("native v2 research survives the installed selection, risk evaluation, and 
     backend = await startFixtureServer(directory, () => undefined);
     electron = await launch();
     page = await electron.firstWindow();
+    await expect(page.getByRole("button", { name: "Supplier reliability ledger", exact: true })).not.toBeVisible();
+    await page.getByRole("button", { name: "Discarded 1", exact: true }).click();
+    await page.getByRole("button", { name: "Restore idea: Supplier reliability ledger", exact: true }).click();
+    await page.getByRole("button", { name: "Discarded 0", exact: true }).click();
     await expect(page.getByText("Supplier reliability ledger", { exact: true })).toBeVisible();
     {
       const savedModel = await page.evaluate(async () => (await (window as unknown as { scraply: ScraplyApi }).scraply.getWorkspace()).runConfig?.model);
