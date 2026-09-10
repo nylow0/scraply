@@ -41,7 +41,7 @@ export async function startMockBackend(options: { longIdeaTitle?: boolean } = {}
     requests.push({ method: req.method ?? "GET", path: url.pathname, body });
     if (url.pathname === "/validation") return ok(res, validation);
     if (url.pathname === "/workspace") return ok(res, workspace());
-    if (url.pathname === "/threads") { activeThreadId = "thread-1"; threads.push({ id: activeThreadId, title: "New research", createdAt: now, updatedAt: now }); return ok(res, { thread: { ...threads[0], status }, workspace: workspace() }); }
+    if (url.pathname === "/threads") { activeThreadId = "thread-1"; if (!threads.some((thread) => thread.id === activeThreadId)) threads.push({ id: activeThreadId, title: "New research", createdAt: now, updatedAt: now }); return ok(res, { thread: { ...threads[0], status }, workspace: workspace() }); }
     if (url.pathname === "/threads/select") { activeThreadId = (body as { threadId: string }).threadId; return ok(res, workspace()); }
     if (url.pathname === "/threads/title") return ok(res, { title: "Reducing repair shop delays" });
     if (url.pathname === "/threads/archive") {

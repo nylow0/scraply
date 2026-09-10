@@ -1,6 +1,5 @@
 <script lang="ts">
   import { tick } from "svelte";
-  import BrandMark from "./BrandMark.svelte";
   import ResearchDefaults from "./ResearchDefaults.svelte";
   import ProviderLogo from "./ProviderLogo.svelte";
   import Icon from "./Icon.svelte";
@@ -26,12 +25,18 @@
   const searchProviders = ["exa", "perplexity"] as const;
   let section = $state<"account" | "defaults" | "connections" | "archive" | "local">("account");
   let heading: HTMLHeadingElement;
+  let dialog: HTMLDialogElement;
+  $effect(() => {
+    if (!dialog) return;
+    if (open && !dialog.open) dialog.showModal();
+    else if (!open && dialog.open) dialog.close();
+  });
   let archived = $derived(workspace?.threads.filter((thread) => thread.archivedAt || thread.status === "archived") ?? []);
   let nativeValidationPending = $derived(workspace?.validation.native.error?.startsWith("Checking ")
     || workspace?.validation.native.error === "Native runtime is starting");
   let nativeModelOptions = $derived(workspace?.modelOptions.filter((item) => item.providerId === "openai-subscription") ?? []);
 
-  // Keep the workspace mounted behind the page so returning preserves drafts and scroll.
+  // The modal keeps the workspace mounted so dismissing it preserves drafts and scroll.
   export async function show() { section = "account"; open = true; await tick(); heading.focus(); }
   async function back() { open = false; await tick(); document.getElementById("settings-button")?.focus(); }
   function deleteArchived(id: string, title: string) {
@@ -39,18 +44,15 @@
   }
 </script>
 
-<svelte:window onkeydown={(event) => { if (open && event.key === "Escape" && !(event.target instanceof Element && event.target.closest("select"))) { event.preventDefault(); void back(); } }} />
-<section class="settings-screen" hidden={!open} aria-label="Settings">
+<dialog bind:this={dialog} class="settings-popup" data-section={section} aria-labelledby="settings-title" closedby="any" onclose={back} oncancel={(event) => { event.preventDefault(); void back(); }}>
+  <div class="popup-header"><h1 bind:this={heading} tabindex="-1" id="settings-title">Settings</h1><button class="close" aria-label="Close settings" onclick={back}><Icon name="close" size={18} /></button></div>
   <div class="settings-layout">
     <nav aria-label="Settings sections">
-      <div class="settings-brand"><BrandMark size={36} /><span>Scraply</span></div>
-      <h1 bind:this={heading} tabindex="-1" id="settings-title">Settings</h1>
       <button class:active={section === "account"} aria-pressed={section === "account"} onclick={() => section = "account"}><Icon name="command" size={16} />Account</button>
       <button class:active={section === "defaults"} aria-pressed={section === "defaults"} onclick={() => section = "defaults"}><Icon name="brief" size={16} />Research defaults</button>
       <button class:active={section === "connections"} aria-pressed={section === "connections"} onclick={() => section = "connections"}><Icon name="research" size={16} />Connections</button>
       <button class:active={section === "archive"} aria-pressed={section === "archive"} onclick={() => section = "archive"}><Icon name="archive" size={16} />Archived research</button>
       <button class:active={section === "local"} aria-pressed={section === "local"} onclick={() => section = "local"}><Icon name="folder" size={16} />Local files</button>
-      <button class="back" onclick={back}><Icon name="back" size={20} />Back to research</button>
     </nav>
     <div class="settings-content">
       <header><div><h2>{section === "account" ? "Your account" : section === "defaults" ? "Research defaults" : section === "connections" ? "Search connections" : section === "archive" ? "Archived research" : "Local files"}</h2></div></header>
@@ -135,29 +137,25 @@
   </div>
     </div>
   </div>
-</section>
+</dialog>
 
 <style>
-  .settings-screen { position:fixed;inset:36px 0 0;z-index:10;background:#000;color:var(--text); }
-  .settings-layout { display:grid;grid-template-columns:248px minmax(0,1fr);height:100%; }
-  .settings-brand { display:flex;align-items:center;gap:10px;padding:4px 8px 16px;color:var(--text);font-size:26px;font-weight:700;letter-spacing:-.03em; }
-  .settings-brand :global(svg) { color:var(--accent); }
-  nav { display:flex;flex-direction:column;gap:5px;background:#000;padding:16px 12px 28px;min-height:0; }
-  nav h1 { margin:0 12px 20px;font-size:18px;font-weight:650;letter-spacing:-.03em; }
-  nav button { display:flex;gap:10px;align-items:center;border:0;background:transparent;text-align:left;color:var(--muted);padding:12px;font-size:12px; }
+  .settings-layout { display:grid;grid-template-columns:170px minmax(0,1fr);min-height:0;flex:1; }
+  nav { display:flex;flex-direction:column;gap:5px;background:transparent;padding:12px 8px;min-height:0; }
+  nav button { display:flex;gap:10px;align-items:center;border:0;background:transparent;text-align:left;color:var(--muted);padding:12px;font-size:13px; }
   nav button.active { background:var(--surface-2);color:var(--text); }
   nav button.active :global(svg) { color:var(--accent); }
-  .settings-content { padding:48px clamp(30px,7vw,110px);min-width:0;overflow:auto;scrollbar-gutter:stable; }
+  .settings-content { padding:20px 24px;min-width:0;overflow:auto;scrollbar-gutter:stable;border-left:1px solid var(--border); }
   .settings-content > div { max-width:680px; }
-  header { display:flex;align-items:start;justify-content:space-between;gap:16px;margin-bottom:30px; }
+  header { display:flex;align-items:start;justify-content:space-between;gap:16px;margin-bottom:20px; }
   h2 { margin:0;font-size:21px;font-weight:650;letter-spacing:-.03em; }
-  button { padding:10px 14px;border:1px solid var(--border-strong);border-radius:8px;background:var(--surface-2);color:var(--text);font-size:11px; }
+  button { padding:10px 14px;border:1px solid var(--border-strong);border-radius:8px;background:var(--surface-2);color:var(--text);font-size:13px; }
   button:hover:not(:disabled) { background:var(--border); }
   .account-emblem { display:grid;place-items:center;width:54px;height:54px;border:1px solid #71cfba30;border-radius:17px;background:#71cfba0b;color:var(--accent);margin-bottom:20px; }
   .native-account { display:grid;gap:26px; }
   .native-account > div:first-child { display:grid;gap:10px; }
   .native-account strong { font-size:16px;font-weight:600; }
-  .native-account span { color:var(--muted);font-size:12px;overflow-wrap:anywhere; }
+  .native-account span { color:var(--muted);font-size:13px;overflow-wrap:anywhere; }
   .native-account .account-error { color:var(--danger); }
   .account-actions,.login-progress { display:flex;flex-wrap:wrap;align-items:center;gap:8px; }
   .primary { background:var(--accent-strong);color:var(--accent-ink);border-color:transparent; }
@@ -166,20 +164,28 @@
   .login-progress code { padding:8px 12px;border:1px solid var(--border-strong);border-radius:6px;font:600 17px var(--mono);letter-spacing:.1em; }
   .local h2 { font-size:13px;letter-spacing:0;margin-bottom:16px; }
   .search > h2 { display:none; }
-  .provider { display:flex;align-items:center;justify-content:space-between;gap:20px;padding:22px 0;border-bottom:1px solid var(--border);font-size:12px; }
+  .provider { display:flex;align-items:center;justify-content:space-between;gap:20px;padding:22px 0;border-bottom:1px solid var(--border);font-size:13px; }
   .provider:first-of-type { border-top:1px solid var(--border); }
   .provider-name { display:flex;align-items:center;gap:14px;color:var(--text); }
   .provider-name :global(svg) { flex:none; }
   .provider strong { font-weight:600; }.provider span { color:var(--muted);max-width:70%;text-align:right;overflow-wrap:anywhere; }
   .provider .ok { color:var(--success); }.search > button { margin-top:24px; }
   .local > div { display:grid;gap:12px; }.local button { padding:16px;text-align:left;background:var(--surface);border-color:var(--border); }
-  .feedback { padding:12px;border:1px solid var(--border);border-radius:8px;color:var(--muted);font-size:12px;overflow-wrap:anywhere; }
+  .feedback { padding:12px;border:1px solid var(--border);border-radius:8px;color:var(--muted);font-size:13px;overflow-wrap:anywhere; }
   .feedback.error { color:var(--danger); }
   [hidden] { display:none; }
-  nav .back { margin: auto 4px 0;padding:12px 8px;font-size:13px; }
   .archive-list article { display:flex;align-items:center;gap:10px;padding:22px 0;border-bottom:1px solid var(--border); }
   .archive-list article > div { flex:1;min-width:0;display:grid;gap:6px; }
   .archive-list strong { font-size:14px;overflow-wrap:anywhere; }
-  .archive-list span,.archive-empty { font-size:12px;color:var(--muted); }
+  .archive-list span,.archive-empty { font-size:13px;color:var(--muted); }
   .danger { color:var(--danger); }
+  .settings-popup { width:min(740px,calc(100vw - 32px));height:min(420px,calc(100dvh - 110px));max-width:none;max-height:none;margin:auto auto 64px 16px;padding:0;border:1px solid #363d38;border-radius:14px;background:#0d100e;color:var(--text);box-shadow:0 18px 70px #000b;overflow:hidden; }
+  .settings-popup[data-section="defaults"] { height:min(620px,calc(100dvh - 110px)); }
+  .settings-popup[open] { display:flex;flex-direction:column; }
+  .settings-popup::backdrop { background:#0005; }
+  .popup-header { margin:0;display:flex;align-items:center;justify-content:space-between;gap:20px;padding:14px 18px;border-bottom:1px solid var(--border); }
+  .popup-header h1 { margin:0;font-size:16px;font-weight:600;padding:0; }
+  .popup-header .close { display:grid;place-items:center;border:0;background:transparent;padding:6px;color:var(--muted); }
+  .close:hover { background:var(--surface-2); }
+  @media(max-width:600px) { .settings-layout { grid-template-columns:140px minmax(0,1fr); }.settings-content { padding:18px 16px; }nav button { font-size:13px;padding:10px 6px; } }
 </style>

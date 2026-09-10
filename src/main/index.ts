@@ -327,6 +327,7 @@ function createWindow(): void {
     isDev ? process.env.ELECTRON_RENDERER_URL : undefined,
   );
   mainWindow = new BrowserWindow({
+    show: process.env.SCRAPLY_TEST_HIDE_WINDOWS !== "1",
     width: 1280,
     height: 860,
     minWidth: 960,
@@ -338,6 +339,9 @@ function createWindow(): void {
     autoHideMenuBar: true,
     ...(existsSync(iconPath) ? { icon: iconPath } : {}),
     webPreferences: {
+      // Keep hidden test windows rendering so layout and screenshot checks remain meaningful.
+      offscreen: process.env.SCRAPLY_TEST_HIDE_WINDOWS === "1",
+      backgroundThrottling: process.env.SCRAPLY_TEST_HIDE_WINDOWS !== "1",
       preload: join(__dirname, "../preload/index.js"),
       contextIsolation: true,
       nodeIntegration: false,

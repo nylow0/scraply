@@ -129,8 +129,12 @@
     reconcilePending = false;
     const requestEpoch = ++loadEpoch;
     try {
-      const next = await window.scraply.getWorkspace();
+      let next = await window.scraply.getWorkspace();
       if (requestEpoch !== loadEpoch) return;
+      if (loading && next.threads.length === 0) {
+        next = (await window.scraply.createThread()).workspace;
+        if (requestEpoch !== loadEpoch) return;
+      }
       const changedThread = next.activeThreadId !== workspace?.activeThreadId;
       workspace = next;
       if (changedThread) activeStep = defaultStep(next);
@@ -477,12 +481,7 @@
     {#if loading}
       <div class="skeleton" role="status" aria-label="Loading workspace"><i></i><i></i><i></i></div>
     {:else if !workspace || !activeThread}
-      <section class="welcome">
-        <div class="welcome-symbol"><Icon name="research" size={32} /></div>
-        <h1>Find your next<br />worthwhile idea.</h1>
-        <button disabled={busy} onclick={createThread}>{busy ? "Creating…" : "Create research"}<Icon name="arrow" size={17} /></button>
-        <div class="welcome-path"><span><Icon name="brief" />Define your brief</span><i></i><span><Icon name="research" />Review the evidence</span><i></i><span><Icon name="ideas" />Develop an idea</span></div>
-      </section>
+      <div class="empty-workspace"><button disabled={busy} onclick={createThread}>New research</button></div>
     {:else if activeStep === "setup"}
       {#if activeThread.status === "configuring" || editingScope || !workspace.scope}
         <div id="workflow-panel-setup" role="tabpanel" aria-label="Research setup">
@@ -543,36 +542,33 @@
 <style>
   .sidebar-area { display:contents; }.sidebar-area[hidden] { display:none; }
   .app-shell.sidebar-hidden { grid-template-columns:minmax(0,1fr); }
-  .settings-button { display:flex;align-items:center;gap:12px;width:100%;padding:12px 8px;border:0;border-radius:8px;background:transparent;color:var(--muted);font-size:13px;text-align:left; }
+  .settings-button { display:flex;align-items:center;gap:10px;width:100%;padding:9px 12px;min-height:38px;border:0;border-radius:7px;background:transparent;color:var(--muted);font-size:13px;text-align:left;transition:background 180ms ease,color 180ms ease; }
   .settings-button:hover { background:var(--surface-2);color:var(--text); }
 
   .app-shell { height:calc(100% - 36px);display:grid;grid-template-columns:248px minmax(0,1fr);background:#000;padding:10px 10px 10px 0; }
   .main-content { min-width:0;overflow-y:auto;overflow-x:hidden;scrollbar-gutter:stable;position:relative;border:1px solid var(--border);border-radius:18px;background:var(--bg); }
-  .topbar { position:sticky;top:0;z-index:3;height:54px;padding:0 24px;display:flex;align-items:center;justify-content:space-between;background:color-mix(in srgb,var(--bg) 94%,transparent);backdrop-filter:blur(18px);border-bottom:1px solid var(--border);font-size:12px;color:var(--muted); }
+  .topbar { position:sticky;top:0;z-index:3;height:54px;padding:0 24px;display:flex;align-items:center;justify-content:space-between;background:color-mix(in srgb,var(--bg) 94%,transparent);backdrop-filter:blur(18px);border-bottom:1px solid var(--border);font-size:13px;color:var(--muted); }
   .location { display:block;color:var(--text);font-size:15px;font-weight:600;letter-spacing:0;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis; }
-  .calls { white-space:nowrap;margin-left:16px;font:500 10px var(--sans); }.calls strong { color:var(--text);font-weight:600; }
-  .notice { position:sticky;top:122px;z-index:3;margin:12px var(--page-inline) 0;padding:12px 16px;border:1px solid var(--border-strong);border-radius:10px;background:var(--surface-2);display:flex;justify-content:space-between;gap:16px;color:var(--muted);font-size:12px;overflow-wrap:anywhere; }
+  .calls { white-space:nowrap;margin-left:16px;font:500 13px var(--sans); }.calls strong { color:var(--text);font-weight:600; }
+  .notice { position:sticky;top:122px;z-index:3;margin:12px var(--page-inline) 0;padding:12px 16px;border:1px solid var(--border-strong);border-radius:10px;background:var(--surface-2);display:flex;justify-content:space-between;gap:16px;color:var(--muted);font-size:13px;overflow-wrap:anywhere; }
   .notice.error { border-color:#df929260;color:var(--danger); }.notice button { border:0;background:transparent;color:inherit; }
-  .welcome { min-height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;padding:72px 40px;background:radial-gradient(ellipse at 50% 38%,#71cfba07,transparent 55%); }
-  .welcome-symbol,.activity-symbol { display:grid;place-items:center;width:76px;height:76px;border:1px solid #71cfba30;border-radius:24px;color:var(--accent-strong);background:#71cfba08;box-shadow:inset 0 1px #92ead515; }
-  .eyebrow { font:500 12px var(--sans);color:var(--muted);margin:28px 0 0; }
-  .welcome h1 { font-size:clamp(38px,4.8vw,62px);font-weight:650;letter-spacing:-.05em;line-height:1.1;margin:28px 0 14px; }
-  .welcome button { margin-top:28px;display:flex;align-items:center;gap:18px;border:0;border-radius:10px;padding:14px 20px;font-size:12px;font-weight:650;background:var(--accent-strong);color:var(--accent-ink);box-shadow:0 6px 24px #71cfba10; }
-  .welcome-path { display:flex;align-items:center;gap:20px;margin-top:76px;color:var(--subtle);font-size:11px; }
-  .welcome-path span { display:flex;align-items:center;gap:9px; }.welcome-path i { width:28px;height:1px;background:var(--border-strong); }
+  .empty-workspace { padding:var(--page-top) var(--page-inline); }
+  .empty-workspace button { padding:10px 16px;border:1px solid var(--border);border-radius:8px;background:var(--surface);color:var(--text); }
+  .activity-symbol { display:grid;place-items:center;width:76px;height:76px;border:1px solid #71cfba30;border-radius:24px;color:var(--accent-strong);background:#71cfba08;box-shadow:inset 0 1px #92ead515; }
+  .eyebrow { font:500 13px var(--sans);color:var(--muted);margin:28px 0 0; }
   .running,.failed { display:flex;flex-direction:column;align-items:start;max-width:900px;min-height:calc(100dvh - 160px);margin:auto;justify-content:center;padding:60px var(--page-inline); }
   .running h1,.failed h1 { font-size:38px;font-weight:600;letter-spacing:-.035em;line-height:1.25;max-width:620px;margin:10px 0 20px; }
   .failed > p:not(.eyebrow),.research-export-hint { color:var(--muted);font-size:13px;line-height:1.8;max-width:650px;margin:0; }
   .activity-symbol { position:relative; }.activity-symbol::after { content:"";position:absolute;inset:-5px;border:1px solid transparent;border-top-color:var(--accent);border-radius:28px;animation:orbit 4s linear infinite; }
   .activity { width:100%;display:flex;gap:14px;border:1px solid var(--border);border-radius:14px;padding:20px;background:var(--surface);margin:24px 0;align-items:center; }
-  .activity p { margin:0;font-size:12px;color:var(--muted); }.activity span { width:7px;height:7px;border-radius:50%;background:var(--accent);flex:none;animation:pulse 1.5s ease infinite alternate; }
-  .run-actions { display:flex;gap:9px; }.run-actions button { border:1px solid var(--border-strong);background:transparent;color:var(--text);padding:10px 14px;border-radius:8px;font-size:12px; }.run-actions .cancel { color:var(--danger); }
+  .activity p { margin:0;font-size:13px;color:var(--muted); }.activity span { width:7px;height:7px;border-radius:50%;background:var(--accent);flex:none;animation:pulse 1.5s ease infinite alternate; }
+  .run-actions { display:flex;gap:9px; }.run-actions button { border:1px solid var(--border-strong);background:transparent;color:var(--text);padding:10px 14px;border-radius:8px;font-size:13px; }.run-actions .cancel { color:var(--danger); }
   .run-stopped { display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:16px;margin:14px var(--page-inline) 0;padding:16px;border:1px solid #df92924a;border-radius:12px;background:#df929208; }
-  .run-stopped > div:first-child { display:grid;gap:5px; }.run-stopped strong { font-size:13px; }.run-stopped span { color:var(--muted);font-size:12px; }.run-stopped-actions { display:flex;flex-wrap:wrap;gap:8px; }.run-stopped-actions button { border:1px solid var(--border-strong);border-radius:8px;background:transparent;color:var(--text);padding:9px 13px;font-size:11px; }.run-stopped-actions .cancel { color:var(--danger); }
+  .run-stopped > div:first-child { display:grid;gap:5px; }.run-stopped strong { font-size:13px; }.run-stopped span { color:var(--muted);font-size:13px; }.run-stopped-actions { display:flex;flex-wrap:wrap;gap:8px; }.run-stopped-actions button { border:1px solid var(--border-strong);border-radius:8px;background:transparent;color:var(--text);padding:9px 13px;font-size:13px; }.run-stopped-actions .cancel { color:var(--danger); }
   .skeleton { padding:90px var(--page-inline);display:grid;gap:18px; }.skeleton i { display:block;height:24px;max-width:720px;border-radius:8px;background:linear-gradient(90deg,var(--surface),var(--surface-2),var(--surface));background-size:200% 100%;animation:shimmer 1.2s infinite; }.skeleton i:first-child { height:58px;width:60%; }.skeleton i:last-child { width:40%; }
   .main-content > :global([role="tabpanel"]) { animation:page-reveal 200ms var(--ease); }
   @keyframes page-reveal { from { opacity:.6;transform:translateY(4px); }to { opacity:1;transform:none; } }
   @keyframes shimmer { to { background-position:-200% 0; } }@keyframes pulse { to { opacity:.3; } }@keyframes orbit { to { transform:rotate(360deg); } }
-  @media(max-width:950px) { .calls { display:none; }.welcome-path { gap:10px;flex-wrap:wrap;justify-content:center; }.welcome-path i { width:14px; } }
-  @media(max-width:720px) { .app-shell { grid-template-columns:180px minmax(0,1fr);padding:0; }.main-content { border-radius:0; }.topbar { padding:0 16px; }.welcome { padding:48px 22px; }.welcome h1 { font-size:36px; }.welcome-path { margin-top:40px;flex-direction:column; }.welcome-path i { display:none; }.running h1,.failed h1 { font-size:28px; } }
+  @media(max-width:950px) { .calls { display:none; } }
+  @media(max-width:720px) { .app-shell { grid-template-columns:180px minmax(0,1fr);padding:0; }.main-content { border-radius:0; }.topbar { padding:0 16px; }.running h1,.failed h1 { font-size:28px; } }
 </style>

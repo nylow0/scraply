@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { startMockBackend } from "./mock-backend";
 
-test("title defaults, archive recovery, stable headers, and styled menus", async ({}, testInfo) => {
+test("compact settings, consistent fields, title defaults, and archive recovery", async ({}, testInfo) => {
   const mock = await startMockBackend();
   const directory = mkdtempSync(join(tmpdir(), "scraply-design-"));
   const launch = () => _electron.launch({
@@ -16,14 +16,24 @@ test("title defaults, archive recovery, stable headers, and styled menus", async
   let app: ElectronApplication | undefined = await launch();
   try {
     let page = await app.firstWindow();
-    await page.getByRole("button", { name: "Create research", exact: true }).click();
+    await expect(page.getByLabel("Research name", { exact: true })).toBeVisible();
+    await expect(page.locator(".heading-icon,.welcome")).toHaveCount(0);
+    const fields = await page.locator(".scope-page input:not([type=radio]),.scope-page textarea,.scope-page select").evaluateAll((items) => items.map((el) => ({ font: getComputedStyle(el).fontSize, resize: getComputedStyle(el).resize, textarea: el.tagName === "TEXTAREA" })));
+    expect(new Set(fields.map((field) => field.font))).toEqual(new Set(["13px"]));
+    expect(fields.filter((field) => field.textarea).every((field) => field.resize === "none")).toBe(true);
     const settings = page.getByRole("button", { name: "Settings", exact: true });
     const settingsBounds = await settings.boundingBox();
     await settings.click();
-    const back = page.getByRole("button", { name: "Back to research", exact: true });
+    const popup = page.getByRole("dialog", { name: "Settings", exact: true });
+    await expect(popup).toBeVisible();
+    const popupBounds = await popup.boundingBox();
+    expect(popupBounds!.width).toBeLessThan(800);
+    expect(popupBounds!.height).toBeLessThan(600);
+    const back = page.getByRole("button", { name: "Close settings", exact: true });
     const backBounds = await back.boundingBox();
-    expect(Math.abs(settingsBounds!.x - backBounds!.x)).toBeLessThan(2);
-    expect(Math.abs(settingsBounds!.y - backBounds!.y)).toBeLessThan(2);
+    expect(backBounds!.width).toBeLessThan(50);
+    expect(settingsBounds!.y).toBeGreaterThan(backBounds!.y);
+    await page.screenshot({ animations: "disabled", path: testInfo.outputPath("settings-popup.png") });
     await page.getByRole("button", { name: "Research defaults", exact: true }).click();
     await expect(page.getByLabel("Title model", { exact: true })).toHaveValue("openai-subscription:gpt-5.6-luna");
     await expect(page.getByLabel("Title reasoning", { exact: true })).toHaveValue("low");
@@ -59,7 +69,7 @@ test("title defaults, archive recovery, stable headers, and styled menus", async
     await page.getByRole("button", { name: "Archived research", exact: true }).click();
     await page.screenshot({ animations: "disabled", path: testInfo.outputPath("archive.png") });
     await page.getByRole("button", { name: "Restore Reducing repair shop delays", exact: true }).click();
-    await page.getByRole("button", { name: "Back to research", exact: true }).click();
+    await page.getByRole("button", { name: "Close settings", exact: true }).click();
     await page.getByRole("button", { name: "Open thread Reducing repair shop delays", exact: true }).click();
     await expect(page.locator(".location")).toHaveText("Reducing repair shop delays");
     await page.getByRole("button", { name: "Archive research Reducing repair shop delays", exact: true }).click();

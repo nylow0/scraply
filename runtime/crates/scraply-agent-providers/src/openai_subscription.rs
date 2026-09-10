@@ -26,7 +26,8 @@ use std::{collections::BTreeMap, path::PathBuf, sync::Arc, time::Duration};
 pub const OPENAI_SUBSCRIPTION_PROVIDER_ID: &str = "openai-subscription";
 const CHATGPT_CODEX_BASE_URL: &str = "https://chatgpt.com/backend-api/codex";
 const ACCOUNT_ID_HEADER: &str = "chatgpt-account-id";
-const PINNED_CLIENT_VERSION: &str = "0.144.4";
+// Catalog visibility is version-gated; 0.144.4 omits Astra for entitled accounts.
+const MODEL_CATALOG_CLIENT_VERSION: &str = "0.153.4";
 const MAX_SESSION_CREDENTIAL_BYTES: usize = 64 * 1024;
 static EPHEMERAL_AUTH_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
@@ -367,7 +368,7 @@ impl OpenAiSubscription {
     async fn request_models(&self, auth: &CodexAuth) -> Result<reqwest::Response, ProviderError> {
         self.client
             .get(format!("{}/models", self.base_url.trim_end_matches('/')))
-            .query(&[("client_version", PINNED_CLIENT_VERSION)])
+            .query(&[("client_version", MODEL_CATALOG_CLIENT_VERSION)])
             .headers(auth_headers(auth)?)
             .timeout(Duration::from_secs(30))
             .send()
@@ -1024,6 +1025,60 @@ mod tests {
             .to_string(),
         )
         .unwrap()
+    }
+
+    #[tokio::test]
+    async fn catalog_version_exposes_astra_without_aliasing_hidden_models() {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut request = Vec::new();
+            let mut buffer = [0_u8; 4096];
+            while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+                let count = stream.read(&mut buffer).unwrap();
+                if count == 0 {
+                    break;
+                }
+                request.extend_from_slice(&buffer[..count]);
+            }
+            let request = String::from_utf8(request).unwrap();
+            // The live catalog omits Astra for the old 0.144.4 query.
+            let mut models = vec![
+                json!({"slug":"gpt-reserve","visibility":"hide"}),
+                json!({"slug":"gpt-5.6-sol","visibility":"list"}),
+            ];
+            if request.starts_with("GET /models?client_version=0.153.4 ") {
+                models.push(json!({"slug":"gpt-6-astra","visibility":"list","supported_reasoning_levels":[{"effort":"low"}]}));
+            }
+            let body = json!({"models":models}).to_string();
+            write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body).unwrap();
+        });
+        let mut provider = OpenAiSubscription::ephemeral().await.unwrap();
+        provider.base_url = format!("http://{address}");
+        let mut auth = test_session_credential().deserialize_auth().unwrap();
+        auth.last_refresh = Some("2026-09-10T00:00:00Z".parse().unwrap());
+        provider
+            .set_session_credential(OpenAiSessionCredential::from_auth(&auth).unwrap())
+            .await
+            .unwrap();
+        let models = provider.list_models().await.unwrap();
+        server.join().unwrap();
+        assert!(
+            models
+                .iter()
+                .any(|model| model.identity.model_id == "gpt-6-astra")
+        );
+        assert!(
+            !models
+                .iter()
+                .any(|model| model.identity.model_id == "gpt-reserve")
+        );
+        provider.logout().await.unwrap();
     }
 
     #[test]

@@ -53,10 +53,10 @@
   <label><span>Default model</span><select aria-label="Default model" bind:value={modelKey} onchange={() => saved = false}>
     {#each models as model (modelRefKey(model))}<option value={modelRefKey(model)}>{model.displayName}{model.available ? "" : workspace?.validation.native.connected ? " (unavailable)" : ""}</option>{/each}
   </select></label>
-  {#if selectedModel && !selectedModel.available && workspace?.validation.native.connected}<p class="availability" role="status">{selectedModel.displayName} isn't available for this account. You can save it as a default, but research needs an available model.</p>{/if}
+  {#if selectedModel && !selectedModel.available && workspace?.validation.native.connected}<p class="availability" role="status">{selectedModel.displayName} isn't in the current model list. Refresh your account or choose another model.</p>{/if}
   <fieldset>
     <legend>Research titles</legend>
-    <p>Leave the research name blank to generate it when you start.</p>
+    <p>Blank research names are generated automatically.</p>
     <label><span>Title model</span><select aria-label="Title model" bind:value={titleModelKey} onchange={() => { saved = false; titleReasoningEffort = titleEfforts.some((effort) => effort.id === "low") ? "low" : titleEfforts[0]?.id ?? "low"; }}>
       {#each models as model (modelRefKey(model))}<option value={modelRefKey(model)}>{model.displayName}{!model.available && workspace?.validation.native.connected ? " (unavailable)" : ""}</option>{/each}
     </select></label>
@@ -70,19 +70,19 @@
   {#if error}<p role="alert">{error}</p>{/if}
 </form>
 <style>
-  fieldset { margin:0;padding:24px 0 0;border:0;border-top:1px solid var(--border);display:grid;gap:18px; }
+  fieldset { margin:0;padding:24px 0 0;border:0;border-top:1px solid var(--border);display:grid;gap:16px; }
   legend { float:left;width:100%;font-size:16px;font-weight:600;margin-bottom:6px; }
-  fieldset p { font-size:12px;color:var(--muted);margin:0; }
-  form { display:grid;gap:24px; }
-  label { display:grid;gap:10px;min-width:0;font-size:12px; }
-  select { width:100%;min-width:0;background:var(--surface);border:1px solid var(--border-strong);border-radius:9px;color:var(--text);padding:12px;font-size:12px; }
+  fieldset p { font-size:13px;color:var(--muted);margin:0; }
+  form { display:grid;gap:18px; }
+  label { display:grid;gap:10px;min-width:0;font-size:13px; }
+  select { width:100%;min-width:0;background:var(--surface);border:1px solid var(--border-strong);border-radius:9px;color:var(--text);padding:12px;font-size:13px; }
   .provider-select { position:relative;color:var(--text); }
   .provider-select :global(svg) { position:absolute;top:50%;left:13px;transform:translateY(-50%);pointer-events:none; }
   .provider-select select { padding-left:42px; }
   footer { display:flex;gap:14px;align-items:center; }
-  button { padding:11px 16px;border:0;border-radius:8px;background:var(--accent-strong);color:var(--accent-ink);font-size:12px;font-weight:600; }
-  footer span { color:var(--success);font-size:11px; }
-  .scope-note { margin:-12px 0 0;color:var(--subtle);font-size:11px; }
-  .availability { padding:12px;border:1px solid var(--border);border-radius:8px;color:var(--muted);font-size:11px;line-height:1.7;margin:0; }
-  [role="alert"] { color:var(--danger);font-size:12px;margin:0; }
+  button { padding:11px 16px;border:0;border-radius:8px;background:var(--accent-strong);color:var(--accent-ink);font-size:13px;font-weight:600; }
+  footer span { color:var(--success);font-size:13px; }
+  .scope-note { margin:-12px 0 0;color:var(--subtle);font-size:13px; }
+  .availability { padding:12px;border:1px solid var(--border);border-radius:8px;color:var(--muted);font-size:13px;line-height:1.7;margin:0; }
+  [role="alert"] { color:var(--danger);font-size:13px;margin:0; }
 </style>

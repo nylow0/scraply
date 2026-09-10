@@ -198,7 +198,7 @@
 
   .item-number,
   .response-number {
-    font: 600 11px var(--mono);
+    font:600 13px var(--mono);
     color: var(--subtle);
   }
 
@@ -210,7 +210,7 @@
 
   .top-risk-label {
     color: var(--danger);
-    font: 500 10px var(--sans);
+    font:500 13px var(--sans);
     letter-spacing: .04em;
     text-transform: none;
   }
@@ -218,7 +218,7 @@
   .top-risk-statement {
     overflow: hidden;
     color: var(--muted);
-    font-size: 11px;
+    font-size:13px;
     line-height: 1.35;
     text-overflow: ellipsis;
     overflow-wrap: anywhere;
@@ -231,7 +231,7 @@
     gap: 16px;
     flex-wrap:wrap;
     color: var(--subtle);
-    font: 500 10px var(--sans);
+    font:500 13px var(--sans);
     text-transform: none;
   }
 
@@ -335,7 +335,7 @@
   .direction,
   .risk-count,
   .response-number {
-    font: 500 10px var(--sans);
+    font:500 13px var(--sans);
     letter-spacing: .04em;
     text-transform: none;
     color: var(--subtle);
@@ -498,7 +498,7 @@
     border: 1px solid var(--border-strong);
     border-radius: 99px;
     color: var(--muted);
-    font: 500 10px var(--sans);
+    font:500 13px var(--sans);
     text-transform: none;
   }
 

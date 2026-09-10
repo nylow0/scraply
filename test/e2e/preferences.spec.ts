@@ -33,7 +33,7 @@ test("research defaults persist after reopen while a saved project keeps its cho
     await expect(page.getByLabel("Default search provider", { exact: true })).toHaveValue("perplexity");
     await expect(page.getByLabel("Default model", { exact: true })).toHaveValue("openai-subscription:gpt-6-astra");
     await page.keyboard.press("Escape");
-    await page.getByRole("button", { name: "Create research", exact: true }).click();
+    await expect(page.getByLabel("Research name", { exact: true })).toBeVisible();
     await expect(page.getByLabel("Model", { exact: true })).toHaveValue("openai-subscription:gpt-6-astra");
     await expect(page.getByLabel("Search provider", { exact: true })).toHaveValue("perplexity");
     // Per-run overrides remain separate from the defaults saved in Settings.
