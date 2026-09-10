@@ -1,6 +1,7 @@
 import { installApplicationMenu, showApplicationMenu } from "./app-menu";
 import { app, BrowserWindow, dialog, ipcMain, safeStorage, shell, utilityProcess, type IpcMainInvokeEvent } from "electron";
 import { randomUUID } from "node:crypto";
+import { startBrowserDevHost, type AppRequestHandler } from "./browser-dev";
 import { readFileSync, existsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { z } from "zod";
@@ -47,6 +48,9 @@ import { revokeNativeAccount } from "./native-account";
 import { isAllowedRendererUrl, parseExternalHttpsUrl, rendererEntryUrl } from "./security";
 
 const isDev = !app.isPackaged;
+const browserDev = isDev && process.env.SCRAPLY_BROWSER_DEV === "1";
+const appHandlers = new Map<string, AppRequestHandler>();
+let browserDevHost: Awaited<ReturnType<typeof startBrowserDevHost>> | undefined;
 let mainWindow: BrowserWindow | null = null;
 let backendReady: BackendReady | null = null;
 let backendProcess: Electron.UtilityProcess | null = null;
@@ -179,8 +183,9 @@ async function startBackendProcess(): Promise<BackendReady> {
       if (!parsed.success) return;
       const message = parsed.data;
 
-      if (message.type === "event" && mainWindow && !mainWindow.isDestroyed()) {
-        mainWindow.webContents.send(IPC_CHANNELS.BACKEND_EVENT, message.event);
+      if (message.type === "event") {
+        if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(IPC_CHANNELS.BACKEND_EVENT, message.event);
+        browserDevHost?.publish(message.event);
         return;
       }
       if (message.type === "persist-provider-credential") {
@@ -519,6 +524,7 @@ function assertTrustedSender(event: IpcMainInvokeEvent): void {
 
 function registerIpc(): void {
   const handle = (channel: string, handler: (...args: unknown[]) => unknown): void => {
+    if (browserDev) appHandlers.set(channel, handler);
     ipcMain.handle(channel, (event, ...args) => {
       assertTrustedSender(event);
       return handler(...args);
@@ -595,6 +601,7 @@ function registerIpc(): void {
   handle(IPC_CHANNELS.EXPORT_RESEARCH, async (body) => {
     const payload = ExportResearchRequestSchema.parse(body);
     const bundle = await post("/research/export", payload) as { filename: string; content: string };
+    if (browserDev) return { downloads: [bundle] };
     if (!mainWindow) throw new AppError("backend_unavailable");
     const filename = bundle.filename.replace(/[^a-zA-Z0-9._-]/g, "-");
     const selection = await dialog.showSaveDialog(mainWindow, {
@@ -609,6 +616,7 @@ function registerIpc(): void {
   handle(IPC_CHANNELS.EXPORT_IDEAS, async (body) => {
     const payload = ExportIdeasRequestSchema.parse(body);
     const bundle = await post("/ideas/export", payload) as { files: Array<{ filename: string; content: string }> };
+    if (browserDev) return { downloads: bundle.files };
     if (!mainWindow) throw new AppError("backend_unavailable");
     const selection = await dialog.showOpenDialog(mainWindow, {
       title: "Export solution files",
@@ -687,7 +695,17 @@ if (!gotLock) {
     const automaticSecrets = readAutomaticSecrets();
     secrets = { ...secrets, ...automaticSecrets };
     registerIpc();
-    createWindow();
+    if (browserDev) {
+      browserDevHost = await startBrowserDevHost({
+        port: z.coerce.number().int().min(1).max(65535).parse(process.env.SCRAPLY_BROWSER_PORT),
+        token: z.string().min(32).parse(process.env.SCRAPLY_BROWSER_TOKEN),
+        sessionId: z.string().uuid().parse(process.env.SCRAPLY_BROWSER_SESSION),
+        handlers: appHandlers,
+        shutdown: () => app.quit(),
+      });
+    } else {
+      createWindow();
+    }
     void ensureBackend()
       .then(async () => {
         if (!automaticSecrets.exaApiKey && !automaticSecrets.perplexityApiKey) return;
@@ -700,15 +718,16 @@ if (!gotLock) {
   });
 
   app.on("window-all-closed", () => {
-    if (process.platform !== "darwin") app.quit();
+    if (!browserDev && process.platform !== "darwin") app.quit();
   });
 
   app.on("activate", () => {
-    if (!mainWindow) createWindow();
+    if (!browserDev && !mainWindow) createWindow();
   });
 
   app.on("before-quit", () => {
     isQuitting = true;
+    browserDevHost?.close();
     logger?.log({ level: "info", component: "main", event: "app-shutdown" });
     backendProcess?.kill();
   });

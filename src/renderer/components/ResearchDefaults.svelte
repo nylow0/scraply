@@ -66,23 +66,22 @@
     </select></label>
   </fieldset>
   <footer><button type="submit">Save defaults</button>{#if saved}<span role="status">Defaults saved</span>{/if}</footer>
-  <p class="scope-note">Applies to new research.</p>
   {#if error}<p role="alert">{error}</p>{/if}
 </form>
 <style>
-  fieldset { margin:0;padding:24px 0 0;border:0;border-top:1px solid var(--border);display:grid;gap:16px; }
+  fieldset { grid-column:1/-1;margin:0;padding:18px 0 0;border:0;border-top:1px solid var(--border);display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px; }
   legend { float:left;width:100%;font-size:16px;font-weight:600;margin-bottom:6px; }
-  fieldset p { font-size:13px;color:var(--muted);margin:0; }
-  form { display:grid;gap:18px; }
-  label { display:grid;gap:10px;min-width:0;font-size:13px; }
+  fieldset p { grid-column:1/-1;font-size:13px;color:var(--muted);margin:0; }
+  form { display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:20px 12px; }
+  label { display:grid;align-content:start;gap:8px;min-width:0;font-size:13px; }
   select { width:100%;min-width:0;background:var(--surface);border:1px solid var(--border-strong);border-radius:9px;color:var(--text);padding:12px;font-size:13px; }
   .provider-select { position:relative;color:var(--text); }
   .provider-select :global(svg) { position:absolute;top:50%;left:13px;transform:translateY(-50%);pointer-events:none; }
   .provider-select select { padding-left:42px; }
-  footer { display:flex;gap:14px;align-items:center; }
+  footer { grid-column:1/-1;display:flex;flex-wrap:wrap;gap:14px;align-items:center; }
   button { padding:11px 16px;border:0;border-radius:8px;background:var(--accent-strong);color:var(--accent-ink);font-size:13px;font-weight:600; }
   footer span { color:var(--success);font-size:13px; }
-  .scope-note { margin:-12px 0 0;color:var(--subtle);font-size:13px; }
-  .availability { padding:12px;border:1px solid var(--border);border-radius:8px;color:var(--muted);font-size:13px;line-height:1.7;margin:0; }
-  [role="alert"] { color:var(--danger);font-size:13px;margin:0; }
+  .availability { grid-column:1/-1;padding:12px;border:1px solid var(--border);border-radius:8px;color:var(--muted);font-size:13px;line-height:1.7;margin:0; }
+  [role="alert"] { grid-column:1/-1;color:var(--danger);font-size:13px;margin:0; }
+  @media(max-width:600px) { form,fieldset { grid-template-columns:1fr; } }
 </style>

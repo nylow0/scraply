@@ -12,9 +12,9 @@
   <button aria-label="Toggle sidebar" title="Toggle sidebar (Ctrl+B)" onclick={onToggle}><Icon name="sidebar" size={16} /></button>
   <button aria-label="Go back" title="Back (Alt+Left)" disabled={!canBack} onclick={onBack}><Icon name="back" size={17} /></button>
   <button aria-label="Go forward" title="Forward (Alt+Right)" disabled={!canForward} onclick={onForward}><Icon name="arrow" size={17} /></button>
-  <nav aria-label="Application menu">
+  {#if !import.meta.env.VITE_SCRAPLY_BROWSER_DEV}<nav aria-label="Application menu">
     {#each ["File", "Edit", "View", "Help"] as name (name)}<button aria-haspopup="menu" onclick={(event) => menu(name as "File" | "Edit" | "View" | "Help", event)}>{name}</button>{/each}
-  </nav>
+  </nav>{/if}
 </div>
 <style>
   .desktop-bar { height:36px;display:flex;align-items:center;gap:2px;padding:0 148px 0 8px;background:#000;-webkit-app-region:drag;user-select:none; }
