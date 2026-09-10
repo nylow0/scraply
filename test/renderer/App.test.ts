@@ -129,7 +129,7 @@ describe("App workspace coordination", () => {
     installApi({ getWorkspace: vi.fn().mockResolvedValue(state) });
     const view = render(App);
 
-    expect(await view.findByText("Which problems deserve development?")).toBeTruthy();
+    expect(await view.findByText("Choose problems to develop")).toBeTruthy();
     expect(view.getByText("Failed evidence requirements")).toBeTruthy();
     expect(view.getByText("No candidates passed the evidence requirements.")).toBeTruthy();
   });
@@ -152,6 +152,7 @@ describe("App workspace coordination", () => {
       cancelNativeLogin,
     });
     const view = render(App);
+    await fireEvent.click(await view.findByRole("button", { name: "Settings" }));
     await fireEvent.click(await view.findByRole("button", { name: "Use device code" }));
     expect(await view.findByText("ABCD-1234")).toBeTruthy();
 
@@ -192,6 +193,7 @@ describe("App workspace coordination", () => {
       completeNativeLogin: vi.fn().mockResolvedValue({ pending: false as const, workspace: connected }),
     });
     const view = render(App);
+    await fireEvent.click(await view.findByRole("button", { name: "Settings" }));
 
     expect(await view.findByText("provider request failed with HTTP 401")).toBeTruthy();
     expect(view.queryByRole("button", { name: "Try again" })).toBeNull();
@@ -221,6 +223,7 @@ describe("App workspace coordination", () => {
       completeNativeLogin: vi.fn().mockResolvedValue({ pending: false as const, workspace: connected }),
     });
     const view = render(App);
+    await fireEvent.click(await view.findByRole("button", { name: "Settings" }));
 
     await fireEvent.click(await view.findByRole("button", { name: "Sign in with OpenAI" }));
     expect(await view.findByText("Native model account connected.")).toBeTruthy();
@@ -256,6 +259,7 @@ describe("App workspace coordination", () => {
       completeNativeLogin: vi.fn().mockResolvedValue({ pending: false as const, workspace: checking }),
     });
     const view = render(App);
+    await fireEvent.click(await view.findByRole("button", { name: "Settings" }));
 
     await fireEvent.click(await view.findByRole("button", { name: "Sign in with OpenAI" }));
 
@@ -274,6 +278,7 @@ describe("App workspace coordination", () => {
       startNativeLogin: vi.fn().mockRejectedValue(new Error("Browser sign-in could not start")),
     });
     const view = render(App);
+    await fireEvent.click(await view.findByRole("button", { name: "Settings" }));
 
     await fireEvent.click(await view.findByRole("button", { name: "Sign in with OpenAI" }));
     expect((await view.findByRole("alert")).textContent).toContain("Browser sign-in could not start");
@@ -302,6 +307,7 @@ describe("App workspace coordination", () => {
       completeNativeLogin: vi.fn().mockResolvedValue({ pending: false as const, workspace: rejected }),
     });
     const view = render(App);
+    await fireEvent.click(await view.findByRole("button", { name: "Settings" }));
 
     await fireEvent.click(await view.findByRole("button", { name: "Sign in with OpenAI" }));
 
@@ -328,6 +334,7 @@ describe("App workspace coordination", () => {
       .mockResolvedValueOnce(ready);
     installApi({ getWorkspace, retryConnection: vi.fn().mockResolvedValue(undefined) });
     const view = render(App);
+    await fireEvent.click(await view.findByRole("button", { name: "Settings" }));
 
     const title = await view.findByLabelText("Research name") as HTMLInputElement;
     await fireEvent.input(title, { target: { value: "My unsaved research" } });

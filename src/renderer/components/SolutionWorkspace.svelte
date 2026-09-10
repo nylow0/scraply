@@ -38,9 +38,8 @@
 <section class="workspace">
   <header>
     <div>
-      <p class="eyebrow">Development output</p>
       <h1>{solutions.length} solution {solutions.length === 1 ? "idea" : "ideas"}</h1>
-      <p class="intro">{hasV2 ? "Choose a mechanism to analyze." : "Expand an option to inspect its completed analysis."} Evidence and model judgments are available for inspection; options are not ranked.</p>
+      <p class="intro">Open an idea to explore it. Options are not ranked.</p>
     </div>
     <div class="actions" aria-label="Solution actions">
       <button onclick={onReview}>Review problems</button>
@@ -54,14 +53,6 @@
     </div>
   </header>
 
-  {#if !hasV2}
-    <div class="list-heading" aria-hidden="true">
-      <span>Options</span>
-      <span>Highest risk</span>
-      <span>Evaluation snapshot</span>
-      <span></span>
-    </div>
-  {/if}
 
   <div class="solutions">
     {#each visible as item (item.idea.id)}
@@ -94,17 +85,11 @@
     padding-bottom: 24px;
   }
 
-  .eyebrow {
-    margin: 0;
-    font: 600 11px var(--mono);
-    letter-spacing: .12em;
-    text-transform: uppercase;
-    color: var(--accent-strong);
-  }
+
 
   h1 {
     margin: 7px 0 5px;
-    font-size: clamp(28px, 3.3vw, 40px);
+    font-size: 28px;
     line-height: 1.05;
     letter-spacing: -.04em;
   }
@@ -144,20 +129,11 @@
     background: color-mix(in srgb, #b98645 10%, var(--surface));
   }
 
-  .list-heading {
-    display: grid;
-    grid-template-columns: minmax(210px, 1fr) minmax(260px, .9fr) auto 20px;
-    gap: 16px;
-    padding: 10px 18px 9px 64px;
-    border-block: 1px solid var(--border);
-    font: 600 10px var(--mono);
-    letter-spacing: .08em;
-    text-transform: uppercase;
-    color: var(--subtle);
-  }
+
 
   .solutions {
-    border-bottom: 1px solid var(--border);
+    display: grid;
+    gap: 8px;
   }
 
   .empty {
@@ -193,10 +169,6 @@
 
     .actions {
       justify-content: flex-start;
-    }
-
-    .list-heading {
-      display: none;
     }
   }
 </style>

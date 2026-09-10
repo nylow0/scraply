@@ -96,20 +96,20 @@
     grid-template-columns: auto auto;
     align-items: center;
     gap: 8px;
-    min-width: 132px;
+    min-width: 112px;
     height: 48px;
     padding: 0 18px;
     border: 0;
-    border-left: 1px solid var(--border);
+    border-radius: 6px 6px 0 0;
     background: transparent;
     color: var(--subtle);
-    font-weight: 650;
+    font-weight: 550;
     text-align: left;
     transition: color .25s var(--ease), background .25s var(--ease), transform .2s var(--ease);
   }
 
   button:last-child {
-    border-right: 1px solid var(--border);
+    border-right: 0;
   }
 
   button:not(:disabled):hover {
