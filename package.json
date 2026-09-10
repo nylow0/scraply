@@ -7,7 +7,9 @@
   "type": "module",
   "main": "out/main/index.js",
   "scripts": {
-    "dev": "electron-vite dev",
+    "dev": "bun scripts/dev-browser.ts",
+    "dev:stop": "bun scripts/dev-browser.ts stop",
+    "dev:electron": "electron-vite dev",
     "clean:out": "bun -e \"import { rmSync } from 'node:fs'; for (const path of ['out/main', 'out/preload', 'out/renderer']) rmSync(path, { recursive: true, force: true })\"",
     "clean:release": "bun -e \"import { rmSync } from 'node:fs'; rmSync('release', { recursive: true, force: true })\"",
     "build": "bun run clean:out && electron-vite build",

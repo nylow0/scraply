@@ -18,7 +18,7 @@ This workspace is maintained in `nylow0/scraply` under `runtime/`. It was import
 
 From the Scraply root, run `git submodule update --init --recursive` once, then `bun run prepare:runtime` to test and package the native executable. Packaging uses `build/cargo` for its Cargo cache and generates the archive and provenance lock under `build/runtime-artifacts`.
 
-For app development, follow the [root README](../README.md#development) to configure Electron with the staged worker and reuse it between UI/backend edits. Rebuild the stage after native changes; Cargo alone does not replace the executable in `build/runtime` that the app uses.
+For app development, follow the [root README](../README.md#development) to start the background browser server with the staged worker and reuse it between UI/backend edits. Rebuild the stage after native changes; Cargo alone does not replace the executable in `build/runtime` that the app uses.
 
 For development, run these commands from `runtime/` with the MSVC toolchain on Windows:
 
