@@ -1,4 +1,5 @@
 <script lang="ts">
+  import type { Snippet } from "svelte";
   import type { Thread } from "../../shared/schemas";
   import { statusLabel, statusTone } from "../lib/status";
   import BrandMark from "./BrandMark.svelte";
@@ -11,9 +12,7 @@
     onNew,
     onSelect,
     onDelete,
-    onOpenGuide,
-    onOpenData,
-    onOpenLogs,
+    settingsControl,
   }: {
     threads: Thread[];
     activeThreadId: string | null;
@@ -22,9 +21,7 @@
     onNew: () => void;
     onSelect: (id: string) => void;
     onDelete: (id: string) => void;
-    onOpenGuide: () => void;
-    onOpenData: () => void | Promise<void>;
-    onOpenLogs: () => void | Promise<void>;
+    settingsControl: Snippet;
   } = $props();
 
   function confirmDelete(thread: Thread) {
@@ -74,17 +71,13 @@
       <p class="empty">No threads yet</p>
     {/each}
   </div>
-  <div class="footer">
-    <button class="link" disabled={busy} onclick={onOpenGuide}>User guide</button>
-    <button class="link" disabled={busy} onclick={onOpenData}>Open data folder</button>
-    <button class="link" disabled={busy} onclick={onOpenLogs}>Open logs folder</button>
-  </div>
+  <div class="footer">{@render settingsControl()}</div>
 </aside>
 
 <style>
   .sidebar {
     display: grid;
-    grid-template-rows: auto auto auto 1fr auto;
+    grid-template-rows: auto auto auto minmax(0, 1fr) auto;
     gap: 14px;
     padding: 20px 16px 16px;
     background: var(--surface);
@@ -121,8 +114,7 @@
   }
 
   .new:disabled,
-  .thread:disabled,
-  .link:disabled {
+  .thread:disabled {
     cursor: not-allowed;
     opacity: .5;
   }
@@ -139,11 +131,11 @@
     justify-content: space-between;
     padding: 8px 5px 0;
     color: var(--subtle);
-    font-family: var(--mono);
-    font-size: 10px;
+    font-family: var(--sans);
+    font-size: 12px;
     font-weight: 600;
-    letter-spacing: 0.1em;
-    text-transform: uppercase;
+    letter-spacing: 0;
+    text-transform: none;
   }
 
   .list {
@@ -230,8 +222,7 @@
 
   .thread:focus-visible,
   .delete:focus-visible,
-  .new:focus-visible,
-  .link:focus-visible {
+  .new:focus-visible {
     outline: 2px solid var(--accent-strong);
     outline-offset: 2px;
   }
@@ -289,16 +280,7 @@
     border-top: 1px solid var(--border);
   }
 
-  .link {
-    background: transparent;
-    border: none;
-    color: var(--muted);
-    text-align: left;
-    padding: 5px 4px;
-    font-size: 12px;
-  }
 
-  .link:not(:disabled):hover {
-    color: var(--text);
-  }
+
+
 </style>

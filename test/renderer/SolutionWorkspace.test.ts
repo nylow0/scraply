@@ -5,13 +5,15 @@ import SolutionWorkspace from "../../src/renderer/components/SolutionWorkspace.s
 import type { SolutionView } from "../../src/shared/ipc";
 
 describe("SolutionListItem risk summary", () => {
-  test("shows the highest risk and project-ending counts before the idea is expanded", () => {
+  test("keeps the collapsed title free of risk details and retains the expanded snapshot", () => {
     const idea = solution();
     const view = render(SolutionListItem, { idea, rank: 1, onOpenSource: vi.fn() });
     const summary = view.container.querySelector(".solution-summary");
 
     expect(summary).not.toBeNull();
-    const preview = within(summary as HTMLElement);
+    expect(summary?.textContent?.trim()).toBe(idea.mechanism);
+    expect(summary?.textContent).not.toContain("Highest risk");
+    const preview = within(view.container.querySelector(".expanded-snapshot") as HTMLElement);
     expect(preview.getByText("Highest risk: likely · project ends")).toBeTruthy();
     expect(preview.getByText("The only supplier can leave the market.")).toBeTruthy();
     expect(preview.queryByText("Shops may distrust pooled delivery data.")).toBeNull();
@@ -28,7 +30,7 @@ describe("SolutionListItem risk summary", () => {
       { ...first.risks[0]!, id: "tie-second", description: "Second tied risk.", sortKey: 6 },
     ];
     const tiedView = render(SolutionListItem, { idea: first, rank: 1, onOpenSource: vi.fn() });
-    const tiedSummary = within(tiedView.container.querySelector(".solution-summary") as HTMLElement);
+    const tiedSummary = within(tiedView.container.querySelector(".expanded-snapshot") as HTMLElement);
 
     expect(tiedSummary.getByText("First tied risk.")).toBeTruthy();
     expect(tiedSummary.queryByText("Second tied risk.")).toBeNull();
@@ -90,9 +92,9 @@ describe("SolutionWorkspace ordering explanation", () => {
       onReview: vi.fn(),
     });
 
-    expect(view.getByText(/options are not ranked/)).toBeTruthy();
+    expect(view.getByText(/Options are not ranked/)).toBeTruthy();
     expect(view.getByRole("button", { name: "Unaddressed project-ending" })).toBeTruthy();
-    expect(view.getByText("Highest risk")).toBeTruthy();
+    expect(view.queryByText("Highest risk", { exact: true })).toBeNull();
     expect(view.queryByText(/catastrophic gaps/i)).toBeNull();
   });
 

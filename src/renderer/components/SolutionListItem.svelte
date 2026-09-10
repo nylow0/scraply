@@ -21,12 +21,13 @@
 </script>
 
 <details bind:open class:warning class="solution" style={`--rank:${rank}`}>
-  <summary class="solution-summary">
-    <span class="rank">{String(rank).padStart(2, "0")}</span>
-    <span class="identity">
-      <strong>{idea.mechanism}</strong>
-      <small>{idea.problemStatement}</small>
-    </span>
+  <summary class="solution-summary disclosure-title" title={idea.mechanism}>
+    <span class="disclosure-label">{idea.mechanism}</span>
+  </summary>
+
+  <div class="solution-body">
+    {#if idea.detailsLoaded === false}<p role="status">{error || "Loading saved analysis…"}</p>{:else}
+    <div class="expanded-snapshot">
     <span class="risk-preview">
       {#if highestRisk}
         <span class="top-risk-label estimated">Highest risk: {highestRisk.likelihood} · {highestRisk.impact}</span>
@@ -40,11 +41,7 @@
       <span><strong>{projectEndingRisks}</strong> project-ending</span>
       <span class:danger={idea.unaddressedCatastrophicRisks > 0}><strong>{idea.unaddressedCatastrophicRisks}</strong> unaddressed</span>
     </span>
-    <span class="chevron" aria-hidden="true"></span>
-  </summary>
-
-  <div class="solution-body">
-    {#if idea.detailsLoaded === false}<p role="status">{error || "Loading saved analysis…"}</p>{:else}
+    </div>
     <details class="category">
       <summary>
         <span><strong>Overview</strong><small>Mechanism, constraints, and source problem</small></span>
@@ -177,7 +174,10 @@
   }
 
   .solution {
-    border-top: 1px solid var(--border);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    overflow: hidden;
+    background: var(--surface);
   }
 
   .solution.warning {
@@ -185,12 +185,11 @@
   }
 
   .solution-summary {
-    display: grid;
-    grid-template-columns: 30px minmax(210px, 1fr) minmax(260px, .9fr) auto 20px;
+    display: flex;
     gap: 16px;
     align-items: center;
-    min-height: 106px;
-    padding: 14px 18px;
+    min-height: 56px;
+    padding: 16px 18px;
     transition: background-color 180ms var(--ease);
   }
 
@@ -203,33 +202,10 @@
     box-shadow: inset 0 -1px var(--border-strong);
   }
 
-  .rank,
   .item-number,
   .response-number {
     font: 600 11px var(--mono);
     color: var(--subtle);
-  }
-
-  .identity {
-    display: grid;
-    gap: 4px;
-    min-width: 0;
-  }
-
-  .identity strong {
-    overflow: hidden;
-    font-size: 16px;
-    line-height: 1.3;
-    letter-spacing: -.015em;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .identity small {
-    overflow: hidden;
-    color: var(--muted);
-    text-overflow: ellipsis;
-    white-space: nowrap;
   }
 
   .risk-preview {
@@ -294,7 +270,7 @@
   }
 
   .solution-body {
-    padding: 8px 18px 22px 64px;
+    padding: 8px 20px 22px;
     background: color-mix(in srgb, var(--surface) 38%, transparent);
   }
 
@@ -550,17 +526,10 @@
     color: var(--subtle);
   }
 
-  @keyframes enter {
-    from {
-      opacity: 0;
-      transform: translateY(6px);
-    }
-  }
 
   @media (max-width: 850px) {
     .solution-summary {
-      grid-template-columns: 26px minmax(0, 1fr) 18px;
-      min-height: 72px;
+      min-height: 56px;
       padding-inline: 12px;
     }
 
@@ -574,13 +543,9 @@
       grid-column: 2;
     }
 
-    .solution-summary > .chevron {
-      grid-column: 3;
-      grid-row: 1 / span 3;
-    }
 
     .solution-body {
-      padding: 6px 12px 18px 38px;
+      padding: 6px 16px 18px;
     }
 
     .overview {
@@ -618,18 +583,5 @@
     }
   }
 
-  @media (max-width: 560px) {
-    .identity strong,
-    .identity small {
-      white-space: normal;
-    }
-
-    .metrics {
-      flex-wrap: wrap;
-    }
-
-    dl {
-      grid-template-columns: 1fr;
-    }
-  }
+  .expanded-snapshot { display:flex;flex-wrap:wrap;gap:24px;padding:18px 0; }
 </style>

@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount, tick } from "svelte";
   import type { NativeLoginStartResult, ResearchEvent, SolutionView, WorkspaceState } from "../shared/ipc";
+  import Settings from "./components/Settings.svelte";
   import Sidebar from "./components/Sidebar.svelte";
   import ScopeForm from "./components/ScopeForm.svelte";
   import ProblemCheckpoint from "./components/ProblemCheckpoint.svelte";
@@ -26,6 +27,8 @@
   let editingScopeThreadId = $state<string | null>(null);
   let nativeLogin = $state<NativeLoginStartResult | null>(null);
   let nativeLoginEpoch = 0;
+  let settings: Settings | undefined;
+  let settingsOpen = $state(false);
   let reconcileTimer: ReturnType<typeof setTimeout> | null = null;
   let reconcilePending = false;
   let loadEpoch = 0;
@@ -370,10 +373,14 @@
     onNew={createThread}
     onSelect={selectThread}
     onDelete={deleteThread}
-    onOpenGuide={() => { feedback = { text: "Workflow: start from any context and choose discovered problems, or start with a known problem and go directly to solutions.", tone: "info" }; }}
-    onOpenData={openDataFolder}
-    onOpenLogs={openLogsFolder}
-  />
+  >
+    {#snippet settingsControl()}
+      <Settings bind:this={settings} bind:open={settingsOpen} {feedback} {workspace} {busy} {nativeLogin}
+        onRetry={retryConnections} onConnectNative={connectNativeAccount} onCancelNative={cancelNativeLogin}
+        onRefreshNative={refreshNativeAccount} onLogoutNative={logoutNativeAccount}
+        onOpenData={openDataFolder} onOpenLogs={openLogsFolder} />
+    {/snippet}
+  </Sidebar>
 
   <main class="main-content">
     {#if workspace && activeThread}
@@ -404,7 +411,7 @@
       {/if}
     {/if}
 
-    {#if feedback}<div class:error={feedback.tone === "error"} class="notice" role={feedback.tone === "error" ? "alert" : "status"}>{feedback.text}<button aria-label="Dismiss" onclick={() => feedback = null}>×</button></div>{/if}
+    {#if feedback && !settingsOpen}<div class:error={feedback.tone === "error"} class="notice" role={feedback.tone === "error" ? "alert" : "status"}>{feedback.text}<button aria-label="Dismiss" onclick={() => feedback = null}>×</button></div>{/if}
 
     {#if loading}
       <div class="skeleton" role="status" aria-label="Loading workspace"><i></i><i></i><i></i></div>
@@ -414,9 +421,7 @@
       {#if activeThread.status === "configuring" || editingScope || !workspace.scope}
         <div id="workflow-panel-setup" role="tabpanel" aria-label="Research setup">
           {#key workspace.activeThreadId}
-            <ScopeForm {workspace} {busy} {nativeLogin} onSave={saveScope} onStart={startResearch} onRetry={retryConnections}
-              onConnectNative={connectNativeAccount} onCancelNative={cancelNativeLogin}
-              onRefreshNative={refreshNativeAccount} onLogoutNative={logoutNativeAccount} />
+            <ScopeForm {workspace} {busy} onSave={saveScope} onStart={startResearch} onRetry={retryConnections} onOpenSettings={() => settings?.show()} />
           {/key}
         </div>
       {:else}
@@ -466,6 +471,6 @@
 </div>
 
 <style>
-  .app-shell{height:100%;display:grid;grid-template-columns:250px minmax(0,1fr);background:var(--bg)}.main-content{min-width:0;overflow:auto;position:relative;border-left:1px solid var(--border)}.topbar{position:sticky;top:0;z-index:3;height:48px;padding:0 20px;display:flex;align-items:center;justify-content:space-between;background:color-mix(in srgb,var(--bg) 91%,transparent);backdrop-filter:blur(12px);border-bottom:1px solid var(--border);font-size:12px;color:var(--muted)}.status-dot{display:inline-block;width:6px;height:6px;background:var(--subtle);border-radius:50%;margin-right:8px}.status-dot.live{background:var(--accent-strong);animation:pulse 1.2s var(--ease) infinite alternate}.calls{font:500 11px var(--mono)}.calls strong{color:var(--text)}.notice{position:sticky;top:106px;z-index:3;margin:10px 18px 0;padding:11px 14px;border:1px solid var(--border-strong);background:var(--surface-2);display:flex;justify-content:space-between;color:var(--muted)}.notice.error{border-color:color-mix(in srgb,var(--danger) 55%,var(--border));color:var(--danger)}.notice button{border:0;background:transparent;color:inherit}.welcome,.running,.failed{max-width:920px;min-height:calc(100dvh - 48px);padding:clamp(70px,12vh,140px) var(--page-inline);display:flex;flex-direction:column;align-items:flex-start}.welcome h1,.running h1,.failed h1{font-size:clamp(38px,6vw,70px);letter-spacing:-.055em;line-height:.98;max-width:850px;margin:12px 0 22px}.welcome>p:not(.eyebrow),.failed>p:not(.eyebrow){color:var(--muted);max-width:610px;font-size:16px}.eyebrow{font:600 11px var(--mono);letter-spacing:.12em;text-transform:uppercase;color:var(--accent-strong)}.welcome button{margin-top:26px;border:1px solid var(--accent);background:var(--accent-strong);color:var(--accent-ink);padding:12px 17px;border-radius:8px;font-weight:700}.activity{margin-top:40px;border-top:1px solid var(--border);width:min(720px,100%);padding:20px 0;display:flex;gap:12px;color:var(--muted)}.activity span{width:8px;height:8px;margin-top:6px;background:var(--accent-strong);border-radius:50%;animation:pulse 1.2s var(--ease) infinite alternate}.run-actions{margin-top:auto;display:flex;gap:9px}.run-actions button{border:1px solid var(--border-strong);background:transparent;color:var(--text);padding:10px 14px;border-radius:8px}.run-actions .cancel{color:var(--danger)}.skeleton{padding:90px var(--page-inline);display:grid;gap:18px}.skeleton i{display:block;height:24px;max-width:720px;background:linear-gradient(90deg,var(--surface),var(--surface-2),var(--surface));background-size:200% 100%;animation:shimmer 1.2s infinite}.skeleton i:first-child{height:58px;width:60%}.skeleton i:last-child{width:40%}@keyframes shimmer{to{background-position:-200% 0}}@keyframes pulse{to{opacity:.3;transform:scale(.8)}}@media(max-width:720px){.app-shell{grid-template-columns:1fr}.app-shell :global(.sidebar){display:none}.main-content{border-left:0}.topbar{padding:0 14px}.calls{display:none}.welcome,.running,.failed{padding:70px 20px}.welcome h1,.running h1,.failed h1{font-size:42px}}
+  .app-shell{height:100%;display:grid;grid-template-columns:250px minmax(0,1fr);background:var(--bg)}.main-content{min-width:0;overflow:auto;position:relative;border-left:1px solid var(--border)}.topbar{position:sticky;top:0;z-index:3;height:48px;padding:0 20px;display:flex;align-items:center;justify-content:space-between;background:color-mix(in srgb,var(--bg) 91%,transparent);backdrop-filter:blur(12px);border-bottom:1px solid var(--border);font-size:12px;color:var(--muted)}.status-dot{display:inline-block;width:6px;height:6px;background:var(--subtle);border-radius:50%;margin-right:8px}.status-dot.live{background:var(--accent-strong);animation:pulse 1.2s var(--ease) infinite alternate}.calls{font:500 11px var(--mono)}.calls strong{color:var(--text)}.notice{position:sticky;top:106px;z-index:3;margin:10px 18px 0;padding:11px 14px;border:1px solid var(--border-strong);background:var(--surface-2);display:flex;justify-content:space-between;color:var(--muted)}.notice.error{border-color:color-mix(in srgb,var(--danger) 55%,var(--border));color:var(--danger)}.notice button{border:0;background:transparent;color:inherit}.welcome,.running,.failed{max-width:920px;min-height:calc(100dvh - 48px);padding:clamp(70px,12vh,140px) var(--page-inline);display:flex;flex-direction:column;align-items:flex-start}.welcome h1,.running h1,.failed h1{font-size:clamp(28px,3.4vw,42px);letter-spacing:-.055em;line-height:1.15;max-width:850px;margin:12px 0 22px}.welcome>p:not(.eyebrow),.failed>p:not(.eyebrow){color:var(--muted);max-width:610px;font-size:16px}.eyebrow{font:600 11px var(--mono);letter-spacing:0;text-transform:none;color:var(--accent-strong)}.welcome button{margin-top:26px;border:1px solid var(--accent);background:var(--accent-strong);color:var(--accent-ink);padding:12px 17px;border-radius:8px;font-weight:700}.activity{margin-top:40px;border-top:1px solid var(--border);width:min(720px,100%);padding:20px 0;display:flex;gap:12px;color:var(--muted)}.activity span{width:8px;height:8px;margin-top:6px;background:var(--accent-strong);border-radius:50%;animation:pulse 1.2s var(--ease) infinite alternate}.run-actions{margin-top:auto;display:flex;gap:9px}.run-actions button{border:1px solid var(--border-strong);background:transparent;color:var(--text);padding:10px 14px;border-radius:8px}.run-actions .cancel{color:var(--danger)}.skeleton{padding:90px var(--page-inline);display:grid;gap:18px}.skeleton i{display:block;height:24px;max-width:720px;background:linear-gradient(90deg,var(--surface),var(--surface-2),var(--surface));background-size:200% 100%;animation:shimmer 1.2s infinite}.skeleton i:first-child{height:58px;width:60%}.skeleton i:last-child{width:40%}@keyframes shimmer{to{background-position:-200% 0}}@keyframes pulse{to{opacity:.3;transform:scale(.8)}}@media(max-width:720px){.app-shell{grid-template-columns:180px minmax(0,1fr)}.app-shell :global(.sidebar){display:grid}.main-content{border-left:0}.topbar{padding:0 14px}.calls{display:none}.welcome,.running,.failed{padding:70px 20px}.welcome h1,.running h1,.failed h1{font-size:28px}}
   .research-export-hint{max-width:650px;margin:0;color:var(--muted)}.run-stopped{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:16px;margin:14px var(--page-inline) 0;padding:14px 16px;border:1px solid color-mix(in srgb,var(--danger) 45%,var(--border));border-radius:8px;background:color-mix(in srgb,var(--danger) 7%,var(--surface))}.run-stopped>div:first-child{display:grid;gap:4px}.run-stopped strong{font-size:13px}.run-stopped span{color:var(--muted);font-size:12px}.run-stopped-actions{display:flex;flex-wrap:wrap;gap:8px}.run-stopped-actions button{border:1px solid var(--border-strong);border-radius:8px;background:transparent;color:var(--text);padding:9px 13px;font-weight:650}.run-stopped-actions .cancel{color:var(--danger)}
 </style>

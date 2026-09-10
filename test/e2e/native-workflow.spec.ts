@@ -29,12 +29,12 @@ test("recovers an expired native session through installed sign-in and restores 
     let page = await electron.firstWindow();
     await page.getByRole("button", { name: "Create research", exact: true }).click();
 
+    await page.getByLabel("Research name", { exact: true }).fill("Unsaved auth recovery draft");
+    await page.getByRole("button", { name: "Settings", exact: true }).click();
     const accountCard = page.getByLabel("OpenAI account");
     await expect(accountCard.getByText(/OpenAI .*session.*Sign in again\./)).toBeVisible();
     await expect(page.getByRole("button", { name: "Sign in with OpenAI", exact: true })).toBeVisible();
     await expect(page.getByRole("button", { name: "Try again", exact: true })).toHaveCount(0);
-    await page.getByLabel("Research name", { exact: true }).fill("Unsaved auth recovery draft");
-
     await page.getByRole("button", { name: "Use device code", exact: true }).click();
     await expect(page.getByText("FIXTURE-CODE", { exact: true })).toBeVisible();
     const cancellationStartedAt = Date.now();
@@ -61,6 +61,7 @@ test("recovers an expired native session through installed sign-in and restores 
     backend = await startFixtureServer(directory, () => undefined, "auth-recovery");
     electron = await launch();
     page = await electron.firstWindow();
+    await page.getByRole("button", { name: "Settings", exact: true }).click();
     await expect(page.getByText("synthetic-account", { exact: true })).toBeVisible();
     await expect(page.getByRole("option", { name: /Mod/ })).toHaveCount(1);
     await expect(page.getByLabel("OpenAI account").getByText(/OpenAI .*session.*Sign in again\./)).toHaveCount(0);
@@ -130,15 +131,18 @@ test("native v2 research survives the installed selection, risk evaluation, and 
     await page.getByLabel("What do you want to explore?", { exact: false }).fill("Parts delivery uncertainty for repair shops");
     await page.getByLabel("Research depth", { exact: false }).selectOption("quick");
     await page.getByRole("button", { name: "Discover problems", exact: true }).click();
-    await expect(page.getByText("Which problems deserve development?", { exact: true })).toBeVisible();
+    await expect(page.getByText("Choose problems to develop", { exact: true })).toBeVisible();
+    await expect(page.getByText("overstated", { exact: true })).not.toBeVisible();
+    await page.locator(".problem-disclosure > summary").first().click();
     await expect(page.getByText("overstated", { exact: true })).toBeVisible();
     await page.getByRole("checkbox", { name: "Develop this problem" }).check();
     await page.getByRole("button", { name: "Commit selection", exact: true }).click();
     await expect(page.getByText("Supplier reliability ledger", { exact: true })).toBeVisible();
     {
+      await page.getByRole("button", { name: "Supplier reliability ledger", exact: true }).click();
       await page.getByRole("button", { name: "Choose and analyze", exact: true }).first().click();
+      await page.getByRole("button", { name: "Supplier reliability ledger", exact: true }).click();
       await expect(page.getByText("Your selected option", { exact: false })).toBeVisible();
-      await page.getByText("Evidence, analysis and your decision", { exact: true }).click();
       await expect(page.getByText("Next experiment", { exact: true })).toBeVisible();
       await page.getByLabel("Question", { exact: true }).fill("Which suppliers publish arrival histories?");
       await page.getByRole("button", { name: "Check evidence", exact: true }).click();
@@ -190,7 +194,7 @@ test("native v2 research survives the installed selection, risk evaluation, and 
       expect(savedModel).toEqual({ providerId: "openai-subscription", modelId: "gpt-fixture" });
     }
     {
-      await page.getByText("Evidence, analysis and your decision", { exact: true }).click();
+      await page.getByRole("button", { name: "Supplier reliability ledger", exact: true }).click();
       await expect(page.getByLabel("Observed test result", { exact: true })).toHaveValue("Nine of ten estimates matched arrivals");
       const reopenedFollowUp = page.getByRole("region", { name: "Evidence follow-up result" });
       await expect(reopenedFollowUp).toContainText("Which suppliers publish arrival histories?");
@@ -198,7 +202,8 @@ test("native v2 research survives the installed selection, risk evaluation, and 
       await expect(page.getByRole("button", { name: "Check evidence", exact: true })).toHaveCount(0);
     }
     await page.getByRole("tab", { name: /Research/ }).click();
-    await expect(page.getByText("The evidence behind the ideas.", { exact: true })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Research", exact: true })).toBeVisible();
+    await page.locator(".problem-disclosure > summary").first().click();
     await page.getByText("2 cited factors", { exact: true }).click();
     await expect(page.getByText("Parts delivery windows are uncertain.", { exact: true }).first()).toBeVisible();
     await page.screenshot({ path: testInfo.outputPath("native-reopened-evidence.png") });

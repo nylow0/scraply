@@ -2,17 +2,17 @@
 
 :root {
   color-scheme: dark;
-  --bg: #101210;
-  --surface: #151815;
-  --surface-2: #1b1f1b;
-  --border: #2d332e;
-  --border-strong: #414941;
-  --text: #f2f4f0;
-  --muted: #a3aba3;
-  --subtle: #737c74;
-  --accent: #b89a4b;
-  --accent-strong: #d2b45e;
-  --accent-ink: #1b170b;
+  --bg: #202020;
+  --surface: #181818;
+  --surface-2: #292929;
+  --border: #343434;
+  --border-strong: #484848;
+  --text: #ededed;
+  --muted: #b0b0b0;
+  --subtle: #969696;
+  --accent: #c9c9c9;
+  --accent-strong: #ededed;
+  --accent-ink: #202020;
   --danger: #df9292;
   --success: #79b98f;
   --mono: "Geist Mono", "Cascadia Code", ui-monospace, monospace;
@@ -21,7 +21,7 @@
 
   /* Shared page metrics. Every main-area page uses these so the left edge,
      max width, and top offset line up when switching between them. */
-  --page-inline: clamp(20px, 4vw, 56px);
+  --page-inline: clamp(20px, 3vw, 40px);
   --page-top: 30px;
   --page-max: 1180px;
 }
@@ -65,7 +65,7 @@ button {
 }
 
 button:not(:disabled):active {
-  transform: translateY(1px) scale(0.985);
+  transform: translateY(1px);
 }
 
 button:disabled,
@@ -112,3 +112,48 @@ select:disabled {
     transition: none !important;
   }
 }
+
+/* Shared title disclosures keep research and ideas scannable. */
+.disclosure-title {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  min-width: 0;
+  min-height: 56px;
+  padding: 16px 18px;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 550;
+  text-align: left;
+  list-style: none;
+  cursor: pointer;
+}
+.disclosure-title::-webkit-details-marker { display: none; }
+.disclosure-title .disclosure-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.disclosure-title::after {
+  content: "";
+  width: 7px;
+  height: 7px;
+  margin-left: auto;
+  flex: 0 0 auto;
+  border-right: 1.5px solid var(--subtle);
+  border-bottom: 1.5px solid var(--subtle);
+  transform: rotate(-45deg);
+  transition: transform 160ms var(--ease);
+}
+details[open] > .disclosure-title::after, .disclosure-title[aria-expanded="true"]::after { transform: rotate(45deg); }
+.disclosure-title:hover { background: var(--surface-2); }
+.disclosure-content { padding: 4px 20px 20px; border-top: 1px solid var(--border); }
+.disclosure-content > p { max-width: 76ch; color: var(--muted); }
+
+details[open] > .disclosure-title .disclosure-label,
+.disclosure-title[aria-expanded="true"] .disclosure-label {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.disclosure-title:focus-visible { outline-offset: -3px; border-radius: 8px; }
+button:disabled { opacity: .45; }
