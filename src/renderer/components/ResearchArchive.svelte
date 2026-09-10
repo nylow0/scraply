@@ -1,4 +1,5 @@
 <script lang="ts">
+  import ResultsToolbar from "./ResultsToolbar.svelte";
   import type { ProblemCandidate, RejectedProblemCandidate } from "../../shared/ipc";
 
   let {
@@ -19,6 +20,8 @@
   let factorCount = $derived(new Set(problems.flatMap((problem) => problem.factors.map((factor) => factor.id))).size);
   let evidenceBacked = $derived(factorCount > 0);
   let discoveryRan = $derived(evidenceBacked || rejectedCandidates.length > 0);
+  let query = $state("");
+  let filteredProblems = $derived(problems.filter((problem) => problem.statement.toLowerCase().includes(query.trim().toLowerCase())));
 </script>
 
 <div class="archive" id="workflow-panel-research" role="tabpanel" aria-label="Research" tabindex="0">
@@ -41,8 +44,9 @@
     <div><dt>Sources</dt><dd>{sourceCount}</dd></div>
   </dl>
 
+  <ResultsToolbar bind:query label="Search problems" count={filteredProblems.length} />
   <div class="problems">
-    {#each problems as problem, index (problem.id)}
+    {#each filteredProblems as problem, index (problem.id)}
       <article class:warning={["insufficient-evidence", "overstated", "attempted-and-failed"].includes(problem.verdict)} style={`--index:${index}`}>
         <details class="problem-disclosure">
           <summary class="disclosure-title" title={problem.statement}><span class="disclosure-label">{problem.statement}</span></summary>
@@ -72,9 +76,10 @@
           </div>
         </details>
       </article>
+    {:else}{#if query}<p class="empty">No problems match "{query}".</p>
     {:else}
       <div class="empty"><h2>No candidates passed the evidence requirements.</h2><p>The rejected candidates remain available below.</p></div>
-    {/each}
+    {/if}{/each}
   </div>
 
   {#if rejectedCandidates.length > 0}
@@ -94,11 +99,45 @@
 </div>
 
 <style>
-  .archive{max-width:1050px;margin:0 auto;padding:32px var(--page-inline) 100px}header{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:28px;align-items:end;padding-bottom:24px}.eyebrow{margin:0;font:600 11px var(--sans);letter-spacing:0;text-transform:none;color:var(--accent-strong)}h1{font-size:28px;letter-spacing:-.04em;line-height:1.05;margin:8px 0}.intro{max-width:640px;margin:0;color:var(--muted)}.export{min-height:38px;padding:9px 13px;border:1px solid var(--border-strong);border-radius:8px;background:var(--surface);color:var(--text);font-weight:550}.export:active:not(:disabled){transform:scale(.98)}button:disabled{cursor:not-allowed;opacity:.48}.summary{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));margin:10px 0 24px;border-block:1px solid var(--border)}.summary>div{padding:16px 4px}.summary>div+div{border-left:1px solid var(--border);padding-left:20px}dt{font:600 10px var(--sans);letter-spacing:0;text-transform:none;color:var(--subtle)}dd{margin:5px 0 0}.summary dd{font:650 22px var(--sans)}.problems{display:grid;gap:14px}article{padding:22px 24px;border:1px solid var(--border);border-left:3px solid var(--border-strong);background:var(--surface)}article.warning{border-left-color:#b98645}.meta{display:flex;flex-wrap:wrap;gap:7px}.meta span{padding:4px 8px;border:1px solid var(--border-strong);border-radius:999px;color:var(--muted);font:600 10px var(--sans);text-transform:none}.meta .selected{border-color:var(--accent);color:var(--accent-strong)}h2{margin:13px 0 7px;font-size:21px;letter-spacing:-.025em}article>p{color:var(--muted)}.problem-data{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin:18px 0}.estimated{text-decoration:underline dotted;text-underline-offset:4px}.reason,details{padding-top:14px;border-top:1px solid var(--border)}.reason{font-size:12px}summary{cursor:pointer;color:var(--muted)}blockquote{margin:14px 0;padding-left:16px;border-left:1px solid var(--border-strong)}blockquote p{margin:0 0 6px}q{display:block;color:var(--text)}blockquote button{padding:7px 0;border:0;background:transparent;color:var(--accent-strong)}.rejected{margin-top:24px}.rejected>summary{font-weight:650}.rejected>summary span{margin-left:7px;color:var(--subtle);font:600 10px var(--sans)}.rejected-list{display:grid;gap:12px;padding-top:14px}.rejected-item{border-left-color:var(--danger)}.empty{padding:42px 4px;border-top:1px solid var(--border)}.empty h2,.empty p{margin:0}.empty p{margin-top:6px;color:var(--muted)}@media(max-width:700px){.archive{padding:28px 20px 72px}header{grid-template-columns:1fr;align-items:start}.export{justify-self:start}.summary{grid-template-columns:1fr}.summary>div+div{border-left:0;border-top:1px solid var(--border);padding-left:4px}.problem-data{grid-template-columns:1fr}}
-
-  article:has(> .problem-disclosure) { padding:0;border-radius:10px;overflow:hidden; }
+  header { display:flex;align-items:center;justify-content:space-between;gap:24px; }
+  .eyebrow { display:none; }
+  h1 { font-size:32px;font-weight:650;letter-spacing:-.045em;line-height:1.2;margin:0 0 10px; }
+  header p:last-child { font-size:12px;margin:0;color:var(--muted); }
+  .export { min-height:36px;padding:9px 12px;border:1px solid var(--border);border-radius:8px;background:transparent;color:var(--text);font-size:11px;white-space:nowrap; }
+  .problems { display:grid;gap:10px; }
+  article { border:1px solid var(--border);border-radius:13px;background:linear-gradient(120deg,#1b202377,var(--surface));overflow:hidden;box-shadow:inset 0 1px #ffffff04; }
+  article:has(> .problem-disclosure[open]) { border-color:var(--border-strong);background:var(--bg); }
+  article.warning { border-left:2px solid #b98645; }
   .problem-disclosure { padding:0;border:0; }
   .problem-disclosure > summary { color:var(--text); }
   .problem-disclosure[open] > summary { background:var(--surface-2); }
-  .problem-disclosure :global(.disclosure-content) { padding-top:16px; }
+  .problem-disclosure :global(.disclosure-content) { padding:22px 26px; }
+  dl:not(.summary) { display:grid;grid-template-columns:1fr 1fr;gap:20px;padding:18px 20px;border:1px solid var(--border);border-radius:10px;background:var(--surface);margin:18px 0; }
+  dt { color:var(--subtle);font-size:11px;font-weight:500; }
+  dd { margin:5px 0 0;font-size:13px;line-height:1.6;color:var(--muted); }
+  .estimated { text-decoration:underline dotted;text-underline-offset:4px; }
+  .reason { padding-top:14px;font-size:12px;border-top:1px solid var(--border);color:var(--muted); }
+  details { border-top:1px solid var(--border);padding-top:14px; }
+  summary { cursor:pointer;font-size:12px;color:var(--muted); }
+  blockquote { margin:14px 0;padding:16px 18px;border:1px solid var(--border);border-left:2px solid #71cfba55;border-radius:0 10px 10px 0;background:var(--surface);font-size:12px;line-height:1.8; }
+  blockquote p { color:var(--muted);margin:0 0 8px; }q { display:block;font-size:14px;color:var(--text); }
+  blockquote small { display:block;margin-top:9px;color:var(--subtle);font-size:10px; }
+  blockquote button { display:block;padding:8px 0 0;border:0;background:transparent;color:var(--accent-strong);font-size:11px; }
+  .rejected { margin-top:22px;font-size:12px; }
+  .rejected > summary span { margin-left:8px;color:var(--subtle); }
+  .rejected-list { display:grid;gap:12px;padding-top:16px; }
+  .rejected-item { border-color:#df92922a;padding:20px; }
+  h2 { font-size:16px;font-weight:550;line-height:1.5; }.rejected-item p { font-size:12px;color:var(--muted); }
+  .empty { padding:32px 20px;color:var(--muted);font-size:13px;border:1px dashed var(--border-strong);border-radius:12px; }.empty h2 { font-size:17px; }
+  @media(max-width:800px) { header { flex-direction:column;align-items:start; }dl:not(.summary) { grid-template-columns:1fr; }.problem-disclosure :global(.disclosure-content) { padding:18px; } }
+
+  .archive { max-width:1120px;margin:auto;padding:38px var(--page-inline) 80px; }
+  .summary { display:flex;gap:24px;border:0;margin:24px 0 0; }
+  .summary > div { display:flex;align-items:center;gap:9px; }
+  .summary dt { font-size:11px;color:var(--muted); }
+  .summary dd { font:600 11px var(--sans);margin:0;background:var(--surface-2);border:1px solid var(--border);padding:3px 8px;border-radius:6px; }
+  .meta { display:flex;flex-wrap:wrap;gap:7px;margin-bottom:16px; }
+  .meta span { padding:4px 8px;border:1px solid var(--border-strong);border-radius:6px;color:var(--muted);font-size:10px; }
+  .meta .selected { color:var(--accent-strong);border-color:#71cfba40; }
+  @media(max-width:700px) { .archive { padding:28px 22px 60px; }.summary { flex-wrap:wrap;gap:12px; } }
 </style>

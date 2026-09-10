@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount, tick } from "svelte";
   import type { NativeLoginStartResult, ResearchEvent, SolutionView, WorkspaceState } from "../shared/ipc";
+  import Icon from "./components/Icon.svelte";
   import Settings from "./components/Settings.svelte";
   import Sidebar from "./components/Sidebar.svelte";
   import ScopeForm from "./components/ScopeForm.svelte";
@@ -385,10 +386,9 @@
   <main class="main-content">
     {#if workspace && activeThread}
       <div class="topbar">
-        <div><span class="status-dot" class:live={activeThread.status.endsWith("running")}></span>{activeThread.title}</div>
+        <div class="location"><span class="location-prefix">Research</span><span class="location-divider">/</span><span class="status-dot" class:live={activeThread.status.endsWith("running")}></span>{activeThread.title}</div>
         {#if activeRun}<div class="calls"><strong>{activeRun.codexCalls}</strong> model calls / ~{activeRun.projectedCodexCalls} · <strong>{activeRun.searches}</strong> searches / ~{activeRun.projectedSearches}</div>{/if}
       </div>
-      <RunUsage usage={activeRun?.usage} />
       <WorkflowTabs
         active={activeStep}
         setupReady={true}
@@ -396,6 +396,7 @@
         {ideasReady}
         onSelect={openStep}
       />
+      <RunUsage usage={activeRun?.usage} />
       {#if activeThread.status === "failed"}
         <div class="run-stopped" role="status">
           <div><strong>Run stopped</strong><span>{activeRun?.resumeBlockedReason ?? activeRun?.completionReason ?? activeRun?.lastActivity ?? "The last run failed or was cancelled. Review the setup, then retry explicitly."}</span></div>
@@ -416,7 +417,13 @@
     {#if loading}
       <div class="skeleton" role="status" aria-label="Loading workspace"><i></i><i></i><i></i></div>
     {:else if !workspace || !activeThread}
-      <section class="welcome"><p class="eyebrow">Local-first research</p><h1>Find problems worth solving before generating solutions.</h1><p>Start with whatever context you have. Scraply will gather evidence, try to kill each candidate, and stop for your judgment.</p><button disabled={busy} onclick={createThread}>{busy ? "Creating…" : "Create research"}</button></section>
+      <section class="welcome">
+        <div class="welcome-symbol"><Icon name="research" size={32} /></div>
+        <p class="eyebrow">A place to think things through</p><h1>Find your next<br />worthwhile idea.</h1>
+        <p>Explore a question. Follow the evidence. Decide what deserves to be built.</p>
+        <button disabled={busy} onclick={createThread}>{busy ? "Creating…" : "Create research"}<Icon name="arrow" size={17} /></button>
+        <div class="welcome-path"><span><Icon name="brief" />Define your brief</span><i></i><span><Icon name="research" />Review the evidence</span><i></i><span><Icon name="ideas" />Develop an idea</span></div>
+      </section>
     {:else if activeStep === "setup"}
       {#if activeThread.status === "configuring" || editingScope || !workspace.scope}
         <div id="workflow-panel-setup" role="tabpanel" aria-label="Research setup">
@@ -434,8 +441,8 @@
     {:else if activeStep === "research"}
       {#if activeThread.status === "discovery-running"}
         <div class="running" id="workflow-panel-research" role="tabpanel" aria-label="Research" tabindex="0">
-          <p class="eyebrow">Discovery in progress</p>
-          <h1>Reading the field before naming the problem.</h1>
+          <div class="activity-symbol"><Icon name="research" size={30} /></div><p class="eyebrow">Discovery in progress</p>
+          <h1>Following the evidence.</h1><p class="activity-intro">Scraply is gathering sources and testing which problems hold up.</p>
           <div class="activity"><span></span><p>{latestEvent?.type === "run-progress" ? latestEvent.message : activeRun?.lastActivity ?? "Preparing the next provider call…"}</p></div>
           {#if activeRun}<div class="run-actions"><button class="cancel" disabled={busy} onclick={() => cancelResearch(activeRun.runId)}>Cancel run</button></div>{/if}
         </div>
@@ -452,8 +459,8 @@
       {/if}
     {:else if activeThread.status === "development-running"}
       <div class="running" id="workflow-panel-ideas" role="tabpanel" aria-label="Ideas" tabindex="0">
-        <p class="eyebrow">Development in progress</p>
-        <h1>Building the selected chain one problem at a time.</h1>
+        <div class="activity-symbol"><Icon name="ideas" size={30} /></div><p class="eyebrow">Development in progress</p>
+        <h1>Turning problems into possibilities.</h1>
         <p class="research-export-hint">The research archive is already available. Open the Research tab to inspect or export it while ideas are generated.</p>
         <div class="activity"><span></span><p>{latestEvent?.type === "run-progress" ? latestEvent.message : activeRun?.lastActivity ?? "Preparing the next provider call…"}</p></div>
         {#if activeRun}<div class="run-actions"><button class="cancel" disabled={busy} onclick={() => cancelResearch(activeRun.runId)}>Cancel run</button></div>{/if}
@@ -471,6 +478,36 @@
 </div>
 
 <style>
-  .app-shell{height:100%;display:grid;grid-template-columns:250px minmax(0,1fr);background:var(--bg)}.main-content{min-width:0;overflow:auto;position:relative;border-left:1px solid var(--border)}.topbar{position:sticky;top:0;z-index:3;height:48px;padding:0 20px;display:flex;align-items:center;justify-content:space-between;background:color-mix(in srgb,var(--bg) 91%,transparent);backdrop-filter:blur(12px);border-bottom:1px solid var(--border);font-size:12px;color:var(--muted)}.status-dot{display:inline-block;width:6px;height:6px;background:var(--subtle);border-radius:50%;margin-right:8px}.status-dot.live{background:var(--accent-strong);animation:pulse 1.2s var(--ease) infinite alternate}.calls{font:500 11px var(--mono)}.calls strong{color:var(--text)}.notice{position:sticky;top:106px;z-index:3;margin:10px 18px 0;padding:11px 14px;border:1px solid var(--border-strong);background:var(--surface-2);display:flex;justify-content:space-between;color:var(--muted)}.notice.error{border-color:color-mix(in srgb,var(--danger) 55%,var(--border));color:var(--danger)}.notice button{border:0;background:transparent;color:inherit}.welcome,.running,.failed{max-width:920px;min-height:calc(100dvh - 48px);padding:clamp(70px,12vh,140px) var(--page-inline);display:flex;flex-direction:column;align-items:flex-start}.welcome h1,.running h1,.failed h1{font-size:clamp(28px,3.4vw,42px);letter-spacing:-.055em;line-height:1.15;max-width:850px;margin:12px 0 22px}.welcome>p:not(.eyebrow),.failed>p:not(.eyebrow){color:var(--muted);max-width:610px;font-size:16px}.eyebrow{font:600 11px var(--mono);letter-spacing:0;text-transform:none;color:var(--accent-strong)}.welcome button{margin-top:26px;border:1px solid var(--accent);background:var(--accent-strong);color:var(--accent-ink);padding:12px 17px;border-radius:8px;font-weight:700}.activity{margin-top:40px;border-top:1px solid var(--border);width:min(720px,100%);padding:20px 0;display:flex;gap:12px;color:var(--muted)}.activity span{width:8px;height:8px;margin-top:6px;background:var(--accent-strong);border-radius:50%;animation:pulse 1.2s var(--ease) infinite alternate}.run-actions{margin-top:auto;display:flex;gap:9px}.run-actions button{border:1px solid var(--border-strong);background:transparent;color:var(--text);padding:10px 14px;border-radius:8px}.run-actions .cancel{color:var(--danger)}.skeleton{padding:90px var(--page-inline);display:grid;gap:18px}.skeleton i{display:block;height:24px;max-width:720px;background:linear-gradient(90deg,var(--surface),var(--surface-2),var(--surface));background-size:200% 100%;animation:shimmer 1.2s infinite}.skeleton i:first-child{height:58px;width:60%}.skeleton i:last-child{width:40%}@keyframes shimmer{to{background-position:-200% 0}}@keyframes pulse{to{opacity:.3;transform:scale(.8)}}@media(max-width:720px){.app-shell{grid-template-columns:180px minmax(0,1fr)}.app-shell :global(.sidebar){display:grid}.main-content{border-left:0}.topbar{padding:0 14px}.calls{display:none}.welcome,.running,.failed{padding:70px 20px}.welcome h1,.running h1,.failed h1{font-size:28px}}
-  .research-export-hint{max-width:650px;margin:0;color:var(--muted)}.run-stopped{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:16px;margin:14px var(--page-inline) 0;padding:14px 16px;border:1px solid color-mix(in srgb,var(--danger) 45%,var(--border));border-radius:8px;background:color-mix(in srgb,var(--danger) 7%,var(--surface))}.run-stopped>div:first-child{display:grid;gap:4px}.run-stopped strong{font-size:13px}.run-stopped span{color:var(--muted);font-size:12px}.run-stopped-actions{display:flex;flex-wrap:wrap;gap:8px}.run-stopped-actions button{border:1px solid var(--border-strong);border-radius:8px;background:transparent;color:var(--text);padding:9px 13px;font-weight:650}.run-stopped-actions .cancel{color:var(--danger)}
+  .app-shell { height:100%;display:grid;grid-template-columns:248px minmax(0,1fr);background:var(--surface);padding:10px 10px 10px 0; }
+  .main-content { min-width:0;overflow:auto;position:relative;border:1px solid var(--border);border-radius:18px;background:var(--bg); }
+  .topbar { position:sticky;top:0;z-index:3;height:54px;padding:0 24px;display:flex;align-items:center;justify-content:space-between;background:color-mix(in srgb,var(--bg) 94%,transparent);backdrop-filter:blur(18px);border-bottom:1px solid var(--border);font-size:12px;color:var(--muted); }
+  .location { display:flex;align-items:center;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis; }
+  .location-prefix { color:var(--subtle); }.location-divider { margin:0 12px;color:var(--border-strong); }
+  .status-dot { display:inline-block;width:6px;height:6px;background:var(--subtle);border-radius:50%;margin-right:8px;flex:none; }.status-dot.live { background:var(--accent);animation:pulse 1.5s ease infinite alternate; }
+  .calls { white-space:nowrap;margin-left:16px;font:500 10px var(--sans); }.calls strong { color:var(--text);font-weight:600; }
+  .notice { position:sticky;top:122px;z-index:3;margin:12px var(--page-inline) 0;padding:12px 16px;border:1px solid var(--border-strong);border-radius:10px;background:var(--surface-2);display:flex;justify-content:space-between;gap:16px;color:var(--muted);font-size:12px;overflow-wrap:anywhere; }
+  .notice.error { border-color:#df929260;color:var(--danger); }.notice button { border:0;background:transparent;color:inherit; }
+  .welcome { min-height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;padding:72px 40px;background:radial-gradient(ellipse at 50% 38%,#71cfba07,transparent 55%); }
+  .welcome-symbol,.activity-symbol { display:grid;place-items:center;width:76px;height:76px;border:1px solid #71cfba30;border-radius:24px;color:var(--accent-strong);background:#71cfba08;box-shadow:inset 0 1px #92ead515; }
+  .eyebrow { font:500 12px var(--sans);color:var(--muted);margin:28px 0 0; }
+  .welcome h1 { font-size:clamp(38px,4.8vw,62px);font-weight:650;letter-spacing:-.05em;line-height:1.1;margin:12px 0 22px; }
+  .welcome > p:not(.eyebrow) { max-width:370px;font-size:14px;line-height:1.8;color:var(--muted);margin:0; }
+  .welcome button { margin-top:28px;display:flex;align-items:center;gap:18px;border:0;border-radius:10px;padding:14px 20px;font-size:12px;font-weight:650;background:var(--accent-strong);color:var(--accent-ink);box-shadow:0 6px 24px #71cfba10; }
+  .welcome-path { display:flex;align-items:center;gap:20px;margin-top:76px;color:var(--subtle);font-size:11px; }
+  .welcome-path span { display:flex;align-items:center;gap:9px; }.welcome-path i { width:28px;height:1px;background:var(--border-strong); }
+  .running,.failed { display:flex;flex-direction:column;align-items:start;max-width:900px;min-height:calc(100dvh - 160px);margin:auto;justify-content:center;padding:60px var(--page-inline); }
+  .running h1,.failed h1 { font-size:38px;font-weight:600;letter-spacing:-.035em;line-height:1.25;max-width:620px;margin:10px 0 20px; }
+  .failed > p:not(.eyebrow),.activity-intro,.research-export-hint { color:var(--muted);font-size:13px;line-height:1.8;max-width:650px;margin:0; }
+  .activity-symbol { position:relative; }.activity-symbol::after { content:"";position:absolute;inset:-5px;border:1px solid transparent;border-top-color:var(--accent);border-radius:28px;animation:orbit 4s linear infinite; }
+  .activity { width:100%;display:flex;gap:14px;border:1px solid var(--border);border-radius:14px;padding:20px;background:var(--surface);margin:24px 0;align-items:center; }
+  .activity p { margin:0;font-size:12px;color:var(--muted); }.activity span { width:7px;height:7px;border-radius:50%;background:var(--accent);flex:none;animation:pulse 1.5s ease infinite alternate; }
+  .run-actions { display:flex;gap:9px; }.run-actions button { border:1px solid var(--border-strong);background:transparent;color:var(--text);padding:10px 14px;border-radius:8px;font-size:12px; }.run-actions .cancel { color:var(--danger); }
+  .run-stopped { display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:16px;margin:14px var(--page-inline) 0;padding:16px;border:1px solid #df92924a;border-radius:12px;background:#df929208; }
+  .run-stopped > div:first-child { display:grid;gap:5px; }.run-stopped strong { font-size:13px; }.run-stopped span { color:var(--muted);font-size:12px; }.run-stopped-actions { display:flex;flex-wrap:wrap;gap:8px; }.run-stopped-actions button { border:1px solid var(--border-strong);border-radius:8px;background:transparent;color:var(--text);padding:9px 13px;font-size:11px; }.run-stopped-actions .cancel { color:var(--danger); }
+  .skeleton { padding:90px var(--page-inline);display:grid;gap:18px; }.skeleton i { display:block;height:24px;max-width:720px;border-radius:8px;background:linear-gradient(90deg,var(--surface),var(--surface-2),var(--surface));background-size:200% 100%;animation:shimmer 1.2s infinite; }.skeleton i:first-child { height:58px;width:60%; }.skeleton i:last-child { width:40%; }
+  .main-content > :global([role="tabpanel"]) { animation:page-reveal 200ms var(--ease); }
+  @keyframes page-reveal { from { opacity:.6;transform:translateY(4px); }to { opacity:1;transform:none; } }
+  @keyframes shimmer { to { background-position:-200% 0; } }@keyframes pulse { to { opacity:.3; } }@keyframes orbit { to { transform:rotate(360deg); } }
+  @media(max-width:950px) { .calls { display:none; }.welcome-path { gap:10px;flex-wrap:wrap;justify-content:center; }.welcome-path i { width:14px; } }
+  @media(max-width:720px) { .app-shell { grid-template-columns:180px minmax(0,1fr);padding:0; }.main-content { border-radius:0; }.location-prefix,.location-divider { display:none; }.topbar { padding:0 16px; }.welcome { padding:48px 22px; }.welcome h1 { font-size:36px; }.welcome-path { margin-top:40px;flex-direction:column; }.welcome-path i { display:none; }.running h1,.failed h1 { font-size:28px; } }
 </style>

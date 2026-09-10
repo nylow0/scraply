@@ -175,9 +175,9 @@
 
   .solution {
     border: 1px solid var(--border);
-    border-radius: 10px;
+    border-radius: 13px;
     overflow: hidden;
-    background: var(--surface);
+    background: linear-gradient(120deg,#1b202377,var(--surface));
   }
 
   .solution.warning {
@@ -189,7 +189,7 @@
     gap: 16px;
     align-items: center;
     min-height: 56px;
-    padding: 16px 18px;
+    padding: 21px 22px;
     transition: background-color 180ms var(--ease);
   }
 
@@ -216,9 +216,9 @@
 
   .top-risk-label {
     color: var(--danger);
-    font: 600 10px var(--mono);
+    font: 500 10px var(--sans);
     letter-spacing: .04em;
-    text-transform: uppercase;
+    text-transform: none;
   }
 
   .top-risk-statement {
@@ -236,8 +236,8 @@
     justify-content: flex-end;
     gap: 16px;
     color: var(--subtle);
-    font: 500 10px var(--mono);
-    text-transform: uppercase;
+    font: 500 10px var(--sans);
+    text-transform: none;
   }
 
   .metrics > span {
@@ -270,7 +270,7 @@
   }
 
   .solution-body {
-    padding: 8px 20px 22px;
+    padding: 12px 26px 26px;
     background: color-mix(in srgb, var(--surface) 38%, transparent);
   }
 
@@ -307,13 +307,17 @@
   .overview {
     display: grid;
     grid-template-columns: 1.4fr 1fr 1fr;
-    gap: 1px;
-    background: var(--border);
+    gap: 20px;
+    padding:20px;
+    border:1px solid var(--border);
+    border-radius:12px;
+    background:var(--surface);
   }
 
   .overview > div {
-    padding: 16px;
-    background: var(--bg);
+    padding: 14px;
+    border-radius:10px;
+    background:var(--surface);
   }
 
   .overview p {
@@ -334,9 +338,9 @@
   .direction,
   .risk-count,
   .response-number {
-    font: 600 10px var(--mono);
+    font: 500 10px var(--sans);
     letter-spacing: .04em;
-    text-transform: uppercase;
+    text-transform: none;
     color: var(--subtle);
   }
 
@@ -497,8 +501,8 @@
     border: 1px solid var(--border-strong);
     border-radius: 99px;
     color: var(--muted);
-    font: 600 10px var(--mono);
-    text-transform: uppercase;
+    font: 500 10px var(--sans);
+    text-transform: none;
   }
 
   .responses {
@@ -507,9 +511,10 @@
   }
 
   .response {
-    padding: 14px;
+    padding: 18px;
     border: 1px solid var(--border);
-    background: var(--bg);
+    border-radius:10px;
+    background: var(--surface);
   }
 
   .response p {
