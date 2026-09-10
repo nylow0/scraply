@@ -28,7 +28,7 @@ export async function startMockBackend(): Promise<MockBackend> {
   let status = "configuring";
   const workspace = () => ({
     validation, threads: threads.map((thread) => ({ ...thread, status })), activeThreadId, messages: [], scope,
-    runConfig: activeThreadId ? runConfig : null, models: [DEFAULT_RUN_CONFIG.model], modelOptions: [{ ...DEFAULT_RUN_CONFIG.model, displayName: "GPT-5.6-Luna", defaultReasoningEffort: "medium", reasoningEfforts: [{ id: "medium", description: "Balanced reasoning" }] }], modelCatalog: { models: [DEFAULT_RUN_CONFIG.model], favorites: [] }, presets: [],
+    runConfig: activeThreadId ? runConfig : null, models: [DEFAULT_RUN_CONFIG.model, { providerId: "openai-subscription", modelId: "gpt-6-astra" }], modelOptions: [{ ...DEFAULT_RUN_CONFIG.model, displayName: "GPT-5.6 Sol", defaultReasoningEffort: "medium", reasoningEfforts: [{ id: "medium", description: "Balanced reasoning" }] }, { providerId: "openai-subscription", modelId: "gpt-6-astra", displayName: "Astra", defaultReasoningEffort: "medium", reasoningEfforts: [{ id: "medium", description: "Balanced reasoning" }] }], modelCatalog: { models: [DEFAULT_RUN_CONFIG.model], favorites: [] }, presets: [],
     problemCandidates: status !== "configuring" ? [problem] : [], rejectedProblemCandidates: status !== "configuring" ? [rejectedProblem] : [], solutions: status === "solutions-ready" ? [solution] : [],
     latestResearchRun: status === "configuring" ? null : { runId: "run-1", status: "completed", problemId: status === "solutions-ready" ? "problem-1" : null, codexCalls: 8, searches: 10, projectedCodexCalls: 20, projectedSearches: 20, lastActivity: "Problem verification completed" }, pendingRuns: [],
   });

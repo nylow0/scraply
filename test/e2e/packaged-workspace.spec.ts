@@ -1,5 +1,6 @@
 import { expect, test, _electron } from "@playwright/test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync } from "node:fs";
+import { rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ScraplyApi } from "../../src/preload/index";
@@ -52,6 +53,7 @@ test("the packaged backend reuses empty drafts without losing a setup draft or s
     expect((await page.evaluate(() => (window as unknown as { scraply: ScraplyApi }).scraply.getWorkspace())).threads).toHaveLength(2);
   } finally {
     await app.close();
-    rmSync(directory, { recursive: true, force: true });
+    // Windows may hold database handles briefly after the app and backend exit.
+    await rm(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 });

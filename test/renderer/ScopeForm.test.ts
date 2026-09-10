@@ -15,14 +15,14 @@ describe("ScopeForm search provider selection", () => {
     const legacyModel = { providerId: "legacy-codex-cli", modelId: DEFAULT_RUN_CONFIG.model.modelId };
     state.models = [nativeModel, legacyModel];
     state.modelOptions = [
-      { ...state.modelOptions[0]!, ...nativeModel, displayName: "Luna" },
-      { ...state.modelOptions[0]!, ...legacyModel, displayName: "Luna legacy" },
+      { ...state.modelOptions[0]!, ...nativeModel, displayName: "GPT-5.6 Sol" },
+      { ...state.modelOptions[0]!, ...legacyModel, displayName: "Sol legacy" },
     ];
     const onSave = vi.fn().mockResolvedValue(undefined);
     const onStart = vi.fn().mockResolvedValue(undefined);
     const view = render(ScopeForm, { workspace: state, busy: false, onSave, onStart, onRetry: vi.fn() });
-    expect(view.getByRole("option", { name: "Luna" })).toBeTruthy();
-    expect(view.queryByRole("option", { name: "Luna legacy" })).toBeNull();
+    expect(view.getByRole("option", { name: "GPT-5.6 Sol" })).toBeTruthy();
+    expect(view.queryByRole("option", { name: "Sol legacy" })).toBeNull();
     const select = view.getByRole("combobox", { name: /Model/ }) as HTMLSelectElement;
     expect(select.value).toBe(modelRefKey(DEFAULT_RUN_CONFIG.model));
     await fireEvent.change(select, { target: { value: modelRefKey(nativeModel) } });

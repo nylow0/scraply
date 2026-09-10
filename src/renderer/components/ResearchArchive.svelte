@@ -27,13 +27,10 @@
 <div class="archive" id="workflow-panel-research" role="tabpanel" aria-label="Research" tabindex="0">
   <header>
     <div>
-      <p class="eyebrow">Research archive</p>
       <h1>Research</h1>
-      <p class="intro">{evidenceBacked
-        ? "Open a problem to review its evidence."
-        : discoveryRan
+      {#if !evidenceBacked}<p class="intro">{discoveryRan
           ? "These candidates did not pass the evidence requirements."
-          : "User-stated problems. No discovery evidence was gathered."}</p>
+          : "User-stated problems. No discovery evidence was gathered."}</p>{/if}
     </div>
     <button class="export" disabled={busy} onclick={onExport}>{busy ? "Exporting…" : "Export research JSON"}</button>
   </header>
@@ -100,7 +97,6 @@
 
 <style>
   header { display:flex;align-items:center;justify-content:space-between;gap:24px; }
-  .eyebrow { display:none; }
   h1 { font-size:32px;font-weight:650;letter-spacing:-.045em;line-height:1.2;margin:0 0 10px; }
   header p:last-child { font-size:12px;margin:0;color:var(--muted); }
   .export { min-height:36px;padding:9px 12px;border:1px solid var(--border);border-radius:8px;background:transparent;color:var(--text);font-size:11px;white-space:nowrap; }

@@ -55,7 +55,7 @@
 
 <svelte:window onkeydown={(event) => { if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k") { event.preventDefault(); void showFinder(); } }} />
 <aside class="sidebar">
-  <div class="brand"><div class="brand-symbol"><BrandMark size={23} /></div><span>Scraply<small>Research workspace</small></span></div>
+  <div class="brand"><div class="brand-symbol"><BrandMark size={23} /></div><span>Scraply</span></div>
   <button class="new" aria-label="Create new research thread" disabled={busy} onclick={onNew}><Icon name="plus" size={17} />New research</button>
   <button bind:this={searchTrigger} class="find" onclick={showFinder}><Icon name="search" size={16} /><span>Find research</span><kbd>Ctrl K</kbd></button>
   <div class="list-head"><span>Your research</span><span>{threads.length}</span></div>
@@ -110,9 +110,8 @@
 </dialog>
 <style>
   .sidebar { display:grid;grid-template-rows:auto auto auto auto minmax(0,1fr) auto;gap:10px;padding:26px 16px 18px;background:var(--surface);min-height:0; }
-  .brand { display:flex;align-items:center;gap:10px;padding:0 8px 25px;font-size:18px;font-weight:700;letter-spacing:-.04em; }
+  .brand { display:flex;align-items:center;gap:10px;padding:4px 8px 23px;font-size:18px;font-weight:700;letter-spacing:-.04em; }
   .brand-symbol { color:var(--accent-strong); }
-  .brand small { display:block;font-weight:450;font-size:10px;letter-spacing:0;color:var(--subtle);margin-top:4px; }
   .new,.find { width:100%;display:flex;align-items:center;gap:10px;border-radius:9px;padding:11px 12px;font-size:12px;font-weight:550; }
   .new { border:1px solid #71cfba28;background:#71cfba0c;color:var(--accent-strong); }
   .new:hover:not(:disabled) { background:#71cfba18;border-color:#71cfba55; }
@@ -120,7 +119,7 @@
   .find:hover { background:var(--surface-2);color:var(--text); }
   .find kbd { margin-left:auto; }
   kbd { padding:2px 4px;border:1px solid var(--border);border-radius:4px;font:10px var(--sans);color:var(--subtle);white-space:nowrap; }
-  .list-head { display:flex;justify-content:space-between;padding:24px 12px 8px;color:var(--subtle);font-size:10px;font-weight:550; }
+  .list-head { display:flex;justify-content:space-between;padding:18px 12px 8px;color:var(--subtle);font-size:10px;font-weight:550; }
   .list { overflow:auto;display:grid;gap:4px;align-content:start; }
   .thread-row { position:relative;display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;border:1px solid transparent;border-radius:10px; }
   .thread-row:hover { background:#ffffff04; }

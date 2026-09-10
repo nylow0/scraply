@@ -15,7 +15,7 @@
   let filteredProblems = $derived(problems.filter((problem) => problem.statement.toLowerCase().includes(query.trim().toLowerCase())));
 </script>
 <section class="checkpoint">
-  <header><div><p class="eyebrow">Human checkpoint</p><h1>Choose problems to develop</h1><p>Open a problem to review the evidence and select it.</p></div><button class="export" disabled={busy} onclick={onExport}>Export research JSON</button></header>
+  <header><div><h1>Choose problems to develop</h1></div><button class="export" disabled={busy} onclick={onExport}>Export research JSON</button></header>
   <details class="evidence-key"><summary>How to read the evidence</summary><p>Plain quotes are source-verified. Dotted text is model-estimated. Amber borders mark weak or adverse verdicts.</p></details>
   <ResultsToolbar bind:query label="Search problems" count={filteredProblems.length} />
   <div class="problems">
@@ -55,9 +55,7 @@
 </section>
 <style>
   header { display:flex;align-items:center;justify-content:space-between;gap:24px; }
-  .eyebrow { display:none; }
   h1 { font-size:32px;font-weight:650;letter-spacing:-.045em;line-height:1.2;margin:0 0 10px; }
-  header p:last-child { font-size:12px;margin:0;color:var(--muted); }
   .export { min-height:36px;padding:9px 12px;border:1px solid var(--border);border-radius:8px;background:transparent;color:var(--text);font-size:11px;white-space:nowrap; }
   .problems { display:grid;gap:10px; }
   article { border:1px solid var(--border);border-radius:13px;background:linear-gradient(120deg,#1b202377,var(--surface));overflow:hidden;box-shadow:inset 0 1px #ffffff04; }

@@ -11,6 +11,8 @@
     type SearchProvider,
   } from "../../shared/schemas";
   import { untrack } from "svelte";
+  import { modelDisplayName, readResearchDefaults } from "../lib/research-defaults";
+  import ProviderLogo from "./ProviderLogo.svelte";
   import Icon from "./Icon.svelte";
 
   let { workspace, busy, onSave, onStart, onRetry, onOpenSettings } : {
@@ -22,6 +24,8 @@
   } = $props();
 
   const initial = untrack(() => workspace);
+  const defaults = untrack(readResearchDefaults);
+  const startingModel = initial.scope ? initial.runConfig?.model : defaults.model;
   let researchMode = $state<ResearchMode>(initial.runConfig?.researchMode ?? "explore-market");
   const workflowVersion = 2;
   let audienceSourcePolicy = $state<"web" | "communities">(initial.runConfig?.audienceSourcePolicy ?? "web");
@@ -34,7 +38,7 @@
   let offLimits = $state(initial.scope?.offLimits.join("\n") ?? "");
   let knownProblem = $state(initial.runConfig?.knownProblem ?? "");
   const legacyModelNeedsReplacement = initial.runConfig?.model.providerId === "legacy-codex-cli";
-  let initialModel = initial.runConfig?.model
+  let initialModel = startingModel
     ?? (initial.models.some((model) => sameModelRef(model, DEFAULT_RUN_CONFIG.model))
       ? DEFAULT_RUN_CONFIG.model
       : initial.modelOptions.find((item) => item.providerId === "openai-subscription") ?? DEFAULT_RUN_CONFIG.model);
@@ -52,8 +56,7 @@
       ? initial.runConfig.reasoningEffort
       : initialModelOption?.defaultReasoningEffort ?? DEFAULT_RUN_CONFIG.reasoningEffort);
   let discoveryDepth = $state(initial.runConfig?.discoveryDepth ?? DEFAULT_RUN_CONFIG.discoveryDepth);
-  let searchProvider = $state<SearchProvider>(initial.runConfig?.searchProvider
-    ?? (initial.validation.exa.valid ? "exa" : initial.validation.perplexity.valid ? "perplexity" : "exa"));
+  let searchProvider = $state<SearchProvider>(initial.scope ? initial.runConfig?.searchProvider ?? defaults.searchProvider : defaults.searchProvider);
   let maxRunMinutes = $state(initial.runConfig?.maxRunMinutes ?? DEFAULT_RUN_CONFIG.maxRunMinutes);
   let reasoningDescription = $derived(selectedModelOption?.reasoningEfforts.find((item) => item.id === reasoningEffort)?.description ?? "Controls how deeply the model reasons.");
   let depthDescription = $derived(discoveryDepth === "quick"
@@ -148,7 +151,7 @@
 <section class="scope-page">
   <header class="page-heading">
     <div class="heading-icon"><Icon name="research" size={25} /></div>
-    <div><h1>What do you want to explore?</h1><p>A starting point is all you need. Make it a question worth answering.</p></div>
+    <h1>Research setup</h1>
   </header>
   <form onsubmit={(event) => { event.preventDefault(); void saveAndStart(); }}>
     <div class="brief-column">
@@ -156,15 +159,15 @@
         <legend>Starting point</legend>
         <label class:active={researchMode === "explore-market"}>
           <input type="radio" name="research-mode" value="explore-market" checked={researchMode === "explore-market"} onchange={() => researchMode = "explore-market"} />
-          <Icon name="research" size={22} /><span><strong>Discover a problem</strong><small>Find an opening in a market.</small></span><span class="mode-check"><Icon name="check" size={14} /></span>
+          <Icon name="research" size={22} /><span><strong>Discover a problem</strong></span><span class="mode-check"><Icon name="check" size={14} /></span>
         </label>
         <label class:active={researchMode === "known-problem"}>
           <input type="radio" name="research-mode" value="known-problem" checked={researchMode === "known-problem"} onchange={() => researchMode = "known-problem"} />
-          <Icon name="ideas" size={22} /><span><strong>Start with a problem</strong><small>Explore ways to solve it.</small></span><span class="mode-check"><Icon name="check" size={14} /></span>
+          <Icon name="ideas" size={22} /><span><strong>Start with a problem</strong></span><span class="mode-check"><Icon name="check" size={14} /></span>
         </label>
       </fieldset>
       <section class="brief-panel" aria-label="Research brief">
-        <div class="panel-heading"><Icon name="brief" /><h2>Your brief</h2><span>Start here</span></div>
+        <div class="panel-heading"><Icon name="brief" /><h2>Your brief</h2></div>
     <div class="primary-fields">
       <label><span>Research name</span><input bind:value={title} aria-invalid={Boolean(errors.title)} aria-describedby={errors.title ? "title-error" : undefined} placeholder={researchMode === "explore-market" ? "Project ideas" : "Solution ideas"} />{#if errors.title}<small id="title-error" class="field-error">{errors.title}</small>{/if}</label>
       {#if researchMode === "known-problem"}
@@ -172,7 +175,7 @@
       {/if}
       <label class:discovery-context={researchMode === "explore-market"}><span>{researchMode === "explore-market" ? "What do you want to explore?" : "Market or domain (optional)"}</span>{#if researchMode === "explore-market"}<small>Use whatever starting point you have: a goal, competition, topic, audience, market, rough idea, or something more specific.</small>{/if}<textarea bind:value={domain} aria-invalid={Boolean(errors.domain)} aria-describedby={errors.domain ? "domain-error" : undefined} rows={researchMode === "explore-market" ? 4 : 2} placeholder={researchMode === "explore-market" ? "Describe your goal, topic, audience, or starting idea." : "Add any relevant market or domain context."}></textarea>{#if errors.domain}<small id="domain-error" class="field-error">{errors.domain}</small>{/if}</label>
       <label><span>{researchMode === "explore-market" ? "People or groups (optional)" : "Audience (optional)"}</span><input bind:value={audience} placeholder={researchMode === "explore-market" ? "Students, local communities, or leave blank" : "Owners of small repair shops"} /></label>
-      <label class="problem-field"><span>What should we evaluate risk against?</span><small>Describe what you need to protect or achieve. Leave blank to use the research goal and boundaries.</small><textarea bind:value={riskEvaluationCriteria} maxlength="4000" rows="3" placeholder="I have four weekends and $300. Evaluate risks to finishing a useful prototype, keeping costs within budget, and protecting customer data."></textarea></label>
+      <label class="problem-field"><span>What should we evaluate risk against?</span><textarea bind:value={riskEvaluationCriteria} maxlength="4000" rows="3" placeholder="I have four weekends and $300. Evaluate risks to finishing a useful prototype, keeping costs within budget, and protecting customer data."></textarea></label>
     </div>
 
 
@@ -190,15 +193,15 @@
     <aside class="configuration" aria-label="Run configuration">
       <div class="panel-heading"><Icon name="command" /><h2>Run configuration</h2></div>
     <div class="run-settings" class:known={researchMode === "known-problem"}>
-      <label class="run-setting model-setting"><span>Model</span><select bind:this={modelSelect} bind:value={modelKey} onchange={selectModel} disabled={nativeModelOptions.length === 0}>{#if !selectedModelAvailable}<option value={modelKey}>{legacyModelNeedsReplacement && !modelKey ? "Choose an OpenAI model" : workspace.validation.native.connected ? `${model.modelId} (unavailable)` : "Connect OpenAI to choose a model"}</option>{/if}{#if !astraAvailable}<option value="openai-subscription:gpt-6-astra" disabled>Astra (unavailable for this account)</option>{/if}{#each nativeModelOptions as item (modelRefKey(item))}<option value={modelRefKey(item)}>{item.modelId === "gpt-6-astra" ? "Astra" : item.displayName}</option>{/each}</select><small>{nativeModelOptions.length === 0 ? "Your available models appear here after you sign in." : "The model used throughout this research, including the independent risk evaluator."}</small></label>
+      <label class="run-setting model-setting"><span>Model</span><select aria-label="Model" bind:this={modelSelect} bind:value={modelKey} onchange={selectModel} disabled={nativeModelOptions.length === 0}>{#if !selectedModelAvailable}<option value={modelKey}>{legacyModelNeedsReplacement && !modelKey ? "Choose an OpenAI model" : workspace.validation.native.connected ? `${modelDisplayName(model)} (unavailable)` : "Connect OpenAI to choose a model"}</option>{/if}{#if !astraAvailable && model.modelId !== "gpt-6-astra"}<option value="openai-subscription:gpt-6-astra" disabled>Astra (unavailable for this account)</option>{/if}{#each nativeModelOptions as item (modelRefKey(item))}<option value={modelRefKey(item)}>{modelDisplayName(item)}</option>{/each}</select><small>{nativeModelOptions.length === 0 ? "Your available models appear here after you sign in." : "The model used throughout this research, including the independent risk evaluator."}</small></label>
       <label class="run-setting"><span>Reasoning</span><select title={reasoningDescription} bind:value={reasoningEffort}>{#each (selectedModelOption?.reasoningEfforts ?? [{ id: reasoningEffort, description: "" }]) as effort (effort.id)}<option value={effort.id}>{effort.id.charAt(0).toUpperCase() + effort.id.slice(1)}</option>{/each}</select><small>{reasoningDescription}</small></label>
       {#if researchMode === "explore-market"}<label class="run-setting"><span>Research depth</span><select title={depthDescription} bind:value={discoveryDepth}><option value="quick">Quick</option><option value="standard">Standard</option><option value="deep">Deep</option></select><small>{depthDescription}</small></label>{/if}
-      {#if researchMode === "explore-market"}<label class="run-setting search-setting"><span>Search provider</span><select aria-label="Search provider" bind:value={searchProvider}><option value="exa">Exa</option><option value="perplexity">Perplexity</option></select><small>{selectedSearchName}: {selectedSearchValidation.valid ? "Connected" : selectedSearchValidation.error ?? "Connection unavailable"}</small></label>{/if}
+      {#if researchMode === "explore-market"}<label class="run-setting search-setting"><span>Search provider</span><div class="provider-select"><ProviderLogo provider={searchProvider} size={17} /><select aria-label="Search provider" bind:value={searchProvider}><option value="exa">Exa</option><option value="perplexity">Perplexity</option></select></div><small>{selectedSearchName}: {selectedSearchValidation.valid ? "Connected" : selectedSearchValidation.error ?? "Connection unavailable"}</small></label>{/if}
     </div>
 
 
       <div class="output-settings">
-      <label><span>Ideas to generate</span><input type="number" bind:value={ideaCount} min="1" max={MAX_IDEA_COUNT} step="1" required aria-invalid={Boolean(errors.ideaCount)} aria-describedby={errors.ideaCount ? "idea-count-error" : undefined} /><small>Per selected problem. The model may return fewer if it cannot find enough useful, distinct ideas.</small>{#if errors.ideaCount}<small id="idea-count-error" class="field-error">{errors.ideaCount}</small>{/if}</label>
+      <label><span>Ideas per problem</span><input aria-label="Ideas to generate" type="number" bind:value={ideaCount} min="1" max={MAX_IDEA_COUNT} step="1" required aria-invalid={Boolean(errors.ideaCount)} aria-describedby={errors.ideaCount ? "idea-count-error" : undefined} /><small>Per selected problem. The model may return fewer if it cannot find enough useful, distinct ideas.</small>{#if errors.ideaCount}<small id="idea-count-error" class="field-error">{errors.ideaCount}</small>{/if}</label>
       {#if researchMode === "explore-market"}<label><span>Audience sources</span><select bind:value={audienceSourcePolicy}><option value="web">Across the web</option><option value="communities">Reddit and Hacker News</option></select><small>Choose communities only when they represent the people you want to understand.</small></label>{/if}
 
       </div>
@@ -229,17 +232,15 @@
       <button type="submit" class="primary" disabled={locked || !providersReady}>{locked ? (researchMode === "explore-market" ? "Starting discovery…" : "Starting development…") : (researchMode === "explore-market" ? "Discover problems" : "Generate solutions")}</button>
     </footer>
 
-      <p class="run-note">{researchMode === "explore-market" ? "You'll review the evidence before choosing what to develop." : "Your problem goes directly to idea development."}</p>
     </aside>
   </form>
 </section>
 
 <style>
   .scope-page { max-width:1250px;margin:0 auto;padding:36px var(--page-inline) 64px; }
-  .page-heading { display:flex;align-items:center;gap:18px;margin-bottom:32px; }
+  .page-heading { display:flex;align-items:center;gap:16px;margin-bottom:28px; }
   .heading-icon { display:grid;place-items:center;width:54px;height:54px;border:1px solid #71cfba26;border-radius:18px;background:#71cfba0c;color:var(--accent-strong);flex:none; }
-  h1 { margin:0 0 8px;font-size:clamp(24px,2.6vw,34px);line-height:1.2;letter-spacing:-.045em;font-weight:650; }
-  .page-heading p { margin:0;color:var(--muted);font-size:13px; }
+  h1 { margin:0;font-size:clamp(24px,2.6vw,32px);line-height:1.2;letter-spacing:-.045em;font-weight:650; }
   form { display:grid;grid-template-columns:minmax(0,1fr) 285px;gap:24px;align-items:start; }
   .brief-column { min-width:0; }
   fieldset { border:0;padding:0;margin:0 0 22px; }
@@ -253,13 +254,11 @@
   .mode-picker input { position:absolute;opacity:0;width:1px;height:1px; }
   .mode-picker label:focus-within { outline:2px solid var(--accent);outline-offset:3px; }
   .mode-picker strong { font-size:12px;font-weight:650; }
-  .mode-picker small { font-size:11px; }
   .mode-check { display:none;position:absolute;right:8px;top:8px;color:var(--accent); }
   .active .mode-check { display:block; }
   .brief-panel { padding:24px;border:1px solid var(--border);border-radius:18px;background:linear-gradient(145deg,#1b202355,transparent 65%);box-shadow:inset 0 1px #ffffff04; }
   .panel-heading { display:flex;align-items:center;gap:9px;margin-bottom:20px;color:var(--muted); }
   .panel-heading h2 { margin:0;font-size:13px;color:var(--text);font-weight:650; }
-  .panel-heading > span { margin-left:auto;font-size:10px;color:var(--subtle); }
   .primary-fields { display:grid;gap:22px; }
   label { display:grid;gap:8px;min-width:0; }
   label > span { font-size:12px;font-weight:600; }
@@ -278,8 +277,11 @@
   .run-settings { display:grid;grid-template-columns:1fr 1fr;gap:14px 12px; }
   .model-setting,.search-setting { grid-column:1/-1; }
   .output-settings { display:grid;grid-template-columns:.8fr 1.2fr;gap:12px; }
-  .output-settings label { grid-template-rows:30px auto;align-content:start;gap:4px; }
+  .output-settings label { grid-template-rows:32px auto;align-content:start;gap:4px; }
   .run-setting { gap:7px; }
+  .provider-select { position:relative;color:var(--text); }
+  .provider-select :global(svg) { position:absolute;left:12px;top:50%;transform:translateY(-50%);pointer-events:none; }
+  .provider-select select { padding-left:38px; }
   .run-setting small { display:none; }
   .output-settings { border-top:1px solid var(--border);margin-top:18px;padding-top:18px; }
   .output-settings label > small { display:none; }
@@ -293,8 +295,7 @@
   footer > span { color:var(--success);font-size:11px; }
   .primary { min-height:44px;background:var(--accent-strong);border-color:transparent;color:var(--accent-ink);font-size:12px;box-shadow:0 4px 16px #71cfba12; }
   .primary:hover:not(:disabled) { box-shadow:0 4px 24px #71cfba25;transform:translateY(-1px); }
-  .run-note { color:var(--subtle);font-size:10px;line-height:1.6;margin:14px 0 0;text-align:center; }
-  @media(max-width:1100px) { form { grid-template-columns:minmax(0,1fr) 250px;gap:16px; }.mode-picker label { padding:16px 10px;gap:8px; }.mode-picker small { display:none; }.brief-panel { padding:20px; }.configuration { padding:18px; } }
+  @media(max-width:1100px) { form { grid-template-columns:minmax(0,1fr) 250px;gap:16px; }.mode-picker label { padding:16px 10px;gap:8px; }.brief-panel { padding:20px; }.configuration { padding:18px; } }
   @media(max-width:950px) { form { grid-template-columns:1fr; }.configuration { position:static; }.run-settings,.output-settings { grid-template-columns:1fr 1fr; }.scope-page { padding:28px 22px 48px; } }
   @media(max-width:560px) { .page-heading { align-items:start; }.heading-icon { display:none; }.mode-picker { grid-template-columns:1fr; }.run-settings,.output-settings { grid-template-columns:1fr; } }
   @media(max-height:760px) { .configuration { position:static; } }
