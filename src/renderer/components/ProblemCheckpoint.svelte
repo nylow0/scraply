@@ -1,4 +1,5 @@
 <script lang="ts">
+  import ResultsToolbar from "./ResultsToolbar.svelte";
   import type { ProblemCandidate, RejectedProblemCandidate } from "../../shared/ipc";
   import { untrack } from "svelte";
   import { SvelteSet } from "svelte/reactivity";
@@ -10,13 +11,16 @@
   let projected=$derived((selected.size+(userProblem.trim()?1:0))*3);
   function toggle(id:string){if(selected.has(id))selected.delete(id);else selected.add(id)}
   function useAsUserAsserted(statement:string){userProblem=statement;userProblemTextarea?.focus()}
+  let query = $state("");
+  let filteredProblems = $derived(problems.filter((problem) => problem.statement.toLowerCase().includes(query.trim().toLowerCase())));
 </script>
 <section class="checkpoint">
   <header><div><p class="eyebrow">Human checkpoint</p><h1>Choose problems to develop</h1><p>Open a problem to review the evidence and select it.</p></div><button class="export" disabled={busy} onclick={onExport}>Export research JSON</button></header>
-  <div class="legend">Plain quotes are source-verified · dotted text is model-estimated · amber borders mark weak or adverse verdicts</div>
+  <details class="evidence-key"><summary>How to read the evidence</summary><p>Plain quotes are source-verified. Dotted text is model-estimated. Amber borders mark weak or adverse verdicts.</p></details>
+  <ResultsToolbar bind:query label="Search problems" count={filteredProblems.length} />
   <div class="problems">
-    {#each problems as problem,index (problem.id)}
-      <article class:warning={["insufficient-evidence","overstated","attempted-and-failed"].includes(problem.verdict)} style={`--index:${index}`}>
+    {#each filteredProblems as problem,index (problem.id)}
+      <article class:picked={selected.has(problem.id)} class:warning={["insufficient-evidence","overstated","attempted-and-failed"].includes(problem.verdict)} style={`--index:${index}`}>
         <details class="problem-disclosure">
           <summary class="disclosure-title" title={problem.statement}><span class="disclosure-label">{problem.statement}</span>{#if selected.has(problem.id)}<span aria-label="Selected for development">✓</span>{/if}</summary>
           <div class="disclosure-content">
@@ -29,7 +33,7 @@
           </div>
         </details>
       </article>
-    {:else}<div class="empty"><h2>No candidates passed the evidence requirements.</h2><p>Review what failed below, state the problem yourself, or edit the scope and run discovery again.</p></div>{/each}
+    {:else}{#if query}<p class="empty">No problems match "{query}".</p>{:else}<div class="empty"><h2>No candidates passed the evidence requirements.</h2><p>Review what failed below, state the problem yourself, or edit the scope and run discovery again.</p></div>{/if}{/each}
   </div>
   {#if rejectedCandidates.length > 0}
     <details class="rejected">
@@ -50,11 +54,52 @@
   <footer><p><strong>{selected.size+(userProblem.trim()?1:0)}</strong> problems selected · ~{projected} model calls projected</p><button disabled={busy||(!selected.size&&!userProblem.trim())} onclick={()=>onCommit([...selected],userProblem.trim()||null)}>{busy?"Starting…":"Commit selection"}</button></footer>
 </section>
 <style>
-  .checkpoint{max-width:1050px;margin:0 auto;padding:32px var(--page-inline) 110px}header{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:24px;align-items:end}.eyebrow{font:600 11px var(--sans);letter-spacing:0;text-transform:none;color:var(--accent-strong)}h1{font-size:28px;letter-spacing:-.04em;margin:9px 0}header p:last-child,.legend{color:var(--muted)}.export{min-height:38px;padding:9px 13px;border:1px solid var(--border-strong);border-radius:8px;background:var(--surface);color:var(--text);font-weight:550}.export:active:not(:disabled){transform:scale(.98)}.legend{margin:28px 0 18px;padding-top:16px;border-top:1px solid var(--border);font-size:12px}.problems{display:grid;gap:14px}article{border:1px solid var(--border);border-left:3px solid var(--border-strong);padding:22px 24px;background:var(--surface)}article.warning{border-left-color:#b98645}.pick{display:flex;gap:9px;align-items:center;font-weight:650}.pick input{accent-color:var(--accent-strong)}.verdict{display:flex;gap:8px;margin:14px 0}.verdict span{font:600 10px var(--sans);text-transform:none;border:1px solid var(--border-strong);border-radius:999px;padding:4px 8px;color:var(--muted)}h2{font-size:21px;letter-spacing:-.025em;margin:8px 0}article>p{color:var(--muted)}dl{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin:18px 0}dt{font:600 10px var(--sans);text-transform:none;color:var(--subtle)}dd{margin:4px 0}.estimated{text-decoration:underline dotted;text-underline-offset:4px}.reason{font-size:12px}.reason,details{border-top:1px solid var(--border);padding-top:14px}summary{cursor:pointer;color:var(--muted)}blockquote{margin:14px 0;padding-left:16px;border-left:1px solid var(--border-strong)}blockquote p{margin:0 0 6px}q{display:block;color:var(--text)}blockquote button{border:0;background:transparent;color:var(--accent-strong);padding:7px 0}.rejected{margin-top:24px}.rejected>summary{font-weight:650}.rejected>summary span{margin-left:7px;color:var(--subtle);font:600 10px var(--sans)}.rejected-list{display:grid;gap:12px;padding-top:14px}.rejected-item{border-left-color:var(--danger)}.use-rejected{margin-top:14px;padding:9px 12px;border:1px solid var(--border-strong);border-radius:7px;background:transparent;color:var(--text);font-weight:650}.use-rejected:hover:not(:disabled){background:var(--surface-2)}.escape{margin-top:24px;padding:22px 24px;border:1px dashed var(--border-strong)}.escape label{display:grid;gap:10px}.escape textarea{background:var(--bg);border:1px solid var(--border-strong);border-radius:8px;color:var(--text);padding:12px;resize:vertical}footer{position:sticky;bottom:0;margin-top:22px;padding:16px 20px;display:flex;justify-content:space-between;align-items:center;background:color-mix(in srgb,var(--surface) 92%,transparent);backdrop-filter:blur(12px);border:1px solid var(--border-strong)}footer p{margin:0;color:var(--muted)}footer button{padding:11px 16px;border-radius:8px;border:1px solid var(--accent);background:var(--accent-strong);color:var(--accent-ink);font-weight:700}@media(max-width:700px){.checkpoint{padding:28px 20px 80px}header{grid-template-columns:1fr;align-items:start}.export{justify-self:start}dl{grid-template-columns:1fr}footer{align-items:flex-start;gap:12px;flex-direction:column}}
-
-  article:has(> .problem-disclosure) { padding:0;border-radius:10px;overflow:hidden; }
+  header { display:flex;align-items:center;justify-content:space-between;gap:24px; }
+  .eyebrow { display:none; }
+  h1 { font-size:32px;font-weight:650;letter-spacing:-.045em;line-height:1.2;margin:0 0 10px; }
+  header p:last-child { font-size:12px;margin:0;color:var(--muted); }
+  .export { min-height:36px;padding:9px 12px;border:1px solid var(--border);border-radius:8px;background:transparent;color:var(--text);font-size:11px;white-space:nowrap; }
+  .problems { display:grid;gap:10px; }
+  article { border:1px solid var(--border);border-radius:13px;background:linear-gradient(120deg,#1b202377,var(--surface));overflow:hidden;box-shadow:inset 0 1px #ffffff04; }
+  article:has(> .problem-disclosure[open]) { border-color:var(--border-strong);background:var(--bg); }
+  article.warning { border-left:2px solid #b98645; }
   .problem-disclosure { padding:0;border:0; }
   .problem-disclosure > summary { color:var(--text); }
   .problem-disclosure[open] > summary { background:var(--surface-2); }
-  .problem-disclosure :global(.disclosure-content) { padding-top:16px; }
+  .problem-disclosure :global(.disclosure-content) { padding:22px 26px; }
+  dl:not(.summary) { display:grid;grid-template-columns:1fr 1fr;gap:20px;padding:18px 20px;border:1px solid var(--border);border-radius:10px;background:var(--surface);margin:18px 0; }
+  dt { color:var(--subtle);font-size:11px;font-weight:500; }
+  dd { margin:5px 0 0;font-size:13px;line-height:1.6;color:var(--muted); }
+  .estimated { text-decoration:underline dotted;text-underline-offset:4px; }
+  .reason { padding-top:14px;font-size:12px;border-top:1px solid var(--border);color:var(--muted); }
+  details { border-top:1px solid var(--border);padding-top:14px; }
+  summary { cursor:pointer;font-size:12px;color:var(--muted); }
+  blockquote { margin:14px 0;padding:16px 18px;border:1px solid var(--border);border-left:2px solid #71cfba55;border-radius:0 10px 10px 0;background:var(--surface);font-size:12px;line-height:1.8; }
+  blockquote p { color:var(--muted);margin:0 0 8px; }q { display:block;font-size:14px;color:var(--text); }
+  blockquote small { display:block;margin-top:9px;color:var(--subtle);font-size:10px; }
+  blockquote button { display:block;padding:8px 0 0;border:0;background:transparent;color:var(--accent-strong);font-size:11px; }
+  .rejected { margin-top:22px;font-size:12px; }
+  .rejected > summary span { margin-left:8px;color:var(--subtle); }
+  .rejected-list { display:grid;gap:12px;padding-top:16px; }
+  .rejected-item { border-color:#df92922a;padding:20px; }
+  h2 { font-size:16px;font-weight:550;line-height:1.5; }.rejected-item p { font-size:12px;color:var(--muted); }
+  .empty { padding:32px 20px;color:var(--muted);font-size:13px;border:1px dashed var(--border-strong);border-radius:12px; }.empty h2 { font-size:17px; }
+  @media(max-width:800px) { header { flex-direction:column;align-items:start; }dl:not(.summary) { grid-template-columns:1fr; }.problem-disclosure :global(.disclosure-content) { padding:18px; } }
+
+  .checkpoint { max-width:1120px;margin:auto;padding:38px var(--page-inline) 80px; }
+  .evidence-key { margin-top:20px;padding:0;border:0;font-size:11px;color:var(--muted); }
+  .evidence-key p { max-width:76ch;margin:10px 0 0; }
+  article.picked { border-color:#71cfba60; }
+  .pick { display:flex;gap:9px;align-items:center;width:fit-content;padding:10px 14px;border:1px solid #71cfba30;border-radius:8px;background:#71cfba08;font-size:12px;color:var(--accent-strong); }
+  .pick input { width:15px;height:15px;accent-color:var(--accent); }
+  .verdict { display:flex;gap:8px;margin:14px 0; }
+  .verdict span { font-size:10px;border:1px solid var(--border-strong);border-radius:6px;padding:4px 8px;color:var(--muted); }
+  .use-rejected { padding:9px 12px;border:1px solid var(--border-strong);border-radius:8px;background:var(--surface-2);color:var(--text);font-size:11px; }
+  .escape { margin-top:24px;border:1px solid var(--border);border-radius:13px;padding:20px;background:var(--surface); }
+  .escape label { display:grid;gap:12px; }.escape label > span { color:var(--muted);font-size:12px; }
+  .escape textarea { font-size:13px;background:var(--bg);border:1px solid var(--border-strong);border-radius:8px;color:var(--text);padding:12px;resize:vertical; }
+  footer { position:sticky;bottom:16px;display:flex;align-items:center;justify-content:space-between;gap:16px;margin-top:24px;border:1px solid var(--border-strong);border-radius:13px;padding:16px 20px;box-shadow:0 8px 32px #0005;background:color-mix(in srgb,var(--surface) 94%,transparent);backdrop-filter:blur(16px); }
+  footer p { margin:0;color:var(--muted);font-size:11px; }footer strong { display:inline-block;font-size:15px;color:var(--accent-strong);margin-right:5px; }
+  footer button { padding:11px 16px;font-size:12px;font-weight:650;border:0;border-radius:9px;background:var(--accent-strong);color:var(--accent-ink); }
+  @media(max-width:700px) { footer { flex-direction:column;align-items:stretch; }.checkpoint { padding:28px 22px 60px; } }
 </style>

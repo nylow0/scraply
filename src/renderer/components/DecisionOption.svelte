@@ -82,7 +82,7 @@
 </script>
 
 <article class:selected={idea.selected}>
-  <button class="disclosure-title" title={idea.mechanism} aria-expanded={open} aria-controls={`option-body-${idea.id}`} onclick={() => open = !open}>
+  <button class="disclosure-title" class:expanded={open} title={idea.mechanism} aria-expanded={open} aria-controls={`option-body-${idea.id}`} onclick={() => open = !open}>
     <span class="disclosure-label">{idea.mechanism}</span>
   </button>
   {#if open}
@@ -92,6 +92,7 @@
         <p>{idea.description}</p></div>
       {#if idea.selectable}<button class="primary" disabled={busy} onclick={() => onSelect(idea)}>Choose and analyze</button>{/if}
     </header>
+    <div class="option-overview">
     <p class="problem">{idea.problemStatement}</p>
     <dl>
       <div><dt>Key assumption</dt><dd>{idea.keyAssumption}</dd></div>
@@ -99,15 +100,18 @@
       <div><dt>Constraints</dt><dd>{idea.respectsOffLimits ? "" : "Possible conflict. "}{idea.respectsOffLimitsWhy}</dd></div>
     </dl>
     {#if idea.unknowns?.length}<h3>Still uncertain</h3><ul>{#each idea.unknowns as unknown, index (index)}<li>{unknown}</li>{/each}</ul>{/if}
+    </div>
       {#if loading}<p role="status">Loading saved details…</p>{/if}
       {#if error}<p role="alert">{error}</p><button onclick={loadDetail}>Retry details</button>{/if}
       {#if detail}
+        <div class="source-columns">
         <section aria-label="Sources supporting this option"><h3>Sources supporting this option</h3>
           <ul>{#each supportingReferences as source (source.id)}<li>{#if source.url}<a href={source.url} onclick={(event) => { event.preventDefault(); void onOpenSource(source.url!); }}>{source.title}</a>{:else}{source.title}{/if}</li>{:else}<li>No supporting sources cited for this option.</li>{/each}</ul>
         </section>
         <section aria-label="Sources challenging this option"><h3>Sources challenging this option</h3>
           <ul>{#each contraryReferences as source (source.id)}<li>{#if source.url}<a href={source.url} onclick={(event) => { event.preventDefault(); void onOpenSource(source.url!); }}>{source.title}</a>{:else}{source.title}{/if}</li>{:else}<li>No contrary sources cited for this option.</li>{/each}</ul>
         </section>
+        </div>
         <p class="status">These roles are the model's assessment of this option. The original problem evidence follows.</p>
         <h3>Observations about the problem</h3>
         {#each detail.factors as factor (factor.id)}
@@ -162,7 +166,7 @@
               <button disabled={busy || !followUpQuestion.trim()}>Check evidence</button>
             </form>
           {/if}
-          <form onsubmit={(event) => { event.preventDefault(); void save(); }}>
+          <form class="decision-editor" onsubmit={(event) => { event.preventDefault(); void save(); }}>
             <h3>Your decision and actual result</h3><p>Keep observations separate from the model's proposals.</p>
             <label>Your decision<textarea rows="3" maxlength="8000" bind:value={userDecision} oninput={() => saved = false}></textarea></label>
             <label>Observed test result<textarea rows="3" maxlength="8000" bind:value={observedResult} oninput={() => saved = false} placeholder="Leave empty until you have an observation."></textarea></label>
@@ -175,20 +179,37 @@
 </article>
 
 <style>
-  article { border: 1px solid var(--border); border-radius: 10px; padding: 0; overflow: hidden; background: var(--surface); }
-  article.selected { border-color: var(--accent-strong); }
-  header { display: flex; justify-content: space-between; gap: 24px; align-items: start; }
-  h3 { margin: 24px 0 10px; font-size: 16px; }
-  p { line-height: 1.55; }
-  .status, .problem { color: var(--muted); font-size: 12px; }
-  dl { display: grid; gap: 16px; } dt { color: var(--muted); font-size: 12px; margin-bottom: 4px; } dd { margin: 0; }
-  button { padding: 10px 14px; border: 1px solid var(--border-strong); border-radius: 7px; background: var(--surface-2); color: var(--text); }
-  .primary { border-color: var(--accent-strong); flex-shrink: 0; }
-  summary { cursor: pointer; padding: 14px 0; } details { border-top: 1px solid var(--border); margin-top: 18px; }
-  blockquote { margin: 16px 0; border-left: 2px solid var(--border-strong); padding-left: 16px; } footer { margin-top: 7px; }
-  .finding { border-bottom: 1px solid var(--border); padding: 12px 0; }
-  .experiment { border: 1px solid var(--border-strong); border-radius: 8px; padding: 0 20px 20px; margin-top: 24px; }
-  label { display: grid; gap: 8px; margin: 16px 0; } textarea { width: 100%; background: var(--surface-2); color: var(--text); border: 1px solid var(--border-strong); border-radius: 6px; padding: 12px; }
-  .source-text { white-space: pre-wrap; max-height: 360px; overflow: auto; } form span { margin-left: 12px; }
-  @media (max-width: 650px) { header { flex-direction: column; } article { padding: 0; } }
+  article { border:1px solid var(--border);border-radius:13px;padding:0;overflow:hidden;background:linear-gradient(120deg,#1b202377,var(--surface));box-shadow:inset 0 1px #ffffff04; }
+  article.selected { border-color:#71cfba60; }
+  .disclosure-title.expanded { background:var(--surface-2); }
+  .disclosure-content { background:var(--bg);padding:24px 28px 30px; }
+  header { display:flex;justify-content:space-between;gap:24px;align-items:start;padding-bottom:22px; }
+  header > div { min-width:0; }header p { margin:8px 0 0;max-width:70ch;font-size:15px;line-height:1.8; }
+  header .status { margin:0;font-size:10px;color:var(--accent); }
+  h3 { margin:28px 0 12px;font-size:14px;font-weight:650;letter-spacing:-.015em; }
+  p,li { line-height:1.8;font-size:12px;max-width:78ch;color:var(--muted); }
+  ul { padding-left:20px; }li + li { margin-top:7px; }
+  .status,.problem { color:var(--subtle);font-size:11px;line-height:1.7; }
+  .option-overview { padding:20px 22px;background:var(--surface);border:1px solid var(--border);border-radius:12px; }
+  .option-overview .problem { margin:0 0 18px;padding-bottom:16px;border-bottom:1px solid var(--border);color:var(--text);font-size:12px; }
+  dl { display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:22px;margin:0; }
+  dt { color:var(--subtle);font-size:10px;margin-bottom:8px; }dd { margin:0;color:var(--muted);font-size:12px;line-height:1.8; }
+  button:not(.disclosure-title) { padding:10px 14px;border:1px solid var(--border-strong);border-radius:8px;background:var(--surface-2);color:var(--text);font-size:11px;font-weight:550; }
+  button.primary { background:var(--accent-strong);color:var(--accent-ink);border-color:transparent;flex-shrink:0; }
+  summary { cursor:pointer;padding:14px 0;font-size:12px;color:var(--muted); }details { border-top:1px solid var(--border);margin-top:18px; }
+  .source-columns { display:grid;grid-template-columns:1fr 1fr;gap:24px;border-bottom:1px solid var(--border);padding-bottom:18px; }
+  .source-columns section { min-width:0; }.source-columns h3 { font-size:12px; }.source-columns ul { padding-left:16px; }.source-columns a { overflow-wrap:anywhere; }
+  blockquote { margin:16px 0;padding:18px 20px;border:1px solid var(--border);border-left:2px solid #71cfba55;border-radius:0 10px 10px 0;background:var(--surface);font-size:13px;line-height:1.8;max-width:78ch; }
+  footer { margin-top:10px;font-size:11px; }.estimated { display:block;color:var(--subtle);font-size:10px;margin-top:8px; }
+  .finding { border-bottom:1px solid var(--border);padding:18px 0; }.finding strong { font-size:13px;font-weight:550; }.finding p { margin-bottom:0; }
+  .experiment { border:1px solid #71cfba38;border-radius:14px;padding:22px;margin-top:28px;background:#71cfba05; }
+  .experiment h3 { margin:0 0 14px;color:var(--accent-strong);font-size:12px; }.experiment > strong { font-size:16px;font-weight:600;line-height:1.6;display:block;max-width:70ch; }
+  .experiment dl { padding-top:18px;border-top:1px solid var(--border);margin-top:18px; }
+  form { border:1px solid var(--border);padding:22px;border-radius:14px;background:var(--surface);margin-top:24px; }
+  form h3 { margin:0 0 8px; }form > p { margin:0 0 20px; }
+  label { display:grid;gap:8px;margin:16px 0;font-size:12px;color:var(--muted); }
+  textarea { width:100%;background:var(--bg);color:var(--text);border:1px solid var(--border-strong);border-radius:9px;padding:12px;resize:vertical;font-size:12px; }
+  .decision-editor { display:grid;grid-template-columns:1fr 1fr;gap:0 20px; }.decision-editor h3,.decision-editor > p { grid-column:1/-1; }.decision-editor button { width:fit-content; }.decision-editor label { margin-top:0; }
+  .source-text { white-space:pre-wrap;max-height:360px;overflow:auto; }form span { margin-left:12px;font-size:11px;color:var(--success); }
+  @media(max-width:850px) { dl { grid-template-columns:1fr;gap:16px; }.source-columns { grid-template-columns:1fr;gap:0; }.decision-editor { grid-template-columns:1fr; }.disclosure-content { padding:20px; }header { flex-direction:column;gap:16px; } }
 </style>

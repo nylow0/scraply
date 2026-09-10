@@ -1,28 +1,29 @@
 @import "tailwindcss";
+@import "@fontsource-variable/plus-jakarta-sans";
 
 :root {
   color-scheme: dark;
-  --bg: #202020;
-  --surface: #181818;
-  --surface-2: #292929;
-  --border: #343434;
-  --border-strong: #484848;
-  --text: #ededed;
-  --muted: #b0b0b0;
-  --subtle: #969696;
-  --accent: #c9c9c9;
-  --accent-strong: #ededed;
-  --accent-ink: #202020;
+  --bg: #111416;
+  --surface: #0b0e10;
+  --surface-2: #1b2023;
+  --border: #272e32;
+  --border-strong: #3c484e;
+  --text: #edf2f1;
+  --muted: #a0acae;
+  --subtle: #849295;
+  --accent: #71cfba;
+  --accent-strong: #92ead5;
+  --accent-ink: #09221c;
   --danger: #df9292;
   --success: #79b98f;
   --mono: "Geist Mono", "Cascadia Code", ui-monospace, monospace;
-  --sans: "Segoe UI Variable Text", "Aptos", system-ui, sans-serif;
+  --sans: "Plus Jakarta Sans Variable", "Segoe UI", system-ui, sans-serif;
   --ease: cubic-bezier(0.16, 1, 0.3, 1);
 
   /* Shared page metrics. Every main-area page uses these so the left edge,
      max width, and top offset line up when switching between them. */
   --page-inline: clamp(20px, 3vw, 40px);
-  --page-top: 30px;
+  --page-top: 38px;
   --page-max: 1180px;
 }
 
@@ -107,7 +108,7 @@ select:disabled {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  * {
+  *, *::before, *::after, *::details-content {
     animation: none !important;
     transition: none !important;
   }
@@ -121,12 +122,12 @@ select:disabled {
   width: 100%;
   min-width: 0;
   min-height: 56px;
-  padding: 16px 18px;
+  padding: 21px 22px;
   border: 0;
   background: transparent;
   color: var(--text);
-  font-size: 14px;
-  font-weight: 550;
+  font-size: 15px;
+  font-weight: 600;
   text-align: left;
   list-style: none;
   cursor: pointer;
@@ -146,7 +147,7 @@ select:disabled {
 }
 details[open] > .disclosure-title::after, .disclosure-title[aria-expanded="true"]::after { transform: rotate(45deg); }
 .disclosure-title:hover { background: var(--surface-2); }
-.disclosure-content { padding: 4px 20px 20px; border-top: 1px solid var(--border); }
+.disclosure-content { padding: 16px 26px 26px; border-top: 1px solid var(--border); }
 .disclosure-content > p { max-width: 76ch; color: var(--muted); }
 
 details[open] > .disclosure-title .disclosure-label,
@@ -157,3 +158,21 @@ details[open] > .disclosure-title .disclosure-label,
 
 .disclosure-title:focus-visible { outline-offset: -3px; border-radius: 8px; }
 button:disabled { opacity: .45; }
+
+/* Expansion communicates where detail belongs. Reduced motion disables these globally. */
+:root { interpolate-size: allow-keywords; }
+details::details-content {
+  block-size: 0;
+  overflow: clip;
+  transition: block-size 260ms var(--ease), content-visibility 260ms allow-discrete;
+}
+details[open]::details-content { block-size: auto; }
+@keyframes detail-reveal { from { opacity: 0; transform: translateY(-5px); } to { opacity: 1; transform: none; } }
+.disclosure-content { animation: detail-reveal 220ms var(--ease); }
+.disclosure-title::before { content:""; width:7px; height:7px; border:1px solid var(--subtle); border-radius:50%; flex:none; }
+.disclosure-title[aria-expanded="true"]::before, details[open] > .disclosure-title::before { background:var(--accent); border-color:var(--accent); }
+a { color:var(--accent-strong); text-underline-offset:3px; }
+input, textarea, select { transition:border-color 180ms ease, box-shadow 180ms ease; }
+input:focus, textarea:focus, select:focus { border-color:var(--accent) !important; box-shadow:0 0 0 3px #71cfba12; }
+textarea { line-height:1.65; }
+::placeholder { color:var(--subtle); opacity:.8; }

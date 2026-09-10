@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Icon from "./Icon.svelte";
   export type WorkflowStep = "setup" | "research" | "ideas";
 
   let {
@@ -60,7 +61,7 @@
         onclick={() => onSelect(step.id)}
         onkeydown={(event) => handleKeydown(event, step.id)}
       >
-        <span class="number">{step.number}</span>
+        <span class="step-icon"><Icon name={step.id === "setup" ? "brief" : step.id === "research" ? "research" : "ideas"} size={16} /></span>
         <span>{step.label}</span>
         <i aria-hidden="true"></i>
       </button>
@@ -69,101 +70,16 @@
 </nav>
 
 <style>
-  .workflow-tabs {
-    position: sticky;
-    top: 48px;
-    z-index: 2;
-    overflow-x: auto;
-    border-bottom: 1px solid var(--border);
-    background: color-mix(in srgb, var(--bg) 94%, transparent);
-    backdrop-filter: blur(12px);
-    scrollbar-width: none;
-  }
-
-  .workflow-tabs::-webkit-scrollbar {
-    display: none;
-  }
-
-  [role="tablist"] {
-    display: flex;
-    min-width: max-content;
-    padding: 0 var(--page-inline);
-  }
-
-  button {
-    position: relative;
-    display: grid;
-    grid-template-columns: auto auto;
-    align-items: center;
-    gap: 8px;
-    min-width: 112px;
-    height: 48px;
-    padding: 0 18px;
-    border: 0;
-    border-radius: 6px 6px 0 0;
-    background: transparent;
-    color: var(--subtle);
-    font-weight: 550;
-    text-align: left;
-    transition: color .25s var(--ease), background .25s var(--ease), transform .2s var(--ease);
-  }
-
-  button:last-child {
-    border-right: 0;
-  }
-
-  button:not(:disabled):hover {
-    color: var(--text);
-    background: var(--surface);
-  }
-
-  button:not(:disabled):active {
-    transform: translateY(1px);
-  }
-
-  button:disabled {
-    cursor: not-allowed;
-    opacity: .38;
-  }
-
-  button.active {
-    color: var(--text);
-    background: var(--surface);
-  }
-
-  button i {
-    position: absolute;
-    right: 18px;
-    bottom: -1px;
-    left: 18px;
-    height: 2px;
-    background: transparent;
-    transform: scaleX(.35);
-    transition: transform .3s var(--ease), background .3s var(--ease);
-  }
-
-  button.active i {
-    background: var(--accent-strong);
-    transform: scaleX(1);
-  }
-
-  .number {
-    font: 600 10px var(--mono);
-    color: var(--subtle);
-  }
-
-  button.complete .number {
-    color: var(--accent-strong);
-  }
-
-  @media (max-width: 720px) {
-    [role="tablist"] {
-      padding: 0 14px;
-    }
-
-    button {
-      min-width: 112px;
-      padding-inline: 14px;
-    }
-  }
+  .workflow-tabs { position:sticky;top:54px;z-index:2;padding:14px var(--page-inline);background:color-mix(in srgb,var(--bg) 94%,transparent);backdrop-filter:blur(18px);border-bottom:1px solid var(--border); }
+  [role="tablist"] { display:flex;align-items:center;gap:22px; }
+  button { position:relative;display:flex;align-items:center;gap:9px;height:36px;padding:0 14px 0 6px;border:1px solid transparent;border-radius:9px;background:transparent;color:var(--muted);font-size:12px;font-weight:600; }
+  button + button::before { content:"";position:absolute;width:14px;height:1px;background:var(--border-strong);left:-20px; }
+  button.active { background:#71cfba0b;color:var(--accent-strong);border-color:#71cfba20; }
+  button:hover:not(:disabled) { background:var(--surface-2); }
+  button:disabled { opacity:.38; }
+  .step-icon { display:grid;place-items:center;width:26px;height:26px;border-radius:7px;color:var(--muted); }
+  .active .step-icon { background:#71cfba16;color:var(--accent-strong); }
+  button i { position:absolute;bottom:-15px;left:12px;right:12px;height:2px;background:var(--accent);opacity:0;transform:scaleX(.4);transition:transform 250ms var(--ease),opacity 250ms; }
+  button.active i { opacity:1;transform:scaleX(1); }
+  @media(max-width:650px) { .workflow-tabs { padding-inline:14px; }[role="tablist"] { gap:14px; }button { padding-right:8px;gap:4px; }button + button::before { left:-12px;width:8px; } }
 </style>

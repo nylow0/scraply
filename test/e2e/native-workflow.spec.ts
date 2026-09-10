@@ -48,7 +48,7 @@ test("recovers an expired native session through installed sign-in and restores 
     await expect(page.getByText("synthetic-account", { exact: true })).toBeVisible();
     await expect(page.getByRole("option", { name: /Mod/ })).toHaveCount(1);
     await expect(page.getByLabel("Research name", { exact: true })).toHaveValue("Unsaved auth recovery draft");
-    await page.screenshot({ path: testInfo.outputPath("native-auth-recovered.png") });
+    await page.screenshot({ animations: "disabled", path: testInfo.outputPath("native-auth-recovered.png") });
 
     const operations = readFileSync(join(directory, "operations.txt"), "utf8").trim().split("\n");
     expect(operations.filter((operation) => operation === "account.refresh")).toHaveLength(1);
@@ -116,7 +116,7 @@ test("native v2 research survives the installed selection, risk evaluation, and 
       await page.reload();
       await expect(page.getByText("This project used the removed CLI integration. Choose an OpenAI model to start a new run.", { exact: true })).toBeVisible();
       await expect(page.getByRole("button", { name: "Retry connections", exact: true })).toHaveCount(0);
-      await page.screenshot({ path: testInfo.outputPath("legacy-model-choice.png") });
+      await page.screenshot({ animations: "disabled", path: testInfo.outputPath("legacy-model-choice.png") });
       const modelSelect = page.getByRole("combobox", { name: /Model/ });
       await page.getByRole("button", { name: "Choose model", exact: true }).click();
       await expect(modelSelect).toBeFocused();
@@ -148,12 +148,18 @@ test("native v2 research survives the installed selection, risk evaluation, and 
       await page.getByRole("button", { name: "Check evidence", exact: true }).click();
       const followUp = page.getByRole("region", { name: "Evidence follow-up result" });
       await expect(followUp.getByText("This option has used its one evidence follow-up.", { exact: true })).toBeVisible();
-      await page.screenshot({ path: testInfo.outputPath("native-follow-up.png") });
+      await page.screenshot({ animations: "disabled", path: testInfo.outputPath("native-follow-up.png") });
       await expect(followUp.locator("blockquote").filter({ hasText: "Parts delivery windows are uncertain." })).toHaveCount(2);
       await expect(followUp.getByRole("link", { name: "Synthetic delivery report 0" })).toBeVisible();
       await expect(page.getByRole("button", { name: "Check evidence", exact: true })).toHaveCount(0);
       await page.getByLabel("Your decision", { exact: true }).fill("Pilot with one supplier");
       await page.getByLabel("Observed test result", { exact: true }).fill("Nine of ten estimates matched arrivals");
+      // Filtering changes visibility without unmounting an open idea or discarding its draft.
+      await page.getByRole("textbox", { name: "Search ideas" }).fill("no matching idea");
+      await expect(page.getByLabel("Your decision", { exact: true })).not.toBeVisible();
+      await page.getByRole("button", { name: "Clear filter" }).click();
+      await expect(page.getByLabel("Your decision", { exact: true })).toHaveValue("Pilot with one supplier");
+      await expect(page.getByLabel("Observed test result", { exact: true })).toHaveValue("Nine of ten estimates matched arrivals");
       await page.getByRole("button", { name: "Save decision and result", exact: true }).click();
       await expect(page.getByText("Saved", { exact: true })).toBeVisible();
       const progressTarget = await page.evaluate(async () => {
@@ -179,7 +185,7 @@ test("native v2 research survives the installed selection, risk evaluation, and 
       writeFileSync(testInfo.outputPath("progress-samples.json"), JSON.stringify({ samplesMs }, null, 2));
     }
     await expect(page.getByText("Observed order volume stays too sparse", { exact: true }).first()).toBeVisible();
-    await page.screenshot({ path: testInfo.outputPath("native-solutions.png") });
+    await page.screenshot({ animations: "disabled", path: testInfo.outputPath("native-solutions.png") });
     await events;
     expect(eventErrors).toEqual([]);
     await electron.close();
@@ -206,7 +212,7 @@ test("native v2 research survives the installed selection, risk evaluation, and 
     await page.locator(".problem-disclosure > summary").first().click();
     await page.getByText("2 cited factors", { exact: true }).click();
     await expect(page.getByText("Parts delivery windows are uncertain.", { exact: true }).first()).toBeVisible();
-    await page.screenshot({ path: testInfo.outputPath("native-reopened-evidence.png") });
+    await page.screenshot({ animations: "disabled", path: testInfo.outputPath("native-reopened-evidence.png") });
     expect(readFileSync(join(directory, "requests.jsonl"), "utf8").trim().split("\n")).toHaveLength(9);
     expect(existsSync(join(directory, "prompts", "solutions.md"))).toBe(false);
     expect(readFileSync(join(directory, "prompts", "retired-prompt-backups", managedHash, "solutions.md"), "utf8")).toBe(managedPrompt);
