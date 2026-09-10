@@ -55,6 +55,10 @@ select {
   font: inherit;
 }
 
+textarea { resize:none;overflow:auto; }
+input,textarea,select { font-size:13px;line-height:1.5; }
+button { line-height:1.4; }
+
 button {
   cursor: pointer;
   transition:

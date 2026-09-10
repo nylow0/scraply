@@ -27,7 +27,7 @@ test("recovers an expired native session through installed sign-in and restores 
   try {
     electron = await launch();
     let page = await electron.firstWindow();
-    await page.getByRole("button", { name: "Create research", exact: true }).click();
+    await expect(page.getByLabel("Research name", { exact: true })).toBeVisible();
 
     await page.getByLabel("Research name", { exact: true }).fill("Unsaved auth recovery draft");
     await page.getByRole("button", { name: "Settings", exact: true }).click();
@@ -99,7 +99,7 @@ test("native v2 research survives the installed selection, risk evaluation, and 
   try {
     electron = await launch();
     let page = await electron.firstWindow();
-    await page.getByRole("button", { name: "Create research", exact: true }).click();
+    await expect(page.getByLabel("Research name", { exact: true })).toBeVisible();
     await expect(page.getByRole("tabpanel", { name: "Research setup" })).toBeVisible();
     {
       await page.evaluate(async () => {

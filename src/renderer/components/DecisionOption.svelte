@@ -167,15 +167,15 @@
           {:else if idea.selected && idea.runId && analysis && idea.canRequestEvidenceFollowUp && onEvidenceFollowUp}
             <form onsubmit={(event) => { event.preventDefault(); void onEvidenceFollowUp(idea.runId!, followUpQuestion.trim()); }}>
               <h3>Ask one evidence question</h3>
-              <p>Run one focused follow-up search. The saved result will appear here.</p>
+              <p>One follow-up search per idea.</p>
               <label>Question<textarea rows="2" maxlength="500" bind:value={followUpQuestion} placeholder="What should we verify next?"></textarea></label>
               <button disabled={busy || !followUpQuestion.trim()}>Check evidence</button>
             </form>
           {/if}
           <form class="decision-editor" onsubmit={(event) => { event.preventDefault(); void save(); }}>
-            <h3>Your decision and actual result</h3><p>Keep observations separate from the model's proposals.</p>
+            <h3>Your decision and actual result</h3><p>Record what you decided and observed.</p>
             <label>Your decision<textarea rows="3" maxlength="8000" bind:value={userDecision} oninput={() => saved = false}></textarea></label>
-            <label>Observed test result<textarea rows="3" maxlength="8000" bind:value={observedResult} oninput={() => saved = false} placeholder="Leave empty until you have an observation."></textarea></label>
+            <label>Observed test result<textarea rows="3" maxlength="8000" bind:value={observedResult} oninput={() => saved = false} placeholder="What happened?"></textarea></label>
             <button disabled={busy}>Save decision and result</button>{#if saved}<span role="status">Saved</span>{/if}
           </form>
         {:else if idea.selected}<p>The analysis has not completed. Saved options remain available.</p>{/if}
@@ -191,31 +191,31 @@
   .disclosure-content { background:var(--bg);padding:24px 28px 30px; }
   header { display:flex;justify-content:space-between;gap:24px;align-items:start;padding-bottom:22px; }
   header > div { min-width:0; }header p { margin:8px 0 0;max-width:70ch;font-size:15px;line-height:1.8; }
-  header .status { margin:0;font-size:10px;color:var(--accent); }
+  header .status { margin:0;font-size:13px;color:var(--accent); }
   h3 { margin:28px 0 12px;font-size:14px;font-weight:650;letter-spacing:-.015em; }
-  p,li { line-height:1.8;font-size:12px;max-width:78ch;color:var(--muted); }
+  p,li { line-height:1.8;font-size:13px;max-width:78ch;color:var(--muted); }
   ul { padding-left:20px; }li + li { margin-top:7px; }
-  .status,.problem { color:var(--subtle);font-size:11px;line-height:1.7; }
+  .status,.problem { color:var(--subtle);font-size:13px;line-height:1.7; }
   .option-overview { padding:0;background:transparent;border:0;border-top:1px solid var(--border);border-radius:0;margin-top:0; }
-  .option-overview .problem { margin:0 0 18px;padding-bottom:16px;border-bottom:1px solid var(--border);color:var(--text);font-size:12px; }
+  .option-overview .problem { margin:0 0 18px;padding-bottom:16px;border-bottom:1px solid var(--border);color:var(--text);font-size:13px; }
   dl { display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:22px;margin:0; }
-  dt { color:var(--subtle);font-size:10px;margin-bottom:8px; }dd { margin:0;color:var(--muted);font-size:12px;line-height:1.8; }
-  button:not(.disclosure-title) { padding:10px 14px;border:1px solid var(--border-strong);border-radius:8px;background:var(--surface-2);color:var(--text);font-size:11px;font-weight:550; }
+  dt { color:var(--subtle);font-size:13px;margin-bottom:8px; }dd { margin:0;color:var(--muted);font-size:13px;line-height:1.8; }
+  button:not(.disclosure-title) { padding:10px 14px;border:1px solid var(--border-strong);border-radius:8px;background:var(--surface-2);color:var(--text);font-size:13px;font-weight:550; }
   button.primary { background:var(--accent-strong);color:var(--accent-ink);border-color:transparent;flex-shrink:0; }
   summary { cursor:pointer;padding:18px 0;font-size:14px;color:var(--muted); }details { border-top:1px solid var(--border);margin-top:18px; }
   .source-columns { display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:24px;border-bottom:1px solid var(--border);padding-bottom:18px; }
-  .source-columns section { min-width:0; }.source-columns h3 { font-size:12px; }.source-columns ul { padding-left:16px; }.source-columns a { overflow-wrap:anywhere; }
+  .source-columns section { min-width:0; }.source-columns h3 { font-size:13px; }.source-columns ul { padding-left:16px; }.source-columns a { overflow-wrap:anywhere; }
   blockquote { margin:16px 0;padding:18px 20px;border:1px solid var(--border);border-left:2px solid #71cfba55;border-radius:0 10px 10px 0;background:var(--surface);font-size:13px;line-height:1.8;max-width:78ch; }
-  footer { margin-top:10px;font-size:11px; }.estimated { display:block;color:var(--subtle);font-size:10px;margin-top:8px; }
+  footer { margin-top:10px;font-size:13px; }.estimated { display:block;color:var(--subtle);font-size:13px;margin-top:8px; }
   .finding { border-bottom:1px solid var(--border);padding:18px 0; }.finding strong { font-size:13px;font-weight:550; }.finding p { margin-bottom:0; }
   .experiment { border:1px solid #71cfba38;border-radius:14px;padding:22px;margin-top:28px;background:#71cfba05; }
-  .experiment h3 { margin:0 0 14px;color:var(--accent-strong);font-size:12px; }.experiment > strong { font-size:16px;font-weight:600;line-height:1.6;display:block;max-width:70ch; }
+  .experiment h3 { margin:0 0 14px;color:var(--accent-strong);font-size:13px; }.experiment > strong { font-size:16px;font-weight:600;line-height:1.6;display:block;max-width:70ch; }
   .experiment dl { padding-top:18px;border-top:1px solid var(--border);margin-top:18px; }
   form { border:1px solid var(--border);padding:22px;border-radius:14px;background:var(--surface);margin-top:24px; }
   form h3 { margin:0 0 8px; }form > p { margin:0 0 20px; }
-  label { display:grid;gap:8px;margin:16px 0;font-size:12px;color:var(--muted); }
-  textarea { width:100%;background:var(--bg);color:var(--text);border:1px solid var(--border-strong);border-radius:9px;padding:12px;resize:vertical;font-size:12px; }
+  label { display:grid;gap:8px;margin:16px 0;font-size:13px;color:var(--muted); }
+  textarea { width:100%;background:var(--bg);color:var(--text);border:1px solid var(--border-strong);border-radius:9px;padding:12px;resize:none;font-size:13px; }
   .decision-editor { display:grid;grid-template-columns:1fr 1fr;gap:0 20px; }.decision-editor h3,.decision-editor > p { grid-column:1/-1; }.decision-editor button { width:fit-content; }.decision-editor label { margin-top:0; }
-  .source-text { white-space:pre-wrap;max-height:360px;overflow:auto; }form span { margin-left:12px;font-size:11px;color:var(--success); }
+  .source-text { white-space:pre-wrap;max-height:360px;overflow:auto; }form span { margin-left:12px;font-size:13px;color:var(--success); }
   @media(max-width:850px) { dl { grid-template-columns:1fr;gap:16px; }.source-columns { grid-template-columns:1fr;gap:0; }.decision-editor { grid-template-columns:1fr; }.disclosure-content { padding:20px; }header { flex-direction:column;gap:16px; } }
 </style>

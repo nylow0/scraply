@@ -72,7 +72,7 @@
 <style>
   .workflow-tabs { position:sticky;top:54px;z-index:2;padding:14px var(--page-inline);background:color-mix(in srgb,var(--bg) 94%,transparent);backdrop-filter:blur(18px);border-bottom:1px solid var(--border); }
   [role="tablist"] { display:flex;align-items:center;gap:22px; }
-  button { position:relative;display:flex;align-items:center;gap:9px;height:36px;padding:0 14px 0 6px;border:1px solid transparent;border-radius:9px;background:transparent;color:var(--muted);font-size:12px;font-weight:600; }
+  button { position:relative;display:flex;align-items:center;gap:9px;height:36px;padding:0 14px 0 6px;border:1px solid transparent;border-radius:9px;background:transparent;color:var(--muted);font-size:13px;font-weight:600; }
   button + button::before { content:"";position:absolute;width:14px;height:1px;background:var(--border-strong);left:-20px; }
   button.active { background:#71cfba0b;color:var(--accent-strong);border-color:#71cfba20; }
   button:hover:not(:disabled) { background:var(--surface-2); }

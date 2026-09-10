@@ -17,7 +17,7 @@ test("the packaged backend reuses empty drafts without losing a setup draft or s
   });
   try {
     const page = await app.firstWindow();
-    await page.getByRole("button", { name: "Create research", exact: true }).click();
+    await expect(page.getByLabel("Research name", { exact: true })).toBeVisible();
     const name = page.getByLabel("Research name", { exact: true });
     await expect(name).toBeVisible();
     await name.fill("Unsaved research idea");
