@@ -419,8 +419,7 @@
     {:else if !workspace || !activeThread}
       <section class="welcome">
         <div class="welcome-symbol"><Icon name="research" size={32} /></div>
-        <p class="eyebrow">A place to think things through</p><h1>Find your next<br />worthwhile idea.</h1>
-        <p>Explore a question. Follow the evidence. Decide what deserves to be built.</p>
+        <h1>Find your next<br />worthwhile idea.</h1>
         <button disabled={busy} onclick={createThread}>{busy ? "Creating…" : "Create research"}<Icon name="arrow" size={17} /></button>
         <div class="welcome-path"><span><Icon name="brief" />Define your brief</span><i></i><span><Icon name="research" />Review the evidence</span><i></i><span><Icon name="ideas" />Develop an idea</span></div>
       </section>
@@ -442,7 +441,7 @@
       {#if activeThread.status === "discovery-running"}
         <div class="running" id="workflow-panel-research" role="tabpanel" aria-label="Research" tabindex="0">
           <div class="activity-symbol"><Icon name="research" size={30} /></div><p class="eyebrow">Discovery in progress</p>
-          <h1>Following the evidence.</h1><p class="activity-intro">Scraply is gathering sources and testing which problems hold up.</p>
+          <h1>Following the evidence.</h1>
           <div class="activity"><span></span><p>{latestEvent?.type === "run-progress" ? latestEvent.message : activeRun?.lastActivity ?? "Preparing the next provider call…"}</p></div>
           {#if activeRun}<div class="run-actions"><button class="cancel" disabled={busy} onclick={() => cancelResearch(activeRun.runId)}>Cancel run</button></div>{/if}
         </div>
@@ -490,14 +489,13 @@
   .welcome { min-height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;padding:72px 40px;background:radial-gradient(ellipse at 50% 38%,#71cfba07,transparent 55%); }
   .welcome-symbol,.activity-symbol { display:grid;place-items:center;width:76px;height:76px;border:1px solid #71cfba30;border-radius:24px;color:var(--accent-strong);background:#71cfba08;box-shadow:inset 0 1px #92ead515; }
   .eyebrow { font:500 12px var(--sans);color:var(--muted);margin:28px 0 0; }
-  .welcome h1 { font-size:clamp(38px,4.8vw,62px);font-weight:650;letter-spacing:-.05em;line-height:1.1;margin:12px 0 22px; }
-  .welcome > p:not(.eyebrow) { max-width:370px;font-size:14px;line-height:1.8;color:var(--muted);margin:0; }
+  .welcome h1 { font-size:clamp(38px,4.8vw,62px);font-weight:650;letter-spacing:-.05em;line-height:1.1;margin:28px 0 14px; }
   .welcome button { margin-top:28px;display:flex;align-items:center;gap:18px;border:0;border-radius:10px;padding:14px 20px;font-size:12px;font-weight:650;background:var(--accent-strong);color:var(--accent-ink);box-shadow:0 6px 24px #71cfba10; }
   .welcome-path { display:flex;align-items:center;gap:20px;margin-top:76px;color:var(--subtle);font-size:11px; }
   .welcome-path span { display:flex;align-items:center;gap:9px; }.welcome-path i { width:28px;height:1px;background:var(--border-strong); }
   .running,.failed { display:flex;flex-direction:column;align-items:start;max-width:900px;min-height:calc(100dvh - 160px);margin:auto;justify-content:center;padding:60px var(--page-inline); }
   .running h1,.failed h1 { font-size:38px;font-weight:600;letter-spacing:-.035em;line-height:1.25;max-width:620px;margin:10px 0 20px; }
-  .failed > p:not(.eyebrow),.activity-intro,.research-export-hint { color:var(--muted);font-size:13px;line-height:1.8;max-width:650px;margin:0; }
+  .failed > p:not(.eyebrow),.research-export-hint { color:var(--muted);font-size:13px;line-height:1.8;max-width:650px;margin:0; }
   .activity-symbol { position:relative; }.activity-symbol::after { content:"";position:absolute;inset:-5px;border:1px solid transparent;border-top-color:var(--accent);border-radius:28px;animation:orbit 4s linear infinite; }
   .activity { width:100%;display:flex;gap:14px;border:1px solid var(--border);border-radius:14px;padding:20px;background:var(--surface);margin:24px 0;align-items:center; }
   .activity p { margin:0;font-size:12px;color:var(--muted); }.activity span { width:7px;height:7px;border-radius:50%;background:var(--accent);flex:none;animation:pulse 1.5s ease infinite alternate; }

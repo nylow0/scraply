@@ -1,4 +1,6 @@
 <script lang="ts">
+  import ResearchDefaults from "./ResearchDefaults.svelte";
+  import ProviderLogo from "./ProviderLogo.svelte";
   import Icon from "./Icon.svelte";
   import type { NativeLoginStartResult, WorkspaceState } from "../../shared/ipc";
 
@@ -18,7 +20,7 @@
   } = $props();
 
   const searchProviders = ["exa", "perplexity"] as const;
-  let section = $state<"account" | "connections" | "local">("account");
+  let section = $state<"account" | "defaults" | "connections" | "local">("account");
   let dialog: HTMLDialogElement;
   let trigger: HTMLButtonElement;
   let nativeValidationPending = $derived(workspace?.validation.native.error?.startsWith("Checking ")
@@ -44,14 +46,14 @@
   <div class="settings-layout">
     <nav aria-label="Settings sections">
       <h1 id="settings-title">Settings</h1>
-      <p class="nav-caption">Your workspace</p>
       <button class:active={section === "account"} aria-pressed={section === "account"} onclick={() => section = "account"}><Icon name="command" size={16} />Account</button>
+      <button class:active={section === "defaults"} aria-pressed={section === "defaults"} onclick={() => section = "defaults"}><Icon name="brief" size={16} />Research defaults</button>
       <button class:active={section === "connections"} aria-pressed={section === "connections"} onclick={() => section = "connections"}><Icon name="research" size={16} />Connections</button>
       <button class:active={section === "local"} aria-pressed={section === "local"} onclick={() => section = "local"}><Icon name="folder" size={16} />Local files</button>
-      <span class="local-note">Saved on this device</span>
     </nav>
     <div class="settings-content">
-      <header><div><h2>{section === "account" ? "Your account" : section === "connections" ? "Search connections" : "Local files & help"}</h2><p>{section === "account" ? "Manage the account that powers your research." : section === "connections" ? "The sources Scraply uses to explore the web." : "Your research stays on your computer."}</p></div><button class="close" aria-label="Close settings" onclick={() => dialog.close()}><Icon name="close" /></button></header>
+      <header><div><h2>{section === "account" ? "Your account" : section === "defaults" ? "Research defaults" : section === "connections" ? "Search connections" : "Local files & help"}</h2></div><button class="close" aria-label="Close settings" onclick={() => dialog.close()}><Icon name="close" /></button></header>
+  <div hidden={section !== "defaults"}><ResearchDefaults {workspace} /></div>
   {#if feedback}<p class="feedback" class:error={feedback.tone === "error"} role={feedback.tone === "error" ? "alert" : "status"}>{feedback.text}</p>{/if}
   {#if workspace}
     <div hidden={section !== "account"}>
@@ -110,7 +112,7 @@
       {#each searchProviders as provider (provider)}
         {@const status = workspace.validation[provider]}
         <div class="provider">
-          <strong>{provider === "exa" ? "Exa" : "Perplexity"}</strong>
+          <div class="provider-name"><ProviderLogo provider={provider} size={22} /><strong>{provider === "exa" ? "Exa" : "Perplexity"}</strong></div>
           <span class:ok={status.valid}>{status.valid ? "Connected" : status.error ?? "Not connected"}</span>
         </div>
       {/each}
@@ -143,15 +145,12 @@
   .settings-layout { display:grid;grid-template-columns:205px minmax(0,1fr);min-height:490px; }
   nav { display:flex;flex-direction:column;gap:5px;background:var(--surface);padding:30px 16px 20px;border-right:1px solid var(--border); }
   nav h1 { margin:0 12px 28px;font-size:18px;font-weight:650;letter-spacing:-.03em; }
-  .nav-caption { margin:0 12px 9px;font-size:10px;color:var(--subtle); }
   nav button { display:flex;gap:10px;align-items:center;border:0;background:transparent;text-align:left;color:var(--muted);padding:12px;font-size:12px; }
   nav button.active { background:var(--surface-2);color:var(--text); }
   nav button.active :global(svg) { color:var(--accent); }
-  .local-note { margin:auto 12px 0;padding-top:24px;font-size:10px;color:var(--subtle); }
   .settings-content { padding:32px;min-width:0; }
   header { display:flex;align-items:start;justify-content:space-between;gap:16px;margin-bottom:30px; }
   h2 { margin:0;font-size:21px;font-weight:650;letter-spacing:-.03em; }
-  header p { margin:9px 0 0;font-size:12px;line-height:1.7;color:var(--muted); }
   button { padding:10px 14px;border:1px solid var(--border-strong);border-radius:8px;background:var(--surface-2);color:var(--text);font-size:11px; }
   button:hover:not(:disabled) { background:var(--border); }
   .close { padding:5px;border:0;background:transparent;color:var(--muted); }
@@ -168,8 +167,10 @@
   .login-progress code { padding:8px 12px;border:1px solid var(--border-strong);border-radius:6px;font:600 17px var(--mono);letter-spacing:.1em; }
   section h2 { font-size:13px;letter-spacing:0;margin-bottom:16px; }
   .search > h2 { display:none; }
-  .provider { display:flex;align-items:center;justify-content:space-between;gap:20px;padding:20px 0;border-bottom:1px solid var(--border);font-size:12px; }
+  .provider { display:flex;align-items:center;justify-content:space-between;gap:20px;padding:22px 0;border-bottom:1px solid var(--border);font-size:12px; }
   .provider:first-of-type { border-top:1px solid var(--border); }
+  .provider-name { display:flex;align-items:center;gap:14px;color:var(--text); }
+  .provider-name :global(svg) { flex:none; }
   .provider strong { font-weight:600; }.provider span { color:var(--muted);max-width:70%;text-align:right;overflow-wrap:anywhere; }
   .provider .ok { color:var(--success); }.search > button { margin-top:24px; }
   .local > div { display:grid;gap:12px; }.local button { padding:16px;text-align:left;background:var(--surface);border-color:var(--border); }
@@ -178,5 +179,5 @@
   .guide { margin-top:28px;color:var(--muted);font-size:12px;line-height:1.7; }.guide summary { cursor:pointer; }
   [hidden] { display:none; }
   @keyframes settings-open { from { opacity:0;transform:translateY(12px) scale(.98); }to { opacity:1;transform:none; } }
-  @media(max-width:650px) { .settings-layout { grid-template-columns:1fr; }nav { padding:20px;display:flex;flex-direction:row;flex-wrap:wrap;border-right:0;border-bottom:1px solid var(--border); }nav h1 { width:100%;margin:0 0 10px; }.nav-caption,.local-note { display:none; }.settings-content { padding:24px; } }
+  @media(max-width:650px) { .settings-layout { grid-template-columns:1fr; }nav { padding:20px;display:flex;flex-direction:row;flex-wrap:wrap;border-right:0;border-bottom:1px solid var(--border); }nav h1 { width:100%;margin:0 0 10px; }.settings-content { padding:24px; } }
 </style>

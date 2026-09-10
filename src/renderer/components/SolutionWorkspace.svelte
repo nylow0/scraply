@@ -42,7 +42,6 @@
   <header>
     <div>
       <h1>{solutions.length} solution {solutions.length === 1 ? "idea" : "ideas"}</h1>
-      <p class="intro">Open an idea to explore it. Options are not ranked.</p>
     </div>
     <div class="actions" aria-label="Solution actions">
       <button onclick={onReview}>Review problems</button>
@@ -74,7 +73,7 @@
     {/each}
   </div>
 
-  <p class="legend">Dotted labels are model-estimated. Amber marks ideas developed from weak or adverse problem evidence.</p>
+  <p class="legend">Options are not ranked. Dotted labels are model-estimated. Amber marks ideas developed from weak or adverse problem evidence.</p>
 </section>
 
 <style>
@@ -82,7 +81,6 @@
   header { display:flex;align-items:start;flex-wrap:wrap;gap:22px; }
   header > div:first-child { flex:1;min-width:230px; }
   h1 { font-size:32px;font-weight:650;letter-spacing:-.035em;margin:0 0 10px;line-height:1.2; }
-  .intro { font-size:12px;color:var(--muted);margin:0;max-width:620px; }
   .actions { display:flex;flex-wrap:wrap;justify-content:flex-end;gap:5px; }
   .actions button,.empty button { min-height:34px;padding:8px 10px;background:transparent;border:1px solid var(--border);border-radius:8px;color:var(--text);font-size:10px; }
   .actions button:hover,.empty button:hover { background:var(--surface-2);border-color:var(--border-strong); }

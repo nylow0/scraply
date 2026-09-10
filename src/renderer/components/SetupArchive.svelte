@@ -15,7 +15,7 @@
 
 <div class="setup" id="workflow-panel-setup" role="tabpanel" aria-label="Research setup" tabindex="0">
   <header>
-    <div><p class="eyebrow">Saved setup</p><h1>Where this work started.</h1><p>The original scope and run settings remain attached to the workflow.</p></div>
+    <div><h1>Where this work started.</h1></div>
     {#if onEdit}<button onclick={onEdit}>Edit setup</button>{/if}
   </header>
   {#if scope && config}
@@ -45,7 +45,7 @@
 <style>
   .setup { max-width:1080px;margin:auto;padding:38px var(--page-inline) 70px; }
   header { display:flex;justify-content:space-between;align-items:center;gap:24px;margin-bottom:30px; }
-  .eyebrow { display:none; }h1 { margin:0 0 10px;font-size:32px;font-weight:650;letter-spacing:-.045em;line-height:1.2; }header p { margin:0;color:var(--muted);font-size:12px; }
+  h1 { margin:0 0 10px;font-size:32px;font-weight:650;letter-spacing:-.045em;line-height:1.2; }
   header button { border:1px solid var(--border-strong);background:var(--surface);color:var(--text);border-radius:8px;padding:10px 14px;white-space:nowrap;font-size:11px; }
   .fields { display:grid;grid-template-columns:1fr 1fr;border:1px solid var(--border);border-radius:16px;padding:8px 26px;background:linear-gradient(145deg,#1b202355,transparent); }
   .fields > div { padding:22px 0;border-bottom:1px solid var(--border); }

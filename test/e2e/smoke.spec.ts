@@ -27,7 +27,7 @@ test("the renderer restores the problem-selection step after a restart", async (
     await expect(page.getByRole("button", { name: "Sign out", exact: true })).toBeVisible();
     await page.screenshot({ animations: "disabled", path: testInfo.outputPath("settings.png") });
     await page.getByRole("button", { name: "Connections", exact: true }).click();
-    await expect(page.getByRole("dialog").getByText("Exa", { exact: true })).toBeVisible();
+    await expect(page.locator(".provider-name").getByText("Exa", { exact: true })).toBeVisible();
     await page.screenshot({ animations: "disabled", path: testInfo.outputPath("settings-connections.png") });
     await page.getByRole("button", { name: "Local files", exact: true }).click();
     await expect(page.getByRole("button", { name: "Open data folder" })).toBeVisible();
