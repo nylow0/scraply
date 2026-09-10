@@ -2,6 +2,9 @@ import { defineConfig, externalizeDepsPlugin } from "electron-vite";
 import { svelte } from "@sveltejs/vite-plugin-svelte";
 import tailwindcss from "@tailwindcss/vite";
 import { resolve } from "node:path";
+import { browserDevProxy } from "./scripts/browser-dev-proxy";
+
+const browserDev = process.env.SCRAPLY_BROWSER_DEV === "1";
 
 export default defineConfig(({ mode }) => ({
   main: {
@@ -28,6 +31,23 @@ export default defineConfig(({ mode }) => ({
     },
   },
   renderer: {
+    ...(browserDev ? {
+      server: {
+        host: "127.0.0.1",
+        port: 5173,
+        strictPort: true,
+        open: false,
+        cors: false,
+        fs: { deny: [".env", ".env.*", "*.{crt,pem}", "**/.git/**", "**/build/browser-dev/**"] },
+        proxy: {
+          "/__scraply_dev": {
+            target: `http://127.0.0.1:${process.env.SCRAPLY_BROWSER_PORT}`,
+            rewrite: (path: string) => path.replace(/^\/__scraply_dev/, ""),
+            headers: { authorization: `Bearer ${process.env.SCRAPLY_BROWSER_TOKEN}` },
+          },
+        },
+      },
+    } : {}),
     root: resolve("src/renderer"),
     resolve: {
       alias: {
@@ -39,6 +59,6 @@ export default defineConfig(({ mode }) => ({
         input: resolve("src/renderer/index.html"),
       },
     },
-    plugins: [tailwindcss(), svelte()],
+    plugins: [tailwindcss(), svelte(), ...(browserDev ? [browserDevProxy()] : [])],
   },
 }));

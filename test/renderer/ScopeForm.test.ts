@@ -126,8 +126,8 @@ describe("ScopeForm search provider selection", () => {
       workspace: state, busy: false, onSave: vi.fn(), onStart: vi.fn(), onRetry: vi.fn(),
     });
 
-    expect(view.getByText("Checking required connections")).toBeTruthy();
-    expect(view.queryByText("Required connection needs attention")).toBeNull();
+    expect(view.getByText("Checking connections")).toBeTruthy();
+    expect(view.queryByText("Connect to start")).toBeNull();
     expect((view.getByRole("button", { name: "Checking connections" }) as HTMLButtonElement).disabled).toBe(true);
     expect(view.queryByLabelText("OpenAI account")).toBeNull();
   });

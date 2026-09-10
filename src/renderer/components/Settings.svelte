@@ -75,7 +75,7 @@
           {#if workspace.validation.native.error}
             <span class="account-error">{workspace.validation.native.error}</span>
           {:else}
-            <span>Sign in with your OpenAI account. Scraply opens the secure sign-in page in your browser.</span>
+            <span>Continue in your browser to sign in.</span>
           {/if}
         {:else}
           {#each workspace.validation.native.accounts as account (account.providerId)}
@@ -130,8 +130,7 @@
     <p role="status">Loading account settings…</p>
   {/if}
   <div hidden={section !== "local"}>
-  <section class="local" aria-labelledby="local-title">
-    <h2 id="local-title">Local files</h2>
+  <section class="local" aria-label="Local files">
     <div><button disabled={busy} onclick={onOpenData}>Open data folder</button><button disabled={busy} onclick={onOpenLogs}>Open logs folder</button></div>
   </section>
   </div>
@@ -162,7 +161,6 @@
   .primary:hover:not(:disabled) { background:var(--accent); }
   .login-progress { border:1px solid var(--border-strong);padding:16px;border-radius:12px;background:var(--surface); }
   .login-progress code { padding:8px 12px;border:1px solid var(--border-strong);border-radius:6px;font:600 17px var(--mono);letter-spacing:.1em; }
-  .local h2 { font-size:13px;letter-spacing:0;margin-bottom:16px; }
   .search > h2 { display:none; }
   .provider { display:flex;align-items:center;justify-content:space-between;gap:20px;padding:22px 0;border-bottom:1px solid var(--border);font-size:13px; }
   .provider:first-of-type { border-top:1px solid var(--border); }
@@ -179,8 +177,7 @@
   .archive-list strong { font-size:14px;overflow-wrap:anywhere; }
   .archive-list span,.archive-empty { font-size:13px;color:var(--muted); }
   .danger { color:var(--danger); }
-  .settings-popup { width:min(740px,calc(100vw - 32px));height:min(420px,calc(100dvh - 110px));max-width:none;max-height:none;margin:auto auto 64px 16px;padding:0;border:1px solid #363d38;border-radius:14px;background:#0d100e;color:var(--text);box-shadow:0 18px 70px #000b;overflow:hidden; }
-  .settings-popup[data-section="defaults"] { height:min(620px,calc(100dvh - 110px)); }
+  .settings-popup { width:min(740px,calc(100vw - 32px));height:min(500px,calc(100dvh - 110px));max-width:none;max-height:none;margin:auto auto 64px 16px;padding:0;border:1px solid #363d38;border-radius:14px;background:#000;color:var(--text);box-shadow:0 18px 70px #000b;overflow:hidden; }
   .settings-popup[open] { display:flex;flex-direction:column; }
   .settings-popup::backdrop { background:#0005; }
   .popup-header { margin:0;display:flex;align-items:center;justify-content:space-between;gap:20px;padding:14px 18px;border-bottom:1px solid var(--border); }

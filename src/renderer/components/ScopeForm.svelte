@@ -180,7 +180,7 @@
     <section class="optional-fields" aria-label="Context and boundaries">
       <h3>Context and boundaries <span>Optional</span></h3>
       <div>
-        <label><span>{researchMode === "explore-market" ? "Anything else to consider" : "Context"}</span><small>{researchMode === "explore-market" ? "" : ""}</small><textarea bind:value={observations} rows="4" placeholder="Useful background"></textarea></label>
+        <label><span>{researchMode === "explore-market" ? "Anything else to consider" : "Context"}</span><textarea bind:value={observations} rows="4" placeholder="Useful background"></textarea></label>
         <label><span>Boundaries</span><small>One limit per line.</small><textarea bind:value={offLimits} rows="4" placeholder="What should ideas avoid?"></textarea></label>
       </div>
     </section>
@@ -191,7 +191,7 @@
     <aside class="configuration" aria-label="Run configuration">
       <div class="panel-heading"><Icon name="command" /><h2>Run configuration</h2></div>
     <div class="run-settings" class:known={researchMode === "known-problem"}>
-      <label class="run-setting model-setting"><span>Model</span><select aria-label="Model" bind:this={modelSelect} bind:value={modelKey} onchange={selectModel} disabled={nativeModelOptions.length === 0}>{#if !selectedModelAvailable}<option value={modelKey}>{legacyModelNeedsReplacement && !modelKey ? "Choose an OpenAI model" : workspace.validation.native.connected ? `${modelDisplayName(model)} (unavailable)` : "Connect OpenAI to choose a model"}</option>{/if}{#if !astraAvailable && model.modelId !== "gpt-6-astra"}<option value="openai-subscription:gpt-6-astra" disabled>Astra (not in model list)</option>{/if}{#each nativeModelOptions as item (modelRefKey(item))}<option value={modelRefKey(item)}>{modelDisplayName(item)}</option>{/each}</select><small>{nativeModelOptions.length === 0 ? "Your available models appear here after you sign in." : "The model used throughout this research, including the independent risk evaluator."}</small></label>
+      <label class="run-setting model-setting"><span>Model</span><select aria-label="Model" bind:this={modelSelect} bind:value={modelKey} onchange={selectModel} disabled={nativeModelOptions.length === 0}>{#if !selectedModelAvailable}<option value={modelKey}>{legacyModelNeedsReplacement && !modelKey ? "Choose an OpenAI model" : workspace.validation.native.connected ? `${modelDisplayName(model)} (unavailable)` : "Sign in to choose"}</option>{/if}{#if !astraAvailable && model.modelId !== "gpt-6-astra"}<option value="openai-subscription:gpt-6-astra" disabled>Astra (not in model list)</option>{/if}{#each nativeModelOptions as item (modelRefKey(item))}<option value={modelRefKey(item)}>{modelDisplayName(item)}</option>{/each}</select><small>{nativeModelOptions.length === 0 ? "Your available models appear here after you sign in." : "The model used throughout this research, including the independent risk evaluator."}</small></label>
       <label class="run-setting"><span>Reasoning</span><select title={reasoningDescription} bind:value={reasoningEffort}>{#each (selectedModelOption?.reasoningEfforts ?? [{ id: reasoningEffort, description: "" }]) as effort (effort.id)}<option value={effort.id}>{effort.id.charAt(0).toUpperCase() + effort.id.slice(1)}</option>{/each}</select><small>{reasoningDescription}</small></label>
       {#if researchMode === "explore-market"}<label class="run-setting"><span>Research depth</span><select title={depthDescription} bind:value={discoveryDepth}><option value="quick">Quick</option><option value="standard">Standard</option><option value="deep">Deep</option></select><small>{depthDescription}</small></label>{/if}
       {#if researchMode === "explore-market"}<label class="run-setting search-setting"><span>Search provider</span><div class="provider-select"><ProviderLogo provider={searchProvider} size={17} /><select aria-label="Search provider" bind:value={searchProvider}><option value="exa">Exa</option><option value="perplexity">Perplexity</option></select></div><small>{selectedSearchName}: {selectedSearchValidation.valid ? "Connected" : selectedSearchValidation.error ?? "Connection unavailable"}</small></label>{/if}
@@ -215,7 +215,7 @@
     {#if connectionNeedsAttention}
       <div class="connection-warning" class:checking={connectionsChecking} role="status">
         <div>
-          <strong>{connectionsChecking ? "Checking required connections" : "Required connection needs attention"}</strong>
+          <strong>{connectionsChecking ? "Checking connections" : "Connect to start"}</strong>
           {#if modelStatus}<span>Model: {modelStatus}</span>{/if}
           {#if researchMode === "explore-market" && !selectedSearchValidation.valid}<span>{selectedSearchName}: {selectedSearchValidation.error ?? "Connection unavailable"}</span>{/if}
         </div>

@@ -340,7 +340,7 @@ describe("App workspace coordination", () => {
     await fireEvent.input(title, { target: { value: "My unsaved research" } });
     await fireEvent.click(view.getByRole("button", { name: "Try again" }));
 
-    expect(await view.findByText("Checking required connections")).toBeTruthy();
+    expect(await view.findByText("Checking connections")).toBeTruthy();
     expect((view.getByRole("button", { name: "Checking connections" }) as HTMLButtonElement).disabled).toBe(true);
     expect(await view.findByRole("button", { name: "Sign in with OpenAI" }, { timeout: 1_500 })).toBeTruthy();
     expect(getWorkspace).toHaveBeenCalledTimes(3);
