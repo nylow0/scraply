@@ -1,23 +1,23 @@
 @import "tailwindcss";
-@import "@fontsource-variable/plus-jakarta-sans";
+
 
 :root {
   color-scheme: dark;
-  --bg: #111416;
-  --surface: #0b0e10;
-  --surface-2: #1b2023;
-  --border: #272e32;
-  --border-strong: #3c484e;
-  --text: #edf2f1;
-  --muted: #a0acae;
-  --subtle: #849295;
-  --accent: #71cfba;
-  --accent-strong: #92ead5;
-  --accent-ink: #09221c;
+  --bg: #000000;
+  --surface: #090b0a;
+  --surface-2: #191d1b;
+  --border: #252b28;
+  --border-strong: #48534d;
+  --text: #f1f5f3;
+  --muted: #b1bab5;
+  --subtle: #8b9890;
+  --accent: #26e6a2;
+  --accent-strong: #3cf0af;
+  --accent-ink: #002b1b;
   --danger: #df9292;
-  --success: #79b98f;
+  --success: #36e6a0;
   --mono: "Geist Mono", "Cascadia Code", ui-monospace, monospace;
-  --sans: "Plus Jakarta Sans Variable", "Segoe UI", system-ui, sans-serif;
+  --sans: "Segoe UI", system-ui, sans-serif;
   --ease: cubic-bezier(0.16, 1, 0.3, 1);
 
   /* Shared page metrics. Every main-area page uses these so the left edge,
@@ -176,3 +176,20 @@ input, textarea, select { transition:border-color 180ms ease, box-shadow 180ms e
 input:focus, textarea:focus, select:focus { border-color:var(--accent) !important; box-shadow:0 0 0 3px #71cfba12; }
 textarea { line-height:1.65; }
 ::placeholder { color:var(--subtle); opacity:.8; }
+
+/* Chromium's customizable picker retains native keyboard and form behavior. */
+select, select::picker(select) { appearance: base-select; }
+select { gap:12px;align-items:center; }
+select::picker(select) {
+  background:#101512;color:var(--text);border:1px solid #3b4c42;border-radius:12px;
+  padding:6px;box-shadow:0 16px 48px #000b;max-height:min(360px,60vh);overflow:auto;
+  margin-block:6px;font:400 13px/1.4 var(--sans);min-width:anchor-size(width);
+}
+select::picker-icon { color:var(--muted);width:14px;transition:rotate 150ms; }
+select:open::picker-icon { rotate:180deg; }
+select option { padding:10px 12px;border-radius:7px;gap:12px;min-height:38px;white-space:normal; }
+select option:checked { background:#0e3b29;color:#66ffc4;font-weight:600; }
+select option:hover, select option:focus { background:#234333;outline:none; }
+select option:disabled { color:#748077; }
+select option::checkmark { color:var(--accent);order:2;margin-left:auto; }
+select:focus-visible { outline:2px solid var(--accent);outline-offset:2px; }

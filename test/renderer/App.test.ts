@@ -404,6 +404,8 @@ function installApi(overrides: Partial<ScraplyApi>): void {
     openLogsFolder: async () => undefined,
     createThread: async () => ({ workspace: workspace("alpha") }),
     selectThread: noWorkspace,
+    archiveThread: noWorkspace,
+    generateTitle: vi.fn(async () => ({ title: "Generated research title" })),
     deleteThread: noWorkspace,
     saveScope: noWorkspace,
     saveRunConfig: noWorkspace,

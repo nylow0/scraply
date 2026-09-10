@@ -46,7 +46,7 @@ test("recovers an expired native session through installed sign-in and restores 
 
     await page.getByRole("button", { name: "Sign in with OpenAI", exact: true }).click();
     await expect(page.getByText("synthetic-account", { exact: true })).toBeVisible();
-    await expect(page.getByRole("option", { name: /Mod/ })).toHaveCount(1);
+    await expect(page.getByLabel("OpenAI account")).toContainText("synthetic-account");
     await expect(page.getByLabel("Research name", { exact: true })).toHaveValue("Unsaved auth recovery draft");
     await page.screenshot({ animations: "disabled", path: testInfo.outputPath("native-auth-recovered.png") });
 
@@ -63,7 +63,7 @@ test("recovers an expired native session through installed sign-in and restores 
     page = await electron.firstWindow();
     await page.getByRole("button", { name: "Settings", exact: true }).click();
     await expect(page.getByText("synthetic-account", { exact: true })).toBeVisible();
-    await expect(page.getByRole("option", { name: /Mod/ })).toHaveCount(1);
+    await expect(page.getByLabel("OpenAI account")).toContainText("synthetic-account");
     await expect(page.getByLabel("OpenAI account").getByText(/OpenAI .*session.*Sign in again\./)).toHaveCount(0);
   } finally {
     await electron?.close();
@@ -126,7 +126,7 @@ test("native v2 research survives the installed selection, risk evaluation, and 
     await expect(page.getByRole("combobox", { name: /Research workflow/ })).toHaveCount(0);
     await page.getByLabel("Ideas to generate", { exact: false }).fill("5");
     await page.getByLabel("What should we evaluate risk against?", { exact: false }).fill("Avoid losing a week of repair capacity");
-    await expect(page.getByRole("option", { name: /Mod/ })).toHaveCount(1);
+    await expect(page.getByLabel("OpenAI account")).toContainText("synthetic-account");
     await page.getByLabel("Research name", { exact: true }).fill("Native protocol UI fixture");
     await page.getByLabel("What do you want to explore?", { exact: false }).fill("Parts delivery uncertainty for repair shops");
     await page.getByLabel("Research depth", { exact: false }).selectOption("quick");

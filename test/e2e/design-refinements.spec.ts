@@ -1,0 +1,88 @@
+import { expect, test, _electron, type ElectronApplication } from "@playwright/test";
+import { mkdtempSync } from "node:fs";
+import { rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { startMockBackend } from "./mock-backend";
+
+test("title defaults, archive recovery, stable headers, and styled menus", async ({}, testInfo) => {
+  const mock = await startMockBackend();
+  const directory = mkdtempSync(join(tmpdir(), "scraply-design-"));
+  const launch = () => _electron.launch({
+    executablePath: process.env.SCRAPLY_E2E_EXECUTABLE ?? join(process.cwd(), "release/win-unpacked/Scraply.exe"),
+    args: [`--user-data-dir=${directory}`],
+    env: { ...process.env, SCRAPLY_E2E: "1", SCRAPLY_E2E_BACKEND_URL: mock.url, SCRAPLY_E2E_BACKEND_TOKEN: mock.token },
+  });
+  let app: ElectronApplication | undefined = await launch();
+  try {
+    let page = await app.firstWindow();
+    await page.getByRole("button", { name: "Create research", exact: true }).click();
+    const settings = page.getByRole("button", { name: "Settings", exact: true });
+    const settingsBounds = await settings.boundingBox();
+    await settings.click();
+    const back = page.getByRole("button", { name: "Back to research", exact: true });
+    const backBounds = await back.boundingBox();
+    expect(Math.abs(settingsBounds!.x - backBounds!.x)).toBeLessThan(2);
+    expect(Math.abs(settingsBounds!.y - backBounds!.y)).toBeLessThan(2);
+    await page.getByRole("button", { name: "Research defaults", exact: true }).click();
+    await expect(page.getByLabel("Title model", { exact: true })).toHaveValue("openai-subscription:gpt-5.6-luna");
+    await expect(page.getByLabel("Title reasoning", { exact: true })).toHaveValue("low");
+    const provider = page.getByLabel("Default search provider", { exact: true });
+    expect(await provider.evaluate((el) => getComputedStyle(el).appearance)).toBe("base-select");
+    await provider.click();
+    await expect(provider).toHaveJSProperty("value", "exa");
+    await page.screenshot({ animations: "disabled", path: testInfo.outputPath("provider-menu.png") });
+    await page.keyboard.press("Escape");
+    await expect(back).toBeVisible();
+    await back.click();
+    await expect(page.getByRole("region", { name: "Context and boundaries", exact: true })).toBeVisible();
+    await page.getByLabel("What do you want to explore?").fill("Help repair shops estimate late parts arrivals.");
+    await page.getByRole("button", { name: "Discover problems", exact: true }).click();
+    await expect(page.locator(".location")).toHaveText("Reducing repair shop delays");
+    expect(mock.requests.find((request) => request.path === "/threads/title")?.body).toEqual({
+      context: "Help repair shops estimate late parts arrivals.",
+      model: { providerId: "openai-subscription", modelId: "gpt-5.6-luna" }, reasoningEffort: "low",
+    });
+    const bar = page.locator(".topbar");
+    const researchBounds = await bar.boundingBox();
+    await page.getByRole("tab", { name: /Setup/ }).click();
+    const setupBounds = await bar.boundingBox();
+    expect(setupBounds!.x).toBe(researchBounds!.x);
+    expect(setupBounds!.width).toBe(researchBounds!.width);
+    expect(await page.locator("body").evaluate((el) => getComputedStyle(el).backgroundColor)).toBe("rgb(0, 0, 0)");
+    await page.getByRole("button", { name: "Archive research Reducing repair shop delays", exact: true }).click();
+    await expect(page.getByRole("button", { name: "Open thread Reducing repair shop delays", exact: true })).toHaveCount(0);
+    await app.close();
+    app = await launch();
+    page = await app.firstWindow();
+    await page.getByRole("button", { name: "Settings", exact: true }).click();
+    await page.getByRole("button", { name: "Archived research", exact: true }).click();
+    await page.screenshot({ animations: "disabled", path: testInfo.outputPath("archive.png") });
+    await page.getByRole("button", { name: "Restore Reducing repair shop delays", exact: true }).click();
+    await page.getByRole("button", { name: "Back to research", exact: true }).click();
+    await page.getByRole("button", { name: "Open thread Reducing repair shop delays", exact: true }).click();
+    await expect(page.locator(".location")).toHaveText("Reducing repair shop delays");
+    await page.getByRole("button", { name: "Archive research Reducing repair shop delays", exact: true }).click();
+    await page.getByRole("button", { name: "Settings", exact: true }).click();
+    await page.getByRole("button", { name: "Archived research", exact: true }).click();
+    page.once("dialog", (dialog) => dialog.accept());
+    await page.getByRole("button", { name: "Delete Reducing repair shop delays", exact: true }).click();
+    await expect(page.getByText("No archived research.", { exact: true })).toBeVisible();
+    await page.getByRole("button", { name: "Research defaults", exact: true }).click();
+    await page.getByLabel("Title model", { exact: true }).selectOption("openai-subscription:gpt-6-astra");
+    await page.getByLabel("Title reasoning", { exact: true }).selectOption("medium");
+    await page.getByRole("button", { name: "Save defaults", exact: true }).click();
+    await expect(page.getByText("Defaults saved", { exact: true })).toBeVisible();
+    await app.close();
+    app = await launch();
+    page = await app.firstWindow();
+    await page.getByRole("button", { name: "Settings", exact: true }).click();
+    await page.getByRole("button", { name: "Research defaults", exact: true }).click();
+    await expect(page.getByLabel("Title model", { exact: true })).toHaveValue("openai-subscription:gpt-6-astra");
+    await expect(page.getByLabel("Title reasoning", { exact: true })).toHaveValue("medium");
+  } finally {
+    await app?.close();
+    await mock.close();
+    await rm(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+  }
+});

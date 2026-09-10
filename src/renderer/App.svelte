@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount, tick } from "svelte";
   import type { NativeLoginStartResult, ResearchEvent, SolutionView, WorkspaceState } from "../shared/ipc";
+  import { readResearchDefaults } from "./lib/research-defaults";
   import Icon from "./components/Icon.svelte";
   import Settings from "./components/Settings.svelte";
   import Sidebar from "./components/Sidebar.svelte";
@@ -186,12 +187,29 @@
       if (reconcilePending) reconcileSoon();
     }
   }
+  async function archiveThread(id: string, archived = true) {
+    await action(async () => {
+      const next = await window.scraply.archiveThread(id, archived);
+      setWorkspace(next);
+      activeStep = defaultStep(next);
+      editingScopeThreadId = null;
+      reviewSelection = false;
+    });
+  }
   async function saveScope(scope: NonNullable<WorkspaceState["scope"]>, config: NonNullable<WorkspaceState["runConfig"]>) {
     const threadId = workspace?.activeThreadId;
     if (!threadId || busy) return;
     busy = true;
     feedback = null;
     try {
+      if (!scope.title.trim()) {
+        const defaults = readResearchDefaults();
+        const result = await window.scraply.generateTitle({
+          context: [config.knownProblem, scope.domain, scope.audience, scope.observations].filter(Boolean).join("\n").slice(0,20000),
+          model: defaults.titleModel, reasoningEffort: defaults.titleReasoningEffort,
+        });
+        scope = { ...scope, title: result.title };
+      }
       setWorkspace(await window.scraply.saveScope({ threadId, scope }));
       setWorkspace(await window.scraply.saveRunConfig({ threadId, config }));
       editingScopeThreadId = null;
@@ -365,28 +383,28 @@
   function message(value: unknown) { return value instanceof Error ? value.message : "Something went wrong."; }
 </script>
 
+<div class="window-drag-region" aria-hidden="true"></div>
 <div class="app-shell">
+  <div class="sidebar-area" inert={settingsOpen}>
   <Sidebar
-    threads={workspace?.threads ?? []}
+    threads={workspace?.threads.filter((thread) => !thread.archivedAt) ?? []}
     activeThreadId={workspace?.activeThreadId ?? null}
     {busy}
     {deletingThreadId}
     onNew={createThread}
     onSelect={selectThread}
-    onDelete={deleteThread}
+    onArchive={archiveThread}
   >
     {#snippet settingsControl()}
-      <Settings bind:this={settings} bind:open={settingsOpen} {feedback} {workspace} {busy} {nativeLogin}
-        onRetry={retryConnections} onConnectNative={connectNativeAccount} onCancelNative={cancelNativeLogin}
-        onRefreshNative={refreshNativeAccount} onLogoutNative={logoutNativeAccount}
-        onOpenData={openDataFolder} onOpenLogs={openLogsFolder} />
+      <button id="settings-button" class="settings-button" onclick={() => settings?.show()}><Icon name="settings" size={20} />Settings</button>
     {/snippet}
   </Sidebar>
+  </div>
 
-  <main class="main-content">
+  <main class="main-content" inert={settingsOpen}>
     {#if workspace && activeThread}
       <div class="topbar">
-        <div class="location"><span class="location-prefix">Research</span><span class="location-divider">/</span><span class="status-dot" class:live={activeThread.status.endsWith("running")}></span>{activeThread.title}</div>
+        <div class="location" title={activeThread.title}>{activeThread.title}</div>
         {#if activeRun}<div class="calls"><strong>{activeRun.codexCalls}</strong> model calls / ~{activeRun.projectedCodexCalls} · <strong>{activeRun.searches}</strong> searches / ~{activeRun.projectedSearches}</div>{/if}
       </div>
       <WorkflowTabs
@@ -474,15 +492,22 @@
       <div class="failed" id="workflow-panel-ideas" role="tabpanel" aria-label="Ideas" tabindex="0"><p class="eyebrow">Ideas not ready</p><h1>Complete the research step first.</h1></div>
     {/if}
   </main>
+  <Settings bind:this={settings} bind:open={settingsOpen} {feedback} {workspace} {busy} {nativeLogin}
+    onRetry={retryConnections} onConnectNative={connectNativeAccount} onCancelNative={cancelNativeLogin}
+    onRefreshNative={refreshNativeAccount} onLogoutNative={logoutNativeAccount}
+    onOpenData={openDataFolder} onOpenLogs={openLogsFolder} onRestore={(id) => archiveThread(id, false)} onDelete={deleteThread} />
 </div>
 
 <style>
-  .app-shell { height:100%;display:grid;grid-template-columns:248px minmax(0,1fr);background:var(--surface);padding:10px 10px 10px 0; }
-  .main-content { min-width:0;overflow:auto;position:relative;border:1px solid var(--border);border-radius:18px;background:var(--bg); }
+  .window-drag-region { height:36px;background:#000;-webkit-app-region:drag; }
+  .sidebar-area { display:contents; }
+  .settings-button { display:flex;align-items:center;gap:12px;width:100%;padding:12px 8px;border:0;border-radius:8px;background:transparent;color:var(--muted);font-size:13px;text-align:left; }
+  .settings-button:hover { background:var(--surface-2);color:var(--text); }
+
+  .app-shell { height:calc(100% - 36px);display:grid;grid-template-columns:248px minmax(0,1fr);background:#000;padding:10px 10px 10px 0; }
+  .main-content { min-width:0;overflow:auto;scrollbar-gutter:stable;position:relative;border:1px solid var(--border);border-radius:18px;background:var(--bg); }
   .topbar { position:sticky;top:0;z-index:3;height:54px;padding:0 24px;display:flex;align-items:center;justify-content:space-between;background:color-mix(in srgb,var(--bg) 94%,transparent);backdrop-filter:blur(18px);border-bottom:1px solid var(--border);font-size:12px;color:var(--muted); }
-  .location { display:flex;align-items:center;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis; }
-  .location-prefix { color:var(--subtle); }.location-divider { margin:0 12px;color:var(--border-strong); }
-  .status-dot { display:inline-block;width:6px;height:6px;background:var(--subtle);border-radius:50%;margin-right:8px;flex:none; }.status-dot.live { background:var(--accent);animation:pulse 1.5s ease infinite alternate; }
+  .location { display:block;color:var(--text);font-size:15px;font-weight:600;letter-spacing:0;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis; }
   .calls { white-space:nowrap;margin-left:16px;font:500 10px var(--sans); }.calls strong { color:var(--text);font-weight:600; }
   .notice { position:sticky;top:122px;z-index:3;margin:12px var(--page-inline) 0;padding:12px 16px;border:1px solid var(--border-strong);border-radius:10px;background:var(--surface-2);display:flex;justify-content:space-between;gap:16px;color:var(--muted);font-size:12px;overflow-wrap:anywhere; }
   .notice.error { border-color:#df929260;color:var(--danger); }.notice button { border:0;background:transparent;color:inherit; }
@@ -507,5 +532,5 @@
   @keyframes page-reveal { from { opacity:.6;transform:translateY(4px); }to { opacity:1;transform:none; } }
   @keyframes shimmer { to { background-position:-200% 0; } }@keyframes pulse { to { opacity:.3; } }@keyframes orbit { to { transform:rotate(360deg); } }
   @media(max-width:950px) { .calls { display:none; }.welcome-path { gap:10px;flex-wrap:wrap;justify-content:center; }.welcome-path i { width:14px; } }
-  @media(max-width:720px) { .app-shell { grid-template-columns:180px minmax(0,1fr);padding:0; }.main-content { border-radius:0; }.location-prefix,.location-divider { display:none; }.topbar { padding:0 16px; }.welcome { padding:48px 22px; }.welcome h1 { font-size:36px; }.welcome-path { margin-top:40px;flex-direction:column; }.welcome-path i { display:none; }.running h1,.failed h1 { font-size:28px; } }
+  @media(max-width:720px) { .app-shell { grid-template-columns:180px minmax(0,1fr);padding:0; }.main-content { border-radius:0; }.topbar { padding:0 16px; }.welcome { padding:48px 22px; }.welcome h1 { font-size:36px; }.welcome-path { margin-top:40px;flex-direction:column; }.welcome-path i { display:none; }.running h1,.failed h1 { font-size:28px; } }
 </style>

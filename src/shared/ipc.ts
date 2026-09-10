@@ -5,6 +5,7 @@ import {
   ModelCatalogSchema,
   ModelOptionSchema,
   ModelRefSchema,
+  ReasoningEffortSchema,
   RunConfigSchema,
   SourceDetailSchema as SharedSourceDetailSchema,
   ThreadSchema,
@@ -47,6 +48,13 @@ export const HealthResponseSchema = z.object({ ok: z.boolean(), version: z.strin
 
 export const CreateThreadRequestSchema = z.object({ title: ShortTextSchema.optional() });
 export const SelectThreadRequestSchema = z.object({ threadId: EntityIdSchema });
+export const ArchiveThreadRequestSchema = z.object({ threadId: EntityIdSchema, archived: z.boolean() }).strict();
+export const GenerateTitleRequestSchema = z.object({
+  context: z.string().trim().min(1).max(20000),
+  model: ModelRefSchema,
+  reasoningEffort: ReasoningEffortSchema,
+}).strict();
+export const GenerateTitleResultSchema = z.object({ title: z.string().trim().min(1).max(100) }).strict();
 export const DeleteThreadRequestSchema = z.object({ threadId: EntityIdSchema });
 export const SaveScopeSchema = z.object({ threadId: EntityIdSchema, scope: ScopeSchema }).strict();
 export const SaveRunConfigSchema = z.object({ threadId: EntityIdSchema, config: RunConfigSchema, presetName: z.string().optional() });
@@ -228,6 +236,7 @@ export const IPC_CHANNELS = {
   GET_VALIDATION: "scraply:get-validation", RETRY_CONNECTION: "scraply:retry-connection",
   OPEN_DATA_FOLDER: "scraply:open-data-folder", OPEN_LOGS_FOLDER: "scraply:open-logs-folder",
   GET_WORKSPACE: "scraply:get-workspace", CREATE_THREAD: "scraply:create-thread", SELECT_THREAD: "scraply:select-thread",
+  ARCHIVE_THREAD: "scraply:archive-thread", GENERATE_TITLE: "scraply:generate-title",
   DELETE_THREAD: "scraply:delete-thread", SAVE_SCOPE: "scraply:save-scope", SAVE_RUN_CONFIG: "scraply:save-run-config",
   SAVE_FAVORITE_MODEL: "scraply:save-favorite-model", START_RESEARCH: "scraply:start-research",
   CANCEL_RESEARCH: "scraply:cancel-research", RESUME_RESEARCH: "scraply:resume-research",

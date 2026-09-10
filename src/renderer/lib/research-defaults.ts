@@ -1,10 +1,12 @@
 import { z } from "zod";
-import { DEFAULT_RUN_CONFIG, ModelRefSchema } from "../../shared/schemas";
+import { DEFAULT_RUN_CONFIG, ModelRefSchema, ReasoningEffortSchema } from "../../shared/schemas";
 
 const storageKey = "scraply.research-defaults.v1";
 const ResearchDefaultsSchema = z.object({
   model: ModelRefSchema,
   searchProvider: z.enum(["exa", "perplexity"]),
+  titleModel: ModelRefSchema.default({ providerId: "openai-subscription", modelId: "gpt-5.6-luna" }),
+  titleReasoningEffort: ReasoningEffortSchema.default("low"),
 });
 export type ResearchDefaults = z.infer<typeof ResearchDefaultsSchema>;
 
@@ -16,7 +18,7 @@ export function readResearchDefaults(): ResearchDefaults {
   } catch {
     // A missing or invalid preference must not prevent the workspace from opening.
   }
-  return { model: { ...DEFAULT_RUN_CONFIG.model }, searchProvider: DEFAULT_RUN_CONFIG.searchProvider };
+  return ResearchDefaultsSchema.parse({ model: { ...DEFAULT_RUN_CONFIG.model }, searchProvider: DEFAULT_RUN_CONFIG.searchProvider });
 }
 
 export function saveResearchDefaults(defaults: ResearchDefaults): void {
@@ -25,6 +27,7 @@ export function saveResearchDefaults(defaults: ResearchDefaults): void {
 
 export function modelDisplayName(model: { modelId: string; displayName?: string }): string {
   if (model.modelId === "gpt-6-astra") return "Astra";
+  if (model.modelId === "gpt-5.6-luna") return "GPT-5.6 Luna";
   if (model.modelId === "gpt-5.6-sol") return "GPT-5.6 Sol";
   return model.displayName ?? model.modelId;
 }

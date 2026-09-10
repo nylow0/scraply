@@ -131,6 +131,7 @@ export const ThreadSchema = z.object({
   id: z.string().min(1),
   title: z.string().min(1),
   status: ThreadStatusSchema,
+  archivedAt: z.string().datetime().nullable().optional(),
   createdAt: z.string().datetime(),
   updatedAt: z.string().datetime(),
 });

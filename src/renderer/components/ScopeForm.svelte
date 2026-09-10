@@ -116,7 +116,6 @@
 
   function missingFields(): Record<string, string> {
     const next: Record<string, string> = {};
-    if (!title.trim()) next.title = "Research name is required.";
     if (!Number.isInteger(ideaCount) || ideaCount === undefined || ideaCount < 1 || ideaCount > MAX_IDEA_COUNT) {
       next.ideaCount = `Choose a whole number from 1 to ${MAX_IDEA_COUNT}.`;
     }
@@ -169,7 +168,7 @@
       <section class="brief-panel" aria-label="Research brief">
         <div class="panel-heading"><Icon name="brief" /><h2>Your brief</h2></div>
     <div class="primary-fields">
-      <label><span>Research name</span><input bind:value={title} aria-invalid={Boolean(errors.title)} aria-describedby={errors.title ? "title-error" : undefined} placeholder={researchMode === "explore-market" ? "Project ideas" : "Solution ideas"} />{#if errors.title}<small id="title-error" class="field-error">{errors.title}</small>{/if}</label>
+      <label><span>Research name</span><input bind:value={title} aria-invalid={Boolean(errors.title)} aria-describedby={errors.title ? "title-error" : undefined} placeholder="Auto-generated when research starts" />{#if errors.title}<small id="title-error" class="field-error">{errors.title}</small>{/if}</label>
       {#if researchMode === "known-problem"}
         <label class="problem-field"><span>Problem statement</span><small>State the problem directly. This becomes a user-asserted problem and goes straight to solution development.</small><textarea bind:value={knownProblem} aria-invalid={Boolean(errors.knownProblem)} aria-describedby={errors.knownProblem ? "known-problem-error" : undefined} rows="4" placeholder="Small repair shops cannot reliably predict parts arrival times."></textarea>{#if errors.knownProblem}<small id="known-problem-error" class="field-error">{errors.knownProblem}</small>{/if}</label>
       {/if}
@@ -179,13 +178,13 @@
     </div>
 
 
-    <details class="optional-fields">
-      <summary>Context and boundaries <span>Optional</span></summary>
+    <section class="optional-fields" aria-label="Context and boundaries">
+      <h3>Context and boundaries <span>Optional</span></h3>
       <div>
         <label><span>{researchMode === "explore-market" ? "Anything else to consider" : "Context"}</span><small>{researchMode === "explore-market" ? "Add useful details without needing to structure them." : "Useful background for solution generation."}</small><textarea bind:value={observations} rows="4" placeholder="Constraints, interests, experience, resources, or early observations"></textarea></label>
         <label><span>Boundaries</span><small>One boundary per line. Applied when solutions are proposed.</small><textarea bind:value={offLimits} rows="4" placeholder="Marketplace business model&#10;Requires regulated inventory"></textarea></label>
       </div>
-    </details>
+    </section>
 
 
       </section>
@@ -270,8 +269,8 @@
   input[aria-invalid="true"],textarea[aria-invalid="true"] { border-color:var(--danger); }
   .field-error { color:var(--danger); }
   .optional-fields { margin-top:24px;border-top:1px solid var(--border);padding-top:20px; }
-  .optional-fields summary { font-size:12px;cursor:pointer;color:var(--muted); }
-  .optional-fields summary span { font-size:10px;margin-left:5px;color:var(--subtle); }
+  .optional-fields h3 { margin:0;font-size:13px;font-weight:600;color:var(--text); }
+  .optional-fields h3 span { font-size:10px;margin-left:5px;color:var(--subtle); }
   .optional-fields > div { display:grid;gap:20px;padding-top:20px; }
   .configuration { position:sticky;top:150px;border:1px solid var(--border);border-radius:16px;padding:22px;background:var(--surface); }
   .run-settings { display:grid;grid-template-columns:1fr 1fr;gap:14px 12px; }

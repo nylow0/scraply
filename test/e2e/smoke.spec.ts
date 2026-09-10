@@ -23,7 +23,7 @@ test("the renderer restores the problem-selection step after a restart", async (
     expect(settingsBounds!.x).toBeLessThan(250);
     expect(settingsBounds!.y).toBeGreaterThan(viewport.height - 110);
     await settings.click();
-    await expect(page.getByRole("dialog", { name: "Settings" })).toBeVisible();
+    await expect(page.getByRole("region", { name: "Settings", exact: true })).toBeVisible();
     await expect(page.getByRole("button", { name: "Sign out", exact: true })).toBeVisible();
     await page.screenshot({ animations: "disabled", path: testInfo.outputPath("settings.png") });
     await page.getByRole("button", { name: "Connections", exact: true }).click();
