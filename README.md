@@ -15,51 +15,57 @@ Scraply is a local-first Windows desktop app for evidence-backed research and id
 Run commands from the checkout you are editing. For first-time setup:
 
 ```powershell
-bun install
+bun install --frozen-lockfile
 bunx --no-install install-electron
 git submodule update --init --recursive
 bun run prepare:runtime
 ```
 
-`prepare:runtime` builds, checks, and stages the Rust worker. Reuse that stage for UI and TypeScript backend changes. Run preparation again when the stage is missing or the runtime source, Cargo dependencies, pinned submodule, or runtime build/protocol configuration changes. A new worktree needs its own prepared stage. See [runtime/README.md](runtime/README.md#build) for native development.
+`prepare:runtime` builds, checks, and stages the Rust worker. Reuse that stage for UI and TypeScript backend changes. Prepare it again when the stage is missing or the native source, Cargo dependencies, pinned submodule, or runtime build/protocol configuration changes. See [runtime/README.md](runtime/README.md#build) for native development.
 
-Electron 42 downloads its executable on demand. The explicit `install-electron` step is needed because this version of electron-vite reads Electron's installed path directly. Repeat it after removing Electron's executable or replacing dependencies if dev reports `Electron uninstall`. See the [Electron 42 installation change](https://www.electronjs.org/blog/electron-42-0).
-
-For each development terminal session, point Electron at the prepared worker and start the app:
-
-```powershell
-$env:SCRAPLY_AGENT_PATH = (Resolve-Path build/runtime/scraply-agent.exe).Path
-$env:SCRAPLY_AGENT_LOCK_PATH = (Resolve-Path build/runtime/scraply-agent.lock.json).Path
-bun run dev
-```
-
-These variables are required for native generation in development; preparation alone does not configure the dev process. Run them in the same terminal as `bun run dev`.
+Electron 42 downloads its executable on demand. The explicit `install-electron` setup step is needed because this version of electron-vite reads Electron's installed path directly. Repeat it if dev reports a missing Electron executable. See the [Electron 42 installation change](https://www.electronjs.org/blog/electron-42-0).
 
 ### Daily iteration
 
-`bun run dev` starts Vite and opens an Electron development window with the real preload bridge and backend. Verify changes in that window. The installed Start menu shortcut still runs the last installed build. A normal browser does not supply `window.scraply` and cannot verify the complete app.
+```powershell
+bun run dev
+```
 
-Keep the dev process running while editing Svelte, CSS, or other renderer code; Vite updates the UI on save. After main-process, preload, TypeScript backend, startup configuration, or prompt changes, stop it with Ctrl+C and run `bun run dev` again. For automatic main/preload rebuilds and Electron restarts, use `bun run dev --watch`; Rust changes still require runtime preparation and a restart. Stop dev before packaging from the same checkout because those commands replace `out/`.
+This starts the server in the background and prints **http://127.0.0.1:5173**. Open that link in your browser. It creates no Scraply window, DevTools window, or terminal window, and does not open a browser automatically. Running the command again reuses the server for this checkout. Keep it running and provide the link when handing the change to Dany.
 
-Dev mode uses real local data and provider accounts. Use **Open data folder** to identify the active data directory before testing persistence or deletion. For isolated manual testing, append `-- --user-data-dir=C:/path/to/scraply-dev-data` to the dev command, choosing a dedicated directory. Keep destructive or paid verification within the task's authorization.
+The browser uses the real app handlers and backend. A windowless Electron host supplies SQLite, encrypted credentials, and the native worker. The launcher automatically selects the prepared files in `build/runtime`. For an intentionally reused native artifact, set both `SCRAPLY_AGENT_PATH` and `SCRAPLY_AGENT_LOCK_PATH` before starting. Reuse an artifact only when its native code and protocol match the checkout being tested; release builds still prepare their own verified artifact.
+
+Renderer edits update the browser on save. Main-process and TypeScript backend changes rebuild and restart the background host; reload the browser after a host restart. Unsaved form edits can reset during hot reload. After changing startup configuration, environment variables, or prepared native files, stop and start the server:
+
+```powershell
+bun run dev:stop
+bun run dev
+```
+
+The server binds only to `127.0.0.1`. If port 5173 belongs to another process or checkout, startup fails instead of stopping it. Use `dev:stop` from the owning checkout. Logs and launch state are in `build/browser-dev/`; the log is replaced on each start. Stop dev before packaging from the same checkout because packaging replaces `out/`.
+
+Browser development keeps its data and encrypted credentials in `.scraply/browser-dev/`, separate from the installed app. Sign in and configure providers for this dev workspace. Set `SCRAPLY_DEV_DATA_DIR` before starting if a task needs a different dedicated profile. **Open data folder** shows the active location. Exports download through the browser; account login and folder/link actions use the local host. Keep destructive or paid verification within the task's authorization.
+
+For a task that specifically needs an Electron window, run `bun run dev:stop`, configure the two native artifact variables above, then run `bun run dev:electron`. This is an explicit desktop check, not the default preview. The installed Start menu shortcut continues to run the last installed build.
 
 ### Verification and handoff
 
 | Change | Local verification |
 | --- | --- |
-| UI or TypeScript backend | Exercise the affected workflow in the Electron dev window, run focused tests for the change, then `bun run check` before handoff. |
-| Native runtime or host/runtime integration | Prepare the changed runtime, restart dev, and exercise the affected real runtime interaction as well as relevant tests and `bun run check`. |
-| Installer, packaging, packaged resource paths, or behavior specific to the installed app | Run `bun run build:installed`, exercise the affected behavior in that app, and run the relevant packaged checks described in [RELEASE.md](RELEASE.md). |
-| Release verification | Follow [RELEASE.md](RELEASE.md), including its required package and installed-app checks. |
-| Documentation or read-only investigation | Check referenced commands and links as needed; no application build or installation. |
+| UI or TypeScript backend | Exercise the affected workflow in the browser, run focused tests, then `bun run check` before handoff. |
+| Native runtime or host/runtime integration | Prepare the changed runtime, restart dev, and exercise the affected real runtime interaction plus relevant tests and `bun run check`. |
+| Electron window, preload, permissions, dialogs, or other desktop integration | Verify the affected interaction in an explicit Electron development session. |
+| Installer, packaging, packaged resource paths, or behavior specific to the installed app | Run `bun run build:installed`, exercise that behavior in the resulting app, and run the relevant packaged checks in [RELEASE.md](RELEASE.md). |
+| Release verification | Follow [RELEASE.md](RELEASE.md), including its package and installed-app gates. |
+| Documentation or read-only investigation | Check referenced commands and links as needed; no build or installation. |
 
-For a UI change, verification includes the affected action and its visible result. For persistence changes, reopen the app and confirm the saved state. Report the workflow exercised, checks passed or failed, and any unavailable verification. A dev-server ready message or passing code checks alone does not verify an interaction.
+For a UI change, verify the affected action and visible result. For persistence changes, restart and confirm saved state. Report the URL, checkout, workflow exercised, checks passed or failed, and any unverified behavior. A server-ready message or passing code checks alone does not verify an interaction.
 
-`bun run test:e2e` prepares the runtime and packages an E2E app before running Playwright. Use it when its scenarios cover the change and that packaged coverage is needed; it is not a lightweight dev-server check. The checked-in CI and release gates remain separate from this daily loop.
+`bun run test:e2e` prepares the runtime and packages an E2E app before running Playwright. Use it when its scenarios provide needed packaged coverage; it is not a lightweight browser check. CI and release gates remain separate from daily iteration.
 
-`bun run build:installed` prepares the runtime, rebuilds the Windows packages, verifies their source/hash manifest, installs the exact package, and verifies the installed executable and ASAR. Use it for the cases above or when Dany explicitly requests an installed build. Release files go to `release/`.
+`bun run build:installed` prepares the runtime, rebuilds and verifies Windows packages, installs the exact package, and verifies the installed executable and ASAR. Use it for the cases above or an explicit installed-build request. Output goes to `release/`.
 
-Routine dev runs do not create installers or rebuild Rust. Native preparation uses `build/cargo` for its Cargo cache; see the runtime build instructions before managing that cache. Avoid accumulating extra worktrees just to verify UI edits, since native preparation in each worktree creates another cache.
+Routine dev runs do not create installers or rebuild Rust. Native preparation uses `build/cargo` for its Cargo cache. Avoid repeatedly preparing identical native code in extra worktrees just to preview UI edits.
 
 ### Provider setup
 
