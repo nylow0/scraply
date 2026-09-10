@@ -12,12 +12,56 @@ Scraply is a local-first Windows desktop app for evidence-backed research and id
 
 ## Development
 
+Run commands from the checkout you are editing. For first-time setup:
+
 ```powershell
 bun install
+bunx --no-install install-electron
 git submodule update --init --recursive
 bun run prepare:runtime
+```
+
+`prepare:runtime` builds, checks, and stages the Rust worker. Reuse that stage for UI and TypeScript backend changes. Run preparation again when the stage is missing or the runtime source, Cargo dependencies, pinned submodule, or runtime build/protocol configuration changes. A new worktree needs its own prepared stage. See [runtime/README.md](runtime/README.md#build) for native development.
+
+Electron 42 downloads its executable on demand. The explicit `install-electron` step is needed because this version of electron-vite reads Electron's installed path directly. Repeat it after removing Electron's executable or replacing dependencies if dev reports `Electron uninstall`. See the [Electron 42 installation change](https://www.electronjs.org/blog/electron-42-0).
+
+For each development terminal session, point Electron at the prepared worker and start the app:
+
+```powershell
+$env:SCRAPLY_AGENT_PATH = (Resolve-Path build/runtime/scraply-agent.exe).Path
+$env:SCRAPLY_AGENT_LOCK_PATH = (Resolve-Path build/runtime/scraply-agent.lock.json).Path
 bun run dev
 ```
+
+These variables are required for native generation in development; preparation alone does not configure the dev process. Run them in the same terminal as `bun run dev`.
+
+### Daily iteration
+
+`bun run dev` starts Vite and opens an Electron development window with the real preload bridge and backend. Verify changes in that window. The installed Start menu shortcut still runs the last installed build. A normal browser does not supply `window.scraply` and cannot verify the complete app.
+
+Keep the dev process running while editing Svelte, CSS, or other renderer code; Vite updates the UI on save. After main-process, preload, TypeScript backend, startup configuration, or prompt changes, stop it with Ctrl+C and run `bun run dev` again. For automatic main/preload rebuilds and Electron restarts, use `bun run dev --watch`; Rust changes still require runtime preparation and a restart. Stop dev before packaging from the same checkout because those commands replace `out/`.
+
+Dev mode uses real local data and provider accounts. Use **Open data folder** to identify the active data directory before testing persistence or deletion. For isolated manual testing, append `-- --user-data-dir=C:/path/to/scraply-dev-data` to the dev command, choosing a dedicated directory. Keep destructive or paid verification within the task's authorization.
+
+### Verification and handoff
+
+| Change | Local verification |
+| --- | --- |
+| UI or TypeScript backend | Exercise the affected workflow in the Electron dev window, run focused tests for the change, then `bun run check` before handoff. |
+| Native runtime or host/runtime integration | Prepare the changed runtime, restart dev, and exercise the affected real runtime interaction as well as relevant tests and `bun run check`. |
+| Installer, packaging, packaged resource paths, or behavior specific to the installed app | Run `bun run build:installed`, exercise the affected behavior in that app, and run the relevant packaged checks described in [RELEASE.md](RELEASE.md). |
+| Release verification | Follow [RELEASE.md](RELEASE.md), including its required package and installed-app checks. |
+| Documentation or read-only investigation | Check referenced commands and links as needed; no application build or installation. |
+
+For a UI change, verification includes the affected action and its visible result. For persistence changes, reopen the app and confirm the saved state. Report the workflow exercised, checks passed or failed, and any unavailable verification. A dev-server ready message or passing code checks alone does not verify an interaction.
+
+`bun run test:e2e` prepares the runtime and packages an E2E app before running Playwright. Use it when its scenarios cover the change and that packaged coverage is needed; it is not a lightweight dev-server check. The checked-in CI and release gates remain separate from this daily loop.
+
+`bun run build:installed` prepares the runtime, rebuilds the Windows packages, verifies their source/hash manifest, installs the exact package, and verifies the installed executable and ASAR. Use it for the cases above or when Dany explicitly requests an installed build. Release files go to `release/`.
+
+Routine dev runs do not create installers or rebuild Rust. Native preparation uses `build/cargo` for its Cargo cache; see the runtime build instructions before managing that cache. Avoid accumulating extra worktrees just to verify UI edits, since native preparation in each worktree creates another cache.
+
+### Provider setup
 
 Set `EXA_API_KEY`, `PERPLEXITY_API_KEY`, or both in `.env` for development or in the environment that launches the installed app. Each discovery run uses the search provider selected in its setup. Scraply checks configured providers in the background, then stores the keys with Windows-backed encryption after validation. Known-problem development does not require web search.
 
@@ -26,26 +70,6 @@ Connect OpenAI through Scraply's account controls. The app opens OpenAI login in
 The native agent source lives in [runtime/](runtime/README.md) and is built with the app. `nylow0/scraply-agent` is legacy; new runtime changes belong in this repository. The pinned upstream source supplies OpenAI login and Responses transport libraries. Scraply does not package or invoke the Codex CLI.
 
 Native OpenAI does not support output-token ceilings. Scraply omits that field for this provider; request deadlines and the runtime output-size limit still apply, but they do not guarantee a token or billing ceiling. Other providers retain the configured token ceiling.
-
-Run the code checks before handing off a change:
-
-```powershell
-bun run check
-```
-
-When a change affects the desktop workflow, run its packaged E2E check:
-
-```powershell
-bun run test:e2e
-```
-
-After completing an application change, build and install it for hands-on testing:
-
-```powershell
-bun run build:installed
-```
-
-`bun run build:installed` cleans and rebuilds the Windows installers, verifies their source/hash manifest, installs the exact package, and verifies the installed executable and ASAR. Release files are written to `release/`.
 
 The branch and release workflow is documented in [RELEASE.md](RELEASE.md). `master` is the only long-lived branch. Every feature, fix, documentation change, and maintenance task uses a short-lived branch and a pull request into `master`.
 
