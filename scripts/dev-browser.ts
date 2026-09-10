@@ -16,8 +16,14 @@ type State = z.infer<typeof StateSchema>;
 
 function readState(): State | undefined {
   if (!existsSync(statePath)) return undefined;
-  const parsed = StateSchema.safeParse(JSON.parse(readFileSync(statePath, "utf8")));
-  return parsed.success ? parsed.data : undefined;
+  try {
+    const parsed = StateSchema.safeParse(JSON.parse(readFileSync(statePath, "utf8")));
+    return parsed.success ? parsed.data : undefined;
+  } catch (error) {
+    // Truncated launch metadata can be regenerated; file-access failures still matter.
+    if (error instanceof SyntaxError) return undefined;
+    throw error;
+  }
 }
 
 async function isRunning(state: State): Promise<boolean> {
