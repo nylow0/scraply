@@ -273,9 +273,8 @@ function workspace(): WorkspaceState {
 
 function renderSettings(props: Partial<ComponentProps<typeof Settings>> & { workspace: WorkspaceState }) {
   const view = render(Settings, {
-    busy: false, nativeLogin: null, onRetry: vi.fn(), onConnectNative: vi.fn(), onCancelNative: vi.fn(),
-    onRefreshNative: vi.fn(), onLogoutNative: vi.fn(), onOpenData: vi.fn(), onOpenLogs: vi.fn(), ...props,
+    open: true, busy: false, nativeLogin: null, onRetry: vi.fn(), onConnectNative: vi.fn(), onCancelNative: vi.fn(),
+    onRefreshNative: vi.fn(), onLogoutNative: vi.fn(), onOpenData: vi.fn(), onOpenLogs: vi.fn(), onRestore: vi.fn(), onDelete: vi.fn(), ...props,
   });
-  view.component.show();
   return view;
 }

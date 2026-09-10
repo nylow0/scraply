@@ -26,6 +26,32 @@ afterEach(async () => {
 });
 
 describe("native research workflow through the production backend", () => {
+  test("generates a title through the runtime and preserves archived research across restart", async () => {
+    const item = await fixture({ searchEnabled: false });
+    const threadId = await item.createThread("known-problem");
+    const title = await item.post("/threads/title", { context: statement, model, reasoningEffort: "low" }, z.object({ title: z.string() }));
+    expect(title.title).toBe("Reducing repair shop delays");
+    const request = item.requests()[0]!;
+    expect(request.model).toEqual(model);
+    expect(request.reasoningEffort).toBe("low");
+    expect(request.deadlineMs).toBe(30000);
+    expect(request.workOrder.inputs).toEqual({ brief: statement });
+    expect((await item.raw("/threads/title", { context: statement, model: { ...model, modelId: "unavailable" }, reasoningEffort: "low" })).status).toBe(409);
+    expect(item.requests()).toHaveLength(1);
+    const archived = await item.post("/threads/archive", { threadId, archived: true }, WorkspaceStateSchema);
+    expect(archived.activeThreadId).toBeNull();
+    expect(archived.threads.find((thread) => thread.id === threadId)?.archivedAt).toBeTruthy();
+    await item.restart();
+    expect((await item.workspace()).threads.find((thread) => thread.id === threadId)?.archivedAt).toBeTruthy();
+    await item.post("/threads/archive", { threadId, archived: false }, WorkspaceStateSchema);
+    const restored = await item.post("/threads/select", { threadId }, WorkspaceStateSchema);
+    expect(restored.scope).toEqual(expect.objectContaining(scope));
+    expect(restored.runConfig?.researchMode).toBe("known-problem");
+    await item.post("/threads/archive", { threadId, archived: true }, WorkspaceStateSchema);
+    const removed = await item.post("/threads/delete", { threadId }, WorkspaceStateSchema);
+    expect(removed.threads.some((thread) => thread.id === threadId)).toBe(false);
+  });
+
   test("fails before provider spend on an empty override, then runs and snapshots a deliberate edit", async () => {
     const item = await fixture({ searchEnabled: false });
     const overridePath = join(item.directory, "prompts", "workflow-v2-solutions.md");

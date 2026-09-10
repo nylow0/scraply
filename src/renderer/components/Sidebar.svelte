@@ -12,7 +12,7 @@
     deletingThreadId = null,
     onNew,
     onSelect,
-    onDelete,
+    onArchive,
     settingsControl,
   }: {
     threads: Thread[];
@@ -21,7 +21,7 @@
     deletingThreadId?: string | null;
     onNew: () => void;
     onSelect: (id: string) => void;
-    onDelete: (id: string) => void;
+    onArchive: (id: string) => void;
     settingsControl: Snippet;
   } = $props();
 
@@ -31,7 +31,7 @@
   let searchTrigger: HTMLButtonElement;
   let matches = $derived(threads.filter((thread) => thread.title.toLowerCase().includes(search.trim().toLowerCase())));
   async function showFinder() {
-    if (document.querySelector("dialog[open]")) return;
+    if (document.querySelector("dialog[open], .settings-screen:not([hidden])")) return;
     search = "";
     finder.showModal();
     await tick();
@@ -46,16 +46,11 @@
     if (event.key === "Enter" && matches[0]) { event.preventDefault(); openResult(matches[0].id); }
     if (event.key === "ArrowDown") { event.preventDefault(); finder.querySelector<HTMLButtonElement>(".search-result")?.focus(); }
   }
-  function confirmDelete(thread: Thread) {
-    if (confirm(`Delete "${thread.title}"?\n\nThis permanently removes its scope, evidence, problems, and solutions.`)) {
-      onDelete(thread.id);
-    }
-  }
 </script>
 
 <svelte:window onkeydown={(event) => { if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k") { event.preventDefault(); void showFinder(); } }} />
 <aside class="sidebar">
-  <div class="brand"><div class="brand-symbol"><BrandMark size={23} /></div><span>Scraply</span></div>
+  <div class="brand"><div class="brand-symbol"><BrandMark size={36} /></div><span>Scraply</span></div>
   <button class="new" aria-label="Create new research thread" disabled={busy} onclick={onNew}><Icon name="plus" size={17} />New research</button>
   <button bind:this={searchTrigger} class="find" onclick={showFinder}><Icon name="search" size={16} /><span>Find research</span><kbd>Ctrl K</kbd></button>
   <div class="list-head"><span>Your research</span><span>{threads.length}</span></div>
@@ -69,25 +64,23 @@
           disabled={busy}
           onclick={() => onSelect(thread.id)}
         >
-          <span class="title"><Icon name="folder" size={14} /><span>{thread.title}</span></span>
+          <span class="title"><span>{thread.title}</span></span>
           <span class="meta" data-tone={statusTone(thread.status)}>
-            <span class="meta-dot" aria-hidden="true"></span>{statusLabel(thread.status)}
+            <Icon name={thread.status === "failed" ? "alert" : thread.status.endsWith("running") ? "progress" : thread.status === "configuring" ? "brief" : "check"} size={11} />{statusLabel(thread.status)}
           </span>
         </button>
         <button
           class="delete"
           class:busy={deletingThreadId === thread.id}
-          title="Delete research"
-          aria-label={`Delete research ${thread.title}`}
+          title="Archive research"
+          aria-label={`Archive research ${thread.title}`}
           disabled={busy || deletingThreadId !== null}
-          onclick={() => confirmDelete(thread)}
+          onclick={() => onArchive(thread.id)}
         >
           {#if deletingThreadId === thread.id}
             <span class="spinner" aria-hidden="true"></span>
           {:else}
-            <svg aria-hidden="true" viewBox="0 0 20 20" width="15" height="15" fill="none">
-              <path d="M4.75 6.25h10.5M8 3.75h4M6.25 6.25l.5 9h6.5l.5-9M8.25 8.5v4.5M11.75 8.5v4.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
-            </svg>
+            <Icon name="archive" size={16} />
           {/if}
         </button>
       </div>
@@ -103,14 +96,14 @@
   <div class="search-results">
     <p>{search ? `${matches.length} results` : "Your research"}</p>
     {#each matches as thread (thread.id)}
-      <button class="search-result" disabled={busy} onclick={() => openResult(thread.id)}><Icon name="folder" /><span><strong>{thread.title}</strong><small>{statusLabel(thread.status)}</small></span><Icon name="arrow" size={15} /></button>
+      <button class="search-result" disabled={busy} onclick={() => openResult(thread.id)}><Icon name="research" /><span><strong>{thread.title}</strong><small>{statusLabel(thread.status)}</small></span><Icon name="arrow" size={15} /></button>
     {:else}<div class="no-results">No research found.{#if search} Try a different name.{/if}</div>{/each}
   </div>
   <footer><span>Type to search</span><span>Enter to open</span><span>Tab to navigate</span></footer>
 </dialog>
 <style>
-  .sidebar { display:grid;grid-template-rows:auto auto auto auto minmax(0,1fr) auto;gap:10px;padding:26px 16px 18px;background:var(--surface);min-height:0; }
-  .brand { display:flex;align-items:center;gap:10px;padding:4px 8px 23px;font-size:18px;font-weight:700;letter-spacing:-.04em; }
+  .sidebar { display:grid;grid-template-rows:auto auto auto auto minmax(0,1fr) auto;gap:10px;padding:26px 16px 18px;background:#000;min-height:0; }
+  .brand { display:flex;align-items:center;gap:10px;padding:4px 8px 28px;font-size:28px;font-weight:700;letter-spacing:-.04em; }
   .brand-symbol { color:var(--accent-strong); }
   .new,.find { width:100%;display:flex;align-items:center;gap:10px;border-radius:9px;padding:11px 12px;font-size:12px;font-weight:550; }
   .new { border:1px solid #71cfba28;background:#71cfba0c;color:var(--accent-strong); }
@@ -130,9 +123,6 @@
   .title :global(svg) { flex:none;color:var(--subtle); }
   .title > span { overflow:hidden;text-overflow:ellipsis;white-space:nowrap; }
   .meta { display:flex;align-items:center;gap:6px;padding-left:22px;color:var(--subtle);font-size:10px; }
-  .meta-dot { width:4px;height:4px;border-radius:50%;background:var(--subtle); }
-  .meta[data-tone="active"] .meta-dot { background:var(--accent);animation:pulse 1.5s infinite alternate; }
-  .meta[data-tone="done"] .meta-dot { background:var(--success); }
   .delete { border:0;background:transparent;color:var(--muted);display:grid;width:26px;height:30px;place-items:center;padding:0;margin-right:4px;border-radius:6px;opacity:0; }
   .thread-row:hover .delete,.thread-row:focus-within .delete,.delete.busy { opacity:1; }
   .delete:hover { color:var(--danger);background:#df929215; }
@@ -159,4 +149,12 @@
   @keyframes spin { to { transform:rotate(360deg); } }
   @keyframes pulse { to { opacity:.3; } }
   @media(max-width:720px) { .sidebar { padding-inline:10px; }.find kbd { display:none; }.brand { padding-inline:6px;font-size:16px; } }
+
+  .thread .meta { display:inline-flex;align-items:center;gap:5px;width:fit-content;margin:9px 0 0;padding:3px 7px;border:1px solid #3a403d;border-radius:5px;color:#c0c7c3;font-size:10px;line-height:1.2;background:#181b19; }
+  .thread .meta[data-tone="done"] { color:#59ffc0;border-color:#21744f;background:#0c3021; }
+  .thread .meta[data-tone="active"] { color:#80d5ff;border-color:#286383;background:#0d2939; }
+  .thread .meta[data-tone="attention"] { color:#ffc977;border-color:#805725;background:#32220e; }
+  .thread-row.active { background:#102a1e;border-color:#2b8b5c; }
+  .thread .title { font-size:13px;font-weight:550;line-height:1.4; }
+  .delete:hover:not(:disabled) { color:var(--text);background:var(--surface-2); }
 </style>

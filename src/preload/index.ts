@@ -21,6 +21,8 @@ const api = {
   openLogsFolder: (): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.OPEN_LOGS_FOLDER),
   createThread: (title?: string) => ipcRenderer.invoke(IPC_CHANNELS.CREATE_THREAD, { title }),
   selectThread: (threadId: string): Promise<WorkspaceState> => ipcRenderer.invoke(IPC_CHANNELS.SELECT_THREAD, { threadId }),
+  archiveThread: (threadId: string, archived: boolean): Promise<WorkspaceState> => ipcRenderer.invoke(IPC_CHANNELS.ARCHIVE_THREAD, { threadId, archived }),
+  generateTitle: (payload: { context: string; model: import("../shared/schemas").ModelRef; reasoningEffort: string }): Promise<{ title: string }> => ipcRenderer.invoke(IPC_CHANNELS.GENERATE_TITLE, payload),
   deleteThread: (threadId: string): Promise<WorkspaceState> => ipcRenderer.invoke(IPC_CHANNELS.DELETE_THREAD, { threadId }),
   saveScope: (payload: { threadId: string; scope: NonNullable<WorkspaceState["scope"]> }): Promise<WorkspaceState> =>
     ipcRenderer.invoke(IPC_CHANNELS.SAVE_SCOPE, SaveScopeSchema.parse(payload)),

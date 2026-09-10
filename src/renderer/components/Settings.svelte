@@ -1,10 +1,12 @@
 <script lang="ts">
+  import { tick } from "svelte";
+  import BrandMark from "./BrandMark.svelte";
   import ResearchDefaults from "./ResearchDefaults.svelte";
   import ProviderLogo from "./ProviderLogo.svelte";
   import Icon from "./Icon.svelte";
   import type { NativeLoginStartResult, WorkspaceState } from "../../shared/ipc";
 
-  let { workspace, busy, nativeLogin, open = $bindable(false), feedback, onRetry, onConnectNative, onCancelNative, onRefreshNative, onLogoutNative, onOpenData, onOpenLogs }: {
+  let { workspace, busy, nativeLogin, open = $bindable(false), feedback, onRetry, onConnectNative, onCancelNative, onRefreshNative, onLogoutNative, onOpenData, onOpenLogs, onRestore, onDelete }: {
     workspace: WorkspaceState | null;
     open?: boolean;
     feedback?: { text: string; tone: "error" | "info" } | null;
@@ -17,42 +19,46 @@
     onLogoutNative: (providerId: string) => Promise<void>;
     onOpenData: () => Promise<void>;
     onOpenLogs: () => Promise<void>;
+    onRestore: (id: string) => Promise<void>;
+    onDelete: (id: string) => Promise<void>;
   } = $props();
 
   const searchProviders = ["exa", "perplexity"] as const;
-  let section = $state<"account" | "defaults" | "connections" | "local">("account");
-  let dialog: HTMLDialogElement;
-  let trigger: HTMLButtonElement;
+  let section = $state<"account" | "defaults" | "connections" | "archive" | "local">("account");
+  let heading: HTMLHeadingElement;
+  let archived = $derived(workspace?.threads.filter((thread) => thread.archivedAt || thread.status === "archived") ?? []);
   let nativeValidationPending = $derived(workspace?.validation.native.error?.startsWith("Checking ")
     || workspace?.validation.native.error === "Native runtime is starting");
   let nativeModelOptions = $derived(workspace?.modelOptions.filter((item) => item.providerId === "openai-subscription") ?? []);
-  let connected = $derived(Boolean(workspace?.validation.native.connected));
 
-  // Native modal behavior provides focus containment and Escape dismissal.
-  // The setup form stays mounted, so opening settings never discards a draft.
-  export function show() { section = "account"; dialog.showModal(); open = true; }
+  // Keep the workspace mounted behind the page so returning preserves drafts and scroll.
+  export async function show() { section = "account"; open = true; await tick(); heading.focus(); }
+  async function back() { open = false; await tick(); document.getElementById("settings-button")?.focus(); }
+  function deleteArchived(id: string, title: string) {
+    if (confirm(`Permanently delete "${title}" and all its research? This cannot be undone.`)) void onDelete(id);
+  }
 </script>
 
-<button bind:this={trigger} class="settings-trigger" onclick={show} aria-haspopup="dialog" aria-label="Settings">
-  <svg viewBox="0 0 24 24" width="19" height="19" fill="none" aria-hidden="true">
-    <path d="m9 3-.6 2.2-2 .9-2.1-.6-2 3.5 1.5 1.7v2.6L2.3 15l2 3.5 2.1-.6 2 .9L9 21h4l.6-2.2 2-.9 2.1.6 2-3.5-1.5-1.7v-2.6L19.7 9l-2-3.5-2.1.6-2-.9L13 3Z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/>
-    <circle cx="11" cy="12" r="3" stroke="currentColor" stroke-width="1.3"/>
-  </svg>
-  <span><strong>Settings</strong></span>
-  <i class:connected class:pending={nativeValidationPending || Boolean(nativeLogin)} aria-hidden="true"></i>
-</button>
-
-<dialog bind:this={dialog} aria-labelledby="settings-title" onclose={() => { open = false; trigger.focus(); }}>
+<svelte:window onkeydown={(event) => { if (open && event.key === "Escape" && !(event.target instanceof Element && event.target.closest("select"))) { event.preventDefault(); void back(); } }} />
+<section class="settings-screen" hidden={!open} aria-label="Settings">
   <div class="settings-layout">
     <nav aria-label="Settings sections">
-      <h1 id="settings-title">Settings</h1>
+      <div class="settings-brand"><BrandMark size={36} /><span>Scraply</span></div>
+      <h1 bind:this={heading} tabindex="-1" id="settings-title">Settings</h1>
       <button class:active={section === "account"} aria-pressed={section === "account"} onclick={() => section = "account"}><Icon name="command" size={16} />Account</button>
       <button class:active={section === "defaults"} aria-pressed={section === "defaults"} onclick={() => section = "defaults"}><Icon name="brief" size={16} />Research defaults</button>
       <button class:active={section === "connections"} aria-pressed={section === "connections"} onclick={() => section = "connections"}><Icon name="research" size={16} />Connections</button>
+      <button class:active={section === "archive"} aria-pressed={section === "archive"} onclick={() => section = "archive"}><Icon name="archive" size={16} />Archived research</button>
       <button class:active={section === "local"} aria-pressed={section === "local"} onclick={() => section = "local"}><Icon name="folder" size={16} />Local files</button>
+      <button class="back" onclick={back}><Icon name="back" size={20} />Back to research</button>
     </nav>
     <div class="settings-content">
-      <header><div><h2>{section === "account" ? "Your account" : section === "defaults" ? "Research defaults" : section === "connections" ? "Search connections" : "Local files & help"}</h2></div><button class="close" aria-label="Close settings" onclick={() => dialog.close()}><Icon name="close" /></button></header>
+      <header><div><h2>{section === "account" ? "Your account" : section === "defaults" ? "Research defaults" : section === "connections" ? "Search connections" : section === "archive" ? "Archived research" : "Local files"}</h2></div></header>
+  <div hidden={section !== "archive"} class="archive-list">
+    {#each archived as thread (thread.id)}
+      <article><div><strong>{thread.title}</strong><span>{thread.archivedAt ? new Date(thread.archivedAt).toLocaleDateString() : "Archived"}</span></div><button disabled={busy} onclick={() => onRestore(thread.id)} aria-label={`Restore ${thread.title}`}>Restore</button><button class="danger" disabled={busy} onclick={() => deleteArchived(thread.id, thread.title)} aria-label={`Delete ${thread.title}`}>Delete</button></article>
+    {:else}<p class="archive-empty">No archived research.</p>{/each}
+  </div>
   <div hidden={section !== "defaults"}><ResearchDefaults {workspace} /></div>
   {#if feedback}<p class="feedback" class:error={feedback.tone === "error"} role={feedback.tone === "error" ? "alert" : "status"}>{feedback.text}</p>{/if}
   {#if workspace}
@@ -126,34 +132,27 @@
     <h2 id="local-title">Local files</h2>
     <div><button disabled={busy} onclick={onOpenData}>Open data folder</button><button disabled={busy} onclick={onOpenLogs}>Open logs folder</button></div>
   </section>
-  <details class="guide"><summary>User guide</summary><p>Start from any context and choose discovered problems, or start with a known problem and go directly to solutions.</p></details>
   </div>
     </div>
   </div>
-</dialog>
+</section>
 
 <style>
-  .settings-trigger { display:flex;align-items:center;gap:11px;width:100%;padding:12px 8px;border:0;border-radius:8px;background:transparent;color:var(--muted);text-align:left; }
-  .settings-trigger:hover { background:var(--surface-2);color:var(--text); }
-  .settings-trigger strong { font-size:12px;font-weight:550; }
-  .settings-trigger svg { flex-shrink:0; }
-  i { width:5px;height:5px;flex-shrink:0;margin-left:auto;border-radius:50%;background:var(--danger); }
-  i.connected { background:var(--success); }i.pending { background:var(--subtle); }
-  dialog { width:min(820px,calc(100vw - 40px));max-height:calc(100dvh - 60px);margin:auto;padding:0;border:1px solid var(--border-strong);border-radius:20px;background:var(--bg);color:var(--text);box-shadow:0 32px 120px #000b;overflow:auto; }
-  dialog[open] { animation:settings-open 240ms var(--ease); }
-  dialog::backdrop { background:#0009;backdrop-filter:blur(7px); }
-  .settings-layout { display:grid;grid-template-columns:205px minmax(0,1fr);min-height:490px; }
-  nav { display:flex;flex-direction:column;gap:5px;background:var(--surface);padding:30px 16px 20px;border-right:1px solid var(--border); }
-  nav h1 { margin:0 12px 28px;font-size:18px;font-weight:650;letter-spacing:-.03em; }
+  .settings-screen { position:fixed;inset:36px 0 0;z-index:10;background:#000;color:var(--text); }
+  .settings-layout { display:grid;grid-template-columns:248px minmax(0,1fr);height:100%; }
+  .settings-brand { display:flex;align-items:center;gap:10px;padding:4px 8px 28px;color:var(--text);font-size:28px;font-weight:700;letter-spacing:-.03em; }
+  .settings-brand :global(svg) { color:var(--accent); }
+  nav { display:flex;flex-direction:column;gap:5px;background:#000;padding:36px 16px 28px;min-height:0; }
+  nav h1 { margin:0 12px 20px;font-size:18px;font-weight:650;letter-spacing:-.03em; }
   nav button { display:flex;gap:10px;align-items:center;border:0;background:transparent;text-align:left;color:var(--muted);padding:12px;font-size:12px; }
   nav button.active { background:var(--surface-2);color:var(--text); }
   nav button.active :global(svg) { color:var(--accent); }
-  .settings-content { padding:32px;min-width:0; }
+  .settings-content { padding:48px clamp(30px,7vw,110px);min-width:0;overflow:auto;scrollbar-gutter:stable; }
+  .settings-content > div { max-width:680px; }
   header { display:flex;align-items:start;justify-content:space-between;gap:16px;margin-bottom:30px; }
   h2 { margin:0;font-size:21px;font-weight:650;letter-spacing:-.03em; }
   button { padding:10px 14px;border:1px solid var(--border-strong);border-radius:8px;background:var(--surface-2);color:var(--text);font-size:11px; }
   button:hover:not(:disabled) { background:var(--border); }
-  .close { padding:5px;border:0;background:transparent;color:var(--muted); }
   .account-emblem { display:grid;place-items:center;width:54px;height:54px;border:1px solid #71cfba30;border-radius:17px;background:#71cfba0b;color:var(--accent);margin-bottom:20px; }
   .native-account { display:grid;gap:26px; }
   .native-account > div:first-child { display:grid;gap:10px; }
@@ -165,7 +164,7 @@
   .primary:hover:not(:disabled) { background:var(--accent); }
   .login-progress { border:1px solid var(--border-strong);padding:16px;border-radius:12px;background:var(--surface); }
   .login-progress code { padding:8px 12px;border:1px solid var(--border-strong);border-radius:6px;font:600 17px var(--mono);letter-spacing:.1em; }
-  section h2 { font-size:13px;letter-spacing:0;margin-bottom:16px; }
+  .local h2 { font-size:13px;letter-spacing:0;margin-bottom:16px; }
   .search > h2 { display:none; }
   .provider { display:flex;align-items:center;justify-content:space-between;gap:20px;padding:22px 0;border-bottom:1px solid var(--border);font-size:12px; }
   .provider:first-of-type { border-top:1px solid var(--border); }
@@ -176,8 +175,11 @@
   .local > div { display:grid;gap:12px; }.local button { padding:16px;text-align:left;background:var(--surface);border-color:var(--border); }
   .feedback { padding:12px;border:1px solid var(--border);border-radius:8px;color:var(--muted);font-size:12px;overflow-wrap:anywhere; }
   .feedback.error { color:var(--danger); }
-  .guide { margin-top:28px;color:var(--muted);font-size:12px;line-height:1.7; }.guide summary { cursor:pointer; }
   [hidden] { display:none; }
-  @keyframes settings-open { from { opacity:0;transform:translateY(12px) scale(.98); }to { opacity:1;transform:none; } }
-  @media(max-width:650px) { .settings-layout { grid-template-columns:1fr; }nav { padding:20px;display:flex;flex-direction:row;flex-wrap:wrap;border-right:0;border-bottom:1px solid var(--border); }nav h1 { width:100%;margin:0 0 10px; }.settings-content { padding:24px; } }
+  nav .back { margin: auto 4px 0;padding:12px 8px;font-size:13px; }
+  .archive-list article { display:flex;align-items:center;gap:10px;padding:22px 0;border-bottom:1px solid var(--border); }
+  .archive-list article > div { flex:1;min-width:0;display:grid;gap:6px; }
+  .archive-list strong { font-size:14px;overflow-wrap:anywhere; }
+  .archive-list span,.archive-empty { font-size:12px;color:var(--muted); }
+  .danger { color:var(--danger); }
 </style>

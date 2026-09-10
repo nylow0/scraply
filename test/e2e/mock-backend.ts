@@ -41,7 +41,15 @@ export async function startMockBackend(): Promise<MockBackend> {
     if (url.pathname === "/validation") return ok(res, validation);
     if (url.pathname === "/workspace") return ok(res, workspace());
     if (url.pathname === "/threads") { activeThreadId = "thread-1"; threads.push({ id: activeThreadId, title: "New research", createdAt: now, updatedAt: now }); return ok(res, { thread: { ...threads[0], status }, workspace: workspace() }); }
-    if (url.pathname === "/threads/select") return ok(res, workspace());
+    if (url.pathname === "/threads/select") { activeThreadId = (body as { threadId: string }).threadId; return ok(res, workspace()); }
+    if (url.pathname === "/threads/title") return ok(res, { title: "Reducing repair shop delays" });
+    if (url.pathname === "/threads/archive") {
+      const input = body as { threadId: string; archived: boolean };
+      const thread = threads.find((item) => item.id === input.threadId)!;
+      thread.archivedAt = input.archived ? now : null;
+      if (input.archived) activeThreadId = null;
+      return ok(res, workspace());
+    }
     if (url.pathname === "/threads/delete") { threads.length = 0; activeThreadId = null; return ok(res, workspace()); }
     if (url.pathname === "/scope") { scope = (body as { scope: Record<string, unknown> }).scope; threads[0]!.title = String(scope.title); return ok(res, workspace()); }
     if (url.pathname === "/run-config") { runConfig = (body as { config: typeof DEFAULT_RUN_CONFIG }).config; return ok(res, workspace()); }

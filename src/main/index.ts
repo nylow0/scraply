@@ -7,6 +7,7 @@ import {
   ApiErrorResponseSchema,
   ApiResponseSchema,
   CancelResearchSchema,
+  ArchiveThreadRequestSchema, GenerateTitleRequestSchema, GenerateTitleResultSchema,
   CreateThreadRequestSchema,
   DeleteThreadRequestSchema,
   EvidenceFollowUpRequestSchema,
@@ -329,7 +330,9 @@ function createWindow(): void {
     height: 860,
     minWidth: 960,
     minHeight: 640,
-    backgroundColor: "#0a0a0a",
+    backgroundColor: "#000000",
+    titleBarStyle: "hidden",
+    titleBarOverlay: { color: "#000000", symbolColor: "#c2c7c5", height: 36 },
     title: "Scraply",
     autoHideMenuBar: true,
     ...(existsSync(iconPath) ? { icon: iconPath } : {}),
@@ -528,6 +531,8 @@ function registerIpc(): void {
   });
   handle(IPC_CHANNELS.CREATE_THREAD, (body) => post("/threads", CreateThreadRequestSchema.parse(body ?? {})));
   handle(IPC_CHANNELS.SELECT_THREAD, (body) => post("/threads/select", SelectThreadRequestSchema.parse(body)));
+  handle(IPC_CHANNELS.ARCHIVE_THREAD, (body) => post("/threads/archive", ArchiveThreadRequestSchema.parse(body)));
+  handle(IPC_CHANNELS.GENERATE_TITLE, async (body) => GenerateTitleResultSchema.parse(await post("/threads/title", GenerateTitleRequestSchema.parse(body))));
   handle(IPC_CHANNELS.DELETE_THREAD, (body) => post("/threads/delete", DeleteThreadRequestSchema.parse(body)));
   handle(IPC_CHANNELS.SAVE_SCOPE, (body) => post("/scope", SaveScopeSchema.parse(body)));
   handle(IPC_CHANNELS.SAVE_RUN_CONFIG, (body) => post("/run-config", SaveRunConfigSchema.parse(body)));
