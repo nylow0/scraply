@@ -136,4 +136,10 @@
   .meta span { padding:4px 8px;border:1px solid var(--border-strong);border-radius:6px;color:var(--muted);font-size:10px; }
   .meta .selected { color:var(--accent-strong);border-color:#71cfba40; }
   @media(max-width:700px) { .archive { padding:28px 22px 60px; }.summary { flex-wrap:wrap;gap:12px; } }
+  .summary { display:flex;align-items:center;gap:36px;margin:24px 0 8px;padding:18px 0;border-top:1px solid var(--border);border-bottom:1px solid var(--border); }
+  .summary > div { display:flex;align-items:baseline;gap:10px; }
+  .summary dt { font-size:14px;color:var(--muted); }
+  .summary dd { font-size:20px;font-weight:600;background:transparent;border:0;padding:0;color:var(--text); }
+  .problems { min-width:0; }.problems article { min-width:0; }
+  .problem-disclosure :global(.disclosure-title) { font-size:15px;line-height:1.5; }
 </style>

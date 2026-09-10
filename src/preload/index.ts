@@ -1,3 +1,4 @@
+import { AppCommandSchema } from "../shared/ipc";
 import { contextBridge, ipcRenderer } from "electron";
 import {
   ExportIdeasRequestSchema, ExportResearchRequestSchema, IPC_CHANNELS, ResearchEventSchema, SaveFavoriteModelSchema,
@@ -50,6 +51,13 @@ const api = {
   exportIdeas: (threadId: string, format: "markdown" | "json" = "markdown") =>
     ipcRenderer.invoke(IPC_CHANNELS.EXPORT_IDEAS, ExportIdeasRequestSchema.parse({ threadId, format })),
   getSourceDetail: (sourceId: string): Promise<SourceDetail> => ipcRenderer.invoke(IPC_CHANNELS.GET_SOURCE_DETAIL, { sourceId }),
+  showAppMenu: (payload: { menu: "File" | "Edit" | "View" | "Help"; x: number; y: number }): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.SHOW_APP_MENU, payload),
+  discardIdea: (threadId: string, ideaId: string, discarded: boolean): Promise<WorkspaceState> => ipcRenderer.invoke(IPC_CHANNELS.DISCARD_IDEA, { threadId, ideaId, discarded }),
+  onAppCommand: (listener: (command: import("zod").z.infer<typeof AppCommandSchema>) => void) => {
+    const handler = (_: unknown, value: unknown) => { const parsed = AppCommandSchema.safeParse(value); if (parsed.success) listener(parsed.data); };
+    ipcRenderer.on(IPC_CHANNELS.APP_COMMAND, handler);
+    return () => { ipcRenderer.removeListener(IPC_CHANNELS.APP_COMMAND, handler); };
+  },
   getIdeaDetail: (ideaId: string): Promise<SolutionView> => ipcRenderer.invoke(IPC_CHANNELS.GET_IDEA_DETAIL, { ideaId }),
   openExternalUrl: (url: string): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.OPEN_EXTERNAL_URL, { url }),
   onBackendEvent: (listener: (event: ResearchEvent) => void) => {

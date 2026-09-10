@@ -193,3 +193,8 @@ select option:hover, select option:focus { background:#234333;outline:none; }
 select option:disabled { color:#748077; }
 select option::checkmark { color:var(--accent);order:2;margin-left:auto; }
 select:focus-visible { outline:2px solid var(--accent);outline-offset:2px; }
+
+/* Grid tracks must shrink to the viewport even when a generated title is a paragraph. */
+.disclosure-title { max-width:100%;min-width:0; }
+.disclosure-title .disclosure-label { flex:1;min-width:0; }
+::-webkit-scrollbar-button { display:none;width:0;height:0; }

@@ -18,7 +18,7 @@ const problem = { id: "problem-1", statement: "Small repair shops cannot reliabl
 const rejectedProblem = { id: "rejected-1", statement: "Repair shops cannot compare every supplier on one marketplace.", reason: "The candidate cited factors from only one source hostname." };
 const solution = { id: "solution-1", problemId: "problem-1", problemStatement: problem.statement, problemVerdict: "confirmed", factors: [factor], mechanism: "Supplier reliability ledger", description: "Pool observed delivery windows by supplier and part category.", respectsOffLimits: true, respectsOffLimitsWhy: "Does not hold inventory.", outcomes: [{ id: "outcome-1", description: "Shops quote narrower delivery windows.", direction: "positive", affects: "Scheduling", addressesCore: true }, { id: "outcome-2", description: "Sparse suppliers remain hard to estimate.", direction: "negative", affects: "Coverage", addressesCore: false }], risks: [{ id: "risk-2", description: "The only data supplier can leave the market.", likelihood: "likely", impact: "project ends", sortKey: 9, mitigations: [] }, { id: "risk-1", description: "Suppliers change behavior faster than the ledger updates.", likelihood: "possible", impact: "~2 weeks", sortKey: 4, mitigations: [{ id: "mitigation-1", approach: "Decay old observations", cost: "One maintenance rule", failsIf: "Volume is too sparse", riskIds: ["risk-1"] }] }], confirmedCoreOutcomes: 1, unaddressedCatastrophicRisks: 1 };
 
-export async function startMockBackend(): Promise<MockBackend> {
+export async function startMockBackend(options: { longIdeaTitle?: boolean } = {}): Promise<MockBackend> {
   const token = "e2e-token";
   const requests: MockBackend["requests"] = [];
   const threads: Array<Record<string, unknown>> = [];
@@ -26,10 +26,11 @@ export async function startMockBackend(): Promise<MockBackend> {
   let scope: Record<string, unknown> | null = null;
   let runConfig = DEFAULT_RUN_CONFIG;
   let status = "configuring";
+  let discarded = false;
   const workspace = () => ({
     validation, threads: threads.map((thread) => ({ ...thread, status })), activeThreadId, messages: [], scope,
     runConfig: activeThreadId ? runConfig : null, models: [DEFAULT_RUN_CONFIG.model, { providerId: "openai-subscription", modelId: "gpt-6-astra" }], modelOptions: [{ ...DEFAULT_RUN_CONFIG.model, displayName: "GPT-5.6 Sol", defaultReasoningEffort: "medium", reasoningEfforts: [{ id: "medium", description: "Balanced reasoning" }] }, { providerId: "openai-subscription", modelId: "gpt-6-astra", displayName: "Astra", defaultReasoningEffort: "medium", reasoningEfforts: [{ id: "medium", description: "Balanced reasoning" }] }], modelCatalog: { models: [DEFAULT_RUN_CONFIG.model], favorites: [] }, presets: [],
-    problemCandidates: status !== "configuring" ? [problem] : [], rejectedProblemCandidates: status !== "configuring" ? [rejectedProblem] : [], solutions: status === "solutions-ready" ? [solution] : [],
+    problemCandidates: status !== "configuring" ? [problem] : [], rejectedProblemCandidates: status !== "configuring" ? [rejectedProblem] : [], solutions: status === "solutions-ready" ? [{ ...solution, discarded, mechanism: options.longIdeaTitle ? "Recruit people who recently encountered the problem and reconstruct the last occurrence, current workflow, consequences, frequency, workarounds, and the value of a shared supplier reliability ledger for independent repair shops." : solution.mechanism }] : [],
     latestResearchRun: status === "configuring" ? null : { runId: "run-1", status: "completed", problemId: status === "solutions-ready" ? "problem-1" : null, codexCalls: 8, searches: 10, projectedCodexCalls: 20, projectedSearches: 20, lastActivity: "Problem verification completed" }, pendingRuns: [],
   });
   const server = createServer(async (req, res) => {
@@ -57,6 +58,7 @@ export async function startMockBackend(): Promise<MockBackend> {
     if (url.pathname === "/research/start") { status = "problems-ready"; return ok(res, { runId: "run-1", workspace: workspace() }); }
     if (url.pathname === "/research/select-problems") { status = "solutions-ready"; return ok(res, workspace()); }
     if (url.pathname === "/research/export") return ok(res, { filename: "repair-delays-research.json", content: JSON.stringify({ schemaVersion: 1, problems: [problem] }) });
+    if (url.pathname === "/ideas/discard") { discarded = (body as { discarded: boolean }).discarded; return ok(res, workspace()); }
     if (url.pathname === "/ideas/export") return ok(res, { files: [{ filename: "repair-delays.md", content: "# Repair delays" }] });
     return reply(res, 404, { ok: false, error: { code: "not_found", message: "Not found" } });
   });

@@ -92,7 +92,7 @@
         <p>{idea.description}</p></div>
       {#if idea.selectable}<button class="primary" disabled={busy} onclick={() => onSelect(idea)}>Choose and analyze</button>{/if}
     </header>
-    <div class="option-overview">
+    <details class="option-overview"><summary>Problem and fit</summary>
     <p class="problem">{idea.problemStatement}</p>
     <dl>
       <div><dt>Key assumption</dt><dd>{idea.keyAssumption}</dd></div>
@@ -100,10 +100,11 @@
       <div><dt>Constraints</dt><dd>{idea.respectsOffLimits ? "" : "Possible conflict. "}{idea.respectsOffLimitsWhy}</dd></div>
     </dl>
     {#if idea.unknowns?.length}<h3>Still uncertain</h3><ul>{#each idea.unknowns as unknown, index (index)}<li>{unknown}</li>{/each}</ul>{/if}
-    </div>
+    </details>
       {#if loading}<p role="status">Loading saved details…</p>{/if}
       {#if error}<p role="alert">{error}</p><button onclick={loadDetail}>Retry details</button>{/if}
       {#if detail}
+        <details class="deep-review"><summary>Evidence and sources</summary>
         <div class="source-columns">
         <section aria-label="Sources supporting this option"><h3>Sources supporting this option</h3>
           <ul>{#each supportingReferences as source (source.id)}<li>{#if source.url}<a href={source.url} onclick={(event) => { event.preventDefault(); void onOpenSource(source.url!); }}>{source.title}</a>{:else}{source.title}{/if}</li>{:else}<li>No supporting sources cited for this option.</li>{/each}</ul>
@@ -121,27 +122,32 @@
         {#each detail.contrarySources ?? [] as source (source.id)}
           <details><summary>{source.title}</summary><a href={source.url} onclick={(event) => { event.preventDefault(); void onOpenSource(source.url); }}>Open source</a><p class="source-text">{source.text}</p></details>
         {:else}<p>No contrary sources were collected. Their absence does not confirm the premise.</p>{/each}
+        </details>
         {#if detail.riskEvaluation && !analysis}
-          <section aria-label="Independent risk evaluation">
+          <details aria-label="Independent risk evaluation"><summary>Risk review</summary>
             <h3>Independent risk evaluation</h3>
             <p class="status">Evaluated against: {detail.riskEvaluationCriteria || "The research goal and boundaries."}</p>
             {#each detail.riskEvaluation.risks as risk (risk.riskId)}<div class="finding"><strong>{risk.description}</strong><p>{risk.whyDecisive}</p></div>{:else}<p>The evaluator identified no decisive risk.</p>{/each}
             {#if detail.riskEvaluation.unknowns.length}<h3>Open questions</h3><ul>{#each detail.riskEvaluation.unknowns as unknown, index (index)}<li>{unknown}</li>{/each}</ul>{/if}
             <p class="status">Risk review saved. The final analysis is not complete.</p>
-          </section>
+          </details>
         {/if}
         {#if analysis}
+          <section class="experiment"><h3>Next experiment</h3><strong>{analysis.experiment.question}</strong><p>{analysis.experiment.method}</p>
+            <dl><div><dt>Cost</dt><dd>{analysis.experiment.cost}</dd></div><div><dt>Pass</dt><dd>{analysis.experiment.passCriterion}</dd></div><div><dt>Fail</dt><dd>{analysis.experiment.failCriterion}</dd></div></dl>
+          </section>
+          <details class="deep-review"><summary>Possible outcomes</summary>
           <h3>Possible consequences</h3><p class="status">Model judgments. These have not been observed.</p>
           {#each analysis.consequences as consequence, index (index)}<div class="finding"><strong>{consequence.direction}: {consequence.description}</strong><p>Affects {consequence.affects}. {consequence.rationale}</p></div>{/each}
+          </details>
+          <details class="deep-review"><summary>Risks and responses</summary>
           <h3>{detail.riskEvaluation ? "Independent risk evaluation" : "Decisive risks"}</h3>
           <p class="status">Evaluated against: {detail.riskEvaluationCriteria || "The research goal and boundaries."}</p>
           {#each analysis.risks as risk (risk.riskId)}<div class="finding"><strong>{risk.description}</strong><p>{risk.whyDecisive}</p></div>{:else}<p>No decisive risk identified by the model. This is not a safety guarantee.</p>{/each}
           <h3>Proposed responses, untested</h3>
           {#each analysis.proposedResponses as response, index (index)}<div class="finding"><strong>{response.approach}</strong><p>Addresses: {analysis.risks.filter((risk) => response.riskIds.includes(risk.riskId)).map((risk) => risk.description).join("; ")}</p><p>Cost: {response.cost}</p><p>Fails if: {response.failsIf}</p></div>{/each}
           {#if analysis.unknowns.length}<h3>Open questions</h3><ul>{#each analysis.unknowns as unknown, index (index)}<li>{unknown}</li>{/each}</ul>{/if}
-          <section class="experiment"><h3>Next experiment</h3><strong>{analysis.experiment.question}</strong><p>{analysis.experiment.method}</p>
-            <dl><div><dt>Cost</dt><dd>{analysis.experiment.cost}</dd></div><div><dt>Pass</dt><dd>{analysis.experiment.passCriterion}</dd></div><div><dt>Fail</dt><dd>{analysis.experiment.failCriterion}</dd></div></dl>
-          </section>
+          </details>
           {#if detail.evidenceFollowUp}
             <section class="follow-up" aria-label="Evidence follow-up result">
               <h3>Evidence follow-up</h3>
@@ -179,7 +185,7 @@
 </article>
 
 <style>
-  article { border:1px solid var(--border);border-radius:13px;padding:0;overflow:hidden;background:linear-gradient(120deg,#1b202377,var(--surface));box-shadow:inset 0 1px #ffffff04; }
+  article { min-width:0;max-width:100%;overflow-wrap:anywhere; border:1px solid var(--border);border-radius:13px;padding:0;overflow:hidden;background:linear-gradient(120deg,#1b202377,var(--surface));box-shadow:inset 0 1px #ffffff04; }
   article.selected { border-color:#71cfba60; }
   .disclosure-title.expanded { background:var(--surface-2); }
   .disclosure-content { background:var(--bg);padding:24px 28px 30px; }
@@ -190,14 +196,14 @@
   p,li { line-height:1.8;font-size:12px;max-width:78ch;color:var(--muted); }
   ul { padding-left:20px; }li + li { margin-top:7px; }
   .status,.problem { color:var(--subtle);font-size:11px;line-height:1.7; }
-  .option-overview { padding:20px 22px;background:var(--surface);border:1px solid var(--border);border-radius:12px; }
+  .option-overview { padding:0;background:transparent;border:0;border-top:1px solid var(--border);border-radius:0;margin-top:0; }
   .option-overview .problem { margin:0 0 18px;padding-bottom:16px;border-bottom:1px solid var(--border);color:var(--text);font-size:12px; }
   dl { display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:22px;margin:0; }
   dt { color:var(--subtle);font-size:10px;margin-bottom:8px; }dd { margin:0;color:var(--muted);font-size:12px;line-height:1.8; }
   button:not(.disclosure-title) { padding:10px 14px;border:1px solid var(--border-strong);border-radius:8px;background:var(--surface-2);color:var(--text);font-size:11px;font-weight:550; }
   button.primary { background:var(--accent-strong);color:var(--accent-ink);border-color:transparent;flex-shrink:0; }
-  summary { cursor:pointer;padding:14px 0;font-size:12px;color:var(--muted); }details { border-top:1px solid var(--border);margin-top:18px; }
-  .source-columns { display:grid;grid-template-columns:1fr 1fr;gap:24px;border-bottom:1px solid var(--border);padding-bottom:18px; }
+  summary { cursor:pointer;padding:18px 0;font-size:14px;color:var(--muted); }details { border-top:1px solid var(--border);margin-top:18px; }
+  .source-columns { display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:24px;border-bottom:1px solid var(--border);padding-bottom:18px; }
   .source-columns section { min-width:0; }.source-columns h3 { font-size:12px; }.source-columns ul { padding-left:16px; }.source-columns a { overflow-wrap:anywhere; }
   blockquote { margin:16px 0;padding:18px 20px;border:1px solid var(--border);border-left:2px solid #71cfba55;border-radius:0 10px 10px 0;background:var(--surface);font-size:13px;line-height:1.8;max-width:78ch; }
   footer { margin-top:10px;font-size:11px; }.estimated { display:block;color:var(--subtle);font-size:10px;margin-top:8px; }
