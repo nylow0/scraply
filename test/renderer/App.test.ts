@@ -8,6 +8,58 @@ import { DEFAULT_RUN_CONFIG } from "../../src/shared/schemas";
 import { summarizeRunUsage } from "../../src/backend/run-usage";
 
 describe("App workspace coordination", () => {
+  test.each(["archived", "deleted"] as const)("skips %s research in both history directions and disables unreachable navigation", async (unavailable) => {
+    let state = workspace("alpha");
+    state.threads.push({ ...state.threads[0]!, id: "gamma", title: "Gamma" });
+    let backendEvent: ((event: ResearchEvent) => void) | undefined;
+    installApi({
+      getWorkspace: async () => structuredClone(state),
+      selectThread: async (threadId) => {
+        state = { ...state, activeThreadId: threadId };
+        return structuredClone(state);
+      },
+      archiveThread: async (threadId) => {
+        state = { ...state, threads: state.threads.map((thread) => thread.id === threadId
+          ? { ...thread, archivedAt: "2026-09-12T00:00:00.000Z" } : thread) };
+        return structuredClone(state);
+      },
+      onBackendEvent(listener) { backendEvent = listener; return () => { backendEvent = undefined; }; },
+    });
+    const view = render(App);
+    await view.findByRole("button", { name: "Open thread Alpha" });
+    const back = view.getByRole("button", { name: "Go back" }) as HTMLButtonElement;
+    const forward = view.getByRole("button", { name: "Go forward" }) as HTMLButtonElement;
+    expect(back.disabled).toBe(true);
+
+    for (const title of ["Beta", "Gamma"]) {
+      const button = view.getByRole("button", { name: `Open thread ${title}` });
+      await fireEvent.click(button);
+      await waitFor(() => expect(button.getAttribute("aria-current")).toBe("true"));
+    }
+    await fireEvent.click(view.getByRole("button", { name: "Archive research Beta" }));
+    await waitFor(() => expect(view.queryByRole("button", { name: "Open thread Beta" })).toBeNull());
+    if (unavailable === "deleted") {
+      // A reconciled workspace can remove an archived entry permanently.
+      state = { ...state, threads: state.threads.filter((thread) => thread.id !== "beta") };
+      backendEvent?.({ type: "run-completed", threadId: "gamma", runId: "run-gamma", problemId: null });
+      await waitFor(() => expect(view.queryByRole("button", { name: "Restore Beta", hidden: true })).toBeNull());
+    }
+
+    await fireEvent.click(back);
+    await waitFor(() => expect(view.getByRole("button", { name: "Open thread Alpha" }).getAttribute("aria-current")).toBe("true"));
+    await tick();
+    expect(back.disabled).toBe(true);
+    expect(forward.disabled).toBe(false);
+    await fireEvent.click(forward);
+    await waitFor(() => expect(view.getByRole("button", { name: "Open thread Gamma" }).getAttribute("aria-current")).toBe("true"));
+    await tick();
+    expect(forward.disabled).toBe(true);
+
+    await fireEvent.click(view.getByRole("button", { name: "Archive research Alpha" }));
+    await waitFor(() => expect(back.disabled).toBe(true));
+    expect(forward.disabled).toBe(true);
+  });
+
   test("updates live usage without loading the whole workspace on progress", async () => {
     const state = workspace("alpha");
     const usage = summarizeRunUsage([]);

@@ -37,6 +37,8 @@
   let navigation = $state<NavigationTarget[]>([]);
   let navigationIndex = $state(-1);
   let traversingHistory = false;
+  let backIndex = $derived(findHistoryIndex(-1));
+  let forwardIndex = $derived(findHistoryIndex(1));
   $effect(() => {
     const route = { threadId: workspace?.activeThreadId, step: activeStep, settings: settingsOpen };
     if (loading || busy || !route.threadId) return;
@@ -48,11 +50,18 @@
       navigationIndex = navigation.length - 1;
     });
   });
-  async function navigateHistory(offset: number) {
-    const index = navigationIndex + offset;
+  function findHistoryIndex(direction: -1 | 1): number {
+    // Archived and deleted research can leave gaps in either direction.
+    for (let index = navigationIndex + direction; index >= 0 && index < navigation.length; index += direction) {
+      const route = navigation[index];
+      if (workspace?.threads.some((thread) => thread.id === route?.threadId && !thread.archivedAt)) return index;
+    }
+    return -1;
+  }
+  async function navigateHistory(direction: -1 | 1) {
+    const index = direction === -1 ? backIndex : forwardIndex;
     const route = navigation[index];
-    if (!route || busy || traversingHistory) return;
-    if (!workspace?.threads.some((thread) => thread.id === route.threadId && !thread.archivedAt)) return;
+    if (!route || !workspace || busy || traversingHistory) return;
     traversingHistory = true;
     try {
       if (route.threadId !== workspace.activeThreadId) await selectThread(route.threadId);
@@ -429,7 +438,7 @@
   function message(value: unknown) { return value instanceof Error ? value.message : "Something went wrong."; }
 </script>
 
-<DesktopBar canBack={navigationIndex > 0 && !busy} canForward={navigationIndex < navigation.length - 1 && !busy} onBack={() => navigateHistory(-1)} onForward={() => navigateHistory(1)} onToggle={() => sidebarVisible = !sidebarVisible} />
+<DesktopBar canBack={backIndex !== -1 && !busy} canForward={forwardIndex !== -1 && !busy} onBack={() => navigateHistory(-1)} onForward={() => navigateHistory(1)} onToggle={() => sidebarVisible = !sidebarVisible} />
 <div class="app-shell" class:sidebar-hidden={!sidebarVisible}>
   <div class="sidebar-area" hidden={!sidebarVisible} inert={settingsOpen}>
   <Sidebar
