@@ -28,7 +28,7 @@ export function saveResearchDefaults(defaults: ResearchDefaults): void {
 }
 
 export function modelDisplayName(model: { modelId: string; displayName?: string }): string {
-  if (model.modelId === "gpt-6-astra") return "Astra";
+  if (model.modelId === "gpt-6-astra") return "GPT-6 Astra";
   if (model.modelId === "gpt-5.6-luna") return "GPT-5.6 Luna";
   if (model.modelId === "gpt-5.6-sol") return "GPT-5.6 Sol";
   return model.displayName ?? model.modelId;

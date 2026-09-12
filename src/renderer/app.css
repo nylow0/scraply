@@ -175,14 +175,14 @@ textarea { line-height:1.65; }
 
 /* Chromium's customizable picker retains native keyboard and form behavior. */
 select, select::picker(select) { appearance: base-select; }
-select { gap:12px;align-items:center; }
+select { gap:12px;align-items:center;justify-content:space-between; }
 select::picker(select) {
   background:var(--surface);color:var(--text);border:1px solid var(--border-strong);border-radius:8px;
   padding:4px;box-shadow:0 8px 24px #0009;max-height:min(360px,60vh);overflow:auto;
   margin-block:6px;font:400 13px/1.4 var(--sans);min-width:anchor-size(width);
   transition:none;animation:none;
 }
-select::picker-icon { content:"";width:7px;height:7px;margin:0 3px 3px 10px;flex:none;border-right:1.5px solid var(--muted);border-bottom:1.5px solid var(--muted);transform:rotate(45deg);transition:none; }
+select::picker-icon { content:"";width:7px;height:7px;margin:0 3px 3px auto;flex:none;border-right:1.5px solid var(--muted);border-bottom:1.5px solid var(--muted);transform:rotate(45deg);transition:none; }
 select:open::picker-icon { transform:translateY(3px) rotate(225deg); }
 select option { padding:9px 10px;border-radius:4px;gap:12px;min-height:36px;white-space:normal; }
 select option:checked { background:#0e3b29;color:#66ffc4;font-weight:600; }

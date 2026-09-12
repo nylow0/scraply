@@ -17,6 +17,8 @@ test("setup hierarchy, source preferences, keyboard controls, and sidebar fit in
   });
   try {
     const page = await app.firstWindow();
+    const appIcon = await app.evaluate(async ({ app }) => (await app.getFileIcon(process.execPath, { size: "large" })).toPNG().toString("base64"));
+    await testInfo.attach("installed-app-icon", { body: Buffer.from(appIcon, "base64"), contentType: "image/png" });
     await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]!.setSize(1280, 800));
     await expect(page.getByLabel("Research name", { exact: true })).toBeVisible();
     // Seed a real library through the preload API in this disposable profile.
@@ -45,6 +47,31 @@ test("setup hierarchy, source preferences, keyboard controls, and sidebar fit in
     await page.screenshot({ path: testInfo.outputPath("known-problem.png") });
     await page.keyboard.press("ArrowLeft");
     await expect(page.getByRole("radio", { name: /^Find problems/ })).toBeChecked();
+
+    const count = page.getByRole("spinbutton", { name: "Solutions per problem", exact: true });
+    const fewer = page.getByRole("button", { name: "Fewer solutions per problem", exact: true });
+    const more = page.getByRole("button", { name: "More solutions per problem", exact: true });
+    await more.click();
+    await expect(count).toHaveValue("4");
+    await fewer.click();
+    await expect(count).toHaveValue("3");
+    await count.fill("1");
+    await expect(fewer).toBeDisabled();
+    await count.fill("20");
+    await expect(more).toBeDisabled();
+    await fewer.click();
+    await expect(count).toHaveValue("19");
+    await count.fill("");
+    await more.click();
+    await expect(count).toHaveValue("4");
+    await count.focus();
+    await page.keyboard.press("ArrowDown");
+    await expect(count).toHaveValue("3");
+    const countBox = (await count.boundingBox())!;
+    const moreBox = (await more.boundingBox())!;
+    expect(Math.abs((moreBox.y + moreBox.height / 2) - (countBox.y + countBox.height / 2))).toBeLessThan(1);
+    expect(moreBox.x + moreBox.width).toBeLessThan(countBox.x + countBox.width);
+    await page.screenshot({ path: testInfo.outputPath("run-controls.png") });
 
     const coverage = page.getByLabel("Search coverage", { exact: true });
     await expect(coverage).toHaveValue("web");
@@ -75,6 +102,11 @@ test("setup hierarchy, source preferences, keyboard controls, and sidebar fit in
     await expect(dialog.locator(".account-emblem svg")).toBeVisible();
     await page.screenshot({ path: testInfo.outputPath("account.png") });
     await dialog.getByRole("button", { name: "Research defaults", exact: true }).click();
+    await expect(page.getByLabel("Default model").getByRole("option", { name: "GPT-6 Astra", exact: true })).toHaveCount(1);
+    await expect(page.getByLabel("Title model").getByRole("option", { name: "GPT-6 Astra", exact: true })).toHaveCount(1);
+    await page.getByLabel("Default model", { exact: true }).click();
+    await page.screenshot({ path: testInfo.outputPath("model-picker.png") });
+    await page.keyboard.press("Escape");
     const defaultCoverage = page.getByLabel("Default search coverage");
     await defaultCoverage.selectOption("communities");
     await page.getByLabel("Default research depth").selectOption("deep");
