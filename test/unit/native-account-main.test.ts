@@ -7,7 +7,7 @@ describe("main-owned native account cleanup", () => {
     let revoked = false;
 
     await expect(revokeNativeAccount(
-      () => { throw persistenceError; },
+      async () => { throw persistenceError; },
       async () => { revoked = true; },
     )).rejects.toBe(persistenceError);
 

@@ -1,9 +1,9 @@
 export async function revokeNativeAccount<T>(
-  removePersistedCredential: () => void,
+  removePersistedCredential: () => void | Promise<void>,
   revokeRuntimeAccount: () => Promise<T>,
 ): Promise<T> {
   let persistenceError: unknown;
-  try { removePersistedCredential(); }
+  try { await removePersistedCredential(); }
   catch (error) { persistenceError = error; }
 
   let revocation: { ok: true; value: T } | { ok: false; error: unknown };

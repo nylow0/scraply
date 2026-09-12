@@ -4,7 +4,7 @@
 
 ## Local development versus release verification
 
-Use the [README development workflow](README.md#development) for routine iteration in a browser with the background dev server. Local packaging and installation are required for installer/packaging changes, behavior specific to the packaged or installed app, release verification, or an explicit installed-build request. These development rules do not replace the CI or release gates below, and browser testing does not establish that a release package works.
+Use the [README development workflow](README.md#development) for routine iteration in a browser with the background dev server. After completing an application change, run `bun run build:installed` from the checkout root. Skip it for read-only questions, documentation-only changes, and intermediate investigation. These development rules do not replace the CI or release gates below, and browser testing does not establish that a release package works.
 
 ## Publish a release candidate
 
