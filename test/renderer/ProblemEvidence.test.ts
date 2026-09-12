@@ -54,8 +54,8 @@ describe("rejected problem evidence", () => {
     });
 
     await fireEvent.click(view.getByText("Failed evidence requirements").closest("summary") as HTMLElement);
-    expect(view.getByText("The research behind the ideas.")).toBeTruthy();
-    expect(view.getByText("Discovery ran, but these candidates did not pass the evidence requirements. The failures remain visible below and in the research export.")).toBeTruthy();
+    expect(view.getByRole("heading", { name: "Research" })).toBeTruthy();
+    expect(view.getByText("These candidates did not pass the evidence requirements.")).toBeTruthy();
     expect(view.queryByText(/discovery never ran/i)).toBeNull();
     const rejectedCard = view.getByText(rejected[0]!.statement).closest("article") as HTMLElement;
     expect(within(rejectedCard).getByText("Not evidence-backed")).toBeTruthy();

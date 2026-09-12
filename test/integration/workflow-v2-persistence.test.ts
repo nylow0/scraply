@@ -74,7 +74,9 @@ describe("workflow v2 persistence", () => {
       const snapshots = new Map(tables.map(table => [table, source.db.prepare(`SELECT * FROM ${table}`).all()]));
       for (const table of tables) {
         for (const row of snapshots.get(table)!) {
-          const values = Object.entries(row as Record<string, string | number | null>);
+          // The v19 fixture predates the archive column added in v22.
+          const values = Object.entries(row as Record<string, string | number | null>)
+            .filter(([column]) => table !== "threads" || column !== "archived_at");
           legacy.prepare(`INSERT INTO ${table} (${values.map(([key]) => key).join(",")}) VALUES (${values.map(() => "?").join(",")})`).run(...values.map(([, value]) => value));
         }
       }

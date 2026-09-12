@@ -1,28 +1,29 @@
 @import "tailwindcss";
 
+
 :root {
   color-scheme: dark;
-  --bg: #101210;
-  --surface: #151815;
-  --surface-2: #1b1f1b;
-  --border: #2d332e;
-  --border-strong: #414941;
-  --text: #f2f4f0;
-  --muted: #a3aba3;
-  --subtle: #737c74;
-  --accent: #b89a4b;
-  --accent-strong: #d2b45e;
-  --accent-ink: #1b170b;
+  --bg: #000000;
+  --surface: #090b0a;
+  --surface-2: #191d1b;
+  --border: #252b28;
+  --border-strong: #48534d;
+  --text: #f1f5f3;
+  --muted: #b1bab5;
+  --subtle: #8b9890;
+  --accent: #26e6a2;
+  --accent-strong: #3cf0af;
+  --accent-ink: #002b1b;
   --danger: #df9292;
-  --success: #79b98f;
+  --success: #36e6a0;
   --mono: "Geist Mono", "Cascadia Code", ui-monospace, monospace;
-  --sans: "Segoe UI Variable Text", "Aptos", system-ui, sans-serif;
+  --sans: "Segoe UI", system-ui, sans-serif;
   --ease: cubic-bezier(0.16, 1, 0.3, 1);
 
   /* Shared page metrics. Every main-area page uses these so the left edge,
      max width, and top offset line up when switching between them. */
-  --page-inline: clamp(20px, 4vw, 56px);
-  --page-top: 30px;
+  --page-inline: clamp(20px, 3vw, 40px);
+  --page-top: 38px;
   --page-max: 1180px;
 }
 
@@ -54,6 +55,10 @@ select {
   font: inherit;
 }
 
+textarea { resize:none;overflow:auto; }
+input,textarea,select { font-size:13px;line-height:1.5; }
+button { line-height:1.4; }
+
 button {
   cursor: pointer;
   transition:
@@ -65,7 +70,7 @@ button {
 }
 
 button:not(:disabled):active {
-  transform: translateY(1px) scale(0.985);
+  transform: translateY(1px);
 }
 
 button:disabled,
@@ -86,8 +91,9 @@ select:disabled {
 }
 
 * {
-  scrollbar-width: thin;
-  scrollbar-color: var(--border-strong) transparent;
+  /* Non-auto standard scrollbar properties override Chromium's pseudo-elements. */
+  scrollbar-width: auto;
+  scrollbar-color: auto;
 }
 
 ::-webkit-scrollbar {
@@ -106,9 +112,86 @@ select:disabled {
   background-color: var(--muted);
 }
 
+::-webkit-scrollbar-track, ::-webkit-scrollbar-corner { background: transparent; }
+
 @media (prefers-reduced-motion: reduce) {
-  * {
+  *, *::before, *::after, *::details-content {
     animation: none !important;
     transition: none !important;
   }
 }
+
+/* Shared title disclosures keep research and solutions scannable. */
+.disclosure-title {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  min-width: 0;
+  min-height: 56px;
+  padding: 21px 22px;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  font-size: 15px;
+  font-weight: 600;
+  text-align: left;
+  list-style: none;
+  cursor: pointer;
+}
+.disclosure-title::-webkit-details-marker { display: none; }
+.disclosure-title .disclosure-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.disclosure-title::after {
+  content: "";
+  width: 7px;
+  height: 7px;
+  margin-left: auto;
+  flex: 0 0 auto;
+  border-right: 1.5px solid var(--subtle);
+  border-bottom: 1.5px solid var(--subtle);
+  transform: rotate(-45deg);
+  transition: transform 160ms var(--ease);
+}
+details[open] > .disclosure-title::after, .disclosure-title[aria-expanded="true"]::after { transform: rotate(45deg); }
+.disclosure-title:hover { background: var(--surface-2); }
+.disclosure-content { padding: 16px 26px 26px; border-top: 1px solid var(--border); }
+.disclosure-content > p { max-width: 76ch; color: var(--muted); }
+
+details[open] > .disclosure-title .disclosure-label,
+.disclosure-title[aria-expanded="true"] .disclosure-label {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.disclosure-title:focus-visible { outline-offset: -3px; border-radius: 8px; }
+button:disabled { opacity: .45; }
+
+/* Disclosures open directly so longer sections do not move while being read. */
+a { color:var(--accent-strong); text-underline-offset:3px; }
+input, textarea, select { transition:border-color 180ms ease, box-shadow 180ms ease; }
+input:focus, textarea:focus, select:focus { border-color:var(--accent) !important; box-shadow:0 0 0 3px #71cfba12; }
+textarea { line-height:1.65; }
+::placeholder { color:var(--subtle); opacity:.8; }
+
+/* Chromium's customizable picker retains native keyboard and form behavior. */
+select, select::picker(select) { appearance: base-select; }
+select { gap:12px;align-items:center;justify-content:space-between; }
+select::picker(select) {
+  background:var(--surface);color:var(--text);border:1px solid var(--border-strong);border-radius:8px;
+  padding:4px;box-shadow:0 8px 24px #0009;max-height:min(360px,60vh);overflow:auto;
+  margin-block:6px;font:400 13px/1.4 var(--sans);min-width:anchor-size(width);
+  transition:none;animation:none;
+}
+select::picker-icon { content:"";width:7px;height:7px;margin:0 3px 3px auto;flex:none;border-right:1.5px solid var(--muted);border-bottom:1.5px solid var(--muted);transform:rotate(45deg);transition:none; }
+select:open::picker-icon { transform:translateY(3px) rotate(225deg); }
+select option { padding:9px 10px;border-radius:4px;gap:12px;min-height:36px;white-space:normal; }
+select option:checked { background:#0e3b29;color:#66ffc4;font-weight:600; }
+select option:hover, select option:focus { background:#234333;outline:none; }
+select option:disabled { color:#748077; }
+select option::checkmark { content:"";width:5px;height:9px;border-right:1.5px solid var(--accent);border-bottom:1.5px solid var(--accent);transform:rotate(45deg);order:2;margin-left:auto; }
+select:focus-visible { outline:2px solid var(--accent);outline-offset:2px; }
+
+/* Grid tracks must shrink to the viewport even when a generated title is a paragraph. */
+.disclosure-title { max-width:100%;min-width:0; }
+.disclosure-title .disclosure-label { flex:1;min-width:0; }
+::-webkit-scrollbar-button { display:none;width:0;height:0; }

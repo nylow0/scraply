@@ -74,7 +74,7 @@ export const DEFAULT_RUN_CONFIG = {
   workflowVersion: 2,
   audienceSourcePolicy: "web",
   ideaCount: DEFAULT_IDEA_COUNT,
-  model: { providerId: OPENAI_SUBSCRIPTION_PROVIDER_ID, modelId: "gpt-5.6-luna" },
+  model: { providerId: OPENAI_SUBSCRIPTION_PROVIDER_ID, modelId: "gpt-5.6-sol" },
   reasoningEffort: "medium",
   discoveryDepth: "standard",
   maxRunMinutes: 90,
@@ -131,6 +131,7 @@ export const ThreadSchema = z.object({
   id: z.string().min(1),
   title: z.string().min(1),
   status: ThreadStatusSchema,
+  archivedAt: z.string().datetime().nullable().optional(),
   createdAt: z.string().datetime(),
   updatedAt: z.string().datetime(),
 });

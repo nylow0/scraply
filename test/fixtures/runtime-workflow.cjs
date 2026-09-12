@@ -4,6 +4,7 @@ const { stageOutputs } = require("./research-baseline/corpus.json");
 
 module.exports = function workflowOutput(request) {
   const stage = request.workOrder.stage.split(":")[0];
+  if (stage === "research-title") return { title: "Reducing repair shop delays" };
   const data = request.evidence[0].content;
   const v2 = request.workOrder.inputs?.workflowVersion === 2;
   if (v2) {
