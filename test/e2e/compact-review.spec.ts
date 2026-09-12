@@ -59,7 +59,7 @@ test("desktop navigation and compact idea review preserve dismissed ideas", asyn
     await expect(page.getByText("Pool observed delivery windows by supplier and part category.", { exact: true })).toBeVisible();
     await expect(page.getByText("Highest risk:", { exact: false })).not.toBeVisible();
     await page.screenshot({ animations: "disabled", path: testInfo.outputPath("idea-first.png") });
-    await page.getByRole("button", { name: /^Discard idea:/ }).click();
+    await page.getByRole("button", { name: /^Discard solution:/ }).click();
     await expect(page.locator(".idea-row:visible")).toHaveCount(0);
     await expect(page.getByRole("button", { name: "Discarded 1", exact: true })).toBeVisible();
     await app.close();
@@ -68,7 +68,7 @@ test("desktop navigation and compact idea review preserve dismissed ideas", asyn
     await expect(page.locator(".idea-row:visible")).toHaveCount(0);
     await page.getByRole("button", { name: "Discarded 1", exact: true }).click();
     await expect(page.locator(".idea-row:visible")).toHaveCount(1);
-    await page.getByRole("button", { name: /^Restore idea:/ }).click();
+    await page.getByRole("button", { name: /^Restore solution:/ }).click();
     await page.getByRole("button", { name: "Discarded 0", exact: true }).click();
     await expect(page.locator(".idea-row:visible")).toHaveCount(1);
     expect(mock.requests.filter((request) => request.path === "/ideas/discard").map((request) => request.body)).toEqual([

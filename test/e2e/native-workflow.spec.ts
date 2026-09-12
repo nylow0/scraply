@@ -124,7 +124,7 @@ test("native v2 research survives the installed selection, risk evaluation, and 
       await expect(page.getByText("This project used the removed CLI integration.", { exact: false })).toHaveCount(0);
     }
     await expect(page.getByRole("combobox", { name: /Research workflow/ })).toHaveCount(0);
-    await page.getByLabel("Ideas to generate", { exact: false }).fill("5");
+    await page.getByLabel("Solutions per problem", { exact: true }).fill("5");
     await page.getByLabel("What should we evaluate risk against?", { exact: false }).fill("Avoid losing a week of repair capacity");
     await expect(page.getByLabel("OpenAI account")).toContainText("synthetic-account");
     await page.getByLabel("Research name", { exact: true }).fill("Native protocol UI fixture");
@@ -160,7 +160,7 @@ test("native v2 research survives the installed selection, risk evaluation, and 
       await page.getByLabel("Your decision", { exact: true }).fill("Pilot with one supplier");
       await page.getByLabel("Observed test result", { exact: true }).fill("Nine of ten estimates matched arrivals");
       // Filtering changes visibility without unmounting an open idea or discarding its draft.
-      await page.getByRole("textbox", { name: "Search ideas" }).fill("no matching idea");
+      await page.getByRole("textbox", { name: "Search solutions" }).fill("no matching idea");
       await expect(page.getByLabel("Your decision", { exact: true })).not.toBeVisible();
       await page.getByRole("button", { name: "Clear filter" }).click();
       await expect(page.getByLabel("Your decision", { exact: true })).toHaveValue("Pilot with one supplier");
@@ -192,7 +192,7 @@ test("native v2 research survives the installed selection, risk evaluation, and 
     await page.getByText("Risks and responses", { exact: true }).click();
     await expect(page.getByText("Observed order volume stays too sparse", { exact: true }).first()).toBeVisible();
     await page.screenshot({ animations: "disabled", path: testInfo.outputPath("native-solutions.png") });
-    await page.getByRole("button", { name: "Discard idea: Supplier reliability ledger", exact: true }).click();
+    await page.getByRole("button", { name: "Discard solution: Supplier reliability ledger", exact: true }).click();
     await expect(page.getByRole("button", { name: "Supplier reliability ledger", exact: true })).not.toBeVisible();
     await events;
     expect(eventErrors).toEqual([]);
@@ -204,7 +204,7 @@ test("native v2 research survives the installed selection, risk evaluation, and 
     page = await electron.firstWindow();
     await expect(page.getByRole("button", { name: "Supplier reliability ledger", exact: true })).not.toBeVisible();
     await page.getByRole("button", { name: "Discarded 1", exact: true }).click();
-    await page.getByRole("button", { name: "Restore idea: Supplier reliability ledger", exact: true }).click();
+    await page.getByRole("button", { name: "Restore solution: Supplier reliability ledger", exact: true }).click();
     await page.getByRole("button", { name: "Discarded 0", exact: true }).click();
     await expect(page.getByText("Supplier reliability ledger", { exact: true })).toBeVisible();
     {

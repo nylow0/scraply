@@ -91,8 +91,9 @@ select:disabled {
 }
 
 * {
-  scrollbar-width: thin;
-  scrollbar-color: var(--border-strong) transparent;
+  /* Non-auto standard scrollbar properties override Chromium's pseudo-elements. */
+  scrollbar-width: auto;
+  scrollbar-color: auto;
 }
 
 ::-webkit-scrollbar {
@@ -111,6 +112,8 @@ select:disabled {
   background-color: var(--muted);
 }
 
+::-webkit-scrollbar-track, ::-webkit-scrollbar-corner { background: transparent; }
+
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after, *::details-content {
     animation: none !important;
@@ -118,7 +121,7 @@ select:disabled {
   }
 }
 
-/* Shared title disclosures keep research and ideas scannable. */
+/* Shared title disclosures keep research and solutions scannable. */
 .disclosure-title {
   display: flex;
   align-items: center;
@@ -163,18 +166,7 @@ details[open] > .disclosure-title .disclosure-label,
 .disclosure-title:focus-visible { outline-offset: -3px; border-radius: 8px; }
 button:disabled { opacity: .45; }
 
-/* Expansion communicates where detail belongs. Reduced motion disables these globally. */
-:root { interpolate-size: allow-keywords; }
-details::details-content {
-  block-size: 0;
-  overflow: clip;
-  transition: block-size 260ms var(--ease), content-visibility 260ms allow-discrete;
-}
-details[open]::details-content { block-size: auto; }
-@keyframes detail-reveal { from { opacity: 0; transform: translateY(-5px); } to { opacity: 1; transform: none; } }
-.disclosure-content { animation: detail-reveal 220ms var(--ease); }
-.disclosure-title::before { content:""; width:7px; height:7px; border:1px solid var(--subtle); border-radius:50%; flex:none; }
-.disclosure-title[aria-expanded="true"]::before, details[open] > .disclosure-title::before { background:var(--accent); border-color:var(--accent); }
+/* Disclosures open directly so longer sections do not move while being read. */
 a { color:var(--accent-strong); text-underline-offset:3px; }
 input, textarea, select { transition:border-color 180ms ease, box-shadow 180ms ease; }
 input:focus, textarea:focus, select:focus { border-color:var(--accent) !important; box-shadow:0 0 0 3px #71cfba12; }
@@ -185,17 +177,18 @@ textarea { line-height:1.65; }
 select, select::picker(select) { appearance: base-select; }
 select { gap:12px;align-items:center; }
 select::picker(select) {
-  background:#101512;color:var(--text);border:1px solid #3b4c42;border-radius:12px;
-  padding:6px;box-shadow:0 16px 48px #000b;max-height:min(360px,60vh);overflow:auto;
+  background:var(--surface);color:var(--text);border:1px solid var(--border-strong);border-radius:8px;
+  padding:4px;box-shadow:0 8px 24px #0009;max-height:min(360px,60vh);overflow:auto;
   margin-block:6px;font:400 13px/1.4 var(--sans);min-width:anchor-size(width);
+  transition:none;animation:none;
 }
-select::picker-icon { color:var(--muted);width:14px;transition:rotate 150ms; }
-select:open::picker-icon { rotate:180deg; }
-select option { padding:10px 12px;border-radius:7px;gap:12px;min-height:38px;white-space:normal; }
+select::picker-icon { content:"";width:7px;height:7px;margin:0 3px 3px 10px;flex:none;border-right:1.5px solid var(--muted);border-bottom:1.5px solid var(--muted);transform:rotate(45deg);transition:none; }
+select:open::picker-icon { transform:translateY(3px) rotate(225deg); }
+select option { padding:9px 10px;border-radius:4px;gap:12px;min-height:36px;white-space:normal; }
 select option:checked { background:#0e3b29;color:#66ffc4;font-weight:600; }
 select option:hover, select option:focus { background:#234333;outline:none; }
 select option:disabled { color:#748077; }
-select option::checkmark { color:var(--accent);order:2;margin-left:auto; }
+select option::checkmark { content:"";width:5px;height:9px;border-right:1.5px solid var(--accent);border-bottom:1.5px solid var(--accent);transform:rotate(45deg);order:2;margin-left:auto; }
 select:focus-visible { outline:2px solid var(--accent);outline-offset:2px; }
 
 /* Grid tracks must shrink to the viewport even when a generated title is a paragraph. */

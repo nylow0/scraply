@@ -30,7 +30,7 @@
       <div><dt>Model</dt><dd>{config.model.modelId}</dd></div>
       <div><dt>Provider</dt><dd>{config.model.providerId}</dd></div>
       <div><dt>Reasoning</dt><dd>{config.reasoningEffort}</dd></div>
-      <div><dt>Ideas per problem</dt><dd>{config.ideaCount ?? (config.workflowVersion === 2 ? 3 : "3–5")}</dd></div>
+      <div><dt>Solutions per problem</dt><dd>{config.ideaCount ?? (config.workflowVersion === 2 ? 3 : "3–5")}</dd></div>
       {#if config.researchMode === "explore-market"}<div><dt>Research depth</dt><dd>{config.discoveryDepth}</dd></div>{/if}
       {#if config.researchMode === "explore-market"}<div><dt>Search provider</dt><dd>{config.searchProvider}</dd></div>{/if}
     </dl>

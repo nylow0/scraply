@@ -50,7 +50,7 @@
           <div class="disclosure-content">
             <div class="meta">
               <span class="verdict">{problem.verdict}</span>
-              {#if problem.selected}<span class="selected">Used for ideas</span>{/if}
+              {#if problem.selected}<span class="selected">Used for solutions</span>{/if}
               {#if problem.singleHarvestModeWarning}<span>One harvest mode</span>{/if}
             </div>
 

@@ -1,3 +1,9 @@
+OpenAI logo
+
+Source: https://github.com/simple-icons/simple-icons/blob/13.21.0/icons/openai.svg
+License: CC0 1.0 Universal, https://creativecommons.org/publicdomain/zero/1.0/
+OpenAI trademarks remain the property of OpenAI.
+
 Plus Jakarta Sans
 
 Copyright 2020 The Plus Jakarta Sans Project Authors (https://github.com/tokotype/PlusJakartaSans) PlusJakartaSans-Italic[wght].ttf: Copyright 2020 The Plus Jakarta Sans Project Authors (https://github.com/tokotype/PlusJakartaSans)
@@ -100,4 +106,3 @@ Provider marks
 Exa logomark: https://exa.ai/brand
 Perplexity mark: https://github.com/simple-icons/simple-icons/blob/develop/icons/perplexity.svg (CC0-1.0).
 Provider marks are used to identify their respective integrations.
-

@@ -87,8 +87,8 @@ test("the renderer restores the problem-selection step after a restart", async (
     await page.getByRole("button", { name: "Commit selection" }).click();
     await expect(page.getByText("Supplier reliability ledger")).toBeVisible();
     await page.screenshot({ animations: "disabled", path: testInfo.outputPath("ideas.png") });
-    await page.getByRole("textbox", { name: "Search ideas" }).fill("nothing matches");
-    await expect(page.getByText('No ideas match "nothing matches".')).toBeVisible();
+    await page.getByRole("textbox", { name: "Search solutions" }).fill("nothing matches");
+    await expect(page.getByText('No solutions match "nothing matches".')).toBeVisible();
     await page.getByRole("button", { name: "Clear filter" }).click();
     await expect(page.getByText(/Options are not ranked/)).toBeVisible();
     await expect(page.getByText(/independently confirmed outcomes/)).toHaveCount(0);
@@ -108,7 +108,7 @@ test("the renderer restores the problem-selection step after a restart", async (
     await expect(page.getByText("Backorders add days to routine repairs.")).toBeVisible();
     await page.getByRole("tab", { name: /Setup/ }).click();
     await expect(page.locator(".fields .primary strong")).toHaveText("Repair delays");
-    await page.getByRole("tab", { name: /Ideas/ }).click();
+    await page.getByRole("tab", { name: /Solutions/ }).click();
     await expect(page.getByText("Supplier reliability ledger")).toBeVisible();
     await page.setViewportSize({ width: 960, height: 640 });
     await expect(page.getByRole("button", { name: "Settings", exact: true })).toBeVisible();
