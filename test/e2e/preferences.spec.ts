@@ -19,7 +19,7 @@ test("research defaults persist after reopen while a saved project keeps its cho
     await page.getByRole("button", { name: "Research defaults", exact: true }).click();
     await expect(page.getByLabel("Default search provider", { exact: true })).toHaveValue("exa");
     await expect(page.getByLabel("Default model", { exact: true })).toHaveValue("openai-subscription:gpt-5.6-sol");
-    await expect(page.getByLabel("Default model").getByRole("option", { name: "Astra", exact: true })).toHaveCount(1);
+    await expect(page.getByLabel("Default model").getByRole("option", { name: "GPT-6 Astra", exact: true })).toHaveCount(1);
     await page.getByLabel("Default search provider", { exact: true }).selectOption("perplexity");
     await page.getByLabel("Default model", { exact: true }).selectOption("openai-subscription:gpt-6-astra");
     await page.getByRole("button", { name: "Save defaults" }).click();
