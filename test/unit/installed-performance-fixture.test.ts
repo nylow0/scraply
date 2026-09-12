@@ -10,10 +10,22 @@ import { WorkflowV2DecisionAnalysisOutputSchema } from "../../src/shared/structu
 
 const directories: string[] = [];
 
+async function removeDirectory(directory: string): Promise<void> {
+  let lastError: unknown;
+  for (let attempt = 0; attempt < 10; attempt += 1) {
+    try {
+      await rm(directory, { recursive: true, force: true });
+      return;
+    } catch (error) {
+      lastError = error;
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+  }
+  throw lastError;
+}
+
 afterEach(async () => {
-  await Promise.all(directories.splice(0).map((directory) => rm(directory, {
-    recursive: true, force: true, maxRetries: 10, retryDelay: 100,
-  })));
+  await Promise.all(directories.splice(0).map(removeDirectory));
 });
 
 describe("installed performance fixture", () => {
