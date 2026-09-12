@@ -29,16 +29,22 @@ describe("discovery", () => {
     expect(batches.flat().map((item) => item.id)).toEqual(["one", "two"]);
   });
 
-  test("keeps query count and source policy in trusted inputs", async () => {
+  test.each([
+    { includeDomains: undefined },
+    { includeDomains: [] },
+    { includeDomains: ["reddit.com", "news.ycombinator.com"] },
+  ])("passes audience domain policy %j to the planner and search provider", async ({ includeDomains }) => {
     let plannerCalls = 0;
     let searches = 0;
     const plannerInputs: Array<Record<string, unknown>> = [];
+    const searchDomains: Array<string[] | undefined> = [];
     const result = await harvestFactors(scope(), {
       prompt: () => "Fixture discovery instructions",
       workflowVersion: 2,
       model,
       reasoningEffort,
       depth: "quick",
+      ...(includeDomains === undefined ? {} : { audienceSearch: { includeDomains: [...includeDomains] } }),
       modelClient: modelClient(async (request) => {
         if (request.schema._def === QueryPlanOutputSchema._def) {
           plannerCalls += 1;
@@ -48,8 +54,9 @@ describe("discovery", () => {
         return request.schema.parse({ factors: [] });
       }),
       search: {
-        async search() {
+        async search(_query, options) {
           searches += 1;
+          searchDomains.push(options?.includeDomains);
           return [];
         },
       },
@@ -60,7 +67,11 @@ describe("discovery", () => {
     expect(searches).toBe(6);
     expect(plannerInputs).toEqual([
       { harvestMode: "domain", queryCount: 3, sourcePolicy: { includeDomains: [] } },
-      { harvestMode: "audience", queryCount: 3, sourcePolicy: { includeDomains: ["reddit.com", "news.ycombinator.com"] } },
+      { harvestMode: "audience", queryCount: 3, sourcePolicy: { includeDomains: includeDomains ?? ["reddit.com", "news.ycombinator.com"] } },
+    ]);
+    expect(searchDomains).toEqual([
+      undefined, undefined, undefined,
+      ...Array.from({ length: 3 }, () => [...(includeDomains ?? ["reddit.com", "news.ycombinator.com"])]),
     ]);
   });
 

@@ -12,6 +12,8 @@
   let modelKey = $state(modelRefKey(initial.model));
   let titleModelKey = $state(modelRefKey(initial.titleModel));
   let titleReasoningEffort = $state(initial.titleReasoningEffort);
+  let audienceSourcePolicy = $state(initial.audienceSourcePolicy);
+  let discoveryDepth = $state(initial.discoveryDepth);
   let titleEfforts = $derived(workspace?.modelOptions.find((model) => modelRefKey(model) === titleModelKey)?.reasoningEfforts ?? [{ id: "low", description: "" }, { id: "medium", description: "" }, { id: "high", description: "" }]);
   let saved = $state(false);
   let error = $state("");
@@ -41,7 +43,7 @@
     if (!selectedModel || !titleModel) return;
     error = "";
     try {
-      saveResearchDefaults({ searchProvider, titleModel: { providerId: titleModel.providerId, modelId: titleModel.modelId }, titleReasoningEffort, model: { providerId: selectedModel.providerId, modelId: selectedModel.modelId } });
+      saveResearchDefaults({ searchProvider, audienceSourcePolicy, discoveryDepth, titleModel: { providerId: titleModel.providerId, modelId: titleModel.modelId }, titleReasoningEffort, model: { providerId: selectedModel.providerId, modelId: selectedModel.modelId } });
       saved = true;
     } catch {
       error = "Could not save defaults on this device. Try again.";
@@ -64,6 +66,14 @@
       {#if !titleEfforts.some((effort) => effort.id === titleReasoningEffort)}<option value={titleReasoningEffort}>{titleReasoningEffort} (unavailable)</option>{/if}
       {#each titleEfforts as effort (effort.id)}<option value={effort.id}>{effort.id.charAt(0).toUpperCase() + effort.id.slice(1)}</option>{/each}
     </select></label>
+  </fieldset>
+  <fieldset class="advanced-search">
+    <legend>Advanced search defaults</legend>
+    <p>Applied to new research. Each setup can override these choices.</p>
+    <label><span>Search coverage</span><select aria-label="Default search coverage" bind:value={audienceSourcePolicy} onchange={() => saved = false} aria-describedby="default-coverage-help"><option value="web">Web and communities</option><option value="communities">Communities only</option></select></label>
+    <label><span>Research depth</span><select aria-label="Default research depth" bind:value={discoveryDepth} onchange={() => saved = false} aria-describedby="default-depth-help"><option value="quick">Quick</option><option value="standard">Standard</option><option value="deep">Deep</option></select></label>
+    <p id="default-coverage-help">Web and communities allows all sites, including forums. Communities only limits audience evidence to Reddit and Hacker News. Market research always searches all sites.</p>
+    <p id="default-depth-help">Quick uses fewer searches and sources. Deep explores more sources and cross-checks. Standard balances the two.</p>
   </fieldset>
   <footer><button type="submit">Save defaults</button>{#if saved}<span role="status">Defaults saved</span>{/if}</footer>
   {#if error}<p role="alert">{error}</p>{/if}

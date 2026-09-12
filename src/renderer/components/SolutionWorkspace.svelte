@@ -45,7 +45,7 @@
 <section class="workspace">
   <header>
     <div>
-      <h1>{solutions.length - discardedCount} solution {solutions.length - discardedCount === 1 ? "idea" : "ideas"}</h1>
+      <h1>{solutions.length - discardedCount} {solutions.length - discardedCount === 1 ? "solution" : "solutions"}</h1>
     </div>
     <div class="actions" aria-label="Solution actions">
       <button onclick={onReview}>Review problems</button>
@@ -56,20 +56,20 @@
   </header>
 
 
-  <ResultsToolbar bind:query label="Search ideas" count={matchCount} />
-  {#if solutions.length > 0 && matchCount === 0}<p class="filter-empty">{query ? `No ideas match "${query}".` : showDiscarded ? "No discarded ideas." : discardedCount === solutions.length ? "All ideas discarded. Open Discarded to review or restore them." : "No ideas match this filter."}</p>{/if}
+  <ResultsToolbar bind:query label="Search solutions" count={matchCount} />
+  {#if solutions.length > 0 && matchCount === 0}<p class="filter-empty">{query ? `No solutions match "${query}".` : showDiscarded ? "No discarded solutions." : discardedCount === solutions.length ? "All solutions discarded. Open Discarded to review or restore them." : "No solutions match this filter."}</p>{/if}
   <div class="solutions">
     {#each rankedSolutions as item (item.idea.id)}
       <div class="idea-row" hidden={!!item.idea.discarded !== showDiscarded || (unaddressedOnly && item.idea.unaddressedCatastrophicRisks === 0) || !item.idea.mechanism.toLowerCase().includes(query.trim().toLowerCase())}>
-      {#if onDiscard}<button class="dismiss" disabled={busy} aria-label={`${item.idea.discarded ? "Restore" : "Discard"} idea: ${item.idea.mechanism}`} onclick={() => onDiscard?.(item.idea.id, !item.idea.discarded)}>{item.idea.discarded ? "Restore" : "Discard"}</button>{/if}
+      {#if onDiscard}<button class="dismiss" disabled={busy} aria-label={`${item.idea.discarded ? "Restore" : "Discard"} solution: ${item.idea.mechanism}`} onclick={() => onDiscard?.(item.idea.id, !item.idea.discarded)}>{item.idea.discarded ? "Restore" : "Discard"}</button>{/if}
       {#if item.idea.workflowVersion === 2 && onSelect && onSave}
         <DecisionOption idea={item.idea} {busy} {onSelect} {onSave} {onOpenSource} {onEvidenceFollowUp} />
       {:else}<SolutionListItem idea={item.idea} rank={item.rank} {onOpenSource} />{/if}
       </div>
     {:else}
       <div class="empty">
-        <h2>{solutions.length ? "No ideas match this filter." : hasV2 ? "No solution options were returned." : "No useful new option was proposed."}</h2>
-        {#if solutions.length}<p>Clear "Unaddressed project-ending" to return to the complete solution list.</p><button onclick={() => unaddressedOnly = false}>Show every idea</button>{:else if hasV2}<p>The model returned zero options for the selected problem. Review the evidence and try another problem or run.</p>{/if}
+        <h2>{solutions.length ? "No solutions match this filter." : hasV2 ? "No solutions were returned." : "No useful new solution was proposed."}</h2>
+        {#if solutions.length}<p>Clear "Unaddressed project-ending" to return to the complete solution list.</p><button onclick={() => unaddressedOnly = false}>Show every solution</button>{:else if hasV2}<p>The model returned zero solutions for the selected problem. Review the evidence and try another problem or run.</p>{/if}
       </div>
     {/each}
   </div>
@@ -80,7 +80,7 @@
         onclick={() => unaddressedOnly = !unaddressedOnly}
       >Unaddressed project-ending</button>{/if}
 </div>
-  <p class="legend">Options are not ranked. Dotted labels are model-estimated. Amber marks ideas developed from weak or adverse problem evidence.</p>
+  <p class="legend">Solutions are not ranked. Dotted labels are model-estimated. Amber marks solutions developed from weak or adverse problem evidence.</p>
 </section>
 
 <style>

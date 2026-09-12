@@ -1,10 +1,12 @@
 import { z } from "zod";
-import { DEFAULT_RUN_CONFIG, ModelRefSchema, ReasoningEffortSchema } from "../../shared/schemas";
+import { DEFAULT_RUN_CONFIG, DiscoveryDepthSchema, ModelRefSchema, ReasoningEffortSchema } from "../../shared/schemas";
 
 const storageKey = "scraply.research-defaults.v1";
 const ResearchDefaultsSchema = z.object({
   model: ModelRefSchema,
   searchProvider: z.enum(["exa", "perplexity"]),
+  audienceSourcePolicy: z.enum(["web", "communities"]).default("web"),
+  discoveryDepth: DiscoveryDepthSchema.default("standard"),
   titleModel: ModelRefSchema.default({ providerId: "openai-subscription", modelId: "gpt-5.6-luna" }),
   titleReasoningEffort: ReasoningEffortSchema.default("low"),
 });

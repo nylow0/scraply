@@ -167,7 +167,7 @@
           {:else if idea.selected && idea.runId && analysis && idea.canRequestEvidenceFollowUp && onEvidenceFollowUp}
             <form onsubmit={(event) => { event.preventDefault(); void onEvidenceFollowUp(idea.runId!, followUpQuestion.trim()); }}>
               <h3>Ask one evidence question</h3>
-              <p>One follow-up search per idea.</p>
+              <p>One follow-up search per solution.</p>
               <label>Question<textarea rows="2" maxlength="500" bind:value={followUpQuestion} placeholder="What should we verify next?"></textarea></label>
               <button disabled={busy || !followUpQuestion.trim()}>Check evidence</button>
             </form>

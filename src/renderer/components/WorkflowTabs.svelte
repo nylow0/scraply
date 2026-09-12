@@ -16,10 +16,10 @@
     onSelect: (step: WorkflowStep) => void;
   } = $props();
 
-  const steps: Array<{ id: WorkflowStep; number: string; label: string }> = [
-    { id: "setup", number: "01", label: "Setup" },
-    { id: "research", number: "02", label: "Research" },
-    { id: "ideas", number: "03", label: "Ideas" },
+  const steps: Array<{ id: WorkflowStep; label: string }> = [
+    { id: "setup", label: "Setup" },
+    { id: "research", label: "Research" },
+    { id: "ideas", label: "Solutions" },
   ];
 
   function ready(step: WorkflowStep): boolean {
@@ -63,14 +63,13 @@
       >
         <span class="step-icon"><Icon name={step.id === "setup" ? "brief" : step.id === "research" ? "research" : "ideas"} size={16} /></span>
         <span>{step.label}</span>
-        <i aria-hidden="true"></i>
       </button>
     {/each}
   </div>
 </nav>
 
 <style>
-  .workflow-tabs { position:sticky;top:54px;z-index:2;padding:14px var(--page-inline);background:color-mix(in srgb,var(--bg) 94%,transparent);backdrop-filter:blur(18px);border-bottom:1px solid var(--border); }
+  .workflow-tabs { position:sticky;top:54px;z-index:2;padding:8px var(--page-inline);background:var(--bg);border-bottom:1px solid var(--border); }
   [role="tablist"] { display:flex;align-items:center;gap:22px; }
   button { position:relative;display:flex;align-items:center;gap:9px;height:36px;padding:0 14px 0 6px;border:1px solid transparent;border-radius:9px;background:transparent;color:var(--muted);font-size:13px;font-weight:600; }
   button + button::before { content:"";position:absolute;width:14px;height:1px;background:var(--border-strong);left:-20px; }
@@ -78,8 +77,6 @@
   button:hover:not(:disabled) { background:var(--surface-2); }
   button:disabled { opacity:.38; }
   .step-icon { display:grid;place-items:center;width:26px;height:26px;border-radius:7px;color:var(--muted); }
-  .active .step-icon { background:#71cfba16;color:var(--accent-strong); }
-  button i { position:absolute;bottom:-15px;left:12px;right:12px;height:2px;background:var(--accent);opacity:0;transform:scaleX(.4);transition:transform 250ms var(--ease),opacity 250ms; }
-  button.active i { opacity:1;transform:scaleX(1); }
+  .active .step-icon { color:var(--accent-strong); }
   @media(max-width:650px) { .workflow-tabs { padding-inline:14px; }[role="tablist"] { gap:14px; }button { padding-right:8px;gap:4px; }button + button::before { left:-12px;width:8px; } }
 </style>

@@ -454,6 +454,7 @@ export class ResearchEngine {
       onProjection: (message: string) => this.progress(active, message),
       workflowVersion: 2 as const,
       prompt: (name: string) => workflow.resolvePrompt(name as WorkflowV2StageId).text,
+      // "web" is unrestricted, including community sites; only "communities" adds a domain filter.
       audienceSearch: { includeDomains: active.config.audienceSourcePolicy === "communities" ? ["reddit.com", "news.ycombinator.com"] : [] },
     };
   }

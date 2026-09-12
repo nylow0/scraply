@@ -450,7 +450,7 @@
   <main class="main-content" inert={settingsOpen}>
     {#if workspace && activeThread}
       <div class="topbar">
-        <div class="location" title={activeThread.title}>{activeThread.title}</div>
+        <h1 class="location" title={activeThread.title}>{activeThread.title}</h1>
         {#if activeRun}<div class="calls"><strong>{activeRun.codexCalls}</strong> model calls / ~{activeRun.projectedCodexCalls} · <strong>{activeRun.searches}</strong> searches / ~{activeRun.projectedSearches}</div>{/if}
       </div>
       <WorkflowTabs
@@ -516,21 +516,21 @@
         <div class="failed" id="workflow-panel-research" role="tabpanel" aria-label="Research" tabindex="0"><p class="eyebrow">Research unavailable</p><h1>No completed research is ready yet.</h1><p>Return to setup and start a research run.</p></div>
       {/if}
     {:else if activeThread.status === "development-running"}
-      <div class="running" id="workflow-panel-ideas" role="tabpanel" aria-label="Ideas" tabindex="0">
+      <div class="running" id="workflow-panel-ideas" role="tabpanel" aria-label="Solutions" tabindex="0">
         <div class="activity-symbol"><Icon name="ideas" size={30} /></div><p class="eyebrow">Development in progress</p>
         <h1>Turning problems into possibilities.</h1>
-        <p class="research-export-hint">The research archive is already available. Open the Research tab to inspect or export it while ideas are generated.</p>
+        <p class="research-export-hint">The research archive is already available. Open the Research tab to inspect or export it while solutions are generated.</p>
         <div class="activity"><span></span><p>{latestEvent?.type === "run-progress" ? latestEvent.message : activeRun?.lastActivity ?? "Preparing the next provider call…"}</p></div>
         {#if activeRun}<div class="run-actions"><button class="cancel" disabled={busy} onclick={() => cancelResearch(activeRun.runId)}>Cancel run</button></div>{/if}
       </div>
     {:else if activeThread.status === "solutions-ready" || workspace.solutions.length > 0}
-      <div id="workflow-panel-ideas" role="tabpanel" aria-label="Ideas">
+      <div id="workflow-panel-ideas" role="tabpanel" aria-label="Solutions">
         <SolutionWorkspace solutions={workspace.solutions} {busy} onDiscard={discardIdea} workflowVersion={activeRun?.workflowVersion} onSelect={selectOption} onSave={saveDecision} onExport={exportIdeas} onOpenSource={openExternalUrl} onEvidenceFollowUp={requestEvidenceFollowUp} onReview={() => { activeStep = "research"; reviewSelection = true; }} />
       </div>
     {:else if activeThread.status === "failed"}
-      <div class="failed" id="workflow-panel-ideas" role="tabpanel" aria-label="Ideas" tabindex="0"><p class="eyebrow">No ideas</p><h1>The run stopped before any ideas were built.</h1><p>{activeRun?.canResume ? "Resume the saved attempt or edit the setup." : "Edit the setup to start a new run."}</p></div>
+      <div class="failed" id="workflow-panel-ideas" role="tabpanel" aria-label="Solutions" tabindex="0"><p class="eyebrow">No solutions</p><h1>The run stopped before any solutions were generated.</h1><p>{activeRun?.canResume ? "Resume the saved attempt or edit the setup." : "Edit the setup to start a new run."}</p></div>
     {:else}
-      <div class="failed" id="workflow-panel-ideas" role="tabpanel" aria-label="Ideas" tabindex="0"><p class="eyebrow">Ideas not ready</p><h1>Complete the research step first.</h1></div>
+      <div class="failed" id="workflow-panel-ideas" role="tabpanel" aria-label="Solutions" tabindex="0"><p class="eyebrow">Solutions not ready</p><h1>Complete the research step first.</h1></div>
     {/if}
   </main>
   <Settings bind:this={settings} bind:open={settingsOpen} {feedback} {workspace} {busy} {nativeLogin}
@@ -546,9 +546,9 @@
   .settings-button:hover { background:var(--surface-2);color:var(--text); }
 
   .app-shell { height:calc(100% - 36px);display:grid;grid-template-columns:248px minmax(0,1fr);background:#000;padding:10px 10px 10px 0; }
-  .main-content { min-width:0;overflow-y:auto;overflow-x:hidden;scrollbar-gutter:stable;position:relative;border:1px solid var(--border);border-radius:18px;background:var(--bg); }
+  .main-content { min-width:0;overflow-y:auto;overflow-x:hidden;scrollbar-gutter:stable;position:relative;border-left:1px solid var(--border);background:var(--bg); }
   .topbar { position:sticky;top:0;z-index:3;height:54px;padding:0 24px;display:flex;align-items:center;justify-content:space-between;background:color-mix(in srgb,var(--bg) 94%,transparent);backdrop-filter:blur(18px);border-bottom:1px solid var(--border);font-size:13px;color:var(--muted); }
-  .location { display:block;color:var(--text);font-size:15px;font-weight:600;letter-spacing:0;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis; }
+  .location { display:block;margin:0;color:var(--text);font-size:20px;font-weight:600;letter-spacing:-.025em;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis; }
   .calls { white-space:nowrap;margin-left:16px;font:500 13px var(--sans); }.calls strong { color:var(--text);font-weight:600; }
   .notice { position:sticky;top:122px;z-index:3;margin:12px var(--page-inline) 0;padding:12px 16px;border:1px solid var(--border-strong);border-radius:10px;background:var(--surface-2);display:flex;justify-content:space-between;gap:16px;color:var(--muted);font-size:13px;overflow-wrap:anywhere; }
   .notice.error { border-color:#df929260;color:var(--danger); }.notice button { border:0;background:transparent;color:inherit; }

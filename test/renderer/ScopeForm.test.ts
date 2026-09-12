@@ -7,6 +7,49 @@ import type { WorkspaceState } from "../../src/shared/ipc";
 import { DEFAULT_RUN_CONFIG, RunConfigSchema, modelRefKey } from "../../src/shared/schemas";
 
 describe("ScopeForm search provider selection", () => {
+  test("persists advanced search defaults for new research and preserves saved setup choices", async () => {
+    const storageKey = "scraply.research-defaults.v1";
+    const previous = localStorage.getItem(storageKey);
+    try {
+      localStorage.removeItem(storageKey);
+      const settingsView = renderSettings({ workspace: workspace() });
+      await fireEvent.click(settingsView.getByRole("button", { name: "Research defaults" }));
+      const coverage = settingsView.getByLabelText("Default search coverage") as HTMLSelectElement;
+      expect(coverage.value).toBe("web");
+      expect(coverage.selectedOptions[0]?.textContent).toBe("Web and communities");
+      await fireEvent.change(coverage, { target: { value: "communities" } });
+      await fireEvent.change(settingsView.getByLabelText("Default research depth"), { target: { value: "deep" } });
+      await fireEvent.click(settingsView.getByRole("button", { name: "Save defaults" }));
+      settingsView.unmount();
+
+      const reopened = renderSettings({ workspace: workspace() });
+      await fireEvent.click(reopened.getByRole("button", { name: "Research defaults" }));
+      expect((reopened.getByLabelText("Default search coverage") as HTMLSelectElement).value).toBe("communities");
+      expect((reopened.getByLabelText("Default research depth") as HTMLSelectElement).value).toBe("deep");
+      reopened.unmount();
+
+      const state = workspace();
+      state.scope = null;
+      state.validation.exa = { valid: true };
+      const onSave = vi.fn().mockResolvedValue(undefined);
+      const view = render(ScopeForm, { workspace: state, busy: false, onSave, onStart: vi.fn(), onRetry: vi.fn() });
+      expect((view.getByLabelText("Search coverage") as HTMLSelectElement).value).toBe("communities");
+      expect((view.getByLabelText("Research depth") as HTMLSelectElement).value).toBe("deep");
+      await fireEvent.input(view.getByLabelText(/What do you want to explore/), { target: { value: "Repair shop delays" } });
+      await fireEvent.click(view.getByRole("button", { name: "Discover problems" }));
+      await waitFor(() => expect(onSave).toHaveBeenCalledTimes(1));
+      expect(RunConfigSchema.parse(onSave.mock.calls[0]?.[1])).toMatchObject({ audienceSourcePolicy: "communities", discoveryDepth: "deep" });
+      view.unmount();
+
+      const savedView = render(ScopeForm, { workspace: workspace(), busy: false, onSave, onStart: vi.fn(), onRetry: vi.fn() });
+      expect((savedView.getByLabelText("Search coverage") as HTMLSelectElement).value).toBe("web");
+      expect((savedView.getByLabelText("Research depth") as HTMLSelectElement).value).toBe("standard");
+    } finally {
+      if (previous === null) localStorage.removeItem(storageKey);
+      else localStorage.setItem(storageKey, previous);
+    }
+  });
+
   test("offers only native OpenAI models and saves the selected model", async () => {
     const state = workspace();
     const nativeModel = { providerId: "openai-subscription", modelId: DEFAULT_RUN_CONFIG.model.modelId };
@@ -80,7 +123,7 @@ describe("ScopeForm search provider selection", () => {
     const connected = workspace();
     connected.validation.native = {
       available: true, connected: true, version: "0.1.0",
-      accounts: [{ providerId: "openai-subscription", email: "dany@example.test", plan: "plus" }],
+      accounts: [{ providerId: "openai-subscription", email: "dany@example.test", plan: "prolite" }],
     };
     const refresh = vi.fn().mockResolvedValue(undefined);
     const logout = vi.fn().mockResolvedValue(undefined);
@@ -90,7 +133,7 @@ describe("ScopeForm search provider selection", () => {
       onRetry: vi.fn(),
       onRefreshNative: refresh, onLogoutNative: logout,
     });
-    expect(accountView.getByText("dany@example.test · plus")).toBeTruthy();
+    expect(accountView.getByText("dany@example.test · ChatGPT Pro")).toBeTruthy();
     await fireEvent.click(accountView.getByRole("button", { name: "Refresh" }));
     await fireEvent.click(accountView.getByRole("button", { name: "Sign out" }));
     expect(refresh).toHaveBeenCalledWith("openai-subscription");

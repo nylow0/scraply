@@ -3,6 +3,8 @@
   import ResearchDefaults from "./ResearchDefaults.svelte";
   import ProviderLogo from "./ProviderLogo.svelte";
   import Icon from "./Icon.svelte";
+  import OpenAILogo from "./OpenAILogo.svelte";
+  import { accountPlanLabel } from "../lib/account-plan";
   import type { NativeLoginStartResult, WorkspaceState } from "../../shared/ipc";
 
   let { workspace, busy, nativeLogin, open = $bindable(false), feedback, onRetry, onConnectNative, onCancelNative, onRefreshNative, onLogoutNative, onOpenData, onOpenLogs, onRestore, onDelete }: {
@@ -48,7 +50,7 @@
   <div class="popup-header"><h1 bind:this={heading} tabindex="-1" id="settings-title">Settings</h1><button class="close" aria-label="Close settings" onclick={back}><Icon name="close" size={18} /></button></div>
   <div class="settings-layout">
     <nav aria-label="Settings sections">
-      <button class:active={section === "account"} aria-pressed={section === "account"} onclick={() => section = "account"}><Icon name="command" size={16} />Account</button>
+      <button class:active={section === "account"} aria-pressed={section === "account"} onclick={() => section = "account"}><OpenAILogo size={16} />Account</button>
       <button class:active={section === "defaults"} aria-pressed={section === "defaults"} onclick={() => section = "defaults"}><Icon name="brief" size={16} />Research defaults</button>
       <button class:active={section === "connections"} aria-pressed={section === "connections"} onclick={() => section = "connections"}><Icon name="research" size={16} />Connections</button>
       <button class:active={section === "archive"} aria-pressed={section === "archive"} onclick={() => section = "archive"}><Icon name="archive" size={16} />Archived research</button>
@@ -65,7 +67,7 @@
   {#if feedback}<p class="feedback" class:error={feedback.tone === "error"} role={feedback.tone === "error" ? "alert" : "status"}>{feedback.text}</p>{/if}
   {#if workspace}
     <div hidden={section !== "account"}>
-    <div class="account-emblem"><Icon name="command" size={25} /></div>
+    <div class="account-emblem"><OpenAILogo size={36} /></div>
     <div class="native-account" class:needs-connection={!workspace.validation.native.connected && !nativeValidationPending} class:checking={nativeValidationPending} aria-label="OpenAI account">
       <div>
         <strong>{workspace.validation.native.connected ? "OpenAI account" : "Connect OpenAI to start research"}</strong>
@@ -79,7 +81,7 @@
           {/if}
         {:else}
           {#each workspace.validation.native.accounts as account (account.providerId)}
-            <span>{account.email ?? account.accountId ?? account.providerId}{account.plan ? ` · ${account.plan}` : ""}</span>
+            <span>{account.email ?? account.accountId ?? account.providerId}{account.plan ? ` · ${accountPlanLabel(account.plan)}` : ""}</span>
           {/each}
           {#if workspace.validation.native.error}
             <span class="account-error">{workspace.validation.native.error}</span>
@@ -150,7 +152,7 @@
   h2 { margin:0;font-size:21px;font-weight:650;letter-spacing:-.03em; }
   button { padding:10px 14px;border:1px solid var(--border-strong);border-radius:8px;background:var(--surface-2);color:var(--text);font-size:13px; }
   button:hover:not(:disabled) { background:var(--border); }
-  .account-emblem { display:grid;place-items:center;width:54px;height:54px;border:1px solid #71cfba30;border-radius:17px;background:#71cfba0b;color:var(--accent);margin-bottom:20px; }
+  .account-emblem { color:var(--text);margin-bottom:24px; }
   .native-account { display:grid;gap:26px; }
   .native-account > div:first-child { display:grid;gap:10px; }
   .native-account strong { font-size:16px;font-weight:600; }
