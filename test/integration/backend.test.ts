@@ -17,7 +17,7 @@ const modelOption = (id: string) => ({
   defaultReasoningEffort: "medium",
   reasoningEfforts: [{ id: "medium", description: "Balanced reasoning" }],
 });
-const nativeInspection = (models = [modelOption("gpt-5.6-luna")]) => ({
+const nativeInspection = (models = [modelOption("gpt-5.6-sol")]) => ({
   available: true, connected: true, accounts: [{ providerId: "openai-subscription" }], models,
 });
 afterEach(async () => {
@@ -36,7 +36,7 @@ describe("cutover backend", () => {
     const handle = await startBackend({
       dataDir: dir, dbPath: join(dir, "scraply.db"), bundledPromptsDir: join(process.cwd(), "prompts"),
       promptOverridesDir: join(dir, "prompts"), appVersion: "test", getSecrets: () => ({ exaApiKey: "test-key" }),
-      providerValidation: { inspectNative: async () => nativeInspection([modelOption("gpt-5.6-luna"), modelOption("gpt-test")]), validateExa: async () => ({ valid: true }) },
+      providerValidation: { inspectNative: async () => nativeInspection([modelOption("gpt-5.6-sol"), modelOption("gpt-test")]), validateExa: async () => ({ valid: true }) },
     }, () => undefined); handles.push(handle);
 
     const post = async (path: string, body: unknown) => {
@@ -49,10 +49,10 @@ describe("cutover backend", () => {
     };
     expect(created.thread.status).toBe("configuring");
     expect(created.workspace.models).toEqual([
-      { providerId: "openai-subscription", modelId: "gpt-5.6-luna" },
+      { providerId: "openai-subscription", modelId: "gpt-5.6-sol" },
       { providerId: "openai-subscription", modelId: "gpt-test" },
     ]);
-    expect(created.workspace.runConfig.model).toEqual({ providerId: "openai-subscription", modelId: "gpt-5.6-luna" });
+    expect(created.workspace.runConfig.model).toEqual({ providerId: "openai-subscription", modelId: "gpt-5.6-sol" });
     const removedEventsEndpoint = await fetch(`http://127.0.0.1:${handle.port}/events`, { headers: { authorization: `Bearer ${handle.token}` } });
     expect(removedEventsEndpoint.status).toBe(404);
     const workspace = await post("/scope", { threadId: created.thread.id, scope: { title: "Repair shops", audience: "Independent shops", domain: "Parts sourcing", observations: "", offLimits: ["Inventory"] } }) as { scope: { title: string; audience: string; domain: string; observations: string; offLimits: string[] } };

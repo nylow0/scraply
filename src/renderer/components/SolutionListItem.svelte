@@ -21,36 +21,13 @@
 </script>
 
 <details bind:open class:warning class="solution" style={`--rank:${rank}`}>
-  <summary class="solution-summary">
-    <span class="rank">{String(rank).padStart(2, "0")}</span>
-    <span class="identity">
-      <strong>{idea.mechanism}</strong>
-      <small>{idea.problemStatement}</small>
-    </span>
-    <span class="risk-preview">
-      {#if highestRisk}
-        <span class="top-risk-label estimated">Highest risk: {highestRisk.likelihood} · {highestRisk.impact}</span>
-        <span class="top-risk-statement">{highestRisk.description}</span>
-      {:else}
-        <span class="top-risk-label">No risks identified</span>
-      {/if}
-    </span>
-    <span class="metrics" aria-label="Solution evaluation snapshot">
-      <span><strong>{idea.confirmedCoreOutcomes}</strong> model-judged core</span>
-      <span><strong>{projectEndingRisks}</strong> project-ending</span>
-      <span class:danger={idea.unaddressedCatastrophicRisks > 0}><strong>{idea.unaddressedCatastrophicRisks}</strong> unaddressed</span>
-    </span>
-    <span class="chevron" aria-hidden="true"></span>
+  <summary class="solution-summary disclosure-title" title={idea.mechanism}>
+    <span class="disclosure-label">{idea.mechanism}</span>
   </summary>
 
   <div class="solution-body">
     {#if idea.detailsLoaded === false}<p role="status">{error || "Loading saved analysis…"}</p>{:else}
-    <details class="category">
-      <summary>
-        <span><strong>Overview</strong><small>Mechanism, constraints, and source problem</small></span>
-        <span class="chevron" aria-hidden="true"></span>
-      </summary>
-      <div class="category-body overview">
+    <section class="overview">
         <div>
           <span class="label">How it works</span>
           <p>{idea.description}</p>
@@ -65,8 +42,7 @@
           <p>{idea.respectsOffLimitsWhy}</p>
           <small>{idea.respectsOffLimits ? "Within the stated off-limits rules" : "Possible off-limits conflict"}</small>
         </div>
-      </div>
-    </details>
+    </section>
 
     <details class="category">
       <summary>
@@ -121,6 +97,21 @@
         <span><strong>Review all risks and responses</strong><small>{idea.risks.length} risks · {projectEndingRisks} project-ending · {idea.unaddressedCatastrophicRisks} unaddressed</small></span>
         <span class="chevron" aria-hidden="true"></span>
       </summary>
+    <div class="expanded-snapshot">
+    <span class="risk-preview">
+      {#if highestRisk}
+        <span class="top-risk-label estimated">Highest risk: {highestRisk.likelihood} · {highestRisk.impact}</span>
+        <span class="top-risk-statement">{highestRisk.description}</span>
+      {:else}
+        <span class="top-risk-label">No risks identified</span>
+      {/if}
+    </span>
+    <span class="metrics" aria-label="Solution evaluation snapshot">
+      <span><strong>{idea.confirmedCoreOutcomes}</strong> model-judged core</span>
+      <span><strong>{projectEndingRisks}</strong> project-ending</span>
+      <span class:danger={idea.unaddressedCatastrophicRisks > 0}><strong>{idea.unaddressedCatastrophicRisks}</strong> unaddressed</span>
+    </span>
+    </div>
       <div class="category-body risk-list">
         {#each idea.risks as risk, index (risk.id)}
           <article class:project-ending={risk.impact === "project ends" && risk.mitigations.length === 0} class="risk-item" aria-labelledby={`risk-${risk.id}`}>
@@ -177,7 +168,10 @@
   }
 
   .solution {
-    border-top: 1px solid var(--border);
+    border: 1px solid var(--border);
+    border-radius: 13px;
+    overflow: hidden;
+    background: linear-gradient(120deg,#1b202377,var(--surface));
   }
 
   .solution.warning {
@@ -185,12 +179,11 @@
   }
 
   .solution-summary {
-    display: grid;
-    grid-template-columns: 30px minmax(210px, 1fr) minmax(260px, .9fr) auto 20px;
+    display: flex;
     gap: 16px;
     align-items: center;
-    min-height: 106px;
-    padding: 14px 18px;
+    min-height: 56px;
+    padding: 18px 22px;
     transition: background-color 180ms var(--ease);
   }
 
@@ -203,33 +196,10 @@
     box-shadow: inset 0 -1px var(--border-strong);
   }
 
-  .rank,
   .item-number,
   .response-number {
-    font: 600 11px var(--mono);
+    font:600 13px var(--mono);
     color: var(--subtle);
-  }
-
-  .identity {
-    display: grid;
-    gap: 4px;
-    min-width: 0;
-  }
-
-  .identity strong {
-    overflow: hidden;
-    font-size: 16px;
-    line-height: 1.3;
-    letter-spacing: -.015em;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .identity small {
-    overflow: hidden;
-    color: var(--muted);
-    text-overflow: ellipsis;
-    white-space: nowrap;
   }
 
   .risk-preview {
@@ -240,18 +210,18 @@
 
   .top-risk-label {
     color: var(--danger);
-    font: 600 10px var(--mono);
+    font:500 13px var(--sans);
     letter-spacing: .04em;
-    text-transform: uppercase;
+    text-transform: none;
   }
 
   .top-risk-statement {
     overflow: hidden;
     color: var(--muted);
-    font-size: 11px;
+    font-size:13px;
     line-height: 1.35;
     text-overflow: ellipsis;
-    white-space: nowrap;
+    overflow-wrap: anywhere;
   }
 
   .metrics {
@@ -259,9 +229,10 @@
     align-items: center;
     justify-content: flex-end;
     gap: 16px;
+    flex-wrap:wrap;
     color: var(--subtle);
-    font: 500 10px var(--mono);
-    text-transform: uppercase;
+    font:500 13px var(--sans);
+    text-transform: none;
   }
 
   .metrics > span {
@@ -294,7 +265,7 @@
   }
 
   .solution-body {
-    padding: 8px 18px 22px 64px;
+    padding: 12px 26px 26px;
     background: color-mix(in srgb, var(--surface) 38%, transparent);
   }
 
@@ -330,16 +301,22 @@
 
   .overview {
     display: grid;
-    grid-template-columns: 1.4fr 1fr 1fr;
-    gap: 1px;
-    background: var(--border);
+    grid-template-columns: repeat(2,minmax(0,1fr));
+    gap: 20px;
+    padding:20px 0;
+    border:0;
+    border-radius:12px;
+    background:var(--surface);
   }
 
   .overview > div {
-    padding: 16px;
-    background: var(--bg);
+    padding: 0;
+    min-width:0;
+    overflow-wrap:anywhere;
   }
 
+  .overview > div:first-child { grid-column:1/-1; }
+  .overview > div:first-child p { font-size:16px;line-height:1.8;color:var(--text);max-width:85ch; }
   .overview p {
     margin: 7px 0;
     color: var(--muted);
@@ -358,9 +335,9 @@
   .direction,
   .risk-count,
   .response-number {
-    font: 600 10px var(--mono);
+    font:500 13px var(--sans);
     letter-spacing: .04em;
-    text-transform: uppercase;
+    text-transform: none;
     color: var(--subtle);
   }
 
@@ -521,8 +498,8 @@
     border: 1px solid var(--border-strong);
     border-radius: 99px;
     color: var(--muted);
-    font: 600 10px var(--mono);
-    text-transform: uppercase;
+    font:500 13px var(--sans);
+    text-transform: none;
   }
 
   .responses {
@@ -531,9 +508,10 @@
   }
 
   .response {
-    padding: 14px;
+    padding: 18px;
     border: 1px solid var(--border);
-    background: var(--bg);
+    border-radius:10px;
+    background: var(--surface);
   }
 
   .response p {
@@ -550,17 +528,10 @@
     color: var(--subtle);
   }
 
-  @keyframes enter {
-    from {
-      opacity: 0;
-      transform: translateY(6px);
-    }
-  }
 
   @media (max-width: 850px) {
     .solution-summary {
-      grid-template-columns: 26px minmax(0, 1fr) 18px;
-      min-height: 72px;
+      min-height: 56px;
       padding-inline: 12px;
     }
 
@@ -574,13 +545,9 @@
       grid-column: 2;
     }
 
-    .solution-summary > .chevron {
-      grid-column: 3;
-      grid-row: 1 / span 3;
-    }
 
     .solution-body {
-      padding: 6px 12px 18px 38px;
+      padding: 6px 16px 18px;
     }
 
     .overview {
@@ -618,18 +585,5 @@
     }
   }
 
-  @media (max-width: 560px) {
-    .identity strong,
-    .identity small {
-      white-space: normal;
-    }
-
-    .metrics {
-      flex-wrap: wrap;
-    }
-
-    dl {
-      grid-template-columns: 1fr;
-    }
-  }
+  .expanded-snapshot { display:flex;flex-wrap:wrap;gap:24px;padding:18px 0; }
 </style>

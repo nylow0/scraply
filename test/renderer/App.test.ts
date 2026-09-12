@@ -8,6 +8,58 @@ import { DEFAULT_RUN_CONFIG } from "../../src/shared/schemas";
 import { summarizeRunUsage } from "../../src/backend/run-usage";
 
 describe("App workspace coordination", () => {
+  test.each(["archived", "deleted"] as const)("skips %s research in both history directions and disables unreachable navigation", async (unavailable) => {
+    let state = workspace("alpha");
+    state.threads.push({ ...state.threads[0]!, id: "gamma", title: "Gamma" });
+    let backendEvent: ((event: ResearchEvent) => void) | undefined;
+    installApi({
+      getWorkspace: async () => structuredClone(state),
+      selectThread: async (threadId) => {
+        state = { ...state, activeThreadId: threadId };
+        return structuredClone(state);
+      },
+      archiveThread: async (threadId) => {
+        state = { ...state, threads: state.threads.map((thread) => thread.id === threadId
+          ? { ...thread, archivedAt: "2026-09-12T00:00:00.000Z" } : thread) };
+        return structuredClone(state);
+      },
+      onBackendEvent(listener) { backendEvent = listener; return () => { backendEvent = undefined; }; },
+    });
+    const view = render(App);
+    await view.findByRole("button", { name: "Open thread Alpha" });
+    const back = view.getByRole("button", { name: "Go back" }) as HTMLButtonElement;
+    const forward = view.getByRole("button", { name: "Go forward" }) as HTMLButtonElement;
+    expect(back.disabled).toBe(true);
+
+    for (const title of ["Beta", "Gamma"]) {
+      const button = view.getByRole("button", { name: `Open thread ${title}` });
+      await fireEvent.click(button);
+      await waitFor(() => expect(button.getAttribute("aria-current")).toBe("true"));
+    }
+    await fireEvent.click(view.getByRole("button", { name: "Archive research Beta" }));
+    await waitFor(() => expect(view.queryByRole("button", { name: "Open thread Beta" })).toBeNull());
+    if (unavailable === "deleted") {
+      // A reconciled workspace can remove an archived entry permanently.
+      state = { ...state, threads: state.threads.filter((thread) => thread.id !== "beta") };
+      backendEvent?.({ type: "run-completed", threadId: "gamma", runId: "run-gamma", problemId: null });
+      await waitFor(() => expect(view.queryByRole("button", { name: "Restore Beta", hidden: true })).toBeNull());
+    }
+
+    await fireEvent.click(back);
+    await waitFor(() => expect(view.getByRole("button", { name: "Open thread Alpha" }).getAttribute("aria-current")).toBe("true"));
+    await tick();
+    expect(back.disabled).toBe(true);
+    expect(forward.disabled).toBe(false);
+    await fireEvent.click(forward);
+    await waitFor(() => expect(view.getByRole("button", { name: "Open thread Gamma" }).getAttribute("aria-current")).toBe("true"));
+    await tick();
+    expect(forward.disabled).toBe(true);
+
+    await fireEvent.click(view.getByRole("button", { name: "Archive research Alpha" }));
+    await waitFor(() => expect(back.disabled).toBe(true));
+    expect(forward.disabled).toBe(true);
+  });
+
   test("updates live usage without loading the whole workspace on progress", async () => {
     const state = workspace("alpha");
     const usage = summarizeRunUsage([]);
@@ -129,7 +181,7 @@ describe("App workspace coordination", () => {
     installApi({ getWorkspace: vi.fn().mockResolvedValue(state) });
     const view = render(App);
 
-    expect(await view.findByText("Which problems deserve development?")).toBeTruthy();
+    expect(await view.findByText("Choose problems to develop")).toBeTruthy();
     expect(view.getByText("Failed evidence requirements")).toBeTruthy();
     expect(view.getByText("No candidates passed the evidence requirements.")).toBeTruthy();
   });
@@ -152,6 +204,7 @@ describe("App workspace coordination", () => {
       cancelNativeLogin,
     });
     const view = render(App);
+    await fireEvent.click(await view.findByRole("button", { name: "Settings" }));
     await fireEvent.click(await view.findByRole("button", { name: "Use device code" }));
     expect(await view.findByText("ABCD-1234")).toBeTruthy();
 
@@ -192,6 +245,7 @@ describe("App workspace coordination", () => {
       completeNativeLogin: vi.fn().mockResolvedValue({ pending: false as const, workspace: connected }),
     });
     const view = render(App);
+    await fireEvent.click(await view.findByRole("button", { name: "Settings" }));
 
     expect(await view.findByText("provider request failed with HTTP 401")).toBeTruthy();
     expect(view.queryByRole("button", { name: "Try again" })).toBeNull();
@@ -200,7 +254,7 @@ describe("App workspace coordination", () => {
     expect(startNativeLogin).toHaveBeenCalledWith({ providerId: "openai-subscription", method: "browser" });
     expect(await view.findByText("Native model account connected.")).toBeTruthy();
     expect(view.queryByText("provider request failed with HTTP 401")).toBeNull();
-    expect(view.getByRole("option", { name: DEFAULT_RUN_CONFIG.model.modelId })).toBeTruthy();
+    expect(view.getByRole("option", { name: "GPT-5.6 Sol" })).toBeTruthy();
   });
 
   test("shows discovered models as soon as browser sign-in completes", async () => {
@@ -221,10 +275,11 @@ describe("App workspace coordination", () => {
       completeNativeLogin: vi.fn().mockResolvedValue({ pending: false as const, workspace: connected }),
     });
     const view = render(App);
+    await fireEvent.click(await view.findByRole("button", { name: "Settings" }));
 
     await fireEvent.click(await view.findByRole("button", { name: "Sign in with OpenAI" }));
     expect(await view.findByText("Native model account connected.")).toBeTruthy();
-    expect(view.getByRole("option", { name: DEFAULT_RUN_CONFIG.model.modelId })).toBeTruthy();
+    expect(view.getByRole("option", { name: "GPT-5.6 Sol" })).toBeTruthy();
     expect(view.getByText("dany@example.test")).toBeTruthy();
   });
 
@@ -256,11 +311,12 @@ describe("App workspace coordination", () => {
       completeNativeLogin: vi.fn().mockResolvedValue({ pending: false as const, workspace: checking }),
     });
     const view = render(App);
+    await fireEvent.click(await view.findByRole("button", { name: "Settings" }));
 
     await fireEvent.click(await view.findByRole("button", { name: "Sign in with OpenAI" }));
 
     expect(await view.findByText("OpenAI sign-in finished.")).toBeTruthy();
-    expect(await view.findByRole("option", { name: DEFAULT_RUN_CONFIG.model.modelId }, { timeout: 1_500 })).toBeTruthy();
+    expect(await view.findByRole("option", { name: "GPT-5.6 Sol" }, { timeout: 1_500 })).toBeTruthy();
     expect(view.queryByText("Checking available OpenAI models")).toBeNull();
   });
 
@@ -274,6 +330,7 @@ describe("App workspace coordination", () => {
       startNativeLogin: vi.fn().mockRejectedValue(new Error("Browser sign-in could not start")),
     });
     const view = render(App);
+    await fireEvent.click(await view.findByRole("button", { name: "Settings" }));
 
     await fireEvent.click(await view.findByRole("button", { name: "Sign in with OpenAI" }));
     expect((await view.findByRole("alert")).textContent).toContain("Browser sign-in could not start");
@@ -302,6 +359,7 @@ describe("App workspace coordination", () => {
       completeNativeLogin: vi.fn().mockResolvedValue({ pending: false as const, workspace: rejected }),
     });
     const view = render(App);
+    await fireEvent.click(await view.findByRole("button", { name: "Settings" }));
 
     await fireEvent.click(await view.findByRole("button", { name: "Sign in with OpenAI" }));
 
@@ -328,12 +386,13 @@ describe("App workspace coordination", () => {
       .mockResolvedValueOnce(ready);
     installApi({ getWorkspace, retryConnection: vi.fn().mockResolvedValue(undefined) });
     const view = render(App);
+    await fireEvent.click(await view.findByRole("button", { name: "Settings" }));
 
     const title = await view.findByLabelText("Research name") as HTMLInputElement;
     await fireEvent.input(title, { target: { value: "My unsaved research" } });
     await fireEvent.click(view.getByRole("button", { name: "Try again" }));
 
-    expect(await view.findByText("Checking required connections")).toBeTruthy();
+    expect(await view.findByText("Checking connections")).toBeTruthy();
     expect((view.getByRole("button", { name: "Checking connections" }) as HTMLButtonElement).disabled).toBe(true);
     expect(await view.findByRole("button", { name: "Sign in with OpenAI" }, { timeout: 1_500 })).toBeTruthy();
     expect(getWorkspace).toHaveBeenCalledTimes(3);
@@ -397,6 +456,11 @@ function installApi(overrides: Partial<ScraplyApi>): void {
     openLogsFolder: async () => undefined,
     createThread: async () => ({ workspace: workspace("alpha") }),
     selectThread: noWorkspace,
+    archiveThread: noWorkspace,
+    discardIdea: noWorkspace,
+    showAppMenu: async () => undefined,
+    onAppCommand: () => () => undefined,
+    generateTitle: vi.fn(async () => ({ title: "Generated research title" })),
     deleteThread: noWorkspace,
     saveScope: noWorkspace,
     saveRunConfig: noWorkspace,
