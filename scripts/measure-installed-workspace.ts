@@ -337,8 +337,8 @@ async function sampleRendererMemory(
     bounded("Memory.getDOMCounters", 5_000, cdp.call("Memory.getDOMCounters")),
     evaluate(cdp, `({
       elements: document.querySelectorAll('*').length,
-      solutions: document.querySelectorAll('details.solution').length,
-      categories: document.querySelectorAll('details.category').length,
+      solutions: document.querySelectorAll('.solutions > .idea-row > :is(article, details.solution)').length,
+      categories: document.querySelectorAll('.solutions details.category, .disclosure-content details').length,
     })`),
   ]);
   memoryDiagnostics.push({
@@ -397,14 +397,15 @@ async function launch(mode: Mode, index: number, fixture: InstalledPerformanceFi
     const deadline = launchedAt + READINESS_TIMEOUT_MS;
     await waitForValue(
       `${mode} UI readiness`,
-      () => evaluate<{ body: string; projects: number; solutions: number }>(cdp!, `({
-        body: document.body.innerText,
+      () => evaluate<{ title: string; projects: number; solutions: number; setupVisible: boolean }>(cdp!, `({
+        title: document.querySelector('.topbar .location')?.textContent?.trim() ?? '',
         projects: document.querySelectorAll('[aria-label^="Open thread "]').length,
-        solutions: document.querySelectorAll('.solutions > details.solution, .solutions > article').length,
+        solutions: document.querySelectorAll('.solutions > .idea-row:not([hidden]) > :is(article, details.solution)').length,
+        setupVisible: document.querySelector('[role="tabpanel"][aria-label="Research setup"]') !== null,
       })`),
       (value) => mode === "empty"
-        ? value.body.includes("Create research") && value.projects === 0
-        : value.body.includes("Synthetic project 01") && value.projects === 20 && value.solutions === expectedSyntheticSolutionCount,
+        ? value.setupVisible && value.projects === 1 && value.solutions === 0
+        : value.title === "Synthetic project 01" && value.projects === 20 && value.solutions === expectedSyntheticSolutionCount,
       deadline,
     );
     const usableUiMs = performance.now() - launchedAt;
@@ -423,7 +424,7 @@ async function launch(mode: Mode, index: number, fixture: InstalledPerformanceFi
     const visibleFactorSourceCount = new Set(
       readyWorkspace.value.problemCandidates.flatMap((problem) => problem.factors.map((factor) => factor.sourceId)),
     ).size;
-    if (mode === "empty" && (projectCount !== 0 || solutionCount !== 0 || visibleFactorSourceCount !== 0)) {
+    if (mode === "empty" && (projectCount !== 1 || solutionCount !== 0 || visibleFactorSourceCount !== 0)) {
       throw new Error(`Empty cold start loaded ${projectCount} projects, ${solutionCount} solutions, and ${visibleFactorSourceCount} factor sources`);
     }
     if (mode === "synthetic" && (projectCount !== 20 || solutionCount !== expectedSyntheticSolutionCount || visibleFactorSourceCount !== 20)) {
@@ -649,14 +650,14 @@ try {
       const deadline = started + ${READINESS_TIMEOUT_MS};
       let observed = {};
       while (performance.now() < deadline) {
-        const topbar = document.querySelector('.topbar > div')?.textContent?.trim() ?? '';
+        const topbar = document.querySelector('.topbar .location')?.textContent?.trim() ?? '';
         const currentButton = [...document.querySelectorAll('button')]
           .find((item) => item.getAttribute('aria-label') === 'Open thread ' + title);
         const active = currentButton?.getAttribute('aria-current') === 'true';
-        const solutions = [...document.querySelectorAll('.solutions > details.solution, .solutions > article')];
+        const solutions = [...document.querySelectorAll('.solutions > .idea-row:not([hidden]) > :is(article, details.solution)')];
         const heading = document.querySelector('.workspace h1')?.textContent?.trim() ?? '';
         observed = { topbar, active, solutionCount: solutions.length, heading };
-        if (topbar === title && active && solutions.length === ${expectedSyntheticSolutionCount} && heading.includes('${expectedSyntheticSolutionCount} solution ideas')) {
+        if (topbar === title && active && solutions.length === ${expectedSyntheticSolutionCount} && heading === '${expectedSyntheticSolutionCount} solutions') {
           await new Promise((resolve) => setTimeout(resolve, 0));
           return {
             durationMs: performance.now() - started,
@@ -664,7 +665,7 @@ try {
             heading,
             ariaCurrent: currentButton?.getAttribute('aria-current') ?? null,
             solutionCount: solutions.length,
-            firstMechanism: solutions[0]?.querySelector('.identity strong')?.textContent?.trim() ?? '',
+            firstMechanism: solutions[0]?.querySelector('.disclosure-label')?.textContent?.trim() ?? '',
           };
         }
         await new Promise((resolve) => setTimeout(resolve, 10));
@@ -684,25 +685,25 @@ try {
     if (!solutionId || !sourceId) throw new Error(`Missing detail IDs after rendering ${title}`);
 
     const detailResult = await evaluate<{ durationMs: number; mechanism: string; overviewTextBytes: number }>(session.cdp, `(async () => {
-      const solution = document.querySelector('article.selected > details');
-      const solutionSummary = solution?.querySelector(':scope > summary');
-      if (!(solution instanceof HTMLDetailsElement) || !(solutionSummary instanceof HTMLElement)) {
-        throw new Error('Solution summary control is missing');
+      const article = document.querySelector('.solutions > .idea-row:not([hidden]) > article.selected');
+      const disclosure = article?.querySelector(':scope > button.disclosure-title');
+      if (!(article instanceof HTMLElement) || !(disclosure instanceof HTMLButtonElement)) {
+        throw new Error('Selected solution disclosure is missing');
       }
-      solution.open = false;
       const started = performance.now();
-      solutionSummary.click();
+      if (disclosure.getAttribute('aria-expanded') === 'true') disclosure.click();
+      disclosure.click();
       const deadline = started + ${READINESS_TIMEOUT_MS};
       while (performance.now() < deadline) {
-        const article = solution.closest('article');
+        const content = article.querySelector(':scope > .disclosure-content');
         const text = article?.textContent ?? '';
-        if (solution.open && text.includes('Synthetic v2 consequence')) {
+        if (disclosure.getAttribute('aria-expanded') === 'true' && content instanceof HTMLElement && text.includes('Synthetic v2 consequence')) {
           await new Promise((resolve) => setTimeout(resolve, 0));
-          const rendered = solution.getBoundingClientRect();
+          const rendered = content.getBoundingClientRect();
           if (rendered.height <= 0) throw new Error('Expanded v2 analysis has no rendered height');
           return {
             durationMs: performance.now() - started,
-            mechanism: article?.querySelector('h2')?.textContent?.trim() ?? '',
+            mechanism: article.querySelector('.disclosure-label')?.textContent?.trim() ?? '',
             overviewTextBytes: new TextEncoder().encode(text).length,
             detailKind: 'v2-selected-analysis',
           };
