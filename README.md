@@ -12,12 +12,62 @@ Scraply is a local-first Windows desktop app for evidence-backed research and id
 
 ## Development
 
+Run commands from the checkout you are editing. For first-time setup:
+
 ```powershell
-bun install
+bun install --frozen-lockfile
+bunx --no-install install-electron
 git submodule update --init --recursive
 bun run prepare:runtime
+```
+
+`prepare:runtime` builds, checks, and stages the Rust worker. Reuse that stage for UI and TypeScript backend changes. Prepare it again when the stage is missing or the native source, Cargo dependencies, pinned submodule, or runtime build/protocol configuration changes. See [runtime/README.md](runtime/README.md#build) for native development.
+
+Electron 42 downloads its executable on demand. The explicit `install-electron` setup step is needed because this version of electron-vite reads Electron's installed path directly. Repeat it if dev reports a missing Electron executable. See the [Electron 42 installation change](https://www.electronjs.org/blog/electron-42-0).
+
+### Daily iteration
+
+```powershell
 bun run dev
 ```
+
+This starts the server in the background and prints **http://127.0.0.1:5173**. Open that link in your browser. It creates no Scraply window, DevTools window, or terminal window, and does not open a browser automatically. Running the command again reuses the server for this checkout. Keep it running and provide the link when handing the change to Dany.
+
+The browser uses the real app handlers and backend. A windowless Electron host supplies SQLite, encrypted credentials, and the native worker. The launcher automatically selects the prepared files in `build/runtime`. For an intentionally reused native artifact, set both `SCRAPLY_AGENT_PATH` and `SCRAPLY_AGENT_LOCK_PATH` before starting. Reuse an artifact only when its native code and protocol match the checkout being tested; release builds still prepare their own verified artifact.
+
+Renderer edits update the browser on save. Main-process and TypeScript backend changes rebuild and restart the background host; reload the browser after a host restart. Unsaved form edits can reset during hot reload. After changing startup configuration, environment variables, or prepared native files, stop and start the server:
+
+```powershell
+bun run dev:stop
+bun run dev
+```
+
+The server binds only to `127.0.0.1`. If port 5173 belongs to another process or checkout, startup fails instead of stopping it. Use `dev:stop` from the owning checkout. Logs and launch state are in `build/browser-dev/`; the log is replaced on each start. Stop dev before packaging from the same checkout because packaging replaces `out/`.
+
+Browser development keeps its data and encrypted credentials in `.scraply/browser-dev/`, separate from the installed app. Sign in and configure providers for this dev workspace. Set `SCRAPLY_DEV_DATA_DIR` before starting if a task needs a different dedicated profile. **Open data folder** shows the active location. Exports download through the browser; account login and folder/link actions use the local host. Keep destructive or paid verification within the task's authorization.
+
+For a task that specifically needs an Electron window, run `bun run dev:stop`, configure the two native artifact variables above, then run `bun run dev:electron`. This is an explicit desktop check, not the default preview. The installed Start menu shortcut continues to run the last installed build.
+
+### Verification and handoff
+
+| Change | Local verification |
+| --- | --- |
+| UI or TypeScript backend | Exercise the affected workflow in the browser, run focused tests, then `bun run check` before handoff. |
+| Native runtime or host/runtime integration | Prepare the changed runtime, restart dev, and exercise the affected real runtime interaction plus relevant tests and `bun run check`. |
+| Electron window, preload, permissions, dialogs, or other desktop integration | Verify the affected interaction in an explicit Electron development session. |
+| Installer, packaging, packaged resource paths, or behavior specific to the installed app | Run `bun run build:installed`, exercise that behavior in the resulting app, and run the relevant packaged checks in [RELEASE.md](RELEASE.md). |
+| Release verification | Follow [RELEASE.md](RELEASE.md), including its package and installed-app gates. |
+| Documentation or read-only investigation | Check referenced commands and links as needed; no build or installation. |
+
+For a UI change, verify the affected action and visible result. For persistence changes, restart and confirm saved state. Report the URL, checkout, workflow exercised, checks passed or failed, and any unverified behavior. A server-ready message or passing code checks alone does not verify an interaction.
+
+`bun run test:e2e` prepares the runtime and packages an E2E app before running Playwright. Use it when its scenarios provide needed packaged coverage; it is not a lightweight browser check. CI and release gates remain separate from daily iteration.
+
+`bun run build:installed` prepares the runtime, rebuilds and verifies Windows packages, installs the exact package, and verifies the installed executable and ASAR. Use it for the cases above or an explicit installed-build request. Output goes to `release/`.
+
+Routine dev runs do not create installers or rebuild Rust. Native preparation uses `build/cargo` for its Cargo cache. Avoid repeatedly preparing identical native code in extra worktrees just to preview UI edits.
+
+### Provider setup
 
 Set `EXA_API_KEY`, `PERPLEXITY_API_KEY`, or both in `.env` for development or in the environment that launches the installed app. Each discovery run uses the search provider selected in its setup. Scraply checks configured providers in the background, then stores the keys with Windows-backed encryption after validation. Known-problem development does not require web search.
 
@@ -26,26 +76,6 @@ Connect OpenAI through Scraply's account controls. The app opens OpenAI login in
 The native agent source lives in [runtime/](runtime/README.md) and is built with the app. `nylow0/scraply-agent` is legacy; new runtime changes belong in this repository. The pinned upstream source supplies OpenAI login and Responses transport libraries. Scraply does not package or invoke the Codex CLI.
 
 Native OpenAI does not support output-token ceilings. Scraply omits that field for this provider; request deadlines and the runtime output-size limit still apply, but they do not guarantee a token or billing ceiling. Other providers retain the configured token ceiling.
-
-Run the code checks before handing off a change:
-
-```powershell
-bun run check
-```
-
-When a change affects the desktop workflow, run its packaged E2E check:
-
-```powershell
-bun run test:e2e
-```
-
-After completing an application change, build and install it for hands-on testing:
-
-```powershell
-bun run build:installed
-```
-
-`bun run build:installed` cleans and rebuilds the Windows installers, verifies their source/hash manifest, installs the exact package, and verifies the installed executable and ASAR. Release files are written to `release/`.
 
 The branch and release workflow is documented in [RELEASE.md](RELEASE.md). `master` is the only long-lived branch. Every feature, fix, documentation change, and maintenance task uses a short-lived branch and a pull request into `master`.
 

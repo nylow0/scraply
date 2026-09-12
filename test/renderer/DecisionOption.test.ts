@@ -13,7 +13,7 @@ describe("DecisionOption interactions", () => {
     installDetailApi(vi.fn().mockResolvedValue(saved));
     const props = handlers(idea);
     const view = render(DecisionOption, props);
-    await fireEvent.click(view.getByText("Evidence, analysis and your decision"));
+    await fireEvent.click(view.getByRole("button", { name: "Supplier reliability ledger" }));
     const supporting = await view.findByRole("region", { name: "Sources supporting this option" });
     await fireEvent.click(within(supporting).getByRole("link", { name: "Manual checklist" }));
     expect(props.onOpenSource).toHaveBeenCalledWith("https://example.com/checklist");
@@ -30,7 +30,7 @@ describe("DecisionOption interactions", () => {
     const props = handlers(first);
     const view = render(DecisionOption, props);
 
-    await fireEvent.click(view.getByText("Evidence, analysis and your decision"));
+    await fireEvent.click(view.getByRole("button", { name: "Supplier reliability ledger" }));
     const decision = await view.findByLabelText("Your decision") as HTMLTextAreaElement;
     const observed = view.getByLabelText("Observed test result") as HTMLTextAreaElement;
     await fireEvent.input(decision, { target: { value: "Draft before refresh" } });
@@ -44,9 +44,9 @@ describe("DecisionOption interactions", () => {
     expect(decision.value).toBe("Draft before refresh");
     expect(observed.value).toBe("Edit during refresh");
 
-    await fireEvent.click(view.getByText("Evidence, analysis and your decision"));
+    await fireEvent.click(view.getByRole("button", { name: "Supplier reliability ledger" }));
     await waitFor(() => expect(view.queryByLabelText("Your decision")).toBeNull());
-    await fireEvent.click(view.getByText("Evidence, analysis and your decision"));
+    await fireEvent.click(view.getByRole("button", { name: "Supplier reliability ledger" }));
     expect((await view.findByLabelText("Your decision") as HTMLTextAreaElement).value).toBe("Draft before refresh");
     expect((view.getByLabelText("Observed test result") as HTMLTextAreaElement).value).toBe("Edit during refresh");
   });
@@ -58,7 +58,7 @@ describe("DecisionOption interactions", () => {
     let saveCompleted = false;
     const onSave = vi.fn().mockImplementation(async () => { await pendingSave.promise; saveCompleted = true; });
     const view = render(DecisionOption, { ...handlers(idea), onSave });
-    await fireEvent.click(view.getByText("Evidence, analysis and your decision"));
+    await fireEvent.click(view.getByRole("button", { name: "Supplier reliability ledger" }));
     const decision = await view.findByLabelText("Your decision") as HTMLTextAreaElement;
     await fireEvent.input(decision, { target: { value: "Submitted draft" } });
     await fireEvent.click(view.getByRole("button", { name: "Save decision and result" }));
@@ -77,7 +77,7 @@ describe("DecisionOption interactions", () => {
     const onEvidenceFollowUp = vi.fn().mockResolvedValue(undefined);
     installDetailApi(vi.fn().mockResolvedValue(detail(available, "", "")));
     const availableView = render(DecisionOption, { ...handlers(available), onEvidenceFollowUp });
-    await fireEvent.click(availableView.getByText("Evidence, analysis and your decision"));
+    await fireEvent.click(availableView.getByRole("button", { name: "Supplier reliability ledger" }));
     await fireEvent.input(await availableView.findByLabelText("Question"), { target: { value: "Which suppliers publish arrival histories?" } });
     await fireEvent.click(availableView.getByRole("button", { name: "Check evidence" }));
     expect(onEvidenceFollowUp).toHaveBeenCalledWith(available.runId, "Which suppliers publish arrival histories?");
@@ -94,7 +94,7 @@ describe("DecisionOption interactions", () => {
     };
     installDetailApi(vi.fn().mockResolvedValue(exhaustedDetail));
     const exhaustedView = render(DecisionOption, { ...handlers(exhausted), onEvidenceFollowUp });
-    await fireEvent.click(exhaustedView.getByText("Evidence, analysis and your decision"));
+    await fireEvent.click(exhaustedView.getByRole("button", { name: "Supplier reliability ledger" }));
     expect(await exhaustedView.findByText("Three suppliers publish dated arrival records.")).toBeTruthy();
     expect(exhaustedView.getByRole("link", { name: "Supplier delivery study" })).toBeTruthy();
     expect(exhaustedView.getByText("This option has used its one evidence follow-up.")).toBeTruthy();

@@ -1099,4 +1099,5 @@ export const MIGRATIONS = [
     sql: "",
     afterSql: migrateSolutionLimit,
   },
+  { id: 22, sql: "ALTER TABLE threads ADD COLUMN archived_at TEXT;" },
 ] as const;

@@ -1,5 +1,6 @@
 import { expect, test, _electron } from "@playwright/test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync } from "node:fs";
+import { rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ScraplyApi } from "../../src/preload/index";
@@ -16,7 +17,7 @@ test("the packaged backend reuses empty drafts without losing a setup draft or s
   });
   try {
     const page = await app.firstWindow();
-    await page.getByRole("button", { name: "Create research", exact: true }).click();
+    await expect(page.getByLabel("Research name", { exact: true })).toBeVisible();
     const name = page.getByLabel("Research name", { exact: true });
     await expect(name).toBeVisible();
     await name.fill("Unsaved research idea");
@@ -52,6 +53,7 @@ test("the packaged backend reuses empty drafts without losing a setup draft or s
     expect((await page.evaluate(() => (window as unknown as { scraply: ScraplyApi }).scraply.getWorkspace())).threads).toHaveLength(2);
   } finally {
     await app.close();
-    rmSync(directory, { recursive: true, force: true });
+    // Windows may hold database handles briefly after the app and backend exit.
+    await rm(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 });
