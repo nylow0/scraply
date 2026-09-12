@@ -2,6 +2,10 @@
 
 `master` is the production branch. Every release change or rollback fix goes through a short-lived branch and a pull request into `master`.
 
+## Local development versus release verification
+
+Use the [README development workflow](README.md#development) for routine iteration in a browser with the background dev server. Local packaging and installation are required for installer/packaging changes, behavior specific to the packaged or installed app, release verification, or an explicit installed-build request. These development rules do not replace the CI or release gates below, and browser testing does not establish that a release package works.
+
 ## Publish a release candidate
 
 After the target commit lands on `master` and passes the required checks, either in CI or locally as described below:

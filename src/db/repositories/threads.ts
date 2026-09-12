@@ -12,7 +12,7 @@ export class ThreadRepository {
 
   listThreads(): Thread[] {
     return (this.db.db.prepare("SELECT * FROM threads ORDER BY updated_at DESC").all() as Array<Record<string, unknown>>)
-      .map((row) => ThreadSchema.parse({ id: row.id, title: row.title, status: row.status, createdAt: row.created_at, updatedAt: row.updated_at }));
+      .map((row) => ThreadSchema.parse({ id: row.id, title: row.title, status: row.status, archivedAt: row.archived_at ?? null, createdAt: row.created_at, updatedAt: row.updated_at }));
   }
 
   createThread(title = "New research", config: RunConfig = DEFAULT_RUN_CONFIG): Thread {
@@ -36,7 +36,7 @@ export class ThreadRepository {
     // untouched draft without deleting older entries or resetting its model preferences.
     const row = this.db.db.prepare(`
       SELECT t.* FROM threads t
-      WHERE t.status = 'configuring' AND t.title = 'New research'
+      WHERE t.archived_at IS NULL AND t.status = 'configuring' AND t.title = 'New research'
         AND NOT EXISTS (SELECT 1 FROM settings s WHERE s.key = 'scope:' || t.id)
         AND NOT EXISTS (SELECT 1 FROM messages m WHERE m.thread_id = t.id)
         AND NOT EXISTS (SELECT 1 FROM research_runs r WHERE r.thread_id = t.id)
@@ -53,6 +53,10 @@ export class ThreadRepository {
   }
   renameThread(threadId: string, title: string): void {
     this.db.db.prepare("UPDATE threads SET title = ?, updated_at = ? WHERE id = ?").run(title, new Date().toISOString(), threadId);
+  }
+  archiveThread(threadId: string, archived: boolean): void {
+    this.db.db.prepare("UPDATE threads SET archived_at = ? WHERE id = ?")
+      .run(archived ? new Date().toISOString() : null, threadId);
   }
   deleteThread(threadId: string): void { this.db.db.prepare("DELETE FROM threads WHERE id = ?").run(threadId); }
 

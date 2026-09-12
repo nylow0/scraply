@@ -1,10 +1,55 @@
 import { fireEvent, render, waitFor } from "@testing-library/svelte";
+import type { ComponentProps } from "svelte";
 import { describe, expect, test, vi } from "vitest";
+import Settings from "../../src/renderer/components/Settings.svelte";
 import ScopeForm from "../../src/renderer/components/ScopeForm.svelte";
 import type { WorkspaceState } from "../../src/shared/ipc";
 import { DEFAULT_RUN_CONFIG, RunConfigSchema, modelRefKey } from "../../src/shared/schemas";
 
 describe("ScopeForm search provider selection", () => {
+  test("persists advanced search defaults for new research and preserves saved setup choices", async () => {
+    const storageKey = "scraply.research-defaults.v1";
+    const previous = localStorage.getItem(storageKey);
+    try {
+      localStorage.removeItem(storageKey);
+      const settingsView = renderSettings({ workspace: workspace() });
+      await fireEvent.click(settingsView.getByRole("button", { name: "Research defaults" }));
+      const coverage = settingsView.getByLabelText("Default search coverage") as HTMLSelectElement;
+      expect(coverage.value).toBe("web");
+      expect(coverage.selectedOptions[0]?.textContent).toBe("Web and communities");
+      await fireEvent.change(coverage, { target: { value: "communities" } });
+      await fireEvent.change(settingsView.getByLabelText("Default research depth"), { target: { value: "deep" } });
+      await fireEvent.click(settingsView.getByRole("button", { name: "Save defaults" }));
+      settingsView.unmount();
+
+      const reopened = renderSettings({ workspace: workspace() });
+      await fireEvent.click(reopened.getByRole("button", { name: "Research defaults" }));
+      expect((reopened.getByLabelText("Default search coverage") as HTMLSelectElement).value).toBe("communities");
+      expect((reopened.getByLabelText("Default research depth") as HTMLSelectElement).value).toBe("deep");
+      reopened.unmount();
+
+      const state = workspace();
+      state.scope = null;
+      state.validation.exa = { valid: true };
+      const onSave = vi.fn().mockResolvedValue(undefined);
+      const view = render(ScopeForm, { workspace: state, busy: false, onSave, onStart: vi.fn(), onRetry: vi.fn() });
+      expect((view.getByLabelText("Search coverage") as HTMLSelectElement).value).toBe("communities");
+      expect((view.getByLabelText("Research depth") as HTMLSelectElement).value).toBe("deep");
+      await fireEvent.input(view.getByLabelText(/What do you want to explore/), { target: { value: "Repair shop delays" } });
+      await fireEvent.click(view.getByRole("button", { name: "Discover problems" }));
+      await waitFor(() => expect(onSave).toHaveBeenCalledTimes(1));
+      expect(RunConfigSchema.parse(onSave.mock.calls[0]?.[1])).toMatchObject({ audienceSourcePolicy: "communities", discoveryDepth: "deep" });
+      view.unmount();
+
+      const savedView = render(ScopeForm, { workspace: workspace(), busy: false, onSave, onStart: vi.fn(), onRetry: vi.fn() });
+      expect((savedView.getByLabelText("Search coverage") as HTMLSelectElement).value).toBe("web");
+      expect((savedView.getByLabelText("Research depth") as HTMLSelectElement).value).toBe("standard");
+    } finally {
+      if (previous === null) localStorage.removeItem(storageKey);
+      else localStorage.setItem(storageKey, previous);
+    }
+  });
+
   test("offers only native OpenAI models and saves the selected model", async () => {
     const state = workspace();
     const nativeModel = { providerId: "openai-subscription", modelId: DEFAULT_RUN_CONFIG.model.modelId };
@@ -13,14 +58,14 @@ describe("ScopeForm search provider selection", () => {
     const legacyModel = { providerId: "legacy-codex-cli", modelId: DEFAULT_RUN_CONFIG.model.modelId };
     state.models = [nativeModel, legacyModel];
     state.modelOptions = [
-      { ...state.modelOptions[0]!, ...nativeModel, displayName: "Luna" },
-      { ...state.modelOptions[0]!, ...legacyModel, displayName: "Luna legacy" },
+      { ...state.modelOptions[0]!, ...nativeModel, displayName: "GPT-5.6 Sol" },
+      { ...state.modelOptions[0]!, ...legacyModel, displayName: "Sol legacy" },
     ];
     const onSave = vi.fn().mockResolvedValue(undefined);
     const onStart = vi.fn().mockResolvedValue(undefined);
     const view = render(ScopeForm, { workspace: state, busy: false, onSave, onStart, onRetry: vi.fn() });
-    expect(view.getByRole("option", { name: "Luna" })).toBeTruthy();
-    expect(view.queryByRole("option", { name: "Luna legacy" })).toBeNull();
+    expect(view.getByRole("option", { name: "GPT-5.6 Sol" })).toBeTruthy();
+    expect(view.queryByRole("option", { name: "Sol legacy" })).toBeNull();
     const select = view.getByRole("combobox", { name: /Model/ }) as HTMLSelectElement;
     expect(select.value).toBe(modelRefKey(DEFAULT_RUN_CONFIG.model));
     await fireEvent.change(select, { target: { value: modelRefKey(nativeModel) } });
@@ -63,10 +108,10 @@ describe("ScopeForm search provider selection", () => {
     const disconnected = workspace();
     disconnected.validation.native = { available: true, connected: false, version: "0.1.0", accounts: [] };
     const connect = vi.fn().mockResolvedValue(undefined);
-    const view = render(ScopeForm, {
+    const view = renderSettings({
       workspace: disconnected,
       busy: false,
-      onSave: vi.fn(), onStart: vi.fn(), onRetry: vi.fn(),
+      onRetry: vi.fn(),
       onConnectNative: connect,
     });
 
@@ -78,17 +123,17 @@ describe("ScopeForm search provider selection", () => {
     const connected = workspace();
     connected.validation.native = {
       available: true, connected: true, version: "0.1.0",
-      accounts: [{ providerId: "openai-subscription", email: "dany@example.test", plan: "plus" }],
+      accounts: [{ providerId: "openai-subscription", email: "dany@example.test", plan: "prolite" }],
     };
     const refresh = vi.fn().mockResolvedValue(undefined);
     const logout = vi.fn().mockResolvedValue(undefined);
-    const accountView = render(ScopeForm, {
+    const accountView = renderSettings({
       workspace: connected,
       busy: false,
-      onSave: vi.fn(), onStart: vi.fn(), onRetry: vi.fn(),
+      onRetry: vi.fn(),
       onRefreshNative: refresh, onLogoutNative: logout,
     });
-    expect(accountView.getByText("dany@example.test · plus")).toBeTruthy();
+    expect(accountView.getByText("dany@example.test · ChatGPT Pro")).toBeTruthy();
     await fireEvent.click(accountView.getByRole("button", { name: "Refresh" }));
     await fireEvent.click(accountView.getByRole("button", { name: "Sign out" }));
     expect(refresh).toHaveBeenCalledWith("openai-subscription");
@@ -103,13 +148,12 @@ describe("ScopeForm search provider selection", () => {
     state.models = [];
     state.modelOptions = [];
     const retry = vi.fn().mockResolvedValue(undefined);
-    const view = render(ScopeForm, {
-      workspace: state, busy: false, onSave: vi.fn(), onStart: vi.fn(), onRetry: retry,
+    const view = renderSettings({
+      workspace: state, busy: false, onRetry: retry,
     });
 
     expect(view.getByLabelText("OpenAI account")).toBeTruthy();
     expect(view.getByText("OpenAI runtime could not start")).toBeTruthy();
-    expect(view.getByRole("option", { name: "Connect OpenAI to choose a model" })).toBeTruthy();
     expect(view.queryByText(/Legacy Codex CLI/)).toBeNull();
     await fireEvent.click(view.getByRole("button", { name: "Try again" }));
     expect(retry).toHaveBeenCalledTimes(1);
@@ -125,10 +169,10 @@ describe("ScopeForm search provider selection", () => {
       workspace: state, busy: false, onSave: vi.fn(), onStart: vi.fn(), onRetry: vi.fn(),
     });
 
-    expect(view.getByText("Checking required connections")).toBeTruthy();
-    expect(view.queryByText("Required connection needs attention")).toBeNull();
+    expect(view.getByText("Checking connections")).toBeTruthy();
+    expect(view.queryByText("Connect to start")).toBeNull();
     expect((view.getByRole("button", { name: "Checking connections" }) as HTMLButtonElement).disabled).toBe(true);
-    expect(view.getByLabelText("OpenAI account").classList.contains("needs-connection")).toBe(false);
+    expect(view.queryByLabelText("OpenAI account")).toBeNull();
   });
 
   test("explains an empty model list after account connection", () => {
@@ -140,11 +184,10 @@ describe("ScopeForm search provider selection", () => {
     state.modelOptions = [];
     const view = render(ScopeForm, {
       workspace: state, busy: false, onSave: vi.fn(), onStart: vi.fn(), onRetry: vi.fn(),
-      onRefreshNative: vi.fn(), onLogoutNative: vi.fn(),
     });
 
     expect(view.getByText("Your available models appear here after you sign in.")).toBeTruthy();
-    expect(view.getByText("No compatible models were found. Refresh the account to try again.")).toBeTruthy();
+    expect(view.getByText("Model: No compatible models are available")).toBeTruthy();
     expect((view.getByRole("combobox", { name: /Model/ }) as HTMLSelectElement).disabled).toBe(true);
   });
 
@@ -219,7 +262,7 @@ describe("ScopeForm search provider selection", () => {
     const state = workspace();
     state.validation.native = { available: true, connected: false, version: "0.1.0", accounts: [] };
     const cancel = vi.fn().mockResolvedValue(undefined);
-    const view = render(ScopeForm, {
+    const view = renderSettings({
       workspace: state,
       busy: true,
       nativeLogin: {
@@ -229,7 +272,7 @@ describe("ScopeForm search provider selection", () => {
         verificationUrl: "https://example.test/device",
         userCode: "ABCD-1234",
       },
-      onSave: vi.fn(), onStart: vi.fn(), onRetry: vi.fn(), onCancelNative: cancel,
+      onRetry: vi.fn(), onCancelNative: cancel,
     });
 
     expect(view.getByText("ABCD-1234")).toBeTruthy();
@@ -269,4 +312,12 @@ function workspace(): WorkspaceState {
     latestResearchRun: null,
     pendingRuns: [],
   };
+}
+
+function renderSettings(props: Partial<ComponentProps<typeof Settings>> & { workspace: WorkspaceState }) {
+  const view = render(Settings, {
+    open: true, busy: false, nativeLogin: null, onRetry: vi.fn(), onConnectNative: vi.fn(), onCancelNative: vi.fn(),
+    onRefreshNative: vi.fn(), onLogoutNative: vi.fn(), onOpenData: vi.fn(), onOpenLogs: vi.fn(), onRestore: vi.fn(), onDelete: vi.fn(), ...props,
+  });
+  return view;
 }
