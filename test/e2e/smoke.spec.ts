@@ -92,7 +92,7 @@ test("the renderer restores the problem-selection step after a restart", async (
     await page.getByRole("textbox", { name: "Search solutions" }).fill("nothing matches");
     await expect(page.getByText('No solutions match "nothing matches".')).toBeVisible();
     await page.getByRole("button", { name: "Clear filter" }).click();
-    await expect(page.getByText(/Options are not ranked/)).toBeVisible();
+    await expect(page.getByText(/Solutions are not ranked/)).toBeVisible();
     await expect(page.getByText(/independently confirmed outcomes/)).toHaveCount(0);
     await expect(page.getByText("Highest risk: likely · project ends")).not.toBeVisible();
     await page.getByText("Supplier reliability ledger").click();
