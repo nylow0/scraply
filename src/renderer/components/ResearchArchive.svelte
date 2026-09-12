@@ -1,4 +1,5 @@
 <script lang="ts">
+  import "./problem-review.css";
   import ResultsToolbar from "./ResultsToolbar.svelte";
   import type { ProblemCandidate, RejectedProblemCandidate } from "../../shared/ipc";
 
@@ -24,7 +25,7 @@
   let filteredProblems = $derived(problems.filter((problem) => problem.statement.toLowerCase().includes(query.trim().toLowerCase())));
 </script>
 
-<div class="archive" id="workflow-panel-research" role="tabpanel" aria-label="Research" tabindex="0">
+<div class="archive problem-review" id="workflow-panel-research" role="tabpanel" aria-label="Research" tabindex="0">
   <header>
     <div>
       <h1>Research</h1>
@@ -96,36 +97,7 @@
 </div>
 
 <style>
-  header { display:flex;align-items:center;justify-content:space-between;gap:24px; }
-  h1 { font-size:32px;font-weight:650;letter-spacing:-.045em;line-height:1.2;margin:0 0 10px; }
   header p:last-child { font-size:13px;margin:0;color:var(--muted); }
-  .export { min-height:36px;padding:9px 12px;border:1px solid var(--border);border-radius:8px;background:transparent;color:var(--text);font-size:13px;white-space:nowrap; }
-  .problems { display:grid;gap:10px; }
-  article { border:1px solid var(--border);border-radius:13px;background:linear-gradient(120deg,#1b202377,var(--surface));overflow:hidden;box-shadow:inset 0 1px #ffffff04; }
-  article:has(> .problem-disclosure[open]) { border-color:var(--border-strong);background:var(--bg); }
-  article.warning { border-left:2px solid #b98645; }
-  .problem-disclosure { padding:0;border:0; }
-  .problem-disclosure > summary { color:var(--text); }
-  .problem-disclosure[open] > summary { background:var(--surface-2); }
-  .problem-disclosure :global(.disclosure-content) { padding:22px 26px; }
-  dl:not(.summary) { display:grid;grid-template-columns:1fr 1fr;gap:20px;padding:18px 20px;border:1px solid var(--border);border-radius:10px;background:var(--surface);margin:18px 0; }
-  dt { color:var(--subtle);font-size:13px;font-weight:500; }
-  dd { margin:5px 0 0;font-size:13px;line-height:1.6;color:var(--muted); }
-  .estimated { text-decoration:underline dotted;text-underline-offset:4px; }
-  .reason { padding-top:14px;font-size:13px;border-top:1px solid var(--border);color:var(--muted); }
-  details { border-top:1px solid var(--border);padding-top:14px; }
-  summary { cursor:pointer;font-size:13px;color:var(--muted); }
-  blockquote { margin:14px 0;padding:16px 18px;border:1px solid var(--border);border-left:2px solid #71cfba55;border-radius:0 10px 10px 0;background:var(--surface);font-size:13px;line-height:1.8; }
-  blockquote p { color:var(--muted);margin:0 0 8px; }q { display:block;font-size:14px;color:var(--text); }
-  blockquote small { display:block;margin-top:9px;color:var(--subtle);font-size:13px; }
-  blockquote button { display:block;padding:8px 0 0;border:0;background:transparent;color:var(--accent-strong);font-size:13px; }
-  .rejected { margin-top:22px;font-size:13px; }
-  .rejected > summary span { margin-left:8px;color:var(--subtle); }
-  .rejected-list { display:grid;gap:12px;padding-top:16px; }
-  .rejected-item { border-color:#df92922a;padding:20px; }
-  h2 { font-size:16px;font-weight:550;line-height:1.5; }.rejected-item p { font-size:13px;color:var(--muted); }
-  .empty { padding:32px 20px;color:var(--muted);font-size:13px;border:1px dashed var(--border-strong);border-radius:12px; }.empty h2 { font-size:17px; }
-  @media(max-width:800px) { header { flex-direction:column;align-items:start; }dl:not(.summary) { grid-template-columns:1fr; }.problem-disclosure :global(.disclosure-content) { padding:18px; } }
 
   .archive { max-width:1120px;margin:auto;padding:38px var(--page-inline) 80px; }
   .summary { display:flex;gap:24px;border:0;margin:24px 0 0; }
