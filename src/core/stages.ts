@@ -13,6 +13,8 @@ import {
 import { MAX_IDEA_COUNT } from "../shared/schemas";
 
 export const WORKFLOW_VERSION_V2 = 2 as const;
+// A full 60,000-character source batch can take more than two minutes with high reasoning.
+export const FACTOR_HARVEST_DEADLINE_MS = 300_000;
 
 export const WORKFLOW_V2_STAGE_IDS = [
   "query-plan",
@@ -53,7 +55,7 @@ export const WORKFLOW_V2_STAGE_REGISTRY = {
     schemaRevision: 1,
     schema: WorkflowV2FactorHarvestOutputSchema,
     maxOutputTokens: 4_096,
-    deadlineMs: 120_000,
+    deadlineMs: FACTOR_HARVEST_DEADLINE_MS,
   },
   "problem-candidates": {
     id: "problem-candidates",
