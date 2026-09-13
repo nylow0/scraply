@@ -17,6 +17,7 @@ describe("discovery", () => {
     ["STUDENTS WHO FELL BEHIND EARLY STRUGGLED TO CATCH UP", "Students who fell behind early struggled to catch up"],
     ["43% of respondents find academic assignments to be the mostchallenging tasks to prioritize", "43% of respondents find academic assignments to be the most challenging tasks to prioritize"],
     ["most respondents (31%) keep a mental list of tasks, while 29%rely on digital reminders", "most respondents (31%) keep a mental list of tasks, while 29% rely on digital reminders"],
+    ["This did not fail. The mostchallenging tasks still persist.", "The most challenging tasks still persist."],
   ])("accepts extraction formatting without changing quoted characters: %s", (source, quote) => {
     expect(quoteAppearsVerbatim(source, quote)).toBe(true);
   });
@@ -26,6 +27,8 @@ describe("discovery", () => {
     ["Students do not submit assignments", "Students do submit assignments"],
     ["Students miss deadlines. Teachers assign homework.", "Students miss homework"],
     ["Scores were 1 00 in the table", "Scores were 100 in the table"],
+    ["The outcome was notable.", "The outcome was not able."],
+    ["The system was not able to recover.", "The system was notable to recover."],
     ["Students miss deadlines", "  "],
   ])("rejects unsupported quotes despite formatting tolerance: %s", (source, quote) => {
     expect(quoteAppearsVerbatim(source, quote)).toBe(false);

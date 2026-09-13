@@ -21,7 +21,7 @@ import {
 import { deriveJsonSchema } from "../../src/shared/json-schema";
 import { WorkflowExecution } from "../../src/core/workflow-execution";
 import { configurePromptPaths } from "../../src/core/prompts";
-import { discoverProblems, harvestFactors, type HarvestedSource } from "../../src/core/discovery";
+import { discoverProblems, harvestFactors, type HarvestedFactor, type HarvestedSource } from "../../src/core/discovery";
 import type { StructuredModelClient } from "../../src/providers/structured";
 
 const directories: string[] = [];
@@ -241,7 +241,7 @@ describe("workflow v2 persistence", () => {
     } finally { client.close(); }
   });
 
-  test("finishes assessing valid candidates when another candidate cites an unknown factor", async () => {
+  test("does not let an invalid candidate consume the assessment limit", async () => {
     configurePromptPaths({ bundledDir: join(process.cwd(), "prompts"), overrideDir: null });
     const client = database();
     const execution = new WorkflowExecution(client, "run-v2");
@@ -268,12 +268,55 @@ describe("workflow v2 persistence", () => {
         sourceId: source.id, harvestMode: "domain", modelConfidence: 0.9, source,
       }], [source], {
         workflowVersion: 2, model: { providerId: "openai-subscription", modelId: "gpt-5.6-luna" }, reasoningEffort: "low", depth: "quick",
+        candidateLimit: 1,
         modelClient: execution.discoveryClient(modelClient), prompt: () => "Assess evidence", search: { async search() { return []; } },
       });
       expect(result.problems).toHaveLength(1);
       expect(result.problems[0]!.factorIds).toEqual(["factor"]);
       expect(result.blockedCandidates).toEqual([{ statement: "Untraceable candidate", reason: "Candidate cited an unknown factor ID; its evidence could not be verified." }]);
       expect(assessments).toBe(1);
+    } finally { client.close(); }
+  });
+
+  test("blocks scale estimates whose basis is unknown or absent from the cited factors", async () => {
+    configurePromptPaths({ bundledDir: join(process.cwd(), "prompts"), overrideDir: null });
+    const client = database();
+    const execution = new WorkflowExecution(client, "run-v2");
+    const source: HarvestedSource = {
+      id: "support", providerSourceId: "support", canonicalUrl: "https://support.test/page", url: "https://support.test/page",
+      title: "Support", retrievedText: "Operators repeat filing.", author: null, publishedAt: null,
+      contentHash: "support", retrievedAt: "2026-01-01T00:00:00.000Z",
+    };
+    const factors: HarvestedFactor[] = ["factor", "uncited-factor"].map((id) => ({
+      id, subject: "Operators", behavior: "repeat filing", quote: source.retrievedText,
+      sourceId: source.id, harvestMode: "domain", modelConfidence: 0.9, source,
+    }));
+    let assessments = 0;
+    const modelClient: StructuredModelClient = { async structuredCompletion(request) {
+      const candidate = { whyItPersists: "Systems disagree.", affected: "Operators", scaleEstimate: "Weekly",
+        factorIds: ["factor"], alternativeExplanations: [], unknowns: [] };
+      if (request.stage !== "problem-candidates") assessments++;
+      const output = request.stage === "problem-candidates"
+        ? { problems: [
+          { ...candidate, statement: "Unknown scale basis", scaleBasisFactorId: "missing-factor" },
+          { ...candidate, statement: "Uncited scale basis", scaleBasisFactorId: "uncited-factor" },
+        ] }
+        : { verdict: "confirmed", verdictReason: "Evidence supports the estimate.", verdictSourceIds: ["support"], unresolvedAssumptions: [], wouldChangeConclusion: [] };
+      return { output: request.schema.parse(output), metadata: {
+        model: request.model, usage: { status: "unknown" }, latencyMs: 1, repairCount: 0, providerRequestIds: [], attempts: [],
+      } };
+    } };
+    try {
+      const result = await discoverProblems({ title: "Filing", audience: "Operators", domain: "Filing", observations: "", offLimits: [] }, factors, [source], {
+        workflowVersion: 2, model: { providerId: "openai-subscription", modelId: "gpt-5.6-luna" }, reasoningEffort: "low", depth: "quick",
+        modelClient: execution.discoveryClient(modelClient), prompt: () => "Assess evidence", search: { async search() { return []; } },
+      });
+      expect(result.problems).toEqual([]);
+      expect(result.blockedCandidates).toEqual([
+        { statement: "Unknown scale basis", reason: "Candidate scale basis did not cite a known supporting factor; its scale evidence could not be verified." },
+        { statement: "Uncited scale basis", reason: "Candidate scale basis did not cite a known supporting factor; its scale evidence could not be verified." },
+      ]);
+      expect(assessments).toBe(0);
     } finally { client.close(); }
   });
 
