@@ -18,6 +18,9 @@ describe("discovery", () => {
     ["43% of respondents find academic assignments to be the mostchallenging tasks to prioritize", "43% of respondents find academic assignments to be the most challenging tasks to prioritize"],
     ["most respondents (31%) keep a mental list of tasks, while 29%rely on digital reminders", "most respondents (31%) keep a mental list of tasks, while 29% rely on digital reminders"],
     ["This did not fail. The mostchallenging tasks still persist.", "The most challenging tasks still persist."],
+    ["Students donot submit assignments", "Students do not submit assignments"],
+    ["There is noway to recover", "There is no way to recover"],
+    ["They cannot proceed", "They can not proceed"],
   ])("accepts extraction formatting without changing quoted characters: %s", (source, quote) => {
     expect(quoteAppearsVerbatim(source, quote)).toBe(true);
   });

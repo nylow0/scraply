@@ -338,12 +338,22 @@ function hasMatchingNegations(source: string, quote: string): boolean {
 }
 
 function standaloneNegationSignature(value: string): string[] {
-  const matches = value.matchAll(/(^|[^\p{L}\p{N}_])(no|not|never|none|neither|nor|without)(?=$|[^\p{L}\p{N}_])/giu);
+  const normalized = normalizeKnownFusedNegations(value);
+  const matches = normalized.matchAll(/(^|[^\p{L}\p{N}_])(no|not|never|none|neither|nor|without)(?=$|[^\p{L}\p{N}_])/giu);
   return Array.from(matches, (match) => {
     const sourceIndex = match.index + match[1]!.length;
-    const compactIndex = compactExtractedText(value.slice(0, sourceIndex)).text.length;
+    const compactIndex = compactExtractedText(normalized.slice(0, sourceIndex)).text.length;
     return `${compactIndex}:${match[2]!.toLowerCase()}`;
   });
+}
+
+function normalizeKnownFusedNegations(value: string): string {
+  return value
+    .replace(
+      /(?<![\p{L}\p{N}_])(can|could|do|does|did|have|has|had|is|are|was|were|may|might|must|should|would|will)not(?![\p{L}\p{N}_])/giu,
+      "$1 not",
+    )
+    .replace(/(?<![\p{L}\p{N}_])noway(?![\p{L}\p{N}_])/giu, "no way");
 }
 
 function compactExtractedText(value: string): { text: string; sourceIndexes: number[] } {
