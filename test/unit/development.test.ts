@@ -53,7 +53,8 @@ test("retains independently evaluated risks and unknowns when analysis omits the
 });
 
 test("reassesses only against follow-up evidence and keeps authoritative risk records exact", async () => {
-  const followUp = [{ sourceId: "follow-up-factor", content: { quote: "Exports refresh each minute" } }];
+  const beyondLimit = "UNBOUNDED-FOLLOW-UP-MARKER";
+  const followUp = [{ sourceId: "follow-up-factor", content: { quote: `${"x".repeat(30_000)}${beyondLimit}` } }];
   const riskResult = await reassessSelectedOptionRisk(context, option, evaluation, followUp, dependencies({
     affectedRisks: [{ riskId: "stale", effect: "weakened", rationale: "The refresh is bounded" }],
     newRisks: [{ riskId: "permissions", description: "Operators cannot read exports", whyDecisive: "The check cannot run" }],
@@ -62,6 +63,7 @@ test("reassesses only against follow-up evidence and keeps authoritative risk re
     const serialized = JSON.stringify(evidence);
     expect(serialized).toContain("follow-up-factor");
     expect(serialized).toContain("scraply:original-risk-evaluation");
+    expect(serialized).not.toContain(beyondLimit);
   }));
   const draft = { consequences: [], proposedResponses: [], additionalUnknowns: [], experiment: {
     question: "Can operators read current state?", method: "Check ten claims", cost: "One hour",
@@ -74,6 +76,7 @@ test("reassesses only against follow-up evidence and keeps authoritative risk re
     const serialized = JSON.stringify(evidence);
     expect(serialized).toContain("scraply:original-decision-analysis");
     expect(serialized).toContain("follow-up-factor");
+    expect(serialized).not.toContain(beyondLimit);
   }));
   expect(result.analysis.risks).toEqual([...evaluation.risks, ...riskResult.reassessment.newRisks]);
   expect(result.analysis.risks[0]).toEqual(evaluation.risks[0]);
