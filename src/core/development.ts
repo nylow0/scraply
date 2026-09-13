@@ -361,9 +361,7 @@ export async function reassessSelectedOptionRisk(
   const stage = WORKFLOW_V2_STAGE_REGISTRY["risk-evaluation"];
   const resolvedPrompt = (dependencies.resolvePrompt ?? resolveWorkflowV2Prompt)(stage.id);
   const baseEvidence = developmentEvidence(context, selectedOption).evidence;
-  const boundedFollowUp = developmentEvidence({
-    ...context, supportingEvidence: followUpEvidence, contraryEvidence: [],
-  }, selectedOption).evidence.slice(1);
+  const boundedFollowUp = boundedReassessmentEvidence(context, selectedOption, followUpEvidence);
   const request: StructuredStageRequest<WorkflowV2RiskReassessment> = {
     generationId: randomUUID(), stage: stage.id, model: dependencies.model,
     reasoningEffort: dependencies.reasoningEffort,
@@ -409,6 +407,7 @@ export async function reassessSelectedOption(
   dependencies: WorkflowV2DevelopmentDependencies,
 ): Promise<ReassessedSelectedOption> {
   const combinedRisks = [...originalRiskEvaluation.risks, ...riskReassessment.newRisks];
+  const boundedFollowUp = boundedReassessmentEvidence(context, selectedOption, followUpEvidence);
   const result = await analyzeSelectedOption(context, selectedOption, {
     ...dependencies,
     beforeGeneration: (request, prompt) => {
@@ -422,12 +421,24 @@ export async function reassessSelectedOption(
         ...request.evidence,
         { sourceId: "scraply:original-decision-analysis", content: originalAnalysis },
         { sourceId: "scraply:risk-reassessment", content: riskReassessment },
-        ...followUpEvidence,
+        ...boundedFollowUp,
       ];
       dependencies.beforeGeneration?.(request, prompt);
     },
   }, { risks: combinedRisks, unknowns: [...originalRiskEvaluation.unknowns, ...riskReassessment.additionalUnknowns] });
   return { ...result, riskReassessment };
+}
+
+function boundedReassessmentEvidence(
+  context: WorkflowV2DevelopmentContext,
+  selectedOption: DevelopedWorkflowV2SolutionOption,
+  followUpEvidence: WorkflowV2EvidenceItem[],
+): WorkflowV2EvidenceItem[] {
+  return developmentEvidence({
+    ...context,
+    supportingEvidence: followUpEvidence,
+    contraryEvidence: [],
+  }, selectedOption).evidence.slice(1);
 }
 
 function developmentEvidence(
