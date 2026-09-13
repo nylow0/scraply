@@ -473,6 +473,37 @@ describe("native v2 decisions through the production backend", () => {
     expect(item.requests().filter((request) => request.workOrder.stage === "risk-evaluation" && JSON.stringify(request.workOrder.inputs).includes('"reassessment":true'))).toHaveLength(1);
   }, 20_000);
 
+  test("cancelling an accepted reassessment settles once and remains retryable", async () => {
+    const item = await fixture({ workflowVersion: 2, searchEnabled: false, mode: "workflow-reassessment-cancel" });
+    const threadId = await item.createThread("known-problem");
+    await item.post("/research/start", { threadId }, z.object({ runId: z.string() }));
+    const options = await item.waitFor((state) => state.latestResearchRun?.awaitingSelection === true);
+    const selected = options.solutions[0]!;
+    await item.post("/research/select-option", { threadId, runId: selected.runId, solutionId: selected.id }, WorkspaceStateSchema);
+    await item.waitFor((state) => state.latestResearchRun?.status === "completed" && !state.latestResearchRun.awaitingSelection);
+    const db = new DatabaseClient(item.dbPath);
+    const now = new Date().toISOString();
+    db.db.prepare(`INSERT INTO evidence_follow_ups (research_run_id, solution_id, question, status, requested_at, completed_at, updated_at)
+      VALUES (?, ?, 'Did anything change?', 'completed', ?, ?, ?)`).run(selected.runId, selected.id, now, now, now);
+    db.close();
+    await item.post("/research/evidence-reassessment", { threadId, runId: selected.runId }, WorkspaceStateSchema);
+    const attempts = new DatabaseClient(item.dbPath);
+    const deadline = Date.now() + 5_000;
+    while (!attempts.db.prepare(`SELECT 1 FROM generation_attempts WHERE stage_key = 'decision-analysis' AND status = 'accepted'
+      AND json_extract(request_json, '$.workOrder.inputs.reassessment') = 1`).get()) {
+      if (Date.now() >= deadline) throw new Error("Reassessment analysis was not accepted");
+      await Bun.sleep(20);
+    }
+    attempts.close();
+    const eventCount = item.events.length;
+    const cancelled = await item.post("/research/cancel", { runId: selected.runId }, z.object({ workspace: WorkspaceStateSchema }));
+    expect(cancelled.workspace.latestResearchRun?.status).toBe("completed");
+    const detail = await item.post(`/ideas/${selected.id}`, undefined, SolutionViewSchema);
+    expect(detail.evidenceFollowUp?.reassessmentStatus).toBe("failed");
+    expect(detail.canReassessEvidence).toBe(true);
+    expect(item.events.slice(eventCount).map((event) => event.type)).toEqual(["run-cancelled"]);
+  }, 20_000);
+
   test("cancels a pending follow-up without losing analysis or reopening its cap", async () => {
     const item = await fixture({ workflowVersion: 2, hangFollowUpSearch: true });
     const threadId = await item.createThread("known-problem");

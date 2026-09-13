@@ -132,6 +132,11 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
       heldGeneration = request;
       return;
     }
+    if (mode === "workflow-reassessment-cancel" && request.payload.workOrder.stage === "decision-analysis"
+      && request.payload.workOrder.inputs?.reassessment === true) {
+      heldGeneration = request;
+      return;
+    }
     if (mode === "hang-cancel") return;
     const metadata = {
       model, prompt, usage: { status: "unknown" }, finishReason: "stop", latencyMs: 1,
