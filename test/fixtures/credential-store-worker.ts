@@ -7,9 +7,9 @@ if (!path || !encodedKey || !field || !value) throw new Error("Missing fixture a
 const key = Buffer.from(encodedKey, "base64");
 const store = createCredentialStore(path, createFixtureEncryption(key));
 const secrets = store.load();
-const go = new Promise<void>(resolve => process.stdin.once("data", () => resolve()));
+const startSignal = new Promise<void>(resolve => process.stdin.once("data", () => resolve()));
 console.log("ready");
-await go;
+await startSignal;
 if (field === "exaApiKey") secrets.exaApiKey = value;
 else secrets.providerCredentials.openai = value;
 await store.save(secrets, () => {
