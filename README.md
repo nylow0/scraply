@@ -44,7 +44,13 @@ bun run dev
 
 The server binds only to `127.0.0.1`. If port 5173 belongs to another process or checkout, startup fails instead of stopping it. Use `dev:stop` from the owning checkout. Logs and launch state are in `build/browser-dev/`; the log is replaced on each start. Stop dev before packaging from the same checkout because packaging replaces `out/`.
 
-Browser development keeps its data and encrypted credentials in `.scraply/browser-dev/`, separate from the installed app. Sign in and configure providers for this dev workspace. Set `SCRAPLY_DEV_DATA_DIR` before starting if a task needs a different dedicated profile. **Open data folder** shows the active location. Exports download through the browser; account login and folder/link actions use the local host. Keep destructive or paid verification within the task's authorization.
+Browser development keeps projects in `.scraply/browser-dev/` and uses the installed app's encrypted credentials at `%APPDATA%/scraply/secrets.bin`. An existing OpenAI login and saved Exa/Perplexity keys are available after starting dev. Both development and installed Scraply retain Windows `safeStorage` encryption and the existing file format. Credentials stay in the local Electron host; the browser receives account status, not stored tokens or keys. Electron also needs the installed profile's `Local State` encryption context, selected through `sessionData` before startup. The dev `userData` path and project database stay separate. Keep this distinction when changing startup paths; the real Electron credential-profile test covers it.
+
+Login, logout, token refresh, and validated key changes update that shared file. Restart the other running instance after changing accounts or keys. Writes merge independent changes and reject stale updates to the same credential, so an old session cannot restore a signed-out account. If a conflict occurs, restart the instance reporting it. Older installed builds lack this write protection; close them during development until you have installed this change. No credential migration is needed.
+
+Set `SCRAPLY_DEV_DATA_DIR` before starting to select a different project profile. For disposable account/login tests, also set `SCRAPLY_DEV_SHARED_CREDENTIALS=0`; credentials then remain in that dev profile. `SCRAPLY_E2E=1` always uses its own profile's credentials, and packaged apps continue respecting their `--user-data-dir`. Environment and `.env` search keys remain explicit overrides and are saved after validation, so use the isolated option for throwaway keys. Restart dev after changing these variables.
+
+**Open data folder** shows the project data location. Exports download through the browser; account login and folder/link actions use the local host. Keep destructive or paid verification within the task's authorization. Never sign out the shared real account merely to test logout; use a disposable isolated profile.
 
 For a task that specifically needs an Electron window, run `bun run dev:stop`, configure the two native artifact variables above, then run `bun run dev:electron`. This is an explicit desktop check, not the default preview. The installed Start menu shortcut continues to run the last installed build.
 
@@ -63,7 +69,7 @@ For a UI change, verify the affected action and visible result. For persistence 
 
 `bun run test:e2e` prepares the runtime and packages an E2E app before running Playwright. Use it when its scenarios provide needed packaged coverage; it is not a lightweight browser check. CI and release gates remain separate from daily iteration.
 
-`bun run build:installed` prepares the runtime, rebuilds and verifies Windows packages, installs the exact package, and verifies the installed executable and ASAR. Use it for the cases above or an explicit installed-build request. Output goes to `release/`.
+After completing an application change, run `bun run build:installed` from the checkout root. It prepares the runtime, rebuilds and verifies Windows packages, installs the exact package, and verifies the installed executable and ASAR. Skip it for read-only questions, documentation-only changes, and intermediate investigation. Stop dev before this command, then restart it for handoff. Output goes to `release/`.
 
 Routine dev runs do not create installers or rebuild Rust. Native preparation uses `build/cargo` for its Cargo cache. Avoid repeatedly preparing identical native code in extra worktrees just to preview UI edits.
 

@@ -43,12 +43,15 @@ import {
 import { AppError } from "../shared/errors";
 import { resolveRuntimeLaunch } from "../shared/runtime-artifact";
 import { createFileLogger, type FileLogger } from "./logging";
-import { writeFileAtomically } from "./atomic-file";
+import { createCredentialStore } from "./credential-store";
+import { configureCredentialProfile } from "./credential-profile";
 import { revokeNativeAccount } from "./native-account";
 import { isAllowedRendererUrl, parseExternalHttpsUrl, rendererEntryUrl } from "./security";
 
 const isDev = !app.isPackaged;
 const browserDev = isDev && process.env.SCRAPLY_BROWSER_DEV === "1";
+const { projectProfile, credentialsPath } = configureCredentialProfile(app, process.env);
+const credentialStore = createCredentialStore(credentialsPath, safeStorage);
 const appHandlers = new Map<string, AppRequestHandler>();
 let browserDevHost: Awaited<ReturnType<typeof startBrowserDevHost>> | undefined;
 let mainWindow: BrowserWindow | null = null;
@@ -56,6 +59,7 @@ let backendReady: BackendReady | null = null;
 let backendProcess: Electron.UtilityProcess | null = null;
 let backendStartPromise: Promise<BackendReady> | null = null;
 let backendStartupFailure: string | null = null;
+let credentialLoadFailure: string | null = null;
 let logger: FileLogger | null = null;
 let isQuitting = false;
 const blockedProviderCredentialWrites = new Set<string>();
@@ -75,7 +79,7 @@ function secretValues(): string[] {
 }
 
 function getPaths() {
-  const dataDir = join(app.getPath("userData"), "scraply");
+  const dataDir = join(projectProfile, "scraply");
   const dbPath = join(dataDir, "scraply.db");
   const logsDir = join(dataDir, "logs");
   const bundledPromptsDir = join(app.getAppPath(), "prompts");
@@ -104,31 +108,6 @@ function readAutomaticSecrets(): Partial<BackendSecrets> {
     if (key === "PERPLEXITY_API_KEY" && value) candidate.perplexityApiKey = value;
   }
   return candidate;
-}
-
-function loadStoredSecrets(): void {
-  const settingsPath = join(app.getPath("userData"), "secrets.bin");
-  if (!existsSync(settingsPath) || !safeStorage.isEncryptionAvailable()) return;
-  try {
-    const raw = safeStorage.decryptString(readFileSync(settingsPath));
-    const parsed = JSON.parse(raw) as Partial<BackendSecrets>;
-    secrets = {
-      exaApiKey: typeof parsed.exaApiKey === "string" ? parsed.exaApiKey : null,
-      perplexityApiKey: typeof parsed.perplexityApiKey === "string" ? parsed.perplexityApiKey : null,
-      providerCredentials: parsed.providerCredentials && typeof parsed.providerCredentials === "object"
-        ? Object.fromEntries(Object.entries(parsed.providerCredentials).filter((entry): entry is [string, string] => typeof entry[1] === "string"))
-        : {},
-    };
-  } catch {
-    // ignore corrupt secrets file
-  }
-}
-
-function persistSecrets(nextSecrets = secrets): void {
-  if (!safeStorage.isEncryptionAvailable()) throw new AppError("secure_storage_unavailable");
-  const settingsPath = join(app.getPath("userData"), "secrets.bin");
-  const encrypted = safeStorage.encryptString(JSON.stringify(nextSecrets));
-  writeFileAtomically(settingsPath, encrypted);
 }
 
 async function startBackendProcess(): Promise<BackendReady> {
@@ -178,7 +157,7 @@ async function startBackendProcess(): Promise<BackendReady> {
       }
     };
 
-    processHandle.on("message", (rawMessage) => {
+    processHandle.on("message", async (rawMessage) => {
       const parsed = BackendToMainMessageSchema.safeParse(rawMessage);
       if (!parsed.success) return;
       const message = parsed.data;
@@ -201,7 +180,11 @@ async function startBackendProcess(): Promise<BackendReady> {
             ...secrets,
             providerCredentials: { ...secrets.providerCredentials, [message.providerId]: message.credential },
           };
-          persistSecrets(nextSecrets);
+          await credentialStore.save(nextSecrets, () => {
+            if (blockedProviderCredentialWrites.has(message.providerId)) {
+              throw new Error("The account was signed out before this credential could be saved");
+            }
+          });
           secrets = nextSecrets;
           processHandle.postMessage({ type: "provider-credential-persisted", requestId: message.requestId, ok: true });
         } catch (error) {
@@ -307,6 +290,10 @@ async function startBackendProcess(): Promise<BackendReady> {
 }
 
 async function ensureBackend(): Promise<BackendReady> {
+  if (credentialLoadFailure) {
+    backendStartupFailure = credentialLoadFailure;
+    throw new AppError("backend_unavailable", credentialLoadFailure);
+  }
   if (backendReady) return backendReady;
   if (!backendStartPromise) {
     backendStartPromise = startBackendProcess()
@@ -482,7 +469,7 @@ async function validateAndPersistSecrets(candidate: BackendSecrets): Promise<Val
       await updateBackendSecrets(previous);
       return validation;
     }
-    persistSecrets(candidate);
+    await credentialStore.save(candidate);
     secrets = candidate;
     return validation;
   } catch (error) {
@@ -492,6 +479,10 @@ async function validateAndPersistSecrets(candidate: BackendSecrets): Promise<Val
 }
 
 async function retryAutomaticConnection(): Promise<void> {
+  if (credentialLoadFailure) {
+    secrets = credentialStore.load();
+    credentialLoadFailure = null;
+  }
   const automaticSecrets = readAutomaticSecrets();
   const candidate: BackendSecrets = {
     exaApiKey: automaticSecrets.exaApiKey ?? secrets.exaApiKey,
@@ -574,8 +565,8 @@ function registerIpc(): void {
     const providerCredentials = { ...secrets.providerCredentials };
     delete providerCredentials[input.providerId];
     const nextSecrets = { ...secrets, providerCredentials };
-    return revokeNativeAccount(() => {
-      try { persistSecrets(nextSecrets); }
+    return revokeNativeAccount(async () => {
+      try { await credentialStore.save(nextSecrets); }
       finally { secrets = nextSecrets; }
     }, () => post("/native/login/cancel", input));
   });
@@ -586,8 +577,8 @@ function registerIpc(): void {
     const providerCredentials = { ...secrets.providerCredentials };
     delete providerCredentials[input.providerId];
     const nextSecrets = { ...secrets, providerCredentials };
-    return revokeNativeAccount(() => {
-      try { persistSecrets(nextSecrets); }
+    return revokeNativeAccount(async () => {
+      try { await credentialStore.save(nextSecrets); }
       finally { secrets = nextSecrets; }
     }, () => post("/native/logout", input));
   });
@@ -691,7 +682,10 @@ if (!gotLock) {
       event: "app-startup",
       context: { version: app.getVersion() },
     });
-    loadStoredSecrets();
+    try { secrets = credentialStore.load(); }
+    catch (error) {
+      credentialLoadFailure = error instanceof Error ? error.message : "Saved credentials could not be read.";
+    }
     const automaticSecrets = readAutomaticSecrets();
     secrets = { ...secrets, ...automaticSecrets };
     registerIpc();
@@ -710,7 +704,7 @@ if (!gotLock) {
       .then(async () => {
         if (!automaticSecrets.exaApiKey && !automaticSecrets.perplexityApiKey) return;
         const validation = await backendRequest<ValidationState>("/validation");
-        if (validation.setupComplete && configuredProviderSecretsAreValid(secrets, validation)) persistSecrets(secrets);
+        if (validation.setupComplete && configuredProviderSecretsAreValid(secrets, validation)) await credentialStore.save(secrets);
       })
       .catch((error) => {
         console.error("Backend startup failed", error);
