@@ -138,44 +138,44 @@ export async function harvestFactors(
         const remainingBatches = batches.length - index;
         const factorLimit = Math.ceil((targetAccepted - acceptedForMode) / remainingBatches);
         if (factorLimit <= 0) break;
-      const response = await structuredCall(
-        dependencies,
-        `factor-harvest:${mode}:${batch.map((source) => source.id).join(",")}`,
-        (dependencies.prompt ?? loadPrompt)("factor-harvest"),
-        buildFactorHarvestInput(scope, mode, batch, factorLimit),
-        FactorHarvestOutputSchema.extend({ factors: FactorHarvestOutputSchema.shape.factors.max(factorLimit) }),
-      );
-      extracted[mode] += response.factors.length;
-      for (const candidate of response.factors) {
-        const rejection = validateFactor(candidate, mode, sourceById);
-        if (rejection) {
-          rejections.push(rejection);
-          continue;
+        const response = await structuredCall(
+          dependencies,
+          `factor-harvest:${mode}:${batch.map((source) => source.id).join(",")}`,
+          (dependencies.prompt ?? loadPrompt)("factor-harvest"),
+          buildFactorHarvestInput(scope, mode, batch, factorLimit),
+          FactorHarvestOutputSchema.extend({ factors: FactorHarvestOutputSchema.shape.factors.max(factorLimit) }),
+        );
+        extracted[mode] += response.factors.length;
+        for (const candidate of response.factors) {
+          const rejection = validateFactor(candidate, mode, sourceById);
+          if (rejection) {
+            rejections.push(rejection);
+            continue;
+          }
+          const source = sourceById.get(candidate.sourceId)!;
+          const classification = "sourceRole" in candidate ? candidate : null;
+          rawFactors.push({
+            id: (dependencies.idFactory ?? randomUUID)(),
+            subject: candidate.subject.trim(),
+            behavior: candidate.behavior.trim(),
+            quote: candidate.quote.trim(),
+            sourceId: source.id,
+            harvestMode: mode,
+            modelConfidence: candidate.modelConfidence,
+            uncertainty: classification?.uncertainty.trim() ?? null,
+            sourceRole: classification?.sourceRole ?? "unknown",
+            audienceFit: classification?.audienceFit ?? "unknown",
+            independentSourceKey: classification?.independentSourceKey?.trim() || null,
+            supportsDemand: classification?.supportsDemand === true
+              && classification.audienceFit === "intended-buyer"
+              && (classification.sourceRole === "firsthand" || classification.sourceRole === "measured"),
+            demandEvidenceUncertainty: classification?.demandEvidenceUncertainty.trim()
+              ?? "Not classified in the saved output.",
+          });
+          acceptedForMode += 1;
+          if (acceptedForMode >= targetAccepted) break;
         }
-        const source = sourceById.get(candidate.sourceId)!;
-        const classification = "sourceRole" in candidate ? candidate : null;
-        rawFactors.push({
-          id: (dependencies.idFactory ?? randomUUID)(),
-          subject: candidate.subject.trim(),
-          behavior: candidate.behavior.trim(),
-          quote: candidate.quote.trim(),
-          sourceId: source.id,
-          harvestMode: mode,
-          modelConfidence: candidate.modelConfidence,
-          uncertainty: classification?.uncertainty.trim() ?? null,
-          sourceRole: classification?.sourceRole ?? "unknown",
-          audienceFit: classification?.audienceFit ?? "unknown",
-          independentSourceKey: classification?.independentSourceKey?.trim() || null,
-          supportsDemand: classification?.supportsDemand === true
-            && classification.audienceFit === "intended-buyer"
-            && (classification.sourceRole === "firsthand" || classification.sourceRole === "measured"),
-          demandEvidenceUncertainty: classification?.demandEvidenceUncertainty.trim()
-            ?? "Not classified in the saved output.",
-        });
-        acceptedForMode += 1;
-        if (acceptedForMode >= targetAccepted) break;
       }
-    }
     };
     await harvest(modeSources, modeFactorLimit - reservedFactorCapacity);
     if (reservedQueries.length > 0 && !hasIntendedBuyerObservation(rawFactors.filter((factor) => factor.harvestMode === mode))) {
@@ -489,7 +489,13 @@ async function planQueries(
       throw new ProviderFailure("schema", "Query planner did not return enough distinct evidence intents", false);
     }
   }
-  return queries.slice(0, count);
+  const bounded = queries.slice(0, count);
+  if (dependencies.workflowVersion !== 2 || bounded.some((item) => item.intent === "unclassified")) return bounded;
+  const buyingIndex = bounded.findIndex((item) => item.intent === "buying-signal");
+  const firsthandIndex = bounded.findIndex((item) => item.intent === "firsthand-experience");
+  const reserveIndex = buyingIndex >= 0 ? buyingIndex : firsthandIndex;
+  if (reserveIndex < 0) return bounded;
+  return [...bounded.slice(0, reserveIndex), ...bounded.slice(reserveIndex + 1), bounded[reserveIndex]!];
 }
 
 async function searchQueries(
