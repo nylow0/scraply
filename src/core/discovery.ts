@@ -315,6 +315,12 @@ export async function discoverProblems(
       && factor.audienceFit === "intended-buyer"
       && (factor.sourceRole === "firsthand" || factor.sourceRole === "measured"));
     const independentBuyerSources = new Set(intendedBuyerFactors.map((factor) => factor.independentSourceKey).filter(Boolean));
+    const resolvedEvidenceGap = independentBuyerSources.size >= 2
+      ? null
+      : evidenceGap(
+          "evidenceGap" in kill ? kill.evidenceGap : null,
+          "evidenceGap" in candidate ? candidate.evidenceGap : null,
+        );
     problems.push({
       id: (dependencies.idFactory ?? randomUUID)(),
       statement: candidate.statement.trim(),
@@ -331,12 +337,11 @@ export async function discoverProblems(
         ? "insufficient-evidence" : kill.verdict,
       verdictReason: dependencies.workflowVersion === 2
         && (hostnames.length < 2 || intendedBuyerFactors.length === 0 || independentBuyerSources.size < 2)
-        ? `Intended-buyer demand evidence: ${intendedBuyerFactors.length} factor(s) across ${independentBuyerSources.size} independent source(s). ${evidenceGap(
-          "evidenceGap" in kill ? kill.evidenceGap : null,
-          "evidenceGap" in candidate ? candidate.evidenceGap : null,
-        )} ${kill.verdictReason.trim()}`
+        ? `Intended-buyer evidence: ${intendedBuyerFactors.length} factor(s) across ${independentBuyerSources.size} independent source(s). ${resolvedEvidenceGap} ${kill.verdictReason.trim()}`
         : kill.verdictReason.trim(),
       verdictSourceIds: validVerdictSourceIds,
+      intendedBuyerEvidenceFactorIds: intendedBuyerFactors.map((factor) => factor.id),
+      evidenceGap: resolvedEvidenceGap,
       factors: citedFactors,
       sourceHostnames: hostnames,
       singleHarvestModeWarning: new Set(citedFactors.map((factor) => factor.harvestMode)).size === 1 && citedFactors.length > 0,

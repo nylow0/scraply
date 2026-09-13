@@ -1110,6 +1110,9 @@ export const MIGRATIONS = [
       ALTER TABLE factors ADD COLUMN independent_source_key TEXT;
       ALTER TABLE factors ADD COLUMN supports_demand INTEGER NOT NULL DEFAULT 0 CHECK(supports_demand IN (0, 1));
       ALTER TABLE factors ADD COLUMN demand_evidence_uncertainty TEXT;
+      ALTER TABLE problems ADD COLUMN intended_buyer_evidence_factor_ids_json TEXT NOT NULL DEFAULT '[]'
+        CHECK(json_valid(intended_buyer_evidence_factor_ids_json));
+      ALTER TABLE problems ADD COLUMN evidence_gap TEXT;
     `,
   },
   {

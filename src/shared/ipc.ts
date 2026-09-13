@@ -145,6 +145,7 @@ export const ProblemCandidateSchema = z.object({
   statement: z.string(), whyItPersists: z.string(), affected: z.string(), scaleEstimate: z.string(),
   verdict: z.enum(["confirmed", "overstated", "already-solved", "insufficient-evidence", "attempted-and-failed", "user-asserted"]),
   verdictReason: z.string(), selected: z.boolean(), factors: z.array(FactorViewSchema),
+  intendedBuyerEvidenceFactorIds: z.array(EntityIdSchema), evidenceGap: z.string().nullable(),
   singleHarvestModeWarning: z.boolean(),
 });
 export const RejectedProblemCandidateSchema = z.object({

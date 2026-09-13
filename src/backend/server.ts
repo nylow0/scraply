@@ -321,6 +321,8 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
         id: String(row.id), statement: String(row.statement), whyItPersists: String(row.why_it_persists),
         affected: String(row.affected), scaleEstimate: String(row.scale_estimate), verdict: String(row.verdict) as ProblemCandidate["verdict"],
         verdictReason: String(row.verdict_reason), selected: row.selected_at !== null,
+        intendedBuyerEvidenceFactorIds: JSON.parse(String(row.intended_buyer_evidence_factor_ids_json ?? "[]")) as string[],
+        evidenceGap: row.evidence_gap === null || row.evidence_gap === undefined ? null : String(row.evidence_gap),
         factors,
         singleHarvestModeWarning: factors.length > 0 && new Set(factors.map((factor) => factor.harvestMode)).size === 1,
       };
@@ -573,12 +575,19 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
       contentHash: String(source.content_hash), retrievedAt: String(source.retrieved_at),
     }));
     const factors = (db.db.prepare(`
-      SELECT id, subject, behavior, quote, source_id, harvest_mode, model_confidence, uncertainty, created_at
+      SELECT id, subject, behavior, quote, source_id, harvest_mode, model_confidence, uncertainty,
+        source_role, audience_fit, independent_source_key, supports_demand, demand_evidence_uncertainty, created_at
       FROM factors WHERE research_run_id = ? ORDER BY created_at, id
     `).all(runId) as Array<Record<string, unknown>>).map((factor) => ({
       id: String(factor.id), subject: String(factor.subject), behavior: String(factor.behavior), quote: String(factor.quote),
       sourceId: String(factor.source_id), harvestMode: String(factor.harvest_mode), modelConfidence: Number(factor.model_confidence),
       ...(factor.uncertainty === null || factor.uncertainty === undefined ? {} : { uncertainty: String(factor.uncertainty) }),
+      sourceRole: String(factor.source_role ?? "unknown"), audienceFit: String(factor.audience_fit ?? "unknown"),
+      independentSourceKey: factor.independent_source_key === null || factor.independent_source_key === undefined
+        ? null : String(factor.independent_source_key),
+      supportsDemand: Number(factor.supports_demand ?? 0) === 1,
+      ...(factor.demand_evidence_uncertainty === null || factor.demand_evidence_uncertainty === undefined
+        ? {} : { demandEvidenceUncertainty: String(factor.demand_evidence_uncertainty) }),
       createdAt: String(factor.created_at),
     }));
     // The archived scope is the one this run actually used; the thread's live scope may have been edited since.
@@ -1380,6 +1389,13 @@ function mapFactor(factor: Record<string, unknown>): FactorView {
     sourceId: String(factor.source_id), sourceTitle: String(factor.source_title), sourceUrl: String(factor.canonical_url),
     harvestMode: String(factor.harvest_mode) as "domain" | "audience", modelConfidence: Number(factor.model_confidence),
     ...(factor.uncertainty === null || factor.uncertainty === undefined ? {} : { uncertainty: String(factor.uncertainty) }),
+    sourceRole: String(factor.source_role ?? "unknown") as FactorView["sourceRole"],
+    audienceFit: String(factor.audience_fit ?? "unknown") as FactorView["audienceFit"],
+    independentSourceKey: factor.independent_source_key === null || factor.independent_source_key === undefined
+      ? null : String(factor.independent_source_key),
+    supportsDemand: Number(factor.supports_demand ?? 0) === 1,
+    ...(factor.demand_evidence_uncertainty === null || factor.demand_evidence_uncertainty === undefined
+      ? {} : { demandEvidenceUncertainty: String(factor.demand_evidence_uncertainty) }),
   };
 }
 function slug(value: string): string { return value.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 80) || "problem"; }

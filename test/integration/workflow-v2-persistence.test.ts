@@ -106,9 +106,14 @@ describe("workflow v2 persistence", () => {
       const snapshots = new Map(tables.map(table => [table, source.db.prepare(`SELECT * FROM ${table}`).all()]));
       for (const table of tables) {
         for (const row of snapshots.get(table)!) {
-          // The v19 fixture predates the archive and reassessment columns.
+          // The v19 fixture predates archive, evidence classification, startup and reassessment columns.
+          const migration23Columns = new Set([
+            "source_role", "audience_fit", "independent_source_key", "supports_demand", "demand_evidence_uncertainty",
+            "intended_buyer_evidence_factor_ids_json", "evidence_gap",
+          ]);
           const values = Object.entries(row as Record<string, string | number | null>)
             .filter(([column]) => {
+              if (migration23Columns.has(column)) return false;
               if (table === "threads") return column !== "archived_at";
               if (table === "solutions") return column !== "startup_opportunity_json";
               if (table === "decision_analyses") return column !== "experiment_outcome";
