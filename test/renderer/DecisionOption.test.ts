@@ -66,7 +66,7 @@ describe("DecisionOption interactions", () => {
     pendingSave.resolve();
 
     await waitFor(() => expect(saveCompleted).toBe(true));
-    expect(onSave).toHaveBeenCalledWith(idea.id, "Submitted draft", "");
+    expect(onSave).toHaveBeenCalledWith(idea.id, "Submitted draft", "", "not-run");
     expect(decision.value).toBe("Newer unsaved draft");
     expect(view.queryByText("Saved", { exact: true })).toBeNull();
   });
@@ -91,6 +91,10 @@ describe("DecisionOption interactions", () => {
       sources: [],
       factors: [{ ...exhaustedDetail.factors[0]!, id: "follow-up-factor", quote: "Three suppliers publish dated arrival records.", sourceTitle: "Supplier delivery study" }],
       error: null,
+      reassessmentStatus: null,
+      riskReassessment: null,
+      reassessmentAnalysis: null,
+      reassessmentError: null,
     };
     installDetailApi(vi.fn().mockResolvedValue(exhaustedDetail));
     const exhaustedView = render(DecisionOption, { ...handlers(exhausted), onEvidenceFollowUp });
@@ -124,7 +128,7 @@ function option(id: string): SolutionView {
 function detail(summary: SolutionView, userDecision: string, observedResult: string): SolutionView {
   return { ...summary, detailsLoaded: true, userDecision, observedResult, contrarySources: [], decisionAnalysis: {
     consequences: [{ description: "Narrower estimates", direction: "positive", affects: "Scheduling", rationale: "Histories replace guesses" }],
-    risks: [], proposedResponses: [], unknowns: [], experiment: { question: "Are estimates accurate?", method: "Track ten deliveries", cost: "One week", passCriterion: "Eight match", failCriterion: "Three miss" },
+    risks: [], proposedResponses: [], unknowns: [], experiment: { question: "Are estimates accurate?", method: "Track ten deliveries", cost: "One week", passCriterion: "Eight match", failCriterion: "Three miss", inconclusiveCriterion: "Fewer than ten deliveries arrive" },
   } };
 }
 
