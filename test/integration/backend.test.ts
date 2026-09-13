@@ -663,6 +663,7 @@ describe("cutover backend", () => {
       });
       return { status: response.status, body: await response.json() as { data?: {
         thread?: { id: string };
+        latestResearchRun?: { runConfig?: { model: { providerId: string; modelId: string }; reasoningEffort: string } | null } | null;
         problemCandidates?: Array<{ statement: string; verdict: string }>;
         rejectedProblemCandidates?: Array<{ id: string; statement: string; reason: string }>;
       }; error?: { message: string } } };
@@ -722,6 +723,9 @@ describe("cutover backend", () => {
       verdict: "user-asserted",
     })]);
     expect(asserted.body.data?.rejectedProblemCandidates).toEqual([{ id: "rejected-1", statement: "One-source candidate", reason: "Only one source hostname." }]);
+    expect(asserted.body.data?.latestResearchRun?.runConfig).toMatchObject({
+      model: { providerId: "openai-subscription", modelId: "gpt-test" }, reasoningEffort: "medium",
+    });
     const persisted = new DatabaseClient(dbPath);
     const runs = persisted.db.prepare("SELECT problem_id, config_json FROM research_runs WHERE thread_id = ? ORDER BY created_at, rowid").all(threadId) as Array<{ problem_id: string | null; config_json: string }>;
     expect(runs).toHaveLength(2);

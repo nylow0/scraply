@@ -78,6 +78,20 @@ describe("rejected problem evidence", () => {
     );
   });
 
+  test("restores the most recent development choice", () => {
+    const view = render(ProblemCheckpoint, {
+      problems: [], rejectedCandidates: [], busy: false, modelOptions,
+      initialConfig: {
+        ...DEFAULT_RUN_CONFIG,
+        model: { providerId: "openai-subscription", modelId: "gpt-6-astra" },
+        reasoningEffort: "xhigh",
+      },
+      onCommit: vi.fn(), onExport: vi.fn(), onOpenSource: vi.fn(),
+    });
+    expect((view.getByRole("combobox", { name: "Development model" }) as HTMLSelectElement).value).toBe("openai-subscription:gpt-6-astra");
+    expect((view.getByRole("combobox", { name: "Development reasoning" }) as HTMLSelectElement).value).toBe("xhigh");
+  });
+
   test("keeps rejected candidates visible in the research archive without presenting them as evidence-backed", async () => {
     const view = render(ResearchArchive, {
       problems: [],

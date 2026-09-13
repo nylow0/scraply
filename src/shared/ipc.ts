@@ -191,6 +191,7 @@ export const RunUsageSchema = z.object({
 }).strict();
 export const LatestResearchRunSchema = z.object({
   workflowVersion: z.union([z.literal(1), z.literal(2)]).optional(),
+  runConfig: RunConfigSchema.nullable().optional(),
   awaitingSelection: z.boolean().optional(), interrupted: z.boolean().optional(),
   canResume: z.boolean().optional(), resumeBlockedReason: z.string().optional(),
   runId: EntityIdSchema, status: z.enum(["queued", "running", "completed", "failed", "cancelled"]),
