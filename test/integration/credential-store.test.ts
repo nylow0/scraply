@@ -1,9 +1,10 @@
 import { afterEach, expect, test } from "bun:test";
-import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
+import { randomBytes } from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { createCredentialStore, credentialStorePath } from "../../src/main/credential-store";
+import { createCredentialStore, resolveCredentialStoreLocation } from "../../src/main/credential-store";
+import { createFixtureEncryption } from "../fixtures/credential-store-encryption";
 
 const directories: string[] = [];
 afterEach(() => { for (const directory of directories.splice(0)) rmSync(directory, { recursive: true, force: true }); });
@@ -14,29 +15,23 @@ function fixture() {
   const path = join(directory, "secrets.bin");
   // Exercise encrypted file I/O without accessing the Windows account's actual vault.
   const key = randomBytes(32);
-  const encryption = {
-    isEncryptionAvailable: () => true,
-    encryptString(value: string) {
-      const iv = randomBytes(12);
-      const cipher = createCipheriv("aes-256-gcm", key, iv);
-      const encrypted = Buffer.concat([cipher.update(value, "utf8"), cipher.final()]);
-      return Buffer.concat([iv, cipher.getAuthTag(), encrypted]);
-    },
-    decryptString(value: Buffer) {
-      const cipher = createDecipheriv("aes-256-gcm", key, value.subarray(0, 12));
-      cipher.setAuthTag(value.subarray(12, 28));
-      return Buffer.concat([cipher.update(value.subarray(28)), cipher.final()]).toString("utf8");
-    },
-  };
+  const encryption = createFixtureEncryption(key);
   return { path, key, encryption, open: () => createCredentialStore(path, encryption) };
 }
 
-test("dev reuses the installed credential path while explicit test profiles stay isolated", () => {
+test("credential store location shares the installed profile only during normal development", () => {
   const options = { appData: "roaming", userData: "dev-projects", development: true, e2e: false, isolatedDevelopment: false };
-  expect(credentialStorePath(options)).toBe(join("roaming", "scraply", "secrets.bin"));
-  expect(credentialStorePath({ ...options, development: false, userData: join("roaming", "scraply") })).toBe(credentialStorePath(options));
+  expect(resolveCredentialStoreLocation(options)).toEqual({
+    credentialsPath: join("roaming", "scraply", "secrets.bin"),
+    sessionDataPath: join("roaming", "scraply"),
+  });
+  expect(resolveCredentialStoreLocation({ ...options, development: false, userData: join("roaming", "scraply") })).toEqual({
+    credentialsPath: join("roaming", "scraply", "secrets.bin"), sessionDataPath: null,
+  });
   for (const override of [{ e2e: true }, { isolatedDevelopment: true }, { development: false }]) {
-    expect(credentialStorePath({ ...options, ...override })).toBe(join("dev-projects", "secrets.bin"));
+    expect(resolveCredentialStoreLocation({ ...options, ...override })).toEqual({
+      credentialsPath: join("dev-projects", "secrets.bin"), sessionDataPath: null,
+    });
   }
 });
 
