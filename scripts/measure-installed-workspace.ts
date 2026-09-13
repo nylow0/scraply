@@ -4,9 +4,8 @@ import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { convertInstalledPerformanceFixtureToV2, createInstalledPerformanceFixture, type InstalledPerformanceFixture } from "./create-installed-performance-fixture";
+import { createInstalledPerformanceFixture, type InstalledPerformanceFixture } from "./create-installed-performance-fixture";
 
-const BASELINE_EXECUTABLE_SHA256 = "96c932430384ed31b9494d7a92c229cbc4be619346333799e6afe5d6401e125e";
 const COLD_SAMPLES_PER_MODE = 10;
 const WARM_WORKSPACE_SAMPLES = 30;
 const SWITCH_AND_DETAIL_SAMPLES = 100;
@@ -129,12 +128,12 @@ class CdpClient {
 const root = resolve(import.meta.dir, "..");
 const executablePath = join(process.env.LOCALAPPDATA ?? "", "Programs", "Scraply", "Scraply.exe");
 const executableSha256 = sha256(executablePath);
-const expectedSha256 = argument("--expected-exe-sha") ?? BASELINE_EXECUTABLE_SHA256;
-const label = argument("--label") ?? "baseline076";
+const expectedSha256 = argument("--expected-exe-sha");
+const label = argument("--label") ?? "current";
 const progressSamplesPath = argument("--progress-samples");
-const historyMode = argument("--history") ?? "legacy-v1";
-if (historyMode !== "legacy-v1" && historyMode !== "representative-v2") throw new Error("--history must be legacy-v1 or representative-v2");
-const expectedSyntheticSolutionCount = historyMode === "representative-v2" ? 18 : 20;
+const expectedSyntheticSolutionCount = 18;
+if (argument("--history") !== undefined) throw new Error("--history was removed; the benchmark now always uses representative v2 history");
+if (!expectedSha256) throw new Error("--expected-exe-sha is required so the benchmark records the intended installed build");
 if (!/^[a-f0-9]{64}$/i.test(expectedSha256)) throw new Error("--expected-exe-sha must be a 64-character SHA-256 hash");
 if (!/^[a-zA-Z0-9._-]+$/.test(label)) throw new Error("--label may contain only letters, numbers, dots, underscores, and hyphens");
 if (executableSha256.toLowerCase() !== expectedSha256.toLowerCase()) {
@@ -338,8 +337,8 @@ async function sampleRendererMemory(
     bounded("Memory.getDOMCounters", 5_000, cdp.call("Memory.getDOMCounters")),
     evaluate(cdp, `({
       elements: document.querySelectorAll('*').length,
-      solutions: document.querySelectorAll('details.solution').length,
-      categories: document.querySelectorAll('details.category').length,
+      solutions: document.querySelectorAll('.solutions > .idea-row > :is(article, details.solution)').length,
+      categories: document.querySelectorAll('.solutions details.category, .disclosure-content details').length,
     })`),
   ]);
   memoryDiagnostics.push({
@@ -398,14 +397,15 @@ async function launch(mode: Mode, index: number, fixture: InstalledPerformanceFi
     const deadline = launchedAt + READINESS_TIMEOUT_MS;
     await waitForValue(
       `${mode} UI readiness`,
-      () => evaluate<{ body: string; projects: number; solutions: number }>(cdp!, `({
-        body: document.body.innerText,
+      () => evaluate<{ title: string; projects: number; solutions: number; setupVisible: boolean }>(cdp!, `({
+        title: document.querySelector('.topbar .location')?.textContent?.trim() ?? '',
         projects: document.querySelectorAll('[aria-label^="Open thread "]').length,
-        solutions: document.querySelectorAll('.solutions > details.solution, .solutions > article').length,
+        solutions: document.querySelectorAll('.solutions > .idea-row:not([hidden]) > :is(article, details.solution)').length,
+        setupVisible: document.querySelector('[role="tabpanel"][aria-label="Research setup"]') !== null,
       })`),
       (value) => mode === "empty"
-        ? value.body.includes("Create research") && value.projects === 0
-        : value.body.includes("Synthetic project 01") && value.projects === 20 && value.solutions === expectedSyntheticSolutionCount,
+        ? value.setupVisible && value.projects === 1 && value.solutions === 0
+        : value.title === "Synthetic project 01" && value.projects === 20 && value.solutions === expectedSyntheticSolutionCount,
       deadline,
     );
     const usableUiMs = performance.now() - launchedAt;
@@ -424,7 +424,7 @@ async function launch(mode: Mode, index: number, fixture: InstalledPerformanceFi
     const visibleFactorSourceCount = new Set(
       readyWorkspace.value.problemCandidates.flatMap((problem) => problem.factors.map((factor) => factor.sourceId)),
     ).size;
-    if (mode === "empty" && (projectCount !== 0 || solutionCount !== 0 || visibleFactorSourceCount !== 0)) {
+    if (mode === "empty" && (projectCount !== 1 || solutionCount !== 0 || visibleFactorSourceCount !== 0)) {
       throw new Error(`Empty cold start loaded ${projectCount} projects, ${solutionCount} solutions, and ${visibleFactorSourceCount} factor sources`);
     }
     if (mode === "synthetic" && (projectCount !== 20 || solutionCount !== expectedSyntheticSolutionCount || visibleFactorSourceCount !== 20)) {
@@ -586,8 +586,7 @@ if (preexistingProcesses.length > 0) {
 }
 
 record("fixture-creation-started");
-const baseFixture = createInstalledPerformanceFixture(fixturePath);
-const fixture = historyMode === "representative-v2" ? convertInstalledPerformanceFixtureToV2(baseFixture) : baseFixture;
+const fixture = createInstalledPerformanceFixture(fixturePath);
 record("fixture-created", {
   sha256: fixture.databaseSha256,
   bytes: fixture.databaseBytes,
@@ -651,14 +650,14 @@ try {
       const deadline = started + ${READINESS_TIMEOUT_MS};
       let observed = {};
       while (performance.now() < deadline) {
-        const topbar = document.querySelector('.topbar > div')?.textContent?.trim() ?? '';
+        const topbar = document.querySelector('.topbar .location')?.textContent?.trim() ?? '';
         const currentButton = [...document.querySelectorAll('button')]
           .find((item) => item.getAttribute('aria-label') === 'Open thread ' + title);
         const active = currentButton?.getAttribute('aria-current') === 'true';
-        const solutions = [...document.querySelectorAll('.solutions > details.solution, .solutions > article')];
+        const solutions = [...document.querySelectorAll('.solutions > .idea-row:not([hidden]) > :is(article, details.solution)')];
         const heading = document.querySelector('.workspace h1')?.textContent?.trim() ?? '';
         observed = { topbar, active, solutionCount: solutions.length, heading };
-        if (topbar === title && active && solutions.length === ${expectedSyntheticSolutionCount} && heading.includes('${expectedSyntheticSolutionCount} solution ideas')) {
+        if (topbar === title && active && solutions.length === ${expectedSyntheticSolutionCount} && heading === '${expectedSyntheticSolutionCount} solutions') {
           await new Promise((resolve) => setTimeout(resolve, 0));
           return {
             durationMs: performance.now() - started,
@@ -666,7 +665,7 @@ try {
             heading,
             ariaCurrent: currentButton?.getAttribute('aria-current') ?? null,
             solutionCount: solutions.length,
-            firstMechanism: solutions[0]?.querySelector('.identity strong')?.textContent?.trim() ?? '',
+            firstMechanism: solutions[0]?.querySelector('.disclosure-label')?.textContent?.trim() ?? '',
           };
         }
         await new Promise((resolve) => setTimeout(resolve, 10));
@@ -686,66 +685,32 @@ try {
     if (!solutionId || !sourceId) throw new Error(`Missing detail IDs after rendering ${title}`);
 
     const detailResult = await evaluate<{ durationMs: number; mechanism: string; overviewTextBytes: number }>(session.cdp, `(async () => {
-      const v2 = ${historyMode === "representative-v2"};
-      const solution = document.querySelector(v2 ? 'article.selected > details' : 'details.solution');
-      const solutionSummary = solution?.querySelector(':scope > summary');
-      if (!(solution instanceof HTMLDetailsElement) || !(solutionSummary instanceof HTMLElement)) {
-        throw new Error('Solution summary control is missing');
+      const article = document.querySelector('.solutions > .idea-row:not([hidden]) > article.selected');
+      const disclosure = article?.querySelector(':scope > button.disclosure-title');
+      if (!(article instanceof HTMLElement) || !(disclosure instanceof HTMLButtonElement)) {
+        throw new Error('Selected solution disclosure is missing');
       }
-      solution.open = false;
       const started = performance.now();
-      solutionSummary.click();
-      if (v2) {
-        const deadline = started + ${READINESS_TIMEOUT_MS};
-        while (performance.now() < deadline) {
-          const article = solution.closest('article');
-          const text = article?.textContent ?? '';
-          if (solution.open && text.includes('Synthetic v2 consequence')) {
-            await new Promise((resolve) => setTimeout(resolve, 0));
-            const rendered = solution.getBoundingClientRect();
-            if (rendered.height <= 0) throw new Error('Expanded v2 analysis has no rendered height');
-            return {
-              durationMs: performance.now() - started,
-              mechanism: article?.querySelector('h2')?.textContent?.trim() ?? '',
-              overviewTextBytes: new TextEncoder().encode(text).length,
-              detailKind: 'v2-selected-analysis',
-            };
-          }
-          await new Promise((resolve) => setTimeout(resolve, 10));
-        }
-        throw new Error('Rendered v2 decision analysis timed out');
-      }
-      const detailDeadline = performance.now() + ${READINESS_TIMEOUT_MS};
-      let overview;
-      let overviewSummary;
-      while (performance.now() < detailDeadline) {
-        overview = solution.querySelector('details.category');
-        overviewSummary = overview?.querySelector(':scope > summary');
-        if (overview instanceof HTMLDetailsElement && overviewSummary instanceof HTMLElement) break;
-        await new Promise((resolve) => setTimeout(resolve, 10));
-      }
-      if (!(overview instanceof HTMLDetailsElement) || !(overviewSummary instanceof HTMLElement)) {
-        throw new Error('Lazy solution detail controls did not load');
-      }
-      overview.open = false;
-      overviewSummary.click();
+      if (disclosure.getAttribute('aria-expanded') === 'true') disclosure.click();
+      disclosure.click();
       const deadline = started + ${READINESS_TIMEOUT_MS};
       while (performance.now() < deadline) {
-        const overviewText = overview.querySelector('.overview')?.textContent ?? '';
-        if (solution.open && overview.open && overviewText.includes('Synthetic solution analysis')) {
+        const content = article.querySelector(':scope > .disclosure-content');
+        const text = article?.textContent ?? '';
+        if (disclosure.getAttribute('aria-expanded') === 'true' && content instanceof HTMLElement && text.includes('Synthetic v2 consequence')) {
           await new Promise((resolve) => setTimeout(resolve, 0));
-          const rendered = overview.querySelector('.overview')?.getBoundingClientRect();
-          if (!rendered || rendered.height <= 0) throw new Error('Expanded solution detail has no rendered height');
+          const rendered = content.getBoundingClientRect();
+          if (rendered.height <= 0) throw new Error('Expanded v2 analysis has no rendered height');
           return {
             durationMs: performance.now() - started,
-            mechanism: solution.querySelector('.identity strong')?.textContent?.trim() ?? '',
-            overviewTextBytes: new TextEncoder().encode(overviewText).length,
-            detailKind: 'v1-solution-analysis',
+            mechanism: article.querySelector('.disclosure-label')?.textContent?.trim() ?? '',
+            overviewTextBytes: new TextEncoder().encode(text).length,
+            detailKind: 'v2-selected-analysis',
           };
         }
         await new Promise((resolve) => setTimeout(resolve, 10));
       }
-      throw new Error('Rendered solution detail timed out');
+      throw new Error('Rendered v2 decision analysis timed out');
     })()`, READINESS_TIMEOUT_MS + 1_000);
     localDetailSamples.push({ sequence: index + 1, sampledAtMs: measurementElapsedMs(), targetTitle: title, ...detailResult });
 
