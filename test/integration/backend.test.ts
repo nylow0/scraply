@@ -675,7 +675,7 @@ describe("cutover backend", () => {
     client.db.prepare(`
       INSERT INTO research_runs (id, thread_id, status, config_json, problem_id, created_at, updated_at)
       VALUES ('discovery-rejected', ?, 'completed', ?, NULL, ?, ?)
-    `).run(threadId, JSON.stringify({ ...DEFAULT_RUN_CONFIG, model: { providerId: "openai-subscription", modelId: "gpt-test" } }), now, now);
+    `).run(threadId, JSON.stringify({ ...DEFAULT_RUN_CONFIG, reasoningEffort: "low" }), now, now);
     client.db.prepare(`
       INSERT INTO rejected_problem_candidates (id, discovery_run_id, statement, reason, created_at)
       VALUES ('rejected-1', 'discovery-rejected', 'One-source candidate', 'Only one source hostname.', ?)
@@ -686,13 +686,35 @@ describe("cutover backend", () => {
       threadId,
       problemIds: ["rejected-1"],
       userProblem: null,
+      model: { providerId: "openai-subscription", modelId: "gpt-test" },
+      reasoningEffort: "medium",
     });
     expect(fakeEvidenceSelection.status).toBe(409);
+
+    const unavailableModel = await request("/research/select-problems", {
+      threadId,
+      problemIds: [],
+      userProblem: "One-source candidate",
+      model: { providerId: "openai-subscription", modelId: "gpt-unavailable" },
+      reasoningEffort: "medium",
+    });
+    expect(unavailableModel.status).toBe(409);
+
+    const unsupportedReasoning = await request("/research/select-problems", {
+      threadId,
+      problemIds: [],
+      userProblem: "One-source candidate",
+      model: { providerId: "openai-subscription", modelId: "gpt-test" },
+      reasoningEffort: "xhigh",
+    });
+    expect(unsupportedReasoning.status).toBe(400);
 
     const asserted = await request("/research/select-problems", {
       threadId,
       problemIds: [],
       userProblem: "One-source candidate",
+      model: { providerId: "openai-subscription", modelId: "gpt-test" },
+      reasoningEffort: "medium",
     });
     expect(asserted.status).toBe(200);
     expect(asserted.body.data?.problemCandidates).toEqual([expect.objectContaining({
@@ -700,6 +722,14 @@ describe("cutover backend", () => {
       verdict: "user-asserted",
     })]);
     expect(asserted.body.data?.rejectedProblemCandidates).toEqual([{ id: "rejected-1", statement: "One-source candidate", reason: "Only one source hostname." }]);
+    const persisted = new DatabaseClient(dbPath);
+    const runs = persisted.db.prepare("SELECT problem_id, config_json FROM research_runs WHERE thread_id = ? ORDER BY created_at, rowid").all(threadId) as Array<{ problem_id: string | null; config_json: string }>;
+    expect(runs).toHaveLength(2);
+    expect(JSON.parse(runs[0]!.config_json)).toMatchObject({ model: DEFAULT_RUN_CONFIG.model, reasoningEffort: "low" });
+    expect(JSON.parse(runs[1]!.config_json)).toMatchObject({ model: { providerId: "openai-subscription", modelId: "gpt-test" }, reasoningEffort: "medium" });
+    expect(runs[0]!.problem_id).toBeNull();
+    expect(runs[1]!.problem_id).not.toBeNull();
+    persisted.close();
   });
 
   test("cancels and deletes stale runs without provider credentials", async () => {

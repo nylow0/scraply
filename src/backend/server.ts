@@ -969,6 +969,12 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
         const input = SelectProblemsSchema.parse(body); requireThread(input.threadId);
         const runId = latestDiscoveryRun(input.threadId); if (!runId) throw new AppError("conflict", "No completed discovery run is ready for selection.");
         requireRunnableRunProvider(runId);
+        const validation = cachedValidation ?? await validateProviders();
+        const modelOption = cachedModelOptions.find((item) => sameModelRef(item, input.model));
+        if (!validation.native.connected || !modelOption) throw new AppError("conflict", "Selected development model is unavailable");
+        if (!modelOption.reasoningEfforts.some((effort) => effort.id === input.reasoningEffort)) {
+          throw new AppError("validation_error", "Selected reasoning effort is unavailable for this model.");
+        }
         const known = new Set((db.db.prepare("SELECT id FROM problems WHERE discovery_run_id = ?").all(runId) as Array<{ id: string }>).map((item) => item.id));
         if (input.problemIds.some((id) => !known.has(id))) throw new AppError("conflict", "A selected problem no longer belongs to the latest discovery run.");
         db.db.exec("BEGIN IMMEDIATE");
@@ -994,7 +1000,8 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
           db.db.exec("COMMIT");
         } catch (error) { db.db.exec("ROLLBACK"); throw error; }
         if (input.problemIds.length === 0 && !input.userProblem) { threads.updateThreadStatus(input.threadId, "problems-ready"); return sendJson(res, 200, await workspaceState()); }
-        const config = threads.getLatestRunConfig(input.threadId) ?? DEFAULT_RUN_CONFIG;
+        const previousConfig = threads.getLatestRunConfig(input.threadId) ?? DEFAULT_RUN_CONFIG;
+        const config = RunConfigSchema.parse({ ...previousConfig, model: input.model, reasoningEffort: input.reasoningEffort });
         try { await ensureEngine().startNextSelected(input.threadId, config); }
         catch (error) { if (error instanceof ActiveRunConflictError) throw new AppError("conflict", "This research already has an active run."); throw error; }
         return sendJson(res, 200, await workspaceState());

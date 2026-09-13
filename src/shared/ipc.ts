@@ -78,6 +78,8 @@ export const SelectProblemsSchema = z.object({
   threadId: EntityIdSchema,
   problemIds: z.array(EntityIdSchema),
   userProblem: z.string().trim().max(2_000).nullable(),
+  model: ModelRefSchema,
+  reasoningEffort: ReasoningEffortSchema,
 }).strict();
 export const ExportIdeasRequestSchema = z.object({ threadId: EntityIdSchema, format: z.enum(["markdown", "json"]).default("markdown") });
 export const ExportResearchRequestSchema = z.object({ threadId: EntityIdSchema });

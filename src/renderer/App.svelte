@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount, tick, untrack } from "svelte";
   import type { NativeLoginStartResult, ResearchEvent, SolutionView, WorkspaceState } from "../shared/ipc";
+  import type { ModelRef } from "../shared/schemas";
   import { readResearchDefaults } from "./lib/research-defaults";
   import DesktopBar from "./components/DesktopBar.svelte";
   import Icon from "./components/Icon.svelte";
@@ -378,11 +379,11 @@
   async function cancelResearch(runId: string) {
     await action(async () => setWorkspace(await window.scraply.cancelResearch(runId)));
   }
-  async function selectProblems(ids: string[], userProblem: string | null) {
+  async function selectProblems(ids: string[], userProblem: string | null, model: ModelRef, reasoningEffort: string) {
     const threadId = workspace?.activeThreadId;
     if (!threadId) return;
     await action(async () => {
-      setWorkspace(await window.scraply.selectProblems({ threadId, problemIds: ids, userProblem }));
+      setWorkspace(await window.scraply.selectProblems({ threadId, problemIds: ids, userProblem, model, reasoningEffort }));
       activeStep = "ideas";
       reviewSelection = false;
     });
@@ -516,7 +517,7 @@
       {:else if (activeThread.status === "problems-ready" || reviewSelection) && (workspace.problemCandidates.length > 0 || workspace.rejectedProblemCandidates.length > 0)}
         <div id="workflow-panel-research" role="tabpanel" aria-label="Research">
           {#key workspace.activeThreadId}
-            <ProblemCheckpoint problems={workspace.problemCandidates} rejectedCandidates={workspace.rejectedProblemCandidates} workflowVersion={activeRun?.workflowVersion} ideaCount={workspace.runConfig?.ideaCount} {busy} onCommit={selectProblems} onExport={exportResearch} onOpenSource={openExternalUrl} />
+            <ProblemCheckpoint problems={workspace.problemCandidates} rejectedCandidates={workspace.rejectedProblemCandidates} modelOptions={workspace.modelOptions} initialConfig={workspace.runConfig} workflowVersion={activeRun?.workflowVersion} ideaCount={workspace.runConfig?.ideaCount} {busy} onCommit={selectProblems} onExport={exportResearch} onOpenSource={openExternalUrl} />
           {/key}
         </div>
       {:else if workspace.problemCandidates.length > 0 || workspace.rejectedProblemCandidates.length > 0}
