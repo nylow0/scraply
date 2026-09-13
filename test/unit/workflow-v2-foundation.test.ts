@@ -40,7 +40,7 @@ afterEach(() => {
 });
 
 describe("workflow v2 foundation", () => {
-  test("keeps evidenced startup gaps tied to citations and hypotheses explicitly uncited", () => {
+  test("requires citations for evidenced startup gaps and keeps cited background hypothetical", () => {
     const startupOption = {
       ...option(),
       startupOpportunity: {
@@ -68,7 +68,7 @@ describe("workflow v2 foundation", () => {
       },
     };
     expect(() => assertWorkflowV2SolutionsSemantics({ options: [citedHypothesis] }, suppliedEvidence))
-      .toThrow("must not present evidence citations as validation");
+      .not.toThrow();
   });
 
   test("registers exactly seven typed stages independent of config version", () => {

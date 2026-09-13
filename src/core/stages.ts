@@ -159,9 +159,6 @@ export function assertWorkflowV2SolutionsSemantics(
     if (gap?.kind === "evidenced" && gap.evidenceIds.length === 0) {
       throw new Error("An evidenced startup gap must cite at least one supplied evidence source");
     }
-    if (gap?.kind === "hypothesis" && gap.evidenceIds.length > 0) {
-      throw new Error("A startup gap hypothesis must not present evidence citations as validation");
-    }
   }
 }
 
