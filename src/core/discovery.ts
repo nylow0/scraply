@@ -201,24 +201,26 @@ export async function discoverProblems(
     ProblemCandidatesOutputSchema,
   );
   const candidateLimit = dependencies.candidateLimit ?? DEFAULT_PROBLEM_CANDIDATE_LIMIT;
-  const candidates = response.problems.slice(0, candidateLimit);
-  dependencies.onProjection?.(
-    `${candidates.length} problem candidates · ${candidates.length} kill searches · ${candidates.length + 1} model calls`,
-  );
-
   const factorById = new Map(factors.map((factor) => [factor.id, factor]));
   const sourcesByUrl = new Map(existingSources.map((source) => [source.canonicalUrl, source]));
   const killSources: HarvestedSource[] = [];
   const problems: DiscoveryProblem[] = [];
   const blockedCandidates: BlockedProblemCandidate[] = [];
-
-  for (const candidate of candidates) {
+  const candidates = response.problems.flatMap((candidate) => {
+    if (dependencies.workflowVersion === 2 && candidate.scaleBasisFactorId !== null
+      && (!factorById.has(candidate.scaleBasisFactorId) || !candidate.factorIds.includes(candidate.scaleBasisFactorId))) {
+      blockedCandidates.push({
+        statement: candidate.statement,
+        reason: "Candidate scale basis did not cite a known supporting factor; its scale evidence could not be verified.",
+      });
+      return [];
+    }
     if (dependencies.workflowVersion === 2 && candidate.factorIds.some((id) => !factorById.has(id))) {
       blockedCandidates.push({
         statement: candidate.statement,
         reason: "Candidate cited an unknown factor ID; its evidence could not be verified.",
       });
-      continue;
+      return [];
     }
     const citedFactors = [...new Set(candidate.factorIds)]
       .map((id) => factorById.get(id))
@@ -229,9 +231,15 @@ export async function discoverProblems(
         statement: candidate.statement,
         reason: `Corpus diversity failed: cited factors span ${hostnames.length} source hostname(s); 2 required.`,
       });
-      continue;
+      return [];
     }
+    return [{ candidate, citedFactors, hostnames }];
+  }).slice(0, candidateLimit);
+  dependencies.onProjection?.(
+    `${candidates.length} problem candidates · ${candidates.length} kill searches · ${candidates.length + 1} model calls`,
+  );
 
+  for (const { candidate, citedFactors, hostnames } of candidates) {
     const searched = await dependencies.search.search(buildKillQuery(candidate.statement), {
       numResults: DISCOVERY_DEPTHS[dependencies.depth ?? "standard"].searchResultsPerQuery,
       maxCharacters: SOURCE_MAX_CHARACTERS,
@@ -268,7 +276,9 @@ export async function discoverProblems(
       whyItPersists: candidate.whyItPersists.trim(),
       affected: candidate.affected.trim(),
       scaleEstimate: candidate.scaleEstimate.trim(),
-      scaleBasisFactorId: factorIds.includes(candidate.scaleBasisFactorId ?? "") ? candidate.scaleBasisFactorId : null,
+      scaleBasisFactorId: dependencies.workflowVersion === 2
+        ? candidate.scaleBasisFactorId
+        : factorIds.includes(candidate.scaleBasisFactorId ?? "") ? candidate.scaleBasisFactorId : null,
       factorIds,
       verdict: dependencies.workflowVersion === 2 && hostnames.length < 2 && kill.verdict === "confirmed" ? "insufficient-evidence" : kill.verdict,
       verdictReason: dependencies.workflowVersion === 2 && hostnames.length < 2
@@ -306,9 +316,36 @@ export function quoteAppearsVerbatim(sourceText: string, quote: string): boolean
   if (normalizedSource.includes(normalizedQuote)) return true;
   // Extracted documents lose word spaces and use heading capitals. Keep every other
   // character in order, including punctuation and spaces between digits in tables.
-  const extractedQuote = normalizedQuote.toLowerCase().replace(/(?<!\d) | (?!\d)/g, "");
-  const extractedSource = normalizedSource.toLowerCase().replace(/(?<!\d) | (?!\d)/g, "");
-  return extractedSource.includes(extractedQuote);
+  // The fallback must not create or remove a negation by changing a word boundary.
+  const extractedQuote = compactExtractedText(normalizedQuote).text;
+  const extractedSource = compactExtractedText(normalizedSource);
+  let matchIndex = extractedSource.text.indexOf(extractedQuote);
+  while (matchIndex >= 0) {
+    const firstSourceIndex = extractedSource.sourceIndexes[matchIndex]!;
+    const lastSourceIndex = extractedSource.sourceIndexes[matchIndex + extractedQuote.length - 1]!;
+    const sourceMatch = normalizedSource.slice(firstSourceIndex, lastSourceIndex + 1);
+    if (hasStandaloneNegation(sourceMatch) === hasStandaloneNegation(normalizedQuote)) return true;
+    matchIndex = extractedSource.text.indexOf(extractedQuote, matchIndex + 1);
+  }
+  return false;
+}
+
+function hasStandaloneNegation(value: string): boolean {
+  return /(?:^|[^\p{L}\p{N}_])(?:no|not|never|none|neither|nor|without)(?=$|[^\p{L}\p{N}_])/iu.test(value);
+}
+
+function compactExtractedText(value: string): { text: string; sourceIndexes: number[] } {
+  let text = "";
+  const sourceIndexes: number[] = [];
+  for (let index = 0; index < value.length; index++) {
+    const character = value[index]!;
+    const spaceBetweenDigits = character === " " && /\d/.test(value[index - 1] ?? "") && /\d/.test(value[index + 1] ?? "");
+    if (character === " " && !spaceBetweenDigits) continue;
+    const lowered = character.toLowerCase();
+    text += lowered;
+    for (let loweredIndex = 0; loweredIndex < lowered.length; loweredIndex++) sourceIndexes.push(index);
+  }
+  return { text, sourceIndexes };
 }
 
 export function batchSources(sources: HarvestedSource[], maxCharacters = SOURCE_BATCH_CHARACTERS): HarvestedSource[][] {
