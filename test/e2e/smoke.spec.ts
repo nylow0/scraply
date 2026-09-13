@@ -1,18 +1,21 @@
-import { expect, test, _electron, type ElectronApplication } from "@playwright/test";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import path from "node:path";
+import { expect, test } from "@playwright/test";
+import { createInstalledApp } from "./installed-app";
 import { startMockBackend } from "./mock-backend";
 
 // The backend here is the in-process mock, so this covers renderer rehydration only — checkpoint
 // persistence itself is covered by the research-engine resume tests.
 test("the renderer restores the problem-selection step after a restart", async ({}, testInfo) => {
   const mock = await startMockBackend();
-  const userDataDir = mkdtempSync(path.join(tmpdir(), "scraply-e2e-"));
-  const executablePath = process.env.SCRAPLY_E2E_EXECUTABLE ?? path.join(process.cwd(), "release", "win-unpacked", "Scraply.exe");
-  const launch = (): Promise<ElectronApplication> => _electron.launch({ executablePath, args: [`--user-data-dir=${userDataDir}`], env: { ...process.env, SCRAPLY_E2E: "1", SCRAPLY_E2E_BACKEND_URL: mock.url, SCRAPLY_E2E_BACKEND_TOKEN: mock.token, ELECTRON_DISABLE_SECURITY_WARNINGS: "true" } });
-  let electron: ElectronApplication | undefined = await launch();
+  const installedApp = createInstalledApp({ directoryPrefix: "scraply-e2e-" });
+  const launch = () => installedApp.launch({
+    ...process.env,
+    SCRAPLY_E2E: "1",
+    SCRAPLY_E2E_BACKEND_URL: mock.url,
+    SCRAPLY_E2E_BACKEND_TOKEN: mock.token,
+    ELECTRON_DISABLE_SECURITY_WARNINGS: "true",
+  });
   try {
+    let electron = await launch();
     let page = await electron.firstWindow();
     await page.screenshot({ animations: "disabled", path: testInfo.outputPath("welcome.png") });
     await expect(page.getByLabel("Research name", { exact: true })).toBeVisible();
@@ -56,8 +59,7 @@ test("the renderer restores the problem-selection step after a restart", async (
     await expect(userProblem).toHaveValue("Repair shops cannot compare every supplier on one marketplace.");
     await userProblem.fill("");
 
-    await electron.close();
-    electron = undefined;
+    await installedApp.close();
     electron = await launch();
     page = await electron.firstWindow();
     await expect(page.getByText("Choose problems to develop")).toBeVisible();
@@ -90,7 +92,7 @@ test("the renderer restores the problem-selection step after a restart", async (
     await page.getByRole("textbox", { name: "Search solutions" }).fill("nothing matches");
     await expect(page.getByText('No solutions match "nothing matches".')).toBeVisible();
     await page.getByRole("button", { name: "Clear filter" }).click();
-    await expect(page.getByText(/Options are not ranked/)).toBeVisible();
+    await expect(page.getByText(/Solutions are not ranked/)).toBeVisible();
     await expect(page.getByText(/independently confirmed outcomes/)).toHaveCount(0);
     await expect(page.getByText("Highest risk: likely · project ends")).not.toBeVisible();
     await page.getByText("Supplier reliability ledger").click();
@@ -121,6 +123,6 @@ test("the renderer restores the problem-selection step after a restart", async (
     expect(await reducedTitle.evaluate((element) => getComputedStyle(element, "::after").transitionDuration)).toBe("0s");
     await expect(page.getByText("1 cited factors", { exact: true })).toBeVisible();
   } finally {
-    await electron?.close(); await mock.close(); rmSync(userDataDir, { recursive: true, force: true });
+    await installedApp.cleanup(() => mock.close());
   }
 });
