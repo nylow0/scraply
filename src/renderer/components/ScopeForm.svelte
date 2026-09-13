@@ -276,8 +276,8 @@
   .model-setting,.search-setting { grid-column:1/-1; }
   .output-settings { display:grid;gap:16px; }
   .output-settings label { grid-template-rows:auto auto;align-content:start;gap:7px; }
-  .solution-count { display:grid;gap:7px; }
-  .solution-count > label { font-size:13px;font-weight:600; }
+  .solution-count { display:grid;align-content:start;gap:7px; }
+  .solution-count > label { display:block;font-size:13px;font-weight:600; }
   .number-control { position:relative; }
   .number-control input { appearance:textfield;padding-right:80px;font-variant-numeric:tabular-nums; }
   .number-control input::-webkit-inner-spin-button,.number-control input::-webkit-outer-spin-button { appearance:none;margin:0; }
