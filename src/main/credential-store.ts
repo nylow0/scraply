@@ -15,13 +15,21 @@ const StoredSecretsSchema = z.object({
   providerCredentials: z.record(z.string()).default({}),
 });
 
-export function credentialStorePath(options: {
+export interface CredentialStoreLocation {
+  credentialsPath: string;
+  sessionDataPath: string | null;
+}
+
+export function resolveCredentialStoreLocation(options: {
   appData: string; userData: string; development: boolean; e2e: boolean; isolatedDevelopment: boolean;
-}): string {
+}): CredentialStoreLocation {
   // Keep the installed file and format. Explicit test profiles never share real credentials.
-  const directory = options.development && !options.e2e && !options.isolatedDevelopment
-    ? join(options.appData, "scraply") : options.userData;
-  return join(directory, "secrets.bin");
+  const sharesInstalledProfile = options.development && !options.e2e && !options.isolatedDevelopment;
+  const directory = sharesInstalledProfile ? join(options.appData, "scraply") : options.userData;
+  return {
+    credentialsPath: join(directory, "secrets.bin"),
+    sessionDataPath: sharesInstalledProfile ? directory : null,
+  };
 }
 
 interface Encryption {
