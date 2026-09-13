@@ -46,7 +46,8 @@ test("reads the existing installed format and preserves unrelated concurrent key
   const rotated = { ...desktopSecrets, providerCredentials: { openai: "rotated-account" } };
   const newKey = { ...devSecrets, exaApiKey: "replacement-key" };
   await desktop.save(rotated);
-  await dev.save(newKey);
+  const local = await dev.save(newKey);
+  expect(local.providerCredentials).toEqual({ openai: "original-account" });
   // A second write from the older runtime view must also preserve the other process's fields.
   await dev.save({ ...newKey, perplexityApiKey: "another-key" });
   expect(open().load()).toEqual({ exaApiKey: "replacement-key", perplexityApiKey: "another-key", providerCredentials: { openai: "rotated-account" } });
@@ -81,6 +82,47 @@ test("separate Node processes serialize simultaneous credential writes", async (
     for (const worker of workers) worker.kill();
   }
 }, 10_000);
+
+test("overlapping saves keep their merged state so a later logout removes the account", async () => {
+  const { open } = fixture();
+  const store = open();
+  const empty = store.load();
+  const account = { ...empty, providerCredentials: { openai: "signed-in" } };
+  const key = { ...empty, exaApiKey: "replacement-key" };
+  let keySave: ReturnType<typeof store.save> | undefined;
+
+  await store.save(account, () => {
+    // Start the second save after the first has acquired the mutex but before it
+    // updates local state. This reproduces two callers using the same snapshot.
+    keySave = store.save(key);
+  });
+  const pendingKeySave = keySave;
+  if (!pendingKeySave) throw new Error("The overlapping save did not start");
+  const merged = await pendingKeySave;
+  expect(merged).toEqual({
+    exaApiKey: "replacement-key",
+    perplexityApiKey: null,
+    providerCredentials: { openai: "signed-in" },
+  });
+
+  await store.save({ ...merged, providerCredentials: {} });
+  expect(open().load()).toEqual({ exaApiKey: "replacement-key", perplexityApiKey: null, providerCredentials: {} });
+});
+
+test("overlapping saves still reject conflicting changes to the same credential", async () => {
+  const { open } = fixture();
+  const store = open();
+  const empty = store.load();
+  let secondSave: ReturnType<typeof store.save> | undefined;
+
+  await store.save({ ...empty, exaApiKey: "first-key" }, () => {
+    secondSave = store.save({ ...empty, exaApiKey: "second-key" });
+  });
+  const pendingSecondSave = secondSave;
+  if (!pendingSecondSave) throw new Error("The overlapping save did not start");
+  await expect(pendingSecondSave).rejects.toThrow("Restart this instance");
+  expect(open().load().exaApiKey).toBe("first-key");
+});
 
 test("a stale instance cannot resurrect a logged-out account or replace a newer login", async () => {
   const { open } = fixture();

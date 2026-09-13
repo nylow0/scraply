@@ -15,13 +15,13 @@ import { QueryPlanOutputSchema } from "../../src/shared/structured-output-schema
 describe("discovery", () => {
   test.each([
     ["STUDENTS WHO FELL BEHIND EARLY STRUGGLED TO CATCH UP", "Students who fell behind early struggled to catch up"],
-    ["43% of respondents find academic assignments to be the mostchallenging tasks to prioritize", "43% of respondents find academic assignments to be the most challenging tasks to prioritize"],
     ["most respondents (31%) keep a mental list of tasks, while 29%rely on digital reminders", "most respondents (31%) keep a mental list of tasks, while 29% rely on digital reminders"],
-    ["This did not fail. The mostchallenging tasks still persist.", "The most challenging tasks still persist."],
     ["Students donot submit assignments", "Students do not submit assignments"],
-    ["Studentsdonotsubmit assignments", "Students do not submit assignments"],
     ["There is noway to recover", "There is no way to recover"],
     ["They cannot proceed", "They can not proceed"],
+    ["Context: They cannot proceed today.", "They can not proceed"],
+    ["They can not proceed", "They cannot proceed"],
+    ["There is no way to recover", "There is noway to recover"],
   ])("accepts extraction formatting without changing quoted characters: %s", (source, quote) => {
     expect(quoteAppearsVerbatim(source, quote)).toBe(true);
   });
@@ -40,6 +40,19 @@ describe("discovery", () => {
     ["Report: Noresults returned", "No results returned"],
     ["No table was available.", "Not able was available."],
     ["xNoresults returned", "No results returned"],
+    ["The outcome isnotable.", "The outcome is not able."],
+    ["The support is now\nhere.", "The support is nowhere."],
+    ["therapist", "the rapist"],
+    ["therapist", "rapist"],
+    ["therapist", "thera"],
+    ["They cannot proceed", "an not proceed"],
+    ["They cannot proceed", "not proceed"],
+    ["There is noway to recover", "way to recover"],
+    ["\u{10400}rapist", "rapist"],
+    ["thera\u{10400}", "thera"],
+    ["43% of respondents find academic assignments to be the mostchallenging tasks to prioritize", "43% of respondents find academic assignments to be the most challenging tasks to prioritize"],
+    ["This did not fail. The mostchallenging tasks still persist.", "The most challenging tasks still persist."],
+    ["Studentsdonotsubmit assignments", "Students do not submit assignments"],
     ["Students miss deadlines", "  "],
   ])("rejects unsupported quotes despite formatting tolerance: %s", (source, quote) => {
     expect(quoteAppearsVerbatim(source, quote)).toBe(false);
