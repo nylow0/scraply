@@ -323,43 +323,88 @@ export function quoteAppearsVerbatim(sourceText: string, quote: string): boolean
   while (matchIndex >= 0) {
     const firstSourceIndex = extractedSource.sourceIndexes[matchIndex]!;
     const lastSourceIndex = extractedSource.sourceIndexes[matchIndex + extractedQuote.length - 1]!;
-    const sourceMatch = normalizedSource.slice(firstSourceIndex, lastSourceIndex + 1);
-    if (hasMatchingNegations(sourceMatch, normalizedQuote)) return true;
+    if (hasMatchingNegations(normalizedSource, firstSourceIndex, lastSourceIndex + 1, normalizedQuote)) return true;
     matchIndex = extractedSource.text.indexOf(extractedQuote, matchIndex + 1);
   }
   return false;
 }
 
-function hasMatchingNegations(source: string, quote: string): boolean {
-  const sourceNegations = negationSignature(source);
-  const quoteNegations = negationSignature(quote);
-  return sourceNegations.length === quoteNegations.length
-    && sourceNegations.every((negation, index) => negation === quoteNegations[index]);
+interface PositionedNegation {
+  token: string;
+  compactIndex: number;
+  sourceIndex: number;
 }
 
-function negationSignature(value: string): string[] {
-  const compacted = compactExtractedText(value);
-  const signature = new Set<string>();
-  const standaloneMatches = value.matchAll(/(^|[^\p{L}\p{N}_])(no|not|never|none|neither|nor|without)(?=$|[^\p{L}\p{N}_])/giu);
-  for (const match of standaloneMatches) {
+function hasMatchingNegations(sourceText: string, sourceStart: number, sourceEnd: number, quote: string): boolean {
+  const source = sourceText.slice(sourceStart, sourceEnd);
+  const sourceNegations = standaloneNegations(source);
+  const quoteNegations = standaloneNegations(quote);
+  const sourceSignature = new Set(sourceNegations.map(negationKey));
+  const quoteSignature = new Set(quoteNegations.map(negationKey));
+  for (const negation of quoteNegations) {
+    const key = negationKey(negation);
+    if (!sourceSignature.has(key) && canRecoverFusedNegation(sourceText, sourceStart, source, quote, negation)) {
+      sourceSignature.add(key);
+    }
+  }
+  return sourceSignature.size === quoteSignature.size
+    && [...sourceSignature].every((negation) => quoteSignature.has(negation));
+}
+
+function standaloneNegations(value: string): PositionedNegation[] {
+  const matches = value.matchAll(/(^|[^\p{L}\p{N}_])(no|not|never|none|neither|nor|without)(?=$|[^\p{L}\p{N}_])/giu);
+  return Array.from(matches, (match) => {
     const sourceIndex = match.index + match[1]!.length;
-    const compactIndex = compactExtractedText(value.slice(0, sourceIndex)).text.length;
-    signature.add(`${compactIndex}:${match[2]!.toLowerCase()}`);
-  }
-  const fusedAuxiliaryMatches = compacted.text.matchAll(/(can|could|do|does|did|have|has|had|is|are|was|were|may|might|must|should|would|will)not/giu);
-  for (const match of fusedAuxiliaryMatches) {
-    const notIndex = match.index + match[1]!.length;
-    if (compacted.sourceIndexes[notIndex] === compacted.sourceIndexes[notIndex - 1]! + 1) {
-      signature.add(`${notIndex}:not`);
-    }
-  }
-  for (const match of compacted.text.matchAll(/noway/giu)) {
-    const wayIndex = match.index + 2;
-    if (compacted.sourceIndexes[wayIndex] === compacted.sourceIndexes[wayIndex - 1]! + 1) {
-      signature.add(`${match.index}:no`);
-    }
-  }
-  return [...signature].sort();
+    return {
+      token: match[2]!.toLowerCase(),
+      compactIndex: compactExtractedText(value.slice(0, sourceIndex)).text.length,
+      sourceIndex,
+    };
+  });
+}
+
+function canRecoverFusedNegation(
+  sourceText: string,
+  sourceStart: number,
+  source: string,
+  quote: string,
+  negation: PositionedNegation,
+): boolean {
+  const compactedSource = compactExtractedText(source);
+  const localSourceIndex = compactedSource.sourceIndexes[negation.compactIndex];
+  if (localSourceIndex === undefined) return false;
+  const sourceIndex = sourceStart + localSourceIndex;
+  if (sourceText.slice(sourceIndex, sourceIndex + negation.token.length).toLowerCase() !== negation.token) return false;
+
+  const startsSourceToken = !isWordCharacter(sourceText[sourceIndex - 1]);
+  const isRightFused = isWordCharacter(sourceText[sourceIndex + negation.token.length]);
+  if (negation.token === "no") return startsSourceToken && isRightFused;
+  if (negation.token !== "not") return false;
+
+  const precedingAuxiliary = quote.slice(0, negation.sourceIndex)
+    .match(/(?:^|[^\p{L}\p{N}_])(can|could|do|does|did|have|has|had|is|are|was|were|may|might|must|should|would|will)\s+$/iu)?.[1]
+    ?.toLowerCase();
+  if (!precedingAuxiliary
+    || !compactedSource.text.slice(0, negation.compactIndex).endsWith(precedingAuxiliary)) return false;
+
+  const isLeftFused = isWordCharacter(sourceText[sourceIndex - 1]);
+  if (!isLeftFused && !isRightFused) return false;
+  if (!isRightFused) return true;
+
+  // A right-fused `not` is inherently ambiguous (`notable` vs `not able`).
+  // Recover only do-support when the quote's next word has at least five characters.
+  if (!/^(?:do|does|did)$/.test(precedingAuxiliary)) return false;
+  const followingWord = quote.slice(negation.sourceIndex + negation.token.length)
+    .match(/^\s+([\p{L}\p{N}_]+)/u)?.[1];
+  return followingWord !== undefined && Array.from(followingWord).length >= 5;
+}
+
+function negationKey(negation: PositionedNegation): string {
+  return `${negation.compactIndex}:${negation.token}`;
+}
+
+function isWordCharacter(character: string | undefined): boolean {
+  return character !== undefined && /[\p{L}\p{N}_]/u.test(character);
 }
 
 function compactExtractedText(value: string): { text: string; sourceIndexes: number[] } {

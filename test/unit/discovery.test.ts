@@ -19,7 +19,10 @@ describe("discovery", () => {
     ["most respondents (31%) keep a mental list of tasks, while 29%rely on digital reminders", "most respondents (31%) keep a mental list of tasks, while 29% rely on digital reminders"],
     ["This did not fail. The mostchallenging tasks still persist.", "The most challenging tasks still persist."],
     ["Students donot submit assignments", "Students do not submit assignments"],
+    ["Students do notsubmit assignments", "Students do not submit assignments"],
     ["Studentsdonotsubmit assignments", "Students do not submit assignments"],
+    ["Noresults were found", "No results were found"],
+    ["Report: Noresults returned", "Report: No results returned"],
     ["There is noway to recover", "There is no way to recover"],
     ["They cannot proceed", "They can not proceed"],
   ])("accepts extraction formatting without changing quoted characters: %s", (source, quote) => {
@@ -35,6 +38,7 @@ describe("discovery", () => {
     ["The system was not able to recover.", "The system was notable to recover."],
     ["The system was not able without manual help.", "The system was notable without manual help."],
     ["No table was available.", "Not able was available."],
+    ["xNoresults returned", "No results returned"],
     ["Students miss deadlines", "  "],
   ])("rejects unsupported quotes despite formatting tolerance: %s", (source, quote) => {
     expect(quoteAppearsVerbatim(source, quote)).toBe(false);
