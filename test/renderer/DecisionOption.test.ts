@@ -60,14 +60,18 @@ describe("DecisionOption interactions", () => {
     const view = render(DecisionOption, { ...handlers(idea), onSave });
     await fireEvent.click(view.getByRole("button", { name: "Compare observed delivery windows." }));
     const decision = await view.findByLabelText("Your decision") as HTMLTextAreaElement;
+    const outcome = view.getByLabelText("Experiment outcome") as HTMLSelectElement;
     await fireEvent.input(decision, { target: { value: "Submitted draft" } });
+    await fireEvent.change(outcome, { target: { value: "pass" } });
     await fireEvent.click(view.getByRole("button", { name: "Save decision and result" }));
     await fireEvent.input(decision, { target: { value: "Newer unsaved draft" } });
+    await fireEvent.change(outcome, { target: { value: "inconclusive" } });
     pendingSave.resolve();
 
     await waitFor(() => expect(saveCompleted).toBe(true));
-    expect(onSave).toHaveBeenCalledWith(idea.id, "Submitted draft", "", "not-run");
+    expect(onSave).toHaveBeenCalledWith(idea.id, "Submitted draft", "", "pass");
     expect(decision.value).toBe("Newer unsaved draft");
+    expect(outcome.value).toBe("inconclusive");
     expect(view.queryByText("Saved", { exact: true })).toBeNull();
   });
 
@@ -84,7 +88,9 @@ describe("DecisionOption interactions", () => {
 
     availableView.unmount();
     const exhausted = option("follow-up-exhausted");
+    exhausted.canReassessEvidence = false;
     const exhaustedDetail = detail(exhausted, "", "");
+    exhaustedDetail.canReassessEvidence = true;
     exhaustedDetail.evidenceFollowUp = {
       status: "completed",
       question: "Which suppliers publish arrival histories?",
@@ -97,12 +103,15 @@ describe("DecisionOption interactions", () => {
       reassessmentError: null,
     };
     installDetailApi(vi.fn().mockResolvedValue(exhaustedDetail));
-    const exhaustedView = render(DecisionOption, { ...handlers(exhausted), onEvidenceFollowUp });
+    const onEvidenceReassessment = vi.fn().mockResolvedValue(undefined);
+    const exhaustedView = render(DecisionOption, { ...handlers(exhausted), onEvidenceFollowUp, onEvidenceReassessment });
     await fireEvent.click(exhaustedView.getByRole("button", { name: "Compare observed delivery windows." }));
     expect(await exhaustedView.findByText("Three suppliers publish dated arrival records.")).toBeTruthy();
     expect(exhaustedView.getByRole("link", { name: "Supplier delivery study" })).toBeTruthy();
     expect(exhaustedView.getByText("This option has used its one evidence follow-up.")).toBeTruthy();
     expect(exhaustedView.queryByRole("button", { name: "Check evidence" })).toBeNull();
+    await fireEvent.click(exhaustedView.getByRole("button", { name: "Reassess with new evidence" }));
+    expect(onEvidenceReassessment).toHaveBeenCalledWith(exhausted.runId);
   });
 });
 

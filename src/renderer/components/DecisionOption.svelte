@@ -28,6 +28,7 @@
   let observedResult = $state("");
   let savedDecision = $state("");
   let savedObservedResult = $state("");
+  let savedExperimentOutcome = $state<ExperimentOutcome>("not-run");
   let saved = $state(false);
   let experimentOutcome = $state<ExperimentOutcome>("not-run");
   let open = $state(false);
@@ -40,14 +41,20 @@
   let followUpSourcesWithoutQuotes = $derived(detail?.evidenceFollowUp?.sources.filter(
     (source) => !detail?.evidenceFollowUp?.factors.some((factor) => factor.sourceId === source.id),
   ) ?? []);
-  let formDirty = $derived(userDecision !== savedDecision || observedResult !== savedObservedResult);
+  let formDirty = $derived(userDecision !== savedDecision || observedResult !== savedObservedResult || experimentOutcome !== savedExperimentOutcome);
   let followUpQuestion = $state("");
-  let enhancedIdea = $derived(idea as EnhancedSolution);
   let enhancedFollowUp = $derived(detail?.evidenceFollowUp as EnhancedFollowUp | undefined);
   type EvidenceMetadata = { sourceRole?: string; audienceFit?: string; independentSourceKey?: string|null; supportsDemand?: boolean; demandEvidenceUncertainty?: string };
   function evidenceSummary(factor: SolutionView["factors"][number]): string {
     const evidence = factor as typeof factor & EvidenceMetadata;
     return `Source role: ${evidence.sourceRole ?? "unknown"} · Audience: ${evidence.audienceFit ?? "unknown"} · ${evidence.independentSourceKey ? "Independent origin identified" : "Independence unknown"} · ${evidence.supportsDemand ? "Supports demand" : "Does not establish demand"}`;
+  }
+  function confirmedEvidenceLabel(solution: SolutionView): string {
+    if (solution.problemVerdict !== "confirmed") return solution.problemVerdict;
+    const hasIntendedBuyerEvidence = solution.factors.some((factor) => (factor as typeof factor & EvidenceMetadata).audienceFit === "intended-buyer");
+    return hasIntendedBuyerEvidence
+      ? "confirmed with intended-buyer evidence; demand not established"
+      : "research marked confirmed; audience fit unassessed; demand not established";
   }
   $effect(() => {
     if (open && revision !== `${idea.id}:${idea.detailRevision}`) void loadDetail();
@@ -67,12 +74,14 @@
     error = "";
     const draftDecision = userDecision;
     const draftObservedResult = observedResult;
+    const draftExperimentOutcome = experimentOutcome;
     try {
       const result = await loadIdeaDetail(idea);
       if (requestEpoch !== detailLoadEpoch || !open || key !== `${idea.id}:${idea.detailRevision}`) return;
-      const preserveDraft = formDirty || userDecision !== draftDecision || observedResult !== draftObservedResult;
+      const preserveDraft = formDirty || userDecision !== draftDecision || observedResult !== draftObservedResult || experimentOutcome !== draftExperimentOutcome;
       detail = result;
-      experimentOutcome = (result as EnhancedSolution).experimentOutcome ?? "not-run";
+      const nextExperimentOutcome = (result as EnhancedSolution).experimentOutcome ?? "not-run";
+      savedExperimentOutcome = nextExperimentOutcome;
       const nextDecision = result.userDecision ?? "";
       const nextObservedResult = result.observedResult ?? "";
       savedDecision = nextDecision;
@@ -80,6 +89,7 @@
       if (!preserveDraft) {
         userDecision = nextDecision;
         observedResult = nextObservedResult;
+        experimentOutcome = nextExperimentOutcome;
       }
     } catch (cause) {
       if (requestEpoch === detailLoadEpoch && open && key === `${idea.id}:${idea.detailRevision}`) error = cause instanceof Error ? cause.message : "Could not load this option";
@@ -90,11 +100,13 @@
     saved = false;
     const submittedDecision = userDecision;
     const submittedObservedResult = observedResult;
+    const submittedExperimentOutcome = experimentOutcome;
     try {
-      await onSave(idea.id, submittedDecision, submittedObservedResult, experimentOutcome);
-      if (userDecision === submittedDecision && observedResult === submittedObservedResult) {
+      await onSave(idea.id, submittedDecision, submittedObservedResult, submittedExperimentOutcome);
+      if (userDecision === submittedDecision && observedResult === submittedObservedResult && experimentOutcome === submittedExperimentOutcome) {
         savedDecision = submittedDecision;
         savedObservedResult = submittedObservedResult;
+        savedExperimentOutcome = submittedExperimentOutcome;
         saved = true;
       }
     }
@@ -109,7 +121,7 @@
   {#if open}
     <div class="disclosure-content" id={`option-body-${idea.id}`}>
     <header>
-      <div><p class="status">{idea.selected ? "Your selected option" : "Option"} · Problem evidence: {idea.problemVerdict === "confirmed" ? "confirmed for the stated audience; demand not established" : idea.problemVerdict}</p>
+      <div><p class="status">{idea.selected ? "Your selected option" : "Option"} · Problem evidence: {confirmedEvidenceLabel(idea)}</p>
         <p>{idea.mechanism}</p></div>
       {#if idea.selectable}<button class="primary" disabled={busy || analysisBlocked} title={analysisBlocked ? "Wait for the current generation batch to finish" : undefined} onclick={() => onSelect(idea)}>Choose and analyze</button>{/if}
     </header>
@@ -206,9 +218,19 @@
                   <p class="status">This is a separate assessment. The original analysis above remains unchanged.</p>
                   <h3>Updated consequences</h3>
                   {#each enhancedFollowUp.reassessmentAnalysis.consequences as consequence, index (index)}<div class="finding"><strong>{consequence.direction}: {consequence.description}</strong><p>{consequence.rationale}</p></div>{/each}
+                  <h3>Updated risk assessment</h3>
+                  {#if enhancedFollowUp.riskReassessment}
+                    {#each enhancedFollowUp.riskReassessment.affectedRisks as risk (risk.riskId)}<div class="finding"><strong>{risk.effect}: {risk.riskId}</strong><p>{risk.rationale}</p></div>{/each}
+                    {#each enhancedFollowUp.riskReassessment.newRisks as risk (risk.riskId)}<div class="finding"><strong>New risk: {risk.description}</strong><p>{risk.whyDecisive}</p></div>{/each}
+                    {#if enhancedFollowUp.riskReassessment.additionalUnknowns.length}<ul>{#each enhancedFollowUp.riskReassessment.additionalUnknowns as unknown, index (index)}<li>{unknown}</li>{/each}</ul>{/if}
+                  {/if}
+                  {#each enhancedFollowUp.reassessmentAnalysis.risks as risk (risk.riskId)}<div class="finding"><strong>{risk.description}</strong><p>{risk.whyDecisive}</p></div>{:else}<p>No additional decisive risks were identified.</p>{/each}
+                  <h3>Updated proposed responses</h3>
+                  {#each enhancedFollowUp.reassessmentAnalysis.proposedResponses as response, index (index)}<div class="finding"><strong>{response.approach}</strong><p>Cost: {response.cost}</p><p>Fails if: {response.failsIf}</p></div>{:else}<p>No additional response was proposed.</p>{/each}
                   {#if enhancedFollowUp.reassessmentAnalysis.unknowns.length}<h3>Updated open questions</h3><ul>{#each enhancedFollowUp.reassessmentAnalysis.unknowns as unknown, index (index)}<li>{unknown}</li>{/each}</ul>{/if}
+                  <section class="experiment"><h3>Updated experiment</h3><strong>{enhancedFollowUp.reassessmentAnalysis.experiment.question}</strong><p>{enhancedFollowUp.reassessmentAnalysis.experiment.method}</p><dl><div><dt>Cost</dt><dd>{enhancedFollowUp.reassessmentAnalysis.experiment.cost}</dd></div><div><dt>Pass</dt><dd>{enhancedFollowUp.reassessmentAnalysis.experiment.passCriterion}</dd></div><div><dt>Fail</dt><dd>{enhancedFollowUp.reassessmentAnalysis.experiment.failCriterion}</dd></div><div><dt>Inconclusive</dt><dd>{enhancedFollowUp.reassessmentAnalysis.experiment.inconclusiveCriterion}</dd></div></dl></section>
                 </details>
-              {:else if detail.evidenceFollowUp.status === "completed" && enhancedIdea.canReassessEvidence && idea.runId && onEvidenceReassessment}
+              {:else if detail.evidenceFollowUp.status === "completed" && (detail as EnhancedSolution).canReassessEvidence && idea.runId && onEvidenceReassessment}
                 <button class="reassess" disabled={busy} onclick={() => onEvidenceReassessment?.(idea.runId!)}>Reassess with new evidence</button>
                 <p class="status">Your prior analysis will remain unchanged and the reassessment will appear separately.</p>
               {/if}
