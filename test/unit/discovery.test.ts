@@ -29,6 +29,8 @@ describe("discovery", () => {
     ["Scores were 1 00 in the table", "Scores were 100 in the table"],
     ["The outcome was notable.", "The outcome was not able."],
     ["The system was not able to recover.", "The system was notable to recover."],
+    ["The system was not able without manual help.", "The system was notable without manual help."],
+    ["No table was available.", "Not able was available."],
     ["Students miss deadlines", "  "],
   ])("rejects unsupported quotes despite formatting tolerance: %s", (source, quote) => {
     expect(quoteAppearsVerbatim(source, quote)).toBe(false);

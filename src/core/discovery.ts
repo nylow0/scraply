@@ -316,7 +316,7 @@ export function quoteAppearsVerbatim(sourceText: string, quote: string): boolean
   if (normalizedSource.includes(normalizedQuote)) return true;
   // Extracted documents lose word spaces and use heading capitals. Keep every other
   // character in order, including punctuation and spaces between digits in tables.
-  // The fallback must not create or remove a negation by changing a word boundary.
+  // The fallback must preserve each negation's identity and compacted position.
   const extractedQuote = compactExtractedText(normalizedQuote).text;
   const extractedSource = compactExtractedText(normalizedSource);
   let matchIndex = extractedSource.text.indexOf(extractedQuote);
@@ -324,14 +324,26 @@ export function quoteAppearsVerbatim(sourceText: string, quote: string): boolean
     const firstSourceIndex = extractedSource.sourceIndexes[matchIndex]!;
     const lastSourceIndex = extractedSource.sourceIndexes[matchIndex + extractedQuote.length - 1]!;
     const sourceMatch = normalizedSource.slice(firstSourceIndex, lastSourceIndex + 1);
-    if (hasStandaloneNegation(sourceMatch) === hasStandaloneNegation(normalizedQuote)) return true;
+    if (hasMatchingNegations(sourceMatch, normalizedQuote)) return true;
     matchIndex = extractedSource.text.indexOf(extractedQuote, matchIndex + 1);
   }
   return false;
 }
 
-function hasStandaloneNegation(value: string): boolean {
-  return /(?:^|[^\p{L}\p{N}_])(?:no|not|never|none|neither|nor|without)(?=$|[^\p{L}\p{N}_])/iu.test(value);
+function hasMatchingNegations(source: string, quote: string): boolean {
+  const sourceNegations = standaloneNegationSignature(source);
+  const quoteNegations = standaloneNegationSignature(quote);
+  return sourceNegations.length === quoteNegations.length
+    && sourceNegations.every((negation, index) => negation === quoteNegations[index]);
+}
+
+function standaloneNegationSignature(value: string): string[] {
+  const matches = value.matchAll(/(^|[^\p{L}\p{N}_])(no|not|never|none|neither|nor|without)(?=$|[^\p{L}\p{N}_])/giu);
+  return Array.from(matches, (match) => {
+    const sourceIndex = match.index + match[1]!.length;
+    const compactIndex = compactExtractedText(value.slice(0, sourceIndex)).text.length;
+    return `${compactIndex}:${match[2]!.toLowerCase()}`;
+  });
 }
 
 function compactExtractedText(value: string): { text: string; sourceIndexes: number[] } {
