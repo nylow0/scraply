@@ -1,7 +1,7 @@
 import {
   ExportIdeasRequestSchema, ExportResearchRequestSchema, IPC_CHANNELS, SaveFavoriteModelSchema,
   NativeLoginCancelSchema, NativeLoginCompleteSchema, NativeLoginStartSchema, NativeProviderSchema,
-  SaveRunConfigSchema, SaveScopeSchema, SelectProblemsSchema, SelectOptionSchema, SaveDecisionSchema, EvidenceFollowUpRequestSchema,
+  SaveRunConfigSchema, SaveScopeSchema, SelectProblemsSchema, SelectOptionSchema, SaveDecisionSchema, EvidenceFollowUpRequestSchema, EvidenceReassessmentRequestSchema,
   AppCommandSchema, type NativeLoginCompleteResult, type NativeLoginStartResult, type ResearchEvent,
   type SolutionView, type SourceDetail, type ValidationState, type WorkspaceState,
 } from "./ipc";
@@ -16,10 +16,12 @@ export function createScraplyApi(transport: ApiTransport) {
   return {
     selectOption: (payload: { threadId: string; runId: string; solutionId: string }): Promise<WorkspaceState> =>
       transport.invoke(IPC_CHANNELS.SELECT_OPTION, SelectOptionSchema.parse(payload)),
-    saveDecision: (payload: { threadId: string; solutionId: string; userDecision: string; observedResult: string }): Promise<WorkspaceState> =>
+    saveDecision: (payload: { threadId: string; solutionId: string; userDecision: string; observedResult: string; experimentOutcome?: "not-run" | "pass" | "fail" | "inconclusive" }): Promise<WorkspaceState> =>
       transport.invoke(IPC_CHANNELS.SAVE_DECISION, SaveDecisionSchema.parse(payload)),
     requestEvidenceFollowUp: (payload: { threadId: string; runId: string; question: string }): Promise<WorkspaceState> =>
       transport.invoke(IPC_CHANNELS.EVIDENCE_FOLLOW_UP, EvidenceFollowUpRequestSchema.parse(payload)),
+    requestEvidenceReassessment: (payload: { threadId: string; runId: string }): Promise<WorkspaceState> =>
+      transport.invoke(IPC_CHANNELS.EVIDENCE_REASSESSMENT, EvidenceReassessmentRequestSchema.parse(payload)),
     getValidation: (): Promise<ValidationState> => transport.invoke(IPC_CHANNELS.GET_VALIDATION),
     retryConnection: (): Promise<void> => transport.invoke(IPC_CHANNELS.RETRY_CONNECTION),
     getWorkspace: (): Promise<WorkspaceState> => transport.invoke(IPC_CHANNELS.GET_WORKSPACE),

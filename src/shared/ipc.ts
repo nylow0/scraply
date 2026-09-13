@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { ScopeSchema, WorkflowV2DecisionAnalysisOutputSchema, WorkflowV2RiskEvaluationOutputSchema } from "./structured-output-schemas";
+import { ScopeSchema, WorkflowV2CompatibleDecisionAnalysisOutputSchema, WorkflowV2RiskEvaluationOutputSchema, WorkflowV2RiskReassessmentOutputSchema } from "./structured-output-schemas";
 import {
   MessageSchema,
   ModelCatalogSchema,
@@ -70,10 +70,14 @@ export const SelectOptionSchema = z.object({ threadId: EntityIdSchema, runId: En
 export const SaveDecisionSchema = z.object({
   threadId: EntityIdSchema, solutionId: EntityIdSchema,
   userDecision: z.string().trim().max(8_000), observedResult: z.string().trim().max(8_000),
+  experimentOutcome: z.enum(["not-run", "pass", "fail", "inconclusive"]).default("not-run"),
 }).strict();
 export const EvidenceFollowUpRequestSchema = z.object({
   threadId: EntityIdSchema, runId: EntityIdSchema,
   question: z.string().trim().min(1).max(500),
+}).strict();
+export const EvidenceReassessmentRequestSchema = z.object({
+  threadId: EntityIdSchema, runId: EntityIdSchema,
 }).strict();
 export const SelectProblemsSchema = z.object({
   threadId: EntityIdSchema,
@@ -127,6 +131,10 @@ export const EvidenceFollowUpViewSchema = z.object({
   sources: z.array(SourceDetailSchema),
   factors: z.array(FactorViewSchema),
   error: z.string().nullable(),
+  reassessmentStatus: z.enum(["running", "completed", "failed"]).nullable(),
+  riskReassessment: WorkflowV2RiskReassessmentOutputSchema.nullable(),
+  reassessmentAnalysis: WorkflowV2CompatibleDecisionAnalysisOutputSchema.nullable(),
+  reassessmentError: z.string().nullable(),
 });
 export const ProblemCandidateSchema = z.object({
   id: EntityIdSchema,
@@ -162,6 +170,7 @@ export const SolutionViewSchema = z.object({
   runId: EntityIdSchema.optional(), selected: z.boolean().optional(), selectable: z.boolean().optional(),
   evidenceFollowUpStatus: z.enum(["running", "completed", "failed"]).optional(),
   canRequestEvidenceFollowUp: z.boolean().optional(),
+  canReassessEvidence: z.boolean().optional(),
   keyAssumption: z.string().optional(), whyCurrentApproachMaySuffice: z.string().optional(),
   startupOpportunity: z.object({
     opportunityType: z.enum(["startup-opportunity", "process-improvement", "incumbent-configuration"]),
@@ -171,11 +180,12 @@ export const SolutionViewSchema = z.object({
   }).strict().optional(),
   unknowns: z.array(z.string()).optional(), supportingEvidenceIds: z.array(z.string()).optional(), contraryEvidenceIds: z.array(z.string()).optional(),
   contrarySources: z.array(z.object({ id: EntityIdSchema, title: z.string(), url: z.string().url(), text: z.string() })).optional(),
-  decisionAnalysis: WorkflowV2DecisionAnalysisOutputSchema.nullable().optional(),
+  decisionAnalysis: WorkflowV2CompatibleDecisionAnalysisOutputSchema.nullable().optional(),
   riskEvaluation: WorkflowV2RiskEvaluationOutputSchema.nullable().optional(),
   riskEvaluationCriteria: z.string().optional(),
   evidenceFollowUp: EvidenceFollowUpViewSchema.optional(),
-  userDecision: z.string().nullable().optional(), observedResult: z.string().nullable().optional(), detailRevision: z.string().optional(),
+  userDecision: z.string().nullable().optional(), observedResult: z.string().nullable().optional(),
+  experimentOutcome: z.enum(["not-run", "pass", "fail", "inconclusive"]).optional(), detailRevision: z.string().optional(),
   id: EntityIdSchema, problemId: EntityIdSchema, problemStatement: z.string(), problemVerdict: ProblemCandidateSchema.shape.verdict,
   factors: z.array(FactorViewSchema),
   mechanism: z.string(), description: z.string(), respectsOffLimits: z.boolean(), respectsOffLimitsWhy: z.string(),
@@ -261,6 +271,7 @@ export type RunUsage = z.infer<typeof RunUsageSchema>;
 export const IPC_CHANNELS = {
   APP_COMMAND: "scraply:app-command", SHOW_APP_MENU: "scraply:show-app-menu", DISCARD_IDEA: "scraply:discard-idea",
   SELECT_OPTION: "scraply:select-option", SAVE_DECISION: "scraply:save-decision", EVIDENCE_FOLLOW_UP: "scraply:evidence-follow-up",
+  EVIDENCE_REASSESSMENT: "scraply:evidence-reassessment",
   GET_VALIDATION: "scraply:get-validation", RETRY_CONNECTION: "scraply:retry-connection",
   OPEN_DATA_FOLDER: "scraply:open-data-folder", OPEN_LOGS_FOLDER: "scraply:open-logs-folder",
   GET_WORKSPACE: "scraply:get-workspace", CREATE_THREAD: "scraply:create-thread", SELECT_THREAD: "scraply:select-thread",

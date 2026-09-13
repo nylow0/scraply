@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { evaluateSelectedOptionRisk, analyzeSelectedOption, produceDevelopmentOptions, type WorkflowV2DevelopmentContext } from "../../src/core/development";
+import { evaluateSelectedOptionRisk, analyzeSelectedOption, produceDevelopmentOptions, reassessSelectedOption, reassessSelectedOptionRisk, type WorkflowV2DevelopmentContext } from "../../src/core/development";
 import type { StructuredModelClient } from "../../src/providers/structured";
 import { developmentProjection } from "../../src/shared/development-projection";
 
@@ -39,12 +39,44 @@ test("rejects duplicate risk identities without an app-owned retry", async () =>
 });
 
 test("retains independently evaluated risks and unknowns when analysis omits them", async () => {
-  const analysis = { consequences: [], risks: [], proposedResponses: [], unknowns: [], experiment: { question: "Is state current?", method: "Check ten claims", cost: "One hour", passCriterion: "Ten agree", failCriterion: "Any stale" } };
+  const analysis = { consequences: [], proposedResponses: [], additionalUnknowns: ["Operator access"], experiment: { question: "Is state current?", method: "Check ten claims", cost: "One hour", passCriterion: "Ten agree", failCriterion: "Any stale", inconclusiveCriterion: "The sample cannot be retrieved" } };
   let calls = 0;
-  const result = await analyzeSelectedOption(context, option, dependencies(analysis, () => { calls++; }), evaluation);
+  const result = await analyzeSelectedOption(context, option, dependencies(analysis, evidence => {
+    calls++;
+    expect(JSON.stringify(evidence)).toContain("scraply:risk-evaluation");
+  }), evaluation);
   expect(result.analysis.risks).toEqual(evaluation.risks);
-  expect(result.analysis.unknowns).toEqual(evaluation.unknowns);
+  expect(result.analysis.unknowns).toEqual([...evaluation.unknowns, "Operator access"]);
+  expect(result.request.jsonSchema).not.toHaveProperty("properties.risks");
+  expect(result.request.jsonSchema).not.toHaveProperty("properties.unknowns");
   expect(calls).toBe(1);
+});
+
+test("reassesses only against follow-up evidence and keeps authoritative risk records exact", async () => {
+  const followUp = [{ sourceId: "follow-up-factor", content: { quote: "Exports refresh each minute" } }];
+  const riskResult = await reassessSelectedOptionRisk(context, option, evaluation, followUp, dependencies({
+    affectedRisks: [{ riskId: "stale", effect: "weakened", rationale: "The refresh is bounded" }],
+    newRisks: [{ riskId: "permissions", description: "Operators cannot read exports", whyDecisive: "The check cannot run" }],
+    additionalUnknowns: ["Export permissions"],
+  }, evidence => {
+    const serialized = JSON.stringify(evidence);
+    expect(serialized).toContain("follow-up-factor");
+    expect(serialized).toContain("scraply:original-risk-evaluation");
+  }));
+  const draft = { consequences: [], proposedResponses: [], additionalUnknowns: [], experiment: {
+    question: "Can operators read current state?", method: "Check ten claims", cost: "One hour",
+    passCriterion: "Ten are current", failCriterion: "Two are stale", inconclusiveCriterion: "Permissions prevent inspection",
+  } };
+  const result = await reassessSelectedOption(context, option, {
+    consequences: [], risks: evaluation.risks, proposedResponses: [], unknowns: evaluation.unknowns,
+    experiment: { ...draft.experiment },
+  }, evaluation, riskResult.reassessment, followUp, dependencies(draft, evidence => {
+    const serialized = JSON.stringify(evidence);
+    expect(serialized).toContain("scraply:original-decision-analysis");
+    expect(serialized).toContain("follow-up-factor");
+  }));
+  expect(result.analysis.risks).toEqual([...evaluation.risks, ...riskResult.reassessment.newRisks]);
+  expect(result.analysis.risks[0]).toEqual(evaluation.risks[0]);
 });
 
 test("retains the historical call projection for saved v1 results", () => {

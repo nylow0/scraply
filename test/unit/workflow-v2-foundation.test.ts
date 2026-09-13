@@ -226,24 +226,27 @@ describe("workflow v2 foundation", () => {
         affects: "operators",
         rationale: "Shared state removes duplicate entry",
       }],
-      risks: [{ riskId: "risk-1", description: "The source blocks access", whyDecisive: "No state can sync" }],
       proposedResponses: [{
         riskIds: ["risk-1"],
         approach: "Test a manual export",
         cost: "One hour",
         failsIf: "Exports omit claim state",
       }],
-      unknowns: ["Export completeness"],
+      additionalUnknowns: ["Export completeness"],
       experiment: {
         question: "Does one export contain enough state?",
         method: "Inspect ten recent claims",
         cost: "One hour",
         passCriterion: "At least nine contain all required fields",
         failCriterion: "Two or more omit a required field",
+        inconclusiveCriterion: "The export cannot be obtained",
       },
     }, (request) => {
       capturedEvidence = JSON.stringify(request.evidence);
-    }));
+    }), {
+      risks: [{ riskId: "risk-1", description: "The source blocks access", whyDecisive: "No state can sync" }],
+      unknowns: [],
+    });
 
     expect(capturedEvidence).toContain(selected.mechanism);
     expect(capturedEvidence).toContain("spreadsheet failed");

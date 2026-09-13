@@ -1,6 +1,7 @@
 import type { ZodType } from "zod";
 import {
   WorkflowV2DecisionAnalysisOutputSchema,
+  WorkflowV2CompatibleDecisionAnalysisOutputSchema,
   WorkflowV2FactorHarvestOutputSchema,
   WorkflowV2ProblemCandidatesOutputSchema,
   WorkflowV2ProblemKillOutputSchema,
@@ -119,7 +120,9 @@ export function parseWorkflowV2StageOutput(
   }
   // Keep this revision switch when adding schemas. Saved checkpoints must keep using the schema
   // version that created them instead of the currently bundled stage definition.
-  const output = WORKFLOW_V2_STAGE_REGISTRY[stageId].schema.parse(value);
+  const output = stageId === "decision-analysis"
+    ? WorkflowV2CompatibleDecisionAnalysisOutputSchema.parse(value)
+    : WORKFLOW_V2_STAGE_REGISTRY[stageId].schema.parse(value);
   assertWorkflowV2StageOutputSemantics(stageId, output, evidence);
   return output;
 }

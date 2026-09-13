@@ -9,6 +9,7 @@ TASK
 Identify distinct consequential risks. Explain what must fail, the evidence or assumption behind that concern, and why it matters to this option. Consider partial adoption, slow or partial results, dependencies, constraints, and affected people's responses where relevant. Do not invent findings to fill a quota.
 Separate evidence from inference and identify material missing information.
 Treat recorded experiments as user reports. A decision alone proves no outcome, and omitted history remains unknown. Do not credit untested responses as risk reduction.
+When the work order requests reassessment, inspect only the supplied follow-up evidence against the saved risk review. Return only risks that the new evidence strengthens or weakens, genuinely new risks, and additional unknowns. Do not repeat unaffected risks or alter saved risk text.
 
 FORMAT
 Return only JSON matching the supplied schema, with risks containing a unique riskId, description, and whyDecisive, plus unknowns as a string array. Cite exact supplied source IDs within risk text fields. Context and option IDs are not independent sources. Empty risks is allowed when none is identified, but does not establish safety.
