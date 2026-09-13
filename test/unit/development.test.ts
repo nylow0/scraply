@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { evaluateSelectedOptionRisk, analyzeSelectedOption, type WorkflowV2DevelopmentContext } from "../../src/core/development";
+import { evaluateSelectedOptionRisk, analyzeSelectedOption, produceDevelopmentOptions, type WorkflowV2DevelopmentContext } from "../../src/core/development";
 import type { StructuredModelClient } from "../../src/providers/structured";
 import { developmentProjection } from "../../src/shared/development-projection";
 
@@ -50,4 +50,38 @@ test("retains independently evaluated risks and unknowns when analysis omits the
 test("retains the historical call projection for saved v1 results", () => {
   expect(developmentProjection(3)).toBe(14);
   expect(developmentProjection(5)).toBe(22);
+});
+
+test("requires startup details and passes prior project mechanisms without making them evidence", async () => {
+  const startup = {
+    opportunityType: "startup-opportunity" as const,
+    payingCustomerSegment: "Independent claims operators",
+    trigger: "A duplicate filing is discovered",
+    existingSubstitute: "Check the shared claims tool manually",
+    gapAssessment: { kind: "hypothesis" as const, description: "Manual checks may be skipped under time pressure", evidenceIds: [] },
+    smallestSellableWorkflow: "Detect and block a duplicate filing",
+    firstCustomerRoute: "Interview operators in two claims communities",
+    disconfirmingDemandTest: "Reject demand if ten operators decline a manual paid pilot",
+  };
+  const { id: _id, problemId: _problemId, ...plainOption } = option;
+  void _id;
+  void _problemId;
+  const startupContext = {
+    ...context,
+    priorProjectMechanisms: [{ mechanism: "Shared-state reminder", problemStatement: "Claims are filed twice" }],
+  };
+  const result = await produceDevelopmentOptions(startupContext, {
+    ...dependencies({ options: [{ ...plainOption, startupOpportunity: startup }] }),
+    explorationPurpose: "startup-opportunities",
+    ideaCount: 1,
+  });
+  expect(result.options[0]?.startupOpportunity).toEqual(startup);
+  const requestInputs = result.request.workOrder.inputs as { explorationPurpose: string; evidenceSourceIds: string[] };
+  expect(requestInputs).toMatchObject({ explorationPurpose: "startup-opportunities" });
+  expect(JSON.stringify(result.request.evidence[0]?.content)).toContain("Shared-state reminder");
+  expect(requestInputs.evidenceSourceIds).toEqual([]);
+
+  await expect(produceDevelopmentOptions(startupContext, {
+    ...dependencies({ options: [plainOption] }), explorationPurpose: "startup-opportunities", ideaCount: 1,
+  })).rejects.toMatchObject({ code: "schema" });
 });

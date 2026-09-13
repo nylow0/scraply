@@ -6,6 +6,7 @@ import {
   ModelOptionSchema,
   ModelRefSchema,
   ReasoningEffortSchema,
+  ExplorationPurposeSchema,
   RunConfigSchema,
   SourceDetailSchema as SharedSourceDetailSchema,
   ThreadSchema,
@@ -80,6 +81,7 @@ export const SelectProblemsSchema = z.object({
   userProblem: z.string().trim().max(2_000).nullable(),
   model: ModelRefSchema,
   reasoningEffort: ReasoningEffortSchema,
+  explorationPurpose: ExplorationPurposeSchema.optional(),
 }).strict();
 export const ExportIdeasRequestSchema = z.object({ threadId: EntityIdSchema, format: z.enum(["markdown", "json"]).default("markdown") });
 export const ExportResearchRequestSchema = z.object({ threadId: EntityIdSchema });
@@ -156,6 +158,12 @@ export const SolutionViewSchema = z.object({
   evidenceFollowUpStatus: z.enum(["running", "completed", "failed"]).optional(),
   canRequestEvidenceFollowUp: z.boolean().optional(),
   keyAssumption: z.string().optional(), whyCurrentApproachMaySuffice: z.string().optional(),
+  startupOpportunity: z.object({
+    opportunityType: z.enum(["startup-opportunity", "process-improvement", "incumbent-configuration"]),
+    payingCustomerSegment: z.string(), trigger: z.string(), existingSubstitute: z.string(),
+    gapAssessment: z.object({ kind: z.enum(["evidenced", "hypothesis"]), description: z.string(), evidenceIds: z.array(z.string()) }).strict(),
+    smallestSellableWorkflow: z.string(), firstCustomerRoute: z.string(), disconfirmingDemandTest: z.string(),
+  }).strict().optional(),
   unknowns: z.array(z.string()).optional(), supportingEvidenceIds: z.array(z.string()).optional(), contraryEvidenceIds: z.array(z.string()).optional(),
   contrarySources: z.array(z.object({ id: EntityIdSchema, title: z.string(), url: z.string().url(), text: z.string() })).optional(),
   decisionAnalysis: WorkflowV2DecisionAnalysisOutputSchema.nullable().optional(),

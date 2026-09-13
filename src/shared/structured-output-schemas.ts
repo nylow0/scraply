@@ -135,6 +135,29 @@ export const MitigationsOutputSchema = z.object({
 
 const WorkflowV2RequiredTextSchema = z.string().trim().min(1);
 
+export const OpportunityTypeSchema = z.enum([
+  "startup-opportunity",
+  "process-improvement",
+  "incumbent-configuration",
+]);
+
+export const StartupGapAssessmentSchema = z.object({
+  kind: z.enum(["evidenced", "hypothesis"]),
+  description: WorkflowV2RequiredTextSchema,
+  evidenceIds: z.array(WorkflowV2RequiredTextSchema),
+}).strict();
+
+export const StartupOpportunityDetailsSchema = z.object({
+  opportunityType: OpportunityTypeSchema,
+  payingCustomerSegment: WorkflowV2RequiredTextSchema,
+  trigger: WorkflowV2RequiredTextSchema,
+  existingSubstitute: WorkflowV2RequiredTextSchema,
+  gapAssessment: StartupGapAssessmentSchema,
+  smallestSellableWorkflow: WorkflowV2RequiredTextSchema,
+  firstCustomerRoute: WorkflowV2RequiredTextSchema,
+  disconfirmingDemandTest: WorkflowV2RequiredTextSchema,
+}).strict();
+
 export const WorkflowV2QueryPlanItemSchema = z.object({
   query: WorkflowV2RequiredTextSchema,
   uncertainty: WorkflowV2RequiredTextSchema,
@@ -202,8 +225,12 @@ export const WorkflowV2SolutionOptionSchema = z.object({
   respectsOffLimitsWhy: WorkflowV2RequiredTextSchema,
 }).strict();
 
+export const WorkflowV2StartupSolutionOptionSchema = WorkflowV2SolutionOptionSchema.extend({
+  startupOpportunity: StartupOpportunityDetailsSchema,
+}).strict();
+
 export const WorkflowV2SolutionsOutputSchema = z.object({
-  options: z.array(WorkflowV2SolutionOptionSchema),
+  options: z.array(z.union([WorkflowV2StartupSolutionOptionSchema, WorkflowV2SolutionOptionSchema])),
 }).strict();
 
 export const WorkflowV2ConsequenceSchema = z.object({
@@ -278,5 +305,8 @@ export type Solution = z.infer<typeof SolutionSchema>;
 export type Outcome = z.infer<typeof OutcomeSchema>;
 export type Risk = z.infer<typeof RiskSchema>;
 export type ProposedMitigation = z.infer<typeof ProposedMitigationSchema>;
-export type WorkflowV2SolutionOption = z.infer<typeof WorkflowV2SolutionOptionSchema>;
+export type StartupOpportunityDetails = z.infer<typeof StartupOpportunityDetailsSchema>;
+export type WorkflowV2SolutionOption = z.infer<typeof WorkflowV2SolutionOptionSchema> & {
+  startupOpportunity?: StartupOpportunityDetails;
+};
 export type WorkflowV2DecisionAnalysis = z.infer<typeof WorkflowV2DecisionAnalysisOutputSchema>;

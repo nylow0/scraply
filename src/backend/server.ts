@@ -441,6 +441,7 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
           && row.decision_updated_at !== null && row.evidence_follow_up_status === null && row.run_status === "completed",
         keyAssumption: row.key_assumption === null ? undefined : String(row.key_assumption),
         whyCurrentApproachMaySuffice: row.why_current_approach_may_suffice === null ? undefined : String(row.why_current_approach_may_suffice),
+        startupOpportunity: row.startup_opportunity_json === null ? undefined : JSON.parse(String(row.startup_opportunity_json)),
         unknowns: JSON.parse(String(row.unknowns_json ?? "[]")),
         supportingEvidenceIds: JSON.parse(String(row.supporting_evidence_ids_json ?? "[]")),
         contraryEvidenceIds: JSON.parse(String(row.contrary_evidence_ids_json ?? "[]")),
@@ -1002,7 +1003,12 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
         } catch (error) { db.db.exec("ROLLBACK"); throw error; }
         if (input.problemIds.length === 0 && !input.userProblem) { threads.updateThreadStatus(input.threadId, "problems-ready"); return sendJson(res, 200, await workspaceState()); }
         const previousConfig = threads.getLatestRunConfig(input.threadId) ?? DEFAULT_RUN_CONFIG;
-        const config = RunConfigSchema.parse({ ...previousConfig, model: input.model, reasoningEffort: input.reasoningEffort });
+        const config = RunConfigSchema.parse({
+          ...previousConfig,
+          model: input.model,
+          reasoningEffort: input.reasoningEffort,
+          explorationPurpose: input.explorationPurpose ?? previousConfig.explorationPurpose,
+        });
         try { await ensureEngine().startNextSelected(input.threadId, config); }
         catch (error) { if (error instanceof ActiveRunConflictError) throw new AppError("conflict", "This research already has an active run."); throw error; }
         return sendJson(res, 200, await workspaceState());
