@@ -297,7 +297,14 @@ export function normalizeEvidenceText(value: string): string {
 
 export function quoteAppearsVerbatim(sourceText: string, quote: string): boolean {
   const normalizedQuote = normalizeEvidenceText(quote);
-  return normalizedQuote.length > 0 && normalizeEvidenceText(sourceText).includes(normalizedQuote);
+  if (!normalizedQuote) return false;
+  const normalizedSource = normalizeEvidenceText(sourceText);
+  if (normalizedSource.includes(normalizedQuote)) return true;
+  // Extracted documents lose word spaces and use heading capitals. Keep every other
+  // character in order, including punctuation and spaces between digits in tables.
+  const extractedQuote = normalizedQuote.toLowerCase().replace(/(?<!\d) | (?!\d)/g, "");
+  const extractedSource = normalizedSource.toLowerCase().replace(/(?<!\d) | (?!\d)/g, "");
+  return extractedSource.includes(extractedQuote);
 }
 
 export function batchSources(sources: HarvestedSource[], maxCharacters = SOURCE_BATCH_CHARACTERS): HarvestedSource[][] {
