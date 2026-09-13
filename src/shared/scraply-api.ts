@@ -52,7 +52,7 @@ export function createScraplyApi(transport: ApiTransport) {
     startResearch: (threadId: string): Promise<{ workspace: WorkspaceState }> => transport.invoke(IPC_CHANNELS.START_RESEARCH, { threadId }),
     cancelResearch: async (runId: string): Promise<WorkspaceState> => (await transport.invoke<{ workspace: WorkspaceState }>(IPC_CHANNELS.CANCEL_RESEARCH, { runId })).workspace,
     resumeResearch: async (runId: string): Promise<WorkspaceState> => (await transport.invoke<{ workspace: WorkspaceState }>(IPC_CHANNELS.RESUME_RESEARCH, { runId })).workspace,
-    selectProblems: (payload: { threadId: string; problemIds: string[]; userProblem: string | null }): Promise<WorkspaceState> =>
+    selectProblems: (payload: { threadId: string; problemIds: string[]; userProblem: string | null; model: import("./schemas").ModelRef; reasoningEffort: string }): Promise<WorkspaceState> =>
       transport.invoke(IPC_CHANNELS.SELECT_PROBLEMS, SelectProblemsSchema.parse(payload)),
     exportResearch: (threadId: string): Promise<{ cancelled: true } | { cancelled: false; file: string }> =>
       transport.invoke(IPC_CHANNELS.EXPORT_RESEARCH, ExportResearchRequestSchema.parse({ threadId })),

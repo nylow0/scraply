@@ -2,6 +2,21 @@ import { fireEvent, render, within } from "@testing-library/svelte";
 import { describe, expect, test, vi } from "vitest";
 import ProblemCheckpoint from "../../src/renderer/components/ProblemCheckpoint.svelte";
 import ResearchArchive from "../../src/renderer/components/ResearchArchive.svelte";
+import { DEFAULT_RUN_CONFIG } from "../../src/shared/schemas";
+
+const modelOptions = [{
+  ...DEFAULT_RUN_CONFIG.model,
+  displayName: "GPT-5.6 Sol",
+  defaultReasoningEffort: "medium",
+  reasoningEfforts: [{ id: "low", description: "Fast" }, { id: "medium", description: "Balanced" }],
+}, {
+  providerId: "openai-subscription",
+  modelId: "gpt-6-astra",
+  displayName: "GPT-6 Astra",
+  defaultReasoningEffort: "high",
+  reasoningEfforts: [{ id: "high", description: "Thorough" }, { id: "xhigh", description: "Deep" }],
+}];
+const checkpointDefaults = { modelOptions, initialConfig: DEFAULT_RUN_CONFIG };
 
 const rejected = [{
   id: "rejected-1",
@@ -13,6 +28,7 @@ describe("rejected problem evidence", () => {
   test.each([1, 2] as const)("projects the current three-stage development for saved workflow %s", async (version) => {
     const view = render(ProblemCheckpoint, {
       problems: [], rejectedCandidates: [], workflowVersion: version, busy: false,
+      ...checkpointDefaults,
       onCommit: vi.fn(), onExport: vi.fn(), onOpenSource: vi.fn(),
     });
     await fireEvent.input(view.getByRole("textbox", { name: "Or state the problem yourself." }), { target: { value: "A user-asserted problem." } });
@@ -23,6 +39,7 @@ describe("rejected problem evidence", () => {
     const view = render(ProblemCheckpoint, {
       problems: [],
       rejectedCandidates: rejected,
+      ...checkpointDefaults,
       busy: false,
       onCommit: vi.fn(),
       onExport: vi.fn(),
@@ -42,6 +59,23 @@ describe("rejected problem evidence", () => {
     expect(textarea.value).toBe(rejected[0]!.statement);
     expect(document.activeElement).toBe(textarea);
     expect((view.getByRole("button", { name: "Commit selection" }) as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  test("commits the chosen development model and a supported reasoning effort", async () => {
+    const onCommit = vi.fn().mockResolvedValue(undefined);
+    const view = render(ProblemCheckpoint, {
+      problems: [], rejectedCandidates: [], busy: false, ...checkpointDefaults,
+      onCommit, onExport: vi.fn(), onOpenSource: vi.fn(),
+    });
+    await fireEvent.input(view.getByRole("textbox", { name: "Or state the problem yourself." }), { target: { value: "A user-asserted problem." } });
+    await fireEvent.change(view.getByRole("combobox", { name: "Development model" }), { target: { value: "openai-subscription:gpt-6-astra" } });
+    expect((view.getByRole("combobox", { name: "Development reasoning" }) as HTMLSelectElement).value).toBe("high");
+    await fireEvent.change(view.getByRole("combobox", { name: "Development reasoning" }), { target: { value: "xhigh" } });
+    await fireEvent.click(view.getByRole("button", { name: "Commit selection" }));
+    expect(onCommit).toHaveBeenCalledWith(
+      [], "A user-asserted problem.",
+      { providerId: "openai-subscription", modelId: "gpt-6-astra" }, "xhigh",
+    );
   });
 
   test("keeps rejected candidates visible in the research archive without presenting them as evidence-backed", async () => {

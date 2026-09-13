@@ -110,7 +110,7 @@ describe("native research workflow through the production backend", () => {
     expect(discovered.problemCandidates[0]?.factors).toHaveLength(2);
     expect(item.searches).toHaveLength(7);
 
-    await item.post("/research/select-problems", { threadId, problemIds: [discovered.problemCandidates[0]!.id], userProblem: null }, WorkspaceStateSchema);
+    await item.post("/research/select-problems", { threadId, problemIds: [discovered.problemCandidates[0]!.id], userProblem: null, model, reasoningEffort: "low" }, WorkspaceStateSchema);
     const options = await item.waitFor((state) => state.threads.find((thread) => thread.id === threadId)?.status === "solutions-ready");
     expect(options.solutions).toHaveLength(2);
     const selected = options.solutions[0]!;
@@ -359,7 +359,7 @@ describe("native v2 decisions through the production backend", () => {
     const discovery = await item.waitFor((state) => state.threads.find((thread) => thread.id === threadId)?.status === "problems-ready");
     const problem = discovery.problemCandidates[0]!;
     expect(problem.verdict).toBe("overstated");
-    await item.post("/research/select-problems", { threadId, problemIds: [problem.id], userProblem: null }, WorkspaceStateSchema);
+    await item.post("/research/select-problems", { threadId, problemIds: [problem.id], userProblem: null, model, reasoningEffort: "low" }, WorkspaceStateSchema);
     const options = await item.waitFor((state) => state.latestResearchRun?.awaitingSelection === true);
     const selected = options.solutions[0]!;
     await item.post("/research/select-option", { threadId, runId: selected.runId, solutionId: selected.id }, WorkspaceStateSchema);
