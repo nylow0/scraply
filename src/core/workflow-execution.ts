@@ -15,6 +15,7 @@ import { WORKFLOW_V2_STAGE_IDS, WORKFLOW_V2_STAGE_REGISTRY, type WorkflowV2Stage
 export class WorkflowExecution {
   readonly repository: WorkflowV2Repository;
   private readonly prompts: Record<WorkflowV2StageId, ResolvedWorkflowV2Prompt>;
+  private readonly factorUncertainty = new Map<string, string>();
   private readonly pendingStages = new Map<string, {
     stageId: WorkflowV2StageId;
     request: StructuredStageRequest<unknown>;
@@ -120,7 +121,21 @@ export class WorkflowExecution {
         output = stage.schema.parse(completion.output);
         metadata = completion.metadata;
         assertDiscoveryStageSemantics(stageId, output, original);
-        this.pendingStages.set(original.stage, { stageId, request, prompt, metadata, output, context, selectionId });
+        if (stageId === "factor-harvest") {
+          // A harvest can span several slow batches. Save each completed batch so cancelling a
+          // later one does not replay provider work that already returned a validated result.
+          this.db.immediateTransaction(() => {
+            this.commitStage(stageId, request, prompt, metadata, output, context, selectionId);
+            this.save(`metadata:${original.stage}`, metadata);
+          });
+        } else {
+          this.pendingStages.set(original.stage, { stageId, request, prompt, metadata, output, context, selectionId });
+        }
+      }
+      if (stageId === "factor-harvest") {
+        for (const factor of WorkflowV2FactorHarvestOutputSchema.parse(output).factors) {
+          this.factorUncertainty.set(factorIdentity(factor), factor.uncertainty);
+        }
       }
       // Discovery keeps its deterministic search/quote pipeline. Only query-plan's wire shape differs.
       let adapted: unknown = output;
@@ -157,15 +172,8 @@ export class WorkflowExecution {
   }
 
   withFactorUncertainty<T extends { sourceId: string; subject: string; quote: string }>(factors: T[]): Array<T & { uncertainty?: string }> {
-    const uncertainty = new Map<string, string>();
-    for (const pending of this.pendingStages.values()) {
-      if (pending.stageId !== "factor-harvest") continue;
-      for (const factor of WorkflowV2FactorHarvestOutputSchema.parse(pending.output).factors) {
-        uncertainty.set(factorIdentity(factor), factor.uncertainty);
-      }
-    }
     return factors.map((factor) => {
-      const value = uncertainty.get(factorIdentity(factor));
+      const value = this.factorUncertainty.get(factorIdentity(factor));
       return value ? { ...factor, uncertainty: value } : factor;
     });
   }
