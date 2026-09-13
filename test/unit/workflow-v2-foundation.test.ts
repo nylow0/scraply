@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -28,8 +28,14 @@ import { deriveJsonSchema } from "../../src/shared/json-schema";
 import { WorkflowV2SolutionOptionSchema } from "../../src/shared/structured-output-schemas";
 
 const directories: string[] = [];
+const bundledPromptDir = join(import.meta.dir, "../../prompts");
+
+beforeEach(() => {
+  configurePromptPaths({ bundledDir: bundledPromptDir, overrideDir: null });
+});
 
 afterEach(() => {
+  configurePromptPaths({ bundledDir: bundledPromptDir, overrideDir: null });
   while (directories.length > 0) rmSync(directories.pop()!, { recursive: true, force: true });
 });
 
