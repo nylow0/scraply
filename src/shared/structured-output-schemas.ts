@@ -266,6 +266,14 @@ export const WorkflowV2ExperimentSchema = z.object({
   cost: WorkflowV2RequiredTextSchema,
   passCriterion: WorkflowV2RequiredTextSchema,
   failCriterion: WorkflowV2RequiredTextSchema,
+  inconclusiveCriterion: WorkflowV2RequiredTextSchema,
+}).strict();
+
+export const WorkflowV2DecisionAnalysisDraftSchema = z.object({
+  consequences: z.array(WorkflowV2ConsequenceSchema),
+  proposedResponses: z.array(WorkflowV2ProposedResponseSchema),
+  additionalUnknowns: z.array(WorkflowV2RequiredTextSchema),
+  experiment: WorkflowV2ExperimentSchema.required(),
 }).strict();
 
 export const WorkflowV2DecisionAnalysisOutputSchema = z.object({
@@ -274,6 +282,31 @@ export const WorkflowV2DecisionAnalysisOutputSchema = z.object({
   proposedResponses: z.array(WorkflowV2ProposedResponseSchema),
   unknowns: z.array(WorkflowV2RequiredTextSchema),
   experiment: WorkflowV2ExperimentSchema,
+}).strict();
+
+const WorkflowV2LegacyDecisionAnalysisOutputSchema = WorkflowV2DecisionAnalysisOutputSchema.extend({
+  experiment: WorkflowV2ExperimentSchema.omit({ inconclusiveCriterion: true }),
+});
+
+export const WorkflowV2CompatibleDecisionAnalysisOutputSchema = z.union([
+  WorkflowV2DecisionAnalysisOutputSchema,
+  WorkflowV2LegacyDecisionAnalysisOutputSchema.transform((analysis) => ({
+    ...analysis,
+    experiment: {
+      ...analysis.experiment,
+      inconclusiveCriterion: "The observations do not meet either the pass or fail criterion.",
+    },
+  })),
+]);
+
+export const WorkflowV2RiskReassessmentOutputSchema = z.object({
+  affectedRisks: z.array(z.object({
+    riskId: WorkflowV2RequiredTextSchema,
+    effect: z.enum(["strengthened", "weakened"]),
+    rationale: WorkflowV2RequiredTextSchema,
+  }).strict()),
+  newRisks: z.array(WorkflowV2DecisionRiskSchema),
+  additionalUnknowns: z.array(WorkflowV2RequiredTextSchema),
 }).strict();
 
 export const STRUCTURED_OUTPUT_SCHEMAS = {
@@ -310,3 +343,5 @@ export type WorkflowV2SolutionOption = z.infer<typeof WorkflowV2SolutionOptionSc
   startupOpportunity?: StartupOpportunityDetails;
 };
 export type WorkflowV2DecisionAnalysis = z.infer<typeof WorkflowV2DecisionAnalysisOutputSchema>;
+export type WorkflowV2DecisionAnalysisDraft = z.infer<typeof WorkflowV2DecisionAnalysisDraftSchema>;
+export type WorkflowV2RiskReassessment = z.infer<typeof WorkflowV2RiskReassessmentOutputSchema>;

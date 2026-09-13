@@ -106,10 +106,18 @@ describe("workflow v2 persistence", () => {
       const snapshots = new Map(tables.map(table => [table, source.db.prepare(`SELECT * FROM ${table}`).all()]));
       for (const table of tables) {
         for (const row of snapshots.get(table)!) {
-          // The v19 fixture predates the archive column added in v22.
+          // The v19 fixture predates the archive and reassessment columns.
           const values = Object.entries(row as Record<string, string | number | null>)
-            .filter(([column]) => (table !== "threads" || column !== "archived_at")
-              && (table !== "solutions" || column !== "startup_opportunity_json"));
+            .filter(([column]) => {
+              if (table === "threads") return column !== "archived_at";
+              if (table === "solutions") return column !== "startup_opportunity_json";
+              if (table === "decision_analyses") return column !== "experiment_outcome";
+              if (table === "evidence_follow_ups") return ![
+                "reassessment_status", "risk_reassessment_json", "reassessment_analysis_json",
+                "risk_generation_id", "analysis_generation_id", "reassessment_error", "reassessed_at",
+              ].includes(column);
+              return true;
+            });
           legacy.prepare(`INSERT INTO ${table} (${values.map(([key]) => key).join(",")}) VALUES (${values.map(() => "?").join(",")})`).run(...values.map(([, value]) => value));
         }
       }
@@ -593,6 +601,44 @@ describe("workflow v2 persistence", () => {
     client.close();
   });
 
+  test("persists a separate evidence reassessment and permits retry only after failure", () => {
+    const client = database();
+    const followUps = new EvidenceFollowUpRepository(client);
+    const analysis = decisionAnalysis();
+    client.immediateTransaction(() => {
+      const workflow = new WorkflowV2Repository(client);
+      workflow.saveSolutionOptions("run-v2", "problem-1", [solution("solution-1")]);
+      workflow.selectSolution("run-v2", "solution-1");
+      const checkpoint = workflow.saveStageResult(decisionStageResult("solution-1", analysis));
+      workflow.saveDecisionAnalysis({ researchRunId: "run-v2", solutionId: "solution-1", stageResultId: checkpoint.id, analysis });
+      client.db.prepare("UPDATE research_runs SET status = 'completed' WHERE id = 'run-v2'").run();
+      followUps.request("run-v2", "solution-1", "Does evidence change the risk?");
+      followUps.markRunning("run-v2");
+      followUps.complete("run-v2", [], []);
+      followUps.beginReassessment("run-v2");
+      followUps.failReassessment("run-v2", "Provider unavailable");
+      followUps.beginReassessment("run-v2");
+      followUps.completeReassessment({
+        researchRunId: "run-v2",
+        riskReassessment: { affectedRisks: [], newRisks: [], additionalUnknowns: ["No firsthand account found"] },
+        analysis,
+        riskGenerationId: "risk-generation",
+        analysisGenerationId: "analysis-generation",
+      });
+    });
+    expect(followUps.find("run-v2")).toEqual(expect.objectContaining({
+      reassessmentStatus: "completed",
+      reassessmentAnalysis: analysis,
+      riskReassessment: { affectedRisks: [], newRisks: [], additionalUnknowns: ["No firsthand account found"] },
+    }));
+    expect(() => client.immediateTransaction(() => followUps.beginReassessment("run-v2")))
+      .toThrow("cannot overlap or replace");
+    const original = client.db.prepare("SELECT analysis_json FROM decision_analyses WHERE research_run_id = 'run-v2'")
+      .get() as { analysis_json: string };
+    expect(JSON.parse(original.analysis_json)).toEqual(analysis);
+    client.close();
+  });
+
   test("rejects changed schema, input, evidence, and context identities on checkpoint reuse", () => {
     const client = database();
     const repository = new WorkflowV2Repository(client);
@@ -775,6 +821,7 @@ function decisionAnalysis() {
       cost: "One hour",
       passCriterion: "Nine are complete",
       failCriterion: "Two are incomplete",
+      inconclusiveCriterion: "The export cannot be obtained",
     },
   };
 }

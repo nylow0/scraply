@@ -390,7 +390,7 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
       )
       SELECT s.*, p.statement AS problem_statement, p.verdict AS problem_verdict,
         rr.workflow_version, rr.status AS run_status, rr.awaiting_selection, rr.updated_at AS run_updated_at,
-        ${details ? "da.analysis_json, da.user_decision, da.observed_result, sc.risk_evaluation_criteria, review.output_json AS risk_evaluation_json," : ""} da.updated_at AS decision_updated_at,
+        ${details ? "da.analysis_json, da.user_decision, da.observed_result, da.experiment_outcome, sc.risk_evaluation_criteria, review.output_json AS risk_evaluation_json," : ""} da.updated_at AS decision_updated_at,
         review.id AS risk_evaluation_key,
         ef.status AS evidence_follow_up_status, ef.updated_at AS evidence_follow_up_updated_at,
         COALESCE(oc.outcome_count, 0) AS outcome_count, COALESCE(oc.core_count, 0) AS core_count,
@@ -451,6 +451,7 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
           riskEvaluationCriteria: String(row.risk_evaluation_criteria ?? ""),
           userDecision: row.user_decision === null ? null : String(row.user_decision),
           observedResult: row.observed_result === null ? null : String(row.observed_result),
+          experimentOutcome: String(row.experiment_outcome ?? "not-run") as "not-run" | "pass" | "fail" | "inconclusive",
           contrarySources: contrarySourcesByProblem.get(String(row.problem_id)) ?? [],
           ...(evidenceFollowUp ? { evidenceFollowUp } : {}),
         } : {}),
@@ -1076,8 +1077,8 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
         const belongs = db.db.prepare(`SELECT da.id FROM decision_analyses da JOIN research_runs rr ON rr.id = da.research_run_id
           WHERE rr.thread_id = ? AND da.solution_id = ?`).get(input.threadId, input.solutionId) as { id: string } | undefined;
         if (!belongs) throw new AppError("not_found", "Selected analysis does not belong to this project.");
-        db.db.prepare("UPDATE decision_analyses SET user_decision = ?, observed_result = ?, updated_at = ? WHERE id = ?")
-          .run(input.userDecision, input.observedResult, new Date().toISOString(), belongs.id);
+        db.db.prepare("UPDATE decision_analyses SET user_decision = ?, observed_result = ?, experiment_outcome = ?, updated_at = ? WHERE id = ?")
+          .run(input.userDecision, input.observedResult, input.experimentOutcome, new Date().toISOString(), belongs.id);
         return sendJson(res, 200, await workspaceState());
       }
       if (route === "/research/cancel") {

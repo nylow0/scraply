@@ -1104,4 +1104,16 @@ export const MIGRATIONS = [
     id: 24,
     sql: `ALTER TABLE solutions ADD COLUMN startup_opportunity_json TEXT CHECK(startup_opportunity_json IS NULL OR json_valid(startup_opportunity_json));`,
   },
+  { id: 25, sql: `
+    ALTER TABLE decision_analyses ADD COLUMN experiment_outcome TEXT NOT NULL DEFAULT 'not-run'
+      CHECK(experiment_outcome IN ('not-run', 'pass', 'fail', 'inconclusive'));
+    ALTER TABLE evidence_follow_ups ADD COLUMN reassessment_status TEXT
+      CHECK(reassessment_status IN ('running', 'completed', 'failed'));
+    ALTER TABLE evidence_follow_ups ADD COLUMN risk_reassessment_json TEXT CHECK(risk_reassessment_json IS NULL OR json_valid(risk_reassessment_json));
+    ALTER TABLE evidence_follow_ups ADD COLUMN reassessment_analysis_json TEXT CHECK(reassessment_analysis_json IS NULL OR json_valid(reassessment_analysis_json));
+    ALTER TABLE evidence_follow_ups ADD COLUMN risk_generation_id TEXT;
+    ALTER TABLE evidence_follow_ups ADD COLUMN analysis_generation_id TEXT;
+    ALTER TABLE evidence_follow_ups ADD COLUMN reassessment_error TEXT;
+    ALTER TABLE evidence_follow_ups ADD COLUMN reassessed_at TEXT;
+  ` },
 ] as const;
