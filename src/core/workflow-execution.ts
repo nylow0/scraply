@@ -89,11 +89,19 @@ export class WorkflowExecution {
       const stageId = id as WorkflowV2StageId;
       const stage = WORKFLOW_V2_STAGE_REGISTRY[stageId];
       const prompt = this.resolvePrompt(stageId);
+      const factorLimit = stageId === "factor-harvest"
+        ? Number((original.workOrder.inputs as { factorLimit?: unknown }).factorLimit)
+        : Number.NaN;
+      const requestSchema = stageId === "factor-harvest" && Number.isInteger(factorLimit) && factorLimit >= 0
+        ? WorkflowV2FactorHarvestOutputSchema.extend({
+            factors: WorkflowV2FactorHarvestOutputSchema.shape.factors.max(factorLimit),
+          })
+        : stage.schema;
       const request: StructuredStageRequest<unknown> = {
         ...original,
         workOrder: { ...original.workOrder, instruction: prompt.text, inputs: { routing: original.workOrder.inputs, workflowVersion: 2 } },
-        schema: stage.schema,
-        jsonSchema: deriveJsonSchema(stage.schema),
+        schema: requestSchema,
+        jsonSchema: deriveJsonSchema(requestSchema),
         deadlineMs: stage.deadlineMs,
       };
       if (original.model.providerId === "openai-subscription") delete request.maxOutputTokens;
@@ -125,7 +133,7 @@ export class WorkflowExecution {
         this.persistFactorHarvest(original.stage, stageId, request, prompt, metadata, output, context, selectionId);
       } else {
         const completion = await client.structuredCompletion(request);
-        output = stage.schema.parse(completion.output);
+        output = requestSchema.parse(completion.output);
         metadata = completion.metadata;
         assertDiscoveryStageSemantics(stageId, output, original);
         if (stageId === "factor-harvest") {
@@ -141,10 +149,19 @@ export class WorkflowExecution {
           this.factorUncertainty.set(factorIdentity(factor), factor.uncertainty);
         }
       }
-      // Discovery keeps its deterministic search/quote pipeline. Only query-plan's wire shape differs.
+      // Discovery keeps its deterministic search and quote checks while retaining v2 evidence labels.
       let adapted: unknown = output;
-      if (stageId === "query-plan") adapted = { queries: WorkflowV2QueryPlanOutputSchema.parse(output).queries.map((item) => item.query) };
-      if (stageId === "factor-harvest") adapted = { factors: WorkflowV2FactorHarvestOutputSchema.parse(output).factors.map(({ uncertainty, ...factor }) => { void uncertainty; return factor; }) };
+      if (stageId === "query-plan") adapted = { queries: WorkflowV2QueryPlanOutputSchema.parse(output).queries };
+      if (stageId === "factor-harvest") adapted = {
+        factors: WorkflowV2FactorHarvestOutputSchema.parse(output).factors.map((factor) => "sourceRole" in factor ? factor : {
+          ...factor,
+          sourceRole: "unknown" as const,
+          audienceFit: "unknown" as const,
+          independentSourceKey: null,
+          supportsDemand: false,
+          demandEvidenceUncertainty: "Not classified in the saved output.",
+        }),
+      };
       if (stageId === "problem-candidates") adapted = { problems: WorkflowV2ProblemCandidatesOutputSchema.parse(output).problems.map(({ alternativeExplanations, unknowns, ...problem }) => { void alternativeExplanations; void unknowns; return problem; }) };
       if (stageId === "problem-kill") {
         const { unresolvedAssumptions, wouldChangeConclusion, ...assessment } = WorkflowV2ProblemKillOutputSchema.parse(output);

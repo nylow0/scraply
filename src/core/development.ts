@@ -48,6 +48,11 @@ export interface DevelopmentProblem extends Problem {
 export interface DevelopmentFactor extends Factor {
   id: string;
   uncertainty?: string;
+  sourceRole?: "firsthand" | "measured" | "vendor" | "recommendation" | "illustration" | "unknown";
+  audienceFit?: "intended-buyer" | "adjacent" | "general" | "unknown";
+  independentSourceKey?: string | null;
+  supportsDemand?: boolean;
+  demandEvidenceUncertainty?: string;
 }
 
 export interface DevelopedOutcome extends Outcome {

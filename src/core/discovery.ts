@@ -35,6 +35,8 @@ export {
 
 export type { DiscoveryDepth };
 export type HarvestMode = "domain" | "audience";
+type QueryIntent = "firsthand-experience" | "measured-behavior" | "current-alternative" | "buying-signal" | "contrary-evidence";
+interface PlannedQuery { query: string; intent: QueryIntent | "unclassified" }
 
 export const FACTOR_SUBJECT_MAX_CHARACTERS = 160;
 export const FACTOR_BEHAVIOR_MAX_CHARACTERS = 280;
@@ -115,20 +117,33 @@ export async function harvestFactors(
   const rejections: FactorRejection[] = [];
   const extracted: Record<HarvestMode, number> = { domain: 0, audience: 0 };
 
-  // The chosen source policy applies to audience searches; community complaints are one option.
+  // Hold one planned search in reserve. Run it only when the returned evidence mix still lacks
+  // firsthand or measured intended-buyer evidence, without exceeding the configured search count.
   for (const mode of ["domain", "audience"] as const) {
     const queries = await planQueries(scope, mode, depthConfig.queriesPerMode, dependencies);
-    const searchedSources = await searchQueries(queries, mode, depthConfig.searchResultsPerQuery, dependencies);
-    const modeSources = dedupeSources(searchedSources, allSources);
+    const reserveCount = dependencies.workflowVersion === 2 && queries.length > 1 ? 1 : 0;
+    const initialQueries = queries.slice(0, queries.length - reserveCount);
+    const reservedQueries = queries.slice(queries.length - reserveCount);
+    const searchedSources = await searchQueries(initialQueries, mode, depthConfig.searchResultsPerQuery, dependencies);
+    let modeSources = dedupeSources(searchedSources, allSources);
+    const modeFactorLimit = mode === "domain" ? Math.floor(depthConfig.factorCap / 2) : Math.ceil(depthConfig.factorCap / 2);
+    const reservedFactorCapacity = reservedQueries.length > 0 ? Math.max(1, Math.ceil(modeFactorLimit / 4)) : 0;
+    modeSources = selectDiverseSources(modeSources, modeFactorLimit);
     allSources.push(...modeSources);
-    const sourceById = new Map(allSources.map((source) => [source.id, source]));
-    for (const batch of batchSources(modeSources)) {
+    let acceptedForMode = 0;
+    const harvest = async (sources: HarvestedSource[], targetAccepted: number) => {
+      const sourceById = new Map(allSources.map((source) => [source.id, source]));
+      const batches = batchSources(sources);
+      for (const [index, batch] of batches.entries()) {
+        const remainingBatches = batches.length - index;
+        const factorLimit = Math.ceil((targetAccepted - acceptedForMode) / remainingBatches);
+        if (factorLimit <= 0) break;
       const response = await structuredCall(
         dependencies,
         `factor-harvest:${mode}:${batch.map((source) => source.id).join(",")}`,
         (dependencies.prompt ?? loadPrompt)("factor-harvest"),
-        buildFactorHarvestInput(scope, mode, batch),
-        FactorHarvestOutputSchema,
+        buildFactorHarvestInput(scope, mode, batch, factorLimit),
+        FactorHarvestOutputSchema.extend({ factors: FactorHarvestOutputSchema.shape.factors.max(factorLimit) }),
       );
       extracted[mode] += response.factors.length;
       for (const candidate of response.factors) {
@@ -138,6 +153,7 @@ export async function harvestFactors(
           continue;
         }
         const source = sourceById.get(candidate.sourceId)!;
+        const classification = "sourceRole" in candidate ? candidate : null;
         rawFactors.push({
           id: (dependencies.idFactory ?? randomUUID)(),
           subject: candidate.subject.trim(),
@@ -146,13 +162,34 @@ export async function harvestFactors(
           sourceId: source.id,
           harvestMode: mode,
           modelConfidence: candidate.modelConfidence,
+          uncertainty: classification?.uncertainty.trim() ?? null,
+          sourceRole: classification?.sourceRole ?? "unknown",
+          audienceFit: classification?.audienceFit ?? "unknown",
+          independentSourceKey: classification?.independentSourceKey?.trim() || null,
+          supportsDemand: classification?.supportsDemand === true
+            && classification.audienceFit === "intended-buyer"
+            && (classification.sourceRole === "firsthand" || classification.sourceRole === "measured"),
+          demandEvidenceUncertainty: classification?.demandEvidenceUncertainty.trim()
+            ?? "Not classified in the saved output.",
         });
+        acceptedForMode += 1;
+        if (acceptedForMode >= targetAccepted) break;
       }
+    }
+    };
+    await harvest(modeSources, modeFactorLimit - reservedFactorCapacity);
+    if (reservedQueries.length > 0 && !hasIntendedBuyerObservation(rawFactors.filter((factor) => factor.harvestMode === mode))) {
+      const additional = dedupeSources(
+        await searchQueries(reservedQueries, mode, depthConfig.searchResultsPerQuery, dependencies),
+        allSources,
+      );
+      const selected = selectDiverseSources(additional, Math.max(1, modeFactorLimit - acceptedForMode));
+      allSources.push(...selected);
+      await harvest(selected, modeFactorLimit);
     }
   }
 
   const shuffled = shuffleOnce(rawFactors, dependencies.random ?? Math.random)
-    .slice(0, depthConfig.factorCap)
     .map((factor) => ({ ...factor, source: allSources.find((source) => source.id === factor.sourceId)! }));
   const accepted = {
     domain: rawFactors.filter((factor) => factor.harvestMode === "domain").length,
@@ -271,6 +308,13 @@ export async function discoverProblems(
       throw new ProviderFailure("schema", "Evidence assessment referenced an unknown source ID", false);
     }
     const factorIds = citedFactors.map((factor) => factor.id);
+    const candidateBuyerIds = "intendedBuyerEvidenceFactorIds" in candidate ? candidate.intendedBuyerEvidenceFactorIds : [];
+    const killBuyerIds = "intendedBuyerEvidenceFactorIds" in kill ? kill.intendedBuyerEvidenceFactorIds : candidateBuyerIds;
+    const claimedBuyerIds = new Set(killBuyerIds);
+    const intendedBuyerFactors = citedFactors.filter((factor) => claimedBuyerIds.has(factor.id)
+      && factor.audienceFit === "intended-buyer"
+      && (factor.sourceRole === "firsthand" || factor.sourceRole === "measured"));
+    const independentBuyerSources = new Set(intendedBuyerFactors.map((factor) => factor.independentSourceKey).filter(Boolean));
     problems.push({
       id: (dependencies.idFactory ?? randomUUID)(),
       statement: candidate.statement.trim(),
@@ -281,9 +325,17 @@ export async function discoverProblems(
         ? candidate.scaleBasisFactorId
         : factorIds.includes(candidate.scaleBasisFactorId ?? "") ? candidate.scaleBasisFactorId : null,
       factorIds,
-      verdict: dependencies.workflowVersion === 2 && hostnames.length < 2 && kill.verdict === "confirmed" ? "insufficient-evidence" : kill.verdict,
-      verdictReason: dependencies.workflowVersion === 2 && hostnames.length < 2
-        ? `Support spans ${hostnames.length} independent source hosts. ${kill.verdictReason.trim()}` : kill.verdictReason.trim(),
+      verdict: dependencies.workflowVersion === 2
+        && kill.verdict === "confirmed"
+        && (hostnames.length < 2 || intendedBuyerFactors.length === 0 || independentBuyerSources.size < 2)
+        ? "insufficient-evidence" : kill.verdict,
+      verdictReason: dependencies.workflowVersion === 2
+        && (hostnames.length < 2 || intendedBuyerFactors.length === 0 || independentBuyerSources.size < 2)
+        ? `Intended-buyer demand evidence: ${intendedBuyerFactors.length} factor(s) across ${independentBuyerSources.size} independent source(s). ${evidenceGap(
+          "evidenceGap" in kill ? kill.evidenceGap : null,
+          "evidenceGap" in candidate ? candidate.evidenceGap : null,
+        )} ${kill.verdictReason.trim()}`
+        : kill.verdictReason.trim(),
       verdictSourceIds: validVerdictSourceIds,
       factors: citedFactors,
       sourceHostnames: hostnames,
@@ -391,7 +443,7 @@ async function planQueries(
   mode: HarvestMode,
   count: number,
   dependencies: DiscoveryDependencies,
-): Promise<string[]> {
+): Promise<PlannedQuery[]> {
   const response = await structuredCall(
     dependencies,
     `query-plan:${mode}`,
@@ -414,7 +466,10 @@ async function planQueries(
     },
     QueryPlanOutputSchema,
   );
-  const queries = [...new Set(response.queries.map((query) => query.trim()).filter(Boolean))];
+  const planned = response.queries.map((item): PlannedQuery => typeof item === "string"
+    ? { query: item.trim(), intent: "unclassified" }
+    : { query: item.query.trim(), intent: "intent" in item ? item.intent as QueryIntent : "unclassified" });
+  const queries = [...new Map(planned.filter((item) => item.query).map((item) => [item.query, item])).values()];
   if (queries.length < count) {
     throw new ProviderFailure(
       "schema",
@@ -422,11 +477,18 @@ async function planQueries(
       false,
     );
   }
+  if (dependencies.workflowVersion === 2 && queries.every((item) => item.intent !== "unclassified")) {
+    const intents = new Set(queries.map((item) => item.intent));
+    const hasBuyerIntent = intents.has("firsthand-experience") || intents.has("buying-signal");
+    if (!hasBuyerIntent || intents.size < Math.min(3, count)) {
+      throw new ProviderFailure("schema", "Query planner did not return enough distinct evidence intents", false);
+    }
+  }
   return queries.slice(0, count);
 }
 
 async function searchQueries(
-  queries: string[],
+  queries: PlannedQuery[],
   mode: HarvestMode,
   resultsPerQuery: number,
   dependencies: DiscoveryDependencies,
@@ -437,7 +499,7 @@ async function searchQueries(
     dependencies.signal?.throwIfAborted();
     // Wait for both reservations to settle before ending a failed batch. Flatten in query order
     // so response timing cannot change deduplication, source IDs, or the evidence shown downstream.
-    const batch = await Promise.allSettled(queries.slice(index, index + concurrency).map((query) => dependencies.search.search(query, {
+    const batch = await Promise.allSettled(queries.slice(index, index + concurrency).map(({ query }) => dependencies.search.search(query, {
       numResults: resultsPerQuery,
       maxCharacters: SOURCE_MAX_CHARACTERS,
       ...(mode === "audience"
@@ -657,9 +719,9 @@ export async function harvestEvidenceFollowUp(
   };
 }
 
-function buildFactorHarvestInput(scope: Scope, mode: HarvestMode, sources: HarvestedSource[]) {
+function buildFactorHarvestInput(scope: Scope, mode: HarvestMode, sources: HarvestedSource[], factorLimit: number) {
   return {
-    inputs: { harvestMode: mode },
+    inputs: { harvestMode: mode, factorLimit },
     evidence: { scope, sources: sources.map(toStageSource) },
   };
 }
@@ -676,8 +738,12 @@ function buildProblemCandidatesInput(scope: Scope, factors: HarvestedFactor[]) {
     inputs: {},
     evidence: {
       scope: stage2Scope,
-      factors: factors.map(({ id, subject, behavior, quote, sourceId, harvestMode, modelConfidence }) => ({
-      id, subject, behavior, quote, sourceId, harvestMode, modelConfidence,
+      factors: factors.map(({
+        id, subject, behavior, quote, sourceId, harvestMode, modelConfidence, uncertainty,
+        sourceRole, audienceFit, independentSourceKey, supportsDemand, demandEvidenceUncertainty,
+      }) => ({
+        id, subject, behavior, quote, sourceId, harvestMode, modelConfidence, uncertainty,
+        sourceRole, audienceFit, independentSourceKey, supportsDemand, demandEvidenceUncertainty,
       })),
     },
   };
@@ -710,6 +776,34 @@ function shuffleOnce<T>(values: T[], random: () => number): T[] {
     [shuffled[index], shuffled[swap]] = [shuffled[swap]!, shuffled[index]!];
   }
   return shuffled;
+}
+
+function selectDiverseSources(sources: HarvestedSource[], limit: number): HarvestedSource[] {
+  const queues = new Map<string, HarvestedSource[]>();
+  for (const source of sources) {
+    const key = new URL(source.canonicalUrl).hostname;
+    const queue = queues.get(key) ?? [];
+    queue.push(source);
+    queues.set(key, queue);
+  }
+  const selected: HarvestedSource[] = [];
+  while (selected.length < limit && [...queues.values()].some((queue) => queue.length > 0)) {
+    for (const queue of queues.values()) {
+      const source = queue.shift();
+      if (source) selected.push(source);
+      if (selected.length >= limit) break;
+    }
+  }
+  return selected;
+}
+
+function hasIntendedBuyerObservation(factors: Array<Omit<HarvestedFactor, "source">>): boolean {
+  return factors.some((factor) => factor.audienceFit === "intended-buyer"
+    && (factor.sourceRole === "firsthand" || factor.sourceRole === "measured"));
+}
+
+function evidenceGap(killGap: string | null, candidateGap: string | null): string {
+  return killGap ?? candidateGap ?? "More independent intended-buyer evidence is required.";
 }
 
 function rate(numerator: number, denominator: number): number {

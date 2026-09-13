@@ -172,7 +172,8 @@ describe("discovery", () => {
     expect(plannerCalls).toBe(1);
   });
 
-  test("reports accepted factors separately from factors retained by the cap", async () => {
+  test("caps each evidence mode before generation instead of discarding generated factors", async () => {
+    const domainFactorLimits: number[] = [];
     const result = await harvestFactors(scope(), {
       prompt: () => "Fixture discovery instructions",
       workflowVersion: 2,
@@ -182,17 +183,26 @@ describe("discovery", () => {
       random: () => 0.5,
       modelClient: modelClient(async (request) => {
         if (request.schema._def === QueryPlanOutputSchema._def) {
-          return request.schema.parse({ queries: ["one", "two", "three"] });
+          return request.schema.parse({ queries: [
+            { query: "one", intent: "firsthand-experience", uncertainty: "experience", intendedSourceType: "buyer account" },
+            { query: "two", intent: "current-alternative", uncertainty: "alternative", intendedSourceType: "workflow account" },
+            { query: "three", intent: "contrary-evidence", uncertainty: "contrary", intendedSourceType: "independent report" },
+          ] });
         }
         const evidence = request.evidence[0]!.content as { sources: Array<{ id: string }> };
         const sourceId = evidence.sources[0]?.id;
-        const count = (request.workOrder.inputs as { harvestMode: string }).harvestMode === "domain" ? 31 : 0;
+        const inputs = request.workOrder.inputs as { harvestMode: string; factorLimit: number };
+        if (inputs.harvestMode === "domain") domainFactorLimits.push(inputs.factorLimit);
+        const count = inputs.harvestMode === "domain" ? inputs.factorLimit : 0;
         return request.schema.parse({ factors: Array.from({ length: count }, () => ({
           subject: "Operators",
           behavior: "repeat manual filing",
           quote: "repeat manual filing every week",
           sourceId,
           modelConfidence: 0.8,
+          uncertainty: "Vendor-authored passage.", sourceRole: "vendor", audienceFit: "intended-buyer",
+          independentSourceKey: "vendor-one", supportsDemand: true,
+          demandEvidenceUncertainty: "No attributable buyer purchase behavior.",
         })) });
       }),
       search: {
@@ -207,11 +217,13 @@ describe("discovery", () => {
       },
     });
 
-    expect(result.factors).toHaveLength(30);
+    expect(result.factors).toHaveLength(15);
+    expect(domainFactorLimits).toEqual([11, 4]);
+    expect(result.factors.every((factor) => factor.supportsDemand === false)).toBe(true);
     expect(result.metrics).toMatchObject({
-      extracted: { domain: 31, audience: 0 },
-      accepted: { domain: 31, audience: 0 },
-      retained: { domain: 30, audience: 0 },
+      extracted: { domain: 15, audience: 0 },
+      accepted: { domain: 15, audience: 0 },
+      retained: { domain: 15, audience: 0 },
       rejected: { domain: 0, audience: 0 },
     });
   });
@@ -224,8 +236,8 @@ describe("discovery", () => {
       url: "https://other.test/context",
     };
     const factors: HarvestedFactor[] = [
-      { id: "factor-1", subject: "Operators", behavior: "repeat filing", quote: "Contrary evidence.", sourceId: existing.id, harvestMode: "domain", modelConfidence: 0.8, source: existing },
-      { id: "factor-2", subject: "Operators", behavior: "repeat filing", quote: "Supporting evidence.", sourceId: other.id, harvestMode: "audience", modelConfidence: 0.8, source: other },
+      { id: "factor-1", subject: "Operators", behavior: "repeat filing", quote: "Contrary evidence.", sourceId: existing.id, harvestMode: "domain", modelConfidence: 0.8, sourceRole: "firsthand", audienceFit: "intended-buyer", independentSourceKey: "operator-one", supportsDemand: false, source: existing },
+      { id: "factor-2", subject: "Operators", behavior: "repeat filing", quote: "Supporting evidence.", sourceId: other.id, harvestMode: "audience", modelConfidence: 0.8, sourceRole: "measured", audienceFit: "intended-buyer", independentSourceKey: "study-two", supportsDemand: false, source: other },
     ];
     let killEvidence: unknown;
     const result = await discoverProblems(scope(), factors, [existing, other], {
@@ -243,6 +255,7 @@ describe("discovery", () => {
             scaleEstimate: "Recurring",
             scaleBasisFactorId: null,
             factorIds: factors.map((factor) => factor.id),
+            intendedBuyerEvidenceFactorIds: factors.map((factor) => factor.id), evidenceGap: null,
           }] });
         }
         killEvidence = request.evidence;
@@ -250,6 +263,7 @@ describe("discovery", () => {
           verdict: "confirmed",
           verdictReason: "Contrary evidence does not resolve the problem.",
           verdictSourceIds: [existing.id],
+          intendedBuyerEvidenceFactorIds: factors.map((factor) => factor.id), evidenceGap: null,
         });
       }),
       search: {
@@ -262,6 +276,7 @@ describe("discovery", () => {
     expect(JSON.stringify(killEvidence)).toContain(existing.canonicalUrl);
     expect(result.killSources).toEqual([]);
     expect(result.problems[0]?.verdictSourceIds).toEqual([existing.id]);
+    expect(result.problems[0]?.verdict).toBe("confirmed");
   });
 
   test("skips a search result whose URL cannot be parsed instead of failing the run", async () => {
