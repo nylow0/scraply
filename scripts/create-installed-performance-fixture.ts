@@ -176,6 +176,7 @@ export function createInstalledPerformanceFixture(outputPath: string): Installed
       experiment: {
         question: "Does the synthetic mechanism pass?", method: "Inspect deterministic fixture rows", cost: "One synthetic hour",
         passCriterion: "All expected rows exist", failCriterion: "Any expected row is absent",
+        inconclusiveCriterion: "The fixture cannot inspect every expected row",
       },
     }));
     const analysisDigest = digest(analysis);

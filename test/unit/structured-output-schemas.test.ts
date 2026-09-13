@@ -40,12 +40,14 @@ describe("structured output schemas", () => {
   test("nullable values remain required keys with explicit null support", () => {
     const jsonSchema = deriveJsonSchema(STRUCTURED_OUTPUT_SCHEMAS.problemCandidates);
     const problems = jsonSchema.properties?.problems;
-    const problem = problems?.items?.properties;
-    if (!problems?.items || !problem?.scaleBasisFactorId) {
-      throw new Error("Problem candidate JSON Schema is missing its nested object shape");
+    const problemVariants = problems?.items?.anyOf;
+    if (!problemVariants?.length) {
+      throw new Error("Problem candidate JSON Schema is missing its object variants");
     }
 
-    expect(problems.items.required).toContain("scaleBasisFactorId");
-    expect(problem.scaleBasisFactorId.anyOf).toContainEqual({ type: "null" });
+    for (const problem of problemVariants) {
+      expect(problem.required).toContain("scaleBasisFactorId");
+      expect(problem.properties?.scaleBasisFactorId?.anyOf).toContainEqual({ type: "null" });
+    }
   });
 });
