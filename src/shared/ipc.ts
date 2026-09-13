@@ -124,6 +124,10 @@ export const FactorViewSchema = z.object({
   subject: z.string(), behavior: z.string(), quote: z.string(), sourceId: EntityIdSchema,
   sourceTitle: z.string(), sourceUrl: z.string().url(), harvestMode: z.enum(["domain", "audience"]),
   modelConfidence: z.number(), uncertainty: z.string().optional(),
+  sourceRole: z.enum(["firsthand", "measured", "vendor", "recommendation", "illustration", "unknown"]).optional(),
+  audienceFit: z.enum(["intended-buyer", "adjacent", "general", "unknown"]).optional(),
+  independentSourceKey: z.string().nullable().optional(), supportsDemand: z.boolean().optional(),
+  demandEvidenceUncertainty: z.string().optional(),
 });
 export const EvidenceFollowUpViewSchema = z.object({
   status: z.enum(["running", "completed", "failed"]),

@@ -25,6 +25,11 @@ export interface DiscoveryFactorRecord {
   harvestMode: "domain" | "audience";
   modelConfidence: number;
   uncertainty?: string | null;
+  sourceRole?: "firsthand" | "measured" | "vendor" | "recommendation" | "illustration" | "unknown";
+  audienceFit?: "intended-buyer" | "adjacent" | "general" | "unknown";
+  independentSourceKey?: string | null;
+  supportsDemand?: boolean;
+  demandEvidenceUncertainty?: string | null;
 }
 
 export interface DiscoveryProblemRecord {
@@ -82,8 +87,9 @@ export class DiscoveryRepository {
       const insert = db.prepare(`
         INSERT INTO factors (
           id, research_run_id, subject, behavior, quote, source_id,
-          harvest_mode, model_confidence, uncertainty, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          harvest_mode, model_confidence, uncertainty, source_role, audience_fit,
+          independent_source_key, supports_demand, demand_evidence_uncertainty, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `);
       for (const factor of factors) {
         this.assertSourceBelongsToRun(researchRunId, factor.sourceId);
@@ -97,6 +103,11 @@ export class DiscoveryRepository {
           factor.harvestMode,
           factor.modelConfidence,
           factor.uncertainty ?? null,
+          factor.sourceRole ?? "unknown",
+          factor.audienceFit ?? "unknown",
+          factor.independentSourceKey ?? null,
+          factor.supportsDemand ? 1 : 0,
+          factor.demandEvidenceUncertainty ?? null,
           now,
         );
       }

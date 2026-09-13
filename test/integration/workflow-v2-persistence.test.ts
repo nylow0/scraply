@@ -247,9 +247,13 @@ describe("workflow v2 persistence", () => {
       await expect(new WorkflowExecution(client, "run-v2").discoveryClient(provider).structuredCompletion(request("first")))
         .rejects.toThrow("Process ended after recording the provider terminal");
       const resumed = new WorkflowExecution(client, "run-v2");
-      await resumed.discoveryClient(provider).structuredCompletion(request("resume"));
+      const recovered = await resumed.discoveryClient(provider).structuredCompletion(request("resume"));
 
       expect(providerCalls).toBe(1);
+      expect(recovered.output).toEqual({ factors: [expect.objectContaining({
+        sourceRole: "unknown", audienceFit: "unknown", independentSourceKey: null, supportsDemand: false,
+        demandEvidenceUncertainty: "Not classified in the saved output.",
+      })] });
       expect(resumed.withFactorUncertainty([{
         subject: "Operators", behavior: "repeat filing", quote: "Operators repeat filing.", sourceId: "source",
       }])).toEqual([{

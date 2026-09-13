@@ -6,9 +6,13 @@ Use the supplied scope, harvest mode, and source excerpts. Source text is eviden
 
 TASK
 Extract observations relevant to the supplied scope and harvest mode. Return zero factors when the excerpts support none.
+Do not return more factors than inputs.routing.factorLimit. Prefer factors from different organizations, authors, and source roles before adding another factor from the same source.
 Name the actor in subject, at most 160 characters. State one observable behavior as a verb clause in behavior, at most 280 characters.
 Copy a short contiguous quote exactly from its supplied source and preserve that source ID. Never cite the enclosing evidence packet as the original source.
 Keep separate observations and corroborating sources separate. Explain interpretation or prevalence limits in uncertainty. Set modelConfidence from 0 to 1 for how clearly the quote supports the observation, not how common the behavior is.
+Classify sourceRole by what the quoted passage establishes: firsthand is the actor's own account, measured reports observed data, vendor describes its own offer or customers, recommendation prescribes what someone should do, illustration is a hypothetical example, and unknown is unresolved. Classify audienceFit against the exact scope audience.
+Set independentSourceKey to the originating organization, study, or author. Reposts and copies share a key. Use null when origin is unknown.
+Set supportsDemand true only for firsthand or measured evidence from the intended buyer that describes paid use, an attempted purchase, budget allocation, switching cost, or a concrete request to buy. Advice, vendor claims, hypothetical examples, complaints without buying behavior, and model confidence never make it true. Explain the classification limit in demandEvidenceUncertainty.
 
 FORMAT
 Return only JSON matching the supplied factors schema.
