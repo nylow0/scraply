@@ -43,6 +43,8 @@ export interface DiscoveryProblemRecord {
   verdict: "confirmed" | "overstated" | "already-solved" | "insufficient-evidence" | "attempted-and-failed" | "user-asserted";
   verdictReason: string;
   verdictSourceIds: string[];
+  intendedBuyerEvidenceFactorIds?: string[];
+  evidenceGap?: string | null;
 }
 
 export interface RejectedProblemCandidateRecord {
@@ -130,8 +132,9 @@ export class DiscoveryRepository {
         INSERT INTO problems (
           id, discovery_run_id, statement, why_it_persists, affected,
           scale_estimate, scale_basis_factor_id, verdict, verdict_reason,
-          verdict_source_ids_json, selected_at, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '[]', NULL, ?)
+          verdict_source_ids_json, intended_buyer_evidence_factor_ids_json,
+          evidence_gap, selected_at, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '[]', ?, ?, NULL, ?)
       `);
       const insertFactor = db.prepare(`
         INSERT INTO problem_factors (problem_id, factor_id) VALUES (?, ?)
@@ -162,6 +165,8 @@ export class DiscoveryRepository {
           problem.scaleBasisFactorId,
           problem.verdict,
           problem.verdictReason,
+          JSON.stringify(problem.intendedBuyerEvidenceFactorIds ?? []),
+          problem.evidenceGap ?? null,
           now,
         );
         problem.verdictSourceIds.forEach((sourceId, position) => {
