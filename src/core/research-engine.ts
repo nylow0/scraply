@@ -9,7 +9,7 @@ import { ProviderFailure, type GenerationMetadata, type StructuredModelClient, t
 import { AppError } from "../shared/errors";
 import type { ResearchEvent } from "../shared/ipc";
 import { DEFAULT_IDEA_COUNT, RunConfigSchema, sameModelRef, type RunConfig } from "../shared/schemas";
-import { ScopeSchema, WorkflowV2DecisionAnalysisOutputSchema, WorkflowV2RiskEvaluationOutputSchema, WorkflowV2RiskReassessmentOutputSchema, type Scope } from "../shared/structured-output-schemas";
+import { ScopeSchema, WorkflowV2CompatibleDecisionAnalysisOutputSchema, WorkflowV2RiskEvaluationOutputSchema, WorkflowV2RiskReassessmentOutputSchema, type Scope } from "../shared/structured-output-schemas";
 import { analyzeSelectedOption, evaluateSelectedOptionRisk, produceDevelopmentOptions, reassessSelectedOption, reassessSelectedOptionRisk, type WorkflowV2EvidenceItem } from "./development";
 import { discoverProblems, discoveryRunProjection, harvestEvidenceFollowUp, harvestFactors, type HarvestResult } from "./discovery";
 import { WorkflowExecution } from "./workflow-execution";
@@ -247,8 +247,9 @@ export class ResearchEngine {
     catch (error) { throw new AppError("conflict", error instanceof Error ? error.message : "Evidence reassessment cannot be started."); }
     this.options.db.db.prepare("UPDATE research_runs SET status = 'running', cancelled = 0, updated_at = ? WHERE id = ?").run(new Date().toISOString(), runId);
     const config = RunConfigSchema.parse(JSON.parse(row.config_json));
+    const completedCalls = this.ledger.countProviderCalls(runId, config.model.providerId);
     const active: ActiveRun = { runId, threadId, problemId: row.problem_id, config, abortController: new AbortController(), startedAt: Date.now(),
-      projectedCodexCalls: 2, projectedSearches: 0, workflow: new WorkflowExecution(this.options.db, runId), followUpModelReservation: null, followUpSearchReservation: null };
+      projectedCodexCalls: completedCalls + 2, projectedSearches: 0, workflow: new WorkflowExecution(this.options.db, runId), followUpModelReservation: null, followUpSearchReservation: null };
     this.activeRuns.set(runId, active);
     this.scheduleDeadline(active);
     this.emit({ type: "run-resumed", runId, threadId });
@@ -679,6 +680,7 @@ export class ResearchEngine {
       active.abortController.abort(error);
       const followUp = this.followUps.find(active.runId);
       if (followUp && ["requested", "running"].includes(followUp.status)) this.failEvidenceFollowUp(active, error);
+      else if (followUp?.reassessmentStatus === "running") this.failEvidenceReassessment(active, error);
       else this.fail(active, error, "failed");
     }, active.config.maxRunMinutes * 60_000);
   }
@@ -796,7 +798,7 @@ export class ResearchEngine {
     const originalAnalysisStage = workflow.repository.findStageResult(active.runId, "decision-analysis", option.id);
     if (!originalRiskStage || !originalAnalysisStage) throw new Error("The original analysis checkpoints are missing");
     const originalRisk = WorkflowV2RiskEvaluationOutputSchema.parse(originalRiskStage.output);
-    const originalAnalysis = WorkflowV2DecisionAnalysisOutputSchema.parse(originalAnalysisStage.output);
+    const originalAnalysis = WorkflowV2CompatibleDecisionAnalysisOutputSchema.parse(originalAnalysisStage.output);
     const followUpEvidence = this.evidenceFollowUpItems(followUp);
     const context = workflow.developmentContext(active.problemId!);
     const selectionId = `${option.id}:evidence-reassessment`;
@@ -844,6 +846,7 @@ export class ResearchEngine {
   }
 
   private failEvidenceReassessment(active: ActiveRun, error: unknown): void {
+    if (this.activeRuns.get(active.runId) !== active) return;
     if (active.deadlineTimer) clearTimeout(active.deadlineTimer);
     this.activeRuns.delete(active.runId);
     const message = error instanceof Error ? error.message : "Evidence reassessment failed";
