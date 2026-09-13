@@ -16,6 +16,9 @@ import { MAX_IDEA_COUNT } from "../shared/schemas";
 export const WORKFLOW_VERSION_V2 = 2 as const;
 // A full 60,000-character source batch can take more than two minutes with high reasoning.
 export const FACTOR_HARVEST_DEADLINE_MS = 300_000;
+// Decision analysis can carry the selected option, independent risk review, and prior
+// experiment history. Subscription providers have exceeded the generic two-minute limit.
+export const DECISION_ANALYSIS_DEADLINE_MS = 300_000;
 
 export const WORKFLOW_V2_STAGE_IDS = [
   "query-plan",
@@ -92,7 +95,7 @@ export const WORKFLOW_V2_STAGE_REGISTRY = {
     schemaRevision: 1,
     schema: WorkflowV2DecisionAnalysisOutputSchema,
     maxOutputTokens: 6_144,
-    deadlineMs: 120_000,
+    deadlineMs: DECISION_ANALYSIS_DEADLINE_MS,
   },
   "risk-evaluation": {
     id: "risk-evaluation",
