@@ -58,7 +58,7 @@ describe("rejected problem evidence", () => {
     const textarea = view.getByRole("textbox", { name: "Or state the problem yourself." }) as HTMLTextAreaElement;
     expect(textarea.value).toBe(rejected[0]!.statement);
     expect(document.activeElement).toBe(textarea);
-    expect((view.getByRole("button", { name: "Commit selection" }) as HTMLButtonElement).disabled).toBe(false);
+    expect((view.getByRole("button", { name: "Generate all selected" }) as HTMLButtonElement).disabled).toBe(false);
   });
 
   test("commits the chosen development model and a supported reasoning effort", async () => {
@@ -71,10 +71,10 @@ describe("rejected problem evidence", () => {
     await fireEvent.change(view.getByRole("combobox", { name: "Development model" }), { target: { value: "openai-subscription:gpt-6-astra" } });
     expect((view.getByRole("combobox", { name: "Development reasoning" }) as HTMLSelectElement).value).toBe("high");
     await fireEvent.change(view.getByRole("combobox", { name: "Development reasoning" }), { target: { value: "xhigh" } });
-    await fireEvent.click(view.getByRole("button", { name: "Commit selection" }));
+    await fireEvent.click(view.getByRole("button", { name: "Generate all selected" }));
     expect(onCommit).toHaveBeenCalledWith(
       [], "A user-asserted problem.",
-      { providerId: "openai-subscription", modelId: "gpt-6-astra" }, "xhigh",
+      { providerId: "openai-subscription", modelId: "gpt-6-astra" }, "xhigh", "general-solutions",
     );
   });
 
