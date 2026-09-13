@@ -214,7 +214,11 @@ export async function discoverProblems(
 
   for (const candidate of candidates) {
     if (dependencies.workflowVersion === 2 && candidate.factorIds.some((id) => !factorById.has(id))) {
-      throw new ProviderFailure("schema", "A problem candidate referenced an unknown factor ID", false);
+      blockedCandidates.push({
+        statement: candidate.statement,
+        reason: "Candidate cited an unknown factor ID; its evidence could not be verified.",
+      });
+      continue;
     }
     const citedFactors = [...new Set(candidate.factorIds)]
       .map((id) => factorById.get(id))
