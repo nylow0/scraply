@@ -16,7 +16,7 @@ import { developmentProjection } from "../shared/development-projection";
 import { optionEvidenceReferences } from "../shared/option-evidence";
 import {
   DiscardIdeaRequestSchema, ArchiveThreadRequestSchema, GenerateTitleRequestSchema, GenerateTitleResultSchema,
-  CreateThreadRequestSchema, DeleteThreadRequestSchema, EvidenceFollowUpRequestSchema, ExportIdeasRequestSchema, ExportResearchRequestSchema,
+  CreateThreadRequestSchema, DeleteThreadRequestSchema, EvidenceFollowUpRequestSchema, EvidenceReassessmentRequestSchema, ExportIdeasRequestSchema, ExportResearchRequestSchema,
   GetIdeaDetailRequestSchema, GetSourceDetailRequestSchema, HealthResponseSchema,
   NativeLoginCancelSchema, NativeLoginCompleteSchema, NativeLoginStartSchema, NativeProviderSchema,
   ResumeResearchSchema, SaveFavoriteModelSchema, SaveRunConfigSchema, SaveScopeSchema,
@@ -441,6 +441,9 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
         }),
         canRequestEvidenceFollowUp: Number(row.workflow_version) === 2 && row.selected_at !== null
           && row.decision_updated_at !== null && row.evidence_follow_up_status === null && row.run_status === "completed",
+        canReassessEvidence: Number(row.workflow_version) === 2 && row.selected_at !== null
+          && evidenceFollowUp?.status === "completed" && [null, "failed"].includes(evidenceFollowUp.reassessmentStatus) && row.run_status === "completed"
+          && generationAttempts.getResumeSafety(String(row.research_run_id)).canResume,
         keyAssumption: row.key_assumption === null ? undefined : String(row.key_assumption),
         whyCurrentApproachMaySuffice: row.why_current_approach_may_suffice === null ? undefined : String(row.why_current_approach_may_suffice),
         startupOpportunity: row.startup_opportunity_json === null ? undefined : JSON.parse(String(row.startup_opportunity_json)),
@@ -528,7 +531,8 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
   function readEvidenceFollowUps(runIds: string[], readAll: DataRead) {
     if (runIds.length === 0) return new Map<string, {
       status: "running" | "completed" | "failed"; question: string; sources: Array<Record<string, unknown>>;
-      factors: FactorView[]; error: string | null; updatedAt: string;
+      factors: FactorView[]; error: string | null; updatedAt: string; reassessmentStatus: "running" | "completed" | "failed" | null;
+      riskReassessment: unknown | null; reassessmentAnalysis: unknown | null; reassessmentError: string | null;
     }>();
     const uniqueRunIds = [...new Set(runIds)];
     const rows = readAll(`SELECT * FROM evidence_follow_ups WHERE research_run_id IN (${placeholders(uniqueRunIds)})`, uniqueRunIds);
@@ -554,6 +558,10 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
         sources: (JSON.parse(String(row.source_ids_json)) as string[]).flatMap((id) => sourcesById.get(id) ?? []),
         factors: (JSON.parse(String(row.factor_ids_json)) as string[]).flatMap((id) => factorsById.get(id) ?? []),
         error: row.error_message === null ? null : String(row.error_message), updatedAt: String(row.updated_at),
+        reassessmentStatus: row.reassessment_status === null ? null : String(row.reassessment_status) as "running" | "completed" | "failed",
+        riskReassessment: row.risk_reassessment_json === null ? null : JSON.parse(String(row.risk_reassessment_json)),
+        reassessmentAnalysis: row.reassessment_analysis_json === null ? null : JSON.parse(String(row.reassessment_analysis_json)),
+        reassessmentError: row.reassessment_error === null ? null : String(row.reassessment_error),
       }];
     }));
   }
@@ -1072,6 +1080,13 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
         requireThread(input.threadId);
         requireRunnableRunProvider(input.runId);
         await ensureEngine().selectOption(input.threadId, input.runId, input.solutionId);
+        return sendJson(res, 200, await workspaceState());
+      }
+      if (route === "/research/evidence-reassessment") {
+        const input = EvidenceReassessmentRequestSchema.parse(body);
+        requireThread(input.threadId);
+        requireRunnableRunProvider(input.runId);
+        await ensureEngine().requestEvidenceReassessment(input.threadId, input.runId);
         return sendJson(res, 200, await workspaceState());
       }
       if (route === "/research/evidence-follow-up") {
