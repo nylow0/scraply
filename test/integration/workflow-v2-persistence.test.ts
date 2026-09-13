@@ -279,6 +279,7 @@ describe("workflow v2 persistence", () => {
           verdict: "already-solved", verdictReason: "A manual alternative addresses the supplied observation.",
           verdictSourceIds: ["support", evidence.sources![0]!.id, ...(invented ? ["invented"] : [])],
           unresolvedAssumptions: [], wouldChangeConclusion: [],
+          intendedBuyerEvidenceFactorIds: [], evidenceGap: "No independent intended-buyer evidence.",
         };
       });
       const result = discoverProblems({ title: "Filing", audience: "Operators", domain: "Filing", observations: "", offLimits: [] }, [
@@ -306,7 +307,7 @@ describe("workflow v2 persistence", () => {
         if (request.stage !== "problem-candidates") assessments++;
         return request.stage === "problem-candidates"
           ? { problems: [{ ...candidate, statement: "Untraceable candidate", factorIds: ["typo"] }, candidate] }
-          : { verdict: "already-solved", verdictReason: "An existing option handles filing.", verdictSourceIds: ["support"], unresolvedAssumptions: [], wouldChangeConclusion: [] };
+          : { verdict: "already-solved", verdictReason: "An existing option handles filing.", verdictSourceIds: ["support"], unresolvedAssumptions: [], wouldChangeConclusion: [], intendedBuyerEvidenceFactorIds: [], evidenceGap: "No independent intended-buyer evidence." };
       });
       const result = await discoverProblems({ title: "Filing", audience: "Operators", domain: "Filing", observations: "", offLimits: [] }, [
         discoveryFactor(source),

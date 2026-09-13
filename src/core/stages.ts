@@ -5,6 +5,7 @@ import {
   WorkflowV2FactorHarvestOutputSchema,
   WorkflowV2ProblemCandidatesOutputSchema,
   WorkflowV2ProblemKillOutputSchema,
+  ClassifiedWorkflowV2ProblemKillOutputSchema,
   WorkflowV2QueryPlanOutputSchema,
   WorkflowV2RiskEvaluationOutputSchema,
   WorkflowV2SolutionsOutputSchema,
@@ -75,7 +76,7 @@ export const WORKFLOW_V2_STAGE_REGISTRY = {
     promptFilename: "workflow-v2-problem-kill.md",
     promptRevision: 1,
     schemaRevision: 1,
-    schema: WorkflowV2ProblemKillOutputSchema,
+    schema: ClassifiedWorkflowV2ProblemKillOutputSchema,
     maxOutputTokens: 2_048,
     deadlineMs: 120_000,
   },
@@ -125,6 +126,8 @@ export function parseWorkflowV2StageOutput(
   // version that created them instead of the currently bundled stage definition.
   const output = stageId === "decision-analysis"
     ? WorkflowV2CompatibleDecisionAnalysisOutputSchema.parse(value)
+    : stageId === "problem-kill"
+      ? WorkflowV2ProblemKillOutputSchema.parse(value)
     : WORKFLOW_V2_STAGE_REGISTRY[stageId].schema.parse(value);
   assertWorkflowV2StageOutputSemantics(stageId, output, evidence);
   return output;
