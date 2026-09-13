@@ -443,6 +443,10 @@ describe("native v2 decisions through the production backend", () => {
         .toEqual([{ status: "completed", awaiting_selection: 1 }, { status: "completed", awaiting_selection: 1 }]);
     } finally { db.close(); }
     const firstRunOption = completed.solutions[0]!;
+    const aged = new DatabaseClient(item.dbPath);
+    aged.db.prepare("UPDATE research_runs SET created_at = ? WHERE id = ?")
+      .run(new Date(Date.now() - 10 * 60_000).toISOString(), firstRunOption.runId);
+    aged.close();
     const selectingOlderRun = await item.post("/research/select-option", {
       threadId, runId: firstRunOption.runId, solutionId: firstRunOption.id,
     }, WorkspaceStateSchema);
@@ -452,6 +456,9 @@ describe("native v2 decisions through the production backend", () => {
     });
     expect(selectingOlderRun.latestResearchRun?.stage === "evaluating-risk"
       || selectingOlderRun.latestResearchRun?.stage === "analyzing-option").toBe(true);
+    expect(selectingOlderRun.latestResearchRun?.elapsedMs).toBeGreaterThan(9 * 60_000);
+    expect(selectingOlderRun.latestResearchRun?.operationElapsedMs).toBeLessThan(5_000);
+    expect(Date.parse(selectingOlderRun.latestResearchRun!.operationStartedAt!)).toBeGreaterThan(Date.now() - 5_000);
   }, 20_000);
 
   test("reassesses a completed zero-result follow-up without another search", async () => {

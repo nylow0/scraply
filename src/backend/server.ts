@@ -730,7 +730,8 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
       .get(row.id) as { stage_id: string } | undefined;
     const progress = db.db.prepare(`SELECT payload_json FROM job_events WHERE run_id = ? AND type = 'run-progress' ORDER BY id DESC LIMIT 1`)
       .get(row.id) as { payload_json: string } | undefined;
-    const projectedStage = progress ? (JSON.parse(progress.payload_json) as { stage?: string }).stage : undefined;
+    const progressPayload = progress ? JSON.parse(progress.payload_json) as { stage?: string; operationStartedAt?: string; operationElapsedMs?: number } : null;
+    const projectedStage = progressPayload?.stage;
     const modelState = attempt && ["prepared", "dispatched", "accepted"].includes(attempt.status)
       ? attempt.status === "prepared" ? "waiting" as const : attempt.status === "dispatched" ? "dispatched" as const : "accepted" as const
       : null;
@@ -749,7 +750,15 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
       : row.status === "cancelled" ? "cancelled" as const
       : isRuntimeStage(projectedStage) ? projectedStage : inferredStage;
     const end = ["completed", "failed", "cancelled"].includes(row.status) ? Date.parse(row.updated_at) : Date.now();
-    return { stage, modelState, elapsedMs: Math.max(0, end - Date.parse(row.created_at)), lastSuccessfulCheckpoint: checkpoint?.stage_id ?? null };
+    const operationStartedAt = progressPayload?.operationStartedAt;
+    const persistedOperationElapsed = progressPayload?.operationElapsedMs;
+    const operationElapsedMs = operationStartedAt && row.status === "running"
+      ? Math.max(0, Date.now() - Date.parse(operationStartedAt))
+      : persistedOperationElapsed;
+    return { stage, modelState, elapsedMs: Math.max(0, end - Date.parse(row.created_at)),
+      ...(operationStartedAt ? { operationStartedAt } : {}),
+      ...(operationElapsedMs === undefined ? {} : { operationElapsedMs: Math.max(0, operationElapsedMs) }),
+      lastSuccessfulCheckpoint: checkpoint?.stage_id ?? null };
   }
 
   function isRuntimeStage(value: string | undefined): value is "queued" | "searching" | "extracting" | "synthesizing-problems" | "generating-options" | "awaiting-option-selection" | "evaluating-risk" | "analyzing-option" | "evidence-follow-up" | "completed" | "failed" | "cancelled" {
