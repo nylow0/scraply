@@ -49,6 +49,7 @@ test("retains independently evaluated risks and unknowns when analysis omits the
   expect(result.analysis.unknowns).toEqual([...evaluation.unknowns, "Operator access"]);
   expect(result.request.jsonSchema).not.toHaveProperty("properties.risks");
   expect(result.request.jsonSchema).not.toHaveProperty("properties.unknowns");
+  expect(result.request.deadlineMs).toBe(300_000);
   expect(calls).toBe(1);
 });
 
