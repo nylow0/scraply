@@ -23,6 +23,7 @@ import {
   SOURCE_MAX_CHARACTERS,
 } from "../shared/discovery-projection";
 import { loadPrompt } from "./prompts";
+import { FACTOR_HARVEST_DEADLINE_MS } from "./stages";
 
 export {
   DEFAULT_PROBLEM_CANDIDATE_LIMIT,
@@ -588,7 +589,7 @@ async function structuredCall<T>(
     repairPolicy: "one_retry",
     // The subscription endpoint rejects token ceilings; its deadline and byte limit still apply.
     ...(dependencies.model.providerId !== "openai-subscription" ? { maxOutputTokens: 8_192 } : {}),
-    deadlineMs: 120_000,
+    deadlineMs: stage.startsWith("factor-harvest:") ? FACTOR_HARVEST_DEADLINE_MS : 120_000,
     ...(dependencies.signal ? { signal: dependencies.signal } : {}),
   });
   return result.output;

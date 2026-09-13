@@ -141,6 +141,7 @@ describe("discovery", () => {
     });
     expect(harvestRequests.length).toBeGreaterThan(0);
     for (const request of harvestRequests) {
+      expect(request.deadlineMs).toBe(300_000);
       expect(request.stage.length).toBeGreaterThan(256);
       expect(Buffer.byteLength(request.evidence[0]!.sourceId)).toBeLessThanOrEqual(256);
       const content = request.evidence[0]!.content as { sources: Array<{ id: string }> };
