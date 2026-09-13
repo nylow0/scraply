@@ -331,29 +331,35 @@ export function quoteAppearsVerbatim(sourceText: string, quote: string): boolean
 }
 
 function hasMatchingNegations(source: string, quote: string): boolean {
-  const sourceNegations = standaloneNegationSignature(source);
-  const quoteNegations = standaloneNegationSignature(quote);
+  const sourceNegations = negationSignature(source);
+  const quoteNegations = negationSignature(quote);
   return sourceNegations.length === quoteNegations.length
     && sourceNegations.every((negation, index) => negation === quoteNegations[index]);
 }
 
-function standaloneNegationSignature(value: string): string[] {
-  const normalized = normalizeKnownFusedNegations(value);
-  const matches = normalized.matchAll(/(^|[^\p{L}\p{N}_])(no|not|never|none|neither|nor|without)(?=$|[^\p{L}\p{N}_])/giu);
-  return Array.from(matches, (match) => {
+function negationSignature(value: string): string[] {
+  const compacted = compactExtractedText(value);
+  const signature = new Set<string>();
+  const standaloneMatches = value.matchAll(/(^|[^\p{L}\p{N}_])(no|not|never|none|neither|nor|without)(?=$|[^\p{L}\p{N}_])/giu);
+  for (const match of standaloneMatches) {
     const sourceIndex = match.index + match[1]!.length;
-    const compactIndex = compactExtractedText(normalized.slice(0, sourceIndex)).text.length;
-    return `${compactIndex}:${match[2]!.toLowerCase()}`;
-  });
-}
-
-function normalizeKnownFusedNegations(value: string): string {
-  return value
-    .replace(
-      /(?<![\p{L}\p{N}_])(can|could|do|does|did|have|has|had|is|are|was|were|may|might|must|should|would|will)not(?![\p{L}\p{N}_])/giu,
-      "$1 not",
-    )
-    .replace(/(?<![\p{L}\p{N}_])noway(?![\p{L}\p{N}_])/giu, "no way");
+    const compactIndex = compactExtractedText(value.slice(0, sourceIndex)).text.length;
+    signature.add(`${compactIndex}:${match[2]!.toLowerCase()}`);
+  }
+  const fusedAuxiliaryMatches = compacted.text.matchAll(/(can|could|do|does|did|have|has|had|is|are|was|were|may|might|must|should|would|will)not/giu);
+  for (const match of fusedAuxiliaryMatches) {
+    const notIndex = match.index + match[1]!.length;
+    if (compacted.sourceIndexes[notIndex] === compacted.sourceIndexes[notIndex - 1]! + 1) {
+      signature.add(`${notIndex}:not`);
+    }
+  }
+  for (const match of compacted.text.matchAll(/noway/giu)) {
+    const wayIndex = match.index + 2;
+    if (compacted.sourceIndexes[wayIndex] === compacted.sourceIndexes[wayIndex - 1]! + 1) {
+      signature.add(`${match.index}:no`);
+    }
+  }
+  return [...signature].sort();
 }
 
 function compactExtractedText(value: string): { text: string; sourceIndexes: number[] } {
