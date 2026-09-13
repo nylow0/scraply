@@ -224,7 +224,7 @@ export class WorkflowV2Repository {
     assertSha256(stage.prompt.currentBundledSha256, "bundled prompt");
     assertSha256(stage.runtimePrompt.sha256, "runtime prompt");
     verifyHash(stage.prompt.text, stage.prompt.resolvedSha256, "resolved prompt");
-    const parsedOutput = stage.stageId === "risk-evaluation" && stage.selectionId?.endsWith(":evidence-reassessment")
+    const parsedOutput = stage.stageId === "risk-evaluation" && isEvidenceReassessmentKey(stage.selectionId)
       ? WorkflowV2RiskReassessmentOutputSchema.parse(stage.output)
       : parseWorkflowV2StageOutput(stage.stageId, 1, stage.output, stage.evidence);
     const selectionKey = normalizeSelectionKey(stage.selectionId);
@@ -462,7 +462,7 @@ function decodeStageRow(row: StageResultRow): SavedWorkflowV2Stage {
   verifyHash(row.effective_request_json, row.effective_request_sha256, "stored effective request");
   const evidence = JSON.parse(row.evidence_json) as WorkflowV2EvidenceSnapshot[];
   const rawOutput = JSON.parse(row.output_json);
-  const output = row.stage_id === "risk-evaluation" && row.selection_key.endsWith(":evidence-reassessment")
+  const output = row.stage_id === "risk-evaluation" && isEvidenceReassessmentKey(row.selection_key)
     ? WorkflowV2RiskReassessmentOutputSchema.parse(rawOutput)
     : parseWorkflowV2StageOutput(row.stage_id, row.stage_revision, rawOutput, evidence);
   return {
@@ -493,6 +493,10 @@ function decodeStageRow(row: StageResultRow): SavedWorkflowV2Stage {
     effectiveRequest: JSON.parse(row.effective_request_json),
     completedAt: row.completed_at,
   };
+}
+
+function isEvidenceReassessmentKey(selectionId: string | null | undefined): boolean {
+  return Boolean(selectionId && (selectionId.endsWith(":evidence-reassessment") || selectionId.includes(":evidence-reassessment:")));
 }
 
 function sameStageIdentity(
