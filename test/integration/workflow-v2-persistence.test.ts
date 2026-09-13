@@ -22,7 +22,7 @@ import { deriveJsonSchema } from "../../src/shared/json-schema";
 import { WorkflowExecution } from "../../src/core/workflow-execution";
 import { configurePromptPaths } from "../../src/core/prompts";
 import { discoverProblems, harvestFactors, type HarvestedFactor, type HarvestedSource } from "../../src/core/discovery";
-import type { StructuredModelClient } from "../../src/providers/structured";
+import type { StructuredModelClient, StructuredStageRequest } from "../../src/providers/structured";
 
 const directories: string[] = [];
 
@@ -201,33 +201,21 @@ describe("workflow v2 persistence", () => {
   });
 
   test.each([false, true])("assesses supplied supporting and contrary sources while rejecting invented citations (%s)", async (invented) => {
-    configurePromptPaths({ bundledDir: join(process.cwd(), "prompts"), overrideDir: null });
-    const client = database();
-    const execution = new WorkflowExecution(client, "run-v2");
-    const source: HarvestedSource = {
-      id: "support", providerSourceId: "support", canonicalUrl: "https://support.test/page", url: "https://support.test/page",
-      title: "Support", retrievedText: "Operators repeat filing.", author: null, publishedAt: null,
-      contentHash: "support", retrievedAt: "2026-01-01T00:00:00.000Z",
-    };
-    const modelClient: StructuredModelClient = { async structuredCompletion(request) {
-      const evidence = request.evidence[0]!.content as { sources?: Array<{ id: string }> };
-      const output = request.stage === "problem-candidates" ? { problems: [{
-        statement: "Operators repeat filing.", whyItPersists: "Systems disagree.", affected: "Operators",
-        scaleEstimate: "Unknown", scaleBasisFactorId: null, factorIds: ["factor"], alternativeExplanations: [], unknowns: [],
-      }] } : {
-        verdict: "already-solved", verdictReason: "A manual alternative addresses the supplied observation.",
-        verdictSourceIds: ["support", evidence.sources![0]!.id, ...(invented ? ["invented"] : [])],
-        unresolvedAssumptions: [], wouldChangeConclusion: [],
-      };
-      return { output: request.schema.parse(output), metadata: {
-        model: request.model, usage: { status: "unknown" }, latencyMs: 1, repairCount: 0, providerRequestIds: [], attempts: [],
-      } };
-    } };
-    try {
-      const result = discoverProblems({ title: "Filing", audience: "Operators", domain: "Filing", observations: "", offLimits: [] }, [{
-        id: "factor", subject: "Operators", behavior: "repeat filing", quote: source.retrievedText,
-        sourceId: source.id, harvestMode: "domain", modelConfidence: 0.8, source,
-      }], [source], {
+    await withDiscoveryFixture(async ({ execution, source }) => {
+      const modelClient = discoveryModelClient((request) => {
+        const evidence = request.evidence[0]!.content as { sources?: Array<{ id: string }> };
+        return request.stage === "problem-candidates" ? { problems: [{
+          statement: "Operators repeat filing.", whyItPersists: "Systems disagree.", affected: "Operators",
+          scaleEstimate: "Unknown", scaleBasisFactorId: null, factorIds: ["factor"], alternativeExplanations: [], unknowns: [],
+        }] } : {
+          verdict: "already-solved", verdictReason: "A manual alternative addresses the supplied observation.",
+          verdictSourceIds: ["support", evidence.sources![0]!.id, ...(invented ? ["invented"] : [])],
+          unresolvedAssumptions: [], wouldChangeConclusion: [],
+        };
+      });
+      const result = discoverProblems({ title: "Filing", audience: "Operators", domain: "Filing", observations: "", offLimits: [] }, [
+        discoveryFactor(source, "factor", 0.8),
+      ], [source], {
         model: { providerId: "test", modelId: "test" }, reasoningEffort: "low", depth: "quick", workflowVersion: 2,
         modelClient: execution.discoveryClient(modelClient),
         prompt: (stage) => execution.resolvePrompt(stage as keyof typeof WORKFLOW_V2_STAGE_REGISTRY).text,
@@ -238,35 +226,23 @@ describe("workflow v2 persistence", () => {
         const discovery = await result;
         expect(discovery.problems[0]!.verdictSourceIds).toEqual(["support", discovery.killSources[0]!.id]);
       }
-    } finally { client.close(); }
+    });
   });
 
   test("does not let an invalid candidate consume the assessment limit", async () => {
-    configurePromptPaths({ bundledDir: join(process.cwd(), "prompts"), overrideDir: null });
-    const client = database();
-    const execution = new WorkflowExecution(client, "run-v2");
-    const source: HarvestedSource = {
-      id: "support", providerSourceId: "support", canonicalUrl: "https://support.test/page", url: "https://support.test/page",
-      title: "Support", retrievedText: "Operators repeat filing.", author: null, publishedAt: null,
-      contentHash: "support", retrievedAt: "2026-01-01T00:00:00.000Z",
-    };
-    let assessments = 0;
-    const modelClient: StructuredModelClient = { async structuredCompletion(request) {
-      const candidate = { statement: "Operators repeat filing.", whyItPersists: "Systems disagree.", affected: "Operators",
-        scaleEstimate: "Unknown", scaleBasisFactorId: null, factorIds: ["factor"], alternativeExplanations: [], unknowns: [] };
-      if (request.stage !== "problem-candidates") assessments++;
-      const output = request.stage === "problem-candidates"
-        ? { problems: [{ ...candidate, statement: "Untraceable candidate", factorIds: ["typo"] }, candidate] }
-        : { verdict: "already-solved", verdictReason: "An existing option handles filing.", verdictSourceIds: ["support"], unresolvedAssumptions: [], wouldChangeConclusion: [] };
-      return { output: request.schema.parse(output), metadata: {
-        model: request.model, usage: { status: "unknown" }, latencyMs: 1, repairCount: 0, providerRequestIds: [], attempts: [],
-      } };
-    } };
-    try {
-      const result = await discoverProblems({ title: "Filing", audience: "Operators", domain: "Filing", observations: "", offLimits: [] }, [{
-        id: "factor", subject: "Operators", behavior: "repeat filing", quote: source.retrievedText,
-        sourceId: source.id, harvestMode: "domain", modelConfidence: 0.9, source,
-      }], [source], {
+    await withDiscoveryFixture(async ({ execution, source }) => {
+      let assessments = 0;
+      const modelClient = discoveryModelClient((request) => {
+        const candidate = { statement: "Operators repeat filing.", whyItPersists: "Systems disagree.", affected: "Operators",
+          scaleEstimate: "Unknown", scaleBasisFactorId: null, factorIds: ["factor"], alternativeExplanations: [], unknowns: [] };
+        if (request.stage !== "problem-candidates") assessments++;
+        return request.stage === "problem-candidates"
+          ? { problems: [{ ...candidate, statement: "Untraceable candidate", factorIds: ["typo"] }, candidate] }
+          : { verdict: "already-solved", verdictReason: "An existing option handles filing.", verdictSourceIds: ["support"], unresolvedAssumptions: [], wouldChangeConclusion: [] };
+      });
+      const result = await discoverProblems({ title: "Filing", audience: "Operators", domain: "Filing", observations: "", offLimits: [] }, [
+        discoveryFactor(source),
+      ], [source], {
         workflowVersion: 2, model: { providerId: "openai-subscription", modelId: "gpt-5.6-luna" }, reasoningEffort: "low", depth: "quick",
         candidateLimit: 1,
         modelClient: execution.discoveryClient(modelClient), prompt: () => "Assess evidence", search: { async search() { return []; } },
@@ -275,38 +251,24 @@ describe("workflow v2 persistence", () => {
       expect(result.problems[0]!.factorIds).toEqual(["factor"]);
       expect(result.blockedCandidates).toEqual([{ statement: "Untraceable candidate", reason: "Candidate cited an unknown factor ID; its evidence could not be verified." }]);
       expect(assessments).toBe(1);
-    } finally { client.close(); }
+    });
   });
 
   test("blocks scale estimates whose basis is unknown or absent from the cited factors", async () => {
-    configurePromptPaths({ bundledDir: join(process.cwd(), "prompts"), overrideDir: null });
-    const client = database();
-    const execution = new WorkflowExecution(client, "run-v2");
-    const source: HarvestedSource = {
-      id: "support", providerSourceId: "support", canonicalUrl: "https://support.test/page", url: "https://support.test/page",
-      title: "Support", retrievedText: "Operators repeat filing.", author: null, publishedAt: null,
-      contentHash: "support", retrievedAt: "2026-01-01T00:00:00.000Z",
-    };
-    const factors: HarvestedFactor[] = ["factor", "uncited-factor"].map((id) => ({
-      id, subject: "Operators", behavior: "repeat filing", quote: source.retrievedText,
-      sourceId: source.id, harvestMode: "domain", modelConfidence: 0.9, source,
-    }));
-    let assessments = 0;
-    const modelClient: StructuredModelClient = { async structuredCompletion(request) {
-      const candidate = { whyItPersists: "Systems disagree.", affected: "Operators", scaleEstimate: "Weekly",
-        factorIds: ["factor"], alternativeExplanations: [], unknowns: [] };
-      if (request.stage !== "problem-candidates") assessments++;
-      const output = request.stage === "problem-candidates"
-        ? { problems: [
-          { ...candidate, statement: "Unknown scale basis", scaleBasisFactorId: "missing-factor" },
-          { ...candidate, statement: "Uncited scale basis", scaleBasisFactorId: "uncited-factor" },
-        ] }
-        : { verdict: "confirmed", verdictReason: "Evidence supports the estimate.", verdictSourceIds: ["support"], unresolvedAssumptions: [], wouldChangeConclusion: [] };
-      return { output: request.schema.parse(output), metadata: {
-        model: request.model, usage: { status: "unknown" }, latencyMs: 1, repairCount: 0, providerRequestIds: [], attempts: [],
-      } };
-    } };
-    try {
+    await withDiscoveryFixture(async ({ execution, source }) => {
+      const factors = [discoveryFactor(source), discoveryFactor(source, "uncited-factor")];
+      let assessments = 0;
+      const modelClient = discoveryModelClient((request) => {
+        const candidate = { whyItPersists: "Systems disagree.", affected: "Operators", scaleEstimate: "Weekly",
+          factorIds: ["factor"], alternativeExplanations: [], unknowns: [] };
+        if (request.stage !== "problem-candidates") assessments++;
+        return request.stage === "problem-candidates"
+          ? { problems: [
+            { ...candidate, statement: "Unknown scale basis", scaleBasisFactorId: "missing-factor" },
+            { ...candidate, statement: "Uncited scale basis", scaleBasisFactorId: "uncited-factor" },
+          ] }
+          : { verdict: "confirmed", verdictReason: "Evidence supports the estimate.", verdictSourceIds: ["support"], unresolvedAssumptions: [], wouldChangeConclusion: [] };
+      });
       const result = await discoverProblems({ title: "Filing", audience: "Operators", domain: "Filing", observations: "", offLimits: [] }, factors, [source], {
         workflowVersion: 2, model: { providerId: "openai-subscription", modelId: "gpt-5.6-luna" }, reasoningEffort: "low", depth: "quick",
         modelClient: execution.discoveryClient(modelClient), prompt: () => "Assess evidence", search: { async search() { return []; } },
@@ -317,7 +279,7 @@ describe("workflow v2 persistence", () => {
         { statement: "Uncited scale basis", reason: "Candidate scale basis did not cite a known supporting factor; its scale evidence could not be verified." },
       ]);
       expect(assessments).toBe(0);
-    } finally { client.close(); }
+    });
   });
 
   test("uses compact references for new runs while reproducing legacy references exactly", () => {
@@ -582,6 +544,51 @@ describe("workflow v2 persistence", () => {
     client.close();
   });
 });
+
+async function withDiscoveryFixture(
+  run: (fixture: { execution: WorkflowExecution; source: HarvestedSource }) => Promise<void>,
+): Promise<void> {
+  configurePromptPaths({ bundledDir: join(process.cwd(), "prompts"), overrideDir: null });
+  const client = database();
+  const source: HarvestedSource = {
+    id: "support", providerSourceId: "support", canonicalUrl: "https://support.test/page", url: "https://support.test/page",
+    title: "Support", retrievedText: "Operators repeat filing.", author: null, publishedAt: null,
+    contentHash: "support", retrievedAt: "2026-01-01T00:00:00.000Z",
+  };
+  try {
+    await run({ execution: new WorkflowExecution(client, "run-v2"), source });
+  } finally {
+    client.close();
+  }
+}
+
+function discoveryFactor(source: HarvestedSource, id = "factor", modelConfidence = 0.9): HarvestedFactor {
+  return {
+    id, subject: "Operators", behavior: "repeat filing", quote: source.retrievedText,
+    sourceId: source.id, harvestMode: "domain", modelConfidence, source,
+  };
+}
+
+function discoveryModelClient(
+  completion: (request: StructuredStageRequest<unknown>) => unknown | Promise<unknown>,
+): StructuredModelClient {
+  return {
+    async structuredCompletion<T>(request: StructuredStageRequest<T>) {
+      const output = await completion(request as StructuredStageRequest<unknown>);
+      return {
+        output: request.schema.parse(output),
+        metadata: {
+          model: request.model,
+          usage: { status: "unknown" },
+          latencyMs: 1,
+          repairCount: 0,
+          providerRequestIds: [],
+          attempts: [],
+        },
+      };
+    },
+  };
+}
 
 function database(): DatabaseClient {
   const directory = mkdtempSync(join(tmpdir(), "scraply-workflow-v2-"));
