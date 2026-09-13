@@ -9,17 +9,20 @@ const RUNS_PER_PROJECT = 5;
 const SOURCES_PER_PROJECT = 50;
 const DEVELOPMENT_RUNS_PER_PROJECT = RUNS_PER_PROJECT - 1;
 const SOLUTIONS_PER_DEVELOPMENT_RUN = 5;
+const V2_SOLUTIONS_PER_RUN = 3;
 const FIXED_EPOCH_MS = Date.parse("2026-01-01T00:00:00.000Z");
-const CONFIG_JSON = JSON.stringify({
-  configVersion: 2,
-  model: { providerId: "legacy-codex-cli", modelId: "gpt-5.6-luna" },
-  reasoningEffort: "medium",
-  discoveryDepth: "standard",
-  maxRunMinutes: 90,
-  searchProvider: "exa",
-  researchMode: "explore-market",
-  knownProblem: "",
-});
+
+function configJson(workflowVersion: 1 | 2): string {
+  const providerId = workflowVersion === 2 ? "openai-subscription" : "legacy-codex-cli";
+  return JSON.stringify({
+    configVersion: 2, workflowVersion, model: { providerId, modelId: "gpt-5.6-luna" },
+    reasoningEffort: "medium", discoveryDepth: "standard", maxRunMinutes: 90,
+    searchProvider: "exa", researchMode: "explore-market", knownProblem: "",
+  });
+}
+
+const LEGACY_CONFIG_JSON = configJson(1);
+const CURRENT_CONFIG_JSON = configJson(2);
 
 export interface InstalledPerformanceFixture {
   databasePath: string;
@@ -29,7 +32,7 @@ export interface InstalledPerformanceFixture {
   schemaVersion: number;
   synthetic: true;
   redacted: true;
-  workflowCoverage: "legacy-v1" | "representative-v2";
+  workflowCoverage: "representative-v2";
   counts: Record<string, number>;
   expected: {
     projects: number;
@@ -56,6 +59,10 @@ function sha256(path: string): string {
   return createHash("sha256").update(readFileSync(path)).digest("hex");
 }
 
+function digest(value: string): string {
+  return createHash("sha256").update(value).digest("hex");
+}
+
 function tableCount(client: DatabaseClient, table: string): number {
   const row = client.db.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get() as { count: number };
   return row.count;
@@ -78,8 +85,9 @@ export function createInstalledPerformanceFixture(outputPath: string): Installed
     const insertRun = db.prepare(`
       INSERT INTO research_runs (
         id, thread_id, status, config_json, spend_estimate, cancelled, created_at, updated_at,
-        idempotency_key, completion_reason, budget_limit, reserved_cost, committed_cost, problem_id
-      ) VALUES (?, ?, 'completed', ?, 0, 0, ?, ?, ?, 'Synthetic benchmark run completed.', 0, 0, 0, ?)
+        idempotency_key, completion_reason, budget_limit, reserved_cost, committed_cost, problem_id,
+        workflow_version
+      ) VALUES (?, ?, 'completed', ?, 0, 0, ?, ?, ?, 'Synthetic benchmark run completed.', 0, 0, 0, ?, ?)
     `);
     const insertScope = db.prepare(`
       INSERT INTO scopes (
@@ -94,8 +102,9 @@ export function createInstalledPerformanceFixture(outputPath: string): Installed
     `);
     const insertFactor = db.prepare(`
       INSERT INTO factors (
-        id, research_run_id, subject, behavior, quote, source_id, harvest_mode, model_confidence, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        id, research_run_id, subject, behavior, quote, source_id, harvest_mode, model_confidence,
+        uncertainty, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'Synthetic v2 uncertainty retained for display.', ?)
     `);
     const insertProblem = db.prepare(`
       INSERT INTO problems (
@@ -111,8 +120,10 @@ export function createInstalledPerformanceFixture(outputPath: string): Installed
     const insertSolution = db.prepare(`
       INSERT INTO solutions (
         id, problem_id, mechanism, description, respects_off_limits,
-        respects_off_limits_why, created_at, research_run_id
-      ) VALUES (?, ?, ?, ?, 1, ?, ?, ?)
+        respects_off_limits_why, created_at, research_run_id, option_position,
+        key_assumption, why_current_approach_may_suffice, unknowns_json,
+        supporting_evidence_ids_json, contrary_evidence_ids_json, selected_at
+      ) VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, '[]', '[]', ?)
     `);
     const insertOutcome = db.prepare(`
       INSERT INTO outcomes (id, solution_id, description, direction, affects, addresses_core, created_at)
@@ -131,6 +142,43 @@ export function createInstalledPerformanceFixture(outputPath: string): Installed
       INSERT INTO job_events (run_id, thread_id, problem_id, type, payload_json, created_at)
       VALUES (?, ?, ?, 'run-progress', ?, ?)
     `);
+    const insertStage = db.prepare(`INSERT INTO stage_results (
+      id, research_run_id, stage_id, selection_key, workflow_version, stage_revision,
+      context_json, context_sha256, output_json, output_sha256, prompt_filename, prompt_source,
+      prompt_text, prompt_sha256, current_bundled_prompt_sha256, schema_json, schema_sha256,
+      input_json, input_sha256, evidence_json, evidence_ids_json, evidence_ids_sha256,
+      evidence_sha256, runtime_prompt_id, runtime_prompt_sha256, effective_request_json,
+      effective_request_sha256, completed_at
+    ) VALUES (?, ?, 'decision-analysis', ?, 2, 1, ?, ?, ?, ?, 'decision-analysis.md', 'bundled',
+      ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'synthetic-runtime', ?, ?, ?, ?)`);
+    const insertAnalysis = db.prepare(`INSERT INTO decision_analyses (
+      id, research_run_id, solution_id, stage_result_id, analysis_json, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?)`);
+    const emptyJson = "{}";
+    const emptyArray = "[]";
+    const emptyJsonDigest = digest(emptyJson);
+    const promptText = "Synthetic deterministic performance fixture prompt. This fixture is not resume evidence.";
+    const promptDigest = digest(promptText);
+    const analysis = JSON.stringify(WorkflowV2DecisionAnalysisOutputSchema.parse({
+      consequences: [{
+        description: largeText("Synthetic v2 consequence", 1, 4_096), direction: "positive",
+        affects: "Synthetic operators", rationale: largeText("Synthetic rationale", 1, 2_048),
+      }],
+      risks: [{
+        riskId: "synthetic-v2-risk", description: largeText("Synthetic v2 risk", 1, 4_096),
+        whyDecisive: largeText("Synthetic decisive rationale", 1, 2_048),
+      }],
+      proposedResponses: [{
+        riskIds: ["synthetic-v2-risk"], approach: largeText("Synthetic proposed response", 1, 4_096), cost: "One synthetic hour",
+        failsIf: "The deterministic fixture condition is false",
+      }],
+      unknowns: ["Synthetic unresolved question"],
+      experiment: {
+        question: "Does the synthetic mechanism pass?", method: "Inspect deterministic fixture rows", cost: "One synthetic hour",
+        passCriterion: "All expected rows exist", failCriterion: "Any expected row is absent",
+      },
+    }));
+    const analysisDigest = digest(analysis);
 
     for (let project = 0; project < PROJECT_COUNT; project += 1) {
       const threadId = id("project", project);
@@ -138,7 +186,7 @@ export function createInstalledPerformanceFixture(outputPath: string): Installed
       const discoveryRunId = id("run", project, 0);
       const createdAt = timestamp(sequence++);
       insertThread.run(threadId, projectTitle, createdAt, timestamp(100_000 - project));
-      insertRunConfig.run(id("config", project), threadId, CONFIG_JSON, createdAt);
+      insertRunConfig.run(id("config", project), threadId, CURRENT_CONFIG_JSON, createdAt);
       for (let message = 0; message < 25; message += 1) {
         const messageAt = timestamp(sequence++);
         insertMessage.run(
@@ -154,11 +202,12 @@ export function createInstalledPerformanceFixture(outputPath: string): Installed
       insertRun.run(
         discoveryRunId,
         threadId,
-        CONFIG_JSON,
+        LEGACY_CONFIG_JSON,
         discoveryAt,
         discoveryAt,
         id("idempotency", project, 0),
         null,
+        1,
       );
       insertScope.run(
         id("scope", project),
@@ -235,14 +284,16 @@ export function createInstalledPerformanceFixture(outputPath: string): Installed
         const developmentRunId = id("run", project, development + 1);
         const problemId = problemIds[development]!;
         const runAt = timestamp(sequence++);
+        const currentWorkflow = development === DEVELOPMENT_RUNS_PER_PROJECT - 1;
         insertRun.run(
           developmentRunId,
           threadId,
-          CONFIG_JSON,
+          currentWorkflow ? CURRENT_CONFIG_JSON : LEGACY_CONFIG_JSON,
           runAt,
           runAt,
           id("idempotency", project, development + 1),
           problemId,
+          currentWorkflow ? 2 : 1,
         );
         insertEvent.run(
           developmentRunId,
@@ -251,7 +302,8 @@ export function createInstalledPerformanceFixture(outputPath: string): Installed
           JSON.stringify({ message: `Synthetic development run ${development + 1} complete.` }),
           runAt,
         );
-        for (let solution = 0; solution < SOLUTIONS_PER_DEVELOPMENT_RUN; solution += 1) {
+        const solutionCount = currentWorkflow ? V2_SOLUTIONS_PER_RUN : SOLUTIONS_PER_DEVELOPMENT_RUN;
+        for (let solution = 0; solution < solutionCount; solution += 1) {
           const solutionId = id("solution", project, development, solution);
           const solutionAt = timestamp(sequence++);
           insertSolution.run(
@@ -262,6 +314,11 @@ export function createInstalledPerformanceFixture(outputPath: string): Installed
             largeText(`Synthetic scope analysis ${project}-${development}-${solution}`, solution, 4_096),
             solutionAt,
             developmentRunId,
+            currentWorkflow ? solution : null,
+            currentWorkflow ? "Synthetic v2 assumption" : null,
+            currentWorkflow ? "Synthetic current approach may suffice" : null,
+            currentWorkflow ? '["Synthetic uncertainty"]' : null,
+            currentWorkflow && solution === 0 ? solutionAt : null,
           );
           for (let outcome = 0; outcome < 3; outcome += 1) {
             insertOutcome.run(
@@ -297,6 +354,15 @@ export function createInstalledPerformanceFixture(outputPath: string): Installed
             insertRiskMitigation.run(riskId, mitigationId);
           }
         }
+        if (currentWorkflow) {
+          const solutionId = id("solution", project, development, 0);
+          const stageId = id("stage-v2", project);
+          const completedAt = timestamp(200_000 + project);
+          insertStage.run(stageId, developmentRunId, solutionId, emptyJson, emptyJsonDigest, analysis, analysisDigest,
+            promptText, promptDigest, promptDigest, emptyJson, emptyJsonDigest, emptyJson, emptyJsonDigest,
+            emptyJson, emptyArray, digest(emptyArray), emptyJsonDigest, emptyJsonDigest, emptyJson, emptyJsonDigest, completedAt);
+          insertAnalysis.run(id("analysis-v2", project), developmentRunId, solutionId, stageId, analysis, completedAt, completedAt);
+        }
       }
     }
 
@@ -323,7 +389,9 @@ export function createInstalledPerformanceFixture(outputPath: string): Installed
     projects: PROJECT_COUNT,
     researchRuns: PROJECT_COUNT * RUNS_PER_PROJECT,
     sources: PROJECT_COUNT * SOURCES_PER_PROJECT,
-    solutions: PROJECT_COUNT * DEVELOPMENT_RUNS_PER_PROJECT * SOLUTIONS_PER_DEVELOPMENT_RUN,
+    solutions: PROJECT_COUNT * (
+      (DEVELOPMENT_RUNS_PER_PROJECT - 1) * SOLUTIONS_PER_DEVELOPMENT_RUN + V2_SOLUTIONS_PER_RUN
+    ),
   };
   if (
     counts.threads !== expected.projects
@@ -346,85 +414,12 @@ export function createInstalledPerformanceFixture(outputPath: string): Installed
     schemaVersion: Math.max(...schemaMigrationIds),
     synthetic: true,
     redacted: true,
-    workflowCoverage: "legacy-v1",
+    workflowCoverage: "representative-v2",
     counts,
     expected,
   };
   writeFileSync(`${databasePath}.json`, `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
   return manifest;
-}
-
-export function convertInstalledPerformanceFixtureToV2(fixture: InstalledPerformanceFixture): InstalledPerformanceFixture {
-  const client = new DatabaseClient(fixture.databasePath);
-  const db = client.db;
-  const analysisValue = WorkflowV2DecisionAnalysisOutputSchema.parse({
-    consequences: [{ description: largeText("Synthetic v2 consequence", 1, 4_096), direction: "positive", affects: "Synthetic operators", rationale: largeText("Synthetic rationale", 1, 2_048) }],
-    risks: [{ riskId: "synthetic-v2-risk", description: largeText("Synthetic v2 risk", 1, 4_096), whyDecisive: largeText("Synthetic decisive rationale", 1, 2_048) }],
-    proposedResponses: [{ riskIds: ["synthetic-v2-risk"], approach: largeText("Synthetic proposed response", 1, 4_096), cost: "One synthetic hour", failsIf: "The deterministic fixture condition is false" }],
-    unknowns: ["Synthetic unresolved question"],
-    experiment: { question: "Does the synthetic mechanism pass?", method: "Inspect deterministic fixture rows", cost: "One synthetic hour", passCriterion: "All expected rows exist", failCriterion: "Any expected row is absent" },
-  });
-  const analysis = JSON.stringify(analysisValue);
-  const emptyJson = "{}";
-  const emptyArray = "[]";
-  const digest = createHash("sha256").update(emptyJson).digest("hex");
-  const promptText = "Synthetic deterministic performance fixture prompt. This fixture is not resume evidence.";
-  const promptDigest = createHash("sha256").update(promptText).digest("hex");
-  db.exec("BEGIN IMMEDIATE");
-  try {
-    db.prepare("UPDATE factors SET uncertainty = 'Synthetic v2 uncertainty retained for display.'").run();
-    const insertStage = db.prepare(`INSERT INTO stage_results (
-      id, research_run_id, stage_id, selection_key, workflow_version, stage_revision,
-      context_json, context_sha256, output_json, output_sha256, prompt_filename, prompt_source,
-      prompt_text, prompt_sha256, current_bundled_prompt_sha256, schema_json, schema_sha256,
-      input_json, input_sha256, evidence_json, evidence_ids_json, evidence_ids_sha256,
-      evidence_sha256, runtime_prompt_id, runtime_prompt_sha256, effective_request_json,
-      effective_request_sha256, completed_at
-    ) VALUES (?, ?, 'decision-analysis', ?, 2, 1, ?, ?, ?, ?, 'decision-analysis.md', 'bundled',
-      ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'synthetic-runtime', ?, ?, ?, ?)`);
-    const insertAnalysis = db.prepare(`INSERT INTO decision_analyses (
-      id, research_run_id, solution_id, stage_result_id, analysis_json, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?)`);
-    for (let project = 0; project < PROJECT_COUNT; project += 1) {
-      const runId = id("run", project, DEVELOPMENT_RUNS_PER_PROJECT);
-      const solutionId = id("solution", project, DEVELOPMENT_RUNS_PER_PROJECT - 1, 0);
-      const completedAt = timestamp(200_000 + project);
-      db.prepare("UPDATE research_runs SET workflow_version = 2, awaiting_selection = 0 WHERE id = ?").run(runId);
-      db.prepare("DELETE FROM solutions WHERE research_run_id = ? AND CAST(substr(id, length(id) - 2) AS INTEGER) >= 3").run(runId);
-      db.prepare(`UPDATE solutions SET option_position = CASE WHEN CAST(substr(id, length(id) - 2) AS INTEGER) < 3
-          THEN CAST(substr(id, length(id) - 2) AS INTEGER) ELSE NULL END,
-        key_assumption = 'Synthetic v2 assumption', why_current_approach_may_suffice = 'Synthetic current approach may suffice',
-        unknowns_json = '["Synthetic uncertainty"]', supporting_evidence_ids_json = '[]', contrary_evidence_ids_json = '[]'
-        WHERE research_run_id = ?`).run(runId);
-      db.prepare("UPDATE solutions SET selected_at = ? WHERE id = ?").run(completedAt, solutionId);
-      const stageId = id("stage-v2", project);
-      insertStage.run(stageId, runId, solutionId, emptyJson, digest, analysis, createHash("sha256").update(analysis).digest("hex"), promptText, promptDigest, promptDigest,
-        emptyJson, digest, emptyJson, digest, emptyJson, emptyArray, createHash("sha256").update(emptyArray).digest("hex"), digest,
-        digest, emptyJson, digest, completedAt);
-      insertAnalysis.run(id("analysis-v2", project), runId, solutionId, stageId, analysis, completedAt, completedAt);
-    }
-    db.exec("COMMIT");
-  } catch (error) {
-    db.exec("ROLLBACK");
-    client.close();
-    throw error;
-  }
-  db.exec("PRAGMA wal_checkpoint(TRUNCATE)");
-  client.close();
-  const counterClient = new DatabaseClient(fixture.databasePath);
-  const convertedCounts = Object.fromEntries([
-    "threads", "messages", "research_runs", "sources", "factors", "problems", "solutions", "outcomes", "risks", "mitigations", "job_events",
-  ].map((table) => [table, tableCount(counterClient, table)]));
-  counterClient.close();
-  const converted = {
-    ...fixture,
-    databaseSha256: sha256(fixture.databasePath), databaseBytes: statSync(fixture.databasePath).size,
-    workflowCoverage: "representative-v2" as const,
-    counts: convertedCounts,
-    expected: { ...fixture.expected, solutions: Number(convertedCounts.solutions) },
-  };
-  writeFileSync(`${fixture.databasePath}.json`, `${JSON.stringify(converted, null, 2)}\n`, "utf8");
-  return converted;
 }
 
 if (import.meta.main) {

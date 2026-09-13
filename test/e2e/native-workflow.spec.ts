@@ -1,31 +1,31 @@
-import { expect, test, _electron, type ElectronApplication } from "@playwright/test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { expect, test } from "@playwright/test";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawn } from "node:child_process";
 import { createInterface } from "node:readline";
 import { IPC_CHANNELS, BackendReadySchema, ResearchEventSchema, type ResearchEvent } from "../../src/shared/ipc";
 import type { ScraplyApi } from "../../src/preload/index";
+import { createInstalledApp } from "./installed-app";
 
 // Installed renderer/preload/main with the production backend loaded from source. Only the native
 // child and Exa HTTP responses are fixtures. Live bundled-runtime parity is a separate gate.
 test("recovers an expired native session through installed sign-in and restores it after reopen", async ({}, testInfo) => {
-  const directory = mkdtempSync(join(tmpdir(), "scraply-native-auth-ui-"));
-  let electron: ElectronApplication | undefined;
+  const installedApp = createInstalledApp({ directoryPrefix: "scraply-native-auth-ui-", profileDirectoryName: "electron" });
+  const { directory } = installedApp;
   let backend = await startFixtureServer(directory, () => undefined, "auth-recovery");
   const launch = async () => {
-    const app = await _electron.launch({
-      executablePath: process.env.SCRAPLY_E2E_EXECUTABLE ?? join(process.cwd(), "release/win-unpacked/Scraply.exe"),
-      args: [`--user-data-dir=${join(directory, "electron")}`],
-      env: { ...process.env, SCRAPLY_E2E: "1", SCRAPLY_E2E_BACKEND_URL: `http://127.0.0.1:${backend.port}`,
-        SCRAPLY_E2E_BACKEND_TOKEN: backend.token },
+    const electron = await installedApp.launch({
+      ...process.env,
+      SCRAPLY_E2E: "1",
+      SCRAPLY_E2E_BACKEND_URL: `http://127.0.0.1:${backend.port}`,
+      SCRAPLY_E2E_BACKEND_TOKEN: backend.token,
     });
-    await app.evaluate(({ shell }) => { shell.openExternal = async () => undefined; });
-    return app;
+    await electron.evaluate(({ shell }) => { shell.openExternal = async () => undefined; });
+    return electron;
   };
   try {
-    electron = await launch();
+    let electron = await launch();
     let page = await electron.firstWindow();
     await expect(page.getByLabel("Research name", { exact: true })).toBeVisible();
 
@@ -55,8 +55,7 @@ test("recovers an expired native session through installed sign-in and restores 
     expect(operations).toContain("account.login.cancel");
     expect(operations).toContain("credential.session.persisted");
 
-    await electron.close();
-    electron = undefined;
+    await installedApp.close();
     await backend.close();
     backend = await startFixtureServer(directory, () => undefined, "auth-recovery");
     electron = await launch();
@@ -66,38 +65,36 @@ test("recovers an expired native session through installed sign-in and restores 
     await expect(page.getByLabel("OpenAI account")).toContainText("synthetic-account");
     await expect(page.getByLabel("OpenAI account").getByText(/OpenAI .*session.*Sign in again\./)).toHaveCount(0);
   } finally {
-    await electron?.close();
-    await backend.close();
-    rmSync(directory, { recursive: true, force: true });
+    await installedApp.cleanup(() => backend.close());
   }
 });
 
 test("native v2 research survives the installed selection, risk evaluation, and reopen interaction", async ({}, testInfo) => {
-  const directory = mkdtempSync(join(tmpdir(), "scraply-native-ui-"));
+  const installedApp = createInstalledApp({ directoryPrefix: "scraply-native-ui-", profileDirectoryName: "electron" });
+  const { directory } = installedApp;
   const managedPrompt = "Custom instructions from a retired workflow.\n";
   const managedHash = createHash("sha256").update(managedPrompt).digest("hex");
   mkdirSync(join(directory, "prompts"));
   writeFileSync(join(directory, "prompts", "solutions.md"), managedPrompt);
-  let electron: ElectronApplication | undefined;
   let events = Promise.resolve();
   const eventErrors: unknown[] = [];
   let backend = await startFixtureServer(directory, (event) => {
-    const app = electron;
-    if (!app) return;
+    const electron = installedApp.application;
+    if (!electron) return;
     events = events.then(async () => {
-      await app.evaluate(({ BrowserWindow }, message) => {
+      await electron.evaluate(({ BrowserWindow }, message) => {
         BrowserWindow.getAllWindows()[0]?.webContents.send(message.channel, message.event);
       }, { channel: IPC_CHANNELS.BACKEND_EVENT, event });
     }).catch((error: unknown) => { eventErrors.push(error); });
   });
-  const launch = () => _electron.launch({
-    executablePath: process.env.SCRAPLY_E2E_EXECUTABLE ?? join(process.cwd(), "release/win-unpacked/Scraply.exe"),
-    args: [`--user-data-dir=${join(directory, "electron")}`],
-    env: { ...process.env, SCRAPLY_E2E: "1", SCRAPLY_E2E_BACKEND_URL: `http://127.0.0.1:${backend.port}`,
-      SCRAPLY_E2E_BACKEND_TOKEN: backend.token },
+  const launch = () => installedApp.launch({
+    ...process.env,
+    SCRAPLY_E2E: "1",
+    SCRAPLY_E2E_BACKEND_URL: `http://127.0.0.1:${backend.port}`,
+    SCRAPLY_E2E_BACKEND_TOKEN: backend.token,
   });
   try {
-    electron = await launch();
+    let electron = await launch();
     let page = await electron.firstWindow();
     await expect(page.getByLabel("Research name", { exact: true })).toBeVisible();
     await expect(page.getByRole("tabpanel", { name: "Research setup" })).toBeVisible();
@@ -129,7 +126,7 @@ test("native v2 research survives the installed selection, risk evaluation, and 
     await expect(page.getByLabel("OpenAI account")).toContainText("synthetic-account");
     await page.getByLabel("Research name", { exact: true }).fill("Native protocol UI fixture");
     await page.getByLabel("What do you want to explore?", { exact: false }).fill("Parts delivery uncertainty for repair shops");
-    await page.getByLabel("Research depth", { exact: false }).selectOption("quick");
+    await page.getByLabel("Research depth", { exact: true }).selectOption("quick");
     await page.getByRole("button", { name: "Discover problems", exact: true }).click();
     await expect(page.getByText("Choose problems to develop", { exact: true })).toBeVisible();
     await expect(page.getByText("overstated", { exact: true })).not.toBeVisible();
@@ -196,8 +193,7 @@ test("native v2 research survives the installed selection, risk evaluation, and 
     await expect(page.getByRole("button", { name: "Supplier reliability ledger", exact: true })).not.toBeVisible();
     await events;
     expect(eventErrors).toEqual([]);
-    await electron.close();
-    electron = undefined;
+    await installedApp.close();
     await backend.close();
     backend = await startFixtureServer(directory, () => undefined);
     electron = await launch();
@@ -230,9 +226,7 @@ test("native v2 research survives the installed selection, risk evaluation, and 
     expect(readFileSync(join(directory, "prompts", "retired-prompt-backups", managedHash, "solutions.md"), "utf8")).toBe(managedPrompt);
   } finally {
     await events;
-    await electron?.close();
-    await backend.close();
-    rmSync(directory, { recursive: true, force: true });
+    await installedApp.cleanup(() => backend.close());
   }
 });
 
