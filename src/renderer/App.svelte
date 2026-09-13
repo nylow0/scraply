@@ -120,19 +120,20 @@
       }
       latestEvent = event;
       if (event.type === "run-progress" && workspace?.latestResearchRun?.runId === event.runId) {
+        const latestRun = workspace.latestResearchRun;
         const measureId = progressMeasureId++;
         const startMark = `scraply-progress-received-${measureId}`;
         const visibleMark = `scraply-progress-rendered-${measureId}`;
         performance.mark(startMark);
-        workspace.latestResearchRun.lastActivity = event.message;
-        workspace.latestResearchRun.codexCalls = event.codexCalls;
-        workspace.latestResearchRun.searches = event.searches;
-        if (event.usage) workspace.latestResearchRun.usage = event.usage;
+        latestRun.lastActivity = event.message;
+        latestRun.codexCalls = event.codexCalls;
+        latestRun.searches = event.searches;
+        if (event.usage) latestRun.usage = event.usage;
         const progress = event as typeof event & RuntimeProgress;
-        if (progress.stage !== undefined) workspace.latestResearchRun.stage = progress.stage as NonNullable<typeof workspace.latestResearchRun.stage>;
-        if (progress.modelState !== undefined) workspace.latestResearchRun.modelState = progress.modelState;
-        if (progress.elapsedMs !== undefined) workspace.latestResearchRun.elapsedMs = progress.elapsedMs;
-        if (progress.lastSuccessfulCheckpoint !== undefined) workspace.latestResearchRun.lastSuccessfulCheckpoint = progress.lastSuccessfulCheckpoint;
+        if (progress.stage !== undefined) latestRun.stage = progress.stage as NonNullable<typeof latestRun.stage>;
+        if (progress.modelState !== undefined) latestRun.modelState = progress.modelState;
+        if (progress.elapsedMs !== undefined) latestRun.elapsedMs = progress.elapsedMs;
+        if (progress.lastSuccessfulCheckpoint !== undefined) latestRun.lastSuccessfulCheckpoint = progress.lastSuccessfulCheckpoint;
         progressReceivedAt = Date.now();
         void tick().then(() => {
           try {

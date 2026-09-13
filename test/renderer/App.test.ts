@@ -517,6 +517,7 @@ function installApi(overrides: Partial<ScraplyApi>): void {
     selectOption: noWorkspace,
     saveDecision: noWorkspace,
     requestEvidenceFollowUp: noWorkspace,
+    requestEvidenceReassessment: noWorkspace,
     exportResearch: async () => ({ cancelled: true as const }),
     exportIdeas: async () => ({ cancelled: true as const, files: [] }),
     getSourceDetail: async () => { throw new Error("unused"); },
