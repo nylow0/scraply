@@ -727,10 +727,20 @@ async function withDiscoveryFixture(
 }
 
 function discoveryFactor(source: HarvestedSource, id = "factor", modelConfidence = 0.9): HarvestedFactor {
-  return {
+  const factor = {
     id, subject: "Operators", behavior: "repeat filing", quote: source.retrievedText,
     sourceId: source.id, harvestMode: "domain", modelConfidence, source,
   };
+  // Keep the fixture's checkpoint context fully JSON-shaped when optional evidence
+  // classification is absent from an older saved stage output.
+  return Object.assign(factor, {
+    uncertainty: null,
+    sourceRole: "unknown",
+    audienceFit: "unknown",
+    independentSourceKey: null,
+    supportsDemand: false,
+    demandEvidenceUncertainty: "Not classified in the saved output.",
+  }) as HarvestedFactor;
 }
 
 function discoveryModelClient(
