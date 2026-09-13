@@ -11,7 +11,7 @@ describe("SolutionListItem risk summary", () => {
     const summary = view.container.querySelector(".solution-summary");
 
     expect(summary).not.toBeNull();
-    expect(summary?.textContent?.trim()).toBe(idea.mechanism);
+    expect(summary?.textContent?.trim()).toBe(idea.description);
     expect(summary?.textContent).not.toContain("Highest risk");
     const preview = within(view.container.querySelector(".expanded-snapshot") as HTMLElement);
     expect(preview.getByText("Highest risk: likely · project ends")).toBeTruthy();
@@ -21,6 +21,7 @@ describe("SolutionListItem risk summary", () => {
     expect(metrics.textContent).toContain("2 project-ending");
     expect(metrics.textContent).toContain("1 unaddressed");
     expect(preview.queryByText(/fatal/i)).toBeNull();
+
   });
 
   test("uses API order to break tied risk scores and handles an empty risk list", () => {
@@ -62,6 +63,7 @@ describe("SolutionListItem risk summary", () => {
     const view = render(SolutionListItem, { idea: solution(), rank: 1, onOpenSource });
 
     await fireEvent.click(view.container.querySelector(".solution-summary") as HTMLElement);
+    expect(view.getByText("Supplier reliability ledger")).toBeTruthy();
     await fireEvent.click(view.getByText("Evidence behind this problem").closest("summary") as HTMLElement);
     expect(view.getByText("We call around before promising a date.")).toBeTruthy();
     expect(view.getByText("Specialist part buyers")).toBeTruthy();

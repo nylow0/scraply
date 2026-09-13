@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount, tick, untrack } from "svelte";
   import type { NativeLoginStartResult, ResearchEvent, SolutionView, WorkspaceState } from "../shared/ipc";
-  import type { ModelRef } from "../shared/schemas";
+  import type { ExplorationPurpose, ModelRef } from "../shared/schemas";
   import { readResearchDefaults } from "./lib/research-defaults";
   import DesktopBar from "./components/DesktopBar.svelte";
   import Icon from "./components/Icon.svelte";
@@ -80,8 +80,22 @@
   let loadEpoch = 0;
   let workspaceInFlight = false;
   let progressMeasureId = 0;
+  let clockNow = $state(Date.now());
+  let progressReceivedAt = $state(Date.now());
   let activeThread = $derived(workspace?.threads.find((item) => item.id === workspace?.activeThreadId) ?? null);
   let activeRun = $derived(workspace?.latestResearchRun ?? null);
+  type RuntimeProgress = {
+    stage?: string;
+    modelState?: "waiting" | "dispatched" | "accepted" | null;
+    elapsedMs?: number;
+    lastSuccessfulCheckpoint?: string | null;
+  };
+  let runtimeProgress = $derived((activeRun ?? {}) as RuntimeProgress);
+  let visibleElapsedMs = $derived(runtimeProgress.elapsedMs === undefined ? undefined
+    : runtimeProgress.elapsedMs + (["queued", "running"].includes(activeRun?.status ?? "") ? Math.max(0, clockNow - progressReceivedAt) : 0));
+  let runActivity = $derived(latestEvent?.type === "run-progress" && latestEvent.runId === activeRun?.runId
+    ? latestEvent.message
+    : activeRun?.lastActivity ?? "Preparing the next provider call...");
   // Local-only override: lets the user reopen the scope form from a failed run without touching server state.
   let editingScope = $derived(editingScopeThreadId !== null && editingScopeThreadId === activeThread?.id);
   let researchReady = $derived(Boolean(activeThread && (workspace?.problemCandidates.length || workspace?.rejectedProblemCandidates.length || activeThread.status === "discovery-running")));
@@ -89,6 +103,7 @@
 
   onMount(() => {
     void load();
+    const clock = setInterval(() => clockNow = Date.now(), 1_000);
     const stopCommands = window.scraply.onAppCommand((command) => {
       if (command === "toggle-sidebar") sidebarVisible = !sidebarVisible;
       else if (command === "back") void navigateHistory(-1);
@@ -98,7 +113,11 @@
       else if (command === "export-research" && workspace?.activeThreadId) void exportResearch();
     });
     const dispose = window.scraply.onBackendEvent((event) => {
-      if (event.threadId !== workspace?.activeThreadId) return;
+      if (event.threadId !== workspace?.activeThreadId) {
+        // Terminal events change sidebar state even when another thread is open.
+        if (["run-completed", "run-cancelled", "run-failed"].includes(event.type)) reconcileSoon();
+        return;
+      }
       latestEvent = event;
       if (event.type === "run-progress" && workspace?.latestResearchRun?.runId === event.runId) {
         const measureId = progressMeasureId++;
@@ -109,6 +128,12 @@
         workspace.latestResearchRun.codexCalls = event.codexCalls;
         workspace.latestResearchRun.searches = event.searches;
         if (event.usage) workspace.latestResearchRun.usage = event.usage;
+        const progress = event as typeof event & RuntimeProgress;
+        if (progress.stage !== undefined) workspace.latestResearchRun.stage = progress.stage as NonNullable<typeof workspace.latestResearchRun.stage>;
+        if (progress.modelState !== undefined) workspace.latestResearchRun.modelState = progress.modelState;
+        if (progress.elapsedMs !== undefined) workspace.latestResearchRun.elapsedMs = progress.elapsedMs;
+        if (progress.lastSuccessfulCheckpoint !== undefined) workspace.latestResearchRun.lastSuccessfulCheckpoint = progress.lastSuccessfulCheckpoint;
+        progressReceivedAt = Date.now();
         void tick().then(() => {
           try {
             const values = document.querySelectorAll(".calls strong");
@@ -130,7 +155,7 @@
       }
       reconcileSoon();
     });
-    return () => { stopCommands(); dispose(); if (reconcileTimer) clearTimeout(reconcileTimer); };
+    return () => { stopCommands(); dispose(); clearInterval(clock); if (reconcileTimer) clearTimeout(reconcileTimer); };
   });
 
   async function load() {
@@ -379,11 +404,14 @@
   async function cancelResearch(runId: string) {
     await action(async () => setWorkspace(await window.scraply.cancelResearch(runId)));
   }
-  async function selectProblems(ids: string[], userProblem: string | null, model: ModelRef, reasoningEffort: string) {
+  async function selectProblems(ids: string[], userProblem: string | null, model: ModelRef, reasoningEffort: string, explorationPurpose: ExplorationPurpose) {
     const threadId = workspace?.activeThreadId;
     if (!threadId) return;
     await action(async () => {
-      setWorkspace(await window.scraply.selectProblems({ threadId, problemIds: ids, userProblem, model, reasoningEffort }));
+      const api = window.scraply as typeof window.scraply & {
+        selectProblems(request: { threadId: string; problemIds: string[]; userProblem: string|null; model: ModelRef; reasoningEffort: string; explorationPurpose: ExplorationPurpose }): Promise<WorkspaceState>;
+      };
+      setWorkspace(await api.selectProblems({ threadId, problemIds: ids, userProblem, model, reasoningEffort, explorationPurpose }));
       activeStep = "ideas";
       reviewSelection = false;
     });
@@ -394,11 +422,14 @@
     const runId = idea.runId;
     await action(async () => setWorkspace(await window.scraply.selectOption({ threadId, runId, solutionId: idea.id })));
   }
-  async function saveDecision(solutionId: string, userDecision: string, observedResult: string) {
+  async function saveDecision(solutionId: string, userDecision: string, observedResult: string, experimentOutcome: "not-run" | "pass" | "fail" | "inconclusive") {
     const threadId = workspace?.activeThreadId;
     if (!threadId || busy) throw new Error("Wait for the current action before saving.");
     busy = true;
-    try { setWorkspace(await window.scraply.saveDecision({ threadId, solutionId, userDecision, observedResult })); }
+    const api = window.scraply as typeof window.scraply & {
+      saveDecision(request: { threadId: string; solutionId: string; userDecision: string; observedResult: string; experimentOutcome: "not-run" | "pass" | "fail" | "inconclusive" }): Promise<WorkspaceState>;
+    };
+    try { setWorkspace(await api.saveDecision({ threadId, solutionId, userDecision, observedResult, experimentOutcome })); }
     finally { busy = false; if (reconcilePending) reconcileSoon(); }
   }
   async function exportResearch() {
@@ -437,6 +468,24 @@
     await action(() => window.scraply.openLogsFolder());
   }
   function message(value: unknown) { return value instanceof Error ? value.message : "Something went wrong."; }
+  function stageLabel(stage: string | undefined): string {
+    if (!stage) return "Working";
+    return stage.split("-").map((part) => part.charAt(0).toUpperCase() + part.slice(1)).join(" ");
+  }
+  async function requestEvidenceReassessment(runId: string) {
+    const threadId = activeThread?.id;
+    if (!threadId || !runId) return;
+    const api = window.scraply as typeof window.scraply & {
+      requestEvidenceReassessment(request: { threadId: string; runId: string }): Promise<WorkspaceState>;
+    };
+    await action(async () => setWorkspace(await api.requestEvidenceReassessment({ threadId, runId })));
+  }
+  function elapsedLabel(elapsedMs: number | undefined): string | null {
+    if (elapsedMs === undefined) return null;
+    const seconds = Math.max(0, Math.floor(elapsedMs / 1_000));
+    const minutes = Math.floor(seconds / 60);
+    return minutes ? `${minutes}m ${seconds % 60}s elapsed` : `${seconds}s elapsed`;
+  }
 </script>
 
 <DesktopBar canBack={backIndex !== -1 && !busy} canForward={forwardIndex !== -1 && !busy} onBack={() => navigateHistory(-1)} onForward={() => navigateHistory(1)} onToggle={() => sidebarVisible = !sidebarVisible} />
@@ -511,7 +560,8 @@
         <div class="running" id="workflow-panel-research" role="tabpanel" aria-label="Research" tabindex="0">
           <div class="activity-symbol"><Icon name="research" size={30} /></div><p class="eyebrow">Discovery in progress</p>
           <h1>Following the evidence.</h1>
-          <div class="activity"><span></span><p>{latestEvent?.type === "run-progress" ? latestEvent.message : activeRun?.lastActivity ?? "Preparing the next provider call…"}</p></div>
+          <div class="activity"><span></span><p>{runActivity}</p></div>
+          {#if activeRun}<div class="progress-facts" aria-label="Run progress"><strong>{stageLabel(runtimeProgress.stage)}</strong>{#if runtimeProgress.modelState}<span>{runtimeProgress.modelState === "waiting" ? "Queued for model" : runtimeProgress.modelState === "dispatched" ? "Sent to model" : "Accepted by model"}</span>{/if}{#if elapsedLabel(visibleElapsedMs)}<span>{elapsedLabel(visibleElapsedMs)}</span>{/if}{#if runtimeProgress.lastSuccessfulCheckpoint}<span>Last checkpoint: {runtimeProgress.lastSuccessfulCheckpoint}</span>{/if}</div>{/if}
           {#if activeRun}<div class="run-actions"><button class="cancel" disabled={busy} onclick={() => cancelResearch(activeRun.runId)}>Cancel run</button></div>{/if}
         </div>
       {:else if (activeThread.status === "problems-ready" || reviewSelection) && (workspace.problemCandidates.length > 0 || workspace.rejectedProblemCandidates.length > 0)}
@@ -526,16 +576,20 @@
         <div class="failed" id="workflow-panel-research" role="tabpanel" aria-label="Research" tabindex="0"><p class="eyebrow">Research unavailable</p><h1>No completed research is ready yet.</h1><p>Return to setup and start a research run.</p></div>
       {/if}
     {:else if activeThread.status === "development-running"}
-      <div class="running" id="workflow-panel-ideas" role="tabpanel" aria-label="Solutions" tabindex="0">
+      <div id="workflow-panel-ideas" role="tabpanel" aria-label="Solutions" tabindex="0">
+      <div class="running development-progress">
         <div class="activity-symbol"><Icon name="ideas" size={30} /></div><p class="eyebrow">Development in progress</p>
-        <h1>Turning problems into possibilities.</h1>
+        <h1>{runtimeProgress.stage === "analyzing-option" || runtimeProgress.stage === "evaluating-risk" ? "Analyzing the selected option." : workspace.solutions.length ? "Generating the next options." : "Turning problems into possibilities."}</h1>
         <p class="research-export-hint">The research archive is already available. Open the Research tab to inspect or export it while solutions are generated.</p>
-        <div class="activity"><span></span><p>{latestEvent?.type === "run-progress" ? latestEvent.message : activeRun?.lastActivity ?? "Preparing the next provider call…"}</p></div>
+        <div class="activity"><span></span><p>{runActivity}</p></div>
+        {#if activeRun}<div class="progress-facts" aria-label="Run progress"><strong>{stageLabel(runtimeProgress.stage)}</strong>{#if runtimeProgress.modelState}<span>{runtimeProgress.modelState === "waiting" ? "Queued for model" : runtimeProgress.modelState === "dispatched" ? "Sent to model" : "Accepted by model"}</span>{/if}{#if elapsedLabel(visibleElapsedMs)}<span>{elapsedLabel(visibleElapsedMs)}</span>{/if}{#if runtimeProgress.lastSuccessfulCheckpoint}<span>Last checkpoint: {runtimeProgress.lastSuccessfulCheckpoint}</span>{/if}</div>{/if}
         {#if activeRun}<div class="run-actions"><button class="cancel" disabled={busy} onclick={() => cancelResearch(activeRun.runId)}>Cancel run</button></div>{/if}
+      </div>
+      {#if workspace.solutions.length > 0}<SolutionWorkspace solutions={workspace.solutions} {busy} analysisBlocked={true} onDiscard={discardIdea} workflowVersion={activeRun?.workflowVersion} onSelect={selectOption} onSave={saveDecision} onExport={exportIdeas} onOpenSource={openExternalUrl} onEvidenceFollowUp={requestEvidenceFollowUp} onEvidenceReassessment={requestEvidenceReassessment} onReview={() => { activeStep = "research"; reviewSelection = true; }} />{/if}
       </div>
     {:else if activeThread.status === "solutions-ready" || workspace.solutions.length > 0}
       <div id="workflow-panel-ideas" role="tabpanel" aria-label="Solutions">
-        <SolutionWorkspace solutions={workspace.solutions} {busy} onDiscard={discardIdea} workflowVersion={activeRun?.workflowVersion} onSelect={selectOption} onSave={saveDecision} onExport={exportIdeas} onOpenSource={openExternalUrl} onEvidenceFollowUp={requestEvidenceFollowUp} onReview={() => { activeStep = "research"; reviewSelection = true; }} />
+        <SolutionWorkspace solutions={workspace.solutions} {busy} onDiscard={discardIdea} workflowVersion={activeRun?.workflowVersion} onSelect={selectOption} onSave={saveDecision} onExport={exportIdeas} onOpenSource={openExternalUrl} onEvidenceFollowUp={requestEvidenceFollowUp} onEvidenceReassessment={requestEvidenceReassessment} onReview={() => { activeStep = "research"; reviewSelection = true; }} />
       </div>
     {:else if activeThread.status === "failed"}
       <div class="failed" id="workflow-panel-ideas" role="tabpanel" aria-label="Solutions" tabindex="0"><p class="eyebrow">No solutions</p><h1>The run stopped before any solutions were generated.</h1><p>{activeRun?.canResume ? "Resume the saved attempt or edit the setup." : "Edit the setup to start a new run."}</p></div>
@@ -572,6 +626,9 @@
   .activity-symbol { position:relative; }.activity-symbol::after { content:"";position:absolute;inset:-5px;border:1px solid transparent;border-top-color:var(--accent);border-radius:28px;animation:orbit 4s linear infinite; }
   .activity { width:100%;display:flex;gap:14px;border:1px solid var(--border);border-radius:14px;padding:20px;background:var(--surface);margin:24px 0;align-items:center; }
   .activity p { margin:0;font-size:13px;color:var(--muted); }.activity span { width:7px;height:7px;border-radius:50%;background:var(--accent);flex:none;animation:pulse 1.5s ease infinite alternate; }
+  .progress-facts { display:flex;flex-wrap:wrap;gap:8px 18px;color:var(--subtle);font-size:13px; }
+  .progress-facts strong { color:var(--text);font-weight:600; }
+  .development-progress { min-height:auto;padding-bottom:32px;border-bottom:1px solid var(--border); }
   .run-actions { display:flex;gap:9px; }.run-actions button { border:1px solid var(--border-strong);background:transparent;color:var(--text);padding:10px 14px;border-radius:8px;font-size:13px; }.run-actions .cancel { color:var(--danger); }
   .run-stopped { display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:16px;margin:14px var(--page-inline) 0;padding:16px;border:1px solid #df92924a;border-radius:12px;background:#df929208; }
   .run-stopped > div:first-child { display:grid;gap:5px; }.run-stopped strong { font-size:13px; }.run-stopped span { color:var(--muted);font-size:13px; }.run-stopped-actions { display:flex;flex-wrap:wrap;gap:8px; }.run-stopped-actions button { border:1px solid var(--border-strong);border-radius:8px;background:transparent;color:var(--text);padding:9px 13px;font-size:13px; }.run-stopped-actions .cancel { color:var(--danger); }
