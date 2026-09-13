@@ -107,6 +107,11 @@ export const PendingRunSchema = z.object({
   threadTitle: z.string(),
   status: z.enum(["queued", "running"]),
   problemId: EntityIdSchema.nullable(),
+  stage: z.enum(["queued", "searching", "extracting", "synthesizing-problems", "generating-options", "awaiting-option-selection", "evaluating-risk", "analyzing-option", "evidence-follow-up", "completed", "failed", "cancelled"]).optional(),
+  modelState: z.enum(["waiting", "dispatched", "accepted"]).nullable().optional(),
+  elapsedMs: z.number().int().nonnegative().optional(),
+  lastSuccessfulCheckpoint: z.string().nullable().optional(),
+  queuePosition: z.number().int().positive().optional(),
 });
 export const SourceDetailSchema = SharedSourceDetailSchema;
 
@@ -206,6 +211,11 @@ export const LatestResearchRunSchema = z.object({
   problemId: EntityIdSchema.nullable(), codexCalls: z.number().int().nonnegative(), searches: z.number().int().nonnegative(),
   projectedCodexCalls: z.number().int().nonnegative(), projectedSearches: z.number().int().nonnegative(),
   lastActivity: z.string().nullable(), completionReason: z.string().nullable().optional(), usage: RunUsageSchema.optional(),
+  stage: PendingRunSchema.shape.stage,
+  modelState: PendingRunSchema.shape.modelState,
+  elapsedMs: PendingRunSchema.shape.elapsedMs,
+  lastSuccessfulCheckpoint: PendingRunSchema.shape.lastSuccessfulCheckpoint,
+  queuePosition: PendingRunSchema.shape.queuePosition,
 });
 
 export const WorkspaceStateSchema = z.object({
@@ -221,7 +231,9 @@ export const WorkspaceStateSchema = z.object({
 
 export const ResearchEventSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("run-started"), runId: EntityIdSchema, threadId: EntityIdSchema, problemId: EntityIdSchema.nullable() }),
-  z.object({ type: z.literal("run-progress"), runId: EntityIdSchema, threadId: EntityIdSchema, message: z.string(), codexCalls: z.number().int(), searches: z.number().int(), usage: RunUsageSchema.optional() }),
+  z.object({ type: z.literal("run-progress"), runId: EntityIdSchema, threadId: EntityIdSchema, message: z.string(), codexCalls: z.number().int(), searches: z.number().int(), usage: RunUsageSchema.optional(),
+    stage: PendingRunSchema.shape.stage, modelState: PendingRunSchema.shape.modelState,
+    elapsedMs: PendingRunSchema.shape.elapsedMs, lastSuccessfulCheckpoint: PendingRunSchema.shape.lastSuccessfulCheckpoint }),
   z.object({ type: z.literal("run-resumed"), runId: EntityIdSchema, threadId: EntityIdSchema }),
   z.object({ type: z.literal("run-completed"), runId: EntityIdSchema, threadId: EntityIdSchema, problemId: EntityIdSchema.nullable() }),
   z.object({ type: z.literal("run-cancelled"), runId: EntityIdSchema, threadId: EntityIdSchema }),
