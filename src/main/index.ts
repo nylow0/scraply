@@ -180,12 +180,11 @@ async function startBackendProcess(): Promise<BackendReady> {
             ...secrets,
             providerCredentials: { ...secrets.providerCredentials, [message.providerId]: message.credential },
           };
-          await credentialStore.save(nextSecrets, () => {
+          secrets = await credentialStore.save(nextSecrets, () => {
             if (blockedProviderCredentialWrites.has(message.providerId)) {
               throw new Error("The account was signed out before this credential could be saved");
             }
           });
-          secrets = nextSecrets;
           processHandle.postMessage({ type: "provider-credential-persisted", requestId: message.requestId, ok: true });
         } catch (error) {
           blockedProviderCredentialWrites.add(message.providerId);
@@ -469,8 +468,7 @@ async function validateAndPersistSecrets(candidate: BackendSecrets): Promise<Val
       await updateBackendSecrets(previous);
       return validation;
     }
-    await credentialStore.save(candidate);
-    secrets = candidate;
+    secrets = await credentialStore.save(candidate);
     return validation;
   } catch (error) {
     await updateBackendSecrets(previous).catch(() => undefined);
@@ -566,8 +564,9 @@ function registerIpc(): void {
     delete providerCredentials[input.providerId];
     const nextSecrets = { ...secrets, providerCredentials };
     return revokeNativeAccount(async () => {
-      try { await credentialStore.save(nextSecrets); }
-      finally { secrets = nextSecrets; }
+      let persisted = nextSecrets;
+      try { persisted = await credentialStore.save(nextSecrets); }
+      finally { secrets = persisted; }
     }, () => post("/native/login/cancel", input));
   });
   handle(IPC_CHANNELS.NATIVE_ACCOUNT_REFRESH, (body) => post("/native/account/refresh", NativeProviderSchema.parse(body)));
@@ -578,8 +577,9 @@ function registerIpc(): void {
     delete providerCredentials[input.providerId];
     const nextSecrets = { ...secrets, providerCredentials };
     return revokeNativeAccount(async () => {
-      try { await credentialStore.save(nextSecrets); }
-      finally { secrets = nextSecrets; }
+      let persisted = nextSecrets;
+      try { persisted = await credentialStore.save(nextSecrets); }
+      finally { secrets = persisted; }
     }, () => post("/native/logout", input));
   });
   handle(IPC_CHANNELS.START_RESEARCH, (body) => post("/research/start", StartResearchSchema.parse(body)));
@@ -704,7 +704,9 @@ if (!gotLock) {
       .then(async () => {
         if (!automaticSecrets.exaApiKey && !automaticSecrets.perplexityApiKey) return;
         const validation = await backendRequest<ValidationState>("/validation");
-        if (validation.setupComplete && configuredProviderSecretsAreValid(secrets, validation)) await credentialStore.save(secrets);
+        if (validation.setupComplete && configuredProviderSecretsAreValid(secrets, validation)) {
+          secrets = await credentialStore.save(secrets);
+        }
       })
       .catch((error) => {
         console.error("Backend startup failed", error);
