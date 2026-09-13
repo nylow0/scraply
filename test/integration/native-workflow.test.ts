@@ -108,7 +108,7 @@ describe("native research workflow through the production backend", () => {
     expect(discovered.problemCandidates[0]?.verdict).toBe("overstated");
     expect(discovered.problemCandidates[0]?.verdictReason).toContain("disagrees");
     expect(discovered.problemCandidates[0]?.factors).toHaveLength(2);
-    expect(item.searches).toHaveLength(7);
+    expect(item.searches).toHaveLength(6);
 
     await item.post("/research/select-problems", { threadId, problemIds: [discovered.problemCandidates[0]!.id], userProblem: null, model, reasoningEffort: "medium" }, WorkspaceStateSchema);
     const options = await item.waitFor((state) => state.threads.find((thread) => thread.id === threadId)?.status === "solutions-ready");
