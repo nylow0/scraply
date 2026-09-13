@@ -419,7 +419,7 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
     const risksBySolution = details ? readRisks(solutionIds, readAll) : new Map<string, SolutionView["risks"]>();
     const factorsByProblem = details ? readProblemFactors(problemIds, readAll) : new Map<string, FactorView[]>();
     const contrarySourcesByProblem = details ? readContrarySources(problemIds, readAll) : new Map<string, NonNullable<SolutionView["contrarySources"]>>();
-    const followUpsByRun = details ? readEvidenceFollowUps(rows.map((row) => String(row.research_run_id)), readAll) : new Map();
+    const followUpsBySolution = details ? readEvidenceFollowUps(rows.map((row) => String(row.research_run_id)), readAll) : new Map();
     context.observeDataRead?.({ operation: details ? "solution-details" : "solution-summaries", queryCount, rowCount: rows.length });
     const discardedIds = new Set(JSON.parse(db.getSetting(`discarded-ideas:${threadId}`) ?? "[]") as string[]);
     const result = rows.map((row): SolutionView => {
@@ -429,7 +429,7 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
         impact: String(row.highest_risk_impact) as "≤3 days lost" | "~2 weeks" | "~2 months" | "project ends",
         sortKey: Number(row.highest_risk_sort_key),
       };
-      const evidenceFollowUp = followUpsByRun.get(String(row.research_run_id));
+      const evidenceFollowUp = followUpsBySolution.get(String(row.id));
       return {
         discarded: discardedIds.has(String(row.id)), detailsLoaded: details, highestRisk: highest,
         outcomeCount: Number(row.outcome_count), riskCount: Number(row.risk_count), projectEndingRiskCount: Number(row.ending_count),
@@ -552,7 +552,7 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
     const factorsById = new Map(factorRows.map((factor) => [String(factor.id), mapFactor(factor)]));
     return new Map(rows.map((row) => {
       const status = String(row.status);
-      return [String(row.research_run_id), {
+      return [String(row.solution_id), {
         status: status === "requested" ? "running" : status as "running" | "completed" | "failed",
         question: String(row.question),
         sources: (JSON.parse(String(row.source_ids_json)) as string[]).flatMap((id) => sourcesById.get(id) ?? []),
@@ -629,14 +629,14 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
   }
   function listEvidenceFollowUpExports(threadId: string) {
     const rows = db.db.prepare(`
-      SELECT ef.research_run_id FROM evidence_follow_ups ef
+      SELECT ef.research_run_id, ef.solution_id FROM evidence_follow_ups ef
       JOIN research_runs rr ON rr.id = ef.research_run_id
       WHERE rr.thread_id = ? ORDER BY ef.requested_at, ef.research_run_id
-    `).all(threadId) as Array<{ research_run_id: string }>;
+    `).all(threadId) as Array<{ research_run_id: string; solution_id: string }>;
     const readAll: DataRead = (sql, params) => db.db.prepare(sql).all(...params) as Array<Record<string, unknown>>;
-    const byRun = readEvidenceFollowUps(rows.map((row) => row.research_run_id), readAll);
+    const bySolution = readEvidenceFollowUps(rows.map((row) => row.research_run_id), readAll);
     return rows.flatMap((row) => {
-      const followUp = byRun.get(row.research_run_id);
+      const followUp = bySolution.get(row.solution_id);
       return followUp ? [{ researchRunId: row.research_run_id, ...followUp }] : [];
     });
   }
