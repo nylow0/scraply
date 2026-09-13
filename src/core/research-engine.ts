@@ -652,6 +652,7 @@ export class ResearchEngine {
     const searches = this.ledger.countProviderCalls(active.runId, active.config.searchProvider);
     const details = { message, codexCalls, searches, ...(active.stage ? { stage: active.stage } : {}),
       modelState: active.modelState ?? null, elapsedMs: Math.max(0, Date.now() - active.startedAt),
+      operationStartedAt: new Date(active.startedAt).toISOString(), operationElapsedMs: Math.max(0, Date.now() - active.startedAt),
       lastSuccessfulCheckpoint: this.lastSuccessfulCheckpoint(active.runId) };
     this.logJob(active.runId, active.threadId, "run-progress", details);
     this.emit({ type: "run-progress", runId: active.runId, threadId: active.threadId, ...details });
