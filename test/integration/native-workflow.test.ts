@@ -384,6 +384,14 @@ describe("native v2 decisions through the production backend", () => {
     expect(detail.evidenceFollowUp).toEqual(expect.objectContaining({ status: "completed", question, error: null }));
     expect(detail.evidenceFollowUp?.sources).toHaveLength(2);
     expect(detail.evidenceFollowUp?.factors).toHaveLength(2);
+    const sibling = options.solutions.find((solution) => solution.id !== selected.id)!;
+    expect((await item.post(`/ideas/${sibling.id}`, undefined, SolutionViewSchema)).evidenceFollowUp).toBeUndefined();
+    expect(followedUp.solutions.find((solution) => solution.id === sibling.id)?.evidenceFollowUpStatus).toBeUndefined();
+    const siblingExport = await item.post("/ideas/export", { threadId, format: "json" }, z.object({
+      files: z.array(z.object({ content: z.string() })),
+    }));
+    const exportedIdeas = siblingExport.files.flatMap((file) => JSON.parse(file.content) as Array<{ id: string; evidenceFollowUp?: unknown }>);
+    expect(exportedIdeas.find((solution) => solution.id === sibling.id)?.evidenceFollowUp).toBeUndefined();
     const followUpRequest = item.requests().find((request) => request.workOrder.stage === "factor-harvest:follow-up")!;
     expect(followUpRequest.workOrder.inputs).toEqual({ routing: { harvestMode: "domain", followUp: true }, workflowVersion: 2 });
     expect(JSON.stringify(followUpRequest.workOrder)).not.toContain(question);
