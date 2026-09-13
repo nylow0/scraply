@@ -313,71 +313,58 @@ export function quoteAppearsVerbatim(sourceText: string, quote: string): boolean
   const normalizedQuote = normalizeEvidenceText(quote);
   if (!normalizedQuote) return false;
   const normalizedSource = normalizeEvidenceText(sourceText);
-  if (normalizedSource.includes(normalizedQuote)) return true;
-  // Extracted documents lose word spaces and use heading capitals. Keep every other
-  // character in order, including punctuation and spaces between digits in tables.
-  // The fallback must preserve each negation's identity and compacted position.
-  const extractedQuote = compactExtractedText(normalizedQuote).text;
-  const extractedSource = compactExtractedText(normalizedSource);
-  let matchIndex = extractedSource.text.indexOf(extractedQuote);
+  if (containsAtWordBoundaries(normalizedSource, normalizedQuote)) return true;
+  return containsAtWordBoundaries(
+    evidenceComparisonText(normalizedSource),
+    evidenceComparisonText(normalizedQuote),
+  );
+}
+
+const SPACED_EXTRACTION_EQUIVALENT = /(^|[^\p{L}\p{N}_])(can not|could not|do not|does not|did not|have not|has not|had not|is not|are not|was not|were not|may not|might not|must not|should not|would not|will not|no way)(?=$|[^\p{L}\p{N}_])/gu;
+
+function evidenceComparisonText(value: string): string {
+  // Treat approved fused forms as atomic words. Expanding them would create new
+  // internal boundaries that a shorter quote could match.
+  const characters = Array.from(value.toLowerCase());
+  let text = "";
+  for (let index = 0; index < characters.length; index++) {
+    const character = characters[index]!;
+    const touchesPunctuation = character === " "
+      && (!isWordCharacter(characters[index - 1]) || !isWordCharacter(characters[index + 1]));
+    if (!touchesPunctuation) text += character;
+  }
+  return text.replace(SPACED_EXTRACTION_EQUIVALENT, (_match, boundary: string, phrase: string) => (
+    `${boundary}${phrase.replace(" ", "")}`
+  ));
+}
+
+function isWordCharacter(character: string | undefined): boolean {
+  return character !== undefined && /[\p{L}\p{N}_]/u.test(character);
+}
+
+function containsAtWordBoundaries(source: string, quote: string): boolean {
+  const requiresStartBoundary = isWordCharacter(characterAt(quote, 0));
+  const requiresEndBoundary = isWordCharacter(characterBefore(quote, quote.length));
+  let matchIndex = source.indexOf(quote);
   while (matchIndex >= 0) {
-    const firstSourceIndex = extractedSource.sourceIndexes[matchIndex]!;
-    const lastSourceIndex = extractedSource.sourceIndexes[matchIndex + extractedQuote.length - 1]!;
-    const sourceMatch = normalizedSource.slice(firstSourceIndex, lastSourceIndex + 1);
-    if (hasMatchingNegations(sourceMatch, normalizedQuote)) return true;
-    matchIndex = extractedSource.text.indexOf(extractedQuote, matchIndex + 1);
+    const startsAtBoundary = !requiresStartBoundary || !isWordCharacter(characterBefore(source, matchIndex));
+    const endsAtBoundary = !requiresEndBoundary || !isWordCharacter(characterAt(source, matchIndex + quote.length));
+    if (startsAtBoundary && endsAtBoundary) return true;
+    matchIndex = source.indexOf(quote, matchIndex + 1);
   }
   return false;
 }
 
-function hasMatchingNegations(source: string, quote: string): boolean {
-  const sourceNegations = negationSignature(source);
-  const quoteNegations = negationSignature(quote);
-  return sourceNegations.length === quoteNegations.length
-    && sourceNegations.every((negation, index) => negation === quoteNegations[index]);
+function characterAt(value: string, index: number): string | undefined {
+  const codePoint = value.codePointAt(index);
+  return codePoint === undefined ? undefined : String.fromCodePoint(codePoint);
 }
 
-function negationSignature(value: string): string[] {
-  const compacted = compactExtractedText(value);
-  const signature = new Set<string>();
-  const standaloneMatches = value.matchAll(/(^|[^\p{L}\p{N}_])(no|not|never|none|neither|nor|without)(?=$|[^\p{L}\p{N}_])/giu);
-  for (const match of standaloneMatches) {
-    const sourceIndex = match.index + match[1]!.length;
-    const compactIndex = compactExtractedText(value.slice(0, sourceIndex)).text.length;
-    signature.add(`${compactIndex}:${match[2]!.toLowerCase()}`);
-  }
-  // Negation-boundary splits are ambiguous, so recover only known left-fused
-  // auxiliary+`not` forms and the explicit `noway` form; all others fail closed.
-  const fusedAuxiliaryMatches = compacted.text.matchAll(
-    /(can|could|do|does|did|have|has|had|is|are|was|were|may|might|must|should|would|will)not/giu,
-  );
-  for (const match of fusedAuxiliaryMatches) {
-    const notIndex = match.index + match[1]!.length;
-    if (compacted.sourceIndexes[notIndex] === compacted.sourceIndexes[notIndex - 1]! + 1) {
-      signature.add(`${notIndex}:not`);
-    }
-  }
-  for (const match of compacted.text.matchAll(/noway/giu)) {
-    const wayIndex = match.index + 2;
-    if (compacted.sourceIndexes[wayIndex] === compacted.sourceIndexes[wayIndex - 1]! + 1) {
-      signature.add(`${match.index}:no`);
-    }
-  }
-  return [...signature].sort();
-}
-
-function compactExtractedText(value: string): { text: string; sourceIndexes: number[] } {
-  let text = "";
-  const sourceIndexes: number[] = [];
-  for (let index = 0; index < value.length; index++) {
-    const character = value[index]!;
-    const spaceBetweenDigits = character === " " && /\d/.test(value[index - 1] ?? "") && /\d/.test(value[index + 1] ?? "");
-    if (character === " " && !spaceBetweenDigits) continue;
-    const lowered = character.toLowerCase();
-    text += lowered;
-    for (let loweredIndex = 0; loweredIndex < lowered.length; loweredIndex++) sourceIndexes.push(index);
-  }
-  return { text, sourceIndexes };
+function characterBefore(value: string, index: number): string | undefined {
+  if (index <= 0) return undefined;
+  const trailingCodeUnit = value.charCodeAt(index - 1);
+  const startsSurrogatePair = trailingCodeUnit >= 0xdc00 && trailingCodeUnit <= 0xdfff;
+  return value.slice(startsSurrogatePair ? index - 2 : index - 1, index);
 }
 
 export function batchSources(sources: HarvestedSource[], maxCharacters = SOURCE_BATCH_CHARACTERS): HarvestedSource[][] {

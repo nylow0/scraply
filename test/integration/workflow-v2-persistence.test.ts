@@ -52,7 +52,7 @@ describe("workflow v2 persistence", () => {
       const result = await harvestFactors({ title: "Homework", audience: "Students", domain: "Homework", observations: "", offLimits: [] }, {
         model: { providerId: "openai-subscription", modelId: "gpt-5.6-luna" }, reasoningEffort: "low", depth: "quick", workflowVersion: 2,
         modelClient: execution.discoveryClient(modelClient), prompt: () => "Extract evidence", search: { async search() {
-          return [{ id: "source", url: "https://example.test/homework", title: "Homework", text: "STUDENTS DO NOT SUBMIT THEIRASSIGNMENTS ON TIME" }];
+          return [{ id: "source", url: "https://example.test/homework", title: "Homework", text: "STUDENTS DO NOT SUBMIT THEIR ASSIGNMENTS ON TIME" }];
         } },
       });
       expect(result.factors).toHaveLength(1);

@@ -63,6 +63,7 @@ async function lockStore(path: string): Promise<() => Promise<void>> {
 
 export function createCredentialStore(path: string, encryption: Encryption) {
   let baseline: BackendSecrets | undefined;
+  let pendingSave: Promise<void> = Promise.resolve();
   function read(): BackendSecrets {
     if (!encryption.isEncryptionAvailable()) throw new AppError("secure_storage_unavailable");
     if (!existsSync(path)) return StoredSecretsSchema.parse({});
@@ -78,41 +79,56 @@ export function createCredentialStore(path: string, encryption: Encryption) {
       baseline = read();
       return structuredClone(baseline);
     },
-    async save(next: BackendSecrets, beforeWrite?: () => void): Promise<void> {
+    async save(next: BackendSecrets, beforeWrite?: () => void): Promise<BackendSecrets> {
       if (!baseline) throw new Error("Load credential storage before saving");
-      const previous = structuredClone(baseline);
+      const requestedBaseline = structuredClone(baseline);
       const candidate = StoredSecretsSchema.parse(next);
-      mkdirSync(dirname(path), { recursive: true });
-      const unlock = await lockStore(path);
-      try {
-        beforeWrite?.();
-        const current = read();
-        let changed = false;
-        const conflict = () => {
-          throw new AppError("internal_error", "Credentials changed in another Scraply instance. Restart this instance before changing the account or keys.");
-        };
-        for (const key of ["exaApiKey", "perplexityApiKey"] as const) {
-          if (candidate[key] === previous[key]) continue;
-          if (current[key] !== previous[key] && current[key] !== candidate[key]) conflict();
-          current[key] = candidate[key];
-          changed = true;
+      const operation = pendingSave.then(async () => {
+        if (!baseline) throw new Error("Load credential storage before saving");
+        const previous = structuredClone(baseline);
+        const local = structuredClone(previous);
+        mkdirSync(dirname(path), { recursive: true });
+        const unlock = await lockStore(path);
+        try {
+          beforeWrite?.();
+          const current = read();
+          let changed = false;
+          const conflict = () => {
+            throw new AppError("internal_error", "Credentials changed in another Scraply instance. Restart this instance before changing the account or keys.");
+          };
+          for (const key of ["exaApiKey", "perplexityApiKey"] as const) {
+            if (candidate[key] === requestedBaseline[key]) continue;
+            if (current[key] !== requestedBaseline[key] && current[key] !== candidate[key]) conflict();
+            current[key] = candidate[key];
+            local[key] = candidate[key];
+            changed = true;
+          }
+          for (const provider of new Set([...Object.keys(requestedBaseline.providerCredentials), ...Object.keys(candidate.providerCredentials)])) {
+            const requestedValue = requestedBaseline.providerCredentials[provider];
+            const nextValue = candidate.providerCredentials[provider];
+            if (nextValue === requestedValue) continue;
+            const currentValue = current.providerCredentials[provider];
+            if (currentValue !== requestedValue && currentValue !== nextValue) conflict();
+            if (nextValue === undefined) {
+              delete current.providerCredentials[provider];
+              delete local.providerCredentials[provider];
+            } else {
+              current.providerCredentials[provider] = nextValue;
+              local.providerCredentials[provider] = nextValue;
+            }
+            changed = true;
+          }
+          if (changed) writeFileAtomically(path, encryption.encryptString(JSON.stringify(current)));
+          // Retain every local change while leaving unrelated cross-process fields out
+          // of the baseline, so stale callers cannot overwrite them later.
+          baseline = local;
+          return structuredClone(local);
+        } finally {
+          await unlock();
         }
-        for (const provider of new Set([...Object.keys(previous.providerCredentials), ...Object.keys(candidate.providerCredentials)])) {
-          const oldValue = previous.providerCredentials[provider];
-          const nextValue = candidate.providerCredentials[provider];
-          if (nextValue === oldValue) continue;
-          const currentValue = current.providerCredentials[provider];
-          if (currentValue !== oldValue && currentValue !== nextValue) conflict();
-          if (nextValue === undefined) delete current.providerCredentials[provider];
-          else current.providerCredentials[provider] = nextValue;
-          changed = true;
-        }
-        if (changed) writeFileAtomically(path, encryption.encryptString(JSON.stringify(current)));
-        // Keep this instance's view, so a later save doesn't undo fields merged from another instance.
-        baseline = candidate;
-      } finally {
-        await unlock();
-      }
+      });
+      pendingSave = operation.then(() => undefined, () => undefined);
+      return operation;
     },
   };
 }
