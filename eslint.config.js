@@ -2,7 +2,7 @@ import svelte from "eslint-plugin-svelte";
 import tseslint from "typescript-eslint";
 
 export default [
-  { ignores: [".svelte-kit/**", "archive/**", "build/**", "node_modules/**", "out/**", "release/**", "test-results/**", "runtime/vendor/**", "runtime/target/**", "runtime/dist/**"] },
+  { ignores: [".svelte-kit/**", ".worktrees/**", "archive/**", "build/**", "node_modules/**", "out/**", "release/**", "test-results/**", "runtime/vendor/**", "runtime/target/**", "runtime/dist/**"] },
   { linterOptions: { reportUnusedDisableDirectives: "error" } },
   ...tseslint.configs.recommended,
   ...svelte.configs["flat/recommended"],
