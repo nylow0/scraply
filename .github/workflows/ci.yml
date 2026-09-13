@@ -23,6 +23,7 @@ jobs:
         with:
           bun-version: 1.3.13
       - run: bun install --frozen-lockfile
+      - run: bunx --no-install install-electron
       - run: bun audit --prod
       - name: Audit dev dependencies (advisory)
         continue-on-error: true
