@@ -7,7 +7,6 @@ import type { GenerationMetadata, StructuredModelClient, StructuredStageRequest 
 import { deriveJsonSchema } from "../shared/json-schema";
 import { SourceSchema } from "../shared/schemas";
 import { WorkflowV2QueryPlanOutputSchema, WorkflowV2FactorHarvestOutputSchema, WorkflowV2ProblemCandidatesOutputSchema, WorkflowV2ProblemKillOutputSchema, WorkflowV2SolutionsOutputSchema } from "../shared/structured-output-schemas";
-import { quoteAppearsVerbatim } from "./discovery";
 import type { WorkflowV2DevelopmentContext } from "./development";
 import { resolveWorkflowV2Prompt, type ResolvedWorkflowV2Prompt } from "./prompts";
 import { WORKFLOW_V2_STAGE_IDS, WORKFLOW_V2_STAGE_REGISTRY, type WorkflowV2StageId } from "./stages";
@@ -289,30 +288,9 @@ function assertDiscoveryStageSemantics<T>(
     }
     return;
   }
-  if (stageId === "factor-harvest") {
-    const sources = findRecords(evidence, "sources");
-    const sourceById = new Map(sources.flatMap((source) => {
-      const id = typeof source.id === "string" ? source.id : null;
-      const text = typeof source.text === "string" ? source.text : null;
-      return id && text !== null ? [[id, text] as const] : [];
-    }));
-    for (const factor of WorkflowV2FactorHarvestOutputSchema.parse(output).factors) {
-      const text = sourceById.get(factor.sourceId);
-      if (text === undefined) throw new Error(`Factor harvest referenced unknown source ${factor.sourceId}`);
-      if (!quoteAppearsVerbatim(text, factor.quote)) {
-        throw new Error(`Factor harvest quote does not appear in source ${factor.sourceId}`);
-      }
-    }
-    return;
-  }
-  if (stageId === "problem-candidates") {
-    const factorIds = new Set(findRecords(evidence, "factors").flatMap((factor) =>
-      typeof factor.id === "string" ? [factor.id] : []));
-    for (const candidate of WorkflowV2ProblemCandidatesOutputSchema.parse(output).problems) {
-      if (candidate.factorIds.some((id) => !factorIds.has(id))) {
-        throw new Error("Problem candidate referenced an unknown factor ID");
-      }
-    }
+  if (stageId === "factor-harvest" || stageId === "problem-candidates") {
+    // Discovery validates individual quotes and citations, recording rejected rows.
+    // Aborting here would discard valid evidence from the same batch as a bad row.
     return;
   }
   if (stageId === "problem-kill") {

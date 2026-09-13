@@ -13,6 +13,38 @@ import { ProviderFailure } from "../../src/providers/structured";
 import { QueryPlanOutputSchema } from "../../src/shared/structured-output-schemas";
 
 describe("discovery", () => {
+  test.each([
+    ["STUDENTS WHO FELL BEHIND EARLY STRUGGLED TO CATCH UP", "Students who fell behind early struggled to catch up"],
+    ["43% of respondents find academic assignments to be the mostchallenging tasks to prioritize", "43% of respondents find academic assignments to be the most challenging tasks to prioritize"],
+    ["most respondents (31%) keep a mental list of tasks, while 29%rely on digital reminders", "most respondents (31%) keep a mental list of tasks, while 29% rely on digital reminders"],
+    ["This did not fail. The mostchallenging tasks still persist.", "The most challenging tasks still persist."],
+    ["Students donot submit assignments", "Students do not submit assignments"],
+    ["Studentsdonotsubmit assignments", "Students do not submit assignments"],
+    ["There is noway to recover", "There is no way to recover"],
+    ["They cannot proceed", "They can not proceed"],
+  ])("accepts extraction formatting without changing quoted characters: %s", (source, quote) => {
+    expect(quoteAppearsVerbatim(source, quote)).toBe(true);
+  });
+
+  test.each([
+    ["43% of respondents struggle", "44% of respondents struggle"],
+    ["Students do not submit assignments", "Students do submit assignments"],
+    ["Students miss deadlines. Teachers assign homework.", "Students miss homework"],
+    ["Scores were 1 00 in the table", "Scores were 100 in the table"],
+    ["The outcome was notable.", "The outcome was not able."],
+    ["The system was not able to recover.", "The system was notable to recover."],
+    ["The system was not able without manual help.", "The system was notable without manual help."],
+    ["They do notability assessments.", "They do not ability assessments."],
+    ["Students do notsubmit assignments", "Students do not submit assignments"],
+    ["Noresults were found", "No results were found"],
+    ["Report: Noresults returned", "No results returned"],
+    ["No table was available.", "Not able was available."],
+    ["xNoresults returned", "No results returned"],
+    ["Students miss deadlines", "  "],
+  ])("rejects unsupported quotes despite formatting tolerance: %s", (source, quote) => {
+    expect(quoteAppearsVerbatim(source, quote)).toBe(false);
+  });
+
   const model = { providerId: "test-provider", modelId: "test-model" };
   const reasoningEffort = "medium" as const;
   test("normalizes typography and whitespace before checking a quote", () => {
