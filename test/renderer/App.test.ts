@@ -125,6 +125,32 @@ describe("App workspace coordination", () => {
     expect(view.getByRole("button", { name: "Shared repair status" })).toBeTruthy();
   });
 
+  test("anchors elapsed time when switching to a run after browsing another thread", async () => {
+    let now = 1_000;
+    const dateNow = vi.spyOn(Date, "now").mockImplementation(() => now);
+    try {
+      const alpha = workspace("alpha");
+      const beta = workspace("beta");
+      beta.threads[1]!.status = "development-running";
+      beta.latestResearchRun = {
+        runId: "run-beta", status: "running", problemId: "problem-1", workflowVersion: 2,
+        codexCalls: 1, searches: 0, projectedCodexCalls: 3, projectedSearches: 0,
+        lastActivity: "Generating options", stage: "generating-options", modelState: "accepted",
+        elapsedMs: 30_000, lastSuccessfulCheckpoint: "Problem saved",
+      };
+      installApi({ getWorkspace: vi.fn().mockResolvedValue(alpha), selectThread: vi.fn().mockResolvedValue(beta) });
+      const view = render(App);
+      const betaButton = await view.findByRole("button", { name: "Open thread Beta" });
+      now += 240_000;
+      await fireEvent.click(betaButton);
+
+      expect(await view.findByText("30s elapsed")).toBeTruthy();
+      expect(view.queryByText("4m 30s elapsed")).toBeNull();
+    } finally {
+      dateNow.mockRestore();
+    }
+  });
+
   test.each(["discovery-running", "development-running"] as const)("allows cancellation but does not offer resume during %s", async (status) => {
     const state = workspace("alpha");
     state.threads[0]!.status = status;

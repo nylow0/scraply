@@ -173,6 +173,7 @@
       }
       const changedThread = next.activeThreadId !== workspace?.activeThreadId;
       workspace = next;
+      progressReceivedAt = Date.now();
       if (changedThread) activeStep = defaultStep(next);
       if (feedback?.source === "workspace-load") feedback = null;
       if (validationPending(next)) reconcileSoon(500);
@@ -190,6 +191,7 @@
     loadEpoch += 1;
     loading = false;
     workspace = next;
+    progressReceivedAt = Date.now();
     if (validationPending(next)) reconcileSoon(500);
   }
   function reconcileSoon(delayMs = 180) {
@@ -487,6 +489,13 @@
     const minutes = Math.floor(seconds / 60);
     return minutes ? `${minutes}m ${seconds % 60}s elapsed` : `${seconds}s elapsed`;
   }
+  function activeSolutionRunLabel(): string {
+    const activity = runActivity.toLowerCase();
+    if (activity.includes("reassess")) return "Reassessing with new evidence";
+    if (runtimeProgress.stage === "evidence-follow-up") return "Researching follow-up evidence";
+    if (runtimeProgress.stage === "evaluating-risk" || runtimeProgress.stage === "analyzing-option") return "Analyzing the selected option";
+    return stageLabel(runtimeProgress.stage);
+  }
 </script>
 
 <DesktopBar canBack={backIndex !== -1 && !busy} canForward={forwardIndex !== -1 && !busy} onBack={() => navigateHistory(-1)} onForward={() => navigateHistory(1)} onToggle={() => sidebarVisible = !sidebarVisible} />
@@ -590,6 +599,12 @@
       </div>
     {:else if activeThread.status === "solutions-ready" || workspace.solutions.length > 0}
       <div id="workflow-panel-ideas" role="tabpanel" aria-label="Solutions">
+        {#if activeRun && ["queued", "running"].includes(activeRun.status)}
+          <section class="compact-progress" aria-label="Active solution work">
+            <div><strong>{activeSolutionRunLabel()}</strong><p>{runActivity}</p></div>
+            <div class="progress-facts" aria-label="Run progress">{#if runtimeProgress.modelState}<span>{runtimeProgress.modelState === "waiting" ? "Queued for model" : runtimeProgress.modelState === "dispatched" ? "Sent to model" : "Accepted by model"}</span>{/if}{#if elapsedLabel(visibleElapsedMs)}<span>{elapsedLabel(visibleElapsedMs)}</span>{/if}{#if runtimeProgress.lastSuccessfulCheckpoint}<span>Last checkpoint: {runtimeProgress.lastSuccessfulCheckpoint}</span>{/if}</div>
+          </section>
+        {/if}
         <SolutionWorkspace solutions={workspace.solutions} {busy} onDiscard={discardIdea} workflowVersion={activeRun?.workflowVersion} onSelect={selectOption} onSave={saveDecision} onExport={exportIdeas} onOpenSource={openExternalUrl} onEvidenceFollowUp={requestEvidenceFollowUp} onEvidenceReassessment={requestEvidenceReassessment} onReview={() => { activeStep = "research"; reviewSelection = true; }} />
       </div>
     {:else if activeThread.status === "failed"}
@@ -630,6 +645,10 @@
   .progress-facts { display:flex;flex-wrap:wrap;gap:8px 18px;color:var(--subtle);font-size:13px; }
   .progress-facts strong { color:var(--text);font-weight:600; }
   .development-progress { min-height:auto;padding-bottom:32px;border-bottom:1px solid var(--border); }
+  .compact-progress { display:flex;justify-content:space-between;gap:20px;padding:16px var(--page-inline);border-bottom:1px solid var(--border);background:#000; }
+  .compact-progress strong { font-size:13px;color:var(--text); }
+  .compact-progress p { margin:4px 0 0;color:var(--muted);font-size:13px; }
+  .compact-progress .progress-facts { justify-content:flex-end;align-items:center; }
   .run-actions { display:flex;gap:9px; }.run-actions button { border:1px solid var(--border-strong);background:transparent;color:var(--text);padding:10px 14px;border-radius:8px;font-size:13px; }.run-actions .cancel { color:var(--danger); }
   .run-stopped { display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:16px;margin:14px var(--page-inline) 0;padding:16px;border:1px solid #df92924a;border-radius:12px;background:#df929208; }
   .run-stopped > div:first-child { display:grid;gap:5px; }.run-stopped strong { font-size:13px; }.run-stopped span { color:var(--muted);font-size:13px; }.run-stopped-actions { display:flex;flex-wrap:wrap;gap:8px; }.run-stopped-actions button { border:1px solid var(--border-strong);border-radius:8px;background:transparent;color:var(--text);padding:9px 13px;font-size:13px; }.run-stopped-actions .cancel { color:var(--danger); }
