@@ -21,6 +21,7 @@ import {
   WORKFLOW_V2_STAGE_REGISTRY,
   WORKFLOW_VERSION_V2,
   assertWorkflowV2SolutionsSemantics,
+  parseWorkflowV2StageOutput,
 } from "../../src/core/stages";
 import { ProviderFailure, type StructuredModelClient, type StructuredStageRequest } from "../../src/providers/structured";
 import { deriveJsonSchema } from "../../src/shared/json-schema";
@@ -76,6 +77,14 @@ describe("workflow v2 foundation", () => {
     for (const stage of Object.values(WORKFLOW_V2_STAGE_REGISTRY)) {
       expect(() => deriveJsonSchema(stage.schema)).not.toThrow();
     }
+    expect(deriveJsonSchema(WORKFLOW_V2_STAGE_REGISTRY["problem-kill"].schema).type).toBe("object");
+    expect(parseWorkflowV2StageOutput("problem-kill", 1, {
+      verdict: "insufficient-evidence",
+      verdictReason: "The saved evidence did not settle the claim.",
+      verdictSourceIds: [],
+      unresolvedAssumptions: ["Buyer fit was not assessed."],
+      wouldChangeConclusion: ["A firsthand intended-buyer account."],
+    })).toMatchObject({ verdict: "insufficient-evidence" });
     expect(() => WorkflowV2SolutionOptionSchema.parse(option({ mechanism: " " }))).toThrow();
   });
 

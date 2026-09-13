@@ -287,7 +287,7 @@ const LegacyWorkflowV2ProblemKillOutputSchema = ProblemSchema.pick({
   wouldChangeConclusion: z.array(WorkflowV2RequiredTextSchema),
 }).strict();
 
-const ClassifiedWorkflowV2ProblemKillOutputSchema = ProblemSchema.pick({
+export const ClassifiedWorkflowV2ProblemKillOutputSchema = ProblemSchema.pick({
   verdict: true,
   verdictReason: true,
   verdictSourceIds: true,
