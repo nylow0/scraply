@@ -21,7 +21,7 @@ import {
 import { deriveJsonSchema } from "../../src/shared/json-schema";
 import { WorkflowExecution } from "../../src/core/workflow-execution";
 import { configurePromptPaths } from "../../src/core/prompts";
-import { discoverProblems, type HarvestedSource } from "../../src/core/discovery";
+import { discoverProblems, harvestFactors, type HarvestedSource } from "../../src/core/discovery";
 import type { StructuredModelClient } from "../../src/providers/structured";
 
 const directories: string[] = [];
@@ -33,6 +33,36 @@ afterEach(() => {
 });
 
 describe("workflow v2 persistence", () => {
+  test("harvests formatted source quotes and rejects bad factors without aborting the research stage", async () => {
+    configurePromptPaths({ bundledDir: join(process.cwd(), "prompts"), overrideDir: null });
+    const client = database();
+    const execution = new WorkflowExecution(client, "run-v2");
+    const modelClient: StructuredModelClient = { async structuredCompletion(request) {
+      const evidence = request.evidence[0]!.content as { sources?: Array<{ id: string }> };
+      const factor = { subject: "Students", behavior: "miss deadlines", sourceId: evidence.sources?.[0]?.id,
+        quote: "Students do not submit their assignments on time", modelConfidence: 0.8, uncertainty: "One source" };
+      const output = request.stage.startsWith("query-plan")
+        ? { queries: ["one", "two", "three"].map(query => ({ query, uncertainty: "Deadline challenges", intendedSourceType: "Student reports" })) }
+        : { factors: [factor, { ...factor, quote: "Students do submit their assignments on time" }, { ...factor, sourceId: "invented" }] };
+      return { output: request.schema.parse(output), metadata: {
+        model: request.model, usage: { status: "unknown" }, latencyMs: 1, repairCount: 0, providerRequestIds: [], attempts: [],
+      } };
+    } };
+    try {
+      const result = await harvestFactors({ title: "Homework", audience: "Students", domain: "Homework", observations: "", offLimits: [] }, {
+        model: { providerId: "openai-subscription", modelId: "gpt-5.6-luna" }, reasoningEffort: "low", depth: "quick", workflowVersion: 2,
+        modelClient: execution.discoveryClient(modelClient), prompt: () => "Extract evidence", search: { async search() {
+          return [{ id: "source", url: "https://example.test/homework", title: "Homework", text: "STUDENTS DO NOT SUBMIT THEIRASSIGNMENTS ON TIME" }];
+        } },
+      });
+      expect(result.factors).toHaveLength(1);
+      expect(result.factors[0]!.quote).toBe("Students do not submit their assignments on time");
+      expect(result.rejections.map(item => item.reason).sort()).toEqual(["quote-mismatch", "unknown-source"]);
+      expect(result.metrics.accepted.domain).toBe(1);
+      expect(result.metrics.rejected.domain).toBe(2);
+    } finally { client.close(); }
+  });
+
   test("migrates v19 risk snapshots without losing decisions, observations or historical child rows", () => {
     const source = database();
     const repository = new WorkflowV2Repository(source);
