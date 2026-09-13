@@ -145,8 +145,16 @@ export function assertWorkflowV2SolutionsSemantics(
   // support an option to use the existing manual process instead.
   const suppliedIds = new Set([...categories.supporting, ...categories.contrary]);
   for (const option of output.options) {
-    if ([...option.supportingEvidenceIds, ...option.contraryEvidenceIds].some((id) => !suppliedIds.has(id))) {
+    const gapEvidenceIds = option.startupOpportunity?.gapAssessment.evidenceIds ?? [];
+    if ([...option.supportingEvidenceIds, ...option.contraryEvidenceIds, ...gapEvidenceIds].some((id) => !suppliedIds.has(id))) {
       throw new Error("A v2 solution option referenced an unknown evidence source ID");
+    }
+    const gap = option.startupOpportunity?.gapAssessment;
+    if (gap?.kind === "evidenced" && gap.evidenceIds.length === 0) {
+      throw new Error("An evidenced startup gap must cite at least one supplied evidence source");
+    }
+    if (gap?.kind === "hypothesis" && gap.evidenceIds.length > 0) {
+      throw new Error("A startup gap hypothesis must not present evidence citations as validation");
     }
   }
 }
