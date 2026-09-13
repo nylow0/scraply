@@ -194,7 +194,9 @@ describe("native research workflow through the production backend", () => {
     const threadId = await item.createThread("known-problem");
     const { runId } = await item.post("/research/start", { threadId }, z.object({ runId: z.string() }));
     await item.waitForAttempt("accepted");
-    await item.post("/research/cancel", { runId }, z.object({ workspace: WorkspaceStateSchema }));
+    const cancelled = await item.post("/research/cancel", { runId }, z.object({ workspace: WorkspaceStateSchema }));
+    expect(cancelled.workspace.latestResearchRun).toMatchObject({ runId, status: "cancelled", canResume: true });
+    expect(cancelled.workspace.latestResearchRun?.resumeBlockedReason).toBeUndefined();
     await item.waitForAttempt("cancelled");
     expect(item.operations()).toContain("generation.cancel");
     expect(item.requests()).toHaveLength(1);
@@ -395,6 +397,44 @@ describe("native v2 decisions through the production backend", () => {
     const reopened = await item.post(`/ideas/${selected.id}`, undefined, SolutionViewSchema);
     expect(reopened.evidenceFollowUp).toEqual(detail.evidenceFollowUp);
     expect(followedUp.solutions.find((solution) => solution.id === selected.id)?.decisionAnalysis).toBeUndefined();
+  }, 20_000);
+
+  test("generates options for every selected problem before asking for analysis", async () => {
+    const item = await fixture({ workflowVersion: 2 });
+    const threadId = await item.createThread("explore-market");
+    await item.post("/research/start", { threadId }, z.object({ runId: z.string() }));
+    const discovery = await item.waitFor((state) => state.threads.find((thread) => thread.id === threadId)?.status === "problems-ready");
+    const discovered = discovery.problemCandidates[0]!;
+    await item.post("/research/select-problems", {
+      threadId,
+      problemIds: [discovered.id],
+      userProblem: "Supplier credits disappear between return shipment and statement reconciliation.",
+      model,
+      reasoningEffort: "medium",
+    }, WorkspaceStateSchema);
+
+    const completed = await item.waitFor((state) => {
+      const optionRuns = new Set(state.solutions.map((solution) => solution.runId));
+      return state.threads.find((thread) => thread.id === threadId)?.status === "solutions-ready"
+        && optionRuns.size === 2;
+    });
+    expect(completed.solutions).toHaveLength(4);
+    expect(item.requests().filter((request) => request.workOrder.stage === "solutions")).toHaveLength(2);
+    const db = new DatabaseClient(item.dbPath);
+    try {
+      expect(db.db.prepare(`SELECT status, awaiting_selection FROM research_runs WHERE problem_id IS NOT NULL ORDER BY created_at, rowid`).all())
+        .toEqual([{ status: "completed", awaiting_selection: 1 }, { status: "completed", awaiting_selection: 1 }]);
+    } finally { db.close(); }
+    const firstRunOption = completed.solutions[0]!;
+    const selectingOlderRun = await item.post("/research/select-option", {
+      threadId, runId: firstRunOption.runId, solutionId: firstRunOption.id,
+    }, WorkspaceStateSchema);
+    expect(selectingOlderRun.latestResearchRun).toMatchObject({
+      runId: firstRunOption.runId,
+      problemId: firstRunOption.problemId,
+    });
+    expect(selectingOlderRun.latestResearchRun?.stage === "evaluating-risk"
+      || selectingOlderRun.latestResearchRun?.stage === "analyzing-option").toBe(true);
   }, 20_000);
 
   test("cancels a pending follow-up without losing analysis or reopening its cap", async () => {

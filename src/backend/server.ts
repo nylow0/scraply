@@ -649,8 +649,11 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
     return row ? { runId: row.research_run_id, summary: runUsage(row.research_run_id) } : null;
   }
   function latestRun(threadId: string) {
-    const row = db.db.prepare("SELECT id, status, problem_id, config_json, workflow_version, awaiting_selection, interrupted, completion_reason FROM research_runs WHERE thread_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1")
-      .get(threadId) as { id: string; status: string; problem_id: string | null; config_json: string; workflow_version: 1 | 2; awaiting_selection: number; interrupted: number; completion_reason: string | null } | undefined;
+    const row = db.db.prepare(`SELECT id, status, problem_id, config_json, workflow_version, awaiting_selection,
+        interrupted, completion_reason, created_at, updated_at
+      FROM research_runs WHERE thread_id = ?
+      ORDER BY CASE WHEN status IN ('queued','running') THEN 0 ELSE 1 END, created_at DESC, rowid DESC LIMIT 1`)
+      .get(threadId) as { id: string; status: string; problem_id: string | null; config_json: string; workflow_version: 1 | 2; awaiting_selection: number; interrupted: number; completion_reason: string | null; created_at: string; updated_at: string } | undefined;
     if (!row) return null;
     // History predating the current required config fields is still readable.
     // Missing model provenance must never make it resumable as a current run.
@@ -668,6 +671,7 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
     const providerRemoved = !runConfig || runConfig.model.providerId === HISTORICAL_CODEX_CLI_PROVIDER_ID;
     // Match resumeRun: ended legacy runs have no resumable stage checkpoints.
     const resumableStatus = ["queued", "running", ...(row.workflow_version === 2 ? ["failed", "cancelled"] : [])].includes(row.status);
+    const runtime = runtimeProjection(row);
     return {
       runId: row.id, status: row.status, problemId: row.problem_id,
       runConfig,
@@ -684,17 +688,54 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
         ? { resumeBlockedReason: REMOVED_CODEX_CLI_MESSAGE }
         : resumeSafety.resumeBlockedReason ? { resumeBlockedReason: resumeSafety.resumeBlockedReason } : {}),
       usage: runUsage(row.id),
+      ...runtime,
     };
   }
-  function listPendingRuns(): Array<{ runId: string; threadId: string; threadTitle: string; status: "queued" | "running"; problemId: string | null }> {
+  function listPendingRuns() {
     return db.db.prepare(`
-      SELECT rr.id AS run_id, rr.thread_id, t.title, rr.status, rr.problem_id
+      SELECT rr.id AS run_id, rr.thread_id, t.title, rr.status, rr.problem_id, rr.awaiting_selection, rr.created_at, rr.updated_at
       FROM research_runs rr JOIN threads t ON t.id = rr.thread_id
       WHERE rr.status IN ('queued','running') ORDER BY rr.created_at
-    `).all().map((row) => {
+    `).all().map((row, index) => {
       const item = row as Record<string, unknown>;
-      return { runId: String(item.run_id), threadId: String(item.thread_id), threadTitle: String(item.title), status: String(item.status) as "queued" | "running", problemId: item.problem_id === null ? null : String(item.problem_id) };
+      const runtime = runtimeProjection({ id: String(item.run_id), status: String(item.status), problem_id: item.problem_id === null ? null : String(item.problem_id),
+        awaiting_selection: Number(item.awaiting_selection), created_at: String(item.created_at), updated_at: String(item.updated_at) });
+      return { runId: String(item.run_id), threadId: String(item.thread_id), threadTitle: String(item.title), status: String(item.status) as "queued" | "running",
+        problemId: item.problem_id === null ? null : String(item.problem_id), ...runtime, queuePosition: index + 1 };
     });
+  }
+
+  function runtimeProjection(row: { id: string; status: string; problem_id: string | null; awaiting_selection: number; created_at: string; updated_at: string }) {
+    const attempt = db.db.prepare(`SELECT stage_key, status FROM generation_attempts WHERE research_run_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1`)
+      .get(row.id) as { stage_key: string; status: string } | undefined;
+    const checkpoint = db.db.prepare(`SELECT stage_id FROM stage_results WHERE research_run_id = ? ORDER BY completed_at DESC, rowid DESC LIMIT 1`)
+      .get(row.id) as { stage_id: string } | undefined;
+    const progress = db.db.prepare(`SELECT payload_json FROM job_events WHERE run_id = ? AND type = 'run-progress' ORDER BY id DESC LIMIT 1`)
+      .get(row.id) as { payload_json: string } | undefined;
+    const projectedStage = progress ? (JSON.parse(progress.payload_json) as { stage?: string }).stage : undefined;
+    const modelState = attempt && ["prepared", "dispatched", "accepted"].includes(attempt.status)
+      ? attempt.status === "prepared" ? "waiting" as const : attempt.status === "dispatched" ? "dispatched" as const : "accepted" as const
+      : null;
+    const stageKey = attempt?.stage_key.split(":")[0];
+    const inferredStage = row.awaiting_selection ? "awaiting-option-selection" as const
+      : stageKey === "factor-harvest" ? "extracting" as const
+      : stageKey === "problem-candidates" || stageKey === "problem-kill" ? "synthesizing-problems" as const
+      : stageKey === "solutions" ? "generating-options" as const
+      : stageKey === "risk-evaluation" ? "evaluating-risk" as const
+      : stageKey === "decision-analysis" ? "analyzing-option" as const
+      : stageKey === "query-plan" ? "searching" as const
+      : "queued" as const;
+    const stage = row.awaiting_selection ? "awaiting-option-selection" as const
+      : row.status === "completed" ? "completed" as const
+      : row.status === "failed" ? "failed" as const
+      : row.status === "cancelled" ? "cancelled" as const
+      : isRuntimeStage(projectedStage) ? projectedStage : inferredStage;
+    const end = ["completed", "failed", "cancelled"].includes(row.status) ? Date.parse(row.updated_at) : Date.now();
+    return { stage, modelState, elapsedMs: Math.max(0, end - Date.parse(row.created_at)), lastSuccessfulCheckpoint: checkpoint?.stage_id ?? null };
+  }
+
+  function isRuntimeStage(value: string | undefined): value is "queued" | "searching" | "extracting" | "synthesizing-problems" | "generating-options" | "awaiting-option-selection" | "evaluating-risk" | "analyzing-option" | "evidence-follow-up" | "completed" | "failed" | "cancelled" {
+    return Boolean(value && ["queued", "searching", "extracting", "synthesizing-problems", "generating-options", "awaiting-option-selection", "evaluating-risk", "analyzing-option", "evidence-follow-up", "completed", "failed", "cancelled"].includes(value));
   }
   function requireThread(threadId: string): void {
     if (!db.db.prepare("SELECT 1 FROM threads WHERE id = ?").get(threadId)) throw new AppError("not_found", "Thread not found.");
@@ -1040,7 +1081,10 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
         return sendJson(res, 200, await workspaceState());
       }
       if (route === "/research/cancel") {
-        const { runId } = ResumeResearchSchema.parse(body); cancelRun(runId); return sendJson(res, 200, { workspace: await workspaceState() });
+        const { runId } = ResumeResearchSchema.parse(body);
+        if (engine) await engine.cancelRunAndWait(runId);
+        else cancelRun(runId);
+        return sendJson(res, 200, { workspace: await workspaceState() });
       }
       if (route === "/research/export") {
         const input = ExportResearchRequestSchema.parse(body); requireThread(input.threadId);
