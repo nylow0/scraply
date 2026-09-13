@@ -288,19 +288,9 @@ function assertDiscoveryStageSemantics<T>(
     }
     return;
   }
-  if (stageId === "factor-harvest") {
-    // Discovery validates each factor against its source and records rejected rows.
-    // Aborting here would discard valid evidence from the same batch as a bad quote.
-    return;
-  }
-  if (stageId === "problem-candidates") {
-    const factorIds = new Set(findRecords(evidence, "factors").flatMap((factor) =>
-      typeof factor.id === "string" ? [factor.id] : []));
-    for (const candidate of WorkflowV2ProblemCandidatesOutputSchema.parse(output).problems) {
-      if (candidate.factorIds.some((id) => !factorIds.has(id))) {
-        throw new Error("Problem candidate referenced an unknown factor ID");
-      }
-    }
+  if (stageId === "factor-harvest" || stageId === "problem-candidates") {
+    // Discovery validates individual quotes and citations, recording rejected rows.
+    // Aborting here would discard valid evidence from the same batch as a bad row.
     return;
   }
   if (stageId === "problem-kill") {
