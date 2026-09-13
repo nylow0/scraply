@@ -117,8 +117,8 @@ export class WorkflowExecution {
         identity: { promptSha256: prompt.resolvedSha256, schema: request.jsonSchema, inputs: request.workOrder.inputs, evidence },
       });
       if (previous.kind === "unknown-completion") throw new Error("A generation may have completed before interruption. Start a new run to avoid replaying it.");
-      const recovered = previous.kind === "not-started" && stageId === "factor-harvest"
-        ? this.recoverCompletedFactorHarvest(request)
+      const recovered = previous.kind === "not-started"
+        ? this.recoverCompletedStage(request)
         : null;
       let output: unknown;
       let metadata: GenerationMetadata;
@@ -130,19 +130,16 @@ export class WorkflowExecution {
       } else if (recovered) {
         output = recovered.output;
         metadata = recovered.metadata;
-        this.persistFactorHarvest(original.stage, stageId, request, prompt, metadata, output, context, selectionId);
+        assertDiscoveryStageSemantics(stageId, output, original);
+        this.persistCompletedStage(original.stage, stageId, request, prompt, metadata, output, context, selectionId);
       } else {
         const completion = await client.structuredCompletion(request);
         output = requestSchema.parse(completion.output);
         metadata = completion.metadata;
         assertDiscoveryStageSemantics(stageId, output, original);
-        if (stageId === "factor-harvest") {
-          // A harvest can span several slow batches. Save each completed batch so cancelling a
-          // later one does not replay provider work that already returned a validated result.
-          this.persistFactorHarvest(original.stage, stageId, request, prompt, metadata, output, context, selectionId);
-        } else {
-          this.pendingStages.set(original.stage, { stageId, request, prompt, metadata, output, context, selectionId });
-        }
+        // Each validated provider result is its own durable replay boundary. Domain rows may be
+        // persisted later, but a restart must not repeat completed model work.
+        this.persistCompletedStage(original.stage, stageId, request, prompt, metadata, output, context, selectionId);
       }
       if (stageId === "factor-harvest") {
         for (const factor of WorkflowV2FactorHarvestOutputSchema.parse(output).factors) {
@@ -172,7 +169,7 @@ export class WorkflowExecution {
     } };
   }
 
-  private recoverCompletedFactorHarvest(request: StructuredStageRequest<unknown>): {
+  private recoverCompletedStage(request: StructuredStageRequest<unknown>): {
     output: unknown;
     metadata: GenerationMetadata;
   } | null {
@@ -198,7 +195,7 @@ export class WorkflowExecution {
     return null;
   }
 
-  private persistFactorHarvest(
+  private persistCompletedStage(
     stageKey: string,
     stageId: WorkflowV2StageId,
     request: StructuredStageRequest<unknown>,

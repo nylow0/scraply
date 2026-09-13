@@ -19,7 +19,7 @@ import {
   WorkflowV2Repository,
 } from "../../src/db/repositories/workflow-v2";
 import { deriveJsonSchema } from "../../src/shared/json-schema";
-import { FactorHarvestOutputSchema } from "../../src/shared/structured-output-schemas";
+import { FactorHarvestOutputSchema, ProblemCandidatesOutputSchema } from "../../src/shared/structured-output-schemas";
 import { WorkflowExecution } from "../../src/core/workflow-execution";
 import { configurePromptPaths } from "../../src/core/prompts";
 import { discoverProblems, harvestFactors, type HarvestedFactor, type HarvestedSource } from "../../src/core/discovery";
@@ -265,6 +265,39 @@ describe("workflow v2 persistence", () => {
         subject: "Operators", behavior: "repeat filing", quote: "Operators repeat filing.", sourceId: "source",
         uncertainty: "One source",
       }]);
+    } finally { client.close(); }
+  });
+
+  test("recovers a completed problem-candidates attempt without another provider call", async () => {
+    configurePromptPaths({ bundledDir: join(process.cwd(), "prompts"), overrideDir: null });
+    const client = database();
+    const stage = WORKFLOW_V2_STAGE_REGISTRY["problem-candidates"];
+    const request: StructuredStageRequest<unknown> = {
+      generationId: "candidate-original", stage: "problem-candidates:batch-1", model: { providerId: "test", modelId: "test" }, reasoningEffort: "high",
+      workOrder: { stage: "problem-candidates", instruction: "Legacy instruction", goal: "Find problems", inputs: {}, requiredDecisions: [], definitionOfDone: [], constraints: [] },
+      evidence: [], schema: ProblemCandidatesOutputSchema, jsonSchema: deriveJsonSchema(ProblemCandidatesOutputSchema), repairPolicy: "one_retry", deadlineMs: stage.deadlineMs,
+    };
+    const output = stage.schema.parse({ problems: [{ statement: "Operators repeat filing.", whyItPersists: "Systems disagree.", affected: "Operators",
+      scaleEstimate: "Unknown", scaleBasisFactorId: null, factorIds: [], alternativeExplanations: [], unknowns: ["Frequency"] }] });
+    const metadata = { model: request.model, usage: { status: "unknown" as const }, latencyMs: 1, repairCount: 0, providerRequestIds: [], attempts: [],
+      prompt: { id: "scraply.stage-worker.v1", sha256: createHash("sha256").update("runtime-prompt").digest("hex") } };
+    try {
+      let providerCalls = 0;
+      const adapter = new WorkflowExecution(client, "run-v2").discoveryClient({ structuredCompletion: async (received) => {
+        providerCalls++;
+        if (providerCalls > 1) throw new Error("Provider must not be called twice");
+        const attempts = new GenerationAttemptRepository(client);
+        const prepared = attempts.prepare("run-v2", received);
+        attempts.markDispatched(prepared.id); attempts.markAccepted(prepared.id, { compilerPrompt: metadata.prompt });
+        attempts.recordTerminal(prepared.id, { status: "completed", terminalKind: "completed", output, attemptMetadata: metadata, usage: metadata.usage });
+        throw new Error("Process ended after recording the provider terminal");
+      } });
+      await expect(adapter.structuredCompletion(request)).rejects.toThrow("Process ended");
+      const recovered = await adapter.structuredCompletion({ ...request, generationId: "candidate-resume" });
+      expect(providerCalls).toBe(1);
+      expect(recovered.output).toEqual({ problems: [{ statement: "Operators repeat filing.", whyItPersists: "Systems disagree.", affected: "Operators",
+        scaleEstimate: "Unknown", scaleBasisFactorId: null, factorIds: [] }] });
+      expect(new WorkflowExecution(client, "run-v2").repository.findStageResult("run-v2", "problem-candidates", "batch-1")).not.toBeNull();
     } finally { client.close(); }
   });
 
