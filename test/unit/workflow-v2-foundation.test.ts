@@ -20,6 +20,7 @@ import {
   WORKFLOW_V2_STAGE_IDS,
   WORKFLOW_V2_STAGE_REGISTRY,
   WORKFLOW_VERSION_V2,
+  assertWorkflowV2SolutionsSemantics,
 } from "../../src/core/stages";
 import { ProviderFailure, type StructuredModelClient, type StructuredStageRequest } from "../../src/providers/structured";
 import { deriveJsonSchema } from "../../src/shared/json-schema";
@@ -32,6 +33,37 @@ afterEach(() => {
 });
 
 describe("workflow v2 foundation", () => {
+  test("keeps evidenced startup gaps tied to citations and hypotheses explicitly uncited", () => {
+    const startupOption = {
+      ...option(),
+      startupOpportunity: {
+        opportunityType: "startup-opportunity" as const,
+        payingCustomerSegment: "Repair shops",
+        trigger: "A supplier return becomes overdue",
+        existingSubstitute: "Spreadsheet follow-up",
+        gapAssessment: { kind: "evidenced" as const, description: "Returns lack follow-up", evidenceIds: [] },
+        smallestSellableWorkflow: "Track one return balance",
+        firstCustomerRoute: "Local repair associations",
+        disconfirmingDemandTest: "Five shops decline a paid manual pilot",
+      },
+    };
+    const suppliedEvidence = [
+      { sourceId: "support-1", content: { categories: ["supporting"] } },
+      { sourceId: "contrary-1", content: { categories: ["contrary"] } },
+    ];
+    expect(() => assertWorkflowV2SolutionsSemantics({ options: [startupOption] }, suppliedEvidence))
+      .toThrow("must cite at least one");
+    const citedHypothesis = {
+      ...startupOption,
+      startupOpportunity: {
+        ...startupOption.startupOpportunity,
+        gapAssessment: { kind: "hypothesis" as const, description: "Follow-up may be missed", evidenceIds: ["support-1"] },
+      },
+    };
+    expect(() => assertWorkflowV2SolutionsSemantics({ options: [citedHypothesis] }, suppliedEvidence))
+      .toThrow("must not present evidence citations as validation");
+  });
+
   test("registers exactly seven typed stages independent of config version", () => {
     expect(Object.keys(WORKFLOW_V2_STAGE_REGISTRY).sort()).toEqual([...WORKFLOW_V2_STAGE_IDS].sort());
     expect(WORKFLOW_V2_STAGE_IDS).toHaveLength(7);

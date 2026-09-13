@@ -371,6 +371,7 @@ export class ResearchEngine {
       const deps = {
         modelClient: this.instrumentedModel(active), model: active.config.model,
         ideaCount: active.config.ideaCount,
+        explorationPurpose: active.config.explorationPurpose,
         reasoningEffort: active.config.reasoningEffort, signal: active.abortController.signal,
         resolvePrompt: workflow.resolvePrompt,
       };
