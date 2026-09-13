@@ -669,6 +669,7 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
     const resumableStatus = ["queued", "running", ...(row.workflow_version === 2 ? ["failed", "cancelled"] : [])].includes(row.status);
     return {
       runId: row.id, status: row.status, problemId: row.problem_id,
+      runConfig,
       workflowVersion: row.workflow_version, awaitingSelection: Boolean(row.awaiting_selection), interrupted: Boolean(row.interrupted),
       codexCalls: counts.find((item) => item.provider === runConfig?.model.providerId)?.count ?? 0,
       searches: counts.find((item) => item.provider === runConfig?.searchProvider)?.count ?? 0,
