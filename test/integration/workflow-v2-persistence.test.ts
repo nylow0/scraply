@@ -748,6 +748,7 @@ function discoveryModelClient(
           repairCount: 0,
           providerRequestIds: [],
           attempts: [],
+          prompt: { id: "scraply.stage-worker.v1", sha256: createHash("sha256").update("fixture-runtime-prompt").digest("hex") },
         },
       };
     },
