@@ -174,6 +174,7 @@ describe("discovery", () => {
 
   test("caps each evidence mode before generation instead of discarding generated factors", async () => {
     const domainFactorLimits: number[] = [];
+    const domainSearches: string[] = [];
     const result = await harvestFactors(scope(), {
       prompt: () => "Fixture discovery instructions",
       workflowVersion: 2,
@@ -207,6 +208,7 @@ describe("discovery", () => {
       }),
       search: {
         async search(query) {
+          if (domainSearches.length < 3) domainSearches.push(query);
           return [{
             id: query,
             url: `https://example.test/${query}`,
@@ -219,6 +221,7 @@ describe("discovery", () => {
 
     expect(result.factors).toHaveLength(15);
     expect(domainFactorLimits).toEqual([11, 4]);
+    expect(domainSearches).toEqual(["two", "three", "one"]);
     expect(result.factors.every((factor) => factor.supportsDemand === false)).toBe(true);
     expect(result.metrics).toMatchObject({
       extracted: { domain: 15, audience: 0 },
