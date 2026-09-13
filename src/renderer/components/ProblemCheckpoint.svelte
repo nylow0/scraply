@@ -44,6 +44,12 @@
   function evidenceGap(problem: ProblemCandidate): string | null {
     return (problem as ProblemCandidate & { evidenceGap?: string|null }).evidenceGap ?? null;
   }
+  function verdictLabel(problem: ProblemCandidate): string {
+    if (problem.verdict !== "confirmed") return problem.verdict;
+    return problem.factors.some((factor) => (factor as typeof factor & EvidenceMetadata).audienceFit === "intended-buyer")
+      ? "Confirmed with intended-buyer evidence"
+      : "Research marked confirmed; audience fit unassessed";
+  }
 </script>
 <section class="checkpoint problem-review">
   <header><div><h1>Choose problems to develop</h1></div><button class="export" disabled={busy} onclick={onExport}>Export research JSON</button></header>
@@ -56,7 +62,7 @@
           <summary class="disclosure-title" title={problem.statement}><span class="disclosure-label">{problem.statement}</span>{#if selected.has(problem.id)}<span aria-label="Selected for development">✓</span>{/if}</summary>
           <div class="disclosure-content">
             <label class="pick"><input type="checkbox" checked={selected.has(problem.id)} disabled={busy} onchange={()=>toggle(problem.id)} /><span>Develop this problem</span></label>
-            <div class="verdict"><span>{problem.verdict === "confirmed" ? "Confirmed problem evidence" : problem.verdict}</span>{#if problem.verdict === "confirmed"}<span>Demand not established</span>{/if}{#if problem.singleHarvestModeWarning}<span>one harvest mode</span>{/if}</div>
+            <div class="verdict"><span>{verdictLabel(problem)}</span>{#if problem.verdict === "confirmed"}<span>Demand not established</span>{/if}{#if problem.singleHarvestModeWarning}<span>one harvest mode</span>{/if}</div>
             <p>{problem.whyItPersists}</p>
             <dl><div><dt>Affected</dt><dd>{problem.affected}</dd></div><div><dt>Scale</dt><dd class="estimated">{problem.scaleEstimate}</dd></div></dl>
             <p class="reason">{problem.verdictReason}</p>
