@@ -109,6 +109,9 @@ export class WorkflowExecution {
         identity: { promptSha256: prompt.resolvedSha256, schema: request.jsonSchema, inputs: request.workOrder.inputs, evidence },
       });
       if (previous.kind === "unknown-completion") throw new Error("A generation may have completed before interruption. Start a new run to avoid replaying it.");
+      const recovered = previous.kind === "not-started" && stageId === "factor-harvest"
+        ? this.recoverCompletedFactorHarvest(request)
+        : null;
       let output: unknown;
       let metadata: GenerationMetadata;
       if (previous.kind === "reusable") {
@@ -116,6 +119,10 @@ export class WorkflowExecution {
         const savedMetadata = this.read<GenerationMetadata>(`metadata:${original.stage}`);
         if (!savedMetadata) throw new Error("Checkpoint metadata is missing");
         metadata = savedMetadata;
+      } else if (recovered) {
+        output = recovered.output;
+        metadata = recovered.metadata;
+        this.persistFactorHarvest(original.stage, stageId, request, prompt, metadata, output, context, selectionId);
       } else {
         const completion = await client.structuredCompletion(request);
         output = stage.schema.parse(completion.output);
@@ -124,10 +131,7 @@ export class WorkflowExecution {
         if (stageId === "factor-harvest") {
           // A harvest can span several slow batches. Save each completed batch so cancelling a
           // later one does not replay provider work that already returned a validated result.
-          this.db.immediateTransaction(() => {
-            this.commitStage(stageId, request, prompt, metadata, output, context, selectionId);
-            this.save(`metadata:${original.stage}`, metadata);
-          });
+          this.persistFactorHarvest(original.stage, stageId, request, prompt, metadata, output, context, selectionId);
         } else {
           this.pendingStages.set(original.stage, { stageId, request, prompt, metadata, output, context, selectionId });
         }
@@ -149,6 +153,48 @@ export class WorkflowExecution {
       }
       return { output: original.schema.parse(adapted), metadata };
     } };
+  }
+
+  private recoverCompletedFactorHarvest(request: StructuredStageRequest<unknown>): {
+    output: unknown;
+    metadata: GenerationMetadata;
+  } | null {
+    const rows = this.db.db.prepare(`
+      SELECT request_json, output_json, attempt_metadata_json
+      FROM generation_attempts
+      WHERE research_run_id = ? AND stage_key = ? AND status = 'completed'
+      ORDER BY terminal_at DESC
+    `).all(this.runId, request.stage) as Array<{
+      request_json: string;
+      output_json: string;
+      attempt_metadata_json: string;
+    }>;
+    const expected = completedAttemptIdentity(request);
+    for (const row of rows) {
+      const savedRequest = JSON.parse(row.request_json) as Record<string, unknown>;
+      if (canonicalJson(completedAttemptIdentity(savedRequest)) !== canonicalJson(expected)) continue;
+      const output = request.schema.parse(JSON.parse(row.output_json));
+      const metadata = JSON.parse(row.attempt_metadata_json) as GenerationMetadata;
+      if (!metadata.prompt) continue;
+      return { output, metadata };
+    }
+    return null;
+  }
+
+  private persistFactorHarvest(
+    stageKey: string,
+    stageId: WorkflowV2StageId,
+    request: StructuredStageRequest<unknown>,
+    prompt: ResolvedWorkflowV2Prompt,
+    metadata: GenerationMetadata,
+    output: unknown,
+    context: unknown,
+    selectionId: string | null,
+  ): void {
+    this.db.immediateTransaction(() => {
+      this.commitStage(stageId, request, prompt, metadata, output, context, selectionId);
+      this.save(`metadata:${stageKey}`, metadata);
+    });
   }
 
   /** Caller invokes this inside the same transaction that persists the validated domain rows. */
@@ -337,6 +383,19 @@ function findRecords(values: unknown[], key: string): Array<Record<string, unkno
   };
   for (const value of values) visit(value);
   return found;
+}
+
+function completedAttemptIdentity(request: Record<string, unknown> | StructuredStageRequest<unknown>): Record<string, unknown> {
+  return {
+    stage: request.stage,
+    model: request.model,
+    reasoningEffort: request.reasoningEffort,
+    workOrder: request.workOrder,
+    evidence: request.evidence,
+    jsonSchema: request.jsonSchema,
+    repairPolicy: request.repairPolicy,
+    maxOutputTokens: request.maxOutputTokens ?? null,
+  };
 }
 
 function uniqueStrings(values: string[]): string[] {

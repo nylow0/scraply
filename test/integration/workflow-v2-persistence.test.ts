@@ -209,17 +209,24 @@ describe("workflow v2 persistence", () => {
     let providerCalls = 0;
     const provider: StructuredModelClient = { async structuredCompletion(request) {
       providerCalls += 1;
-      return {
-        output: request.schema.parse({ factors: [{
-          subject: "Operators", behavior: "repeat filing", quote: "Operators repeat filing.",
-          sourceId: "source", modelConfidence: 0.8, uncertainty: "One source",
-        }] }),
-        metadata: {
-          model: request.model, usage: { status: "unknown" }, latencyMs: 1, repairCount: 0,
-          providerRequestIds: [], attempts: [],
-          prompt: { id: "scraply.stage-worker.v1", sha256: createHash("sha256").update("runtime-prompt").digest("hex") },
-        },
+      if (providerCalls > 1) throw new Error("Completed batch was sent to the provider again");
+      const output = request.schema.parse({ factors: [{
+        subject: "Operators", behavior: "repeat filing", quote: "Operators repeat filing.",
+        sourceId: "source", modelConfidence: 0.8, uncertainty: "One source",
+      }] });
+      const metadata = {
+        model: request.model, usage: { status: "unknown" as const }, latencyMs: 1, repairCount: 0,
+        providerRequestIds: [], attempts: [],
+        prompt: { id: "scraply.stage-worker.v1", sha256: createHash("sha256").update("runtime-prompt").digest("hex") },
       };
+      const attempts = new GenerationAttemptRepository(client);
+      const prepared = attempts.prepare("run-v2", { ...request, deadlineMs: 120_000 });
+      attempts.markDispatched(prepared.id);
+      attempts.markAccepted(prepared.id, { compilerPrompt: metadata.prompt });
+      attempts.recordTerminal(prepared.id, {
+        status: "completed", terminalKind: "completed", output, attemptMetadata: metadata, usage: metadata.usage,
+      });
+      throw new Error("Process ended after recording the provider terminal");
     } };
     const request = (generationId: string): StructuredStageRequest<unknown> => ({
       generationId, stage: "factor-harvest:domain:source", model: { providerId: "test", modelId: "test" }, reasoningEffort: "high",
@@ -228,7 +235,8 @@ describe("workflow v2 persistence", () => {
       jsonSchema: deriveJsonSchema(FactorHarvestOutputSchema), repairPolicy: "one_retry", deadlineMs: stage.deadlineMs,
     });
     try {
-      await new WorkflowExecution(client, "run-v2").discoveryClient(provider).structuredCompletion(request("first"));
+      await expect(new WorkflowExecution(client, "run-v2").discoveryClient(provider).structuredCompletion(request("first")))
+        .rejects.toThrow("Process ended after recording the provider terminal");
       const resumed = new WorkflowExecution(client, "run-v2");
       await resumed.discoveryClient(provider).structuredCompletion(request("resume"));
 
