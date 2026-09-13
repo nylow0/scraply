@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { DatabaseClient } from "../db/client";
 import { CostLedgerRepository, type CostReservation } from "../db/repositories/cost-ledger";
 import { DiscoveryRepository } from "../db/repositories/discovery";
@@ -801,7 +802,8 @@ export class ResearchEngine {
     const originalAnalysis = WorkflowV2CompatibleDecisionAnalysisOutputSchema.parse(originalAnalysisStage.output);
     const followUpEvidence = this.evidenceFollowUpItems(followUp);
     const context = workflow.developmentContext(active.problemId!);
-    const selectionId = `${option.id}:evidence-reassessment`;
+    const evidenceRevision = createHash("sha256").update(JSON.stringify(followUpEvidence)).digest("hex").slice(0, 16);
+    const selectionId = `${option.id}:evidence-reassessment:v2:${evidenceRevision}`;
     const deps = { modelClient: this.instrumentedModel(active), model: active.config.model, reasoningEffort: active.config.reasoningEffort,
       signal: active.abortController.signal, resolvePrompt: workflow.resolvePrompt };
     this.progress(active, "Reassessing risks using the completed evidence follow-up", "evaluating-risk");
@@ -838,11 +840,17 @@ export class ResearchEngine {
   private evidenceFollowUpItems(followUp: ReturnType<EvidenceFollowUpRepository["find"]> & {}): WorkflowV2EvidenceItem[] {
     const sourceIds = followUp.sourceIds;
     const factorIds = followUp.factorIds;
-    const sources = sourceIds.length ? this.options.db.db.prepare(`SELECT id, title, canonical_url AS url, retrieved_text AS text FROM sources WHERE id IN (${sourceIds.map(() => "?").join(",")})`).all(...sourceIds) : [];
+    const sources = sourceIds.length ? this.options.db.db.prepare(`SELECT id, title, canonical_url AS url FROM sources WHERE id IN (${sourceIds.map(() => "?").join(",")})`).all(...sourceIds) : [];
     const factors = factorIds.length ? this.options.db.db.prepare(`SELECT id, source_id AS sourceId, subject, behavior, quote, model_confidence AS modelConfidence, uncertainty FROM factors WHERE id IN (${factorIds.map(() => "?").join(",")})`).all(...factorIds) : [];
-    return [{ sourceId: "scraply:evidence-follow-up-outcome", content: { question: followUp.question, status: "completed", sourceCount: sourceIds.length, factorCount: factorIds.length } },
-      ...sourceIds.map((sourceId) => ({ sourceId, content: { source: sources.find((item) => (item as { id: string }).id === sourceId) ?? null,
-        factors: factors.filter((item) => (item as { sourceId: string }).sourceId === sourceId) } }))];
+    const sentinel = { sourceId: "scraply:evidence-follow-up-outcome", content: { question: followUp.question, status: "completed",
+      searchedSourceCount: sourceIds.length, quoteVerifiedObservationCount: factorIds.length,
+      conclusion: factorIds.length === 0 ? "The follow-up found no new quote-verified support." : "Only the quote-verified observations below are new evidence." } };
+    return [sentinel, ...factors.map((factor) => {
+      const sourceId = (factor as { sourceId: string }).sourceId;
+      return { sourceId: `scraply:evidence-follow-up-factor:${(factor as { id: string }).id}`, content: {
+        factor, source: sources.find((item) => (item as { id: string }).id === sourceId) ?? { id: sourceId },
+      } };
+    })];
   }
 
   private failEvidenceReassessment(active: ActiveRun, error: unknown): void {

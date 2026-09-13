@@ -457,7 +457,7 @@ describe("native v2 decisions through the production backend", () => {
     const db = new DatabaseClient(item.dbPath);
     const now = new Date().toISOString();
     db.db.prepare(`INSERT INTO evidence_follow_ups (research_run_id, solution_id, question, status, source_ids_json, factor_ids_json, requested_at, completed_at, updated_at)
-      VALUES (?, ?, 'Did the follow-up find any matching records?', 'completed', '[]', '[]', ?, ?, ?)`).run(selected.runId, selected.id, now, now, now);
+      VALUES (?, ?, 'Did the follow-up find any matching records?', 'completed', '["raw-unverified-source"]', '[]', ?, ?, ?)`).run(selected.runId, selected.id, now, now, now);
     db.close();
     const searches = item.searches.length;
     await item.post("/research/evidence-reassessment", { threadId, runId: selected.runId }, WorkspaceStateSchema);
@@ -471,6 +471,9 @@ describe("native v2 decisions through the production backend", () => {
     expect(detail.evidenceFollowUp).toMatchObject({ reassessmentStatus: "completed", sources: [], factors: [] });
     expect(item.searches).toHaveLength(searches);
     expect(item.requests().filter((request) => request.workOrder.stage === "risk-evaluation" && JSON.stringify(request.workOrder.inputs).includes('"reassessment":true'))).toHaveLength(1);
+    const riskRequest = item.requests().find((request) => request.workOrder.stage === "risk-evaluation" && JSON.stringify(request.workOrder.inputs).includes('"reassessment":true'))!;
+    expect(JSON.stringify(riskRequest.evidence)).not.toContain("raw-unverified-source");
+    expect(JSON.stringify(riskRequest.evidence)).toContain("no new quote-verified support");
   }, 20_000);
 
   test("cancelling an accepted reassessment settles once and remains retryable", async () => {
