@@ -108,7 +108,8 @@ describe("workflow v2 persistence", () => {
         for (const row of snapshots.get(table)!) {
           // The v19 fixture predates the archive column added in v22.
           const values = Object.entries(row as Record<string, string | number | null>)
-            .filter(([column]) => table !== "threads" || column !== "archived_at");
+            .filter(([column]) => (table !== "threads" || column !== "archived_at")
+              && (table !== "solutions" || column !== "startup_opportunity_json"));
           legacy.prepare(`INSERT INTO ${table} (${values.map(([key]) => key).join(",")}) VALUES (${values.map(() => "?").join(",")})`).run(...values.map(([, value]) => value));
         }
       }
@@ -429,6 +430,30 @@ describe("workflow v2 persistence", () => {
     expect(() => client.immediateTransaction(() => {
       repository.saveSolutionOptions("run-v2", "problem-1", [solution("solution-1")]);
     })).toThrow(WorkflowV2ConflictError);
+    client.close();
+  });
+
+  test("persists startup opportunity details while keeping general options nullable", () => {
+    const client = database();
+    const repository = new WorkflowV2Repository(client);
+    const candidate = {
+      ...solution("startup-1"),
+      startupOpportunity: {
+        opportunityType: "startup-opportunity" as const,
+        payingCustomerSegment: "Independent claims operators",
+        trigger: "A duplicate claim is found",
+        existingSubstitute: "Manual shared-state check",
+        gapAssessment: { kind: "hypothesis" as const, description: "Operators may skip the check", evidenceIds: [] },
+        smallestSellableWorkflow: "Block one duplicate filing",
+        firstCustomerRoute: "Claims operator communities",
+        disconfirmingDemandTest: "Ten operators decline a paid manual pilot",
+      },
+    };
+    client.immediateTransaction(() => repository.saveSolutionOptions("run-v2", "problem-1", [candidate]));
+    const rows = client.db.prepare("SELECT id, startup_opportunity_json FROM solutions ORDER BY id").all() as Array<{ id: string; startup_opportunity_json: string | null }>;
+    expect(rows.map((row) => ({ id: row.id, startupOpportunity: JSON.parse(String(row.startup_opportunity_json)) })))
+      .toEqual([{ id: "startup-1", startupOpportunity: candidate.startupOpportunity }]);
+    expect(client.immediateTransaction(() => repository.saveSolutionOptions("run-v2", "problem-1", [candidate])).created).toBe(false);
     client.close();
   });
 

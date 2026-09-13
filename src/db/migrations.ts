@@ -1100,4 +1100,8 @@ export const MIGRATIONS = [
     afterSql: migrateSolutionLimit,
   },
   { id: 22, sql: "ALTER TABLE threads ADD COLUMN archived_at TEXT;" },
+  {
+    id: 24,
+    sql: `ALTER TABLE solutions ADD COLUMN startup_opportunity_json TEXT CHECK(startup_opportunity_json IS NULL OR json_valid(startup_opportunity_json));`,
+  },
 ] as const;

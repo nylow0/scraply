@@ -272,6 +272,7 @@ export class WorkflowExecution {
       })),
       contraryEvidence: base.problem.verdictSourceIds.map((sourceId) => ({ sourceId, content: evidenceForSource(sourceId) })),
       priorFailedAttempts: [],
+      priorProjectMechanisms: this.priorProjectMechanisms(),
       recordedExperiments: this.recordedExperiments(base.problem.statement),
     };
     const candidateOutputs = stageEvidence.filter((stage) => stage.stage_id === "problem-candidates")
@@ -289,6 +290,27 @@ export class WorkflowExecution {
     };
     this.save("development-context", context);
     return context;
+  }
+
+  private priorProjectMechanisms(): NonNullable<WorkflowV2DevelopmentContext["priorProjectMechanisms"]> {
+    const rows = this.db.db.prepare(`
+      SELECT s.mechanism, p.statement
+      FROM solutions s JOIN problems p ON p.id = s.problem_id
+      JOIN research_runs previous ON previous.id = s.research_run_id
+      JOIN research_runs current ON current.id = ?
+      WHERE previous.thread_id = current.thread_id AND previous.rowid < current.rowid
+      ORDER BY previous.rowid DESC, s.option_position, s.id LIMIT 40
+    `).all(this.runId) as Array<{ mechanism: string; statement: string }>;
+    const results: NonNullable<WorkflowV2DevelopmentContext["priorProjectMechanisms"]> = [];
+    let characters = 0;
+    for (const row of rows) {
+      const item = { mechanism: row.mechanism, problemStatement: row.statement };
+      const size = JSON.stringify(item).length;
+      if (characters + size > 8_000) break;
+      results.push(item);
+      characters += size;
+    }
+    return results;
   }
 
   private recordedExperiments(statement: string): NonNullable<WorkflowV2DevelopmentContext["recordedExperiments"]> {
