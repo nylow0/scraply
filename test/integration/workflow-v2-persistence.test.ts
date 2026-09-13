@@ -19,6 +19,7 @@ import {
   WorkflowV2Repository,
 } from "../../src/db/repositories/workflow-v2";
 import { deriveJsonSchema } from "../../src/shared/json-schema";
+import { FactorHarvestOutputSchema } from "../../src/shared/structured-output-schemas";
 import { WorkflowExecution } from "../../src/core/workflow-execution";
 import { configurePromptPaths } from "../../src/core/prompts";
 import { discoverProblems, harvestFactors, type HarvestedFactor, type HarvestedSource } from "../../src/core/discovery";
@@ -46,6 +47,7 @@ describe("workflow v2 persistence", () => {
         : { factors: [factor, { ...factor, quote: "Students do submit their assignments on time" }, { ...factor, sourceId: "invented" }] };
       return { output: request.schema.parse(output), metadata: {
         model: request.model, usage: { status: "unknown" }, latencyMs: 1, repairCount: 0, providerRequestIds: [], attempts: [],
+        prompt: { id: "scraply.stage-worker.v1", sha256: createHash("sha256").update("runtime-prompt").digest("hex") },
       } };
     } };
     try {
@@ -197,6 +199,46 @@ describe("workflow v2 persistence", () => {
         })).rejects.toThrow("Inspected before provider dispatch");
         expect(inspected).toBe(true);
       }
+    } finally { client.close(); }
+  });
+
+  test("reuses a completed factor batch after interruption before the full harvest is persisted", async () => {
+    configurePromptPaths({ bundledDir: join(process.cwd(), "prompts"), overrideDir: null });
+    const client = database();
+    const stage = WORKFLOW_V2_STAGE_REGISTRY["factor-harvest"];
+    let providerCalls = 0;
+    const provider: StructuredModelClient = { async structuredCompletion(request) {
+      providerCalls += 1;
+      return {
+        output: request.schema.parse({ factors: [{
+          subject: "Operators", behavior: "repeat filing", quote: "Operators repeat filing.",
+          sourceId: "source", modelConfidence: 0.8, uncertainty: "One source",
+        }] }),
+        metadata: {
+          model: request.model, usage: { status: "unknown" }, latencyMs: 1, repairCount: 0,
+          providerRequestIds: [], attempts: [],
+          prompt: { id: "scraply.stage-worker.v1", sha256: createHash("sha256").update("runtime-prompt").digest("hex") },
+        },
+      };
+    } };
+    const request = (generationId: string): StructuredStageRequest<unknown> => ({
+      generationId, stage: "factor-harvest:domain:source", model: { providerId: "test", modelId: "test" }, reasoningEffort: "high",
+      workOrder: { stage: "factor-harvest", instruction: "Legacy instruction", goal: "Extract factors", inputs: { harvestMode: "domain" }, requiredDecisions: [], definitionOfDone: [], constraints: [] },
+      evidence: [{ sourceId: "source", content: { sources: [] } }], schema: FactorHarvestOutputSchema,
+      jsonSchema: deriveJsonSchema(FactorHarvestOutputSchema), repairPolicy: "one_retry", deadlineMs: stage.deadlineMs,
+    });
+    try {
+      await new WorkflowExecution(client, "run-v2").discoveryClient(provider).structuredCompletion(request("first"));
+      const resumed = new WorkflowExecution(client, "run-v2");
+      await resumed.discoveryClient(provider).structuredCompletion(request("resume"));
+
+      expect(providerCalls).toBe(1);
+      expect(resumed.withFactorUncertainty([{
+        subject: "Operators", behavior: "repeat filing", quote: "Operators repeat filing.", sourceId: "source",
+      }])).toEqual([{
+        subject: "Operators", behavior: "repeat filing", quote: "Operators repeat filing.", sourceId: "source",
+        uncertainty: "One source",
+      }]);
     } finally { client.close(); }
   });
 
