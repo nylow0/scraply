@@ -391,11 +391,20 @@ describe("native v2 decisions through the production backend", () => {
     expect(item.searches.at(-1)).toEqual(expect.objectContaining({ query: question }));
     expect(item.searches).toHaveLength(searchesBeforeFollowUp + 1);
     expect(item.requests()).toHaveLength(requestsBeforeFollowUp + 1);
-    item.assertAccounting(requestsBeforeFollowUp + 1);
+    const beforeReassessment = await item.post(`/ideas/${selected.id}`, undefined, SolutionViewSchema);
+    expect(beforeReassessment.canReassessEvidence).toBe(true);
+    await item.post("/research/evidence-reassessment", { threadId, runId: selected.runId }, WorkspaceStateSchema);
+    await item.waitFor((state) => state.latestResearchRun?.status === "completed");
+    const reassessed = await item.post(`/ideas/${selected.id}`, undefined, SolutionViewSchema);
+    expect({ status: reassessed.evidenceFollowUp?.reassessmentStatus, error: reassessed.evidenceFollowUp?.reassessmentError }).toEqual({ status: "completed", error: null });
+    expect(reassessed.evidenceFollowUp?.riskReassessment?.affectedRisks[0]?.riskId).toBe("sparse");
+    expect(reassessed.decisionAnalysis).toEqual(detail.decisionAnalysis);
+    expect(item.searches).toHaveLength(searchesBeforeFollowUp + 1);
+    item.assertAccounting(requestsBeforeFollowUp + 3);
     expect((await item.raw("/research/evidence-follow-up", { threadId, runId: selected.runId, question: "Try twice" })).status).toBe(409);
     await item.restart();
     const reopened = await item.post(`/ideas/${selected.id}`, undefined, SolutionViewSchema);
-    expect(reopened.evidenceFollowUp).toEqual(detail.evidenceFollowUp);
+    expect(reopened.evidenceFollowUp).toEqual(reassessed.evidenceFollowUp);
     expect(followedUp.solutions.find((solution) => solution.id === selected.id)?.decisionAnalysis).toBeUndefined();
   }, 20_000);
 
@@ -435,6 +444,33 @@ describe("native v2 decisions through the production backend", () => {
     });
     expect(selectingOlderRun.latestResearchRun?.stage === "evaluating-risk"
       || selectingOlderRun.latestResearchRun?.stage === "analyzing-option").toBe(true);
+  }, 20_000);
+
+  test("reassesses a completed zero-result follow-up without another search", async () => {
+    const item = await fixture({ workflowVersion: 2, searchEnabled: false, mode: "workflow-reassessment-fail-once" });
+    const threadId = await item.createThread("known-problem");
+    await item.post("/research/start", { threadId }, z.object({ runId: z.string() }));
+    const options = await item.waitFor((state) => state.latestResearchRun?.awaitingSelection === true);
+    const selected = options.solutions[0]!;
+    await item.post("/research/select-option", { threadId, runId: selected.runId, solutionId: selected.id }, WorkspaceStateSchema);
+    await item.waitFor((state) => state.latestResearchRun?.status === "completed" && !state.latestResearchRun.awaitingSelection);
+    const db = new DatabaseClient(item.dbPath);
+    const now = new Date().toISOString();
+    db.db.prepare(`INSERT INTO evidence_follow_ups (research_run_id, solution_id, question, status, source_ids_json, factor_ids_json, requested_at, completed_at, updated_at)
+      VALUES (?, ?, 'Did the follow-up find any matching records?', 'completed', '[]', '[]', ?, ?, ?)`).run(selected.runId, selected.id, now, now, now);
+    db.close();
+    const searches = item.searches.length;
+    await item.post("/research/evidence-reassessment", { threadId, runId: selected.runId }, WorkspaceStateSchema);
+    await item.waitFor((state) => state.latestResearchRun?.status === "completed");
+    const failed = await item.post(`/ideas/${selected.id}`, undefined, SolutionViewSchema);
+    expect(failed.evidenceFollowUp?.reassessmentStatus).toBe("failed");
+    expect(failed.canReassessEvidence).toBe(true);
+    await item.post("/research/evidence-reassessment", { threadId, runId: selected.runId }, WorkspaceStateSchema);
+    await item.waitFor((state) => state.latestResearchRun?.status === "completed");
+    const detail = await item.post(`/ideas/${selected.id}`, undefined, SolutionViewSchema);
+    expect(detail.evidenceFollowUp).toMatchObject({ reassessmentStatus: "completed", sources: [], factors: [] });
+    expect(item.searches).toHaveLength(searches);
+    expect(item.requests().filter((request) => request.workOrder.stage === "risk-evaluation" && JSON.stringify(request.workOrder.inputs).includes('"reassessment":true'))).toHaveLength(1);
   }, 20_000);
 
   test("cancels a pending follow-up without losing analysis or reopening its cap", async () => {

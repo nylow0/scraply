@@ -8,6 +8,7 @@ import {
 import type { ResolvedWorkflowV2Prompt } from "../../core/prompts";
 import {
   WorkflowV2DecisionAnalysisOutputSchema,
+  WorkflowV2RiskReassessmentOutputSchema,
   WorkflowV2SolutionOptionSchema,
   WorkflowV2StartupSolutionOptionSchema,
   WorkflowV2SolutionsOutputSchema,
@@ -223,7 +224,9 @@ export class WorkflowV2Repository {
     assertSha256(stage.prompt.currentBundledSha256, "bundled prompt");
     assertSha256(stage.runtimePrompt.sha256, "runtime prompt");
     verifyHash(stage.prompt.text, stage.prompt.resolvedSha256, "resolved prompt");
-    const parsedOutput = parseWorkflowV2StageOutput(stage.stageId, 1, stage.output, stage.evidence);
+    const parsedOutput = stage.stageId === "risk-evaluation" && stage.selectionId?.endsWith(":evidence-reassessment")
+      ? WorkflowV2RiskReassessmentOutputSchema.parse(stage.output)
+      : parseWorkflowV2StageOutput(stage.stageId, 1, stage.output, stage.evidence);
     const selectionKey = normalizeSelectionKey(stage.selectionId);
     const contextJson = canonicalJson(stage.context);
     const outputJson = canonicalJson(parsedOutput);
@@ -458,12 +461,10 @@ function decodeStageRow(row: StageResultRow): SavedWorkflowV2Stage {
   verifyHash(row.evidence_ids_json, row.evidence_ids_sha256, "stored evidence identities");
   verifyHash(row.effective_request_json, row.effective_request_sha256, "stored effective request");
   const evidence = JSON.parse(row.evidence_json) as WorkflowV2EvidenceSnapshot[];
-  const output = parseWorkflowV2StageOutput(
-    row.stage_id,
-    row.stage_revision,
-    JSON.parse(row.output_json),
-    evidence,
-  );
+  const rawOutput = JSON.parse(row.output_json);
+  const output = row.stage_id === "risk-evaluation" && row.selection_key.endsWith(":evidence-reassessment")
+    ? WorkflowV2RiskReassessmentOutputSchema.parse(rawOutput)
+    : parseWorkflowV2StageOutput(row.stage_id, row.stage_revision, rawOutput, evidence);
   return {
     id: row.id,
     researchRunId: row.research_run_id,

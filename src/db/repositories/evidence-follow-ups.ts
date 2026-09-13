@@ -180,6 +180,17 @@ export class EvidenceFollowUpRepository {
     return rows.map((row) => row.research_run_id);
   }
 
+  failInterruptedReassessments(reason: string): string[] {
+    const rows = this.client.db.prepare("SELECT research_run_id FROM evidence_follow_ups WHERE reassessment_status = 'running'").all() as Array<{ research_run_id: string }>;
+    if (rows.length === 0) return [];
+    const now = new Date().toISOString();
+    this.client.db.prepare(`UPDATE evidence_follow_ups SET reassessment_status = 'failed', reassessment_error = ?, reassessed_at = ?, updated_at = ? WHERE reassessment_status = 'running'`)
+      .run(reason, now, now);
+    for (const row of rows) this.client.db.prepare("UPDATE research_runs SET status = 'completed', completion_reason = ?, updated_at = ? WHERE id = ?")
+      .run("Evidence reassessment interrupted", now, row.research_run_id);
+    return rows.map((row) => row.research_run_id);
+  }
+
   interruptedRunIds(): string[] {
     return (this.client.db.prepare(`
       SELECT research_run_id FROM evidence_follow_ups WHERE status IN ('requested', 'running')

@@ -9,8 +9,8 @@ import { ProviderFailure, type GenerationMetadata, type StructuredModelClient, t
 import { AppError } from "../shared/errors";
 import type { ResearchEvent } from "../shared/ipc";
 import { DEFAULT_IDEA_COUNT, RunConfigSchema, sameModelRef, type RunConfig } from "../shared/schemas";
-import { ScopeSchema, WorkflowV2RiskEvaluationOutputSchema, type Scope } from "../shared/structured-output-schemas";
-import { analyzeSelectedOption, evaluateSelectedOptionRisk, produceDevelopmentOptions } from "./development";
+import { ScopeSchema, WorkflowV2DecisionAnalysisOutputSchema, WorkflowV2RiskEvaluationOutputSchema, WorkflowV2RiskReassessmentOutputSchema, type Scope } from "../shared/structured-output-schemas";
+import { analyzeSelectedOption, evaluateSelectedOptionRisk, produceDevelopmentOptions, reassessSelectedOption, reassessSelectedOptionRisk, type WorkflowV2EvidenceItem } from "./development";
 import { discoverProblems, discoveryRunProjection, harvestEvidenceFollowUp, harvestFactors, type HarvestResult } from "./discovery";
 import { WorkflowExecution } from "./workflow-execution";
 import type { WorkflowV2StageId } from "./stages";
@@ -52,9 +52,10 @@ export function recoverInterruptedEvidenceFollowUps(db: DatabaseClient): string[
     for (const allowance of unusedModelAllowances) ledger.release(allowance.id);
     ledger.settleUncertain(runId, "The app restarted during an evidence follow-up provider operation");
   }
-  return db.immediateTransaction(() => followUps.failInterrupted(
-    "The app restarted during this follow-up. It was not replayed.",
-  ));
+  return db.immediateTransaction(() => {
+    followUps.failInterruptedReassessments("The app restarted during reassessment. Retry it after reviewing the saved follow-up.");
+    return followUps.failInterrupted("The app restarted during this follow-up. It was not replayed.");
+  });
 }
 
 export class ResearchEngine {
@@ -234,6 +235,31 @@ export class ResearchEngine {
     this.cancelRunInternal(runId, true);
   }
 
+  async requestEvidenceReassessment(threadId: string, runId: string): Promise<void> {
+    if (this.activeRuns.has(runId)) throw new AppError("conflict", "This research run is already active.");
+    const row = this.options.db.db.prepare("SELECT thread_id, problem_id, config_json FROM research_runs WHERE id = ? AND workflow_version = 2 AND status = 'completed'")
+      .get(runId) as { thread_id: string; problem_id: string; config_json: string } | undefined;
+    if (!row || row.thread_id !== threadId) throw new AppError("not_found", "Completed v2 analysis run not found.");
+    const safety = this.generationAttempts.getResumeSafety(runId);
+    if (!safety.canResume) throw new AppError("conflict", `${safety.resumeBlockedReason} Cancel this run and start a new one to avoid an automatic duplicate charge.`);
+    this.assertThreadIdle(threadId, runId);
+    try { this.options.db.immediateTransaction(() => this.followUps.beginReassessment(runId)); }
+    catch (error) { throw new AppError("conflict", error instanceof Error ? error.message : "Evidence reassessment cannot be started."); }
+    this.options.db.db.prepare("UPDATE research_runs SET status = 'running', cancelled = 0, updated_at = ? WHERE id = ?").run(new Date().toISOString(), runId);
+    const config = RunConfigSchema.parse(JSON.parse(row.config_json));
+    const active: ActiveRun = { runId, threadId, problemId: row.problem_id, config, abortController: new AbortController(), startedAt: Date.now(),
+      projectedCodexCalls: 2, projectedSearches: 0, workflow: new WorkflowExecution(this.options.db, runId), followUpModelReservation: null, followUpSearchReservation: null };
+    this.activeRuns.set(runId, active);
+    this.scheduleDeadline(active);
+    this.emit({ type: "run-resumed", runId, threadId });
+    const execution = this.executeEvidenceReassessment(active).catch((error) => this.failEvidenceReassessment(active, error)).finally(() => {
+      this.executions.delete(execution);
+      if (this.executionsByRun.get(runId) === execution) this.executionsByRun.delete(runId);
+    });
+    this.executions.add(execution);
+    this.executionsByRun.set(runId, execution);
+  }
+
   private cancelRunInternal(runId: string, emitTerminalEvent: boolean): { threadId: string } {
     const row = this.options.db.db.prepare("SELECT thread_id, status FROM research_runs WHERE id = ?").get(runId) as
       { thread_id: string; status: string } | undefined;
@@ -257,6 +283,16 @@ export class ResearchEngine {
         this.options.db.db.prepare(`
           UPDATE research_runs SET status = 'completed', completion_reason = ?, cancelled = 0, updated_at = ? WHERE id = ?
         `).run("Analysis completed; evidence follow-up cancelled", new Date().toISOString(), runId);
+      });
+      this.updateThread(row.thread_id, "solutions-ready");
+      if (emitTerminalEvent) this.emit({ type: "run-cancelled", runId, threadId: row.thread_id });
+      return { threadId: row.thread_id };
+    }
+    if (followUp?.reassessmentStatus === "running") {
+      this.options.db.immediateTransaction(() => {
+        this.followUps.failReassessment(runId, "Cancelled by user");
+        this.options.db.db.prepare("UPDATE research_runs SET status = 'completed', completion_reason = ?, cancelled = 0, updated_at = ? WHERE id = ?")
+          .run("Analysis completed; evidence reassessment cancelled", new Date().toISOString(), runId);
       });
       this.updateThread(row.thread_id, "solutions-ready");
       if (emitTerminalEvent) this.emit({ type: "run-cancelled", runId, threadId: row.thread_id });
@@ -746,6 +782,75 @@ export class ResearchEngine {
         UPDATE research_runs SET status = 'completed', completion_reason = ?, updated_at = ? WHERE id = ?
       `).run("Analysis completed; evidence follow-up failed", new Date().toISOString(), active.runId);
     });
+    this.updateThread(active.threadId, "solutions-ready");
+    this.emit({ type: "run-failed", runId: active.runId, threadId: active.threadId, error: message });
+  }
+
+  private async executeEvidenceReassessment(active: ActiveRun): Promise<void> {
+    const workflow = active.workflow!;
+    const followUp = this.followUps.find(active.runId);
+    if (!followUp || followUp.status !== "completed") throw new Error("Evidence reassessment requires a completed follow-up");
+    const option = workflow.selectedOption(active.problemId!);
+    if (!option || option.id !== followUp.solutionId) throw new Error("The selected option for this follow-up is missing");
+    const originalRiskStage = workflow.repository.findStageResult(active.runId, "risk-evaluation", option.id);
+    const originalAnalysisStage = workflow.repository.findStageResult(active.runId, "decision-analysis", option.id);
+    if (!originalRiskStage || !originalAnalysisStage) throw new Error("The original analysis checkpoints are missing");
+    const originalRisk = WorkflowV2RiskEvaluationOutputSchema.parse(originalRiskStage.output);
+    const originalAnalysis = WorkflowV2DecisionAnalysisOutputSchema.parse(originalAnalysisStage.output);
+    const followUpEvidence = this.evidenceFollowUpItems(followUp);
+    const context = workflow.developmentContext(active.problemId!);
+    const selectionId = `${option.id}:evidence-reassessment`;
+    const deps = { modelClient: this.instrumentedModel(active), model: active.config.model, reasoningEffort: active.config.reasoningEffort,
+      signal: active.abortController.signal, resolvePrompt: workflow.resolvePrompt };
+    this.progress(active, "Reassessing risks using the completed evidence follow-up", "evaluating-risk");
+    const savedRisk = workflow.repository.findStageResult(active.runId, "risk-evaluation", selectionId);
+    const riskResult = savedRisk ? { reassessment: WorkflowV2RiskReassessmentOutputSchema.parse(savedRisk.output), request: null, resolvedPrompt: null, metadata: null }
+      : await reassessSelectedOptionRisk(context, option, originalRisk, followUpEvidence, deps);
+    active.abortController.signal.throwIfAborted();
+    if (riskResult.request && riskResult.resolvedPrompt && riskResult.metadata) this.options.db.immediateTransaction(() => workflow.commitStage(
+      "risk-evaluation", riskResult.request!, riskResult.resolvedPrompt!, riskResult.metadata!, riskResult.reassessment, context, selectionId,
+    ));
+    this.progress(active, "Reassessing the option and its next experiment", "analyzing-option");
+    const analysisResult = await reassessSelectedOption(context, option, originalAnalysis, originalRisk, riskResult.reassessment, followUpEvidence, deps);
+    active.abortController.signal.throwIfAborted();
+    this.options.db.immediateTransaction(() => {
+      workflow.commitStage("decision-analysis", analysisResult.request, analysisResult.resolvedPrompt, analysisResult.metadata, analysisResult.analysis, context, selectionId);
+      this.followUps.completeReassessment({ researchRunId: active.runId, riskReassessment: riskResult.reassessment, analysis: analysisResult.analysis,
+        riskGenerationId: riskResult.request?.generationId ?? this.reassessmentRiskGenerationId(active.runId), analysisGenerationId: analysisResult.request.generationId });
+    });
+    this.runs.finish(active.runId, "completed", "Evidence reassessment completed");
+    if (active.deadlineTimer) clearTimeout(active.deadlineTimer);
+    this.activeRuns.delete(active.runId);
+    this.updateThread(active.threadId, "solutions-ready");
+    this.emit({ type: "run-completed", runId: active.runId, threadId: active.threadId, problemId: active.problemId });
+  }
+
+  private reassessmentRiskGenerationId(runId: string): string {
+    const row = this.options.db.db.prepare(`SELECT generation_id FROM generation_attempts WHERE research_run_id = ? AND stage_key = 'risk-evaluation'
+      AND status = 'completed' AND json_extract(request_json, '$.workOrder.inputs.reassessment') = 1 ORDER BY terminal_at DESC LIMIT 1`)
+      .get(runId) as { generation_id: string } | undefined;
+    if (!row) throw new Error("Saved risk reassessment generation provenance is missing");
+    return row.generation_id;
+  }
+
+  private evidenceFollowUpItems(followUp: ReturnType<EvidenceFollowUpRepository["find"]> & {}): WorkflowV2EvidenceItem[] {
+    const sourceIds = followUp.sourceIds;
+    const factorIds = followUp.factorIds;
+    const sources = sourceIds.length ? this.options.db.db.prepare(`SELECT id, title, canonical_url AS url, retrieved_text AS text FROM sources WHERE id IN (${sourceIds.map(() => "?").join(",")})`).all(...sourceIds) : [];
+    const factors = factorIds.length ? this.options.db.db.prepare(`SELECT id, source_id AS sourceId, subject, behavior, quote, model_confidence AS modelConfidence, uncertainty FROM factors WHERE id IN (${factorIds.map(() => "?").join(",")})`).all(...factorIds) : [];
+    return [{ sourceId: "scraply:evidence-follow-up-outcome", content: { question: followUp.question, status: "completed", sourceCount: sourceIds.length, factorCount: factorIds.length } },
+      ...sourceIds.map((sourceId) => ({ sourceId, content: { source: sources.find((item) => (item as { id: string }).id === sourceId) ?? null,
+        factors: factors.filter((item) => (item as { sourceId: string }).sourceId === sourceId) } }))];
+  }
+
+  private failEvidenceReassessment(active: ActiveRun, error: unknown): void {
+    if (active.deadlineTimer) clearTimeout(active.deadlineTimer);
+    this.activeRuns.delete(active.runId);
+    const message = error instanceof Error ? error.message : "Evidence reassessment failed";
+    this.ledger.settleUncertain(active.runId, message);
+    const followUp = this.followUps.find(active.runId);
+    if (followUp?.reassessmentStatus === "running") this.options.db.immediateTransaction(() => this.followUps.failReassessment(active.runId, message));
+    this.runs.finish(active.runId, "completed", "Evidence reassessment failed");
     this.updateThread(active.threadId, "solutions-ready");
     this.emit({ type: "run-failed", runId: active.runId, threadId: active.threadId, error: message });
   }
