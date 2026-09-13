@@ -88,11 +88,15 @@
     stage?: string;
     modelState?: "waiting" | "dispatched" | "accepted" | null;
     elapsedMs?: number;
+    operationStartedAt?: string;
+    operationElapsedMs?: number;
     lastSuccessfulCheckpoint?: string | null;
   };
   let runtimeProgress = $derived((activeRun ?? {}) as RuntimeProgress);
-  let visibleElapsedMs = $derived(runtimeProgress.elapsedMs === undefined ? undefined
-    : runtimeProgress.elapsedMs + (["queued", "running"].includes(activeRun?.status ?? "") ? Math.max(0, clockNow - progressReceivedAt) : 0));
+  let clockDelta = $derived(["queued", "running"].includes(activeRun?.status ?? "") ? Math.max(0, clockNow - progressReceivedAt) : 0);
+  let visibleElapsedMs = $derived((runtimeProgress.operationElapsedMs ?? runtimeProgress.elapsedMs) === undefined ? undefined
+    : (runtimeProgress.operationElapsedMs ?? runtimeProgress.elapsedMs ?? 0) + clockDelta);
+  let elapsedStatus = $derived(elapsedLabel(visibleElapsedMs, runtimeProgress.operationElapsedMs === undefined));
   let runActivity = $derived(latestEvent?.type === "run-progress" && latestEvent.runId === activeRun?.runId
     ? latestEvent.message
     : activeRun?.lastActivity ?? "Preparing the next provider call...");
@@ -133,6 +137,8 @@
         if (progress.stage !== undefined) latestRun.stage = progress.stage as NonNullable<typeof latestRun.stage>;
         if (progress.modelState !== undefined) latestRun.modelState = progress.modelState;
         if (progress.elapsedMs !== undefined) latestRun.elapsedMs = progress.elapsedMs;
+        if (progress.operationStartedAt !== undefined) latestRun.operationStartedAt = progress.operationStartedAt;
+        if (progress.operationElapsedMs !== undefined) latestRun.operationElapsedMs = progress.operationElapsedMs;
         if (progress.lastSuccessfulCheckpoint !== undefined) latestRun.lastSuccessfulCheckpoint = progress.lastSuccessfulCheckpoint;
         progressReceivedAt = Date.now();
         void tick().then(() => {
@@ -483,11 +489,12 @@
     };
     await action(async () => setWorkspace(await api.requestEvidenceReassessment({ threadId, runId })));
   }
-  function elapsedLabel(elapsedMs: number | undefined): string | null {
+  function elapsedLabel(elapsedMs: number | undefined, totalRun = false): string | null {
     if (elapsedMs === undefined) return null;
     const seconds = Math.max(0, Math.floor(elapsedMs / 1_000));
     const minutes = Math.floor(seconds / 60);
-    return minutes ? `${minutes}m ${seconds % 60}s elapsed` : `${seconds}s elapsed`;
+    const duration = minutes ? `${minutes}m ${seconds % 60}s` : `${seconds}s`;
+    return totalRun ? `Total run: ${duration}` : `${duration} elapsed`;
   }
   function activeSolutionRunLabel(): string {
     const activity = runActivity.toLowerCase();
@@ -571,7 +578,7 @@
           <div class="activity-symbol"><Icon name="research" size={30} /></div><p class="eyebrow">Discovery in progress</p>
           <h1>Following the evidence.</h1>
           <div class="activity"><span></span><p>{runActivity}</p></div>
-          {#if activeRun}<div class="progress-facts" aria-label="Run progress"><strong>{stageLabel(runtimeProgress.stage)}</strong>{#if runtimeProgress.modelState}<span>{runtimeProgress.modelState === "waiting" ? "Queued for model" : runtimeProgress.modelState === "dispatched" ? "Sent to model" : "Accepted by model"}</span>{/if}{#if elapsedLabel(visibleElapsedMs)}<span>{elapsedLabel(visibleElapsedMs)}</span>{/if}{#if runtimeProgress.lastSuccessfulCheckpoint}<span>Last checkpoint: {runtimeProgress.lastSuccessfulCheckpoint}</span>{/if}</div>{/if}
+          {#if activeRun}<div class="progress-facts" aria-label="Run progress"><strong>{stageLabel(runtimeProgress.stage)}</strong>{#if runtimeProgress.modelState}<span>{runtimeProgress.modelState === "waiting" ? "Queued for model" : runtimeProgress.modelState === "dispatched" ? "Sent to model" : "Accepted by model"}</span>{/if}{#if elapsedStatus}<span>{elapsedStatus}</span>{/if}{#if runtimeProgress.lastSuccessfulCheckpoint}<span>Last checkpoint: {runtimeProgress.lastSuccessfulCheckpoint}</span>{/if}</div>{/if}
           {#if activeRun}<div class="run-actions"><button class="cancel" disabled={busy} onclick={() => cancelResearch(activeRun.runId)}>Cancel run</button></div>{/if}
         </div>
       {:else if (activeThread.status === "problems-ready" || reviewSelection) && (workspace.problemCandidates.length > 0 || workspace.rejectedProblemCandidates.length > 0)}
@@ -592,7 +599,7 @@
         <h1>{runtimeProgress.stage === "analyzing-option" || runtimeProgress.stage === "evaluating-risk" ? "Analyzing the selected option." : workspace.solutions.length ? "Generating the next options." : "Turning problems into possibilities."}</h1>
         <p class="research-export-hint">The research archive is already available. Open the Research tab to inspect or export it while solutions are generated.</p>
         <div class="activity"><span></span><p>{runActivity}</p></div>
-        {#if activeRun}<div class="progress-facts" aria-label="Run progress"><strong>{stageLabel(runtimeProgress.stage)}</strong>{#if runtimeProgress.modelState}<span>{runtimeProgress.modelState === "waiting" ? "Queued for model" : runtimeProgress.modelState === "dispatched" ? "Sent to model" : "Accepted by model"}</span>{/if}{#if elapsedLabel(visibleElapsedMs)}<span>{elapsedLabel(visibleElapsedMs)}</span>{/if}{#if runtimeProgress.lastSuccessfulCheckpoint}<span>Last checkpoint: {runtimeProgress.lastSuccessfulCheckpoint}</span>{/if}</div>{/if}
+        {#if activeRun}<div class="progress-facts" aria-label="Run progress"><strong>{stageLabel(runtimeProgress.stage)}</strong>{#if runtimeProgress.modelState}<span>{runtimeProgress.modelState === "waiting" ? "Queued for model" : runtimeProgress.modelState === "dispatched" ? "Sent to model" : "Accepted by model"}</span>{/if}{#if elapsedStatus}<span>{elapsedStatus}</span>{/if}{#if runtimeProgress.lastSuccessfulCheckpoint}<span>Last checkpoint: {runtimeProgress.lastSuccessfulCheckpoint}</span>{/if}</div>{/if}
         {#if activeRun}<div class="run-actions"><button class="cancel" disabled={busy} onclick={() => cancelResearch(activeRun.runId)}>Cancel run</button></div>{/if}
       </div>
       {#if workspace.solutions.length > 0}<SolutionWorkspace solutions={workspace.solutions} {busy} analysisBlocked={true} onDiscard={discardIdea} workflowVersion={activeRun?.workflowVersion} onSelect={selectOption} onSave={saveDecision} onExport={exportIdeas} onOpenSource={openExternalUrl} onEvidenceFollowUp={requestEvidenceFollowUp} onEvidenceReassessment={requestEvidenceReassessment} onReview={() => { activeStep = "research"; reviewSelection = true; }} />{/if}
@@ -602,7 +609,7 @@
         {#if activeRun && ["queued", "running"].includes(activeRun.status)}
           <section class="compact-progress" aria-label="Active solution work">
             <div><strong>{activeSolutionRunLabel()}</strong><p>{runActivity}</p></div>
-            <div class="progress-facts" aria-label="Run progress">{#if runtimeProgress.modelState}<span>{runtimeProgress.modelState === "waiting" ? "Queued for model" : runtimeProgress.modelState === "dispatched" ? "Sent to model" : "Accepted by model"}</span>{/if}{#if elapsedLabel(visibleElapsedMs)}<span>{elapsedLabel(visibleElapsedMs)}</span>{/if}{#if runtimeProgress.lastSuccessfulCheckpoint}<span>Last checkpoint: {runtimeProgress.lastSuccessfulCheckpoint}</span>{/if}</div>
+            <div class="progress-facts" aria-label="Run progress">{#if runtimeProgress.modelState}<span>{runtimeProgress.modelState === "waiting" ? "Queued for model" : runtimeProgress.modelState === "dispatched" ? "Sent to model" : "Accepted by model"}</span>{/if}{#if elapsedStatus}<span>{elapsedStatus}</span>{/if}{#if runtimeProgress.lastSuccessfulCheckpoint}<span>Last checkpoint: {runtimeProgress.lastSuccessfulCheckpoint}</span>{/if}</div>
           </section>
         {/if}
         <SolutionWorkspace solutions={workspace.solutions} {busy} onDiscard={discardIdea} workflowVersion={activeRun?.workflowVersion} onSelect={selectOption} onSave={saveDecision} onExport={exportIdeas} onOpenSource={openExternalUrl} onEvidenceFollowUp={requestEvidenceFollowUp} onEvidenceReassessment={requestEvidenceReassessment} onReview={() => { activeStep = "research"; reviewSelection = true; }} />

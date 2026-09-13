@@ -136,7 +136,8 @@ describe("App workspace coordination", () => {
         runId: "run-beta", status: "running", problemId: "problem-1", workflowVersion: 2,
         codexCalls: 1, searches: 0, projectedCodexCalls: 3, projectedSearches: 0,
         lastActivity: "Generating options", stage: "generating-options", modelState: "accepted",
-        elapsedMs: 30_000, lastSuccessfulCheckpoint: "Problem saved",
+        elapsedMs: 270_000, operationStartedAt: "2026-09-14T00:00:00.000Z", operationElapsedMs: 30_000,
+        lastSuccessfulCheckpoint: "Problem saved",
       };
       installApi({ getWorkspace: vi.fn().mockResolvedValue(alpha), selectThread: vi.fn().mockResolvedValue(beta) });
       const view = render(App);
@@ -145,7 +146,7 @@ describe("App workspace coordination", () => {
       await fireEvent.click(betaButton);
 
       expect(await view.findByText("30s elapsed")).toBeTruthy();
-      expect(view.queryByText("4m 30s elapsed")).toBeNull();
+      expect(view.queryByText("Total run: 4m 30s")).toBeNull();
     } finally {
       dateNow.mockRestore();
     }
