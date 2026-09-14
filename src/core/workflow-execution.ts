@@ -460,11 +460,21 @@ function recoverableFactorPartitionSourceIds(
 ): Set<string> | null {
   const normalize = (value: Record<string, unknown> | StructuredStageRequest<unknown>) => {
     const workOrder = structuredClone(value.workOrder) as Record<string, unknown>;
+    if (typeof workOrder.stage === "string") {
+      // Source IDs identify one partition, while the harvest mode identifies its semantics.
+      // A smaller resumed partition may reuse a completed superset only across that boundary.
+      workOrder.stage = workOrder.stage.replace(/^(factor-harvest:(?:domain|audience)):.+$/, "$1");
+    }
     const inputs = workOrder.inputs as Record<string, unknown> | undefined;
     const routing = inputs?.routing as Record<string, unknown> | undefined;
     if (routing) delete routing.factorLimit;
+    const jsonSchema = structuredClone(value.jsonSchema) as Record<string, unknown>;
+    const properties = jsonSchema.properties as Record<string, unknown> | undefined;
+    const factors = properties?.factors as Record<string, unknown> | undefined;
+    if (factors) delete factors.maxItems;
     return { model: value.model, reasoningEffort: value.reasoningEffort, workOrder,
-      repairPolicy: value.repairPolicy, maxOutputTokens: value.maxOutputTokens ?? null };
+      jsonSchema, repairPolicy: value.repairPolicy,
+      maxOutputTokens: value.maxOutputTokens ?? null };
   };
   if (canonicalJson(normalize(request)) !== canonicalJson(normalize(savedRequest))) return null;
   const sources = (value: unknown): Array<Record<string, unknown>> => {
