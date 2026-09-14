@@ -192,6 +192,26 @@ export class WorkflowExecution {
       if (!metadata.prompt) continue;
       return { output, metadata };
     }
+    if (request.stage.startsWith("factor-harvest:")) {
+      const earlier = this.db.db.prepare(`
+        SELECT request_json, output_json, attempt_metadata_json
+        FROM generation_attempts
+        WHERE research_run_id = ? AND stage_key LIKE 'factor-harvest:%' AND status = 'completed'
+        ORDER BY terminal_at DESC
+      `).all(this.runId) as typeof rows;
+      for (const row of earlier) {
+        const savedRequest = JSON.parse(row.request_json) as Record<string, unknown>;
+        const sourceIds = recoverableFactorPartitionSourceIds(request, savedRequest);
+        if (!sourceIds) continue;
+        const parsed = WorkflowV2FactorHarvestOutputSchema.safeParse(JSON.parse(row.output_json));
+        if (!parsed.success) continue;
+        const output = request.schema.safeParse({ factors: parsed.data.factors.filter((factor) => sourceIds.has(factor.sourceId)) });
+        if (!output.success) continue;
+        const metadata = JSON.parse(row.attempt_metadata_json) as GenerationMetadata;
+        if (!metadata.prompt) continue;
+        return { output: output.data, metadata };
+      }
+    }
     return null;
   }
 
@@ -432,6 +452,32 @@ function completedAttemptIdentity(request: Record<string, unknown> | StructuredS
     repairPolicy: request.repairPolicy,
     maxOutputTokens: request.maxOutputTokens ?? null,
   };
+}
+
+function recoverableFactorPartitionSourceIds(
+  request: StructuredStageRequest<unknown>,
+  savedRequest: Record<string, unknown>,
+): Set<string> | null {
+  const normalize = (value: Record<string, unknown> | StructuredStageRequest<unknown>) => {
+    const workOrder = structuredClone(value.workOrder) as Record<string, unknown>;
+    const inputs = workOrder.inputs as Record<string, unknown> | undefined;
+    const routing = inputs?.routing as Record<string, unknown> | undefined;
+    if (routing) delete routing.factorLimit;
+    return { model: value.model, reasoningEffort: value.reasoningEffort, workOrder,
+      repairPolicy: value.repairPolicy, maxOutputTokens: value.maxOutputTokens ?? null };
+  };
+  if (canonicalJson(normalize(request)) !== canonicalJson(normalize(savedRequest))) return null;
+  const sources = (value: unknown): Array<Record<string, unknown>> => {
+    if (!Array.isArray(value)) return [];
+    const content = (value[0] as { content?: { sources?: unknown } } | undefined)?.content;
+    return Array.isArray(content?.sources) ? content.sources as Array<Record<string, unknown>> : [];
+  };
+  const requestedSources = sources(request.evidence);
+  const savedSources = sources(savedRequest.evidence);
+  if (requestedSources.length === 0 || savedSources.length < requestedSources.length) return null;
+  const savedById = new Map(savedSources.map((source) => [String(source.id), source]));
+  if (requestedSources.some((source) => canonicalJson(savedById.get(String(source.id))) !== canonicalJson(source))) return null;
+  return new Set(requestedSources.map((source) => String(source.id)));
 }
 
 function uniqueStrings(values: string[]): string[] {
