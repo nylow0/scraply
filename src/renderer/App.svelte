@@ -408,7 +408,11 @@
     await action(async () => setWorkspace(await window.scraply.logoutNativeAccount(providerId)));
   }
   async function resumeResearch(runId: string) {
-    await action(async () => setWorkspace(await window.scraply.resumeResearch(runId)));
+    await action(async () => {
+      const next = await window.scraply.resumeResearch(runId);
+      setWorkspace(next);
+      activeStep = defaultStep(next);
+    });
   }
   async function cancelResearch(runId: string) {
     await action(async () => setWorkspace(await window.scraply.cancelResearch(runId)));
