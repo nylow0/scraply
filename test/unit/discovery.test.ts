@@ -70,10 +70,10 @@ describe("discovery", () => {
   });
 
   test.each([
-    "A hypothetical 20-seat $500 bill calculated from advertised prices, not an observed customer bill.",
-    "The comparison lists paid tiers from $5 to $25 without observed purchases.",
-    "The Rootly total is an illustrative calculation, not an actual customer payment.",
-    "The source lists free plan limits but no observed adoption.",
+    "This is a third-party calculation based on listed prices, not an observed customer bill; configurations and prices may change.",
+    "The comparison reports advertised prices rather than realized customer spending and does not establish how many small teams subscribe.",
+    "This is a third-party calculation based on combining two modules; actual customer configuration, discounts, and billing may differ.",
+    "The passage reports plan availability but not adoption or conversion; plan limits and continued availability may change.",
   ])("does not treat catalog or hypothetical price evidence as observed buyer behavior: %s", (uncertainty) => {
     expect(qualifiesAsIntendedBuyerObservation({
       id: "factor", subject: "Teams", behavior: "compare prices", quote: "Pricing details", sourceId: "source",
@@ -88,6 +88,12 @@ describe("discovery", () => {
       harvestMode: "audience", modelConfidence: 0.9, sourceRole: "firsthand", audienceFit: "intended-buyer",
       independentSourceKey: "shop-one", supportsDemand: true,
       uncertainty: "One shop paid $50 after leaving the free plan; prevalence was not measured.",
+    })).toBe(true);
+    expect(qualifiesAsIntendedBuyerObservation({
+      id: "factor-two", subject: "One small repair shop", behavior: "loses two hours each week copying repair status",
+      quote: "I lose two hours each week", sourceId: "source", harvestMode: "audience", modelConfidence: 0.9,
+      sourceRole: "firsthand", audienceFit: "intended-buyer", independentSourceKey: "shop-one",
+      supportsDemand: false, uncertainty: "No observed purchase or payment; one shop reported the workaround.",
     })).toBe(true);
   });
 
