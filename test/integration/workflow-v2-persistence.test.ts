@@ -244,13 +244,37 @@ describe("workflow v2 persistence", () => {
     } };
     const request = (generationId: string, partitioned = false): StructuredStageRequest<unknown> => ({
       generationId, stage: partitioned ? "factor-harvest:domain:source" : "factor-harvest:domain:source,other", model: { providerId: "test", modelId: "test" }, reasoningEffort: "high",
-      workOrder: { stage: "factor-harvest", instruction: "Legacy instruction", goal: "Extract factors", inputs: { harvestMode: "domain", factorLimit: partitioned ? 8 : 15 }, requiredDecisions: [], definitionOfDone: [], constraints: [] },
+      workOrder: { stage: partitioned ? "factor-harvest:domain:source" : "factor-harvest:domain:source,other", instruction: "Legacy instruction", goal: "Extract factors", inputs: { harvestMode: "domain", factorLimit: partitioned ? 8 : 15 }, requiredDecisions: [], definitionOfDone: [], constraints: [] },
       evidence: [{ sourceId: "source", content: { sources: partitioned ? [{ id: "source", text: "Operators repeat filing." }] : [{ id: "source", text: "Operators repeat filing." }, { id: "other", text: "Other evidence." }] } }], schema: FactorHarvestOutputSchema,
       jsonSchema: deriveJsonSchema(FactorHarvestOutputSchema), repairPolicy: "one_retry", deadlineMs: stage.deadlineMs,
     });
     try {
       await expect(new WorkflowExecution(client, "run-v2").discoveryClient(provider).structuredCompletion(request("first")))
         .rejects.toThrow("Process ended after recording the provider terminal");
+
+      let rejectedReuseDispatches = 0;
+      const expectsFreshDispatch = async (candidate: StructuredStageRequest<unknown>) => {
+        const rejectingProvider: StructuredModelClient = { async structuredCompletion() {
+          rejectedReuseDispatches++;
+          throw new Error("Fresh provider dispatch");
+        } };
+        await expect(new WorkflowExecution(client, "run-v2").discoveryClient(rejectingProvider).structuredCompletion(candidate))
+          .rejects.toThrow("Fresh provider dispatch");
+      };
+      const smaller = request("resume-check", true);
+      await expectsFreshDispatch({
+        ...smaller,
+        stage: "factor-harvest:audience:source",
+        workOrder: { ...smaller.workOrder, stage: "factor-harvest:audience:source", inputs: { harvestMode: "audience", factorLimit: 8 } },
+      });
+      await expectsFreshDispatch({
+        ...smaller,
+        evidence: [{ sourceId: "source", content: { sources: [{ id: "source", text: "Changed evidence." }] } }],
+      });
+
+      await expectsFreshDispatch({ ...smaller, model: { ...smaller.model, modelId: "different-model" } });
+      expect(rejectedReuseDispatches).toBe(3);
+
       const resumed = new WorkflowExecution(client, "run-v2");
       const recovered = await resumed.discoveryClient(provider).structuredCompletion(request("resume", true));
 
