@@ -85,6 +85,8 @@ describe("discovery", () => {
     expect(prompt).toContain("measured reports actual observed behavior or outcomes");
     expect(prompt).toContain("advertised prices, plan limits, feature catalogs, and arithmetic based on those facts");
     expect(prompt).toContain("Never turn \"Use structured logs\" into the observed behavior \"uses structured logs.\"");
+    expect(prompt).toContain("Buying inventory, raw materials, replacement parts, or other core-business inputs does not establish demand");
+    expect(prompt).toContain("Preserve such purchases as workflow evidence when relevant, but set supportsDemand false.");
   });
 
   test("keeps a genuine buyer outcome when only prevalence is unmeasured", () => {
