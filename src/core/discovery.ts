@@ -172,7 +172,7 @@ export async function harvestFactors(
             supportsDemand: classification?.supportsDemand === true
               && classification.audienceFit === "intended-buyer"
               && (classification.sourceRole === "firsthand" || classification.sourceRole === "measured")
-              && !EXPLICITLY_NOT_OBSERVED.test(`${classification.uncertainty} ${classification.demandEvidenceUncertainty}`),
+              && !CATALOG_OR_HYPOTHETICAL_EVIDENCE.test(classification.uncertainty),
             demandEvidenceUncertainty: classification?.demandEvidenceUncertainty.trim()
               ?? "Not classified in the saved output.",
           });
@@ -815,12 +815,14 @@ function hasIntendedBuyerObservation(factors: Array<Omit<HarvestedFactor, "sourc
   return factors.some(qualifiesAsIntendedBuyerObservation);
 }
 
-const EXPLICITLY_NOT_OBSERVED = /\b(?:(?:hypothetical|illustrative) (?:bill|calculation|example)|(?:not|no|without) (?:an? )?(?:observed|actual) (?:customer )?(?:bill|payment|purchase|adoption|behavior|outcome)s?)\b/i;
+// This only catches clear catalog arithmetic found in recovered evidence. Purchase language alone
+// says nothing about whether the same excerpt contains a valid firsthand problem observation.
+const CATALOG_OR_HYPOTHETICAL_EVIDENCE = /\b(?:third-party calculation based on (?:listed prices|combining (?:two )?modules)|reports advertised prices rather than realized customer spending|reports plan availability but not adoption or conversion|(?:hypothetical|illustrative) (?:bill|calculation|example))\b/i;
 
 export function qualifiesAsIntendedBuyerObservation(factor: Omit<HarvestedFactor, "source">): boolean {
   if (factor.audienceFit !== "intended-buyer") return false;
   if (factor.sourceRole !== "firsthand" && factor.sourceRole !== "measured") return false;
-  return !EXPLICITLY_NOT_OBSERVED.test(factor.uncertainty ?? "");
+  return !CATALOG_OR_HYPOTHETICAL_EVIDENCE.test(factor.uncertainty ?? "");
 }
 
 function preserveRecommendationWording(
