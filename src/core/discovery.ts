@@ -169,7 +169,7 @@ export async function harvestFactors(
             supportsDemand: classification?.supportsDemand === true
               && classification.audienceFit === "intended-buyer"
               && (classification.sourceRole === "firsthand" || classification.sourceRole === "measured")
-              && !NON_OBSERVED_EVIDENCE.test(`${classification.uncertainty} ${classification.demandEvidenceUncertainty}`),
+              && !EXPLICITLY_NOT_OBSERVED.test(`${classification.uncertainty} ${classification.demandEvidenceUncertainty}`),
             demandEvidenceUncertainty: classification?.demandEvidenceUncertainty.trim()
               ?? "Not classified in the saved output.",
           });
@@ -313,7 +313,7 @@ export async function discoverProblems(
     const killBuyerIds = "intendedBuyerEvidenceFactorIds" in kill ? kill.intendedBuyerEvidenceFactorIds : candidateBuyerIds;
     const claimedBuyerIds = new Set(killBuyerIds);
     const intendedBuyerFactors = citedFactors.filter((factor) => claimedBuyerIds.has(factor.id)
-      && factorCountsAsIntendedBuyerObservation(factor));
+      && qualifiesAsIntendedBuyerObservation(factor));
     const independentBuyerSources = new Set(intendedBuyerFactors.map((factor) => factor.independentSourceKey).filter(Boolean));
     const resolvedEvidenceGap = independentBuyerSources.size >= 2
       ? null
@@ -809,15 +809,15 @@ function selectDiverseSources(sources: HarvestedSource[], limit: number): Harves
 }
 
 function hasIntendedBuyerObservation(factors: Array<Omit<HarvestedFactor, "source">>): boolean {
-  return factors.some(factorCountsAsIntendedBuyerObservation);
+  return factors.some(qualifiesAsIntendedBuyerObservation);
 }
 
-const NON_OBSERVED_EVIDENCE = /\b(advertis(?:ed|ing)|catalog|feature list|free plan|hypothetical|illustrat(?:ion|ive)|list price|pricing page|tier limits?|calculation|calculated|not observed|not measured|no observed|no adoption|adoption (?:is|was) (?:not|un)measured)\b/i;
+const EXPLICITLY_NOT_OBSERVED = /\b(?:(?:hypothetical|illustrative) (?:bill|calculation|example)|(?:not|no|without) (?:an? )?(?:observed|actual) (?:customer )?(?:bill|payment|purchase|adoption|behavior|outcome)s?)\b/i;
 
-function factorCountsAsIntendedBuyerObservation(factor: Omit<HarvestedFactor, "source">): boolean {
+export function qualifiesAsIntendedBuyerObservation(factor: Omit<HarvestedFactor, "source">): boolean {
   if (factor.audienceFit !== "intended-buyer") return false;
   if (factor.sourceRole !== "firsthand" && factor.sourceRole !== "measured") return false;
-  return !NON_OBSERVED_EVIDENCE.test(`${factor.uncertainty ?? ""} ${factor.demandEvidenceUncertainty ?? ""}`);
+  return !EXPLICITLY_NOT_OBSERVED.test(`${factor.uncertainty ?? ""} ${factor.demandEvidenceUncertainty ?? ""}`);
 }
 
 function preserveRecommendationWording(
@@ -827,7 +827,7 @@ function preserveRecommendationWording(
   if (sourceRole !== "recommendation" || /\b(advis(?:e|ed)|recommend(?:s|ed)?|should|guidance|instruct(?:s|ed)?)\b/i.test(behavior)) {
     return behavior;
   }
-  return `The source recommends: ${behavior}`;
+  return `Recommendation: ${behavior}`.slice(0, FACTOR_BEHAVIOR_MAX_CHARACTERS).trimEnd();
 }
 
 function evidenceGap(killGap: string | null, candidateGap: string | null): string {
