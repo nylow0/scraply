@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
 import {
   batchSources,
   discoverProblems,
@@ -69,17 +70,21 @@ describe("discovery", () => {
     expect(quoteAppearsVerbatim(source, "this is fast")).toBe(false);
   });
 
-  test.each([
-    "This is a third-party calculation based on listed prices, not an observed customer bill; configurations and prices may change.",
-    "The comparison reports advertised prices rather than realized customer spending and does not establish how many small teams subscribe.",
-    "This is a third-party calculation based on combining two modules; actual customer configuration, discounts, and billing may differ.",
-    "The passage reports plan availability but not adoption or conversion; plan limits and continued availability may change.",
-  ])("does not treat catalog or hypothetical price evidence as observed buyer behavior: %s", (uncertainty) => {
+  test.each(["vendor", "recommendation", "illustration", "unknown"] as const)(
+    "does not treat %s evidence as an observed intended-buyer behavior",
+    (sourceRole) => {
     expect(qualifiesAsIntendedBuyerObservation({
       id: "factor", subject: "Teams", behavior: "compare prices", quote: "Pricing details", sourceId: "source",
-      harvestMode: "domain", modelConfidence: 0.8, sourceRole: "measured", audienceFit: "intended-buyer",
-      independentSourceKey: "comparison", supportsDemand: false, uncertainty,
+      harvestMode: "domain", modelConfidence: 0.8, sourceRole, audienceFit: "intended-buyer",
+      independentSourceKey: "comparison", supportsDemand: false,
     })).toBe(false);
+  });
+
+  test("defines measured evidence as observed outcomes and keeps catalog facts illustrative", () => {
+    const prompt = readFileSync("prompts/workflow-v2-factor-harvest.md", "utf8");
+    expect(prompt).toContain("measured reports actual observed behavior or outcomes");
+    expect(prompt).toContain("advertised prices, plan limits, feature catalogs, and arithmetic based on those facts");
+    expect(prompt).toContain("Never turn \"Use structured logs\" into the observed behavior \"uses structured logs.\"");
   });
 
   test("keeps a genuine buyer outcome when only prevalence is unmeasured", () => {
@@ -251,7 +256,7 @@ describe("discovery", () => {
           sourceId,
           modelConfidence: 0.8,
           uncertainty: "This is a hypothetical calculation from advertised prices, not observed adoption.",
-          sourceRole: index === 0 ? "recommendation" : index === 1 ? "vendor" : "measured", audienceFit: "intended-buyer",
+          sourceRole: index === 0 ? "recommendation" : index === 1 ? "vendor" : "illustration", audienceFit: "intended-buyer",
           independentSourceKey: "comparison-one", supportsDemand: true,
           demandEvidenceUncertainty: "No observed customer bill or purchase behavior.",
         })) });
