@@ -242,17 +242,17 @@ describe("workflow v2 persistence", () => {
       });
       throw new Error("Process ended after recording the provider terminal");
     } };
-    const request = (generationId: string): StructuredStageRequest<unknown> => ({
-      generationId, stage: "factor-harvest:domain:source", model: { providerId: "test", modelId: "test" }, reasoningEffort: "high",
-      workOrder: { stage: "factor-harvest", instruction: "Legacy instruction", goal: "Extract factors", inputs: { harvestMode: "domain" }, requiredDecisions: [], definitionOfDone: [], constraints: [] },
-      evidence: [{ sourceId: "source", content: { sources: [] } }], schema: FactorHarvestOutputSchema,
+    const request = (generationId: string, partitioned = false): StructuredStageRequest<unknown> => ({
+      generationId, stage: partitioned ? "factor-harvest:domain:source" : "factor-harvest:domain:source,other", model: { providerId: "test", modelId: "test" }, reasoningEffort: "high",
+      workOrder: { stage: "factor-harvest", instruction: "Legacy instruction", goal: "Extract factors", inputs: { harvestMode: "domain", factorLimit: partitioned ? 8 : 15 }, requiredDecisions: [], definitionOfDone: [], constraints: [] },
+      evidence: [{ sourceId: "source", content: { sources: partitioned ? [{ id: "source", text: "Operators repeat filing." }] : [{ id: "source", text: "Operators repeat filing." }, { id: "other", text: "Other evidence." }] } }], schema: FactorHarvestOutputSchema,
       jsonSchema: deriveJsonSchema(FactorHarvestOutputSchema), repairPolicy: "one_retry", deadlineMs: stage.deadlineMs,
     });
     try {
       await expect(new WorkflowExecution(client, "run-v2").discoveryClient(provider).structuredCompletion(request("first")))
         .rejects.toThrow("Process ended after recording the provider terminal");
       const resumed = new WorkflowExecution(client, "run-v2");
-      const recovered = await resumed.discoveryClient(provider).structuredCompletion(request("resume"));
+      const recovered = await resumed.discoveryClient(provider).structuredCompletion(request("resume", true));
 
       expect(providerCalls).toBe(1);
       expect(recovered.output).toEqual({ factors: [expect.objectContaining({
