@@ -12,6 +12,7 @@ import {
 import type { StructuredModelClient, StructuredStageRequest } from "../../src/providers/structured";
 import { ProviderFailure } from "../../src/providers/structured";
 import { QueryPlanOutputSchema } from "../../src/shared/structured-output-schemas";
+import { AUDIENCE_SOURCE_BATCH_CHARACTERS, discoveryRunProjection } from "../../src/shared/discovery-projection";
 
 describe("discovery", () => {
   test.each([
@@ -106,6 +107,14 @@ describe("discovery", () => {
     const batches = batchSources(sources, 90);
     expect(batches).toHaveLength(2);
     expect(batches.flat().map((item) => item.id)).toEqual(["one", "two"]);
+  });
+
+  test("keeps standard audience extraction packets below the Sol timeout boundary", () => {
+    const sources = Array.from({ length: 18 }, (_, index) => source(`audience-${index}`, "a".repeat(3_000)));
+    const batches = batchSources(sources, AUDIENCE_SOURCE_BATCH_CHARACTERS);
+    expect(batches.length).toBeGreaterThan(1);
+    expect(batches.flat().map((item) => item.id)).toEqual(sources.map((item) => item.id));
+    expect(discoveryRunProjection("standard").modelCalls).toBe(16);
   });
 
   test.each([

@@ -20,6 +20,7 @@ import {
   DEFAULT_PROBLEM_CANDIDATE_LIMIT,
   DISCOVERY_DEPTHS,
   SOURCE_BATCH_CHARACTERS,
+  AUDIENCE_SOURCE_BATCH_CHARACTERS,
   SOURCE_MAX_CHARACTERS,
 } from "../shared/discovery-projection";
 import { loadPrompt } from "./prompts";
@@ -133,7 +134,9 @@ export async function harvestFactors(
     let acceptedForMode = 0;
     const harvest = async (sources: HarvestedSource[], targetAccepted: number) => {
       const sourceById = new Map(allSources.map((source) => [source.id, source]));
-      const batches = batchSources(sources);
+      // Audience searches return heterogeneous long-form discussions. Smaller packets keep Sol
+      // extraction comfortably inside its deadline while preserving deterministic source groups.
+      const batches = batchSources(sources, mode === "audience" ? AUDIENCE_SOURCE_BATCH_CHARACTERS : SOURCE_BATCH_CHARACTERS);
       for (const [index, batch] of batches.entries()) {
         const remainingBatches = batches.length - index;
         const factorLimit = Math.ceil((targetAccepted - acceptedForMode) / remainingBatches);
