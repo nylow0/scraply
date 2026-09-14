@@ -953,11 +953,43 @@ fn map_api_error(error: ApiError) -> ProviderError {
             true,
             "OpenAI is temporarily overloaded",
         ),
-        _ => ProviderError::new(
+        ApiError::Stream(_) => ProviderError::new(
             OPENAI_SUBSCRIPTION_PROVIDER_ID,
             ProviderErrorCode::Transport,
             true,
-            "OpenAI subscription request failed",
+            "OpenAI response stream was interrupted",
+        ),
+        ApiError::Retryable { .. } => ProviderError::new(
+            OPENAI_SUBSCRIPTION_PROVIDER_ID,
+            ProviderErrorCode::Transport,
+            true,
+            "OpenAI temporarily could not complete the request",
+        ),
+        ApiError::InvalidRequest { .. } => ProviderError::new(
+            OPENAI_SUBSCRIPTION_PROVIDER_ID,
+            ProviderErrorCode::InvalidRequest,
+            false,
+            "OpenAI rejected the request as invalid",
+        ),
+        ApiError::CyberPolicy { .. } => ProviderError::new(
+            OPENAI_SUBSCRIPTION_PROVIDER_ID,
+            ProviderErrorCode::InvalidRequest,
+            false,
+            "OpenAI rejected the request under its safety policy",
+        ),
+        ApiError::Transport(TransportError::RetryLimit | TransportError::Network(_)) => {
+            ProviderError::new(
+                OPENAI_SUBSCRIPTION_PROVIDER_ID,
+                ProviderErrorCode::Transport,
+                true,
+                "OpenAI connection could not complete the request",
+            )
+        }
+        ApiError::Transport(TransportError::Build(_)) => ProviderError::new(
+            OPENAI_SUBSCRIPTION_PROVIDER_ID,
+            ProviderErrorCode::InvalidRequest,
+            false,
+            "OpenAI request could not be prepared",
         ),
     }
 }
@@ -1113,6 +1145,67 @@ mod tests {
             error.detail,
             "OpenAI session refresh could not be completed"
         );
+    }
+
+    #[test]
+    fn generation_api_errors_keep_safe_actionable_classification() {
+        let cases = [
+            (
+                ApiError::Stream("secret streamed provider payload".to_owned()),
+                ProviderErrorCode::Transport,
+                true,
+                "OpenAI response stream was interrupted",
+            ),
+            (
+                ApiError::Retryable {
+                    message: "secret retry payload".to_owned(),
+                    delay: None,
+                },
+                ProviderErrorCode::Transport,
+                true,
+                "OpenAI temporarily could not complete the request",
+            ),
+            (
+                ApiError::InvalidRequest {
+                    message: "secret invalid request payload".to_owned(),
+                },
+                ProviderErrorCode::InvalidRequest,
+                false,
+                "OpenAI rejected the request as invalid",
+            ),
+            (
+                ApiError::CyberPolicy {
+                    message: "secret policy payload".to_owned(),
+                },
+                ProviderErrorCode::InvalidRequest,
+                false,
+                "OpenAI rejected the request under its safety policy",
+            ),
+            (
+                ApiError::Transport(TransportError::Network(
+                    "https://secret.example Authorization: bearer-secret".to_owned(),
+                )),
+                ProviderErrorCode::Transport,
+                true,
+                "OpenAI connection could not complete the request",
+            ),
+            (
+                ApiError::Transport(TransportError::Build(
+                    "secret serialized request".to_owned(),
+                )),
+                ProviderErrorCode::InvalidRequest,
+                false,
+                "OpenAI request could not be prepared",
+            ),
+        ];
+
+        for (upstream, expected_code, expected_retryable, expected_detail) in cases {
+            let error = map_api_error(upstream);
+            assert_eq!(error.code, expected_code);
+            assert_eq!(error.retryable, expected_retryable);
+            assert_eq!(error.detail, expected_detail);
+            assert!(!error.detail.contains("secret"));
+        }
     }
 
     #[test]
