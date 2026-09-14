@@ -817,7 +817,7 @@ const EXPLICITLY_NOT_OBSERVED = /\b(?:(?:hypothetical|illustrative) (?:bill|calc
 export function qualifiesAsIntendedBuyerObservation(factor: Omit<HarvestedFactor, "source">): boolean {
   if (factor.audienceFit !== "intended-buyer") return false;
   if (factor.sourceRole !== "firsthand" && factor.sourceRole !== "measured") return false;
-  return !EXPLICITLY_NOT_OBSERVED.test(`${factor.uncertainty ?? ""} ${factor.demandEvidenceUncertainty ?? ""}`);
+  return !EXPLICITLY_NOT_OBSERVED.test(factor.uncertainty ?? "");
 }
 
 function preserveRecommendationWording(

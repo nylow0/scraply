@@ -90,6 +90,17 @@ describe("discovery", () => {
     })).toBe(true);
   });
 
+  test("keeps firsthand problem evidence separate from missing purchase evidence", () => {
+    expect(qualifiesAsIntendedBuyerObservation({
+      id: "factor", subject: "One small repair shop", behavior: "loses two hours each week copying repair status into spreadsheets",
+      quote: "I lose two hours each week copying repair status into spreadsheets", sourceId: "source",
+      harvestMode: "audience", modelConfidence: 0.9, sourceRole: "firsthand", audienceFit: "intended-buyer",
+      independentSourceKey: "shop-one", supportsDemand: false,
+      uncertainty: "One shop; prevalence was not measured.",
+      demandEvidenceUncertainty: "No observed purchase or payment.",
+    })).toBe(true);
+  });
+
   test("batches sources without splitting a source", () => {
     const sources = [source("one", "a".repeat(30)), source("two", "b".repeat(30))];
     const batches = batchSources(sources, 90);
