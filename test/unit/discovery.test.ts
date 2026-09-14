@@ -89,6 +89,19 @@ describe("discovery", () => {
     expect(prompt).toContain("Preserve such purchases as workflow evidence when relevant, but set supportsDemand false.");
   });
 
+  test("keeps intended-buyer problem observations separate from demand in synthesis prompts", () => {
+    const candidates = readFileSync("prompts/workflow-v2-problem-candidates.md", "utf8");
+    const kill = readFileSync("prompts/workflow-v2-problem-kill.md", "utf8");
+    for (const prompt of [candidates, kill]) {
+      expect(prompt).toMatch(/audienceFit (?:is )?intended-buyer/);
+      expect(prompt).toContain("sourceRole");
+      expect(prompt).toContain("regardless of supportsDemand");
+      expect(prompt).not.toContain("supportsDemand true");
+    }
+    expect(candidates).toMatch(/willingness to pay is an uncertainty about a product opportunity/i);
+    expect(kill).toContain("missing willingness-to-pay evidence as a separate unresolved assumption");
+  });
+
   test("keeps a genuine buyer outcome when only prevalence is unmeasured", () => {
     expect(qualifiesAsIntendedBuyerObservation({
       id: "factor", subject: "One shop", behavior: "paid $50 after leaving the free plan", quote: "We paid $50", sourceId: "source",
