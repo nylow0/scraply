@@ -7,6 +7,7 @@ export const DISCOVERY_DEPTHS = {
 } as const;
 
 export const SOURCE_BATCH_CHARACTERS = 60_000;
+export const AUDIENCE_SOURCE_BATCH_CHARACTERS = 30_000;
 export const SOURCE_MAX_CHARACTERS = 6_000;
 export const DEFAULT_PROBLEM_CANDIDATE_LIMIT = 4;
 
@@ -16,12 +17,15 @@ export function discoveryRunProjection(
   candidateLimit = DEFAULT_PROBLEM_CANDIDATE_LIMIT,
 ): { searches: number; modelCalls: number; factorCap: number } {
   const config = DISCOVERY_DEPTHS[depth];
-  const batchesPerMode = Math.max(1, Math.ceil(
+  const domainBatches = Math.max(1, Math.ceil(
     (config.queriesPerMode * config.searchResultsPerQuery * SOURCE_MAX_CHARACTERS) / SOURCE_BATCH_CHARACTERS,
+  ));
+  const audienceBatches = Math.max(1, Math.ceil(
+    (config.queriesPerMode * config.searchResultsPerQuery * SOURCE_MAX_CHARACTERS) / AUDIENCE_SOURCE_BATCH_CHARACTERS,
   ));
   return {
     searches: config.queriesPerMode * 2 + candidateLimit,
-    modelCalls: 2 + batchesPerMode * 2 + 1 + candidateLimit,
+    modelCalls: 2 + domainBatches + audienceBatches + 1 + candidateLimit,
     factorCap: config.factorCap,
   };
 }
