@@ -303,6 +303,7 @@ describe("discovery", () => {
       { id: "factor-2", subject: "Operators", behavior: "repeat filing", quote: "Supporting evidence.", sourceId: other.id, harvestMode: "audience", modelConfidence: 0.8, sourceRole: "measured", audienceFit: "intended-buyer", independentSourceKey: "study-two", supportsDemand: false, source: other },
     ];
     let killEvidence: unknown;
+    const synthesisDeadlines: Array<{ stage: string; deadlineMs: number }> = [];
     const result = await discoverProblems(scope(), factors, [existing, other], {
       prompt: () => "Fixture discovery instructions",
       workflowVersion: 2,
@@ -310,6 +311,7 @@ describe("discovery", () => {
       reasoningEffort,
       depth: "quick",
       modelClient: modelClient(async (request) => {
+        synthesisDeadlines.push({ stage: request.stage, deadlineMs: request.deadlineMs });
         if (request.stage === "problem-candidates") {
           return request.schema.parse({ problems: [{
             statement: "Operators duplicate recurring filings.",
@@ -337,6 +339,10 @@ describe("discovery", () => {
     });
 
     expect(JSON.stringify(killEvidence)).toContain(existing.canonicalUrl);
+    expect(synthesisDeadlines).toEqual([
+      { stage: "problem-candidates", deadlineMs: 300_000 },
+      { stage: expect.stringMatching(/^problem-kill:/), deadlineMs: 300_000 },
+    ]);
     expect(result.killSources).toEqual([]);
     expect(result.problems[0]?.verdictSourceIds).toEqual([existing.id]);
     expect(result.problems[0]?.verdict).toBe("confirmed");

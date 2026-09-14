@@ -77,9 +77,8 @@ describe("workflow v2 foundation", () => {
     expect(WORKFLOW_VERSION_V2).toBe(2);
     expect(WORKFLOW_V2_STAGE_REGISTRY.solutions.schema).toBeDefined();
     expect(WORKFLOW_V2_STAGE_REGISTRY["factor-harvest"].deadlineMs).toBe(300_000);
-    expect(WORKFLOW_V2_STAGE_REGISTRY["problem-candidates"].deadlineMs).toBe(120_000);
-    expect(WORKFLOW_V2_STAGE_REGISTRY["factor-harvest"].deadlineMs).toBe(300_000);
-    expect(WORKFLOW_V2_STAGE_REGISTRY["problem-candidates"].deadlineMs).toBe(120_000);
+    expect(WORKFLOW_V2_STAGE_REGISTRY["problem-candidates"].deadlineMs).toBe(300_000);
+    expect(WORKFLOW_V2_STAGE_REGISTRY["problem-kill"].deadlineMs).toBe(300_000);
     for (const stage of Object.values(WORKFLOW_V2_STAGE_REGISTRY)) {
       expect(() => deriveJsonSchema(stage.schema)).not.toThrow();
     }

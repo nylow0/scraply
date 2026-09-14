@@ -17,6 +17,9 @@ import { MAX_IDEA_COUNT } from "../shared/schemas";
 export const WORKFLOW_VERSION_V2 = 2 as const;
 // A full 60,000-character source batch can take more than two minutes with high reasoning.
 export const FACTOR_HARVEST_DEADLINE_MS = 300_000;
+// Candidate synthesis carries the full retained factor set, while each kill review carries
+// contrary pages and the candidate's supporting factors. High reasoning can exceed two minutes.
+export const DISCOVERY_SYNTHESIS_DEADLINE_MS = 300_000;
 // Decision analysis can carry the selected option, independent risk review, and prior
 // experiment history. Subscription providers have exceeded the generic two-minute limit.
 export const DECISION_ANALYSIS_DEADLINE_MS = 300_000;
@@ -69,7 +72,7 @@ export const WORKFLOW_V2_STAGE_REGISTRY = {
     schemaRevision: 1,
     schema: WorkflowV2ProblemCandidatesOutputSchema,
     maxOutputTokens: 4_096,
-    deadlineMs: 120_000,
+    deadlineMs: DISCOVERY_SYNTHESIS_DEADLINE_MS,
   },
   "problem-kill": {
     id: "problem-kill",
@@ -78,7 +81,7 @@ export const WORKFLOW_V2_STAGE_REGISTRY = {
     schemaRevision: 1,
     schema: ClassifiedWorkflowV2ProblemKillOutputSchema,
     maxOutputTokens: 2_048,
-    deadlineMs: 120_000,
+    deadlineMs: DISCOVERY_SYNTHESIS_DEADLINE_MS,
   },
   solutions: {
     id: "solutions",
