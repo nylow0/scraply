@@ -4,6 +4,7 @@ import {
   discoverProblems,
   harvestFactors,
   normalizeEvidenceText,
+  qualifiesAsIntendedBuyerObservation,
   quoteAppearsVerbatim,
   type HarvestedFactor,
   type HarvestedSource,
@@ -65,6 +66,28 @@ describe("discovery", () => {
     expect(normalizeEvidenceText(source)).toBe('People said "this takes - far too long" after filing.');
     expect(quoteAppearsVerbatim(source, 'this takes - far too long')).toBe(true);
     expect(quoteAppearsVerbatim(source, "this is fast")).toBe(false);
+  });
+
+  test.each([
+    "A hypothetical 20-seat $500 bill calculated from advertised prices, not an observed customer bill.",
+    "The comparison lists paid tiers from $5 to $25 without observed purchases.",
+    "The Rootly total is an illustrative calculation, not an actual customer payment.",
+    "The source lists free plan limits but no observed adoption.",
+  ])("does not treat catalog or hypothetical price evidence as observed buyer behavior: %s", (uncertainty) => {
+    expect(qualifiesAsIntendedBuyerObservation({
+      id: "factor", subject: "Teams", behavior: "compare prices", quote: "Pricing details", sourceId: "source",
+      harvestMode: "domain", modelConfidence: 0.8, sourceRole: "measured", audienceFit: "intended-buyer",
+      independentSourceKey: "comparison", supportsDemand: false, uncertainty,
+    })).toBe(false);
+  });
+
+  test("keeps a genuine buyer outcome when only prevalence is unmeasured", () => {
+    expect(qualifiesAsIntendedBuyerObservation({
+      id: "factor", subject: "One shop", behavior: "paid $50 after leaving the free plan", quote: "We paid $50", sourceId: "source",
+      harvestMode: "audience", modelConfidence: 0.9, sourceRole: "firsthand", audienceFit: "intended-buyer",
+      independentSourceKey: "shop-one", supportsDemand: true,
+      uncertainty: "One shop paid $50 after leaving the free plan; prevalence was not measured.",
+    })).toBe(true);
   });
 
   test("batches sources without splitting a source", () => {
@@ -202,7 +225,7 @@ describe("discovery", () => {
           sourceId,
           modelConfidence: 0.8,
           uncertainty: "This is a hypothetical calculation from advertised prices, not observed adoption.",
-          sourceRole: index === 0 ? "recommendation" : "measured", audienceFit: "intended-buyer",
+          sourceRole: index === 0 ? "recommendation" : index === 1 ? "vendor" : "measured", audienceFit: "intended-buyer",
           independentSourceKey: "comparison-one", supportsDemand: true,
           demandEvidenceUncertainty: "No observed customer bill or purchase behavior.",
         })) });
@@ -224,7 +247,9 @@ describe("discovery", () => {
     expect(domainFactorLimits).toEqual([11, 4]);
     expect(domainSearches).toEqual(["two", "three", "one"]);
     expect(result.factors.every((factor) => factor.supportsDemand === false)).toBe(true);
-    expect(result.factors.some((factor) => factor.behavior === "The source recommends: uses structured logs")).toBe(true);
+    expect(result.factors.some((factor) => factor.sourceRole === "vendor")).toBe(true);
+    expect(result.factors.some((factor) => factor.behavior === "Recommendation: uses structured logs")).toBe(true);
+    expect(result.factors.every((factor) => factor.behavior.length <= 280)).toBe(true);
     expect(result.metrics).toMatchObject({
       extracted: { domain: 15, audience: 0 },
       accepted: { domain: 15, audience: 0 },
