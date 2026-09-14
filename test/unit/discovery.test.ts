@@ -195,15 +195,16 @@ describe("discovery", () => {
         const inputs = request.workOrder.inputs as { harvestMode: string; factorLimit: number };
         if (inputs.harvestMode === "domain") domainFactorLimits.push(inputs.factorLimit);
         const count = inputs.harvestMode === "domain" ? inputs.factorLimit : 0;
-        return request.schema.parse({ factors: Array.from({ length: count }, () => ({
+        return request.schema.parse({ factors: Array.from({ length: count }, (_, index) => ({
           subject: "Operators",
-          behavior: "repeat manual filing",
+          behavior: index === 0 ? "uses structured logs" : "repeat manual filing",
           quote: "repeat manual filing every week",
           sourceId,
           modelConfidence: 0.8,
-          uncertainty: "Vendor-authored passage.", sourceRole: "vendor", audienceFit: "intended-buyer",
-          independentSourceKey: "vendor-one", supportsDemand: true,
-          demandEvidenceUncertainty: "No attributable buyer purchase behavior.",
+          uncertainty: "This is a hypothetical calculation from advertised prices, not observed adoption.",
+          sourceRole: index === 0 ? "recommendation" : "measured", audienceFit: "intended-buyer",
+          independentSourceKey: "comparison-one", supportsDemand: true,
+          demandEvidenceUncertainty: "No observed customer bill or purchase behavior.",
         })) });
       }),
       search: {
@@ -223,6 +224,7 @@ describe("discovery", () => {
     expect(domainFactorLimits).toEqual([11, 4]);
     expect(domainSearches).toEqual(["two", "three", "one"]);
     expect(result.factors.every((factor) => factor.supportsDemand === false)).toBe(true);
+    expect(result.factors.some((factor) => factor.behavior === "The source recommends: uses structured logs")).toBe(true);
     expect(result.metrics).toMatchObject({
       extracted: { domain: 15, audience: 0 },
       accepted: { domain: 15, audience: 0 },
