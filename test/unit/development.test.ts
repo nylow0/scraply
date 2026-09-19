@@ -105,6 +105,7 @@ test("requires startup details and passes prior project mechanisms without makin
   const startupContext = {
     ...context,
     priorProjectMechanisms: [{ mechanism: "Shared-state reminder", problemStatement: "Claims are filed twice" }],
+    priorProjectMechanismsOmittedCount: 7,
   };
   const result = await produceDevelopmentOptions(startupContext, {
     ...dependencies({ options: [{ ...plainOption, startupOpportunity: startup }] }),
@@ -115,6 +116,7 @@ test("requires startup details and passes prior project mechanisms without makin
   const requestInputs = result.request.workOrder.inputs as { explorationPurpose: string; evidenceSourceIds: string[] };
   expect(requestInputs).toMatchObject({ explorationPurpose: "startup-opportunities" });
   expect(JSON.stringify(result.request.evidence[0]?.content)).toContain("Shared-state reminder");
+  expect(result.request.evidence[0]?.content).toMatchObject({ priorProjectMechanismsOmittedCount: 7 });
   expect(requestInputs.evidenceSourceIds).toEqual([]);
 
   await expect(produceDevelopmentOptions(startupContext, {
