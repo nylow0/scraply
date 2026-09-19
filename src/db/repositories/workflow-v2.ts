@@ -8,7 +8,9 @@ import {
 import type { ResolvedWorkflowV2Prompt } from "../../core/prompts";
 import {
   WorkflowV2DecisionAnalysisOutputSchema,
+  WorkflowV2RiskReassessmentOutputSchema,
   WorkflowV2SolutionOptionSchema,
+  WorkflowV2StartupSolutionOptionSchema,
   WorkflowV2SolutionsOutputSchema,
   type WorkflowV2DecisionAnalysis,
   type WorkflowV2SolutionOption,
@@ -128,15 +130,20 @@ export class WorkflowV2Repository {
     if (!run) throw new Error("The development run is missing");
     const ideaCount = RunConfigSchema.parse(JSON.parse(run.config_json)).ideaCount ?? DEFAULT_IDEA_COUNT;
     if (options.length > ideaCount) throw new Error(`This run requested at most ${ideaCount} ideas`);
-    const parsed = options.map((option) => {
+    const parsed: Array<WorkflowV2SolutionOption & { id: string }> = options.map((option) => {
       const { id, ...candidate } = option;
-      return { ...WorkflowV2SolutionOptionSchema.parse(candidate), id };
+      const schema = "startupOpportunity" in candidate
+        ? WorkflowV2StartupSolutionOptionSchema
+        : WorkflowV2SolutionOptionSchema;
+      const parsedCandidate: WorkflowV2SolutionOption = schema.parse(candidate);
+      return { ...parsedCandidate, id };
     });
     this.requireV2Run(researchRunId, problemId);
     const existing = this.client.db.prepare(`
       SELECT id, mechanism, description, respects_off_limits, respects_off_limits_why,
         option_position, key_assumption, why_current_approach_may_suffice,
-        supporting_evidence_ids_json, contrary_evidence_ids_json, unknowns_json
+        supporting_evidence_ids_json, contrary_evidence_ids_json, unknowns_json,
+        startup_opportunity_json
       FROM solutions WHERE research_run_id = ? ORDER BY option_position, id
     `).all(researchRunId);
     const expected = parsed.map((option, position) => optionRow(option, position));
@@ -164,8 +171,9 @@ export class WorkflowV2Repository {
         id, problem_id, research_run_id, mechanism, description, respects_off_limits,
         respects_off_limits_why, option_position, key_assumption,
         why_current_approach_may_suffice, supporting_evidence_ids_json,
-        contrary_evidence_ids_json, unknowns_json, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        contrary_evidence_ids_json, unknowns_json, created_at,
+        startup_opportunity_json
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     for (const [position, option] of parsed.entries()) {
       insert.run(
@@ -183,6 +191,7 @@ export class WorkflowV2Repository {
         canonicalJson(option.contraryEvidenceIds),
         canonicalJson(option.unknowns),
         now,
+        option.startupOpportunity ? canonicalJson(option.startupOpportunity) : null,
       );
     }
     return { created: true };
@@ -215,7 +224,9 @@ export class WorkflowV2Repository {
     assertSha256(stage.prompt.currentBundledSha256, "bundled prompt");
     assertSha256(stage.runtimePrompt.sha256, "runtime prompt");
     verifyHash(stage.prompt.text, stage.prompt.resolvedSha256, "resolved prompt");
-    const parsedOutput = parseWorkflowV2StageOutput(stage.stageId, 1, stage.output, stage.evidence);
+    const parsedOutput = stage.stageId === "risk-evaluation" && isEvidenceReassessmentKey(stage.selectionId)
+      ? WorkflowV2RiskReassessmentOutputSchema.parse(stage.output)
+      : parseWorkflowV2StageOutput(stage.stageId, 1, stage.output, stage.evidence);
     const selectionKey = normalizeSelectionKey(stage.selectionId);
     const contextJson = canonicalJson(stage.context);
     const outputJson = canonicalJson(parsedOutput);
@@ -424,6 +435,7 @@ function optionRow(option: WorkflowV2SolutionOption & { id: string }, position: 
     supporting_evidence_ids_json: canonicalJson(option.supportingEvidenceIds),
     contrary_evidence_ids_json: canonicalJson(option.contraryEvidenceIds),
     unknowns_json: canonicalJson(option.unknowns),
+    startup_opportunity_json: option.startupOpportunity ? canonicalJson(option.startupOpportunity) : null,
   };
 }
 
@@ -449,12 +461,10 @@ function decodeStageRow(row: StageResultRow): SavedWorkflowV2Stage {
   verifyHash(row.evidence_ids_json, row.evidence_ids_sha256, "stored evidence identities");
   verifyHash(row.effective_request_json, row.effective_request_sha256, "stored effective request");
   const evidence = JSON.parse(row.evidence_json) as WorkflowV2EvidenceSnapshot[];
-  const output = parseWorkflowV2StageOutput(
-    row.stage_id,
-    row.stage_revision,
-    JSON.parse(row.output_json),
-    evidence,
-  );
+  const rawOutput = JSON.parse(row.output_json);
+  const output = row.stage_id === "risk-evaluation" && isEvidenceReassessmentKey(row.selection_key)
+    ? WorkflowV2RiskReassessmentOutputSchema.parse(rawOutput)
+    : parseWorkflowV2StageOutput(row.stage_id, row.stage_revision, rawOutput, evidence);
   return {
     id: row.id,
     researchRunId: row.research_run_id,
@@ -483,6 +493,10 @@ function decodeStageRow(row: StageResultRow): SavedWorkflowV2Stage {
     effectiveRequest: JSON.parse(row.effective_request_json),
     completedAt: row.completed_at,
   };
+}
+
+function isEvidenceReassessmentKey(selectionId: string | null | undefined): boolean {
+  return Boolean(selectionId && (selectionId.endsWith(":evidence-reassessment") || selectionId.includes(":evidence-reassessment:")));
 }
 
 function sameStageIdentity(

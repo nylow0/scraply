@@ -1,9 +1,12 @@
 import { describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
 import {
   batchSources,
   discoverProblems,
+  harvestEvidenceFollowUp,
   harvestFactors,
   normalizeEvidenceText,
+  qualifiesAsIntendedBuyerObservation,
   quoteAppearsVerbatim,
   type HarvestedFactor,
   type HarvestedSource,
@@ -11,6 +14,7 @@ import {
 import type { StructuredModelClient, StructuredStageRequest } from "../../src/providers/structured";
 import { ProviderFailure } from "../../src/providers/structured";
 import { QueryPlanOutputSchema } from "../../src/shared/structured-output-schemas";
+import { AUDIENCE_SOURCE_BATCH_CHARACTERS, discoveryRunProjection } from "../../src/shared/discovery-projection";
 
 describe("discovery", () => {
   test.each([
@@ -67,11 +71,122 @@ describe("discovery", () => {
     expect(quoteAppearsVerbatim(source, "this is fast")).toBe(false);
   });
 
+  test.each(["vendor", "recommendation", "illustration", "unknown"] as const)(
+    "does not treat %s evidence as an observed intended-buyer behavior",
+    (sourceRole) => {
+    expect(qualifiesAsIntendedBuyerObservation({
+      id: "factor", subject: "Teams", behavior: "compare prices", quote: "Pricing details", sourceId: "source",
+      harvestMode: "domain", modelConfidence: 0.8, sourceRole, audienceFit: "intended-buyer",
+      independentSourceKey: "comparison", supportsDemand: false,
+    })).toBe(false);
+  });
+
+  test("defines measured evidence as observed outcomes and keeps catalog facts illustrative", () => {
+    const prompt = readFileSync("prompts/workflow-v2-factor-harvest.md", "utf8");
+    expect(prompt).toContain("measured reports actual observed behavior or outcomes");
+    expect(prompt).toContain("advertised prices, plan limits, feature catalogs, and arithmetic based on those facts");
+    expect(prompt).toContain("Never turn \"Use structured logs\" into the observed behavior \"uses structured logs.\"");
+    expect(prompt).toContain("Buying inventory, raw materials, replacement parts, or other core-business inputs does not establish demand");
+    expect(prompt).toContain("Preserve such purchases as workflow evidence when relevant, but set supportsDemand false.");
+  });
+
+  test("keeps intended-buyer problem observations separate from demand in synthesis prompts", () => {
+    const candidates = readFileSync("prompts/workflow-v2-problem-candidates.md", "utf8");
+    const kill = readFileSync("prompts/workflow-v2-problem-kill.md", "utf8");
+    for (const prompt of [candidates, kill]) {
+      expect(prompt).toMatch(/audienceFit (?:is )?intended-buyer/);
+      expect(prompt).toContain("sourceRole");
+      expect(prompt).toContain("regardless of supportsDemand");
+      expect(prompt).not.toContain("supportsDemand true");
+    }
+    expect(candidates).toMatch(/willingness to pay is an uncertainty about a product opportunity/i);
+    expect(kill).toContain("missing willingness-to-pay evidence as a separate unresolved assumption");
+  });
+
+  test("keeps a genuine buyer outcome when only prevalence is unmeasured", () => {
+    expect(qualifiesAsIntendedBuyerObservation({
+      id: "factor", subject: "One shop", behavior: "paid $50 after leaving the free plan", quote: "We paid $50", sourceId: "source",
+      harvestMode: "audience", modelConfidence: 0.9, sourceRole: "firsthand", audienceFit: "intended-buyer",
+      independentSourceKey: "shop-one", supportsDemand: true,
+      uncertainty: "One shop paid $50 after leaving the free plan; prevalence was not measured.",
+    })).toBe(true);
+    expect(qualifiesAsIntendedBuyerObservation({
+      id: "factor-two", subject: "One small repair shop", behavior: "loses two hours each week copying repair status",
+      quote: "I lose two hours each week", sourceId: "source", harvestMode: "audience", modelConfidence: 0.9,
+      sourceRole: "firsthand", audienceFit: "intended-buyer", independentSourceKey: "shop-one",
+      supportsDemand: false, uncertainty: "No observed purchase or payment; one shop reported the workaround.",
+    })).toBe(true);
+  });
+
+  test("keeps firsthand problem evidence separate from missing purchase evidence", () => {
+    expect(qualifiesAsIntendedBuyerObservation({
+      id: "factor", subject: "One small repair shop", behavior: "loses two hours each week copying repair status into spreadsheets",
+      quote: "I lose two hours each week copying repair status into spreadsheets", sourceId: "source",
+      harvestMode: "audience", modelConfidence: 0.9, sourceRole: "firsthand", audienceFit: "intended-buyer",
+      independentSourceKey: "shop-one", supportsDemand: false,
+      uncertainty: "One shop; prevalence was not measured.",
+      demandEvidenceUncertainty: "No observed purchase or payment.",
+    })).toBe(true);
+  });
+
+  test("preserves every classification field from a follow-up harvest", async () => {
+    const result = await harvestEvidenceFollowUp(scope(), "Which operators pay for this workaround?", {
+      prompt: () => "Fixture discovery instructions",
+      workflowVersion: 2,
+      model,
+      reasoningEffort,
+      depth: "quick",
+      modelClient: modelClient(async (request) => {
+        const evidence = request.evidence[0]!.content as { sources: Array<{ id: string }> };
+        return request.schema.parse({ factors: [{
+          subject: "Repair shops",
+          behavior: "paid for a delivery tracking service",
+          quote: "We paid for delivery tracking last year.",
+          sourceId: evidence.sources[0]!.id,
+          modelConfidence: 0.91,
+          uncertainty: "One shop reported the purchase; prevalence is unknown.",
+          sourceRole: "firsthand",
+          audienceFit: "intended-buyer",
+          independentSourceKey: "repair-shop-one",
+          supportsDemand: true,
+          demandEvidenceUncertainty: "The renewal decision was not reported.",
+        }] });
+      }),
+      search: {
+        async search() {
+          return [{
+            id: "follow-up-source",
+            url: "https://example.test/follow-up",
+            title: "Repair shop interview",
+            text: "We paid for delivery tracking last year.",
+          }];
+        },
+      },
+    });
+
+    expect(result.factors[0]).toMatchObject({
+      uncertainty: "One shop reported the purchase; prevalence is unknown.",
+      sourceRole: "firsthand",
+      audienceFit: "intended-buyer",
+      independentSourceKey: "repair-shop-one",
+      supportsDemand: true,
+      demandEvidenceUncertainty: "The renewal decision was not reported.",
+    });
+  });
+
   test("batches sources without splitting a source", () => {
     const sources = [source("one", "a".repeat(30)), source("two", "b".repeat(30))];
     const batches = batchSources(sources, 90);
     expect(batches).toHaveLength(2);
     expect(batches.flat().map((item) => item.id)).toEqual(["one", "two"]);
+  });
+
+  test("keeps standard audience extraction packets below the Sol timeout boundary", () => {
+    const sources = Array.from({ length: 18 }, (_, index) => source(`audience-${index}`, "a".repeat(3_000)));
+    const batches = batchSources(sources, AUDIENCE_SOURCE_BATCH_CHARACTERS);
+    expect(batches.length).toBeGreaterThan(1);
+    expect(batches.flat().map((item) => item.id)).toEqual(sources.map((item) => item.id));
+    expect(discoveryRunProjection("standard").modelCalls).toBe(16);
   });
 
   test.each([
@@ -141,6 +256,7 @@ describe("discovery", () => {
     });
     expect(harvestRequests.length).toBeGreaterThan(0);
     for (const request of harvestRequests) {
+      expect(request.deadlineMs).toBe(300_000);
       expect(request.stage.length).toBeGreaterThan(256);
       expect(Buffer.byteLength(request.evidence[0]!.sourceId)).toBeLessThanOrEqual(256);
       const content = request.evidence[0]!.content as { sources: Array<{ id: string }> };
@@ -171,7 +287,9 @@ describe("discovery", () => {
     expect(plannerCalls).toBe(1);
   });
 
-  test("reports accepted factors separately from factors retained by the cap", async () => {
+  test("caps each evidence mode before generation instead of discarding generated factors", async () => {
+    const domainFactorLimits: number[] = [];
+    const domainSearches: string[] = [];
     const result = await harvestFactors(scope(), {
       prompt: () => "Fixture discovery instructions",
       workflowVersion: 2,
@@ -181,21 +299,32 @@ describe("discovery", () => {
       random: () => 0.5,
       modelClient: modelClient(async (request) => {
         if (request.schema._def === QueryPlanOutputSchema._def) {
-          return request.schema.parse({ queries: ["one", "two", "three"] });
+          return request.schema.parse({ queries: [
+            { query: "one", intent: "firsthand-experience", uncertainty: "experience", intendedSourceType: "buyer account" },
+            { query: "two", intent: "current-alternative", uncertainty: "alternative", intendedSourceType: "workflow account" },
+            { query: "three", intent: "contrary-evidence", uncertainty: "contrary", intendedSourceType: "independent report" },
+          ] });
         }
         const evidence = request.evidence[0]!.content as { sources: Array<{ id: string }> };
         const sourceId = evidence.sources[0]?.id;
-        const count = (request.workOrder.inputs as { harvestMode: string }).harvestMode === "domain" ? 31 : 0;
-        return request.schema.parse({ factors: Array.from({ length: count }, () => ({
+        const inputs = request.workOrder.inputs as { harvestMode: string; factorLimit: number };
+        if (inputs.harvestMode === "domain") domainFactorLimits.push(inputs.factorLimit);
+        const count = inputs.harvestMode === "domain" ? inputs.factorLimit : 0;
+        return request.schema.parse({ factors: Array.from({ length: count }, (_, index) => ({
           subject: "Operators",
-          behavior: "repeat manual filing",
+          behavior: index === 0 ? "uses structured logs" : "repeat manual filing",
           quote: "repeat manual filing every week",
           sourceId,
           modelConfidence: 0.8,
+          uncertainty: "This is a hypothetical calculation from advertised prices, not observed adoption.",
+          sourceRole: index === 0 ? "recommendation" : index === 1 ? "vendor" : "illustration", audienceFit: "intended-buyer",
+          independentSourceKey: "comparison-one", supportsDemand: true,
+          demandEvidenceUncertainty: "No observed customer bill or purchase behavior.",
         })) });
       }),
       search: {
         async search(query) {
+          if (domainSearches.length < 3) domainSearches.push(query);
           return [{
             id: query,
             url: `https://example.test/${query}`,
@@ -206,11 +335,17 @@ describe("discovery", () => {
       },
     });
 
-    expect(result.factors).toHaveLength(30);
+    expect(result.factors).toHaveLength(15);
+    expect(domainFactorLimits).toEqual([11, 4]);
+    expect(domainSearches).toEqual(["two", "three", "one"]);
+    expect(result.factors.every((factor) => factor.supportsDemand === false)).toBe(true);
+    expect(result.factors.some((factor) => factor.sourceRole === "vendor")).toBe(true);
+    expect(result.factors.some((factor) => factor.behavior === "Recommendation: uses structured logs")).toBe(true);
+    expect(result.factors.every((factor) => factor.behavior.length <= 280)).toBe(true);
     expect(result.metrics).toMatchObject({
-      extracted: { domain: 31, audience: 0 },
-      accepted: { domain: 31, audience: 0 },
-      retained: { domain: 30, audience: 0 },
+      extracted: { domain: 15, audience: 0 },
+      accepted: { domain: 15, audience: 0 },
+      retained: { domain: 15, audience: 0 },
       rejected: { domain: 0, audience: 0 },
     });
   });
@@ -223,10 +358,11 @@ describe("discovery", () => {
       url: "https://other.test/context",
     };
     const factors: HarvestedFactor[] = [
-      { id: "factor-1", subject: "Operators", behavior: "repeat filing", quote: "Contrary evidence.", sourceId: existing.id, harvestMode: "domain", modelConfidence: 0.8, source: existing },
-      { id: "factor-2", subject: "Operators", behavior: "repeat filing", quote: "Supporting evidence.", sourceId: other.id, harvestMode: "audience", modelConfidence: 0.8, source: other },
+      { id: "factor-1", subject: "Operators", behavior: "repeat filing", quote: "Contrary evidence.", sourceId: existing.id, harvestMode: "domain", modelConfidence: 0.8, sourceRole: "firsthand", audienceFit: "intended-buyer", independentSourceKey: "operator-one", supportsDemand: false, source: existing },
+      { id: "factor-2", subject: "Operators", behavior: "repeat filing", quote: "Supporting evidence.", sourceId: other.id, harvestMode: "audience", modelConfidence: 0.8, sourceRole: "measured", audienceFit: "intended-buyer", independentSourceKey: "study-two", supportsDemand: false, source: other },
     ];
     let killEvidence: unknown;
+    const synthesisDeadlines: Array<{ stage: string; deadlineMs: number }> = [];
     const result = await discoverProblems(scope(), factors, [existing, other], {
       prompt: () => "Fixture discovery instructions",
       workflowVersion: 2,
@@ -234,6 +370,7 @@ describe("discovery", () => {
       reasoningEffort,
       depth: "quick",
       modelClient: modelClient(async (request) => {
+        synthesisDeadlines.push({ stage: request.stage, deadlineMs: request.deadlineMs });
         if (request.stage === "problem-candidates") {
           return request.schema.parse({ problems: [{
             statement: "Operators duplicate recurring filings.",
@@ -242,6 +379,7 @@ describe("discovery", () => {
             scaleEstimate: "Recurring",
             scaleBasisFactorId: null,
             factorIds: factors.map((factor) => factor.id),
+            intendedBuyerEvidenceFactorIds: factors.map((factor) => factor.id), evidenceGap: null,
           }] });
         }
         killEvidence = request.evidence;
@@ -249,6 +387,7 @@ describe("discovery", () => {
           verdict: "confirmed",
           verdictReason: "Contrary evidence does not resolve the problem.",
           verdictSourceIds: [existing.id],
+          intendedBuyerEvidenceFactorIds: factors.map((factor) => factor.id), evidenceGap: null,
         });
       }),
       search: {
@@ -259,8 +398,68 @@ describe("discovery", () => {
     });
 
     expect(JSON.stringify(killEvidence)).toContain(existing.canonicalUrl);
+    expect(synthesisDeadlines).toEqual([
+      { stage: "problem-candidates", deadlineMs: 300_000 },
+      { stage: expect.stringMatching(/^problem-kill:/), deadlineMs: 300_000 },
+    ]);
     expect(result.killSources).toEqual([]);
     expect(result.problems[0]?.verdictSourceIds).toEqual([existing.id]);
+    expect(result.problems[0]?.verdict).toBe("confirmed");
+  });
+
+  test.each([
+    ["accepts distinct buyer origins hosted on one forum", ["buyer-one", "buyer-two"], "confirmed", null],
+    ["keeps a concrete gap when buyer origins are not independent", ["buyer-one", "buyer-one"], "insufficient-evidence", "More independent intended-buyer evidence is required."],
+  ] as const)("%s", async (_name, sourceKeys, expectedVerdict, expectedGap) => {
+    const sources = [source("one", "First buyer report."), source("two", "Second buyer report.")];
+    const factors: HarvestedFactor[] = sources.map((item, index) => ({
+      id: `factor-${index + 1}`,
+      subject: "Operators",
+      behavior: "repeat filing",
+      quote: item.retrievedText,
+      sourceId: item.id,
+      harvestMode: "audience",
+      modelConfidence: 0.8,
+      sourceRole: "firsthand",
+      audienceFit: "intended-buyer",
+      independentSourceKey: sourceKeys[index]!,
+      supportsDemand: false,
+      source: item,
+    }));
+    const result = await discoverProblems(scope(), factors, sources, {
+      prompt: () => "Fixture discovery instructions",
+      workflowVersion: 2,
+      model,
+      reasoningEffort,
+      depth: "quick",
+      modelClient: modelClient(async (request) => request.schema.parse(request.stage === "problem-candidates"
+        ? { problems: [{
+            statement: "Operators duplicate recurring filings.",
+            whyItPersists: "Systems do not share state.",
+            affected: "Operators",
+            scaleEstimate: "Recurring",
+            scaleBasisFactorId: null,
+            factorIds: factors.map((factor) => factor.id),
+            intendedBuyerEvidenceFactorIds: factors.map((factor) => factor.id),
+            evidenceGap: null,
+          }] }
+        : {
+            verdict: "confirmed",
+            verdictReason: "No contrary evidence resolves the problem.",
+            verdictSourceIds: factors.map((factor) => factor.sourceId),
+            intendedBuyerEvidenceFactorIds: factors.map((factor) => factor.id),
+            evidenceGap: null,
+          })),
+      search: { async search() { return []; } },
+    });
+
+    const problem = result.problems[0]!;
+    expect(problem.sourceHostnames).toEqual(["example.test"]);
+    expect(problem.verdict).toBe(expectedVerdict);
+    expect(problem.evidenceGap).toBe(expectedGap);
+    expect(problem.verdictReason).not.toContain("null");
+    if (expectedGap) expect(problem.verdictReason).toContain(expectedGap);
+    else expect(problem.verdictReason).toBe("No contrary evidence resolves the problem.");
   });
 
   test("skips a search result whose URL cannot be parsed instead of failing the run", async () => {

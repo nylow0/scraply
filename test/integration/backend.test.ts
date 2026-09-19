@@ -31,6 +31,59 @@ afterEach(async () => {
 });
 
 describe("cutover backend", () => {
+  test("repairs stale development status without changing active runs or option selection", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "scraply-stale-development-")); dirs.push(dir);
+    const dbPath = join(dir, "scraply.db");
+    const handle = await startBackend({
+      dataDir: dir, dbPath, bundledPromptsDir: join(process.cwd(), "prompts"), promptOverridesDir: join(dir, "prompts"),
+      appVersion: "test", getSecrets: () => ({ exaApiKey: null }),
+      providerValidation: { inspectNative: async () => nativeInspection() },
+    }, () => undefined); handles.push(handle);
+    const post = async (path: string, body: unknown) => {
+      const response = await fetch(`http://127.0.0.1:${handle.port}${path}`, {
+        method: "POST", headers: { authorization: `Bearer ${handle.token}`, "content-type": "application/json" }, body: JSON.stringify(body),
+      });
+      return (await response.json() as { data: { thread: { id: string } } }).data;
+    };
+    const stale = await post("/threads", { title: "Stale completed analysis" });
+    const awaiting = await post("/threads", { title: "Options awaiting selection" });
+    const active = await post("/threads", { title: "Active development" });
+    const client = new DatabaseClient(dbPath);
+    const now = new Date().toISOString();
+    const config = JSON.stringify({ ...DEFAULT_RUN_CONFIG, workflowVersion: 2 });
+    const projects = [
+      { threadId: stale.thread.id, suffix: "stale" },
+      { threadId: awaiting.thread.id, suffix: "awaiting" },
+      { threadId: active.thread.id, suffix: "active" },
+    ];
+    for (const { threadId, suffix } of projects) {
+      client.db.prepare("UPDATE threads SET status = 'development-running' WHERE id = ?").run(threadId);
+      client.db.prepare(`INSERT INTO research_runs (id, thread_id, status, config_json, workflow_version, created_at, updated_at)
+        VALUES (?, ?, 'completed', ?, 2, ?, ?)`).run(`discovery-${suffix}`, threadId, config, now, now);
+      client.db.prepare(`INSERT INTO problems (id, discovery_run_id, statement, why_it_persists, affected, scale_estimate, verdict,
+        verdict_reason, verdict_source_ids_json, created_at) VALUES (?, ?, ?, '', '', '', 'confirmed', '', '[]', ?)`)
+        .run(`problem-${suffix}`, `discovery-${suffix}`, `Problem ${suffix}`, now);
+    }
+    client.db.prepare(`INSERT INTO research_runs (id, thread_id, status, config_json, problem_id, awaiting_selection, workflow_version, created_at, updated_at)
+      VALUES ('stale-completed', ?, 'completed', ?, 'problem-stale', 0, 2, ?, ?)`).run(stale.thread.id, config, now, now);
+    client.db.prepare(`INSERT INTO research_runs (id, thread_id, status, config_json, problem_id, awaiting_selection, workflow_version, created_at, updated_at)
+      VALUES ('awaiting-completed', ?, 'completed', ?, 'problem-awaiting', 1, 2, ?, ?)`).run(awaiting.thread.id, config, now, now);
+    client.db.prepare(`INSERT INTO research_runs (id, thread_id, status, config_json, problem_id, awaiting_selection, workflow_version, created_at, updated_at)
+      VALUES ('active-running', ?, 'running', ?, 'problem-active', 0, 2, ?, ?)`).run(active.thread.id, config, now, now);
+    client.close();
+
+    const response = await fetch(`http://127.0.0.1:${handle.port}/workspace`, {
+      headers: { authorization: `Bearer ${handle.token}` },
+    });
+    const workspace = (await response.json() as { data: { threads: Array<{ id: string; status: string }> } }).data;
+    expect(workspace.threads.find((thread) => thread.id === stale.thread.id)?.status).toBe("solutions-ready");
+    expect(workspace.threads.find((thread) => thread.id === awaiting.thread.id)?.status).toBe("solutions-ready");
+    expect(workspace.threads.find((thread) => thread.id === active.thread.id)?.status).toBe("development-running");
+    const verification = new DatabaseClient(dbPath);
+    expect(verification.db.prepare("SELECT awaiting_selection FROM research_runs WHERE id = 'awaiting-completed'").get()).toEqual({ awaiting_selection: 1 });
+    verification.close();
+  });
+
   test("creates a configuring thread and persists the five-field scope", async () => {
     const dir = mkdtempSync(join(tmpdir(), "scraply-backend-")); dirs.push(dir);
     const handle = await startBackend({
@@ -461,8 +514,9 @@ describe("cutover backend", () => {
     }));
     expect([...dataReads].reverse().find((read) => read.operation === "solution-details")).toEqual({ operation: "solution-details", queryCount: 8, rowCount: 1 });
     expect(workspace.latestResearchRun.problemId).toBe("problem-deselected");
-    const exported = await post("/ideas/export", { threadId: created.thread.id, format: "json" }) as { files: Array<{ filename: string; content: string }> };
+    const exported = await post("/ideas/export", { threadId: created.thread.id, format: "json" }) as { filename: string; files: Array<{ filename: string; content: string }> };
     expect([...dataReads].reverse().find((read) => read.operation === "solution-details")).toEqual({ operation: "solution-details", queryCount: 8, rowCount: 5 });
+    expect(exported.filename).toMatch(/^[a-z0-9-]+-ideas\.json$/);
     expect(exported.files).toHaveLength(1);
     const jsonIdeas = JSON.parse(exported.files[0]!.content) as Array<{ id: string; factors: Array<{ quote: string; retrievedText?: string }> }>;
     expect(jsonIdeas.map((solution) => solution.id)).toEqual([
@@ -604,13 +658,24 @@ describe("cutover backend", () => {
       .run("scope-export", "discovery-export", scope.title, scope.audience, scope.domain, scope.observations, JSON.stringify(scope.offLimits), now, now);
     client.db.prepare(`INSERT INTO sources (id, research_run_id, provider_source_id, canonical_url, title, retrieved_text, content_hash, retrieved_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
       .run("source-export", "discovery-export", "provider-1", "https://example.com/evidence", "Repair evidence", "Observed delivery delays.", "hash-1", now);
-    client.db.prepare(`INSERT INTO factors (id, research_run_id, subject, behavior, quote, source_id, harvest_mode, model_confidence, uncertainty, created_at) VALUES (?, ?, ?, ?, ?, ?, 'domain', 0.83, ?, ?)`)
-      .run("factor-export", "discovery-export", "Repair shops", "wait for parts", "Observed delivery delays.", "source-export", "Seasonality was not measured.", now);
-    client.db.prepare(`INSERT INTO problems (id, discovery_run_id, statement, why_it_persists, affected, scale_estimate, verdict, verdict_reason, verdict_source_ids_json, selected_at, created_at) VALUES (?, ?, ?, ?, ?, ?, 'confirmed', ?, '[]', NULL, ?)`)
-      .run("problem-export", "discovery-export", "Parts arrival is unpredictable.", "Supplier data is fragmented.", "Independent shops", "Thousands", "Evidence confirms recurring delays.", now);
+    client.db.prepare(`INSERT INTO sources (id, research_run_id, provider_source_id, canonical_url, title, retrieved_text, content_hash, retrieved_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
+      .run("source-contrary", "discovery-export", "provider-2", "https://example.com/contrary", "Contrary evidence", "Some shops report reliable delivery.", "hash-2", now);
+    client.db.prepare(`INSERT INTO factors (
+      id, research_run_id, subject, behavior, quote, source_id, harvest_mode, model_confidence, uncertainty,
+      source_role, audience_fit, independent_source_key, supports_demand, demand_evidence_uncertainty, created_at
+    ) VALUES (?, ?, ?, ?, ?, ?, 'domain', 0.83, ?, 'firsthand', 'intended-buyer', 'shop-one', 1, ?, ?)`)
+      .run("factor-export", "discovery-export", "Repair shops", "wait for parts", "Observed delivery delays.", "source-export", "Seasonality was not measured.", "One shop does not establish prevalence.", now);
+    client.db.prepare(`INSERT INTO problems (
+      id, discovery_run_id, statement, why_it_persists, affected, scale_estimate, verdict, verdict_reason,
+      verdict_source_ids_json, intended_buyer_evidence_factor_ids_json, evidence_gap, selected_at, created_at
+    ) VALUES (?, ?, ?, ?, ?, ?, 'confirmed', ?, '[]', '["factor-export"]', ?, NULL, ?)`)
+      .run("problem-export", "discovery-export", "Parts arrival is unpredictable.", "Supplier data is fragmented.", "Independent shops", "Thousands", "Evidence confirms recurring delays.", "A second independent shop is missing.", now);
     client.db.prepare(`INSERT INTO problem_verdict_sources (problem_id, source_id, research_run_id, position) VALUES (?, ?, ?, 0)`)
-      .run("problem-export", "source-export", "discovery-export");
+      .run("problem-export", "source-contrary", "discovery-export");
     client.db.prepare("INSERT INTO problem_factors (problem_id, factor_id) VALUES (?, ?)").run("problem-export", "factor-export");
+    client.db.prepare(`INSERT INTO research_runs (id, thread_id, status, config_json, problem_id, workflow_version, created_at, updated_at)
+      VALUES ('development-export-empty', ?, 'completed', ?, 'problem-export', 2, ?, ?)`)
+      .run(created.thread.id, JSON.stringify(config), now, now);
     client.db.prepare(`
       INSERT INTO rejected_problem_candidates (id, discovery_run_id, statement, reason, created_at)
       VALUES ('rejected-export', 'discovery-export', 'One-source candidate', 'Cited factors span one source hostname; two are required.', ?)
@@ -620,7 +685,24 @@ describe("cutover backend", () => {
     const workspaceResponse = await fetch(`http://127.0.0.1:${handle.port}/workspace`, {
       headers: { authorization: `Bearer ${handle.token}` },
     });
-    const workspace = (await workspaceResponse.json() as { data: { rejectedProblemCandidates: Array<{ id: string; statement: string; reason: string }> } }).data;
+    const workspace = (await workspaceResponse.json() as { data: {
+      problemCandidates: Array<{ id: string; developmentCompleted: boolean }>;
+      rejectedProblemCandidates: Array<{ id: string; statement: string; reason: string }>;
+    } }).data;
+    expect(workspace.problemCandidates).toEqual([expect.objectContaining({
+      id: "problem-export",
+      developmentCompleted: true,
+    })]);
+    await post("/research/select-problems", {
+      threadId: created.thread.id,
+      problemIds: ["problem-export"],
+      userProblem: null,
+      model: config.model,
+      reasoningEffort: config.reasoningEffort,
+    });
+    const reused = new DatabaseClient(dbPath);
+    expect(reused.db.prepare("SELECT COUNT(*) AS count FROM generation_attempts").get()).toEqual({ count: 0 });
+    reused.close();
     expect(workspace.rejectedProblemCandidates).toEqual([{
       id: "rejected-export",
       statement: "One-source candidate",
@@ -631,14 +713,26 @@ describe("cutover backend", () => {
     await post("/scope", { threadId: created.thread.id, scope: { ...scope, title: "Edited later", domain: "Something else" } });
 
     const bundle = await post("/research/export", { threadId: created.thread.id }) as { filename: string; content: string };
-    const exported = JSON.parse(bundle.content) as { schemaVersion: number; scope: typeof scope; sources: Array<{ text: string }>; factors: Array<{ sourceId: string; uncertainty?: string }>; problems: Array<{ id: string }>; rejectedProblemCandidates: Array<{ id: string; statement: string; reason: string }> };
+    const exported = JSON.parse(bundle.content) as { schemaVersion: number; scope: typeof scope; sources: Array<{ id: string; text: string }>; factors: Array<{ sourceId: string; uncertainty?: string; sourceRole: string; audienceFit: string; independentSourceKey: string | null; supportsDemand: boolean; demandEvidenceUncertainty?: string }>; problems: Array<{ id: string; verdictSourceIds: string[]; intendedBuyerEvidenceFactorIds: string[]; evidenceGap: string | null; factors: Array<{ sourceRole?: string }> }>; rejectedProblemCandidates: Array<{ id: string; statement: string; reason: string }> };
     expect(bundle.filename).toBe("edited-later-research.json");
     expect(exported.schemaVersion).toBe(1);
     expect(exported.scope).toEqual(scope);
-    expect(exported.sources[0]?.text).toBe("Observed delivery delays.");
+    expect(exported.sources).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: "source-export", text: "Observed delivery delays." }),
+      expect.objectContaining({ id: "source-contrary", text: "Some shops report reliable delivery." }),
+    ]));
     expect(exported.factors[0]?.sourceId).toBe("source-export");
     expect(exported.factors[0]?.uncertainty).toBe("Seasonality was not measured.");
+    expect(exported.factors[0]).toMatchObject({
+      sourceRole: "firsthand", audienceFit: "intended-buyer", independentSourceKey: "shop-one",
+      supportsDemand: true, demandEvidenceUncertainty: "One shop does not establish prevalence.",
+    });
     expect(exported.problems.map((problem) => problem.id)).toEqual(["problem-export"]);
+    expect(exported.problems[0]).toMatchObject({
+      verdictSourceIds: ["source-contrary"],
+      intendedBuyerEvidenceFactorIds: ["factor-export"], evidenceGap: "A second independent shop is missing.",
+      factors: [expect.objectContaining({ sourceRole: "firsthand" })],
+    });
     expect(exported.rejectedProblemCandidates).toEqual([{
       id: "rejected-export",
       statement: "One-source candidate",
@@ -663,6 +757,7 @@ describe("cutover backend", () => {
       });
       return { status: response.status, body: await response.json() as { data?: {
         thread?: { id: string };
+        latestResearchRun?: { runConfig?: { model: { providerId: string; modelId: string }; reasoningEffort: string } | null } | null;
         problemCandidates?: Array<{ statement: string; verdict: string }>;
         rejectedProblemCandidates?: Array<{ id: string; statement: string; reason: string }>;
       }; error?: { message: string } } };
@@ -675,7 +770,7 @@ describe("cutover backend", () => {
     client.db.prepare(`
       INSERT INTO research_runs (id, thread_id, status, config_json, problem_id, created_at, updated_at)
       VALUES ('discovery-rejected', ?, 'completed', ?, NULL, ?, ?)
-    `).run(threadId, JSON.stringify({ ...DEFAULT_RUN_CONFIG, model: { providerId: "openai-subscription", modelId: "gpt-test" } }), now, now);
+    `).run(threadId, JSON.stringify({ ...DEFAULT_RUN_CONFIG, reasoningEffort: "low" }), now, now);
     client.db.prepare(`
       INSERT INTO rejected_problem_candidates (id, discovery_run_id, statement, reason, created_at)
       VALUES ('rejected-1', 'discovery-rejected', 'One-source candidate', 'Only one source hostname.', ?)
@@ -686,13 +781,35 @@ describe("cutover backend", () => {
       threadId,
       problemIds: ["rejected-1"],
       userProblem: null,
+      model: { providerId: "openai-subscription", modelId: "gpt-test" },
+      reasoningEffort: "medium",
     });
     expect(fakeEvidenceSelection.status).toBe(409);
+
+    const unavailableModel = await request("/research/select-problems", {
+      threadId,
+      problemIds: [],
+      userProblem: "One-source candidate",
+      model: { providerId: "openai-subscription", modelId: "gpt-unavailable" },
+      reasoningEffort: "medium",
+    });
+    expect(unavailableModel.status).toBe(409);
+
+    const unsupportedReasoning = await request("/research/select-problems", {
+      threadId,
+      problemIds: [],
+      userProblem: "One-source candidate",
+      model: { providerId: "openai-subscription", modelId: "gpt-test" },
+      reasoningEffort: "xhigh",
+    });
+    expect(unsupportedReasoning.status).toBe(400);
 
     const asserted = await request("/research/select-problems", {
       threadId,
       problemIds: [],
       userProblem: "One-source candidate",
+      model: { providerId: "openai-subscription", modelId: "gpt-test" },
+      reasoningEffort: "medium",
     });
     expect(asserted.status).toBe(200);
     expect(asserted.body.data?.problemCandidates).toEqual([expect.objectContaining({
@@ -700,6 +817,17 @@ describe("cutover backend", () => {
       verdict: "user-asserted",
     })]);
     expect(asserted.body.data?.rejectedProblemCandidates).toEqual([{ id: "rejected-1", statement: "One-source candidate", reason: "Only one source hostname." }]);
+    expect(asserted.body.data?.latestResearchRun?.runConfig).toMatchObject({
+      model: { providerId: "openai-subscription", modelId: "gpt-test" }, reasoningEffort: "medium",
+    });
+    const persisted = new DatabaseClient(dbPath);
+    const runs = persisted.db.prepare("SELECT problem_id, config_json FROM research_runs WHERE thread_id = ? ORDER BY created_at, rowid").all(threadId) as Array<{ problem_id: string | null; config_json: string }>;
+    expect(runs).toHaveLength(2);
+    expect(JSON.parse(runs[0]!.config_json)).toMatchObject({ model: DEFAULT_RUN_CONFIG.model, reasoningEffort: "low" });
+    expect(JSON.parse(runs[1]!.config_json)).toMatchObject({ model: { providerId: "openai-subscription", modelId: "gpt-test" }, reasoningEffort: "medium" });
+    expect(runs[0]!.problem_id).toBeNull();
+    expect(runs[1]!.problem_id).not.toBeNull();
+    persisted.close();
   });
 
   test("cancels and deletes stale runs without provider credentials", async () => {

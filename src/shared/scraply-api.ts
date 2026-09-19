@@ -1,7 +1,7 @@
 import {
   ExportIdeasRequestSchema, ExportResearchRequestSchema, IPC_CHANNELS, SaveFavoriteModelSchema,
   NativeLoginCancelSchema, NativeLoginCompleteSchema, NativeLoginStartSchema, NativeProviderSchema,
-  SaveRunConfigSchema, SaveScopeSchema, SelectProblemsSchema, SelectOptionSchema, SaveDecisionSchema, EvidenceFollowUpRequestSchema,
+  SaveRunConfigSchema, SaveScopeSchema, SelectProblemsSchema, SelectOptionSchema, SaveDecisionSchema, EvidenceFollowUpRequestSchema, EvidenceReassessmentRequestSchema,
   AppCommandSchema, type NativeLoginCompleteResult, type NativeLoginStartResult, type ResearchEvent,
   type SolutionView, type SourceDetail, type ValidationState, type WorkspaceState,
 } from "./ipc";
@@ -16,10 +16,12 @@ export function createScraplyApi(transport: ApiTransport) {
   return {
     selectOption: (payload: { threadId: string; runId: string; solutionId: string }): Promise<WorkspaceState> =>
       transport.invoke(IPC_CHANNELS.SELECT_OPTION, SelectOptionSchema.parse(payload)),
-    saveDecision: (payload: { threadId: string; solutionId: string; userDecision: string; observedResult: string }): Promise<WorkspaceState> =>
+    saveDecision: (payload: { threadId: string; solutionId: string; userDecision: string; observedResult: string; experimentOutcome?: "not-run" | "pass" | "fail" | "inconclusive" }): Promise<WorkspaceState> =>
       transport.invoke(IPC_CHANNELS.SAVE_DECISION, SaveDecisionSchema.parse(payload)),
     requestEvidenceFollowUp: (payload: { threadId: string; runId: string; question: string }): Promise<WorkspaceState> =>
       transport.invoke(IPC_CHANNELS.EVIDENCE_FOLLOW_UP, EvidenceFollowUpRequestSchema.parse(payload)),
+    requestEvidenceReassessment: (payload: { threadId: string; runId: string }): Promise<WorkspaceState> =>
+      transport.invoke(IPC_CHANNELS.EVIDENCE_REASSESSMENT, EvidenceReassessmentRequestSchema.parse(payload)),
     getValidation: (): Promise<ValidationState> => transport.invoke(IPC_CHANNELS.GET_VALIDATION),
     retryConnection: (): Promise<void> => transport.invoke(IPC_CHANNELS.RETRY_CONNECTION),
     getWorkspace: (): Promise<WorkspaceState> => transport.invoke(IPC_CHANNELS.GET_WORKSPACE),
@@ -52,7 +54,7 @@ export function createScraplyApi(transport: ApiTransport) {
     startResearch: (threadId: string): Promise<{ workspace: WorkspaceState }> => transport.invoke(IPC_CHANNELS.START_RESEARCH, { threadId }),
     cancelResearch: async (runId: string): Promise<WorkspaceState> => (await transport.invoke<{ workspace: WorkspaceState }>(IPC_CHANNELS.CANCEL_RESEARCH, { runId })).workspace,
     resumeResearch: async (runId: string): Promise<WorkspaceState> => (await transport.invoke<{ workspace: WorkspaceState }>(IPC_CHANNELS.RESUME_RESEARCH, { runId })).workspace,
-    selectProblems: (payload: { threadId: string; problemIds: string[]; userProblem: string | null }): Promise<WorkspaceState> =>
+    selectProblems: (payload: { threadId: string; problemIds: string[]; userProblem: string | null; model: import("./schemas").ModelRef; reasoningEffort: string }): Promise<WorkspaceState> =>
       transport.invoke(IPC_CHANNELS.SELECT_PROBLEMS, SelectProblemsSchema.parse(payload)),
     exportResearch: (threadId: string): Promise<{ cancelled: true } | { cancelled: false; file: string }> =>
       transport.invoke(IPC_CHANNELS.EXPORT_RESEARCH, ExportResearchRequestSchema.parse({ threadId })),

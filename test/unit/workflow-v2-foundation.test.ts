@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -20,26 +20,76 @@ import {
   WORKFLOW_V2_STAGE_IDS,
   WORKFLOW_V2_STAGE_REGISTRY,
   WORKFLOW_VERSION_V2,
+  assertWorkflowV2SolutionsSemantics,
+  parseWorkflowV2StageOutput,
 } from "../../src/core/stages";
 import { ProviderFailure, type StructuredModelClient, type StructuredStageRequest } from "../../src/providers/structured";
 import { deriveJsonSchema } from "../../src/shared/json-schema";
 import { WorkflowV2SolutionOptionSchema } from "../../src/shared/structured-output-schemas";
 
 const directories: string[] = [];
+const bundledPromptDir = join(import.meta.dir, "../../prompts");
+
+beforeEach(() => {
+  configurePromptPaths({ bundledDir: bundledPromptDir, overrideDir: null });
+});
 
 afterEach(() => {
+  configurePromptPaths({ bundledDir: bundledPromptDir, overrideDir: null });
   while (directories.length > 0) rmSync(directories.pop()!, { recursive: true, force: true });
 });
 
 describe("workflow v2 foundation", () => {
+  test("requires citations for evidenced startup gaps and keeps cited background hypothetical", () => {
+    const startupOption = {
+      ...option(),
+      startupOpportunity: {
+        opportunityType: "startup-opportunity" as const,
+        payingCustomerSegment: "Repair shops",
+        trigger: "A supplier return becomes overdue",
+        existingSubstitute: "Spreadsheet follow-up",
+        gapAssessment: { kind: "evidenced" as const, description: "Returns lack follow-up", evidenceIds: [] },
+        smallestSellableWorkflow: "Track one return balance",
+        firstCustomerRoute: "Local repair associations",
+        disconfirmingDemandTest: "Five shops decline a paid manual pilot",
+      },
+    };
+    const suppliedEvidence = [
+      { sourceId: "support-1", content: { categories: ["supporting"] } },
+      { sourceId: "contrary-1", content: { categories: ["contrary"] } },
+    ];
+    expect(() => assertWorkflowV2SolutionsSemantics({ options: [startupOption] }, suppliedEvidence))
+      .toThrow("must cite at least one");
+    const citedHypothesis = {
+      ...startupOption,
+      startupOpportunity: {
+        ...startupOption.startupOpportunity,
+        gapAssessment: { kind: "hypothesis" as const, description: "Follow-up may be missed", evidenceIds: ["support-1"] },
+      },
+    };
+    expect(() => assertWorkflowV2SolutionsSemantics({ options: [citedHypothesis] }, suppliedEvidence))
+      .not.toThrow();
+  });
+
   test("registers exactly seven typed stages independent of config version", () => {
     expect(Object.keys(WORKFLOW_V2_STAGE_REGISTRY).sort()).toEqual([...WORKFLOW_V2_STAGE_IDS].sort());
     expect(WORKFLOW_V2_STAGE_IDS).toHaveLength(7);
     expect(WORKFLOW_VERSION_V2).toBe(2);
     expect(WORKFLOW_V2_STAGE_REGISTRY.solutions.schema).toBeDefined();
+    expect(WORKFLOW_V2_STAGE_REGISTRY["factor-harvest"].deadlineMs).toBe(300_000);
+    expect(WORKFLOW_V2_STAGE_REGISTRY["problem-candidates"].deadlineMs).toBe(300_000);
+    expect(WORKFLOW_V2_STAGE_REGISTRY["problem-kill"].deadlineMs).toBe(300_000);
     for (const stage of Object.values(WORKFLOW_V2_STAGE_REGISTRY)) {
       expect(() => deriveJsonSchema(stage.schema)).not.toThrow();
     }
+    expect(deriveJsonSchema(WORKFLOW_V2_STAGE_REGISTRY["problem-kill"].schema).type).toBe("object");
+    expect(parseWorkflowV2StageOutput("problem-kill", 1, {
+      verdict: "insufficient-evidence",
+      verdictReason: "The saved evidence did not settle the claim.",
+      verdictSourceIds: [],
+      unresolvedAssumptions: ["Buyer fit was not assessed."],
+      wouldChangeConclusion: ["A firsthand intended-buyer account."],
+    })).toMatchObject({ verdict: "insufficient-evidence" });
     expect(() => WorkflowV2SolutionOptionSchema.parse(option({ mechanism: " " }))).toThrow();
   });
 
@@ -222,24 +272,27 @@ describe("workflow v2 foundation", () => {
         affects: "operators",
         rationale: "Shared state removes duplicate entry",
       }],
-      risks: [{ riskId: "risk-1", description: "The source blocks access", whyDecisive: "No state can sync" }],
       proposedResponses: [{
         riskIds: ["risk-1"],
         approach: "Test a manual export",
         cost: "One hour",
         failsIf: "Exports omit claim state",
       }],
-      unknowns: ["Export completeness"],
+      additionalUnknowns: ["Export completeness"],
       experiment: {
         question: "Does one export contain enough state?",
         method: "Inspect ten recent claims",
         cost: "One hour",
         passCriterion: "At least nine contain all required fields",
         failCriterion: "Two or more omit a required field",
+        inconclusiveCriterion: "The export cannot be obtained",
       },
     }, (request) => {
       capturedEvidence = JSON.stringify(request.evidence);
-    }));
+    }), {
+      risks: [{ riskId: "risk-1", description: "The source blocks access", whyDecisive: "No state can sync" }],
+      unknowns: [],
+    });
 
     expect(capturedEvidence).toContain(selected.mechanism);
     expect(capturedEvidence).toContain("spreadsheet failed");

@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { evaluateSelectedOptionRisk, analyzeSelectedOption, type WorkflowV2DevelopmentContext } from "../../src/core/development";
+import { evaluateSelectedOptionRisk, analyzeSelectedOption, produceDevelopmentOptions, reassessSelectedOption, reassessSelectedOptionRisk, type WorkflowV2DevelopmentContext } from "../../src/core/development";
 import type { StructuredModelClient } from "../../src/providers/structured";
 import { developmentProjection } from "../../src/shared/development-projection";
 
@@ -39,15 +39,87 @@ test("rejects duplicate risk identities without an app-owned retry", async () =>
 });
 
 test("retains independently evaluated risks and unknowns when analysis omits them", async () => {
-  const analysis = { consequences: [], risks: [], proposedResponses: [], unknowns: [], experiment: { question: "Is state current?", method: "Check ten claims", cost: "One hour", passCriterion: "Ten agree", failCriterion: "Any stale" } };
+  const analysis = { consequences: [], proposedResponses: [], additionalUnknowns: ["Operator access"], experiment: { question: "Is state current?", method: "Check ten claims", cost: "One hour", passCriterion: "Ten agree", failCriterion: "Any stale", inconclusiveCriterion: "The sample cannot be retrieved" } };
   let calls = 0;
-  const result = await analyzeSelectedOption(context, option, dependencies(analysis, () => { calls++; }), evaluation);
+  const result = await analyzeSelectedOption(context, option, dependencies(analysis, evidence => {
+    calls++;
+    expect(JSON.stringify(evidence)).toContain("scraply:risk-evaluation");
+  }), evaluation);
   expect(result.analysis.risks).toEqual(evaluation.risks);
-  expect(result.analysis.unknowns).toEqual(evaluation.unknowns);
+  expect(result.analysis.unknowns).toEqual([...evaluation.unknowns, "Operator access"]);
+  expect(result.request.jsonSchema).not.toHaveProperty("properties.risks");
+  expect(result.request.jsonSchema).not.toHaveProperty("properties.unknowns");
+  expect(result.request.deadlineMs).toBe(300_000);
   expect(calls).toBe(1);
+});
+
+test("reassesses only against follow-up evidence and keeps authoritative risk records exact", async () => {
+  const beyondLimit = "UNBOUNDED-FOLLOW-UP-MARKER";
+  const followUp = [{ sourceId: "follow-up-factor", content: { quote: `${"x".repeat(30_000)}${beyondLimit}` } }];
+  const riskResult = await reassessSelectedOptionRisk(context, option, evaluation, followUp, dependencies({
+    affectedRisks: [{ riskId: "stale", effect: "weakened", rationale: "The refresh is bounded" }],
+    newRisks: [{ riskId: "permissions", description: "Operators cannot read exports", whyDecisive: "The check cannot run" }],
+    additionalUnknowns: ["Export permissions"],
+  }, evidence => {
+    const serialized = JSON.stringify(evidence);
+    expect(serialized).toContain("follow-up-factor");
+    expect(serialized).toContain("scraply:original-risk-evaluation");
+    expect(serialized).not.toContain(beyondLimit);
+  }));
+  const draft = { consequences: [], proposedResponses: [], additionalUnknowns: [], experiment: {
+    question: "Can operators read current state?", method: "Check ten claims", cost: "One hour",
+    passCriterion: "Ten are current", failCriterion: "Two are stale", inconclusiveCriterion: "Permissions prevent inspection",
+  } };
+  const result = await reassessSelectedOption(context, option, {
+    consequences: [], risks: evaluation.risks, proposedResponses: [], unknowns: evaluation.unknowns,
+    experiment: { ...draft.experiment },
+  }, evaluation, riskResult.reassessment, followUp, dependencies(draft, evidence => {
+    const serialized = JSON.stringify(evidence);
+    expect(serialized).toContain("scraply:original-decision-analysis");
+    expect(serialized).toContain("follow-up-factor");
+    expect(serialized).not.toContain(beyondLimit);
+  }));
+  expect(result.analysis.risks).toEqual([...evaluation.risks, ...riskResult.reassessment.newRisks]);
+  expect(result.analysis.risks[0]).toEqual(evaluation.risks[0]);
 });
 
 test("retains the historical call projection for saved v1 results", () => {
   expect(developmentProjection(3)).toBe(14);
   expect(developmentProjection(5)).toBe(22);
+});
+
+test("requires startup details and passes prior project mechanisms without making them evidence", async () => {
+  const startup = {
+    opportunityType: "startup-opportunity" as const,
+    payingCustomerSegment: "Independent claims operators",
+    trigger: "A duplicate filing is discovered",
+    existingSubstitute: "Check the shared claims tool manually",
+    gapAssessment: { kind: "hypothesis" as const, description: "Manual checks may be skipped under time pressure", evidenceIds: [] },
+    smallestSellableWorkflow: "Detect and block a duplicate filing",
+    firstCustomerRoute: "Interview operators in two claims communities",
+    disconfirmingDemandTest: "Reject demand if ten operators decline a manual paid pilot",
+  };
+  const { id: _id, problemId: _problemId, ...plainOption } = option;
+  void _id;
+  void _problemId;
+  const startupContext = {
+    ...context,
+    priorProjectMechanisms: [{ mechanism: "Shared-state reminder", problemStatement: "Claims are filed twice" }],
+    priorProjectMechanismsOmittedCount: 7,
+  };
+  const result = await produceDevelopmentOptions(startupContext, {
+    ...dependencies({ options: [{ ...plainOption, startupOpportunity: startup }] }),
+    explorationPurpose: "startup-opportunities",
+    ideaCount: 1,
+  });
+  expect(result.options[0]?.startupOpportunity).toEqual(startup);
+  const requestInputs = result.request.workOrder.inputs as { explorationPurpose: string; evidenceSourceIds: string[] };
+  expect(requestInputs).toMatchObject({ explorationPurpose: "startup-opportunities" });
+  expect(JSON.stringify(result.request.evidence[0]?.content)).toContain("Shared-state reminder");
+  expect(result.request.evidence[0]?.content).toMatchObject({ priorProjectMechanismsOmittedCount: 7 });
+  expect(requestInputs.evidenceSourceIds).toEqual([]);
+
+  await expect(produceDevelopmentOptions(startupContext, {
+    ...dependencies({ options: [plainOption] }), explorationPurpose: "startup-opportunities", ideaCount: 1,
+  })).rejects.toMatchObject({ code: "schema" });
 });

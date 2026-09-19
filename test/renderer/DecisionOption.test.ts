@@ -13,7 +13,7 @@ describe("DecisionOption interactions", () => {
     installDetailApi(vi.fn().mockResolvedValue(saved));
     const props = handlers(idea);
     const view = render(DecisionOption, props);
-    await fireEvent.click(view.getByRole("button", { name: "Supplier reliability ledger" }));
+    await fireEvent.click(view.getByRole("button", { name: "Compare observed delivery windows." }));
     const supporting = await view.findByRole("region", { name: "Sources supporting this option" });
     await fireEvent.click(within(supporting).getByRole("link", { name: "Manual checklist" }));
     expect(props.onOpenSource).toHaveBeenCalledWith("https://example.com/checklist");
@@ -30,7 +30,7 @@ describe("DecisionOption interactions", () => {
     const props = handlers(first);
     const view = render(DecisionOption, props);
 
-    await fireEvent.click(view.getByRole("button", { name: "Supplier reliability ledger" }));
+    await fireEvent.click(view.getByRole("button", { name: "Compare observed delivery windows." }));
     const decision = await view.findByLabelText("Your decision") as HTMLTextAreaElement;
     const observed = view.getByLabelText("Observed test result") as HTMLTextAreaElement;
     await fireEvent.input(decision, { target: { value: "Draft before refresh" } });
@@ -44,9 +44,9 @@ describe("DecisionOption interactions", () => {
     expect(decision.value).toBe("Draft before refresh");
     expect(observed.value).toBe("Edit during refresh");
 
-    await fireEvent.click(view.getByRole("button", { name: "Supplier reliability ledger" }));
+    await fireEvent.click(view.getByRole("button", { name: "Compare observed delivery windows." }));
     await waitFor(() => expect(view.queryByLabelText("Your decision")).toBeNull());
-    await fireEvent.click(view.getByRole("button", { name: "Supplier reliability ledger" }));
+    await fireEvent.click(view.getByRole("button", { name: "Compare observed delivery windows." }));
     expect((await view.findByLabelText("Your decision") as HTMLTextAreaElement).value).toBe("Draft before refresh");
     expect((view.getByLabelText("Observed test result") as HTMLTextAreaElement).value).toBe("Edit during refresh");
   });
@@ -58,16 +58,20 @@ describe("DecisionOption interactions", () => {
     let saveCompleted = false;
     const onSave = vi.fn().mockImplementation(async () => { await pendingSave.promise; saveCompleted = true; });
     const view = render(DecisionOption, { ...handlers(idea), onSave });
-    await fireEvent.click(view.getByRole("button", { name: "Supplier reliability ledger" }));
+    await fireEvent.click(view.getByRole("button", { name: "Compare observed delivery windows." }));
     const decision = await view.findByLabelText("Your decision") as HTMLTextAreaElement;
+    const outcome = view.getByLabelText("Experiment outcome") as HTMLSelectElement;
     await fireEvent.input(decision, { target: { value: "Submitted draft" } });
+    await fireEvent.change(outcome, { target: { value: "pass" } });
     await fireEvent.click(view.getByRole("button", { name: "Save decision and result" }));
     await fireEvent.input(decision, { target: { value: "Newer unsaved draft" } });
+    await fireEvent.change(outcome, { target: { value: "inconclusive" } });
     pendingSave.resolve();
 
     await waitFor(() => expect(saveCompleted).toBe(true));
-    expect(onSave).toHaveBeenCalledWith(idea.id, "Submitted draft", "");
+    expect(onSave).toHaveBeenCalledWith(idea.id, "Submitted draft", "", "pass");
     expect(decision.value).toBe("Newer unsaved draft");
+    expect(outcome.value).toBe("inconclusive");
     expect(view.queryByText("Saved", { exact: true })).toBeNull();
   });
 
@@ -77,28 +81,82 @@ describe("DecisionOption interactions", () => {
     const onEvidenceFollowUp = vi.fn().mockResolvedValue(undefined);
     installDetailApi(vi.fn().mockResolvedValue(detail(available, "", "")));
     const availableView = render(DecisionOption, { ...handlers(available), onEvidenceFollowUp });
-    await fireEvent.click(availableView.getByRole("button", { name: "Supplier reliability ledger" }));
+    await fireEvent.click(availableView.getByRole("button", { name: "Compare observed delivery windows." }));
     await fireEvent.input(await availableView.findByLabelText("Question"), { target: { value: "Which suppliers publish arrival histories?" } });
     await fireEvent.click(availableView.getByRole("button", { name: "Check evidence" }));
     expect(onEvidenceFollowUp).toHaveBeenCalledWith(available.runId, "Which suppliers publish arrival histories?");
 
     availableView.unmount();
     const exhausted = option("follow-up-exhausted");
+    exhausted.canReassessEvidence = false;
     const exhaustedDetail = detail(exhausted, "", "");
+    exhaustedDetail.canReassessEvidence = true;
     exhaustedDetail.evidenceFollowUp = {
       status: "completed",
       question: "Which suppliers publish arrival histories?",
       sources: [],
       factors: [{ ...exhaustedDetail.factors[0]!, id: "follow-up-factor", quote: "Three suppliers publish dated arrival records.", sourceTitle: "Supplier delivery study" }],
       error: null,
+      reassessmentStatus: null,
+      riskReassessment: null,
+      reassessmentAnalysis: null,
+      reassessmentError: null,
     };
     installDetailApi(vi.fn().mockResolvedValue(exhaustedDetail));
-    const exhaustedView = render(DecisionOption, { ...handlers(exhausted), onEvidenceFollowUp });
-    await fireEvent.click(exhaustedView.getByRole("button", { name: "Supplier reliability ledger" }));
+    const onEvidenceReassessment = vi.fn().mockResolvedValue(undefined);
+    const exhaustedView = render(DecisionOption, { ...handlers(exhausted), onEvidenceFollowUp, onEvidenceReassessment });
+    await fireEvent.click(exhaustedView.getByRole("button", { name: "Compare observed delivery windows." }));
     expect(await exhaustedView.findByText("Three suppliers publish dated arrival records.")).toBeTruthy();
     expect(exhaustedView.getByRole("link", { name: "Supplier delivery study" })).toBeTruthy();
     expect(exhaustedView.getByText("This option has used its one evidence follow-up.")).toBeTruthy();
     expect(exhaustedView.queryByRole("button", { name: "Check evidence" })).toBeNull();
+    await fireEvent.click(exhaustedView.getByRole("button", { name: "Reassess with new evidence" }));
+    expect(onEvidenceReassessment).toHaveBeenCalledWith(exhausted.runId);
+  });
+
+  test("labels reassessed risk changes without rendering risks twice", async () => {
+    const idea = option("risk-reassessment");
+    const saved = detail(idea, "", "");
+    const existingRisk = {
+      riskId: "delivery-variance",
+      description: "Existing delivery variance",
+      whyDecisive: "Wide variance can make estimates misleading.",
+    };
+    const newRisk = {
+      riskId: "supplier-dependency",
+      description: "New supplier dependency",
+      whyDecisive: "The follow-up found that one supplier controls the data feed.",
+    };
+    saved.decisionAnalysis = { ...saved.decisionAnalysis!, risks: [existingRisk] };
+    saved.evidenceFollowUp = {
+      status: "completed",
+      question: "Who controls the delivery data?",
+      sources: [],
+      factors: [],
+      error: null,
+      reassessmentStatus: "completed",
+      riskReassessment: {
+        affectedRisks: [],
+        newRisks: [newRisk],
+        additionalUnknowns: [],
+      },
+      reassessmentAnalysis: {
+        ...saved.decisionAnalysis,
+        risks: [existingRisk, newRisk],
+      },
+      reassessmentError: null,
+    };
+    installDetailApi(vi.fn().mockResolvedValue(saved));
+    const view = render(DecisionOption, handlers(idea));
+
+    await fireEvent.click(view.getByRole("button", { name: "Compare observed delivery windows." }));
+    const summary = await view.findByText("Reassessment with new evidence");
+    const reassessment = summary.closest("details");
+    expect(reassessment).toBeTruthy();
+    const reassessmentView = within(reassessment!);
+    expect(view.getAllByText("New risk: New supplier dependency")).toHaveLength(1);
+    expect(reassessmentView.getByText("Existing delivery variance")).toBeTruthy();
+    expect(reassessmentView.queryByText(/(?:New|Updated|Strengthened|Weakened) risk: Existing delivery variance/)).toBeNull();
   });
 });
 
@@ -124,7 +182,7 @@ function option(id: string): SolutionView {
 function detail(summary: SolutionView, userDecision: string, observedResult: string): SolutionView {
   return { ...summary, detailsLoaded: true, userDecision, observedResult, contrarySources: [], decisionAnalysis: {
     consequences: [{ description: "Narrower estimates", direction: "positive", affects: "Scheduling", rationale: "Histories replace guesses" }],
-    risks: [], proposedResponses: [], unknowns: [], experiment: { question: "Are estimates accurate?", method: "Track ten deliveries", cost: "One week", passCriterion: "Eight match", failCriterion: "Three miss" },
+    risks: [], proposedResponses: [], unknowns: [], experiment: { question: "Are estimates accurate?", method: "Track ten deliveries", cost: "One week", passCriterion: "Eight match", failCriterion: "Three miss", inconclusiveCriterion: "Fewer than ten deliveries arrive" },
   } };
 }
 

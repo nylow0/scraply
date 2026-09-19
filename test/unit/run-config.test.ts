@@ -15,6 +15,7 @@ describe("run configuration compatibility", () => {
       discoveryDepth: "standard",
       maxRunMinutes: 90,
       searchProvider: "exa",
+      explorationPurpose: "general-solutions",
       researchMode: "explore-market",
       knownProblem: "",
     });

@@ -1,11 +1,12 @@
 import { z } from "zod";
-import { ScopeSchema, WorkflowV2DecisionAnalysisOutputSchema, WorkflowV2RiskEvaluationOutputSchema } from "./structured-output-schemas";
+import { ScopeSchema, WorkflowV2CompatibleDecisionAnalysisOutputSchema, WorkflowV2RiskEvaluationOutputSchema, WorkflowV2RiskReassessmentOutputSchema } from "./structured-output-schemas";
 import {
   MessageSchema,
   ModelCatalogSchema,
   ModelOptionSchema,
   ModelRefSchema,
   ReasoningEffortSchema,
+  ExplorationPurposeSchema,
   RunConfigSchema,
   SourceDetailSchema as SharedSourceDetailSchema,
   ThreadSchema,
@@ -69,15 +70,22 @@ export const SelectOptionSchema = z.object({ threadId: EntityIdSchema, runId: En
 export const SaveDecisionSchema = z.object({
   threadId: EntityIdSchema, solutionId: EntityIdSchema,
   userDecision: z.string().trim().max(8_000), observedResult: z.string().trim().max(8_000),
+  experimentOutcome: z.enum(["not-run", "pass", "fail", "inconclusive"]).default("not-run"),
 }).strict();
 export const EvidenceFollowUpRequestSchema = z.object({
   threadId: EntityIdSchema, runId: EntityIdSchema,
   question: z.string().trim().min(1).max(500),
 }).strict();
+export const EvidenceReassessmentRequestSchema = z.object({
+  threadId: EntityIdSchema, runId: EntityIdSchema,
+}).strict();
 export const SelectProblemsSchema = z.object({
   threadId: EntityIdSchema,
   problemIds: z.array(EntityIdSchema),
   userProblem: z.string().trim().max(2_000).nullable(),
+  model: ModelRefSchema,
+  reasoningEffort: ReasoningEffortSchema,
+  explorationPurpose: ExplorationPurposeSchema.optional(),
 }).strict();
 export const ExportIdeasRequestSchema = z.object({ threadId: EntityIdSchema, format: z.enum(["markdown", "json"]).default("markdown") });
 export const ExportResearchRequestSchema = z.object({ threadId: EntityIdSchema });
@@ -103,6 +111,13 @@ export const PendingRunSchema = z.object({
   threadTitle: z.string(),
   status: z.enum(["queued", "running"]),
   problemId: EntityIdSchema.nullable(),
+  stage: z.enum(["queued", "searching", "extracting", "synthesizing-problems", "generating-options", "awaiting-option-selection", "evaluating-risk", "analyzing-option", "evidence-follow-up", "completed", "failed", "cancelled"]).optional(),
+  modelState: z.enum(["waiting", "dispatched", "accepted"]).nullable().optional(),
+  elapsedMs: z.number().int().nonnegative().optional(),
+  operationStartedAt: z.string().datetime().optional(),
+  operationElapsedMs: z.number().int().nonnegative().optional(),
+  lastSuccessfulCheckpoint: z.string().nullable().optional(),
+  queuePosition: z.number().int().positive().optional(),
 });
 export const SourceDetailSchema = SharedSourceDetailSchema;
 
@@ -111,6 +126,10 @@ export const FactorViewSchema = z.object({
   subject: z.string(), behavior: z.string(), quote: z.string(), sourceId: EntityIdSchema,
   sourceTitle: z.string(), sourceUrl: z.string().url(), harvestMode: z.enum(["domain", "audience"]),
   modelConfidence: z.number(), uncertainty: z.string().optional(),
+  sourceRole: z.enum(["firsthand", "measured", "vendor", "recommendation", "illustration", "unknown"]).optional(),
+  audienceFit: z.enum(["intended-buyer", "adjacent", "general", "unknown"]).optional(),
+  independentSourceKey: z.string().nullable().optional(), supportsDemand: z.boolean().optional(),
+  demandEvidenceUncertainty: z.string().optional(),
 });
 export const EvidenceFollowUpViewSchema = z.object({
   status: z.enum(["running", "completed", "failed"]),
@@ -118,13 +137,18 @@ export const EvidenceFollowUpViewSchema = z.object({
   sources: z.array(SourceDetailSchema),
   factors: z.array(FactorViewSchema),
   error: z.string().nullable(),
+  reassessmentStatus: z.enum(["running", "completed", "failed"]).nullable(),
+  riskReassessment: WorkflowV2RiskReassessmentOutputSchema.nullable(),
+  reassessmentAnalysis: WorkflowV2CompatibleDecisionAnalysisOutputSchema.nullable(),
+  reassessmentError: z.string().nullable(),
 });
 export const ProblemCandidateSchema = z.object({
   id: EntityIdSchema,
   statement: z.string(), whyItPersists: z.string(), affected: z.string(), scaleEstimate: z.string(),
   verdict: z.enum(["confirmed", "overstated", "already-solved", "insufficient-evidence", "attempted-and-failed", "user-asserted"]),
   verdictReason: z.string(), selected: z.boolean(), factors: z.array(FactorViewSchema),
-  singleHarvestModeWarning: z.boolean(),
+  intendedBuyerEvidenceFactorIds: z.array(EntityIdSchema), evidenceGap: z.string().nullable(),
+  singleHarvestModeWarning: z.boolean(), developmentCompleted: z.boolean(),
 });
 export const RejectedProblemCandidateSchema = z.object({
   id: EntityIdSchema,
@@ -153,14 +177,22 @@ export const SolutionViewSchema = z.object({
   runId: EntityIdSchema.optional(), selected: z.boolean().optional(), selectable: z.boolean().optional(),
   evidenceFollowUpStatus: z.enum(["running", "completed", "failed"]).optional(),
   canRequestEvidenceFollowUp: z.boolean().optional(),
+  canReassessEvidence: z.boolean().optional(),
   keyAssumption: z.string().optional(), whyCurrentApproachMaySuffice: z.string().optional(),
+  startupOpportunity: z.object({
+    opportunityType: z.enum(["startup-opportunity", "process-improvement", "incumbent-configuration"]),
+    payingCustomerSegment: z.string(), trigger: z.string(), existingSubstitute: z.string(),
+    gapAssessment: z.object({ kind: z.enum(["evidenced", "hypothesis"]), description: z.string(), evidenceIds: z.array(z.string()) }).strict(),
+    smallestSellableWorkflow: z.string(), firstCustomerRoute: z.string(), disconfirmingDemandTest: z.string(),
+  }).strict().optional(),
   unknowns: z.array(z.string()).optional(), supportingEvidenceIds: z.array(z.string()).optional(), contraryEvidenceIds: z.array(z.string()).optional(),
   contrarySources: z.array(z.object({ id: EntityIdSchema, title: z.string(), url: z.string().url(), text: z.string() })).optional(),
-  decisionAnalysis: WorkflowV2DecisionAnalysisOutputSchema.nullable().optional(),
+  decisionAnalysis: WorkflowV2CompatibleDecisionAnalysisOutputSchema.nullable().optional(),
   riskEvaluation: WorkflowV2RiskEvaluationOutputSchema.nullable().optional(),
   riskEvaluationCriteria: z.string().optional(),
   evidenceFollowUp: EvidenceFollowUpViewSchema.optional(),
-  userDecision: z.string().nullable().optional(), observedResult: z.string().nullable().optional(), detailRevision: z.string().optional(),
+  userDecision: z.string().nullable().optional(), observedResult: z.string().nullable().optional(),
+  experimentOutcome: z.enum(["not-run", "pass", "fail", "inconclusive"]).optional(), detailRevision: z.string().optional(),
   id: EntityIdSchema, problemId: EntityIdSchema, problemStatement: z.string(), problemVerdict: ProblemCandidateSchema.shape.verdict,
   factors: z.array(FactorViewSchema),
   mechanism: z.string(), description: z.string(), respectsOffLimits: z.boolean(), respectsOffLimitsWhy: z.string(),
@@ -189,12 +221,20 @@ export const RunUsageSchema = z.object({
 }).strict();
 export const LatestResearchRunSchema = z.object({
   workflowVersion: z.union([z.literal(1), z.literal(2)]).optional(),
+  runConfig: RunConfigSchema.nullable().optional(),
   awaitingSelection: z.boolean().optional(), interrupted: z.boolean().optional(),
   canResume: z.boolean().optional(), resumeBlockedReason: z.string().optional(),
   runId: EntityIdSchema, status: z.enum(["queued", "running", "completed", "failed", "cancelled"]),
   problemId: EntityIdSchema.nullable(), codexCalls: z.number().int().nonnegative(), searches: z.number().int().nonnegative(),
   projectedCodexCalls: z.number().int().nonnegative(), projectedSearches: z.number().int().nonnegative(),
   lastActivity: z.string().nullable(), completionReason: z.string().nullable().optional(), usage: RunUsageSchema.optional(),
+  stage: PendingRunSchema.shape.stage,
+  modelState: PendingRunSchema.shape.modelState,
+  elapsedMs: PendingRunSchema.shape.elapsedMs,
+  operationStartedAt: PendingRunSchema.shape.operationStartedAt,
+  operationElapsedMs: PendingRunSchema.shape.operationElapsedMs,
+  lastSuccessfulCheckpoint: PendingRunSchema.shape.lastSuccessfulCheckpoint,
+  queuePosition: PendingRunSchema.shape.queuePosition,
 });
 
 export const WorkspaceStateSchema = z.object({
@@ -210,7 +250,10 @@ export const WorkspaceStateSchema = z.object({
 
 export const ResearchEventSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("run-started"), runId: EntityIdSchema, threadId: EntityIdSchema, problemId: EntityIdSchema.nullable() }),
-  z.object({ type: z.literal("run-progress"), runId: EntityIdSchema, threadId: EntityIdSchema, message: z.string(), codexCalls: z.number().int(), searches: z.number().int(), usage: RunUsageSchema.optional() }),
+  z.object({ type: z.literal("run-progress"), runId: EntityIdSchema, threadId: EntityIdSchema, message: z.string(), codexCalls: z.number().int(), searches: z.number().int(), usage: RunUsageSchema.optional(),
+    stage: PendingRunSchema.shape.stage, modelState: PendingRunSchema.shape.modelState,
+    elapsedMs: PendingRunSchema.shape.elapsedMs, operationStartedAt: PendingRunSchema.shape.operationStartedAt,
+    operationElapsedMs: PendingRunSchema.shape.operationElapsedMs, lastSuccessfulCheckpoint: PendingRunSchema.shape.lastSuccessfulCheckpoint }),
   z.object({ type: z.literal("run-resumed"), runId: EntityIdSchema, threadId: EntityIdSchema }),
   z.object({ type: z.literal("run-completed"), runId: EntityIdSchema, threadId: EntityIdSchema, problemId: EntityIdSchema.nullable() }),
   z.object({ type: z.literal("run-cancelled"), runId: EntityIdSchema, threadId: EntityIdSchema }),
@@ -238,6 +281,7 @@ export type RunUsage = z.infer<typeof RunUsageSchema>;
 export const IPC_CHANNELS = {
   APP_COMMAND: "scraply:app-command", SHOW_APP_MENU: "scraply:show-app-menu", DISCARD_IDEA: "scraply:discard-idea",
   SELECT_OPTION: "scraply:select-option", SAVE_DECISION: "scraply:save-decision", EVIDENCE_FOLLOW_UP: "scraply:evidence-follow-up",
+  EVIDENCE_REASSESSMENT: "scraply:evidence-reassessment",
   GET_VALIDATION: "scraply:get-validation", RETRY_CONNECTION: "scraply:retry-connection",
   OPEN_DATA_FOLDER: "scraply:open-data-folder", OPEN_LOGS_FOLDER: "scraply:open-logs-folder",
   GET_WORKSPACE: "scraply:get-workspace", CREATE_THREAD: "scraply:create-thread", SELECT_THREAD: "scraply:select-thread",

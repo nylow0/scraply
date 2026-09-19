@@ -19,6 +19,7 @@ import {
   WorkflowV2Repository,
 } from "../../src/db/repositories/workflow-v2";
 import { deriveJsonSchema } from "../../src/shared/json-schema";
+import { FactorHarvestOutputSchema, ProblemCandidatesOutputSchema } from "../../src/shared/structured-output-schemas";
 import { WorkflowExecution } from "../../src/core/workflow-execution";
 import { configurePromptPaths } from "../../src/core/prompts";
 import { discoverProblems, harvestFactors, type HarvestedFactor, type HarvestedSource } from "../../src/core/discovery";
@@ -46,6 +47,7 @@ describe("workflow v2 persistence", () => {
         : { factors: [factor, { ...factor, quote: "Students do submit their assignments on time" }, { ...factor, sourceId: "invented" }] };
       return { output: request.schema.parse(output), metadata: {
         model: request.model, usage: { status: "unknown" }, latencyMs: 1, repairCount: 0, providerRequestIds: [], attempts: [],
+        prompt: { id: "scraply.stage-worker.v1", sha256: createHash("sha256").update("runtime-prompt").digest("hex") },
       } };
     } };
     try {
@@ -104,9 +106,23 @@ describe("workflow v2 persistence", () => {
       const snapshots = new Map(tables.map(table => [table, source.db.prepare(`SELECT * FROM ${table}`).all()]));
       for (const table of tables) {
         for (const row of snapshots.get(table)!) {
-          // The v19 fixture predates the archive column added in v22.
+          // The v19 fixture predates archive, evidence classification, startup and reassessment columns.
+          const migration23Columns = new Set([
+            "source_role", "audience_fit", "independent_source_key", "supports_demand", "demand_evidence_uncertainty",
+            "intended_buyer_evidence_factor_ids_json", "evidence_gap",
+          ]);
           const values = Object.entries(row as Record<string, string | number | null>)
-            .filter(([column]) => table !== "threads" || column !== "archived_at");
+            .filter(([column]) => {
+              if (migration23Columns.has(column)) return false;
+              if (table === "threads") return column !== "archived_at";
+              if (table === "solutions") return column !== "startup_opportunity_json";
+              if (table === "decision_analyses") return column !== "experiment_outcome";
+              if (table === "evidence_follow_ups") return ![
+                "reassessment_status", "risk_reassessment_json", "reassessment_analysis_json",
+                "risk_generation_id", "analysis_generation_id", "reassessment_error", "reassessed_at",
+              ].includes(column);
+              return true;
+            });
           legacy.prepare(`INSERT INTO ${table} (${values.map(([key]) => key).join(",")}) VALUES (${values.map(() => "?").join(",")})`).run(...values.map(([, value]) => value));
         }
       }
@@ -175,6 +191,103 @@ describe("workflow v2 persistence", () => {
     } finally { client.close(); }
   });
 
+  test("keeps older project mechanisms visible after several long option runs", () => {
+    configurePromptPaths({ bundledDir: join(process.cwd(), "prompts"), overrideDir: null });
+    const client = database();
+    const now = new Date().toISOString();
+    const learnerBlocker = "Collect learner setup blockers, keep each case open, and require learner confirmation before closure.";
+    try {
+      client.db.prepare("UPDATE research_runs SET status = 'completed' WHERE id = 'run-v2'").run();
+      client.db.prepare(`
+        INSERT INTO scopes (
+          id, research_run_id, title, audience, domain, observations, off_limits_json, created_at, updated_at
+        ) VALUES ('history-scope', 'run-discovery', 'Educator tools', 'Independent educators', 'Course operations', '', '[]', ?, ?)
+      `).run(now, now);
+      for (let problemIndex = 0; problemIndex < 5; problemIndex += 1) {
+        const problemId = `history-problem-${problemIndex}`;
+        const runId = `history-run-${problemIndex}`;
+        client.db.prepare(`
+          INSERT INTO problems (
+            id, discovery_run_id, statement, why_it_persists, affected, scale_estimate,
+            verdict, verdict_reason, verdict_source_ids_json, created_at
+          ) VALUES (?, 'run-discovery', ?, '', '', '', 'user-asserted', 'Selected by the user.', '[]', ?)
+        `).run(problemId, `Long supplementary hypothesis ${problemIndex}: ${"payment, enrollment, access, and administration. ".repeat(30)}`, now);
+        client.db.prepare(`
+          INSERT INTO research_runs (
+            id, thread_id, status, config_json, workflow_version, problem_id, created_at, updated_at
+          ) VALUES (?, 'thread-1', 'completed', ?, 2, ?, ?, ?)
+        `).run(runId, JSON.stringify(DEFAULT_RUN_CONFIG), problemId, now, now);
+      }
+      for (let optionIndex = 0; optionIndex < 29; optionIndex += 1) {
+        const problemIndex = Math.floor(optionIndex / 6);
+        const mechanism = optionIndex === 0
+          ? learnerBlocker
+          : `Track enrollment exception ${optionIndex}. ${"Record each state transition and require explicit confirmation. ".repeat(20)}`;
+        client.db.prepare(`
+          INSERT INTO solutions (
+            id, problem_id, mechanism, description, respects_off_limits, respects_off_limits_why,
+            created_at, research_run_id, option_position
+          ) VALUES (?, ?, ?, ?, 1, 'Within constraints.', ?, ?, ?)
+        `).run(
+          `history-solution-${optionIndex}`,
+          `history-problem-${problemIndex}`,
+          mechanism,
+          `Compact option ${optionIndex}: ${"A deliberately long production-shaped description. ".repeat(10)}`,
+          now,
+          `history-run-${problemIndex}`,
+          optionIndex % 6,
+        );
+      }
+      client.db.prepare(`
+        INSERT INTO research_runs (
+          id, thread_id, status, config_json, workflow_version, problem_id, created_at, updated_at
+        ) VALUES ('history-current', 'thread-1', 'running', ?, 2, 'problem-1', ?, ?)
+      `).run(JSON.stringify(DEFAULT_RUN_CONFIG), now, now);
+
+      const context = new WorkflowExecution(client, "history-current").developmentContext("problem-1");
+      expect(context.priorProjectMechanisms).toHaveLength(29);
+      expect(context.priorProjectMechanisms?.some((item) => item.mechanism.includes(learnerBlocker))).toBe(true);
+      expect(context.priorProjectMechanismsOmittedCount).toBe(0);
+      expect(JSON.stringify(context.priorProjectMechanisms).length).toBeLessThanOrEqual(24_000);
+
+      client.db.prepare("UPDATE research_runs SET status = 'completed' WHERE id = 'history-current'").run();
+      client.db.prepare(`
+        INSERT INTO problems (
+          id, discovery_run_id, statement, why_it_persists, affected, scale_estimate,
+          verdict, verdict_reason, verdict_source_ids_json, created_at
+        ) VALUES ('overflow-problem', 'run-discovery', ?, '', '', '', 'user-asserted', 'Selected by the user.', '[]', ?)
+      `).run(`Another long hypothesis: ${"integration recovery and exception handling. ".repeat(30)}`, now);
+      client.db.prepare(`
+        INSERT INTO research_runs (
+          id, thread_id, status, config_json, workflow_version, problem_id, created_at, updated_at
+        ) VALUES ('overflow-run', 'thread-1', 'completed', ?, 2, 'overflow-problem', ?, ?)
+      `).run(JSON.stringify(DEFAULT_RUN_CONFIG), now, now);
+      for (let optionIndex = 0; optionIndex < 20; optionIndex += 1) {
+        client.db.prepare(`
+          INSERT INTO solutions (
+            id, problem_id, mechanism, description, respects_off_limits, respects_off_limits_why,
+            created_at, research_run_id, option_position
+          ) VALUES (?, 'overflow-problem', ?, ?, 1, 'Within constraints.', ?, 'overflow-run', ?)
+        `).run(
+          `overflow-solution-${optionIndex}`,
+          `Handle integration exception ${optionIndex}. ${"Record transitions and require operator confirmation. ".repeat(20)}`,
+          `Overflow option ${optionIndex}: ${"A deliberately long production-shaped description. ".repeat(10)}`,
+          now,
+          optionIndex,
+        );
+      }
+      client.db.prepare(`
+        INSERT INTO research_runs (
+          id, thread_id, status, config_json, workflow_version, problem_id, created_at, updated_at
+        ) VALUES ('overflow-current', 'thread-1', 'running', ?, 2, 'problem-1', ?, ?)
+      `).run(JSON.stringify(DEFAULT_RUN_CONFIG), now, now);
+      const overflow = new WorkflowExecution(client, "overflow-current").developmentContext("problem-1");
+      expect((overflow.priorProjectMechanisms?.length ?? 0) + (overflow.priorProjectMechanismsOmittedCount ?? 0)).toBe(49);
+      expect(overflow.priorProjectMechanismsOmittedCount).toBeGreaterThan(0);
+      expect(JSON.stringify(overflow.priorProjectMechanisms).length).toBeLessThanOrEqual(24_000);
+    } finally { client.close(); }
+  });
+
   test.each(["openrouter", "openai-subscription"])("uses each discovery stage's output ceiling for %s", async (providerId) => {
     configurePromptPaths({ bundledDir: join(process.cwd(), "prompts"), overrideDir: null });
     const client = database();
@@ -200,6 +313,136 @@ describe("workflow v2 persistence", () => {
     } finally { client.close(); }
   });
 
+  test("reuses a completed factor batch after interruption before the full harvest is persisted", async () => {
+    configurePromptPaths({ bundledDir: join(process.cwd(), "prompts"), overrideDir: null });
+    const client = database();
+    const stage = WORKFLOW_V2_STAGE_REGISTRY["factor-harvest"];
+    let providerCalls = 0;
+    const provider: StructuredModelClient = { async structuredCompletion(request) {
+      providerCalls += 1;
+      if (providerCalls > 1) throw new Error("Completed batch was sent to the provider again");
+      const output = request.schema.parse({ factors: [{
+        subject: "Operators", behavior: "repeat filing", quote: "Operators repeat filing.",
+        sourceId: "source", modelConfidence: 0.8, uncertainty: "One source",
+      }, {
+        subject: "Operators", behavior: "reconcile duplicates", quote: "Operators reconcile duplicate records.",
+        sourceId: "source", modelConfidence: 0.7, uncertainty: "One source",
+      }] });
+      const metadata = {
+        model: request.model, usage: { status: "unknown" as const }, latencyMs: 1, repairCount: 0,
+        providerRequestIds: [], attempts: [],
+        prompt: { id: "scraply.stage-worker.v1", sha256: createHash("sha256").update("runtime-prompt").digest("hex") },
+      };
+      const attempts = new GenerationAttemptRepository(client);
+      const prepared = attempts.prepare("run-v2", { ...request, deadlineMs: 120_000 });
+      attempts.markDispatched(prepared.id);
+      attempts.markAccepted(prepared.id, { compilerPrompt: metadata.prompt });
+      attempts.recordTerminal(prepared.id, {
+        status: "completed", terminalKind: "completed", output, attemptMetadata: metadata, usage: metadata.usage,
+      });
+      throw new Error("Process ended after recording the provider terminal");
+    } };
+    const request = (generationId: string, partitioned = false): StructuredStageRequest<unknown> => ({
+      generationId, stage: partitioned ? "factor-harvest:domain:source" : "factor-harvest:domain:source,other", model: { providerId: "test", modelId: "test" }, reasoningEffort: "high",
+      workOrder: { stage: partitioned ? "factor-harvest:domain:source" : "factor-harvest:domain:source,other", instruction: "Legacy instruction", goal: "Extract factors", inputs: { harvestMode: "domain", factorLimit: partitioned ? 1 : 15 }, requiredDecisions: [], definitionOfDone: [], constraints: [] },
+      evidence: [{
+        sourceId: partitioned ? "scraply:factor-harvest:domain:source" : "scraply:factor-harvest:domain:source,other",
+        content: {
+          scope: { title: "Filing", audience: "Operators" },
+          sources: partitioned ? [{ id: "source", text: "Operators repeat filing." }] : [{ id: "source", text: "Operators repeat filing." }, { id: "other", text: "Other evidence." }],
+        },
+      }], schema: FactorHarvestOutputSchema,
+      jsonSchema: deriveJsonSchema(FactorHarvestOutputSchema), repairPolicy: "one_retry", deadlineMs: stage.deadlineMs,
+    });
+    try {
+      await expect(new WorkflowExecution(client, "run-v2").discoveryClient(provider).structuredCompletion(request("first")))
+        .rejects.toThrow("Process ended after recording the provider terminal");
+
+      let rejectedReuseDispatches = 0;
+      const expectsFreshDispatch = async (candidate: StructuredStageRequest<unknown>) => {
+        const rejectingProvider: StructuredModelClient = { async structuredCompletion() {
+          rejectedReuseDispatches++;
+          throw new Error("Fresh provider dispatch");
+        } };
+        await expect(new WorkflowExecution(client, "run-v2").discoveryClient(rejectingProvider).structuredCompletion(candidate))
+          .rejects.toThrow("Fresh provider dispatch");
+      };
+      const smaller = request("resume-check", true);
+      await expectsFreshDispatch({
+        ...smaller,
+        stage: "factor-harvest:audience:source",
+        workOrder: { ...smaller.workOrder, stage: "factor-harvest:audience:source", inputs: { harvestMode: "audience", factorLimit: 1 } },
+      });
+      await expectsFreshDispatch({
+        ...smaller,
+        evidence: [{ ...smaller.evidence[0]!, content: { scope: { title: "Filing", audience: "Operators" }, sources: [{ id: "source", text: "Changed evidence." }] } }],
+      });
+      await expectsFreshDispatch({
+        ...smaller,
+        evidence: [{ ...smaller.evidence[0]!, content: { scope: { title: "Changed scope", audience: "Operators" }, sources: [{ id: "source", text: "Operators repeat filing." }] } }],
+      });
+      await expectsFreshDispatch({ ...smaller, evidence: [...smaller.evidence, { sourceId: "extra", content: { note: "Changed envelope" } }] });
+      await expectsFreshDispatch({
+        ...smaller,
+        stage: "factor-harvest:domain:missing",
+        workOrder: { ...smaller.workOrder, stage: "factor-harvest:domain:missing" },
+        evidence: [{ sourceId: "missing", content: { scope: { title: "Filing", audience: "Operators" }, sources: [{ id: "missing", text: "Different source." }] } }],
+      });
+
+      await expectsFreshDispatch({ ...smaller, model: { ...smaller.model, modelId: "different-model" } });
+      expect(rejectedReuseDispatches).toBe(6);
+
+      const resumed = new WorkflowExecution(client, "run-v2");
+      const recovered = await resumed.discoveryClient(provider).structuredCompletion(request("resume", true));
+
+      expect(providerCalls).toBe(1);
+      expect((recovered.output as { factors: unknown[] }).factors).toHaveLength(1);
+      expect(recovered.output).toEqual({ factors: [expect.objectContaining({
+        sourceRole: "unknown", audienceFit: "unknown", independentSourceKey: null, supportsDemand: false,
+        demandEvidenceUncertainty: "Not classified in the saved output.",
+      })] });
+      expect(resumed.withFactorUncertainty([{
+        subject: "Operators", behavior: "repeat filing", quote: "Operators repeat filing.", sourceId: "source",
+      }])).toEqual([{
+        subject: "Operators", behavior: "repeat filing", quote: "Operators repeat filing.", sourceId: "source",
+        uncertainty: "One source",
+      }]);
+    } finally { client.close(); }
+  });
+
+  test("recovers a completed problem-candidates attempt without another provider call", async () => {
+    configurePromptPaths({ bundledDir: join(process.cwd(), "prompts"), overrideDir: null });
+    const client = database();
+    const stage = WORKFLOW_V2_STAGE_REGISTRY["problem-candidates"];
+    const request: StructuredStageRequest<unknown> = {
+      generationId: "candidate-original", stage: "problem-candidates:batch-1", model: { providerId: "test", modelId: "test" }, reasoningEffort: "high",
+      workOrder: { stage: "problem-candidates", instruction: "Legacy instruction", goal: "Find problems", inputs: {}, requiredDecisions: [], definitionOfDone: [], constraints: [] },
+      evidence: [], schema: ProblemCandidatesOutputSchema, jsonSchema: deriveJsonSchema(ProblemCandidatesOutputSchema), repairPolicy: "one_retry", deadlineMs: stage.deadlineMs,
+    };
+    const output = stage.schema.parse({ problems: [{ statement: "Operators repeat filing.", whyItPersists: "Systems disagree.", affected: "Operators",
+      scaleEstimate: "Unknown", scaleBasisFactorId: null, factorIds: [], alternativeExplanations: [], unknowns: ["Frequency"] }] });
+    const metadata = { model: request.model, usage: { status: "unknown" as const }, latencyMs: 1, repairCount: 0, providerRequestIds: [], attempts: [],
+      prompt: { id: "scraply.stage-worker.v1", sha256: createHash("sha256").update("runtime-prompt").digest("hex") } };
+    try {
+      let providerCalls = 0;
+      const adapter = new WorkflowExecution(client, "run-v2").discoveryClient({ structuredCompletion: async (received) => {
+        providerCalls++;
+        if (providerCalls > 1) throw new Error("Provider must not be called twice");
+        const attempts = new GenerationAttemptRepository(client);
+        const prepared = attempts.prepare("run-v2", received);
+        attempts.markDispatched(prepared.id); attempts.markAccepted(prepared.id, { compilerPrompt: metadata.prompt });
+        attempts.recordTerminal(prepared.id, { status: "completed", terminalKind: "completed", output, attemptMetadata: metadata, usage: metadata.usage });
+        throw new Error("Process ended after recording the provider terminal");
+      } });
+      await expect(adapter.structuredCompletion(request)).rejects.toThrow("Process ended");
+      const recovered = await adapter.structuredCompletion({ ...request, generationId: "candidate-resume" });
+      expect(providerCalls).toBe(1);
+      expect(recovered.output).toEqual({ problems: [{ statement: "Operators repeat filing.", whyItPersists: "Systems disagree.", affected: "Operators",
+        scaleEstimate: "Unknown", scaleBasisFactorId: null, factorIds: [] }] });
+      expect(new WorkflowExecution(client, "run-v2").repository.findStageResult("run-v2", "problem-candidates", "batch-1")).not.toBeNull();
+    } finally { client.close(); }
+  });
+
   test.each([false, true])("assesses supplied supporting and contrary sources while rejecting invented citations (%s)", async (invented) => {
     await withDiscoveryFixture(async ({ execution, source }) => {
       const modelClient = discoveryModelClient((request) => {
@@ -211,6 +454,7 @@ describe("workflow v2 persistence", () => {
           verdict: "already-solved", verdictReason: "A manual alternative addresses the supplied observation.",
           verdictSourceIds: ["support", evidence.sources![0]!.id, ...(invented ? ["invented"] : [])],
           unresolvedAssumptions: [], wouldChangeConclusion: [],
+          intendedBuyerEvidenceFactorIds: [], evidenceGap: "No independent intended-buyer evidence.",
         };
       });
       const result = discoverProblems({ title: "Filing", audience: "Operators", domain: "Filing", observations: "", offLimits: [] }, [
@@ -238,7 +482,7 @@ describe("workflow v2 persistence", () => {
         if (request.stage !== "problem-candidates") assessments++;
         return request.stage === "problem-candidates"
           ? { problems: [{ ...candidate, statement: "Untraceable candidate", factorIds: ["typo"] }, candidate] }
-          : { verdict: "already-solved", verdictReason: "An existing option handles filing.", verdictSourceIds: ["support"], unresolvedAssumptions: [], wouldChangeConclusion: [] };
+          : { verdict: "already-solved", verdictReason: "An existing option handles filing.", verdictSourceIds: ["support"], unresolvedAssumptions: [], wouldChangeConclusion: [], intendedBuyerEvidenceFactorIds: [], evidenceGap: "No independent intended-buyer evidence." };
       });
       const result = await discoverProblems({ title: "Filing", audience: "Operators", domain: "Filing", observations: "", offLimits: [] }, [
         discoveryFactor(source),
@@ -382,6 +626,30 @@ describe("workflow v2 persistence", () => {
     client.close();
   });
 
+  test("persists startup opportunity details while keeping general options nullable", () => {
+    const client = database();
+    const repository = new WorkflowV2Repository(client);
+    const candidate = {
+      ...solution("startup-1"),
+      startupOpportunity: {
+        opportunityType: "startup-opportunity" as const,
+        payingCustomerSegment: "Independent claims operators",
+        trigger: "A duplicate claim is found",
+        existingSubstitute: "Manual shared-state check",
+        gapAssessment: { kind: "hypothesis" as const, description: "Operators may skip the check", evidenceIds: [] },
+        smallestSellableWorkflow: "Block one duplicate filing",
+        firstCustomerRoute: "Claims operator communities",
+        disconfirmingDemandTest: "Ten operators decline a paid manual pilot",
+      },
+    };
+    client.immediateTransaction(() => repository.saveSolutionOptions("run-v2", "problem-1", [candidate]));
+    const rows = client.db.prepare("SELECT id, startup_opportunity_json FROM solutions ORDER BY id").all() as Array<{ id: string; startup_opportunity_json: string | null }>;
+    expect(rows.map((row) => ({ id: row.id, startupOpportunity: JSON.parse(String(row.startup_opportunity_json)) })))
+      .toEqual([{ id: "startup-1", startupOpportunity: candidate.startupOpportunity }]);
+    expect(client.immediateTransaction(() => repository.saveSolutionOptions("run-v2", "problem-1", [candidate])).created).toBe(false);
+    client.close();
+  });
+
   test("rejects semantically invalid solution and decision checkpoints", () => {
     const client = database();
     const repository = new WorkflowV2Repository(client);
@@ -518,6 +786,44 @@ describe("workflow v2 persistence", () => {
     client.close();
   });
 
+  test("persists a separate evidence reassessment and permits retry only after failure", () => {
+    const client = database();
+    const followUps = new EvidenceFollowUpRepository(client);
+    const analysis = decisionAnalysis();
+    client.immediateTransaction(() => {
+      const workflow = new WorkflowV2Repository(client);
+      workflow.saveSolutionOptions("run-v2", "problem-1", [solution("solution-1")]);
+      workflow.selectSolution("run-v2", "solution-1");
+      const checkpoint = workflow.saveStageResult(decisionStageResult("solution-1", analysis));
+      workflow.saveDecisionAnalysis({ researchRunId: "run-v2", solutionId: "solution-1", stageResultId: checkpoint.id, analysis });
+      client.db.prepare("UPDATE research_runs SET status = 'completed' WHERE id = 'run-v2'").run();
+      followUps.request("run-v2", "solution-1", "Does evidence change the risk?");
+      followUps.markRunning("run-v2");
+      followUps.complete("run-v2", [], []);
+      followUps.beginReassessment("run-v2");
+      followUps.failReassessment("run-v2", "Provider unavailable");
+      followUps.beginReassessment("run-v2");
+      followUps.completeReassessment({
+        researchRunId: "run-v2",
+        riskReassessment: { affectedRisks: [], newRisks: [], additionalUnknowns: ["No firsthand account found"] },
+        analysis,
+        riskGenerationId: "risk-generation",
+        analysisGenerationId: "analysis-generation",
+      });
+    });
+    expect(followUps.find("run-v2")).toEqual(expect.objectContaining({
+      reassessmentStatus: "completed",
+      reassessmentAnalysis: analysis,
+      riskReassessment: { affectedRisks: [], newRisks: [], additionalUnknowns: ["No firsthand account found"] },
+    }));
+    expect(() => client.immediateTransaction(() => followUps.beginReassessment("run-v2")))
+      .toThrow("cannot overlap or replace");
+    const original = client.db.prepare("SELECT analysis_json FROM decision_analyses WHERE research_run_id = 'run-v2'")
+      .get() as { analysis_json: string };
+    expect(JSON.parse(original.analysis_json)).toEqual(analysis);
+    client.close();
+  });
+
   test("rejects changed schema, input, evidence, and context identities on checkpoint reuse", () => {
     const client = database();
     const repository = new WorkflowV2Repository(client);
@@ -563,10 +869,20 @@ async function withDiscoveryFixture(
 }
 
 function discoveryFactor(source: HarvestedSource, id = "factor", modelConfidence = 0.9): HarvestedFactor {
-  return {
+  const factor = {
     id, subject: "Operators", behavior: "repeat filing", quote: source.retrievedText,
     sourceId: source.id, harvestMode: "domain", modelConfidence, source,
   };
+  // Keep the fixture's checkpoint context fully JSON-shaped when optional evidence
+  // classification is absent from an older saved stage output.
+  return Object.assign(factor, {
+    uncertainty: null,
+    sourceRole: "unknown",
+    audienceFit: "unknown",
+    independentSourceKey: null,
+    supportsDemand: false,
+    demandEvidenceUncertainty: "Not classified in the saved output.",
+  }) as HarvestedFactor;
 }
 
 function discoveryModelClient(
@@ -584,6 +900,7 @@ function discoveryModelClient(
           repairCount: 0,
           providerRequestIds: [],
           attempts: [],
+          prompt: { id: "scraply.stage-worker.v1", sha256: createHash("sha256").update("fixture-runtime-prompt").digest("hex") },
         },
       };
     },
@@ -700,6 +1017,7 @@ function decisionAnalysis() {
       cost: "One hour",
       passCriterion: "Nine are complete",
       failCriterion: "Two are incomplete",
+      inconclusiveCriterion: "The export cannot be obtained",
     },
   };
 }

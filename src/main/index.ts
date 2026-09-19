@@ -13,6 +13,7 @@ import {
   CreateThreadRequestSchema,
   DeleteThreadRequestSchema,
   EvidenceFollowUpRequestSchema,
+  EvidenceReassessmentRequestSchema,
   ExportIdeasRequestSchema,
   ExportResearchRequestSchema,
   GetIdeaDetailRequestSchema,
@@ -41,6 +42,7 @@ import {
   type BackendSecrets,
 } from "../shared/backend-process";
 import { AppError } from "../shared/errors";
+import { bundleBrowserIdeaExport } from "../shared/browser-export";
 import { resolveRuntimeLaunch } from "../shared/runtime-artifact";
 import { createFileLogger, type FileLogger } from "./logging";
 import { createCredentialStore } from "./credential-store";
@@ -589,6 +591,7 @@ function registerIpc(): void {
   handle(IPC_CHANNELS.SELECT_OPTION, (body) => post("/research/select-option", SelectOptionSchema.parse(body)));
   handle(IPC_CHANNELS.SAVE_DECISION, (body) => post("/research/decision", SaveDecisionSchema.parse(body)));
   handle(IPC_CHANNELS.EVIDENCE_FOLLOW_UP, (body) => post("/research/evidence-follow-up", EvidenceFollowUpRequestSchema.parse(body)));
+  handle(IPC_CHANNELS.EVIDENCE_REASSESSMENT, (body) => post("/research/evidence-reassessment", EvidenceReassessmentRequestSchema.parse(body)));
   handle(IPC_CHANNELS.EXPORT_RESEARCH, async (body) => {
     const payload = ExportResearchRequestSchema.parse(body);
     const bundle = await post("/research/export", payload) as { filename: string; content: string };
@@ -606,8 +609,8 @@ function registerIpc(): void {
   });
   handle(IPC_CHANNELS.EXPORT_IDEAS, async (body) => {
     const payload = ExportIdeasRequestSchema.parse(body);
-    const bundle = await post("/ideas/export", payload) as { files: Array<{ filename: string; content: string }> };
-    if (browserDev) return { downloads: bundle.files };
+    const bundle = await post("/ideas/export", payload) as { filename: string; files: Array<{ filename: string; content: string }> };
+    if (browserDev) return { downloads: [bundleBrowserIdeaExport(bundle, payload.format)] };
     if (!mainWindow) throw new AppError("backend_unavailable");
     const selection = await dialog.showOpenDialog(mainWindow, {
       title: "Export solution files",

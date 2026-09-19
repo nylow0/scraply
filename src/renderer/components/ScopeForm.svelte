@@ -7,6 +7,7 @@
     modelRefKey,
     sameModelRef,
     type ModelRef,
+    type ExplorationPurpose,
     type ResearchMode,
     type SearchProvider,
   } from "../../shared/schemas";
@@ -27,6 +28,7 @@
   const defaults = untrack(readResearchDefaults);
   const startingModel = initial.scope ? initial.runConfig?.model : defaults.model;
   let researchMode = $state<ResearchMode>(initial.runConfig?.researchMode ?? "explore-market");
+  let explorationPurpose = $state<ExplorationPurpose>(initial.runConfig?.explorationPurpose ?? "general-solutions");
   const workflowVersion = 2;
   let audienceSourcePolicy = $state<"web" | "communities">(initial.scope ? initial.runConfig?.audienceSourcePolicy ?? "web" : defaults.audienceSourcePolicy);
   let title = $state(initial.scope?.title ?? "");
@@ -69,7 +71,7 @@
   let draftFingerprint = $derived(JSON.stringify({
     researchMode, title: title.trim(), audience: audience.trim(), domain: domain.trim(), observations: observations.trim(),
     offLimits: offLimits.split("\n").map((item) => item.trim()).filter(Boolean), knownProblem: knownProblem.trim(),
-    model, reasoningEffort, discoveryDepth, searchProvider, maxRunMinutes, workflowVersion, audienceSourcePolicy,
+    model, reasoningEffort, discoveryDepth, searchProvider, maxRunMinutes, workflowVersion, audienceSourcePolicy, explorationPurpose,
     riskEvaluationCriteria: riskEvaluationCriteria.trim(), ideaCount,
   }));
   // Only pre-mark as saved when a persisted run config exists and still matches the draft; a model that is no
@@ -136,7 +138,7 @@
         title: title.trim(), audience: audience.trim(), domain: domain.trim(), observations: observations.trim(),
         riskEvaluationCriteria: riskEvaluationCriteria.trim(),
         offLimits: offLimits.split("\n").map((item) => item.trim()).filter(Boolean),
-      }, { configVersion: 2, workflowVersion, audienceSourcePolicy, ideaCount, model, reasoningEffort, discoveryDepth, searchProvider, maxRunMinutes, researchMode, knownProblem: knownProblem.trim() });
+      }, { configVersion: 2, workflowVersion, audienceSourcePolicy, ideaCount, model, reasoningEffort, discoveryDepth, searchProvider, maxRunMinutes, researchMode, knownProblem: knownProblem.trim(), explorationPurpose });
       savedFingerprint = submittedFingerprint;
       await onStart();
     } catch {
@@ -160,6 +162,11 @@
           <input type="radio" name="research-mode" value="known-problem" checked={researchMode === "known-problem"} onchange={() => researchMode = "known-problem"} />
           <Icon name="ideas" size={22} /><span><strong>I have a problem to solve</strong><small>Describe your problem and go straight to solutions.</small></span>
         </label>
+      </fieldset>
+      <fieldset class="purpose-picker">
+        <legend>What should the options be?</legend>
+        <label class:active={explorationPurpose === "general-solutions"}><input type="radio" name="exploration-purpose" value="general-solutions" checked={explorationPurpose === "general-solutions"} onchange={() => explorationPurpose = "general-solutions"} /><span><strong>Practical solutions</strong><small>Include product changes, process improvements, and configurations.</small></span></label>
+        <label class:active={explorationPurpose === "startup-opportunities"}><input type="radio" name="exploration-purpose" value="startup-opportunities" checked={explorationPurpose === "startup-opportunities"} onchange={() => explorationPurpose = "startup-opportunities"} /><span><strong>Startup opportunities</strong><small>Require a paying customer, market gap, sellable workflow, and first customer route.</small></span></label>
       </fieldset>
       <section class="brief-panel" aria-label="Research brief">
     <div class="primary-fields">
@@ -256,6 +263,14 @@
   .mode-picker input { position:absolute;width:1px;height:1px;padding:0;border:0;clip-path:inset(50%);overflow:hidden; }
   .mode-picker label:focus-within { outline:2px solid var(--accent);outline-offset:3px; }
   .mode-picker strong { font-size:13px;font-weight:650; }
+  .purpose-picker { display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:18px; }
+  .purpose-picker label { position:relative;display:flex;padding:14px;border:1px solid var(--border);border-radius:8px;background:#000;cursor:pointer; }
+  .purpose-picker label.active { border-color:var(--accent);background:#081610; }
+  .purpose-picker label > span { display:grid;gap:5px; }
+  .purpose-picker strong { color:var(--text);font-size:13px; }
+  .purpose-picker small { color:var(--muted);font-size:12px;line-height:1.5; }
+  .purpose-picker input { position:absolute;width:1px;height:1px;clip-path:inset(50%); }
+  .purpose-picker label:focus-within { outline:2px solid var(--accent);outline-offset:3px; }
   .primary-fields { display:grid;gap:20px; }
   label { display:grid;gap:8px;min-width:0; }
   label > span { font-size:13px;font-weight:600; }
@@ -304,6 +319,6 @@
   .primary:hover:not(:disabled) { box-shadow:0 4px 24px #71cfba25;transform:translateY(-1px); }
   @media(max-width:1100px) { form { grid-template-columns:minmax(0,1fr) 230px;gap:24px; }.mode-picker label { padding:14px 10px;gap:8px; }.configuration { padding-left:20px; } }
   @media(max-width:950px) { form { grid-template-columns:1fr; }.configuration { position:static;border-left:0;border-top:1px solid var(--border);padding:24px 0 0; }.run-settings,.output-settings { grid-template-columns:1fr 1fr; }.scope-page { padding:24px 22px 48px; } }
-  @media(max-width:560px) { .mode-picker { grid-template-columns:1fr; }.run-settings,.output-settings { grid-template-columns:1fr; } }
+  @media(max-width:560px) { .mode-picker,.purpose-picker { grid-template-columns:1fr; }.run-settings,.output-settings { grid-template-columns:1fr; } }
   @media(max-height:760px) { .configuration { position:static; } }
 </style>

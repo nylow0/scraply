@@ -76,31 +76,59 @@ export const ProposedMitigationSchema = z.object({
 }).strict();
 
 export const QueryPlanOutputSchema = z.object({
-  queries: z.array(z.string()),
+  queries: z.array(z.union([z.string(), z.object({
+    query: z.string(), uncertainty: z.string(), intendedSourceType: z.string(),
+  }).strict(), z.object({
+    query: z.string(),
+    intent: z.string(),
+    uncertainty: z.string(),
+    intendedSourceType: z.string(),
+  }).strict()])),
 }).strict();
 
 export const FactorHarvestOutputSchema = z.object({
-  factors: z.array(FactorSchema.omit({ harvestMode: true })),
+  factors: z.array(z.union([
+    FactorSchema.omit({ harvestMode: true }),
+    FactorSchema.omit({ harvestMode: true }).extend({ uncertainty: z.string() }).strict(),
+    FactorSchema.omit({ harvestMode: true }).extend({
+      uncertainty: z.string(),
+      sourceRole: z.enum(["firsthand", "measured", "vendor", "recommendation", "illustration", "unknown"]),
+      audienceFit: z.enum(["intended-buyer", "adjacent", "general", "unknown"]),
+      independentSourceKey: z.string().nullable(),
+      supportsDemand: z.boolean(),
+      demandEvidenceUncertainty: z.string(),
+    }).strict(),
+  ])),
 }).strict();
 
 export const ProblemCandidatesOutputSchema = z.object({
-  problems: z.array(ProblemSchema.pick({
+  problems: z.array(z.union([ProblemSchema.pick({
     statement: true,
     whyItPersists: true,
     affected: true,
     scaleEstimate: true,
     scaleBasisFactorId: true,
     factorIds: true,
-  })),
+  }), ProblemSchema.pick({
+    statement: true, whyItPersists: true, affected: true, scaleEstimate: true,
+    scaleBasisFactorId: true, factorIds: true,
+  }).extend({
+    intendedBuyerEvidenceFactorIds: z.array(z.string()), evidenceGap: z.string().nullable(),
+  }).strict()])),
 }).strict();
 
-export const ProblemKillOutputSchema = ProblemSchema.pick({
+const LegacyProblemKillOutputSchema = ProblemSchema.pick({
   verdict: true,
   verdictReason: true,
   verdictSourceIds: true,
+}).extend({ verdict: ProblemVerdictSchema.exclude(["user-asserted"]) }).strict();
+
+export const ProblemKillOutputSchema = z.union([LegacyProblemKillOutputSchema, ProblemSchema.pick({
+  verdict: true, verdictReason: true, verdictSourceIds: true,
 }).extend({
   verdict: ProblemVerdictSchema.exclude(["user-asserted"]),
-}).strict();
+  intendedBuyerEvidenceFactorIds: z.array(z.string()), evidenceGap: z.string().nullable(),
+}).strict()]);
 
 export const SolutionsOutputSchema = z.object({
   solutions: z.array(SolutionSchema.omit({ problemId: true })),
@@ -135,14 +163,74 @@ export const MitigationsOutputSchema = z.object({
 
 const WorkflowV2RequiredTextSchema = z.string().trim().min(1);
 
-export const WorkflowV2QueryPlanItemSchema = z.object({
+export const OpportunityTypeSchema = z.enum([
+  "startup-opportunity",
+  "process-improvement",
+  "incumbent-configuration",
+]);
+
+export const StartupGapAssessmentSchema = z.object({
+  kind: z.enum(["evidenced", "hypothesis"]),
+  description: WorkflowV2RequiredTextSchema,
+  evidenceIds: z.array(WorkflowV2RequiredTextSchema),
+}).strict();
+
+export const StartupOpportunityDetailsSchema = z.object({
+  opportunityType: OpportunityTypeSchema,
+  payingCustomerSegment: WorkflowV2RequiredTextSchema,
+  trigger: WorkflowV2RequiredTextSchema,
+  existingSubstitute: WorkflowV2RequiredTextSchema,
+  gapAssessment: StartupGapAssessmentSchema,
+  smallestSellableWorkflow: WorkflowV2RequiredTextSchema,
+  firstCustomerRoute: WorkflowV2RequiredTextSchema,
+  disconfirmingDemandTest: WorkflowV2RequiredTextSchema,
+}).strict();
+
+export const WorkflowV2QueryIntentSchema = z.enum([
+  "firsthand-experience",
+  "measured-behavior",
+  "current-alternative",
+  "buying-signal",
+  "contrary-evidence",
+]);
+
+export const EvidenceSourceRoleSchema = z.enum([
+  "firsthand",
+  "measured",
+  "vendor",
+  "recommendation",
+  "illustration",
+  "unknown",
+]);
+
+export const EvidenceAudienceFitSchema = z.enum([
+  "intended-buyer",
+  "adjacent",
+  "general",
+  "unknown",
+]);
+
+const LegacyWorkflowV2QueryPlanItemSchema = z.object({
   query: WorkflowV2RequiredTextSchema,
   uncertainty: WorkflowV2RequiredTextSchema,
   intendedSourceType: WorkflowV2RequiredTextSchema,
 }).strict();
 
+export const WorkflowV2QueryPlanItemSchema = z.object({
+  query: WorkflowV2RequiredTextSchema,
+  intent: WorkflowV2QueryIntentSchema,
+  uncertainty: WorkflowV2RequiredTextSchema,
+  intendedSourceType: WorkflowV2RequiredTextSchema,
+}).strict();
+
 export const WorkflowV2QueryPlanOutputSchema = z.object({
-  queries: z.array(WorkflowV2QueryPlanItemSchema),
+  queries: z.array(z.union([LegacyWorkflowV2QueryPlanItemSchema, WorkflowV2QueryPlanItemSchema])),
+}).strict();
+
+const LegacyWorkflowV2FactorSchema = FactorSchema.omit({ harvestMode: true }).extend({
+  subject: WorkflowV2RequiredTextSchema, behavior: WorkflowV2RequiredTextSchema,
+  quote: WorkflowV2RequiredTextSchema, sourceId: WorkflowV2RequiredTextSchema,
+  uncertainty: WorkflowV2RequiredTextSchema,
 }).strict();
 
 export const WorkflowV2FactorSchema = FactorSchema.omit({ harvestMode: true }).extend({
@@ -151,10 +239,15 @@ export const WorkflowV2FactorSchema = FactorSchema.omit({ harvestMode: true }).e
   quote: WorkflowV2RequiredTextSchema,
   sourceId: WorkflowV2RequiredTextSchema,
   uncertainty: WorkflowV2RequiredTextSchema,
+  sourceRole: EvidenceSourceRoleSchema,
+  audienceFit: EvidenceAudienceFitSchema,
+  independentSourceKey: WorkflowV2RequiredTextSchema.nullable(),
+  supportsDemand: z.boolean(),
+  demandEvidenceUncertainty: WorkflowV2RequiredTextSchema,
 }).strict();
 
 export const WorkflowV2FactorHarvestOutputSchema = z.object({
-  factors: z.array(WorkflowV2FactorSchema),
+  factors: z.array(z.union([LegacyWorkflowV2FactorSchema, WorkflowV2FactorSchema])),
 }).strict();
 
 export const WorkflowV2ProblemCandidateSchema = ProblemSchema.pick({
@@ -172,13 +265,29 @@ export const WorkflowV2ProblemCandidateSchema = ProblemSchema.pick({
   factorIds: z.array(WorkflowV2RequiredTextSchema),
   alternativeExplanations: z.array(WorkflowV2RequiredTextSchema),
   unknowns: z.array(WorkflowV2RequiredTextSchema),
+  intendedBuyerEvidenceFactorIds: z.array(WorkflowV2RequiredTextSchema),
+  evidenceGap: WorkflowV2RequiredTextSchema.nullable(),
 }).strict();
+
+const LegacyWorkflowV2ProblemCandidateSchema = WorkflowV2ProblemCandidateSchema.omit({
+  intendedBuyerEvidenceFactorIds: true, evidenceGap: true,
+});
 
 export const WorkflowV2ProblemCandidatesOutputSchema = z.object({
-  problems: z.array(WorkflowV2ProblemCandidateSchema),
+  problems: z.array(z.union([LegacyWorkflowV2ProblemCandidateSchema, WorkflowV2ProblemCandidateSchema])),
 }).strict();
 
-export const WorkflowV2ProblemKillOutputSchema = ProblemSchema.pick({
+const LegacyWorkflowV2ProblemKillOutputSchema = ProblemSchema.pick({
+  verdict: true, verdictReason: true, verdictSourceIds: true,
+}).extend({
+  verdict: ProblemVerdictSchema.exclude(["user-asserted"]),
+  verdictReason: WorkflowV2RequiredTextSchema,
+  verdictSourceIds: z.array(WorkflowV2RequiredTextSchema),
+  unresolvedAssumptions: z.array(WorkflowV2RequiredTextSchema),
+  wouldChangeConclusion: z.array(WorkflowV2RequiredTextSchema),
+}).strict();
+
+export const ClassifiedWorkflowV2ProblemKillOutputSchema = ProblemSchema.pick({
   verdict: true,
   verdictReason: true,
   verdictSourceIds: true,
@@ -188,7 +297,14 @@ export const WorkflowV2ProblemKillOutputSchema = ProblemSchema.pick({
   verdictSourceIds: z.array(WorkflowV2RequiredTextSchema),
   unresolvedAssumptions: z.array(WorkflowV2RequiredTextSchema),
   wouldChangeConclusion: z.array(WorkflowV2RequiredTextSchema),
+  intendedBuyerEvidenceFactorIds: z.array(WorkflowV2RequiredTextSchema),
+  evidenceGap: WorkflowV2RequiredTextSchema.nullable(),
 }).strict();
+
+export const WorkflowV2ProblemKillOutputSchema = z.union([
+  LegacyWorkflowV2ProblemKillOutputSchema,
+  ClassifiedWorkflowV2ProblemKillOutputSchema,
+]);
 
 export const WorkflowV2SolutionOptionSchema = z.object({
   mechanism: WorkflowV2RequiredTextSchema,
@@ -202,8 +318,12 @@ export const WorkflowV2SolutionOptionSchema = z.object({
   respectsOffLimitsWhy: WorkflowV2RequiredTextSchema,
 }).strict();
 
+export const WorkflowV2StartupSolutionOptionSchema = WorkflowV2SolutionOptionSchema.extend({
+  startupOpportunity: StartupOpportunityDetailsSchema,
+}).strict();
+
 export const WorkflowV2SolutionsOutputSchema = z.object({
-  options: z.array(WorkflowV2SolutionOptionSchema),
+  options: z.array(z.union([WorkflowV2StartupSolutionOptionSchema, WorkflowV2SolutionOptionSchema])),
 }).strict();
 
 export const WorkflowV2ConsequenceSchema = z.object({
@@ -239,6 +359,14 @@ export const WorkflowV2ExperimentSchema = z.object({
   cost: WorkflowV2RequiredTextSchema,
   passCriterion: WorkflowV2RequiredTextSchema,
   failCriterion: WorkflowV2RequiredTextSchema,
+  inconclusiveCriterion: WorkflowV2RequiredTextSchema,
+}).strict();
+
+export const WorkflowV2DecisionAnalysisDraftSchema = z.object({
+  consequences: z.array(WorkflowV2ConsequenceSchema),
+  proposedResponses: z.array(WorkflowV2ProposedResponseSchema),
+  additionalUnknowns: z.array(WorkflowV2RequiredTextSchema),
+  experiment: WorkflowV2ExperimentSchema.required(),
 }).strict();
 
 export const WorkflowV2DecisionAnalysisOutputSchema = z.object({
@@ -247,6 +375,31 @@ export const WorkflowV2DecisionAnalysisOutputSchema = z.object({
   proposedResponses: z.array(WorkflowV2ProposedResponseSchema),
   unknowns: z.array(WorkflowV2RequiredTextSchema),
   experiment: WorkflowV2ExperimentSchema,
+}).strict();
+
+const WorkflowV2LegacyDecisionAnalysisOutputSchema = WorkflowV2DecisionAnalysisOutputSchema.extend({
+  experiment: WorkflowV2ExperimentSchema.omit({ inconclusiveCriterion: true }),
+});
+
+export const WorkflowV2CompatibleDecisionAnalysisOutputSchema = z.union([
+  WorkflowV2DecisionAnalysisOutputSchema,
+  WorkflowV2LegacyDecisionAnalysisOutputSchema.transform((analysis) => ({
+    ...analysis,
+    experiment: {
+      ...analysis.experiment,
+      inconclusiveCriterion: "The observations do not meet either the pass or fail criterion.",
+    },
+  })),
+]);
+
+export const WorkflowV2RiskReassessmentOutputSchema = z.object({
+  affectedRisks: z.array(z.object({
+    riskId: WorkflowV2RequiredTextSchema,
+    effect: z.enum(["strengthened", "weakened"]),
+    rationale: WorkflowV2RequiredTextSchema,
+  }).strict()),
+  newRisks: z.array(WorkflowV2DecisionRiskSchema),
+  additionalUnknowns: z.array(WorkflowV2RequiredTextSchema),
 }).strict();
 
 export const STRUCTURED_OUTPUT_SCHEMAS = {
@@ -278,5 +431,10 @@ export type Solution = z.infer<typeof SolutionSchema>;
 export type Outcome = z.infer<typeof OutcomeSchema>;
 export type Risk = z.infer<typeof RiskSchema>;
 export type ProposedMitigation = z.infer<typeof ProposedMitigationSchema>;
-export type WorkflowV2SolutionOption = z.infer<typeof WorkflowV2SolutionOptionSchema>;
+export type StartupOpportunityDetails = z.infer<typeof StartupOpportunityDetailsSchema>;
+export type WorkflowV2SolutionOption = z.infer<typeof WorkflowV2SolutionOptionSchema> & {
+  startupOpportunity?: StartupOpportunityDetails;
+};
 export type WorkflowV2DecisionAnalysis = z.infer<typeof WorkflowV2DecisionAnalysisOutputSchema>;
+export type WorkflowV2DecisionAnalysisDraft = z.infer<typeof WorkflowV2DecisionAnalysisDraftSchema>;
+export type WorkflowV2RiskReassessment = z.infer<typeof WorkflowV2RiskReassessmentOutputSchema>;

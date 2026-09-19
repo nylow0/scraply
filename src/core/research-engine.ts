@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { DatabaseClient } from "../db/client";
 import { CostLedgerRepository, type CostReservation } from "../db/repositories/cost-ledger";
 import { DiscoveryRepository } from "../db/repositories/discovery";
@@ -9,8 +10,8 @@ import { ProviderFailure, type GenerationMetadata, type StructuredModelClient, t
 import { AppError } from "../shared/errors";
 import type { ResearchEvent } from "../shared/ipc";
 import { DEFAULT_IDEA_COUNT, RunConfigSchema, sameModelRef, type RunConfig } from "../shared/schemas";
-import { ScopeSchema, WorkflowV2RiskEvaluationOutputSchema, type Scope } from "../shared/structured-output-schemas";
-import { analyzeSelectedOption, evaluateSelectedOptionRisk, produceDevelopmentOptions } from "./development";
+import { ScopeSchema, WorkflowV2CompatibleDecisionAnalysisOutputSchema, WorkflowV2RiskEvaluationOutputSchema, WorkflowV2RiskReassessmentOutputSchema, type Scope } from "../shared/structured-output-schemas";
+import { analyzeSelectedOption, evaluateSelectedOptionRisk, produceDevelopmentOptions, reassessSelectedOption, reassessSelectedOptionRisk, type WorkflowV2EvidenceItem } from "./development";
 import { discoverProblems, discoveryRunProjection, harvestEvidenceFollowUp, harvestFactors, type HarvestResult } from "./discovery";
 import { WorkflowExecution } from "./workflow-execution";
 import type { WorkflowV2StageId } from "./stages";
@@ -35,6 +36,9 @@ interface ActiveRun {
   workflow?: WorkflowExecution;
   followUpModelReservation: CostReservation | null;
   followUpSearchReservation: CostReservation | null;
+  generationProvenance: Map<string, string>;
+  stage?: RuntimeStage;
+  modelState?: "waiting" | "dispatched" | "accepted" | null;
 }
 
 export function recoverInterruptedEvidenceFollowUps(db: DatabaseClient): string[] {
@@ -50,15 +54,17 @@ export function recoverInterruptedEvidenceFollowUps(db: DatabaseClient): string[
     for (const allowance of unusedModelAllowances) ledger.release(allowance.id);
     ledger.settleUncertain(runId, "The app restarted during an evidence follow-up provider operation");
   }
-  return db.immediateTransaction(() => followUps.failInterrupted(
-    "The app restarted during this follow-up. It was not replayed.",
-  ));
+  return db.immediateTransaction(() => {
+    followUps.failInterruptedReassessments("The app restarted during reassessment. Retry it after reviewing the saved follow-up.");
+    return followUps.failInterrupted("The app restarted during this follow-up. It was not replayed.");
+  });
 }
 
 export class ResearchEngine {
   private readonly activeRuns = new Map<string, ActiveRun>();
   // A cancelled execution can still be unwinding when its replacement starts.
   private readonly executions = new Set<Promise<void>>();
+  private readonly executionsByRun = new Map<string, Promise<void>>();
   private readonly runs: ResearchRunRepository;
   private readonly ledger: CostLedgerRepository;
   private readonly generationAttempts: GenerationAttemptRepository;
@@ -207,6 +213,7 @@ export class ResearchEngine {
       workflow: new WorkflowExecution(this.options.db, runId),
       followUpModelReservation: null,
       followUpSearchReservation: null,
+      generationProvenance: new Map(),
     };
     this.activeRuns.set(runId, active);
     this.scheduleDeadline(active);
@@ -215,8 +222,10 @@ export class ResearchEngine {
       .catch((error) => this.failEvidenceFollowUp(active, error))
       .finally(() => {
         this.executions.delete(execution);
+        if (this.executionsByRun.get(runId) === execution) this.executionsByRun.delete(runId);
       });
     this.executions.add(execution);
+    this.executionsByRun.set(runId, execution);
   }
 
   private assertThreadIdle(threadId: string, exceptRunId: string): void {
@@ -226,6 +235,37 @@ export class ResearchEngine {
   }
 
   cancelRun(runId: string): void {
+    this.cancelRunInternal(runId, true);
+  }
+
+  async requestEvidenceReassessment(threadId: string, runId: string): Promise<void> {
+    if (this.activeRuns.has(runId)) throw new AppError("conflict", "This research run is already active.");
+    const row = this.options.db.db.prepare("SELECT thread_id, problem_id, config_json FROM research_runs WHERE id = ? AND workflow_version = 2 AND status = 'completed'")
+      .get(runId) as { thread_id: string; problem_id: string; config_json: string } | undefined;
+    if (!row || row.thread_id !== threadId) throw new AppError("not_found", "Completed v2 analysis run not found.");
+    const safety = this.generationAttempts.getResumeSafety(runId);
+    if (!safety.canResume) throw new AppError("conflict", `${safety.resumeBlockedReason} Cancel this run and start a new one to avoid an automatic duplicate charge.`);
+    this.assertThreadIdle(threadId, runId);
+    try { this.options.db.immediateTransaction(() => this.followUps.beginReassessment(runId)); }
+    catch (error) { throw new AppError("conflict", error instanceof Error ? error.message : "Evidence reassessment cannot be started."); }
+    this.options.db.db.prepare("UPDATE research_runs SET status = 'running', cancelled = 0, updated_at = ? WHERE id = ?").run(new Date().toISOString(), runId);
+    const config = RunConfigSchema.parse(JSON.parse(row.config_json));
+    const completedCalls = this.ledger.countProviderCalls(runId, config.model.providerId);
+    const active: ActiveRun = { runId, threadId, problemId: row.problem_id, config, abortController: new AbortController(), startedAt: Date.now(),
+      projectedCodexCalls: completedCalls + 2, projectedSearches: 0, workflow: new WorkflowExecution(this.options.db, runId), followUpModelReservation: null, followUpSearchReservation: null,
+      generationProvenance: new Map() };
+    this.activeRuns.set(runId, active);
+    this.scheduleDeadline(active);
+    this.emit({ type: "run-resumed", runId, threadId });
+    const execution = this.executeEvidenceReassessment(active).catch((error) => this.failEvidenceReassessment(active, error)).finally(() => {
+      this.executions.delete(execution);
+      if (this.executionsByRun.get(runId) === execution) this.executionsByRun.delete(runId);
+    });
+    this.executions.add(execution);
+    this.executionsByRun.set(runId, execution);
+  }
+
+  private cancelRunInternal(runId: string, emitTerminalEvent: boolean): { threadId: string } {
     const row = this.options.db.db.prepare("SELECT thread_id, status FROM research_runs WHERE id = ?").get(runId) as
       { thread_id: string; status: string } | undefined;
     if (!row) throw new AppError("not_found", "Research run not found.");
@@ -250,12 +290,30 @@ export class ResearchEngine {
         `).run("Analysis completed; evidence follow-up cancelled", new Date().toISOString(), runId);
       });
       this.updateThread(row.thread_id, "solutions-ready");
-      this.emit({ type: "run-cancelled", runId, threadId: row.thread_id });
-      return;
+      if (emitTerminalEvent) this.emit({ type: "run-cancelled", runId, threadId: row.thread_id });
+      return { threadId: row.thread_id };
+    }
+    if (followUp?.reassessmentStatus === "running") {
+      this.options.db.immediateTransaction(() => {
+        this.followUps.failReassessment(runId, "Cancelled by user");
+        this.options.db.db.prepare("UPDATE research_runs SET status = 'completed', completion_reason = ?, cancelled = 0, updated_at = ? WHERE id = ?")
+          .run("Analysis completed; evidence reassessment cancelled", new Date().toISOString(), runId);
+      });
+      this.updateThread(row.thread_id, "solutions-ready");
+      if (emitTerminalEvent) this.emit({ type: "run-cancelled", runId, threadId: row.thread_id });
+      return { threadId: row.thread_id };
     }
     this.runs.cancel(runId);
     this.updateThread(row.thread_id, "failed");
-    this.emit({ type: "run-cancelled", runId, threadId: row.thread_id });
+    if (emitTerminalEvent) this.emit({ type: "run-cancelled", runId, threadId: row.thread_id });
+    return { threadId: row.thread_id };
+  }
+
+  async cancelRunAndWait(runId: string): Promise<void> {
+    const { threadId } = this.cancelRunInternal(runId, false);
+    const execution = this.executionsByRun.get(runId);
+    if (execution) await execution;
+    this.emit({ type: "run-cancelled", runId, threadId });
   }
 
   private begin(runId: string, threadId: string, problemId: string | null, config: RunConfig, resumed = false): void {
@@ -267,6 +325,7 @@ export class ResearchEngine {
       runId, threadId, problemId, config, abortController: new AbortController(), startedAt: Date.now(),
       projectedCodexCalls: projection.modelCalls, projectedSearches: projection.searches,
       followUpModelReservation: null, followUpSearchReservation: null,
+      generationProvenance: new Map(),
     };
     this.activeRuns.set(runId, active);
     this.scheduleDeadline(active);
@@ -278,8 +337,10 @@ export class ResearchEngine {
       .catch((error) => this.fail(active, error))
       .finally(() => {
         this.executions.delete(execution);
+        if (this.executionsByRun.get(runId) === execution) this.executionsByRun.delete(runId);
       });
     this.executions.add(execution);
+    this.executionsByRun.set(runId, execution);
   }
 
   private async execute(active: ActiveRun): Promise<void> {
@@ -294,7 +355,11 @@ export class ResearchEngine {
     if (!active.problemId) { this.updateThread(active.threadId, "problems-ready"); return; }
     if (active.workflow) {
       const waiting = this.options.db.db.prepare("SELECT awaiting_selection FROM research_runs WHERE id = ?").get(active.runId) as { awaiting_selection: number };
-      if (waiting.awaiting_selection) { this.updateThread(active.threadId, "solutions-ready"); return; }
+      const selected = this.options.db.db.prepare("SELECT 1 FROM solutions WHERE research_run_id = ? AND selected_at IS NOT NULL LIMIT 1").get(active.runId);
+      if (!waiting.awaiting_selection && selected) {
+        this.updateThread(active.threadId, "solutions-ready");
+        return;
+      }
     }
     // This run is already completed and out of activeRuns, so fail() would no-op; a queue handoff
     // that throws has to move the thread off development-running here or it stays stuck there.
@@ -328,14 +393,12 @@ export class ResearchEngine {
         harvest = { ...harvest, factors: workflow.withFactorUncertainty(harvest.factors) };
         const snapshot = harvest;
         this.discovery.persistFactors(active.runId, harvest.sources, harvest.factors, () => {
-          workflow.flushPendingStages(["query-plan", "factor-harvest"]);
           workflow.save("harvest", snapshot);
         });
       }
       this.progress(active, `${harvest.factors.length} observations from ${harvest.sources.length} sources`);
       const result = await discoverProblems(scope, harvest.factors, harvest.sources, { ...deps, idFactory: workflow.idFactory("problems") });
       this.discovery.persistProblems(active.runId, result.killSources, result.problems, result.blockedCandidates, () => {
-        workflow.flushPendingStages(["problem-candidates", "problem-kill"]);
         workflow.save("discovery-completed", result);
       });
       this.progress(active, `${result.problems.length} problems ready for your review`);
@@ -351,6 +414,7 @@ export class ResearchEngine {
       const deps = {
         modelClient: this.instrumentedModel(active), model: active.config.model,
         ideaCount: active.config.ideaCount,
+        explorationPurpose: active.config.explorationPurpose,
         reasoningEffort: active.config.reasoningEffort, signal: active.abortController.signal,
         resolvePrompt: workflow.resolvePrompt,
       };
@@ -370,7 +434,7 @@ export class ResearchEngine {
           },
         });
       } else {
-        this.progress(active, `Generating up to ${active.config.ideaCount ?? DEFAULT_IDEA_COUNT} ideas`);
+        this.progress(active, `Generating up to ${active.config.ideaCount ?? DEFAULT_IDEA_COUNT} ideas`, "generating-options");
         const result = await produceDevelopmentOptions(context, deps);
         active.abortController.signal.throwIfAborted();
         this.options.db.immediateTransaction(() => {
@@ -415,7 +479,7 @@ export class ResearchEngine {
           });
           riskEvaluation = WorkflowV2RiskEvaluationOutputSchema.parse(saved.output);
         } else {
-          this.progress(active, "Risk evaluator: reviewing the selected idea against your criteria");
+          this.progress(active, "Risk evaluator: reviewing the selected idea against your criteria", "evaluating-risk");
           const result = await evaluateSelectedOptionRisk(context, option, deps);
           active.abortController.signal.throwIfAborted();
           this.options.db.immediateTransaction(() => workflow.commitStage(
@@ -424,7 +488,7 @@ export class ResearchEngine {
           riskEvaluation = result.evaluation;
         }
       }
-      this.progress(active, "Analyzing the selected option and its next experiment");
+      this.progress(active, "Analyzing the selected option and its next experiment", "analyzing-option");
       const result = await analyzeSelectedOption(context, option, deps, riskEvaluation);
       active.abortController.signal.throwIfAborted();
       this.options.db.immediateTransaction(() => {
@@ -465,6 +529,8 @@ export class ResearchEngine {
     return {
       structuredCompletion: async <T>(request: StructuredStageRequest<T>) => {
         active.abortController.signal.throwIfAborted();
+        const stage = runtimeStage(request.stage);
+        this.progress(active, "Waiting for model availability", stage, "waiting");
         if (!sameModelRef(request.model, active.config.model)) throw new Error("Stage model does not match the active run configuration");
         const providerId = active.config.model.providerId;
         const preparedIdentity = client.prepareIdentity
@@ -473,6 +539,7 @@ export class ResearchEngine {
         active.abortController.signal.throwIfAborted();
         const reusable = this.generationAttempts.findCompleted(active.runId, request, preparedIdentity);
         if (reusable) {
+          active.generationProvenance.set(request.generationId, reusable.generationId);
           return { output: reusable.output, metadata: reusable.metadata as GenerationMetadata };
         }
         this.enforceRunawayBackstop(active, providerId, active.projectedCodexCalls);
@@ -493,11 +560,13 @@ export class ResearchEngine {
               reservation ??= this.ledger.reserve(active.runId, "structured-completion", providerId, active.config.model.modelId, 0, attempt.id);
               dispatched = true;
               this.generationAttempts.markDispatched(attempt.id);
+              if (this.activeRuns.get(active.runId) === active) this.progress(active, "Model request dispatched", stage, "dispatched");
               request.onDispatched?.();
             },
             onAccepted: (metadata) => {
               accepted = true;
               this.generationAttempts.markAccepted(attempt.id, metadata);
+              if (this.activeRuns.get(active.runId) === active) this.progress(active, "Model request accepted", stage, "accepted");
               request.onAccepted?.(metadata);
             },
           });
@@ -517,7 +586,7 @@ export class ResearchEngine {
           terminalRecorded = true;
           if (!reservation) throw new Error("Model completed without a recorded dispatch");
           this.ledger.commit(reservation.id, reportedCost(result.metadata), { generation: result.metadata });
-          if (this.activeRuns.get(active.runId) === active) this.progress(active, "Model call completed");
+          if (this.activeRuns.get(active.runId) === active) this.progress(active, "Model call completed", stage, null);
           return result;
         } catch (error) {
           const failedAttempts = error instanceof ProviderFailure ? error.attempts : undefined;
@@ -582,11 +651,23 @@ export class ResearchEngine {
     if (count >= Math.max(6, projection * 3)) throw new Error(`Runaway backstop triggered for ${provider}; the run exceeded 3× its projected calls.`);
   }
 
-  private progress(active: ActiveRun, message: string): void {
+  private progress(active: ActiveRun, message: string, stage?: RuntimeStage, modelState?: "waiting" | "dispatched" | "accepted" | null): void {
+    if (stage) active.stage = stage;
+    if (modelState !== undefined) active.modelState = modelState;
     const codexCalls = this.ledger.countProviderCalls(active.runId, active.config.model.providerId);
     const searches = this.ledger.countProviderCalls(active.runId, active.config.searchProvider);
-    this.logJob(active.runId, active.threadId, "run-progress", { message, codexCalls, searches });
-    this.emit({ type: "run-progress", runId: active.runId, threadId: active.threadId, message, codexCalls, searches });
+    const details = { message, codexCalls, searches, ...(active.stage ? { stage: active.stage } : {}),
+      modelState: active.modelState ?? null, elapsedMs: Math.max(0, Date.now() - active.startedAt),
+      operationStartedAt: new Date(active.startedAt).toISOString(), operationElapsedMs: Math.max(0, Date.now() - active.startedAt),
+      lastSuccessfulCheckpoint: this.lastSuccessfulCheckpoint(active.runId) };
+    this.logJob(active.runId, active.threadId, "run-progress", details);
+    this.emit({ type: "run-progress", runId: active.runId, threadId: active.threadId, ...details });
+  }
+
+  private lastSuccessfulCheckpoint(runId: string): string | null {
+    const row = this.options.db.db.prepare(`SELECT stage_id FROM stage_results WHERE research_run_id = ? ORDER BY completed_at DESC, rowid DESC LIMIT 1`)
+      .get(runId) as { stage_id: string } | undefined;
+    return row?.stage_id ?? null;
   }
 
   private fail(active: ActiveRun, error: unknown, status?: "failed" | "cancelled"): void {
@@ -607,6 +688,7 @@ export class ResearchEngine {
       active.abortController.abort(error);
       const followUp = this.followUps.find(active.runId);
       if (followUp && ["requested", "running"].includes(followUp.status)) this.failEvidenceFollowUp(active, error);
+      else if (followUp?.reassessmentStatus === "running") this.failEvidenceReassessment(active, error);
       else this.fail(active, error, "failed");
     }, active.config.maxRunMinutes * 60_000);
   }
@@ -680,7 +762,6 @@ export class ResearchEngine {
     }
     const factors = active.workflow!.withFactorUncertainty(result.factors);
     this.discovery.persistFactors(active.runId, result.sources, factors, () => {
-      active.workflow!.flushPendingStages(["factor-harvest"]);
       this.followUps.complete(
         active.runId,
         result.sources.map((source) => source.id),
@@ -713,6 +794,112 @@ export class ResearchEngine {
     this.updateThread(active.threadId, "solutions-ready");
     this.emit({ type: "run-failed", runId: active.runId, threadId: active.threadId, error: message });
   }
+
+  private async executeEvidenceReassessment(active: ActiveRun): Promise<void> {
+    const workflow = active.workflow!;
+    const followUp = this.followUps.find(active.runId);
+    if (!followUp || followUp.status !== "completed") throw new Error("Evidence reassessment requires a completed follow-up");
+    const option = workflow.selectedOption(active.problemId!);
+    if (!option || option.id !== followUp.solutionId) throw new Error("The selected option for this follow-up is missing");
+    const originalRiskStage = workflow.repository.findStageResult(active.runId, "risk-evaluation", option.id);
+    const originalAnalysisStage = workflow.repository.findStageResult(active.runId, "decision-analysis", option.id);
+    if (!originalRiskStage || !originalAnalysisStage) throw new Error("The original analysis checkpoints are missing");
+    const originalRisk = WorkflowV2RiskEvaluationOutputSchema.parse(originalRiskStage.output);
+    const originalAnalysis = WorkflowV2CompatibleDecisionAnalysisOutputSchema.parse(originalAnalysisStage.output);
+    const followUpEvidence = this.evidenceFollowUpItems(followUp);
+    const context = workflow.developmentContext(active.problemId!);
+    const evidenceRevision = createHash("sha256").update(JSON.stringify(followUpEvidence)).digest("hex").slice(0, 16);
+    const selectionId = `${option.id}:evidence-reassessment:v2:${evidenceRevision}`;
+    const deps = { modelClient: this.instrumentedModel(active), model: active.config.model, reasoningEffort: active.config.reasoningEffort,
+      signal: active.abortController.signal, resolvePrompt: workflow.resolvePrompt };
+    this.progress(active, "Reassessing risks using the completed evidence follow-up", "evaluating-risk");
+    const savedRisk = workflow.repository.findStageResult(active.runId, "risk-evaluation", selectionId);
+    const riskResult = savedRisk ? { reassessment: WorkflowV2RiskReassessmentOutputSchema.parse(savedRisk.output), request: null, resolvedPrompt: null, metadata: null }
+      : await reassessSelectedOptionRisk(context, option, originalRisk, followUpEvidence, deps);
+    active.abortController.signal.throwIfAborted();
+    if (riskResult.request && riskResult.resolvedPrompt && riskResult.metadata) this.options.db.immediateTransaction(() => workflow.commitStage(
+      "risk-evaluation", riskResult.request!, riskResult.resolvedPrompt!, riskResult.metadata!, riskResult.reassessment, context, selectionId,
+    ));
+    this.progress(active, "Reassessing the option and its next experiment", "analyzing-option");
+    const analysisResult = await reassessSelectedOption(context, option, originalAnalysis, originalRisk, riskResult.reassessment, followUpEvidence, deps);
+    active.abortController.signal.throwIfAborted();
+    this.options.db.immediateTransaction(() => {
+      workflow.commitStage("decision-analysis", analysisResult.request, analysisResult.resolvedPrompt, analysisResult.metadata, analysisResult.analysis, context, selectionId);
+      this.followUps.completeReassessment({ researchRunId: active.runId, riskReassessment: riskResult.reassessment, analysis: analysisResult.analysis,
+        riskGenerationId: riskResult.request
+          ? this.generationIdFor(active, riskResult.request.generationId)
+          : this.reassessmentRiskGenerationId(active.runId),
+        analysisGenerationId: this.generationIdFor(active, analysisResult.request.generationId) });
+    });
+    this.runs.finish(active.runId, "completed", "Evidence reassessment completed");
+    if (active.deadlineTimer) clearTimeout(active.deadlineTimer);
+    this.activeRuns.delete(active.runId);
+    this.updateThread(active.threadId, "solutions-ready");
+    this.emit({ type: "run-completed", runId: active.runId, threadId: active.threadId, problemId: active.problemId });
+  }
+
+  private reassessmentRiskGenerationId(runId: string): string {
+    const row = this.options.db.db.prepare(`SELECT generation_id FROM generation_attempts WHERE research_run_id = ? AND stage_key = 'risk-evaluation'
+      AND status = 'completed' AND json_extract(request_json, '$.workOrder.inputs.reassessment') = 1 ORDER BY terminal_at DESC LIMIT 1`)
+      .get(runId) as { generation_id: string } | undefined;
+    if (!row) throw new Error("Saved risk reassessment generation provenance is missing");
+    return row.generation_id;
+  }
+
+  private generationIdFor(active: ActiveRun, requestedGenerationId: string): string {
+    return active.generationProvenance.get(requestedGenerationId) ?? requestedGenerationId;
+  }
+
+  private evidenceFollowUpItems(followUp: ReturnType<EvidenceFollowUpRepository["find"]> & {}): WorkflowV2EvidenceItem[] {
+    const sourceIds = followUp.sourceIds;
+    const factorIds = followUp.factorIds;
+    const sources = sourceIds.length ? this.options.db.db.prepare(`SELECT id, title, canonical_url AS url FROM sources WHERE id IN (${sourceIds.map(() => "?").join(",")})`).all(...sourceIds) : [];
+    const factors = factorIds.length ? this.options.db.db.prepare(`SELECT id, source_id AS sourceId, subject, behavior, quote,
+      model_confidence AS modelConfidence, uncertainty, source_role AS sourceRole, audience_fit AS audienceFit,
+      independent_source_key AS independentSourceKey, supports_demand AS supportsDemand,
+      demand_evidence_uncertainty AS demandEvidenceUncertainty
+      FROM factors WHERE id IN (${factorIds.map(() => "?").join(",")})`).all(...factorIds) : [];
+    const sentinel = { sourceId: "scraply:evidence-follow-up-outcome", content: { question: followUp.question, status: "completed",
+      searchedSourceCount: sourceIds.length, quoteVerifiedObservationCount: factorIds.length,
+      conclusion: factorIds.length === 0 ? "The follow-up found no new quote-verified support." : "Only the quote-verified observations below are new evidence." } };
+    return [sentinel, ...factors.map((factor) => {
+      const saved = factor as Record<string, unknown> & { id: string; sourceId: string };
+      const sourceId = saved.sourceId;
+      return { sourceId: `scraply:evidence-follow-up-factor:${saved.id}`, content: {
+        factor: { ...saved, supportsDemand: Boolean(saved.supportsDemand) },
+        source: sources.find((item) => (item as { id: string }).id === sourceId) ?? { id: sourceId },
+      } };
+    })];
+  }
+
+  private failEvidenceReassessment(active: ActiveRun, error: unknown): void {
+    if (this.activeRuns.get(active.runId) !== active) return;
+    if (active.deadlineTimer) clearTimeout(active.deadlineTimer);
+    this.activeRuns.delete(active.runId);
+    const message = error instanceof Error ? error.message : "Evidence reassessment failed";
+    this.ledger.settleUncertain(active.runId, message);
+    const followUp = this.followUps.find(active.runId);
+    if (followUp?.reassessmentStatus === "running") this.options.db.immediateTransaction(() => this.followUps.failReassessment(active.runId, message));
+    this.runs.finish(active.runId, "completed", "Evidence reassessment failed");
+    this.updateThread(active.threadId, "solutions-ready");
+    this.emit({ type: "run-failed", runId: active.runId, threadId: active.threadId, error: message });
+  }
+}
+
+type RuntimeStage =
+  | "queued" | "searching" | "extracting" | "synthesizing-problems"
+  | "generating-options" | "awaiting-option-selection" | "evaluating-risk"
+  | "analyzing-option" | "evidence-follow-up" | "completed" | "failed" | "cancelled";
+
+function runtimeStage(stageKey: string): RuntimeStage {
+  const stage = stageKey.split(":")[0];
+  if (stage === "query-plan") return "searching";
+  if (stage === "factor-harvest") return "extracting";
+  if (stage === "problem-candidates" || stage === "problem-kill") return "synthesizing-problems";
+  if (stage === "solutions") return "generating-options";
+  if (stage === "risk-evaluation") return "evaluating-risk";
+  if (stage === "decision-analysis") return "analyzing-option";
+  return "queued";
 }
 
 function reportedCost(metadata: GenerationMetadata): number | null {

@@ -26,7 +26,7 @@ describe("destructive graph cutover", () => {
     const tables = tableNames(client.db as unknown as Database);
     for (const name of ["threads", "messages", "run_configs", "research_runs", "job_events", "sources", "cost_ledger", "generation_attempts", "scopes", "factors", "problems", "problem_factors", "problem_verdict_sources", "rejected_problem_candidates", "solutions", "outcomes", "risks", "mitigations", "risk_mitigations", "stage_results", "decision_analyses", "evidence_follow_ups"]) expect(tables).toContain(name);
     for (const name of ["intake_answers", "briefs", "stream_runs", "claims", "claim_evidence", "ideas", "reports", "branch_contexts", "ratings", "idea_ratings", "rating_history"]) expect(tables).not.toContain(name);
-    expect(client.db.prepare("SELECT MAX(id) AS id FROM schema_migrations").get()).toEqual({ id: 22 });
+    expect(client.db.prepare("SELECT MAX(id) AS id FROM schema_migrations").get()).toEqual({ id: 25 });
     client.close();
   });
 
