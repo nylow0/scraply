@@ -56,6 +56,19 @@
       ? "confirmed with intended-buyer evidence; demand not established"
       : "research marked confirmed; audience fit unassessed; demand not established";
   }
+  function reassessedRiskLabel(risk: NonNullable<SolutionView["decisionAnalysis"]>["risks"][number]): string {
+    if (enhancedFollowUp?.riskReassessment?.newRisks.some((item) => item.riskId === risk.riskId)) {
+      return `New risk: ${risk.description}`;
+    }
+    const change = enhancedFollowUp?.riskReassessment?.affectedRisks.find((item) => item.riskId === risk.riskId);
+    return change ? `${change.effect === "strengthened" ? "Strengthened" : "Weakened"} risk: ${risk.description}` : risk.description;
+  }
+  function reassessedRiskChange(riskId: string): string | null {
+    return enhancedFollowUp?.riskReassessment?.affectedRisks.find((item) => item.riskId === riskId)?.rationale ?? null;
+  }
+  function isNewReassessmentUnknown(unknown: string): boolean {
+    return enhancedFollowUp?.riskReassessment?.additionalUnknowns.includes(unknown) ?? false;
+  }
   $effect(() => {
     if (open && revision !== `${idea.id}:${idea.detailRevision}`) void loadDetail();
     if (!open && wasOpen) {
@@ -218,16 +231,14 @@
                   <p class="status">This is a separate assessment. The original analysis above remains unchanged.</p>
                   <h3>Updated consequences</h3>
                   {#each enhancedFollowUp.reassessmentAnalysis.consequences as consequence, index (index)}<div class="finding"><strong>{consequence.direction}: {consequence.description}</strong><p>{consequence.rationale}</p></div>{/each}
-                  <h3>Updated risk assessment</h3>
-                  {#if enhancedFollowUp.riskReassessment}
-                    {#each enhancedFollowUp.riskReassessment.affectedRisks as risk (risk.riskId)}<div class="finding"><strong>{risk.effect}: {risk.riskId}</strong><p>{risk.rationale}</p></div>{/each}
-                    {#each enhancedFollowUp.riskReassessment.newRisks as risk (risk.riskId)}<div class="finding"><strong>New risk: {risk.description}</strong><p>{risk.whyDecisive}</p></div>{/each}
-                    {#if enhancedFollowUp.riskReassessment.additionalUnknowns.length}<ul>{#each enhancedFollowUp.riskReassessment.additionalUnknowns as unknown, index (index)}<li>{unknown}</li>{/each}</ul>{/if}
-                  {/if}
-                  {#each enhancedFollowUp.reassessmentAnalysis.risks as risk (risk.riskId)}<div class="finding"><strong>{risk.description}</strong><p>{risk.whyDecisive}</p></div>{:else}<p>No additional decisive risks were identified.</p>{/each}
+                  <h3>Reassessed risks</h3>
+                  <p class="status">New and changed risks are labeled. Unchanged risks remain in the complete reassessed analysis.</p>
+                  {#each enhancedFollowUp.reassessmentAnalysis.risks as risk (risk.riskId)}
+                    <div class="finding"><strong>{reassessedRiskLabel(risk)}</strong><p>{risk.whyDecisive}</p>{#if reassessedRiskChange(risk.riskId)}<p class="status">Evidence change: {reassessedRiskChange(risk.riskId)}</p>{/if}</div>
+                  {:else}<p>No decisive risks were identified in the reassessment.</p>{/each}
                   <h3>Updated proposed responses</h3>
                   {#each enhancedFollowUp.reassessmentAnalysis.proposedResponses as response, index (index)}<div class="finding"><strong>{response.approach}</strong><p>Cost: {response.cost}</p><p>Fails if: {response.failsIf}</p></div>{:else}<p>No additional response was proposed.</p>{/each}
-                  {#if enhancedFollowUp.reassessmentAnalysis.unknowns.length}<h3>Updated open questions</h3><ul>{#each enhancedFollowUp.reassessmentAnalysis.unknowns as unknown, index (index)}<li>{unknown}</li>{/each}</ul>{/if}
+                  {#if enhancedFollowUp.reassessmentAnalysis.unknowns.length}<h3>Reassessed open questions</h3><ul>{#each enhancedFollowUp.reassessmentAnalysis.unknowns as unknown, index (index)}<li>{#if isNewReassessmentUnknown(unknown)}<strong>New question:</strong> {/if}{unknown}</li>{/each}</ul>{/if}
                   <section class="experiment"><h3>Updated experiment</h3><strong>{enhancedFollowUp.reassessmentAnalysis.experiment.question}</strong><p>{enhancedFollowUp.reassessmentAnalysis.experiment.method}</p><dl><div><dt>Cost</dt><dd>{enhancedFollowUp.reassessmentAnalysis.experiment.cost}</dd></div><div><dt>Pass</dt><dd>{enhancedFollowUp.reassessmentAnalysis.experiment.passCriterion}</dd></div><div><dt>Fail</dt><dd>{enhancedFollowUp.reassessmentAnalysis.experiment.failCriterion}</dd></div><div><dt>Inconclusive</dt><dd>{enhancedFollowUp.reassessmentAnalysis.experiment.inconclusiveCriterion}</dd></div></dl></section>
                 </details>
               {:else if detail.evidenceFollowUp.status === "completed" && (detail as EnhancedSolution).canReassessEvidence && idea.runId && onEvidenceReassessment}

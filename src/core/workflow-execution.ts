@@ -16,15 +16,6 @@ export class WorkflowExecution {
   readonly repository: WorkflowV2Repository;
   private readonly prompts: Record<WorkflowV2StageId, ResolvedWorkflowV2Prompt>;
   private readonly factorUncertainty = new Map<string, string>();
-  private readonly pendingStages = new Map<string, {
-    stageId: WorkflowV2StageId;
-    request: StructuredStageRequest<unknown>;
-    prompt: ResolvedWorkflowV2Prompt;
-    metadata: GenerationMetadata;
-    output: unknown;
-    context: unknown;
-    selectionId: string | null;
-  }>();
 
   constructor(private readonly db: DatabaseClient, readonly runId: string) {
     this.repository = new WorkflowV2Repository(db);
@@ -205,7 +196,12 @@ export class WorkflowExecution {
         if (!sourceIds) continue;
         const parsed = WorkflowV2FactorHarvestOutputSchema.safeParse(JSON.parse(row.output_json));
         if (!parsed.success) continue;
-        const output = request.schema.safeParse({ factors: parsed.data.factors.filter((factor) => sourceIds.has(factor.sourceId)) });
+        const factorLimit = Number((request.workOrder.inputs as { routing?: { factorLimit?: unknown } }).routing?.factorLimit);
+        const matchingFactors = parsed.data.factors.filter((factor) => sourceIds.has(factor.sourceId));
+        const factors = Number.isInteger(factorLimit) && factorLimit >= 0
+          ? matchingFactors.slice(0, factorLimit)
+          : matchingFactors;
+        const output = request.schema.safeParse({ factors });
         if (!output.success) continue;
         const metadata = JSON.parse(row.attempt_metadata_json) as GenerationMetadata;
         if (!metadata.prompt) continue;
@@ -229,26 +225,6 @@ export class WorkflowExecution {
       this.commitStage(stageId, request, prompt, metadata, output, context, selectionId);
       this.save(`metadata:${stageKey}`, metadata);
     });
-  }
-
-  /** Caller invokes this inside the same transaction that persists the validated domain rows. */
-  flushPendingStages(stageIds: readonly WorkflowV2StageId[]): void {
-    this.db.requireImmediateTransaction();
-    const allowed = new Set(stageIds);
-    for (const [stageKey, pending] of this.pendingStages) {
-      if (!allowed.has(pending.stageId)) continue;
-      this.commitStage(
-        pending.stageId,
-        pending.request,
-        pending.prompt,
-        pending.metadata,
-        pending.output,
-        pending.context,
-        pending.selectionId,
-      );
-      this.save(`metadata:${stageKey}`, pending.metadata);
-      this.pendingStages.delete(stageKey);
-    }
   }
 
   withFactorUncertainty<T extends { sourceId: string; subject: string; quote: string }>(factors: T[]): Array<T & { uncertainty?: string }> {

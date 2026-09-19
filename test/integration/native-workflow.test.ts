@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { z } from "zod";
 import { DatabaseClient } from "../../src/db/client";
 import { ResearchRunRepository } from "../../src/db/repositories/research-runs";
+import { ThreadRepository } from "../../src/db/repositories/threads";
 import { WORKFLOW_V2_STAGE_REGISTRY, type WorkflowV2StageId } from "../../src/core/stages";
 import { WorkspaceStateSchema, SolutionViewSchema, type WorkspaceState, type ResearchEvent } from "../../src/shared/ipc";
 import { GenerationStartPayloadSchema } from "../../src/shared/runtime-protocol";
@@ -325,6 +326,15 @@ describe("native v2 decisions through the production backend", () => {
     await item.waitFor(state => state.latestResearchRun?.status === "completed" && !state.latestResearchRun.awaitingSelection);
     expect(item.requests().map(request => request.workOrder.stage)).toEqual(["solutions", "decision-analysis"]);
     item.assertAccounting(2);
+    const completed = new DatabaseClient(item.dbPath);
+    try {
+      const now = new Date().toISOString();
+      completed.db.prepare(`INSERT INTO evidence_follow_ups (
+        research_run_id, solution_id, question, status, requested_at, completed_at, updated_at
+      ) VALUES (?, ?, 'Does newer evidence change the result?', 'completed', ?, ?, ?)`)
+        .run(selected.runId, selected.id, now, now, now);
+    } finally { completed.close(); }
+    expect((await item.post(`/ideas/${selected.id}`, undefined, SolutionViewSchema)).canReassessEvidence).toBe(false);
   });
 
   test("pauses after options, reopens under changed prompts, analyzes one option and records an observed result", async () => {
@@ -419,6 +429,34 @@ describe("native v2 decisions through the production backend", () => {
     expect(reassessed.decisionAnalysis).toEqual(detail.decisionAnalysis);
     expect(item.searches).toHaveLength(searchesBeforeFollowUp + 1);
     item.assertAccounting(requestsBeforeFollowUp + 3);
+    const riskReassessmentRequest = item.requests().find((request) =>
+      request.workOrder.stage === "risk-evaluation" && JSON.stringify(request.workOrder.inputs).includes('"reassessment":true'))!;
+    expect(JSON.stringify(riskReassessmentRequest.evidence)).toContain('"sourceRole":"measured"');
+    expect(JSON.stringify(riskReassessmentRequest.evidence)).toContain('"audienceFit":"intended-buyer"');
+    expect(JSON.stringify(riskReassessmentRequest.evidence)).toContain('"independentSourceKey":"survey.example.test"');
+    expect(JSON.stringify(riskReassessmentRequest.evidence)).toContain('"supportsDemand":true');
+    expect(JSON.stringify(riskReassessmentRequest.evidence)).toContain('"demandEvidenceUncertainty":"The synthetic report covers one repair shop"');
+
+    const attemptsBeforeRecovery = item.requests().length;
+    const interrupted = new DatabaseClient(item.dbPath);
+    interrupted.db.prepare("DELETE FROM stage_results WHERE research_run_id = ? AND selection_key LIKE '%:evidence-reassessment:%'").run(selected.runId);
+    interrupted.db.prepare(`UPDATE evidence_follow_ups
+      SET reassessment_status = 'failed', risk_reassessment_json = NULL, reassessment_analysis_json = NULL,
+        risk_generation_id = NULL, analysis_generation_id = NULL, reassessment_error = 'Interrupted after provider completion'
+      WHERE research_run_id = ?`).run(selected.runId);
+    interrupted.close();
+    await item.post("/research/evidence-reassessment", { threadId, runId: selected.runId }, WorkspaceStateSchema);
+    await item.waitFor((state) => state.latestResearchRun?.status === "completed");
+    expect(item.requests()).toHaveLength(attemptsBeforeRecovery);
+    const provenance = new DatabaseClient(item.dbPath);
+    try {
+      const row = provenance.db.prepare("SELECT risk_generation_id AS riskGenerationId, analysis_generation_id AS analysisGenerationId FROM evidence_follow_ups WHERE research_run_id = ?")
+        .get(selected.runId) as { riskGenerationId: string; analysisGenerationId: string };
+      expect(provenance.db.prepare("SELECT stage_key FROM generation_attempts WHERE research_run_id = ? AND generation_id = ?").get(selected.runId, row.riskGenerationId))
+        .toEqual({ stage_key: "risk-evaluation" });
+      expect(provenance.db.prepare("SELECT stage_key FROM generation_attempts WHERE research_run_id = ? AND generation_id = ?").get(selected.runId, row.analysisGenerationId))
+        .toEqual({ stage_key: "decision-analysis" });
+    } finally { provenance.close(); }
     expect((await item.raw("/research/evidence-follow-up", { threadId, runId: selected.runId, question: "Try twice" })).status).toBe(409);
     await item.restart();
     const reopened = await item.post(`/ideas/${selected.id}`, undefined, SolutionViewSchema);
@@ -440,7 +478,7 @@ describe("native v2 decisions through the production backend", () => {
       reasoningEffort: "medium",
     }, WorkspaceStateSchema);
 
-    const completed = await item.waitFor((state) => {
+    let completed = await item.waitFor((state) => {
       const optionRuns = new Set(state.solutions.map((solution) => solution.runId));
       return state.threads.find((thread) => thread.id === threadId)?.status === "solutions-ready"
         && optionRuns.size === 2;
@@ -448,10 +486,41 @@ describe("native v2 decisions through the production backend", () => {
     expect(completed.solutions).toHaveLength(4);
     expect(item.requests().filter((request) => request.workOrder.stage === "solutions")).toHaveLength(2);
     const db = new DatabaseClient(item.dbPath);
+    let completedRunId = "";
+    let removedProblemId = "";
+    let queuedConfig = "";
     try {
       expect(db.db.prepare(`SELECT status, awaiting_selection FROM research_runs WHERE problem_id IS NOT NULL ORDER BY created_at, rowid`).all())
         .toEqual([{ status: "completed", awaiting_selection: 1 }, { status: "completed", awaiting_selection: 1 }]);
+      const runs = db.db.prepare(`SELECT id, problem_id AS problemId, config_json AS configJson
+        FROM research_runs WHERE problem_id IS NOT NULL ORDER BY created_at, rowid`).all() as Array<{ id: string; problemId: string; configJson: string }>;
+      completedRunId = runs[0]!.id;
+      removedProblemId = runs[1]!.problemId;
+      queuedConfig = runs[1]!.configJson;
     } finally { db.close(); }
+
+    const optionRequestsBeforeRecovery = item.requests().filter((request) => request.workOrder.stage === "solutions").length;
+    await item.close();
+    const gap = new DatabaseClient(item.dbPath);
+    try {
+      gap.db.prepare("DELETE FROM research_runs WHERE problem_id = ?").run(removedProblemId);
+      gap.db.prepare("UPDATE threads SET status = 'development-running' WHERE id = ?").run(threadId);
+      new ThreadRepository(gap).recoverStaleDevelopmentStatuses();
+      expect(gap.db.prepare("SELECT status FROM threads WHERE id = ?").get(threadId)).toEqual({ status: "development-running" });
+    } finally { gap.close(); }
+    await item.restart();
+    completed = await item.waitFor((state) => {
+      const optionRuns = new Set(state.solutions.map((solution) => solution.runId));
+      return state.threads.find((thread) => thread.id === threadId)?.status === "solutions-ready"
+        && optionRuns.size === 2;
+    });
+    expect(item.requests().filter((request) => request.workOrder.stage === "solutions")).toHaveLength(optionRequestsBeforeRecovery + 1);
+    const recovered = new DatabaseClient(item.dbPath);
+    try {
+      expect(recovered.db.prepare("SELECT COUNT(*) AS count FROM research_runs WHERE id = ?").get(completedRunId)).toEqual({ count: 1 });
+      expect(recovered.db.prepare("SELECT config_json AS configJson FROM research_runs WHERE problem_id = ?").get(removedProblemId))
+        .toEqual({ configJson: queuedConfig });
+    } finally { recovered.close(); }
     const firstRunOption = completed.solutions[0]!;
     const aged = new DatabaseClient(item.dbPath);
     aged.db.prepare("UPDATE research_runs SET created_at = ? WHERE id = ?")
