@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { FocusedExperimentRecord } from "../../shared/focused-experiment";
+  import { numericOutcomeLabels, numericInconclusiveLabel, type FocusedExperimentRecord } from "../../shared/focused-experiment";
 
   let { experiment }: { experiment: FocusedExperimentRecord } = $props();
   let plan = $derived(experiment.plan);
@@ -8,23 +8,13 @@
   function thresholdLabel(kind: "pass" | "fail"): string {
     const rules = plan.outcomeRules;
     if (rules.kind !== "numeric-threshold") return kind === "pass" ? rules.passCriterion : rules.failCriterion;
-    if (rules.direction === "higher-is-better") {
-      return kind === "pass"
-        ? `${plan.primaryMetric.name} is at least ${rules.passThreshold} ${plan.primaryMetric.unit}`
-        : `${plan.primaryMetric.name} is below ${rules.failThreshold} ${plan.primaryMetric.unit}`;
-    }
-    return kind === "pass"
-      ? `${plan.primaryMetric.name} is at most ${rules.passThreshold} ${plan.primaryMetric.unit}`
-      : `${plan.primaryMetric.name} is above ${rules.failThreshold} ${plan.primaryMetric.unit}`;
+    return `${plan.primaryMetric.name} is ${numericOutcomeLabels(rules)[kind]} ${plan.primaryMetric.unit}`;
   }
 
   function inconclusiveLabel(): string {
     const rules = plan.outcomeRules;
     if (rules.kind === "reviewed-text") return rules.inconclusiveCriterion;
-    const band = rules.direction === "higher-is-better"
-      ? `${rules.failThreshold} to below ${rules.passThreshold}`
-      : `above ${rules.passThreshold} to ${rules.failThreshold}`;
-    return `${band} ${plan.primaryMetric.unit}, fewer than ${rules.minimumUsableObservations} usable observations, or data excluded by the unusable-observation rule.`;
+    return numericInconclusiveLabel(rules, plan.primaryMetric.unit);
   }
 </script>
 
@@ -76,6 +66,9 @@
       <div><dt>Inconclusive</dt><dd>{inconclusiveLabel()}</dd></div>
     </dl>
     <p class="rationale">{plan.outcomeRules.thresholdRationale}</p>
+    {#if plan.outcomeRules.kind === "numeric-threshold" && !plan.outcomeRules.metricRange}
+      <p role="status">Legacy numeric plan: metric bounds were not recorded. Thresholds are unchanged; review these rules before running the experiment.</p>
+    {/if}
   </section>
 
   <div class="section-grid">

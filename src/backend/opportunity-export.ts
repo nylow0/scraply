@@ -1,13 +1,14 @@
-import type { FocusedExperimentRecord } from "../shared/focused-experiment";
+import { numericOutcomeLabels, numericInconclusiveLabel, type FocusedExperimentRecord } from "../shared/focused-experiment";
 import type { OpportunityFamiliesView } from "../shared/opportunity-review";
 
 export function renderFocusedExperiment(record: FocusedExperimentRecord): string {
   const { plan } = record;
   const rules = plan.outcomeRules;
   const numericRules = rules.kind === "numeric-threshold" ? [
-    `Pass: ${plan.primaryMetric.name} ${rules.direction === "higher-is-better" ? ">=" : "<="} ${rules.passThreshold}.`,
-    `Fail: ${plan.primaryMetric.name} ${rules.direction === "higher-is-better" ? "<" : ">"} ${rules.failThreshold}.`,
-    `Inconclusive: values between those rules, insufficient observations, or unusable data. ${rules.insufficientDataReason}`,
+    `Pass: ${plan.primaryMetric.name} is ${numericOutcomeLabels(rules).pass} ${plan.primaryMetric.unit}.`,
+    `Fail: ${plan.primaryMetric.name} is ${numericOutcomeLabels(rules).fail} ${plan.primaryMetric.unit}.`,
+    `Inconclusive: ${numericInconclusiveLabel(rules, plan.primaryMetric.unit)} ${rules.insufficientDataReason}`,
+    ...(!rules.metricRange ? ["Legacy numeric plan: metric bounds were not recorded. Thresholds are unchanged; review these rules before running the experiment."] : []),
   ] : [
     `Pass: ${rules.passCriterion}`,
     `Fail: ${rules.failCriterion}`,

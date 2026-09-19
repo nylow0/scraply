@@ -4,6 +4,7 @@ import type { StructuredStageRequest } from "../../providers/structured";
 import {
   FocusedDemandTestSchema,
   FocusedExperimentRecordSchema,
+  NewFocusedExperimentSchema,
   type FocusedDemandTest,
   type FocusedExperimentRecord,
 } from "../../shared/focused-experiment";
@@ -201,6 +202,7 @@ export class FocusedExperimentRepository {
       }
       return;
     }
+    NewFocusedExperimentSchema.parse(parsed.plan);
     const now = new Date().toISOString();
     this.client.db.prepare(`
       INSERT INTO focused_experiments (

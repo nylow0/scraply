@@ -173,6 +173,7 @@ class ExpansionModel implements StructuredModelClient {
           direction: "higher-is-better",
           passThreshold: 4,
           failThreshold: 2,
+          metricRange: { minimum: 0, maximum: 5 },
           thresholdRationale: "Four uses support adoption; fewer than two stop the workflow.",
           minimumUsableObservations: 5,
           insufficientDataReason: "Fewer than five estimates cannot support the decision.",
