@@ -298,6 +298,7 @@ export class WorkflowExecution {
           ?? "Not recorded",
       })),
     });
+    const priorProjectMechanisms = this.priorProjectMechanisms();
     const context: WorkflowV2DevelopmentContext = {
       scope: base.scope,
       problem: base.problem,
@@ -306,7 +307,8 @@ export class WorkflowExecution {
       })),
       contraryEvidence: base.problem.verdictSourceIds.map((sourceId) => ({ sourceId, content: evidenceForSource(sourceId) })),
       priorFailedAttempts: [],
-      priorProjectMechanisms: this.priorProjectMechanisms(),
+      priorProjectMechanisms: priorProjectMechanisms.items,
+      priorProjectMechanismsOmittedCount: priorProjectMechanisms.omittedCount,
       recordedExperiments: this.recordedExperiments(base.problem.statement),
     };
     const candidateOutputs = stageEvidence.filter((stage) => stage.stage_id === "problem-candidates")
@@ -326,25 +328,32 @@ export class WorkflowExecution {
     return context;
   }
 
-  private priorProjectMechanisms(): NonNullable<WorkflowV2DevelopmentContext["priorProjectMechanisms"]> {
+  private priorProjectMechanisms(): {
+    items: NonNullable<WorkflowV2DevelopmentContext["priorProjectMechanisms"]>;
+    omittedCount: number;
+  } {
     const rows = this.db.db.prepare(`
-      SELECT s.mechanism, p.statement
+      SELECT s.description, s.mechanism, p.statement, COUNT(*) OVER () AS total_count
       FROM solutions s JOIN problems p ON p.id = s.problem_id
       JOIN research_runs previous ON previous.id = s.research_run_id
       JOIN research_runs current ON current.id = ?
       WHERE previous.thread_id = current.thread_id AND previous.rowid < current.rowid
-      ORDER BY previous.rowid DESC, s.option_position, s.id LIMIT 40
-    `).all(this.runId) as Array<{ mechanism: string; statement: string }>;
+      ORDER BY previous.rowid DESC, s.option_position, s.id LIMIT 100
+    `).all(this.runId) as Array<{ description: string; mechanism: string; statement: string; total_count: number }>;
     const results: NonNullable<WorkflowV2DevelopmentContext["priorProjectMechanisms"]> = [];
-    let characters = 0;
+    let characters = 2; // JSON array brackets.
     for (const row of rows) {
-      const item = { mechanism: row.mechanism, problemStatement: row.statement };
-      const size = JSON.stringify(item).length;
-      if (characters + size > 8_000) break;
+      const item = {
+        description: boundedExcerpt(row.description, 180),
+        mechanism: boundedExcerpt(row.mechanism, 440),
+        problemStatement: boundedExcerpt(row.statement, 140),
+      };
+      const size = JSON.stringify(item).length + (results.length > 0 ? 1 : 0);
+      if (characters + size > 24_000) continue;
       results.push(item);
       characters += size;
     }
-    return results;
+    return { items: results, omittedCount: (rows[0]?.total_count ?? 0) - results.length };
   }
 
   private recordedExperiments(statement: string): NonNullable<WorkflowV2DevelopmentContext["recordedExperiments"]> {
@@ -502,6 +511,13 @@ function recoverableFactorPartitionSourceIds(
     return !saved || canonicalJson(saved) !== canonicalJson(source);
   })) return null;
   return new Set(requestedSources.map((source) => String(source.id)));
+}
+
+function boundedExcerpt(value: string, maxCharacters: number): string {
+  const normalized = value.replace(/\s+/g, " ").trim();
+  const characters = Array.from(normalized);
+  if (characters.length <= maxCharacters) return normalized;
+  return `${characters.slice(0, maxCharacters - 1).join("")}…`;
 }
 
 function uniqueStrings(values: string[]): string[] {
