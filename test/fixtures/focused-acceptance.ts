@@ -1,4 +1,4 @@
-import saved from "./focused-acceptance.json";
+import saved from "./focused-acceptance.json" with { type: "json" };
 import { FocusedExperimentSchema, NewFocusedExperimentSchema, type FocusedExperimentReview } from "../../src/shared/focused-experiment";
 
 export const savedPaymentDraft = FocusedExperimentSchema.parse(saved.savedPaymentDraft);
