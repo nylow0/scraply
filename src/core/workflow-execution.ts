@@ -497,7 +497,10 @@ function recoverableFactorPartitionSourceIds(
   const savedSources = sources(savedRequest.evidence);
   if (requestedSources.length === 0 || savedSources.length < requestedSources.length) return null;
   const savedById = new Map(savedSources.map((source) => [String(source.id), source]));
-  if (requestedSources.some((source) => canonicalJson(savedById.get(String(source.id))) !== canonicalJson(source))) return null;
+  if (requestedSources.some((source) => {
+    const saved = savedById.get(String(source.id));
+    return !saved || canonicalJson(saved) !== canonicalJson(source);
+  })) return null;
   return new Set(requestedSources.map((source) => String(source.id)));
 }
 

@@ -282,8 +282,15 @@ describe("workflow v2 persistence", () => {
         evidence: [{ ...smaller.evidence[0]!, content: { scope: { title: "Changed scope", audience: "Operators" }, sources: [{ id: "source", text: "Operators repeat filing." }] } }],
       });
       await expectsFreshDispatch({ ...smaller, evidence: [...smaller.evidence, { sourceId: "extra", content: { note: "Changed envelope" } }] });
+      await expectsFreshDispatch({
+        ...smaller,
+        stage: "factor-harvest:domain:missing",
+        workOrder: { ...smaller.workOrder, stage: "factor-harvest:domain:missing" },
+        evidence: [{ sourceId: "missing", content: { scope: { title: "Filing", audience: "Operators" }, sources: [{ id: "missing", text: "Different source." }] } }],
+      });
+
       await expectsFreshDispatch({ ...smaller, model: { ...smaller.model, modelId: "different-model" } });
-      expect(rejectedReuseDispatches).toBe(5);
+      expect(rejectedReuseDispatches).toBe(6);
 
       const resumed = new WorkflowExecution(client, "run-v2");
       const recovered = await resumed.discoveryClient(provider).structuredCompletion(request("resume", true));
