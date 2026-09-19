@@ -1,5 +1,8 @@
 import { migrateRiskEvaluationSnapshots } from "./migrate-risk-evaluations";
 import { migrateSolutionLimit } from "./migrate-solution-limit";
+import { FOCUSED_EXPERIMENT_MIGRATION_SQL, FOCUSED_DEMAND_TEST_MIGRATION_SQL } from "./repositories/focused-experiments";
+import { OPPORTUNITY_REVIEW_MIGRATION_SQL } from "./repositories/opportunities";
+import { OPPORTUNITY_EXPLORATION_MIGRATION_SQL } from "./repositories/opportunity-exploration";
 
 export const MIGRATIONS = [
   {
@@ -1131,4 +1134,8 @@ export const MIGRATIONS = [
     ALTER TABLE evidence_follow_ups ADD COLUMN reassessment_error TEXT;
     ALTER TABLE evidence_follow_ups ADD COLUMN reassessed_at TEXT;
   ` },
+  { id: 26, sql: FOCUSED_EXPERIMENT_MIGRATION_SQL },
+  { id: 27, sql: OPPORTUNITY_REVIEW_MIGRATION_SQL },
+  { id: 28, sql: OPPORTUNITY_EXPLORATION_MIGRATION_SQL },
+  { id: 29, sql: FOCUSED_DEMAND_TEST_MIGRATION_SQL },
 ] as const;

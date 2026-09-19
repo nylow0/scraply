@@ -1,0 +1,52 @@
+{
+  "schemaVersion": 1,
+  "source": "Saved three-scope browser evaluation, compacted for deterministic grouping review",
+  "cases": [
+    {
+      "id": "educator-known-duplicate",
+      "expectedRelationship": "duplicate",
+      "reason": "Both options sell the same cohort operator an unresolved-learner queue that collects questions or blockers, tracks human follow-up, and keeps each case open until the learner or instructor confirms resolution.",
+      "candidate": {
+        "sourceOptionId": "423b65b4-2134-4235-aff1-3fad5b3ef92c",
+        "discardedInBaseline": true,
+        "buyer": "Independent instructors running paid technical cohorts",
+        "buyingTrigger": "Learner questions remain unanswered across live sessions or support channels",
+        "jobToBeDone": "Keep each learner question visible until a human reviews its resolution",
+        "coreWorkflow": "Capture a lesson-linked question, group related blockers, send a reviewed response, and track per-learner resolution",
+        "currentSubstitute": "Chat or email plus a spreadsheet, task board, or helpdesk"
+      },
+      "target": {
+        "sourceOptionId": "12664f90-6afb-476c-a33c-59e659b0778a",
+        "discardedInBaseline": false,
+        "buyer": "Small paid cohort operators teaching live coding sessions",
+        "buyingTrigger": "Simultaneous learner questions make it hard to track who recovered",
+        "jobToBeDone": "Keep learner blockers visible until recovery is confirmed",
+        "coreWorkflow": "Collect blocker reports, share a workaround, and confirm which learners remain blocked",
+        "currentSubstitute": "Chat, raised hands, polls, forms, or a shared issue list"
+      }
+    },
+    {
+      "id": "educator-clearly-separate",
+      "expectedRelationship": "separate-business",
+      "reason": "The validator is bought before publishing an exercise to reconcile code and instructions. The support inbox is bought during a cohort to resolve learner questions. Their triggers, jobs, workflows, and standalone value require separate purchases.",
+      "candidate": {
+        "sourceOptionId": "14936262-8f53-467c-adbf-9ec8c76c5119",
+        "discardedInBaseline": false,
+        "buyer": "Independent educators who repeatedly revise repository-based JavaScript exercises",
+        "buyingTrigger": "An exercise revision is about to be released to a paying cohort",
+        "jobToBeDone": "Find contradictions among starter files, solutions, examples, checks, dependencies, and instructions before publication",
+        "coreWorkflow": "Run a local prepublication check and review a reproducible contradiction report",
+        "currentSubstitute": "CI, repository tests, manual dry-runs, and LMS preview"
+      },
+      "target": {
+        "sourceOptionId": "423b65b4-2134-4235-aff1-3fad5b3ef92c",
+        "discardedInBaseline": true,
+        "buyer": "Independent instructors running paid technical cohorts",
+        "buyingTrigger": "Learner questions remain unanswered across live sessions or support channels",
+        "jobToBeDone": "Keep each learner question visible until a human reviews its resolution",
+        "coreWorkflow": "Capture, answer, and track each learner question through resolution",
+        "currentSubstitute": "Chat or email plus a manually maintained queue"
+      }
+    }
+  ]
+}

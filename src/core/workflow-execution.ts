@@ -5,6 +5,7 @@ import { WorkflowV2Repository, canonicalJson } from "../db/repositories/workflow
 import type { SearchClient } from "../providers/search";
 import type { GenerationMetadata, StructuredModelClient, StructuredStageRequest } from "../providers/structured";
 import { deriveJsonSchema } from "../shared/json-schema";
+import { OpportunityExpansionOutputSchema } from "../shared/opportunity-exploration";
 import { SourceSchema } from "../shared/schemas";
 import { WorkflowV2QueryPlanOutputSchema, WorkflowV2FactorHarvestOutputSchema, WorkflowV2ProblemCandidatesOutputSchema, WorkflowV2ProblemKillOutputSchema, WorkflowV2SolutionsOutputSchema } from "../shared/structured-output-schemas";
 import type { WorkflowV2DevelopmentContext } from "./development";
@@ -26,6 +27,7 @@ export class WorkflowExecution {
       // 96-bit deterministic identifiers are easier for models to copy than full SHA-256 text.
       // Save the format per run: an older run without this marker must still reproduce its IDs.
       this.save("identifier-characters", 24);
+      this.save("focused-experiments", { version: 1 });
     }
   }
 
@@ -34,6 +36,10 @@ export class WorkflowExecution {
   // Older runs keep their original six-stage contract when resumed.
   hasRiskEvaluator(): boolean {
     return Boolean(this.prompts["risk-evaluation"]);
+  }
+
+  hasFocusedExperiments(): boolean {
+    return this.read<{ version: number }>("focused-experiments")?.version === 1;
   }
 
   read<T>(key: string): T | null {
@@ -359,13 +365,43 @@ export class WorkflowExecution {
 
   selectedOption(problemId: string) {
     const checkpoint = this.repository.findStageResult(this.runId, "solutions");
-    if (!checkpoint) throw new Error("Solution options are not ready");
     const selected = this.db.db.prepare("SELECT id, option_position FROM solutions WHERE research_run_id = ? AND selected_at IS NOT NULL")
       .get(this.runId) as { id: string; option_position: number } | undefined;
     if (!selected) return null;
-    const option = WorkflowV2SolutionsOutputSchema.parse(checkpoint.output).options[selected.option_position];
+    const option = checkpoint
+      ? WorkflowV2SolutionsOutputSchema.parse(checkpoint.output).options[selected.option_position]
+      : this.expansionOptionFromCheckpoint(selected.id, selected.option_position);
     if (!option) throw new Error("Selected option is missing from its saved checkpoint");
     return { ...option, id: selected.id, problemId };
+  }
+
+  private expansionOptionFromCheckpoint(solutionId: string, position: number) {
+    const row = this.db.db.prepare(`
+      SELECT attempt.result_json
+      FROM opportunity_candidate_origins origin
+      JOIN opportunity_exploration_attempts attempt
+        ON attempt.thread_id = origin.thread_id
+       AND attempt.stage_key = 'gap-generation:' || origin.batch_id
+       AND attempt.status = 'completed'
+      WHERE origin.candidate_id = ? AND origin.batch_id IS NOT NULL
+    `).get(solutionId) as { result_json: string } | undefined;
+    if (!row) throw new Error("Solution options are not ready");
+    const saved: unknown = JSON.parse(row.result_json);
+    if (!saved || typeof saved !== "object" || Array.isArray(saved)) {
+      throw new Error("Saved opportunity expansion checkpoint is invalid");
+    }
+    const record = saved as Record<string, unknown>;
+    if (!Array.isArray(record.candidateIds) || record.candidateIds.some((id) => typeof id !== "string")) {
+      throw new Error("Saved opportunity expansion candidate IDs are invalid");
+    }
+    if (record.candidateIds[position] !== solutionId) {
+      throw new Error("Selected expansion option does not match its durable generation checkpoint");
+    }
+    const option = OpportunityExpansionOutputSchema.parse(record.output).options[position];
+    if (!option) return undefined;
+    const { focusedDemandTest, ...workflowOption } = option;
+    void focusedDemandTest;
+    return workflowOption;
   }
 }
 

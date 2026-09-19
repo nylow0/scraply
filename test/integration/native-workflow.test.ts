@@ -7,6 +7,7 @@ import { DatabaseClient } from "../../src/db/client";
 import { ResearchRunRepository } from "../../src/db/repositories/research-runs";
 import { ThreadRepository } from "../../src/db/repositories/threads";
 import { WORKFLOW_V2_STAGE_REGISTRY, type WorkflowV2StageId } from "../../src/core/stages";
+import { FOCUSED_EXPERIMENT_DRAFT_INSTRUCTION, FOCUSED_EXPERIMENT_REVIEW_INSTRUCTION } from "../../src/core/experiment-review";
 import { WorkspaceStateSchema, SolutionViewSchema, type WorkspaceState, type ResearchEvent } from "../../src/shared/ipc";
 import { GenerationStartPayloadSchema } from "../../src/shared/runtime-protocol";
 import { DEFAULT_RUN_CONFIG } from "../../src/shared/schemas";
@@ -146,7 +147,7 @@ describe("native research workflow through the production backend", () => {
     expect(JSON.parse(ideas.files[0]!.content)).toHaveLength(2);
 
     const requests = item.requests();
-    expect(requests).toHaveLength(8); // Five discovery generations, options, risk evaluation and analysis.
+    expect(requests).toHaveLength(10); // Five discovery calls, options, risk, focused draft/review, and analysis.
     expect(requests.filter((request) => request.workOrder.stage === "solutions")).toHaveLength(1);
     const reused = await item.post("/research/select-problems", {
       threadId,
@@ -156,20 +157,27 @@ describe("native research workflow through the production backend", () => {
       reasoningEffort: "medium",
     }, WorkspaceStateSchema);
     expect(reused.problemCandidates[0]?.developmentCompleted).toBe(true);
-    expect(item.requests()).toHaveLength(8);
+    expect(item.requests()).toHaveLength(10);
     for (const request of requests) {
       expect(request.repairPolicy).toBe("one_retry");
       expect(JSON.stringify(request.workOrder)).not.toContain(untrusted);
       expect(request.maxOutputTokens).toBeUndefined();
-      const promptName = request.workOrder.stage.split(":")[0]!;
-      expect(request.deadlineMs).toBe(WORKFLOW_V2_STAGE_REGISTRY[promptName as WorkflowV2StageId].deadlineMs);
-      expect(request.workOrder.instruction.startsWith(readFileSync(join(process.cwd(), "prompts", `workflow-v2-${promptName}.md`), "utf8").trim())).toBe(true);
+      if (request.workOrder.stage.startsWith("focused-experiment:")) {
+        expect(request.deadlineMs).toBe(300_000);
+        expect(request.workOrder.instruction).toBe(request.workOrder.stage.endsWith("review")
+          ? FOCUSED_EXPERIMENT_REVIEW_INSTRUCTION
+          : FOCUSED_EXPERIMENT_DRAFT_INSTRUCTION);
+      } else {
+        const promptName = request.workOrder.stage.split(":")[0]!;
+        expect(request.deadlineMs).toBe(WORKFLOW_V2_STAGE_REGISTRY[promptName as WorkflowV2StageId].deadlineMs);
+        expect(request.workOrder.instruction.startsWith(readFileSync(join(process.cwd(), "prompts", `workflow-v2-${promptName}.md`), "utf8").trim())).toBe(true);
+      }
     }
     expect(requests.some((request) => JSON.stringify(request.evidence).includes(untrusted))).toBe(true);
     expect(JSON.stringify(requests)).not.toContain("synthetic-credential");
     expect(exported.content).not.toContain("synthetic-credential");
     expect(ideas.files[0]?.content).not.toContain("synthetic-credential");
-    item.assertAccounting(8);
+    item.assertAccounting(10);
     expect(item.processIds()).toHaveLength(1);
 
     await item.restart();
@@ -178,8 +186,8 @@ describe("native research workflow through the production backend", () => {
     expect(reopened.problemCandidates).toEqual(developed.problemCandidates);
     const replay = await item.raw("/research/resume", { runId });
     expect(replay.status).toBe(409);
-    expect(item.requests()).toHaveLength(8);
-    item.assertAccounting(8);
+    expect(item.requests()).toHaveLength(10);
+    item.assertAccounting(10);
     const validation = await item.post("/validation", undefined, z.object({ native: z.object({ connected: z.boolean() }) }));
     expect(validation.native.connected).toBe(true);
     expect(item.processIds()).toHaveLength(2);
@@ -271,6 +279,50 @@ describe("native research workflow through the production backend", () => {
 });
 
 describe("native v2 decisions through the production backend", () => {
+  test("reuses a completed startup-option generation after persistence fails and saves focused tests as sidecars", async () => {
+    const item = await fixture({ searchEnabled: false });
+    const threadId = await item.createThread("known-problem", 3, "startup-opportunities");
+    const blocked = new DatabaseClient(item.dbPath);
+    blocked.db.exec(`
+      CREATE TRIGGER fail_initial_startup_option
+      BEFORE INSERT ON solutions
+      BEGIN
+        SELECT RAISE(ABORT, 'fixture startup persistence failure');
+      END;
+    `);
+    blocked.close();
+
+    const { runId } = await item.post("/research/start", { threadId }, z.object({ runId: z.string() }));
+    await item.waitFor((state) => state.latestResearchRun?.status === "failed");
+    expect(item.requests()).toHaveLength(1);
+    const recover = new DatabaseClient(item.dbPath);
+    try {
+      expect(recover.db.prepare("SELECT status FROM generation_attempts WHERE research_run_id = ?").get(runId))
+        .toEqual({ status: "completed" });
+      expect(recover.db.prepare("SELECT COUNT(*) AS count FROM solutions WHERE research_run_id = ?").get(runId))
+        .toEqual({ count: 0 });
+      recover.db.exec("DROP TRIGGER fail_initial_startup_option");
+    } finally { recover.close(); }
+
+    await item.post("/research/resume", { runId }, z.unknown());
+    const resumed = await item.waitFor((state) => state.latestResearchRun?.awaitingSelection === true);
+    expect(item.requests()).toHaveLength(1);
+    expect(resumed.solutions).toHaveLength(2);
+    for (const solution of resumed.solutions) {
+      expect((await item.post(`/ideas/${solution.id}`, undefined, SolutionViewSchema)).focusedDemandTest)
+        .toEqual(expect.objectContaining({ schemaVersion: 1, paymentTerms: expect.objectContaining({ amount: 100, currency: "USD" }) }));
+    }
+    const persisted = new DatabaseClient(item.dbPath);
+    try {
+      expect(persisted.db.prepare("SELECT COUNT(*) AS count FROM focused_demand_tests WHERE research_run_id = ?").get(runId))
+        .toEqual({ count: 2 });
+      const checkpoint = persisted.db.prepare("SELECT output_json FROM stage_results WHERE research_run_id = ? AND stage_id = 'solutions'").get(runId) as { output_json: string };
+      expect(checkpoint.output_json).not.toContain("focusedDemandTest");
+      expect(persisted.db.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
+    } finally { persisted.close(); }
+    item.assertAccounting(1);
+  });
+
   test("saves twenty configured ideas and selects the last one", async () => {
     const item = await fixture({ mode: "workflow-many", searchEnabled: false });
     const threadId = await item.createThread("known-problem", 20);
@@ -283,7 +335,7 @@ describe("native v2 decisions through the production backend", () => {
     expect((await item.post(`/ideas/${selected.id}`, undefined, SolutionViewSchema)).decisionAnalysis).not.toBeNull();
     await item.restart();
     expect((await item.workspace()).solutions).toHaveLength(20);
-    item.assertAccounting(3);
+    item.assertAccounting(5);
   });
 
   test("retains and exports risk evaluation after analysis fails, then reuses it on resume", async () => {
@@ -305,7 +357,10 @@ describe("native v2 decisions through the production backend", () => {
     const resumed = await item.post(`/ideas/${selected.id}`, undefined, SolutionViewSchema);
     expect(resumed.riskEvaluation).toEqual(failed.riskEvaluation);
     expect(resumed.decisionAnalysis?.risks).toEqual(failed.riskEvaluation?.risks);
-    expect(item.requests().map(request => request.workOrder.stage)).toEqual(["solutions", "risk-evaluation", "decision-analysis", "decision-analysis"]);
+    expect(item.requests().map(request => request.workOrder.stage)).toEqual([
+      "solutions", "risk-evaluation", "focused-experiment:draft", "focused-experiment:initial-review",
+      "decision-analysis", "decision-analysis",
+    ]);
   });
 
   test("continues a historical six-stage run without adding risk evaluation", async () => {
@@ -353,8 +408,8 @@ describe("native v2 decisions through the production backend", () => {
     expect(item.requests()).toHaveLength(1);
     await item.post("/research/select-option", { threadId, runId: first.runId, solutionId: first.id }, WorkspaceStateSchema);
     const completed = await item.waitFor((state) => state.latestResearchRun?.status === "completed" && !state.latestResearchRun.awaitingSelection);
-    expect(item.requests()).toHaveLength(3);
-    expect(item.requests()[2]!.workOrder.instruction).toBe(savedPrompt.trim());
+    expect(item.requests()).toHaveLength(5);
+    expect(item.requests().find((request) => request.workOrder.stage === "decision-analysis")?.workOrder.instruction).toBe(savedPrompt.trim());
     expect(completed.solutions.filter((idea) => idea.selected)).toHaveLength(1);
     const detail = await item.post(`/ideas/${first.id}`, undefined, z.object({ decisionAnalysis: z.object({ experiment: z.object({ passCriterion: z.string() }) }) }));
     expect(detail.decisionAnalysis.experiment.passCriterion).toContain("eight");
@@ -365,8 +420,8 @@ describe("native v2 decisions through the production backend", () => {
     const markdown = await item.post("/ideas/export", { threadId, format: "markdown" }, z.object({ files: z.array(z.object({ content: z.string() })) }));
     expect(markdown.files[0]!.content).toContain("Next experiment");
     await item.restart();
-    expect(item.requests()).toHaveLength(3);
-    item.assertAccounting(3);
+    expect(item.requests()).toHaveLength(5);
+    item.assertAccounting(5);
     const db = new DatabaseClient(item.dbPath);
     try {
       expect(db.db.prepare("SELECT stage_id FROM stage_results ORDER BY completed_at").all()).toEqual([{ stage_id: "solutions" }, { stage_id: "risk-evaluation" }, { stage_id: "decision-analysis" }]);
@@ -643,7 +698,7 @@ describe("native v2 decisions through the production backend", () => {
     await item.restart();
     expect((await item.post(`/ideas/${selected.id}`, undefined, SolutionViewSchema)).evidenceFollowUp)
       .toEqual(detail.evidenceFollowUp);
-    expect(item.requests()).toHaveLength(3);
+    expect(item.requests()).toHaveLength(5);
   }, 20_000);
 });
 
@@ -692,11 +747,24 @@ async function fixture({ mode = "workflow", searchEnabled = true, workflowVersio
     operations: () => lines(operationsCapture), processIds: () => lines(pids),
     requests: () => lines(capture).map((line) => z.object({ payload: GenerationStartPayloadSchema }).parse(JSON.parse(line)).payload),
     async restart(nextMode = mode) { await close(); mode = nextMode; await open(); },
-    async createThread(researchMode: "explore-market" | "known-problem", ideaCount = 3) {
+    async createThread(
+      researchMode: "explore-market" | "known-problem",
+      ideaCount = 3,
+      explorationPurpose: "general-solutions" | "startup-opportunities" = "general-solutions",
+    ) {
       const created = await post("/threads", { title: scope.title }, z.object({ thread: z.object({ id: z.string() }) }));
       const threadId = created.thread.id;
       await post("/scope", { threadId, scope }, WorkspaceStateSchema);
-      await post("/run-config", { threadId, config: { ...DEFAULT_RUN_CONFIG, workflowVersion, ideaCount, model, discoveryDepth: "quick", researchMode, knownProblem: researchMode === "known-problem" ? statement : "" } }, WorkspaceStateSchema);
+      await post("/run-config", { threadId, config: {
+        ...DEFAULT_RUN_CONFIG,
+        workflowVersion,
+        ideaCount,
+        model,
+        discoveryDepth: "quick",
+        researchMode,
+        knownProblem: researchMode === "known-problem" ? statement : "",
+        explorationPurpose,
+      } }, WorkspaceStateSchema);
       return threadId;
     },
     async waitFor(predicate: (state: WorkspaceState) => boolean) {
