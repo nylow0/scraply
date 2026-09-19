@@ -56,6 +56,7 @@ module.exports = function workflowOutput(request) {
         direction: "higher-is-better",
         passThreshold: 8,
         failThreshold: 5,
+        metricRange: { minimum: 0, maximum: 10 },
         thresholdRationale: "Eight improved estimates justify a prototype; fewer than five stop it.",
         minimumUsableObservations: 10,
         insufficientDataReason: "Fewer than ten eligible orders cannot support the decision.",

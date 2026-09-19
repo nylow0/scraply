@@ -15,6 +15,8 @@ import { deriveJsonSchema } from "../../src/shared/json-schema";
 import { RunConfigSchema } from "../../src/shared/schemas";
 import { WorkflowV2SolutionsOutputSchema } from "../../src/shared/structured-output-schemas";
 import { WORKFLOW_V2_STAGE_REGISTRY } from "../../src/core/stages";
+import { savedPaymentDraft, validPaymentPlan, combinedAssumptionPlan, acceptanceReview, combinedConditions } from "../fixtures/focused-acceptance";
+import { FocusedExperimentRecordSchema } from "../../src/shared/focused-experiment";
 
 const directories: string[] = [];
 afterEach(() => {
@@ -24,6 +26,75 @@ afterEach(() => {
 });
 
 describe("focused experiment flow", () => {
+  test("rejects the observed impossible failure boundary before review, checkpointing, or acceptance", async () => {
+    const client=setup();
+    const repository=new FocusedExperimentRepository(client);
+    let calls=0;
+    const invalid={...savedPaymentDraft,outcomeRules:{...savedPaymentDraft.outcomeRules,metricRange:{minimum:0,maximum:100}}};
+    const modelClient:StructuredModelClient={async structuredCompletion<T>(request:StructuredStageRequest<T>) {
+      calls++;
+      return {output:request.schema.parse(invalid),metadata:generationMetadata(request)};
+    }};
+    try {
+      await expect(runFocusedExperimentFlow(flowInput(),{repository,modelClient,generationModel:{providerId:"test",modelId:"fixture"},reviewModel:{providerId:"test",modelId:"fixture"},generationReasoningEffort:"high",reviewReasoningEffort:"high"})).rejects.toThrow("both pass and fail");
+      expect(calls).toBe(1);
+      expect(repository.findRecord("run-development","solution-1")).toBeNull();
+      expect(client.db.prepare("SELECT count(*) AS n FROM focused_experiment_stage_results").get()).toEqual({n:0});
+      expect(()=>repository.saveRecord("run-development","solution-1",{schemaVersion:1,status:"approved",plan:savedPaymentDraft,initialReview:acceptanceReview("approved"),finalReview:null,correctionCount:0})).toThrow();
+    } finally {client.close();}
+  });
+
+  test("preserves an existing saved numeric record and its legacy threshold meaning", () => {
+    const client=setup();
+    const repository=new FocusedExperimentRepository(client);
+    const record=FocusedExperimentRecordSchema.parse({schemaVersion:1,status:"approved",plan:savedPaymentDraft,initialReview:acceptanceReview("approved"),finalReview:null,correctionCount:0});
+    const now=new Date().toISOString();
+    client.db.prepare("INSERT INTO focused_experiments (id,research_run_id,solution_id,status,record_json,created_at,updated_at) VALUES ('old','run-development','solution-1','approved',?,?,?)").run(JSON.stringify(record),now,now);
+    expect(repository.findRecord("run-development","solution-1")).toEqual(record);
+    repository.saveRecord("run-development","solution-1",record);
+    expect(repository.findRecord("run-development","solution-1")?.plan.outcomeRules).toEqual(savedPaymentDraft.outcomeRules);
+    client.close();
+  });
+
+  test.each(["approved","uncertain","needs-revision"] as const)("requests condition-by-condition review and handles %s offline", async verdict => {
+    const client=setup();
+    const repository=new FocusedExperimentRepository(client);
+    const draft=verdict==="approved" ? validPaymentPlan() : combinedAssumptionPlan();
+    const outputs=verdict==="needs-revision" ? [draft,acceptanceReview(verdict),draft,acceptanceReview(verdict)] : [draft,acceptanceReview(verdict)];
+    let calls=0;
+    const modelClient:StructuredModelClient={async structuredCompletion<T>(request:StructuredStageRequest<T>) {
+      if(request.stage.endsWith("review")) {
+        expect(request.workOrder.instruction).toContain("Audit every mandatory success condition");
+        expect(request.workOrder.instruction).toContain("Supporting measurements and validity checks do not automatically create a second assumption");
+        expect(request.workOrder.instruction).toContain("verdict to uncertain");
+        expect(request.workOrder.instruction).toContain("fail when value < failThreshold");
+        expect(request.workOrder.inputs).toMatchObject({reviewVersion:2});
+        const evidence=request.evidence.find(item=>item.sourceId==="scraply:focused-experiment");
+        expect(evidence?.content).toEqual(draft);
+        if(verdict!=="approved") expect(JSON.stringify(evidence?.content)).toContain(combinedConditions.passCriterion);
+      }
+      return {output:request.schema.parse(outputs[calls++]),metadata:generationMetadata(request)};
+    }};
+    try {
+      const result=await runFocusedExperimentFlow(flowInput(),{repository,modelClient,generationModel:{providerId:"test",modelId:"fixture"},reviewModel:{providerId:"test",modelId:"fixture"},generationReasoningEffort:"high",reviewReasoningEffort:"high"});
+      expect(result.record.status).toBe(verdict==="approved"?"approved":"needs_revision");
+      expect(calls).toBe(verdict==="needs-revision"?4:2);
+      expect(repository.findRecord("run-development","solution-1")).toEqual(result.record);
+    } finally {client.close();}
+  });
+
+  test("an approved verdict with a failed assumption-isolation check cannot be saved",async()=>{
+    const client=setup();
+    const repository=new FocusedExperimentRepository(client);
+    let calls=0;
+    const outputs=[combinedAssumptionPlan(),{...acceptanceReview("approved"),isolatesAssumption:false}];
+    const modelClient:StructuredModelClient={async structuredCompletion<T>(request:StructuredStageRequest<T>){return {output:request.schema.parse(outputs[calls++]),metadata:generationMetadata(request)};}};
+    try {
+      await expect(runFocusedExperimentFlow(flowInput(),{repository,modelClient,generationModel:{providerId:"test",modelId:"fixture"},reviewModel:{providerId:"test",modelId:"fixture"},generationReasoningEffort:"high",reviewReasoningEffort:"high"})).rejects.toThrow("approved review must pass every check");
+      expect(repository.findRecord("run-development","solution-1")).toBeNull();
+    } finally {client.close();}
+  });
+
   test("persists draft, one correction, final review, and reuses the completed result", async () => {
     const client = setup();
     const repository = new FocusedExperimentRepository(client);
@@ -281,7 +352,7 @@ function plan(): FocusedExperiment {
     participantsAndCases: { eligibilityCriteria: ["Maintains answer keys"], caseSelection: "Choose ten revisions", exclusions: [], recruitmentMethod: "Invite the full maintainer roster." },
     primaryMetric: { name: "additional confirmed contradictions", unit: "contradictions", numerator: null, denominator: null, collectionMethod: "Confirm checker-only findings against intended answers.", comparisonBaseline: "The same revision after normal review." },
     sample: { targetObservations: 10, recruitmentLimit: 15, observationWindow: { value: 3, unit: "weeks" }, feasibilityRationale: "Ten revisions normally arrive in three weeks." },
-    outcomeRules: { kind: "numeric-threshold", direction: "higher-is-better", passThreshold: 8, failThreshold: 4, thresholdRationale: "Eight justifies a prototype; fewer than four does not.", minimumUsableObservations: 10, insufficientDataReason: "Fewer than ten cases misses the policy sample.", unusableObservationRule: "Exclude findings whose intended answer cannot be confirmed." },
+    outcomeRules: { kind: "numeric-threshold", direction: "higher-is-better", passThreshold: 8, failThreshold: 4, metricRange: { minimum: 0, maximum: null }, thresholdRationale: "Eight justifies a prototype; fewer than four does not.", minimumUsableObservations: 10, insufficientDataReason: "Fewer than ten cases misses the policy sample.", unusableObservationRule: "Exclude findings whose intended answer cannot be confirmed." },
     resources: { estimatedEffort: "Three facilitator days.", dependencies: ["Revision access"], spendingLimit: { amount: 500, currency: "USD" } },
     paymentTerms: null,
     followOnDecision: { pass: "Prototype automation.", fail: "Stop this mechanism.", inconclusive: "Recruit the remaining consecutive cases." },
