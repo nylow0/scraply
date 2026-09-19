@@ -191,6 +191,103 @@ describe("workflow v2 persistence", () => {
     } finally { client.close(); }
   });
 
+  test("keeps older project mechanisms visible after several long option runs", () => {
+    configurePromptPaths({ bundledDir: join(process.cwd(), "prompts"), overrideDir: null });
+    const client = database();
+    const now = new Date().toISOString();
+    const learnerBlocker = "Collect learner setup blockers, keep each case open, and require learner confirmation before closure.";
+    try {
+      client.db.prepare("UPDATE research_runs SET status = 'completed' WHERE id = 'run-v2'").run();
+      client.db.prepare(`
+        INSERT INTO scopes (
+          id, research_run_id, title, audience, domain, observations, off_limits_json, created_at, updated_at
+        ) VALUES ('history-scope', 'run-discovery', 'Educator tools', 'Independent educators', 'Course operations', '', '[]', ?, ?)
+      `).run(now, now);
+      for (let problemIndex = 0; problemIndex < 5; problemIndex += 1) {
+        const problemId = `history-problem-${problemIndex}`;
+        const runId = `history-run-${problemIndex}`;
+        client.db.prepare(`
+          INSERT INTO problems (
+            id, discovery_run_id, statement, why_it_persists, affected, scale_estimate,
+            verdict, verdict_reason, verdict_source_ids_json, created_at
+          ) VALUES (?, 'run-discovery', ?, '', '', '', 'user-asserted', 'Selected by the user.', '[]', ?)
+        `).run(problemId, `Long supplementary hypothesis ${problemIndex}: ${"payment, enrollment, access, and administration. ".repeat(30)}`, now);
+        client.db.prepare(`
+          INSERT INTO research_runs (
+            id, thread_id, status, config_json, workflow_version, problem_id, created_at, updated_at
+          ) VALUES (?, 'thread-1', 'completed', ?, 2, ?, ?, ?)
+        `).run(runId, JSON.stringify(DEFAULT_RUN_CONFIG), problemId, now, now);
+      }
+      for (let optionIndex = 0; optionIndex < 29; optionIndex += 1) {
+        const problemIndex = Math.floor(optionIndex / 6);
+        const mechanism = optionIndex === 0
+          ? learnerBlocker
+          : `Track enrollment exception ${optionIndex}. ${"Record each state transition and require explicit confirmation. ".repeat(20)}`;
+        client.db.prepare(`
+          INSERT INTO solutions (
+            id, problem_id, mechanism, description, respects_off_limits, respects_off_limits_why,
+            created_at, research_run_id, option_position
+          ) VALUES (?, ?, ?, ?, 1, 'Within constraints.', ?, ?, ?)
+        `).run(
+          `history-solution-${optionIndex}`,
+          `history-problem-${problemIndex}`,
+          mechanism,
+          `Compact option ${optionIndex}: ${"A deliberately long production-shaped description. ".repeat(10)}`,
+          now,
+          `history-run-${problemIndex}`,
+          optionIndex % 6,
+        );
+      }
+      client.db.prepare(`
+        INSERT INTO research_runs (
+          id, thread_id, status, config_json, workflow_version, problem_id, created_at, updated_at
+        ) VALUES ('history-current', 'thread-1', 'running', ?, 2, 'problem-1', ?, ?)
+      `).run(JSON.stringify(DEFAULT_RUN_CONFIG), now, now);
+
+      const context = new WorkflowExecution(client, "history-current").developmentContext("problem-1");
+      expect(context.priorProjectMechanisms).toHaveLength(29);
+      expect(context.priorProjectMechanisms?.some((item) => item.mechanism.includes(learnerBlocker))).toBe(true);
+      expect(context.priorProjectMechanismsOmittedCount).toBe(0);
+      expect(JSON.stringify(context.priorProjectMechanisms).length).toBeLessThanOrEqual(24_000);
+
+      client.db.prepare("UPDATE research_runs SET status = 'completed' WHERE id = 'history-current'").run();
+      client.db.prepare(`
+        INSERT INTO problems (
+          id, discovery_run_id, statement, why_it_persists, affected, scale_estimate,
+          verdict, verdict_reason, verdict_source_ids_json, created_at
+        ) VALUES ('overflow-problem', 'run-discovery', ?, '', '', '', 'user-asserted', 'Selected by the user.', '[]', ?)
+      `).run(`Another long hypothesis: ${"integration recovery and exception handling. ".repeat(30)}`, now);
+      client.db.prepare(`
+        INSERT INTO research_runs (
+          id, thread_id, status, config_json, workflow_version, problem_id, created_at, updated_at
+        ) VALUES ('overflow-run', 'thread-1', 'completed', ?, 2, 'overflow-problem', ?, ?)
+      `).run(JSON.stringify(DEFAULT_RUN_CONFIG), now, now);
+      for (let optionIndex = 0; optionIndex < 20; optionIndex += 1) {
+        client.db.prepare(`
+          INSERT INTO solutions (
+            id, problem_id, mechanism, description, respects_off_limits, respects_off_limits_why,
+            created_at, research_run_id, option_position
+          ) VALUES (?, 'overflow-problem', ?, ?, 1, 'Within constraints.', ?, 'overflow-run', ?)
+        `).run(
+          `overflow-solution-${optionIndex}`,
+          `Handle integration exception ${optionIndex}. ${"Record transitions and require operator confirmation. ".repeat(20)}`,
+          `Overflow option ${optionIndex}: ${"A deliberately long production-shaped description. ".repeat(10)}`,
+          now,
+          optionIndex,
+        );
+      }
+      client.db.prepare(`
+        INSERT INTO research_runs (
+          id, thread_id, status, config_json, workflow_version, problem_id, created_at, updated_at
+        ) VALUES ('overflow-current', 'thread-1', 'running', ?, 2, 'problem-1', ?, ?)
+      `).run(JSON.stringify(DEFAULT_RUN_CONFIG), now, now);
+      const overflow = new WorkflowExecution(client, "overflow-current").developmentContext("problem-1");
+      expect((overflow.priorProjectMechanisms?.length ?? 0) + (overflow.priorProjectMechanismsOmittedCount ?? 0)).toBe(49);
+      expect(overflow.priorProjectMechanismsOmittedCount).toBeGreaterThan(0);
+      expect(JSON.stringify(overflow.priorProjectMechanisms).length).toBeLessThanOrEqual(24_000);
+    } finally { client.close(); }
+  });
+
   test.each(["openrouter", "openai-subscription"])("uses each discovery stage's output ceiling for %s", async (providerId) => {
     configurePromptPaths({ bundledDir: join(process.cwd(), "prompts"), overrideDir: null });
     const client = database();

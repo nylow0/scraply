@@ -86,7 +86,8 @@ export interface WorkflowV2DevelopmentContext {
   supportingEvidence: WorkflowV2EvidenceItem[];
   contraryEvidence: WorkflowV2EvidenceItem[];
   priorFailedAttempts: string[];
-  priorProjectMechanisms?: Array<{ mechanism: string; problemStatement: string }>;
+  priorProjectMechanisms?: Array<{ description?: string; mechanism: string; problemStatement: string }>;
+  priorProjectMechanismsOmittedCount?: number;
   recordedExperiments?: {
     results: Array<{ mechanism: string; userDecision: string | null; observedResult: string }>;
     omittedCount: number;
