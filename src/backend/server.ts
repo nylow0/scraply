@@ -463,6 +463,7 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
           && row.decision_updated_at !== null && row.evidence_follow_up_status === null && row.run_status === "completed",
         canReassessEvidence: Number(row.workflow_version) === 2 && row.selected_at !== null
           && evidenceFollowUp?.status === "completed" && [null, "failed"].includes(evidenceFollowUp.reassessmentStatus) && row.run_status === "completed"
+          && row.risk_evaluation_key !== null && row.decision_updated_at !== null
           && generationAttempts.getResumeSafety(String(row.research_run_id)).canResume,
         keyAssumption: row.key_assumption === null ? undefined : String(row.key_assumption),
         whyCurrentApproachMaySuffice: row.why_current_approach_may_suffice === null ? undefined : String(row.why_current_approach_may_suffice),
@@ -1223,6 +1224,14 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
   }
   const address = server.address();
   if (!address || typeof address === "string") throw new Error("Backend failed to bind");
+  for (const handoff of threads.pendingDevelopmentHandoffs()) {
+    try {
+      await ensureEngine().startNextSelected(handoff.threadId, handoff.config);
+    } catch (error) {
+      threads.updateThreadStatus(handoff.threadId, "failed");
+      context.log?.({ level: "error", event: "development-handoff-recovery-failed", error });
+    }
+  }
   void validateProviders().catch(() => undefined);
   return {
     port: address.port, token,

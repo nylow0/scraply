@@ -317,7 +317,10 @@ export async function discoverProblems(
     const intendedBuyerFactors = citedFactors.filter((factor) => claimedBuyerIds.has(factor.id)
       && qualifiesAsIntendedBuyerObservation(factor));
     const independentBuyerSources = new Set(intendedBuyerFactors.map((factor) => factor.independentSourceKey).filter(Boolean));
-    const resolvedEvidenceGap = independentBuyerSources.size >= 2
+    // A hostname is only a transport boundary. Separate buyer accounts or studies on the
+    // same forum are independent when extraction gave them distinct source keys.
+    const hasSufficientBuyerEvidence = independentBuyerSources.size >= 2;
+    const resolvedEvidenceGap = hasSufficientBuyerEvidence
       ? null
       : evidenceGap(
           "evidenceGap" in kill ? kill.evidenceGap : null,
@@ -335,10 +338,10 @@ export async function discoverProblems(
       factorIds,
       verdict: dependencies.workflowVersion === 2
         && kill.verdict === "confirmed"
-        && (hostnames.length < 2 || intendedBuyerFactors.length === 0 || independentBuyerSources.size < 2)
+        && !hasSufficientBuyerEvidence
         ? "insufficient-evidence" : kill.verdict,
       verdictReason: dependencies.workflowVersion === 2
-        && (hostnames.length < 2 || intendedBuyerFactors.length === 0 || independentBuyerSources.size < 2)
+        && !hasSufficientBuyerEvidence
         ? `Intended-buyer evidence: ${intendedBuyerFactors.length} factor(s) across ${independentBuyerSources.size} independent source(s). ${resolvedEvidenceGap} ${kill.verdictReason.trim()}`
         : kill.verdictReason.trim(),
       verdictSourceIds: validVerdictSourceIds,
@@ -708,14 +711,24 @@ export async function harvestEvidenceFollowUp(
         rejections.push(rejection);
         continue;
       }
+      const classification = "sourceRole" in candidate ? candidate : null;
       factors.push({
         id: (dependencies.idFactory ?? randomUUID)(),
         subject: candidate.subject.trim(),
-        behavior: candidate.behavior.trim(),
+        behavior: preserveRecommendationWording(candidate.behavior.trim(), classification?.sourceRole),
         quote: candidate.quote.trim(),
         sourceId: candidate.sourceId,
         harvestMode: "domain",
         modelConfidence: candidate.modelConfidence,
+        uncertainty: "uncertainty" in candidate ? candidate.uncertainty.trim() : null,
+        sourceRole: classification?.sourceRole ?? "unknown",
+        audienceFit: classification?.audienceFit ?? "unknown",
+        independentSourceKey: classification?.independentSourceKey?.trim() || null,
+        supportsDemand: classification?.supportsDemand === true
+          && classification.audienceFit === "intended-buyer"
+          && (classification.sourceRole === "firsthand" || classification.sourceRole === "measured"),
+        demandEvidenceUncertainty: classification?.demandEvidenceUncertainty.trim()
+          ?? "Not classified in the saved output.",
         source: sourceById.get(candidate.sourceId)!,
       });
     }

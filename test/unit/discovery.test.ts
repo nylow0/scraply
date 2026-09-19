@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import {
   batchSources,
   discoverProblems,
+  harvestEvidenceFollowUp,
   harvestFactors,
   normalizeEvidenceText,
   qualifiesAsIntendedBuyerObservation,
@@ -126,6 +127,51 @@ describe("discovery", () => {
       uncertainty: "One shop; prevalence was not measured.",
       demandEvidenceUncertainty: "No observed purchase or payment.",
     })).toBe(true);
+  });
+
+  test("preserves every classification field from a follow-up harvest", async () => {
+    const result = await harvestEvidenceFollowUp(scope(), "Which operators pay for this workaround?", {
+      prompt: () => "Fixture discovery instructions",
+      workflowVersion: 2,
+      model,
+      reasoningEffort,
+      depth: "quick",
+      modelClient: modelClient(async (request) => {
+        const evidence = request.evidence[0]!.content as { sources: Array<{ id: string }> };
+        return request.schema.parse({ factors: [{
+          subject: "Repair shops",
+          behavior: "paid for a delivery tracking service",
+          quote: "We paid for delivery tracking last year.",
+          sourceId: evidence.sources[0]!.id,
+          modelConfidence: 0.91,
+          uncertainty: "One shop reported the purchase; prevalence is unknown.",
+          sourceRole: "firsthand",
+          audienceFit: "intended-buyer",
+          independentSourceKey: "repair-shop-one",
+          supportsDemand: true,
+          demandEvidenceUncertainty: "The renewal decision was not reported.",
+        }] });
+      }),
+      search: {
+        async search() {
+          return [{
+            id: "follow-up-source",
+            url: "https://example.test/follow-up",
+            title: "Repair shop interview",
+            text: "We paid for delivery tracking last year.",
+          }];
+        },
+      },
+    });
+
+    expect(result.factors[0]).toMatchObject({
+      uncertainty: "One shop reported the purchase; prevalence is unknown.",
+      sourceRole: "firsthand",
+      audienceFit: "intended-buyer",
+      independentSourceKey: "repair-shop-one",
+      supportsDemand: true,
+      demandEvidenceUncertainty: "The renewal decision was not reported.",
+    });
   });
 
   test("batches sources without splitting a source", () => {
@@ -359,6 +405,61 @@ describe("discovery", () => {
     expect(result.killSources).toEqual([]);
     expect(result.problems[0]?.verdictSourceIds).toEqual([existing.id]);
     expect(result.problems[0]?.verdict).toBe("confirmed");
+  });
+
+  test.each([
+    ["accepts distinct buyer origins hosted on one forum", ["buyer-one", "buyer-two"], "confirmed", null],
+    ["keeps a concrete gap when buyer origins are not independent", ["buyer-one", "buyer-one"], "insufficient-evidence", "More independent intended-buyer evidence is required."],
+  ] as const)("%s", async (_name, sourceKeys, expectedVerdict, expectedGap) => {
+    const sources = [source("one", "First buyer report."), source("two", "Second buyer report.")];
+    const factors: HarvestedFactor[] = sources.map((item, index) => ({
+      id: `factor-${index + 1}`,
+      subject: "Operators",
+      behavior: "repeat filing",
+      quote: item.retrievedText,
+      sourceId: item.id,
+      harvestMode: "audience",
+      modelConfidence: 0.8,
+      sourceRole: "firsthand",
+      audienceFit: "intended-buyer",
+      independentSourceKey: sourceKeys[index]!,
+      supportsDemand: false,
+      source: item,
+    }));
+    const result = await discoverProblems(scope(), factors, sources, {
+      prompt: () => "Fixture discovery instructions",
+      workflowVersion: 2,
+      model,
+      reasoningEffort,
+      depth: "quick",
+      modelClient: modelClient(async (request) => request.schema.parse(request.stage === "problem-candidates"
+        ? { problems: [{
+            statement: "Operators duplicate recurring filings.",
+            whyItPersists: "Systems do not share state.",
+            affected: "Operators",
+            scaleEstimate: "Recurring",
+            scaleBasisFactorId: null,
+            factorIds: factors.map((factor) => factor.id),
+            intendedBuyerEvidenceFactorIds: factors.map((factor) => factor.id),
+            evidenceGap: null,
+          }] }
+        : {
+            verdict: "confirmed",
+            verdictReason: "No contrary evidence resolves the problem.",
+            verdictSourceIds: factors.map((factor) => factor.sourceId),
+            intendedBuyerEvidenceFactorIds: factors.map((factor) => factor.id),
+            evidenceGap: null,
+          })),
+      search: { async search() { return []; } },
+    });
+
+    const problem = result.problems[0]!;
+    expect(problem.sourceHostnames).toEqual(["example.test"]);
+    expect(problem.verdict).toBe(expectedVerdict);
+    expect(problem.evidenceGap).toBe(expectedGap);
+    expect(problem.verdictReason).not.toContain("null");
+    if (expectedGap) expect(problem.verdictReason).toContain(expectedGap);
+    else expect(problem.verdictReason).toBe("No contrary evidence resolves the problem.");
   });
 
   test("skips a search result whose URL cannot be parsed instead of failing the run", async () => {

@@ -113,6 +113,51 @@ describe("DecisionOption interactions", () => {
     await fireEvent.click(exhaustedView.getByRole("button", { name: "Reassess with new evidence" }));
     expect(onEvidenceReassessment).toHaveBeenCalledWith(exhausted.runId);
   });
+
+  test("labels reassessed risk changes without rendering risks twice", async () => {
+    const idea = option("risk-reassessment");
+    const saved = detail(idea, "", "");
+    const existingRisk = {
+      riskId: "delivery-variance",
+      description: "Existing delivery variance",
+      whyDecisive: "Wide variance can make estimates misleading.",
+    };
+    const newRisk = {
+      riskId: "supplier-dependency",
+      description: "New supplier dependency",
+      whyDecisive: "The follow-up found that one supplier controls the data feed.",
+    };
+    saved.decisionAnalysis = { ...saved.decisionAnalysis!, risks: [existingRisk] };
+    saved.evidenceFollowUp = {
+      status: "completed",
+      question: "Who controls the delivery data?",
+      sources: [],
+      factors: [],
+      error: null,
+      reassessmentStatus: "completed",
+      riskReassessment: {
+        affectedRisks: [],
+        newRisks: [newRisk],
+        additionalUnknowns: [],
+      },
+      reassessmentAnalysis: {
+        ...saved.decisionAnalysis,
+        risks: [existingRisk, newRisk],
+      },
+      reassessmentError: null,
+    };
+    installDetailApi(vi.fn().mockResolvedValue(saved));
+    const view = render(DecisionOption, handlers(idea));
+
+    await fireEvent.click(view.getByRole("button", { name: "Compare observed delivery windows." }));
+    const summary = await view.findByText("Reassessment with new evidence");
+    const reassessment = summary.closest("details");
+    expect(reassessment).toBeTruthy();
+    const reassessmentView = within(reassessment!);
+    expect(view.getAllByText("New risk: New supplier dependency")).toHaveLength(1);
+    expect(reassessmentView.getByText("Existing delivery variance")).toBeTruthy();
+    expect(reassessmentView.queryByText(/(?:New|Updated|Strengthened|Weakened) risk: Existing delivery variance/)).toBeNull();
+  });
 });
 
 function handlers(idea: SolutionView) {

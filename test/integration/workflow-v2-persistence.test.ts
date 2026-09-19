@@ -324,6 +324,9 @@ describe("workflow v2 persistence", () => {
       const output = request.schema.parse({ factors: [{
         subject: "Operators", behavior: "repeat filing", quote: "Operators repeat filing.",
         sourceId: "source", modelConfidence: 0.8, uncertainty: "One source",
+      }, {
+        subject: "Operators", behavior: "reconcile duplicates", quote: "Operators reconcile duplicate records.",
+        sourceId: "source", modelConfidence: 0.7, uncertainty: "One source",
       }] });
       const metadata = {
         model: request.model, usage: { status: "unknown" as const }, latencyMs: 1, repairCount: 0,
@@ -341,7 +344,7 @@ describe("workflow v2 persistence", () => {
     } };
     const request = (generationId: string, partitioned = false): StructuredStageRequest<unknown> => ({
       generationId, stage: partitioned ? "factor-harvest:domain:source" : "factor-harvest:domain:source,other", model: { providerId: "test", modelId: "test" }, reasoningEffort: "high",
-      workOrder: { stage: partitioned ? "factor-harvest:domain:source" : "factor-harvest:domain:source,other", instruction: "Legacy instruction", goal: "Extract factors", inputs: { harvestMode: "domain", factorLimit: partitioned ? 8 : 15 }, requiredDecisions: [], definitionOfDone: [], constraints: [] },
+      workOrder: { stage: partitioned ? "factor-harvest:domain:source" : "factor-harvest:domain:source,other", instruction: "Legacy instruction", goal: "Extract factors", inputs: { harvestMode: "domain", factorLimit: partitioned ? 1 : 15 }, requiredDecisions: [], definitionOfDone: [], constraints: [] },
       evidence: [{
         sourceId: partitioned ? "scraply:factor-harvest:domain:source" : "scraply:factor-harvest:domain:source,other",
         content: {
@@ -368,7 +371,7 @@ describe("workflow v2 persistence", () => {
       await expectsFreshDispatch({
         ...smaller,
         stage: "factor-harvest:audience:source",
-        workOrder: { ...smaller.workOrder, stage: "factor-harvest:audience:source", inputs: { harvestMode: "audience", factorLimit: 8 } },
+        workOrder: { ...smaller.workOrder, stage: "factor-harvest:audience:source", inputs: { harvestMode: "audience", factorLimit: 1 } },
       });
       await expectsFreshDispatch({
         ...smaller,
@@ -393,6 +396,7 @@ describe("workflow v2 persistence", () => {
       const recovered = await resumed.discoveryClient(provider).structuredCompletion(request("resume", true));
 
       expect(providerCalls).toBe(1);
+      expect((recovered.output as { factors: unknown[] }).factors).toHaveLength(1);
       expect(recovered.output).toEqual({ factors: [expect.objectContaining({
         sourceRole: "unknown", audienceFit: "unknown", independentSourceKey: null, supportsDemand: false,
         demandEvidenceUncertainty: "Not classified in the saved output.",

@@ -28,7 +28,63 @@ export class ThreadRepository {
           SELECT 1 FROM research_runs AS completed
           WHERE completed.thread_id = thread.id AND completed.problem_id IS NOT NULL AND completed.status = 'completed'
         )
+        AND NOT EXISTS (
+          SELECT 1 FROM problems AS pending
+          WHERE pending.selected_at IS NOT NULL
+            AND pending.discovery_run_id = (
+              SELECT discovery.id FROM research_runs AS discovery
+              WHERE discovery.thread_id = thread.id AND discovery.problem_id IS NULL AND discovery.status = 'completed'
+              ORDER BY discovery.created_at DESC, discovery.rowid DESC LIMIT 1
+            )
+            AND NOT EXISTS (SELECT 1 FROM research_runs AS started WHERE started.problem_id = pending.id)
+        )
     `).run(new Date().toISOString());
+  }
+
+  pendingDevelopmentHandoffs(): Array<{ threadId: string; config: RunConfig }> {
+    const rows = this.db.db.prepare(`
+      WITH ranked_discovery AS (
+        SELECT id, thread_id,
+          ROW_NUMBER() OVER (PARTITION BY thread_id ORDER BY created_at DESC, rowid DESC) AS position
+        FROM research_runs
+        WHERE problem_id IS NULL AND status = 'completed'
+      )
+      SELECT thread.id AS thread_id, previous.config_json
+      FROM threads AS thread
+      JOIN ranked_discovery AS discovery ON discovery.thread_id = thread.id AND discovery.position = 1
+      JOIN research_runs AS previous ON previous.id = (
+        SELECT completed.id
+        FROM research_runs AS completed
+        JOIN problems AS completed_problem ON completed_problem.id = completed.problem_id
+        WHERE completed.thread_id = thread.id AND completed.status = 'completed'
+          AND completed_problem.discovery_run_id = discovery.id
+        ORDER BY completed.created_at DESC, completed.rowid DESC LIMIT 1
+      )
+      WHERE thread.status = 'development-running'
+        AND NOT EXISTS (
+          SELECT 1 FROM research_runs AS active
+          WHERE active.thread_id = thread.id AND active.status IN ('queued', 'running')
+        )
+        AND EXISTS (
+          SELECT 1 FROM problems AS pending
+          WHERE pending.discovery_run_id = discovery.id AND pending.selected_at IS NOT NULL
+            AND NOT EXISTS (SELECT 1 FROM research_runs AS started WHERE started.problem_id = pending.id)
+        )
+        AND NOT EXISTS (
+          SELECT 1 FROM problems AS unresolved
+          WHERE unresolved.discovery_run_id = discovery.id AND unresolved.selected_at IS NOT NULL
+            AND EXISTS (SELECT 1 FROM research_runs AS attempted WHERE attempted.problem_id = unresolved.id)
+            AND NOT EXISTS (
+              SELECT 1 FROM research_runs AS completed
+              WHERE completed.problem_id = unresolved.id AND completed.status = 'completed'
+            )
+        )
+      ORDER BY thread.created_at, thread.id
+    `).all() as Array<{ thread_id: string; config_json: string }>;
+    return rows.map((row) => ({
+      threadId: row.thread_id,
+      config: RunConfigSchema.parse(JSON.parse(row.config_json)),
+    }));
   }
 
   createThread(title = "New research", config: RunConfig = DEFAULT_RUN_CONFIG): Thread {

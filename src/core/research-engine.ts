@@ -36,6 +36,7 @@ interface ActiveRun {
   workflow?: WorkflowExecution;
   followUpModelReservation: CostReservation | null;
   followUpSearchReservation: CostReservation | null;
+  generationProvenance: Map<string, string>;
   stage?: RuntimeStage;
   modelState?: "waiting" | "dispatched" | "accepted" | null;
 }
@@ -212,6 +213,7 @@ export class ResearchEngine {
       workflow: new WorkflowExecution(this.options.db, runId),
       followUpModelReservation: null,
       followUpSearchReservation: null,
+      generationProvenance: new Map(),
     };
     this.activeRuns.set(runId, active);
     this.scheduleDeadline(active);
@@ -250,7 +252,8 @@ export class ResearchEngine {
     const config = RunConfigSchema.parse(JSON.parse(row.config_json));
     const completedCalls = this.ledger.countProviderCalls(runId, config.model.providerId);
     const active: ActiveRun = { runId, threadId, problemId: row.problem_id, config, abortController: new AbortController(), startedAt: Date.now(),
-      projectedCodexCalls: completedCalls + 2, projectedSearches: 0, workflow: new WorkflowExecution(this.options.db, runId), followUpModelReservation: null, followUpSearchReservation: null };
+      projectedCodexCalls: completedCalls + 2, projectedSearches: 0, workflow: new WorkflowExecution(this.options.db, runId), followUpModelReservation: null, followUpSearchReservation: null,
+      generationProvenance: new Map() };
     this.activeRuns.set(runId, active);
     this.scheduleDeadline(active);
     this.emit({ type: "run-resumed", runId, threadId });
@@ -322,6 +325,7 @@ export class ResearchEngine {
       runId, threadId, problemId, config, abortController: new AbortController(), startedAt: Date.now(),
       projectedCodexCalls: projection.modelCalls, projectedSearches: projection.searches,
       followUpModelReservation: null, followUpSearchReservation: null,
+      generationProvenance: new Map(),
     };
     this.activeRuns.set(runId, active);
     this.scheduleDeadline(active);
@@ -389,14 +393,12 @@ export class ResearchEngine {
         harvest = { ...harvest, factors: workflow.withFactorUncertainty(harvest.factors) };
         const snapshot = harvest;
         this.discovery.persistFactors(active.runId, harvest.sources, harvest.factors, () => {
-          workflow.flushPendingStages(["query-plan", "factor-harvest"]);
           workflow.save("harvest", snapshot);
         });
       }
       this.progress(active, `${harvest.factors.length} observations from ${harvest.sources.length} sources`);
       const result = await discoverProblems(scope, harvest.factors, harvest.sources, { ...deps, idFactory: workflow.idFactory("problems") });
       this.discovery.persistProblems(active.runId, result.killSources, result.problems, result.blockedCandidates, () => {
-        workflow.flushPendingStages(["problem-candidates", "problem-kill"]);
         workflow.save("discovery-completed", result);
       });
       this.progress(active, `${result.problems.length} problems ready for your review`);
@@ -537,6 +539,7 @@ export class ResearchEngine {
         active.abortController.signal.throwIfAborted();
         const reusable = this.generationAttempts.findCompleted(active.runId, request, preparedIdentity);
         if (reusable) {
+          active.generationProvenance.set(request.generationId, reusable.generationId);
           return { output: reusable.output, metadata: reusable.metadata as GenerationMetadata };
         }
         this.enforceRunawayBackstop(active, providerId, active.projectedCodexCalls);
@@ -759,7 +762,6 @@ export class ResearchEngine {
     }
     const factors = active.workflow!.withFactorUncertainty(result.factors);
     this.discovery.persistFactors(active.runId, result.sources, factors, () => {
-      active.workflow!.flushPendingStages(["factor-harvest"]);
       this.followUps.complete(
         active.runId,
         result.sources.map((source) => source.id),
@@ -824,7 +826,10 @@ export class ResearchEngine {
     this.options.db.immediateTransaction(() => {
       workflow.commitStage("decision-analysis", analysisResult.request, analysisResult.resolvedPrompt, analysisResult.metadata, analysisResult.analysis, context, selectionId);
       this.followUps.completeReassessment({ researchRunId: active.runId, riskReassessment: riskResult.reassessment, analysis: analysisResult.analysis,
-        riskGenerationId: riskResult.request?.generationId ?? this.reassessmentRiskGenerationId(active.runId), analysisGenerationId: analysisResult.request.generationId });
+        riskGenerationId: riskResult.request
+          ? this.generationIdFor(active, riskResult.request.generationId)
+          : this.reassessmentRiskGenerationId(active.runId),
+        analysisGenerationId: this.generationIdFor(active, analysisResult.request.generationId) });
     });
     this.runs.finish(active.runId, "completed", "Evidence reassessment completed");
     if (active.deadlineTimer) clearTimeout(active.deadlineTimer);
@@ -841,18 +846,28 @@ export class ResearchEngine {
     return row.generation_id;
   }
 
+  private generationIdFor(active: ActiveRun, requestedGenerationId: string): string {
+    return active.generationProvenance.get(requestedGenerationId) ?? requestedGenerationId;
+  }
+
   private evidenceFollowUpItems(followUp: ReturnType<EvidenceFollowUpRepository["find"]> & {}): WorkflowV2EvidenceItem[] {
     const sourceIds = followUp.sourceIds;
     const factorIds = followUp.factorIds;
     const sources = sourceIds.length ? this.options.db.db.prepare(`SELECT id, title, canonical_url AS url FROM sources WHERE id IN (${sourceIds.map(() => "?").join(",")})`).all(...sourceIds) : [];
-    const factors = factorIds.length ? this.options.db.db.prepare(`SELECT id, source_id AS sourceId, subject, behavior, quote, model_confidence AS modelConfidence, uncertainty FROM factors WHERE id IN (${factorIds.map(() => "?").join(",")})`).all(...factorIds) : [];
+    const factors = factorIds.length ? this.options.db.db.prepare(`SELECT id, source_id AS sourceId, subject, behavior, quote,
+      model_confidence AS modelConfidence, uncertainty, source_role AS sourceRole, audience_fit AS audienceFit,
+      independent_source_key AS independentSourceKey, supports_demand AS supportsDemand,
+      demand_evidence_uncertainty AS demandEvidenceUncertainty
+      FROM factors WHERE id IN (${factorIds.map(() => "?").join(",")})`).all(...factorIds) : [];
     const sentinel = { sourceId: "scraply:evidence-follow-up-outcome", content: { question: followUp.question, status: "completed",
       searchedSourceCount: sourceIds.length, quoteVerifiedObservationCount: factorIds.length,
       conclusion: factorIds.length === 0 ? "The follow-up found no new quote-verified support." : "Only the quote-verified observations below are new evidence." } };
     return [sentinel, ...factors.map((factor) => {
-      const sourceId = (factor as { sourceId: string }).sourceId;
-      return { sourceId: `scraply:evidence-follow-up-factor:${(factor as { id: string }).id}`, content: {
-        factor, source: sources.find((item) => (item as { id: string }).id === sourceId) ?? { id: sourceId },
+      const saved = factor as Record<string, unknown> & { id: string; sourceId: string };
+      const sourceId = saved.sourceId;
+      return { sourceId: `scraply:evidence-follow-up-factor:${saved.id}`, content: {
+        factor: { ...saved, supportsDemand: Boolean(saved.supportsDemand) },
+        source: sources.find((item) => (item as { id: string }).id === sourceId) ?? { id: sourceId },
       } };
     })];
   }
