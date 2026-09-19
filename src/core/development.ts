@@ -468,6 +468,9 @@ function developmentEvidence(
     originalProblem: context.problem,
     priorFailedAttempts: context.priorFailedAttempts,
     ...(context.priorProjectMechanisms ? { priorProjectMechanisms: context.priorProjectMechanisms } : {}),
+    ...(context.priorProjectMechanismsOmittedCount === undefined
+      ? {}
+      : { priorProjectMechanismsOmittedCount: context.priorProjectMechanismsOmittedCount }),
     ...(context.recordedExperiments ? { recordedExperiments: context.recordedExperiments } : {}),
     ...(context.researchContext ? { researchContext: context.researchContext } : {}),
     ...(selectedOption ? { selectedOption } : {}),
