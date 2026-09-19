@@ -340,6 +340,16 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
     `).all(runId) as Array<Record<string, unknown>>;
     return groupRows(rows, "problem_id", mapFactor);
   }
+  function listProblemVerdictSourceIdsForRun(runId: string): Map<string, string[]> {
+    const rows = db.db.prepare(`
+      SELECT pvs.problem_id, pvs.source_id
+      FROM problems p
+      JOIN problem_verdict_sources pvs ON pvs.problem_id = p.id
+      WHERE p.discovery_run_id = ?
+      ORDER BY pvs.problem_id, pvs.position
+    `).all(runId) as Array<{ problem_id: string; source_id: string }>;
+    return groupRows(rows, "problem_id", (row) => String(row.source_id));
+  }
   function listRejectedProblemCandidates(threadId: string): RejectedProblemCandidate[] {
     const runId = latestDiscoveryRun(threadId);
     if (!runId) return [];
@@ -598,6 +608,8 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
         ? {} : { demandEvidenceUncertainty: String(factor.demand_evidence_uncertainty) }),
       createdAt: String(factor.created_at),
     }));
+    const problems = listProblems(threadId);
+    const verdictSourceIdsByProblem = listProblemVerdictSourceIdsForRun(runId);
     // The archived scope is the one this run actually used; the thread's live scope may have been edited since.
     const archivedScope = db.db.prepare(`
       SELECT title, audience, domain, observations, off_limits_json, risk_evaluation_criteria FROM scopes WHERE research_run_id = ?
@@ -622,7 +634,10 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
         : threads.getScope(threadId),
       sources,
       factors,
-      problems: listProblems(threadId),
+      problems: problems.map((problem) => ({
+        ...problem,
+        verdictSourceIds: verdictSourceIdsByProblem.get(problem.id) ?? [],
+      })),
       rejectedProblemCandidates: listRejectedProblemCandidates(threadId),
       evidenceFollowUps: listEvidenceFollowUpExports(threadId),
     };

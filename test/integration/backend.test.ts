@@ -604,6 +604,8 @@ describe("cutover backend", () => {
       .run("scope-export", "discovery-export", scope.title, scope.audience, scope.domain, scope.observations, JSON.stringify(scope.offLimits), now, now);
     client.db.prepare(`INSERT INTO sources (id, research_run_id, provider_source_id, canonical_url, title, retrieved_text, content_hash, retrieved_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
       .run("source-export", "discovery-export", "provider-1", "https://example.com/evidence", "Repair evidence", "Observed delivery delays.", "hash-1", now);
+    client.db.prepare(`INSERT INTO sources (id, research_run_id, provider_source_id, canonical_url, title, retrieved_text, content_hash, retrieved_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
+      .run("source-contrary", "discovery-export", "provider-2", "https://example.com/contrary", "Contrary evidence", "Some shops report reliable delivery.", "hash-2", now);
     client.db.prepare(`INSERT INTO factors (
       id, research_run_id, subject, behavior, quote, source_id, harvest_mode, model_confidence, uncertainty,
       source_role, audience_fit, independent_source_key, supports_demand, demand_evidence_uncertainty, created_at
@@ -615,7 +617,7 @@ describe("cutover backend", () => {
     ) VALUES (?, ?, ?, ?, ?, ?, 'confirmed', ?, '[]', '["factor-export"]', ?, NULL, ?)`)
       .run("problem-export", "discovery-export", "Parts arrival is unpredictable.", "Supplier data is fragmented.", "Independent shops", "Thousands", "Evidence confirms recurring delays.", "A second independent shop is missing.", now);
     client.db.prepare(`INSERT INTO problem_verdict_sources (problem_id, source_id, research_run_id, position) VALUES (?, ?, ?, 0)`)
-      .run("problem-export", "source-export", "discovery-export");
+      .run("problem-export", "source-contrary", "discovery-export");
     client.db.prepare("INSERT INTO problem_factors (problem_id, factor_id) VALUES (?, ?)").run("problem-export", "factor-export");
     client.db.prepare(`
       INSERT INTO rejected_problem_candidates (id, discovery_run_id, statement, reason, created_at)
@@ -637,11 +639,14 @@ describe("cutover backend", () => {
     await post("/scope", { threadId: created.thread.id, scope: { ...scope, title: "Edited later", domain: "Something else" } });
 
     const bundle = await post("/research/export", { threadId: created.thread.id }) as { filename: string; content: string };
-    const exported = JSON.parse(bundle.content) as { schemaVersion: number; scope: typeof scope; sources: Array<{ text: string }>; factors: Array<{ sourceId: string; uncertainty?: string; sourceRole: string; audienceFit: string; independentSourceKey: string | null; supportsDemand: boolean; demandEvidenceUncertainty?: string }>; problems: Array<{ id: string; intendedBuyerEvidenceFactorIds: string[]; evidenceGap: string | null; factors: Array<{ sourceRole?: string }> }>; rejectedProblemCandidates: Array<{ id: string; statement: string; reason: string }> };
+    const exported = JSON.parse(bundle.content) as { schemaVersion: number; scope: typeof scope; sources: Array<{ id: string; text: string }>; factors: Array<{ sourceId: string; uncertainty?: string; sourceRole: string; audienceFit: string; independentSourceKey: string | null; supportsDemand: boolean; demandEvidenceUncertainty?: string }>; problems: Array<{ id: string; verdictSourceIds: string[]; intendedBuyerEvidenceFactorIds: string[]; evidenceGap: string | null; factors: Array<{ sourceRole?: string }> }>; rejectedProblemCandidates: Array<{ id: string; statement: string; reason: string }> };
     expect(bundle.filename).toBe("edited-later-research.json");
     expect(exported.schemaVersion).toBe(1);
     expect(exported.scope).toEqual(scope);
-    expect(exported.sources[0]?.text).toBe("Observed delivery delays.");
+    expect(exported.sources).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: "source-export", text: "Observed delivery delays." }),
+      expect.objectContaining({ id: "source-contrary", text: "Some shops report reliable delivery." }),
+    ]));
     expect(exported.factors[0]?.sourceId).toBe("source-export");
     expect(exported.factors[0]?.uncertainty).toBe("Seasonality was not measured.");
     expect(exported.factors[0]).toMatchObject({
@@ -650,6 +655,7 @@ describe("cutover backend", () => {
     });
     expect(exported.problems.map((problem) => problem.id)).toEqual(["problem-export"]);
     expect(exported.problems[0]).toMatchObject({
+      verdictSourceIds: ["source-contrary"],
       intendedBuyerEvidenceFactorIds: ["factor-export"], evidenceGap: "A second independent shop is missing.",
       factors: [expect.objectContaining({ sourceRole: "firsthand" })],
     });
