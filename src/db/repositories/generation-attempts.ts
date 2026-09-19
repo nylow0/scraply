@@ -30,6 +30,7 @@ export interface GenerationTerminalRecord {
 }
 
 export interface ReusableGeneration<T> {
+  generationId: string;
   output: T;
   metadata: unknown;
 }
@@ -95,13 +96,14 @@ export class GenerationAttemptRepository {
   ): ReusableGeneration<T> | null {
     const requestSha256 = sha256(canonicalJson(effectiveRequestSnapshot(request, runtimeIdentity)));
     const row = this.client.db.prepare(`
-      SELECT output_json, attempt_metadata_json
+      SELECT generation_id, output_json, attempt_metadata_json
       FROM generation_attempts
       WHERE research_run_id = ? AND request_sha256 = ? AND status = 'completed'
       ORDER BY terminal_at DESC LIMIT 1
-    `).get(researchRunId, requestSha256) as { output_json: string; attempt_metadata_json: string } | undefined;
+    `).get(researchRunId, requestSha256) as { generation_id: string; output_json: string; attempt_metadata_json: string } | undefined;
     if (!row) return null;
     return {
+      generationId: row.generation_id,
       output: request.schema.parse(JSON.parse(row.output_json)),
       metadata: JSON.parse(row.attempt_metadata_json),
     };

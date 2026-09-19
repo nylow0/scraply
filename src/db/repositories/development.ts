@@ -70,6 +70,13 @@ export class DevelopmentRepository {
         harvestMode: String(row.harvest_mode) as DevelopmentFactor["harvestMode"],
         modelConfidence: Number(row.model_confidence),
         ...(row.uncertainty === null ? {} : { uncertainty: String(row.uncertainty) }),
+        sourceRole: String(row.source_role ?? "unknown") as NonNullable<DevelopmentFactor["sourceRole"]>,
+        audienceFit: String(row.audience_fit ?? "unknown") as NonNullable<DevelopmentFactor["audienceFit"]>,
+        independentSourceKey: row.independent_source_key === null || row.independent_source_key === undefined
+          ? null : String(row.independent_source_key),
+        supportsDemand: Number(row.supports_demand ?? 0) === 1,
+        ...(row.demand_evidence_uncertainty === null || row.demand_evidence_uncertainty === undefined
+          ? {} : { demandEvidenceUncertainty: String(row.demand_evidence_uncertainty) }),
       })),
     };
   }

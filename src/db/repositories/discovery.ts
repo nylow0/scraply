@@ -25,6 +25,11 @@ export interface DiscoveryFactorRecord {
   harvestMode: "domain" | "audience";
   modelConfidence: number;
   uncertainty?: string | null;
+  sourceRole?: "firsthand" | "measured" | "vendor" | "recommendation" | "illustration" | "unknown";
+  audienceFit?: "intended-buyer" | "adjacent" | "general" | "unknown";
+  independentSourceKey?: string | null;
+  supportsDemand?: boolean;
+  demandEvidenceUncertainty?: string | null;
 }
 
 export interface DiscoveryProblemRecord {
@@ -38,6 +43,8 @@ export interface DiscoveryProblemRecord {
   verdict: "confirmed" | "overstated" | "already-solved" | "insufficient-evidence" | "attempted-and-failed" | "user-asserted";
   verdictReason: string;
   verdictSourceIds: string[];
+  intendedBuyerEvidenceFactorIds?: string[];
+  evidenceGap?: string | null;
 }
 
 export interface RejectedProblemCandidateRecord {
@@ -82,8 +89,9 @@ export class DiscoveryRepository {
       const insert = db.prepare(`
         INSERT INTO factors (
           id, research_run_id, subject, behavior, quote, source_id,
-          harvest_mode, model_confidence, uncertainty, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          harvest_mode, model_confidence, uncertainty, source_role, audience_fit,
+          independent_source_key, supports_demand, demand_evidence_uncertainty, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `);
       for (const factor of factors) {
         this.assertSourceBelongsToRun(researchRunId, factor.sourceId);
@@ -97,6 +105,11 @@ export class DiscoveryRepository {
           factor.harvestMode,
           factor.modelConfidence,
           factor.uncertainty ?? null,
+          factor.sourceRole ?? "unknown",
+          factor.audienceFit ?? "unknown",
+          factor.independentSourceKey ?? null,
+          factor.supportsDemand ? 1 : 0,
+          factor.demandEvidenceUncertainty ?? null,
           now,
         );
       }
@@ -119,8 +132,9 @@ export class DiscoveryRepository {
         INSERT INTO problems (
           id, discovery_run_id, statement, why_it_persists, affected,
           scale_estimate, scale_basis_factor_id, verdict, verdict_reason,
-          verdict_source_ids_json, selected_at, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '[]', NULL, ?)
+          verdict_source_ids_json, intended_buyer_evidence_factor_ids_json,
+          evidence_gap, selected_at, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '[]', ?, ?, NULL, ?)
       `);
       const insertFactor = db.prepare(`
         INSERT INTO problem_factors (problem_id, factor_id) VALUES (?, ?)
@@ -151,6 +165,8 @@ export class DiscoveryRepository {
           problem.scaleBasisFactorId,
           problem.verdict,
           problem.verdictReason,
+          JSON.stringify(problem.intendedBuyerEvidenceFactorIds ?? []),
+          problem.evidenceGap ?? null,
           now,
         );
         problem.verdictSourceIds.forEach((sourceId, position) => {

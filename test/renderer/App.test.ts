@@ -85,6 +85,73 @@ describe("App workspace coordination", () => {
     expect(getWorkspace).toHaveBeenCalledTimes(1);
   });
 
+  test("refreshes sidebar state when an inactive thread finishes", async () => {
+    const running = workspace("alpha");
+    running.threads[1]!.status = "development-running";
+    const completed = structuredClone(running);
+    completed.threads[1]!.status = "solutions-ready";
+    let backendEvent: ((event: ResearchEvent) => void) | undefined;
+    const getWorkspace = vi.fn()
+      .mockResolvedValueOnce(running)
+      .mockResolvedValueOnce(completed);
+    installApi({
+      getWorkspace,
+      onBackendEvent(listener) { backendEvent = listener; return () => { backendEvent = undefined; }; },
+    });
+    const rerendered = render(App);
+    expect((await rerendered.findAllByText("Developing")).length).toBeGreaterThan(0);
+    backendEvent?.({ type: "run-completed", threadId: "beta", runId: "run-beta", problemId: "problem-1" });
+    await waitFor(() => expect(rerendered.getAllByText("Solutions ready").length).toBeGreaterThan(0));
+  });
+
+  test("keeps completed options visible while another batch runs", async () => {
+    const state = workspace("alpha");
+    state.threads[0]!.status = "development-running";
+    state.latestResearchRun = {
+      runId: "run-alpha", status: "running", problemId: "problem-2", workflowVersion: 2,
+      codexCalls: 1, searches: 0, projectedCodexCalls: 3, projectedSearches: 0,
+      lastActivity: "Generating options",
+    };
+    state.solutions = [{
+      id: "solution-1", problemId: "problem-1", problemStatement: "A problem", problemVerdict: "user-asserted",
+      factors: [], mechanism: "Full synchronization mechanism", description: "Shared repair status",
+      respectsOffLimits: true, respectsOffLimitsWhy: "Within scope", outcomes: [], risks: [],
+      confirmedCoreOutcomes: 0, unaddressedCatastrophicRisks: 0, workflowVersion: 2,
+    }];
+    installApi({ getWorkspace: vi.fn().mockResolvedValue(state) });
+    const view = render(App);
+
+    expect(await view.findByText("Generating the next options.")).toBeTruthy();
+    expect(view.getByRole("button", { name: "Shared repair status" })).toBeTruthy();
+  });
+
+  test("anchors elapsed time when switching to a run after browsing another thread", async () => {
+    let now = 1_000;
+    const dateNow = vi.spyOn(Date, "now").mockImplementation(() => now);
+    try {
+      const alpha = workspace("alpha");
+      const beta = workspace("beta");
+      beta.threads[1]!.status = "development-running";
+      beta.latestResearchRun = {
+        runId: "run-beta", status: "running", problemId: "problem-1", workflowVersion: 2,
+        codexCalls: 1, searches: 0, projectedCodexCalls: 3, projectedSearches: 0,
+        lastActivity: "Generating options", stage: "generating-options", modelState: "accepted",
+        elapsedMs: 270_000, operationStartedAt: "2026-09-14T00:00:00.000Z", operationElapsedMs: 30_000,
+        lastSuccessfulCheckpoint: "Problem saved",
+      };
+      installApi({ getWorkspace: vi.fn().mockResolvedValue(alpha), selectThread: vi.fn().mockResolvedValue(beta) });
+      const view = render(App);
+      const betaButton = await view.findByRole("button", { name: "Open thread Beta" });
+      now += 240_000;
+      await fireEvent.click(betaButton);
+
+      expect(await view.findByText("30s elapsed")).toBeTruthy();
+      expect(view.queryByText("Total run: 4m 30s")).toBeNull();
+    } finally {
+      dateNow.mockRestore();
+    }
+  });
+
   test.each(["discovery-running", "development-running"] as const)("allows cancellation but does not offer resume during %s", async (status) => {
     const state = workspace("alpha");
     state.threads[0]!.status = status;
@@ -477,6 +544,7 @@ function installApi(overrides: Partial<ScraplyApi>): void {
     selectOption: noWorkspace,
     saveDecision: noWorkspace,
     requestEvidenceFollowUp: noWorkspace,
+    requestEvidenceReassessment: noWorkspace,
     exportResearch: async () => ({ cancelled: true as const }),
     exportIdeas: async () => ({ cancelled: true as const, files: [] }),
     getSourceDetail: async () => { throw new Error("unused"); },

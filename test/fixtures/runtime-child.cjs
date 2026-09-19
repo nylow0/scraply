@@ -18,6 +18,7 @@ let credential;
 let pendingLogin;
 let loginSequence = 0;
 let heldGeneration;
+let reassessmentFailed = false;
 if (process.env.SCRAPLY_RUNTIME_PID_CAPTURE) fs.appendFileSync(process.env.SCRAPLY_RUNTIME_PID_CAPTURE, `${process.pid}\n`);
 const prompt = { id: "scraply.stage-worker.v1", sha256: "277d724f20acb1f32fa0a8b7c454c670971e3c40bfc921db40c044caa760e6f1" };
 const model = { providerId: "openai-subscription", modelId: "gpt-fixture" };
@@ -131,13 +132,21 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
       heldGeneration = request;
       return;
     }
+    if (mode === "workflow-reassessment-cancel" && request.payload.workOrder.stage === "decision-analysis"
+      && request.payload.workOrder.inputs?.reassessment === true) {
+      heldGeneration = request;
+      return;
+    }
     if (mode === "hang-cancel") return;
     const metadata = {
       model, prompt, usage: { status: "unknown" }, finishReason: "stop", latencyMs: 1,
       repairCount: 0, providerRequestIds: ["fixture-provider-request"],
       attempts: [{ attempt: "initial", outcome: "completed", providerCompletion: "confirmed", model, usage: { status: "unknown" }, cost: { status: "not_reported" }, finishReason: "stop", latencyMs: 1, providerRequestId: "fixture-provider-request" }],
     };
-    const output = mode === "workflow-analysis-fail" && request.payload.workOrder.stage === "decision-analysis" ? { invalid: true }
+    const isReassessmentAnalysis = request.payload.workOrder.stage === "decision-analysis" && request.payload.workOrder.inputs?.reassessment === true;
+    const failReassessment = mode === "workflow-reassessment-fail-once" && isReassessmentAnalysis && !reassessmentFailed;
+    if (failReassessment) reassessmentFailed = true;
+    const output = (mode === "workflow-analysis-fail" && request.payload.workOrder.stage === "decision-analysis") || failReassessment ? { invalid: true }
       : workflow ? require("./runtime-workflow.cjs")(request.payload)
       : mode === "invalid-output" ? { invalid: true } : request.payload.workOrder.stage.startsWith("query-plan")
       ? { queries: ["one", "two", "three"] }

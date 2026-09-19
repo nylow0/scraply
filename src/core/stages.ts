@@ -1,9 +1,11 @@
 import type { ZodType } from "zod";
 import {
   WorkflowV2DecisionAnalysisOutputSchema,
+  WorkflowV2CompatibleDecisionAnalysisOutputSchema,
   WorkflowV2FactorHarvestOutputSchema,
   WorkflowV2ProblemCandidatesOutputSchema,
   WorkflowV2ProblemKillOutputSchema,
+  ClassifiedWorkflowV2ProblemKillOutputSchema,
   WorkflowV2QueryPlanOutputSchema,
   WorkflowV2RiskEvaluationOutputSchema,
   WorkflowV2SolutionsOutputSchema,
@@ -13,6 +15,14 @@ import {
 import { MAX_IDEA_COUNT } from "../shared/schemas";
 
 export const WORKFLOW_VERSION_V2 = 2 as const;
+// A full 60,000-character source batch can take more than two minutes with high reasoning.
+export const FACTOR_HARVEST_DEADLINE_MS = 300_000;
+// Candidate synthesis carries the full retained factor set, while each kill review carries
+// contrary pages and the candidate's supporting factors. High reasoning can exceed two minutes.
+export const DISCOVERY_SYNTHESIS_DEADLINE_MS = 300_000;
+// Decision analysis can carry the selected option, independent risk review, and prior
+// experiment history. Subscription providers have exceeded the generic two-minute limit.
+export const DECISION_ANALYSIS_DEADLINE_MS = 300_000;
 
 export const WORKFLOW_V2_STAGE_IDS = [
   "query-plan",
@@ -53,7 +63,7 @@ export const WORKFLOW_V2_STAGE_REGISTRY = {
     schemaRevision: 1,
     schema: WorkflowV2FactorHarvestOutputSchema,
     maxOutputTokens: 4_096,
-    deadlineMs: 120_000,
+    deadlineMs: FACTOR_HARVEST_DEADLINE_MS,
   },
   "problem-candidates": {
     id: "problem-candidates",
@@ -62,16 +72,16 @@ export const WORKFLOW_V2_STAGE_REGISTRY = {
     schemaRevision: 1,
     schema: WorkflowV2ProblemCandidatesOutputSchema,
     maxOutputTokens: 4_096,
-    deadlineMs: 120_000,
+    deadlineMs: DISCOVERY_SYNTHESIS_DEADLINE_MS,
   },
   "problem-kill": {
     id: "problem-kill",
     promptFilename: "workflow-v2-problem-kill.md",
     promptRevision: 1,
     schemaRevision: 1,
-    schema: WorkflowV2ProblemKillOutputSchema,
+    schema: ClassifiedWorkflowV2ProblemKillOutputSchema,
     maxOutputTokens: 2_048,
-    deadlineMs: 120_000,
+    deadlineMs: DISCOVERY_SYNTHESIS_DEADLINE_MS,
   },
   solutions: {
     id: "solutions",
@@ -89,7 +99,7 @@ export const WORKFLOW_V2_STAGE_REGISTRY = {
     schemaRevision: 1,
     schema: WorkflowV2DecisionAnalysisOutputSchema,
     maxOutputTokens: 6_144,
-    deadlineMs: 120_000,
+    deadlineMs: DECISION_ANALYSIS_DEADLINE_MS,
   },
   "risk-evaluation": {
     id: "risk-evaluation",
@@ -117,7 +127,11 @@ export function parseWorkflowV2StageOutput(
   }
   // Keep this revision switch when adding schemas. Saved checkpoints must keep using the schema
   // version that created them instead of the currently bundled stage definition.
-  const output = WORKFLOW_V2_STAGE_REGISTRY[stageId].schema.parse(value);
+  const output = stageId === "decision-analysis"
+    ? WorkflowV2CompatibleDecisionAnalysisOutputSchema.parse(value)
+    : stageId === "problem-kill"
+      ? WorkflowV2ProblemKillOutputSchema.parse(value)
+    : WORKFLOW_V2_STAGE_REGISTRY[stageId].schema.parse(value);
   assertWorkflowV2StageOutputSemantics(stageId, output, evidence);
   return output;
 }
@@ -140,8 +154,13 @@ export function assertWorkflowV2SolutionsSemantics(
   // support an option to use the existing manual process instead.
   const suppliedIds = new Set([...categories.supporting, ...categories.contrary]);
   for (const option of output.options) {
-    if ([...option.supportingEvidenceIds, ...option.contraryEvidenceIds].some((id) => !suppliedIds.has(id))) {
+    const gapEvidenceIds = option.startupOpportunity?.gapAssessment.evidenceIds ?? [];
+    if ([...option.supportingEvidenceIds, ...option.contraryEvidenceIds, ...gapEvidenceIds].some((id) => !suppliedIds.has(id))) {
       throw new Error("A v2 solution option referenced an unknown evidence source ID");
+    }
+    const gap = option.startupOpportunity?.gapAssessment;
+    if (gap?.kind === "evidenced" && gap.evidenceIds.length === 0) {
+      throw new Error("An evidenced startup gap must cite at least one supplied evidence source");
     }
   }
 }

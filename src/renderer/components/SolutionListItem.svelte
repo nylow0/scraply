@@ -21,8 +21,8 @@
 </script>
 
 <details bind:open class:warning class="solution" style={`--rank:${rank}`}>
-  <summary class="solution-summary disclosure-title" title={idea.mechanism}>
-    <span class="disclosure-label">{idea.mechanism}</span>
+  <summary class="solution-summary disclosure-title" title={idea.description}>
+    <span class="disclosure-label">{idea.description}</span>
   </summary>
 
   <div class="solution-body">
@@ -30,7 +30,7 @@
     <section class="overview">
         <div>
           <span class="label">How it works</span>
-          <p>{idea.description}</p>
+          <p>{idea.mechanism}</p>
         </div>
         <div>
           <span class="label">Problem addressed</span>

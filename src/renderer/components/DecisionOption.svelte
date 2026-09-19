@@ -2,12 +2,24 @@
   import type { SolutionView } from "../../shared/ipc";
   import { optionEvidenceReferences } from "../../shared/option-evidence";
   import { loadIdeaDetail } from "../lib/idea-details";
-  let { idea, busy, onSelect, onSave, onOpenSource, onEvidenceFollowUp }: {
+  type ExperimentOutcome = "not-run" | "pass" | "fail" | "inconclusive";
+  type EnhancedSolution = SolutionView & {
+    experimentOutcome?: ExperimentOutcome;
+    canReassessEvidence?: boolean;
+  };
+  type EnhancedFollowUp = NonNullable<SolutionView["evidenceFollowUp"]> & {
+    reassessmentStatus?: "running" | "completed" | "failed" | null;
+    reassessmentAnalysis?: NonNullable<SolutionView["decisionAnalysis"]> | null;
+    reassessmentError?: string | null;
+  };
+  let { idea, busy, analysisBlocked = false, onSelect, onSave, onOpenSource, onEvidenceFollowUp, onEvidenceReassessment }: {
     idea: SolutionView; busy: boolean;
+    analysisBlocked?: boolean;
     onSelect: (idea: SolutionView) => Promise<void>;
-    onSave: (solutionId: string, decision: string, observed: string) => Promise<void>;
+    onSave: (solutionId: string, decision: string, observed: string, outcome: ExperimentOutcome) => Promise<void>;
     onOpenSource: (url: string) => Promise<void>;
     onEvidenceFollowUp?: ((runId: string, question: string) => Promise<void>) | undefined;
+    onEvidenceReassessment?: ((runId: string) => Promise<void>) | undefined;
   } = $props();
   let detail = $state<SolutionView | null>(null);
   let error = $state("");
@@ -16,7 +28,9 @@
   let observedResult = $state("");
   let savedDecision = $state("");
   let savedObservedResult = $state("");
+  let savedExperimentOutcome = $state<ExperimentOutcome>("not-run");
   let saved = $state(false);
+  let experimentOutcome = $state<ExperimentOutcome>("not-run");
   let open = $state(false);
   let revision = "";
   let detailLoadEpoch = 0;
@@ -27,8 +41,34 @@
   let followUpSourcesWithoutQuotes = $derived(detail?.evidenceFollowUp?.sources.filter(
     (source) => !detail?.evidenceFollowUp?.factors.some((factor) => factor.sourceId === source.id),
   ) ?? []);
-  let formDirty = $derived(userDecision !== savedDecision || observedResult !== savedObservedResult);
+  let formDirty = $derived(userDecision !== savedDecision || observedResult !== savedObservedResult || experimentOutcome !== savedExperimentOutcome);
   let followUpQuestion = $state("");
+  let enhancedFollowUp = $derived(detail?.evidenceFollowUp as EnhancedFollowUp | undefined);
+  type EvidenceMetadata = { sourceRole?: string; audienceFit?: string; independentSourceKey?: string|null; supportsDemand?: boolean; demandEvidenceUncertainty?: string };
+  function evidenceSummary(factor: SolutionView["factors"][number]): string {
+    const evidence = factor as typeof factor & EvidenceMetadata;
+    return `Source role: ${evidence.sourceRole ?? "unknown"} · Audience: ${evidence.audienceFit ?? "unknown"} · ${evidence.independentSourceKey ? "Independent origin identified" : "Independence unknown"} · ${evidence.supportsDemand ? "Supports demand" : "Does not establish demand"}`;
+  }
+  function confirmedEvidenceLabel(solution: SolutionView): string {
+    if (solution.problemVerdict !== "confirmed") return solution.problemVerdict;
+    const hasIntendedBuyerEvidence = solution.factors.some((factor) => (factor as typeof factor & EvidenceMetadata).audienceFit === "intended-buyer");
+    return hasIntendedBuyerEvidence
+      ? "confirmed with intended-buyer evidence; demand not established"
+      : "research marked confirmed; audience fit unassessed; demand not established";
+  }
+  function reassessedRiskLabel(risk: NonNullable<SolutionView["decisionAnalysis"]>["risks"][number]): string {
+    if (enhancedFollowUp?.riskReassessment?.newRisks.some((item) => item.riskId === risk.riskId)) {
+      return `New risk: ${risk.description}`;
+    }
+    const change = enhancedFollowUp?.riskReassessment?.affectedRisks.find((item) => item.riskId === risk.riskId);
+    return change ? `${change.effect === "strengthened" ? "Strengthened" : "Weakened"} risk: ${risk.description}` : risk.description;
+  }
+  function reassessedRiskChange(riskId: string): string | null {
+    return enhancedFollowUp?.riskReassessment?.affectedRisks.find((item) => item.riskId === riskId)?.rationale ?? null;
+  }
+  function isNewReassessmentUnknown(unknown: string): boolean {
+    return enhancedFollowUp?.riskReassessment?.additionalUnknowns.includes(unknown) ?? false;
+  }
   $effect(() => {
     if (open && revision !== `${idea.id}:${idea.detailRevision}`) void loadDetail();
     if (!open && wasOpen) {
@@ -47,11 +87,14 @@
     error = "";
     const draftDecision = userDecision;
     const draftObservedResult = observedResult;
+    const draftExperimentOutcome = experimentOutcome;
     try {
       const result = await loadIdeaDetail(idea);
       if (requestEpoch !== detailLoadEpoch || !open || key !== `${idea.id}:${idea.detailRevision}`) return;
-      const preserveDraft = formDirty || userDecision !== draftDecision || observedResult !== draftObservedResult;
+      const preserveDraft = formDirty || userDecision !== draftDecision || observedResult !== draftObservedResult || experimentOutcome !== draftExperimentOutcome;
       detail = result;
+      const nextExperimentOutcome = (result as EnhancedSolution).experimentOutcome ?? "not-run";
+      savedExperimentOutcome = nextExperimentOutcome;
       const nextDecision = result.userDecision ?? "";
       const nextObservedResult = result.observedResult ?? "";
       savedDecision = nextDecision;
@@ -59,6 +102,7 @@
       if (!preserveDraft) {
         userDecision = nextDecision;
         observedResult = nextObservedResult;
+        experimentOutcome = nextExperimentOutcome;
       }
     } catch (cause) {
       if (requestEpoch === detailLoadEpoch && open && key === `${idea.id}:${idea.detailRevision}`) error = cause instanceof Error ? cause.message : "Could not load this option";
@@ -69,11 +113,13 @@
     saved = false;
     const submittedDecision = userDecision;
     const submittedObservedResult = observedResult;
+    const submittedExperimentOutcome = experimentOutcome;
     try {
-      await onSave(idea.id, submittedDecision, submittedObservedResult);
-      if (userDecision === submittedDecision && observedResult === submittedObservedResult) {
+      await onSave(idea.id, submittedDecision, submittedObservedResult, submittedExperimentOutcome);
+      if (userDecision === submittedDecision && observedResult === submittedObservedResult && experimentOutcome === submittedExperimentOutcome) {
         savedDecision = submittedDecision;
         savedObservedResult = submittedObservedResult;
+        savedExperimentOutcome = submittedExperimentOutcome;
         saved = true;
       }
     }
@@ -82,15 +128,15 @@
 </script>
 
 <article class:selected={idea.selected}>
-  <button class="disclosure-title" class:expanded={open} title={idea.mechanism} aria-expanded={open} aria-controls={`option-body-${idea.id}`} onclick={() => open = !open}>
-    <span class="disclosure-label">{idea.mechanism}</span>
+  <button class="disclosure-title" class:expanded={open} title={idea.description} aria-expanded={open} aria-controls={`option-body-${idea.id}`} onclick={() => open = !open}>
+    <span class="disclosure-label">{idea.description}</span>
   </button>
   {#if open}
     <div class="disclosure-content" id={`option-body-${idea.id}`}>
     <header>
-      <div><p class="status">{idea.selected ? "Your selected option" : "Option"} · Problem evidence: {idea.problemVerdict}</p>
-        <p>{idea.description}</p></div>
-      {#if idea.selectable}<button class="primary" disabled={busy} onclick={() => onSelect(idea)}>Choose and analyze</button>{/if}
+      <div><p class="status">{idea.selected ? "Your selected option" : "Option"} · Problem evidence: {confirmedEvidenceLabel(idea)}</p>
+        <p>{idea.mechanism}</p></div>
+      {#if idea.selectable}<button class="primary" disabled={busy || analysisBlocked} title={analysisBlocked ? "Wait for the current generation batch to finish" : undefined} onclick={() => onSelect(idea)}>Choose and analyze</button>{/if}
     </header>
     <details class="option-overview"><summary>Problem and fit</summary>
     <p class="problem">{idea.problemStatement}</p>
@@ -101,9 +147,24 @@
     </dl>
     {#if idea.unknowns?.length}<h3>Still uncertain</h3><ul>{#each idea.unknowns as unknown, index (index)}<li>{unknown}</li>{/each}</ul>{/if}
     </details>
+    {#if idea.startupOpportunity}
+      <details class="startup-details"><summary>Startup opportunity</summary>
+        <dl>
+          <div><dt>Category</dt><dd>{idea.startupOpportunity.opportunityType.replaceAll("-", " ")}</dd></div>
+          <div><dt>Paying customer</dt><dd>{idea.startupOpportunity.payingCustomerSegment}</dd></div>
+          <div><dt>Trigger</dt><dd>{idea.startupOpportunity.trigger}</dd></div>
+          <div><dt>Current substitute</dt><dd>{idea.startupOpportunity.existingSubstitute}</dd></div>
+          <div><dt>Gap assessment</dt><dd><span class="evidence-kind">{idea.startupOpportunity.gapAssessment.kind}</span> {idea.startupOpportunity.gapAssessment.description}</dd></div>
+          <div><dt>Smallest sellable workflow</dt><dd>{idea.startupOpportunity.smallestSellableWorkflow}</dd></div>
+          <div><dt>First customer route</dt><dd>{idea.startupOpportunity.firstCustomerRoute}</dd></div>
+          <div><dt>Demand test that could disconfirm this</dt><dd>{idea.startupOpportunity.disconfirmingDemandTest}</dd></div>
+        </dl>
+      </details>
+    {/if}
       {#if loading}<p role="status">Loading saved details…</p>{/if}
       {#if error}<p role="alert">{error}</p><button onclick={loadDetail}>Retry details</button>{/if}
       {#if detail}
+        {#if analysis}<p class="analysis-status" role="status">Analysis completed. The experiment and model judgments are ready to review.</p>{/if}
         <details class="deep-review"><summary>Evidence and sources</summary>
         <div class="source-columns">
         <section aria-label="Sources supporting this option"><h3>Sources supporting this option</h3>
@@ -116,7 +177,7 @@
         <p class="status">These roles are the model's assessment of this option. The original problem evidence follows.</p>
         <h3>Observations about the problem</h3>
         {#each detail.factors as factor (factor.id)}
-          <blockquote>{factor.quote}{#if factor.uncertainty}<p class="status">Uncertainty: {factor.uncertainty}</p>{/if}<small class="estimated">Model confidence is uncalibrated.</small><footer><a href={factor.sourceUrl} onclick={(event) => { event.preventDefault(); void onOpenSource(factor.sourceUrl); }}>{factor.sourceTitle}</a></footer></blockquote>
+          <blockquote>{factor.quote}<p class="status">{evidenceSummary(factor)}</p>{#if factor.uncertainty}<p class="status">Uncertainty: {factor.uncertainty}</p>{/if}{#if (factor as typeof factor & EvidenceMetadata).demandEvidenceUncertainty}<p class="status">Demand evidence gap: {(factor as typeof factor & EvidenceMetadata).demandEvidenceUncertainty}</p>{/if}<small class="estimated">Matched against the saved search excerpt. Model confidence is uncalibrated.</small><footer><a href={factor.sourceUrl} onclick={(event) => { event.preventDefault(); void onOpenSource(factor.sourceUrl); }}>{factor.sourceTitle}</a></footer></blockquote>
         {:else}<p>No source-backed observations. Treat the problem as an assertion to test.</p>{/each}
         <h3>Sources used to assess the problem</h3>
         {#each detail.contrarySources ?? [] as source (source.id)}
@@ -134,7 +195,7 @@
         {/if}
         {#if analysis}
           <section class="experiment"><h3>Next experiment</h3><strong>{analysis.experiment.question}</strong><p>{analysis.experiment.method}</p>
-            <dl><div><dt>Cost</dt><dd>{analysis.experiment.cost}</dd></div><div><dt>Pass</dt><dd>{analysis.experiment.passCriterion}</dd></div><div><dt>Fail</dt><dd>{analysis.experiment.failCriterion}</dd></div></dl>
+            <dl><div><dt>Cost</dt><dd>{analysis.experiment.cost}</dd></div><div><dt>Pass</dt><dd>{analysis.experiment.passCriterion}</dd></div><div><dt>Fail</dt><dd>{analysis.experiment.failCriterion}</dd></div><div><dt>Inconclusive</dt><dd>{"inconclusiveCriterion" in analysis.experiment ? String(analysis.experiment.inconclusiveCriterion) : "The result does not clearly meet the pass or fail criterion."}</dd></div></dl>
           </section>
           <details class="deep-review"><summary>Possible outcomes</summary>
           <h3>Possible consequences</h3><p class="status">Model judgments. These have not been observed.</p>
@@ -163,6 +224,27 @@
               {#if detail.evidenceFollowUp.status === "completed" && !detail.evidenceFollowUp.factors.length}<p role="status">The follow-up completed without a quote-verified observation.</p>{/if}
               {#if detail.evidenceFollowUp.status === "failed"}<p role="alert">{detail.evidenceFollowUp.error ?? "The evidence follow-up failed."}</p>{/if}
               {#if detail.evidenceFollowUp.status !== "running"}<p class="status">This option has used its one evidence follow-up.</p>{/if}
+              {#if enhancedFollowUp?.reassessmentStatus === "running"}<p role="status">Reassessing with the follow-up evidence...</p>{/if}
+              {#if enhancedFollowUp?.reassessmentStatus === "failed"}<p role="alert">{enhancedFollowUp.reassessmentError ?? "The reassessment failed."}</p>{/if}
+              {#if enhancedFollowUp?.reassessmentAnalysis}
+                <details class="reassessment"><summary>Reassessment with new evidence</summary>
+                  <p class="status">This is a separate assessment. The original analysis above remains unchanged.</p>
+                  <h3>Updated consequences</h3>
+                  {#each enhancedFollowUp.reassessmentAnalysis.consequences as consequence, index (index)}<div class="finding"><strong>{consequence.direction}: {consequence.description}</strong><p>{consequence.rationale}</p></div>{/each}
+                  <h3>Reassessed risks</h3>
+                  <p class="status">New and changed risks are labeled. Unchanged risks remain in the complete reassessed analysis.</p>
+                  {#each enhancedFollowUp.reassessmentAnalysis.risks as risk (risk.riskId)}
+                    <div class="finding"><strong>{reassessedRiskLabel(risk)}</strong><p>{risk.whyDecisive}</p>{#if reassessedRiskChange(risk.riskId)}<p class="status">Evidence change: {reassessedRiskChange(risk.riskId)}</p>{/if}</div>
+                  {:else}<p>No decisive risks were identified in the reassessment.</p>{/each}
+                  <h3>Updated proposed responses</h3>
+                  {#each enhancedFollowUp.reassessmentAnalysis.proposedResponses as response, index (index)}<div class="finding"><strong>{response.approach}</strong><p>Cost: {response.cost}</p><p>Fails if: {response.failsIf}</p></div>{:else}<p>No additional response was proposed.</p>{/each}
+                  {#if enhancedFollowUp.reassessmentAnalysis.unknowns.length}<h3>Reassessed open questions</h3><ul>{#each enhancedFollowUp.reassessmentAnalysis.unknowns as unknown, index (index)}<li>{#if isNewReassessmentUnknown(unknown)}<strong>New question:</strong> {/if}{unknown}</li>{/each}</ul>{/if}
+                  <section class="experiment"><h3>Updated experiment</h3><strong>{enhancedFollowUp.reassessmentAnalysis.experiment.question}</strong><p>{enhancedFollowUp.reassessmentAnalysis.experiment.method}</p><dl><div><dt>Cost</dt><dd>{enhancedFollowUp.reassessmentAnalysis.experiment.cost}</dd></div><div><dt>Pass</dt><dd>{enhancedFollowUp.reassessmentAnalysis.experiment.passCriterion}</dd></div><div><dt>Fail</dt><dd>{enhancedFollowUp.reassessmentAnalysis.experiment.failCriterion}</dd></div><div><dt>Inconclusive</dt><dd>{enhancedFollowUp.reassessmentAnalysis.experiment.inconclusiveCriterion}</dd></div></dl></section>
+                </details>
+              {:else if detail.evidenceFollowUp.status === "completed" && (detail as EnhancedSolution).canReassessEvidence && idea.runId && onEvidenceReassessment}
+                <button class="reassess" disabled={busy} onclick={() => onEvidenceReassessment?.(idea.runId!)}>Reassess with new evidence</button>
+                <p class="status">Your prior analysis will remain unchanged and the reassessment will appear separately.</p>
+              {/if}
             </section>
           {:else if idea.selected && idea.runId && analysis && idea.canRequestEvidenceFollowUp && onEvidenceFollowUp}
             <form onsubmit={(event) => { event.preventDefault(); void onEvidenceFollowUp(idea.runId!, followUpQuestion.trim()); }}>
@@ -176,6 +258,7 @@
             <h3>Your decision and actual result</h3><p>Record what you decided and observed.</p>
             <label>Your decision<textarea rows="3" maxlength="8000" bind:value={userDecision} oninput={() => saved = false}></textarea></label>
             <label>Observed test result<textarea rows="3" maxlength="8000" bind:value={observedResult} oninput={() => saved = false} placeholder="What happened?"></textarea></label>
+            <label>Experiment outcome<select bind:value={experimentOutcome} oninput={() => saved = false}><option value="not-run">Not run</option><option value="pass">Pass</option><option value="fail">Fail</option><option value="inconclusive">Inconclusive</option></select></label>
             <button disabled={busy}>Save decision and result</button>{#if saved}<span role="status">Saved</span>{/if}
           </form>
         {:else if idea.selected}<p>The analysis has not completed. Saved options remain available.</p>{/if}
@@ -196,7 +279,11 @@
   p,li { line-height:1.8;font-size:13px;max-width:78ch;color:var(--muted); }
   ul { padding-left:20px; }li + li { margin-top:7px; }
   .status,.problem { color:var(--subtle);font-size:13px;line-height:1.7; }
+  .analysis-status { color:var(--success);font-size:13px; }
   .option-overview { padding:0;background:transparent;border:0;border-top:1px solid var(--border);border-radius:0;margin-top:0; }
+  .startup-details { border-top:1px solid var(--border); }
+  .startup-details dl { grid-template-columns:repeat(2,minmax(0,1fr)); }
+  .evidence-kind { display:inline-block;margin-right:5px;padding:2px 6px;border:1px solid var(--border-strong);border-radius:5px;color:var(--subtle);font-size:11px;text-transform:capitalize; }
   .option-overview .problem { margin:0 0 18px;padding-bottom:16px;border-bottom:1px solid var(--border);color:var(--text);font-size:13px; }
   dl { display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:22px;margin:0; }
   dt { color:var(--subtle);font-size:13px;margin-bottom:8px; }dd { margin:0;color:var(--muted);font-size:13px;line-height:1.8; }
@@ -215,6 +302,8 @@
   form h3 { margin:0 0 8px; }form > p { margin:0 0 20px; }
   label { display:grid;gap:8px;margin:16px 0;font-size:13px;color:var(--muted); }
   textarea { width:100%;background:var(--bg);color:var(--text);border:1px solid var(--border-strong);border-radius:9px;padding:12px;resize:none;font-size:13px; }
+  select { width:100%;background:#000;color:var(--text);border:1px solid var(--border-strong);border-radius:9px;padding:11px;font-size:13px; }
+  .reassess { margin-top:14px; }
   .decision-editor { display:grid;grid-template-columns:1fr 1fr;gap:0 20px; }.decision-editor h3,.decision-editor > p { grid-column:1/-1; }.decision-editor button { width:fit-content; }.decision-editor label { margin-top:0; }
   .source-text { white-space:pre-wrap;max-height:360px;overflow:auto; }form span { margin-left:12px;font-size:13px;color:var(--success); }
   @media(max-width:850px) { dl { grid-template-columns:1fr;gap:16px; }.source-columns { grid-template-columns:1fr;gap:0; }.decision-editor { grid-template-columns:1fr; }.disclosure-content { padding:20px; }header { flex-direction:column;gap:16px; } }

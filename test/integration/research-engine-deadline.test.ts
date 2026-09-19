@@ -467,6 +467,12 @@ function createPersistedDiscoveryRun(): {
     sourceId: "source-1",
     harvestMode: "domain" as const,
     modelConfidence: 0.8,
+    uncertainty: "The fixture covers one operator group",
+    sourceRole: "measured" as const,
+    audienceFit: "intended-buyer" as const,
+    independentSourceKey: "example.test",
+    supportsDemand: true,
+    demandEvidenceUncertainty: "The fixture uses one synthetic source",
     source,
   };
   discovery.persistFactors(runId, [source], [factor]);

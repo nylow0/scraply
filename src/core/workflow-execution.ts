@@ -15,15 +15,7 @@ import { WORKFLOW_V2_STAGE_IDS, WORKFLOW_V2_STAGE_REGISTRY, type WorkflowV2Stage
 export class WorkflowExecution {
   readonly repository: WorkflowV2Repository;
   private readonly prompts: Record<WorkflowV2StageId, ResolvedWorkflowV2Prompt>;
-  private readonly pendingStages = new Map<string, {
-    stageId: WorkflowV2StageId;
-    request: StructuredStageRequest<unknown>;
-    prompt: ResolvedWorkflowV2Prompt;
-    metadata: GenerationMetadata;
-    output: unknown;
-    context: unknown;
-    selectionId: string | null;
-  }>();
+  private readonly factorUncertainty = new Map<string, string>();
 
   constructor(private readonly db: DatabaseClient, readonly runId: string) {
     this.repository = new WorkflowV2Repository(db);
@@ -88,11 +80,19 @@ export class WorkflowExecution {
       const stageId = id as WorkflowV2StageId;
       const stage = WORKFLOW_V2_STAGE_REGISTRY[stageId];
       const prompt = this.resolvePrompt(stageId);
+      const factorLimit = stageId === "factor-harvest"
+        ? Number((original.workOrder.inputs as { factorLimit?: unknown }).factorLimit)
+        : Number.NaN;
+      const requestSchema = stageId === "factor-harvest" && Number.isInteger(factorLimit) && factorLimit >= 0
+        ? WorkflowV2FactorHarvestOutputSchema.extend({
+            factors: WorkflowV2FactorHarvestOutputSchema.shape.factors.max(factorLimit),
+          })
+        : stage.schema;
       const request: StructuredStageRequest<unknown> = {
         ...original,
         workOrder: { ...original.workOrder, instruction: prompt.text, inputs: { routing: original.workOrder.inputs, workflowVersion: 2 } },
-        schema: stage.schema,
-        jsonSchema: deriveJsonSchema(stage.schema),
+        schema: requestSchema,
+        jsonSchema: deriveJsonSchema(requestSchema),
         deadlineMs: stage.deadlineMs,
       };
       if (original.model.providerId === "openai-subscription") delete request.maxOutputTokens;
@@ -108,6 +108,9 @@ export class WorkflowExecution {
         identity: { promptSha256: prompt.resolvedSha256, schema: request.jsonSchema, inputs: request.workOrder.inputs, evidence },
       });
       if (previous.kind === "unknown-completion") throw new Error("A generation may have completed before interruption. Start a new run to avoid replaying it.");
+      const recovered = previous.kind === "not-started"
+        ? this.recoverCompletedStage(request)
+        : null;
       let output: unknown;
       let metadata: GenerationMetadata;
       if (previous.kind === "reusable") {
@@ -115,17 +118,38 @@ export class WorkflowExecution {
         const savedMetadata = this.read<GenerationMetadata>(`metadata:${original.stage}`);
         if (!savedMetadata) throw new Error("Checkpoint metadata is missing");
         metadata = savedMetadata;
+      } else if (recovered) {
+        output = recovered.output;
+        metadata = recovered.metadata;
+        assertDiscoveryStageSemantics(stageId, output, original);
+        this.persistCompletedStage(original.stage, stageId, request, prompt, metadata, output, context, selectionId);
       } else {
         const completion = await client.structuredCompletion(request);
-        output = stage.schema.parse(completion.output);
+        output = requestSchema.parse(completion.output);
         metadata = completion.metadata;
         assertDiscoveryStageSemantics(stageId, output, original);
-        this.pendingStages.set(original.stage, { stageId, request, prompt, metadata, output, context, selectionId });
+        // Each validated provider result is its own durable replay boundary. Domain rows may be
+        // persisted later, but a restart must not repeat completed model work.
+        this.persistCompletedStage(original.stage, stageId, request, prompt, metadata, output, context, selectionId);
       }
-      // Discovery keeps its deterministic search/quote pipeline. Only query-plan's wire shape differs.
+      if (stageId === "factor-harvest") {
+        for (const factor of WorkflowV2FactorHarvestOutputSchema.parse(output).factors) {
+          this.factorUncertainty.set(factorIdentity(factor), factor.uncertainty);
+        }
+      }
+      // Discovery keeps its deterministic search and quote checks while retaining v2 evidence labels.
       let adapted: unknown = output;
-      if (stageId === "query-plan") adapted = { queries: WorkflowV2QueryPlanOutputSchema.parse(output).queries.map((item) => item.query) };
-      if (stageId === "factor-harvest") adapted = { factors: WorkflowV2FactorHarvestOutputSchema.parse(output).factors.map(({ uncertainty, ...factor }) => { void uncertainty; return factor; }) };
+      if (stageId === "query-plan") adapted = { queries: WorkflowV2QueryPlanOutputSchema.parse(output).queries };
+      if (stageId === "factor-harvest") adapted = {
+        factors: WorkflowV2FactorHarvestOutputSchema.parse(output).factors.map((factor) => "sourceRole" in factor ? factor : {
+          ...factor,
+          sourceRole: "unknown" as const,
+          audienceFit: "unknown" as const,
+          independentSourceKey: null,
+          supportsDemand: false,
+          demandEvidenceUncertainty: "Not classified in the saved output.",
+        }),
+      };
       if (stageId === "problem-candidates") adapted = { problems: WorkflowV2ProblemCandidatesOutputSchema.parse(output).problems.map(({ alternativeExplanations, unknowns, ...problem }) => { void alternativeExplanations; void unknowns; return problem; }) };
       if (stageId === "problem-kill") {
         const { unresolvedAssumptions, wouldChangeConclusion, ...assessment } = WorkflowV2ProblemKillOutputSchema.parse(output);
@@ -136,36 +160,76 @@ export class WorkflowExecution {
     } };
   }
 
-  /** Caller invokes this inside the same transaction that persists the validated domain rows. */
-  flushPendingStages(stageIds: readonly WorkflowV2StageId[]): void {
-    this.db.requireImmediateTransaction();
-    const allowed = new Set(stageIds);
-    for (const [stageKey, pending] of this.pendingStages) {
-      if (!allowed.has(pending.stageId)) continue;
-      this.commitStage(
-        pending.stageId,
-        pending.request,
-        pending.prompt,
-        pending.metadata,
-        pending.output,
-        pending.context,
-        pending.selectionId,
-      );
-      this.save(`metadata:${stageKey}`, pending.metadata);
-      this.pendingStages.delete(stageKey);
+  private recoverCompletedStage(request: StructuredStageRequest<unknown>): {
+    output: unknown;
+    metadata: GenerationMetadata;
+  } | null {
+    const rows = this.db.db.prepare(`
+      SELECT request_json, output_json, attempt_metadata_json
+      FROM generation_attempts
+      WHERE research_run_id = ? AND stage_key = ? AND status = 'completed'
+      ORDER BY terminal_at DESC
+    `).all(this.runId, request.stage) as Array<{
+      request_json: string;
+      output_json: string;
+      attempt_metadata_json: string;
+    }>;
+    const expected = completedAttemptIdentity(request);
+    for (const row of rows) {
+      const savedRequest = JSON.parse(row.request_json) as Record<string, unknown>;
+      if (canonicalJson(completedAttemptIdentity(savedRequest)) !== canonicalJson(expected)) continue;
+      const output = request.schema.parse(JSON.parse(row.output_json));
+      const metadata = JSON.parse(row.attempt_metadata_json) as GenerationMetadata;
+      if (!metadata.prompt) continue;
+      return { output, metadata };
     }
+    if (request.stage.startsWith("factor-harvest:")) {
+      const earlier = this.db.db.prepare(`
+        SELECT request_json, output_json, attempt_metadata_json
+        FROM generation_attempts
+        WHERE research_run_id = ? AND stage_key LIKE 'factor-harvest:%' AND status = 'completed'
+        ORDER BY terminal_at DESC
+      `).all(this.runId) as typeof rows;
+      for (const row of earlier) {
+        const savedRequest = JSON.parse(row.request_json) as Record<string, unknown>;
+        const sourceIds = recoverableFactorPartitionSourceIds(request, savedRequest);
+        if (!sourceIds) continue;
+        const parsed = WorkflowV2FactorHarvestOutputSchema.safeParse(JSON.parse(row.output_json));
+        if (!parsed.success) continue;
+        const factorLimit = Number((request.workOrder.inputs as { routing?: { factorLimit?: unknown } }).routing?.factorLimit);
+        const matchingFactors = parsed.data.factors.filter((factor) => sourceIds.has(factor.sourceId));
+        const factors = Number.isInteger(factorLimit) && factorLimit >= 0
+          ? matchingFactors.slice(0, factorLimit)
+          : matchingFactors;
+        const output = request.schema.safeParse({ factors });
+        if (!output.success) continue;
+        const metadata = JSON.parse(row.attempt_metadata_json) as GenerationMetadata;
+        if (!metadata.prompt) continue;
+        return { output: output.data, metadata };
+      }
+    }
+    return null;
+  }
+
+  private persistCompletedStage(
+    stageKey: string,
+    stageId: WorkflowV2StageId,
+    request: StructuredStageRequest<unknown>,
+    prompt: ResolvedWorkflowV2Prompt,
+    metadata: GenerationMetadata,
+    output: unknown,
+    context: unknown,
+    selectionId: string | null,
+  ): void {
+    this.db.immediateTransaction(() => {
+      this.commitStage(stageId, request, prompt, metadata, output, context, selectionId);
+      this.save(`metadata:${stageKey}`, metadata);
+    });
   }
 
   withFactorUncertainty<T extends { sourceId: string; subject: string; quote: string }>(factors: T[]): Array<T & { uncertainty?: string }> {
-    const uncertainty = new Map<string, string>();
-    for (const pending of this.pendingStages.values()) {
-      if (pending.stageId !== "factor-harvest") continue;
-      for (const factor of WorkflowV2FactorHarvestOutputSchema.parse(pending.output).factors) {
-        uncertainty.set(factorIdentity(factor), factor.uncertainty);
-      }
-    }
     return factors.map((factor) => {
-      const value = uncertainty.get(factorIdentity(factor));
+      const value = this.factorUncertainty.get(factorIdentity(factor));
       return value ? { ...factor, uncertainty: value } : factor;
     });
   }
@@ -210,6 +274,7 @@ export class WorkflowExecution {
           ?? "Not recorded",
       })),
     });
+    const priorProjectMechanisms = this.priorProjectMechanisms();
     const context: WorkflowV2DevelopmentContext = {
       scope: base.scope,
       problem: base.problem,
@@ -218,6 +283,8 @@ export class WorkflowExecution {
       })),
       contraryEvidence: base.problem.verdictSourceIds.map((sourceId) => ({ sourceId, content: evidenceForSource(sourceId) })),
       priorFailedAttempts: [],
+      priorProjectMechanisms: priorProjectMechanisms.items,
+      priorProjectMechanismsOmittedCount: priorProjectMechanisms.omittedCount,
       recordedExperiments: this.recordedExperiments(base.problem.statement),
     };
     const candidateOutputs = stageEvidence.filter((stage) => stage.stage_id === "problem-candidates")
@@ -235,6 +302,34 @@ export class WorkflowExecution {
     };
     this.save("development-context", context);
     return context;
+  }
+
+  private priorProjectMechanisms(): {
+    items: NonNullable<WorkflowV2DevelopmentContext["priorProjectMechanisms"]>;
+    omittedCount: number;
+  } {
+    const rows = this.db.db.prepare(`
+      SELECT s.description, s.mechanism, p.statement, COUNT(*) OVER () AS total_count
+      FROM solutions s JOIN problems p ON p.id = s.problem_id
+      JOIN research_runs previous ON previous.id = s.research_run_id
+      JOIN research_runs current ON current.id = ?
+      WHERE previous.thread_id = current.thread_id AND previous.rowid < current.rowid
+      ORDER BY previous.rowid DESC, s.option_position, s.id LIMIT 100
+    `).all(this.runId) as Array<{ description: string; mechanism: string; statement: string; total_count: number }>;
+    const results: NonNullable<WorkflowV2DevelopmentContext["priorProjectMechanisms"]> = [];
+    let characters = 2; // JSON array brackets.
+    for (const row of rows) {
+      const item = {
+        description: boundedExcerpt(row.description, 180),
+        mechanism: boundedExcerpt(row.mechanism, 440),
+        problemStatement: boundedExcerpt(row.statement, 140),
+      };
+      const size = JSON.stringify(item).length + (results.length > 0 ? 1 : 0);
+      if (characters + size > 24_000) continue;
+      results.push(item);
+      characters += size;
+    }
+    return { items: results, omittedCount: (rows[0]?.total_count ?? 0) - results.length };
   }
 
   private recordedExperiments(statement: string): NonNullable<WorkflowV2DevelopmentContext["recordedExperiments"]> {
@@ -329,6 +424,76 @@ function findRecords(values: unknown[], key: string): Array<Record<string, unkno
   };
   for (const value of values) visit(value);
   return found;
+}
+
+function completedAttemptIdentity(request: Record<string, unknown> | StructuredStageRequest<unknown>): Record<string, unknown> {
+  return {
+    stage: request.stage,
+    model: request.model,
+    reasoningEffort: request.reasoningEffort,
+    workOrder: request.workOrder,
+    evidence: request.evidence,
+    jsonSchema: request.jsonSchema,
+    repairPolicy: request.repairPolicy,
+    maxOutputTokens: request.maxOutputTokens ?? null,
+  };
+}
+
+function recoverableFactorPartitionSourceIds(
+  request: StructuredStageRequest<unknown>,
+  savedRequest: Record<string, unknown>,
+): Set<string> | null {
+  const normalize = (value: Record<string, unknown> | StructuredStageRequest<unknown>) => {
+    const workOrder = structuredClone(value.workOrder) as Record<string, unknown>;
+    if (typeof workOrder.stage === "string") {
+      // Source IDs identify one partition, while the harvest mode identifies its semantics.
+      // A smaller resumed partition may reuse a completed superset only across that boundary.
+      workOrder.stage = workOrder.stage.replace(/^(factor-harvest:(?:domain|audience)):.+$/, "$1");
+    }
+    const inputs = workOrder.inputs as Record<string, unknown> | undefined;
+    const routing = inputs?.routing as Record<string, unknown> | undefined;
+    if (routing) delete routing.factorLimit;
+    const jsonSchema = structuredClone(value.jsonSchema) as Record<string, unknown>;
+    const properties = jsonSchema.properties as Record<string, unknown> | undefined;
+    const factors = properties?.factors as Record<string, unknown> | undefined;
+    if (factors) delete factors.maxItems;
+    const evidence = structuredClone(value.evidence) as unknown;
+    if (Array.isArray(evidence)) {
+      const partition = evidence[0] as { sourceId?: unknown; content?: unknown } | undefined;
+      if (partition && typeof partition === "object") {
+        // The envelope ID and sources identify the partition. Compare every other evidence field.
+        partition.sourceId = "factor-harvest:partition";
+        if (partition.content && typeof partition.content === "object" && !Array.isArray(partition.content)) {
+          delete (partition.content as Record<string, unknown>).sources;
+        }
+      }
+    }
+    return { model: value.model, reasoningEffort: value.reasoningEffort, workOrder,
+      evidence, jsonSchema, repairPolicy: value.repairPolicy,
+      maxOutputTokens: value.maxOutputTokens ?? null };
+  };
+  if (canonicalJson(normalize(request)) !== canonicalJson(normalize(savedRequest))) return null;
+  const sources = (value: unknown): Array<Record<string, unknown>> => {
+    if (!Array.isArray(value)) return [];
+    const content = (value[0] as { content?: { sources?: unknown } } | undefined)?.content;
+    return Array.isArray(content?.sources) ? content.sources as Array<Record<string, unknown>> : [];
+  };
+  const requestedSources = sources(request.evidence);
+  const savedSources = sources(savedRequest.evidence);
+  if (requestedSources.length === 0 || savedSources.length < requestedSources.length) return null;
+  const savedById = new Map(savedSources.map((source) => [String(source.id), source]));
+  if (requestedSources.some((source) => {
+    const saved = savedById.get(String(source.id));
+    return !saved || canonicalJson(saved) !== canonicalJson(source);
+  })) return null;
+  return new Set(requestedSources.map((source) => String(source.id)));
+}
+
+function boundedExcerpt(value: string, maxCharacters: number): string {
+  const normalized = value.replace(/\s+/g, " ").trim();
+  const characters = Array.from(normalized);
+  if (characters.length <= maxCharacters) return normalized;
+  return `${characters.slice(0, maxCharacters - 1).join("")}…`;
 }
 
 function uniqueStrings(values: string[]): string[] {

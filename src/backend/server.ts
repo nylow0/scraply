@@ -16,7 +16,7 @@ import { developmentProjection } from "../shared/development-projection";
 import { optionEvidenceReferences } from "../shared/option-evidence";
 import {
   DiscardIdeaRequestSchema, ArchiveThreadRequestSchema, GenerateTitleRequestSchema, GenerateTitleResultSchema,
-  CreateThreadRequestSchema, DeleteThreadRequestSchema, EvidenceFollowUpRequestSchema, ExportIdeasRequestSchema, ExportResearchRequestSchema,
+  CreateThreadRequestSchema, DeleteThreadRequestSchema, EvidenceFollowUpRequestSchema, EvidenceReassessmentRequestSchema, ExportIdeasRequestSchema, ExportResearchRequestSchema,
   GetIdeaDetailRequestSchema, GetSourceDetailRequestSchema, HealthResponseSchema,
   NativeLoginCancelSchema, NativeLoginCompleteSchema, NativeLoginStartSchema, NativeProviderSchema,
   ResumeResearchSchema, SaveFavoriteModelSchema, SaveRunConfigSchema, SaveScopeSchema,
@@ -273,6 +273,7 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
 
   async function workspaceState() {
     if (!cachedValidation) void validateProviders().catch(() => undefined);
+    threads.recoverStaleDevelopmentStatuses();
     const threadList = threads.listThreads();
     if (activeThreadId && !threadList.some((thread) => thread.id === activeThreadId && !thread.archivedAt)) activeThreadId = threadList.find((thread) => !thread.archivedAt)?.id ?? null;
     const runConfig = activeThreadId ? threads.getLatestRunConfig(activeThreadId) : null;
@@ -313,7 +314,15 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
   function listProblems(threadId: string): ProblemCandidate[] {
     const runId = latestDiscoveryRun(threadId);
     if (!runId) return [];
-    const rows = db.db.prepare("SELECT * FROM problems WHERE discovery_run_id = ? ORDER BY created_at, id").all(runId) as Array<Record<string, unknown>>;
+    const rows = db.db.prepare(`
+      SELECT p.*, EXISTS (
+        SELECT 1 FROM research_runs development
+        WHERE development.problem_id = p.id AND development.status = 'completed'
+      ) AS development_completed
+      FROM problems p
+      WHERE p.discovery_run_id = ?
+      ORDER BY p.created_at, p.id
+    `).all(runId) as Array<Record<string, unknown>>;
     const factorsByProblem = listProblemFactorsForRun(runId);
     return rows.map((row) => {
       const factors = factorsByProblem.get(String(row.id)) ?? [];
@@ -321,8 +330,11 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
         id: String(row.id), statement: String(row.statement), whyItPersists: String(row.why_it_persists),
         affected: String(row.affected), scaleEstimate: String(row.scale_estimate), verdict: String(row.verdict) as ProblemCandidate["verdict"],
         verdictReason: String(row.verdict_reason), selected: row.selected_at !== null,
+        intendedBuyerEvidenceFactorIds: JSON.parse(String(row.intended_buyer_evidence_factor_ids_json ?? "[]")) as string[],
+        evidenceGap: row.evidence_gap === null || row.evidence_gap === undefined ? null : String(row.evidence_gap),
         factors,
         singleHarvestModeWarning: factors.length > 0 && new Set(factors.map((factor) => factor.harvestMode)).size === 1,
+        developmentCompleted: Number(row.development_completed) === 1,
       };
     });
   }
@@ -337,6 +349,16 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
       ORDER BY f.created_at, f.id
     `).all(runId) as Array<Record<string, unknown>>;
     return groupRows(rows, "problem_id", mapFactor);
+  }
+  function listProblemVerdictSourceIdsForRun(runId: string): Map<string, string[]> {
+    const rows = db.db.prepare(`
+      SELECT pvs.problem_id, pvs.source_id
+      FROM problems p
+      JOIN problem_verdict_sources pvs ON pvs.problem_id = p.id
+      WHERE p.discovery_run_id = ?
+      ORDER BY pvs.problem_id, pvs.position
+    `).all(runId) as Array<{ problem_id: string; source_id: string }>;
+    return groupRows(rows, "problem_id", (row) => String(row.source_id));
   }
   function listRejectedProblemCandidates(threadId: string): RejectedProblemCandidate[] {
     const runId = latestDiscoveryRun(threadId);
@@ -390,7 +412,7 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
       )
       SELECT s.*, p.statement AS problem_statement, p.verdict AS problem_verdict,
         rr.workflow_version, rr.status AS run_status, rr.awaiting_selection, rr.updated_at AS run_updated_at,
-        ${details ? "da.analysis_json, da.user_decision, da.observed_result, sc.risk_evaluation_criteria, review.output_json AS risk_evaluation_json," : ""} da.updated_at AS decision_updated_at,
+        ${details ? "da.analysis_json, da.user_decision, da.observed_result, da.experiment_outcome, sc.risk_evaluation_criteria, review.output_json AS risk_evaluation_json," : ""} da.updated_at AS decision_updated_at,
         review.id AS risk_evaluation_key,
         ef.status AS evidence_follow_up_status, ef.updated_at AS evidence_follow_up_updated_at,
         COALESCE(oc.outcome_count, 0) AS outcome_count, COALESCE(oc.core_count, 0) AS core_count,
@@ -417,7 +439,7 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
     const risksBySolution = details ? readRisks(solutionIds, readAll) : new Map<string, SolutionView["risks"]>();
     const factorsByProblem = details ? readProblemFactors(problemIds, readAll) : new Map<string, FactorView[]>();
     const contrarySourcesByProblem = details ? readContrarySources(problemIds, readAll) : new Map<string, NonNullable<SolutionView["contrarySources"]>>();
-    const followUpsByRun = details ? readEvidenceFollowUps(rows.map((row) => String(row.research_run_id)), readAll) : new Map();
+    const followUpsBySolution = details ? readEvidenceFollowUps(rows.map((row) => String(row.research_run_id)), readAll) : new Map();
     context.observeDataRead?.({ operation: details ? "solution-details" : "solution-summaries", queryCount, rowCount: rows.length });
     const discardedIds = new Set(JSON.parse(db.getSetting(`discarded-ideas:${threadId}`) ?? "[]") as string[]);
     const result = rows.map((row): SolutionView => {
@@ -427,7 +449,7 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
         impact: String(row.highest_risk_impact) as "≤3 days lost" | "~2 weeks" | "~2 months" | "project ends",
         sortKey: Number(row.highest_risk_sort_key),
       };
-      const evidenceFollowUp = followUpsByRun.get(String(row.research_run_id));
+      const evidenceFollowUp = followUpsBySolution.get(String(row.id));
       return {
         discarded: discardedIds.has(String(row.id)), detailsLoaded: details, highestRisk: highest,
         outcomeCount: Number(row.outcome_count), riskCount: Number(row.risk_count), projectEndingRiskCount: Number(row.ending_count),
@@ -439,8 +461,13 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
         }),
         canRequestEvidenceFollowUp: Number(row.workflow_version) === 2 && row.selected_at !== null
           && row.decision_updated_at !== null && row.evidence_follow_up_status === null && row.run_status === "completed",
+        canReassessEvidence: Number(row.workflow_version) === 2 && row.selected_at !== null
+          && evidenceFollowUp?.status === "completed" && [null, "failed"].includes(evidenceFollowUp.reassessmentStatus) && row.run_status === "completed"
+          && row.risk_evaluation_key !== null && row.decision_updated_at !== null
+          && generationAttempts.getResumeSafety(String(row.research_run_id)).canResume,
         keyAssumption: row.key_assumption === null ? undefined : String(row.key_assumption),
         whyCurrentApproachMaySuffice: row.why_current_approach_may_suffice === null ? undefined : String(row.why_current_approach_may_suffice),
+        startupOpportunity: row.startup_opportunity_json === null ? undefined : JSON.parse(String(row.startup_opportunity_json)),
         unknowns: JSON.parse(String(row.unknowns_json ?? "[]")),
         supportingEvidenceIds: JSON.parse(String(row.supporting_evidence_ids_json ?? "[]")),
         contraryEvidenceIds: JSON.parse(String(row.contrary_evidence_ids_json ?? "[]")),
@@ -450,6 +477,7 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
           riskEvaluationCriteria: String(row.risk_evaluation_criteria ?? ""),
           userDecision: row.user_decision === null ? null : String(row.user_decision),
           observedResult: row.observed_result === null ? null : String(row.observed_result),
+          experimentOutcome: String(row.experiment_outcome ?? "not-run") as "not-run" | "pass" | "fail" | "inconclusive",
           contrarySources: contrarySourcesByProblem.get(String(row.problem_id)) ?? [],
           ...(evidenceFollowUp ? { evidenceFollowUp } : {}),
         } : {}),
@@ -524,7 +552,8 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
   function readEvidenceFollowUps(runIds: string[], readAll: DataRead) {
     if (runIds.length === 0) return new Map<string, {
       status: "running" | "completed" | "failed"; question: string; sources: Array<Record<string, unknown>>;
-      factors: FactorView[]; error: string | null; updatedAt: string;
+      factors: FactorView[]; error: string | null; updatedAt: string; reassessmentStatus: "running" | "completed" | "failed" | null;
+      riskReassessment: unknown | null; reassessmentAnalysis: unknown | null; reassessmentError: string | null;
     }>();
     const uniqueRunIds = [...new Set(runIds)];
     const rows = readAll(`SELECT * FROM evidence_follow_ups WHERE research_run_id IN (${placeholders(uniqueRunIds)})`, uniqueRunIds);
@@ -544,12 +573,16 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
     const factorsById = new Map(factorRows.map((factor) => [String(factor.id), mapFactor(factor)]));
     return new Map(rows.map((row) => {
       const status = String(row.status);
-      return [String(row.research_run_id), {
+      return [String(row.solution_id), {
         status: status === "requested" ? "running" : status as "running" | "completed" | "failed",
         question: String(row.question),
         sources: (JSON.parse(String(row.source_ids_json)) as string[]).flatMap((id) => sourcesById.get(id) ?? []),
         factors: (JSON.parse(String(row.factor_ids_json)) as string[]).flatMap((id) => factorsById.get(id) ?? []),
         error: row.error_message === null ? null : String(row.error_message), updatedAt: String(row.updated_at),
+        reassessmentStatus: row.reassessment_status === null ? null : String(row.reassessment_status) as "running" | "completed" | "failed",
+        riskReassessment: row.risk_reassessment_json === null ? null : JSON.parse(String(row.risk_reassessment_json)),
+        reassessmentAnalysis: row.reassessment_analysis_json === null ? null : JSON.parse(String(row.reassessment_analysis_json)),
+        reassessmentError: row.reassessment_error === null ? null : String(row.reassessment_error),
       }];
     }));
   }
@@ -571,14 +604,23 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
       contentHash: String(source.content_hash), retrievedAt: String(source.retrieved_at),
     }));
     const factors = (db.db.prepare(`
-      SELECT id, subject, behavior, quote, source_id, harvest_mode, model_confidence, uncertainty, created_at
+      SELECT id, subject, behavior, quote, source_id, harvest_mode, model_confidence, uncertainty,
+        source_role, audience_fit, independent_source_key, supports_demand, demand_evidence_uncertainty, created_at
       FROM factors WHERE research_run_id = ? ORDER BY created_at, id
     `).all(runId) as Array<Record<string, unknown>>).map((factor) => ({
       id: String(factor.id), subject: String(factor.subject), behavior: String(factor.behavior), quote: String(factor.quote),
       sourceId: String(factor.source_id), harvestMode: String(factor.harvest_mode), modelConfidence: Number(factor.model_confidence),
       ...(factor.uncertainty === null || factor.uncertainty === undefined ? {} : { uncertainty: String(factor.uncertainty) }),
+      sourceRole: String(factor.source_role ?? "unknown"), audienceFit: String(factor.audience_fit ?? "unknown"),
+      independentSourceKey: factor.independent_source_key === null || factor.independent_source_key === undefined
+        ? null : String(factor.independent_source_key),
+      supportsDemand: Number(factor.supports_demand ?? 0) === 1,
+      ...(factor.demand_evidence_uncertainty === null || factor.demand_evidence_uncertainty === undefined
+        ? {} : { demandEvidenceUncertainty: String(factor.demand_evidence_uncertainty) }),
       createdAt: String(factor.created_at),
     }));
+    const problems = listProblems(threadId);
+    const verdictSourceIdsByProblem = listProblemVerdictSourceIdsForRun(runId);
     // The archived scope is the one this run actually used; the thread's live scope may have been edited since.
     const archivedScope = db.db.prepare(`
       SELECT title, audience, domain, observations, off_limits_json, risk_evaluation_criteria FROM scopes WHERE research_run_id = ?
@@ -603,21 +645,24 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
         : threads.getScope(threadId),
       sources,
       factors,
-      problems: listProblems(threadId),
+      problems: problems.map((problem) => ({
+        ...problem,
+        verdictSourceIds: verdictSourceIdsByProblem.get(problem.id) ?? [],
+      })),
       rejectedProblemCandidates: listRejectedProblemCandidates(threadId),
       evidenceFollowUps: listEvidenceFollowUpExports(threadId),
     };
   }
   function listEvidenceFollowUpExports(threadId: string) {
     const rows = db.db.prepare(`
-      SELECT ef.research_run_id FROM evidence_follow_ups ef
+      SELECT ef.research_run_id, ef.solution_id FROM evidence_follow_ups ef
       JOIN research_runs rr ON rr.id = ef.research_run_id
       WHERE rr.thread_id = ? ORDER BY ef.requested_at, ef.research_run_id
-    `).all(threadId) as Array<{ research_run_id: string }>;
+    `).all(threadId) as Array<{ research_run_id: string; solution_id: string }>;
     const readAll: DataRead = (sql, params) => db.db.prepare(sql).all(...params) as Array<Record<string, unknown>>;
-    const byRun = readEvidenceFollowUps(rows.map((row) => row.research_run_id), readAll);
+    const bySolution = readEvidenceFollowUps(rows.map((row) => row.research_run_id), readAll);
     return rows.flatMap((row) => {
-      const followUp = byRun.get(row.research_run_id);
+      const followUp = bySolution.get(row.solution_id);
       return followUp ? [{ researchRunId: row.research_run_id, ...followUp }] : [];
     });
   }
@@ -648,8 +693,11 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
     return row ? { runId: row.research_run_id, summary: runUsage(row.research_run_id) } : null;
   }
   function latestRun(threadId: string) {
-    const row = db.db.prepare("SELECT id, status, problem_id, config_json, workflow_version, awaiting_selection, interrupted, completion_reason FROM research_runs WHERE thread_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1")
-      .get(threadId) as { id: string; status: string; problem_id: string | null; config_json: string; workflow_version: 1 | 2; awaiting_selection: number; interrupted: number; completion_reason: string | null } | undefined;
+    const row = db.db.prepare(`SELECT id, status, problem_id, config_json, workflow_version, awaiting_selection,
+        interrupted, completion_reason, created_at, updated_at
+      FROM research_runs WHERE thread_id = ?
+      ORDER BY CASE WHEN status IN ('queued','running') THEN 0 ELSE 1 END, created_at DESC, rowid DESC LIMIT 1`)
+      .get(threadId) as { id: string; status: string; problem_id: string | null; config_json: string; workflow_version: 1 | 2; awaiting_selection: number; interrupted: number; completion_reason: string | null; created_at: string; updated_at: string } | undefined;
     if (!row) return null;
     // History predating the current required config fields is still readable.
     // Missing model provenance must never make it resumable as a current run.
@@ -667,8 +715,10 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
     const providerRemoved = !runConfig || runConfig.model.providerId === HISTORICAL_CODEX_CLI_PROVIDER_ID;
     // Match resumeRun: ended legacy runs have no resumable stage checkpoints.
     const resumableStatus = ["queued", "running", ...(row.workflow_version === 2 ? ["failed", "cancelled"] : [])].includes(row.status);
+    const runtime = runtimeProjection(row);
     return {
       runId: row.id, status: row.status, problemId: row.problem_id,
+      runConfig,
       workflowVersion: row.workflow_version, awaitingSelection: Boolean(row.awaiting_selection), interrupted: Boolean(row.interrupted),
       codexCalls: counts.find((item) => item.provider === runConfig?.model.providerId)?.count ?? 0,
       searches: counts.find((item) => item.provider === runConfig?.searchProvider)?.count ?? 0,
@@ -682,17 +732,63 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
         ? { resumeBlockedReason: REMOVED_CODEX_CLI_MESSAGE }
         : resumeSafety.resumeBlockedReason ? { resumeBlockedReason: resumeSafety.resumeBlockedReason } : {}),
       usage: runUsage(row.id),
+      ...runtime,
     };
   }
-  function listPendingRuns(): Array<{ runId: string; threadId: string; threadTitle: string; status: "queued" | "running"; problemId: string | null }> {
+  function listPendingRuns() {
     return db.db.prepare(`
-      SELECT rr.id AS run_id, rr.thread_id, t.title, rr.status, rr.problem_id
+      SELECT rr.id AS run_id, rr.thread_id, t.title, rr.status, rr.problem_id, rr.awaiting_selection, rr.created_at, rr.updated_at
       FROM research_runs rr JOIN threads t ON t.id = rr.thread_id
       WHERE rr.status IN ('queued','running') ORDER BY rr.created_at
-    `).all().map((row) => {
+    `).all().map((row, index) => {
       const item = row as Record<string, unknown>;
-      return { runId: String(item.run_id), threadId: String(item.thread_id), threadTitle: String(item.title), status: String(item.status) as "queued" | "running", problemId: item.problem_id === null ? null : String(item.problem_id) };
+      const runtime = runtimeProjection({ id: String(item.run_id), status: String(item.status), problem_id: item.problem_id === null ? null : String(item.problem_id),
+        awaiting_selection: Number(item.awaiting_selection), created_at: String(item.created_at), updated_at: String(item.updated_at) });
+      return { runId: String(item.run_id), threadId: String(item.thread_id), threadTitle: String(item.title), status: String(item.status) as "queued" | "running",
+        problemId: item.problem_id === null ? null : String(item.problem_id), ...runtime, queuePosition: index + 1 };
     });
+  }
+
+  function runtimeProjection(row: { id: string; status: string; problem_id: string | null; awaiting_selection: number; created_at: string; updated_at: string }) {
+    const attempt = db.db.prepare(`SELECT stage_key, status FROM generation_attempts WHERE research_run_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1`)
+      .get(row.id) as { stage_key: string; status: string } | undefined;
+    const checkpoint = db.db.prepare(`SELECT stage_id FROM stage_results WHERE research_run_id = ? ORDER BY completed_at DESC, rowid DESC LIMIT 1`)
+      .get(row.id) as { stage_id: string } | undefined;
+    const progress = db.db.prepare(`SELECT payload_json FROM job_events WHERE run_id = ? AND type = 'run-progress' ORDER BY id DESC LIMIT 1`)
+      .get(row.id) as { payload_json: string } | undefined;
+    const progressPayload = progress ? JSON.parse(progress.payload_json) as { stage?: string; operationStartedAt?: string; operationElapsedMs?: number } : null;
+    const projectedStage = progressPayload?.stage;
+    const modelState = attempt && ["prepared", "dispatched", "accepted"].includes(attempt.status)
+      ? attempt.status === "prepared" ? "waiting" as const : attempt.status === "dispatched" ? "dispatched" as const : "accepted" as const
+      : null;
+    const stageKey = attempt?.stage_key.split(":")[0];
+    const inferredStage = row.awaiting_selection ? "awaiting-option-selection" as const
+      : stageKey === "factor-harvest" ? "extracting" as const
+      : stageKey === "problem-candidates" || stageKey === "problem-kill" ? "synthesizing-problems" as const
+      : stageKey === "solutions" ? "generating-options" as const
+      : stageKey === "risk-evaluation" ? "evaluating-risk" as const
+      : stageKey === "decision-analysis" ? "analyzing-option" as const
+      : stageKey === "query-plan" ? "searching" as const
+      : "queued" as const;
+    const stage = row.awaiting_selection ? "awaiting-option-selection" as const
+      : row.status === "completed" ? "completed" as const
+      : row.status === "failed" ? "failed" as const
+      : row.status === "cancelled" ? "cancelled" as const
+      : isRuntimeStage(projectedStage) ? projectedStage : inferredStage;
+    const end = ["completed", "failed", "cancelled"].includes(row.status) ? Date.parse(row.updated_at) : Date.now();
+    const operationStartedAt = progressPayload?.operationStartedAt;
+    const persistedOperationElapsed = progressPayload?.operationElapsedMs;
+    const operationElapsedMs = operationStartedAt && row.status === "running"
+      ? Math.max(0, Date.now() - Date.parse(operationStartedAt))
+      : persistedOperationElapsed;
+    return { stage, modelState, elapsedMs: Math.max(0, end - Date.parse(row.created_at)),
+      ...(operationStartedAt ? { operationStartedAt } : {}),
+      ...(operationElapsedMs === undefined ? {} : { operationElapsedMs: Math.max(0, operationElapsedMs) }),
+      lastSuccessfulCheckpoint: checkpoint?.stage_id ?? null };
+  }
+
+  function isRuntimeStage(value: string | undefined): value is "queued" | "searching" | "extracting" | "synthesizing-problems" | "generating-options" | "awaiting-option-selection" | "evaluating-risk" | "analyzing-option" | "evidence-follow-up" | "completed" | "failed" | "cancelled" {
+    return Boolean(value && ["queued", "searching", "extracting", "synthesizing-problems", "generating-options", "awaiting-option-selection", "evaluating-risk", "analyzing-option", "evidence-follow-up", "completed", "failed", "cancelled"].includes(value));
   }
   function requireThread(threadId: string): void {
     if (!db.db.prepare("SELECT 1 FROM threads WHERE id = ?").get(threadId)) throw new AppError("not_found", "Thread not found.");
@@ -969,6 +1065,12 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
         const input = SelectProblemsSchema.parse(body); requireThread(input.threadId);
         const runId = latestDiscoveryRun(input.threadId); if (!runId) throw new AppError("conflict", "No completed discovery run is ready for selection.");
         requireRunnableRunProvider(runId);
+        const validation = cachedValidation ?? await validateProviders();
+        const modelOption = cachedModelOptions.find((item) => sameModelRef(item, input.model));
+        if (!validation.native.connected || !modelOption) throw new AppError("conflict", "Selected development model is unavailable");
+        if (!modelOption.reasoningEfforts.some((effort) => effort.id === input.reasoningEffort)) {
+          throw new AppError("validation_error", "Selected reasoning effort is unavailable for this model.");
+        }
         const known = new Set((db.db.prepare("SELECT id FROM problems WHERE discovery_run_id = ?").all(runId) as Array<{ id: string }>).map((item) => item.id));
         if (input.problemIds.some((id) => !known.has(id))) throw new AppError("conflict", "A selected problem no longer belongs to the latest discovery run.");
         db.db.exec("BEGIN IMMEDIATE");
@@ -994,7 +1096,13 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
           db.db.exec("COMMIT");
         } catch (error) { db.db.exec("ROLLBACK"); throw error; }
         if (input.problemIds.length === 0 && !input.userProblem) { threads.updateThreadStatus(input.threadId, "problems-ready"); return sendJson(res, 200, await workspaceState()); }
-        const config = threads.getLatestRunConfig(input.threadId) ?? DEFAULT_RUN_CONFIG;
+        const previousConfig = threads.getLatestRunConfig(input.threadId) ?? DEFAULT_RUN_CONFIG;
+        const config = RunConfigSchema.parse({
+          ...previousConfig,
+          model: input.model,
+          reasoningEffort: input.reasoningEffort,
+          explorationPurpose: input.explorationPurpose ?? previousConfig.explorationPurpose,
+        });
         try { await ensureEngine().startNextSelected(input.threadId, config); }
         catch (error) { if (error instanceof ActiveRunConflictError) throw new AppError("conflict", "This research already has an active run."); throw error; }
         return sendJson(res, 200, await workspaceState());
@@ -1009,6 +1117,13 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
         await ensureEngine().selectOption(input.threadId, input.runId, input.solutionId);
         return sendJson(res, 200, await workspaceState());
       }
+      if (route === "/research/evidence-reassessment") {
+        const input = EvidenceReassessmentRequestSchema.parse(body);
+        requireThread(input.threadId);
+        requireRunnableRunProvider(input.runId);
+        await ensureEngine().requestEvidenceReassessment(input.threadId, input.runId);
+        return sendJson(res, 200, await workspaceState());
+      }
       if (route === "/research/evidence-follow-up") {
         const input = EvidenceFollowUpRequestSchema.parse(body);
         requireThread(input.threadId);
@@ -1021,12 +1136,15 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
         const belongs = db.db.prepare(`SELECT da.id FROM decision_analyses da JOIN research_runs rr ON rr.id = da.research_run_id
           WHERE rr.thread_id = ? AND da.solution_id = ?`).get(input.threadId, input.solutionId) as { id: string } | undefined;
         if (!belongs) throw new AppError("not_found", "Selected analysis does not belong to this project.");
-        db.db.prepare("UPDATE decision_analyses SET user_decision = ?, observed_result = ?, updated_at = ? WHERE id = ?")
-          .run(input.userDecision, input.observedResult, new Date().toISOString(), belongs.id);
+        db.db.prepare("UPDATE decision_analyses SET user_decision = ?, observed_result = ?, experiment_outcome = ?, updated_at = ? WHERE id = ?")
+          .run(input.userDecision, input.observedResult, input.experimentOutcome, new Date().toISOString(), belongs.id);
         return sendJson(res, 200, await workspaceState());
       }
       if (route === "/research/cancel") {
-        const { runId } = ResumeResearchSchema.parse(body); cancelRun(runId); return sendJson(res, 200, { workspace: await workspaceState() });
+        const { runId } = ResumeResearchSchema.parse(body);
+        if (engine) await engine.cancelRunAndWait(runId);
+        else cancelRun(runId);
+        return sendJson(res, 200, { workspace: await workspaceState() });
       }
       if (route === "/research/export") {
         const input = ExportResearchRequestSchema.parse(body); requireThread(input.threadId);
@@ -1035,6 +1153,7 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
       }
       if (route === "/ideas/export") {
         const input = ExportIdeasRequestSchema.parse(body); requireThread(input.threadId); const ideas = listSolutions(input.threadId);
+        const thread = db.db.prepare("SELECT title FROM threads WHERE id = ?").get(input.threadId) as { title: string };
         const emptyResults = db.db.prepare(`
             SELECT r.id, r.workflow_version, p.id AS problem_id, p.statement, p.discovery_run_id
             FROM research_runs r JOIN problems p ON p.id = r.problem_id
@@ -1069,7 +1188,10 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
             : "";
           return { filename, content: input.format === "json" ? JSON.stringify(exportedGroup, null, 2) : `${renderMarkdown(group)}${followUpMarkdown}` };
         });
-        return sendJson(res, 200, { files: [...files, ...emptyFiles] });
+        return sendJson(res, 200, {
+          filename: `${slug(thread.title)}-ideas.${input.format === "json" ? "json" : "md"}`,
+          files: [...files, ...emptyFiles],
+        });
       }
       throw new AppError("not_found", "Route not found.");
     } catch (error) {
@@ -1102,6 +1224,14 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
   }
   const address = server.address();
   if (!address || typeof address === "string") throw new Error("Backend failed to bind");
+  for (const handoff of threads.pendingDevelopmentHandoffs()) {
+    try {
+      await ensureEngine().startNextSelected(handoff.threadId, handoff.config);
+    } catch (error) {
+      threads.updateThreadStatus(handoff.threadId, "failed");
+      context.log?.({ level: "error", event: "development-handoff-recovery-failed", error });
+    }
+  }
   void validateProviders().catch(() => undefined);
   return {
     port: address.port, token,
@@ -1321,6 +1451,13 @@ function mapFactor(factor: Record<string, unknown>): FactorView {
     sourceId: String(factor.source_id), sourceTitle: String(factor.source_title), sourceUrl: String(factor.canonical_url),
     harvestMode: String(factor.harvest_mode) as "domain" | "audience", modelConfidence: Number(factor.model_confidence),
     ...(factor.uncertainty === null || factor.uncertainty === undefined ? {} : { uncertainty: String(factor.uncertainty) }),
+    sourceRole: String(factor.source_role ?? "unknown") as FactorView["sourceRole"],
+    audienceFit: String(factor.audience_fit ?? "unknown") as FactorView["audienceFit"],
+    independentSourceKey: factor.independent_source_key === null || factor.independent_source_key === undefined
+      ? null : String(factor.independent_source_key),
+    supportsDemand: Number(factor.supports_demand ?? 0) === 1,
+    ...(factor.demand_evidence_uncertainty === null || factor.demand_evidence_uncertainty === undefined
+      ? {} : { demandEvidenceUncertainty: String(factor.demand_evidence_uncertainty) }),
   };
 }
 function slug(value: string): string { return value.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 80) || "problem"; }

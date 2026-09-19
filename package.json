@@ -20,7 +20,7 @@
     "verify:package": "bun scripts/verify-package.ts",
     "install:local": "powershell -NoProfile -File scripts/install-local.ps1",
     "build:installed": "bun run package && bun run install:local",
-    "test": "bun test test/unit && bun test --timeout 30000 test/integration",
+    "test": "bun test ./test/unit && bun test --timeout 30000 ./test/integration",
     "test:renderer": "vitest run --maxWorkers=1 --no-file-parallelism",
     "test:e2e": "bun run package:e2e && playwright test",
     "test:e2e:production": "bun scripts/run-e2e.ts production",

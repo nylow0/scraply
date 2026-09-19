@@ -1100,4 +1100,35 @@ export const MIGRATIONS = [
     afterSql: migrateSolutionLimit,
   },
   { id: 22, sql: "ALTER TABLE threads ADD COLUMN archived_at TEXT;" },
+  {
+    id: 23,
+    sql: `
+      ALTER TABLE factors ADD COLUMN source_role TEXT NOT NULL DEFAULT 'unknown'
+        CHECK(source_role IN ('firsthand', 'measured', 'vendor', 'recommendation', 'illustration', 'unknown'));
+      ALTER TABLE factors ADD COLUMN audience_fit TEXT NOT NULL DEFAULT 'unknown'
+        CHECK(audience_fit IN ('intended-buyer', 'adjacent', 'general', 'unknown'));
+      ALTER TABLE factors ADD COLUMN independent_source_key TEXT;
+      ALTER TABLE factors ADD COLUMN supports_demand INTEGER NOT NULL DEFAULT 0 CHECK(supports_demand IN (0, 1));
+      ALTER TABLE factors ADD COLUMN demand_evidence_uncertainty TEXT;
+      ALTER TABLE problems ADD COLUMN intended_buyer_evidence_factor_ids_json TEXT NOT NULL DEFAULT '[]'
+        CHECK(json_valid(intended_buyer_evidence_factor_ids_json));
+      ALTER TABLE problems ADD COLUMN evidence_gap TEXT;
+    `,
+  },
+  {
+    id: 24,
+    sql: `ALTER TABLE solutions ADD COLUMN startup_opportunity_json TEXT CHECK(startup_opportunity_json IS NULL OR json_valid(startup_opportunity_json));`,
+  },
+  { id: 25, sql: `
+    ALTER TABLE decision_analyses ADD COLUMN experiment_outcome TEXT NOT NULL DEFAULT 'not-run'
+      CHECK(experiment_outcome IN ('not-run', 'pass', 'fail', 'inconclusive'));
+    ALTER TABLE evidence_follow_ups ADD COLUMN reassessment_status TEXT
+      CHECK(reassessment_status IN ('running', 'completed', 'failed'));
+    ALTER TABLE evidence_follow_ups ADD COLUMN risk_reassessment_json TEXT CHECK(risk_reassessment_json IS NULL OR json_valid(risk_reassessment_json));
+    ALTER TABLE evidence_follow_ups ADD COLUMN reassessment_analysis_json TEXT CHECK(reassessment_analysis_json IS NULL OR json_valid(reassessment_analysis_json));
+    ALTER TABLE evidence_follow_ups ADD COLUMN risk_generation_id TEXT;
+    ALTER TABLE evidence_follow_ups ADD COLUMN analysis_generation_id TEXT;
+    ALTER TABLE evidence_follow_ups ADD COLUMN reassessment_error TEXT;
+    ALTER TABLE evidence_follow_ups ADD COLUMN reassessed_at TEXT;
+  ` },
 ] as const;

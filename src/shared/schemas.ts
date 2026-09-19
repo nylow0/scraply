@@ -18,6 +18,7 @@ export const SourceDetailSchema = SourceSchema.extend({
 
 export const DiscoveryDepthSchema = z.enum(["quick", "standard", "deep"]);
 export const ResearchModeSchema = z.enum(["explore-market", "known-problem"]);
+export const ExplorationPurposeSchema = z.enum(["general-solutions", "startup-opportunities"]);
 export const ReasoningEffortSchema = z.string().trim().min(1).regex(/^[a-z0-9_-]+$/);
 export const ProviderIdSchema = z.string().trim().min(1).regex(/^[a-z0-9_-]+$/);
 export const ModelRefSchema = z.object({
@@ -45,6 +46,7 @@ const RunConfigInputSchema = z.object({
   searchProvider: SearchProviderSchema.optional(),
   researchMode: ResearchModeSchema.optional(),
   knownProblem: z.string().trim().max(2_000).optional(),
+  explorationPurpose: ExplorationPurposeSchema.optional(),
 }).strict();
 const LegacyRunConfigSchema = RunConfigInputSchema.omit({ configVersion: true, model: true }).extend({
   model: z.string().trim().min(1),
@@ -58,6 +60,7 @@ export const RunConfigSchema = z.union([
     researchMode: value.researchMode ?? "explore-market" as const,
     knownProblem: value.knownProblem ?? "",
     searchProvider: value.searchProvider ?? "exa" as const,
+    explorationPurpose: value.explorationPurpose ?? "general-solutions" as const,
   })),
   LegacyRunConfigSchema.transform((value) => ({
     ...value,
@@ -66,6 +69,7 @@ export const RunConfigSchema = z.union([
     researchMode: value.researchMode ?? "explore-market" as const,
     knownProblem: value.knownProblem ?? "",
     searchProvider: value.searchProvider ?? "exa" as const,
+    explorationPurpose: value.explorationPurpose ?? "general-solutions" as const,
   })),
 ]);
 
@@ -81,6 +85,7 @@ export const DEFAULT_RUN_CONFIG = {
   searchProvider: "exa",
   researchMode: "explore-market",
   knownProblem: "",
+  explorationPurpose: "general-solutions",
 } satisfies RunConfig;
 
 export const ModelOptionSchema = z.object({
@@ -140,8 +145,14 @@ export type Source = z.infer<typeof SourceSchema>;
 export type SourceDetail = z.infer<typeof SourceDetailSchema>;
 export type DiscoveryDepth = z.infer<typeof DiscoveryDepthSchema>;
 export type ResearchMode = z.infer<typeof ResearchModeSchema>;
+export type ExplorationPurpose = z.infer<typeof ExplorationPurposeSchema>;
 export type ReasoningEffort = z.infer<typeof ReasoningEffortSchema>;
-export type RunConfig = z.infer<typeof RunConfigSchema>;
+type ParsedRunConfig = z.infer<typeof RunConfigSchema>;
+// Callers may still construct records written before explorationPurpose existed. Parsing always
+// fills the general-purpose behavior so persisted and IPC records expose an explicit value.
+export type RunConfig = Omit<ParsedRunConfig, "explorationPurpose"> & {
+  explorationPurpose?: ExplorationPurpose;
+};
 export type SearchProvider = z.infer<typeof SearchProviderSchema>;
 export type ModelOption = z.infer<typeof ModelOptionSchema>;
 export type ProviderId = z.infer<typeof ProviderIdSchema>;

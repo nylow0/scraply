@@ -15,17 +15,21 @@
     onSave,
     workflowVersion,
     onEvidenceFollowUp,
+    onEvidenceReassessment,
+    analysisBlocked = false,
   }: {
     solutions: SolutionView[];
     busy: boolean;
+    analysisBlocked?: boolean;
     onDiscard?: (ideaId: string, discarded: boolean) => Promise<void>;
     onExport: (format: "markdown" | "json") => Promise<void>;
     onOpenSource: (url: string) => Promise<void>;
     onReview: () => void;
     onSelect?: (idea: SolutionView) => Promise<void>;
-    onSave?: (solutionId: string, decision: string, observed: string) => Promise<void>;
+    onSave?: (solutionId: string, decision: string, observed: string, outcome: "not-run" | "pass" | "fail" | "inconclusive") => Promise<void>;
     workflowVersion?: 1 | 2 | undefined;
     onEvidenceFollowUp?: ((runId: string, question: string) => Promise<void>) | undefined;
+    onEvidenceReassessment?: ((runId: string) => Promise<void>) | undefined;
   } = $props();
 
   let query = $state("");
@@ -34,12 +38,16 @@
   let unaddressedOnly = $state(false);
   let hasV2 = $derived(workflowVersion === 2 || solutions.some((idea) => idea.workflowVersion === 2));
   let rankedSolutions = $derived(solutions.map((idea, index) => ({ idea, rank: index + 1 })));
+  function matchesQuery(idea: SolutionView): boolean {
+    const normalized = query.trim().toLowerCase();
+    return idea.description.toLowerCase().includes(normalized) || idea.mechanism.toLowerCase().includes(normalized);
+  }
   let visible = $derived(
     unaddressedOnly
       ? rankedSolutions.filter(({ idea }) => idea.unaddressedCatastrophicRisks > 0)
       : rankedSolutions,
   );
-  let matchCount = $derived(visible.filter(({ idea }) => !!idea.discarded === showDiscarded && idea.mechanism.toLowerCase().includes(query.trim().toLowerCase())).length);
+  let matchCount = $derived(visible.filter(({ idea }) => !!idea.discarded === showDiscarded && matchesQuery(idea)).length);
 </script>
 
 <section class="workspace">
@@ -60,10 +68,10 @@
   {#if solutions.length > 0 && matchCount === 0}<p class="filter-empty">{query ? `No solutions match "${query}".` : showDiscarded ? "No discarded solutions." : discardedCount === solutions.length ? "All solutions discarded. Open Discarded to review or restore them." : "No solutions match this filter."}</p>{/if}
   <div class="solutions">
     {#each rankedSolutions as item (item.idea.id)}
-      <div class="idea-row" hidden={!!item.idea.discarded !== showDiscarded || (unaddressedOnly && item.idea.unaddressedCatastrophicRisks === 0) || !item.idea.mechanism.toLowerCase().includes(query.trim().toLowerCase())}>
-      {#if onDiscard}<button class="dismiss" disabled={busy} aria-label={`${item.idea.discarded ? "Restore" : "Discard"} solution: ${item.idea.mechanism}`} onclick={() => onDiscard?.(item.idea.id, !item.idea.discarded)}>{item.idea.discarded ? "Restore" : "Discard"}</button>{/if}
+      <div class="idea-row" hidden={!!item.idea.discarded !== showDiscarded || (unaddressedOnly && item.idea.unaddressedCatastrophicRisks === 0) || !matchesQuery(item.idea)}>
+      {#if onDiscard}<button class="dismiss" disabled={busy} aria-label={`${item.idea.discarded ? "Restore" : "Discard"} solution: ${item.idea.description}`} onclick={() => onDiscard?.(item.idea.id, !item.idea.discarded)}>{item.idea.discarded ? "Restore" : "Discard"}</button>{/if}
       {#if item.idea.workflowVersion === 2 && onSelect && onSave}
-        <DecisionOption idea={item.idea} {busy} {onSelect} {onSave} {onOpenSource} {onEvidenceFollowUp} />
+        <DecisionOption idea={item.idea} {busy} {analysisBlocked} {onSelect} {onSave} {onOpenSource} {onEvidenceFollowUp} {onEvidenceReassessment} />
       {:else}<SolutionListItem idea={item.idea} rank={item.rank} {onOpenSource} />{/if}
       </div>
     {:else}
