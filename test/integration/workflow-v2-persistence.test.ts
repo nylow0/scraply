@@ -245,7 +245,13 @@ describe("workflow v2 persistence", () => {
     const request = (generationId: string, partitioned = false): StructuredStageRequest<unknown> => ({
       generationId, stage: partitioned ? "factor-harvest:domain:source" : "factor-harvest:domain:source,other", model: { providerId: "test", modelId: "test" }, reasoningEffort: "high",
       workOrder: { stage: partitioned ? "factor-harvest:domain:source" : "factor-harvest:domain:source,other", instruction: "Legacy instruction", goal: "Extract factors", inputs: { harvestMode: "domain", factorLimit: partitioned ? 8 : 15 }, requiredDecisions: [], definitionOfDone: [], constraints: [] },
-      evidence: [{ sourceId: "source", content: { sources: partitioned ? [{ id: "source", text: "Operators repeat filing." }] : [{ id: "source", text: "Operators repeat filing." }, { id: "other", text: "Other evidence." }] } }], schema: FactorHarvestOutputSchema,
+      evidence: [{
+        sourceId: partitioned ? "scraply:factor-harvest:domain:source" : "scraply:factor-harvest:domain:source,other",
+        content: {
+          scope: { title: "Filing", audience: "Operators" },
+          sources: partitioned ? [{ id: "source", text: "Operators repeat filing." }] : [{ id: "source", text: "Operators repeat filing." }, { id: "other", text: "Other evidence." }],
+        },
+      }], schema: FactorHarvestOutputSchema,
       jsonSchema: deriveJsonSchema(FactorHarvestOutputSchema), repairPolicy: "one_retry", deadlineMs: stage.deadlineMs,
     });
     try {
@@ -269,11 +275,15 @@ describe("workflow v2 persistence", () => {
       });
       await expectsFreshDispatch({
         ...smaller,
-        evidence: [{ sourceId: "source", content: { sources: [{ id: "source", text: "Changed evidence." }] } }],
+        evidence: [{ ...smaller.evidence[0]!, content: { scope: { title: "Filing", audience: "Operators" }, sources: [{ id: "source", text: "Changed evidence." }] } }],
       });
-
+      await expectsFreshDispatch({
+        ...smaller,
+        evidence: [{ ...smaller.evidence[0]!, content: { scope: { title: "Changed scope", audience: "Operators" }, sources: [{ id: "source", text: "Operators repeat filing." }] } }],
+      });
+      await expectsFreshDispatch({ ...smaller, evidence: [...smaller.evidence, { sourceId: "extra", content: { note: "Changed envelope" } }] });
       await expectsFreshDispatch({ ...smaller, model: { ...smaller.model, modelId: "different-model" } });
-      expect(rejectedReuseDispatches).toBe(3);
+      expect(rejectedReuseDispatches).toBe(5);
 
       const resumed = new WorkflowExecution(client, "run-v2");
       const recovered = await resumed.discoveryClient(provider).structuredCompletion(request("resume", true));

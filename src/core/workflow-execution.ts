@@ -472,8 +472,19 @@ function recoverableFactorPartitionSourceIds(
     const properties = jsonSchema.properties as Record<string, unknown> | undefined;
     const factors = properties?.factors as Record<string, unknown> | undefined;
     if (factors) delete factors.maxItems;
+    const evidence = structuredClone(value.evidence) as unknown;
+    if (Array.isArray(evidence)) {
+      const partition = evidence[0] as { sourceId?: unknown; content?: unknown } | undefined;
+      if (partition && typeof partition === "object") {
+        // The envelope ID and sources identify the partition. Compare every other evidence field.
+        partition.sourceId = "factor-harvest:partition";
+        if (partition.content && typeof partition.content === "object" && !Array.isArray(partition.content)) {
+          delete (partition.content as Record<string, unknown>).sources;
+        }
+      }
+    }
     return { model: value.model, reasoningEffort: value.reasoningEffort, workOrder,
-      jsonSchema, repairPolicy: value.repairPolicy,
+      evidence, jsonSchema, repairPolicy: value.repairPolicy,
       maxOutputTokens: value.maxOutputTokens ?? null };
   };
   if (canonicalJson(normalize(request)) !== canonicalJson(normalize(savedRequest))) return null;
