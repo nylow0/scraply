@@ -1152,6 +1152,7 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
       }
       if (route === "/ideas/export") {
         const input = ExportIdeasRequestSchema.parse(body); requireThread(input.threadId); const ideas = listSolutions(input.threadId);
+        const thread = db.db.prepare("SELECT title FROM threads WHERE id = ?").get(input.threadId) as { title: string };
         const emptyResults = db.db.prepare(`
             SELECT r.id, r.workflow_version, p.id AS problem_id, p.statement, p.discovery_run_id
             FROM research_runs r JOIN problems p ON p.id = r.problem_id
@@ -1186,7 +1187,10 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
             : "";
           return { filename, content: input.format === "json" ? JSON.stringify(exportedGroup, null, 2) : `${renderMarkdown(group)}${followUpMarkdown}` };
         });
-        return sendJson(res, 200, { files: [...files, ...emptyFiles] });
+        return sendJson(res, 200, {
+          filename: `${slug(thread.title)}-ideas.${input.format === "json" ? "json" : "md"}`,
+          files: [...files, ...emptyFiles],
+        });
       }
       throw new AppError("not_found", "Route not found.");
     } catch (error) {

@@ -514,8 +514,9 @@ describe("cutover backend", () => {
     }));
     expect([...dataReads].reverse().find((read) => read.operation === "solution-details")).toEqual({ operation: "solution-details", queryCount: 8, rowCount: 1 });
     expect(workspace.latestResearchRun.problemId).toBe("problem-deselected");
-    const exported = await post("/ideas/export", { threadId: created.thread.id, format: "json" }) as { files: Array<{ filename: string; content: string }> };
+    const exported = await post("/ideas/export", { threadId: created.thread.id, format: "json" }) as { filename: string; files: Array<{ filename: string; content: string }> };
     expect([...dataReads].reverse().find((read) => read.operation === "solution-details")).toEqual({ operation: "solution-details", queryCount: 8, rowCount: 5 });
+    expect(exported.filename).toMatch(/^[a-z0-9-]+-ideas\.json$/);
     expect(exported.files).toHaveLength(1);
     const jsonIdeas = JSON.parse(exported.files[0]!.content) as Array<{ id: string; factors: Array<{ quote: string; retrievedText?: string }> }>;
     expect(jsonIdeas.map((solution) => solution.id)).toEqual([
