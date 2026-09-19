@@ -3,6 +3,9 @@
   import type { SolutionView } from "../../shared/ipc";
   import SolutionListItem from "./SolutionListItem.svelte";
   import DecisionOption from "./DecisionOption.svelte";
+  import OpportunityFamilies from "./OpportunityFamilies.svelte";
+  import type { OpportunityFamiliesView, OpportunityMembershipCommand } from "../../shared/opportunity-review";
+  import type { ModelOption, ModelRef, RunConfig } from "../../shared/schemas";
 
   let {
     solutions,
@@ -17,10 +20,24 @@
     onEvidenceFollowUp,
     onEvidenceReassessment,
     analysisBlocked = false,
+    opportunities,
+    modelOptions = [],
+    initialConfig,
+    onReviewOpportunities,
+    onEditMembership,
+    onPlanExperiment,
+    opportunityReviewRunning = false,
   }: {
     solutions: SolutionView[];
     busy: boolean;
     analysisBlocked?: boolean;
+    opportunities?: OpportunityFamiliesView | undefined;
+    modelOptions?: ModelOption[];
+    initialConfig?: RunConfig | null;
+    onReviewOpportunities?: (model: ModelRef, reasoningEffort: string, allowAmbiguousRetry?: boolean) => Promise<void>;
+    onEditMembership?: (command: OpportunityMembershipCommand) => Promise<void>;
+    onPlanExperiment?: (idea: SolutionView) => Promise<void>;
+    opportunityReviewRunning?: boolean | undefined;
     onDiscard?: (ideaId: string, discarded: boolean) => Promise<void>;
     onExport: (format: "markdown" | "json") => Promise<void>;
     onOpenSource: (url: string) => Promise<void>;
@@ -63,6 +80,9 @@
     </div>
   </header>
 
+  {#if opportunities && onReviewOpportunities && onEditMembership}
+    <OpportunityFamilies {opportunities} {modelOptions} initialConfig={initialConfig ?? null} busy={busy || analysisBlocked || opportunityReviewRunning} onReview={onReviewOpportunities} onEdit={onEditMembership} />
+  {/if}
 
   <ResultsToolbar bind:query label="Search solutions" count={matchCount} />
   {#if solutions.length > 0 && matchCount === 0}<p class="filter-empty">{query ? `No solutions match "${query}".` : showDiscarded ? "No discarded solutions." : discardedCount === solutions.length ? "All solutions discarded. Open Discarded to review or restore them." : "No solutions match this filter."}</p>{/if}
@@ -71,7 +91,7 @@
       <div class="idea-row" hidden={!!item.idea.discarded !== showDiscarded || (unaddressedOnly && item.idea.unaddressedCatastrophicRisks === 0) || !matchesQuery(item.idea)}>
       {#if onDiscard}<button class="dismiss" disabled={busy} aria-label={`${item.idea.discarded ? "Restore" : "Discard"} solution: ${item.idea.description}`} onclick={() => onDiscard?.(item.idea.id, !item.idea.discarded)}>{item.idea.discarded ? "Restore" : "Discard"}</button>{/if}
       {#if item.idea.workflowVersion === 2 && onSelect && onSave}
-        <DecisionOption idea={item.idea} {busy} {analysisBlocked} {onSelect} {onSave} {onOpenSource} {onEvidenceFollowUp} {onEvidenceReassessment} />
+        <DecisionOption idea={item.idea} busy={busy || opportunityReviewRunning} {analysisBlocked} {onSelect} {onSave} {onOpenSource} {onEvidenceFollowUp} {onEvidenceReassessment} {onPlanExperiment} />
       {:else}<SolutionListItem idea={item.idea} rank={item.rank} {onOpenSource} />{/if}
       </div>
     {:else}

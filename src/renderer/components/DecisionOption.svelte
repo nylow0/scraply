@@ -2,17 +2,9 @@
   import type { SolutionView } from "../../shared/ipc";
   import { optionEvidenceReferences } from "../../shared/option-evidence";
   import { loadIdeaDetail } from "../lib/idea-details";
+  import FocusedExperiment from "./FocusedExperiment.svelte";
   type ExperimentOutcome = "not-run" | "pass" | "fail" | "inconclusive";
-  type EnhancedSolution = SolutionView & {
-    experimentOutcome?: ExperimentOutcome;
-    canReassessEvidence?: boolean;
-  };
-  type EnhancedFollowUp = NonNullable<SolutionView["evidenceFollowUp"]> & {
-    reassessmentStatus?: "running" | "completed" | "failed" | null;
-    reassessmentAnalysis?: NonNullable<SolutionView["decisionAnalysis"]> | null;
-    reassessmentError?: string | null;
-  };
-  let { idea, busy, analysisBlocked = false, onSelect, onSave, onOpenSource, onEvidenceFollowUp, onEvidenceReassessment }: {
+  let { idea, busy, analysisBlocked = false, onSelect, onSave, onOpenSource, onEvidenceFollowUp, onEvidenceReassessment, onPlanExperiment }: {
     idea: SolutionView; busy: boolean;
     analysisBlocked?: boolean;
     onSelect: (idea: SolutionView) => Promise<void>;
@@ -20,6 +12,7 @@
     onOpenSource: (url: string) => Promise<void>;
     onEvidenceFollowUp?: ((runId: string, question: string) => Promise<void>) | undefined;
     onEvidenceReassessment?: ((runId: string) => Promise<void>) | undefined;
+    onPlanExperiment?: ((idea: SolutionView) => Promise<void>) | undefined;
   } = $props();
   let detail = $state<SolutionView | null>(null);
   let error = $state("");
@@ -36,6 +29,8 @@
   let detailLoadEpoch = 0;
   let wasOpen = false;
   let analysis = $derived(detail?.decisionAnalysis);
+  let focusedExperiment = $derived(detail?.focusedExperiment ?? idea.focusedExperiment);
+  let opportunityOrigin = $derived(idea.opportunityOrigin);
   let supportingReferences = $derived(detail ? optionEvidenceReferences(detail, detail.supportingEvidenceIds ?? []) : []);
   let contraryReferences = $derived(detail ? optionEvidenceReferences(detail, detail.contraryEvidenceIds ?? []) : []);
   let followUpSourcesWithoutQuotes = $derived(detail?.evidenceFollowUp?.sources.filter(
@@ -43,7 +38,7 @@
   ) ?? []);
   let formDirty = $derived(userDecision !== savedDecision || observedResult !== savedObservedResult || experimentOutcome !== savedExperimentOutcome);
   let followUpQuestion = $state("");
-  let enhancedFollowUp = $derived(detail?.evidenceFollowUp as EnhancedFollowUp | undefined);
+  let enhancedFollowUp = $derived(detail?.evidenceFollowUp);
   type EvidenceMetadata = { sourceRole?: string; audienceFit?: string; independentSourceKey?: string|null; supportsDemand?: boolean; demandEvidenceUncertainty?: string };
   function evidenceSummary(factor: SolutionView["factors"][number]): string {
     const evidence = factor as typeof factor & EvidenceMetadata;
@@ -93,7 +88,7 @@
       if (requestEpoch !== detailLoadEpoch || !open || key !== `${idea.id}:${idea.detailRevision}`) return;
       const preserveDraft = formDirty || userDecision !== draftDecision || observedResult !== draftObservedResult || experimentOutcome !== draftExperimentOutcome;
       detail = result;
-      const nextExperimentOutcome = (result as EnhancedSolution).experimentOutcome ?? "not-run";
+      const nextExperimentOutcome = result.experimentOutcome ?? "not-run";
       savedExperimentOutcome = nextExperimentOutcome;
       const nextDecision = result.userDecision ?? "";
       const nextObservedResult = result.observedResult ?? "";
@@ -135,7 +130,11 @@
     <div class="disclosure-content" id={`option-body-${idea.id}`}>
     <header>
       <div><p class="status">{idea.selected ? "Your selected option" : "Option"} · Problem evidence: {confirmedEvidenceLabel(idea)}</p>
-        <p>{idea.mechanism}</p></div>
+        <p>{idea.mechanism}</p>
+        {#if opportunityOrigin}
+          <p class="origin"><span>{opportunityOrigin.kind === "exploratory-hypothesis" ? "Exploratory hypothesis" : "Saved problem origin"}</span>{opportunityOrigin.kind === "exploratory-hypothesis" ? opportunityOrigin.disclosure : opportunityOrigin.evidenceGap ?? "Generated from the saved problem map. Supporting evidence does not establish customer demand."}</p>
+        {/if}
+      </div>
       {#if idea.selectable}<button class="primary" disabled={busy || analysisBlocked} title={analysisBlocked ? "Wait for the current generation batch to finish" : undefined} onclick={() => onSelect(idea)}>Choose and analyze</button>{/if}
     </header>
     <details class="option-overview"><summary>Problem and fit</summary>
@@ -157,7 +156,14 @@
           <div><dt>Gap assessment</dt><dd><span class="evidence-kind">{idea.startupOpportunity.gapAssessment.kind}</span> {idea.startupOpportunity.gapAssessment.description}</dd></div>
           <div><dt>Smallest sellable workflow</dt><dd>{idea.startupOpportunity.smallestSellableWorkflow}</dd></div>
           <div><dt>First customer route</dt><dd>{idea.startupOpportunity.firstCustomerRoute}</dd></div>
-          <div><dt>Demand test that could disconfirm this</dt><dd>{idea.startupOpportunity.disconfirmingDemandTest}</dd></div>
+          {#if idea.focusedDemandTest}
+            <div><dt>Primary demand assumption</dt><dd><span class="evidence-kind">{idea.focusedDemandTest.assumption.category.replaceAll("-", " ")}</span> {idea.focusedDemandTest.assumption.testableClaim}</dd></div>
+            <div><dt>Short demand test</dt><dd>{idea.focusedDemandTest.methodSummary}</dd></div>
+            <div><dt>Disconfirming observation</dt><dd>{idea.focusedDemandTest.disconfirmingObservation}</dd></div>
+            {#if idea.focusedDemandTest.paymentTerms}<div><dt>Price and commitment</dt><dd>{idea.focusedDemandTest.paymentTerms.amount} {idea.focusedDemandTest.paymentTerms.currency}. {idea.focusedDemandTest.paymentTerms.commitmentAction}</dd></div>{/if}
+          {:else}
+            <div><dt>Demand test that could disconfirm this</dt><dd>{idea.startupOpportunity.disconfirmingDemandTest}</dd></div>
+          {/if}
         </dl>
       </details>
     {/if}
@@ -193,10 +199,19 @@
             <p class="status">Risk review saved. The final analysis is not complete.</p>
           </details>
         {/if}
+        {#if focusedExperiment}
+          <FocusedExperiment experiment={focusedExperiment} />
+        {/if}
         {#if analysis}
+          {#if !focusedExperiment}
           <section class="experiment"><h3>Next experiment</h3><strong>{analysis.experiment.question}</strong><p>{analysis.experiment.method}</p>
             <dl><div><dt>Cost</dt><dd>{analysis.experiment.cost}</dd></div><div><dt>Pass</dt><dd>{analysis.experiment.passCriterion}</dd></div><div><dt>Fail</dt><dd>{analysis.experiment.failCriterion}</dd></div><div><dt>Inconclusive</dt><dd>{"inconclusiveCriterion" in analysis.experiment ? String(analysis.experiment.inconclusiveCriterion) : "The result does not clearly meet the pass or fail criterion."}</dd></div></dl>
           </section>
+          {/if}
+          {#if idea.selected && !focusedExperiment && onPlanExperiment}
+            <button class="plan-experiment" disabled={busy} onclick={() => onPlanExperiment?.(idea)}>Plan a focused experiment</button>
+            <p class="status">This creates a reviewed plan. It does not run a customer experiment.</p>
+          {/if}
           <details class="deep-review"><summary>Possible outcomes</summary>
           <h3>Possible consequences</h3><p class="status">Model judgments. These have not been observed.</p>
           {#each analysis.consequences as consequence, index (index)}<div class="finding"><strong>{consequence.direction}: {consequence.description}</strong><p>Affects {consequence.affects}. {consequence.rationale}</p></div>{/each}
@@ -241,7 +256,7 @@
                   {#if enhancedFollowUp.reassessmentAnalysis.unknowns.length}<h3>Reassessed open questions</h3><ul>{#each enhancedFollowUp.reassessmentAnalysis.unknowns as unknown, index (index)}<li>{#if isNewReassessmentUnknown(unknown)}<strong>New question:</strong> {/if}{unknown}</li>{/each}</ul>{/if}
                   <section class="experiment"><h3>Updated experiment</h3><strong>{enhancedFollowUp.reassessmentAnalysis.experiment.question}</strong><p>{enhancedFollowUp.reassessmentAnalysis.experiment.method}</p><dl><div><dt>Cost</dt><dd>{enhancedFollowUp.reassessmentAnalysis.experiment.cost}</dd></div><div><dt>Pass</dt><dd>{enhancedFollowUp.reassessmentAnalysis.experiment.passCriterion}</dd></div><div><dt>Fail</dt><dd>{enhancedFollowUp.reassessmentAnalysis.experiment.failCriterion}</dd></div><div><dt>Inconclusive</dt><dd>{enhancedFollowUp.reassessmentAnalysis.experiment.inconclusiveCriterion}</dd></div></dl></section>
                 </details>
-              {:else if detail.evidenceFollowUp.status === "completed" && (detail as EnhancedSolution).canReassessEvidence && idea.runId && onEvidenceReassessment}
+              {:else if detail.evidenceFollowUp.status === "completed" && detail.canReassessEvidence && idea.runId && onEvidenceReassessment}
                 <button class="reassess" disabled={busy} onclick={() => onEvidenceReassessment?.(idea.runId!)}>Reassess with new evidence</button>
                 <p class="status">Your prior analysis will remain unchanged and the reassessment will appear separately.</p>
               {/if}
@@ -275,6 +290,8 @@
   header { display:flex;justify-content:space-between;gap:24px;align-items:start;padding-bottom:22px; }
   header > div { min-width:0; }header p { margin:8px 0 0;max-width:70ch;font-size:15px;line-height:1.8; }
   header .status { margin:0;font-size:13px;color:var(--accent); }
+  .origin { display:flex;align-items:baseline;gap:8px;color:var(--subtle);font-size:12px; }
+  .origin span { flex-shrink:0;border:1px solid var(--border-strong);border-radius:5px;padding:2px 6px;color:var(--muted); }
   h3 { margin:28px 0 12px;font-size:14px;font-weight:650;letter-spacing:-.015em; }
   p,li { line-height:1.8;font-size:13px;max-width:78ch;color:var(--muted); }
   ul { padding-left:20px; }li + li { margin-top:7px; }
@@ -304,6 +321,7 @@
   textarea { width:100%;background:var(--bg);color:var(--text);border:1px solid var(--border-strong);border-radius:9px;padding:12px;resize:none;font-size:13px; }
   select { width:100%;background:#000;color:var(--text);border:1px solid var(--border-strong);border-radius:9px;padding:11px;font-size:13px; }
   .reassess { margin-top:14px; }
+  .plan-experiment { margin-top:14px; }
   .decision-editor { display:grid;grid-template-columns:1fr 1fr;gap:0 20px; }.decision-editor h3,.decision-editor > p { grid-column:1/-1; }.decision-editor button { width:fit-content; }.decision-editor label { margin-top:0; }
   .source-text { white-space:pre-wrap;max-height:360px;overflow:auto; }form span { margin-left:12px;font-size:13px;color:var(--success); }
   @media(max-width:850px) { dl { grid-template-columns:1fr;gap:16px; }.source-columns { grid-template-columns:1fr;gap:0; }.decision-editor { grid-template-columns:1fr; }.disclosure-content { padding:20px; }header { flex-direction:column;gap:16px; } }

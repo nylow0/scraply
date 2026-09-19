@@ -1,4 +1,6 @@
 import {
+  ReviewSavedOpportunitiesSchema, EditOpportunityMembershipSchema, RequestFocusedExperimentSchema,
+  OpportunityExplorationActionSchema, PreviewOpportunityExtensionSchema, ApplyOpportunityExtensionSchema,
   ExportIdeasRequestSchema, ExportResearchRequestSchema, IPC_CHANNELS, SaveFavoriteModelSchema,
   NativeLoginCancelSchema, NativeLoginCompleteSchema, NativeLoginStartSchema, NativeProviderSchema,
   SaveRunConfigSchema, SaveScopeSchema, SelectProblemsSchema, SelectOptionSchema, SaveDecisionSchema, EvidenceFollowUpRequestSchema, EvidenceReassessmentRequestSchema,
@@ -14,6 +16,22 @@ export interface ApiTransport {
 
 export function createScraplyApi(transport: ApiTransport) {
   return {
+    startOpportunityExploration: (payload: import("zod").z.infer<typeof ReviewSavedOpportunitiesSchema>): Promise<WorkspaceState> =>
+      transport.invoke(IPC_CHANNELS.START_OPPORTUNITY_EXPLORATION, ReviewSavedOpportunitiesSchema.parse(payload)),
+    pauseOpportunityExploration: (threadId: string): Promise<WorkspaceState> =>
+      transport.invoke(IPC_CHANNELS.PAUSE_OPPORTUNITY_EXPLORATION, OpportunityExplorationActionSchema.parse({ threadId })),
+    resumeOpportunityExploration: (payload: import("zod").z.infer<typeof ReviewSavedOpportunitiesSchema>): Promise<WorkspaceState> =>
+      transport.invoke(IPC_CHANNELS.RESUME_OPPORTUNITY_EXPLORATION, ReviewSavedOpportunitiesSchema.parse(payload)),
+    previewOpportunityBudgetExtension: (payload: import("zod").z.infer<typeof PreviewOpportunityExtensionSchema>): Promise<import("./opportunity-exploration").OpportunityBudgetExtensionPreview> =>
+      transport.invoke(IPC_CHANNELS.PREVIEW_OPPORTUNITY_EXTENSION, PreviewOpportunityExtensionSchema.parse(payload)),
+    applyOpportunityBudgetExtension: (payload: import("zod").z.infer<typeof ApplyOpportunityExtensionSchema>): Promise<WorkspaceState> =>
+      transport.invoke(IPC_CHANNELS.APPLY_OPPORTUNITY_EXTENSION, ApplyOpportunityExtensionSchema.parse(payload)),
+    reviewSavedOpportunities: (payload: import("zod").z.infer<typeof ReviewSavedOpportunitiesSchema>): Promise<WorkspaceState> =>
+      transport.invoke(IPC_CHANNELS.REVIEW_OPPORTUNITIES, ReviewSavedOpportunitiesSchema.parse(payload)),
+    editOpportunityMembership: (payload: import("zod").z.infer<typeof EditOpportunityMembershipSchema>): Promise<WorkspaceState> =>
+      transport.invoke(IPC_CHANNELS.EDIT_OPPORTUNITY_MEMBERSHIP, EditOpportunityMembershipSchema.parse(payload)),
+    requestFocusedExperiment: (payload: import("zod").z.infer<typeof RequestFocusedExperimentSchema>): Promise<WorkspaceState> =>
+      transport.invoke(IPC_CHANNELS.REQUEST_FOCUSED_EXPERIMENT, RequestFocusedExperimentSchema.parse(payload)),
     selectOption: (payload: { threadId: string; runId: string; solutionId: string }): Promise<WorkspaceState> =>
       transport.invoke(IPC_CHANNELS.SELECT_OPTION, SelectOptionSchema.parse(payload)),
     saveDecision: (payload: { threadId: string; solutionId: string; userDecision: string; observedResult: string; experimentOutcome?: "not-run" | "pass" | "fail" | "inconclusive" }): Promise<WorkspaceState> =>
