@@ -31,6 +31,59 @@ afterEach(async () => {
 });
 
 describe("cutover backend", () => {
+  test("repairs stale development status without changing active runs or option selection", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "scraply-stale-development-")); dirs.push(dir);
+    const dbPath = join(dir, "scraply.db");
+    const handle = await startBackend({
+      dataDir: dir, dbPath, bundledPromptsDir: join(process.cwd(), "prompts"), promptOverridesDir: join(dir, "prompts"),
+      appVersion: "test", getSecrets: () => ({ exaApiKey: null }),
+      providerValidation: { inspectNative: async () => nativeInspection() },
+    }, () => undefined); handles.push(handle);
+    const post = async (path: string, body: unknown) => {
+      const response = await fetch(`http://127.0.0.1:${handle.port}${path}`, {
+        method: "POST", headers: { authorization: `Bearer ${handle.token}`, "content-type": "application/json" }, body: JSON.stringify(body),
+      });
+      return (await response.json() as { data: { thread: { id: string } } }).data;
+    };
+    const stale = await post("/threads", { title: "Stale completed analysis" });
+    const awaiting = await post("/threads", { title: "Options awaiting selection" });
+    const active = await post("/threads", { title: "Active development" });
+    const client = new DatabaseClient(dbPath);
+    const now = new Date().toISOString();
+    const config = JSON.stringify({ ...DEFAULT_RUN_CONFIG, workflowVersion: 2 });
+    const projects = [
+      { threadId: stale.thread.id, suffix: "stale" },
+      { threadId: awaiting.thread.id, suffix: "awaiting" },
+      { threadId: active.thread.id, suffix: "active" },
+    ];
+    for (const { threadId, suffix } of projects) {
+      client.db.prepare("UPDATE threads SET status = 'development-running' WHERE id = ?").run(threadId);
+      client.db.prepare(`INSERT INTO research_runs (id, thread_id, status, config_json, workflow_version, created_at, updated_at)
+        VALUES (?, ?, 'completed', ?, 2, ?, ?)`).run(`discovery-${suffix}`, threadId, config, now, now);
+      client.db.prepare(`INSERT INTO problems (id, discovery_run_id, statement, why_it_persists, affected, scale_estimate, verdict,
+        verdict_reason, verdict_source_ids_json, created_at) VALUES (?, ?, ?, '', '', '', 'confirmed', '', '[]', ?)`)
+        .run(`problem-${suffix}`, `discovery-${suffix}`, `Problem ${suffix}`, now);
+    }
+    client.db.prepare(`INSERT INTO research_runs (id, thread_id, status, config_json, problem_id, awaiting_selection, workflow_version, created_at, updated_at)
+      VALUES ('stale-completed', ?, 'completed', ?, 'problem-stale', 0, 2, ?, ?)`).run(stale.thread.id, config, now, now);
+    client.db.prepare(`INSERT INTO research_runs (id, thread_id, status, config_json, problem_id, awaiting_selection, workflow_version, created_at, updated_at)
+      VALUES ('awaiting-completed', ?, 'completed', ?, 'problem-awaiting', 1, 2, ?, ?)`).run(awaiting.thread.id, config, now, now);
+    client.db.prepare(`INSERT INTO research_runs (id, thread_id, status, config_json, problem_id, awaiting_selection, workflow_version, created_at, updated_at)
+      VALUES ('active-running', ?, 'running', ?, 'problem-active', 0, 2, ?, ?)`).run(active.thread.id, config, now, now);
+    client.close();
+
+    const response = await fetch(`http://127.0.0.1:${handle.port}/workspace`, {
+      headers: { authorization: `Bearer ${handle.token}` },
+    });
+    const workspace = (await response.json() as { data: { threads: Array<{ id: string; status: string }> } }).data;
+    expect(workspace.threads.find((thread) => thread.id === stale.thread.id)?.status).toBe("solutions-ready");
+    expect(workspace.threads.find((thread) => thread.id === awaiting.thread.id)?.status).toBe("solutions-ready");
+    expect(workspace.threads.find((thread) => thread.id === active.thread.id)?.status).toBe("development-running");
+    const verification = new DatabaseClient(dbPath);
+    expect(verification.db.prepare("SELECT awaiting_selection FROM research_runs WHERE id = 'awaiting-completed'").get()).toEqual({ awaiting_selection: 1 });
+    verification.close();
+  });
+
   test("creates a configuring thread and persists the five-field scope", async () => {
     const dir = mkdtempSync(join(tmpdir(), "scraply-backend-")); dirs.push(dir);
     const handle = await startBackend({

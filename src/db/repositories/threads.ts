@@ -15,6 +15,22 @@ export class ThreadRepository {
       .map((row) => ThreadSchema.parse({ id: row.id, title: row.title, status: row.status, archivedAt: row.archived_at ?? null, createdAt: row.created_at, updatedAt: row.updated_at }));
   }
 
+  recoverStaleDevelopmentStatuses(): void {
+    this.db.db.prepare(`
+      UPDATE threads AS thread
+      SET status = 'solutions-ready', updated_at = ?
+      WHERE thread.status = 'development-running'
+        AND NOT EXISTS (
+          SELECT 1 FROM research_runs AS active
+          WHERE active.thread_id = thread.id AND active.status IN ('queued', 'running')
+        )
+        AND EXISTS (
+          SELECT 1 FROM research_runs AS completed
+          WHERE completed.thread_id = thread.id AND completed.problem_id IS NOT NULL AND completed.status = 'completed'
+        )
+    `).run(new Date().toISOString());
+  }
+
   createThread(title = "New research", config: RunConfig = DEFAULT_RUN_CONFIG): Thread {
     const now = new Date().toISOString();
     const thread = ThreadSchema.parse({ id: randomUUID(), title, status: "configuring", createdAt: now, updatedAt: now });
