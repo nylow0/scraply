@@ -273,6 +273,7 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
 
   async function workspaceState() {
     if (!cachedValidation) void validateProviders().catch(() => undefined);
+    threads.recoverStaleDevelopmentStatuses();
     const threadList = threads.listThreads();
     if (activeThreadId && !threadList.some((thread) => thread.id === activeThreadId && !thread.archivedAt)) activeThreadId = threadList.find((thread) => !thread.archivedAt)?.id ?? null;
     const runConfig = activeThreadId ? threads.getLatestRunConfig(activeThreadId) : null;
