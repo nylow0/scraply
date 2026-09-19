@@ -1,8 +1,42 @@
-# Lean opportunity acceptance — 2026-09-20
+# PR #26 review readiness — 2026-09-20
+
+The two findings below have been addressed in application commit `c0e68fe`, with follow-up offline test compatibility fixes. PR #26 is ready for final code review after the focused checks recorded here. It is not yet an accepted or publishable 1.0 release. No versions, tags, or releases changed.
+
+## Corrections and compatibility
+
+- **Numeric outcomes:** new numeric plans must declare their possible metric range. Validation rejects overlapping regions and unreachable pass/fail rules before acceptance. Pass remains inclusive and fail remains exclusive; saved thresholds are never silently reinterpreted. The saved USD 400 draft is readable but rejected for new acceptance. Adding the correct 0–100 bounds still rejects its impossible `failThreshold: 0`. The offline correction uses “below 1% fails”: zero fails after five usable observations, exactly 1% is inconclusive, and exactly 40% passes. Insufficient or unusable observations remain inconclusive. UI, Markdown, and all planning/review instructions share the comparison contract.
+- **Assumption isolation:** review instructions audit every mandatory success condition, identify its assumption, distinguish independent business premises from measurement validity checks, and request separation where failure would be confounded. Ambiguity requires an uncertain review. The saved teammate-use/maintenance/reconciliation/payment condition is retained as a negative fixture; the payment-only plan is the positive fixture. Offline checks verify the actual request and handling of approved, uncertain, needs-revision, and contradictory review outputs.
+- **Saved work:** legacy numeric records remain readable with their original comparisons and a visible review reminder. Completed records remain reusable. An incomplete checkpoint made with the older instruction identity requires a new run; it is not overwritten. Real projects and credentials were not changed by acceptance testing. Full raw evaluation records remain local in `build/lean-acceptance-results/`; only the necessary experiment content is tracked in the fixtures.
+
+## Verification
+
+- A separate local review pass checked the integrated changes for correctness, compatibility, scope, and regression gaps. It found an empty inconclusive interval when pass/fail thresholds were equal; the shared display helper and regression now cover it. No unresolved implementation blocker was found in this focused review. Grouping labels and family counting were left unchanged.
+- `bun run check`: lint, both TypeScript projects, and Svelte diagnostics passed; **191 unit, 160 integration, and 65 renderer tests passed (416 total)**. The existing opt-in Exa live test was skipped. Existing workflow checks cover persistence, correction limits, resume safety, and grouping mechanics.
+- Isolated browser verification exercised invalid-plan rejection, accepted rule display, and the unchanged legacy plan plus warning. The dev profile uses a local fixture backend without shared credentials.
+- `bun run build:installed` passed, including runtime checks, package integrity, installation, and installed-file verification. The installed application contains `c0e68fe`; subsequent changes affect only tests and this note. App version remains **0.3.0**, runtime **0.2.0**. The local build is marked dirty because the unrelated, pre-existing `.worktrees/` directory remains untracked. It is not a clean-master release artifact.
+- Two focused Playwright checks passed against the installed executable with retries disabled: (1) real renderer/preload/main request bridge to an isolated SQLite planning fixture, rejecting the invalid draft and displaying valid rules, Not run, and the legacy warning after reload; (2) credential-free copies of the existing installed and browser databases, loading all **19 and 11** thread summaries and opening **three projects from each**. Completed v1/v2 results loaded; a failed v1 run correctly retained its problems without presenting partial rows as completed ideas. The source databases were read-only during snapshot creation.
+
+**Zero new live model/provider calls and zero research requests were made.** Stubbed review results prove request construction and application behavior, not that the revised reviewer will always detect confounding. Semantic quality remains best-effort. The earlier missing fourth result, small sample, duplicate-versus-variant disagreement, and lack of broad quality validation remain limitations. No further evaluation is implied by this readiness note.
+
+## Remaining release gates
+
+Per [RELEASE.md](RELEASE.md), approval of this PR is separate from permission to publish 1.0. Future release work must:
+
+1. Prepare any version change in an authorized PR, land approved changes on `master`, and use a clean checkout at the exact current `origin/master` SHA.
+2. Run frozen dependency installation, explicit Electron installation, `bun audit --prod`, and `bun run check` at that SHA.
+3. Run `SCRAPLY_RELEASE_STRICT=1 bun run build:installed`, then the full portable and installed E2E gates. Only the focused installed checks were run for this follow-up. Unsigned release artifacts require explicit `SCRAPLY_ALLOW_UNSIGNED=1` and a verified private repository; public releases require valid signatures.
+4. Verify the exact five-file bundle (installer, portable executable, manifest, SHA256SUMS, runtime lock), source identities, hashes, and signing policy with `check-promotion.ts rc` and `verify-promoted-assets.ts`.
+5. After separate authorization to tag/publish, install the published RC and accept its affected workflows. Production must promote that accepted RC's exact bytes without rebuilding; keep releases immutable.
+
+CI and Release are manually disabled and remain so. This task does not merge, tag, publish, or satisfy the remaining gates above.
+
+---
+
+# Historical lean opportunity acceptance — 2026-09-20
 
 Implementation evaluated: `e152842`, [PR #26](https://github.com/nylow0/scraply/pull/26).
 
-This deliberately selected sample does **not** establish comprehensive quality, population error rates, or the original three-scope release gate. Baseline labels are fixed review judgments, not customer evidence. The PR remains a draft.
+This deliberately selected sample does **not** establish comprehensive quality, population error rates, or the original three-scope release gate. Baseline labels are fixed review judgments, not customer evidence. The PR was a draft at the time of this original pass; the follow-up above records its current readiness.
 
 ## Scope and execution
 

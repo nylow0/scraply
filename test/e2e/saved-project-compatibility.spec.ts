@@ -8,7 +8,7 @@ import { createInstalledApp } from "./installed-app";
 // Opt-in local snapshots only. Never open or mutate the user's original database.
 test("existing projects load in the installed app from isolated credential-free snapshots",async()=>{
   test.skip(!process.env.SCRAPLY_ACCEPTANCE_SNAPSHOTS,"Requires explicitly prepared local snapshots");
-  const snapshots=z.array(z.object({name:z.string(),snapshot:z.string(),threads:z.array(z.object({id:z.string(),title:z.string()})),count:z.object({n:z.number()})})).parse(JSON.parse(readFileSync(process.env.SCRAPLY_ACCEPTANCE_SNAPSHOTS!,"utf8")));
+  const snapshots=z.array(z.object({name:z.string(),snapshot:z.string(),threads:z.array(z.object({id:z.string(),title:z.string(),visibleSolutionCount:z.number().int().nonnegative()})),count:z.object({n:z.number()})})).parse(JSON.parse(readFileSync(process.env.SCRAPLY_ACCEPTANCE_SNAPSHOTS!,"utf8")));
   for(const snapshot of snapshots) {
     const app=createInstalledApp({directoryPrefix:"scraply-saved-compatibility-"});
     mkdirSync(join(app.directory,"scraply"));
@@ -29,9 +29,17 @@ test("existing projects load in the installed app from isolated credential-free 
         await expect(page.getByRole("heading",{name:thread.title,exact:true})).toBeVisible();
         const saved=await page.evaluate(()=> (window as unknown as {scraply:ScraplyApi}).scraply.getWorkspace());
         expect(saved.activeThreadId).toBe(thread.id);
-        expect(saved.solutions.length).toBeGreaterThan(0);
-        const detail=await page.evaluate(async id=>(window as unknown as {scraply:ScraplyApi}).scraply.getIdeaDetail(id),saved.solutions[0]!.id);
-        expect(detail.id).toBe(saved.solutions[0]!.id);
+        // A failed legacy run can contain partial SQL rows without completed ideas.
+        // Compare against the prepared snapshot, including this zero-result case.
+        expect(saved.solutions).toHaveLength(thread.visibleSolutionCount);
+        if (saved.solutions[0]) {
+          const detail=await page.evaluate(async id=>(window as unknown as {scraply:ScraplyApi}).scraply.getIdeaDetail(id),saved.solutions[0].id);
+          expect(detail.id).toBe(saved.solutions[0].id);
+          expect(detail.detailsLoaded).toBe(true);
+        } else {
+          expect(saved.latestResearchRun?.status).toBe("failed");
+          expect(saved.problemCandidates.length).toBeGreaterThan(0);
+        }
       }
       await page.reload();
       await expect(page.getByRole("heading",{name:snapshot.threads.at(-1)!.title,exact:true})).toBeVisible();
