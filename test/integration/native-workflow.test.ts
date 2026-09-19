@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { z } from "zod";
 import { DatabaseClient } from "../../src/db/client";
+import { ResearchRunRepository } from "../../src/db/repositories/research-runs";
 import { WORKFLOW_V2_STAGE_REGISTRY, type WorkflowV2StageId } from "../../src/core/stages";
 import { WorkspaceStateSchema, SolutionViewSchema, type WorkspaceState, type ResearchEvent } from "../../src/shared/ipc";
 import { GenerationStartPayloadSchema } from "../../src/shared/runtime-protocol";
@@ -456,6 +457,14 @@ describe("native v2 decisions through the production backend", () => {
     aged.db.prepare("UPDATE research_runs SET created_at = ? WHERE id = ?")
       .run(new Date(Date.now() - 10 * 60_000).toISOString(), firstRunOption.runId);
     aged.close();
+
+    const otherThreadId = await item.createThread("explore-market");
+    const activeOtherProject = new DatabaseClient(item.dbPath);
+    new ResearchRunRepository(activeOtherProject).create(otherThreadId, { ...DEFAULT_RUN_CONFIG, workflowVersion: 2, model }, null);
+    activeOtherProject.db.prepare("UPDATE threads SET status = 'discovery-running' WHERE id = ?").run(otherThreadId);
+    activeOtherProject.close();
+    await item.post("/threads/select", { threadId }, WorkspaceStateSchema);
+
     const selectingOlderRun = await item.post("/research/select-option", {
       threadId, runId: firstRunOption.runId, solutionId: firstRunOption.id,
     }, WorkspaceStateSchema);
@@ -468,6 +477,11 @@ describe("native v2 decisions through the production backend", () => {
     expect(selectingOlderRun.latestResearchRun?.elapsedMs).toBeGreaterThan(9 * 60_000);
     expect(selectingOlderRun.latestResearchRun?.operationElapsedMs).toBeLessThan(5_000);
     expect(Date.parse(selectingOlderRun.latestResearchRun!.operationStartedAt!)).toBeGreaterThan(Date.now() - 5_000);
+
+    const analyzedOlderRun = await item.waitFor((state) =>
+      state.threads.find((thread) => thread.id === threadId)?.status === "solutions-ready");
+    expect(analyzedOlderRun.threads.find((thread) => thread.id === threadId)?.status).toBe("solutions-ready");
+    expect(analyzedOlderRun.threads.find((thread) => thread.id === otherThreadId)?.status).toBe("discovery-running");
   }, 20_000);
 
   test("reassesses a completed zero-result follow-up without another search", async () => {

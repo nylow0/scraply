@@ -352,7 +352,10 @@ export class ResearchEngine {
     if (active.workflow) {
       const waiting = this.options.db.db.prepare("SELECT awaiting_selection FROM research_runs WHERE id = ?").get(active.runId) as { awaiting_selection: number };
       const selected = this.options.db.db.prepare("SELECT 1 FROM solutions WHERE research_run_id = ? AND selected_at IS NOT NULL LIMIT 1").get(active.runId);
-      if (!waiting.awaiting_selection && selected) return;
+      if (!waiting.awaiting_selection && selected) {
+        this.updateThread(active.threadId, "solutions-ready");
+        return;
+      }
     }
     // This run is already completed and out of activeRuns, so fail() would no-op; a queue handoff
     // that throws has to move the thread off development-running here or it stays stuck there.
