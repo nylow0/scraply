@@ -146,6 +146,15 @@ describe("native research workflow through the production backend", () => {
     const requests = item.requests();
     expect(requests).toHaveLength(8); // Five discovery generations, options, risk evaluation and analysis.
     expect(requests.filter((request) => request.workOrder.stage === "solutions")).toHaveLength(1);
+    const reused = await item.post("/research/select-problems", {
+      threadId,
+      problemIds: [discovered.problemCandidates[0]!.id],
+      userProblem: null,
+      model,
+      reasoningEffort: "medium",
+    }, WorkspaceStateSchema);
+    expect(reused.problemCandidates[0]?.developmentCompleted).toBe(true);
+    expect(item.requests()).toHaveLength(8);
     for (const request of requests) {
       expect(request.repairPolicy).toBe("one_retry");
       expect(JSON.stringify(request.workOrder)).not.toContain(untrusted);

@@ -619,6 +619,9 @@ describe("cutover backend", () => {
     client.db.prepare(`INSERT INTO problem_verdict_sources (problem_id, source_id, research_run_id, position) VALUES (?, ?, ?, 0)`)
       .run("problem-export", "source-contrary", "discovery-export");
     client.db.prepare("INSERT INTO problem_factors (problem_id, factor_id) VALUES (?, ?)").run("problem-export", "factor-export");
+    client.db.prepare(`INSERT INTO research_runs (id, thread_id, status, config_json, problem_id, workflow_version, created_at, updated_at)
+      VALUES ('development-export-empty', ?, 'completed', ?, 'problem-export', 2, ?, ?)`)
+      .run(created.thread.id, JSON.stringify(config), now, now);
     client.db.prepare(`
       INSERT INTO rejected_problem_candidates (id, discovery_run_id, statement, reason, created_at)
       VALUES ('rejected-export', 'discovery-export', 'One-source candidate', 'Cited factors span one source hostname; two are required.', ?)
@@ -628,7 +631,24 @@ describe("cutover backend", () => {
     const workspaceResponse = await fetch(`http://127.0.0.1:${handle.port}/workspace`, {
       headers: { authorization: `Bearer ${handle.token}` },
     });
-    const workspace = (await workspaceResponse.json() as { data: { rejectedProblemCandidates: Array<{ id: string; statement: string; reason: string }> } }).data;
+    const workspace = (await workspaceResponse.json() as { data: {
+      problemCandidates: Array<{ id: string; developmentCompleted: boolean }>;
+      rejectedProblemCandidates: Array<{ id: string; statement: string; reason: string }>;
+    } }).data;
+    expect(workspace.problemCandidates).toEqual([expect.objectContaining({
+      id: "problem-export",
+      developmentCompleted: true,
+    })]);
+    await post("/research/select-problems", {
+      threadId: created.thread.id,
+      problemIds: ["problem-export"],
+      userProblem: null,
+      model: config.model,
+      reasoningEffort: config.reasoningEffort,
+    });
+    const reused = new DatabaseClient(dbPath);
+    expect(reused.db.prepare("SELECT COUNT(*) AS count FROM generation_attempts").get()).toEqual({ count: 0 });
+    reused.close();
     expect(workspace.rejectedProblemCandidates).toEqual([{
       id: "rejected-export",
       statement: "One-source candidate",
