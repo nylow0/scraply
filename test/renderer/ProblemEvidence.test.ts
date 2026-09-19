@@ -2,6 +2,7 @@ import { fireEvent, render, within } from "@testing-library/svelte";
 import { describe, expect, test, vi } from "vitest";
 import ProblemCheckpoint from "../../src/renderer/components/ProblemCheckpoint.svelte";
 import ResearchArchive from "../../src/renderer/components/ResearchArchive.svelte";
+import type { ProblemCandidate } from "../../src/shared/ipc";
 import { DEFAULT_RUN_CONFIG } from "../../src/shared/schemas";
 
 const modelOptions = [{
@@ -18,6 +19,24 @@ const modelOptions = [{
 }];
 const checkpointDefaults = { modelOptions, initialConfig: DEFAULT_RUN_CONFIG };
 
+function problemCandidate(id: string, developmentCompleted: boolean): ProblemCandidate {
+  return {
+    id,
+    statement: `Problem ${id}`,
+    whyItPersists: "The workflow remains fragmented.",
+    affected: "Independent teams",
+    scaleEstimate: "Many teams",
+    verdict: "confirmed",
+    verdictReason: "Multiple sources agree.",
+    selected: true,
+    factors: [],
+    intendedBuyerEvidenceFactorIds: [],
+    evidenceGap: null,
+    singleHarvestModeWarning: false,
+    developmentCompleted,
+  };
+}
+
 const rejected = [{
   id: "rejected-1",
   statement: "Independent shops cannot compare supplier reliability.",
@@ -25,6 +44,26 @@ const rejected = [{
 }];
 
 describe("rejected problem evidence", () => {
+  test("projects calls only for selected problems that still need development", () => {
+    const view = render(ProblemCheckpoint, {
+      problems: [problemCandidate("completed", true), problemCandidate("pending", false)],
+      rejectedCandidates: [], busy: false, ...checkpointDefaults,
+      onCommit: vi.fn(), onExport: vi.fn(), onOpenSource: vi.fn(),
+    });
+
+    expect(view.getByText(/~3 model calls projected/)).toBeTruthy();
+  });
+
+  test("projects zero calls when every selected problem reuses completed development", () => {
+    const view = render(ProblemCheckpoint, {
+      problems: [problemCandidate("completed-empty", true)],
+      rejectedCandidates: [], busy: false, ...checkpointDefaults,
+      onCommit: vi.fn(), onExport: vi.fn(), onOpenSource: vi.fn(),
+    });
+
+    expect(view.getByText(/~0 model calls projected/)).toBeTruthy();
+  });
+
   test.each([1, 2] as const)("projects the current three-stage development for saved workflow %s", async (version) => {
     const view = render(ProblemCheckpoint, {
       problems: [], rejectedCandidates: [], workflowVersion: version, busy: false,

@@ -313,7 +313,15 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
   function listProblems(threadId: string): ProblemCandidate[] {
     const runId = latestDiscoveryRun(threadId);
     if (!runId) return [];
-    const rows = db.db.prepare("SELECT * FROM problems WHERE discovery_run_id = ? ORDER BY created_at, id").all(runId) as Array<Record<string, unknown>>;
+    const rows = db.db.prepare(`
+      SELECT p.*, EXISTS (
+        SELECT 1 FROM research_runs development
+        WHERE development.problem_id = p.id AND development.status = 'completed'
+      ) AS development_completed
+      FROM problems p
+      WHERE p.discovery_run_id = ?
+      ORDER BY p.created_at, p.id
+    `).all(runId) as Array<Record<string, unknown>>;
     const factorsByProblem = listProblemFactorsForRun(runId);
     return rows.map((row) => {
       const factors = factorsByProblem.get(String(row.id)) ?? [];
@@ -325,6 +333,7 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
         evidenceGap: row.evidence_gap === null || row.evidence_gap === undefined ? null : String(row.evidence_gap),
         factors,
         singleHarvestModeWarning: factors.length > 0 && new Set(factors.map((factor) => factor.harvestMode)).size === 1,
+        developmentCompleted: Number(row.development_completed) === 1,
       };
     });
   }

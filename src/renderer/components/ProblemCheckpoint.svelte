@@ -11,7 +11,7 @@
   const selected=new SvelteSet(initialProblems.filter((item)=>item.selected).map((item)=>item.id));
   let userProblem=$state("");
   let userProblemTextarea: HTMLTextAreaElement | undefined;
-  let projected=$derived((selected.size+(userProblem.trim()?1:0))*3);
+  let projected=$derived((problems.filter((problem)=>selected.has(problem.id)&&!problem.developmentCompleted).length+(userProblem.trim()?1:0))*3);
   const availableModels=untrack(()=>modelOptions.filter((item)=>item.providerId==="openai-subscription"));
   const savedConfig=untrack(()=>initialConfig);
   const initialModel=availableModels.find((item)=>savedConfig&&sameModelRef(item,savedConfig.model))??availableModels[0];
@@ -95,7 +95,7 @@
     <label><span>Option type</span><select aria-label="Option type" bind:value={explorationPurpose} disabled={busy}><option value="general-solutions">Practical solutions</option><option value="startup-opportunities">Startup opportunities</option></select></label>
     <p>This choice applies to every new development run in this selection.</p>
   </section>
-  <footer><p><strong>{selected.size+(userProblem.trim()?1:0)}</strong> problems selected · ~{projected} model calls projected. Scraply will generate a batch for every selection, and may return fewer options than requested when the evidence does not support more.</p><button disabled={busy||!selectedModel||(!selected.size&&!userProblem.trim())} onclick={()=>onCommit([...selected],userProblem.trim()||null,model,reasoningEffort,explorationPurpose)}>{busy?"Starting…":"Generate all selected"}</button></footer>
+  <footer><p><strong>{selected.size+(userProblem.trim()?1:0)}</strong> problems selected · ~{projected} model calls projected. Scraply will reuse completed development and generate a batch for each remaining selection. It may return fewer options than requested when the evidence does not support more.</p><button disabled={busy||!selectedModel||(!selected.size&&!userProblem.trim())} onclick={()=>onCommit([...selected],userProblem.trim()||null,model,reasoningEffort,explorationPurpose)}>{busy?"Starting…":"Generate all selected"}</button></footer>
 </section>
 <style>
 
