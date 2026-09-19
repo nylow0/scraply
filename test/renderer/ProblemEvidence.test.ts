@@ -19,14 +19,14 @@ const modelOptions = [{
 }];
 const checkpointDefaults = { modelOptions, initialConfig: DEFAULT_RUN_CONFIG };
 
-function problemCandidate(id: string, developmentCompleted: boolean): ProblemCandidate {
+function problemCandidate(id: string, developmentCompleted: boolean, verdict: ProblemCandidate["verdict"] = "confirmed"): ProblemCandidate {
   return {
     id,
     statement: `Problem ${id}`,
     whyItPersists: "The workflow remains fragmented.",
     affected: "Independent teams",
     scaleEstimate: "Many teams",
-    verdict: "confirmed",
+    verdict,
     verdictReason: "Multiple sources agree.",
     selected: true,
     factors: [],
@@ -62,6 +62,24 @@ describe("rejected problem evidence", () => {
     });
 
     expect(view.getByText(/~0 model calls projected/)).toBeTruthy();
+  });
+
+  test("does not project another run when manual text matches selected user-asserted development", async () => {
+    const completed = problemCandidate("completed-manual", true, "user-asserted");
+    completed.statement = "An exact user-asserted problem.";
+    const pending = problemCandidate("pending-manual", false, "user-asserted");
+    pending.statement = "A pending user-asserted problem.";
+    const view = render(ProblemCheckpoint, {
+      problems: [completed, pending], rejectedCandidates: [], busy: false, ...checkpointDefaults,
+      onCommit: vi.fn(), onExport: vi.fn(), onOpenSource: vi.fn(),
+    });
+    const textbox = view.getByRole("textbox", { name: "Or state the problem yourself." });
+
+    await fireEvent.input(textbox, { target: { value: completed.statement } });
+    expect(view.getByText(/~3 model calls projected/)).toBeTruthy();
+
+    await fireEvent.input(textbox, { target: { value: pending.statement } });
+    expect(view.getByText(/~3 model calls projected/)).toBeTruthy();
   });
 
   test.each([1, 2] as const)("projects the current three-stage development for saved workflow %s", async (version) => {

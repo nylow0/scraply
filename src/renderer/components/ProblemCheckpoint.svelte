@@ -11,7 +11,9 @@
   const selected=new SvelteSet(initialProblems.filter((item)=>item.selected).map((item)=>item.id));
   let userProblem=$state("");
   let userProblemTextarea: HTMLTextAreaElement | undefined;
-  let projected=$derived((problems.filter((problem)=>selected.has(problem.id)&&!problem.developmentCompleted).length+(userProblem.trim()?1:0))*3);
+  let matchingUserProblem=$derived(problems.find((problem)=>problem.verdict==="user-asserted"&&problem.statement===userProblem.trim()));
+  let manualDevelopment=$derived(userProblem.trim()&&(!matchingUserProblem||(!matchingUserProblem.developmentCompleted&&!selected.has(matchingUserProblem.id)))?1:0);
+  let projected=$derived((problems.filter((problem)=>selected.has(problem.id)&&!problem.developmentCompleted).length+manualDevelopment)*3);
   const availableModels=untrack(()=>modelOptions.filter((item)=>item.providerId==="openai-subscription"));
   const savedConfig=untrack(()=>initialConfig);
   const initialModel=availableModels.find((item)=>savedConfig&&sameModelRef(item,savedConfig.model))??availableModels[0];
