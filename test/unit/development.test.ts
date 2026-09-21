@@ -99,6 +99,19 @@ test("requires startup details and passes prior project mechanisms without makin
     firstCustomerRoute: "Interview operators in two claims communities",
     disconfirmingDemandTest: "Reject demand if ten operators decline a manual paid pilot",
   };
+  const focusedDemandTest = {
+    schemaVersion: 1 as const,
+    assumption: {
+      id: "payment-paid-pilot",
+      category: "payment" as const,
+      testableClaim: "Operators will pay for a manual duplicate-filing check before automation exists.",
+      decisionImpact: "No paid commitment would stop the opportunity before building the workflow.",
+      selectionReason: "The existing tool may already solve the problem, so actual payment is the decisive gap.",
+    },
+    methodSummary: "Offer the same manual pilot at a stated price to ten eligible operators.",
+    disconfirmingObservation: "None of the ten operators pays a deposit or signs a purchase commitment.",
+    paymentTerms: { amount: 250, currency: "USD", commitmentAction: "Pay a refundable deposit for the pilot." },
+  };
   const { id: _id, problemId: _problemId, ...plainOption } = option;
   void _id;
   void _problemId;
@@ -108,11 +121,13 @@ test("requires startup details and passes prior project mechanisms without makin
     priorProjectMechanismsOmittedCount: 7,
   };
   const result = await produceDevelopmentOptions(startupContext, {
-    ...dependencies({ options: [{ ...plainOption, startupOpportunity: startup }] }),
+    ...dependencies({ options: [{ ...plainOption, startupOpportunity: startup, focusedDemandTest }] }),
     explorationPurpose: "startup-opportunities",
+    focusedExperiments: true,
     ideaCount: 1,
   });
   expect(result.options[0]?.startupOpportunity).toEqual(startup);
+  expect(result.options[0]?.focusedDemandTest).toEqual(focusedDemandTest);
   const requestInputs = result.request.workOrder.inputs as { explorationPurpose: string; evidenceSourceIds: string[] };
   expect(requestInputs).toMatchObject({ explorationPurpose: "startup-opportunities" });
   expect(JSON.stringify(result.request.evidence[0]?.content)).toContain("Shared-state reminder");
@@ -120,6 +135,14 @@ test("requires startup details and passes prior project mechanisms without makin
   expect(requestInputs.evidenceSourceIds).toEqual([]);
 
   await expect(produceDevelopmentOptions(startupContext, {
-    ...dependencies({ options: [plainOption] }), explorationPurpose: "startup-opportunities", ideaCount: 1,
+    ...dependencies({ options: [{ ...plainOption, startupOpportunity: startup }] }), explorationPurpose: "startup-opportunities", focusedExperiments: true, ideaCount: 1,
   })).rejects.toMatchObject({ code: "schema" });
+
+  const legacy = await produceDevelopmentOptions(startupContext, {
+    ...dependencies({ options: [{ ...plainOption, startupOpportunity: startup }] }),
+    explorationPurpose: "startup-opportunities",
+    ideaCount: 1,
+  });
+  expect(legacy.options[0]?.focusedDemandTest).toBeUndefined();
+  expect(legacy.request.workOrder.inputs).not.toHaveProperty("focusedExperimentVersion");
 });

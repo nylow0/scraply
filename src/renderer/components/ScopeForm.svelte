@@ -11,6 +11,10 @@
     type ResearchMode,
     type SearchProvider,
   } from "../../shared/schemas";
+  import {
+    DEFAULT_OPPORTUNITY_EXPLORATION_CONFIG,
+    type OpportunityExplorationConfig,
+  } from "../../shared/opportunity-exploration";
   import { untrack } from "svelte";
   import { modelDisplayName, readResearchDefaults } from "../lib/research-defaults";
   import ProviderLogo from "./ProviderLogo.svelte";
@@ -29,6 +33,26 @@
   const startingModel = initial.scope ? initial.runConfig?.model : defaults.model;
   let researchMode = $state<ResearchMode>(initial.runConfig?.researchMode ?? "explore-market");
   let explorationPurpose = $state<ExplorationPurpose>(initial.runConfig?.explorationPurpose ?? "general-solutions");
+  const initialOpportunityExploration = initial.runConfig?.opportunityExploration;
+  let opportunityTargetEnabled = $state(Boolean(initialOpportunityExploration));
+  let targetFamilies = $state(initialOpportunityExploration?.targetFamilies ?? DEFAULT_OPPORTUNITY_EXPLORATION_CONFIG.targetFamilies);
+  let batchSize = $state(initialOpportunityExploration?.batchSize ?? DEFAULT_OPPORTUNITY_EXPLORATION_CONFIG.batchSize);
+  let maxModelCalls = $state(initialOpportunityExploration?.maxModelCalls ?? DEFAULT_OPPORTUNITY_EXPLORATION_CONFIG.maxModelCalls);
+  let maxSearches = $state(initialOpportunityExploration?.maxSearches ?? DEFAULT_OPPORTUNITY_EXPLORATION_CONFIG.maxSearches);
+  let allowExploratoryProblems = $state(initialOpportunityExploration?.allowExploratoryProblems ?? false);
+  let opportunityExploration = $derived<OpportunityExplorationConfig | undefined>(
+    explorationPurpose === "startup-opportunities" && opportunityTargetEnabled
+      ? {
+          targetFamilies,
+          batchSize,
+          maxExpansionRounds: 2,
+          maxRawCandidates: Math.min(60, targetFamilies * 2),
+          maxModelCalls,
+          maxSearches,
+          allowExploratoryProblems,
+        }
+      : undefined,
+  );
   const workflowVersion = 2;
   let audienceSourcePolicy = $state<"web" | "communities">(initial.scope ? initial.runConfig?.audienceSourcePolicy ?? "web" : defaults.audienceSourcePolicy);
   let title = $state(initial.scope?.title ?? "");
@@ -72,7 +96,7 @@
     researchMode, title: title.trim(), audience: audience.trim(), domain: domain.trim(), observations: observations.trim(),
     offLimits: offLimits.split("\n").map((item) => item.trim()).filter(Boolean), knownProblem: knownProblem.trim(),
     model, reasoningEffort, discoveryDepth, searchProvider, maxRunMinutes, workflowVersion, audienceSourcePolicy, explorationPurpose,
-    riskEvaluationCriteria: riskEvaluationCriteria.trim(), ideaCount,
+    riskEvaluationCriteria: riskEvaluationCriteria.trim(), ideaCount, opportunityExploration,
   }));
   // Only pre-mark as saved when a persisted run config exists and still matches the draft; a model that is no
   // longer offered falls back to the default, and the badge must not claim that fallback was ever saved.
@@ -121,6 +145,20 @@
     if (!Number.isInteger(ideaCount) || ideaCount === undefined || ideaCount < 1 || ideaCount > MAX_IDEA_COUNT) {
       next.ideaCount = `Choose a whole number from 1 to ${MAX_IDEA_COUNT}.`;
     }
+    if (opportunityExploration) {
+      if (!Number.isInteger(targetFamilies) || targetFamilies < 2 || targetFamilies > 30) {
+        next.targetFamilies = "Choose a whole number from 2 to 30.";
+      }
+      if (!Number.isInteger(batchSize) || batchSize < 4 || batchSize > 6) {
+        next.batchSize = "Choose a batch size from 4 to 6.";
+      }
+      if (!Number.isInteger(maxModelCalls) || maxModelCalls < 1 || maxModelCalls > 40) {
+        next.maxModelCalls = "Choose a model-call limit from 1 to 40.";
+      }
+      if (!Number.isInteger(maxSearches) || maxSearches < 0 || maxSearches > 20) {
+        next.maxSearches = "Choose a search limit from 0 to 20.";
+      }
+    }
     if (researchMode === "explore-market") {
       if (!domain.trim()) next.domain = "A starting context is required.";
     } else if (!knownProblem.trim()) next.knownProblem = "Problem statement is required.";
@@ -138,7 +176,11 @@
         title: title.trim(), audience: audience.trim(), domain: domain.trim(), observations: observations.trim(),
         riskEvaluationCriteria: riskEvaluationCriteria.trim(),
         offLimits: offLimits.split("\n").map((item) => item.trim()).filter(Boolean),
-      }, { configVersion: 2, workflowVersion, audienceSourcePolicy, ideaCount, model, reasoningEffort, discoveryDepth, searchProvider, maxRunMinutes, researchMode, knownProblem: knownProblem.trim(), explorationPurpose });
+      }, {
+        configVersion: 2, workflowVersion, audienceSourcePolicy, ideaCount, model, reasoningEffort,
+        discoveryDepth, searchProvider, maxRunMinutes, researchMode, knownProblem: knownProblem.trim(),
+        explorationPurpose, ...(opportunityExploration ? { opportunityExploration } : {}),
+      });
       savedFingerprint = submittedFingerprint;
       await onStart();
     } catch {
@@ -168,6 +210,24 @@
         <label class:active={explorationPurpose === "general-solutions"}><input type="radio" name="exploration-purpose" value="general-solutions" checked={explorationPurpose === "general-solutions"} onchange={() => explorationPurpose = "general-solutions"} /><span><strong>Practical solutions</strong><small>Include product changes, process improvements, and configurations.</small></span></label>
         <label class:active={explorationPurpose === "startup-opportunities"}><input type="radio" name="exploration-purpose" value="startup-opportunities" checked={explorationPurpose === "startup-opportunities"} onchange={() => explorationPurpose = "startup-opportunities"} /><span><strong>Startup opportunities</strong><small>Require a paying customer, market gap, sellable workflow, and first customer route.</small></span></label>
       </fieldset>
+      {#if explorationPurpose === "startup-opportunities"}
+        <section class="opportunity-target" aria-label="Distinct opportunity target">
+          <label class="target-toggle">
+            <input type="checkbox" bind:checked={opportunityTargetEnabled} />
+            <span><strong>Build a project-wide set of distinct businesses</strong><small>Review families across problems, then expand only into named gaps while the saved budget remains.</small></span>
+          </label>
+          {#if opportunityTargetEnabled}
+            <div class="target-grid">
+              <label><span>Distinct family target</span><input aria-label="Distinct family target" type="number" min="2" max="30" step="1" bind:value={targetFamilies} aria-invalid={Boolean(errors.targetFamilies)} />{#if errors.targetFamilies}<small class="field-error">{errors.targetFamilies}</small>{/if}</label>
+              <label><span>Batch size</span><select aria-label="Opportunity batch size" bind:value={batchSize}><option value={4}>4</option><option value={5}>5</option><option value={6}>6</option></select>{#if errors.batchSize}<small class="field-error">{errors.batchSize}</small>{/if}</label>
+              <label><span>Model-call limit</span><input aria-label="Opportunity model-call limit" type="number" min="1" max="40" step="1" bind:value={maxModelCalls} aria-invalid={Boolean(errors.maxModelCalls)} />{#if errors.maxModelCalls}<small class="field-error">{errors.maxModelCalls}</small>{/if}</label>
+              <label><span>Added search limit</span><input aria-label="Opportunity search limit" type="number" min="0" max="20" step="1" bind:value={maxSearches} aria-invalid={Boolean(errors.maxSearches)} />{#if errors.maxSearches}<small class="field-error">{errors.maxSearches}</small>{/if}</label>
+            </div>
+            <p>Up to 2 expansion rounds and {Math.min(60, targetFamilies * 2)} raw candidates. Initial batches also respect your solutions-per-problem limit. Each batch is reviewed before the next begins.</p>
+            <label class="exploratory-toggle"><input type="checkbox" bind:checked={allowExploratoryProblems} /><span><strong>Allow exploratory problem hypotheses</strong><small>Use only after the researched map is exhausted. Scraply labels these permanently and does not invent evidence for them.</small></span></label>
+          {/if}
+        </section>
+      {/if}
       <section class="brief-panel" aria-label="Research brief">
     <div class="primary-fields">
       <label><span>Research name</span><input bind:value={title} aria-invalid={Boolean(errors.title)} aria-describedby={errors.title ? "title-error" : undefined} placeholder="Give this research a name, or leave blank" />{#if errors.title}<small id="title-error" class="field-error">{errors.title}</small>{/if}</label>
@@ -271,6 +331,16 @@
   .purpose-picker small { color:var(--muted);font-size:12px;line-height:1.5; }
   .purpose-picker input { position:absolute;width:1px;height:1px;clip-path:inset(50%); }
   .purpose-picker label:focus-within { outline:2px solid var(--accent);outline-offset:3px; }
+  .opportunity-target { margin:-10px 0 24px;padding:16px;border:1px solid var(--border);border-radius:8px;background:#050505; }
+  .target-toggle,.exploratory-toggle { position:relative;display:flex;grid-template-columns:auto 1fr;gap:10px;align-items:start; }
+  .target-toggle > input,.exploratory-toggle > input { width:16px;height:16px;margin:2px 0 0; }
+  .target-toggle > span,.exploratory-toggle > span { display:grid;gap:4px; }
+  .target-toggle strong,.exploratory-toggle strong { font-size:13px; }
+  .target-toggle small,.exploratory-toggle small { font-size:12px; }
+  .target-grid { display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin-top:16px;padding-top:16px;border-top:1px solid var(--border); }
+  .target-grid label > span { font-size:12px; }
+  .opportunity-target > p { margin:12px 0;color:var(--muted);font-size:12px;line-height:1.5; }
+  .exploratory-toggle { padding-top:12px;border-top:1px solid var(--border); }
   .primary-fields { display:grid;gap:20px; }
   label { display:grid;gap:8px;min-width:0; }
   label > span { font-size:13px;font-weight:600; }
@@ -319,6 +389,6 @@
   .primary:hover:not(:disabled) { box-shadow:0 4px 24px #71cfba25;transform:translateY(-1px); }
   @media(max-width:1100px) { form { grid-template-columns:minmax(0,1fr) 230px;gap:24px; }.mode-picker label { padding:14px 10px;gap:8px; }.configuration { padding-left:20px; } }
   @media(max-width:950px) { form { grid-template-columns:1fr; }.configuration { position:static;border-left:0;border-top:1px solid var(--border);padding:24px 0 0; }.run-settings,.output-settings { grid-template-columns:1fr 1fr; }.scope-page { padding:24px 22px 48px; } }
-  @media(max-width:560px) { .mode-picker,.purpose-picker { grid-template-columns:1fr; }.run-settings,.output-settings { grid-template-columns:1fr; } }
+  @media(max-width:560px) { .mode-picker,.purpose-picker,.target-grid { grid-template-columns:1fr; }.run-settings,.output-settings { grid-template-columns:1fr; } }
   @media(max-height:760px) { .configuration { position:static; } }
 </style>

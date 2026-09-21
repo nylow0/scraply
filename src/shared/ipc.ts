@@ -12,6 +12,9 @@ import {
   ThreadSchema,
 } from "./schemas";
 import { OPENAI_SUBSCRIPTION_PROVIDER_ID } from "./schemas";
+import { OpportunityFamiliesViewSchema, OpportunityMembershipCommandSchema } from "./opportunity-review";
+import { FocusedExperimentRecordSchema, FocusedDemandTestSchema } from "./focused-experiment";
+import { OpportunityExplorationProgressSchema, OpportunityExplorationStatusSchema, OpportunityBudgetExtensionSchema, OpportunityBudgetExtensionPreviewSchema, OpportunityCandidateOriginSchema } from "./opportunity-exploration";
 
 const EntityIdSchema = z.string().trim().min(1).max(128);
 const ShortTextSchema = z.string().trim().min(1).max(256);
@@ -67,6 +70,12 @@ export const StartResearchSchema = z.object({ threadId: EntityIdSchema });
 export const CancelResearchSchema = z.object({ runId: EntityIdSchema });
 export const ResumeResearchSchema = z.object({ runId: EntityIdSchema });
 export const SelectOptionSchema = z.object({ threadId: EntityIdSchema, runId: EntityIdSchema, solutionId: EntityIdSchema }).strict();
+export const ReviewSavedOpportunitiesSchema = z.object({ threadId: EntityIdSchema, model: ModelRefSchema, reasoningEffort: ReasoningEffortSchema, allowAmbiguousRetry: z.boolean().optional() }).strict();
+export const EditOpportunityMembershipSchema = z.object({ threadId: EntityIdSchema, command: OpportunityMembershipCommandSchema }).strict();
+export const RequestFocusedExperimentSchema = z.object({ threadId: EntityIdSchema, runId: EntityIdSchema, solutionId: EntityIdSchema }).strict();
+export const OpportunityExplorationActionSchema = z.object({ threadId: EntityIdSchema }).strict();
+export const PreviewOpportunityExtensionSchema = z.object({ threadId: EntityIdSchema, extension: OpportunityBudgetExtensionSchema }).strict();
+export const ApplyOpportunityExtensionSchema = z.object({ threadId: EntityIdSchema, preview: OpportunityBudgetExtensionPreviewSchema }).strict();
 export const SaveDecisionSchema = z.object({
   threadId: EntityIdSchema, solutionId: EntityIdSchema,
   userDecision: z.string().trim().max(8_000), observedResult: z.string().trim().max(8_000),
@@ -188,6 +197,9 @@ export const SolutionViewSchema = z.object({
   unknowns: z.array(z.string()).optional(), supportingEvidenceIds: z.array(z.string()).optional(), contraryEvidenceIds: z.array(z.string()).optional(),
   contrarySources: z.array(z.object({ id: EntityIdSchema, title: z.string(), url: z.string().url(), text: z.string() })).optional(),
   decisionAnalysis: WorkflowV2CompatibleDecisionAnalysisOutputSchema.nullable().optional(),
+  focusedExperiment: FocusedExperimentRecordSchema.nullable().optional(),
+  focusedDemandTest: FocusedDemandTestSchema.nullable().optional(),
+  opportunityOrigin: OpportunityCandidateOriginSchema.nullable().optional(),
   riskEvaluation: WorkflowV2RiskEvaluationOutputSchema.nullable().optional(),
   riskEvaluationCriteria: z.string().optional(),
   evidenceFollowUp: EvidenceFollowUpViewSchema.optional(),
@@ -245,10 +257,14 @@ export const WorkspaceStateSchema = z.object({
   modelCatalog: ModelCatalogSchema, presets: z.array(z.object({ name: z.string(), config: RunConfigSchema })),
   problemCandidates: z.array(ProblemCandidateSchema), rejectedProblemCandidates: z.array(RejectedProblemCandidateSchema),
   solutions: z.array(SolutionViewSchema),
+  opportunityFamilies: OpportunityFamiliesViewSchema.optional(),
+  opportunityExploration: OpportunityExplorationProgressSchema.nullable().optional(),
+  opportunityReviewStatus: z.object({ running: z.boolean(), kind: z.enum(["review", "exploration", "experiment"]).nullable(), error: z.string().nullable() }).optional(),
   latestResearchRun: LatestResearchRunSchema.nullable(), pendingRuns: z.array(PendingRunSchema),
 });
 
 export const ResearchEventSchema = z.discriminatedUnion("type", [
+  z.object({ type: z.literal("opportunity-progress"), threadId: EntityIdSchema, status: z.union([OpportunityExplorationStatusSchema, z.literal("reviewing-saved"), z.literal("planning-experiment")]), error: z.string().optional() }),
   z.object({ type: z.literal("run-started"), runId: EntityIdSchema, threadId: EntityIdSchema, problemId: EntityIdSchema.nullable() }),
   z.object({ type: z.literal("run-progress"), runId: EntityIdSchema, threadId: EntityIdSchema, message: z.string(), codexCalls: z.number().int(), searches: z.number().int(), usage: RunUsageSchema.optional(),
     stage: PendingRunSchema.shape.stage, modelState: PendingRunSchema.shape.modelState,
@@ -282,6 +298,11 @@ export const IPC_CHANNELS = {
   APP_COMMAND: "scraply:app-command", SHOW_APP_MENU: "scraply:show-app-menu", DISCARD_IDEA: "scraply:discard-idea",
   SELECT_OPTION: "scraply:select-option", SAVE_DECISION: "scraply:save-decision", EVIDENCE_FOLLOW_UP: "scraply:evidence-follow-up",
   EVIDENCE_REASSESSMENT: "scraply:evidence-reassessment",
+  REVIEW_OPPORTUNITIES: "scraply:review-opportunities", EDIT_OPPORTUNITY_MEMBERSHIP: "scraply:edit-opportunity-membership",
+  REQUEST_FOCUSED_EXPERIMENT: "scraply:request-focused-experiment",
+  PAUSE_OPPORTUNITY_EXPLORATION: "scraply:pause-opportunity-exploration", RESUME_OPPORTUNITY_EXPLORATION: "scraply:resume-opportunity-exploration",
+  START_OPPORTUNITY_EXPLORATION: "scraply:start-opportunity-exploration",
+  PREVIEW_OPPORTUNITY_EXTENSION: "scraply:preview-opportunity-extension", APPLY_OPPORTUNITY_EXTENSION: "scraply:apply-opportunity-extension",
   GET_VALIDATION: "scraply:get-validation", RETRY_CONNECTION: "scraply:retry-connection",
   OPEN_DATA_FOLDER: "scraply:open-data-folder", OPEN_LOGS_FOLDER: "scraply:open-logs-folder",
   GET_WORKSPACE: "scraply:get-workspace", CREATE_THREAD: "scraply:create-thread", SELECT_THREAD: "scraply:select-thread",

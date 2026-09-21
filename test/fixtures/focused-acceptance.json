@@ -1,0 +1,92 @@
+{
+  "combinedConditions": {
+    "passCriterion": "Across both cycles, a teammate other than the usual release owner uses the page to answer a real completion, blocker, or ownership question without asking that owner; relevant human entries are maintained by the team rather than reconstructed by the operator; reconciliation finds no wrongly attributed completion; and the buyer accepts the stated paid continuation. This supports a broader pilot, not proof of automated integration feasibility or general demand.",
+    "inconclusiveCriterion": "No representative releases occur; access restrictions prevent a faithful page; there are no actual status questions or handoffs; the operator supplies missing human state on the team's behalf; or the buying decision is deferred without an explicit value judgment. Resolve that limitation before treating the test as demand evidence.",
+    "question": "For a team reporting recurring release-status work, does an event-backed combined view provide enough incremental value over its existing tools to be used during real handoffs and justify paid continuation?",
+    "failCriterion": "After two sufficiently evidenced release cycles for an eligible team, teammates do not consult the pages for real status questions, explicitly prefer their existing view, or the buyer declines the stated paid continuation because the combined record adds insufficient value. This would argue against building for that tested customer profile, not establish that all teams lack demand."
+  },
+  "source": "2026-09-20 lean acceptance, e152842",
+  "savedPaymentDraft": {
+    "schemaVersion": 1,
+    "assumption": {
+      "id": "assumption-payment-01",
+      "category": "payment",
+      "testableClaim": "At least 40% of eligible small-team engineering leads receiving the same offer will pay USD 400 upfront for a four-week pilot covering one repository, one CI provider, and two release cycles.",
+      "decisionImpact": "Determines whether to build the narrow ledger as a sellable product now. A pass supports proceeding to a narrow MVP; a fail indicates that demonstrated interest does not justify the build at the tested offer and price.",
+      "selectionReason": "Paid demand is the most decisive unproven risk. The supplied records describe plausible release confusion but contain no purchases, paid pilots, budgets, or other financial commitments for this specific ledger."
+    },
+    "shortDemandTestAssumptionId": null,
+    "assumptionChangeReason": null,
+    "participantsAndCases": {
+      "eligibilityCriteria": [
+        "Engineering team has 3–20 engineers.",
+        "Team releases frequently and its release process combines pipeline execution with at least one manual verification or ownership step.",
+        "Engineering lead reports repeatedly answering release-status questions or describes a recent delayed or confusing release involving disagreement between chat updates and pipeline state.",
+        "Team can provide a walkthrough and evidence links for one recent release without exposing prohibited information.",
+        "Participant has authority to approve and pay USD 400 for the pilot."
+      ],
+      "caseSelection": "Apply the eligibility screener before presenting the product or price. Approach prospects sequentially through the stated first-customer route and issue the identical offer to the first eligible teams until five usable offers are obtained or the recruitment limit is reached. Do not select teams based on enthusiasm after showing the concept. Use one recent release walkthrough per team to demonstrate the proposed ledger, then present the same written scope, price, and seven-day payment deadline.",
+      "exclusions": [
+        "Team relies entirely on CI history and has no manual release verification or ownership steps.",
+        "Team is outside the 3–20-engineer target range.",
+        "Participant lacks purchasing authority or requires an unrepresented approver before an offer can be evaluated.",
+        "Required release evidence cannot be shared even in a read-only or redacted form.",
+        "Team requests materially different scope, such as multiple repositories, multiple CI providers, deployment execution, rollback execution, or custom orchestration."
+      ],
+      "recruitmentMethod": "Contact small-team engineering leads who report repeated release-status questions and request a walkthrough of one recent release. Recruit consecutively rather than choosing only the most enthusiastic respondents."
+    },
+    "primaryMetric": {
+      "name": "Upfront paid-pilot conversion rate",
+      "unit": "percent of usable offers",
+      "numerator": "Number of usable offers for which the full USD 400 payment is received within seven calendar days",
+      "denominator": "Number of usable standardized paid-pilot offers delivered to eligible purchasing authorities",
+      "collectionMethod": "For every usable standardized offer, record whether the full USD 400 payment was received by the seven-day deadline. Calculate the percentage only after the deadline for each included offer has passed.",
+      "comparisonBaseline": "The supplied records contain zero verified paid pilots or purchases for this ledger; the experiment tests conversion from a standardized offer to actual payment."
+    },
+    "sample": {
+      "targetObservations": 5,
+      "recruitmentLimit": 12,
+      "observationWindow": {
+        "value": 6,
+        "unit": "weeks"
+      },
+      "feasibilityRationale": "The saved context already proposes working with five teams over two release cycles. A five-offer target keeps manual demonstrations feasible, while a recruitment cap of twelve limits effort if many prospects are ineligible or decline a walkthrough."
+    },
+    "outcomeRules": {
+      "kind": "numeric-threshold",
+      "direction": "higher-is-better",
+      "passThreshold": 40,
+      "failThreshold": 0,
+      "thresholdRationale": "With at least five usable offers, a 0% payment rate fails, a rate greater than 0% but below 40% is inconclusive, and a rate of at least 40% passes. Requiring at least two payments in the initial five avoids proceeding on one isolated buyer while keeping the sample feasible for a manual pilot test.",
+      "minimumUsableObservations": 5,
+      "insufficientDataReason": "Fewer than five usable standardized offers cannot support the planned decision and are inconclusive regardless of observed payments.",
+      "unusableObservationRule": "Exclude an offer only if the team is later found ineligible, the offer was not delivered, the price or pilot terms differed from the standard offer, or payment could not legally or operationally be accepted. A refusal, stated lack of budget, or no payment by the seven-day deadline is usable and counts as unpaid."
+    },
+    "resources": {
+      "estimatedEffort": "Up to 80 founder hours across six weeks for recruitment, screening, release walkthroughs, demonstrations, offers, payment tracking, and preparation to deliver any purchased pilots.",
+      "dependencies": [
+        "A fixed written pilot scope for one repository, one CI provider, and two release cycles",
+        "A consistent demonstration based on one recent release walkthrough",
+        "Ability to create the event-backed release pages manually without claiming automated product capabilities",
+        "A payment method and invoice that can accept USD 400 upfront",
+        "Access, with participant permission, to the release evidence needed for the demonstration and paid pilot",
+        "A screening form and offer log that preserve all refusals and nonresponses"
+      ],
+      "spendingLimit": {
+        "amount": 500,
+        "currency": "USD"
+      }
+    },
+    "paymentTerms": {
+      "amount": 400,
+      "currency": "USD",
+      "commitmentAction": "Pay the full USD 400 invoice within seven calendar days to reserve a four-week, one-repository, one-CI-provider pilot covering two release cycles; verbal interest, a meeting booking, or a nonbinding letter does not count."
+    },
+    "followOnDecision": {
+      "pass": "Collect the payments, deliver the standardized pilots, and proceed with a narrow MVP for one repository and one CI provider. Test mechanism reliability and ongoing adoption separately rather than treating payment as proof of either.",
+      "fail": "Do not build the product under the tested positioning and price. Record why prospects declined and reconsider the segment, scope, or value proposition before conducting another payment test.",
+      "inconclusive": "Do not make the build decision. If fewer than five usable offers were completed, repair recruitment or protocol problems and rerun the same test; if exactly one of at least five usable offers converted, obtain another fixed sample before deciding."
+    }
+  },
+  "optionId": "a6ed8747-be38-42dc-933a-ddcda9a90818"
+}

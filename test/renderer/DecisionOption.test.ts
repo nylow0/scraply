@@ -4,6 +4,58 @@ import DecisionOption from "../../src/renderer/components/DecisionOption.svelte"
 import type { SolutionView } from "../../src/shared/ipc";
 
 describe("DecisionOption interactions", () => {
+  test("shows the short demand test as one priced commitment assumption", async () => {
+    const idea = option("short-demand-test");
+    idea.startupOpportunity = {
+      opportunityType: "startup-opportunity",
+      payingCustomerSegment: "Independent operators",
+      trigger: "A duplicate filing is found",
+      existingSubstitute: "Manual shared-state check",
+      gapAssessment: { kind: "hypothesis", description: "Manual checks may be skipped", evidenceIds: [] },
+      smallestSellableWorkflow: "Manual duplicate check",
+      firstCustomerRoute: "Operator community",
+      disconfirmingDemandTest: "Legacy summary",
+    };
+    idea.focusedDemandTest = {
+      schemaVersion: 1,
+      assumption: { id: "payment-pilot", category: "payment", testableClaim: "Operators pay for a manual pilot.", decisionImpact: "No commitment stops the build.", selectionReason: "Payment is the remaining unknown." },
+      methodSummary: "Offer the same manual pilot to ten eligible operators.",
+      disconfirmingObservation: "No operator pays the deposit.",
+      paymentTerms: { amount: 250, currency: "USD", commitmentAction: "Pay a refundable deposit." },
+    };
+    installDetailApi(vi.fn().mockResolvedValue(detail(idea, "", "")));
+    const view = render(DecisionOption, handlers(idea));
+    await fireEvent.click(view.getByRole("button", { name: "Compare observed delivery windows." }));
+    expect(view.getByText("Operators pay for a manual pilot.")).toBeTruthy();
+    expect(view.getByText("250 USD. Pay a refundable deposit.")).toBeTruthy();
+    expect(view.queryByText("Legacy summary")).toBeNull();
+  });
+
+  test("offers explicit focused planning for saved analyses without marking an experiment as run", async () => {
+    const idea = option("focused-plan-request");
+    installDetailApi(vi.fn().mockResolvedValue(detail(idea, "", "")));
+    const onPlanExperiment = vi.fn().mockResolvedValue(undefined);
+    const view = render(DecisionOption, { ...handlers(idea), onPlanExperiment });
+    await fireEvent.click(view.getByRole("button", { name: "Compare observed delivery windows." }));
+    await fireEvent.click(await view.findByRole("button", { name: "Plan a focused experiment" }));
+    expect(onPlanExperiment).toHaveBeenCalledWith(idea);
+    expect(view.getByText("This creates a reviewed plan. It does not run a customer experiment.")).toBeTruthy();
+  });
+
+  test("renders the structured plan and its review state instead of the legacy experiment summary", async () => {
+    const idea = option("focused-plan-view");
+    const saved = detail(idea, "", "");
+    saved.focusedExperiment = focusedExperiment();
+    saved.decisionAnalysis = null;
+    installDetailApi(vi.fn().mockResolvedValue(saved));
+    const view = render(DecisionOption, handlers(idea));
+    await fireEvent.click(view.getByRole("button", { name: "Compare observed delivery windows." }));
+    expect(await view.findByRole("region", { name: "Focused experiment" })).toBeTruthy();
+    expect(view.getByText("This is a plan. It has not been run and does not confirm customer demand.")).toBeTruthy();
+    expect(view.getByText("additional confirmed contradictions is at least 8 contradictions")).toBeTruthy();
+    expect(view.queryByText("Are estimates accurate?")).toBeNull();
+  });
+
   test("links each option's citations separately from the original problem evidence", async () => {
     const idea = option("citation-roles");
     const saved = detail(idea, "", "");
@@ -190,4 +242,38 @@ function deferred<T>() {
   let resolve!: (value: T) => void;
   const promise = new Promise<T>((fulfill) => { resolve = fulfill; });
   return { promise, resolve };
+}
+
+function focusedExperiment() {
+  const review = {
+    schemaVersion: 1 as const,
+    verdict: "approved" as const,
+    isolatesAssumption: true,
+    measuresBehavior: true,
+    controlsComparison: true,
+    outcomeRulesCoherent: true,
+    rationale: "The plan compares the same cases and partitions every result.",
+    issues: [],
+    correctionInstruction: null,
+  };
+  return {
+    schemaVersion: 1 as const,
+    status: "approved" as const,
+    correctionCount: 0 as const,
+    initialReview: review,
+    finalReview: null,
+    plan: {
+      schemaVersion: 1 as const,
+      assumption: { id: "mechanism-contradictions", category: "mechanism-value" as const, testableClaim: "The checker finds confirmed contradictions missed by normal review.", decisionImpact: "Failure stops the mechanism.", selectionReason: "Mechanism value comes before adoption." },
+      shortDemandTestAssumptionId: null,
+      assumptionChangeReason: null,
+      participantsAndCases: { eligibilityCriteria: ["Maintains answer keys"], caseSelection: "Use the next ten consecutive revisions.", exclusions: [], recruitmentMethod: "Invite the full maintainer roster." },
+      primaryMetric: { name: "additional confirmed contradictions", unit: "contradictions", numerator: null, denominator: null, collectionMethod: "Confirm checker-only findings.", comparisonBaseline: "The same revision after normal review." },
+      sample: { targetObservations: 10, recruitmentLimit: 15, observationWindow: { value: 3, unit: "weeks" as const }, feasibilityRationale: "Ten revisions normally arrive." },
+      outcomeRules: { kind: "numeric-threshold" as const, direction: "higher-is-better" as const, passThreshold: 8, failThreshold: 4, thresholdRationale: "Eight justifies a prototype.", minimumUsableObservations: 10, insufficientDataReason: "Fewer than ten is insufficient.", unusableObservationRule: "Exclude unconfirmed answers." },
+      resources: { estimatedEffort: "Three facilitator days.", dependencies: ["Revision access"], spendingLimit: { amount: 500, currency: "USD" } },
+      paymentTerms: null,
+      followOnDecision: { pass: "Prototype automation.", fail: "Stop the mechanism.", inconclusive: "Recruit missing cases." },
+    },
+  };
 }
