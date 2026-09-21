@@ -7,6 +7,27 @@ import type { WorkspaceState } from "../../src/shared/ipc";
 import { DEFAULT_RUN_CONFIG, RunConfigSchema, modelRefKey } from "../../src/shared/schemas";
 
 describe("ScopeForm search provider selection", () => {
+  test("saves an explicit family target separately from the per-problem idea count", async () => {
+    const state = workspace();
+    state.validation.exa = { valid: true };
+    const onSave = vi.fn().mockResolvedValue(undefined);
+    const onStart = vi.fn().mockResolvedValue(undefined);
+    const view = render(ScopeForm, { workspace: state, busy: false, onSave, onStart, onRetry: vi.fn() });
+    await fireEvent.click(view.getByRole("radio", { name: /Startup opportunities/ }));
+    await fireEvent.click(view.getByRole("checkbox", { name: /Build a project-wide set/ }));
+    await fireEvent.input(view.getByLabelText("Distinct family target"), { target: { value: "8" } });
+    await fireEvent.input(view.getByLabelText("Opportunity model-call limit"), { target: { value: "10" } });
+    await fireEvent.click(view.getByRole("button", { name: "Discover problems" }));
+    await waitFor(() => expect(onStart).toHaveBeenCalledTimes(1));
+    const saved = RunConfigSchema.parse(onSave.mock.calls[0]?.[1]);
+    expect(saved.ideaCount).toBe(state.runConfig!.ideaCount);
+    expect(saved.opportunityExploration).toMatchObject({ targetFamilies: 8, maxRawCandidates: 16, maxModelCalls: 10, allowExploratoryProblems: false });
+    view.unmount();
+    const reopened = render(ScopeForm, { workspace: { ...state, runConfig: saved }, busy: false, onSave, onStart, onRetry: vi.fn() });
+    expect((reopened.getByRole("checkbox", { name: /Build a project-wide set/ }) as HTMLInputElement).checked).toBe(true);
+    expect((reopened.getByLabelText("Distinct family target") as HTMLInputElement).value).toBe("8");
+  });
+
   test("persists advanced search defaults for new research and preserves saved setup choices", async () => {
     const storageKey = "scraply.research-defaults.v1";
     const previous = localStorage.getItem(storageKey);

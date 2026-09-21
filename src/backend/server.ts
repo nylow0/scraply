@@ -4,6 +4,11 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { recoverInterruptedEvidenceFollowUps, ResearchEngine } from "../core/research-engine";
 import { DatabaseClient } from "../db/client";
 import { GenerationAttemptRepository } from "../db/repositories/generation-attempts";
+import { FocusedDemandTestSchema, FocusedExperimentRecordSchema } from "../shared/focused-experiment";
+import { OpportunityRepository } from "../db/repositories/opportunities";
+import { OpportunityExplorationRepository } from "../db/repositories/opportunity-exploration";
+import { FocusedExperimentRepository } from "../db/repositories/focused-experiments";
+import { OpportunityCandidateOriginSchema } from "../shared/opportunity-exploration";
 import { ActiveRunConflictError } from "../db/repositories/research-runs";
 import { ThreadRepository } from "../db/repositories/threads";
 import { ExaClient } from "../providers/exa";
@@ -16,6 +21,8 @@ import { developmentProjection } from "../shared/development-projection";
 import { optionEvidenceReferences } from "../shared/option-evidence";
 import {
   DiscardIdeaRequestSchema, ArchiveThreadRequestSchema, GenerateTitleRequestSchema, GenerateTitleResultSchema,
+  ReviewSavedOpportunitiesSchema, EditOpportunityMembershipSchema, RequestFocusedExperimentSchema,
+  OpportunityExplorationActionSchema, PreviewOpportunityExtensionSchema, ApplyOpportunityExtensionSchema,
   CreateThreadRequestSchema, DeleteThreadRequestSchema, EvidenceFollowUpRequestSchema, EvidenceReassessmentRequestSchema, ExportIdeasRequestSchema, ExportResearchRequestSchema,
   GetIdeaDetailRequestSchema, GetSourceDetailRequestSchema, HealthResponseSchema,
   NativeLoginCancelSchema, NativeLoginCompleteSchema, NativeLoginStartSchema, NativeProviderSchema,
@@ -31,6 +38,7 @@ import {
 import type { LogInput } from "../shared/logging";
 import { discoveryRunProjection } from "../core/discovery";
 import { summarizeRunUsage, type GenerationAttemptUsageRow } from "./run-usage";
+import { renderFocusedExperiment, renderOpportunityFamilies } from "./opportunity-export";
 
 export interface BackendContext {
   dataDir: string;
@@ -93,8 +101,12 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
   const token = randomBytes(24).toString("hex");
   const db = new DatabaseClient(context.dbPath);
   const generationAttempts = new GenerationAttemptRepository(db);
+  const opportunities = new OpportunityRepository(db);
+  const exploration = new OpportunityExplorationRepository(db);
   generationAttempts.interruptInFlight("The backend restarted before the generation reached a durable terminal result");
   recoverInterruptedEvidenceFollowUps(db);
+  opportunities.recoverInFlightReviewCalls();
+  db.immediateTransaction(() => exploration.recoverInterruptedExplorations());
   db.db.exec(`
     UPDATE research_runs SET interrupted = 1 WHERE status IN ('queued', 'running');
     UPDATE threads SET status = 'failed' WHERE id IN (
@@ -300,6 +312,9 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
       problemCandidates: activeThreadId ? listProblems(activeThreadId) : [],
       rejectedProblemCandidates: activeThreadId ? listRejectedProblemCandidates(activeThreadId) : [],
       solutions: activeThreadId ? listSolutions(activeThreadId, false) : [],
+      ...(activeThreadId ? { opportunityFamilies: opportunities.familyView(activeThreadId) } : {}),
+      opportunityExploration: activeThreadId ? exploration.find(activeThreadId) : null,
+      opportunityReviewStatus: activeThreadId && engine ? engine.getOpportunityReviewStatus(activeThreadId) : { running: false, kind: null, error: null },
       latestResearchRun,
       pendingRuns: listPendingRuns(),
     };
@@ -412,7 +427,10 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
       )
       SELECT s.*, p.statement AS problem_statement, p.verdict AS problem_verdict,
         rr.workflow_version, rr.status AS run_status, rr.awaiting_selection, rr.updated_at AS run_updated_at,
-        ${details ? "da.analysis_json, da.user_decision, da.observed_result, da.experiment_outcome, sc.risk_evaluation_criteria, review.output_json AS risk_evaluation_json," : ""} da.updated_at AS decision_updated_at,
+        ${details ? "da.analysis_json, da.user_decision, da.observed_result, da.experiment_outcome, sc.risk_evaluation_criteria, review.output_json AS risk_evaluation_json, fe.record_json AS focused_experiment_json," : ""} da.updated_at AS decision_updated_at,
+        fe.updated_at AS focused_experiment_updated_at,
+        fdt.test_json AS focused_demand_test_json,
+        origin.origin_json AS opportunity_origin_json,
         review.id AS risk_evaluation_key,
         ef.status AS evidence_follow_up_status, ef.updated_at AS evidence_follow_up_updated_at,
         COALESCE(oc.outcome_count, 0) AS outcome_count, COALESCE(oc.core_count, 0) AS core_count,
@@ -424,6 +442,9 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
       FROM solutions s JOIN problems p ON p.id = s.problem_id
       JOIN research_runs rr ON rr.id = s.research_run_id
       LEFT JOIN decision_analyses da ON da.solution_id = s.id
+      LEFT JOIN focused_experiments fe ON fe.research_run_id = rr.id AND fe.solution_id = s.id
+      LEFT JOIN focused_demand_tests fdt ON fdt.research_run_id = rr.id AND fdt.solution_id = s.id
+      LEFT JOIN opportunity_candidate_origins origin ON origin.candidate_id = s.id
       LEFT JOIN scopes sc ON sc.research_run_id = p.discovery_run_id
       LEFT JOIN stage_results review ON review.research_run_id = rr.id AND review.stage_id = 'risk-evaluation' AND review.selection_key = s.id
       LEFT JOIN evidence_follow_ups ef ON ef.research_run_id = rr.id AND ef.solution_id = s.id
@@ -468,11 +489,14 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
         keyAssumption: row.key_assumption === null ? undefined : String(row.key_assumption),
         whyCurrentApproachMaySuffice: row.why_current_approach_may_suffice === null ? undefined : String(row.why_current_approach_may_suffice),
         startupOpportunity: row.startup_opportunity_json === null ? undefined : JSON.parse(String(row.startup_opportunity_json)),
+        focusedDemandTest: row.focused_demand_test_json ? FocusedDemandTestSchema.parse(JSON.parse(String(row.focused_demand_test_json))) : null,
+        opportunityOrigin: row.opportunity_origin_json ? OpportunityCandidateOriginSchema.parse(JSON.parse(String(row.opportunity_origin_json))) : null,
         unknowns: JSON.parse(String(row.unknowns_json ?? "[]")),
         supportingEvidenceIds: JSON.parse(String(row.supporting_evidence_ids_json ?? "[]")),
         contraryEvidenceIds: JSON.parse(String(row.contrary_evidence_ids_json ?? "[]")),
         ...(details ? {
           decisionAnalysis: row.analysis_json ? JSON.parse(String(row.analysis_json)) : null,
+          focusedExperiment: row.focused_experiment_json ? FocusedExperimentRecordSchema.parse(JSON.parse(String(row.focused_experiment_json))) : null,
           riskEvaluation: row.risk_evaluation_json ? JSON.parse(String(row.risk_evaluation_json)) : null,
           riskEvaluationCriteria: String(row.risk_evaluation_criteria ?? ""),
           userDecision: row.user_decision === null ? null : String(row.user_decision),
@@ -481,7 +505,7 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
           contrarySources: contrarySourcesByProblem.get(String(row.problem_id)) ?? [],
           ...(evidenceFollowUp ? { evidenceFollowUp } : {}),
         } : {}),
-        detailRevision: `${row.run_updated_at}:${row.decision_updated_at ?? ""}:${row.evidence_follow_up_updated_at ?? ""}:${row.risk_evaluation_key ?? ""}`,
+        detailRevision: `${row.run_updated_at}:${row.decision_updated_at ?? ""}:${row.evidence_follow_up_updated_at ?? ""}:${row.risk_evaluation_key ?? ""}:${row.focused_experiment_updated_at ?? ""}`,
         id: String(row.id), problemId: String(row.problem_id), problemStatement: String(row.problem_statement),
         problemVerdict: String(row.problem_verdict) as SolutionView["problemVerdict"], mechanism: String(row.mechanism),
         factors: details ? factorsByProblem.get(String(row.problem_id)) ?? [] : [],
@@ -651,6 +675,9 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
       })),
       rejectedProblemCandidates: listRejectedProblemCandidates(threadId),
       evidenceFollowUps: listEvidenceFollowUpExports(threadId),
+      opportunityReview: opportunities.exportReview(threadId),
+      opportunityExploration: exploration.find(threadId) ? exploration.exportExploration(threadId) : null,
+      focusedExperiments: new FocusedExperimentRepository(db).exportExperiments(threadId),
     };
   }
   function listEvidenceFollowUpExports(threadId: string) {
@@ -665,6 +692,20 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
       const followUp = bySolution.get(row.solution_id);
       return followUp ? [{ researchRunId: row.research_run_id, ...followUp }] : [];
     });
+  }
+  function opportunityExportFiles(threadId: string, format: "markdown" | "json") {
+    const review = opportunities.exportReview(threadId);
+    const progress = exploration.find(threadId);
+    const view = opportunities.familyView(threadId);
+    const experiments = new FocusedExperimentRepository(db).exportExperiments(threadId);
+    const explorationExport = progress ? exploration.exportExploration(threadId) : null;
+    if (view.reviewStatus === "not-reviewed" && !progress && experiments.experiments.length === 0) return [];
+    return [{
+      filename: `opportunity-review.${format === "json" ? "json" : "md"}`,
+      content: format === "json"
+        ? JSON.stringify({ kind: "opportunity-review", schemaVersion: 1, threadId, review, exploration: explorationExport, focusedExperiments: experiments }, null, 2)
+        : `${renderOpportunityFamilies(view)}${progress ? `\n## Target progress\n\n${progress.counts.acceptedFamilies}/${progress.config.targetFamilies} distinct hypotheses. Status: ${progress.status}.\n\n${progress.stopReason ?? "Review is in progress."}\n\nModel calls: ${progress.usage.modelCalls}/${progress.config.maxModelCalls}. Searches: ${progress.usage.searches}/${progress.config.maxSearches}.\n` : ""}\n## Complete review history\n\n\`\`\`json\n${JSON.stringify({ review, exploration: explorationExport, focusedExperiments: experiments }, null, 2)}\n\`\`\`\n`,
+    }];
   }
   function runUsage(runId: string) {
     const rows = db.db.prepare(`
@@ -708,7 +749,11 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
     const promptSnapshot = db.db.prepare("SELECT value_json FROM workflow_snapshots WHERE research_run_id = ? AND snapshot_key = 'prompts'")
       .get(row.id) as { value_json: string } | undefined;
     const hasRiskEvaluator = promptSnapshot ? Boolean(JSON.parse(promptSnapshot.value_json)["risk-evaluation"]) : true;
-    const projection = row.problem_id ? { modelCalls: row.workflow_version === 2 ? (hasRiskEvaluator ? 3 : 2) : developmentProjection(runConfig?.ideaCount ?? 5), searches: 0 } : discoveryRunProjection(runConfig?.discoveryDepth ?? "standard");
+    const focusedSnapshot = db.db.prepare("SELECT value_json FROM workflow_snapshots WHERE research_run_id = ? AND snapshot_key = 'focused-experiments'")
+      .get(row.id) as { value_json: string } | undefined;
+    const hasFocusedExperiments = focusedSnapshot ? JSON.parse(focusedSnapshot.value_json).version === 1 : false;
+    const developmentCalls = hasRiskEvaluator ? 3 + (hasFocusedExperiments ? 2 : 0) : 2;
+    const projection = row.problem_id ? { modelCalls: row.workflow_version === 2 ? developmentCalls : developmentProjection(runConfig?.ideaCount ?? 5), searches: 0 } : discoveryRunProjection(runConfig?.discoveryDepth ?? "standard");
     const activity = db.db.prepare("SELECT payload_json FROM job_events WHERE run_id = ? AND type = 'run-progress' ORDER BY id DESC LIMIT 1")
       .get(row.id) as { payload_json: string } | undefined;
     const resumeSafety = generationAttempts.getResumeSafety(row.id);
@@ -869,6 +914,7 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
       if (route === "/ideas/discard") {
         const input = DiscardIdeaRequestSchema.parse(body);
         requireThread(input.threadId);
+        engine?.assertOpportunityEditingAllowed(input.threadId);
         if (!db.db.prepare("SELECT 1 FROM solutions s JOIN research_runs r ON r.id = s.research_run_id WHERE s.id = ? AND r.thread_id = ?").get(input.ideaId, input.threadId)) throw new AppError("not_found", "Idea not found in this research.");
         const key = `discarded-ideas:${input.threadId}`;
         const ids = new Set(JSON.parse(db.getSetting(key) ?? "[]") as string[]);
@@ -906,16 +952,21 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
       }
       if (route === "/threads/delete") {
         const { threadId } = DeleteThreadRequestSchema.parse(body); requireThread(threadId);
+        engine?.assertOpportunityEditingAllowed(threadId);
         for (const run of listPendingRuns().filter((item) => item.threadId === threadId)) cancelRun(run.runId);
         threads.deleteThread(threadId); if (activeThreadId === threadId) activeThreadId = threads.listThreads().find((thread) => !thread.archivedAt)?.id ?? null;
         db.setSetting("active_thread_id", activeThreadId ?? ""); return sendJson(res, 200, await workspaceState());
       }
       if (route === "/scope") {
-        const input = SaveScopeSchema.parse(body); requireThread(input.threadId); threads.saveScope(input.threadId, input.scope);
+        const input = SaveScopeSchema.parse(body); requireThread(input.threadId);
+        engine?.assertOpportunityEditingAllowed(input.threadId);
+        threads.saveScope(input.threadId, input.scope);
         return sendJson(res, 200, await workspaceState());
       }
       if (route === "/run-config") {
-        const input = SaveRunConfigSchema.parse(body); requireThread(input.threadId); threads.saveRunConfig(input.threadId, { ...input.config, workflowVersion: 2 }, input.presetName);
+        const input = SaveRunConfigSchema.parse(body); requireThread(input.threadId);
+        engine?.assertOpportunityEditingAllowed(input.threadId);
+        threads.saveRunConfig(input.threadId, { ...input.config, workflowVersion: 2 }, input.presetName);
         return sendJson(res, 200, await workspaceState());
       }
       if (route === "/models/favorite") {
@@ -1140,6 +1191,50 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
           .run(input.userDecision, input.observedResult, input.experimentOutcome, new Date().toISOString(), belongs.id);
         return sendJson(res, 200, await workspaceState());
       }
+      if (route === "/experiments/plan") {
+        const input = RequestFocusedExperimentSchema.parse(body);
+        requireThread(input.threadId);
+        requireRunnableRunProvider(input.runId);
+        await ensureEngine().requestFocusedExperiment(input.threadId, input.runId, input.solutionId);
+        return sendJson(res, 200, await workspaceState());
+      }
+      if (route === "/opportunities/review" || route === "/opportunities/start" || route === "/opportunities/resume") {
+        const input = ReviewSavedOpportunitiesSchema.parse(body);
+        requireThread(input.threadId);
+        const validation = cachedValidation ?? await validateProviders();
+        if (!validation.native.connected || input.model.providerId !== OPENAI_SUBSCRIPTION_PROVIDER_ID
+          || !cachedModels.some(model => sameModelRef(model, input.model))) {
+          throw new AppError("conflict", "Choose a connected Native OpenAI review model.");
+        }
+        if (route === "/opportunities/review") await ensureEngine().reviewSavedOpportunities(input.threadId, input.model, input.reasoningEffort, input.allowAmbiguousRetry ?? false);
+        else if (route === "/opportunities/start") await ensureEngine().startOpportunityExploration(input.threadId, input.model, input.reasoningEffort);
+        else await ensureEngine().resumeOpportunityExploration(input.threadId, input.model, input.reasoningEffort);
+        return sendJson(res, 200, await workspaceState());
+      }
+      if (route === "/opportunities/membership") {
+        const input = EditOpportunityMembershipSchema.parse(body);
+        requireThread(input.threadId);
+        engine?.assertOpportunityEditingAllowed(input.threadId);
+        opportunities.editMembership(input.threadId, input.command);
+        return sendJson(res, 200, await workspaceState());
+      }
+      if (route === "/opportunities/pause") {
+        const input = OpportunityExplorationActionSchema.parse(body);
+        requireThread(input.threadId);
+        ensureEngine().pauseOpportunityExploration(input.threadId);
+        return sendJson(res, 200, await workspaceState());
+      }
+      if (route === "/opportunities/extension-preview") {
+        const input = PreviewOpportunityExtensionSchema.parse(body);
+        requireThread(input.threadId);
+        return sendJson(res, 200, ensureEngine().previewOpportunityBudgetExtension(input.threadId, input.extension));
+      }
+      if (route === "/opportunities/extension") {
+        const input = ApplyOpportunityExtensionSchema.parse(body);
+        requireThread(input.threadId);
+        ensureEngine().applyOpportunityBudgetExtension(input.threadId, input.preview);
+        return sendJson(res, 200, await workspaceState());
+      }
       if (route === "/research/cancel") {
         const { runId } = ResumeResearchSchema.parse(body);
         if (engine) await engine.cancelRunAndWait(runId);
@@ -1190,7 +1285,7 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
         });
         return sendJson(res, 200, {
           filename: `${slug(thread.title)}-ideas.${input.format === "json" ? "json" : "md"}`,
-          files: [...files, ...emptyFiles],
+          files: [...files, ...emptyFiles, ...opportunityExportFiles(input.threadId, input.format)],
         });
       }
       throw new AppError("not_found", "Route not found.");
@@ -1379,6 +1474,7 @@ function renderDecisionMarkdown(ideas: SolutionView[]): string {
     return [
       `# ${idea.mechanism}`, "", idea.description, "", `Problem: ${idea.problemStatement}`, "",
       `Workflow: v2. ${idea.selected ? "Selected by the user." : "Not selected."} Problem evidence: ${idea.problemVerdict}.`, "",
+      ...(idea.opportunityOrigin ? [`Origin: ${idea.opportunityOrigin.kind}. ${idea.opportunityOrigin.kind === "exploratory-hypothesis" ? idea.opportunityOrigin.disclosure : idea.opportunityOrigin.evidenceGap ?? "Evidence presence does not establish customer demand."}`, ""] : []),
       `Key assumption: ${idea.keyAssumption}`, "", `Current approach may suffice: ${idea.whyCurrentApproachMaySuffice}`, "",
       `Constraints: ${idea.respectsOffLimitsWhy}`, "", "## Uncertainty", "", ...(idea.unknowns ?? []).map((item) => `- ${item}`), "",
       `Evaluate risk against: ${idea.riskEvaluationCriteria || "The research goal and boundaries."}`, "",
@@ -1401,6 +1497,7 @@ function renderDecisionMarkdown(ideas: SolutionView[]): string {
         `Cost: ${analysis.experiment.cost}`, "", `Pass: ${analysis.experiment.passCriterion}`, "", `Fail: ${analysis.experiment.failCriterion}`, "",
       ] : ["No completed analysis for this option.", ""]),
       "## User decision", "", idea.userDecision || "Not recorded.", "",
+      ...(idea.focusedExperiment ? [renderFocusedExperiment(idea.focusedExperiment), ""] : []),
       "## Observed test result", "", idea.observedResult || "Not recorded. Proposed responses remain untested.", "",
     ];
   });

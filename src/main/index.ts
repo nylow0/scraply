@@ -7,6 +7,8 @@ import { join } from "node:path";
 import { z } from "zod";
 import {
   ApiErrorResponseSchema,
+  ReviewSavedOpportunitiesSchema, EditOpportunityMembershipSchema, RequestFocusedExperimentSchema,
+  OpportunityExplorationActionSchema, PreviewOpportunityExtensionSchema, ApplyOpportunityExtensionSchema,
   ApiResponseSchema,
   CancelResearchSchema,
   AppMenuRequestSchema, DiscardIdeaRequestSchema, ArchiveThreadRequestSchema, GenerateTitleRequestSchema, GenerateTitleResultSchema,
@@ -590,6 +592,14 @@ function registerIpc(): void {
   handle(IPC_CHANNELS.SELECT_PROBLEMS, (body) => post("/research/select-problems", SelectProblemsSchema.parse(body)));
   handle(IPC_CHANNELS.SELECT_OPTION, (body) => post("/research/select-option", SelectOptionSchema.parse(body)));
   handle(IPC_CHANNELS.SAVE_DECISION, (body) => post("/research/decision", SaveDecisionSchema.parse(body)));
+  handle(IPC_CHANNELS.REVIEW_OPPORTUNITIES, (body) => post("/opportunities/review", ReviewSavedOpportunitiesSchema.parse(body)));
+  handle(IPC_CHANNELS.EDIT_OPPORTUNITY_MEMBERSHIP, (body) => post("/opportunities/membership", EditOpportunityMembershipSchema.parse(body)));
+  handle(IPC_CHANNELS.REQUEST_FOCUSED_EXPERIMENT, (body) => post("/experiments/plan", RequestFocusedExperimentSchema.parse(body)));
+  handle(IPC_CHANNELS.PAUSE_OPPORTUNITY_EXPLORATION, (body) => post("/opportunities/pause", OpportunityExplorationActionSchema.parse(body)));
+  handle(IPC_CHANNELS.START_OPPORTUNITY_EXPLORATION, (body) => post("/opportunities/start", ReviewSavedOpportunitiesSchema.parse(body)));
+  handle(IPC_CHANNELS.RESUME_OPPORTUNITY_EXPLORATION, (body) => post("/opportunities/resume", ReviewSavedOpportunitiesSchema.parse(body)));
+  handle(IPC_CHANNELS.PREVIEW_OPPORTUNITY_EXTENSION, (body) => post("/opportunities/extension-preview", PreviewOpportunityExtensionSchema.parse(body)));
+  handle(IPC_CHANNELS.APPLY_OPPORTUNITY_EXTENSION, (body) => post("/opportunities/extension", ApplyOpportunityExtensionSchema.parse(body)));
   handle(IPC_CHANNELS.EVIDENCE_FOLLOW_UP, (body) => post("/research/evidence-follow-up", EvidenceFollowUpRequestSchema.parse(body)));
   handle(IPC_CHANNELS.EVIDENCE_REASSESSMENT, (body) => post("/research/evidence-reassessment", EvidenceReassessmentRequestSchema.parse(body)));
   handle(IPC_CHANNELS.EXPORT_RESEARCH, async (body) => {

@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { SearchProviderSchema } from "../providers/search";
+import { OpportunityExplorationConfigSchema } from "./opportunity-exploration";
 
 export const SourceSchema = z.object({
   id: z.string().min(1),
@@ -47,6 +48,7 @@ const RunConfigInputSchema = z.object({
   researchMode: ResearchModeSchema.optional(),
   knownProblem: z.string().trim().max(2_000).optional(),
   explorationPurpose: ExplorationPurposeSchema.optional(),
+  opportunityExploration: OpportunityExplorationConfigSchema.optional(),
 }).strict();
 const LegacyRunConfigSchema = RunConfigInputSchema.omit({ configVersion: true, model: true }).extend({
   model: z.string().trim().min(1),
@@ -71,7 +73,11 @@ export const RunConfigSchema = z.union([
     searchProvider: value.searchProvider ?? "exa" as const,
     explorationPurpose: value.explorationPurpose ?? "general-solutions" as const,
   })),
-]);
+]).superRefine((config, ctx) => {
+  if (config.opportunityExploration && config.explorationPurpose !== "startup-opportunities") {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["opportunityExploration"], message: "A distinct-business target requires startup opportunity exploration." });
+  }
+});
 
 export const DEFAULT_RUN_CONFIG = {
   configVersion: 2,
