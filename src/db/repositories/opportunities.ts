@@ -1,5 +1,6 @@
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import type { GenerationAcceptanceMetadata, GenerationMetadata } from "../../providers/structured";
+import { canonicalJson, sha256 } from "../../shared/content-identity";
 import {
   OpportunityFamiliesViewSchema,
   OpportunityMembershipEditSchema,
@@ -324,6 +325,7 @@ export class OpportunityRepository {
     return (this.client.db.prepare("SELECT changes() AS count").get() as { count: number }).count;
   }
 
+  /** Marks calls left in flight by a stopped process before any review state is projected. */
   recoverInFlightReviewCalls(threadId?: string): string[] {
     const now = new Date().toISOString();
     const filter = threadId ? "thread_id = ? AND " : "";
@@ -1017,15 +1019,6 @@ export class OpportunityRepository {
   }
 }
 
-export function acceptedOpportunityFamilyCount(db: DatabaseClient, threadId: string): number {
-  return new OpportunityRepository(db).acceptedFamilyCount(threadId);
-}
-
-/** Marks calls left in flight by a stopped process before any review state is projected. */
-export function recoverInterruptedOpportunityReviews(db: DatabaseClient): string[] {
-  return new OpportunityRepository(db).recoverInFlightReviewCalls();
-}
-
 function candidateFromRow(row: SolutionCandidateRow): OpportunityCandidateSnapshot {
   const startup = parseStartup(row.startup_opportunity_json);
   return {
@@ -1068,26 +1061,4 @@ function parseStartup(value: string | null) {
   if (!value) return null;
   const parsed = StartupOpportunityDetailsSchema.safeParse(JSON.parse(value));
   return parsed.success ? parsed.data : null;
-}
-
-function sha256(value: string): string {
-  return createHash("sha256").update(value, "utf8").digest("hex");
-}
-
-function canonicalJson(value: unknown): string {
-  return JSON.stringify(canonicalValue(value));
-}
-
-function canonicalValue(value: unknown): unknown {
-  if (value === null || typeof value === "string" || typeof value === "boolean") return value;
-  if (typeof value === "number") {
-    if (!Number.isFinite(value)) throw new Error("Opportunity review snapshot contains a non-finite number");
-    return value;
-  }
-  if (Array.isArray(value)) return value.map(canonicalValue);
-  if (typeof value === "object") {
-    const object = value as Record<string, unknown>;
-    return Object.fromEntries(Object.keys(object).sort().map((key) => [key, canonicalValue(object[key])]));
-  }
-  throw new Error("Opportunity review snapshot contains a non-JSON value");
 }

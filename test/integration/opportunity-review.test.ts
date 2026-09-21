@@ -6,11 +6,7 @@ import { ProviderFailure, type StructuredModelClient, type StructuredStageReques
 import { reviewSavedOpportunities } from "../../src/core/opportunity-review";
 import { DatabaseClient } from "../../src/db/client";
 import { OpportunityExplorationRepository } from "../../src/db/repositories/opportunity-exploration";
-import {
-  OpportunityRepository,
-  acceptedOpportunityFamilyCount,
-  recoverInterruptedOpportunityReviews,
-} from "../../src/db/repositories/opportunities";
+import { OpportunityRepository } from "../../src/db/repositories/opportunities";
 import type { OpportunityReviewOutput } from "../../src/shared/opportunity-review";
 import { DEFAULT_OPPORTUNITY_EXPLORATION_CONFIG } from "../../src/shared/opportunity-exploration";
 import { DEFAULT_RUN_CONFIG } from "../../src/shared/schemas";
@@ -46,9 +42,8 @@ describe("opportunity review", () => {
     const duplicate = result.opportunities.families.flatMap((family) => family.members)
       .find((member) => member.optionId === "option-b");
     expect(duplicate?.relationship).toBe("duplicate");
-    expect(acceptedOpportunityFamilyCount(db, "thread-1")).toBe(2);
-
     const repository = new OpportunityRepository(db);
+    expect(repository.acceptedFamilyCount("thread-1")).toBe(2);
     repository.editMembership("thread-1", {
       operation: "mark-uncertain",
       optionId: "option-a",
@@ -336,7 +331,7 @@ describe("opportunity review", () => {
     const dispatched = repository.prepareReviewCall(reviewCallInput(1));
     repository.markReviewDispatched(dispatched.id);
 
-    expect(recoverInterruptedOpportunityReviews(db)).toEqual(["thread-1"]);
+    expect(repository.recoverInFlightReviewCalls()).toEqual(["thread-1"]);
     const reviews = repository.exportReview("thread-1").reviews;
     expect(reviews.map((review) => review.status)).toEqual(["interrupted", "interrupted"]);
     expect(reviews.map((review) => review.error)).toContain("never-dispatched");

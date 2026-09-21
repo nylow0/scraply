@@ -199,6 +199,15 @@ export function numericOutcomeLabels(rules: z.infer<typeof NumericOutcomeRulesSc
     : { pass: `at most ${rules.passThreshold}`, fail: `above ${rules.failThreshold}`, inconclusive: noGap ? null : `above ${rules.passThreshold} to ${rules.failThreshold}` };
 }
 
+export function numericMetricRangeLabel(rules: z.infer<typeof NumericOutcomeRulesSchema>, unit: string): string | null {
+  if (!rules.metricRange) return null;
+  const { minimum, maximum } = rules.metricRange;
+  if (minimum === null && maximum === null) return `No finite minimum or maximum (${unit})`;
+  if (minimum === null) return `At most ${maximum} ${unit}`;
+  if (maximum === null) return `At least ${minimum} ${unit}`;
+  return `${minimum} to ${maximum} ${unit}`;
+}
+
 export function numericInconclusiveLabel(rules: z.infer<typeof NumericOutcomeRulesSchema>, unit: string): string {
   const band = numericOutcomeLabels(rules).inconclusive;
   const observations = `fewer than ${rules.minimumUsableObservations} usable observations`;

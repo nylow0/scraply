@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { canonicalJson } from "../../shared/content-identity";
 import type { DatabaseClient } from "../client";
 import {
   OpportunityBudgetExtensionPreviewSchema,
@@ -732,17 +733,6 @@ function decodeAttemptState(row: AttemptRow): OpportunityStageResumeState {
     return { kind: "unknown-dispatch", attemptId: row.id };
   }
   return { kind: "prepared", attemptId: row.id };
-}
-
-function canonicalJson(value: unknown): string {
-  return JSON.stringify(sortJson(value));
-}
-
-function sortJson(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(sortJson);
-  if (!value || typeof value !== "object") return value;
-  return Object.fromEntries(Object.entries(value).sort(([left], [right]) => left.localeCompare(right))
-    .map(([key, item]) => [key, sortJson(item)]));
 }
 
 function nonnegativeInteger(value: number, name: string): number {

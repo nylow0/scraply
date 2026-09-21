@@ -1,9 +1,10 @@
 import { createHash } from "node:crypto";
 import type { DatabaseClient } from "../db/client";
 import { DevelopmentRepository } from "../db/repositories/development";
-import { WorkflowV2Repository, canonicalJson } from "../db/repositories/workflow-v2";
+import { WorkflowV2Repository } from "../db/repositories/workflow-v2";
 import type { SearchClient } from "../providers/search";
 import type { GenerationMetadata, StructuredModelClient, StructuredStageRequest } from "../providers/structured";
+import { canonicalJson } from "../shared/content-identity";
 import { deriveJsonSchema } from "../shared/json-schema";
 import { OpportunityExpansionOutputSchema } from "../shared/opportunity-exploration";
 import { SourceSchema } from "../shared/schemas";

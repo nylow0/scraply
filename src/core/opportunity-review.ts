@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import type { DatabaseClient } from "../db/client";
 import {
   OpportunityRepository,
@@ -7,6 +7,7 @@ import {
 } from "../db/repositories/opportunities";
 import { ProviderFailure, type StructuredModelClient, type StructuredStageRequest } from "../providers/structured";
 import { deriveJsonSchema } from "../shared/json-schema";
+import { canonicalJson, sha256 } from "../shared/content-identity";
 import {
   OpportunityReviewOutputSchema,
   type OpportunityCandidateSnapshot,
@@ -597,26 +598,4 @@ function normalizeLimits(limits?: OpportunityReviewLimits): Required<Opportunity
 
 function comparisonKey(comparison: { candidateOptionId: string; target: OpportunityComparisonTarget }): string {
   return `${comparison.candidateOptionId}\u0000${comparison.target.kind}\u0000${comparison.target.id}`;
-}
-
-function sha256(value: string): string {
-  return createHash("sha256").update(value, "utf8").digest("hex");
-}
-
-function canonicalJson(value: unknown): string {
-  return JSON.stringify(canonicalValue(value));
-}
-
-function canonicalValue(value: unknown): unknown {
-  if (value === null || typeof value === "string" || typeof value === "boolean") return value;
-  if (typeof value === "number") {
-    if (!Number.isFinite(value)) throw new Error("Opportunity review input contains a non-finite number");
-    return value;
-  }
-  if (Array.isArray(value)) return value.map(canonicalValue);
-  if (typeof value === "object") {
-    const object = value as Record<string, unknown>;
-    return Object.fromEntries(Object.keys(object).sort().map((key) => [key, canonicalValue(object[key])]));
-  }
-  throw new Error("Opportunity review input contains a non-JSON value");
 }

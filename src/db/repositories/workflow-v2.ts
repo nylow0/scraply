@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import {
   assertWorkflowV2DecisionAnalysisSemantics,
   parseWorkflowV2StageOutput,
@@ -6,6 +6,7 @@ import {
   type WorkflowV2StageId,
 } from "../../core/stages";
 import type { ResolvedWorkflowV2Prompt } from "../../core/prompts";
+import { canonicalJson, sha256 } from "../../shared/content-identity";
 import {
   WorkflowV2DecisionAnalysisOutputSchema,
   WorkflowV2RiskReassessmentOutputSchema,
@@ -534,26 +535,4 @@ function assertSha256(value: string, label: string): void {
 
 function verifyHash(value: string, expected: string, label: string): void {
   if (sha256(value) !== expected) throw new Error(`${label} snapshot hash mismatch`);
-}
-
-function sha256(value: string): string {
-  return createHash("sha256").update(value, "utf8").digest("hex");
-}
-
-export function canonicalJson(value: unknown): string {
-  return JSON.stringify(canonicalValue(value));
-}
-
-function canonicalValue(value: unknown): unknown {
-  if (value === null || typeof value === "string" || typeof value === "boolean") return value;
-  if (typeof value === "number") {
-    if (!Number.isFinite(value)) throw new Error("Workflow snapshot contains a non-finite number");
-    return value;
-  }
-  if (Array.isArray(value)) return value.map(canonicalValue);
-  if (typeof value === "object") {
-    const object = value as Record<string, unknown>;
-    return Object.fromEntries(Object.keys(object).sort().map((key) => [key, canonicalValue(object[key])]));
-  }
-  throw new Error("Workflow snapshot contains a non-JSON value");
 }
