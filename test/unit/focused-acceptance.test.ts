@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { FocusedExperimentSchema, NewFocusedExperimentSchema, classifyNumericExperimentOutcome, numericOutcomeLabels, numericInconclusiveLabel } from "../../src/shared/focused-experiment";
+import { FocusedExperimentSchema, NewFocusedExperimentSchema, classifyNumericExperimentOutcome, numericMetricRangeLabel, numericOutcomeLabels, numericInconclusiveLabel } from "../../src/shared/focused-experiment";
 import { renderFocusedExperiment } from "../../src/backend/opportunity-export";
 import { savedPaymentDraft, validPaymentPlan, acceptanceReview } from "../fixtures/focused-acceptance";
 
@@ -22,6 +22,10 @@ test("valid numeric boundaries, insufficient observations, and invalid metric va
   expect(classifyNumericExperimentOutcome(rules,{metricValue:0,usableObservations:4,hasUnusableData:false})).toBe("inconclusive");
   expect(classifyNumericExperimentOutcome(rules,{metricValue:40,usableObservations:5,hasUnusableData:true})).toBe("inconclusive");
   expect(numericOutcomeLabels(rules)).toEqual({pass:"at least 40",fail:"below 1",inconclusive:"1 to below 40"});
+  expect(numericMetricRangeLabel(rules,validPaymentPlan().primaryMetric.unit)).toBe("0 to 100 percent of usable offers");
+  expect(numericMetricRangeLabel({...rules,metricRange:{minimum:0,maximum:null}},"observations")).toBe("At least 0 observations");
+  expect(numericMetricRangeLabel({...rules,metricRange:{minimum:null,maximum:100}},"observations")).toBe("At most 100 observations");
+  expect(numericMetricRangeLabel({...rules,metricRange:{minimum:null,maximum:null}},"observations")).toBe("No finite minimum or maximum (observations)");
   const lower = {...rules,direction:"lower-is-better" as const,passThreshold:10,failThreshold:20};
   for(const [metricValue,expected] of [[0,"pass"],[10,"pass"],[10.1,"inconclusive"],[20,"inconclusive"],[20.1,"fail"],[100,"fail"]] as const) {
     expect(classifyNumericExperimentOutcome(lower,{metricValue,usableObservations:5,hasUnusableData:false})).toBe(expected);
@@ -50,6 +54,7 @@ test("equal thresholds have no numeric gap, and exports share the exact UI compa
   expect(classifyNumericExperimentOutcome(rules,{metricValue:40,usableObservations:5,hasUnusableData:false})).toBe("pass");
   expect(classifyNumericExperimentOutcome(rules,{metricValue:39.9,usableObservations:5,hasUnusableData:false})).toBe("fail");
   const markdown=renderFocusedExperiment({schemaVersion:1,status:"approved",plan,initialReview:acceptanceReview("approved"),finalReview:null,correctionCount:0});
+  expect(markdown).toContain("Metric range: 0 to 100 percent of usable offers.");
   expect(markdown).toContain("is below 1 percent of usable offers");
   expect(markdown).toContain(numericInconclusiveLabel(plan.outcomeRules,plan.primaryMetric.unit));
 });

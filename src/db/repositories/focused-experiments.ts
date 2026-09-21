@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import type { ZodType } from "zod";
 import type { StructuredStageRequest } from "../../providers/structured";
 import {
@@ -8,8 +8,8 @@ import {
   type FocusedDemandTest,
   type FocusedExperimentRecord,
 } from "../../shared/focused-experiment";
+import { canonicalJson, sha256 } from "../../shared/content-identity";
 import type { DatabaseClient } from "../client";
-import { canonicalJson } from "./workflow-v2";
 
 export type FocusedExperimentStageKey = "draft" | "initial-review" | "correction" | "final-review";
 
@@ -358,9 +358,6 @@ function requestSnapshot<T>(request: StructuredStageRequest<T>): Record<string, 
   };
 }
 
-function sha256(value: string): string {
-  return createHash("sha256").update(value, "utf8").digest("hex");
-}
 
 function parseJson(value: unknown): unknown {
   return JSON.parse(String(value)) as unknown;

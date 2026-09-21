@@ -1,5 +1,6 @@
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import type { GenerationAcceptanceMetadata, StructuredStageRequest } from "../../providers/structured";
+import { canonicalJson, sha256 } from "../../shared/content-identity";
 import type { DatabaseClient } from "../client";
 
 export type GenerationAttemptStatus =
@@ -219,26 +220,4 @@ function effectiveRequestSnapshot<T>(
     compilerPrompt: runtimeIdentity.compilerPrompt ?? null,
     maxOutputTokens: request.maxOutputTokens ?? null,
   };
-}
-
-function sha256(value: string): string {
-  return createHash("sha256").update(value, "utf8").digest("hex");
-}
-
-function canonicalJson(value: unknown): string {
-  return JSON.stringify(canonicalValue(value));
-}
-
-function canonicalValue(value: unknown): unknown {
-  if (value === null || typeof value === "string" || typeof value === "boolean") return value;
-  if (typeof value === "number") {
-    if (!Number.isFinite(value)) throw new Error("Generation snapshot contains a non-finite number");
-    return value;
-  }
-  if (Array.isArray(value)) return value.map(canonicalValue);
-  if (typeof value === "object") {
-    const object = value as Record<string, unknown>;
-    return Object.fromEntries(Object.keys(object).sort().map((key) => [key, canonicalValue(object[key])]));
-  }
-  throw new Error("Generation snapshot contains a non-JSON value");
 }

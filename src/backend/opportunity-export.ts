@@ -1,10 +1,14 @@
-import { numericOutcomeLabels, numericInconclusiveLabel, type FocusedExperimentRecord } from "../shared/focused-experiment";
+import { numericMetricRangeLabel, numericOutcomeLabels, numericInconclusiveLabel, type FocusedExperimentRecord } from "../shared/focused-experiment";
 import type { OpportunityFamiliesView } from "../shared/opportunity-review";
 
 export function renderFocusedExperiment(record: FocusedExperimentRecord): string {
   const { plan } = record;
   const rules = plan.outcomeRules;
+  const metricRange = rules.kind === "numeric-threshold"
+    ? numericMetricRangeLabel(rules, plan.primaryMetric.unit)
+    : null;
   const numericRules = rules.kind === "numeric-threshold" ? [
+    ...(metricRange ? [`Metric range: ${metricRange}.`] : []),
     `Pass: ${plan.primaryMetric.name} is ${numericOutcomeLabels(rules).pass} ${plan.primaryMetric.unit}.`,
     `Fail: ${plan.primaryMetric.name} is ${numericOutcomeLabels(rules).fail} ${plan.primaryMetric.unit}.`,
     `Inconclusive: ${numericInconclusiveLabel(rules, plan.primaryMetric.unit)} ${rules.insufficientDataReason}`,

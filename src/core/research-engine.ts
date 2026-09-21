@@ -6,7 +6,7 @@ import { EvidenceFollowUpRepository } from "../db/repositories/evidence-follow-u
 import { GenerationAttemptRepository } from "../db/repositories/generation-attempts";
 import { FocusedExperimentRepository } from "../db/repositories/focused-experiments";
 import { ResearchRunRepository } from "../db/repositories/research-runs";
-import { OpportunityRepository, recoverInterruptedOpportunityReviews } from "../db/repositories/opportunities";
+import { OpportunityRepository } from "../db/repositories/opportunities";
 import { OpportunityExplorationRepository } from "../db/repositories/opportunity-exploration";
 import { WorkflowV2Repository } from "../db/repositories/workflow-v2";
 import type { SearchClient, SearchOptions, SearchProvider } from "../providers/search";
@@ -103,6 +103,7 @@ export class ResearchEngine {
   private readonly generationAttempts: GenerationAttemptRepository;
   private readonly followUps: EvidenceFollowUpRepository;
   private readonly discovery: DiscoveryRepository;
+  private readonly opportunities: OpportunityRepository;
   private readonly opportunityTasks = new Map<string, OpportunityTask>();
   private readonly opportunityErrors = new Map<string, string>();
 
@@ -112,8 +113,9 @@ export class ResearchEngine {
     this.generationAttempts = new GenerationAttemptRepository(options.db);
     this.followUps = new EvidenceFollowUpRepository(options.db);
     this.discovery = new DiscoveryRepository(options.db);
+    this.opportunities = new OpportunityRepository(options.db);
     recoverInterruptedEvidenceFollowUps(options.db);
-    recoverInterruptedOpportunityReviews(options.db);
+    this.opportunities.recoverInFlightReviewCalls();
     options.db.immediateTransaction(() =>
       new OpportunityExplorationRepository(options.db).recoverInterruptedExplorations());
   }
@@ -666,7 +668,7 @@ export class ResearchEngine {
     signal: AbortSignal,
   ) {
     const repository = new OpportunityExplorationRepository(this.options.db);
-    const view = new OpportunityRepository(this.options.db).familyView(threadId);
+    const view = this.opportunities.familyView(threadId);
     const context = this.opportunityMapContext(threadId);
     const instruction = "Name only concrete buyer, workflow, trigger, problem, or evidence gaps in the saved startup inventory. New buyers or workflows are allowed only after the supplied map is exhausted. Ask for one bounded search query when evidence is required. Return no gap rather than generic 'more ideas'. Exploratory hypotheses are allowed only when the project flag says so.";
     const attempt = this.options.db.immediateTransaction(() => repository.prepareAttempt(threadId, {
@@ -792,7 +794,7 @@ export class ResearchEngine {
     const saved = repository.completedAttemptResult(threadId, stageKey);
     if (saved) return parseSavedExpansion(saved);
     const evidence = this.opportunityExpansionEvidence(threadId, searchedSources);
-    const view = new OpportunityRepository(this.options.db).familyView(threadId);
+    const view = this.opportunities.familyView(threadId);
     const instruction = "Generate one small batch for the named coverage gap. Every option must be a distinct startup opportunity with a paying customer, smallest sellable workflow, and one structured focusedDemandTest for the most decision-relevant demand assumption. Do not repeat accepted families. Preserve weak evidence as uncertainty. Reference only supplied evidence IDs. An evidence-backed new problem must name nonempty problemHypothesis.evidenceIds that directly support the problem. When exploratory mode is used, every evidence-ID list must be empty and the gap assessment must remain a hypothesis.";
     const attempt = this.options.db.immediateTransaction(() => repository.prepareAttempt(threadId, {
       stageKey,
@@ -1019,7 +1021,7 @@ export class ResearchEngine {
 
   private syncOpportunityInventory(threadId: string): void {
     const repository = new OpportunityExplorationRepository(this.options.db);
-    const families = new OpportunityRepository(this.options.db).familyView(threadId);
+    const families = this.opportunities.familyView(threadId);
     const origins = this.opportunityOrigins(threadId);
     this.options.db.immediateTransaction(() => {
       repository.saveCounts(threadId, opportunityCounts(families));

@@ -5,7 +5,7 @@ import { recoverInterruptedEvidenceFollowUps, ResearchEngine } from "../core/res
 import { DatabaseClient } from "../db/client";
 import { GenerationAttemptRepository } from "../db/repositories/generation-attempts";
 import { FocusedDemandTestSchema, FocusedExperimentRecordSchema } from "../shared/focused-experiment";
-import { OpportunityRepository, recoverInterruptedOpportunityReviews } from "../db/repositories/opportunities";
+import { OpportunityRepository } from "../db/repositories/opportunities";
 import { OpportunityExplorationRepository } from "../db/repositories/opportunity-exploration";
 import { FocusedExperimentRepository } from "../db/repositories/focused-experiments";
 import { OpportunityCandidateOriginSchema } from "../shared/opportunity-exploration";
@@ -105,8 +105,8 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
   const exploration = new OpportunityExplorationRepository(db);
   generationAttempts.interruptInFlight("The backend restarted before the generation reached a durable terminal result");
   recoverInterruptedEvidenceFollowUps(db);
-  recoverInterruptedOpportunityReviews(db);
-  db.immediateTransaction(() => new OpportunityExplorationRepository(db).recoverInterruptedExplorations());
+  opportunities.recoverInFlightReviewCalls();
+  db.immediateTransaction(() => exploration.recoverInterruptedExplorations());
   db.db.exec(`
     UPDATE research_runs SET interrupted = 1 WHERE status IN ('queued', 'running');
     UPDATE threads SET status = 'failed' WHERE id IN (

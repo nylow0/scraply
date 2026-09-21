@@ -1,9 +1,12 @@
 <script lang="ts">
-  import { numericOutcomeLabels, numericInconclusiveLabel, type FocusedExperimentRecord } from "../../shared/focused-experiment";
+  import { numericMetricRangeLabel, numericOutcomeLabels, numericInconclusiveLabel, type FocusedExperimentRecord } from "../../shared/focused-experiment";
 
   let { experiment }: { experiment: FocusedExperimentRecord } = $props();
   let plan = $derived(experiment.plan);
   let review = $derived(experiment.finalReview ?? experiment.initialReview);
+  let metricRange = $derived(plan.outcomeRules.kind === "numeric-threshold"
+    ? numericMetricRangeLabel(plan.outcomeRules, plan.primaryMetric.unit)
+    : null);
 
   function thresholdLabel(kind: "pass" | "fail"): string {
     const rules = plan.outcomeRules;
@@ -52,6 +55,7 @@
       <p>{plan.primaryMetric.collectionMethod}</p>
       <dl>
         <div><dt>Unit</dt><dd>{plan.primaryMetric.unit}</dd></div>
+        {#if metricRange}<div><dt>Metric range</dt><dd>{metricRange}</dd></div>{/if}
         <div><dt>Baseline</dt><dd>{plan.primaryMetric.comparisonBaseline}</dd></div>
         <div><dt>Sample</dt><dd>{plan.sample.targetObservations} observations, recruit up to {plan.sample.recruitmentLimit}, over {plan.sample.observationWindow.value} {plan.sample.observationWindow.unit}</dd></div>
       </dl>
