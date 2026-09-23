@@ -23,6 +23,7 @@ import {
   materializeResearchSnapshot, resolveResearchSelection, validateResearchRequest,
   type ResearchFindingView, type ResearchRequestView,
 } from "./research-revisions";
+import { remainingWorkflowMs as remainingMs } from "./workflow-time";
 
 type ResearchRequestAction = Extract<WorkflowAction, { type: "request-research" }>;
 type ApplyResearchAction = Extract<WorkflowAction, { type: "apply-research" }>;
@@ -985,11 +986,6 @@ function errorMessage(error: unknown): string {
   if (error instanceof Error) return error.message;
   if (typeof error === "object" && error !== null && "message" in error && typeof error.message === "string") return error.message;
   return "The research request failed.";
-}
-
-function remainingMs(session: WorkflowSession): number {
-  if (!session.runningSince) return session.remainingMs;
-  return Math.max(0, session.remainingMs - Math.max(0, Date.now() - Date.parse(session.runningSince)));
 }
 
 function isFinding(value: ResearchFindingView | null): value is ResearchFindingView { return value !== null; }
