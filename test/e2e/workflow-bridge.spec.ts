@@ -221,14 +221,14 @@ test(`installed ${mode} workflow previews, runs, pauses, finishes, and reopens t
     await expect(restoredProgress).toContainText(mode === "vibe" ? "Target reached" : "No qualifying ideas");
     if (mode === "vibe") {
       await expect(reopenedPage.getByRole("tabpanel", { name: "Solutions" })).toBeVisible();
-      await expect(reopenedPage.getByRole("button", { name: "Track repair quote approvals in one shared view.", exact: true })).toBeVisible();
+      await expect(reopenedPage.getByRole("button", { name: "Open idea: Track repair quote approvals in one shared view.", exact: true })).toBeVisible();
       await reopenedPage.setViewportSize({ width: 1600, height: 1200 });
       await reopenedPage.screenshot({ path: testInfo.outputPath(`${mode}-workflow-finished.png`), animations: "disabled", fullPage: true });
-      const savedIdea = reopenedPage.getByRole("button", { name: "Track repair quote approvals in one shared view.", exact: true });
+      const savedIdea = reopenedPage.getByRole("button", { name: "Open idea: Track repair quote approvals in one shared view.", exact: true });
       await savedIdea.scrollIntoViewIfNeeded();
       await reopenedPage.screenshot({ path: testInfo.outputPath("vibe-saved-idea.png"), animations: "disabled" });
       await savedIdea.click();
-      await expect(reopenedPage.getByText("Approval status board", { exact: true })).toBeVisible();
+      await expect(reopenedPage.getByRole("heading", { name: "Approval status board", exact: true, level: 1 })).toBeVisible();
       await expect(reopenedPage.getByText("Problem and fit")).toBeVisible();
     } else await reopenedPage.screenshot({ path: testInfo.outputPath(`${mode}-workflow-finished.png`), animations: "disabled" });
 
