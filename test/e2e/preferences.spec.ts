@@ -41,6 +41,7 @@ test("research defaults persist after reopen while a saved project keeps its cho
     await page.getByLabel("Search provider", { exact: true }).selectOption("exa");
     await page.getByLabel("Research name", { exact: true }).fill("Saved provider choices");
     await page.getByLabel("What do you want to explore?").fill("Parts sourcing");
+    await page.getByRole("radio", { name: /^Babysit/ }).check();
     await page.getByRole("button", { name: "Start Babysit", exact: true }).click();
     await expect(page.getByRole("heading", { name: "Choose problems to develop" })).toBeVisible();
     await electron.close();
