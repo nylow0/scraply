@@ -185,6 +185,9 @@ test(`installed ${mode} workflow previews, runs, pauses, finishes, and reopens t
     await expect(page.getByRole("tabpanel", { name: "Research setup" })).toBeVisible();
     await page.getByText(mode === "vibe" ? "Vibe" : "Babysit", { exact: true }).click();
     await page.getByPlaceholder("Your topic or idea").fill(topic);
+    await page.setViewportSize({ width: 1366, height: 768 });
+    await expect(page.getByRole("button", { name: mode === "vibe" ? "Start Vibe" : "Start Babysit" })).toBeEnabled();
+    await page.screenshot({ path: testInfo.outputPath(`${mode}-setup.png`), animations: "disabled" });
     await page.getByRole("button", { name: "Research settings", exact: true }).click();
     await page.getByRole("spinbutton", { name: "Solutions per problem" }).fill("1");
     await page.getByRole("button", { name: "Done", exact: true }).click();

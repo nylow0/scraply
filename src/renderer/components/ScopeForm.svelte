@@ -612,7 +612,7 @@
   form { display:flex;flex-direction:column; }
   .setup-scroll { flex:1;min-height:0;overflow:auto;scroll-padding-block:24px; }
   .setup-body,.launch-content { width:min(100%,800px);margin-inline:auto; }
-  .setup-body { padding:16px 24px;display:grid;gap:12px; }
+  .setup-body { padding:12px 24px;display:grid;gap:10px; }
   label { display:grid;gap:8px;min-width:0;font-size:14px; }
   label > span { font-weight:500; }
   input,select,textarea { width:100%;min-width:0;min-height:42px;padding:9px 12px;border:1px solid var(--border-strong);border-radius:7px;color:var(--text);background:var(--surface);font-size:14px; }
@@ -623,7 +623,7 @@
   input[aria-invalid="true"],textarea[aria-invalid="true"],select[aria-invalid="true"] { border-color:var(--danger); }
   fieldset { min-width:0;border:0;padding:0;margin:0; }
   .choice-group { display:grid;gap:6px; }
-  .choice-group legend { margin-bottom:8px;font-size:13px;color:var(--muted); }
+  .choice-group legend { margin-bottom:6px;font-size:13px;color:var(--muted); }
   .choice-group label { display:flex;align-items:center;gap:10px;padding:10px 12px;min-height:42px;border:1px solid transparent;border-radius:7px;cursor:pointer; }
   .choice-group label:hover { background:var(--surface-2); }
   .choice-group label.active { background:#101c17;border-color:#355747; }
@@ -639,7 +639,7 @@
   .main-brief { gap:10px; }
   .main-brief textarea { min-height:94px;padding:10px 14px;font-size:15px; }
   .audience-field { grid-template-columns:auto minmax(0,1fr);align-items:center;gap:18px; }
-  .settings-summary { display:flex;justify-content:space-between;align-items:center;gap:16px;padding:10px 0;border-block:1px solid var(--border); }
+  .settings-summary { display:flex;justify-content:space-between;align-items:center;gap:16px;padding:8px 0;border-block:1px solid var(--border); }
   .settings-summary p { margin:0;font-size:14px;line-height:1.55; }
   .settings-summary p span,.settings-summary .summary-secondary { color:var(--muted);font-size:13px; }
   .settings-summary .override-note { margin-top:4px;font-size:13px;color:var(--accent); }
