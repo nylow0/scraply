@@ -146,6 +146,67 @@ test("workflow preview, start, detail, and workspace use the same saved session"
   expect((await terminalExtensionPreview.json() as { error: { code: string } }).error.code).toBe("REVISION_CONFLICT");
 });
 
+test("completed discovery respects a pending pause or stop before Vibe generation", async () => {
+  for (const requestedState of ["pause-requested", "stop-requested"] as const) {
+    const { threadId, dbPath } = await fixture();
+    const client = new DatabaseClient(dbPath);
+    const workflows = new WorkflowRepository(client);
+    const now = new Date().toISOString();
+    const runId = `completed-${requestedState}`;
+    const problemId = `problem-${requestedState}`;
+    const contract = WorkflowLaunchContractSchema.parse({
+      ...launchDraft(), purpose: "discovery", mode: "vibe",
+      runConfig: { ...DEFAULT_RUN_CONFIG, researchMode: "explore-market" },
+      resolvedInstructions: { research: "Research", ideas: "Ideas", review: "Review" },
+      instructionHashes: { research: "research", ideas: "ideas", review: "review" },
+    });
+    const session = client.immediateTransaction(() => {
+      const created = workflows.createSession({ threadId, purpose: "discovery", mode: "vibe", contract,
+        remainingMs: contract.limits.maxMinutes * 60_000 });
+      const item = workflows.createWorkItem({ sessionId: created.id, kind: "discovery",
+        scopeKey: "initial-research", state: "ready", input: { brief: contract.brief } });
+      workflows.updateWorkItem(item.id, "running", { outputRefs: { runId } });
+      workflows.updateSession(created.id, created.revision, { state: requestedState });
+      return { sessionId: created.id, taskId: item.id };
+    });
+    client.db.prepare(`INSERT INTO research_runs (id,thread_id,status,config_json,workflow_version,
+      workflow_session_id,purpose,created_at,updated_at) VALUES (?,?,'completed',?,2,?,'discovery',?,?)`)
+      .run(runId, threadId, JSON.stringify(DEFAULT_RUN_CONFIG), session.sessionId, now, now);
+    client.db.prepare(`INSERT INTO scopes (id,research_run_id,title,audience,domain,observations,
+      off_limits_json,created_at,updated_at) VALUES (?,?,?,'Repair shops','Parts purchasing','','[]',?,?)`)
+      .run(`scope-${requestedState}`, runId, "Repair approvals", now, now);
+    client.db.prepare(`INSERT INTO problems (id,discovery_run_id,statement,why_it_persists,affected,
+      scale_estimate,verdict,verdict_reason,verdict_source_ids_json,created_at)
+      VALUES (?,?,'Repair approvals stall','','Repair shops','','confirmed','','[]',?)`)
+      .run(problemId, runId, now);
+    const errors: unknown[] = [];
+    const coordinator = new WorkflowCoordinator({ db: client,
+      engine: () => ({}) as ResearchEngine,
+      capabilities: async () => ({ nativeConnected: true, searchReady: { exa: false, perplexity: false }, modelOptions: [] }),
+      listProblems: () => [{ id: problemId, statement: "Repair approvals stall", whyItPersists: "", affected: "Repair shops",
+        scaleEstimate: "", verdict: "confirmed", verdictReason: "", selected: false,
+        factors: [{ id: "evidence-factor", subject: "Repair shops", behavior: "Approvals stall", quote: "Approvals stall",
+          sourceId: "evidence-source", sourceTitle: "Shop interview", sourceUrl: "https://example.com/interview",
+          harvestMode: "audience", modelConfidence: 0.9, sourceRole: "firsthand", audienceFit: "intended-buyer",
+          independentSourceKey: "shop-one", supportsDemand: false }],
+        intendedBuyerEvidenceFactorIds: ["evidence-factor"], evidenceGap: null, briefFit: "direct",
+        contraryEvidence: "resolved", workflowKey: "repair-approvals", singleHarvestModeWarning: false,
+        developmentCompleted: false }],
+      onProgress: () => {}, onError: (error) => errors.push(error),
+    });
+    coordinator.handleRunEvent({ type: "run-completed", runId, threadId, problemId: null });
+    const settled = workflows.getSession(session.sessionId)!;
+    expect(errors).toEqual([]);
+    expect(workflows.getWorkItem(session.taskId)?.state).toBe("succeeded");
+    expect(settled.activeSnapshotId).not.toBeNull();
+    expect(settled.state).toBe(requestedState === "stop-requested" ? "finished" : "paused");
+    expect(settled.outcome).toBe(requestedState === "stop-requested" ? "cancelled" : null);
+    expect(settled.runningSince).toBeNull();
+    expect(workflows.listWorkItems(session.sessionId).filter((item) => item.kind === "generate-ideas")).toEqual([]);
+    client.close();
+  }
+});
+
 test("an active workflow can extend its budget through preview and command", async () => {
   const { request, threadId, dbPath, errors } = await fixture();
   const launchPreviewResponse = await request("/workflows/preview", { type: "launch", threadId, draft: launchDraft() });
