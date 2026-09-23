@@ -1,10 +1,14 @@
 import type { IncomingMessage } from "node:http";
 import type { Plugin } from "vite";
 
-export const BROWSER_DEV_ORIGIN = "http://127.0.0.1:5173";
+const configuredPort = Number(process.env.SCRAPLY_BROWSER_UI_PORT ?? 5173);
+if (!Number.isSafeInteger(configuredPort) || configuredPort < 1024 || configuredPort > 65535) {
+  throw new Error("SCRAPLY_BROWSER_UI_PORT must be a valid local port.");
+}
+export const BROWSER_DEV_ORIGIN = `http://127.0.0.1:${configuredPort}`;
 
 export function isBrowserDevRequestAllowed(request: Pick<IncomingMessage, "method" | "headers">): boolean {
-  if (request.headers.host !== "127.0.0.1:5173") return false;
+  if (request.headers.host !== new URL(BROWSER_DEV_ORIGIN).host) return false;
   const origin = request.headers.origin;
   if (origin && origin !== BROWSER_DEV_ORIGIN) return false;
   const site = request.headers["sec-fetch-site"];

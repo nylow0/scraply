@@ -3,6 +3,12 @@ import { DEFAULT_RUN_CONFIG, RunConfigSchema } from "../../src/shared/schemas";
 import { DEFAULT_OPPORTUNITY_EXPLORATION_CONFIG } from "../../src/shared/opportunity-exploration";
 
 describe("run configuration compatibility", () => {
+  test("new runs use automatic intent while saved configs without a purpose retain general behavior", () => {
+    expect(RunConfigSchema.parse(DEFAULT_RUN_CONFIG).explorationPurpose).toBe("auto");
+    const { explorationPurpose, ...historical } = DEFAULT_RUN_CONFIG;
+    expect(explorationPurpose).toBe("auto");
+    expect(RunConfigSchema.parse(historical).explorationPurpose).toBe("general-solutions");
+  });
   test("keeps existing projects out of target exploration unless explicitly selected", () => {
     expect(RunConfigSchema.parse(DEFAULT_RUN_CONFIG).opportunityExploration).toBeUndefined();
     expect(RunConfigSchema.safeParse({ ...DEFAULT_RUN_CONFIG, opportunityExploration: DEFAULT_OPPORTUNITY_EXPLORATION_CONFIG }).success).toBe(false);

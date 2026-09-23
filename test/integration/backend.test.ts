@@ -423,7 +423,7 @@ describe("cutover backend", () => {
     client.close();
   });
 
-  test("shows and exports solutions only for selected problems in the latest discovery", async () => {
+  test("keeps selected ideas across discoveries and exports each project run", async () => {
     const dir = mkdtempSync(join(tmpdir(), "scraply-backend-")); dirs.push(dir);
     const dbPath = join(dir, "scraply.db");
     const dataReads: Array<{ operation: string; queryCount: number; rowCount: number }> = [];
@@ -492,9 +492,10 @@ describe("cutover backend", () => {
     expect(workspaceResponse.status).toBe(200);
     const workspace = (await workspaceResponse.json() as { data: { solutions: Array<{ id: string; factors: Array<{ quote: string; sourceTitle: string; retrievedText?: string }> }>; latestResearchRun: { problemId: string | null } } }).data;
     expect(workspace.solutions.map((solution) => solution.id)).toEqual([
+      "solution-old",
       "solution-selected", "solution-selected-2", "solution-selected-3", "solution-selected-4", "solution-selected-5",
     ]);
-    expect([...dataReads].reverse().find((read) => read.operation === "solution-summaries")).toEqual({ operation: "solution-summaries", queryCount: 1, rowCount: 5 });
+    expect([...dataReads].reverse().find((read) => read.operation === "solution-summaries")).toEqual({ operation: "solution-summaries", queryCount: 1, rowCount: 6 });
     expect(workspace.solutions[0]!.factors).toEqual([]);
     const detailResponse = await fetch(`http://127.0.0.1:${handle.port}/ideas/solution-selected`, { headers: { authorization: `Bearer ${handle.token}` } });
     expect(detailResponse.status).toBe(200);
@@ -515,20 +516,23 @@ describe("cutover backend", () => {
     expect([...dataReads].reverse().find((read) => read.operation === "solution-details")).toEqual({ operation: "solution-details", queryCount: 8, rowCount: 1 });
     expect(workspace.latestResearchRun.problemId).toBe("problem-deselected");
     const exported = await post("/ideas/export", { threadId: created.thread.id, format: "json" }) as { filename: string; files: Array<{ filename: string; content: string }> };
-    expect([...dataReads].reverse().find((read) => read.operation === "solution-details")).toEqual({ operation: "solution-details", queryCount: 8, rowCount: 5 });
+    expect([...dataReads].reverse().find((read) => read.operation === "solution-details")).toEqual({ operation: "solution-details", queryCount: 8, rowCount: 6 });
     expect(exported.filename).toMatch(/^[a-z0-9-]+-ideas\.json$/);
-    expect(exported.files).toHaveLength(1);
-    const jsonIdeas = JSON.parse(exported.files[0]!.content) as Array<{ id: string; factors: Array<{ quote: string; retrievedText?: string }> }>;
+    expect(exported.files).toHaveLength(3);
+    expect(exported.files.find((file) => file.filename.startsWith("superseded-problem-"))).toBeDefined();
+    const selectedJson = exported.files.find((file) => file.filename.startsWith("selected-problem-"))!;
+    const jsonIdeas = JSON.parse(selectedJson.content) as Array<{ id: string; factors: Array<{ quote: string; retrievedText?: string }> }>;
     expect(jsonIdeas.map((solution) => solution.id)).toEqual([
       "solution-selected", "solution-selected-2", "solution-selected-3", "solution-selected-4", "solution-selected-5",
     ]);
     expect(jsonIdeas[0]!.factors[0]!.quote).toBe("Parts arrive several days late.");
     expect(jsonIdeas[0]!.factors[0]!.retrievedText).toBeUndefined();
     expect(JSON.stringify(jsonIdeas[0])).toContain("Does the delay persist?");
-    const markdown = await post("/ideas/export", { threadId: created.thread.id, format: "markdown" }) as { files: Array<{ content: string }> };
-    expect(markdown.files[0]!.content).toContain("## Evidence behind the problem");
-    expect(markdown.files[0]!.content).toContain("> Parts arrive several days late.");
-    expect(markdown.files[0]!.content.match(/Uncertainty: Holiday demand was not sampled\./g)).toHaveLength(2);
+    const markdown = await post("/ideas/export", { threadId: created.thread.id, format: "markdown" }) as { files: Array<{ filename: string; content: string }> };
+    const selectedMarkdown = markdown.files.find((file) => file.filename.startsWith("selected-problem-"))!.content;
+    expect(selectedMarkdown).toContain("## Evidence behind the problem");
+    expect(selectedMarkdown).toContain("> Parts arrive several days late.");
+    expect(selectedMarkdown.match(/Uncertainty: Holiday demand was not sampled\./g)).toHaveLength(2);
 
     const v2Client = new DatabaseClient(dbPath);
     v2Client.db.prepare("UPDATE research_runs SET workflow_version = 2 WHERE id = 'development-selected'").run();
@@ -536,8 +540,8 @@ describe("cutover backend", () => {
       .run(JSON.stringify(["source-selected"]));
     v2Client.db.prepare("INSERT INTO problem_verdict_sources (problem_id, source_id, research_run_id, position) VALUES ('problem-selected', 'source-selected', 'discovery-latest', 0)").run();
     v2Client.close();
-    const v2Markdown = await post("/ideas/export", { threadId: created.thread.id, format: "markdown" }) as { files: Array<{ content: string }> };
-    const [decisionMarkdown, followUpMarkdown] = v2Markdown.files[0]!.content.split("\n## Evidence follow-up");
+    const v2Markdown = await post("/ideas/export", { threadId: created.thread.id, format: "markdown" }) as { files: Array<{ filename: string; content: string }> };
+    const [decisionMarkdown, followUpMarkdown] = v2Markdown.files.find((file) => file.filename.startsWith("selected-problem-"))!.content.split("\n## Evidence follow-up");
     expect(decisionMarkdown).toContain("## Observations about the problem");
     expect(decisionMarkdown).toContain("## Sources supporting this option\n\n- [Selected evidence](https://example.com/selected)");
     expect(decisionMarkdown?.match(/Uncertainty: Holiday demand was not sampled\./g)).toHaveLength(1);
@@ -558,13 +562,30 @@ describe("cutover backend", () => {
       VALUES ('development-empty', ?, 'completed', ?, 'problem-empty', 2, ?, ?)`).run(created.thread.id, persistedConfig, now, now);
     emptyClient.close();
     const withEmpty = await post("/ideas/export", { threadId: created.thread.id, format: "json" }) as { files: Array<{ filename: string; content: string }> };
-    expect(withEmpty.files).toHaveLength(3);
+    expect(withEmpty.files).toHaveLength(5);
     expect(withEmpty.files.some((file) => file.content.includes("Earlier option with cancelled analysis"))).toBe(true);
     const noOptions = withEmpty.files.find((file) => file.filename.includes("no-options"))!;
     expect(JSON.parse(noOptions.content)).toMatchObject({ kind: "no-options", status: "completed", workflowVersion: 2,
       runId: "development-empty", discoveryRunId: "discovery-latest", problemId: "problem-empty", options: [] });
     const emptyMarkdown = await post("/ideas/export", { threadId: created.thread.id, format: "markdown" }) as { files: Array<{ content: string }> };
     expect(emptyMarkdown.files.some((file) => file.content.includes("This is not evidence that the problem is solved."))).toBe(true);
+
+    const secondProject = await post("/threads", {}) as { thread: { id: string } };
+    expect(secondProject.thread.id).not.toBe(created.thread.id);
+    for (const ideaId of ["solution-old", "solution-selected"]) {
+      const response = await fetch(`http://127.0.0.1:${handle.port}/ideas/${ideaId}`, {
+        headers: { authorization: `Bearer ${handle.token}` },
+      });
+      expect(response.status).toBe(200);
+      expect((await response.json() as { data: { id: string } }).data.id).toBe(ideaId);
+    }
+    const absent = await fetch(`http://127.0.0.1:${handle.port}/ideas/missing-idea`, {
+      headers: { authorization: `Bearer ${handle.token}` },
+    });
+    expect(absent.status).toBe(404);
+    expect((await absent.json() as { error: { code: string; message: string } }).error)
+      .toEqual({ code: "not_found", message: "Solution not found." });
+    await post("/threads/select", { threadId: created.thread.id });
 
     await handle.close();
     handles.splice(handles.indexOf(handle), 1);
@@ -590,6 +611,46 @@ describe("cutover backend", () => {
       mechanism: "Current solution",
       evidenceFollowUp: { status: "failed", error: "The app restarted during this follow-up. It was not replayed." },
     });
+  });
+
+  test("exports sources saved before an interrupted first discovery", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "scraply-partial-research-export-")); dirs.push(dir);
+    const dbPath = join(dir, "scraply.db");
+    const handle = await startBackend({
+      dataDir: dir, dbPath, bundledPromptsDir: join(process.cwd(), "prompts"), promptOverridesDir: join(dir, "prompts"),
+      appVersion: "test", getSecrets: () => ({ exaApiKey: null }),
+      providerValidation: { inspectNative: async () => nativeInspection() },
+    }, () => undefined); handles.push(handle);
+    const request = async (path: string, body: unknown) => {
+      const response = await fetch(`http://127.0.0.1:${handle.port}${path}`, {
+        method: "POST", headers: { authorization: `Bearer ${handle.token}`, "content-type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      expect(response.status).toBe(200);
+      return (await response.json() as { data: unknown }).data;
+    };
+    const created = await request("/threads", {}) as { thread: { id: string } };
+    const now = new Date().toISOString();
+    const client = new DatabaseClient(dbPath);
+    client.db.prepare(`INSERT INTO research_runs
+      (id, thread_id, status, config_json, completion_reason, created_at, updated_at)
+      VALUES ('interrupted-discovery', ?, 'cancelled', ?, 'Stopped after source collection.', ?, ?)`)
+      .run(created.thread.id, JSON.stringify(DEFAULT_RUN_CONFIG), now, now);
+    client.db.prepare(`INSERT INTO sources
+      (id, research_run_id, canonical_url, title, retrieved_text, content_hash, retrieved_at)
+      VALUES ('saved-source', 'interrupted-discovery', 'https://example.test/source', 'Saved source',
+        'A saved observation before cancellation.', 'hash', ?)`)
+      .run(now);
+    client.close();
+    const bundle = await request("/research/export", { threadId: created.thread.id }) as { content: string };
+    const exported = JSON.parse(bundle.content) as { researchRun: { id: string; status: string;
+      completionReason: string; exportNote: string }; sources: Array<{ id: string; text: string }>; problems: unknown[] };
+    expect(exported.researchRun).toMatchObject({ id: "interrupted-discovery", status: "cancelled",
+      completionReason: "Stopped after source collection." });
+    expect(exported.researchRun.exportNote).toContain("only saved artifacts");
+    expect(exported.sources).toEqual([expect.objectContaining({ id: "saved-source",
+      text: "A saved observation before cancellation." })]);
+    expect(exported.problems).toEqual([]);
   });
 
   test("never resumes a historical Codex CLI run or changes its accounting", async () => {
@@ -667,9 +728,10 @@ describe("cutover backend", () => {
       .run("factor-export", "discovery-export", "Repair shops", "wait for parts", "Observed delivery delays.", "source-export", "Seasonality was not measured.", "One shop does not establish prevalence.", now);
     client.db.prepare(`INSERT INTO problems (
       id, discovery_run_id, statement, why_it_persists, affected, scale_estimate, verdict, verdict_reason,
-      verdict_source_ids_json, intended_buyer_evidence_factor_ids_json, evidence_gap, selected_at, created_at
-    ) VALUES (?, ?, ?, ?, ?, ?, 'confirmed', ?, '[]', '["factor-export"]', ?, NULL, ?)`)
-      .run("problem-export", "discovery-export", "Parts arrival is unpredictable.", "Supplier data is fragmented.", "Independent shops", "Thousands", "Evidence confirms recurring delays.", "A second independent shop is missing.", now);
+      verdict_source_ids_json, intended_buyer_evidence_factor_ids_json, evidence_gap,
+      brief_fit, contrary_evidence, workflow_key, selected_at, created_at
+    ) VALUES (?, ?, ?, ?, ?, ?, 'confirmed', ?, '[]', '["factor-export"]', ?, 'direct', 'resolved', ?, NULL, ?)`)
+      .run("problem-export", "discovery-export", "Parts arrival is unpredictable.", "Supplier data is fragmented.", "Independent shops", "Thousands", "Evidence confirms recurring delays.", "A second independent shop is missing.", "repair shop: reorder parts after stockout", now);
     client.db.prepare(`INSERT INTO problem_verdict_sources (problem_id, source_id, research_run_id, position) VALUES (?, ?, ?, 0)`)
       .run("problem-export", "source-contrary", "discovery-export");
     client.db.prepare("INSERT INTO problem_factors (problem_id, factor_id) VALUES (?, ?)").run("problem-export", "factor-export");
@@ -686,12 +748,13 @@ describe("cutover backend", () => {
       headers: { authorization: `Bearer ${handle.token}` },
     });
     const workspace = (await workspaceResponse.json() as { data: {
-      problemCandidates: Array<{ id: string; developmentCompleted: boolean }>;
+      problemCandidates: Array<{ id: string; developmentCompleted: boolean; briefFit: string; contraryEvidence: string; workflowKey?: string }>;
       rejectedProblemCandidates: Array<{ id: string; statement: string; reason: string }>;
     } }).data;
     expect(workspace.problemCandidates).toEqual([expect.objectContaining({
       id: "problem-export",
       developmentCompleted: true,
+      briefFit: "direct", contraryEvidence: "resolved", workflowKey: "repair shop: reorder parts after stockout",
     })]);
     await post("/research/select-problems", {
       threadId: created.thread.id,
@@ -713,7 +776,7 @@ describe("cutover backend", () => {
     await post("/scope", { threadId: created.thread.id, scope: { ...scope, title: "Edited later", domain: "Something else" } });
 
     const bundle = await post("/research/export", { threadId: created.thread.id }) as { filename: string; content: string };
-    const exported = JSON.parse(bundle.content) as { schemaVersion: number; scope: typeof scope; sources: Array<{ id: string; text: string }>; factors: Array<{ sourceId: string; uncertainty?: string; sourceRole: string; audienceFit: string; independentSourceKey: string | null; supportsDemand: boolean; demandEvidenceUncertainty?: string }>; problems: Array<{ id: string; verdictSourceIds: string[]; intendedBuyerEvidenceFactorIds: string[]; evidenceGap: string | null; factors: Array<{ sourceRole?: string }> }>; rejectedProblemCandidates: Array<{ id: string; statement: string; reason: string }> };
+    const exported = JSON.parse(bundle.content) as { schemaVersion: number; scope: typeof scope; sources: Array<{ id: string; text: string }>; factors: Array<{ sourceId: string; uncertainty?: string; sourceRole: string; audienceFit: string; independentSourceKey: string | null; supportsDemand: boolean; demandEvidenceUncertainty?: string }>; problems: Array<{ id: string; verdictSourceIds: string[]; intendedBuyerEvidenceFactorIds: string[]; evidenceGap: string | null; briefFit: string; contraryEvidence: string; workflowKey?: string; factors: Array<{ sourceRole?: string }> }>; rejectedProblemCandidates: Array<{ id: string; statement: string; reason: string }> };
     expect(bundle.filename).toBe("edited-later-research.json");
     expect(exported.schemaVersion).toBe(1);
     expect(exported.scope).toEqual(scope);
@@ -731,6 +794,7 @@ describe("cutover backend", () => {
     expect(exported.problems[0]).toMatchObject({
       verdictSourceIds: ["source-contrary"],
       intendedBuyerEvidenceFactorIds: ["factor-export"], evidenceGap: "A second independent shop is missing.",
+      briefFit: "direct", contraryEvidence: "resolved", workflowKey: "repair shop: reorder parts after stockout",
       factors: [expect.objectContaining({ sourceRole: "firsthand" })],
     });
     expect(exported.rejectedProblemCandidates).toEqual([{

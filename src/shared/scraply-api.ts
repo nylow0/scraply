@@ -1,4 +1,5 @@
 import {
+  ApiResponseSchema,
   ReviewSavedOpportunitiesSchema, EditOpportunityMembershipSchema, RequestFocusedExperimentSchema,
   OpportunityExplorationActionSchema, PreviewOpportunityExtensionSchema, ApplyOpportunityExtensionSchema,
   ExportIdeasRequestSchema, ExportResearchRequestSchema, IPC_CHANNELS, SaveFavoriteModelSchema,
@@ -7,6 +8,14 @@ import {
   AppCommandSchema, type NativeLoginCompleteResult, type NativeLoginStartResult, type ResearchEvent,
   type SolutionView, type SourceDetail, type ValidationState, type WorkspaceState,
 } from "./ipc";
+import { AppError } from "./errors";
+import { z } from "zod";
+import {
+  PreviewWorkflowRequestSchema, PreviewWorkflowResultSchema, StartWorkflowRequestSchema,
+  WorkflowAdmissionReceiptSchema, GetWorkflowRequestSchema, WorkflowDetailSchema,
+  CommandWorkflowRequestSchema, GetIdeaConversationRequestSchema, SelectIdeaVersionRequestSchema, IdeaConversationSchema,
+  SubmitIdeaTurnRequestSchema, SubmitIdeaTurnResultSchema,
+} from "./workflow-contracts";
 
 export interface ApiTransport {
   invoke<T>(channel: string, payload?: unknown): Promise<T>;
@@ -15,7 +24,31 @@ export interface ApiTransport {
 }
 
 export function createScraplyApi(transport: ApiTransport) {
+  async function workflowInvoke<T extends z.ZodTypeAny>(channel: string, payload: unknown, resultSchema: T): Promise<z.infer<T>> {
+    const response = ApiResponseSchema(resultSchema).parse(await transport.invoke<unknown>(channel, payload));
+    if ("error" in response) {
+      const { code, message, reference, recovery } = response.error;
+      throw new AppError(code, message, undefined, reference, recovery);
+    }
+    if ("data" in response) return response.data;
+    throw new AppError("internal_error");
+  }
+
   return {
+    previewWorkflow: (payload: z.infer<typeof PreviewWorkflowRequestSchema>) =>
+      workflowInvoke(IPC_CHANNELS.PREVIEW_WORKFLOW, PreviewWorkflowRequestSchema.parse(payload), PreviewWorkflowResultSchema),
+    startWorkflow: (payload: z.infer<typeof StartWorkflowRequestSchema>) =>
+      workflowInvoke(IPC_CHANNELS.START_WORKFLOW, StartWorkflowRequestSchema.parse(payload), WorkflowAdmissionReceiptSchema),
+    getWorkflow: (payload: z.infer<typeof GetWorkflowRequestSchema>) =>
+      workflowInvoke(IPC_CHANNELS.GET_WORKFLOW, GetWorkflowRequestSchema.parse(payload), WorkflowDetailSchema),
+    commandWorkflow: (payload: z.infer<typeof CommandWorkflowRequestSchema>) =>
+      workflowInvoke(IPC_CHANNELS.COMMAND_WORKFLOW, CommandWorkflowRequestSchema.parse(payload), WorkflowAdmissionReceiptSchema),
+    getIdeaConversation: (payload: z.infer<typeof GetIdeaConversationRequestSchema>) =>
+      workflowInvoke(IPC_CHANNELS.GET_IDEA_CONVERSATION, GetIdeaConversationRequestSchema.parse(payload), IdeaConversationSchema),
+    selectIdeaVersion: (payload: z.infer<typeof SelectIdeaVersionRequestSchema>) =>
+      workflowInvoke(IPC_CHANNELS.SELECT_IDEA_VERSION, SelectIdeaVersionRequestSchema.parse(payload), IdeaConversationSchema),
+    submitIdeaTurn: (payload: z.infer<typeof SubmitIdeaTurnRequestSchema>) =>
+      workflowInvoke(IPC_CHANNELS.SUBMIT_IDEA_TURN, SubmitIdeaTurnRequestSchema.parse(payload), SubmitIdeaTurnResultSchema),
     startOpportunityExploration: (payload: import("zod").z.infer<typeof ReviewSavedOpportunitiesSchema>): Promise<WorkspaceState> =>
       transport.invoke(IPC_CHANNELS.START_OPPORTUNITY_EXPLORATION, ReviewSavedOpportunitiesSchema.parse(payload)),
     pauseOpportunityExploration: (threadId: string): Promise<WorkspaceState> =>

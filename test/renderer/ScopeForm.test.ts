@@ -5,16 +5,156 @@ import Settings from "../../src/renderer/components/Settings.svelte";
 import ScopeForm from "../../src/renderer/components/ScopeForm.svelte";
 import type { WorkspaceState } from "../../src/shared/ipc";
 import { DEFAULT_RUN_CONFIG, RunConfigSchema, modelRefKey } from "../../src/shared/schemas";
+import type { WorkflowLaunchDraft } from "../../src/shared/workflow-contracts";
 
 describe("ScopeForm search provider selection", () => {
+  test("keeps untouched brief fields calm and hides the problem cap for a stated problem", async () => {
+    const state = workspace();
+    state.scope = null;
+    state.runConfig = null;
+    state.validation.exa = { valid: true };
+    const view = render(ScopeForm, {
+      workspace: state, busy: false, onSave: vi.fn(), onStart: vi.fn(), onRetry: vi.fn(),
+      onPreviewWorkflow: vi.fn(), onStartWorkflow: vi.fn(),
+    });
+
+    const startingContext = view.getByPlaceholderText("Your topic or idea");
+    expect(startingContext.getAttribute("aria-invalid")).toBe("false");
+    expect(view.queryByText("A starting context is required.", { selector: ".field-error" })).toBeNull();
+    expect(view.queryByRole("radio", { name: /Startup opportunities/ })).toBeNull();
+    await fireEvent.blur(startingContext);
+    expect(startingContext.getAttribute("aria-invalid")).toBe("true");
+
+    await fireEvent.click(view.getByRole("radio", { name: /I have a problem to solve/ }));
+    await fireEvent.click(view.getByRole("radio", { name: /Vibe/ }));
+    expect(view.getByPlaceholderText("Describe the problem.").getAttribute("aria-invalid")).toBe("false");
+    expect(view.queryByLabelText("Automatic problem cap")).toBeNull();
+    expect(view.getByText("Describe the problem to check the launch plan.")).toBeTruthy();
+  });
+
+  test("previews an unattended launch and invalidates the preview when its limits change", async () => {
+    const state = workspace();
+    state.validation.exa = { valid: true };
+    const onPreviewWorkflow = vi.fn(async (draft: WorkflowLaunchDraft) => ({
+      type: "launch" as const,
+      proposal: { ...draft,
+        resolvedInstructions: { research: "research", ideas: "ideas", review: "review" },
+        instructionHashes: { research: "r", ideas: "i", review: "v" },
+      },
+      previewHash: `preview-${draft.limits.maxModelCalls}`,
+      capabilityFingerprint: "catalogue", minimumWork: { modelCalls: 36, searches: 16 },
+      upperLimits: draft.limits,
+      fieldErrors: draft.limits.maxModelCalls < 36
+        ? [{ path: ["limits", "maxModelCalls"], code: "BUDGET_TOO_SMALL", message: "Allow at least 36 model calls." }]
+        : [],
+      expiresAt: "2099-01-01T00:00:00.000Z",
+    }));
+    const onStartWorkflow = vi.fn(async () => {});
+    const onSave = vi.fn(async () => {});
+    const onStart = vi.fn(async () => {});
+    const view = render(ScopeForm, { workspace: state, busy: false, onSave, onStart,
+      onPreviewWorkflow, onStartWorkflow, onRetry: vi.fn(async () => {}) });
+    await fireEvent.click(view.getByRole("radio", { name: /Vibe/ }));
+    await waitFor(() => expect(onPreviewWorkflow).toHaveBeenCalled());
+    const latestDraft = onPreviewWorkflow.mock.lastCall?.[0];
+    expect(latestDraft).toMatchObject({ mode: "vibe", ideas: { model: DEFAULT_RUN_CONFIG.model }, targets: { automaticProblemCap: 3 } });
+    expect(view.getByLabelText("Ideas model")).toBeTruthy();
+    await waitFor(() => expect((view.getByRole("button", { name: "Start Vibe" }) as HTMLButtonElement).disabled).toBe(false));
+
+    await fireEvent.input(view.getByLabelText("Maximum model calls"), { target: { value: "1" } });
+    expect((view.getByRole("button", { name: "Start Vibe" }) as HTMLButtonElement).disabled).toBe(true);
+    await waitFor(() => expect(view.getByText("Allow at least 36 model calls.")).toBeTruthy());
+    await fireEvent.input(view.getByLabelText("Maximum model calls"), { target: { value: "44" } });
+    await waitFor(() => expect((view.getByRole("button", { name: "Start Vibe" }) as HTMLButtonElement).disabled).toBe(false));
+    await fireEvent.click(view.getByRole("button", { name: "Start Vibe" }));
+    await waitFor(() => expect(onStartWorkflow).toHaveBeenCalledOnce());
+    expect(onSave).not.toHaveBeenCalled();
+    expect(onStart).not.toHaveBeenCalled();
+  });
+
+  test("sets one managed project allowance for research and opportunity work and rejects a short total", async () => {
+    const state = workspace();
+    state.validation.exa = { valid: true };
+    const onPreviewWorkflow = vi.fn(async (draft: WorkflowLaunchDraft) => ({
+      type: "launch" as const,
+      proposal: { ...draft,
+        resolvedInstructions: { research: "research", ideas: "ideas", review: "review" },
+        instructionHashes: { research: "r", ideas: "i", review: "v" },
+      },
+      previewHash: `preview-${draft.limits.maxModelCalls}-${draft.limits.maxSearches}`,
+      capabilityFingerprint: "catalogue", minimumWork: { modelCalls: 56, searches: 16 },
+      upperLimits: draft.limits, fieldErrors: [], expiresAt: "2099-01-01T00:00:00.000Z",
+    }));
+    const onStartWorkflow = vi.fn().mockResolvedValue(undefined);
+    const view = render(ScopeForm, {
+      workspace: state, busy: false, onSave: vi.fn(), onStart: vi.fn(), onRetry: vi.fn(),
+      onPreviewWorkflow, onStartWorkflow,
+    });
+
+    await fireEvent.click(view.getByRole("radio", { name: /Vibe/ }));
+    await fireEvent.click(view.getByText("Distinct business target (optional)"));
+    await fireEvent.click(view.getByRole("checkbox", { name: /Find distinct businesses across this project/ }));
+    expect(view.queryByLabelText("Opportunity model-call limit")).toBeNull();
+    expect(view.queryByLabelText("Opportunity search limit")).toBeNull();
+    expect(view.getByText(/whole-workflow limits in Work limits below cover research, idea batches, review, and any added searches/)).toBeTruthy();
+    expect((view.getByLabelText("Maximum model calls") as HTMLInputElement).value).toBe("56");
+    expect((view.getByLabelText("Maximum searches") as HTMLInputElement).value).toBe("22");
+    await waitFor(() => expect(onPreviewWorkflow.mock.lastCall?.[0]).toMatchObject({
+      targets: { kind: "project", distinctBusinessCount: 30 },
+      limits: { maxModelCalls: 56, maxSearches: 22 },
+      runConfig: { opportunityExploration: { maxModelCalls: 24, maxSearches: 6 } },
+    }));
+
+    await fireEvent.input(view.getByLabelText("Maximum model calls"), { target: { value: "55" } });
+    expect(view.getByText("Allow at least 56 model calls for projected research, generation, and review.")).toBeTruthy();
+    expect((view.getByRole("button", { name: "Start Vibe" }) as HTMLButtonElement).disabled).toBe(true);
+    await fireEvent.input(view.getByLabelText("Maximum model calls"), { target: { value: "56" } });
+    await fireEvent.input(view.getByLabelText("Maximum searches"), { target: { value: "15" } });
+    expect(view.getByText("Allow at least 16 searches for projected research.")).toBeTruthy();
+    expect((view.getByRole("button", { name: "Start Vibe" }) as HTMLButtonElement).disabled).toBe(true);
+
+    await fireEvent.input(view.getByLabelText("Maximum searches"), { target: { value: "17" } });
+    await waitFor(() => expect(onPreviewWorkflow.mock.lastCall?.[0]).toMatchObject({
+      limits: { maxModelCalls: 56, maxSearches: 17 },
+      runConfig: { opportunityExploration: { maxModelCalls: 24, maxSearches: 1 } },
+    }));
+    await waitFor(() => expect((view.getByRole("button", { name: "Start Vibe" }) as HTMLButtonElement).disabled).toBe(false));
+    await fireEvent.click(view.getByRole("button", { name: "Start Vibe" }));
+    expect(onStartWorkflow).toHaveBeenCalledOnce();
+  });
+
+  test("uses singular search wording in a valid one-search launch preview", async () => {
+    const state = workspace();
+    const onPreviewWorkflow = vi.fn(async (draft: WorkflowLaunchDraft) => ({
+      type: "launch" as const,
+      proposal: { ...draft,
+        resolvedInstructions: { research: "research", ideas: "ideas", review: "review" },
+        instructionHashes: { research: "r", ideas: "i", review: "v" },
+      },
+      previewHash: "one-search", capabilityFingerprint: "catalogue",
+      minimumWork: { modelCalls: 4, searches: 1 }, upperLimits: draft.limits,
+      fieldErrors: [], expiresAt: "2099-01-01T00:00:00.000Z",
+    }));
+    const view = render(ScopeForm, {
+      workspace: state, busy: false, onSave: vi.fn(), onStart: vi.fn(), onRetry: vi.fn(),
+      onPreviewWorkflow, onStartWorkflow: vi.fn().mockResolvedValue(undefined),
+    });
+    await fireEvent.click(view.getByRole("radio", { name: /I have a problem to solve/ }));
+    await fireEvent.input(view.getByPlaceholderText("Describe the problem."), { target: { value: "Repairs arrive late." } });
+    await fireEvent.input(view.getByLabelText("Maximum searches"), { target: { value: "1" } });
+    await waitFor(() => expect(view.getByText(/Up to 12 model calls, 1 search, and 90 minutes/)).toBeTruthy());
+    expect(view.getByText(/Minimum required: 4 model calls and 1 search/)).toBeTruthy();
+  });
+
   test("saves an explicit family target separately from the per-problem idea count", async () => {
     const state = workspace();
     state.validation.exa = { valid: true };
     const onSave = vi.fn().mockResolvedValue(undefined);
     const onStart = vi.fn().mockResolvedValue(undefined);
     const view = render(ScopeForm, { workspace: state, busy: false, onSave, onStart, onRetry: vi.fn() });
-    await fireEvent.click(view.getByRole("radio", { name: /Startup opportunities/ }));
-    await fireEvent.click(view.getByRole("checkbox", { name: /Build a project-wide set/ }));
+    expect(view.queryByRole("radio", { name: /Startup opportunities/ })).toBeNull();
+    await fireEvent.click(view.getByText("Distinct business target (optional)"));
+    await fireEvent.click(view.getByRole("checkbox", { name: /Find distinct businesses across this project/ }));
     await fireEvent.input(view.getByLabelText("Distinct family target"), { target: { value: "8" } });
     await fireEvent.input(view.getByLabelText("Opportunity model-call limit"), { target: { value: "10" } });
     await fireEvent.click(view.getByRole("button", { name: "Discover problems" }));
@@ -24,8 +164,35 @@ describe("ScopeForm search provider selection", () => {
     expect(saved.opportunityExploration).toMatchObject({ targetFamilies: 8, maxRawCandidates: 16, maxModelCalls: 10, allowExploratoryProblems: false });
     view.unmount();
     const reopened = render(ScopeForm, { workspace: { ...state, runConfig: saved }, busy: false, onSave, onStart, onRetry: vi.fn() });
-    expect((reopened.getByRole("checkbox", { name: /Build a project-wide set/ }) as HTMLInputElement).checked).toBe(true);
+    expect((reopened.getByRole("checkbox", { name: /Find distinct businesses across this project/ }) as HTMLInputElement).checked).toBe(true);
     expect((reopened.getByLabelText("Distinct family target") as HTMLInputElement).value).toBe("8");
+    expect(reopened.getByText("Distinct business target · On (8)")).toBeTruthy();
+    await fireEvent.click(reopened.getByRole("checkbox", { name: /Find distinct businesses across this project/ }));
+    await fireEvent.click(reopened.getByRole("button", { name: "Discover problems" }));
+    await waitFor(() => expect(onSave).toHaveBeenCalledTimes(2));
+    const withoutTarget = RunConfigSchema.parse(onSave.mock.calls[1]?.[1]);
+    expect(withoutTarget.explorationPurpose).toBe("auto");
+    expect(withoutTarget.opportunityExploration).toBeUndefined();
+  });
+
+  test("keeps a saved output rule until the user switches that project to the brief", async () => {
+    const state = workspace();
+    state.runConfig = { ...DEFAULT_RUN_CONFIG, explorationPurpose: "startup-opportunities" };
+    state.validation.exa = { valid: true };
+    const onSave = vi.fn().mockResolvedValue(undefined);
+    const view = render(ScopeForm, {
+      workspace: state, busy: false, onSave, onStart: vi.fn().mockResolvedValue(undefined), onRetry: vi.fn(),
+    });
+
+    expect(view.getByText(/This saved project asks for startup opportunities/)).toBeTruthy();
+    await fireEvent.click(view.getByRole("button", { name: "Discover problems" }));
+    await waitFor(() => expect(onSave).toHaveBeenCalledTimes(1));
+    expect(RunConfigSchema.parse(onSave.mock.calls[0]?.[1]).explorationPurpose).toBe("startup-opportunities");
+
+    await fireEvent.click(view.getByRole("button", { name: "Follow the brief instead" }));
+    await fireEvent.click(view.getByRole("button", { name: "Discover problems" }));
+    await waitFor(() => expect(onSave).toHaveBeenCalledTimes(2));
+    expect(RunConfigSchema.parse(onSave.mock.calls[1]?.[1]).explorationPurpose).toBe("auto");
   });
 
   test("persists advanced search defaults for new research and preserves saved setup choices", async () => {
@@ -93,6 +260,75 @@ describe("ScopeForm search provider selection", () => {
     await fireEvent.click(view.getByRole("button", { name: "Discover problems" }));
     await waitFor(() => expect(onStart).toHaveBeenCalledTimes(1));
     expect(RunConfigSchema.parse(onSave.mock.calls[0]?.[1]).model).toEqual(nativeModel);
+  });
+
+  test("keeps an unavailable GPT-6 default visible without changing the title model", async () => {
+    const storageKey = "scraply.research-defaults.v1";
+    const previous = localStorage.getItem(storageKey);
+    try {
+      localStorage.removeItem(storageKey);
+      const view = renderSettings({ workspace: workspace() });
+      await fireEvent.click(view.getByRole("button", { name: "Research defaults" }));
+      const model = view.getByLabelText("Default model") as HTMLSelectElement;
+      const titleModel = view.getByLabelText("Title model") as HTMLSelectElement;
+      expect([...model.options].map((option) => option.textContent)).toContain("GPT-6 Sol (unavailable)");
+      expect([...model.options].map((option) => option.textContent)).toContain("GPT-6 Luna (unavailable)");
+      const originalTitle = titleModel.value;
+      await fireEvent.change(model, { target: { value: "openai-subscription:gpt-6-sol" } });
+      await fireEvent.click(view.getByRole("button", { name: "Save defaults" }));
+      view.unmount();
+
+      const reopened = renderSettings({ workspace: workspace() });
+      await fireEvent.click(reopened.getByRole("button", { name: "Research defaults" }));
+      expect((reopened.getByLabelText("Default model") as HTMLSelectElement).value).toBe("openai-subscription:gpt-6-sol");
+      expect((reopened.getByLabelText("Title model") as HTMLSelectElement).value).toBe(originalTitle);
+    } finally {
+      if (previous === null) localStorage.removeItem(storageKey);
+      else localStorage.setItem(storageKey, previous);
+    }
+  });
+
+  test("offers live GPT-6 Sol and Luna and uses their catalog reasoning defaults", async () => {
+    const state = workspace();
+    state.validation.exa = { valid: true };
+    const sol = { providerId: "openai-subscription", modelId: "gpt-6-sol" };
+    const luna = { providerId: "openai-subscription", modelId: "gpt-6-luna" };
+    state.models = [...state.models, sol, luna];
+    state.modelOptions = [
+      ...state.modelOptions,
+      { ...sol, displayName: "Sol", defaultReasoningEffort: "high", reasoningEfforts: [{ id: "low", description: "Fast" }, { id: "high", description: "Thorough" }] },
+      { ...luna, displayName: "Luna", defaultReasoningEffort: "minimal", reasoningEfforts: [{ id: "minimal", description: "Brief" }] },
+    ];
+    const onSave = vi.fn().mockResolvedValue(undefined);
+    const view = render(ScopeForm, { workspace: state, busy: false, onSave, onStart: vi.fn(), onRetry: vi.fn() });
+    const modelSelect = view.getByRole("combobox", { name: "Model" }) as HTMLSelectElement;
+    expect(view.getByRole("option", { name: "GPT-6 Sol" })).toBeTruthy();
+    expect(view.getByRole("option", { name: "GPT-6 Luna" })).toBeTruthy();
+    await fireEvent.change(modelSelect, { target: { value: modelRefKey(sol) } });
+    expect((view.getByRole("combobox", { name: /Reasoning/ }) as HTMLSelectElement).value).toBe("high");
+    await fireEvent.change(modelSelect, { target: { value: modelRefKey(luna) } });
+    expect((view.getByRole("combobox", { name: /Reasoning/ }) as HTMLSelectElement).value).toBe("minimal");
+    await fireEvent.click(view.getByRole("button", { name: "Discover problems" }));
+    await waitFor(() => expect(onSave).toHaveBeenCalledTimes(1));
+    expect(onSave.mock.calls[0]?.[1]).toMatchObject({ model: luna, reasoningEffort: "minimal" });
+  });
+
+  test("keeps a saved effort visible when the live catalog changes", async () => {
+    const state = workspace();
+    state.validation.exa = { valid: true };
+    state.runConfig = { ...DEFAULT_RUN_CONFIG, reasoningEffort: "medium" };
+    state.modelOptions = [{ ...state.modelOptions[0]!, defaultReasoningEffort: "high", reasoningEfforts: [{ id: "high", description: "Thorough" }] }];
+    const onSave = vi.fn().mockResolvedValue(undefined);
+    const view = render(ScopeForm, { workspace: state, busy: false, onSave, onStart: vi.fn(), onRetry: vi.fn() });
+    const reasoning = view.getByRole("combobox", { name: /Reasoning/ }) as HTMLSelectElement;
+    expect(reasoning.value).toBe("medium");
+    expect(view.getByRole("option", { name: "medium (unavailable)" })).toBeTruthy();
+    expect((view.getByRole("button", { name: "Discover problems" }) as HTMLButtonElement).disabled).toBe(true);
+    await fireEvent.change(reasoning, { target: { value: "high" } });
+    expect((view.getByRole("button", { name: "Discover problems" }) as HTMLButtonElement).disabled).toBe(false);
+    await fireEvent.click(view.getByRole("button", { name: "Discover problems" }));
+    await waitFor(() => expect(onSave).toHaveBeenCalledTimes(1));
+    expect(onSave.mock.calls[0]?.[1]).toMatchObject({ model: DEFAULT_RUN_CONFIG.model, reasoningEffort: "high" });
   });
 
   test("warns for only the selected provider and saves a connected replacement", async () => {
@@ -329,6 +565,8 @@ function workspace(): WorkspaceState {
     presets: [],
     problemCandidates: [],
     rejectedProblemCandidates: [],
+    researchRequests: [],
+    researchFindings: [],
     solutions: [],
     latestResearchRun: null,
     pendingRuns: [],

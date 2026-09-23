@@ -178,6 +178,7 @@ export interface OpportunityStageAttemptInput {
   model: { providerId: string; modelId: string; reasoningEffort: string };
   promptVersion: string;
   promptText: string;
+  workItemId?: string;
 }
 
 export type OpportunityStageResumeState =
@@ -253,8 +254,8 @@ export class OpportunityExplorationRepository {
       },
       counts,
       originCounts: this.originCounts(threadId),
-      gaps: this.gaps(threadId),
-      batches: this.batches(threadId),
+      gaps: this.listGaps(threadId),
+      batches: this.listBatches(threadId),
       activeGapId: row.active_gap_id,
       startedAt: row.started_at,
       updatedAt: row.updated_at,
@@ -267,22 +268,29 @@ export class OpportunityExplorationRepository {
     return progress;
   }
 
-  saveGap(threadId: string, gap: OpportunityCoverageGap): void {
+  saveGap(threadId: string, gap: OpportunityCoverageGap, sessionId: string | null = null,
+    allowExploratoryProblems = false): void {
     this.client.requireImmediateTransaction();
-    this.require(threadId);
+    if (sessionId === null) this.require(threadId);
+    this.requireSession(threadId, sessionId);
     const parsed = OpportunityCoverageGapSchema.parse(gap);
-    const config = this.require(threadId).config;
-    if (parsed.candidateOrigin === "exploratory-allowed" && !config.allowExploratoryProblems) {
+    const existing = this.client.db.prepare("SELECT thread_id, session_id, candidate_origin FROM opportunity_coverage_gaps WHERE id = ?")
+      .get(parsed.id) as { thread_id: string; session_id: string | null; candidate_origin: string } | undefined;
+    const exploratoryAllowed = sessionId === null
+      ? this.require(threadId).config.allowExploratoryProblems : allowExploratoryProblems;
+    const preservingExploratoryGap = existing?.thread_id === threadId && existing.session_id === sessionId
+      && existing.candidate_origin === "exploratory-allowed";
+    if (parsed.candidateOrigin === "exploratory-allowed" && !exploratoryAllowed && !preservingExploratoryGap) {
       throw new Error("Exploratory problem hypotheses were not enabled for this project.");
     }
-    const existing = this.client.db.prepare("SELECT thread_id FROM opportunity_coverage_gaps WHERE id = ?")
-      .get(parsed.id) as { thread_id: string } | undefined;
-    if (existing && existing.thread_id !== threadId) throw new Error("Coverage gap belongs to another project.");
+    if (existing && (existing.thread_id !== threadId || existing.session_id !== sessionId)) {
+      throw new Error("Coverage gap belongs to another session or project.");
+    }
     this.client.db.prepare(`
       INSERT INTO opportunity_coverage_gaps (
-        id, thread_id, name, description, dimension, evidence_needed, search_query,
+        id, thread_id, session_id, name, description, dimension, evidence_needed, search_query,
         map_exhausted, candidate_origin, status, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(id) DO UPDATE SET
         name = excluded.name,
         description = excluded.description,
@@ -294,11 +302,11 @@ export class OpportunityExplorationRepository {
         status = excluded.status,
         updated_at = excluded.updated_at
     `).run(
-      parsed.id, threadId, parsed.name, parsed.description, parsed.dimension,
+      parsed.id, threadId, sessionId, parsed.name, parsed.description, parsed.dimension,
       parsed.evidenceNeeded, parsed.searchQuery, parsed.mapExhausted ? 1 : 0,
       parsed.candidateOrigin, parsed.status, parsed.createdAt, parsed.updatedAt,
     );
-    this.touch(threadId);
+    if (sessionId === null) this.touch(threadId);
   }
 
   setActiveGap(threadId: string, gapId: string | null): void {
@@ -344,16 +352,20 @@ export class OpportunityExplorationRepository {
 
   planBatch(input: {
     threadId: string;
+    sessionId?: string | null;
     coverageGapId: string | null;
     requestedCandidates: number;
     acceptedFamiliesBefore: number;
   }): OpportunityExplorationBatch {
     this.client.requireImmediateTransaction();
     const progress = this.require(input.threadId);
-    if (progress.batches.some((batch) => ["planned", "generating", "awaiting-review", "reviewing"].includes(batch.status))) {
+    const sessionId = input.sessionId ?? null;
+    this.requireSession(input.threadId, sessionId);
+    const batches = this.listBatches(input.threadId, sessionId);
+    if (batches.some((batch) => ["planned", "generating", "awaiting-review", "reviewing"].includes(batch.status))) {
       throw new Error("Finish the current opportunity batch review before planning another batch.");
     }
-    if (input.coverageGapId) this.requireGap(input.threadId, input.coverageGapId);
+    if (input.coverageGapId) this.requireGap(input.threadId, input.coverageGapId, sessionId);
     if (!Number.isInteger(input.requestedCandidates) || input.requestedCandidates < 1 || input.requestedCandidates > 6) {
       throw new Error("Opportunity batches must request between one and six candidates.");
     }
@@ -361,14 +373,14 @@ export class OpportunityExplorationRepository {
       throw new Error("Accepted family count changed before the batch was planned.");
     }
     const id = randomUUID();
-    const ordinal = progress.batches.length + 1;
+    const ordinal = batches.length + 1;
     const now = this.now();
     this.client.db.prepare(`
       INSERT INTO opportunity_exploration_batches (
-        id, thread_id, ordinal, coverage_gap_id, requested_candidates, status,
+        id, thread_id, session_id, ordinal, coverage_gap_id, requested_candidates, status,
         accepted_families_before, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, 'planned', ?, ?, ?)
-    `).run(id, input.threadId, ordinal, input.coverageGapId, input.requestedCandidates, input.acceptedFamiliesBefore, now, now);
+      ) VALUES (?, ?, ?, ?, ?, ?, 'planned', ?, ?, ?)
+    `).run(id, input.threadId, sessionId, ordinal, input.coverageGapId, input.requestedCandidates, input.acceptedFamiliesBefore, now, now);
     return OpportunityExplorationBatchSchema.parse({
       id, ordinal, coverageGapId: input.coverageGapId, requestedCandidates: input.requestedCandidates,
       savedCandidateIds: [], status: "planned", acceptedFamiliesBefore: input.acceptedFamiliesBefore,
@@ -378,13 +390,15 @@ export class OpportunityExplorationRepository {
 
   updateBatch(input: {
     threadId: string;
+    sessionId?: string | null;
     batchId: string;
     status: OpportunityExplorationBatch["status"];
     savedCandidateIds?: string[];
     acceptedFamiliesAfter?: number | null;
   }): void {
     this.client.requireImmediateTransaction();
-    const batch = this.requireBatch(input.threadId, input.batchId);
+    const sessionId = input.sessionId ?? null;
+    const batch = this.requireBatch(input.threadId, input.batchId, sessionId);
     const savedCandidateIds = input.savedCandidateIds ?? batch.savedCandidateIds;
     OpportunityExplorationBatchSchema.parse({
       ...batch,
@@ -396,16 +410,17 @@ export class OpportunityExplorationRepository {
     this.client.db.prepare(`
       UPDATE opportunity_exploration_batches SET
         status = ?, saved_candidate_ids_json = ?, accepted_families_after = ?, updated_at = ?
-      WHERE id = ? AND thread_id = ?
+      WHERE id = ? AND thread_id = ? AND session_id IS ?
     `).run(
       input.status, canonicalJson(savedCandidateIds), input.acceptedFamiliesAfter ?? batch.acceptedFamiliesAfter,
-      this.now(), input.batchId, input.threadId,
+      this.now(), input.batchId, input.threadId, sessionId,
     );
     this.touch(input.threadId);
   }
 
   saveCandidateOrigin(input: {
     threadId: string;
+    sessionId?: string | null;
     candidateId: string;
     batchId: string | null;
     origin: OpportunityCandidateOrigin;
@@ -416,7 +431,7 @@ export class OpportunityExplorationRepository {
     if (origin.kind === "exploratory-hypothesis" && !progress.config.allowExploratoryProblems) {
       throw new Error("Exploratory problem hypotheses were not enabled for this project.");
     }
-    if (input.batchId) this.requireBatch(input.threadId, input.batchId);
+    if (input.batchId) this.requireBatch(input.threadId, input.batchId, input.sessionId ?? null);
     const serialized = canonicalJson(origin);
     const existing = this.client.db.prepare("SELECT thread_id, batch_id, origin_json FROM opportunity_candidate_origins WHERE candidate_id = ?")
       .get(input.candidateId) as { thread_id: string; batch_id: string | null; origin_json: string } | undefined;
@@ -439,28 +454,58 @@ export class OpportunityExplorationRepository {
     return row ? OpportunityCandidateOriginSchema.parse(JSON.parse(row.origin_json)) : null;
   }
 
-  completedAttemptResult(threadId: string, stageKey: string): unknown | null {
-    const row = this.attemptRow(threadId, stageKey);
-    if (!row || row.status !== "completed" || !row.result_json) return null;
-    return JSON.parse(row.result_json);
+  completedAttemptResult(threadId: string, stageKey: string, sessionId: string | null = null): unknown | null {
+    return this.completedAttempt(threadId, stageKey, sessionId)?.result ?? null;
   }
 
-  prepareAttempt(threadId: string, input: OpportunityStageAttemptInput): OpportunityStageResumeState {
+  completedAttempt(threadId: string, stageKey: string, sessionId: string | null = null):
+    { attemptId: string; result: unknown; workItemId: string | null; model: unknown } | null {
+    const row = this.attemptRow(threadId, stageKey, sessionId);
+    if (!row || row.status !== "completed" || !row.result_json) return null;
+    return { attemptId: row.id, result: JSON.parse(row.result_json),
+      workItemId: row.work_item_id, model: JSON.parse(row.model_json) };
+  }
+
+  loadAttempt(threadId: string, stageKey: string, sessionId: string | null = null): {
+    attemptId: string;
+    status: AttemptRow["status"];
+    input: unknown;
+    model: unknown;
+    promptVersion: string;
+    promptText: string;
+    workItemId: string | null;
+    result: unknown | null;
+  } | null {
+    this.requireSession(threadId, sessionId);
+    const row = this.attemptRow(threadId, stageKey, sessionId);
+    if (!row) return null;
+    return {
+      attemptId: row.id, status: row.status, input: JSON.parse(row.input_json),
+      model: JSON.parse(row.model_json), promptVersion: row.prompt_version,
+      promptText: row.prompt_text, workItemId: row.work_item_id,
+      result: row.result_json ? JSON.parse(row.result_json) : null,
+    };
+  }
+
+  prepareAttempt(threadId: string, input: OpportunityStageAttemptInput, sessionId: string | null = null): OpportunityStageResumeState {
     this.client.requireImmediateTransaction();
-    this.require(threadId);
-    const existing = this.attemptRow(threadId, input.stageKey);
+    if (sessionId === null) this.require(threadId);
+    this.requireSession(threadId, sessionId);
+    const existing = this.attemptRow(threadId, input.stageKey, sessionId);
     if (existing) {
       const identity = canonicalJson({
         input: JSON.parse(existing.input_json),
         model: JSON.parse(existing.model_json),
         promptVersion: existing.prompt_version,
         promptText: existing.prompt_text,
+        workItemId: existing.work_item_id,
       });
       const requested = canonicalJson({
         input: input.input,
         model: input.model,
         promptVersion: input.promptVersion,
         promptText: input.promptText,
+        workItemId: input.workItemId ?? null,
       });
       if (identity !== requested) throw new Error("Opportunity stage checkpoint identity changed. Start a new review.");
       return decodeAttemptState(existing);
@@ -469,57 +514,57 @@ export class OpportunityExplorationRepository {
     const now = this.now();
     this.client.db.prepare(`
       INSERT INTO opportunity_exploration_attempts (
-        id, thread_id, stage_key, stage_name, status, input_json, model_json,
-        prompt_version, prompt_text, prepared_at, updated_at
-      ) VALUES (?, ?, ?, ?, 'prepared', ?, ?, ?, ?, ?, ?)
+        id, thread_id, session_id, stage_key, stage_name, status, input_json, model_json,
+        prompt_version, prompt_text, prepared_at, updated_at, work_item_id
+      ) VALUES (?, ?, ?, ?, ?, 'prepared', ?, ?, ?, ?, ?, ?, ?)
     `).run(
-      id, threadId, input.stageKey, input.stageName, canonicalJson(input.input), canonicalJson(input.model),
-      input.promptVersion, input.promptText, now, now,
+      id, threadId, sessionId, input.stageKey, input.stageName, canonicalJson(input.input), canonicalJson(input.model),
+      input.promptVersion, input.promptText, now, now, input.workItemId ?? null,
     );
     return { kind: "prepared", attemptId: id };
   }
 
-  markAttemptDispatched(threadId: string, attemptId: string, operation: "model" | "search" | "none" = "model"): void {
+  markAttemptDispatched(threadId: string, attemptId: string, operation: "model" | "search" | "none" = "model", sessionId: string | null = null): void {
     this.client.requireImmediateTransaction();
     const now = this.now();
     this.client.db.prepare(`
       UPDATE opportunity_exploration_attempts
       SET status = 'dispatched', dispatched_at = ?, updated_at = ?
-      WHERE id = ? AND thread_id = ? AND status = 'prepared'
-    `).run(now, now, attemptId, threadId);
+      WHERE id = ? AND thread_id = ? AND session_id IS ? AND status = 'prepared'
+    `).run(now, now, attemptId, threadId, sessionId);
     if (this.lastChangeCount() !== 1) throw new Error("Opportunity stage was already dispatched or does not belong to this project.");
     if (operation !== "none") this.addUsage(threadId, operation === "model" ? { modelCalls: 1 } : { searches: 1 });
   }
 
-  completeAttempt(threadId: string, attemptId: string, result: unknown): void {
+  completeAttempt(threadId: string, attemptId: string, result: unknown, sessionId: string | null = null): void {
     this.client.requireImmediateTransaction();
     const now = this.now();
     this.client.db.prepare(`
       UPDATE opportunity_exploration_attempts
       SET status = 'completed', result_json = ?, completed_at = ?, updated_at = ?
-      WHERE id = ? AND thread_id = ? AND status = 'dispatched'
-    `).run(canonicalJson(result), now, now, attemptId, threadId);
+      WHERE id = ? AND thread_id = ? AND session_id IS ? AND status = 'dispatched'
+    `).run(canonicalJson(result), now, now, attemptId, threadId, sessionId);
     if (this.lastChangeCount() !== 1) throw new Error("Only a dispatched opportunity stage can be completed.");
   }
 
-  failAttempt(threadId: string, attemptId: string, error: string, completionKnown: boolean): void {
+  failAttempt(threadId: string, attemptId: string, error: string, completionKnown: boolean, sessionId: string | null = null): void {
     this.client.requireImmediateTransaction();
     const status = completionKnown ? "failed" : "unknown-dispatch";
     this.client.db.prepare(`
       UPDATE opportunity_exploration_attempts
       SET status = ?, error_message = ?, completed_at = ?, updated_at = ?
-      WHERE id = ? AND thread_id = ? AND status IN ('prepared', 'dispatched')
-    `).run(status, error, this.now(), this.now(), attemptId, threadId);
+      WHERE id = ? AND thread_id = ? AND session_id IS ? AND status IN ('prepared', 'dispatched')
+    `).run(status, error, this.now(), this.now(), attemptId, threadId, sessionId);
     if (this.lastChangeCount() !== 1) throw new Error("Opportunity stage attempt is already terminal or missing.");
   }
 
-  markInterruptedDispatchesUnknown(threadId: string): number {
+  markInterruptedDispatchesUnknown(threadId: string, sessionId: string | null = null): number {
     this.client.requireImmediateTransaction();
     this.client.db.prepare(`
       UPDATE opportunity_exploration_attempts
       SET status = 'unknown-dispatch', error_message = ?, completed_at = ?, updated_at = ?
-      WHERE thread_id = ? AND status = 'dispatched'
-    `).run("The app restarted after dispatch; this request will not be replayed.", this.now(), this.now(), threadId);
+      WHERE thread_id = ? AND session_id IS ? AND status = 'dispatched'
+    `).run("The app restarted after dispatch; this request will not be replayed.", this.now(), this.now(), threadId, sessionId);
     return this.lastChangeCount();
   }
 
@@ -532,8 +577,9 @@ export class OpportunityExplorationRepository {
     `).run(status, terminal ? reason!.trim() : null, this.now(), threadId);
   }
 
-  applyBudgetExtension(threadId: string, preview: OpportunityBudgetExtensionPreview): OpportunityExplorationProgress {
+  applyBudgetExtension(threadId: string, preview: OpportunityBudgetExtensionPreview, sessionId: string | null = null): OpportunityExplorationProgress {
     this.client.requireImmediateTransaction();
+    this.requireSession(threadId, sessionId);
     const parsed = OpportunityBudgetExtensionPreviewSchema.parse(preview);
     const current = this.require(threadId);
     if (canonicalJson(current.config) !== canonicalJson(parsed.current)) {
@@ -542,9 +588,9 @@ export class OpportunityExplorationRepository {
     const now = this.now();
     this.client.db.prepare(`
       INSERT INTO opportunity_budget_extensions (
-        id, thread_id, previous_config_json, proposed_config_json, preview_json, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?)
-    `).run(randomUUID(), threadId, canonicalJson(parsed.current), canonicalJson(parsed.proposed), canonicalJson(parsed), now);
+        id, thread_id, session_id, previous_config_json, proposed_config_json, preview_json, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run(randomUUID(), threadId, sessionId, canonicalJson(parsed.current), canonicalJson(parsed.proposed), canonicalJson(parsed), now);
     this.client.db.prepare(`
       UPDATE opportunity_explorations SET config_json = ?, status = 'mapping-coverage', stop_reason = NULL, updated_at = ?
       WHERE thread_id = ?
@@ -626,12 +672,13 @@ export class OpportunityExplorationRepository {
     });
   }
 
-  private gaps(threadId: string): OpportunityCoverageGap[] {
+  listGaps(threadId: string, sessionId: string | null = null): OpportunityCoverageGap[] {
+    this.requireSession(threadId, sessionId);
     const rows = this.client.db.prepare(`
       SELECT id, name, description, dimension, evidence_needed, search_query, map_exhausted,
         candidate_origin, status, created_at, updated_at
-      FROM opportunity_coverage_gaps WHERE thread_id = ? ORDER BY created_at, id
-    `).all(threadId) as GapRow[];
+      FROM opportunity_coverage_gaps WHERE thread_id = ? AND session_id IS ? ORDER BY created_at, id
+    `).all(threadId, sessionId) as GapRow[];
     return rows.map((row) => OpportunityCoverageGapSchema.parse({
       id: row.id,
       name: row.name,
@@ -647,12 +694,13 @@ export class OpportunityExplorationRepository {
     }));
   }
 
-  private batches(threadId: string): OpportunityExplorationBatch[] {
+  listBatches(threadId: string, sessionId: string | null = null): OpportunityExplorationBatch[] {
+    this.requireSession(threadId, sessionId);
     const rows = this.client.db.prepare(`
       SELECT id, ordinal, coverage_gap_id, requested_candidates, saved_candidate_ids_json,
         status, accepted_families_before, accepted_families_after, created_at, updated_at
-      FROM opportunity_exploration_batches WHERE thread_id = ? ORDER BY ordinal
-    `).all(threadId) as BatchRow[];
+      FROM opportunity_exploration_batches WHERE thread_id = ? AND session_id IS ? ORDER BY ordinal
+    `).all(threadId, sessionId) as BatchRow[];
     return rows.map((row) => OpportunityExplorationBatchSchema.parse({
       id: row.id,
       ordinal: row.ordinal,
@@ -679,16 +727,23 @@ export class OpportunityExplorationRepository {
     };
   }
 
-  private requireGap(threadId: string, gapId: string): void {
-    const row = this.client.db.prepare("SELECT 1 FROM opportunity_coverage_gaps WHERE id = ? AND thread_id = ?")
-      .get(gapId, threadId);
-    if (!row) throw new Error("Coverage gap does not belong to this project.");
+  private requireGap(threadId: string, gapId: string, sessionId: string | null = null): void {
+    const row = this.client.db.prepare("SELECT 1 FROM opportunity_coverage_gaps WHERE id = ? AND thread_id = ? AND session_id IS ?")
+      .get(gapId, threadId, sessionId);
+    if (!row) throw new Error("Coverage gap does not belong to this session or project.");
   }
 
-  private requireBatch(threadId: string, batchId: string): OpportunityExplorationBatch {
-    const batch = this.batches(threadId).find((item) => item.id === batchId);
-    if (!batch) throw new Error("Opportunity batch does not belong to this project.");
+  private requireBatch(threadId: string, batchId: string, sessionId: string | null = null): OpportunityExplorationBatch {
+    const batch = this.listBatches(threadId, sessionId).find((item) => item.id === batchId);
+    if (!batch) throw new Error("Opportunity batch does not belong to this session or project.");
     return batch;
+  }
+
+  private requireSession(threadId: string, sessionId: string | null): void {
+    if (sessionId === null) return;
+    const session = this.client.db.prepare("SELECT 1 FROM workflow_sessions WHERE id = ? AND thread_id = ?")
+      .get(sessionId, threadId);
+    if (!session) throw new Error("Workflow session does not belong to this project.");
   }
 
   private requireThread(threadId: string): void {
@@ -702,11 +757,11 @@ export class OpportunityExplorationRepository {
       .run(this.now(), threadId);
   }
 
-  private attemptRow(threadId: string, stageKey: string): AttemptRow | undefined {
+  private attemptRow(threadId: string, stageKey: string, sessionId: string | null = null): AttemptRow | undefined {
     return this.client.db.prepare(`
-      SELECT id, status, input_json, model_json, prompt_version, prompt_text, result_json
-      FROM opportunity_exploration_attempts WHERE thread_id = ? AND stage_key = ?
-    `).get(threadId, stageKey) as AttemptRow | undefined;
+      SELECT id, status, input_json, model_json, prompt_version, prompt_text, result_json, work_item_id
+      FROM opportunity_exploration_attempts WHERE thread_id = ? AND stage_key = ? AND session_id IS ?
+    `).get(threadId, stageKey, sessionId) as AttemptRow | undefined;
   }
 
   private lastChangeCount(): number {
@@ -722,6 +777,7 @@ interface AttemptRow {
   prompt_version: string;
   prompt_text: string;
   result_json: string | null;
+  work_item_id: string | null;
 }
 
 function decodeAttemptState(row: AttemptRow): OpportunityStageResumeState {

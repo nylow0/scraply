@@ -39,11 +39,17 @@ import {
   type ValidationState,
 } from "../shared/ipc";
 import {
+  PreviewWorkflowRequestSchema, PreviewWorkflowResultSchema, StartWorkflowRequestSchema,
+  WorkflowAdmissionReceiptSchema, GetWorkflowRequestSchema, WorkflowDetailSchema,
+  CommandWorkflowRequestSchema, GetIdeaConversationRequestSchema, SelectIdeaVersionRequestSchema, IdeaConversationSchema,
+  SubmitIdeaTurnRequestSchema, SubmitIdeaTurnResultSchema,
+} from "../shared/workflow-contracts";
+import {
   BackendToMainMessageSchema,
   configuredProviderSecretsAreValid,
   type BackendSecrets,
 } from "../shared/backend-process";
-import { AppError } from "../shared/errors";
+import { AppError, toErrorPayload } from "../shared/errors";
 import { bundleBrowserIdeaExport } from "../shared/browser-export";
 import { resolveRuntimeLaunch } from "../shared/runtime-artifact";
 import { createFileLogger, type FileLogger } from "./logging";
@@ -430,12 +436,13 @@ async function backendRequest<T>(path: string, init?: RequestInit): Promise<T> {
   if (!response.ok) {
     const parsedError = ApiErrorResponseSchema.safeParse(payload);
     if (parsedError.success) {
-      const { code, message, reference } = parsedError.data.error;
+      const { code, message, reference, recovery } = parsedError.data.error;
       throw new AppError(
         code,
         reference ? `${message} Reference: ${reference}` : message,
         response.status,
         reference,
+        recovery,
       );
     }
     throw new AppError("internal_error");
@@ -524,6 +531,35 @@ function registerIpc(): void {
     });
   };
   const post = <T>(path: string, body: T) => backendRequest(path, { method: "POST", body: JSON.stringify(body) });
+  // Workflow handlers return an envelope so Electron keeps the typed error payload across IPC.
+  const workflow = async <T>(operation: () => Promise<T>) => {
+    try { return { ok: true as const, data: await operation() }; }
+    catch (error) { return { ok: false as const, error: toErrorPayload(error).error }; }
+  };
+
+  handle(IPC_CHANNELS.PREVIEW_WORKFLOW, (body) => workflow(async () =>
+    PreviewWorkflowResultSchema.parse(await post("/workflows/preview", PreviewWorkflowRequestSchema.parse(body)))));
+  handle(IPC_CHANNELS.START_WORKFLOW, (body) => workflow(async () =>
+    WorkflowAdmissionReceiptSchema.parse(await post("/workflows/start", StartWorkflowRequestSchema.parse(body)))));
+  handle(IPC_CHANNELS.GET_WORKFLOW, (body) => workflow(async () => {
+    const { sessionId, cursor } = GetWorkflowRequestSchema.parse(body);
+    const path = `/workflows/${encodeURIComponent(sessionId)}${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ""}`;
+    return WorkflowDetailSchema.parse(await backendRequest(path));
+  }));
+  handle(IPC_CHANNELS.COMMAND_WORKFLOW, (body) => workflow(async () =>
+    WorkflowAdmissionReceiptSchema.parse(await post("/workflows/command", CommandWorkflowRequestSchema.parse(body)))));
+  handle(IPC_CHANNELS.GET_IDEA_CONVERSATION, (body) => workflow(async () => {
+    const { ideaId, branchId, cursor } = GetIdeaConversationRequestSchema.parse(body);
+    const params = new URLSearchParams();
+    if (branchId) params.set("branchId", branchId);
+    if (cursor) params.set("cursor", cursor);
+    const query = params.size ? `?${params}` : "";
+    return IdeaConversationSchema.parse(await backendRequest(`/ideas/${encodeURIComponent(ideaId)}/conversation${query}`));
+  }));
+  handle(IPC_CHANNELS.SELECT_IDEA_VERSION, (body) => workflow(async () =>
+    IdeaConversationSchema.parse(await post("/ideas/select-version", SelectIdeaVersionRequestSchema.parse(body)))));
+  handle(IPC_CHANNELS.SUBMIT_IDEA_TURN, (body) => workflow(async () =>
+    SubmitIdeaTurnResultSchema.parse(await post("/ideas/turn", SubmitIdeaTurnRequestSchema.parse(body)))));
 
   handle(IPC_CHANNELS.GET_VALIDATION, () => backendRequest("/validation"));
   handle(IPC_CHANNELS.RETRY_CONNECTION, retryAutomaticConnection);

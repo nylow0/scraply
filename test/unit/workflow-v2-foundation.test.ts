@@ -71,9 +71,9 @@ describe("workflow v2 foundation", () => {
       .not.toThrow();
   });
 
-  test("registers exactly seven typed stages independent of config version", () => {
+  test("registers the production stages independent of config version", () => {
     expect(Object.keys(WORKFLOW_V2_STAGE_REGISTRY).sort()).toEqual([...WORKFLOW_V2_STAGE_IDS].sort());
-    expect(WORKFLOW_V2_STAGE_IDS).toHaveLength(7);
+    expect(WORKFLOW_V2_STAGE_IDS).toHaveLength(9);
     expect(WORKFLOW_VERSION_V2).toBe(2);
     expect(WORKFLOW_V2_STAGE_REGISTRY.solutions.schema).toBeDefined();
     expect(WORKFLOW_V2_STAGE_REGISTRY["factor-harvest"].deadlineMs).toBe(300_000);
@@ -83,6 +83,16 @@ describe("workflow v2 foundation", () => {
       expect(() => deriveJsonSchema(stage.schema)).not.toThrow();
     }
     expect(deriveJsonSchema(WORKFLOW_V2_STAGE_REGISTRY["problem-kill"].schema).type).toBe("object");
+    const newKill = {
+      verdict: "confirmed", verdictReason: "Two buyers report the same repeated task.", verdictSourceIds: ["source-1"],
+      unresolvedAssumptions: [], wouldChangeConclusion: ["A contrary buyer account"],
+      intendedBuyerEvidenceFactorIds: ["factor-1"], evidenceGap: null,
+      briefFit: "direct", contraryEvidence: "resolved", workflowKey: "operator: repeat filing after status change",
+    };
+    expect(WORKFLOW_V2_STAGE_REGISTRY["problem-kill"].schema.parse(newKill)).toMatchObject({
+      briefFit: "direct", contraryEvidence: "resolved", workflowKey: newKill.workflowKey,
+    });
+    expect(() => WORKFLOW_V2_STAGE_REGISTRY["problem-kill"].schema.parse({ ...newKill, briefFit: undefined })).toThrow();
     expect(parseWorkflowV2StageOutput("problem-kill", 1, {
       verdict: "insufficient-evidence",
       verdictReason: "The saved evidence did not settle the claim.",

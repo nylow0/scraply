@@ -31,9 +31,12 @@ test("desktop navigation and compact idea review preserve dismissed ideas", asyn
     });
     await page.getByLabel("Research name", { exact: true }).fill("Compact idea review");
     await page.getByLabel("What do you want to explore?").fill("Parts delivery uncertainty.");
-    await page.getByRole("button", { name: "Discover problems", exact: true }).click();
+    await page.getByRole("button", { name: "Start Babysit", exact: true }).click();
+    await expect(page.getByRole("tabpanel", { name: "Research" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Go back", exact: true })).toBeEnabled();
     await page.getByRole("tab", { name: /Setup/ }).click();
-    await expect(page.locator(".fields .primary strong")).toHaveText("Compact idea review");
+    await expect(page.getByRole("tab", { name: /Setup/ })).toHaveAttribute("aria-selected", "true");
+    await expect(page.getByRole("heading", { name: "Compact idea review" })).toBeVisible();
     await page.getByRole("button", { name: "Go back", exact: true }).click();
     await expect(page.getByRole("tab", { name: /Research/ })).toHaveAttribute("aria-selected", "true");
     await page.getByRole("button", { name: "Go forward", exact: true }).click();
@@ -48,18 +51,19 @@ test("desktop navigation and compact idea review preserve dismissed ideas", asyn
     await page.getByRole("tab", { name: /Research/ }).click();
     await page.locator(".problem-disclosure > summary").first().click();
     await page.getByRole("checkbox", { name: "Develop this problem" }).check();
-    await page.getByRole("button", { name: "Commit selection", exact: true }).click();
+    await page.getByRole("button", { name: "Generate all selected", exact: true }).click();
     for (const width of [1400, 960]) {
       await page.setViewportSize({ width, height: 800 });
       for (const selector of [".main-content", ".workspace", ".solutions", ".idea-row"]) {
         expect(await page.locator(selector).evaluate((el) => el.scrollWidth <= el.clientWidth + 1), selector).toBe(true);
       }
     }
-    await page.locator(".solution-summary").click();
-    await expect(page.getByText("Pool observed delivery windows by supplier and part category.", { exact: true })).toBeVisible();
+    await page.getByRole("button", { name: "Open idea: Pool observed delivery windows by supplier and part category." }).click();
+    await expect(page.locator(".idea-detail").getByText("Pool observed delivery windows by supplier and part category.", { exact: true })).toBeVisible();
     await expect(page.getByText("Highest risk:", { exact: false })).not.toBeVisible();
     await page.screenshot({ animations: "disabled", path: testInfo.outputPath("idea-first.png") });
-    await page.getByRole("button", { name: /^Discard solution:/ }).click();
+    await page.getByRole("button", { name: "Back to ideas" }).click();
+    await page.getByRole("button", { name: /^Discard idea:/ }).click();
     await expect(page.locator(".idea-row:visible")).toHaveCount(0);
     await expect(page.getByRole("button", { name: "Discarded 1", exact: true })).toBeVisible();
     await app.close();
@@ -68,7 +72,7 @@ test("desktop navigation and compact idea review preserve dismissed ideas", asyn
     await expect(page.locator(".idea-row:visible")).toHaveCount(0);
     await page.getByRole("button", { name: "Discarded 1", exact: true }).click();
     await expect(page.locator(".idea-row:visible")).toHaveCount(1);
-    await page.getByRole("button", { name: /^Restore solution:/ }).click();
+    await page.getByRole("button", { name: /^Restore idea:/ }).click();
     await page.getByRole("button", { name: "Discarded 0", exact: true }).click();
     await expect(page.locator(".idea-row:visible")).toHaveCount(1);
     expect(mock.requests.filter((request) => request.path === "/ideas/discard").map((request) => request.body)).toEqual([

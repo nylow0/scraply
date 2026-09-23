@@ -1,10 +1,11 @@
 <script lang="ts">
   import type { SolutionView } from "../../shared/ipc";
+  import { untrack } from "svelte";
   import { loadIdeaDetail } from "../lib/idea-details";
 
-  let { idea: summary, rank, onOpenSource }: { idea: SolutionView; rank: number; onOpenSource: (url: string) => Promise<void> } = $props();
+  let { idea: summary, rank, initiallyOpen = false, inDetailView = false, onOpenSource }: { idea: SolutionView; rank: number; initiallyOpen?: boolean; inDetailView?: boolean; onOpenSource: (url: string) => Promise<void> } = $props();
   let detail = $state<SolutionView | null>(null);
-  let open = $state(false);
+  let open = $state(untrack(() => initiallyOpen));
   let error = $state("");
   let idea = $derived(detail ?? summary);
   $effect(() => {
@@ -22,11 +23,12 @@
 
 <details bind:open class:warning class="solution" style={`--rank:${rank}`}>
   <summary class="solution-summary disclosure-title" title={idea.description}>
-    <span class="disclosure-label">{idea.description}</span>
+    <span class="disclosure-label">{inDetailView ? "Review evidence and risks" : idea.description}</span>
   </summary>
 
   <div class="solution-body">
     {#if idea.detailsLoaded === false}<p role="status">{error || "Loading saved analysis…"}</p>{:else}
+    {#if inDetailView}<p class="detail-description">{idea.description}</p>{/if}
     <section class="overview">
         <div>
           <span class="label">How it works</span>
@@ -586,4 +588,5 @@
   }
 
   .expanded-snapshot { display:flex;flex-wrap:wrap;gap:24px;padding:18px 0; }
+  .detail-description { max-width:75ch;margin:8px 0 22px;color:var(--text);font-size:15px;line-height:1.65;white-space:pre-wrap; }
 </style>
