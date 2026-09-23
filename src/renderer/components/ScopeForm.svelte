@@ -86,7 +86,7 @@
   let discoveryDepth = $state(initial.scope ? initial.runConfig?.discoveryDepth ?? DEFAULT_RUN_CONFIG.discoveryDepth : defaults.discoveryDepth);
   let searchProvider = $state<SearchProvider>(initial.scope ? initial.runConfig?.searchProvider ?? defaults.searchProvider : defaults.searchProvider);
   let maxRunMinutes = $state(initial.runConfig?.maxRunMinutes ?? DEFAULT_RUN_CONFIG.maxRunMinutes);
-  let workflowMode = $state<"babysit" | "vibe">("babysit");
+  let workflowMode = $state<"babysit" | "vibe">("vibe");
   let ideaModelKey = $state(untrack(() => modelKey));
   let ideaModelOption = $derived(nativeModelOptions.find((item) => modelRefKey(item) === ideaModelKey));
   let ideaModel = $derived<ModelRef>({
@@ -422,13 +422,13 @@
       {#if useWorkflow}
         <fieldset class="choice-group workflow-mode">
           <legend>Run mode</legend>
-          <label class:active={workflowMode === "babysit"}>
-            <input type="radio" name="workflow-mode" value="babysit" checked={workflowMode === "babysit"} onchange={() => workflowMode = "babysit"} />
-            <span><strong>Babysit</strong><small>Review the research and choose what becomes an idea.</small></span>
-          </label>
           <label class:active={workflowMode === "vibe"}>
             <input type="radio" name="workflow-mode" value="vibe" checked={workflowMode === "vibe"} onchange={() => workflowMode = "vibe"} />
             <span><strong>Vibe</strong><small>Let Scraply research, generate, and review ideas within your limits.</small></span>
+          </label>
+          <label class:active={workflowMode === "babysit"}>
+            <input type="radio" name="workflow-mode" value="babysit" checked={workflowMode === "babysit"} onchange={() => workflowMode = "babysit"} />
+            <span><strong>Babysit</strong><small>Review the research and choose what becomes an idea.</small></span>
           </label>
         </fieldset>
       {/if}

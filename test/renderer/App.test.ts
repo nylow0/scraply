@@ -1,4 +1,4 @@
-import { fireEvent, render, waitFor } from "@testing-library/svelte";
+import { fireEvent, render, waitFor, within } from "@testing-library/svelte";
 import { tick } from "svelte";
 import { describe, expect, test, vi } from "vitest";
 import type { ScraplyApi } from "../../src/preload/index";
@@ -562,7 +562,7 @@ describe("App workspace coordination", () => {
     expect(startNativeLogin).toHaveBeenCalledWith({ providerId: "openai-subscription", method: "browser" });
     expect(await view.findByText("Native model account connected.")).toBeTruthy();
     expect(view.queryByText("provider request failed with HTTP 401")).toBeNull();
-    expect(view.getByRole("option", { name: "GPT-5.6 Sol" })).toBeTruthy();
+    expect(within(view.getByRole("combobox", { name: "Model" })).getByRole("option", { name: "GPT-5.6 Sol" })).toBeTruthy();
   });
 
   test("shows discovered models as soon as browser sign-in completes", async () => {
@@ -587,7 +587,7 @@ describe("App workspace coordination", () => {
 
     await fireEvent.click(await view.findByRole("button", { name: "Sign in with OpenAI" }));
     expect(await view.findByText("Native model account connected.")).toBeTruthy();
-    expect(view.getByRole("option", { name: "GPT-5.6 Sol" })).toBeTruthy();
+    expect(within(view.getByRole("combobox", { name: "Model" })).getByRole("option", { name: "GPT-5.6 Sol" })).toBeTruthy();
     expect(view.getByText("dany@example.test")).toBeTruthy();
   });
 
@@ -624,7 +624,7 @@ describe("App workspace coordination", () => {
     await fireEvent.click(await view.findByRole("button", { name: "Sign in with OpenAI" }));
 
     expect(await view.findByText("OpenAI sign-in finished.")).toBeTruthy();
-    expect(await view.findByRole("option", { name: "GPT-5.6 Sol" }, { timeout: 1_500 })).toBeTruthy();
+    expect(await within(view.getByRole("combobox", { name: "Model" })).findByRole("option", { name: "GPT-5.6 Sol" }, { timeout: 1_500 })).toBeTruthy();
     expect(view.queryByText("Checking available OpenAI models")).toBeNull();
   });
 
