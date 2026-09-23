@@ -527,6 +527,22 @@ export class WorkflowRepository {
     return totals;
   }
 
+  countProviderAttempts(runId: string): number {
+    const row = this.client.db.prepare(`SELECT COALESCE(SUM(
+      CASE WHEN attempt_metadata_json IS NOT NULL AND json_type(attempt_metadata_json, '$.attempts') = 'array'
+        THEN MAX(1, json_array_length(attempt_metadata_json, '$.attempts'))
+        WHEN status IN ('dispatched','accepted','completed','failed','cancelled','interrupted')
+          AND terminal_kind IS NOT 'never-dispatched' THEN 1 ELSE 0 END
+      ),0) AS count FROM generation_attempts WHERE research_run_id = ?`).get(runId) as { count: number };
+    return row.count;
+  }
+
+  hasUnknownProviderCompletion(runId: string): boolean {
+    return Boolean(this.client.db.prepare(`SELECT 1 FROM generation_attempts WHERE research_run_id = ?
+      AND (status IN ('dispatched','accepted') OR (status = 'interrupted' AND terminal_kind IS NOT 'never-dispatched'))
+      LIMIT 1`).get(runId));
+  }
+
   settleBudget(id: string, input: {
     state: Exclude<BudgetState, "reserved">; settledUnits: number;
     generationAttemptId?: string; opportunityAttemptId?: string;
