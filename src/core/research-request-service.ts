@@ -311,7 +311,7 @@ export class ResearchRequestService {
     try {
       await this.options.engine().resumeRun(runId);
     } catch (error) {
-      if (this.hasUnknownCompletion(runId)) this.markUnknownRequest(session, item, runId);
+      if (this.repository.hasUnknownProviderCompletion(runId)) this.markUnknownRequest(session, item, runId);
       else this.failBeforeDispatch(sessionId, item.id, runId, error);
     }
   }
@@ -648,7 +648,7 @@ export class ResearchRequestService {
 
   private settleRequestBudget(item: WorkflowWorkItem, runId: string, completed: boolean): void {
     const entries = this.repository.listBudgetEntries(item.sessionId).filter((entry) => entry.workItemId === item.id && entry.state === "reserved");
-    const modelCalls = this.providerAttemptCount(runId);
+    const modelCalls = this.repository.countProviderAttempts(runId);
     const searches = (this.options.db.db.prepare(`SELECT COUNT(*) AS count FROM cost_ledger
       WHERE research_run_id = ? AND operation = 'search' AND status IN ('reserved','committed')`)
       .get(runId) as { count: number }).count;
@@ -657,27 +657,12 @@ export class ResearchRequestService {
       if (used > entry.reservedUnits) {
         throw new AppError("BUDGET_TOO_SMALL", "The research run exceeded its saved allowance.");
       }
-      const unknown = !completed && this.hasUnknownCompletion(runId) && entry.kind === "model-call";
+      const unknown = !completed && this.repository.hasUnknownProviderCompletion(runId) && entry.kind === "model-call";
       this.repository.settleBudget(entry.id, {
         state: unknown ? "uncertain" : used > 0 ? "spent" : "released",
         settledUnits: unknown ? entry.reservedUnits : used,
       });
     }
-  }
-
-  private providerAttemptCount(runId: string): number {
-    const row = this.options.db.db.prepare(`SELECT COALESCE(SUM(
-      CASE WHEN attempt_metadata_json IS NOT NULL AND json_type(attempt_metadata_json, '$.attempts') = 'array'
-        THEN MAX(1, json_array_length(attempt_metadata_json, '$.attempts'))
-        WHEN status IN ('dispatched','accepted','completed','failed','cancelled','interrupted')
-          AND terminal_kind IS NOT 'never-dispatched' THEN 1 ELSE 0 END
-      ),0) AS count FROM generation_attempts WHERE research_run_id = ?`).get(runId) as { count: number };
-    return row.count;
-  }
-
-  private hasUnknownCompletion(runId: string): boolean {
-    return Boolean(this.options.db.db.prepare(`SELECT 1 FROM generation_attempts WHERE research_run_id = ?
-      AND (status IN ('dispatched','accepted') OR (status = 'interrupted' AND terminal_kind != 'never-dispatched')) LIMIT 1`).get(runId));
   }
 
   private failBeforeDispatch(sessionId: string, workItemId: string, runId: string, error: unknown): void {
