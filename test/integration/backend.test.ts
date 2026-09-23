@@ -570,6 +570,23 @@ describe("cutover backend", () => {
     const emptyMarkdown = await post("/ideas/export", { threadId: created.thread.id, format: "markdown" }) as { files: Array<{ content: string }> };
     expect(emptyMarkdown.files.some((file) => file.content.includes("This is not evidence that the problem is solved."))).toBe(true);
 
+    const secondProject = await post("/threads", {}) as { thread: { id: string } };
+    expect(secondProject.thread.id).not.toBe(created.thread.id);
+    for (const ideaId of ["solution-old", "solution-selected"]) {
+      const response = await fetch(`http://127.0.0.1:${handle.port}/ideas/${ideaId}`, {
+        headers: { authorization: `Bearer ${handle.token}` },
+      });
+      expect(response.status).toBe(200);
+      expect((await response.json() as { data: { id: string } }).data.id).toBe(ideaId);
+    }
+    const absent = await fetch(`http://127.0.0.1:${handle.port}/ideas/missing-idea`, {
+      headers: { authorization: `Bearer ${handle.token}` },
+    });
+    expect(absent.status).toBe(404);
+    expect((await absent.json() as { error: { code: string; message: string } }).error)
+      .toEqual({ code: "not_found", message: "Solution not found." });
+    await post("/threads/select", { threadId: created.thread.id });
+
     await handle.close();
     handles.splice(handles.indexOf(handle), 1);
     const interrupted = new DatabaseClient(dbPath);
@@ -594,6 +611,46 @@ describe("cutover backend", () => {
       mechanism: "Current solution",
       evidenceFollowUp: { status: "failed", error: "The app restarted during this follow-up. It was not replayed." },
     });
+  });
+
+  test("exports sources saved before an interrupted first discovery", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "scraply-partial-research-export-")); dirs.push(dir);
+    const dbPath = join(dir, "scraply.db");
+    const handle = await startBackend({
+      dataDir: dir, dbPath, bundledPromptsDir: join(process.cwd(), "prompts"), promptOverridesDir: join(dir, "prompts"),
+      appVersion: "test", getSecrets: () => ({ exaApiKey: null }),
+      providerValidation: { inspectNative: async () => nativeInspection() },
+    }, () => undefined); handles.push(handle);
+    const request = async (path: string, body: unknown) => {
+      const response = await fetch(`http://127.0.0.1:${handle.port}${path}`, {
+        method: "POST", headers: { authorization: `Bearer ${handle.token}`, "content-type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      expect(response.status).toBe(200);
+      return (await response.json() as { data: unknown }).data;
+    };
+    const created = await request("/threads", {}) as { thread: { id: string } };
+    const now = new Date().toISOString();
+    const client = new DatabaseClient(dbPath);
+    client.db.prepare(`INSERT INTO research_runs
+      (id, thread_id, status, config_json, completion_reason, created_at, updated_at)
+      VALUES ('interrupted-discovery', ?, 'cancelled', ?, 'Stopped after source collection.', ?, ?)`)
+      .run(created.thread.id, JSON.stringify(DEFAULT_RUN_CONFIG), now, now);
+    client.db.prepare(`INSERT INTO sources
+      (id, research_run_id, canonical_url, title, retrieved_text, content_hash, retrieved_at)
+      VALUES ('saved-source', 'interrupted-discovery', 'https://example.test/source', 'Saved source',
+        'A saved observation before cancellation.', 'hash', ?)`)
+      .run(now);
+    client.close();
+    const bundle = await request("/research/export", { threadId: created.thread.id }) as { content: string };
+    const exported = JSON.parse(bundle.content) as { researchRun: { id: string; status: string;
+      completionReason: string; exportNote: string }; sources: Array<{ id: string; text: string }>; problems: unknown[] };
+    expect(exported.researchRun).toMatchObject({ id: "interrupted-discovery", status: "cancelled",
+      completionReason: "Stopped after source collection." });
+    expect(exported.researchRun.exportNote).toContain("only saved artifacts");
+    expect(exported.sources).toEqual([expect.objectContaining({ id: "saved-source",
+      text: "A saved observation before cancellation." })]);
+    expect(exported.problems).toEqual([]);
   });
 
   test("never resumes a historical Codex CLI run or changes its accounting", async () => {

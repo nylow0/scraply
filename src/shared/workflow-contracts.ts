@@ -104,6 +104,7 @@ export const WorkflowSummarySchema = z.object({
   outcome: WorkflowOutcomeSchema.nullable(),
   revision: NonnegativeCountSchema,
   activeSnapshotId: IdSchema.nullable(),
+  researchApplied: z.literal(true).optional(),
   selectedProblemIds: z.array(IdSchema),
   counts: WorkflowCountsSchema,
   limits: WorkflowLimitsSchema,
@@ -139,6 +140,7 @@ export const WorkflowActionSchema = z.discriminatedUnion("type", [
     instructions: z.string().trim().max(20_000).optional(),
   }).strict(),
   z.object({ type: z.literal("apply-research"), baseSnapshotId: IdSchema.optional(), includedRequestIds: z.array(IdSchema), replacements: z.array(z.object({ oldFindingId: IdSchema, newFindingId: IdSchema }).strict()) }).strict(),
+  z.object({ type: z.literal("keep-research"), requestId: IdSchema, baseSnapshotId: IdSchema.optional() }).strict(),
   z.object({ type: z.literal("generate-ideas"), snapshotId: IdSchema, problemIds: z.array(IdSchema).min(1), model: ModelRefSchema, reasoningEffort: ReasoningEffortSchema, reviewModel: ModelRefSchema.optional(), reviewReasoningEffort: ReasoningEffortSchema.optional(), target: z.discriminatedUnion("kind", [
     z.object({ kind: z.literal("per-problem"), count: z.number().int().min(1).max(20) }).strict(),
     z.object({ kind: z.literal("project"), count: z.number().int().min(1).max(30) }).strict(),

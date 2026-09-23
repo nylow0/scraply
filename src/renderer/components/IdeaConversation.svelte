@@ -7,6 +7,7 @@
   let {
     conversation,
     modelOptions,
+    activeResearchSnapshotId = null,
     busy = false,
     busyReason = "Wait for the current work to finish before sending a follow-up.",
     onSubmit,
@@ -15,6 +16,7 @@
   }: {
     conversation: ConversationView;
     modelOptions: ModelOption[];
+    activeResearchSnapshotId?: string | null;
     busy?: boolean;
     busyReason?: string;
     onSubmit: (draft: Draft) => Promise<void>;
@@ -24,7 +26,7 @@
 
   let selectedVersionId = $state("");
   let selectedBranchId = $state<string | null>(null);
-  let mobilePane = $state<"idea" | "conversation">("idea");
+  let mobilePane = $state<"idea" | "conversation">("conversation");
   let intent = $state<Draft["intent"]>("explore-directions");
   let draft = $state("");
   let modelKey = $state<string | null>(null);
@@ -32,9 +34,16 @@
   let replyToTurnId = $state<string | null>(null);
   let retryParentTurnId = $state<string | null | undefined>(undefined);
   let sending = $state(false);
+  let useNewerResearch = $state(false);
   let error = $state<string | null>(null);
 
   let selectedVersion = $derived(conversation.versions.find((version) => version.solutionId === selectedVersionId));
+  let parentVersion = $derived(conversation.versions.find((version) => version.solutionId === selectedVersion?.parentSolutionId));
+  let newerResearchAvailable = $derived(!!activeResearchSnapshotId && selectedVersion?.evidenceSnapshotId !== activeResearchSnapshotId);
+  let changedFields = $derived(parentVersion && selectedVersion ? [
+    ...(parentVersion.mechanism !== selectedVersion.mechanism ? ["How it works"] : []),
+    ...(parentVersion.description !== selectedVersion.description ? ["Description"] : []),
+  ] : []);
   let branchId = $derived(selectedBranchId ?? conversation.branches.at(-1)?.branchId ?? null);
   let branch = $derived(conversation.branches.find((item) => item.branchId === branchId));
   let visibleTurns = $derived(conversation.turns.filter((turn) => !branchId || turn.branchId === branchId));
@@ -63,6 +72,7 @@
     effort = null;
     replyToTurnId = null;
     retryParentTurnId = undefined;
+    useNewerResearch = false;
     error = null;
     try {
       await onSelectVersion?.(solutionId);
@@ -74,6 +84,16 @@
 
   function modelFromOption(option: ModelOption): ModelRef {
     return { providerId: option.providerId, modelId: option.modelId };
+  }
+  function versionTitle(text: string): string {
+    const firstLine = text.trim().split(/\n/)[0] ?? "";
+    const lead = firstLine.match(/^.{1,110}?(?=[:,;]\s)/s)?.[0];
+    if (lead) return lead.trim();
+    const sentence = firstLine.match(/^.*?[.!?](?=\s|$)/s)?.[0];
+    if (sentence && sentence.length <= 110) return sentence.trim();
+    if (firstLine.length <= 110) return firstLine;
+    const words = firstLine.slice(0, 110).trimEnd();
+    return `${words.slice(0, words.lastIndexOf(" "))}…`;
   }
 
   async function submit() {
@@ -93,13 +113,15 @@
         clientMessageId: crypto.randomUUID(),
         intent,
         text,
-        ...(selectedVersion.evidenceSnapshotId ? { evidenceSnapshotId: selectedVersion.evidenceSnapshotId } : {}),
+        ...((useNewerResearch && newerResearchAvailable ? activeResearchSnapshotId : selectedVersion.evidenceSnapshotId)
+          ? { evidenceSnapshotId: (useNewerResearch && newerResearchAvailable ? activeResearchSnapshotId : selectedVersion.evidenceSnapshotId)! } : {}),
         model: modelFromOption(selectedModelOption),
         reasoningEffort: effectiveEffort,
         allowance: { maxModelCalls: 2, maxMinutes: 2 },
         ...(branchFromEarlier ? { branchFromEarlier: true } : {}),
       });
       draft = "";
+      useNewerResearch = false;
       replyToTurnId = null;
       retryParentTurnId = undefined;
     } catch (cause) {
@@ -131,8 +153,9 @@
     <section class:mobile-hidden={mobilePane !== "idea"} class="version-panel" aria-label="Selected idea version">
       <div class="panel-heading"><span class="eyebrow">Selected idea version</span><span class="version-number">v{selectedVersion?.versionNumber ?? 1}</span></div>
       {#if selectedVersion}
-        <h2>{selectedVersion.mechanism}</h2>
-        <p class="description">{selectedVersion.description}</p>
+        <h2>Idea v{selectedVersion.versionNumber}</h2>
+        <h3>How it works</h3><p class="description">{selectedVersion.mechanism}</p>
+        <h3>What it does</h3><p class="description">{selectedVersion.description}</p>
         <div class="review-chip" class:current={selectedVersion.reviewFreshness === "current"}>
           {selectedVersion.reviewFreshness === "current" ? "Review applies to this version" : selectedVersion.reviewFreshness === "stale" ? "Review belongs to an earlier version" : "This version has not been reviewed"}
         </div>
@@ -143,7 +166,7 @@
         {#each conversation.versions as version (version.solutionId)}
           <li>
             <button class:selected={version.solutionId === selectedVersionId} aria-current={version.solutionId === selectedVersionId ? "true" : undefined} onclick={() => selectVersion(version.solutionId)}>
-              <span class="version-title"><strong>v{version.versionNumber}</strong> {version.mechanism}</span>
+              <span class="version-title"><strong>v{version.versionNumber}</strong> {versionTitle(version.mechanism)}</span>
               <small>{version.changeSummary ?? "Original mechanism"}</small>
             </button>
           </li>
@@ -151,6 +174,14 @@
       </ol>
       {#if selectedVersion?.parentSolutionId}
         <p class="lineage">Based on v{conversation.versions.find((item) => item.solutionId === selectedVersion?.parentSolutionId)?.versionNumber ?? "?"}. Its earlier review and conversation remain in history.</p>
+        {#if parentVersion}
+          <details class="version-comparison"><summary>Compare with v{parentVersion.versionNumber}</summary>
+            <p>{selectedVersion.changeSummary ?? "This version changes the saved idea."}</p>
+            <p>{changedFields.length ? `Changed: ${changedFields.join(" and ")}.` : "The explanation is unchanged."}</p>
+            {#if changedFields.includes("How it works")}<div><strong>Earlier mechanism</strong><p>{parentVersion.mechanism}</p><strong>Current mechanism</strong><p>{selectedVersion.mechanism}</p></div>{/if}
+            {#if changedFields.includes("Description")}<div><strong>Earlier description</strong><p>{parentVersion.description}</p><strong>Current description</strong><p>{selectedVersion.description}</p></div>{/if}
+          </details>
+        {/if}
       {/if}
     </section>
 
@@ -192,6 +223,7 @@
         {:else if replyToTurnId}<div class="reply-context">{replyToTurnId !== branch?.headTurnId ? "Replying from an earlier turn creates a branch." : "Replying to the latest turn."} <button onclick={() => replyToTurnId = null}>Use latest</button></div>{/if}
         <label for="idea-follow-up-draft" class="visually-hidden">Follow-up message</label>
         <textarea id="idea-follow-up-draft" bind:value={draft} maxlength="4000" rows="3" placeholder="Write a follow-up…"></textarea>
+        {#if newerResearchAvailable}<label class="research-choice"><input type="checkbox" bind:checked={useNewerResearch} /><span><strong>Use newer research</strong><small>Use the current research snapshot for this reply. The saved idea and earlier versions stay as they are.</small></span></label>{/if}
         <div class="send-controls">
           <label>Model
             <select value={effectiveModelKey ?? ""} onchange={(event) => { modelKey = event.currentTarget.value || null; effort = null; }}>
@@ -209,7 +241,7 @@
         {#if originalModel && !selectedModelOption}<p class="notice" role="status">The model used for this version is unavailable. Choose another model for new work.</p>{/if}
         {#if busy}<p class="notice" role="status">{busyReason}</p>{/if}
         {#if error}<p class="error" role="alert">{error}</p>{/if}
-        <p class="allowance">One response and one reserved schema correction. No new web search.</p>
+        <p class="allowance">Uses saved research. Up to two model calls; no new search.</p>
       </div>
     </section>
   </div>
@@ -221,8 +253,8 @@
   .version-panel,.conversation-panel { min-width:0;padding:24px; }
   .version-panel { border-right:1px solid var(--border); }
   .panel-heading { display:flex;align-items:start;justify-content:space-between;gap:14px;margin-bottom:14px; }
-  .eyebrow { color:var(--accent);font-size:11px;letter-spacing:.09em;text-transform:uppercase;font-weight:650; }
-  .version-number,.context-label { color:var(--subtle);font:12px var(--mono); }
+  .eyebrow { color:var(--muted);font-size:12px;font-weight:600; }
+  .version-number,.context-label { color:var(--subtle);font-size:12px;font-family:var(--sans); }
   h2 { margin:3px 0 10px;font-size:19px;letter-spacing:-.025em;line-height:1.3; }
   h3 { margin:28px 0 12px;font-size:13px;color:var(--muted);font-weight:600; }
   .description,.lineage { color:var(--muted);line-height:1.65;white-space:pre-wrap; }
@@ -235,6 +267,11 @@
   .version-title strong { color:var(--accent);margin-right:7px; }
   .versions small { display:block;margin-top:5px;color:var(--subtle);line-height:1.4; }
   .lineage { margin:14px 0 0;font-size:12px; }
+  .version-comparison { margin-top:18px;padding-top:14px;border-top:1px solid var(--border);color:var(--muted);font-size:13px; }
+  .version-comparison summary { color:var(--text);cursor:pointer;font-weight:600; }
+  .version-comparison p { white-space:pre-wrap;line-height:1.55;overflow-wrap:anywhere; }
+  .version-comparison div { margin-top:15px;padding-top:12px;border-top:1px solid var(--border); }
+  .version-comparison strong { display:block;color:var(--text);font-size:12px; }
   .turns { display:grid;gap:18px;margin-top:16px;max-height:550px;overflow:auto; }
   .empty { color:var(--muted);padding:30px 0;line-height:1.6; }
   .turn { border-top:1px solid var(--border);padding-top:17px; }
@@ -255,6 +292,9 @@
   .intent-buttons button { background:transparent;border:1px solid var(--border);border-radius:7px;padding:7px 10px;color:var(--muted);font-size:12px; }
   .intent-buttons button.active { border-color:#26e6a277;color:var(--accent);background:#0b1711; }
   textarea { width:100%;min-height:88px;background:#080a09;border:1px solid var(--border-strong);border-radius:8px;padding:11px;color:var(--text);resize:vertical; }
+  .research-choice { display:flex;align-items:flex-start;gap:10px;margin:11px 0;padding:11px 12px;border:1px solid var(--border);border-radius:8px;color:var(--text);font-size:13px;cursor:pointer; }
+  .research-choice input { width:16px;height:16px;accent-color:var(--accent);margin:2px 0 0;flex:none; }
+  .research-choice span { display:grid;gap:3px; }.research-choice small { color:var(--muted);font-size:12px;line-height:1.45; }
   .send-controls { display:flex;align-items:end;gap:10px;flex-wrap:wrap;margin-top:10px; }
   .send-controls label,.branch-picker { display:grid;gap:4px;color:var(--subtle);font-size:11px; }
   .send-controls select,.branch-picker select { max-width:210px;min-height:34px;background:#080a09;border:1px solid var(--border);border-radius:6px;color:var(--text);padding:5px 7px; }

@@ -26,8 +26,9 @@ import {
 
 type ResearchRequestAction = Extract<WorkflowAction, { type: "request-research" }>;
 type ApplyResearchAction = Extract<WorkflowAction, { type: "apply-research" }>;
+type KeepResearchAction = Extract<WorkflowAction, { type: "keep-research" }>;
 type RequestInput = { action: ResearchRequestAction; baseSnapshotId: string | null };
-type RequestOutput = { runId: string; problemIds?: string[]; appliedSnapshotId?: string };
+type RequestOutput = { runId: string; problemIds?: string[]; appliedSnapshotId?: string; reviewDecision?: "kept-current" };
 type AngleInput = ResearchAngleProposal;
 type AngleOutput = { runId?: string | undefined; query?: string | undefined; intent?: string | undefined;
   mode?: string | undefined; sourceCount?: number | undefined;
@@ -138,14 +139,14 @@ export class ResearchRequestService {
     return { workItemId: item.id, session: updated };
   }
 
-  /** A finished Babysit session keeps its terminal record; new research begins in a linked session. */
+  /** A finished collection keeps its terminal record; explicit research begins in a linked Babysit session. */
   continueFinishedSession(
     sessionId: string, expectedRevision: number, action: ResearchRequestAction,
   ): { workItemId: string; session: WorkflowSession } {
     this.options.db.requireImmediateTransaction();
     const previous = this.requireSession(sessionId, expectedRevision);
-    if (previous.state !== "finished" || previous.mode !== "babysit" || !previous.activeSnapshotId) {
-      throw new AppError("conflict", "Choose a finished Babysit project with saved research to continue.");
+    if (previous.state !== "finished" || !previous.activeSnapshotId) {
+      throw new AppError("conflict", "Choose a finished project with saved research to continue.");
     }
     const activeSession = this.repository.getActiveSession(previous.threadId);
     const activeRun = this.options.db.db.prepare(`SELECT 1 FROM research_runs
@@ -158,11 +159,19 @@ export class ResearchRequestService {
     if ((action.baseSnapshotId ?? null) !== base.id) {
       throw new WorkflowConflictError("REVISION_CONFLICT", "The saved research snapshot changed. Reload before continuing.");
     }
+    if (action.allowance.maxMinutes > 240) {
+      throw new AppError("validation_error", "Keep the follow-up research allowance within 240 minutes.");
+    }
     const contract = WorkflowLaunchContractSchema.parse(previous.contract);
+    const followUpLimits = {
+      maxModelCalls: action.allowance.maxModelCalls,
+      maxSearches: action.allowance.maxSearches,
+      maxMinutes: action.allowance.maxMinutes,
+    };
     const continued = this.repository.createSession({
       threadId: previous.threadId, purpose: "research-followup", mode: "babysit",
-      contract: { ...contract, purpose: "research-followup" },
-      remainingMs: contract.limits.maxMinutes * 60_000,
+      contract: { ...contract, purpose: "research-followup", mode: "babysit", limits: followUpLimits },
+      remainingMs: followUpLimits.maxMinutes * 60_000,
     });
     const materialized = materializeResearchSnapshot(this.options.db, {
       threadId: previous.threadId, baseRunId: base.materializationRunId,
@@ -367,10 +376,23 @@ export class ResearchRequestService {
         state: "paused", remainingMs: remainingMs(session), runningSince: null,
       });
     } else if (session.state === "running" && ready.length === 0) {
+      const reviewed = session.purpose === "research-followup" && this.followUpReviewComplete(session.id);
       this.repository.updateSession(session.id, session.revision, {
-        state: "waiting-for-review", remainingMs: remainingMs(session), runningSince: null,
+        state: reviewed ? "finished" : "waiting-for-review",
+        ...(reviewed ? { outcome: "partial" as const } : {}),
+        remainingMs: remainingMs(session), runningSince: null,
       });
     }
+  }
+
+  private followUpReviewComplete(sessionId: string): boolean {
+    const items = this.repository.listWorkItems(sessionId).filter((item) => item.kind === "research-request");
+    if (!items.length || items.some((item) => ["planned", "ready", "running", "unknown"].includes(item.state))) return false;
+    if (this.options.db.db.prepare(`SELECT 1 FROM research_runs
+      WHERE workflow_session_id = ? AND status IN ('queued','running') LIMIT 1`).get(sessionId)) return false;
+    const appliedIds = new Set(this.repository.listSnapshots(sessionId).flatMap((snapshot) => snapshot.selection.includedRequestIds ?? []));
+    return items.every((item) => item.state !== "succeeded" || appliedIds.has(item.id)
+      || (item.outputRefs as RequestOutput | null)?.reviewDecision === "kept-current");
   }
 
   /** The coordinator forwards terminal engine events here after the run result is durable. */
@@ -414,6 +436,22 @@ export class ResearchRequestService {
   } {
     this.options.db.requireImmediateTransaction();
     const session = this.requireSession(sessionId, expectedRevision);
+    const pendingFollowUp = session.purpose === "research-followup" && (
+      this.repository.listWorkItems(sessionId).some((item) =>
+        item.kind === "research-request" && ["planned", "ready", "running", "unknown"].includes(item.state))
+      || Boolean(this.options.db.db.prepare(`SELECT 1 FROM research_runs
+        WHERE workflow_session_id = ? AND status IN ('queued','running') LIMIT 1`).get(sessionId)));
+    if (pendingFollowUp) {
+      throw new AppError("validation_error", "Wait for every research request to settle before applying the follow-up snapshot.");
+    }
+    if (session.purpose === "research-followup") {
+      const included = new Set(action.includedRequestIds);
+      const applied = new Set(this.repository.listSnapshots(sessionId).flatMap((snapshot) => snapshot.selection.includedRequestIds ?? []));
+      const unresolved = this.repository.listWorkItems(sessionId).some((item) => item.kind === "research-request"
+        && item.state === "succeeded" && !included.has(item.id) && !applied.has(item.id)
+        && (item.outputRefs as RequestOutput | null)?.reviewDecision !== "kept-current");
+      if (unresolved) throw new AppError("validation_error", "Review every completed request before applying the follow-up snapshot.");
+    }
     const baseSnapshotId = action.baseSnapshotId ?? null;
     if (baseSnapshotId !== session.activeSnapshotId) {
       throw new WorkflowConflictError("REVISION_CONFLICT", "The active research snapshot changed. Reload before applying results.");
@@ -429,7 +467,8 @@ export class ResearchRequestService {
       const item = this.repository.getWorkItem(id);
       const output = item?.outputRefs as RequestOutput | null;
       if (!item || item.sessionId !== sessionId || item.kind !== "research-request"
-        || item.state !== "succeeded" || !output?.runId || !output.problemIds?.length) {
+        || item.state !== "succeeded" || output?.reviewDecision === "kept-current"
+        || !output?.runId || !output.problemIds?.length) {
         throw new WorkflowConflictError("INVALID_REFERENCE", "An included research request is incomplete or belongs to another project.");
       }
       return { item, output };
@@ -474,10 +513,42 @@ export class ResearchRequestService {
     });
     const updated = this.repository.updateSession(sessionId, expectedRevision, {
       activeSnapshotId: snapshot.id,
-      state: session.state,
-      runningSince: session.runningSince,
+      state: session.purpose === "research-followup" ? "finished" : session.state,
+      ...(session.purpose === "research-followup" ? { outcome: "partial" as const } : {}),
+      runningSince: session.purpose === "research-followup" ? null : session.runningSince,
     });
     return { snapshot, session: updated };
+  }
+
+  /** Record an explicit decision to retain the current snapshot without changing successful research work. */
+  keepResearch(sessionId: string, expectedRevision: number, action: KeepResearchAction): {
+    workItemId: string; session: WorkflowSession;
+  } {
+    this.options.db.requireImmediateTransaction();
+    const session = this.requireSession(sessionId, expectedRevision);
+    if (session.mode !== "babysit" || !["running", "waiting-for-review"].includes(session.state)) {
+      throw new AppError("conflict", "Review a completed research request in the active Babysit session.");
+    }
+    if ((action.baseSnapshotId ?? null) !== session.activeSnapshotId) {
+      throw new WorkflowConflictError("REVISION_CONFLICT", "The active research snapshot changed. Reload before keeping it.");
+    }
+    const item = this.repository.getWorkItem(action.requestId);
+    const output = item?.outputRefs as RequestOutput | null;
+    if (!item || item.sessionId !== sessionId || item.kind !== "research-request" || item.state !== "succeeded"
+      || !output?.runId || output.reviewDecision === "kept-current"
+      || this.repository.listSnapshots(sessionId).some((snapshot) => {
+        const included = snapshot.selection.includedRequestIds;
+        return Array.isArray(included) && included.includes(item.id);
+      })) {
+      throw new WorkflowConflictError("INVALID_REFERENCE", "Choose a completed, unapplied request from this session.");
+    }
+    this.options.db.db.prepare("UPDATE workflow_work_items SET output_refs_json = ? WHERE id = ?")
+      .run(canonicalJson({ ...output, reviewDecision: "kept-current" }), item.id);
+    const finished = session.purpose === "research-followup" && this.followUpReviewComplete(sessionId);
+    const updated = this.repository.updateSession(sessionId, expectedRevision, finished ? {
+      state: "finished", outcome: "partial", remainingMs: remainingMs(session), runningSince: null,
+    } : {});
+    return { workItemId: item.id, session: updated };
   }
 
   listRequests(sessionId: string): ResearchRequestView[] {
@@ -524,6 +595,7 @@ export class ResearchRequestService {
             };
           }),
         ...(applied ? { appliedSnapshotId: applied.id } : {}),
+        ...(output?.reviewDecision ? { reviewDecision: output.reviewDecision } : {}),
         ...(item.error ? { error: errorMessage(item.error) } : {}),
       };
       });

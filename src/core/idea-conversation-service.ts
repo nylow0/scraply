@@ -418,7 +418,7 @@ export class IdeaConversationService {
       const snapshot = this.workflows.getSnapshot(snapshotId);
       const session = snapshot && this.workflows.getSession(snapshot.sessionId);
       if (!snapshot || session?.threadId !== threadId) throw new AppError("INVALID_REFERENCE", "Evidence snapshot belongs to another project.");
-      const rows = this.options.db.db.prepare("SELECT id FROM sources WHERE research_run_id = ? ORDER BY created_at, id")
+      const rows = this.options.db.db.prepare("SELECT id FROM sources WHERE research_run_id = ? ORDER BY retrieved_at, id")
         .all(snapshot.materializationRunId) as Array<{ id: string }>;
       const membership = new Set(rows.map((row) => row.id));
       sourceIds = [...sourceIds.filter((id) => membership.has(id)), ...rows.map((row) => row.id).filter((id) => !sourceIds.includes(id))];

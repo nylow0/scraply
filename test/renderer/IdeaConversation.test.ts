@@ -63,4 +63,23 @@ describe("IdeaConversation", () => {
     expect(onSubmit.mock.calls[0]?.[0]).toMatchObject({ parentTurnId: null, expectedHeadTurnId: null });
     expect(onSubmit.mock.calls[0]?.[0].branchId).toBeUndefined();
   });
+
+  test("keeps saved evidence by default and opts into newer research for a reply", async () => {
+    const onSubmit = vi.fn().mockResolvedValue(undefined);
+    const view = render(IdeaConversation, {
+      conversation: conversation(), modelOptions, onSubmit, activeResearchSnapshotId: "snapshot-3",
+    });
+    expect(view.getByText("Changed: How it works and Description.")).toBeTruthy();
+    await fireEvent.change(view.getByLabelText("Model"), { target: { value: "test:new-model" } });
+    await fireEvent.input(view.getByLabelText("Follow-up message"), { target: { value: "Explain the saved evidence." } });
+    await fireEvent.click(view.getByRole("button", { name: "Send follow-up" }));
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
+    expect(onSubmit.mock.calls[0]?.[0].evidenceSnapshotId).toBe("snapshot-2");
+
+    await fireEvent.click(view.getByRole("checkbox", { name: /Use newer research/ }));
+    await fireEvent.input(view.getByLabelText("Follow-up message"), { target: { value: "Rethink with the newer evidence." } });
+    await fireEvent.click(view.getByRole("button", { name: "Send follow-up" }));
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(2));
+    expect(onSubmit.mock.calls[1]?.[0].evidenceSnapshotId).toBe("snapshot-3");
+  });
 });

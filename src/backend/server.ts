@@ -24,7 +24,6 @@ import { ProviderFailure, type StructuredModelClient } from "../providers/struct
 import { RuntimeClient } from "../providers/runtime";
 import { AppError, toErrorPayload } from "../shared/errors";
 import { developmentProjection } from "../shared/development-projection";
-import { optionEvidenceReferences } from "../shared/option-evidence";
 import {
   DiscardIdeaRequestSchema, ArchiveThreadRequestSchema, GenerateTitleRequestSchema, GenerateTitleResultSchema,
   ReviewSavedOpportunitiesSchema, EditOpportunityMembershipSchema, RequestFocusedExperimentSchema,
@@ -406,13 +405,21 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
       .get(threadId) as { id: string } | undefined;
     return row?.id ?? null;
   }
-  function listProblems(threadId: string, discoveryRunId?: string): ProblemCandidate[] {
+  function latestPersistedDiscoveryRun(threadId: string): string | null {
+    const row = db.db.prepare(`SELECT id FROM research_runs
+      WHERE thread_id = ? AND problem_id IS NULL
+        AND (purpose IS NULL OR purpose IN ('discovery', 'known-problem'))
+      ORDER BY created_at DESC, rowid DESC LIMIT 1`).get(threadId) as { id: string } | undefined;
+    return row?.id ?? null;
+  }
+  function listProblems(threadId: string, discoveryRunId?: string, includeIncomplete = false): ProblemCandidate[] {
     const runId = discoveryRunId ?? latestDiscoveryRun(threadId);
     if (!runId) return [];
     if (discoveryRunId && !db.db.prepare(`
       SELECT 1 FROM research_runs
-      WHERE id = ? AND thread_id = ? AND problem_id IS NULL AND status = 'completed'
-    `).get(discoveryRunId, threadId)) {
+      WHERE id = ? AND thread_id = ? AND problem_id IS NULL
+        AND (? = 1 OR status = 'completed')
+    `).get(discoveryRunId, threadId, includeIncomplete ? 1 : 0)) {
       throw new AppError("INVALID_REFERENCE", "The discovery run does not belong to this project.");
     }
     const rows = db.db.prepare(`
@@ -464,8 +471,8 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
     `).all(runId) as Array<{ problem_id: string; source_id: string }>;
     return groupRows(rows, "problem_id", (row) => String(row.source_id));
   }
-  function listRejectedProblemCandidates(threadId: string): RejectedProblemCandidate[] {
-    const runId = latestDiscoveryRun(threadId);
+  function listRejectedProblemCandidates(threadId: string, discoveryRunId?: string): RejectedProblemCandidate[] {
+    const runId = discoveryRunId ?? latestDiscoveryRun(threadId);
     if (!runId) return [];
     return (db.db.prepare(`
       SELECT id, statement, reason
@@ -699,8 +706,8 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
     }));
   }
   function researchExport(threadId: string) {
-    const runId = latestDiscoveryRun(threadId);
-    if (!runId) throw new AppError("conflict", "Research must finish before it can be exported.");
+    const runId = latestDiscoveryRun(threadId) ?? latestPersistedDiscoveryRun(threadId);
+    if (!runId) throw new AppError("conflict", "No saved research run is available to export.");
     const thread = db.db.prepare("SELECT id, title FROM threads WHERE id = ?").get(threadId) as { id: string; title: string };
     const run = db.db.prepare(`
       SELECT id, status, config_json, completion_reason, created_at, updated_at
@@ -731,7 +738,7 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
         ? {} : { demandEvidenceUncertainty: String(factor.demand_evidence_uncertainty) }),
       createdAt: String(factor.created_at),
     }));
-    const problems = listProblems(threadId);
+    const problems = listProblems(threadId, runId, true);
     const verdictSourceIdsByProblem = listProblemVerdictSourceIdsForRun(runId);
     // The archived scope is the one this run actually used; the thread's live scope may have been edited since.
     const archivedScope = db.db.prepare(`
@@ -745,6 +752,7 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
       thread,
       researchRun: {
         id: String(run.id), status: String(run.status), completionReason: run.completion_reason === null ? null : String(run.completion_reason),
+        ...(run.status === "completed" ? {} : { exportNote: "This run did not complete; the export contains only saved artifacts." }),
         createdAt: String(run.created_at), completedAt: String(run.updated_at), config: parsedConfig.success ? parsedConfig.data : archivedConfig,
         usage: runUsage(runId),
       },
@@ -761,7 +769,7 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
         ...problem,
         verdictSourceIds: verdictSourceIdsByProblem.get(problem.id) ?? [],
       })),
-      rejectedProblemCandidates: listRejectedProblemCandidates(threadId),
+      rejectedProblemCandidates: listRejectedProblemCandidates(threadId, runId),
       evidenceFollowUps: listEvidenceFollowUpExports(threadId),
       opportunityReview: opportunities.exportReview(threadId),
       opportunityExploration: exploration.find(threadId) ? exploration.exportExploration(threadId) : null,
@@ -832,6 +840,23 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
   }
 
   function ideaHistory(threadId: string) {
+    const workflowOutcomes = (db.db.prepare(`SELECT id FROM workflow_sessions
+      WHERE thread_id = ? AND purpose != 'idea-turn' ORDER BY started_at, id`)
+      .all(threadId) as Array<{ id: string }>).map(({ id }) => {
+      const summary = workflowCoordinator.summary(id);
+      const provenance = {
+        sessionId: id, mode: summary.mode, purpose: summary.purpose, state: summary.state,
+        outcome: summary.outcome, stopReason: summary.stopReason,
+        ...(summary.researchApplied ? { researchApplied: true } : {}),
+        activeSnapshotId: summary.activeSnapshotId, selectedProblemIds: summary.selectedProblemIds,
+      };
+      return summary.purpose === "research-followup" ? provenance : {
+        ...provenance, targetKind: summary.targetKind,
+        requested: summary.counts.requested, accepted: summary.counts.accepted,
+        missing: summary.counts.missing, failed: summary.counts.failed,
+        unresolved: summary.counts.unresolved,
+      };
+    });
     const versions = db.db.prepare(`SELECT lineage.* FROM solution_lineage lineage
       JOIN solutions solution ON solution.id = lineage.solution_id
       JOIN research_runs run ON run.id = solution.research_run_id
@@ -866,6 +891,7 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
     const snapshots = evidenceSnapshotHistory(threadId);
     return {
       schemaVersion: 1, threadId,
+      workflowOutcomes,
       selectedVersions: selections.map((row) => ({ rootSolutionId: row.root_solution_id, selectedSolutionId: row.selected_solution_id })),
       versions: [...versions, ...standaloneRoots.map((root) => ({
         solution_id: root.id, root_solution_id: root.id, parent_solution_id: null,
@@ -901,6 +927,21 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
     const roots = [...new Set([...history.versions.map((version) => version.rootSolutionId),
       ...history.turns.map((turn) => turn.rootSolutionId)])];
     const lines = ["# Idea history", "", "Saved versions, conversation branches, and evidence provenance for this project.", ""];
+    if (history.workflowOutcomes.length) {
+      lines.push("## Run outcomes", "");
+      for (const outcome of history.workflowOutcomes) {
+        lines.push(`### ${markdownCell(outcome.purpose)} · \`${outcome.sessionId}\``, "",
+          `Mode: ${outcome.mode}. State: ${outcome.state}. Outcome: ${outcome.outcome ?? "in progress"}.`);
+        if ("targetKind" in outcome) {
+          lines.push(`Target: ${outcome.targetKind}. Requested: ${outcome.requested}. Accepted: ${outcome.accepted}. Missing: ${outcome.missing}. Failed: ${outcome.failed}. Unresolved: ${outcome.unresolved}.`);
+        } else {
+          lines.push(`Research applied: ${outcome.researchApplied === true ? "yes" : "no"}.`);
+        }
+        lines.push(
+          `Evidence snapshot: ${outcome.activeSnapshotId ? `\`${outcome.activeSnapshotId}\`` : "none"}. Selected findings: ${outcome.selectedProblemIds.length ? outcome.selectedProblemIds.map((id) => `\`${id}\``).join(", ") : "none"}.`,
+          ...(outcome.stopReason ? [`Reason: ${markdownCell(outcome.stopReason)}`] : []), "");
+      }
+    }
     for (const rootId of roots) {
       const root = ideaById.get(rootId);
       lines.push(`## ${root ? markdownCell(root.mechanism) : "Idea"}`, "", `Root idea: \`${rootId}\`. Selected version: \`${selectedByRoot.get(rootId) ?? rootId}\`.`, "");
@@ -1198,7 +1239,10 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
       }
       if (method === "GET" && route.startsWith("/ideas/")) {
         const { ideaId } = GetIdeaDetailRequestSchema.parse({ ideaId: route.slice(7) });
-        const idea = listSolutions(activeThreadId ?? "", true, ideaId)[0];
+        const owner = db.db.prepare(`SELECT run.thread_id FROM solutions solution
+          JOIN research_runs run ON run.id = solution.research_run_id WHERE solution.id = ?`)
+          .get(ideaId) as { thread_id: string } | undefined;
+        const idea = owner ? listSolutions(owner.thread_id, true, ideaId)[0] : null;
         if (!idea) throw new AppError("not_found", "Solution not found.");
         return sendJson(res, 200, idea);
       }
@@ -1582,6 +1626,18 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
       if (route === "/ideas/export") {
         const input = ExportIdeasRequestSchema.parse(body); requireThread(input.threadId); const ideas = listSolutions(input.threadId);
         const thread = db.db.prepare("SELECT title FROM threads WHERE id = ?").get(input.threadId) as { title: string };
+        const citedIds = [...new Set(ideas.flatMap((idea) => [
+          ...(idea.supportingEvidenceIds ?? []), ...(idea.contraryEvidenceIds ?? []),
+        ]))];
+        const citedSources = citedIds.length ? db.db.prepare(`SELECT s.id, s.title, s.canonical_url AS url
+          FROM sources s JOIN research_runs r ON r.id = s.research_run_id
+          WHERE r.thread_id = ? AND s.id IN (${placeholders(citedIds)})`)
+          .all(input.threadId, ...citedIds) as Array<{ id: string; title: string; url: string }> : [];
+        const sourceById = new Map(citedSources.map((source) => [source.id, source]));
+        const exportIdeas: ExportIdea[] = ideas.map((idea) => ({ ...idea,
+          sourceReferences: [...new Set([...(idea.supportingEvidenceIds ?? []), ...(idea.contraryEvidenceIds ?? [])])]
+            .flatMap((id) => { const source = sourceById.get(id); return source ? [source] : []; }),
+        }));
         const emptyResults = db.db.prepare(`
             SELECT r.id, r.workflow_version, p.id AS problem_id, p.statement, p.discovery_run_id
             FROM research_runs r JOIN problems p ON p.id = r.problem_id
@@ -1599,8 +1655,8 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
               : `# ${empty.statement}\n\nWorkflow: v${empty.workflow_version}. No options proposed.\n\nThis completed run produced no useful option. This is not evidence that the problem is solved.\n`;
             return { filename: `${slug(empty.statement)}-no-options-${empty.problem_id}.${input.format === "json" ? "json" : "md"}`, content };
         });
-        const files = [...new Set(ideas.map((idea) => idea.problemId))].map((problemId, index) => {
-          const group = ideas.filter((idea) => idea.problemId === problemId);
+        const files = [...new Set(exportIdeas.map((idea) => idea.problemId))].map((problemId, index) => {
+          const group = exportIdeas.filter((idea) => idea.problemId === problemId);
           const filename = `${slug(group[0]!.problemStatement)}-${index + 1}.${input.format === "json" ? "json" : "md"}`;
           const exportedGroup = input.format === "json"
             ? group.map((idea) => {
@@ -1777,7 +1833,14 @@ function errorMessage(error: unknown, fallback: string): string {
   return error instanceof Error ? error.message : fallback;
 }
 
-function renderMarkdown(ideas: SolutionView[]): string {
+type ExportIdea = SolutionView & { sourceReferences: Array<{ id: string; title: string; url: string }> };
+
+function exportEvidenceReferences(idea: ExportIdea, ids: readonly string[]) {
+  const sources = new Map(idea.sourceReferences.map((source) => [source.id, source]));
+  return [...new Set(ids)].map((id) => sources.get(id) ?? { id, title: `Source unavailable (${id})`, url: null });
+}
+
+function renderMarkdown(ideas: ExportIdea[]): string {
   if (ideas.some((idea) => idea.workflowVersion === 2)) return renderDecisionMarkdown(ideas);
   const first = ideas[0]!;
   const evidence = first.factors.length > 0
@@ -1802,7 +1865,7 @@ function renderMarkdown(ideas: SolutionView[]): string {
     "### Risks", "", ...idea.risks.map((risk) => `- ${risk.likelihood} / ${risk.impact}: ${risk.description}${risk.mitigations.length ? `\n  - Proposed response: ${risk.mitigations.map((m) => `${m.approach}; fails if ${m.failsIf}`).join(" | ")}` : ""}`), "",
   ])].join("\n");
 }
-function renderDecisionMarkdown(ideas: SolutionView[]): string {
+function renderDecisionMarkdown(ideas: ExportIdea[]): string {
   const factors = [...new Map(ideas.flatMap((idea) => idea.factors).map((factor) => [factor.id, factor])).values()];
   const sources = [...new Map(ideas.flatMap((idea) => idea.contrarySources ?? []).map((source) => [source.id, source])).values()];
   const options = ideas.flatMap((idea) => {
@@ -1820,9 +1883,9 @@ function renderDecisionMarkdown(ideas: SolutionView[]): string {
         ...idea.riskEvaluation.unknowns.map((unknown) => `- Unknown: ${unknown}`), "",
       ] : []),
       "## Sources supporting this option", "",
-      ...optionEvidenceReferences(idea, idea.supportingEvidenceIds ?? []).map((source) => source.url ? `- [${source.title}](${source.url})` : `- ${source.title}`), "",
+      ...exportEvidenceReferences(idea, idea.supportingEvidenceIds ?? []).map((source) => source.url ? `- [${source.title}](${source.url})` : `- ${source.title}`), "",
       "## Sources challenging this option", "",
-      ...optionEvidenceReferences(idea, idea.contraryEvidenceIds ?? []).map((source) => source.url ? `- [${source.title}](${source.url})` : `- ${source.title}`), "",
+      ...exportEvidenceReferences(idea, idea.contraryEvidenceIds ?? []).map((source) => source.url ? `- [${source.title}](${source.url})` : `- ${source.title}`), "",
       "These roles are the model's assessment of this option. Shared problem evidence is in the appendix.", "",
       ...(analysis ? [
         "## Model analysis, not observed results", "", ...analysis.consequences.map((item) => `- ${item.direction}: ${item.description}. Affects ${item.affects}. ${item.rationale}`), "",

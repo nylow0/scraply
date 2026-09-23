@@ -36,13 +36,17 @@ The progress view shows the current stage, accepted ideas versus the target, sav
 
 A settled Vibe run opens the idea collection. It may contain the target, a useful partial set, or zero qualifying ideas. A provider or authentication failure should end with the work saved and a reason you can act on. A request with an unknown completion is conservatively counted and is not silently replayed.
 
+After a Vibe run finishes, open **Research** to ask a separate question or revisit a finding. This starts a new, explicitly limited research follow-up; it does not reopen the finished Vibe run or change its recorded idea count. Compare the result before applying it to a new evidence snapshot. The original ideas stay saved.
+
 ## Review ideas and explore one
 
-Scraply aims for distinct, eligible ideas, then makes at most two targeted attempts to fill gaps within the saved budget. It never pads the count. Review the accepted count, the requested count, unresolved comparisons, and the stopping reason. Variants and duplicates do not count as new business families. The saved-idea review button compares the current collection without generating more options; membership edits keep the original work and append to decision history.
+Scraply aims for distinct, eligible ideas, then makes at most two fill rounds, split into small assigned batches, within the saved budget. It never pads the count. Review the accepted count, the requested count, unresolved comparisons, and the stopping reason. Variants and duplicates do not count as new business families. The saved-idea review button compares the current collection without generating more options; membership edits keep the original work and append to decision history.
 
 Open an idea to read its evidence, assumptions, risks, and possible consequences. A source citation means the saved excerpt can be traced, not that the proposed business outcome has happened. The independent risk evaluation is a model judgment. Record your own decision and any real-world test outcome separately.
 
 The idea's conversation can explain the saved rationale, discuss other directions, or rethink the mechanism. A rethink saves a linked version. Earlier versions, their evidence snapshots, and their reviews remain readable. A conversation reply by itself does not add an idea to the collection. Revising an idea does not make an earlier risk review apply to the new version.
+
+By default, a reply uses the selected version's saved research. If you applied later research, check **Use newer research** before sending a reply that should consider the current snapshot. The reply records the snapshot it used. A rethink based on it creates a new version while the earlier idea, conversation, and evidence stay in history. Compare versions in the idea view; changing the selected version does not rerun the model.
 
 For a selected startup idea, Scraply can draft a focused experiment and review whether it tests one assumption. The draft specifies a metric, baseline, eligible cases, observation window, outcome rules, and spending limit. A review may mark it **needs revision**. A generated plan is not a customer experiment that has been run; check its thresholds before using it. If one decisive fact is missing, you can request one evidence follow-up for that run. Completed and failed follow-ups both consume its one-question limit.
 
@@ -54,4 +58,4 @@ Saved v1 projects remain readable and exportable. New research uses the current 
 
 New development runs can include recorded observations from earlier completed experiments on the same problem in the same project. Scraply labels them as your reports, with the original mechanism and decision attached. The run snapshots up to five recent results and 12,000 characters; later edits do not rewrite that snapshot.
 
-Export research as JSON and ideas or analyses as Markdown or JSON. Exported files are portable records, not a full backup of the project database. [Data and privacy](data-and-privacy.md) explains full backups, local logs, credentials, and what gets sent to providers. [Troubleshooting](troubleshooting.md) covers interrupted and partial runs.
+Export research as JSON and ideas or analyses as Markdown or JSON. Idea exports include saved version lineage, conversation turns, and evidence snapshot references where present. Exported files are portable records, not a full backup of the project database. [Data and privacy](data-and-privacy.md) explains full backups, local logs, credentials, and what gets sent to providers. [Troubleshooting](troubleshooting.md) covers interrupted and partial runs.

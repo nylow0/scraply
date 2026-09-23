@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { startBackend, type BackendHandle } from "../../src/backend/server";
 import { materializeResearchSnapshot } from "../../src/core/research-revisions";
 import { ResearchRequestService } from "../../src/core/research-request-service";
+import { WorkflowCoordinator } from "../../src/core/workflow-coordinator";
 import { WorkflowExecution } from "../../src/core/workflow-execution";
 import { DatabaseClient } from "../../src/db/client";
 import { DiscoveryRepository } from "../../src/db/repositories/discovery";
@@ -108,6 +109,9 @@ describe("research snapshot materialization", () => {
     expect(applied.snapshot.selection.sourceProblemIds).toEqual([oldProblemId, "new-question-finding"]);
     expect(repository.getSession(sessionId)?.activeSnapshotId).toBe(applied.snapshot.id);
     expect(repository.getSnapshot(snapshotId)).not.toBeNull();
+    expect(() => client.immediateTransaction(() => service.keepResearch(sessionId, applied.session.revision, {
+      type: "keep-research", requestId: admitted.workItemId, baseSnapshotId: applied.snapshot.id,
+    }))).toThrow("completed, unapplied request");
     expect(() => client.immediateTransaction(() => service.applyResearch(sessionId, revision, {
       type: "apply-research", baseSnapshotId: snapshotId,
       includedRequestIds: [admitted.workItemId], replacements: [],
@@ -356,6 +360,239 @@ describe("research snapshot materialization", () => {
     expect(input.action.baseSnapshotId).toBe(linked.id);
     client.close();
   });
+
+  test("a finished Vibe session accepts explicit research and Apply closes only the linked review", () => {
+    const { client, repository, sessionId, snapshotId } = workflowFixture({ mode: "vibe", maxSearches: 0 });
+    client.immediateTransaction(() => repository.updateSession(sessionId, repository.getSession(sessionId)!.revision, {
+      state: "finished", outcome: "partial",
+    }));
+    const original = repository.getSession(sessionId)!;
+    const service = new ResearchRequestService({
+      db: client, engine: () => ({ resumeRun: async () => {} }),
+      modelClient: () => { throw new Error("No model call expected"); },
+    });
+    const continued = client.immediateTransaction(() => service.continueFinishedSession(sessionId, original.revision, {
+      type: "request-research", kind: "new-question", question: "What changed in buyer approval?",
+      baseSnapshotId: snapshotId,
+      model: { providerId: "openai-subscription", modelId: "test-model" }, reasoningEffort: "medium",
+      allowance: { maxModelCalls: 12, maxSearches: 2, maxMinutes: 10 },
+    }));
+    expect(continued.session.mode).toBe("babysit");
+    expect(continued.session.purpose).toBe("research-followup");
+    expect(continued.session.contract).toMatchObject({ mode: "babysit", purpose: "research-followup",
+      limits: { maxModelCalls: 12, maxSearches: 2, maxMinutes: 10 } });
+    expect(continued.session.remainingMs).toBe(10 * 60_000);
+    expect(repository.getSession(sessionId)).toEqual(original);
+    const linkedId = continued.session.activeSnapshotId!;
+    saveFinding(client, "run-new", "new-vibe-finding", "source-vibe", "factor-vibe", "Buyers now approve in-app");
+    client.immediateTransaction(() => {
+      repository.updateWorkItem(continued.workItemId, "running");
+      repository.updateWorkItem(continued.workItemId, "succeeded", {
+        outputRefs: { runId: "run-new", problemIds: ["new-vibe-finding"] },
+      });
+    });
+    const queued = client.immediateTransaction(() => repository.createWorkItem({
+      sessionId: continued.session.id, kind: "research-request", scopeKey: "queued-second-question",
+      state: "ready", input: { action: { type: "request-research", kind: "new-question",
+        question: "What alternatives remain?" }, baseSnapshotId: linkedId },
+    }));
+    const beforeApply = repository.getSession(continued.session.id)!;
+    expect(() => client.immediateTransaction(() => service.applyResearch(continued.session.id, beforeApply.revision, {
+      type: "apply-research", baseSnapshotId: linkedId, includedRequestIds: [continued.workItemId], replacements: [],
+    }))).toThrow("Wait for every research request to settle");
+    client.immediateTransaction(() => repository.updateWorkItem(queued.id, "skipped"));
+    const applied = client.immediateTransaction(() => service.applyResearch(continued.session.id, beforeApply.revision, {
+      type: "apply-research", baseSnapshotId: linkedId, includedRequestIds: [continued.workItemId], replacements: [],
+    }));
+    expect(applied.session).toMatchObject({ state: "finished", outcome: "partial", activeSnapshotId: applied.snapshot.id });
+    expect(applied.snapshot.parentSnapshotId).toBe(linkedId);
+    expect(applied.snapshot.selection.problemIds).toHaveLength(2);
+    expect(repository.getActiveSession("project-1")).toBeNull();
+    expect(repository.getSession(sessionId)).toEqual(original);
+    expect(repository.listWorkItems(continued.session.id).filter((item) => item.kind === "generate-ideas")).toEqual([]);
+    const coordinator = new WorkflowCoordinator({ db: client, engine: () => { throw new Error("No generation expected"); },
+      capabilities: async () => ({ nativeConnected: false, searchReady: { exa: false, perplexity: false }, modelOptions: [] }),
+      listProblems: () => [], onProgress: () => {} });
+    expect(coordinator.summary(continued.session.id)).toMatchObject({ researchApplied: true,
+      stopReason: "Selected research was applied to a new evidence snapshot." });
+    expect(coordinator.summary(sessionId).researchApplied).toBeUndefined();
+    client.close();
+  });
+
+  test("keeping a no-result Vibe follow-up settles only after every completed request is reviewed", async () => {
+    const { client, repository, sessionId, snapshotId } = workflowFixture({ mode: "vibe", maxSearches: 0 });
+    client.immediateTransaction(() => repository.updateSession(sessionId, repository.getSession(sessionId)!.revision, {
+      state: "finished", outcome: "target-met",
+    }));
+    const original = repository.getSession(sessionId)!;
+    const service = new ResearchRequestService({ db: client,
+      engine: () => ({ resumeRun: async () => {} }),
+      modelClient: () => { throw new Error("No research dispatch expected"); },
+    });
+    const continued = client.immediateTransaction(() => service.continueFinishedSession(sessionId, original.revision, {
+      type: "request-research", kind: "redo", question: "Find newer evidence",
+      targetFindingId: original.activeSnapshotId ? repository.getSnapshot(original.activeSnapshotId)!.selection.problemIds[0]! : "",
+      baseSnapshotId: snapshotId, model: { providerId: "openai-subscription", modelId: "test-model" },
+      reasoningEffort: "medium", allowance: { maxModelCalls: 5, maxSearches: 2, maxMinutes: 10 },
+    }));
+    const second = client.immediateTransaction(() => {
+      repository.updateWorkItem(continued.workItemId, "running");
+      repository.updateWorkItem(continued.workItemId, "succeeded", { outputRefs: { runId: "run-new", problemIds: [] } });
+      const item = repository.createWorkItem({ sessionId: continued.session.id, kind: "research-request",
+        scopeKey: "another-finished-question", state: "ready",
+        input: { action: { type: "request-research", kind: "new-question", question: "Any other new evidence?" },
+          baseSnapshotId: continued.session.activeSnapshotId } });
+      repository.updateWorkItem(item.id, "running");
+      repository.updateWorkItem(item.id, "succeeded", { outputRefs: { runId: "run-new", problemIds: [] } });
+      repository.updateSession(continued.session.id, repository.getSession(continued.session.id)!.revision, {
+        state: "waiting-for-review", runningSince: null,
+      });
+      return item;
+    });
+    const foreign = client.immediateTransaction(() => {
+      const item = repository.createWorkItem({ sessionId, kind: "research-request", scopeKey: "older-session-question",
+        state: "ready", input: { action: { type: "request-research", kind: "new-question", question: "Earlier question" },
+          baseSnapshotId: snapshotId } });
+      repository.updateWorkItem(item.id, "running");
+      repository.updateWorkItem(item.id, "succeeded", { outputRefs: { runId: "run-old", problemIds: [] } });
+      return item;
+    });
+    const coordinator = new WorkflowCoordinator({ db: client,
+      engine: () => { throw new Error("No generation expected"); },
+      capabilities: async () => ({ nativeConnected: false, searchReady: { exa: false, perplexity: false }, modelOptions: [] }),
+      listProblems: () => [], onProgress: () => {}, researchService: service,
+    });
+    const before = repository.getSession(continued.session.id)!;
+    const command = { threadId: "project-1", sessionId: continued.session.id,
+      expectedRevision: before.revision, clientCommandId: "keep-first-result",
+      action: { type: "keep-research", requestId: continued.workItemId, baseSnapshotId: before.activeSnapshotId } };
+    const first = await coordinator.command(command);
+    expect(first.summary.state).toBe("waiting-for-review");
+    expect(first.summary.researchApplied).toBeUndefined();
+    expect(first.summary.activeSnapshotId).toBe(before.activeSnapshotId);
+    expect(service.listRequests(continued.session.id).find((item) => item.id === continued.workItemId))
+      .toMatchObject({ status: "completed", reviewDecision: "kept-current", resultFindings: [] });
+    expect(repository.getWorkItem(continued.workItemId)?.outputRefs)
+      .toMatchObject({ runId: "run-new", problemIds: [], reviewDecision: "kept-current" });
+    await expect(coordinator.command({ ...command, clientCommandId: "stale-keep", action: {
+      type: "keep-research", requestId: second.id, baseSnapshotId: before.activeSnapshotId,
+    } })).rejects.toMatchObject({ code: "REVISION_CONFLICT" });
+    await expect(coordinator.command({ ...command, expectedRevision: first.revision, clientCommandId: "foreign-keep",
+      action: { type: "keep-research", requestId: foreign.id, baseSnapshotId: before.activeSnapshotId },
+    })).rejects.toMatchObject({ code: "INVALID_REFERENCE" });
+    const finished = await coordinator.command({ ...command, expectedRevision: first.revision,
+      clientCommandId: "keep-second-result",
+      action: { type: "keep-research", requestId: second.id, baseSnapshotId: before.activeSnapshotId } });
+    expect(finished.summary).toMatchObject({ state: "finished", outcome: "partial",
+      activeSnapshotId: before.activeSnapshotId });
+    expect(finished.summary.researchApplied).toBeUndefined();
+    expect(finished.summary.stopReason).toContain("Current research was kept");
+    expect(repository.listSnapshots(continued.session.id)).toHaveLength(1);
+    expect(repository.getSession(sessionId)).toEqual(original);
+    client.close();
+  });
+
+  test("keeping research in an initial Babysit checkpoint preserves the generation choice", () => {
+    const { client, repository, sessionId, snapshotId } = workflowFixture();
+    const item = client.immediateTransaction(() => {
+      const created = repository.createWorkItem({ sessionId, kind: "research-request", scopeKey: "unhelpful-question",
+        state: "ready", input: { action: { type: "request-research", kind: "new-question", question: "Any more evidence?" },
+          baseSnapshotId: snapshotId } });
+      repository.updateWorkItem(created.id, "running");
+      repository.updateWorkItem(created.id, "succeeded", { outputRefs: { runId: "run-new", problemIds: [] } });
+      return created;
+    });
+    const service = new ResearchRequestService({ db: client,
+      engine: () => ({ resumeRun: async () => {} }),
+      modelClient: () => { throw new Error("No research dispatch expected"); },
+    });
+    const current = repository.getSession(sessionId)!;
+    const kept = client.immediateTransaction(() => service.keepResearch(sessionId, current.revision, {
+      type: "keep-research", requestId: item.id, baseSnapshotId: snapshotId,
+    }));
+    expect(kept.session).toMatchObject({ state: "waiting-for-review", activeSnapshotId: snapshotId, outcome: null });
+    expect(service.listRequests(sessionId).find((request) => request.id === item.id)?.reviewDecision).toBe("kept-current");
+    client.close();
+  });
+
+  test("keeping one result does not turn an uncertain sibling into ordinary partial completion", () => {
+    const { client, repository, sessionId, snapshotId, oldProblemId } = workflowFixture({ mode: "vibe" });
+    client.immediateTransaction(() => repository.updateSession(sessionId, repository.getSession(sessionId)!.revision, {
+      state: "finished", outcome: "target-met",
+    }));
+    const service = new ResearchRequestService({ db: client,
+      engine: () => ({ resumeRun: async () => {} }),
+      modelClient: () => { throw new Error("No research dispatch expected"); },
+    });
+    const continued = client.immediateTransaction(() => service.continueFinishedSession(sessionId,
+      repository.getSession(sessionId)!.revision, {
+        type: "request-research", kind: "redo", question: "Check newer evidence",
+        targetFindingId: oldProblemId, baseSnapshotId: snapshotId,
+        model: { providerId: "openai-subscription", modelId: "test-model" }, reasoningEffort: "medium",
+        allowance: { maxModelCalls: 5, maxSearches: 2, maxMinutes: 10 },
+      }));
+    client.immediateTransaction(() => {
+      repository.updateWorkItem(continued.workItemId, "running");
+      repository.updateWorkItem(continued.workItemId, "succeeded", { outputRefs: { runId: "run-new", problemIds: [] } });
+      const uncertain = repository.createWorkItem({ sessionId: continued.session.id, kind: "research-request",
+        scopeKey: "uncertain-sibling", state: "ready",
+        input: { action: { type: "request-research", kind: "new-question", question: "Another question" },
+          baseSnapshotId: continued.session.activeSnapshotId } });
+      repository.updateWorkItem(uncertain.id, "running");
+      repository.updateWorkItem(uncertain.id, "unknown", { error: { message: "Provider completion is uncertain." } });
+      repository.updateSession(continued.session.id, repository.getSession(continued.session.id)!.revision, {
+        state: "waiting-for-review", runningSince: null,
+      });
+    });
+    const current = repository.getSession(continued.session.id)!;
+    const kept = client.immediateTransaction(() => service.keepResearch(current.id, current.revision, {
+      type: "keep-research", requestId: continued.workItemId, baseSnapshotId: current.activeSnapshotId!,
+    }));
+    expect(kept.session).toMatchObject({ state: "waiting-for-review", outcome: null });
+    expect(repository.listWorkItems(current.id).find((item) => item.state === "unknown")).toBeDefined();
+    client.close();
+  });
+
+  test("applying one result cannot settle a follow-up with an uncertain sibling", () => {
+    const { client, repository, sessionId, snapshotId } = workflowFixture({ mode: "vibe" });
+    client.immediateTransaction(() => repository.updateSession(sessionId, repository.getSession(sessionId)!.revision, {
+      state: "finished", outcome: "target-met",
+    }));
+    const service = new ResearchRequestService({ db: client,
+      engine: () => ({ resumeRun: async () => {} }),
+      modelClient: () => { throw new Error("No research dispatch expected"); },
+    });
+    const continued = client.immediateTransaction(() => service.continueFinishedSession(sessionId,
+      repository.getSession(sessionId)!.revision, {
+        type: "request-research", kind: "new-question", question: "Any new buying evidence?",
+        baseSnapshotId: snapshotId, model: { providerId: "openai-subscription", modelId: "test-model" },
+        reasoningEffort: "medium", allowance: { maxModelCalls: 5, maxSearches: 2, maxMinutes: 10 },
+      }));
+    saveFinding(client, "run-new", "new-apply-finding", "new-apply-source", "new-apply-factor", "Buyers approved a new workflow");
+    client.immediateTransaction(() => {
+      repository.updateWorkItem(continued.workItemId, "running");
+      repository.updateWorkItem(continued.workItemId, "succeeded", {
+        outputRefs: { runId: "run-new", problemIds: ["new-apply-finding"] },
+      });
+      const uncertain = repository.createWorkItem({ sessionId: continued.session.id, kind: "research-request",
+        scopeKey: "unknown-sibling-for-apply", state: "ready",
+        input: { action: { type: "request-research", kind: "new-question", question: "Another question" },
+          baseSnapshotId: continued.session.activeSnapshotId } });
+      repository.updateWorkItem(uncertain.id, "running");
+      repository.updateWorkItem(uncertain.id, "unknown", { error: { message: "Provider completion is uncertain." } });
+      repository.updateSession(continued.session.id, repository.getSession(continued.session.id)!.revision, {
+        state: "waiting-for-review", runningSince: null,
+      });
+    });
+    const before = repository.getSession(continued.session.id)!;
+    expect(() => client.immediateTransaction(() => service.applyResearch(before.id, before.revision, {
+      type: "apply-research", baseSnapshotId: before.activeSnapshotId!,
+      includedRequestIds: [continued.workItemId], replacements: [],
+    }))).toThrow("Wait for every research request to settle");
+    expect(repository.getSession(before.id)).toEqual(before);
+    expect(repository.listSnapshots(before.id)).toHaveLength(1);
+    client.close();
+  });
 });
 
 test("finished Babysit research command survives backend reopening with linked request history", async () => {
@@ -435,7 +672,8 @@ test("finished Babysit research command survives backend reopening with linked r
   }
 });
 
-function workflowFixture(options: { researchInstruction?: string; auditResearchText?: string } = {}, directory?: string): {
+function workflowFixture(options: { researchInstruction?: string; auditResearchText?: string;
+  mode?: "babysit" | "vibe"; maxSearches?: number } = {}, directory?: string): {
   client: DatabaseClient; repository: WorkflowRepository; sessionId: string; snapshotId: string; oldProblemId: string;
 } {
   const client = setup(directory);
@@ -443,13 +681,13 @@ function workflowFixture(options: { researchInstruction?: string; auditResearchT
   const repository = new WorkflowRepository(client);
   const sessionId = "workflow-session";
   client.immediateTransaction(() => repository.createSession({
-    id: sessionId, threadId: "project-1", purpose: "discovery", mode: "babysit",
+    id: sessionId, threadId: "project-1", purpose: "discovery", mode: options.mode ?? "babysit",
     contract: {
-      contractVersion: 1, purpose: "discovery", mode: "babysit", brief: "Research manual filing",
+      contractVersion: 1, purpose: "discovery", mode: options.mode ?? "babysit", brief: "Research manual filing",
       scope: { title: "Operations", audience: "Small teams", domain: "Filing", observations: "Manual entries repeat", offLimits: [] },
       runConfig: DEFAULT_RUN_CONFIG,
       targets: { kind: "per-problem", ideaCount: 3 },
-      limits: { maxMinutes: 60, maxModelCalls: 50, maxSearches: 30 },
+      limits: { maxMinutes: 60, maxModelCalls: 50, maxSearches: options.maxSearches ?? 30 },
       instructions: { ...(options.researchInstruction ? { research: options.researchInstruction } : {}) },
       resolvedInstructions: { research: options.auditResearchText ?? "", ideas: "", review: "" },
       instructionHashes: { research: "hash-research", ideas: "hash-ideas", review: "hash-review" },

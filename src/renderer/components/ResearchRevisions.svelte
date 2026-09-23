@@ -10,7 +10,7 @@
 
   let {
     requests, findings, activeSnapshotId, modelOptions, researchModel, researchReasoningEffort,
-    busy, readOnly = false, onRequest, onApply, onOpenSource,
+    busy, readOnly = false, onRequest, onApply, onKeep, onOpenSource,
   }: {
     requests: ResearchRequestView[];
     findings: ResearchFindingView[];
@@ -24,6 +24,7 @@
       model: ModelRef; reasoningEffort: string; baseSnapshotId: string | null;
     }) => Promise<void>;
     onApply: (baseSnapshotId: string | null, includedRequestIds: string[], replacements: ResearchReplacement[]) => Promise<void>;
+    onKeep: (requestId: string, baseSnapshotId: string | null) => Promise<void>;
     onOpenSource: (url: string) => Promise<void>;
   } = $props();
 
@@ -44,6 +45,7 @@
   let maxMinutes = $state(10);
   let submitting = $state(false);
   let applying = $state(false);
+  let keeping = $state(false);
   let localError = $state("");
   let selectedRequestId = $state<string | null>(null);
   let includedIds = $state<string[]>([]);
@@ -53,11 +55,11 @@
   let anglePreview = $derived(previewResearchAngles(kind, enteredAngles,
     { maxSearches: kind === "reevaluate" ? 0 : maxSearches }));
   let minimumModelCalls = $derived(kind === "reevaluate" ? 1 : researchSearchAllocation(maxSearches).modelCalls);
-  let includedRequests = $derived(requests.filter((item) => !item.archived && includedIds.includes(item.id)));
-  let pendingCount = $derived(requests.filter((item) => !item.archived && item.status === "completed" && !item.appliedSnapshotId).length);
+  let includedRequests = $derived(requests.filter((item) => !item.archived && !item.reviewDecision && includedIds.includes(item.id)));
+  let pendingCount = $derived(requests.filter((item) => !item.archived && item.status === "completed" && !item.appliedSnapshotId && !item.reviewDecision).length);
   let missingReplacement = $derived(includedRequests.some((item) =>
     item.kind !== "new-question" && (!item.targetFindingId || !chosenReplacements[item.id])));
-  let canApply = $derived(includedRequests.length > 0 && !missingReplacement && !busy && !applying);
+  let canApply = $derived(includedRequests.length > 0 && !missingReplacement && !busy && !applying && !keeping);
 
   function chooseKind(next: ResearchRequestKind) {
     kind = next;
@@ -142,6 +144,21 @@
       applying = false;
     }
   }
+
+  async function keepCurrent(requestId: string) {
+    if (busy || keeping || readOnly) return;
+    localError = "";
+    keeping = true;
+    try {
+      await onKeep(requestId, activeSnapshotId);
+      includedIds = includedIds.filter((id) => id !== requestId);
+      selectedRequestId = null;
+    } catch (error) {
+      localError = error instanceof Error ? error.message : "The review decision could not be saved.";
+    } finally {
+      keeping = false;
+    }
+  }
 </script>
 
 <section class="research-revisions" aria-label="Research revisions">
@@ -221,9 +238,9 @@
         <div class:active={selectedRequestId === request.id} class="request-row">
           <button type="button" class="request-select" onclick={() => { selectedRequestId = request.id; localError = ""; }}>
             <span class="request-name">{request.question}</span>
-            <span class="request-meta">{request.kind === "new-question" ? "New question" : request.kind === "redo" ? "New evidence" : "Reevaluation"} · {request.archived ? "Earlier session" : request.appliedSnapshotId ? "Applied" : request.status === "completed" ? "Ready to review" : request.status}</span>
+            <span class="request-meta">{request.kind === "new-question" ? "New question" : request.kind === "redo" ? "New evidence" : "Reevaluation"} · {request.archived ? "Earlier session" : request.appliedSnapshotId ? "Applied" : request.reviewDecision === "kept-current" ? "Kept current research" : request.status === "completed" ? "Ready to review" : request.status}</span>
           </button>
-          {#if !readOnly && !request.archived && request.status === "completed" && request.resultFindings.length > 0 && !request.appliedSnapshotId}
+          {#if !readOnly && !request.archived && request.status === "completed" && request.resultFindings.length > 0 && !request.appliedSnapshotId && !request.reviewDecision}
             <label class="include-toggle"><input type="checkbox" checked={includedIds.includes(request.id)} disabled={busy || applying} onchange={() => toggleIncluded(request.id)} /><span>Include</span></label>
           {/if}
         </div>
@@ -232,16 +249,17 @@
 
     <div class="request-detail">
       {#if selectedRequest}
-        <div class="detail-head"><span class="status-dot" class:complete={selectedRequest.status === "completed"}></span><span>{selectedRequest.appliedSnapshotId ? "Applied research" : selectedRequest.status === "completed" ? "Proposed research update" : "Research request"}</span></div>
+        <div class="detail-head"><span class="status-dot" class:complete={selectedRequest.status === "completed"}></span><span>{selectedRequest.appliedSnapshotId ? "Applied research" : selectedRequest.reviewDecision === "kept-current" ? "Kept current research" : selectedRequest.status === "completed" ? "Proposed research update" : "Research request"}</span></div>
         <h3>{selectedRequest.question}</h3>
         {#if selectedRequest.angles?.length}
           <div class="angle-results" aria-label="Angle progress"><strong>Research angles</strong>
             {#each selectedRequest.angles as angle (angle.id)}
               <div class="angle-result"><div><span>{angle.name}</span><small>{angle.sourceClass.replaceAll("-", " ")}</small></div><em>{angle.status}</em>
                 {#if angle.query}<p>Search: {angle.query}</p>{/if}
-                {#if angle.sourceCount !== undefined}<p>{angle.sourceCount} {angle.sourceCount === 1 ? "source" : "sources"} returned</p>{/if}
+                {#if selectedRequest.kind === "reevaluate"}<p>Uses saved research; no new search.</p>
+                {:else if angle.sourceCount !== undefined}<p>{angle.sourceCount} {angle.sourceCount === 1 ? "source" : "sources"} returned</p>{/if}
                 {#if angle.sources?.length}<ul class="angle-sources">{#each angle.sources as source (source.url)}<li><button type="button" onclick={() => onOpenSource(source.url)}>{source.title}</button></li>{/each}</ul>{/if}
-                {#if angle.gap}<p class="gap-text">{angle.gap}</p>{/if}
+                {#if selectedRequest.kind !== "reevaluate" && angle.gap}<p class="gap-text">{angle.gap}</p>{/if}
               </div>
             {/each}
           </div>
@@ -255,7 +273,7 @@
             <div class="comparison">
               <div class="finding old"><span>Previous finding</span><h4>{selectedRequest.previousFinding.statement}</h4><p>{selectedRequest.previousFinding.verdictReason}</p><small>{selectedRequest.previousFinding.verdict}</small></div>
               <div class="finding proposed"><span>New result</span>
-                {#each selectedRequest.resultFindings as finding (finding.id)}<h4>{finding.statement}</h4><p>{finding.verdictReason}</p><small>{finding.verdict}</small>{/each}
+                {#each selectedRequest.resultFindings as finding (finding.id)}<h4>{finding.statement}</h4><p>{finding.verdictReason}</p><small>{finding.verdict}</small>{:else}<p>No finding met the evidence requirements. Current research remains unchanged.</p>{/each}
               </div>
             </div>
           {:else}
@@ -270,14 +288,14 @@
               {#if finding.evidenceGap}<p class="gap"><strong>Remaining gap</strong> {finding.evidenceGap}</p>{/if}
             </details>
           {/each}
-          {#if !readOnly && !selectedRequest.archived && !selectedRequest.appliedSnapshotId}
+          {#if !readOnly && !selectedRequest.archived && !selectedRequest.appliedSnapshotId && !selectedRequest.reviewDecision}
             {#if selectedRequest.kind !== "new-question" && selectedRequest.resultFindings.length > 0}
               <label class="field replacement-select"><span>Replace the previous finding with</span><select value={chosenReplacements[selectedRequest.id] ?? ""} onchange={(event) => { chosenReplacements = { ...chosenReplacements, [selectedRequest.id]: event.currentTarget.value }; }}>
                 <option value="">Choose a result</option>
                 {#each selectedRequest.resultFindings as finding (finding.id)}<option value={finding.id}>{finding.statement}</option>{/each}
               </select></label>
             {/if}
-            <button class="quiet-button" type="button" onclick={() => { includedIds = includedIds.filter((id) => id !== selectedRequest?.id); selectedRequestId = null; }}>Keep current research</button>
+            <button class="quiet-button" type="button" disabled={busy || keeping} onclick={() => void keepCurrent(selectedRequest!.id)}>{keeping ? "Saving decision…" : "Keep current research"}</button>
           {/if}
         {/if}
       {:else}

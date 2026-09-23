@@ -93,7 +93,7 @@ export type IdeaFillDecision =
       reason: string;
     };
 
-/** Uses only reviewed, distinct ideas to choose one bounded fill batch. */
+/** Uses only reviewed, distinct ideas to decide whether another fill round is legal. */
 export function planIdeaFill(input: IdeaFillInput): IdeaFillDecision {
   for (const [name, value] of [
     ["accepted distinct count", input.acceptedDistinct],
@@ -133,7 +133,7 @@ export function planIdeaFill(input: IdeaFillInput): IdeaFillDecision {
   if (rawRemaining === 0) {
     return { kind: "terminal", stop: "raw-cap", reason: `The raw candidate cap of ${input.rawCandidateCap} is exhausted.` };
   }
-  if (input.remainingModelCalls !== undefined && input.remainingModelCalls < 2) {
+  if (input.remainingModelCalls !== undefined && input.remainingModelCalls < 4) {
     return { kind: "terminal", stop: "model-budget", reason: "A new idea batch needs four available model calls to reserve generation, review, and possible schema corrections." };
   }
   if (input.lastRoundAcceptedGain === 0) {
@@ -157,6 +157,46 @@ export function planIdeaFill(input: IdeaFillInput): IdeaFillDecision {
     deficit,
     reason: `Request ${quota} candidates for named gap "${gapId}", then review and recount distinct ideas.`,
   };
+}
+
+export interface IdeaFillRoundInput extends IdeaFillInput {
+  /** A gap can own several batches only when it has that much unmet capacity. */
+  gapCapacities: Record<string, number>;
+}
+
+export type IdeaFillRoundDecision =
+  | { kind: "generate"; round: number; batches: Array<{ gapId: string; quota: number }> }
+  | Extract<IdeaFillDecision, { kind: "terminal" }>;
+
+/** Reserve a full round up front, then review its serial batches before measuring gain. */
+export function planIdeaFillRound(input: IdeaFillRoundInput): IdeaFillRoundDecision {
+  const gate = planIdeaFill(input);
+  if (gate.kind === "terminal") return gate;
+  const modelBatches = input.remainingModelCalls === undefined
+    ? Number.MAX_SAFE_INTEGER : Math.floor(input.remainingModelCalls / 4);
+  let remaining = Math.min(gate.deficit, input.rawCandidateCap - input.rawCandidatesUsed);
+  const capacities = new Map(input.namedGapIds.map((id) => {
+    const capacity = input.gapCapacities[id] ?? 0;
+    if (!Number.isSafeInteger(capacity) || capacity < 0) throw new Error("Gap capacity must be a nonnegative whole number.");
+    return [id, capacity] as const;
+  }));
+  const batches: Array<{ gapId: string; quota: number }> = [];
+  while (remaining > 0 && batches.length < modelBatches) {
+    let admitted = false;
+    for (const gapId of input.namedGapIds) {
+      const capacity = capacities.get(gapId) ?? 0;
+      if (capacity === 0) continue;
+      const quota = Math.min(5, remaining, capacity);
+      batches.push({ gapId, quota });
+      capacities.set(gapId, capacity - quota);
+      remaining -= quota;
+      admitted = true;
+      if (remaining === 0 || batches.length >= modelBatches) break;
+    }
+    if (!admitted) break;
+  }
+  return batches.length > 0 ? { kind: "generate", round: gate.round, batches }
+    : { kind: "terminal", stop: "no-useful-gap", reason: "No named gap has capacity for a targeted fill batch." };
 }
 
 /**
