@@ -204,6 +204,31 @@ describe("SolutionWorkspace idea conversation", () => {
     expect((view.getByLabelText("Follow-up message") as HTMLTextAreaElement).value).toBe("Keep this unsent.");
   });
 
+  test("opens a revised version's full detail and returns to its conversation", async () => {
+    const root = { ...solution(), workflowVersion: 2 as const };
+    const revised = { ...root, id: "solution-2", mechanism: "Buyer delivery ledger",
+      description: "Revised idea", keyAssumption: "Buyers will share delivery observations." };
+    const onLoadVersionDetail = vi.fn().mockResolvedValue(revised);
+    Object.defineProperty(window, "scraply", { configurable: true,
+      value: { getIdeaDetail: vi.fn().mockResolvedValue(revised) } });
+    const view = render(SolutionWorkspace, {
+      solutions: [root], busy: false, modelOptions, conversation: conversation(),
+      onExport: vi.fn(), onOpenSource: vi.fn(), onReview: vi.fn(),
+      onSelect: vi.fn(), onSave: vi.fn(),
+      onOpenConversation: vi.fn().mockResolvedValue(undefined),
+      onSubmitIdeaTurn: vi.fn().mockResolvedValue(undefined), onLoadVersionDetail,
+      onSelectConversationVersion: vi.fn().mockResolvedValue(undefined),
+    });
+    await fireEvent.click(view.getByRole("button", { name: `Open idea: ${root.description}` }));
+    await fireEvent.click(view.getByRole("button", { name: `Explore idea: ${root.description}` }));
+    await fireEvent.click(view.getByRole("button", { name: /v2 Buyer delivery ledger/ }));
+    await fireEvent.click(view.getByRole("button", { name: "View full idea details" }));
+    expect(onLoadVersionDetail).toHaveBeenCalledWith("solution-2");
+    await waitFor(() => expect(view.getByText("Buyers will share delivery observations.")).toBeTruthy());
+    await fireEvent.click(view.getByRole("button", { name: "Back to conversation" }));
+    expect(view.getByLabelText("Idea versions and conversation")).toBeTruthy();
+  });
+
   test("offers a retry when opening a conversation fails", async () => {
     const idea = { ...solution(), workflowVersion: 2 as const };
     const onOpenConversation = vi.fn().mockRejectedValueOnce(new Error("Conversation could not load.")).mockResolvedValueOnce(undefined);
