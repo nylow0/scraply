@@ -364,7 +364,6 @@
   let setupForm: HTMLFormElement;
   let configurationTrigger: HTMLElement | null = null;
   let settingsSection = $state<SettingsSection>("research");
-  let moreContextOpen = $state(Boolean(initial.scope?.title || initial.scope?.observations || initial.scope?.riskEvaluationCriteria || initial.scope?.offLimits.length));
   const fieldSections: Record<string, SettingsSection | "brief" | "business"> = {
     domain: "brief", knownProblem: "brief", title: "brief", researchMode: "brief",
     targetFamilies: "business", batchSize: "business", maxModelCalls: "business", maxSearches: "business",
@@ -415,7 +414,6 @@
     }
     const section = key ? fieldSections[key] : undefined;
     if (section === "business") businessTargetOpen = true;
-    if (key === "title") moreContextOpen = true;
     await tick();
     const field = key ? setupForm.querySelector<HTMLElement>(`[data-field="${key}"]`) : null;
     if (section === "brief" || section === "business") {
@@ -442,37 +440,18 @@
           {:else}
             <label class="main-brief"><span>What do you want to explore?</span><textarea data-field="domain" bind:value={domain} onblur={() => domainTouched = true} aria-invalid={Boolean(domainError)} aria-describedby={domainError ? "domain-error" : undefined} rows="3" placeholder="Your topic or idea"></textarea>{#if domainError}<small id="domain-error" class="field-error">{domainError}</small>{/if}</label>
           {/if}
+          <div class="brief-meta">
           <label class="audience-field"><span>Audience <small>Optional</small></span><input bind:value={audience} placeholder={researchMode === "explore-market" ? "Who is this for?" : "Who is affected?"} /></label>
-        </section>
-        {#if useWorkflow}
-          <fieldset class="choice-group workflow-mode">
-            <legend>Run mode</legend>
-            <label class:active={workflowMode === "vibe"}><input type="radio" name="workflow-mode" value="vibe" checked={workflowMode === "vibe"} onchange={() => workflowMode = "vibe"} /><span><strong>Vibe</strong><small>Automatic</small></span></label>
-            <label class:active={workflowMode === "babysit"}><input type="radio" name="workflow-mode" value="babysit" checked={workflowMode === "babysit"} onchange={() => workflowMode = "babysit"} /><span><strong>Babysit</strong><small>Review research first</small></span></label>
-          </fieldset>
-        {/if}
-        <section class="settings-summary" aria-label="Effective research settings">
-          <div>
-            <p>{modelDisplayName(model)} <span>· {reasoningEffort} reasoning</span></p>
-            <p class="summary-secondary">{#if researchMode === "explore-market"}{discoveryDepth.charAt(0).toUpperCase() + discoveryDepth.slice(1)} research · {selectedSearchName} · {audienceSourcePolicy === "web" ? "Web and communities" : "Communities only"} ·&nbsp;{/if}{ideaCount ?? "—"} ideas per problem</p>
-            {#if ideaOverrides}<p class="override-note">Ideas & review: {modelDisplayName(ideaModel)} · {ideaReasoningEffort} reasoning</p>{/if}
-            {#if customInstructionCount}<p class="override-note">{customInstructionCount} custom {customInstructionCount === 1 ? "instruction" : "instructions"}</p>{/if}
-            {#if configurationIssues}<p class="field-error">{configurationIssues} {configurationIssues === 1 ? "setting needs" : "settings need"} attention</p>{/if}
-          </div>
-          <button type="button" class="text-action" onclick={() => showConfiguration()}>Research settings <Icon name="settings" size={16} /></button>
-        </section>
-        <div class="optional-sections">
-          <details class="optional-fields" bind:open={moreContextOpen}>
-            <summary>Name, context and boundaries</summary>
-            <div class="optional-body">
               <label><span>Research name <small>Optional</small></span><input data-field="title" bind:value={title} aria-invalid={Boolean(errors.title)} placeholder="Name this research" />{#if errors.title}<small class="field-error">{errors.title}</small>{/if}</label>
+          </div>
+        </section>
+        <div class="context-fields">
               {#if researchMode === "known-problem"}<label><span>Market or domain (optional)</span><textarea data-field="domain" bind:value={domain} rows="2" placeholder="Market or field"></textarea></label>{/if}
               <label><span>Risk priorities</span><textarea bind:value={riskEvaluationCriteria} maxlength="4000" rows="2" placeholder="What matters most: time, budget, or other limits?"></textarea></label>
               <label><span>{researchMode === "explore-market" ? "Anything else to consider" : "Context"}</span><textarea bind:value={observations} rows="2" placeholder="Useful background"></textarea></label>
               <label><span>Boundaries</span><textarea bind:value={offLimits} rows="2" placeholder="What should solutions avoid? One limit per line."></textarea></label>
-            </div>
-          </details>
-                {#if !opportunityTargetEnabled && explorationPurpose !== "auto"}
+        </div>
+        {#if !opportunityTargetEnabled && explorationPurpose !== "auto"}
         <p class="saved-purpose-note">This saved project asks for {explorationPurpose === "startup-opportunities" ? "startup opportunities" : "practical solutions"}. <button type="button" onclick={() => purposeOverride = "auto"}>Follow the brief instead</button></p>
       {/if}
       <details class="business-target" bind:open={businessTargetOpen}>
@@ -497,10 +476,26 @@
         </section>
       </details>
 
-        </div>
       </div>
     </div>
-    <footer class="launch-footer">
+    <aside class="launch-sidebar" aria-label="Run setup">
+        {#if useWorkflow}
+          <fieldset class="choice-group workflow-mode">
+            <legend>Run mode</legend>
+            <label class:active={workflowMode === "vibe"}><input type="radio" name="workflow-mode" value="vibe" checked={workflowMode === "vibe"} onchange={() => workflowMode = "vibe"} /><span><strong>Vibe</strong><small>Automatic</small></span></label>
+            <label class:active={workflowMode === "babysit"}><input type="radio" name="workflow-mode" value="babysit" checked={workflowMode === "babysit"} onchange={() => workflowMode = "babysit"} /><span><strong>Babysit</strong><small>Review research first</small></span></label>
+          </fieldset>
+        {/if}
+        <section class="settings-summary" aria-label="Effective research settings">
+          <div>
+            <p>{modelDisplayName(model)} <span>· {reasoningEffort} reasoning</span></p>
+            <p class="summary-secondary">{#if researchMode === "explore-market"}{discoveryDepth.charAt(0).toUpperCase() + discoveryDepth.slice(1)} research · {selectedSearchName} · {audienceSourcePolicy === "web" ? "Web and communities" : "Communities only"} ·&nbsp;{/if}{ideaCount ?? "—"} ideas per problem</p>
+            {#if ideaOverrides}<p class="override-note">Ideas & review: {modelDisplayName(ideaModel)} · {ideaReasoningEffort} reasoning</p>{/if}
+            {#if customInstructionCount}<p class="override-note">{customInstructionCount} custom {customInstructionCount === 1 ? "instruction" : "instructions"}</p>{/if}
+            {#if configurationIssues}<p class="field-error">{configurationIssues} {configurationIssues === 1 ? "setting needs" : "settings need"} attention</p>{/if}
+          </div>
+          <button type="button" class="text-action" onclick={() => showConfiguration()}>Research settings <Icon name="settings" size={16} /></button>
+        </section>
       <div class="launch-content">
         <div class="launch-row">
           <div class="limit-summary">
@@ -524,7 +519,7 @@
           </div>
         {/if}
       </div>
-    </footer>
+    </aside>
     <dialog bind:this={configuration} class="settings-dialog" aria-label="Research settings" onclose={() => configurationTrigger?.focus({ preventScroll: true })} onkeydown={(event) => { if (event.key === "Enter" && event.target instanceof HTMLInputElement) event.preventDefault(); }}>
       <header><h2>Research settings</h2><button type="button" aria-label="Close research settings" onclick={() => configuration.close()}><Icon name="close" /></button></header>
       <nav aria-label="Settings groups">
@@ -609,10 +604,12 @@
 
 <style>
   .scope-page,form { height:100%;min-height:0; }
-  form { display:flex;flex-direction:column; }
+  form { display:grid;grid-template-columns:minmax(0,1fr) 288px; }
   .setup-scroll { flex:1;min-height:0;overflow:auto;scroll-padding-block:24px; }
-  .setup-body,.launch-content { width:min(100%,800px);margin-inline:auto; }
-  .setup-body { padding:12px 24px;display:grid;gap:10px; }
+  .setup-body { width:min(100%,880px);margin-inline:auto;padding:28px 32px;display:grid;gap:24px; }
+  .brief-meta,.context-fields { display:grid;grid-template-columns:1fr 1fr;gap:20px; }
+  .context-fields { padding-top:4px; }
+  .context-fields > :last-child:nth-child(odd) { grid-column:1/-1; }
   label { display:grid;gap:8px;min-width:0;font-size:14px; }
   label > span { font-weight:500; }
   input,select,textarea { width:100%;min-width:0;min-height:42px;padding:9px 12px;border:1px solid var(--border-strong);border-radius:7px;color:var(--text);background:var(--surface);font-size:14px; }
@@ -634,37 +631,35 @@
   .choice-group strong { font-size:14px;font-weight:600;min-width:58px; }
   .mode-picker { grid-template-columns:1fr 1fr; }
   .workflow-mode { gap:4px; }
-  .brief-panel { display:grid;gap:10px; }
+  .workflow-mode label > span { display:grid;gap:3px; }
+  .brief-panel { display:grid;gap:20px; }
   .main-brief > span { font-size:26px;line-height:1.25;letter-spacing:-.7px;font-weight:600; }
   .main-brief { gap:10px; }
-  .main-brief textarea { min-height:94px;padding:10px 14px;font-size:15px; }
-  .audience-field { grid-template-columns:auto minmax(0,1fr);align-items:center;gap:18px; }
-  .settings-summary { display:flex;justify-content:space-between;align-items:center;gap:16px;padding:8px 0;border-block:1px solid var(--border); }
+  .main-brief textarea { min-height:132px;padding:10px 14px;font-size:15px; }
+  .settings-summary { display:flex;flex-direction:column;align-items:start;gap:12px;padding-top:20px;border-top:1px solid var(--border); }
   .settings-summary p { margin:0;font-size:14px;line-height:1.55; }
   .settings-summary p span,.settings-summary .summary-secondary { color:var(--muted);font-size:13px; }
   .settings-summary .override-note { margin-top:4px;font-size:13px;color:var(--accent); }
   button { min-height:36px;padding:8px 12px;border:1px solid var(--border-strong);border-radius:7px;background:var(--surface);color:var(--text);font-size:14px; }
   button:hover:not(:disabled) { background:var(--surface-2); }
   .text-action { display:inline-flex;align-items:center;justify-content:center;gap:8px;border:0;background:transparent;color:var(--accent-strong);padding:6px 0;min-height:32px;font-size:13px;text-align:left; }
-  .settings-summary > button { flex:none; }
   .text-action:hover:not(:disabled) { background:transparent;text-decoration:underline; }
-  .optional-sections { display:grid;grid-template-columns:1fr 1fr;gap:0 24px; }
-  details[open],.saved-purpose-note { grid-column:1/-1; }
   summary { display:flex;align-items:center;gap:12px;min-height:40px;cursor:pointer;list-style:none;color:var(--muted);font-size:13px; }
   summary::-webkit-details-marker { display:none; }
   summary::after { content:"";flex:none;width:6px;height:6px;border-right:1.5px solid currentColor;border-bottom:1.5px solid currentColor;transform:rotate(-45deg);margin-left:auto;margin-right:4px; }
   details[open] > summary::after { transform:rotate(45deg); }
   summary:hover { color:var(--text); }
-  .optional-body,.opportunity-target { display:grid;gap:16px;padding:12px 0 20px; }
+  .opportunity-target { display:grid;gap:16px;padding:12px 0 20px; }
   .target-grid,.run-settings,.output-settings,.limits-grid { display:grid;grid-template-columns:1fr 1fr;gap:16px; }
   .target-toggle,.exploratory-toggle { display:flex;gap:10px;align-items:start; }
   .target-toggle input,.exploratory-toggle input { flex:none;width:18px;height:18px;min-height:0;margin-top:2px;accent-color:var(--accent); }
   .target-toggle span,.exploratory-toggle span { display:grid;gap:5px; }
   .opportunity-target p,.saved-purpose-note { color:var(--muted);font-size:13px;line-height:1.6;margin:0; }
   .saved-purpose-note button { border:0;padding:0;color:var(--accent);background:none; }
-  .launch-footer { flex:none;background:var(--bg);border-top:1px solid var(--border); }
-  .launch-content { padding:14px 24px 16px; }
-  .launch-row { display:flex;justify-content:space-between;align-items:center;gap:16px; }
+  .launch-sidebar { min-height:0;overflow:auto;display:flex;flex-direction:column;gap:24px;padding:28px 20px;background:var(--bg);border-left:1px solid var(--border);scroll-padding-block:20px; }
+  .launch-sidebar > * { flex:none; }
+  .launch-content { margin-top:auto;padding-top:24px; }
+  .launch-row { display:flex;flex-direction:column;align-items:stretch;gap:20px; }
   .limit-summary > span { display:flex;align-items:center;gap:14px;font-size:14px;font-weight:500; }
   .limit-summary p { margin:1px 0 0;color:var(--muted);font-size:13px;line-height:1.6; }
   .primary { display:flex;align-items:center;justify-content:center;gap:12px;min-width:154px;min-height:44px;background:var(--accent-strong);border:0;color:var(--accent-ink);font-weight:600; }
@@ -697,12 +692,18 @@
   .number-actions { position:absolute;right:4px;top:50%;transform:translateY(-50%);display:flex;gap:2px; }
   .number-actions button { width:32px;min-height:32px;padding:0;border:0;background:none;display:grid;place-items:center; }
   .dialog-footer { display:flex;justify-content:space-between;align-items:center;gap:12px;padding:14px 24px;border-top:1px solid var(--border);font-size:13px;color:var(--muted); }
+  @media(max-width:1100px) {
+    form { display:block;overflow:auto; }
+    .setup-scroll { overflow:visible; }
+    .launch-sidebar { overflow:visible;border-left:0;border-top:1px solid var(--border);padding:24px 32px;display:grid;grid-template-columns:1fr 1fr;gap:24px; }
+    .settings-summary { border-top:0;padding-top:0; }
+    .launch-content { grid-column:1/-1;margin-top:0;padding-top:0; }
+  }
   @media(max-width:600px) {
-    .setup-body { padding:20px 16px;gap:18px; }.launch-content { padding:12px 16px; }
-    .main-brief > span { font-size:24px; }.mode-picker,.optional-sections,.target-grid,.run-settings,.output-settings,.limits-grid { grid-template-columns:1fr; }
-    .audience-field { grid-template-columns:1fr;gap:8px; }.settings-summary { align-items:start;flex-direction:column;gap:6px; }
+    .setup-body { padding:20px 16px;gap:20px; }.launch-sidebar { padding:20px 16px;grid-template-columns:1fr; }
+    .main-brief > span { font-size:24px; }.mode-picker,.brief-meta,.context-fields,.target-grid,.run-settings,.output-settings,.limits-grid { grid-template-columns:1fr; }
     .launch-row { align-items:stretch;flex-direction:column;gap:10px; }.primary { width:100%; }
     .settings-dialog header,.settings-content { padding:16px; }.settings-dialog nav { padding-inline:10px; }.dialog-footer { padding:12px 16px; }
   }
-  @media(max-height:600px) { .scope-page,form { height:auto; }.setup-scroll { overflow:visible;flex:none; }.launch-footer { position:static; } }
+  @media(max-height:600px) and (min-width:1101px) { .scope-page,form { height:auto; }.setup-scroll { overflow:visible;flex:none; }.launch-sidebar { position:sticky;top:0;align-self:start;max-height:100dvh; } }
 </style>
