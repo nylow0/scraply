@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { allocateIdeaTargets, planIdeaFill, planOpportunityStep, previewOpportunityBudgetExtension } from "../../src/core/opportunity-planning";
+import { allocateIdeaTargets, planIdeaFill, planIdeaFillRound, planOpportunityStep, previewOpportunityBudgetExtension } from "../../src/core/opportunity-planning";
 import {
   OpportunityExplorationProgressSchema,
   type OpportunityExplorationProgress,
@@ -195,6 +195,25 @@ test("a reviewed 20-to-12 set fills named gaps five, then three at a time", () =
     remainingMs: 20_000,
   });
   expect(second).toMatchObject({ kind: "generate", gapId: "workflow-gap", quota: 3, deficit: 3, round: 2 });
+});
+
+test("one fill round reserves the full eight-candidate deficit within its review budget", () => {
+  const input = {
+    acceptedDistinct: 12, target: 20, rawCandidateCap: 40, rawCandidatesUsed: 20,
+    fillRoundsUsed: 0, lastRoundAcceptedGain: null,
+    namedGapIds: ["buyer-gap", "workflow-gap"], gapCapacities: { "buyer-gap": 5, "workflow-gap": 5 },
+    remainingModelCalls: 8, remainingMs: 30_000,
+  };
+  expect(planIdeaFillRound(input)).toEqual({ kind: "generate", round: 1, batches: [
+    { gapId: "buyer-gap", quota: 5 }, { gapId: "workflow-gap", quota: 3 },
+  ] });
+  expect(planIdeaFillRound({ ...input, remainingModelCalls: 4 })).toEqual({ kind: "generate", round: 1,
+    batches: [{ gapId: "buyer-gap", quota: 5 }] });
+  expect(planIdeaFillRound({ ...input, remainingModelCalls: 3 })).toMatchObject({ kind: "terminal", stop: "model-budget" });
+  expect(planIdeaFillRound({ ...input, rawCandidateCap: 23 })).toEqual({ kind: "generate", round: 1,
+    batches: [{ gapId: "buyer-gap", quota: 3 }] });
+  expect(planIdeaFillRound({ ...input, fillRoundsUsed: 1, lastRoundAcceptedGain: 0 }))
+    .toMatchObject({ kind: "terminal", stop: "no-gain" });
 });
 
 test.each([1, 2, 3])("practical solution fill accepts a final deficit of %i", (deficit) => {

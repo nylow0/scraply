@@ -16,7 +16,8 @@ import { discoveryRunProjection } from "../shared/discovery-projection";
 import type { ResearchEngine } from "./research-engine";
 import { previewLaunch, verifyLaunchPreview, type WorkflowCapabilities } from "./workflow-preflight";
 import { selectVibeProblems } from "./vibe-selection";
-import { allocateIdeaTargets, planIdeaFill } from "./opportunity-planning";
+import { allocateIdeaTargets, planIdeaFill, planIdeaFillRound } from "./opportunity-planning";
+import { fillGenerationAngle, initialGenerationAngles } from "./idea-assignments";
 import { loadManagedCoverageGaps, markManagedCoverageGapCovered, runManagedCoverageMap } from "./managed-coverage-map";
 import { loadManagedCoverageSearchSources, runManagedCoverageSearch } from "./managed-coverage-search";
 import { materializeResearchSnapshot } from "./research-revisions";
@@ -37,6 +38,7 @@ export interface WorkflowCoordinatorOptions {
     cancelRequestRun?: (runId: string) => Promise<void>;
     handleRunEvent: (event: ResearchEvent) => Promise<void>;
     applyResearch: (sessionId: string, expectedRevision: number, action: Extract<WorkflowAction, { type: "apply-research" }>) => { session: WorkflowSession };
+    keepResearch: (sessionId: string, expectedRevision: number, action: Extract<WorkflowAction, { type: "keep-research" }>) => { workItemId: string; session: WorkflowSession };
   };
   ideaService?: {
     getConversation: (input: unknown) => unknown;
@@ -294,9 +296,11 @@ export class WorkflowCoordinator {
     const contract = WorkflowLaunchContractSchema.parse(session.contract);
     const items = this.repository.listWorkItems(sessionId);
     const entries = this.repository.listBudgetEntries(sessionId);
-    const selectedProblemIds = session.activeSnapshotId
-      ? this.repository.getSnapshot(session.activeSnapshotId)?.selection.problemIds ?? []
-      : [];
+    const activeSnapshot = session.activeSnapshotId ? this.repository.getSnapshot(session.activeSnapshotId) : null;
+    const selectedProblemIds = activeSnapshot?.selection.problemIds ?? [];
+    const researchApplied = session.purpose === "research-followup" && session.state === "finished"
+      && Array.isArray(activeSnapshot?.selection.includedRequestIds)
+      && activeSnapshot.selection.includedRequestIds.length > 0;
     const generationItems = items.filter((item) => item.kind === "generate-ideas");
     const initialInput = generationItems.find((item) => fillRoundFromItem(item) === 0)?.input as {
       targetKind?: "per-problem" | "project"; requestedTarget?: number;
@@ -354,13 +358,18 @@ export class WorkflowCoordinator {
       sessionId: session.id, threadId: session.threadId, purpose: session.purpose, mode: session.mode, targetKind,
       state: session.state, outcome: session.outcome, revision: session.revision,
       activeSnapshotId: session.activeSnapshotId, selectedProblemIds, counts, limits,
+      ...(researchApplied ? { researchApplied: true } : {}),
       budget: {
         modelCalls: budgetStatus("model-call", limits.maxModelCalls),
         searches: budgetStatus("search", limits.maxSearches),
         remainingMs: remainingMs(session),
       },
       currentStage: current?.kind ?? null,
-      stopReason: session.outcome ? terminalReason(items, session) : null,
+      stopReason: session.outcome
+        ? researchApplied
+          ? `Selected research was applied to a new evidence snapshot.${counts.failed > 0 ? ` ${terminalReason(items, session)}` : ""}`
+          : terminalReason(items, session)
+        : null,
       startedAt: session.startedAt, finishedAt: session.finishedAt,
     });
   }
@@ -500,6 +509,11 @@ export class WorkflowCoordinator {
         case "apply-research": {
           if (!this.options.researchService) throw new AppError("conflict", "Research selection is unavailable.");
           this.options.researchService.applyResearch(current.id, current.revision, action);
+          break;
+        }
+        case "keep-research": {
+          if (!this.options.researchService) throw new AppError("conflict", "Research review is unavailable.");
+          changedTaskIds = [this.options.researchService.keepResearch(current.id, current.revision, action).workItemId];
           break;
         }
         case "generate-ideas": {
@@ -1008,6 +1022,7 @@ export class WorkflowCoordinator {
     if (required > available) throw new AppError("BUDGET_TOO_SMALL", `Reserve at least ${required} model calls for generation and independent review.`);
     let ordinal = this.repository.listWorkItems(sessionId).length;
     for (const allocation of allocations.allocations) {
+      const angles = initialGenerationAngles(this.options.db, allocation.problemId, Math.ceil(allocation.quota / 5));
       for (let remaining = allocation.quota, batch = 0; remaining > 0; batch += 1) {
         const quota = Math.min(5, remaining);
         remaining -= quota;
@@ -1015,7 +1030,8 @@ export class WorkflowCoordinator {
           sessionId, kind: "generate-ideas", scopeKey: `ideas:${snapshotId}:${allocation.problemId}:${batch}`,
           ordinal: ordinal++, state: "ready",
           input: { problemId: allocation.problemId, snapshotId, quota, model, reasoningEffort,
-            reviewModel, reviewReasoningEffort, fillRound: 0, batch, targetKind, requestedTarget: target },
+            reviewModel, reviewReasoningEffort, fillRound: 0, batch, targetKind, requestedTarget: target,
+            generationAngle: angles[batch] },
         });
         this.repository.reserveBudget({ sessionId, workItemId: item.id, operationKey: `ideas:${item.id}`,
           kind: "model-call", reservedUnits: 4 });
@@ -1179,7 +1195,7 @@ export class WorkflowCoordinator {
     const running = this.repository.listWorkItems(sessionId).some((item) => item.kind === "generate-ideas" && item.state === "running");
     if (running) return;
     const progress = this.summary(sessionId);
-    if (progress.targetKind === "project" && progress.counts.accepted >= progress.counts.requested) {
+    if (progress.counts.accepted >= progress.counts.requested) {
       const skipped = this.options.db.immediateTransaction(() => {
         const ready = this.repository.listWorkItems(sessionId).filter((item) =>
           ["generate-ideas", "coverage-map", "coverage-search"].includes(item.kind) && item.state === "ready");
@@ -1312,10 +1328,12 @@ export class WorkflowCoordinator {
         .flatMap((item) => outputSolutionIds(item))).size;
       const targetFor = (problemId: string) => generationItems.filter((item) => fillRoundFromItem(item) === 0 && problemIdFromItem(item) === problemId)
         .reduce((count, item) => count + requestedFromItem(item), 0);
+      const remainingProblemCapacity = (problemId: string) => 2 * targetFor(problemId)
+        - generationItems.filter((item) => problemIdFromItem(item) === problemId)
+          .reduce((count, item) => count + requestedFromItem(item), 0);
       const eligibleProblems = problemIds.filter((problemId) =>
         (targetKind === "project" || byAccepted(problemId) < targetFor(problemId))
-        && generationItems.filter((item) => problemIdFromItem(item) === problemId)
-          .reduce((count, item) => count + requestedFromItem(item), 0) < 2 * targetFor(problemId))
+        && remainingProblemCapacity(problemId) > 0)
         .sort((a, b) => targetKind === "project"
           ? byAccepted(a) - byAccepted(b)
           : (targetFor(b) - byAccepted(b)) - (targetFor(a) - byAccepted(a)));
@@ -1332,7 +1350,7 @@ export class WorkflowCoordinator {
         acceptedDistinct: summary.counts.accepted, target: summary.counts.requested,
         rawCandidateCap: 2 * summary.counts.requested, rawCandidatesUsed: summary.counts.attempted,
         fillRoundsUsed: completedRounds.length, lastRoundAcceptedGain: lastGain,
-        remainingModelCalls: Math.floor(this.availableBudget(session, "model-call") / 2),
+        remainingModelCalls: this.availableBudget(session, "model-call"),
         remainingMs: remainingMs(session) - 5 * 60_000,
       };
       const gate = planIdeaFill({ ...fillInput, namedGapIds: namedGaps.length ? namedGaps : ["coverage-pending"] });
@@ -1396,43 +1414,68 @@ export class WorkflowCoordinator {
           return;
         }
       }
-      const fill = planIdeaFill({ ...fillInput, namedGapIds: namedGaps });
-      if (!collectionStop && fill.kind === "generate" && snapshot && this.availableBudget(session, "model-call") >= 4) {
-        const quota = targetKind === "project" ? fill.quota
-          : Math.min(fill.quota, targetFor(fill.gapId) - byAccepted(fill.gapId));
-        if (quota <= 0) throw new Error("Fill selected a problem without an unmet target.");
-        const problemId = targetKind === "project" ? eligibleProblems[0] : fill.gapId;
-        const gap = targetKind === "project" ? readyGaps.find((candidate) => candidate.id === fill.gapId) : null;
-        if (!problemId || (targetKind === "project" && !gap)) throw new Error("Fill has no selected problem or saved coverage gap.");
+      const availableProblemCapacity = eligibleProblems.reduce((count, id) => count + remainingProblemCapacity(id), 0);
+      const largestProblemCapacity = Math.max(0, ...eligibleProblems.map(remainingProblemCapacity));
+      const gapCapacities = Object.fromEntries(namedGaps.map((id) => [id, targetKind === "project"
+        ? Math.min(5, largestProblemCapacity)
+        : Math.min(targetFor(id) - byAccepted(id), remainingProblemCapacity(id))]));
+      const fill = planIdeaFillRound({ ...fillInput, namedGapIds: namedGaps, gapCapacities,
+        rawCandidateCap: targetKind === "project"
+          ? Math.min(fillInput.rawCandidateCap, fillInput.rawCandidatesUsed + availableProblemCapacity)
+          : fillInput.rawCandidateCap });
+      if (!collectionStop && fill.kind === "generate" && snapshot) {
         const first = generationItems.find((item) => fillRoundFromItem(item) === 0);
         const firstInput = first?.input as { model?: WorkflowLaunchContract["runConfig"]["model"]; reasoningEffort?: string;
           reviewModel?: WorkflowLaunchContract["runConfig"]["model"]; reviewReasoningEffort?: string } | undefined;
-        const item = this.options.db.immediateTransaction(() => {
-          const created = this.repository.createWorkItem({
-            sessionId, parentItemId: generationItems.at(-1)?.id ?? null, kind: "generate-ideas",
-            scopeKey: `fill:${snapshot.id}:${fill.round}:${fill.gapId}`,
-            ordinal: items.length, state: "ready",
-            input: {
-              problemId, snapshotId: snapshot.id, quota, fillRound: fill.round,
-              ...(gap ? { generationAngle: { gapId: gap.id, name: gap.name, angle: gap.description },
-                generationEvidence: loadManagedCoverageSearchSources(this.options.db, session.threadId, sessionId, gap.id),
-                acceptedBefore: summary.counts.accepted } : {}),
-              model: firstInput?.model ?? contract.ideas?.model ?? contract.runConfig.model,
-              reasoningEffort: firstInput?.reasoningEffort ?? contract.ideas?.reasoningEffort ?? contract.runConfig.reasoningEffort,
-              reviewModel: firstInput?.reviewModel ?? contract.ideas?.reviewModel ?? contract.ideas?.model ?? contract.runConfig.model,
-              reviewReasoningEffort: firstInput?.reviewReasoningEffort ?? contract.ideas?.reviewReasoningEffort ?? contract.ideas?.reasoningEffort ?? contract.runConfig.reasoningEffort,
-            },
-          });
-          this.repository.reserveBudget({ sessionId, workItemId: created.id, operationKey: `ideas:${created.id}`,
-            kind: "model-call", reservedUnits: 4 });
-          this.repository.updateSession(sessionId, session.revision, {
-            remainingMs: remainingMs(session), runningSince: new Date().toISOString(),
-          });
-          return created;
+        const problemCapacity = new Map(eligibleProblems.map((id) => [id, remainingProblemCapacity(id)]));
+        const assigned = fill.batches.flatMap((batch) => {
+          const problemId = targetKind === "project"
+            ? eligibleProblems.find((id) => (problemCapacity.get(id) ?? 0) >= batch.quota) : batch.gapId;
+          if (!problemId) return [];
+          problemCapacity.set(problemId, (problemCapacity.get(problemId) ?? 0) - batch.quota);
+          return [{ ...batch, problemId }];
         });
-        this.progress(sessionId, [item.id]);
-        void this.dispatchNextGeneration(sessionId);
-        return;
+        const acceptedIds = new Set(generationItems.flatMap(outputSolutionIds));
+        const mechanisms = new Map(eligibleProblems.map((problemId) => [problemId,
+          (this.options.db.db.prepare(`SELECT id, mechanism FROM solutions WHERE problem_id = ? ORDER BY created_at, id`)
+            .all(problemId) as Array<{ id: string; mechanism: string }> )
+            .filter((solution) => acceptedIds.has(solution.id)).map((solution) => solution.mechanism)]));
+        if (assigned.length === 0) collectionStop = { code: "no-useful-gap", reason: "No selected problem has capacity for another bounded fill batch." };
+        else {
+          const created = this.options.db.immediateTransaction(() => {
+            const batchItems = assigned.map((batch, index) => {
+              const gap = targetKind === "project" ? readyGaps.find((candidate) => candidate.id === batch.gapId) : null;
+              const item = this.repository.createWorkItem({
+                sessionId, parentItemId: generationItems.at(-1)?.id ?? null, kind: "generate-ideas",
+                scopeKey: `fill:${snapshot.id}:${fill.round}:${batch.gapId}:${index}`,
+                ordinal: items.length + index, state: "ready",
+                input: {
+                  problemId: batch.problemId, snapshotId: snapshot.id, quota: batch.quota, fillRound: fill.round,
+                  acceptedBefore: summary.counts.accepted,
+                  ...(gap ? { generationAngle: { gapId: gap.id, name: gap.name, angle: gap.description },
+                    generationEvidence: loadManagedCoverageSearchSources(this.options.db, session.threadId, sessionId, gap.id) }
+                    : { generationAngle: fillGenerationAngle(this.options.db, batch.problemId,
+                      generationItems.filter((item) => problemIdFromItem(item) === batch.problemId).length + index,
+                      mechanisms.get(batch.problemId) ?? []) }),
+                  model: firstInput?.model ?? contract.ideas?.model ?? contract.runConfig.model,
+                  reasoningEffort: firstInput?.reasoningEffort ?? contract.ideas?.reasoningEffort ?? contract.runConfig.reasoningEffort,
+                  reviewModel: firstInput?.reviewModel ?? contract.ideas?.reviewModel ?? contract.ideas?.model ?? contract.runConfig.model,
+                  reviewReasoningEffort: firstInput?.reviewReasoningEffort ?? contract.ideas?.reviewReasoningEffort ?? contract.ideas?.reasoningEffort ?? contract.runConfig.reasoningEffort,
+                },
+              });
+              this.repository.reserveBudget({ sessionId, workItemId: item.id, operationKey: `ideas:${item.id}`,
+                kind: "model-call", reservedUnits: 4 });
+              return item.id;
+            });
+            this.repository.updateSession(sessionId, session.revision, {
+              remainingMs: remainingMs(session), runningSince: new Date().toISOString(),
+            });
+            return batchItems;
+          });
+          this.progress(sessionId, created);
+          void this.dispatchNextGeneration(sessionId);
+          return;
+        }
       }
       if (!collectionStop && fill.kind === "terminal") collectionStop = { code: fill.stop, reason: fill.reason };
     }
@@ -1621,10 +1664,16 @@ function requestedFromItem(item: WorkflowWorkItem): number {
 function terminalReason(items: WorkflowWorkItem[], session: WorkflowSession): string {
   const failure = items.find((item) => item.state === "failed" || item.state === "unknown");
   if (failure) return errorFromItem(failure) ?? "A provider result could not be confirmed.";
+  if (session.purpose === "research-followup" && items.some((item) => item.kind === "research-request"
+    && (item.outputRefs as { reviewDecision?: unknown } | null)?.reviewDecision === "kept-current")) {
+    return "Current research was kept. No new evidence snapshot was applied.";
+  }
   const collection = items.find((item) => item.kind === "collection-stop");
   const stop = collection?.outputRefs as { shortfall?: unknown; targetKind?: unknown; reason?: unknown } | null;
   if (typeof stop?.reason === "string" && typeof stop.shortfall === "number") {
-    const unit = stop.targetKind === "project" ? "business families" : "ideas";
+    const unit = stop.targetKind === "project"
+      ? stop.shortfall === 1 ? "business family" : "business families"
+      : stop.shortfall === 1 ? "idea" : "ideas";
     return `Short by ${stop.shortfall} distinct ${unit}. ${stop.reason}`;
   }
   if (session.outcome === "no-qualifying-ideas") return "No problem had enough saved evidence for unattended generation.";

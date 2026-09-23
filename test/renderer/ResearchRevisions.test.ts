@@ -27,6 +27,7 @@ function props(requests: ResearchRequestView[] = []) {
     researchModel: model, researchReasoningEffort: "medium", busy: false,
     onRequest: vi.fn().mockResolvedValue(undefined),
     onApply: vi.fn().mockResolvedValue(undefined),
+    onKeep: vi.fn().mockResolvedValue(undefined),
     onOpenSource: vi.fn().mockResolvedValue(undefined),
   };
 }
@@ -64,6 +65,22 @@ describe("ResearchRevisions", () => {
     expect(input.onApply).not.toHaveBeenCalled();
   });
 
+  test("describes a zero-search reevaluation as using saved research", async () => {
+    const input = props([{
+      id: "reevaluate-1", kind: "reevaluate", question: "Recheck the saved finding", status: "completed",
+      targetFindingId: "old", previousFinding: previous, resultFindings: [proposed],
+      angles: [{ id: "angle-1", name: "Saved evidence", sourceClass: "firsthand-experience",
+        acceptanceCriterion: "Reevaluate existing sources", status: "completed", sourceCount: 0,
+        gap: "No saved sources were available" }],
+    }]);
+    const view = render(ResearchRevisions, input);
+    await fireEvent.click(view.getByRole("button", { name: /Recheck the saved finding/ }));
+    expect(view.getByText("Uses saved research; no new search.")).toBeTruthy();
+    expect(view.queryByText("0 sources returned")).toBeNull();
+    expect(view.queryByText("No saved sources were available")).toBeNull();
+    expect(view.getByText("New report")).toBeTruthy();
+  });
+
   test("requires an explicit replacement before applying a completed redo", async () => {
     const input = props([{
       id: "request-1", kind: "redo", question: "Redo buyer evidence", status: "completed",
@@ -81,6 +98,35 @@ describe("ResearchRevisions", () => {
     expect(input.onApply).toHaveBeenCalledWith("snapshot-1", ["request-1"], [
       { oldFindingId: "old", newFindingId: "new" },
     ]);
+  });
+
+  test("explains a completed redo with no qualifying replacement", async () => {
+    const input = props([{
+      id: "request-empty", kind: "redo", question: "Redo buyer evidence", status: "completed",
+      targetFindingId: "old", previousFinding: previous, resultFindings: [],
+    }]);
+    const view = render(ResearchRevisions, input);
+    await fireEvent.click(view.getByRole("button", { name: /Redo buyer evidence/ }));
+    expect(view.getByText("New result")).toBeTruthy();
+    expect(view.getByText("No finding met the evidence requirements. Current research remains unchanged.")).toBeTruthy();
+    expect(view.queryByLabelText("Replace the previous finding with")).toBeNull();
+    await fireEvent.click(view.getByRole("button", { name: "Keep current research" }));
+    await waitFor(() => expect(input.onKeep).toHaveBeenCalledWith("request-empty", "snapshot-1"));
+    expect(view.queryByText("New result")).toBeNull();
+  });
+
+  test("reopens a kept-current comparison without offering another review decision", async () => {
+    const input = props([{
+      id: "request-kept", kind: "redo", question: "Earlier buyer evidence", status: "completed",
+      targetFindingId: "old", previousFinding: previous, resultFindings: [],
+      reviewDecision: "kept-current",
+    }]);
+    const view = render(ResearchRevisions, { ...input, readOnly: true });
+    expect(view.queryByText(/completed result is ready to review/)).toBeNull();
+    await fireEvent.click(view.getByRole("button", { name: /Earlier buyer evidence/ }));
+    expect(view.getAllByText("Kept current research").length).toBeGreaterThan(0);
+    expect(view.getByText("No finding met the evidence requirements. Current research remains unchanged.")).toBeTruthy();
+    expect(view.queryByRole("button", { name: "Keep current research" })).toBeNull();
   });
 
   test("previews planned and omitted angles with the fixed allowance and saves request instructions", async () => {

@@ -47,6 +47,7 @@ export interface ResearchRequestView {
   angles?: ResearchAngleView[] | undefined;
   archived?: boolean | undefined;
   appliedSnapshotId?: string | undefined;
+  reviewDecision?: "kept-current" | undefined;
   error?: string | undefined;
 }
 

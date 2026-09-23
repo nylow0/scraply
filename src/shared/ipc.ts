@@ -290,6 +290,7 @@ export const ResearchRequestViewSchema = z.object({
   angles: z.array(ResearchAngleViewSchema).optional(),
   archived: z.boolean().optional(),
   appliedSnapshotId: EntityIdSchema.optional(),
+  reviewDecision: z.literal("kept-current").optional(),
   error: z.string().optional(),
 });
 

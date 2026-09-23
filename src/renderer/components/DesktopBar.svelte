@@ -1,7 +1,8 @@
 <script lang="ts">
   import Icon from "./Icon.svelte";
-  let { canBack, canForward, onBack, onForward, onToggle }: {
+  let { canBack, canForward, onBack, onForward, onToggle, navigationOpen = true, compact = false }: {
     canBack: boolean; canForward: boolean; onBack: () => void; onForward: () => void; onToggle: () => void;
+    navigationOpen?: boolean; compact?: boolean;
   } = $props();
   function menu(name: "File" | "Edit" | "View" | "Help", event: MouseEvent) {
     const rect = (event.currentTarget as HTMLButtonElement).getBoundingClientRect();
@@ -9,7 +10,7 @@
   }
 </script>
 <div class="desktop-bar">
-  <button aria-label="Toggle sidebar" title="Toggle sidebar (Ctrl+B)" onclick={onToggle}><Icon name="sidebar" size={16} /></button>
+  <button id="navigation-toggle" aria-label={compact ? navigationOpen ? "Close navigation" : "Open navigation" : "Toggle sidebar"} aria-expanded={navigationOpen} aria-controls="research-navigation" title="Toggle sidebar (Ctrl+B)" onclick={onToggle}><Icon name="sidebar" size={16} /></button>
   <button aria-label="Go back" title="Back (Alt+Left)" disabled={!canBack} onclick={onBack}><Icon name="back" size={17} /></button>
   <button aria-label="Go forward" title="Forward (Alt+Right)" disabled={!canForward} onclick={onForward}><Icon name="arrow" size={17} /></button>
   {#if !import.meta.env.VITE_SCRAPLY_BROWSER_DEV}<nav aria-label="Application menu">

@@ -42,6 +42,7 @@
   let conversationIdeaId = $state<string | null>(null);
   let conversationLoading = $state(false);
   let conversationError = $state<string | null>(null);
+  let ideaFocused = $state(false);
   let workflowLoadEpoch = 0;
   let conversationLoadEpoch = 0;
   let reviewSelection = $state(false);
@@ -52,6 +53,17 @@
   let settings: Settings | undefined;
   let settingsOpen = $state(false);
   let sidebarVisible = $state(true);
+  let narrowViewport = $state(typeof window !== "undefined" && typeof window.matchMedia === "function" && window.matchMedia("(max-width: 720px)").matches);
+  let mobileSidebarOpen = $state(false);
+  let navigationOpen = $derived(narrowViewport ? mobileSidebarOpen : sidebarVisible);
+  function toggleNavigation() {
+    if (narrowViewport) mobileSidebarOpen = !mobileSidebarOpen;
+    else sidebarVisible = !sidebarVisible;
+  }
+  function closeMobileNavigation() {
+    mobileSidebarOpen = false;
+    void tick().then(() => document.getElementById("navigation-toggle")?.focus());
+  }
   type NavigationTarget = { threadId: string; step: WorkflowStep; settings: boolean };
   let navigation = $state<NavigationTarget[]>([]);
   let navigationIndex = $state(-1);
@@ -103,6 +115,8 @@
   let activeThread = $derived(workspace?.threads.find((item) => item.id === workspace?.activeThreadId) ?? null);
   let activeRun = $derived(workspace?.latestResearchRun ?? null);
   let activeWorkflow = $derived(workspace?.activeWorkflow ?? null);
+  let appliedResearchSnapshotId = $derived(activeWorkflow?.activeSnapshotId && workspace?.researchRequests.some((request) => request.appliedSnapshotId === activeWorkflow.activeSnapshotId)
+    ? activeWorkflow.activeSnapshotId : null);
   type RuntimeProgress = {
     stage?: string;
     modelState?: "waiting" | "dispatched" | "accepted" | null;
@@ -126,6 +140,19 @@
     || activeWorkflow?.purpose === "known-problem" || activeWorkflow?.state === "finished")));
 
   onMount(() => {
+    const viewport = window.matchMedia?.("(max-width: 720px)");
+    const resizeNavigation = (event: MediaQueryListEvent) => {
+      narrowViewport = event.matches;
+      mobileSidebarOpen = false;
+    };
+    viewport?.addEventListener("change", resizeNavigation);
+    const closeDrawerOnEscape = (event: KeyboardEvent) => {
+      if (!narrowViewport || !mobileSidebarOpen || event.key !== "Escape") return;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      closeMobileNavigation();
+    };
+    window.addEventListener("keydown", closeDrawerOnEscape, { capture: true });
     void load();
     const clock = setInterval(() => clockNow = Date.now(), 1_000);
     // A development host restart or a dropped event stream can miss the terminal event.
@@ -134,7 +161,7 @@
       if (activeWorkflow && ["running", "pause-requested", "stop-requested"].includes(activeWorkflow.state)) reconcileSoon();
     }, 5_000);
     const stopCommands = window.scraply.onAppCommand((command) => {
-      if (command === "toggle-sidebar") sidebarVisible = !sidebarVisible;
+      if (command === "toggle-sidebar") toggleNavigation();
       else if (command === "back") void navigateHistory(-1);
       else if (command === "forward") void navigateHistory(1);
       else if (command === "settings") void settings?.show();
@@ -203,7 +230,7 @@
       }
       reconcileSoon();
     });
-    return () => { stopCommands(); dispose(); clearInterval(clock); clearInterval(workflowRefresh); if (reconcileTimer) clearTimeout(reconcileTimer); };
+    return () => { window.removeEventListener("keydown", closeDrawerOnEscape, { capture: true }); viewport?.removeEventListener("change", resizeNavigation); stopCommands(); dispose(); clearInterval(clock); clearInterval(workflowRefresh); if (reconcileTimer) clearTimeout(reconcileTimer); };
   });
 
   async function load() {
@@ -498,6 +525,9 @@
   async function applyResearch(baseSnapshotId: string | null, includedRequestIds: string[], replacements: ResearchReplacement[]) {
     await commandWorkflow({ type: "apply-research", ...(baseSnapshotId ? { baseSnapshotId } : {}), includedRequestIds, replacements });
   }
+  async function keepResearch(requestId: string, baseSnapshotId: string | null) {
+    await commandWorkflow({ type: "keep-research", requestId, ...(baseSnapshotId ? { baseSnapshotId } : {}) });
+  }
   async function refreshConversation(ideaId: string, cursor?: string) {
     const epoch = ++conversationLoadEpoch;
     const threadId = workspace?.activeThreadId;
@@ -786,20 +816,21 @@
   }
 </script>
 
-<DesktopBar canBack={backIndex !== -1 && !busy} canForward={forwardIndex !== -1 && !busy} onBack={() => navigateHistory(-1)} onForward={() => navigateHistory(1)} onToggle={() => sidebarVisible = !sidebarVisible} />
-<div class="app-shell" class:sidebar-hidden={!sidebarVisible}>
-  <div class="sidebar-area" hidden={!sidebarVisible} inert={settingsOpen}>
+<DesktopBar canBack={backIndex !== -1 && !busy} canForward={forwardIndex !== -1 && !busy} onBack={() => navigateHistory(-1)} onForward={() => navigateHistory(1)} onToggle={toggleNavigation} navigationOpen={navigationOpen} compact={narrowViewport} />
+<div class="app-shell" class:sidebar-hidden={!navigationOpen}>
+  {#if narrowViewport && mobileSidebarOpen}<button class="sidebar-backdrop" aria-label="Close navigation" onclick={closeMobileNavigation}></button>{/if}
+  <div id="research-navigation" class="sidebar-area" hidden={!navigationOpen} inert={settingsOpen}>
   <Sidebar
     threads={workspace?.threads.filter((thread) => !thread.archivedAt) ?? []}
     activeThreadId={workspace?.activeThreadId ?? null}
     {busy}
     {deletingThreadId}
-    onNew={createThread}
-    onSelect={selectThread}
+    onNew={() => { mobileSidebarOpen = false; void createThread(); }}
+    onSelect={(id) => { mobileSidebarOpen = false; void selectThread(id); }}
     onArchive={archiveThread}
   >
     {#snippet settingsControl()}
-      <button id="settings-button" class="settings-button" onclick={() => settings?.show()}><Icon name="settings" size={20} />Settings</button>
+      <button id="settings-button" class="settings-button" onclick={() => { mobileSidebarOpen = false; settings?.show(); }}><Icon name="settings" size={20} />Settings</button>
     {/snippet}
   </Sidebar>
   </div>
@@ -818,7 +849,7 @@
         onSelect={openStep}
       />
       {#if !activeWorkflow}<RunUsage usage={activeRun?.usage} />{/if}
-      {#if workflowDetail && activeWorkflow && workflowDetail.summary.sessionId === activeWorkflow.sessionId}
+      {#if workflowDetail && activeWorkflow && workflowDetail.summary.sessionId === activeWorkflow.sessionId && !(activeStep === "ideas" && ideaFocused && activeWorkflow.state === "finished")}
         <div class="workflow-progress-wrap"><VibeProgress detail={workflowDetail} {busy}
           onPause={() => commandWorkflow({ type: "pause" })}
           onResume={() => commandWorkflow({ type: "resume" })}
@@ -893,15 +924,18 @@
       {:else if workspace.problemCandidates.length > 0 || workspace.rejectedProblemCandidates.length > 0}
         <ResearchArchive problems={workspace.problemCandidates} rejectedCandidates={workspace.rejectedProblemCandidates} {busy} onExport={exportResearch} onOpenSource={openExternalUrl} />
       {:else}
-        <div class="failed" id="workflow-panel-research" role="tabpanel" aria-label="Research" tabindex="0"><p class="eyebrow">{activeWorkflow ? "Research outcome" : "Research unavailable"}</p><h1>{activeWorkflow?.stopReason ?? "No completed research is ready yet."}</h1><p>{activeWorkflow ? "You can inspect the task record above or start a new run from setup." : "Return to setup and start a research run."}</p></div>
+        <div class="failed" id="workflow-panel-research" role="tabpanel" aria-label="Research" tabindex="0"><p class="eyebrow">{activeWorkflow ? "Research outcome" : "Research unavailable"}</p><h1>{activeWorkflow?.stopReason ?? "No completed research is ready yet."}</h1><p>{activeWorkflow ? "You can inspect the task record above or start a new run from setup." : "Return to setup and start a research run."}</p>{#if activeRun || activeWorkflow}<div class="zero-idea-actions"><button disabled={busy} onclick={exportResearch}>Export research JSON</button></div>{/if}</div>
       {/if}
       {#if activeWorkflow}
+        {#if activeWorkflow.mode === "vibe" && activeWorkflow.state === "finished" && activeWorkflow.activeSnapshotId}
+          <p class="followup-note">You can start a separate research follow-up. The finished Vibe result and its ideas stay saved; apply the new research when you want to use it in a later idea conversation.</p>
+        {/if}
         <ResearchRevisions requests={workspace.researchRequests} findings={workspace.researchFindings}
-          readOnly={activeWorkflow.mode !== "babysit" || !(["running", "waiting-for-review"].includes(activeWorkflow.state)
+          readOnly={(activeWorkflow.mode === "vibe" && activeWorkflow.state !== "finished") || !(["running", "waiting-for-review"].includes(activeWorkflow.state)
             || (activeWorkflow.state === "finished" && !!activeWorkflow.activeSnapshotId))}
           activeSnapshotId={activeWorkflow.activeSnapshotId} modelOptions={workspace.modelOptions}
           researchModel={workspace.runConfig?.model ?? null} researchReasoningEffort={workspace.runConfig?.reasoningEffort ?? "medium"}
-          {busy} onRequest={requestResearch} onApply={applyResearch} onOpenSource={openExternalUrl} />
+          {busy} onRequest={requestResearch} onApply={applyResearch} onKeep={keepResearch} onOpenSource={openExternalUrl} />
       {/if}
     {:else if activeThread.status === "development-running" && !activeWorkflow}
       <div id="workflow-panel-ideas" role="tabpanel" aria-label="Solutions" tabindex="0">
@@ -913,7 +947,7 @@
         {#if activeRun}<div class="progress-facts" aria-label="Run progress"><strong>{stageLabel(runtimeProgress.stage)}</strong>{#if runtimeProgress.modelState}<span>{runtimeProgress.modelState === "waiting" ? "Queued for model" : runtimeProgress.modelState === "dispatched" ? "Sent to model" : "Accepted by model"}</span>{/if}{#if elapsedStatus}<span>{elapsedStatus}</span>{/if}{#if runtimeProgress.lastSuccessfulCheckpoint}<span>Last checkpoint: {runtimeProgress.lastSuccessfulCheckpoint}</span>{/if}</div>{/if}
         {#if activeRun}<div class="run-actions"><button class="cancel" disabled={busy} onclick={() => cancelResearch(activeRun.runId)}>Cancel run</button></div>{/if}
       </div>
-      {#if workspace.solutions.length > 0}<SolutionWorkspace solutions={workspace.solutions} {busy} analysisBlocked={true} opportunities={workspace.opportunityFamilies} opportunityReviewRunning={workspace.opportunityReviewStatus?.running} modelOptions={workspace.modelOptions} initialConfig={workspace.runConfig} onReviewOpportunities={reviewSavedOpportunities} onEditMembership={editOpportunityMembership} onPlanExperiment={requestFocusedExperiment} onDiscard={discardIdea} workflowVersion={activeRun?.workflowVersion} onSelect={selectOption} onSave={saveDecision} onExport={exportIdeas} onOpenSource={openExternalUrl} onEvidenceFollowUp={requestEvidenceFollowUp} onEvidenceReassessment={requestEvidenceReassessment} onReview={() => { activeStep = "research"; reviewSelection = true; }} {conversation} {conversationLoading} {conversationError} onOpenConversation={openConversation} onCloseConversation={closeConversation} onSubmitIdeaTurn={submitIdeaTurn} onSelectConversationVersion={selectConversationVersion} onLoadMoreConversation={(cursor) => refreshConversation(conversationIdeaId ?? "", cursor)} />{/if}
+      {#if workspace.solutions.length > 0}<SolutionWorkspace solutions={workspace.solutions} {busy} analysisBlocked={true} opportunities={workspace.opportunityFamilies} opportunityReviewRunning={workspace.opportunityReviewStatus?.running} modelOptions={workspace.modelOptions} initialConfig={workspace.runConfig} acceptedCount={null} activeResearchSnapshotId={appliedResearchSnapshotId} onFocusChange={(focused) => ideaFocused = focused} onReviewOpportunities={reviewSavedOpportunities} onEditMembership={editOpportunityMembership} onPlanExperiment={requestFocusedExperiment} onDiscard={discardIdea} workflowVersion={activeRun?.workflowVersion} onSelect={selectOption} onSave={saveDecision} onExport={exportIdeas} onOpenSource={openExternalUrl} onEvidenceFollowUp={requestEvidenceFollowUp} onEvidenceReassessment={requestEvidenceReassessment} onReview={() => { activeStep = "research"; reviewSelection = true; }} {conversation} {conversationLoading} {conversationError} onOpenConversation={openConversation} onCloseConversation={closeConversation} onSubmitIdeaTurn={submitIdeaTurn} onSelectConversationVersion={selectConversationVersion} onLoadMoreConversation={(cursor) => refreshConversation(conversationIdeaId ?? "", cursor)} />{/if}
       </div>
     {:else if activeThread.status === "solutions-ready" || workspace.solutions.length > 0}
       <div id="workflow-panel-ideas" role="tabpanel" aria-label="Solutions">
@@ -923,13 +957,14 @@
             <div class="progress-facts" aria-label="Run progress">{#if runtimeProgress.modelState}<span>{runtimeProgress.modelState === "waiting" ? "Queued for model" : runtimeProgress.modelState === "dispatched" ? "Sent to model" : "Accepted by model"}</span>{/if}{#if elapsedStatus}<span>{elapsedStatus}</span>{/if}{#if runtimeProgress.lastSuccessfulCheckpoint}<span>Last checkpoint: {runtimeProgress.lastSuccessfulCheckpoint}</span>{/if}</div>
           </section>
         {/if}
-        <SolutionWorkspace solutions={workspace.solutions} {busy} opportunities={workspace.opportunityFamilies} opportunityReviewRunning={workspace.opportunityReviewStatus?.running} modelOptions={workspace.modelOptions} initialConfig={workspace.runConfig} onReviewOpportunities={reviewSavedOpportunities} onEditMembership={editOpportunityMembership} onPlanExperiment={requestFocusedExperiment} onDiscard={discardIdea} workflowVersion={activeRun?.workflowVersion} onSelect={selectOption} onSave={saveDecision} onExport={exportIdeas} onOpenSource={openExternalUrl} onEvidenceFollowUp={requestEvidenceFollowUp} onEvidenceReassessment={requestEvidenceReassessment} onReview={() => { activeStep = "research"; reviewSelection = true; }} {conversation} {conversationLoading} {conversationError} onOpenConversation={openConversation} onCloseConversation={closeConversation} onSubmitIdeaTurn={submitIdeaTurn} onSelectConversationVersion={selectConversationVersion} onLoadMoreConversation={(cursor) => refreshConversation(conversationIdeaId ?? "", cursor)} />
+        <SolutionWorkspace solutions={workspace.solutions} {busy} opportunities={workspace.opportunityFamilies} opportunityReviewRunning={workspace.opportunityReviewStatus?.running} modelOptions={workspace.modelOptions} initialConfig={workspace.runConfig} acceptedCount={activeWorkflow?.purpose === "research-followup" ? null : activeWorkflow?.counts.accepted ?? null} activeResearchSnapshotId={appliedResearchSnapshotId} onFocusChange={(focused) => ideaFocused = focused} onReviewOpportunities={reviewSavedOpportunities} onEditMembership={editOpportunityMembership} onPlanExperiment={requestFocusedExperiment} onDiscard={discardIdea} workflowVersion={activeRun?.workflowVersion} onSelect={selectOption} onSave={saveDecision} onExport={exportIdeas} onOpenSource={openExternalUrl} onEvidenceFollowUp={requestEvidenceFollowUp} onEvidenceReassessment={requestEvidenceReassessment} onReview={() => { activeStep = "research"; reviewSelection = true; }} {conversation} {conversationLoading} {conversationError} onOpenConversation={openConversation} onCloseConversation={closeConversation} onSubmitIdeaTurn={submitIdeaTurn} onSelectConversationVersion={selectConversationVersion} onLoadMoreConversation={(cursor) => refreshConversation(conversationIdeaId ?? "", cursor)} />
       </div>
     {:else if activeWorkflow}
       <div class="failed" id="workflow-panel-ideas" role="tabpanel" aria-label="Solutions" tabindex="0">
         <p class="eyebrow">{activeWorkflow.state === "finished" ? "Idea outcome" : "Idea development"}</p>
         <h1>{activeWorkflow.stopReason ?? (activeWorkflow.state === "finished" ? "No qualifying ideas were produced." : "Ideas are being developed.")}</h1>
         <p>{activeWorkflow.state === "finished" ? "Research and task details remain available in the Research tab." : "Progress and remaining limits are shown above."}</p>
+        {#if activeWorkflow.state === "finished"}<div class="zero-idea-actions"><button disabled={busy} onclick={() => exportIdeas("markdown")}>Export result</button><button disabled={busy} onclick={() => exportIdeas("json")}>Export JSON</button></div>{/if}
       </div>
     {:else if activeThread.status === "failed"}
       <div class="failed" id="workflow-panel-ideas" role="tabpanel" aria-label="Solutions" tabindex="0"><p class="eyebrow">No solutions</p><h1>The run stopped before any solutions were generated.</h1><p>{activeRun?.canResume ? "Resume the saved attempt or edit the setup." : "Edit the setup to start a new run."}</p></div>
@@ -967,6 +1002,9 @@
   .running,.failed { display:flex;flex-direction:column;align-items:start;max-width:900px;min-height:calc(100dvh - 160px);margin:auto;justify-content:center;padding:60px var(--page-inline); }
   .running h1,.failed h1 { font-size:38px;font-weight:600;letter-spacing:-.035em;line-height:1.25;max-width:620px;margin:10px 0 20px; }
   .failed > p:not(.eyebrow),.research-export-hint { color:var(--muted);font-size:13px;line-height:1.8;max-width:650px;margin:0; }
+  .zero-idea-actions { display:flex;flex-wrap:wrap;gap:8px;margin-top:22px; }
+  .zero-idea-actions button { min-height:38px;padding:8px 12px;border:1px solid var(--border-strong);border-radius:8px;background:#000;color:var(--text);font-size:13px; }
+  .followup-note { max-width:75ch;margin:20px var(--page-inline) 0;color:var(--muted);font-size:13px;line-height:1.6; }
   .activity-symbol { position:relative; }.activity-symbol::after { content:"";position:absolute;inset:-5px;border:1px solid transparent;border-top-color:var(--accent);border-radius:28px;animation:orbit 4s linear infinite; }
   .activity { width:100%;display:flex;gap:14px;border:1px solid var(--border);border-radius:14px;padding:20px;background:var(--surface);margin:24px 0;align-items:center; }
   .activity p { margin:0;font-size:13px;color:var(--muted); }.activity span { width:7px;height:7px;border-radius:50%;background:var(--accent);flex:none;animation:pulse 1.5s ease infinite alternate; }
@@ -985,5 +1023,14 @@
   @keyframes page-reveal { from { opacity:.6;transform:translateY(4px); }to { opacity:1;transform:none; } }
   @keyframes shimmer { to { background-position:-200% 0; } }@keyframes pulse { to { opacity:.3; } }@keyframes orbit { to { transform:rotate(360deg); } }
   @media(max-width:950px) { .calls { display:none; } }
-  @media(max-width:720px) { .app-shell { grid-template-columns:180px minmax(0,1fr);padding:0; }.main-content { border-radius:0; }.topbar { padding:0 16px; }.running h1,.failed h1 { font-size:28px; } }
+  @media(max-width:720px) {
+    .app-shell { grid-template-columns:minmax(0,1fr);padding:0; }
+    .sidebar-backdrop { position:fixed;inset:36px 0 0;z-index:10;width:100%;border:0;background:#000a; }
+    .sidebar-area { position:fixed;top:36px;bottom:0;left:0;z-index:11;display:block;width:min(280px,calc(100vw - 56px));background:#000;border-right:1px solid var(--border-strong);box-shadow:12px 0 32px #0009; }
+    .sidebar-area[hidden] { display:none; }
+    .sidebar-area :global(.sidebar) { height:100%; }
+    .main-content { border-radius:0; }
+    .topbar { padding:0 16px; }
+    .running h1,.failed h1 { font-size:28px; }
+  }
 </style>

@@ -88,7 +88,7 @@ describe("SolutionListItem risk summary", () => {
 });
 
 describe("SolutionWorkspace ordering explanation", () => {
-  test("shows business grouping when automatic output contains startups", () => {
+  test("keeps business grouping available without hiding the idea list", async () => {
     const opportunities: OpportunityFamiliesView = {
       rawOptionCount: 1, reviewedOptionCount: 0, acceptedFamilyCount: 0,
       families: [], unresolved: [], unreviewedOptionIds: ["solution-1"],
@@ -111,6 +111,8 @@ describe("SolutionWorkspace ordering explanation", () => {
 
     const startup = render(SolutionWorkspace, props);
     expect(startup.getByText("0 accepted families")).toBeTruthy();
+    expect(startup.getByRole("button", { name: /Open idea:/ })).toBeTruthy();
+    await fireEvent.click(startup.getByText(/Review idea grouping/));
     expect(startup.getByRole("button", { name: "Review 1 saved idea" })).toBeTruthy();
   });
 
@@ -123,7 +125,7 @@ describe("SolutionWorkspace ordering explanation", () => {
       onReview: vi.fn(),
     });
 
-    expect(view.getByText(/Solutions are not ranked/)).toBeTruthy();
+    expect(view.getByText(/Ideas are shown in saved order/)).toBeTruthy();
     expect(view.getByRole("button", { name: "Unaddressed project-ending" })).toBeTruthy();
     expect(view.queryByText("Highest risk", { exact: true })).toBeNull();
     expect(view.queryByText(/catastrophic gaps/i)).toBeNull();
@@ -136,7 +138,7 @@ describe("SolutionWorkspace ordering explanation", () => {
     });
 
     expect(view.getByText("No solutions were returned.")).toBeTruthy();
-    expect(view.getByText(/zero solutions for the selected problem/)).toBeTruthy();
+    expect(view.getByText(/Review the research and run result/)).toBeTruthy();
     expect(view.queryByText("Highest risk")).toBeNull();
     expect(view.queryByText("Evaluation snapshot")).toBeNull();
     expect(view.queryByRole("button", { name: "Show every solution" })).toBeNull();
@@ -177,11 +179,11 @@ describe("SolutionWorkspace idea conversation", () => {
       onOpenConversation, onCloseConversation, onSelectConversationVersion, onSubmitIdeaTurn,
     };
     const view = render(SolutionWorkspace, props);
+    await fireEvent.click(view.getByRole("button", { name: `Open idea: ${idea.description}` }));
     const open = view.getByRole("button", { name: `Explore idea: ${idea.description}` });
-
     await fireEvent.click(open);
     expect(onOpenConversation).toHaveBeenCalledWith(idea.id);
-    expect(view.getByRole("button", { name: "Back to solutions" })).toBeTruthy();
+    expect(view.getByRole("button", { name: "Back to idea" })).toBeTruthy();
     expect(view.getByText("Review applies to this version")).toBeTruthy();
     await fireEvent.click(view.getByRole("button", { name: /v2 Buyer delivery ledger/ }));
     expect(onSelectConversationVersion).toHaveBeenCalledWith("solution-2");
@@ -211,6 +213,7 @@ describe("SolutionWorkspace idea conversation", () => {
       onOpenConversation, onSubmitIdeaTurn: vi.fn().mockResolvedValue(undefined),
     });
 
+    await fireEvent.click(view.getByRole("button", { name: `Open idea: ${idea.description}` }));
     await fireEvent.click(view.getByRole("button", { name: `Explore idea: ${idea.description}` }));
     expect((await view.findByRole("alert")).textContent).toContain("Conversation could not load.");
     await fireEvent.click(view.getByRole("button", { name: "Try again" }));
@@ -227,6 +230,7 @@ describe("SolutionWorkspace idea conversation", () => {
       onOpenConversation, onSubmitIdeaTurn: vi.fn().mockResolvedValue(undefined),
     });
 
+    await fireEvent.click(view.getByRole("button", { name: `Open idea: ${idea.description}` }));
     await fireEvent.click(view.getByRole("button", { name: `Explore idea: ${idea.description}` }));
     expect(onOpenConversation).toHaveBeenCalledWith("solution-2");
     expect(view.getByLabelText("Idea versions and conversation").closest("[hidden]")).toBeNull();

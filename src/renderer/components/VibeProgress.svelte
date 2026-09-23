@@ -60,6 +60,9 @@
     return parents.length > 0 ? parents : detail.tasks;
   });
   let terminal = $derived(summary.state === "finished");
+  let researchFollowUp = $derived(summary.purpose === "research-followup");
+  // Follow-up sessions inherit a snapshot before work starts; only an applied result earns this label.
+  let researchUpdated = $derived(researchFollowUp && terminal && summary.researchApplied === true);
   let canPause = $derived(summary.state === "running");
   let canResume = $derived(summary.state === "paused" && !!onResume
     && summary.budget.modelCalls.uncertain === 0 && summary.budget.searches.uncertain === 0
@@ -167,32 +170,41 @@
   }
 </script>
 
-<section class="vibe-progress" aria-label={summary.mode === "vibe" ? "Vibe run progress" : "Babysit run progress"}>
+<section class="vibe-progress" class:terminal aria-label={summary.mode === "vibe" ? "Vibe run progress" : "Babysit run progress"}>
   <header class="overview">
     <div class="overview-copy">
-      <p class="stage">{terminal ? outcomeLabel(summary.outcome) : summary.currentStage === "coverage-map"
+      <p class="stage">{terminal ? researchFollowUp ? "Research result" : "Run result" : summary.currentStage === "coverage-map"
         ? "Finding coverage gaps" : summary.currentStage === "coverage-search" ? "Checking gap evidence"
           : summary.currentStage ? readable(summary.currentStage) : stateLabel(summary.state)}</p>
-      <h2><span class="accepted">{accepted}</span><span class="target"> / {target} {targetUnit}</span></h2>
-      <p class="current-status">{terminal ? outcomeLabel(summary.outcome) : stateLabel(summary.state)}</p>
+      {#if researchFollowUp}<h2 class="research-heading">Research follow-up</h2>{:else}<h2><span class="accepted">{accepted}</span><span class="target"> / {target} {targetUnit}</span></h2>{/if}
+      {#if !terminal}<p class="current-status">{stateLabel(summary.state)}</p>{/if}
     </div>
-    {#if !terminal && summary.counts.missing > 0}
+    {#if !researchFollowUp && !terminal && summary.counts.missing > 0}
       <span class="shortfall">{summary.counts.missing} still needed</span>
     {/if}
   </header>
 
-  <div class="meter" role="progressbar" aria-label={`Accepted ${targetUnit}`} aria-valuemin="0" aria-valuemax={Math.max(1, target)} aria-valuenow={Math.min(accepted, Math.max(1, target))} aria-valuetext={`${accepted} of ${target} ${targetUnit} accepted`}>
+  {#if !researchFollowUp && !terminal}<div class="meter" role="progressbar" aria-label={`Accepted ${targetUnit}`} aria-valuemin="0" aria-valuemax={Math.max(1, target)} aria-valuenow={Math.min(accepted, Math.max(1, target))} aria-valuetext={`${accepted} of ${target} ${targetUnit} accepted`}>
     <span style={`width:${targetPercent}%`}></span>
-  </div>
+  </div>{/if}
 
-  <dl class="counts" aria-label="Idea review counts">
+  {#if terminal}
+    <p class="terminal-reason" role="status"><strong>{researchUpdated ? "Research updated" : outcomeLabel(summary.outcome)}.</strong> {terminalReason(summary)}</p>
+  {:else if summary.state === "pause-requested" || summary.state === "stop-requested"}
+    <p class="pending-reason" role="status">{stateLabel(summary.state)}. Completed work remains saved.</p>
+  {/if}
+
+  <details class="run-details" open={!terminal}>
+  <summary>Run details</summary>
+
+  {#if !researchFollowUp}<dl class="counts" aria-label="Idea review counts">
     <div><dt>Requested</dt><dd>{summary.counts.requested}</dd></div>
     <div><dt>Validated</dt><dd>{summary.counts.validated}</dd></div>
     <div><dt>Duplicates</dt><dd>{summary.counts.duplicate}</dd></div>
     <div><dt>Missing</dt><dd>{summary.counts.missing}</dd></div>
-  </dl>
+  </dl>{/if}
 
-  {#if summary.targetKind === "project"}
+  {#if !researchFollowUp && summary.targetKind === "project"}
     <dl class="family-counts" aria-label="Business family totals">
       <div><dt>Existing families</dt><dd>{summary.counts.existing}</dd></div>
       <div><dt>Added this run</dt><dd>{summary.counts.addedBySession}</dd></div>
@@ -241,12 +253,6 @@
     </details>
   {/if}
 
-  {#if terminal}
-    <p class="terminal-reason" role="status"><strong>{outcomeLabel(summary.outcome)}.</strong> {terminalReason(summary)}</p>
-  {:else if summary.state === "pause-requested" || summary.state === "stop-requested"}
-    <p class="pending-reason" role="status">{stateLabel(summary.state)}. Completed work remains saved.</p>
-  {/if}
-
   {#if visibleTasks.length > 0}
     <section class="task-section" aria-label="Research and idea tasks">
       <h3>{terminal ? "Saved work" : "Current work"}</h3>
@@ -265,7 +271,6 @@
   {:else}
     <p class="empty-tasks">Tasks will appear here as the run advances.</p>
   {/if}
-
   {#if canPause || canStop || canResume}
     <div class="controls">
       <p>{summary.state === "paused" ? canResume ? "Resume uses the saved limits." : "This run is paused. Resolve any uncertain task before resuming." : canPause ? "Pause waits for the current request. Stop requests cancellation and keeps completed work." : "Stop keeps completed work."}</p>
@@ -312,16 +317,28 @@
       {:else if detail.nextCursor}<p>More saved task history is available.</p>{/if}
     {/if}
   </details>
+  </details>
 </section>
 
 <style>
   .vibe-progress { display:grid; gap:20px; padding:clamp(16px, 3vw, 26px); border:1px solid var(--border); border-radius:12px; background:#000; color:var(--text); }
+  .vibe-progress.terminal { gap:8px;padding:13px 18px; }
+  .vibe-progress.terminal .overview { align-items:center; }
+  .vibe-progress.terminal .overview-copy { display:flex;align-items:baseline;flex-wrap:wrap;gap:5px 14px; }
+  .vibe-progress.terminal .accepted { font-size:23px; }
+  .vibe-progress.terminal .stage { margin:0; }
+  .vibe-progress.terminal .terminal-reason { padding:0;border:0;background:transparent; }
+  .run-details { min-width:0; }
+  .run-details > summary { color:var(--muted);font-size:13px;cursor:pointer; }
+  .run-details[open] > summary { margin-bottom:18px; }
+  .run-details > dl + dl,.run-details > dl + section,.run-details > dl + p { margin-top:16px; }
   .retry-acknowledge { display:flex; align-items:flex-start; gap:8px; margin:12px 0; color:var(--muted); font-size:12px; line-height:1.5; }
   .retry-button { min-height:36px; padding:7px 12px; border:1px solid var(--border-strong); border-radius:7px; background:var(--surface-2); color:var(--text); font-size:12px; }
   .overview { display:flex; align-items:start; justify-content:space-between; gap:18px; }
   .overview-copy { min-width:0; }
   .stage { margin:0 0 9px; color:var(--muted); font-size:13px; line-height:1.4; }
   h2 { display:flex; flex-wrap:wrap; align-items:baseline; gap:0; margin:0; font-size:17px; font-weight:500; line-height:1.2; }
+  .research-heading { font-size:21px;font-weight:620;letter-spacing:-.02em; }
   .accepted { font-size:clamp(38px, 6vw, 56px); font-weight:680; letter-spacing:-.05em; font-variant-numeric:tabular-nums; }
   .target { color:var(--muted); }
   .current-status { margin:9px 0 0; color:var(--text); font-size:13px; }

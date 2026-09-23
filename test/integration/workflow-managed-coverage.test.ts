@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { materializeResearchSnapshot } from "../../src/core/research-revisions";
 import { WorkflowCoordinator } from "../../src/core/workflow-coordinator";
+import { fillGenerationAngle, initialGenerationAngles } from "../../src/core/idea-assignments";
 import type { ResearchEngine } from "../../src/core/research-engine";
 import { DatabaseClient } from "../../src/db/client";
 import { WorkflowRepository } from "../../src/db/repositories/workflows";
@@ -25,20 +26,23 @@ async function waitUntil(predicate: () => boolean): Promise<void> {
 }
 
 function fixture(output: { gaps: unknown[]; noUsefulGapReason: string | null },
-  options: { searchClient?: SearchClient; maxSearches?: number } = {}) {
+  options: { searchClient?: SearchClient; maxSearches?: number; target?: number;
+    targetKind?: "project" | "per-problem"; acceptedIds?: string[]; proposedCount?: number;
+    maxModelCalls?: number } = {}) {
   const directory = mkdtempSync(join(tmpdir(), "scraply-workflow-coverage-"));
   directories.push(directory);
   const db = new DatabaseClient(join(directory, "scraply.db"));
   const now = new Date().toISOString();
   const runConfig = { ...DEFAULT_RUN_CONFIG, explorationPurpose: "startup-opportunities" as const,
-    researchMode: "known-problem" as const, knownProblem: "Approval delays repair work.", ideaCount: 2 };
+    researchMode: "known-problem" as const, knownProblem: "Approval delays repair work.", ideaCount: options.target ?? 2 };
   const contract = WorkflowLaunchContractSchema.parse({
     contractVersion: 1, purpose: "known-problem", mode: "vibe", brief: "Sell a repair approval workflow",
     scope: { title: "Repair approvals", audience: "Independent repair shops", domain: "Automotive repair",
       observations: "Revised estimates wait for signoff", offLimits: [] },
     runConfig, ideas: { model: runConfig.model, reasoningEffort: "medium" },
-    targets: { kind: "project", ideaCount: 2, distinctBusinessCount: 2 },
-    limits: { maxMinutes: 90, maxModelCalls: 10, maxSearches: options.maxSearches ?? 0 },
+    targets: { kind: options.targetKind ?? "project", ideaCount: options.target ?? 2,
+      ...((options.targetKind ?? "project") === "project" ? { distinctBusinessCount: options.target ?? 2 } : {}) },
+    limits: { maxMinutes: 90, maxModelCalls: options.maxModelCalls ?? 10, maxSearches: options.maxSearches ?? 0 },
     instructions: {}, resolvedInstructions: { research: "", ideas: "", review: "" },
     instructionHashes: { research: "hash", ideas: "hash", review: "hash" },
   });
@@ -66,12 +70,15 @@ function fixture(output: { gaps: unknown[]; noUsefulGapReason: string | null },
     const initial = workflows.createWorkItem({ sessionId: session.id, kind: "generate-ideas",
       scopeKey: "initial:0", state: "ready", input: {
         problemId: materialized.problemIds[0], snapshotId: snapshot.id,
-        quota: 2, fillRound: 0, targetKind: "project", requestedTarget: 2,
+        quota: options.target ?? 2, fillRound: 0, targetKind: options.targetKind ?? "project",
+        requestedTarget: options.target ?? 2,
         model: runConfig.model, reasoningEffort: "medium",
       } });
     workflows.updateWorkItem(initial.id, "running");
     workflows.updateWorkItem(initial.id, "succeeded", { outputRefs: {
-      solutionIds: [], proposedSolutionIds: ["candidate-a", "candidate-b"],
+      solutionIds: options.acceptedIds ?? [],
+      proposedSolutionIds: options.proposedCount === undefined ? ["candidate-a", "candidate-b"]
+        : Array.from({ length: options.proposedCount }, (_, index) => `candidate-${index}`),
     } });
     return { sessionId: session.id, problemId: materialized.problemIds[0]! };
   });
@@ -137,6 +144,83 @@ test("a managed startup fill maps a named gap, settles one call, and targets its
     expect(ledger.opportunity_attempt_id).toBe((map?.outputRefs as { attemptId: string }).attemptId);
     expect(caseFile.modelCalls()).toBe(1);
     expect(errors).toEqual([]);
+  } finally { db.close(); }
+});
+
+test("one reviewed fill round reserves five and three candidates for an eight-idea deficit", async () => {
+  const caseFile = fixture({ gaps: [], noUsefulGapReason: null }, {
+    targetKind: "per-problem", target: 20, acceptedIds: Array.from({ length: 12 }, (_, index) => `accepted-${index}`),
+    proposedCount: 20, maxModelCalls: 8,
+  });
+  const { db, workflows, coordinator, sessionId, generationCalls } = caseFile;
+  try {
+    finishCollection(coordinator, sessionId);
+    await waitUntil(() => generationCalls.length === 1);
+    const fills = workflows.listWorkItems(sessionId).filter((item) => item.kind === "generate-ideas"
+      && (item.input as { fillRound?: number }).fillRound === 1);
+    expect(fills).toHaveLength(2);
+    expect(fills.map((item) => (item.input as { quota: number }).quota)).toEqual([5, 3]);
+    expect(fills.map((item) => (item.input as { acceptedBefore: number }).acceptedBefore)).toEqual([12, 12]);
+    expect(new Set(fills.map((item) => (item.input as { generationAngle: { gapId: string } }).generationAngle.gapId)).size).toBe(2);
+    expect(fills.map((item) => item.state)).toEqual(["running", "ready"]);
+    const reserved = db.db.prepare(`SELECT SUM(reserved_units) AS units FROM workflow_budget_entries
+      WHERE session_id = ? AND state = 'reserved'`).get(sessionId) as { units: number };
+    expect(reserved.units).toBe(8);
+    for (const item of fills) {
+      db.immediateTransaction(() => {
+        if (item.state === "ready") workflows.updateWorkItem(item.id, "running");
+        workflows.updateWorkItem(item.id, "succeeded", { outputRefs: { solutionIds: [], proposedSolutionIds: [] } });
+        const reservation = workflows.listBudgetEntries(sessionId).find((entry) => entry.workItemId === item.id)!;
+        workflows.settleBudget(reservation.id, { state: "spent", settledUnits: 2 });
+      });
+    }
+    finishCollection(coordinator, sessionId);
+    expect(workflows.getSession(sessionId)).toMatchObject({ state: "finished", outcome: "partial" });
+    expect(workflows.listWorkItems(sessionId).find((item) => item.kind === "collection-stop")?.outputRefs)
+      .toMatchObject({ code: "no-gain", shortfall: 8 });
+  } finally { db.close(); }
+});
+
+test.each([
+  { targetKind: "per-problem" as const, unit: "idea" },
+  { targetKind: "project" as const, unit: "business family" },
+])("a one-$unit shortfall uses a singular terminal reason", ({ targetKind, unit }) => {
+  const { db, coordinator, sessionId } = fixture({ gaps: [], noUsefulGapReason: null }, {
+    targetKind, target: 1, proposedCount: 1, maxModelCalls: 1,
+  });
+  try {
+    finishCollection(coordinator, sessionId);
+    expect(coordinator.summary(sessionId).stopReason).toMatch(new RegExp(`^Short by 1 distinct ${unit}\\.`));
+  } finally { db.close(); }
+});
+
+test("initial assignments use distinct saved observations and retain stable identities", () => {
+  const caseFile = fixture({ gaps: [], noUsefulGapReason: null });
+  const { db, problemId } = caseFile;
+  try {
+    const now = new Date().toISOString();
+    for (const [id, subject, behavior] of [
+      ["factor-approval", "shop owner", "waits for revised estimate approval"],
+      ["factor-status", "service advisor", "calls the customer to learn approval status"],
+    ]) {
+      db.db.prepare(`INSERT INTO sources (id,research_run_id,canonical_url,title,retrieved_text,content_hash,retrieved_at)
+        VALUES (?, 'source', ?, ?, ?, ?, ?)`).run(`source-${id}`, `https://example.test/${id}`, id,
+          behavior, "a".repeat(64), now);
+      db.db.prepare(`INSERT INTO factors (id,research_run_id,subject,behavior,quote,source_id,harvest_mode,model_confidence,created_at)
+        VALUES (?, 'source', ?, ?, ?, ?, 'audience', 0.8, ?)`).run(id, subject, behavior, behavior, `source-${id}`, now);
+      db.db.prepare("INSERT INTO problem_factors (problem_id,factor_id) VALUES (?,?)").run(problemId, id);
+    }
+    const angles = initialGenerationAngles(db, problemId, 2);
+    expect(angles.map((angle) => angle.gapId)).toEqual([
+      `initial:${problemId}:factor:factor-approval:0`, `initial:${problemId}:factor:factor-status:0`,
+    ]);
+    expect(angles[0]?.angle).toContain("waits for revised estimate approval");
+    expect(angles[1]?.angle).toContain("calls the customer to learn approval status");
+    expect(initialGenerationAngles(db, problemId, 2)).toEqual(angles);
+    const fillAngle = fillGenerationAngle(db, problemId, 2, ["Approval queue", "SMS approval link"]);
+    expect(fillAngle.angle).toContain("Approval queue");
+    expect(fillAngle.angle).toContain("SMS approval link");
+    expect(fillAngle.angle).toContain("Return fewer or no ideas");
   } finally { db.close(); }
 });
 

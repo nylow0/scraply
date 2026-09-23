@@ -62,12 +62,58 @@ describe("VibeProgress", () => {
     expect(view.queryByRole("button", { name: "Pause" })).toBeNull();
     expect(view.queryByRole("button", { name: "Stop" })).toBeNull();
 
-    const diagnostics = view.container.querySelector("details");
+    const diagnostics = view.container.querySelector("details.diagnostics") as HTMLDetailsElement | null;
     expect(diagnostics?.open).toBe(false);
+    await fireEvent.click(view.getByText("Run details"));
     await fireEvent.click(view.getByText(/Task details/));
     expect(diagnostics?.open).toBe(true);
     expect(view.getByText("One result may have reached the provider")).toBeTruthy();
     expect(view.getByText("buyer-source")).toBeTruthy();
+  });
+
+  test("describes a completed research follow-up without an idea target", () => {
+    const view = render(VibeProgress, { detail: detail({
+      purpose: "research-followup", state: "finished", outcome: "partial",
+      activeSnapshotId: "snapshot-new", researchApplied: true, currentStage: null,
+      stopReason: "Selected research was applied to a new evidence snapshot.",
+      finishedAt: "2026-09-23T12:03:00.000Z",
+    }), busy: false, onPause: vi.fn(async () => {}), onStop: vi.fn(async () => {}) });
+    expect(view.getByText("Research follow-up")).toBeTruthy();
+    expect(view.getByRole("status").textContent).toContain("Research updated");
+    expect(view.queryByRole("progressbar", { name: /Accepted/ })).toBeNull();
+  });
+
+  test("omits inherited idea shortfall and review counts while a research follow-up runs", () => {
+    const view = render(VibeProgress, { detail: detail({ purpose: "research-followup" }), busy: false,
+      onPause: vi.fn(async () => {}), onStop: vi.fn(async () => {}) });
+    expect(view.getByText("Research follow-up")).toBeTruthy();
+    expect(view.queryByText("6 still needed")).toBeNull();
+    expect(view.queryByLabelText("Idea review counts")).toBeNull();
+    expect(view.queryByRole("progressbar", { name: /Accepted/ })).toBeNull();
+  });
+
+  test("does not call an inherited snapshot an update after cancellation", () => {
+    const view = render(VibeProgress, { detail: detail({
+      purpose: "research-followup", state: "finished", outcome: "cancelled",
+      activeSnapshotId: "snapshot-inherited", currentStage: null,
+      stopReason: "The request was cancelled before applying new research.",
+      finishedAt: "2026-09-23T12:03:00.000Z",
+    }), busy: false, onPause: vi.fn(async () => {}), onStop: vi.fn(async () => {}) });
+    expect(view.getByRole("status").textContent).toContain("Stopped.");
+    expect(view.getByRole("status").textContent).toContain("cancelled before applying");
+    expect(view.queryByText("Research updated")).toBeNull();
+    expect(view.queryByRole("progressbar", { name: /Accepted/ })).toBeNull();
+  });
+
+  test("does not call partial follow-up work an applied update", () => {
+    const view = render(VibeProgress, { detail: detail({
+      purpose: "research-followup", state: "finished", outcome: "partial",
+      activeSnapshotId: "snapshot-inherited", currentStage: null,
+      stopReason: "The request ended before new research was selected.",
+      finishedAt: "2026-09-23T12:03:00.000Z",
+    }), busy: false, onPause: vi.fn(async () => {}), onStop: vi.fn(async () => {}) });
+    expect(view.getByRole("status").textContent).toContain("Partial result.");
+    expect(view.queryByText("Research updated")).toBeNull();
   });
 
   test("paused runs offer Resume while pending stop and busy states cannot dispatch another action", async () => {

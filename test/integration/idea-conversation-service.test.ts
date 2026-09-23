@@ -4,8 +4,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, test } from "bun:test";
 import { IdeaConversationService } from "../../src/core/idea-conversation-service";
+import { ResearchRequestService } from "../../src/core/research-request-service";
+import { materializeResearchSnapshot } from "../../src/core/research-revisions";
 import { DatabaseClient } from "../../src/db/client";
 import { WorkflowV2Repository } from "../../src/db/repositories/workflow-v2";
+import { WorkflowRepository } from "../../src/db/repositories/workflows";
 import { ProviderFailure, type StructuredModelClient, type StructuredStageRequest } from "../../src/providers/structured";
 import { DEFAULT_RUN_CONFIG } from "../../src/shared/schemas";
 
@@ -138,6 +141,91 @@ describe("idea conversation service", () => {
     expect(conversation.turns[0]?.assistant?.generatedSolutionId).toBe(conversation.versions[1]?.solutionId);
     service.selectVersion("thread-1", "idea-1", "idea-1");
     expect(service.getConversation({ ideaId: "idea-1" }).selectedVersionId).toBe("idea-1");
+  });
+
+  test("a rethink after applying newer research saves a version citing its new snapshot source", async () => {
+    const db = fixture();
+    const now = new Date().toISOString();
+    db.db.prepare("UPDATE sources SET content_hash = ? WHERE id = 'source-1'")
+      .run(createHash("sha256").update("Release review catches upgrade issues.").digest("hex"));
+    const workflows = new WorkflowRepository(db);
+    const session = db.immediateTransaction(() => workflows.createSession({
+      threadId: "thread-1", purpose: "research-followup", mode: "babysit",
+      contract: { contractVersion: 1, purpose: "research-followup", mode: "babysit", brief: "Review upgrade evidence",
+        scope: { title: "Releases", audience: "Teams", domain: "Software", observations: "Review gaps", offLimits: [] },
+        runConfig: DEFAULT_RUN_CONFIG, targets: { kind: "per-problem", ideaCount: 1 },
+        limits: { maxMinutes: 10, maxModelCalls: 2, maxSearches: 0 },
+        instructions: {}, resolvedInstructions: { research: "", ideas: "", review: "" },
+        instructionHashes: { research: "hash", ideas: "hash", review: "hash" } },
+      remainingMs: 10 * 60_000,
+    }));
+    const base = db.immediateTransaction(() => {
+      const materialized = materializeResearchSnapshot(db, { threadId: "thread-1", baseRunId: "discovery-1",
+        sourceProblemIds: ["problem-1"], sessionId: session.id });
+      const snapshot = workflows.createSnapshot({ sessionId: session.id, materializationRunId: materialized.runId,
+        selection: { problemIds: materialized.problemIds }, originMap: materialized.originMap });
+      workflows.updateSession(session.id, workflows.getSession(session.id)!.revision, {
+        state: "waiting-for-review", activeSnapshotId: snapshot.id,
+      });
+      return snapshot;
+    });
+    db.db.prepare(`INSERT INTO research_runs (id, thread_id, status, config_json, workflow_version, created_at, updated_at)
+      VALUES ('new-evidence-run', 'thread-1', 'completed', ?, 2, ?, ?)`).run(JSON.stringify(DEFAULT_RUN_CONFIG), now, now);
+    db.db.prepare(`INSERT INTO sources (id, research_run_id, canonical_url, title, retrieved_text, content_hash, retrieved_at)
+      VALUES ('new-source', 'new-evidence-run', 'https://example.test/new-review', 'New review account',
+        'Release owners now review dependency changes in the weekly checklist.', ?, ?)` )
+      .run(createHash("sha256").update("Release owners now review dependency changes in the weekly checklist.").digest("hex"), now);
+    db.db.prepare(`INSERT INTO problems (id, discovery_run_id, statement, why_it_persists, affected,
+      scale_estimate, verdict, verdict_reason, verdict_source_ids_json, created_at)
+      VALUES ('new-problem', 'new-evidence-run', 'Weekly review catches dependency changes', 'Teams rush',
+        'Release owners', 'Unknown', 'confirmed', 'New saved account', '[]', ?)` ).run(now);
+    db.db.prepare(`INSERT INTO problem_verdict_sources (problem_id, source_id, research_run_id, position)
+      VALUES ('new-problem', 'new-source', 'new-evidence-run', 0)`).run();
+    const requestItem = db.immediateTransaction(() => {
+      const item = workflows.createWorkItem({ sessionId: session.id, kind: "research-request", scopeKey: "new-evidence",
+        state: "ready", input: { action: { kind: "new-question", question: "Has review changed?" }, baseSnapshotId: base.id } });
+      workflows.updateWorkItem(item.id, "running");
+      workflows.updateWorkItem(item.id, "succeeded", { outputRefs: { runId: "new-evidence-run", problemIds: ["new-problem"] } });
+      return item;
+    });
+    const research = new ResearchRequestService({ db,
+      engine: () => ({ resumeRun: async () => {} }),
+      modelClient: () => { throw new Error("No research dispatch expected"); },
+    });
+    const applied = db.immediateTransaction(() => research.applyResearch(session.id, workflows.getSession(session.id)!.revision, {
+      type: "apply-research", baseSnapshotId: base.id, includedRequestIds: [requestItem.id], replacements: [],
+    }));
+    const newSource = db.db.prepare("SELECT id FROM sources WHERE research_run_id = ? AND title = 'New review account'")
+      .get(applied.snapshot.materializationRunId) as { id: string };
+    let providerCalls = 0;
+    const service = new IdeaConversationService({ db, modelClient: () => ({
+      async structuredCompletion<T>(prepared: StructuredStageRequest<T>) {
+        providerCalls += 1;
+        return completion({ reply: "Use weekly review for the new evidence.", citedEvidenceIds: [newSource.id],
+          assumptions: ["Owners review weekly"], changeSummary: "Moves review to a weekly checklist",
+          candidate: { mechanism: "Review dependencies in the weekly checklist",
+            description: "Release owners review the changed dependencies each week.",
+            keyAssumption: "Owners can review weekly.", whyCurrentApproachMaySuffice: "Current release checks may suffice.",
+            supportingEvidenceIds: [newSource.id], contraryEvidenceIds: [], unknowns: ["Owner capacity"],
+            respectsOffLimits: true, respectsOffLimitsWhy: "Uses the existing process." },
+        }).structuredCompletion(prepared);
+      },
+    }), modelAvailable: () => true, onProgress: () => {} });
+    const admitted = await service.submitTurn({ ...request("rethink-new-research"), intent: "rethink",
+      text: "Rethink using the newer research.", evidenceSnapshotId: applied.snapshot.id });
+    expect(await waitForTurn(db, admitted.turnId)).toBe("completed");
+    expect(providerCalls).toBe(1);
+    const conversation = service.getConversation({ ideaId: "idea-1" });
+    expect(conversation.versions).toHaveLength(2);
+    expect(conversation.versions[1]).toMatchObject({ parentSolutionId: "idea-1",
+      evidenceSnapshotId: applied.snapshot.id });
+    expect(conversation.turns[0]?.assistant?.citedEvidenceIds).toContain(newSource.id);
+    expect(db.db.prepare("SELECT mechanism FROM solutions WHERE id = 'idea-1'").get())
+      .toEqual({ mechanism: "Review dependencies before release" });
+    expect(db.db.prepare(`SELECT rr.workflow_version, rr.evidence_snapshot_id, s.supporting_evidence_ids_json
+      FROM solutions s JOIN research_runs rr ON rr.id = s.research_run_id WHERE s.id = ?`)
+      .get(conversation.versions[1]!.solutionId)).toEqual({ workflow_version: 2,
+        evidence_snapshot_id: applied.snapshot.id, supporting_evidence_ids_json: JSON.stringify([newSource.id]) });
   });
 
   test("a known provider failure retains the user message and spent attempt", async () => {

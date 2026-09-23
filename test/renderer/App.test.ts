@@ -9,6 +9,47 @@ import type { WorkflowSummary } from "../../src/shared/workflow-contracts";
 import { summarizeRunUsage } from "../../src/backend/run-usage";
 
 describe("App workspace coordination", () => {
+  test("uses a narrow navigation drawer without changing the desktop sidebar choice", async () => {
+    let compact = false;
+    let resize: ((event: { matches: boolean }) => void) | undefined;
+    vi.stubGlobal("matchMedia", vi.fn().mockImplementation(() => ({
+      get matches() { return compact; },
+      addEventListener: (_type: string, listener: (event: { matches: boolean }) => void) => { resize = listener; },
+      removeEventListener: vi.fn(),
+    })));
+    installApi({ getWorkspace: async () => workspace("alpha") });
+    const view = render(App);
+    try {
+      const navigation = view.container.querySelector("#research-navigation") as HTMLElement;
+      await view.findByRole("button", { name: "Toggle sidebar" });
+      await fireEvent.click(view.getByRole("button", { name: "Toggle sidebar" }));
+      expect(navigation.hidden).toBe(true);
+
+      compact = true;
+      resize?.({ matches: true });
+      await waitFor(() => expect(view.getByRole("button", { name: "Open navigation" })).toBeTruthy());
+      expect(navigation.hidden).toBe(true);
+      await fireEvent.click(view.getByRole("button", { name: "Open navigation" }));
+      expect(navigation.hidden).toBe(false);
+      expect(view.container.querySelector(".sidebar-backdrop")).not.toBeNull();
+      const underlyingEscape = vi.fn();
+      window.addEventListener("keydown", underlyingEscape);
+      await fireEvent.keyDown(window, { key: "Escape" });
+      window.removeEventListener("keydown", underlyingEscape);
+      expect(navigation.hidden).toBe(true);
+      expect(view.container.querySelector(".sidebar-backdrop")).toBeNull();
+      expect(underlyingEscape).not.toHaveBeenCalled();
+
+      compact = false;
+      resize?.({ matches: false });
+      await waitFor(() => expect(view.getByRole("button", { name: "Toggle sidebar" })).toBeTruthy());
+      expect(navigation.hidden).toBe(true);
+    } finally {
+      view.unmount();
+      vi.unstubAllGlobals();
+    }
+  });
+
   test("starts a previewed Vibe run and shows its persisted progress", async () => {
     const state = workspace("alpha");
     state.validation.native = { available: true, connected: true, accounts: [{ providerId: "openai-subscription" }] };
@@ -235,7 +276,94 @@ describe("App workspace coordination", () => {
     const view = render(App);
 
     expect(await view.findByText("Generating the next options.")).toBeTruthy();
-    expect(view.getByRole("button", { name: "Shared repair status" })).toBeTruthy();
+    expect(view.getByRole("button", { name: "Open idea: Shared repair status" })).toBeTruthy();
+  });
+
+  test("keeps saved ideas separate from follow-up counts and records a keep-current decision", async () => {
+    const state = workspace("alpha");
+    state.threads[0]!.status = "solutions-ready";
+    state.solutions = [{
+      id: "solution-1", problemId: "problem-1", problemStatement: "A problem", problemVerdict: "confirmed",
+      factors: [], mechanism: "Share repair status", description: "A shared repair status for customers",
+      respectsOffLimits: true, respectsOffLimitsWhy: "Within scope", outcomes: [], risks: [],
+      confirmedCoreOutcomes: 1, unaddressedCatastrophicRisks: 0, workflowVersion: 2,
+    }];
+    state.activeWorkflow = {
+      sessionId: "follow-up", threadId: "alpha", purpose: "research-followup", mode: "babysit",
+      targetKind: "per-problem", state: "waiting-for-review", outcome: null, revision: 2,
+      activeSnapshotId: "snapshot-1", selectedProblemIds: ["problem-1"],
+      counts: { requested: 1, attempted: 0, validated: 0, accepted: 0, duplicate: 0,
+        unresolved: 0, failed: 0, missing: 1, existing: 1, addedBySession: 0, total: 1 },
+      limits: { maxMinutes: 10, maxModelCalls: 2, maxSearches: 0 },
+      budget: { modelCalls: { limit: 2, spent: 1, reserved: 0, uncertain: 0 },
+        searches: { limit: 0, spent: 0, reserved: 0, uncertain: 0 }, remainingMs: 0 },
+      currentStage: null, stopReason: null,
+      startedAt: "2026-09-23T12:00:00.000Z", finishedAt: null,
+    };
+    state.researchRequests = [{
+      id: "request-1", kind: "redo", question: "Recheck buyer evidence", status: "completed",
+      targetFindingId: "problem-1", resultFindings: [], previousFinding: {
+        id: "problem-1", statement: "A problem", verdict: "confirmed", verdictReason: "Saved buyer evidence",
+        evidenceGap: null, supportingSources: [], verdictSources: [],
+      },
+    }];
+    const commandWorkflow = vi.fn(async (request: Parameters<ScraplyApi["commandWorkflow"]>[0]) => {
+      if (request.action.type !== "keep-research") throw new Error("Unexpected workflow command");
+      state.researchRequests[0] = { ...state.researchRequests[0]!, reviewDecision: "kept-current" };
+      state.activeWorkflow = { ...state.activeWorkflow!, state: "finished", outcome: "partial", revision: 3,
+        stopReason: "Current research was kept after reviewing the follow-up.",
+        finishedAt: "2026-09-23T12:03:00.000Z" };
+      return { sessionId: "follow-up", revision: 3, summary: state.activeWorkflow };
+    });
+    installApi({ getWorkspace: async () => structuredClone(state),
+      getWorkflow: async () => ({ summary: state.activeWorkflow!, tasks: [], nextCursor: null }), commandWorkflow });
+    const view = render(App);
+    await fireEvent.click(await view.findByRole("tab", { name: "Solutions" }));
+    expect(await view.findByText(/1 saved idea to inspect/)).toBeTruthy();
+    expect(view.queryByText(/0 accepted toward the run target/)).toBeNull();
+    await fireEvent.click(view.getByRole("tab", { name: "Research" }));
+    await fireEvent.click(view.getByRole("button", { name: /Recheck buyer evidence/ }));
+    expect(view.getByText("No finding met the evidence requirements. Current research remains unchanged.")).toBeTruthy();
+    await fireEvent.click(view.getByRole("button", { name: "Keep current research" }));
+    await waitFor(() => expect(commandWorkflow).toHaveBeenCalledWith(expect.objectContaining({
+      sessionId: "follow-up", expectedRevision: 2,
+      action: { type: "keep-research", requestId: "request-1", baseSnapshotId: "snapshot-1" },
+    })));
+    expect((await view.findAllByText("Current research was kept after reviewing the follow-up.")).length).toBeGreaterThan(0);
+    await fireEvent.click(view.getByRole("button", { name: /Recheck buyer evidence/ }));
+    expect(view.getAllByText("Kept current research").length).toBeGreaterThan(0);
+    expect(view.queryByRole("button", { name: "Keep current research" })).toBeNull();
+  });
+
+  test("exports a finished zero-idea result and a stopped research record", async () => {
+    const state = workspace("alpha");
+    state.threads[0]!.status = "solutions-ready";
+    state.activeWorkflow = {
+      sessionId: "session-zero", threadId: "alpha", purpose: "discovery", mode: "vibe", targetKind: "per-problem",
+      state: "finished", outcome: "no-qualifying-ideas", revision: 2, activeSnapshotId: null, selectedProblemIds: [],
+      counts: { requested: 3, attempted: 0, validated: 0, accepted: 0, duplicate: 0, unresolved: 0,
+        failed: 0, missing: 3, existing: 0, addedBySession: 0, total: 0 },
+      limits: { maxMinutes: 30, maxModelCalls: 10, maxSearches: 4 },
+      budget: { modelCalls: { limit: 10, spent: 2, reserved: 0, uncertain: 0 },
+        searches: { limit: 4, spent: 1, reserved: 0, uncertain: 0 }, remainingMs: 0 },
+      currentStage: null, stopReason: "No buyer evidence supported generation.",
+      startedAt: "2026-09-23T00:00:00.000Z", finishedAt: "2026-09-23T00:04:00.000Z",
+    };
+    state.latestResearchRun = { runId: "run-zero", status: "completed", problemId: null, workflowVersion: 2,
+      codexCalls: 2, searches: 1, projectedCodexCalls: 10, projectedSearches: 4,
+      lastActivity: "Completed" };
+    const exportIdeas = vi.fn(async () => ({ cancelled: true as const, files: [] }));
+    const exportResearch = vi.fn(async () => ({ cancelled: true as const }));
+    installApi({ getWorkspace: async () => structuredClone(state),
+      getWorkflow: async () => ({ summary: state.activeWorkflow!, tasks: [], nextCursor: null }),
+      exportIdeas, exportResearch });
+    const view = render(App);
+    await view.findByText("No buyer evidence supported generation.");
+    await fireEvent.click(view.getByRole("button", { name: "Export ideas" }));
+    await waitFor(() => expect(exportIdeas).toHaveBeenCalledWith("alpha", "markdown"));
+    await fireEvent.click(view.getByRole("tab", { name: "Research" }));
+    await fireEvent.click(view.getByRole("button", { name: "Export research JSON" }));
+    await waitFor(() => expect(exportResearch).toHaveBeenCalledWith("alpha"));
   });
 
   test("anchors elapsed time when switching to a run after browsing another thread", async () => {

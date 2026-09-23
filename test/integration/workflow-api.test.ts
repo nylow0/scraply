@@ -752,6 +752,8 @@ test("workspace keeps an earlier root idea after a new evidence snapshot while v
     versions: Array<{ solutionId: string; rootSolutionId: string; turnId: string | null }>;
     turns: Array<{ id: string; branchId: string; generatedSolutionId: string }>;
     evidenceSnapshots: Array<{ id: string; selection: { problemIds: string[] }; originMap: { problems: Record<string, unknown>; sources: Record<string, unknown> } }>;
+    workflowOutcomes: Array<{ sessionId: string; purpose: string; state: string; activeSnapshotId: string | null;
+      researchApplied?: boolean; targetKind?: string; requested?: number; accepted?: number; missing?: number }>;
   };
   expect(history.versions.map((version) => version.solutionId)).toEqual(["root-idea", "version-idea", "board-version-idea"]);
   expect(history.versions[1]).toMatchObject({ rootSolutionId: "root-idea", turnId: "turn-for-version" });
@@ -764,6 +766,13 @@ test("workspace keeps an earlier root idea after a new evidence snapshot while v
   expect(history.evidenceSnapshots[0]!.selection.problemIds).toHaveLength(1);
   expect(Object.keys(history.evidenceSnapshots[0]!.originMap.problems)).toEqual(history.evidenceSnapshots[0]!.selection.problemIds);
   expect(Object.keys(history.evidenceSnapshots[0]!.originMap.sources)).toHaveLength(1);
+  const researchOutcome = history.workflowOutcomes.find((outcome) => outcome.sessionId === followupSession.id);
+  expect(researchOutcome).toMatchObject({ purpose: "research-followup", state: "waiting-for-review",
+    activeSnapshotId: history.evidenceSnapshots[0]!.id });
+  expect(researchOutcome).not.toHaveProperty("targetKind");
+  expect(researchOutcome).not.toHaveProperty("requested");
+  expect(researchOutcome).not.toHaveProperty("accepted");
+  expect(researchOutcome).not.toHaveProperty("missing");
 
   const markdownResponse = await request("/ideas/export", { threadId, format: "markdown" });
   expect(markdownResponse.status).toBe(200);
@@ -773,6 +782,9 @@ test("workspace keeps an earlier root idea after a new evidence snapshot while v
   expect(markdownHistory).toContain("Conversation branch `branch-for-version`");
   expect(markdownHistory).toContain("Conversation branch `branch-for-board`");
   expect(markdownHistory).toContain("Selected findings:");
+  expect(markdownHistory).toContain("Research applied: no.");
+  expect(markdownHistory).not.toContain("Target: undefined");
+  expect(markdownHistory).not.toContain("Requested: undefined");
   expect(markdownHistory).toContain("`source-for-versions`");
   expect(markdownHistory).not.toContain('"versions": [');
 
@@ -792,6 +804,166 @@ test("workspace keeps an earlier root idea after a new evidence snapshot while v
   expect(archived.history.runs.find((run) => run.id === "completed-request-run")?.problems.map((problem) => problem.id)).toEqual(["completed-request-finding"]);
   expect(archived.history.runs.find((run) => run.id === "discovery-for-versions")?.sources.map((source) => source.id)).toEqual(["source-for-versions"]);
   expect(archived.history.runs.some((run) => run.problems.some((problem) => problem.id === "problem-for-versions"))).toBe(true);
+
+  const reopened = new DatabaseClient(dbPath);
+  const savedWorkflows = new WorkflowRepository(reopened);
+  const appliedSnapshotId = reopened.immediateTransaction(() => {
+    const prior = savedWorkflows.listSnapshots(followupSession.id)[0]!;
+    const requestId = savedWorkflows.listWorkItems(followupSession.id).find((item) => item.kind === "research-request")!.id;
+    const newEvidenceText = "A parts manager describes approval delays after warranty changes.";
+    reopened.db.prepare(`INSERT INTO sources (id, research_run_id, canonical_url, title, retrieved_text, content_hash, retrieved_at)
+      VALUES ('new-request-source', 'completed-request-run', 'https://example.test/new-request',
+        'New request source', ?, ?, ?)`).run(newEvidenceText, sha256(newEvidenceText), new Date().toISOString());
+    reopened.db.prepare(`INSERT INTO problem_verdict_sources (problem_id, source_id, research_run_id, position)
+      VALUES ('completed-request-finding', 'new-request-source', 'completed-request-run', 0)`).run();
+    reopened.db.prepare(`INSERT INTO threads (id, title, status, created_at, updated_at)
+      VALUES ('foreign-citation-thread', 'Foreign', 'solutions-ready', ?, ?)`).run(new Date().toISOString(), new Date().toISOString());
+    reopened.db.prepare(`INSERT INTO research_runs (id, thread_id, status, config_json, workflow_version, created_at, updated_at)
+      VALUES ('foreign-citation-run', 'foreign-citation-thread', 'completed', ?, 2, ?, ?)`)
+      .run(JSON.stringify(DEFAULT_RUN_CONFIG), new Date().toISOString(), new Date().toISOString());
+    reopened.db.prepare(`INSERT INTO sources (id, research_run_id, canonical_url, title, retrieved_text, content_hash, retrieved_at)
+      VALUES ('foreign-citation-source', 'foreign-citation-run', 'https://example.test/foreign',
+        'Foreign source', 'Foreign project evidence', 'hash', ?)`).run(new Date().toISOString());
+    const materialized = materializeResearchSnapshot(reopened, { threadId,
+      baseRunId: prior.materializationRunId, sourceProblemIds: [...prior.selection.problemIds, "completed-request-finding"],
+      sessionId: followupSession.id });
+    const applied = savedWorkflows.createSnapshot({ sessionId: followupSession.id, parentSnapshotId: prior.id,
+      materializationRunId: materialized.runId,
+      selection: { problemIds: materialized.problemIds, sourceProblemIds: [...prior.selection.problemIds, "completed-request-finding"],
+        includedRequestIds: [requestId] }, originMap: materialized.originMap });
+    const copiedSource = reopened.db.prepare("SELECT id FROM sources WHERE research_run_id = ? AND title = 'New request source'")
+      .get(materialized.runId) as { id: string };
+    reopened.db.prepare(`UPDATE solutions SET supporting_evidence_ids_json = ?, contrary_evidence_ids_json = ?
+      WHERE id = 'version-idea'`).run(JSON.stringify([copiedSource.id, "missing-citation", "foreign-citation-source"]),
+        JSON.stringify([copiedSource.id]));
+    reopened.db.prepare(`UPDATE research_runs SET evidence_snapshot_id = ?
+      WHERE id = (SELECT research_run_id FROM solutions WHERE id = 'version-idea')`).run(applied.id);
+    savedWorkflows.updateSession(followupSession.id, savedWorkflows.getSession(followupSession.id)!.revision, {
+      state: "finished", outcome: "partial", activeSnapshotId: applied.id,
+    });
+    return applied.id;
+  });
+  reopened.close();
+  const appliedExport = await request("/ideas/export", { threadId, format: "json" });
+  const appliedFiles = (await appliedExport.json() as { data: { files: Array<{ filename: string; content: string }> } }).data.files;
+  const appliedHistory = JSON.parse(appliedFiles.find((file) => file.filename === "idea-history.json")!.content) as {
+    workflowOutcomes: Array<{ sessionId: string; researchApplied?: boolean; activeSnapshotId: string; requested?: number }>;
+  };
+  expect(appliedHistory.workflowOutcomes.find((outcome) => outcome.sessionId === followupSession.id))
+    .toMatchObject({ researchApplied: true, activeSnapshotId: appliedSnapshotId });
+  expect(appliedHistory.workflowOutcomes.find((outcome) => outcome.sessionId === followupSession.id))
+    .not.toHaveProperty("requested");
+  const appliedMarkdown = await request("/ideas/export", { threadId, format: "markdown" });
+  const appliedMarkdownFiles = (await appliedMarkdown.json() as { data: { files: Array<{ filename: string; content: string }> } }).data.files;
+  expect(appliedMarkdownFiles.find((file) => file.filename === "idea-history.md")?.content)
+    .toContain("Research applied: yes.");
+  const ideaMarkdown = appliedMarkdownFiles.find((file) => file.filename.endsWith("-1.md"))!.content;
+  expect(ideaMarkdown).toContain("[New request source](https://example.test/new-request)");
+  expect(ideaMarkdown).toContain("Source unavailable (missing-citation)");
+  expect(ideaMarkdown).toContain("Source unavailable (foreign-citation-source)");
+  const appliedIdeas = JSON.parse(appliedFiles.find((file) => file.filename.endsWith("-1.json"))!.content) as
+    Array<{ id: string; sourceReferences?: Array<{ id: string; title: string; url: string }> }>;
+  expect(appliedIdeas.find((idea) => idea.id === "version-idea")?.sourceReferences)
+    .toEqual([expect.objectContaining({ title: "New request source", url: "https://example.test/new-request" })]);
+  expect(ideaMarkdown).not.toContain("Source unavailable (" + appliedIdeas.find((idea) => idea.id === "version-idea")?.sourceReferences?.[0]?.id + ")");
+});
+
+test("idea history exports zero, failed, and partial collection outcomes without hiding saved ideas", async () => {
+  const { request, threadId, dbPath } = await fixture();
+  const contract = WorkflowLaunchContractSchema.parse({ ...launchDraft(),
+    resolvedInstructions: { research: "", ideas: "", review: "" },
+    instructionHashes: { research: "research-hash", ideas: "ideas-hash", review: "review-hash" },
+  });
+  const client = new DatabaseClient(dbPath);
+  const workflows = new WorkflowRepository(client);
+  const zero = client.immediateTransaction(() => workflows.createSession({
+    id: "zero-collection", threadId, purpose: "known-problem", mode: "babysit", contract,
+    remainingMs: 90 * 60_000,
+  }));
+  client.immediateTransaction(() => workflows.updateSession(zero.id, zero.revision, {
+    state: "finished", outcome: "no-qualifying-ideas",
+  }));
+  const failed = client.immediateTransaction(() => workflows.createSession({
+    id: "failed-collection", threadId, purpose: "known-problem", mode: "babysit", contract,
+    remainingMs: 90 * 60_000,
+  }));
+  client.immediateTransaction(() => {
+    const item = workflows.createWorkItem({ sessionId: failed.id, kind: "known-problem",
+      scopeKey: "failed-before-ideas", state: "ready", input: {} });
+    workflows.updateWorkItem(item.id, "running");
+    workflows.updateWorkItem(item.id, "failed", { error: { message: "Research provider stopped before idea generation." } });
+    workflows.updateSession(failed.id, failed.revision, { state: "finished", outcome: "failed" });
+  });
+  const partial = client.immediateTransaction(() => workflows.createSession({
+    id: "partial-collection", threadId, purpose: "known-problem", mode: "babysit", contract,
+    remainingMs: 90 * 60_000,
+  }));
+  const now = new Date().toISOString();
+  client.db.prepare(`INSERT INTO research_runs
+    (id, thread_id, status, config_json, workflow_version, created_at, updated_at)
+    VALUES ('source-for-outcomes', ?, 'completed', ?, 2, ?, ?)`).run(threadId, JSON.stringify(DEFAULT_RUN_CONFIG), now, now);
+  client.db.prepare(`INSERT INTO scopes
+    (id, research_run_id, title, audience, domain, observations, off_limits_json, created_at, updated_at)
+    VALUES ('scope-for-outcomes', 'source-for-outcomes', 'Approvals', 'Repair shops', 'Repairs', '', '[]', ?, ?)`)
+    .run(now, now);
+  client.db.prepare(`INSERT INTO problems
+    (id, discovery_run_id, statement, why_it_persists, affected, scale_estimate, verdict,
+      verdict_reason, verdict_source_ids_json, created_at)
+    VALUES ('problem-for-outcomes', 'source-for-outcomes', 'Approvals delay repairs', '', 'Repair shops', '',
+      'confirmed', '', '[]', ?)`).run(now);
+  client.immediateTransaction(() => {
+    const materialized = materializeResearchSnapshot(client, { threadId, baseRunId: "source-for-outcomes",
+      sourceProblemIds: ["problem-for-outcomes"], sessionId: partial.id });
+    const snapshot = workflows.createSnapshot({ sessionId: partial.id, materializationRunId: materialized.runId,
+      selection: { problemIds: materialized.problemIds }, originMap: materialized.originMap });
+    workflows.updateSession(partial.id, partial.revision, { activeSnapshotId: snapshot.id });
+    const generation = workflows.createWorkItem({ sessionId: partial.id, kind: "generate-ideas",
+      scopeKey: "one-accepted-idea", state: "ready", input: {
+        problemId: materialized.problemIds[0], snapshotId: snapshot.id, quota: 3, fillRound: 0,
+        targetKind: "per-problem", requestedTarget: 3,
+      } });
+    workflows.updateWorkItem(generation.id, "running");
+    workflows.updateWorkItem(generation.id, "succeeded", { outputRefs: {
+      solutionIds: ["saved-outcome-idea"], proposedSolutionIds: ["saved-outcome-idea"],
+    } });
+    workflows.updateSession(partial.id, workflows.getSession(partial.id)!.revision, {
+      state: "finished", outcome: "partial",
+    });
+    client.db.prepare(`INSERT INTO research_runs
+      (id, thread_id, status, config_json, problem_id, workflow_version, workflow_session_id, created_at, updated_at)
+      VALUES ('generation-for-outcomes', ?, 'completed', ?, ?, 2, ?, ?, ?)`)
+      .run(threadId, JSON.stringify(DEFAULT_RUN_CONFIG), materialized.problemIds[0], partial.id, now, now);
+    client.db.prepare(`INSERT INTO solutions
+      (id, problem_id, mechanism, description, respects_off_limits, respects_off_limits_why, created_at, research_run_id)
+      VALUES ('saved-outcome-idea', ?, 'Approval queue', 'A queue for parts approvals', 1, '', ?, 'generation-for-outcomes')`)
+      .run(materialized.problemIds[0], now);
+  });
+  client.close();
+  const response = await request("/ideas/export", { threadId, format: "json" });
+  expect(response.status).toBe(200);
+  const files = (await response.json() as { data: { files: Array<{ filename: string; content: string }> } }).data.files;
+  const history = JSON.parse(files.find((file) => file.filename === "idea-history.json")!.content) as {
+    workflowOutcomes: Array<{ sessionId: string; outcome: string; requested: number; accepted: number;
+      missing: number; failed: number; stopReason: string; activeSnapshotId: string | null;
+      selectedProblemIds: string[] }>;
+  };
+  expect(history.workflowOutcomes).toHaveLength(3);
+  expect(history.workflowOutcomes.find((outcome) => outcome.sessionId === zero.id)).toMatchObject({
+    outcome: "no-qualifying-ideas", requested: 2, accepted: 0, missing: 2,
+  });
+  expect(history.workflowOutcomes.find((outcome) => outcome.sessionId === failed.id)).toMatchObject({
+    outcome: "failed", failed: 1, stopReason: "Research provider stopped before idea generation.",
+  });
+  expect(history.workflowOutcomes.find((outcome) => outcome.sessionId === partial.id)).toMatchObject({
+    outcome: "partial", requested: 3, accepted: 1, missing: 2,
+    selectedProblemIds: [expect.any(String)], activeSnapshotId: expect.any(String),
+  });
+  expect(files.some((file) => file.content.includes("Approval queue"))).toBe(true);
+  const markdown = await request("/ideas/export", { threadId, format: "markdown" });
+  expect(markdown.status).toBe(200);
+  const markdownFiles = (await markdown.json() as { data: { files: Array<{ filename: string; content: string }> } }).data.files;
+  expect(markdownFiles.find((file) => file.filename === "idea-history.md")?.content)
+    .toContain("## Run outcomes");
 });
 
 test("a project without a launch session can select and reload an idea version", async () => {
