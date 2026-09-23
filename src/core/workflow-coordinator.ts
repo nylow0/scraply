@@ -21,6 +21,7 @@ import { fillGenerationAngle, initialGenerationAngles } from "./idea-assignments
 import { loadManagedCoverageGaps, markManagedCoverageGapCovered, runManagedCoverageMap } from "./managed-coverage-map";
 import { loadManagedCoverageSearchSources, runManagedCoverageSearch } from "./managed-coverage-search";
 import { materializeResearchSnapshot } from "./research-revisions";
+import { remainingWorkflowMs as remainingMs } from "./workflow-time";
 import { DEFAULT_OPPORTUNITY_EXPLORATION_CONFIG, OpportunityExplorationConfigSchema } from "../shared/opportunity-exploration";
 
 export interface WorkflowCoordinatorOptions {
@@ -1509,10 +1510,6 @@ function capabilityHash(capabilities: WorkflowCapabilities): string {
       defaultEffort: model.defaultReasoningEffort, efforts: model.reasoningEfforts.map((effort) => effort.id).sort() }))
       .sort((left, right) => left.id.localeCompare(right.id)),
   }));
-}
-
-function remainingMs(session: WorkflowSession): number {
-  return Math.max(0, session.remainingMs - (session.runningSince ? Date.now() - Date.parse(session.runningSince) : 0));
 }
 
 function questionFromItem(item: WorkflowWorkItem): string | undefined {

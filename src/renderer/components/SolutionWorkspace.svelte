@@ -39,6 +39,7 @@
     onCloseConversation,
     onSubmitIdeaTurn,
     onSelectConversationVersion,
+    onLoadVersionDetail,
     onLoadMoreConversation,
     onFocusChange,
   }: {
@@ -70,6 +71,7 @@
     onCloseConversation?: () => void;
     onSubmitIdeaTurn?: (draft: Omit<SubmitIdeaTurnRequest, "threadId" | "rootSolutionId">) => Promise<void>;
     onSelectConversationVersion?: (solutionId: string) => Promise<void>;
+    onLoadVersionDetail?: (solutionId: string) => Promise<SolutionView>;
     onLoadMoreConversation?: (cursor: string) => Promise<void>;
     onFocusChange?: (focused: boolean) => void;
   } = $props();
@@ -79,6 +81,8 @@
   let discardedCount = $derived(solutions.filter((idea) => idea.discarded).length);
   let unaddressedOnly = $state(false);
   let selectedIdeaId = $state<string | null>(null);
+  let selectedVersionDetail = $state<SolutionView | null>(null);
+  let returnToConversationId = $state<string | null>(null);
   let activeConversationId = $state<string | null>(null);
   let retainedConversation = $state<ConversationView | null>(null);
   let openingConversation = $state(false);
@@ -122,13 +126,30 @@
   }
   function openIdea(event: MouseEvent, ideaId: string) {
     ideaButton = event.currentTarget as HTMLButtonElement;
+    selectedVersionDetail = null;
+    returnToConversationId = null;
     selectedIdeaId = ideaId;
   }
   function closeIdea() {
     selectedIdeaId = null;
-    void tick().then(() => ideaButton?.focus());
+    selectedVersionDetail = null;
+    if (returnToConversationId) {
+      activeConversationId = returnToConversationId;
+      returnToConversationId = null;
+    } else void tick().then(() => ideaButton?.focus());
   }
-  let selectedIdea = $derived(solutions.find((idea) => idea.id === selectedIdeaId) ?? null);
+  async function viewVersionDetail(solutionId: string) {
+    if (!onLoadVersionDetail || !activeConversationId) return;
+    const conversationId = activeConversationId;
+    const detail = await onLoadVersionDetail(solutionId);
+    if (activeConversationId !== conversationId) return;
+    selectedVersionDetail = detail;
+    returnToConversationId = conversationId;
+    selectedIdeaId = solutionId;
+    activeConversationId = null;
+  }
+  let selectedIdea = $derived(selectedVersionDetail?.id === selectedIdeaId
+    ? selectedVersionDetail : solutions.find((idea) => idea.id === selectedIdeaId) ?? null);
   let hasV2 = $derived(workflowVersion === 2 || solutions.some((idea) => idea.workflowVersion === 2));
   let rankedSolutions = $derived(solutions.map((idea, index) => ({ idea, rank: index + 1 })));
   function matchesQuery(idea: SolutionView): boolean {
@@ -238,9 +259,9 @@
 
   <div class="idea-detail" hidden={activeConversationId !== null || selectedIdeaId === null}>
     {#if selectedIdea}
-      <div class="detail-navigation"><button class="back-button" onclick={closeIdea}>Back to ideas</button><span>Idea details</span></div>
+      <div class="detail-navigation"><button class="back-button" onclick={closeIdea}>{returnToConversationId ? "Back to conversation" : "Back to ideas"}</button><span>Idea details</span></div>
       <div class="detail-heading"><h1>{shortTitle(selectedIdea.mechanism)}</h1>
-        {#if selectedIdea.workflowVersion === 2 && onOpenConversation}<button class="explore-button" aria-label={`Explore idea: ${selectedIdea.description}`} onclick={(event) => openConversation(event, selectedIdea.id)}>Explore this idea</button>{/if}
+        {#if selectedIdea.workflowVersion === 2 && onOpenConversation && !returnToConversationId}<button class="explore-button" aria-label={`Explore idea: ${selectedIdea.description}`} onclick={(event) => openConversation(event, selectedIdea.id)}>Explore this idea</button>{/if}
       </div>
       {#if selectedIdea.workflowVersion === 2 && onSelect && onSave}
         <DecisionOption idea={selectedIdea} busy={busy || opportunityReviewRunning} {analysisBlocked} initiallyOpen={true} inDetailView={true} {onSelect} {onSave} {onOpenSource} {onEvidenceFollowUp} {onEvidenceReassessment} {onPlanExperiment} />
@@ -260,7 +281,7 @@
     {#if retainedConversation && onSubmitIdeaTurn}
       <div hidden={!conversationMatchesSelection || openingConversation || conversationLoading || !!openError || !!conversationError}>
         {#key retainedConversation.rootSolutionId}
-          <IdeaConversation conversation={retainedConversation} {modelOptions} {activeResearchSnapshotId} busy={busy || analysisBlocked || opportunityReviewRunning} onSubmit={onSubmitIdeaTurn} {...(onSelectConversationVersion ? { onSelectVersion: onSelectConversationVersion } : {})} {...(onLoadMoreConversation ? { onLoadMore: onLoadMoreConversation } : {})} />
+          <IdeaConversation conversation={retainedConversation} {modelOptions} {activeResearchSnapshotId} busy={busy || analysisBlocked || opportunityReviewRunning} onSubmit={onSubmitIdeaTurn} {...(onSelectConversationVersion ? { onSelectVersion: onSelectConversationVersion } : {})} {...(onLoadVersionDetail ? { onViewVersion: viewVersionDetail } : {})} {...(onLoadMoreConversation ? { onLoadMore: onLoadMoreConversation } : {})} />
         {/key}
       </div>
     {/if}

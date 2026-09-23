@@ -12,6 +12,7 @@
     busyReason = "Wait for the current work to finish before sending a follow-up.",
     onSubmit,
     onSelectVersion,
+    onViewVersion,
     onLoadMore,
   }: {
     conversation: ConversationView;
@@ -21,6 +22,7 @@
     busyReason?: string;
     onSubmit: (draft: Draft) => Promise<void>;
     onSelectVersion?: (solutionId: string) => Promise<void>;
+    onViewVersion?: (solutionId: string) => Promise<void>;
     onLoadMore?: (cursor: string) => Promise<void>;
   } = $props();
 
@@ -36,6 +38,7 @@
   let sending = $state(false);
   let useNewerResearch = $state(false);
   let error = $state<string | null>(null);
+  let versionError = $state<string | null>(null);
 
   let selectedVersion = $derived(conversation.versions.find((version) => version.solutionId === selectedVersionId));
   let parentVersion = $derived(conversation.versions.find((version) => version.solutionId === selectedVersion?.parentSolutionId));
@@ -74,6 +77,7 @@
     retryParentTurnId = undefined;
     useNewerResearch = false;
     error = null;
+    versionError = null;
     try {
       await onSelectVersion?.(solutionId);
     } catch (cause) {
@@ -156,6 +160,12 @@
         <h2>Idea v{selectedVersion.versionNumber}</h2>
         <h3>How it works</h3><p class="description">{selectedVersion.mechanism}</p>
         <h3>What it does</h3><p class="description">{selectedVersion.description}</p>
+        {#if onViewVersion}<button class="full-version" onclick={async () => {
+          versionError = null;
+          try { await onViewVersion(selectedVersion.solutionId); }
+          catch (cause) { versionError = cause instanceof Error ? cause.message : "Could not open the full idea."; }
+        }}>View full idea details</button>{/if}
+        {#if versionError}<p class="error" role="alert">{versionError}</p>{/if}
         <div class="review-chip" class:current={selectedVersion.reviewFreshness === "current"}>
           {selectedVersion.reviewFreshness === "current" ? "Review applies to this version" : selectedVersion.reviewFreshness === "stale" ? "Review belongs to an earlier version" : "This version has not been reviewed"}
         </div>
@@ -258,6 +268,7 @@
   h2 { margin:3px 0 10px;font-size:19px;letter-spacing:-.025em;line-height:1.3; }
   h3 { margin:28px 0 12px;font-size:13px;color:var(--muted);font-weight:600; }
   .description,.lineage { color:var(--muted);line-height:1.65;white-space:pre-wrap; }
+  .full-version { margin:0 0 16px;padding:8px 11px;border:1px solid var(--border);border-radius:7px;background:#080a09;color:var(--accent); }
   .review-chip { display:inline-block;margin-top:12px;padding:6px 9px;border:1px solid #b9864566;border-radius:6px;color:#e4b46f;font-size:11px; }
   .review-chip.current { border-color:#26e6a266;color:var(--accent); }
   .versions { list-style:none;padding:0;margin:0;display:grid;gap:7px; }
