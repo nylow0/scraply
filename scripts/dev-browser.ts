@@ -95,7 +95,7 @@ async function start(): Promise<void> {
   }
   // Refuse an occupied UI port before starting another host or overwriting its state.
   const probe = createServer();
-  await new Promise<void>((resolve, reject) => { probe.once("error", reject); probe.listen(5173, "127.0.0.1", resolve); });
+  await new Promise<void>((resolve, reject) => { probe.once("error", reject); probe.listen(Number(new URL(BROWSER_DEV_ORIGIN).port), "127.0.0.1", resolve); });
   await new Promise<void>((resolve) => probe.close(() => resolve()));
   const state: State = { token: randomBytes(24).toString("hex"), sessionId: randomUUID(), port: await unusedPort() };
   mkdirSync(dirname(statePath), { recursive: true });

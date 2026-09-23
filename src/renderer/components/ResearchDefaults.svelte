@@ -19,7 +19,7 @@
   let error = $state("");
   let models = $derived.by(() => {
     const choices = new SvelteMap<string, ModelRef & { displayName: string; available: boolean }>();
-    for (const modelId of ["gpt-5.6-sol", "gpt-6-astra", "gpt-5.6-luna"]) {
+    for (const modelId of ["gpt-6-astra", "gpt-6-sol", "gpt-6-luna", "gpt-5.6-sol", "gpt-5.6-luna"]) {
       const model = { providerId: "openai-subscription", modelId };
       choices.set(modelRefKey(model), { ...model, displayName: modelDisplayName(model), available: false });
     }
@@ -59,7 +59,7 @@
   <fieldset>
     <legend>Research titles</legend>
     <p>Blank research names are generated automatically.</p>
-    <label><span>Title model</span><select aria-label="Title model" bind:value={titleModelKey} onchange={() => { saved = false; titleReasoningEffort = titleEfforts.some((effort) => effort.id === "low") ? "low" : titleEfforts[0]?.id ?? "low"; }}>
+    <label><span>Title model</span><select aria-label="Title model" bind:value={titleModelKey} onchange={() => { saved = false; titleReasoningEffort = workspace?.modelOptions.find((model) => modelRefKey(model) === titleModelKey)?.defaultReasoningEffort ?? titleEfforts[0]?.id ?? "low"; }}>
       {#each models as model (modelRefKey(model))}<option value={modelRefKey(model)}>{model.displayName}{!model.available && workspace?.validation.native.connected ? " (unavailable)" : ""}</option>{/each}
     </select></label>
     <label><span>Title reasoning</span><select aria-label="Title reasoning" bind:value={titleReasoningEffort} onchange={() => saved = false}>

@@ -11,12 +11,19 @@ export class ActiveRunConflictError extends Error {
 }
 
 export interface CreatedResearchRun { runId: string; created: boolean }
+export interface ResearchRunWorkflowLink {
+  sessionId: string;
+  purpose: "discovery" | "known-problem" | "research-followup" | "idea-turn";
+  evidenceSnapshotId?: string | null;
+  /** Link the new run to its reserved work item before any provider dispatch. False cancels it. */
+  onRunCreated?: (runId: string) => boolean;
+}
 const ACCOUNTING_BUDGET_USD = 1_000;
 
 export class ResearchRunRepository {
   constructor(private readonly client: DatabaseClient) {}
 
-  create(threadId: string, config: RunConfig, problemId: string | null = null, idempotencyKey = randomUUID()): CreatedResearchRun {
+  create(threadId: string, config: RunConfig, problemId: string | null = null, idempotencyKey = randomUUID(), workflow?: ResearchRunWorkflowLink): CreatedResearchRun {
     const db = this.client.db;
     db.exec("BEGIN IMMEDIATE");
     try {
@@ -34,9 +41,11 @@ export class ResearchRunRepository {
       db.prepare(`
         INSERT INTO research_runs (
           id, thread_id, status, config_json, idempotency_key, spend_estimate, cancelled,
-          completion_reason, budget_limit, reserved_cost, committed_cost, problem_id, created_at, updated_at
-        ) VALUES (?, ?, 'running', ?, ?, 0, 0, NULL, ?, 0, 0, ?, ?, ?)
-      `).run(runId, threadId, JSON.stringify(config), idempotencyKey, ACCOUNTING_BUDGET_USD, problemId, now, now);
+          completion_reason, budget_limit, reserved_cost, committed_cost, problem_id, created_at, updated_at,
+          workflow_session_id, purpose, evidence_snapshot_id
+        ) VALUES (?, ?, 'running', ?, ?, 0, 0, NULL, ?, 0, 0, ?, ?, ?, ?, ?, ?)
+      `).run(runId, threadId, JSON.stringify(config), idempotencyKey, ACCOUNTING_BUDGET_USD, problemId, now, now,
+        workflow?.sessionId ?? null, workflow?.purpose ?? null, workflow?.evidenceSnapshotId ?? null);
       db.prepare("UPDATE research_runs SET workflow_version = ? WHERE id = ?").run(config.workflowVersion ?? 1, runId);
       db.exec("COMMIT");
       return { runId, created: true };

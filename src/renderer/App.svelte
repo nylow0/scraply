@@ -2,6 +2,13 @@
   import { onMount, tick, untrack } from "svelte";
   import type { NativeLoginStartResult, ResearchEvent, SolutionView, WorkspaceState } from "../shared/ipc";
   import type { ExplorationPurpose, ModelRef } from "../shared/schemas";
+  import type { ResearchReplacement, ResearchRequestDraft } from "../shared/research-revisions";
+  import {
+    PreviewWorkflowResultSchema,
+    type WorkflowAction, type WorkflowDetail, type WorkflowLaunchDraft,
+    type IdeaConversation as IdeaConversationView, type SubmitIdeaTurnRequest,
+  } from "../shared/workflow-contracts";
+  import type { z } from "zod";
   import { readResearchDefaults } from "./lib/research-defaults";
   import DesktopBar from "./components/DesktopBar.svelte";
   import Icon from "./components/Icon.svelte";
@@ -15,11 +22,14 @@
   import OpportunityProgress from "./components/OpportunityProgress.svelte";
   import WorkflowTabs, { type WorkflowStep } from "./components/WorkflowTabs.svelte";
   import RunUsage from "./components/RunUsage.svelte";
+  import VibeProgress from "./components/VibeProgress.svelte";
+  import ResearchRevisions from "./components/ResearchRevisions.svelte";
 
   type Feedback = { text: string; tone: "error" | "info"; source?: "workspace-load" };
   type WorkspaceResult = { workspace: WorkspaceState };
   type ResearchExportResult = { cancelled: true } | { cancelled: false; file: string };
   type IdeasExportResult = { cancelled: true } | { cancelled: false; directory: string; files: string[] };
+  type WorkflowPreview = z.infer<typeof PreviewWorkflowResultSchema>;
 
   let workspace = $state<WorkspaceState | null>(null);
   let loading = $state(true);
@@ -27,6 +37,13 @@
   let feedback = $state<Feedback | null>(null);
   let deletingThreadId = $state<string | null>(null);
   let latestEvent = $state<ResearchEvent | null>(null);
+  let workflowDetail = $state<WorkflowDetail | null>(null);
+  let conversation = $state<IdeaConversationView | null>(null);
+  let conversationIdeaId = $state<string | null>(null);
+  let conversationLoading = $state(false);
+  let conversationError = $state<string | null>(null);
+  let workflowLoadEpoch = 0;
+  let conversationLoadEpoch = 0;
   let reviewSelection = $state(false);
   let activeStep = $state<WorkflowStep>("setup");
   let editingScopeThreadId = $state<string | null>(null);
@@ -85,6 +102,7 @@
   let progressReceivedAt = $state(Date.now());
   let activeThread = $derived(workspace?.threads.find((item) => item.id === workspace?.activeThreadId) ?? null);
   let activeRun = $derived(workspace?.latestResearchRun ?? null);
+  let activeWorkflow = $derived(workspace?.activeWorkflow ?? null);
   type RuntimeProgress = {
     stage?: string;
     modelState?: "waiting" | "dispatched" | "accepted" | null;
@@ -103,12 +121,18 @@
     : activeRun?.lastActivity ?? "Preparing the next provider call...");
   // Local-only override: lets the user reopen the scope form from a failed run without touching server state.
   let editingScope = $derived(editingScopeThreadId !== null && editingScopeThreadId === activeThread?.id);
-  let researchReady = $derived(Boolean(activeThread && (workspace?.problemCandidates.length || workspace?.rejectedProblemCandidates.length || activeThread.status === "discovery-running")));
-  let ideasReady = $derived(Boolean(activeThread && (workspace?.solutions.length || activeThread.status === "development-running" || activeThread.status === "solutions-ready")));
+  let researchReady = $derived(Boolean(activeThread && (activeWorkflow || workspace?.problemCandidates.length || workspace?.rejectedProblemCandidates.length || activeThread.status === "discovery-running")));
+  let ideasReady = $derived(Boolean(activeThread && (workspace?.solutions.length || activeThread.status === "development-running" || activeThread.status === "solutions-ready"
+    || activeWorkflow?.purpose === "known-problem" || activeWorkflow?.state === "finished")));
 
   onMount(() => {
     void load();
     const clock = setInterval(() => clockNow = Date.now(), 1_000);
+    // A development host restart or a dropped event stream can miss the terminal event.
+    // Reconcile active sessions periodically so progress and completion still reach the UI.
+    const workflowRefresh = setInterval(() => {
+      if (activeWorkflow && ["running", "pause-requested", "stop-requested"].includes(activeWorkflow.state)) reconcileSoon();
+    }, 5_000);
     const stopCommands = window.scraply.onAppCommand((command) => {
       if (command === "toggle-sidebar") sidebarVisible = !sidebarVisible;
       else if (command === "back") void navigateHistory(-1);
@@ -118,6 +142,17 @@
       else if (command === "export-research" && workspace?.activeThreadId) void exportResearch();
     });
     const dispose = window.scraply.onBackendEvent((event) => {
+      if (event.type === "workflow-progress") {
+        if (event.threadId === workspace?.activeThreadId) {
+          if (event.sessionId === workspace?.activeWorkflow?.sessionId) {
+            if (event.state === "finished" && workspace.activeWorkflow.mode === "vibe") activeStep = "ideas";
+            else if (event.state === "waiting-for-review") activeStep = "research";
+          }
+          if (conversationIdeaId && event.sessionId !== workspace?.activeWorkflow?.sessionId) void refreshConversation(conversationIdeaId);
+        }
+        reconcileSoon();
+        return;
+      }
       if (event.type === "opportunity-progress") {
         if (event.threadId === workspace?.activeThreadId && event.error) feedback = { text: event.error, tone: "error" };
         reconcileSoon();
@@ -168,7 +203,7 @@
       }
       reconcileSoon();
     });
-    return () => { stopCommands(); dispose(); clearInterval(clock); if (reconcileTimer) clearTimeout(reconcileTimer); };
+    return () => { stopCommands(); dispose(); clearInterval(clock); clearInterval(workflowRefresh); if (reconcileTimer) clearTimeout(reconcileTimer); };
   });
 
   async function load() {
@@ -185,6 +220,13 @@
       }
       const changedThread = next.activeThreadId !== workspace?.activeThreadId;
       workspace = next;
+      if (changedThread) {
+        conversationLoadEpoch += 1;
+        conversation = null;
+        conversationIdeaId = null;
+        conversationError = null;
+      }
+      void refreshWorkflowDetail(next.activeWorkflow?.sessionId ?? null, next.activeWorkflow?.revision ?? null);
       progressReceivedAt = Date.now();
       if (changedThread) activeStep = defaultStep(next);
       if (feedback?.source === "workspace-load") feedback = null;
@@ -202,9 +244,45 @@
   function setWorkspace(next: WorkspaceState) {
     loadEpoch += 1;
     loading = false;
+    if (next.activeThreadId !== workspace?.activeThreadId) {
+      conversationLoadEpoch += 1;
+      conversation = null;
+      conversationIdeaId = null;
+      conversationError = null;
+    }
     workspace = next;
+    void refreshWorkflowDetail(next.activeWorkflow?.sessionId ?? null, next.activeWorkflow?.revision ?? null);
     progressReceivedAt = Date.now();
     if (validationPending(next)) reconcileSoon(500);
+  }
+  async function refreshWorkflowDetail(sessionId: string | null, revision: number | null, force = false) {
+    if (!sessionId) {
+      workflowLoadEpoch += 1;
+      workflowDetail = null;
+      return;
+    }
+    if (!force && workflowDetail?.summary.sessionId === sessionId && workflowDetail.summary.revision >= (revision ?? 0)) return;
+    const epoch = ++workflowLoadEpoch;
+    try {
+      const next = await window.scraply.getWorkflow({ sessionId });
+      if (epoch === workflowLoadEpoch && workspace?.activeWorkflow?.sessionId === sessionId) workflowDetail = next;
+    } catch (cause) {
+      if (epoch === workflowLoadEpoch && workspace?.activeWorkflow?.sessionId === sessionId) feedback = { text: message(cause), tone: "error" };
+    }
+  }
+  async function loadMoreWorkflowTasks(cursor: string) {
+    const sessionId = workflowDetail?.summary.sessionId;
+    if (!sessionId) return;
+    try {
+      const page = await window.scraply.getWorkflow({ sessionId, cursor });
+      if (workflowDetail?.summary.sessionId !== sessionId) return;
+      const savedIds = new Set(workflowDetail.tasks.map((task) => task.id));
+      workflowDetail = { ...page,
+        summary: workflowDetail.summary.revision > page.summary.revision ? workflowDetail.summary : page.summary,
+        tasks: [...workflowDetail.tasks, ...page.tasks.filter((task) => !savedIds.has(task.id))] };
+    } catch (cause) {
+      feedback = { text: message(cause), tone: "error" };
+    }
   }
   function reconcileSoon(delayMs = 180) {
     reconcilePending = true;
@@ -233,7 +311,16 @@
   }
   function defaultStep(state: WorkspaceState): WorkflowStep {
     const thread = state.threads.find((item) => item.id === state.activeThreadId);
-    if (thread?.status === "development-running" || thread?.status === "solutions-ready" || state.solutions.length > 0) return "ideas";
+    const workflow = state.activeWorkflow;
+    if (workflow) {
+      if (workflow.purpose === "research-followup" || workflow.state === "waiting-for-review") return "research";
+      if (workflow.selectedProblemIds.length > 0 && workflow.state === "running") return "ideas";
+      if (workflow.mode === "vibe" && (workflow.state === "finished" || workflow.purpose === "known-problem")) return "ideas";
+      if (workflow.state === "finished" && state.solutions.length > 0) return "ideas";
+      return "research";
+    }
+    if (state.solutions.length > 0 || thread?.status === "solutions-ready") return "ideas";
+    if (thread?.status === "development-running") return "ideas";
     if (thread?.status === "discovery-running" || state.problemCandidates.length > 0 || state.rejectedProblemCandidates.length > 0) return "research";
     return "setup";
   }
@@ -327,6 +414,129 @@
       activeStep = defaultStep(next);
       editingScopeThreadId = null;
     });
+  }
+  async function previewWorkflow(draft: WorkflowLaunchDraft): Promise<WorkflowPreview> {
+    const threadId = workspace?.activeThreadId;
+    if (!threadId) throw new Error("Choose a project before previewing this run.");
+    return window.scraply.previewWorkflow({ type: "launch", threadId, draft: $state.snapshot(draft) });
+  }
+  async function previewWorkflowExtension(extension: { additionalModelCalls: number; additionalSearches: number; additionalMinutes: number }): Promise<WorkflowPreview> {
+    const threadId = workspace?.activeThreadId;
+    const summary = workspace?.activeWorkflow;
+    if (!threadId || !summary) throw new Error("Open an active workflow to extend its limits.");
+    return window.scraply.previewWorkflow({ type: "budget-extension", threadId,
+      sessionId: summary.sessionId, expectedRevision: summary.revision, extension: $state.snapshot(extension) });
+  }
+  async function applyWorkflowExtension(preview: WorkflowPreview) {
+    if (preview.type !== "budget-extension" || !("additionalModelCalls" in preview.proposal) || preview.fieldErrors.length > 0) {
+      throw new Error("Preview a valid allowance extension first.");
+    }
+    await commandWorkflow({ type: "extend-budget", previewHash: preview.previewHash,
+      capabilityFingerprint: preview.capabilityFingerprint, previewExpiresAt: preview.expiresAt,
+      extension: preview.proposal });
+  }
+  async function startWorkflow(preview: WorkflowPreview) {
+    const threadId = workspace?.activeThreadId;
+    if (!threadId || busy || preview.type !== "launch") throw new Error("This launch is no longer available. Preview it again.");
+    const contract = $state.snapshot(preview.proposal);
+    if (!("contractVersion" in contract)) throw new Error("This launch preview is invalid.");
+    busy = true;
+    feedback = null;
+    try {
+      setWorkspace(await window.scraply.saveScope({ threadId, scope: contract.scope }));
+      setWorkspace(await window.scraply.saveRunConfig({ threadId, config: contract.runConfig }));
+      const receipt = await window.scraply.startWorkflow({
+        threadId, clientCommandId: crypto.randomUUID(), contract,
+        previewHash: preview.previewHash, capabilityFingerprint: preview.capabilityFingerprint,
+        previewExpiresAt: preview.expiresAt,
+      });
+      setWorkspace(await window.scraply.getWorkspace());
+      await refreshWorkflowDetail(receipt.sessionId, receipt.revision, true);
+      activeStep = contract.purpose === "known-problem" && contract.mode === "vibe" ? "ideas" : "research";
+      editingScopeThreadId = null;
+    } catch (cause) {
+      feedback = { text: message(cause), tone: "error" };
+      throw cause;
+    } finally {
+      busy = false;
+      if (reconcilePending) reconcileSoon();
+    }
+  }
+  async function commandWorkflow(command: WorkflowAction) {
+    const threadId = workspace?.activeThreadId;
+    const summary = workspace?.activeWorkflow;
+    if (!threadId || !summary || busy) throw new Error("Wait for the current workflow action to finish.");
+    busy = true;
+    feedback = null;
+    try {
+      const receipt = await window.scraply.commandWorkflow({
+        threadId, sessionId: summary.sessionId, clientCommandId: crypto.randomUUID(),
+        expectedRevision: summary.revision, action: $state.snapshot(command),
+      });
+      setWorkspace(await window.scraply.getWorkspace());
+      await refreshWorkflowDetail(workspace?.activeWorkflow?.sessionId ?? receipt.sessionId,
+        workspace?.activeWorkflow?.revision ?? receipt.revision, true);
+    } catch (cause) {
+      feedback = { text: message(cause), tone: "error" };
+      throw cause;
+    } finally {
+      busy = false;
+      if (reconcilePending) reconcileSoon();
+    }
+  }
+  async function requestResearch(draft: ResearchRequestDraft & { model: ModelRef; reasoningEffort: string; baseSnapshotId: string | null }) {
+    await commandWorkflow({
+      type: "request-research", kind: draft.kind, question: draft.question,
+      ...(draft.baseSnapshotId ? { baseSnapshotId: draft.baseSnapshotId } : {}),
+      ...(draft.targetFindingId ? { targetFindingId: draft.targetFindingId } : {}),
+      ...(draft.targetRequestId ? { targetRequestId: draft.targetRequestId } : {}),
+      model: draft.model, reasoningEffort: draft.reasoningEffort,
+      allowance: draft.allowance, ...(draft.angles?.length ? { angles: draft.angles } : {}),
+      ...(draft.instructions?.trim() ? { instructions: draft.instructions.trim() } : {}),
+    });
+  }
+  async function applyResearch(baseSnapshotId: string | null, includedRequestIds: string[], replacements: ResearchReplacement[]) {
+    await commandWorkflow({ type: "apply-research", ...(baseSnapshotId ? { baseSnapshotId } : {}), includedRequestIds, replacements });
+  }
+  async function refreshConversation(ideaId: string, cursor?: string) {
+    const epoch = ++conversationLoadEpoch;
+    const threadId = workspace?.activeThreadId;
+    conversationLoading = true;
+    conversationError = null;
+    try {
+      const next = await window.scraply.getIdeaConversation({ ideaId, ...(cursor ? { cursor } : {}) });
+      if (epoch !== conversationLoadEpoch || workspace?.activeThreadId !== threadId) return;
+      conversation = cursor && conversation?.rootSolutionId === next.rootSolutionId
+        ? { ...next, turns: [...conversation.turns, ...next.turns.filter((turn) => !conversation?.turns.some((old) => old.id === turn.id))] }
+        : next;
+    } catch (cause) {
+      if (epoch === conversationLoadEpoch) conversationError = message(cause);
+    } finally {
+      if (epoch === conversationLoadEpoch) conversationLoading = false;
+    }
+  }
+  async function openConversation(ideaId: string) {
+    conversationIdeaId = ideaId;
+    await refreshConversation(ideaId);
+  }
+  function closeConversation() {
+    conversationIdeaId = null;
+    conversationLoadEpoch += 1;
+  }
+  async function submitIdeaTurn(draft: Omit<SubmitIdeaTurnRequest, "threadId" | "rootSolutionId">) {
+    const threadId = workspace?.activeThreadId;
+    const rootSolutionId = conversation?.rootSolutionId;
+    if (!threadId || !rootSolutionId) throw new Error("Open an idea before adding a turn.");
+    await window.scraply.submitIdeaTurn($state.snapshot({ ...draft, threadId, rootSolutionId }));
+    await refreshConversation(conversationIdeaId ?? rootSolutionId);
+    reconcileSoon();
+  }
+  async function selectConversationVersion(solutionId: string) {
+    const threadId = workspace?.activeThreadId;
+    const rootSolutionId = conversation?.rootSolutionId;
+    if (!threadId || !rootSolutionId) throw new Error("Open an idea before choosing its version.");
+    conversation = await window.scraply.selectIdeaVersion({ threadId, rootSolutionId, solutionId });
+    setWorkspace(await window.scraply.getWorkspace());
   }
   async function retryConnections() {
     await action(async () => {
@@ -426,6 +636,27 @@
   async function selectProblems(ids: string[], userProblem: string | null, model: ModelRef, reasoningEffort: string, explorationPurpose: ExplorationPurpose) {
     const threadId = workspace?.activeThreadId;
     if (!threadId) return;
+    if (activeWorkflow) {
+      if (userProblem?.trim()) {
+        feedback = { text: "This workflow can only develop problems saved in its research snapshot. Start a new known-problem run to use your own statement.", tone: "error" };
+        return;
+      }
+      const savedPurpose = workspace?.runConfig?.explorationPurpose ?? "general-solutions";
+      if (explorationPurpose !== savedPurpose) {
+        feedback = { text: "The option type changed since this workflow started. Review the saved setup before generating ideas.", tone: "error" };
+        return;
+      }
+      const problemIds = ids.length ? ids : activeWorkflow.selectedProblemIds;
+      if (!activeWorkflow.activeSnapshotId || problemIds.length === 0) throw new Error("Choose at least one problem from the current research snapshot.");
+      const target = workspace?.runConfig?.opportunityExploration
+        ? { kind: "project" as const, count: workspace.runConfig.opportunityExploration.targetFamilies }
+        : { kind: "per-problem" as const, count: workspace?.runConfig?.ideaCount ?? 3 };
+      await commandWorkflow({ type: "generate-ideas", snapshotId: activeWorkflow.activeSnapshotId, problemIds,
+        model, reasoningEffort, target });
+      activeStep = "ideas";
+      reviewSelection = false;
+      return;
+    }
     await action(async () => {
       const api = window.scraply as typeof window.scraply & {
         selectProblems(request: { threadId: string; problemIds: string[]; userProblem: string|null; model: ModelRef; reasoningEffort: string; explorationPurpose: ExplorationPurpose }): Promise<WorkspaceState>;
@@ -577,7 +808,7 @@
     {#if workspace && activeThread}
       <div class="topbar">
         <h1 class="location" title={activeThread.title}>{activeThread.title}</h1>
-        {#if activeRun}<div class="calls"><strong>{activeRun.codexCalls}</strong> model calls / ~{activeRun.projectedCodexCalls} · <strong>{activeRun.searches}</strong> searches / ~{activeRun.projectedSearches}</div>{/if}
+        {#if activeRun && !activeWorkflow}<div class="calls"><strong>{activeRun.codexCalls}</strong> model calls / ~{activeRun.projectedCodexCalls} · <strong>{activeRun.searches}</strong> searches / ~{activeRun.projectedSearches}</div>{/if}
       </div>
       <WorkflowTabs
         active={activeStep}
@@ -586,15 +817,24 @@
         {ideasReady}
         onSelect={openStep}
       />
-      <RunUsage usage={activeRun?.usage} />
-      {#if workspace.opportunityExploration}
+      {#if !activeWorkflow}<RunUsage usage={activeRun?.usage} />{/if}
+      {#if workflowDetail && activeWorkflow && workflowDetail.summary.sessionId === activeWorkflow.sessionId}
+        <div class="workflow-progress-wrap"><VibeProgress detail={workflowDetail} {busy}
+          onPause={() => commandWorkflow({ type: "pause" })}
+          onResume={() => commandWorkflow({ type: "resume" })}
+          onStop={() => commandWorkflow({ type: "stop" })}
+          onRetryTask={(taskId, expectedTerminalAttemptId, acknowledgeUnknownCompletion) => commandWorkflow({ type: "retry-task", taskId, expectedTerminalAttemptId, acknowledgeUnknownCompletion })}
+          onLoadMoreTasks={loadMoreWorkflowTasks}
+          onPreviewExtension={previewWorkflowExtension} onApplyExtension={applyWorkflowExtension} /></div>
+      {/if}
+      {#if !activeWorkflow && workspace.opportunityExploration}
         <OpportunityProgress progress={workspace.opportunityExploration} {busy} onPause={pauseOpportunities} onResume={startOrResumeOpportunities} onPreviewExtension={previewOpportunityExtension} onApplyExtension={applyOpportunityExtension} />
-      {:else if workspace.runConfig?.opportunityExploration && workspace.solutions.length > 0}
+      {:else if !activeWorkflow && workspace.runConfig?.opportunityExploration && workspace.solutions.length > 0}
         <div class="notice"><button disabled={busy || workspace.opportunityReviewStatus?.running} onclick={startOrResumeOpportunities}>Continue toward {workspace.runConfig.opportunityExploration.targetFamilies} distinct hypotheses</button></div>
       {/if}
       {#if workspace.opportunityReviewStatus?.kind === "review" && workspace.opportunityReviewStatus.running}<div class="notice" role="status">Reviewing saved business ideas. Completed comparisons are being saved.</div>{/if}
       {#if workspace.opportunityReviewStatus?.kind === "experiment" && workspace.opportunityReviewStatus.running}<div class="notice" role="status">Planning and reviewing a focused experiment. No customer test is being run.</div>{/if}
-      {#if activeThread.status === "failed"}
+      {#if activeThread.status === "failed" && !activeWorkflow}
         <div class="run-stopped" role="status">
           <div><strong>Run stopped</strong><span>{activeRun?.resumeBlockedReason ?? activeRun?.completionReason ?? activeRun?.lastActivity ?? "The last run failed or was cancelled. Review the setup, then retry explicitly."}</span></div>
           <div class="run-stopped-actions">
@@ -619,18 +859,24 @@
       {#if activeThread.status === "configuring" || editingScope || !workspace.scope}
         <div id="workflow-panel-setup" role="tabpanel" aria-label="Research setup">
           {#key workspace.activeThreadId}
-            <ScopeForm {workspace} {busy} onSave={saveScope} onStart={startResearch} onRetry={retryConnections} onOpenSettings={() => settings?.show()} />
+            <ScopeForm {workspace} {busy} onSave={saveScope} onStart={startResearch} onPreviewWorkflow={previewWorkflow} onStartWorkflow={startWorkflow} onRetry={retryConnections} onOpenSettings={() => settings?.show()} />
           {/key}
         </div>
       {:else}
-        {#if activeThread.status === "failed"}
+        {#if activeThread.status === "failed" || activeWorkflow?.state === "finished"}
           <SetupArchive {workspace} onEdit={() => { editingScopeThreadId = activeThread?.id ?? null; }} />
         {:else}
           <SetupArchive {workspace} />
         {/if}
       {/if}
     {:else if activeStep === "research"}
-      {#if activeThread.status === "discovery-running"}
+      {#if activeWorkflow && ["running", "paused", "pause-requested", "stop-requested"].includes(activeWorkflow.state)}
+        <div class="managed-research" id="workflow-panel-research" role="tabpanel" aria-label="Research">
+          <p class="eyebrow">{activeWorkflow.mode === "vibe" ? "Vibe research" : "Babysit research"}</p>
+          <h1>{activeWorkflow.state === "paused" ? "Research paused." : "Following the evidence."}</h1>
+          <p>Research tasks and their outcomes appear above.</p>
+        </div>
+      {:else if activeThread.status === "discovery-running" && !activeWorkflow}
         <div class="running" id="workflow-panel-research" role="tabpanel" aria-label="Research" tabindex="0">
           <div class="activity-symbol"><Icon name="research" size={30} /></div><p class="eyebrow">Discovery in progress</p>
           <h1>Following the evidence.</h1>
@@ -638,18 +884,26 @@
           {#if activeRun}<div class="progress-facts" aria-label="Run progress"><strong>{stageLabel(runtimeProgress.stage)}</strong>{#if runtimeProgress.modelState}<span>{runtimeProgress.modelState === "waiting" ? "Queued for model" : runtimeProgress.modelState === "dispatched" ? "Sent to model" : "Accepted by model"}</span>{/if}{#if elapsedStatus}<span>{elapsedStatus}</span>{/if}{#if runtimeProgress.lastSuccessfulCheckpoint}<span>Last checkpoint: {runtimeProgress.lastSuccessfulCheckpoint}</span>{/if}</div>{/if}
           {#if activeRun}<div class="run-actions"><button class="cancel" disabled={busy} onclick={() => cancelResearch(activeRun.runId)}>Cancel run</button></div>{/if}
         </div>
-      {:else if (activeThread.status === "problems-ready" || reviewSelection) && (workspace.problemCandidates.length > 0 || workspace.rejectedProblemCandidates.length > 0)}
+      {:else if (activeWorkflow ? activeWorkflow.state === "waiting-for-review" : activeThread.status === "problems-ready" || reviewSelection) && (workspace.problemCandidates.length > 0 || workspace.rejectedProblemCandidates.length > 0)}
         <div id="workflow-panel-research" role="tabpanel" aria-label="Research">
           {#key workspace.activeThreadId}
-            <ProblemCheckpoint problems={workspace.problemCandidates} rejectedCandidates={workspace.rejectedProblemCandidates} modelOptions={workspace.modelOptions} initialConfig={activeRun?.problemId ? activeRun.runConfig ?? workspace.runConfig : workspace.runConfig} workflowVersion={activeRun?.workflowVersion} ideaCount={workspace.runConfig?.ideaCount} {busy} onCommit={selectProblems} onExport={exportResearch} onOpenSource={openExternalUrl} />
+            <ProblemCheckpoint problems={workspace.problemCandidates} rejectedCandidates={workspace.rejectedProblemCandidates} modelOptions={workspace.modelOptions} initialConfig={activeRun?.problemId ? activeRun.runConfig ?? workspace.runConfig : workspace.runConfig} fixedExplorationPurpose={activeWorkflow ? workspace.runConfig?.explorationPurpose ?? "general-solutions" : undefined} workflowVersion={activeRun?.workflowVersion} ideaCount={workspace.runConfig?.ideaCount} {busy} onCommit={selectProblems} onExport={exportResearch} onOpenSource={openExternalUrl} />
           {/key}
         </div>
       {:else if workspace.problemCandidates.length > 0 || workspace.rejectedProblemCandidates.length > 0}
         <ResearchArchive problems={workspace.problemCandidates} rejectedCandidates={workspace.rejectedProblemCandidates} {busy} onExport={exportResearch} onOpenSource={openExternalUrl} />
       {:else}
-        <div class="failed" id="workflow-panel-research" role="tabpanel" aria-label="Research" tabindex="0"><p class="eyebrow">Research unavailable</p><h1>No completed research is ready yet.</h1><p>Return to setup and start a research run.</p></div>
+        <div class="failed" id="workflow-panel-research" role="tabpanel" aria-label="Research" tabindex="0"><p class="eyebrow">{activeWorkflow ? "Research outcome" : "Research unavailable"}</p><h1>{activeWorkflow?.stopReason ?? "No completed research is ready yet."}</h1><p>{activeWorkflow ? "You can inspect the task record above or start a new run from setup." : "Return to setup and start a research run."}</p></div>
       {/if}
-    {:else if activeThread.status === "development-running"}
+      {#if activeWorkflow}
+        <ResearchRevisions requests={workspace.researchRequests} findings={workspace.researchFindings}
+          readOnly={activeWorkflow.mode !== "babysit" || !(["running", "waiting-for-review"].includes(activeWorkflow.state)
+            || (activeWorkflow.state === "finished" && !!activeWorkflow.activeSnapshotId))}
+          activeSnapshotId={activeWorkflow.activeSnapshotId} modelOptions={workspace.modelOptions}
+          researchModel={workspace.runConfig?.model ?? null} researchReasoningEffort={workspace.runConfig?.reasoningEffort ?? "medium"}
+          {busy} onRequest={requestResearch} onApply={applyResearch} onOpenSource={openExternalUrl} />
+      {/if}
+    {:else if activeThread.status === "development-running" && !activeWorkflow}
       <div id="workflow-panel-ideas" role="tabpanel" aria-label="Solutions" tabindex="0">
       <div class="running development-progress">
         <div class="activity-symbol"><Icon name="ideas" size={30} /></div><p class="eyebrow">Development in progress</p>
@@ -659,17 +913,23 @@
         {#if activeRun}<div class="progress-facts" aria-label="Run progress"><strong>{stageLabel(runtimeProgress.stage)}</strong>{#if runtimeProgress.modelState}<span>{runtimeProgress.modelState === "waiting" ? "Queued for model" : runtimeProgress.modelState === "dispatched" ? "Sent to model" : "Accepted by model"}</span>{/if}{#if elapsedStatus}<span>{elapsedStatus}</span>{/if}{#if runtimeProgress.lastSuccessfulCheckpoint}<span>Last checkpoint: {runtimeProgress.lastSuccessfulCheckpoint}</span>{/if}</div>{/if}
         {#if activeRun}<div class="run-actions"><button class="cancel" disabled={busy} onclick={() => cancelResearch(activeRun.runId)}>Cancel run</button></div>{/if}
       </div>
-      {#if workspace.solutions.length > 0}<SolutionWorkspace solutions={workspace.solutions} {busy} analysisBlocked={true} opportunities={workspace.opportunityFamilies} opportunityReviewRunning={workspace.opportunityReviewStatus?.running} modelOptions={workspace.modelOptions} initialConfig={workspace.runConfig} onReviewOpportunities={reviewSavedOpportunities} onEditMembership={editOpportunityMembership} onPlanExperiment={requestFocusedExperiment} onDiscard={discardIdea} workflowVersion={activeRun?.workflowVersion} onSelect={selectOption} onSave={saveDecision} onExport={exportIdeas} onOpenSource={openExternalUrl} onEvidenceFollowUp={requestEvidenceFollowUp} onEvidenceReassessment={requestEvidenceReassessment} onReview={() => { activeStep = "research"; reviewSelection = true; }} />{/if}
+      {#if workspace.solutions.length > 0}<SolutionWorkspace solutions={workspace.solutions} {busy} analysisBlocked={true} opportunities={workspace.opportunityFamilies} opportunityReviewRunning={workspace.opportunityReviewStatus?.running} modelOptions={workspace.modelOptions} initialConfig={workspace.runConfig} onReviewOpportunities={reviewSavedOpportunities} onEditMembership={editOpportunityMembership} onPlanExperiment={requestFocusedExperiment} onDiscard={discardIdea} workflowVersion={activeRun?.workflowVersion} onSelect={selectOption} onSave={saveDecision} onExport={exportIdeas} onOpenSource={openExternalUrl} onEvidenceFollowUp={requestEvidenceFollowUp} onEvidenceReassessment={requestEvidenceReassessment} onReview={() => { activeStep = "research"; reviewSelection = true; }} {conversation} {conversationLoading} {conversationError} onOpenConversation={openConversation} onCloseConversation={closeConversation} onSubmitIdeaTurn={submitIdeaTurn} onSelectConversationVersion={selectConversationVersion} onLoadMoreConversation={(cursor) => refreshConversation(conversationIdeaId ?? "", cursor)} />{/if}
       </div>
     {:else if activeThread.status === "solutions-ready" || workspace.solutions.length > 0}
       <div id="workflow-panel-ideas" role="tabpanel" aria-label="Solutions">
-        {#if activeRun && ["queued", "running"].includes(activeRun.status)}
+        {#if activeRun && !activeWorkflow && ["queued", "running"].includes(activeRun.status)}
           <section class="compact-progress" aria-label="Active solution work">
             <div><strong>{activeSolutionRunLabel()}</strong><p>{runActivity}</p></div>
             <div class="progress-facts" aria-label="Run progress">{#if runtimeProgress.modelState}<span>{runtimeProgress.modelState === "waiting" ? "Queued for model" : runtimeProgress.modelState === "dispatched" ? "Sent to model" : "Accepted by model"}</span>{/if}{#if elapsedStatus}<span>{elapsedStatus}</span>{/if}{#if runtimeProgress.lastSuccessfulCheckpoint}<span>Last checkpoint: {runtimeProgress.lastSuccessfulCheckpoint}</span>{/if}</div>
           </section>
         {/if}
-        <SolutionWorkspace solutions={workspace.solutions} {busy} opportunities={workspace.opportunityFamilies} opportunityReviewRunning={workspace.opportunityReviewStatus?.running} modelOptions={workspace.modelOptions} initialConfig={workspace.runConfig} onReviewOpportunities={reviewSavedOpportunities} onEditMembership={editOpportunityMembership} onPlanExperiment={requestFocusedExperiment} onDiscard={discardIdea} workflowVersion={activeRun?.workflowVersion} onSelect={selectOption} onSave={saveDecision} onExport={exportIdeas} onOpenSource={openExternalUrl} onEvidenceFollowUp={requestEvidenceFollowUp} onEvidenceReassessment={requestEvidenceReassessment} onReview={() => { activeStep = "research"; reviewSelection = true; }} />
+        <SolutionWorkspace solutions={workspace.solutions} {busy} opportunities={workspace.opportunityFamilies} opportunityReviewRunning={workspace.opportunityReviewStatus?.running} modelOptions={workspace.modelOptions} initialConfig={workspace.runConfig} onReviewOpportunities={reviewSavedOpportunities} onEditMembership={editOpportunityMembership} onPlanExperiment={requestFocusedExperiment} onDiscard={discardIdea} workflowVersion={activeRun?.workflowVersion} onSelect={selectOption} onSave={saveDecision} onExport={exportIdeas} onOpenSource={openExternalUrl} onEvidenceFollowUp={requestEvidenceFollowUp} onEvidenceReassessment={requestEvidenceReassessment} onReview={() => { activeStep = "research"; reviewSelection = true; }} {conversation} {conversationLoading} {conversationError} onOpenConversation={openConversation} onCloseConversation={closeConversation} onSubmitIdeaTurn={submitIdeaTurn} onSelectConversationVersion={selectConversationVersion} onLoadMoreConversation={(cursor) => refreshConversation(conversationIdeaId ?? "", cursor)} />
+      </div>
+    {:else if activeWorkflow}
+      <div class="failed" id="workflow-panel-ideas" role="tabpanel" aria-label="Solutions" tabindex="0">
+        <p class="eyebrow">{activeWorkflow.state === "finished" ? "Idea outcome" : "Idea development"}</p>
+        <h1>{activeWorkflow.stopReason ?? (activeWorkflow.state === "finished" ? "No qualifying ideas were produced." : "Ideas are being developed.")}</h1>
+        <p>{activeWorkflow.state === "finished" ? "Research and task details remain available in the Research tab." : "Progress and remaining limits are shown above."}</p>
       </div>
     {:else if activeThread.status === "failed"}
       <div class="failed" id="workflow-panel-ideas" role="tabpanel" aria-label="Solutions" tabindex="0"><p class="eyebrow">No solutions</p><h1>The run stopped before any solutions were generated.</h1><p>{activeRun?.canResume ? "Resume the saved attempt or edit the setup." : "Edit the setup to start a new run."}</p></div>
@@ -684,6 +944,10 @@
 </div>
 
 <style>
+  .workflow-progress-wrap { padding:18px var(--page-inline) 0; }
+  .managed-research { max-width:900px; margin:auto; padding:44px var(--page-inline) 20px; }
+  .managed-research h1 { margin:8px 0 12px; font-size:clamp(24px,4vw,36px); letter-spacing:-.035em; }
+  .managed-research p:last-child { color:var(--muted); font-size:13px; line-height:1.7; }
   .sidebar-area { display:contents; }.sidebar-area[hidden] { display:none; }
   .app-shell.sidebar-hidden { grid-template-columns:minmax(0,1fr); }
   .settings-button { display:flex;align-items:center;gap:10px;width:100%;padding:9px 12px;min-height:38px;border:0;border-radius:7px;background:transparent;color:var(--muted);font-size:13px;text-align:left;transition:background 180ms ease,color 180ms ease; }

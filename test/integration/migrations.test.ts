@@ -1,10 +1,12 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { Database } from "bun:sqlite";
 import { DatabaseClient } from "../../src/db/client";
 import { MIGRATIONS } from "../../src/db/migrations";
+import { OpportunityExplorationRepository } from "../../src/db/repositories/opportunity-exploration";
+import { WorkflowRepository } from "../../src/db/repositories/workflows";
 
 const dirs: string[] = [];
 afterEach(async () => {
@@ -23,10 +25,11 @@ function tableNames(db: Database): string[] {
 describe("destructive graph cutover", () => {
   test("creates only the surviving runtime and graph tables on a fresh database", () => {
     const client = new DatabaseClient(pathForTest());
+    expect(client.preMigrationBackupPath).toBeNull();
     const tables = tableNames(client.db as unknown as Database);
     for (const name of ["threads", "messages", "run_configs", "research_runs", "job_events", "sources", "cost_ledger", "generation_attempts", "scopes", "factors", "problems", "problem_factors", "problem_verdict_sources", "rejected_problem_candidates", "solutions", "outcomes", "risks", "mitigations", "risk_mitigations", "stage_results", "decision_analyses", "evidence_follow_ups"]) expect(tables).toContain(name);
     for (const name of ["intake_answers", "briefs", "stream_runs", "claims", "claim_evidence", "ideas", "reports", "branch_contexts", "ratings", "idea_ratings", "rating_history"]) expect(tables).not.toContain(name);
-    expect(client.db.prepare("SELECT MAX(id) AS id FROM schema_migrations").get()).toEqual({ id: 29 });
+    expect(client.db.prepare("SELECT MAX(id) AS id FROM schema_migrations").get()).toEqual({ id: 34 });
     client.close();
   });
 
@@ -59,6 +62,8 @@ describe("destructive graph cutover", () => {
 
     const migrated = new DatabaseClient(dbPath);
     expect(migrated.db.prepare("SELECT statement FROM problems WHERE id = 'problem-1'").get()).toEqual({ statement: "Problem" });
+    expect(migrated.db.prepare("SELECT brief_fit, contrary_evidence, workflow_key FROM problems WHERE id = 'problem-1'").get())
+      .toEqual({ brief_fit: "unknown", contrary_evidence: "unknown", workflow_key: null });
     expect(migrated.db.prepare("SELECT DISTINCT verdict_source_ids_json FROM problems").all())
       .toEqual([{ verdict_source_ids_json: "[]" }]);
     expect(migrated.db.prepare("SELECT problem_id, source_id, research_run_id, position FROM problem_verdict_sources").all())
@@ -113,5 +118,106 @@ describe("destructive graph cutover", () => {
       model: { providerId: "legacy-codex-cli", modelId: "gpt-5.6-luna" },
     });
     migrated.close();
+  });
+
+  test("upgrades saved opportunity work without losing batch and attempt references", () => {
+    const dbPath = pathForTest();
+    const legacy = new Database(dbPath);
+    legacy.exec("PRAGMA foreign_keys = ON; CREATE TABLE schema_migrations (id INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)");
+    const legacyClient = { db: legacy } as unknown as DatabaseClient;
+    for (const migration of MIGRATIONS.filter((item) => item.id <= 29)) {
+      const rebuild = "rebuildReferencedTable" in migration && migration.rebuildReferencedTable;
+      if (rebuild) legacy.exec("PRAGMA foreign_keys = OFF; PRAGMA legacy_alter_table = ON;");
+      legacy.exec("BEGIN");
+      try {
+        if (migration.sql) legacy.exec(migration.sql);
+        if ("afterSql" in migration) migration.afterSql(legacyClient);
+        legacy.prepare("INSERT INTO schema_migrations (id, applied_at) VALUES (?, ?)")
+          .run(migration.id, "2026-09-01T00:00:00.000Z");
+        legacy.exec("COMMIT");
+      } catch (error) {
+        legacy.exec("ROLLBACK");
+        throw error;
+      } finally {
+        if (rebuild) legacy.exec("PRAGMA legacy_alter_table = OFF; PRAGMA foreign_keys = ON;");
+      }
+    }
+    const now = "2026-09-01T00:00:00.000Z";
+    legacy.prepare("INSERT INTO threads (id, title, status, created_at, updated_at) VALUES ('thread-1','Saved','configuring',?,?)")
+      .run(now, now);
+    legacy.prepare(`INSERT INTO opportunity_explorations
+      (thread_id, config_json, status, started_at, updated_at)
+      VALUES ('thread-1', '{}', 'mapping-coverage', ?, ?)`).run(now, now);
+    legacy.prepare(`INSERT INTO opportunity_coverage_gaps
+      (id, thread_id, name, description, dimension, map_exhausted, candidate_origin,
+        status, created_at, updated_at)
+      VALUES ('gap-1', 'thread-1', 'Buyer', '', 'buyer', 0, 'evidence-only', 'named', ?, ?)`)
+      .run(now, now);
+    legacy.prepare(`INSERT INTO opportunity_exploration_batches
+      (id, thread_id, ordinal, coverage_gap_id, requested_candidates, status,
+        accepted_families_before, created_at, updated_at)
+      VALUES ('batch-1', 'thread-1', 1, 'gap-1', 1, 'planned', 0, ?, ?)`)
+      .run(now, now);
+    legacy.prepare(`INSERT INTO opportunity_candidate_origins
+      (candidate_id, thread_id, batch_id, origin_json, created_at)
+      VALUES ('candidate-1', 'thread-1', 'batch-1', '{}', ?)`)
+      .run(now);
+    legacy.prepare(`INSERT INTO opportunity_exploration_attempts
+      (id, thread_id, stage_key, stage_name, status, input_json, model_json,
+        prompt_version, prompt_text, prepared_at, updated_at)
+      VALUES ('attempt-1', 'thread-1', 'review:1', 'review', 'prepared', '{}', '{}', '1', '', ?, ?)`)
+      .run(now, now);
+    legacy.close();
+
+    const migrated = new DatabaseClient(dbPath);
+    const backupPath = migrated.preMigrationBackupPath;
+    if (!backupPath) throw new Error("Saved database was migrated without a backup");
+    expect(existsSync(backupPath)).toBe(true);
+    expect(migrated.getMeta("last_pre_migration_backup_path")).toBe(backupPath);
+    const backup = new Database(backupPath);
+    expect(backup.prepare("SELECT MAX(id) AS id FROM schema_migrations").get()).toEqual({ id: 29 });
+    expect(backup.prepare("SELECT batch_id FROM opportunity_candidate_origins WHERE candidate_id = 'candidate-1'").get())
+      .toEqual({ batch_id: "batch-1" });
+    backup.close();
+    expect(migrated.db.prepare("SELECT batch_id FROM opportunity_candidate_origins WHERE candidate_id = 'candidate-1'").get())
+      .toEqual({ batch_id: "batch-1" });
+    expect(migrated.db.prepare("SELECT coverage_gap_id FROM opportunity_exploration_batches WHERE id = 'batch-1'").get())
+      .toEqual({ coverage_gap_id: "gap-1" });
+    expect(migrated.db.prepare("SELECT stage_key FROM opportunity_exploration_attempts WHERE id = 'attempt-1'").get())
+      .toEqual({ stage_key: "review:1" });
+    migrated.db.prepare("INSERT INTO threads (id,title,status,created_at,updated_at) VALUES ('managed','Managed','configuring',?,?)")
+      .run(now, now);
+    migrated.immediateTransaction(() => {
+      new WorkflowRepository(migrated).createSession({ id: "managed-session", threadId: "managed",
+        purpose: "discovery", mode: "vibe", contract: {}, remainingMs: 60_000 });
+      const exploration = new OpportunityExplorationRepository(migrated);
+      exploration.saveGap("managed", {
+        id: "managed-gap", name: "Workflow mechanism", description: "A different approval route",
+        dimension: "workflow", evidenceNeeded: null, searchQuery: null, mapExhausted: true,
+        candidateOrigin: "evidence-only", status: "ready", createdAt: now, updatedAt: now,
+      }, "managed-session");
+      expect(exploration.prepareAttempt("managed", {
+        stageKey: "coverage-map:1", stageName: "coverage-map", input: { round: 1 },
+        model: { providerId: "fixture", modelId: "fixture", reasoningEffort: "low" },
+        promptVersion: "v1", promptText: "Map coverage",
+      }, "managed-session").kind).toBe("prepared");
+      expect(exploration.find("managed")).toBeNull();
+    });
+    expect(migrated.db.prepare("SELECT session_id FROM opportunity_coverage_gaps WHERE id = 'managed-gap'").get())
+      .toEqual({ session_id: "managed-session" });
+    expect(migrated.db.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
+    migrated.db.prepare("DELETE FROM workflow_sessions WHERE id = 'managed-session'").run();
+    expect(migrated.db.prepare("SELECT id FROM opportunity_coverage_gaps WHERE id = 'managed-gap'").get()).toBeNull();
+    expect(migrated.db.prepare("SELECT id FROM opportunity_exploration_attempts WHERE session_id = 'managed-session'").get()).toBeNull();
+    expect(migrated.db.prepare("SELECT id FROM opportunity_coverage_gaps WHERE id = 'gap-1'").get())
+      .toEqual({ id: "gap-1" });
+    migrated.close();
+    const reopened = new DatabaseClient(dbPath);
+    expect(reopened.preMigrationBackupPath).toBeNull();
+    expect(reopened.getMeta("last_pre_migration_backup_path")).toBe(backupPath);
+    expect(reopened.db.prepare("SELECT batch_id FROM opportunity_candidate_origins WHERE candidate_id = 'candidate-1'").get())
+      .toEqual({ batch_id: "batch-1" });
+    expect(readdirSync(dirname(dbPath)).filter((name) => name.startsWith("scraply.db.pre-migration-")).length).toBe(1);
+    reopened.close();
   });
 });

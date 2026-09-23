@@ -859,11 +859,13 @@ fn resolve_models(catalog: ModelsResponse) -> Result<Vec<ModelMetadata>, Provide
     let mut models: Vec<_> = catalog
         .models
         .into_iter()
-        // Astra is an explicit Scraply choice even when the catalog hides it from default menus.
-        // It must still be present in this account's live catalog.
+        // These explicit Scraply choices may be hidden from default menus, but must
+        // still be present in this account's live catalog.
         .filter(|model| {
-            model.slug == "gpt-6-astra"
-                || !matches!(model.visibility.as_deref(), Some("hide" | "none"))
+            matches!(
+                model.slug.as_str(),
+                "gpt-6-astra" | "gpt-6-sol" | "gpt-6-luna"
+            ) || !matches!(model.visibility.as_deref(), Some("hide" | "none"))
         })
         .collect();
     models.sort_by_key(|model| model.priority);
@@ -1060,7 +1062,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn catalog_version_exposes_astra_without_aliasing_hidden_models() {
+    async fn catalog_version_exposes_requested_gpt_6_models_without_other_hidden_models() {
         use std::io::{Read, Write};
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap();
@@ -1079,13 +1081,15 @@ mod tests {
                 request.extend_from_slice(&buffer[..count]);
             }
             let request = String::from_utf8(request).unwrap();
-            // The live catalog omits Astra for the old 0.144.4 query.
+            // The live catalog omits these models for the old 0.144.4 query.
             let mut models = vec![
                 json!({"slug":"gpt-reserve","visibility":"hide"}),
                 json!({"slug":"gpt-5.6-sol","visibility":"list"}),
             ];
             if request.starts_with("GET /models?client_version=0.153.4 ") {
                 models.push(json!({"slug":"gpt-6-astra","visibility":"list","supported_reasoning_levels":[{"effort":"low"}]}));
+                models.push(json!({"slug":"gpt-6-sol","visibility":"hide","supported_reasoning_levels":[{"effort":"medium"}]}));
+                models.push(json!({"slug":"gpt-6-luna","visibility":"list","supported_reasoning_levels":[{"effort":"high"}]}));
             }
             let body = json!({"models":models}).to_string();
             write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body).unwrap();
@@ -1100,11 +1104,13 @@ mod tests {
             .unwrap();
         let models = provider.list_models().await.unwrap();
         server.join().unwrap();
-        assert!(
-            models
-                .iter()
-                .any(|model| model.identity.model_id == "gpt-6-astra")
-        );
+        for model_id in ["gpt-6-astra", "gpt-6-sol", "gpt-6-luna"] {
+            assert!(
+                models
+                    .iter()
+                    .any(|model| model.identity.model_id == model_id)
+            );
+        }
         assert!(
             !models
                 .iter()
@@ -1132,6 +1138,55 @@ mod tests {
             let error = resolve_models(catalog).unwrap_err();
             assert_eq!(error.code, ProviderErrorCode::InvalidResponse);
         }
+    }
+
+    #[test]
+    fn catalog_does_not_invent_absent_models_or_reasoning_efforts() {
+        let catalog: ModelsResponse = serde_json::from_value(json!({"models": [
+            {"slug":"gpt-6-sol","visibility":"hide","default_reasoning_level":"high",
+             "supported_reasoning_levels":[
+                {"effort":"low","description":"Fast"},
+                {"effort":"high","description":"Thorough"}
+             ]},
+            {"slug":"gpt-6-luna","visibility":"none","default_reasoning_level":"minimal",
+             "supported_reasoning_levels":[{"effort":"minimal","description":"Brief"}]},
+            {"slug":"gpt-internal","visibility":"hide"}
+        ]}))
+        .unwrap();
+        let models = resolve_models(catalog).unwrap();
+        assert_eq!(models.len(), 2);
+        let sol = models
+            .iter()
+            .find(|model| model.identity.model_id == "gpt-6-sol")
+            .unwrap();
+        assert!(sol.supports_structured_output);
+        assert_eq!(sol.default_reasoning_effort.as_deref(), Some("high"));
+        assert_eq!(
+            sol.supported_reasoning_efforts,
+            ["low".to_owned(), "high".to_owned()]
+        );
+        assert_eq!(
+            sol.reasoning_effort_descriptions
+                .get("high")
+                .map(String::as_str),
+            Some("Thorough")
+        );
+        let luna = models
+            .iter()
+            .find(|model| model.identity.model_id == "gpt-6-luna")
+            .unwrap();
+        assert_eq!(luna.default_reasoning_effort.as_deref(), Some("minimal"));
+        assert_eq!(luna.supported_reasoning_efforts, ["minimal".to_owned()]);
+        assert!(
+            !models
+                .iter()
+                .any(|model| model.identity.model_id == "gpt-6-astra")
+        );
+        assert!(
+            !models
+                .iter()
+                .any(|model| model.identity.model_id == "gpt-internal")
+        );
     }
 
     #[test]

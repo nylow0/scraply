@@ -5,9 +5,122 @@ import type { ScraplyApi } from "../../src/preload/index";
 import App from "../../src/renderer/App.svelte";
 import type { ResearchEvent, WorkspaceState } from "../../src/shared/ipc";
 import { DEFAULT_RUN_CONFIG } from "../../src/shared/schemas";
+import type { WorkflowSummary } from "../../src/shared/workflow-contracts";
 import { summarizeRunUsage } from "../../src/backend/run-usage";
 
 describe("App workspace coordination", () => {
+  test("starts a previewed Vibe run and shows its persisted progress", async () => {
+    const state = workspace("alpha");
+    state.validation.native = { available: true, connected: true, accounts: [{ providerId: "openai-subscription" }] };
+    const summary: WorkflowSummary = {
+      sessionId: "session-vibe", threadId: "alpha", purpose: "discovery", mode: "vibe", targetKind: "per-problem",
+      state: "running", outcome: null, revision: 1, activeSnapshotId: null, selectedProblemIds: [],
+      counts: { requested: 3, attempted: 0, validated: 0, accepted: 0, duplicate: 0, unresolved: 0,
+        failed: 0, missing: 3, existing: 0, addedBySession: 0, total: 0 },
+      limits: { maxMinutes: 30, maxModelCalls: 44, maxSearches: 18 },
+      budget: { modelCalls: { limit: 44, spent: 0, reserved: 0, uncertain: 0 },
+        searches: { limit: 18, spent: 0, reserved: 0, uncertain: 0 }, remainingMs: 1_800_000 },
+      currentStage: "Researching direct buyer evidence", stopReason: null,
+      startedAt: "2026-09-23T00:00:00.000Z", finishedAt: null,
+    };
+    const previewWorkflow = vi.fn(async (request: Parameters<ScraplyApi["previewWorkflow"]>[0]) => {
+      structuredClone(request);
+      if (request.type === "budget-extension") return {
+        type: "budget-extension" as const, proposal: request.extension,
+        previewHash: "extension-1", capabilityFingerprint: "models-1",
+        minimumWork: { modelCalls: 0, searches: 0 },
+        upperLimits: { maxMinutes: 30, maxModelCalls: 46, maxSearches: 18 },
+        fieldErrors: [], expiresAt: "2099-01-01T00:00:00.000Z",
+      };
+      return {
+        type: "launch" as const,
+        proposal: { ...request.draft,
+          resolvedInstructions: { research: "research", ideas: "ideas", review: "review" },
+          instructionHashes: { research: "r", ideas: "i", review: "v" } },
+        previewHash: "preview-1", capabilityFingerprint: "models-1",
+        minimumWork: { modelCalls: 36, searches: 16 }, upperLimits: request.draft.limits,
+        fieldErrors: [], expiresAt: "2099-01-01T00:00:00.000Z",
+      };
+    });
+    const startWorkflow = vi.fn(async (request: Parameters<ScraplyApi["startWorkflow"]>[0]) => {
+      structuredClone(request);
+      if (request.threadId !== "alpha") throw new Error("Wrong thread for launch");
+      state.activeWorkflow = summary;
+      return { sessionId: summary.sessionId, revision: summary.revision, summary };
+    });
+    const commandWorkflow = vi.fn(async (request: Parameters<ScraplyApi["commandWorkflow"]>[0]) => {
+      structuredClone(request);
+      if (request.action.type === "extend-budget") {
+        const extended = { ...summary, revision: 2,
+          limits: { ...summary.limits, maxModelCalls: 46 },
+          budget: { ...summary.budget, modelCalls: { ...summary.budget.modelCalls, limit: 46 } } };
+        state.activeWorkflow = extended;
+        return { sessionId: extended.sessionId, revision: extended.revision, summary: extended };
+      }
+      if (request.action.type === "pause") {
+        const paused = { ...(state.activeWorkflow ?? summary), state: "paused" as const, revision: 3 };
+        state.activeWorkflow = paused;
+        return { sessionId: paused.sessionId, revision: paused.revision, summary: paused };
+      }
+      throw new Error("Unexpected command");
+    });
+    installApi({
+      getWorkspace: async () => structuredClone(state),
+      saveScope: async (request) => { const { scope } = structuredClone(request); state.scope = scope; return structuredClone(state); },
+      saveRunConfig: async (request) => { const { config } = structuredClone(request); state.runConfig = config; return structuredClone(state); },
+      previewWorkflow, startWorkflow, commandWorkflow,
+      getWorkflow: async () => ({ summary: state.activeWorkflow ?? summary, tasks: [], nextCursor: null }),
+    });
+    const view = render(App);
+    await fireEvent.input(await view.findByPlaceholderText("Your topic or idea"), { target: { value: "Independent repair shops" } });
+    await fireEvent.click(view.getByRole("radio", { name: /Vibe/ }));
+    await waitFor(() => expect(previewWorkflow).toHaveBeenCalled());
+    const launch = view.getByRole("button", { name: "Start Vibe" }) as HTMLButtonElement;
+    await waitFor(() => expect(launch.disabled).toBe(false));
+    await fireEvent.click(launch);
+    await waitFor(() => expect(startWorkflow.mock.calls.length + Number(Boolean(view.queryByRole("alert")))).toBeGreaterThan(0));
+    expect(view.queryByRole("alert")?.textContent).toBeFalsy();
+    await waitFor(() => expect(startWorkflow).toHaveBeenCalledOnce());
+    expect(startWorkflow.mock.calls[0]?.[0]).toMatchObject({ threadId: "alpha", contract: {
+      mode: "vibe", brief: "Independent repair shops", targets: { automaticProblemCap: 3 },
+    } });
+    expect(await view.findByLabelText("Vibe run progress")).toBeTruthy();
+    expect(view.getByText("Researching direct buyer evidence")).toBeTruthy();
+    expect(view.queryByRole("button", { name: "Add research" })).toBeNull();
+    await fireEvent.click(view.getByText("Extend work allowance"));
+    await fireEvent.input(view.getByLabelText("Additional model calls"), { target: { value: "2" } });
+    await fireEvent.click(view.getByRole("button", { name: "Preview extension" }));
+    await waitFor(() => expect((view.getByRole("button", { name: "Apply extension" }) as HTMLButtonElement).disabled).toBe(false));
+    await fireEvent.click(view.getByRole("button", { name: "Apply extension" }));
+    await waitFor(() => expect(commandWorkflow).toHaveBeenCalledTimes(1));
+    expect(commandWorkflow.mock.calls[0]?.[0]).toMatchObject({ expectedRevision: 1,
+      action: { type: "extend-budget", previewHash: "extension-1", extension: { additionalModelCalls: 2 } } });
+    expect(view.getByText("Model calls left").nextElementSibling?.textContent).toContain("46 of 46");
+    await fireEvent.click(view.getByRole("button", { name: "Pause" }));
+    await waitFor(() => expect(commandWorkflow).toHaveBeenCalledTimes(2));
+    expect(commandWorkflow.mock.calls[1]?.[0]).toMatchObject({ sessionId: "session-vibe", expectedRevision: 2, action: { type: "pause" } });
+    expect(await view.findByRole("button", { name: "Resume" })).toBeTruthy();
+
+    view.unmount();
+    state.activeWorkflow = { ...summary, purpose: "known-problem", mode: "babysit", state: "waiting-for-review" };
+    state.problemCandidates = [{ id: "problem-known", statement: "A buyer workflow problem", whyItPersists: "Manual coordination",
+      affected: "Repair shops", scaleEstimate: "Several shops", verdict: "user-asserted", verdictReason: "Stated by the user",
+      selected: true, factors: [], intendedBuyerEvidenceFactorIds: [], evidenceGap: null,
+      singleHarvestModeWarning: false, developmentCompleted: false }];
+    state.latestResearchRun = { runId: "old-run", status: "completed", problemId: "problem-known",
+      codexCalls: 0, searches: 0, projectedCodexCalls: 0, projectedSearches: 0, lastActivity: "Completed",
+      runConfig: { ...state.runConfig!, explorationPurpose: "startup-opportunities" } };
+    const restored = render(App);
+    await waitFor(() => expect(restored.getByRole("tab", { name: "Research" }).getAttribute("aria-selected")).toBe("true"));
+    expect(restored.getByText("Practical solutions")).toBeTruthy();
+    expect(restored.queryByRole("combobox", { name: "Option type" })).toBeNull();
+    expect(restored.queryByRole("textbox", { name: "Or state the problem yourself." })).toBeNull();
+    restored.unmount();
+    state.activeWorkflow = { ...summary, purpose: "research-followup", mode: "babysit", state: "running" };
+    state.threads[0]!.status = "solutions-ready";
+    const followUp = render(App);
+    await waitFor(() => expect(followUp.getByRole("tab", { name: "Research" }).getAttribute("aria-selected")).toBe("true"));
+  });
   test.each(["archived", "deleted"] as const)("skips %s research in both history directions and disables unreachable navigation", async (unavailable) => {
     let state = workspace("alpha");
     state.threads.push({ ...state.threads[0]!, id: "gamma", title: "Gamma" });
@@ -507,6 +620,8 @@ function workspace(activeThreadId: "alpha" | "beta"): WorkspaceState {
     presets: [],
     problemCandidates: [],
     rejectedProblemCandidates: [],
+    researchRequests: [],
+    researchFindings: [],
     solutions: [],
     latestResearchRun: null,
     pendingRuns: [],
@@ -538,6 +653,13 @@ function installApi(overrides: Partial<ScraplyApi>): void {
     refreshNativeAccount: noWorkspace,
     logoutNativeAccount: noWorkspace,
     startResearch: async () => ({ workspace: workspace("alpha") }),
+    previewWorkflow: async () => { throw new Error("unused"); },
+    startWorkflow: async () => { throw new Error("unused"); },
+    getWorkflow: async () => { throw new Error("unused"); },
+    commandWorkflow: async () => { throw new Error("unused"); },
+    getIdeaConversation: async () => { throw new Error("unused"); },
+    submitIdeaTurn: async () => { throw new Error("unused"); },
+    selectIdeaVersion: async () => { throw new Error("unused"); },
     cancelResearch: noWorkspace,
     resumeResearch: noWorkspace,
     selectProblems: noWorkspace,

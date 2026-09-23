@@ -19,7 +19,7 @@ import {
   WorkflowV2Repository,
 } from "../../src/db/repositories/workflow-v2";
 import { deriveJsonSchema } from "../../src/shared/json-schema";
-import { FactorHarvestOutputSchema, ProblemCandidatesOutputSchema } from "../../src/shared/structured-output-schemas";
+import { FactorHarvestOutputSchema, ProblemCandidatesOutputSchema, ProblemKillOutputSchema } from "../../src/shared/structured-output-schemas";
 import { WorkflowExecution } from "../../src/core/workflow-execution";
 import { configurePromptPaths } from "../../src/core/prompts";
 import { discoverProblems, harvestFactors, type HarvestedFactor, type HarvestedSource } from "../../src/core/discovery";
@@ -104,25 +104,16 @@ describe("workflow v2 persistence", () => {
       // Runs and problems reference each other; restore the complete fixture before checking it.
       legacy.exec("PRAGMA foreign_keys = OFF");
       const snapshots = new Map(tables.map(table => [table, source.db.prepare(`SELECT * FROM ${table}`).all()]));
+      const legacyColumns = new Map(tables.map(table => [
+        table,
+        (legacy.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[]).map(column => column.name),
+      ]));
       for (const table of tables) {
         for (const row of snapshots.get(table)!) {
-          // The v19 fixture predates archive, evidence classification, startup and reassessment columns.
-          const migration23Columns = new Set([
-            "source_role", "audience_fit", "independent_source_key", "supports_demand", "demand_evidence_uncertainty",
-            "intended_buyer_evidence_factor_ids_json", "evidence_gap",
-          ]);
+          // Insert only columns present in the v19 schema, then verify those values survive the upgrade.
+          const availableColumns = new Set(legacyColumns.get(table)!);
           const values = Object.entries(row as Record<string, string | number | null>)
-            .filter(([column]) => {
-              if (migration23Columns.has(column)) return false;
-              if (table === "threads") return column !== "archived_at";
-              if (table === "solutions") return column !== "startup_opportunity_json";
-              if (table === "decision_analyses") return column !== "experiment_outcome";
-              if (table === "evidence_follow_ups") return ![
-                "reassessment_status", "risk_reassessment_json", "reassessment_analysis_json",
-                "risk_generation_id", "analysis_generation_id", "reassessment_error", "reassessed_at",
-              ].includes(column);
-              return true;
-            });
+            .filter(([column]) => availableColumns.has(column));
           legacy.prepare(`INSERT INTO ${table} (${values.map(([key]) => key).join(",")}) VALUES (${values.map(() => "?").join(",")})`).run(...values.map(([, value]) => value));
         }
       }
@@ -131,7 +122,11 @@ describe("workflow v2 persistence", () => {
       const upgraded = new DatabaseClient(path);
       try {
         for (const table of tables.filter(table => table !== "stage_results")) {
-          expect(upgraded.db.prepare(`SELECT * FROM ${table}`).all()).toEqual(snapshots.get(table)!);
+          const columns = legacyColumns.get(table)!;
+          const expected = snapshots.get(table)!.map(row => Object.fromEntries(
+            Object.entries(row as Record<string, string | number | null>).filter(([column]) => columns.includes(column)),
+          ));
+          expect(upgraded.db.prepare(`SELECT ${columns.join(", ")} FROM ${table}`).all()).toEqual(expected);
         }
         const risk = new WorkflowV2Repository(upgraded).findStageResult("run-v2", "risk-evaluation", "solution-1")!;
         expect(risk.output).toEqual({ risks: analysis.risks, unknowns: analysis.unknowns });
@@ -443,6 +438,39 @@ describe("workflow v2 persistence", () => {
     } finally { client.close(); }
   });
 
+  test("resumes an older problem-kill run with its saved output contract", async () => {
+    configurePromptPaths({ bundledDir: join(process.cwd(), "prompts"), overrideDir: null });
+    const client = database();
+    try {
+      const original = new WorkflowExecution(client, "run-v2");
+      const prompts = original.read<Record<string, Record<string, unknown>>>("prompts")!;
+      client.db.prepare(`UPDATE workflow_snapshots SET value_json = ? WHERE research_run_id = 'run-v2' AND snapshot_key = 'prompts'`)
+        .run(JSON.stringify({ ...prompts, "problem-kill": { ...prompts["problem-kill"], currentBundledSha256: "0".repeat(64) } }));
+      const stage = WORKFLOW_V2_STAGE_REGISTRY["problem-kill"];
+      const request: StructuredStageRequest<unknown> = {
+        generationId: "older-kill", stage: "problem-kill:older", model: { providerId: "test", modelId: "test" }, reasoningEffort: "low",
+        workOrder: { stage: "problem-kill", instruction: "Saved instruction", goal: "Assess evidence", inputs: {}, definitionOfDone: [] },
+        evidence: [], schema: ProblemKillOutputSchema, jsonSchema: deriveJsonSchema(ProblemKillOutputSchema),
+        repairPolicy: "one_retry", deadlineMs: stage.deadlineMs,
+      };
+      const olderOutput = {
+        verdict: "insufficient-evidence", verdictReason: "The buyer has not been reached.", verdictSourceIds: [],
+        unresolvedAssumptions: ["Buyer fit"], wouldChangeConclusion: ["Interview the buyer"],
+        intendedBuyerEvidenceFactorIds: [], evidenceGap: "No buyer evidence.",
+      };
+      const resumed = new WorkflowExecution(client, "run-v2");
+      const result = await resumed.discoveryClient(discoveryModelClient((received) => {
+        expect(received.schema.safeParse(olderOutput).success).toBe(true);
+        expect(received.schema.safeParse({ ...olderOutput, briefFit: "direct", contraryEvidence: "resolved", workflowKey: "buyer: filing" }).success).toBe(false);
+        return olderOutput;
+      })).structuredCompletion(request);
+      expect(result.output).toEqual({
+        verdict: "insufficient-evidence", verdictReason: "The buyer has not been reached.", verdictSourceIds: [],
+        intendedBuyerEvidenceFactorIds: [], evidenceGap: "No buyer evidence.",
+      });
+    } finally { client.close(); }
+  });
+
   test.each([false, true])("assesses supplied supporting and contrary sources while rejecting invented citations (%s)", async (invented) => {
     await withDiscoveryFixture(async ({ execution, source }) => {
       const modelClient = discoveryModelClient((request) => {
@@ -455,6 +483,7 @@ describe("workflow v2 persistence", () => {
           verdictSourceIds: ["support", evidence.sources![0]!.id, ...(invented ? ["invented"] : [])],
           unresolvedAssumptions: [], wouldChangeConclusion: [],
           intendedBuyerEvidenceFactorIds: [], evidenceGap: "No independent intended-buyer evidence.",
+          briefFit: "direct", contraryEvidence: "resolved", workflowKey: "operator: repeat filing after status change",
         };
       });
       const result = discoverProblems({ title: "Filing", audience: "Operators", domain: "Filing", observations: "", offLimits: [] }, [
@@ -469,6 +498,9 @@ describe("workflow v2 persistence", () => {
       else {
         const discovery = await result;
         expect(discovery.problems[0]!.verdictSourceIds).toEqual(["support", discovery.killSources[0]!.id]);
+        expect(discovery.problems[0]).toEqual(expect.objectContaining({
+          briefFit: "direct", contraryEvidence: "resolved", workflowKey: "operator: repeat filing after status change",
+        }));
       }
     });
   });
@@ -482,7 +514,7 @@ describe("workflow v2 persistence", () => {
         if (request.stage !== "problem-candidates") assessments++;
         return request.stage === "problem-candidates"
           ? { problems: [{ ...candidate, statement: "Untraceable candidate", factorIds: ["typo"] }, candidate] }
-          : { verdict: "already-solved", verdictReason: "An existing option handles filing.", verdictSourceIds: ["support"], unresolvedAssumptions: [], wouldChangeConclusion: [], intendedBuyerEvidenceFactorIds: [], evidenceGap: "No independent intended-buyer evidence." };
+          : { verdict: "already-solved", verdictReason: "An existing option handles filing.", verdictSourceIds: ["support"], unresolvedAssumptions: [], wouldChangeConclusion: [], intendedBuyerEvidenceFactorIds: [], evidenceGap: "No independent intended-buyer evidence.", briefFit: "direct", contraryEvidence: "resolved", workflowKey: "operator: repeat filing after status change" };
       });
       const result = await discoverProblems({ title: "Filing", audience: "Operators", domain: "Filing", observations: "", offLimits: [] }, [
         discoveryFactor(source),

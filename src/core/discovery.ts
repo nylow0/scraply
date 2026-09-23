@@ -37,7 +37,7 @@ export {
 export type { DiscoveryDepth };
 export type HarvestMode = "domain" | "audience";
 type QueryIntent = "firsthand-experience" | "measured-behavior" | "current-alternative" | "buying-signal" | "contrary-evidence";
-interface PlannedQuery { query: string; intent: QueryIntent | "unclassified" }
+export interface PlannedQuery { query: string; intent: QueryIntent | "unclassified" }
 
 export const FACTOR_SUBJECT_MAX_CHARACTERS = 160;
 export const FACTOR_BEHAVIOR_MAX_CHARACTERS = 280;
@@ -105,6 +105,11 @@ export interface DiscoveryDependencies {
   workflowVersion?: 1 | 2;
   idFactory?: () => string;
   prompt?: (name: string) => string;
+  queryCountByMode?: { domain: number; audience: number };
+  searchConcurrency?: number;
+  researchAngles?: Array<{ name: string; sourceClass: string }>;
+  onPlannedQueries?: (mode: HarvestMode, queries: PlannedQuery[]) => void;
+  onQueryResult?: (mode: HarvestMode, query: PlannedQuery, sources: Source[] | null, error?: unknown) => void;
 }
 
 export async function harvestFactors(
@@ -121,10 +126,11 @@ export async function harvestFactors(
   // Hold one planned search in reserve. Run it only when the returned evidence mix still lacks
   // firsthand or measured intended-buyer evidence, without exceeding the configured search count.
   for (const mode of ["domain", "audience"] as const) {
-    const queries = await planQueries(scope, mode, depthConfig.queriesPerMode, dependencies);
+    const queries = await planQueries(scope, mode, dependencies.queryCountByMode?.[mode] ?? depthConfig.queriesPerMode, dependencies);
     const reserveCount = dependencies.workflowVersion === 2 && queries.length > 1 ? 1 : 0;
     const initialQueries = queries.slice(0, queries.length - reserveCount);
     const reservedQueries = queries.slice(queries.length - reserveCount);
+    dependencies.onPlannedQueries?.(mode, initialQueries);
     const searchedSources = await searchQueries(initialQueries, mode, depthConfig.searchResultsPerQuery, dependencies);
     let modeSources = dedupeSources(searchedSources, allSources);
     const modeFactorLimit = mode === "domain" ? Math.floor(depthConfig.factorCap / 2) : Math.ceil(depthConfig.factorCap / 2);
@@ -182,6 +188,7 @@ export async function harvestFactors(
     };
     await harvest(modeSources, modeFactorLimit - reservedFactorCapacity);
     if (reservedQueries.length > 0 && !hasIntendedBuyerObservation(rawFactors.filter((factor) => factor.harvestMode === mode))) {
+      dependencies.onPlannedQueries?.(mode, reservedQueries);
       const additional = dedupeSources(
         await searchQueries(reservedQueries, mode, depthConfig.searchResultsPerQuery, dependencies),
         allSources,
@@ -347,6 +354,9 @@ export async function discoverProblems(
       verdictSourceIds: validVerdictSourceIds,
       intendedBuyerEvidenceFactorIds: intendedBuyerFactors.map((factor) => factor.id),
       evidenceGap: resolvedEvidenceGap,
+      briefFit: "briefFit" in kill ? kill.briefFit : "unknown",
+      contraryEvidence: "contraryEvidence" in kill ? kill.contraryEvidence : "unknown",
+      workflowKey: "workflowKey" in kill ? kill.workflowKey : null,
       factors: citedFactors,
       sourceHostnames: hostnames,
       singleHarvestModeWarning: new Set(citedFactors.map((factor) => factor.harvestMode)).size === 1 && citedFactors.length > 0,
@@ -462,6 +472,10 @@ async function planQueries(
       inputs: {
         harvestMode: mode,
         queryCount: count,
+        ...(dependencies.researchAngles?.length ? { angleAssignments: dependencies.researchAngles.filter((angle) =>
+          mode === "domain"
+            ? ["current-alternative", "contrary-evidence", "measured-behavior"].includes(angle.sourceClass)
+            : ["firsthand-experience", "buying-signal", "measured-behavior"].includes(angle.sourceClass)) } : {}),
         sourcePolicy: mode === "audience"
           ? {
               includeDomains: dependencies.audienceSearch?.includeDomains ?? DEFAULT_AUDIENCE_DOMAINS,
@@ -479,7 +493,8 @@ async function planQueries(
   const planned = response.queries.map((item): PlannedQuery => typeof item === "string"
     ? { query: item.trim(), intent: "unclassified" }
     : { query: item.query.trim(), intent: "intent" in item ? item.intent as QueryIntent : "unclassified" });
-  const queries = [...new Map(planned.filter((item) => item.query).map((item) => [item.query, item])).values()];
+  const queries = [...new Map(planned.filter((item) => item.query)
+    .map((item) => [normalizeSearchQuery(item.query), item])).values()];
   if (queries.length < count) {
     throw new ProviderFailure(
       "schema",
@@ -487,7 +502,8 @@ async function planQueries(
       false,
     );
   }
-  if (dependencies.workflowVersion === 2 && queries.every((item) => item.intent !== "unclassified")) {
+  if (dependencies.workflowVersion === 2 && !dependencies.researchAngles?.length
+    && queries.every((item) => item.intent !== "unclassified")) {
     const intents = new Set(queries.map((item) => item.intent));
     const hasBuyerIntent = intents.has("firsthand-experience") || intents.has("buying-signal");
     if (!hasBuyerIntent || intents.size < Math.min(3, count)) {
@@ -510,7 +526,8 @@ async function searchQueries(
   dependencies: DiscoveryDependencies,
 ): Promise<HarvestedSource[]> {
   const gathered: Source[] = [];
-  const concurrency = dependencies.workflowVersion === 2 && dependencies.search.provider === "exa" ? 2 : 1;
+  const concurrency = dependencies.searchConcurrency
+    ?? (dependencies.workflowVersion === 2 && dependencies.search.provider === "exa" ? 2 : 1);
   for (let index = 0; index < queries.length; index += concurrency) {
     dependencies.signal?.throwIfAborted();
     // Wait for both reservations to settle before ending a failed batch. Flatten in query order
@@ -523,13 +540,20 @@ async function searchQueries(
         : {}),
       ...(dependencies.signal ? { signal: dependencies.signal } : {}),
     })));
-    const failure = batch.find((result) => result.status === "rejected");
-    if (failure?.status === "rejected") throw failure.reason;
-    for (const result of batch) {
+    for (const [offset, result] of batch.entries()) {
+      const planned = queries[index + offset]!;
+      dependencies.onQueryResult?.(mode, planned, result.status === "fulfilled" ? result.value : null,
+        result.status === "rejected" ? result.reason : undefined);
       if (result.status === "fulfilled") gathered.push(...result.value);
     }
+    const failure = batch.find((result) => result.status === "rejected");
+    if (failure?.status === "rejected") throw failure.reason;
   }
   return resolveSources(gathered, new Map(), dependencies.onProjection, dependencies.idFactory).fresh;
+}
+
+export function normalizeSearchQuery(query: string): string {
+  return query.normalize("NFKC").trim().replace(/\s+/g, " ").toLowerCase();
 }
 
 /**

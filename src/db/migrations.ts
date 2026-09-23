@@ -3,6 +3,9 @@ import { migrateSolutionLimit } from "./migrate-solution-limit";
 import { FOCUSED_EXPERIMENT_MIGRATION_SQL, FOCUSED_DEMAND_TEST_MIGRATION_SQL } from "./repositories/focused-experiments";
 import { OPPORTUNITY_REVIEW_MIGRATION_SQL } from "./repositories/opportunities";
 import { OPPORTUNITY_EXPLORATION_MIGRATION_SQL } from "./repositories/opportunity-exploration";
+import { OPPORTUNITY_SESSION_MIGRATION_SQL } from "./migrate-opportunity-sessions";
+import { MANAGED_COVERAGE_MIGRATION_SQL } from "./migrate-managed-coverage";
+import type { DatabaseClient } from "./client";
 
 export const MIGRATIONS = [
   {
@@ -1138,4 +1141,385 @@ export const MIGRATIONS = [
   { id: 27, sql: OPPORTUNITY_REVIEW_MIGRATION_SQL },
   { id: 28, sql: OPPORTUNITY_EXPLORATION_MIGRATION_SQL },
   { id: 29, sql: FOCUSED_DEMAND_TEST_MIGRATION_SQL },
+  {
+    id: 30,
+    sql: `
+      CREATE TABLE workflow_sessions (
+        id TEXT PRIMARY KEY,
+        thread_id TEXT NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
+        purpose TEXT NOT NULL CHECK(purpose IN (
+          'discovery', 'known-problem', 'research-followup', 'idea-turn'
+        )),
+        mode TEXT NOT NULL CHECK(mode IN ('babysit', 'vibe')),
+        contract_json TEXT NOT NULL CHECK(json_valid(contract_json)),
+        contract_sha256 TEXT NOT NULL CHECK(length(contract_sha256) = 64),
+        state TEXT NOT NULL CHECK(state IN (
+          'running', 'waiting-for-review', 'pause-requested', 'stop-requested', 'paused', 'finished'
+        )),
+        outcome TEXT CHECK(outcome IN (
+          'target-met', 'partial', 'no-qualifying-ideas', 'failed', 'cancelled', 'needs-attention'
+        )),
+        revision INTEGER NOT NULL DEFAULT 0 CHECK(revision >= 0),
+        active_snapshot_id TEXT REFERENCES evidence_snapshots(id) ON DELETE RESTRICT,
+        remaining_ms INTEGER NOT NULL CHECK(remaining_ms >= 0),
+        additional_model_calls INTEGER NOT NULL DEFAULT 0 CHECK(additional_model_calls >= 0),
+        additional_searches INTEGER NOT NULL DEFAULT 0 CHECK(additional_searches >= 0),
+        additional_minutes INTEGER NOT NULL DEFAULT 0 CHECK(additional_minutes >= 0),
+        running_since TEXT,
+        started_at TEXT NOT NULL,
+        finished_at TEXT,
+        CHECK((state = 'finished') = (outcome IS NOT NULL)),
+        CHECK((state = 'finished') = (finished_at IS NOT NULL)),
+        CHECK((state IN ('running', 'pause-requested', 'stop-requested')) = (running_since IS NOT NULL)),
+        UNIQUE(id, thread_id)
+      );
+      CREATE UNIQUE INDEX idx_workflow_sessions_one_unfinished
+        ON workflow_sessions(thread_id) WHERE state != 'finished';
+      CREATE INDEX idx_workflow_sessions_history
+        ON workflow_sessions(thread_id, started_at DESC, id);
+      CREATE TRIGGER prevent_workflow_session_contract_update
+      BEFORE UPDATE OF thread_id, purpose, mode, contract_json, contract_sha256 ON workflow_sessions
+      BEGIN SELECT RAISE(ABORT, 'workflow launch contract is immutable'); END;
+
+      CREATE TABLE workflow_commands (
+        id TEXT PRIMARY KEY,
+        thread_id TEXT NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
+        session_id TEXT NOT NULL,
+        client_command_id TEXT NOT NULL,
+        payload_sha256 TEXT NOT NULL CHECK(length(payload_sha256) = 64),
+        result_json TEXT NOT NULL CHECK(json_valid(result_json)),
+        created_at TEXT NOT NULL,
+        UNIQUE(thread_id, client_command_id),
+        FOREIGN KEY(session_id, thread_id)
+          REFERENCES workflow_sessions(id, thread_id) ON DELETE CASCADE
+      );
+      CREATE INDEX idx_workflow_commands_session
+        ON workflow_commands(session_id, created_at, id);
+      CREATE TRIGGER prevent_workflow_command_update BEFORE UPDATE ON workflow_commands
+      BEGIN SELECT RAISE(ABORT, 'workflow command receipts are immutable'); END;
+
+      CREATE TABLE workflow_work_items (
+        id TEXT PRIMARY KEY,
+        session_id TEXT NOT NULL REFERENCES workflow_sessions(id) ON DELETE CASCADE,
+        parent_item_id TEXT,
+        kind TEXT NOT NULL,
+        scope_key TEXT NOT NULL,
+        ordinal INTEGER NOT NULL CHECK(ordinal >= 0),
+        dependencies_json TEXT NOT NULL CHECK(json_valid(dependencies_json)),
+        input_json TEXT NOT NULL CHECK(json_valid(input_json)),
+        input_sha256 TEXT NOT NULL CHECK(length(input_sha256) = 64),
+        state TEXT NOT NULL CHECK(state IN (
+          'planned', 'ready', 'running', 'succeeded', 'failed',
+          'cancelled', 'skipped', 'unknown'
+        )),
+        output_refs_json TEXT CHECK(output_refs_json IS NULL OR json_valid(output_refs_json)),
+        error_json TEXT CHECK(error_json IS NULL OR json_valid(error_json)),
+        created_at TEXT NOT NULL,
+        finished_at TEXT,
+        UNIQUE(session_id, scope_key),
+        UNIQUE(id, session_id),
+        FOREIGN KEY(parent_item_id, session_id)
+          REFERENCES workflow_work_items(id, session_id) ON DELETE RESTRICT,
+        CHECK(parent_item_id IS NULL OR parent_item_id != id),
+        CHECK((state IN ('succeeded', 'failed', 'cancelled', 'skipped', 'unknown')) = (finished_at IS NOT NULL))
+      );
+      CREATE INDEX idx_workflow_work_items_session_state
+        ON workflow_work_items(session_id, state, ordinal, id);
+      CREATE TRIGGER prevent_workflow_work_item_input_update
+      BEFORE UPDATE OF session_id, parent_item_id, kind, scope_key, ordinal,
+        dependencies_json, input_json, input_sha256 ON workflow_work_items
+      BEGIN SELECT RAISE(ABORT, 'admitted work item input is immutable'); END;
+
+      CREATE TABLE workflow_budget_entries (
+        id TEXT PRIMARY KEY,
+        session_id TEXT NOT NULL REFERENCES workflow_sessions(id) ON DELETE CASCADE,
+        work_item_id TEXT NOT NULL,
+        operation_key TEXT NOT NULL,
+        kind TEXT NOT NULL CHECK(kind IN ('model-call', 'search')),
+        reserved_units INTEGER NOT NULL CHECK(reserved_units > 0),
+        settled_units INTEGER CHECK(settled_units IS NULL OR settled_units BETWEEN 0 AND reserved_units),
+        state TEXT NOT NULL CHECK(state IN ('reserved', 'spent', 'uncertain', 'released')),
+        generation_attempt_id TEXT UNIQUE REFERENCES generation_attempts(id) ON DELETE RESTRICT,
+        opportunity_attempt_id TEXT UNIQUE REFERENCES opportunity_exploration_attempts(id) ON DELETE RESTRICT,
+        created_at TEXT NOT NULL,
+        settled_at TEXT,
+        UNIQUE(session_id, operation_key),
+        FOREIGN KEY(work_item_id, session_id)
+          REFERENCES workflow_work_items(id, session_id) ON DELETE RESTRICT,
+        CHECK(generation_attempt_id IS NULL OR opportunity_attempt_id IS NULL),
+        CHECK((state = 'reserved') = (settled_at IS NULL)),
+        CHECK((state = 'reserved') = (settled_units IS NULL))
+      );
+      CREATE INDEX idx_workflow_budget_entries_session
+        ON workflow_budget_entries(session_id, state, kind);
+      CREATE TRIGGER prevent_workflow_budget_reservation_update
+      BEFORE UPDATE OF session_id, work_item_id, operation_key, kind, reserved_units ON workflow_budget_entries
+      BEGIN SELECT RAISE(ABORT, 'budget reservation is immutable'); END;
+
+      CREATE TABLE evidence_snapshots (
+        id TEXT PRIMARY KEY,
+        session_id TEXT NOT NULL REFERENCES workflow_sessions(id) ON DELETE CASCADE,
+        parent_snapshot_id TEXT REFERENCES evidence_snapshots(id) ON DELETE RESTRICT,
+        materialization_run_id TEXT NOT NULL UNIQUE,
+        selection_json TEXT NOT NULL CHECK(json_valid(selection_json)),
+        origin_map_json TEXT NOT NULL CHECK(json_valid(origin_map_json)),
+        content_sha256 TEXT NOT NULL CHECK(length(content_sha256) = 64),
+        created_by_command_id TEXT REFERENCES workflow_commands(id) ON DELETE RESTRICT,
+        created_at TEXT NOT NULL,
+        UNIQUE(id, session_id),
+        CHECK(parent_snapshot_id IS NULL OR parent_snapshot_id != id)
+      );
+      CREATE INDEX idx_evidence_snapshots_session
+        ON evidence_snapshots(session_id, created_at, id);
+      CREATE TRIGGER prevent_evidence_snapshot_update BEFORE UPDATE ON evidence_snapshots
+      BEGIN SELECT RAISE(ABORT, 'evidence snapshots are immutable'); END;
+      CREATE TRIGGER validate_evidence_snapshot_insert BEFORE INSERT ON evidence_snapshots
+      WHEN NOT EXISTS (
+        SELECT 1 FROM research_runs rr
+        JOIN workflow_sessions ws ON ws.id = NEW.session_id
+        WHERE rr.id = NEW.materialization_run_id
+          AND rr.thread_id = ws.thread_id
+          AND rr.workflow_session_id = ws.id
+      ) OR (NEW.parent_snapshot_id IS NOT NULL AND NOT EXISTS (
+        SELECT 1 FROM evidence_snapshots parent
+        JOIN workflow_sessions source_session ON source_session.id = parent.session_id
+        JOIN workflow_sessions target_session ON target_session.id = NEW.session_id
+        WHERE parent.id = NEW.parent_snapshot_id
+          AND source_session.thread_id = target_session.thread_id
+      )) OR (NEW.created_by_command_id IS NOT NULL AND NOT EXISTS (
+        SELECT 1 FROM workflow_commands wc
+        WHERE wc.id = NEW.created_by_command_id AND wc.session_id = NEW.session_id
+      ))
+      BEGIN SELECT RAISE(ABORT, 'snapshot references must belong to its session'); END;
+      CREATE TRIGGER validate_workflow_session_snapshot_update
+      BEFORE UPDATE OF active_snapshot_id ON workflow_sessions
+      WHEN NEW.active_snapshot_id IS NOT NULL AND NOT EXISTS (
+        SELECT 1 FROM evidence_snapshots es
+        WHERE es.id = NEW.active_snapshot_id AND es.session_id = NEW.id
+      )
+      BEGIN SELECT RAISE(ABORT, 'active snapshot must belong to its session'); END;
+
+      CREATE TABLE idea_turns (
+        id TEXT PRIMARY KEY,
+        root_solution_id TEXT NOT NULL REFERENCES solutions(id) ON DELETE CASCADE,
+        branch_id TEXT NOT NULL,
+        branch_sequence INTEGER NOT NULL CHECK(branch_sequence > 0),
+        parent_turn_id TEXT REFERENCES idea_turns(id) ON DELETE RESTRICT,
+        base_solution_id TEXT NOT NULL REFERENCES solutions(id) ON DELETE RESTRICT,
+        evidence_snapshot_id TEXT REFERENCES evidence_snapshots(id) ON DELETE RESTRICT,
+        session_id TEXT NOT NULL REFERENCES workflow_sessions(id) ON DELETE CASCADE,
+        client_message_id TEXT NOT NULL,
+        intent TEXT NOT NULL CHECK(intent IN ('explain', 'explore-directions', 'rethink')),
+        user_text TEXT NOT NULL,
+        context_json TEXT NOT NULL CHECK(json_valid(context_json)),
+        context_sha256 TEXT NOT NULL CHECK(length(context_sha256) = 64),
+        state TEXT NOT NULL CHECK(state IN ('pending', 'completed', 'failed', 'unknown', 'cancelled')),
+        assistant_json TEXT CHECK(assistant_json IS NULL OR json_valid(assistant_json)),
+        stage_result_id TEXT UNIQUE REFERENCES stage_results(id) ON DELETE RESTRICT,
+        generated_solution_id TEXT UNIQUE REFERENCES solutions(id) ON DELETE RESTRICT,
+        error_json TEXT CHECK(error_json IS NULL OR json_valid(error_json)),
+        created_at TEXT NOT NULL,
+        completed_at TEXT,
+        UNIQUE(root_solution_id, client_message_id),
+        UNIQUE(branch_id, branch_sequence),
+        CHECK((state = 'pending') = (completed_at IS NULL)),
+        CHECK(state != 'completed' OR assistant_json IS NOT NULL)
+      );
+      CREATE INDEX idx_idea_turns_root_branch
+        ON idea_turns(root_solution_id, branch_id, branch_sequence);
+      CREATE TRIGGER prevent_completed_idea_turn_update
+      BEFORE UPDATE ON idea_turns WHEN OLD.state != 'pending'
+      BEGIN SELECT RAISE(ABORT, 'terminal idea turns are immutable'); END;
+      CREATE TRIGGER prevent_idea_turn_input_update
+      BEFORE UPDATE OF root_solution_id, branch_id, branch_sequence, parent_turn_id,
+        base_solution_id, evidence_snapshot_id, session_id, client_message_id,
+        intent, user_text, context_json, context_sha256 ON idea_turns
+      BEGIN SELECT RAISE(ABORT, 'idea turn input is immutable'); END;
+
+      CREATE TABLE solution_lineage (
+        solution_id TEXT PRIMARY KEY REFERENCES solutions(id) ON DELETE CASCADE,
+        root_solution_id TEXT NOT NULL REFERENCES solutions(id) ON DELETE RESTRICT,
+        parent_solution_id TEXT REFERENCES solutions(id) ON DELETE RESTRICT,
+        version_number INTEGER NOT NULL CHECK(version_number > 0),
+        turn_id TEXT UNIQUE REFERENCES idea_turns(id) ON DELETE RESTRICT,
+        evidence_snapshot_id TEXT REFERENCES evidence_snapshots(id) ON DELETE RESTRICT,
+        change_summary TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        UNIQUE(root_solution_id, version_number),
+        CHECK((version_number = 1) = (parent_solution_id IS NULL)),
+        CHECK((version_number = 1) = (turn_id IS NULL)),
+        CHECK(version_number != 1 OR solution_id = root_solution_id),
+        CHECK(parent_solution_id IS NULL OR parent_solution_id != solution_id)
+      );
+      CREATE INDEX idx_solution_lineage_root
+        ON solution_lineage(root_solution_id, version_number);
+      CREATE TRIGGER prevent_solution_lineage_update BEFORE UPDATE ON solution_lineage
+      BEGIN SELECT RAISE(ABORT, 'solution lineage is immutable'); END;
+
+      ALTER TABLE research_runs ADD COLUMN workflow_session_id TEXT
+        REFERENCES workflow_sessions(id) ON DELETE SET NULL;
+      ALTER TABLE research_runs ADD COLUMN purpose TEXT
+        CHECK(purpose IS NULL OR purpose IN (
+          'discovery', 'known-problem', 'idea-batch', 'research-followup',
+          'idea-turn', 'materialization', 'research-materialization'
+        ));
+      ALTER TABLE research_runs ADD COLUMN evidence_snapshot_id TEXT
+        REFERENCES evidence_snapshots(id) ON DELETE RESTRICT;
+      CREATE INDEX idx_research_runs_workflow_session
+        ON research_runs(workflow_session_id, created_at, id);
+      CREATE TRIGGER validate_research_run_workflow_insert BEFORE INSERT ON research_runs
+      WHEN (NEW.workflow_session_id IS NOT NULL AND NOT EXISTS (
+        SELECT 1 FROM workflow_sessions ws WHERE ws.id = NEW.workflow_session_id AND ws.thread_id = NEW.thread_id
+      )) OR (NEW.evidence_snapshot_id IS NOT NULL AND NOT EXISTS (
+        SELECT 1 FROM evidence_snapshots es JOIN workflow_sessions ws ON ws.id = es.session_id
+        WHERE es.id = NEW.evidence_snapshot_id AND ws.thread_id = NEW.thread_id
+      ))
+      BEGIN SELECT RAISE(ABORT, 'research run workflow references must belong to its project'); END;
+      CREATE TRIGGER validate_research_run_workflow_update
+      BEFORE UPDATE OF workflow_session_id, evidence_snapshot_id, thread_id ON research_runs
+      WHEN (NEW.workflow_session_id IS NOT NULL AND NOT EXISTS (
+        SELECT 1 FROM workflow_sessions ws WHERE ws.id = NEW.workflow_session_id AND ws.thread_id = NEW.thread_id
+      )) OR (NEW.evidence_snapshot_id IS NOT NULL AND NOT EXISTS (
+        SELECT 1 FROM evidence_snapshots es JOIN workflow_sessions ws ON ws.id = es.session_id
+        WHERE es.id = NEW.evidence_snapshot_id AND ws.thread_id = NEW.thread_id
+      ))
+      BEGIN SELECT RAISE(ABORT, 'research run workflow references must belong to its project'); END;
+
+      ALTER TABLE generation_attempts ADD COLUMN work_item_id TEXT
+        REFERENCES workflow_work_items(id) ON DELETE SET NULL;
+      ALTER TABLE opportunity_exploration_attempts ADD COLUMN work_item_id TEXT
+        REFERENCES workflow_work_items(id) ON DELETE SET NULL;
+      CREATE INDEX idx_generation_attempts_work_item ON generation_attempts(work_item_id);
+      CREATE INDEX idx_opportunity_attempts_work_item ON opportunity_exploration_attempts(work_item_id);
+      CREATE TRIGGER validate_generation_attempt_work_item_insert
+      BEFORE INSERT ON generation_attempts WHEN NEW.work_item_id IS NOT NULL AND NOT EXISTS (
+        SELECT 1 FROM workflow_work_items wi JOIN research_runs rr ON rr.id = NEW.research_run_id
+        WHERE wi.id = NEW.work_item_id AND wi.session_id = rr.workflow_session_id
+      ) BEGIN SELECT RAISE(ABORT, 'generation attempt work item must belong to its run'); END;
+      CREATE TRIGGER validate_generation_attempt_work_item_update
+      BEFORE UPDATE OF work_item_id ON generation_attempts WHEN NEW.work_item_id IS NOT NULL AND NOT EXISTS (
+        SELECT 1 FROM workflow_work_items wi JOIN research_runs rr ON rr.id = NEW.research_run_id
+        WHERE wi.id = NEW.work_item_id AND wi.session_id = rr.workflow_session_id
+      ) BEGIN SELECT RAISE(ABORT, 'generation attempt work item must belong to its run'); END;
+      CREATE TRIGGER validate_opportunity_attempt_work_item_insert
+      BEFORE INSERT ON opportunity_exploration_attempts WHEN NEW.work_item_id IS NOT NULL AND NOT EXISTS (
+        SELECT 1 FROM workflow_work_items wi JOIN workflow_sessions ws ON ws.id = wi.session_id
+        WHERE wi.id = NEW.work_item_id AND ws.thread_id = NEW.thread_id
+      ) BEGIN SELECT RAISE(ABORT, 'opportunity attempt work item must belong to its project'); END;
+      CREATE TRIGGER validate_opportunity_attempt_work_item_update
+      BEFORE UPDATE OF work_item_id ON opportunity_exploration_attempts WHEN NEW.work_item_id IS NOT NULL AND NOT EXISTS (
+        SELECT 1 FROM workflow_work_items wi JOIN workflow_sessions ws ON ws.id = wi.session_id
+        WHERE wi.id = NEW.work_item_id AND ws.thread_id = NEW.thread_id
+      ) BEGIN SELECT RAISE(ABORT, 'opportunity attempt work item must belong to its project'); END;
+
+      CREATE TABLE workflow_solution_preferences (
+        root_solution_id TEXT PRIMARY KEY REFERENCES solutions(id) ON DELETE CASCADE,
+        selected_solution_id TEXT NOT NULL REFERENCES solutions(id) ON DELETE RESTRICT,
+        updated_at TEXT NOT NULL
+      );
+      CREATE TRIGGER validate_workflow_solution_preference_insert
+      BEFORE INSERT ON workflow_solution_preferences WHEN NOT EXISTS (
+        SELECT 1 FROM solution_lineage sl
+        WHERE sl.root_solution_id = NEW.root_solution_id AND sl.solution_id = NEW.selected_solution_id
+      ) BEGIN SELECT RAISE(ABORT, 'selected version must belong to its root'); END;
+      CREATE TRIGGER validate_workflow_solution_preference_update
+      BEFORE UPDATE OF selected_solution_id ON workflow_solution_preferences WHEN NOT EXISTS (
+        SELECT 1 FROM solution_lineage sl
+        WHERE sl.root_solution_id = NEW.root_solution_id AND sl.solution_id = NEW.selected_solution_id
+      ) BEGIN SELECT RAISE(ABORT, 'selected version must belong to its root'); END;
+    `,
+  },
+  {
+    id: 31,
+    sql: `
+      CREATE TABLE stage_results_v31 (
+        id TEXT PRIMARY KEY,
+        research_run_id TEXT NOT NULL REFERENCES research_runs(id) ON DELETE CASCADE,
+        stage_id TEXT NOT NULL CHECK(stage_id IN (
+          'query-plan', 'factor-harvest', 'problem-candidates',
+          'problem-kill', 'solutions', 'risk-evaluation', 'decision-analysis',
+          'solution-set-review', 'idea-follow-up'
+        )),
+        selection_key TEXT NOT NULL DEFAULT '',
+        workflow_version INTEGER NOT NULL CHECK(workflow_version = 2),
+        stage_revision INTEGER NOT NULL CHECK(stage_revision > 0),
+        context_json TEXT NOT NULL CHECK(json_valid(context_json)),
+        context_sha256 TEXT NOT NULL,
+        output_json TEXT NOT NULL CHECK(json_valid(output_json)),
+        output_sha256 TEXT NOT NULL,
+        prompt_filename TEXT NOT NULL,
+        prompt_source TEXT NOT NULL CHECK(prompt_source IN ('bundled', 'override')),
+        prompt_text TEXT NOT NULL,
+        prompt_sha256 TEXT NOT NULL,
+        current_bundled_prompt_sha256 TEXT NOT NULL,
+        override_baseline_revision INTEGER,
+        override_baseline_sha256 TEXT,
+        schema_json TEXT NOT NULL CHECK(json_valid(schema_json)),
+        schema_sha256 TEXT NOT NULL,
+        input_json TEXT NOT NULL,
+        input_sha256 TEXT NOT NULL,
+        evidence_json TEXT NOT NULL CHECK(json_valid(evidence_json)),
+        evidence_ids_json TEXT NOT NULL CHECK(json_valid(evidence_ids_json)),
+        evidence_ids_sha256 TEXT NOT NULL,
+        evidence_sha256 TEXT NOT NULL,
+        runtime_prompt_id TEXT NOT NULL,
+        runtime_prompt_sha256 TEXT NOT NULL,
+        effective_request_json TEXT NOT NULL CHECK(json_valid(effective_request_json)),
+        effective_request_sha256 TEXT NOT NULL,
+        completed_at TEXT NOT NULL,
+        UNIQUE(research_run_id, stage_id, selection_key),
+        CHECK(
+          (override_baseline_revision IS NULL AND override_baseline_sha256 IS NULL)
+          OR (override_baseline_revision = 1 AND override_baseline_sha256 IS NOT NULL)
+        )
+      );
+      INSERT INTO stage_results_v31 SELECT * FROM stage_results;
+      CREATE TABLE decision_analyses_v31 (
+        id TEXT PRIMARY KEY,
+        research_run_id TEXT NOT NULL REFERENCES research_runs(id) ON DELETE CASCADE,
+        solution_id TEXT NOT NULL,
+        stage_result_id TEXT NOT NULL UNIQUE REFERENCES stage_results_v31(id) ON DELETE CASCADE,
+        analysis_json TEXT NOT NULL CHECK(json_valid(analysis_json)),
+        user_decision TEXT,
+        observed_result TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        experiment_outcome TEXT NOT NULL DEFAULT 'not-run'
+          CHECK(experiment_outcome IN ('not-run', 'pass', 'fail', 'inconclusive')),
+        UNIQUE(research_run_id, solution_id),
+        FOREIGN KEY (solution_id, research_run_id)
+          REFERENCES solutions(id, research_run_id) ON DELETE CASCADE
+      );
+      INSERT INTO decision_analyses_v31 SELECT * FROM decision_analyses;
+      DROP TABLE decision_analyses;
+      DROP TABLE stage_results;
+      ALTER TABLE stage_results_v31 RENAME TO stage_results;
+      ALTER TABLE decision_analyses_v31 RENAME TO decision_analyses;
+      CREATE INDEX idx_stage_results_run_completed
+        ON stage_results(research_run_id, completed_at, stage_id);
+      CREATE INDEX idx_decision_analyses_run_created
+        ON decision_analyses(research_run_id, created_at, id);
+      CREATE TRIGGER prevent_stage_result_update
+      BEFORE UPDATE ON stage_results
+      BEGIN SELECT RAISE(ABORT, 'completed stage results are immutable'); END;
+    `,
+    afterSql: (client: DatabaseClient) => {
+      if (client.db.prepare("PRAGMA foreign_key_check").all().length > 0) {
+        throw new Error("Stage migration would break saved references");
+      }
+    },
+  },
+  { id: 32, rebuildReferencedTable: true, sql: OPPORTUNITY_SESSION_MIGRATION_SQL },
+  {
+    id: 33,
+    sql: `
+      ALTER TABLE problems ADD COLUMN brief_fit TEXT NOT NULL DEFAULT 'unknown'
+        CHECK(brief_fit IN ('direct', 'partial', 'unknown', 'outside'));
+      ALTER TABLE problems ADD COLUMN contrary_evidence TEXT NOT NULL DEFAULT 'unknown'
+        CHECK(contrary_evidence IN ('resolved', 'unknown', 'unresolved'));
+      ALTER TABLE problems ADD COLUMN workflow_key TEXT
+        CHECK(workflow_key IS NULL OR (length(trim(workflow_key)) BETWEEN 1 AND 160));
+    `,
+  },
+  { id: 34, rebuildReferencedTable: true, sql: MANAGED_COVERAGE_MIGRATION_SQL },
 ] as const;

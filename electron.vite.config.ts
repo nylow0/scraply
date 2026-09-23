@@ -2,7 +2,7 @@ import { defineConfig, externalizeDepsPlugin } from "electron-vite";
 import { svelte } from "@sveltejs/vite-plugin-svelte";
 import tailwindcss from "@tailwindcss/vite";
 import { resolve } from "node:path";
-import { browserDevProxy } from "./scripts/browser-dev-proxy";
+import { BROWSER_DEV_ORIGIN, browserDevProxy } from "./scripts/browser-dev-proxy";
 
 const browserDev = process.env.SCRAPLY_BROWSER_DEV === "1";
 
@@ -34,7 +34,7 @@ export default defineConfig(({ mode }) => ({
     ...(browserDev ? {
       server: {
         host: "127.0.0.1",
-        port: 5173,
+        port: Number(new URL(BROWSER_DEV_ORIGIN).port),
         strictPort: true,
         open: false,
         cors: false,

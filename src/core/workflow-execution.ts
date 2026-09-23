@@ -4,11 +4,11 @@ import { DevelopmentRepository } from "../db/repositories/development";
 import { WorkflowV2Repository } from "../db/repositories/workflow-v2";
 import type { SearchClient } from "../providers/search";
 import type { GenerationMetadata, StructuredModelClient, StructuredStageRequest } from "../providers/structured";
-import { canonicalJson } from "../shared/content-identity";
+import { canonicalJson, sha256 } from "../shared/content-identity";
 import { deriveJsonSchema } from "../shared/json-schema";
 import { OpportunityExpansionOutputSchema } from "../shared/opportunity-exploration";
 import { SourceSchema } from "../shared/schemas";
-import { WorkflowV2QueryPlanOutputSchema, WorkflowV2FactorHarvestOutputSchema, WorkflowV2ProblemCandidatesOutputSchema, WorkflowV2ProblemKillOutputSchema, WorkflowV2SolutionsOutputSchema } from "../shared/structured-output-schemas";
+import { ClassifiedWorkflowV2ProblemKillOutputSchema, WorkflowV2QueryPlanOutputSchema, WorkflowV2FactorHarvestOutputSchema, WorkflowV2ProblemCandidatesOutputSchema, WorkflowV2ProblemKillOutputSchema, WorkflowV2SolutionsOutputSchema } from "../shared/structured-output-schemas";
 import type { WorkflowV2DevelopmentContext } from "./development";
 import { resolveWorkflowV2Prompt, type ResolvedWorkflowV2Prompt } from "./prompts";
 import { WORKFLOW_V2_STAGE_IDS, WORKFLOW_V2_STAGE_REGISTRY, type WorkflowV2StageId } from "./stages";
@@ -17,12 +17,28 @@ import { WORKFLOW_V2_STAGE_IDS, WORKFLOW_V2_STAGE_REGISTRY, type WorkflowV2Stage
 export class WorkflowExecution {
   readonly repository: WorkflowV2Repository;
   private readonly prompts: Record<WorkflowV2StageId, ResolvedWorkflowV2Prompt>;
+  private readonly disableRepair: boolean;
   private readonly factorUncertainty = new Map<string, string>();
 
   constructor(private readonly db: DatabaseClient, readonly runId: string) {
     this.repository = new WorkflowV2Repository(db);
+    const run = db.db.prepare(`SELECT rr.purpose, ws.contract_json FROM research_runs rr
+      LEFT JOIN workflow_sessions ws ON ws.id = rr.workflow_session_id WHERE rr.id = ?`)
+      .get(runId) as { purpose: string | null; contract_json: string | null } | undefined;
+    this.disableRepair = run?.purpose === "research-followup";
     const saved = this.read<Record<WorkflowV2StageId, ResolvedWorkflowV2Prompt>>("prompts");
-    this.prompts = saved ?? Object.fromEntries(WORKFLOW_V2_STAGE_IDS.map((stage) => [stage, resolveWorkflowV2Prompt(stage)])) as Record<WorkflowV2StageId, ResolvedWorkflowV2Prompt>;
+    const instructionSet = run?.contract_json
+      ? (JSON.parse(run.contract_json) as { instructions?: { research?: string; ideas?: string; review?: string } }).instructions
+      : undefined;
+    this.prompts = saved ?? Object.fromEntries(WORKFLOW_V2_STAGE_IDS.map((stage) => {
+      const prompt = resolveWorkflowV2Prompt(stage);
+      const kind = ["query-plan", "factor-harvest", "problem-candidates", "problem-kill"].includes(stage)
+        ? "research" : ["solutions", "idea-follow-up"].includes(stage) ? "ideas" : "review";
+      const instruction = instructionSet?.[kind]?.trim();
+      if (!instruction) return [stage, prompt];
+      const text = `${prompt.text}\n\nProject instruction for this workflow stage:\n${instruction}`;
+      return [stage, { ...prompt, text, resolvedSha256: sha256(text) }];
+    })) as Record<WorkflowV2StageId, ResolvedWorkflowV2Prompt>;
     if (!saved) {
       this.save("prompts", this.prompts);
       // 96-bit deterministic identifiers are easier for models to copy than full SHA-256 text.
@@ -70,10 +86,11 @@ export class WorkflowExecution {
       options?.signal?.throwIfAborted();
       const { signal: _signal, ...parameters } = options ?? {};
       void _signal;
-      const key = `search:${createHash("sha256").update(canonicalJson({ query, parameters })).digest("hex")}`;
+      const normalizedQuery = query.normalize("NFKC").trim().replace(/\s+/g, " ");
+      const key = `search:${createHash("sha256").update(canonicalJson({ query: normalizedQuery.toLowerCase(), parameters })).digest("hex")}`;
       const saved = this.read<unknown>(key);
       if (saved) return SourceSchema.array().parse(saved);
-      const results = await client.search(query, options);
+      const results = await client.search(normalizedQuery, options);
       options?.signal?.throwIfAborted();
       this.save(key, results);
       return results;
@@ -94,6 +111,9 @@ export class WorkflowExecution {
         ? WorkflowV2FactorHarvestOutputSchema.extend({
             factors: WorkflowV2FactorHarvestOutputSchema.shape.factors.max(factorLimit),
           })
+        // A saved run keeps its original prompt and schema so completed kill reviews can resume.
+        : stageId === "problem-kill" && prompt.currentBundledSha256 !== resolveWorkflowV2Prompt("problem-kill").currentBundledSha256
+          ? ClassifiedWorkflowV2ProblemKillOutputSchema
         : stage.schema;
       const request: StructuredStageRequest<unknown> = {
         ...original,
@@ -102,6 +122,7 @@ export class WorkflowExecution {
         jsonSchema: deriveJsonSchema(requestSchema),
         deadlineMs: stage.deadlineMs,
       };
+      if (this.disableRepair) request.repairPolicy = "disabled";
       if (original.model.providerId === "openai-subscription") delete request.maxOutputTokens;
       else request.maxOutputTokens = stage.maxOutputTokens;
       const context = { inputs: request.workOrder.inputs, evidence: request.evidence };

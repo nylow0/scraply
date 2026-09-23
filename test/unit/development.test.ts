@@ -88,6 +88,47 @@ test("retains the historical call projection for saved v1 results", () => {
   expect(developmentProjection(5)).toBe(22);
 });
 
+test("rejects extra provider candidates before returning anything for persistence", async () => {
+  const { id: _id, problemId: _problemId, ...plainOption } = option;
+  void _id;
+  void _problemId;
+  let calls = 0;
+  await expect(produceDevelopmentOptions(context, {
+    ...dependencies({ options: [plainOption, { ...plainOption, mechanism: "Check the claim archive" }] }, () => { calls++; }),
+    ideaCount: 1,
+  })).rejects.toMatchObject({ code: "schema", message: "The solutions stage returned more than 1 options" });
+  expect(calls).toBe(1);
+});
+
+test("sends a saved buyer and workflow angle in the solutions model work order", async () => {
+  const { id: _id, problemId: _problemId, ...plainOption } = option;
+  void _id;
+  void _problemId;
+  const generationAngle = {
+    gapId: "gap-repeat-claims", name: "Independent adjusters",
+    angle: "Find a distinct paid workflow for adjusters who reconcile duplicate claims after a handoff.",
+  };
+  const base = dependencies({ options: [plainOption] });
+  let calls = 0;
+  const modelClient: StructuredModelClient = {
+    async structuredCompletion<T>(request: import("../../src/providers/structured").StructuredStageRequest<T>) {
+      calls++;
+      expect(request.workOrder.inputs).toMatchObject({ generationAngle });
+      expect(request.workOrder.goal).toContain(generationAngle.angle);
+      expect(request.workOrder.constraints).toContain(
+        "Treat the generation angle as task direction, not evidence. Respect the saved evidence and off-limits list; return no candidate if the gap cannot be addressed honestly.",
+      );
+      return base.modelClient.structuredCompletion(request);
+    },
+  };
+  await produceDevelopmentOptions(context, { ...base, modelClient, ideaCount: 1, generationAngle });
+  expect(calls).toBe(1);
+
+  const ordinary = await produceDevelopmentOptions(context, { ...base, ideaCount: 1 });
+  expect(ordinary.request.workOrder.inputs).not.toHaveProperty("generationAngle");
+  expect(ordinary.request.workOrder.goal).toBe("Produce up to 1 distinct, useful, unranked ideas for the selected problem.");
+});
+
 test("requires startup details and passes prior project mechanisms without making them evidence", async () => {
   const startup = {
     opportunityType: "startup-opportunity" as const,

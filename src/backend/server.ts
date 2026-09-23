@@ -2,6 +2,11 @@ import { deriveJsonSchema } from "../shared/json-schema";
 import { randomBytes, randomUUID } from "node:crypto";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { recoverInterruptedEvidenceFollowUps, ResearchEngine } from "../core/research-engine";
+import { WorkflowCoordinator } from "../core/workflow-coordinator";
+import { IdeaConversationService } from "../core/idea-conversation-service";
+import { ResearchRequestService } from "../core/research-request-service";
+import { scheduledModelClient } from "../core/scheduled-model-client";
+import { WorkflowModelScheduler } from "../core/workflow-scheduler";
 import { DatabaseClient } from "../db/client";
 import { GenerationAttemptRepository } from "../db/repositories/generation-attempts";
 import { FocusedDemandTestSchema, FocusedExperimentRecordSchema } from "../shared/focused-experiment";
@@ -11,6 +16,7 @@ import { FocusedExperimentRepository } from "../db/repositories/focused-experime
 import { OpportunityCandidateOriginSchema } from "../shared/opportunity-exploration";
 import { ActiveRunConflictError } from "../db/repositories/research-runs";
 import { ThreadRepository } from "../db/repositories/threads";
+import { WorkflowRepository } from "../db/repositories/workflows";
 import { ExaClient } from "../providers/exa";
 import { PerplexityClient } from "../providers/perplexity";
 import type { SearchClient, SearchProvider, ValidationResult } from "../providers/search";
@@ -39,6 +45,13 @@ import type { LogInput } from "../shared/logging";
 import { discoveryRunProjection } from "../core/discovery";
 import { summarizeRunUsage, type GenerationAttemptUsageRow } from "./run-usage";
 import { renderFocusedExperiment, renderOpportunityFamilies } from "./opportunity-export";
+import {
+  CommandWorkflowRequestSchema, GetIdeaConversationRequestSchema, GetWorkflowRequestSchema,
+  IdeaConversationSchema, PreviewWorkflowRequestSchema, PreviewWorkflowResultSchema,
+  SelectIdeaVersionRequestSchema, StartWorkflowRequestSchema, SubmitIdeaTurnRequestSchema, SubmitIdeaTurnResultSchema,
+  WorkflowAdmissionReceiptSchema, WorkflowDetailSchema,
+  type WorkflowSummary,
+} from "../shared/workflow-contracts";
 
 export interface BackendContext {
   dataDir: string;
@@ -114,6 +127,7 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
     );
   `);
   const threads = new ThreadRepository(db);
+  const workflows = new WorkflowRepository(db);
   db.setMeta("persistence_probe", `ok-${Date.now()}`);
   let activeThreadId: string | null = db.getSetting("active_thread_id") || null;
   let cachedValidation: ValidationState | null = null;
@@ -126,6 +140,7 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
   let nativeAuthTail: Promise<void> = Promise.resolve();
   const pendingNativeLogins = new Map<string, string>();
   let engine: ResearchEngine | null = null;
+  const workflowModelScheduler = new WorkflowModelScheduler();
   const invalidateProviderCache = () => {
     validationGeneration += 1;
     validationPromise = null;
@@ -152,6 +167,11 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
     } catch (error) {
       context.log?.({ level: "error", event: "backend-event-delivery-failed", error });
     }
+    if (event.type !== "workflow-progress") {
+      void Promise.resolve().then(() => workflowCoordinator.handleRunEvent(event)).catch((error) => {
+        context.log?.({ level: "error", event: "workflow-event-handling-failed", error });
+      });
+    }
   };
   const ensureEngine = () => {
     if (!engine) {
@@ -163,6 +183,7 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
       engine = new ResearchEngine({
         db,
         modelClients: context.modelClients ?? {},
+        modelScheduler: workflowModelScheduler,
         searchClients,
         onEvent: emitEvent,
       });
@@ -259,6 +280,52 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
     native: { available: false, connected: false, accounts: [], error: "Checking native runtime" },
   });
 
+  const emitWorkflowProgress = (summary: WorkflowSummary, changedTaskIds: string[]) => emitEvent({
+    type: "workflow-progress", sessionId: summary.sessionId, threadId: summary.threadId,
+    revision: summary.revision, state: summary.state, outcome: summary.outcome,
+    changedTaskIds, counts: summary.counts,
+  });
+  const workflowModelClient = (model: ModelRef, projectId: string): StructuredModelClient => {
+    const client = context.modelClients?.[model.providerId];
+    if (!client) throw new AppError("MODEL_UNAVAILABLE", "The selected model is not connected.");
+    return scheduledModelClient(client, workflowModelScheduler, projectId);
+  };
+  const ideaService = new IdeaConversationService({
+    db,
+    modelClient: workflowModelClient,
+    modelAvailable: (model, effort) => Boolean(
+      (cachedValidation?.native.connected ?? cachedNativeValidation?.connected)
+      && cachedModelOptions.some((option) => sameModelRef(option, model)
+        && option.reasoningEfforts.some((reasoning) => reasoning.id === effort)),
+    ),
+    onProgress: (sessionId) => emitWorkflowProgress(workflowCoordinator.summary(sessionId), []),
+  });
+  const researchService = new ResearchRequestService({
+    db,
+    engine: ensureEngine,
+    modelClient: workflowModelClient,
+    onProgress: (sessionId, changedTaskIds) => emitWorkflowProgress(workflowCoordinator.summary(sessionId), changedTaskIds),
+  });
+  const workflowCoordinator = new WorkflowCoordinator({
+    db,
+    engine: ensureEngine,
+    capabilities: async () => {
+      const validation = cachedValidation ?? await validateProviders();
+      return {
+        modelOptions: cachedModelOptions,
+        nativeConnected: validation.native.connected,
+        searchReady: { exa: validation.exa.valid, perplexity: validation.perplexity.valid },
+      };
+    },
+    listProblems: (threadId, discoveryRunId) => listProblems(threadId, discoveryRunId),
+    onProgress: emitWorkflowProgress,
+    onError: (error) => context.log?.({ level: "error", event: "workflow-coordinator-failed", error }),
+    ideaService,
+    researchService,
+  });
+  ideaService.reconcileInterrupted();
+  workflowCoordinator.reconcileInterrupted();
+
   function modelCatalog(): ModelCatalog {
     const favorites = readFavoriteModels();
     const models = [...cachedModels];
@@ -290,6 +357,13 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
     if (activeThreadId && !threadList.some((thread) => thread.id === activeThreadId && !thread.archivedAt)) activeThreadId = threadList.find((thread) => !thread.archivedAt)?.id ?? null;
     const runConfig = activeThreadId ? threads.getLatestRunConfig(activeThreadId) : null;
     const latestResearchRun = activeThreadId ? latestRun(activeThreadId) : null;
+    const activeWorkflow = activeThreadId ? workflowCoordinator.findActiveSummary(activeThreadId) : null;
+    const activeSnapshot = activeWorkflow?.activeSnapshotId ? workflows.getSnapshot(activeWorkflow.activeSnapshotId) : null;
+    const snapshotProblems = activeThreadId && activeSnapshot && activeSnapshot.sessionId === activeWorkflow?.sessionId
+      ? listProblems(activeThreadId, activeSnapshot.materializationRunId)
+        .filter((problem) => activeSnapshot.selection.problemIds.includes(problem.id))
+        .map((problem) => ({ ...problem, selected: true }))
+      : null;
     const pending = pendingValidation();
     const validation = cachedValidation ?? (cachedNativeValidation
       ? ValidationStateSchema.parse({
@@ -309,12 +383,15 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
       modelOptions: cachedModelOptions,
       modelCatalog: modelCatalog(),
       presets: threads.listPresets(),
-      problemCandidates: activeThreadId ? listProblems(activeThreadId) : [],
+      problemCandidates: snapshotProblems ?? (activeThreadId ? listProblems(activeThreadId) : []),
       rejectedProblemCandidates: activeThreadId ? listRejectedProblemCandidates(activeThreadId) : [],
       solutions: activeThreadId ? listSolutions(activeThreadId, false) : [],
       ...(activeThreadId ? { opportunityFamilies: opportunities.familyView(activeThreadId) } : {}),
       opportunityExploration: activeThreadId ? exploration.find(activeThreadId) : null,
       opportunityReviewStatus: activeThreadId && engine ? engine.getOpportunityReviewStatus(activeThreadId) : { running: false, kind: null, error: null },
+      activeWorkflow,
+      researchRequests: activeWorkflow ? researchService.listRequests(activeWorkflow.sessionId) : [],
+      researchFindings: activeWorkflow ? researchService.listActiveFindings(activeWorkflow.sessionId) : [],
       latestResearchRun,
       pendingRuns: listPendingRuns(),
     };
@@ -322,13 +399,22 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
   }
 
   function latestDiscoveryRun(threadId: string): string | null {
-    const row = db.db.prepare(`SELECT id FROM research_runs WHERE thread_id = ? AND problem_id IS NULL AND status = 'completed' ORDER BY created_at DESC, rowid DESC LIMIT 1`)
+    const row = db.db.prepare(`SELECT id FROM research_runs
+      WHERE thread_id = ? AND problem_id IS NULL AND status = 'completed'
+        AND (purpose IS NULL OR purpose IN ('discovery', 'known-problem'))
+      ORDER BY created_at DESC, rowid DESC LIMIT 1`)
       .get(threadId) as { id: string } | undefined;
     return row?.id ?? null;
   }
-  function listProblems(threadId: string): ProblemCandidate[] {
-    const runId = latestDiscoveryRun(threadId);
+  function listProblems(threadId: string, discoveryRunId?: string): ProblemCandidate[] {
+    const runId = discoveryRunId ?? latestDiscoveryRun(threadId);
     if (!runId) return [];
+    if (discoveryRunId && !db.db.prepare(`
+      SELECT 1 FROM research_runs
+      WHERE id = ? AND thread_id = ? AND problem_id IS NULL AND status = 'completed'
+    `).get(discoveryRunId, threadId)) {
+      throw new AppError("INVALID_REFERENCE", "The discovery run does not belong to this project.");
+    }
     const rows = db.db.prepare(`
       SELECT p.*, EXISTS (
         SELECT 1 FROM research_runs development
@@ -347,6 +433,9 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
         verdictReason: String(row.verdict_reason), selected: row.selected_at !== null,
         intendedBuyerEvidenceFactorIds: JSON.parse(String(row.intended_buyer_evidence_factor_ids_json ?? "[]")) as string[],
         evidenceGap: row.evidence_gap === null || row.evidence_gap === undefined ? null : String(row.evidence_gap),
+        briefFit: String(row.brief_fit ?? "unknown") as ProblemCandidate["briefFit"],
+        contraryEvidence: String(row.contrary_evidence ?? "unknown") as ProblemCandidate["contraryEvidence"],
+        ...(row.workflow_key ? { workflowKey: String(row.workflow_key) } : {}),
         factors,
         singleHarvestModeWarning: factors.length > 0 && new Set(factors.map((factor) => factor.harvestMode)).size === 1,
         developmentCompleted: Number(row.development_completed) === 1,
@@ -403,12 +492,11 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
         JOIN research_runs rr2 ON rr2.id = s2.research_run_id
         WHERE rr2.thread_id = ? AND (rr2.status = 'completed' OR rr2.workflow_version = 2)
           AND (? IS NULL OR s2.id = ?)
-          AND p2.selected_at IS NOT NULL
-          AND p2.discovery_run_id = (
-            SELECT id FROM research_runs
-            WHERE thread_id = ? AND problem_id IS NULL AND status = 'completed'
-            ORDER BY created_at DESC, rowid DESC LIMIT 1
-          )
+          AND (? = 1 OR NOT EXISTS (
+            SELECT 1 FROM solution_lineage lineage
+            WHERE lineage.solution_id = s2.id AND lineage.version_number > 1
+          ))
+          AND (p2.selected_at IS NOT NULL OR rr2.workflow_version = 2)
       ), outcome_counts AS (
         SELECT solution_id, COUNT(*) AS outcome_count,
           SUM(CASE WHEN addresses_core = 1 THEN 1 ELSE 0 END) AS core_count
@@ -453,7 +541,7 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
       LEFT JOIN ranked_risks hr ON hr.solution_id = s.id AND hr.position = 1
       WHERE s.id IN (SELECT id FROM relevant_solutions)
       ORDER BY s.created_at, s.option_position, s.id
-    `, [threadId, solutionId ?? null, solutionId ?? null, threadId]);
+    `, [threadId, solutionId ?? null, solutionId ?? null, details ? 1 : 0]);
     const solutionIds = rows.map((row) => String(row.id));
     const problemIds = [...new Set(rows.map((row) => String(row.problem_id)))];
     const outcomesBySolution = details ? readOutcomes(solutionIds, readAll) : new Map<string, SolutionView["outcomes"]>();
@@ -678,7 +766,204 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
       opportunityReview: opportunities.exportReview(threadId),
       opportunityExploration: exploration.find(threadId) ? exploration.exportExploration(threadId) : null,
       focusedExperiments: new FocusedExperimentRepository(db).exportExperiments(threadId),
+      history: researchHistory(threadId),
     };
+  }
+
+  function researchHistory(threadId: string) {
+    const sessions = db.db.prepare(`SELECT id, purpose, mode, state, outcome, active_snapshot_id,
+      started_at, finished_at FROM workflow_sessions WHERE thread_id = ? ORDER BY started_at, id`)
+      .all(threadId) as Array<{ id: string; purpose: string; mode: string; state: string; outcome: string | null;
+        active_snapshot_id: string | null; started_at: string; finished_at: string | null }>;
+    const runs = db.db.prepare(`SELECT id, status, purpose, problem_id, workflow_session_id,
+      evidence_snapshot_id, config_json, completion_reason, created_at, updated_at
+      FROM research_runs WHERE thread_id = ? ORDER BY created_at, rowid`)
+      .all(threadId) as Array<{ id: string; status: string; purpose: string | null; problem_id: string | null;
+        workflow_session_id: string | null; evidence_snapshot_id: string | null; config_json: string;
+        completion_reason: string | null; created_at: string; updated_at: string }>;
+    const snapshots = sessions.flatMap((session) => workflows.listSnapshots(session.id).map((snapshot) => ({
+      ...snapshot, workflowSessionId: session.id,
+    })));
+    const requestOwners = new Map((db.db.prepare(`SELECT item.id, item.session_id FROM workflow_work_items item
+      JOIN workflow_sessions session ON session.id = item.session_id
+      WHERE session.thread_id = ? AND item.kind = 'research-request'`).all(threadId) as Array<{ id: string; session_id: string }>)
+      .map((item) => [item.id, item.session_id]));
+    return {
+      workflowSessions: sessions.map((session) => ({
+        id: session.id, purpose: session.purpose, mode: session.mode, state: session.state,
+        outcome: session.outcome, activeSnapshotId: session.active_snapshot_id,
+        startedAt: session.started_at, finishedAt: session.finished_at,
+      })),
+      researchRequests: sessions.length === 0 ? [] : researchService.listRequests(sessions.at(-1)!.id).map((request) => ({
+        ...request, workflowSessionId: requestOwners.get(request.id),
+      })),
+      evidenceSnapshots: snapshots,
+      runs: runs.map((run) => {
+        const scope = db.db.prepare(`SELECT title, audience, domain, observations, off_limits_json,
+          risk_evaluation_criteria FROM scopes WHERE research_run_id = ?`).get(run.id) as {
+          title: string; audience: string; domain: string; observations: string; off_limits_json: string;
+          risk_evaluation_criteria: string | null;
+        } | undefined;
+        return {
+          id: run.id, status: run.status, purpose: run.purpose, problemId: run.problem_id,
+          workflowSessionId: run.workflow_session_id, evidenceSnapshotId: run.evidence_snapshot_id,
+          config: JSON.parse(run.config_json) as unknown, completionReason: run.completion_reason,
+          createdAt: run.created_at, updatedAt: run.updated_at, usage: runUsage(run.id),
+          scope: scope ? {
+            title: scope.title, audience: scope.audience, domain: scope.domain,
+            observations: scope.observations, offLimits: JSON.parse(scope.off_limits_json) as unknown,
+            riskEvaluationCriteria: scope.risk_evaluation_criteria,
+          } : null,
+          sources: db.db.prepare("SELECT * FROM sources WHERE research_run_id = ? ORDER BY retrieved_at, id").all(run.id),
+          factors: db.db.prepare("SELECT * FROM factors WHERE research_run_id = ? ORDER BY created_at, id").all(run.id),
+          problems: db.db.prepare("SELECT * FROM problems WHERE discovery_run_id = ? ORDER BY created_at, id").all(run.id),
+          rejectedProblemCandidates: db.db.prepare("SELECT * FROM rejected_problem_candidates WHERE discovery_run_id = ? ORDER BY created_at, id").all(run.id),
+        };
+      }),
+    };
+  }
+
+  function evidenceSnapshotHistory(threadId: string) {
+    const sessions = db.db.prepare("SELECT id FROM workflow_sessions WHERE thread_id = ? ORDER BY started_at, id")
+      .all(threadId) as Array<{ id: string }>;
+    return sessions.flatMap((session) => workflows.listSnapshots(session.id).map((snapshot) => ({
+      ...snapshot, workflowSessionId: session.id,
+    })));
+  }
+
+  function ideaHistory(threadId: string) {
+    const versions = db.db.prepare(`SELECT lineage.* FROM solution_lineage lineage
+      JOIN solutions solution ON solution.id = lineage.solution_id
+      JOIN research_runs run ON run.id = solution.research_run_id
+      WHERE run.thread_id = ? ORDER BY lineage.root_solution_id, lineage.version_number`)
+      .all(threadId) as Array<{ solution_id: string; root_solution_id: string; parent_solution_id: string | null;
+        version_number: number; turn_id: string | null; evidence_snapshot_id: string | null;
+        change_summary: string; created_at: string }>;
+    const standaloneRoots = db.db.prepare(`SELECT solution.id, solution.created_at
+      FROM solutions solution JOIN problems problem ON problem.id = solution.problem_id
+      JOIN research_runs run ON run.id = solution.research_run_id
+      WHERE run.thread_id = ? AND (run.status = 'completed' OR run.workflow_version = 2)
+        AND (problem.selected_at IS NOT NULL OR run.workflow_version = 2)
+        AND NOT EXISTS (SELECT 1 FROM solution_lineage lineage WHERE lineage.solution_id = solution.id)
+      ORDER BY solution.created_at, solution.id`)
+      .all(threadId) as Array<{ id: string; created_at: string }>;
+    const turns = db.db.prepare(`SELECT turn.* FROM idea_turns turn
+      JOIN solutions root ON root.id = turn.root_solution_id
+      JOIN research_runs run ON run.id = root.research_run_id
+      WHERE run.thread_id = ? ORDER BY turn.root_solution_id, turn.branch_id, turn.branch_sequence`)
+      .all(threadId) as Array<{ id: string; root_solution_id: string; branch_id: string; branch_sequence: number;
+        parent_turn_id: string | null; base_solution_id: string; evidence_snapshot_id: string | null;
+        session_id: string; client_message_id: string; intent: string; user_text: string;
+        context_json: string; context_sha256: string; state: string; assistant_json: string | null;
+        stage_result_id: string | null;
+        generated_solution_id: string | null; error_json: string | null; created_at: string; completed_at: string | null }>;
+    const selections = db.db.prepare(`SELECT preference.root_solution_id, preference.selected_solution_id
+      FROM workflow_solution_preferences preference
+      JOIN solutions root ON root.id = preference.root_solution_id
+      JOIN research_runs run ON run.id = root.research_run_id
+      WHERE run.thread_id = ? ORDER BY preference.root_solution_id`)
+      .all(threadId) as Array<{ root_solution_id: string; selected_solution_id: string }>;
+    const snapshots = evidenceSnapshotHistory(threadId);
+    return {
+      schemaVersion: 1, threadId,
+      selectedVersions: selections.map((row) => ({ rootSolutionId: row.root_solution_id, selectedSolutionId: row.selected_solution_id })),
+      versions: [...versions, ...standaloneRoots.map((root) => ({
+        solution_id: root.id, root_solution_id: root.id, parent_solution_id: null,
+        version_number: 1, turn_id: null, evidence_snapshot_id: null,
+        change_summary: "Original idea", created_at: root.created_at,
+      }))].sort((left, right) => left.root_solution_id.localeCompare(right.root_solution_id)
+        || left.version_number - right.version_number).map((row) => ({
+        solutionId: row.solution_id, rootSolutionId: row.root_solution_id,
+        parentSolutionId: row.parent_solution_id, versionNumber: row.version_number,
+        turnId: row.turn_id, evidenceSnapshotId: row.evidence_snapshot_id,
+        changeSummary: row.change_summary, createdAt: row.created_at,
+      })),
+      turns: turns.map((row) => ({
+        id: row.id, rootSolutionId: row.root_solution_id, branchId: row.branch_id,
+        branchSequence: row.branch_sequence, parentTurnId: row.parent_turn_id,
+        baseSolutionId: row.base_solution_id, evidenceSnapshotId: row.evidence_snapshot_id,
+        sessionId: row.session_id, clientMessageId: row.client_message_id,
+        intent: row.intent, userText: row.user_text, context: JSON.parse(row.context_json) as unknown,
+        contextSha256: row.context_sha256, state: row.state,
+        assistant: row.assistant_json ? JSON.parse(row.assistant_json) as unknown : null,
+        stageResultId: row.stage_result_id,
+        generatedSolutionId: row.generated_solution_id,
+        error: row.error_json ? JSON.parse(row.error_json) as unknown : null,
+        createdAt: row.created_at, completedAt: row.completed_at,
+      })),
+      evidenceSnapshots: snapshots,
+    };
+  }
+
+  function renderIdeaHistoryMarkdown(history: ReturnType<typeof ideaHistory>, ideas: SolutionView[]): string {
+    const ideaById = new Map(ideas.map((idea) => [idea.id, idea]));
+    const selectedByRoot = new Map(history.selectedVersions.map((selection) => [selection.rootSolutionId, selection.selectedSolutionId]));
+    const roots = [...new Set([...history.versions.map((version) => version.rootSolutionId),
+      ...history.turns.map((turn) => turn.rootSolutionId)])];
+    const lines = ["# Idea history", "", "Saved versions, conversation branches, and evidence provenance for this project.", ""];
+    for (const rootId of roots) {
+      const root = ideaById.get(rootId);
+      lines.push(`## ${root ? markdownCell(root.mechanism) : "Idea"}`, "", `Root idea: \`${rootId}\`. Selected version: \`${selectedByRoot.get(rootId) ?? rootId}\`.`, "");
+      lines.push("### Versions", "", "| Version | Idea | Parent | Change | Turn | Evidence snapshot |", "| --- | --- | --- | --- | --- | --- |");
+      for (const version of history.versions.filter((entry) => entry.rootSolutionId === rootId)) {
+        lines.push(`| ${version.versionNumber} | \`${version.solutionId}\` | ${version.parentSolutionId ? `\`${version.parentSolutionId}\`` : "Original"} | ${markdownCell(version.changeSummary)} | ${version.turnId ? `\`${version.turnId}\`` : "—"} | ${version.evidenceSnapshotId ? `\`${version.evidenceSnapshotId}\`` : "—"} |`);
+      }
+      lines.push("");
+      const turns = history.turns.filter((turn) => turn.rootSolutionId === rootId);
+      for (const branchId of new Set(turns.map((turn) => turn.branchId))) {
+        lines.push(`### Conversation branch \`${branchId}\``, "");
+        for (const turn of turns.filter((entry) => entry.branchId === branchId).sort((left, right) => left.branchSequence - right.branchSequence)) {
+          lines.push(`#### Turn ${turn.branchSequence} · \`${turn.id}\``, "",
+            `Intent: ${turn.intent}. State: ${turn.state}. Base version: \`${turn.baseSolutionId}\`.${turn.parentTurnId ? ` Parent turn: \`${turn.parentTurnId}\`.` : ""}`,
+            `Evidence snapshot: ${turn.evidenceSnapshotId ? `\`${turn.evidenceSnapshotId}\`` : "none"}. Generated version: ${turn.generatedSolutionId ? `\`${turn.generatedSolutionId}\`` : "none"}.`,
+            "", "**User**", "", markdownQuote(turn.userText), "");
+          const assistant = turn.assistant && typeof turn.assistant === "object" ? turn.assistant as Record<string, unknown> : null;
+          if (assistant && typeof assistant.text === "string") {
+            lines.push("**Assistant**", "", markdownQuote(assistant.text), "");
+            if (Array.isArray(assistant.citedEvidenceIds) && assistant.citedEvidenceIds.length) {
+              lines.push(`Cited evidence: ${assistant.citedEvidenceIds.map((id) => `\`${String(id)}\``).join(", ")}.`, "");
+            }
+            if (Array.isArray(assistant.assumptions) && assistant.assumptions.length) {
+              lines.push("Assumptions:", "", ...assistant.assumptions.map((assumption) => `- ${String(assumption)}`), "");
+            }
+          }
+          if (turn.error) lines.push(`Turn error: ${markdownCell(String((turn.error as { message?: unknown }).message ?? "Saved error"))}.`, "");
+          lines.push(`Saved context SHA-256: \`${turn.contextSha256}\`.`, "");
+        }
+      }
+    }
+    lines.push("## Evidence snapshots", "");
+    if (!history.evidenceSnapshots.length) lines.push("No evidence snapshots were saved.", "");
+    for (const snapshot of history.evidenceSnapshots) {
+      lines.push(`### Snapshot \`${snapshot.id}\``, "",
+        `Workflow session: \`${snapshot.workflowSessionId}\`. Materialization run: \`${snapshot.materializationRunId}\`.`,
+        `Parent snapshot: ${snapshot.parentSnapshotId ? `\`${snapshot.parentSnapshotId}\`` : "none"}. Content SHA-256: \`${snapshot.contentSha256}\`.`,
+        `Selected findings: ${snapshot.selection.problemIds.map((id) => `\`${id}\``).join(", ")}.`, "");
+      const selectedRequests = snapshot.selection.includedRequestIds;
+      if (Array.isArray(selectedRequests) && selectedRequests.length) {
+        lines.push(`Included research requests: ${selectedRequests.map((id) => `\`${String(id)}\``).join(", ")}.`, "");
+      }
+      lines.push("| Copied record | Copy ID | Original ID | Original run | Content SHA-256 |", "| --- | --- | --- | --- | --- |");
+      for (const [id, origin] of Object.entries(snapshot.originMap.problems)) {
+        lines.push(`| Finding | \`${id}\` | \`${origin.originalId}\` | \`${origin.originalRunId}\` | \`${origin.contentSha256}\` |`);
+      }
+      for (const [id, origin] of Object.entries(snapshot.originMap.factors)) {
+        lines.push(`| Factor | \`${id}\` | \`${origin.originalId}\` | \`${origin.originalRunId}\` | \`${origin.contentSha256}\` |`);
+      }
+      for (const [id, origins] of Object.entries(snapshot.originMap.sources)) {
+        for (const origin of origins) lines.push(`| Source | \`${id}\` | \`${origin.originalId}\` | \`${origin.originalRunId}\` | \`${origin.contentSha256}\` |`);
+      }
+      lines.push("");
+    }
+    return `${lines.join("\n").trimEnd()}\n`;
+  }
+
+  function markdownCell(value: string): string {
+    return value.replace(/\|/g, "\\|").replace(/\r?\n/g, " ");
+  }
+
+  function markdownQuote(value: string): string {
+    return value.split(/\r?\n/).map((line) => `> ${line}`).join("\n");
   }
   function listEvidenceFollowUpExports(threadId: string) {
     const rows = db.db.prepare(`
@@ -744,7 +1029,14 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
     // Missing model provenance must never make it resumable as a current run.
     const parsedConfig = RunConfigSchema.safeParse(JSON.parse(row.config_json));
     const runConfig = parsedConfig.success ? parsedConfig.data : null;
-    const counts = db.db.prepare(`SELECT provider, COUNT(*) AS count FROM cost_ledger WHERE research_run_id = ? AND status IN ('reserved','committed') GROUP BY provider`)
+    const counts = db.db.prepare(`SELECT ledger.provider, SUM(CASE
+        WHEN attempts.attempt_metadata_json IS NOT NULL
+          AND json_type(attempts.attempt_metadata_json, '$.attempts') = 'array'
+          THEN MAX(1, json_array_length(attempts.attempt_metadata_json, '$.attempts'))
+        ELSE 1 END) AS count
+      FROM cost_ledger ledger LEFT JOIN generation_attempts attempts ON attempts.id = ledger.generation_attempt_id
+      WHERE ledger.research_run_id = ? AND ledger.status IN ('reserved','committed')
+      GROUP BY ledger.provider`)
       .all(row.id) as Array<{ provider: string; count: number }>;
     const promptSnapshot = db.db.prepare("SELECT value_json FROM workflow_snapshots WHERE research_run_id = ? AND snapshot_key = 'prompts'")
       .get(row.id) as { value_json: string } | undefined;
@@ -880,6 +1172,13 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
       if (method === "GET" && route === "/health") return sendJson(res, 200, HealthResponseSchema.parse({ ok: true, version: context.appVersion, persistenceCheck: db.getMeta("persistence_probe") ?? undefined }));
       if (method === "GET" && route === "/validation") return sendJson(res, 200, await validateProviders());
       if (method === "GET" && route === "/workspace") return sendJson(res, 200, await workspaceState());
+      if (method === "GET" && route.startsWith("/workflows/")) {
+        const input = GetWorkflowRequestSchema.parse({
+          sessionId: decodeRouteSegment(route.slice("/workflows/".length)),
+          ...(url.searchParams.has("cursor") ? { cursor: url.searchParams.get("cursor") } : {}),
+        });
+        return sendJson(res, 200, WorkflowDetailSchema.parse(await workflowCoordinator.get(input.sessionId, input.cursor)));
+      }
       if (method === "GET" && route.startsWith("/sources/")) {
         const { sourceId } = GetSourceDetailRequestSchema.parse({ sourceId: route.slice(9) });
         const row = db.db.prepare("SELECT * FROM sources WHERE id = ?").get(sourceId) as Record<string, unknown> | undefined;
@@ -887,6 +1186,15 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
         return sendJson(res, 200, SourceDetailSchema.parse({ id: row.id, researchRunId: row.research_run_id, url: row.canonical_url, title: row.title,
           text: row.retrieved_text, ...(row.author ? { author: row.author } : {}), ...(row.published_at ? { publishedDate: row.published_at } : {}),
           contentHash: row.content_hash, retrievedAt: row.retrieved_at }));
+      }
+      const conversationRoute = /^\/ideas\/([^/]+)\/conversation$/.exec(route);
+      if (method === "GET" && conversationRoute) {
+        const input = GetIdeaConversationRequestSchema.parse({
+          ideaId: decodeRouteSegment(conversationRoute[1]!),
+          ...(url.searchParams.has("branchId") ? { branchId: url.searchParams.get("branchId") } : {}),
+          ...(url.searchParams.has("cursor") ? { cursor: url.searchParams.get("cursor") } : {}),
+        });
+        return sendJson(res, 200, IdeaConversationSchema.parse(await workflowCoordinator.getConversation(input)));
       }
       if (method === "GET" && route.startsWith("/ideas/")) {
         const { ideaId } = GetIdeaDetailRequestSchema.parse({ ideaId: route.slice(7) });
@@ -896,6 +1204,25 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
       }
       if (method !== "POST") throw new AppError("not_found", "Route not found.");
       const body = await readBody(req);
+      if (route === "/workflows/preview") {
+        return sendJson(res, 200, PreviewWorkflowResultSchema.parse(await workflowCoordinator.preview(PreviewWorkflowRequestSchema.parse(body))));
+      }
+      if (route === "/workflows/start") {
+        return sendJson(res, 200, WorkflowAdmissionReceiptSchema.parse(await workflowCoordinator.start(StartWorkflowRequestSchema.parse(body))));
+      }
+      if (route === "/workflows/command") {
+        return sendJson(res, 200, WorkflowAdmissionReceiptSchema.parse(await workflowCoordinator.command(CommandWorkflowRequestSchema.parse(body))));
+      }
+      if (route === "/ideas/turn") {
+        const input = SubmitIdeaTurnRequestSchema.parse(body);
+        await validateProviders();
+        return sendJson(res, 200, SubmitIdeaTurnResultSchema.parse(await workflowCoordinator.submitTurn(input)));
+      }
+      if (route === "/ideas/select-version") {
+        const input = SelectIdeaVersionRequestSchema.parse(body);
+        ideaService.selectVersion(input.threadId, input.rootSolutionId, input.solutionId);
+        return sendJson(res, 200, IdeaConversationSchema.parse(ideaService.getConversation({ ideaId: input.rootSolutionId })));
+      }
       if (route === "/threads") {
         const input = CreateThreadRequestSchema.parse(body);
         const validation = cachedValidation ?? await validateProviders();
@@ -953,8 +1280,15 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
       if (route === "/threads/delete") {
         const { threadId } = DeleteThreadRequestSchema.parse(body); requireThread(threadId);
         engine?.assertOpportunityEditingAllowed(threadId);
+        if (workflows.getActiveSession(threadId)) {
+          throw new AppError("PROJECT_BUSY", "Finish or stop the active workflow before deleting this project.");
+        }
         for (const run of listPendingRuns().filter((item) => item.threadId === threadId)) cancelRun(run.runId);
-        threads.deleteThread(threadId); if (activeThreadId === threadId) activeThreadId = threads.listThreads().find((thread) => !thread.archivedAt)?.id ?? null;
+        db.immediateTransaction(() => {
+          workflows.deleteProjectMetadata(threadId);
+          threads.deleteThread(threadId);
+        });
+        if (activeThreadId === threadId) activeThreadId = threads.listThreads().find((thread) => !thread.archivedAt)?.id ?? null;
         db.setSetting("active_thread_id", activeThreadId ?? ""); return sendJson(res, 200, await workspaceState());
       }
       if (route === "/scope") {
@@ -1253,12 +1587,10 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
             SELECT r.id, r.workflow_version, p.id AS problem_id, p.statement, p.discovery_run_id
             FROM research_runs r JOIN problems p ON p.id = r.problem_id
             WHERE r.thread_id = ? AND r.status = 'completed' AND r.awaiting_selection = 0
-              AND p.discovery_run_id = ? AND p.selected_at IS NOT NULL
+              AND (p.selected_at IS NOT NULL OR r.workflow_version = 2)
               AND NOT EXISTS (SELECT 1 FROM solutions s WHERE s.research_run_id = r.id)
-              AND NOT EXISTS (SELECT 1 FROM research_runs newer WHERE newer.problem_id = r.problem_id
-                AND newer.status = 'completed' AND (newer.created_at > r.created_at OR (newer.created_at = r.created_at AND newer.rowid > r.rowid)))
             ORDER BY r.created_at, r.rowid
-          `).all(input.threadId, latestDiscoveryRun(input.threadId)) as
+          `).all(input.threadId) as
             Array<{ id: string; workflow_version: 1 | 2; problem_id: string; statement: string; discovery_run_id: string }>;
         const emptyFiles = emptyResults.map((empty) => {
             const result = { kind: "no-options", status: "completed", workflowVersion: empty.workflow_version,
@@ -1283,9 +1615,13 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
             : "";
           return { filename, content: input.format === "json" ? JSON.stringify(exportedGroup, null, 2) : `${renderMarkdown(group)}${followUpMarkdown}` };
         });
+        const history = ideaHistory(input.threadId);
         return sendJson(res, 200, {
           filename: `${slug(thread.title)}-ideas.${input.format === "json" ? "json" : "md"}`,
-          files: [...files, ...emptyFiles, ...opportunityExportFiles(input.threadId, input.format)],
+          files: [...files, ...emptyFiles, {
+            filename: `idea-history.${input.format === "json" ? "json" : "md"}`,
+            content: input.format === "json" ? JSON.stringify(history, null, 2) : renderIdeaHistoryMarkdown(history, ideas),
+          }, ...opportunityExportFiles(input.threadId, input.format)],
         });
       }
       throw new AppError("not_found", "Route not found.");
@@ -1340,6 +1676,7 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
       } catch (error) {
         closeError = error;
       } finally {
+        workflowModelScheduler.cancelAll(new Error("Backend is closing"));
         await Promise.allSettled([...pendingRequests]);
         await engine?.shutdown();
         await context.nativeRuntime?.close();
@@ -1559,6 +1896,10 @@ function mapFactor(factor: Record<string, unknown>): FactorView {
 }
 function slug(value: string): string { return value.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 80) || "problem"; }
 function authorize(req: IncomingMessage, token: string): boolean { return req.headers.authorization === `Bearer ${token}`; }
+function decodeRouteSegment(segment: string): string {
+  try { return decodeURIComponent(segment); }
+  catch { throw new AppError("validation_error", "Invalid path identifier."); }
+}
 async function readBody(req: IncomingMessage): Promise<unknown> {
   const chunks: Buffer[] = []; let size = 0;
   for await (const chunk of req) { const buffer = Buffer.from(chunk); size += buffer.length; if (size > 1_000_000) throw new AppError("validation_error", "Request body is too large."); chunks.push(buffer); }
