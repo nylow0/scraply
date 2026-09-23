@@ -68,6 +68,8 @@ This is an explicit desktop check, not the default preview. The installed Start 
 
 ## Verification and handoff
 
+For offline setup and navigation checks, run `bun run test:ui` and open `http://127.0.0.1:5176/?history=18&long=1`. This mounts the real renderer with synthetic projects and a local mock transport. It cannot launch research or contact a provider. Use `history=0` or `history=80` for empty and large collections, `active=70` with the large collection to place the current project outside recent history, and `connection=offline` for a disconnected search provider. Reloading resets the fixture. Settings and archive/restore changes last for the current page session.
+
 | Change | Local verification |
 | --- | --- |
 | UI or TypeScript backend | Exercise the affected workflow in the browser, run focused tests, then `bun run check` before handoff. |

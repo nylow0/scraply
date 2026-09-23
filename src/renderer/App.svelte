@@ -147,7 +147,7 @@
     };
     viewport?.addEventListener("change", resizeNavigation);
     const closeDrawerOnEscape = (event: KeyboardEvent) => {
-      if (!narrowViewport || !mobileSidebarOpen || event.key !== "Escape") return;
+      if (!narrowViewport || !mobileSidebarOpen || event.key !== "Escape" || document.querySelector("dialog[open]")) return;
       event.preventDefault();
       event.stopImmediatePropagation();
       closeMobileNavigation();
@@ -819,15 +819,17 @@
 <DesktopBar canBack={backIndex !== -1 && !busy} canForward={forwardIndex !== -1 && !busy} onBack={() => navigateHistory(-1)} onForward={() => navigateHistory(1)} onToggle={toggleNavigation} navigationOpen={navigationOpen} compact={narrowViewport} />
 <div class="app-shell" class:sidebar-hidden={!navigationOpen}>
   {#if narrowViewport && mobileSidebarOpen}<button class="sidebar-backdrop" aria-label="Close navigation" onclick={closeMobileNavigation}></button>{/if}
-  <div id="research-navigation" class="sidebar-area" hidden={!navigationOpen} inert={settingsOpen}>
+  <div id="research-navigation" class="sidebar-area" class:collapsed={!navigationOpen} inert={settingsOpen}>
   <Sidebar
-    threads={workspace?.threads.filter((thread) => !thread.archivedAt) ?? []}
+    visible={navigationOpen}
+    threads={workspace?.threads ?? []}
     activeThreadId={workspace?.activeThreadId ?? null}
     {busy}
     {deletingThreadId}
     onNew={() => { mobileSidebarOpen = false; void createThread(); }}
     onSelect={(id) => { mobileSidebarOpen = false; void selectThread(id); }}
     onArchive={archiveThread}
+    onRestore={(id) => archiveThread(id, false)}
   >
     {#snippet settingsControl()}
       <button id="settings-button" class="settings-button" onclick={() => { mobileSidebarOpen = false; settings?.show(); }}><Icon name="settings" size={20} />Settings</button>
@@ -835,8 +837,9 @@
   </Sidebar>
   </div>
 
-  <main class="main-content" inert={settingsOpen}>
+  <main class="main-content" class:setup-active={Boolean(workspace && activeThread && activeStep === "setup" && (activeThread.status === "configuring" || editingScope || !workspace.scope))} inert={settingsOpen}>
     {#if workspace && activeThread}
+      <header class="workspace-header">
       <div class="topbar">
         <h1 class="location" title={activeThread.title}>{activeThread.title}</h1>
         {#if activeRun && !activeWorkflow}<div class="calls"><strong>{activeRun.codexCalls}</strong> model calls / ~{activeRun.projectedCodexCalls} · <strong>{activeRun.searches}</strong> searches / ~{activeRun.projectedSearches}</div>{/if}
@@ -848,6 +851,7 @@
         {ideasReady}
         onSelect={openStep}
       />
+      </header>
       {#if !activeWorkflow}<RunUsage usage={activeRun?.usage} />{/if}
       {#if workflowDetail && activeWorkflow && workflowDetail.summary.sessionId === activeWorkflow.sessionId && !(activeStep === "ideas" && ideaFocused && activeWorkflow.state === "finished")}
         <div class="workflow-progress-wrap"><VibeProgress detail={workflowDetail} {busy}
@@ -983,17 +987,20 @@
   .managed-research { max-width:900px; margin:auto; padding:44px var(--page-inline) 20px; }
   .managed-research h1 { margin:8px 0 12px; font-size:clamp(24px,4vw,36px); letter-spacing:-.035em; }
   .managed-research p:last-child { color:var(--muted); font-size:13px; line-height:1.7; }
-  .sidebar-area { display:contents; }.sidebar-area[hidden] { display:none; }
+  .sidebar-area { display:contents; }
   .app-shell.sidebar-hidden { grid-template-columns:minmax(0,1fr); }
   .settings-button { display:flex;align-items:center;gap:10px;width:100%;padding:9px 12px;min-height:38px;border:0;border-radius:7px;background:transparent;color:var(--muted);font-size:13px;text-align:left;transition:background 180ms ease,color 180ms ease; }
   .settings-button:hover { background:var(--surface-2);color:var(--text); }
 
   .app-shell { height:calc(100% - 36px);display:grid;grid-template-columns:248px minmax(0,1fr);background:#000;padding:10px 10px 10px 0; }
   .main-content { min-width:0;overflow-y:auto;overflow-x:hidden;scrollbar-gutter:stable;position:relative;border-left:1px solid var(--border);background:var(--bg); }
-  .topbar { position:sticky;top:0;z-index:3;height:54px;padding:0 24px;display:flex;align-items:center;justify-content:space-between;background:color-mix(in srgb,var(--bg) 94%,transparent);backdrop-filter:blur(18px);border-bottom:1px solid var(--border);font-size:13px;color:var(--muted); }
-  .location { display:block;margin:0;color:var(--text);font-size:20px;font-weight:600;letter-spacing:-.025em;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis; }
+  .workspace-header { position:sticky;top:0;z-index:3;flex:none;min-height:72px;padding:12px 24px;display:flex;align-items:center;gap:24px;background:var(--bg);border-bottom:1px solid var(--border); }
+  .topbar { display:flex;align-items:center;flex:1;min-width:0;gap:16px;color:var(--muted); }
+  .location { display:block;margin:0;color:var(--text);font-size:24px;font-weight:600;letter-spacing:-.6px;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis; }
+  .main-content.setup-active { display:flex;flex-direction:column;overflow:hidden; }
+  .setup-active > #workflow-panel-setup { flex:1;min-height:0; }
   .calls { white-space:nowrap;margin-left:16px;font:500 13px var(--sans); }.calls strong { color:var(--text);font-weight:600; }
-  .notice { position:sticky;top:122px;z-index:3;margin:12px var(--page-inline) 0;padding:12px 16px;border:1px solid var(--border-strong);border-radius:10px;background:var(--surface-2);display:flex;justify-content:space-between;gap:16px;color:var(--muted);font-size:13px;overflow-wrap:anywhere; }
+  .notice { flex:none;margin:12px var(--page-inline) 0;padding:12px 16px;border:1px solid var(--border-strong);border-radius:10px;background:var(--surface-2);display:flex;justify-content:space-between;gap:16px;color:var(--muted);font-size:13px;overflow-wrap:anywhere; }
   .notice.error { border-color:#df929260;color:var(--danger); }.notice button { border:0;background:transparent;color:inherit; }
   .empty-workspace { padding:var(--page-top) var(--page-inline); }
   .empty-workspace button { padding:10px 16px;border:1px solid var(--border);border-radius:8px;background:var(--surface);color:var(--text); }
@@ -1027,10 +1034,12 @@
     .app-shell { grid-template-columns:minmax(0,1fr);padding:0; }
     .sidebar-backdrop { position:fixed;inset:36px 0 0;z-index:10;width:100%;border:0;background:#000a; }
     .sidebar-area { position:fixed;top:36px;bottom:0;left:0;z-index:11;display:block;width:min(280px,calc(100vw - 56px));background:#000;border-right:1px solid var(--border-strong);box-shadow:12px 0 32px #0009; }
-    .sidebar-area[hidden] { display:none; }
+    .sidebar-area.collapsed { display:contents; }
     .sidebar-area :global(.sidebar) { height:100%; }
     .main-content { border-radius:0; }
-    .topbar { padding:0 16px; }
+    .workspace-header { align-items:start;flex-direction:column;gap:8px;padding:12px 16px; }
+    .topbar { width:100%; }
     .running h1,.failed h1 { font-size:28px; }
   }
+  @media(max-height:600px) { .main-content.setup-active { display:block;overflow:auto; }.workspace-header { position:static; } }
 </style>

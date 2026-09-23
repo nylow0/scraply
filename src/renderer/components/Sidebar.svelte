@@ -1,38 +1,41 @@
 <script lang="ts">
   import { tick, type Snippet } from "svelte";
-  import Icon from "./Icon.svelte";
+  import Icon, { type IconName } from "./Icon.svelte";
   import type { Thread } from "../../shared/schemas";
   import { statusLabel, statusTone } from "../lib/status";
   import BrandMark from "./BrandMark.svelte";
 
-  let {
-    threads,
-    activeThreadId,
-    busy,
-    deletingThreadId = null,
-    onNew,
-    onSelect,
-    onArchive,
-    settingsControl,
-  }: {
-    threads: Thread[];
-    activeThreadId: string | null;
-    busy: boolean;
-    deletingThreadId?: string | null;
-    onNew: () => void;
-    onSelect: (id: string) => void;
-    onArchive: (id: string) => void;
+  let { threads, activeThreadId, busy, visible = true, deletingThreadId = null, onNew, onSelect, onArchive, onRestore, settingsControl }: {
+    threads: Thread[]; activeThreadId: string | null; busy: boolean; visible?: boolean; deletingThreadId?: string | null;
+    onNew: () => void; onSelect: (id: string) => void; onArchive: (id: string) => void; onRestore: (id: string) => void;
     settingsControl: Snippet;
   } = $props();
 
+  type CollectionFilter = "all" | "attention" | "archived";
   let search = $state("");
+  let filter = $state<CollectionFilter>("all");
   let finder: HTMLDialogElement;
   let searchInput: HTMLInputElement;
   let searchTrigger: HTMLButtonElement;
-  let matches = $derived(threads.filter((thread) => thread.title.toLowerCase().includes(search.trim().toLowerCase())));
-  async function showFinder() {
+  let returnFocus: HTMLElement | null = null;
+  let activeThreads = $derived(threads.filter((thread) => !thread.archivedAt && thread.status !== "archived"));
+  let attentionThreads = $derived(activeThreads.filter((thread) => thread.status.endsWith("running") || thread.status === "failed"));
+  let recentThreads = $derived.by(() => {
+    const recent = [...activeThreads].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+    const current = recent.find((thread) => thread.id === activeThreadId);
+    return (current ? [current, ...recent.filter((thread) => thread.id !== current.id)] : recent).slice(0, 6);
+  });
+  let matches = $derived(threads.filter((thread) => {
+    const archived = Boolean(thread.archivedAt) || thread.status === "archived";
+    const included = filter === "archived" ? archived : !archived && (filter === "all" || thread.status.endsWith("running") || thread.status === "failed");
+    return included && thread.title.toLowerCase().includes(search.trim().toLowerCase());
+  }).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)));
+
+  async function showFinder(nextFilter: CollectionFilter = "all") {
     if (document.querySelector("dialog[open], .settings-screen:not([hidden])")) return;
+    returnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     search = "";
+    filter = nextFilter;
     finder.showModal();
     await tick();
     searchInput.focus();
@@ -43,132 +46,120 @@
     onSelect(id);
   }
   function searchKeys(event: KeyboardEvent) {
-    if (event.key === "Enter" && matches[0]) { event.preventDefault(); openResult(matches[0].id); }
-    if (event.key === "ArrowDown") { event.preventDefault(); finder.querySelector<HTMLButtonElement>(".search-result")?.focus(); }
+    if (event.key === "Enter" && matches[0] && filter !== "archived") { event.preventDefault(); openResult(matches[0].id); }
+    if (event.key === "ArrowDown") { event.preventDefault(); finder.querySelector<HTMLButtonElement>(".search-result, .restore")?.focus(); }
+  }
+  function threadIcon(thread: Thread): IconName {
+    if (thread.status === "failed") return "alert";
+    if (thread.status.endsWith("running")) return "progress";
+    if (thread.status === "problems-ready") return "research";
+    if (thread.status === "solutions-ready") return "ideas";
+    return "brief";
   }
 </script>
 
 <svelte:window onkeydown={(event) => { if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k") { event.preventDefault(); void showFinder(); } }} />
-<aside class="sidebar">
-  <div class="brand"><div class="brand-symbol"><BrandMark size={36} /></div><span>Scraply</span></div>
-  <button class="new" aria-label="Create new research thread" disabled={busy} onclick={onNew}><Icon name="plus" size={17} />New research</button>
-  <button bind:this={searchTrigger} class="find" onclick={showFinder}><Icon name="search" size={16} /><span>Find research</span><kbd>Ctrl K</kbd></button>
-  <div class="list-head"><span>Your research</span><span>{threads.length}</span></div>
-  <div class="list" role="list" aria-label="Research threads">
-    {#each threads as thread (thread.id)}
-      <div class="thread-row" class:active={thread.id === activeThreadId} role="listitem">
-        <button
-          class="thread"
-          aria-current={thread.id === activeThreadId ? "true" : undefined}
-          aria-label={`Open thread ${thread.title}`}
-          disabled={busy}
-          onclick={() => onSelect(thread.id)}
-        >
-          <span class="title"><span>{thread.title}</span></span>
-          <span class="meta" data-tone={statusTone(thread.status)}>
-            <Icon name={thread.status === "failed" ? "alert" : thread.status.endsWith("running") ? "progress" : thread.status === "configuring" ? "brief" : "check"} size={11} />{statusLabel(thread.status)}
-          </span>
-        </button>
-        <button
-          class="delete"
-          class:busy={deletingThreadId === thread.id}
-          title="Archive research"
-          aria-label={`Archive research ${thread.title}`}
-          disabled={busy || deletingThreadId !== null}
-          onclick={() => onArchive(thread.id)}
-        >
-          {#if deletingThreadId === thread.id}
-            <span class="spinner" aria-hidden="true"></span>
-          {:else}
-            <Icon name="archive" size={16} />
-          {/if}
-        </button>
-      </div>
-    {:else}
-      <p class="empty">No threads yet</p>
-    {/each}
+<aside class="sidebar" aria-label="Research navigation" hidden={!visible}>
+  <div class="brand"><BrandMark size={27} /><span>Scraply</span></div>
+  <button class="new" aria-label="Create new research thread" disabled={busy} onclick={onNew}><Icon name="plus" size={18} />New research</button>
+  <button bind:this={searchTrigger} class="find" aria-label="All research" onclick={() => showFinder()}><Icon name="search" size={18} /><span>All research</span><kbd aria-hidden="true">Ctrl K</kbd></button>
+  <div class="recent">
+    <div class="list-head">Recent research</div>
+    <div class="list" role="list" aria-label="Research threads">
+      {#each recentThreads as thread (thread.id)}
+        <div class="thread-row" class:active={thread.id === activeThreadId} role="listitem">
+          <button class="thread" aria-current={thread.id === activeThreadId ? "true" : undefined} aria-label={`Open thread ${thread.title}`} aria-describedby={`thread-status-${thread.id}`} title={`${thread.title} · ${statusLabel(thread.status)}`} disabled={busy} onclick={() => onSelect(thread.id)}>
+            <span class="status-icon" data-tone={statusTone(thread.status)} aria-hidden="true"><Icon name={threadIcon(thread)} size={16} /></span>
+            <span class="title">{thread.title}</span><span class="sr-only" id={`thread-status-${thread.id}`}>{statusLabel(thread.status)}</span>
+          </button>
+          <button class="archive" title="Archive research" aria-label={`Archive research ${thread.title}`} disabled={busy || deletingThreadId !== null} onclick={() => onArchive(thread.id)}><Icon name={deletingThreadId === thread.id ? "progress" : "archive"} size={15} /></button>
+        </div>
+      {:else}<p class="empty">No research yet.</p>{/each}
+    </div>
+    {#if attentionThreads.length}<button class="attention-link" aria-label={`Running & attention ${attentionThreads.length}`} onclick={() => showFinder("attention")}><Icon name="progress" size={16} /><span>Running & attention</span><span>{attentionThreads.length}</span></button>{/if}
   </div>
   <div class="footer">{@render settingsControl()}</div>
 </aside>
 
-<dialog bind:this={finder} class="finder" aria-label="Find research" onclose={() => searchTrigger.focus()}>
-  <div class="search-heading"><Icon name="search" size={20} /><input bind:this={searchInput} bind:value={search} aria-label="Search research" placeholder="Find a research project..." onkeydown={searchKeys} /><button aria-label="Close search" onclick={() => finder.close()}><kbd>Esc</kbd></button></div>
+<dialog bind:this={finder} class="finder" aria-label="All research" onclose={() => (returnFocus?.isConnected ? returnFocus : searchTrigger)?.focus({ preventScroll: true })}>
+  <header><h2>All research</h2><button aria-label="Close search" onclick={() => finder.close()}><Icon name="close" /></button></header>
+  <div class="search-heading"><Icon name="search" size={18} /><input bind:this={searchInput} bind:value={search} aria-label="Search research" placeholder="Search research by name" onkeydown={searchKeys} /></div>
+  <nav aria-label="Research filters">
+    <button aria-pressed={filter === "all"} onclick={() => filter = "all"}>All</button>
+    <button aria-pressed={filter === "attention"} onclick={() => filter = "attention"}>Running & attention</button>
+    <button aria-pressed={filter === "archived"} onclick={() => filter = "archived"}>Archived</button>
+  </nav>
   <div class="search-results">
-    <p>{search ? `${matches.length} results` : "Your research"}</p>
+    <p>{matches.length} {matches.length === 1 ? "result" : "results"}</p>
     {#each matches as thread (thread.id)}
-      <button class="search-result" disabled={busy} onclick={() => openResult(thread.id)}><Icon name="research" /><span><strong>{thread.title}</strong><small>{statusLabel(thread.status)}</small></span><Icon name="arrow" size={15} /></button>
-    {:else}<div class="no-results">No research found.{#if search} Try a different name.{/if}</div>{/each}
+      <div class="result-row">
+        {#if filter === "archived"}
+          <div class="archived-result"><strong>{thread.title}</strong><small>Archived · {statusLabel(thread.status)}</small></div>
+          <button class="restore" disabled={busy} aria-label={`Restore ${thread.title}`} onclick={() => onRestore(thread.id)}>Restore</button>
+        {:else}
+          <button class="search-result" disabled={busy} onclick={() => openResult(thread.id)}><Icon name={threadIcon(thread)} /><span><strong>{thread.title}</strong><small>{statusLabel(thread.status)}</small></span></button>
+          <button class="archive" disabled={busy || deletingThreadId !== null} aria-label={`Archive research ${thread.title}`} onclick={() => onArchive(thread.id)}><Icon name="archive" size={16} /></button>
+        {/if}
+      </div>
+    {:else}<div class="no-results">{filter === "archived" ? "No archived research found." : filter === "attention" ? "Nothing running or needing attention." : "No research found."}{#if search} Try a different name.{/if}</div>{/each}
   </div>
-  <footer><span>Type to search</span><span>Enter to open</span><span>Tab to navigate</span></footer>
+  <footer><span>Enter to open</span><span>Esc to close</span></footer>
 </dialog>
-<style>
-  .sidebar { display:grid;grid-template-rows:auto auto auto auto minmax(0,1fr) auto;gap:5px;padding:6px 12px 8px;background:#000;min-height:0; }
-  .brand { display:flex;align-items:center;gap:10px;padding:4px 8px 16px;font-size:26px;font-weight:700;letter-spacing:-.04em; }
-  .brand-symbol { color:var(--accent-strong); }
-  .new,.find { width:100%;display:flex;align-items:center;gap:10px;border:0;border-radius:7px;padding:8px 12px;min-height:36px;font-size:13px;font-weight:500;transition:background 180ms ease,color 180ms ease; }
-  .new { border:1px solid #71cfba28;background:#71cfba0c;color:var(--accent-strong); }
-  .new:hover:not(:disabled) { background:#71cfba18;border-color:#71cfba55; }
-  .find { border:0;background:transparent;color:var(--muted); }
-  .find:hover { background:var(--surface-2);color:var(--text); }
-  .find kbd { margin-left:auto;border:0;background:transparent;padding:0;font-size:13px;color:#727b75; }
-  .new :global(svg),.find :global(svg) { flex:none;width:16px;height:16px;color:#b2bbb5; }
-  kbd { padding:2px 4px;border:1px solid var(--border);border-radius:4px;font:10px var(--sans);color:var(--subtle);white-space:nowrap; }
-  .list-head { display:flex;justify-content:space-between;padding:12px 12px 6px;color:var(--subtle);font-size:13px;font-weight:550; }
-  .list { min-height:0;overflow-y:auto;overflow-x:hidden;display:grid;gap:4px;align-content:start;padding:0 4px 12px 0;scroll-padding-block:8px;scrollbar-gutter:stable; }
-  .thread-row { position:relative;display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;border:1px solid transparent;border-radius:10px; }
-  .thread-row:hover { background:#ffffff04; }
-  .thread-row.active { background:var(--surface-2);border-color:#ffffff06; }
-  .thread { text-align:left;border:0;background:transparent;color:var(--muted);padding:13px 10px;display:grid;gap:7px;min-width:0;border-radius:9px; }
-  .active .thread { color:var(--text); }
-  .title { display:flex;align-items:center;gap:8px;min-width:0;font-size:13px;font-weight:500; }
-  .title :global(svg) { flex:none;color:var(--subtle); }
-  .title > span { overflow:hidden;text-overflow:ellipsis;white-space:nowrap; }
-  .meta { display:flex;align-items:center;gap:6px;padding-left:22px;color:var(--subtle);font-size:13px; }
-  .delete { border:0;background:transparent;color:var(--muted);display:grid;width:26px;height:30px;place-items:center;padding:0;margin-right:4px;border-radius:6px;opacity:0; }
-  .thread-row:hover .delete,.thread-row:focus-within .delete,.delete.busy { opacity:1; }
-  .delete:hover { color:var(--danger);background:#df929215; }
-  .spinner { width:12px;height:12px;border:1.5px solid var(--border);border-top-color:var(--muted);border-radius:50%;animation:spin 700ms linear infinite; }
-  .empty { color:var(--subtle);padding:10px 12px;font-size:13px; }
-  .footer { padding:8px 0 0;border-top:1px solid var(--border); }
-  .finder { width:min(580px,calc(100vw - 40px));max-height:70vh;margin:14vh auto auto;padding:0;border:1px solid var(--border-strong);border-radius:18px;background:var(--bg);color:var(--text);box-shadow:0 28px 100px #000a; }
-  .finder[open] { animation:search-open 200ms var(--ease); }
-  .finder::backdrop { background:#0008;backdrop-filter:blur(5px); }
-  .search-heading { display:flex;align-items:center;gap:14px;padding:22px;border-bottom:1px solid var(--border);color:var(--muted); }
-  .search-heading input { flex:1;min-width:0;border:0;background:transparent;box-shadow:none;color:var(--text);outline:none;font-size:15px; }
-  .search-heading button { border:0;background:transparent; }
-  .search-results { max-height:45vh;overflow:auto;padding:10px; }
-  .search-results > p { padding:0 12px;font-size:13px;color:var(--subtle); }
-  .search-result { width:100%;display:flex;align-items:center;gap:14px;border:0;border-radius:10px;background:transparent;padding:14px 12px;text-align:left;color:var(--text); }
-  .search-result:hover,.search-result:focus-visible { background:var(--surface-2); }
-  .search-result > span { flex:1;display:grid;gap:5px;min-width:0; }
-  .search-result strong { font-size:13px;font-weight:550;overflow-wrap:anywhere; }
-  .search-result small { color:var(--subtle);font-size:13px; }
-  .search-result :global(svg) { flex:none;color:var(--muted); }
-  .no-results { padding:28px 12px;color:var(--muted);font-size:13px; }
-  .finder footer { display:flex;gap:20px;padding:14px 22px;border-top:1px solid var(--border);color:var(--subtle);font-size:13px; }
-  @keyframes search-open { from { opacity:0;transform:scale(.97) translateY(-8px); }to { opacity:1;transform:none; } }
-  @keyframes spin { to { transform:rotate(360deg); } }
-  @keyframes pulse { to { opacity:.3; } }
-  @media(max-width:720px) { .sidebar { padding-inline:10px; }.find kbd { display:none; }.brand { padding-inline:6px;font-size:16px; } }
 
-  .thread .meta { display:inline-flex;align-items:center;gap:5px;width:fit-content;margin:9px 0 0;padding:3px 7px;border:1px solid #3a403d;border-radius:5px;color:#c0c7c3;font-size:13px;line-height:1.2;background:#181b19; }
-  .thread .meta[data-tone="done"] { color:#59ffc0;border-color:#21744f;background:#0c3021; }
-  .thread .meta[data-tone="active"] { color:#80d5ff;border-color:#286383;background:#0d2939; }
-  .thread .meta[data-tone="attention"] { color:#ffc977;border-color:#805725;background:#32220e; }
-  .thread-row.active { background:#102a1e;border-color:#2b8b5c; }
-  .thread .title { font-size:13px;font-weight:550;line-height:1.4; }
-  .delete:hover:not(:disabled) { color:var(--text);background:var(--surface-2); }
-  .thread-row { border-color:transparent;border-radius:7px;transition:background 220ms ease,border-color 220ms ease; }
-  .thread-row:hover { background:#151817; }
-  .thread-row.active { background:#1b211e;border-color:#303a34; }
-  .thread-row.active:hover { background:#222a25; }
-  .thread { padding:10px 12px;gap:0; }
-  .thread .title { font-size:13px;line-height:1.3;font-weight:500; }
-  .thread .meta { margin-top:5px;padding:0;border:0;background:transparent;font-size:13px;gap:5px; }
-  .thread .meta[data-tone="done"] { background:transparent;border:0;color:#87b99c; }
-  .thread .meta[data-tone="attention"] { background:transparent;border:0;color:#c8ad83; }
-  .thread .meta[data-tone="active"] { background:transparent;border:0;color:#91b3c5; }
-  .list { gap:2px; }
-  .list::-webkit-scrollbar { width:5px; }.list::-webkit-scrollbar-button { display:none;height:0; }.list::-webkit-scrollbar-thumb { border:0;border-radius:6px;background:#343b37; }
-  .new { color:var(--text);background:#141815;border:0; }.new:hover:not(:disabled),.find:hover { background:#202622;border-color:transparent; }
+<style>
+  .sidebar { display:flex;flex-direction:column;gap:6px;padding:14px 12px 8px;background:var(--navigation);min-height:0;overflow:auto;scroll-padding-block:12px; }
+  .sidebar[hidden] { display:none; }
+  .sidebar > * { flex-shrink:0; }
+  .brand { display:flex;align-items:center;gap:10px;padding:4px 10px 18px;font-size:22px;font-weight:650;letter-spacing:-.6px; }
+  .brand :global(svg) { color:var(--accent-strong);flex:none; }
+  button { color:var(--text);font-size:14px; }
+  .new,.find,.attention-link { width:100%;display:flex;align-items:center;gap:10px;border:0;border-radius:7px;padding:10px;min-height:42px;font-weight:500;text-align:left; }
+  .new { background:#17231d;color:var(--accent-strong); }
+  .find,.attention-link { background:none;color:var(--muted); }
+  .find kbd,.attention-link > span:last-child { margin-left:auto;font:12px var(--sans);color:var(--muted); }
+  .new:hover:not(:disabled),.find:hover,.attention-link:hover { background:var(--surface-2);color:var(--text); }
+  .new :global(svg),.find :global(svg),.attention-link :global(svg) { flex:none; }
+  .recent { padding-top:14px; }
+  .list-head { padding:6px 10px 10px;color:var(--subtle);font-size:13px; }
+  .list { display:grid;gap:3px; }
+  .thread-row { display:grid;grid-template-columns:minmax(0,1fr) 32px;align-items:start;border-radius:7px; }
+  .thread-row:hover { background:#ffffff07; }
+  .thread-row.active { background:#18251e; }
+  .thread { display:flex;align-items:center;gap:9px;min-height:40px;padding:10px 4px 10px 10px;min-width:0;text-align:left;border:0;border-radius:7px;background:none;color:var(--muted); }
+  .active .thread { color:var(--text); }
+  .title { min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;line-height:1.45; }
+  .thread:hover .title,.thread:focus-visible .title { white-space:normal;overflow-wrap:anywhere; }
+  .status-icon { flex:none;display:flex;color:var(--muted); }
+  .status-icon[data-tone="attention"] { color:#e9bd7a; }.status-icon[data-tone="active"] { color:var(--accent); }
+  .archive { display:grid;place-items:center;width:32px;min-height:40px;padding:0;border:0;border-radius:6px;background:none;color:var(--subtle); }
+  .archive:hover:not(:disabled) { color:var(--text);background:var(--surface-2); }
+  .attention-link { margin-top:12px;font-size:13px; }
+  .footer { margin-top:auto;padding-top:18px; }
+  .empty { margin:0;padding:10px;color:var(--muted);font-size:14px; }
+  .sr-only { position:absolute;width:1px;height:1px;padding:0;overflow:hidden;clip-path:inset(50%);white-space:nowrap; }
+  .finder { width:min(680px,calc(100vw - 32px));max-height:calc(100dvh - 48px);padding:0;margin:auto;border:1px solid var(--border-strong);border-radius:12px;background:var(--bg);color:var(--text); }
+  .finder[open] { display:flex;flex-direction:column; }
+  .finder::backdrop { background:#000b; }
+  .finder header { display:flex;align-items:center;justify-content:space-between;padding:20px 24px 12px; }
+  h2 { margin:0;font-size:22px; }
+  .finder header button { display:grid;place-items:center;width:40px;height:40px;border:0;background:none;color:var(--muted);border-radius:7px; }
+  .search-heading { display:flex;align-items:center;gap:12px;margin:0 24px 16px;padding:0 12px;border:1px solid var(--border-strong);border-radius:7px;background:var(--surface);color:var(--muted); }
+  .search-heading input { flex:1;min-width:0;min-height:44px;border:0;background:none;color:var(--text);font-size:15px; }
+  .finder nav { display:flex;flex-wrap:wrap;gap:4px;padding:0 24px 12px;border-bottom:1px solid var(--border); }
+  .finder nav button { min-height:36px;padding:6px 12px;border:0;border-radius:6px;background:none;color:var(--muted);font-size:13px; }
+  .finder nav button[aria-pressed="true"] { background:#101c17;color:var(--accent-strong); }
+  .search-results { min-height:0;overflow:auto;padding:12px 16px; }
+  .search-results > p { margin:0;padding:0 8px 10px;font-size:13px;color:var(--muted); }
+  .result-row { display:flex;align-items:center;gap:8px;border-radius:8px; }
+  .result-row:hover { background:var(--surface); }
+  .search-result { flex:1;min-width:0;display:flex;align-items:center;gap:12px;padding:12px 8px;border:0;border-radius:7px;background:none;text-align:left; }
+  .search-result > span,.archived-result { display:grid;gap:5px;min-width:0; }
+  .search-result :global(svg) { flex:none;color:var(--muted); }
+  .search-result strong,.archived-result strong { font-size:14px;font-weight:500;overflow-wrap:anywhere; }
+  .search-result small,.archived-result small { color:var(--muted);font-size:13px; }
+  .archived-result { flex:1;padding:12px 8px; }
+  .restore { min-height:40px;padding:8px 12px;border:1px solid var(--border-strong);border-radius:7px;background:var(--surface); }
+  .no-results { padding:24px 8px;color:var(--muted);font-size:14px; }
+  .finder footer { display:flex;gap:20px;padding:14px 24px;border-top:1px solid var(--border);color:var(--muted);font-size:13px; }
+  @media(max-width:420px) { .finder header { padding:12px 16px; }.search-heading { margin-inline:16px; }.finder nav { padding-inline:12px; } }
 </style>
