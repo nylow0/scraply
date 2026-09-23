@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { ScopeSchema, WorkflowV2CompatibleDecisionAnalysisOutputSchema, WorkflowV2RiskEvaluationOutputSchema, WorkflowV2RiskReassessmentOutputSchema } from "./structured-output-schemas";
+import { ProblemBriefFitSchema, ProblemContraryEvidenceSchema, ScopeSchema, WorkflowV2CompatibleDecisionAnalysisOutputSchema, WorkflowV2RiskEvaluationOutputSchema, WorkflowV2RiskReassessmentOutputSchema } from "./structured-output-schemas";
 import {
   MessageSchema,
   ModelCatalogSchema,
@@ -15,6 +15,7 @@ import { OPENAI_SUBSCRIPTION_PROVIDER_ID } from "./schemas";
 import { OpportunityFamiliesViewSchema, OpportunityMembershipCommandSchema } from "./opportunity-review";
 import { FocusedExperimentRecordSchema, FocusedDemandTestSchema } from "./focused-experiment";
 import { OpportunityExplorationProgressSchema, OpportunityExplorationStatusSchema, OpportunityBudgetExtensionSchema, OpportunityBudgetExtensionPreviewSchema, OpportunityCandidateOriginSchema } from "./opportunity-exploration";
+import { WorkflowSummarySchema } from "./workflow-contracts";
 
 const EntityIdSchema = z.string().trim().min(1).max(128);
 const ShortTextSchema = z.string().trim().min(1).max(256);
@@ -22,11 +23,14 @@ const ShortTextSchema = z.string().trim().min(1).max(256);
 export const AppErrorCodeSchema = z.enum([
   "validation_error", "unauthorized", "not_found", "conflict", "provider_timeout",
   "backend_unavailable", "secure_storage_unavailable", "internal_error",
+  "PROJECT_BUSY", "REVISION_CONFLICT", "MODEL_UNAVAILABLE", "BUDGET_TOO_SMALL",
+  "INVALID_REFERENCE", "UNKNOWN_COMPLETION", "IDEMPOTENCY_CONFLICT", "PREVIEW_STALE",
 ]);
 export const AppErrorPayloadSchema = z.object({
   code: AppErrorCodeSchema,
   message: z.string().min(1).max(512),
   reference: z.string().min(1).max(128).optional(),
+  recovery: z.record(z.string(), z.unknown()).optional(),
 });
 export const ApiErrorResponseSchema = z.object({ ok: z.literal(false), error: AppErrorPayloadSchema });
 export function ApiResponseSchema<T extends z.ZodTypeAny>(dataSchema: T) {
@@ -157,6 +161,8 @@ export const ProblemCandidateSchema = z.object({
   verdict: z.enum(["confirmed", "overstated", "already-solved", "insufficient-evidence", "attempted-and-failed", "user-asserted"]),
   verdictReason: z.string(), selected: z.boolean(), factors: z.array(FactorViewSchema),
   intendedBuyerEvidenceFactorIds: z.array(EntityIdSchema), evidenceGap: z.string().nullable(),
+  briefFit: ProblemBriefFitSchema.optional(), contraryEvidence: ProblemContraryEvidenceSchema.optional(),
+  workflowKey: z.string().trim().min(1).max(160).optional(),
   singleHarvestModeWarning: z.boolean(), developmentCompleted: z.boolean(),
 });
 export const RejectedProblemCandidateSchema = z.object({
@@ -249,6 +255,43 @@ export const LatestResearchRunSchema = z.object({
   queuePosition: PendingRunSchema.shape.queuePosition,
 });
 
+export const ResearchFindingViewSchema = z.object({
+  id: EntityIdSchema,
+  statement: z.string(),
+  verdict: z.string(),
+  verdictReason: z.string(),
+  evidenceGap: z.string().nullable(),
+  supportingSources: z.array(z.object({ id: EntityIdSchema, title: z.string(), url: z.string() })),
+  verdictSources: z.array(z.object({ id: EntityIdSchema, title: z.string(), url: z.string() })),
+});
+
+export const ResearchAngleViewSchema = z.object({
+  id: EntityIdSchema,
+  name: z.string(),
+  sourceClass: z.enum(["firsthand-experience", "measured-behavior", "current-alternative",
+    "buying-signal", "contrary-evidence", "saved-evidence"]),
+  acceptanceCriterion: z.string(),
+  status: z.enum(["planned", "running", "completed", "failed", "omitted"]),
+  query: z.string().optional(),
+  sourceCount: z.number().int().nonnegative().optional(),
+  sources: z.array(z.object({ title: z.string(), url: z.string().url() })).optional(),
+  gap: z.string().optional(),
+});
+
+export const ResearchRequestViewSchema = z.object({
+  id: EntityIdSchema,
+  kind: z.enum(["new-question", "redo", "reevaluate"]),
+  question: z.string(),
+  status: z.enum(["queued", "running", "completed", "failed", "cancelled"]),
+  targetFindingId: EntityIdSchema.optional(),
+  previousFinding: ResearchFindingViewSchema.optional(),
+  resultFindings: z.array(ResearchFindingViewSchema),
+  angles: z.array(ResearchAngleViewSchema).optional(),
+  archived: z.boolean().optional(),
+  appliedSnapshotId: EntityIdSchema.optional(),
+  error: z.string().optional(),
+});
+
 export const WorkspaceStateSchema = z.object({
   validation: ValidationStateSchema,
   threads: z.array(ThreadSchema), activeThreadId: z.string().nullable(), messages: z.array(MessageSchema),
@@ -261,9 +304,13 @@ export const WorkspaceStateSchema = z.object({
   opportunityExploration: OpportunityExplorationProgressSchema.nullable().optional(),
   opportunityReviewStatus: z.object({ running: z.boolean(), kind: z.enum(["review", "exploration", "experiment"]).nullable(), error: z.string().nullable() }).optional(),
   latestResearchRun: LatestResearchRunSchema.nullable(), pendingRuns: z.array(PendingRunSchema),
+  activeWorkflow: WorkflowSummarySchema.nullable().optional(),
+  researchRequests: z.array(ResearchRequestViewSchema),
+  researchFindings: z.array(ResearchFindingViewSchema),
 });
 
 export const ResearchEventSchema = z.discriminatedUnion("type", [
+  z.object({ type: z.literal("workflow-progress"), sessionId: EntityIdSchema, threadId: EntityIdSchema, revision: z.number().int().nonnegative(), state: WorkflowSummarySchema.shape.state, outcome: WorkflowSummarySchema.shape.outcome, changedTaskIds: z.array(EntityIdSchema), counts: WorkflowSummarySchema.shape.counts }),
   z.object({ type: z.literal("opportunity-progress"), threadId: EntityIdSchema, status: z.union([OpportunityExplorationStatusSchema, z.literal("reviewing-saved"), z.literal("planning-experiment")]), error: z.string().optional() }),
   z.object({ type: z.literal("run-started"), runId: EntityIdSchema, threadId: EntityIdSchema, problemId: EntityIdSchema.nullable() }),
   z.object({ type: z.literal("run-progress"), runId: EntityIdSchema, threadId: EntityIdSchema, message: z.string(), codexCalls: z.number().int(), searches: z.number().int(), usage: RunUsageSchema.optional(),
@@ -295,6 +342,10 @@ export type SolutionView = z.infer<typeof SolutionViewSchema>;
 export type RunUsage = z.infer<typeof RunUsageSchema>;
 
 export const IPC_CHANNELS = {
+  PREVIEW_WORKFLOW: "scraply:preview-workflow", START_WORKFLOW: "scraply:start-workflow",
+  GET_WORKFLOW: "scraply:get-workflow", COMMAND_WORKFLOW: "scraply:command-workflow",
+  GET_IDEA_CONVERSATION: "scraply:get-idea-conversation", SUBMIT_IDEA_TURN: "scraply:submit-idea-turn",
+  SELECT_IDEA_VERSION: "scraply:select-idea-version",
   APP_COMMAND: "scraply:app-command", SHOW_APP_MENU: "scraply:show-app-menu", DISCARD_IDEA: "scraply:discard-idea",
   SELECT_OPTION: "scraply:select-option", SAVE_DECISION: "scraply:save-decision", EVIDENCE_FOLLOW_UP: "scraply:evidence-follow-up",
   EVIDENCE_REASSESSMENT: "scraply:evidence-reassessment",

@@ -22,6 +22,143 @@ export interface OpportunityPlanningInput {
   elapsedMinutes: number;
 }
 
+export interface IdeaTargetAllocationInput {
+  /** Selected problem IDs in saved evidence-rank order. */
+  problemIds: string[];
+  target: number;
+  maxPerProblem?: number;
+}
+
+export interface IdeaTargetAllocation {
+  allocations: Array<{ problemId: string; quota: number }>;
+  unassignedCount: number;
+  reason: string | null;
+}
+
+/** Assigns distinct idea slots once per problem, then round-robin in saved rank order. */
+export function allocateIdeaTargets(input: IdeaTargetAllocationInput): IdeaTargetAllocation {
+  const maxPerProblem = input.maxPerProblem ?? 20;
+  if (!Number.isSafeInteger(input.target) || input.target < 1) {
+    throw new Error("The idea target must be a positive whole number.");
+  }
+  if (!Number.isSafeInteger(maxPerProblem) || maxPerProblem < 1 || maxPerProblem > 20) {
+    throw new Error("The per-problem idea limit must be a whole number from 1 to 20.");
+  }
+  if (input.problemIds.some((id) => !id.trim() || id !== id.trim()) || new Set(input.problemIds).size !== input.problemIds.length) {
+    throw new Error("Selected problem IDs must be nonempty and distinct.");
+  }
+
+  const allocations = input.problemIds.map((problemId) => ({ problemId, quota: 0 }));
+  let unassignedCount = input.target;
+  while (unassignedCount > 0) {
+    let assignedThisPass = 0;
+    for (const allocation of allocations) {
+      if (unassignedCount === 0) break;
+      if (allocation.quota >= maxPerProblem) continue;
+      allocation.quota += 1;
+      unassignedCount -= 1;
+      assignedThisPass += 1;
+    }
+    if (assignedThisPass === 0) break;
+  }
+
+  return {
+    allocations,
+    unassignedCount,
+    reason: unassignedCount > 0
+      ? `The selected problems can accept at most ${allocations.length * maxPerProblem} distinct ideas; ${unassignedCount} target ${unassignedCount === 1 ? "slot" : "slots"} cannot be assigned.`
+      : null,
+  };
+}
+
+export interface IdeaFillInput {
+  acceptedDistinct: number;
+  target: number;
+  rawCandidateCap: number;
+  rawCandidatesUsed: number;
+  /** Completed fill rounds; the current round is not counted until its review finishes. */
+  fillRoundsUsed: number;
+  lastRoundAcceptedGain: number | null;
+  /** Eligible coverage gaps in saved priority order. */
+  namedGapIds: string[];
+  remainingModelCalls?: number;
+  remainingMs?: number;
+}
+
+export type IdeaFillDecision =
+  | { kind: "generate"; gapId: string; quota: number; round: number; deficit: number; reason: string }
+  | {
+      kind: "terminal";
+      stop: "target-met" | "time-budget" | "raw-cap" | "model-budget" | "no-gain" | "round-limit" | "no-useful-gap";
+      reason: string;
+    };
+
+/** Uses only reviewed, distinct ideas to choose one bounded fill batch. */
+export function planIdeaFill(input: IdeaFillInput): IdeaFillDecision {
+  for (const [name, value] of [
+    ["accepted distinct count", input.acceptedDistinct],
+    ["idea target", input.target],
+    ["raw candidate cap", input.rawCandidateCap],
+    ["raw candidates used", input.rawCandidatesUsed],
+    ["completed fill rounds", input.fillRoundsUsed],
+  ] as const) {
+    if (!Number.isSafeInteger(value) || value < (name === "idea target" ? 1 : 0)) {
+      throw new Error(`The ${name} must be a valid nonnegative whole number${name === "idea target" ? " above zero" : ""}.`);
+    }
+  }
+  if (input.fillRoundsUsed > 2) throw new Error("At most two fill rounds are allowed.");
+  if (input.lastRoundAcceptedGain !== null
+    && (!Number.isSafeInteger(input.lastRoundAcceptedGain) || input.lastRoundAcceptedGain < 0)) {
+    throw new Error("The last fill round gain must be a nonnegative whole number or null.");
+  }
+  if (input.remainingModelCalls !== undefined
+    && (!Number.isSafeInteger(input.remainingModelCalls) || input.remainingModelCalls < 0)) {
+    throw new Error("Remaining model calls must be a nonnegative whole number.");
+  }
+  if (input.remainingMs !== undefined && !Number.isFinite(input.remainingMs)) {
+    throw new Error("Remaining time must be a finite number of milliseconds.");
+  }
+  if (input.namedGapIds.some((id) => !id.trim() || id !== id.trim())
+    || new Set(input.namedGapIds).size !== input.namedGapIds.length) {
+    throw new Error("Named gap IDs must be nonempty and distinct.");
+  }
+
+  if (input.acceptedDistinct >= input.target) {
+    return { kind: "terminal", stop: "target-met", reason: `${input.acceptedDistinct} distinct ideas meet the target of ${input.target}.` };
+  }
+  if (input.remainingMs !== undefined && input.remainingMs <= 0) {
+    return { kind: "terminal", stop: "time-budget", reason: "The project time budget is exhausted." };
+  }
+  const rawRemaining = Math.max(0, input.rawCandidateCap - input.rawCandidatesUsed);
+  if (rawRemaining === 0) {
+    return { kind: "terminal", stop: "raw-cap", reason: `The raw candidate cap of ${input.rawCandidateCap} is exhausted.` };
+  }
+  if (input.remainingModelCalls !== undefined && input.remainingModelCalls < 2) {
+    return { kind: "terminal", stop: "model-budget", reason: "A new idea batch needs four available model calls to reserve generation, review, and possible schema corrections." };
+  }
+  if (input.lastRoundAcceptedGain === 0) {
+    return { kind: "terminal", stop: "no-gain", reason: "The last reviewed fill round added no distinct idea." };
+  }
+  if (input.fillRoundsUsed >= 2) {
+    return { kind: "terminal", stop: "round-limit", reason: "Two fill rounds finished without reaching the distinct idea target." };
+  }
+  const gapId = input.namedGapIds[0];
+  if (!gapId) {
+    return { kind: "terminal", stop: "no-useful-gap", reason: "No named coverage gap remains for a targeted fill batch." };
+  }
+
+  const deficit = input.target - input.acceptedDistinct;
+  const quota = Math.min(5, deficit, rawRemaining);
+  return {
+    kind: "generate",
+    gapId,
+    quota,
+    round: input.fillRoundsUsed + 1,
+    deficit,
+    reason: `Request ${quota} candidates for named gap "${gapId}", then review and recount distinct ideas.`,
+  };
+}
+
 /**
  * Chooses one bounded coordinator action. It never infers semantic coverage or family membership.
  * Those judgments must already be persisted by the review stages supplied in progress.
@@ -94,6 +231,12 @@ export function planOpportunityStep(input: OpportunityPlanningInput): Opportunit
     return budgetStop(progress, `The model-call limit of ${config.maxModelCalls} is exhausted.`);
   }
 
+  // Every new generation needs a separate collection review before it can earn target credit.
+  const modelCallsRemaining = config.maxModelCalls - progress.usage.modelCalls;
+  if (modelCallsRemaining < 2) {
+    return budgetStop(progress, `Only ${modelCallsRemaining} model call remains, but generation and review need at least 2.`);
+  }
+
   const lastReviewed = [...progress.batches].reverse().find((batch) => batch.status === "reviewed");
   if (lastReviewed && lastReviewed.acceptedFamiliesAfter === lastReviewed.acceptedFamiliesBefore) {
     return {
@@ -107,6 +250,9 @@ export function planOpportunityStep(input: OpportunityPlanningInput): Opportunit
   if (availableGaps.length === 0) {
     if (progress.usage.expansionRounds >= config.maxExpansionRounds) {
       return budgetStop(progress, `The expansion limit of ${config.maxExpansionRounds} rounds is exhausted.`);
+    }
+    if (modelCallsRemaining < 3) {
+      return budgetStop(progress, `Only ${modelCallsRemaining} model calls remain, but coverage mapping, generation, and review need at least 3.`);
     }
     return { kind: "map-coverage", reason: "Review the saved inventory and name a concrete coverage gap before expanding it." };
   }
@@ -146,6 +292,9 @@ export function planOpportunityStep(input: OpportunityPlanningInput): Opportunit
   }
 
   if (gap.status === "named") {
+    if (modelCallsRemaining < 3) {
+      return budgetStop(progress, `Only ${modelCallsRemaining} model calls remain, but coverage mapping, generation, and review need at least 3.`);
+    }
     return {
       kind: "map-coverage",
       reason: `Coverage gap "${gap.name}" must be marked ready or given a bounded evidence request before generation.`,
@@ -153,10 +302,8 @@ export function planOpportunityStep(input: OpportunityPlanningInput): Opportunit
   }
 
   const rawCapacity = config.maxRawCandidates - progress.usage.rawCandidates;
-  if (rawCapacity < 4) {
-    return budgetStop(progress, `Only ${rawCapacity} raw candidate slots remain, fewer than the minimum batch of 4.`);
-  }
-  const candidateCount = Math.min(config.batchSize, rawCapacity, 6);
+  const deficit = config.targetFamilies - progress.counts.acceptedFamilies;
+  const candidateCount = Math.min(config.batchSize, rawCapacity, deficit, 6);
   return {
     kind: "generate-batch",
     gap,
@@ -177,7 +324,7 @@ export function previewOpportunityBudgetExtension(
   });
   const nextGap = progress.gaps.find((gap) => ["named", "search-needed", "ready"].includes(gap.status)) ?? null;
   const needsSearch = nextGap?.status === "search-needed";
-  const estimatedModelCalls = nextGap ? 2 : 1;
+  const estimatedModelCalls = nextGap?.status === "ready" || needsSearch ? 2 : 3;
   const estimatedSearches = needsSearch ? 1 : 0;
   return OpportunityBudgetExtensionPreviewSchema.parse({
     current,
@@ -186,7 +333,7 @@ export function previewOpportunityBudgetExtension(
     estimatedAdditionalCalls: { modelCalls: estimatedModelCalls, searches: estimatedSearches },
     summary: nextGap
       ? `The next bounded attempt covers "${nextGap.name}" with a baseline of ${estimatedModelCalls} model calls${needsSearch ? " and 1 search" : ""}; comparison chunks or one correction can use more within the project cap.`
-      : "No next gap is saved. Extending the budget would first use one model call to map coverage.",
+      : "No next gap is saved. Mapping coverage, generation, and review need a baseline of 3 model calls.",
   });
 }
 

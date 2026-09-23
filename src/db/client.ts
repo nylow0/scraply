@@ -1,17 +1,17 @@
-import { mkdirSync } from "node:fs";
-import { dirname } from "node:path";
+import { randomUUID } from "node:crypto";
+import { mkdirSync, rmSync } from "node:fs";
+import { dirname, resolve } from "node:path";
 import { MIGRATIONS } from "./migrations";
 import { openDatabase, type SqlDatabase } from "./sqlite";
 
 export class DatabaseClient {
   readonly db: SqlDatabase;
+  preMigrationBackupPath: string | null = null;
   private transactionActive = false;
 
-  constructor(dbPath: string) {
+  constructor(private readonly dbPath: string) {
     mkdirSync(dirname(dbPath), { recursive: true });
     this.db = openDatabase(dbPath);
-    this.db.exec("PRAGMA journal_mode = WAL;");
-    this.db.exec("PRAGMA foreign_keys = ON;");
     try {
       this.migrate();
     } catch (error) {
@@ -21,15 +21,29 @@ export class DatabaseClient {
   }
 
   migrate(): void {
+    // Read the old schema before even creating schema_migrations. A WAL-aware SQLite
+    // snapshot is required before the product-rework migrations touch saved data.
+    const existingTables = this.db.prepare(`
+      SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'
+    `).all() as { name: string }[];
+    const hasMigrationTable = existingTables.some((row) => row.name === "schema_migrations");
+    const applied = new Set(hasMigrationTable
+      ? this.db.prepare("SELECT id FROM schema_migrations").all().map((row) => (row as { id: number }).id)
+      : []);
+    const pendingProductMigrations = MIGRATIONS.filter((migration) =>
+      migration.id >= 30 && migration.id <= 33 && !applied.has(migration.id));
+    if (existingTables.length > 0 && pendingProductMigrations.length > 0) {
+      this.preMigrationBackupPath = this.createPreMigrationBackup(Math.max(0, ...applied));
+      console.info(`Pre-migration database backup: ${this.preMigrationBackupPath}`);
+    }
+    this.db.exec("PRAGMA journal_mode = WAL;");
+    this.db.exec("PRAGMA foreign_keys = ON;");
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS schema_migrations (
         id INTEGER PRIMARY KEY,
         applied_at TEXT NOT NULL
       );
     `);
-    const applied = new Set(
-      this.db.prepare("SELECT id FROM schema_migrations").all().map((row) => (row as { id: number }).id),
-    );
     for (const migration of MIGRATIONS) {
       if (applied.has(migration.id)) continue;
       const rebuild = "rebuildReferencedTable" in migration && migration.rebuildReferencedTable;
@@ -56,6 +70,33 @@ export class DatabaseClient {
         this.transactionActive = false;
         if (rebuild) this.db.exec("PRAGMA legacy_alter_table = OFF; PRAGMA foreign_keys = ON;");
       }
+    }
+    if (this.preMigrationBackupPath) {
+      this.setMeta("last_pre_migration_backup_path", this.preMigrationBackupPath);
+    }
+  }
+
+  private createPreMigrationBackup(startingVersion: number): string {
+    const stamp = new Date().toISOString().replace(/[^0-9]/g, "");
+    const backupPath = resolve(`${this.dbPath}.pre-migration-v${startingVersion}-${stamp}-${randomUUID()}.db`);
+    const synchronous = this.db.prepare("PRAGMA synchronous").get() as { synchronous: number };
+    try {
+      // FULL asks SQLite to sync the VACUUM INTO output before the upgrade begins.
+      this.db.exec("PRAGMA synchronous = FULL;");
+      this.db.prepare("VACUUM INTO ?").run(backupPath);
+      const backup = openDatabase(backupPath);
+      try {
+        const check = backup.prepare("PRAGMA quick_check").get() as { quick_check: string };
+        if (check.quick_check !== "ok") throw new Error("Backup failed SQLite quick_check");
+      } finally {
+        backup.close();
+      }
+      return backupPath;
+    } catch (error) {
+      rmSync(backupPath, { force: true });
+      throw new Error(`Database upgrade stopped because its backup failed: ${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      this.db.exec(`PRAGMA synchronous = ${synchronous.synchronous};`);
     }
   }
 

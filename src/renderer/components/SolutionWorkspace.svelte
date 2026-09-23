@@ -1,8 +1,11 @@
 <script lang="ts">
+  import { tick } from "svelte";
   import ResultsToolbar from "./ResultsToolbar.svelte";
   import type { SolutionView } from "../../shared/ipc";
+  import type { IdeaConversation as ConversationView, SubmitIdeaTurnRequest } from "../../shared/workflow-contracts";
   import SolutionListItem from "./SolutionListItem.svelte";
   import DecisionOption from "./DecisionOption.svelte";
+  import IdeaConversation from "./IdeaConversation.svelte";
   import OpportunityFamilies from "./OpportunityFamilies.svelte";
   import type { OpportunityFamiliesView, OpportunityMembershipCommand } from "../../shared/opportunity-review";
   import type { ModelOption, ModelRef, RunConfig } from "../../shared/schemas";
@@ -27,6 +30,14 @@
     onEditMembership,
     onPlanExperiment,
     opportunityReviewRunning = false,
+    conversation = null,
+    conversationLoading = false,
+    conversationError = null,
+    onOpenConversation,
+    onCloseConversation,
+    onSubmitIdeaTurn,
+    onSelectConversationVersion,
+    onLoadMoreConversation,
   }: {
     solutions: SolutionView[];
     busy: boolean;
@@ -47,12 +58,59 @@
     workflowVersion?: 1 | 2 | undefined;
     onEvidenceFollowUp?: ((runId: string, question: string) => Promise<void>) | undefined;
     onEvidenceReassessment?: ((runId: string) => Promise<void>) | undefined;
+    conversation?: ConversationView | null;
+    conversationLoading?: boolean;
+    conversationError?: string | null;
+    onOpenConversation?: (ideaId: string) => Promise<void>;
+    onCloseConversation?: () => void;
+    onSubmitIdeaTurn?: (draft: Omit<SubmitIdeaTurnRequest, "threadId" | "rootSolutionId">) => Promise<void>;
+    onSelectConversationVersion?: (solutionId: string) => Promise<void>;
+    onLoadMoreConversation?: (cursor: string) => Promise<void>;
   } = $props();
 
   let query = $state("");
   let showDiscarded = $state(false);
   let discardedCount = $derived(solutions.filter((idea) => idea.discarded).length);
   let unaddressedOnly = $state(false);
+  let activeConversationId = $state<string | null>(null);
+  let retainedConversation = $state<ConversationView | null>(null);
+  let openingConversation = $state(false);
+  let openError = $state<string | null>(null);
+  let openingButton: HTMLButtonElement | null = null;
+  let openRequest = 0;
+  let conversationMatchesSelection = $derived(
+    !!activeConversationId && !!retainedConversation
+      && retainedConversation.versions.some((version) => version.solutionId === activeConversationId),
+  );
+
+  $effect(() => {
+    if (conversation) retainedConversation = conversation;
+  });
+
+  async function openConversation(event: MouseEvent, ideaId: string) {
+    if (!onOpenConversation) return;
+    if (activeConversationId === null) openingButton = event.currentTarget as HTMLButtonElement;
+    activeConversationId = ideaId;
+    openingConversation = true;
+    openError = null;
+    const request = ++openRequest;
+    try {
+      await onOpenConversation(ideaId);
+    } catch (cause) {
+      if (request === openRequest) openError = cause instanceof Error ? cause.message : "Could not open this conversation.";
+    } finally {
+      if (request === openRequest) openingConversation = false;
+    }
+  }
+
+  function closeConversation() {
+    openRequest += 1;
+    activeConversationId = null;
+    openingConversation = false;
+    openError = null;
+    onCloseConversation?.();
+    void tick().then(() => openingButton?.focus());
+  }
   let hasV2 = $derived(workflowVersion === 2 || solutions.some((idea) => idea.workflowVersion === 2));
   let rankedSolutions = $derived(solutions.map((idea, index) => ({ idea, rank: index + 1 })));
   function matchesQuery(idea: SolutionView): boolean {
@@ -67,7 +125,15 @@
   let matchCount = $derived(visible.filter(({ idea }) => !!idea.discarded === showDiscarded && matchesQuery(idea)).length);
 </script>
 
+<svelte:window onkeydown={(event) => {
+  if (activeConversationId && event.key === "Escape") {
+    event.preventDefault();
+    closeConversation();
+  }
+}} />
+
 <section class="workspace">
+  <div hidden={activeConversationId !== null}>
   <header>
     <div>
       <h1>{solutions.length - discardedCount} {solutions.length - discardedCount === 1 ? "solution" : "solutions"}</h1>
@@ -80,7 +146,7 @@
     </div>
   </header>
 
-  {#if opportunities && onReviewOpportunities && onEditMembership}
+  {#if initialConfig?.explorationPurpose === "startup-opportunities" && opportunities && onReviewOpportunities && onEditMembership}
     <OpportunityFamilies {opportunities} {modelOptions} initialConfig={initialConfig ?? null} busy={busy || analysisBlocked || opportunityReviewRunning} onReview={onReviewOpportunities} onEdit={onEditMembership} />
   {/if}
 
@@ -93,6 +159,9 @@
       {#if item.idea.workflowVersion === 2 && onSelect && onSave}
         <DecisionOption idea={item.idea} busy={busy || opportunityReviewRunning} {analysisBlocked} {onSelect} {onSave} {onOpenSource} {onEvidenceFollowUp} {onEvidenceReassessment} {onPlanExperiment} />
       {:else}<SolutionListItem idea={item.idea} rank={item.rank} {onOpenSource} />{/if}
+      {#if item.idea.workflowVersion === 2 && onOpenConversation}
+        <button class="explore-button" aria-label={`Explore idea: ${item.idea.description}`} onclick={(event) => openConversation(event, item.idea.id)}>Explore this idea</button>
+      {/if}
       </div>
     {:else}
       <div class="empty">
@@ -109,6 +178,25 @@
       >Unaddressed project-ending</button>{/if}
 </div>
   <p class="legend">Solutions are not ranked. Dotted labels are model-estimated. Amber marks solutions developed from weak or adverse problem evidence.</p>
+  </div>
+
+  <div class="conversation-view" hidden={activeConversationId === null}>
+    <button class="back-button" onclick={closeConversation}>Back to solutions</button>
+    {#if activeConversationId && (openingConversation || conversationLoading)}
+      <p class="conversation-status" role="status">Opening conversation…</p>
+    {:else if activeConversationId && (openError || conversationError)}
+      <div class="conversation-error" role="alert"><p>{openError ?? conversationError}</p><button onclick={(event) => openConversation(event, activeConversationId!)}>Try again</button></div>
+    {:else if activeConversationId && !conversationMatchesSelection}
+      <p class="conversation-status" role="status">Conversation is unavailable.</p>
+    {/if}
+    {#if retainedConversation && onSubmitIdeaTurn}
+      <div hidden={!conversationMatchesSelection || openingConversation || conversationLoading || !!openError || !!conversationError}>
+        {#key retainedConversation.rootSolutionId}
+          <IdeaConversation conversation={retainedConversation} {modelOptions} busy={busy || analysisBlocked || opportunityReviewRunning} onSubmit={onSubmitIdeaTurn} {...(onSelectConversationVersion ? { onSelectVersion: onSelectConversationVersion } : {})} {...(onLoadMoreConversation ? { onLoadMore: onLoadMoreConversation } : {})} />
+        {/key}
+      </div>
+    {/if}
+  </div>
 </section>
 
 <style>
@@ -135,6 +223,13 @@
   .empty { display:grid;justify-items:start;gap:8px;padding:44px 20px; }.empty h2 { font-size:18px; }.empty h2,.empty p { margin:0; }.empty p { color:var(--muted);font-size:13px; }
   .legend { margin:24px 0 0;max-width:70ch;color:var(--subtle);font-size:13px;line-height:1.8; }
   .filter-empty { padding:24px;border:1px dashed var(--border-strong);border-radius:12px;color:var(--muted);font-size:13px; }
+  .explore-button,.back-button,.conversation-error button { min-height:38px;padding:8px 12px;border:1px solid var(--border-strong);border-radius:8px;background:#000;color:var(--text);font-size:13px;cursor:pointer; }
+  .explore-button { margin:10px 0 4px; }
+  .explore-button:hover,.back-button:hover,.conversation-error button:hover { background:var(--surface-2); }
+  .conversation-view { min-width:0; }
+  .back-button { margin-bottom:18px; }
+  .conversation-status,.conversation-error { margin:0 0 18px;padding:18px;border:1px solid var(--border);border-radius:10px;color:var(--muted);font-size:14px; }
+  .conversation-error p { margin:0 0 12px; }
   [hidden] { display:none; }
   @media(max-width:850px) { .workspace { padding:28px 22px 60px; }.actions { justify-content:flex-start; } }
 </style>

@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { z } from "zod";
 import type { GenerationAcceptanceMetadata, GenerationMetadata } from "../../providers/structured";
 import { canonicalJson, sha256 } from "../../shared/content-identity";
 import {
@@ -179,6 +180,18 @@ interface CurrentMembershipRow {
   description: string;
   startup_opportunity_json: string | null;
 }
+
+const SolutionSetMembershipProjectionSchema = z.object({
+  solutionSetReview: z.object({
+    acceptedSolutionIds: z.array(z.string()),
+    decisions: z.array(z.object({
+      candidateId: z.string(),
+      status: z.enum(["accepted", "duplicate", "variant", "unresolved", "rejected"]),
+      reason: z.string().min(1),
+      matchingSolutionId: z.string().nullable(),
+    }).passthrough()),
+  }).passthrough(),
+}).passthrough();
 
 export class OpportunityRepository {
   constructor(private readonly client: DatabaseClient) {}
@@ -471,6 +484,75 @@ export class OpportunityRepository {
     }
   }
 
+  /**
+   * Projects immutable workflow solution-set checkpoints into the editable opportunity family
+   * history. The caller owns an immediate transaction, so a retry cannot leave half a batch.
+   */
+  materializeSolutionSetReviews(threadId: string): { projectedOptionIds: string[] } {
+    this.client.requireImmediateTransaction();
+    const candidates = new Map(this.solutionRows(threadId).map((row) => [row.id, row]));
+    const stages = this.client.db.prepare(`
+      SELECT stage.id, stage.context_json, stage.research_run_id
+      FROM stage_results stage JOIN research_runs run ON run.id = stage.research_run_id
+      WHERE run.thread_id = ? AND stage.stage_id = 'solution-set-review'
+      ORDER BY run.rowid, stage.completed_at, stage.id
+    `).all(threadId) as Array<{ id: string; context_json: string; research_run_id: string }>;
+    const projectedOptionIds: string[] = [];
+    for (const stage of stages) {
+      const projection = SolutionSetMembershipProjectionSchema.parse(JSON.parse(stage.context_json));
+      const decisions = projection.solutionSetReview.decisions;
+      const acceptedIds = projection.solutionSetReview.acceptedSolutionIds;
+      const acceptedFromDecisions = decisions.filter((decision) => decision.status === "accepted")
+        .map((decision) => decision.candidateId);
+      if (canonicalJson([...acceptedIds].sort()) !== canonicalJson(acceptedFromDecisions.sort())) {
+        throw new Error(`Solution-set checkpoint ${stage.id} has inconsistent accepted IDs`);
+      }
+      for (const decision of decisions) {
+        const candidate = candidates.get(decision.candidateId);
+        if (!candidate || candidate.research_run_id !== stage.research_run_id) {
+          throw new Error(`Solution-set checkpoint ${stage.id} references an option outside its run`);
+        }
+        // Practical solutions are reviewed in the same stage but do not belong in the
+        // startup family pane. The full checkpoint still remains in stage_results.
+        if (!candidate.startup_opportunity_json) continue;
+        const current = this.currentDecision(candidate.id);
+        if (current) {
+          if (current.thread_id !== threadId) throw new Error("Opportunity decision belongs to another project");
+          continue;
+        }
+        let familyId: string | null = null;
+        let relationship: OpportunityRelationship = "uncertain";
+        let state: "accepted" | "unresolved" = "unresolved";
+        let reason = decision.reason;
+        if (decision.status === "accepted") {
+          familyId = randomUUID();
+          relationship = "separate-business";
+          state = "accepted";
+          this.createFamily(familyId, threadId, candidate.id, candidate.mechanism,
+            candidate.description, reason, "model", randomUUID);
+        } else if (decision.status === "duplicate" || decision.status === "variant") {
+          const match = decision.matchingSolutionId ? this.currentDecision(decision.matchingSolutionId) : null;
+          if (match?.thread_id === threadId && match.state === "accepted" && match.family_id) {
+            familyId = match.family_id;
+            relationship = decision.status;
+            state = "accepted";
+          } else {
+            reason = `${reason} The matched solution has no accepted startup family, so this option remains unresolved.`;
+          }
+        }
+        this.insertDecision({
+          id: randomUUID(), threadId, optionId: candidate.id, familyId,
+          relationship, state, reason, actor: "model", reviewCallId: null, supersedesId: null,
+        });
+        if (familyId && state === "accepted") {
+          this.preferCountableRepresentative(threadId, familyId, candidate.id, reason, "model", randomUUID);
+        }
+        projectedOptionIds.push(candidate.id);
+      }
+    }
+    return { projectedOptionIds };
+  }
+
   editMembership(threadId: string, edit: OpportunityMembershipEdit): OpportunityFamiliesView {
     const parsed = OpportunityMembershipEditSchema.parse(edit);
     this.client.immediateTransaction(() => this.applyMembershipEdit(threadId, parsed));
@@ -565,11 +647,24 @@ export class OpportunityRepository {
       SELECT MAX(terminal_at) AS reviewed_at FROM opportunity_review_calls
       WHERE thread_id = ? AND status = 'completed'
     `).get(threadId) as { reviewed_at: string | null };
+    const latestSolutionSet = this.client.db.prepare(`
+      SELECT MAX(stage.completed_at) AS reviewed_at FROM stage_results stage
+      JOIN research_runs run ON run.id = stage.research_run_id
+      WHERE run.thread_id = ? AND stage.stage_id = 'solution-set-review'
+        AND EXISTS (
+          SELECT 1 FROM solutions option
+          WHERE option.research_run_id = run.id AND option.startup_opportunity_json IS NOT NULL
+        )
+    `).get(threadId) as { reviewed_at: string | null };
     const latestCall = this.client.db.prepare(`
-      SELECT status, error_message FROM opportunity_review_calls
+      SELECT status, error_message, created_at FROM opportunity_review_calls
       WHERE thread_id = ? ORDER BY created_at DESC, id DESC LIMIT 1
-    `).get(threadId) as { status: OpportunityReviewCallStatus; error_message: string | null } | undefined;
-    const reviewStatus = latestCall
+    `).get(threadId) as { status: OpportunityReviewCallStatus; error_message: string | null; created_at: string } | undefined;
+    const solutionSetIsLatest = latestSolutionSet.reviewed_at !== null
+      && (!latestCall || latestSolutionSet.reviewed_at >= latestCall.created_at);
+    const reviewStatus = solutionSetIsLatest
+      ? "completed" as const
+      : latestCall
       ? latestCall.status === "completed"
         ? "completed" as const
         : ["prepared", "dispatched", "accepted"].includes(latestCall.status)
@@ -585,7 +680,8 @@ export class OpportunityRepository {
       families,
       unresolved,
       unreviewedOptionIds: candidates.filter((candidate) => !reviewed.has(candidate.optionId)).map((candidate) => candidate.optionId),
-      lastReviewedAt: latestCompleted.reviewed_at,
+      lastReviewedAt: [latestCompleted.reviewed_at, latestSolutionSet.reviewed_at]
+        .filter((value): value is string => value !== null).sort().at(-1) ?? null,
       reviewStatus,
       reviewError: reviewStatus === "failed" || reviewStatus === "blocked" ? latestCall?.error_message ?? "Opportunity review did not complete." : null,
     });

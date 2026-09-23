@@ -5,17 +5,20 @@ import { DiscoveryRepository } from "../db/repositories/discovery";
 import { EvidenceFollowUpRepository } from "../db/repositories/evidence-follow-ups";
 import { GenerationAttemptRepository } from "../db/repositories/generation-attempts";
 import { FocusedExperimentRepository } from "../db/repositories/focused-experiments";
-import { ResearchRunRepository } from "../db/repositories/research-runs";
+import { ResearchRunRepository, type ResearchRunWorkflowLink } from "../db/repositories/research-runs";
 import { OpportunityRepository } from "../db/repositories/opportunities";
 import { OpportunityExplorationRepository } from "../db/repositories/opportunity-exploration";
 import { WorkflowV2Repository } from "../db/repositories/workflow-v2";
+import { WorkflowRepository } from "../db/repositories/workflows";
 import type { SearchClient, SearchOptions, SearchProvider } from "../providers/search";
 import { ProviderFailure, type GenerationMetadata, type StructuredModelClient, type StructuredStageRequest } from "../providers/structured";
 import { AppError } from "../shared/errors";
+import { WorkflowLaunchContractSchema } from "../shared/workflow-contracts";
 import { assertFocusedDemandTestSemantics } from "../shared/focused-experiment";
 import { deriveJsonSchema } from "../shared/json-schema";
 import type { ResearchEvent } from "../shared/ipc";
 import { opportunityCounts } from "../shared/opportunity-review";
+import { researchSearchAllocation, type ResearchAngleSourceClass } from "../shared/research-revisions";
 import {
   type OpportunityBudgetExtension,
   type OpportunityBudgetExtensionPreview,
@@ -26,19 +29,24 @@ import {
   type OpportunityExplorationConfig,
   type OpportunityExplorationProgress,
 } from "../shared/opportunity-exploration";
-import { DEFAULT_IDEA_COUNT, RunConfigSchema, SourceSchema, sameModelRef, type ModelRef, type ReasoningEffort, type RunConfig, type Source } from "../shared/schemas";
-import { ScopeSchema, WorkflowV2CompatibleDecisionAnalysisOutputSchema, WorkflowV2RiskEvaluationOutputSchema, WorkflowV2RiskReassessmentOutputSchema, type Scope } from "../shared/structured-output-schemas";
-import { analyzeSelectedOption, evaluateSelectedOptionRisk, produceDevelopmentOptions, reassessSelectedOption, reassessSelectedOptionRisk, type WorkflowV2EvidenceItem } from "./development";
-import { discoverProblems, discoveryRunProjection, harvestEvidenceFollowUp, harvestFactors, type HarvestResult } from "./discovery";
+import { DEFAULT_IDEA_COUNT, ModelRefSchema, ReasoningEffortSchema, RunConfigSchema, SourceSchema, sameModelRef, type ModelRef, type ReasoningEffort, type RunConfig, type Source } from "../shared/schemas";
+import { ScopeSchema, WorkflowV2CompatibleDecisionAnalysisOutputSchema, WorkflowV2RiskEvaluationOutputSchema, WorkflowV2RiskReassessmentOutputSchema, WorkflowV2SolutionOptionSchema, WorkflowV2SolutionsOutputSchema, WorkflowV2StartupSolutionOptionSchema, type Scope } from "../shared/structured-output-schemas";
+import { analyzeSelectedOption, developmentStageEvidence, evaluateSelectedOptionRisk, produceDevelopmentOptions, reassessSelectedOption, reassessSelectedOptionRisk, WorkflowGenerationAngleSchema, WorkflowGenerationEvidenceSchema, type WorkflowV2DevelopmentContext, type WorkflowV2EvidenceItem } from "./development";
+import { discoverProblems, discoveryRunProjection, harvestEvidenceFollowUp, harvestFactors, normalizeSearchQuery,
+  type HarvestMode, type HarvestResult, type PlannedQuery } from "./discovery";
 import { runFocusedExperimentFlow } from "./experiment-review";
 import { planOpportunityStep, previewOpportunityBudgetExtension } from "./opportunity-planning";
 import { reviewSavedOpportunities as runOpportunityReview } from "./opportunity-review";
+import { classifySolutionSetReview, prepareSolutionSetReview, reviewSolutionSet, type SolutionSetItem } from "./solution-set-review";
+import { scheduledModelClient } from "./scheduled-model-client";
+import type { WorkflowModelScheduler } from "./workflow-scheduler";
 import { WorkflowExecution } from "./workflow-execution";
 import type { WorkflowV2StageId } from "./stages";
 
 export interface ResearchEngineOptions {
   db: DatabaseClient;
   modelClients?: Partial<Record<string, StructuredModelClient>>;
+  modelScheduler?: WorkflowModelScheduler;
   searchClients?: Partial<Record<SearchProvider, SearchClient>>;
   onEvent: (event: ResearchEvent) => void;
 }
@@ -53,6 +61,8 @@ interface ActiveRun {
   deadlineTimer?: ReturnType<typeof setTimeout>;
   projectedCodexCalls: number;
   projectedSearches: number;
+  researchAllowance?: { maxModelCalls: number; maxSearches: number };
+  researchRequest?: { sessionId: string; workItemId: string };
   workflow?: WorkflowExecution;
   followUpModelReservation: CostReservation | null;
   followUpSearchReservation: CostReservation | null;
@@ -122,6 +132,20 @@ export class ResearchEngine {
 
   getActiveRunIds(): ReadonlySet<string> { return new Set(this.activeRuns.keys()); }
 
+  /** Session work outside a research run shares the same per-project model scheduler. */
+  scheduledWorkflowModelClient(threadId: string, model: ModelRef): StructuredModelClient {
+    const client = this.options.modelClients?.[model.providerId];
+    if (!client) throw new AppError("conflict", `Model provider ${model.providerId} is unavailable`);
+    return this.options.modelScheduler
+      ? scheduledModelClient(client, this.options.modelScheduler, threadId) : client;
+  }
+
+  workflowSearchClient(provider: SearchProvider): SearchClient {
+    const client = this.options.searchClients?.[provider];
+    if (!client) throw new AppError("conflict", `Search provider ${provider} is unavailable`);
+    return client;
+  }
+
   async shutdown(): Promise<void> {
     for (const runId of this.getActiveRunIds()) {
       try { this.cancelRun(runId); } catch { /* the run ended before shutdown reached it */ }
@@ -131,23 +155,24 @@ export class ResearchEngine {
     await Promise.allSettled([...this.opportunityTasks.values()].map((task) => task.promise));
   }
 
-  async startDiscovery(threadId: string, scope: Scope, config: RunConfig): Promise<string> {
+  async startDiscovery(threadId: string, scope: Scope, config: RunConfig, workflow?: ResearchRunWorkflowLink): Promise<string> {
     config = { ...config, workflowVersion: 2 };
     const parsedScope = ScopeSchema.parse(scope);
-    const created = this.runs.create(threadId, config, null);
+    const created = this.runs.create(threadId, config, null, undefined, workflow);
     if (!created.created) return created.runId;
     this.discovery.persistScope(created.runId, parsedScope);
+    if (!this.admitWorkflowRun(created.runId, threadId, workflow)) return created.runId;
     this.begin(created.runId, threadId, null, config);
     return created.runId;
   }
 
-  async startKnownProblem(threadId: string, scope: Scope, problemStatement: string, config: RunConfig): Promise<string> {
+  async startKnownProblem(threadId: string, scope: Scope, problemStatement: string, config: RunConfig, workflow?: ResearchRunWorkflowLink): Promise<string> {
     config = { ...config, workflowVersion: 2 };
     const parsedScope = ScopeSchema.parse(scope);
     const statement = problemStatement.trim();
     if (!statement) throw new AppError("validation_error", "Problem statement is required.");
-    const root = this.discovery.createKnownProblemRoot(threadId, parsedScope, statement, config);
-    return this.startProblem(threadId, root.problemId, config);
+    const root = this.discovery.createKnownProblemRoot(threadId, parsedScope, statement, config, workflow);
+    return this.startProblem(threadId, root.problemId, config, workflow);
   }
 
   async startNextSelected(threadId: string, config: RunConfig): Promise<string | null> {
@@ -177,11 +202,36 @@ export class ResearchEngine {
     return this.startProblem(threadId, problem.id, config);
   }
 
-  private startProblem(threadId: string, problemId: string, config: RunConfig): string {
+  /** New workflow sessions select an exact saved problem instead of relying on the latest discovery run. */
+  async startSelectedProblem(threadId: string, problemId: string, config: RunConfig, workflow?: ResearchRunWorkflowLink): Promise<string> {
+    const owner = this.options.db.db.prepare(`
+      SELECT 1 FROM problems p
+      JOIN research_runs discovery ON discovery.id = p.discovery_run_id
+      WHERE p.id = ? AND discovery.thread_id = ? AND discovery.status = 'completed'
+    `).get(problemId, threadId);
+    if (!owner) throw new AppError("not_found", "Selected problem does not belong to this project.");
+    return this.startProblem(threadId, problemId, config, workflow);
+  }
+
+  private startProblem(threadId: string, problemId: string, config: RunConfig, workflow?: ResearchRunWorkflowLink): string {
     config = { ...config, workflowVersion: 2 };
-    const created = this.runs.create(threadId, config, problemId);
-    if (created.created) this.begin(created.runId, threadId, problemId, config);
+    const created = this.runs.create(threadId, config, problemId, undefined, workflow);
+    if (created.created && this.admitWorkflowRun(created.runId, threadId, workflow)) {
+      this.begin(created.runId, threadId, problemId, config);
+    }
     return created.runId;
+  }
+
+  private admitWorkflowRun(runId: string, threadId: string, workflow?: ResearchRunWorkflowLink): boolean {
+    try {
+      if (workflow?.onRunCreated?.(runId) !== false) return true;
+      this.runs.finish(runId, "cancelled", "Stopped before provider dispatch.");
+      this.emit({ type: "run-cancelled", runId, threadId });
+      return false;
+    } catch (error) {
+      this.runs.finish(runId, "failed", error instanceof Error ? error.message : "Unable to start workflow run.");
+      throw error;
+    }
   }
 
   async resumeRun(runId: string): Promise<void> {
@@ -1360,6 +1410,19 @@ export class ResearchEngine {
       followUpModelReservation: null, followUpSearchReservation: null,
       generationProvenance: new Map(),
     };
+    const request = this.options.db.db.prepare(`
+      SELECT wi.id, wi.session_id,
+             json_extract(wi.input_json, '$.action.allowance.maxModelCalls') AS max_model_calls,
+             json_extract(wi.input_json, '$.action.allowance.maxSearches') AS max_searches
+      FROM workflow_work_items wi
+      WHERE wi.kind = 'research-request'
+        AND json_extract(wi.output_refs_json, '$.runId') = ?
+      LIMIT 1
+    `).get(runId) as { id: string; session_id: string; max_model_calls: number; max_searches: number } | undefined;
+    if (request) active.researchAllowance = {
+      maxModelCalls: request.max_model_calls, maxSearches: request.max_searches,
+    };
+    if (request) active.researchRequest = { sessionId: request.session_id, workItemId: request.id };
     this.activeRuns.set(runId, active);
     this.scheduleDeadline(active);
     this.updateThread(threadId, problemId ? "development-running" : "discovery-running");
@@ -1386,6 +1449,14 @@ export class ResearchEngine {
     this.activeRuns.delete(active.runId);
     this.emit({ type: "run-completed", runId: active.runId, threadId: active.threadId, problemId: active.problemId });
     if (!active.problemId) { this.updateThread(active.threadId, "problems-ready"); return; }
+    // A workflow session advances from its explicit snapshot and task list. The legacy
+    // latest-discovery handoff below remains only for runs created before that contract.
+    const session = this.options.db.db.prepare("SELECT workflow_session_id FROM research_runs WHERE id = ?")
+      .get(active.runId) as { workflow_session_id: string | null };
+    if (session.workflow_session_id) {
+      this.updateThread(active.threadId, "solutions-ready");
+      return;
+    }
     if (active.workflow) {
       const waiting = this.options.db.db.prepare("SELECT awaiting_selection FROM research_runs WHERE id = ?").get(active.runId) as { awaiting_selection: number };
       const selected = this.options.db.db.prepare("SELECT 1 FROM solutions WHERE research_run_id = ? AND selected_at IS NOT NULL LIMIT 1").get(active.runId);
@@ -1443,8 +1514,30 @@ export class ResearchEngine {
   private async executeDevelopment(active: ActiveRun): Promise<void> {
     if (active.workflow) {
       const workflow = active.workflow;
-      const context = workflow.developmentContext(active.problemId!);
-      const opportunityConfig = active.config.opportunityExploration;
+      let context = workflow.developmentContext(active.problemId!);
+      const sessionRow = this.options.db.db.prepare("SELECT workflow_session_id FROM research_runs WHERE id = ?")
+        .get(active.runId) as { workflow_session_id: string | null };
+      const isWorkflowSession = Boolean(sessionRow.workflow_session_id);
+      const generationTask = sessionRow.workflow_session_id
+        ? this.options.db.db.prepare(`SELECT input_json FROM workflow_work_items
+          WHERE session_id = ? AND kind = 'generate-ideas'
+            AND json_extract(output_refs_json, '$.runId') = ? LIMIT 1`)
+          .get(sessionRow.workflow_session_id, active.runId) as { input_json: string } | undefined
+        : undefined;
+      const savedAngle = generationTask
+        ? (JSON.parse(generationTask.input_json) as { generationAngle?: unknown }).generationAngle : undefined;
+      const generationAngle = savedAngle === undefined ? undefined : WorkflowGenerationAngleSchema.parse(savedAngle);
+      const savedEvidence = generationTask
+        ? (JSON.parse(generationTask.input_json) as { generationEvidence?: unknown }).generationEvidence : undefined;
+      if (savedEvidence !== undefined) {
+        const generationEvidence = this.materializeGenerationEvidence(active.runId,
+          WorkflowGenerationEvidenceSchema.parse(savedEvidence));
+        const alreadySupplied = new Set([...context.supportingEvidence, ...context.contraryEvidence]
+          .map((item) => item.sourceId));
+        context = { ...context, generationEvidence: generationEvidence.filter((item) => !alreadySupplied.has(item.sourceId)) };
+      }
+      // Session-scoped collections use the bounded reviewer for both practical and startup targets.
+      const opportunityConfig = isWorkflowSession ? undefined : active.config.opportunityExploration;
       if (opportunityConfig) {
         const exploration = new OpportunityExplorationRepository(this.options.db);
         if (!exploration.find(active.threadId)) {
@@ -1472,9 +1565,12 @@ export class ResearchEngine {
       const deps = {
         modelClient: this.instrumentedModel(active),
         model: active.config.model,
-        ideaCount: opportunityBatchSize ?? active.config.ideaCount,
+        ideaCount: isWorkflowSession
+          ? Math.min(active.config.ideaCount ?? DEFAULT_IDEA_COUNT, 5)
+          : opportunityBatchSize ?? active.config.ideaCount,
         explorationPurpose: active.config.explorationPurpose,
         focusedExperiments: workflow.hasFocusedExperiments(),
+        ...(generationAngle ? { generationAngle } : {}),
         reasoningEffort: active.config.reasoningEffort, signal: active.abortController.signal,
         resolvePrompt: workflow.resolvePrompt,
       };
@@ -1512,7 +1608,7 @@ export class ResearchEngine {
           this.progress(active, "The project raw-candidate limit is exhausted. No new initial problem batch was dispatched.");
           return;
         }
-        this.progress(active, `Generating up to ${opportunityBatchSize ?? active.config.ideaCount ?? DEFAULT_IDEA_COUNT} ideas`, "generating-options");
+        this.progress(active, `Generating up to ${deps.ideaCount ?? DEFAULT_IDEA_COUNT} ideas`, "generating-options");
       const result = await produceDevelopmentOptions(context, generationDeps);
       active.abortController.signal.throwIfAborted();
       this.options.db.immediateTransaction(() => {
@@ -1550,6 +1646,9 @@ export class ResearchEngine {
           }
           this.syncOpportunityInventory(active.threadId);
         }
+      }
+      if (isWorkflowSession && sessionRow.workflow_session_id) {
+        await this.reviewPracticalSolutions(active, workflow, context, sessionRow.workflow_session_id);
       }
       const option = workflow.selectedOption(active.problemId!);
       if (!option) {
@@ -1631,17 +1730,283 @@ export class ResearchEngine {
     throw new AppError("conflict", "Legacy generation has been retired. Start a new run to use the current prompts.");
   }
 
+  private materializeGenerationEvidence(runId: string, sources: Source[]): WorkflowV2EvidenceItem[] {
+    const seenUrls = new Set<string>();
+    return this.options.db.immediateTransaction(() => sources.flatMap((source) => {
+      if (seenUrls.has(source.url)) return [];
+      seenUrls.add(source.url);
+      const contentHash = createHash("sha256").update(source.text).digest("hex");
+      let saved = this.options.db.db.prepare(`SELECT id, provider_source_id, canonical_url, title,
+        retrieved_text, author, published_at, content_hash FROM sources
+        WHERE research_run_id = ? AND canonical_url = ? ORDER BY rowid LIMIT 1`)
+        .get(runId, source.url) as {
+          id: string; provider_source_id: string | null; canonical_url: string; title: string;
+          retrieved_text: string; author: string | null; published_at: string | null; content_hash: string;
+        } | undefined;
+      if (!saved) {
+        const id = randomUUID();
+        this.options.db.db.prepare(`INSERT INTO sources
+          (id, research_run_id, provider_source_id, canonical_url, title, retrieved_text,
+            author, published_at, content_hash, retrieved_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+          .run(id, runId, source.id, source.url, source.title, source.text,
+            source.author ?? null, source.publishedDate ?? null, contentHash, new Date().toISOString());
+        saved = {
+          id, provider_source_id: source.id, canonical_url: source.url, title: source.title,
+          retrieved_text: source.text, author: source.author ?? null,
+          published_at: source.publishedDate ?? null, content_hash: contentHash,
+        };
+      }
+      return [{
+        sourceId: saved.id,
+        content: {
+          url: saved.canonical_url, title: saved.title, text: saved.retrieved_text,
+          providerSourceId: saved.provider_source_id,
+          searchSourceId: source.id,
+          ...(saved.content_hash !== contentHash ? { searchExcerptOmitted: "A saved source at this URL already exists in the immutable run." } : {}),
+          ...(saved.author ? { author: saved.author } : {}),
+          ...(saved.published_at ? { publishedDate: saved.published_at } : {}),
+        },
+      }];
+    }));
+  }
+
+  private async reviewPracticalSolutions(
+    active: ActiveRun,
+    workflow: WorkflowExecution,
+    context: WorkflowV2DevelopmentContext,
+    sessionId: string,
+  ): Promise<void> {
+    const solutionsStage = workflow.repository.findStageResult(active.runId, "solutions");
+    if (!solutionsStage) throw new Error("Practical solutions have no saved generation checkpoint");
+    const options = WorkflowV2SolutionsOutputSchema.parse(solutionsStage.output).options;
+    const rows = this.options.db.db.prepare(`
+      SELECT id, option_position FROM solutions WHERE research_run_id = ? ORDER BY option_position
+    `).all(active.runId) as Array<{ id: string; option_position: number }>;
+    if (rows.length !== options.length) throw new Error("Saved practical solutions do not match their generation checkpoint");
+    if (rows.length === 0) return;
+    const candidates: SolutionSetItem[] = rows.map((row) => {
+      const option = options[row.option_position];
+      if (!option) throw new Error(`Saved practical solution ${row.id} has no checkpoint option`);
+      return { id: row.id, option };
+    });
+    const contractRow = this.options.db.db.prepare("SELECT contract_json FROM workflow_sessions WHERE id = ?")
+      .get(sessionId) as { contract_json: string } | undefined;
+    if (!contractRow) throw new Error("The practical solution session is missing");
+    const contract = WorkflowLaunchContractSchema.parse(JSON.parse(contractRow.contract_json));
+    const generationItem = this.options.db.db.prepare(`SELECT input_json FROM workflow_work_items
+      WHERE kind = 'generate-ideas' AND session_id = ?
+        AND json_extract(output_refs_json, '$.runId') = ? LIMIT 1`)
+      .get(sessionId, active.runId) as { input_json: string } | undefined;
+    const generationInput = generationItem ? JSON.parse(generationItem.input_json) as {
+      reviewModel?: unknown; reviewReasoningEffort?: unknown;
+    } : null;
+    const reviewModel = ModelRefSchema.parse(generationInput?.reviewModel ?? contract.ideas?.reviewModel ?? active.config.model);
+    const reviewReasoningEffort = ReasoningEffortSchema.parse(
+      generationInput?.reviewReasoningEffort ?? contract.ideas?.reviewReasoningEffort ?? active.config.reasoningEffort,
+    );
+    const inventory = this.loadPracticalInventory(active, sessionId);
+    const prepared = prepareSolutionSetReview({
+      candidates,
+      existingSolutions: inventory.accepted,
+      otherExistingSolutions: inventory.other,
+      omittedSolutionIds: inventory.omittedSolutionIds,
+      acceptedInventoryCount: inventory.acceptedCount,
+      problem: context.problem,
+      projectConstraints: context.scope,
+      savedInstructions: contract.instructions.review ?? "",
+      startupOnly: active.config.explorationPurpose === "startup-opportunities",
+      evidence: developmentStageEvidence(context).slice(1),
+      model: reviewModel,
+      reasoningEffort: reviewReasoningEffort,
+      signal: active.abortController.signal,
+      resolvePrompt: workflow.resolvePrompt,
+    });
+    const reviewContext = (classification: ReturnType<typeof classifySolutionSetReview>) => ({
+      developmentContext: context,
+      solutionSetReview: {
+        decisions: classification.decisions,
+        acceptedSolutionIds: classification.decisions
+          .filter((decision) => decision.status === "accepted")
+          .map((decision) => decision.candidateId),
+        addedDistinctCount: classification.addedDistinctCount,
+        acceptedDistinctCount: classification.acceptedDistinctCount,
+        coverageErrors: classification.coverageErrors,
+        omittedSolutionIds: prepared.omittedSolutionIds,
+      },
+    });
+    const identity = {
+      promptSha256: prepared.prompt.resolvedSha256,
+      schema: prepared.request.jsonSchema,
+      inputs: prepared.request.workOrder.inputs,
+      evidence: prepared.request.evidence.map((item) => ({ sourceId: item.sourceId, content: item.content })),
+    };
+    const savedReview = workflow.repository.findStageResult(active.runId, "solution-set-review", active.problemId);
+    if (savedReview) {
+      const classification = classifySolutionSetReview(candidates, prepared.existingSolutions,
+        prepared.evidenceSourceIds, savedReview.output, {
+          otherExistingSolutions: prepared.otherExistingSolutions,
+          omittedSolutionIds: prepared.omittedSolutionIds,
+          acceptedInventoryCount: prepared.acceptedInventoryCount,
+          startupOnly: prepared.startupOnly,
+        });
+      workflow.repository.getStageResumeState({
+        researchRunId: active.runId, stageId: "solution-set-review", selectionId: active.problemId,
+        context: reviewContext(classification), identity,
+      });
+      return;
+    }
+    const resume = workflow.repository.getStageResumeState({
+      researchRunId: active.runId, stageId: "solution-set-review", selectionId: active.problemId,
+      context, identity,
+    });
+    if (resume.kind === "unknown-completion") {
+      throw new Error("A solution review may have completed before interruption. Review the saved attempt before retrying.");
+    }
+    this.progress(active, `Reviewing ${candidates.length} practical solution${candidates.length === 1 ? "" : "s"}`, "generating-options");
+    await reviewSolutionSet(prepared, this.instrumentedModel(active, undefined, reviewModel), (completed) => {
+      active.abortController.signal.throwIfAborted();
+      this.options.db.immediateTransaction(() => workflow.commitStage(
+        "solution-set-review", completed.request, completed.prompt, completed.metadata,
+        completed.output, reviewContext(completed), active.problemId,
+      ));
+    });
+  }
+
+  private loadPracticalInventory(active: ActiveRun, sessionId: string): {
+    accepted: SolutionSetItem[];
+    other: SolutionSetItem[];
+    omittedSolutionIds: string[];
+    acceptedCount: number;
+  } {
+    const baseline = active.config.explorationPurpose === "startup-opportunities"
+      ? new WorkflowRepository(this.options.db).listWorkItems(sessionId)
+        .map((item) => (item.input as { familyBaseline?: { candidateInventoryIds?: unknown } }).familyBaseline)
+        .find((value) => Array.isArray(value?.candidateInventoryIds))
+      : undefined;
+    const launchCandidates = Array.isArray(baseline?.candidateInventoryIds)
+      ? new Set(baseline.candidateInventoryIds.filter((id: unknown): id is string => typeof id === "string"))
+      : null;
+    const countedRepresentatives = active.config.explorationPurpose === "startup-opportunities"
+      ? new Set(this.opportunities.familyView(active.threadId).families
+        .filter((family) => family.counted).map((family) => family.representativeOptionId))
+      : new Set<string>();
+    const reviewRows = this.options.db.db.prepare(`
+      SELECT stage.context_json FROM stage_results stage
+      JOIN research_runs previous ON previous.id = stage.research_run_id
+      WHERE previous.thread_id = ? AND previous.rowid < (SELECT rowid FROM research_runs WHERE id = ?)
+        AND stage.stage_id = 'solution-set-review'
+    `).all(active.threadId, active.runId) as Array<{ context_json: string }>;
+    const acceptedIds = new Set<string>();
+    for (const row of reviewRows) {
+      const value = JSON.parse(row.context_json) as { solutionSetReview?: { acceptedSolutionIds?: unknown } };
+      const ids = value.solutionSetReview?.acceptedSolutionIds;
+      if (Array.isArray(ids)) {
+        for (const id of ids) if (typeof id === "string") acceptedIds.add(id);
+      }
+    }
+    const rows = this.options.db.db.prepare(`
+      SELECT solution.id, previous.rowid AS run_rowid, previous.workflow_session_id,
+        solution.mechanism, solution.description, solution.respects_off_limits,
+        solution.respects_off_limits_why, solution.key_assumption,
+        solution.why_current_approach_may_suffice, solution.supporting_evidence_ids_json,
+        solution.contrary_evidence_ids_json, solution.unknowns_json,
+        solution.startup_opportunity_json
+      FROM solutions solution JOIN research_runs previous ON previous.id = solution.research_run_id
+      WHERE previous.thread_id = ? AND previous.id <> ?
+      ORDER BY previous.rowid DESC, solution.option_position, solution.id
+    `).all(active.threadId, active.runId) as Array<{
+      id: string; run_rowid: number; workflow_session_id: string | null;
+      mechanism: string; description: string; respects_off_limits: number;
+      respects_off_limits_why: string; key_assumption: string | null;
+      why_current_approach_may_suffice: string | null;
+      supporting_evidence_ids_json: string | null; contrary_evidence_ids_json: string | null;
+      unknowns_json: string | null; startup_opportunity_json: string | null;
+    }>;
+    const currentRun = this.options.db.db.prepare("SELECT rowid AS run_rowid FROM research_runs WHERE id = ?")
+      .get(active.runId) as { run_rowid: number };
+    // Keep launch candidates fixed, while including this session's additions and live accepted family roots.
+    const visibleRows = rows.filter((row) => countedRepresentatives.has(row.id)
+      || (row.run_rowid < currentRun.run_rowid
+        && (!launchCandidates || launchCandidates.has(row.id) || row.workflow_session_id === sessionId)));
+    if (active.config.explorationPurpose === "startup-opportunities") {
+      const priorIds = new Set(visibleRows.map((row) => row.id));
+      // Keep the legacy family's chosen option as the accepted root in the new review.
+      for (const id of countedRepresentatives) if (priorIds.has(id)) acceptedIds.add(id);
+    }
+    const parseStrings = (json: string | null): string[] => {
+      if (!json) return [];
+      const value = JSON.parse(json) as unknown;
+      return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
+    };
+    const items: SolutionSetItem[] = visibleRows.map((row) => {
+      const option = {
+        mechanism: row.mechanism.trim() || "Older saved mechanism",
+        description: row.description.trim() || "No older description was recorded.",
+        keyAssumption: row.key_assumption?.trim() || "Not recorded in the older solution.",
+        whyCurrentApproachMaySuffice: row.why_current_approach_may_suffice?.trim() || "Not recorded in the older solution.",
+        supportingEvidenceIds: parseStrings(row.supporting_evidence_ids_json),
+        contraryEvidenceIds: parseStrings(row.contrary_evidence_ids_json),
+        unknowns: parseStrings(row.unknowns_json),
+        respectsOffLimits: Boolean(row.respects_off_limits),
+        respectsOffLimitsWhy: row.respects_off_limits_why.trim() || "Not recorded in the older solution.",
+      };
+      return {
+        id: row.id,
+        option: row.startup_opportunity_json
+          ? WorkflowV2StartupSolutionOptionSchema.parse({ ...option,
+            startupOpportunity: JSON.parse(row.startup_opportunity_json) as unknown })
+          : WorkflowV2SolutionOptionSchema.parse(option),
+      };
+    });
+    const ordered = [
+      ...items.filter((item) => acceptedIds.has(item.id)),
+      ...items.filter((item) => !acceptedIds.has(item.id)),
+    ];
+    const accepted: SolutionSetItem[] = [];
+    const other: SolutionSetItem[] = [];
+    const omittedSolutionIds: string[] = [];
+    let characters = 0;
+    for (const item of ordered) {
+      const size = JSON.stringify(item).length;
+      if (accepted.length + other.length >= 64 || characters + size > 60_000) {
+        omittedSolutionIds.push(item.id);
+        continue;
+      }
+      characters += size;
+      (acceptedIds.has(item.id) ? accepted : other).push(item);
+    }
+    return {
+      accepted, other, omittedSolutionIds,
+      acceptedCount: items.filter((item) => acceptedIds.has(item.id)).length,
+    };
+  }
+
   private dependencies(active: ActiveRun) {
     const workflow = active.workflow;
     if (!workflow) throw new Error("The current workflow must be initialized before research starts");
     const modelClient = this.instrumentedModel(active);
     const search = this.instrumentedSearch(active);
+    const allocation = active.researchAllowance
+      ? researchSearchAllocation(active.researchAllowance.maxSearches) : null;
     return {
       modelClient: workflow.discoveryClient(modelClient),
       search: workflow.search(search),
       model: active.config.model,
       reasoningEffort: active.config.reasoningEffort,
       depth: active.config.discoveryDepth,
+      ...(allocation ? {
+        candidateLimit: allocation.candidateLimit,
+        queryCountByMode: { domain: allocation.domainQueries, audience: allocation.audienceQueries },
+        searchConcurrency: 1,
+        researchAngles: this.researchAngleItems(active).filter((item) => item.state !== "skipped").map((item) => {
+          const input = item.input as { name: string; sourceClass: ResearchAngleSourceClass };
+          return { name: input.name, sourceClass: input.sourceClass };
+        }),
+        onPlannedQueries: (mode: HarvestMode, queries: PlannedQuery[]) => this.assignResearchAngleQueries(active, mode, queries),
+        onQueryResult: (mode: HarvestMode, query: PlannedQuery, sources: Source[] | null, error?: unknown) =>
+          this.finishResearchAngleQuery(active, mode, query, sources, error),
+      } : {}),
       signal: active.abortController.signal,
       onProjection: (message: string) => this.progress(active, message),
       workflowVersion: 2 as const,
@@ -1651,28 +2016,104 @@ export class ResearchEngine {
     };
   }
 
-  private instrumentedModel(active: ActiveRun, beforeUncachedDispatch?: () => void): StructuredModelClient {
-    const client = this.options.modelClients?.[active.config.model.providerId];
-    if (!client) throw new Error(`Model provider ${active.config.model.providerId} is unavailable`);
+  private researchAngleItems(active: ActiveRun) {
+    if (!active.researchRequest) return [];
+    return new WorkflowRepository(this.options.db).listWorkItems(active.researchRequest.sessionId)
+      .filter((item) => item.kind === "research-angle" && item.parentItemId === active.researchRequest?.workItemId);
+  }
+
+  private assignResearchAngleQueries(active: ActiveRun, mode: HarvestMode, queries: PlannedQuery[]): void {
+    if (!active.researchRequest || queries.length === 0) return;
+    const workflows = new WorkflowRepository(this.options.db);
+    const preferred = mode === "domain"
+      ? new Set<ResearchAngleSourceClass>(["current-alternative", "contrary-evidence", "measured-behavior"])
+      : new Set<ResearchAngleSourceClass>(["firsthand-experience", "buying-signal", "measured-behavior"]);
+    const items = this.researchAngleItems(active);
+    const used = new Set(items.flatMap((item) => {
+      const output = item.outputRefs as { query?: string } | null;
+      return output?.query ? [normalizeSearchQuery(output.query)] : [];
+    }));
+    const changed: string[] = [];
+    this.options.db.immediateTransaction(() => {
+      for (const item of items) {
+        if (item.state !== "ready") continue;
+        const input = item.input as { sourceClass: ResearchAngleSourceClass };
+        if (!preferred.has(input.sourceClass)) continue;
+        const match = queries.find((query) => query.intent === input.sourceClass
+          && !used.has(normalizeSearchQuery(query.query)));
+        if (!match) continue;
+        used.add(normalizeSearchQuery(match.query));
+        workflows.updateWorkItem(item.id, "running", {
+          outputRefs: { runId: active.runId, query: match.query, intent: match.intent, mode },
+        });
+        changed.push(item.id);
+      }
+    });
+    if (changed.length) this.progress(active, `Researching ${changed.length} named angle${changed.length === 1 ? "" : "s"}`, "searching");
+  }
+
+  private finishResearchAngleQuery(
+    active: ActiveRun, mode: HarvestMode, query: PlannedQuery, sources: Source[] | null, error?: unknown,
+  ): void {
+    if (!active.researchRequest) return;
+    const item = this.researchAngleItems(active).find((candidate) => {
+      const output = candidate.outputRefs as { query?: string; mode?: string } | null;
+      return candidate.state === "running" && output?.mode === mode
+        && output.query && normalizeSearchQuery(output.query) === normalizeSearchQuery(query.query);
+    });
+    if (!item) return;
+    const linkedSources = sources ? [...new Map(sources.map((source) =>
+      [source.url, { title: source.title, url: source.url }])).values()] : [];
+    const sourceCount = linkedSources.length;
+    this.options.db.immediateTransaction(() => new WorkflowRepository(this.options.db).updateWorkItem(
+      item.id, error ? "failed" : "succeeded", {
+        outputRefs: { ...(item.outputRefs as object), sourceCount, sources: linkedSources,
+          ...(error ? { gap: error instanceof Error ? error.message : "The search failed." }
+            : sourceCount === 0 ? { gap: "No source was returned for this angle." } : {}),
+        },
+      },
+    ));
+    this.progress(active, error ? "A named research angle failed" : "A named research angle finished", "searching");
+  }
+
+  private instrumentedModel(active: ActiveRun, beforeUncachedDispatch?: () => void, stageModel = active.config.model): StructuredModelClient {
+    const baseClient = this.options.modelClients?.[stageModel.providerId];
+    if (!baseClient) throw new Error(`Model provider ${stageModel.providerId} is unavailable`);
+    const session = this.options.db.db.prepare("SELECT workflow_session_id FROM research_runs WHERE id = ?")
+      .get(active.runId) as { workflow_session_id: string | null } | undefined;
+    const client = session?.workflow_session_id && this.options.modelScheduler
+      ? scheduledModelClient(baseClient, this.options.modelScheduler, active.threadId) : baseClient;
     return {
       structuredCompletion: async <T>(request: StructuredStageRequest<T>) => {
         active.abortController.signal.throwIfAborted();
         const stage = runtimeStage(request.stage);
         this.progress(active, "Waiting for model availability", stage, "waiting");
-        if (!sameModelRef(request.model, active.config.model)) throw new Error("Stage model does not match the active run configuration");
-        const providerId = active.config.model.providerId;
+        if (!sameModelRef(request.model, stageModel)) throw new Error("Stage model does not match the selected stage model");
+        const providerId = stageModel.providerId;
         const preparedIdentity = client.prepareIdentity
           ? await client.prepareIdentity()
           : client.preparedIdentity?.();
         active.abortController.signal.throwIfAborted();
-        const reusable = this.generationAttempts.findCompleted(active.runId, request, preparedIdentity);
+        const disabledRepairRequest = { ...request, repairPolicy: "disabled" as const };
+        const reusable = this.generationAttempts.findCompleted(active.runId, request, preparedIdentity)
+          ?? (request.repairPolicy === "disabled" ? null
+            : this.generationAttempts.findCompleted(active.runId, disabledRepairRequest, preparedIdentity));
         if (reusable) {
           active.generationProvenance.set(request.generationId, reusable.generationId);
           return { output: reusable.output, metadata: reusable.metadata as GenerationMetadata };
         }
         beforeUncachedDispatch?.();
+        const remainingTaskCalls = this.remainingWorkflowTaskCalls(active, "model-call");
+        if (remainingTaskCalls !== null && remainingTaskCalls < 1) {
+          throw new AppError("BUDGET_TOO_SMALL", "This workflow task used its model-call reservation.");
+        }
+        if (active.researchAllowance
+          && this.ledger.countProviderCalls(active.runId, providerId) >= active.researchAllowance.maxModelCalls) {
+          throw new AppError("BUDGET_TOO_SMALL", "This research request used its model-call allowance.");
+        }
         this.enforceRunawayBackstop(active, providerId, active.projectedCodexCalls);
-        const attempt = this.generationAttempts.prepare(active.runId, request, preparedIdentity);
+        const boundedRequest = remainingTaskCalls === 1 ? disabledRepairRequest : request;
+        const attempt = this.generationAttempts.prepare(active.runId, boundedRequest, preparedIdentity);
         let reservation: ReturnType<CostLedgerRepository["reserve"]> | null = null;
         let accepted = false;
         let dispatched = false;
@@ -1684,9 +2125,9 @@ export class ResearchEngine {
             this.ledger.attachGenerationAttempt(reservation.id, attempt.id);
           }
           const result = await client.structuredCompletion<T>({
-            ...request,
+            ...boundedRequest,
             onDispatched: () => {
-              reservation ??= this.ledger.reserve(active.runId, "structured-completion", providerId, active.config.model.modelId, 0, attempt.id);
+              reservation ??= this.ledger.reserve(active.runId, "structured-completion", providerId, stageModel.modelId, 0, attempt.id);
               dispatched = true;
               this.generationAttempts.markDispatched(attempt.id);
               if (this.activeRuns.get(active.runId) === active) this.progress(active, "Model request dispatched", stage, "dispatched");
@@ -1700,7 +2141,7 @@ export class ResearchEngine {
             },
           });
           if (!reservation) {
-            reservation = this.ledger.reserve(active.runId, "structured-completion", providerId, active.config.model.modelId, 0, attempt.id);
+            reservation = this.ledger.reserve(active.runId, "structured-completion", providerId, stageModel.modelId, 0, attempt.id);
             dispatched = true;
             this.generationAttempts.markDispatched(attempt.id);
           }
@@ -1721,7 +2162,7 @@ export class ResearchEngine {
           const failedAttempts = error instanceof ProviderFailure ? error.attempts : undefined;
           const failedCostUsd = failedAttempts ? reportedAttemptCost(failedAttempts) : null;
           if (!reservation && failedAttempts?.length) {
-            reservation = this.ledger.reserve(active.runId, "structured-completion", providerId, active.config.model.modelId, 0, attempt.id);
+            reservation = this.ledger.reserve(active.runId, "structured-completion", providerId, stageModel.modelId, 0, attempt.id);
             dispatched = true;
             this.generationAttempts.markDispatched(attempt.id);
           }
@@ -1760,6 +2201,14 @@ export class ResearchEngine {
       search: async (query: string, options?: SearchOptions) => {
         active.abortController.signal.throwIfAborted();
         if (!client) throw new AppError("conflict", `Connect ${provider === "exa" ? "Exa" : "Perplexity"} before discovering problems.`);
+        const remainingTaskSearches = this.remainingWorkflowTaskCalls(active, "search");
+        if (remainingTaskSearches !== null && remainingTaskSearches < 1) {
+          throw new AppError("BUDGET_TOO_SMALL", "This workflow task used its search reservation.");
+        }
+        if (active.researchAllowance
+          && this.ledger.countProviderCalls(active.runId, provider) >= active.researchAllowance.maxSearches) {
+          throw new AppError("BUDGET_TOO_SMALL", "This research request used its search allowance.");
+        }
         this.enforceRunawayBackstop(active, provider, active.projectedSearches);
         const reservation = active.followUpSearchReservation
           ?? this.ledger.reserve(active.runId, "search", provider, null, provider === "exa" ? 0.02 : 0.005);
@@ -1773,6 +2222,39 @@ export class ResearchEngine {
         }
       },
     };
+  }
+
+  /** New session runs may dispatch only within their saved work-item reservations. */
+  private remainingWorkflowTaskCalls(active: ActiveRun, kind: "model-call" | "search"): number | null {
+    const linked = this.options.db.db.prepare(`SELECT workflow_session_id FROM research_runs WHERE id = ?`)
+      .get(active.runId) as { workflow_session_id: string | null } | undefined;
+    if (!linked?.workflow_session_id) return null;
+    const item = this.options.db.db.prepare(`SELECT id FROM workflow_work_items
+      WHERE session_id = ? AND json_extract(output_refs_json, '$.runId') = ?
+        AND kind IN ('discovery','known-problem','generate-ideas','research-request') LIMIT 1`)
+      .get(linked.workflow_session_id, active.runId) as { id: string } | undefined;
+    if (!item) {
+      const existing = this.options.db.db.prepare(`SELECT 1 FROM workflow_budget_entries
+        WHERE session_id = ? LIMIT 1`).get(linked.workflow_session_id);
+      if (existing) throw new AppError("BUDGET_TOO_SMALL", "The workflow run has no saved task reservation.");
+      return null;
+    }
+    const reserved = this.options.db.db.prepare(`SELECT COALESCE(SUM(reserved_units),0) AS units
+      FROM workflow_budget_entries WHERE work_item_id = ? AND kind = ? AND state = 'reserved'`)
+      .get(item.id, kind) as { units: number };
+    if (reserved.units < 1) throw new AppError("BUDGET_TOO_SMALL", `The workflow task has no ${kind} reservation.`);
+    const used = kind === "search"
+      ? (this.options.db.db.prepare(`SELECT COUNT(*) AS count FROM cost_ledger
+          WHERE research_run_id = ? AND operation = 'search' AND status IN ('reserved','committed')`)
+        .get(active.runId) as { count: number }).count
+      : (this.options.db.db.prepare(`SELECT COALESCE(SUM(
+          CASE WHEN attempt_metadata_json IS NOT NULL AND json_type(attempt_metadata_json, '$.attempts') = 'array'
+            THEN MAX(1, json_array_length(attempt_metadata_json, '$.attempts'))
+            WHEN status IN ('dispatched','accepted','completed','failed','cancelled','interrupted')
+              AND terminal_kind IS NOT 'never-dispatched' THEN 1 ELSE 0 END
+          ),0) AS count FROM generation_attempts WHERE research_run_id = ?`)
+        .get(active.runId) as { count: number }).count;
+    return reserved.units - used;
   }
 
   private enforceRunawayBackstop(active: ActiveRun, provider: string, projection: number): void {
@@ -2034,7 +2516,7 @@ function runtimeStage(stageKey: string): RuntimeStage {
   if (stage === "query-plan") return "searching";
   if (stage === "factor-harvest") return "extracting";
   if (stage === "problem-candidates" || stage === "problem-kill") return "synthesizing-problems";
-  if (stage === "solutions") return "generating-options";
+  if (stage === "solutions" || stage === "solution-set-review") return "generating-options";
   if (stage === "risk-evaluation") return "evaluating-risk";
   if (stage === "decision-analysis") return "analyzing-option";
   return "queued";

@@ -3,12 +3,12 @@
   import {
     DEFAULT_RUN_CONFIG,
     modelRefKey,
-    sameModelRef,
     type ModelOption,
     type ModelRef,
     type RunConfig,
   } from "../../shared/schemas";
   import { modelDisplayName } from "../lib/research-defaults";
+  import { untrack } from "svelte";
 
   let {
     opportunities,
@@ -26,10 +26,12 @@
     onEdit: (command: OpportunityMembershipCommand) => Promise<void>;
   } = $props();
 
+  const savedConfig = untrack(() => initialConfig);
   let availableModels = $derived(modelOptions.filter((item) => item.providerId === "openai-subscription"));
-  let modelKey = $state("");
+  let modelKey = $state(savedConfig?.model ? modelRefKey(savedConfig.model) : "");
   let selectedModel = $derived(availableModels.find((item) => modelRefKey(item) === modelKey));
-  let reasoningEffort = $state(DEFAULT_RUN_CONFIG.reasoningEffort);
+  let reasoningEffort = $state(savedConfig?.reasoningEffort ?? DEFAULT_RUN_CONFIG.reasoningEffort);
+  let reasoningAvailable = $derived(selectedModel?.reasoningEfforts.some((item) => item.id === reasoningEffort) ?? false);
   let reviewModel = $derived<ModelRef>({
     providerId: selectedModel?.providerId ?? "",
     modelId: selectedModel?.modelId ?? "",
@@ -48,8 +50,6 @@
     ].sort().join("\u0000");
     if (nextIdentity === opportunityIdentity) return;
     opportunityIdentity = nextIdentity;
-    modelKey = "";
-    reasoningEffort = DEFAULT_RUN_CONFIG.reasoningEffort;
     editReason = "";
     targetByOption = {};
     relationByOption = {};
@@ -57,13 +57,9 @@
   });
 
   $effect(() => {
-    if (selectedModel || availableModels.length === 0) return;
-    const preferred = availableModels.find((item) => initialConfig && sameModelRef(item, initialConfig.model)) ?? availableModels[0];
-    if (!preferred) return;
-    modelKey = modelRefKey(preferred);
-    reasoningEffort = initialConfig && preferred.reasoningEfforts.some((item) => item.id === initialConfig.reasoningEffort)
-      ? initialConfig.reasoningEffort
-      : preferred.defaultReasoningEffort;
+    if (modelKey || !availableModels[0]) return;
+    modelKey = modelRefKey(availableModels[0]);
+    reasoningEffort = availableModels[0].defaultReasoningEffort;
   });
 
   function selectModel(): void {
@@ -134,18 +130,21 @@
     <label>
       <span>Review model</span>
       <select aria-label="Opportunity review model" bind:value={modelKey} onchange={selectModel} disabled={busy || availableModels.length === 0}>
+        {#if modelKey && !selectedModel}<option value={modelKey}>{modelDisplayName(savedConfig?.model ?? DEFAULT_RUN_CONFIG.model)} (unavailable)</option>{/if}
         {#each availableModels as item (modelRefKey(item))}<option value={modelRefKey(item)}>{modelDisplayName(item)}</option>{/each}
       </select>
     </label>
     <label>
       <span>Review reasoning</span>
       <select aria-label="Opportunity review reasoning" bind:value={reasoningEffort} disabled={busy || !selectedModel}>
+        {#if !reasoningAvailable}<option value={reasoningEffort}>{reasoningEffort} (unavailable)</option>{/if}
         {#each (selectedModel?.reasoningEfforts ?? []) as effort (effort.id)}<option value={effort.id}>{effort.id.charAt(0).toUpperCase() + effort.id.slice(1)}</option>{/each}
       </select>
     </label>
-    <button class="review-button" disabled={busy || !selectedModel || opportunities.unreviewedOptionIds.length === 0} onclick={() => onReview(reviewModel, reasoningEffort, opportunities.reviewStatus === "blocked")}>
+    <button class="review-button" disabled={busy || !selectedModel || !reasoningAvailable || opportunities.unreviewedOptionIds.length === 0} onclick={() => onReview(reviewModel, reasoningEffort, opportunities.reviewStatus === "blocked")}>
       {busy && opportunities.reviewStatus === "running" ? "Reviewing…" : opportunities.reviewStatus === "blocked" ? "Start a new review" : opportunities.unreviewedOptionIds.length > 0 ? `Review ${opportunities.unreviewedOptionIds.length} saved ${opportunities.unreviewedOptionIds.length === 1 ? "idea" : "ideas"}` : "Saved ideas reviewed"}
     </button>
+    {#if modelKey && !selectedModel}<p role="status">The saved review model is unavailable. Choose an available model to review ideas.</p>{:else if selectedModel && !reasoningAvailable}<p role="status">The saved reasoning effort is unavailable for this model. Choose an available effort to review ideas.</p>{/if}
   </div>
 
   {#if opportunities.reviewedOptionCount > 0}

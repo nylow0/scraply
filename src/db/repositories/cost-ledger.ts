@@ -20,8 +20,15 @@ export class CostLedgerRepository {
 
   countProviderCalls(runId: string, provider: string): number {
     const row = this.client.db.prepare(`
-      SELECT COUNT(*) AS count FROM cost_ledger
-      WHERE research_run_id = ? AND provider = ? AND status IN ('reserved', 'committed')
+      SELECT COALESCE(SUM(CASE
+        WHEN attempts.attempt_metadata_json IS NOT NULL
+          AND json_type(attempts.attempt_metadata_json, '$.attempts') = 'array'
+          THEN MAX(1, json_array_length(attempts.attempt_metadata_json, '$.attempts'))
+        ELSE 1 END), 0) AS count
+      FROM cost_ledger ledger
+      LEFT JOIN generation_attempts attempts ON attempts.id = ledger.generation_attempt_id
+      WHERE ledger.research_run_id = ? AND ledger.provider = ?
+        AND ledger.status IN ('reserved', 'committed')
     `).get(runId, provider) as { count: number };
     return row.count;
   }

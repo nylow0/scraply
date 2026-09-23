@@ -18,6 +18,7 @@ test("installed business review passes through the desktop bridge and renders th
     activeThreadId: "desktop-project", messages: [], scope: null, runConfig: DEFAULT_RUN_CONFIG,
     models: [DEFAULT_RUN_CONFIG.model], modelOptions: [model], modelCatalog: { models: [DEFAULT_RUN_CONFIG.model], favorites: [] }, presets: [],
     problemCandidates: [], rejectedProblemCandidates: [], latestResearchRun: null, pendingRuns: [],
+    researchRequests: [], researchFindings: [],
     solutions: [{ id: "option-1", problemId: "problem-1", problemStatement: "Repair approvals are delayed", problemVerdict: "insufficient-evidence", factors: [], mechanism: "Repair approval workflow", description: "Record the approval of a revised quote.", respectsOffLimits: true, respectsOffLimitsWhy: "Within scope", outcomes: [], risks: [], confirmedCoreOutcomes: 0, unaddressedCatastrophicRisks: 0 }],
     opportunityFamilies: {
       rawOptionCount: 1, reviewedOptionCount: reviewed ? 1 : 0, acceptedFamilyCount: reviewed ? 1 : 0,
