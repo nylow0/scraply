@@ -632,7 +632,7 @@ test("workspace keeps an earlier root idea after a new evidence snapshot while v
       'message-for-version', 'rethink', 'Try a queue', '{}', ?, 'completed', ?,
       'version-idea', ?, ?)
   `).run(session.id, sha256("{}"), JSON.stringify({
-    text: "Use a queue.", citedEvidenceIds: [], assumptions: [],
+    reply: "Use a queue.", citedEvidenceIds: [], assumptions: [],
     changeSummary: "Queue approvals", generatedSolutionId: "version-idea",
   }), now, now);
   client.db.prepare(`
@@ -700,6 +700,9 @@ test("workspace keeps an earlier root idea after a new evidence snapshot while v
       outputRefs: { runId: "completed-request-run", problemIds: ["completed-request-finding"] },
     });
   });
+  // Older root lineage rows may lack the snapshot even though the source run kept it.
+  client.db.prepare("UPDATE research_runs SET evidence_snapshot_id = ? WHERE id = 'root-run'")
+    .run(workflows.getSession(followupSession.id)!.activeSnapshotId);
   client.close();
 
   const workspaceResponse = await request("/workspace");
@@ -749,13 +752,14 @@ test("workspace keeps an earlier root idea after a new evidence snapshot while v
   const historyFile = exported.files.find((file) => file.filename === "idea-history.json");
   expect(historyFile).toBeDefined();
   const history = JSON.parse(historyFile!.content) as {
-    versions: Array<{ solutionId: string; rootSolutionId: string; turnId: string | null }>;
+    versions: Array<{ solutionId: string; rootSolutionId: string; turnId: string | null; evidenceSnapshotId: string | null }>;
     turns: Array<{ id: string; branchId: string; generatedSolutionId: string }>;
     evidenceSnapshots: Array<{ id: string; selection: { problemIds: string[] }; originMap: { problems: Record<string, unknown>; sources: Record<string, unknown> } }>;
     workflowOutcomes: Array<{ sessionId: string; purpose: string; state: string; activeSnapshotId: string | null;
       researchApplied?: boolean; targetKind?: string; requested?: number; accepted?: number; missing?: number }>;
   };
   expect(history.versions.map((version) => version.solutionId)).toEqual(["root-idea", "version-idea", "board-version-idea"]);
+  expect(history.versions[0]?.evidenceSnapshotId).toBe(history.evidenceSnapshots[0]!.id);
   expect(history.versions[1]).toMatchObject({ rootSolutionId: "root-idea", turnId: "turn-for-version" });
   expect(history.turns).toEqual(expect.arrayContaining([
     expect.objectContaining({ id: "turn-for-version", branchId: "branch-for-version", generatedSolutionId: "version-idea" }),
@@ -780,6 +784,7 @@ test("workspace keeps an earlier root idea after a new evidence snapshot while v
   const markdownHistory = markdownFiles.find((file) => file.filename === "idea-history.md")?.content;
   expect(markdownHistory).toContain("# Idea history");
   expect(markdownHistory).toContain("Conversation branch `branch-for-version`");
+  expect(markdownHistory).toContain("Use a queue.");
   expect(markdownHistory).toContain("Conversation branch `branch-for-board`");
   expect(markdownHistory).toContain("Selected findings:");
   expect(markdownHistory).toContain("Research applied: no.");

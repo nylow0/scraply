@@ -21,6 +21,7 @@ import { fillGenerationAngle, initialGenerationAngles } from "./idea-assignments
 import { loadManagedCoverageGaps, markManagedCoverageGapCovered, runManagedCoverageMap } from "./managed-coverage-map";
 import { loadManagedCoverageSearchSources, runManagedCoverageSearch } from "./managed-coverage-search";
 import { materializeResearchSnapshot } from "./research-revisions";
+import { remainingWorkflowMs as remainingMs } from "./workflow-time";
 import { DEFAULT_OPPORTUNITY_EXPLORATION_CONFIG, OpportunityExplorationConfigSchema } from "../shared/opportunity-exploration";
 
 export interface WorkflowCoordinatorOptions {
@@ -129,12 +130,12 @@ export class WorkflowCoordinator {
       const linkedRunning = this.repository.getWorkItem(running?.id ?? "");
       if (linkedRunning?.state === "running") {
         const runId = runIdFromItem(linkedRunning);
-        if (runId && this.hasUnknownAttempt(runId)) {
+        if (runId && this.repository.hasUnknownProviderCompletion(runId)) {
           this.options.db.immediateTransaction(() => {
             this.repository.updateWorkItem(linkedRunning.id, "unknown", {
               outputRefs: linkedRunning.outputRefs, error: { message: "A provider call may have completed while the app was closed." },
             });
-            this.settleTaskBudget(linkedRunning.id, "uncertain", this.providerAttemptCount(runId));
+            this.settleTaskBudget(linkedRunning.id, "uncertain", this.repository.countProviderAttempts(runId));
             this.repository.updateSession(session.id, session.revision, {
               state: "finished", outcome: "needs-attention", remainingMs: remainingMs(session),
             });
@@ -151,7 +152,7 @@ export class WorkflowCoordinator {
             this.repository.updateWorkItem(item.id, item.state === "running" ? "cancelled" : "skipped", {
               ...(runId ? { outputRefs: item.outputRefs } : {}), error: { message: "Stopped before the app restarted." },
             });
-            this.settleTaskBudget(item.id, runId ? "spent" : "released", runId ? this.providerAttemptCount(runId) : 0);
+            this.settleTaskBudget(item.id, runId ? "spent" : "released", runId ? this.repository.countProviderAttempts(runId) : 0);
             if (runId) this.options.db.db.prepare(`UPDATE research_runs SET status = 'cancelled', cancelled = 1,
               interrupted = 0, updated_at = ? WHERE id = ? AND status IN ('queued','running')`)
               .run(new Date().toISOString(), runId);
@@ -915,13 +916,13 @@ export class WorkflowCoordinator {
       else if (item.kind === "generate-ideas") this.completeGeneration(session, item, event.runId);
       return;
     }
-    const unknown = this.hasUnknownAttempt(event.runId);
+    const unknown = this.repository.hasUnknownProviderCompletion(event.runId);
     const skipped = this.options.db.immediateTransaction(() => {
       this.repository.updateWorkItem(item.id, unknown ? "unknown" : event.type === "run-cancelled" ? "cancelled" : "failed", {
         outputRefs: { runId: event.runId },
         error: { message: unknown ? "A dispatched provider result has no confirmed terminal record." : event.type === "run-failed" ? event.error : "Stopped by the user." },
       });
-      this.settleTaskBudget(item.id, unknown ? "uncertain" : "spent", this.providerAttemptCount(event.runId));
+      this.settleTaskBudget(item.id, unknown ? "uncertain" : "spent", this.repository.countProviderAttempts(event.runId));
       const skippedIds = this.skipReadyTasks(session.id, event.type === "run-cancelled" ? "session-stopped" : "upstream-failed");
       const outcome = unknown ? "needs-attention" : event.type === "run-cancelled" ? "cancelled" : "partial";
       this.repository.updateSession(session.id, session.revision, { state: "finished", outcome, remainingMs: remainingMs(session) });
@@ -943,7 +944,7 @@ export class WorkflowCoordinator {
       this.repository.updateWorkItem(item.id, "succeeded", {
         outputRefs: { runId, ...(selection ? { selection } : {}) },
       });
-      this.settleTaskBudget(item.id, "spent", this.providerAttemptCount(runId));
+      this.settleTaskBudget(item.id, "spent", this.repository.countProviderAttempts(runId));
       if (sourceIds.length === 0) {
         const state = stopped || contract.mode === "vibe"
           ? "finished" : session.state === "pause-requested" ? "paused" : "waiting-for-review";
@@ -1047,45 +1048,60 @@ export class WorkflowCoordinator {
       .get(workItemId) as { id: string; status: string; dispatched_at: string | null } | undefined ?? null;
   }
 
-  private async dispatchCoverageMap(sessionId: string, item: WorkflowWorkItem): Promise<void> {
+  private async dispatchCoverage(sessionId: string, item: WorkflowWorkItem): Promise<void> {
     if (this.dispatching.has(item.id)) return;
     const session = this.repository.getSession(sessionId);
     if (!session || session.state !== "running") return;
+    if (item.kind !== "coverage-map" && item.kind !== "coverage-search") throw new AppError("INVALID_REFERENCE");
     const contract = WorkflowLaunchContractSchema.parse(session.contract);
-    const input = item.input as { round: 1 | 2; model: WorkflowLaunchContract["runConfig"]["model"];
-      reasoningEffort: string };
-    const target = contract.targets.distinctBusinessCount ?? contract.targets.ideaCount;
-    const explorationConfig = contract.runConfig.opportunityExploration ?? OpportunityExplorationConfigSchema.parse({
-      ...DEFAULT_OPPORTUNITY_EXPLORATION_CONFIG,
-      targetFamilies: Math.max(2, target), maxRawCandidates: Math.min(60, 2 * Math.max(2, target)),
-      maxModelCalls: Math.min(40, contract.limits.maxModelCalls + session.additionalModelCalls),
-      maxSearches: Math.min(20, contract.limits.maxSearches + session.additionalSearches),
-    });
     this.dispatching.add(item.id);
     const controller = new AbortController();
     this.coverageControllers.set(item.id, controller);
     try {
       this.options.db.immediateTransaction(() => this.repository.updateWorkItem(item.id, "running"));
       this.progress(sessionId, [item.id]);
-      const result = await runManagedCoverageMap({
-        db: this.options.db, threadId: session.threadId, sessionId, workItemId: item.id, round: input.round,
-        explorationConfig,
-        ...(this.coverageAttempt(item.id)?.status === "completed" ? {}
-          : { modelClient: this.options.engine().scheduledWorkflowModelClient(session.threadId, input.model) }),
-        model: input.model, reasoningEffort: ReasoningEffortSchema.parse(input.reasoningEffort), signal: controller.signal,
-        onDispatched: (attemptId) => {
-          this.options.db.immediateTransaction(() => this.repository.linkCoverageAttemptToRunningWorkItem(item.id, attemptId));
-          this.progress(sessionId, [item.id]);
-        },
-      });
+      const onDispatched = (attemptId: string) => {
+        this.options.db.immediateTransaction(() => this.repository.linkCoverageAttemptToRunningWorkItem(item.id, attemptId));
+        this.progress(sessionId, [item.id]);
+      };
+      const replayed = this.coverageAttempt(item.id)?.status === "completed";
+      let attemptId: string;
+      let outputRefs: Record<string, unknown>;
+      if (item.kind === "coverage-map") {
+        const input = item.input as { round: 1 | 2; model: WorkflowLaunchContract["runConfig"]["model"];
+          reasoningEffort: string };
+        const target = contract.targets.distinctBusinessCount ?? contract.targets.ideaCount;
+        const explorationConfig = contract.runConfig.opportunityExploration ?? OpportunityExplorationConfigSchema.parse({
+          ...DEFAULT_OPPORTUNITY_EXPLORATION_CONFIG,
+          targetFamilies: Math.max(2, target), maxRawCandidates: Math.min(60, 2 * Math.max(2, target)),
+          maxModelCalls: Math.min(40, contract.limits.maxModelCalls + session.additionalModelCalls),
+          maxSearches: Math.min(20, contract.limits.maxSearches + session.additionalSearches),
+        });
+        const result = await runManagedCoverageMap({
+          db: this.options.db, threadId: session.threadId, sessionId, workItemId: item.id, round: input.round,
+          explorationConfig,
+          ...(replayed ? {} : { modelClient: this.options.engine().scheduledWorkflowModelClient(session.threadId, input.model) }),
+          model: input.model, reasoningEffort: ReasoningEffortSchema.parse(input.reasoningEffort),
+          signal: controller.signal, onDispatched,
+        });
+        attemptId = result.attemptId;
+        outputRefs = { attemptId, gapIds: result.gaps.map((gap) => gap.id), noUsefulGapReason: result.noUsefulGapReason };
+      } else {
+        const input = item.input as { gapId: string };
+        const result = await runManagedCoverageSearch({
+          db: this.options.db, threadId: session.threadId, sessionId, workItemId: item.id,
+          gapId: input.gapId, searchProvider: contract.runConfig.searchProvider,
+          ...(replayed ? {} : { searchClient: this.options.engine().workflowSearchClient(contract.runConfig.searchProvider) }),
+          signal: controller.signal, onDispatched,
+        });
+        attemptId = result.attemptId;
+        outputRefs = { attemptId, sourceIds: result.sources.map((source) => source.id), noEvidenceReason: result.noEvidenceReason };
+      }
       const current = this.repository.getSession(sessionId);
       if (!current || current.state === "finished") return;
       this.options.db.immediateTransaction(() => {
-        this.repository.updateWorkItem(item.id, "succeeded", { outputRefs: {
-          attemptId: result.attemptId, gapIds: result.gaps.map((gap) => gap.id),
-          noUsefulGapReason: result.noUsefulGapReason,
-        } });
-        this.settleTaskBudget(item.id, "spent", 1, result.attemptId);
+        this.repository.updateWorkItem(item.id, "succeeded", { outputRefs });
+        this.settleTaskBudget(item.id, "spent", 1, attemptId);
         this.repository.updateSession(sessionId, current.revision, {
           state: current.state === "stop-requested" ? "finished" : current.state === "pause-requested" ? "paused" : "running",
           ...(current.state === "stop-requested" ? { outcome: "cancelled" as const } : {}),
@@ -1106,74 +1122,7 @@ export class WorkflowCoordinator {
       this.options.db.immediateTransaction(() => {
         this.repository.updateWorkItem(item.id, current.state === "stop-requested" ? "cancelled" : unknown ? "unknown" : "failed", {
           outputRefs: attempt ? { attemptId: attempt.id } : null,
-          error: { message: unknown ? "Coverage mapping may have completed without a saved result. Review it before retrying."
-            : safeError(error) },
-        });
-        this.settleTaskBudget(item.id, unknown ? "uncertain" : spent ? "spent" : "released", spent ? 1 : 0, attempt?.id);
-        this.repository.updateSession(sessionId, current.revision, {
-          state: "finished", outcome: current.state === "stop-requested" ? "cancelled" : unknown ? "needs-attention" : "partial",
-          remainingMs: remainingMs(current),
-        });
-      });
-      this.progress(sessionId, [item.id]);
-    } finally {
-      this.coverageControllers.delete(item.id);
-      this.dispatching.delete(item.id);
-    }
-  }
-
-  private async dispatchCoverageSearch(sessionId: string, item: WorkflowWorkItem): Promise<void> {
-    if (this.dispatching.has(item.id)) return;
-    const session = this.repository.getSession(sessionId);
-    if (!session || session.state !== "running") return;
-    const contract = WorkflowLaunchContractSchema.parse(session.contract);
-    const input = item.input as { gapId: string };
-    this.dispatching.add(item.id);
-    const controller = new AbortController();
-    this.coverageControllers.set(item.id, controller);
-    try {
-      this.options.db.immediateTransaction(() => this.repository.updateWorkItem(item.id, "running"));
-      this.progress(sessionId, [item.id]);
-      const result = await runManagedCoverageSearch({
-        db: this.options.db, threadId: session.threadId, sessionId, workItemId: item.id,
-        gapId: input.gapId, searchProvider: contract.runConfig.searchProvider,
-        ...(this.coverageAttempt(item.id)?.status === "completed" ? {}
-          : { searchClient: this.options.engine().workflowSearchClient(contract.runConfig.searchProvider) }),
-        signal: controller.signal,
-        onDispatched: (attemptId) => {
-          this.options.db.immediateTransaction(() => this.repository.linkCoverageAttemptToRunningWorkItem(item.id, attemptId));
-          this.progress(sessionId, [item.id]);
-        },
-      });
-      const current = this.repository.getSession(sessionId);
-      if (!current || current.state === "finished") return;
-      this.options.db.immediateTransaction(() => {
-        this.repository.updateWorkItem(item.id, "succeeded", { outputRefs: {
-          attemptId: result.attemptId, sourceIds: result.sources.map((source) => source.id),
-          noEvidenceReason: result.noEvidenceReason,
-        } });
-        this.settleTaskBudget(item.id, "spent", 1, result.attemptId);
-        this.repository.updateSession(sessionId, current.revision, {
-          state: current.state === "stop-requested" ? "finished" : current.state === "pause-requested" ? "paused" : "running",
-          ...(current.state === "stop-requested" ? { outcome: "cancelled" as const } : {}),
-          remainingMs: remainingMs(current),
-          runningSince: current.state === "running" ? new Date().toISOString() : null,
-        });
-      });
-      this.progress(sessionId, [item.id]);
-      if (current.state === "running") this.finishCollection(sessionId);
-    } catch (error) {
-      this.options.onError?.(error);
-      const current = this.repository.getSession(sessionId);
-      const saved = this.repository.getWorkItem(item.id);
-      if (!current || current.state === "finished" || saved?.state !== "running") return;
-      const attempt = this.coverageAttempt(item.id);
-      const unknown = attempt?.status === "dispatched" || attempt?.status === "unknown-dispatch";
-      const spent = Boolean(attempt?.dispatched_at);
-      this.options.db.immediateTransaction(() => {
-        this.repository.updateWorkItem(item.id, current.state === "stop-requested" ? "cancelled" : unknown ? "unknown" : "failed", {
-          outputRefs: attempt ? { attemptId: attempt.id } : null,
-          error: { message: unknown ? "Evidence search may have completed without a saved result. Review it before retrying."
+          error: { message: unknown ? `${item.kind === "coverage-map" ? "Coverage mapping" : "Evidence search"} may have completed without a saved result. Review it before retrying.`
             : safeError(error) },
         });
         this.settleTaskBudget(item.id, unknown ? "uncertain" : spent ? "spent" : "released", spent ? 1 : 0, attempt?.id);
@@ -1227,8 +1176,7 @@ export class WorkflowCoordinator {
       ["coverage-map", "coverage-search"].includes(item.kind) && (item.state === "ready" || item.state === "running"));
     if (coverage) {
       if (coverage.state === "ready") {
-        if (coverage.kind === "coverage-map") void this.dispatchCoverageMap(sessionId, coverage);
-        else void this.dispatchCoverageSearch(sessionId, coverage);
+        void this.dispatchCoverage(sessionId, coverage);
       }
       return;
     }
@@ -1273,7 +1221,7 @@ export class WorkflowCoordinator {
         outputRefs: { runId, solutionIds: reviewed, proposedSolutionIds: allSolutions },
         ...(review ? {} : { error: { message: "Solution collection review was not saved." } }),
       });
-      this.settleTaskBudget(item.id, "spent", this.providerAttemptCount(runId));
+      this.settleTaskBudget(item.id, "spent", this.repository.countProviderAttempts(runId));
       this.repository.updateSession(session.id, session.revision, {
         remainingMs: remainingMs(session), runningSince: new Date().toISOString(),
       });
@@ -1380,7 +1328,7 @@ export class WorkflowCoordinator {
               return created;
             });
             this.progress(sessionId, [search.id]);
-            void this.dispatchCoverageSearch(sessionId, search);
+            void this.dispatchCoverage(sessionId, search);
             return;
           }
         } else if (mappedThisRound) {
@@ -1410,7 +1358,7 @@ export class WorkflowCoordinator {
             return created;
           });
           this.progress(sessionId, [map.id]);
-          void this.dispatchCoverageMap(sessionId, map);
+          void this.dispatchCoverage(sessionId, map);
           return;
         }
       }
@@ -1499,25 +1447,6 @@ export class WorkflowCoordinator {
     this.progress(sessionId, []);
   }
 
-  private providerAttemptCount(runId: string): number {
-    const rows = this.options.db.db.prepare(`SELECT attempt_metadata_json FROM generation_attempts WHERE research_run_id = ?`)
-      .all(runId) as Array<{ attempt_metadata_json: string | null }>;
-    return rows.reduce((sum, row) => {
-      if (!row.attempt_metadata_json) return sum;
-      const metadata = JSON.parse(row.attempt_metadata_json) as { attempts?: unknown[] };
-      return sum + (metadata.attempts?.length ?? 0);
-    }, 0);
-  }
-
-  private hasUnknownAttempt(runId: string): boolean {
-    const row = this.options.db.db.prepare(`SELECT 1 FROM generation_attempts
-      WHERE research_run_id = ? AND (
-        status IN ('dispatched','accepted')
-        OR (status = 'interrupted' AND terminal_kind IS NOT 'never-dispatched')
-      ) LIMIT 1`).get(runId);
-    return Boolean(row);
-  }
-
   private settleTaskBudget(taskId: string, state: "spent" | "uncertain" | "released", attempts: number,
     opportunityAttemptId?: string): void {
     const item = this.repository.getWorkItem(taskId);
@@ -1581,10 +1510,6 @@ function capabilityHash(capabilities: WorkflowCapabilities): string {
       defaultEffort: model.defaultReasoningEffort, efforts: model.reasoningEfforts.map((effort) => effort.id).sort() }))
       .sort((left, right) => left.id.localeCompare(right.id)),
   }));
-}
-
-function remainingMs(session: WorkflowSession): number {
-  return Math.max(0, session.remainingMs - (session.runningSince ? Date.now() - Date.parse(session.runningSince) : 0));
 }
 
 function questionFromItem(item: WorkflowWorkItem): string | undefined {

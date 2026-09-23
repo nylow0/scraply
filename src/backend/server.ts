@@ -857,21 +857,27 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
         unresolved: summary.counts.unresolved,
       };
     });
-    const versions = db.db.prepare(`SELECT lineage.* FROM solution_lineage lineage
+    const versions = db.db.prepare(`SELECT lineage.solution_id, lineage.root_solution_id,
+        lineage.parent_solution_id, lineage.version_number, lineage.turn_id,
+        CASE WHEN lineage.version_number = 1
+          THEN COALESCE(lineage.evidence_snapshot_id, run.evidence_snapshot_id)
+          ELSE lineage.evidence_snapshot_id END AS evidence_snapshot_id,
+        lineage.change_summary, lineage.created_at
+      FROM solution_lineage lineage
       JOIN solutions solution ON solution.id = lineage.solution_id
       JOIN research_runs run ON run.id = solution.research_run_id
       WHERE run.thread_id = ? ORDER BY lineage.root_solution_id, lineage.version_number`)
       .all(threadId) as Array<{ solution_id: string; root_solution_id: string; parent_solution_id: string | null;
         version_number: number; turn_id: string | null; evidence_snapshot_id: string | null;
         change_summary: string; created_at: string }>;
-    const standaloneRoots = db.db.prepare(`SELECT solution.id, solution.created_at
+    const standaloneRoots = db.db.prepare(`SELECT solution.id, solution.created_at, run.evidence_snapshot_id
       FROM solutions solution JOIN problems problem ON problem.id = solution.problem_id
       JOIN research_runs run ON run.id = solution.research_run_id
       WHERE run.thread_id = ? AND (run.status = 'completed' OR run.workflow_version = 2)
         AND (problem.selected_at IS NOT NULL OR run.workflow_version = 2)
         AND NOT EXISTS (SELECT 1 FROM solution_lineage lineage WHERE lineage.solution_id = solution.id)
       ORDER BY solution.created_at, solution.id`)
-      .all(threadId) as Array<{ id: string; created_at: string }>;
+      .all(threadId) as Array<{ id: string; created_at: string; evidence_snapshot_id: string | null }>;
     const turns = db.db.prepare(`SELECT turn.* FROM idea_turns turn
       JOIN solutions root ON root.id = turn.root_solution_id
       JOIN research_runs run ON run.id = root.research_run_id
@@ -895,7 +901,7 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
       selectedVersions: selections.map((row) => ({ rootSolutionId: row.root_solution_id, selectedSolutionId: row.selected_solution_id })),
       versions: [...versions, ...standaloneRoots.map((root) => ({
         solution_id: root.id, root_solution_id: root.id, parent_solution_id: null,
-        version_number: 1, turn_id: null, evidence_snapshot_id: null,
+        version_number: 1, turn_id: null, evidence_snapshot_id: root.evidence_snapshot_id,
         change_summary: "Original idea", created_at: root.created_at,
       }))].sort((left, right) => left.root_solution_id.localeCompare(right.root_solution_id)
         || left.version_number - right.version_number).map((row) => ({
@@ -959,12 +965,14 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
             `Evidence snapshot: ${turn.evidenceSnapshotId ? `\`${turn.evidenceSnapshotId}\`` : "none"}. Generated version: ${turn.generatedSolutionId ? `\`${turn.generatedSolutionId}\`` : "none"}.`,
             "", "**User**", "", markdownQuote(turn.userText), "");
           const assistant = turn.assistant && typeof turn.assistant === "object" ? turn.assistant as Record<string, unknown> : null;
-          if (assistant && typeof assistant.text === "string") {
-            lines.push("**Assistant**", "", markdownQuote(assistant.text), "");
-            if (Array.isArray(assistant.citedEvidenceIds) && assistant.citedEvidenceIds.length) {
+          const assistantText = typeof assistant?.reply === "string" ? assistant.reply
+            : typeof assistant?.text === "string" ? assistant.text : null;
+          if (assistantText !== null) {
+            lines.push("**Assistant**", "", markdownQuote(assistantText), "");
+            if (assistant && Array.isArray(assistant.citedEvidenceIds) && assistant.citedEvidenceIds.length) {
               lines.push(`Cited evidence: ${assistant.citedEvidenceIds.map((id) => `\`${String(id)}\``).join(", ")}.`, "");
             }
-            if (Array.isArray(assistant.assumptions) && assistant.assumptions.length) {
+            if (assistant && Array.isArray(assistant.assumptions) && assistant.assumptions.length) {
               lines.push("Assumptions:", "", ...assistant.assumptions.map((assumption) => `- ${String(assumption)}`), "");
             }
           }
