@@ -4,7 +4,7 @@ import { CostLedgerRepository } from "../db/repositories/cost-ledger";
 import { GenerationAttemptRepository } from "../db/repositories/generation-attempts";
 import { ResearchRunRepository } from "../db/repositories/research-runs";
 import { WorkflowV2Repository } from "../db/repositories/workflow-v2";
-import { WorkflowConflictError, WorkflowRepository, type IdeaTurn, type WorkflowSession } from "../db/repositories/workflows";
+import { WorkflowConflictError, WorkflowRepository, type IdeaTurn } from "../db/repositories/workflows";
 import { ProviderFailure, type GenerationAttemptMetadata, type StructuredModelClient } from "../providers/structured";
 import { canonicalJson, sha256 } from "../shared/content-identity";
 import { AppError } from "../shared/errors";
@@ -15,11 +15,13 @@ import {
   type IdeaConversation, type SubmitIdeaTurnRequest, type WorkflowSummary,
 } from "../shared/workflow-contracts";
 import { generateIdeaFollowUp, prepareIdeaFollowUp, type IdeaFollowUpInput, type PreparedIdeaFollowUp } from "./idea-conversation";
+import { remainingWorkflowMs } from "./workflow-time";
 
 interface SolutionRow {
   id: string;
   problem_id: string;
   research_run_id: string;
+  evidence_snapshot_id: string | null;
   thread_id: string;
   workflow_version: number;
   config_json: string;
@@ -106,7 +108,8 @@ export class IdeaConversationService {
       const original = this.savedModel(row);
       return {
         solutionId: version.solutionId, parentSolutionId: version.parentSolutionId,
-        versionNumber: version.versionNumber, evidenceSnapshotId: version.evidenceSnapshotId,
+        versionNumber: version.versionNumber,
+        evidenceSnapshotId: version.evidenceSnapshotId ?? (version.parentSolutionId ? null : row.evidence_snapshot_id),
         changeSummary: version.parentSolutionId ? version.changeSummary : null,
         mechanism: row.mechanism, description: row.description,
         reviewFreshness: reviewed.has(row.id) ? "current" as const
@@ -187,7 +190,7 @@ export class IdeaConversationService {
         this.runs.finish(item.run_id, "failed", message);
         const session = this.workflows.getSession(item.session_id)!;
         this.workflows.updateSession(session.id, session.revision, { state: "finished",
-          outcome: safe ? "failed" : "needs-attention", remainingMs: this.remainingMs(session), runningSince: null });
+          outcome: safe ? "failed" : "needs-attention", remainingMs: remainingWorkflowMs(session), runningSince: null });
       });
       settled.push(item.session_id);
       this.options.onProgress(item.session_id);
@@ -225,7 +228,8 @@ export class IdeaConversationService {
         this.requireProjectIdle(request.threadId);
         this.assertBranchHead(request, branch.branchId, branch.parentTurnId);
         if (!this.workflows.getSolutionLineage(root.id)) {
-          this.workflows.createSolutionLineage({ solutionId: root.id, rootSolutionId: root.id, changeSummary: "Original idea" });
+          this.workflows.createSolutionLineage({ solutionId: root.id, rootSolutionId: root.id,
+            evidenceSnapshotId: root.evidence_snapshot_id, changeSummary: "Original idea" });
         }
         const limits = { maxMinutes: request.allowance.maxMinutes, maxModelCalls: request.allowance.maxModelCalls, maxSearches: 0 };
         const session = this.workflows.createSession({
@@ -310,7 +314,7 @@ export class IdeaConversationService {
         missing: completed ? 0 : 1, existing: 0, addedBySession: created, total: created },
       limits: contract.limits,
       budget: { modelCalls: budget("model-call", contract.limits.maxModelCalls),
-        searches: budget("search", 0), remainingMs: this.remainingMs(session) },
+        searches: budget("search", 0), remainingMs: remainingWorkflowMs(session) },
       currentStage: items.find((item) => item.state === "running" || item.state === "ready")?.kind ?? null,
       stopReason: session.outcome ? errorMessage(items.find((item) => item.error)?.error) : null,
       startedAt: session.startedAt, finishedAt: session.finishedAt,
@@ -330,7 +334,7 @@ export class IdeaConversationService {
 
   private solution(id: string): SolutionRow | null {
     return this.options.db.db.prepare(`
-      SELECT s.*, rr.thread_id, rr.config_json, rr.workflow_version
+      SELECT s.*, rr.thread_id, rr.config_json, rr.workflow_version, rr.evidence_snapshot_id
       FROM solutions s JOIN research_runs rr ON rr.id = s.research_run_id WHERE s.id = ?
     `).get(id) as SolutionRow | undefined ?? null;
   }
@@ -390,9 +394,11 @@ export class IdeaConversationService {
       seen.add(current);
       const turn = this.workflows.getIdeaTurn(current);
       if (!turn || turn.rootSolutionId !== request.rootSolutionId) throw new AppError("INVALID_REFERENCE");
-      const assistant = turn.assistant as { text?: unknown } | null;
+      const assistant = turn.assistant as { reply?: unknown; text?: unknown } | null;
+      const assistantText = typeof assistant?.reply === "string" ? assistant.reply
+        : typeof assistant?.text === "string" ? assistant.text : null;
       history.unshift({ id: turn.id, userText: turn.userText,
-        assistantText: typeof assistant?.text === "string" ? assistant.text : null });
+        assistantText });
       current = turn.parentTurnId;
     }
     return {
@@ -469,11 +475,6 @@ export class IdeaConversationService {
     };
   }
 
-  private remainingMs(session: WorkflowSession): number {
-    const elapsed = session.runningSince ? Math.max(0, Date.now() - Date.parse(session.runningSince)) : 0;
-    return Math.max(0, session.remainingMs - elapsed);
-  }
-
   private async dispatch(pending: PendingDispatch): Promise<void> {
     if (this.dispatching.has(pending.turnId)) return;
     this.dispatching.add(pending.turnId);
@@ -530,7 +531,7 @@ export class IdeaConversationService {
           this.runs.finish(pending.runId, "completed");
           const session = this.workflows.getSession(pending.sessionId)!;
           this.workflows.updateSession(session.id, session.revision, { state: "finished", outcome: "target-met",
-            remainingMs: this.remainingMs(session), runningSince: null });
+            remainingMs: remainingWorkflowMs(session), runningSince: null });
         });
       });
     } catch (cause) {
@@ -580,7 +581,7 @@ export class IdeaConversationService {
       const session = this.workflows.getSession(pending.sessionId)!;
       this.workflows.updateSession(session.id, session.revision, { state: "finished",
         outcome: unknown ? "needs-attention" : cancelled ? "cancelled" : "failed",
-        remainingMs: this.remainingMs(session), runningSince: null });
+        remainingMs: remainingWorkflowMs(session), runningSince: null });
     });
   }
 }

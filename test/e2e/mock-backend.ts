@@ -1,6 +1,7 @@
 import { createServer } from "node:http";
 import { once } from "node:events";
 import { DEFAULT_RUN_CONFIG } from "../../src/shared/schemas";
+import { PreviewWorkflowRequestSchema, StartWorkflowRequestSchema, type WorkflowSummary } from "../../src/shared/workflow-contracts";
 
 export interface MockBackend {
   url: string; token: string; requests: Array<{ method: string; path: string; body: unknown }>;
@@ -27,10 +28,11 @@ export async function startMockBackend(options: { longIdeaTitle?: boolean } = {}
   let runConfig = DEFAULT_RUN_CONFIG;
   let status = "configuring";
   let discarded = false;
+  let workflowSummary: WorkflowSummary | null = null;
   const workspace = () => ({
     validation, threads: threads.map((thread) => ({ ...thread, status })), activeThreadId, messages: [], scope,
     runConfig: activeThreadId ? runConfig : null, models: [DEFAULT_RUN_CONFIG.model, { providerId: "openai-subscription", modelId: "gpt-6-astra" }], modelOptions: [{ ...DEFAULT_RUN_CONFIG.model, displayName: "GPT-5.6 Sol", defaultReasoningEffort: "medium", reasoningEfforts: [{ id: "medium", description: "Balanced reasoning" }] }, { providerId: "openai-subscription", modelId: "gpt-6-astra", displayName: "Astra", defaultReasoningEffort: "medium", reasoningEfforts: [{ id: "medium", description: "Balanced reasoning" }] }], modelCatalog: { models: [DEFAULT_RUN_CONFIG.model], favorites: [] }, presets: [],
-    problemCandidates: status !== "configuring" ? [problem] : [], rejectedProblemCandidates: status !== "configuring" ? [rejectedProblem] : [], solutions: status === "solutions-ready" ? [{ ...solution, discarded, mechanism: options.longIdeaTitle ? "Recruit people who recently encountered the problem and reconstruct the last occurrence, current workflow, consequences, frequency, workarounds, and the value of a shared supplier reliability ledger for independent repair shops." : solution.mechanism }] : [],
+    problemCandidates: status !== "configuring" ? [problem] : [], rejectedProblemCandidates: status !== "configuring" ? [rejectedProblem] : [], researchRequests: [], researchFindings: [], solutions: status === "solutions-ready" ? [{ ...solution, discarded, mechanism: options.longIdeaTitle ? "Recruit people who recently encountered the problem and reconstruct the last occurrence, current workflow, consequences, frequency, workarounds, and the value of a shared supplier reliability ledger for independent repair shops." : solution.mechanism }] : [],
     latestResearchRun: status === "configuring" ? null : { runId: "run-1", status: "completed", problemId: status === "solutions-ready" ? "problem-1" : null, codexCalls: 8, searches: 10, projectedCodexCalls: 20, projectedSearches: 20, lastActivity: "Problem verification completed" }, pendingRuns: [],
   });
   const server = createServer(async (req, res) => {
@@ -54,6 +56,36 @@ export async function startMockBackend(options: { longIdeaTitle?: boolean } = {}
     if (url.pathname === "/threads/delete") { threads.length = 0; activeThreadId = null; return ok(res, workspace()); }
     if (url.pathname === "/scope") { scope = (body as { scope: Record<string, unknown> }).scope; threads[0]!.title = String(scope.title); return ok(res, workspace()); }
     if (url.pathname === "/run-config") { runConfig = (body as { config: typeof DEFAULT_RUN_CONFIG }).config; return ok(res, workspace()); }
+    if (url.pathname === "/workflows/preview") {
+      const input = PreviewWorkflowRequestSchema.parse(body);
+      if (input.type !== "launch") return reply(res, 422, { ok: false, error: { code: "validation_error", message: "Expected a launch preview." } });
+      const proposal = {
+        ...input.draft,
+        resolvedInstructions: { research: "Fixture research", ideas: "Fixture ideas", review: "Fixture review" },
+        instructionHashes: { research: "fixture-research", ideas: "fixture-ideas", review: "fixture-review" },
+      };
+      return ok(res, { type: "launch", proposal, previewHash: "fixture-preview", capabilityFingerprint: "fixture-capabilities",
+        minimumWork: { modelCalls: 1, searches: 1 }, upperLimits: proposal.limits, fieldErrors: [], expiresAt: "2099-01-01T00:00:00.000Z" });
+    }
+    if (url.pathname === "/workflows/start") {
+      const input = StartWorkflowRequestSchema.parse(body);
+      status = "problems-ready";
+      workflowSummary = {
+        sessionId: "fixture-session", threadId: input.threadId, purpose: input.contract.purpose, mode: input.contract.mode,
+        targetKind: input.contract.targets.kind, state: "waiting-for-review", outcome: null, revision: 1,
+        activeSnapshotId: "fixture-snapshot", selectedProblemIds: [],
+        counts: { requested: input.contract.targets.ideaCount, attempted: 0, validated: 0, accepted: 0,
+          duplicate: 0, unresolved: 0, failed: 0, missing: input.contract.targets.ideaCount,
+          existing: 0, addedBySession: 0, total: 0 },
+        limits: input.contract.limits,
+        budget: { modelCalls: { limit: input.contract.limits.maxModelCalls, spent: 1, reserved: 0, uncertain: 0 },
+          searches: { limit: input.contract.limits.maxSearches, spent: 1, reserved: 0, uncertain: 0 },
+          remainingMs: input.contract.limits.maxMinutes * 60_000 },
+        currentStage: null, stopReason: null, startedAt: now, finishedAt: null,
+      };
+      return ok(res, { sessionId: workflowSummary.sessionId, revision: workflowSummary.revision, summary: workflowSummary });
+    }
+    if (url.pathname === "/workflows/fixture-session" && workflowSummary) return ok(res, { summary: workflowSummary, tasks: [], nextCursor: null });
     if (url.pathname === "/models/favorite") return ok(res, workspace());
     if (url.pathname === "/research/start") { status = "problems-ready"; return ok(res, { runId: "run-1", workspace: workspace() }); }
     if (url.pathname === "/research/select-problems") { status = "solutions-ready"; return ok(res, workspace()); }

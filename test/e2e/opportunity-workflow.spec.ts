@@ -48,6 +48,7 @@ test("installed business review passes through the desktop bridge and renders th
   try {
     const electron = await app.launch({ ...process.env, SCRAPLY_E2E: "1", SCRAPLY_E2E_BACKEND_URL: `http://127.0.0.1:${address.port}`, SCRAPLY_E2E_BACKEND_TOKEN: "opportunity-desktop-fixture" });
     const page = await electron.firstWindow();
+    await page.locator("details.grouping > summary").click();
     await page.getByRole("button", { name: "Review 1 saved idea", exact: true }).click();
     await expect(page.getByText("Quote approvals", { exact: true })).toBeVisible();
     expect(requests).toContain("/opportunities/review");
