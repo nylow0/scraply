@@ -26,8 +26,9 @@ use std::{collections::BTreeMap, path::PathBuf, sync::Arc, time::Duration};
 pub const OPENAI_SUBSCRIPTION_PROVIDER_ID: &str = "openai-subscription";
 const CHATGPT_CODEX_BASE_URL: &str = "https://chatgpt.com/backend-api/codex";
 const ACCOUNT_ID_HEADER: &str = "chatgpt-account-id";
-// Catalog visibility is version-gated; 0.144.4 omits Astra for entitled accounts.
-const MODEL_CATALOG_CLIENT_VERSION: &str = "0.153.4";
+// Subscription catalog visibility is version-gated; use a client version that
+// includes the September 2026 GPT-6 Sol and Luna release.
+const MODEL_CATALOG_CLIENT_VERSION: &str = "0.156.1";
 const MAX_SESSION_CREDENTIAL_BYTES: usize = 64 * 1024;
 static EPHEMERAL_AUTH_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
@@ -1081,12 +1082,12 @@ mod tests {
                 request.extend_from_slice(&buffer[..count]);
             }
             let request = String::from_utf8(request).unwrap();
-            // The live catalog omits these models for the old 0.144.4 query.
+            // Recent GPT-6 models are not offered to older catalog clients.
             let mut models = vec![
                 json!({"slug":"gpt-reserve","visibility":"hide"}),
                 json!({"slug":"gpt-5.6-sol","visibility":"list"}),
             ];
-            if request.starts_with("GET /models?client_version=0.153.4 ") {
+            if request.starts_with("GET /models?client_version=0.156.1 ") {
                 models.push(json!({"slug":"gpt-6-astra","visibility":"list","supported_reasoning_levels":[{"effort":"low"}]}));
                 models.push(json!({"slug":"gpt-6-sol","visibility":"hide","supported_reasoning_levels":[{"effort":"medium"}]}));
                 models.push(json!({"slug":"gpt-6-luna","visibility":"list","supported_reasoning_levels":[{"effort":"high"}]}));

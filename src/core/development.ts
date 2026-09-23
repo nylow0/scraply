@@ -195,8 +195,18 @@ export async function produceDevelopmentOptions(
   };
   const usesFocusedDemandTests = dependencies.explorationPurpose === "startup-opportunities"
     && dependencies.focusedExperiments === true;
+  const autoUsesFocusedDemandTests = dependencies.explorationPurpose === "auto"
+    && dependencies.focusedExperiments === true;
   const generationAngle = dependencies.generationAngle
     ? WorkflowGenerationAngleSchema.parse(dependencies.generationAngle) : undefined;
+  const autoStartupDetailsSchema = startupDetailsSchema.extend({
+    opportunityType: z.literal("startup-opportunity"),
+  });
+  const autoStartupOptionSchema = WorkflowV2StartupSolutionOptionSchema.extend({
+    ...evidenceFields,
+    startupOpportunity: autoStartupDetailsSchema,
+    ...(autoUsesFocusedDemandTests ? { focusedDemandTest: FocusedDemandTestSchema } : {}),
+  });
   const optionSchema = usesFocusedDemandTests
     ? WorkflowV2StartupSolutionOptionSchema.extend({
         ...evidenceFields,
@@ -205,7 +215,12 @@ export async function produceDevelopmentOptions(
       })
     : dependencies.explorationPurpose === "startup-opportunities"
       ? WorkflowV2StartupSolutionOptionSchema.extend({ ...evidenceFields, startupOpportunity: startupDetailsSchema })
-      : WorkflowV2SolutionOptionSchema.extend(evidenceFields);
+      : dependencies.explorationPurpose === "auto"
+        ? z.union([
+            autoStartupOptionSchema,
+            WorkflowV2SolutionOptionSchema.extend(evidenceFields),
+          ])
+        : WorkflowV2SolutionOptionSchema.extend(evidenceFields);
   const outputSchema = WorkflowV2SolutionsOutputSchema.extend({
     options: z.array(optionSchema).max(ideaCount),
   });
@@ -228,15 +243,18 @@ export async function produceDevelopmentOptions(
         ...(generationAngle ? { generationAngle } : {}),
         ...(context.generationEvidence?.length
           ? { generationEvidenceSourceIds: context.generationEvidence.map((item) => item.sourceId) } : {}),
-        ...(dependencies.explorationPurpose === "startup-opportunities"
-          ? { explorationPurpose: dependencies.explorationPurpose }
-          : {}),
-        ...(usesFocusedDemandTests ? { focusedExperimentVersion: 1 } : {}),
+        ...(dependencies.explorationPurpose ? { explorationPurpose: dependencies.explorationPurpose } : {}),
+        ...(usesFocusedDemandTests || autoUsesFocusedDemandTests ? { focusedExperimentVersion: 1 } : {}),
       },
       requiredDecisions: [
         "Whether the current approach already suffices.",
         "Which assumptions and unknowns make each mechanism worth testing.",
         ...(generationAngle ? ["How each mechanism addresses the named buyer and workflow gap."] : []),
+        ...(dependencies.explorationPurpose === "auto" ? [
+          "What outcome does the user's original scope and selected problem ask for: an improvement to an existing workflow, a standalone business, or both?",
+          "For each proposed standalone business, identify a buyer, sellable workflow, existing substitute, and a demand test that could disconfirm it.",
+          ...(autoUsesFocusedDemandTests ? ["For each standalone business, choose the primary demand assumption and a short test that could disconfirm it."] : []),
+        ] : []),
         ...(usesFocusedDemandTests
           ? [
               "Which category describes each option, who would pay, and what demand result would disconfirm it.",
@@ -249,6 +267,11 @@ export async function produceDevelopmentOptions(
       definitionOfDone: [
         `Aim for ${ideaCount} distinct ideas, but return fewer or none rather than padding the list. Do not rank or select them.`,
         "Reference only IDs in evidenceSourceIds. When that list is empty, both evidence-ID arrays must be empty.",
+        ...(dependencies.explorationPurpose === "auto" ? [
+          "Match the user's requested outcome. Return practical improvements without startupOpportunity; attach startupOpportunity only to a plausible standalone business.",
+          "Do not turn a product change, process improvement, or incumbent configuration into a startup business to fill the idea count.",
+          ...(autoUsesFocusedDemandTests ? ["Give every startup business one structured focusedDemandTest; practical improvements do not need one."] : []),
+        ] : []),
         ...(context.generationEvidence?.length
           ? ["Gap search excerpts are leads, not proof of demand or mechanism value; cite only what each saved source actually says."] : []),
         ...(usesFocusedDemandTests
@@ -283,8 +306,9 @@ export async function produceDevelopmentOptions(
   try {
     output = outputSchema.parse(completion.output);
     assertWorkflowV2SolutionsSemantics(output, boundedEvidence, ideaCount);
-    if (usesFocusedDemandTests) {
+    if (usesFocusedDemandTests || autoUsesFocusedDemandTests) {
       for (const option of output.options) {
+        if (autoUsesFocusedDemandTests && !option.startupOpportunity) continue;
         if (!("focusedDemandTest" in option)) throw new Error("A focused startup option is missing its short demand test");
         assertFocusedDemandTestSemantics(FocusedDemandTestSchema.parse(option.focusedDemandTest));
       }

@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { GenerationMetadata, StructuredModelClient, StructuredStageRequest } from "../providers/structured";
 import { deriveJsonSchema } from "../shared/json-schema";
-import type { ModelRef, ReasoningEffort } from "../shared/schemas";
+import type { ExplorationPurpose, ModelRef, ReasoningEffort } from "../shared/schemas";
 import {
   WorkflowV2SolutionSetReviewOutputSchema,
   type WorkflowV2SolutionOption,
@@ -27,6 +27,7 @@ export interface SolutionSetReviewInput {
   problem: unknown;
   projectConstraints: unknown;
   savedInstructions: string;
+  explorationPurpose?: ExplorationPurpose;
   startupOnly?: boolean;
   evidence: ReadonlyArray<{ sourceId: string; content: unknown }>;
   model: ModelRef;
@@ -104,10 +105,18 @@ export function prepareSolutionSetReview(input: SolutionSetReviewInput): Prepare
         input.startupOnly ? "For this startup collection, use each candidate's startupOpportunity details. "
           + "A process improvement or incumbent configuration cannot count as a distinct startup business. "
           + "Compare paying customer, trigger, existing substitute, smallest sellable workflow, first customer route, "
-          + "gap evidence, and disconfirming demand test." : ""].filter(Boolean).join("\n\n"),
+          + "gap evidence, and disconfirming demand test." : "",
+        input.explorationPurpose === "auto" ? "Use the original project scope and selected problem to judge the user's requested outcome. "
+          + "Reject a process-only idea for an exclusively business brief, or an unrelated business for a practical-improvement brief. "
+          + "Practical improvements and standalone businesses can coexist when the brief supports both. "
+          + "Only candidates with startupOpportunity.opportunityType startup-opportunity are businesses; "
+          + "check their buyer, substitute, sellable workflow, and demand test without treating unsupported demand as proven." : "",
+      ].filter(Boolean).join("\n\n"),
       goal: input.startupOnly
         ? "Classify each proposed startup business against accepted project families and this batch."
-        : "Classify every proposed practical solution against the accepted project inventory and this batch.",
+        : input.explorationPurpose === "auto"
+          ? "Classify each proposed idea against the user's brief, accepted project inventory, and this batch."
+          : "Classify every proposed practical solution against the accepted project inventory and this batch.",
       inputs: {
         candidateIds,
         candidates: input.candidates,
@@ -117,12 +126,14 @@ export function prepareSolutionSetReview(input: SolutionSetReviewInput): Prepare
         problem: input.problem,
         projectConstraints: input.projectConstraints,
         evidenceSourceIds,
+        ...(input.explorationPurpose ? { explorationPurpose: input.explorationPurpose } : {}),
         startupOnly: input.startupOnly === true,
       },
       definitionOfDone: [
         "Assess each candidate ID exactly once and cite only supplied evidence IDs.",
         "Accept only a useful, distinct mechanism. Explain the concrete difference.",
         "Match duplicates and variants to an existing root or earlier candidate.",
+        ...(input.explorationPurpose === "auto" ? ["Assess fit to the user's stated outcome; do not treat a process change as a business opportunity or invent a paying customer."] : []),
         ...(input.startupOnly ? ["Accept only a distinct startup business with startupOpportunity.opportunityType startup-opportunity."] : []),
       ],
       constraints: [

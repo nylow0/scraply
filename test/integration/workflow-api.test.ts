@@ -80,6 +80,7 @@ test("workflow preview, start, detail, and workspace use the same saved session"
   expect(previewResponse.status).toBe(200);
   const preview = PreviewWorkflowResultSchema.parse((await previewResponse.json() as { data: unknown }).data);
   expect(preview.fieldErrors).toEqual([]);
+  expect(WorkflowLaunchContractSchema.parse(preview.proposal).runConfig.explorationPurpose).toBe("auto");
 
   const start = {
     threadId, clientCommandId: "launch-command-1", contract: preview.proposal,

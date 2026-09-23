@@ -24,7 +24,7 @@ async function waitUntil(predicate: () => boolean): Promise<void> {
   expect(predicate()).toBe(true);
 }
 
-test("a workflow development run checkpoints collection decisions before completion", async () => {
+test("a workflow development run reuses its saved review after prompt and inputs evolve", async () => {
   configurePromptPaths({ bundledDir: join(process.cwd(), "prompts"), overrideDir: null });
   const directory = mkdtempSync(join(tmpdir(), "scraply-solution-review-"));
   directories.push(directory);
@@ -72,6 +72,12 @@ test("a workflow development run checkpoints collection decisions before complet
           .toContain(generationEvidence[0]!.text);
       }
       if (request.stage === "solutions") await solutionsGate;
+      if (request.stage === "solution-set-review") {
+        // Model transport receives the same work order later saved in the
+        // checkpoint. Keep this fixture's review in the pre-intent format.
+        delete (request.workOrder.inputs as Record<string, unknown>).explorationPurpose;
+        request.workOrder.instruction = "Earlier review instructions without an output-intent rule.";
+      }
       request.onDispatched?.();
       request.onAccepted?.({});
       const output = request.stage === "solutions"
@@ -162,6 +168,19 @@ test("a workflow development run checkpoints collection decisions before complet
       { stage_key: "solutions", status: "completed" },
       { stage_key: "solution-set-review", status: "completed" },
     ]);
+
+    const savedReview = db.db.prepare(`SELECT input_json, effective_request_json FROM stage_results
+      WHERE research_run_id = ? AND stage_id = 'solution-set-review'`).get(runId) as {
+      input_json: string; effective_request_json: string;
+    };
+    expect(JSON.parse(savedReview.input_json)).not.toHaveProperty("explorationPurpose");
+    expect(savedReview.effective_request_json).toContain("Earlier review instructions");
+    db.db.prepare("UPDATE research_runs SET status = 'failed', awaiting_selection = 0 WHERE id = ?").run(runId);
+    await engine.resumeRun(runId);
+    await waitUntil(() => !engine.getActiveRunIds().has(runId));
+    expect(db.db.prepare("SELECT status FROM research_runs WHERE id = ?").get(runId))
+      .toMatchObject({ status: "completed" });
+    expect(stages).toEqual(["solutions:fixture", "solution-set-review:fixture-review"]);
   } finally {
     await engine.shutdown();
     db.close();

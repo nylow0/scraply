@@ -88,7 +88,7 @@ describe("SolutionListItem risk summary", () => {
 });
 
 describe("SolutionWorkspace ordering explanation", () => {
-  test("shows opportunity families only for startup opportunities", () => {
+  test("shows business grouping when automatic output contains startups", () => {
     const opportunities: OpportunityFamiliesView = {
       rawOptionCount: 1, reviewedOptionCount: 0, acceptedFamilyCount: 0,
       families: [], unresolved: [], unreviewedOptionIds: ["solution-1"],
@@ -101,15 +101,15 @@ describe("SolutionWorkspace ordering explanation", () => {
       onEditMembership: vi.fn().mockResolvedValue(undefined),
       onExport: vi.fn(), onOpenSource: vi.fn(), onReview: vi.fn(),
     };
-    const practical = render(SolutionWorkspace, props);
+    const practical = render(SolutionWorkspace, {
+      ...props, opportunities: { ...opportunities, rawOptionCount: 0, unreviewedOptionIds: [] },
+    });
     expect(practical.queryByText("0 accepted families")).toBeNull();
     expect(practical.queryByRole("button", { name: "Review 1 saved idea" })).toBeNull();
     expect(practical.getByText("Supplier reliability ledger")).toBeTruthy();
     practical.unmount();
 
-    const startup = render(SolutionWorkspace, {
-      ...props, initialConfig: { ...DEFAULT_RUN_CONFIG, explorationPurpose: "startup-opportunities" as const },
-    });
+    const startup = render(SolutionWorkspace, props);
     expect(startup.getByText("0 accepted families")).toBeTruthy();
     expect(startup.getByRole("button", { name: "Review 1 saved idea" })).toBeTruthy();
   });

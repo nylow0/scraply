@@ -146,7 +146,7 @@
 
 <section class="research-revisions" aria-label="Research revisions">
   <header class="section-header">
-    <div><h2>Research requests</h2><p>{readOnly ? "Saved research and evidence from this project." : "Ask another question or revisit a finding. Results stay separate until you use them."}</p></div>
+    <div><h2>Research requests</h2><p>{readOnly ? "Follow-up requests saved with this project." : "Ask another question or revisit a finding. Results stay separate until you use them."}</p></div>
     {#if !readOnly}<button class="add-button" type="button" disabled={busy || submitting} onclick={() => { chooseKind("new-question"); drafting = !drafting; }}>
       {drafting ? "Close request" : "Add research"}
     </button>{/if}
@@ -208,6 +208,12 @@
     </form>
   {/if}
 
+  {#if requests.length === 0}
+    <div class="requests-empty" role="status">
+      <strong>No additional research requests</strong>
+      <p>{readOnly ? "This project has no saved follow-up research." : "Add research to ask another question or revisit a finding."}</p>
+    </div>
+  {:else}
   <div class="revision-layout">
     <div class="request-list" aria-label="Saved research requests">
       <div class="list-heading"><strong>Saved requests</strong><span>{requests.length}</span></div>
@@ -221,8 +227,6 @@
             <label class="include-toggle"><input type="checkbox" checked={includedIds.includes(request.id)} disabled={busy || applying} onchange={() => toggleIncluded(request.id)} /><span>Include</span></label>
           {/if}
         </div>
-      {:else}
-        <p class="empty-list">The original discovery is saved. Add a request to investigate another question or revisit a finding.</p>
       {/each}
     </div>
 
@@ -281,6 +285,7 @@
       {/if}
     </div>
   </div>
+  {/if}
 
   {#if !readOnly && includedRequests.length > 0}
     <footer class="apply-bar"><p><strong>{includedRequests.length}</strong> {includedRequests.length === 1 ? "result" : "results"} selected for the next snapshot. Earlier research remains in the archive.</p><button class="primary" type="button" disabled={!canApply} onclick={applyResults}>{applying ? "Applying…" : "Use selected results"}</button></footer>
@@ -316,13 +321,14 @@
   .angle-preview{display:grid;gap:9px;padding:14px;border:1px solid var(--border-strong);border-radius:9px;background:var(--surface)}.preview-heading{display:flex;justify-content:space-between;gap:12px;color:var(--text);font-size:12px}.preview-heading span{color:var(--muted);font-size:11px}.preview-row{display:flex;gap:10px;align-items:start;padding:7px 0;border-top:1px solid var(--border);font-size:12px}.preview-dot{width:6px;height:6px;margin-top:6px;border-radius:50%;background:var(--accent);flex:none}.preview-row strong{display:block;font-weight:600}.preview-row small{display:block;color:var(--subtle);line-height:1.45;margin-top:3px}.preview-gap,.preview-omitted{margin:0;color:var(--muted);font-size:12px}.preview-omitted{display:grid;gap:3px;padding-top:8px;border-top:1px solid var(--border)}.preview-omitted strong{color:#f0b9a1}.angle-results{display:grid;gap:8px;margin:0 0 16px;padding:13px;border:1px solid var(--border);border-radius:9px;background:var(--surface)}.angle-results>strong{font-size:11px}.angle-result{display:grid;grid-template-columns:1fr auto;gap:3px;padding-top:8px;border-top:1px solid var(--border);font-size:12px}.angle-result small{display:block;color:var(--subtle);margin-top:2px}.angle-result em{font-style:normal;color:var(--accent);text-transform:capitalize;font-size:11px}.angle-result p{grid-column:1/-1;margin:2px 0 0;color:var(--muted);font-size:11px}.angle-result .gap-text{color:#f0b9a1}.angle-sources{grid-column:1/-1;display:grid;gap:4px;margin:4px 0 0;padding:0;list-style:none}.angle-sources button{padding:0;border:0;background:transparent;color:var(--accent);font-size:11px;text-align:left;cursor:pointer}.angle-sources button:hover{text-decoration:underline}
   .form-actions{display:flex;align-items:center;justify-content:space-between;gap:14px;color:var(--subtle);font-size:12px;border-top:1px solid var(--border);padding-top:14px}
   .primary{padding:10px 15px;border:0;border-radius:8px;background:var(--accent-strong);color:var(--accent-ink);font-size:13px;font-weight:650;white-space:nowrap}
+  .requests-empty{padding:19px 21px;border:1px solid var(--border);border-radius:10px;background:#000}
+  .requests-empty strong{font-size:13px}.requests-empty p{margin:4px 0 0;color:var(--muted);font-size:13px}
   .revision-layout{display:grid;grid-template-columns:minmax(240px,.7fr) minmax(0,1.3fr);min-height:260px;border:1px solid var(--border-strong);border-radius:12px;overflow:hidden;background:#000}
   .request-list{border-right:1px solid var(--border-strong);background:var(--surface)}.list-heading{display:flex;justify-content:space-between;padding:15px 17px;border-bottom:1px solid var(--border);font-size:12px;color:var(--muted)}
   .request-row{display:flex;align-items:center;gap:6px;border-bottom:1px solid var(--border)}.request-row.active{background:#71cfba0d;box-shadow:inset 2px 0 var(--accent)}
   .request-select{flex:1;min-width:0;text-align:left;background:transparent;border:0;color:var(--text);padding:14px 17px}
   .request-name{display:block;font-size:13px;font-weight:600;line-height:1.4}.request-meta{display:block;margin-top:5px;font-size:11px;color:var(--muted)}
   .include-toggle{display:grid;justify-items:center;gap:2px;padding:7px 10px 7px 0;color:var(--subtle);font-size:10px;cursor:pointer}.include-toggle input{accent-color:var(--accent)}
-  .empty-list{margin:0;padding:19px 17px;color:var(--muted);font-size:13px}
   .request-detail{padding:22px;min-width:0}.detail-head{display:flex;align-items:center;gap:8px;color:var(--muted);font-size:11px}.status-dot{width:7px;height:7px;border-radius:50%;background:var(--muted)}.status-dot.complete{background:var(--accent)}
   .request-detail h3{margin:8px 0 16px}.detail-empty{max-width:45ch;margin:auto;padding:30px 0}.detail-empty h3{margin:0 0 7px}.detail-empty p,.detail-message{color:var(--muted);font-size:13px;margin:0}
   .comparison{display:grid;grid-template-columns:1fr 1fr;gap:10px}.finding,.new-findings{padding:15px;border:1px solid var(--border);border-radius:9px;background:var(--surface)}.finding.proposed{border-color:#71cfba50}

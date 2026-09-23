@@ -19,7 +19,7 @@ export const SourceDetailSchema = SourceSchema.extend({
 
 export const DiscoveryDepthSchema = z.enum(["quick", "standard", "deep"]);
 export const ResearchModeSchema = z.enum(["explore-market", "known-problem"]);
-export const ExplorationPurposeSchema = z.enum(["general-solutions", "startup-opportunities"]);
+export const ExplorationPurposeSchema = z.enum(["auto", "general-solutions", "startup-opportunities"]);
 export const ReasoningEffortSchema = z.string().trim().min(1).regex(/^[a-z0-9_-]+$/);
 export const ProviderIdSchema = z.string().trim().min(1).regex(/^[a-z0-9_-]+$/);
 export const ModelRefSchema = z.object({
@@ -91,7 +91,7 @@ export const DEFAULT_RUN_CONFIG = {
   searchProvider: "exa",
   researchMode: "explore-market",
   knownProblem: "",
-  explorationPurpose: "general-solutions",
+  explorationPurpose: "auto",
 } satisfies RunConfig;
 
 export const ModelOptionSchema = z.object({

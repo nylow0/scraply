@@ -120,7 +120,7 @@
       <h2 id="opportunity-review-title">{opportunities.acceptedFamilyCount} accepted {opportunities.acceptedFamilyCount === 1 ? "family" : "families"}</h2>
       <p>{opportunities.reviewedOptionCount}/{opportunities.rawOptionCount} saved ideas reviewed. Variants and duplicates stay visible without increasing the family count.</p>
     </div>
-    <span class:warning={opportunities.reviewStatus === "failed" || opportunities.reviewStatus === "blocked"} class="status">{opportunities.reviewStatus.replace("-", " ")}</span>
+    <span class:warning={opportunities.reviewStatus === "failed" || opportunities.reviewStatus === "blocked" || opportunities.unresolved.length > 0} class="status">{opportunities.reviewStatus === "completed" && opportunities.unresolved.length > 0 ? `${opportunities.unresolved.length} need a decision` : opportunities.reviewStatus === "not-reviewed" ? "Not reviewed" : opportunities.reviewStatus.charAt(0).toUpperCase() + opportunities.reviewStatus.slice(1)}</span>
   </header>
 
   {#if opportunities.reviewError}<p class="review-error" role="alert">{opportunities.reviewError}</p>{/if}
@@ -150,8 +150,9 @@
   {#if opportunities.reviewedOptionCount > 0}
     <label class="decision-note">
       <span>Reason for a grouping change</span>
-      <input bind:value={editReason} maxlength="2000" placeholder="Describe the overlap, distinction, or uncertainty" disabled={busy} />
+      <input bind:value={editReason} maxlength="2000" placeholder="Describe the overlap, distinction, or uncertainty" aria-describedby="grouping-reason-help" disabled={busy} />
     </label>
+    <small id="grouping-reason-help" class="decision-help">Add a reason to enable manual decisions. Scraply saves it with each change.</small>
   {/if}
 
   <div class="families">
@@ -196,17 +197,20 @@
   {#if opportunities.unresolved.length > 0}
     <section class="unresolved" aria-labelledby="unresolved-title">
       <h3 id="unresolved-title">Needs a human decision <span>{opportunities.unresolved.length}</span></h3>
+      {#if !reason()}<p class="decision-hint">Enter a reason above to enable these decisions.</p>{/if}
       {#each opportunities.unresolved as item (item.membership.optionId)}
         <article>
-          <div><h4>{item.membership.mechanism}</h4><p>{item.membership.description}</p><small>{item.membership.reason}</small></div>
+          <details class="candidate-detail"><summary>{item.membership.mechanism}</summary><div><p>{item.membership.description}</p><p>{item.membership.reason}</p></div></details>
           <div class="member-actions">
-            <select aria-label={`Relationship for ${item.membership.mechanism}`} value={relationFor(item.membership.optionId)} onchange={(event) => updateRelation(item.membership.optionId, event)} disabled={busy}>
-              <option value="variant">Variant</option><option value="duplicate">Duplicate</option>
-            </select>
-            <select aria-label={`Move ${item.membership.mechanism} to family`} value={targetFor(item.membership.optionId)} onchange={(event) => updateTarget(item.membership.optionId, event)} disabled={busy}>
-              {#each opportunities.families.filter((family) => family.active) as family (family.id)}<option value={family.id}>{family.title}</option>{/each}
-            </select>
-            <button disabled={busy || !reason() || !targetFor(item.membership.optionId)} onclick={() => move(item.membership.optionId)}>Assign</button>
+            {#if opportunities.families.some((family) => family.active)}
+              <select aria-label={`Relationship for ${item.membership.mechanism}`} value={relationFor(item.membership.optionId)} onchange={(event) => updateRelation(item.membership.optionId, event)} disabled={busy}>
+                <option value="variant">Variant</option><option value="duplicate">Duplicate</option>
+              </select>
+              <select aria-label={`Move ${item.membership.mechanism} to family`} value={targetFor(item.membership.optionId)} onchange={(event) => updateTarget(item.membership.optionId, event)} disabled={busy}>
+                {#each opportunities.families.filter((family) => family.active) as family (family.id)}<option value={family.id}>{family.title}</option>{/each}
+              </select>
+              <button disabled={busy || !reason() || !targetFor(item.membership.optionId)} onclick={() => move(item.membership.optionId)}>Assign</button>
+            {/if}
             <button disabled={busy || !reason()} onclick={() => split(item.membership.optionId, item.membership.mechanism, item.membership.description)}>Keep separate</button>
           </div>
         </article>
@@ -218,11 +222,11 @@
 <style>
   .opportunity-review { margin:26px 0;padding:22px;border:1px solid var(--border);border-radius:14px;background:#000; }
   header { display:flex;align-items:flex-start;justify-content:space-between;gap:20px; }
-  h2,h3,h4,p { margin:0; }
+  h2,h3,p { margin:0; }
   h2 { margin-top:5px;font-size:22px;letter-spacing:-.025em; }
   header p:last-child { margin-top:8px;max-width:72ch;color:var(--muted);font-size:13px;line-height:1.6; }
   .eyebrow { color:var(--accent-strong);font-size:11px;font-weight:700;letter-spacing:.12em;text-transform:uppercase; }
-  .status { flex:none;padding:5px 8px;border:1px solid #71cfba45;border-radius:999px;color:#9ee1d1;font-size:11px;text-transform:capitalize; }
+  .status { flex:none;padding:5px 8px;border:1px solid #71cfba45;border-radius:999px;color:#9ee1d1;font-size:11px; }
   .status.warning { border-color:#d69b5c66;color:#e4b46f; }
   .review-error,.retry-warning { margin-top:14px;padding:10px 12px;border:1px solid #d69b5c55;border-radius:8px;background:#d69b5c0c;color:#e4b46f;font-size:13px; }
   .retry-warning { margin-top:8px;line-height:1.55; }
@@ -233,6 +237,7 @@
   button:disabled { opacity:.45; }
   .review-button { min-height:36px;border-color:#71cfba55;background:#71cfba18;color:var(--accent-strong);font-weight:650; }
   .decision-note { margin-top:12px; }
+  .decision-help { display:block;margin-top:6px;color:var(--subtle);font-size:12px;line-height:1.5; }
   .families { display:grid;gap:10px;margin-top:16px; }
   .families > article,.unresolved > article { border:1px solid var(--border);border-radius:11px;background:var(--surface); }
   .families > article.uncounted { border-color:#d69b5c4f; }
@@ -253,8 +258,12 @@
   .unresolved { display:grid;gap:9px;margin-top:18px;padding-top:18px;border-top:1px solid var(--border); }
   .unresolved > h3 { font-size:14px; }.unresolved > h3 span { color:#e4b46f; }
   .unresolved > article { display:grid;gap:12px;padding:14px; }
-  .unresolved h4 { font-size:13px; }.unresolved p,.unresolved small { display:block;margin-top:5px;color:var(--muted);font-size:12px;line-height:1.5; }
-  .unresolved small { color:var(--subtle); }
+  .decision-hint { margin:0;color:var(--subtle);font-size:12px; }
+  .candidate-detail { border:0; }
+  .candidate-detail summary { display:list-item;padding:0 0 0 17px;color:var(--text);font-size:13px;font-weight:600;line-height:1.5; }
+  .candidate-detail > div { display:grid;gap:8px;margin:10px 0 0 17px; }
+  .candidate-detail p { margin:0;color:var(--muted);font-size:12px;line-height:1.55; }
+  .candidate-detail p:last-child { color:var(--subtle); }
   .unresolved .member-actions { padding:0; }
   @media(max-width:760px) { .review-controls { grid-template-columns:1fr; }.family-heading { flex-direction:column; }.family-heading > span { align-self:flex-start; } }
 </style>

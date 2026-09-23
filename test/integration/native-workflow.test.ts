@@ -104,7 +104,7 @@ describe("native research workflow through the production backend", () => {
 
   test("discovers, selects an adverse premise, develops, exports, and reopens without replay", async () => {
     const item = await fixture();
-    const threadId = await item.createThread("explore-market");
+    const threadId = await item.createThread("explore-market", 3, "auto");
     const { runId } = await item.post("/research/start", { threadId }, z.object({ runId: z.string() }));
     const discovered = await item.waitFor((state) => state.threads.find((thread) => thread.id === threadId)?.status === "problems-ready");
     expect(discovered.problemCandidates).toHaveLength(1);
@@ -113,7 +113,8 @@ describe("native research workflow through the production backend", () => {
     expect(discovered.problemCandidates[0]?.factors).toHaveLength(2);
     expect(item.searches).toHaveLength(6);
 
-    await item.post("/research/select-problems", { threadId, problemIds: [discovered.problemCandidates[0]!.id], userProblem: null, model, reasoningEffort: "medium" }, WorkspaceStateSchema);
+    await item.post("/research/select-problems", { threadId, problemIds: [discovered.problemCandidates[0]!.id], userProblem: null,
+      model, reasoningEffort: "medium", explorationPurpose: "startup-opportunities" }, WorkspaceStateSchema);
     const options = await item.waitFor((state) => state.threads.find((thread) => thread.id === threadId)?.status === "solutions-ready");
     expect(options.solutions).toHaveLength(2);
     const selected = options.solutions[0]!;
@@ -149,6 +150,8 @@ describe("native research workflow through the production backend", () => {
     const requests = item.requests();
     expect(requests).toHaveLength(10); // Five discovery calls, options, risk, focused draft/review, and analysis.
     expect(requests.filter((request) => request.workOrder.stage === "solutions")).toHaveLength(1);
+    expect(requests.find((request) => request.workOrder.stage === "solutions")?.workOrder.inputs)
+      .toMatchObject({ explorationPurpose: "auto" });
     const reused = await item.post("/research/select-problems", {
       threadId,
       problemIds: [discovered.problemCandidates[0]!.id],
@@ -750,7 +753,7 @@ async function fixture({ mode = "workflow", searchEnabled = true, workflowVersio
     async createThread(
       researchMode: "explore-market" | "known-problem",
       ideaCount = 3,
-      explorationPurpose: "general-solutions" | "startup-opportunities" = "general-solutions",
+      explorationPurpose: "auto" | "general-solutions" | "startup-opportunities" = "general-solutions",
     ) {
       const created = await post("/threads", { title: scope.title }, z.object({ thread: z.object({ id: z.string() }) }));
       const threadId = created.thread.id;

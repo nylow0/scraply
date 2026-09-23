@@ -146,7 +146,7 @@
     </div>
   </header>
 
-  {#if initialConfig?.explorationPurpose === "startup-opportunities" && opportunities && onReviewOpportunities && onEditMembership}
+  {#if opportunities && onReviewOpportunities && onEditMembership && (initialConfig?.explorationPurpose === "startup-opportunities" || opportunities.rawOptionCount > 0 || opportunities.families.some((family) => family.active) || opportunities.unresolved.length > 0)}
     <OpportunityFamilies {opportunities} {modelOptions} initialConfig={initialConfig ?? null} busy={busy || analysisBlocked || opportunityReviewRunning} onReview={onReviewOpportunities} onEdit={onEditMembership} />
   {/if}
 

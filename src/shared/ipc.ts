@@ -98,6 +98,7 @@ export const SelectProblemsSchema = z.object({
   userProblem: z.string().trim().max(2_000).nullable(),
   model: ModelRefSchema,
   reasoningEffort: ReasoningEffortSchema,
+  // Older renderers sent this choice; the saved run configuration now owns intent.
   explorationPurpose: ExplorationPurposeSchema.optional(),
 }).strict();
 export const ExportIdeasRequestSchema = z.object({ threadId: EntityIdSchema, format: z.enum(["markdown", "json"]).default("markdown") });

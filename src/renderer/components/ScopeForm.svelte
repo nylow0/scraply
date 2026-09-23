@@ -42,9 +42,12 @@
   const defaults = untrack(readResearchDefaults);
   const startingModel = initial.scope ? initial.runConfig?.model : defaults.model;
   let researchMode = $state<ResearchMode>(initial.runConfig?.researchMode ?? "explore-market");
-  let explorationPurpose = $state<ExplorationPurpose>(initial.runConfig?.explorationPurpose ?? "general-solutions");
   const initialOpportunityExploration = initial.runConfig?.opportunityExploration;
   let opportunityTargetEnabled = $state(Boolean(initialOpportunityExploration));
+  let businessTargetOpen = $state(Boolean(initialOpportunityExploration));
+  let purposeOverride = $state<ExplorationPurpose | null>(null);
+  let explorationPurpose = $derived<ExplorationPurpose>(opportunityTargetEnabled
+    ? "startup-opportunities" : purposeOverride ?? initial.runConfig?.explorationPurpose ?? "auto");
   let targetFamilies = $state(initialOpportunityExploration?.targetFamilies ?? DEFAULT_OPPORTUNITY_EXPLORATION_CONFIG.targetFamilies);
   let batchSize = $state(initialOpportunityExploration?.batchSize ?? DEFAULT_OPPORTUNITY_EXPLORATION_CONFIG.batchSize);
   let maxModelCalls = $state(initialOpportunityExploration?.maxModelCalls ?? DEFAULT_OPPORTUNITY_EXPLORATION_CONFIG.maxModelCalls);
@@ -60,6 +63,8 @@
   let ideaCount = $state<number | undefined>(initial.runConfig?.ideaCount ?? DEFAULT_IDEA_COUNT);
   let offLimits = $state(initial.scope?.offLimits.join("\n") ?? "");
   let knownProblem = $state(initial.runConfig?.knownProblem ?? "");
+  let knownProblemTouched = $state(false);
+  let domainTouched = $state(false);
   const legacyModelNeedsReplacement = initial.runConfig?.model.providerId === "legacy-codex-cli";
   let initialModel = startingModel
     ?? (initial.models.some((model) => sameModelRef(model, DEFAULT_RUN_CONFIG.model))
@@ -97,7 +102,7 @@
   let discoveryReservation = $derived(researchMode === "known-problem"
     ? { modelCalls: 0, searches: 0 }
     : { modelCalls: discoveryRunProjection(discoveryDepth).modelCalls * 2, searches: discoveryRunProjection(discoveryDepth).searches });
-  let projectTargetEnabled = $derived(explorationPurpose === "startup-opportunities" && opportunityTargetEnabled);
+  let projectTargetEnabled = $derived(opportunityTargetEnabled);
   let projectInitialBatchCalls = $derived.by(() => {
     if (!projectTargetEnabled || !Number.isInteger(targetFamilies) || targetFamilies < 2 || targetFamilies > 30) return 0;
     const possibleProblems = researchMode === "known-problem" ? 1 : workflowMode === "vibe" ? automaticProblemCap : 1;
@@ -177,6 +182,8 @@
         : workspace.validation.native.error ?? (nativeModelOptions.length === 0 ? "No compatible models are available" : null));
   let locked = $derived(busy || submitting);
   let errors = $derived(validationAttempted || useWorkflow ? missingFields() : {});
+  let knownProblemError = $derived(validationAttempted || knownProblemTouched ? errors.knownProblem : undefined);
+  let domainError = $derived(validationAttempted || domainTouched ? errors.domain : undefined);
   let ideaModelAvailable = $derived(Boolean(ideaModelOption) && workspace.models.some((item) => sameModelRef(item, ideaModel)));
   let ideaReasoningAvailable = $derived(ideaModelOption?.reasoningEfforts.some((item) => item.id === ideaReasoningEffort) ?? false);
   let workflowDraft = $derived(buildWorkflowDraft());
@@ -248,7 +255,7 @@
         kind: opportunityExploration ? "project" : "per-problem",
         ideaCount: ideaCount ?? DEFAULT_IDEA_COUNT,
         ...(opportunityExploration ? { distinctBusinessCount: targetFamilies } : {}),
-        ...(workflowMode === "vibe" ? { automaticProblemCap } : {}),
+        ...(workflowMode === "vibe" && researchMode === "explore-market" ? { automaticProblemCap } : {}),
       },
       limits: { maxMinutes: maxRunMinutes, maxModelCalls: workflowModelLimit, maxSearches: workflowSearchLimit },
       instructions: { research: researchInstruction.trim(), ideas: ideasInstruction.trim(), review: reviewInstruction.trim() },
@@ -299,10 +306,17 @@
       if (workflowMode === "vibe") {
         if (!ideaModelAvailable) next.ideaModel = "Choose an available ideas model.";
         else if (!ideaReasoningAvailable) next.ideaReasoning = "Choose an available reasoning effort for ideas.";
-        if (!Number.isInteger(automaticProblemCap) || automaticProblemCap < 1 || automaticProblemCap > 20) next.automaticProblemCap = "Choose 1 to 20 problems.";
+        if (researchMode === "explore-market" && (!Number.isInteger(automaticProblemCap) || automaticProblemCap < 1 || automaticProblemCap > 20)) next.automaticProblemCap = "Choose 1 to 20 problems.";
       }
     }
     return next;
+  }
+
+  function launchSteps(): string {
+    if (researchMode === "known-problem") {
+      return workflowMode === "vibe" ? "Use your stated problem, generate, and review" : "Use your stated problem, then wait for your choices";
+    }
+    return workflowMode === "vibe" ? "Research, select, generate, and review" : "Research, then wait for your selection";
   }
 
   async function saveAndStart() {
@@ -348,7 +362,7 @@
   <form onsubmit={(event) => { event.preventDefault(); void saveAndStart(); }}>
     <div class="brief-column">
       {#if useWorkflow}
-        <fieldset class="workflow-mode" aria-label="How should Scraply run?">
+        <fieldset class="choice-group workflow-mode">
           <legend>How should Scraply run?</legend>
           <label class:active={workflowMode === "babysit"}>
             <input type="radio" name="workflow-mode" value="babysit" checked={workflowMode === "babysit"} onchange={() => workflowMode = "babysit"} />
@@ -360,27 +374,27 @@
           </label>
         </fieldset>
       {/if}
-      <fieldset class="mode-picker">
+      <fieldset class="choice-group mode-picker">
         <legend>Starting point</legend>
         <label class:active={researchMode === "explore-market"}>
           <input type="radio" name="research-mode" value="explore-market" checked={researchMode === "explore-market"} onchange={() => researchMode = "explore-market"} />
-          <Icon name="research" size={22} /><span><strong>Find problems to solve</strong><small>Research a topic or audience, then choose a problem.</small></span>
+          <span><strong>Find problems to solve</strong><small>Research a topic or audience, then choose a problem.</small></span>
         </label>
         <label class:active={researchMode === "known-problem"}>
           <input type="radio" name="research-mode" value="known-problem" checked={researchMode === "known-problem"} onchange={() => researchMode = "known-problem"} />
-          <Icon name="ideas" size={22} /><span><strong>I have a problem to solve</strong><small>Describe your problem and go straight to solutions.</small></span>
+          <span><strong>I have a problem to solve</strong><small>Describe your problem and go straight to solutions.</small></span>
         </label>
       </fieldset>
-      <fieldset class="purpose-picker">
-        <legend>What should the options be?</legend>
-        <label class:active={explorationPurpose === "general-solutions"}><input type="radio" name="exploration-purpose" value="general-solutions" checked={explorationPurpose === "general-solutions"} onchange={() => explorationPurpose = "general-solutions"} /><span><strong>Practical solutions</strong><small>Include product changes, process improvements, and configurations.</small></span></label>
-        <label class:active={explorationPurpose === "startup-opportunities"}><input type="radio" name="exploration-purpose" value="startup-opportunities" checked={explorationPurpose === "startup-opportunities"} onchange={() => explorationPurpose = "startup-opportunities"} /><span><strong>Startup opportunities</strong><small>Require a paying customer, market gap, sellable workflow, and first customer route.</small></span></label>
-      </fieldset>
-      {#if explorationPurpose === "startup-opportunities"}
+      {#if !opportunityTargetEnabled && explorationPurpose !== "auto"}
+        <p class="saved-purpose-note">This saved project asks for {explorationPurpose === "startup-opportunities" ? "startup opportunities" : "practical solutions"}. <button type="button" onclick={() => purposeOverride = "auto"}>Follow the brief instead</button></p>
+      {/if}
+      <details class="business-target" bind:open={businessTargetOpen}>
+        <summary>Distinct business target {opportunityTargetEnabled ? `· On (${targetFamilies})` : "(optional)"}</summary>
         <section class="opportunity-target" aria-label="Distinct opportunity target">
+          <p class="business-target-intro">{opportunityTargetEnabled ? "This target asks specifically for startup businesses." : explorationPurpose === "auto" ? "Leave this off to let Scraply follow your brief." : "This saved project keeps its previous output rule until you choose to follow the brief."} Use it only if you need a set number of distinct businesses.</p>
           <label class="target-toggle">
-            <input type="checkbox" bind:checked={opportunityTargetEnabled} />
-            <span><strong>Build a project-wide set of distinct businesses</strong><small>Review families across problems, then expand only into named gaps while the saved budget remains.</small></span>
+            <input type="checkbox" checked={opportunityTargetEnabled} onchange={(event) => { opportunityTargetEnabled = event.currentTarget.checked; if (!opportunityTargetEnabled) purposeOverride = "auto"; }} />
+            <span><strong>Find distinct businesses across this project</strong><small>Group similar ideas, then explore gaps within your saved limits.</small></span>
           </label>
           {#if opportunityTargetEnabled}
             <div class="target-grid">
@@ -395,16 +409,16 @@
             <label class="exploratory-toggle"><input type="checkbox" bind:checked={allowExploratoryProblems} /><span><strong>Allow exploratory problem hypotheses</strong><small>Use only after the researched map is exhausted. Scraply labels these permanently and does not invent evidence for them.</small></span></label>
           {/if}
         </section>
-      {/if}
+      </details>
       <section class="brief-panel" aria-label="Research brief">
     <div class="primary-fields">
       <label><span>Research name</span><input bind:value={title} aria-invalid={Boolean(errors.title)} aria-describedby={errors.title ? "title-error" : undefined} placeholder="Give this research a name, or leave blank" />{#if errors.title}<small id="title-error" class="field-error">{errors.title}</small>{/if}</label>
       {#if researchMode === "known-problem"}
-        <label class="problem-field"><span>Problem statement</span><small>Used as your starting premise, without discovery.</small><textarea bind:value={knownProblem} aria-invalid={Boolean(errors.knownProblem)} aria-describedby={errors.knownProblem ? "known-problem-error" : undefined} rows="4" placeholder="Describe the problem."></textarea>{#if errors.knownProblem}<small id="known-problem-error" class="field-error">{errors.knownProblem}</small>{/if}</label>
+        <label class="problem-field"><span>Problem statement</span><small>Used as your starting premise, without discovery.</small><textarea bind:value={knownProblem} onblur={() => knownProblemTouched = true} aria-invalid={Boolean(knownProblemError)} aria-describedby={knownProblemError ? "known-problem-error" : undefined} rows="4" placeholder="Describe the problem."></textarea>{#if knownProblemError}<small id="known-problem-error" class="field-error">{knownProblemError}</small>{/if}</label>
       {/if}
-      <label class:discovery-context={researchMode === "explore-market"}><span>{researchMode === "explore-market" ? "What do you want to explore?" : "Market or domain (optional)"}</span>{#if researchMode === "explore-market"}<small>Use whatever starting point you have: a goal, competition, topic, audience, market, rough idea, or something more specific.</small>{/if}<textarea bind:value={domain} aria-invalid={Boolean(errors.domain)} aria-describedby={errors.domain ? "domain-error" : undefined} rows={researchMode === "explore-market" ? 4 : 2} placeholder={researchMode === "explore-market" ? "Your topic or idea" : "Market or field"}></textarea>{#if errors.domain}<small id="domain-error" class="field-error">{errors.domain}</small>{/if}</label>
+      <label class:discovery-context={researchMode === "explore-market"}><span>{researchMode === "explore-market" ? "What do you want to explore?" : "Market or domain (optional)"}</span>{#if researchMode === "explore-market"}<small>Use whatever starting point you have: a goal, competition, topic, audience, market, rough idea, or something more specific.</small>{/if}<textarea bind:value={domain} onblur={() => domainTouched = true} aria-invalid={Boolean(domainError)} aria-describedby={domainError ? "domain-error" : undefined} rows={researchMode === "explore-market" ? 4 : 2} placeholder={researchMode === "explore-market" ? "Your topic or idea" : "Market or field"}></textarea>{#if domainError}<small id="domain-error" class="field-error">{domainError}</small>{/if}</label>
       <label><span>{researchMode === "explore-market" ? "People or groups (optional)" : "Audience (optional)"}</span><input bind:value={audience} placeholder={researchMode === "explore-market" ? "Who is this for?" : "Who is affected?"} /></label>
-      <label class="problem-field"><span>What should we evaluate risk against?</span><textarea bind:value={riskEvaluationCriteria} maxlength="4000" rows="3" placeholder="What matters most: time, budget, or other limits?"></textarea></label>
+      <label class="problem-field"><span>Risk priorities (optional)</span><textarea bind:value={riskEvaluationCriteria} maxlength="4000" rows="3" placeholder="What matters most: time, budget, or other limits?"></textarea></label>
     </div>
 
 
@@ -441,7 +455,7 @@
           {#each (ideaModelOption?.reasoningEfforts ?? []) as effort (effort.id)}<option value={effort.id}>{effort.id.charAt(0).toUpperCase() + effort.id.slice(1)}</option>{/each}
         </select></label>
         {#if errors.ideaReasoning}<small class="field-error">{errors.ideaReasoning}</small>{/if}
-        <p>Review uses the same model and reasoning. Babysit lets you choose the ideas model after research.</p>
+        <p>Review uses this ideas model and reasoning.</p>
       </section>
     {:else if useWorkflow}
       <p class="ideas-later">Choose the ideas model after reviewing research.</p>
@@ -478,14 +492,18 @@
           <label><span>Time limit (minutes)</span><input aria-label="Time limit" type="number" min="5" max="240" step="1" bind:value={maxRunMinutes} aria-invalid={Boolean(errors.maxRunMinutes)} />{#if errors.maxRunMinutes}<small class="field-error">{errors.maxRunMinutes}</small>{/if}</label>
           <label><span>Maximum model calls</span><input aria-label="Maximum model calls" type="number" min="1" step="1" bind:value={workflowModelLimit} oninput={() => workflowModelLimitTouched = true} aria-invalid={Boolean(errors.workflowModelLimit || previewIssue("limits.maxModelCalls"))} />{#if errors.workflowModelLimit || previewIssue("limits.maxModelCalls")}<small class="field-error">{errors.workflowModelLimit ?? previewIssue("limits.maxModelCalls")}</small>{/if}</label>
           <label><span>Maximum searches</span><input aria-label="Maximum searches" type="number" min="0" step="1" bind:value={workflowSearchLimit} oninput={() => workflowSearchLimitTouched = true} aria-invalid={Boolean(errors.workflowSearchLimit || previewIssue("limits.maxSearches"))} />{#if errors.workflowSearchLimit || previewIssue("limits.maxSearches")}<small class="field-error">{errors.workflowSearchLimit ?? previewIssue("limits.maxSearches")}</small>{/if}</label>
-          {#if workflowMode === "vibe"}<label><span>Automatic problem cap</span><input aria-label="Automatic problem cap" type="number" min="1" max="20" step="1" bind:value={automaticProblemCap} aria-invalid={Boolean(errors.automaticProblemCap)} />{#if errors.automaticProblemCap}<small class="field-error">{errors.automaticProblemCap}</small>{/if}</label>{/if}
+          {#if workflowMode === "vibe" && researchMode === "explore-market"}<label><span>Automatic problem cap</span><input aria-label="Automatic problem cap" type="number" min="1" max="20" step="1" bind:value={automaticProblemCap} aria-invalid={Boolean(errors.automaticProblemCap)} />{#if errors.automaticProblemCap}<small class="field-error">{errors.automaticProblemCap}</small>{/if}</label>{/if}
         </div>
       </details>
       <div class="launch-preview" role="status">
         {#if previewing}<span>Checking the launch plan…</span>
         {:else if previewError}<span class="field-error">{previewError}</span>
-        {:else if workflowPreviewValid && workflowPreview}<span>{workflowMode === "vibe" ? "Research, select, generate, and review" : "Research, then wait for your selection"}. Target: {opportunityExploration ? `${targetFamilies} distinct businesses` : `${ideaCount} ideas per problem`}. Up to {workflowModelLimit} model calls, {workflowSearchLimit} {workflowSearchLimit === 1 ? "search" : "searches"}, and {maxRunMinutes} minutes.</span>
-        {:else}<span>Complete the brief and model choices to check the launch plan.</span>{/if}
+        {:else if workflowPreviewValid && workflowPreview}<span>{launchSteps()}. Target: {opportunityExploration ? `${targetFamilies} distinct businesses` : `${ideaCount} ${ideaCount === 1 ? "idea" : "ideas"} per problem`}. Up to {workflowModelLimit} model calls, {workflowSearchLimit} {workflowSearchLimit === 1 ? "search" : "searches"}, and {maxRunMinutes} minutes.</span>
+        {:else if !providersReady}<span>Connect the required providers and choose an available research model.</span>
+        {:else if missingFields().knownProblem}<span>Describe the problem to check the launch plan.</span>
+        {:else if missingFields().domain}<span>Add a starting topic or audience to check the launch plan.</span>
+        {:else if Object.keys(missingFields()).length > 0}<span>Check the highlighted settings to continue.</span>
+        {:else}<span>Preparing the launch plan…</span>{/if}
         {#if workflowPreview && workflowPreview.fieldErrors.length > 0}
           <ul>{#each workflowPreview.fieldErrors.filter((issue) => !["limits.maxModelCalls", "limits.maxSearches", "ideas.model"].includes(issue.path.join("."))) as issue (`${issue.path.join(".")}:${issue.code}`)}<li>{issue.message}</li>{/each}</ul>
         {:else if workflowPreviewValid && workflowPreview}<small>Minimum required: {workflowPreview.minimumWork.modelCalls} model calls and {workflowPreview.minimumWork.searches} {workflowPreview.minimumWork.searches === 1 ? "search" : "searches"}. Work stops at your saved limits.</small>{/if}
@@ -527,36 +545,25 @@
   .scope-page { max-width:1250px;margin:0 auto;padding:24px var(--page-inline) 48px; }
   form { display:grid;grid-template-columns:minmax(0,1fr) 265px;gap:32px;align-items:start; }
   .brief-column { min-width:0; }
-  fieldset { border:0;padding:0;margin:0 0 24px; }
-  legend { position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%); }
-  .workflow-mode { display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:22px; }
-  .workflow-mode legend { position:static;width:auto;height:auto;overflow:visible;clip-path:none;grid-column:1/-1;margin-bottom:10px;color:var(--text);font-size:14px;font-weight:650; }
-  .workflow-mode label { position:relative;display:flex;padding:14px;border:1px solid var(--border-strong);border-radius:8px;background:#000;cursor:pointer; }
-  .workflow-mode label.active { border-color:var(--accent);background:#07130f; }
-  .workflow-mode label > span { display:grid;gap:5px; }
-  .workflow-mode strong { font-size:14px; }
-  .workflow-mode small { font-size:12px; }
-  .workflow-mode input { position:absolute;width:1px;height:1px;clip-path:inset(50%); }
-  .workflow-mode label:focus-within { outline:2px solid var(--accent);outline-offset:3px; }
-  .mode-picker { display:grid;grid-template-columns:1fr 1fr;gap:10px; }
-  .mode-picker label { position:relative;display:flex;gap:12px;align-items:center;padding:16px 14px;border:1px solid var(--border-strong);border-radius:8px;background:var(--bg);cursor:pointer; }
-  .mode-picker label.active { border-color:var(--accent);background:#081610; }
-  .mode-picker label > :global(svg) { color:var(--muted);flex:none; }
-  .mode-picker label.active > :global(svg) { color:var(--accent-strong); }
-  .mode-picker label > span { display:grid;gap:5px;flex:1; }
-  .mode-picker small { font-size:12px;font-weight:400;line-height:1.5; }
-  .mode-picker input { position:absolute;width:1px;height:1px;padding:0;border:0;clip-path:inset(50%);overflow:hidden; }
-  .mode-picker label:focus-within { outline:2px solid var(--accent);outline-offset:3px; }
-  .mode-picker strong { font-size:13px;font-weight:650; }
-  .purpose-picker { display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:18px; }
-  .purpose-picker label { position:relative;display:flex;padding:14px;border:1px solid var(--border);border-radius:8px;background:#000;cursor:pointer; }
-  .purpose-picker label.active { border-color:var(--accent);background:#081610; }
-  .purpose-picker label > span { display:grid;gap:5px; }
-  .purpose-picker strong { color:var(--text);font-size:13px; }
-  .purpose-picker small { color:var(--muted);font-size:12px;line-height:1.5; }
-  .purpose-picker input { position:absolute;width:1px;height:1px;clip-path:inset(50%); }
-  .purpose-picker label:focus-within { outline:2px solid var(--accent);outline-offset:3px; }
-  .opportunity-target { margin:-10px 0 24px;padding:16px;border:1px solid var(--border);border-radius:8px;background:#050505; }
+  fieldset { border:0;padding:0;margin:0 0 22px; }
+  .choice-group { display:grid;grid-template-columns:1fr 1fr;gap:10px; }
+  .choice-group legend { grid-column:1/-1;margin-bottom:8px;color:var(--text);font-size:14px;font-weight:650; }
+  .choice-group label { position:relative;display:flex;min-height:90px;padding:15px 16px;border:1px solid var(--border-strong);border-radius:9px;background:#000;cursor:pointer; }
+  .choice-group label:hover { border-color:var(--muted); }
+  .choice-group label.active { border-color:var(--accent);background:#07130f; }
+  .choice-group label > span { display:grid;align-content:center;gap:6px; }
+  .choice-group strong { color:var(--text);font-size:14px;font-weight:650;line-height:1.3; }
+  .choice-group small { color:var(--muted);font-size:12px;font-weight:400;line-height:1.5; }
+  .choice-group input { position:absolute;width:1px;height:1px;padding:0;border:0;clip-path:inset(50%);overflow:hidden; }
+  .choice-group label:has(input:focus-visible) { outline:2px solid var(--accent);outline-offset:3px; }
+  .business-target { margin:0 0 24px;border:1px solid var(--border);border-radius:8px;background:#050505; }
+  .saved-purpose-note { margin:-4px 0 18px;color:var(--muted);font-size:12px;line-height:1.5; }
+  .saved-purpose-note button { margin-left:4px;padding:0;border:0;background:none;color:var(--accent-strong);font:inherit;text-decoration:underline;cursor:pointer; }
+  .business-target summary { padding:13px 16px;color:var(--muted);font-size:13px;cursor:pointer; }
+  .business-target summary:focus-visible { outline:2px solid var(--accent);outline-offset:3px; }
+  .business-target[open] summary { border-bottom:1px solid var(--border); }
+  .opportunity-target { padding:16px; }
+  .business-target-intro { margin:0 0 14px;color:var(--muted);font-size:12px;line-height:1.5; }
   .target-toggle,.exploratory-toggle { position:relative;display:flex;grid-template-columns:auto 1fr;gap:10px;align-items:start; }
   .target-toggle > input,.exploratory-toggle > input { width:16px;height:16px;margin:2px 0 0; }
   .target-toggle > span,.exploratory-toggle > span { display:grid;gap:4px; }
@@ -624,8 +631,8 @@
   footer > span { color:var(--success);font-size:13px; }
   .primary { min-height:44px;background:var(--accent-strong);border-color:transparent;color:var(--accent-ink);font-size:13px;box-shadow:0 4px 16px #71cfba12; }
   .primary:hover:not(:disabled) { box-shadow:0 4px 24px #71cfba25;transform:translateY(-1px); }
-  @media(max-width:1100px) { form { grid-template-columns:minmax(0,1fr) 230px;gap:24px; }.mode-picker label { padding:14px 10px;gap:8px; }.configuration { padding-left:20px; } }
+  @media(max-width:1100px) { form { grid-template-columns:minmax(0,1fr) 230px;gap:24px; }.choice-group label { padding:14px 12px; }.configuration { padding-left:20px; } }
   @media(max-width:950px) { form { grid-template-columns:1fr; }.configuration { position:static;border-left:0;border-top:1px solid var(--border);padding:24px 0 0; }.run-settings,.output-settings { grid-template-columns:1fr 1fr; }.scope-page { padding:24px 22px 48px; } }
-  @media(max-width:560px) { .workflow-mode,.mode-picker,.purpose-picker,.target-grid { grid-template-columns:1fr; }.run-settings,.output-settings { grid-template-columns:1fr; } }
+  @media(max-width:560px) { .choice-group,.target-grid { grid-template-columns:1fr; }.run-settings,.output-settings { grid-template-columns:1fr; } }
   @media(max-height:760px) { .configuration { position:static; } }
 </style>
