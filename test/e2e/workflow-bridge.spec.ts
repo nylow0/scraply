@@ -185,7 +185,9 @@ test(`installed ${mode} workflow previews, runs, pauses, finishes, and reopens t
     await expect(page.getByRole("tabpanel", { name: "Research setup" })).toBeVisible();
     await page.getByText(mode === "vibe" ? "Vibe" : "Babysit", { exact: true }).click();
     await page.getByPlaceholder("Your topic or idea").fill(topic);
+    await page.getByRole("button", { name: "Research settings", exact: true }).click();
     await page.getByRole("spinbutton", { name: "Solutions per problem" }).fill("1");
+    await page.getByRole("button", { name: "Done", exact: true }).click();
     const launch = page.getByRole("button", { name: mode === "vibe" ? "Start Vibe" : "Start Babysit" });
     await expect(launch).toBeEnabled();
     await launch.click();
