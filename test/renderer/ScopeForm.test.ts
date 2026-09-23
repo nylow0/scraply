@@ -49,7 +49,7 @@ describe("ScopeForm search provider selection", () => {
     expect(view.getByText("Describe the problem to check the launch plan.")).toBeTruthy();
   });
 
-  test("previews an unattended launch and invalidates the preview when its limits change", async () => {
+  test("defaults to Vibe first and invalidates its launch preview when limits change", async () => {
     const state = workspace();
     state.validation.exa = { valid: true };
     const onPreviewWorkflow = vi.fn(async (draft: WorkflowLaunchDraft) => ({
@@ -71,7 +71,9 @@ describe("ScopeForm search provider selection", () => {
     const onStart = vi.fn(async () => {});
     const view = render(ScopeForm, { workspace: state, busy: false, onSave, onStart,
       onPreviewWorkflow, onStartWorkflow, onRetry: vi.fn(async () => {}) });
-    await fireEvent.click(view.getByRole("radio", { name: /Vibe/ }));
+    const defaultMode = view.getByRole("group", { name: "Run mode" }).querySelector<HTMLInputElement>('input[type="radio"]');
+    expect(defaultMode?.value).toBe("vibe");
+    expect(defaultMode?.checked).toBe(true);
     await waitFor(() => expect(onPreviewWorkflow).toHaveBeenCalled());
     const latestDraft = onPreviewWorkflow.mock.lastCall?.[0];
     expect(latestDraft).toMatchObject({ mode: "vibe", ideas: { model: DEFAULT_RUN_CONFIG.model }, targets: { automaticProblemCap: 3 } });
