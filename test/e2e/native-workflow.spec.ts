@@ -122,6 +122,7 @@ test("native v2 research survives the installed selection, risk evaluation, and 
     }
     await expect(page.getByRole("combobox", { name: /Research workflow/ })).toHaveCount(0);
     await page.getByLabel("Solutions per problem", { exact: true }).fill("5");
+    await page.getByText("Context and boundaries", { exact: true }).click();
     await page.getByPlaceholder("What matters most: time, budget, or other limits?").fill("Avoid losing a week of repair capacity");
     await expect(page.getByLabel("OpenAI account")).toContainText("synthetic-account");
     await page.getByLabel("Research name", { exact: true }).fill("Native protocol UI fixture");
