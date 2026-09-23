@@ -183,7 +183,7 @@ test(`installed ${mode} workflow previews, runs, pauses, finishes, and reopens t
     });
     const page = await electron.firstWindow();
     await expect(page.getByRole("tabpanel", { name: "Research setup" })).toBeVisible();
-    if (mode === "vibe") await page.getByText("Vibe", { exact: true }).click();
+    await page.getByText(mode === "vibe" ? "Vibe" : "Babysit", { exact: true }).click();
     await page.getByPlaceholder("Your topic or idea").fill(topic);
     await page.getByRole("spinbutton", { name: "Solutions per problem" }).fill("1");
     const launch = page.getByRole("button", { name: mode === "vibe" ? "Start Vibe" : "Start Babysit" });
