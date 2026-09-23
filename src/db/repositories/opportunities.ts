@@ -199,7 +199,7 @@ export class OpportunityRepository {
   loadUnreviewedCandidates(threadId: string): OpportunityCandidateSnapshot[] {
     const reviewed = new Set(this.currentMembershipRows(threadId).map((row) => row.option_id));
     return this.solutionRows(threadId)
-      .filter((row) => !reviewed.has(row.id))
+      .filter((row) => row.startup_opportunity_json !== null && !reviewed.has(row.id))
       .map(candidateFromRow);
   }
 
@@ -208,7 +208,7 @@ export class OpportunityRepository {
       .filter((row) => row.state === "unresolved")
       .map((row) => row.option_id));
     return this.solutionRows(threadId)
-      .filter((row) => unresolved.has(row.id))
+      .filter((row) => row.startup_opportunity_json !== null && unresolved.has(row.id))
       .map(candidateFromRow);
   }
 
@@ -564,8 +564,14 @@ export class OpportunityRepository {
   }
 
   familyView(threadId: string): OpportunityFamiliesView {
-    const candidates = this.solutionRows(threadId).map(candidateFromRow);
-    const candidateById = new Map(candidates.map((candidate) => [candidate.optionId, candidate]));
+    // Practical ideas from automatic runs do not enter the business-family queue.
+    const rows = this.solutionRows(threadId);
+    const candidates = rows
+      .filter((row) => row.startup_opportunity_json !== null)
+      .map(candidateFromRow);
+    // Older manual reviews could create memberships for practical ideas. Keep those
+    // records readable even though they no longer count as business candidates.
+    const candidateById = new Map(rows.map(candidateFromRow).map((candidate) => [candidate.optionId, candidate]));
     const discarded = this.discardedIds(threadId);
     const memberships = this.currentMembershipRows(threadId);
     const membershipsByFamily = new Map<string, CurrentMembershipRow[]>();
@@ -642,7 +648,10 @@ export class OpportunityRepository {
         counted: Boolean(counted),
       };
     });
-    const reviewed = new Set(memberships.map((membership) => membership.option_id));
+    const businessIds = new Set(candidates.map((candidate) => candidate.optionId));
+    const reviewed = new Set(memberships
+      .filter((membership) => businessIds.has(membership.option_id))
+      .map((membership) => membership.option_id));
     const latestCompleted = this.client.db.prepare(`
       SELECT MAX(terminal_at) AS reviewed_at FROM opportunity_review_calls
       WHERE thread_id = ? AND status = 'completed'

@@ -1486,7 +1486,6 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
           ...previousConfig,
           model: input.model,
           reasoningEffort: input.reasoningEffort,
-          explorationPurpose: input.explorationPurpose ?? previousConfig.explorationPurpose,
         });
         try { await ensureEngine().startNextSelected(input.threadId, config); }
         catch (error) { if (error instanceof ActiveRunConflictError) throw new AppError("conflict", "This research already has an active run."); throw error; }

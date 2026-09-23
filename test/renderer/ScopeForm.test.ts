@@ -8,6 +8,30 @@ import { DEFAULT_RUN_CONFIG, RunConfigSchema, modelRefKey } from "../../src/shar
 import type { WorkflowLaunchDraft } from "../../src/shared/workflow-contracts";
 
 describe("ScopeForm search provider selection", () => {
+  test("keeps untouched brief fields calm and hides the problem cap for a stated problem", async () => {
+    const state = workspace();
+    state.scope = null;
+    state.runConfig = null;
+    state.validation.exa = { valid: true };
+    const view = render(ScopeForm, {
+      workspace: state, busy: false, onSave: vi.fn(), onStart: vi.fn(), onRetry: vi.fn(),
+      onPreviewWorkflow: vi.fn(), onStartWorkflow: vi.fn(),
+    });
+
+    const startingContext = view.getByPlaceholderText("Your topic or idea");
+    expect(startingContext.getAttribute("aria-invalid")).toBe("false");
+    expect(view.queryByText("A starting context is required.", { selector: ".field-error" })).toBeNull();
+    expect(view.queryByRole("radio", { name: /Startup opportunities/ })).toBeNull();
+    await fireEvent.blur(startingContext);
+    expect(startingContext.getAttribute("aria-invalid")).toBe("true");
+
+    await fireEvent.click(view.getByRole("radio", { name: /I have a problem to solve/ }));
+    await fireEvent.click(view.getByRole("radio", { name: /Vibe/ }));
+    expect(view.getByPlaceholderText("Describe the problem.").getAttribute("aria-invalid")).toBe("false");
+    expect(view.queryByLabelText("Automatic problem cap")).toBeNull();
+    expect(view.getByText("Describe the problem to check the launch plan.")).toBeTruthy();
+  });
+
   test("previews an unattended launch and invalidates the preview when its limits change", async () => {
     const state = workspace();
     state.validation.exa = { valid: true };
@@ -68,8 +92,8 @@ describe("ScopeForm search provider selection", () => {
     });
 
     await fireEvent.click(view.getByRole("radio", { name: /Vibe/ }));
-    await fireEvent.click(view.getByRole("radio", { name: /Startup opportunities/ }));
-    await fireEvent.click(view.getByRole("checkbox", { name: /Build a project-wide set/ }));
+    await fireEvent.click(view.getByText("Distinct business target (optional)"));
+    await fireEvent.click(view.getByRole("checkbox", { name: /Find distinct businesses across this project/ }));
     expect(view.queryByLabelText("Opportunity model-call limit")).toBeNull();
     expect(view.queryByLabelText("Opportunity search limit")).toBeNull();
     expect(view.getByText(/whole-workflow limits in Work limits below cover research, idea batches, review, and any added searches/)).toBeTruthy();
@@ -128,8 +152,9 @@ describe("ScopeForm search provider selection", () => {
     const onSave = vi.fn().mockResolvedValue(undefined);
     const onStart = vi.fn().mockResolvedValue(undefined);
     const view = render(ScopeForm, { workspace: state, busy: false, onSave, onStart, onRetry: vi.fn() });
-    await fireEvent.click(view.getByRole("radio", { name: /Startup opportunities/ }));
-    await fireEvent.click(view.getByRole("checkbox", { name: /Build a project-wide set/ }));
+    expect(view.queryByRole("radio", { name: /Startup opportunities/ })).toBeNull();
+    await fireEvent.click(view.getByText("Distinct business target (optional)"));
+    await fireEvent.click(view.getByRole("checkbox", { name: /Find distinct businesses across this project/ }));
     await fireEvent.input(view.getByLabelText("Distinct family target"), { target: { value: "8" } });
     await fireEvent.input(view.getByLabelText("Opportunity model-call limit"), { target: { value: "10" } });
     await fireEvent.click(view.getByRole("button", { name: "Discover problems" }));
@@ -139,8 +164,35 @@ describe("ScopeForm search provider selection", () => {
     expect(saved.opportunityExploration).toMatchObject({ targetFamilies: 8, maxRawCandidates: 16, maxModelCalls: 10, allowExploratoryProblems: false });
     view.unmount();
     const reopened = render(ScopeForm, { workspace: { ...state, runConfig: saved }, busy: false, onSave, onStart, onRetry: vi.fn() });
-    expect((reopened.getByRole("checkbox", { name: /Build a project-wide set/ }) as HTMLInputElement).checked).toBe(true);
+    expect((reopened.getByRole("checkbox", { name: /Find distinct businesses across this project/ }) as HTMLInputElement).checked).toBe(true);
     expect((reopened.getByLabelText("Distinct family target") as HTMLInputElement).value).toBe("8");
+    expect(reopened.getByText("Distinct business target · On (8)")).toBeTruthy();
+    await fireEvent.click(reopened.getByRole("checkbox", { name: /Find distinct businesses across this project/ }));
+    await fireEvent.click(reopened.getByRole("button", { name: "Discover problems" }));
+    await waitFor(() => expect(onSave).toHaveBeenCalledTimes(2));
+    const withoutTarget = RunConfigSchema.parse(onSave.mock.calls[1]?.[1]);
+    expect(withoutTarget.explorationPurpose).toBe("auto");
+    expect(withoutTarget.opportunityExploration).toBeUndefined();
+  });
+
+  test("keeps a saved output rule until the user switches that project to the brief", async () => {
+    const state = workspace();
+    state.runConfig = { ...DEFAULT_RUN_CONFIG, explorationPurpose: "startup-opportunities" };
+    state.validation.exa = { valid: true };
+    const onSave = vi.fn().mockResolvedValue(undefined);
+    const view = render(ScopeForm, {
+      workspace: state, busy: false, onSave, onStart: vi.fn().mockResolvedValue(undefined), onRetry: vi.fn(),
+    });
+
+    expect(view.getByText(/This saved project asks for startup opportunities/)).toBeTruthy();
+    await fireEvent.click(view.getByRole("button", { name: "Discover problems" }));
+    await waitFor(() => expect(onSave).toHaveBeenCalledTimes(1));
+    expect(RunConfigSchema.parse(onSave.mock.calls[0]?.[1]).explorationPurpose).toBe("startup-opportunities");
+
+    await fireEvent.click(view.getByRole("button", { name: "Follow the brief instead" }));
+    await fireEvent.click(view.getByRole("button", { name: "Discover problems" }));
+    await waitFor(() => expect(onSave).toHaveBeenCalledTimes(2));
+    expect(RunConfigSchema.parse(onSave.mock.calls[1]?.[1]).explorationPurpose).toBe("auto");
   });
 
   test("persists advanced search defaults for new research and preserves saved setup choices", async () => {

@@ -22,8 +22,7 @@
   let selectedModel=$derived(availableModels.find((item)=>modelRefKey(item)===modelKey));
   let reasoningEffort=$state<string>(savedConfig?.reasoningEffort??initialModelOption?.defaultReasoningEffort??DEFAULT_RUN_CONFIG.reasoningEffort);
   let reasoningAvailable=$derived(selectedModel?.reasoningEfforts.some((item)=>item.id===reasoningEffort)??false);
-  let explorationPurpose=$state<ExplorationPurpose>(savedConfig?.explorationPurpose??"general-solutions");
-  let selectedPurpose=$derived(fixedExplorationPurpose??explorationPurpose);
+  let selectedPurpose=$derived(fixedExplorationPurpose??savedConfig?.explorationPurpose??DEFAULT_RUN_CONFIG.explorationPurpose);
   let model=$derived<ModelRef>({providerId:selectedModel?.providerId??"",modelId:selectedModel?.modelId??""});
   $effect(()=>{if(!modelKey&&!savedConfig?.model&&availableModels[0]){modelKey=modelRefKey(availableModels[0]);reasoningEffort=availableModels[0].defaultReasoningEffort}});
   function selectModel(){reasoningEffort=selectedModel?.defaultReasoningEffort??DEFAULT_RUN_CONFIG.reasoningEffort}
@@ -98,13 +97,7 @@
   <section class="development-settings" aria-label="Development settings">
     <label><span>Development model</span><select aria-label="Development model" bind:value={modelKey} onchange={selectModel} disabled={busy||availableModels.length===0}>{#if modelKey&&!selectedModel}<option value={modelKey}>{modelDisplayName(savedConfig?.model??DEFAULT_RUN_CONFIG.model)} (unavailable)</option>{/if}{#each availableModels as item (modelRefKey(item))}<option value={modelRefKey(item)}>{modelDisplayName(item)}</option>{/each}</select></label>
     <label><span>Development reasoning</span><select aria-label="Development reasoning" bind:value={reasoningEffort} disabled={busy||!selectedModel}>{#if !reasoningAvailable}<option value={reasoningEffort}>{reasoningEffort} (unavailable)</option>{/if}{#each (selectedModel?.reasoningEfforts??[]) as effort (effort.id)}<option value={effort.id}>{effort.id.charAt(0).toUpperCase()+effort.id.slice(1)}</option>{/each}</select></label>
-    {#if fixedExplorationPurpose}
-      <div class="fixed-purpose"><span>Option type</span><strong>{fixedExplorationPurpose === "startup-opportunities" ? "Startup opportunities" : "Practical solutions"}</strong></div>
-      <p>The option type was set when this workflow started. The development model can still be chosen here.</p>
-    {:else}
-      <label><span>Option type</span><select aria-label="Option type" bind:value={explorationPurpose} disabled={busy}><option value="general-solutions">Practical solutions</option><option value="startup-opportunities">Startup opportunities</option></select></label>
-      <p>This choice applies to every new development run in this selection.</p>
-    {/if}
+    <p>{selectedPurpose === "auto" ? "Ideas will follow your brief and each selected problem." : selectedPurpose === "startup-opportunities" ? "This project asks for startup opportunities." : "This project asks for practical solutions."}</p>
     {#if modelKey&&!selectedModel}<p role="status">The saved development model is unavailable. Choose an available model before generating.</p>{:else if selectedModel&&!reasoningAvailable}<p role="status">The saved reasoning effort is unavailable for this model. Choose an available effort before generating.</p>{/if}
   </section>
   <footer>
@@ -133,8 +126,6 @@
   .escape textarea { font-size:13px;background:var(--bg);border:1px solid var(--border-strong);border-radius:8px;color:var(--text);padding:12px;resize:none; }
   .development-settings { display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:16px;border:1px solid var(--border);border-radius:13px;padding:20px;background:var(--surface); }
   .development-settings label { display:grid;gap:8px;color:var(--muted);font-size:13px; }
-  .fixed-purpose { display:grid;gap:8px;color:var(--muted);font-size:13px; }
-  .fixed-purpose strong { padding:10px;border:1px solid var(--border-strong);border-radius:8px;background:var(--bg);color:var(--text);font-weight:600; }
   .development-settings select { background:var(--bg);border:1px solid var(--border-strong);border-radius:8px;color:var(--text);padding:10px; }
   .development-settings p { grid-column:1/-1;margin:0;color:var(--muted);font-size:12px; }
   footer { position:sticky;bottom:16px;display:flex;align-items:center;justify-content:space-between;gap:16px;margin-top:24px;border:1px solid var(--border-strong);border-radius:13px;padding:16px 20px;box-shadow:0 8px 32px #0005;background:color-mix(in srgb,var(--surface) 94%,transparent);backdrop-filter:blur(16px); }

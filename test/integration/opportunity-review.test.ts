@@ -20,6 +20,36 @@ afterEach(() => {
 });
 
 describe("opportunity review", () => {
+  test("business-family counts exclude practical ideas in an automatic mixed collection", () => {
+    const db = database();
+    seedOptions(db, ["business"]);
+    db.db.prepare(`INSERT INTO solutions (
+      id, problem_id, research_run_id, mechanism, description, respects_off_limits,
+      respects_off_limits_why, created_at
+    ) VALUES (?, ?, ?, ?, ?, 1, ?, ?)`)
+      .run("practical", "problem-1", "run-0", "Shared calendar", "Coordinate the existing repair workflow",
+        "Within the saved boundaries.", new Date().toISOString());
+    const repository = new OpportunityRepository(db);
+    const view = repository.familyView("thread-1");
+    expect(view.rawOptionCount).toBe(1);
+    expect(view.unreviewedOptionIds).toEqual(["business"]);
+    expect(repository.loadUnreviewedCandidates("thread-1").map((candidate) => candidate.optionId)).toEqual(["business"]);
+    const now = new Date().toISOString();
+    db.db.prepare(`INSERT INTO opportunity_families (id, thread_id, representative_option_id,
+      title, summary, active, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 1, ?, ?)`)
+      .run("historical-practical", "thread-1", "practical", "Earlier manual review", "Saved before automatic intent", now, now);
+    db.db.prepare(`INSERT INTO opportunity_membership_decisions (id, thread_id, option_id, family_id,
+      relationship, state, reason, actor, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      .run("historical-membership", "thread-1", "practical", "historical-practical", "separate-business",
+        "accepted", "Earlier user decision", "user", now);
+    expect(repository.familyView("thread-1").families.find((family) => family.id === "historical-practical")?.members)
+      .toMatchObject([{ optionId: "practical", eligibleStartup: false }]);
+    db.db.prepare("UPDATE solutions SET startup_opportunity_json = NULL WHERE id = 'business'").run();
+    expect(new OpportunityRepository(db).familyView("thread-1")).toMatchObject({
+      rawOptionCount: 0, reviewedOptionCount: 0, unreviewedOptionIds: [],
+    });
+    db.close();
+  });
   test("counts distinct startup families, keeps duplicates visible, and records reversible human edits", async () => {
     const db = database();
     seedOptions(db, ["option-a", "option-b", "option-c"]);

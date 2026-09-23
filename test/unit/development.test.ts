@@ -187,3 +187,63 @@ test("requires startup details and passes prior project mechanisms without makin
   expect(legacy.options[0]?.focusedDemandTest).toBeUndefined();
   expect(legacy.request.workOrder.inputs).not.toHaveProperty("focusedExperimentVersion");
 });
+
+test("automatic intent accepts practical and sellable ideas from the same brief without inventing a business", async () => {
+  const { id: _id, problemId: _problemId, ...plainOption } = option;
+  void _id;
+  void _problemId;
+  const startupOpportunity = {
+    opportunityType: "startup-opportunity" as const,
+    payingCustomerSegment: "Independent repair shops",
+    trigger: "A late part delays a promised repair",
+    existingSubstitute: "Call suppliers for updates",
+    gapAssessment: { kind: "hypothesis" as const, description: "Calls may miss changes between check-ins", evidenceIds: [] },
+    smallestSellableWorkflow: "Track delivery changes and alert the shop",
+    firstCustomerRoute: "Pilot with two local repair shops",
+    disconfirmingDemandTest: "Neither shop agrees to pay for a manual alert pilot",
+  };
+  const brief = { ...context, scope: { ...context.scope,
+    title: "Improve repair operations and explore a sellable supplier alert service" } };
+  const result = await produceDevelopmentOptions(brief, {
+    ...dependencies({ options: [plainOption, { ...plainOption, mechanism: "Supplier alert service", startupOpportunity }] }),
+    explorationPurpose: "auto", ideaCount: 2,
+  });
+  expect(result.options).toHaveLength(2);
+  expect(result.options[0]?.startupOpportunity).toBeUndefined();
+  expect(result.options[1]?.startupOpportunity).toEqual(startupOpportunity);
+  expect(result.request.workOrder.inputs).toMatchObject({ explorationPurpose: "auto" });
+  expect(result.request.workOrder.requiredDecisions?.join(" ")).toContain("user's original scope");
+  expect(JSON.stringify(result.request.evidence[0]?.content)).toContain(brief.scope.title);
+  expect(JSON.stringify(result.request.jsonSchema)).toContain('"anyOf"');
+
+  const focusedDemandTest = {
+    schemaVersion: 1 as const,
+    assumption: {
+      id: "repair-shop-pain", category: "pain" as const,
+      testableClaim: "Late parts force shops to revise repair promises.",
+      decisionImpact: "Without this pain the alert service should not be built.",
+      selectionReason: "The original problem may already be solved by supplier calls.",
+    },
+    methodSummary: "Interview five shops about their most recent late delivery.",
+    disconfirmingObservation: "No shop reports a missed or changed promise.",
+    paymentTerms: null,
+  };
+  const focused = await produceDevelopmentOptions(brief, {
+    ...dependencies({ options: [plainOption, { ...plainOption, mechanism: "Supplier alert service",
+      startupOpportunity, focusedDemandTest }] }),
+    explorationPurpose: "auto", focusedExperiments: true, ideaCount: 2,
+  });
+  expect(focused.options[0]?.focusedDemandTest).toBeUndefined();
+  expect(focused.options[1]?.focusedDemandTest).toEqual(focusedDemandTest);
+  expect(focused.request.workOrder.inputs).toMatchObject({ focusedExperimentVersion: 1 });
+  await expect(produceDevelopmentOptions(brief, {
+    ...dependencies({ options: [{ ...plainOption, startupOpportunity }] }),
+    explorationPurpose: "auto", focusedExperiments: true, ideaCount: 1,
+  })).rejects.toMatchObject({ code: "schema" });
+
+  await expect(produceDevelopmentOptions(brief, {
+    ...dependencies({ options: [{ ...plainOption, startupOpportunity: { ...startupOpportunity,
+      opportunityType: "process-improvement" } }] }),
+    explorationPurpose: "auto", ideaCount: 1,
+  })).rejects.toMatchObject({ code: "schema" });
+});

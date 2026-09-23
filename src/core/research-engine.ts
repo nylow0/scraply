@@ -1815,6 +1815,7 @@ export class ResearchEngine {
       problem: context.problem,
       projectConstraints: context.scope,
       savedInstructions: contract.instructions.review ?? "",
+      ...(active.config.explorationPurpose ? { explorationPurpose: active.config.explorationPurpose } : {}),
       startupOnly: active.config.explorationPurpose === "startup-opportunities",
       evidence: developmentStageEvidence(context).slice(1),
       model: reviewModel,
@@ -1852,7 +1853,13 @@ export class ResearchEngine {
         });
       workflow.repository.getStageResumeState({
         researchRunId: active.runId, stageId: "solution-set-review", selectionId: active.problemId,
-        context: reviewContext(classification), identity,
+        context: reviewContext(classification),
+        identity: {
+          promptSha256: savedReview.prompt.resolvedSha256,
+          schema: savedReview.schema,
+          inputs: savedReview.inputs,
+          evidence: savedReview.evidence,
+        },
       });
       return;
     }
@@ -1863,7 +1870,7 @@ export class ResearchEngine {
     if (resume.kind === "unknown-completion") {
       throw new Error("A solution review may have completed before interruption. Review the saved attempt before retrying.");
     }
-    this.progress(active, `Reviewing ${candidates.length} practical solution${candidates.length === 1 ? "" : "s"}`, "generating-options");
+    this.progress(active, `Reviewing ${candidates.length} idea${candidates.length === 1 ? "" : "s"}`, "generating-options");
     await reviewSolutionSet(prepared, this.instrumentedModel(active, undefined, reviewModel), (completed) => {
       active.abortController.signal.throwIfAborted();
       this.options.db.immediateTransaction(() => workflow.commitStage(

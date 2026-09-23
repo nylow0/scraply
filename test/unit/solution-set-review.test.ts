@@ -35,6 +35,36 @@ function assessment(
 }
 
 describe("practical solution collection review", () => {
+  test("automatic review carries the original brief and judges mixed ideas without a startup-only gate", () => {
+    const scope = { title: "Improve claims handling or find a paid service", offLimits: [] };
+    const business = item("business-service", "Sell a claims reconciliation service", {
+      startupOpportunity: {
+        opportunityType: "startup-opportunity", payingCustomerSegment: "Claims operators",
+        trigger: "A duplicate claim appears", existingSubstitute: "Manual checks",
+        gapAssessment: { kind: "hypothesis", description: "Manual checks may miss duplicates", evidenceIds: [] },
+        smallestSellableWorkflow: "Review claims before filing", firstCustomerRoute: "Pilot with one operator",
+        disconfirmingDemandTest: "The operator declines a paid pilot",
+      },
+    });
+    const prepared = prepareSolutionSetReview({
+      candidates: [item("workflow-change"), business], existingSolutions: [],
+      problem: { statement: "Claims are filed twice" }, projectConstraints: scope,
+      savedInstructions: "", explorationPurpose: "auto", evidence: [],
+      model: { providerId: "test", modelId: "reviewer" }, reasoningEffort: "medium",
+    });
+    expect(prepared.request.workOrder.inputs).toMatchObject({
+      explorationPurpose: "auto", projectConstraints: scope, startupOnly: false,
+    });
+    expect(prepared.request.workOrder.instruction).toContain("original project scope");
+    expect(prepared.request.workOrder.goal).toContain("user's brief");
+    const classified = classifySolutionSetReview(prepared.candidates, [], [], {
+      assessments: [
+        { ...assessment("workflow-change", "distinct"), citedEvidenceIds: [] },
+        { ...assessment("business-service", "distinct"), citedEvidenceIds: [] },
+      ],
+    }, { startupOnly: prepared.startupOnly });
+    expect(classified.decisions.map((decision) => decision.status)).toEqual(["accepted", "accepted"]);
+  });
   test("sends all accepted roots and exact candidate IDs in a bounded reviewer request", () => {
     const candidates = [item("new-a"), item("new-b")];
     const existingSolutions = [item("root-a"), item("root-b")];

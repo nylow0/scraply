@@ -1245,7 +1245,7 @@ export class WorkflowCoordinator {
     const review = readSolutionSetReview(this.options.db, runId);
     const reviewed = review?.acceptedSolutionIds.filter((id) => allSolutions.includes(id)) ?? [];
     this.options.db.immediateTransaction(() => {
-      if (review && WorkflowLaunchContractSchema.parse(session.contract).runConfig.explorationPurpose === "startup-opportunities") {
+      if (review && WorkflowLaunchContractSchema.parse(session.contract).runConfig.explorationPurpose !== "general-solutions") {
         new OpportunityRepository(this.options.db).materializeSolutionSetReviews(session.threadId);
         const angle = (item.input as { generationAngle?: { gapId?: unknown } }).generationAngle;
         if (typeof angle?.gapId === "string" && loadManagedCoverageGaps(this.options.db, session.threadId, session.id)

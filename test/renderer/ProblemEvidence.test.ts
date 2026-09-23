@@ -44,7 +44,7 @@ const rejected = [{
 }];
 
 describe("rejected problem evidence", () => {
-  test("locks the option type and manual problem entry for a managed checkpoint while legacy selection remains editable", async () => {
+  test("uses the saved output rule for managed work and the brief for automatic work", async () => {
     const managedCommit = vi.fn(async () => {});
     const managed = render(ProblemCheckpoint, {
       problems: [problemCandidate("managed", false)], rejectedCandidates: rejected, busy: false,
@@ -53,7 +53,7 @@ describe("rejected problem evidence", () => {
       fixedExplorationPurpose: "general-solutions",
       onCommit: managedCommit, onExport: vi.fn(), onOpenSource: vi.fn(),
     });
-    expect(managed.getByText("Practical solutions")).toBeTruthy();
+    expect(managed.getByText("This project asks for practical solutions.")).toBeTruthy();
     expect(managed.queryByRole("combobox", { name: "Option type" })).toBeNull();
     expect(managed.queryByRole("textbox", { name: "Or state the problem yourself." })).toBeNull();
     expect(managed.queryByRole("button", { name: "Use as user-asserted problem" })).toBeNull();
@@ -69,9 +69,10 @@ describe("rejected problem evidence", () => {
       ...checkpointDefaults, onCommit: legacyCommit, onExport: vi.fn(), onOpenSource: vi.fn(),
     });
     expect(legacy.getByText(/~3 model calls projected/)).toBeTruthy();
-    await fireEvent.change(legacy.getByRole("combobox", { name: "Option type" }), { target: { value: "startup-opportunities" } });
+    expect(legacy.queryByRole("combobox", { name: "Option type" })).toBeNull();
+    expect(legacy.getByText("Ideas will follow your brief and each selected problem.")).toBeTruthy();
     await fireEvent.click(legacy.getByRole("button", { name: "Generate all selected" }));
-    expect(legacyCommit).toHaveBeenCalledWith(["legacy"], null, DEFAULT_RUN_CONFIG.model, "medium", "startup-opportunities");
+    expect(legacyCommit).toHaveBeenCalledWith(["legacy"], null, DEFAULT_RUN_CONFIG.model, "medium", "auto");
   });
   test("projects calls only for selected problems that still need development", () => {
     const view = render(ProblemCheckpoint, {
@@ -160,7 +161,7 @@ describe("rejected problem evidence", () => {
     await fireEvent.click(view.getByRole("button", { name: "Generate all selected" }));
     expect(onCommit).toHaveBeenCalledWith(
       [], "A user-asserted problem.",
-      { providerId: "openai-subscription", modelId: "gpt-6-astra" }, "xhigh", "general-solutions",
+      { providerId: "openai-subscription", modelId: "gpt-6-astra" }, "xhigh", "auto",
     );
   });
 
@@ -194,7 +195,7 @@ describe("rejected problem evidence", () => {
     await fireEvent.change(model, { target: { value: "openai-subscription:gpt-6-astra" } });
     expect(generate.disabled).toBe(false);
     await fireEvent.click(generate);
-    expect(onCommit).toHaveBeenCalledWith([], "A user-asserted problem.", { providerId: "openai-subscription", modelId: "gpt-6-astra" }, "high", "general-solutions");
+    expect(onCommit).toHaveBeenCalledWith([], "A user-asserted problem.", { providerId: "openai-subscription", modelId: "gpt-6-astra" }, "high", "auto");
   });
 
   test("requires an available reasoning effort before development", async () => {

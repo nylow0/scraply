@@ -112,7 +112,7 @@ describe("App workspace coordination", () => {
       runConfig: { ...state.runConfig!, explorationPurpose: "startup-opportunities" } };
     const restored = render(App);
     await waitFor(() => expect(restored.getByRole("tab", { name: "Research" }).getAttribute("aria-selected")).toBe("true"));
-    expect(restored.getByText("Practical solutions")).toBeTruthy();
+    expect(restored.getByText("Ideas will follow your brief and each selected problem.")).toBeTruthy();
     expect(restored.queryByRole("combobox", { name: "Option type" })).toBeNull();
     expect(restored.queryByRole("textbox", { name: "Or state the problem yourself." })).toBeNull();
     restored.unmount();
