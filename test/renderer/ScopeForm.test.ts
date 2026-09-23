@@ -269,7 +269,6 @@ describe("ScopeForm search provider selection", () => {
     const onSave = vi.fn().mockResolvedValue(undefined);
     const onStart = vi.fn().mockResolvedValue(undefined);
     const view = render(ScopeForm, { workspace: state, busy: false, onSave, onStart, onRetry: vi.fn() });
-    await fireEvent.click(view.getByRole("button", { name: "Research settings" }));
     expect(view.getByRole("option", { name: "GPT-5.6 Sol" })).toBeTruthy();
     expect(view.queryByRole("option", { name: "Sol legacy" })).toBeNull();
     const select = view.getByRole("combobox", { name: /Model/ }) as HTMLSelectElement;
@@ -319,7 +318,6 @@ describe("ScopeForm search provider selection", () => {
     ];
     const onSave = vi.fn().mockResolvedValue(undefined);
     const view = render(ScopeForm, { workspace: state, busy: false, onSave, onStart: vi.fn(), onRetry: vi.fn() });
-    await fireEvent.click(view.getByRole("button", { name: "Research settings" }));
     const modelSelect = view.getByRole("combobox", { name: "Model" }) as HTMLSelectElement;
     expect(view.getByRole("option", { name: "GPT-6 Sol" })).toBeTruthy();
     expect(view.getByRole("option", { name: "GPT-6 Luna" })).toBeTruthy();
@@ -339,7 +337,6 @@ describe("ScopeForm search provider selection", () => {
     state.modelOptions = [{ ...state.modelOptions[0]!, defaultReasoningEffort: "high", reasoningEfforts: [{ id: "high", description: "Thorough" }] }];
     const onSave = vi.fn().mockResolvedValue(undefined);
     const view = render(ScopeForm, { workspace: state, busy: false, onSave, onStart: vi.fn(), onRetry: vi.fn() });
-    await fireEvent.click(view.getByRole("button", { name: "Research settings" }));
     const reasoning = view.getByRole("combobox", { name: /Reasoning/ }) as HTMLSelectElement;
     expect(reasoning.value).toBe("medium");
     expect(view.getByRole("option", { name: "medium (unavailable)" })).toBeTruthy();
@@ -463,7 +460,6 @@ describe("ScopeForm search provider selection", () => {
       workspace: state, busy: false, onSave: vi.fn(), onStart: vi.fn(), onRetry: vi.fn(),
     });
 
-    await fireEvent.click(view.getByRole("button", { name: "Research settings" }));
     expect(view.getByText("Your available models appear here after you sign in.")).toBeTruthy();
     expect(view.getByText("No compatible models are available")).toBeTruthy();
     expect((view.getByRole("combobox", { name: /Model/ }) as HTMLSelectElement).disabled).toBe(true);
@@ -482,7 +478,6 @@ describe("ScopeForm search provider selection", () => {
       workspace: state, busy: false, onSave, onStart, onRetry: vi.fn(),
     });
 
-    await fireEvent.click(view.getByRole("button", { name: "Research settings" }));
     const modelSelect = view.getByRole("combobox", { name: /Model/ }) as HTMLSelectElement;
     expect(modelSelect.value).toBe("");
     expect(view.getByRole("option", { name: "Choose an OpenAI model" })).toBeTruthy();
@@ -563,6 +558,20 @@ describe("ScopeForm search provider selection", () => {
 });
 
 describe("settings surfaces preserve launch configuration", () => {
+  test("explains run modes on hover or focus without changing the selected mode", async () => {
+    const view = render(ScopeForm, { workspace: workspace(), busy: false, onSave: vi.fn(), onStart: vi.fn(), onRetry: vi.fn(), onPreviewWorkflow: vi.fn(), onStartWorkflow: vi.fn() });
+    const info = view.getByRole("button", { name: "About Babysit" });
+    await fireEvent.mouseEnter(info.parentElement!);
+    expect(view.getByRole("tooltip").textContent).toContain("choose which ones become ideas");
+    expect((view.getByRole("radio", { name: "Vibe" }) as HTMLInputElement).checked).toBe(true);
+    await fireEvent.keyDown(info, { key: "Escape" });
+    expect(view.queryByRole("tooltip")).toBeNull();
+    await fireEvent.focusIn(info);
+    expect(view.getByRole("tooltip")).toBeTruthy();
+    await fireEvent.focusOut(info);
+    expect(view.queryByRole("tooltip")).toBeNull();
+  });
+
   test.each([
     [["runConfig", "searchProvider"], "Search provider"],
     [["ideas", "reviewModel"], "Ideas model"],
@@ -605,13 +614,15 @@ describe("settings surfaces preserve launch configuration", () => {
     }
     await fireEvent.input(view.getByLabelText("Risk priorities"), { target: { value: "Low setup effort" } });
     await fireEvent.input(view.getByLabelText("Boundaries"), { target: { value: "No hardware\nNo migration" } });
-    await fireEvent.click(view.getByRole("button", { name: "Research settings" }));
+    expect(view.getByLabelText("Solutions per problem").closest("aside")).toBeTruthy();
     await fireEvent.input(view.getByLabelText("Solutions per problem"), { target: { value: "5" } });
     if (researchMode === "explore-market") {
       await fireEvent.change(view.getByLabelText("Research depth"), { target: { value: "deep" } });
+      await fireEvent.click(view.getByRole("button", { name: "Advanced settings" }));
       await fireEvent.change(view.getByLabelText("Search coverage"), { target: { value: "communities" } });
       await fireEvent.change(view.getByLabelText("Search provider"), { target: { value: "perplexity" } });
     }
+    if (researchMode === "known-problem") await fireEvent.click(view.getByRole("button", { name: "Advanced settings" }));
     await fireEvent.click(view.getByRole("button", { name: "Ideas & review" }));
     await fireEvent.change(view.getByLabelText("Ideas model"), { target: { value: modelRefKey(ideasModel) } });
     await fireEvent.click(view.getByRole("button", { name: "Instructions" }));
@@ -637,7 +648,7 @@ describe("settings surfaces preserve launch configuration", () => {
     }));
     const expected = structuredClone(onPreviewWorkflow.mock.lastCall![0]);
     if (mode === "babysit") expect(expected.ideas).toBeUndefined();
-    await fireEvent.click(view.getByRole("button", { name: "Research settings" }));
+    await fireEvent.click(view.getByRole("button", { name: "Advanced settings" }));
     await fireEvent.click(view.getByRole("button", { name: "Done" }));
     await fireEvent.click(view.getByRole("button", { name: mode === "vibe" ? "Start Vibe" : "Start Babysit" }));
     await waitFor(() => expect(onStartWorkflow).toHaveBeenCalledOnce());
@@ -657,7 +668,7 @@ describe("settings surfaces preserve launch configuration", () => {
     await fireEvent.click(view.getByRole("button", { name: "Done" }));
     expect(view.queryByRole("dialog")).toBeNull();
     await fireEvent.click(view.getByRole("button", { name: "Review settings" }));
-    expect(view.getByRole("dialog", { name: "Research settings" })).toBeTruthy();
+    expect(view.getByRole("dialog", { name: "Advanced settings" })).toBeTruthy();
     expect(document.activeElement).toBe(view.getByLabelText("Time limit"));
     expect((view.getByRole("button", { name: "Start Vibe" }) as HTMLButtonElement).disabled).toBe(true);
   });
