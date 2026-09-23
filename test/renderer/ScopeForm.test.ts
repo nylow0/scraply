@@ -8,6 +8,23 @@ import { DEFAULT_RUN_CONFIG, RunConfigSchema, modelRefKey } from "../../src/shar
 import type { WorkflowLaunchDraft } from "../../src/shared/workflow-contracts";
 
 describe("ScopeForm search provider selection", () => {
+  test("shows saved context and preserves it when collapsed before launch", async () => {
+    const state = workspace();
+    state.validation.exa = { valid: true };
+    state.scope = { ...state.scope!, observations: "Shared inbox", riskEvaluationCriteria: "One-week setup", offLimits: ["No hardware"] };
+    const onSave = vi.fn().mockResolvedValue(undefined);
+    const view = render(ScopeForm, { workspace: state, busy: false, onSave, onStart: vi.fn(), onRetry: vi.fn() });
+    const disclosure = view.getByText("Context and boundaries").closest("details");
+    expect(disclosure?.open).toBe(true);
+    await fireEvent.input(view.getByLabelText("Risk priorities"), { target: { value: "Two-week setup" } });
+    await fireEvent.click(view.getByText("Context and boundaries"));
+    expect(disclosure?.open).toBe(false);
+    await fireEvent.click(view.getByRole("button", { name: "Discover problems" }));
+    await waitFor(() => expect(onSave).toHaveBeenCalledWith(expect.objectContaining({
+      observations: "Shared inbox", riskEvaluationCriteria: "Two-week setup", offLimits: ["No hardware"],
+    }), expect.anything()));
+  });
+
   test("keeps untouched brief fields calm and hides the problem cap for a stated problem", async () => {
     const state = workspace();
     state.scope = null;
@@ -96,7 +113,7 @@ describe("ScopeForm search provider selection", () => {
     await fireEvent.click(view.getByRole("checkbox", { name: /Find distinct businesses across this project/ }));
     expect(view.queryByLabelText("Opportunity model-call limit")).toBeNull();
     expect(view.queryByLabelText("Opportunity search limit")).toBeNull();
-    expect(view.getByText(/whole-workflow limits in Work limits below cover research, idea batches, review, and any added searches/)).toBeTruthy();
+    expect(view.getByText(/Work limits cover research, ideas, review, and added searches/)).toBeTruthy();
     expect((view.getByLabelText("Maximum model calls") as HTMLInputElement).value).toBe("56");
     expect((view.getByLabelText("Maximum searches") as HTMLInputElement).value).toBe("22");
     await waitFor(() => expect(onPreviewWorkflow.mock.lastCall?.[0]).toMatchObject({

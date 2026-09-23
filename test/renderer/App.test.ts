@@ -696,7 +696,7 @@ describe("App workspace coordination", () => {
     const view = render(App);
     await fireEvent.click(await view.findByRole("button", { name: "Settings" }));
 
-    const title = await view.findByLabelText("Research name") as HTMLInputElement;
+    const title = await view.findByLabelText("Research name Optional") as HTMLInputElement;
     await fireEvent.input(title, { target: { value: "My unsaved research" } });
     await fireEvent.click(view.getByRole("button", { name: "Try again" }));
 
