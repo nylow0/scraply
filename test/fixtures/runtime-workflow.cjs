@@ -79,6 +79,10 @@ module.exports = function workflowOutput(request) {
   }
   const stage = request.workOrder.stage.split(":")[0];
   if (stage === "research-title") return { title: "Reducing repair shop delays" };
+  if (stage === "solution-set-review") return { assessments: request.workOrder.inputs.candidateIds.map((candidateId) => ({
+    candidateId, decision: "distinct", reason: "The fixture treats each proposed workflow as a distinct option.",
+    matchingSolutionId: null, citedEvidenceIds: [],
+  })) };
   const data = request.evidence[0].content;
   const v2 = request.workOrder.inputs?.workflowVersion === 2;
   if (v2) {

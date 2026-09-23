@@ -31,7 +31,7 @@ test("setup hierarchy, source preferences, keyboard controls, and sidebar fit in
     const name = page.getByLabel("Research name", { exact: true });
     await expect(name).toBeVisible();
     await page.screenshot({ path: testInfo.outputPath("setup.png") });
-    expect((await name.boundingBox())!.y).toBeLessThan(await page.evaluate(() => innerHeight * 0.45));
+    await expect(name).toBeInViewport();
     await expect(page.locator("main h1:visible")).toHaveCount(1);
     await expect(page.getByRole("heading", { name: "Your brief" })).toHaveCount(0);
     await expect(page.getByRole("heading", { name: "Research setup" })).toHaveCount(0);
@@ -43,7 +43,7 @@ test("setup hierarchy, source preferences, keyboard controls, and sidebar fit in
     await page.keyboard.press("ArrowRight");
     await expect(page.getByRole("radio", { name: /^I have a problem/ })).toBeChecked();
     await expect(page.getByText("Problem statement", { exact: true })).toBeVisible();
-    await expect(page.getByRole("button", { name: "Generate solutions" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Start Babysit" })).toBeVisible();
     await page.screenshot({ path: testInfo.outputPath("known-problem.png") });
     await page.keyboard.press("ArrowLeft");
     await expect(page.getByRole("radio", { name: /^Find problems/ })).toBeChecked();

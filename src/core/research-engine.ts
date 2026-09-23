@@ -1401,8 +1401,10 @@ export class ResearchEngine {
 
   private begin(runId: string, threadId: string, problemId: string | null, config: RunConfig, resumed = false): void {
     if (config.workflowVersion !== 2) throw new AppError("conflict", "Legacy generation has been retired. Start a new run to use the current prompts.");
+    const selected = problemId && this.options.db.db.prepare(`SELECT 1 FROM solutions
+      WHERE research_run_id = ? AND selected_at IS NOT NULL LIMIT 1`).get(runId);
     const projection = problemId
-      ? { modelCalls: 3, searches: 0 }
+      ? { modelCalls: selected ? this.ledger.countProviderCalls(runId, config.model.providerId) + 4 : 3, searches: 0 }
       : discoveryRunProjection(config.discoveryDepth);
     const active: ActiveRun = {
       runId, threadId, problemId, config, abortController: new AbortController(), startedAt: Date.now(),
@@ -2236,16 +2238,20 @@ export class ResearchEngine {
     const linked = this.options.db.db.prepare(`SELECT workflow_session_id FROM research_runs WHERE id = ?`)
       .get(active.runId) as { workflow_session_id: string | null } | undefined;
     if (!linked?.workflow_session_id) return null;
-    const item = this.options.db.db.prepare(`SELECT id FROM workflow_work_items
+    const item = this.options.db.db.prepare(`SELECT id, state FROM workflow_work_items
       WHERE session_id = ? AND json_extract(output_refs_json, '$.runId') = ?
         AND kind IN ('discovery','known-problem','generate-ideas','research-request') LIMIT 1`)
-      .get(linked.workflow_session_id, active.runId) as { id: string } | undefined;
+      .get(linked.workflow_session_id, active.runId) as { id: string; state: string } | undefined;
     if (!item) {
       const existing = this.options.db.db.prepare(`SELECT 1 FROM workflow_budget_entries
         WHERE session_id = ? LIMIT 1`).get(linked.workflow_session_id);
       if (existing) throw new AppError("BUDGET_TOO_SMALL", "The workflow run has no saved task reservation.");
       return null;
     }
+    // A human can analyze a saved option after its generation task has settled. That
+    // explicit follow-up is charged to the run, outside the finished task's reservation.
+    if (item.state === "succeeded" && this.options.db.db.prepare(`SELECT 1 FROM solutions
+      WHERE research_run_id = ? AND selected_at IS NOT NULL LIMIT 1`).get(active.runId)) return null;
     const reserved = this.options.db.db.prepare(`SELECT COALESCE(SUM(reserved_units),0) AS units
       FROM workflow_budget_entries WHERE work_item_id = ? AND kind = ? AND state = 'reserved'`)
       .get(item.id, kind) as { units: number };
@@ -2357,8 +2363,8 @@ export class ResearchEngine {
       ...(row.risk_evaluation_criteria ? { riskEvaluationCriteria: row.risk_evaluation_criteria } : {}),
     });
     const providerId = active.config.model.providerId;
-    this.enforceRunawayBackstop(active, providerId, 1);
-    this.enforceRunawayBackstop(active, active.config.searchProvider, 1);
+    this.enforceRunawayBackstop(active, providerId, active.projectedCodexCalls);
+    this.enforceRunawayBackstop(active, active.config.searchProvider, active.projectedSearches);
     active.followUpModelReservation = this.ledger.reserve(
       active.runId, "evidence-follow-up", providerId, active.config.model.modelId, 0,
     );

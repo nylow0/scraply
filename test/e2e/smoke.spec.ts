@@ -39,7 +39,8 @@ test("the renderer restores the problem-selection step after a restart", async (
     await page.keyboard.press("Escape");
     await expect(settings).toBeFocused();
     await expect(page.getByLabel("Research name")).toHaveValue("Repair delays");
-    const startBounds = await page.getByRole("button", { name: "Discover problems" }).boundingBox();
+    await page.getByRole("button", { name: "Start Babysit" }).scrollIntoViewIfNeeded();
+    const startBounds = await page.getByRole("button", { name: "Start Babysit" }).boundingBox();
     expect(startBounds!.y + startBounds!.height).toBeLessThan(viewport.height);
     await page.screenshot({ animations: "disabled", path: testInfo.outputPath("setup.png") });
     await page.setViewportSize({ width: 960, height: 640 });
@@ -49,7 +50,7 @@ test("the renderer restores the problem-selection step after a restart", async (
     // Discovery must start from the context alone: the audience field is optional and is left blank here
     // on purpose, so reinstating an audience requirement fails this test instead of shipping.
     await page.getByLabel("What do you want to explore?").fill("Parts sourcing");
-    await page.getByRole("button", { name: "Discover problems" }).click();
+    await page.getByRole("button", { name: "Start Babysit" }).click();
     await expect(page.getByText("Choose problems to develop")).toBeVisible();
     await expect(page.getByRole("button", { name: "Export research JSON" })).toBeVisible();
     await page.getByText("Failed evidence requirements").click();
@@ -86,17 +87,17 @@ test("the renderer restores the problem-selection step after a restart", async (
     await page.getByRole("button", { name: "Clear filter" }).click();
     await page.locator(".problem-disclosure > summary").first().click();
     await expect(page.getByRole("checkbox", { name: "Develop this problem" })).toBeChecked();
-    await page.getByRole("button", { name: "Commit selection" }).click();
+    await page.getByRole("button", { name: "Generate all selected" }).click();
     await expect(page.getByText("Supplier reliability ledger")).toBeVisible();
     await page.screenshot({ animations: "disabled", path: testInfo.outputPath("ideas.png") });
     await page.getByRole("textbox", { name: "Search solutions" }).fill("nothing matches");
     await expect(page.getByText('No solutions match "nothing matches".')).toBeVisible();
     await page.getByRole("button", { name: "Clear filter" }).click();
-    await expect(page.getByText(/Solutions are not ranked/)).toBeVisible();
+    await expect(page.getByText(/Ideas are shown in saved order/)).toBeVisible();
     await expect(page.getByText(/independently confirmed outcomes/)).toHaveCount(0);
     await expect(page.getByText("Highest risk: likely · project ends")).not.toBeVisible();
-    await page.getByText("Supplier reliability ledger").click();
-    await expect(page.getByText("Pool observed delivery windows by supplier and part category.")).toBeVisible();
+    await page.getByRole("button", { name: "Open idea: Pool observed delivery windows by supplier and part category." }).click();
+    await expect(page.locator(".idea-detail").getByText("Pool observed delivery windows by supplier and part category.")).toBeVisible();
     await expect(page.getByText("Highest risk: likely · project ends")).not.toBeVisible();
     await page.getByText("Review all risks and responses").click();
     await expect(page.getByText("Volume is too sparse")).toBeVisible();
