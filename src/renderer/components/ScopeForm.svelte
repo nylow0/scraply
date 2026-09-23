@@ -424,11 +424,11 @@
           <legend>Run mode</legend>
           <label class:active={workflowMode === "babysit"}>
             <input type="radio" name="workflow-mode" value="babysit" checked={workflowMode === "babysit"} onchange={() => workflowMode = "babysit"} />
-            <span><strong>Babysit</strong><small>You choose ideas</small></span>
+            <span><strong>Babysit</strong><small>Review the research and choose what becomes an idea.</small></span>
           </label>
           <label class:active={workflowMode === "vibe"}>
             <input type="radio" name="workflow-mode" value="vibe" checked={workflowMode === "vibe"} onchange={() => workflowMode = "vibe"} />
-            <span><strong>Vibe</strong><small>Auto research & review</small></span>
+            <span><strong>Vibe</strong><small>Let Scraply research, generate, and review ideas within your limits.</small></span>
           </label>
         </fieldset>
       {/if}
@@ -551,7 +551,9 @@
   .choice-group small { color:var(--muted);font-size:11px;font-weight:400;line-height:1.5; }
   .choice-group input { appearance:none;flex:none;width:14px;height:14px;margin:0;padding:0;border:1px solid var(--border-strong);border-radius:50%;background:#000; }
   .choice-group input:checked { border:4px solid var(--accent); }
-  .workflow-mode label { align-items:start;gap:8px;padding:12px 10px; }
+  .workflow-mode { grid-template-columns:1fr; }
+  .workflow-mode label { align-items:start;gap:10px;padding:14px; }
+  .workflow-mode small { font-size:12px; }
   .workflow-mode input { margin-top:2px; }
   .choice-group label:has(input:focus-visible) { outline:2px solid var(--accent);outline-offset:3px; }
   .business-target { margin:0;border-bottom:1px solid var(--border); }
