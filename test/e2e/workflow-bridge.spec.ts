@@ -183,6 +183,9 @@ test(`installed ${mode} workflow previews, runs, pauses, finishes, and reopens t
     });
     const page = await electron.firstWindow();
     await expect(page.getByRole("tabpanel", { name: "Research setup" })).toBeVisible();
+    const runSetup = page.getByRole("complementary", { name: "Run setup" });
+    await expect(runSetup.getByRole("button", { name: "Advanced settings", exact: true })).toBeVisible();
+    await expect(runSetup.getByRole("button", { name: "About Vibe", exact: true })).toBeVisible();
     await page.getByText(mode === "vibe" ? "Vibe" : "Babysit", { exact: true }).click();
     await page.getByPlaceholder("Your topic or idea").fill(topic);
     await page.setViewportSize({ width: 1366, height: 768 });
