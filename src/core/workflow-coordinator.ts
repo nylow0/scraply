@@ -924,15 +924,17 @@ export class WorkflowCoordinator {
         ...(contract.targets.automaticProblemCap ? { maxProblems: contract.targets.automaticProblemCap } : {}) })
       : null;
     const sourceIds = selection ? selection.selectedProblemIds : candidates.map((candidate) => candidate.id);
+    const stopped = session.state === "stop-requested";
     this.options.db.immediateTransaction(() => {
       this.repository.updateWorkItem(item.id, "succeeded", {
         outputRefs: { runId, ...(selection ? { selection } : {}) },
       });
       this.settleTaskBudget(item.id, "spent", this.providerAttemptCount(runId));
       if (sourceIds.length === 0) {
-        const state = contract.mode === "vibe" ? "finished" : session.state === "pause-requested" ? "paused" : "waiting-for-review";
+        const state = stopped || contract.mode === "vibe"
+          ? "finished" : session.state === "pause-requested" ? "paused" : "waiting-for-review";
         this.repository.updateSession(session.id, session.revision, {
-          state, ...(state === "finished" ? { outcome: "no-qualifying-ideas" as const } : {}),
+          state, ...(state === "finished" ? { outcome: stopped ? "cancelled" as const : "no-qualifying-ideas" as const } : {}),
           remainingMs: remainingMs(session),
         });
       } else {
@@ -944,16 +946,18 @@ export class WorkflowCoordinator {
           selection: { problemIds: materialized.problemIds, ...(selection ? { decisions: selection.decisions } : {}) },
           originMap: materialized.originMap,
         });
+        const state = stopped ? "finished"
+          : session.state === "pause-requested" ? "paused" : contract.mode === "vibe" ? "running" : "waiting-for-review";
         this.repository.updateSession(session.id, session.revision, {
-          state: session.state === "pause-requested" ? "paused" : contract.mode === "vibe" ? "running" : "waiting-for-review",
+          state, ...(stopped ? { outcome: "cancelled" as const } : {}),
           activeSnapshotId: snapshot.id, remainingMs: remainingMs(session),
-          runningSince: contract.mode === "vibe" ? new Date().toISOString() : null,
+          runningSince: state === "running" ? new Date().toISOString() : null,
         });
       }
     });
     this.progress(session.id, [item.id]);
-    if (contract.mode === "vibe" && sourceIds.length > 0 && session.state !== "pause-requested") this.planGeneration(session.id);
-    else if (contract.mode === "babysit" && this.options.researchService && session.state !== "pause-requested") {
+    if (contract.mode === "vibe" && sourceIds.length > 0 && !stopped && session.state !== "pause-requested") this.planGeneration(session.id);
+    else if (contract.mode === "babysit" && this.options.researchService && !stopped && session.state !== "pause-requested") {
       void this.options.researchService.dispatchReady(session.id).catch((error) => this.options.onError?.(error));
     }
   }
