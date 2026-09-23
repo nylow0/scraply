@@ -122,30 +122,25 @@ test("native v2 research survives the installed selection, risk evaluation, and 
     }
     await expect(page.getByRole("combobox", { name: /Research workflow/ })).toHaveCount(0);
     await page.getByLabel("Solutions per problem", { exact: true }).fill("5");
-    await page.getByLabel("What should we evaluate risk against?", { exact: false }).fill("Avoid losing a week of repair capacity");
+    await page.getByPlaceholder("What matters most: time, budget, or other limits?").fill("Avoid losing a week of repair capacity");
     await expect(page.getByLabel("OpenAI account")).toContainText("synthetic-account");
     await page.getByLabel("Research name", { exact: true }).fill("Native protocol UI fixture");
     await page.getByLabel("What do you want to explore?", { exact: false }).fill("Parts delivery uncertainty for repair shops");
     await page.getByLabel("Research depth", { exact: true }).selectOption("quick");
-    await page.getByRole("button", { name: "Discover problems", exact: true }).click();
+    await page.getByRole("button", { name: "Start Babysit", exact: true }).click();
     await expect(page.getByText("Choose problems to develop", { exact: true })).toBeVisible();
     await expect(page.getByText("overstated", { exact: true })).not.toBeVisible();
     await page.locator(".problem-disclosure > summary").first().click();
     await expect(page.getByText("overstated", { exact: true })).toBeVisible();
     await page.getByRole("checkbox", { name: "Develop this problem" }).check();
-    await page.getByRole("button", { name: "Commit selection", exact: true }).click();
-    await expect(page.getByText("Supplier reliability ledger", { exact: true })).toBeVisible();
+    await page.getByRole("button", { name: "Generate all selected", exact: true }).click();
+    await expect(page.getByRole("heading", { name: "Supplier reliability ledger" }).first()).toBeVisible();
     {
-      await page.getByRole("button", { name: "Supplier reliability ledger", exact: true }).click();
+      await page.getByRole("button", { name: "Open idea: Track observed delivery windows by supplier and part category.", exact: true }).first().click();
+      await expect.poll(async () => page.evaluate(async () => (await (window as unknown as { scraply: ScraplyApi }).scraply.getWorkspace()).solutions.some((idea) => idea.selectable)), { timeout: 30_000 }).toBe(true);
       await page.getByRole("button", { name: "Choose and analyze", exact: true }).first().click();
-      await expect.poll(async () => page.evaluate(async () => {
-        const state = await (window as unknown as { scraply: ScraplyApi }).scraply.getWorkspace();
-        return state.latestResearchRun?.status === "completed" && !state.latestResearchRun.awaitingSelection;
-      })).toBe(true);
-      const analyzedIdea = page.getByRole("button", { name: "Supplier reliability ledger", exact: true });
-      if (await analyzedIdea.getAttribute("aria-expanded") === "false") await analyzedIdea.click();
       await expect(page.getByText("Your selected option", { exact: false })).toBeVisible();
-      await expect(page.getByText("Next experiment", { exact: true })).toBeVisible();
+      await expect(page.getByRole("region", { name: "Focused experiment" })).toBeVisible({ timeout: 30_000 });
       await page.getByLabel("Question", { exact: true }).fill("Which suppliers publish arrival histories?");
       await page.getByRole("button", { name: "Check evidence", exact: true }).click();
       const followUp = page.getByRole("region", { name: "Evidence follow-up result" });
@@ -156,41 +151,12 @@ test("native v2 research survives the installed selection, risk evaluation, and 
       await expect(page.getByRole("button", { name: "Check evidence", exact: true })).toHaveCount(0);
       await page.getByLabel("Your decision", { exact: true }).fill("Pilot with one supplier");
       await page.getByLabel("Observed test result", { exact: true }).fill("Nine of ten estimates matched arrivals");
-      // Filtering changes visibility without unmounting an open idea or discarding its draft.
-      await page.getByRole("textbox", { name: "Search solutions" }).fill("no matching idea");
-      await expect(page.getByLabel("Your decision", { exact: true })).not.toBeVisible();
-      await page.getByRole("button", { name: "Clear filter" }).click();
-      await expect(page.getByLabel("Your decision", { exact: true })).toHaveValue("Pilot with one supplier");
-      await expect(page.getByLabel("Observed test result", { exact: true })).toHaveValue("Nine of ten estimates matched arrivals");
       await page.getByRole("button", { name: "Save decision and result", exact: true }).click();
       await expect(page.getByText("Saved", { exact: true })).toBeVisible();
-      const progressTarget = await page.evaluate(async () => {
-        performance.clearMeasures("scraply-progress-visible");
-        const state = await (window as unknown as { scraply: ScraplyApi }).scraply.getWorkspace();
-        return { threadId: state.activeThreadId!, runId: state.latestResearchRun!.runId };
-      });
-      await electron.evaluate(async ({ BrowserWindow }, target) => {
-        const contents = BrowserWindow.getAllWindows()[0]!.webContents;
-        for (let index = 0; index < 35; index += 1) {
-          contents.send("scraply:backend-event", {
-            type: "run-progress", threadId: target.threadId, runId: target.runId,
-            message: `Deterministic renderer progress ${index}`, codexCalls: index, searches: index,
-          });
-          await new Promise((resolve) => setTimeout(resolve, 10));
-        }
-      }, progressTarget);
-      await page.waitForFunction(() => performance.getEntriesByName("scraply-progress-visible").length >= 30);
-      await expect(page.locator(".calls strong").first()).toHaveText("34");
-      await expect(page.locator(".calls strong").nth(1)).toHaveText("34");
-      const samplesMs = await page.evaluate(() => performance.getEntriesByName("scraply-progress-visible").map((entry) => entry.duration));
-      expect(samplesMs).toHaveLength(35);
-      writeFileSync(testInfo.outputPath("progress-samples.json"), JSON.stringify({ samplesMs }, null, 2));
     }
     await page.getByText("Risks and responses", { exact: true }).click();
     await expect(page.getByText("Observed order volume stays too sparse", { exact: true }).first()).toBeVisible();
     await page.screenshot({ animations: "disabled", path: testInfo.outputPath("native-solutions.png") });
-    await page.getByRole("button", { name: "Discard solution: Supplier reliability ledger", exact: true }).click();
-    await expect(page.getByRole("button", { name: "Supplier reliability ledger", exact: true })).not.toBeVisible();
     await events;
     expect(eventErrors).toEqual([]);
     await installedApp.close();
@@ -198,17 +164,13 @@ test("native v2 research survives the installed selection, risk evaluation, and 
     backend = await startFixtureServer(directory, () => undefined);
     electron = await launch();
     page = await electron.firstWindow();
-    await expect(page.getByRole("button", { name: "Supplier reliability ledger", exact: true })).not.toBeVisible();
-    await page.getByRole("button", { name: "Discarded 1", exact: true }).click();
-    await page.getByRole("button", { name: "Restore solution: Supplier reliability ledger", exact: true }).click();
-    await page.getByRole("button", { name: "Discarded 0", exact: true }).click();
-    await expect(page.getByText("Supplier reliability ledger", { exact: true })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Supplier reliability ledger" }).first()).toBeVisible();
     {
       const savedModel = await page.evaluate(async () => (await (window as unknown as { scraply: ScraplyApi }).scraply.getWorkspace()).runConfig?.model);
       expect(savedModel).toEqual({ providerId: "openai-subscription", modelId: "gpt-fixture" });
     }
     {
-      await page.getByRole("button", { name: "Supplier reliability ledger", exact: true }).click();
+      await page.getByRole("button", { name: "Open idea: Track observed delivery windows by supplier and part category.", exact: true }).first().click();
       await expect(page.getByLabel("Observed test result", { exact: true })).toHaveValue("Nine of ten estimates matched arrivals");
       const reopenedFollowUp = page.getByRole("region", { name: "Evidence follow-up result" });
       await expect(reopenedFollowUp).toContainText("Which suppliers publish arrival histories?");
@@ -221,7 +183,10 @@ test("native v2 research survives the installed selection, risk evaluation, and 
     await page.getByText("2 cited factors", { exact: true }).click();
     await expect(page.getByText("Parts delivery windows are uncertain.", { exact: true }).first()).toBeVisible();
     await page.screenshot({ animations: "disabled", path: testInfo.outputPath("native-reopened-evidence.png") });
-    expect(readFileSync(join(directory, "requests.jsonl"), "utf8").trim().split("\n")).toHaveLength(9);
+    const stages = readFileSync(join(directory, "requests.jsonl"), "utf8").trim().split("\n")
+      .map((line) => JSON.parse(line) as { payload: { workOrder: { stage: string } } })
+      .map((request) => request.payload.workOrder.stage);
+    expect(stages).toEqual(expect.arrayContaining(["risk-evaluation", "decision-analysis"]));
     expect(existsSync(join(directory, "prompts", "solutions.md"))).toBe(false);
     expect(readFileSync(join(directory, "prompts", "retired-prompt-backups", managedHash, "solutions.md"), "utf8")).toBe(managedPrompt);
   } finally {

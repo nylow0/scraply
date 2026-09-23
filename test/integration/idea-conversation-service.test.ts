@@ -115,6 +115,28 @@ describe("idea conversation service", () => {
     expect(conversation.turns[0]?.assistant?.citedEvidenceIds).toEqual(["source-1"]);
   });
 
+  test("a later turn includes the saved assistant reply in its model context", async () => {
+    const db = fixture();
+    const reply = "The saved source reports upgrade review catching issues.";
+    const service = new IdeaConversationService({ db, modelClient: () => completion({
+      reply, citedEvidenceIds: ["source-1"], assumptions: [], changeSummary: null, candidate: null,
+    }), modelAvailable: () => true, onProgress: () => {} });
+    const first = await service.submitTurn(request("message-1"));
+    expect(await waitForTurn(db, first.turnId)).toBe("completed");
+    const branchId = service.getConversation({ ideaId: "idea-1" }).turns[0]!.branchId;
+    const second = await service.submitTurn({ ...request("message-2"), branchId,
+      parentTurnId: first.turnId, expectedHeadTurnId: first.turnId, text: "What would block it?" });
+    expect(await waitForTurn(db, second.turnId)).toBe("completed");
+    const saved = db.db.prepare("SELECT context_json FROM idea_turns WHERE id = ?")
+      .get(second.turnId) as { context_json: string };
+    const context = JSON.parse(saved.context_json) as {
+      workOrder: { inputs: { context: { conversation: Array<{ id: string; userText: string; assistantText: string | null }> } } };
+    };
+    expect(context.workOrder.inputs.context.conversation).toEqual([{
+      id: first.turnId, userText: "Why could this work?", assistantText: reply,
+    }]);
+  });
+
   test("a rethink saves an immutable second solution and leaves the original selected version history", async () => {
     const db = fixture();
     const revised = {
@@ -169,6 +191,12 @@ describe("idea conversation service", () => {
       });
       return snapshot;
     });
+    db.db.prepare("UPDATE research_runs SET evidence_snapshot_id = ? WHERE id = 'run-v2'").run(base.id);
+    const originalConversation = new IdeaConversationService({ db,
+      modelClient: () => { throw new Error("No provider call expected"); },
+      modelAvailable: () => true, onProgress: () => {},
+    }).getConversation({ ideaId: "idea-1" });
+    expect(originalConversation.versions[0]?.evidenceSnapshotId).toBe(base.id);
     db.db.prepare(`INSERT INTO research_runs (id, thread_id, status, config_json, workflow_version, created_at, updated_at)
       VALUES ('new-evidence-run', 'thread-1', 'completed', ?, 2, ?, ?)`).run(JSON.stringify(DEFAULT_RUN_CONFIG), now, now);
     db.db.prepare(`INSERT INTO sources (id, research_run_id, canonical_url, title, retrieved_text, content_hash, retrieved_at)
@@ -219,6 +247,9 @@ describe("idea conversation service", () => {
     expect(conversation.versions).toHaveLength(2);
     expect(conversation.versions[1]).toMatchObject({ parentSolutionId: "idea-1",
       evidenceSnapshotId: applied.snapshot.id });
+    expect(conversation.versions[0]?.evidenceSnapshotId).toBe(base.id);
+    expect(db.db.prepare("SELECT evidence_snapshot_id FROM solution_lineage WHERE solution_id = 'idea-1'").get())
+      .toEqual({ evidence_snapshot_id: base.id });
     expect(conversation.turns[0]?.assistant?.citedEvidenceIds).toContain(newSource.id);
     expect(db.db.prepare("SELECT mechanism FROM solutions WHERE id = 'idea-1'").get())
       .toEqual({ mechanism: "Review dependencies before release" });
