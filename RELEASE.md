@@ -4,7 +4,7 @@
 
 ## Local development versus release verification
 
-Use the [README development workflow](README.md#development) for routine iteration in a browser with the background dev server. After completing an application change, run `bun run build:installed` from the checkout root. Skip it for read-only questions, documentation-only changes, and intermediate investigation. These development rules do not replace the CI or release gates below, and browser testing does not establish that a release package works.
+Use the [development guide](docs/development.md) for routine iteration in a browser with the background dev server. After completing an application change, run `bun run build:installed` from the checkout root. Skip it for read-only questions, documentation-only changes, and intermediate investigation. These development rules do not replace the CI or release gates below, and browser testing does not establish that a release package works.
 
 ## Publish a release candidate
 
@@ -55,7 +55,7 @@ Private builds may be unsigned only when the workflow or local release process e
 
 ## Bundled native runtime
 
-The app package requires exactly the seven prompt filenames in `src/core/stages.ts`; package verification rejects missing stages and superseded Markdown prompts. Legacy v1 generation and its bundled prompts are retired at Dany's request, before release acceptance. Existing v1 results remain readable, and saved v2 runs retain their prompt snapshots. On startup, recognized retired overrides are backed up under `retired-prompt-backups`; proven bundled v2 copies move to `bundled-copy-backups`, while custom v2 overrides remain active. This retirement does not assert that release or human usefulness acceptance has passed.
+The app package requires exactly the nine prompt filenames in `src/core/stages.ts`, including `workflow-v2-solution-set-review.md` and `workflow-v2-idea-follow-up.md`; package verification rejects missing stages and superseded Markdown prompts. Legacy v1 generation and its bundled prompts are retired at Dany's request, before release acceptance. Existing v1 results remain readable, and saved v2 runs retain their prompt snapshots. On startup, recognized retired overrides are backed up under `retired-prompt-backups`; proven bundled v2 copies move to `bundled-copy-backups`, while custom v2 overrides remain active. This retirement does not assert that release or human usefulness acceptance has passed.
 
 Scraply packages one tested `scraply-agent` executable at `resources/runtime/scraply-agent.exe`, outside `app.asar`. Native mode requires protocol 1.1. Runtime native protocol 1.0 is explicitly incompatible. Runtime 0.2.0 removes the temporary `app-server` and `exec -` commands.
 

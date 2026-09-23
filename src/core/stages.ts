@@ -5,10 +5,12 @@ import {
   WorkflowV2FactorHarvestOutputSchema,
   WorkflowV2ProblemCandidatesOutputSchema,
   WorkflowV2ProblemKillOutputSchema,
-  ClassifiedWorkflowV2ProblemKillOutputSchema,
+  ExplicitWorkflowV2ProblemKillOutputSchema,
   WorkflowV2QueryPlanOutputSchema,
   WorkflowV2RiskEvaluationOutputSchema,
   WorkflowV2SolutionsOutputSchema,
+  WorkflowV2SolutionSetReviewOutputSchema,
+  WorkflowV2IdeaFollowUpOutputSchema,
   type WorkflowV2DecisionAnalysis,
   type WorkflowV2SolutionOption,
 } from "../shared/structured-output-schemas";
@@ -30,6 +32,8 @@ export const WORKFLOW_V2_STAGE_IDS = [
   "problem-candidates",
   "problem-kill",
   "solutions",
+  "solution-set-review",
+  "idea-follow-up",
   "risk-evaluation",
   "decision-analysis",
 ] as const;
@@ -79,7 +83,7 @@ export const WORKFLOW_V2_STAGE_REGISTRY = {
     promptFilename: "workflow-v2-problem-kill.md",
     promptRevision: 1,
     schemaRevision: 1,
-    schema: ClassifiedWorkflowV2ProblemKillOutputSchema,
+    schema: ExplicitWorkflowV2ProblemKillOutputSchema,
     maxOutputTokens: 2_048,
     deadlineMs: DISCOVERY_SYNTHESIS_DEADLINE_MS,
   },
@@ -89,6 +93,24 @@ export const WORKFLOW_V2_STAGE_REGISTRY = {
     promptRevision: 1,
     schemaRevision: 1,
     schema: WorkflowV2SolutionsOutputSchema,
+    maxOutputTokens: 4_096,
+    deadlineMs: 120_000,
+  },
+  "solution-set-review": {
+    id: "solution-set-review",
+    promptFilename: "workflow-v2-solution-set-review.md",
+    promptRevision: 1,
+    schemaRevision: 1,
+    schema: WorkflowV2SolutionSetReviewOutputSchema,
+    maxOutputTokens: 4_096,
+    deadlineMs: 120_000,
+  },
+  "idea-follow-up": {
+    id: "idea-follow-up",
+    promptFilename: "workflow-v2-idea-follow-up.md",
+    promptRevision: 1,
+    schemaRevision: 1,
+    schema: WorkflowV2IdeaFollowUpOutputSchema,
     maxOutputTokens: 4_096,
     deadlineMs: 120_000,
   },
@@ -150,9 +172,9 @@ export function assertWorkflowV2SolutionsSemantics(
     throw new Error(`The solutions stage returned more than ${ideaCount} options`);
   }
   const categories = evidenceCategories(evidence);
-  // Discovery roles describe the problem. A source arguing against a new product can
-  // support an option to use the existing manual process instead.
-  const suppliedIds = new Set([...categories.supporting, ...categories.contrary]);
+  // Discovery roles describe the problem, while a gap search is an unclassified lead.
+  // All saved sources may be cited if an option explains their actual relevance.
+  const suppliedIds = new Set([...categories.supporting, ...categories.contrary, ...categories.gapSearch]);
   for (const option of output.options) {
     const gapEvidenceIds = option.startupOpportunity?.gapAssessment.evidenceIds ?? [];
     if ([...option.supportingEvidenceIds, ...option.contraryEvidenceIds, ...gapEvidenceIds].some((id) => !suppliedIds.has(id))) {
@@ -200,12 +222,14 @@ function assertWorkflowV2StageOutputSemantics(
 function evidenceCategories(evidence: readonly WorkflowV2CategorizedEvidence[]) {
   const supporting = new Set<string>();
   const contrary = new Set<string>();
+  const gapSearch = new Set<string>();
   for (const item of evidence) {
     if (!item.content || typeof item.content !== "object" || Array.isArray(item.content)) continue;
     const categories = (item.content as Record<string, unknown>).categories;
     if (!Array.isArray(categories)) continue;
     if (categories.includes("supporting")) supporting.add(item.sourceId);
     if (categories.includes("contrary")) contrary.add(item.sourceId);
+    if (categories.includes("gap-search")) gapSearch.add(item.sourceId);
   }
-  return { supporting, contrary };
+  return { supporting, contrary, gapSearch };
 }

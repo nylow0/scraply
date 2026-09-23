@@ -449,6 +449,9 @@ describe("discovery", () => {
             verdictSourceIds: factors.map((factor) => factor.sourceId),
             intendedBuyerEvidenceFactorIds: factors.map((factor) => factor.id),
             evidenceGap: null,
+            briefFit: "direct",
+            contraryEvidence: "resolved",
+            workflowKey: "operator: repeat filing after status change",
           })),
       search: { async search() { return []; } },
     });
@@ -457,6 +460,9 @@ describe("discovery", () => {
     expect(problem.sourceHostnames).toEqual(["example.test"]);
     expect(problem.verdict).toBe(expectedVerdict);
     expect(problem.evidenceGap).toBe(expectedGap);
+    expect(problem).toMatchObject({
+      briefFit: "direct", contraryEvidence: "resolved", workflowKey: "operator: repeat filing after status change",
+    });
     expect(problem.verdictReason).not.toContain("null");
     if (expectedGap) expect(problem.verdictReason).toContain(expectedGap);
     else expect(problem.verdictReason).toBe("No contrary evidence resolves the problem.");

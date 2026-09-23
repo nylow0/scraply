@@ -2,26 +2,29 @@
   import "./problem-review.css";
   import ResultsToolbar from "./ResultsToolbar.svelte";
   import type { ProblemCandidate, RejectedProblemCandidate } from "../../shared/ipc";
-  import { DEFAULT_RUN_CONFIG, modelRefKey, sameModelRef, type ExplorationPurpose, type ModelOption, type ModelRef, type RunConfig } from "../../shared/schemas";
+  import { DEFAULT_RUN_CONFIG, modelRefKey, type ExplorationPurpose, type ModelOption, type ModelRef, type RunConfig } from "../../shared/schemas";
   import { modelDisplayName } from "../lib/research-defaults";
   import { untrack } from "svelte";
   import { SvelteSet } from "svelte/reactivity";
-  let { problems, rejectedCandidates, modelOptions, initialConfig, busy, onCommit, onExport, onOpenSource }:{ problems:ProblemCandidate[];rejectedCandidates:RejectedProblemCandidate[];modelOptions:ModelOption[];initialConfig:RunConfig|null;workflowVersion?:1|2|undefined;ideaCount?:number|undefined;busy:boolean;onCommit:(ids:string[],userProblem:string|null,model:ModelRef,reasoningEffort:string,explorationPurpose:ExplorationPurpose)=>Promise<void>;onExport:()=>Promise<void>;onOpenSource:(url:string)=>Promise<void> }=$props();
+  let { problems, rejectedCandidates, modelOptions, initialConfig, fixedExplorationPurpose, busy, onCommit, onExport, onOpenSource }:{ problems:ProblemCandidate[];rejectedCandidates:RejectedProblemCandidate[];modelOptions:ModelOption[];initialConfig:RunConfig|null;fixedExplorationPurpose?:ExplorationPurpose|undefined;workflowVersion?:1|2|undefined;ideaCount?:number|undefined;busy:boolean;onCommit:(ids:string[],userProblem:string|null,model:ModelRef,reasoningEffort:string,explorationPurpose:ExplorationPurpose)=>Promise<void>;onExport:()=>Promise<void>;onOpenSource:(url:string)=>Promise<void> }=$props();
   const initialProblems=untrack(()=>problems);
   const selected=new SvelteSet(initialProblems.filter((item)=>item.selected).map((item)=>item.id));
   let userProblem=$state("");
-  let userProblemTextarea: HTMLTextAreaElement | undefined;
+  let userProblemTextarea = $state<HTMLTextAreaElement | undefined>(undefined);
   let matchingUserProblem=$derived(problems.find((problem)=>problem.verdict==="user-asserted"&&problem.statement===userProblem.trim()));
   let manualDevelopment=$derived(userProblem.trim()&&(!matchingUserProblem||(!matchingUserProblem.developmentCompleted&&!selected.has(matchingUserProblem.id)))?1:0);
   let projected=$derived((problems.filter((problem)=>selected.has(problem.id)&&!problem.developmentCompleted).length+manualDevelopment)*3);
-  const availableModels=untrack(()=>modelOptions.filter((item)=>item.providerId==="openai-subscription"));
+  let availableModels=$derived(modelOptions.filter((item)=>item.providerId==="openai-subscription"));
   const savedConfig=untrack(()=>initialConfig);
-  const initialModel=availableModels.find((item)=>savedConfig&&sameModelRef(item,savedConfig.model))??availableModels[0];
+  const initialModel=untrack(()=>savedConfig?.model??modelOptions.find((item)=>item.providerId==="openai-subscription"));
   let modelKey=$state(initialModel?modelRefKey(initialModel):"");
+  const initialModelOption=untrack(()=>modelOptions.find((item)=>modelRefKey(item)===modelKey));
   let selectedModel=$derived(availableModels.find((item)=>modelRefKey(item)===modelKey));
-  let reasoningEffort=$state(savedConfig&&initialModel?.reasoningEfforts.some((item)=>item.id===savedConfig.reasoningEffort)?savedConfig.reasoningEffort:initialModel?.defaultReasoningEffort??DEFAULT_RUN_CONFIG.reasoningEffort);
-  let explorationPurpose=$state<ExplorationPurpose>(savedConfig?.explorationPurpose??"general-solutions");
+  let reasoningEffort=$state<string>(savedConfig?.reasoningEffort??initialModelOption?.defaultReasoningEffort??DEFAULT_RUN_CONFIG.reasoningEffort);
+  let reasoningAvailable=$derived(selectedModel?.reasoningEfforts.some((item)=>item.id===reasoningEffort)??false);
+  let selectedPurpose=$derived(fixedExplorationPurpose??savedConfig?.explorationPurpose??DEFAULT_RUN_CONFIG.explorationPurpose);
   let model=$derived<ModelRef>({providerId:selectedModel?.providerId??"",modelId:selectedModel?.modelId??""});
+  $effect(()=>{if(!modelKey&&!savedConfig?.model&&availableModels[0]){modelKey=modelRefKey(availableModels[0]);reasoningEffort=availableModels[0].defaultReasoningEffort}});
   function selectModel(){reasoningEffort=selectedModel?.defaultReasoningEffort??DEFAULT_RUN_CONFIG.reasoningEffort}
   function toggle(id:string){if(selected.has(id))selected.delete(id);else selected.add(id)}
   function useAsUserAsserted(statement:string){userProblem=statement;userProblemTextarea?.focus()}
@@ -84,20 +87,27 @@
             <div class="verdict"><span>Not evidence-backed</span></div>
             <h2>{candidate.statement}</h2>
             <p>{candidate.reason}</p>
-            <button class="use-rejected" type="button" disabled={busy} onclick={() => useAsUserAsserted(candidate.statement)}>Use as user-asserted problem</button>
+            {#if !fixedExplorationPurpose}<button class="use-rejected" type="button" disabled={busy} onclick={() => useAsUserAsserted(candidate.statement)}>Use as user-asserted problem</button>{/if}
           </article>
         {/each}
       </div>
     </details>
   {/if}
-  <div class="escape"><label><span>Or state the problem yourself.</span><textarea bind:this={userProblemTextarea} bind:value={userProblem} disabled={busy} rows="3" placeholder="Describe the problem in one direct sentence."></textarea></label></div>
+  {#if !fixedExplorationPurpose}<div class="escape"><label><span>Or state the problem yourself.</span><textarea bind:this={userProblemTextarea} bind:value={userProblem} disabled={busy} rows="3" placeholder="Describe the problem in one direct sentence."></textarea></label></div>{/if}
   <section class="development-settings" aria-label="Development settings">
-    <label><span>Development model</span><select aria-label="Development model" bind:value={modelKey} onchange={selectModel} disabled={busy||availableModels.length===0}>{#each availableModels as item (modelRefKey(item))}<option value={modelRefKey(item)}>{modelDisplayName(item)}</option>{/each}</select></label>
-    <label><span>Development reasoning</span><select aria-label="Development reasoning" bind:value={reasoningEffort} disabled={busy||!selectedModel}>{#each (selectedModel?.reasoningEfforts??[]) as effort (effort.id)}<option value={effort.id}>{effort.id.charAt(0).toUpperCase()+effort.id.slice(1)}</option>{/each}</select></label>
-    <label><span>Option type</span><select aria-label="Option type" bind:value={explorationPurpose} disabled={busy}><option value="general-solutions">Practical solutions</option><option value="startup-opportunities">Startup opportunities</option></select></label>
-    <p>This choice applies to every new development run in this selection.</p>
+    <label><span>Development model</span><select aria-label="Development model" bind:value={modelKey} onchange={selectModel} disabled={busy||availableModels.length===0}>{#if modelKey&&!selectedModel}<option value={modelKey}>{modelDisplayName(savedConfig?.model??DEFAULT_RUN_CONFIG.model)} (unavailable)</option>{/if}{#each availableModels as item (modelRefKey(item))}<option value={modelRefKey(item)}>{modelDisplayName(item)}</option>{/each}</select></label>
+    <label><span>Development reasoning</span><select aria-label="Development reasoning" bind:value={reasoningEffort} disabled={busy||!selectedModel}>{#if !reasoningAvailable}<option value={reasoningEffort}>{reasoningEffort} (unavailable)</option>{/if}{#each (selectedModel?.reasoningEfforts??[]) as effort (effort.id)}<option value={effort.id}>{effort.id.charAt(0).toUpperCase()+effort.id.slice(1)}</option>{/each}</select></label>
+    <p>{selectedPurpose === "auto" ? "Ideas will follow your brief and each selected problem." : selectedPurpose === "startup-opportunities" ? "This project asks for startup opportunities." : "This project asks for practical solutions."}</p>
+    {#if modelKey&&!selectedModel}<p role="status">The saved development model is unavailable. Choose an available model before generating.</p>{:else if selectedModel&&!reasoningAvailable}<p role="status">The saved reasoning effort is unavailable for this model. Choose an available effort before generating.</p>{/if}
   </section>
-  <footer><p><strong>{selected.size+(userProblem.trim()?1:0)}</strong> problems selected · ~{projected} model calls projected. Scraply will reuse completed development and generate a batch for each remaining selection. It may return fewer options than requested when the evidence does not support more.</p><button disabled={busy||!selectedModel||(!selected.size&&!userProblem.trim())} onclick={()=>onCommit([...selected],userProblem.trim()||null,model,reasoningEffort,explorationPurpose)}>{busy?"Starting…":"Generate all selected"}</button></footer>
+  <footer>
+    {#if fixedExplorationPurpose}
+      <p><strong>{selected.size}</strong> problems selected · Each idea batch reserves up to 4 model calls for generation and review. The total number of batches depends on the target and accepted ideas; remaining allowance is shown above.</p>
+    {:else}
+      <p><strong>{selected.size+(userProblem.trim()?1:0)}</strong> problems selected · ~{projected} model calls projected. Scraply will reuse completed development and generate a batch for each remaining selection. It may return fewer options than requested when the evidence does not support more.</p>
+    {/if}
+    <button disabled={busy||!selectedModel||!reasoningAvailable||(!selected.size&&!userProblem.trim())} onclick={()=>onCommit([...selected],userProblem.trim()||null,model,reasoningEffort,selectedPurpose)}>{busy?"Starting…":"Generate all selected"}</button>
+  </footer>
 </section>
 <style>
 

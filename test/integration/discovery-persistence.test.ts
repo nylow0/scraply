@@ -49,6 +49,9 @@ describe("discovery persistence", () => {
       verdict: "confirmed",
       verdictReason: "Contrary evidence did not kill it.",
       verdictSourceIds: ["source-1"],
+      briefFit: "direct",
+      contraryEvidence: "resolved",
+      workflowKey: "operator: repeat filing after status change",
     }], [{
       statement: "A weak candidate",
       reason: "Cited factors span one source hostname; two are required.",
@@ -65,6 +68,8 @@ describe("discovery persistence", () => {
     }]);
     expect(client.db.prepare("SELECT verdict_source_ids_json FROM problems WHERE id = 'problem-1'").get())
       .toEqual({ verdict_source_ids_json: "[]" });
+    expect(client.db.prepare("SELECT brief_fit, contrary_evidence, workflow_key FROM problems WHERE id = 'problem-1'").get())
+      .toEqual({ brief_fit: "direct", contrary_evidence: "resolved", workflow_key: "operator: repeat filing after status change" });
     expect(client.db.prepare("SELECT statement, reason FROM rejected_problem_candidates").all()).toEqual([{
       statement: "A weak candidate",
       reason: "Cited factors span one source hostname; two are required.",

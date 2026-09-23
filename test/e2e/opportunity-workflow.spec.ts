@@ -18,6 +18,7 @@ test("installed business review passes through the desktop bridge and renders th
     activeThreadId: "desktop-project", messages: [], scope: null, runConfig: DEFAULT_RUN_CONFIG,
     models: [DEFAULT_RUN_CONFIG.model], modelOptions: [model], modelCatalog: { models: [DEFAULT_RUN_CONFIG.model], favorites: [] }, presets: [],
     problemCandidates: [], rejectedProblemCandidates: [], latestResearchRun: null, pendingRuns: [],
+    researchRequests: [], researchFindings: [],
     solutions: [{ id: "option-1", problemId: "problem-1", problemStatement: "Repair approvals are delayed", problemVerdict: "insufficient-evidence", factors: [], mechanism: "Repair approval workflow", description: "Record the approval of a revised quote.", respectsOffLimits: true, respectsOffLimitsWhy: "Within scope", outcomes: [], risks: [], confirmedCoreOutcomes: 0, unaddressedCatastrophicRisks: 0 }],
     opportunityFamilies: {
       rawOptionCount: 1, reviewedOptionCount: reviewed ? 1 : 0, acceptedFamilyCount: reviewed ? 1 : 0,
@@ -47,6 +48,7 @@ test("installed business review passes through the desktop bridge and renders th
   try {
     const electron = await app.launch({ ...process.env, SCRAPLY_E2E: "1", SCRAPLY_E2E_BACKEND_URL: `http://127.0.0.1:${address.port}`, SCRAPLY_E2E_BACKEND_TOKEN: "opportunity-desktop-fixture" });
     const page = await electron.firstWindow();
+    await page.locator("details.grouping > summary").click();
     await page.getByRole("button", { name: "Review 1 saved idea", exact: true }).click();
     await expect(page.getByText("Quote approvals", { exact: true })).toBeVisible();
     expect(requests).toContain("/opportunities/review");

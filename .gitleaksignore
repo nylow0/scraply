@@ -1,0 +1,5 @@
+# Gitleaks 8.30.1 false positives, reviewed against source at the listed commit.
+# The runtime test uses a synthetic JWT with empty JSON header and payload.
+9047a6f58d5972b0249aa6c03ed623f59692a58d:runtime/crates/scraply-agent-cli/tests/runtime.rs:generic-api-key:36
+# Cargo.lock lists a dependency name at this line, not a credential.
+9047a6f58d5972b0249aa6c03ed623f59692a58d:runtime/Cargo.lock:generic-api-key:1671

@@ -79,6 +79,10 @@ module.exports = function workflowOutput(request) {
   }
   const stage = request.workOrder.stage.split(":")[0];
   if (stage === "research-title") return { title: "Reducing repair shop delays" };
+  if (stage === "solution-set-review") return { assessments: request.workOrder.inputs.candidateIds.map((candidateId) => ({
+    candidateId, decision: "distinct", reason: "The fixture treats each proposed workflow as a distinct option.",
+    matchingSolutionId: null, citedEvidenceIds: [],
+  })) };
   const data = request.evidence[0].content;
   const v2 = request.workOrder.inputs?.workflowVersion === 2;
   if (v2) {
@@ -93,7 +97,7 @@ module.exports = function workflowOutput(request) {
       ].map(({ query, intent }) => ({ query, intent, uncertainty: "How often deliveries slip", intendedSourceType: "Operational records and customer reports" })) };
       case "factor-harvest": return { factors: data.sources.map((source) => ({ subject: "Repair shops", behavior: "record uncertain parts delivery windows", quote: source.text.split("\n")[0], sourceId: source.id, modelConfidence: 0.7, uncertainty: "This source may not represent other shops", sourceRole: "measured", audienceFit: "intended-buyer", independentSourceKey: new URL(source.url).hostname, supportsDemand: source.text.startsWith("Parts delivery windows are uncertain."), demandEvidenceUncertainty: "The synthetic report covers one repair shop" })) };
       case "problem-candidates": return { problems: data.factors.length ? [{ ...stageOutputs.problemCandidates.problems[0], factorIds: data.factors.map((factor) => factor.id), scaleBasisFactorId: null, alternativeExplanations: ["Delays may cluster around one supplier"], unknowns: ["Frequency across suppliers"], intendedBuyerEvidenceFactorIds: data.factors.filter((factor) => factor.supportsDemand).map((factor) => factor.id), evidenceGap: null }] : [] };
-      case "problem-kill": return { verdict: "overstated", verdictReason: "The supplied vendor report disagrees with the customer complaints.", verdictSourceIds: data.sources.map((source) => source.id), unresolvedAssumptions: ["The complaints represent all suppliers"], wouldChangeConclusion: ["A representative delivery log"], intendedBuyerEvidenceFactorIds: data.supportingFactors.filter((factor) => factor.supportsDemand).map((factor) => factor.id), evidenceGap: null };
+      case "problem-kill": return { verdict: "overstated", verdictReason: "The supplied vendor report disagrees with the customer complaints.", verdictSourceIds: data.sources.map((source) => source.id), unresolvedAssumptions: ["The complaints represent all suppliers"], wouldChangeConclusion: ["A representative delivery log"], intendedBuyerEvidenceFactorIds: data.supportingFactors.filter((factor) => factor.supportsDemand).map((factor) => factor.id), evidenceGap: null, briefFit: "direct", contraryEvidence: "unresolved", workflowKey: "repair shop: estimate part arrival for a repair" };
       case "solutions": return { options: [stageOutputs.solutions.solutions[0], { mechanism: "Manual supplier check", description: "Call before quoting a delivery window.", respectsOffLimits: true, respectsOffLimitsWhy: "No inventory." }].flatMap((option, index) => process.env.SCRAPLY_RUNTIME_CHILD_MODE === "workflow-many" ? Array.from({ length: Math.ceil((request.workOrder.inputs.ideaCount - index) / 2) }, (_, copy) => ({ ...option, mechanism: `${option.mechanism} ${copy * 2 + index + 1}` })) : [option]).map((option, index) => ({
         ...option,
         keyAssumption: "Delivery records help the next estimate",

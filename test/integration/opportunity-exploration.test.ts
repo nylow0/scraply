@@ -10,6 +10,7 @@ import { DiscoveryRepository } from "../../src/db/repositories/discovery";
 import { FocusedExperimentRepository } from "../../src/db/repositories/focused-experiments";
 import { OpportunityExplorationRepository } from "../../src/db/repositories/opportunity-exploration";
 import { OpportunityRepository } from "../../src/db/repositories/opportunities";
+import { WorkflowRepository } from "../../src/db/repositories/workflows";
 import { ThreadRepository } from "../../src/db/repositories/threads";
 import type { SearchClient } from "../../src/providers/search";
 import type { StructuredModelClient, StructuredStageRequest, StructuredStageResult } from "../../src/providers/structured";
@@ -433,6 +434,55 @@ test("one permitted round maps a named gap, searches, generates, reviews, and re
     await engine.shutdown();
     db.close();
   }
+});
+
+test("collection checkpoints reuse names and ordinals only across separate workflow sessions", () => {
+  const db = database();
+  const config = projectConfig();
+  const thread = new ThreadRepository(db).createThread("Session-scoped collection", config);
+  const repository = new OpportunityExplorationRepository(db);
+  const workflows = new WorkflowRepository(db);
+  const timestamp = new Date().toISOString();
+  try {
+    db.immediateTransaction(() => {
+      repository.create(thread.id, config.opportunityExploration!);
+      workflows.createSession({ id: "collection-a", threadId: thread.id, purpose: "discovery",
+        mode: "vibe", contract: {}, remainingMs: 60_000 });
+      workflows.updateSession("collection-a", 0, { state: "finished", outcome: "partial" });
+      workflows.createSession({ id: "collection-b", threadId: thread.id, purpose: "discovery",
+        mode: "vibe", contract: {}, remainingMs: 60_000 });
+      const attemptIds: string[] = [];
+      for (const [sessionId, gapId] of [["collection-a", "gap-a"], ["collection-b", "gap-b"]] as const) {
+        repository.saveGap(thread.id, {
+          id: gapId, name: "Approval trigger", description: "Find the buying trigger.",
+          dimension: "trigger", evidenceNeeded: null, searchQuery: null,
+          mapExhausted: false, candidateOrigin: "evidence-only", status: "named",
+          createdAt: timestamp, updatedAt: timestamp,
+        }, sessionId);
+        expect(repository.planBatch({ threadId: thread.id, sessionId, coverageGapId: gapId,
+          requestedCandidates: 1, acceptedFamiliesBefore: 0 }).ordinal).toBe(1);
+        const attempt = repository.prepareAttempt(thread.id, {
+          stageKey: "coverage-map:1", stageName: "coverage-map", input: { round: 1 },
+          model: { providerId: "fixture", modelId: "fixture", reasoningEffort: "low" },
+          promptVersion: "v1", promptText: "Map coverage",
+        }, sessionId);
+        expect(attempt.kind).toBe("prepared");
+        if (attempt.kind === "prepared") attemptIds.push(attempt.attemptId);
+      }
+      expect(() => repository.markAttemptDispatched(thread.id, attemptIds[0]!, "model", "collection-b")).toThrow();
+      repository.markAttemptDispatched(thread.id, attemptIds[0]!, "model", "collection-a");
+      repository.completeAttempt(thread.id, attemptIds[0]!, { mapped: true }, "collection-a");
+    });
+    expect(repository.listGaps(thread.id, "collection-a").map(gap => gap.id)).toEqual(["gap-a"]);
+    expect(repository.listGaps(thread.id, "collection-b").map(gap => gap.id)).toEqual(["gap-b"]);
+    expect(repository.listBatches(thread.id, "collection-a")).toHaveLength(1);
+    expect(repository.listBatches(thread.id, "collection-b")).toHaveLength(1);
+    expect(repository.completedAttemptResult(thread.id, "coverage-map:1", "collection-a")).toEqual({ mapped: true });
+    expect(repository.completedAttemptResult(thread.id, "coverage-map:1", "collection-b")).toBeNull();
+    expect(repository.require(thread.id).gaps).toEqual([]);
+    expect(repository.require(thread.id).batches).toEqual([]);
+    expect(db.db.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
+  } finally { db.close(); }
 });
 
 test("startup recovery pauses an orphaned exploration and marks an in-flight dispatch unknown", async () => {

@@ -9,6 +9,11 @@ export const ProblemVerdictSchema = z.enum([
   "attempted-and-failed",
   "user-asserted",
 ]);
+export const ProblemBriefFitSchema = z.enum(["direct", "partial", "unknown", "outside"]);
+export const ProblemContraryEvidenceSchema = z.enum(["resolved", "unknown", "unresolved"]);
+export type ProblemBriefFit = z.infer<typeof ProblemBriefFitSchema>;
+export type ProblemContraryEvidence = z.infer<typeof ProblemContraryEvidenceSchema>;
+const ProblemWorkflowKeySchema = z.string().trim().min(1).max(160).nullable();
 export const OutcomeDirectionSchema = z.enum(["positive", "negative"]);
 export const RiskLikelihoodSchema = z.enum(["rare", "possible", "likely"]);
 export const RiskImpactSchema = z.enum(["≤3 days lost", "~2 weeks", "~2 months", "project ends"]);
@@ -123,12 +128,24 @@ const LegacyProblemKillOutputSchema = ProblemSchema.pick({
   verdictSourceIds: true,
 }).extend({ verdict: ProblemVerdictSchema.exclude(["user-asserted"]) }).strict();
 
-export const ProblemKillOutputSchema = z.union([LegacyProblemKillOutputSchema, ProblemSchema.pick({
+const ClassifiedProblemKillOutputSchema = ProblemSchema.pick({
   verdict: true, verdictReason: true, verdictSourceIds: true,
 }).extend({
   verdict: ProblemVerdictSchema.exclude(["user-asserted"]),
   intendedBuyerEvidenceFactorIds: z.array(z.string()), evidenceGap: z.string().nullable(),
-}).strict()]);
+}).strict();
+
+const ExplicitProblemKillOutputSchema = ClassifiedProblemKillOutputSchema.extend({
+  briefFit: ProblemBriefFitSchema,
+  contraryEvidence: ProblemContraryEvidenceSchema,
+  workflowKey: ProblemWorkflowKeySchema,
+}).strict();
+
+export const ProblemKillOutputSchema = z.union([
+  LegacyProblemKillOutputSchema,
+  ClassifiedProblemKillOutputSchema,
+  ExplicitProblemKillOutputSchema,
+]);
 
 export const SolutionsOutputSchema = z.object({
   solutions: z.array(SolutionSchema.omit({ problemId: true })),
@@ -301,9 +318,16 @@ export const ClassifiedWorkflowV2ProblemKillOutputSchema = ProblemSchema.pick({
   evidenceGap: WorkflowV2RequiredTextSchema.nullable(),
 }).strict();
 
+export const ExplicitWorkflowV2ProblemKillOutputSchema = ClassifiedWorkflowV2ProblemKillOutputSchema.extend({
+  briefFit: ProblemBriefFitSchema,
+  contraryEvidence: ProblemContraryEvidenceSchema,
+  workflowKey: ProblemWorkflowKeySchema,
+}).strict();
+
 export const WorkflowV2ProblemKillOutputSchema = z.union([
   LegacyWorkflowV2ProblemKillOutputSchema,
   ClassifiedWorkflowV2ProblemKillOutputSchema,
+  ExplicitWorkflowV2ProblemKillOutputSchema,
 ]);
 
 export const WorkflowV2SolutionOptionSchema = z.object({
@@ -324,6 +348,24 @@ export const WorkflowV2StartupSolutionOptionSchema = WorkflowV2SolutionOptionSch
 
 export const WorkflowV2SolutionsOutputSchema = z.object({
   options: z.array(z.union([WorkflowV2StartupSolutionOptionSchema, WorkflowV2SolutionOptionSchema])),
+}).strict();
+
+export const WorkflowV2SolutionSetReviewOutputSchema = z.object({
+  assessments: z.array(z.object({
+    candidateId: WorkflowV2RequiredTextSchema,
+    decision: z.enum(["distinct", "duplicate", "variant", "insufficient-evidence", "rejected"]),
+    reason: WorkflowV2RequiredTextSchema,
+    matchingSolutionId: WorkflowV2RequiredTextSchema.nullable(),
+    citedEvidenceIds: z.array(WorkflowV2RequiredTextSchema),
+  }).strict()),
+}).strict();
+
+export const WorkflowV2IdeaFollowUpOutputSchema = z.object({
+  reply: WorkflowV2RequiredTextSchema,
+  citedEvidenceIds: z.array(WorkflowV2RequiredTextSchema),
+  assumptions: z.array(WorkflowV2RequiredTextSchema),
+  changeSummary: WorkflowV2RequiredTextSchema.nullable(),
+  candidate: z.union([WorkflowV2StartupSolutionOptionSchema, WorkflowV2SolutionOptionSchema]).nullable(),
 }).strict();
 
 export const WorkflowV2ConsequenceSchema = z.object({
@@ -421,6 +463,8 @@ export const WORKFLOW_V2_STRUCTURED_OUTPUT_SCHEMAS = {
   workflowV2ProblemCandidates: WorkflowV2ProblemCandidatesOutputSchema,
   workflowV2ProblemKill: WorkflowV2ProblemKillOutputSchema,
   workflowV2Solutions: WorkflowV2SolutionsOutputSchema,
+  workflowV2SolutionSetReview: WorkflowV2SolutionSetReviewOutputSchema,
+  workflowV2IdeaFollowUp: WorkflowV2IdeaFollowUpOutputSchema,
   workflowV2DecisionAnalysis: WorkflowV2DecisionAnalysisOutputSchema,
 } as const satisfies Record<string, z.ZodType<unknown>>;
 
@@ -435,6 +479,7 @@ export type StartupOpportunityDetails = z.infer<typeof StartupOpportunityDetails
 export type WorkflowV2SolutionOption = z.infer<typeof WorkflowV2SolutionOptionSchema> & {
   startupOpportunity?: StartupOpportunityDetails;
 };
+export type WorkflowV2IdeaFollowUp = z.infer<typeof WorkflowV2IdeaFollowUpOutputSchema>;
 export type WorkflowV2DecisionAnalysis = z.infer<typeof WorkflowV2DecisionAnalysisOutputSchema>;
 export type WorkflowV2DecisionAnalysisDraft = z.infer<typeof WorkflowV2DecisionAnalysisDraftSchema>;
 export type WorkflowV2RiskReassessment = z.infer<typeof WorkflowV2RiskReassessmentOutputSchema>;

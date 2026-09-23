@@ -47,11 +47,10 @@ test("compact settings, consistent fields, title defaults, and archive recovery"
     await back.click();
     await expect(page.getByRole("region", { name: "Context and boundaries", exact: true })).toBeVisible();
     await page.getByLabel("What do you want to explore?").fill("Help repair shops estimate late parts arrivals.");
-    await page.getByRole("button", { name: "Discover problems", exact: true }).click();
-    await expect(page.locator(".location")).toHaveText("Reducing repair shop delays");
-    expect(mock.requests.find((request) => request.path === "/threads/title")?.body).toEqual({
-      context: "Help repair shops estimate late parts arrivals.",
-      model: { providerId: "openai-subscription", modelId: "gpt-5.6-luna" }, reasoningEffort: "low",
+    await page.getByRole("button", { name: "Start Babysit", exact: true }).click();
+    await expect(page.locator(".location")).toHaveText("Help repair shops estimate late parts arrivals.");
+    expect(mock.requests.find((request) => request.path === "/scope")?.body).toMatchObject({
+      scope: { title: "Help repair shops estimate late parts arrivals." },
     });
     const bar = page.locator(".topbar");
     const researchBounds = await bar.boundingBox();
@@ -60,23 +59,23 @@ test("compact settings, consistent fields, title defaults, and archive recovery"
     expect(setupBounds!.x).toBe(researchBounds!.x);
     expect(setupBounds!.width).toBe(researchBounds!.width);
     expect(await page.locator("body").evaluate((el) => getComputedStyle(el).backgroundColor)).toBe("rgb(0, 0, 0)");
-    await page.getByRole("button", { name: "Archive research Reducing repair shop delays", exact: true }).click();
-    await expect(page.getByRole("button", { name: "Open thread Reducing repair shop delays", exact: true })).toHaveCount(0);
+    await page.getByRole("button", { name: "Archive research Help repair shops estimate late parts arrivals.", exact: true }).click();
+    await expect(page.getByRole("button", { name: "Open thread Help repair shops estimate late parts arrivals.", exact: true })).toHaveCount(0);
     await app.close();
     app = await launch();
     page = await app.firstWindow();
     await page.getByRole("button", { name: "Settings", exact: true }).click();
     await page.getByRole("button", { name: "Archived research", exact: true }).click();
     await page.screenshot({ animations: "disabled", path: testInfo.outputPath("archive.png") });
-    await page.getByRole("button", { name: "Restore Reducing repair shop delays", exact: true }).click();
+    await page.getByRole("button", { name: "Restore Help repair shops estimate late parts arrivals.", exact: true }).click();
     await page.getByRole("button", { name: "Close settings", exact: true }).click();
-    await page.getByRole("button", { name: "Open thread Reducing repair shop delays", exact: true }).click();
-    await expect(page.locator(".location")).toHaveText("Reducing repair shop delays");
-    await page.getByRole("button", { name: "Archive research Reducing repair shop delays", exact: true }).click();
+    await page.getByRole("button", { name: "Open thread Help repair shops estimate late parts arrivals.", exact: true }).click();
+    await expect(page.locator(".location")).toHaveText("Help repair shops estimate late parts arrivals.");
+    await page.getByRole("button", { name: "Archive research Help repair shops estimate late parts arrivals.", exact: true }).click();
     await page.getByRole("button", { name: "Settings", exact: true }).click();
     await page.getByRole("button", { name: "Archived research", exact: true }).click();
     page.once("dialog", (dialog) => dialog.accept());
-    await page.getByRole("button", { name: "Delete Reducing repair shop delays", exact: true }).click();
+    await page.getByRole("button", { name: "Delete Help repair shops estimate late parts arrivals.", exact: true }).click();
     await expect(page.getByText("No archived research.", { exact: true })).toBeVisible();
     await page.getByRole("button", { name: "Research defaults", exact: true }).click();
     await page.getByLabel("Title model", { exact: true }).selectOption("openai-subscription:gpt-6-astra");

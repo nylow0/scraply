@@ -88,6 +88,47 @@ test("retains the historical call projection for saved v1 results", () => {
   expect(developmentProjection(5)).toBe(22);
 });
 
+test("rejects extra provider candidates before returning anything for persistence", async () => {
+  const { id: _id, problemId: _problemId, ...plainOption } = option;
+  void _id;
+  void _problemId;
+  let calls = 0;
+  await expect(produceDevelopmentOptions(context, {
+    ...dependencies({ options: [plainOption, { ...plainOption, mechanism: "Check the claim archive" }] }, () => { calls++; }),
+    ideaCount: 1,
+  })).rejects.toMatchObject({ code: "schema", message: "The solutions stage returned more than 1 options" });
+  expect(calls).toBe(1);
+});
+
+test("sends a saved buyer and workflow angle in the solutions model work order", async () => {
+  const { id: _id, problemId: _problemId, ...plainOption } = option;
+  void _id;
+  void _problemId;
+  const generationAngle = {
+    gapId: "gap-repeat-claims", name: "Independent adjusters",
+    angle: "Find a distinct paid workflow for adjusters who reconcile duplicate claims after a handoff.",
+  };
+  const base = dependencies({ options: [plainOption] });
+  let calls = 0;
+  const modelClient: StructuredModelClient = {
+    async structuredCompletion<T>(request: import("../../src/providers/structured").StructuredStageRequest<T>) {
+      calls++;
+      expect(request.workOrder.inputs).toMatchObject({ generationAngle });
+      expect(request.workOrder.goal).toContain(generationAngle.angle);
+      expect(request.workOrder.constraints).toContain(
+        "Treat the generation angle as task direction, not evidence. Respect the saved evidence and off-limits list; return no candidate if the gap cannot be addressed honestly.",
+      );
+      return base.modelClient.structuredCompletion(request);
+    },
+  };
+  await produceDevelopmentOptions(context, { ...base, modelClient, ideaCount: 1, generationAngle });
+  expect(calls).toBe(1);
+
+  const ordinary = await produceDevelopmentOptions(context, { ...base, ideaCount: 1 });
+  expect(ordinary.request.workOrder.inputs).not.toHaveProperty("generationAngle");
+  expect(ordinary.request.workOrder.goal).toBe("Produce up to 1 distinct, useful, unranked ideas for the selected problem.");
+});
+
 test("requires startup details and passes prior project mechanisms without making them evidence", async () => {
   const startup = {
     opportunityType: "startup-opportunity" as const,
@@ -145,4 +186,64 @@ test("requires startup details and passes prior project mechanisms without makin
   });
   expect(legacy.options[0]?.focusedDemandTest).toBeUndefined();
   expect(legacy.request.workOrder.inputs).not.toHaveProperty("focusedExperimentVersion");
+});
+
+test("automatic intent accepts practical and sellable ideas from the same brief without inventing a business", async () => {
+  const { id: _id, problemId: _problemId, ...plainOption } = option;
+  void _id;
+  void _problemId;
+  const startupOpportunity = {
+    opportunityType: "startup-opportunity" as const,
+    payingCustomerSegment: "Independent repair shops",
+    trigger: "A late part delays a promised repair",
+    existingSubstitute: "Call suppliers for updates",
+    gapAssessment: { kind: "hypothesis" as const, description: "Calls may miss changes between check-ins", evidenceIds: [] },
+    smallestSellableWorkflow: "Track delivery changes and alert the shop",
+    firstCustomerRoute: "Pilot with two local repair shops",
+    disconfirmingDemandTest: "Neither shop agrees to pay for a manual alert pilot",
+  };
+  const brief = { ...context, scope: { ...context.scope,
+    title: "Improve repair operations and explore a sellable supplier alert service" } };
+  const result = await produceDevelopmentOptions(brief, {
+    ...dependencies({ options: [plainOption, { ...plainOption, mechanism: "Supplier alert service", startupOpportunity }] }),
+    explorationPurpose: "auto", ideaCount: 2,
+  });
+  expect(result.options).toHaveLength(2);
+  expect(result.options[0]?.startupOpportunity).toBeUndefined();
+  expect(result.options[1]?.startupOpportunity).toEqual(startupOpportunity);
+  expect(result.request.workOrder.inputs).toMatchObject({ explorationPurpose: "auto" });
+  expect(result.request.workOrder.requiredDecisions?.join(" ")).toContain("user's original scope");
+  expect(JSON.stringify(result.request.evidence[0]?.content)).toContain(brief.scope.title);
+  expect(JSON.stringify(result.request.jsonSchema)).toContain('"anyOf"');
+
+  const focusedDemandTest = {
+    schemaVersion: 1 as const,
+    assumption: {
+      id: "repair-shop-pain", category: "pain" as const,
+      testableClaim: "Late parts force shops to revise repair promises.",
+      decisionImpact: "Without this pain the alert service should not be built.",
+      selectionReason: "The original problem may already be solved by supplier calls.",
+    },
+    methodSummary: "Interview five shops about their most recent late delivery.",
+    disconfirmingObservation: "No shop reports a missed or changed promise.",
+    paymentTerms: null,
+  };
+  const focused = await produceDevelopmentOptions(brief, {
+    ...dependencies({ options: [plainOption, { ...plainOption, mechanism: "Supplier alert service",
+      startupOpportunity, focusedDemandTest }] }),
+    explorationPurpose: "auto", focusedExperiments: true, ideaCount: 2,
+  });
+  expect(focused.options[0]?.focusedDemandTest).toBeUndefined();
+  expect(focused.options[1]?.focusedDemandTest).toEqual(focusedDemandTest);
+  expect(focused.request.workOrder.inputs).toMatchObject({ focusedExperimentVersion: 1 });
+  await expect(produceDevelopmentOptions(brief, {
+    ...dependencies({ options: [{ ...plainOption, startupOpportunity }] }),
+    explorationPurpose: "auto", focusedExperiments: true, ideaCount: 1,
+  })).rejects.toMatchObject({ code: "schema" });
+
+  await expect(produceDevelopmentOptions(brief, {
+    ...dependencies({ options: [{ ...plainOption, startupOpportunity: { ...startupOpportunity,
+      opportunityType: "process-improvement" } }] }),
+    explorationPurpose: "auto", ideaCount: 1,
+  })).rejects.toMatchObject({ code: "schema" });
 });

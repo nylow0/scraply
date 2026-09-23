@@ -10,6 +10,14 @@ const STATUS_BY_CODE: Record<AppErrorCode, number> = {
   backend_unavailable: 503,
   secure_storage_unavailable: 503,
   internal_error: 500,
+  PROJECT_BUSY: 409,
+  REVISION_CONFLICT: 409,
+  MODEL_UNAVAILABLE: 409,
+  BUDGET_TOO_SMALL: 400,
+  INVALID_REFERENCE: 400,
+  UNKNOWN_COMPLETION: 409,
+  IDEMPOTENCY_CONFLICT: 409,
+  PREVIEW_STALE: 409,
 };
 
 const DEFAULT_MESSAGES: Record<AppErrorCode, string> = {
@@ -21,24 +29,35 @@ const DEFAULT_MESSAGES: Record<AppErrorCode, string> = {
   backend_unavailable: "The local backend is unavailable.",
   secure_storage_unavailable: "Secure storage is unavailable. Secrets were not saved.",
   internal_error: "Something went wrong. Please try again.",
+  PROJECT_BUSY: "This project already has active work.",
+  REVISION_CONFLICT: "The workflow changed. Reload it before trying again.",
+  MODEL_UNAVAILABLE: "The selected model is unavailable.",
+  BUDGET_TOO_SMALL: "The work allowance is too small for this request.",
+  INVALID_REFERENCE: "The selected item no longer belongs to this workflow.",
+  UNKNOWN_COMPLETION: "A previous provider attempt has an unknown outcome.",
+  IDEMPOTENCY_CONFLICT: "This command ID was already used for a different request.",
+  PREVIEW_STALE: "The preview expired or the available capabilities changed.",
 };
 
 export class AppError extends Error {
   readonly code: AppErrorCode;
   readonly status: number;
   readonly reference: string | undefined;
+  readonly recovery: Record<string, unknown> | undefined;
 
   constructor(
     code: AppErrorCode,
     message = DEFAULT_MESSAGES[code],
     status = STATUS_BY_CODE[code],
     reference?: string,
+    recovery?: Record<string, unknown>,
   ) {
     super(message);
     this.name = "AppError";
     this.code = code;
     this.status = status;
     this.reference = reference;
+    this.recovery = recovery;
   }
 }
 
@@ -59,6 +78,7 @@ export function toErrorPayload(error: unknown): { status: number; error: AppErro
       code: normalized.code,
       message: normalized.message,
       ...(normalized.reference ? { reference: normalized.reference } : {}),
+      ...(normalized.recovery ? { recovery: normalized.recovery } : {}),
     },
   };
 }

@@ -70,6 +70,23 @@ describe("OpportunityFamilies", () => {
     );
   });
 
+  test("does not replace a saved review model missing from the live catalog", async () => {
+    const onReview = vi.fn().mockResolvedValue(undefined);
+    const view = render(OpportunityFamilies, {
+      opportunities: unreviewedView(), modelOptions: [model],
+      initialConfig: { ...DEFAULT_RUN_CONFIG, model: { providerId: "openai-subscription", modelId: "gpt-6-luna" } },
+      busy: false, onReview, onEdit: vi.fn().mockResolvedValue(undefined),
+    });
+    const selection = view.getByLabelText("Opportunity review model") as HTMLSelectElement;
+    const review = view.getByRole("button", { name: "Review 2 saved ideas" }) as HTMLButtonElement;
+    expect(selection.value).toBe("openai-subscription:gpt-6-luna");
+    expect(review.disabled).toBe(true);
+    await fireEvent.change(selection, { target: { value: "openai-subscription:gpt-5.6-sol" } });
+    expect(review.disabled).toBe(false);
+    await fireEvent.click(review);
+    expect(onReview).toHaveBeenCalledWith(DEFAULT_RUN_CONFIG.model, "medium", false);
+  });
+
   test("shows duplicate membership and requires a reason before a reversible edit", async () => {
     const onEdit = vi.fn().mockResolvedValue(undefined);
     const view = render(OpportunityFamilies, {

@@ -1,8 +1,8 @@
 import { randomUUID } from "node:crypto";
-import type { Scope } from "../../shared/structured-output-schemas";
+import type { ProblemBriefFit, ProblemContraryEvidence, Scope } from "../../shared/structured-output-schemas";
 import type { RunConfig } from "../../shared/schemas";
 import type { DatabaseClient } from "../client";
-import { ActiveRunConflictError } from "./research-runs";
+import { ActiveRunConflictError, type ResearchRunWorkflowLink } from "./research-runs";
 
 export interface DiscoverySourceRecord {
   id: string;
@@ -45,6 +45,9 @@ export interface DiscoveryProblemRecord {
   verdictSourceIds: string[];
   intendedBuyerEvidenceFactorIds?: string[];
   evidenceGap?: string | null;
+  briefFit?: ProblemBriefFit;
+  contraryEvidence?: ProblemContraryEvidence;
+  workflowKey?: string | null;
 }
 
 export interface RejectedProblemCandidateRecord {
@@ -133,8 +136,8 @@ export class DiscoveryRepository {
           id, discovery_run_id, statement, why_it_persists, affected,
           scale_estimate, scale_basis_factor_id, verdict, verdict_reason,
           verdict_source_ids_json, intended_buyer_evidence_factor_ids_json,
-          evidence_gap, selected_at, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '[]', ?, ?, NULL, ?)
+          evidence_gap, brief_fit, contrary_evidence, workflow_key, selected_at, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '[]', ?, ?, ?, ?, ?, NULL, ?)
       `);
       const insertFactor = db.prepare(`
         INSERT INTO problem_factors (problem_id, factor_id) VALUES (?, ?)
@@ -167,6 +170,9 @@ export class DiscoveryRepository {
           problem.verdictReason,
           JSON.stringify(problem.intendedBuyerEvidenceFactorIds ?? []),
           problem.evidenceGap ?? null,
+          problem.briefFit ?? "unknown",
+          problem.contraryEvidence ?? "unknown",
+          problem.workflowKey?.trim() || null,
           now,
         );
         problem.verdictSourceIds.forEach((sourceId, position) => {
@@ -187,7 +193,7 @@ export class DiscoveryRepository {
     });
   }
 
-  createKnownProblemRoot(threadId: string, scope: Scope, statement: string, config: RunConfig): { runId: string; problemId: string } {
+  createKnownProblemRoot(threadId: string, scope: Scope, statement: string, config: RunConfig, workflow?: ResearchRunWorkflowLink): { runId: string; problemId: string } {
     const db = this.client.db;
     const trimmedStatement = statement.trim();
     if (!trimmedStatement) throw new Error("Known problem statement cannot be empty");
@@ -197,7 +203,7 @@ export class DiscoveryRepository {
         .get(threadId) as { id: string } | undefined;
       if (active) throw new ActiveRunConflictError(active.id);
 
-      const existing = db.prepare(`
+      const existing = workflow ? undefined : db.prepare(`
         SELECT rr.id AS run_id, p.id AS problem_id
         FROM research_runs rr
         JOIN scopes s ON s.research_run_id = rr.id
@@ -219,9 +225,11 @@ export class DiscoveryRepository {
       const problemId = randomUUID();
       const now = new Date().toISOString();
       db.prepare(`
-        INSERT INTO research_runs (id, thread_id, status, config_json, cancelled, completion_reason, problem_id, created_at, updated_at)
-        VALUES (?, ?, 'completed', ?, 0, 'Known problem supplied; discovery bypassed.', NULL, ?, ?)
-      `).run(runId, threadId, JSON.stringify(config), now, now);
+        INSERT INTO research_runs (id, thread_id, status, config_json, cancelled, completion_reason, problem_id, created_at, updated_at,
+          workflow_session_id, purpose, evidence_snapshot_id)
+        VALUES (?, ?, 'completed', ?, 0, 'Known problem supplied; discovery bypassed.', NULL, ?, ?, ?, ?, ?)
+      `).run(runId, threadId, JSON.stringify(config), now, now,
+        workflow?.sessionId ?? null, workflow?.purpose ?? null, workflow?.evidenceSnapshotId ?? null);
       db.prepare("UPDATE research_runs SET workflow_version = ? WHERE id = ?").run(config.workflowVersion ?? 1, runId);
       this.persistScope(runId, scope);
       db.prepare(`

@@ -1,12 +1,15 @@
 <script lang="ts">
   import type { SolutionView } from "../../shared/ipc";
+  import { untrack } from "svelte";
   import { optionEvidenceReferences } from "../../shared/option-evidence";
   import { loadIdeaDetail } from "../lib/idea-details";
   import FocusedExperiment from "./FocusedExperiment.svelte";
   type ExperimentOutcome = "not-run" | "pass" | "fail" | "inconclusive";
-  let { idea, busy, analysisBlocked = false, onSelect, onSave, onOpenSource, onEvidenceFollowUp, onEvidenceReassessment, onPlanExperiment }: {
+  let { idea, busy, analysisBlocked = false, initiallyOpen = false, inDetailView = false, onSelect, onSave, onOpenSource, onEvidenceFollowUp, onEvidenceReassessment, onPlanExperiment }: {
     idea: SolutionView; busy: boolean;
     analysisBlocked?: boolean;
+    initiallyOpen?: boolean;
+    inDetailView?: boolean;
     onSelect: (idea: SolutionView) => Promise<void>;
     onSave: (solutionId: string, decision: string, observed: string, outcome: ExperimentOutcome) => Promise<void>;
     onOpenSource: (url: string) => Promise<void>;
@@ -24,7 +27,7 @@
   let savedExperimentOutcome = $state<ExperimentOutcome>("not-run");
   let saved = $state(false);
   let experimentOutcome = $state<ExperimentOutcome>("not-run");
-  let open = $state(false);
+  let open = $state(untrack(() => initiallyOpen));
   let revision = "";
   let detailLoadEpoch = 0;
   let wasOpen = false;
@@ -124,12 +127,13 @@
 
 <article class:selected={idea.selected}>
   <button class="disclosure-title" class:expanded={open} title={idea.description} aria-expanded={open} aria-controls={`option-body-${idea.id}`} onclick={() => open = !open}>
-    <span class="disclosure-label">{idea.description}</span>
+    <span class="disclosure-label">{inDetailView ? "Review and decisions" : idea.description}</span>
   </button>
   {#if open}
     <div class="disclosure-content" id={`option-body-${idea.id}`}>
     <header>
       <div><p class="status">{idea.selected ? "Your selected option" : "Option"} · Problem evidence: {confirmedEvidenceLabel(idea)}</p>
+        {#if inDetailView}<p class="idea-description">{idea.description}</p><h3 class="mechanism-heading">How it works</h3>{/if}
         <p>{idea.mechanism}</p>
         {#if opportunityOrigin}
           <p class="origin"><span>{opportunityOrigin.kind === "exploratory-hypothesis" ? "Exploratory hypothesis" : "Saved problem origin"}</span>{opportunityOrigin.kind === "exploratory-hypothesis" ? opportunityOrigin.disclosure : opportunityOrigin.evidenceGap ?? "Generated from the saved problem map. Supporting evidence does not establish customer demand."}</p>
@@ -290,6 +294,8 @@
   header { display:flex;justify-content:space-between;gap:24px;align-items:start;padding-bottom:22px; }
   header > div { min-width:0; }header p { margin:8px 0 0;max-width:70ch;font-size:15px;line-height:1.8; }
   header .status { margin:0;font-size:13px;color:var(--accent); }
+  header .idea-description { color:var(--text);font-size:15px;line-height:1.65;white-space:pre-wrap; }
+  header .mechanism-heading { margin:22px 0 0;color:var(--text);font-size:13px; }
   .origin { display:flex;align-items:baseline;gap:8px;color:var(--subtle);font-size:12px; }
   .origin span { flex-shrink:0;border:1px solid var(--border-strong);border-radius:5px;padding:2px 6px;color:var(--muted); }
   h3 { margin:28px 0 12px;font-size:14px;font-weight:650;letter-spacing:-.015em; }
