@@ -441,9 +441,10 @@
           {:else}
             <label class="main-brief"><span>What do you want to explore?</span><textarea data-field="domain" bind:value={domain} onblur={() => domainTouched = true} aria-invalid={Boolean(domainError)} aria-describedby={domainError ? "domain-error" : undefined} rows="3" placeholder="Your topic or idea"></textarea>{#if domainError}<small id="domain-error" class="field-error">{domainError}</small>{/if}</label>
           {/if}
+          <!-- "Optional" is a visual hint; aria-label keeps each field's name free of it for assistive tech and tests. -->
           <div class="brief-meta">
-          <label class="audience-field"><span>Audience <small>Optional</small></span><input bind:value={audience} placeholder={researchMode === "explore-market" ? "Who is this for?" : "Who is affected?"} /></label>
-              <label><span>Research name <small>Optional</small></span><input data-field="title" bind:value={title} aria-invalid={Boolean(errors.title)} placeholder="Name this research" />{#if errors.title}<small class="field-error">{errors.title}</small>{/if}</label>
+          <label class="audience-field"><span>Audience <small>Optional</small></span><input aria-label="Audience" bind:value={audience} placeholder={researchMode === "explore-market" ? "Who is this for?" : "Who is affected?"} /></label>
+              <label><span>Research name <small>Optional</small></span><input data-field="title" aria-label="Research name" bind:value={title} aria-invalid={Boolean(errors.title)} aria-describedby={errors.title ? "title-error" : undefined} placeholder="Name this research" />{#if errors.title}<small id="title-error" class="field-error">{errors.title}</small>{/if}</label>
           </div>
         </section>
         <div class="context-fields">

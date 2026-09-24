@@ -39,6 +39,7 @@ test("the renderer restores the problem-selection step after a restart", async (
     await page.keyboard.press("Escape");
     await expect(settings).toBeFocused();
     await expect(page.getByLabel("Research name")).toHaveValue("Repair delays");
+    await page.getByRole("radio", { name: /^Babysit/ }).check();
     await page.getByRole("button", { name: "Start Babysit" }).scrollIntoViewIfNeeded();
     const startBounds = await page.getByRole("button", { name: "Start Babysit" }).boundingBox();
     expect(startBounds!.y + startBounds!.height).toBeLessThan(viewport.height);
