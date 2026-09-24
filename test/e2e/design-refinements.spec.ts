@@ -18,9 +18,10 @@ test("compact settings, consistent fields, title defaults, and archive recovery"
     let page = await app.firstWindow();
     await expect(page.getByLabel("Research name", { exact: true })).toBeVisible();
     await expect(page.locator(".heading-icon,.welcome")).toHaveCount(0);
-    const fields = await page.locator(".scope-page input:not([type=radio]),.scope-page textarea,.scope-page select").evaluateAll((items) => items.map((el) => ({ font: getComputedStyle(el).fontSize, resize: getComputedStyle(el).resize, textarea: el.tagName === "TEXTAREA" })));
+    const fields = await page.locator(".scope-page input:not([type=radio]),.scope-page textarea:not(.main-brief textarea),.scope-page select").evaluateAll((items) => items.map((el) => ({ font: getComputedStyle(el).fontSize, resize: getComputedStyle(el).resize, textarea: el.tagName === "TEXTAREA" })));
     expect(new Set(fields.map((field) => field.font))).toEqual(new Set(["13px"]));
     expect(fields.filter((field) => field.textarea).every((field) => field.resize === "none")).toBe(true);
+    await expect(page.locator(".main-brief textarea")).toHaveCSS("font-size", "14px");
     const settings = page.getByRole("button", { name: "Settings", exact: true });
     const settingsBounds = await settings.boundingBox();
     await settings.click();
@@ -45,8 +46,9 @@ test("compact settings, consistent fields, title defaults, and archive recovery"
     await page.keyboard.press("Escape");
     await expect(back).toBeVisible();
     await back.click();
-    await expect(page.getByRole("region", { name: "Context and boundaries", exact: true })).toBeVisible();
+    await expect(page.locator("details.optional-fields > summary", { hasText: "Context and boundaries" })).toBeVisible();
     await page.getByLabel("What do you want to explore?").fill("Help repair shops estimate late parts arrivals.");
+    await page.getByRole("radio", { name: /^Babysit/ }).check();
     await page.getByRole("button", { name: "Start Babysit", exact: true }).click();
     await expect(page.locator(".location")).toHaveText("Help repair shops estimate late parts arrivals.");
     expect(mock.requests.find((request) => request.path === "/scope")?.body).toMatchObject({

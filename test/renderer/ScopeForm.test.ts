@@ -8,6 +8,23 @@ import { DEFAULT_RUN_CONFIG, RunConfigSchema, modelRefKey } from "../../src/shar
 import type { WorkflowLaunchDraft } from "../../src/shared/workflow-contracts";
 
 describe("ScopeForm search provider selection", () => {
+  test("shows saved context and preserves it when collapsed before launch", async () => {
+    const state = workspace();
+    state.validation.exa = { valid: true };
+    state.scope = { ...state.scope!, observations: "Shared inbox", riskEvaluationCriteria: "One-week setup", offLimits: ["No hardware"] };
+    const onSave = vi.fn().mockResolvedValue(undefined);
+    const view = render(ScopeForm, { workspace: state, busy: false, onSave, onStart: vi.fn(), onRetry: vi.fn() });
+    const disclosure = view.getByText("Context and boundaries").closest("details");
+    expect(disclosure?.open).toBe(true);
+    await fireEvent.input(view.getByLabelText("Risk priorities"), { target: { value: "Two-week setup" } });
+    await fireEvent.click(view.getByText("Context and boundaries"));
+    expect(disclosure?.open).toBe(false);
+    await fireEvent.click(view.getByRole("button", { name: "Discover problems" }));
+    await waitFor(() => expect(onSave).toHaveBeenCalledWith(expect.objectContaining({
+      observations: "Shared inbox", riskEvaluationCriteria: "Two-week setup", offLimits: ["No hardware"],
+    }), expect.anything()));
+  });
+
   test("keeps untouched brief fields calm and hides the problem cap for a stated problem", async () => {
     const state = workspace();
     state.scope = null;
@@ -32,7 +49,7 @@ describe("ScopeForm search provider selection", () => {
     expect(view.getByText("Describe the problem to check the launch plan.")).toBeTruthy();
   });
 
-  test("previews an unattended launch and invalidates the preview when its limits change", async () => {
+  test("defaults to Vibe first and invalidates its launch preview when limits change", async () => {
     const state = workspace();
     state.validation.exa = { valid: true };
     const onPreviewWorkflow = vi.fn(async (draft: WorkflowLaunchDraft) => ({
@@ -54,7 +71,9 @@ describe("ScopeForm search provider selection", () => {
     const onStart = vi.fn(async () => {});
     const view = render(ScopeForm, { workspace: state, busy: false, onSave, onStart,
       onPreviewWorkflow, onStartWorkflow, onRetry: vi.fn(async () => {}) });
-    await fireEvent.click(view.getByRole("radio", { name: /Vibe/ }));
+    const defaultMode = view.getByRole("group", { name: "Run mode" }).querySelector<HTMLInputElement>('input[type="radio"]');
+    expect(defaultMode?.value).toBe("vibe");
+    expect(defaultMode?.checked).toBe(true);
     await waitFor(() => expect(onPreviewWorkflow).toHaveBeenCalled());
     const latestDraft = onPreviewWorkflow.mock.lastCall?.[0];
     expect(latestDraft).toMatchObject({ mode: "vibe", ideas: { model: DEFAULT_RUN_CONFIG.model }, targets: { automaticProblemCap: 3 } });
@@ -96,7 +115,7 @@ describe("ScopeForm search provider selection", () => {
     await fireEvent.click(view.getByRole("checkbox", { name: /Find distinct businesses across this project/ }));
     expect(view.queryByLabelText("Opportunity model-call limit")).toBeNull();
     expect(view.queryByLabelText("Opportunity search limit")).toBeNull();
-    expect(view.getByText(/whole-workflow limits in Work limits below cover research, idea batches, review, and any added searches/)).toBeTruthy();
+    expect(view.getByText(/Work limits cover research, ideas, review, and added searches/)).toBeTruthy();
     expect((view.getByLabelText("Maximum model calls") as HTMLInputElement).value).toBe("56");
     expect((view.getByLabelText("Maximum searches") as HTMLInputElement).value).toBe("22");
     await waitFor(() => expect(onPreviewWorkflow.mock.lastCall?.[0]).toMatchObject({
