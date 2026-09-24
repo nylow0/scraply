@@ -183,8 +183,14 @@ test(`installed ${mode} workflow previews, runs, pauses, finishes, and reopens t
     });
     const page = await electron.firstWindow();
     await expect(page.getByRole("tabpanel", { name: "Research setup" })).toBeVisible();
+    const runSetup = page.getByRole("complementary", { name: "Run setup" });
+    await expect(runSetup.getByRole("button", { name: "Advanced settings", exact: true })).toBeVisible();
+    await expect(runSetup.getByRole("button", { name: "About Vibe", exact: true })).toBeVisible();
     await page.getByText(mode === "vibe" ? "Vibe" : "Babysit", { exact: true }).click();
     await page.getByPlaceholder("Your topic or idea").fill(topic);
+    await page.setViewportSize({ width: 1366, height: 768 });
+    await expect(page.getByRole("button", { name: mode === "vibe" ? "Start Vibe" : "Start Babysit" })).toBeEnabled();
+    await page.screenshot({ path: testInfo.outputPath(`${mode}-setup.png`), animations: "disabled" });
     await page.getByRole("spinbutton", { name: "Solutions per problem" }).fill("1");
     const launch = page.getByRole("button", { name: mode === "vibe" ? "Start Vibe" : "Start Babysit" });
     await expect(launch).toBeEnabled();
@@ -216,15 +222,14 @@ test(`installed ${mode} workflow previews, runs, pauses, finishes, and reopens t
     await expect(restoredProgress).toContainText(mode === "vibe" ? "Target reached" : "No qualifying ideas");
     if (mode === "vibe") {
       await expect(reopenedPage.getByRole("tabpanel", { name: "Solutions" })).toBeVisible();
-      await expect(reopenedPage.getByRole("heading", { name: "Approval status board" })).toBeVisible();
-      await expect(reopenedPage.getByText("Track repair quote approvals in one shared view.", { exact: true })).toBeVisible();
+      await expect(reopenedPage.getByRole("button", { name: "Open idea: Track repair quote approvals in one shared view.", exact: true })).toBeVisible();
       await reopenedPage.setViewportSize({ width: 1600, height: 1200 });
       await reopenedPage.screenshot({ path: testInfo.outputPath(`${mode}-workflow-finished.png`), animations: "disabled", fullPage: true });
       const savedIdea = reopenedPage.getByRole("button", { name: "Open idea: Track repair quote approvals in one shared view.", exact: true });
       await savedIdea.scrollIntoViewIfNeeded();
       await reopenedPage.screenshot({ path: testInfo.outputPath("vibe-saved-idea.png"), animations: "disabled" });
       await savedIdea.click();
-      await expect(reopenedPage.locator(".idea-detail").getByRole("heading", { name: "Approval status board" })).toBeVisible();
+      await expect(reopenedPage.getByRole("heading", { name: "Approval status board", exact: true, level: 1 })).toBeVisible();
       await expect(reopenedPage.getByText("Problem and fit")).toBeVisible();
     } else await reopenedPage.screenshot({ path: testInfo.outputPath(`${mode}-workflow-finished.png`), animations: "disabled" });
 

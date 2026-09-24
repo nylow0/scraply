@@ -8,17 +8,15 @@ import { DEFAULT_RUN_CONFIG, RunConfigSchema, modelRefKey } from "../../src/shar
 import type { WorkflowLaunchDraft } from "../../src/shared/workflow-contracts";
 
 describe("ScopeForm search provider selection", () => {
-  test("shows saved context and preserves it when collapsed before launch", async () => {
+  test("keeps context fields visible and preserves edits on launch", async () => {
     const state = workspace();
     state.validation.exa = { valid: true };
     state.scope = { ...state.scope!, observations: "Shared inbox", riskEvaluationCriteria: "One-week setup", offLimits: ["No hardware"] };
     const onSave = vi.fn().mockResolvedValue(undefined);
     const view = render(ScopeForm, { workspace: state, busy: false, onSave, onStart: vi.fn(), onRetry: vi.fn() });
-    const disclosure = view.getByText("Context and boundaries").closest("details");
-    expect(disclosure?.open).toBe(true);
+    expect(view.getByLabelText("Risk priorities").closest("details")).toBeNull();
+    expect(view.getByLabelText("Boundaries").closest("details")).toBeNull();
     await fireEvent.input(view.getByLabelText("Risk priorities"), { target: { value: "Two-week setup" } });
-    await fireEvent.click(view.getByText("Context and boundaries"));
-    expect(disclosure?.open).toBe(false);
     await fireEvent.click(view.getByRole("button", { name: "Discover problems" }));
     await waitFor(() => expect(onSave).toHaveBeenCalledWith(expect.objectContaining({
       observations: "Shared inbox", riskEvaluationCriteria: "Two-week setup", offLimits: ["No hardware"],
@@ -46,7 +44,7 @@ describe("ScopeForm search provider selection", () => {
     await fireEvent.click(view.getByRole("radio", { name: /Vibe/ }));
     expect(view.getByPlaceholderText("Describe the problem.").getAttribute("aria-invalid")).toBe("false");
     expect(view.queryByLabelText("Automatic problem cap")).toBeNull();
-    expect(view.getByText("Describe the problem to check the launch plan.")).toBeTruthy();
+    expect(view.getByText("Describe the problem to start.")).toBeTruthy();
   });
 
   test("defaults to Vibe first and invalidates its launch preview when limits change", async () => {
@@ -82,7 +80,7 @@ describe("ScopeForm search provider selection", () => {
 
     await fireEvent.input(view.getByLabelText("Maximum model calls"), { target: { value: "1" } });
     expect((view.getByRole("button", { name: "Start Vibe" }) as HTMLButtonElement).disabled).toBe(true);
-    await waitFor(() => expect(view.getByText("Allow at least 36 model calls.")).toBeTruthy());
+    await waitFor(() => expect(view.getByText("Allow at least 36 model calls.", { selector: ".launch-status span" })).toBeTruthy());
     await fireEvent.input(view.getByLabelText("Maximum model calls"), { target: { value: "44" } });
     await waitFor(() => expect((view.getByRole("button", { name: "Start Vibe" }) as HTMLButtonElement).disabled).toBe(false));
     await fireEvent.click(view.getByRole("button", { name: "Start Vibe" }));
@@ -125,11 +123,11 @@ describe("ScopeForm search provider selection", () => {
     }));
 
     await fireEvent.input(view.getByLabelText("Maximum model calls"), { target: { value: "55" } });
-    expect(view.getByText("Allow at least 56 model calls for projected research, generation, and review.")).toBeTruthy();
+    expect(view.getByText("Allow at least 56 model calls for projected research, generation, and review.", { selector: ".launch-status span" })).toBeTruthy();
     expect((view.getByRole("button", { name: "Start Vibe" }) as HTMLButtonElement).disabled).toBe(true);
     await fireEvent.input(view.getByLabelText("Maximum model calls"), { target: { value: "56" } });
     await fireEvent.input(view.getByLabelText("Maximum searches"), { target: { value: "15" } });
-    expect(view.getByText("Allow at least 16 searches for projected research.")).toBeTruthy();
+    expect(view.getByText("Allow at least 16 searches for projected research.", { selector: ".launch-status span" })).toBeTruthy();
     expect((view.getByRole("button", { name: "Start Vibe" }) as HTMLButtonElement).disabled).toBe(true);
 
     await fireEvent.input(view.getByLabelText("Maximum searches"), { target: { value: "17" } });
@@ -161,8 +159,8 @@ describe("ScopeForm search provider selection", () => {
     await fireEvent.click(view.getByRole("radio", { name: /I have a problem to solve/ }));
     await fireEvent.input(view.getByPlaceholderText("Describe the problem."), { target: { value: "Repairs arrive late." } });
     await fireEvent.input(view.getByLabelText("Maximum searches"), { target: { value: "1" } });
-    await waitFor(() => expect(view.getByText(/Up to 12 model calls, 1 search, and 90 minutes/)).toBeTruthy());
-    expect(view.getByText(/Minimum required: 4 model calls and 1 search/)).toBeTruthy();
+    await waitFor(() => expect(view.getByText(/90 min.*12 model calls.*1 search/)).toBeTruthy());
+    await waitFor(() => expect(view.getByText(/Minimum required: 4 model calls and 1 search/)).toBeTruthy());
   });
 
   test("saves an explicit family target separately from the per-problem idea count", async () => {
@@ -445,13 +443,13 @@ describe("ScopeForm search provider selection", () => {
       workspace: state, busy: false, onSave: vi.fn(), onStart: vi.fn(), onRetry: vi.fn(),
     });
 
-    expect(view.getByText("Checking connections")).toBeTruthy();
+    expect(view.getByText("Checking connections…")).toBeTruthy();
     expect(view.queryByText("Connect to start")).toBeNull();
-    expect((view.getByRole("button", { name: "Checking connections" }) as HTMLButtonElement).disabled).toBe(true);
+    expect((view.getByRole("button", { name: "Discover problems" }) as HTMLButtonElement).disabled).toBe(true);
     expect(view.queryByLabelText("OpenAI account")).toBeNull();
   });
 
-  test("explains an empty model list after account connection", () => {
+  test("explains an empty model list after account connection", async () => {
     const state = workspace();
     state.validation.native = {
       available: true, connected: true, accounts: [{ providerId: "openai-subscription", email: "dany@example.test" }],
@@ -463,7 +461,7 @@ describe("ScopeForm search provider selection", () => {
     });
 
     expect(view.getByText("Your available models appear here after you sign in.")).toBeTruthy();
-    expect(view.getByText("Model: No compatible models are available")).toBeTruthy();
+    expect(view.getByText("No compatible models are available")).toBeTruthy();
     expect((view.getByRole("combobox", { name: /Model/ }) as HTMLSelectElement).disabled).toBe(true);
   });
 
@@ -483,7 +481,7 @@ describe("ScopeForm search provider selection", () => {
     const modelSelect = view.getByRole("combobox", { name: /Model/ }) as HTMLSelectElement;
     expect(modelSelect.value).toBe("");
     expect(view.getByRole("option", { name: "Choose an OpenAI model" })).toBeTruthy();
-    expect(view.getByText("This project used the removed CLI integration. Choose an OpenAI model to start a new run.")).toBeTruthy();
+    expect(view.getByText("This project used the removed CLI integration. Choose an available OpenAI model.")).toBeTruthy();
     expect(view.queryByRole("button", { name: "Retry connections" })).toBeNull();
     await fireEvent.click(view.getByRole("button", { name: "Choose model" }));
     expect(document.activeElement).toBe(modelSelect);
@@ -512,7 +510,7 @@ describe("ScopeForm search provider selection", () => {
       workspace: state, busy: false, onSave: vi.fn(), onStart: vi.fn(), onRetry: vi.fn(),
     });
 
-    expect(view.getByText("The model saved for this project is no longer available. Choose an available OpenAI model to start a new run.")).toBeTruthy();
+    expect(view.getByText("Choose an available model to start.")).toBeTruthy();
     expect(view.queryByRole("button", { name: "Retry connections" })).toBeNull();
     expect(view.getByRole("button", { name: "Choose model" })).toBeTruthy();
     expect((view.getByRole("button", { name: "Discover problems" }) as HTMLButtonElement).disabled).toBe(true);
@@ -530,7 +528,7 @@ describe("ScopeForm search provider selection", () => {
     });
 
     expect(view.getByRole("button", { name: "Choose model" })).toBeTruthy();
-    expect(view.getAllByText("Exa: Exa unavailable")).toHaveLength(2);
+    expect(view.getByText("Exa: Exa unavailable", { selector: ".connection-warning span" })).toBeTruthy();
     expect(view.getByRole("button", { name: "Retry connections" })).toBeTruthy();
   });
 
@@ -556,6 +554,144 @@ describe("ScopeForm search provider selection", () => {
     expect(button.disabled).toBe(false);
     await fireEvent.click(button);
     expect(cancel).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("settings surfaces preserve launch configuration", () => {
+  test("explains run modes on hover or focus without changing the selected mode", async () => {
+    const view = render(ScopeForm, { workspace: workspace(), busy: false, onSave: vi.fn(), onStart: vi.fn(), onRetry: vi.fn(), onPreviewWorkflow: vi.fn(), onStartWorkflow: vi.fn() });
+    const info = view.getByRole("button", { name: "About Babysit" });
+    await fireEvent.mouseEnter(info.parentElement!);
+    expect(view.getByRole("tooltip").textContent).toContain("choose which ones become ideas");
+    expect((view.getByRole("radio", { name: "Vibe" }) as HTMLInputElement).checked).toBe(true);
+    await fireEvent.keyDown(info, { key: "Escape" });
+    expect(view.queryByRole("tooltip")).toBeNull();
+    await fireEvent.focusIn(info);
+    expect(view.getByRole("tooltip")).toBeTruthy();
+    await fireEvent.focusOut(info);
+    expect(view.queryByRole("tooltip")).toBeNull();
+  });
+
+  test("keeps a clicked mode explanation open and dismisses a hovered one with Escape", async () => {
+    const view = render(ScopeForm, { workspace: workspace(), busy: false, onSave: vi.fn(), onStart: vi.fn(), onRetry: vi.fn(), onPreviewWorkflow: vi.fn(), onStartWorkflow: vi.fn() });
+    const info = view.getByRole("button", { name: "About Vibe" });
+    await fireEvent.mouseEnter(info.parentElement!);
+    await fireEvent.keyDown(document.body, { key: "Escape" });
+    expect(view.queryByRole("tooltip")).toBeNull();
+
+    info.focus();
+    await fireEvent.click(info);
+    await fireEvent.mouseLeave(info.parentElement!);
+    expect(view.getByRole("tooltip").textContent).toContain("Work stops at your saved limits");
+    await fireEvent.keyDown(info, { key: "Escape" });
+    expect(view.queryByRole("tooltip")).toBeNull();
+  });
+
+  test.each([
+    [["runConfig", "searchProvider"], "Search provider"],
+    [["ideas", "reviewModel"], "Ideas model"],
+  ])("reveals the field for preflight errors at %s", async (path, label) => {
+    const state = workspace();
+    state.validation.exa = { valid: true };
+    const onPreviewWorkflow = vi.fn(async (draft: WorkflowLaunchDraft) => ({
+      type: "launch" as const, proposal: { ...draft,
+        resolvedInstructions: { research: "r", ideas: "i", review: "v" }, instructionHashes: { research: "r", ideas: "i", review: "v" } },
+      previewHash: "blocked", capabilityFingerprint: "fixture", minimumWork: { modelCalls: 1, searches: 0 },
+      upperLimits: draft.limits, fieldErrors: [{ path: path as string[], code: "UNAVAILABLE", message: "This choice became unavailable." }], expiresAt: "2099-01-01T00:00:00.000Z",
+    }));
+    const view = render(ScopeForm, { workspace: state, busy: false, onSave: vi.fn(), onStart: vi.fn(), onRetry: vi.fn(), onPreviewWorkflow, onStartWorkflow: vi.fn() });
+    await waitFor(() => expect(view.getByRole("button", { name: "Review settings" })).toBeTruthy());
+    await fireEvent.click(view.getByRole("button", { name: "Review settings" }));
+    await waitFor(() => expect(document.activeElement).toBe(view.getByLabelText(label as string)));
+    expect(view.getByRole("alert").textContent).toBe("This choice became unavailable.");
+  });
+
+  test.each([
+    ["explore-market", "vibe"], ["explore-market", "babysit"],
+    ["known-problem", "vibe"], ["known-problem", "babysit"],
+  ] as const)("preserves %s / %s values across settings and disclosure changes", async (researchMode, mode) => {
+    const state = workspace();
+    state.validation.exa = { valid: true };
+    const ideasModel = { providerId: "openai-subscription", modelId: "gpt-6-astra" };
+    state.models.push(ideasModel);
+    state.modelOptions.push({ ...ideasModel, displayName: "Astra", defaultReasoningEffort: "high", reasoningEfforts: [{ id: "high", description: "Thorough" }] });
+    const onPreviewWorkflow = vi.fn(async (draft: WorkflowLaunchDraft) => ({
+      type: "launch" as const, proposal: { ...draft,
+        resolvedInstructions: { research: "r", ideas: "i", review: "v" }, instructionHashes: { research: "r", ideas: "i", review: "v" } },
+      previewHash: JSON.stringify(draft), capabilityFingerprint: "fixture", minimumWork: { modelCalls: 1, searches: 0 },
+      upperLimits: draft.limits, fieldErrors: [], expiresAt: "2099-01-01T00:00:00.000Z",
+    }));
+    const onStartWorkflow = vi.fn().mockResolvedValue(undefined);
+    const view = render(ScopeForm, { workspace: state, busy: false, onSave: vi.fn(), onStart: vi.fn(), onRetry: vi.fn(), onPreviewWorkflow, onStartWorkflow });
+    if (researchMode === "known-problem") {
+      await fireEvent.click(view.getByRole("radio", { name: "I have a problem to solve" }));
+      await fireEvent.input(view.getByPlaceholderText("Describe the problem."), { target: { value: "Approvals take too long" } });
+    }
+    await fireEvent.input(view.getByLabelText("Risk priorities"), { target: { value: "Low setup effort" } });
+    await fireEvent.input(view.getByLabelText("Boundaries"), { target: { value: "No hardware\nNo migration" } });
+    expect(view.getByLabelText("Solutions per problem").closest("aside")).toBeTruthy();
+    await fireEvent.input(view.getByLabelText("Solutions per problem"), { target: { value: "5" } });
+    if (researchMode === "explore-market") {
+      await fireEvent.change(view.getByLabelText("Research depth"), { target: { value: "deep" } });
+      await fireEvent.click(view.getByRole("button", { name: "Advanced settings" }));
+      await fireEvent.change(view.getByLabelText("Search coverage"), { target: { value: "communities" } });
+      await fireEvent.change(view.getByLabelText("Search provider"), { target: { value: "perplexity" } });
+    }
+    if (researchMode === "known-problem") await fireEvent.click(view.getByRole("button", { name: "Advanced settings" }));
+    await fireEvent.click(view.getByRole("button", { name: "Ideas & review" }));
+    await fireEvent.change(view.getByLabelText("Ideas model"), { target: { value: modelRefKey(ideasModel) } });
+    await fireEvent.click(view.getByRole("button", { name: "Instructions" }));
+    for (const [label, value] of [["Research instructions", "Research context"], ["Ideas instructions", "Generate carefully"], ["Review instructions", "Check evidence"]]) {
+      await fireEvent.input(view.getByLabelText(label!), { target: { value } });
+    }
+    await fireEvent.click(view.getByRole("button", { name: "Work limits" }));
+    await fireEvent.input(view.getByLabelText("Time limit"), { target: { value: "80" } });
+    await fireEvent.input(view.getByLabelText("Maximum model calls"), { target: { value: "200" } });
+    await fireEvent.input(view.getByLabelText("Maximum searches"), { target: { value: "80" } });
+    await fireEvent.click(view.getByRole("button", { name: "Done" }));
+    expect(view.getByText("Ideas & review: GPT-6 Astra · high reasoning")).toBeTruthy();
+    if (mode === "babysit") await fireEvent.click(view.getByRole("radio", { name: /Babysit/ }));
+    await waitFor(() => expect(onPreviewWorkflow.mock.lastCall?.[0]).toMatchObject({
+      purpose: researchMode === "known-problem" ? "known-problem" : "discovery", mode,
+      brief: researchMode === "known-problem" ? "Approvals take too long" : "Parts sourcing",
+      scope: { title: "Repair shops", audience: "Shops", domain: "Parts sourcing", riskEvaluationCriteria: "Low setup effort", offLimits: ["No hardware", "No migration"] },
+      runConfig: { ...DEFAULT_RUN_CONFIG, ideaCount: 5, maxRunMinutes: 80, researchMode, knownProblem: researchMode === "known-problem" ? "Approvals take too long" : "",
+        ...(researchMode === "explore-market" ? { discoveryDepth: "deep", audienceSourcePolicy: "communities", searchProvider: "perplexity" } : {}) },
+      limits: { maxMinutes: 80, maxModelCalls: 200, maxSearches: 80 },
+      instructions: { research: "Research context", ideas: "Generate carefully", review: "Check evidence" },
+      ...(mode === "vibe" ? { ideas: { model: ideasModel, reasoningEffort: "high", reviewModel: ideasModel, reviewReasoningEffort: "high" } } : {}),
+    }));
+    const expected = structuredClone(onPreviewWorkflow.mock.lastCall![0]);
+    if (mode === "babysit") expect(expected.ideas).toBeUndefined();
+    await fireEvent.click(view.getByRole("button", { name: "Advanced settings" }));
+    await fireEvent.click(view.getByRole("button", { name: "Done" }));
+    await fireEvent.click(view.getByRole("button", { name: mode === "vibe" ? "Start Vibe" : "Start Babysit" }));
+    await waitFor(() => expect(onStartWorkflow).toHaveBeenCalledOnce());
+    expect(onStartWorkflow.mock.calls[0]?.[0].proposal).toMatchObject(expected);
+  });
+
+  test("reveals a collapsed invalid limit, focuses it, and retries a failed preview", async () => {
+    const state = workspace();
+    state.validation.exa = { valid: true };
+    const onPreviewWorkflow = vi.fn().mockRejectedValue(new Error("Preview temporarily unavailable"));
+    const view = render(ScopeForm, { workspace: state, busy: false, onSave: vi.fn(), onStart: vi.fn(), onRetry: vi.fn(), onPreviewWorkflow, onStartWorkflow: vi.fn() });
+    await waitFor(() => expect(view.getByText("Preview temporarily unavailable")).toBeTruthy());
+    await fireEvent.click(view.getByRole("button", { name: "Retry preview" }));
+    await waitFor(() => expect(onPreviewWorkflow).toHaveBeenCalledTimes(2));
+    await fireEvent.click(view.getByRole("button", { name: "Edit limits" }));
+    await fireEvent.input(view.getByLabelText("Time limit"), { target: { value: "1" } });
+    await fireEvent.click(view.getByRole("button", { name: "Done" }));
+    expect(view.queryByRole("dialog")).toBeNull();
+    const review = view.getByRole("button", { name: "Review settings" });
+    review.focus();
+    await fireEvent.click(review);
+    expect(view.getByRole("dialog", { name: "Advanced settings" })).toBeTruthy();
+    await waitFor(() => expect(document.activeElement).toBe(view.getByLabelText("Time limit")));
+    expect((view.getByRole("button", { name: "Start Vibe" }) as HTMLButtonElement).disabled).toBe(true);
+    await fireEvent.input(view.getByLabelText("Time limit"), { target: { value: "30" } });
+    await fireEvent.click(view.getByRole("button", { name: "Done" }));
+    expect(view.queryByRole("button", { name: "Review settings" })).toBeNull();
+    expect(document.activeElement).toBe(view.getByRole("button", { name: "Advanced settings" }));
   });
 });
 

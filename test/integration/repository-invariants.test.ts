@@ -34,6 +34,24 @@ describe("repository invariants", () => {
     client.close();
   });
 
+  test("restoring a thread archived by its legacy status returns it to navigation", () => {
+    const client = database();
+    const threads = new ThreadRepository(client);
+    const legacy = threads.createThread("Legacy archive");
+    const current = threads.createThread("Current archive");
+    threads.updateThreadStatus(legacy.id, "archived");
+    threads.updateThreadStatus(current.id, "solutions-ready");
+    threads.archiveThread(current.id, true);
+
+    threads.archiveThread(legacy.id, false);
+    threads.archiveThread(current.id, false);
+
+    const restored = new Map(threads.listThreads().map((thread) => [thread.id, thread]));
+    expect(restored.get(legacy.id)).toMatchObject({ status: "configuring", archivedAt: null });
+    expect(restored.get(current.id)).toMatchObject({ status: "solutions-ready", archivedAt: null });
+    client.close();
+  });
+
   test("rejects discovery links to factors and sources from another run", () => {
     const client = database();
     createThreadAndRun(client, "thread-1", "run-1");

@@ -20,10 +20,15 @@ describe("App workspace coordination", () => {
     installApi({ getWorkspace: async () => workspace("alpha") });
     const view = render(App);
     try {
-      const navigation = view.container.querySelector("#research-navigation") as HTMLElement;
+      const navigation = view.container.querySelector("#research-navigation aside") as HTMLElement;
       await view.findByRole("button", { name: "Toggle sidebar" });
       await fireEvent.click(view.getByRole("button", { name: "Toggle sidebar" }));
       expect(navigation.hidden).toBe(true);
+
+      await fireEvent.keyDown(window, { key: "k", ctrlKey: true });
+      expect(view.getByRole("dialog", { name: "All research" })).toBeTruthy();
+      expect(document.activeElement).toBe(view.getByRole("textbox", { name: "Search research" }));
+      await fireEvent.click(view.getByRole("button", { name: "Close search" }));
 
       compact = true;
       resize?.({ matches: true });
@@ -555,14 +560,14 @@ describe("App workspace coordination", () => {
     const view = render(App);
     await fireEvent.click(await view.findByRole("button", { name: "Settings" }));
 
-    expect(await view.findByText("provider request failed with HTTP 401")).toBeTruthy();
+    expect(await within(view.getByRole("dialog", { name: "Settings" })).findByText("provider request failed with HTTP 401")).toBeTruthy();
     expect(view.queryByRole("button", { name: "Try again" })).toBeNull();
     await fireEvent.click(view.getByRole("button", { name: "Sign in with OpenAI" }));
 
     expect(startNativeLogin).toHaveBeenCalledWith({ providerId: "openai-subscription", method: "browser" });
     expect(await view.findByText("Native model account connected.")).toBeTruthy();
     expect(view.queryByText("provider request failed with HTTP 401")).toBeNull();
-    expect(within(view.getByRole("combobox", { name: "Model" })).getByRole("option", { name: "GPT-5.6 Sol" })).toBeTruthy();
+    expect(within(view.getByLabelText("Model", { exact: true })).getByRole("option", { name: "GPT-5.6 Sol", hidden: true })).toBeTruthy();
   });
 
   test("shows discovered models as soon as browser sign-in completes", async () => {
@@ -587,7 +592,7 @@ describe("App workspace coordination", () => {
 
     await fireEvent.click(await view.findByRole("button", { name: "Sign in with OpenAI" }));
     expect(await view.findByText("Native model account connected.")).toBeTruthy();
-    expect(within(view.getByRole("combobox", { name: "Model" })).getByRole("option", { name: "GPT-5.6 Sol" })).toBeTruthy();
+    expect(within(view.getByLabelText("Model", { exact: true })).getByRole("option", { name: "GPT-5.6 Sol", hidden: true })).toBeTruthy();
     expect(view.getByText("dany@example.test")).toBeTruthy();
   });
 
@@ -624,7 +629,7 @@ describe("App workspace coordination", () => {
     await fireEvent.click(await view.findByRole("button", { name: "Sign in with OpenAI" }));
 
     expect(await view.findByText("OpenAI sign-in finished.")).toBeTruthy();
-    expect(await within(view.getByRole("combobox", { name: "Model" })).findByRole("option", { name: "GPT-5.6 Sol" }, { timeout: 1_500 })).toBeTruthy();
+    expect(await within(view.getByLabelText("Model", { exact: true })).findByRole("option", { name: "GPT-5.6 Sol", hidden: true }, { timeout: 1_500 })).toBeTruthy();
     expect(view.queryByText("Checking available OpenAI models")).toBeNull();
   });
 
@@ -700,8 +705,8 @@ describe("App workspace coordination", () => {
     await fireEvent.input(title, { target: { value: "My unsaved research" } });
     await fireEvent.click(view.getByRole("button", { name: "Try again" }));
 
-    expect(await view.findByText("Checking connections")).toBeTruthy();
-    expect((view.getByRole("button", { name: "Checking connections" }) as HTMLButtonElement).disabled).toBe(true);
+    expect(await view.findByText("Checking connections…")).toBeTruthy();
+    expect((view.getByRole("button", { name: "Start Vibe" }) as HTMLButtonElement).disabled).toBe(true);
     expect(await view.findByRole("button", { name: "Sign in with OpenAI" }, { timeout: 1_500 })).toBeTruthy();
     expect(getWorkspace).toHaveBeenCalledTimes(3);
     expect(title.value).toBe("My unsaved research");

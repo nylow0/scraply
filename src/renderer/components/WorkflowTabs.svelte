@@ -69,14 +69,13 @@
 </nav>
 
 <style>
-  .workflow-tabs { position:sticky;top:54px;z-index:2;padding:8px var(--page-inline);background:var(--bg);border-bottom:1px solid var(--border); }
-  [role="tablist"] { display:flex;align-items:center;gap:22px; }
-  button { position:relative;display:flex;align-items:center;gap:9px;height:36px;padding:0 14px 0 6px;border:1px solid transparent;border-radius:9px;background:transparent;color:var(--muted);font-size:13px;font-weight:600; }
-  button + button::before { content:"";position:absolute;width:14px;height:1px;background:var(--border-strong);left:-20px; }
+  .workflow-tabs { flex:none;max-width:100%; }
+  [role="tablist"] { display:flex;align-items:center;gap:4px; }
+  button { display:flex;align-items:center;gap:7px;min-height:40px;padding:8px 10px;border:0;border-radius:7px;background:transparent;color:var(--muted);font-size:14px;font-weight:500; }
   button.active { background:#71cfba0b;color:var(--accent-strong);border-color:#71cfba20; }
   button:hover:not(:disabled) { background:var(--surface-2); }
   button:disabled { opacity:.38; }
-  .step-icon { display:grid;place-items:center;width:26px;height:26px;border-radius:7px;color:var(--muted); }
+  .step-icon { display:grid;place-items:center;color:var(--muted); }
   .active .step-icon { color:var(--accent-strong); }
-  @media(max-width:650px) { .workflow-tabs { padding-inline:14px; }[role="tablist"] { gap:14px; }button { padding-right:8px;gap:4px; }button + button::before { left:-12px;width:8px; } }
+  @media(max-width:420px) { button { padding-inline:8px;gap:6px; } }
 </style>

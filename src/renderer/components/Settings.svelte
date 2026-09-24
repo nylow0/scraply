@@ -5,6 +5,7 @@
   import Icon from "./Icon.svelte";
   import OpenAILogo from "./OpenAILogo.svelte";
   import { accountPlanLabel } from "../lib/account-plan";
+  import { isArchived } from "../lib/status";
   import type { NativeLoginStartResult, WorkspaceState } from "../../shared/ipc";
 
   let { workspace, busy, nativeLogin, open = $bindable(false), feedback, onRetry, onConnectNative, onCancelNative, onRefreshNative, onLogoutNative, onOpenData, onOpenLogs, onRestore, onDelete }: {
@@ -33,7 +34,7 @@
     if (open && !dialog.open) dialog.showModal();
     else if (!open && dialog.open) dialog.close();
   });
-  let archived = $derived(workspace?.threads.filter((thread) => thread.archivedAt || thread.status === "archived") ?? []);
+  let archived = $derived(workspace?.threads.filter(isArchived) ?? []);
   let nativeValidationPending = $derived(workspace?.validation.native.error?.startsWith("Checking ")
     || workspace?.validation.native.error === "Native runtime is starting");
   let nativeModelOptions = $derived(workspace?.modelOptions.filter((item) => item.providerId === "openai-subscription") ?? []);
