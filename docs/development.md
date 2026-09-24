@@ -109,4 +109,4 @@ Run the local check after staging files and before committing:
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/check-secrets.ps1 -Scope staged
 ```
 
-For a publishable-history audit, use `-Scope history` in a fresh clone after fetching the refs that could become public. The script pins and hash-verifies its Gitleaks download and emits redacted findings. A clean staged check covers only the new patch; a clean history scan covers only the refs included in that clone. Keep the audit scope and inaccessible areas with its report. [SECURITY.md](../SECURITY.md) gives the private vulnerability route.
+For a publishable-history audit, use `-Scope history` in a fresh clone after fetching the refs that could become public. The script pins and hash-verifies its Gitleaks download and emits redacted findings. A clean staged check covers only the new patch; a clean history scan covers only the refs included in that clone. Keep the audit scope and inaccessible areas with its report.
