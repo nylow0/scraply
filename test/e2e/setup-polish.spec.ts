@@ -37,7 +37,7 @@ test("setup hierarchy, source preferences, keyboard controls, and sidebar fit in
     await expect(page.getByRole("heading", { name: "Research setup" })).toHaveCount(0);
     await expect(page.locator(".workflow-tabs .active i")).toHaveCount(0);
     expect(await page.locator(".brief-panel").evaluate(el => getComputedStyle(el).borderTopWidth)).toBe("0px");
-    expect(await page.locator(".mode-picker input").first().evaluate(el => el.getBoundingClientRect().width)).toBe(14);
+    expect(await page.locator(".mode-picker input").first().evaluate(el => el.getBoundingClientRect().width)).toBe(16);
 
     await page.getByText("Find problems to solve", { exact: true }).click();
     await page.keyboard.press("ArrowRight");
@@ -49,30 +49,19 @@ test("setup hierarchy, source preferences, keyboard controls, and sidebar fit in
     await expect(page.getByRole("radio", { name: /^Find problems/ })).toBeChecked();
 
     const count = page.getByRole("spinbutton", { name: "Solutions per problem", exact: true });
-    const fewer = page.getByRole("button", { name: "Fewer solutions per problem", exact: true });
-    const more = page.getByRole("button", { name: "More solutions per problem", exact: true });
-    await more.click();
-    await expect(count).toHaveValue("4");
-    await fewer.click();
-    await expect(count).toHaveValue("3");
-    await count.fill("1");
-    await expect(fewer).toBeDisabled();
-    await count.fill("20");
-    await expect(more).toBeDisabled();
-    await fewer.click();
-    await expect(count).toHaveValue("19");
-    await count.fill("");
-    await more.click();
-    await expect(count).toHaveValue("4");
+    // The count is a plain number field; keyboard steps still work without separate stepper buttons.
+    await expect(page.getByRole("button", { name: /solutions per problem/ })).toHaveCount(0);
+    await count.fill("4");
     await count.focus();
     await page.keyboard.press("ArrowDown");
     await expect(count).toHaveValue("3");
-    const countBox = (await count.boundingBox())!;
-    const moreBox = (await more.boundingBox())!;
-    expect(Math.abs((moreBox.y + moreBox.height / 2) - (countBox.y + countBox.height / 2))).toBeLessThan(1);
-    expect(moreBox.x + moreBox.width).toBeLessThan(countBox.x + countBox.width);
+    await page.keyboard.press("ArrowUp");
+    await expect(count).toHaveValue("4");
+    await page.keyboard.press("ArrowDown");
+    await expect(count).toHaveValue("3");
     await page.screenshot({ path: testInfo.outputPath("run-controls.png") });
 
+    await page.getByRole("button", { name: "Advanced settings" }).click();
     const coverage = page.getByLabel("Search coverage", { exact: true });
     await expect(coverage).toHaveValue("web");
     expect(await coverage.evaluate(el => getComputedStyle(el, "::picker-icon").content)).toBe('""');
@@ -87,14 +76,12 @@ test("setup hierarchy, source preferences, keyboard controls, and sidebar fit in
     await page.keyboard.press("Escape");
     await expect(coverage).toBeFocused();
     await coverage.selectOption("web");
+    await page.getByRole("button", { name: "Done", exact: true }).click();
 
+    // Navigation shows at most six recent projects; the rest stay reachable through All research.
     const list = page.getByRole("list", { name: "Research threads" });
-    await list.evaluate(el => { el.scrollTop = el.scrollHeight; });
-    const last = list.getByRole("listitem").last();
-    const lastBox = (await last.boundingBox())!;
-    const listBox = (await list.boundingBox())!;
-    expect(lastBox.y + lastBox.height).toBeLessThanOrEqual(listBox.y + listBox.height - 8);
-    expect(await list.evaluate(el => getComputedStyle(el, "::-webkit-scrollbar-button").display)).toBe("none");
+    await expect(list.getByRole("listitem")).toHaveCount(6);
+    await expect(list.getByRole("listitem").last()).toBeInViewport({ ratio: 1 });
     await page.screenshot({ path: testInfo.outputPath("setup-sidebar-bottom.png") });
 
     await page.getByRole("button", { name: "Settings", exact: true }).click();
