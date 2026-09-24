@@ -38,7 +38,9 @@ test("research defaults persist after reopen while a saved project keeps its cho
     await expect(page.getByLabel("Search provider", { exact: true })).toHaveValue("perplexity");
     // Per-run overrides remain separate from the defaults saved in Settings.
     await page.getByLabel("Model", { exact: true }).selectOption("openai-subscription:gpt-5.6-sol");
+    await page.getByRole("button", { name: "Advanced settings" }).click();
     await page.getByLabel("Search provider", { exact: true }).selectOption("exa");
+    await page.getByRole("button", { name: "Done", exact: true }).click();
     await page.getByLabel("Research name", { exact: true }).fill("Saved provider choices");
     await page.getByLabel("What do you want to explore?").fill("Parts sourcing");
     await page.getByRole("radio", { name: /^Babysit/ }).check();
