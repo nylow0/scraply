@@ -37,13 +37,13 @@ test("setup hierarchy, source preferences, keyboard controls, and sidebar fit in
     await expect(page.getByRole("heading", { name: "Research setup" })).toHaveCount(0);
     await expect(page.locator(".workflow-tabs .active i")).toHaveCount(0);
     expect(await page.locator(".brief-panel").evaluate(el => getComputedStyle(el).borderTopWidth)).toBe("0px");
-    expect(await page.locator(".mode-picker input").first().evaluate(el => el.getBoundingClientRect().width)).toBe(1);
+    expect(await page.locator(".mode-picker input").first().evaluate(el => el.getBoundingClientRect().width)).toBe(14);
 
     await page.getByText("Find problems to solve", { exact: true }).click();
     await page.keyboard.press("ArrowRight");
     await expect(page.getByRole("radio", { name: /^I have a problem/ })).toBeChecked();
-    await expect(page.getByText("Problem statement", { exact: true })).toBeVisible();
-    await expect(page.getByRole("button", { name: "Start Babysit" })).toBeVisible();
+    await expect(page.getByText("What problem do you want to solve?", { exact: true })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Start Vibe" })).toBeVisible();
     await page.screenshot({ path: testInfo.outputPath("known-problem.png") });
     await page.keyboard.press("ArrowLeft");
     await expect(page.getByRole("radio", { name: /^Find problems/ })).toBeChecked();
