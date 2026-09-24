@@ -2,7 +2,7 @@
   import { tick, type Snippet } from "svelte";
   import Icon, { type IconName } from "./Icon.svelte";
   import type { Thread } from "../../shared/schemas";
-  import { statusLabel, statusTone } from "../lib/status";
+  import { isArchived, needsAttention, statusLabel, statusTone } from "../lib/status";
   import BrandMark from "./BrandMark.svelte";
 
   let { threads, activeThreadId, busy, visible = true, deletingThreadId = null, onNew, onSelect, onArchive, onRestore, settingsControl }: {
@@ -18,18 +18,17 @@
   let searchInput: HTMLInputElement;
   let searchTrigger: HTMLButtonElement;
   let returnFocus: HTMLElement | null = null;
-  let activeThreads = $derived(threads.filter((thread) => !thread.archivedAt && thread.status !== "archived"));
-  let attentionThreads = $derived(activeThreads.filter((thread) => thread.status.endsWith("running") || thread.status === "failed"));
+  let activeThreads = $derived(threads.filter((thread) => !isArchived(thread)));
+  let archivedThreads = $derived(threads.filter(isArchived));
+  let attentionThreads = $derived(activeThreads.filter((thread) => needsAttention(thread.status)));
   let recentThreads = $derived.by(() => {
     const recent = [...activeThreads].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
     const current = recent.find((thread) => thread.id === activeThreadId);
     return (current ? [current, ...recent.filter((thread) => thread.id !== current.id)] : recent).slice(0, 6);
   });
-  let matches = $derived(threads.filter((thread) => {
-    const archived = Boolean(thread.archivedAt) || thread.status === "archived";
-    const included = filter === "archived" ? archived : !archived && (filter === "all" || thread.status.endsWith("running") || thread.status === "failed");
-    return included && thread.title.toLowerCase().includes(search.trim().toLowerCase());
-  }).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)));
+  let matches = $derived((filter === "archived" ? archivedThreads : filter === "attention" ? attentionThreads : activeThreads)
+    .filter((thread) => thread.title.toLowerCase().includes(search.trim().toLowerCase()))
+    .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)));
 
   async function showFinder(nextFilter: CollectionFilter = "all") {
     if (document.querySelector("dialog[open], .settings-screen:not([hidden])")) return;

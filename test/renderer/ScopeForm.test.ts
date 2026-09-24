@@ -572,6 +572,21 @@ describe("settings surfaces preserve launch configuration", () => {
     expect(view.queryByRole("tooltip")).toBeNull();
   });
 
+  test("keeps a clicked mode explanation open and dismisses a hovered one with Escape", async () => {
+    const view = render(ScopeForm, { workspace: workspace(), busy: false, onSave: vi.fn(), onStart: vi.fn(), onRetry: vi.fn(), onPreviewWorkflow: vi.fn(), onStartWorkflow: vi.fn() });
+    const info = view.getByRole("button", { name: "About Vibe" });
+    await fireEvent.mouseEnter(info.parentElement!);
+    await fireEvent.keyDown(document.body, { key: "Escape" });
+    expect(view.queryByRole("tooltip")).toBeNull();
+
+    info.focus();
+    await fireEvent.click(info);
+    await fireEvent.mouseLeave(info.parentElement!);
+    expect(view.getByRole("tooltip").textContent).toContain("Work stops at your saved limits");
+    await fireEvent.keyDown(info, { key: "Escape" });
+    expect(view.queryByRole("tooltip")).toBeNull();
+  });
+
   test.each([
     [["runConfig", "searchProvider"], "Search provider"],
     [["ideas", "reviewModel"], "Ideas model"],
@@ -667,10 +682,16 @@ describe("settings surfaces preserve launch configuration", () => {
     await fireEvent.input(view.getByLabelText("Time limit"), { target: { value: "1" } });
     await fireEvent.click(view.getByRole("button", { name: "Done" }));
     expect(view.queryByRole("dialog")).toBeNull();
-    await fireEvent.click(view.getByRole("button", { name: "Review settings" }));
+    const review = view.getByRole("button", { name: "Review settings" });
+    review.focus();
+    await fireEvent.click(review);
     expect(view.getByRole("dialog", { name: "Advanced settings" })).toBeTruthy();
-    expect(document.activeElement).toBe(view.getByLabelText("Time limit"));
+    await waitFor(() => expect(document.activeElement).toBe(view.getByLabelText("Time limit")));
     expect((view.getByRole("button", { name: "Start Vibe" }) as HTMLButtonElement).disabled).toBe(true);
+    await fireEvent.input(view.getByLabelText("Time limit"), { target: { value: "30" } });
+    await fireEvent.click(view.getByRole("button", { name: "Done" }));
+    expect(view.queryByRole("button", { name: "Review settings" })).toBeNull();
+    expect(document.activeElement).toBe(view.getByRole("button", { name: "Advanced settings" }));
   });
 });
 

@@ -135,6 +135,7 @@
     : activeRun?.lastActivity ?? "Preparing the next provider call...");
   // Local-only override: lets the user reopen the scope form from a failed run without touching server state.
   let editingScope = $derived(editingScopeThreadId !== null && editingScopeThreadId === activeThread?.id);
+  let showSetupForm = $derived(Boolean(workspace && activeThread && (activeThread.status === "configuring" || editingScope || !workspace.scope)));
   let researchReady = $derived(Boolean(activeThread && (activeWorkflow || workspace?.problemCandidates.length || workspace?.rejectedProblemCandidates.length || activeThread.status === "discovery-running")));
   let ideasReady = $derived(Boolean(activeThread && (workspace?.solutions.length || activeThread.status === "development-running" || activeThread.status === "solutions-ready"
     || activeWorkflow?.purpose === "known-problem" || activeWorkflow?.state === "finished")));
@@ -837,7 +838,7 @@
   </Sidebar>
   </div>
 
-  <main class="main-content" class:setup-active={Boolean(workspace && activeThread && activeStep === "setup" && (activeThread.status === "configuring" || editingScope || !workspace.scope))} inert={settingsOpen}>
+  <main class="main-content" class:setup-active={activeStep === "setup" && showSetupForm} inert={settingsOpen}>
     {#if workspace && activeThread}
       <header class="workspace-header">
       <div class="topbar">
@@ -891,7 +892,7 @@
     {:else if !workspace || !activeThread}
       <div class="empty-workspace"><button disabled={busy} onclick={createThread}>New research</button></div>
     {:else if activeStep === "setup"}
-      {#if activeThread.status === "configuring" || editingScope || !workspace.scope}
+      {#if showSetupForm}
         <div id="workflow-panel-setup" role="tabpanel" aria-label="Research setup">
           {#key workspace.activeThreadId}
             <ScopeForm {workspace} {busy} onSave={saveScope} onStart={startResearch} onPreviewWorkflow={previewWorkflow} onStartWorkflow={startWorkflow} onRetry={retryConnections} onOpenSettings={() => settings?.show()} />
@@ -1001,8 +1002,9 @@
   .workspace-header { position:sticky;top:0;z-index:3;flex:none;min-height:72px;padding:12px 24px;display:flex;align-items:center;gap:24px;background:var(--bg);border-bottom:1px solid var(--border); }
   .topbar { display:flex;align-items:center;flex:1;min-width:0;gap:16px;color:var(--muted); }
   .location { display:block;margin:0;color:var(--text);font-size:24px;font-weight:600;letter-spacing:-.6px;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis; }
-  .main-content.setup-active { display:flex;flex-direction:column;overflow:hidden; }
-  .setup-active > #workflow-panel-setup { flex:1;min-height:0; }
+  .main-content.setup-active { display:flex;flex-direction:column; }
+  .setup-active > :global(:not(#workflow-panel-setup)) { flex:none; }
+  .setup-active > #workflow-panel-setup { flex:1 0 0;min-height:420px; }
   .calls { white-space:nowrap;margin-left:16px;font:500 13px var(--sans); }.calls strong { color:var(--text);font-weight:600; }
   .notice { flex:none;margin:12px var(--page-inline) 0;padding:12px 16px;border:1px solid var(--border-strong);border-radius:10px;background:var(--surface-2);display:flex;justify-content:space-between;gap:16px;color:var(--muted);font-size:13px;overflow-wrap:anywhere; }
   .notice.error { border-color:#df929260;color:var(--danger); }.notice button { border:0;background:transparent;color:inherit; }
@@ -1045,5 +1047,5 @@
     .topbar { width:100%; }
     .running h1,.failed h1 { font-size:28px; }
   }
-  @media(max-height:600px) { .main-content.setup-active { display:block;overflow:auto; }.workspace-header { position:static; } }
+  @media(max-height:600px) { .main-content.setup-active { display:block; }.setup-active .workspace-header { position:static; } }
 </style>

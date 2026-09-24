@@ -129,6 +129,8 @@ export class ThreadRepository {
   archiveThread(threadId: string, archived: boolean): void {
     this.db.db.prepare("UPDATE threads SET archived_at = ? WHERE id = ?")
       .run(archived ? new Date().toISOString() : null, threadId);
+    // Older projects were archived by status; restoring them returns them to setup, as migration 9 did for inactive threads.
+    if (!archived) this.db.db.prepare("UPDATE threads SET status = 'configuring' WHERE id = ? AND status = 'archived'").run(threadId);
   }
   deleteThread(threadId: string): void { this.db.db.prepare("DELETE FROM threads WHERE id = ?").run(threadId); }
 

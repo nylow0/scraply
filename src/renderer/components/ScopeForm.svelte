@@ -182,7 +182,8 @@
         ? workspace.validation.native.error ?? "Connect your OpenAI account"
         : workspace.validation.native.error ?? (nativeModelOptions.length === 0 ? "No compatible models are available" : null));
   let locked = $derived(busy || submitting);
-  let errors = $derived(validationAttempted || useWorkflow ? missingFields() : {});
+  let missing = $derived(missingFields());
+  let errors = $derived(validationAttempted || useWorkflow ? missing : {});
   let knownProblemError = $derived(validationAttempted || knownProblemTouched ? errors.knownProblem : undefined);
   let domainError = $derived(validationAttempted || domainTouched ? errors.domain : undefined);
   let ideaModelAvailable = $derived(Boolean(ideaModelOption) && workspace.models.some((item) => sameModelRef(item, ideaModel)));
@@ -206,7 +207,7 @@
     workflowPreview = null;
     previewFingerprint = null;
     previewError = null;
-    if (!useWorkflow || !onPreviewWorkflow || !providersReady || Object.keys(missingFields()).length > 0
+    if (!useWorkflow || !onPreviewWorkflow || !providersReady || Object.keys(missing).length > 0
       || (workflowMode === "vibe" && (!ideaModelAvailable || !ideaReasoningAvailable))) return;
     const timer = setTimeout(() => {
       previewing = true;
@@ -324,7 +325,7 @@
   async function saveAndStart() {
     if (locked || !providersReady) return;
     validationAttempted = true;
-    if (Object.keys(missingFields()).length > 0) { await revealBlockingField(); return; }
+    if (Object.keys(missing).length > 0) { await revealBlockingField(); return; }
     submitting = true;
     try {
       if (useWorkflow && onPreviewWorkflow && onStartWorkflow) {
@@ -365,6 +366,23 @@
   let configurationTrigger: HTMLElement | null = null;
   let settingsSection = $state<SettingsSection>("research");
   let modeHelp = $state<"vibe" | "babysit" | null>(null);
+  let advancedSettingsButton: HTMLButtonElement;
+
+  function hideModeHelpOnLeave(event: MouseEvent) {
+    if (!(event.currentTarget as HTMLElement).contains(document.activeElement)) modeHelp = null;
+  }
+
+  function dismissModeHelp(event: KeyboardEvent) {
+    if (event.key !== "Escape" || !modeHelp) return;
+    modeHelp = null;
+    event.stopPropagation();
+  }
+
+  // The trigger may unmount once its issue is fixed, so fall back to the Advanced settings button.
+  function restoreConfigurationFocus() {
+    const trigger = configurationTrigger?.isConnected && configurationTrigger !== document.body ? configurationTrigger : advancedSettingsButton;
+    trigger?.focus({ preventScroll: true });
+  }
   const fieldSections: Record<string, SettingsSection | "brief" | "business" | "main"> = {
     domain: "brief", knownProblem: "brief", title: "brief", researchMode: "brief",
     targetFamilies: "business", batchSize: "business", maxModelCalls: "business", maxSearches: "business",
@@ -384,9 +402,9 @@
     + (workflowPreview?.fieldErrors.length ?? 0) + Number(modelChoiceRequired) + Number(reasoningChoiceRequired));
   let blockingMessage = $derived.by(() => {
     if (!providersReady) return connectionsChecking ? "Checking connections…" : connectionNeedsAttention ? "Connect the required providers to start." : modelChoiceRequired ? "Choose an available model to start." : "Choose an available reasoning effort to start.";
-    const firstError = Object.values(missingFields())[0];
-    if (firstError) return firstError === "A starting context is required." ? "Add a topic to your brief to start."
-      : firstError === "Problem statement is required." ? "Describe the problem to start." : firstError;
+    const firstField = Object.keys(missing)[0];
+    if (firstField) return firstField === "domain" ? "Add a topic to your brief to start."
+      : firstField === "knownProblem" ? "Describe the problem to start." : missing[firstField];
     if (previewError) return previewError;
     const previewFieldError = workflowPreview?.fieldErrors[0];
     if (previewFieldError) return previewFieldError.message;
@@ -407,7 +425,7 @@
   // Reveal and focus a blocked field even when its settings or disclosure are closed.
   async function revealBlockingField() {
     validationAttempted = true;
-    let key = modelChoiceRequired ? "model" : reasoningChoiceRequired ? "reasoning" : Object.keys(missingFields())[0];
+    let key = modelChoiceRequired ? "model" : reasoningChoiceRequired ? "reasoning" : Object.keys(missing)[0];
     const previewField = workflowPreview?.fieldErrors[0];
     if (!key && previewField) {
       const issue = previewField.path.join(".");
@@ -425,6 +443,8 @@
     }
   }
 </script>
+
+<svelte:window onkeydown={dismissModeHelp} />
 
 <section class="scope-page">
   <form bind:this={setupForm} novalidate onsubmit={(event) => { event.preventDefault(); void saveAndStart(); }}>
@@ -486,15 +506,15 @@
             <legend>Run mode</legend>
             <div class="mode-option" class:active={workflowMode === "vibe"}>
               <label><input type="radio" name="workflow-mode" value="vibe" checked={workflowMode === "vibe"} onchange={() => workflowMode = "vibe"} /><strong>Vibe</strong></label>
-              <span class="mode-info" role="presentation" onmouseenter={() => modeHelp = "vibe"} onmouseleave={() => modeHelp = null} onfocusin={() => modeHelp = "vibe"} onfocusout={() => modeHelp = null}>
-                <button type="button" class="info-button" aria-label="About Vibe" aria-describedby="vibe-help" onclick={() => modeHelp = "vibe"} onkeydown={(event) => { if (event.key === "Escape") { modeHelp = null; event.stopPropagation(); } }}><Icon name="info" size={16} /></button>
+              <span class="mode-info" role="presentation" onmouseenter={() => modeHelp = "vibe"} onmouseleave={hideModeHelpOnLeave} onfocusin={() => modeHelp = "vibe"} onfocusout={() => modeHelp = null}>
+                <button type="button" class="info-button" aria-label="About Vibe" aria-describedby="vibe-help" onclick={() => modeHelp = "vibe"} onkeydown={dismissModeHelp}><Icon name="info" size={16} /></button>
                 <span id="vibe-help" class="mode-tooltip" role="tooltip" hidden={modeHelp !== "vibe"}>{researchMode === "known-problem" ? "Scraply generates and reviews ideas for your stated problem automatically." : "Scraply researches your brief, selects problems, generates ideas, and reviews them automatically."} Work stops at your saved limits. Review the results when the run ends.</span>
               </span>
             </div>
             <div class="mode-option" class:active={workflowMode === "babysit"}>
               <label><input type="radio" name="workflow-mode" value="babysit" checked={workflowMode === "babysit"} onchange={() => workflowMode = "babysit"} /><strong>Babysit</strong></label>
-              <span class="mode-info" role="presentation" onmouseenter={() => modeHelp = "babysit"} onmouseleave={() => modeHelp = null} onfocusin={() => modeHelp = "babysit"} onfocusout={() => modeHelp = null}>
-                <button type="button" class="info-button" aria-label="About Babysit" aria-describedby="babysit-help" onclick={() => modeHelp = "babysit"} onkeydown={(event) => { if (event.key === "Escape") { modeHelp = null; event.stopPropagation(); } }}><Icon name="info" size={16} /></button>
+              <span class="mode-info" role="presentation" onmouseenter={() => modeHelp = "babysit"} onmouseleave={hideModeHelpOnLeave} onfocusin={() => modeHelp = "babysit"} onfocusout={() => modeHelp = null}>
+                <button type="button" class="info-button" aria-label="About Babysit" aria-describedby="babysit-help" onclick={() => modeHelp = "babysit"} onkeydown={dismissModeHelp}><Icon name="info" size={16} /></button>
                 <span id="babysit-help" class="mode-tooltip" role="tooltip" hidden={modeHelp !== "babysit"}>{researchMode === "known-problem" ? "Scraply uses your stated problem, then waits for you to choose the next step." : "Scraply researches your brief, then pauses so you can review the problems and choose which ones become ideas."} You control when idea generation begins.</span>
               </span>
             </div>
@@ -519,7 +539,7 @@
           {#if reasoningChoiceRequired}<p class="field-error">The saved reasoning effort is unavailable for this model. Choose an available effort to start a new run.</p>{/if}
         {#if ideaOverrides}<p class="override-note">Ideas & review: {modelDisplayName(ideaModel)} · {ideaReasoningEffort} reasoning</p>{/if}
         {#if customInstructionCount}<p class="override-note">{customInstructionCount} custom {customInstructionCount === 1 ? "instruction" : "instructions"}</p>{/if}
-        <button type="button" class="text-action" onclick={() => showConfiguration()}>Advanced settings <Icon name="settings" size={16} /></button>
+        <button type="button" class="text-action" bind:this={advancedSettingsButton} onclick={() => showConfiguration()}>Advanced settings <Icon name="settings" size={16} /></button>
       </section>
       <div class="launch-content">
         <div class="launch-row">
@@ -531,7 +551,7 @@
         </div>
         <div class="launch-status" role="status">
           {#if blockingMessage}<span>{blockingMessage}</span>{:else if useWorkflow}<span>{launchSteps()}.</span>{/if}
-          {#if configurationIssues || missingFields().domain || missingFields().knownProblem}<button type="button" class="text-action" onclick={revealBlockingField}>{modelChoiceRequired ? "Choose model" : configurationIssues ? "Review settings" : "Edit brief"}</button>{/if}
+          {#if configurationIssues || missing.domain || missing.knownProblem}<button type="button" class="text-action" onclick={revealBlockingField}>{modelChoiceRequired ? "Choose model" : configurationIssues ? "Review settings" : "Edit brief"}</button>{/if}
           {#if previewError}<button type="button" class="text-action" onclick={() => previewAttempt += 1}>Retry preview</button>{/if}
           {#if saved}<span>Saved</span>{/if}
         </div>
@@ -545,7 +565,7 @@
         {/if}
       </div>
     </aside>
-    <dialog bind:this={configuration} class="settings-dialog" aria-label="Advanced settings" onclose={() => configurationTrigger?.focus({ preventScroll: true })} onkeydown={(event) => { if (event.key === "Enter" && event.target instanceof HTMLInputElement) event.preventDefault(); }}>
+    <dialog bind:this={configuration} class="settings-dialog" aria-label="Advanced settings" onclose={restoreConfigurationFocus} onkeydown={(event) => { if (event.key === "Enter" && event.target instanceof HTMLInputElement) event.preventDefault(); }}>
       <header><h2>Advanced settings</h2><button type="button" aria-label="Close advanced settings" onclick={() => configuration.close()}><Icon name="close" /></button></header>
       <nav aria-label="Settings groups">
         {#if researchMode === "explore-market"}<button type="button" aria-pressed={settingsSection === "research"} onclick={() => settingsSection = "research"}>Search</button>{/if}
