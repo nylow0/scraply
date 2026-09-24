@@ -25,4 +25,4 @@ Describe the visible result and what you expected instead.
 
 ## Evidence
 
-Include a screenshot, redacted log excerpt, or the app's correlation reference if useful. Remove API keys, tokens, personal data, and private project content. For a vulnerability, use the private route in [SECURITY.md](../../SECURITY.md).
+Include a screenshot, redacted log excerpt, or the app's correlation reference if useful. Remove API keys, tokens, personal data, and private project content. Report a vulnerability to the maintainer privately, not in an issue.
