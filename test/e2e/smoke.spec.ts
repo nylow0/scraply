@@ -67,13 +67,13 @@ test("the renderer restores the problem-selection step after a restart", async (
     await expect(page.getByText("Choose problems to develop")).toBeVisible();
 
     await page.keyboard.press("Control+k");
-    await expect(page.getByRole("dialog", { name: "Find research" })).toBeVisible();
+    await expect(page.getByRole("dialog", { name: "All research" })).toBeVisible();
     await page.getByRole("textbox", { name: "Search research", exact: true }).fill("no matching research");
     await expect(page.getByText("No research found.", { exact: false })).toBeVisible();
     await page.getByRole("textbox", { name: "Search research", exact: true }).fill("Repair");
     await page.screenshot({ animations: "disabled", path: testInfo.outputPath("research-finder.png") });
     await page.keyboard.press("Enter");
-    await expect(page.getByRole("dialog", { name: "Find research" })).not.toBeVisible();
+    await expect(page.getByRole("dialog", { name: "All research" })).not.toBeVisible();
     await page.getByRole("textbox", { name: "Search problems" }).fill("nothing matches");
     await expect(page.getByText('No problems match "nothing matches".')).toBeVisible();
     await page.getByRole("button", { name: "Clear filter" }).click();
