@@ -58,7 +58,7 @@
   {#if selectedModel && !selectedModel.available && workspace?.validation.native.connected}<p class="availability" role="status">{selectedModel.displayName} isn't in the current model list. Refresh your account or choose another model.</p>{/if}
   <fieldset>
     <legend>Research titles</legend>
-    <p>Blank research names are generated automatically.</p>
+    <p>This model names each research when you start it.</p>
     <label><span>Title model</span><select aria-label="Title model" bind:value={titleModelKey} onchange={() => { saved = false; titleReasoningEffort = workspace?.modelOptions.find((model) => modelRefKey(model) === titleModelKey)?.defaultReasoningEffort ?? titleEfforts[0]?.id ?? "low"; }}>
       {#each models as model (modelRefKey(model))}<option value={modelRefKey(model)}>{model.displayName}{!model.available && workspace?.validation.native.connected ? " (unavailable)" : ""}</option>{/each}
     </select></label>
