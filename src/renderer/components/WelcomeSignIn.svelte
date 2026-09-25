@@ -20,7 +20,7 @@
 </script>
 
 <dialog bind:this={dialog} class="welcome" aria-labelledby="welcome-title" aria-describedby="welcome-body"
-  oncancel={(event) => { event.preventDefault(); if (!nativeLogin) onDismiss(); }}>
+  oncancel={(event) => { event.preventDefault(); if (nativeLogin) onCancel(); onDismiss(); }}>
   <BrandMark size={44} />
   <h1 id="welcome-title">{returning ? "Welcome back" : "Welcome to Scraply"}</h1>
   <p id="welcome-body">{returning
