@@ -114,8 +114,8 @@
   .checkpoint { max-width:1120px;margin:auto;padding:38px var(--page-inline) 80px; }
   .evidence-key { margin-top:20px;padding:0;border:0;font-size:13px;color:var(--muted); }
   .evidence-key p { max-width:76ch;margin:10px 0 0; }
-  article.picked { border-color:#71cfba60; }
-  .pick { display:flex;gap:9px;align-items:center;width:fit-content;padding:10px 14px;border:1px solid #71cfba30;border-radius:8px;background:#71cfba08;font-size:13px;color:var(--accent-strong); }
+  article.picked { border-color:#bdbdbd60; }
+  .pick { display:flex;gap:9px;align-items:center;width:fit-content;padding:10px 14px;border:1px solid #bdbdbd30;border-radius:8px;background:#bdbdbd08;font-size:13px;color:var(--accent-strong); }
   .pick input { width:15px;height:15px;accent-color:var(--accent); }
   .verdict { display:flex;gap:8px;margin:14px 0; }
   .verdict span { font-size:13px;border:1px solid var(--border-strong);border-radius:6px;padding:4px 8px;color:var(--muted); }

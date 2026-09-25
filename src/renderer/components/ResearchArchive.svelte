@@ -106,7 +106,7 @@
   .summary dd { font:600 13px var(--sans);margin:0;background:var(--surface-2);border:1px solid var(--border);padding:3px 8px;border-radius:6px; }
   .meta { display:flex;flex-wrap:wrap;gap:7px;margin-bottom:16px; }
   .meta span { padding:4px 8px;border:1px solid var(--border-strong);border-radius:6px;color:var(--muted);font-size:13px; }
-  .meta .selected { color:var(--accent-strong);border-color:#71cfba40; }
+  .meta .selected { color:var(--accent-strong);border-color:#bdbdbd40; }
   @media(max-width:700px) { .archive { padding:28px 22px 60px; }.summary { flex-wrap:wrap;gap:12px; } }
   .summary { display:flex;align-items:center;gap:36px;margin:24px 0 8px;padding:18px 0;border-top:1px solid var(--border);border-bottom:1px solid var(--border); }
   .summary > div { display:flex;align-items:baseline;gap:10px; }

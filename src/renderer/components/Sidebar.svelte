@@ -109,7 +109,7 @@
   .sidebar > * { flex-shrink:0; }
   button { color:var(--text);font-size:14px; }
   .new,.find,.attention-link { width:100%;display:flex;align-items:center;gap:10px;border:0;border-radius:7px;padding:10px;min-height:42px;font-weight:500;text-align:left; }
-  .new { background:rgb(128 217 182 / .12);box-shadow:inset 0 1px 0 rgb(255 255 255 / .08);color:var(--accent-strong); }
+  .new { background:rgb(255 255 255 / .07);color:var(--text); }
   .find,.attention-link { background:none;color:var(--muted); }
   .find kbd,.attention-link > span:last-child { margin-left:auto;font:12px var(--sans);color:var(--muted); }
   .new:hover:not(:disabled),.find:hover,.attention-link:hover { background:var(--surface-2);color:var(--text); }
@@ -141,7 +141,7 @@
   .search-heading input { flex:1;min-width:0;min-height:44px;border:0;background:none;color:var(--text);font-size:15px; }
   .finder nav { display:flex;flex-wrap:wrap;gap:4px;padding:0 24px 12px;border-bottom:1px solid var(--border); }
   .finder nav button { min-height:36px;padding:6px 12px;border:0;border-radius:6px;background:none;color:var(--muted);font-size:13px; }
-  .finder nav button[aria-pressed="true"] { background:rgb(128 217 182 / .1);color:var(--accent-strong); }
+  .finder nav button[aria-pressed="true"] { background:rgb(255 255 255 / .09);color:var(--text); }
   .search-results { min-height:0;overflow:auto;padding:12px 16px; }
   .search-results > p { margin:0;padding:0 8px 10px;font-size:13px;color:var(--muted); }
   .result-row { display:flex;align-items:center;gap:8px;border-radius:8px; }
