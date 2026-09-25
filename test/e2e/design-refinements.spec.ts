@@ -20,7 +20,8 @@ test("compact settings, consistent fields, title defaults, and archive recovery"
     await expect(page.locator(".heading-icon,.welcome")).toHaveCount(0);
     const fields = await page.locator(".scope-page input:not([type=radio]),.scope-page textarea:not(.main-brief textarea),.scope-page select").evaluateAll((items) => items.map((el) => ({ font: getComputedStyle(el).fontSize, resize: getComputedStyle(el).resize, textarea: el.tagName === "TEXTAREA" })));
     expect(new Set(fields.map((field) => field.font))).toEqual(new Set(["14px"]));
-    expect(fields.filter((field) => field.textarea).every((field) => field.resize === "vertical")).toBe(true);
+    // Text fields keep a fixed size; long text scrolls inside instead of the field growing.
+    expect(fields.filter((field) => field.textarea).every((field) => field.resize === "none")).toBe(true);
     await expect(page.locator(".main-brief textarea")).toHaveCSS("font-size", "15px");
     const settings = page.getByRole("button", { name: "Settings", exact: true });
     await settings.click();
