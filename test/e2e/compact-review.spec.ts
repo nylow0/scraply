@@ -25,15 +25,14 @@ test("desktop navigation and compact idea review preserve dismissed ideas", asyn
       const item = Menu.getApplicationMenu()!.items[0]!.submenu!.items[0]!;
       item.click(undefined, BrowserWindow.getAllWindows()[0], undefined);
     });
-    await page.getByLabel("Research name", { exact: true }).fill("Compact idea review");
     await page.getByLabel("What do you want to explore?").fill("Parts delivery uncertainty.");
     await page.getByRole("radio", { name: /^Babysit/ }).check();
-    await page.getByRole("button", { name: "Start Babysit", exact: true }).click();
+    await page.getByRole("button", { name: "Start", exact: true }).click();
     await expect(page.getByRole("tabpanel", { name: "Research" })).toBeVisible();
     await expect(page.getByRole("button", { name: "Go back", exact: true })).toBeEnabled();
     await page.getByRole("tab", { name: /Setup/ }).click();
     await expect(page.getByRole("tab", { name: /Setup/ })).toHaveAttribute("aria-selected", "true");
-    await expect(page.getByRole("heading", { name: "Compact idea review" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Reducing repair shop delays" })).toBeVisible();
     await page.getByRole("button", { name: "Go back", exact: true }).click();
     await expect(page.getByRole("tab", { name: /Research/ })).toHaveAttribute("aria-selected", "true");
     await page.getByRole("button", { name: "Go forward", exact: true }).click();
@@ -42,7 +41,7 @@ test("desktop navigation and compact idea review preserve dismissed ideas", asyn
     await expect(page.locator(".sidebar")).not.toBeVisible();
     await page.getByRole("button", { name: "Toggle sidebar", exact: true }).click();
     await expect(page.locator(".sidebar")).toBeVisible();
-    const rowHeight = await page.getByRole("button", { name: "Open thread Compact idea review", exact: true }).evaluate((el) => el.getBoundingClientRect().height);
+    const rowHeight = await page.getByRole("button", { name: "Open thread Reducing repair shop delays", exact: true }).evaluate((el) => el.getBoundingClientRect().height);
     expect(rowHeight).toBeLessThan(70);
     await page.screenshot({ animations: "disabled", path: testInfo.outputPath("compact-setup.png") });
     await page.getByRole("tab", { name: /Research/ }).click();

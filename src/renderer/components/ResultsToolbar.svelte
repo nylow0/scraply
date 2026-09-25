@@ -9,7 +9,7 @@
 <style>
   .result-toolbar { display:flex;justify-content:space-between;align-items:center;gap:16px;margin:24px 0 14px; }
   label { display:flex;align-items:center;gap:9px;color:var(--subtle);background:var(--surface);border:1px solid var(--border);padding:9px 12px;border-radius:8px;width:min(340px,75%); }
-  label:focus-within { border-color:var(--accent); }
+  label:focus-within { border-color:rgb(255 255 255 / .38);box-shadow:0 0 0 3px rgb(255 255 255 / .05); }
   input { width:100%;min-width:0;border:0;background:transparent;color:var(--text);outline:none;font-size:13px; }
   input:focus { box-shadow:none; }
   button { display:grid;place-items:center;border:0;background:transparent;color:var(--muted);padding:0; }

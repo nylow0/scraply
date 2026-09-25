@@ -4,19 +4,23 @@
 :root {
   color-scheme: dark;
   --bg: #000000;
-  --navigation: #080a09;
-  --surface: #0b0b0b;
-  --surface-2: #191919;
-  --border: #252525;
-  --border-strong: #454545;
+  --navigation: transparent;
+  /* Surfaces and borders are translucent white so anything nested in a glass panel reads as a layer of it. */
+  --surface: rgb(255 255 255 / .035);
+  --surface-2: rgb(255 255 255 / .075);
+  --border: rgb(255 255 255 / .085);
+  --border-strong: rgb(255 255 255 / .17);
   --text: #f2f2f2;
   --muted: #a3a3a3;
   --subtle: #858585;
-  --accent: #80d9b6;
-  --accent-strong: #9be5c8;
-  --accent-ink: #002b1b;
+  /* One muted pink, used sparingly: the logo, primary buttons, text links, and small indicators.
+     Everything else is black, grey, and white. */
+  --accent: #d6a2b6;
+  --accent-strong: #e7bfce;
+  --accent-ink: #2a0f1a;
   --danger: #df9292;
-  --success: #36e6a0;
+  --success: #9fcfb2;
+  --focus-ring: rgb(255 255 255 / .6);
   --mono: "Geist Mono", "Cascadia Code", ui-monospace, monospace;
   --sans: "Plus Jakarta Sans Variable", "Segoe UI", sans-serif;
   --ease: cubic-bezier(0.16, 1, 0.3, 1);
@@ -26,6 +30,35 @@
   --page-inline: clamp(20px, 3vw, 40px);
   --page-top: 38px;
   --page-max: 1180px;
+
+  /* Liquid glass, kept quiet: panels are a faint neutral tint over plain black with a hairline edge.
+     .glass is for panels that sit in the layout; .glass-dense is for anything that floats
+     above content (dialogs, menus, tooltips), where text must stay readable over busy content. */
+  --glass-fill: rgb(255 255 255 / .03);
+  --glass-fill-dense: rgb(16 17 17 / .9);
+  --glass-edge: rgb(255 255 255 / .07);
+  /* No light rim: edges stay a quiet grey hairline. */
+  --glass-rim: inset 0 0 0 0 transparent;
+  --glass-shadow: 0 10px 30px rgb(0 0 0 / .35);
+  --glass-blur: blur(16px) saturate(120%);
+  --glass-backdrop: rgb(0 0 0 / .42);
+  --panel-radius: 18px;
+}
+
+.glass,
+.glass-dense {
+  border: 1px solid var(--glass-edge);
+  background: var(--glass-fill);
+  box-shadow: var(--glass-rim), var(--glass-shadow);
+  backdrop-filter: var(--glass-blur);
+}
+
+.glass-dense { background: var(--glass-fill-dense); }
+
+/* Modal backdrops blur the app behind them instead of only dimming it. */
+dialog.glass-dense::backdrop {
+  background: var(--glass-backdrop);
+  backdrop-filter: blur(10px) saturate(120%);
 }
 
 * {
@@ -39,8 +72,8 @@ body,
 }
 
 body {
-  margin: 0;
   background: var(--bg);
+  margin: 0;
   color: var(--text);
   font-family: var(--sans);
   font-size: 14px;
@@ -56,7 +89,8 @@ select {
   font: inherit;
 }
 
-textarea { resize:none;overflow:auto; }
+/* Text fields keep a fixed size everywhere; longer text scrolls inside them. */
+textarea { resize:none !important;overflow:auto; }
 input,textarea,select { font-size:13px;line-height:1.5; }
 button { line-height:1.4; }
 
@@ -82,7 +116,7 @@ select:disabled {
 }
 
 :focus-visible {
-  outline: 2px solid var(--accent-strong);
+  outline: 2px solid var(--focus-ring);
   outline-offset: 3px;
 }
 
@@ -170,7 +204,10 @@ button:disabled { opacity: .45; }
 /* Disclosures open directly so longer sections do not move while being read. */
 a { color:var(--accent-strong); text-underline-offset:3px; }
 input, textarea, select { transition:border-color 180ms ease, box-shadow 180ms ease; }
-input:focus, textarea:focus, select:focus { border-color:var(--accent) !important; box-shadow:0 0 0 3px #71cfba12; }
+input:focus, textarea:focus, select:focus { border-color:rgb(255 255 255 / .38) !important; box-shadow:0 0 0 3px rgb(255 255 255 / .05); }
+/* A field flagged after Start stays red while it is being fixed. */
+[aria-invalid="true"]:focus { border-color:var(--danger) !important; box-shadow:0 0 0 3px rgb(223 146 146 / .14); }
+[aria-invalid="true"]:focus-visible { outline-color:var(--danger); }
 textarea { line-height:1.65; }
 ::placeholder { color:var(--subtle); opacity:.8; }
 
@@ -178,19 +215,19 @@ textarea { line-height:1.65; }
 select, select::picker(select) { appearance: base-select; }
 select { gap:12px;align-items:center;justify-content:space-between; }
 select::picker(select) {
-  background:var(--surface);color:var(--text);border:1px solid var(--border-strong);border-radius:8px;
-  padding:4px;box-shadow:0 8px 24px #0009;max-height:min(360px,60vh);overflow:auto;
+  background:var(--glass-fill-dense);backdrop-filter:var(--glass-blur);color:var(--text);border:1px solid var(--glass-edge);border-radius:10px;
+  padding:4px;box-shadow:var(--glass-rim),0 12px 32px rgb(0 0 0 / .6);max-height:min(360px,60vh);overflow:auto;
   margin-block:6px;font:400 13px/1.4 var(--sans);min-width:anchor-size(width);
   transition:none;animation:none;
 }
 select::picker-icon { content:"";width:7px;height:7px;margin:0 3px 3px auto;flex:none;border-right:1.5px solid var(--muted);border-bottom:1.5px solid var(--muted);transform:rotate(45deg);transition:none; }
 select:open::picker-icon { transform:translateY(3px) rotate(225deg); }
 select option { padding:9px 10px;border-radius:4px;gap:12px;min-height:36px;white-space:normal; }
-select option:checked { background:#0e3b29;color:#66ffc4;font-weight:600; }
-select option:hover, select option:focus { background:#234333;outline:none; }
-select option:disabled { color:#748077; }
+select option:checked { background:rgb(255 255 255 / .09);color:var(--text);font-weight:600; }
+select option:hover, select option:focus { background:rgb(255 255 255 / .06);outline:none; }
+select option:disabled { color:#7a7a7a; }
 select option::checkmark { content:"";width:5px;height:9px;border-right:1.5px solid var(--accent);border-bottom:1.5px solid var(--accent);transform:rotate(45deg);order:2;margin-left:auto; }
-select:focus-visible { outline:2px solid var(--accent);outline-offset:2px; }
+select:focus-visible { outline:2px solid var(--focus-ring);outline-offset:2px; }
 
 /* Grid tracks must shrink to the viewport even when a generated title is a paragraph. */
 .disclosure-title { max-width:100%;min-width:0; }

@@ -327,7 +327,8 @@
   .detail-navigation { display:flex;align-items:center;gap:16px;margin-bottom:24px;color:var(--subtle);font-size:13px; }
   .back-button,.conversation-error button { min-height:38px;padding:8px 12px;border:1px solid var(--border-strong);border-radius:8px;background:#000;color:var(--text);font-size:13px; }
   .back-button:hover,.conversation-error button:hover { background:var(--surface-2); }
-  .detail-heading { display:grid;justify-items:start;gap:12px;margin-bottom:25px; }
+  /* The title and its main action share a row; the action wraps under a long title. */
+  .detail-heading { display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px 20px;margin-bottom:24px; }
   .conversation-view { min-width:0; }
   .conversation-view .back-button { margin-bottom:18px; }
   .conversation-status,.conversation-error { margin:0 0 18px;padding:18px;border:1px solid var(--border);border-radius:10px;color:var(--muted);font-size:14px; }

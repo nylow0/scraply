@@ -7,7 +7,7 @@ const ResearchDefaultsSchema = z.object({
   searchProvider: z.enum(["exa", "perplexity"]),
   audienceSourcePolicy: z.enum(["web", "communities"]).default("web"),
   discoveryDepth: DiscoveryDepthSchema.default("standard"),
-  titleModel: ModelRefSchema.default({ providerId: "openai-subscription", modelId: "gpt-5.6-luna" }),
+  titleModel: ModelRefSchema.default({ providerId: "openai-subscription", modelId: "gpt-6-luna" }),
   titleReasoningEffort: ReasoningEffortSchema.default("low"),
 });
 export type ResearchDefaults = z.infer<typeof ResearchDefaultsSchema>;

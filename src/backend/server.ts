@@ -1314,7 +1314,7 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
         const validation = cachedValidation ?? await validateProviders();
         if (!validation.native.connected || input.model.providerId !== OPENAI_SUBSCRIPTION_PROVIDER_ID
           || !cachedModels.some((model) => sameModelRef(model, input.model))) {
-          throw new AppError("conflict", "The title model is unavailable. Choose a title model in Settings or enter a research name.");
+          throw new AppError("conflict", "The title model is unavailable. Choose a title model in Settings.");
         }
         const client = context.modelClients?.[input.model.providerId] ?? context.nativeRuntime;
         if (!client) throw new AppError("conflict", "Connect OpenAI to generate research titles.");

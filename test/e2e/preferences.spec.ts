@@ -18,7 +18,7 @@ test("research defaults persist after reopen while a saved project keeps its cho
     await page.getByRole("button", { name: "Settings", exact: true }).click();
     await page.getByRole("button", { name: "Research defaults", exact: true }).click();
     await expect(page.getByLabel("Default search provider", { exact: true })).toHaveValue("exa");
-    await expect(page.getByLabel("Default model", { exact: true })).toHaveValue("openai-subscription:gpt-5.6-sol");
+    await expect(page.getByLabel("Default model", { exact: true })).toHaveValue("openai-subscription:gpt-6-sol");
     await expect(page.getByLabel("Default model").getByRole("option", { name: "GPT-6 Astra", exact: true })).toHaveCount(1);
     await page.getByLabel("Default search provider", { exact: true }).selectOption("perplexity");
     await page.getByLabel("Default model", { exact: true }).selectOption("openai-subscription:gpt-6-astra");
@@ -33,24 +33,23 @@ test("research defaults persist after reopen while a saved project keeps its cho
     await expect(page.getByLabel("Default search provider", { exact: true })).toHaveValue("perplexity");
     await expect(page.getByLabel("Default model", { exact: true })).toHaveValue("openai-subscription:gpt-6-astra");
     await page.keyboard.press("Escape");
-    await expect(page.getByLabel("Research name", { exact: true })).toBeVisible();
+    await expect(page.getByLabel("Audience", { exact: true })).toBeVisible();
     await expect(page.getByLabel("Model", { exact: true })).toHaveValue("openai-subscription:gpt-6-astra");
     await expect(page.getByLabel("Search provider", { exact: true })).toHaveValue("perplexity");
     // Per-run overrides remain separate from the defaults saved in Settings.
-    await page.getByLabel("Model", { exact: true }).selectOption("openai-subscription:gpt-5.6-sol");
+    await page.getByLabel("Model", { exact: true }).selectOption("openai-subscription:gpt-6-sol");
     await page.getByRole("button", { name: "Advanced settings" }).click();
     await page.getByLabel("Search provider", { exact: true }).selectOption("exa");
     await page.getByRole("button", { name: "Done", exact: true }).click();
-    await page.getByLabel("Research name", { exact: true }).fill("Saved provider choices");
     await page.getByLabel("What do you want to explore?").fill("Parts sourcing");
     await page.getByRole("radio", { name: /^Babysit/ }).check();
-    await page.getByRole("button", { name: "Start Babysit", exact: true }).click();
+    await page.getByRole("button", { name: "Start", exact: true }).click();
     await expect(page.getByRole("heading", { name: "Choose problems to develop" })).toBeVisible();
     await electron.close();
     electron = await launch();
     page = await electron.firstWindow();
     await page.getByRole("tab", { name: /Setup/ }).click();
-    await expect(page.locator(".setup .run-settings").getByText("gpt-5.6-sol", { exact: true })).toBeVisible();
+    await expect(page.locator(".setup .run-settings").getByText("gpt-6-sol", { exact: true })).toBeVisible();
     await expect(page.locator(".setup .run-settings").getByText("exa", { exact: true })).toBeVisible();
     await page.getByRole("button", { name: "Settings", exact: true }).click();
     await page.getByRole("button", { name: "Research defaults", exact: true }).click();

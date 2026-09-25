@@ -121,7 +121,7 @@ describe("App workspace coordination", () => {
     await fireEvent.input(await view.findByPlaceholderText("Your topic or idea"), { target: { value: "Independent repair shops" } });
     await fireEvent.click(view.getByRole("radio", { name: /Vibe/ }));
     await waitFor(() => expect(previewWorkflow).toHaveBeenCalled());
-    const launch = view.getByRole("button", { name: "Start Vibe" }) as HTMLButtonElement;
+    const launch = view.getByRole("button", { name: "Start" }) as HTMLButtonElement;
     await waitFor(() => expect(launch.disabled).toBe(false));
     await fireEvent.click(launch);
     await waitFor(() => expect(startWorkflow.mock.calls.length + Number(Boolean(view.queryByRole("alert")))).toBeGreaterThan(0));
@@ -560,14 +560,14 @@ describe("App workspace coordination", () => {
     const view = render(App);
     await fireEvent.click(await view.findByRole("button", { name: "Settings" }));
 
-    expect(await within(view.getByRole("dialog", { name: "Settings" })).findByText("provider request failed with HTTP 401")).toBeTruthy();
+    expect(await within(view.getByRole("region", { name: "Settings" })).findByText("provider request failed with HTTP 401")).toBeTruthy();
     expect(view.queryByRole("button", { name: "Try again" })).toBeNull();
     await fireEvent.click(view.getByRole("button", { name: "Sign in with OpenAI" }));
 
     expect(startNativeLogin).toHaveBeenCalledWith({ providerId: "openai-subscription", method: "browser" });
     expect(await view.findByText("Native model account connected.")).toBeTruthy();
     expect(view.queryByText("provider request failed with HTTP 401")).toBeNull();
-    expect(within(view.getByLabelText("Model", { exact: true })).getByRole("option", { name: "GPT-5.6 Sol", hidden: true })).toBeTruthy();
+    expect(within(view.getByLabelText("Model", { exact: true })).getByRole("option", { name: "GPT-6 Sol", hidden: true })).toBeTruthy();
   });
 
   test("shows discovered models as soon as browser sign-in completes", async () => {
@@ -592,7 +592,7 @@ describe("App workspace coordination", () => {
 
     await fireEvent.click(await view.findByRole("button", { name: "Sign in with OpenAI" }));
     expect(await view.findByText("Native model account connected.")).toBeTruthy();
-    expect(within(view.getByLabelText("Model", { exact: true })).getByRole("option", { name: "GPT-5.6 Sol", hidden: true })).toBeTruthy();
+    expect(within(view.getByLabelText("Model", { exact: true })).getByRole("option", { name: "GPT-6 Sol", hidden: true })).toBeTruthy();
     expect(view.getByText("dany@example.test")).toBeTruthy();
   });
 
@@ -660,7 +660,7 @@ describe("App workspace coordination", () => {
     // The prompt waits for Settings to close rather than stacking on top of it.
     await waitFor(() => expect(view.getByText("Connect OpenAI to start research")).toBeTruthy());
     expect(view.queryByRole("dialog", { name: "Welcome back" })).toBeNull();
-    await fireEvent.click(view.getByRole("button", { name: "Close settings" }));
+    await fireEvent.click(view.getByRole("button", { name: "Back" }));
 
     const welcome = await view.findByRole("dialog", { name: "Welcome back" });
     await fireEvent.click(within(welcome).getByRole("button", { name: "Not now" }));
@@ -700,7 +700,7 @@ describe("App workspace coordination", () => {
     await fireEvent.click(await view.findByRole("button", { name: "Sign in with OpenAI" }));
 
     expect(await view.findByText("OpenAI sign-in finished.")).toBeTruthy();
-    expect(await within(view.getByLabelText("Model", { exact: true })).findByRole("option", { name: "GPT-5.6 Sol", hidden: true }, { timeout: 1_500 })).toBeTruthy();
+    expect(await within(view.getByLabelText("Model", { exact: true })).findByRole("option", { name: "GPT-6 Sol", hidden: true }, { timeout: 1_500 })).toBeTruthy();
     expect(view.queryByText("Checking available OpenAI models")).toBeNull();
   });
 
@@ -772,15 +772,15 @@ describe("App workspace coordination", () => {
     const view = render(App);
     await fireEvent.click(await view.findByRole("button", { name: "Settings" }));
 
-    const title = await view.findByLabelText("Research name") as HTMLInputElement;
-    await fireEvent.input(title, { target: { value: "My unsaved research" } });
+    const brief = await view.findByPlaceholderText("Your topic or idea") as HTMLTextAreaElement;
+    await fireEvent.input(brief, { target: { value: "My unsaved research" } });
     await fireEvent.click(view.getByRole("button", { name: "Try again" }));
 
     expect(await view.findByText("Checking connections…")).toBeTruthy();
-    expect((view.getByRole("button", { name: "Start Vibe" }) as HTMLButtonElement).disabled).toBe(true);
+    expect((view.getByRole("button", { name: "Start" }) as HTMLButtonElement).disabled).toBe(true);
     expect(await view.findByRole("button", { name: "Sign in with OpenAI" }, { timeout: 1_500 })).toBeTruthy();
     expect(getWorkspace).toHaveBeenCalledTimes(3);
-    expect(title.value).toBe("My unsaved research");
+    expect(brief.value).toBe("My unsaved research");
   });
 
   test("shows the saved reason and hides resume when completion is unknown", async () => {
