@@ -6,7 +6,7 @@ import { spawn } from "node:child_process";
 import { createInterface } from "node:readline";
 import { IPC_CHANNELS, BackendReadySchema, ResearchEventSchema, type ResearchEvent } from "../../src/shared/ipc";
 import type { ScraplyApi } from "../../src/preload/index";
-import { createInstalledApp } from "./installed-app";
+import { createInstalledApp, dismissSignInPrompt } from "./installed-app";
 
 // Installed renderer/preload/main with the production backend loaded from source. Only the native
 // child and Exa HTTP responses are fixtures. Live bundled-runtime parity is a separate gate.
@@ -27,6 +27,7 @@ test("recovers an expired native session through installed sign-in and restores 
   try {
     let electron = await launch();
     let page = await electron.firstWindow();
+    await dismissSignInPrompt(page);
     await expect(page.getByLabel("Research name", { exact: true })).toBeVisible();
 
     await page.getByLabel("Research name", { exact: true }).fill("Unsaved auth recovery draft");

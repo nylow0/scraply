@@ -3,7 +3,6 @@
   import Icon, { type IconName } from "./Icon.svelte";
   import type { Thread } from "../../shared/schemas";
   import { isArchived, needsAttention, statusLabel, statusTone } from "../lib/status";
-  import BrandMark from "./BrandMark.svelte";
 
   let { threads, activeThreadId, busy, visible = true, deletingThreadId = null, onNew, onSelect, onArchive, onRestore, settingsControl }: {
     threads: Thread[]; activeThreadId: string | null; busy: boolean; visible?: boolean; deletingThreadId?: string | null;
@@ -59,7 +58,6 @@
 
 <svelte:window onkeydown={(event) => { if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k") { event.preventDefault(); void showFinder(); } }} />
 <aside class="sidebar" aria-label="Research navigation" hidden={!visible}>
-  <div class="brand"><BrandMark size={27} /><span>Scraply</span></div>
   <button class="new" aria-label="Create new research thread" disabled={busy} onclick={onNew}><Icon name="plus" size={18} />New research</button>
   <button bind:this={searchTrigger} class="find" aria-label="All research" onclick={() => showFinder()}><Icon name="search" size={18} /><span>All research</span><kbd aria-hidden="true">Ctrl K</kbd></button>
   <div class="recent">
@@ -106,11 +104,9 @@
 </dialog>
 
 <style>
-  .sidebar { display:flex;flex-direction:column;gap:6px;padding:14px 12px 8px;background:var(--navigation);min-height:0;overflow:auto;scroll-padding-block:12px; }
+  .sidebar { display:flex;flex-direction:column;gap:6px;padding:4px 12px 8px;background:var(--navigation);min-height:0;overflow:auto;scroll-padding-block:12px; }
   .sidebar[hidden] { display:none; }
   .sidebar > * { flex-shrink:0; }
-  .brand { display:flex;align-items:center;gap:10px;padding:4px 10px 18px;font-size:22px;font-weight:650;letter-spacing:-.6px; }
-  .brand :global(svg) { color:var(--accent-strong);flex:none; }
   button { color:var(--text);font-size:14px; }
   .new,.find,.attention-link { width:100%;display:flex;align-items:center;gap:10px;border:0;border-radius:7px;padding:10px;min-height:42px;font-weight:500;text-align:left; }
   .new { background:#17231d;color:var(--accent-strong); }

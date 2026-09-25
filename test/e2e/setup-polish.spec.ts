@@ -4,6 +4,7 @@ import { rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ScraplyApi } from "../../src/preload/index";
+import { dismissSignInPrompt } from "./installed-app";
 
 test("setup hierarchy, source preferences, keyboard controls, and sidebar fit in the installed app", async ({}, testInfo) => {
   const directory = mkdtempSync(join(tmpdir(), "scraply-setup-polish-"));
@@ -17,6 +18,7 @@ test("setup hierarchy, source preferences, keyboard controls, and sidebar fit in
   });
   try {
     const page = await app.firstWindow();
+    await dismissSignInPrompt(page);
     const appIcon = await app.evaluate(async ({ app }) => (await app.getFileIcon(process.execPath, { size: "large" })).toPNG().toString("base64"));
     await testInfo.attach("installed-app-icon", { body: Buffer.from(appIcon, "base64"), contentType: "image/png" });
     await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]!.setSize(1280, 800));

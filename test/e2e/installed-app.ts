@@ -1,4 +1,4 @@
-import { _electron, type ElectronApplication } from "@playwright/test";
+import { _electron, type ElectronApplication, type Page } from "@playwright/test";
 import { mkdtempSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -52,4 +52,12 @@ export function createInstalledApp(options: InstalledAppOptions) {
       }
     },
   };
+}
+
+// A signed-out profile gets the welcome sign-in prompt, which can open at any point during startup
+// checks, including after a reload. Tests that don't exercise that prompt close it whenever it appears.
+export async function dismissSignInPrompt(page: Page) {
+  await page.addLocatorHandler(page.getByRole("dialog", { name: /^Welcome/ }), async (dialog) => {
+    await dialog.getByRole("button", { name: "Not now" }).click();
+  });
 }

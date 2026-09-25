@@ -1,4 +1,4 @@
-import { installApplicationMenu, showApplicationMenu } from "./app-menu";
+import { installApplicationMenu } from "./app-menu";
 import { app, BrowserWindow, dialog, ipcMain, safeStorage, screen, shell, utilityProcess, type IpcMainInvokeEvent } from "electron";
 import { randomUUID } from "node:crypto";
 import { startBrowserDevHost, type AppRequestHandler } from "./browser-dev";
@@ -11,7 +11,7 @@ import {
   OpportunityExplorationActionSchema, PreviewOpportunityExtensionSchema, ApplyOpportunityExtensionSchema,
   ApiResponseSchema,
   CancelResearchSchema,
-  AppMenuRequestSchema, DiscardIdeaRequestSchema, ArchiveThreadRequestSchema, GenerateTitleRequestSchema, GenerateTitleResultSchema,
+  DiscardIdeaRequestSchema, ArchiveThreadRequestSchema, GenerateTitleRequestSchema, GenerateTitleResultSchema,
   CreateThreadRequestSchema,
   DeleteThreadRequestSchema,
   EvidenceFollowUpRequestSchema,
@@ -589,10 +589,6 @@ function registerIpc(): void {
   });
   handle(IPC_CHANNELS.CREATE_THREAD, (body) => post("/threads", CreateThreadRequestSchema.parse(body ?? {})));
   handle(IPC_CHANNELS.SELECT_THREAD, (body) => post("/threads/select", SelectThreadRequestSchema.parse(body)));
-  handle(IPC_CHANNELS.SHOW_APP_MENU, (body) => {
-    const input = AppMenuRequestSchema.parse(body);
-    if (mainWindow) showApplicationMenu(mainWindow, input.menu, input.x, input.y);
-  });
   handle(IPC_CHANNELS.DISCARD_IDEA, (body) => post("/ideas/discard", DiscardIdeaRequestSchema.parse(body)));
   handle(IPC_CHANNELS.ARCHIVE_THREAD, (body) => post("/threads/archive", ArchiveThreadRequestSchema.parse(body)));
   handle(IPC_CHANNELS.GENERATE_TITLE, async (body) => GenerateTitleResultSchema.parse(await post("/threads/title", GenerateTitleRequestSchema.parse(body))));

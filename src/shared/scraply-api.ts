@@ -83,7 +83,6 @@ export function createScraplyApi(transport: ApiTransport) {
     archiveThread: (threadId: string, archived: boolean): Promise<WorkspaceState> => transport.invoke(IPC_CHANNELS.ARCHIVE_THREAD, { threadId, archived }),
     generateTitle: (payload: { context: string; model: import("./schemas").ModelRef; reasoningEffort: string }): Promise<{ title: string }> => transport.invoke(IPC_CHANNELS.GENERATE_TITLE, payload),
     discardIdea: (threadId: string, ideaId: string, discarded: boolean): Promise<WorkspaceState> => transport.invoke(IPC_CHANNELS.DISCARD_IDEA, { threadId, ideaId, discarded }),
-    showAppMenu: (payload: { menu: "File" | "Edit" | "View" | "Help"; x: number; y: number }): Promise<void> => transport.invoke(IPC_CHANNELS.SHOW_APP_MENU, payload),
     onAppCommand: transport.onAppCommand ?? (() => () => {}),
     deleteThread: (threadId: string): Promise<WorkspaceState> => transport.invoke(IPC_CHANNELS.DELETE_THREAD, { threadId }),
     saveScope: (payload: { threadId: string; scope: NonNullable<WorkspaceState["scope"]> }): Promise<WorkspaceState> =>
