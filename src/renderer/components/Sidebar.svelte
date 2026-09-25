@@ -4,8 +4,10 @@
   import type { Thread } from "../../shared/schemas";
   import { isArchived, needsAttention, statusLabel, statusTone } from "../lib/status";
 
-  let { threads, activeThreadId, busy, visible = true, deletingThreadId = null, onNew, onSelect, onArchive, onRestore, settingsControl }: {
-    threads: Thread[]; activeThreadId: string | null; busy: boolean; visible?: boolean; deletingThreadId?: string | null;
+  // `collapsed` renders the icon rail: labels stay in the accessibility tree but are visually hidden,
+  // and row titles move into tooltips.
+  let { threads, activeThreadId, busy, collapsed = false, deletingThreadId = null, onNew, onSelect, onArchive, onRestore, settingsControl }: {
+    threads: Thread[]; activeThreadId: string | null; busy: boolean; collapsed?: boolean; deletingThreadId?: string | null;
     onNew: () => void; onSelect: (id: string) => void; onArchive: (id: string) => void; onRestore: (id: string) => void;
     settingsControl: Snippet;
   } = $props();
@@ -57,23 +59,23 @@
 </script>
 
 <svelte:window onkeydown={(event) => { if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k") { event.preventDefault(); void showFinder(); } }} />
-<aside class="sidebar glass" aria-label="Research navigation" hidden={!visible}>
-  <button class="new" aria-label="Create new research thread" disabled={busy} onclick={onNew}><Icon name="plus" size={18} />New research</button>
-  <button bind:this={searchTrigger} class="find" aria-label="All research" onclick={() => showFinder()}><Icon name="search" size={18} /><span>All research</span><kbd aria-hidden="true">Ctrl K</kbd></button>
+<aside class="sidebar glass" class:collapsed aria-label="Research navigation">
+  <button class="new" aria-label="Create new research thread" title={collapsed ? "New research" : undefined} disabled={busy} onclick={onNew}><Icon name="plus" size={18} /><span class="label">New research</span></button>
+  <button bind:this={searchTrigger} class="find" aria-label="All research" title={collapsed ? "All research (Ctrl+K)" : undefined} onclick={() => showFinder()}><Icon name="search" size={18} /><span class="label">All research</span><kbd aria-hidden="true">Ctrl K</kbd></button>
   <div class="recent">
-    <div class="list-head">Recent research</div>
+    <div class="list-head"><span class="label">Recent research</span></div>
     <div class="list" role="list" aria-label="Research threads">
       {#each recentThreads as thread (thread.id)}
         <div class="thread-row" class:active={thread.id === activeThreadId} role="listitem">
           <button class="thread" aria-current={thread.id === activeThreadId ? "true" : undefined} aria-label={`Open thread ${thread.title}`} aria-describedby={`thread-status-${thread.id}`} title={`${thread.title} · ${statusLabel(thread.status)}`} disabled={busy} onclick={() => onSelect(thread.id)}>
             <span class="status-icon" data-tone={statusTone(thread.status)} aria-hidden="true"><Icon name={threadIcon(thread)} size={16} /></span>
-            <span class="title">{thread.title}</span><span class="sr-only" id={`thread-status-${thread.id}`}>{statusLabel(thread.status)}</span>
+            <span class="title label">{thread.title}</span><span class="sr-only" id={`thread-status-${thread.id}`}>{statusLabel(thread.status)}</span>
           </button>
           <button class="archive" title="Archive research" aria-label={`Archive research ${thread.title}`} disabled={busy || deletingThreadId !== null} onclick={() => onArchive(thread.id)}><Icon name={deletingThreadId === thread.id ? "progress" : "archive"} size={15} /></button>
         </div>
       {:else}<p class="empty">No research yet.</p>{/each}
     </div>
-    {#if attentionThreads.length}<button class="attention-link" aria-label={`Running & attention ${attentionThreads.length}`} onclick={() => showFinder("attention")}><Icon name="progress" size={16} /><span>Running & attention</span><span>{attentionThreads.length}</span></button>{/if}
+    {#if attentionThreads.length}<button class="attention-link" aria-label={`Running & attention ${attentionThreads.length}`} title={collapsed ? "Running & attention" : undefined} onclick={() => showFinder("attention")}><Icon name="progress" size={16} /><span class="label">Running & attention</span><span class="count">{attentionThreads.length}</span></button>{/if}
   </div>
   <div class="footer">{@render settingsControl()}</div>
 </aside>
@@ -105,13 +107,12 @@
 
 <style>
   .sidebar { display:flex;flex-direction:column;gap:6px;padding:12px 10px 8px;border-radius:var(--panel-radius);min-height:0;overflow:auto;scroll-padding-block:12px; }
-  .sidebar[hidden] { display:none; }
   .sidebar > * { flex-shrink:0; }
   button { color:var(--text);font-size:14px; }
   .new,.find,.attention-link { width:100%;display:flex;align-items:center;gap:10px;border:0;border-radius:7px;padding:10px;min-height:42px;font-weight:500;text-align:left; }
   .new { background:rgb(255 255 255 / .07);color:var(--text); }
   .find,.attention-link { background:none;color:var(--muted); }
-  .find kbd,.attention-link > span:last-child { margin-left:auto;font:12px var(--sans);color:var(--muted); }
+  .find kbd,.attention-link .count { margin-left:auto;font:12px var(--sans);color:var(--muted); }
   .new:hover:not(:disabled),.find:hover,.attention-link:hover { background:var(--surface-2);color:var(--text); }
   .new :global(svg),.find :global(svg),.attention-link :global(svg) { flex:none; }
   .recent { padding-top:14px; }
@@ -131,6 +132,17 @@
   .attention-link { margin-top:12px;font-size:13px; }
   .footer { margin-top:auto;padding-top:18px; }
   .empty { margin:0;padding:10px;color:var(--muted);font-size:14px; }
+  /* Icon rail: rows keep their expanded height so icons stay where they were in the list. */
+  .collapsed { padding-inline:8px; }
+  .collapsed .new,.collapsed .find,.collapsed .attention-link,.collapsed .thread { justify-content:center;padding-inline:0;gap:0; }
+  .collapsed .footer :global(button) { justify-content:center;padding-inline:0;gap:0; }
+  .collapsed .label,.collapsed kbd,.collapsed .footer :global(.label) { position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap; }
+  .collapsed .thread-row { grid-template-columns:minmax(0,1fr); }
+  .collapsed .archive { display:none; }
+  .collapsed .recent { padding-top:8px; }
+  .collapsed .list-head { height:1px;margin:0 6px 10px;padding:0;background:var(--border); }
+  .collapsed .attention-link { position:relative; }
+  .collapsed .attention-link .count { position:absolute;top:3px;right:3px;min-width:16px;height:16px;padding:0 4px;border-radius:999px;background:var(--surface-2);color:var(--text);font-size:10px;line-height:16px;text-align:center; }
   .sr-only { position:absolute;width:1px;height:1px;padding:0;overflow:hidden;clip-path:inset(50%);white-space:nowrap; }
   .finder { width:min(680px,calc(100vw - 32px));max-height:calc(100dvh - 48px);padding:0;margin:auto;border-radius:16px;color:var(--text); }
   .finder[open] { display:flex;flex-direction:column; }

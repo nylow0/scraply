@@ -630,9 +630,11 @@
 
 <style>
   .scope-page,form { height:100%;min-height:0; }
-  form { display:grid;grid-template-columns:minmax(0,1fr) 300px; }
+  /* The launch panel grows a little with the page so its paired selects keep readable labels. */
+  /* The form lines up with the page column: the brief starts at the header title and the panel ends under the tabs. */
+  form { display:grid;grid-template-columns:minmax(0,1fr) clamp(300px,26cqi,344px);padding-right:calc(var(--page-gutter) - 12px); }
   .setup-scroll { flex:1;min-height:0;overflow:auto;scroll-padding-block:24px; }
-  .setup-body { width:min(100%,880px);margin-inline:auto;padding:28px 32px;display:grid;gap:24px; }
+  .setup-body { width:min(100%,calc(888px + var(--page-gutter)));padding:28px 32px 28px var(--page-gutter);display:grid;gap:24px; }
   .context-fields { display:grid;grid-template-columns:1fr 1fr;gap:20px; }
   .context-fields { padding-top:4px; }
   .context-fields > :last-child:nth-child(odd) { grid-column:1/-1; }
@@ -726,18 +728,22 @@
   .provider-select select { padding-left:38px; }
   .solution-count { display:grid;align-content:start;gap:8px; }
   .dialog-footer { display:flex;justify-content:space-between;align-items:center;gap:12px;padding:14px 24px;border-top:1px solid var(--border);font-size:13px;color:var(--muted); }
-  @media(max-width:1100px) {
-    form { display:block;overflow:auto; }
+  /* Page-width breakpoints follow the page container; the dialog rules below follow the window it floats over. */
+  @container page (max-width:840px) {
+    form { display:block;overflow:auto;padding-right:0; }
     .setup-scroll { overflow:visible; }
-    .launch-sidebar { overflow:visible;margin:0 20px 20px;padding:24px;display:grid;grid-template-columns:1fr 1fr;gap:24px; }
+    .launch-sidebar { overflow:visible;margin:0 32px 20px var(--page-gutter);padding:24px;display:grid;grid-template-columns:1fr 1fr;gap:24px; }
     .main-settings { border-top:0;padding-top:0; }
     .launch-content { grid-column:1/-1;margin-top:0;padding-top:0; }
   }
-  @media(max-width:600px) {
+  @container page (max-width:560px) {
     .setup-body { padding:20px 16px;gap:20px; }.launch-sidebar { margin:0 12px 12px;padding:20px 16px;grid-template-columns:1fr; }
-    .main-brief > span { font-size:24px; }.mode-picker,.context-fields,.target-grid,.run-settings,.output-settings,.limits-grid { grid-template-columns:1fr; }
+    .main-brief > span { font-size:24px; }.mode-picker,.context-fields,.target-grid { grid-template-columns:1fr; }
     .launch-row { align-items:stretch;flex-direction:column;gap:10px; }.primary { width:100%; }
+  }
+  @media(max-width:600px) {
+    .run-settings,.output-settings,.limits-grid { grid-template-columns:1fr; }
     .settings-dialog header,.settings-content { padding:16px; }.settings-dialog nav { padding-inline:10px; }.dialog-footer { padding:12px 16px; }
   }
-  @media(max-height:600px) and (min-width:1101px) { .scope-page,form { height:auto; }.setup-scroll { overflow:visible;flex:none; }.launch-sidebar { position:sticky;top:0;align-self:start;max-height:100dvh; } }
+  @media(max-height:600px) { @container page (min-width:841px) { .scope-page,form { height:auto; }.setup-scroll { overflow:visible;flex:none; }.launch-sidebar { position:sticky;top:0;align-self:start;max-height:100dvh; } } }
 </style>

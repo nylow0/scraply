@@ -29,7 +29,11 @@
      max width, and top offset line up when switching between them. */
   --page-inline: clamp(20px, 3vw, 40px);
   --page-top: 38px;
-  --page-max: 1180px;
+  --page-max: 1120px;
+  /* Inline padding that puts full-width bands (the page header, run summaries, notices, the setup
+     form) on the same edges as a centred `--page-max` column. `cqi` resolves against the nearest
+     query container, which for every page element is .main-content. */
+  --page-gutter: max(var(--page-inline), calc((100cqi - var(--page-max)) / 2 + var(--page-inline)));
 
   /* Liquid glass, kept quiet: panels are a faint neutral tint over plain black with a hairline edge.
      .glass is for panels that sit in the layout; .glass-dense is for anything that floats
@@ -43,6 +47,11 @@
   --glass-blur: blur(16px) saturate(120%);
   --glass-backdrop: rgb(0 0 0 / .42);
   --panel-radius: 18px;
+}
+
+/* Large windows get a wider page column instead of a narrow strip in the middle. */
+@media (min-width: 1800px) {
+  :root { --page-max: 1280px; }
 }
 
 .glass,

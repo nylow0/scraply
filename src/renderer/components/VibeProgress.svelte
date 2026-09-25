@@ -400,7 +400,7 @@
   .diagnostics dd { margin-top:1px; color:var(--muted); font-size:11px; }
   .diagnostics code { overflow-wrap:anywhere; }
   .diagnostics p { margin:10px 0 0; }
-  @media(max-width:600px) {
+  @container page (max-width:520px) {
     .extension-fields { grid-template-columns:1fr; }
     .overview, .controls { align-items:stretch; flex-direction:column; }
     .shortfall { align-self:flex-start; }
@@ -411,7 +411,7 @@
     .control-buttons { width:100%; }
     .control-buttons button { flex:1; }
   }
-  @media(max-width:380px) {
+  @container page (max-width:340px) {
     .allowance { grid-template-columns:1fr; gap:10px; }
     .diagnostics dl { grid-template-columns:1fr; }
   }
