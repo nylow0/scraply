@@ -560,7 +560,7 @@ describe("App workspace coordination", () => {
     const view = render(App);
     await fireEvent.click(await view.findByRole("button", { name: "Settings" }));
 
-    expect(await within(view.getByRole("dialog", { name: "Settings" })).findByText("provider request failed with HTTP 401")).toBeTruthy();
+    expect(await within(view.getByRole("region", { name: "Settings" })).findByText("provider request failed with HTTP 401")).toBeTruthy();
     expect(view.queryByRole("button", { name: "Try again" })).toBeNull();
     await fireEvent.click(view.getByRole("button", { name: "Sign in with OpenAI" }));
 
@@ -637,7 +637,7 @@ describe("App workspace coordination", () => {
     // The prompt waits for Settings to close rather than stacking on top of it.
     await waitFor(() => expect(view.getByText("Connect OpenAI to start research")).toBeTruthy());
     expect(view.queryByRole("dialog", { name: "Welcome back" })).toBeNull();
-    await fireEvent.click(view.getByRole("button", { name: "Close settings" }));
+    await fireEvent.click(view.getByRole("button", { name: "Back" }));
 
     const welcome = await view.findByRole("dialog", { name: "Welcome back" });
     await fireEvent.click(within(welcome).getByRole("button", { name: "Not now" }));

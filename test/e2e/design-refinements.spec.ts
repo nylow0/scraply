@@ -23,20 +23,19 @@ test("compact settings, consistent fields, title defaults, and archive recovery"
     expect(fields.filter((field) => field.textarea).every((field) => field.resize === "vertical")).toBe(true);
     await expect(page.locator(".main-brief textarea")).toHaveCSS("font-size", "15px");
     const settings = page.getByRole("button", { name: "Settings", exact: true });
-    const settingsBounds = await settings.boundingBox();
     await settings.click();
-    const popup = page.getByRole("dialog", { name: "Settings", exact: true });
+    const popup = page.getByRole("region", { name: "Settings", exact: true });
     await expect(popup).toBeVisible();
+    // Settings is its own full-window screen: it spans the window and covers the sidebar, including its Settings button.
     const popupBounds = await popup.boundingBox();
-    expect(popupBounds!.width).toBeLessThan(800);
-    expect(popupBounds!.height).toBeLessThan(600);
-    const back = page.getByRole("button", { name: "Close settings", exact: true });
-    const backBounds = await back.boundingBox();
-    expect(backBounds!.width).toBeLessThan(50);
-    expect(settingsBounds!.y).toBeGreaterThan(backBounds!.y);
-    await page.screenshot({ animations: "disabled", path: testInfo.outputPath("settings-popup.png") });
+    expect(popupBounds!.width).toBe(await page.evaluate(() => innerWidth));
+    expect(await page.evaluate(() => document.elementFromPoint(40, innerHeight - 40)?.closest(".settings-screen") !== null)).toBe(true);
+    const back = page.getByRole("button", { name: "Back", exact: true });
+    await expect(page.getByRole("heading", { name: "Settings", exact: true })).toBeFocused();
+    await page.screenshot({ animations: "disabled", path: testInfo.outputPath("settings-screen.png") });
     await page.getByRole("button", { name: "Research defaults", exact: true }).click();
     await expect(page.getByLabel("Title model", { exact: true })).toHaveValue("openai-subscription:gpt-6-luna");
+    await expect(page.getByLabel("Title model").getByRole("option", { name: "GPT-6 Luna", exact: true })).toHaveCount(1);
     await expect(page.getByLabel("Title reasoning", { exact: true })).toHaveValue("low");
     const provider = page.getByLabel("Default search provider", { exact: true });
     expect(await provider.evaluate((el) => getComputedStyle(el).appearance)).toBe("base-select");
@@ -70,7 +69,9 @@ test("compact settings, consistent fields, title defaults, and archive recovery"
     await page.getByRole("button", { name: "Archived research", exact: true }).click();
     await page.screenshot({ animations: "disabled", path: testInfo.outputPath("archive.png") });
     await page.getByRole("button", { name: "Restore Reducing repair shop delays", exact: true }).click();
-    await page.getByRole("button", { name: "Close settings", exact: true }).click();
+    // Esc leaves Settings too.
+    await page.keyboard.press("Escape");
+    await expect(page.getByRole("region", { name: "Settings", exact: true })).toBeHidden();
     await page.getByRole("button", { name: "Open thread Reducing repair shop delays", exact: true }).click();
     await expect(page.locator(".location")).toHaveText("Reducing repair shop delays");
     await page.getByRole("button", { name: "Archive research Reducing repair shop delays", exact: true }).click();
