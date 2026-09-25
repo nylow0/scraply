@@ -13,9 +13,9 @@
   <button aria-label="Go forward" title="Forward (Alt+Right)" disabled={!canForward} onclick={onForward}><Icon name="arrow" size={17} /></button>
 </div>
 <style>
-  .desktop-bar { height:36px;display:flex;align-items:center;gap:2px;padding:0 148px 0 14px;background:#000;-webkit-app-region:drag;user-select:none; }
+  .desktop-bar { height:36px;display:flex;align-items:center;gap:2px;padding:0 148px 0 16px;background:transparent;-webkit-app-region:drag;user-select:none; }
   .brand { display:flex;align-items:center;gap:8px;margin-right:14px;font-size:14px;font-weight:650;letter-spacing:-.02em; }
   .brand :global(svg) { color:var(--accent-strong); }
   button { -webkit-app-region:no-drag;display:grid;place-items:center;min-width:30px;height:28px;padding:0 8px;background:transparent;color:#999;border:0;border-radius:4px; }
-  button:hover:not(:disabled) { color:#eee;background:#202020; }button:disabled { opacity:.35; }
+  button:hover:not(:disabled) { color:#eee;background:var(--surface-2); }button:disabled { opacity:.35; }
 </style>

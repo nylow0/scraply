@@ -413,6 +413,19 @@
       reviewSelection = false;
     });
   }
+  // Research is always named by the title agent. If it cannot answer (for example, the title model is
+  // unavailable), the first line of the brief is used so naming never blocks a start.
+  async function generateResearchTitle(context: string): Promise<string> {
+    const defaults = readResearchDefaults();
+    try {
+      const result = await window.scraply.generateTitle({
+        context: context.slice(0, 20000), model: defaults.titleModel, reasoningEffort: defaults.titleReasoningEffort,
+      });
+      return result.title;
+    } catch {
+      return (context.split("\n")[0] ?? "").slice(0, 80).trim() || "New research";
+    }
+  }
   async function saveScope(scope: NonNullable<WorkspaceState["scope"]>, config: NonNullable<WorkspaceState["runConfig"]>) {
     const threadId = workspace?.activeThreadId;
     if (!threadId || busy) return;
@@ -420,12 +433,7 @@
     feedback = null;
     try {
       if (!scope.title.trim()) {
-        const defaults = readResearchDefaults();
-        const result = await window.scraply.generateTitle({
-          context: [config.knownProblem, scope.domain, scope.audience, scope.observations].filter(Boolean).join("\n").slice(0,20000),
-          model: defaults.titleModel, reasoningEffort: defaults.titleReasoningEffort,
-        });
-        scope = { ...scope, title: result.title };
+        scope = { ...scope, title: await generateResearchTitle([config.knownProblem, scope.domain, scope.audience, scope.observations].filter(Boolean).join("\n")) };
       }
       setWorkspace(await window.scraply.saveScope({ threadId, scope }));
       setWorkspace(await window.scraply.saveRunConfig({ threadId, config }));
@@ -902,7 +910,7 @@
       {#if showSetupForm}
         <div id="workflow-panel-setup" role="tabpanel" aria-label="Research setup">
           {#key workspace.activeThreadId}
-            <ScopeForm {workspace} {busy} onSave={saveScope} onStart={startResearch} onPreviewWorkflow={previewWorkflow} onStartWorkflow={startWorkflow} onRetry={retryConnections} onOpenSettings={() => settings?.show()} />
+            <ScopeForm {workspace} {busy} onSave={saveScope} onStart={startResearch} onPreviewWorkflow={previewWorkflow} onStartWorkflow={startWorkflow} onGenerateTitle={generateResearchTitle} onRetry={retryConnections} onOpenSettings={() => settings?.show()} />
           {/key}
         </div>
       {:else}
@@ -1011,9 +1019,11 @@
   .settings-button { display:flex;align-items:center;gap:10px;width:100%;padding:9px 12px;min-height:38px;border:0;border-radius:7px;background:transparent;color:var(--muted);font-size:13px;text-align:left;transition:background 180ms ease,color 180ms ease; }
   .settings-button:hover { background:var(--surface-2);color:var(--text); }
 
-  .app-shell { height:calc(100% - 36px);display:grid;grid-template-columns:248px minmax(0,1fr);background:#000;padding:10px 10px 10px 0; }
-  .main-content { min-width:0;overflow-y:auto;overflow-x:hidden;scrollbar-gutter:stable;position:relative;border-left:1px solid var(--border);background:var(--bg); }
-  .workspace-header { position:sticky;top:0;z-index:3;flex:none;min-height:72px;padding:12px 24px;display:flex;align-items:center;gap:24px;background:var(--bg);border-bottom:1px solid var(--border); }
+  /* Floating layout: the sidebar and the page are separate panels over the lit background. */
+  .app-shell { height:calc(100% - 36px);display:grid;grid-template-columns:256px minmax(0,1fr);gap:10px;padding:2px 10px 10px; }
+  /* The page stays nearly black for reading; the glow only tints its edges. */
+  .main-content { min-width:0;overflow-y:auto;overflow-x:hidden;scrollbar-gutter:stable;position:relative;border:1px solid var(--glass-edge);border-radius:var(--panel-radius);background:rgb(0 0 0 / .6);box-shadow:var(--glass-rim),var(--glass-shadow);backdrop-filter:var(--glass-blur); }
+  .workspace-header { position:sticky;top:0;z-index:3;flex:none;min-height:72px;padding:12px 24px;display:flex;align-items:center;gap:24px;background:rgb(0 0 0 / .55);backdrop-filter:blur(20px) saturate(150%);border-bottom:1px solid var(--border); }
   .topbar { display:flex;align-items:center;flex:1;min-width:0;gap:16px;color:var(--muted); }
   .location { display:block;margin:0;color:var(--text);font-size:24px;font-weight:600;letter-spacing:-.6px;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis; }
   .main-content.setup-active { display:flex;flex-direction:column; }
@@ -1038,7 +1048,7 @@
   .progress-facts { display:flex;flex-wrap:wrap;gap:8px 18px;color:var(--subtle);font-size:13px; }
   .progress-facts strong { color:var(--text);font-weight:600; }
   .development-progress { min-height:auto;padding-bottom:32px;border-bottom:1px solid var(--border); }
-  .compact-progress { display:flex;justify-content:space-between;gap:20px;padding:16px var(--page-inline);border-bottom:1px solid var(--border);background:#000; }
+  .compact-progress { display:flex;justify-content:space-between;gap:20px;padding:16px var(--page-inline);border-bottom:1px solid var(--border);background:var(--surface); }
   .compact-progress strong { font-size:13px;color:var(--text); }
   .compact-progress p { margin:4px 0 0;color:var(--muted);font-size:13px; }
   .compact-progress .progress-facts { justify-content:flex-end;align-items:center; }
@@ -1051,12 +1061,12 @@
   @keyframes shimmer { to { background-position:-200% 0; } }@keyframes pulse { to { opacity:.3; } }@keyframes orbit { to { transform:rotate(360deg); } }
   @media(max-width:950px) { .calls { display:none; } }
   @media(max-width:720px) {
-    .app-shell { grid-template-columns:minmax(0,1fr);padding:0; }
-    .sidebar-backdrop { position:fixed;inset:36px 0 0;z-index:10;width:100%;border:0;background:#000a; }
-    .sidebar-area { position:fixed;top:36px;bottom:0;left:0;z-index:11;display:block;width:min(280px,calc(100vw - 56px));background:#000;border-right:1px solid var(--border-strong);box-shadow:12px 0 32px #0009; }
+    .app-shell { grid-template-columns:minmax(0,1fr);padding:0 8px 8px; }
+    .sidebar-backdrop { position:fixed;inset:36px 0 0;z-index:10;width:100%;border:0;background:var(--glass-backdrop);backdrop-filter:blur(8px); }
+    .sidebar-area { position:fixed;top:40px;bottom:8px;left:8px;z-index:11;display:block;width:min(280px,calc(100vw - 56px)); }
     .sidebar-area.collapsed { display:contents; }
-    .sidebar-area :global(.sidebar) { height:100%; }
-    .main-content { border-radius:0; }
+    .sidebar-area :global(.sidebar) { height:100%;background:var(--glass-fill-dense); }
+
     .workspace-header { align-items:start;flex-direction:column;gap:8px;padding:12px 16px; }
     .topbar { width:100%; }
     .running h1,.failed h1 { font-size:28px; }

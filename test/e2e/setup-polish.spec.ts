@@ -22,7 +22,7 @@ test("setup hierarchy, source preferences, keyboard controls, and sidebar fit in
     const appIcon = await app.evaluate(async ({ app }) => (await app.getFileIcon(process.execPath, { size: "large" })).toPNG().toString("base64"));
     await testInfo.attach("installed-app-icon", { body: Buffer.from(appIcon, "base64"), contentType: "image/png" });
     await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]!.setSize(1280, 800));
-    await expect(page.getByLabel("Research name", { exact: true })).toBeVisible();
+    await expect(page.getByLabel("What do you want to explore?", { exact: true })).toBeVisible();
     // Seed a real library through the preload API in this disposable profile.
     await page.evaluate(async () => {
       const api = (window as unknown as { scraply: ScraplyApi }).scraply;
@@ -30,7 +30,7 @@ test("setup hierarchy, source preferences, keyboard controls, and sidebar fit in
       await api.createThread();
     });
     await page.reload();
-    const name = page.getByLabel("Research name", { exact: true });
+    const name = page.getByLabel("What do you want to explore?", { exact: true });
     await expect(name).toBeVisible();
     await page.screenshot({ path: testInfo.outputPath("setup.png") });
     await expect(name).toBeInViewport();
@@ -45,7 +45,7 @@ test("setup hierarchy, source preferences, keyboard controls, and sidebar fit in
     await page.keyboard.press("ArrowRight");
     await expect(page.getByRole("radio", { name: /^I have a problem/ })).toBeChecked();
     await expect(page.getByText("What problem do you want to solve?", { exact: true })).toBeVisible();
-    await expect(page.getByRole("button", { name: "Start Vibe" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Start", exact: true })).toBeVisible();
     await page.screenshot({ path: testInfo.outputPath("known-problem.png") });
     await page.keyboard.press("ArrowLeft");
     await expect(page.getByRole("radio", { name: /^Find problems/ })).toBeChecked();

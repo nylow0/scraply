@@ -19,7 +19,7 @@
   onMount(() => dialog.showModal());
 </script>
 
-<dialog bind:this={dialog} class="welcome" aria-labelledby="welcome-title" aria-describedby="welcome-body"
+<dialog bind:this={dialog} class="welcome glass-dense" aria-labelledby="welcome-title" aria-describedby="welcome-body"
   oncancel={(event) => { event.preventDefault(); if (!nativeLogin) onDismiss(); }}>
   <BrandMark size={44} />
   <h1 id="welcome-title">{returning ? "Welcome back" : "Welcome to Scraply"}</h1>
@@ -47,17 +47,16 @@
 </dialog>
 
 <style>
-  .welcome { width:min(420px,calc(100vw - 32px));margin:auto;padding:36px 32px 24px;border:1px solid var(--border-strong);border-radius:16px;background:#000;color:var(--text);box-shadow:0 24px 90px #000; }
+  .welcome { width:min(420px,calc(100vw - 32px));margin:auto;padding:36px 32px 24px;border-radius:22px;color:var(--text); }
   .welcome[open] { display:flex;flex-direction:column;align-items:flex-start;animation:welcome-open 260ms var(--ease); }
-  .welcome::backdrop { background:#000c; }
   h1 { margin:22px 0 10px;font-size:26px;font-weight:650;letter-spacing:-.035em;line-height:1.15; }
   p { margin:0;color:var(--muted);font-size:14px;line-height:1.6; }
   .error { margin-top:14px;color:var(--danger);font-size:13px;overflow-wrap:anywhere; }
   .actions { display:grid;gap:8px;width:100%;margin-top:28px; }
-  button { min-height:42px;padding:10px 16px;border:1px solid var(--border-strong);border-radius:9px;background:var(--surface-2);color:var(--text);font-size:14px;font-weight:500; }
+  button { min-height:42px;padding:10px 16px;border:1px solid var(--border-strong);border-radius:12px;background:var(--surface-2);color:var(--text);font-size:14px;font-weight:500; }
   button:hover:not(:disabled) { background:var(--border); }
   button:disabled { opacity:.5; }
-  .primary { border-color:transparent;background:var(--accent-strong);color:var(--accent-ink);font-weight:600; }
+  .primary { border-color:transparent;background:var(--accent-strong);box-shadow:inset 0 1px 0 rgb(255 255 255 / .45),0 8px 24px rgb(128 217 182 / .18);color:var(--accent-ink);font-weight:600; }
   .primary:hover:not(:disabled) { background:var(--accent); }
   .quiet { align-self:center;min-height:36px;margin-top:12px;border:0;background:transparent;color:var(--muted);font-size:13px; }
   .quiet:hover:not(:disabled) { background:transparent;color:var(--text); }

@@ -623,7 +623,7 @@ test("finished Babysit research command survives backend reopening with linked r
     },
     providerValidation: { inspectNative: async () => ({
       available: true, connected: true, accounts: [{ providerId: "openai-subscription" }],
-      models: [{ providerId: "openai-subscription", modelId: "gpt-5.6-sol", displayName: "Test model",
+      models: [{ providerId: "openai-subscription", modelId: "gpt-6-sol", displayName: "Test model",
         defaultReasoningEffort: "medium", reasoningEfforts: [{ id: "medium", description: "Medium" }] }],
     }) },
   };
@@ -639,7 +639,7 @@ test("finished Babysit research command survives backend reopening with linked r
       clientCommandId: "research-after-finish", action: {
         type: "request-research", kind: "redo", question: "Find stronger buyer reports",
         targetFindingId: oldProblemId, baseSnapshotId: snapshotId,
-        model: { providerId: "openai-subscription", modelId: "gpt-5.6-sol" }, reasoningEffort: "medium",
+        model: { providerId: "openai-subscription", modelId: "gpt-6-sol" }, reasoningEffort: "medium",
         allowance: { maxModelCalls: 12, maxSearches: 10, maxMinutes: 10 },
       },
     });

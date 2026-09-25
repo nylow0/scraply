@@ -57,7 +57,7 @@
 </script>
 
 <svelte:window onkeydown={(event) => { if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k") { event.preventDefault(); void showFinder(); } }} />
-<aside class="sidebar" aria-label="Research navigation" hidden={!visible}>
+<aside class="sidebar glass" aria-label="Research navigation" hidden={!visible}>
   <button class="new" aria-label="Create new research thread" disabled={busy} onclick={onNew}><Icon name="plus" size={18} />New research</button>
   <button bind:this={searchTrigger} class="find" aria-label="All research" onclick={() => showFinder()}><Icon name="search" size={18} /><span>All research</span><kbd aria-hidden="true">Ctrl K</kbd></button>
   <div class="recent">
@@ -78,7 +78,7 @@
   <div class="footer">{@render settingsControl()}</div>
 </aside>
 
-<dialog bind:this={finder} class="finder" aria-label="All research" onclose={() => (returnFocus?.isConnected ? returnFocus : searchTrigger)?.focus({ preventScroll: true })}>
+<dialog bind:this={finder} class="finder glass-dense" aria-label="All research" onclose={() => (returnFocus?.isConnected ? returnFocus : searchTrigger)?.focus({ preventScroll: true })}>
   <header><h2>All research</h2><button aria-label="Close search" onclick={() => finder.close()}><Icon name="close" /></button></header>
   <div class="search-heading"><Icon name="search" size={18} /><input bind:this={searchInput} bind:value={search} aria-label="Search research" placeholder="Search research by name" onkeydown={searchKeys} /></div>
   <nav aria-label="Research filters">
@@ -104,12 +104,12 @@
 </dialog>
 
 <style>
-  .sidebar { display:flex;flex-direction:column;gap:6px;padding:4px 12px 8px;background:var(--navigation);min-height:0;overflow:auto;scroll-padding-block:12px; }
+  .sidebar { display:flex;flex-direction:column;gap:6px;padding:12px 10px 8px;border-radius:var(--panel-radius);min-height:0;overflow:auto;scroll-padding-block:12px; }
   .sidebar[hidden] { display:none; }
   .sidebar > * { flex-shrink:0; }
   button { color:var(--text);font-size:14px; }
   .new,.find,.attention-link { width:100%;display:flex;align-items:center;gap:10px;border:0;border-radius:7px;padding:10px;min-height:42px;font-weight:500;text-align:left; }
-  .new { background:#17231d;color:var(--accent-strong); }
+  .new { background:rgb(128 217 182 / .12);box-shadow:inset 0 1px 0 rgb(255 255 255 / .08);color:var(--accent-strong); }
   .find,.attention-link { background:none;color:var(--muted); }
   .find kbd,.attention-link > span:last-child { margin-left:auto;font:12px var(--sans);color:var(--muted); }
   .new:hover:not(:disabled),.find:hover,.attention-link:hover { background:var(--surface-2);color:var(--text); }
@@ -119,7 +119,7 @@
   .list { display:grid;gap:3px; }
   .thread-row { display:grid;grid-template-columns:minmax(0,1fr) 32px;align-items:start;border-radius:7px; }
   .thread-row:hover { background:#ffffff07; }
-  .thread-row.active { background:#18251e; }
+  .thread-row.active { background:rgb(128 217 182 / .09); }
   .thread { display:flex;align-items:center;gap:9px;min-height:40px;padding:10px 4px 10px 10px;min-width:0;text-align:left;border:0;border-radius:7px;background:none;color:var(--muted); }
   .active .thread { color:var(--text); }
   .title { min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;line-height:1.45; }
@@ -132,9 +132,8 @@
   .footer { margin-top:auto;padding-top:18px; }
   .empty { margin:0;padding:10px;color:var(--muted);font-size:14px; }
   .sr-only { position:absolute;width:1px;height:1px;padding:0;overflow:hidden;clip-path:inset(50%);white-space:nowrap; }
-  .finder { width:min(680px,calc(100vw - 32px));max-height:calc(100dvh - 48px);padding:0;margin:auto;border:1px solid var(--border-strong);border-radius:12px;background:var(--bg);color:var(--text); }
+  .finder { width:min(680px,calc(100vw - 32px));max-height:calc(100dvh - 48px);padding:0;margin:auto;border-radius:16px;color:var(--text); }
   .finder[open] { display:flex;flex-direction:column; }
-  .finder::backdrop { background:#000b; }
   .finder header { display:flex;align-items:center;justify-content:space-between;padding:20px 24px 12px; }
   h2 { margin:0;font-size:22px; }
   .finder header button { display:grid;place-items:center;width:40px;height:40px;border:0;background:none;color:var(--muted);border-radius:7px; }
@@ -142,7 +141,7 @@
   .search-heading input { flex:1;min-width:0;min-height:44px;border:0;background:none;color:var(--text);font-size:15px; }
   .finder nav { display:flex;flex-wrap:wrap;gap:4px;padding:0 24px 12px;border-bottom:1px solid var(--border); }
   .finder nav button { min-height:36px;padding:6px 12px;border:0;border-radius:6px;background:none;color:var(--muted);font-size:13px; }
-  .finder nav button[aria-pressed="true"] { background:#101c17;color:var(--accent-strong); }
+  .finder nav button[aria-pressed="true"] { background:rgb(128 217 182 / .1);color:var(--accent-strong); }
   .search-results { min-height:0;overflow:auto;padding:12px 16px; }
   .search-results > p { margin:0;padding:0 8px 10px;font-size:13px;color:var(--muted); }
   .result-row { display:flex;align-items:center;gap:8px;border-radius:8px; }

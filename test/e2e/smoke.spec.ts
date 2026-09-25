@@ -18,8 +18,8 @@ test("the renderer restores the problem-selection step after a restart", async (
     let electron = await launch();
     let page = await electron.firstWindow();
     await page.screenshot({ animations: "disabled", path: testInfo.outputPath("welcome.png") });
-    await expect(page.getByLabel("Research name", { exact: true })).toBeVisible();
-    await page.getByLabel("Research name").fill("Repair delays");
+    await expect(page.getByLabel("Audience", { exact: true })).toBeVisible();
+    await page.getByLabel("Audience", { exact: true }).fill("Repair shops");
     const settings = page.getByRole("button", { name: "Settings", exact: true });
     const settingsBounds = await settings.boundingBox();
     const viewport = page.viewportSize() ?? await page.evaluate(() => ({ width: innerWidth, height: innerHeight }));
@@ -38,10 +38,10 @@ test("the renderer restores the problem-selection step after a restart", async (
     await expect(page.getByRole("button", { name: "Sign out", exact: true })).toBeVisible();
     await page.keyboard.press("Escape");
     await expect(settings).toBeFocused();
-    await expect(page.getByLabel("Research name")).toHaveValue("Repair delays");
+    await expect(page.getByLabel("Audience", { exact: true })).toHaveValue("Repair shops");
     await page.getByRole("radio", { name: /^Babysit/ }).check();
-    await page.getByRole("button", { name: "Start Babysit" }).scrollIntoViewIfNeeded();
-    const startBounds = await page.getByRole("button", { name: "Start Babysit" }).boundingBox();
+    await page.getByRole("button", { name: "Start", exact: true }).scrollIntoViewIfNeeded();
+    const startBounds = await page.getByRole("button", { name: "Start", exact: true }).boundingBox();
     expect(startBounds!.y + startBounds!.height).toBeLessThan(viewport.height);
     await page.screenshot({ animations: "disabled", path: testInfo.outputPath("setup.png") });
     await page.setViewportSize({ width: 960, height: 640 });
@@ -51,7 +51,7 @@ test("the renderer restores the problem-selection step after a restart", async (
     // Discovery must start from the context alone: the audience field is optional and is left blank here
     // on purpose, so reinstating an audience requirement fails this test instead of shipping.
     await page.getByLabel("What do you want to explore?").fill("Parts sourcing");
-    await page.getByRole("button", { name: "Start Babysit" }).click();
+    await page.getByRole("button", { name: "Start", exact: true }).click();
     await expect(page.getByText("Choose problems to develop")).toBeVisible();
     await expect(page.getByRole("button", { name: "Export research JSON" })).toBeVisible();
     await page.getByText("Failed evidence requirements").click();
@@ -111,7 +111,8 @@ test("the renderer restores the problem-selection step after a restart", async (
     await page.getByText("1 cited factors", { exact: true }).click();
     await expect(page.getByText("Backorders add days to routine repairs.")).toBeVisible();
     await page.getByRole("tab", { name: /Setup/ }).click();
-    await expect(page.locator(".fields .primary strong")).toHaveText("Repair delays");
+    // No name was entered: the title agent named the research.
+    await expect(page.locator(".fields .primary strong")).toHaveText("Reducing repair shop delays");
     await page.getByRole("tab", { name: /Solutions/ }).click();
     await expect(page.getByText("Supplier reliability ledger")).toBeVisible();
     await page.setViewportSize({ width: 960, height: 640 });

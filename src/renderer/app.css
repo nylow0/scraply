@@ -4,11 +4,12 @@
 :root {
   color-scheme: dark;
   --bg: #000000;
-  --navigation: #080a09;
-  --surface: #0b0b0b;
-  --surface-2: #191919;
-  --border: #252525;
-  --border-strong: #454545;
+  --navigation: transparent;
+  /* Surfaces and borders are translucent white so anything nested in a glass panel reads as a layer of it. */
+  --surface: rgb(255 255 255 / .035);
+  --surface-2: rgb(255 255 255 / .075);
+  --border: rgb(255 255 255 / .085);
+  --border-strong: rgb(255 255 255 / .17);
   --text: #f2f2f2;
   --muted: #a3a3a3;
   --subtle: #858585;
@@ -26,6 +27,35 @@
   --page-inline: clamp(20px, 3vw, 40px);
   --page-top: 38px;
   --page-max: 1180px;
+
+  /* Liquid glass. Panels float over a black page lit by two faint teal glows (see body).
+     .glass is for panels that sit in the layout; .glass-dense is for anything that floats
+     above content (dialogs, menus, tooltips), where text must stay readable over busy content. */
+  --glass-fill: linear-gradient(180deg, rgb(255 255 255 / .07), rgb(255 255 255 / .025) 60%);
+  --glass-fill-dense: linear-gradient(180deg, rgb(28 34 31 / .78), rgb(10 12 11 / .86));
+  --glass-edge: rgb(255 255 255 / .1);
+  /* The top rim catches light; this is the one decorative detail of the glass. */
+  --glass-rim: inset 0 1px 0 rgb(255 255 255 / .16), inset 0 0 0 1px rgb(255 255 255 / .02);
+  --glass-shadow: 0 24px 64px rgb(0 0 0 / .5);
+  --glass-blur: blur(26px) saturate(165%);
+  --glass-backdrop: rgb(0 0 0 / .42);
+  --panel-radius: 18px;
+}
+
+.glass,
+.glass-dense {
+  border: 1px solid var(--glass-edge);
+  background: var(--glass-fill);
+  box-shadow: var(--glass-rim), var(--glass-shadow);
+  backdrop-filter: var(--glass-blur);
+}
+
+.glass-dense { background: var(--glass-fill-dense); }
+
+/* Modal backdrops blur the app behind them instead of only dimming it. */
+dialog.glass-dense::backdrop {
+  background: var(--glass-backdrop);
+  backdrop-filter: blur(10px) saturate(120%);
 }
 
 * {
@@ -40,7 +70,12 @@ body,
 
 body {
   margin: 0;
-  background: var(--bg);
+  /* Black, lit from behind the sidebar and the run panel, so the glass has something to blur. */
+  background:
+    radial-gradient(ellipse 55% 48% at 6% 4%, rgb(128 217 182 / .17), transparent 72%),
+    radial-gradient(ellipse 50% 52% at 98% 96%, rgb(72 184 150 / .13), transparent 70%),
+    var(--bg);
+  background-attachment: fixed;
   color: var(--text);
   font-family: var(--sans);
   font-size: 14px;
@@ -178,8 +213,8 @@ textarea { line-height:1.65; }
 select, select::picker(select) { appearance: base-select; }
 select { gap:12px;align-items:center;justify-content:space-between; }
 select::picker(select) {
-  background:var(--surface);color:var(--text);border:1px solid var(--border-strong);border-radius:8px;
-  padding:4px;box-shadow:0 8px 24px #0009;max-height:min(360px,60vh);overflow:auto;
+  background:var(--glass-fill-dense);backdrop-filter:var(--glass-blur);color:var(--text);border:1px solid var(--glass-edge);border-radius:10px;
+  padding:4px;box-shadow:var(--glass-rim),0 12px 32px rgb(0 0 0 / .6);max-height:min(360px,60vh);overflow:auto;
   margin-block:6px;font:400 13px/1.4 var(--sans);min-width:anchor-size(width);
   transition:none;animation:none;
 }
