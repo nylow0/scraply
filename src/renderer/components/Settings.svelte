@@ -146,18 +146,19 @@
 <style>
   .settings-screen { position:fixed;inset:36px 0 0;z-index:20;display:flex;flex-direction:column;background:var(--bg);color:var(--text); }
   .settings-screen[hidden] { display:none; }
-  /* The header lines up with the centered layout below: the Back icon sits over the section icons. */
-  .screen-header { display:flex;align-items:center;gap:14px;padding:12px 24px 12px calc(max(0px, (100% - 1120px) / 2) + 20px);border-bottom:1px solid var(--border); }
+  /* Full width: content on the left under the Back header, the section list as a column on the right edge.
+     The list stays first in the DOM so keyboard users reach it first. */
+  .screen-header { display:flex;align-items:center;gap:14px;padding:12px 24px 12px 32px;border-bottom:1px solid var(--border); }
   .screen-header h1 { margin:0;font-size:20px;font-weight:650;letter-spacing:-.02em; }
   .screen-header h1:focus { outline:none; }
   .back { display:flex;align-items:center;gap:8px;border:0;background:transparent;color:var(--muted);padding:8px 12px 8px 8px; }
   .back:hover:not(:disabled) { color:var(--text);background:var(--surface-2); }
-  .settings-layout { display:grid;grid-template-columns:240px minmax(0,1fr);width:min(100%,1120px);margin:0 auto;min-height:0;flex:1; }
-  nav { display:flex;flex-direction:column;gap:4px;padding:28px 16px;min-height:0; }
+  .settings-layout { display:grid;grid-template-columns:minmax(0,1fr) 260px;min-height:0;flex:1; }
+  nav { order:2;display:flex;flex-direction:column;gap:4px;padding:28px 16px;min-height:0;border-left:1px solid var(--border); }
   nav button { display:flex;gap:10px;align-items:center;border:0;border-radius:8px;background:transparent;text-align:left;color:var(--muted);padding:11px 12px;font-size:14px; }
   nav button.active { background:var(--surface-2);color:var(--text); }
   nav button.active :global(svg) { color:var(--accent); }
-  .settings-content { padding:32px 40px;min-width:0;overflow:auto;scrollbar-gutter:stable;border-left:1px solid var(--border); }
+  .settings-content { order:1;padding:32px 40px;min-width:0;overflow:auto;scrollbar-gutter:stable; }
   .settings-content > div { max-width:720px; }
   .settings-content > header { display:flex;align-items:start;justify-content:space-between;gap:16px;margin-bottom:24px; }
   h2 { margin:0;font-size:24px;font-weight:650;letter-spacing:-.03em; }
@@ -190,5 +191,5 @@
   .archive-list strong { font-size:14px;overflow-wrap:anywhere; }
   .archive-list span,.archive-empty { font-size:13px;color:var(--muted); }
   .danger { color:var(--danger); }
-  @media(max-width:720px) { .settings-layout { grid-template-columns:minmax(0,1fr);grid-template-rows:auto minmax(0,1fr); }nav { flex-direction:row;overflow-x:auto;padding:10px 12px;border-bottom:1px solid var(--border); }nav button { flex:none;font-size:13px;padding:9px 10px; }.settings-content { padding:20px 16px;border-left:0; }.screen-header { padding:10px 12px; } }
+  @media(max-width:720px) { .settings-layout { grid-template-columns:minmax(0,1fr);grid-template-rows:auto minmax(0,1fr); }nav { order:0;flex-direction:row;overflow-x:auto;padding:10px 12px;border-left:0;border-bottom:1px solid var(--border); }nav button { flex:none;font-size:13px;padding:9px 10px; }.settings-content { padding:20px 16px;border-left:0; }.screen-header { padding:10px 12px; } }
 </style>

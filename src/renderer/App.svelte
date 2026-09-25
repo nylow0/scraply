@@ -944,7 +944,7 @@
       {:else if workspace.problemCandidates.length > 0 || workspace.rejectedProblemCandidates.length > 0}
         <ResearchArchive problems={workspace.problemCandidates} rejectedCandidates={workspace.rejectedProblemCandidates} {busy} onExport={exportResearch} onOpenSource={openExternalUrl} />
       {:else}
-        <div class="failed" id="workflow-panel-research" role="tabpanel" aria-label="Research" tabindex="0"><p class="eyebrow">{activeWorkflow ? "Research outcome" : "Research unavailable"}</p><h1>{activeWorkflow?.stopReason ?? "No completed research is ready yet."}</h1><p>{activeWorkflow ? "You can inspect the task record above or start a new run from setup." : "Return to setup and start a research run."}</p>{#if activeRun || activeWorkflow}<div class="zero-idea-actions"><button disabled={busy} onclick={exportResearch}>Export research JSON</button></div>{/if}</div>
+        <div class="failed" class:after-summary={Boolean(activeWorkflow)} id="workflow-panel-research" role="tabpanel" aria-label="Research" tabindex="0"><p class="eyebrow">{activeWorkflow ? "Research outcome" : "Research unavailable"}</p><h1>{activeWorkflow?.stopReason ?? "No completed research is ready yet."}</h1><p>{activeWorkflow ? "You can inspect the task record above or start a new run from setup." : "Return to setup and start a research run."}</p>{#if activeRun || activeWorkflow}<div class="zero-idea-actions"><button disabled={busy} onclick={exportResearch}>Export research JSON</button></div>{/if}</div>
       {/if}
       {#if activeWorkflow}
         {#if activeWorkflow.mode === "vibe" && activeWorkflow.state === "finished" && activeWorkflow.activeSnapshotId}
@@ -1037,6 +1037,8 @@
   .activity-symbol { display:grid;place-items:center;width:76px;height:76px;border:1px solid #bdbdbd30;border-radius:24px;color:var(--accent-strong);background:#bdbdbd08;box-shadow:inset 0 1px #ffffff15; }
   .eyebrow { font:500 13px var(--sans);color:var(--muted);margin:28px 0 0; }
   .running,.failed { display:flex;flex-direction:column;align-items:start;max-width:900px;min-height:calc(100dvh - 160px);margin:auto;justify-content:center;padding:60px var(--page-inline); }
+  /* Under a run summary the outcome follows it at the page edge instead of centering in the window. */
+  .failed.after-summary { min-height:0;max-width:none;margin:0;justify-content:flex-start;padding:36px var(--page-inline) 48px; }
   .running h1,.failed h1 { font-size:38px;font-weight:600;letter-spacing:-.035em;line-height:1.25;max-width:620px;margin:10px 0 20px; }
   .failed > p:not(.eyebrow),.research-export-hint { color:var(--muted);font-size:13px;line-height:1.8;max-width:650px;margin:0; }
   .zero-idea-actions { display:flex;flex-wrap:wrap;gap:8px;margin-top:22px; }

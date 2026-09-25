@@ -271,6 +271,8 @@
   function previewIssue(path: string): string | null {
     return workflowPreview?.fieldErrors.find((issue) => issue.path.join(".") === path)?.message ?? null;
   }
+  // Ideas settings live in the run panel, so any preview issue under "ideas" (model or review model) is shown there.
+  let ideasPreviewIssue = $derived(workflowPreview?.fieldErrors.find((issue) => issue.path[0] === "ideas")?.message ?? null);
 
   function missingFields(): Record<string, string> {
     const next: Record<string, string> = {};
@@ -363,7 +365,7 @@
     }
   }
 
-  type SettingsSection = "research" | "ideas" | "instructions" | "limits";
+  type SettingsSection = "research" | "instructions" | "limits";
   let configuration: HTMLDialogElement;
   let setupForm: HTMLFormElement;
   let configurationTrigger: HTMLElement | null = null;
@@ -389,7 +391,7 @@
   const fieldSections: Record<string, SettingsSection | "brief" | "business" | "main"> = {
     domain: "brief", knownProblem: "brief", researchMode: "brief",
     targetFamilies: "business", batchSize: "business", maxModelCalls: "business", maxSearches: "business",
-    model: "main", reasoning: "main", ideaCount: "main", ideaModel: "ideas", ideaReasoning: "ideas",
+    model: "main", reasoning: "main", ideaCount: "main", ideaModel: "main", ideaReasoning: "main",
     maxRunMinutes: "limits", workflowModelLimit: "limits", workflowSearchLimit: "limits", automaticProblemCap: "limits",
   };
   const previewFields: Record<string, string> = {
@@ -399,7 +401,6 @@
     "targets.distinctBusinessCount": "targetFamilies", "limits.maxModelCalls": "workflowModelLimit",
     "limits.maxSearches": "workflowSearchLimit", "limits.maxMinutes": "maxRunMinutes",
   };
-  let ideaOverrides = $derived(workflowMode === "vibe" && (!sameModelRef(model, ideaModel) || reasoningEffort !== ideaReasoningEffort));
   let customInstructionCount = $derived([researchInstruction, ideasInstruction, reviewInstruction].filter((value) => value.trim()).length);
   let configurationIssues = $derived(Object.keys(errors).filter((key) => !["domain", "knownProblem"].includes(key)).length
     + (workflowPreview?.fieldErrors.length ?? 0) + Number(modelChoiceRequired) + Number(reasoningChoiceRequired));
@@ -416,7 +417,7 @@
   });
 
   async function showConfiguration(section: SettingsSection = "research", field?: HTMLElement) {
-    settingsSection = section === "research" && researchMode === "known-problem" ? useWorkflow && workflowMode === "vibe" ? "ideas" : "limits" : section;
+    settingsSection = section === "research" && researchMode === "known-problem" ? "limits" : section;
     if (!configuration.open) {
       configurationTrigger = document.activeElement instanceof HTMLElement ? document.activeElement : null;
       configuration.showModal();
@@ -525,7 +526,8 @@
       <label class="run-setting model-setting"><span>Model</span><select aria-label="Model" data-field="model" bind:this={modelSelect} bind:value={modelKey} onchange={selectModel} disabled={nativeModelOptions.length === 0}>{#if !selectedModelAvailable}<option value={modelKey}>{legacyModelNeedsReplacement && !modelKey ? "Choose an OpenAI model" : workspace.validation.native.connected ? `${modelDisplayName(model)} (unavailable)` : "Sign in to choose"}</option>{/if}{#each gpt6Models as modelId (modelId)}{#if !nativeModelOptions.some((item) => item.modelId === modelId) && model.modelId !== modelId}<option value={`openai-subscription:${modelId}`} disabled>{modelDisplayName({ modelId })} (not in model list)</option>{/if}{/each}{#each nativeModelOptions as item (modelRefKey(item))}<option value={modelRefKey(item)}>{modelDisplayName(item)}</option>{/each}</select>{#if nativeModelOptions.length === 0}<small>Your available models appear here after you sign in.</small>{/if}</label>
       <label class="run-setting"><span>Reasoning</span><select aria-label="Reasoning" data-field="reasoning" title={reasoningDescription} bind:value={reasoningEffort}>{#if !selectedReasoningAvailable}<option value={reasoningEffort}>{reasoningEffort} (unavailable)</option>{/if}{#each (selectedModelOption?.reasoningEfforts ?? []) as effort (effort.id)}<option value={effort.id}>{effort.id.charAt(0).toUpperCase() + effort.id.slice(1)}</option>{/each}</select></label>
       {#if researchMode === "explore-market"}<label class="run-setting"><span>Research depth</span><select aria-label="Research depth" title={depthDescription} bind:value={discoveryDepth}><option value="quick">Quick</option><option value="standard">Standard</option><option value="deep">Deep</option></select></label>{/if}
-      <div class="solution-count">
+      <!-- A stated problem has no research depth, so the count takes that grid cell instead of its own row. -->
+      <div class="solution-count" class:paired={researchMode === "known-problem"}>
         <label for="solution-count">Solutions per problem</label>
         <div class="count-input">
           <input id="solution-count" data-field="ideaCount" type="number" bind:value={ideaCount} min="1" max={MAX_IDEA_COUNT} step="1" required aria-invalid={Boolean(errors.ideaCount)} aria-describedby={errors.ideaCount ? "idea-count-error" : undefined} />
@@ -533,11 +535,24 @@
         </div>
         {#if errors.ideaCount}<small id="idea-count-error" class="field-error">{errors.ideaCount}</small>{/if}
       </div>
+      <!-- Vibe generates and reviews ideas itself, so their model is chosen up front; Babysit picks it when developing problems. -->
+      {#if useWorkflow && workflowMode === "vibe"}
+        <label class="run-setting"><span>Ideas model</span><select aria-label="Ideas model" data-field="ideaModel" bind:value={ideaModelKey} onchange={selectIdeaModel} aria-invalid={Boolean(errors.ideaModel || ideasPreviewIssue)}>
+          {#if !ideaModelAvailable}<option value={ideaModelKey}>{modelDisplayName(ideaModel)} (unavailable)</option>{/if}
+          {#each nativeModelOptions as option (modelRefKey(option))}<option value={modelRefKey(option)}>{modelDisplayName(option)}</option>{/each}
+        </select></label>
+        <label class="run-setting"><span>Ideas reasoning</span><select aria-label="Ideas reasoning" data-field="ideaReasoning" bind:value={ideaReasoningEffort} aria-invalid={Boolean(errors.ideaReasoning)}>
+          {#if !ideaReasoningAvailable}<option value={ideaReasoningEffort}>{ideaReasoningEffort} (unavailable)</option>{/if}
+          {#each (ideaModelOption?.reasoningEfforts ?? []) as effort (effort.id)}<option value={effort.id}>{effort.id.charAt(0).toUpperCase() + effort.id.slice(1)}</option>{/each}
+        </select></label>
+        {#if errors.ideaModel || ideasPreviewIssue}<small class="field-error wide" role="alert">{errors.ideaModel ?? ideasPreviewIssue}</small>{/if}
+        {#if errors.ideaReasoning}<small class="field-error wide">{errors.ideaReasoning}</small>{/if}
+        <small class="wide">Ideas are also reviewed with this model.</small>
+      {/if}
 
         </div>
           {#if modelChoiceRequired}<p class="field-error">{legacyModelNeedsReplacement ? "This project used the removed CLI integration." : "The saved model is unavailable."} Choose an available OpenAI model.</p>{/if}
           {#if reasoningChoiceRequired}<p class="field-error">The saved reasoning effort is unavailable for this model. Choose an available effort to start a new run.</p>{/if}
-        {#if ideaOverrides}<p class="override-note">Ideas & review: {modelDisplayName(ideaModel)} · {ideaReasoningEffort} reasoning</p>{/if}
         {#if customInstructionCount}<p class="override-note">{customInstructionCount} custom {customInstructionCount === 1 ? "instruction" : "instructions"}</p>{/if}
         <button type="button" class="text-action" bind:this={advancedSettingsButton} onclick={() => showConfiguration()}>Advanced settings <Icon name="settings" size={16} /></button>
       </section>
@@ -570,12 +585,11 @@
       <header><h2>Advanced settings</h2><button type="button" aria-label="Close advanced settings" onclick={() => configuration.close()}><Icon name="close" /></button></header>
       <nav aria-label="Settings groups">
         {#if researchMode === "explore-market"}<button type="button" aria-pressed={settingsSection === "research"} onclick={() => settingsSection = "research"}>Search</button>{/if}
-        {#if useWorkflow && workflowMode === "vibe"}<button type="button" aria-pressed={settingsSection === "ideas"} onclick={() => settingsSection = "ideas"}>Ideas & review</button>{/if}
         <button type="button" aria-pressed={settingsSection === "limits"} onclick={() => settingsSection = "limits"}>Work limits</button>
         {#if useWorkflow}<button type="button" aria-pressed={settingsSection === "instructions"} onclick={() => settingsSection = "instructions"}>Instructions</button>{/if}
       </nav>
       <div class="settings-content">
-        {#each workflowPreview?.fieldErrors.filter((issue) => issue.path[0] !== "limits") ?? [] as issue (issue.path.join(".") + issue.code)}<p class="field-error" role="alert">{issue.message}</p>{/each}
+        {#each workflowPreview?.fieldErrors.filter((issue) => issue.path[0] !== "limits" && issue.path[0] !== "ideas") ?? [] as issue (issue.path.join(".") + issue.code)}<p class="field-error" role="alert">{issue.message}</p>{/each}
         <section class="settings-panel" aria-label="Research configuration" hidden={settingsSection !== "research"}>
           <h3>Search</h3>    <div class="run-settings">
       {#if researchMode === "explore-market"}<label class="run-setting search-setting"><span>Search provider</span><div class="provider-select"><ProviderLogo provider={searchProvider} size={17} /><select aria-label="Search provider" data-field="searchProvider" bind:value={searchProvider}><option value="exa">Exa</option><option value="perplexity">Perplexity</option></select></div><small>{selectedSearchName}: {selectedSearchValidation.valid ? "Connected" : selectedSearchValidation.error ?? "Connection unavailable"}</small></label>{/if}
@@ -587,26 +601,6 @@
       </div>
 
 
-        </section>
-        <section class="settings-panel" aria-label="Ideas configuration" hidden={settingsSection !== "ideas"}>
-              {#if useWorkflow && workflowMode === "vibe"}
-      <section class="ideas-settings" aria-label="Ideas model settings">
-        <h3>Ideas and review</h3>
-        <label><span>Ideas model</span><select aria-label="Ideas model" data-field="ideaModel" bind:value={ideaModelKey} onchange={selectIdeaModel} aria-invalid={Boolean(errors.ideaModel || previewIssue("ideas.model"))}>
-          {#if !ideaModelAvailable}<option value={ideaModelKey}>{modelDisplayName(ideaModel)} (unavailable)</option>{/if}
-          {#each nativeModelOptions as option (modelRefKey(option))}<option value={modelRefKey(option)}>{modelDisplayName(option)}</option>{/each}
-        </select></label>
-        {#if errors.ideaModel || previewIssue("ideas.model")}<small class="field-error">{errors.ideaModel ?? previewIssue("ideas.model")}</small>{/if}
-        <label><span>Ideas reasoning</span><select aria-label="Ideas reasoning" data-field="ideaReasoning" bind:value={ideaReasoningEffort} aria-invalid={Boolean(errors.ideaReasoning)}>
-          {#if !ideaReasoningAvailable}<option value={ideaReasoningEffort}>{ideaReasoningEffort} (unavailable)</option>{/if}
-          {#each (ideaModelOption?.reasoningEfforts ?? []) as effort (effort.id)}<option value={effort.id}>{effort.id.charAt(0).toUpperCase() + effort.id.slice(1)}</option>{/each}
-        </select></label>
-        {#if errors.ideaReasoning}<small class="field-error">{errors.ideaReasoning}</small>{/if}
-      </section>
-    {/if}
-
-
-<p class="help">Review uses the ideas model and reasoning shown here.</p>
         </section>
         <section class="settings-panel" aria-label="Work limits configuration" hidden={settingsSection !== "limits"}>
           <h3>Work limits</h3><p class="help">Work stops at these limits. They do not guarantee completion.</p>
@@ -644,7 +638,7 @@
   label { display:grid;gap:8px;min-width:0;font-size:14px; }
   label > span { font-weight:500; }
   input,select,textarea { width:100%;min-width:0;min-height:42px;padding:9px 12px;border:1px solid var(--border-strong);border-radius:7px;color:var(--text);background:var(--surface);font-size:14px; }
-  textarea { resize:vertical;line-height:1.65; }
+  textarea { line-height:1.65; }
   small,.help { color:var(--muted);font-size:13px;font-weight:400;line-height:1.5; }
   label > span > small { margin-left:6px; }
   .field-error { color:var(--danger);font-size:13px; }
@@ -679,6 +673,9 @@
   .main-settings-grid .solution-count { grid-column:1/-1;grid-template-columns:1fr 100px;align-items:center; }
   .main-settings-grid .solution-count label { font-size:13px;line-height:1.5; }
   .main-settings-grid .solution-count .field-error { grid-column:1/-1; }
+  .main-settings-grid .solution-count.paired { grid-column:auto;grid-template-columns:1fr;align-items:stretch; }
+  .main-settings-grid .wide { grid-column:1/-1; }
+  .solution-count.paired .count-input input { width:100%; }
   .main-settings .text-action { justify-self:start; }
   .override-note { margin:0;font-size:13px;color:var(--accent);line-height:1.5; }
   button { min-height:36px;padding:8px 12px;border:1px solid var(--border-strong);border-radius:7px;background:var(--surface);color:var(--text);font-size:14px; }
