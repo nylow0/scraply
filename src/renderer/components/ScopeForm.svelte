@@ -528,9 +528,9 @@
       {#if researchMode === "explore-market"}<label class="run-setting"><span>Research depth</span><select aria-label="Research depth" title={depthDescription} bind:value={discoveryDepth}><option value="quick">Quick</option><option value="standard">Standard</option><option value="deep">Deep</option></select></label>{/if}
       <!-- A stated problem has no research depth, so the count takes that grid cell instead of its own row. -->
       <div class="solution-count" class:paired={researchMode === "known-problem"}>
-        <label for="solution-count">Solutions per problem</label>
+        <label for="solution-count">{researchMode === "known-problem" ? "Solutions" : "Solutions per problem"}</label>
         <div class="count-input">
-          <input id="solution-count" data-field="ideaCount" type="number" bind:value={ideaCount} min="1" max={MAX_IDEA_COUNT} step="1" required aria-invalid={Boolean(errors.ideaCount)} aria-describedby={errors.ideaCount ? "idea-count-error" : undefined} />
+          <input id="solution-count" aria-label="Solutions per problem" data-field="ideaCount" type="number" bind:value={ideaCount} min="1" max={MAX_IDEA_COUNT} step="1" required aria-invalid={Boolean(errors.ideaCount)} aria-describedby={errors.ideaCount ? "idea-count-error" : undefined} />
 
         </div>
         {#if errors.ideaCount}<small id="idea-count-error" class="field-error">{errors.ideaCount}</small>{/if}
