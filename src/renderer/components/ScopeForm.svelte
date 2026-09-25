@@ -667,7 +667,7 @@
   .mode-option label { flex:1;border:0; }
   .mode-info { display:flex;align-items:center;margin-right:6px; }
   .info-button { display:grid;place-items:center;width:32px;min-height:32px;padding:0;border:0;background:transparent;color:var(--muted); }
-  .mode-tooltip { position:absolute;z-index:5;right:0;top:100%;width:248px;max-width:calc(100vw - 48px);padding:12px 14px;border-radius:10px;color:var(--text);font-size:13px;line-height:1.6; }
+  .mode-tooltip { position:absolute;z-index:5;right:0;top:100%;width:248px;max-width:calc(100vw - 48px);padding:12px 14px;border-radius:10px;background:#111212;color:var(--text);font-size:13px;line-height:1.6; }
   .mode-tooltip[hidden] { display:none; }
   .brief-panel { display:grid;gap:20px; }
   .main-brief > span { font-size:26px;line-height:1.25;letter-spacing:-.7px;font-weight:600; }
