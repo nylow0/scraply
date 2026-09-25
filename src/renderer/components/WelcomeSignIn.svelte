@@ -56,7 +56,7 @@
   button { min-height:42px;padding:10px 16px;border:1px solid var(--border-strong);border-radius:12px;background:var(--surface-2);color:var(--text);font-size:14px;font-weight:500; }
   button:hover:not(:disabled) { background:var(--border); }
   button:disabled { opacity:.5; }
-  .primary { border-color:transparent;background:var(--accent-strong);box-shadow:inset 0 1px 0 rgb(255 255 255 / .45),0 8px 24px rgb(128 217 182 / .18);color:var(--accent-ink);font-weight:600; }
+  .primary { border-color:transparent;background:var(--accent-strong);box-shadow:inset 0 1px 0 rgb(255 255 255 / .45),0 6px 18px rgb(128 217 182 / .1);color:var(--accent-ink);font-weight:600; }
   .primary:hover:not(:disabled) { background:var(--accent); }
   .quiet { align-self:center;min-height:36px;margin-top:12px;border:0;background:transparent;color:var(--muted);font-size:13px; }
   .quiet:hover:not(:disabled) { background:transparent;color:var(--text); }

@@ -119,7 +119,7 @@
   .list { display:grid;gap:3px; }
   .thread-row { display:grid;grid-template-columns:minmax(0,1fr) 32px;align-items:start;border-radius:7px; }
   .thread-row:hover { background:#ffffff07; }
-  .thread-row.active { background:rgb(128 217 182 / .09); }
+  .thread-row.active { background:var(--surface-2); }
   .thread { display:flex;align-items:center;gap:9px;min-height:40px;padding:10px 4px 10px 10px;min-width:0;text-align:left;border:0;border-radius:7px;background:none;color:var(--muted); }
   .active .thread { color:var(--text); }
   .title { min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;line-height:1.45; }

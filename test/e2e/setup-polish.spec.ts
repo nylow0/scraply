@@ -87,7 +87,7 @@ test("setup hierarchy, source preferences, keyboard controls, and sidebar fit in
     await page.screenshot({ path: testInfo.outputPath("setup-sidebar-bottom.png") });
 
     await page.getByRole("button", { name: "Settings", exact: true }).click();
-    const dialog = page.getByRole("dialog", { name: "Settings", exact: true });
+    const dialog = page.getByRole("region", { name: "Settings", exact: true });
     await expect(dialog.locator(".account-emblem svg")).toBeVisible();
     await page.screenshot({ path: testInfo.outputPath("account.png") });
     await dialog.getByRole("button", { name: "Research defaults", exact: true }).click();
@@ -102,7 +102,7 @@ test("setup hierarchy, source preferences, keyboard controls, and sidebar fit in
     await page.getByRole("button", { name: "Save defaults" }).click();
     await expect(page.getByText("Defaults saved", { exact: true })).toBeVisible();
     await page.screenshot({ path: testInfo.outputPath("advanced-search.png") });
-    await page.getByRole("button", { name: "Close settings" }).click();
+    await page.getByRole("button", { name: "Back", exact: true }).click();
     await page.reload();
     await expect(coverage).toHaveValue("communities");
     await expect(page.getByLabel("Research depth", { exact: true })).toHaveValue("deep");

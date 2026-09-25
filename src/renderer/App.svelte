@@ -1021,8 +1021,8 @@
 
   /* Floating layout: the sidebar and the page are separate panels over the lit background. */
   .app-shell { height:calc(100% - 36px);display:grid;grid-template-columns:256px minmax(0,1fr);gap:10px;padding:2px 10px 10px; }
-  /* The page stays nearly black for reading; the glow only tints its edges. */
-  .main-content { min-width:0;overflow-y:auto;overflow-x:hidden;scrollbar-gutter:stable;position:relative;border:1px solid var(--glass-edge);border-radius:var(--panel-radius);background:rgb(0 0 0 / .6);box-shadow:var(--glass-rim),var(--glass-shadow);backdrop-filter:var(--glass-blur); }
+  /* The page is a black panel with the same hairline edge as the glass around it. */
+  .main-content { min-width:0;overflow-y:auto;overflow-x:hidden;scrollbar-gutter:stable;position:relative;border:1px solid var(--glass-edge);border-radius:var(--panel-radius);background:var(--bg);box-shadow:var(--glass-rim); }
   .workspace-header { position:sticky;top:0;z-index:3;flex:none;min-height:72px;padding:12px 24px;display:flex;align-items:center;gap:24px;background:rgb(0 0 0 / .55);backdrop-filter:blur(20px) saturate(150%);border-bottom:1px solid var(--border); }
   .topbar { display:flex;align-items:center;flex:1;min-width:0;gap:16px;color:var(--muted); }
   .location { display:block;margin:0;color:var(--text);font-size:24px;font-weight:600;letter-spacing:-.6px;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis; }

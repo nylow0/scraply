@@ -704,7 +704,7 @@
   .launch-row { display:flex;flex-direction:column;align-items:stretch;gap:12px; }
   .limit-summary > span { display:flex;align-items:center;gap:14px;font-size:14px;font-weight:500; }
   .limit-summary p { margin:1px 0 0;color:var(--muted);font-size:13px;line-height:1.6; }
-  .primary { display:flex;align-items:center;justify-content:center;gap:12px;min-width:154px;min-height:44px;background:var(--accent-strong);border:0;border-radius:10px;box-shadow:inset 0 1px 0 rgb(255 255 255 / .45),0 8px 24px rgb(128 217 182 / .16);color:var(--accent-ink);font-weight:600; }
+  .primary { display:flex;align-items:center;justify-content:center;gap:12px;min-width:154px;min-height:44px;background:var(--accent-strong);border:0;border-radius:10px;box-shadow:inset 0 1px 0 rgb(255 255 255 / .45),0 6px 18px rgb(128 217 182 / .1);color:var(--accent-ink);font-weight:600; }
   .primary:hover:not(:disabled) { background:var(--accent); }
   .launch-status { display:flex;align-items:center;flex-wrap:wrap;gap:4px 12px;margin-top:5px;font-size:13px;color:var(--muted);line-height:1.5; }
   .connection-warning { display:flex;flex-wrap:wrap;gap:4px 12px;margin-top:6px;font-size:13px;color:var(--danger);align-items:center; }
