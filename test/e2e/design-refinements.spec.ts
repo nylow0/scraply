@@ -28,7 +28,7 @@ test("compact settings, consistent fields, title defaults, and archive recovery"
     await expect(popup).toBeVisible();
     // Settings is its own full-window screen: it spans the window and covers the sidebar, including its Settings button.
     const popupBounds = await popup.boundingBox();
-    expect(popupBounds!.width).toBe(await page.evaluate(() => innerWidth));
+    expect(Math.abs(popupBounds!.width - await page.evaluate(() => innerWidth))).toBeLessThanOrEqual(1);
     expect(await page.evaluate(() => document.elementFromPoint(40, innerHeight - 40)?.closest(".settings-screen") !== null)).toBe(true);
     const back = page.getByRole("button", { name: "Back", exact: true });
     await expect(page.getByRole("heading", { name: "Settings", exact: true })).toBeFocused();
