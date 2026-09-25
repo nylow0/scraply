@@ -1,6 +1,6 @@
 import { expect, test } from "@playwright/test";
 import type { ScraplyApi } from "../../src/preload/index";
-import { createInstalledApp } from "./installed-app";
+import { createInstalledApp, dismissSignInPrompt } from "./installed-app";
 
 test("the packaged backend reuses empty drafts without losing a setup draft or saved project", async () => {
   const installedApp = createInstalledApp({ directoryPrefix: "scraply-packaged-drafts-" });
@@ -11,6 +11,7 @@ test("the packaged backend reuses empty drafts without losing a setup draft or s
   try {
     const electron = await installedApp.launch(env);
     const page = await electron.firstWindow();
+    await dismissSignInPrompt(page);
     await expect(page.getByLabel("Research name", { exact: true })).toBeVisible();
     const name = page.getByLabel("Research name", { exact: true });
     await expect(name).toBeVisible();
