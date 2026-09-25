@@ -25,7 +25,10 @@ $workspaceTargetExisted = Test-Path -LiteralPath $workspaceTarget
 $priorCargoTargetDirectory = [Environment]::GetEnvironmentVariable("CARGO_TARGET_DIR", "Process")
 $ownsCargoTargetDirectory = [string]::IsNullOrWhiteSpace($priorCargoTargetDirectory)
 if ($ownsCargoTargetDirectory) {
-    $cargoTargetDirectory = [IO.Path]::GetFullPath((Join-Path $repositoryRoot "..\build\cargo"))
+    # One per-user cache shared by every checkout and worktree. A per-checkout cache
+    # grows to 10-20 GB each, and parallel worktrees multiplied it until disks filled.
+    # Cargo's lock serializes concurrent packaging runs that share this directory.
+    $cargoTargetDirectory = [IO.Path]::GetFullPath((Join-Path $env:LOCALAPPDATA "scraply-build\cargo"))
 }
 elseif ([IO.Path]::IsPathRooted($priorCargoTargetDirectory)) {
     $cargoTargetDirectory = [IO.Path]::GetFullPath($priorCargoTargetDirectory)
@@ -44,6 +47,14 @@ if ($cargoTargetDirectory.Equals($repositoryRoot, [StringComparison]::OrdinalIgn
 }
 [Environment]::SetEnvironmentVariable("CARGO_TARGET_DIR", $cargoTargetDirectory, "Process")
 Write-Verbose "Using external Cargo target directory: $cargoTargetDirectory"
+
+# Packaging compiles each profile once per run, so incremental state (several GB for
+# the vendored workspace) costs disk without speeding anything up. An explicit
+# caller setting still wins.
+$priorCargoIncremental = [Environment]::GetEnvironmentVariable("CARGO_INCREMENTAL", "Process")
+if ([string]::IsNullOrWhiteSpace($priorCargoIncremental)) {
+    [Environment]::SetEnvironmentVariable("CARGO_INCREMENTAL", "0", "Process")
+}
 
 try {
 $cargo = (Get-Command cargo -ErrorAction Stop).Source
@@ -183,6 +194,11 @@ finally {
     [Environment]::SetEnvironmentVariable(
         "CARGO_TARGET_DIR",
         $priorCargoTargetDirectory,
+        "Process"
+    )
+    [Environment]::SetEnvironmentVariable(
+        "CARGO_INCREMENTAL",
+        $priorCargoIncremental,
         "Process"
     )
 
