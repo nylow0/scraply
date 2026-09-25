@@ -362,9 +362,10 @@ function createWindow(): void {
     if (savedState?.maximized) createdWindow.maximize();
     createdWindow.show();
   }
+  const initialNormalBounds = createdWindow.getNormalBounds();
   installApplicationMenu(createdWindow);
   createdWindow.on("close", () => {
-    try { saveWindowState(windowStatePath, createdWindow, savedState?.bounds); }
+    try { saveWindowState(windowStatePath, createdWindow, savedState?.bounds, initialNormalBounds); }
     catch (error) { logger?.log({ level: "warn", component: "main", event: "window-state-save-failed", error }); }
   });
   createdWindow.on("closed", () => {

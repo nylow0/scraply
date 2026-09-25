@@ -57,6 +57,20 @@ test("the window reopens maximized, or at the size it was closed at", async () =
     electron = await launch();
     expect(await placement(electron)).toEqual(reopened);
     expect(savedFile()).toEqual({ maximized: false, bounds: resized.bounds });
+
+    // A small deliberate change must not be mistaken for display scaling drift.
+    await electron.evaluate(({ BrowserWindow }) => {
+      const window = BrowserWindow.getAllWindows()[0]!;
+      const bounds = window.getNormalBounds();
+      window.setBounds({ ...bounds, x: bounds.x + 3, width: bounds.width + 4 });
+    });
+    const adjusted = await placement(electron);
+    await electron.close();
+    expect(savedFile()).toEqual({ maximized: false, bounds: adjusted.bounds });
+    electron = await launch();
+    const adjustedReopen = await placement(electron);
+    expect(Math.abs(adjustedReopen.bounds.x - adjusted.bounds.x)).toBeLessThanOrEqual(4);
+    expect(Math.abs(adjustedReopen.bounds.width - adjusted.bounds.width)).toBeLessThanOrEqual(4);
   } finally {
     await electron?.close();
     await mock.close();
