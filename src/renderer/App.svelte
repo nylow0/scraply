@@ -1029,8 +1029,9 @@
      It is also the `page` size container: page components use @container page queries so their
      breakpoints follow the width they actually get, whatever the navigation is doing. */
   .main-content { grid-column:2;container:page / inline-size;min-width:0;overflow-y:auto;overflow-x:hidden;scrollbar-gutter:stable;position:relative;border:1px solid var(--glass-edge);border-radius:var(--panel-radius);background:var(--bg);box-shadow:var(--glass-rim); }
-  /* When the title would get narrower than its flex-basis, the tabs wrap onto their own row instead of squeezing it. */
-  .workspace-header { position:sticky;top:0;z-index:3;flex:none;min-height:72px;padding:12px var(--page-gutter);display:flex;flex-wrap:wrap;align-items:center;gap:6px 24px;background:rgb(0 0 0 / .55);backdrop-filter:blur(20px) saturate(150%);border-bottom:1px solid var(--border); }
+  /* The title sits at the page's left edge and the tabs at its right edge, whatever the window width.
+     When the title would get narrower than its flex-basis, the tabs wrap onto their own row instead of squeezing it. */
+  .workspace-header { position:sticky;top:0;z-index:3;flex:none;min-height:72px;padding:12px 24px;display:flex;flex-wrap:wrap;align-items:center;gap:6px 24px;background:rgb(0 0 0 / .55);backdrop-filter:blur(20px) saturate(150%);border-bottom:1px solid var(--border); }
   .topbar { display:flex;align-items:center;flex:1 1 300px;min-width:0;gap:16px;color:var(--muted); }
   .location { display:block;margin:0;color:var(--text);font-size:clamp(20px,2.6cqi,24px);font-weight:600;letter-spacing:-.6px;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis; }
   .main-content.setup-active { display:flex;flex-direction:column; }
