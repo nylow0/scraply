@@ -85,7 +85,9 @@ For UI changes, verify the action and visible result. For persistence changes, r
 
 After completing an application change, run `bun run build:installed` from the checkout root. It prepares the runtime, rebuilds and verifies Windows packages, installs the exact package, and verifies the installed executable and ASAR. Skip it for read-only questions, documentation-only changes, and intermediate investigation. Stop development before this command, then restart it for handoff. Output goes to `release/`.
 
-Routine development does not create installers or rebuild Rust. Native preparation uses `build/cargo` for its Cargo cache. Avoid preparing identical native code in extra worktrees merely to preview UI edits.
+Routine development does not create installers or rebuild Rust. Native preparation uses one Cargo cache shared by every checkout: `%LOCALAPPDATA%\scraply-build\cargo`, roughly 9 GB. Set `CARGO_TARGET_DIR` to move it. Deleting that folder reclaims the space; the next preparation rebuilds it from scratch. Avoid preparing identical native code in extra worktrees merely to preview UI edits.
+
+Remove a worktree once its pull request merges, because each one carries its own `node_modules` and build output. Confirm `git status` is clean, then run `git worktree remove <path>`. Git requires `--force` for worktrees that contain the runtime submodule.
 
 ## Provider setup
 
