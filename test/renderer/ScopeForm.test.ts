@@ -115,9 +115,11 @@ describe("ScopeForm search provider selection", () => {
     await waitFor(() => expect((view.getByRole("button", { name: "Start" }) as HTMLButtonElement).disabled).toBe(false));
 
     await fireEvent.input(view.getByLabelText("Maximum model calls"), { target: { value: "1" } });
-    await waitFor(() => expect(view.getByText("Allow at least 36 model calls.", { selector: ".launch-status span" })).toBeTruthy());
+    await waitFor(() => expect(onPreviewWorkflow.mock.lastCall?.[0].limits.maxModelCalls).toBe(1));
+    expect(view.queryByText("Allow at least 36 model calls.", { selector: ".launch-status span" })).toBeNull();
     // An invalid launch is not started; Start opens the limit that needs fixing.
     await fireEvent.click(view.getByRole("button", { name: "Start" }));
+    await waitFor(() => expect(view.getByText("Allow at least 36 model calls.", { selector: ".launch-status span" })).toBeTruthy());
     await waitFor(() => expect(document.activeElement).toBe(view.getByLabelText("Maximum model calls")));
     expect(onStartWorkflow).not.toHaveBeenCalled();
     await fireEvent.input(view.getByLabelText("Maximum model calls"), { target: { value: "44" } });
@@ -626,7 +628,7 @@ describe("settings surfaces preserve launch configuration", () => {
   test.each([
     [["runConfig", "searchProvider"], "Search provider"],
     [["ideas", "reviewModel"], "Ideas model"],
-  ])("reveals the field for preflight errors at %s", async (path, label) => {
+  ])("reveals the field for preflight errors at %s after Start", async (path, label) => {
     const state = workspace();
     state.validation.exa = { valid: true };
     const onPreviewWorkflow = vi.fn(async (draft: WorkflowLaunchDraft) => ({
@@ -636,8 +638,10 @@ describe("settings surfaces preserve launch configuration", () => {
       upperLimits: draft.limits, fieldErrors: [{ path: path as string[], code: "UNAVAILABLE", message: "This choice became unavailable." }], expiresAt: "2099-01-01T00:00:00.000Z",
     }));
     const view = render(ScopeForm, { workspace: state, busy: false, onSave: vi.fn(), onStart: vi.fn(), onRetry: vi.fn(), onPreviewWorkflow, onStartWorkflow: vi.fn() });
-    await waitFor(() => expect(view.getByRole("button", { name: "Review settings" })).toBeTruthy());
-    await fireEvent.click(view.getByRole("button", { name: "Review settings" }));
+    await waitFor(() => expect(onPreviewWorkflow).toHaveBeenCalled());
+    expect(view.queryByRole("alert")).toBeNull();
+    expect(view.queryByRole("button", { name: "Review settings" })).toBeNull();
+    await fireEvent.click(view.getByRole("button", { name: "Start" }));
     await waitFor(() => expect(document.activeElement).toBe(view.getByLabelText(label as string)));
     expect(view.getByRole("alert").textContent).toBe("This choice became unavailable.");
   });
@@ -707,14 +711,14 @@ describe("settings surfaces preserve launch configuration", () => {
     expect(onStartWorkflow.mock.calls[0]?.[0].proposal).toMatchObject(expected);
   });
 
-  test("reveals a collapsed invalid limit, focuses it, and retries a failed preview", async () => {
+  test("hides preview errors before Start, then reveals and focuses an invalid limit", async () => {
     const state = workspace();
     state.validation.exa = { valid: true };
     const onPreviewWorkflow = vi.fn().mockRejectedValue(new Error("Preview temporarily unavailable"));
     const view = render(ScopeForm, { workspace: state, busy: false, onSave: vi.fn(), onStart: vi.fn(), onRetry: vi.fn(), onPreviewWorkflow, onStartWorkflow: vi.fn() });
-    await waitFor(() => expect(view.getByText("Preview temporarily unavailable")).toBeTruthy());
-    await fireEvent.click(view.getByRole("button", { name: "Retry preview" }));
-    await waitFor(() => expect(onPreviewWorkflow).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(onPreviewWorkflow).toHaveBeenCalledTimes(1));
+    expect(view.queryByText("Preview temporarily unavailable")).toBeNull();
+    expect(view.queryByRole("button", { name: "Retry preview" })).toBeNull();
     await fireEvent.click(view.getByRole("button", { name: "Edit limits" }));
     await fireEvent.input(view.getByLabelText("Time limit"), { target: { value: "1" } });
     await fireEvent.click(view.getByRole("button", { name: "Done" }));

@@ -34,6 +34,10 @@ test("compact settings, consistent fields, title defaults, and archive recovery"
     const back = page.getByRole("button", { name: "Back", exact: true });
     await expect(page.getByRole("heading", { name: "Settings", exact: true })).toBeFocused();
     await page.screenshot({ animations: "disabled", path: testInfo.outputPath("settings-screen.png") });
+    await page.getByRole("button", { name: "Local files", exact: true }).click();
+    await page.getByRole("button", { name: "Open logs folder" }).focus();
+    await page.keyboard.press("Tab");
+    expect(await page.evaluate(() => document.activeElement?.closest(".settings-screen") !== null)).toBe(true);
     await page.getByRole("button", { name: "Research defaults", exact: true }).click();
     await expect(page.getByLabel("Title model", { exact: true })).toHaveValue("openai-subscription:gpt-6-luna");
     await expect(page.getByLabel("Title model").getByRole("option", { name: "GPT-6 Luna", exact: true })).toHaveCount(1);
@@ -45,7 +49,8 @@ test("compact settings, consistent fields, title defaults, and archive recovery"
     await page.screenshot({ animations: "disabled", path: testInfo.outputPath("provider-menu.png") });
     await page.keyboard.press("Escape");
     await expect(back).toBeVisible();
-    await back.click();
+    await page.keyboard.press("Escape");
+    await expect(popup).toBeHidden();
     await expect(page.getByPlaceholder("What matters most: time, budget, or other limits?")).toBeVisible();
     await page.getByLabel("What do you want to explore?").fill("Reducing repair shop delays");
     await page.getByRole("radio", { name: /^Babysit/ }).check();

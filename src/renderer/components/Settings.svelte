@@ -28,6 +28,7 @@
   const searchProviders = ["exa", "perplexity"] as const;
   let section = $state<"account" | "defaults" | "connections" | "archive" | "local">("account");
   let heading: HTMLHeadingElement;
+  let screen: HTMLElement;
   let archived = $derived(workspace?.threads.filter(isArchived) ?? []);
   let nativeValidationPending = $derived(workspace?.validation.native.error?.startsWith("Checking ")
     || workspace?.validation.native.error === "Native runtime is starting");
@@ -36,10 +37,22 @@
   // Settings covers the whole window, but the workspace stays mounted underneath so leaving preserves drafts and scroll.
   export async function show() { section = "account"; open = true; await tick(); heading.focus(); }
   async function back() { open = false; await tick(); document.getElementById("settings-button")?.focus(); }
-  // Esc leaves Settings unless a dialog or a select (whose picker closes on Esc) is using the key.
-  function closeOnEscape(event: KeyboardEvent) {
+  // Keep keyboard focus on the full-window screen and leave on Esc when no picker is open.
+  function handleSettingsKeydown(event: KeyboardEvent) {
+    if (open && event.key === "Tab") {
+      const focusable = Array.from(screen.querySelectorAll<HTMLElement>(
+        'button:not([disabled]),select:not([disabled]),input:not([disabled]),textarea:not([disabled]),a[href],[tabindex]:not([tabindex="-1"])',
+      )).filter((element) => element.getClientRects().length > 0);
+      const first = focusable[0];
+      const last = focusable.at(-1);
+      if (first && last && (event.shiftKey ? document.activeElement === first : document.activeElement === last)) {
+        event.preventDefault();
+        (event.shiftKey ? last : first).focus();
+      }
+      return;
+    }
     if (!open || event.key !== "Escape" || event.defaultPrevented || document.querySelector("dialog[open]")) return;
-    if (event.target instanceof Element && event.target.closest("select")) return;
+    if (event.target instanceof HTMLOptionElement || (event.target instanceof HTMLSelectElement && event.target.matches(":open"))) return;
     event.preventDefault();
     void back();
   }
@@ -48,8 +61,8 @@
   }
 </script>
 
-<svelte:window onkeydown={closeOnEscape} />
-<section class="settings-screen" hidden={!open} data-section={section} aria-labelledby="settings-title">
+<svelte:window onkeydown={handleSettingsKeydown} />
+<section bind:this={screen} class="settings-screen" hidden={!open} data-section={section} aria-labelledby="settings-title">
   <header class="screen-header"><button class="back" onclick={back}><Icon name="back" size={17} />Back</button><h1 bind:this={heading} tabindex="-1" id="settings-title">Settings</h1></header>
   <div class="settings-layout">
     <nav aria-label="Settings sections">
