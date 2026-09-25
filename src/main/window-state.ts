@@ -37,20 +37,21 @@ export function readWindowState(path: string, workAreas: Rectangle[]): WindowSta
   return reachable ? state : null;
 }
 
-// With display scaling and the hidden title bar, Windows reports a restored window a few pixels
-// larger than the bounds applied (+2 at 125%). Changes this small are rounding, not a user resize.
-const SCALING_DRIFT = 8;
-
 /**
  * Records the window's normal (unmaximized) bounds and whether it is maximized. Full screen
- * reopens as maximized. Call on "close", before the window is destroyed. `restoredBounds` are
- * the bounds applied at launch; they are kept when the window was not resized beyond scaling
- * drift, so the window does not grow a little on every launch.
+ * reopens as maximized. Call on "close", before the window is destroyed. Windows can report
+ * slightly different bounds after applying a saved placement. Keep the saved bounds only when
+ * the window still has its initial normal bounds, so even a small user adjustment persists.
  */
-export function saveWindowState(path: string, window: BrowserWindow, restoredBounds: Rectangle | undefined): void {
+export function saveWindowState(
+  path: string,
+  window: BrowserWindow,
+  restoredBounds: Rectangle | undefined,
+  initialNormalBounds: Rectangle,
+): void {
   const current = window.getNormalBounds();
   const unchanged = restoredBounds !== undefined && (["x", "y", "width", "height"] as const)
-    .every(key => Math.abs(current[key] - restoredBounds[key]) <= SCALING_DRIFT);
+    .every(key => current[key] === initialNormalBounds[key]);
   const state: WindowState = {
     bounds: unchanged ? restoredBounds : current,
     maximized: window.isMaximized() || window.isFullScreen(),
