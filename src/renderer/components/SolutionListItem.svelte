@@ -530,7 +530,7 @@
   }
 
 
-  @media (max-width: 850px) {
+  @container page (max-width: 700px) {
     .solution-summary {
       min-height: 56px;
       padding-inline: 12px;

@@ -128,5 +128,5 @@
   aside strong { color:#e6a34a; }
   aside p { margin-bottom:0; }
   ul { margin-bottom:0;padding-left:18px; }
-  @media(max-width:850px) { .assumption-grid,.section-grid { grid-template-columns:1fr; }.title-row { flex-direction:column; }.review-status { align-self:start; } }
+  @container page (max-width:700px) { .assumption-grid,.section-grid { grid-template-columns:1fr; }.title-row { flex-direction:column; }.review-status { align-self:start; } }
 </style>

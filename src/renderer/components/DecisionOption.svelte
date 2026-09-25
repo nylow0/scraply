@@ -331,5 +331,5 @@
   .plan-experiment { margin-top:14px; }
   .decision-editor { display:grid;grid-template-columns:1fr 1fr;gap:0 20px; }.decision-editor h3,.decision-editor > p { grid-column:1/-1; }.decision-editor button { width:fit-content; }.decision-editor label { margin-top:0; }
   .source-text { white-space:pre-wrap;max-height:360px;overflow:auto; }form span { margin-left:12px;font-size:13px;color:var(--success); }
-  @media(max-width:850px) { dl { grid-template-columns:1fr;gap:16px; }.source-columns { grid-template-columns:1fr;gap:0; }.decision-editor { grid-template-columns:1fr; }.disclosure-content { padding:20px; }header { flex-direction:column;gap:16px; } }
+  @container page (max-width:700px) { dl { grid-template-columns:1fr;gap:16px; }.source-columns { grid-template-columns:1fr;gap:0; }.decision-editor { grid-template-columns:1fr; }.disclosure-content { padding:20px; }header { flex-direction:column;gap:16px; } }
 </style>

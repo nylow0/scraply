@@ -29,7 +29,11 @@
      max width, and top offset line up when switching between them. */
   --page-inline: clamp(20px, 3vw, 40px);
   --page-top: 38px;
-  --page-max: 1180px;
+  --page-max: 1120px;
+  /* Inline padding that puts full-width bands (the page header, run summaries, notices, the setup
+     form) on the same edges as a centred `--page-max` column. `cqi` resolves against the nearest
+     query container, which for every page element is .main-content. */
+  --page-gutter: max(var(--page-inline), calc((100cqi - var(--page-max)) / 2 + var(--page-inline)));
 
   /* Liquid glass, kept quiet: panels are a faint neutral tint over plain black with a hairline edge.
      .glass is for panels that sit in the layout; .glass-dense is for anything that floats
@@ -43,6 +47,11 @@
   --glass-blur: blur(16px) saturate(120%);
   --glass-backdrop: rgb(0 0 0 / .42);
   --panel-radius: 18px;
+}
+
+/* Large windows get a wider page column instead of a narrow strip in the middle. */
+@media (min-width: 1800px) {
+  :root { --page-max: 1280px; }
 }
 
 .glass,
@@ -210,6 +219,26 @@ input:focus, textarea:focus, select:focus { border-color:rgb(255 255 255 / .38) 
 [aria-invalid="true"]:focus-visible { outline-color:var(--danger); }
 textarea { line-height:1.65; }
 ::placeholder { color:var(--subtle); opacity:.8; }
+
+/* Number steppers: Chromium's grey arrow block becomes two thin chevrons in the muted text colour.
+   The pseudo-element keeps its native behaviour: its top half steps up, its bottom half steps down,
+   and keyboard arrows still work. `display: block` keeps it painted when the field is not hovered.
+   The chevrons are a public file, not a data: URL, because the renderer CSP does not allow data: images. */
+input[type="number"]::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  appearance: none;
+  display: block;
+  width: 12px;
+  height: 22px;
+  margin-left: 8px;
+  cursor: pointer;
+  opacity: .55;
+  transition: opacity 160ms var(--ease);
+  background: center / 10px 18px no-repeat url("/stepper-arrows.svg");
+}
+input[type="number"]:is(:hover, :focus)::-webkit-inner-spin-button { opacity: 1; }
+input[type="number"]:disabled::-webkit-inner-spin-button { opacity: .25; cursor: not-allowed; }
+input[type="number"]::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
 
 /* Chromium's customizable picker retains native keyboard and form behavior. */
 select, select::picker(select) { appearance: base-select; }

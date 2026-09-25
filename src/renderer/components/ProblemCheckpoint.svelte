@@ -111,7 +111,7 @@
 </section>
 <style>
 
-  .checkpoint { max-width:1120px;margin:auto;padding:38px var(--page-inline) 80px; }
+  .checkpoint { max-width:var(--page-max);margin:auto;padding:38px var(--page-inline) 80px; }
   .evidence-key { margin-top:20px;padding:0;border:0;font-size:13px;color:var(--muted); }
   .evidence-key p { max-width:76ch;margin:10px 0 0; }
   article.picked { border-color:#bdbdbd60; }
@@ -131,5 +131,5 @@
   footer { position:sticky;bottom:16px;display:flex;align-items:center;justify-content:space-between;gap:16px;margin-top:24px;border:1px solid var(--border-strong);border-radius:13px;padding:16px 20px;box-shadow:0 8px 32px #0005;background:color-mix(in srgb,var(--surface) 94%,transparent);backdrop-filter:blur(16px); }
   footer p { margin:0;color:var(--muted);font-size:13px; }footer strong { display:inline-block;font-size:15px;color:var(--accent-strong);margin-right:5px; }
   footer button { padding:11px 16px;font-size:13px;font-weight:650;border:0;border-radius:9px;background:var(--accent-strong);color:var(--accent-ink); }
-  @media(max-width:700px) { footer { flex-direction:column;align-items:stretch; }.checkpoint { padding:28px 22px 60px; }.development-settings { grid-template-columns:1fr; }.development-settings p { grid-column:auto; } }
+  @container page (max-width:600px) { footer { flex-direction:column;align-items:stretch; }.checkpoint { padding:28px 22px 60px; }.development-settings { grid-template-columns:1fr; }.development-settings p { grid-column:auto; } }
 </style>

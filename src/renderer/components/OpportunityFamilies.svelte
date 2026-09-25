@@ -265,5 +265,5 @@
   .candidate-detail p { margin:0;color:var(--muted);font-size:12px;line-height:1.55; }
   .candidate-detail p:last-child { color:var(--subtle); }
   .unresolved .member-actions { padding:0; }
-  @media(max-width:760px) { .review-controls { grid-template-columns:1fr; }.family-heading { flex-direction:column; }.family-heading > span { align-self:flex-start; } }
+  @container page (max-width:600px) { .review-controls { grid-template-columns:1fr; }.family-heading { flex-direction:column; }.family-heading > span { align-self:flex-start; } }
 </style>

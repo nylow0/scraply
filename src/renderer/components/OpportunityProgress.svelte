@@ -173,5 +173,5 @@
   .preview p { flex:1 1 280px;margin:0;color:var(--text); }
   .preview small { flex:1 1 100%;color:var(--muted); }
   .error { color:var(--danger) !important; }
-  @media(max-width:720px) { .counts { grid-template-columns:repeat(2,minmax(0,1fr)); }.budget { grid-template-columns:repeat(2,minmax(0,1fr)); }.extension-inputs { grid-template-columns:1fr 1fr; }.extension-inputs button { grid-column:1/-1; } }
+  @container page (max-width:600px) { .counts { grid-template-columns:repeat(2,minmax(0,1fr)); }.budget { grid-template-columns:repeat(2,minmax(0,1fr)); }.extension-inputs { grid-template-columns:1fr 1fr; }.extension-inputs button { grid-column:1/-1; } }
 </style>
