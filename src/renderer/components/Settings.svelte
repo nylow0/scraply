@@ -28,27 +28,42 @@
   const searchProviders = ["exa", "perplexity"] as const;
   let section = $state<"account" | "defaults" | "connections" | "archive" | "local">("account");
   let heading: HTMLHeadingElement;
-  let dialog: HTMLDialogElement;
-  $effect(() => {
-    if (!dialog) return;
-    if (open && !dialog.open) dialog.showModal();
-    else if (!open && dialog.open) dialog.close();
-  });
+  let screen: HTMLElement;
   let archived = $derived(workspace?.threads.filter(isArchived) ?? []);
   let nativeValidationPending = $derived(workspace?.validation.native.error?.startsWith("Checking ")
     || workspace?.validation.native.error === "Native runtime is starting");
   let nativeModelOptions = $derived(workspace?.modelOptions.filter((item) => item.providerId === "openai-subscription") ?? []);
 
-  // The modal keeps the workspace mounted so dismissing it preserves drafts and scroll.
+  // Settings covers the whole window, but the workspace stays mounted underneath so leaving preserves drafts and scroll.
   export async function show() { section = "account"; open = true; await tick(); heading.focus(); }
   async function back() { open = false; await tick(); document.getElementById("settings-button")?.focus(); }
+  // Keep keyboard focus on the full-window screen and leave on Esc when no picker is open.
+  function handleSettingsKeydown(event: KeyboardEvent) {
+    if (open && event.key === "Tab") {
+      const focusable = Array.from(screen.querySelectorAll<HTMLElement>(
+        'button:not([disabled]),select:not([disabled]),input:not([disabled]),textarea:not([disabled]),a[href],[tabindex]:not([tabindex="-1"])',
+      )).filter((element) => element.getClientRects().length > 0);
+      const first = focusable[0];
+      const last = focusable.at(-1);
+      if (first && last && (event.shiftKey ? document.activeElement === first : document.activeElement === last)) {
+        event.preventDefault();
+        (event.shiftKey ? last : first).focus();
+      }
+      return;
+    }
+    if (!open || event.key !== "Escape" || event.defaultPrevented || document.querySelector("dialog[open]")) return;
+    if (event.target instanceof HTMLOptionElement || (event.target instanceof HTMLSelectElement && event.target.matches(":open"))) return;
+    event.preventDefault();
+    void back();
+  }
   function deleteArchived(id: string, title: string) {
     if (confirm(`Permanently delete "${title}" and all its research? This cannot be undone.`)) void onDelete(id);
   }
 </script>
 
-<dialog bind:this={dialog} class="settings-popup" data-section={section} aria-labelledby="settings-title" closedby="any" onclose={back} oncancel={(event) => { event.preventDefault(); void back(); }}>
-  <div class="popup-header"><h1 bind:this={heading} tabindex="-1" id="settings-title">Settings</h1><button class="close" aria-label="Close settings" onclick={back}><Icon name="close" size={18} /></button></div>
+<svelte:window onkeydown={handleSettingsKeydown} />
+<section bind:this={screen} class="settings-screen" hidden={!open} data-section={section} aria-labelledby="settings-title">
+  <header class="screen-header"><button class="back" onclick={back}><Icon name="back" size={17} />Back</button><h1 bind:this={heading} tabindex="-1" id="settings-title">Settings</h1></header>
   <div class="settings-layout">
     <nav aria-label="Settings sections">
       <button class:active={section === "account"} aria-pressed={section === "account"} onclick={() => section = "account"}><OpenAILogo size={16} />Account</button>
@@ -139,18 +154,27 @@
   </div>
     </div>
   </div>
-</dialog>
+</section>
 
 <style>
-  .settings-layout { display:grid;grid-template-columns:170px minmax(0,1fr);min-height:0;flex:1; }
-  nav { display:flex;flex-direction:column;gap:5px;background:transparent;padding:12px 8px;min-height:0; }
-  nav button { display:flex;gap:10px;align-items:center;border:0;background:transparent;text-align:left;color:var(--muted);padding:12px;font-size:13px; }
+  .settings-screen { position:fixed;inset:36px 0 0;z-index:20;display:flex;flex-direction:column;background:var(--bg);color:var(--text); }
+  .settings-screen[hidden] { display:none; }
+  /* Full width: content on the left under the Back header, the section list as a column on the right edge.
+     The list stays first in the DOM so keyboard users reach it first. */
+  .screen-header { display:flex;align-items:center;gap:14px;padding:12px 24px 12px 32px;border-bottom:1px solid var(--border); }
+  .screen-header h1 { margin:0;font-size:20px;font-weight:650;letter-spacing:-.02em; }
+  .screen-header h1:focus { outline:none; }
+  .back { display:flex;align-items:center;gap:8px;border:0;background:transparent;color:var(--muted);padding:8px 12px 8px 8px; }
+  .back:hover:not(:disabled) { color:var(--text);background:var(--surface-2); }
+  .settings-layout { display:grid;grid-template-columns:minmax(0,1fr) 260px;min-height:0;flex:1; }
+  nav { order:2;display:flex;flex-direction:column;gap:4px;padding:28px 16px;min-height:0;border-left:1px solid var(--border); }
+  nav button { display:flex;gap:10px;align-items:center;border:0;border-radius:8px;background:transparent;text-align:left;color:var(--muted);padding:11px 12px;font-size:14px; }
   nav button.active { background:var(--surface-2);color:var(--text); }
   nav button.active :global(svg) { color:var(--accent); }
-  .settings-content { padding:20px 24px;min-width:0;overflow:auto;scrollbar-gutter:stable;border-left:1px solid var(--border); }
-  .settings-content > div { max-width:680px; }
-  header { display:flex;align-items:start;justify-content:space-between;gap:16px;margin-bottom:20px; }
-  h2 { margin:0;font-size:21px;font-weight:650;letter-spacing:-.03em; }
+  .settings-content { order:1;padding:32px 40px;min-width:0;overflow:auto;scrollbar-gutter:stable; }
+  .settings-content > div { max-width:720px; }
+  .settings-content > header { display:flex;align-items:start;justify-content:space-between;gap:16px;margin-bottom:24px; }
+  h2 { margin:0;font-size:24px;font-weight:650;letter-spacing:-.03em; }
   button { padding:10px 14px;border:1px solid var(--border-strong);border-radius:8px;background:var(--surface-2);color:var(--text);font-size:13px; }
   button:hover:not(:disabled) { background:var(--border); }
   .account-emblem { color:var(--text);margin-bottom:24px; }
@@ -180,12 +204,5 @@
   .archive-list strong { font-size:14px;overflow-wrap:anywhere; }
   .archive-list span,.archive-empty { font-size:13px;color:var(--muted); }
   .danger { color:var(--danger); }
-  .settings-popup { width:min(740px,calc(100vw - 32px));height:min(500px,calc(100dvh - 110px));max-width:none;max-height:none;margin:auto auto 64px 16px;padding:0;border:1px solid #363d38;border-radius:14px;background:#000;color:var(--text);box-shadow:0 18px 70px #000b;overflow:hidden; }
-  .settings-popup[open] { display:flex;flex-direction:column; }
-  .settings-popup::backdrop { background:#0005; }
-  .popup-header { margin:0;display:flex;align-items:center;justify-content:space-between;gap:20px;padding:14px 18px;border-bottom:1px solid var(--border); }
-  .popup-header h1 { margin:0;font-size:16px;font-weight:600;padding:0; }
-  .popup-header .close { display:grid;place-items:center;border:0;background:transparent;padding:6px;color:var(--muted); }
-  .close:hover { background:var(--surface-2); }
-  @media(max-width:600px) { .settings-layout { grid-template-columns:140px minmax(0,1fr); }.settings-content { padding:18px 16px; }nav button { font-size:13px;padding:10px 6px; } }
+  @media(max-width:720px) { .settings-layout { grid-template-columns:minmax(0,1fr);grid-template-rows:auto minmax(0,1fr); }nav { order:0;flex-direction:row;overflow-x:auto;padding:10px 12px;border-left:0;border-bottom:1px solid var(--border); }nav button { flex:none;font-size:13px;padding:9px 10px; }.settings-content { padding:20px 16px;border-left:0; }.screen-header { padding:10px 12px; } }
 </style>

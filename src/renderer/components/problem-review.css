@@ -18,7 +18,7 @@
   .reason { padding-top:14px;font-size:13px;border-top:1px solid var(--border);color:var(--muted); }
   details { border-top:1px solid var(--border);padding-top:14px; }
   summary { cursor:pointer;font-size:13px;color:var(--muted); }
-  blockquote { margin:14px 0;padding:16px 18px;border:1px solid var(--border);border-left:2px solid #71cfba55;border-radius:0 10px 10px 0;background:var(--surface);font-size:13px;line-height:1.8; }
+  blockquote { margin:14px 0;padding:16px 18px;border:1px solid var(--border);border-left:2px solid #bdbdbd55;border-radius:0 10px 10px 0;background:var(--surface);font-size:13px;line-height:1.8; }
   blockquote p { color:var(--muted);margin:0 0 8px; }q { display:block;font-size:14px;color:var(--text); }
   blockquote small { display:block;margin-top:9px;color:var(--subtle);font-size:13px; }
   blockquote button { display:block;padding:8px 0 0;border:0;background:transparent;color:var(--accent-strong);font-size:13px; }

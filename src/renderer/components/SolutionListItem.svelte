@@ -266,8 +266,9 @@
     transform: rotate(225deg) translate(-1px, -1px);
   }
 
+  /* One inset for everything in the body, matching the summary row above it. */
   .solution-body {
-    padding: 12px 26px 26px;
+    padding: 18px 22px 22px;
     background: color-mix(in srgb, var(--surface) 38%, transparent);
   }
 
@@ -281,7 +282,7 @@
     justify-content: space-between;
     gap: 18px;
     min-height: 62px;
-    padding: 12px 4px;
+    padding: 12px 0;
   }
 
   .category > summary > span:first-child {
@@ -305,10 +306,8 @@
     display: grid;
     grid-template-columns: repeat(2,minmax(0,1fr));
     gap: 20px;
-    padding:20px 0;
-    border:0;
-    border-radius:12px;
-    background:var(--surface);
+    padding: 0 0 20px;
+    border-bottom: 1px solid var(--border);
   }
 
   .overview > div {
@@ -588,5 +587,5 @@
   }
 
   .expanded-snapshot { display:flex;flex-wrap:wrap;gap:24px;padding:18px 0; }
-  .detail-description { max-width:75ch;margin:8px 0 22px;color:var(--text);font-size:15px;line-height:1.65;white-space:pre-wrap; }
+  .detail-description { max-width:75ch;margin:0 0 18px;color:var(--text);font-size:15px;line-height:1.65;white-space:pre-wrap; }
 </style>

@@ -33,7 +33,7 @@ function context(directory: string): BackendContext {
     providerValidation: { inspectNative: async () => ({
       available: true, connected: true, accounts: [{ providerId: "openai-subscription" }],
       models: [{
-        providerId: "openai-subscription", modelId: "gpt-5.6-sol", displayName: "Test model",
+        providerId: "openai-subscription", modelId: "gpt-6-sol", displayName: "Test model",
         defaultReasoningEffort: "medium", reasoningEfforts: [{ id: "medium", description: "Medium" }],
       }],
     }) },
@@ -119,7 +119,7 @@ function saveAttemptFixture(input: {
       (id, generation_id, research_run_id, stage_key, provider_id, model_id, reasoning_effort,
         status, request_json, wire_request_sha256, request_sha256, work_order_sha256,
         inputs_sha256, evidence_sha256, schema_sha256, terminal_kind, error_code, created_at, updated_at)
-      VALUES (?, ?, ?, 'discovery', 'openai-subscription', 'gpt-5.6-sol', 'medium',
+      VALUES (?, ?, ?, 'discovery', 'openai-subscription', 'gpt-6-sol', 'medium',
         ?, '{}', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
       .run(attemptId, `generation-${attemptId}`, runId, input.attemptStatus,
         ...Array(6).fill("0".repeat(64)), input.attemptStatus === "failed" ? "provider-error" : null,
@@ -233,7 +233,7 @@ test("generation retry carries accepted and deferred batches into one target", a
         status, request_json, wire_request_sha256, request_sha256, work_order_sha256,
         inputs_sha256, evidence_sha256, schema_sha256, terminal_kind, error_code, created_at, updated_at)
       VALUES ('retry-failed-attempt', 'retry-failed-generation', 'retry-failed-run', 'ideas',
-        'openai-subscription', 'gpt-5.6-sol', 'medium', 'failed', '{}', ?, ?, ?, ?, ?, ?,
+        'openai-subscription', 'gpt-6-sol', 'medium', 'failed', '{}', ?, ?, ?, ?, ?, ?,
         'provider-error', 'timeout', ?, ?)`).run(...Array(6).fill("0".repeat(64)), now, now);
     workflows.updateWorkItem(items[1]!.item.id, "running", { outputRefs: { runId: "retry-failed-run" } });
     workflows.updateWorkItem(items[1]!.item.id, "failed", {

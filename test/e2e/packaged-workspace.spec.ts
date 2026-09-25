@@ -12,8 +12,8 @@ test("the packaged backend reuses empty drafts without losing a setup draft or s
     const electron = await installedApp.launch(env);
     const page = await electron.firstWindow();
     await dismissSignInPrompt(page);
-    await expect(page.getByLabel("Research name", { exact: true })).toBeVisible();
-    const name = page.getByLabel("Research name", { exact: true });
+    await expect(page.getByLabel("What do you want to explore?", { exact: true })).toBeVisible();
+    const name = page.getByLabel("What do you want to explore?", { exact: true });
     await expect(name).toBeVisible();
     await name.fill("Unsaved research idea");
     const initial = await page.evaluate(() => (window as unknown as { scraply: ScraplyApi }).scraply.getWorkspace());
@@ -42,7 +42,7 @@ test("the packaged backend reuses empty drafts without losing a setup draft or s
     expect(state.threads).toHaveLength(2);
     expect(state.activeThreadId).not.toBe(initial.activeThreadId);
     await page.getByRole("button", { name: "Open thread Saved research idea", exact: true }).click();
-    await expect(name).toHaveValue("Saved research idea");
+    await expect(name).toHaveValue("Study planning");
     await newResearch.click();
     await expect(name).toHaveValue("");
     expect((await page.evaluate(() => (window as unknown as { scraply: ScraplyApi }).scraply.getWorkspace())).threads).toHaveLength(2);
