@@ -1,5 +1,5 @@
 import { installApplicationMenu, showApplicationMenu } from "./app-menu";
-import { app, BrowserWindow, dialog, ipcMain, safeStorage, shell, utilityProcess, type IpcMainInvokeEvent } from "electron";
+import { app, BrowserWindow, dialog, ipcMain, safeStorage, screen, shell, utilityProcess, type IpcMainInvokeEvent } from "electron";
 import { randomUUID } from "node:crypto";
 import { startBrowserDevHost, type AppRequestHandler } from "./browser-dev";
 import { readFileSync, existsSync, writeFileSync } from "node:fs";
@@ -57,6 +57,7 @@ import { createCredentialStore } from "./credential-store";
 import { configureCredentialProfile } from "./credential-profile";
 import { revokeNativeAccount } from "./native-account";
 import { isAllowedRendererUrl, parseExternalHttpsUrl, rendererEntryUrl } from "./security";
+import { readWindowState, saveWindowState } from "./window-state";
 
 const isDev = !app.isPackaged;
 const browserDev = isDev && process.env.SCRAPLY_BROWSER_DEV === "1";
@@ -327,8 +328,13 @@ function createWindow(): void {
     join(__dirname, "../renderer/index.html"),
     isDev ? process.env.ELECTRON_RENDERER_URL : undefined,
   );
+  const hideWindow = process.env.SCRAPLY_TEST_HIDE_WINDOWS === "1";
+  // Reopen at the size and position the user left, maximized if it was. Each profile keeps its own file.
+  const windowStatePath = join(app.getPath("userData"), "window-state.json");
+  const savedState = readWindowState(windowStatePath, screen.getAllDisplays().map(display => display.workArea));
   mainWindow = new BrowserWindow({
-    show: process.env.SCRAPLY_TEST_HIDE_WINDOWS !== "1",
+    // Shown below, after the saved placement is applied, so the window does not visibly resize.
+    show: false,
     width: 1280,
     height: 860,
     minWidth: 960,
@@ -341,8 +347,8 @@ function createWindow(): void {
     ...(existsSync(iconPath) ? { icon: iconPath } : {}),
     webPreferences: {
       // Keep hidden test windows rendering so layout and screenshot checks remain meaningful.
-      offscreen: process.env.SCRAPLY_TEST_HIDE_WINDOWS === "1",
-      backgroundThrottling: process.env.SCRAPLY_TEST_HIDE_WINDOWS !== "1",
+      offscreen: hideWindow,
+      backgroundThrottling: !hideWindow,
       preload: join(__dirname, "../preload/index.js"),
       contextIsolation: true,
       nodeIntegration: false,
@@ -350,7 +356,18 @@ function createWindow(): void {
     },
   });
   const createdWindow = mainWindow;
+  // setBounds lands closer to the saved size than constructor bounds with the hidden title bar.
+  if (savedState) createdWindow.setBounds(savedState.bounds);
+  if (!hideWindow) {
+    if (savedState?.maximized) createdWindow.maximize();
+    createdWindow.show();
+  }
+  const initialNormalBounds = createdWindow.getNormalBounds();
   installApplicationMenu(createdWindow);
+  createdWindow.on("close", () => {
+    try { saveWindowState(windowStatePath, createdWindow, savedState?.bounds, initialNormalBounds); }
+    catch (error) { logger?.log({ level: "warn", component: "main", event: "window-state-save-failed", error }); }
+  });
   createdWindow.on("closed", () => {
     if (mainWindow === createdWindow) mainWindow = null;
   });
