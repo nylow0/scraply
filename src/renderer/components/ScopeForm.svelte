@@ -371,6 +371,7 @@
   let setupForm: HTMLFormElement;
   let configurationTrigger: HTMLElement | null = null;
   let settingsSection = $state<SettingsSection>("research");
+  let instructionStage = $state<"research" | "ideas" | "review">("research");
   let modeHelp = $state<"vibe" | "babysit" | null>(null);
   let advancedSettingsButton: HTMLButtonElement;
 
@@ -424,7 +425,7 @@
       configuration.showModal();
     }
     await tick();
-    (field ?? configuration.querySelector<HTMLElement>(".settings-panel:not([hidden]) input, .settings-panel:not([hidden]) select, .settings-panel:not([hidden]) textarea"))?.focus();
+    (field ?? configuration.querySelector<HTMLElement>(".settings-panel:not([inert]) :is(input, select, textarea):not([hidden])"))?.focus();
   }
 
   // Reveal and focus a blocked field even when its settings or disclosure are closed.
@@ -591,7 +592,8 @@
       </nav>
       <div class="settings-content">
         {#each visiblePreviewIssues.filter((issue) => issue.path[0] !== "limits" && issue.path[0] !== "ideas") as issue (issue.path.join(".") + issue.code)}<p class="field-error" role="alert">{issue.message}</p>{/each}
-        <section class="settings-panel" aria-label="Research configuration" hidden={settingsSection !== "research"}>
+        <div class="settings-panels">
+        <section class="settings-panel" aria-label="Research configuration" inert={settingsSection !== "research"}>
           <h3>Search</h3>    <div class="run-settings">
       {#if researchMode === "explore-market"}<label class="run-setting search-setting"><span>Search provider</span><div class="provider-select"><ProviderLogo provider={searchProvider} size={17} /><select aria-label="Search provider" data-field="searchProvider" bind:value={searchProvider}><option value="exa">Exa</option><option value="perplexity">Perplexity</option></select></div><small>{selectedSearchName}: {selectedSearchValidation.valid ? "Connected" : selectedSearchValidation.error ?? "Connection unavailable"}</small></label>{/if}
     </div>
@@ -603,7 +605,7 @@
 
 
         </section>
-        <section class="settings-panel" aria-label="Work limits configuration" hidden={settingsSection !== "limits"}>
+        <section class="settings-panel" aria-label="Work limits configuration" inert={settingsSection !== "limits"}>
           <h3>Work limits</h3><p class="help">Work stops at these limits. They do not guarantee completion.</p>
           {#if useWorkflow}        <div class="advanced-body limits-grid">
           <label><span>Time limit (minutes)</span><input aria-label="Time limit" data-field="maxRunMinutes" type="number" min="5" max="240" step="1" bind:value={maxRunMinutes} aria-invalid={Boolean(errors.maxRunMinutes)} />{#if errors.maxRunMinutes}<small class="field-error">{errors.maxRunMinutes}</small>{/if}</label>
@@ -614,14 +616,19 @@
 {:else}<label><span>Time limit (minutes)</span><input type="number" min="5" max="240" bind:value={maxRunMinutes} /></label>{/if}
           {#if workflowPreviewValid && workflowPreview}<p class="help">Minimum required: {workflowPreview.minimumWork.modelCalls} model calls and {workflowPreview.minimumWork.searches} {workflowPreview.minimumWork.searches === 1 ? "search" : "searches"}. Work stops at your saved limits.</p>{/if}
         </section>
-        <section class="settings-panel" aria-label="Custom instructions" hidden={settingsSection !== "instructions"}>
-          <h3>Custom instructions</h3>        <div class="advanced-body">
-          <label><span>Research instructions</span><textarea bind:value={researchInstruction} maxlength="20000" rows="3" placeholder="Optional context for research"></textarea></label>
-          <label><span>Ideas instructions</span><textarea bind:value={ideasInstruction} maxlength="20000" rows="3" placeholder="Optional context for generation"></textarea></label>
-          <label><span>Review instructions</span><textarea bind:value={reviewInstruction} maxlength="20000" rows="3" placeholder="Optional context for review"></textarea></label>
-        </div>
-
+        <section class="settings-panel instructions-panel" aria-label="Custom instructions" inert={settingsSection !== "instructions"}>
+          <h3>Custom instructions</h3>
+          <!-- One editor per stage keeps this tab as short as the others; the dot marks stages that have text. -->
+          <div class="instruction-stages" role="group" aria-label="Instruction stage">
+            {#each [["research", "Research", researchInstruction], ["ideas", "Ideas", ideasInstruction], ["review", "Review", reviewInstruction]] as const as [stage, label, value] (stage)}
+              <button type="button" aria-pressed={instructionStage === stage} onclick={() => instructionStage = stage}>{label}{#if value.trim()}<span class="filled-dot" aria-hidden="true"></span>{/if}</button>
+            {/each}
+          </div>
+          <textarea aria-label="Research instructions" hidden={instructionStage !== "research"} bind:value={researchInstruction} maxlength="20000" placeholder="Optional context for research"></textarea>
+          <textarea aria-label="Ideas instructions" hidden={instructionStage !== "ideas"} bind:value={ideasInstruction} maxlength="20000" placeholder="Optional context for generation"></textarea>
+          <textarea aria-label="Review instructions" hidden={instructionStage !== "review"} bind:value={reviewInstruction} maxlength="20000" placeholder="Optional context for review"></textarea>
         </section>
+        </div>
       </div>
       <div class="dialog-footer"><span>Changes apply to this research.</span><button type="button" onclick={() => configuration.close()}>Done</button></div>
     </dialog>
@@ -710,14 +717,28 @@
   .connection-warning { display:flex;flex-wrap:wrap;gap:4px 12px;margin-top:6px;font-size:13px;color:var(--danger);align-items:center; }
   .settings-dialog { width:min(720px,calc(100vw - 32px));max-height:calc(100dvh - 32px);padding:0;margin:auto;border-radius:var(--panel-radius);color:var(--text); }
   .settings-dialog[open] { display:flex;flex-direction:column; }
-  .settings-dialog header { display:flex;align-items:center;justify-content:space-between;padding:20px 24px 12px;gap:16px; }
+  /* The close button is a corner control, so it sits closer to the edge than the content padding. */
+  .settings-dialog header { display:flex;align-items:center;justify-content:space-between;padding:20px 14px 12px 24px;gap:16px; }
   .settings-dialog h2 { margin:0;font-size:22px;letter-spacing:-.5px; }
-  .settings-dialog header button { border:0;background:transparent;display:grid;place-items:center; }
+  .settings-dialog header button { width:32px;height:32px;padding:0;border:0;border-radius:8px;background:transparent;display:grid;place-items:center; }
   .settings-dialog nav { display:flex;flex-wrap:wrap;gap:4px;padding:0 24px 12px;border-bottom:1px solid var(--border); }
   .settings-dialog nav button { border:0;background:none;color:var(--muted); }
   .settings-dialog nav button[aria-pressed="true"] { color:var(--accent-strong);background:rgb(255 255 255 / .1); }
   .settings-content { overflow:auto;min-height:0;padding:24px;scroll-padding-block:24px; }
-  .settings-panel[hidden] { display:none; }
+  /* Every tab shares one grid cell, so the dialog takes the tallest tab's height and keeps it while switching.
+     Inactive tabs stay in layout but are inert and invisible. */
+  .settings-panels { display:grid; }
+  .settings-panel { grid-area:1/1;min-width:0; }
+  .settings-panel[inert] { visibility:hidden; }
+  /* The instructions editor stretches to the height the other tabs set; its minimum stays below theirs. */
+  .instructions-panel { display:flex;flex-direction:column;gap:12px; }
+  .instructions-panel h3 { margin-bottom:4px; }
+  .instructions-panel textarea { flex:1;min-height:120px; }
+  .instruction-stages { display:flex;align-self:flex-start;gap:2px;padding:3px;border:1px solid var(--border);border-radius:10px; }
+  .instruction-stages button { display:flex;align-items:center;gap:6px;padding:5px 12px;border:0;border-radius:7px;background:none;color:var(--muted);font-size:13px; }
+  .instruction-stages button:hover:not([aria-pressed="true"]) { color:var(--text); }
+  .instruction-stages button[aria-pressed="true"] { color:var(--text);background:rgb(255 255 255 / .1); }
+  .filled-dot { width:6px;height:6px;border-radius:50%;background:var(--accent-strong); }
   .settings-panel h3 { margin:0 0 16px;font-size:16px;font-weight:600; }
   .settings-panel .help { margin:0 0 16px; }
   .model-setting,.search-setting { grid-column:1/-1; }

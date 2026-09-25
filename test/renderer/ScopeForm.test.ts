@@ -682,9 +682,13 @@ describe("settings surfaces preserve launch configuration", () => {
     }
     if (researchMode === "known-problem") await fireEvent.click(view.getByRole("button", { name: "Advanced settings" }));
     await fireEvent.click(view.getByRole("button", { name: "Instructions" }));
-    for (const [label, value] of [["Research instructions", "Research context"], ["Ideas instructions", "Generate carefully"], ["Review instructions", "Check evidence"]]) {
-      await fireEvent.input(view.getByLabelText(label!), { target: { value } });
+    // Instructions show one stage at a time; each stage keeps its own text.
+    for (const [stage, value] of [["Research", "Research context"], ["Ideas", "Generate carefully"], ["Review", "Check evidence"]] as const) {
+      await fireEvent.click(view.getByRole("button", { name: stage }));
+      await fireEvent.input(view.getByLabelText(`${stage} instructions`), { target: { value } });
     }
+    await fireEvent.click(view.getByRole("button", { name: "Research" }));
+    expect((view.getByLabelText("Research instructions") as HTMLTextAreaElement).value).toBe("Research context");
     await fireEvent.click(view.getByRole("button", { name: "Work limits" }));
     await fireEvent.input(view.getByLabelText("Time limit"), { target: { value: "80" } });
     await fireEvent.input(view.getByLabelText("Maximum model calls"), { target: { value: "200" } });
