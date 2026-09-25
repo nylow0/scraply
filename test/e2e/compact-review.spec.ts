@@ -16,15 +16,11 @@ test("desktop navigation and compact idea review preserve dismissed ideas", asyn
   let app: ElectronApplication | undefined = await launch();
   try {
     let page = await app.firstWindow();
-    await expect(page.getByRole("navigation", { name: "Application menu" })).toBeVisible();
-    expect(await app.evaluate(({ Menu }) => Menu.getApplicationMenu()?.items.map((item) => item.label))).toEqual(["File", "Edit", "View", "Help"]);
+    // The top bar shows the brand instead of menu buttons; the hidden menu still carries the shortcuts.
+    await expect(page.locator(".desktop-bar")).toContainText("Scraply");
+    await expect(page.getByRole("button", { name: "File", exact: true })).toHaveCount(0);
+    expect(await app.evaluate(({ Menu }) => Menu.getApplicationMenu()?.items.map((item) => item.label))).toEqual(["File", "Edit", "View"]);
     expect(await app.evaluate(({ Menu }) => Menu.getApplicationMenu()?.items[1]?.submenu?.items.map((item) => item.role))).toContain("paste");
-    const popup = app.evaluate(({ Menu }) => new Promise<string[]>((resolve) => {
-      const menu = Menu.getApplicationMenu()!.items[0]!.submenu!;
-      menu.once("menu-will-show", () => setTimeout(() => { menu.closePopup(); resolve(menu.items.map((item) => item.label)); }, 100));
-    }));
-    await page.getByRole("button", { name: "File", exact: true }).click();
-    expect(await popup).toContain("New research");
     await app.evaluate(({ Menu, BrowserWindow }) => {
       const item = Menu.getApplicationMenu()!.items[0]!.submenu!.items[0]!;
       item.click(undefined, BrowserWindow.getAllWindows()[0], undefined);
