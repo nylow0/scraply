@@ -159,7 +159,7 @@
 <style>
   .settings-screen { position:fixed;inset:36px 0 0;z-index:20;display:flex;flex-direction:column;background:var(--bg);color:var(--text); }
   .settings-screen[hidden] { display:none; }
-  /* Full width: content on the left under the Back header, the section list as a column on the right edge.
+  /* Full width: content centred in the space left of the section list, which is a column on the right edge.
      The list stays first in the DOM so keyboard users reach it first. */
   .screen-header { display:flex;align-items:center;gap:14px;padding:12px 24px 12px 32px;border-bottom:1px solid var(--border); }
   .screen-header h1 { margin:0;font-size:20px;font-weight:650;letter-spacing:-.02em; }
@@ -172,7 +172,7 @@
   nav button.active { background:var(--surface-2);color:var(--text); }
   nav button.active :global(svg) { color:var(--accent); }
   .settings-content { order:1;padding:32px 40px;min-width:0;overflow:auto;scrollbar-gutter:stable; }
-  .settings-content > div { max-width:720px; }
+  .settings-content > * { max-width:720px;margin-inline:auto; }
   .settings-content > header { display:flex;align-items:start;justify-content:space-between;gap:16px;margin-bottom:24px; }
   h2 { margin:0;font-size:24px;font-weight:650;letter-spacing:-.03em; }
   button { padding:10px 14px;border:1px solid var(--border-strong);border-radius:8px;background:var(--surface-2);color:var(--text);font-size:13px; }

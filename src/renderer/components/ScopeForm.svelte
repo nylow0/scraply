@@ -638,10 +638,10 @@
 <style>
   .scope-page,form { height:100%;min-height:0; }
   /* The launch panel grows a little with the page so its paired selects keep readable labels. */
-  /* The brief starts at the header title's edge; the launch panel stays docked at the right edge of the page. */
+  /* The brief is centred in the space beside the launch panel, which stays docked at the page's right edge. */
   form { display:grid;grid-template-columns:minmax(0,1fr) clamp(300px,26cqi,344px); }
   .setup-scroll { flex:1;min-height:0;overflow:auto;scroll-padding-block:24px; }
-  .setup-body { width:min(100%,calc(888px + var(--page-gutter)));padding:28px 32px 28px var(--page-gutter);display:grid;gap:24px; }
+  .setup-body { width:min(100%,880px);margin-inline:auto;padding:28px 32px;display:grid;gap:24px; }
   .context-fields { display:grid;grid-template-columns:1fr 1fr;gap:20px; }
   .context-fields { padding-top:4px; }
   .context-fields > :last-child:nth-child(odd) { grid-column:1/-1; }
@@ -753,7 +753,7 @@
   @container page (max-width:840px) {
     form { display:block;overflow:auto; }
     .setup-scroll { overflow:visible; }
-    .launch-sidebar { overflow:visible;margin:0 32px 20px var(--page-gutter);padding:24px;display:grid;grid-template-columns:1fr 1fr;gap:24px; }
+    .launch-sidebar { overflow:visible;margin:0 20px 20px;padding:24px;display:grid;grid-template-columns:1fr 1fr;gap:24px; }
     .main-settings { border-top:0;padding-top:0; }
     .launch-content { grid-column:1/-1;margin-top:0;padding-top:0; }
   }
