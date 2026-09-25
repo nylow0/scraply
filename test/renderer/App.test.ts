@@ -638,7 +638,7 @@ describe("App workspace coordination", () => {
     const welcome = await view.findByRole("dialog", { name: "Welcome to Scraply" });
     await fireEvent.click(within(welcome).getByRole("button", { name: "Sign in with OpenAI" }));
     await within(welcome).findByText("Finish signing in in your browser");
-    await fireEvent.cancel(welcome);
+    await fireEvent(welcome, new Event("cancel", { cancelable: true }));
 
     await waitFor(() => expect(cancelNativeLogin).toHaveBeenCalledWith({ loginId: login.loginId, providerId: login.providerId }));
     await waitFor(() => expect(view.queryByRole("dialog", { name: "Welcome to Scraply" })).toBeNull());
