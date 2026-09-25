@@ -13,6 +13,7 @@
   import DesktopBar from "./components/DesktopBar.svelte";
   import Icon from "./components/Icon.svelte";
   import Settings from "./components/Settings.svelte";
+  import WelcomeSignIn from "./components/WelcomeSignIn.svelte";
   import Sidebar from "./components/Sidebar.svelte";
   import ScopeForm from "./components/ScopeForm.svelte";
   import ProblemCheckpoint from "./components/ProblemCheckpoint.svelte";
@@ -52,6 +53,11 @@
   let nativeLoginEpoch = 0;
   let settings: Settings | undefined;
   let settingsOpen = $state(false);
+  // "Not now" hides the sign-in prompt until the next launch or the next sign-out.
+  let signInDismissed = $state(false);
+  // Only once the runtime is ready (available) and reports no account, so a signed-in user never sees it flash during startup checks.
+  let signInPromptOpen = $derived(!!workspace && workspace.validation.native.available && !workspace.validation.native.connected
+    && !signInDismissed && !settingsOpen);
   let sidebarVisible = $state(true);
   let narrowViewport = $state(typeof window !== "undefined" && typeof window.matchMedia === "function" && window.matchMedia("(max-width: 720px)").matches);
   let mobileSidebarOpen = $state(false);
@@ -653,6 +659,7 @@
   }
   async function logoutNativeAccount(providerId: string) {
     await action(async () => setWorkspace(await window.scraply.logoutNativeAccount(providerId)));
+    signInDismissed = false;
   }
   async function resumeResearch(runId: string) {
     await action(async () => {
@@ -985,6 +992,13 @@
     onRetry={retryConnections} onConnectNative={connectNativeAccount} onCancelNative={cancelNativeLogin}
     onRefreshNative={refreshNativeAccount} onLogoutNative={logoutNativeAccount}
     onOpenData={openDataFolder} onOpenLogs={openLogsFolder} onRestore={(id) => archiveThread(id, false)} onDelete={deleteThread} />
+  {#if signInPromptOpen}
+    <!-- First launch creates an empty draft, so "returning" means some research has moved past setup. -->
+    <WelcomeSignIn returning={workspace?.threads.some((thread) => thread.status !== "configuring") ?? false} {busy} {nativeLogin}
+      error={feedback?.tone === "error" ? feedback.text : null}
+      onConnect={(method) => void connectNativeAccount("openai-subscription", method)}
+      onCancel={() => void cancelNativeLogin()} onDismiss={() => signInDismissed = true} />
+  {/if}
 </div>
 
 <style>

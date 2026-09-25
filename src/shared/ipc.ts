@@ -57,7 +57,6 @@ export const HealthResponseSchema = z.object({ ok: z.boolean(), version: z.strin
 export const CreateThreadRequestSchema = z.object({ title: ShortTextSchema.optional() });
 export const SelectThreadRequestSchema = z.object({ threadId: EntityIdSchema });
 export const AppCommandSchema = z.enum(["new-research", "settings", "toggle-sidebar", "back", "forward", "export-research"]);
-export const AppMenuRequestSchema = z.object({ menu: z.enum(["File", "Edit", "View", "Help"]), x: z.number().int().min(0).max(20000), y: z.number().int().min(0).max(20000) }).strict();
 export const DiscardIdeaRequestSchema = z.object({ threadId: EntityIdSchema, ideaId: EntityIdSchema, discarded: z.boolean() }).strict();
 export const ArchiveThreadRequestSchema = z.object({ threadId: EntityIdSchema, archived: z.boolean() }).strict();
 export const GenerateTitleRequestSchema = z.object({
@@ -348,7 +347,7 @@ export const IPC_CHANNELS = {
   GET_WORKFLOW: "scraply:get-workflow", COMMAND_WORKFLOW: "scraply:command-workflow",
   GET_IDEA_CONVERSATION: "scraply:get-idea-conversation", SUBMIT_IDEA_TURN: "scraply:submit-idea-turn",
   SELECT_IDEA_VERSION: "scraply:select-idea-version",
-  APP_COMMAND: "scraply:app-command", SHOW_APP_MENU: "scraply:show-app-menu", DISCARD_IDEA: "scraply:discard-idea",
+  APP_COMMAND: "scraply:app-command", DISCARD_IDEA: "scraply:discard-idea",
   SELECT_OPTION: "scraply:select-option", SAVE_DECISION: "scraply:save-decision", EVIDENCE_FOLLOW_UP: "scraply:evidence-follow-up",
   EVIDENCE_REASSESSMENT: "scraply:evidence-reassessment",
   REVIEW_OPPORTUNITIES: "scraply:review-opportunities", EDIT_OPPORTUNITY_MEMBERSHIP: "scraply:edit-opportunity-membership",

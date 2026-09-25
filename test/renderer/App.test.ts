@@ -596,6 +596,77 @@ describe("App workspace coordination", () => {
     expect(view.getByText("dany@example.test")).toBeTruthy();
   });
 
+  test("welcomes a first-time user and signs in from the prompt", async () => {
+    // An empty profile: the app creates a first draft thread on load.
+    const empty = workspace("alpha");
+    empty.threads = [];
+    empty.activeThreadId = null;
+    empty.validation.native = { available: true, connected: false, accounts: [] };
+    const draft = workspace("alpha");
+    draft.threads = draft.threads.slice(0, 1);
+    draft.validation.native = { available: true, connected: false, accounts: [] };
+    const connected = workspace("alpha");
+    connected.validation.native = { available: true, connected: true, accounts: [{ providerId: "openai-subscription" }] };
+    const startNativeLogin = vi.fn().mockResolvedValue({ loginId: "login-welcome", providerId: "openai-subscription", method: "browser" as const });
+    installApi({
+      getWorkspace: vi.fn().mockResolvedValue(empty),
+      createThread: async () => ({ workspace: draft }),
+      startNativeLogin,
+      completeNativeLogin: vi.fn().mockResolvedValue({ pending: false as const, workspace: connected }),
+    });
+    const view = render(App);
+
+    const welcome = await view.findByRole("dialog", { name: "Welcome to Scraply" });
+    await fireEvent.click(within(welcome).getByRole("button", { name: "Sign in with OpenAI" }));
+    expect(startNativeLogin).toHaveBeenCalledWith({ providerId: "openai-subscription", method: "browser" });
+    await waitFor(() => expect(view.queryByRole("dialog", { name: "Welcome to Scraply" })).toBeNull());
+  });
+
+  test("Escape dismisses the welcome prompt and cancels an active sign-in", async () => {
+    const signedOut = workspace("alpha");
+    signedOut.validation.native = { available: true, connected: false, accounts: [] };
+    const login = { loginId: "login-welcome", providerId: "openai-subscription", method: "browser" as const };
+    const pending = deferred<{ pending: true }>();
+    const cancelNativeLogin = vi.fn().mockResolvedValue(signedOut);
+    installApi({
+      getWorkspace: vi.fn().mockResolvedValue(signedOut),
+      startNativeLogin: vi.fn().mockResolvedValue(login),
+      completeNativeLogin: vi.fn().mockReturnValue(pending.promise),
+      cancelNativeLogin,
+    });
+    const view = render(App);
+    const welcome = await view.findByRole("dialog", { name: "Welcome to Scraply" });
+    await fireEvent.click(within(welcome).getByRole("button", { name: "Sign in with OpenAI" }));
+    await within(welcome).findByText("Finish signing in in your browser");
+    await fireEvent(welcome, new Event("cancel", { cancelable: true }));
+
+    await waitFor(() => expect(cancelNativeLogin).toHaveBeenCalledWith({ loginId: login.loginId, providerId: login.providerId }));
+    await waitFor(() => expect(view.queryByRole("dialog", { name: "Welcome to Scraply" })).toBeNull());
+    pending.resolve({ pending: true });
+  });
+
+  test("asks a returning user to sign in again after signing out, until they choose not now", async () => {
+    const connected = workspace("alpha");
+    connected.validation.native = { available: true, connected: true, accounts: [{ providerId: "openai-subscription", email: "dany@example.test" }] };
+    const signedOut = workspace("alpha");
+    signedOut.threads[0]!.status = "problems-ready";
+    signedOut.validation.native = { available: true, connected: false, accounts: [] };
+    installApi({ getWorkspace: vi.fn().mockResolvedValue(connected), logoutNativeAccount: vi.fn().mockResolvedValue(signedOut) });
+    const view = render(App);
+    await fireEvent.click(await view.findByRole("button", { name: "Settings" }));
+    expect(view.queryByRole("dialog", { name: "Welcome back" })).toBeNull();
+
+    await fireEvent.click(await view.findByRole("button", { name: "Sign out" }));
+    // The prompt waits for Settings to close rather than stacking on top of it.
+    await waitFor(() => expect(view.getByText("Connect OpenAI to start research")).toBeTruthy());
+    expect(view.queryByRole("dialog", { name: "Welcome back" })).toBeNull();
+    await fireEvent.click(view.getByRole("button", { name: "Close settings" }));
+
+    const welcome = await view.findByRole("dialog", { name: "Welcome back" });
+    await fireEvent.click(within(welcome).getByRole("button", { name: "Not now" }));
+    expect(view.queryByRole("dialog", { name: "Welcome back" })).toBeNull();
+  });
+
   test("reconciles model discovery that is still pending when sign-in finishes", async () => {
     const disconnected = workspace("alpha");
     disconnected.models = [];
@@ -773,7 +844,6 @@ function installApi(overrides: Partial<ScraplyApi>): void {
     selectThread: noWorkspace,
     archiveThread: noWorkspace,
     discardIdea: noWorkspace,
-    showAppMenu: async () => undefined,
     onAppCommand: () => () => undefined,
     generateTitle: vi.fn(async () => ({ title: "Generated research title" })),
     deleteThread: noWorkspace,
