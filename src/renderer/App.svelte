@@ -832,9 +832,9 @@
   }
 </script>
 
-<DesktopBar canBack={backIndex !== -1 && !busy} canForward={forwardIndex !== -1 && !busy} onBack={() => navigateHistory(-1)} onForward={() => navigateHistory(1)} onToggle={toggleNavigation} navigationOpen={navigationOpen} compact={narrowViewport} />
+<div inert={settingsOpen}><DesktopBar canBack={backIndex !== -1 && !busy} canForward={forwardIndex !== -1 && !busy} onBack={() => navigateHistory(-1)} onForward={() => navigateHistory(1)} onToggle={toggleNavigation} navigationOpen={navigationOpen} compact={narrowViewport} /></div>
 <div class="app-shell" class:sidebar-hidden={!navigationOpen}>
-  {#if narrowViewport && mobileSidebarOpen}<button class="sidebar-backdrop" aria-label="Close navigation" onclick={closeMobileNavigation}></button>{/if}
+  {#if narrowViewport && mobileSidebarOpen}<button class="sidebar-backdrop" aria-label="Close navigation" inert={settingsOpen} onclick={closeMobileNavigation}></button>{/if}
   <div id="research-navigation" class="sidebar-area" class:collapsed={!navigationOpen} inert={settingsOpen}>
   <Sidebar
     visible={navigationOpen}

@@ -268,11 +268,12 @@
     return error?.startsWith("Checking ") === true || error === "Native runtime is starting";
   }
 
+  let visiblePreviewIssues = $derived(validationAttempted ? (workflowPreview?.fieldErrors ?? []) : []);
   function previewIssue(path: string): string | null {
-    return workflowPreview?.fieldErrors.find((issue) => issue.path.join(".") === path)?.message ?? null;
+    return visiblePreviewIssues.find((issue) => issue.path.join(".") === path)?.message ?? null;
   }
   // Ideas settings live in the run panel, so any preview issue under "ideas" (model or review model) is shown there.
-  let ideasPreviewIssue = $derived(workflowPreview?.fieldErrors.find((issue) => issue.path[0] === "ideas")?.message ?? null);
+  let ideasPreviewIssue = $derived(visiblePreviewIssues.find((issue) => issue.path[0] === "ideas")?.message ?? null);
 
   function missingFields(): Record<string, string> {
     const next: Record<string, string> = {};
@@ -403,16 +404,16 @@
   };
   let customInstructionCount = $derived([researchInstruction, ideasInstruction, reviewInstruction].filter((value) => value.trim()).length);
   let configurationIssues = $derived(Object.keys(errors).filter((key) => !["domain", "knownProblem"].includes(key)).length
-    + (workflowPreview?.fieldErrors.length ?? 0) + Number(modelChoiceRequired) + Number(reasoningChoiceRequired));
+    + visiblePreviewIssues.length + Number(modelChoiceRequired) + Number(reasoningChoiceRequired));
   let blockingMessage = $derived.by(() => {
     if (!providersReady) return connectionsChecking ? "Checking connections…" : connectionNeedsAttention ? "Connect the required providers to start." : modelChoiceRequired ? "Choose an available model to start." : "Choose an available reasoning effort to start.";
     const firstField = Object.keys(missing)[0];
     if (firstField) return firstField === "domain" ? "Add a topic to your brief to start."
       : firstField === "knownProblem" ? "Describe the problem to start." : missing[firstField];
-    if (previewError) return previewError;
-    const previewFieldError = workflowPreview?.fieldErrors[0];
+    if (validationAttempted && previewError) return previewError;
+    const previewFieldError = visiblePreviewIssues[0];
     if (previewFieldError) return previewFieldError.message;
-    if (useWorkflow && !workflowPreviewValid) return "Checking the launch plan…";
+    if (useWorkflow && !workflowPreview && !previewError) return "Checking the launch plan…";
     return null;
   });
 
@@ -430,7 +431,7 @@
   async function revealBlockingField() {
     validationAttempted = true;
     let key = modelChoiceRequired ? "model" : reasoningChoiceRequired ? "reasoning" : Object.keys(missing)[0];
-    const previewField = workflowPreview?.fieldErrors[0];
+    const previewField = visiblePreviewIssues[0];
     if (!key && previewField) {
       const issue = previewField.path.join(".");
       key = previewFields[issue];
@@ -568,7 +569,7 @@
         <div class="launch-status" role="status">
           {#if blockingMessage}<span>{blockingMessage}</span>{:else if useWorkflow}<span>{launchSteps()}.</span>{/if}
           {#if configurationIssues || missing.domain || missing.knownProblem}<button type="button" class="text-action" onclick={revealBlockingField}>{modelChoiceRequired ? "Choose model" : configurationIssues ? "Review settings" : "Edit brief"}</button>{/if}
-          {#if previewError}<button type="button" class="text-action" onclick={() => previewAttempt += 1}>Retry preview</button>{/if}
+          {#if validationAttempted && previewError}<button type="button" class="text-action" onclick={() => previewAttempt += 1}>Retry preview</button>{/if}
           {#if saved}<span>Saved</span>{/if}
         </div>
         {#if connectionNeedsAttention}
@@ -589,7 +590,7 @@
         {#if useWorkflow}<button type="button" aria-pressed={settingsSection === "instructions"} onclick={() => settingsSection = "instructions"}>Instructions</button>{/if}
       </nav>
       <div class="settings-content">
-        {#each workflowPreview?.fieldErrors.filter((issue) => issue.path[0] !== "limits" && issue.path[0] !== "ideas") ?? [] as issue (issue.path.join(".") + issue.code)}<p class="field-error" role="alert">{issue.message}</p>{/each}
+        {#each visiblePreviewIssues.filter((issue) => issue.path[0] !== "limits" && issue.path[0] !== "ideas") as issue (issue.path.join(".") + issue.code)}<p class="field-error" role="alert">{issue.message}</p>{/each}
         <section class="settings-panel" aria-label="Research configuration" hidden={settingsSection !== "research"}>
           <h3>Search</h3>    <div class="run-settings">
       {#if researchMode === "explore-market"}<label class="run-setting search-setting"><span>Search provider</span><div class="provider-select"><ProviderLogo provider={searchProvider} size={17} /><select aria-label="Search provider" data-field="searchProvider" bind:value={searchProvider}><option value="exa">Exa</option><option value="perplexity">Perplexity</option></select></div><small>{selectedSearchName}: {selectedSearchValidation.valid ? "Connected" : selectedSearchValidation.error ?? "Connection unavailable"}</small></label>{/if}
@@ -718,8 +719,7 @@
   .settings-panel h3 { margin:0 0 16px;font-size:16px;font-weight:600; }
   .settings-panel .help { margin:0 0 16px; }
   .model-setting,.search-setting { grid-column:1/-1; }
-  .ideas-settings,.advanced-body { display:grid;gap:16px; }
-  .ideas-settings { margin-bottom:16px; }
+  .advanced-body { display:grid;gap:16px; }
   .output-settings { margin-top:20px;padding-top:20px;border-top:1px solid var(--border); }
   .provider-select { position:relative; }
   .provider-select :global(svg) { position:absolute;left:12px;top:50%;transform:translateY(-50%);pointer-events:none; }
