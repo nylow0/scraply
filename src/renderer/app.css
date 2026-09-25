@@ -89,7 +89,8 @@ select {
   font: inherit;
 }
 
-textarea { resize:none;overflow:auto; }
+/* Text fields keep a fixed size everywhere; longer text scrolls inside them. */
+textarea { resize:none !important;overflow:auto; }
 input,textarea,select { font-size:13px;line-height:1.5; }
 button { line-height:1.4; }
 

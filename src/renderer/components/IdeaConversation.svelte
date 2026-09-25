@@ -302,7 +302,7 @@
   .intent-buttons { display:flex;gap:7px;flex-wrap:wrap;margin-bottom:12px; }
   .intent-buttons button { background:transparent;border:1px solid var(--border);border-radius:7px;padding:7px 10px;color:var(--muted);font-size:12px; }
   .intent-buttons button.active { border-color:#bdbdbd77;color:var(--accent);background:rgb(255 255 255 / .05); }
-  textarea { width:100%;min-height:88px;background:#080a09;border:1px solid var(--border-strong);border-radius:8px;padding:11px;color:var(--text);resize:vertical; }
+  textarea { width:100%;min-height:88px;background:#080a09;border:1px solid var(--border-strong);border-radius:8px;padding:11px;color:var(--text); }
   .research-choice { display:flex;align-items:flex-start;gap:10px;margin:11px 0;padding:11px 12px;border:1px solid var(--border);border-radius:8px;color:var(--text);font-size:13px;cursor:pointer; }
   .research-choice input { width:16px;height:16px;accent-color:var(--accent);margin:2px 0 0;flex:none; }
   .research-choice span { display:grid;gap:3px; }.research-choice small { color:var(--muted);font-size:12px;line-height:1.45; }

@@ -667,6 +667,9 @@ describe("settings surfaces preserve launch configuration", () => {
     await fireEvent.input(view.getByLabelText("Boundaries"), { target: { value: "No hardware\nNo migration" } });
     expect(view.getByLabelText("Solutions per problem").closest("aside")).toBeTruthy();
     await fireEvent.input(view.getByLabelText("Solutions per problem"), { target: { value: "5" } });
+    // Vibe (the default mode) shows the ideas model in the run panel, not in Advanced settings.
+    await fireEvent.change(view.getByLabelText("Ideas model"), { target: { value: modelRefKey(ideasModel) } });
+    expect(view.getByLabelText("Ideas model").closest("aside")).toBeTruthy();
     if (researchMode === "explore-market") {
       await fireEvent.change(view.getByLabelText("Research depth"), { target: { value: "deep" } });
       await fireEvent.click(view.getByRole("button", { name: "Advanced settings" }));
@@ -674,8 +677,6 @@ describe("settings surfaces preserve launch configuration", () => {
       await fireEvent.change(view.getByLabelText("Search provider"), { target: { value: "perplexity" } });
     }
     if (researchMode === "known-problem") await fireEvent.click(view.getByRole("button", { name: "Advanced settings" }));
-    await fireEvent.click(view.getByRole("button", { name: "Ideas & review" }));
-    await fireEvent.change(view.getByLabelText("Ideas model"), { target: { value: modelRefKey(ideasModel) } });
     await fireEvent.click(view.getByRole("button", { name: "Instructions" }));
     for (const [label, value] of [["Research instructions", "Research context"], ["Ideas instructions", "Generate carefully"], ["Review instructions", "Check evidence"]]) {
       await fireEvent.input(view.getByLabelText(label!), { target: { value } });
@@ -685,7 +686,7 @@ describe("settings surfaces preserve launch configuration", () => {
     await fireEvent.input(view.getByLabelText("Maximum model calls"), { target: { value: "200" } });
     await fireEvent.input(view.getByLabelText("Maximum searches"), { target: { value: "80" } });
     await fireEvent.click(view.getByRole("button", { name: "Done" }));
-    expect(view.getByText("Ideas & review: GPT-6 Astra · high reasoning")).toBeTruthy();
+    expect((view.getByLabelText("Ideas reasoning") as HTMLSelectElement).value).toBe("high");
     if (mode === "babysit") await fireEvent.click(view.getByRole("radio", { name: /Babysit/ }));
     await waitFor(() => expect(onPreviewWorkflow.mock.lastCall?.[0]).toMatchObject({
       purpose: researchMode === "known-problem" ? "known-problem" : "discovery", mode,

@@ -138,7 +138,9 @@
   h2 { margin:0;font-size:22px; }
   .finder header button { display:grid;place-items:center;width:40px;height:40px;border:0;background:none;color:var(--muted);border-radius:7px; }
   .search-heading { display:flex;align-items:center;gap:12px;margin:0 24px 16px;padding:0 12px;border:1px solid var(--border-strong);border-radius:7px;background:var(--surface);color:var(--muted); }
-  .search-heading input { flex:1;min-width:0;min-height:44px;border:0;background:none;color:var(--text);font-size:15px; }
+  .search-heading input { flex:1;min-width:0;min-height:44px;border:0;background:none;color:var(--text);font-size:15px;outline:none;box-shadow:none; }
+  /* Focus rings the whole field (icon included), not just the text box inside it. */
+  .search-heading:focus-within { border-color:rgb(255 255 255 / .38);box-shadow:0 0 0 3px rgb(255 255 255 / .05); }
   .finder nav { display:flex;flex-wrap:wrap;gap:4px;padding:0 24px 12px;border-bottom:1px solid var(--border); }
   .finder nav button { min-height:36px;padding:6px 12px;border:0;border-radius:6px;background:none;color:var(--muted);font-size:13px; }
   .finder nav button[aria-pressed="true"] { background:rgb(255 255 255 / .09);color:var(--text); }
