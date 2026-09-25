@@ -28,9 +28,9 @@ test("recovers an expired native session through installed sign-in and restores 
     let electron = await launch();
     let page = await electron.firstWindow();
     await dismissSignInPrompt(page);
-    await expect(page.getByLabel("Research name", { exact: true })).toBeVisible();
+    await expect(page.getByLabel("What do you want to explore?", { exact: true })).toBeVisible();
 
-    await page.getByLabel("Research name", { exact: true }).fill("Unsaved auth recovery draft");
+    await page.getByLabel("What do you want to explore?", { exact: true }).fill("Unsaved auth recovery draft");
     await page.getByRole("button", { name: "Settings", exact: true }).click();
     const accountCard = page.getByLabel("OpenAI account");
     await expect(accountCard.getByText(/OpenAI .*session.*Sign in again\./)).toBeVisible();
@@ -43,12 +43,12 @@ test("recovers an expired native session through installed sign-in and restores 
     await expect(page.getByRole("button", { name: "Sign in with OpenAI", exact: true })).toBeEnabled({ timeout: 2_000 });
     expect(Date.now() - cancellationStartedAt).toBeLessThan(2_000);
     await expect(page.getByText("FIXTURE-CODE", { exact: true })).toHaveCount(0);
-    await expect(page.getByLabel("Research name", { exact: true })).toHaveValue("Unsaved auth recovery draft");
+    await expect(page.getByLabel("What do you want to explore?", { exact: true })).toHaveValue("Unsaved auth recovery draft");
 
     await page.getByRole("button", { name: "Sign in with OpenAI", exact: true }).click();
     await expect(page.getByText("synthetic-account", { exact: true })).toBeVisible();
     await expect(page.getByLabel("OpenAI account")).toContainText("synthetic-account");
-    await expect(page.getByLabel("Research name", { exact: true })).toHaveValue("Unsaved auth recovery draft");
+    await expect(page.getByLabel("What do you want to explore?", { exact: true })).toHaveValue("Unsaved auth recovery draft");
     await page.screenshot({ animations: "disabled", path: testInfo.outputPath("native-auth-recovered.png") });
 
     const operations = readFileSync(join(directory, "operations.txt"), "utf8").trim().split("\n");
@@ -97,7 +97,7 @@ test("native v2 research survives the installed selection, risk evaluation, and 
   try {
     let electron = await launch();
     let page = await electron.firstWindow();
-    await expect(page.getByLabel("Research name", { exact: true })).toBeVisible();
+    await expect(page.getByLabel("What do you want to explore?", { exact: true })).toBeVisible();
     await expect(page.getByRole("tabpanel", { name: "Research setup" })).toBeVisible();
     {
       await page.evaluate(async () => {
@@ -125,11 +125,10 @@ test("native v2 research survives the installed selection, risk evaluation, and 
     await page.getByLabel("Solutions per problem", { exact: true }).fill("5");
     await page.getByPlaceholder("What matters most: time, budget, or other limits?").fill("Avoid losing a week of repair capacity");
     await expect(page.getByLabel("OpenAI account")).toContainText("synthetic-account");
-    await page.getByLabel("Research name", { exact: true }).fill("Native protocol UI fixture");
     await page.getByLabel("What do you want to explore?", { exact: false }).fill("Parts delivery uncertainty for repair shops");
     await page.getByLabel("Research depth", { exact: true }).selectOption("quick");
     await page.getByRole("radio", { name: /^Babysit/ }).check();
-    await page.getByRole("button", { name: "Start Babysit", exact: true }).click();
+    await page.getByRole("button", { name: "Start", exact: true }).click();
     await expect(page.getByText("Choose problems to develop", { exact: true })).toBeVisible();
     await expect(page.getByText("overstated", { exact: true })).not.toBeVisible();
     await page.locator(".problem-disclosure > summary").first().click();

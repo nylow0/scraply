@@ -47,7 +47,7 @@
   }
 </script>
 
-<dialog bind:this={dialog} class="settings-popup" data-section={section} aria-labelledby="settings-title" closedby="any" onclose={back} oncancel={(event) => { event.preventDefault(); void back(); }}>
+<dialog bind:this={dialog} class="settings-popup glass-dense" data-section={section} aria-labelledby="settings-title" closedby="any" onclose={back} oncancel={(event) => { event.preventDefault(); void back(); }}>
   <div class="popup-header"><h1 bind:this={heading} tabindex="-1" id="settings-title">Settings</h1><button class="close" aria-label="Close settings" onclick={back}><Icon name="close" size={18} /></button></div>
   <div class="settings-layout">
     <nav aria-label="Settings sections">
@@ -180,9 +180,8 @@
   .archive-list strong { font-size:14px;overflow-wrap:anywhere; }
   .archive-list span,.archive-empty { font-size:13px;color:var(--muted); }
   .danger { color:var(--danger); }
-  .settings-popup { width:min(740px,calc(100vw - 32px));height:min(500px,calc(100dvh - 110px));max-width:none;max-height:none;margin:auto auto 64px 16px;padding:0;border:1px solid #363d38;border-radius:14px;background:#000;color:var(--text);box-shadow:0 18px 70px #000b;overflow:hidden; }
+  .settings-popup { width:min(740px,calc(100vw - 32px));height:min(500px,calc(100dvh - 110px));max-width:none;max-height:none;margin:auto auto 64px 16px;padding:0;border-radius:var(--panel-radius);color:var(--text);overflow:hidden; }
   .settings-popup[open] { display:flex;flex-direction:column; }
-  .settings-popup::backdrop { background:#0005; }
   .popup-header { margin:0;display:flex;align-items:center;justify-content:space-between;gap:20px;padding:14px 18px;border-bottom:1px solid var(--border); }
   .popup-header h1 { margin:0;font-size:16px;font-weight:600;padding:0; }
   .popup-header .close { display:grid;place-items:center;border:0;background:transparent;padding:6px;color:var(--muted); }

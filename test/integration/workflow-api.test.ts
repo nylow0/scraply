@@ -38,7 +38,7 @@ async function fixture() {
     providerValidation: { inspectNative: async () => ({
       available: true, connected: true, accounts: [{ providerId: "openai-subscription" }],
       models: [{
-        providerId: "openai-subscription", modelId: "gpt-5.6-sol", displayName: "Test model",
+        providerId: "openai-subscription", modelId: "gpt-6-sol", displayName: "Test model",
         defaultReasoningEffort: "medium", reasoningEfforts: [{ id: "medium", description: "Medium" }],
       }],
     }) },

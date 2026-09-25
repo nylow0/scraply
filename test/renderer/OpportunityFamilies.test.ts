@@ -6,8 +6,8 @@ import { DEFAULT_RUN_CONFIG, type ModelOption } from "../../src/shared/schemas";
 
 const model: ModelOption = {
   providerId: "openai-subscription",
-  modelId: "gpt-5.6-sol",
-  displayName: "GPT-5.6 Sol",
+  modelId: "gpt-6-sol",
+  displayName: "GPT-6 Sol",
   defaultReasoningEffort: "medium",
   reasoningEfforts: [
     { id: "low", description: "Fast" },
@@ -60,11 +60,11 @@ describe("OpportunityFamilies", () => {
     });
     await waitFor(() => expect(review.disabled).toBe(false));
     expect((view.getByLabelText("Opportunity review model") as HTMLSelectElement).value)
-      .toBe("openai-subscription:gpt-5.6-sol");
+      .toBe("openai-subscription:gpt-6-sol");
 
     await fireEvent.click(review);
     expect(onReview).toHaveBeenCalledWith(
-      { providerId: "openai-subscription", modelId: "gpt-5.6-sol" },
+      { providerId: "openai-subscription", modelId: "gpt-6-sol" },
       "medium",
       false,
     );
@@ -81,7 +81,7 @@ describe("OpportunityFamilies", () => {
     const review = view.getByRole("button", { name: "Review 2 saved ideas" }) as HTMLButtonElement;
     expect(selection.value).toBe("openai-subscription:gpt-6-luna");
     expect(review.disabled).toBe(true);
-    await fireEvent.change(selection, { target: { value: "openai-subscription:gpt-5.6-sol" } });
+    await fireEvent.change(selection, { target: { value: "openai-subscription:gpt-6-sol" } });
     expect(review.disabled).toBe(false);
     await fireEvent.click(review);
     expect(onReview).toHaveBeenCalledWith(DEFAULT_RUN_CONFIG.model, "medium", false);
@@ -135,7 +135,7 @@ describe("OpportunityFamilies", () => {
     const retry = view.getByRole("button", { name: "Start a new review" });
     await fireEvent.click(retry);
     expect(onReview).toHaveBeenCalledWith(
-      { providerId: "openai-subscription", modelId: "gpt-5.6-sol" },
+      { providerId: "openai-subscription", modelId: "gpt-6-sol" },
       "medium",
       true,
     );

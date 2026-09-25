@@ -27,8 +27,10 @@
 
   type WorkflowPreview = z.infer<typeof PreviewWorkflowResultSchema>;
 
-  let { workspace, busy, onSave, onStart, onPreviewWorkflow, onStartWorkflow, onRetry, onOpenSettings } : {
+  let { workspace, busy, onSave, onStart, onPreviewWorkflow, onStartWorkflow, onGenerateTitle, onRetry, onOpenSettings } : {
     workspace: WorkspaceState; busy: boolean;
+    // Names a new thread from its brief when Start is clicked; there is no name field.
+    onGenerateTitle?: (context: string) => Promise<string>;
     onSave: (scope: NonNullable<WorkspaceState["scope"]>, config: NonNullable<WorkspaceState["runConfig"]>) => Promise<void>;
     onStart: () => Promise<void>;
     onPreviewWorkflow?: (draft: WorkflowLaunchDraft) => Promise<WorkflowPreview>;
@@ -63,8 +65,6 @@
   let ideaCount = $state<number | undefined>(initial.runConfig?.ideaCount ?? DEFAULT_IDEA_COUNT);
   let offLimits = $state(initial.scope?.offLimits.join("\n") ?? "");
   let knownProblem = $state(initial.runConfig?.knownProblem ?? "");
-  let knownProblemTouched = $state(false);
-  let domainTouched = $state(false);
   const legacyModelNeedsReplacement = initial.runConfig?.model.providerId === "legacy-codex-cli";
   let initialModel = startingModel
     ?? (initial.models.some((model) => sameModelRef(model, DEFAULT_RUN_CONFIG.model))
@@ -183,9 +183,8 @@
         : workspace.validation.native.error ?? (nativeModelOptions.length === 0 ? "No compatible models are available" : null));
   let locked = $derived(busy || submitting);
   let missing = $derived(missingFields());
-  let errors = $derived(validationAttempted || useWorkflow ? missing : {});
-  let knownProblemError = $derived(validationAttempted || knownProblemTouched ? errors.knownProblem : undefined);
-  let domainError = $derived(validationAttempted || domainTouched ? errors.domain : undefined);
+  // Field errors stay hidden until the first Start attempt, so an empty draft is never shown as wrong.
+  let errors = $derived(validationAttempted ? missing : {});
   let ideaModelAvailable = $derived(Boolean(ideaModelOption) && workspace.models.some((item) => sameModelRef(item, ideaModel)));
   let ideaReasoningAvailable = $derived(ideaModelOption?.reasoningEfforts.some((item) => item.id === ideaReasoningEffort) ?? false);
   let workflowDraft = $derived(buildWorkflowDraft());
@@ -329,6 +328,10 @@
     submitting = true;
     try {
       if (useWorkflow && onPreviewWorkflow && onStartWorkflow) {
+        // The title is part of the previewed launch contract, so a new thread is named before the final preview.
+        if (!title.trim() && onGenerateTitle) {
+          title = await onGenerateTitle([knownProblem, domain, audience, observations].map((value) => value.trim()).filter(Boolean).join("\n"));
+        }
         const fingerprint = workflowFingerprint;
         let preview = workflowPreview;
         if (!preview || previewFingerprint !== fingerprint || Date.now() >= Date.parse(preview.expiresAt)) {
@@ -337,7 +340,7 @@
           workflowPreview = preview;
           previewFingerprint = fingerprint;
         }
-        if (preview.type !== "launch" || preview.fieldErrors.length > 0) return;
+        if (preview.type !== "launch" || preview.fieldErrors.length > 0) { await revealBlockingField(); return; }
         await onStartWorkflow(preview);
         return;
       }
@@ -384,7 +387,7 @@
     trigger?.focus({ preventScroll: true });
   }
   const fieldSections: Record<string, SettingsSection | "brief" | "business" | "main"> = {
-    domain: "brief", knownProblem: "brief", title: "brief", researchMode: "brief",
+    domain: "brief", knownProblem: "brief", researchMode: "brief",
     targetFamilies: "business", batchSize: "business", maxModelCalls: "business", maxSearches: "business",
     model: "main", reasoning: "main", ideaCount: "main", ideaModel: "ideas", ideaReasoning: "ideas",
     maxRunMinutes: "limits", workflowModelLimit: "limits", workflowSearchLimit: "limits", automaticProblemCap: "limits",
@@ -457,15 +460,12 @@
         </fieldset>
         <section class="brief-panel" aria-label="Research brief">
           {#if researchMode === "known-problem"}
-            <label class="main-brief"><span>What problem do you want to solve?</span><textarea data-field="knownProblem" bind:value={knownProblem} onblur={() => knownProblemTouched = true} aria-invalid={Boolean(knownProblemError)} aria-describedby={knownProblemError ? "known-problem-error" : undefined} rows="3" placeholder="Describe the problem."></textarea>{#if knownProblemError}<small id="known-problem-error" class="field-error">{knownProblemError}</small>{/if}</label>
+            <label class="main-brief"><span>What problem do you want to solve?</span><textarea data-field="knownProblem" bind:value={knownProblem} aria-invalid={Boolean(errors.knownProblem)} aria-describedby={errors.knownProblem ? "known-problem-error" : undefined} rows="3" placeholder="Describe the problem."></textarea>{#if errors.knownProblem}<small id="known-problem-error" class="field-error">{errors.knownProblem}</small>{/if}</label>
           {:else}
-            <label class="main-brief"><span>What do you want to explore?</span><textarea data-field="domain" bind:value={domain} onblur={() => domainTouched = true} aria-invalid={Boolean(domainError)} aria-describedby={domainError ? "domain-error" : undefined} rows="3" placeholder="Your topic or idea"></textarea>{#if domainError}<small id="domain-error" class="field-error">{domainError}</small>{/if}</label>
+            <label class="main-brief"><span>What do you want to explore?</span><textarea data-field="domain" bind:value={domain} aria-invalid={Boolean(errors.domain)} aria-describedby={errors.domain ? "domain-error" : undefined} rows="3" placeholder="Your topic or idea"></textarea>{#if errors.domain}<small id="domain-error" class="field-error">{errors.domain}</small>{/if}</label>
           {/if}
           <!-- "Optional" is a visual hint; aria-label keeps each field's name free of it for assistive tech and tests. -->
-          <div class="brief-meta">
           <label class="audience-field"><span>Audience <small>Optional</small></span><input aria-label="Audience" bind:value={audience} placeholder={researchMode === "explore-market" ? "Who is this for?" : "Who is affected?"} /></label>
-              <label><span>Research name <small>Optional</small></span><input data-field="title" aria-label="Research name" bind:value={title} aria-invalid={Boolean(errors.title)} aria-describedby={errors.title ? "title-error" : undefined} placeholder="Name this research" />{#if errors.title}<small id="title-error" class="field-error">{errors.title}</small>{/if}</label>
-          </div>
         </section>
         <div class="context-fields">
               {#if researchMode === "known-problem"}<label><span>Market or domain (optional)</span><textarea data-field="domain" bind:value={domain} rows="2" placeholder="Market or field"></textarea></label>{/if}
@@ -500,7 +500,7 @@
 
       </div>
     </div>
-    <aside class="launch-sidebar" aria-label="Run setup">
+    <aside class="launch-sidebar glass" aria-label="Run setup">
         {#if useWorkflow}
           <fieldset class="choice-group workflow-mode">
             <legend>Run mode</legend>
@@ -508,14 +508,14 @@
               <label><input type="radio" name="workflow-mode" value="vibe" checked={workflowMode === "vibe"} onchange={() => workflowMode = "vibe"} /><strong>Vibe</strong></label>
               <span class="mode-info" role="presentation" onmouseenter={() => modeHelp = "vibe"} onmouseleave={hideModeHelpOnLeave} onfocusin={() => modeHelp = "vibe"} onfocusout={() => modeHelp = null}>
                 <button type="button" class="info-button" aria-label="About Vibe" aria-describedby="vibe-help" onclick={() => modeHelp = "vibe"} onkeydown={dismissModeHelp}><Icon name="info" size={16} /></button>
-                <span id="vibe-help" class="mode-tooltip" role="tooltip" hidden={modeHelp !== "vibe"}>{researchMode === "known-problem" ? "Scraply generates and reviews ideas for your stated problem automatically." : "Scraply researches your brief, selects problems, generates ideas, and reviews them automatically."} Work stops at your saved limits. Review the results when the run ends.</span>
+                <span id="vibe-help" class="mode-tooltip glass-dense" role="tooltip" hidden={modeHelp !== "vibe"}>{researchMode === "known-problem" ? "Scraply generates and reviews ideas for your stated problem automatically." : "Scraply researches your brief, selects problems, generates ideas, and reviews them automatically."} Work stops at your saved limits. Review the results when the run ends.</span>
               </span>
             </div>
             <div class="mode-option" class:active={workflowMode === "babysit"}>
               <label><input type="radio" name="workflow-mode" value="babysit" checked={workflowMode === "babysit"} onchange={() => workflowMode = "babysit"} /><strong>Babysit</strong></label>
               <span class="mode-info" role="presentation" onmouseenter={() => modeHelp = "babysit"} onmouseleave={hideModeHelpOnLeave} onfocusin={() => modeHelp = "babysit"} onfocusout={() => modeHelp = null}>
                 <button type="button" class="info-button" aria-label="About Babysit" aria-describedby="babysit-help" onclick={() => modeHelp = "babysit"} onkeydown={dismissModeHelp}><Icon name="info" size={16} /></button>
-                <span id="babysit-help" class="mode-tooltip" role="tooltip" hidden={modeHelp !== "babysit"}>{researchMode === "known-problem" ? "Scraply uses your stated problem, then waits for you to choose the next step." : "Scraply researches your brief, then pauses so you can review the problems and choose which ones become ideas."} You control when idea generation begins.</span>
+                <span id="babysit-help" class="mode-tooltip glass-dense" role="tooltip" hidden={modeHelp !== "babysit"}>{researchMode === "known-problem" ? "Scraply uses your stated problem, then waits for you to choose the next step." : "Scraply researches your brief, then pauses so you can review the problems and choose which ones become ideas."} You control when idea generation begins.</span>
               </span>
             </div>
           </fieldset>
@@ -547,7 +547,8 @@
             <span>Work limits <button type="button" class="text-action" onclick={() => showConfiguration("limits")}>Edit limits</button></span>
             <p>{maxRunMinutes} min{#if useWorkflow}&nbsp;· {workflowModelLimit} {workflowModelLimit === 1 ? "model call" : "model calls"} · {workflowSearchLimit} {workflowSearchLimit === 1 ? "search" : "searches"}{#if workflowMode === "vibe" && researchMode === "explore-market"}&nbsp;· {automaticProblemCap} problems{/if}{/if}</p>
           </div>
-          <button type="submit" class="primary" disabled={locked || !providersReady || (useWorkflow && (!workflowPreviewValid || previewing))}>{locked ? "Starting…" : useWorkflow ? `Start ${workflowMode === "vibe" ? "Vibe" : "Babysit"}` : (researchMode === "explore-market" ? "Discover problems" : "Generate solutions")}<Icon name="arrow" size={17} /></button>
+          <!-- Stays clickable while the brief is incomplete: the click is what reveals the missing fields. -->
+          <button type="submit" class="primary" disabled={locked || !providersReady || (useWorkflow && previewing)}>{locked ? "Starting…" : useWorkflow ? "Start" : (researchMode === "explore-market" ? "Discover problems" : "Generate solutions")}<Icon name="arrow" size={17} /></button>
         </div>
         <div class="launch-status" role="status">
           {#if blockingMessage}<span>{blockingMessage}</span>{:else if useWorkflow}<span>{launchSteps()}.</span>{/if}
@@ -565,7 +566,7 @@
         {/if}
       </div>
     </aside>
-    <dialog bind:this={configuration} class="settings-dialog" aria-label="Advanced settings" onclose={restoreConfigurationFocus} onkeydown={(event) => { if (event.key === "Enter" && event.target instanceof HTMLInputElement) event.preventDefault(); }}>
+    <dialog bind:this={configuration} class="settings-dialog glass-dense" aria-label="Advanced settings" onclose={restoreConfigurationFocus} onkeydown={(event) => { if (event.key === "Enter" && event.target instanceof HTMLInputElement) event.preventDefault(); }}>
       <header><h2>Advanced settings</h2><button type="button" aria-label="Close advanced settings" onclick={() => configuration.close()}><Icon name="close" /></button></header>
       <nav aria-label="Settings groups">
         {#if researchMode === "explore-market"}<button type="button" aria-pressed={settingsSection === "research"} onclick={() => settingsSection = "research"}>Search</button>{/if}
@@ -634,10 +635,10 @@
 
 <style>
   .scope-page,form { height:100%;min-height:0; }
-  form { display:grid;grid-template-columns:minmax(0,1fr) 288px; }
+  form { display:grid;grid-template-columns:minmax(0,1fr) 300px; }
   .setup-scroll { flex:1;min-height:0;overflow:auto;scroll-padding-block:24px; }
   .setup-body { width:min(100%,880px);margin-inline:auto;padding:28px 32px;display:grid;gap:24px; }
-  .brief-meta,.context-fields { display:grid;grid-template-columns:1fr 1fr;gap:20px; }
+  .context-fields { display:grid;grid-template-columns:1fr 1fr;gap:20px; }
   .context-fields { padding-top:4px; }
   .context-fields > :last-child:nth-child(odd) { grid-column:1/-1; }
   label { display:grid;gap:8px;min-width:0;font-size:14px; }
@@ -653,7 +654,7 @@
   .choice-group legend { margin-bottom:6px;font-size:13px;color:var(--muted); }
   .choice-group label { display:flex;align-items:center;gap:10px;padding:10px 12px;min-height:42px;border:1px solid transparent;border-radius:7px;cursor:pointer; }
   .choice-group label:hover { background:var(--surface-2); }
-  .choice-group label.active { background:#101c17;border-color:#355747; }
+  .choice-group label.active { background:rgb(128 217 182 / .08);border-color:rgb(128 217 182 / .3);box-shadow:inset 0 1px 0 rgb(255 255 255 / .06); }
   .choice-group input { appearance:none;flex:none;width:16px;height:16px;min-height:0;margin:0;padding:0;border:1px solid var(--subtle);border-radius:50%;background:transparent; }
   .choice-group input:checked { border:5px solid var(--accent); }
   .choice-group label:has(input:focus-visible) { outline:2px solid var(--accent);outline-offset:2px; }
@@ -662,11 +663,11 @@
   .mode-picker { grid-template-columns:1fr 1fr; }
   .workflow-mode { gap:4px; }
   .mode-option { position:relative;display:flex;align-items:center;justify-content:space-between;border:1px solid transparent;border-radius:7px; }
-  .mode-option.active { background:#101c17;border-color:#355747; }
+  .mode-option.active { background:rgb(128 217 182 / .08);border-color:rgb(128 217 182 / .3);box-shadow:inset 0 1px 0 rgb(255 255 255 / .06); }
   .mode-option label { flex:1;border:0; }
   .mode-info { display:flex;align-items:center;margin-right:6px; }
   .info-button { display:grid;place-items:center;width:32px;min-height:32px;padding:0;border:0;background:transparent;color:var(--muted); }
-  .mode-tooltip { position:absolute;z-index:5;right:0;top:100%;width:248px;max-width:calc(100vw - 48px);padding:12px 14px;border:1px solid var(--border-strong);border-radius:8px;background:var(--surface-2);color:var(--text);font-size:13px;line-height:1.6;box-shadow:0 6px 24px #0008; }
+  .mode-tooltip { position:absolute;z-index:5;right:0;top:100%;width:248px;max-width:calc(100vw - 48px);padding:12px 14px;border-radius:10px;color:var(--text);font-size:13px;line-height:1.6; }
   .mode-tooltip[hidden] { display:none; }
   .brief-panel { display:grid;gap:20px; }
   .main-brief > span { font-size:26px;line-height:1.25;letter-spacing:-.7px;font-weight:600; }
@@ -696,25 +697,25 @@
   .target-toggle span,.exploratory-toggle span { display:grid;gap:5px; }
   .opportunity-target p,.saved-purpose-note { color:var(--muted);font-size:13px;line-height:1.6;margin:0; }
   .saved-purpose-note button { border:0;padding:0;color:var(--accent);background:none; }
-  .launch-sidebar { min-height:0;overflow:auto;display:flex;flex-direction:column;gap:18px;padding:20px;background:var(--bg);border-left:1px solid var(--border);scroll-padding-block:20px; }
+  /* The run panel floats inside the page as its own glass card. */
+  .launch-sidebar { min-height:0;overflow:auto;display:flex;flex-direction:column;gap:18px;margin:12px 12px 12px 0;padding:18px;border-radius:14px;scroll-padding-block:20px; }
   .launch-sidebar > * { flex:none; }
   .launch-content { margin-top:auto;padding-top:10px; }
   .launch-row { display:flex;flex-direction:column;align-items:stretch;gap:12px; }
   .limit-summary > span { display:flex;align-items:center;gap:14px;font-size:14px;font-weight:500; }
   .limit-summary p { margin:1px 0 0;color:var(--muted);font-size:13px;line-height:1.6; }
-  .primary { display:flex;align-items:center;justify-content:center;gap:12px;min-width:154px;min-height:44px;background:var(--accent-strong);border:0;color:var(--accent-ink);font-weight:600; }
+  .primary { display:flex;align-items:center;justify-content:center;gap:12px;min-width:154px;min-height:44px;background:var(--accent-strong);border:0;border-radius:10px;box-shadow:inset 0 1px 0 rgb(255 255 255 / .45),0 8px 24px rgb(128 217 182 / .16);color:var(--accent-ink);font-weight:600; }
   .primary:hover:not(:disabled) { background:var(--accent); }
   .launch-status { display:flex;align-items:center;flex-wrap:wrap;gap:4px 12px;margin-top:5px;font-size:13px;color:var(--muted);line-height:1.5; }
   .connection-warning { display:flex;flex-wrap:wrap;gap:4px 12px;margin-top:6px;font-size:13px;color:var(--danger);align-items:center; }
-  .settings-dialog { width:min(720px,calc(100vw - 32px));max-height:calc(100dvh - 32px);padding:0;margin:auto;border:1px solid var(--border-strong);border-radius:12px;background:var(--bg);color:var(--text); }
+  .settings-dialog { width:min(720px,calc(100vw - 32px));max-height:calc(100dvh - 32px);padding:0;margin:auto;border-radius:var(--panel-radius);color:var(--text); }
   .settings-dialog[open] { display:flex;flex-direction:column; }
-  .settings-dialog::backdrop { background:#000b; }
   .settings-dialog header { display:flex;align-items:center;justify-content:space-between;padding:20px 24px 12px;gap:16px; }
   .settings-dialog h2 { margin:0;font-size:22px;letter-spacing:-.5px; }
   .settings-dialog header button { border:0;background:transparent;display:grid;place-items:center; }
   .settings-dialog nav { display:flex;flex-wrap:wrap;gap:4px;padding:0 24px 12px;border-bottom:1px solid var(--border); }
   .settings-dialog nav button { border:0;background:none;color:var(--muted); }
-  .settings-dialog nav button[aria-pressed="true"] { color:var(--accent-strong);background:#101c17; }
+  .settings-dialog nav button[aria-pressed="true"] { color:var(--accent-strong);background:rgb(128 217 182 / .1); }
   .settings-content { overflow:auto;min-height:0;padding:24px;scroll-padding-block:24px; }
   .settings-panel[hidden] { display:none; }
   .settings-panel h3 { margin:0 0 16px;font-size:16px;font-weight:600; }
@@ -731,13 +732,13 @@
   @media(max-width:1100px) {
     form { display:block;overflow:auto; }
     .setup-scroll { overflow:visible; }
-    .launch-sidebar { overflow:visible;border-left:0;border-top:1px solid var(--border);padding:24px 32px;display:grid;grid-template-columns:1fr 1fr;gap:24px; }
+    .launch-sidebar { overflow:visible;margin:0 20px 20px;padding:24px;display:grid;grid-template-columns:1fr 1fr;gap:24px; }
     .main-settings { border-top:0;padding-top:0; }
     .launch-content { grid-column:1/-1;margin-top:0;padding-top:0; }
   }
   @media(max-width:600px) {
-    .setup-body { padding:20px 16px;gap:20px; }.launch-sidebar { padding:20px 16px;grid-template-columns:1fr; }
-    .main-brief > span { font-size:24px; }.mode-picker,.brief-meta,.context-fields,.target-grid,.run-settings,.output-settings,.limits-grid { grid-template-columns:1fr; }
+    .setup-body { padding:20px 16px;gap:20px; }.launch-sidebar { margin:0 12px 12px;padding:20px 16px;grid-template-columns:1fr; }
+    .main-brief > span { font-size:24px; }.mode-picker,.context-fields,.target-grid,.run-settings,.output-settings,.limits-grid { grid-template-columns:1fr; }
     .launch-row { align-items:stretch;flex-direction:column;gap:10px; }.primary { width:100%; }
     .settings-dialog header,.settings-content { padding:16px; }.settings-dialog nav { padding-inline:10px; }.dialog-footer { padding:12px 16px; }
   }

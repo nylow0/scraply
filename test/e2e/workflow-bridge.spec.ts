@@ -189,10 +189,10 @@ test(`installed ${mode} workflow previews, runs, pauses, finishes, and reopens t
     await page.getByText(mode === "vibe" ? "Vibe" : "Babysit", { exact: true }).click();
     await page.getByPlaceholder("Your topic or idea").fill(topic);
     await page.setViewportSize({ width: 1366, height: 768 });
-    await expect(page.getByRole("button", { name: mode === "vibe" ? "Start Vibe" : "Start Babysit" })).toBeEnabled();
+    await expect(page.getByRole("button", { name: "Start", exact: true })).toBeEnabled();
     await page.screenshot({ path: testInfo.outputPath(`${mode}-setup.png`), animations: "disabled" });
     await page.getByRole("spinbutton", { name: "Solutions per problem" }).fill("1");
-    const launch = page.getByRole("button", { name: mode === "vibe" ? "Start Vibe" : "Start Babysit" });
+    const launch = page.getByRole("button", { name: "Start", exact: true });
     await expect(launch).toBeEnabled();
     await launch.click();
 
