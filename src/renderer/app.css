@@ -13,11 +13,14 @@
   --text: #f2f2f2;
   --muted: #a3a3a3;
   --subtle: #858585;
-  --accent: #80d9b6;
-  --accent-strong: #9be5c8;
-  --accent-ink: #002b1b;
+  /* One muted pink, used sparingly: the logo, primary buttons, text links, and small indicators.
+     Everything else is black, grey, and white. */
+  --accent: #d6a2b6;
+  --accent-strong: #e7bfce;
+  --accent-ink: #2a0f1a;
   --danger: #df9292;
-  --success: #36e6a0;
+  --success: #9fcfb2;
+  --focus-ring: rgb(255 255 255 / .6);
   --mono: "Geist Mono", "Cascadia Code", ui-monospace, monospace;
   --sans: "Plus Jakarta Sans Variable", "Segoe UI", sans-serif;
   --ease: cubic-bezier(0.16, 1, 0.3, 1);
@@ -33,9 +36,9 @@
      above content (dialogs, menus, tooltips), where text must stay readable over busy content. */
   --glass-fill: rgb(255 255 255 / .03);
   --glass-fill-dense: rgb(16 17 17 / .9);
-  --glass-edge: rgb(255 255 255 / .09);
-  /* A faint top rim is the only decorative detail of the glass. */
-  --glass-rim: inset 0 1px 0 rgb(255 255 255 / .07);
+  --glass-edge: rgb(255 255 255 / .07);
+  /* No light rim: edges stay a quiet grey hairline. */
+  --glass-rim: inset 0 0 0 0 transparent;
   --glass-shadow: 0 10px 30px rgb(0 0 0 / .35);
   --glass-blur: blur(16px) saturate(120%);
   --glass-backdrop: rgb(0 0 0 / .42);
@@ -112,7 +115,7 @@ select:disabled {
 }
 
 :focus-visible {
-  outline: 2px solid var(--accent-strong);
+  outline: 2px solid var(--focus-ring);
   outline-offset: 3px;
 }
 
@@ -200,7 +203,7 @@ button:disabled { opacity: .45; }
 /* Disclosures open directly so longer sections do not move while being read. */
 a { color:var(--accent-strong); text-underline-offset:3px; }
 input, textarea, select { transition:border-color 180ms ease, box-shadow 180ms ease; }
-input:focus, textarea:focus, select:focus { border-color:var(--accent) !important; box-shadow:0 0 0 3px #71cfba12; }
+input:focus, textarea:focus, select:focus { border-color:rgb(255 255 255 / .38) !important; box-shadow:0 0 0 3px rgb(255 255 255 / .05); }
 /* A field flagged after Start stays red while it is being fixed. */
 [aria-invalid="true"]:focus { border-color:var(--danger) !important; box-shadow:0 0 0 3px rgb(223 146 146 / .14); }
 [aria-invalid="true"]:focus-visible { outline-color:var(--danger); }
@@ -219,11 +222,11 @@ select::picker(select) {
 select::picker-icon { content:"";width:7px;height:7px;margin:0 3px 3px auto;flex:none;border-right:1.5px solid var(--muted);border-bottom:1.5px solid var(--muted);transform:rotate(45deg);transition:none; }
 select:open::picker-icon { transform:translateY(3px) rotate(225deg); }
 select option { padding:9px 10px;border-radius:4px;gap:12px;min-height:36px;white-space:normal; }
-select option:checked { background:#0e3b29;color:#66ffc4;font-weight:600; }
-select option:hover, select option:focus { background:#234333;outline:none; }
-select option:disabled { color:#748077; }
+select option:checked { background:rgb(255 255 255 / .09);color:var(--text);font-weight:600; }
+select option:hover, select option:focus { background:rgb(255 255 255 / .06);outline:none; }
+select option:disabled { color:#7a7a7a; }
 select option::checkmark { content:"";width:5px;height:9px;border-right:1.5px solid var(--accent);border-bottom:1.5px solid var(--accent);transform:rotate(45deg);order:2;margin-left:auto; }
-select:focus-visible { outline:2px solid var(--accent);outline-offset:2px; }
+select:focus-visible { outline:2px solid var(--focus-ring);outline-offset:2px; }
 
 /* Grid tracks must shrink to the viewport even when a generated title is a paragraph. */
 .disclosure-title { max-width:100%;min-width:0; }

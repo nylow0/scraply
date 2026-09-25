@@ -288,7 +288,7 @@
 
 <style>
   article { min-width:0;max-width:100%;overflow-wrap:anywhere; border:1px solid var(--border);border-radius:13px;padding:0;overflow:hidden;background:linear-gradient(120deg,#1b202377,var(--surface));box-shadow:inset 0 1px #ffffff04; }
-  article.selected { border-color:#71cfba60; }
+  article.selected { border-color:#bdbdbd60; }
   .disclosure-title.expanded { background:var(--surface-2); }
   .disclosure-content { background:var(--bg);padding:24px 28px 30px; }
   header { display:flex;justify-content:space-between;gap:24px;align-items:start;padding-bottom:22px; }
@@ -315,10 +315,10 @@
   summary { cursor:pointer;padding:18px 0;font-size:14px;color:var(--muted); }details { border-top:1px solid var(--border);margin-top:18px; }
   .source-columns { display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:24px;border-bottom:1px solid var(--border);padding-bottom:18px; }
   .source-columns section { min-width:0; }.source-columns h3 { font-size:13px; }.source-columns ul { padding-left:16px; }.source-columns a { overflow-wrap:anywhere; }
-  blockquote { margin:16px 0;padding:18px 20px;border:1px solid var(--border);border-left:2px solid #71cfba55;border-radius:0 10px 10px 0;background:var(--surface);font-size:13px;line-height:1.8;max-width:78ch; }
+  blockquote { margin:16px 0;padding:18px 20px;border:1px solid var(--border);border-left:2px solid #bdbdbd55;border-radius:0 10px 10px 0;background:var(--surface);font-size:13px;line-height:1.8;max-width:78ch; }
   footer { margin-top:10px;font-size:13px; }.estimated { display:block;color:var(--subtle);font-size:13px;margin-top:8px; }
   .finding { border-bottom:1px solid var(--border);padding:18px 0; }.finding strong { font-size:13px;font-weight:550; }.finding p { margin-bottom:0; }
-  .experiment { border:1px solid #71cfba38;border-radius:14px;padding:22px;margin-top:28px;background:#71cfba05; }
+  .experiment { border:1px solid #bdbdbd38;border-radius:14px;padding:22px;margin-top:28px;background:#bdbdbd05; }
   .experiment h3 { margin:0 0 14px;color:var(--accent-strong);font-size:13px; }.experiment > strong { font-size:16px;font-weight:600;line-height:1.6;display:block;max-width:70ch; }
   .experiment dl { padding-top:18px;border-top:1px solid var(--border);margin-top:18px; }
   form { border:1px solid var(--border);padding:22px;border-radius:14px;background:var(--surface);margin-top:24px; }

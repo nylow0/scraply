@@ -1034,7 +1034,7 @@
   .notice.error { border-color:#df929260;color:var(--danger); }.notice button { border:0;background:transparent;color:inherit; }
   .empty-workspace { padding:var(--page-top) var(--page-inline); }
   .empty-workspace button { padding:10px 16px;border:1px solid var(--border);border-radius:8px;background:var(--surface);color:var(--text); }
-  .activity-symbol { display:grid;place-items:center;width:76px;height:76px;border:1px solid #71cfba30;border-radius:24px;color:var(--accent-strong);background:#71cfba08;box-shadow:inset 0 1px #92ead515; }
+  .activity-symbol { display:grid;place-items:center;width:76px;height:76px;border:1px solid #bdbdbd30;border-radius:24px;color:var(--accent-strong);background:#bdbdbd08;box-shadow:inset 0 1px #ffffff15; }
   .eyebrow { font:500 13px var(--sans);color:var(--muted);margin:28px 0 0; }
   .running,.failed { display:flex;flex-direction:column;align-items:start;max-width:900px;min-height:calc(100dvh - 160px);margin:auto;justify-content:center;padding:60px var(--page-inline); }
   .running h1,.failed h1 { font-size:38px;font-weight:600;letter-spacing:-.035em;line-height:1.25;max-width:620px;margin:10px 0 20px; }
