@@ -22,6 +22,7 @@ Before schema upgrades, Scraply saves a checked database backup beside `scraply.
 - To restore, close Scraply and replace the data folder with a consistent backup from the same app version.
 - To reset local research data, close Scraply, back up anything important, and remove the `scraply` data subfolder. The app creates a fresh database on next launch.
 - To reset saved provider credentials, close Scraply and remove `secrets.bin` from the Electron user-data directory. The next launch imports configured environment keys again.
+- Scraply remembers the window's size, position, and maximized state in `window-state.json` in the Electron user-data directory. Remove it to reopen at the default size. A saved position that no longer reaches a connected display is ignored.
 
 Deleting or resetting data is irreversible without a backup. For a portable copy of selected work, export research as JSON and options or analyses as Markdown or JSON from the app. An export is not a full database backup.
 
