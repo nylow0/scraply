@@ -208,6 +208,7 @@ input, textarea, select { transition:border-color 180ms ease, box-shadow 180ms e
 input:focus, textarea:focus, select:focus { border-color:var(--accent) !important; box-shadow:0 0 0 3px #71cfba12; }
 /* A field flagged after Start stays red while it is being fixed. */
 [aria-invalid="true"]:focus { border-color:var(--danger) !important; box-shadow:0 0 0 3px rgb(223 146 146 / .14); }
+[aria-invalid="true"]:focus-visible { outline-color:var(--danger); }
 textarea { line-height:1.65; }
 ::placeholder { color:var(--subtle); opacity:.8; }
 
