@@ -622,6 +622,29 @@ describe("App workspace coordination", () => {
     await waitFor(() => expect(view.queryByRole("dialog", { name: "Welcome to Scraply" })).toBeNull());
   });
 
+  test("Escape dismisses the welcome prompt and cancels an active sign-in", async () => {
+    const signedOut = workspace("alpha");
+    signedOut.validation.native = { available: true, connected: false, accounts: [] };
+    const login = { loginId: "login-welcome", providerId: "openai-subscription", method: "browser" as const };
+    const pending = deferred<{ pending: true }>();
+    const cancelNativeLogin = vi.fn().mockResolvedValue(signedOut);
+    installApi({
+      getWorkspace: vi.fn().mockResolvedValue(signedOut),
+      startNativeLogin: vi.fn().mockResolvedValue(login),
+      completeNativeLogin: vi.fn().mockReturnValue(pending.promise),
+      cancelNativeLogin,
+    });
+    const view = render(App);
+    const welcome = await view.findByRole("dialog", { name: "Welcome to Scraply" });
+    await fireEvent.click(within(welcome).getByRole("button", { name: "Sign in with OpenAI" }));
+    await within(welcome).findByText("Finish signing in in your browser");
+    await fireEvent.cancel(welcome);
+
+    await waitFor(() => expect(cancelNativeLogin).toHaveBeenCalledWith({ loginId: login.loginId, providerId: login.providerId }));
+    await waitFor(() => expect(view.queryByRole("dialog", { name: "Welcome to Scraply" })).toBeNull());
+    pending.resolve({ pending: true });
+  });
+
   test("asks a returning user to sign in again after signing out, until they choose not now", async () => {
     const connected = workspace("alpha");
     connected.validation.native = { available: true, connected: true, accounts: [{ providerId: "openai-subscription", email: "dany@example.test" }] };
