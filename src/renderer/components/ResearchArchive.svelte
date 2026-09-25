@@ -99,7 +99,7 @@
 <style>
   header p:last-child { font-size:13px;margin:0;color:var(--muted); }
 
-  .archive { max-width:1120px;margin:auto;padding:38px var(--page-inline) 80px; }
+  .archive { max-width:var(--page-max);margin:auto;padding:38px var(--page-inline) 80px; }
   .summary { display:flex;gap:24px;border:0;margin:24px 0 0; }
   .summary > div { display:flex;align-items:center;gap:9px; }
   .summary dt { font-size:13px;color:var(--muted); }
@@ -107,7 +107,7 @@
   .meta { display:flex;flex-wrap:wrap;gap:7px;margin-bottom:16px; }
   .meta span { padding:4px 8px;border:1px solid var(--border-strong);border-radius:6px;color:var(--muted);font-size:13px; }
   .meta .selected { color:var(--accent-strong);border-color:#bdbdbd40; }
-  @media(max-width:700px) { .archive { padding:28px 22px 60px; }.summary { flex-wrap:wrap;gap:12px; } }
+  @container page (max-width:600px) { .archive { padding:28px 22px 60px; }.summary { flex-wrap:wrap;gap:12px; } }
   .summary { display:flex;align-items:center;gap:36px;margin:24px 0 8px;padding:18px 0;border-top:1px solid var(--border);border-bottom:1px solid var(--border); }
   .summary > div { display:flex;align-items:baseline;gap:10px; }
   .summary dt { font-size:14px;color:var(--muted); }

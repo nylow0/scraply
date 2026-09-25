@@ -71,5 +71,5 @@
   .usage-grid { display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:18px;margin:0;padding:18px 0;border-top:1px solid var(--border); }
   dt,.models span { font-size:13px;color:var(--subtle); }dd { margin:6px 0 0;font-size:13px;color:var(--muted);overflow-wrap:anywhere; }
   .models,.unavailable { color:var(--muted);font-size:13px;line-height:1.7; }.models span { margin-right:12px; }
-  @media(max-width:850px) { .summary-detail { display:none; }.usage-grid { grid-template-columns:1fr 1fr; } }
+  @container page (max-width:680px) { .summary-detail { display:none; }.usage-grid { grid-template-columns:1fr 1fr; } }
 </style>

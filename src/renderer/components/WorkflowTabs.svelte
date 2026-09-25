@@ -77,5 +77,5 @@
   button:disabled { opacity:.38; }
   .step-icon { display:grid;place-items:center;color:var(--muted); }
   .active .step-icon { color:var(--accent-strong); }
-  @media(max-width:420px) { button { padding-inline:8px;gap:6px; } }
+  @container page (max-width:420px) { button { padding-inline:8px;gap:6px; } }
 </style>

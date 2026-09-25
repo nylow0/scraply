@@ -58,13 +58,17 @@
   // Only once the runtime is ready (available) and reports no account, so a signed-in user never sees it flash during startup checks.
   let signInPromptOpen = $derived(!!workspace && workspace.validation.native.available && !workspace.validation.native.connected
     && !signInDismissed && !settingsOpen);
-  let sidebarVisible = $state(true);
-  let narrowViewport = $state(typeof window !== "undefined" && typeof window.matchMedia === "function" && window.matchMedia("(max-width: 720px)").matches);
+  // Navigation is always present: expanded, or as an icon rail. Wide windows dock the expanded sidebar and
+  // Ctrl+B toggles it to the rail. Compact windows keep the rail docked and open the full list as an overlay
+  // drawer, so the page never loses width to navigation it is not using.
+  const COMPACT_NAVIGATION_QUERY = "(max-width: 1099px)";
+  let sidebarExpanded = $state(true);
+  let compactViewport = $state(typeof window !== "undefined" && typeof window.matchMedia === "function" && window.matchMedia(COMPACT_NAVIGATION_QUERY).matches);
   let mobileSidebarOpen = $state(false);
-  let navigationOpen = $derived(narrowViewport ? mobileSidebarOpen : sidebarVisible);
+  let navigationOpen = $derived(compactViewport ? mobileSidebarOpen : sidebarExpanded);
   function toggleNavigation() {
-    if (narrowViewport) mobileSidebarOpen = !mobileSidebarOpen;
-    else sidebarVisible = !sidebarVisible;
+    if (compactViewport) mobileSidebarOpen = !mobileSidebarOpen;
+    else sidebarExpanded = !sidebarExpanded;
   }
   function closeMobileNavigation() {
     mobileSidebarOpen = false;
@@ -147,14 +151,14 @@
     || activeWorkflow?.purpose === "known-problem" || activeWorkflow?.state === "finished")));
 
   onMount(() => {
-    const viewport = window.matchMedia?.("(max-width: 720px)");
+    const viewport = window.matchMedia?.(COMPACT_NAVIGATION_QUERY);
     const resizeNavigation = (event: MediaQueryListEvent) => {
-      narrowViewport = event.matches;
+      compactViewport = event.matches;
       mobileSidebarOpen = false;
     };
     viewport?.addEventListener("change", resizeNavigation);
     const closeDrawerOnEscape = (event: KeyboardEvent) => {
-      if (!narrowViewport || !mobileSidebarOpen || event.key !== "Escape" || document.querySelector("dialog[open]")) return;
+      if (!compactViewport || !mobileSidebarOpen || event.key !== "Escape" || document.querySelector("dialog[open]")) return;
       event.preventDefault();
       event.stopImmediatePropagation();
       closeMobileNavigation();
@@ -832,12 +836,12 @@
   }
 </script>
 
-<div inert={settingsOpen}><DesktopBar canBack={backIndex !== -1 && !busy} canForward={forwardIndex !== -1 && !busy} onBack={() => navigateHistory(-1)} onForward={() => navigateHistory(1)} onToggle={toggleNavigation} navigationOpen={navigationOpen} compact={narrowViewport} /></div>
-<div class="app-shell" class:sidebar-hidden={!navigationOpen}>
-  {#if narrowViewport && mobileSidebarOpen}<button class="sidebar-backdrop" aria-label="Close navigation" inert={settingsOpen} onclick={closeMobileNavigation}></button>{/if}
-  <div id="research-navigation" class="sidebar-area" class:collapsed={!navigationOpen} inert={settingsOpen}>
+<div inert={settingsOpen}><DesktopBar canBack={backIndex !== -1 && !busy} canForward={forwardIndex !== -1 && !busy} onBack={() => navigateHistory(-1)} onForward={() => navigateHistory(1)} onToggle={toggleNavigation} navigationOpen={navigationOpen} compact={compactViewport} /></div>
+<div class="app-shell" class:sidebar-rail={compactViewport || !sidebarExpanded}>
+  {#if compactViewport && mobileSidebarOpen}<button class="sidebar-backdrop" aria-label="Close navigation" inert={settingsOpen} onclick={closeMobileNavigation}></button>{/if}
+  <div id="research-navigation" class="sidebar-area" class:drawer={compactViewport && mobileSidebarOpen} inert={settingsOpen}>
   <Sidebar
-    visible={navigationOpen}
+    collapsed={!navigationOpen}
     threads={workspace?.threads ?? []}
     activeThreadId={workspace?.activeThreadId ?? null}
     {busy}
@@ -848,7 +852,7 @@
     onRestore={(id) => archiveThread(id, false)}
   >
     {#snippet settingsControl()}
-      <button id="settings-button" class="settings-button" onclick={() => { mobileSidebarOpen = false; settings?.show(); }}><Icon name="settings" size={20} />Settings</button>
+      <button id="settings-button" class="settings-button" onclick={() => { mobileSidebarOpen = false; settings?.show(); }}><Icon name="settings" size={20} /><span class="label">Settings</span></button>
     {/snippet}
   </Sidebar>
   </div>
@@ -1010,27 +1014,31 @@
 </div>
 
 <style>
-  .workflow-progress-wrap { padding:18px var(--page-inline) 0; }
+  .workflow-progress-wrap { padding:18px var(--page-gutter) 0; }
   .managed-research { max-width:900px; margin:auto; padding:44px var(--page-inline) 20px; }
   .managed-research h1 { margin:8px 0 12px; font-size:clamp(24px,4vw,36px); letter-spacing:-.035em; }
   .managed-research p:last-child { color:var(--muted); font-size:13px; line-height:1.7; }
   .sidebar-area { display:contents; }
-  .app-shell.sidebar-hidden { grid-template-columns:minmax(0,1fr); }
+  .app-shell.sidebar-rail { --sidebar-width:60px; }
   .settings-button { display:flex;align-items:center;gap:10px;width:100%;padding:9px 12px;min-height:38px;border:0;border-radius:7px;background:transparent;color:var(--muted);font-size:13px;text-align:left;transition:background 180ms ease,color 180ms ease; }
   .settings-button:hover { background:var(--surface-2);color:var(--text); }
 
   /* Floating layout: the sidebar and the page are separate panels over the lit background. */
-  .app-shell { height:calc(100% - 36px);display:grid;grid-template-columns:256px minmax(0,1fr);gap:10px;padding:2px 10px 10px; }
-  /* The page is a black panel with the same hairline edge as the glass around it. */
-  .main-content { min-width:0;overflow-y:auto;overflow-x:hidden;scrollbar-gutter:stable;position:relative;border:1px solid var(--glass-edge);border-radius:var(--panel-radius);background:var(--bg);box-shadow:var(--glass-rim); }
-  .workspace-header { position:sticky;top:0;z-index:3;flex:none;min-height:72px;padding:12px 24px;display:flex;align-items:center;gap:24px;background:rgb(0 0 0 / .55);backdrop-filter:blur(20px) saturate(150%);border-bottom:1px solid var(--border); }
-  .topbar { display:flex;align-items:center;flex:1;min-width:0;gap:16px;color:var(--muted); }
-  .location { display:block;margin:0;color:var(--text);font-size:24px;font-weight:600;letter-spacing:-.6px;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis; }
+  .app-shell { --sidebar-width:clamp(232px,17vw,288px);height:calc(100% - 36px);display:grid;grid-template-columns:var(--sidebar-width) minmax(0,1fr);gap:10px;padding:2px 10px 10px; }
+  /* The page is a black panel with the same hairline edge as the glass around it.
+     It is also the `page` size container: page components use @container page queries so their
+     breakpoints follow the width they actually get, whatever the navigation is doing. */
+  .main-content { grid-column:2;container:page / inline-size;min-width:0;overflow-y:auto;overflow-x:hidden;scrollbar-gutter:stable;position:relative;border:1px solid var(--glass-edge);border-radius:var(--panel-radius);background:var(--bg);box-shadow:var(--glass-rim); }
+  /* The title sits at the page's left edge and the tabs at its right edge, whatever the window width.
+     When the title would get narrower than its flex-basis, the tabs wrap onto their own row instead of squeezing it. */
+  .workspace-header { position:sticky;top:0;z-index:3;flex:none;min-height:72px;padding:12px 24px;display:flex;flex-wrap:wrap;align-items:center;gap:6px 24px;background:rgb(0 0 0 / .55);backdrop-filter:blur(20px) saturate(150%);border-bottom:1px solid var(--border); }
+  .topbar { display:flex;align-items:center;flex:1 1 300px;min-width:0;gap:16px;color:var(--muted); }
+  .location { display:block;margin:0;color:var(--text);font-size:clamp(20px,2.6cqi,24px);font-weight:600;letter-spacing:-.6px;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis; }
   .main-content.setup-active { display:flex;flex-direction:column; }
   .setup-active > :global(:not(#workflow-panel-setup)) { flex:none; }
   .setup-active > #workflow-panel-setup { flex:1 0 0;min-height:420px; }
   .calls { white-space:nowrap;margin-left:16px;font:500 13px var(--sans); }.calls strong { color:var(--text);font-weight:600; }
-  .notice { flex:none;margin:12px var(--page-inline) 0;padding:12px 16px;border:1px solid var(--border-strong);border-radius:10px;background:var(--surface-2);display:flex;justify-content:space-between;gap:16px;color:var(--muted);font-size:13px;overflow-wrap:anywhere; }
+  .notice { flex:none;margin:12px var(--page-gutter) 0;padding:12px 16px;border:1px solid var(--border-strong);border-radius:10px;background:var(--surface-2);display:flex;justify-content:space-between;gap:16px;color:var(--muted);font-size:13px;overflow-wrap:anywhere; }
   .notice.error { border-color:#df929260;color:var(--danger); }.notice button { border:0;background:transparent;color:inherit; }
   .empty-workspace { padding:var(--page-top) var(--page-inline); }
   .empty-workspace button { padding:10px 16px;border:1px solid var(--border);border-radius:8px;background:var(--surface);color:var(--text); }
@@ -1038,40 +1046,36 @@
   .eyebrow { font:500 13px var(--sans);color:var(--muted);margin:28px 0 0; }
   .running,.failed { display:flex;flex-direction:column;align-items:start;max-width:900px;min-height:calc(100dvh - 160px);margin:auto;justify-content:center;padding:60px var(--page-inline); }
   /* Under a run summary the outcome follows it at the page edge instead of centering in the window. */
-  .failed.after-summary { min-height:0;max-width:none;margin:0;justify-content:flex-start;padding:36px var(--page-inline) 48px; }
+  .failed.after-summary { min-height:0;max-width:none;margin:0;justify-content:flex-start;padding:36px var(--page-gutter) 48px; }
   .running h1,.failed h1 { font-size:38px;font-weight:600;letter-spacing:-.035em;line-height:1.25;max-width:620px;margin:10px 0 20px; }
   .failed > p:not(.eyebrow),.research-export-hint { color:var(--muted);font-size:13px;line-height:1.8;max-width:650px;margin:0; }
   .zero-idea-actions { display:flex;flex-wrap:wrap;gap:8px;margin-top:22px; }
   .zero-idea-actions button { min-height:38px;padding:8px 12px;border:1px solid var(--border-strong);border-radius:8px;background:#000;color:var(--text);font-size:13px; }
-  .followup-note { max-width:75ch;margin:20px var(--page-inline) 0;color:var(--muted);font-size:13px;line-height:1.6; }
+  .followup-note { max-width:75ch;margin:20px var(--page-gutter) 0;color:var(--muted);font-size:13px;line-height:1.6; }
   .activity-symbol { position:relative; }.activity-symbol::after { content:"";position:absolute;inset:-5px;border:1px solid transparent;border-top-color:var(--accent);border-radius:28px;animation:orbit 4s linear infinite; }
   .activity { width:100%;display:flex;gap:14px;border:1px solid var(--border);border-radius:14px;padding:20px;background:var(--surface);margin:24px 0;align-items:center; }
   .activity p { margin:0;font-size:13px;color:var(--muted); }.activity span { width:7px;height:7px;border-radius:50%;background:var(--accent);flex:none;animation:pulse 1.5s ease infinite alternate; }
   .progress-facts { display:flex;flex-wrap:wrap;gap:8px 18px;color:var(--subtle);font-size:13px; }
   .progress-facts strong { color:var(--text);font-weight:600; }
   .development-progress { min-height:auto;padding-bottom:32px;border-bottom:1px solid var(--border); }
-  .compact-progress { display:flex;justify-content:space-between;gap:20px;padding:16px var(--page-inline);border-bottom:1px solid var(--border);background:var(--surface); }
+  .compact-progress { display:flex;flex-wrap:wrap;justify-content:space-between;gap:12px 20px;padding:16px var(--page-gutter);border-bottom:1px solid var(--border);background:var(--surface); }
   .compact-progress strong { font-size:13px;color:var(--text); }
   .compact-progress p { margin:4px 0 0;color:var(--muted);font-size:13px; }
   .compact-progress .progress-facts { justify-content:flex-end;align-items:center; }
   .run-actions { display:flex;gap:9px; }.run-actions button { border:1px solid var(--border-strong);background:transparent;color:var(--text);padding:10px 14px;border-radius:8px;font-size:13px; }.run-actions .cancel { color:var(--danger); }
-  .run-stopped { display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:16px;margin:14px var(--page-inline) 0;padding:16px;border:1px solid #df92924a;border-radius:12px;background:#df929208; }
+  .run-stopped { display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:16px;margin:14px var(--page-gutter) 0;padding:16px;border:1px solid #df92924a;border-radius:12px;background:#df929208; }
   .run-stopped > div:first-child { display:grid;gap:5px; }.run-stopped strong { font-size:13px; }.run-stopped span { color:var(--muted);font-size:13px; }.run-stopped-actions { display:flex;flex-wrap:wrap;gap:8px; }.run-stopped-actions button { border:1px solid var(--border-strong);border-radius:8px;background:transparent;color:var(--text);padding:9px 13px;font-size:13px; }.run-stopped-actions .cancel { color:var(--danger); }
   .skeleton { padding:90px var(--page-inline);display:grid;gap:18px; }.skeleton i { display:block;height:24px;max-width:720px;border-radius:8px;background:linear-gradient(90deg,var(--surface),var(--surface-2),var(--surface));background-size:200% 100%;animation:shimmer 1.2s infinite; }.skeleton i:first-child { height:58px;width:60%; }.skeleton i:last-child { width:40%; }
   .main-content > :global([role="tabpanel"]) { animation:page-reveal 200ms var(--ease); }
   @keyframes page-reveal { from { opacity:.6;transform:translateY(4px); }to { opacity:1;transform:none; } }
   @keyframes shimmer { to { background-position:-200% 0; } }@keyframes pulse { to { opacity:.3; } }@keyframes orbit { to { transform:rotate(360deg); } }
-  @media(max-width:950px) { .calls { display:none; } }
-  @media(max-width:720px) {
-    .app-shell { grid-template-columns:minmax(0,1fr);padding:0 8px 8px; }
-    .sidebar-backdrop { position:fixed;inset:36px 0 0;z-index:10;width:100%;border:0;background:var(--glass-backdrop);backdrop-filter:blur(8px); }
-    .sidebar-area { position:fixed;top:40px;bottom:8px;left:8px;z-index:11;display:block;width:min(280px,calc(100vw - 56px)); }
-    .sidebar-area.collapsed { display:contents; }
-    .sidebar-area :global(.sidebar) { height:100%;background:var(--glass-fill-dense); }
-
-    .workspace-header { align-items:start;flex-direction:column;gap:8px;padding:12px 16px; }
-    .topbar { width:100%; }
-    .running h1,.failed h1 { font-size:28px; }
-  }
-  @media(max-height:600px) { .main-content.setup-active { display:block; }.setup-active .workspace-header { position:static; } }
+  /* Compact windows: the expanded list floats over the page while the rail keeps its grid column. */
+  .sidebar-backdrop { position:fixed;inset:36px 0 0;z-index:10;width:100%;border:0;background:var(--glass-backdrop);backdrop-filter:blur(8px); }
+  .sidebar-area.drawer { position:fixed;top:38px;bottom:10px;left:10px;z-index:11;display:block;width:min(288px,calc(100vw - 40px)); }
+  .sidebar-area.drawer :global(.sidebar) { height:100%;background:var(--glass-fill-dense); }
+  @media(max-width:720px) { .app-shell { gap:8px;padding:0 8px 8px; }.sidebar-area.drawer { top:36px;bottom:8px;left:8px; } }
+  @container page (max-width:760px) { .calls { display:none; } }
+  @container page (max-width:600px) { .running h1,.failed h1 { font-size:28px; } }
+  /* Short windows (or high zoom) give the page every row: the header scrolls away with it. */
+  @media(max-height:600px) { .main-content.setup-active { display:block; }.workspace-header { position:static; } }
 </style>
