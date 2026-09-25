@@ -28,5 +28,5 @@
   .rejected-item { border-color:#df92922a;padding:20px; }
   h2 { font-size:16px;font-weight:550;line-height:1.5; }.rejected-item p { font-size:13px;color:var(--muted); }
   .empty { padding:32px 20px;color:var(--muted);font-size:13px;border:1px dashed var(--border-strong);border-radius:12px; }.empty h2 { font-size:17px; }
-  @media(max-width:800px) { header { flex-direction:column;align-items:start; }dl:not(.summary) { grid-template-columns:1fr; }.problem-disclosure .disclosure-content { padding:18px; } }
+  @container page (max-width:640px) { header { flex-direction:column;align-items:start; }dl:not(.summary) { grid-template-columns:1fr; }.problem-disclosure .disclosure-content { padding:18px; } }
 }

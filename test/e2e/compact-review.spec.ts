@@ -38,9 +38,9 @@ test("desktop navigation and compact idea review preserve dismissed ideas", asyn
     await page.getByRole("button", { name: "Go forward", exact: true }).click();
     await expect(page.getByRole("tab", { name: /Setup/ })).toHaveAttribute("aria-selected", "true");
     await page.getByRole("button", { name: "Toggle sidebar", exact: true }).click();
-    await expect(page.locator(".sidebar")).not.toBeVisible();
+    await expect(page.locator(".sidebar")).toHaveClass(/collapsed/);
     await page.getByRole("button", { name: "Toggle sidebar", exact: true }).click();
-    await expect(page.locator(".sidebar")).toBeVisible();
+    await expect(page.locator(".sidebar")).not.toHaveClass(/collapsed/);
     const rowHeight = await page.getByRole("button", { name: "Open thread Reducing repair shop delays", exact: true }).evaluate((el) => el.getBoundingClientRect().height);
     expect(rowHeight).toBeLessThan(70);
     await page.screenshot({ animations: "disabled", path: testInfo.outputPath("compact-setup.png") });

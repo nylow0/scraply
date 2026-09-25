@@ -9,7 +9,7 @@ import type { WorkflowSummary } from "../../src/shared/workflow-contracts";
 import { summarizeRunUsage } from "../../src/backend/run-usage";
 
 describe("App workspace coordination", () => {
-  test("uses a narrow navigation drawer without changing the desktop sidebar choice", async () => {
+  test("keeps an icon rail in compact windows and opens the full list as a drawer", async () => {
     let compact = false;
     let resize: ((event: { matches: boolean }) => void) | undefined;
     vi.stubGlobal("matchMedia", vi.fn().mockImplementation(() => ({
@@ -23,7 +23,10 @@ describe("App workspace coordination", () => {
       const navigation = view.container.querySelector("#research-navigation aside") as HTMLElement;
       await view.findByRole("button", { name: "Toggle sidebar" });
       await fireEvent.click(view.getByRole("button", { name: "Toggle sidebar" }));
-      expect(navigation.hidden).toBe(true);
+      expect(navigation.classList.contains("collapsed")).toBe(true);
+      // The rail keeps every destination reachable by name.
+      expect(within(navigation).getByRole("button", { name: "Create new research thread" })).toBeTruthy();
+      expect(within(navigation).getByRole("button", { name: "Settings" })).toBeTruthy();
 
       await fireEvent.keyDown(window, { key: "k", ctrlKey: true });
       expect(view.getByRole("dialog", { name: "All research" })).toBeTruthy();
@@ -33,22 +36,23 @@ describe("App workspace coordination", () => {
       compact = true;
       resize?.({ matches: true });
       await waitFor(() => expect(view.getByRole("button", { name: "Open navigation" })).toBeTruthy());
-      expect(navigation.hidden).toBe(true);
+      expect(navigation.classList.contains("collapsed")).toBe(true);
       await fireEvent.click(view.getByRole("button", { name: "Open navigation" }));
-      expect(navigation.hidden).toBe(false);
+      expect(navigation.classList.contains("collapsed")).toBe(false);
       expect(view.container.querySelector(".sidebar-backdrop")).not.toBeNull();
       const underlyingEscape = vi.fn();
       window.addEventListener("keydown", underlyingEscape);
       await fireEvent.keyDown(window, { key: "Escape" });
       window.removeEventListener("keydown", underlyingEscape);
-      expect(navigation.hidden).toBe(true);
+      expect(navigation.classList.contains("collapsed")).toBe(true);
       expect(view.container.querySelector(".sidebar-backdrop")).toBeNull();
       expect(underlyingEscape).not.toHaveBeenCalled();
 
       compact = false;
       resize?.({ matches: false });
+      // Leaving compact mode restores the wide-window choice, which was the rail.
       await waitFor(() => expect(view.getByRole("button", { name: "Toggle sidebar" })).toBeTruthy());
-      expect(navigation.hidden).toBe(true);
+      expect(navigation.classList.contains("collapsed")).toBe(true);
     } finally {
       view.unmount();
       vi.unstubAllGlobals();

@@ -289,7 +289,7 @@
 </section>
 
 <style>
-  .workspace { max-width:1120px;margin:0 auto;padding:var(--page-top) var(--page-inline) 80px;min-width:0; }
+  .workspace { max-width:var(--page-max);margin:0 auto;padding:var(--page-top) var(--page-inline) 80px;min-width:0; }
   header { display:flex;align-items:start;justify-content:space-between;flex-wrap:wrap;gap:24px; }
   header > div:first-child { flex:1;min-width:230px; }
   h1 { font-size:clamp(27px,3vw,34px);font-weight:650;letter-spacing:-.035em;margin:0;line-height:1.2; }
@@ -334,6 +334,6 @@
   .conversation-status,.conversation-error { margin:0 0 18px;padding:18px;border:1px solid var(--border);border-radius:10px;color:var(--muted);font-size:14px; }
   .conversation-error p { margin:0 0 12px; }
   [hidden] { display:none; }
-  @media(max-width:850px) { .workspace { padding:28px 22px 60px; }.actions { justify-content:flex-start; }.idea-card { flex-direction:column;gap:15px; }.card-actions { flex-wrap:wrap; } }
-  @media(max-width:480px) { .workspace { padding-inline:16px; }.idea-card { padding:17px; }.card-actions .open-idea { flex:1; } }
+  @container page (max-width:700px) { .workspace { padding:28px 22px 60px; }.actions { justify-content:flex-start; }.idea-card { flex-direction:column;gap:15px; }.card-actions { flex-wrap:wrap; } }
+  @container page (max-width:440px) { .workspace { padding-inline:16px; }.idea-card { padding:17px; }.card-actions .open-idea { flex:1; } }
 </style>
