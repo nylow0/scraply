@@ -16,7 +16,7 @@ OpenCode Zen and Go are not enabled. Their official documentation does not yet d
 
 This workspace is maintained in `nylow0/scraply` under `runtime/`. It was imported from `nylow0/scraply-agent` commit `5fea3f217e9fea54c0d4f88c6ef51ab001b07520`; that repository is legacy. App and runtime changes now belong in the same pull request.
 
-From the Scraply root, run `git submodule update --init --recursive` once, then `bun run prepare:runtime` to test and package the native executable. Packaging uses `build/cargo` for its Cargo cache and generates the archive and provenance lock under `build/runtime-artifacts`.
+From the Scraply root, run `git submodule update --init --recursive` once, then `bun run prepare:runtime` to test and package the native executable. Packaging uses the per-user Cargo cache `%LOCALAPPDATA%\scraply-build\cargo`, shared by all checkouts (override with `CARGO_TARGET_DIR`), and generates the archive and provenance lock under `build/runtime-artifacts`.
 
 For app development, follow the [development guide](../docs/development.md) to start the background browser server with the staged worker and reuse it between UI/backend edits. Rebuild the stage after native changes; Cargo alone does not replace the executable in `build/runtime` that the app uses.
 
