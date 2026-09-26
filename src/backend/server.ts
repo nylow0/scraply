@@ -113,7 +113,9 @@ export interface BackendHandle {
   token: string;
   close: () => Promise<void>;
   secretsChanged: () => void;
-  hasActiveRuns: () => boolean;
+  hasActiveWork: () => boolean;
+  beginSearchKeyUpdate: () => boolean;
+  finishSearchKeyUpdate: () => boolean;
   providersChanged: () => void;
 }
 
@@ -147,6 +149,8 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
   let nativeAuthTail: Promise<void> = Promise.resolve();
   const pendingNativeLogins = new Map<string, string>();
   let engine: ResearchEngine | null = null;
+  let searchKeyUpdatePending = false;
+  let pendingPosts = 0;
   const workflowModelScheduler = new WorkflowModelScheduler();
   const invalidateProviderCache = () => {
     validationGeneration += 1;
@@ -1229,12 +1233,16 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
   }
 
   const pendingRequests = new Set<Promise<void>>();
+  const hasActiveWork = () => Boolean(engine?.hasActiveWork() || db.db.prepare(
+    "SELECT 1 FROM workflow_sessions WHERE state IN ('running', 'pause-requested', 'stop-requested') LIMIT 1",
+  ).get());
   const handleRequest = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
     const startedAt = Date.now();
     const method = req.method ?? "GET";
     let route = req.url ?? "/";
     try {
       if (!authorize(req, token)) return sendError(res, new AppError("unauthorized"));
+      if (method === "POST" && searchKeyUpdatePending) throw new AppError("conflict", "A search key is being updated. Try again in a moment.");
       const url = new URL(req.url ?? "/", "http://127.0.0.1");
       route = url.pathname;
       if (method === "GET" && route === "/health") return sendJson(res, 200, HealthResponseSchema.parse({ ok: true, version: context.appVersion, persistenceCheck: db.getMeta("persistence_probe") ?? undefined }));
@@ -1491,7 +1499,7 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
       // changes wait until no run is active.
       if (route === "/search-keys/preflight") {
         const { provider, apiKey } = SearchKeyPreflightSchema.parse(body);
-        if (engine?.getActiveRunIds().size) {
+        if (hasActiveWork()) {
           throw new AppError("conflict", "Search keys can't change while research is running. Wait for it to finish or cancel it, then try again.");
         }
         return sendJson(res, 200, apiKey ? await validateSearchKey(provider, apiKey) : { valid: true });
@@ -1724,11 +1732,12 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
     }
   };
   const server = createServer((req, res) => {
+    if (req.method === "POST") pendingPosts += 1;
     const pending = handleRequest(req, res);
     pendingRequests.add(pending);
     void pending.then(
-      () => pendingRequests.delete(pending),
-      () => pendingRequests.delete(pending),
+      () => { pendingRequests.delete(pending); if (req.method === "POST") pendingPosts -= 1; },
+      () => { pendingRequests.delete(pending); if (req.method === "POST") pendingPosts -= 1; },
     );
   });
 
@@ -1782,7 +1791,17 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
       invalidateProviderCache();
       void validateProviders().catch(() => undefined);
     },
-    hasActiveRuns: () => Boolean(engine?.getActiveRunIds().size),
+    hasActiveWork,
+    beginSearchKeyUpdate: () => {
+      if (searchKeyUpdatePending || pendingPosts || hasActiveWork()) return false;
+      searchKeyUpdatePending = true;
+      return true;
+    },
+    finishSearchKeyUpdate: () => {
+      const pending = searchKeyUpdatePending;
+      searchKeyUpdatePending = false;
+      return pending;
+    },
     providersChanged: () => {
       invalidateProviderCache();
       void validateProviders().catch(() => undefined);
