@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { modelDisplayName } from "../../src/renderer/lib/research-defaults";
+import { modelDisplayName, providerDisplayName } from "../../src/renderer/lib/research-defaults";
 import { verdictLabel } from "../../src/renderer/lib/status";
 
 describe("display labels", () => {
@@ -14,5 +14,11 @@ describe("display labels", () => {
     expect(verdictLabel("user-asserted")).toBe("User-stated");
     expect(verdictLabel("insufficient-evidence")).toBe("Insufficient evidence");
     expect(verdictLabel("newly-added-verdict")).toBe("Newly added verdict");
+  });
+
+  test("names current and historical providers in saved setup", () => {
+    expect(providerDisplayName("openai-subscription")).toBe("OpenAI");
+    expect(providerDisplayName("legacy-codex-cli")).toBe("Codex CLI (legacy)");
+    expect(providerDisplayName("future-provider")).toBe("Future provider");
   });
 });
