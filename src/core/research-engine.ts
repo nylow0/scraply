@@ -132,6 +132,8 @@ export class ResearchEngine {
 
   getActiveRunIds(): ReadonlySet<string> { return new Set(this.activeRuns.keys()); }
 
+  hasActiveWork(): boolean { return this.activeRuns.size > 0 || this.opportunityTasks.size > 0; }
+
   /** Session work outside a research run shares the same per-project model scheduler. */
   scheduledWorkflowModelClient(threadId: string, model: ModelRef): StructuredModelClient {
     const client = this.options.modelClients?.[model.providerId];
