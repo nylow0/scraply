@@ -88,7 +88,9 @@ test("setup hierarchy, source preferences, keyboard controls, and sidebar fit in
 
     await page.getByRole("button", { name: "Settings", exact: true }).click();
     const dialog = page.getByRole("region", { name: "Settings", exact: true });
-    await expect(dialog.locator(".account-emblem svg")).toBeVisible();
+    // Accounts lists OpenAI and the search providers together, each row with its own logo.
+    await expect(dialog.getByLabel("OpenAI account").locator(".provider-name svg")).toBeVisible();
+    await expect(dialog.locator(".provider-name").getByText("Exa", { exact: true })).toBeVisible();
     await page.screenshot({ path: testInfo.outputPath("account.png") });
     await dialog.getByRole("button", { name: "Research defaults", exact: true }).click();
     await expect(page.getByLabel("Default model").getByRole("option", { name: "GPT-6 Astra", exact: true })).toHaveCount(1);
