@@ -29,12 +29,12 @@ test("the renderer restores the problem-selection step after a restart", async (
     await expect(page.getByRole("region", { name: "Settings", exact: true })).toBeVisible();
     await expect(page.getByRole("button", { name: "Sign out", exact: true })).toBeVisible();
     await page.screenshot({ animations: "disabled", path: testInfo.outputPath("settings.png") });
-    await page.getByRole("button", { name: "Connections", exact: true }).click();
+    // The OpenAI account and the search providers share one Accounts section.
     await expect(page.locator(".provider-name").getByText("Exa", { exact: true })).toBeVisible();
-    await page.screenshot({ animations: "disabled", path: testInfo.outputPath("settings-connections.png") });
+    await page.screenshot({ animations: "disabled", path: testInfo.outputPath("settings-accounts.png") });
     await page.getByRole("button", { name: "Local files", exact: true }).click();
     await expect(page.getByRole("button", { name: "Open data folder" })).toBeVisible();
-    await page.getByRole("button", { name: "Account", exact: true }).click();
+    await page.getByRole("button", { name: "Accounts", exact: true }).click();
     await expect(page.getByRole("button", { name: "Sign out", exact: true })).toBeVisible();
     await page.keyboard.press("Escape");
     await expect(settings).toBeFocused();
