@@ -2,7 +2,7 @@
   import { untrack } from "svelte";
   import { SvelteMap } from "svelte/reactivity";
   import type { WorkspaceState } from "../../shared/ipc";
-  import { DEFAULT_RUN_CONFIG, modelRefKey, type ModelRef, type SearchProvider } from "../../shared/schemas";
+  import { modelRefKey, type ModelRef, type SearchProvider } from "../../shared/schemas";
   import { modelDisplayName, readResearchDefaults, saveResearchDefaults } from "../lib/research-defaults";
   import ProviderLogo from "./ProviderLogo.svelte";
 
@@ -72,7 +72,7 @@
 </script>
 <form onsubmit={(event) => { event.preventDefault(); save(); }}>
   <label><span>Default search provider</span><div class="provider-select"><ProviderLogo provider={searchProvider} size={18} /><select aria-label="Default search provider" bind:value={searchProvider} onchange={() => saved = false}><option value="exa">Exa</option><option value="perplexity">Perplexity</option></select></div></label>
-  <label><span>Default model</span><select aria-label="Default model" bind:value={modelKey} onchange={() => { saved = false; reasoningEffort = catalogEffort(modelKey) ?? DEFAULT_RUN_CONFIG.reasoningEffort; }}>
+  <label><span>Default model</span><select aria-label="Default model" bind:value={modelKey} onchange={() => { saved = false; reasoningEffort = catalogEffort(modelKey) ?? ""; }}>
     {#each models as model (modelRefKey(model))}<option value={modelRefKey(model)}>{model.displayName}{model.available ? "" : workspace?.validation.native.connected ? " (unavailable)" : ""}</option>{/each}
   </select></label>
   <label><span>Default reasoning</span><select aria-label="Default reasoning" bind:value={reasoningEffort} onchange={() => saved = false}>
@@ -94,7 +94,7 @@
   <fieldset>
     <legend>Ideas defaults</legend>
     <p>Used for new idea generation and review. Each setup can override these choices.</p>
-    <label><span>Ideas model</span><select aria-label="Default ideas model" bind:value={ideasModelKey} onchange={() => { saved = false; ideasReasoningEffort = catalogEffort(ideasModelKey) ?? DEFAULT_RUN_CONFIG.reasoningEffort; }}>
+    <label><span>Ideas model</span><select aria-label="Default ideas model" bind:value={ideasModelKey} onchange={() => { saved = false; ideasReasoningEffort = catalogEffort(ideasModelKey) ?? ""; }}>
       {#each models as model (modelRefKey(model))}<option value={modelRefKey(model)}>{model.displayName}{!model.available && workspace?.validation.native.connected ? " (unavailable)" : ""}</option>{/each}
     </select></label>
     <label><span>Ideas reasoning</span><select aria-label="Default ideas reasoning" bind:value={ideasReasoningEffort} onchange={() => saved = false}>

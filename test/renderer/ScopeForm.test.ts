@@ -422,6 +422,53 @@ describe("ScopeForm search provider selection", () => {
     }
   });
 
+  test("uses catalog efforts after changing models while choices load", async () => {
+    const storageKey = "scraply.research-defaults.v1";
+    const previous = localStorage.getItem(storageKey);
+    const sol = DEFAULT_RUN_CONFIG.model;
+    const luna = { providerId: "openai-subscription", modelId: "gpt-6-luna" };
+    const loading = { ...workspace(), modelOptions: [] };
+    const ready = { ...loading, modelOptions: [
+      { ...sol, displayName: "Sol", defaultReasoningEffort: "high", reasoningEfforts: [{ id: "high", description: "Thorough" }] },
+      { ...luna, displayName: "Luna", defaultReasoningEffort: "low", reasoningEfforts: [{ id: "low", description: "Fast" }] },
+    ] };
+    try {
+      localStorage.setItem(storageKey, JSON.stringify({ model: sol, searchProvider: "exa" }));
+      const props = { workspace: loading, open: true, busy: false, nativeLogin: null,
+        onRetry: vi.fn(), onConnectNative: vi.fn(), onCancelNative: vi.fn(), onRefreshNative: vi.fn(),
+        onLogoutNative: vi.fn(), onOpenData: vi.fn(), onOpenLogs: vi.fn(), onRestore: vi.fn(), onDelete: vi.fn() };
+      const settings = render(Settings, props);
+      await fireEvent.click(settings.getByRole("button", { name: "Research defaults" }));
+      await fireEvent.change(settings.getByLabelText("Default model"), { target: { value: modelRefKey(luna) } });
+      await fireEvent.change(settings.getByLabelText("Default ideas model"), { target: { value: modelRefKey(luna) } });
+      await settings.rerender({ ...props, workspace: ready });
+      await waitFor(() => expect((settings.getByLabelText("Default reasoning") as HTMLSelectElement).value).toBe("low"));
+      expect((settings.getByLabelText("Default ideas reasoning") as HTMLSelectElement).value).toBe("low");
+    } finally {
+      if (previous === null) localStorage.removeItem(storageKey);
+      else localStorage.setItem(storageKey, previous);
+    }
+  });
+
+  test("names an unavailable saved ideas model in a new Vibe setup", () => {
+    const storageKey = "scraply.research-defaults.v1";
+    const previous = localStorage.getItem(storageKey);
+    const sol = DEFAULT_RUN_CONFIG.model;
+    const luna = { providerId: "openai-subscription", modelId: "gpt-6-luna" };
+    try {
+      localStorage.setItem(storageKey, JSON.stringify({ model: sol, ideasModel: luna, searchProvider: "exa" }));
+      const state = workspace();
+      state.models = [sol];
+      state.modelOptions = state.modelOptions.filter((model) => modelRefKey(model) === modelRefKey(sol));
+      const setup = render(ScopeForm, { workspace: { ...state, scope: null, runConfig: null }, busy: false,
+        onSave: vi.fn(), onStart: vi.fn(), onRetry: vi.fn(), onPreviewWorkflow: vi.fn(), onStartWorkflow: vi.fn() });
+      expect(setup.getByRole("option", { name: "GPT-6 Luna (unavailable)" })).toBeTruthy();
+    } finally {
+      if (previous === null) localStorage.removeItem(storageKey);
+      else localStorage.setItem(storageKey, previous);
+    }
+  });
+
   test("offers only native OpenAI models and saves the selected model", async () => {
     const state = workspace();
     const nativeModel = { providerId: "openai-subscription", modelId: DEFAULT_RUN_CONFIG.model.modelId };
