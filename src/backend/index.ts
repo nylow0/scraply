@@ -58,6 +58,12 @@ process.parentPort?.on("message", async (event) => {
 
   if (message.type === "update-secrets") {
     if (!handle) return;
+    // The check and update run in one event-loop turn, so a run cannot start between them.
+    if (message.onlyWhenIdle && handle.hasActiveRuns()) {
+      post({ type: "secrets-updated", requestId: message.requestId,
+        error: "Search keys can't change while research is running. Wait for it to finish or cancel it, then try again." });
+      return;
+    }
     secrets = message.secrets;
     handle.secretsChanged();
     post({ type: "secrets-updated", requestId: message.requestId });

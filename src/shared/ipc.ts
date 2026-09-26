@@ -40,7 +40,7 @@ export function ApiResponseSchema<T extends z.ZodTypeAny>(dataSchema: T) {
 
 export const BackendReadySchema = z.object({ port: z.number().int().positive(), token: z.string().min(1) });
 // Search keys are write-only: the renderer sees whether one is saved and its masked tail ("••••a1b2"), never the key.
-const SearchKeyStatusSchema = z.object({ valid: z.boolean(), error: z.string().optional(), maskedKey: z.string().optional() });
+const SearchKeyStatusSchema = z.object({ valid: z.boolean(), error: z.string().optional(), maskedKey: z.string().optional(), checking: z.boolean().optional() });
 export const ValidationStateSchema = z.object({
   exa: SearchKeyStatusSchema,
   perplexity: SearchKeyStatusSchema,
