@@ -597,7 +597,9 @@ describe("App workspace coordination", () => {
     await fireEvent.click(await view.findByRole("button", { name: "Sign in with OpenAI" }));
     expect(await view.findByText("Native model account connected.")).toBeTruthy();
     expect(within(view.getByLabelText("Model", { exact: true })).getByRole("option", { name: "GPT-6 Sol", hidden: true })).toBeTruthy();
-    expect(view.getByText("dany@example.test")).toBeTruthy();
+    // The connected account is listed, with its email hidden until the user reveals it.
+    expect(within(view.getByLabelText("OpenAI account")).getByRole("button", { name: "Show account email" })).toBeTruthy();
+    expect(view.queryByText("dany@example.test")).toBeNull();
   });
 
   test("welcomes a first-time user and signs in from the prompt", async () => {
@@ -624,6 +626,80 @@ describe("App workspace coordination", () => {
     await fireEvent.click(within(welcome).getByRole("button", { name: "Sign in with OpenAI" }));
     expect(startNativeLogin).toHaveBeenCalledWith({ providerId: "openai-subscription", method: "browser" });
     await waitFor(() => expect(view.queryByRole("dialog", { name: "Welcome to Scraply" })).toBeNull());
+  });
+
+  test("continues from sign-in to web search keys and stays open until every entered key is saved", async () => {
+    const noSearch = (state: WorkspaceState) => {
+      state.validation.exa = { valid: false, error: "Exa key missing" };
+      state.validation.perplexity = { valid: false, error: "Perplexity key missing" };
+      return state;
+    };
+    const signedOut = noSearch(workspace("alpha"));
+    signedOut.validation.native = { available: true, connected: false, accounts: [] };
+    const connected = noSearch(workspace("alpha"));
+    connected.validation.native = { available: true, connected: true, accounts: [{ providerId: "openai-subscription" }] };
+    const withExa = structuredClone(connected);
+    withExa.validation.exa = { valid: true, maskedKey: "••••3f9a" };
+    const withBoth = structuredClone(withExa);
+    withBoth.validation.perplexity = { valid: true, maskedKey: "••••77c1" };
+    const saveSearchKey = vi.fn(async ({ provider, apiKey }: { provider: "exa" | "perplexity"; apiKey: string }) => {
+      if (provider === "exa") return withExa;
+      if (apiKey === "pplx-rejected") throw new Error("Perplexity API key was rejected");
+      return withBoth;
+    });
+    installApi({
+      getWorkspace: vi.fn().mockResolvedValue(signedOut),
+      startNativeLogin: vi.fn().mockResolvedValue({ loginId: "login-welcome", providerId: "openai-subscription", method: "browser" as const }),
+      completeNativeLogin: vi.fn().mockResolvedValue({ pending: false as const, workspace: connected }),
+      saveSearchKey,
+    });
+    const view = render(App);
+
+    await fireEvent.click(within(await view.findByRole("dialog", { name: "Welcome to Scraply" })).getByRole("button", { name: "Sign in with OpenAI" }));
+    const prompt = await view.findByRole("dialog", { name: "Add web search" });
+    expect(within(prompt).getByText("OpenAI connected")).toBeTruthy();
+    await waitFor(() => expect(document.activeElement).toBe(within(prompt).getByLabelText("Exa API key")));
+
+    await fireEvent.input(within(prompt).getByLabelText("Exa API key"), { target: { value: "fake-exa-key" } });
+    await fireEvent.input(within(prompt).getByLabelText("Perplexity API key"), { target: { value: "pplx-rejected" } });
+    await fireEvent.click(within(prompt).getByRole("button", { name: "Save and continue" }));
+
+    // Exa is saved and connected, yet the prompt stays so the Perplexity rejection can be read and fixed.
+    expect(await within(prompt).findByRole("alert")).toHaveProperty("textContent", "Perplexity API key was rejected");
+    expect(saveSearchKey.mock.calls.map(([call]) => call)).toEqual([
+      { provider: "exa", apiKey: "fake-exa-key" }, { provider: "perplexity", apiKey: "pplx-rejected" },
+    ]);
+    expect(within(prompt).getByText("Saved")).toBeTruthy();
+    expect(within(prompt).queryByLabelText("Exa API key")).toBeNull();
+    expect(within(prompt).getByRole("button", { name: "Done" })).toBeTruthy();
+    expect(document.activeElement).toBe(within(prompt).getByLabelText("Perplexity API key"));
+
+    await fireEvent.input(within(prompt).getByLabelText("Perplexity API key"), { target: { value: "fake-pplx-key" } });
+    await fireEvent.click(within(prompt).getByRole("button", { name: "Save and continue" }));
+    await waitFor(() => expect(view.queryByRole("dialog", { name: "Add web search" })).toBeNull());
+    expect(saveSearchKey).toHaveBeenLastCalledWith({ provider: "perplexity", apiKey: "fake-pplx-key" });
+  });
+
+  test("asks a signed-in user without a search key to add one, but not one whose saved key is failing", async () => {
+    const noKey = workspace("alpha");
+    noKey.validation.native = { available: true, connected: true, accounts: [{ providerId: "openai-subscription" }] };
+    noKey.validation.exa = { valid: false, error: "Exa key missing" };
+    installApi({ getWorkspace: vi.fn().mockResolvedValue(noKey) });
+    const view = render(App);
+    const prompt = await view.findByRole("dialog", { name: "Add web search" });
+    expect((within(prompt).getByRole("button", { name: "Save and continue" }) as HTMLButtonElement).disabled).toBe(true);
+    await fireEvent.click(within(prompt).getByRole("button", { name: "Not now" }));
+    expect(view.queryByRole("dialog", { name: "Add web search" })).toBeNull();
+    view.unmount();
+
+    // A saved key that is currently rejected is fixed from Settings or setup, not by the first-run prompt.
+    const failing = structuredClone(noKey);
+    failing.validation.exa = { valid: false, error: "Exa API key was rejected", maskedKey: "••••3f9a" };
+    installApi({ getWorkspace: vi.fn().mockResolvedValue(failing) });
+    const next = render(App);
+    await next.findByRole("button", { name: "Settings" });
+    await tick();
+    expect(next.queryByRole("dialog", { name: "Add web search" })).toBeNull();
   });
 
   test("Escape dismisses the welcome prompt and cancels an active sign-in", async () => {
@@ -859,6 +935,8 @@ function installApi(overrides: Partial<ScraplyApi>): void {
     cancelNativeLogin: noWorkspace,
     refreshNativeAccount: noWorkspace,
     logoutNativeAccount: noWorkspace,
+    saveSearchKey: noWorkspace,
+    removeSearchKey: noWorkspace,
     startResearch: async () => ({ workspace: workspace("alpha") }),
     previewWorkflow: async () => { throw new Error("unused"); },
     startWorkflow: async () => { throw new Error("unused"); },

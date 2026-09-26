@@ -68,7 +68,7 @@ This is an explicit desktop check, not the default preview. The installed Start 
 
 ## Verification and handoff
 
-For offline setup and navigation checks, run `bun run test:ui` and open `http://127.0.0.1:5176/?history=18&long=1`. This mounts the real renderer with synthetic projects and a local mock transport. It cannot launch research or contact a provider. Use `history=0` or `history=80` for empty and large collections, `active=70` with the large collection to place the current project outside recent history, and `connection=offline` for a disconnected search provider. Reloading resets the fixture. Settings and archive/restore changes last for the current page session.
+For offline setup and navigation checks, run `bun run test:ui` and open `http://127.0.0.1:5176/?history=18&long=1`. This mounts the real renderer with synthetic projects and a local mock transport. It cannot launch research or contact a provider. Use `history=0` or `history=80` for empty and large collections, `active=70` with the large collection to place the current project outside recent history, and `connection=offline` for a disconnected search provider. `account=signed-out` opens the welcome sign-in, which succeeds on click, and `search=none` starts without search keys. Saving a search key accepts any key except one containing `invalid`. Reloading resets the fixture. Settings and archive/restore changes last for the current page session.
 
 | Change | Local verification |
 | --- | --- |
@@ -91,7 +91,9 @@ Remove a worktree once its pull request merges, because each one carries its own
 
 ## Provider setup
 
-Set `EXA_API_KEY`, `PERPLEXITY_API_KEY`, or both in `.env` for development or in the environment that launches the installed app. A discovery run uses its selected search provider. Scraply checks configured providers in the background, then saves keys with Windows-backed encryption after validation. Known-problem development does not require web search.
+Users add Exa and Perplexity API keys in the app: the welcome prompt asks after OpenAI sign-in, and **Settings → Accounts** adds, replaces, or removes them. Main validates a pasted key with its provider through the backend's `/search-keys/preflight` route before storing it with Windows-backed encryption. A rejected key changes nothing. The renderer only ever receives a key's masked tail (`maskedKey` in validation state). Changes are refused while research runs, because applying a key rebuilds the research engine and would cancel the run.
+
+`EXA_API_KEY` and `PERPLEXITY_API_KEY` in `.env` (development only) or in the launch environment override saved keys on every launch, and are saved after validation. The app refuses to edit an overridden key rather than letting the change revert on the next launch. A discovery run uses its selected search provider. Known-problem development does not require web search.
 
 Connect OpenAI through Scraply's account controls. The app opens OpenAI login in your browser and bundles its `scraply-agent` worker. These credentials stay separate from other Codex installations on the computer. The worker source lives in [runtime/](../runtime/README.md); `nylow0/scraply-agent` is legacy. Pinned upstream source supplies OpenAI login and Responses transport libraries. Scraply does not package or invoke the Codex CLI.
 

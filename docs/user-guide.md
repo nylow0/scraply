@@ -4,7 +4,7 @@ Scraply keeps a project in three places: **Setup** for the brief and limits, **R
 
 ## Start a project
 
-1. Connect an OpenAI account in Scraply. For web discovery, connect Exa or Perplexity too. Selectable models come from the connected account's live catalog.
+1. Connect an OpenAI account in Scraply. For web discovery, add an Exa or Perplexity API key too. The welcome prompt asks for both after you sign in, and **Settings → Accounts** can add, replace, or remove a key later. Scraply checks each key with its provider before saving it and afterwards shows only its last four characters. Selectable models come from the connected account's live catalog.
 2. Create a project. Choose **Find problems to solve** to research a topic or audience, or **I have a problem to solve** when you can state the problem already. A known-problem run can skip web search.
 3. Write what you want to explore or state your known problem. Add the intended audience, boundaries, and any risks you want evaluated. Choose the model and reasoning effort, research depth and search provider when discovery needs them.
 4. Choose how much supervision you want. **Babysit** stops after research for your review. **Vibe** asks for the idea model and limits before launch, then advances through research, selection, generation, and review while the local app host remains open.

@@ -16,6 +16,7 @@ import { OpportunityFamiliesViewSchema, OpportunityMembershipCommandSchema } fro
 import { FocusedExperimentRecordSchema, FocusedDemandTestSchema } from "./focused-experiment";
 import { OpportunityExplorationProgressSchema, OpportunityExplorationStatusSchema, OpportunityBudgetExtensionSchema, OpportunityBudgetExtensionPreviewSchema, OpportunityCandidateOriginSchema } from "./opportunity-exploration";
 import { WorkflowSummarySchema } from "./workflow-contracts";
+import { SearchProviderSchema } from "../providers/search";
 
 const EntityIdSchema = z.string().trim().min(1).max(128);
 const ShortTextSchema = z.string().trim().min(1).max(256);
@@ -38,9 +39,11 @@ export function ApiResponseSchema<T extends z.ZodTypeAny>(dataSchema: T) {
 }
 
 export const BackendReadySchema = z.object({ port: z.number().int().positive(), token: z.string().min(1) });
+// Search keys are write-only: the renderer sees whether one is saved and its masked tail ("••••a1b2"), never the key.
+const SearchKeyStatusSchema = z.object({ valid: z.boolean(), error: z.string().optional(), maskedKey: z.string().optional() });
 export const ValidationStateSchema = z.object({
-  exa: z.object({ valid: z.boolean(), error: z.string().optional() }),
-  perplexity: z.object({ valid: z.boolean(), error: z.string().optional() }),
+  exa: SearchKeyStatusSchema,
+  perplexity: SearchKeyStatusSchema,
   native: z.object({
     available: z.boolean(),
     connected: z.boolean(),
@@ -112,6 +115,13 @@ export const NativeLoginStartSchema = z.object({
 export const NativeLoginCompleteSchema = z.object({ loginId: EntityIdSchema }).strict();
 export const NativeLoginCancelSchema = z.object({ loginId: EntityIdSchema, providerId: z.literal(OPENAI_SUBSCRIPTION_PROVIDER_ID) }).strict();
 export const NativeProviderSchema = z.object({ providerId: z.literal(OPENAI_SUBSCRIPTION_PROVIDER_ID) }).strict();
+// Pasted keys often carry a trailing newline; anything left with whitespace inside cannot be a key.
+const SearchApiKeySchema = z.string().trim().min(1, "Paste an API key.").max(512).regex(/^\S+$/, "API keys can't contain spaces.");
+export const SaveSearchKeySchema = z.object({ provider: SearchProviderSchema, apiKey: SearchApiKeySchema }).strict();
+export const RemoveSearchKeySchema = z.object({ provider: SearchProviderSchema }).strict();
+// Main asks the backend whether a key change may be applied: null checks a removal, a key is also validated.
+export const SearchKeyPreflightSchema = z.object({ provider: SearchProviderSchema, apiKey: SearchApiKeySchema.nullable() }).strict();
+export const SearchKeyPreflightResultSchema = z.object({ valid: z.boolean(), error: z.string().optional() });
 export const NativeLoginLaunchSchema = z.discriminatedUnion("method", [
   z.object({ loginId: EntityIdSchema, providerId: EntityIdSchema, method: z.literal("browser"), authorizationUrl: z.string().url(), callbackPort: z.number().int().positive() }).strict(),
   z.object({ loginId: EntityIdSchema, providerId: EntityIdSchema, method: z.literal("device"), verificationUrl: z.string().url(), userCode: z.string().min(1) }).strict(),
@@ -367,5 +377,6 @@ export const IPC_CHANNELS = {
   NATIVE_LOGIN_START: "scraply:native-login-start", NATIVE_LOGIN_COMPLETE: "scraply:native-login-complete",
   NATIVE_LOGIN_CANCEL: "scraply:native-login-cancel",
   NATIVE_ACCOUNT_REFRESH: "scraply:native-account-refresh", NATIVE_LOGOUT: "scraply:native-logout",
+  SAVE_SEARCH_KEY: "scraply:save-search-key", REMOVE_SEARCH_KEY: "scraply:remove-search-key",
   OPEN_EXTERNAL_URL: "scraply:open-external-url", BACKEND_EVENT: "scraply:backend-event",
 } as const;

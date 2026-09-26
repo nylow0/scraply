@@ -1,4 +1,4 @@
-import { fireEvent, render, waitFor } from "@testing-library/svelte";
+import { fireEvent, render, waitFor, within } from "@testing-library/svelte";
 import type { ComponentProps } from "svelte";
 import { describe, expect, test, vi } from "vitest";
 import Settings from "../../src/renderer/components/Settings.svelte";
@@ -445,11 +445,71 @@ describe("ScopeForm search provider selection", () => {
       onRetry: vi.fn(),
       onRefreshNative: refresh, onLogoutNative: logout,
     });
-    expect(accountView.getByText("dany@example.test · ChatGPT Pro")).toBeTruthy();
+    // The email is hidden behind blurred look-alike text: it is not in the page at all until clicked.
+    const account = within(accountView.container).getByLabelText("OpenAI account");
+    expect(account.textContent).toContain("Signed in as");
+    expect(account.textContent).toContain("· ChatGPT Pro");
+    expect(account.textContent).not.toContain("dany@example.test");
+    await fireEvent.click(within(account).getByRole("button", { name: "Show account email" }));
+    expect(within(account).getByRole("button", { name: "dany@example.test" })).toBeTruthy();
+    await fireEvent.click(within(account).getByRole("button", { name: "dany@example.test" }));
+    expect(account.textContent).not.toContain("dany@example.test");
+    // Revealing lasts only until Settings closes.
+    await fireEvent.click(within(account).getByRole("button", { name: "Show account email" }));
+    await accountView.rerender({ open: false });
+    await accountView.rerender({ open: true });
+    expect(within(accountView.container).getByLabelText("OpenAI account").textContent).not.toContain("dany@example.test");
     await fireEvent.click(accountView.getByRole("button", { name: "Refresh" }));
     await fireEvent.click(accountView.getByRole("button", { name: "Sign out" }));
     expect(refresh).toHaveBeenCalledWith("openai-subscription");
     expect(logout).toHaveBeenCalledWith("openai-subscription");
+  });
+
+  test("adds, replaces, and removes search keys from Settings without ever showing a saved key", async () => {
+    const state = workspace();
+    state.validation.exa = { valid: true, maskedKey: "••••3f9a" };
+    state.validation.perplexity = { valid: false, error: "Perplexity key missing" };
+    const onSaveSearchKey = vi.fn()
+      .mockRejectedValueOnce(new Error("Perplexity API key was rejected"))
+      .mockResolvedValue(undefined);
+    const onRemoveSearchKey = vi.fn().mockResolvedValue(undefined);
+    const onOpenUrl = vi.fn();
+    const view = renderSettings({ workspace: state, onSaveSearchKey, onRemoveSearchKey, onOpenUrl });
+
+    const exa = view.getByLabelText("Exa account");
+    expect(exa.textContent).toContain("Connected");
+    expect(exa.textContent).toContain("Saved key ending in••••3f9a");
+    const perplexity = view.getByLabelText("Perplexity account");
+    expect(perplexity.textContent).toContain("Not connected");
+
+    await fireEvent.click(within(perplexity).getByRole("button", { name: "Add key for Perplexity" }));
+    const field = within(perplexity).getByLabelText("Perplexity API key") as HTMLInputElement;
+    expect(field.type).toBe("password");
+    expect(document.activeElement).toBe(field);
+    await fireEvent.click(within(perplexity).getByRole("link", { name: "Get a Perplexity key" }));
+    expect(onOpenUrl).toHaveBeenCalledWith("https://console.perplexity.ai/project/keys");
+
+    await fireEvent.input(field, { target: { value: "pplx-rejected" } });
+    await fireEvent.click(within(perplexity).getByRole("button", { name: "Save" }));
+    expect(await within(perplexity).findByRole("alert")).toHaveProperty("textContent", "Perplexity API key was rejected");
+    expect(field.getAttribute("aria-invalid")).toBe("true");
+    await fireEvent.input(field, { target: { value: "fake-pplx-key" } });
+    await fireEvent.click(within(perplexity).getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(within(perplexity).queryByLabelText("Perplexity API key")).toBeNull());
+    expect(onSaveSearchKey.mock.calls).toEqual([["perplexity", "pplx-rejected"], ["perplexity", "fake-pplx-key"]]);
+
+    // Replacing starts from an empty field; Escape abandons the edit without leaving Settings.
+    await fireEvent.click(within(exa).getByRole("button", { name: "Replace Exa key" }));
+    const replacement = within(exa).getByLabelText("Exa API key") as HTMLInputElement;
+    expect(replacement.value).toBe("");
+    await fireEvent.keyDown(replacement, { key: "Escape" });
+    expect(within(exa).queryByLabelText("Exa API key")).toBeNull();
+    expect(view.getByRole("region", { name: "Settings" }).hidden).toBe(false);
+
+    await fireEvent.click(within(exa).getByRole("button", { name: "Remove Exa key" }));
+    const confirmation = within(exa).getByRole("group", { name: "Remove the saved Exa key?" });
+    await fireEvent.click(within(confirmation).getByRole("button", { name: "Remove key" }));
+    expect(onRemoveSearchKey).toHaveBeenCalledWith("exa");
   });
 
   test("keeps sign-in recovery visible when the native runtime is unavailable", async () => {
@@ -778,7 +838,8 @@ function workspace(): WorkspaceState {
 function renderSettings(props: Partial<ComponentProps<typeof Settings>> & { workspace: WorkspaceState }) {
   const view = render(Settings, {
     open: true, busy: false, nativeLogin: null, onRetry: vi.fn(), onConnectNative: vi.fn(), onCancelNative: vi.fn(),
-    onRefreshNative: vi.fn(), onLogoutNative: vi.fn(), onOpenData: vi.fn(), onOpenLogs: vi.fn(), onRestore: vi.fn(), onDelete: vi.fn(), ...props,
+    onRefreshNative: vi.fn(), onLogoutNative: vi.fn(), onSaveSearchKey: vi.fn(), onRemoveSearchKey: vi.fn(), onOpenUrl: vi.fn(),
+    onOpenData: vi.fn(), onOpenLogs: vi.fn(), onRestore: vi.fn(), onDelete: vi.fn(), ...props,
   });
   return view;
 }
