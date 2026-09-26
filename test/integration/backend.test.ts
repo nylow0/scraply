@@ -221,15 +221,15 @@ describe("cutover backend", () => {
     for (let attempt = 0; attempt < 40 && !releaseModel; attempt += 1) await new Promise((resolve) => setTimeout(resolve, 25));
     releaseCandidate?.();
     expect((await pendingPreflight).body.data).toEqual({ valid: true });
-    expect(handle.hasActiveRuns()).toBe(true);
+    expect(handle.hasActiveWork()).toBe(true);
     expect(handle.beginSearchKeyUpdate()).toBe(false);
     const busy = await call("/search-keys/preflight", { provider: "exa", apiKey: "exa-another-key" });
     expect(busy.status).toBe(409);
     expect(busy.body.error?.message).toContain("while research is running");
     expect(checkedKeys).not.toContain("exa-another-key");
     releaseModel?.();
-    for (let attempt = 0; attempt < 80 && handle.hasActiveRuns(); attempt += 1) await new Promise((resolve) => setTimeout(resolve, 50));
-    expect(handle.hasActiveRuns()).toBe(false);
+    for (let attempt = 0; attempt < 80 && handle.hasActiveWork(); attempt += 1) await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(handle.hasActiveWork()).toBe(false);
     expect(handle.beginSearchKeyUpdate()).toBe(true);
     expect((await call("/threads", {})).status).toBe(409);
     expect(handle.finishSearchKeyUpdate()).toBe(true);
