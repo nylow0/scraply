@@ -139,7 +139,7 @@
       </div>
       {#each SEARCH_PROVIDERS as provider (provider.id)}
         {@const status = workspace.validation[provider.id]}
-        {@const checking = status.error?.startsWith("Checking ") ?? false}
+        {@const checking = status.checking === true}
         <div class="provider search-account" aria-label={`${provider.name} account`}>
           <div class="provider-row">
             <div class="provider-name"><ProviderLogo provider={provider.id} size={22} /><strong>{provider.name}</strong></div>
@@ -186,10 +186,6 @@
   /* The column starts on the research page title's left edge and uses its heading type, rather than floating centred. */
   .settings-content { padding:18px 24px 32px;min-width:0;min-height:0;overflow:auto;scrollbar-gutter:stable;border:1px solid var(--glass-edge);border-radius:var(--panel-radius);background:var(--bg);box-shadow:var(--glass-rim); }
   .settings-content > * { max-width:720px; }
-  /* Accounts reads as app chrome, so its labels and statuses don't select on click or drag. Key fields stay
-     editable, and a revealed email stays copyable (RedactedText opts back in). */
-  .settings-screen[data-section="accounts"] .settings-content { user-select:none; }
-  .settings-screen[data-section="accounts"] .settings-content :global(input) { user-select:text; }
   .settings-content > header { display:flex;align-items:start;justify-content:space-between;gap:16px;margin-bottom:24px; }
   h2 { margin:0;font-size:24px;font-weight:600;letter-spacing:-.025em; }
   button { padding:10px 14px;border:1px solid var(--border-strong);border-radius:8px;background:var(--surface-2);color:var(--text);font-size:13px; }
