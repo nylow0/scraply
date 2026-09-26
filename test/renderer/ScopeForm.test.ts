@@ -3,6 +3,7 @@ import type { ComponentProps } from "svelte";
 import { describe, expect, test, vi } from "vitest";
 import Settings from "../../src/renderer/components/Settings.svelte";
 import ScopeForm from "../../src/renderer/components/ScopeForm.svelte";
+import ProblemCheckpoint from "../../src/renderer/components/ProblemCheckpoint.svelte";
 import type { WorkspaceState } from "../../src/shared/ipc";
 import { DEFAULT_RUN_CONFIG, RunConfigSchema, modelRefKey } from "../../src/shared/schemas";
 import type { WorkflowLaunchDraft } from "../../src/shared/workflow-contracts";
@@ -288,6 +289,71 @@ describe("ScopeForm search provider selection", () => {
       const savedView = render(ScopeForm, { workspace: workspace(), busy: false, onSave, onStart: vi.fn(), onRetry: vi.fn() });
       expect((savedView.getByLabelText("Search coverage") as HTMLSelectElement).value).toBe("web");
       expect((savedView.getByLabelText("Research depth") as HTMLSelectElement).value).toBe("standard");
+    } finally {
+      if (previous === null) localStorage.removeItem(storageKey);
+      else localStorage.setItem(storageKey, previous);
+    }
+  });
+
+  test("uses saved research and ideas model efforts in new setups and later idea selection", async () => {
+    const storageKey = "scraply.research-defaults.v1";
+    const previous = localStorage.getItem(storageKey);
+    const sol = DEFAULT_RUN_CONFIG.model;
+    const luna = { providerId: "openai-subscription", modelId: "gpt-6-luna" };
+    const state = workspace();
+    state.validation.exa = { valid: true };
+    state.models = [sol, luna];
+    state.modelOptions = [
+      { ...sol, displayName: "Sol", defaultReasoningEffort: "medium", reasoningEfforts: [
+        { id: "low", description: "Fast" }, { id: "medium", description: "Balanced" },
+      ] },
+      { ...luna, displayName: "Luna", defaultReasoningEffort: "low", reasoningEfforts: [
+        { id: "low", description: "Fast" }, { id: "high", description: "Thorough" },
+      ] },
+    ];
+    try {
+      localStorage.removeItem(storageKey);
+      const settings = renderSettings({ workspace: state });
+      await fireEvent.click(settings.getByRole("button", { name: "Research defaults" }));
+      await fireEvent.change(settings.getByLabelText("Default reasoning"), { target: { value: "low" } });
+      await fireEvent.change(settings.getByLabelText("Default ideas model"), { target: { value: modelRefKey(luna) } });
+      expect((settings.getByLabelText("Default ideas reasoning") as HTMLSelectElement).value).toBe("low");
+      await fireEvent.change(settings.getByLabelText("Default ideas reasoning"), { target: { value: "high" } });
+      await fireEvent.click(settings.getByRole("button", { name: "Save defaults" }));
+      settings.unmount();
+
+      const reopened = renderSettings({ workspace: state });
+      await fireEvent.click(reopened.getByRole("button", { name: "Research defaults" }));
+      expect((reopened.getByLabelText("Default reasoning") as HTMLSelectElement).value).toBe("low");
+      expect((reopened.getByLabelText("Default ideas model") as HTMLSelectElement).value).toBe(modelRefKey(luna));
+      expect((reopened.getByLabelText("Default ideas reasoning") as HTMLSelectElement).value).toBe("high");
+      reopened.unmount();
+
+      const fresh = { ...state, scope: null, runConfig: null };
+      const onPreviewWorkflow = vi.fn().mockRejectedValue(new Error("Preview unavailable"));
+      const setup = render(ScopeForm, { workspace: fresh, busy: false, onSave: vi.fn(), onStart: vi.fn(),
+        onRetry: vi.fn(), onPreviewWorkflow, onStartWorkflow: vi.fn() });
+      expect((setup.getByRole("combobox", { name: "Reasoning" }) as HTMLSelectElement).value).toBe("low");
+      expect((setup.getByRole("combobox", { name: "Ideas model" }) as HTMLSelectElement).value).toBe(modelRefKey(luna));
+      expect((setup.getByRole("combobox", { name: "Ideas reasoning" }) as HTMLSelectElement).value).toBe("high");
+      await fireEvent.input(setup.getByPlaceholderText("Your topic or idea"), { target: { value: "Repair shop delays" } });
+      await waitFor(() => expect(onPreviewWorkflow).toHaveBeenCalledWith(expect.objectContaining({
+        runConfig: expect.objectContaining({ model: sol, reasoningEffort: "low" }),
+        ideas: { model: luna, reasoningEffort: "high", reviewModel: luna, reviewReasoningEffort: "high" },
+      })));
+      setup.unmount();
+
+      const checkpoint = render(ProblemCheckpoint, { problems: [], rejectedCandidates: [], modelOptions: state.modelOptions,
+        initialConfig: DEFAULT_RUN_CONFIG, busy: false, onCommit: vi.fn(), onExport: vi.fn(), onOpenSource: vi.fn() });
+      expect((checkpoint.getByLabelText("Development model") as HTMLSelectElement).value).toBe(modelRefKey(luna));
+      expect((checkpoint.getByLabelText("Development reasoning") as HTMLSelectElement).value).toBe("high");
+      checkpoint.unmount();
+
+      const prior = render(ProblemCheckpoint, { problems: [], rejectedCandidates: [], modelOptions: state.modelOptions,
+        initialConfig: DEFAULT_RUN_CONFIG, priorDevelopment: true, busy: false,
+        onCommit: vi.fn(), onExport: vi.fn(), onOpenSource: vi.fn() });
+      expect((prior.getByLabelText("Development model") as HTMLSelectElement).value).toBe(modelRefKey(sol));
+      expect((prior.getByLabelText("Development reasoning") as HTMLSelectElement).value).toBe("medium");
     } finally {
       if (previous === null) localStorage.removeItem(storageKey);
       else localStorage.setItem(storageKey, previous);

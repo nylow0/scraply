@@ -4,6 +4,10 @@ import { DEFAULT_RUN_CONFIG, DiscoveryDepthSchema, HISTORICAL_CODEX_CLI_PROVIDER
 const storageKey = "scraply.research-defaults.v1";
 const ResearchDefaultsSchema = z.object({
   model: ModelRefSchema,
+  // Older saved preferences omit these fields. The live model catalog supplies their initial efforts.
+  reasoningEffort: ReasoningEffortSchema.optional(),
+  ideasModel: ModelRefSchema.optional(),
+  ideasReasoningEffort: ReasoningEffortSchema.optional(),
   searchProvider: z.enum(["exa", "perplexity"]),
   audienceSourcePolicy: z.enum(["web", "communities"]).default("web"),
   discoveryDepth: DiscoveryDepthSchema.default("standard"),

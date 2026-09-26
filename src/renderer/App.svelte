@@ -945,7 +945,7 @@
       {:else if (activeWorkflow ? activeWorkflow.state === "waiting-for-review" : activeThread.status === "problems-ready" || reviewSelection) && (workspace.problemCandidates.length > 0 || workspace.rejectedProblemCandidates.length > 0)}
         <div id="workflow-panel-research" role="tabpanel" aria-label="Research">
           {#key workspace.activeThreadId}
-            <ProblemCheckpoint problems={workspace.problemCandidates} rejectedCandidates={workspace.rejectedProblemCandidates} modelOptions={workspace.modelOptions} initialConfig={activeRun?.problemId ? activeRun.runConfig ?? workspace.runConfig : workspace.runConfig} fixedExplorationPurpose={activeWorkflow ? workspace.runConfig?.explorationPurpose ?? "general-solutions" : undefined} workflowVersion={activeRun?.workflowVersion} ideaCount={workspace.runConfig?.ideaCount} {busy} onCommit={selectProblems} onExport={exportResearch} onOpenSource={openExternalUrl} />
+            <ProblemCheckpoint problems={workspace.problemCandidates} rejectedCandidates={workspace.rejectedProblemCandidates} modelOptions={workspace.modelOptions} initialConfig={activeRun?.problemId ? activeRun.runConfig ?? workspace.runConfig : workspace.runConfig} priorDevelopment={Boolean(activeRun?.problemId)} fixedExplorationPurpose={activeWorkflow ? workspace.runConfig?.explorationPurpose ?? "general-solutions" : undefined} workflowVersion={activeRun?.workflowVersion} ideaCount={workspace.runConfig?.ideaCount} {busy} onCommit={selectProblems} onExport={exportResearch} onOpenSource={openExternalUrl} />
           {/key}
         </div>
       {:else if workspace.problemCandidates.length > 0 || workspace.rejectedProblemCandidates.length > 0}
