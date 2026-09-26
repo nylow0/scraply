@@ -3,7 +3,7 @@ import { execFile } from "node:child_process";
 import { createRequire } from "node:module";
 import { join } from "node:path";
 import { promisify } from "node:util";
-import { createInstalledApp } from "./installed-app";
+import { createInstalledApp, dismissSignInPrompt } from "./installed-app";
 
 test("installed UI rejects invalid planning, displays valid strict rules, and preserves a saved legacy plan",async({},testInfo)=>{
   const app=createInstalledApp({directoryPrefix:"scraply-focused-acceptance-"});
@@ -16,6 +16,8 @@ test("installed UI rejects invalid planning, displays valid strict rules, and pr
   try {
     const electron=await app.launch({...process.env,SCRAPLY_E2E:"1",SCRAPLY_E2E_BACKEND_URL:backend.url,SCRAPLY_E2E_BACKEND_TOKEN:backend.token});
     const page=await electron.firstWindow();
+    // The fixture has no search key, so the welcome prompt asks for one; this test covers planning instead.
+    await dismissSignInPrompt(page);
     await page.getByRole("button",{name:"Open idea: Inspect the saved payment experiment",exact:true}).click();
     await page.getByRole("button",{name:"Plan a focused experiment",exact:true}).click();
     await expect(page.locator("div[role='alert']")).toContainText("Numeric rules must allow both pass and fail");
