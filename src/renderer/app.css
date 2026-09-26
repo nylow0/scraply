@@ -119,10 +119,22 @@ button:not(:disabled):active {
   transform: translateY(1px);
 }
 
+/* Everything that responds to a click shows the pointer, not only buttons: menus, checkboxes, radios,
+   the labels that toggle them, and disclosure rows. Text fields keep the text cursor. */
+select:not(:disabled),
+select option:not(:disabled),
+summary,
+input:is([type="checkbox"], [type="radio"]):not(:disabled),
+label:has(> input:is([type="checkbox"], [type="radio"]):not(:disabled)) {
+  cursor: pointer;
+}
+
 button:disabled,
 input:disabled,
 textarea:disabled,
-select:disabled {
+select:disabled,
+select option:disabled,
+label:has(> input:is([type="checkbox"], [type="radio"]):disabled) {
   cursor: not-allowed;
 }
 
