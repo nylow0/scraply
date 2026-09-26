@@ -1024,7 +1024,7 @@
   .settings-button:hover { background:var(--surface-2);color:var(--text); }
 
   /* Floating layout: the sidebar and the page are separate panels over the lit background. */
-  .app-shell { --sidebar-width:clamp(232px,17vw,288px);height:calc(100% - 36px);display:grid;grid-template-columns:var(--sidebar-width) minmax(0,1fr);gap:10px;padding:2px 10px 10px; }
+  .app-shell { --sidebar-width:var(--sidebar-expanded-width);height:calc(100% - 36px);display:grid;grid-template-columns:var(--sidebar-width) minmax(0,1fr);gap:10px;padding:2px 10px 10px; }
   /* The page is a black panel with the same hairline edge as the glass around it.
      It is also the `page` size container: page components use @container page queries so their
      breakpoints follow the width they actually get, whatever the navigation is doing. */

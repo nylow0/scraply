@@ -24,6 +24,7 @@ test("compact settings, consistent fields, title defaults, and archive recovery"
     expect(fields.filter((field) => field.textarea).every((field) => field.resize === "none")).toBe(true);
     await expect(page.locator(".main-brief textarea")).toHaveCSS("font-size", "15px");
     const settings = page.getByRole("button", { name: "Settings", exact: true });
+    const settingsBounds = await settings.boundingBox();
     await settings.click();
     const popup = page.getByRole("region", { name: "Settings", exact: true });
     await expect(popup).toBeVisible();
@@ -31,7 +32,14 @@ test("compact settings, consistent fields, title defaults, and archive recovery"
     const popupBounds = await popup.boundingBox();
     expect(Math.abs(popupBounds!.width - await page.evaluate(() => innerWidth))).toBeLessThanOrEqual(1);
     expect(await page.evaluate(() => document.elementFromPoint(40, innerHeight - 40)?.closest(".settings-screen") !== null)).toBe(true);
+    // It mirrors the research layout: Back takes the Settings button's spot, and the title and sections sit in the left panel.
     const back = page.getByRole("button", { name: "Back", exact: true });
+    const backBounds = await back.boundingBox();
+    expect(Math.abs(backBounds!.x - settingsBounds!.x)).toBeLessThanOrEqual(2);
+    expect(Math.abs(backBounds!.y - settingsBounds!.y)).toBeLessThanOrEqual(2);
+    const contentLeft = (await popup.locator(".settings-content").boundingBox())!.x;
+    expect((await page.getByRole("heading", { name: "Settings", exact: true }).boundingBox())!.x).toBeLessThan(contentLeft);
+    expect((await page.getByRole("navigation", { name: "Settings sections" }).boundingBox())!.x).toBeLessThan(contentLeft);
     await expect(page.getByRole("heading", { name: "Settings", exact: true })).toBeFocused();
     await page.screenshot({ animations: "disabled", path: testInfo.outputPath("settings-screen.png") });
     await page.getByRole("button", { name: "Local files", exact: true }).click();
