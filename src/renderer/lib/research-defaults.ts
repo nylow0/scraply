@@ -16,7 +16,8 @@ const ResearchDefaultsSchema = z.object({
 });
 export type ResearchDefaults = z.infer<typeof ResearchDefaultsSchema>;
 
-// Preferences belong to this installed app. A saved project's run config takes precedence.
+// Preferences belong to this installed app. Saved run settings win when returning to development;
+// new idea development uses the ideas defaults before the discovery run's settings.
 export function readResearchDefaults(): ResearchDefaults {
   try {
     const stored = localStorage.getItem(storageKey);
