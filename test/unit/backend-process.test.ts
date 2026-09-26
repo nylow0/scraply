@@ -13,11 +13,13 @@ describe("backend utility protocol", () => {
       type: "update-secrets",
       requestId: "request-1",
       secrets,
+      onlyWhenIdle: true,
     }).success).toBe(true);
     expect(MainToBackendMessageSchema.safeParse({ type: "update-secrets", secrets }).success).toBe(false);
     expect(BackendToMainMessageSchema.safeParse({
       type: "secrets-updated",
       requestId: "request-1",
+      error: "Search keys can't change while research is running.",
     }).success).toBe(true);
   });
 

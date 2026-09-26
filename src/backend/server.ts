@@ -113,6 +113,7 @@ export interface BackendHandle {
   token: string;
   close: () => Promise<void>;
   secretsChanged: () => void;
+  hasActiveRuns: () => boolean;
   providersChanged: () => void;
 }
 
@@ -290,9 +291,9 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
   }
   const pendingValidation = () => ValidationStateSchema.parse({
     exa: { valid: false, error: context.getSecrets().exaApiKey ? "Checking Exa connection" : "Exa key missing",
-      maskedKey: maskSearchKey(context.getSecrets().exaApiKey) },
+      maskedKey: maskSearchKey(context.getSecrets().exaApiKey), checking: Boolean(context.getSecrets().exaApiKey) },
     perplexity: { valid: false, error: context.getSecrets().perplexityApiKey ? "Checking Perplexity connection" : "Perplexity key missing",
-      maskedKey: maskSearchKey(context.getSecrets().perplexityApiKey) },
+      maskedKey: maskSearchKey(context.getSecrets().perplexityApiKey), checking: Boolean(context.getSecrets().perplexityApiKey) },
     setupComplete: false,
     native: { available: false, connected: false, accounts: [], error: "Checking native runtime" },
   });
@@ -1781,6 +1782,7 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
       invalidateProviderCache();
       void validateProviders().catch(() => undefined);
     },
+    hasActiveRuns: () => Boolean(engine?.getActiveRunIds().size),
     providersChanged: () => {
       invalidateProviderCache();
       void validateProviders().catch(() => undefined);
