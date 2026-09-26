@@ -493,6 +493,19 @@ async function updateBackendSecrets(nextSecrets: BackendSecrets, onlyWhenIdle = 
   });
 }
 
+async function finishSearchKeyUpdate(previousSecrets?: BackendSecrets): Promise<void> {
+  if (!backendProcess || !backendReady) throw new AppError("backend_unavailable", "The local backend is unavailable.");
+  const requestId = randomUUID();
+  await new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      pendingSecretUpdates.delete(requestId);
+      reject(new AppError("backend_unavailable", "The local backend did not finish the search key update."));
+    }, 5_000);
+    pendingSecretUpdates.set(requestId, { resolve, reject, timer });
+    backendProcess?.postMessage({ type: "finish-search-key-update", requestId, secrets: previousSecrets });
+  });
+}
+
 async function validateAndPersistSecrets(candidate: BackendSecrets): Promise<ValidationState> {
   const previous = secrets;
   await updateBackendSecrets(candidate);
@@ -543,7 +556,11 @@ const SEARCH_KEYS = {
 // with the provider before it is stored; a rejected key changes nothing. Keys set in the environment
 // or .env override saved keys on every launch, so the app refuses to edit those instead of letting
 // the change silently revert.
+let searchKeyChangeInProgress = false;
 async function changeSearchKey(provider: SearchProvider, apiKey: string | null): Promise<WorkspaceState> {
+  if (searchKeyChangeInProgress) throw new AppError("conflict", "A search key is being updated. Try again in a moment.");
+  searchKeyChangeInProgress = true;
+  try {
   const { field, name, variable } = SEARCH_KEYS[provider];
   if (readAutomaticSecrets()[field]) {
     throw new AppError("conflict", `This ${name} key comes from ${variable} in the environment or .env file. Change it there, then retry connections.`);
@@ -552,19 +569,25 @@ async function changeSearchKey(provider: SearchProvider, apiKey: string | null):
     method: "POST", body: JSON.stringify({ provider, apiKey }),
   }));
   if (!check.valid) throw new AppError("validation_error", check.error ?? `${name} did not accept this key.`);
-  const previousKey = secrets[field];
-  secrets = await credentialStore.save({ ...secrets, [field]: apiKey });
+  const previousSecrets = secrets;
+  const candidate = { ...secrets, [field]: apiKey };
+  let persisted = false;
   try {
-    // A run may have started while the provider checked the candidate or while the store wrote it.
-    // The backend checks again before applying the new secrets, and never cancels that run.
-    await updateBackendSecrets(secrets, true);
+    // The backend reserves an idle moment until the encrypted write finishes. A refused key never reaches disk.
+    await updateBackendSecrets(candidate, true);
+    secrets = await credentialStore.save(candidate);
+    persisted = true;
+    await finishSearchKeyUpdate();
   } catch (cause) {
-    secrets = await credentialStore.save({ ...secrets, [field]: previousKey });
+    await finishSearchKeyUpdate(persisted ? undefined : previousSecrets);
     throw cause;
   }
   // Wait for the fresh check so the returned workspace shows the new key's status, not "Checking…".
   await backendRequest("/validation");
   return backendRequest<WorkspaceState>("/workspace");
+  } finally {
+    searchKeyChangeInProgress = false;
+  }
 }
 
 function assertTrustedSender(event: IpcMainInvokeEvent): void {
