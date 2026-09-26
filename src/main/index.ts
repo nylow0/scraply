@@ -218,7 +218,8 @@ async function startBackendProcess(): Promise<BackendReady> {
         if (!pending) return;
         clearTimeout(pending.timer);
         pendingSecretUpdates.delete(message.requestId);
-        pending.resolve();
+        if (message.error) pending.reject(new AppError("conflict", message.error));
+        else pending.resolve();
         return;
       }
       if (message.type === "log") {
@@ -475,7 +476,7 @@ async function backendRequest<T>(path: string, init?: RequestInit): Promise<T> {
   return parsed.data.data as T;
 }
 
-async function updateBackendSecrets(nextSecrets: BackendSecrets): Promise<void> {
+async function updateBackendSecrets(nextSecrets: BackendSecrets, onlyWhenIdle = false): Promise<void> {
   if (!backendProcess) {
     if (process.env.SCRAPLY_E2E_BACKEND_URL) return;
     throw new AppError("backend_unavailable", backendStartupFailure ?? "The local backend is unavailable.");
@@ -488,7 +489,7 @@ async function updateBackendSecrets(nextSecrets: BackendSecrets): Promise<void> 
       reject(new AppError("backend_unavailable", "The local backend did not acknowledge the credential update."));
     }, 5_000);
     pendingSecretUpdates.set(requestId, { resolve, reject, timer });
-    backendProcess?.postMessage({ type: "update-secrets", requestId, secrets: nextSecrets });
+    backendProcess?.postMessage({ type: "update-secrets", requestId, secrets: nextSecrets, onlyWhenIdle });
   });
 }
 
@@ -551,8 +552,16 @@ async function changeSearchKey(provider: SearchProvider, apiKey: string | null):
     method: "POST", body: JSON.stringify({ provider, apiKey }),
   }));
   if (!check.valid) throw new AppError("validation_error", check.error ?? `${name} did not accept this key.`);
+  const previousKey = secrets[field];
   secrets = await credentialStore.save({ ...secrets, [field]: apiKey });
-  await updateBackendSecrets(secrets);
+  try {
+    // A run may have started while the provider checked the candidate or while the store wrote it.
+    // The backend checks again before applying the new secrets, and never cancels that run.
+    await updateBackendSecrets(secrets, true);
+  } catch (cause) {
+    secrets = await credentialStore.save({ ...secrets, [field]: previousKey });
+    throw cause;
+  }
   // Wait for the fresh check so the returned workspace shows the new key's status, not "Checking…".
   await backendRequest("/validation");
   return backendRequest<WorkspaceState>("/workspace");
