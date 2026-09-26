@@ -360,6 +360,68 @@ describe("ScopeForm search provider selection", () => {
     }
   });
 
+  test("takes older preferences' initial efforts from the model catalog", async () => {
+    const storageKey = "scraply.research-defaults.v1";
+    const previous = localStorage.getItem(storageKey);
+    const state = workspace();
+    const sol = DEFAULT_RUN_CONFIG.model;
+    state.modelOptions = [{ ...sol, displayName: "Sol", defaultReasoningEffort: "medium", reasoningEfforts: [
+      { id: "medium", description: "Balanced" }, { id: "high", description: "Thorough" },
+    ] }];
+    try {
+      localStorage.setItem(storageKey, JSON.stringify({ model: sol, searchProvider: "exa" }));
+      const checkpoint = render(ProblemCheckpoint, { problems: [], rejectedCandidates: [], modelOptions: state.modelOptions,
+        initialConfig: { ...DEFAULT_RUN_CONFIG, reasoningEffort: "high" }, busy: false,
+        onCommit: vi.fn(), onExport: vi.fn(), onOpenSource: vi.fn() });
+      expect((checkpoint.getByLabelText("Development reasoning") as HTMLSelectElement).value).toBe("medium");
+      checkpoint.unmount();
+
+      const setup = render(ScopeForm, { workspace: { ...state, scope: null, runConfig: null }, busy: false,
+        onSave: vi.fn(), onStart: vi.fn(), onRetry: vi.fn(), onPreviewWorkflow: vi.fn(), onStartWorkflow: vi.fn() });
+      expect((setup.getByLabelText("Ideas reasoning") as HTMLSelectElement).value).toBe("medium");
+      setup.unmount();
+    } finally {
+      if (previous === null) localStorage.removeItem(storageKey);
+      else localStorage.setItem(storageKey, previous);
+    }
+  });
+
+  test("waits for model choices before filling missing preference efforts", async () => {
+    const storageKey = "scraply.research-defaults.v1";
+    const previous = localStorage.getItem(storageKey);
+    const ready = workspace();
+    const sol = DEFAULT_RUN_CONFIG.model;
+    ready.modelOptions = [{ ...sol, displayName: "Sol", defaultReasoningEffort: "high", reasoningEfforts: [
+      { id: "medium", description: "Balanced" }, { id: "high", description: "Thorough" },
+    ] }];
+    const loading = { ...ready, modelOptions: [] };
+    try {
+      localStorage.setItem(storageKey, JSON.stringify({ model: sol, searchProvider: "exa" }));
+      const settingsProps = { workspace: loading, open: true, busy: false, nativeLogin: null,
+        onRetry: vi.fn(), onConnectNative: vi.fn(), onCancelNative: vi.fn(), onRefreshNative: vi.fn(),
+        onLogoutNative: vi.fn(), onOpenData: vi.fn(), onOpenLogs: vi.fn(), onRestore: vi.fn(), onDelete: vi.fn() };
+      const settings = render(Settings, settingsProps);
+      await fireEvent.click(settings.getByRole("button", { name: "Research defaults" }));
+      await settings.rerender({ ...settingsProps, workspace: ready });
+      await waitFor(() => expect((settings.getByLabelText("Default reasoning") as HTMLSelectElement).value).toBe("high"));
+      expect((settings.getByLabelText("Default ideas reasoning") as HTMLSelectElement).value).toBe("high");
+      await fireEvent.click(settings.getByRole("button", { name: "Save defaults" }));
+      expect(JSON.parse(localStorage.getItem(storageKey) ?? "{}")).toMatchObject({ reasoningEffort: "high", ideasReasoningEffort: "high" });
+      settings.unmount();
+
+      localStorage.setItem(storageKey, JSON.stringify({ model: sol, searchProvider: "exa" }));
+      const setupProps = { workspace: { ...loading, scope: null, runConfig: null }, busy: false,
+        onSave: vi.fn(), onStart: vi.fn(), onRetry: vi.fn(), onPreviewWorkflow: vi.fn(), onStartWorkflow: vi.fn() };
+      const setup = render(ScopeForm, setupProps);
+      await setup.rerender({ ...setupProps, workspace: { ...ready, scope: null, runConfig: null } });
+      await waitFor(() => expect((setup.getByLabelText("Reasoning") as HTMLSelectElement).value).toBe("high"));
+      expect((setup.getByLabelText("Ideas reasoning") as HTMLSelectElement).value).toBe("high");
+    } finally {
+      if (previous === null) localStorage.removeItem(storageKey);
+      else localStorage.setItem(storageKey, previous);
+    }
+  });
+
   test("offers only native OpenAI models and saves the selected model", async () => {
     const state = workspace();
     const nativeModel = { providerId: "openai-subscription", modelId: DEFAULT_RUN_CONFIG.model.modelId };

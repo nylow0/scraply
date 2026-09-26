@@ -81,7 +81,7 @@
   let modelSelect: HTMLSelectElement;
   let reasoningEffort = $state((initial.scope ? initial.runConfig?.reasoningEffort : defaults.reasoningEffort)
     ?? initialModelOption?.defaultReasoningEffort
-    ?? DEFAULT_RUN_CONFIG.reasoningEffort);
+    ?? "");
   let discoveryDepth = $state(initial.scope ? initial.runConfig?.discoveryDepth ?? DEFAULT_RUN_CONFIG.discoveryDepth : defaults.discoveryDepth);
   let searchProvider = $state<SearchProvider>(initial.scope ? initial.runConfig?.searchProvider ?? defaults.searchProvider : defaults.searchProvider);
   let maxRunMinutes = $state(initial.runConfig?.maxRunMinutes ?? DEFAULT_RUN_CONFIG.maxRunMinutes);
@@ -95,8 +95,8 @@
     modelId: ideaModelOption?.modelId ?? model.modelId,
   });
   let ideaReasoningEffort = $state(defaults.ideasReasoningEffort
-    ?? (defaults.ideasModel ? initialIdeasModelOption?.defaultReasoningEffort : untrack(() => reasoningEffort))
-    ?? DEFAULT_RUN_CONFIG.reasoningEffort);
+    ?? initialIdeasModelOption?.defaultReasoningEffort
+    ?? "");
   let automaticProblemCap = $state(3);
   const initialProjection = untrack(() => discoveryRunProjection(discoveryDepth));
   let workflowModelLimit = $state(initialProjection.modelCalls * 2 + 12);
@@ -195,6 +195,11 @@
   let workflowFingerprint = $derived(JSON.stringify(workflowDraft));
   let workflowPreviewValid = $derived(workflowPreview?.type === "launch" && workflowPreview.fieldErrors.length === 0
     && previewFingerprint === workflowFingerprint);
+
+  $effect(() => {
+    if (!reasoningEffort && selectedModelOption) reasoningEffort = selectedModelOption.defaultReasoningEffort;
+    if (!ideaReasoningEffort && ideaModelOption) ideaReasoningEffort = ideaModelOption.defaultReasoningEffort;
+  });
 
   $effect(() => {
     if (!workflowModelLimitTouched) workflowModelLimit = discoveryReservation.modelCalls
