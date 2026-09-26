@@ -332,7 +332,7 @@ describe("research snapshot materialization", () => {
     client.close();
   });
 
-  test("a finished Babysit session continues through a linked snapshot without rewriting history", () => {
+  test("a finished Controlled session continues through a linked snapshot without rewriting history", () => {
     const { client, repository, sessionId, snapshotId, oldProblemId } = workflowFixture();
     client.immediateTransaction(() => repository.updateSession(sessionId, repository.getSession(sessionId)!.revision, {
       state: "finished", outcome: "partial",
@@ -492,7 +492,7 @@ describe("research snapshot materialization", () => {
     client.close();
   });
 
-  test("keeping research in an initial Babysit checkpoint preserves the generation choice", () => {
+  test("keeping research in an initial Controlled checkpoint preserves the generation choice", () => {
     const { client, repository, sessionId, snapshotId } = workflowFixture();
     const item = client.immediateTransaction(() => {
       const created = repository.createWorkItem({ sessionId, kind: "research-request", scopeKey: "unhelpful-question",
@@ -595,7 +595,7 @@ describe("research snapshot materialization", () => {
   });
 });
 
-test("finished Babysit research command survives backend reopening with linked request history", async () => {
+test("finished Controlled research command survives backend reopening with linked request history", async () => {
   const directory = mkdtempSync(join(tmpdir(), "scraply-research-continuation-api-"));
   const { client, repository, sessionId, snapshotId, oldProblemId } = workflowFixture({}, directory);
   const oldRequestId = client.immediateTransaction(() => {
