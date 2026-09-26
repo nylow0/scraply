@@ -28,6 +28,8 @@
   /* Shared page metrics. Every main-area page uses these so the left edge,
      max width, and top offset line up when switching between them. */
   --page-inline: clamp(20px, 3vw, 40px);
+  /* Expanded left panel width, shared by the research sidebar and the Settings section panel. */
+  --sidebar-expanded-width: clamp(232px, 17vw, 288px);
   --page-top: 38px;
   --page-max: 1120px;
   /* Inline padding that puts full-width bands (the page header, run summaries, notices, the setup
