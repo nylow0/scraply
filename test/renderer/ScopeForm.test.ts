@@ -402,6 +402,10 @@ describe("ScopeForm search provider selection", () => {
         onLogoutNative: vi.fn(), onOpenData: vi.fn(), onOpenLogs: vi.fn(), onRestore: vi.fn(), onDelete: vi.fn() };
       const settings = render(Settings, settingsProps);
       await fireEvent.click(settings.getByRole("button", { name: "Research defaults" }));
+      await fireEvent.change(settings.getByLabelText("Default search provider"), { target: { value: "perplexity" } });
+      await fireEvent.click(settings.getByRole("button", { name: "Save defaults" }));
+      expect(JSON.parse(localStorage.getItem(storageKey) ?? "{}")).toMatchObject({ searchProvider: "perplexity" });
+      expect(JSON.parse(localStorage.getItem(storageKey) ?? "{}").reasoningEffort).toBeUndefined();
       await settings.rerender({ ...settingsProps, workspace: ready });
       await waitFor(() => expect((settings.getByLabelText("Default reasoning") as HTMLSelectElement).value).toBe("high"));
       expect((settings.getByLabelText("Default ideas reasoning") as HTMLSelectElement).value).toBe("high");

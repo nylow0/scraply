@@ -57,12 +57,14 @@
   let selectedModel = $derived(models.find((model) => modelRefKey(model) === modelKey));
   let ideasModel = $derived(models.find((model) => modelRefKey(model) === ideasModelKey));
   function save() {
-    if (!selectedModel || !ideasModel || !titleModel || !reasoningEffort || !ideasReasoningEffort) return;
+    if (!selectedModel || !ideasModel || !titleModel) return;
     error = "";
     try {
       saveResearchDefaults({ searchProvider, audienceSourcePolicy, discoveryDepth,
-        model: { providerId: selectedModel.providerId, modelId: selectedModel.modelId }, reasoningEffort,
-        ideasModel: { providerId: ideasModel.providerId, modelId: ideasModel.modelId }, ideasReasoningEffort,
+        model: { providerId: selectedModel.providerId, modelId: selectedModel.modelId },
+        ...(reasoningEffort ? { reasoningEffort } : {}),
+        ideasModel: { providerId: ideasModel.providerId, modelId: ideasModel.modelId },
+        ...(ideasReasoningEffort ? { ideasReasoningEffort } : {}),
         titleModel: { providerId: titleModel.providerId, modelId: titleModel.modelId }, titleReasoningEffort });
       saved = true;
     } catch {
