@@ -36,7 +36,14 @@
   let workspace = $state<WorkspaceState | null>(null);
   let loading = $state(true);
   let busy = $state(false);
+  // Info feedback is a brief confirmation: it shows as a corner toast and clears itself after 3 seconds.
+  // Errors stay inline (page notice or Settings) until dismissed or replaced, because they usually need action.
   let feedback = $state<Feedback | null>(null);
+  $effect(() => {
+    if (feedback?.tone !== "info") return;
+    const timer = setTimeout(() => feedback = null, 3_000);
+    return () => clearTimeout(timer);
+  });
   let deletingThreadId = $state<string | null>(null);
   let latestEvent = $state<ResearchEvent | null>(null);
   let workflowDetail = $state<WorkflowDetail | null>(null);
@@ -938,7 +945,7 @@
       {/if}
     {/if}
 
-    {#if feedback && !settingsOpen}<div class:error={feedback.tone === "error"} class="notice" role={feedback.tone === "error" ? "alert" : "status"}>{feedback.text}<button aria-label="Dismiss" onclick={() => feedback = null}>×</button></div>{/if}
+    {#if feedback?.tone === "error" && !settingsOpen}<div class="notice" role="alert">{feedback.text}<button aria-label="Dismiss" onclick={() => feedback = null}>×</button></div>{/if}
 
     {#if loading}
       <div class="skeleton" role="status" aria-label="Loading workspace"><i></i><i></i><i></i></div>
@@ -1034,7 +1041,7 @@
       <div class="failed" id="workflow-panel-ideas" role="tabpanel" aria-label="Solutions" tabindex="0"><p class="eyebrow">Solutions not ready</p><h1>Complete the research step first.</h1></div>
     {/if}
   </main>
-  <Settings bind:this={settings} bind:open={settingsOpen} {feedback} {workspace} {busy} {nativeLogin}
+  <Settings bind:this={settings} bind:open={settingsOpen} feedback={feedback?.tone === "error" ? feedback : null} {workspace} {busy} {nativeLogin}
     onRetry={retryConnections} onConnectNative={connectNativeAccount} onCancelNative={cancelNativeLogin}
     onRefreshNative={refreshNativeAccount} onLogoutNative={logoutNativeAccount}
     onSaveSearchKey={saveSearchKey} onRemoveSearchKey={removeSearchKey} onOpenUrl={(url) => void openExternalUrl(url)}
@@ -1047,6 +1054,11 @@
       onCancel={() => void cancelNativeLogin()} onSaveSearchKeys={saveWelcomeSearchKeys} onOpenUrl={(url) => void openExternalUrl(url)}
       onDismiss={dismissWelcome} />
   {/if}
+  <!-- The region is always present so screen readers announce each toast. The welcome prompt shows its own
+       progress, and a toast would sit dimmed behind its backdrop, so toasts wait while it is open. -->
+  <div class="toasts" role="status" aria-live="polite">
+    {#if feedback?.tone === "info" && !signInPromptOpen}<p class="toast">{feedback.text}</p>{/if}
+  </div>
 </div>
 
 <style>
@@ -1078,8 +1090,13 @@
   .setup-active > :global(:not(#workflow-panel-setup)) { flex:none; }
   .setup-active > #workflow-panel-setup { flex:1 0 0;min-height:420px; }
   .calls { white-space:nowrap;margin-left:16px;font:500 13px var(--sans); }.calls strong { color:var(--text);font-weight:600; }
-  .notice { flex:none;margin:12px var(--page-gutter) 0;padding:12px 16px;border:1px solid var(--border-strong);border-radius:10px;background:var(--surface-2);display:flex;justify-content:space-between;gap:16px;color:var(--muted);font-size:13px;overflow-wrap:anywhere; }
-  .notice.error { border-color:#df929260;color:var(--danger); }.notice button { border:0;background:transparent;color:inherit; }
+  .notice { flex:none;margin:12px var(--page-gutter) 0;padding:12px 16px;border:1px solid #df929260;border-radius:10px;background:var(--surface-2);display:flex;justify-content:space-between;gap:16px;color:var(--danger);font-size:13px;overflow-wrap:anywhere; }
+  .notice button { border:0;background:transparent;color:inherit; }
+  /* Above Settings (z-index 20); pointer events pass through the empty region. */
+  .toasts { position:fixed;right:20px;bottom:20px;z-index:40;display:grid;justify-items:end;max-width:min(380px,calc(100vw - 40px));pointer-events:none; }
+  .toast { margin:0;padding:12px 16px;border:1px solid var(--glass-edge);border-radius:12px;background:var(--glass-fill-dense);box-shadow:var(--glass-shadow);backdrop-filter:var(--glass-blur);color:var(--text);font-size:13px;line-height:1.5;overflow-wrap:anywhere;animation:toast-in 220ms var(--ease); }
+  @keyframes toast-in { from { opacity:0;transform:translateY(8px); } }
+  @media (prefers-reduced-motion: reduce) { .toast { animation:none; } }
   .empty-workspace { padding:var(--page-top) var(--page-inline); }
   .empty-workspace button { padding:10px 16px;border:1px solid var(--border);border-radius:8px;background:var(--surface);color:var(--text); }
   .activity-symbol { display:grid;place-items:center;width:76px;height:76px;border:1px solid #bdbdbd30;border-radius:24px;color:var(--accent-strong);background:#bdbdbd08;box-shadow:inset 0 1px #ffffff15; }
