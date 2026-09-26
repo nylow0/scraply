@@ -91,8 +91,8 @@
   let ideaModelKey = $state(modelRefKey(initialIdeasModel));
   let ideaModelOption = $derived(nativeModelOptions.find((item) => modelRefKey(item) === ideaModelKey));
   let ideaModel = $derived<ModelRef>({
-    providerId: ideaModelOption?.providerId ?? model.providerId,
-    modelId: ideaModelOption?.modelId ?? model.modelId,
+    providerId: ideaModelOption?.providerId ?? initialIdeasModel.providerId,
+    modelId: ideaModelOption?.modelId ?? initialIdeasModel.modelId,
   });
   let ideaReasoningEffort = $state(defaults.ideasReasoningEffort
     ?? initialIdeasModelOption?.defaultReasoningEffort
