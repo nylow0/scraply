@@ -669,7 +669,9 @@
   .choice-group label.active { background:rgb(255 255 255 / .06);border-color:rgb(255 255 255 / .16); }
   .choice-group input { appearance:none;flex:none;width:16px;height:16px;min-height:0;margin:0;padding:0;border:1px solid var(--subtle);border-radius:50%;background:transparent; }
   .choice-group input:checked { border:5px solid var(--accent); }
-  .choice-group label:has(input:focus-visible) { outline:2px solid var(--accent);outline-offset:2px; }
+  /* The radio itself is small, so its keyboard ring outlines the whole choice row in the shared ring colour. */
+  .choice-group label:has(input:focus-visible) { outline:2px solid var(--focus-ring);outline-offset:2px; }
+  .choice-group input:focus-visible { outline:none; }
   .choice-group label > span { display:flex;align-items:baseline;gap:12px;font-size:14px;font-weight:500; }
   .choice-group strong { font-size:14px;font-weight:600;min-width:58px; }
   .mode-picker { grid-template-columns:1fr 1fr; }

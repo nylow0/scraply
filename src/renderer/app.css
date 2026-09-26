@@ -138,10 +138,14 @@ label:has(> input:is([type="checkbox"], [type="radio"]):disabled) {
   cursor: not-allowed;
 }
 
+/* One ring for every control. main.ts marks pointer use on <html>; while it is active no ring is drawn, so
+   focus returned by a closing dialog or a clicked text field stays quiet. Keyboard navigation always shows it.
+   !important because components may draw their own rings (a radio's ring is on its label). */
 :focus-visible {
   outline: 2px solid var(--focus-ring);
   outline-offset: 3px;
 }
+:root[data-input="pointer"] :is(:focus-visible, label:has(> input:focus-visible)) { outline: none !important; }
 
 ::selection {
   color: var(--text);
@@ -251,8 +255,10 @@ button:disabled { opacity: .45; }
 /* Disclosures open directly so longer sections do not move while being read. */
 a { color:var(--accent-strong); text-underline-offset:3px; }
 input, textarea, select { transition:border-color 180ms ease, box-shadow 180ms ease; }
-/* Radios and checkboxes are excluded: their checked state is drawn with the border, so a focus border would grey them out. */
-input:not([type="radio"], [type="checkbox"]):focus, textarea:focus, select:focus { border-color:rgb(255 255 255 / .38) !important; box-shadow:0 0 0 3px rgb(255 255 255 / .05); }
+/* Text fields brighten their border whenever the caret is in them. Menus only do so for keyboard focus, so a dialog
+   opened with the mouse does not start with its first menu looking selected. Radios and checkboxes are excluded:
+   their checked state is drawn with the border, so a focus border would grey them out. */
+input:not([type="radio"], [type="checkbox"]):focus, textarea:focus, select:focus-visible { border-color:rgb(255 255 255 / .38) !important; box-shadow:0 0 0 3px rgb(255 255 255 / .05); }
 /* A field flagged after Start stays red while it is being fixed. */
 [aria-invalid="true"]:focus { border-color:var(--danger) !important; box-shadow:0 0 0 3px rgb(223 146 146 / .14); }
 [aria-invalid="true"]:focus-visible { outline-color:var(--danger); }

@@ -385,7 +385,6 @@
   .controls p { max-width:55ch; margin:0; color:var(--muted); font-size:12px; line-height:1.5; }
   .control-buttons { display:flex; flex:none; flex-wrap:wrap; gap:8px; }
   button { min-height:36px; padding:8px 12px; border-radius:7px; background:var(--surface-2); color:var(--text); font:inherit; font-size:13px; font-weight:600; cursor:pointer; }
-  button:focus-visible, summary:focus-visible { outline:2px solid var(--accent-strong); outline-offset:3px; }
   button:disabled { opacity:.5; cursor:not-allowed; }
   .pause-button { border:1px solid var(--border-strong); }
   .stop-button { border:1px solid var(--danger); color:var(--danger); }
