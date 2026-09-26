@@ -84,6 +84,12 @@
     ?? "");
   let discoveryDepth = $state(initial.scope ? initial.runConfig?.discoveryDepth ?? DEFAULT_RUN_CONFIG.discoveryDepth : defaults.discoveryDepth);
   let searchProvider = $state<SearchProvider>(initial.scope ? initial.runConfig?.searchProvider ?? defaults.searchProvider : defaults.searchProvider);
+  let searchProviderTouched = $state(false);
+  $effect(() => {
+    if (initial.scope || searchProviderTouched || workspace.validation[searchProvider].valid) return;
+    const available = searchProvider === "exa" ? "perplexity" : "exa";
+    if (workspace.validation[available].valid) searchProvider = available;
+  });
   let maxRunMinutes = $state(initial.runConfig?.maxRunMinutes ?? DEFAULT_RUN_CONFIG.maxRunMinutes);
   // "babysit" is the stored identifier of the mode users see as Controlled (see WorkflowModeSchema).
   let workflowMode = $state<"babysit" | "vibe">("vibe");
@@ -614,7 +620,7 @@
         <div class="settings-panels">
         <section class="settings-panel" aria-label="Research configuration" inert={settingsSection !== "research"}>
           <div class="run-settings">
-      {#if researchMode === "explore-market"}<label class="run-setting search-setting"><span>Search provider</span><div class="provider-select"><ProviderLogo provider={searchProvider} size={17} /><select aria-label="Search provider" data-field="searchProvider" bind:value={searchProvider}><option value="exa">Exa</option><option value="perplexity">Perplexity</option></select></div><small>{searchStatus}</small></label>{/if}
+      {#if researchMode === "explore-market"}<label class="run-setting search-setting"><span>Search provider</span><div class="provider-select"><ProviderLogo provider={searchProvider} size={17} /><select aria-label="Search provider" data-field="searchProvider" bind:value={searchProvider} onchange={() => searchProviderTouched = true}><option value="exa">Exa</option><option value="perplexity">Perplexity</option></select></div><small>{searchStatus}</small></label>{/if}
     </div>
 
       <div class="output-settings">
