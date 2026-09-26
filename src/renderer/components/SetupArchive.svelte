@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { WorkspaceState } from "../../shared/ipc";
-  import { modelDisplayName } from "../lib/research-defaults";
+  import { modelDisplayName, providerDisplayName } from "../lib/research-defaults";
 
   let {
     workspace,
@@ -36,7 +36,7 @@
     </div>
     <dl class="run-settings">
       <div><dt>Model</dt><dd>{modelDisplayName(config.model)}</dd></div>
-      <div><dt>Provider</dt><dd>{config.model.providerId === "openai-subscription" ? "OpenAI" : config.model.providerId}</dd></div>
+      <div><dt>Provider</dt><dd>{providerDisplayName(config.model.providerId)}</dd></div>
       <div><dt>Reasoning</dt><dd>{config.reasoningEffort.charAt(0).toUpperCase() + config.reasoningEffort.slice(1)}</dd></div>
       <div><dt>Solutions per problem</dt><dd>{config.ideaCount ?? (config.workflowVersion === 2 ? 3 : "3–5")}</dd></div>
       {#if !knownProblem}<div><dt>Research depth</dt><dd>{config.discoveryDepth.charAt(0).toUpperCase() + config.discoveryDepth.slice(1)}</dd></div>{/if}

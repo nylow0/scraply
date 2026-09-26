@@ -45,9 +45,9 @@
       <h4>Participants and cases</h4>
       <p>{plan.participantsAndCases.caseSelection}</p>
       <dl>
-        <div><dt>Eligible</dt><dd>{#if plan.participantsAndCases.eligibilityCriteria.length > 1}<ul>{#each plan.participantsAndCases.eligibilityCriteria as item, index (index)}<li>{item}</li>{/each}</ul>{:else}{plan.participantsAndCases.eligibilityCriteria[0] ?? "None specified"}{/if}</dd></div>
+        <div><dt>Eligible</dt><dd>{#if plan.participantsAndCases.eligibilityCriteria.length}<ul>{#each plan.participantsAndCases.eligibilityCriteria as item, index (index)}<li>{item}</li>{/each}</ul>{:else}None specified{/if}</dd></div>
         <div><dt>Recruitment</dt><dd>{plan.participantsAndCases.recruitmentMethod}</dd></div>
-        <div><dt>Exclusions</dt><dd>{#if plan.participantsAndCases.exclusions.length > 1}<ul>{#each plan.participantsAndCases.exclusions as item, index (index)}<li>{item}</li>{/each}</ul>{:else}{plan.participantsAndCases.exclusions[0] ?? "None specified"}{/if}</dd></div>
+        <div><dt>Exclusions</dt><dd>{#if plan.participantsAndCases.exclusions.length}<ul>{#each plan.participantsAndCases.exclusions as item, index (index)}<li>{item}</li>{/each}</ul>{:else}None specified{/if}</dd></div>
       </dl>
     </section>
     <section>
@@ -82,7 +82,7 @@
       <p>{plan.resources.estimatedEffort}</p>
       <dl>
         <div><dt>Spending limit</dt><dd>{plan.resources.spendingLimit.amount} {plan.resources.spendingLimit.currency}</dd></div>
-        <div><dt>Dependencies</dt><dd>{#if plan.resources.dependencies.length > 1}<ul>{#each plan.resources.dependencies as item, index (index)}<li>{item}</li>{/each}</ul>{:else}{plan.resources.dependencies[0] ?? "None"}{/if}</dd></div>
+        <div><dt>Dependencies</dt><dd>{#if plan.resources.dependencies.length}<ul>{#each plan.resources.dependencies as item, index (index)}<li>{item}</li>{/each}</ul>{:else}None{/if}</dd></div>
         {#if plan.paymentTerms}<div><dt>Commitment</dt><dd>{plan.paymentTerms.amount} {plan.paymentTerms.currency}. {plan.paymentTerms.commitmentAction}</dd></div>{/if}
       </dl>
     </section>
