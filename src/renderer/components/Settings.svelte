@@ -15,7 +15,7 @@
   let { workspace, busy, nativeLogin, open = $bindable(false), feedback, onRetry, onConnectNative, onCancelNative, onRefreshNative, onLogoutNative, onSaveSearchKey, onRemoveSearchKey, onOpenUrl, onOpenData, onOpenLogs, onRestore, onDelete }: {
     workspace: WorkspaceState | null;
     open?: boolean;
-    // App passes only errors here; confirmations appear as its corner toast instead.
+    // App passes errors and ongoing progress here; confirmations appear as its corner toast.
     feedback?: { text: string; tone: "error" | "info" } | null;
     busy: boolean;
     nativeLogin: NativeLoginStartResult | null;

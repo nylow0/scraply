@@ -628,6 +628,50 @@ describe("App workspace coordination", () => {
     expect(error.closest(".toasts")).toBeNull();
   });
 
+  test("keeps sign-in instructions visible while the account callback is pending", async () => {
+    const signedOut = workspace("alpha");
+    signedOut.validation.native = { available: true, connected: false, accounts: [] };
+    installApi({
+      getWorkspace: vi.fn().mockResolvedValue(signedOut),
+      startNativeLogin: vi.fn().mockResolvedValue({ loginId: "login-pending", providerId: "openai-subscription", method: "browser" as const }),
+      completeNativeLogin: vi.fn(() => new Promise<Awaited<ReturnType<ScraplyApi["completeNativeLogin"]>>>(() => undefined)),
+    });
+    const view = render(App);
+    await fireEvent.click(await view.findByRole("button", { name: "Settings" }));
+    await fireEvent.click(await view.findByRole("button", { name: "Sign in with OpenAI" }));
+    const instructions = "Finish signing in in your browser. Scraply is waiting for the account callback.";
+    expect(await within(view.getByRole("region", { name: "Settings" })).findByText(instructions)).toBeTruthy();
+    await new Promise((resolve) => setTimeout(resolve, 3_200));
+    expect(within(view.getByRole("region", { name: "Settings" })).getByText(instructions)).toBeTruthy();
+    expect(view.container.querySelector(".toasts")?.textContent).toBe("");
+  }, 10_000);
+
+  test("starts the toast countdown after the welcome prompt closes", async () => {
+    const noSearch = (state: WorkspaceState) => {
+      state.validation.exa = { valid: false, error: "Exa key missing" };
+      state.validation.perplexity = { valid: false, error: "Perplexity key missing" };
+      return state;
+    };
+    const signedOut = noSearch(workspace("alpha"));
+    signedOut.validation.native = { available: true, connected: false, accounts: [] };
+    const connected = noSearch(workspace("alpha"));
+    connected.validation.native = { available: true, connected: true, accounts: [{ providerId: "openai-subscription" }] };
+    installApi({
+      getWorkspace: vi.fn().mockResolvedValue(signedOut),
+      startNativeLogin: vi.fn().mockResolvedValue({ loginId: "login-welcome-toast", providerId: "openai-subscription", method: "browser" as const }),
+      completeNativeLogin: vi.fn().mockResolvedValue({ pending: false as const, workspace: connected }),
+    });
+    const view = render(App);
+    await fireEvent.click(within(await view.findByRole("dialog", { name: "Welcome to Scraply" })).getByRole("button", { name: "Sign in with OpenAI" }));
+    const prompt = await view.findByRole("dialog", { name: "Add web search" });
+    await new Promise((resolve) => setTimeout(resolve, 3_200));
+    expect(view.container.querySelector(".toasts")?.textContent).toBe("");
+    await fireEvent.click(within(prompt).getByRole("button", { name: "Not now" }));
+    const toast = await view.findByText("Native model account connected.");
+    expect(toast.closest(".toasts")).not.toBeNull();
+    await waitFor(() => expect(view.queryByText("Native model account connected.")).toBeNull(), { timeout: 4_000 });
+  }, 12_000);
+
   test("welcomes a first-time user and signs in from the prompt", async () => {
     // An empty profile: the app creates a first draft thread on load.
     const empty = workspace("alpha");
