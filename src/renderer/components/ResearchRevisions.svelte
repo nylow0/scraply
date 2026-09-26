@@ -321,7 +321,6 @@
   h2{margin:0;font-size:22px;font-weight:650;letter-spacing:-.035em}h3{font-size:17px;line-height:1.35;letter-spacing:-.025em}h4{font-size:13px;line-height:1.5}
   p{line-height:1.6}.section-header p{margin:5px 0 0;color:var(--muted);font-size:13px}
   button,select,textarea,input{font:inherit}button{cursor:pointer}button:disabled{opacity:.48;cursor:not-allowed}
-  button:focus-visible,input:focus-visible,textarea:focus-visible,select:focus-visible,summary:focus-visible{outline:2px solid var(--accent-strong);outline-offset:3px}
   .add-button,.quiet-button{min-height:36px;border:1px solid var(--border);border-radius:8px;background:transparent;color:var(--text);padding:8px 12px;font-size:13px;white-space:nowrap}
   .add-button:hover:not(:disabled),.quiet-button:hover:not(:disabled){border-color:var(--border-strong);background:var(--surface-2)}
   .pending-note,.error-note{padding:11px 14px;margin:0 0 14px;border-radius:8px;font-size:13px}
