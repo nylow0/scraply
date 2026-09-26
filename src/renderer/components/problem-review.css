@@ -4,9 +4,10 @@
   h1 { font-size:32px;font-weight:650;letter-spacing:-.045em;line-height:1.2;margin:0 0 10px; }
   .export { min-height:36px;padding:9px 12px;border:1px solid var(--border);border-radius:8px;background:transparent;color:var(--text);font-size:13px;white-space:nowrap; }
   .problems { display:grid;gap:10px; }
-  article { border:1px solid var(--border);border-radius:13px;background:linear-gradient(120deg,#1b202377,var(--surface));overflow:hidden;box-shadow:inset 0 1px #ffffff04; }
+  article { border:1px solid var(--border);border-radius:13px;background:var(--surface);overflow:hidden; }
   article:has(> .problem-disclosure[open]) { border-color:var(--border-strong);background:var(--bg); }
-  article.warning { border-left:2px solid #b98645; }
+  /* An inset bar stays straight inside the rounded corners, where a thicker left border would curve. */
+  article.warning { box-shadow:inset 2px 0 #b98645; }
   .problem-disclosure { padding:0;border:0; }
   .problem-disclosure > summary { color:var(--text); }
   .problem-disclosure[open] > summary { background:var(--surface-2); }
@@ -15,7 +16,8 @@
   dt { color:var(--subtle);font-size:13px;font-weight:500; }
   dd { margin:5px 0 0;font-size:13px;line-height:1.6;color:var(--muted); }
   .estimated { text-decoration:underline dotted;text-underline-offset:4px; }
-  .reason { padding-top:14px;font-size:13px;border-top:1px solid var(--border);color:var(--muted); }
+  .reason { font-size:13px;color:var(--muted); }
+  .no-factors { max-width:none;margin:14px 0 0;padding-top:14px;border-top:1px solid var(--border);font-size:13px;color:var(--subtle); }
   details { border-top:1px solid var(--border);padding-top:14px; }
   summary { cursor:pointer;font-size:13px;color:var(--muted); }
   blockquote { margin:14px 0;padding:16px 18px;border:1px solid var(--border);border-left:2px solid #bdbdbd55;border-radius:0 10px 10px 0;background:var(--surface);font-size:13px;line-height:1.8; }

@@ -6,6 +6,7 @@
   import { previewResearchAngles, researchSearchAllocation } from "../../shared/research-revisions";
   import { modelRefKey, type ModelOption, type ModelRef } from "../../shared/schemas";
   import { modelDisplayName } from "../lib/research-defaults";
+  import { verdictLabel } from "../lib/status";
   import { untrack } from "svelte";
 
   let {
@@ -195,7 +196,7 @@
           {#each availableModels as item (modelRefKey(item))}<option value={modelRefKey(item)}>{modelDisplayName(item)}</option>{/each}
         </select></label>
         <label class="field"><span>Reasoning</span><select bind:value={reasoningEffort} disabled={busy || !selectedModel}>
-          {#each selectedModel?.reasoningEfforts ?? [] as effort (effort.id)}<option value={effort.id}>{effort.id}</option>{/each}
+          {#each selectedModel?.reasoningEfforts ?? [] as effort (effort.id)}<option value={effort.id}>{effort.id.charAt(0).toUpperCase() + effort.id.slice(1)}</option>{/each}
         </select></label>
       </div>
       <details class="advanced"><summary>Angles and work limits</summary>
@@ -271,9 +272,9 @@
         {:else}
           {#if selectedRequest.previousFinding}
             <div class="comparison">
-              <div class="finding old"><span>Previous finding</span><h4>{selectedRequest.previousFinding.statement}</h4><p>{selectedRequest.previousFinding.verdictReason}</p><small>{selectedRequest.previousFinding.verdict}</small></div>
+              <div class="finding old"><span>Previous finding</span><h4>{selectedRequest.previousFinding.statement}</h4><p>{selectedRequest.previousFinding.verdictReason}</p><small>{verdictLabel(selectedRequest.previousFinding.verdict)}</small></div>
               <div class="finding proposed"><span>New result</span>
-                {#each selectedRequest.resultFindings as finding (finding.id)}<h4>{finding.statement}</h4><p>{finding.verdictReason}</p><small>{finding.verdict}</small>{:else}<p>No finding met the evidence requirements. Current research remains unchanged.</p>{/each}
+                {#each selectedRequest.resultFindings as finding (finding.id)}<h4>{finding.statement}</h4><p>{finding.verdictReason}</p><small>{verdictLabel(finding.verdict)}</small>{:else}<p>No finding met the evidence requirements. Current research remains unchanged.</p>{/each}
               </div>
             </div>
           {:else}
@@ -321,8 +322,8 @@
   p{line-height:1.6}.section-header p{margin:5px 0 0;color:var(--muted);font-size:13px}
   button,select,textarea,input{font:inherit}button{cursor:pointer}button:disabled{opacity:.48;cursor:not-allowed}
   button:focus-visible,input:focus-visible,textarea:focus-visible,select:focus-visible,summary:focus-visible{outline:2px solid var(--accent-strong);outline-offset:3px}
-  .add-button,.quiet-button{border:1px solid var(--border-strong);border-radius:8px;background:var(--surface-2);color:var(--text);padding:9px 13px;font-size:13px;white-space:nowrap}
-  .add-button:hover:not(:disabled),.quiet-button:hover:not(:disabled){border-color:var(--accent)}
+  .add-button,.quiet-button{min-height:36px;border:1px solid var(--border);border-radius:8px;background:transparent;color:var(--text);padding:8px 12px;font-size:13px;white-space:nowrap}
+  .add-button:hover:not(:disabled),.quiet-button:hover:not(:disabled){border-color:var(--border-strong);background:var(--surface-2)}
   .pending-note,.error-note{padding:11px 14px;margin:0 0 14px;border-radius:8px;font-size:13px}
   .pending-note{background:#bdbdbd12;border:1px solid #bdbdbd30;color:var(--accent-strong)}
   .error-note{background:#b7555517;border:1px solid #d9777740;color:#f2aaaa}
@@ -345,7 +346,7 @@
   .request-list{border-right:1px solid var(--border-strong);background:var(--surface)}.list-heading{display:flex;justify-content:space-between;padding:15px 17px;border-bottom:1px solid var(--border);font-size:12px;color:var(--muted)}
   .request-row{display:flex;align-items:center;gap:6px;border-bottom:1px solid var(--border)}.request-row.active{background:#bdbdbd0d;box-shadow:inset 2px 0 var(--accent)}
   .request-select{flex:1;min-width:0;text-align:left;background:transparent;border:0;color:var(--text);padding:14px 17px}
-  .request-name{display:block;font-size:13px;font-weight:600;line-height:1.4}.request-meta{display:block;margin-top:5px;font-size:11px;color:var(--muted)}
+  .request-name{display:block;font-size:13px;font-weight:500;line-height:1.45}.request-meta{display:block;margin-top:5px;font-size:11px;color:var(--muted)}
   .include-toggle{display:grid;justify-items:center;gap:2px;padding:7px 10px 7px 0;color:var(--subtle);font-size:10px;cursor:pointer}.include-toggle input{accent-color:var(--accent)}
   .request-detail{padding:22px;min-width:0}.detail-head{display:flex;align-items:center;gap:8px;color:var(--muted);font-size:11px}.status-dot{width:7px;height:7px;border-radius:50%;background:var(--muted)}.status-dot.complete{background:var(--accent)}
   .request-detail h3{margin:8px 0 16px}.detail-empty{max-width:45ch;margin:auto;padding:30px 0}.detail-empty h3{margin:0 0 7px}.detail-empty p,.detail-message{color:var(--muted);font-size:13px;margin:0}

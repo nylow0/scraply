@@ -4,6 +4,7 @@
   import { optionEvidenceReferences } from "../../shared/option-evidence";
   import { loadIdeaDetail } from "../lib/idea-details";
   import FocusedExperiment from "./FocusedExperiment.svelte";
+  import { verdictLabel } from "../lib/status";
   type ExperimentOutcome = "not-run" | "pass" | "fail" | "inconclusive";
   let { idea, busy, analysisBlocked = false, initiallyOpen = false, inDetailView = false, onSelect, onSave, onOpenSource, onEvidenceFollowUp, onEvidenceReassessment, onPlanExperiment }: {
     idea: SolutionView; busy: boolean;
@@ -48,7 +49,7 @@
     return `Source role: ${evidence.sourceRole ?? "unknown"} · Audience: ${evidence.audienceFit ?? "unknown"} · ${evidence.independentSourceKey ? "Independent origin identified" : "Independence unknown"} · ${evidence.supportsDemand ? "Supports demand" : "Does not establish demand"}`;
   }
   function confirmedEvidenceLabel(solution: SolutionView): string {
-    if (solution.problemVerdict !== "confirmed") return solution.problemVerdict;
+    if (solution.problemVerdict !== "confirmed") return verdictLabel(solution.problemVerdict).toLowerCase();
     const hasIntendedBuyerEvidence = solution.factors.some((factor) => (factor as typeof factor & EvidenceMetadata).audienceFit === "intended-buyer");
     return hasIntendedBuyerEvidence
       ? "confirmed with intended-buyer evidence; demand not established"
@@ -275,7 +276,7 @@
           {/if}
           <form class="decision-editor" onsubmit={(event) => { event.preventDefault(); void save(); }}>
             <h3>Your decision and actual result</h3><p>Record what you decided and observed.</p>
-            <label>Your decision<textarea rows="3" maxlength="8000" bind:value={userDecision} oninput={() => saved = false}></textarea></label>
+            <label>Your decision<textarea rows="3" maxlength="8000" bind:value={userDecision} oninput={() => saved = false} placeholder="What did you decide?"></textarea></label>
             <label>Observed test result<textarea rows="3" maxlength="8000" bind:value={observedResult} oninput={() => saved = false} placeholder="What happened?"></textarea></label>
             <label>Experiment outcome<select bind:value={experimentOutcome} oninput={() => saved = false}><option value="not-run">Not run</option><option value="pass">Pass</option><option value="fail">Fail</option><option value="inconclusive">Inconclusive</option></select></label>
             <button disabled={busy}>Save decision and result</button>{#if saved}<span role="status">Saved</span>{/if}
@@ -287,7 +288,7 @@
 </article>
 
 <style>
-  article { min-width:0;max-width:100%;overflow-wrap:anywhere; border:1px solid var(--border);border-radius:13px;padding:0;overflow:hidden;background:linear-gradient(120deg,#1b202377,var(--surface));box-shadow:inset 0 1px #ffffff04; }
+  article { min-width:0;max-width:100%;overflow-wrap:anywhere; border:1px solid var(--border);border-radius:13px;padding:0;overflow:hidden;background:var(--surface); }
   article.selected { border-color:#bdbdbd60; }
   .disclosure-title.expanded { background:var(--surface-2); }
   /* The body shares the summary row's 22px inset so every line starts at the same edge. */
@@ -329,7 +330,7 @@
   select { width:100%;background:#000;color:var(--text);border:1px solid var(--border-strong);border-radius:9px;padding:11px;font-size:13px; }
   .reassess { margin-top:14px; }
   .plan-experiment { margin-top:14px; }
-  .decision-editor { display:grid;grid-template-columns:1fr 1fr;gap:0 20px; }.decision-editor h3,.decision-editor > p { grid-column:1/-1; }.decision-editor button { width:fit-content; }.decision-editor label { margin-top:0; }
+  .decision-editor { display:grid;grid-template-columns:1fr 1fr;gap:0 20px; }.decision-editor h3,.decision-editor > p { grid-column:1/-1; }.decision-editor button { width:fit-content;align-self:end;margin-bottom:16px; }.decision-editor label { margin-top:0; }
   .source-text { white-space:pre-wrap;max-height:360px;overflow:auto; }form span { margin-left:12px;font-size:13px;color:var(--success); }
   @container page (max-width:700px) { dl { grid-template-columns:1fr;gap:16px; }.source-columns { grid-template-columns:1fr;gap:0; }.decision-editor { grid-template-columns:1fr; }.disclosure-content { padding:20px; }header { flex-direction:column;gap:16px; } }
 </style>

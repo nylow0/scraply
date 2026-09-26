@@ -27,11 +27,10 @@ export function saveResearchDefaults(defaults: ResearchDefaults): void {
   localStorage.setItem(storageKey, JSON.stringify(ResearchDefaultsSchema.parse(defaults)));
 }
 
+// Named OpenAI models ("gpt-6-sol", "gpt-5.6-terra") read as "GPT-6 Sol" everywhere; the catalog's own display
+// names hyphenate the variant inconsistently. Other ids keep the catalog name.
 export function modelDisplayName(model: { modelId: string; displayName?: string }): string {
-  if (model.modelId === "gpt-6-astra") return "GPT-6 Astra";
-  if (model.modelId === "gpt-6-sol") return "GPT-6 Sol";
-  if (model.modelId === "gpt-6-luna") return "GPT-6 Luna";
-  if (model.modelId === "gpt-5.6-luna") return "GPT-5.6 Luna";
-  if (model.modelId === "gpt-5.6-sol") return "GPT-5.6 Sol";
+  const named = /^gpt-(\d+(?:\.\d+)?)-([a-z]+)$/.exec(model.modelId);
+  if (named?.[1] && named[2]) return `GPT-${named[1]} ${named[2].charAt(0).toUpperCase()}${named[2].slice(1)}`;
   return model.displayName ?? model.modelId;
 }

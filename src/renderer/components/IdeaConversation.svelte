@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { IdeaConversation as ConversationView, SubmitIdeaTurnRequest } from "../../shared/workflow-contracts";
   import type { ModelOption, ModelRef } from "../../shared/schemas";
+  import { modelDisplayName } from "../lib/research-defaults";
 
   type Draft = Omit<SubmitIdeaTurnRequest, "threadId" | "rootSolutionId">;
 
@@ -155,9 +156,9 @@
 
   <div class="columns">
     <section class:mobile-hidden={mobilePane !== "idea"} class="version-panel" aria-label="Selected idea version">
-      <div class="panel-heading"><span class="eyebrow">Selected idea version</span><span class="version-number">v{selectedVersion?.versionNumber ?? 1}</span></div>
+      <!-- Same eyebrow-and-title structure as the conversation column, so both headings sit on one line. -->
+      <div class="panel-heading"><div><span class="eyebrow">Selected idea version</span><h2>Idea v{selectedVersion?.versionNumber ?? 1}</h2></div></div>
       {#if selectedVersion}
-        <h2>Idea v{selectedVersion.versionNumber}</h2>
         <h3>How it works</h3><p class="description">{selectedVersion.mechanism}</p>
         <h3>What it does</h3><p class="description">{selectedVersion.description}</p>
         {#if onViewVersion}<button class="full-version" onclick={async () => {
@@ -238,12 +239,12 @@
           <label>Model
             <select value={effectiveModelKey ?? ""} onchange={(event) => { modelKey = event.currentTarget.value || null; effort = null; }}>
               {#if !selectedModelOption}<option value="">Choose an available model</option>{/if}
-              {#each modelOptions as option (`${option.providerId}:${option.modelId}`)}<option value={`${option.providerId}:${option.modelId}`}>{option.displayName}</option>{/each}
+              {#each modelOptions as option (`${option.providerId}:${option.modelId}`)}<option value={`${option.providerId}:${option.modelId}`}>{modelDisplayName(option)}</option>{/each}
             </select>
           </label>
           <label>Effort
             <select value={effectiveEffort} onchange={(event) => effort = event.currentTarget.value} disabled={!selectedModelOption}>
-              {#each selectedModelOption?.reasoningEfforts ?? [] as choice (choice.id)}<option value={choice.id}>{choice.id}</option>{/each}
+              {#each selectedModelOption?.reasoningEfforts ?? [] as choice (choice.id)}<option value={choice.id}>{choice.id.charAt(0).toUpperCase() + choice.id.slice(1)}</option>{/each}
             </select>
           </label>
           <button class="send" disabled={!canSend} onclick={submit}>{sending ? "Sending…" : "Send follow-up"}</button>
@@ -264,15 +265,16 @@
   .version-panel { border-right:1px solid var(--border); }
   .panel-heading { display:flex;align-items:start;justify-content:space-between;gap:14px;margin-bottom:14px; }
   .eyebrow { color:var(--muted);font-size:12px;font-weight:600; }
-  .version-number,.context-label { color:var(--subtle);font-size:12px;font-family:var(--sans); }
+  .context-label { color:var(--subtle);font-size:12px;font-family:var(--sans); }
   h2 { margin:3px 0 10px;font-size:19px;letter-spacing:-.025em;line-height:1.3; }
   h3 { margin:28px 0 12px;font-size:13px;color:var(--muted);font-weight:600; }
   .description,.lineage { color:var(--muted);line-height:1.65;white-space:pre-wrap; }
-  .full-version { margin:0 0 16px;padding:8px 11px;border:1px solid var(--border);border-radius:7px;background:#080a09;color:var(--accent); }
-  .review-chip { display:inline-block;margin-top:12px;padding:6px 9px;border:1px solid #b9864566;border-radius:6px;color:#e4b46f;font-size:11px; }
+  /* The button and its review chip share one row, so both use the small control size and centre on the same line. */
+  .full-version { margin:14px 8px 0 0;padding:6px 10px;border:1px solid var(--border);border-radius:7px;background:var(--surface);color:var(--accent);font-size:12px;vertical-align:middle; }
+  .review-chip { display:inline-block;vertical-align:middle;margin-top:14px;padding:6px 9px;border:1px solid #b9864566;border-radius:6px;color:#e4b46f;font-size:11px; }
   .review-chip.current { border-color:#bdbdbd66;color:var(--accent); }
   .versions { list-style:none;padding:0;margin:0;display:grid;gap:7px; }
-  .versions button { display:block;width:100%;padding:12px;text-align:left;border:1px solid var(--border);border-radius:8px;background:#080a09;color:var(--text); }
+  .versions button { display:block;width:100%;padding:12px;text-align:left;border:1px solid var(--border);border-radius:8px;background:var(--surface);color:var(--text); }
   .versions button.selected { border-color:#bdbdbd77;background:rgb(255 255 255 / .05); }
   .version-title { display:block;line-height:1.4; }
   .version-title strong { color:var(--accent);margin-right:7px; }
@@ -288,7 +290,7 @@
   .turn { border-top:1px solid var(--border);padding-top:17px; }
   .message { padding:12px 14px;border:1px solid var(--border);border-radius:9px;margin-bottom:8px; }
   .message.user { margin-left:24px;background:rgb(255 255 255 / .05); }
-  .message.assistant { margin-right:24px;background:#090b0a; }
+  .message.assistant { margin-right:24px;background:var(--surface); }
   .message p { margin:6px 0 0;white-space:pre-wrap;line-height:1.6;overflow-wrap:anywhere; }
   .message-label,.citations { color:var(--subtle);font-size:11px; }
   .message details { margin-top:12px;font-size:12px;color:var(--muted); }
@@ -302,13 +304,13 @@
   .intent-buttons { display:flex;gap:7px;flex-wrap:wrap;margin-bottom:12px; }
   .intent-buttons button { background:transparent;border:1px solid var(--border);border-radius:7px;padding:7px 10px;color:var(--muted);font-size:12px; }
   .intent-buttons button.active { border-color:#bdbdbd77;color:var(--accent);background:rgb(255 255 255 / .05); }
-  textarea { width:100%;min-height:88px;background:#080a09;border:1px solid var(--border-strong);border-radius:8px;padding:11px;color:var(--text); }
+  textarea { width:100%;min-height:88px;background:var(--surface);border:1px solid var(--border-strong);border-radius:8px;padding:11px;color:var(--text); }
   .research-choice { display:flex;align-items:flex-start;gap:10px;margin:11px 0;padding:11px 12px;border:1px solid var(--border);border-radius:8px;color:var(--text);font-size:13px;cursor:pointer; }
   .research-choice input { width:16px;height:16px;accent-color:var(--accent);margin:2px 0 0;flex:none; }
   .research-choice span { display:grid;gap:3px; }.research-choice small { color:var(--muted);font-size:12px;line-height:1.45; }
   .send-controls { display:flex;align-items:end;gap:10px;flex-wrap:wrap;margin-top:10px; }
   .send-controls label,.branch-picker { display:grid;gap:4px;color:var(--subtle);font-size:11px; }
-  .send-controls select,.branch-picker select { max-width:210px;min-height:34px;background:#080a09;border:1px solid var(--border);border-radius:6px;color:var(--text);padding:5px 7px; }
+  .send-controls select,.branch-picker select { max-width:210px;min-height:34px;background:var(--surface);border:1px solid var(--border);border-radius:6px;color:var(--text);padding:5px 7px; }
   .send { margin-left:auto;min-height:34px;padding:7px 11px;background:var(--accent);border:1px solid var(--accent);border-radius:7px;color:var(--accent-ink);font-weight:650;font-size:12px; }
   .send:disabled { opacity:.48; }
   .notice,.error,.allowance,.reply-context { font-size:12px;line-height:1.5; }

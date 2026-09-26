@@ -248,8 +248,9 @@
   .members { border-top:1px solid var(--border); }
   details { border-bottom:1px solid var(--border); }
   details:last-child { border-bottom:0; }
-  summary { display:flex;justify-content:space-between;gap:12px;padding:12px 16px;cursor:pointer;font-size:13px; }
-  summary small { color:var(--subtle);text-transform:capitalize; }
+  summary { display:flex;align-items:baseline;gap:12px;padding:12px 16px;cursor:pointer;font-size:13px; }
+  summary::before { align-self:center; }
+  summary small { margin-left:auto;color:var(--subtle);text-transform:capitalize; }
   details > p { padding:0 16px 10px;color:var(--muted);font-size:12px;line-height:1.55; }
   details > .decision-reason { color:var(--subtle); }
   .member-actions,.merge { display:flex;flex-wrap:wrap;gap:7px;padding:0 16px 14px; }
@@ -260,7 +261,7 @@
   .unresolved > article { display:grid;gap:12px;padding:14px; }
   .decision-hint { margin:0;color:var(--subtle);font-size:12px; }
   .candidate-detail { border:0; }
-  .candidate-detail summary { display:list-item;padding:0 0 0 17px;color:var(--text);font-size:13px;font-weight:600;line-height:1.5; }
+  .candidate-detail summary { display:block;padding:0;color:var(--text);font-size:13px;font-weight:600;line-height:1.5; }
   .candidate-detail > div { display:grid;gap:8px;margin:10px 0 0 17px; }
   .candidate-detail p { margin:0;color:var(--muted);font-size:12px;line-height:1.55; }
   .candidate-detail p:last-child { color:var(--subtle); }
