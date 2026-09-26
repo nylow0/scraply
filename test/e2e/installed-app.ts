@@ -54,10 +54,11 @@ export function createInstalledApp(options: InstalledAppOptions) {
   };
 }
 
-// A signed-out profile gets the welcome sign-in prompt, which can open at any point during startup
-// checks, including after a reload. Tests that don't exercise that prompt close it whenever it appears.
+// A signed-out profile, or one without a search key, gets the welcome prompt ("Welcome…" to sign in, then
+// "Add web search"), which can open at any point during startup checks, including after a reload.
+// Tests that don't exercise that prompt close it whenever it appears.
 export async function dismissSignInPrompt(page: Page) {
-  await page.addLocatorHandler(page.getByRole("dialog", { name: /^Welcome/ }), async (dialog) => {
+  await page.addLocatorHandler(page.getByRole("dialog", { name: /^(Welcome|Add web search)/ }), async (dialog) => {
     await dialog.getByRole("button", { name: "Not now" }).click();
   });
 }

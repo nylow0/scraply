@@ -26,7 +26,7 @@ test("desktop navigation and compact idea review preserve dismissed ideas", asyn
       item.click(undefined, BrowserWindow.getAllWindows()[0], undefined);
     });
     await page.getByLabel("What do you want to explore?").fill("Parts delivery uncertainty.");
-    await page.getByRole("radio", { name: /^Babysit/ }).check();
+    await page.getByRole("radio", { name: /^Controlled/ }).check();
     await page.getByRole("button", { name: "Start", exact: true }).click();
     await expect(page.getByRole("tabpanel", { name: "Research" })).toBeVisible();
     await expect(page.getByRole("button", { name: "Go back", exact: true })).toBeEnabled();

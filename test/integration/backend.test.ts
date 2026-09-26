@@ -165,6 +165,77 @@ describe("cutover backend", () => {
     expect(result.data.workspace.runConfig.searchProvider).toBe("perplexity");
   });
 
+  test("checks a replacement search key without disturbing the saved one, and refuses changes while research runs", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "scraply-search-key-preflight-")); dirs.push(dir);
+    const checkedKeys: string[] = [];
+    let releaseModel: (() => void) | undefined;
+    let releaseCandidate: (() => void) | undefined;
+    const handle = await startBackend({
+      dataDir: dir, dbPath: join(dir, "scraply.db"), bundledPromptsDir: join(process.cwd(), "prompts"),
+      promptOverridesDir: join(dir, "prompts"), appVersion: "test",
+      getSecrets: () => ({ exaApiKey: "exa-saved-key-0000aaaa", perplexityApiKey: null }),
+      // Holds the first model call open, so the run stays active until the test releases it.
+      modelClients: { "openai-subscription": { structuredCompletion: () => new Promise((_, reject) => {
+        releaseModel = () => reject(new Error("released by test"));
+      }) } },
+      providerValidation: {
+        inspectNative: async () => nativeInspection(),
+        validateExa: async (apiKey) => {
+          checkedKeys.push(apiKey);
+          if (apiKey === "exa-replacement-key") await new Promise<void>((resolve) => { releaseCandidate = resolve; });
+          return apiKey === "exa-rejected-key" ? { valid: false, error: "Exa API key was rejected" } : { valid: true };
+        },
+      },
+    }, () => undefined); handles.push(handle);
+    const call = async <T = unknown>(path: string, body?: unknown) => {
+      const response = await fetch(`http://127.0.0.1:${handle.port}${path}`, body === undefined
+        ? { headers: { authorization: `Bearer ${handle.token}` } }
+        : { method: "POST", headers: { authorization: `Bearer ${handle.token}`, "content-type": "application/json" }, body: JSON.stringify(body) });
+      return { status: response.status, body: await response.json() as { data: T; error?: { code: string; message: string } } };
+    };
+    type Validation = { exa: { valid: boolean; maskedKey?: string }; perplexity: { maskedKey?: string } };
+
+    // Saved keys reach the renderer only as a masked tail.
+    const validation = (await call<Validation>("/validation")).body.data;
+    expect(validation.exa).toEqual({ valid: true, maskedKey: "••••aaaa" });
+    expect(validation.perplexity.maskedKey).toBeUndefined();
+    expect(JSON.stringify((await call("/workspace")).body.data)).not.toContain("exa-saved-key");
+
+    const rejected = await call("/search-keys/preflight", { provider: "exa", apiKey: "exa-rejected-key" });
+    expect(rejected.body.data).toEqual({ valid: false, error: "Exa API key was rejected" });
+    expect((await call<Validation>("/validation")).body.data.exa).toEqual({ valid: true, maskedKey: "••••aaaa" });
+    // The candidate was checked once; routine validation still checks only the saved key.
+    expect(checkedKeys.filter((key) => key === "exa-rejected-key")).toHaveLength(1);
+    expect(checkedKeys.at(-1)).toBe("exa-saved-key-0000aaaa");
+    expect((await call("/search-keys/preflight", { provider: "perplexity", apiKey: null })).body.data).toEqual({ valid: true });
+
+    // A run can start while the provider is checking a candidate. The same admission guard used by
+    // the backend process must refuse the update, even when the earlier preflight succeeds.
+    const pendingPreflight = call("/search-keys/preflight", { provider: "exa", apiKey: "exa-replacement-key" });
+    for (let attempt = 0; attempt < 40 && !releaseCandidate; attempt += 1) await new Promise((resolve) => setTimeout(resolve, 25));
+    expect(releaseCandidate).toBeDefined();
+    const threadId = (await call<{ thread: { id: string } }>("/threads", {})).body.data.thread.id;
+    await call("/scope", { threadId, scope: { title: "Known delay", audience: "", domain: "", observations: "", offLimits: [] } });
+    await call("/run-config", { threadId, config: { ...DEFAULT_RUN_CONFIG, researchMode: "known-problem", knownProblem: "Repair shops cannot predict parts arrival times." } });
+    expect((await call("/research/start", { threadId })).status).toBe(200);
+    for (let attempt = 0; attempt < 40 && !releaseModel; attempt += 1) await new Promise((resolve) => setTimeout(resolve, 25));
+    releaseCandidate?.();
+    expect((await pendingPreflight).body.data).toEqual({ valid: true });
+    expect(handle.hasActiveWork()).toBe(true);
+    expect(handle.beginSearchKeyUpdate()).toBe(false);
+    const busy = await call("/search-keys/preflight", { provider: "exa", apiKey: "exa-another-key" });
+    expect(busy.status).toBe(409);
+    expect(busy.body.error?.message).toContain("while research is running");
+    expect(checkedKeys).not.toContain("exa-another-key");
+    releaseModel?.();
+    for (let attempt = 0; attempt < 80 && handle.hasActiveWork(); attempt += 1) await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(handle.hasActiveWork()).toBe(false);
+    expect(handle.beginSearchKeyUpdate()).toBe(true);
+    expect((await call("/threads", {})).status).toBe(409);
+    expect(handle.finishSearchKeyUpdate()).toBe(true);
+    expect((await call("/threads", {})).status).toBe(200);
+  });
+
   test("starts a known problem without Exa and persists a synthetic discovery root", async () => {
     const dir = mkdtempSync(join(tmpdir(), "scraply-known-problem-")); dirs.push(dir);
     const dbPath = join(dir, "scraply.db");
@@ -296,12 +367,13 @@ describe("cutover backend", () => {
       headers: { authorization: `Bearer ${handle.token}` },
     });
     const workspace = await response.json() as { data: {
-      validation: { exa: { error?: string }; native: { available: boolean; connected: boolean; error?: string } };
+      validation: { exa: { error?: string; checking?: boolean }; native: { available: boolean; connected: boolean; error?: string } };
       models: Array<{ providerId: string; modelId: string }>;
     } };
     expect(workspace.data.validation.native).toMatchObject({ available: true, connected: true });
     expect(workspace.data.validation.native.error).toBeUndefined();
     expect(workspace.data.validation.exa.error).toBe("Checking Exa connection");
+    expect(workspace.data.validation.exa.checking).toBe(true);
     expect(workspace.data.models).toEqual([{ providerId: "openai-subscription", modelId: "gpt-ready" }]);
 
     finishExa?.({ valid: true });

@@ -4,7 +4,7 @@
 
 If the native connection asks you to reconnect, use Scraply's OpenAI account control. A cached model name does not prove that the connected account can run it. Model selectors reflect the live account catalog. A saved but unavailable choice remains visible and blocks a new run until you select an available model and reasoning effort.
 
-If search does not connect, the local workspace remains available. Check that `EXA_API_KEY` or `PERPLEXITY_API_KEY` is present in `.env` for development or in the environment that launches the installed app. Match the key to the provider selected in the project setup, then retry connections. [Provider setup](development.md#provider-setup) explains the development path.
+If search does not connect, the local workspace remains available. Open **Settings → Accounts** and check the provider selected in the project setup. Its row shows the provider's reason, such as a rejected key, and the saved key's last four characters. Use **Replace** to paste a new key, or **Retry connections** after a network problem. A key cannot change while research is running. When `EXA_API_KEY` or `PERPLEXITY_API_KEY` is set in `.env` or the launch environment, that key overrides the saved one; change it there instead. [Provider setup](development.md#provider-setup) explains the development path.
 
 If research cannot start, confirm the setup is saved, the selected model and required search provider are connected, and the project has no active run already in progress. A known-problem development run can work without a search provider when it needs no web research.
 

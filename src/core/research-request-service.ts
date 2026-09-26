@@ -61,7 +61,7 @@ export class ResearchRequestService {
     this.options.db.requireImmediateTransaction();
     const session = this.requireSession(sessionId, expectedRevision);
     if (session.mode !== "babysit" || !["running", "waiting-for-review"].includes(session.state)) {
-      throw new AppError("conflict", "Research requests can be added while babysit is running or ready for review.");
+      throw new AppError("conflict", "Research requests can be added while Controlled research is running or ready for review.");
     }
     const draft = validateResearchRequest({
       kind: action.kind, question: action.question, allowance: action.allowance,
@@ -140,7 +140,7 @@ export class ResearchRequestService {
     return { workItemId: item.id, session: updated };
   }
 
-  /** A finished collection keeps its terminal record; explicit research begins in a linked Babysit session. */
+  /** A finished collection keeps its terminal record; explicit research begins in a linked Controlled session. */
   continueFinishedSession(
     sessionId: string, expectedRevision: number, action: ResearchRequestAction,
   ): { workItemId: string; session: WorkflowSession } {
@@ -528,7 +528,7 @@ export class ResearchRequestService {
     this.options.db.requireImmediateTransaction();
     const session = this.requireSession(sessionId, expectedRevision);
     if (session.mode !== "babysit" || !["running", "waiting-for-review"].includes(session.state)) {
-      throw new AppError("conflict", "Review a completed research request in the active Babysit session.");
+      throw new AppError("conflict", "Review a completed research request in the active Controlled session.");
     }
     if ((action.baseSnapshotId ?? null) !== session.activeSnapshotId) {
       throw new WorkflowConflictError("REVISION_CONFLICT", "The active research snapshot changed. Reload before keeping it.");

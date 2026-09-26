@@ -684,6 +684,8 @@ test("an evidence-only batch without problem-level evidence saves no candidates 
   const engine = new ResearchEngine({ db, modelClients: { fixture: model }, searchClients: { exa: search }, onEvent() {} });
   try {
     await engine.startOpportunityExploration(thread.id, config.model, config.reasoningEffort);
+    expect(engine.getActiveRunIds().size).toBe(0);
+    expect(engine.hasActiveWork()).toBe(true);
     await until(() => !engine.getOpportunityReviewStatus(thread.id).running);
     const progress = engine.getOpportunityExploration(thread.id);
     expect(progress?.status).toBe("useful-partial");
