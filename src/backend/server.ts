@@ -113,7 +113,7 @@ export interface BackendHandle {
   token: string;
   close: () => Promise<void>;
   secretsChanged: () => void;
-  hasActiveRuns: () => boolean;
+  hasActiveWork: () => boolean;
   beginSearchKeyUpdate: () => boolean;
   finishSearchKeyUpdate: () => boolean;
   providersChanged: () => void;
@@ -1233,6 +1233,9 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
   }
 
   const pendingRequests = new Set<Promise<void>>();
+  const hasActiveWork = () => Boolean(engine?.hasActiveWork() || db.db.prepare(
+    "SELECT 1 FROM workflow_sessions WHERE state IN ('running', 'pause-requested', 'stop-requested') LIMIT 1",
+  ).get());
   const handleRequest = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
     const startedAt = Date.now();
     const method = req.method ?? "GET";
@@ -1496,7 +1499,7 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
       // changes wait until no run is active.
       if (route === "/search-keys/preflight") {
         const { provider, apiKey } = SearchKeyPreflightSchema.parse(body);
-        if (engine?.getActiveRunIds().size) {
+        if (hasActiveWork()) {
           throw new AppError("conflict", "Search keys can't change while research is running. Wait for it to finish or cancel it, then try again.");
         }
         return sendJson(res, 200, apiKey ? await validateSearchKey(provider, apiKey) : { valid: true });
@@ -1788,9 +1791,9 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
       invalidateProviderCache();
       void validateProviders().catch(() => undefined);
     },
-    hasActiveRuns: () => Boolean(engine?.getActiveRunIds().size),
+    hasActiveWork,
     beginSearchKeyUpdate: () => {
-      if (searchKeyUpdatePending || pendingPosts || engine?.getActiveRunIds().size) return false;
+      if (searchKeyUpdatePending || pendingPosts || hasActiveWork()) return false;
       searchKeyUpdatePending = true;
       return true;
     },
