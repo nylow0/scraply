@@ -450,7 +450,7 @@ describe("ScopeForm search provider selection", () => {
     }
   });
 
-  test("names an unavailable saved ideas model in a new Vibe setup", () => {
+  test("names the selected ideas model when it disappears from the catalog", async () => {
     const storageKey = "scraply.research-defaults.v1";
     const previous = localStorage.getItem(storageKey);
     const sol = DEFAULT_RUN_CONFIG.model;
@@ -460,9 +460,13 @@ describe("ScopeForm search provider selection", () => {
       const state = workspace();
       state.models = [sol];
       state.modelOptions = state.modelOptions.filter((model) => modelRefKey(model) === modelRefKey(sol));
-      const setup = render(ScopeForm, { workspace: { ...state, scope: null, runConfig: null }, busy: false,
-        onSave: vi.fn(), onStart: vi.fn(), onRetry: vi.fn(), onPreviewWorkflow: vi.fn(), onStartWorkflow: vi.fn() });
+      const props = { workspace: { ...state, scope: null, runConfig: null }, busy: false,
+        onSave: vi.fn(), onStart: vi.fn(), onRetry: vi.fn(), onPreviewWorkflow: vi.fn(), onStartWorkflow: vi.fn() };
+      const setup = render(ScopeForm, props);
       expect(setup.getByRole("option", { name: "GPT-6 Luna (unavailable)" })).toBeTruthy();
+      await fireEvent.change(setup.getByLabelText("Ideas model"), { target: { value: modelRefKey(sol) } });
+      await setup.rerender({ ...props, workspace: { ...props.workspace, models: [], modelOptions: [] } });
+      expect((setup.getByLabelText("Ideas model") as HTMLSelectElement).selectedOptions[0]?.textContent).toBe("GPT-6 Sol (unavailable)");
     } finally {
       if (previous === null) localStorage.removeItem(storageKey);
       else localStorage.setItem(storageKey, previous);

@@ -74,8 +74,8 @@
   let nativeModelOptions = $derived(workspace.modelOptions.filter((item) => item.providerId === "openai-subscription"));
   const gpt6Models = ["gpt-6-astra", "gpt-6-sol", "gpt-6-luna"] as const;
   let selectedModelOption = $derived(nativeModelOptions.find((item) => modelRefKey(item) === modelKey));
-  let resolvedModel = $derived(selectedModelOption
-    ?? (modelRefKey(initialModel) === modelKey ? initialModel : DEFAULT_RUN_CONFIG.model));
+  let selectedModelRef = $state<ModelRef>(initialModel);
+  let resolvedModel = $derived(selectedModelOption ?? selectedModelRef);
   let model = $derived<ModelRef>({ providerId: resolvedModel.providerId, modelId: resolvedModel.modelId });
   let initialModelOption = initial.modelOptions.find((item) => sameModelRef(item, initialModel));
   let modelSelect: HTMLSelectElement;
@@ -90,9 +90,10 @@
   const initialIdeasModelOption = initial.modelOptions.find((item) => sameModelRef(item, initialIdeasModel));
   let ideaModelKey = $state(modelRefKey(initialIdeasModel));
   let ideaModelOption = $derived(nativeModelOptions.find((item) => modelRefKey(item) === ideaModelKey));
+  let selectedIdeasModelRef = $state<ModelRef>(initialIdeasModel);
   let ideaModel = $derived<ModelRef>({
-    providerId: ideaModelOption?.providerId ?? initialIdeasModel.providerId,
-    modelId: ideaModelOption?.modelId ?? initialIdeasModel.modelId,
+    providerId: ideaModelOption?.providerId ?? selectedIdeasModelRef.providerId,
+    modelId: ideaModelOption?.modelId ?? selectedIdeasModelRef.modelId,
   });
   let ideaReasoningEffort = $state(defaults.ideasReasoningEffort
     ?? initialIdeasModelOption?.defaultReasoningEffort
@@ -236,11 +237,13 @@
 
   function selectModel(event: Event) {
     const selected = workspace.modelOptions.find((item) => modelRefKey(item) === (event.currentTarget as HTMLSelectElement).value);
+    if (selected) selectedModelRef = { providerId: selected.providerId, modelId: selected.modelId };
     reasoningEffort = selected?.defaultReasoningEffort ?? DEFAULT_RUN_CONFIG.reasoningEffort;
   }
 
   function selectIdeaModel(event: Event) {
     const selected = workspace.modelOptions.find((item) => modelRefKey(item) === (event.currentTarget as HTMLSelectElement).value);
+    if (selected) selectedIdeasModelRef = { providerId: selected.providerId, modelId: selected.modelId };
     ideaReasoningEffort = selected?.defaultReasoningEffort ?? DEFAULT_RUN_CONFIG.reasoningEffort;
   }
 
