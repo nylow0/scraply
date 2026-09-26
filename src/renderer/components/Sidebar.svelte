@@ -59,7 +59,7 @@
 </script>
 
 <svelte:window onkeydown={(event) => { if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k") { event.preventDefault(); void showFinder(); } }} />
-<aside class="sidebar glass" class:collapsed aria-label="Research navigation">
+<aside class="sidebar" class:collapsed aria-label="Research navigation">
   <button class="new" aria-label="Create new research thread" title={collapsed ? "New research" : undefined} disabled={busy} onclick={onNew}><Icon name="plus" size={18} /><span class="label">New research</span></button>
   <button bind:this={searchTrigger} class="find" aria-label="All research" title={collapsed ? "All research (Ctrl+K)" : undefined} onclick={() => showFinder()}><Icon name="search" size={18} /><span class="label">All research</span><kbd aria-hidden="true">Ctrl K</kbd></button>
   <div class="recent">
@@ -106,7 +106,9 @@
 </dialog>
 
 <style>
-  .sidebar { display:flex;flex-direction:column;gap:6px;padding:12px 10px 8px;border-radius:var(--panel-radius);min-height:0;overflow:auto;scroll-padding-block:12px; }
+  /* Docked navigation has no panel of its own: it is part of the window chrome, flush with the left edge.
+     The 8px inset puts the row icons under the brand mark in the title bar. */
+  .sidebar { display:flex;flex-direction:column;gap:6px;padding:12px 0 8px 8px;min-height:0;overflow:auto;scroll-padding-block:12px; }
   .sidebar > * { flex-shrink:0; }
   button { color:var(--text);font-size:14px; }
   .new,.find,.attention-link { width:100%;display:flex;align-items:center;gap:10px;border:0;border-radius:7px;padding:10px;min-height:42px;font-weight:500;text-align:left; }
@@ -124,7 +126,6 @@
   .thread { display:flex;align-items:center;gap:9px;min-height:40px;padding:10px 4px 10px 10px;min-width:0;text-align:left;border:0;border-radius:7px;background:none;color:var(--muted); }
   .active .thread { color:var(--text); }
   .title { min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;line-height:1.45; }
-  .thread:hover .title,.thread:focus-visible .title { white-space:normal;overflow-wrap:anywhere; }
   .status-icon { flex:none;display:flex;color:var(--muted); }
   .status-icon[data-tone="attention"] { color:#e9bd7a; }.status-icon[data-tone="active"] { color:var(--accent); }
   .archive { display:grid;place-items:center;width:32px;min-height:40px;padding:0;border:0;border-radius:6px;background:none;color:var(--subtle); }

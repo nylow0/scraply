@@ -137,7 +137,7 @@ describe("SolutionWorkspace ordering explanation", () => {
       onExport: vi.fn(), onOpenSource: vi.fn(), onReview: vi.fn(),
     });
 
-    expect(view.getByText("No solutions were returned.")).toBeTruthy();
+    expect(view.getByText("No ideas were returned.")).toBeTruthy();
     expect(view.getByText(/Review the research and run result/)).toBeTruthy();
     expect(view.queryByText("Highest risk")).toBeNull();
     expect(view.queryByText("Evaluation snapshot")).toBeNull();

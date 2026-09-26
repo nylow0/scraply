@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { WorkspaceState } from "../../shared/ipc";
+  import { modelDisplayName, providerDisplayName } from "../lib/research-defaults";
 
   let {
     workspace,
@@ -11,6 +12,7 @@
 
   let scope = $derived(workspace.scope);
   let config = $derived(workspace.runConfig);
+  let knownProblem = $derived(config?.researchMode === "known-problem");
 </script>
 
 <div class="setup" id="workflow-panel-setup" role="tabpanel" aria-label="Research setup" tabindex="0">
@@ -18,21 +20,27 @@
   {#if scope && config}
     <div class="fields">
       <div class="primary"><span>Research name</span><strong>{scope.title}</strong></div>
-      <div><span>Starting point</span><strong>{config.researchMode === "known-problem" ? "Known problem" : "Problem discovery"}</strong></div>
-      {#if config.researchMode === "known-problem"}<div class="wide"><span>Problem statement</span><strong>{config.knownProblem}</strong></div>{/if}
-      <div><span>{config.researchMode === "known-problem" ? "Market or domain" : "Starting context"}</span><strong>{scope.domain || "Not specified"}</strong></div>
-      <div><span>{config.researchMode === "known-problem" ? "Audience" : "People or groups"}</span><strong>{scope.audience || "Not specified"}</strong></div>
-      <div class="wide"><span>Context</span><p>{scope.observations || "No additional context."}</p></div>
-      <div class="wide"><span>Evaluate risk against</span><p>{scope.riskEvaluationCriteria || "The research goal and boundaries."}</p></div>
+      <!-- Labels match the setup form, and fields pair up so every divider spans a full row. -->
+      <div><span>Starting point</span><strong>{knownProblem ? "Known problem" : "Problem discovery"}</strong></div>
+      {#if knownProblem}
+        <div><span>Problem statement</span><strong>{config.knownProblem}</strong></div>
+        <div><span>Market or domain</span><strong>{scope.domain || "Not specified"}</strong></div>
+        <div><span>Audience</span><strong>{scope.audience || "Not specified"}</strong></div>
+      {:else}
+        <div><span>Topic</span><strong>{scope.domain || "Not specified"}</strong></div>
+        <div class="wide"><span>Audience</span><strong>{scope.audience || "Not specified"}</strong></div>
+      {/if}
+      <div class="wide"><span>{knownProblem ? "Context" : "Anything else to consider"}</span><p>{scope.observations || "No additional context."}</p></div>
+      <div class="wide"><span>Risk priorities</span><p>{scope.riskEvaluationCriteria || "Not specified. Risks are judged against the research goal and boundaries."}</p></div>
       <div class="wide"><span>Boundaries</span>{#if scope.offLimits.length}<ul>{#each scope.offLimits as item, index (`${item}-${index}`)}<li>{item}</li>{/each}</ul>{:else}<p>No boundaries specified.</p>{/if}</div>
     </div>
     <dl class="run-settings">
-      <div><dt>Model</dt><dd>{config.model.modelId}</dd></div>
-      <div><dt>Provider</dt><dd>{config.model.providerId}</dd></div>
-      <div><dt>Reasoning</dt><dd>{config.reasoningEffort}</dd></div>
+      <div><dt>Model</dt><dd>{modelDisplayName(config.model)}</dd></div>
+      <div><dt>Provider</dt><dd>{providerDisplayName(config.model.providerId)}</dd></div>
+      <div><dt>Reasoning</dt><dd>{config.reasoningEffort.charAt(0).toUpperCase() + config.reasoningEffort.slice(1)}</dd></div>
       <div><dt>Solutions per problem</dt><dd>{config.ideaCount ?? (config.workflowVersion === 2 ? 3 : "3–5")}</dd></div>
-      {#if config.researchMode === "explore-market"}<div><dt>Research depth</dt><dd>{config.discoveryDepth}</dd></div>{/if}
-      {#if config.researchMode === "explore-market"}<div><dt>Search provider</dt><dd>{config.searchProvider}</dd></div>{/if}
+      {#if !knownProblem}<div><dt>Research depth</dt><dd>{config.discoveryDepth.charAt(0).toUpperCase() + config.discoveryDepth.slice(1)}</dd></div>{/if}
+      {#if !knownProblem}<div><dt>Search provider</dt><dd>{config.searchProvider === "exa" ? "Exa" : "Perplexity"}</dd></div>{/if}
     </dl>
   {:else}
     <div class="empty"><h2>No setup has been saved.</h2><p>Complete this step to begin the workflow.</p></div>
@@ -48,7 +56,7 @@
   .fields > div:nth-child(even):not(.wide) { padding-right:24px; }
   .fields > div:last-child { border:0; }.fields .wide,.fields .primary { grid-column:1/-1; }
   .fields span,dt { display:block;margin-bottom:8px;font:500 13px var(--sans);color:var(--subtle); }
-  .fields strong { font-size:14px;line-height:1.7;font-weight:550; }.fields .primary strong { font-size:23px;letter-spacing:-.025em;font-weight:600; }
+  .fields strong { font-size:14px;line-height:1.7;font-weight:500; }.fields .primary strong { font-size:23px;letter-spacing:-.025em;font-weight:600; }
   .fields p,.fields ul { margin:0;color:var(--muted);font-size:13px;line-height:1.8;max-width:76ch; }.fields ul { padding-left:18px; }
   .run-settings { display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:24px;background:var(--surface);border:1px solid var(--border);border-radius:13px;padding:24px;margin:20px 0 0; }
   dd { margin:0;font-size:13px;color:var(--muted);overflow-wrap:anywhere; }

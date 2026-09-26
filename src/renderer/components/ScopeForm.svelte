@@ -268,6 +268,12 @@
     return error?.startsWith("Checking ") === true || error === "Native runtime is starting";
   }
 
+  // Provider errors usually name the provider already ("Exa key missing"), so the prefix is added only when it would not repeat.
+  let searchStatus = $derived.by(() => {
+    const status = selectedSearchValidation.valid ? "Connected" : selectedSearchValidation.error ?? "Connection unavailable";
+    return status.startsWith(selectedSearchName) ? status : `${selectedSearchName}: ${status}`;
+  });
+
   let visiblePreviewIssues = $derived(validationAttempted ? (workflowPreview?.fieldErrors ?? []) : []);
   function previewIssue(path: string): string | null {
     return visiblePreviewIssues.find((issue) => issue.path.join(".") === path)?.message ?? null;
@@ -471,7 +477,7 @@
           <label class="audience-field"><span>Audience <small>Optional</small></span><input aria-label="Audience" bind:value={audience} placeholder={researchMode === "explore-market" ? "Who is this for?" : "Who is affected?"} /></label>
         </section>
         <div class="context-fields">
-              {#if researchMode === "known-problem"}<label><span>Market or domain (optional)</span><textarea data-field="domain" bind:value={domain} rows="2" placeholder="Market or field"></textarea></label>{/if}
+              {#if researchMode === "known-problem"}<label><span>Market or domain <small>Optional</small></span><textarea aria-label="Market or domain" data-field="domain" bind:value={domain} rows="2" placeholder="Market or field"></textarea></label>{/if}
               <label><span>Risk priorities</span><textarea bind:value={riskEvaluationCriteria} maxlength="4000" rows="2" placeholder="What matters most: time, budget, or other limits?"></textarea></label>
               <label><span>{researchMode === "explore-market" ? "Anything else to consider" : "Context"}</span><textarea bind:value={observations} rows="2" placeholder="Useful background"></textarea></label>
               <label><span>Boundaries</span><textarea bind:value={offLimits} rows="2" placeholder="What should solutions avoid? One limit per line."></textarea></label>
@@ -576,7 +582,7 @@
         {#if connectionNeedsAttention}
           <div class="connection-warning">
             {#if modelStatus}<span>{modelStatus}</span>{/if}
-            {#if researchMode === "explore-market" && !selectedSearchValidation.valid}<span>{selectedSearchName}: {selectedSearchValidation.error ?? "Connection unavailable"}</span>{/if}
+            {#if researchMode === "explore-market" && !selectedSearchValidation.valid}<span>{searchStatus}</span>{/if}
             {#if onOpenSettings}<button type="button" class="text-action" onclick={onOpenSettings}>Open settings</button>{/if}
             <button type="button" class="text-action" disabled={locked || connectionsChecking} onclick={() => onRetry()}>{connectionsChecking ? "Checking…" : "Retry connections"}</button>
           </div>
@@ -594,8 +600,8 @@
         {#each visiblePreviewIssues.filter((issue) => issue.path[0] !== "limits" && issue.path[0] !== "ideas") as issue (issue.path.join(".") + issue.code)}<p class="field-error" role="alert">{issue.message}</p>{/each}
         <div class="settings-panels">
         <section class="settings-panel" aria-label="Research configuration" inert={settingsSection !== "research"}>
-          <h3>Search</h3>    <div class="run-settings">
-      {#if researchMode === "explore-market"}<label class="run-setting search-setting"><span>Search provider</span><div class="provider-select"><ProviderLogo provider={searchProvider} size={17} /><select aria-label="Search provider" data-field="searchProvider" bind:value={searchProvider}><option value="exa">Exa</option><option value="perplexity">Perplexity</option></select></div><small>{selectedSearchName}: {selectedSearchValidation.valid ? "Connected" : selectedSearchValidation.error ?? "Connection unavailable"}</small></label>{/if}
+          <div class="run-settings">
+      {#if researchMode === "explore-market"}<label class="run-setting search-setting"><span>Search provider</span><div class="provider-select"><ProviderLogo provider={searchProvider} size={17} /><select aria-label="Search provider" data-field="searchProvider" bind:value={searchProvider}><option value="exa">Exa</option><option value="perplexity">Perplexity</option></select></div><small>{searchStatus}</small></label>{/if}
     </div>
 
       <div class="output-settings">
@@ -606,7 +612,7 @@
 
         </section>
         <section class="settings-panel" aria-label="Work limits configuration" inert={settingsSection !== "limits"}>
-          <h3>Work limits</h3><p class="help">Work stops at these limits. They do not guarantee completion.</p>
+          <p class="help">Work stops at these limits. They do not guarantee completion.</p>
           {#if useWorkflow}        <div class="advanced-body limits-grid">
           <label><span>Time limit (minutes)</span><input aria-label="Time limit" data-field="maxRunMinutes" type="number" min="5" max="240" step="1" bind:value={maxRunMinutes} aria-invalid={Boolean(errors.maxRunMinutes)} />{#if errors.maxRunMinutes}<small class="field-error">{errors.maxRunMinutes}</small>{/if}</label>
           <label><span>Maximum model calls</span><input aria-label="Maximum model calls" data-field="workflowModelLimit" type="number" min="1" step="1" bind:value={workflowModelLimit} oninput={() => workflowModelLimitTouched = true} aria-invalid={Boolean(errors.workflowModelLimit || previewIssue("limits.maxModelCalls"))} />{#if errors.workflowModelLimit || previewIssue("limits.maxModelCalls")}<small class="field-error">{errors.workflowModelLimit ?? previewIssue("limits.maxModelCalls")}</small>{/if}</label>
@@ -617,7 +623,6 @@
           {#if workflowPreviewValid && workflowPreview}<p class="help">Minimum required: {workflowPreview.minimumWork.modelCalls} model calls and {workflowPreview.minimumWork.searches} {workflowPreview.minimumWork.searches === 1 ? "search" : "searches"}. Work stops at your saved limits.</p>{/if}
         </section>
         <section class="settings-panel instructions-panel" aria-label="Custom instructions" inert={settingsSection !== "instructions"}>
-          <h3>Custom instructions</h3>
           <!-- One editor per stage keeps this tab as short as the others; the dot marks stages that have text. -->
           <div class="instruction-stages" role="group" aria-label="Instruction stage">
             {#each [["research", "Research", researchInstruction], ["ideas", "Ideas", ideasInstruction], ["review", "Review", reviewInstruction]] as const as [stage, label, value] (stage)}
@@ -658,10 +663,15 @@
   .choice-group legend { margin-bottom:6px;font-size:13px;color:var(--muted); }
   .choice-group label { display:flex;align-items:center;gap:10px;padding:10px 12px;min-height:42px;border:1px solid transparent;border-radius:7px;cursor:pointer; }
   .choice-group label:hover { background:var(--surface-2); }
+  /* A run mode row is its label plus the info button, so hover paints the whole row, matching the selected outline. */
+  .mode-option label:hover { background:transparent; }
+  .mode-option:hover:not(.active) { background:var(--surface-2); }
   .choice-group label.active { background:rgb(255 255 255 / .06);border-color:rgb(255 255 255 / .16); }
   .choice-group input { appearance:none;flex:none;width:16px;height:16px;min-height:0;margin:0;padding:0;border:1px solid var(--subtle);border-radius:50%;background:transparent; }
   .choice-group input:checked { border:5px solid var(--accent); }
-  .choice-group label:has(input:focus-visible) { outline:2px solid var(--accent);outline-offset:2px; }
+  /* The radio itself is small, so its keyboard ring outlines the whole choice row in the shared ring colour. */
+  .choice-group label:has(input:focus-visible) { outline:2px solid var(--focus-ring);outline-offset:2px; }
+  .choice-group input:focus-visible { outline:none; }
   .choice-group label > span { display:flex;align-items:baseline;gap:12px;font-size:14px;font-weight:500; }
   .choice-group strong { font-size:14px;font-weight:600;min-width:58px; }
   .mode-picker { grid-template-columns:1fr 1fr; }
@@ -671,7 +681,7 @@
   .mode-option label { flex:1;border:0; }
   .mode-info { display:flex;align-items:center;margin-right:6px; }
   .info-button { display:grid;place-items:center;width:32px;min-height:32px;padding:0;border:0;background:transparent;color:var(--muted); }
-  .mode-tooltip { position:absolute;z-index:5;right:0;top:100%;width:248px;max-width:calc(100vw - 48px);padding:12px 14px;border-radius:10px;background:#111212;color:var(--text);font-size:13px;line-height:1.6; }
+  .mode-tooltip { position:absolute;z-index:5;right:0;top:calc(100% + 6px);width:248px;max-width:calc(100vw - 48px);padding:12px 14px;border-radius:10px;background:#111212;color:var(--text);font-size:13px;line-height:1.6; }
   .mode-tooltip[hidden] { display:none; }
   .brief-panel { display:grid;gap:20px; }
   .main-brief > span { font-size:26px;line-height:1.25;letter-spacing:-.7px;font-weight:600; }
@@ -680,8 +690,9 @@
   .main-settings { display:grid;gap:10px;padding-top:16px;border-top:1px solid var(--border); }
   .main-settings-grid { display:grid;grid-template-columns:1fr 1fr;gap:12px; }
   .main-settings-grid label,.main-settings-grid .solution-count { font-size:13px;gap:6px; }
-  .main-settings-grid .solution-count { grid-column:1/-1;grid-template-columns:1fr 100px;align-items:center; }
-  .main-settings-grid .solution-count label { font-size:13px;line-height:1.5; }
+  /* A one- or two-digit count gets a compact field at the row's end instead of a wide box around a single digit. */
+  .main-settings-grid .solution-count { grid-column:1/-1;grid-template-columns:1fr 72px;align-items:center; }
+  .main-settings-grid .solution-count label { font-size:13px;font-weight:500;line-height:1.5; }
   .main-settings-grid .solution-count .field-error { grid-column:1/-1; }
   .main-settings-grid .solution-count.paired { grid-column:auto;grid-template-columns:1fr;align-items:stretch; }
   .main-settings-grid .wide { grid-column:1/-1; }
@@ -694,6 +705,7 @@
   .text-action:hover:not(:disabled) { background:transparent;text-decoration:underline; }
   summary { display:flex;align-items:center;gap:12px;min-height:40px;cursor:pointer;list-style:none;color:var(--muted);font-size:13px; }
   summary::-webkit-details-marker { display:none; }
+  summary::before { content:none; }
   summary::after { content:"";flex:none;width:6px;height:6px;border-right:1.5px solid currentColor;border-bottom:1.5px solid currentColor;transform:rotate(-45deg);margin-left:auto;margin-right:4px; }
   details[open] > summary::after { transform:rotate(45deg); }
   summary:hover { color:var(--text); }
@@ -723,7 +735,8 @@
   .settings-dialog header button { width:32px;height:32px;padding:0;border:0;border-radius:8px;background:transparent;display:grid;place-items:center; }
   .settings-dialog nav { display:flex;flex-wrap:wrap;gap:4px;padding:0 24px 12px;border-bottom:1px solid var(--border); }
   .settings-dialog nav button { border:0;background:none;color:var(--muted); }
-  .settings-dialog nav button[aria-pressed="true"] { color:var(--accent-strong);background:rgb(255 255 255 / .1); }
+  .settings-dialog nav button:hover:not([aria-pressed="true"]) { background:none;color:var(--text); }
+  .settings-dialog nav button[aria-pressed="true"] { color:var(--text);background:rgb(255 255 255 / .1); }
   .settings-content { overflow:auto;min-height:0;padding:24px;scroll-padding-block:24px; }
   /* Every tab shares one grid cell, so the dialog takes the tallest tab's height and keeps it while switching.
      Inactive tabs stay in layout but are inert and invisible. */
@@ -732,16 +745,14 @@
   .settings-panel[inert] { visibility:hidden; }
   /* The instructions editor stretches to the height the other tabs set; its minimum stays below theirs. */
   .instructions-panel { display:flex;flex-direction:column;gap:12px; }
-  .instructions-panel h3 { margin-bottom:4px; }
   .instructions-panel textarea { flex:1;min-height:120px; }
   .instruction-stages { display:flex;align-self:flex-start;gap:2px;padding:3px;border:1px solid var(--border);border-radius:10px; }
   .instruction-stages button { display:flex;align-items:center;gap:6px;padding:5px 12px;border:0;border-radius:7px;background:none;color:var(--muted);font-size:13px; }
   .instruction-stages button:hover:not([aria-pressed="true"]) { color:var(--text); }
   .instruction-stages button[aria-pressed="true"] { color:var(--text);background:rgb(255 255 255 / .1); }
   .filled-dot { width:6px;height:6px;border-radius:50%;background:var(--accent-strong); }
-  .settings-panel h3 { margin:0 0 16px;font-size:16px;font-weight:600; }
   .settings-panel .help { margin:0 0 16px; }
-  .model-setting,.search-setting { grid-column:1/-1; }
+  .model-setting,.search-setting,.source-coverage { grid-column:1/-1; }
   .advanced-body { display:grid;gap:16px; }
   .output-settings { margin-top:20px;padding-top:20px;border-top:1px solid var(--border); }
   .provider-select { position:relative; }

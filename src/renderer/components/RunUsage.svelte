@@ -61,9 +61,10 @@
 {/if}
 
 <style>
-  .run-usage { margin:0;padding:10px var(--page-inline);border-bottom:1px solid var(--border);background:var(--surface); }
+  .run-usage { margin:0;padding:10px var(--page-gutter);border-bottom:1px solid var(--border);background:var(--surface); }
   summary { display:flex;align-items:center;gap:14px;cursor:pointer;list-style:none;font-size:13px;color:var(--subtle); }
   summary::-webkit-details-marker { display:none; }
+  summary::before { content:none; }
   summary::after { content:"";width:5px;height:5px;border-bottom:1px solid var(--subtle);border-right:1px solid var(--subtle);transform:rotate(45deg);margin-left:auto; }
   .run-usage[open] summary::after { transform:rotate(225deg); }.run-usage[open] summary { padding-bottom:14px; }
   .eyebrow { color:var(--muted);margin-right:8px; }
