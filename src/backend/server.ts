@@ -114,6 +114,8 @@ export interface BackendHandle {
   close: () => Promise<void>;
   secretsChanged: () => void;
   hasActiveRuns: () => boolean;
+  beginSearchKeyUpdate: () => boolean;
+  finishSearchKeyUpdate: () => boolean;
   providersChanged: () => void;
 }
 
@@ -147,6 +149,8 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
   let nativeAuthTail: Promise<void> = Promise.resolve();
   const pendingNativeLogins = new Map<string, string>();
   let engine: ResearchEngine | null = null;
+  let searchKeyUpdatePending = false;
+  let pendingPosts = 0;
   const workflowModelScheduler = new WorkflowModelScheduler();
   const invalidateProviderCache = () => {
     validationGeneration += 1;
@@ -1235,6 +1239,7 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
     let route = req.url ?? "/";
     try {
       if (!authorize(req, token)) return sendError(res, new AppError("unauthorized"));
+      if (method === "POST" && searchKeyUpdatePending) throw new AppError("conflict", "A search key is being updated. Try again in a moment.");
       const url = new URL(req.url ?? "/", "http://127.0.0.1");
       route = url.pathname;
       if (method === "GET" && route === "/health") return sendJson(res, 200, HealthResponseSchema.parse({ ok: true, version: context.appVersion, persistenceCheck: db.getMeta("persistence_probe") ?? undefined }));
@@ -1724,11 +1729,12 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
     }
   };
   const server = createServer((req, res) => {
+    if (req.method === "POST") pendingPosts += 1;
     const pending = handleRequest(req, res);
     pendingRequests.add(pending);
     void pending.then(
-      () => pendingRequests.delete(pending),
-      () => pendingRequests.delete(pending),
+      () => { pendingRequests.delete(pending); if (req.method === "POST") pendingPosts -= 1; },
+      () => { pendingRequests.delete(pending); if (req.method === "POST") pendingPosts -= 1; },
     );
   });
 
@@ -1783,6 +1789,16 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
       void validateProviders().catch(() => undefined);
     },
     hasActiveRuns: () => Boolean(engine?.getActiveRunIds().size),
+    beginSearchKeyUpdate: () => {
+      if (searchKeyUpdatePending || pendingPosts || engine?.getActiveRunIds().size) return false;
+      searchKeyUpdatePending = true;
+      return true;
+    },
+    finishSearchKeyUpdate: () => {
+      const pending = searchKeyUpdatePending;
+      searchKeyUpdatePending = false;
+      return pending;
+    },
     providersChanged: () => {
       invalidateProviderCache();
       void validateProviders().catch(() => undefined);
