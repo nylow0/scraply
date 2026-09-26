@@ -186,7 +186,7 @@ test(`installed ${mode} workflow previews, runs, pauses, finishes, and reopens t
     const runSetup = page.getByRole("complementary", { name: "Run setup" });
     await expect(runSetup.getByRole("button", { name: "Advanced settings", exact: true })).toBeVisible();
     await expect(runSetup.getByRole("button", { name: "About Vibe", exact: true })).toBeVisible();
-    await page.getByText(mode === "vibe" ? "Vibe" : "Babysit", { exact: true }).click();
+    await page.getByText(mode === "vibe" ? "Vibe" : "Controlled", { exact: true }).click();
     await page.getByPlaceholder("Your topic or idea").fill(topic);
     await page.setViewportSize({ width: 1366, height: 768 });
     await expect(page.getByRole("button", { name: "Start", exact: true })).toBeEnabled();
@@ -196,7 +196,7 @@ test(`installed ${mode} workflow previews, runs, pauses, finishes, and reopens t
     await expect(launch).toBeEnabled();
     await launch.click();
 
-    const progress = page.getByLabel(mode === "vibe" ? "Vibe run progress" : "Babysit run progress");
+    const progress = page.getByLabel(mode === "vibe" ? "Vibe run progress" : "Controlled run progress");
     await expect(progress).toBeVisible();
     await expect(progress.getByText("Checking buyer evidence for repair approvals")).toBeVisible();
     await expect(progress.getByRole("button", { name: "Pause" })).toBeVisible();
@@ -217,7 +217,7 @@ test(`installed ${mode} workflow previews, runs, pauses, finishes, and reopens t
       SCRAPLY_E2E_BACKEND_TOKEN: "synthetic-workflow-fixture",
     });
     const reopenedPage = await reopened.firstWindow();
-    const restoredProgress = reopenedPage.getByLabel(mode === "vibe" ? "Vibe run progress" : "Babysit run progress");
+    const restoredProgress = reopenedPage.getByLabel(mode === "vibe" ? "Vibe run progress" : "Controlled run progress");
     await expect(restoredProgress).toBeVisible();
     await expect(restoredProgress).toContainText(mode === "vibe" ? "Target reached" : "No qualifying ideas");
     if (mode === "vibe") {
