@@ -19,7 +19,7 @@ import { createInstalledApp } from "./installed-app";
 // The fixture keeps the backend deterministic while the installed renderer, preload, and main
 // process exercise the same request and response schemas as a live workflow.
 for (const mode of ["babysit", "vibe"] as const) {
-test(`installed ${mode} workflow previews, runs, pauses, finishes, and reopens through the desktop bridge`, async ({}, testInfo) => {
+test(`installed ${mode === "vibe" ? "Vibe" : "Controlled"} workflow previews, runs, pauses, finishes, and reopens through the desktop bridge`, async ({}, testInfo) => {
   const threadId = `synthetic-${mode}`;
   const sessionId = `session-${mode}`;
   const now = "2026-09-23T00:00:00.000Z";
