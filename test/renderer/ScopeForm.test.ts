@@ -399,7 +399,8 @@ describe("ScopeForm search provider selection", () => {
       localStorage.setItem(storageKey, JSON.stringify({ model: sol, searchProvider: "exa" }));
       const settingsProps = { workspace: loading, open: true, busy: false, nativeLogin: null,
         onRetry: vi.fn(), onConnectNative: vi.fn(), onCancelNative: vi.fn(), onRefreshNative: vi.fn(),
-        onLogoutNative: vi.fn(), onOpenData: vi.fn(), onOpenLogs: vi.fn(), onRestore: vi.fn(), onDelete: vi.fn() };
+        onLogoutNative: vi.fn(), onSaveSearchKey: vi.fn(), onRemoveSearchKey: vi.fn(), onOpenUrl: vi.fn(),
+        onOpenData: vi.fn(), onOpenLogs: vi.fn(), onRestore: vi.fn(), onDelete: vi.fn() };
       const settings = render(Settings, settingsProps);
       await fireEvent.click(settings.getByRole("button", { name: "Research defaults" }));
       await fireEvent.change(settings.getByLabelText("Default search provider"), { target: { value: "perplexity" } });
@@ -440,7 +441,8 @@ describe("ScopeForm search provider selection", () => {
       localStorage.setItem(storageKey, JSON.stringify({ model: sol, searchProvider: "exa" }));
       const props = { workspace: loading, open: true, busy: false, nativeLogin: null,
         onRetry: vi.fn(), onConnectNative: vi.fn(), onCancelNative: vi.fn(), onRefreshNative: vi.fn(),
-        onLogoutNative: vi.fn(), onOpenData: vi.fn(), onOpenLogs: vi.fn(), onRestore: vi.fn(), onDelete: vi.fn() };
+        onLogoutNative: vi.fn(), onSaveSearchKey: vi.fn(), onRemoveSearchKey: vi.fn(), onOpenUrl: vi.fn(),
+        onOpenData: vi.fn(), onOpenLogs: vi.fn(), onRestore: vi.fn(), onDelete: vi.fn() };
       const settings = render(Settings, props);
       await fireEvent.click(settings.getByRole("button", { name: "Research defaults" }));
       await fireEvent.change(settings.getByLabelText("Default model"), { target: { value: modelRefKey(luna) } });
