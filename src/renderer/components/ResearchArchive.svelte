@@ -1,6 +1,7 @@
 <script lang="ts">
   import "./problem-review.css";
   import ResultsToolbar from "./ResultsToolbar.svelte";
+  import { verdictLabel } from "../lib/status";
   import type { ProblemCandidate, RejectedProblemCandidate } from "../../shared/ipc";
 
   let {
@@ -50,19 +51,22 @@
           <summary class="disclosure-title" title={problem.statement}><span class="disclosure-label">{problem.statement}</span></summary>
           <div class="disclosure-content">
             <div class="meta">
-              <span class="verdict">{problem.verdict}</span>
+              <span class="verdict">{verdictLabel(problem.verdict)}</span>
               {#if problem.selected}<span class="selected">Used for solutions</span>{/if}
               {#if problem.singleHarvestModeWarning}<span>One harvest mode</span>{/if}
             </div>
 
             <p>{problem.whyItPersists}</p>
-            <dl class="problem-data">
-              <div><dt>Affected</dt><dd>{problem.affected}</dd></div>
-              <div><dt>Scale estimate</dt><dd class="estimated">{problem.scaleEstimate}</dd></div>
-            </dl>
+            {#if problem.affected || problem.scaleEstimate}
+              <dl class="problem-data">
+                {#if problem.affected}<div><dt>Affected</dt><dd>{problem.affected}</dd></div>{/if}
+                {#if problem.scaleEstimate}<div><dt>Scale estimate</dt><dd class="estimated">{problem.scaleEstimate}</dd></div>{/if}
+              </dl>
+            {/if}
             <p class="reason">{problem.verdictReason}</p>
+            {#if problem.factors.length === 0}<p class="no-factors">No cited factors</p>{:else}
             <details>
-              <summary>{problem.factors.length} cited factors</summary>
+              <summary>{problem.factors.length} cited {problem.factors.length === 1 ? "factor" : "factors"}</summary>
               {#each problem.factors as factor (factor.id)}
                 <blockquote>
                   <p>{factor.subject} — {factor.behavior}</p>
@@ -71,6 +75,7 @@
                 </blockquote>
               {/each}
             </details>
+            {/if}
           </div>
         </details>
       </article>

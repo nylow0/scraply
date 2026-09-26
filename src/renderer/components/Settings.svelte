@@ -63,7 +63,7 @@
 
 <svelte:window onkeydown={handleSettingsKeydown} />
 <section bind:this={screen} class="settings-screen" hidden={!open} data-section={section} aria-labelledby="settings-title">
-  <aside class="settings-panel glass">
+  <aside class="settings-panel">
     <h1 bind:this={heading} tabindex="-1" id="settings-title">Settings</h1>
     <nav aria-label="Settings sections">
       <button class:active={section === "accounts"} aria-pressed={section === "accounts"} onclick={() => section = "accounts"}><Icon name="account" size={18} />Accounts</button>
@@ -145,20 +145,20 @@
   {/if}
   <div hidden={section !== "local"}>
   <section class="local" aria-label="Local files">
-    <div><button disabled={busy} onclick={onOpenData}>Open data folder</button><button disabled={busy} onclick={onOpenLogs}>Open logs folder</button></div>
+    <div><button disabled={busy} onclick={onOpenData}><Icon name="folder" size={18} />Open data folder</button><button disabled={busy} onclick={onOpenLogs}><Icon name="folder" size={18} />Open logs folder</button></div>
   </section>
   </div>
     </div>
 </section>
 
 <style>
-  /* Settings covers the window with the same floating layout as the research screen: a glass panel on the
+  /* Settings covers the window with the same layout as the research screen: flush navigation on the
      left (title, sections, and Back where the sidebar's Settings button sits) beside a black page panel.
      Panel and row metrics mirror Sidebar.svelte and the settings button in App.svelte so nothing jumps
      when switching between the two screens. */
-  .settings-screen { position:fixed;inset:36px 0 0;z-index:20;display:grid;grid-template-columns:var(--sidebar-expanded-width) minmax(0,1fr);gap:10px;padding:2px 10px 10px;background:var(--bg);color:var(--text); }
+  .settings-screen { position:fixed;inset:36px 0 0;z-index:20;display:grid;grid-template-columns:var(--sidebar-expanded-width) minmax(0,1fr);gap:10px;padding:2px 10px 10px 0;background:var(--bg);color:var(--text); }
   .settings-screen[hidden] { display:none; }
-  .settings-panel { display:flex;flex-direction:column;gap:6px;padding:12px 10px 8px;border-radius:var(--panel-radius);min-height:0;overflow:auto; }
+  .settings-panel { display:flex;flex-direction:column;gap:6px;padding:12px 0 8px 8px;min-height:0;overflow:auto; }
   .settings-panel h1 { display:flex;align-items:center;min-height:42px;margin:0;padding:10px;font-size:16px;font-weight:650;letter-spacing:-.01em; }
   .settings-panel h1:focus { outline:none; }
   nav { display:flex;flex-direction:column;gap:4px;padding-top:8px; }
@@ -203,7 +203,8 @@
   .account-actions .primary { background:var(--accent-strong);color:var(--accent-ink); }
   .account-actions .primary:hover:not(:disabled) { background:var(--accent);color:var(--accent-ink); }
   .retry { margin-top:24px; }
-  .local > div { display:grid;gap:12px; }.local button { padding:16px;text-align:left;background:var(--surface);border-color:var(--border); }
+  .local > div { display:grid;gap:12px; }.local button { display:flex;align-items:center;gap:12px;padding:16px;text-align:left;background:var(--surface);border-color:var(--border); }
+  .local button :global(svg) { flex:none;color:var(--muted); }
   .feedback { padding:12px;border:1px solid var(--border);border-radius:8px;color:var(--muted);font-size:13px;overflow-wrap:anywhere; }
   .feedback.error { color:var(--danger); }
   [hidden] { display:none; }

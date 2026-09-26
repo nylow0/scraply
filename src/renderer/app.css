@@ -210,12 +210,37 @@ details[open] > .disclosure-title .disclosure-label,
 }
 
 .disclosure-title:focus-visible { outline-offset: -3px; border-radius: 8px; }
+
+/* Plain disclosures use the same thin chevron as the rest of the app instead of Chromium's filled triangle.
+   :where() keeps this at element specificity, so a component that draws its own marker can set
+   `summary::before { content: none }` in its scoped styles. */
+summary { list-style: none; }
+summary::-webkit-details-marker { display: none; }
+:where(summary:not(.disclosure-title))::before {
+  content: "";
+  display: inline-block;
+  flex: none;
+  width: 6px;
+  height: 6px;
+  margin: 0 10px 0 1px;
+  border-right: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+  vertical-align: 2px;
+  transform: rotate(-45deg);
+  transition: transform 160ms var(--ease);
+}
+:where(details[open] > summary:not(.disclosure-title))::before { transform: translateY(-1px) rotate(45deg); }
+
+/* Short last lines read as mistakes: headings balance their lines and prose avoids a lone final word. */
+h1, h2, h3, h4 { text-wrap: balance; }
+p, li, dd, blockquote { text-wrap: pretty; }
 button:disabled { opacity: .45; }
 
 /* Disclosures open directly so longer sections do not move while being read. */
 a { color:var(--accent-strong); text-underline-offset:3px; }
 input, textarea, select { transition:border-color 180ms ease, box-shadow 180ms ease; }
-input:focus, textarea:focus, select:focus { border-color:rgb(255 255 255 / .38) !important; box-shadow:0 0 0 3px rgb(255 255 255 / .05); }
+/* Radios and checkboxes are excluded: their checked state is drawn with the border, so a focus border would grey them out. */
+input:not([type="radio"], [type="checkbox"]):focus, textarea:focus, select:focus { border-color:rgb(255 255 255 / .38) !important; box-shadow:0 0 0 3px rgb(255 255 255 / .05); }
 /* A field flagged after Start stays red while it is being fixed. */
 [aria-invalid="true"]:focus { border-color:var(--danger) !important; box-shadow:0 0 0 3px rgb(223 146 146 / .14); }
 [aria-invalid="true"]:focus-visible { outline-color:var(--danger); }

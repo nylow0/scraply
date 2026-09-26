@@ -33,7 +33,8 @@
   </div>
   <p class="planning-note">This is a plan. It has not been run and does not confirm customer demand.</p>
   <dl class="assumption-grid">
-    <div><dt>Assumption</dt><dd><span class="category">{plan.assumption.category.replaceAll("-", " ")}</span> {plan.assumption.id}</dd></div>
+    <!-- The claim itself is the heading above; the assumption's stored id is an internal key, so only its type is shown. -->
+    <div><dt>Assumption type</dt><dd><span class="category">{plan.assumption.category.replaceAll("-", " ")}</span></dd></div>
     <div><dt>Why it changes the decision</dt><dd>{plan.assumption.decisionImpact}</dd></div>
     <div><dt>Why test this first</dt><dd>{plan.assumption.selectionReason}</dd></div>
     {#if plan.assumptionChangeReason}<div><dt>Changed from the short test</dt><dd>{plan.assumptionChangeReason}</dd></div>{/if}
@@ -44,9 +45,9 @@
       <h4>Participants and cases</h4>
       <p>{plan.participantsAndCases.caseSelection}</p>
       <dl>
-        <div><dt>Eligible</dt><dd>{plan.participantsAndCases.eligibilityCriteria.join("; ")}</dd></div>
+        <div><dt>Eligible</dt><dd>{#if plan.participantsAndCases.eligibilityCriteria.length > 1}<ul>{#each plan.participantsAndCases.eligibilityCriteria as item, index (index)}<li>{item}</li>{/each}</ul>{:else}{plan.participantsAndCases.eligibilityCriteria[0] ?? "None specified"}{/if}</dd></div>
         <div><dt>Recruitment</dt><dd>{plan.participantsAndCases.recruitmentMethod}</dd></div>
-        <div><dt>Exclusions</dt><dd>{plan.participantsAndCases.exclusions.length ? plan.participantsAndCases.exclusions.join("; ") : "None specified"}</dd></div>
+        <div><dt>Exclusions</dt><dd>{#if plan.participantsAndCases.exclusions.length > 1}<ul>{#each plan.participantsAndCases.exclusions as item, index (index)}<li>{item}</li>{/each}</ul>{:else}{plan.participantsAndCases.exclusions[0] ?? "None specified"}{/if}</dd></div>
       </dl>
     </section>
     <section>
@@ -81,7 +82,7 @@
       <p>{plan.resources.estimatedEffort}</p>
       <dl>
         <div><dt>Spending limit</dt><dd>{plan.resources.spendingLimit.amount} {plan.resources.spendingLimit.currency}</dd></div>
-        <div><dt>Dependencies</dt><dd>{plan.resources.dependencies.length ? plan.resources.dependencies.join("; ") : "None"}</dd></div>
+        <div><dt>Dependencies</dt><dd>{#if plan.resources.dependencies.length > 1}<ul>{#each plan.resources.dependencies as item, index (index)}<li>{item}</li>{/each}</ul>{:else}{plan.resources.dependencies[0] ?? "None"}{/if}</dd></div>
         {#if plan.paymentTerms}<div><dt>Commitment</dt><dd>{plan.paymentTerms.amount} {plan.paymentTerms.currency}. {plan.paymentTerms.commitmentAction}</dd></div>{/if}
       </dl>
     </section>
@@ -105,9 +106,9 @@
 </section>
 
 <style>
-  .focused-experiment { border:1px solid #bdbdbd38;border-radius:14px;padding:22px;margin-top:28px;background:#050807; }
+  .focused-experiment { border:1px solid #bdbdbd38;border-radius:14px;padding:22px;margin-top:28px;background:var(--surface); }
   .title-row { display:flex;justify-content:space-between;align-items:start;gap:20px; }
-  .eyebrow { margin:0 0 8px;color:var(--accent-strong);font-size:12px;text-transform:uppercase;letter-spacing:.08em; }
+  .eyebrow { margin:0 0 8px;color:var(--accent-strong);font-size:13px; }
   h3 { margin:0;max-width:70ch;font-size:16px;line-height:1.6; }
   h4 { margin:0 0 12px;font-size:13px; }
   p,li,dd { color:var(--muted);font-size:13px;line-height:1.7; }
@@ -120,13 +121,19 @@
   .assumption-grid > div:first-child:last-child { grid-column:1/-1; }
   .section-grid > section,.decision-rules,aside { border-top:1px solid var(--border);padding-top:18px; }
   dl { display:grid;gap:12px;margin:0; }
+  /* A section's lead paragraph or metric name sits above its details with the same gap the details use. */
+  section > p,section > strong { display:block;margin:0 0 12px; }
+  section > strong { margin-bottom:4px; }
+  .decision-rules { margin-top:18px; }
   dt { color:var(--subtle);font-size:12px;margin-bottom:4px; }
   dd { margin:0; }
   strong { font-size:13px; }
   .rationale { margin:14px 0 0;color:var(--subtle); }
+  .decision-rules > p[role="status"] { margin:10px 0 0;color:#e4b46f; }
   aside { margin-top:18px; }
   aside strong { color:#e6a34a; }
   aside p { margin-bottom:0; }
-  ul { margin-bottom:0;padding-left:18px; }
+  ul { margin:0;padding-left:18px;list-style:disc; }
+  li + li { margin-top:4px; }
   @container page (max-width:700px) { .assumption-grid,.section-grid { grid-template-columns:1fr; }.title-row { flex-direction:column; }.review-status { align-self:start; } }
 </style>

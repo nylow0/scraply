@@ -2,6 +2,7 @@
   import type { SolutionView } from "../../shared/ipc";
   import { untrack } from "svelte";
   import { loadIdeaDetail } from "../lib/idea-details";
+  import { verdictLabel } from "../lib/status";
 
   let { idea: summary, rank, initiallyOpen = false, inDetailView = false, onOpenSource }: { idea: SolutionView; rank: number; initiallyOpen?: boolean; inDetailView?: boolean; onOpenSource: (url: string) => Promise<void> } = $props();
   let detail = $state<SolutionView | null>(null);
@@ -37,7 +38,7 @@
         <div>
           <span class="label">Problem addressed</span>
           <p>{idea.problemStatement}</p>
-          <small class:estimated={idea.problemVerdict !== "confirmed"}>Evidence verdict: {idea.problemVerdict}</small>
+          <small class:estimated={idea.problemVerdict !== "confirmed"}>Evidence verdict: {verdictLabel(idea.problemVerdict)}</small>
         </div>
         <div class:conflict={!idea.respectsOffLimits}>
           <span class="label">Scope constraints</span>
@@ -169,11 +170,16 @@
     display: none;
   }
 
+  /* These rows draw their own markers, so they opt out of the shared chevron in app.css. */
+  summary::before {
+    content: none;
+  }
+
   .solution {
     border: 1px solid var(--border);
     border-radius: 13px;
     overflow: hidden;
-    background: linear-gradient(120deg,#1b202377,var(--surface));
+    background: var(--surface);
   }
 
   .solution.warning {

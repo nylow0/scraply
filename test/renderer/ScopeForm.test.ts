@@ -397,8 +397,8 @@ describe("ScopeForm search provider selection", () => {
       onRetry: vi.fn().mockResolvedValue(undefined),
     });
 
-    expect(view.getAllByText("Exa: Exa unavailable").length).toBeGreaterThan(0);
-    expect(view.queryByText("Perplexity: Perplexity unavailable")).toBeNull();
+    expect(view.getAllByText("Exa unavailable").length).toBeGreaterThan(0);
+    expect(view.queryByText("Perplexity unavailable")).toBeNull();
     expect((view.getByRole("button", { name: "Discover problems" }) as HTMLButtonElement).disabled).toBe(true);
 
     await fireEvent.change(view.getByLabelText("Search provider"), { target: { value: "perplexity" } });
@@ -566,7 +566,7 @@ describe("ScopeForm search provider selection", () => {
     });
 
     expect(view.getByRole("button", { name: "Choose model" })).toBeTruthy();
-    expect(view.getByText("Exa: Exa unavailable", { selector: ".connection-warning span" })).toBeTruthy();
+    expect(view.getByText("Exa unavailable", { selector: ".connection-warning span" })).toBeTruthy();
     expect(view.getByRole("button", { name: "Retry connections" })).toBeTruthy();
   });
 
