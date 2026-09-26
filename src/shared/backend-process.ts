@@ -32,6 +32,7 @@ export const BackendUpdateSecretsMessageSchema = z.object({
 export const MainToBackendMessageSchema = z.discriminatedUnion("type", [
   BackendStartMessageSchema,
   BackendUpdateSecretsMessageSchema,
+  z.object({ type: z.literal("finish-search-key-update"), requestId: z.string().min(1), secrets: SecretsSchema.optional() }),
   z.object({
     type: z.literal("provider-credential-persisted"), requestId: z.string().min(1),
     ok: z.boolean(), error: z.string().optional(),

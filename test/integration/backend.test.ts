@@ -209,8 +209,8 @@ describe("cutover backend", () => {
     expect(checkedKeys.at(-1)).toBe("exa-saved-key-0000aaaa");
     expect((await call("/search-keys/preflight", { provider: "perplexity", apiKey: null })).body.data).toEqual({ valid: true });
 
-    // A run can start while the provider is checking a candidate. The backend's final update guard
-    // must see that run, even when the earlier preflight succeeds.
+    // A run can start while the provider is checking a candidate. The same admission guard used by
+    // the backend process must refuse the update, even when the earlier preflight succeeds.
     const pendingPreflight = call("/search-keys/preflight", { provider: "exa", apiKey: "exa-replacement-key" });
     for (let attempt = 0; attempt < 40 && !releaseCandidate; attempt += 1) await new Promise((resolve) => setTimeout(resolve, 25));
     expect(releaseCandidate).toBeDefined();
@@ -222,11 +222,18 @@ describe("cutover backend", () => {
     releaseCandidate?.();
     expect((await pendingPreflight).body.data).toEqual({ valid: true });
     expect(handle.hasActiveRuns()).toBe(true);
+    expect(handle.beginSearchKeyUpdate()).toBe(false);
     const busy = await call("/search-keys/preflight", { provider: "exa", apiKey: "exa-another-key" });
     expect(busy.status).toBe(409);
     expect(busy.body.error?.message).toContain("while research is running");
     expect(checkedKeys).not.toContain("exa-another-key");
     releaseModel?.();
+    for (let attempt = 0; attempt < 80 && handle.hasActiveRuns(); attempt += 1) await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(handle.hasActiveRuns()).toBe(false);
+    expect(handle.beginSearchKeyUpdate()).toBe(true);
+    expect((await call("/threads", {})).status).toBe(409);
+    expect(handle.finishSearchKeyUpdate()).toBe(true);
+    expect((await call("/threads", {})).status).toBe(200);
   });
 
   test("starts a known problem without Exa and persists a synthetic discovery root", async () => {
