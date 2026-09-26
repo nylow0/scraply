@@ -193,7 +193,15 @@
   .provider-status span { color:var(--muted);overflow-wrap:anywhere; }
   .provider .ok { color:var(--success); }
   .provider .account-error { color:var(--danger); }
-  .native-account > :not(.provider-row) { margin-left:36px; }
+  .native-account { gap:10px; }
+  .native-account > .login-progress { margin:6px 0 0 36px; }
+  /* OpenAI's actions are compact ghost buttons under its status, so the row keeps the list's two-column rhythm.
+     The negative margin lines the button text up with the status text above it. */
+  .native-account > .account-actions { justify-content:flex-end;gap:2px;margin-right:-10px; }
+  .account-actions button { padding:6px 10px;border-color:transparent;border-radius:7px;background:transparent;color:var(--muted); }
+  .account-actions button:hover:not(:disabled) { background:var(--surface-2);color:var(--text); }
+  .account-actions .primary { background:var(--accent-strong);color:var(--accent-ink); }
+  .account-actions .primary:hover:not(:disabled) { background:var(--accent);color:var(--accent-ink); }
   .retry { margin-top:24px; }
   .local > div { display:grid;gap:12px; }.local button { padding:16px;text-align:left;background:var(--surface);border-color:var(--border); }
   .feedback { padding:12px;border:1px solid var(--border);border-radius:8px;color:var(--muted);font-size:13px;overflow-wrap:anywhere; }
