@@ -21,7 +21,7 @@ Research exports as JSON. Ideas export as Markdown or JSON.
 
 - Windows 10 or 11
 - An OpenAI subscription account, connected in the app
-- An Exa or Perplexity API key for web research (a run that starts from a known problem can skip search)
+- An Exa or Perplexity API key for web research, pasted in the app (a run that starts from a known problem can skip search)
 
 The [user guide](docs/user-guide.md) covers projects, models, limits, and partial runs. [Data and privacy](docs/data-and-privacy.md) explains what stays local and what goes to providers. [Troubleshooting](docs/troubleshooting.md) covers startup and account errors.
 

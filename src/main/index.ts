@@ -26,10 +26,13 @@ import {
   NativeLoginLaunchSchema,
   NativeLoginStartSchema,
   NativeProviderSchema,
+  RemoveSearchKeySchema,
   ResumeResearchSchema,
   SaveFavoriteModelSchema,
   SaveRunConfigSchema,
   SaveScopeSchema,
+  SaveSearchKeySchema,
+  SearchKeyPreflightResultSchema,
   SelectProblemsSchema,
   SelectOptionSchema,
   SaveDecisionSchema,
@@ -37,7 +40,9 @@ import {
   StartResearchSchema,
   type BackendReady,
   type ValidationState,
+  type WorkspaceState,
 } from "../shared/ipc";
+import type { SearchProvider } from "../providers/search";
 import {
   PreviewWorkflowRequestSchema, PreviewWorkflowResultSchema, StartWorkflowRequestSchema,
   WorkflowAdmissionReceiptSchema, GetWorkflowRequestSchema, WorkflowDetailSchema,
@@ -528,6 +533,31 @@ async function retryAutomaticConnection(): Promise<void> {
   if (backendProcess) await backendRequest("/native/retry", { method: "POST", body: "{}" });
 }
 
+const SEARCH_KEYS = {
+  exa: { field: "exaApiKey", name: "Exa", variable: "EXA_API_KEY" },
+  perplexity: { field: "perplexityApiKey", name: "Perplexity", variable: "PERPLEXITY_API_KEY" },
+} as const satisfies Record<SearchProvider, { field: keyof BackendSecrets; name: string; variable: string }>;
+
+// Saves (apiKey) or removes (null) a search key the user manages in the app. A new key is checked
+// with the provider before it is stored; a rejected key changes nothing. Keys set in the environment
+// or .env override saved keys on every launch, so the app refuses to edit those instead of letting
+// the change silently revert.
+async function changeSearchKey(provider: SearchProvider, apiKey: string | null): Promise<WorkspaceState> {
+  const { field, name, variable } = SEARCH_KEYS[provider];
+  if (readAutomaticSecrets()[field]) {
+    throw new AppError("conflict", `This ${name} key comes from ${variable} in the environment or .env file. Change it there, then retry connections.`);
+  }
+  const check = SearchKeyPreflightResultSchema.parse(await backendRequest("/search-keys/preflight", {
+    method: "POST", body: JSON.stringify({ provider, apiKey }),
+  }));
+  if (!check.valid) throw new AppError("validation_error", check.error ?? `${name} did not accept this key.`);
+  secrets = await credentialStore.save({ ...secrets, [field]: apiKey });
+  await updateBackendSecrets(secrets);
+  // Wait for the fresh check so the returned workspace shows the new key's status, not "Checking…".
+  await backendRequest("/validation");
+  return backendRequest<WorkspaceState>("/workspace");
+}
+
 function assertTrustedSender(event: IpcMainInvokeEvent): void {
   const senderUrl = event.senderFrame?.url ?? "";
   const expectedRendererUrl = rendererEntryUrl(
@@ -548,7 +578,7 @@ function registerIpc(): void {
     });
   };
   const post = <T>(path: string, body: T) => backendRequest(path, { method: "POST", body: JSON.stringify(body) });
-  // Workflow handlers return an envelope so Electron keeps the typed error payload across IPC.
+  // Workflow and search-key handlers return an envelope so Electron keeps the typed error payload across IPC.
   const workflow = async <T>(operation: () => Promise<T>) => {
     try { return { ok: true as const, data: await operation() }; }
     catch (error) { return { ok: false as const, error: toErrorPayload(error).error }; }
@@ -623,6 +653,11 @@ function registerIpc(): void {
     }, () => post("/native/login/cancel", input));
   });
   handle(IPC_CHANNELS.NATIVE_ACCOUNT_REFRESH, (body) => post("/native/account/refresh", NativeProviderSchema.parse(body)));
+  handle(IPC_CHANNELS.SAVE_SEARCH_KEY, (body) => workflow(async () => {
+    const { provider, apiKey } = SaveSearchKeySchema.parse(body);
+    return changeSearchKey(provider, apiKey);
+  }));
+  handle(IPC_CHANNELS.REMOVE_SEARCH_KEY, (body) => workflow(() => changeSearchKey(RemoveSearchKeySchema.parse(body).provider, null)));
   handle(IPC_CHANNELS.NATIVE_LOGOUT, async (body) => {
     const input = NativeProviderSchema.parse(body);
     blockedProviderCredentialWrites.add(input.providerId);

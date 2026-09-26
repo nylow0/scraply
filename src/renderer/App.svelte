@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount, tick, untrack } from "svelte";
   import type { NativeLoginStartResult, ResearchEvent, SolutionView, WorkspaceState } from "../shared/ipc";
-  import type { ExplorationPurpose, ModelRef } from "../shared/schemas";
+  import type { ExplorationPurpose, ModelRef, SearchProvider } from "../shared/schemas";
   import type { ResearchReplacement, ResearchRequestDraft } from "../shared/research-revisions";
   import {
     PreviewWorkflowResultSchema,
@@ -10,6 +10,7 @@
   } from "../shared/workflow-contracts";
   import type { z } from "zod";
   import { readResearchDefaults } from "./lib/research-defaults";
+  import { hasSearchKey, SEARCH_PROVIDERS } from "./lib/search-providers";
   import DesktopBar from "./components/DesktopBar.svelte";
   import Icon from "./components/Icon.svelte";
   import Settings from "./components/Settings.svelte";
@@ -53,11 +54,19 @@
   let nativeLoginEpoch = 0;
   let settings: Settings | undefined;
   let settingsOpen = $state(false);
-  // "Not now" hides the sign-in prompt until the next launch or the next sign-out.
+  // The welcome prompt walks through the accounts research needs: OpenAI sign-in, then a search key.
+  // "Not now" hides it until the next launch or the next sign-out.
   let signInDismissed = $state(false);
-  // Only once the runtime is ready (available) and reports no account, so a signed-in user never sees it flash during startup checks.
-  let signInPromptOpen = $derived(!!workspace && workspace.validation.native.available && !workspace.validation.native.connected
-    && !signInDismissed && !settingsOpen);
+  // Holds the prompt on its search step while it saves keys, so saving the first of two keys doesn't close it
+  // before the second key's result (possibly an error) is shown.
+  let holdSearchStep = $state(false);
+  let searchKeySaved = $derived(!!workspace && SEARCH_PROVIDERS.some(({ id }) => hasSearchKey(workspace!.validation[id])));
+  // Only once the runtime is ready (available), so a signed-in user never sees the prompt flash during startup checks.
+  // Masked keys are reported even while keys are still being checked, so saved keys don't flash the search step either.
+  let welcomeStep = $derived<"sign-in" | "search" | null>(!workspace?.validation.native.available ? null
+    : !workspace.validation.native.connected ? "sign-in"
+    : !searchKeySaved || holdSearchStep ? "search" : null);
+  let signInPromptOpen = $derived(welcomeStep !== null && !signInDismissed && !settingsOpen);
   // Navigation is always present: expanded, or as an icon rail. Wide windows dock the expanded sidebar and
   // Ctrl+B toggles it to the rail. Compact windows keep the rail docked and open the full list as an overlay
   // drawer, so the page never loses width to navigation it is not using.
@@ -673,6 +682,28 @@
     await action(async () => setWorkspace(await window.scraply.logoutNativeAccount(providerId)));
     signInDismissed = false;
   }
+  // Key changes report failures to the control that made them (inline next to the field), not the page notice.
+  async function saveSearchKey(provider: SearchProvider, apiKey: string) {
+    setWorkspace(await window.scraply.saveSearchKey({ provider, apiKey }));
+  }
+  async function removeSearchKey(provider: SearchProvider) {
+    setWorkspace(await window.scraply.removeSearchKey(provider));
+  }
+  // Saves the keys entered in the welcome prompt one at a time and returns each failure by provider.
+  async function saveWelcomeSearchKeys(entries: Array<[SearchProvider, string]>): Promise<Partial<Record<SearchProvider, string>>> {
+    holdSearchStep = true;
+    const failures: Partial<Record<SearchProvider, string>> = {};
+    for (const [provider, apiKey] of entries) {
+      try { await saveSearchKey(provider, apiKey); }
+      catch (cause) { failures[provider] = message(cause); }
+    }
+    if (Object.keys(failures).length === 0) holdSearchStep = false;
+    return failures;
+  }
+  function dismissWelcome() {
+    signInDismissed = true;
+    holdSearchStep = false;
+  }
   async function resumeResearch(runId: string) {
     await action(async () => {
       const next = await window.scraply.resumeResearch(runId);
@@ -1006,13 +1037,15 @@
   <Settings bind:this={settings} bind:open={settingsOpen} {feedback} {workspace} {busy} {nativeLogin}
     onRetry={retryConnections} onConnectNative={connectNativeAccount} onCancelNative={cancelNativeLogin}
     onRefreshNative={refreshNativeAccount} onLogoutNative={logoutNativeAccount}
+    onSaveSearchKey={saveSearchKey} onRemoveSearchKey={removeSearchKey} onOpenUrl={(url) => void openExternalUrl(url)}
     onOpenData={openDataFolder} onOpenLogs={openLogsFolder} onRestore={(id) => archiveThread(id, false)} onDelete={deleteThread} />
-  {#if signInPromptOpen}
+  {#if signInPromptOpen && workspace && welcomeStep}
     <!-- First launch creates an empty draft, so "returning" means some research has moved past setup. -->
-    <WelcomeSignIn returning={workspace?.threads.some((thread) => thread.status !== "configuring") ?? false} {busy} {nativeLogin}
+    <WelcomeSignIn step={welcomeStep} validation={workspace.validation} returning={workspace.threads.some((thread) => thread.status !== "configuring")} {busy} {nativeLogin}
       error={feedback?.tone === "error" ? feedback.text : null}
       onConnect={(method) => void connectNativeAccount("openai-subscription", method)}
-      onCancel={() => void cancelNativeLogin()} onDismiss={() => signInDismissed = true} />
+      onCancel={() => void cancelNativeLogin()} onSaveSearchKeys={saveWelcomeSearchKeys} onOpenUrl={(url) => void openExternalUrl(url)}
+      onDismiss={dismissWelcome} />
   {/if}
 </div>
 
