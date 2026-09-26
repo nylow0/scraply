@@ -4,6 +4,7 @@ import {
   OpportunityExplorationActionSchema, PreviewOpportunityExtensionSchema, ApplyOpportunityExtensionSchema,
   ExportIdeasRequestSchema, ExportResearchRequestSchema, IPC_CHANNELS, SaveFavoriteModelSchema,
   NativeLoginCancelSchema, NativeLoginCompleteSchema, NativeLoginStartSchema, NativeProviderSchema,
+  RemoveSearchKeySchema, SaveSearchKeySchema, WorkspaceStateSchema,
   SaveRunConfigSchema, SaveScopeSchema, SelectProblemsSchema, SelectOptionSchema, SaveDecisionSchema, EvidenceFollowUpRequestSchema, EvidenceReassessmentRequestSchema,
   AppCommandSchema, type NativeLoginCompleteResult, type NativeLoginStartResult, type ResearchEvent,
   type SolutionView, type SourceDetail, type ValidationState, type WorkspaceState,
@@ -101,6 +102,14 @@ export function createScraplyApi(transport: ApiTransport) {
       transport.invoke(IPC_CHANNELS.NATIVE_ACCOUNT_REFRESH, NativeProviderSchema.parse({ providerId })),
     logoutNativeAccount: (providerId: string): Promise<WorkspaceState> =>
       transport.invoke(IPC_CHANNELS.NATIVE_LOGOUT, NativeProviderSchema.parse({ providerId })),
+    // Rejects with the provider's reason (for example "Exa API key was rejected") and stores nothing.
+    saveSearchKey: async (payload: z.input<typeof SaveSearchKeySchema>): Promise<WorkspaceState> => {
+      const parsed = SaveSearchKeySchema.safeParse(payload);
+      if (!parsed.success) throw new AppError("validation_error", parsed.error.issues[0]?.message);
+      return workflowInvoke(IPC_CHANNELS.SAVE_SEARCH_KEY, parsed.data, WorkspaceStateSchema);
+    },
+    removeSearchKey: (provider: z.input<typeof RemoveSearchKeySchema>["provider"]): Promise<WorkspaceState> =>
+      workflowInvoke(IPC_CHANNELS.REMOVE_SEARCH_KEY, RemoveSearchKeySchema.parse({ provider }), WorkspaceStateSchema),
     startResearch: (threadId: string): Promise<{ workspace: WorkspaceState }> => transport.invoke(IPC_CHANNELS.START_RESEARCH, { threadId }),
     cancelResearch: async (runId: string): Promise<WorkspaceState> => (await transport.invoke<{ workspace: WorkspaceState }>(IPC_CHANNELS.CANCEL_RESEARCH, { runId })).workspace,
     resumeResearch: async (runId: string): Promise<WorkspaceState> => (await transport.invoke<{ workspace: WorkspaceState }>(IPC_CHANNELS.RESUME_RESEARCH, { runId })).workspace,

@@ -61,7 +61,7 @@ test("compact settings, consistent fields, title defaults, and archive recovery"
     await expect(popup).toBeHidden();
     await expect(page.getByPlaceholder("What matters most: time, budget, or other limits?")).toBeVisible();
     await page.getByLabel("What do you want to explore?").fill("Reducing repair shop delays");
-    await page.getByRole("radio", { name: /^Babysit/ }).check();
+    await page.getByRole("radio", { name: /^Controlled/ }).check();
     await page.getByRole("button", { name: "Start", exact: true }).click();
     await expect(page.locator(".location")).toHaveText("Reducing repair shop delays");
     expect(mock.requests.find((request) => request.path === "/scope")?.body).toMatchObject({

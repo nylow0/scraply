@@ -4,21 +4,21 @@ Scraply keeps a project in three places: **Setup** for the brief and limits, **R
 
 ## Start a project
 
-1. Connect an OpenAI account in Scraply. For web discovery, connect Exa or Perplexity too. Selectable models come from the connected account's live catalog.
+1. Connect an OpenAI account in Scraply. For web discovery, add an Exa or Perplexity API key too. The welcome prompt asks for both after you sign in, and **Settings → Accounts** can add, replace, or remove a key later. Scraply checks each key with its provider before saving it and afterwards shows only its last four characters. Selectable models come from the connected account's live catalog.
 2. Create a project. Choose **Find problems to solve** to research a topic or audience, or **I have a problem to solve** when you can state the problem already. A known-problem run can skip web search.
 3. Write what you want to explore or state your known problem. Add the intended audience, boundaries, and any risks you want evaluated. Choose the model and reasoning effort, research depth and search provider when discovery needs them.
-4. Choose how much supervision you want. **Babysit** stops after research for your review. **Vibe** asks for the idea model and limits before launch, then advances through research, selection, generation, and review while the local app host remains open.
+4. Choose how much supervision you want. **Controlled** stops after research for your review. **Vibe** asks for the idea model and limits before launch, then advances through research, selection, generation, and review while the local app host remains open.
 5. Check the target and limits before starting. **Solutions per problem** controls each generation batch. For startup opportunities, **Build a project-wide set of distinct businesses** enables a separate **Distinct family target**. It counts accepted, independent business families, not every variant. A higher target can take more calls and may finish short when evidence or limits run out.
 
 The project saves the resolved instructions and chosen model settings with each run. You can edit advanced instructions for research, generation, or review before launch. Existing `prompts/workflow-v2-*.md` overrides remain available for deeper customization; see [data and privacy](data-and-privacy.md#prompt-overrides-and-saved-runs).
 
 ## Models and limits
 
-Scraply's selectors can show GPT-6 Astra, Sol, and Luna when the connected account's live catalog offers them. Reasoning choices depend on the selected model. A saved model or effort that is no longer available remains visible so you can replace it deliberately; Scraply does not silently choose another one. Babysit lets you choose the ideas model after research. Vibe needs it before Start because no selection dialog interrupts that run.
+Scraply's selectors can show GPT-6 Astra, Sol, and Luna when the connected account's live catalog offers them. Reasoning choices depend on the selected model. A saved model or effort that is no longer available remains visible so you can replace it deliberately; Scraply does not silently choose another one. Controlled lets you choose the ideas model after research. Vibe needs it before Start because no selection dialog interrupts that run.
 
 The setup limits bound planned model calls, searches, and elapsed work. Review the preview after changing a limit. Native OpenAI subscription calls do not support an output-token ceiling, so a request deadline and output-size limit cannot guarantee a token or billing ceiling. Usage stays marked unknown when the provider does not report it.
 
-## Babysit research
+## Controlled research
 
 Research presents candidate problems with cited factors and source links. Read the excerpt and open its source before treating a claim as established. A matched excerpt supports only what it actually says. Model confidence is uncalibrated, and a problem's presence does not prove customer demand.
 

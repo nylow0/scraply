@@ -434,7 +434,7 @@ test("project targets retain their starting family count while recounting member
   client.close();
 });
 
-test("Babysit admits a thirty-family project target at the research checkpoint", async () => {
+test("Controlled admits a thirty-family project target at the research checkpoint", async () => {
   const { request, threadId, errors } = await fixture();
   const draft = { ...launchDraft(),
     runConfig: { ...launchDraft().runConfig, explorationPurpose: "startup-opportunities" as const },

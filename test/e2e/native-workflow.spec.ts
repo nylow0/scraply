@@ -127,7 +127,7 @@ test("native v2 research survives the installed selection, risk evaluation, and 
     await expect(page.getByLabel("OpenAI account")).toContainText("synthetic-account");
     await page.getByLabel("What do you want to explore?", { exact: false }).fill("Parts delivery uncertainty for repair shops");
     await page.getByLabel("Research depth", { exact: true }).selectOption("quick");
-    await page.getByRole("radio", { name: /^Babysit/ }).check();
+    await page.getByRole("radio", { name: /^Controlled/ }).check();
     await page.getByRole("button", { name: "Start", exact: true }).click();
     await expect(page.getByText("Choose problems to develop", { exact: true })).toBeVisible();
     await expect(page.getByText("overstated", { exact: true })).not.toBeVisible();

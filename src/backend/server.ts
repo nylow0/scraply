@@ -31,7 +31,7 @@ import {
   CreateThreadRequestSchema, DeleteThreadRequestSchema, EvidenceFollowUpRequestSchema, EvidenceReassessmentRequestSchema, ExportIdeasRequestSchema, ExportResearchRequestSchema,
   GetIdeaDetailRequestSchema, GetSourceDetailRequestSchema, HealthResponseSchema,
   NativeLoginCancelSchema, NativeLoginCompleteSchema, NativeLoginStartSchema, NativeProviderSchema,
-  ResumeResearchSchema, SaveFavoriteModelSchema, SaveRunConfigSchema, SaveScopeSchema,
+  ResumeResearchSchema, SaveFavoriteModelSchema, SaveRunConfigSchema, SaveScopeSchema, SearchKeyPreflightSchema,
   SelectProblemsSchema, SelectOptionSchema, SaveDecisionSchema, SelectThreadRequestSchema, SourceDetailSchema, StartResearchSchema,
   ValidationStateSchema, WorkspaceStateSchema, type FactorView, type ProblemCandidate, type RejectedProblemCandidate, type ResearchEvent,
   type SolutionView, type ValidationState,
@@ -88,6 +88,13 @@ export function isSetupComplete(
   return (search.exa.valid || search.perplexity.valid)
     && native.available && native.connected;
 }
+
+// Reveals the last four characters only for keys long enough that four characters give nothing away.
+// Real Exa and Perplexity keys are 36+ characters.
+export function maskSearchKey(key: string | null | undefined): string | undefined {
+  if (!key) return undefined;
+  return key.length >= 16 ? `••••${key.slice(-4)}` : "••••";
+}
 const REMOVED_CODEX_CLI_MESSAGE = "Codex CLI integration was removed. Start a new run using Native OpenAI.";
 type DataRead = (sql: string, params: readonly unknown[]) => Array<Record<string, unknown>>;
 export function isResearchModeReady(
@@ -106,6 +113,9 @@ export interface BackendHandle {
   token: string;
   close: () => Promise<void>;
   secretsChanged: () => void;
+  hasActiveWork: () => boolean;
+  beginSearchKeyUpdate: () => boolean;
+  finishSearchKeyUpdate: () => boolean;
   providersChanged: () => void;
 }
 
@@ -139,6 +149,8 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
   let nativeAuthTail: Promise<void> = Promise.resolve();
   const pendingNativeLogins = new Map<string, string>();
   let engine: ResearchEngine | null = null;
+  let searchKeyUpdatePending = false;
+  let pendingPosts = 0;
   const workflowModelScheduler = new WorkflowModelScheduler();
   const invalidateProviderCache = () => {
     validationGeneration += 1;
@@ -190,6 +202,12 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
     return engine;
   };
 
+  // Shared by routine validation and key changes, so tests' injected validators cover both.
+  function validateSearchKey(provider: SearchProvider, apiKey: string): Promise<ValidationResult> {
+    if (provider === "exa") return (context.providerValidation?.validateExa ?? ((key: string) => new ExaClient(key).validateKey()))(apiKey);
+    return (context.providerValidation?.validatePerplexity ?? ((key: string) => new PerplexityClient(key).validateKey()))(apiKey);
+  }
+
   async function validateProviders(): Promise<ValidationState> {
     if (validationPromise) return validationPromise;
     const generation = validationGeneration;
@@ -235,15 +253,18 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
         });
       const [nativeInspection, exa, perplexity] = await Promise.all([
         nativeInspectionPromise,
-        secrets.exaApiKey
-          ? (context.providerValidation?.validateExa ?? ((key: string) => new ExaClient(key).validateKey()))(secrets.exaApiKey)
-          : Promise.resolve({ valid: false, error: "Exa key missing" }),
+        secrets.exaApiKey ? validateSearchKey("exa", secrets.exaApiKey) : Promise.resolve({ valid: false, error: "Exa key missing" }),
         secrets.perplexityApiKey
-          ? (context.providerValidation?.validatePerplexity ?? ((key: string) => new PerplexityClient(key).validateKey()))(secrets.perplexityApiKey)
+          ? validateSearchKey("perplexity", secrets.perplexityApiKey)
           : Promise.resolve({ valid: false, error: "Perplexity key missing" }),
       ]);
       const { models: nativeModels, ...native } = nativeInspection;
-      const value = ValidationStateSchema.parse({ exa, perplexity, native, setupComplete: isSetupComplete({ exa, perplexity }, native) });
+      const value = ValidationStateSchema.parse({
+        exa: { ...exa, maskedKey: maskSearchKey(secrets.exaApiKey) },
+        perplexity: { ...perplexity, maskedKey: maskSearchKey(secrets.perplexityApiKey) },
+        native,
+        setupComplete: isSetupComplete({ exa, perplexity }, native),
+      });
       context.log?.({
         level: value.setupComplete ? "info" : "warn",
         event: "provider-validation-completed",
@@ -273,8 +294,10 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
     finally { if (validationPromise === pending) validationPromise = null; }
   }
   const pendingValidation = () => ValidationStateSchema.parse({
-    exa: { valid: false, error: context.getSecrets().exaApiKey ? "Checking Exa connection" : "Exa key missing" },
-    perplexity: { valid: false, error: context.getSecrets().perplexityApiKey ? "Checking Perplexity connection" : "Perplexity key missing" },
+    exa: { valid: false, error: context.getSecrets().exaApiKey ? "Checking Exa connection" : "Exa key missing",
+      maskedKey: maskSearchKey(context.getSecrets().exaApiKey), checking: Boolean(context.getSecrets().exaApiKey) },
+    perplexity: { valid: false, error: context.getSecrets().perplexityApiKey ? "Checking Perplexity connection" : "Perplexity key missing",
+      maskedKey: maskSearchKey(context.getSecrets().perplexityApiKey), checking: Boolean(context.getSecrets().perplexityApiKey) },
     setupComplete: false,
     native: { available: false, connected: false, accounts: [], error: "Checking native runtime" },
   });
@@ -1210,12 +1233,16 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
   }
 
   const pendingRequests = new Set<Promise<void>>();
+  const hasActiveWork = () => Boolean(engine?.hasActiveWork() || db.db.prepare(
+    "SELECT 1 FROM workflow_sessions WHERE state IN ('running', 'pause-requested', 'stop-requested') LIMIT 1",
+  ).get());
   const handleRequest = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
     const startedAt = Date.now();
     const method = req.method ?? "GET";
     let route = req.url ?? "/";
     try {
       if (!authorize(req, token)) return sendError(res, new AppError("unauthorized"));
+      if (method === "POST" && searchKeyUpdatePending) throw new AppError("conflict", "A search key is being updated. Try again in a moment.");
       const url = new URL(req.url ?? "/", "http://127.0.0.1");
       route = url.pathname;
       if (method === "GET" && route === "/health") return sendJson(res, 200, HealthResponseSchema.parse({ ok: true, version: context.appVersion, persistenceCheck: db.getMeta("persistence_probe") ?? undefined }));
@@ -1467,6 +1494,16 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
         if (cleanupError) throw cleanupError;
         return sendJson(res, 200, await workspaceState());
       }
+      // Main calls this before it stores a key change. Validating the candidate here leaves the live secrets
+      // untouched when a key is rejected. Applying a change rebuilds the engine, which cancels its runs, so
+      // changes wait until no run is active.
+      if (route === "/search-keys/preflight") {
+        const { provider, apiKey } = SearchKeyPreflightSchema.parse(body);
+        if (hasActiveWork()) {
+          throw new AppError("conflict", "Search keys can't change while research is running. Wait for it to finish or cancel it, then try again.");
+        }
+        return sendJson(res, 200, apiKey ? await validateSearchKey(provider, apiKey) : { valid: true });
+      }
       if (route === "/native/retry") {
         if (context.prepareNativeRuntime) {
           try { await context.prepareNativeRuntime(); }
@@ -1695,11 +1732,12 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
     }
   };
   const server = createServer((req, res) => {
+    if (req.method === "POST") pendingPosts += 1;
     const pending = handleRequest(req, res);
     pendingRequests.add(pending);
     void pending.then(
-      () => pendingRequests.delete(pending),
-      () => pendingRequests.delete(pending),
+      () => { pendingRequests.delete(pending); if (req.method === "POST") pendingPosts -= 1; },
+      () => { pendingRequests.delete(pending); if (req.method === "POST") pendingPosts -= 1; },
     );
   });
 
@@ -1752,6 +1790,17 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
       engine = null;
       invalidateProviderCache();
       void validateProviders().catch(() => undefined);
+    },
+    hasActiveWork,
+    beginSearchKeyUpdate: () => {
+      if (searchKeyUpdatePending || pendingPosts || hasActiveWork()) return false;
+      searchKeyUpdatePending = true;
+      return true;
+    },
+    finishSearchKeyUpdate: () => {
+      const pending = searchKeyUpdatePending;
+      searchKeyUpdatePending = false;
+      return pending;
     },
     providersChanged: () => {
       invalidateProviderCache();
