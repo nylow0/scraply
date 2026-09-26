@@ -8,6 +8,33 @@ import { DEFAULT_RUN_CONFIG, RunConfigSchema, modelRefKey } from "../../src/shar
 import type { WorkflowLaunchDraft } from "../../src/shared/workflow-contracts";
 
 describe("ScopeForm search provider selection", () => {
+  test("uses the connected provider for a new setup after Perplexity-only onboarding", async () => {
+    const storageKey = "scraply.research-defaults.v1";
+    const previous = localStorage.getItem(storageKey);
+    try {
+      localStorage.removeItem(storageKey);
+      const state = workspace();
+      state.scope = null;
+      state.runConfig = null;
+      state.validation.perplexity = { valid: false, error: "Perplexity unavailable" };
+      const props = { workspace: state, busy: false, onSave: vi.fn(), onStart: vi.fn(), onRetry: vi.fn() };
+      const view = render(ScopeForm, props);
+      const provider = view.getByLabelText("Search provider") as HTMLSelectElement;
+      expect(provider.value).toBe("exa");
+      const connected = { ...state, validation: { ...state.validation, perplexity: { valid: true } } };
+      await view.rerender({ ...props, workspace: connected });
+      await waitFor(() => expect(provider.value).toBe("perplexity"));
+      expect((view.getByRole("button", { name: "Discover problems" }) as HTMLButtonElement).disabled).toBe(false);
+
+      await fireEvent.change(provider, { target: { value: "exa" } });
+      await view.rerender({ ...props, workspace: { ...connected, validation: { ...connected.validation } } });
+      expect(provider.value).toBe("exa");
+    } finally {
+      if (previous === null) localStorage.removeItem(storageKey);
+      else localStorage.setItem(storageKey, previous);
+    }
+  });
+
   test("keeps context fields visible and preserves edits on launch", async () => {
     const state = workspace();
     state.validation.exa = { valid: true };
