@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { DEFAULT_RUN_CONFIG, DiscoveryDepthSchema, ModelRefSchema, ReasoningEffortSchema } from "../../shared/schemas";
+import { DEFAULT_RUN_CONFIG, DiscoveryDepthSchema, HISTORICAL_CODEX_CLI_PROVIDER_ID, ModelRefSchema, OPENAI_SUBSCRIPTION_PROVIDER_ID, ReasoningEffortSchema } from "../../shared/schemas";
 
 const storageKey = "scraply.research-defaults.v1";
 const ResearchDefaultsSchema = z.object({
@@ -27,11 +27,16 @@ export function saveResearchDefaults(defaults: ResearchDefaults): void {
   localStorage.setItem(storageKey, JSON.stringify(ResearchDefaultsSchema.parse(defaults)));
 }
 
+// Named OpenAI models ("gpt-6-sol", "gpt-5.6-terra") read as "GPT-6 Sol" everywhere; the catalog's own display
+// names hyphenate the variant inconsistently. Other ids keep the catalog name.
 export function modelDisplayName(model: { modelId: string; displayName?: string }): string {
-  if (model.modelId === "gpt-6-astra") return "GPT-6 Astra";
-  if (model.modelId === "gpt-6-sol") return "GPT-6 Sol";
-  if (model.modelId === "gpt-6-luna") return "GPT-6 Luna";
-  if (model.modelId === "gpt-5.6-luna") return "GPT-5.6 Luna";
-  if (model.modelId === "gpt-5.6-sol") return "GPT-5.6 Sol";
+  const named = /^gpt-(\d+(?:\.\d+)?)-([a-z]+)$/.exec(model.modelId);
+  if (named?.[1] && named[2]) return `GPT-${named[1]} ${named[2].charAt(0).toUpperCase()}${named[2].slice(1)}`;
   return model.displayName ?? model.modelId;
+}
+
+export function providerDisplayName(providerId: string): string {
+  if (providerId === OPENAI_SUBSCRIPTION_PROVIDER_ID) return "OpenAI";
+  if (providerId === HISTORICAL_CODEX_CLI_PROVIDER_ID) return "Codex CLI (legacy)";
+  return providerId.charAt(0).toUpperCase() + providerId.slice(1).replaceAll("-", " ");
 }

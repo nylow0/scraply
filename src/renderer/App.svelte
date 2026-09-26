@@ -20,7 +20,7 @@
   import ResearchArchive from "./components/ResearchArchive.svelte";
   import SetupArchive from "./components/SetupArchive.svelte";
   import SolutionWorkspace from "./components/SolutionWorkspace.svelte";
-  import OpportunityProgress from "./components/OpportunityProgress.svelte";
+  import OpportunityProgress, { TERMINAL_OPPORTUNITY_STATUSES } from "./components/OpportunityProgress.svelte";
   import WorkflowTabs, { type WorkflowStep } from "./components/WorkflowTabs.svelte";
   import RunUsage from "./components/RunUsage.svelte";
   import VibeProgress from "./components/VibeProgress.svelte";
@@ -883,7 +883,10 @@
           onPreviewExtension={previewWorkflowExtension} onApplyExtension={applyWorkflowExtension} /></div>
       {/if}
       {#if !activeWorkflow && workspace.opportunityExploration}
-        <OpportunityProgress progress={workspace.opportunityExploration} {busy} onPause={pauseOpportunities} onResume={startOrResumeOpportunities} onPreviewExtension={previewOpportunityExtension} onApplyExtension={applyOpportunityExtension} />
+        <!-- Like the workflow summary above, a finished exploration steps aside while one idea is open. -->
+        {#if !(activeStep === "ideas" && ideaFocused && TERMINAL_OPPORTUNITY_STATUSES.includes(workspace.opportunityExploration.status))}
+          <div class="workflow-progress-wrap"><OpportunityProgress progress={workspace.opportunityExploration} {busy} onPause={pauseOpportunities} onResume={startOrResumeOpportunities} onPreviewExtension={previewOpportunityExtension} onApplyExtension={applyOpportunityExtension} /></div>
+        {/if}
       {:else if !activeWorkflow && workspace.runConfig?.opportunityExploration && workspace.solutions.length > 0}
         <div class="notice"><button disabled={busy || workspace.opportunityReviewStatus?.running} onclick={startOrResumeOpportunities}>Continue toward {workspace.runConfig.opportunityExploration.targetFamilies} distinct hypotheses</button></div>
       {/if}
@@ -1015,6 +1018,9 @@
 
 <style>
   .workflow-progress-wrap { padding:18px var(--page-gutter) 0; }
+  /* Research requests follow the problem list as the next section, so the list drops its end-of-page padding. */
+  .main-content > :global(.archive:has(~ .research-revisions)),
+  .main-content > :global(#workflow-panel-research:has(~ .research-revisions) > .checkpoint) { padding-bottom:24px; }
   .managed-research { max-width:900px; margin:auto; padding:44px var(--page-inline) 20px; }
   .managed-research h1 { margin:8px 0 12px; font-size:clamp(24px,4vw,36px); letter-spacing:-.035em; }
   .managed-research p:last-child { color:var(--muted); font-size:13px; line-height:1.7; }
@@ -1023,8 +1029,9 @@
   .settings-button { display:flex;align-items:center;gap:10px;width:100%;padding:9px 12px;min-height:38px;border:0;border-radius:7px;background:transparent;color:var(--muted);font-size:13px;text-align:left;transition:background 180ms ease,color 180ms ease; }
   .settings-button:hover { background:var(--surface-2);color:var(--text); }
 
-  /* Floating layout: the sidebar and the page are separate panels over the lit background. */
-  .app-shell { --sidebar-width:var(--sidebar-expanded-width);height:calc(100% - 36px);display:grid;grid-template-columns:var(--sidebar-width) minmax(0,1fr);gap:10px;padding:2px 10px 10px; }
+  /* The navigation sits flush on the window's left edge as part of the black window chrome, like the title bar above it;
+     only the page floats as a panel. The shell therefore has no left padding, so no width is spent on an outer gutter. */
+  .app-shell { --sidebar-width:var(--sidebar-expanded-width);height:calc(100% - 36px);display:grid;grid-template-columns:var(--sidebar-width) minmax(0,1fr);gap:10px;padding:2px 10px 10px 0; }
   /* The page is a black panel with the same hairline edge as the glass around it.
      It is also the `page` size container: page components use @container page queries so their
      breakpoints follow the width they actually get, whatever the navigation is doing. */
@@ -1072,8 +1079,9 @@
   /* Compact windows: the expanded list floats over the page while the rail keeps its grid column. */
   .sidebar-backdrop { position:fixed;inset:36px 0 0;z-index:10;width:100%;border:0;background:var(--glass-backdrop);backdrop-filter:blur(8px); }
   .sidebar-area.drawer { position:fixed;top:38px;bottom:10px;left:10px;z-index:11;display:block;width:min(288px,calc(100vw - 40px)); }
-  .sidebar-area.drawer :global(.sidebar) { height:100%;background:var(--glass-fill-dense); }
-  @media(max-width:720px) { .app-shell { gap:8px;padding:0 8px 8px; }.sidebar-area.drawer { top:36px;bottom:8px;left:8px; } }
+  /* The drawer floats over the page, so it takes the dense glass panel treatment the docked navigation does not need. */
+  .sidebar-area.drawer :global(.sidebar) { height:100%;border:1px solid var(--glass-edge);border-radius:var(--panel-radius);background:var(--glass-fill-dense);box-shadow:var(--glass-shadow);backdrop-filter:var(--glass-blur); }
+  @media(max-width:720px) { .app-shell { gap:8px;padding:0 8px 8px 0; }.sidebar-area.drawer { top:36px;bottom:8px;left:8px; } }
   @container page (max-width:760px) { .calls { display:none; } }
   @container page (max-width:600px) { .running h1,.failed h1 { font-size:28px; } }
   /* Short windows (or high zoom) give the page every row: the header scrolls away with it. */

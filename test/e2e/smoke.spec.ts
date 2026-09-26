@@ -91,8 +91,8 @@ test("the renderer restores the problem-selection step after a restart", async (
     await page.getByRole("button", { name: "Generate all selected" }).click();
     await expect(page.getByText("Supplier reliability ledger")).toBeVisible();
     await page.screenshot({ animations: "disabled", path: testInfo.outputPath("ideas.png") });
-    await page.getByRole("textbox", { name: "Search solutions" }).fill("nothing matches");
-    await expect(page.getByText('No solutions match "nothing matches".')).toBeVisible();
+    await page.getByRole("textbox", { name: "Search ideas" }).fill("nothing matches");
+    await expect(page.getByText('No ideas match "nothing matches".')).toBeVisible();
     await page.getByRole("button", { name: "Clear filter" }).click();
     await expect(page.getByText(/Ideas are shown in saved order/)).toBeVisible();
     await expect(page.getByText(/independently confirmed outcomes/)).toHaveCount(0);

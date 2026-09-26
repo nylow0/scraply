@@ -119,17 +119,33 @@ button:not(:disabled):active {
   transform: translateY(1px);
 }
 
+/* Everything that responds to a click shows the pointer, not only buttons: menus, checkboxes, radios,
+   the labels that toggle them, and disclosure rows. Text fields keep the text cursor. */
+select:not(:disabled),
+select option:not(:disabled),
+summary,
+input:is([type="checkbox"], [type="radio"]):not(:disabled),
+label:has(> input:is([type="checkbox"], [type="radio"]):not(:disabled)) {
+  cursor: pointer;
+}
+
 button:disabled,
 input:disabled,
 textarea:disabled,
-select:disabled {
+select:disabled,
+select option:disabled,
+label:has(> input:is([type="checkbox"], [type="radio"]):disabled) {
   cursor: not-allowed;
 }
 
+/* One ring for every control. main.ts marks pointer use on <html>; while it is active no ring is drawn, so
+   focus returned by a closing dialog or a clicked text field stays quiet. Keyboard navigation always shows it.
+   !important because components may draw their own rings (a radio's ring is on its label). */
 :focus-visible {
   outline: 2px solid var(--focus-ring);
   outline-offset: 3px;
 }
+:root[data-input="pointer"] :is(:focus-visible, label:has(> input:focus-visible)) { outline: none !important; }
 
 ::selection {
   color: var(--text);
@@ -210,12 +226,39 @@ details[open] > .disclosure-title .disclosure-label,
 }
 
 .disclosure-title:focus-visible { outline-offset: -3px; border-radius: 8px; }
+
+/* Plain disclosures use the same thin chevron as the rest of the app instead of Chromium's filled triangle.
+   :where() keeps this at element specificity, so a component that draws its own marker can set
+   `summary::before { content: none }` in its scoped styles. */
+summary { list-style: none; }
+summary::-webkit-details-marker { display: none; }
+:where(summary:not(.disclosure-title))::before {
+  content: "";
+  display: inline-block;
+  flex: none;
+  width: 6px;
+  height: 6px;
+  margin: 0 10px 0 1px;
+  border-right: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+  vertical-align: 2px;
+  transform: rotate(-45deg);
+  transition: transform 160ms var(--ease);
+}
+:where(details[open] > summary:not(.disclosure-title))::before { transform: translateY(-1px) rotate(45deg); }
+
+/* Short last lines read as mistakes: headings balance their lines and prose avoids a lone final word. */
+h1, h2, h3, h4 { text-wrap: balance; }
+p, li, dd, blockquote { text-wrap: pretty; }
 button:disabled { opacity: .45; }
 
 /* Disclosures open directly so longer sections do not move while being read. */
 a { color:var(--accent-strong); text-underline-offset:3px; }
 input, textarea, select { transition:border-color 180ms ease, box-shadow 180ms ease; }
-input:focus, textarea:focus, select:focus { border-color:rgb(255 255 255 / .38) !important; box-shadow:0 0 0 3px rgb(255 255 255 / .05); }
+/* Text fields brighten their border whenever the caret is in them. Menus only do so for keyboard focus, so a dialog
+   opened with the mouse does not start with its first menu looking selected. Radios and checkboxes are excluded:
+   their checked state is drawn with the border, so a focus border would grey them out. */
+input:not([type="radio"], [type="checkbox"]):focus, textarea:focus, select:focus-visible { border-color:rgb(255 255 255 / .38) !important; box-shadow:0 0 0 3px rgb(255 255 255 / .05); }
 /* A field flagged after Start stays red while it is being fixed. */
 [aria-invalid="true"]:focus { border-color:var(--danger) !important; box-shadow:0 0 0 3px rgb(223 146 146 / .14); }
 [aria-invalid="true"]:focus-visible { outline-color:var(--danger); }

@@ -28,7 +28,7 @@
   let previewing = $state(false);
 
   let targetPercent = $derived(Math.min(100, Math.round((progress.counts.acceptedFamilies / progress.config.targetFamilies) * 100)));
-  let terminal = $derived(["target-reached", "useful-partial", "budget-exhausted", "failed"].includes(progress.status));
+  let terminal = $derived(TERMINAL_OPPORTUNITY_STATUSES.includes(progress.status));
   let canExtend = $derived(["useful-partial", "budget-exhausted"].includes(progress.status));
   let nextGap = $derived(progress.gaps.find((gap) => ["named", "search-needed", "ready"].includes(gap.status)) ?? null);
 
@@ -119,6 +119,9 @@
 <script lang="ts" module>
   import type { OpportunityExplorationStatus } from "../../shared/opportunity-exploration";
 
+  // Exploration has stopped in these states; App also uses them to hide the finished panel while an idea is open.
+  export const TERMINAL_OPPORTUNITY_STATUSES: OpportunityExplorationStatus[] = ["target-reached", "useful-partial", "budget-exhausted", "failed"];
+
   function statusLabel(status: OpportunityExplorationStatus): string {
     const labels: Record<OpportunityExplorationStatus, string> = {
       "mapping-coverage": "Mapping coverage",
@@ -138,7 +141,7 @@
 <style>
   .opportunity-progress { display:grid;gap:18px;padding:20px;border:1px solid var(--border);border-radius:10px;background:#000; }
   header { display:flex;justify-content:space-between;gap:20px;align-items:start; }
-  .eyebrow { margin:0 0 4px;color:var(--muted);font-size:11px;font-weight:700;letter-spacing:.08em;text-transform:uppercase; }
+  .eyebrow { margin:0 0 6px;color:var(--muted);font-size:13px; }
   h2 { margin:0;font-size:34px;line-height:1;font-variant-numeric:tabular-nums; }
   h2 span { color:var(--muted);font-size:16px;font-weight:500; }
   .status { padding:5px 8px;border:1px solid var(--border);border-radius:5px;color:var(--muted);font-size:12px; }
@@ -153,12 +156,14 @@
   .budget div { padding-top:10px;border-top:1px solid var(--border); }
   .budget dd { margin:4px 0 0;font-size:13px;font-variant-numeric:tabular-nums; }
   .gap { padding:14px;border:1px solid var(--border);border-radius:8px;background:var(--surface); }
-  .gap > span { display:block;color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.07em; }
+  .gap > span { display:block;color:var(--muted);font-size:12px; }
   .gap strong { display:block;margin-top:6px;font-size:14px; }
   .gap p { margin:6px 0;color:var(--muted);font-size:13px; }
   .gap small { color:var(--subtle);font-size:12px; }
   .stop-reason { margin:0;padding:12px;border-left:2px solid var(--accent);background:var(--surface);font-size:13px;line-height:1.5; }
   footer { display:flex;justify-content:flex-end; }
+  /* A finished exploration has no action, so its footer takes no row in the grid. */
+  footer:empty { display:none; }
   button { border:1px solid transparent;border-radius:7px;padding:9px 12px;background:var(--accent-strong);color:var(--accent-ink);font-size:13px;font-weight:650; }
   button.secondary { border-color:var(--border-strong);background:var(--surface-2);color:var(--text); }
   button:disabled { opacity:.5; }

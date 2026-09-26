@@ -222,8 +222,8 @@
     </details>
   {/if}
 
-  <ResultsToolbar bind:query label="Search solutions" count={matchCount} />
-  {#if solutions.length > 0 && matchCount === 0}<p class="filter-empty">{query ? `No solutions match "${query}".` : showDiscarded ? "No discarded solutions." : discardedCount === solutions.length ? "All solutions discarded. Open Discarded to review or restore them." : "No solutions match this filter."}</p>{/if}
+  <ResultsToolbar bind:query label="Search ideas" count={matchCount} />
+  {#if solutions.length > 0 && matchCount === 0}<p class="filter-empty">{query ? `No ideas match "${query}".` : showDiscarded ? "No discarded ideas." : discardedCount === solutions.length ? "All ideas discarded. Open Discarded to review or restore them." : "No ideas match this filter."}</p>{/if}
   <div class="solutions">
     {#each rankedSolutions as item (item.idea.id)}
       <div class="idea-row" hidden={!!item.idea.discarded !== showDiscarded || (unaddressedOnly && item.idea.unaddressedCatastrophicRisks === 0) || !matchesQuery(item.idea)}>
@@ -242,7 +242,7 @@
       </div>
     {:else}
       <div class="empty">
-        <h2>{solutions.length ? "No ideas match this filter." : acceptedCount === 0 ? "No ideas met the run target." : hasV2 ? "No solutions were returned." : "No useful new solution was proposed."}</h2>
+        <h2>{solutions.length ? "No ideas match this filter." : acceptedCount === 0 ? "No ideas met the run target." : hasV2 ? "No ideas were returned." : "No useful new idea was proposed."}</h2>
         {#if solutions.length}<p>Clear "Unaddressed project-ending" to return to the complete idea list.</p><button onclick={() => unaddressedOnly = false}>Show every idea</button>{:else if hasV2}<p>Review the research and run result, then try another problem or run.</p>{/if}
       </div>
     {/each}
@@ -298,13 +298,13 @@
   .actions button,.empty button { min-height:38px;padding:8px 12px;background:transparent;border:1px solid var(--border);border-radius:8px;color:var(--muted);font-size:13px; }
   .actions button:hover,.empty button:hover { color:var(--text);background:var(--surface-2);border-color:var(--border-strong); }
   .actions button.active { border-color:#b98645;color:#e4b46f;background:#b9864510; }
-  .grouping { margin:22px 0 0;border:1px solid var(--border);border-radius:9px;background:#050705; }
-  .grouping > summary { display:flex;justify-content:space-between;gap:12px;padding:13px 16px;color:var(--text);font-size:14px;font-weight:600;cursor:pointer; }
-  .grouping > summary span { color:var(--muted);font-size:12px;font-weight:400;text-align:right; }
+  .grouping { margin:22px 0 0;border:1px solid var(--border);border-radius:9px;background:var(--surface); }
+  .grouping > summary { display:flex;align-items:center;gap:12px;padding:13px 16px;color:var(--text);font-size:14px;font-weight:600;cursor:pointer; }
+  .grouping > summary span { margin-left:auto;color:var(--muted);font-size:12px;font-weight:400;text-align:right; }
   .grouping :global(.opportunity-families) { border:0; }
   .solutions { display:grid;grid-template-columns:minmax(0,1fr);gap:10px; }
   .idea-row { min-width:0;max-width:100%; }
-  .idea-card { display:flex;justify-content:space-between;gap:24px;padding:20px 22px;border:1px solid var(--border);border-radius:12px;background:#080b09; }
+  .idea-card { display:flex;justify-content:space-between;gap:24px;padding:20px 22px;border:1px solid var(--border);border-radius:12px;background:var(--surface); }
   .idea-card:hover { border-color:var(--border-strong); }
   .card-copy { min-width:0;max-width:75ch;overflow-wrap:anywhere; }
   .card-copy h2 { margin:0;color:var(--text);font-size:17px;font-weight:620;line-height:1.4;letter-spacing:-.015em; }
@@ -321,7 +321,7 @@
   .secondary-actions { margin-top:18px; }
   .secondary-actions button { background:transparent;border:0;color:var(--subtle);font-size:13px;padding:6px 0; }
   .secondary-actions button.active { color:var(--text); }
-  .empty { display:grid;justify-items:start;gap:8px;padding:44px 20px; }.empty h2 { font-size:18px; }.empty h2,.empty p { margin:0; }.empty p { color:var(--muted);font-size:13px; }
+  .empty { display:grid;justify-items:start;gap:8px;padding:44px 0; }.empty h2 { font-size:18px; }.empty h2,.empty p { margin:0; }.empty p { color:var(--muted);font-size:13px; }
   .legend { margin:24px 0 0;max-width:70ch;color:var(--subtle);font-size:13px;line-height:1.6; }
   .filter-empty { padding:24px;border:1px dashed var(--border-strong);border-radius:12px;color:var(--muted);font-size:13px; }
   .detail-navigation { display:flex;align-items:center;gap:16px;margin-bottom:24px;color:var(--subtle);font-size:13px; }
