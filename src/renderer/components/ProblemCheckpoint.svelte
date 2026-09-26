@@ -3,11 +3,11 @@
   import ResultsToolbar from "./ResultsToolbar.svelte";
   import type { ProblemCandidate, RejectedProblemCandidate } from "../../shared/ipc";
   import { DEFAULT_RUN_CONFIG, modelRefKey, type ExplorationPurpose, type ModelOption, type ModelRef, type RunConfig } from "../../shared/schemas";
-  import { modelDisplayName } from "../lib/research-defaults";
+  import { modelDisplayName, readResearchDefaults } from "../lib/research-defaults";
   import { verdictLabel } from "../lib/status";
   import { untrack } from "svelte";
   import { SvelteSet } from "svelte/reactivity";
-  let { problems, rejectedCandidates, modelOptions, initialConfig, fixedExplorationPurpose, busy, onCommit, onExport, onOpenSource }:{ problems:ProblemCandidate[];rejectedCandidates:RejectedProblemCandidate[];modelOptions:ModelOption[];initialConfig:RunConfig|null;fixedExplorationPurpose?:ExplorationPurpose|undefined;workflowVersion?:1|2|undefined;ideaCount?:number|undefined;busy:boolean;onCommit:(ids:string[],userProblem:string|null,model:ModelRef,reasoningEffort:string,explorationPurpose:ExplorationPurpose)=>Promise<void>;onExport:()=>Promise<void>;onOpenSource:(url:string)=>Promise<void> }=$props();
+  let { problems, rejectedCandidates, modelOptions, initialConfig, priorDevelopment = false, fixedExplorationPurpose, busy, onCommit, onExport, onOpenSource }:{ problems:ProblemCandidate[];rejectedCandidates:RejectedProblemCandidate[];modelOptions:ModelOption[];initialConfig:RunConfig|null;priorDevelopment?:boolean;fixedExplorationPurpose?:ExplorationPurpose|undefined;workflowVersion?:1|2|undefined;ideaCount?:number|undefined;busy:boolean;onCommit:(ids:string[],userProblem:string|null,model:ModelRef,reasoningEffort:string,explorationPurpose:ExplorationPurpose)=>Promise<void>;onExport:()=>Promise<void>;onOpenSource:(url:string)=>Promise<void> }=$props();
   const initialProblems=untrack(()=>problems);
   const selected=new SvelteSet(initialProblems.filter((item)=>item.selected).map((item)=>item.id));
   let userProblem=$state("");
@@ -17,11 +17,16 @@
   let projected=$derived((problems.filter((problem)=>selected.has(problem.id)&&!problem.developmentCompleted).length+manualDevelopment)*3);
   let availableModels=$derived(modelOptions.filter((item)=>item.providerId==="openai-subscription"));
   const savedConfig=untrack(()=>initialConfig);
-  const initialModel=untrack(()=>savedConfig?.model??modelOptions.find((item)=>item.providerId==="openai-subscription"));
+  const defaults=untrack(readResearchDefaults);
+  const hadPriorDevelopment=untrack(()=>priorDevelopment);
+  const initialModel=untrack(()=>(hadPriorDevelopment?savedConfig?.model:defaults.ideasModel)
+    ??savedConfig?.model??modelOptions.find((item)=>item.providerId==="openai-subscription"));
   let modelKey=$state(initialModel?modelRefKey(initialModel):"");
   const initialModelOption=untrack(()=>modelOptions.find((item)=>modelRefKey(item)===modelKey));
   let selectedModel=$derived(availableModels.find((item)=>modelRefKey(item)===modelKey));
-  let reasoningEffort=$state<string>(savedConfig?.reasoningEffort??initialModelOption?.defaultReasoningEffort??DEFAULT_RUN_CONFIG.reasoningEffort);
+  let reasoningEffort=$state<string>((hadPriorDevelopment?savedConfig?.reasoningEffort:defaults.ideasReasoningEffort)
+    ??(!defaults.ideasModel?savedConfig?.reasoningEffort:undefined)
+    ??initialModelOption?.defaultReasoningEffort??DEFAULT_RUN_CONFIG.reasoningEffort);
   let reasoningAvailable=$derived(selectedModel?.reasoningEfforts.some((item)=>item.id===reasoningEffort)??false);
   let selectedPurpose=$derived(fixedExplorationPurpose??savedConfig?.explorationPurpose??DEFAULT_RUN_CONFIG.explorationPurpose);
   let model=$derived<ModelRef>({providerId:selectedModel?.providerId??"",modelId:selectedModel?.modelId??""});

@@ -79,20 +79,24 @@
   let model = $derived<ModelRef>({ providerId: resolvedModel.providerId, modelId: resolvedModel.modelId });
   let initialModelOption = initial.modelOptions.find((item) => sameModelRef(item, initialModel));
   let modelSelect: HTMLSelectElement;
-  let reasoningEffort = $state(initial.runConfig?.reasoningEffort
+  let reasoningEffort = $state((initial.scope ? initial.runConfig?.reasoningEffort : defaults.reasoningEffort)
     ?? initialModelOption?.defaultReasoningEffort
     ?? DEFAULT_RUN_CONFIG.reasoningEffort);
   let discoveryDepth = $state(initial.scope ? initial.runConfig?.discoveryDepth ?? DEFAULT_RUN_CONFIG.discoveryDepth : defaults.discoveryDepth);
   let searchProvider = $state<SearchProvider>(initial.scope ? initial.runConfig?.searchProvider ?? defaults.searchProvider : defaults.searchProvider);
   let maxRunMinutes = $state(initial.runConfig?.maxRunMinutes ?? DEFAULT_RUN_CONFIG.maxRunMinutes);
   let workflowMode = $state<"babysit" | "vibe">("vibe");
-  let ideaModelKey = $state(untrack(() => modelKey));
+  const initialIdeasModel = defaults.ideasModel ?? initialModel;
+  const initialIdeasModelOption = initial.modelOptions.find((item) => sameModelRef(item, initialIdeasModel));
+  let ideaModelKey = $state(modelRefKey(initialIdeasModel));
   let ideaModelOption = $derived(nativeModelOptions.find((item) => modelRefKey(item) === ideaModelKey));
   let ideaModel = $derived<ModelRef>({
     providerId: ideaModelOption?.providerId ?? model.providerId,
     modelId: ideaModelOption?.modelId ?? model.modelId,
   });
-  let ideaReasoningEffort = $state(untrack(() => reasoningEffort));
+  let ideaReasoningEffort = $state(defaults.ideasReasoningEffort
+    ?? (defaults.ideasModel ? initialIdeasModelOption?.defaultReasoningEffort : untrack(() => reasoningEffort))
+    ?? DEFAULT_RUN_CONFIG.reasoningEffort);
   let automaticProblemCap = $state(3);
   const initialProjection = untrack(() => discoveryRunProjection(discoveryDepth));
   let workflowModelLimit = $state(initialProjection.modelCalls * 2 + 12);
