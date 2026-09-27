@@ -685,7 +685,7 @@ describe("ScopeForm search provider selection", () => {
 describe("settings surfaces preserve launch configuration", () => {
   test("explains run modes on hover or focus without changing the selected mode", async () => {
     const view = render(ScopeForm, { workspace: workspace(), busy: false, onSave: vi.fn(), onStart: vi.fn(), onRetry: vi.fn(), onPreviewWorkflow: vi.fn(), onStartWorkflow: vi.fn() });
-    const info = view.getByRole("button", { name: "About Babysit" });
+    const info = view.getByRole("button", { name: "About Controlled" });
     await fireEvent.mouseEnter(info.parentElement!);
     expect(view.getByRole("tooltip").textContent).toContain("choose which ones become ideas");
     expect((view.getByRole("radio", { name: "Vibe" }) as HTMLInputElement).checked).toBe(true);
@@ -782,7 +782,7 @@ describe("settings surfaces preserve launch configuration", () => {
     await fireEvent.input(view.getByLabelText("Maximum searches"), { target: { value: "80" } });
     await fireEvent.click(view.getByRole("button", { name: "Done" }));
     expect((view.getByLabelText("Ideas reasoning") as HTMLSelectElement).value).toBe("high");
-    if (mode === "babysit") await fireEvent.click(view.getByRole("radio", { name: /Babysit/ }));
+    if (mode === "babysit") await fireEvent.click(view.getByRole("radio", { name: /Controlled/ }));
     await waitFor(() => expect(onPreviewWorkflow.mock.lastCall?.[0]).toMatchObject({
       purpose: researchMode === "known-problem" ? "known-problem" : "discovery", mode,
       brief: researchMode === "known-problem" ? "Approvals take too long" : "Parts sourcing",
