@@ -74,14 +74,14 @@
   let nativeModelOptions = $derived(workspace.modelOptions.filter((item) => item.providerId === "openai-subscription"));
   const gpt6Models = ["gpt-6-astra", "gpt-6-sol", "gpt-6-luna"] as const;
   let selectedModelOption = $derived(nativeModelOptions.find((item) => modelRefKey(item) === modelKey));
-  let resolvedModel = $derived(selectedModelOption
-    ?? (modelRefKey(initialModel) === modelKey ? initialModel : DEFAULT_RUN_CONFIG.model));
+  let selectedModelRef = $state<ModelRef>(initialModel);
+  let resolvedModel = $derived(selectedModelOption ?? selectedModelRef);
   let model = $derived<ModelRef>({ providerId: resolvedModel.providerId, modelId: resolvedModel.modelId });
   let initialModelOption = initial.modelOptions.find((item) => sameModelRef(item, initialModel));
   let modelSelect: HTMLSelectElement;
-  let reasoningEffort = $state(initial.runConfig?.reasoningEffort
+  let reasoningEffort = $state((initial.scope ? initial.runConfig?.reasoningEffort : defaults.reasoningEffort)
     ?? initialModelOption?.defaultReasoningEffort
-    ?? DEFAULT_RUN_CONFIG.reasoningEffort);
+    ?? "");
   let discoveryDepth = $state(initial.scope ? initial.runConfig?.discoveryDepth ?? DEFAULT_RUN_CONFIG.discoveryDepth : defaults.discoveryDepth);
   let searchProvider = $state<SearchProvider>(initial.scope ? initial.runConfig?.searchProvider ?? defaults.searchProvider : defaults.searchProvider);
   let searchProviderTouched = $state(false);
@@ -93,13 +93,18 @@
   let maxRunMinutes = $state(initial.runConfig?.maxRunMinutes ?? DEFAULT_RUN_CONFIG.maxRunMinutes);
   // "babysit" is the stored identifier of the mode users see as Controlled (see WorkflowModeSchema).
   let workflowMode = $state<"babysit" | "vibe">("vibe");
-  let ideaModelKey = $state(untrack(() => modelKey));
+  const initialIdeasModel = defaults.ideasModel ?? initialModel;
+  const initialIdeasModelOption = initial.modelOptions.find((item) => sameModelRef(item, initialIdeasModel));
+  let ideaModelKey = $state(modelRefKey(initialIdeasModel));
   let ideaModelOption = $derived(nativeModelOptions.find((item) => modelRefKey(item) === ideaModelKey));
+  let selectedIdeasModelRef = $state<ModelRef>(initialIdeasModel);
   let ideaModel = $derived<ModelRef>({
-    providerId: ideaModelOption?.providerId ?? model.providerId,
-    modelId: ideaModelOption?.modelId ?? model.modelId,
+    providerId: ideaModelOption?.providerId ?? selectedIdeasModelRef.providerId,
+    modelId: ideaModelOption?.modelId ?? selectedIdeasModelRef.modelId,
   });
-  let ideaReasoningEffort = $state(untrack(() => reasoningEffort));
+  let ideaReasoningEffort = $state(defaults.ideasReasoningEffort
+    ?? initialIdeasModelOption?.defaultReasoningEffort
+    ?? "");
   let automaticProblemCap = $state(3);
   const initialProjection = untrack(() => discoveryRunProjection(discoveryDepth));
   let workflowModelLimit = $state(initialProjection.modelCalls * 2 + 12);
@@ -200,6 +205,11 @@
     && previewFingerprint === workflowFingerprint);
 
   $effect(() => {
+    if (!reasoningEffort && selectedModelOption) reasoningEffort = selectedModelOption.defaultReasoningEffort;
+    if (!ideaReasoningEffort && ideaModelOption) ideaReasoningEffort = ideaModelOption.defaultReasoningEffort;
+  });
+
+  $effect(() => {
     if (!workflowModelLimitTouched) workflowModelLimit = discoveryReservation.modelCalls
       + (projectTargetEnabled ? Math.max(DEFAULT_OPPORTUNITY_EXPLORATION_CONFIG.maxModelCalls, projectInitialBatchCalls) : 12);
     if (!workflowSearchLimitTouched) workflowSearchLimit = discoveryReservation.searches
@@ -234,11 +244,13 @@
 
   function selectModel(event: Event) {
     const selected = workspace.modelOptions.find((item) => modelRefKey(item) === (event.currentTarget as HTMLSelectElement).value);
+    if (selected) selectedModelRef = { providerId: selected.providerId, modelId: selected.modelId };
     reasoningEffort = selected?.defaultReasoningEffort ?? DEFAULT_RUN_CONFIG.reasoningEffort;
   }
 
   function selectIdeaModel(event: Event) {
     const selected = workspace.modelOptions.find((item) => modelRefKey(item) === (event.currentTarget as HTMLSelectElement).value);
+    if (selected) selectedIdeasModelRef = { providerId: selected.providerId, modelId: selected.modelId };
     ideaReasoningEffort = selected?.defaultReasoningEffort ?? DEFAULT_RUN_CONFIG.reasoningEffort;
   }
 

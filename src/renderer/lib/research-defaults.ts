@@ -4,6 +4,10 @@ import { DEFAULT_RUN_CONFIG, DiscoveryDepthSchema, HISTORICAL_CODEX_CLI_PROVIDER
 const storageKey = "scraply.research-defaults.v1";
 const ResearchDefaultsSchema = z.object({
   model: ModelRefSchema,
+  // Older saved preferences omit these fields. The live model catalog supplies their initial efforts.
+  reasoningEffort: ReasoningEffortSchema.optional(),
+  ideasModel: ModelRefSchema.optional(),
+  ideasReasoningEffort: ReasoningEffortSchema.optional(),
   searchProvider: z.enum(["exa", "perplexity"]),
   audienceSourcePolicy: z.enum(["web", "communities"]).default("web"),
   discoveryDepth: DiscoveryDepthSchema.default("standard"),
@@ -12,7 +16,8 @@ const ResearchDefaultsSchema = z.object({
 });
 export type ResearchDefaults = z.infer<typeof ResearchDefaultsSchema>;
 
-// Preferences belong to this installed app. A saved project's run config takes precedence.
+// Preferences belong to this installed app. Saved run settings win when returning to development;
+// new idea development uses the ideas defaults before the discovery run's settings.
 export function readResearchDefaults(): ResearchDefaults {
   try {
     const stored = localStorage.getItem(storageKey);

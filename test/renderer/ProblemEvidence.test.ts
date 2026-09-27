@@ -168,6 +168,7 @@ describe("rejected problem evidence", () => {
   test("restores the most recent development choice", () => {
     const view = render(ProblemCheckpoint, {
       problems: [], rejectedCandidates: [], busy: false, modelOptions,
+      priorDevelopment: true,
       initialConfig: {
         ...DEFAULT_RUN_CONFIG,
         model: { providerId: "openai-subscription", modelId: "gpt-6-astra" },
@@ -183,6 +184,7 @@ describe("rejected problem evidence", () => {
     const onCommit = vi.fn().mockResolvedValue(undefined);
     const view = render(ProblemCheckpoint, {
       problems: [], rejectedCandidates: [], busy: false, modelOptions,
+      priorDevelopment: true,
       initialConfig: { ...DEFAULT_RUN_CONFIG, model: { providerId: "openai-subscription", modelId: "gpt-6-luna" } },
       onCommit, onExport: vi.fn(), onOpenSource: vi.fn(),
     });
@@ -201,6 +203,7 @@ describe("rejected problem evidence", () => {
   test("requires an available reasoning effort before development", async () => {
     const view = render(ProblemCheckpoint, {
       problems: [], rejectedCandidates: [], busy: false, modelOptions,
+      priorDevelopment: true,
       initialConfig: { ...DEFAULT_RUN_CONFIG, model: { providerId: "openai-subscription", modelId: "gpt-6-astra" }, reasoningEffort: "medium" },
       onCommit: vi.fn(), onExport: vi.fn(), onOpenSource: vi.fn(),
     });
