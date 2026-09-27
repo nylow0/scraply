@@ -4,7 +4,7 @@ Scraply is a Windows desktop app that finds real problems people have and turns 
 
 You describe a topic, an audience, or a problem you already know. Scraply searches the web and online communities, extracts candidate problems with quoted sources, and generates ideas for the problems worth solving. A separate review pass checks each idea for risks and duplicates. Everything stays in a local SQLite database, and you decide what to pursue.
 
-**Status:** in active development in a private repository. There is no public release yet.
+**Status:** early development. No installer has been published yet, so for now you build Scraply from source with the [development guide](docs/maintainers/development.md).
 
 ## How a project works
 
@@ -23,19 +23,33 @@ Research exports as JSON. Ideas export as Markdown or JSON.
 - An OpenAI subscription account, connected in the app
 - An Exa or Perplexity API key for web research, pasted in the app (a run that starts from a known problem can skip search)
 
-The [user guide](docs/user-guide.md) covers projects, models, limits, and partial runs. [Data and privacy](docs/data-and-privacy.md) explains what stays local and what goes to providers. [Troubleshooting](docs/troubleshooting.md) covers startup and account errors.
+## Documentation
+
+**Using Scraply**
+
+- [User guide](docs/user/guide.md): projects, run modes, models, limits, and exploring ideas
+- [Data and privacy](docs/user/data-and-privacy.md): what stays on your computer, what goes to providers, backups
+- [Troubleshooting](docs/user/troubleshooting.md): accounts, partial runs, startup errors
+
+**Working on Scraply**
+
+- [Development](docs/maintainers/development.md): setup, the dev server, verification
+- [Release](docs/maintainers/release.md): versions, packaging, signing, rollback
+- [Runtime](runtime/README.md): the native worker that makes model calls
+
+Agents working in this repository start at [AGENTS.md](AGENTS.md).
 
 ## How it's built
 
 - **Electron app** with a Svelte 5 and Tailwind renderer (`src/renderer`). The renderer reaches the main process (`src/main`) only through a narrow preload bridge (`src/preload`).
 - **TypeScript core** (`src/core`) runs the workflows, research, and budgets. Storage lives in `src/db`, and the search providers in `src/providers`.
-- **Rust worker** (`runtime/`) makes each model call and validates the result against a schema. See the [runtime guide](runtime/README.md).
+- **Rust worker** (`runtime/`) makes each model call and validates the result against a schema.
 - **Bun** runs the tooling and tests.
 
-## Work on Scraply
+## Contributing
 
-Follow the [development guide](docs/development.md) for prerequisites, setup, and verification. For daily work, `bun run dev` starts a background server and prints a browser URL.
+Bug reports and feature requests are welcome in [issues](https://github.com/nylow0/scraply/issues). For code changes, branch from `master` with a `feat/`, `fix/`, `docs/`, or `chore/` prefix and open a pull request back into `master`. The pull request template lists the verification we expect.
 
-Branch from `master` with a `feat/`, `fix/`, `docs/`, or `chore/` prefix and open a pull request back into `master`. [RELEASE.md](RELEASE.md) covers versioning and release gates.
+## License
 
-The project is not yet licensed for public reuse. A proposed MIT license awaits maintainer approval in [docs/license-proposal.md](docs/license-proposal.md). Bundled runtime and upstream notices remain in their original locations.
+Scraply is released under the [MIT License](LICENSE). The native worker in `runtime/` is licensed under Apache 2.0 and builds on pinned OpenAI Codex libraries; see [runtime/UPSTREAM.md](runtime/UPSTREAM.md) for provenance and notices.
