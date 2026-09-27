@@ -73,4 +73,8 @@ Headless Chromium exercised the real browser-development app using an isolated s
 
 `bun run check` passed with exit code 0: lint, TypeScript, Svelte checks with no errors or warnings, 256 unit tests, 231 integration tests, and 136 renderer tests. The two configured skips were the live Exa probe and the optional saved-development-database-copy fixture. No claim is made that these two checks ran.
 
-Installation and the installed workflow check remain to be recorded after packaging.
+`bun run build:installed` passed with exit code 0. It ran the normal native formatting, source-budget, 86 Rust tests, Clippy, release compilation, package verification, and installation checks. The installed application code and bundled runtime both record commit `5f9d57271e01dd279efba2f130f8bd7745fc5c1c`, with a clean source state. The installed executable is `%LOCALAPPDATA%/Programs/Scraply/Scraply.exe`, version 0.3.0.
+
+The installed `native v2 research` Playwright scenario passed through discovery, problem selection, solution generation, risk analysis, evidence follow-up, a saved decision and observed result, and reopening the saved research. It runs the installed renderer, preload, and main process against the production TypeScript backend with a fixture native child and fixture search responses. It neither uses a live model nor changes the user's account. The first attempt exposed an existing test assertion for lowercase `overstated`; the application already displays `Overstated`. Only the two test assertions were corrected, then the full scenario passed.
+
+Live paid generation, remote provider latency, the optional real saved-database-copy test, and release acceptance were not verified. The installed build is ready for local testing; this work does not claim a production release was published.
