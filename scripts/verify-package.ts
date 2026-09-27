@@ -41,7 +41,7 @@ interface ReleaseManifest {
   dirty: boolean;
   generatedAt: string;
   signed: boolean;
-  signingPolicy: "signed" | "private-unsigned";
+  signingPolicy: "signed" | "unsigned";
   artifacts: ManifestArtifact[];
   runtime: RuntimeManifest;
 }
@@ -235,7 +235,7 @@ const manifest: ReleaseManifest = {
     publishedArtifacts.every((artifact) => artifact.executable?.signatureStatus === "Valid")
     && runtimeSignatureStatus === "Valid"
   ),
-  signingPolicy: allowUnsigned ? "private-unsigned" : "signed",
+  signingPolicy: allowUnsigned ? "unsigned" : "signed",
   artifacts,
   runtime: {
     platform: runtime.lock.platform,

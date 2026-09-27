@@ -116,7 +116,7 @@ function createBundle(overrides: BundleOverrides = {}): BundleFixture {
     sourceRef: approvedRef,
     dirty: false,
     signed: false,
-    signingPolicy: "private-unsigned",
+    signingPolicy: "unsigned",
     runtime,
     artifacts: [
       {
