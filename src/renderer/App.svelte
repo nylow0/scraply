@@ -27,7 +27,9 @@
   import VibeProgress from "./components/VibeProgress.svelte";
   import ResearchRevisions from "./components/ResearchRevisions.svelte";
 
-  type Feedback = { text: string; tone: "error" | "info"; source?: "workspace-load" };
+  type Feedback = { text: string; source?: "workspace-load" } & (
+    { tone: "error"; lifetime?: never } | { tone: "info"; lifetime: "progress" | "confirmation" }
+  );
   type WorkspaceResult = { workspace: WorkspaceState };
   type ResearchExportResult = { cancelled: true } | { cancelled: false; file: string };
   type IdeasExportResult = { cancelled: true } | { cancelled: false; directory: string; files: string[] };
@@ -36,7 +38,13 @@
   let workspace = $state<WorkspaceState | null>(null);
   let loading = $state(true);
   let busy = $state(false);
+  // Confirmations appear briefly as toasts. Progress and errors remain inline until replaced.
   let feedback = $state<Feedback | null>(null);
+  $effect(() => {
+    if (feedback?.tone !== "info" || feedback.lifetime !== "confirmation" || signInPromptOpen) return;
+    const timer = setTimeout(() => feedback = null, 3_000);
+    return () => clearTimeout(timer);
+  });
   let deletingThreadId = $state<string | null>(null);
   let latestEvent = $state<ResearchEvent | null>(null);
   let workflowDetail = $state<WorkflowDetail | null>(null);
@@ -613,7 +621,7 @@
       nativeLogin = login;
       feedback = { text: login.method === "device"
         ? "Enter the device code shown below in the browser to finish signing in."
-        : "Finish signing in in your browser. Scraply is waiting for the account callback.", tone: "info" };
+        : "Finish signing in in your browser. Scraply is waiting for the account callback.", tone: "info", lifetime: "progress" };
       for (let attempt = 0; attempt < 300; attempt += 1) {
         if (epoch !== nativeLoginEpoch) return;
         const result = await window.scraply.completeNativeLogin({ loginId: login.loginId });
@@ -626,9 +634,9 @@
             || nativeError === "Native runtime is starting";
           const hasNativeModel = next.models.some((model) => model.providerId === providerId);
           feedback = next.validation.native.connected && hasNativeModel
-            ? { text: "Native model account connected.", tone: "info" }
+            ? { text: "Native model account connected.", tone: "info", lifetime: "confirmation" }
             : nativeValidationPending
-              ? { text: "OpenAI sign-in finished.", tone: "info" }
+              ? { text: "OpenAI sign-in finished.", tone: "info", lifetime: "confirmation" }
               : {
                   text: nativeError ?? (next.validation.native.connected
                     ? "OpenAI connected, but no compatible models were found."
@@ -664,10 +672,10 @@
     if (!login) return;
     nativeLoginEpoch += 1;
     nativeLogin = null;
-    feedback = { text: "Cancelling native account sign-in…", tone: "info" };
+    feedback = { text: "Cancelling native account sign-in…", tone: "info", lifetime: "progress" };
     try {
       setWorkspace(await window.scraply.cancelNativeLogin({ loginId: login.loginId, providerId: login.providerId }));
-      feedback = { text: "Native account sign-in cancelled.", tone: "info" };
+      feedback = { text: "Native account sign-in cancelled.", tone: "info", lifetime: "confirmation" };
     } catch (cause) {
       feedback = { text: message(cause), tone: "error" };
     } finally {
@@ -808,7 +816,7 @@
     if (!threadId) return;
     await action(async () => {
       const result: ResearchExportResult = await window.scraply.exportResearch(threadId);
-      if (!result.cancelled) feedback = { text: `Research JSON exported to ${result.file}.`, tone: "info" };
+      if (!result.cancelled) feedback = { text: `Research JSON exported to ${result.file}.`, tone: "info", lifetime: "confirmation" };
     });
   }
   async function exportIdeas(format: "markdown" | "json") {
@@ -819,7 +827,7 @@
       if (!result.cancelled) {
         feedback = {
           text: `${result.files.length} ${format === "markdown" ? "Markdown" : "JSON"} file${result.files.length === 1 ? "" : "s"} exported to ${result.directory}.`,
-          tone: "info",
+          tone: "info", lifetime: "confirmation",
         };
       }
     });
@@ -938,7 +946,7 @@
       {/if}
     {/if}
 
-    {#if feedback && !settingsOpen}<div class:error={feedback.tone === "error"} class="notice" role={feedback.tone === "error" ? "alert" : "status"}>{feedback.text}<button aria-label="Dismiss" onclick={() => feedback = null}>×</button></div>{/if}
+    {#if feedback && (feedback.tone === "error" || feedback.lifetime === "progress") && !settingsOpen && !signInPromptOpen}<div class="notice" class:error={feedback.tone === "error"} role={feedback.tone === "error" ? "alert" : "status"}>{feedback.text}{#if feedback.tone === "error"}<button aria-label="Dismiss" onclick={() => feedback = null}>×</button>{/if}</div>{/if}
 
     {#if loading}
       <div class="skeleton" role="status" aria-label="Loading workspace"><i></i><i></i><i></i></div>
@@ -1034,7 +1042,7 @@
       <div class="failed" id="workflow-panel-ideas" role="tabpanel" aria-label="Solutions" tabindex="0"><p class="eyebrow">Solutions not ready</p><h1>Complete the research step first.</h1></div>
     {/if}
   </main>
-  <Settings bind:this={settings} bind:open={settingsOpen} {feedback} {workspace} {busy} {nativeLogin}
+  <Settings bind:this={settings} bind:open={settingsOpen} feedback={feedback?.tone === "error" || feedback?.lifetime === "progress" ? feedback : null} {workspace} {busy} {nativeLogin}
     onRetry={retryConnections} onConnectNative={connectNativeAccount} onCancelNative={cancelNativeLogin}
     onRefreshNative={refreshNativeAccount} onLogoutNative={logoutNativeAccount}
     onSaveSearchKey={saveSearchKey} onRemoveSearchKey={removeSearchKey} onOpenUrl={(url) => void openExternalUrl(url)}
@@ -1047,6 +1055,10 @@
       onCancel={() => void cancelNativeLogin()} onSaveSearchKeys={saveWelcomeSearchKeys} onOpenUrl={(url) => void openExternalUrl(url)}
       onDismiss={dismissWelcome} />
   {/if}
+  <!-- The region remains present for screen readers. A confirmation waits while the welcome prompt is open. -->
+  <div class="toasts" role="status" aria-live="polite">
+    {#if feedback?.tone === "info" && feedback.lifetime === "confirmation" && !signInPromptOpen}<p class="toast">{feedback.text}</p>{/if}
+  </div>
 </div>
 
 <style>
@@ -1079,7 +1091,13 @@
   .setup-active > #workflow-panel-setup { flex:1 0 0;min-height:420px; }
   .calls { white-space:nowrap;margin-left:16px;font:500 13px var(--sans); }.calls strong { color:var(--text);font-weight:600; }
   .notice { flex:none;margin:12px var(--page-gutter) 0;padding:12px 16px;border:1px solid var(--border-strong);border-radius:10px;background:var(--surface-2);display:flex;justify-content:space-between;gap:16px;color:var(--muted);font-size:13px;overflow-wrap:anywhere; }
-  .notice.error { border-color:#df929260;color:var(--danger); }.notice button { border:0;background:transparent;color:inherit; }
+  .notice.error { border-color:#df929260;color:var(--danger); }
+  .notice button { border:0;background:transparent;color:inherit; }
+  /* Above Settings (z-index 20); pointer events pass through the empty region. */
+  .toasts { position:fixed;right:20px;bottom:20px;z-index:40;display:grid;justify-items:end;max-width:min(380px,calc(100vw - 40px));pointer-events:none; }
+  .toast { margin:0;padding:12px 16px;border:1px solid var(--glass-edge);border-radius:12px;background:var(--glass-fill-dense);box-shadow:var(--glass-shadow);backdrop-filter:var(--glass-blur);color:var(--text);font-size:13px;line-height:1.5;overflow-wrap:anywhere;animation:toast-in 220ms var(--ease); }
+  @keyframes toast-in { from { opacity:0;transform:translateY(8px); } }
+  @media (prefers-reduced-motion: reduce) { .toast { animation:none; } }
   .empty-workspace { padding:var(--page-top) var(--page-inline); }
   .empty-workspace button { padding:10px 16px;border:1px solid var(--border);border-radius:8px;background:var(--surface);color:var(--text); }
   .activity-symbol { display:grid;place-items:center;width:76px;height:76px;border:1px solid #bdbdbd30;border-radius:24px;color:var(--accent-strong);background:#bdbdbd08;box-shadow:inset 0 1px #ffffff15; }
