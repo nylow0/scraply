@@ -130,9 +130,9 @@ test("native v2 research survives the installed selection, risk evaluation, and 
     await page.getByRole("radio", { name: /^Controlled/ }).check();
     await page.getByRole("button", { name: "Start", exact: true }).click();
     await expect(page.getByText("Choose problems to develop", { exact: true })).toBeVisible();
-    await expect(page.getByText("overstated", { exact: true })).not.toBeVisible();
+    await expect(page.getByText("Overstated", { exact: true })).not.toBeVisible();
     await page.locator(".problem-disclosure > summary").first().click();
-    await expect(page.getByText("overstated", { exact: true })).toBeVisible();
+    await expect(page.getByText("Overstated", { exact: true })).toBeVisible();
     await page.getByRole("checkbox", { name: "Develop this problem" }).check();
     await page.getByRole("button", { name: "Generate all selected", exact: true }).click();
     await expect(page.getByRole("heading", { name: "Supplier reliability ledger" }).first()).toBeVisible();
