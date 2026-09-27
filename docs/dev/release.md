@@ -11,9 +11,9 @@ After the target commit lands on `master` and passes the required checks, either
 ```powershell
 git fetch --prune origin
 $sha = git rev-parse origin/master
-bun scripts/check-promotion.ts rc $sha v0.3.0-rc.1
-git tag -a v0.3.0-rc.1 $sha -m "Scraply 0.3.0 RC 1"
-git push origin refs/tags/v0.3.0-rc.1
+bun scripts/check-promotion.ts rc $sha v0.1.0-rc.1
+git tag -a v0.1.0-rc.1 $sha -m "Scraply 0.1.0 RC 1"
+git push origin refs/tags/v0.1.0-rc.1
 ```
 
 The RC workflow builds once from that clean SHA, verifies the package, and publishes the verified files as a GitHub prerelease. Install that prerelease and test the affected workflows in the real app.
@@ -26,9 +26,9 @@ After accepting the RC, tag the same SHA:
 
 ```powershell
 $sha = git rev-parse origin/master
-bun scripts/check-promotion.ts production $sha v0.3.0
-git tag -a v0.3.0 $sha -m "Scraply 0.3.0"
-git push origin refs/tags/v0.3.0
+bun scripts/check-promotion.ts production $sha v0.1.0
+git tag -a v0.1.0 $sha -m "Scraply 0.1.0"
+git push origin refs/tags/v0.1.0
 ```
 
 Production must promote the accepted RC files without rebuilding them. The workflow checks the source SHA, file set, manifest, artifact sizes, SHA-256 hashes, executable identity, and signing policy before publishing the same bytes as the final GitHub Release.
@@ -39,9 +39,9 @@ Keep GitHub releases immutable so an accepted RC cannot be replaced.
 
 CI and Release are manually disabled to avoid consuming Actions minutes. Keep them disabled unless I say otherwise. A push or tag must not be used to start a hosted build.
 
-Run the same gates locally from a clean checkout at the exact current `origin/master` SHA: `bun install --frozen-lockfile`, `bunx --no-install install-electron`, `bun audit --prod`, and `bun run check`. The Electron setup is required by the Windows credential-profile regression test. Then run `bun run build:installed` with `SCRAPLY_RELEASE_STRICT=1`, followed by `bun run test:e2e:portable` and `bun run test:e2e:installed`. For a verified private repository only, set `SCRAPLY_ALLOW_UNSIGNED=1`; public releases still require valid signatures. Record the source SHA and actual results in the release notes.
+Run the same gates locally from a clean checkout at the exact current `origin/master` SHA: `bun install --frozen-lockfile`, `bunx --no-install install-electron`, `bun audit --prod`, and `bun run check`. The Electron setup is required by the Windows credential-profile regression test. Then run `bun run build:installed` with `SCRAPLY_RELEASE_STRICT=1` and `SCRAPLY_ALLOW_UNSIGNED=1`, followed by `bun run test:e2e:portable` and `bun run test:e2e:installed`. Record the source SHA and actual results in the release notes.
 
-Collect the same five release files described below into an empty bundle directory. Run `bun scripts/check-promotion.ts rc <sha> <rc-tag>` and `bun scripts/verify-promoted-assets.ts <bundle-directory> <sha> <rc-tag>`; add `--allow-unsigned` to the latter only for the private unsigned policy. Create the RC tag at that SHA and publish those five verified files with `gh release create <rc-tag> --verify-tag --prerelease`, using explicit file paths. Install the published candidate and verify its affected workflows before accepting it.
+Collect the same five release files described below into an empty bundle directory. Run `bun scripts/check-promotion.ts rc <sha> <rc-tag>` and `bun scripts/verify-promoted-assets.ts <bundle-directory> <sha> <rc-tag> --allow-unsigned`. Create the RC tag at that SHA and publish those five verified files with `gh release create <rc-tag> --verify-tag --prerelease`, using explicit file paths. Install the published candidate and verify its affected workflows before accepting it.
 
 For production, download the accepted RC's five files into a new directory, run `check-promotion.ts production` and `verify-promoted-assets.ts` against the same SHA and RC tag, then publish those exact files under the production tag with `gh release create --verify-tag`. Do not rebuild or replace the accepted RC assets. Local execution changes where the checks run, not the release, signing, acceptance, or rollback requirements.
 
@@ -49,7 +49,7 @@ For production, download the accepted RC's five files into a new directory, run 
 
 The package contains `release/manifest.json` with its source, artifact, and bundled-runtime metadata, plus `release/SHA256SUMS.txt` with installer and portable hashes. Manifest schema 2 records the runtime version, protocol versions, source commit, executable identity, notices, and SHA-256 hashes.
 
-Private builds may be unsigned only when the workflow or local release process explicitly sets `SCRAPLY_ALLOW_UNSIGNED=1`; the manifest then records `signingPolicy: "private-unsigned"`. Reject broken signatures. Public releases require valid signatures for Scraply and the bundled runtime.
+Scraply has no code-signing certificate yet, so releases ship unsigned. Windows SmartScreen warns on first launch; say so in the release notes. An unsigned release must opt in explicitly: the release build sets `SCRAPLY_ALLOW_UNSIGNED=1`, promotion passes `--allow-unsigned`, and the manifest records `signingPolicy: "unsigned"`. Broken signatures are always rejected. Once a certificate exists, drop both opt-ins so every release requires valid signatures for Scraply and the bundled runtime.
 
 ## Bundled native runtime
 
