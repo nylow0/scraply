@@ -144,6 +144,11 @@ jobs:
           set -euo pipefail
           mkdir promoted
           gh release download "$SCRAPLY_RC_TAG" --dir promoted
+          # GitHub replaces spaces in asset names with dots; restore the names the manifest records.
+          version="${SCRAPLY_RC_TAG#v}"
+          version="${version%%-rc.*}"
+          mv "promoted/Scraply.Setup.${version}.exe" "promoted/Scraply Setup ${version}.exe"
+          mv "promoted/Scraply.${version}.exe" "promoted/Scraply ${version}.exe"
       - name: Verify the promoted bytes against the approved candidate
         run: >
           bun scripts/verify-promoted-assets.ts promoted ${{ github.sha }} ${{ env.SCRAPLY_RC_TAG }}
