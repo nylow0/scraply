@@ -4,7 +4,7 @@ Scraply is a Windows desktop app that finds real problems people have and turns 
 
 You describe a topic, an audience, or a problem you already know. Scraply searches the web and online communities, extracts candidate problems with quoted sources, and generates ideas for the problems worth solving. A separate review pass checks each idea for risks and duplicates. Everything stays in a local SQLite database, and you decide what to pursue.
 
-**Status:** early development. No installer has been published yet, so for now you build Scraply from source with the [development guide](docs/maintainers/development.md).
+**Status:** early development. No installer has been published yet, so for now you build Scraply from source with the [development guide](docs/dev/development.md).
 
 ## How a project works
 
@@ -33,8 +33,8 @@ Research exports as JSON. Ideas export as Markdown or JSON.
 
 **Working on Scraply**
 
-- [Development](docs/maintainers/development.md): setup, the dev server, verification
-- [Release](docs/maintainers/release.md): versions, packaging, signing, rollback
+- [Development](docs/dev/development.md): setup, the dev server, verification
+- [Release](docs/dev/release.md): versions, packaging, signing, rollback
 - [Runtime](runtime/README.md): the native worker that makes model calls
 
 Agents working in this repository start at [AGENTS.md](AGENTS.md).
@@ -48,7 +48,7 @@ Agents working in this repository start at [AGENTS.md](AGENTS.md).
 
 ## Contributing
 
-Bug reports and feature requests are welcome in [issues](https://github.com/nylow0/scraply/issues). For code changes, branch from `master` with a `feat/`, `fix/`, `docs/`, or `chore/` prefix and open a pull request back into `master`. The pull request template lists the verification we expect.
+Bug reports and feature requests are welcome in [issues](https://github.com/nylow0/scraply/issues). For code changes, branch from `master` with a `feat/`, `fix/`, `docs/`, or `chore/` prefix and open a pull request back into `master`. The pull request template lists the verification I expect.
 
 ## License
 
