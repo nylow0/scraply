@@ -11,7 +11,7 @@ git submodule update --init --recursive
 bun run prepare:runtime
 ```
 
-`prepare:runtime` builds, checks, and stages the Rust worker. Reuse that stage for UI and TypeScript backend changes. Prepare it again when the stage is missing or native source, Cargo dependencies, the pinned submodule, or runtime build or protocol configuration changes. See the [runtime build guide](../runtime/README.md#build).
+`prepare:runtime` builds, checks, and stages the Rust worker. Reuse that stage for UI and TypeScript backend changes. Prepare it again when the stage is missing or native source, Cargo dependencies, the pinned submodule, or runtime build or protocol configuration changes. See the [runtime build guide](../../runtime/README.md#build).
 
 Electron 42 downloads its executable on demand. `install-electron` is an explicit setup step because this version of electron-vite reads the installed path directly. Repeat it if development startup reports a missing Electron executable. See the [Electron 42 installation change](https://www.electronjs.org/blog/electron-42-0).
 
@@ -75,8 +75,8 @@ For offline setup and navigation checks, run `bun run test:ui` and open `http://
 | UI or TypeScript backend | Exercise the affected workflow in the browser, run focused tests, then `bun run check` before handoff. |
 | Native runtime or host/runtime integration | Prepare the changed runtime, restart development, and exercise the affected real runtime interaction, relevant tests, and `bun run check`. |
 | Electron window, preload, permissions, dialogs, or desktop integration | Verify the affected interaction in an explicit Electron development session. |
-| Installer, packaging, packaged paths, or installed-app behavior | Run `bun run build:installed`, exercise that behavior in the resulting app, and run the relevant packaged checks in [RELEASE.md](../RELEASE.md). |
-| Release verification | Follow [RELEASE.md](../RELEASE.md), including package and installed-app gates. |
+| Installer, packaging, packaged paths, or installed-app behavior | Run `bun run build:installed`, exercise that behavior in the resulting app, and run the relevant packaged checks in the [release guide](release.md). |
+| Release verification | Follow the [release guide](release.md), including package and installed-app gates. |
 | Documentation or read-only investigation | Check referenced commands and links as needed; no build or installation. |
 
 For UI changes, verify the action and visible result. For persistence changes, restart and confirm the saved state. Report the URL, checkout, workflow exercised, checks passed or failed, and unverified behavior. A server-ready message or passing code checks alone does not verify an interaction.
@@ -95,15 +95,13 @@ Users add Exa and Perplexity API keys in the app: the welcome prompt asks after 
 
 `EXA_API_KEY` and `PERPLEXITY_API_KEY` in `.env` (development only) or in the launch environment override saved keys on every launch, and are saved after validation. The app refuses to edit an overridden key rather than letting the change revert on the next launch. A discovery run uses its selected search provider. Known-problem development does not require web search.
 
-Connect OpenAI through Scraply's account controls. The app opens OpenAI login in your browser and bundles its `scraply-agent` worker. These credentials stay separate from other Codex installations on the computer. The worker source lives in [runtime/](../runtime/README.md); `nylow0/scraply-agent` is legacy. Pinned upstream source supplies OpenAI login and Responses transport libraries. Scraply does not package or invoke the Codex CLI.
+Connect OpenAI through Scraply's account controls. The app opens OpenAI login in your browser and bundles its `scraply-agent` worker. These credentials stay separate from other Codex installations on the computer. The worker source lives in [runtime/](../../runtime/README.md); `nylow0/scraply-agent` is legacy. Pinned upstream source supplies OpenAI login and Responses transport libraries. Scraply does not package or invoke the Codex CLI.
 
 Native OpenAI does not support output-token ceilings. Scraply omits that field for this provider. Request deadlines and the runtime output-size limit still apply, but they do not guarantee a token or billing ceiling. Other providers retain their configured token ceiling.
 
-## Repository and evaluation notes
+## Usefulness evaluation
 
-`master` is the only long-lived branch. Use a short-lived branch and pull request for every feature, fix, documentation change, or maintenance task. [RELEASE.md](../RELEASE.md) owns release commands and acceptance gates. [ACCEPTANCE.md](../ACCEPTANCE.md) indexes dated acceptance evidence. [The document inventory](repository-inventory.md) records the purpose of existing plans, artifacts, prompts, and runtime guides.
-
-For the initial three-decision usefulness review, follow [the Phase 3 evaluation procedure](evaluation.md). Its outputs and historical claims are separate from implementation and release verification.
+The [Phase 3 evaluation procedure](evaluation.md) compares matching discovery runs in a blinded review. Its results are separate from implementation and release verification.
 
 ## Secret checks
 

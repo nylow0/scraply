@@ -3,6 +3,7 @@
   "version": "0.3.0",
   "description": "Local-first evidence-backed research and idea exploration desktop app.",
   "author": "Dany",
+  "license": "MIT",
   "private": true,
   "type": "module",
   "main": "out/main/index.js",

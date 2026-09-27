@@ -12,11 +12,9 @@ Scraply does not upload telemetry. Logs stay local, rotate, and omit credential 
 
 The app stores provider credentials separately from research data in `secrets.bin`, using Electron's Windows-backed `safeStorage`. It refuses to claim a credential was saved when secure storage is unavailable. Keys go to the selected provider for the operation that needs them. Saved search keys are write-only: the interface shows only their last four characters, and replacing a key means pasting a new one. The OpenAI account email stays blurred in Settings until you click it. The bundled runtime uses Scraply's OpenAI account connection, separate from other Codex installations.
 
-Browser development and the installed app share the encrypted credential file unless you choose an isolated development profile. See [development](development.md#data-and-credentials-during-development) before testing login, logout, or throwaway keys.
-
 ## Backup, restore, and reset
 
-Before schema upgrades, Scraply saves a checked database backup beside `scraply.db`; it logs the absolute path and records it in `app_meta.last_pre_migration_backup_path`. Close Scraply before restoring that backup.
+Before a database upgrade, Scraply saves a checked backup beside `scraply.db` and logs its location. Close Scraply before restoring that backup.
 
 - Close Scraply completely before a full backup. Copy the entire data folder, including any SQLite WAL or SHM files that remain.
 - To restore, close Scraply and replace the data folder with a consistent backup from the same app version.
@@ -28,8 +26,8 @@ Deleting or resetting data is irreversible without a backup. For a portable copy
 
 ## Prompt overrides and saved runs
 
-Research loads the bundled `prompts/workflow-v2-*.md` files named in `src/core/stages.ts`. To customize a prompt, put a deliberately edited file with the same name in the active data folder's `prompts` directory. Remove the override to return to the bundle. Missing or empty bundled prompts cause a packaging error; edit or remove an empty override before that stage runs.
+To customize a bundled `workflow-v2-*.md` prompt, put a file with the same name and your edited prompt text in the active data folder's `prompts` directory. Remove the override to use the bundled prompt again. An empty or whitespace-only override blocks the affected step; edit or remove it before starting a run.
 
-On upgrade, Scraply moves proven bundled v2 copies to `prompts/bundled-copy-backups/<hash>/`, so new runs use the current bundle. Deliberate custom v2 overrides stay active. It backs up every recognized retired override, including custom text, under `prompts/retired-prompt-backups/<hash>/` after verifying the backup. Unknown filenames remain untouched. `.prompt-versions.json` keeps known bundled baselines.
+On upgrade, Scraply moves unchanged copies of old bundled prompts to `prompts/bundled-copy-backups/<hash>/`, so new runs use the current bundle. Custom overrides for active prompts stay in place. It also backs up retired overrides, including your edits, under `prompts/retired-prompt-backups/<hash>/`. Files with unfamiliar names remain untouched.
 
-Each generation stores the resolved instruction and evidence sent for that call. Reopening a project does not start more work. Continuing a saved v2 run uses its original prompt snapshot even if an override changes. Start a new run to use changed setup or instructions. Existing v1 results remain readable and exportable, but interrupted v1 generation cannot resume.
+Reopening a project does not start more work. A saved v2 run resumes with the prompts it started with, even if an override changes. Start a new run to use changed setup or prompts. Existing v1 results remain readable and exportable, but interrupted v1 generation cannot resume.
