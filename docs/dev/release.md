@@ -43,7 +43,7 @@ Run the same gates locally from a clean checkout at the exact current `origin/ma
 
 Collect the same five release files described below into an empty bundle directory. Run `bun scripts/check-promotion.ts rc <sha> <rc-tag>` and `bun scripts/verify-promoted-assets.ts <bundle-directory> <sha> <rc-tag> --allow-unsigned`. Create the RC tag at that SHA and publish those five verified files with `gh release create <rc-tag> --verify-tag --prerelease`, using explicit file paths. Install the published candidate and verify its affected workflows before accepting it.
 
-For production, download the accepted RC's five files into a new directory, run `check-promotion.ts production` and `verify-promoted-assets.ts` against the same SHA and RC tag, then publish those exact files under the production tag with `gh release create --verify-tag`. Do not rebuild or replace the accepted RC assets. Local execution changes where the checks run, not the release, signing, acceptance, or rollback requirements.
+For production, download the accepted RC's five files into a new directory, run `check-promotion.ts production` and `bun scripts/verify-promoted-assets.ts <bundle-directory> <sha> <rc-tag> --allow-unsigned` against the same SHA and RC tag, then publish those exact files under the production tag with `gh release create --verify-tag`. Do not rebuild or replace the accepted RC assets. Local execution changes where the checks run, not the release, signing, acceptance, or rollback requirements.
 
 ## Signing and hashes
 
