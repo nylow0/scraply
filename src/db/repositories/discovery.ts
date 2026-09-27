@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { ProblemBriefFit, ProblemContraryEvidence, Scope } from "../../shared/structured-output-schemas";
 import type { RunConfig } from "../../shared/schemas";
 import type { DatabaseClient } from "../client";
+import type { SqlStatement } from "../sqlite";
 import { ActiveRunConflictError, type ResearchRunWorkflowLink } from "./research-runs";
 
 export interface DiscoverySourceRecord {
@@ -87,7 +88,11 @@ export class DiscoveryRepository {
   ): void {
     const db = this.client.db;
     this.client.immediateTransaction(() => {
-      for (const source of sources) this.insertSource(researchRunId, source);
+      if (sources.length > 0) {
+        const insertSource = db.prepare(INSERT_SOURCE_SQL);
+        for (const source of sources) this.insertSource(insertSource, researchRunId, source);
+      }
+      const sourceExists = db.prepare("SELECT 1 FROM sources WHERE id = ? AND research_run_id = ?");
       const now = new Date().toISOString();
       const insert = db.prepare(`
         INSERT INTO factors (
@@ -97,7 +102,7 @@ export class DiscoveryRepository {
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `);
       for (const factor of factors) {
-        this.assertSourceBelongsToRun(researchRunId, factor.sourceId);
+        this.assertSourceBelongsToRun(sourceExists, researchRunId, factor.sourceId);
         insert.run(
           factor.id,
           researchRunId,
@@ -129,7 +134,12 @@ export class DiscoveryRepository {
   ): void {
     const db = this.client.db;
     this.client.immediateTransaction(() => {
-      for (const source of sources) this.insertSource(researchRunId, source);
+      if (sources.length > 0) {
+        const insertSource = db.prepare(INSERT_SOURCE_SQL);
+        for (const source of sources) this.insertSource(insertSource, researchRunId, source);
+      }
+      const factorExists = db.prepare("SELECT 1 FROM factors WHERE id = ? AND research_run_id = ?");
+      const sourceExists = db.prepare("SELECT 1 FROM sources WHERE id = ? AND research_run_id = ?");
       const now = new Date().toISOString();
       const insertProblem = db.prepare(`
         INSERT INTO problems (
@@ -154,10 +164,10 @@ export class DiscoveryRepository {
       db.prepare("DELETE FROM rejected_problem_candidates WHERE discovery_run_id = ?").run(researchRunId);
       for (const problem of problems) {
         if (problem.scaleBasisFactorId !== null) {
-          this.assertFactorBelongsToRun(researchRunId, problem.scaleBasisFactorId);
+          this.assertFactorBelongsToRun(factorExists, researchRunId, problem.scaleBasisFactorId);
         }
-        for (const factorId of problem.factorIds) this.assertFactorBelongsToRun(researchRunId, factorId);
-        for (const sourceId of problem.verdictSourceIds) this.assertSourceBelongsToRun(researchRunId, sourceId);
+        for (const factorId of problem.factorIds) this.assertFactorBelongsToRun(factorExists, researchRunId, factorId);
+        for (const sourceId of problem.verdictSourceIds) this.assertSourceBelongsToRun(sourceExists, researchRunId, sourceId);
         insertProblem.run(
           problem.id,
           researchRunId,
@@ -247,14 +257,8 @@ export class DiscoveryRepository {
     }
   }
 
-  private insertSource(researchRunId: string, source: DiscoverySourceRecord): void {
-    this.client.db.prepare(`
-      INSERT INTO sources (
-        id, research_run_id, provider_source_id,
-        canonical_url, title, retrieved_text, author, published_at,
-        content_hash, retrieved_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(
+  private insertSource(statement: SqlStatement, researchRunId: string, source: DiscoverySourceRecord): void {
+    statement.run(
       source.id,
       researchRunId,
       source.providerSourceId,
@@ -268,15 +272,21 @@ export class DiscoveryRepository {
     );
   }
 
-  private assertFactorBelongsToRun(researchRunId: string, factorId: string): void {
-    const row = this.client.db.prepare("SELECT 1 FROM factors WHERE id = ? AND research_run_id = ?")
-      .get(factorId, researchRunId);
+  private assertFactorBelongsToRun(statement: SqlStatement, researchRunId: string, factorId: string): void {
+    const row = statement.get(factorId, researchRunId);
     if (!row) throw new Error(`Factor ${factorId} does not belong to research run ${researchRunId}`);
   }
 
-  private assertSourceBelongsToRun(researchRunId: string, sourceId: string): void {
-    const row = this.client.db.prepare("SELECT 1 FROM sources WHERE id = ? AND research_run_id = ?")
-      .get(sourceId, researchRunId);
+  private assertSourceBelongsToRun(statement: SqlStatement, researchRunId: string, sourceId: string): void {
+    const row = statement.get(sourceId, researchRunId);
     if (!row) throw new Error(`Source ${sourceId} does not belong to research run ${researchRunId}`);
   }
 }
+
+const INSERT_SOURCE_SQL = `
+  INSERT INTO sources (
+    id, research_run_id, provider_source_id,
+    canonical_url, title, retrieved_text, author, published_at,
+    content_hash, retrieved_at
+  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+`;

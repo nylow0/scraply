@@ -59,6 +59,7 @@ export class RuntimeClient implements StructuredModelClient {
   private initializePromise: Promise<InitializeResult> | null = null;
   private initialized: InitializeResult | null = null;
   private stdoutBuffer = Buffer.alloc(0);
+  private stdoutBytes = 0;
   private writeTail: Promise<void> = Promise.resolve();
   private generationActive = false;
   private readonly generationWaiters: GenerationWaiter[] = [];
@@ -316,6 +317,7 @@ export class RuntimeClient implements StructuredModelClient {
     });
     this.child = child;
     this.stdoutBuffer = Buffer.alloc(0);
+    this.stdoutBytes = 0;
     child.stdout.on("data", (chunk: Buffer) => this.consumeStdout(child, chunk));
     child.stderr.on("data", () => undefined);
     child.on("error", (error) => this.failProcess(new ProviderFailure("unavailable", "Native runtime could not be started", true, { cause: error }), child));
@@ -372,16 +374,28 @@ export class RuntimeClient implements StructuredModelClient {
 
   private consumeStdout(child: ChildProcessWithoutNullStreams, chunk: Buffer): void {
     if (this.child !== child) return;
-    this.stdoutBuffer = Buffer.concat([this.stdoutBuffer, chunk]);
+    let start = 0;
     for (;;) {
-      const newline = this.stdoutBuffer.indexOf(10);
-      if (newline < 0) break;
-      const line = this.stdoutBuffer.subarray(0, newline);
-      this.stdoutBuffer = this.stdoutBuffer.subarray(newline + 1);
-      if (line.length > MAX_ENVELOPE_BYTES) {
+      const newline = chunk.indexOf(10, start);
+      const end = newline < 0 ? chunk.length : newline;
+      const fragment = chunk.subarray(start, end);
+      this.stdoutBytes += fragment.length;
+      if (this.stdoutBytes > MAX_ENVELOPE_BYTES) {
         this.failProcess(new ProviderFailure("failed", "Native runtime returned an oversized response", false), child);
         return;
       }
+      if (newline < 0) {
+        this.appendStdout(fragment);
+        return;
+      }
+      let line: Buffer;
+      if (this.stdoutBytes === fragment.length) line = fragment;
+      else {
+        this.appendStdout(fragment);
+        line = this.stdoutBuffer.subarray(0, this.stdoutBytes);
+      }
+      this.stdoutBuffer = Buffer.alloc(0);
+      this.stdoutBytes = 0;
       try {
         const decoded = new TextDecoder("utf-8", { fatal: true }).decode(line);
         this.handleEnvelope(child, ServerEnvelopeSchema.parse(JSON.parse(decoded)));
@@ -389,10 +403,21 @@ export class RuntimeClient implements StructuredModelClient {
         this.failProcess(new ProviderFailure("failed", "Native runtime returned an invalid protocol message", false, { cause: error }), child);
         return;
       }
+      if (this.child !== child) return;
+      start = newline + 1;
+      if (start === chunk.length) return;
     }
-    if (this.stdoutBuffer.length > MAX_ENVELOPE_BYTES) {
-      this.failProcess(new ProviderFailure("failed", "Native runtime returned an oversized response", false), child);
+  }
+
+  private appendStdout(fragment: Buffer): void {
+    if (fragment.length === 0) return;
+    if (this.stdoutBuffer.length < this.stdoutBytes) {
+      const capacity = Math.min(MAX_ENVELOPE_BYTES, Math.max(this.stdoutBytes, this.stdoutBuffer.length * 2, 8192));
+      const grown = Buffer.allocUnsafe(capacity);
+      this.stdoutBuffer.copy(grown, 0, 0, this.stdoutBytes - fragment.length);
+      this.stdoutBuffer = grown;
     }
+    fragment.copy(this.stdoutBuffer, this.stdoutBytes - fragment.length);
   }
 
   private handleEnvelope(child: ChildProcessWithoutNullStreams, envelope: ServerEnvelope): void {
@@ -466,6 +491,7 @@ export class RuntimeClient implements StructuredModelClient {
     this.child = null;
     this.initialized = null;
     this.stdoutBuffer = Buffer.alloc(0);
+    this.stdoutBytes = 0;
     for (const pending of this.pendingRequests.values()) { if (pending.timer) clearTimeout(pending.timer); pending.reject(error); }
     for (const pending of this.pendingGenerations.values()) { clearTimeout(pending.timer); pending.reject(error); }
     this.pendingRequests.clear();
