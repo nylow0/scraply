@@ -93,7 +93,7 @@ if (allowUnsigned) {
     throw new Error("Unsigned releases must declare the unsigned signing policy.");
   }
 } else if (!manifest.signed || manifest.signingPolicy !== "signed") {
-  throw new Error("Signed releases require validly signed executables; pass --allow-unsigned for an unsigned release.");
+  throw new Error("A signed release requires validly signed executables; pass --allow-unsigned for an unsigned release.");
 }
 
 const expectedRuntime = {

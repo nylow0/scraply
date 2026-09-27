@@ -227,7 +227,7 @@ describe("promoted release assets", () => {
     expect(result.message).toContain("does not match the bundled runtime lock");
   });
 
-  test("rejects stale checksums and unsigned bytes outside the private policy", () => {
+  test("rejects stale checksums and unsigned bytes without the unsigned opt-in", () => {
     expect(verify(createBundle({ checksums: `${hash("stale")}  ${installerName}\n` })).message)
       .toContain("SHA256SUMS.txt does not match");
     expect(verify(createBundle(), []).message).toContain("requires validly signed executables");
