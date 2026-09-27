@@ -11,9 +11,6 @@ Scraply does not upload telemetry. Logs stay local, rotate, and omit credential 
 ## Credentials
 
 The app stores provider credentials separately from research data in `secrets.bin`, using Electron's Windows-backed `safeStorage`. It refuses to claim a credential was saved when secure storage is unavailable. Keys go to the selected provider for the operation that needs them. Saved search keys are write-only: the interface shows only their last four characters, and replacing a key means pasting a new one. The OpenAI account email stays blurred in Settings until you click it. The bundled runtime uses Scraply's OpenAI account connection, separate from other Codex installations.
-
-Browser development and the installed app share the encrypted credential file unless you choose an isolated development profile. See [development](development.md#data-and-credentials-during-development) before testing login, logout, or throwaway keys.
-
 ## Backup, restore, and reset
 
 Before schema upgrades, Scraply saves a checked database backup beside `scraply.db`; it logs the absolute path and records it in `app_meta.last_pre_migration_backup_path`. Close Scraply before restoring that backup.
