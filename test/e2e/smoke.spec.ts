@@ -108,7 +108,7 @@ test("the renderer restores the problem-selection step after a restart", async (
     await expect(page.getByRole("heading", { name: "Research", exact: true })).toBeVisible();
     await page.getByText("Small repair shops cannot reliably predict parts arrival times.", { exact: true }).click();
     // Cited factors stay collapsed so the archive can be scanned; the evidence must survive one expand.
-    await page.getByText("1 cited factors", { exact: true }).click();
+    await page.getByText("1 cited factor", { exact: true }).click();
     await expect(page.getByText("Backorders add days to routine repairs.")).toBeVisible();
     await page.getByRole("tab", { name: /Setup/ }).click();
     // No name was entered: the title agent named the research.
@@ -124,7 +124,7 @@ test("the renderer restores the problem-selection step after a restart", async (
     const reducedTitle = page.locator(".problem-disclosure > summary").first();
     await reducedTitle.click();
     expect(await reducedTitle.evaluate((element) => getComputedStyle(element, "::after").transitionDuration)).toBe("0s");
-    await expect(page.getByText("1 cited factors", { exact: true })).toBeVisible();
+    await expect(page.getByText("1 cited factor", { exact: true })).toBeVisible();
   } finally {
     await installedApp.cleanup(() => mock.close());
   }

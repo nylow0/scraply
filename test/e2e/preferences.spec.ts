@@ -5,7 +5,8 @@ import path from "node:path";
 import { startMockBackend } from "./mock-backend";
 
 test("research defaults persist after reopen while a saved project keeps its choices", async ({}, testInfo) => {
-  const mock = await startMockBackend();
+  // Both providers are connected, so a new setup keeps the saved default instead of switching to an available provider.
+  const mock = await startMockBackend({ perplexityConnected: true });
   const userDataDir = mkdtempSync(path.join(tmpdir(), "scraply-defaults-"));
   const launch = () => _electron.launch({
     executablePath: process.env.SCRAPLY_E2E_EXECUTABLE ?? path.join(process.cwd(), "release/win-unpacked/Scraply.exe"),
@@ -49,8 +50,8 @@ test("research defaults persist after reopen while a saved project keeps its cho
     electron = await launch();
     page = await electron.firstWindow();
     await page.getByRole("tab", { name: /Setup/ }).click();
-    await expect(page.locator(".setup .run-settings").getByText("gpt-6-sol", { exact: true })).toBeVisible();
-    await expect(page.locator(".setup .run-settings").getByText("exa", { exact: true })).toBeVisible();
+    await expect(page.locator(".setup .run-settings").getByText("GPT-6 Sol", { exact: true })).toBeVisible();
+    await expect(page.locator(".setup .run-settings").getByText("Exa", { exact: true })).toBeVisible();
     await page.getByRole("button", { name: "Settings", exact: true }).click();
     await page.getByRole("button", { name: "Research defaults", exact: true }).click();
     await expect(page.getByLabel("Default model", { exact: true })).toHaveValue("openai-subscription:gpt-6-astra");
