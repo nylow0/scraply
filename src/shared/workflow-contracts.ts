@@ -8,6 +8,8 @@ const ResearchQuestionSchema = z.string().trim().min(1).max(500);
 const NonnegativeCountSchema = z.number().int().nonnegative();
 const ModelChoiceSchema = z.object({ model: ModelRefSchema, reasoningEffort: ReasoningEffortSchema }).strict();
 
+// "babysit" is the stored name of the mode users see as Controlled. It stays in saved session contracts,
+// preview hashes, and the workflow_sessions CHECK constraint, so renaming it would mean rewriting saved projects.
 export const WorkflowModeSchema = z.enum(["babysit", "vibe"]);
 export const WorkflowPurposeSchema = z.enum(["discovery", "known-problem", "research-followup", "idea-turn"]);
 export const WorkflowStateSchema = z.enum(["running", "waiting-for-review", "pause-requested", "paused", "stop-requested", "finished"]);

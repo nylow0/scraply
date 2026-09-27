@@ -961,7 +961,7 @@
     {:else if activeStep === "research"}
       {#if activeWorkflow && ["running", "paused", "pause-requested", "stop-requested"].includes(activeWorkflow.state)}
         <div class="managed-research" id="workflow-panel-research" role="tabpanel" aria-label="Research">
-          <p class="eyebrow">{activeWorkflow.mode === "vibe" ? "Vibe research" : "Babysit research"}</p>
+          <p class="eyebrow">{activeWorkflow.mode === "vibe" ? "Vibe research" : "Controlled research"}</p>
           <h1>{activeWorkflow.state === "paused" ? "Research paused." : "Following the evidence."}</h1>
           <p>Research tasks and their outcomes appear above.</p>
         </div>

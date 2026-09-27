@@ -170,7 +170,7 @@
   }
 </script>
 
-<section class="vibe-progress" class:terminal aria-label={summary.mode === "vibe" ? "Vibe run progress" : "Babysit run progress"}>
+<section class="vibe-progress" class:terminal aria-label={summary.mode === "vibe" ? "Vibe run progress" : "Controlled run progress"}>
   <header class="overview">
     <div class="overview-copy">
       <p class="stage">{terminal ? researchFollowUp ? "Research result" : "Run result" : summary.currentStage === "coverage-map"

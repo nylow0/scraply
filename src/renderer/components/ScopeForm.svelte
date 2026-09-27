@@ -91,6 +91,7 @@
     if (workspace.validation[available].valid) searchProvider = available;
   });
   let maxRunMinutes = $state(initial.runConfig?.maxRunMinutes ?? DEFAULT_RUN_CONFIG.maxRunMinutes);
+  // "babysit" is the stored identifier of the mode users see as Controlled (see WorkflowModeSchema).
   let workflowMode = $state<"babysit" | "vibe">("vibe");
   let ideaModelKey = $state(untrack(() => modelKey));
   let ideaModelOption = $derived(nativeModelOptions.find((item) => modelRefKey(item) === ideaModelKey));
@@ -527,10 +528,10 @@
               </span>
             </div>
             <div class="mode-option" class:active={workflowMode === "babysit"}>
-              <label><input type="radio" name="workflow-mode" value="babysit" checked={workflowMode === "babysit"} onchange={() => workflowMode = "babysit"} /><strong>Babysit</strong></label>
+              <label><input type="radio" name="workflow-mode" value="babysit" checked={workflowMode === "babysit"} onchange={() => workflowMode = "babysit"} /><strong>Controlled</strong></label>
               <span class="mode-info" role="presentation" onmouseenter={() => modeHelp = "babysit"} onmouseleave={hideModeHelpOnLeave} onfocusin={() => modeHelp = "babysit"} onfocusout={() => modeHelp = null}>
-                <button type="button" class="info-button" aria-label="About Babysit" aria-describedby="babysit-help" onclick={() => modeHelp = "babysit"} onkeydown={dismissModeHelp}><Icon name="info" size={16} /></button>
-                <span id="babysit-help" class="mode-tooltip glass-dense" role="tooltip" hidden={modeHelp !== "babysit"}>{researchMode === "known-problem" ? "Scraply uses your stated problem, then waits for you to choose the next step." : "Scraply researches your brief, then pauses so you can review the problems and choose which ones become ideas."} You control when idea generation begins.</span>
+                <button type="button" class="info-button" aria-label="About Controlled" aria-describedby="controlled-help" onclick={() => modeHelp = "babysit"} onkeydown={dismissModeHelp}><Icon name="info" size={16} /></button>
+                <span id="controlled-help" class="mode-tooltip glass-dense" role="tooltip" hidden={modeHelp !== "babysit"}>{researchMode === "known-problem" ? "Scraply uses your stated problem, then waits for you to choose the next step." : "Scraply researches your brief, then pauses so you can review the problems and choose which ones become ideas."} You control when idea generation begins.</span>
               </span>
             </div>
           </fieldset>
@@ -549,7 +550,7 @@
         </div>
         {#if errors.ideaCount}<small id="idea-count-error" class="field-error">{errors.ideaCount}</small>{/if}
       </div>
-      <!-- Vibe generates and reviews ideas itself, so their model is chosen up front; Babysit picks it when developing problems. -->
+      <!-- Vibe generates and reviews ideas itself, so their model is chosen up front; Controlled picks it when developing problems. -->
       {#if useWorkflow && workflowMode === "vibe"}
         <label class="run-setting"><span>Ideas model</span><select aria-label="Ideas model" data-field="ideaModel" bind:value={ideaModelKey} onchange={selectIdeaModel} aria-invalid={Boolean(errors.ideaModel || ideasPreviewIssue)}>
           {#if !ideaModelAvailable}<option value={ideaModelKey}>{modelDisplayName(ideaModel)} (unavailable)</option>{/if}

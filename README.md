@@ -13,7 +13,7 @@ You describe a topic, an audience, or a problem you already know. Scraply search
 3. **Ideas.** Scraply generates solutions for the selected problems, reviews their risks, and groups variants so only distinct ideas count toward your target. It stops at your limits and never pads the count.
 4. **Develop an idea.** Discuss an idea, rethink it into a new version while the old ones stay readable, or draft a small experiment that tests one assumption with a metric and pass/fail thresholds.
 
-There are two run modes. **Vibe** (the default) runs research, problem selection, idea generation, and review in one pass. **Babysit** stops after research so you pick the problems and the ideas model yourself.
+There are two run modes. **Vibe** (the default) runs research, problem selection, idea generation, and review in one pass. **Controlled** stops after research so you pick the problems and the ideas model yourself.
 
 Research exports as JSON. Ideas export as Markdown or JSON.
 
