@@ -19,7 +19,9 @@ const problem = { id: "problem-1", statement: "Small repair shops cannot reliabl
 const rejectedProblem = { id: "rejected-1", statement: "Repair shops cannot compare every supplier on one marketplace.", reason: "The candidate cited factors from only one source hostname." };
 const solution = { id: "solution-1", problemId: "problem-1", problemStatement: problem.statement, problemVerdict: "confirmed", factors: [factor], mechanism: "Supplier reliability ledger", description: "Pool observed delivery windows by supplier and part category.", respectsOffLimits: true, respectsOffLimitsWhy: "Does not hold inventory.", outcomes: [{ id: "outcome-1", description: "Shops quote narrower delivery windows.", direction: "positive", affects: "Scheduling", addressesCore: true }, { id: "outcome-2", description: "Sparse suppliers remain hard to estimate.", direction: "negative", affects: "Coverage", addressesCore: false }], risks: [{ id: "risk-2", description: "The only data supplier can leave the market.", likelihood: "likely", impact: "project ends", sortKey: 9, mitigations: [] }, { id: "risk-1", description: "Suppliers change behavior faster than the ledger updates.", likelihood: "possible", impact: "~2 weeks", sortKey: 4, mitigations: [{ id: "mitigation-1", approach: "Decay old observations", cost: "One maintenance rule", failsIf: "Volume is too sparse", riskIds: ["risk-1"] }] }], confirmedCoreOutcomes: 1, unaddressedCatastrophicRisks: 1 };
 
-export async function startMockBackend(options: { longIdeaTitle?: boolean } = {}): Promise<MockBackend> {
+// `perplexityConnected` reports both search providers as connected; by default only Exa is.
+export async function startMockBackend(options: { longIdeaTitle?: boolean; perplexityConnected?: boolean } = {}): Promise<MockBackend> {
+  const providerValidation = options.perplexityConnected ? { ...validation, perplexity: { valid: true } } : validation;
   const token = "e2e-token";
   const requests: MockBackend["requests"] = [];
   const threads: Array<Record<string, unknown>> = [];
@@ -30,7 +32,7 @@ export async function startMockBackend(options: { longIdeaTitle?: boolean } = {}
   let discarded = false;
   let workflowSummary: WorkflowSummary | null = null;
   const workspace = () => ({
-    validation, threads: threads.map((thread) => ({ ...thread, status })), activeThreadId, messages: [], scope,
+    validation: providerValidation, threads: threads.map((thread) => ({ ...thread, status })), activeThreadId, messages: [], scope,
     runConfig: activeThreadId ? runConfig : null, models: [DEFAULT_RUN_CONFIG.model, { providerId: "openai-subscription", modelId: "gpt-6-astra" }, { providerId: "openai-subscription", modelId: "gpt-6-luna" }], modelOptions: [{ ...DEFAULT_RUN_CONFIG.model, displayName: "GPT-6 Sol", defaultReasoningEffort: "medium", reasoningEfforts: [{ id: "medium", description: "Balanced reasoning" }] }, { providerId: "openai-subscription", modelId: "gpt-6-astra", displayName: "Astra", defaultReasoningEffort: "medium", reasoningEfforts: [{ id: "medium", description: "Balanced reasoning" }] }, { providerId: "openai-subscription", modelId: "gpt-6-luna", displayName: "Luna", defaultReasoningEffort: "low", reasoningEfforts: [{ id: "low", description: "Fast" }] }], modelCatalog: { models: [DEFAULT_RUN_CONFIG.model], favorites: [] }, presets: [],
     problemCandidates: status !== "configuring" ? [problem] : [], rejectedProblemCandidates: status !== "configuring" ? [rejectedProblem] : [], researchRequests: [], researchFindings: [], solutions: status === "solutions-ready" ? [{ ...solution, discarded, mechanism: options.longIdeaTitle ? "Recruit people who recently encountered the problem and reconstruct the last occurrence, current workflow, consequences, frequency, workarounds, and the value of a shared supplier reliability ledger for independent repair shops." : solution.mechanism }] : [],
     latestResearchRun: status === "configuring" ? null : { runId: "run-1", status: "completed", problemId: status === "solutions-ready" ? "problem-1" : null, codexCalls: 8, searches: 10, projectedCodexCalls: 20, projectedSearches: 20, lastActivity: "Problem verification completed" }, pendingRuns: [],
@@ -41,7 +43,7 @@ export async function startMockBackend(options: { longIdeaTitle?: boolean } = {}
     let body: unknown = {};
     if (req.method === "POST") { const chunks: Buffer[] = []; for await (const chunk of req) chunks.push(Buffer.from(chunk)); body = chunks.length ? JSON.parse(Buffer.concat(chunks).toString()) : {}; }
     requests.push({ method: req.method ?? "GET", path: url.pathname, body });
-    if (url.pathname === "/validation") return ok(res, validation);
+    if (url.pathname === "/validation") return ok(res, providerValidation);
     if (url.pathname === "/workspace") return ok(res, workspace());
     if (url.pathname === "/threads") { activeThreadId = "thread-1"; if (!threads.some((thread) => thread.id === activeThreadId)) threads.push({ id: activeThreadId, title: "New research", createdAt: now, updatedAt: now }); return ok(res, { thread: { ...threads[0], status }, workspace: workspace() }); }
     if (url.pathname === "/threads/select") { activeThreadId = (body as { threadId: string }).threadId; return ok(res, workspace()); }

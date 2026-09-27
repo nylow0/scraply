@@ -89,11 +89,11 @@ if (manifest.dirty !== false) throw new Error("The promoted manifest was produce
 if (!Array.isArray(manifest.artifacts)) throw new Error("The promoted manifest has no artifact records.");
 if (!manifest.runtime) throw new Error("The promoted manifest has no runtime record.");
 if (allowUnsigned) {
-  if (manifest.signingPolicy !== "private-unsigned") {
-    throw new Error("Private unsigned releases must declare the private-unsigned signing policy.");
+  if (manifest.signingPolicy !== "unsigned") {
+    throw new Error("Unsigned releases must declare the unsigned signing policy.");
   }
 } else if (!manifest.signed || manifest.signingPolicy !== "signed") {
-  throw new Error("The public release policy requires validly signed executables.");
+  throw new Error("A signed release requires validly signed executables; pass --allow-unsigned for an unsigned release.");
 }
 
 const expectedRuntime = {

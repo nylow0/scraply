@@ -5,6 +5,8 @@ import { createInstalledApp } from "./installed-app";
 
 // Real main process, credential store, and backend (the E2E entry). Its OpenAI account is always connected,
 // and every search key is accepted except "invalid-e2e-key", so no provider is contacted.
+// Production packages omit the E2E backend entry, so the installed-app gate skips this; `bun run test:e2e` runs it.
+test.skip(process.env.SCRAPLY_E2E_SKIP_REAL_BACKEND === "1", "Needs the E2E backend entry, which production packages omit");
 test("adds a search key from the welcome prompt, keeps it encrypted across a relaunch, and removes it in Settings", async ({}, testInfo) => {
   const installedApp = createInstalledApp({ directoryPrefix: "scraply-e2e-search-keys-" });
   // Environment keys override saved ones; this test covers keys the user enters in the app.
