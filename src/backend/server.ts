@@ -1084,12 +1084,6 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
     }
     return summarizeRunUsage(rows);
   }
-  function solutionRunUsage(solutionId: string) {
-    const row = db.db.prepare(`
-      SELECT research_run_id FROM solutions WHERE id = ?
-    `).get(solutionId) as { research_run_id: string } | undefined;
-    return row ? { runId: row.research_run_id, summary: runUsage(row.research_run_id) } : null;
-  }
   function latestRun(threadId: string) {
     const row = db.db.prepare(`SELECT id, status, problem_id, config_json, workflow_version, awaiting_selection,
         interrupted, completion_reason, created_at, updated_at
@@ -1700,13 +1694,25 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
               : `# ${empty.statement}\n\nWorkflow: v${empty.workflow_version}. No options proposed.\n\nThis completed run produced no useful option. This is not evidence that the problem is solved.\n`;
             return { filename: `${slug(empty.statement)}-no-options-${empty.problem_id}.${input.format === "json" ? "json" : "md"}`, content };
         });
-        const files = [...new Set(exportIdeas.map((idea) => idea.problemId))].map((problemId, index) => {
-          const group = exportIdeas.filter((idea) => idea.problemId === problemId);
+        const ideasByProblem = new Map<string, ExportIdea[]>();
+        for (const idea of exportIdeas) {
+          const group = ideasByProblem.get(idea.problemId) ?? [];
+          group.push(idea);
+          ideasByProblem.set(idea.problemId, group);
+        }
+        const usageByRun = new Map<string, ReturnType<typeof runUsage>>();
+        const files = [...ideasByProblem.values()].map((group, index) => {
           const filename = `${slug(group[0]!.problemStatement)}-${index + 1}.${input.format === "json" ? "json" : "md"}`;
           const exportedGroup = input.format === "json"
             ? group.map((idea) => {
-              const usage = solutionRunUsage(idea.id);
-              return { ...idea, ...(usage ? { usage } : {}) };
+              // listSolutions always reads runId from the joined research run.
+              const runId = idea.runId!;
+              let summary = usageByRun.get(runId);
+              if (!summary) {
+                summary = runUsage(runId);
+                usageByRun.set(runId, summary);
+              }
+              return { ...idea, usage: { runId, summary } };
             })
             : group;
           const followUpMarkdown = input.format === "markdown"
