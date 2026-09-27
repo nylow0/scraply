@@ -31,7 +31,8 @@ jobs:
         run: bun run build:installed
         env:
           SCRAPLY_RELEASE_STRICT: "1"
-          SCRAPLY_ALLOW_UNSIGNED: ${{ github.event.repository.private && '1' || '0' }}
+          # Releases ship unsigned until Scraply has a code-signing certificate; see docs/dev/release.md.
+          SCRAPLY_ALLOW_UNSIGNED: "1"
       - run: bun run test:e2e:portable
       - run: bun run test:e2e:installed
       - name: Collect the verified bundle
@@ -48,7 +49,7 @@ jobs:
       - name: Verify the collected bundle
         run: >
           bun scripts/verify-promoted-assets.ts bundle ${{ github.sha }} ${{ github.ref_name }}
-          ${{ github.event.repository.private && '--allow-unsigned' || '' }}
+          --allow-unsigned
       - name: Upload the release-candidate bundle
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -84,7 +85,7 @@ jobs:
       - name: Verify the bundle before publication
         run: >
           bun scripts/verify-promoted-assets.ts bundle ${{ github.sha }} ${{ github.ref_name }}
-          ${{ github.event.repository.private && '--allow-unsigned' || '' }}
+          --allow-unsigned
       - name: Publish the verified prerelease
         shell: bash
         env:
@@ -146,7 +147,7 @@ jobs:
       - name: Verify the promoted bytes against the approved candidate
         run: >
           bun scripts/verify-promoted-assets.ts promoted ${{ github.sha }} ${{ env.SCRAPLY_RC_TAG }}
-          ${{ github.event.repository.private && '--allow-unsigned' || '' }}
+          --allow-unsigned
       - name: Upload the verified production bundle
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -180,7 +181,7 @@ jobs:
         run: >
           bun scripts/verify-promoted-assets.ts promoted ${{ github.sha }}
           ${{ needs.verify-production-candidate.outputs.rc_tag }}
-          ${{ github.event.repository.private && '--allow-unsigned' || '' }}
+          --allow-unsigned
       - name: Publish the approved bytes as production
         shell: bash
         env:
