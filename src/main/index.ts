@@ -26,10 +26,13 @@ import {
   NativeLoginLaunchSchema,
   NativeLoginStartSchema,
   NativeProviderSchema,
+  RemoveSearchKeySchema,
   ResumeResearchSchema,
   SaveFavoriteModelSchema,
   SaveRunConfigSchema,
   SaveScopeSchema,
+  SaveSearchKeySchema,
+  SearchKeyPreflightResultSchema,
   SelectProblemsSchema,
   SelectOptionSchema,
   SaveDecisionSchema,
@@ -37,7 +40,9 @@ import {
   StartResearchSchema,
   type BackendReady,
   type ValidationState,
+  type WorkspaceState,
 } from "../shared/ipc";
+import type { SearchProvider } from "../providers/search";
 import {
   PreviewWorkflowRequestSchema, PreviewWorkflowResultSchema, StartWorkflowRequestSchema,
   WorkflowAdmissionReceiptSchema, GetWorkflowRequestSchema, WorkflowDetailSchema,
@@ -213,7 +218,8 @@ async function startBackendProcess(): Promise<BackendReady> {
         if (!pending) return;
         clearTimeout(pending.timer);
         pendingSecretUpdates.delete(message.requestId);
-        pending.resolve();
+        if (message.error) pending.reject(new AppError("conflict", message.error));
+        else pending.resolve();
         return;
       }
       if (message.type === "log") {
@@ -470,7 +476,7 @@ async function backendRequest<T>(path: string, init?: RequestInit): Promise<T> {
   return parsed.data.data as T;
 }
 
-async function updateBackendSecrets(nextSecrets: BackendSecrets): Promise<void> {
+async function updateBackendSecrets(nextSecrets: BackendSecrets, onlyWhenIdle = false): Promise<void> {
   if (!backendProcess) {
     if (process.env.SCRAPLY_E2E_BACKEND_URL) return;
     throw new AppError("backend_unavailable", backendStartupFailure ?? "The local backend is unavailable.");
@@ -483,7 +489,20 @@ async function updateBackendSecrets(nextSecrets: BackendSecrets): Promise<void> 
       reject(new AppError("backend_unavailable", "The local backend did not acknowledge the credential update."));
     }, 5_000);
     pendingSecretUpdates.set(requestId, { resolve, reject, timer });
-    backendProcess?.postMessage({ type: "update-secrets", requestId, secrets: nextSecrets });
+    backendProcess?.postMessage({ type: "update-secrets", requestId, secrets: nextSecrets, onlyWhenIdle });
+  });
+}
+
+async function finishSearchKeyUpdate(previousSecrets?: BackendSecrets): Promise<void> {
+  if (!backendProcess || !backendReady) throw new AppError("backend_unavailable", "The local backend is unavailable.");
+  const requestId = randomUUID();
+  await new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      pendingSecretUpdates.delete(requestId);
+      reject(new AppError("backend_unavailable", "The local backend did not finish the search key update."));
+    }, 5_000);
+    pendingSecretUpdates.set(requestId, { resolve, reject, timer });
+    backendProcess?.postMessage({ type: "finish-search-key-update", requestId, secrets: previousSecrets });
   });
 }
 
@@ -528,6 +547,49 @@ async function retryAutomaticConnection(): Promise<void> {
   if (backendProcess) await backendRequest("/native/retry", { method: "POST", body: "{}" });
 }
 
+const SEARCH_KEYS = {
+  exa: { field: "exaApiKey", name: "Exa", variable: "EXA_API_KEY" },
+  perplexity: { field: "perplexityApiKey", name: "Perplexity", variable: "PERPLEXITY_API_KEY" },
+} as const satisfies Record<SearchProvider, { field: keyof BackendSecrets; name: string; variable: string }>;
+
+// Saves (apiKey) or removes (null) a search key the user manages in the app. A new key is checked
+// with the provider before it is stored; a rejected key changes nothing. Keys set in the environment
+// or .env override saved keys on every launch, so the app refuses to edit those instead of letting
+// the change silently revert.
+let searchKeyChangeInProgress = false;
+async function changeSearchKey(provider: SearchProvider, apiKey: string | null): Promise<WorkspaceState> {
+  if (searchKeyChangeInProgress) throw new AppError("conflict", "A search key is being updated. Try again in a moment.");
+  searchKeyChangeInProgress = true;
+  try {
+  const { field, name, variable } = SEARCH_KEYS[provider];
+  if (readAutomaticSecrets()[field]) {
+    throw new AppError("conflict", `This ${name} key comes from ${variable} in the environment or .env file. Change it there, then retry connections.`);
+  }
+  const check = SearchKeyPreflightResultSchema.parse(await backendRequest("/search-keys/preflight", {
+    method: "POST", body: JSON.stringify({ provider, apiKey }),
+  }));
+  if (!check.valid) throw new AppError("validation_error", check.error ?? `${name} did not accept this key.`);
+  const previousSecrets = secrets;
+  const candidate = { ...secrets, [field]: apiKey };
+  let persisted = false;
+  try {
+    // The backend reserves an idle moment until the encrypted write finishes. A refused key never reaches disk.
+    await updateBackendSecrets(candidate, true);
+    secrets = await credentialStore.save(candidate);
+    persisted = true;
+    await finishSearchKeyUpdate();
+  } catch (cause) {
+    await finishSearchKeyUpdate(persisted ? undefined : previousSecrets);
+    throw cause;
+  }
+  // Wait for the fresh check so the returned workspace shows the new key's status, not "Checking…".
+  await backendRequest("/validation");
+  return backendRequest<WorkspaceState>("/workspace");
+  } finally {
+    searchKeyChangeInProgress = false;
+  }
+}
+
 function assertTrustedSender(event: IpcMainInvokeEvent): void {
   const senderUrl = event.senderFrame?.url ?? "";
   const expectedRendererUrl = rendererEntryUrl(
@@ -548,7 +610,7 @@ function registerIpc(): void {
     });
   };
   const post = <T>(path: string, body: T) => backendRequest(path, { method: "POST", body: JSON.stringify(body) });
-  // Workflow handlers return an envelope so Electron keeps the typed error payload across IPC.
+  // Workflow and search-key handlers return an envelope so Electron keeps the typed error payload across IPC.
   const workflow = async <T>(operation: () => Promise<T>) => {
     try { return { ok: true as const, data: await operation() }; }
     catch (error) { return { ok: false as const, error: toErrorPayload(error).error }; }
@@ -623,6 +685,11 @@ function registerIpc(): void {
     }, () => post("/native/login/cancel", input));
   });
   handle(IPC_CHANNELS.NATIVE_ACCOUNT_REFRESH, (body) => post("/native/account/refresh", NativeProviderSchema.parse(body)));
+  handle(IPC_CHANNELS.SAVE_SEARCH_KEY, (body) => workflow(async () => {
+    const { provider, apiKey } = SaveSearchKeySchema.parse(body);
+    return changeSearchKey(provider, apiKey);
+  }));
+  handle(IPC_CHANNELS.REMOVE_SEARCH_KEY, (body) => workflow(() => changeSearchKey(RemoveSearchKeySchema.parse(body).provider, null)));
   handle(IPC_CHANNELS.NATIVE_LOGOUT, async (body) => {
     const input = NativeProviderSchema.parse(body);
     blockedProviderCredentialWrites.add(input.providerId);

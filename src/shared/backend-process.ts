@@ -26,11 +26,13 @@ export const BackendUpdateSecretsMessageSchema = z.object({
   type: z.literal("update-secrets"),
   requestId: z.string().min(1),
   secrets: SecretsSchema,
+  onlyWhenIdle: z.boolean().optional(),
 });
 
 export const MainToBackendMessageSchema = z.discriminatedUnion("type", [
   BackendStartMessageSchema,
   BackendUpdateSecretsMessageSchema,
+  z.object({ type: z.literal("finish-search-key-update"), requestId: z.string().min(1), secrets: SecretsSchema.optional() }),
   z.object({
     type: z.literal("provider-credential-persisted"), requestId: z.string().min(1),
     ok: z.boolean(), error: z.string().optional(),
@@ -67,6 +69,7 @@ export const BackendToMainMessageSchema = z.discriminatedUnion("type", [
   z.object({
     type: z.literal("secrets-updated"),
     requestId: z.string().min(1),
+    error: z.string().optional(),
   }),
   z.object({
     type: z.literal("persist-provider-credential"), requestId: z.string().min(1),

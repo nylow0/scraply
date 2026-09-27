@@ -58,8 +58,24 @@ process.parentPort?.on("message", async (event) => {
 
   if (message.type === "update-secrets") {
     if (!handle) return;
+    // Reserve the idle backend through the disk write; new POSTs receive a conflict until it finishes.
+    if (message.onlyWhenIdle && !handle.beginSearchKeyUpdate()) {
+      post({ type: "secrets-updated", requestId: message.requestId,
+        error: "Search keys can't change while research is running. Wait for it to finish or cancel it, then try again." });
+      return;
+    }
     secrets = message.secrets;
     handle.secretsChanged();
+    post({ type: "secrets-updated", requestId: message.requestId });
+    return;
+  }
+
+  if (message.type === "finish-search-key-update") {
+    if (!handle) return;
+    if (handle.finishSearchKeyUpdate() && message.secrets) {
+      secrets = message.secrets;
+      handle.secretsChanged();
+    }
     post({ type: "secrets-updated", requestId: message.requestId });
     return;
   }
