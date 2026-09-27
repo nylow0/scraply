@@ -1208,6 +1208,8 @@ export class WorkflowCoordinator {
       .all(runId) as Array<{ id: string }>).map((row) => row.id);
     const review = readSolutionSetReview(this.options.db, runId);
     const reviewed = review?.acceptedSolutionIds.filter((id) => allSolutions.includes(id)) ?? [];
+    // The engine skips the collection review when a batch proposes no ideas; that empty batch is a result, not a failure.
+    const settled = review !== null || allSolutions.length === 0;
     this.options.db.immediateTransaction(() => {
       if (review && WorkflowLaunchContractSchema.parse(session.contract).runConfig.explorationPurpose !== "general-solutions") {
         new OpportunityRepository(this.options.db).materializeSolutionSetReviews(session.threadId);
@@ -1217,9 +1219,9 @@ export class WorkflowCoordinator {
           markManagedCoverageGapCovered(this.options.db, session.threadId, session.id, angle.gapId);
         }
       }
-      this.repository.updateWorkItem(item.id, review ? "succeeded" : "failed", {
+      this.repository.updateWorkItem(item.id, settled ? "succeeded" : "failed", {
         outputRefs: { runId, solutionIds: reviewed, proposedSolutionIds: allSolutions },
-        ...(review ? {} : { error: { message: "Solution collection review was not saved." } }),
+        ...(settled ? {} : { error: { message: "Solution collection review was not saved." } }),
       });
       this.settleTaskBudget(item.id, "spent", this.repository.countProviderAttempts(runId));
       this.repository.updateSession(session.id, session.revision, {

@@ -355,6 +355,83 @@ test("a target of 20 can request a bounded fill after 18 reviewed ideas", async 
   client.close();
 });
 
+test("an idea batch that proposes nothing ends as no qualifying ideas instead of a failed task", async () => {
+  const { request, threadId, dbPath } = await fixture();
+  const draft = { ...launchDraft(), targets: { kind: "per-problem" as const, ideaCount: 1 } };
+  const previewResponse = await request("/workflows/preview", { type: "launch", threadId, draft });
+  const contract = WorkflowLaunchContractSchema.parse(
+    PreviewWorkflowResultSchema.parse((await previewResponse.json() as { data: unknown }).data).proposal);
+  const client = new DatabaseClient(dbPath);
+  const workflows = new WorkflowRepository(client);
+  const now = new Date().toISOString();
+  const addRun = client.db.prepare(`INSERT INTO research_runs
+    (id, thread_id, status, config_json, workflow_version, workflow_session_id, created_at, updated_at)
+    VALUES (?, ?, ?, ?, 2, ?, ?, ?)`);
+  addRun.run("empty-source", threadId, "completed", JSON.stringify(DEFAULT_RUN_CONFIG), null, now, now);
+  client.db.prepare(`INSERT INTO scopes (id, research_run_id, title, audience, domain, observations, off_limits_json, created_at, updated_at)
+    VALUES ('empty-scope', 'empty-source', 'Cake deposits', 'Bakery owners', 'Bakeries', '', '[]', ?, ?)`).run(now, now);
+  client.db.prepare(`INSERT INTO problems (id, discovery_run_id, statement, why_it_persists,
+    affected, scale_estimate, verdict, verdict_reason, verdict_source_ids_json, created_at)
+    VALUES ('empty-problem', 'empty-source', 'Bakeries take deposits for custom cakes', '', '', '', 'insufficient-evidence', '', '[]', ?)`)
+    .run(now);
+  const session = client.immediateTransaction(() => workflows.createSession({
+    threadId, purpose: "known-problem", mode: "babysit", contract, remainingMs: contract.limits.maxMinutes * 60_000,
+  }));
+  const first = client.immediateTransaction(() => {
+    const materialized = materializeResearchSnapshot(client, {
+      threadId, baseRunId: "empty-source", sourceProblemIds: ["empty-problem"], sessionId: session.id,
+    });
+    const snapshot = workflows.createSnapshot({ sessionId: session.id, materializationRunId: materialized.runId,
+      selection: { problemIds: materialized.problemIds }, originMap: materialized.originMap });
+    workflows.updateSession(session.id, session.revision, { state: "running", activeSnapshotId: snapshot.id });
+    const item = workflows.createWorkItem({ sessionId: session.id, kind: "generate-ideas", scopeKey: "initial:0",
+      ordinal: 0, state: "ready", input: { problemId: materialized.problemIds[0], snapshotId: snapshot.id,
+        quota: 1, fillRound: 0, targetKind: "per-problem", requestedTarget: 1,
+        model: contract.ideas?.model, reasoningEffort: contract.ideas?.reasoningEffort } });
+    workflows.reserveBudget({ sessionId: session.id, workItemId: item.id, operationKey: `ideas:${item.id}`,
+      kind: "model-call", reservedUnits: 4 });
+    workflows.updateWorkItem(item.id, "running");
+    addRun.run("empty-ideas", threadId, "completed", JSON.stringify(DEFAULT_RUN_CONFIG), session.id, now, now);
+    workflows.linkRunToRunningWorkItem(item.id, "empty-ideas");
+    return item;
+  });
+  // The engine saves no solutions and skips the collection review when the model proposes no options.
+  const coordinator = new WorkflowCoordinator({ db: client,
+    engine: () => ({ startSelectedProblem: async (_threadId: string, _problemId: string, _config: unknown,
+      options: { onRunCreated: (runId: string) => boolean }) => {
+      addRun.run("empty-fill", threadId, "completed", JSON.stringify(DEFAULT_RUN_CONFIG), session.id, now, now);
+      options.onRunCreated("empty-fill");
+      return "empty-fill";
+    } }) as unknown as ResearchEngine,
+    capabilities: async () => ({ nativeConnected: true, searchReady: { exa: false, perplexity: false }, modelOptions: [] }),
+    listProblems: () => [], onProgress: () => {},
+  });
+  const runCompleted = (runId: string) => coordinator.handleRunEvent({ type: "run-completed", runId, threadId, problemId: null });
+
+  try {
+    runCompleted("empty-ideas");
+    expect(workflows.getWorkItem(first.id)).toMatchObject({ state: "succeeded", error: null });
+    // An empty batch is an ordinary shortfall, so the planner may try one bounded fill round.
+    const fill = await (async () => {
+      const deadline = Date.now() + 3_000;
+      for (;;) {
+        const item = workflows.listWorkItems(session.id).find((candidate) => candidate.scopeKey.startsWith("fill:"));
+        if ((item?.outputRefs as { runId?: string } | null)?.runId === "empty-fill" || Date.now() > deadline) return item;
+        await Bun.sleep(5);
+      }
+    })();
+    expect(fill).toMatchObject({ state: "running", outputRefs: { runId: "empty-fill" } });
+
+    runCompleted("empty-fill");
+    const summary = coordinator.summary(session.id);
+    expect(summary).toMatchObject({ state: "finished", outcome: "no-qualifying-ideas",
+      counts: { requested: 1, accepted: 0, failed: 0 } });
+    expect(summary.stopReason).toBe("Short by 1 distinct idea. The last reviewed fill round added no distinct idea.");
+  } finally {
+    client.close();
+  }
+});
+
 test("project targets retain their starting family count while recounting membership edits", async () => {
   const { request, threadId, dbPath } = await fixture();
   const draft = { ...launchDraft(), mode: "vibe" as const,
