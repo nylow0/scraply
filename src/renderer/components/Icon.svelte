@@ -1,9 +1,12 @@
 <script lang="ts">
-  export type IconName = "account" | "search" | "plus" | "minus" | "arrow" | "brief" | "research" | "ideas" | "check" | "close" | "folder" | "command" | "archive" | "back" | "alert" | "progress" | "settings" | "sidebar" | "info";
+  export type IconName = "account" | "search" | "plus" | "minus" | "arrow" | "brief" | "research" | "ideas" | "check" | "close" | "folder" | "command" | "archive" | "back" | "alert" | "progress" | "settings" | "sidebar" | "info" | "eye" | "eye-off" | "external";
   let { name, size = 18 }: { name: IconName; size?: number } = $props();
   const paths: Record<IconName, string> = {
     account: "M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8ZM4.5 20a7.5 7.5 0 0 1 15 0",
     info: "M12 22a10 10 0 1 0 0-20 10 10 0 0 0 0 20ZM12 11v6m0-10v.01",
+    eye: "M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12ZM15 12a3 3 0 1 1-6 0 3 3 0 0 1 6 0",
+    "eye-off": "m3 3 18 18M10.6 5.1Q11.3 5 12 5c6.4 0 10 7 10 7a17 17 0 0 1-2.9 3.9M6.6 6.6C3.8 8.4 2 12 2 12s3.6 7 10 7a9.6 9.6 0 0 0 5.4-1.6M9.9 9.9a3 3 0 0 0 4.2 4.2",
+    external: "M14 4h6v6m0-6-9 9m7 1v6H4V6h6",
     sidebar: "M4 4h16v16H4zM9 4v16",
     settings: "m9 3-.6 2.2-2 .9-2.1-.6-2 3.5 1.5 1.7v2.6L2.3 15l2 3.5 2.1-.6 2 .9L9 21h4l.6-2.2 2-.9 2.1.6 2-3.5-1.5-1.7v-2.6L19.7 9l-2-3.5-2.1.6-2-.9L13 3ZM14 12a3 3 0 1 1-6 0 3 3 0 0 1 6 0",
     archive: "M3 4h18v4H3zM5 8v12h14V8M10 12h4",

@@ -4,11 +4,15 @@
   import ProviderLogo from "./ProviderLogo.svelte";
   import Icon from "./Icon.svelte";
   import OpenAILogo from "./OpenAILogo.svelte";
+  import RedactedText from "./RedactedText.svelte";
+  import SearchKeyControls from "./SearchKeyControls.svelte";
   import { accountPlanLabel } from "../lib/account-plan";
+  import { hasSearchKey, SEARCH_PROVIDERS } from "../lib/search-providers";
   import { isArchived } from "../lib/status";
   import type { NativeLoginStartResult, WorkspaceState } from "../../shared/ipc";
+  import type { SearchProvider } from "../../shared/schemas";
 
-  let { workspace, busy, nativeLogin, open = $bindable(false), feedback, onRetry, onConnectNative, onCancelNative, onRefreshNative, onLogoutNative, onOpenData, onOpenLogs, onRestore, onDelete }: {
+  let { workspace, busy, nativeLogin, open = $bindable(false), feedback, onRetry, onConnectNative, onCancelNative, onRefreshNative, onLogoutNative, onSaveSearchKey, onRemoveSearchKey, onOpenUrl, onOpenData, onOpenLogs, onRestore, onDelete }: {
     workspace: WorkspaceState | null;
     open?: boolean;
     feedback?: { text: string; tone: "error" | "info" } | null;
@@ -19,13 +23,16 @@
     onCancelNative: () => Promise<void>;
     onRefreshNative: (providerId: string) => Promise<void>;
     onLogoutNative: (providerId: string) => Promise<void>;
+    // Both reject with a user-facing reason, which the provider's row shows inline.
+    onSaveSearchKey: (provider: SearchProvider, apiKey: string) => Promise<void>;
+    onRemoveSearchKey: (provider: SearchProvider) => Promise<void>;
+    onOpenUrl: (url: string) => void;
     onOpenData: () => Promise<void>;
     onOpenLogs: () => Promise<void>;
     onRestore: (id: string) => Promise<void>;
     onDelete: (id: string) => Promise<void>;
   } = $props();
 
-  const searchProviders = ["exa", "perplexity"] as const;
   let section = $state<"accounts" | "defaults" | "archive" | "local">("accounts");
   let heading: HTMLHeadingElement;
   let screen: HTMLElement;
@@ -95,7 +102,8 @@
               <span class:account-error={Boolean(workspace.validation.native.error)}>{workspace.validation.native.error ?? "Connect OpenAI to start research"}</span>
             {:else}
               {#each workspace.validation.native.accounts as account (account.providerId)}
-                <span>{account.email ?? account.accountId ?? account.providerId}{account.plan ? ` · ${accountPlanLabel(account.plan)}` : ""}</span>
+                <!-- The email stays hidden until clicked, and hides again whenever Settings reopens. -->
+                <span class="account-line">{#if account.email}Signed in as {#key open}<RedactedText value={account.email} label="account email" />{/key}{:else}{account.accountId ?? account.providerId}{/if}{account.plan ? ` · ${accountPlanLabel(account.plan)}` : ""}</span>
               {/each}
               {#if workspace.validation.native.error}
                 <span class="account-error">{workspace.validation.native.error}</span>
@@ -129,13 +137,18 @@
           </div>
         {/if}
       </div>
-      {#each searchProviders as provider (provider)}
-        {@const status = workspace.validation[provider]}
-        <div class="provider">
+      {#each SEARCH_PROVIDERS as provider (provider.id)}
+        {@const status = workspace.validation[provider.id]}
+        {@const checking = status.checking === true}
+        <div class="provider search-account" aria-label={`${provider.name} account`}>
           <div class="provider-row">
-            <div class="provider-name"><ProviderLogo provider={provider} size={22} /><strong>{provider === "exa" ? "Exa" : "Perplexity"}</strong></div>
-            <div class="provider-status"><span class:ok={status.valid}>{status.valid ? "Connected" : status.error ?? "Not connected"}</span></div>
+            <div class="provider-name"><ProviderLogo provider={provider.id} size={22} /><strong>{provider.name}</strong></div>
+            <div class="provider-status">
+              <span class:ok={status.valid} class:account-error={hasSearchKey(status) && !status.valid && !checking}>{status.valid ? "Connected" : checking ? "Checking…" : hasSearchKey(status) ? status.error ?? "Not connected" : "Not connected"}</span>
+            </div>
           </div>
+          <SearchKeyControls provider={provider.id} name={provider.name} keyUrl={provider.keyUrl} {status} {busy}
+            onSave={(apiKey) => onSaveSearchKey(provider.id, apiKey)} onRemove={() => onRemoveSearchKey(provider.id)} {onOpenUrl} />
         </div>
       {/each}
       <button class="retry" disabled={busy} onclick={onRetry}>{busy ? "Checking…" : "Retry connections"}</button>
@@ -193,7 +206,7 @@
   .provider-status span { color:var(--muted);overflow-wrap:anywhere; }
   .provider .ok { color:var(--success); }
   .provider .account-error { color:var(--danger); }
-  .native-account { gap:10px; }
+  .native-account,.search-account { gap:10px; }
   .native-account > .login-progress { margin:6px 0 0 36px; }
   /* OpenAI's actions are compact ghost buttons under its status, so the row keeps the list's two-column rhythm.
      The negative margin lines the button text up with the status text above it. */

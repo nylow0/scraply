@@ -4,7 +4,7 @@ import { mount } from "svelte";
 import App from "../../src/renderer/App.svelte";
 import { createScraplyApi } from "../../src/shared/scraply-api";
 import { DEFAULT_RUN_CONFIG, type Thread } from "../../src/shared/schemas";
-import { IPC_CHANNELS, SaveScopeSchema, SaveRunConfigSchema, type WorkspaceState } from "../../src/shared/ipc";
+import { IPC_CHANNELS, RemoveSearchKeySchema, SaveScopeSchema, SaveRunConfigSchema, SaveSearchKeySchema, type WorkspaceState } from "../../src/shared/ipc";
 import { PreviewWorkflowRequestSchema } from "../../src/shared/workflow-contracts";
 
 // This standalone renderer has no Electron bridge or network provider. URL parameters
@@ -19,11 +19,17 @@ const threads: Thread[] = Array.from({ length: count }, (_, i) => ({
   status: i === active ? "configuring" : i === count - 1 ? "failed" : i === count - 2 ? "discovery-running" : i % 2 ? "problems-ready" : "solutions-ready",
   createdAt: now, updatedAt: new Date(Date.parse(now) - i * 60_000).toISOString(),
 }));
+const noSearch = params.get("search") === "none";
+const connectedNative: WorkspaceState["validation"]["native"] = {
+  available: true, connected: true, accounts: [{ providerId: "openai-subscription", email: "dany@example.test", plan: "pro" }],
+};
 let state: WorkspaceState = {
   validation: {
-    exa: { valid: params.get("connection") !== "offline", ...(params.get("connection") === "offline" ? { error: "Search provider is disconnected" } : {}) },
-    perplexity: { valid: true },
-    native: { available: true, connected: true, accounts: [{ providerId: "openai-subscription" }] }, setupComplete: true,
+    exa: noSearch ? { valid: false, error: "Exa key missing" }
+      : { valid: params.get("connection") !== "offline", maskedKey: "••••3f9a", ...(params.get("connection") === "offline" ? { error: "Search provider is disconnected" } : {}) },
+    perplexity: noSearch ? { valid: false, error: "Perplexity key missing" } : { valid: true, maskedKey: "••••77c1" },
+    native: params.get("account") === "signed-out" ? { available: true, connected: false, accounts: [] } : connectedNative,
+    setupComplete: !noSearch && params.get("account") !== "signed-out",
   },
   threads, activeThreadId: threads[active]?.id ?? null, messages: [], scope: null, runConfig: null,
   models: [DEFAULT_RUN_CONFIG.model, { providerId: "openai-subscription", modelId: "gpt-6-astra" }],
@@ -74,6 +80,28 @@ const fixtureApi = createScraplyApi({
         } }; break;
       }
       case IPC_CHANNELS.RETRY_CONNECTION: result = undefined; break;
+      // Sign-in succeeds at once; nothing leaves the page.
+      case IPC_CHANNELS.NATIVE_LOGIN_START: result = { loginId: "fixture-login", providerId: "openai-subscription", method: "browser" }; break;
+      case IPC_CHANNELS.NATIVE_LOGIN_COMPLETE:
+        state = { ...state, validation: { ...state.validation, native: connectedNative } };
+        result = { pending: false, workspace: state }; break;
+      case IPC_CHANNELS.OPEN_EXTERNAL_URL: result = undefined; break;
+      // Keys containing "invalid" are rejected the way a provider would; others save after a short check.
+      case IPC_CHANNELS.SAVE_SEARCH_KEY: {
+        const { provider, apiKey } = SaveSearchKeySchema.parse(payload);
+        await new Promise((resolve) => setTimeout(resolve, 500));
+        if (apiKey.includes("invalid")) {
+          result = { ok: false, error: { code: "validation_error", message: `${provider === "exa" ? "Exa" : "Perplexity"} API key was rejected` } };
+          break;
+        }
+        state = { ...state, validation: { ...state.validation, [provider]: { valid: true, maskedKey: `••••${apiKey.slice(-4)}` } } };
+        result = { ok: true, data: state }; break;
+      }
+      case IPC_CHANNELS.REMOVE_SEARCH_KEY: {
+        const { provider } = RemoveSearchKeySchema.parse(payload);
+        state = { ...state, validation: { ...state.validation, [provider]: { valid: false, error: `${provider === "exa" ? "Exa" : "Perplexity"} key missing` } } };
+        result = { ok: true, data: state }; break;
+      }
       default: throw new Error(`UI fixture does not execute ${channel}. No research was launched.`);
     }
     return structuredClone(result) as T;
