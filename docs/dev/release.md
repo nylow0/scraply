@@ -37,7 +37,7 @@ Keep GitHub releases immutable so an accepted RC cannot be replaced.
 
 ## Release while GitHub Actions is disabled
 
-CI and Release are manually disabled to avoid consuming Actions minutes. Keep them disabled unless Dany requests otherwise. A push or tag must not be used to start a hosted build.
+CI and Release are manually disabled to avoid consuming Actions minutes. Keep them disabled unless I say otherwise. A push or tag must not be used to start a hosted build.
 
 Run the same gates locally from a clean checkout at the exact current `origin/master` SHA: `bun install --frozen-lockfile`, `bunx --no-install install-electron`, `bun audit --prod`, and `bun run check`. The Electron setup is required by the Windows credential-profile regression test. Then run `bun run build:installed` with `SCRAPLY_RELEASE_STRICT=1`, followed by `bun run test:e2e:portable` and `bun run test:e2e:installed`. For a verified private repository only, set `SCRAPLY_ALLOW_UNSIGNED=1`; public releases still require valid signatures. Record the source SHA and actual results in the release notes.
 
