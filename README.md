@@ -4,7 +4,7 @@ Scraply is a Windows desktop app that finds real problems people have and turns 
 
 You describe a topic, an audience, or a problem you already know. Scraply searches the web and online communities, extracts candidate problems with quoted sources, and generates ideas for the problems worth solving. A separate review pass checks each idea for risks and duplicates. Everything stays in a local SQLite database, and you decide what to pursue.
 
-**Status:** early development. No installer has been published yet, so for now you build Scraply from source with the [development guide](docs/dev/development.md).
+**Status:** early development. Download the [latest release](https://github.com/nylow0/scraply/releases/latest): the installer or the portable build. Releases are not code-signed yet, so Windows SmartScreen asks for confirmation on first launch (**More info → Run anyway**).
 
 ## How a project works
 
