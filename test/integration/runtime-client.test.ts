@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -73,6 +74,56 @@ describe("persistent native runtime client", () => {
 
     expect(result.output).toEqual({ answer: "right" });
     expect(result.metadata.attempts[0]?.providerCompletion).toBe("confirmed");
+  });
+
+  test("accepts a fragmented frame at the exact envelope limit without retaining fragments", async () => {
+    const runtime = client("normal");
+    await runtime.start();
+    const internals = runtime as unknown as {
+      child: ChildProcessWithoutNullStreams;
+      stdoutBuffer: Buffer;
+      stdoutBytes: number;
+    };
+    const envelope = { protocolVersion: "1.1", id: "ignored", operation: "account.list", result: { padding: "" } };
+    const baseLength = Buffer.byteLength(JSON.stringify(envelope));
+    const frame = Buffer.from(JSON.stringify({ ...envelope, result: { padding: "x".repeat(16_777_216 - baseLength) } }));
+    expect(frame.length).toBe(16_777_216);
+    for (let offset = 0; offset < frame.length; offset += 8192) {
+      internals.child.stdout.emit("data", frame.subarray(offset, offset + 8192));
+    }
+    expect(internals.stdoutBytes).toBe(frame.length);
+    expect(internals.stdoutBuffer.length).toBeLessThanOrEqual(16_777_216);
+    internals.child.stdout.emit("data", Buffer.from("\n"));
+    expect(internals.stdoutBytes).toBe(0);
+    expect(internals.stdoutBuffer.length).toBe(0);
+    expect(await runtime.listAccounts()).toEqual([]);
+  });
+
+  test("bounds tiny fragments and restarts after oversized or malformed frames", async () => {
+    const runtime = client("normal");
+    await runtime.start();
+    const internals = runtime as unknown as {
+      child: ChildProcessWithoutNullStreams | null;
+      stdoutBuffer: Buffer;
+      stdoutBytes: number;
+    };
+    const first = internals.child!;
+    const byte = Buffer.from("x");
+    for (let index = 0; index < 100_000; index += 1) first.stdout.emit("data", byte);
+    expect(internals.stdoutBytes).toBe(100_000);
+    expect(internals.stdoutBuffer.length).toBeLessThanOrEqual(131_072);
+    first.stdout.emit("data", Buffer.alloc(16_777_216 - 100_000 + 1, 120));
+    expect(internals.child).toBeNull();
+    expect(internals.stdoutBytes).toBe(0);
+    expect(internals.stdoutBuffer.length).toBe(0);
+    expect(await runtime.listAccounts()).toEqual([]);
+    const second = internals.child!;
+    second.stdout.emit("data", Buffer.concat([Buffer.alloc(16_777_217, 120), Buffer.from("\n")]));
+    expect(internals.child).toBeNull();
+    expect(await runtime.listAccounts()).toEqual([]);
+    internals.child!.stdout.emit("data", Buffer.from("{invalid json}\n"));
+    expect(internals.child).toBeNull();
+    expect(await runtime.listAccounts()).toEqual([]);
   });
 
   test("kills a runtime that acknowledges cancellation without a terminal event", async () => {
