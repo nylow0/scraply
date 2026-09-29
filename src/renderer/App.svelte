@@ -316,7 +316,9 @@
       workflowDetail = null;
       return;
     }
-    if (!force && workflowDetail?.summary.sessionId === sessionId && workflowDetail.summary.revision >= (revision ?? 0)) return;
+    // Progress events do not change the workflow revision. Refresh running sessions on reconciliation too.
+    if (!force && workflowDetail?.summary.sessionId === sessionId && workflowDetail.summary.revision >= (revision ?? 0)
+      && !["running", "pause-requested", "stop-requested"].includes(workflowDetail.summary.state)) return;
     const epoch = ++workflowLoadEpoch;
     try {
       const next = await window.scraply.getWorkflow({ sessionId });
@@ -968,11 +970,7 @@
       {/if}
     {:else if activeStep === "research"}
       {#if activeWorkflow && ["running", "paused", "pause-requested", "stop-requested"].includes(activeWorkflow.state)}
-        <div class="managed-research" id="workflow-panel-research" role="tabpanel" aria-label="Research">
-          <p class="eyebrow">{activeWorkflow.mode === "vibe" ? "Vibe research" : "Controlled research"}</p>
-          <h1>{activeWorkflow.state === "paused" ? "Research paused." : "Following the evidence."}</h1>
-          <p>Research tasks and their outcomes appear above.</p>
-        </div>
+        <div id="workflow-panel-research" role="tabpanel" aria-label="Research"></div>
       {:else if activeThread.status === "discovery-running" && !activeWorkflow}
         <div class="running" id="workflow-panel-research" role="tabpanel" aria-label="Research" tabindex="0">
           <div class="activity-symbol"><Icon name="research" size={30} /></div><p class="eyebrow">Discovery in progress</p>
@@ -1066,9 +1064,6 @@
   /* Research requests follow the problem list as the next section, so the list drops its end-of-page padding. */
   .main-content > :global(.archive:has(~ .research-revisions)),
   .main-content > :global(#workflow-panel-research:has(~ .research-revisions) > .checkpoint) { padding-bottom:24px; }
-  .managed-research { max-width:900px; margin:auto; padding:44px var(--page-inline) 20px; }
-  .managed-research h1 { margin:8px 0 12px; font-size:clamp(24px,4vw,36px); letter-spacing:-.035em; }
-  .managed-research p:last-child { color:var(--muted); font-size:13px; line-height:1.7; }
   .sidebar-area { display:contents; }
   .app-shell.sidebar-rail { --sidebar-width:60px; }
   .settings-button { display:flex;align-items:center;gap:10px;width:100%;padding:9px 12px;min-height:38px;border:0;border-radius:7px;background:transparent;color:var(--muted);font-size:13px;text-align:left;transition:background 180ms ease,color 180ms ease; }

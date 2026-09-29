@@ -30,6 +30,36 @@ function detail(summaryChanges: Partial<WorkflowSummary> = {}): WorkflowDetail {
 }
 
 describe("VibeProgress", () => {
+  test("shows research activity and accessible controls until the idea assignments exist", async () => {
+    const state = detail({ ideaTargetReady: false, selectedProblemIds: [] });
+    state.activity = [{ id: "event-1", message: "Searching Perplexity: repair shop warranty delays", stage: "searching", createdAt: "2026-09-23T12:00:00.000Z" }];
+    const onPause = vi.fn(async () => {});
+    const onStop = vi.fn(async () => {});
+    const view = render(VibeProgress, { detail: state, busy: false, onPause, onStop });
+    expect(view.getByRole("heading", { name: "Researching your brief" })).toBeTruthy();
+    expect(view.getByRole("log").textContent).toContain("repair shop warranty delays");
+    expect(view.queryByRole("progressbar")).toBeNull();
+    expect(view.queryByLabelText("Idea review counts")).toBeNull();
+    expect(view.container.querySelector("details")?.open).toBe(false);
+    await fireEvent.click(view.getByRole("button", { name: "Pause" }));
+    await fireEvent.click(view.getByRole("button", { name: "Stop" }));
+    expect(onPause).toHaveBeenCalledOnce();
+    expect(onStop).toHaveBeenCalledOnce();
+    await view.rerender({ detail: { ...state, summary: { ...state.summary, ideaTargetReady: true,
+      selectedProblemIds: ["problem-1", "problem-2"], counts: { ...state.summary.counts, requested: 6, accepted: 0, missing: 6 } } } });
+    expect(view.getByRole("progressbar").getAttribute("aria-valuetext")).toBe("0 of 6 distinct ideas accepted");
+  });
+
+  test("failed discovery keeps its error without presenting an unallocated idea target", () => {
+    const state = detail({ ideaTargetReady: false, state: "finished", outcome: "failed",
+      stopReason: "Search provider is unavailable.", finishedAt: "2026-09-23T12:01:00.000Z" });
+    const view = render(VibeProgress, { detail: state, busy: false, onPause: vi.fn(async () => {}), onStop: vi.fn(async () => {}) });
+    expect(view.getByRole("heading", { name: "Research stopped" })).toBeTruthy();
+    expect(view.getByRole("status").textContent).toContain("Search provider is unavailable.");
+    expect(view.queryByText(/distinct ideas/)).toBeNull();
+    expect(view.queryByRole("button", { name: "Pause" })).toBeNull();
+  });
+
   test("shows actual usage without remaining limits for depth-guided research", () => {
     const state = detail();
     state.summary.limits.enforced = false;
