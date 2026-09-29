@@ -76,7 +76,7 @@ export const WorkOrderSchema = z.object({
 export const EvidenceSourceSchema = z.object({ sourceId: z.string().min(1), content: z.unknown() }).strict();
 export const GenerationStartPayloadSchema = z.object({
   generationId: z.string().min(1),
-  deadlineMs: z.number().int().positive(),
+  deadlineMs: z.number().int().positive().optional(),
   model: QualifiedModelSchema,
   promptRevision: z.literal(RUNTIME_PROMPT_ID),
   workOrder: WorkOrderSchema,

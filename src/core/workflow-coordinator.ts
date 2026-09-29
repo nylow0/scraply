@@ -341,15 +341,25 @@ export class WorkflowCoordinator {
       missing: Math.max(0, requested - credited), existing, addedBySession, total,
     };
     const limits = {
+      ...contract.limits,
       maxMinutes: Math.min(240, contract.limits.maxMinutes + session.additionalMinutes),
       maxModelCalls: contract.limits.maxModelCalls + session.additionalModelCalls,
       maxSearches: contract.limits.maxSearches + session.additionalSearches,
     };
     const budgetStatus = (kind: "model-call" | "search", limit: number) => {
       const matching = entries.filter((entry) => entry.kind === kind);
+      // Reservations are estimates, not usage. Include dispatched work while a guided task is still running.
+      const liveRunIds = contract.limits.enforced === false ? new Set(matching
+        .filter((entry) => entry.state === "reserved")
+        .flatMap((entry) => {
+          const refs = items.find((item) => item.id === entry.workItemId)?.outputRefs as { runId?: string } | null | undefined;
+          return refs?.runId ? [refs.runId] : [];
+        })) : new Set<string>();
+      const liveUsage = [...liveRunIds].reduce((total, runId) => total
+        + (kind === "model-call" ? this.repository.countProviderAttempts(runId) : this.searchAttemptCount(runId)), 0);
       return {
         limit,
-        spent: matching.filter((entry) => entry.state === "spent").reduce((total, entry) => total + (entry.settledUnits ?? 0), 0),
+        spent: liveUsage + matching.filter((entry) => entry.state === "spent").reduce((total, entry) => total + (entry.settledUnits ?? 0), 0),
         reserved: matching.filter((entry) => entry.state === "reserved").reduce((total, entry) => total + entry.reservedUnits, 0),
         uncertain: matching.filter((entry) => entry.state === "uncertain").reduce((total, entry) => total + entry.reservedUnits, 0),
       };
@@ -708,7 +718,7 @@ export class WorkflowCoordinator {
     const projection = task.kind === "discovery" ? discoveryRunProjection(contract.runConfig.discoveryDepth) : { modelCalls: 0, searches: 0 };
     const runCalls = task.kind === "generate-ideas" ? 4 * pendingGeneration.length : projection.modelCalls * 2;
     const minimumCalls = task.kind === "generate-ideas" ? runCalls : runCalls + 4;
-    if (modelCalls < minimumCalls || searches < projection.searches || remainingMs(original) < 5 * 60_000) {
+    if (contract.limits.enforced !== false && ((modelCalls ?? 0) < minimumCalls || (searches ?? 0) < projection.searches || remainingMs(original) < 5 * 60_000)) {
       throw new AppError("BUDGET_TOO_SMALL", "The original session has too little reserved time or capacity for a retry.");
     }
     const input = task.input as { model?: { providerId: string; modelId: string }; reasoningEffort?: string };
@@ -717,8 +727,9 @@ export class WorkflowCoordinator {
     const receipt = this.options.db.immediateTransaction(() => {
       const retryContract = WorkflowLaunchContractSchema.parse({
         ...contract, limits: {
+          ...contract.limits,
           maxMinutes: Math.max(5, Math.min(240, Math.floor(remainingMs(original) / 60_000))),
-          maxModelCalls: modelCalls, maxSearches: searches,
+          maxModelCalls: modelCalls ?? contract.limits.maxModelCalls, maxSearches: searches ?? contract.limits.maxSearches,
         },
       });
       const session = this.repository.createSession({
@@ -924,7 +935,8 @@ export class WorkflowCoordinator {
       });
       this.settleTaskBudget(item.id, unknown ? "uncertain" : "spent", this.repository.countProviderAttempts(event.runId));
       const skippedIds = this.skipReadyTasks(session.id, event.type === "run-cancelled" ? "session-stopped" : "upstream-failed");
-      const outcome = unknown ? "needs-attention" : event.type === "run-cancelled" ? "cancelled" : "partial";
+      const hasResults = this.summary(session.id).counts.accepted > 0;
+      const outcome = unknown ? "needs-attention" : event.type === "run-cancelled" ? "cancelled" : hasResults ? "partial" : "failed";
       this.repository.updateSession(session.id, session.revision, { state: "finished", outcome, remainingMs: remainingMs(session) });
       return skippedIds;
     });
@@ -1020,7 +1032,7 @@ export class WorkflowCoordinator {
     const created: string[] = [];
     const available = this.availableBudget(session, "model-call");
     const required = allocations.allocations.reduce((total, item) => total + Math.ceil(item.quota / 5) * 4, 0);
-    if (required > available) throw new AppError("BUDGET_TOO_SMALL", `Reserve at least ${required} model calls for generation and independent review.`);
+    if (available !== null && required > available) throw new AppError("BUDGET_TOO_SMALL", `Reserve at least ${required} model calls for generation and independent review.`);
     let ordinal = this.repository.listWorkItems(sessionId).length;
     for (const allocation of allocations.allocations) {
       const angles = initialGenerationAngles(this.options.db, allocation.problemId, Math.ceil(allocation.quota / 5));
@@ -1158,7 +1170,7 @@ export class WorkflowCoordinator {
       this.finishCollection(sessionId);
       return;
     }
-    if (remainingMs(session) < 5 * 60_000) {
+    if (WorkflowLaunchContractSchema.parse(session.contract).limits.enforced !== false && remainingMs(session) < 5 * 60_000) {
       const skipped = this.options.db.immediateTransaction(() => {
         const ready = this.repository.listWorkItems(sessionId).filter((item) =>
           ["generate-ideas", "coverage-map", "coverage-search"].includes(item.kind) && item.state === "ready");
@@ -1187,7 +1199,8 @@ export class WorkflowCoordinator {
     const input = item.input as { problemId: string; snapshotId: string; quota: number; model: WorkflowLaunchContract["runConfig"]["model"]; reasoningEffort: string };
     const contract = WorkflowLaunchContractSchema.parse(session.contract);
     const config = RunConfigSchema.parse({ ...contract.runConfig, model: input.model, reasoningEffort: input.reasoningEffort,
-      ideaCount: input.quota, maxRunMinutes: Math.min(contract.runConfig.maxRunMinutes, Math.floor(remainingMs(session) / 60_000)),
+      ideaCount: input.quota, maxRunMinutes: contract.limits.enforced === false ? contract.runConfig.maxRunMinutes
+        : Math.min(contract.runConfig.maxRunMinutes, Math.floor(remainingMs(session) / 60_000)),
       opportunityExploration: contract.targets.kind === "project" ? contract.runConfig.opportunityExploration : undefined });
     try {
       this.options.db.immediateTransaction(() => this.repository.updateWorkItem(item.id, "running"));
@@ -1300,8 +1313,10 @@ export class WorkflowCoordinator {
         acceptedDistinct: summary.counts.accepted, target: summary.counts.requested,
         rawCandidateCap: 2 * summary.counts.requested, rawCandidatesUsed: summary.counts.attempted,
         fillRoundsUsed: completedRounds.length, lastRoundAcceptedGain: lastGain,
-        remainingModelCalls: this.availableBudget(session, "model-call"),
-        remainingMs: remainingMs(session) - 5 * 60_000,
+        ...(contract.limits.enforced === false ? {} : {
+          remainingModelCalls: this.availableBudget(session, "model-call") ?? 0,
+          remainingMs: remainingMs(session) - 5 * 60_000,
+        }),
       };
       const gate = planIdeaFill({ ...fillInput, namedGapIds: namedGaps.length ? namedGaps : ["coverage-pending"] });
       const mapRound = Math.min(2, completedRounds.length + 1) as 1 | 2;
@@ -1316,7 +1331,7 @@ export class WorkflowCoordinator {
           const managedSearchesUsed = items.filter((item) => item.kind === "coverage-search" && item.state !== "skipped").length;
           if (priorSearch) {
             collectionStop = { code: "evidence-needed", reason: `The bounded search for "${evidenceGap.name}" did not make the gap ready for generation.` };
-          } else if (this.availableBudget(session, "search") < 1 || managedSearchesUsed >= managedSearchLimit) {
+          } else if (contract.limits.enforced !== false && ((this.availableBudget(session, "search") ?? 0) < 1 || managedSearchesUsed >= managedSearchLimit)) {
             collectionStop = { code: "search-budget", reason: `Coverage gap "${evidenceGap.name}" needs evidence: ${evidenceGap.evidenceNeeded?.replace(/[.!?]+$/, "")}. No search remains in this run.` };
           } else {
             const search = this.options.db.immediateTransaction(() => {
@@ -1341,7 +1356,7 @@ export class WorkflowCoordinator {
           collectionStop = { code: "no-useful-gap", reason: typeof output?.noUsefulGapReason === "string"
             ? output.noUsefulGapReason : searchOutput?.noEvidenceReason
               ?? "The saved inventory has no further concrete buyer or workflow gap for a fill batch." };
-        } else if (this.availableBudget(session, "model-call") < 5) {
+        } else if (contract.limits.enforced !== false && (this.availableBudget(session, "model-call") ?? 0) < 5) {
           collectionStop = { code: "model-budget", reason: "A targeted fill needs one coverage map call and four reserved generation and review calls." };
         } else {
           const first = generationItems.find((item) => fillRoundFromItem(item) === 0);
@@ -1488,8 +1503,9 @@ export class WorkflowCoordinator {
     return row.count;
   }
 
-  private availableBudget(session: WorkflowSession, kind: "model-call" | "search"): number {
+  private availableBudget(session: WorkflowSession, kind: "model-call" | "search"): number | null {
     const contract = WorkflowLaunchContractSchema.parse(session.contract);
+    if (contract.limits.enforced === false) return null;
     const limit = kind === "model-call"
       ? contract.limits.maxModelCalls + session.additionalModelCalls
       : contract.limits.maxSearches + session.additionalSearches;

@@ -21,6 +21,8 @@ export const WorkflowTargetSchema = z.object({
   automaticProblemCap: z.number().int().min(1).max(20).optional(),
 }).strict();
 export const WorkflowLimitsSchema = z.object({
+  /** New research uses estimates; omitted preserves an older run's explicit limits. */
+  enforced: z.boolean().optional(),
   maxMinutes: z.number().int().min(1).max(240),
   maxModelCalls: z.number().int().positive(),
   maxSearches: NonnegativeCountSchema,

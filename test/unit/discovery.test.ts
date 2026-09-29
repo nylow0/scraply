@@ -64,6 +64,19 @@ describe("discovery", () => {
 
   const model = { providerId: "test-provider", modelId: "test-model" };
   const reasoningEffort = "medium" as const;
+  test.each([1, 5])("guided depth accepts %s useful queries instead of enforcing the three-query estimate", async (count) => {
+    const searches: string[] = [];
+    await harvestFactors(scope(), {
+      model, reasoningEffort, depth: "quick", guided: true, workflowVersion: 2,
+      prompt: () => "Plan useful searches.",
+      modelClient: modelClient(async (request) => request.schema.parse({
+        queries: Array.from({ length: count }, (_, index) => `Question ${index + 1}`),
+      })),
+      search: { async search(query) { searches.push(query); return []; } },
+    });
+    expect(searches).toHaveLength(count * 2);
+  });
+
   test("normalizes typography and whitespace before checking a quote", () => {
     const source = "People said “this\u00a0takes — far too long” after filing.";
     expect(normalizeEvidenceText(source)).toBe('People said "this takes - far too long" after filing.');
@@ -256,7 +269,7 @@ describe("discovery", () => {
     });
     expect(harvestRequests.length).toBeGreaterThan(0);
     for (const request of harvestRequests) {
-      expect(request.deadlineMs).toBe(300_000);
+      expect(request.deadlineMs).toBeUndefined();
       expect(request.stage.length).toBeGreaterThan(256);
       expect(Buffer.byteLength(request.evidence[0]!.sourceId)).toBeLessThanOrEqual(256);
       const content = request.evidence[0]!.content as { sources: Array<{ id: string }> };
@@ -362,7 +375,7 @@ describe("discovery", () => {
       { id: "factor-2", subject: "Operators", behavior: "repeat filing", quote: "Supporting evidence.", sourceId: other.id, harvestMode: "audience", modelConfidence: 0.8, sourceRole: "measured", audienceFit: "intended-buyer", independentSourceKey: "study-two", supportsDemand: false, source: other },
     ];
     let killEvidence: unknown;
-    const synthesisDeadlines: Array<{ stage: string; deadlineMs: number }> = [];
+    const synthesisDeadlines: Array<{ stage: string; deadlineMs: number | undefined }> = [];
     const result = await discoverProblems(scope(), factors, [existing, other], {
       prompt: () => "Fixture discovery instructions",
       workflowVersion: 2,
@@ -399,8 +412,8 @@ describe("discovery", () => {
 
     expect(JSON.stringify(killEvidence)).toContain(existing.canonicalUrl);
     expect(synthesisDeadlines).toEqual([
-      { stage: "problem-candidates", deadlineMs: 300_000 },
-      { stage: expect.stringMatching(/^problem-kill:/), deadlineMs: 300_000 },
+      { stage: "problem-candidates", deadlineMs: undefined },
+      { stage: expect.stringMatching(/^problem-kill:/), deadlineMs: undefined },
     ]);
     expect(result.killSources).toEqual([]);
     expect(result.problems[0]?.verdictSourceIds).toEqual([existing.id]);

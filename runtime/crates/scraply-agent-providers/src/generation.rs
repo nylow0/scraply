@@ -66,7 +66,12 @@ where
             FailureCode::Cancellation,
             "provider request was cancelled",
         )),
-        _ = tokio::time::sleep(control.remaining()) => Err(CoreError::new(
+        _ = async {
+            match control.remaining() {
+                Some(remaining) => tokio::time::sleep(remaining).await,
+                None => std::future::pending::<()>().await,
+            }
+        } => Err(CoreError::new(
             FailureCode::Timeout,
             "provider request timed out",
         )),

@@ -492,7 +492,9 @@ impl OpenAiSubscription {
                 retry_5xx: false,
                 retry_transport: false,
             },
-            stream_idle_timeout: Duration::from_secs(120),
+            // Upstream requires a duration; Tokio treats an overflowing deadline as never.
+            // Slow reasoning waits for provider completion, transport failure, or cancellation.
+            stream_idle_timeout: Duration::MAX,
         };
         let auth = Arc::new(SubscriptionHeaders {
             headers: auth_headers(&auth)?,

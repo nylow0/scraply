@@ -42,7 +42,7 @@ interface PendingRequest {
 }
 interface PendingGeneration {
   requestId: string;
-  timer: ReturnType<typeof setTimeout>;
+  timer: ReturnType<typeof setTimeout> | undefined;
   resolve: (value: { output: unknown; metadata: z.infer<typeof GenerationMetadataSchema> }) => void;
   reject: (error: Error) => void;
 }
@@ -183,7 +183,7 @@ export class RuntimeClient implements StructuredModelClient {
     }
     const requestId = randomUUID();
     const terminal = new Promise<{ output: unknown; metadata: z.infer<typeof GenerationMetadataSchema> }>((resolve, reject) => {
-      const timer = setTimeout(() => {
+      const timer = request.deadlineMs === undefined ? undefined : setTimeout(() => {
         const generation = this.pendingGenerations.get(request.generationId);
         if (generation?.requestId === requestId) void this.cancelGeneration(request.generationId, "Native runtime did not emit a terminal generation event");
       }, request.deadlineMs + this.terminalGraceMs);
@@ -206,7 +206,7 @@ export class RuntimeClient implements StructuredModelClient {
         accepted = z.object({ generationId: z.literal(request.generationId), prompt: PromptIdentitySchema }).strict().parse(
           await this.request("generation.start", {
           generationId: request.generationId,
-          deadlineMs: request.deadlineMs,
+          ...(request.deadlineMs === undefined ? {} : { deadlineMs: request.deadlineMs }),
           model: request.model,
           promptRevision: initialized.prompt.id,
           workOrder: request.workOrder,

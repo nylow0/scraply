@@ -31,6 +31,7 @@
   } = $props();
 
   let summary = $derived(detail.summary);
+  let guided = $derived(summary.limits.enforced === false);
   let acknowledgedUnknown = $state<Record<string, boolean>>({});
   let additionalModelCalls = $state(0);
   let additionalSearches = $state(0);
@@ -178,6 +179,9 @@
           : summary.currentStage ? readable(summary.currentStage) : stateLabel(summary.state)}</p>
       {#if researchFollowUp}<h2 class="research-heading">Research follow-up</h2>{:else}<h2><span class="accepted">{accepted}</span><span class="target"> / {target} {targetUnit}</span></h2>{/if}
       {#if !terminal}<p class="current-status">{stateLabel(summary.state)}</p>{/if}
+      {#if !terminal && !researchFollowUp && summary.currentStage === "discovery" && accepted === 0}
+        <p class="stage">Gathering evidence. Ideas appear after research and problem selection.</p>
+      {/if}
     </div>
     {#if !researchFollowUp && !terminal && summary.counts.missing > 0}
       <span class="shortfall">{summary.counts.missing} still needed</span>
@@ -215,6 +219,13 @@
     {/if}
   {/if}
 
+  {#if guided}
+  <dl class="allowance" aria-label="Work completed">
+    <div><dt>Model calls used</dt><dd>{summary.budget.modelCalls.spent}</dd></div>
+    <div><dt>Searches used</dt><dd>{summary.budget.searches.spent}</dd></div>
+    <div><dt>Research pace</dt><dd>Guided by depth</dd></div>
+  </dl>
+  {:else}
   <dl class="allowance" aria-label="Remaining work allowance">
     <div>
       <dt>Model calls left</dt>
@@ -229,8 +240,9 @@
       <dd>{remainingTime(summary.budget.remainingMs)}</dd>
     </div>
   </dl>
+  {/if}
 
-  {#if !terminal && onPreviewExtension && onApplyExtension}
+  {#if !guided && !terminal && onPreviewExtension && onApplyExtension}
     <details class="extension">
       <summary>Extend work allowance</summary>
       <p>Choose additional limits, preview the new total, then apply it to this run.</p>

@@ -1,22 +1,22 @@
 # Use Scraply
 
-Scraply keeps a project in three places: **Setup** for the brief and limits, **Research** for evidence, and **Ideas** for the resulting options. Work is saved locally. Reopening a project reads its saved state; it does not start another model or search request.
+Scraply keeps a project in three places: **Setup** for the brief and research settings, **Research** for evidence, and **Ideas** for the resulting options. Work is saved locally. Reopening a project reads its saved state; it does not start another model or search request.
 
 ## Start a project
 
 1. Connect an OpenAI account in Scraply. For web discovery, add an Exa or Perplexity API key too. The welcome prompt asks for both after you sign in, and **Settings → Accounts** can add, replace, or remove a key later. Scraply checks each key with its provider before saving it and afterwards shows only its last four characters. Selectable models come from the connected account's live catalog.
 2. Create a project. Choose **Find problems to solve** to research a topic or audience, or **I have a problem to solve** when you can state the problem already. A known-problem run can skip web search.
 3. Write what you want to explore or state your known problem. Add the intended audience, boundaries, and any risks you want evaluated. Choose the model and reasoning effort, research depth and search provider when discovery needs them.
-4. Choose how much supervision you want. **Controlled** stops after research for your review. **Vibe** asks for the idea model and limits before launch, then advances through research, selection, generation, and review while the local app host remains open.
-5. Check the target and limits before starting. **Solutions per problem** controls each generation batch. For startup opportunities, **Build a project-wide set of distinct businesses** enables a separate **Distinct family target**. It counts accepted, independent business families, not every variant. A higher target can take more calls and may finish short when evidence or limits run out.
+4. Choose how much supervision you want. **Controlled** stops after research for your review. **Vibe** asks for the idea model before launch, then advances through research, selection, generation, and review while the local app host remains open.
+5. Check the depth and target before starting. **Solutions per problem** controls each generation batch. For startup opportunities, **Build a project-wide set of distinct businesses** enables a separate **Distinct family target**. It counts accepted, independent business families, not every variant. A higher target can take more calls and may finish short when the evidence does not support enough distinct ideas.
 
 The project saves the resolved instructions and chosen model settings with each run. You can edit advanced instructions for research, generation, or review before launch. Existing `prompts/workflow-v2-*.md` overrides remain available for deeper customization; see [data and privacy](data-and-privacy.md#prompt-overrides-and-saved-runs).
 
-## Models and limits
+## Models and research depth
 
 Scraply's selectors can show GPT-6 Astra, Sol, and Luna when the connected account's live catalog offers them. Reasoning choices depend on the selected model. A saved model or effort that is no longer available remains visible so you can replace it deliberately; Scraply does not silently choose another one. Controlled lets you choose the ideas model after research. Vibe needs it before Start because no selection dialog interrupts that run.
 
-The setup limits bound planned model calls, searches, and elapsed work. Review the preview after changing a limit. Native OpenAI subscription calls do not support an output-token ceiling, so a request deadline and output-size limit cannot guarantee a token or billing ceiling. Usage stays marked unknown when the provider does not report it.
+**Quick**, **Standard**, and **Deep** guide the breadth and thoroughness of the same research stages. New runs do not stop because they reach an estimated call count, search count, or elapsed duration. A model request waits for its response, a provider or connection error, or your cancellation. You can pause before the next task or stop current work. Older saved runs retain their call and search limits. Usage stays marked unknown when the provider does not report it.
 
 ## Controlled research
 
@@ -32,7 +32,7 @@ For a known problem, you can enter it at the checkpoint and proceed without pret
 
 Vibe selects evidence-qualified problems and records why it chose them. Discovery favors fit to the brief and buyer, direct evidence, and distinct workflows. It can return research with zero ideas if no problem qualifies. It does not turn rejected evidence into a supported claim.
 
-The progress view shows the current stage, accepted ideas versus the target, saved work, and remaining calls, searches, and time. Task details show individual research questions or generation assignments. The app can pause before the next assignment or request cancellation of dispatched work. Closing the app or putting the machine to sleep does not promise background progress. Reopening reads the saved result and offers continuation only when the remaining work is safe to resume.
+The progress view shows the current stage, accepted ideas versus the target, saved work, and calls and searches used. Zero accepted ideas during discovery means research is still gathering evidence; ideas come after problem selection. Task details show individual research questions or generation assignments. The app can pause before the next assignment or request cancellation of dispatched work. Closing the app or putting the machine to sleep does not promise background progress. Reopening reads the saved result and offers continuation only when the remaining work is safe to resume.
 
 A settled Vibe run opens the idea collection. It may contain the target, a useful partial set, or zero qualifying ideas. A provider or authentication failure should end with the work saved and a reason you can act on. A request with an unknown completion is conservatively counted and is not silently replayed.
 
@@ -40,7 +40,7 @@ After a Vibe run finishes, open **Research** to ask a separate question or revis
 
 ## Review ideas and explore one
 
-Scraply aims for distinct, eligible ideas, then makes at most two fill rounds, split into small assigned batches, within the saved budget. It never pads the count. Review the accepted count, the requested count, unresolved comparisons, and the stopping reason. Variants and duplicates do not count as new business families. The saved-idea review button compares the current collection without generating more options; membership edits keep the original work and append to decision history.
+Scraply aims for distinct, eligible ideas, then makes at most two fill rounds, split into small assigned batches. It never pads the count. Review the accepted count, the requested count, unresolved comparisons, and the stopping reason. Variants and duplicates do not count as new business families. The saved-idea review button compares the current collection without generating more options; membership edits keep the original work and append to decision history.
 
 Open an idea to read its evidence, assumptions, risks, and possible consequences. A source citation means the saved excerpt can be traced, not that the proposed business outcome has happened. The independent risk evaluation is a model judgment. Record your own decision and any real-world test outcome separately.
 

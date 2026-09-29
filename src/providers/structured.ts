@@ -86,7 +86,8 @@ export interface StructuredStageRequest<T> {
   repairPolicy: "disabled" | "one_retry";
   maxOutputTokens?: number;
   signal?: AbortSignal;
-  deadlineMs: number;
+  /** Optional for explicit bounded probes. Research waits for completion or cancellation. */
+  deadlineMs?: number;
   onDispatched?: () => void;
   onAccepted?: (metadata: GenerationAcceptanceMetadata) => void;
 }

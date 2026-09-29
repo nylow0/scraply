@@ -201,8 +201,6 @@
   let ideaReasoningAvailable = $derived(ideaModelOption?.reasoningEfforts.some((item) => item.id === ideaReasoningEffort) ?? false);
   let workflowDraft = $derived(buildWorkflowDraft());
   let workflowFingerprint = $derived(JSON.stringify(workflowDraft));
-  let workflowPreviewValid = $derived(workflowPreview?.type === "launch" && workflowPreview.fieldErrors.length === 0
-    && previewFingerprint === workflowFingerprint);
 
   $effect(() => {
     if (!reasoningEffort && selectedModelOption) reasoningEffort = selectedModelOption.defaultReasoningEffort;
@@ -278,7 +276,7 @@
         ...(opportunityExploration ? { distinctBusinessCount: targetFamilies } : {}),
         ...(workflowMode === "vibe" && researchMode === "explore-market" ? { automaticProblemCap } : {}),
       },
-      limits: { maxMinutes: maxRunMinutes, maxModelCalls: workflowModelLimit, maxSearches: workflowSearchLimit },
+      limits: { enforced: false, maxMinutes: maxRunMinutes, maxModelCalls: workflowModelLimit, maxSearches: workflowSearchLimit },
       instructions: { research: researchInstruction.trim(), ideas: ideasInstruction.trim(), review: reviewInstruction.trim() },
     };
   }
@@ -294,9 +292,6 @@
   });
 
   let visiblePreviewIssues = $derived(validationAttempted ? (workflowPreview?.fieldErrors ?? []) : []);
-  function previewIssue(path: string): string | null {
-    return visiblePreviewIssues.find((issue) => issue.path.join(".") === path)?.message ?? null;
-  }
   // Ideas settings live in the run panel, so any preview issue under "ideas" (model or review model) is shown there.
   let ideasPreviewIssue = $derived(visiblePreviewIssues.find((issue) => issue.path[0] === "ideas")?.message ?? null);
 
@@ -323,16 +318,6 @@
       if (!domain.trim()) next.domain = "A starting context is required.";
     } else if (!knownProblem.trim()) next.knownProblem = "Problem statement is required.";
     if (useWorkflow) {
-      if (!Number.isInteger(maxRunMinutes) || maxRunMinutes < 5 || maxRunMinutes > 240) next.maxRunMinutes = "Choose 5 to 240 minutes.";
-      if (!Number.isInteger(workflowModelLimit) || workflowModelLimit < 1) next.workflowModelLimit = "Choose a positive model-call limit.";
-      else if (projectTargetEnabled && projectInitialBatchCalls > 0
-        && workflowModelLimit < discoveryReservation.modelCalls + projectInitialBatchCalls) {
-        next.workflowModelLimit = `Allow at least ${discoveryReservation.modelCalls + projectInitialBatchCalls} model calls for projected research, generation, and review.`;
-      }
-      if (!Number.isInteger(workflowSearchLimit) || workflowSearchLimit < 0) next.workflowSearchLimit = "Choose zero or more searches.";
-      else if (projectTargetEnabled && workflowSearchLimit < discoveryReservation.searches) {
-        next.workflowSearchLimit = `Allow at least ${discoveryReservation.searches} ${discoveryReservation.searches === 1 ? "search" : "searches"} for projected research.`;
-      }
       if (workflowMode === "vibe") {
         if (!ideaModelAvailable) next.ideaModel = "Choose an available ideas model.";
         else if (!ideaReasoningAvailable) next.ideaReasoning = "Choose an available reasoning effort for ideas.";
@@ -418,7 +403,7 @@
   const fieldSections: Record<string, SettingsSection | "brief" | "business" | "main"> = {
     domain: "brief", knownProblem: "brief", researchMode: "brief",
     targetFamilies: "business", batchSize: "business", maxModelCalls: "business", maxSearches: "business",
-    model: "main", reasoning: "main", ideaCount: "main", ideaModel: "main", ideaReasoning: "main",
+    model: "main", reasoning: "main", searchProvider: "main", ideaCount: "main", ideaModel: "main", ideaReasoning: "main",
     maxRunMinutes: "limits", workflowModelLimit: "limits", workflowSearchLimit: "limits", automaticProblemCap: "limits",
   };
   const previewFields: Record<string, string> = {
@@ -520,7 +505,7 @@
                 <label><span>Added opportunity search limit</span><input aria-label="Opportunity search limit" data-field="maxSearches" type="number" min="0" max="20" step="1" bind:value={maxSearches} aria-invalid={Boolean(errors.maxSearches)} />{#if errors.maxSearches}<small class="field-error">{errors.maxSearches}</small>{/if}</label>
               {/if}
             </div>
-            <p>Similar ideas count as one business. Up to 2 expansion rounds and {Math.min(60, targetFamilies * 2)} candidates.{#if useWorkflow}&nbsp;Work limits cover research, ideas, review, and added searches.{/if}</p>
+            <p>Similar ideas count as one business. Up to 2 expansion rounds and {Math.min(60, targetFamilies * 2)} candidates.{#if useWorkflow}&nbsp;Research depth guides evidence collection; useful follow-up work can continue.{/if}</p>
             <label class="exploratory-toggle"><input type="checkbox" bind:checked={allowExploratoryProblems} /><span><strong>Allow exploratory problem hypotheses</strong><small>Use only after the researched map is exhausted. Scraply labels these permanently and does not invent evidence for them.</small></span></label>
           {/if}
         </section>
@@ -536,7 +521,7 @@
               <label><input type="radio" name="workflow-mode" value="vibe" checked={workflowMode === "vibe"} onchange={() => workflowMode = "vibe"} /><strong>Vibe</strong></label>
               <span class="mode-info" role="presentation" onmouseenter={() => modeHelp = "vibe"} onmouseleave={hideModeHelpOnLeave} onfocusin={() => modeHelp = "vibe"} onfocusout={() => modeHelp = null}>
                 <button type="button" class="info-button" aria-label="About Vibe" aria-describedby="vibe-help" onclick={() => modeHelp = "vibe"} onkeydown={dismissModeHelp}><Icon name="info" size={16} /></button>
-                <span id="vibe-help" class="mode-tooltip glass-dense" role="tooltip" hidden={modeHelp !== "vibe"}>{researchMode === "known-problem" ? "Scraply generates and reviews ideas for your stated problem automatically." : "Scraply researches your brief, selects problems, generates ideas, and reviews them automatically."} Work stops at your saved limits. Review the results when the run ends.</span>
+                <span id="vibe-help" class="mode-tooltip glass-dense" role="tooltip" hidden={modeHelp !== "vibe"}>{researchMode === "known-problem" ? "Scraply generates and reviews ideas for your stated problem automatically." : "Scraply researches your brief, selects problems, generates ideas, and reviews them automatically."} You can pause or stop at any time. Review the results when the run ends.</span>
               </span>
             </div>
             <div class="mode-option" class:active={workflowMode === "babysit"}>
@@ -551,8 +536,9 @@
       <section class="main-settings" aria-label="Main research settings">
         <div class="main-settings-grid">
       <label class="run-setting model-setting"><span>Model</span><select aria-label="Model" data-field="model" bind:this={modelSelect} bind:value={modelKey} onchange={selectModel} disabled={nativeModelOptions.length === 0}>{#if !selectedModelAvailable}<option value={modelKey}>{legacyModelNeedsReplacement && !modelKey ? "Choose an OpenAI model" : workspace.validation.native.connected ? `${modelDisplayName(model)} (unavailable)` : "Sign in to choose"}</option>{/if}{#each gpt6Models as modelId (modelId)}{#if !nativeModelOptions.some((item) => item.modelId === modelId) && model.modelId !== modelId}<option value={`openai-subscription:${modelId}`} disabled>{modelDisplayName({ modelId })} (not in model list)</option>{/if}{/each}{#each nativeModelOptions as item (modelRefKey(item))}<option value={modelRefKey(item)}>{modelDisplayName(item)}</option>{/each}</select>{#if nativeModelOptions.length === 0}<small>Your available models appear here after you sign in.</small>{/if}</label>
+      {#if researchMode === "explore-market"}<label class="run-setting search-setting model-setting"><span>Search provider</span><div class="provider-select"><ProviderLogo provider={searchProvider} size={17} /><select aria-label="Search provider" data-field="searchProvider" bind:value={searchProvider} onchange={() => searchProviderTouched = true}><option value="exa">Exa</option><option value="perplexity">Perplexity</option></select></div><small>{searchStatus}</small>{#each visiblePreviewIssues.filter((issue) => issue.path.join(".") === "runConfig.searchProvider") as issue (issue.code)}<small class="field-error" role="alert">{issue.message}</small>{/each}</label>{/if}
       <label class="run-setting"><span>Reasoning</span><select aria-label="Reasoning" data-field="reasoning" title={reasoningDescription} bind:value={reasoningEffort}>{#if !selectedReasoningAvailable}<option value={reasoningEffort}>{reasoningEffort} (unavailable)</option>{/if}{#each (selectedModelOption?.reasoningEfforts ?? []) as effort (effort.id)}<option value={effort.id}>{effort.id.charAt(0).toUpperCase() + effort.id.slice(1)}</option>{/each}</select></label>
-      {#if researchMode === "explore-market"}<label class="run-setting"><span>Research depth</span><select aria-label="Research depth" title={depthDescription} bind:value={discoveryDepth}><option value="quick">Quick</option><option value="standard">Standard</option><option value="deep">Deep</option></select></label>{/if}
+      {#if researchMode === "explore-market"}<label class="run-setting"><span>Research depth</span><select aria-label="Research depth" title={depthDescription} bind:value={discoveryDepth}><option value="quick">Quick</option><option value="standard">Standard</option><option value="deep">Deep</option></select><small>{depthDescription}</small></label>{/if}
       <!-- A stated problem has no research depth, so the count takes that grid cell instead of its own row. -->
       <div class="solution-count" class:paired={researchMode === "known-problem"}>
         <label for="solution-count">{researchMode === "known-problem" ? "Solutions" : "Solutions per problem"}</label>
@@ -586,8 +572,8 @@
       <div class="launch-content">
         <div class="launch-row">
           <div class="limit-summary">
-            <span>Work limits <button type="button" class="text-action" onclick={() => showConfiguration("limits")}>Edit limits</button></span>
-            <p>{maxRunMinutes} min{#if useWorkflow}&nbsp;· {workflowModelLimit} {workflowModelLimit === 1 ? "model call" : "model calls"} · {workflowSearchLimit} {workflowSearchLimit === 1 ? "search" : "searches"}{#if workflowMode === "vibe" && researchMode === "explore-market"}&nbsp;· {automaticProblemCap} problems{/if}{/if}</p>
+            <span>{researchMode === "explore-market" ? "Depth-guided research" : "Idea generation and review"}</span>
+            <p>{researchMode === "explore-market" ? "Research follows the selected depth." : "Ideas are generated and reviewed for your problem."} You can pause or stop at any time.</p>
           </div>
           <!-- Stays clickable while the brief is incomplete: the click is what reveals the missing fields. -->
           <button type="submit" class="primary" disabled={locked || !providersReady || (useWorkflow && previewing)}>{locked ? "Starting…" : useWorkflow ? "Start" : (researchMode === "explore-market" ? "Discover problems" : "Generate solutions")}<Icon name="arrow" size={17} /></button>
@@ -612,7 +598,7 @@
       <header><h2>Advanced settings</h2><button type="button" aria-label="Close advanced settings" onclick={() => configuration.close()}><Icon name="close" /></button></header>
       <nav aria-label="Settings groups">
         {#if researchMode === "explore-market"}<button type="button" aria-pressed={settingsSection === "research"} onclick={() => settingsSection = "research"}>Search</button>{/if}
-        <button type="button" aria-pressed={settingsSection === "limits"} onclick={() => settingsSection = "limits"}>Work limits</button>
+        <button type="button" aria-pressed={settingsSection === "limits"} onclick={() => settingsSection = "limits"}>Research scope</button>
         {#if useWorkflow}<button type="button" aria-pressed={settingsSection === "instructions"} onclick={() => settingsSection = "instructions"}>Instructions</button>{/if}
       </nav>
       <div class="settings-content">
@@ -620,7 +606,6 @@
         <div class="settings-panels">
         <section class="settings-panel" aria-label="Research configuration" inert={settingsSection !== "research"}>
           <div class="run-settings">
-      {#if researchMode === "explore-market"}<label class="run-setting search-setting"><span>Search provider</span><div class="provider-select"><ProviderLogo provider={searchProvider} size={17} /><select aria-label="Search provider" data-field="searchProvider" bind:value={searchProvider} onchange={() => searchProviderTouched = true}><option value="exa">Exa</option><option value="perplexity">Perplexity</option></select></div><small>{searchStatus}</small></label>{/if}
     </div>
 
       <div class="output-settings">
@@ -630,16 +615,9 @@
 
 
         </section>
-        <section class="settings-panel" aria-label="Work limits configuration" inert={settingsSection !== "limits"}>
-          <p class="help">Work stops at these limits. They do not guarantee completion.</p>
-          {#if useWorkflow}        <div class="advanced-body limits-grid">
-          <label><span>Time limit (minutes)</span><input aria-label="Time limit" data-field="maxRunMinutes" type="number" min="5" max="240" step="1" bind:value={maxRunMinutes} aria-invalid={Boolean(errors.maxRunMinutes)} />{#if errors.maxRunMinutes}<small class="field-error">{errors.maxRunMinutes}</small>{/if}</label>
-          <label><span>Maximum model calls</span><input aria-label="Maximum model calls" data-field="workflowModelLimit" type="number" min="1" step="1" bind:value={workflowModelLimit} oninput={() => workflowModelLimitTouched = true} aria-invalid={Boolean(errors.workflowModelLimit || previewIssue("limits.maxModelCalls"))} />{#if errors.workflowModelLimit || previewIssue("limits.maxModelCalls")}<small class="field-error">{errors.workflowModelLimit ?? previewIssue("limits.maxModelCalls")}</small>{/if}</label>
-          <label><span>Maximum searches</span><input aria-label="Maximum searches" data-field="workflowSearchLimit" type="number" min="0" step="1" bind:value={workflowSearchLimit} oninput={() => workflowSearchLimitTouched = true} aria-invalid={Boolean(errors.workflowSearchLimit || previewIssue("limits.maxSearches"))} />{#if errors.workflowSearchLimit || previewIssue("limits.maxSearches")}<small class="field-error">{errors.workflowSearchLimit ?? previewIssue("limits.maxSearches")}</small>{/if}</label>
-          {#if workflowMode === "vibe" && researchMode === "explore-market"}<label><span>Automatic problem cap</span><input aria-label="Automatic problem cap" data-field="automaticProblemCap" type="number" min="1" max="20" step="1" bind:value={automaticProblemCap} aria-invalid={Boolean(errors.automaticProblemCap)} />{#if errors.automaticProblemCap}<small class="field-error">{errors.automaticProblemCap}</small>{/if}</label>{/if}
-        </div>
-{:else}<label><span>Time limit (minutes)</span><input type="number" min="5" max="240" bind:value={maxRunMinutes} /></label>{/if}
-          {#if workflowPreviewValid && workflowPreview}<p class="help">Minimum required: {workflowPreview.minimumWork.modelCalls} model calls and {workflowPreview.minimumWork.searches} {workflowPreview.minimumWork.searches === 1 ? "search" : "searches"}. Work stops at your saved limits.</p>{/if}
+        <section class="settings-panel" aria-label="Research scope configuration" inert={settingsSection !== "limits"}>
+          <p class="help">{researchMode === "explore-market" ? "Depth guides research breadth and evidence collection. " : ""}Model calls and searches are tracked without a fixed cutoff.</p>
+          {#if useWorkflow && workflowMode === "vibe" && researchMode === "explore-market"}<label><span>Problems to develop</span><input aria-label="Automatic problem cap" data-field="automaticProblemCap" type="number" min="1" max="20" step="1" bind:value={automaticProblemCap} aria-invalid={Boolean(errors.automaticProblemCap)} />{#if errors.automaticProblemCap}<small class="field-error">{errors.automaticProblemCap}</small>{/if}</label>{/if}
         </section>
         <section class="settings-panel instructions-panel" aria-label="Custom instructions" inert={settingsSection !== "instructions"}>
           <!-- One editor per stage keeps this tab as short as the others; the dot marks stages that have text. -->
@@ -707,7 +685,7 @@
   .main-brief { gap:10px; }
   .main-brief textarea { min-height:132px;padding:10px 14px;font-size:15px; }
   .main-settings { display:grid;gap:10px;padding-top:16px;border-top:1px solid var(--border); }
-  .main-settings-grid { display:grid;grid-template-columns:1fr 1fr;gap:12px; }
+  .main-settings-grid { display:grid;grid-template-columns:1fr 1fr;align-items:start;gap:12px; }
   .main-settings-grid label,.main-settings-grid .solution-count { font-size:13px;gap:6px; }
   /* A one- or two-digit count gets a compact field at the row's end instead of a wide box around a single digit. */
   .main-settings-grid .solution-count { grid-column:1/-1;grid-template-columns:1fr 72px;align-items:center; }

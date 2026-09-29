@@ -94,7 +94,7 @@ impl CancellationToken {
 #[derive(Debug, Clone)]
 pub struct OperationControl {
     cancellation: CancellationToken,
-    deadline: Instant,
+    deadline: Option<Instant>,
 }
 
 impl OperationControl {
@@ -110,21 +110,33 @@ impl OperationControl {
             .ok_or_else(|| CoreError::new(FailureKind::Timeout, "timeout is invalid"))?;
         Ok(Self {
             cancellation,
-            deadline,
+            deadline: Some(deadline),
         })
+    }
+
+    /// Generation can wait for the provider without imposing a local time limit.
+    pub fn until_cancelled(cancellation: CancellationToken) -> Self {
+        Self {
+            cancellation,
+            deadline: None,
+        }
     }
 
     pub fn cancellation(&self) -> &CancellationToken {
         &self.cancellation
     }
 
-    pub fn remaining(&self) -> Duration {
-        self.deadline.saturating_duration_since(Instant::now())
+    pub fn remaining(&self) -> Option<Duration> {
+        self.deadline
+            .map(|deadline| deadline.saturating_duration_since(Instant::now()))
     }
 
     pub fn check(&self) -> Result<(), CoreError> {
         self.cancellation.check()?;
-        if Instant::now() >= self.deadline {
+        if self
+            .deadline
+            .is_some_and(|deadline| Instant::now() >= deadline)
+        {
             return Err(CoreError::new(FailureKind::Timeout, "operation timed out"));
         }
         Ok(())
@@ -141,6 +153,19 @@ mod tests {
         let peer = token.clone();
         peer.cancel();
         assert_eq!(token.check().unwrap_err().kind(), FailureKind::Cancellation);
+    }
+
+    #[test]
+    fn unbounded_generation_still_observes_cancellation() {
+        let token = CancellationToken::new();
+        let control = OperationControl::until_cancelled(token.clone());
+        assert!(control.remaining().is_none());
+        assert!(control.check().is_ok());
+        token.cancel();
+        assert_eq!(
+            control.check().unwrap_err().kind(),
+            FailureKind::Cancellation
+        );
     }
 
     #[test]

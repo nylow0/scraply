@@ -28,7 +28,7 @@ async function waitUntil(predicate: () => boolean): Promise<void> {
 function fixture(output: { gaps: unknown[]; noUsefulGapReason: string | null },
   options: { searchClient?: SearchClient; maxSearches?: number; target?: number;
     targetKind?: "project" | "per-problem"; acceptedIds?: string[]; proposedCount?: number;
-    maxModelCalls?: number } = {}) {
+    maxModelCalls?: number; enforced?: boolean } = {}) {
   const directory = mkdtempSync(join(tmpdir(), "scraply-workflow-coverage-"));
   directories.push(directory);
   const db = new DatabaseClient(join(directory, "scraply.db"));
@@ -42,7 +42,8 @@ function fixture(output: { gaps: unknown[]; noUsefulGapReason: string | null },
     runConfig, ideas: { model: runConfig.model, reasoningEffort: "medium" },
     targets: { kind: options.targetKind ?? "project", ideaCount: options.target ?? 2,
       ...((options.targetKind ?? "project") === "project" ? { distinctBusinessCount: options.target ?? 2 } : {}) },
-    limits: { maxMinutes: 90, maxModelCalls: options.maxModelCalls ?? 10, maxSearches: options.maxSearches ?? 0 },
+    limits: { ...(options.enforced === undefined ? {} : { enforced: options.enforced }),
+      maxMinutes: 90, maxModelCalls: options.maxModelCalls ?? 10, maxSearches: options.maxSearches ?? 0 },
     instructions: {}, resolvedInstructions: { research: "", ideas: "", review: "" },
     instructionHashes: { research: "hash", ideas: "hash", review: "hash" },
   });
@@ -253,20 +254,26 @@ function evidenceGapOutput() {
     candidateOrigin: "evidence-only" }], noUsefulGapReason: null };
 }
 
-test("a search-needed managed gap settles one search and passes its saved source to fill generation", async () => {
+test.each([true, false])("a managed gap reaches fill generation with enforced limits = %s", async (enforced) => {
   let searchCalls = 0;
   const searchClient: SearchClient = {
     provider: "exa", validateKey: async () => ({ valid: true }),
     async search(query, options) {
       searchCalls += 1;
       expect(query).toBe("repair shop revised estimate signoff interview");
-      expect(options).toMatchObject({ numResults: 5, maxCharacters: 4_000, timeoutMs: 45_000 });
+      expect(options).toMatchObject({ numResults: 5, maxCharacters: 4_000 });
+      expect(options?.timeoutMs).toBeUndefined();
       return [buyerEvidence];
     },
   };
-  const caseFile = fixture(evidenceGapOutput(), { searchClient, maxSearches: 1 });
+  const caseFile = fixture(evidenceGapOutput(), { searchClient, enforced,
+    maxSearches: enforced ? 1 : 0, maxModelCalls: enforced ? 10 : 1 });
   const { db, workflows, coordinator, sessionId, generationCalls, errors } = caseFile;
   try {
+    if (!enforced) {
+      const session = workflows.getSession(sessionId)!;
+      db.immediateTransaction(() => workflows.updateSession(sessionId, session.revision, { remainingMs: 0 }));
+    }
     finishCollection(coordinator, sessionId);
     await waitUntil(() => generationCalls.length === 1);
     const items = workflows.listWorkItems(sessionId);

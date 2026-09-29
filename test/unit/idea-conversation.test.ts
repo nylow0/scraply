@@ -90,7 +90,7 @@ describe("idea follow-up", () => {
     expect(inputs.context.omittedEvidenceCount).toBeGreaterThan(0);
     expect(inputs.context.omittedTurnCount).toBeGreaterThan(0);
     expect(prepared.request.repairPolicy).toBe("one_retry");
-    expect(prepared.request.deadlineMs).toBe(120_000);
+    expect(prepared.request.deadlineMs).toBeUndefined();
     expect(JSON.parse(JSON.stringify(prepared.effectiveContext)).model).toEqual(model);
     expect(prepared.effectiveContext.evidence).toEqual(prepared.request.evidence);
   });
