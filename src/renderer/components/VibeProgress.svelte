@@ -64,7 +64,11 @@
   let researchFollowUp = $derived(summary.purpose === "research-followup");
   let researchView = $derived(!researchFollowUp && !(summary.ideaTargetReady
     ?? (summary.counts.attempted > 0 || accepted > 0 || detail.tasks.some(task => task.kind === "generate-ideas"))));
-  let activity = $derived([...(detail.activity ?? [])].reverse());
+  let activity = $derived.by(() => {
+    const recent = [...(detail.activity ?? [])].reverse();
+    // Transport transitions and older duplicate saves can describe the same action.
+    return recent.filter((item, index) => index === 0 || activityText(item) !== activityText(recent[index - 1]!));
+  });
   let researchHeading = $derived(terminal ? summary.outcome === "target-met" || summary.outcome === "no-qualifying-ideas" ? "Research finished" : "Research stopped"
     : summary.state === "waiting-for-review" ? "Ready for your review"
       : summary.state === "paused" ? "Research paused" : summary.purpose === "known-problem" ? "Preparing your ideas" : "Researching your brief");

@@ -30,6 +30,15 @@ function detail(summaryChanges: Partial<WorkflowSummary> = {}): WorkflowDetail {
 }
 
 describe("VibeProgress", () => {
+  test("shows one activity row for consecutive events describing the same action", () => {
+    const state = detail({ ideaTargetReady: false });
+    state.activity = ["Model request dispatched", "Model request accepted", "Model request accepted"]
+      .map((message, index) => ({ id: `event-${index}`, message, stage: "extracting", createdAt: `2026-09-23T12:00:0${index}.000Z` }));
+    const view = render(VibeProgress, { detail: state, busy: false, onPause: vi.fn(async () => {}), onStop: vi.fn(async () => {}) });
+    expect(view.getAllByText("Reading sources and extracting evidence")).toHaveLength(1);
+    expect(view.getByRole("log").querySelector("time")?.dateTime).toBe("2026-09-23T12:00:02.000Z");
+  });
+
   test("shows research activity and accessible controls until the idea assignments exist", async () => {
     const state = detail({ ideaTargetReady: false, selectedProblemIds: [] });
     state.activity = [{ id: "event-1", message: "Searching Perplexity: repair shop warranty delays", stage: "searching", createdAt: "2026-09-23T12:00:00.000Z" }];
