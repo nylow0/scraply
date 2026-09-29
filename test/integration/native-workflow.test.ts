@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { z } from "zod";
 import { DatabaseClient } from "../../src/db/client";
 import { ResearchRunRepository } from "../../src/db/repositories/research-runs";
+import { GenerationAttemptRepository } from "../../src/db/repositories/generation-attempts";
 import { ThreadRepository } from "../../src/db/repositories/threads";
 import { PreviewWorkflowResultSchema, WorkflowAdmissionReceiptSchema, WorkflowDetailSchema } from "../../src/shared/workflow-contracts";
 import { FOCUSED_EXPERIMENT_DRAFT_INSTRUCTION, FOCUSED_EXPERIMENT_REVIEW_INSTRUCTION } from "../../src/core/experiment-review";
@@ -29,6 +30,75 @@ afterEach(async () => {
 });
 
 describe("native research workflow through the production backend", () => {
+  test("acknowledged discovery recovery reuses eight harvests and nine searches without replaying confirmed work", async () => {
+    const item = await fixture({ mode: "workflow-checkpoint-recovery" });
+    const threadId = await item.createThread("explore-market");
+    const preview = await item.post("/workflows/preview", { type: "launch", threadId, draft: {
+      contractVersion: 1, purpose: "discovery", mode: "babysit", brief: scope.domain, scope,
+      runConfig: { ...DEFAULT_RUN_CONFIG, model, reasoningEffort: "xhigh", discoveryDepth: "deep", searchProvider: "exa" },
+      targets: { kind: "per-problem", ideaCount: 3 },
+      limits: { enforced: false, maxMinutes: 90, maxModelCalls: 62, maxSearches: 26 }, instructions: {},
+    } }, PreviewWorkflowResultSchema);
+    const receipt = await item.post("/workflows/start", { threadId, clientCommandId: "checkpoint-research",
+      contract: preview.proposal, previewHash: preview.previewHash, capabilityFingerprint: preview.capabilityFingerprint,
+      previewExpiresAt: preview.expiresAt }, WorkflowAdmissionReceiptSchema);
+    await item.waitFor(workspace => workspace.activeWorkflow?.state === "finished");
+    const first = await item.post(`/workflows/${receipt.sessionId}`, undefined, WorkflowDetailSchema);
+    expect(first.summary.outcome).toBe("needs-attention");
+    expect(item.requests()).toHaveLength(10);
+    expect(item.searches).toHaveLength(9);
+    const runId = (await item.workspace()).latestResearchRun!.runId;
+    const db = new DatabaseClient(item.dbPath);
+    const confirmedStageKeys = item.requests().slice(0, 9).map(request => request.workOrder.stage);
+    const originalUnknown = db.db.prepare("SELECT * FROM generation_attempts WHERE status = 'interrupted'").get();
+    const originalLedger = db.db.prepare("SELECT * FROM cost_ledger ORDER BY created_at,id").all();
+    expect(db.db.prepare("SELECT COUNT(*) AS count FROM stage_results WHERE stage_id = 'factor-harvest'").get()).toEqual({ count: 8 });
+    expect(new GenerationAttemptRepository(db).getResumeSafety(runId).canResume).toBe(false);
+    expect((await item.raw("/research/resume", { runId })).ok).toBe(false);
+    const task = first.tasks.find(task => task.kind === "discovery")!;
+    const retry = { threadId, sessionId: receipt.sessionId, clientCommandId: "checkpoint-first-retry",
+      expectedRevision: first.summary.revision, action: { type: "retry-task", taskId: task.id,
+        expectedTerminalAttemptId: task.terminalAttemptId, acknowledgeUnknownCompletion: false } };
+    expect((await item.raw("/workflows/command", retry)).ok).toBe(false);
+    const firstRetry = await item.post("/workflows/command", { ...retry, action: { ...retry.action, acknowledgeUnknownCompletion: true } }, WorkflowAdmissionReceiptSchema);
+    expect(firstRetry.sessionId).toBe(receipt.sessionId);
+    await item.waitFor(workspace => workspace.activeWorkflow?.state === "finished");
+    const second = await item.post(`/workflows/${receipt.sessionId}`, undefined, WorkflowDetailSchema);
+    expect(second.summary.outcome).toBe("needs-attention");
+    expect(second.summary.budget.modelCalls.spent).toBe(11);
+    expect(second.summary.budget.searches.spent).toBe(9);
+    expect(item.requests()).toHaveLength(11);
+    expect(item.searches).toHaveLength(9);
+    expect(item.requests()[10]!.workOrder.stage).toBe(item.requests()[9]!.workOrder.stage);
+    expect(db.db.prepare("SELECT * FROM generation_attempts WHERE id = ?").get(task.terminalAttemptId!)).toEqual(originalUnknown);
+    expect((await item.raw("/research/resume", { runId })).ok).toBe(false);
+    const nextTask = second.tasks.find(task => task.kind === "discovery")!;
+    const nextRetry = { ...retry, clientCommandId: "checkpoint-second-retry", expectedRevision: second.summary.revision,
+      action: { ...retry.action, expectedTerminalAttemptId: nextTask.terminalAttemptId } };
+    expect((await item.raw("/workflows/command", nextRetry)).ok).toBe(false);
+    expect((await item.raw("/workflows/command", { ...nextRetry, action: { ...nextRetry.action,
+      expectedTerminalAttemptId: task.terminalAttemptId, acknowledgeUnknownCompletion: true } })).ok).toBe(false);
+    await item.restart("workflow-checkpoint-recovery-complete");
+    expect((await item.raw("/research/resume", { runId })).ok).toBe(false);
+    await item.post("/workflows/command", { ...nextRetry, action: { ...nextRetry.action, acknowledgeUnknownCompletion: true } }, WorkflowAdmissionReceiptSchema);
+    const completed = await item.waitFor(workspace => workspace.activeWorkflow?.state === "waiting-for-review");
+    expect(db.db.prepare("SELECT json_extract(output_refs_json, '$.runId') AS runId FROM workflow_work_items WHERE id = ?")
+      .get(task.id)).toEqual({ runId });
+    expect(completed.activeWorkflow?.sessionId).toBe(receipt.sessionId);
+    expect(item.requests().slice(9).some(request => confirmedStageKeys.includes(request.workOrder.stage))).toBe(false);
+    expect(item.requests()[11]!.workOrder.stage).toBe(item.requests()[9]!.workOrder.stage);
+    const final = await item.post(`/workflows/${receipt.sessionId}`, undefined, WorkflowDetailSchema);
+    expect(final.summary.budget.modelCalls.spent).toBe(item.requests().length);
+    expect(final.summary.budget.searches.spent).toBe(item.searches.length);
+    expect(db.db.prepare("SELECT COUNT(*) AS count FROM generation_attempts WHERE status = 'interrupted'").get()).toEqual({ count: 2 });
+    expect(db.db.prepare("SELECT * FROM generation_attempts WHERE id = ?").get(task.terminalAttemptId!)).toEqual(originalUnknown);
+    const allLedger = db.db.prepare("SELECT * FROM cost_ledger ORDER BY created_at,id").all();
+    expect(allLedger.slice(0, originalLedger.length)).toEqual(originalLedger);
+    expect(new GenerationAttemptRepository(db).getResumeSafety(runId).canResume).toBe(true);
+    expect(db.db.prepare("SELECT COUNT(*) AS count FROM workflow_snapshots WHERE snapshot_key LIKE 'acknowledged-retry:%'").get()).toEqual({ count: 2 });
+    db.close();
+  }, 20_000);
+
   test("a lost OpenAI stream requires acknowledgement before a retry can complete research", async () => {
     const item = await fixture({ mode: "workflow-stream-interrupted-twice" });
     const threadId = await item.createThread("explore-market");
@@ -71,16 +141,18 @@ describe("native research workflow through the production backend", () => {
       expectedRevision: interruptedAgain.summary.revision, action: { type: "retry-task", taskId: failedRetryTask.id,
         expectedTerminalAttemptId: failedRetryTask.terminalAttemptId, acknowledgeUnknownCompletion: false } };
     expect((await item.raw("/workflows/command", retryAgain)).ok).toBe(false);
-    expect(item.requests()).toHaveLength(4);
+    expect(item.requests()).toHaveLength(3);
     const secondRetry = await item.post("/workflows/command", { ...retryAgain, action: { ...retryAgain.action, acknowledgeUnknownCompletion: true } }, WorkflowAdmissionReceiptSchema);
-    expect(secondRetry.sessionId).not.toBe(firstRetry.sessionId);
+    expect(secondRetry.sessionId).toBe(firstRetry.sessionId);
     expect((await item.raw("/workflows/command", { ...retryAgain, clientCommandId: "duplicate-retry", action: { ...retryAgain.action, acknowledgeUnknownCompletion: true } })).ok).toBe(false);
     const recovered = await item.waitFor(workspace => workspace.activeWorkflow?.state === "waiting-for-review");
     expect(recovered.problemCandidates).toHaveLength(1);
-    expect(recovered.activeWorkflow?.sessionId).not.toBe(receipt.sessionId);
+    expect(recovered.activeWorkflow?.sessionId).toBe(receipt.sessionId);
     const original = await item.post(`/workflows/${receipt.sessionId}`, undefined, WorkflowDetailSchema);
-    expect(original.summary.outcome).toBe("needs-attention");
-    expect(original.activity).toEqual(interrupted.activity);
+    expect(original.summary.state).toBe("waiting-for-review");
+    const history = new DatabaseClient(item.dbPath);
+    expect(history.db.prepare("SELECT COUNT(*) AS count FROM generation_attempts WHERE status IN ('interrupted','failed')").get()).toEqual({ count: 2 });
+    history.close();
   }, 15_000);
 
   test("depth-guided discovery completes beyond its call and search estimates", async () => {

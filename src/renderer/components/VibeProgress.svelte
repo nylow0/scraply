@@ -355,9 +355,9 @@
             </dl>
             {#if onRetryTask && task.terminalAttemptId && (task.state === "failed" || task.state === "unknown")}
               {#if task.state === "unknown"}
-                <label class="retry-acknowledge"><input type="checkbox" bind:checked={acknowledgedUnknown[task.id]} />I understand this request may have completed and a retry may repeat its work.</label>
+                <label class="retry-acknowledge"><input type="checkbox" bind:checked={acknowledgedUnknown[task.terminalAttemptId]} />I understand this request may have completed and a retry may repeat its work.</label>
               {/if}
-              <button type="button" class="retry-button" disabled={busy || (task.state === "unknown" && !acknowledgedUnknown[task.id])}
+              <button type="button" class="retry-button" disabled={busy || (task.state === "unknown" && !acknowledgedUnknown[task.terminalAttemptId])}
                 onclick={() => void onRetryTask(task.id, task.terminalAttemptId!, task.state === "unknown").catch(() => {})}>Retry task</button>
             {/if}
           </li>

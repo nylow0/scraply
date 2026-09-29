@@ -55,6 +55,41 @@ describe("durable generation snapshots", () => {
       })).toBeNull();
       expect(() => repository.recordTerminal(first.id, { status: "failed", terminalKind: "duplicate" }))
         .toThrow("already has a terminal result");
+      repository.markDispatched(second.id);
+      expect(repository.getResumeSafety(runId).canResume).toBe(false);
+      repository.recordTerminal(second.id, { status: "interrupted", terminalKind: "interrupted" });
+      expect(repository.getResumeSafety(runId).canResume).toBe(false);
+      const replacement = repository.prepare(runId, request("generation-newer-confirmed"), identity);
+      repository.recordTerminal(replacement.id, { status: "completed", terminalKind: "completed", output: { answer: "newer" } });
+      expect(repository.getResumeSafety(runId).canResume).toBe(true);
+
+      const lostRequest = { ...request("generation-lost"), workOrder: {
+        ...request("generation-lost").workOrder, instruction: "Return the interrupted answer.",
+      } };
+      const lost = repository.prepare(runId, lostRequest, identity);
+      repository.markDispatched(lost.id);
+      repository.recordTerminal(lost.id, { status: "interrupted", terminalKind: "interrupted",
+        attemptMetadata: { attempts: [{ providerCompletion: "unknown" }] } });
+      expect(repository.getResumeSafety(runId).canResume).toBe(false);
+      expect(repository.getResumeSafety(runId, [lost.id]).canResume).toBe(true);
+      const changedEvidence = repository.prepare(runId, { ...lostRequest, generationId: "generation-changed",
+        evidence: [{ sourceId: "source-1", content: "Changed evidence" }] }, identity);
+      repository.recordTerminal(changedEvidence.id, { status: "completed", terminalKind: "completed", output: { answer: "different" } });
+      expect(repository.getResumeSafety(runId).canResume).toBe(false);
+      const changedPrompt = repository.prepare(runId, { ...lostRequest, generationId: "generation-new-prompt" }, {
+        ...identity, compilerPrompt: { id: "scraply.stage-worker.v1", sha256: "e".repeat(64) },
+      });
+      repository.recordTerminal(changedPrompt.id, { status: "completed", terminalKind: "completed", output: { answer: "different" } });
+      expect(repository.getResumeSafety(runId).canResume).toBe(false);
+      const retry = repository.prepare(runId, { ...lostRequest, generationId: "generation-confirmed-retry" }, {
+        ...identity, runtimeSourceSha: "f".repeat(40), runtimeExecutableSha256: "a".repeat(64),
+      });
+      expect(retry.requestSha256).toBe(lost.requestSha256);
+      repository.recordTerminal(retry.id, { status: "completed", terminalKind: "completed", output: { answer: "confirmed" } });
+      expect(repository.getResumeSafety(runId).canResume).toBe(true);
+      // The confirmed matching result permits safe reuse; prior spend remains explicitly unknown.
+      expect(db.db.prepare("SELECT status, attempt_metadata_json FROM generation_attempts WHERE id = ?").get(lost.id))
+        .toEqual({ status: "interrupted", attempt_metadata_json: '{"attempts":[{"providerCompletion":"unknown"}]}' });
     } finally { db.close(); }
   });
 });

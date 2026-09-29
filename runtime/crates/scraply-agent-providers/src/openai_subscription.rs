@@ -2189,6 +2189,56 @@ mod tests {
         }
     }
 
+    async fn wait_for_test_keepalive_pong(
+        socket: &mut tokio_tungstenite::WebSocketStream<tokio::net::TcpStream>,
+    ) -> usize {
+        let mut client_pings = 0;
+        loop {
+            let message = tokio::time::timeout(Duration::from_secs(2), socket.next())
+                .await
+                .expect("client did not answer the server keepalive")
+                .unwrap()
+                .unwrap();
+            match message {
+                Message::Ping(payload) => {
+                    client_pings += 1;
+                    socket.send(Message::Pong(payload)).await.unwrap();
+                }
+                Message::Pong(payload) if payload.as_ref() == b"keepalive" => return client_pings,
+                Message::Pong(_) => {}
+                _ => panic!("unexpected model message while checking keepalive control frames"),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn websocket_duration_fixture_handles_bidirectional_keepalives() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (socket, _) = listener.accept().await.unwrap();
+            let mut socket = tokio_tungstenite::accept_async(socket).await.unwrap();
+            socket
+                .send(Message::Ping(b"keepalive".to_vec().into()))
+                .await
+                .unwrap();
+            assert_eq!(wait_for_test_keepalive_pong(&mut socket).await, 1);
+        });
+        let socket = tokio::net::TcpStream::connect(address).await.unwrap();
+        let (mut client, _) = tokio_tungstenite::client_async(format!("ws://{address}"), socket)
+            .await
+            .unwrap();
+        client.send(Message::Ping(Vec::new().into())).await.unwrap();
+        let Message::Ping(payload) = client.next().await.unwrap().unwrap() else {
+            panic!("fixture server did not send its keepalive")
+        };
+        client.send(Message::Pong(payload)).await.unwrap();
+        assert!(
+            matches!(client.next().await.unwrap().unwrap(), Message::Pong(payload) if payload.is_empty())
+        );
+        server.await.unwrap();
+    }
+
     #[tokio::test]
     #[ignore = "manual 16-minute WebSocket check; local server and fake credentials only"]
     async fn websocket_reasoning_completes_after_fifteen_minutes() {
@@ -2212,14 +2262,7 @@ mod tests {
                     .send(Message::Ping(b"keepalive".to_vec().into()))
                     .await
                     .unwrap();
-                assert!(matches!(
-                    tokio::time::timeout(Duration::from_secs(2), socket.next())
-                        .await
-                        .unwrap()
-                        .unwrap()
-                        .unwrap(),
-                    Message::Pong(_)
-                ));
+                wait_for_test_keepalive_pong(&mut socket).await;
             }
             socket
                 .send(Message::Text(
@@ -2239,13 +2282,18 @@ mod tests {
                 .unwrap();
         });
         let provider = local_test_provider(address).await;
-        let result = provider
-            .generate(
+        let started = Instant::now();
+        let result = tokio::time::timeout(
+            Duration::from_secs(940),
+            provider.generate(
                 generation_request("gpt-6-astra"),
                 &OperationControl::until_cancelled(scraply_agent_core::CancellationToken::new()),
-            )
-            .await
-            .unwrap();
+            ),
+        )
+        .await
+        .expect("WebSocket fixture did not complete within 940 seconds")
+        .unwrap();
+        assert!(started.elapsed() >= Duration::from_secs(915));
         assert_eq!(result.output, b"{}");
         server.await.unwrap();
     }

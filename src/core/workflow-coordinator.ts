@@ -1,5 +1,6 @@
 import type { DatabaseClient } from "../db/client";
 import { DiscoveryRepository } from "../db/repositories/discovery";
+import { GenerationAttemptRepository } from "../db/repositories/generation-attempts";
 import { OpportunityRepository } from "../db/repositories/opportunities";
 import { WorkflowRepository, type WorkflowSession, type WorkflowWorkItem } from "../db/repositories/workflows";
 import { canonicalJson, sha256 } from "../shared/content-identity";
@@ -371,7 +372,11 @@ export class WorkflowCoordinator {
         + (kind === "model-call" ? this.repository.countProviderAttempts(runId) : this.searchAttemptCount(runId)), 0);
       return {
         limit,
-        spent: liveUsage + matching.filter((entry) => entry.state === "spent").reduce((total, entry) => total + (entry.settledUnits ?? 0), 0),
+        spent: liveUsage + matching.filter((entry) => {
+          const item = items.find(item => item.id === entry.workItemId);
+          return entry.state === "spent" && (!item || !liveRunIds.has(runIdFromItem(item) ?? ""));
+        })
+          .reduce((total, entry) => total + (entry.settledUnits ?? 0), 0),
         reserved: matching.filter((entry) => entry.state === "reserved").reduce((total, entry) => total + entry.reservedUnits, 0),
         uncertain: matching.filter((entry) => entry.state === "uncertain").reduce((total, entry) => total + entry.reservedUnits, 0),
       };
@@ -723,6 +728,33 @@ export class WorkflowCoordinator {
       throw new AppError("conflict", "This attempt already has a retry. Open its latest attempt to continue.");
     }
     const contract = WorkflowLaunchContractSchema.parse(original.contract);
+    if (task.kind === "discovery" && ambiguous && contract.limits.enforced === false) {
+      const latest = terminalAttempt(this.options.db, task);
+      if (latest?.id !== attempt.id) throw new AppError("INVALID_REFERENCE", "Acknowledge the latest failed model request.");
+      const unresolved = new GenerationAttemptRepository(this.options.db).unresolvedAttemptIds(runId);
+      const audit = this.options.db.db.prepare(`SELECT value_json FROM workflow_snapshots
+        WHERE research_run_id = ? AND snapshot_key LIKE 'acknowledged-retry:%'`)
+        .all(runId) as Array<{ value_json: string }>;
+      const priorIds = new Set(audit.flatMap(row => (JSON.parse(row.value_json) as { attemptIds: string[] }).attemptIds));
+      const acknowledgedAttemptIds = unresolved.filter(id => id === attempt.id || priorIds.has(id));
+      if (acknowledgedAttemptIds.length !== unresolved.length) throw new AppError("UNKNOWN_COMPLETION");
+      await this.assertModelAvailable(contract.runConfig.model, contract.runConfig.reasoningEffort);
+      this.requireProjectIdle(request.threadId);
+      const receipt = this.options.db.immediateTransaction(() => {
+        this.repository.reopenUnknownDiscovery(original.id, request.expectedRevision, task.id);
+        this.options.db.db.prepare("INSERT INTO workflow_snapshots VALUES (?, ?, ?)").run(runId,
+          `acknowledged-retry:${request.clientCommandId}`, canonicalJson({ attemptIds: acknowledgedAttemptIds,
+            taskId: task.id, terminalAttemptId: attempt.id, acknowledgedAt: new Date().toISOString() }));
+        const result = this.receipt(original.id);
+        this.repository.recordCommand({ threadId: request.threadId, sessionId: original.id,
+          clientCommandId: request.clientCommandId, payload: request, result });
+        return result;
+      });
+      this.progress(original.id, [task.id]);
+      void this.options.engine().resumeRun(runId, acknowledgedAttemptIds)
+        .catch(error => this.failDispatch(original.id, task.id, error));
+      return receipt;
+    }
     const originalItems = this.repository.listWorkItems(original.id);
     const generationItems = originalItems.filter((item) => item.kind === "generate-ideas");
     const pendingGeneration = task.kind === "generate-ideas"

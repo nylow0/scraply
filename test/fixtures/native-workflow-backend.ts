@@ -48,6 +48,10 @@ export async function startNativeWorkflowBackend(directory: string, options: {
     }
     const hosts = body.includeDomains ?? ["survey.example.test", "log.example.test"];
     const contrary = body.query.includes("already solved");
+    if (options.mode?.startsWith("workflow-checkpoint-recovery")) return Response.json({ results: Array.from({ length: 6 }, (_, index) => ({
+      id: `${body.query}-${index}`, url: `https://survey-${index}.example.test/${encodeURIComponent(body.query)}`,
+      title: `Synthetic delivery report ${index}`, text: `Parts delivery windows are uncertain.\n${"Verified source detail. ".repeat(95)}`,
+    })) });
     return Response.json({ results: hosts.map((host, index) => ({
       id: `${host}-${contrary}`, url: `https://${host}/${contrary ? "contrary" : "delivery"}`,
       title: `Synthetic delivery report ${index}`,

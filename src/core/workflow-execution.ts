@@ -21,7 +21,8 @@ export class WorkflowExecution {
   private readonly disableRepair: boolean;
   private readonly factorUncertainty = new Map<string, string>();
 
-  constructor(private readonly db: DatabaseClient, readonly runId: string) {
+  constructor(private readonly db: DatabaseClient, readonly runId: string,
+    private readonly acknowledgedAttemptIds: readonly string[] = []) {
     this.repository = new WorkflowV2Repository(db);
     const run = db.db.prepare(`SELECT rr.purpose, ws.contract_json FROM research_runs rr
       LEFT JOIN workflow_sessions ws ON ws.id = rr.workflow_session_id WHERE rr.id = ?`)
@@ -136,9 +137,10 @@ export class WorkflowExecution {
         stageId,
         selectionId,
         context,
+        acknowledgedAttemptIds: this.acknowledgedAttemptIds,
         identity: { promptSha256: prompt.resolvedSha256, schema: request.jsonSchema, inputs: request.workOrder.inputs, evidence },
       });
-      if (previous.kind === "unknown-completion") throw new Error("A generation may have completed before interruption. Start a new run to avoid replaying it.");
+      if (previous.kind === "unknown-completion") throw new Error("A generation may have completed before interruption. Review this request before explicitly retrying it.");
       const recovered = previous.kind === "not-started"
         ? this.recoverCompletedStage(request)
         : null;

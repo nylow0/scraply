@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { GenerationAttemptRepository } from "./generation-attempts";
 import { canonicalJson, sha256 } from "../../shared/content-identity";
 import type { RunConfig } from "../../shared/schemas";
 import type { DatabaseClient } from "../client";
@@ -352,6 +353,24 @@ export class WorkflowRepository {
     return this.requireSession(id);
   }
 
+  /** Explicit recovery keeps run-local checkpoints and all prior attempt/accounting records. */
+  reopenUnknownDiscovery(sessionId: string, expectedRevision: number, taskId: string): WorkflowSession {
+    this.client.requireImmediateTransaction();
+    const session = this.requireSession(sessionId);
+    const task = this.requireWorkItemInSession(taskId, sessionId);
+    if (session.revision !== expectedRevision || session.state !== "finished" || session.outcome !== "needs-attention"
+      || task.kind !== "discovery" || !["unknown", "failed"].includes(task.state)
+      || (session.contract as { limits?: { enforced?: boolean } }).limits?.enforced !== false) {
+      throw new WorkflowConflictError("REVISION_CONFLICT", "Only a settled guided discovery with an unknown result can reopen");
+    }
+    this.client.db.prepare(`UPDATE workflow_work_items SET state = 'running', error_json = NULL,
+      finished_at = NULL WHERE id = ?`).run(taskId);
+    this.client.db.prepare(`UPDATE workflow_sessions SET state = 'running', outcome = NULL,
+      running_since = ?, finished_at = NULL, revision = revision + 1 WHERE id = ? AND revision = ?`)
+      .run(new Date().toISOString(), sessionId, expectedRevision);
+    return this.requireSession(sessionId);
+  }
+
   getCommand(threadId: string, clientCommandId: string): WorkflowCommand | null {
     const row = this.client.db.prepare(`
       SELECT * FROM workflow_commands WHERE thread_id = ? AND client_command_id = ?
@@ -538,9 +557,7 @@ export class WorkflowRepository {
   }
 
   hasUnknownProviderCompletion(runId: string): boolean {
-    return Boolean(this.client.db.prepare(`SELECT 1 FROM generation_attempts WHERE research_run_id = ?
-      AND (status IN ('dispatched','accepted') OR (status = 'interrupted' AND terminal_kind IS NOT 'never-dispatched'))
-      LIMIT 1`).get(runId));
+    return !new GenerationAttemptRepository(this.client).getResumeSafety(runId).canResume;
   }
 
   settleBudget(id: string, input: {
