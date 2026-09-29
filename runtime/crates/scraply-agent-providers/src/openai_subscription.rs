@@ -23,9 +23,17 @@ use scraply_agent_core::{
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::{collections::BTreeMap, path::PathBuf, sync::Arc, time::Duration};
+use std::{
+    collections::BTreeMap,
+    path::PathBuf,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 use tokio_tungstenite::tungstenite::{
-    Error as WebSocketError, Message, client::IntoClientRequest, protocol::WebSocketConfig,
+    Error as WebSocketError, Message,
+    client::IntoClientRequest,
+    error::ProtocolError,
+    protocol::{CloseFrame, WebSocketConfig},
 };
 
 pub const OPENAI_SUBSCRIPTION_PROVIDER_ID: &str = "openai-subscription";
@@ -641,18 +649,38 @@ impl OpenAiSubscription {
                     .expect("generation body is an object")
                     .remove("stream");
                 body["type"] = json!("response.create");
+                let now = Instant::now();
+                let activity = WebsocketActivity {
+                    started: now,
+                    last_text: now,
+                    sent_pings: 0,
+                    received_pings: 0,
+                    received_pongs: 0,
+                };
                 socket
                     .send(Message::Text(body.to_string().into()))
                     .await
-                    .map_err(|_| {
-                        let mut error = websocket_interrupted();
+                    .map_err(|error| {
+                        let mut error = websocket_interrupted(
+                            WebsocketTermination::Error(&error),
+                            Some(&activity),
+                        );
                         error.request_id = request_id.clone();
                         error
                     })?;
+                // Keep silent reasoning visible to idle network paths without replaying the work order.
+                let heartbeat_interval = Duration::from_secs(30);
+                let mut heartbeat = tokio::time::interval_at(
+                    tokio::time::Instant::now() + heartbeat_interval,
+                    heartbeat_interval,
+                );
+                heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
                 Ok(SubscriptionStream::Websocket {
                     socket: Box::new(socket),
                     request_id,
                     expected_model: request.model.model_id.clone(),
+                    heartbeat,
+                    activity,
                 })
             }
             // These handshake rejections establish that no response.create was dispatched.
@@ -697,6 +725,8 @@ enum SubscriptionStream {
         socket: Box<WebSocketConnection>,
         request_id: Option<String>,
         expected_model: String,
+        heartbeat: tokio::time::Interval,
+        activity: WebsocketActivity,
     },
 }
 
@@ -709,7 +739,7 @@ impl SubscriptionStream {
     }
 
     async fn next(&mut self) -> Option<Result<ResponseEvent, ProviderError>> {
-        let (socket, request_id, expected_model) = match self {
+        let (socket, request_id, expected_model, heartbeat, activity) = match self {
             Self::Http(stream) => {
                 return stream
                     .next()
@@ -720,22 +750,50 @@ impl SubscriptionStream {
                 socket,
                 request_id,
                 expected_model,
-            } => (socket, request_id, expected_model),
+                heartbeat,
+                activity,
+            } => (socket, request_id, expected_model, heartbeat, activity),
         };
         loop {
-            let message = match socket.next().await {
-                Some(Ok(message)) => message,
-                _ => return Some(Err(websocket_interrupted())),
+            let message = tokio::select! {
+                message = socket.next() => match message {
+                    Some(Ok(message)) => message,
+                    Some(Err(error)) => return Some(Err(websocket_interrupted(WebsocketTermination::Error(&error), Some(activity)))),
+                    None => return Some(Err(websocket_interrupted(WebsocketTermination::Eof, Some(activity)))),
+                },
+                _ = heartbeat.tick() => {
+                    if let Err(error) = socket.send(Message::Ping(Vec::new().into())).await {
+                        return Some(Err(websocket_interrupted(WebsocketTermination::Error(&error), Some(activity))));
+                    }
+                    activity.sent_pings = activity.sent_pings.saturating_add(1);
+                    continue;
+                }
             };
             let text = match message {
                 Message::Ping(payload) => {
-                    if socket.send(Message::Pong(payload)).await.is_err() {
-                        return Some(Err(websocket_interrupted()));
+                    activity.received_pings = activity.received_pings.saturating_add(1);
+                    if let Err(error) = socket.send(Message::Pong(payload)).await {
+                        return Some(Err(websocket_interrupted(
+                            WebsocketTermination::Error(&error),
+                            Some(activity),
+                        )));
                     }
                     continue;
                 }
-                Message::Text(text) => text,
-                Message::Close(_) => return Some(Err(websocket_interrupted())),
+                Message::Pong(_) => {
+                    activity.received_pongs = activity.received_pongs.saturating_add(1);
+                    continue;
+                }
+                Message::Text(text) => {
+                    activity.last_text = Instant::now();
+                    text
+                }
+                Message::Close(frame) => {
+                    return Some(Err(websocket_interrupted(
+                        WebsocketTermination::PeerClose(frame.as_ref()),
+                        Some(activity),
+                    )));
+                }
                 _ => continue,
             };
             let event = match serde_json::from_str::<SubscriptionEvent>(&text) {
@@ -936,13 +994,84 @@ fn invalid_websocket_request() -> ProviderError {
     )
 }
 
-fn websocket_interrupted() -> ProviderError {
+struct WebsocketActivity {
+    started: Instant,
+    last_text: Instant,
+    sent_pings: u64,
+    received_pings: u64,
+    received_pongs: u64,
+}
+
+enum WebsocketTermination<'a> {
+    PeerClose(Option<&'a CloseFrame>),
+    Error(&'a WebSocketError),
+    Eof,
+}
+
+fn websocket_interrupted(
+    termination: WebsocketTermination<'_>,
+    activity: Option<&WebsocketActivity>,
+) -> ProviderError {
+    let category = match termination {
+        WebsocketTermination::PeerClose(Some(frame)) => format!(
+            "peer-close code {} reason {}",
+            u16::from(frame.code),
+            websocket_close_reason_category(&frame.reason)
+        ),
+        WebsocketTermination::PeerClose(None) => "peer-close without status".into(),
+        WebsocketTermination::Eof => "EOF without close frame".into(),
+        WebsocketTermination::Error(error) => {
+            let kind = match error {
+                WebSocketError::Io(error) => format!("io {:?}", error.kind()),
+                WebSocketError::Protocol(ProtocolError::ResetWithoutClosingHandshake) => {
+                    "protocol-reset-without-close".into()
+                }
+                WebSocketError::Protocol(_) => "protocol".into(),
+                WebSocketError::Tls(_) => "tls".into(),
+                WebSocketError::Capacity(_) => "capacity".into(),
+                WebSocketError::ConnectionClosed => "connection-closed".into(),
+                WebSocketError::AlreadyClosed => "already-closed".into(),
+                _ => "other".into(),
+            };
+            format!("transport-error {kind}")
+        }
+    };
+    let mut detail = format!(
+        "The OpenAI response stream ended before confirming completion. Completion and usage are unknown; review before retrying. WebSocket: {category}."
+    );
+    if let Some(activity) = activity {
+        detail.push_str(&format!(" Sent pings {}, received pings {}, received pongs {}; elapsed {} ms, text silence {} ms.", activity.sent_pings, activity.received_pings, activity.received_pongs, activity.started.elapsed().as_millis(), activity.last_text.elapsed().as_millis()));
+    }
     ProviderError::new(
         OPENAI_SUBSCRIPTION_PROVIDER_ID,
         ProviderErrorCode::Transport,
         true,
-        "OpenAI closed the response stream before confirming completion. Completion and usage are unknown; review before retrying.",
+        detail,
     )
+}
+
+fn websocket_close_reason_category(reason: &str) -> &'static str {
+    let reason = reason.to_ascii_lowercase();
+    if reason.is_empty() {
+        "empty"
+    } else if reason.contains("idle")
+        && (reason.contains("timeout") || reason.contains("timed out"))
+    {
+        "idle-timeout"
+    } else if reason.contains("connection limit")
+        || reason.contains("duration")
+        || reason.contains("lifetime")
+    {
+        "connection-duration-limit"
+    } else if reason.contains("restart") {
+        "service-restart"
+    } else if reason.contains("rate limit") {
+        "rate-limit"
+    } else if reason.contains("timeout") || reason.contains("timed out") {
+        "timeout"
+    } else {
+        "other"
+    }
 }
 
 #[async_trait]
@@ -1900,9 +2029,164 @@ mod tests {
             .unwrap_err();
         assert_eq!(error.code, ProviderErrorCode::Transport);
         assert!(error.detail.contains("Completion and usage are unknown"));
+        assert!(error.detail.contains("transport-error protocol"));
         assert!(!error.detail.contains("private output"));
         assert_eq!(error.request_id.as_deref(), Some("req_ws-disconnect"));
         server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn websocket_close_diagnostics_keep_only_safe_categories_and_activity() {
+        use tokio_tungstenite::tungstenite::protocol::{CloseFrame, frame::coding::CloseCode};
+        for (frame, expected) in [
+            (
+                Some(CloseFrame {
+                    code: CloseCode::Away,
+                    reason: "Idle timeout: private secret material".into(),
+                }),
+                "peer-close code 1001 reason idle-timeout",
+            ),
+            (
+                Some(CloseFrame {
+                    code: CloseCode::Error,
+                    reason: "private secret material".into(),
+                }),
+                "peer-close code 1011 reason other",
+            ),
+            (None, "peer-close without status"),
+        ] {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let server = tokio::spawn(async move {
+                let (socket, _) = listener.accept().await.unwrap();
+                let mut socket = tokio_tungstenite::accept_async(socket).await.unwrap();
+                assert!(socket.next().await.unwrap().unwrap().is_text());
+                socket
+                    .send(Message::Text(
+                        json!({"type":"response.created","response":{"id":"response-close-test"}})
+                            .to_string()
+                            .into(),
+                    ))
+                    .await
+                    .unwrap();
+                socket
+                    .send(Message::Ping(b"private secret material".to_vec().into()))
+                    .await
+                    .unwrap();
+                assert!(matches!(
+                    socket.next().await.unwrap().unwrap(),
+                    Message::Pong(_)
+                ));
+                socket
+                    .send(Message::Pong(b"private secret material".to_vec().into()))
+                    .await
+                    .unwrap();
+                socket.send(Message::Close(frame)).await.unwrap();
+                assert!(
+                    tokio::time::timeout(Duration::from_millis(100), listener.accept())
+                        .await
+                        .is_err(),
+                    "unknown completion was replayed"
+                );
+            });
+            let provider = local_test_provider(address).await;
+            let error = tokio::time::timeout(
+                Duration::from_secs(5),
+                provider.generate_request(&generation_request("gpt-6-astra")),
+            )
+            .await
+            .unwrap()
+            .unwrap_err();
+            assert_eq!(error.code, ProviderErrorCode::Transport);
+            assert!(error.detail.contains("Completion and usage are unknown"));
+            assert!(error.detail.contains(expected), "{}", error.detail);
+            assert!(error.detail.contains("received pings 1, received pongs 1"));
+            assert!(error.detail.contains("text silence"));
+            assert!(!error.detail.contains("private secret material"));
+            assert_eq!(error.request_id.as_deref(), Some("response-close-test"));
+            server.await.unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn websocket_client_ping_keeps_silent_connection_alive_without_server_pings() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (socket, _) = listener.accept().await.unwrap();
+            let mut socket = tokio_tungstenite::accept_async(socket).await.unwrap();
+            assert!(socket.next().await.unwrap().unwrap().is_text());
+            socket
+                .send(Message::Text(
+                    json!({"type":"response.created","response":{"id":"response-client-ping"}})
+                        .to_string()
+                        .into(),
+                ))
+                .await
+                .unwrap();
+            let ping = tokio::time::timeout(Duration::from_secs(35), socket.next())
+                .await
+                .expect("silent connection received no client heartbeat")
+                .unwrap()
+                .unwrap();
+            let Message::Ping(payload) = ping else {
+                panic!("expected a control ping, not a second assignment")
+            };
+            assert!(payload.is_empty());
+            socket.send(Message::Pong(payload)).await.unwrap();
+            socket
+                .send(Message::Text(
+                    json!({"type":"response.output_text.delta","delta":"{}"})
+                        .to_string()
+                        .into(),
+                ))
+                .await
+                .unwrap();
+            socket
+                .send(Message::Text(
+                    json!({"type":"response.completed","response":{"id":"response-client-ping"}})
+                        .to_string()
+                        .into(),
+                ))
+                .await
+                .unwrap();
+        });
+        let provider = local_test_provider(address).await;
+        let response = tokio::time::timeout(
+            Duration::from_secs(35),
+            provider.generate_request(&generation_request("gpt-6-astra")),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(response.output, b"{}");
+        server.await.unwrap();
+    }
+
+    #[test]
+    fn websocket_termination_diagnostics_never_echo_transport_errors() {
+        let io_error = WebSocketError::Io(std::io::Error::new(
+            std::io::ErrorKind::ConnectionReset,
+            "private secret material",
+        ));
+        let reset_error = WebSocketError::Protocol(ProtocolError::ResetWithoutClosingHandshake);
+        for (termination, expected) in [
+            (WebsocketTermination::Eof, "EOF without close frame"),
+            (
+                WebsocketTermination::Error(&io_error),
+                "transport-error io ConnectionReset",
+            ),
+            (
+                WebsocketTermination::Error(&reset_error),
+                "transport-error protocol-reset-without-close",
+            ),
+        ] {
+            let error = websocket_interrupted(termination, None);
+            assert_eq!(error.code, ProviderErrorCode::Transport);
+            assert!(error.detail.contains(expected));
+            assert!(!error.detail.contains("private secret material"));
+            assert!(error.detail.len() <= 512);
+        }
     }
 
     #[tokio::test]
