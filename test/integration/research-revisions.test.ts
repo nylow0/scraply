@@ -274,8 +274,8 @@ describe("research snapshot materialization", () => {
     client.close();
   });
 
-  test("late queued research stops before dispatch when the project time is exhausted", async () => {
-    const { client, repository, sessionId, snapshotId } = workflowFixture();
+  test.each([true, false])("queued research respects exhausted project time only when enforced = %s", async (enforced) => {
+    const { client, repository, sessionId, snapshotId } = workflowFixture({ enforced });
     const dispatched: string[] = [];
     const service = new ResearchRequestService({
       db: client, engine: () => ({ resumeRun: async (id: string) => { dispatched.push(id); } }),
@@ -296,9 +296,41 @@ describe("research snapshot materialization", () => {
     const runId = (repository.getWorkItem(first.workItemId)!.outputRefs as { runId: string }).runId;
     client.db.prepare("UPDATE research_runs SET status = 'completed' WHERE id = ?").run(runId);
     await service.handleRunEvent({ type: "run-completed", runId, threadId: "project-1", problemId: null });
+    expect(dispatched).toHaveLength(enforced ? 1 : 2);
+    expect(repository.getWorkItem(second.workItemId)?.state).toBe(enforced ? "failed" : "running");
+    expect(repository.getSession(sessionId)?.state).toBe(enforced ? "waiting-for-review" : "running");
+    client.close();
+  });
+
+  test("guided research can be added, completed, and applied after all session estimates are spent", async () => {
+    const { client, repository, sessionId, snapshotId } = workflowFixture({ enforced: false, maxModelCalls: 1, maxSearches: 0 });
+    client.immediateTransaction(() => repository.updateSession(sessionId, repository.getSession(sessionId)!.revision, {
+      remainingMs: 0,
+    }));
+    const dispatched: string[] = [];
+    const service = new ResearchRequestService({
+      db: client, engine: () => ({ resumeRun: async (id: string) => { dispatched.push(id); } }),
+      modelClient: () => { throw new Error("No direct model call expected"); },
+    });
+    const admitted = client.immediateTransaction(() => service.admitRequest(sessionId, repository.getSession(sessionId)!.revision, {
+      type: "request-research", kind: "new-question", question: "What do buyers use today?",
+      baseSnapshotId: snapshotId, model: { providerId: "openai-subscription", modelId: "test-model" },
+      reasoningEffort: "medium", allowance: { maxModelCalls: 12, maxSearches: 10, maxMinutes: 10 },
+    }));
+    await service.dispatchReady(sessionId);
     expect(dispatched).toHaveLength(1);
-    expect(repository.getWorkItem(second.workItemId)?.state).toBe("failed");
-    expect(repository.getSession(sessionId)?.state).toBe("waiting-for-review");
+    const runId = dispatched[0]!;
+    const run = client.db.prepare("SELECT config_json FROM research_runs WHERE id = ?").get(runId) as { config_json: string };
+    expect(JSON.parse(run.config_json).maxRunMinutes).toBe(10);
+    saveRunFinding(client, runId, "guided-finding", "guided-source", "guided-factor", "Buyers use spreadsheets");
+    client.db.prepare("UPDATE research_runs SET status = 'completed' WHERE id = ?").run(runId);
+    await service.handleRunEvent({ type: "run-completed", runId, threadId: "project-1", problemId: null });
+    expect(repository.getWorkItem(admitted.workItemId)?.state).toBe("succeeded");
+    const applied = client.immediateTransaction(() => service.applyResearch(sessionId, repository.getSession(sessionId)!.revision, {
+      type: "apply-research", baseSnapshotId: snapshotId, includedRequestIds: [admitted.workItemId], replacements: [],
+    }));
+    expect(applied.snapshot.selection.sourceProblemIds).toContain("guided-finding");
+    expect(repository.getSnapshot(snapshotId)).not.toBeNull();
     client.close();
   });
 
@@ -673,7 +705,7 @@ test("finished Controlled research command survives backend reopening with linke
 });
 
 function workflowFixture(options: { researchInstruction?: string; auditResearchText?: string;
-  mode?: "babysit" | "vibe"; maxSearches?: number } = {}, directory?: string): {
+  mode?: "babysit" | "vibe"; maxModelCalls?: number; maxSearches?: number; enforced?: boolean } = {}, directory?: string): {
   client: DatabaseClient; repository: WorkflowRepository; sessionId: string; snapshotId: string; oldProblemId: string;
 } {
   const client = setup(directory);
@@ -687,7 +719,8 @@ function workflowFixture(options: { researchInstruction?: string; auditResearchT
       scope: { title: "Operations", audience: "Small teams", domain: "Filing", observations: "Manual entries repeat", offLimits: [] },
       runConfig: DEFAULT_RUN_CONFIG,
       targets: { kind: "per-problem", ideaCount: 3 },
-      limits: { maxMinutes: 60, maxModelCalls: 50, maxSearches: options.maxSearches ?? 30 },
+      limits: { ...(options.enforced === undefined ? {} : { enforced: options.enforced }),
+        maxMinutes: 60, maxModelCalls: options.maxModelCalls ?? 50, maxSearches: options.maxSearches ?? 30 },
       instructions: { ...(options.researchInstruction ? { research: options.researchInstruction } : {}) },
       resolvedInstructions: { research: options.auditResearchText ?? "", ideas: "", review: "" },
       instructionHashes: { research: "hash-research", ideas: "hash-ideas", review: "hash-review" },

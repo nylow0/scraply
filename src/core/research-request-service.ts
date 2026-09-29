@@ -102,9 +102,10 @@ export class ResearchRequestService {
     const contract = WorkflowLaunchContractSchema.parse(session.contract);
     const totals = this.repository.getBudgetTotals(sessionId);
     const limits = this.sessionLimits(session, contract.limits);
-    if (totals.modelCalls.spent + totals.modelCalls.reserved + totals.modelCalls.uncertain + draft.allowance.maxModelCalls > limits.maxModelCalls
+    // Guided sessions have no shared cutoff; the explicit request allowance still applies.
+    if (contract.limits.enforced !== false && (totals.modelCalls.spent + totals.modelCalls.reserved + totals.modelCalls.uncertain + draft.allowance.maxModelCalls > limits.maxModelCalls
       || totals.searches.spent + totals.searches.reserved + totals.searches.uncertain + draft.allowance.maxSearches > limits.maxSearches
-      || remainingMs(session) < draft.allowance.maxMinutes * 60_000) {
+      || remainingMs(session) < draft.allowance.maxMinutes * 60_000)) {
       throw new AppError("BUDGET_TOO_SMALL", "The request exceeds this project's remaining work allowance. Extend the budget or reduce the request.");
     }
     const ordinal = this.repository.listWorkItems(sessionId).length;
@@ -224,7 +225,8 @@ export class ResearchRequestService {
       const input = item.input as RequestInput;
       const action = input.action;
       const contract = WorkflowLaunchContractSchema.parse(session.contract);
-      const effectiveMinutes = Math.floor(remainingMs(session) / 60_000);
+      const effectiveMinutes = contract.limits.enforced === false
+        ? action.allowance.maxMinutes : Math.floor(remainingMs(session) / 60_000);
       if (effectiveMinutes < 5) {
         const error = new AppError("BUDGET_TOO_SMALL", "The remaining project time is too short to start this research request.");
         for (const queued of items.filter((candidate) => candidate.kind === "research-request" && candidate.state === "ready")) {
