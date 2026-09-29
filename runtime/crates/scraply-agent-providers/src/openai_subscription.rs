@@ -958,11 +958,37 @@ fn map_api_error(error: ApiError) -> ProviderError {
             true,
             "OpenAI is temporarily overloaded",
         ),
-        ApiError::Stream(_) => ProviderError::new(
+        ApiError::Stream(message) => ProviderError::new(
             OPENAI_SUBSCRIPTION_PROVIDER_ID,
             ProviderErrorCode::Transport,
             true,
-            "OpenAI response stream was interrupted",
+            // Match upstream's stable categories, never expose a raw stream body or decoder error.
+            match message.as_str() {
+                "stream closed before response.completed" => {
+                    "OpenAI closed the response stream before confirming completion. Completion and usage are unknown; review before retrying."
+                }
+                "idle timeout waiting for SSE" => {
+                    "The OpenAI connection stopped delivering response events. Completion and usage are unknown; review before retrying."
+                }
+                "response.failed event received" => {
+                    "OpenAI reported a failed response without a specific reason."
+                }
+                "Incomplete response returned, reason: max_output_tokens" => {
+                    "OpenAI returned an incomplete response because its output token limit was reached."
+                }
+                "Incomplete response returned, reason: content_filter" => {
+                    "OpenAI returned an incomplete response because of content filtering."
+                }
+                _ if message.starts_with("Incomplete response returned, reason:") => {
+                    "OpenAI returned an incomplete response without a recognized reason."
+                }
+                _ if message.starts_with("failed to parse ResponseCompleted:") => {
+                    "OpenAI sent a completion event that could not be decoded. Completion and usage could not be confirmed."
+                }
+                _ => {
+                    "The OpenAI response stream could not be read. Completion and usage are unknown; review before retrying."
+                }
+            },
         ),
         ApiError::Retryable { .. } => ProviderError::new(
             OPENAI_SUBSCRIPTION_PROVIDER_ID,
@@ -1062,6 +1088,61 @@ mod tests {
             .to_string(),
         )
         .unwrap()
+    }
+
+    #[tokio::test]
+    async fn truncated_response_stream_reports_missing_completion_without_replaying() {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            socket
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut request = Vec::new();
+            let mut buffer = [0_u8; 4096];
+            loop {
+                let count = socket.read(&mut buffer).unwrap();
+                assert!(count > 0);
+                request.extend_from_slice(&buffer[..count]);
+                if let Some(end) = request.windows(4).position(|part| part == b"\r\n\r\n") {
+                    let headers = String::from_utf8_lossy(&request[..end]);
+                    let length = headers
+                        .lines()
+                        .find_map(|line| {
+                            let (name, value) = line.split_once(':')?;
+                            name.eq_ignore_ascii_case("content-length")
+                                .then(|| value.trim().parse::<usize>().unwrap())
+                        })
+                        .unwrap_or(0);
+                    if request.len() >= end + 4 + length {
+                        break;
+                    }
+                }
+            }
+            let body = "data: {\"type\":\"response.created\",\"response\":{\"id\":\"response-test\"}}\n\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"partial private output\"}\n\n";
+            write!(socket, "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body).unwrap();
+        });
+        let mut provider = OpenAiSubscription::ephemeral().await.unwrap();
+        provider.base_url = format!("http://{address}");
+        let mut auth = test_session_credential().deserialize_auth().unwrap();
+        auth.last_refresh = Some("2026-09-29T00:00:00Z".parse().unwrap());
+        provider
+            .set_session_credential(OpenAiSessionCredential::from_auth(&auth).unwrap())
+            .await
+            .unwrap();
+        let error = provider
+            .generate_request(&generation_request("gpt-test"))
+            .await
+            .unwrap_err();
+        server.join().unwrap();
+        assert_eq!(error.code, ProviderErrorCode::Transport);
+        assert_eq!(
+            error.detail,
+            "OpenAI closed the response stream before confirming completion. Completion and usage are unknown; review before retrying."
+        );
+        assert!(!error.detail.contains("private output"));
     }
 
     #[tokio::test]
@@ -1212,7 +1293,7 @@ mod tests {
                 ApiError::Stream("secret streamed provider payload".to_owned()),
                 ProviderErrorCode::Transport,
                 true,
-                "OpenAI response stream was interrupted",
+                "The OpenAI response stream could not be read. Completion and usage are unknown; review before retrying.",
             ),
             (
                 ApiError::Retryable {

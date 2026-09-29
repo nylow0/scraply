@@ -41,6 +41,10 @@ export interface PlannedQuery { query: string; intent: QueryIntent | "unclassifi
 export const FACTOR_SUBJECT_MAX_CHARACTERS = 160;
 export const FACTOR_BEHAVIOR_MAX_CHARACTERS = 280;
 export const DEFAULT_AUDIENCE_DOMAINS = ["reddit.com", "news.ycombinator.com"];
+// Bound a single extraction assignment, not the amount of research in a run.
+const GUIDED_HARVEST_SOURCES = 6;
+const GUIDED_HARVEST_CHARACTERS = 18_000;
+const GUIDED_HARVEST_FACTORS = 12;
 
 export interface HarvestedSource extends DiscoverySourceRecord {
   url: string;
@@ -98,6 +102,7 @@ export interface DiscoveryDependencies {
   depth?: DiscoveryDepth;
   /** Depth suggests search breadth; a useful plan can contain fewer or more queries. */
   guided?: boolean;
+  smallHarvestBatches?: boolean;
   audienceSearch?: Pick<SearchOptions, "includeDomains" | "startPublishedDate"> & { category?: ExaCategory };
   candidateLimit?: number;
   signal?: AbortSignal;
@@ -119,6 +124,7 @@ export async function harvestFactors(
 ): Promise<HarvestResult> {
   const depth = dependencies.depth ?? "standard";
   const depthConfig = DISCOVERY_DEPTHS[depth];
+  const smallBatches = dependencies.guided && dependencies.smallHarvestBatches !== false;
   const allSources: HarvestedSource[] = [];
   const rawFactors: Array<Omit<HarvestedFactor, "source">> = [];
   const rejections: FactorRejection[] = [];
@@ -141,13 +147,17 @@ export async function harvestFactors(
     let acceptedForMode = 0;
     const harvest = async (sources: HarvestedSource[], targetAccepted: number) => {
       const sourceById = new Map(allSources.map((source) => [source.id, source]));
-      // Audience searches return heterogeneous long-form discussions. Smaller packets keep
-      // extraction focused while preserving deterministic source groups.
-      const batches = batchSources(sources, mode === "audience" ? AUDIENCE_SOURCE_BATCH_CHARACTERS : SOURCE_BATCH_CHARACTERS);
+      // Keep older contracts' packet identities. Guided runs checkpoint smaller assignments
+      // so one long reasoning call does not carry the entire search result.
+      const batches = batchSources(sources, smallBatches ? GUIDED_HARVEST_CHARACTERS
+        : mode === "audience" ? AUDIENCE_SOURCE_BATCH_CHARACTERS : SOURCE_BATCH_CHARACTERS,
+      smallBatches ? GUIDED_HARVEST_SOURCES : Infinity);
       for (const [index, batch] of batches.entries()) {
         const remainingBatches = batches.length - index;
-        const factorLimit = Math.ceil((targetAccepted - acceptedForMode) / remainingBatches);
+        const factorLimit = Math.min(smallBatches ? GUIDED_HARVEST_FACTORS : Infinity,
+          Math.ceil((targetAccepted - acceptedForMode) / remainingBatches));
         if (factorLimit <= 0) break;
+        dependencies.onProjection?.(`Reading ${mode} evidence: batch ${index + 1} of ${batches.length}, ${batch.length} sources`);
         const response = await structuredCall(
           dependencies,
           `factor-harvest:${mode}:${batch.map((source) => source.id).join(",")}`,
@@ -441,13 +451,13 @@ function characterBefore(value: string, index: number): string | undefined {
   return value.slice(startsSurrogatePair ? index - 2 : index - 1, index);
 }
 
-export function batchSources(sources: HarvestedSource[], maxCharacters = SOURCE_BATCH_CHARACTERS): HarvestedSource[][] {
+export function batchSources(sources: HarvestedSource[], maxCharacters = SOURCE_BATCH_CHARACTERS, maxSources = Infinity): HarvestedSource[][] {
   const batches: HarvestedSource[][] = [];
   let current: HarvestedSource[] = [];
   let characters = 0;
   for (const source of sources) {
     const size = JSON.stringify(toStageSource(source)).length;
-    if (current.length > 0 && characters + size > maxCharacters) {
+    if (current.length > 0 && (characters + size > maxCharacters || current.length >= maxSources)) {
       batches.push(current);
       current = [];
       characters = 0;

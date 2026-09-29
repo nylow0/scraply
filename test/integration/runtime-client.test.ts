@@ -165,6 +165,17 @@ describe("persistent native runtime client", () => {
     }
   });
 
+  test("keeps an interrupted provider stream as unknown completion instead of a retryable failure", async () => {
+    const runtime = client("stream-interrupted");
+    let failure: unknown;
+    try { await runtime.structuredCompletion(request("generation-stream")); }
+    catch (error) { failure = error; }
+    expect(failure).toBeInstanceOf(ProviderFailure);
+    expect((failure as ProviderFailure).code).toBe("interrupted");
+    expect((failure as ProviderFailure).retryable).toBe(false);
+    expect((failure as ProviderFailure).attempts?.[0]?.providerCompletion).toBe("unknown");
+  });
+
   test("waits for terminal metadata after a prompt mismatch before releasing the generation queue", async () => {
     const runtime = client("prompt-mismatch", { requestTimeoutMs: 1_000, controlTimeoutMs: 100, terminalGraceMs: 100 });
     const started = Date.now();

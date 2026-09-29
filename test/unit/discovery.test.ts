@@ -194,6 +194,30 @@ describe("discovery", () => {
     expect(batches.flat().map((item) => item.id)).toEqual(["one", "two"]);
   });
 
+  test("guided discovery processes a 23-source result in small complete evidence batches", async () => {
+    const batches: Array<{ sources: Array<{ id: string }>; factorLimit: number }> = [];
+    const activity: string[] = [];
+    await harvestFactors(scope(), {
+      model, reasoningEffort: "xhigh", guided: true, depth: "standard", workflowVersion: 2,
+      prompt: () => "Extract verified observations.", onProjection: message => activity.push(message),
+      modelClient: modelClient(async request => {
+        if (request.stage.startsWith("query-plan")) return { queries: ["one"] };
+        const content = request.evidence[0]!.content as { sources: Array<{ id: string }> };
+        const factorLimit = Number((request.workOrder.inputs as { factorLimit: number }).factorLimit);
+        batches.push({ ...content, factorLimit });
+        expect(content.sources.length).toBeLessThanOrEqual(6);
+        expect(factorLimit).toBeLessThanOrEqual(12);
+        return { factors: [] };
+      }),
+      search: { async search() { return Array.from({ length: 23 }, (_, index) => ({
+        id: String(index), url: `https://example.test/source/${index}`, title: `Source ${index}`, text: "Evidence. ".repeat(200),
+      })); } },
+    });
+    expect(batches.length).toBeGreaterThanOrEqual(4);
+    expect(new Set(batches.flatMap(batch => batch.sources.map(source => source.id))).size).toBe(23);
+    expect(activity.some(message => message.includes("batch 1 of 4"))).toBe(true);
+  });
+
   test("keeps standard audience extraction packets below the Sol timeout boundary", () => {
     const sources = Array.from({ length: 18 }, (_, index) => source(`audience-${index}`, "a".repeat(3_000)));
     const batches = batchSources(sources, AUDIENCE_SOURCE_BATCH_CHARACTERS);

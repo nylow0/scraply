@@ -1996,6 +1996,7 @@ export class ResearchEngine {
       reasoningEffort: active.config.reasoningEffort,
       depth: active.config.discoveryDepth,
       guided: this.usesWorkGuidance(active.runId),
+      smallHarvestBatches: workflow.smallHarvestBatches,
       ...(allocation ? {
         candidateLimit: allocation.candidateLimit,
         queryCountByMode: { domain: allocation.domainQueries, audience: allocation.audienceQueries },
