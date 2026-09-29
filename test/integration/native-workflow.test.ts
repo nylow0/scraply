@@ -97,6 +97,9 @@ describe("native research workflow through the production backend", () => {
     expect(progress.summary.counts.requested).toBe(progress.summary.selectedProblemIds.length * 3);
     expect(progress.activity?.length).toBeGreaterThan(0);
     expect(progress.activity?.some(event => event.message.includes("problem"))).toBe(true);
+    expect(progress.activity?.map(event => event.message)).toEqual(
+      item.events.filter(event => event.type === "run-progress").slice(-16).map(event => event.message),
+    );
     await item.restart();
     expect((await item.workspace()).activeWorkflow?.state).toBe("waiting-for-review");
     const restored = await item.post(`/workflows/${receipt.sessionId}`, undefined, WorkflowDetailSchema);
