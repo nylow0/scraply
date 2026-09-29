@@ -45,25 +45,51 @@ const guidedProgress: WorkflowDetail | null = params.get("progress") === "guided
   summary: {
     sessionId: "fixture-guided", threadId: state.activeThreadId, purpose: "discovery", mode: "vibe", targetKind: "per-problem",
     state: "running", outcome: null, revision: 1, activeSnapshotId: null, selectedProblemIds: [],
-    counts: { requested: 3, attempted: 0, validated: 0, accepted: 0, duplicate: 0, unresolved: 0, failed: 0, missing: 3, existing: 0, addedBySession: 0, total: 0 },
+    ideaTargetReady: false,
+    counts: { requested: 0, attempted: 0, validated: 0, accepted: 0, duplicate: 0, unresolved: 0, failed: 0, missing: 0, existing: 0, addedBySession: 0, total: 0 },
     limits: { enforced: false, maxMinutes: 90, maxModelCalls: 72, maxSearches: 38 },
     budget: { modelCalls: { limit: 72, spent: 1, reserved: 50, uncertain: 0 }, searches: { limit: 38, spent: 0, reserved: 24, uncertain: 0 }, remainingMs: 89 * 60_000 },
     currentStage: "discovery", stopReason: null, startedAt: now, finishedAt: null,
   },
   tasks: [{ id: "fixture-discovery", parentItemId: null, kind: "discovery", scopeKey: "initial-research", state: "running", createdAt: now, finishedAt: null }],
+  activity: [
+    { id: "1", message: "Model call completed", stage: "searching", createdAt: now },
+    { id: "2", message: "Searching Perplexity: repair shop warranty approval delays", stage: "searching", createdAt: now },
+    { id: "3", message: "Found 8 sources for: repair shop warranty approval delays", stage: "searching", createdAt: now },
+    { id: "4", message: "Model request accepted", stage: "extracting", createdAt: now },
+  ],
   nextCursor: null,
 } : null;
 if (guidedProgress) {
+  if (params.get("phase") === "ideas") {
+    guidedProgress.summary.ideaTargetReady = true;
+    guidedProgress.summary.selectedProblemIds = ["problem-1", "problem-2"];
+    guidedProgress.summary.counts.requested = 6;
+    guidedProgress.summary.counts.missing = 6;
+    guidedProgress.summary.currentStage = "generate-ideas";
+  }
+  if (params.get("phase") === "failed") {
+    guidedProgress.summary.state = "finished";
+    guidedProgress.summary.outcome = "failed";
+    guidedProgress.summary.stopReason = "Search provider is unavailable.";
+    guidedProgress.summary.finishedAt = now;
+    guidedProgress.tasks[0]!.state = "failed";
+  }
   state.activeWorkflow = guidedProgress.summary;
-  state.threads = state.threads.map(thread => thread.id === state.activeThreadId ? { ...thread, status: "discovery-running" } : thread);
+  state.threads = state.threads.map(thread => thread.id === state.activeThreadId ? { ...thread, status: params.get("phase") === "failed" ? "failed" : "discovery-running" } : thread);
 }
 
+let progressReads = 0;
 const fixtureApi = createScraplyApi({
   async invoke<T>(channel: string, payload?: unknown): Promise<T> {
     let result: unknown;
     switch (channel) {
       case IPC_CHANNELS.GET_WORKSPACE: result = state; break;
-      case IPC_CHANNELS.GET_WORKFLOW: result = { ok: true, data: guidedProgress }; break;
+      case IPC_CHANNELS.GET_WORKFLOW:
+        if (guidedProgress && params.has("live") && ++progressReads === 2) {
+          guidedProgress.activity?.push({ id: "5", message: "12 observations from 8 sources", stage: "extracting", createdAt: now });
+        }
+        result = { ok: true, data: guidedProgress }; break;
       case IPC_CHANNELS.GET_VALIDATION: result = state.validation; break;
       case IPC_CHANNELS.SELECT_THREAD: {
         const { threadId } = payload as { threadId: string };

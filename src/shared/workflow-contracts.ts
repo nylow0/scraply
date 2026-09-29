@@ -109,6 +109,7 @@ export const WorkflowSummarySchema = z.object({
   revision: NonnegativeCountSchema,
   activeSnapshotId: IdSchema.nullable(),
   researchApplied: z.literal(true).optional(),
+  ideaTargetReady: z.boolean().optional(),
   selectedProblemIds: z.array(IdSchema),
   counts: WorkflowCountsSchema,
   limits: WorkflowLimitsSchema,
@@ -131,7 +132,12 @@ export const WorkflowTaskSchema = z.object({
   finishedAt: z.string().datetime().nullable(),
 }).strict();
 export const GetWorkflowRequestSchema = z.object({ sessionId: IdSchema, cursor: z.string().max(512).optional() }).strict();
-export const WorkflowDetailSchema = z.object({ summary: WorkflowSummarySchema, tasks: z.array(WorkflowTaskSchema), nextCursor: z.string().nullable() }).strict();
+export const WorkflowDetailSchema = z.object({
+  summary: WorkflowSummarySchema, tasks: z.array(WorkflowTaskSchema), nextCursor: z.string().nullable(),
+  activity: z.array(z.object({
+    id: IdSchema, message: z.string(), stage: z.string().nullable(), createdAt: z.string().datetime(),
+  }).strict()).optional(),
+}).strict();
 export const WorkflowAdmissionReceiptSchema = z.object({ sessionId: IdSchema, revision: NonnegativeCountSchema, summary: WorkflowSummarySchema }).strict();
 
 export const WorkflowActionSchema = z.discriminatedUnion("type", [

@@ -270,8 +270,17 @@ export class WorkflowCoordinator {
     const offset = cursor ? Number(cursor) : 0;
     if (!Number.isSafeInteger(offset) || offset < 0) throw new AppError("validation_error", "Invalid task cursor.");
     const page = items.slice(offset, offset + 30);
+    // Reuse persisted progress, scoped to this session so reopening cannot show another run's activity.
+    const activity = this.options.db.db.prepare(`SELECT CAST(event.id AS TEXT) AS id,
+      json_extract(event.payload_json, '$.message') AS message,
+      json_extract(event.payload_json, '$.stage') AS stage, event.created_at AS createdAt
+      FROM job_events event JOIN research_runs run ON run.id = event.run_id
+      WHERE run.workflow_session_id = ? AND event.type = 'run-progress'
+        AND json_type(event.payload_json, '$.message') = 'text'
+      ORDER BY event.id DESC LIMIT 16`).all(sessionId);
     return WorkflowDetailSchema.parse({
       summary: this.summary(sessionId),
+      activity: activity.reverse(),
       tasks: page.map((item) => ({
         id: item.id, parentItemId: item.parentItemId, kind: item.kind, scopeKey: item.scopeKey,
         state: item.state, question: questionFromItem(item),
@@ -314,7 +323,7 @@ export class WorkflowCoordinator {
         : generationItems.filter((item) => fillRoundFromItem(item) === 0).reduce((count, item) => count + requestedFromItem(item), 0)
       : contract.targets.kind === "project"
         ? contract.targets.distinctBusinessCount ?? contract.targets.ideaCount
-        : contract.targets.ideaCount * Math.max(1, selectedProblemIds.length);
+        : contract.targets.ideaCount * selectedProblemIds.length;
     const creditedPerProblem = selectedProblemIds.reduce((sum, problemId) => {
       const assigned = generationItems.filter((item) => fillRoundFromItem(item) === 0 && problemIdFromItem(item) === problemId)
         .reduce((count, item) => count + requestedFromItem(item), 0);
@@ -370,6 +379,7 @@ export class WorkflowCoordinator {
       sessionId: session.id, threadId: session.threadId, purpose: session.purpose, mode: session.mode, targetKind,
       state: session.state, outcome: session.outcome, revision: session.revision,
       activeSnapshotId: session.activeSnapshotId, selectedProblemIds, counts, limits,
+      ideaTargetReady: generationItems.length > 0,
       ...(researchApplied ? { researchApplied: true } : {}),
       budget: {
         modelCalls: budgetStatus("model-call", limits.maxModelCalls),

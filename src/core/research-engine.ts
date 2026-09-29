@@ -2214,11 +2214,20 @@ export class ResearchEngine {
         const reservation = active.followUpSearchReservation
           ?? this.ledger.reserve(active.runId, "search", provider, null, provider === "exa" ? 0.02 : 0.005);
         active.followUpSearchReservation = null;
-        try { return await client.search(query, options); }
+        this.progress(active, `Searching ${provider === "exa" ? "Exa" : "Perplexity"}: ${query}`, "searching", null);
+        try {
+          const sources = await client.search(query, options);
+          if (this.activeRuns.get(active.runId) === active) this.progress(active,
+            `Found ${sources.length} ${sources.length === 1 ? "source" : "sources"} for: ${query}`, "searching", null);
+          return sources;
+        } catch (error) {
+          if (this.activeRuns.get(active.runId) === active) this.progress(active,
+            `${active.abortController.signal.aborted ? "Cancelled search" : "Search failed"}: ${query}`, "searching", null);
+          throw error;
+        }
         finally {
           if (this.activeRuns.get(active.runId) === active) {
             this.ledger.commit(reservation.id, reservation.reservedUsd);
-            this.progress(active, `Search: ${query}`);
           }
         }
       },

@@ -135,8 +135,10 @@ describe("App workspace coordination", () => {
       mode: "vibe", brief: "Independent repair shops", targets: { automaticProblemCap: 3 },
     } });
     expect(await view.findByLabelText("Vibe run progress")).toBeTruthy();
-    expect(view.getByText("Researching direct buyer evidence")).toBeTruthy();
+    expect(view.getByRole("heading", { name: "Researching your brief" })).toBeTruthy();
+    expect(view.queryByText(/distinct ideas/)).toBeNull();
     expect(view.queryByRole("button", { name: "Add research" })).toBeNull();
+    await fireEvent.click(view.getByText("Run details"));
     await fireEvent.click(view.getByText("Extend work allowance"));
     await fireEvent.input(view.getByLabelText("Additional model calls"), { target: { value: "2" } });
     await fireEvent.click(view.getByRole("button", { name: "Preview extension" }));

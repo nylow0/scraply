@@ -1031,7 +1031,7 @@ test("idea history exports zero, failed, and partial collection outcomes without
   };
   expect(history.workflowOutcomes).toHaveLength(3);
   expect(history.workflowOutcomes.find((outcome) => outcome.sessionId === zero.id)).toMatchObject({
-    outcome: "no-qualifying-ideas", requested: 2, accepted: 0, missing: 2,
+    outcome: "no-qualifying-ideas", requested: 0, accepted: 0, missing: 0,
   });
   expect(history.workflowOutcomes.find((outcome) => outcome.sessionId === failed.id)).toMatchObject({
     outcome: "failed", failed: 1, stopReason: "Research provider stopped before idea generation.",

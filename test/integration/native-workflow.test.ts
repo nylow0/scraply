@@ -6,7 +6,7 @@ import { z } from "zod";
 import { DatabaseClient } from "../../src/db/client";
 import { ResearchRunRepository } from "../../src/db/repositories/research-runs";
 import { ThreadRepository } from "../../src/db/repositories/threads";
-import { PreviewWorkflowResultSchema, WorkflowAdmissionReceiptSchema } from "../../src/shared/workflow-contracts";
+import { PreviewWorkflowResultSchema, WorkflowAdmissionReceiptSchema, WorkflowDetailSchema } from "../../src/shared/workflow-contracts";
 import { FOCUSED_EXPERIMENT_DRAFT_INSTRUCTION, FOCUSED_EXPERIMENT_REVIEW_INSTRUCTION } from "../../src/core/experiment-review";
 import { WorkspaceStateSchema, SolutionViewSchema, type WorkspaceState, type ResearchEvent } from "../../src/shared/ipc";
 import { GenerationStartPayloadSchema } from "../../src/shared/runtime-protocol";
@@ -51,8 +51,15 @@ describe("native research workflow through the production backend", () => {
     expect(item.requests().length).toBeGreaterThan(1);
     expect(item.searches.length).toBeGreaterThan(0);
     expect(item.requests().every((request) => request.deadlineMs === undefined)).toBe(true);
+    const progress = await item.post(`/workflows/${receipt.sessionId}`, undefined, WorkflowDetailSchema);
+    expect(progress.summary.ideaTargetReady).toBe(false);
+    expect(progress.summary.counts.requested).toBe(progress.summary.selectedProblemIds.length * 3);
+    expect(progress.activity?.length).toBeGreaterThan(0);
+    expect(progress.activity?.some(event => event.message.includes("problem"))).toBe(true);
     await item.restart();
     expect((await item.workspace()).activeWorkflow?.state).toBe("waiting-for-review");
+    const restored = await item.post(`/workflows/${receipt.sessionId}`, undefined, WorkflowDetailSchema);
+    expect(restored.activity).toEqual(progress.activity);
   }, 15_000);
 
   test("generates a title through the runtime and preserves archived research across restart", async () => {
