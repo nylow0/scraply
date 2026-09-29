@@ -810,6 +810,13 @@ impl SubscriptionStream {
                         Some("context_length_exceeded") => ApiError::ContextWindowExceeded,
                         Some("rate_limit_exceeded") => ApiError::RateLimit("rate limit".into()),
                         Some("insufficient_quota") => ApiError::QuotaExceeded,
+                        Some("usage_not_included") => ApiError::UsageNotIncluded,
+                        Some("invalid_prompt" | "bio_policy") => ApiError::InvalidRequest {
+                            message: "request rejected".into(),
+                        },
+                        Some("cyber_policy") => ApiError::CyberPolicy {
+                            message: "request rejected".into(),
+                        },
                         _ if event.kind == "response.incomplete" => ApiError::Stream(format!(
                             "Incomplete response returned, reason: {}",
                             event
@@ -836,6 +843,7 @@ struct SubscriptionEvent {
     response: Option<SubscriptionResponse>,
     headers: Option<Value>,
     error: Option<SubscriptionResponseError>,
+    #[serde(alias = "status_code")]
     status: Option<u16>,
 }
 
@@ -1590,6 +1598,76 @@ mod tests {
             } else {
                 assert_eq!(result.unwrap().output, b"{}");
             }
+            server.await.unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn websocket_failures_keep_subscription_error_classification() {
+        for (event, expected_code, retryable) in [
+            (
+                json!({"type":"response.failed","response":{"id":"response-rejected","error":{"code":"invalid_prompt","message":"private rejected request"}}}),
+                ProviderErrorCode::InvalidRequest,
+                false,
+            ),
+            (
+                json!({"type":"response.failed","response":{"id":"response-rejected","error":{"code":"bio_policy","message":"private rejected request"}}}),
+                ProviderErrorCode::InvalidRequest,
+                false,
+            ),
+            (
+                json!({"type":"response.failed","response":{"id":"response-rejected","error":{"code":"cyber_policy","message":"private rejected request"}}}),
+                ProviderErrorCode::InvalidRequest,
+                false,
+            ),
+            (
+                json!({"type":"response.failed","response":{"id":"response-rejected","error":{"code":"usage_not_included","message":"private rejected request"}}}),
+                ProviderErrorCode::Authentication,
+                false,
+            ),
+            (
+                json!({"type":"error","status_code":401,"error":{"message":"private rejected request"}}),
+                ProviderErrorCode::Authentication,
+                false,
+            ),
+            (
+                json!({"type":"error","status":400,"error":{"message":"private rejected request"}}),
+                ProviderErrorCode::InvalidRequest,
+                false,
+            ),
+            (
+                json!({"type":"error","status":429,"error":{"message":"private rejected request"}}),
+                ProviderErrorCode::RateLimited,
+                true,
+            ),
+            (
+                json!({"type":"error","status_code":502,"error":{"message":"private rejected request"}}),
+                ProviderErrorCode::Transport,
+                true,
+            ),
+        ] {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let server = tokio::spawn(async move {
+                let (socket, _) = listener.accept().await.unwrap();
+                let mut socket = tokio_tungstenite::accept_async(socket).await.unwrap();
+                assert!(socket.next().await.unwrap().unwrap().is_text());
+                socket
+                    .send(Message::Text(event.to_string().into()))
+                    .await
+                    .unwrap();
+            });
+            let provider = local_test_provider(address).await;
+            let error = tokio::time::timeout(
+                Duration::from_secs(5),
+                provider.generate_request(&generation_request("gpt-6-astra")),
+            )
+            .await
+            .unwrap()
+            .unwrap_err();
+            assert_eq!(error.code, expected_code);
+            assert_eq!(error.retryable, retryable);
+            assert!(!error.detail.contains("private rejected request"));
             server.await.unwrap();
         }
     }
