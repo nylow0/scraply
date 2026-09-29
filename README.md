@@ -50,6 +50,10 @@ Agents working in this repository start at [AGENTS.md](AGENTS.md).
 
 Bug reports and feature requests are welcome in [issues](https://github.com/nylow0/scraply/issues). For code changes, branch from `master` with a `feat/`, `fix/`, `docs/`, or `chore/` prefix and open a pull request back into `master`. The pull request template lists the verification I expect.
 
+## Your OpenAI account
+
+Scraply is an unofficial project and isn't affiliated with or endorsed by OpenAI. When you connect OpenAI, Scraply signs in through the Codex login and uses your own ChatGPT subscription, so your use is covered by [OpenAI's terms](https://openai.com/policies/row-terms-of-use/). OpenAI doesn't officially support this kind of access for third-party apps. It can stop working at any time, and you use it at your own risk. Scraply is free, and I don't run any service or share accounts: every request goes from your computer to your account.
+
 ## License
 
 Scraply is released under the [MIT License](LICENSE). The native worker in `runtime/` is licensed under Apache 2.0 and builds on pinned OpenAI Codex libraries; see [runtime/UPSTREAM.md](runtime/UPSTREAM.md) for provenance and notices.
