@@ -19,7 +19,7 @@ let pendingLogin;
 let loginSequence = 0;
 let heldGeneration;
 let reassessmentFailed = false;
-let streamFailed = false;
+let streamFailures = 0;
 if (process.env.SCRAPLY_RUNTIME_PID_CAPTURE) fs.appendFileSync(process.env.SCRAPLY_RUNTIME_PID_CAPTURE, `${process.pid}\n`);
 const prompt = { id: "scraply.stage-worker.v1", sha256: "277d724f20acb1f32fa0a8b7c454c670971e3c40bfc921db40c044caa760e6f1" };
 const model = { providerId: "openai-subscription", modelId: "gpt-fixture" };
@@ -139,8 +139,9 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
       return;
     }
     if (mode === "hang-cancel") return;
-    if (mode === "stream-interrupted" || (mode === "workflow-stream-interrupted" && !streamFailed && request.payload.workOrder.stage.startsWith("factor-harvest"))) {
-      streamFailed = true;
+    const streamFailureLimit = mode === "workflow-stream-interrupted-twice" ? 2 : mode === "workflow-stream-interrupted" ? 1 : 0;
+    if (mode === "stream-interrupted" || (streamFailures < streamFailureLimit && request.payload.workOrder.stage.startsWith("factor-harvest"))) {
+      streamFailures++;
       send({ protocolVersion: "1.1", requestId: request.id, operation: "generation.start", event: {
         kind: "generation.failed", generationId: request.payload.generationId,
         error: { code: "provider_unavailable", retryable: true, detail: "OpenAI closed the response stream before confirming completion. Completion and usage are unknown; review before retrying." },

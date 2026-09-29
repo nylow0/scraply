@@ -9,6 +9,38 @@ import type { WorkflowSummary } from "../../src/shared/workflow-contracts";
 import { summarizeRunUsage } from "../../src/backend/run-usage";
 
 describe("App workspace coordination", () => {
+  test("retries using the finished task revision shown in the detail panel", async () => {
+    const state = workspace("alpha");
+    const summary: WorkflowSummary = {
+      sessionId: "interrupted", threadId: "alpha", purpose: "discovery", mode: "vibe", targetKind: "per-problem",
+      state: "finished", outcome: "needs-attention", revision: 1, activeSnapshotId: null, selectedProblemIds: [],
+      ideaTargetReady: false,
+      counts: { requested: 0, attempted: 0, validated: 0, accepted: 0, duplicate: 0, unresolved: 0,
+        failed: 1, missing: 0, existing: 0, addedBySession: 0, total: 0 },
+      limits: { enforced: false, maxMinutes: 30, maxModelCalls: 44, maxSearches: 18 },
+      budget: { modelCalls: { limit: 44, spent: 2, reserved: 0, uncertain: 1 },
+        searches: { limit: 18, spent: 2, reserved: 0, uncertain: 0 }, remainingMs: 1_800_000 },
+      currentStage: null, stopReason: "Response stream interrupted",
+      startedAt: "2026-09-23T00:00:00.000Z", finishedAt: "2026-09-23T00:01:00.000Z",
+    };
+    state.activeWorkflow = summary;
+    const commandWorkflow = vi.fn(async () => ({ sessionId: summary.sessionId, revision: 3, summary: { ...summary, revision: 3 } }));
+    installApi({ getWorkspace: async () => state, commandWorkflow,
+      getWorkflow: async () => ({ summary: { ...summary, revision: 3 }, tasks: [{ id: "failed-task", parentItemId: null,
+        kind: "discovery", scopeKey: "initial-research", state: "unknown", terminalAttemptId: "attempt",
+        createdAt: summary.startedAt, finishedAt: summary.finishedAt }], nextCursor: null }) });
+    const view = render(App);
+    await view.findByRole("heading", { name: "Research stopped" });
+    await fireEvent.click(view.getByText("Run details"));
+    await fireEvent.click(view.getByText("Task details"));
+    await fireEvent.click(view.getByRole("checkbox", { name: /may have completed/ }));
+    await fireEvent.click(view.getByRole("button", { name: "Retry task" }));
+    await waitFor(() => expect(commandWorkflow).toHaveBeenCalledWith(expect.objectContaining({
+      sessionId: "interrupted", expectedRevision: 3, action: { type: "retry-task", taskId: "failed-task",
+        expectedTerminalAttemptId: "attempt", acknowledgeUnknownCompletion: true },
+    })));
+  });
+
   test("keeps an icon rail in compact windows and opens the full list as a drawer", async () => {
     let compact = false;
     let resize: ((event: { matches: boolean }) => void) | undefined;

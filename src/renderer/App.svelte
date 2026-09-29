@@ -529,7 +529,9 @@
   }
   async function commandWorkflow(command: WorkflowAction) {
     const threadId = workspace?.activeThreadId;
-    const summary = workspace?.activeWorkflow;
+    const active = workspace?.activeWorkflow;
+    const summary = active && workflowDetail?.summary.sessionId === active.sessionId
+      && workflowDetail.summary.revision > active.revision ? workflowDetail.summary : active;
     if (!threadId || !summary || busy) throw new Error("Wait for the current workflow action to finish.");
     busy = true;
     feedback = null;
