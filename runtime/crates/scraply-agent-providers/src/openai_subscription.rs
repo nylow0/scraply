@@ -511,10 +511,19 @@ impl OpenAiSubscription {
             .await
             .map_err(map_api_error)?;
         let mut output = String::new();
+        // The header is available before completion, including when the body disconnects.
+        let upstream_request_id = stream
+            .upstream_request_id
+            .as_deref()
+            .and_then(crate::error::safe_diagnostic);
         let mut response_id = None;
         let mut usage = None;
         while let Some(event) = stream.next().await {
-            match event.map_err(map_api_error)? {
+            match event.map_err(|error| {
+                let mut error = map_api_error(error);
+                error.request_id = upstream_request_id.clone();
+                error
+            })? {
                 ResponseEvent::OutputTextDelta(delta) => {
                     if output.len().saturating_add(delta.len()) > MAX_OUTPUT_BYTES {
                         return Err(ProviderError::new(
@@ -557,12 +566,14 @@ impl OpenAiSubscription {
             }
         }
         let response_id = response_id.ok_or_else(|| {
-            ProviderError::new(
+            let mut error = ProviderError::new(
                 OPENAI_SUBSCRIPTION_PROVIDER_ID,
                 ProviderErrorCode::InvalidResponse,
                 true,
                 "OpenAI response ended before completion",
-            )
+            );
+            error.request_id = upstream_request_id;
+            error
         })?;
         let output = serde_json::from_str::<Value>(&output).map_err(|_| {
             ProviderError::new(
@@ -1122,7 +1133,7 @@ mod tests {
                 }
             }
             let body = "data: {\"type\":\"response.created\",\"response\":{\"id\":\"response-test\"}}\n\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"partial private output\"}\n\n";
-            write!(socket, "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body).unwrap();
+            write!(socket, "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nx-request-id: req_truncated-test\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body).unwrap();
         });
         let mut provider = OpenAiSubscription::ephemeral().await.unwrap();
         provider.base_url = format!("http://{address}");
@@ -1143,6 +1154,65 @@ mod tests {
             "OpenAI closed the response stream before confirming completion. Completion and usage are unknown; review before retrying."
         );
         assert!(!error.detail.contains("private output"));
+        assert_eq!(error.request_id.as_deref(), Some("req_truncated-test"));
+    }
+
+    #[tokio::test]
+    #[ignore = "manual 16-minute transport check; uses only a local server and fake credentials"]
+    async fn idle_response_stream_completes_after_fifteen_minutes() {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            socket
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut request = Vec::new();
+            let mut buffer = [0_u8; 4096];
+            loop {
+                let count = socket.read(&mut buffer).unwrap();
+                assert!(count > 0);
+                request.extend_from_slice(&buffer[..count]);
+                if let Some(end) = request.windows(4).position(|part| part == b"\r\n\r\n") {
+                    let length = String::from_utf8_lossy(&request[..end])
+                        .lines()
+                        .find_map(|line| {
+                            let (name, value) = line.split_once(':')?;
+                            name.eq_ignore_ascii_case("content-length")
+                                .then(|| value.trim().parse::<usize>().unwrap())
+                        })
+                        .unwrap_or(0);
+                    if request.len() >= end + 4 + length {
+                        break;
+                    }
+                }
+            }
+            let created = "data: {\"type\":\"response.created\",\"response\":{\"id\":\"response-slow-test\"}}\n\n";
+            let completed = "data: {\"type\":\"response.output_text.delta\",\"delta\":\"{}\"}\n\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"response-slow-test\"}}\n\n";
+            write!(socket, "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", created.len() + completed.len(), created).unwrap();
+            socket.flush().unwrap();
+            // Real elapsed time also covers socket/HTTP timers outside Tokio's test clock.
+            std::thread::sleep(Duration::from_secs(915));
+            socket.write_all(completed.as_bytes()).unwrap();
+        });
+        let mut provider = OpenAiSubscription::ephemeral().await.unwrap();
+        provider.base_url = format!("http://{address}");
+        let mut auth = test_session_credential().deserialize_auth().unwrap();
+        auth.last_refresh = Some("2026-09-29T00:00:00Z".parse().unwrap());
+        provider
+            .set_session_credential(OpenAiSessionCredential::from_auth(&auth).unwrap())
+            .await
+            .unwrap();
+        let control =
+            OperationControl::until_cancelled(scraply_agent_core::CancellationToken::new());
+        let result = provider
+            .generate(generation_request("gpt-test"), &control)
+            .await
+            .unwrap();
+        server.join().unwrap();
+        assert_eq!(result.output, b"{}");
+        assert_eq!(result.request_id.as_deref(), Some("response-slow-test"));
     }
 
     #[tokio::test]
