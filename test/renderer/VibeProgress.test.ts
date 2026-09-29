@@ -196,7 +196,7 @@ describe("VibeProgress", () => {
     expect((busy.getByRole("button", { name: "Stop" }) as HTMLButtonElement).disabled).toBe(true);
   });
 
-  test("requires acknowledgement before retrying an unknown task attempt", async () => {
+  test("requires fresh acknowledgement when the same task has a new unknown attempt", async () => {
     const onRetryTask = vi.fn(async () => {});
     const run = detail({ state: "finished", outcome: "needs-attention" });
     run.tasks[1] = { ...run.tasks[1]!, terminalAttemptId: "attempt-unknown" };
@@ -208,6 +208,20 @@ describe("VibeProgress", () => {
     expect(retry.disabled).toBe(false);
     await fireEvent.click(retry);
     expect(onRetryTask).toHaveBeenCalledWith("search-1", "attempt-unknown", true);
+
+    await view.rerender({ detail: { ...run, tasks: run.tasks.map(task => task.id === "search-1"
+      ? { ...task, terminalAttemptId: "attempt-unknown-again" } : task) } });
+    const checkbox = view.getByRole("checkbox", { name: /may have completed/ }) as HTMLInputElement;
+    const retryAgain = view.getByRole("button", { name: "Retry task" }) as HTMLButtonElement;
+    expect(checkbox.checked).toBe(false);
+    expect(retryAgain.disabled).toBe(true);
+    retryAgain.click();
+    expect(onRetryTask).toHaveBeenCalledOnce();
+    await fireEvent.click(checkbox);
+    expect(retryAgain.disabled).toBe(false);
+    await fireEvent.click(retryAgain);
+    expect(onRetryTask).toHaveBeenLastCalledWith("search-1", "attempt-unknown-again", true);
+    expect(onRetryTask).toHaveBeenCalledTimes(2);
   });
 
   test("shows startup family totals and applies only a previewed extension", async () => {

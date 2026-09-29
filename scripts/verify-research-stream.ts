@@ -169,10 +169,15 @@ try {
       CAST((julianday(attempt.updated_at) - julianday(attempt.created_at)) * 86400000 AS INTEGER) AS elapsedMs
       FROM generation_attempts attempt JOIN research_runs run ON run.id = attempt.research_run_id
       WHERE run.workflow_session_id = ? ORDER BY attempt.created_at`).all(sessionId));
-    const harvests = attempts.filter(attempt => attempt.stage_key.startsWith("factor-harvest:"));
+    // An acknowledged retry preserves uncertain history. Verify the latest work for each
+    // stage while reporting those historical attempts instead of treating them as erased.
+    const latestStages = new Map(attempts.map(attempt => [attempt.stage_key, attempt]));
+    const harvests = [...latestStages.values()].filter(attempt => attempt.stage_key.startsWith("factor-harvest:"));
+    const historicalUnknownAttempts = attempts.filter(attempt => attempt.status === "interrupted").length;
     const status = { state: detail.summary.state, outcome: detail.summary.outcome,
       stage: detail.summary.currentStage, completedHarvests: harvests.filter(attempt => attempt.status === "completed").length,
       modelCalls: detail.summary.budget.modelCalls.spent, searches: detail.summary.budget.searches.spent,
+      historicalUnknownAttempts,
       attemptStates: attempts.map(attempt => ({ stage: attempt.stage_key.split(":")[0], status: attempt.status, elapsedMs: attempt.elapsedMs })),
     };
     const serialized = JSON.stringify(status);
@@ -199,6 +204,7 @@ try {
       console.log(JSON.stringify({ type: "passed", sessionId, threadId: detail.summary.threadId,
         model: liveContract.runConfig.model, reasoningEffort: liveContract.runConfig.reasoningEffort,
         completedHarvests: status.completedHarvests, modelCalls: status.modelCalls, searches: status.searches,
+        historicalUnknownAttempts,
         problemCandidates: workspace.problemCandidates.length, rejectedCandidates: workspace.rejectedProblemCandidates.length,
         persistedState: reopened.data.summary.state, browserUrl: origin.origin,
       }));

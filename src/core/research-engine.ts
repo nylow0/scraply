@@ -63,6 +63,7 @@ interface ActiveRun {
   researchAllowance?: { maxModelCalls: number; maxSearches: number };
   researchRequest?: { sessionId: string; workItemId: string };
   workflow?: WorkflowExecution;
+  acknowledgedAttemptIds?: readonly string[];
   followUpModelReservation: CostReservation | null;
   followUpSearchReservation: CostReservation | null;
   generationProvenance: Map<string, string>;
@@ -235,7 +236,8 @@ export class ResearchEngine {
     }
   }
 
-  async resumeRun(runId: string): Promise<void> {
+  // Only an explicitly accepted discovery retry supplies attempt IDs. Generic resume remains guarded.
+  async resumeRun(runId: string, acknowledgedAttemptIds: readonly string[] = []): Promise<void> {
     if (this.activeRuns.has(runId)) return;
     const row = this.options.db.db.prepare(`SELECT thread_id, status, config_json, problem_id FROM research_runs WHERE id = ?`)
       .get(runId) as { thread_id: string; status: string; config_json: string; problem_id: string | null } | undefined;
@@ -246,10 +248,10 @@ export class ResearchEngine {
     if (!row || !config || !["queued", "running", ...(config.workflowVersion === 2 ? ["failed", "cancelled"] : [])].includes(row.status)) {
       throw new AppError("conflict", "This research run has already ended and cannot be resumed.");
     }
-    const resumeSafety = this.generationAttempts.getResumeSafety(runId);
+    const resumeSafety = this.generationAttempts.getResumeSafety(runId, acknowledgedAttemptIds);
     if (!resumeSafety.canResume) {
       this.ledger.settleUncertain(runId, "A dispatched generation lost its terminal result during restart");
-      throw new AppError("conflict", `${resumeSafety.resumeBlockedReason} Cancel this run and start a new one to avoid an automatic duplicate charge.`);
+      throw new AppError("conflict", `${resumeSafety.resumeBlockedReason} Review this request before explicitly retrying it.`);
     }
     this.assertThreadIdle(row.thread_id, runId);
     this.ledger.settleUncertain(runId, "The app restarted before an operation reached a durable result");
@@ -270,7 +272,7 @@ export class ResearchEngine {
         resumedOpportunityInitialization = true;
       }
     }
-    this.begin(runId, row.thread_id, row.problem_id, config, true);
+    this.begin(runId, row.thread_id, row.problem_id, config, true, acknowledgedAttemptIds);
     if (resumedOpportunityInitialization) {
       this.emit({ type: "opportunity-progress", threadId: row.thread_id, status: "mapping-coverage" });
     }
@@ -1314,7 +1316,7 @@ export class ResearchEngine {
       .get(runId) as { thread_id: string; problem_id: string; config_json: string } | undefined;
     if (!row || row.thread_id !== threadId) throw new AppError("not_found", "Completed v2 analysis run not found.");
     const safety = this.generationAttempts.getResumeSafety(runId);
-    if (!safety.canResume) throw new AppError("conflict", `${safety.resumeBlockedReason} Cancel this run and start a new one to avoid an automatic duplicate charge.`);
+    if (!safety.canResume) throw new AppError("conflict", `${safety.resumeBlockedReason} Review this request before explicitly retrying it.`);
     this.assertThreadIdle(threadId, runId);
     try { this.options.db.immediateTransaction(() => this.followUps.beginReassessment(runId)); }
     catch (error) { throw new AppError("conflict", error instanceof Error ? error.message : "Evidence reassessment cannot be started."); }
@@ -1392,7 +1394,8 @@ export class ResearchEngine {
     this.emit({ type: "run-cancelled", runId, threadId });
   }
 
-  private begin(runId: string, threadId: string, problemId: string | null, config: RunConfig, resumed = false): void {
+  private begin(runId: string, threadId: string, problemId: string | null, config: RunConfig, resumed = false,
+    acknowledgedAttemptIds: readonly string[] = []): void {
     if (config.workflowVersion !== 2) throw new AppError("conflict", "Legacy generation has been retired. Start a new run to use the current prompts.");
     const selected = problemId && this.options.db.db.prepare(`SELECT 1 FROM solutions
       WHERE research_run_id = ? AND selected_at IS NOT NULL LIMIT 1`).get(runId);
@@ -1404,6 +1407,7 @@ export class ResearchEngine {
       projectedCodexCalls: projection.modelCalls, projectedSearches: projection.searches,
       followUpModelReservation: null, followUpSearchReservation: null,
       generationProvenance: new Map(),
+      acknowledgedAttemptIds,
     };
     const request = this.options.db.db.prepare(`
       SELECT wi.id, wi.session_id,
@@ -1434,7 +1438,7 @@ export class ResearchEngine {
   }
 
   private async execute(active: ActiveRun): Promise<void> {
-    active.workflow = new WorkflowExecution(this.options.db, active.runId);
+    active.workflow = new WorkflowExecution(this.options.db, active.runId, active.acknowledgedAttemptIds);
     if (active.problemId) await this.executeDevelopment(active);
     else await this.executeDiscovery(active);
     if (active.abortController.signal.aborted || this.activeRuns.get(active.runId) !== active) return;

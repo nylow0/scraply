@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { GenerationAttemptRepository } from "./generation-attempts";
 import {
   assertWorkflowV2DecisionAnalysisSemantics,
   parseWorkflowV2StageOutput,
@@ -319,6 +320,7 @@ export class WorkflowV2Repository {
     stageId: WorkflowV2StageId;
     selectionId?: string | null;
     context: unknown;
+    acknowledgedAttemptIds?: readonly string[];
     identity?: {
       promptSha256: string;
       schema: unknown;
@@ -339,15 +341,12 @@ export class WorkflowV2Repository {
       )) throw new WorkflowV2ContextMismatchError();
       return { kind: "reusable", result: saved };
     }
-    const ambiguous = this.client.db.prepare(`
-      SELECT 1 FROM generation_attempts
-      WHERE research_run_id = ? AND (stage_key = ? OR stage_key LIKE ?)
-        AND (
-          status IN ('dispatched', 'accepted')
-          OR (status = 'interrupted' AND terminal_kind IS NOT 'never-dispatched')
-        )
-      LIMIT 1
-    `).get(input.researchRunId, input.stageId, `${input.stageId}:%`);
+    const unresolved = new Set(new GenerationAttemptRepository(this.client).unresolvedAttemptIds(input.researchRunId));
+    const attempts = this.client.db.prepare(`SELECT id FROM generation_attempts
+      WHERE research_run_id = ? AND (stage_key = ? OR stage_key LIKE ?)`)
+      .all(input.researchRunId, input.stageId, `${input.stageId}:%`) as Array<{ id: string }>;
+    const ambiguous = attempts.some(attempt => unresolved.has(attempt.id)
+      && !input.acknowledgedAttemptIds?.includes(attempt.id));
     return ambiguous ? { kind: "unknown-completion" } : { kind: "not-started" };
   }
 
