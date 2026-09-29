@@ -36,6 +36,8 @@ During discovery, the progress view shows recent research actions, including sea
 
 A settled Vibe run opens the idea collection. It may contain the target, a useful partial set, or zero qualifying ideas. A provider or authentication failure should end with the work saved and a reason you can act on. A request with an unknown completion is conservatively counted and is not silently replayed.
 
+If a model connection drops before completion is confirmed, open **Run details**, then **Task details**. Review the warning before choosing **Retry task**. The retry starts a separate attempt at that task and can incur additional provider usage; the original run remains saved. New depth-guided research reads evidence in smaller batches, with batch progress in the activity list.
+
 After a Vibe run finishes, open **Research** to ask a separate question or revisit a finding. This starts a new, explicitly limited research follow-up; it does not reopen the finished Vibe run or change its recorded idea count. Compare the result before applying it to a new evidence snapshot. The original ideas stay saved.
 
 ## Review ideas and explore one

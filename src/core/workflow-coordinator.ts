@@ -281,13 +281,15 @@ export class WorkflowCoordinator {
     return WorkflowDetailSchema.parse({
       summary: this.summary(sessionId),
       activity: activity.reverse(),
-      tasks: page.map((item) => ({
-        id: item.id, parentItemId: item.parentItemId, kind: item.kind, scopeKey: item.scopeKey,
-        state: item.state, question: questionFromItem(item),
-        error: errorFromItem(item), createdAt: item.createdAt, finishedAt: item.finishedAt,
-        ...((item.state === "failed" || item.state === "unknown") && terminalAttemptId(this.options.db, item)
-          ? { terminalAttemptId: terminalAttemptId(this.options.db, item)! } : {}),
-      })),
+      tasks: page.map((item) => {
+        const attempt = item.state === "failed" || item.state === "unknown" ? terminalAttempt(this.options.db, item) : null;
+        return {
+          id: item.id, parentItemId: item.parentItemId, kind: item.kind, scopeKey: item.scopeKey,
+          state: attempt?.completion_unknown ? "unknown" : item.state, question: questionFromItem(item),
+          error: errorFromItem(item), createdAt: item.createdAt, finishedAt: item.finishedAt,
+          ...(attempt ? { terminalAttemptId: attempt.id } : {}),
+        };
+      }),
       nextCursor: offset + page.length < items.length ? String(offset + page.length) : null,
     });
   }
@@ -700,12 +702,14 @@ export class WorkflowCoordinator {
       || (task.state !== "failed" && task.state !== "unknown")) throw new AppError("INVALID_REFERENCE");
     const runId = runIdFromItem(task);
     if (!runId) throw new AppError("UNKNOWN_COMPLETION", "This task has no saved provider attempt to classify.");
-    const attempt = this.options.db.db.prepare(`SELECT id, status, terminal_kind, error_code FROM generation_attempts
+    const attempt = this.options.db.db.prepare(`SELECT id, status, terminal_kind, error_code,
+      EXISTS(SELECT 1 FROM json_each(attempt_metadata_json, '$.attempts')
+        WHERE json_extract(value, '$.providerCompletion') = 'unknown') AS completion_unknown FROM generation_attempts
       WHERE id = ? AND research_run_id = ?`).get(request.action.expectedTerminalAttemptId, runId) as {
-        id: string; status: string; terminal_kind: string | null; error_code: string | null;
+        id: string; status: string; terminal_kind: string | null; error_code: string | null; completion_unknown: number;
       } | undefined;
     if (!attempt) throw new AppError("INVALID_REFERENCE", "The terminal attempt does not belong to this task.");
-    const ambiguous = task.state === "unknown" || ["dispatched", "accepted"].includes(attempt.status)
+    const ambiguous = Boolean(attempt.completion_unknown) || task.state === "unknown" || ["dispatched", "accepted"].includes(attempt.status)
       || (attempt.status === "interrupted" && attempt.terminal_kind !== "never-dispatched");
     if (ambiguous && !request.action.acknowledgeUnknownCompletion) throw new AppError("UNKNOWN_COMPLETION");
     const safeTransient = attempt.terminal_kind === "never-dispatched"
@@ -942,7 +946,7 @@ export class WorkflowCoordinator {
     const skipped = this.options.db.immediateTransaction(() => {
       this.repository.updateWorkItem(item.id, unknown ? "unknown" : event.type === "run-cancelled" ? "cancelled" : "failed", {
         outputRefs: { runId: event.runId },
-        error: { message: unknown ? "A dispatched provider result has no confirmed terminal record." : event.type === "run-failed" ? event.error : "Stopped by the user." },
+        error: { message: event.type === "run-failed" ? event.error : unknown ? "A dispatched provider result has no confirmed terminal record." : "Stopped by the user." },
       });
       this.settleTaskBudget(item.id, unknown ? "uncertain" : "spent", this.repository.countProviderAttempts(event.runId));
       const skippedIds = this.skipReadyTasks(session.id, event.type === "run-cancelled" ? "session-stopped" : "upstream-failed");
@@ -1603,12 +1607,15 @@ function reviewFromItem(db: DatabaseClient, item: WorkflowWorkItem): SavedSoluti
   return runId ? readSolutionSetReview(db, runId) : null;
 }
 
-function terminalAttemptId(db: DatabaseClient, item: WorkflowWorkItem): string | null {
+function terminalAttempt(db: DatabaseClient, item: WorkflowWorkItem): { id: string; completion_unknown: number } | null {
   const runId = runIdFromItem(item);
   if (!runId) return null;
-  const row = db.db.prepare(`SELECT id FROM generation_attempts WHERE research_run_id = ?
-    ORDER BY created_at DESC, rowid DESC LIMIT 1`).get(runId) as { id: string } | undefined;
-  return row?.id ?? null;
+  // Older builds saved some lost streams as failures while retaining the native uncertainty.
+  const row = db.db.prepare(`SELECT id, EXISTS(SELECT 1 FROM json_each(attempt_metadata_json, '$.attempts')
+    WHERE json_extract(value, '$.providerCompletion') = 'unknown') AS completion_unknown
+    FROM generation_attempts WHERE research_run_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1`)
+    .get(runId) as { id: string; completion_unknown: number } | undefined;
+  return row ?? null;
 }
 
 function requestedFromItem(item: WorkflowWorkItem): number {

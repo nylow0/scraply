@@ -29,6 +29,47 @@ afterEach(async () => {
 });
 
 describe("native research workflow through the production backend", () => {
+  test("a lost OpenAI stream requires acknowledgement before a retry can complete research", async () => {
+    const item = await fixture({ mode: "workflow-stream-interrupted" });
+    const threadId = await item.createThread("explore-market");
+    const preview = await item.post("/workflows/preview", { type: "launch", threadId, draft: {
+      contractVersion: 1, purpose: "discovery", mode: "babysit", brief: scope.domain, scope,
+      runConfig: { ...DEFAULT_RUN_CONFIG, model, reasoningEffort: "medium", discoveryDepth: "quick", searchProvider: "exa" },
+      targets: { kind: "per-problem", ideaCount: 3 },
+      limits: { enforced: false, maxMinutes: 5, maxModelCalls: 1, maxSearches: 0 }, instructions: {},
+    } }, PreviewWorkflowResultSchema);
+    const receipt = await item.post("/workflows/start", {
+      threadId, clientCommandId: "interrupted-discovery", contract: preview.proposal,
+      previewHash: preview.previewHash, capabilityFingerprint: preview.capabilityFingerprint, previewExpiresAt: preview.expiresAt,
+    }, WorkflowAdmissionReceiptSchema);
+    await item.waitFor(workspace => workspace.activeWorkflow?.state === "finished");
+    const interrupted = await item.post(`/workflows/${receipt.sessionId}`, undefined, WorkflowDetailSchema);
+    expect(interrupted.summary.outcome).toBe("needs-attention");
+    expect(interrupted.summary.stopReason).toContain("before confirming completion");
+    const task = interrupted.tasks.find(task => task.kind === "discovery")!;
+    expect(task.state).toBe("unknown");
+    expect(item.requests()).toHaveLength(2);
+    // Simulate the previous build's stored classification without losing native attempt metadata.
+    const legacy = new DatabaseClient(item.dbPath);
+    legacy.db.prepare("UPDATE generation_attempts SET status = 'failed', error_code = 'unavailable' WHERE id = ?").run(task.terminalAttemptId!);
+    legacy.db.prepare("UPDATE workflow_work_items SET state = 'failed' WHERE id = ?").run(task.id);
+    legacy.close();
+    expect((await item.post(`/workflows/${receipt.sessionId}`, undefined, WorkflowDetailSchema)).tasks.find(saved => saved.id === task.id)?.state).toBe("unknown");
+    const retry = { threadId, sessionId: receipt.sessionId, clientCommandId: "retry-interrupted-discovery",
+      expectedRevision: interrupted.summary.revision, action: { type: "retry-task", taskId: task.id,
+        expectedTerminalAttemptId: task.terminalAttemptId, acknowledgeUnknownCompletion: false } };
+    const rejected = await item.raw("/workflows/command", retry);
+    expect(rejected.ok).toBe(false);
+    expect(item.requests()).toHaveLength(2);
+    await item.post("/workflows/command", { ...retry, action: { ...retry.action, acknowledgeUnknownCompletion: true } }, WorkflowAdmissionReceiptSchema);
+    const recovered = await item.waitFor(workspace => workspace.activeWorkflow?.state === "waiting-for-review");
+    expect(recovered.problemCandidates).toHaveLength(1);
+    expect(recovered.activeWorkflow?.sessionId).not.toBe(receipt.sessionId);
+    const original = await item.post(`/workflows/${receipt.sessionId}`, undefined, WorkflowDetailSchema);
+    expect(original.summary.outcome).toBe("needs-attention");
+    expect(original.activity).toEqual(interrupted.activity);
+  }, 15_000);
+
   test("depth-guided discovery completes beyond its call and search estimates", async () => {
     const item = await fixture();
     const threadId = await item.createThread("explore-market");

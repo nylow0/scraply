@@ -34,6 +34,18 @@ afterEach(() => {
 });
 
 describe("workflow v2 persistence", () => {
+  test("keeps saved extraction batch policy when an older run is reopened", () => {
+    configurePromptPaths({ bundledDir: join(process.cwd(), "prompts"), overrideDir: null });
+    const client = database();
+    try {
+      expect(new WorkflowExecution(client, "run-v2").smallHarvestBatches).toBe(true);
+      expect(new WorkflowExecution(client, "run-v2").smallHarvestBatches).toBe(true);
+      client.db.prepare("DELETE FROM workflow_snapshots WHERE research_run_id = ? AND snapshot_key = ?")
+        .run("run-v2", "small-harvest-batches");
+      expect(new WorkflowExecution(client, "run-v2").smallHarvestBatches).toBe(false);
+    } finally { client.close(); }
+  });
+
   test("harvests formatted source quotes and rejects bad factors without aborting the research stage", async () => {
     configurePromptPaths({ bundledDir: join(process.cwd(), "prompts"), overrideDir: null });
     const client = database();

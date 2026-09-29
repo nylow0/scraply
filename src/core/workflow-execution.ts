@@ -16,6 +16,7 @@ import { WORKFLOW_V2_STAGE_IDS, WORKFLOW_V2_STAGE_REGISTRY, type WorkflowV2Stage
 /** Run-local snapshots never reuse fresh web results or prompt overrides across runs. */
 export class WorkflowExecution {
   readonly repository: WorkflowV2Repository;
+  readonly smallHarvestBatches: boolean;
   private readonly prompts: Record<WorkflowV2StageId, ResolvedWorkflowV2Prompt>;
   private readonly disableRepair: boolean;
   private readonly factorUncertainty = new Map<string, string>();
@@ -45,7 +46,10 @@ export class WorkflowExecution {
       // Save the format per run: an older run without this marker must still reproduce its IDs.
       this.save("identifier-characters", 24);
       this.save("focused-experiments", { version: 1 });
+      this.save("small-harvest-batches", { version: 1 });
     }
+    // Reopening an older run must reproduce its original source groups and checkpoint identities.
+    this.smallHarvestBatches = this.read<{ version: number }>("small-harvest-batches")?.version === 1;
   }
 
   resolvePrompt = (stage: WorkflowV2StageId): ResolvedWorkflowV2Prompt => this.prompts[stage];

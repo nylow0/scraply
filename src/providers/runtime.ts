@@ -550,6 +550,11 @@ function waitForClose(child: ChildProcessWithoutNullStreams, timeoutMs: number):
 }
 
 function providerFailure(error: RuntimeFailure, attempts?: GenerationAttemptMetadata[]): ProviderFailure {
+  // A terminal worker event can still report that the remote completion was lost.
+  // Preserve that uncertainty so workflow recovery requires an explicit retry decision.
+  if (error.code !== "cancelled" && attempts?.some(attempt => attempt.providerCompletion === "unknown")) {
+    return new ProviderFailure("interrupted", error.detail, false, { runtimeCode: error.code, attempts });
+  }
   const code = error.code === "cancelled" ? "cancelled"
     : error.code === "deadline_exceeded" ? "timeout"
       : error.code === "authentication_failed" ? "auth"
