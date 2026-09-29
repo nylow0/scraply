@@ -30,7 +30,7 @@ afterEach(async () => {
 
 describe("native research workflow through the production backend", () => {
   test("a lost OpenAI stream requires acknowledgement before a retry can complete research", async () => {
-    const item = await fixture({ mode: "workflow-stream-interrupted" });
+    const item = await fixture({ mode: "workflow-stream-interrupted-twice" });
     const threadId = await item.createThread("explore-market");
     const preview = await item.post("/workflows/preview", { type: "launch", threadId, draft: {
       contractVersion: 1, purpose: "discovery", mode: "babysit", brief: scope.domain, scope,
@@ -46,6 +46,8 @@ describe("native research workflow through the production backend", () => {
     const interrupted = await item.post(`/workflows/${receipt.sessionId}`, undefined, WorkflowDetailSchema);
     expect(interrupted.summary.outcome).toBe("needs-attention");
     expect(interrupted.summary.stopReason).toContain("before confirming completion");
+    expect(interrupted.summary.budget.modelCalls.spent).toBe(2);
+    expect(interrupted.summary.budget.searches.spent).toBe(item.searches.length);
     const task = interrupted.tasks.find(task => task.kind === "discovery")!;
     expect(task.state).toBe("unknown");
     expect(item.requests()).toHaveLength(2);
@@ -61,7 +63,18 @@ describe("native research workflow through the production backend", () => {
     const rejected = await item.raw("/workflows/command", retry);
     expect(rejected.ok).toBe(false);
     expect(item.requests()).toHaveLength(2);
-    await item.post("/workflows/command", { ...retry, action: { ...retry.action, acknowledgeUnknownCompletion: true } }, WorkflowAdmissionReceiptSchema);
+    const firstRetry = await item.post("/workflows/command", { ...retry, action: { ...retry.action, acknowledgeUnknownCompletion: true } }, WorkflowAdmissionReceiptSchema);
+    await item.waitFor(workspace => workspace.activeWorkflow?.sessionId === firstRetry.sessionId && workspace.activeWorkflow.state === "finished");
+    const interruptedAgain = await item.post(`/workflows/${firstRetry.sessionId}`, undefined, WorkflowDetailSchema);
+    const failedRetryTask = interruptedAgain.tasks.find(task => task.kind === "discovery")!;
+    const retryAgain = { threadId, sessionId: firstRetry.sessionId, clientCommandId: "retry-second-interruption",
+      expectedRevision: interruptedAgain.summary.revision, action: { type: "retry-task", taskId: failedRetryTask.id,
+        expectedTerminalAttemptId: failedRetryTask.terminalAttemptId, acknowledgeUnknownCompletion: false } };
+    expect((await item.raw("/workflows/command", retryAgain)).ok).toBe(false);
+    expect(item.requests()).toHaveLength(4);
+    const secondRetry = await item.post("/workflows/command", { ...retryAgain, action: { ...retryAgain.action, acknowledgeUnknownCompletion: true } }, WorkflowAdmissionReceiptSchema);
+    expect(secondRetry.sessionId).not.toBe(firstRetry.sessionId);
+    expect((await item.raw("/workflows/command", { ...retryAgain, clientCommandId: "duplicate-retry", action: { ...retryAgain.action, acknowledgeUnknownCompletion: true } })).ok).toBe(false);
     const recovered = await item.waitFor(workspace => workspace.activeWorkflow?.state === "waiting-for-review");
     expect(recovered.problemCandidates).toHaveLength(1);
     expect(recovered.activeWorkflow?.sessionId).not.toBe(receipt.sessionId);

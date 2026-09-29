@@ -360,9 +360,9 @@ export class WorkflowCoordinator {
     };
     const budgetStatus = (kind: "model-call" | "search", limit: number) => {
       const matching = entries.filter((entry) => entry.kind === kind);
-      // Reservations are estimates, not usage. Include dispatched work while a guided task is still running.
+      // Reservations are estimates, not usage. Keep dispatched counts when completion is unknown.
       const liveRunIds = contract.limits.enforced === false ? new Set(matching
-        .filter((entry) => entry.state === "reserved")
+        .filter((entry) => entry.state === "reserved" || entry.state === "uncertain")
         .flatMap((entry) => {
           const refs = items.find((item) => item.id === entry.workItemId)?.outputRefs as { runId?: string } | null | undefined;
           return refs?.runId ? [refs.runId] : [];
@@ -719,8 +719,8 @@ export class WorkflowCoordinator {
       JOIN workflow_sessions session ON session.id = item.session_id
       WHERE session.thread_id = ? AND json_extract(item.input_json, '$.retryOfTaskId') = ? LIMIT 1`)
       .get(request.threadId, task.id);
-    if (priorRetry || (task.input as { retryOfTaskId?: unknown }).retryOfTaskId) {
-      throw new AppError("conflict", "This task already used its one retry.");
+    if (priorRetry) {
+      throw new AppError("conflict", "This attempt already has a retry. Open its latest attempt to continue.");
     }
     const contract = WorkflowLaunchContractSchema.parse(original.contract);
     const originalItems = this.repository.listWorkItems(original.id);
