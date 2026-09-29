@@ -95,7 +95,8 @@ export class WorkflowCoordinator {
             });
             this.settleTaskBudget(running.id, unknown ? "uncertain" : "released", 0, attempt.id);
             this.repository.updateSession(session.id, session.revision, {
-              state: "finished", outcome: unknown ? "needs-attention" : "partial", remainingMs: remainingMs(session),
+              state: "finished", outcome: unknown ? "needs-attention" : this.summary(session.id).counts.accepted > 0 ? "partial" : "failed",
+              remainingMs: remainingMs(session),
             });
           });
           this.progress(session.id, [running.id]);
@@ -1139,7 +1140,8 @@ export class WorkflowCoordinator {
         });
         this.settleTaskBudget(item.id, unknown ? "uncertain" : spent ? "spent" : "released", spent ? 1 : 0, attempt?.id);
         this.repository.updateSession(sessionId, current.revision, {
-          state: "finished", outcome: current.state === "stop-requested" ? "cancelled" : unknown ? "needs-attention" : "partial",
+          state: "finished", outcome: current.state === "stop-requested" ? "cancelled" : unknown ? "needs-attention"
+            : this.summary(sessionId).counts.accepted > 0 ? "partial" : "failed",
           remainingMs: remainingMs(current),
         });
       });
