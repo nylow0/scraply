@@ -7,12 +7,14 @@ use codex_api::{
     ApiError, AuthProvider, Compression, Provider, ReqwestTransport, ResponseEvent,
     ResponsesClient, RetryConfig, TransportError,
 };
+use codex_http_client::{HttpClientFactory, OutboundProxyPolicy};
 use codex_login::{
     AuthCredentialsStoreMode, AuthDotJson, AuthKeyringBackendKind, AuthManager, CodexAuth,
     DeviceCode, LoginServer, RefreshTokenError, ServerOptions, complete_device_code_login,
     load_auth_dot_json, oauth_client_id, request_device_code, run_login_server, save_auth,
 };
-use futures_util::StreamExt;
+use codex_websocket_client::{WebSocketConnection, WebSocketConnector};
+use futures_util::{SinkExt, StreamExt};
 use http::{HeaderMap, HeaderValue, header::AUTHORIZATION};
 use scraply_agent_core::{
     CoreError, FinishReason, GenerationProvider, MAX_OUTPUT_BYTES, OperationControl,
@@ -22,10 +24,14 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::{collections::BTreeMap, path::PathBuf, sync::Arc, time::Duration};
+use tokio_tungstenite::tungstenite::{
+    Error as WebSocketError, Message, client::IntoClientRequest, protocol::WebSocketConfig,
+};
 
 pub const OPENAI_SUBSCRIPTION_PROVIDER_ID: &str = "openai-subscription";
 const CHATGPT_CODEX_BASE_URL: &str = "https://chatgpt.com/backend-api/codex";
 const ACCOUNT_ID_HEADER: &str = "chatgpt-account-id";
+const RESPONSES_WEBSOCKET_BETA: &str = "responses_websockets=2026-02-06";
 // Subscription catalog visibility is version-gated; use a client version that
 // includes the September 2026 GPT-6 Sol and Luna release.
 const MODEL_CATALOG_CLIENT_VERSION: &str = "0.156.1";
@@ -499,29 +505,16 @@ impl OpenAiSubscription {
         let auth = Arc::new(SubscriptionHeaders {
             headers: auth_headers(&auth)?,
         });
-        let client =
-            ResponsesClient::new(ReqwestTransport::new(self.client.clone()), provider, auth);
-        let mut stream = client
-            .stream(
-                generation_body(request),
-                HeaderMap::new(),
-                Compression::None,
-                None,
-            )
-            .await
-            .map_err(map_api_error)?;
+        let mut stream = self.generation_stream(request, provider, auth).await?;
         let mut output = String::new();
-        // The header is available before completion, including when the body disconnects.
-        let upstream_request_id = stream
-            .upstream_request_id
-            .as_deref()
-            .and_then(crate::error::safe_diagnostic);
         let mut response_id = None;
         let mut usage = None;
         while let Some(event) = stream.next().await {
-            match event.map_err(|error| {
-                let mut error = map_api_error(error);
-                error.request_id = upstream_request_id.clone();
+            match event.map_err(|mut error| {
+                error.request_id = stream
+                    .request_id()
+                    .and_then(crate::error::safe_diagnostic)
+                    .or(error.request_id);
                 error
             })? {
                 ResponseEvent::OutputTextDelta(delta) => {
@@ -572,7 +565,7 @@ impl OpenAiSubscription {
                 true,
                 "OpenAI response ended before completion",
             );
-            error.request_id = upstream_request_id;
+            error.request_id = stream.request_id().and_then(crate::error::safe_diagnostic);
             error
         })?;
         let output = serde_json::from_str::<Value>(&output).map_err(|_| {
@@ -598,6 +591,350 @@ impl OpenAiSubscription {
             request_id: Some(response_id),
         })
     }
+
+    async fn generation_stream(
+        &self,
+        request: &ProviderRequest,
+        provider: Provider,
+        auth: Arc<SubscriptionHeaders>,
+    ) -> Result<SubscriptionStream, ProviderError> {
+        let url = provider
+            .websocket_url_for_path("responses")
+            .map_err(|_| invalid_websocket_request())?;
+        let mut upgrade = url
+            .as_str()
+            .into_client_request()
+            .map_err(|_| invalid_websocket_request())?;
+        upgrade
+            .headers_mut()
+            .extend(codex_login::default_client::default_headers());
+        auth.add_auth_headers(upgrade.headers_mut());
+        upgrade.headers_mut().insert(
+            "openai-beta",
+            HeaderValue::from_static(RESPONSES_WEBSOCKET_BETA),
+        );
+        let connector =
+            WebSocketConnector::new(&HttpClientFactory::new(OutboundProxyPolicy::ReqwestDefault))
+                .map_err(|_| invalid_websocket_request())?;
+        match connector.connect(upgrade, WebSocketConfig::default()).await {
+            Ok((mut socket, response)) => {
+                let request_id = response
+                    .headers()
+                    .get("x-request-id")
+                    .and_then(|value| value.to_str().ok())
+                    .and_then(crate::error::safe_diagnostic);
+                if response
+                    .headers()
+                    .get("openai-model")
+                    .and_then(|value| value.to_str().ok())
+                    .is_some_and(|model| model != request.model.model_id)
+                {
+                    return Err(ProviderError::new(
+                        OPENAI_SUBSCRIPTION_PROVIDER_ID,
+                        ProviderErrorCode::InvalidResponse,
+                        false,
+                        "OpenAI returned a different model than requested",
+                    ));
+                }
+                let mut body = generation_body(request);
+                body.as_object_mut()
+                    .expect("generation body is an object")
+                    .remove("stream");
+                body["type"] = json!("response.create");
+                socket
+                    .send(Message::Text(body.to_string().into()))
+                    .await
+                    .map_err(|_| {
+                        let mut error = websocket_interrupted();
+                        error.request_id = request_id.clone();
+                        error
+                    })?;
+                Ok(SubscriptionStream::Websocket {
+                    socket: Box::new(socket),
+                    request_id,
+                    expected_model: request.model.model_id.clone(),
+                })
+            }
+            // These handshake rejections establish that no response.create was dispatched.
+            Err(WebSocketError::Http(response))
+                if matches!(response.status().as_u16(), 405 | 426) =>
+            {
+                let stream = ResponsesClient::new(
+                    ReqwestTransport::new(self.client.clone()),
+                    provider,
+                    auth,
+                )
+                .stream(
+                    generation_body(request),
+                    HeaderMap::new(),
+                    Compression::None,
+                    None,
+                )
+                .await
+                .map_err(map_api_error)?;
+                Ok(SubscriptionStream::Http(stream))
+            }
+            Err(WebSocketError::Http(response)) => Err(ProviderError::http(
+                OPENAI_SUBSCRIPTION_PROVIDER_ID,
+                response.status(),
+                response.headers(),
+            )),
+            Err(_) => Err(ProviderError::new(
+                OPENAI_SUBSCRIPTION_PROVIDER_ID,
+                ProviderErrorCode::Transport,
+                true,
+                "OpenAI WebSocket connection could not be established",
+            )),
+        }
+    }
+}
+
+// Own the socket inside the generation future. Cancelling that future drops the connection,
+// including during silent reasoning; upstream's detached Responses pump cannot do this.
+enum SubscriptionStream {
+    Http(codex_api::ResponseStream),
+    Websocket {
+        socket: Box<WebSocketConnection>,
+        request_id: Option<String>,
+        expected_model: String,
+    },
+}
+
+impl SubscriptionStream {
+    fn request_id(&self) -> Option<&str> {
+        match self {
+            Self::Http(stream) => stream.upstream_request_id.as_deref(),
+            Self::Websocket { request_id, .. } => request_id.as_deref(),
+        }
+    }
+
+    async fn next(&mut self) -> Option<Result<ResponseEvent, ProviderError>> {
+        let (socket, request_id, expected_model) = match self {
+            Self::Http(stream) => {
+                return stream
+                    .next()
+                    .await
+                    .map(|event| event.map_err(map_api_error));
+            }
+            Self::Websocket {
+                socket,
+                request_id,
+                expected_model,
+            } => (socket, request_id, expected_model),
+        };
+        loop {
+            let message = match socket.next().await {
+                Some(Ok(message)) => message,
+                _ => return Some(Err(websocket_interrupted())),
+            };
+            let text = match message {
+                Message::Ping(payload) => {
+                    if socket.send(Message::Pong(payload)).await.is_err() {
+                        return Some(Err(websocket_interrupted()));
+                    }
+                    continue;
+                }
+                Message::Text(text) => text,
+                Message::Close(_) => return Some(Err(websocket_interrupted())),
+                _ => continue,
+            };
+            let event = match serde_json::from_str::<SubscriptionEvent>(&text) {
+                Ok(event) => event,
+                Err(_) => {
+                    return Some(Err(map_api_error(ApiError::Stream(
+                        "failed to parse ResponseCompleted:".into(),
+                    ))));
+                }
+            };
+            if let Some(response) = event.response.as_ref()
+                && request_id.is_none()
+            {
+                *request_id = response
+                    .id
+                    .as_deref()
+                    .and_then(crate::error::safe_diagnostic);
+            }
+            if event
+                .effective_model()
+                .is_some_and(|model| model != expected_model.as_str())
+            {
+                return Some(Err(ProviderError::new(
+                    OPENAI_SUBSCRIPTION_PROVIDER_ID,
+                    ProviderErrorCode::InvalidResponse,
+                    false,
+                    "OpenAI returned a different model than requested",
+                )));
+            }
+            match event.kind.as_str() {
+                "response.output_text.delta" => {
+                    return Some(event.delta.map(ResponseEvent::OutputTextDelta).ok_or_else(
+                        || {
+                            map_api_error(ApiError::Stream(
+                                "failed to parse ResponseCompleted:".into(),
+                            ))
+                        },
+                    ));
+                }
+                "response.completed" => {
+                    let Some(response) = event
+                        .response
+                        .filter(|response| response.id.as_ref().is_some_and(|id| !id.is_empty()))
+                    else {
+                        return Some(Err(map_api_error(ApiError::Stream(
+                            "failed to parse ResponseCompleted:".into(),
+                        ))));
+                    };
+                    return Some(Ok(ResponseEvent::Completed {
+                        response_id: response.id.unwrap(),
+                        token_usage: response.usage.map(|usage| usage.into()),
+                        end_turn: None,
+                    }));
+                }
+                "response.failed" | "response.incomplete" | "error" => {
+                    if let Some(status) = event
+                        .status
+                        .and_then(|status| http::StatusCode::from_u16(status).ok())
+                    {
+                        return Some(Err(ProviderError::http(
+                            OPENAI_SUBSCRIPTION_PROVIDER_ID,
+                            status,
+                            &HeaderMap::new(),
+                        )));
+                    }
+                    let code = event
+                        .error
+                        .as_ref()
+                        .or_else(|| event.response.as_ref()?.error.as_ref())
+                        .and_then(|error| error.code.as_deref());
+                    let upstream = match code {
+                        Some("context_length_exceeded") => ApiError::ContextWindowExceeded,
+                        Some("rate_limit_exceeded") => ApiError::RateLimit("rate limit".into()),
+                        Some("insufficient_quota") => ApiError::QuotaExceeded,
+                        _ if event.kind == "response.incomplete" => ApiError::Stream(format!(
+                            "Incomplete response returned, reason: {}",
+                            event
+                                .response
+                                .and_then(|response| response.incomplete_details)
+                                .and_then(|details| details.reason)
+                                .unwrap_or_default()
+                        )),
+                        _ => ApiError::Stream("response.failed event received".into()),
+                    };
+                    return Some(Err(map_api_error(upstream)));
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
+#[derive(Deserialize)]
+struct SubscriptionEvent {
+    #[serde(rename = "type")]
+    kind: String,
+    delta: Option<String>,
+    response: Option<SubscriptionResponse>,
+    headers: Option<Value>,
+    error: Option<SubscriptionResponseError>,
+    status: Option<u16>,
+}
+
+#[derive(Deserialize)]
+struct SubscriptionResponse {
+    id: Option<String>,
+    headers: Option<Value>,
+    usage: Option<SubscriptionUsage>,
+    error: Option<SubscriptionResponseError>,
+    incomplete_details: Option<SubscriptionIncomplete>,
+}
+
+impl SubscriptionEvent {
+    fn effective_model(&self) -> Option<&str> {
+        // Match upstream: effective-model headers outrank payload labels and top-level metadata.
+        self.response
+            .as_ref()
+            .and_then(|response| response.headers.as_ref())
+            .and_then(subscription_header_model)
+            .or_else(|| self.headers.as_ref().and_then(subscription_header_model))
+    }
+}
+
+fn subscription_header_model(headers: &Value) -> Option<&str> {
+    headers.as_object()?.iter().find_map(|(name, value)| {
+        if name.eq_ignore_ascii_case("openai-model") || name.eq_ignore_ascii_case("x-openai-model")
+        {
+            subscription_header_value(value)
+        } else {
+            None
+        }
+    })
+}
+
+fn subscription_header_value(value: &Value) -> Option<&str> {
+    match value {
+        Value::String(value) => Some(value),
+        Value::Array(items) => items.first().and_then(subscription_header_value),
+        _ => None,
+    }
+}
+
+#[derive(Deserialize)]
+struct SubscriptionResponseError {
+    code: Option<String>,
+}
+#[derive(Deserialize)]
+struct SubscriptionIncomplete {
+    reason: Option<String>,
+}
+#[derive(Deserialize)]
+struct SubscriptionUsage {
+    input_tokens: i64,
+    output_tokens: i64,
+    total_tokens: i64,
+    input_tokens_details: Option<SubscriptionInputUsage>,
+    output_tokens_details: Option<SubscriptionOutputUsage>,
+}
+#[derive(Deserialize)]
+struct SubscriptionInputUsage {
+    cached_tokens: i64,
+}
+#[derive(Deserialize)]
+struct SubscriptionOutputUsage {
+    reasoning_tokens: i64,
+}
+
+impl From<SubscriptionUsage> for codex_protocol::protocol::TokenUsage {
+    fn from(usage: SubscriptionUsage) -> Self {
+        Self {
+            input_tokens: usage.input_tokens,
+            output_tokens: usage.output_tokens,
+            total_tokens: usage.total_tokens,
+            cached_input_tokens: usage
+                .input_tokens_details
+                .map_or(0, |details| details.cached_tokens),
+            reasoning_output_tokens: usage
+                .output_tokens_details
+                .map_or(0, |details| details.reasoning_tokens),
+        }
+    }
+}
+
+fn invalid_websocket_request() -> ProviderError {
+    ProviderError::new(
+        OPENAI_SUBSCRIPTION_PROVIDER_ID,
+        ProviderErrorCode::InvalidRequest,
+        false,
+        "OpenAI WebSocket request could not be prepared",
+    )
+}
+
+fn websocket_interrupted() -> ProviderError {
+    ProviderError::new(
+        OPENAI_SUBSCRIPTION_PROVIDER_ID,
+        ProviderErrorCode::Transport,
+        true,
+        "OpenAI closed the response stream before confirming completion. Completion and usage are unknown; review before retrying.",
+    )
 }
 
 #[async_trait]
@@ -1102,36 +1439,218 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn truncated_response_stream_reports_missing_completion_without_replaying() {
-        use std::io::{Read, Write};
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    #[allow(
+        clippy::result_large_err,
+        reason = "Tungstenite requires this handshake callback's unboxed HTTP error response"
+    )]
+    async fn websocket_reasoning_keeps_connection_alive_and_preserves_assignment() {
+        use futures_util::SinkExt;
+        use tokio_tungstenite::tungstenite::Message;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
-        let server = std::thread::spawn(move || {
-            let (mut socket, _) = listener.accept().unwrap();
+        let server = tokio::spawn(async move {
+            let (socket, _) = listener.accept().await.unwrap();
+            let mut socket = tokio_tungstenite::accept_hdr_async(
+                socket,
+                |request: &tokio_tungstenite::tungstenite::handshake::server::Request, response| {
+                    assert_eq!(request.uri().path(), "/responses");
+                    assert_eq!(
+                        request.headers()["openai-beta"],
+                        "responses_websockets=2026-02-06"
+                    );
+                    Ok(response)
+                },
+            )
+            .await
+            .unwrap();
+            let message = socket.next().await.unwrap().unwrap();
+            let body: Value = serde_json::from_str(message.to_text().unwrap()).unwrap();
+            assert_eq!(body["type"], "response.create");
+            assert_eq!(body["model"], "gpt-6-astra");
+            assert_eq!(body["reasoning"]["effort"], "xhigh");
+            assert_eq!(body["text"]["format"]["strict"], true);
+            assert_eq!(body["text"]["format"]["schema"], json!({"type":"object"}));
+            assert_eq!(body["store"], false);
+            assert!(body.get("previous_response_id").is_none());
+            assert!(body.get("background").is_none());
+            assert!(body.get("stream").is_none());
             socket
-                .set_read_timeout(Some(Duration::from_secs(5)))
+                .send(Message::Text(
+                    json!({"type":"response.created","response":{"id":"response-ws-test"}})
+                        .to_string()
+                        .into(),
+                ))
+                .await
                 .unwrap();
-            let mut request = Vec::new();
-            let mut buffer = [0_u8; 4096];
-            loop {
-                let count = socket.read(&mut buffer).unwrap();
-                assert!(count > 0);
-                request.extend_from_slice(&buffer[..count]);
-                if let Some(end) = request.windows(4).position(|part| part == b"\r\n\r\n") {
-                    let headers = String::from_utf8_lossy(&request[..end]);
-                    let length = headers
-                        .lines()
-                        .find_map(|line| {
-                            let (name, value) = line.split_once(':')?;
-                            name.eq_ignore_ascii_case("content-length")
-                                .then(|| value.trim().parse::<usize>().unwrap())
-                        })
-                        .unwrap_or(0);
-                    if request.len() >= end + 4 + length {
+            // A remote gateway can keep a silent reasoning connection alive with control frames.
+            for _ in 0..3 {
+                socket
+                    .send(Message::Ping(b"keepalive".to_vec().into()))
+                    .await
+                    .unwrap();
+                let pong = tokio::time::timeout(Duration::from_secs(2), socket.next())
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .unwrap();
+                assert!(matches!(pong, Message::Pong(payload) if payload.as_ref() == b"keepalive"));
+            }
+            socket
+                .send(Message::Text(
+                    json!({"type":"response.output_text.delta","delta":"{}"})
+                        .to_string()
+                        .into(),
+                ))
+                .await
+                .unwrap();
+            socket.send(Message::Text(json!({"type":"response.completed","response":{"id":"response-ws-test","usage":{"input_tokens":4,"output_tokens":2,"total_tokens":6}}}).to_string().into())).await.unwrap();
+            // No second response.create and no HTTP replay may follow completion.
+            if let Ok(Some(Ok(Message::Text(_)))) =
+                tokio::time::timeout(Duration::from_secs(2), socket.next()).await
+            {
+                panic!("assignment was dispatched twice");
+            }
+        });
+        let provider = local_test_provider(address).await;
+        let mut request = generation_request("gpt-6-astra");
+        request.reasoning_effort = Some(scraply_agent_core::ReasoningEffort::Xhigh);
+        let result =
+            tokio::time::timeout(Duration::from_secs(5), provider.generate_request(&request))
+                .await
+                .unwrap()
+                .unwrap();
+        assert_eq!(result.output, b"{}");
+        assert_eq!(result.request_id.as_deref(), Some("response-ws-test"));
+        assert_eq!(result.usage.unwrap().total_tokens, 6);
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn websocket_checks_effective_model_headers_instead_of_response_model_labels() {
+        for (event, rejects_model) in [
+            (
+                json!({"type":"response.created","response":{"id":"response-model-test","model":"gpt-6-astra","headers":{"OpenAI-Model":"different-model"}}}),
+                true,
+            ),
+            (
+                json!({"type":"response.created","headers":{"x-openai-model":"different-model"},"response":{"id":"response-model-test","model":"gpt-6-astra"}}),
+                true,
+            ),
+            (
+                json!({"type":"response.created","response":{"id":"response-model-test","model":"gpt-6-astra","headers":{"openai-model":["different-model"]}}}),
+                true,
+            ),
+            (
+                json!({"type":"response.created","headers":{"openai-model":"different-model"},"response":{"id":"response-model-test","model":"gpt-6-astra-alias","headers":{"X-OpenAI-Model":"gpt-6-astra"}}}),
+                false,
+            ),
+            (
+                json!({"type":"response.created","headers":{"OpenAI-Model":"gpt-6-astra"},"response":{"id":"response-model-test","model":"gpt-6-astra-alias"}}),
+                false,
+            ),
+            (
+                json!({"type":"response.created","response":{"id":"response-model-test","model":"gpt-6-astra-alias"}}),
+                false,
+            ),
+        ] {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let server = tokio::spawn(async move {
+                let (socket, _) = listener.accept().await.unwrap();
+                let mut socket = tokio_tungstenite::accept_async(socket).await.unwrap();
+                assert!(socket.next().await.unwrap().unwrap().is_text());
+                for event in [
+                    event,
+                    json!({"type":"response.output_text.delta","delta":"{}"}),
+                    json!({"type":"response.completed","response":{"id":"response-model-test"}}),
+                ] {
+                    if socket
+                        .send(Message::Text(event.to_string().into()))
+                        .await
+                        .is_err()
+                    {
                         break;
                     }
                 }
+            });
+            let provider = local_test_provider(address).await;
+            let result = tokio::time::timeout(
+                Duration::from_secs(5),
+                provider.generate_request(&generation_request("gpt-6-astra")),
+            )
+            .await
+            .unwrap();
+            if rejects_model {
+                let error = result.unwrap_err();
+                assert_eq!(error.code, ProviderErrorCode::InvalidResponse);
+                assert_eq!(
+                    error.detail,
+                    "OpenAI returned a different model than requested"
+                );
+            } else {
+                assert_eq!(result.unwrap().output, b"{}");
             }
+            server.await.unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn websocket_cancellation_closes_silent_connection_without_replaying() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let cancellation = scraply_agent_core::CancellationToken::new();
+        let server_cancellation = cancellation.clone();
+        let server = tokio::spawn(async move {
+            let (socket, _) = listener.accept().await.unwrap();
+            let mut socket = tokio_tungstenite::accept_async(socket).await.unwrap();
+            let request = socket.next().await.unwrap().unwrap();
+            assert_eq!(
+                serde_json::from_str::<Value>(request.to_text().unwrap()).unwrap()["type"],
+                "response.create"
+            );
+            server_cancellation.cancel();
+            let next = tokio::time::timeout(Duration::from_secs(2), socket.next())
+                .await
+                .expect("cancelled assignment left its socket open");
+            assert!(!matches!(
+                next,
+                Some(Ok(tokio_tungstenite::tungstenite::Message::Text(_)))
+            ));
+        });
+        let provider = local_test_provider(address).await;
+        let error = provider
+            .generate(
+                generation_request("gpt-6-astra"),
+                &OperationControl::until_cancelled(cancellation),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(
+            error.failure().code,
+            scraply_agent_core::FailureCode::Cancellation
+        );
+        server.await.unwrap();
+    }
+
+    async fn local_test_provider(address: std::net::SocketAddr) -> OpenAiSubscription {
+        let mut provider = OpenAiSubscription::ephemeral().await.unwrap();
+        provider.base_url = format!("http://{address}");
+        let mut auth = test_session_credential().deserialize_auth().unwrap();
+        auth.last_refresh = Some("2026-09-29T00:00:00Z".parse().unwrap());
+        provider
+            .set_session_credential(OpenAiSessionCredential::from_auth(&auth).unwrap())
+            .await
+            .unwrap();
+        provider
+    }
+
+    #[tokio::test]
+    async fn truncated_response_stream_reports_missing_completion_without_replaying() {
+        use std::io::Write;
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let mut socket = accept_test_http_assignment(&listener);
             let body = "data: {\"type\":\"response.created\",\"response\":{\"id\":\"response-test\"}}\n\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"partial private output\"}\n\n";
             write!(socket, "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nx-request-id: req_truncated-test\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body).unwrap();
         });
@@ -1160,34 +1679,11 @@ mod tests {
     #[tokio::test]
     #[ignore = "manual 16-minute transport check; uses only a local server and fake credentials"]
     async fn idle_response_stream_completes_after_fifteen_minutes() {
-        use std::io::{Read, Write};
+        use std::io::Write;
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap();
         let server = std::thread::spawn(move || {
-            let (mut socket, _) = listener.accept().unwrap();
-            socket
-                .set_read_timeout(Some(Duration::from_secs(5)))
-                .unwrap();
-            let mut request = Vec::new();
-            let mut buffer = [0_u8; 4096];
-            loop {
-                let count = socket.read(&mut buffer).unwrap();
-                assert!(count > 0);
-                request.extend_from_slice(&buffer[..count]);
-                if let Some(end) = request.windows(4).position(|part| part == b"\r\n\r\n") {
-                    let length = String::from_utf8_lossy(&request[..end])
-                        .lines()
-                        .find_map(|line| {
-                            let (name, value) = line.split_once(':')?;
-                            name.eq_ignore_ascii_case("content-length")
-                                .then(|| value.trim().parse::<usize>().unwrap())
-                        })
-                        .unwrap_or(0);
-                    if request.len() >= end + 4 + length {
-                        break;
-                    }
-                }
-            }
+            let mut socket = accept_test_http_assignment(&listener);
             let created = "data: {\"type\":\"response.created\",\"response\":{\"id\":\"response-slow-test\"}}\n\n";
             let completed = "data: {\"type\":\"response.output_text.delta\",\"delta\":\"{}\"}\n\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"response-slow-test\"}}\n\n";
             write!(socket, "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", created.len() + completed.len(), created).unwrap();
@@ -1213,6 +1709,183 @@ mod tests {
         server.join().unwrap();
         assert_eq!(result.output, b"{}");
         assert_eq!(result.request_id.as_deref(), Some("response-slow-test"));
+    }
+
+    // Reject only the upgrade, before dispatch, then accept exactly one HTTP assignment.
+    fn accept_test_http_assignment(listener: &std::net::TcpListener) -> std::net::TcpStream {
+        use std::io::{Read, Write};
+        for _ in 0..2 {
+            let (mut socket, _) = listener.accept().unwrap();
+            socket
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut request = Vec::new();
+            let mut buffer = [0_u8; 4096];
+            loop {
+                let count = socket.read(&mut buffer).unwrap();
+                assert!(count > 0);
+                request.extend_from_slice(&buffer[..count]);
+                if let Some(end) = request.windows(4).position(|part| part == b"\r\n\r\n") {
+                    let headers = String::from_utf8_lossy(&request[..end]);
+                    let length = headers
+                        .lines()
+                        .find_map(|line| {
+                            let (name, value) = line.split_once(':')?;
+                            name.eq_ignore_ascii_case("content-length")
+                                .then(|| value.trim().parse::<usize>().unwrap())
+                        })
+                        .unwrap_or(0);
+                    if request.len() >= end + 4 + length {
+                        break;
+                    }
+                }
+            }
+            if request.starts_with(b"GET ") {
+                socket.write_all(b"HTTP/1.1 426 Upgrade Required\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").unwrap();
+            } else {
+                assert!(request.starts_with(b"POST /responses "));
+                return socket;
+            }
+        }
+        panic!("HTTP assignment was never dispatched");
+    }
+
+    #[tokio::test]
+    async fn interrupted_http_body_reproduces_unreadable_stream_without_replaying() {
+        use std::io::Write;
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let mut socket = accept_test_http_assignment(&listener);
+            let body =
+                "data: {\"type\":\"response.created\",\"response\":{\"id\":\"response-test\"}}\n\n";
+            // Close before the declared HTTP body ends, reproducing the screenshot's read error.
+            write!(socket, "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nx-request-id: req_body-read-test\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len() + 100, body).unwrap();
+        });
+        let provider = local_test_provider(address).await;
+        let error = provider
+            .generate_request(&generation_request("gpt-6-astra"))
+            .await
+            .unwrap_err();
+        server.join().unwrap();
+        assert_eq!(error.code, ProviderErrorCode::Transport);
+        assert_eq!(
+            error.detail,
+            "The OpenAI response stream could not be read. Completion and usage are unknown; review before retrying."
+        );
+        assert_eq!(error.request_id.as_deref(), Some("req_body-read-test"));
+    }
+
+    #[tokio::test]
+    #[allow(
+        clippy::result_large_err,
+        reason = "Tungstenite requires this handshake callback's unboxed HTTP error response"
+    )]
+    async fn websocket_disconnect_keeps_safe_request_id_without_http_replay() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (socket, _) = listener.accept().await.unwrap();
+            let mut socket = tokio_tungstenite::accept_hdr_async(socket, |_: &tokio_tungstenite::tungstenite::handshake::server::Request, mut response: tokio_tungstenite::tungstenite::handshake::server::Response| {
+                response.headers_mut().insert("x-request-id", HeaderValue::from_static("req_ws-disconnect"));
+                Ok(response)
+            }).await.unwrap();
+            assert!(socket.next().await.unwrap().unwrap().is_text());
+            socket
+                .send(Message::Text(
+                    json!({"type":"response.created","response":{"id":"response-ws-lost"}})
+                        .to_string()
+                        .into(),
+                ))
+                .await
+                .unwrap();
+            socket
+                .send(Message::Text(
+                    json!({"type":"response.output_text.delta","delta":"partial private output"})
+                        .to_string()
+                        .into(),
+                ))
+                .await
+                .unwrap();
+            drop(socket);
+            assert!(
+                tokio::time::timeout(Duration::from_millis(100), listener.accept())
+                    .await
+                    .is_err(),
+                "unknown completion was replayed over HTTP"
+            );
+        });
+        let provider = local_test_provider(address).await;
+        let error = provider
+            .generate_request(&generation_request("gpt-6-astra"))
+            .await
+            .unwrap_err();
+        assert_eq!(error.code, ProviderErrorCode::Transport);
+        assert!(error.detail.contains("Completion and usage are unknown"));
+        assert!(!error.detail.contains("private output"));
+        assert_eq!(error.request_id.as_deref(), Some("req_ws-disconnect"));
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    #[ignore = "manual 16-minute WebSocket check; local server and fake credentials only"]
+    async fn websocket_reasoning_completes_after_fifteen_minutes() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (socket, _) = listener.accept().await.unwrap();
+            let mut socket = tokio_tungstenite::accept_async(socket).await.unwrap();
+            assert!(socket.next().await.unwrap().unwrap().is_text());
+            socket
+                .send(Message::Text(
+                    json!({"type":"response.created","response":{"id":"response-slow-ws"}})
+                        .to_string()
+                        .into(),
+                ))
+                .await
+                .unwrap();
+            for _ in 0..61 {
+                tokio::time::sleep(Duration::from_secs(15)).await;
+                socket
+                    .send(Message::Ping(b"keepalive".to_vec().into()))
+                    .await
+                    .unwrap();
+                assert!(matches!(
+                    tokio::time::timeout(Duration::from_secs(2), socket.next())
+                        .await
+                        .unwrap()
+                        .unwrap()
+                        .unwrap(),
+                    Message::Pong(_)
+                ));
+            }
+            socket
+                .send(Message::Text(
+                    json!({"type":"response.output_text.delta","delta":"{}"})
+                        .to_string()
+                        .into(),
+                ))
+                .await
+                .unwrap();
+            socket
+                .send(Message::Text(
+                    json!({"type":"response.completed","response":{"id":"response-slow-ws"}})
+                        .to_string()
+                        .into(),
+                ))
+                .await
+                .unwrap();
+        });
+        let provider = local_test_provider(address).await;
+        let result = provider
+            .generate(
+                generation_request("gpt-6-astra"),
+                &OperationControl::until_cancelled(scraply_agent_core::CancellationToken::new()),
+            )
+            .await
+            .unwrap();
+        assert_eq!(result.output, b"{}");
+        server.await.unwrap();
     }
 
     #[tokio::test]
