@@ -193,7 +193,7 @@ describe("ScopeForm search provider selection", () => {
     expect(onStartWorkflow).toHaveBeenCalledOnce();
   });
 
-  test("shows depth guidance instead of presenting preview estimates as mandatory limits", async () => {
+  test("treats preview estimates as guidance without mandatory limit controls", async () => {
     const state = workspace();
     const onPreviewWorkflow = vi.fn(async (draft: WorkflowLaunchDraft) => ({
       type: "launch" as const,
@@ -212,7 +212,7 @@ describe("ScopeForm search provider selection", () => {
     await fireEvent.click(view.getByRole("radio", { name: /I have a problem to solve/ }));
     await fireEvent.input(view.getByPlaceholderText("Describe the problem."), { target: { value: "Repairs arrive late." } });
     await waitFor(() => expect(onPreviewWorkflow).toHaveBeenCalled());
-    expect(view.getByText("Idea generation and review")).toBeTruthy();
+    expect(onPreviewWorkflow.mock.calls.at(-1)?.[0].limits.enforced).toBe(false);
     expect(view.queryByLabelText("Maximum searches")).toBeNull();
   });
 

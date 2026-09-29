@@ -25,7 +25,9 @@
   let recentThreads = $derived.by(() => {
     const recent = [...activeThreads].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
     const current = recent.find((thread) => thread.id === activeThreadId);
-    return (current ? [current, ...recent.filter((thread) => thread.id !== current.id)] : recent).slice(0, 6);
+    const visible = recent.slice(0, 6);
+    // Keep an older open project accessible without promoting selections above recent work.
+    return current && !visible.includes(current) ? [...visible.slice(0, 5), current] : visible;
   });
   let matches = $derived((filter === "archived" ? archivedThreads : filter === "attention" ? attentionThreads : activeThreads)
     .filter((thread) => thread.title.toLowerCase().includes(search.trim().toLowerCase()))

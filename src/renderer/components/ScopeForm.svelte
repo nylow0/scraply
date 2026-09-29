@@ -149,11 +149,6 @@
   let previewAttempt = $state(0);
   let previewError = $state<string | null>(null);
   let reasoningDescription = $derived(selectedModelOption?.reasoningEfforts.find((item) => item.id === reasoningEffort)?.description ?? "Controls how deeply the model reasons.");
-  let depthDescription = $derived(discoveryDepth === "quick"
-    ? "Faster scan with fewer sources."
-    : discoveryDepth === "deep"
-      ? "Broader search with more cross-checking."
-      : "Balanced coverage for most research.");
   let validationAttempted = $state(false);
   let submitting = $state(false);
   let draftFingerprint = $derived(JSON.stringify({
@@ -325,13 +320,6 @@
       }
     }
     return next;
-  }
-
-  function launchSteps(): string {
-    if (researchMode === "known-problem") {
-      return workflowMode === "vibe" ? "Use your stated problem, generate, and review" : "Use your stated problem, then wait for your choices";
-    }
-    return workflowMode === "vibe" ? "Research, select, generate, and review" : "Research, then wait for your selection";
   }
 
   async function saveAndStart() {
@@ -535,10 +523,10 @@
         {/if}
       <section class="main-settings" aria-label="Main research settings">
         <div class="main-settings-grid">
-      <label class="run-setting model-setting"><span>Model</span><select aria-label="Model" data-field="model" bind:this={modelSelect} bind:value={modelKey} onchange={selectModel} disabled={nativeModelOptions.length === 0}>{#if !selectedModelAvailable}<option value={modelKey}>{legacyModelNeedsReplacement && !modelKey ? "Choose an OpenAI model" : workspace.validation.native.connected ? `${modelDisplayName(model)} (unavailable)` : "Sign in to choose"}</option>{/if}{#each gpt6Models as modelId (modelId)}{#if !nativeModelOptions.some((item) => item.modelId === modelId) && model.modelId !== modelId}<option value={`openai-subscription:${modelId}`} disabled>{modelDisplayName({ modelId })} (not in model list)</option>{/if}{/each}{#each nativeModelOptions as item (modelRefKey(item))}<option value={modelRefKey(item)}>{modelDisplayName(item)}</option>{/each}</select>{#if nativeModelOptions.length === 0}<small>Your available models appear here after you sign in.</small>{/if}</label>
       {#if researchMode === "explore-market"}<label class="run-setting search-setting model-setting"><span>Search provider</span><div class="provider-select"><ProviderLogo provider={searchProvider} size={17} /><select aria-label="Search provider" data-field="searchProvider" bind:value={searchProvider} onchange={() => searchProviderTouched = true}><option value="exa">Exa</option><option value="perplexity">Perplexity</option></select></div><small>{searchStatus}</small>{#each visiblePreviewIssues.filter((issue) => issue.path.join(".") === "runConfig.searchProvider") as issue (issue.code)}<small class="field-error" role="alert">{issue.message}</small>{/each}</label>{/if}
+      <label class="run-setting model-setting"><span>Model</span><select aria-label="Model" data-field="model" bind:this={modelSelect} bind:value={modelKey} onchange={selectModel} disabled={nativeModelOptions.length === 0}>{#if !selectedModelAvailable}<option value={modelKey}>{legacyModelNeedsReplacement && !modelKey ? "Choose an OpenAI model" : workspace.validation.native.connected ? `${modelDisplayName(model)} (unavailable)` : "Sign in to choose"}</option>{/if}{#each gpt6Models as modelId (modelId)}{#if !nativeModelOptions.some((item) => item.modelId === modelId) && model.modelId !== modelId}<option value={`openai-subscription:${modelId}`} disabled>{modelDisplayName({ modelId })} (not in model list)</option>{/if}{/each}{#each nativeModelOptions as item (modelRefKey(item))}<option value={modelRefKey(item)}>{modelDisplayName(item)}</option>{/each}</select>{#if nativeModelOptions.length === 0}<small>Your available models appear here after you sign in.</small>{/if}</label>
       <label class="run-setting"><span>Reasoning</span><select aria-label="Reasoning" data-field="reasoning" title={reasoningDescription} bind:value={reasoningEffort}>{#if !selectedReasoningAvailable}<option value={reasoningEffort}>{reasoningEffort} (unavailable)</option>{/if}{#each (selectedModelOption?.reasoningEfforts ?? []) as effort (effort.id)}<option value={effort.id}>{effort.id.charAt(0).toUpperCase() + effort.id.slice(1)}</option>{/each}</select></label>
-      {#if researchMode === "explore-market"}<label class="run-setting"><span>Research depth</span><select aria-label="Research depth" title={depthDescription} bind:value={discoveryDepth}><option value="quick">Quick</option><option value="standard">Standard</option><option value="deep">Deep</option></select><small>{depthDescription}</small></label>{/if}
+      {#if researchMode === "explore-market"}<label class="run-setting"><span>Research depth</span><select aria-label="Research depth" bind:value={discoveryDepth}><option value="quick">Quick</option><option value="standard">Standard</option><option value="deep">Deep</option></select></label>{/if}
       <!-- A stated problem has no research depth, so the count takes that grid cell instead of its own row. -->
       <div class="solution-count" class:paired={researchMode === "known-problem"}>
         <label for="solution-count">{researchMode === "known-problem" ? "Solutions" : "Solutions per problem"}</label>
@@ -560,7 +548,6 @@
         </select></label>
         {#if errors.ideaModel || ideasPreviewIssue}<small class="field-error wide" role="alert">{errors.ideaModel ?? ideasPreviewIssue}</small>{/if}
         {#if errors.ideaReasoning}<small class="field-error wide">{errors.ideaReasoning}</small>{/if}
-        <small class="wide">Ideas are also reviewed with this model.</small>
       {/if}
 
         </div>
@@ -571,15 +558,11 @@
       </section>
       <div class="launch-content">
         <div class="launch-row">
-          <div class="limit-summary">
-            <span>{researchMode === "explore-market" ? "Depth-guided research" : "Idea generation and review"}</span>
-            <p>{researchMode === "explore-market" ? "Research follows the selected depth." : "Ideas are generated and reviewed for your problem."} You can pause or stop at any time.</p>
-          </div>
           <!-- Stays clickable while the brief is incomplete: the click is what reveals the missing fields. -->
           <button type="submit" class="primary" disabled={locked || !providersReady || (useWorkflow && previewing)}>{locked ? "Starting…" : useWorkflow ? "Start" : (researchMode === "explore-market" ? "Discover problems" : "Generate solutions")}<Icon name="arrow" size={17} /></button>
         </div>
         <div class="launch-status" role="status">
-          {#if blockingMessage}<span>{blockingMessage}</span>{:else if useWorkflow}<span>{launchSteps()}.</span>{/if}
+          {#if blockingMessage}<span>{blockingMessage}</span>{/if}
           {#if configurationIssues || missing.domain || missing.knownProblem}<button type="button" class="text-action" onclick={revealBlockingField}>{modelChoiceRequired ? "Choose model" : configurationIssues ? "Review settings" : "Edit brief"}</button>{/if}
           {#if validationAttempted && previewError}<button type="button" class="text-action" onclick={() => previewAttempt += 1}>Retry preview</button>{/if}
           {#if saved}<span>Saved</span>{/if}
@@ -718,8 +701,6 @@
   .launch-sidebar > * { flex:none; }
   .launch-content { margin-top:auto;padding-top:10px; }
   .launch-row { display:flex;flex-direction:column;align-items:stretch;gap:12px; }
-  .limit-summary > span { display:flex;align-items:center;gap:14px;font-size:14px;font-weight:500; }
-  .limit-summary p { margin:1px 0 0;color:var(--muted);font-size:13px;line-height:1.6; }
   .primary { display:flex;align-items:center;justify-content:center;gap:12px;min-width:154px;min-height:44px;background:var(--accent-strong);border:0;border-radius:10px;color:var(--accent-ink);font-weight:600; }
   .primary:hover:not(:disabled) { background:var(--accent); }
   .launch-status { display:flex;align-items:center;flex-wrap:wrap;gap:4px 12px;margin-top:5px;font-size:13px;color:var(--muted);line-height:1.5; }
