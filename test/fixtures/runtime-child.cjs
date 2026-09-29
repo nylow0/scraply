@@ -154,7 +154,7 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
     const wrong = { protocolVersion: "1.1", requestId: "unrelated-request", operation: "generation.start", event: { kind: "generation.completed", generationId: request.payload.generationId, result: { output: { answer: "wrong" }, metadata } } };
     const correct = { protocolVersion: "1.1", requestId: request.id, operation: "generation.start", event: { kind: "generation.completed", generationId: request.payload.generationId, result: { output, metadata } } };
     const writeTerminal = () => process.stdout.write(`${JSON.stringify(wrong)}\n${JSON.stringify(correct)}\n${JSON.stringify(correct)}\n`);
-    if (mode === "prompt-mismatch") setTimeout(writeTerminal, 75);
+    if (mode === "prompt-mismatch" || mode === "slow-complete") setTimeout(writeTerminal, 75);
     else writeTerminal();
     return;
   }

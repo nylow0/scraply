@@ -111,7 +111,7 @@ describe("ScopeForm search provider selection", () => {
     });
   });
 
-  test("defaults to Vibe first and invalidates its launch preview when limits change", async () => {
+  test("defaults to Vibe and refreshes depth guidance before launch", async () => {
     const state = workspace();
     state.validation.exa = { valid: true };
     const onPreviewWorkflow = vi.fn(async (draft: WorkflowLaunchDraft) => ({
@@ -142,15 +142,11 @@ describe("ScopeForm search provider selection", () => {
     expect(view.getByLabelText("Ideas model")).toBeTruthy();
     await waitFor(() => expect((view.getByRole("button", { name: "Start" }) as HTMLButtonElement).disabled).toBe(false));
 
-    await fireEvent.input(view.getByLabelText("Maximum model calls"), { target: { value: "1" } });
-    await waitFor(() => expect(onPreviewWorkflow.mock.lastCall?.[0].limits.maxModelCalls).toBe(1));
-    expect(view.queryByText("Allow at least 36 model calls.", { selector: ".launch-status span" })).toBeNull();
-    // An invalid launch is not started; Start opens the limit that needs fixing.
-    await fireEvent.click(view.getByRole("button", { name: "Start" }));
-    await waitFor(() => expect(view.getByText("Allow at least 36 model calls.", { selector: ".launch-status span" })).toBeTruthy());
-    await waitFor(() => expect(document.activeElement).toBe(view.getByLabelText("Maximum model calls")));
-    expect(onStartWorkflow).not.toHaveBeenCalled();
-    await fireEvent.input(view.getByLabelText("Maximum model calls"), { target: { value: "44" } });
+    expect(latestDraft?.limits.enforced).toBe(false);
+    expect(view.getByLabelText("Search provider").closest("dialog")).toBeNull();
+    expect(view.queryByLabelText("Maximum model calls")).toBeNull();
+    await fireEvent.change(view.getByLabelText("Research depth"), { target: { value: "deep" } });
+    await waitFor(() => expect(onPreviewWorkflow.mock.lastCall?.[0].runConfig.discoveryDepth).toBe("deep"));
     await waitFor(() => expect((view.getByRole("button", { name: "Start" }) as HTMLButtonElement).disabled).toBe(false));
     await fireEvent.click(view.getByRole("button", { name: "Start" }));
     await waitFor(() => expect(onStartWorkflow).toHaveBeenCalledOnce());
@@ -158,7 +154,7 @@ describe("ScopeForm search provider selection", () => {
     expect(onStart).not.toHaveBeenCalled();
   });
 
-  test("sets one managed project allowance for research and opportunity work and rejects a short total", async () => {
+  test("uses estimates for the managed project without fixed call or search controls", async () => {
     const state = workspace();
     state.validation.exa = { valid: true };
     const onPreviewWorkflow = vi.fn(async (draft: WorkflowLaunchDraft) => ({
@@ -182,32 +178,22 @@ describe("ScopeForm search provider selection", () => {
     await fireEvent.click(view.getByRole("checkbox", { name: /Find distinct businesses across this project/ }));
     expect(view.queryByLabelText("Opportunity model-call limit")).toBeNull();
     expect(view.queryByLabelText("Opportunity search limit")).toBeNull();
-    expect(view.getByText(/Work limits cover research, ideas, review, and added searches/)).toBeTruthy();
-    expect((view.getByLabelText("Maximum model calls") as HTMLInputElement).value).toBe("56");
-    expect((view.getByLabelText("Maximum searches") as HTMLInputElement).value).toBe("22");
+    expect(view.getByText(/Research depth guides evidence collection/)).toBeTruthy();
+    expect(view.queryByLabelText("Maximum model calls")).toBeNull();
+    expect(view.queryByLabelText("Maximum searches")).toBeNull();
     await waitFor(() => expect(onPreviewWorkflow.mock.lastCall?.[0]).toMatchObject({
       targets: { kind: "project", distinctBusinessCount: 30 },
       limits: { maxModelCalls: 56, maxSearches: 22 },
       runConfig: { opportunityExploration: { maxModelCalls: 24, maxSearches: 6 } },
     }));
 
-    await fireEvent.input(view.getByLabelText("Maximum model calls"), { target: { value: "55" } });
-    expect(view.getByText("Allow at least 56 model calls for projected research, generation, and review.", { selector: ".launch-status span" })).toBeTruthy();
-    await fireEvent.input(view.getByLabelText("Maximum model calls"), { target: { value: "56" } });
-    await fireEvent.input(view.getByLabelText("Maximum searches"), { target: { value: "15" } });
-    expect(view.getByText("Allow at least 16 searches for projected research.", { selector: ".launch-status span" })).toBeTruthy();
-
-    await fireEvent.input(view.getByLabelText("Maximum searches"), { target: { value: "17" } });
-    await waitFor(() => expect(onPreviewWorkflow.mock.lastCall?.[0]).toMatchObject({
-      limits: { maxModelCalls: 56, maxSearches: 17 },
-      runConfig: { opportunityExploration: { maxModelCalls: 24, maxSearches: 1 } },
-    }));
+    expect(onPreviewWorkflow.mock.lastCall?.[0].limits.enforced).toBe(false);
     await waitFor(() => expect((view.getByRole("button", { name: "Start" }) as HTMLButtonElement).disabled).toBe(false));
     await fireEvent.click(view.getByRole("button", { name: "Start" }));
     expect(onStartWorkflow).toHaveBeenCalledOnce();
   });
 
-  test("uses singular search wording in a valid one-search launch preview", async () => {
+  test("shows depth guidance instead of presenting preview estimates as mandatory limits", async () => {
     const state = workspace();
     const onPreviewWorkflow = vi.fn(async (draft: WorkflowLaunchDraft) => ({
       type: "launch" as const,
@@ -225,9 +211,9 @@ describe("ScopeForm search provider selection", () => {
     });
     await fireEvent.click(view.getByRole("radio", { name: /I have a problem to solve/ }));
     await fireEvent.input(view.getByPlaceholderText("Describe the problem."), { target: { value: "Repairs arrive late." } });
-    await fireEvent.input(view.getByLabelText("Maximum searches"), { target: { value: "1" } });
-    await waitFor(() => expect(view.getByText(/90 min.*12 model calls.*1 search/)).toBeTruthy());
-    await waitFor(() => expect(view.getByText(/Minimum required: 4 model calls and 1 search/)).toBeTruthy());
+    await waitFor(() => expect(onPreviewWorkflow).toHaveBeenCalled());
+    expect(view.getByText("Idea generation and review")).toBeTruthy();
+    expect(view.queryByLabelText("Maximum searches")).toBeNull();
   });
 
   test("saves an explicit family target separately from the per-problem idea count", async () => {
@@ -892,7 +878,7 @@ describe("settings surfaces preserve launch configuration", () => {
     info.focus();
     await fireEvent.click(info);
     await fireEvent.mouseLeave(info.parentElement!);
-    expect(view.getByRole("tooltip").textContent).toContain("Work stops at your saved limits");
+    expect(view.getByRole("tooltip").textContent).toContain("You can pause or stop at any time");
     await fireEvent.keyDown(info, { key: "Escape" });
     expect(view.queryByRole("tooltip")).toBeNull();
   });
@@ -961,10 +947,8 @@ describe("settings surfaces preserve launch configuration", () => {
     }
     await fireEvent.click(view.getByRole("button", { name: "Research" }));
     expect((view.getByLabelText("Research instructions") as HTMLTextAreaElement).value).toBe("Research context");
-    await fireEvent.click(view.getByRole("button", { name: "Work limits" }));
-    await fireEvent.input(view.getByLabelText("Time limit"), { target: { value: "80" } });
-    await fireEvent.input(view.getByLabelText("Maximum model calls"), { target: { value: "200" } });
-    await fireEvent.input(view.getByLabelText("Maximum searches"), { target: { value: "80" } });
+    await fireEvent.click(view.getByRole("button", { name: "Research scope" }));
+    expect(view.queryByLabelText("Time limit")).toBeNull();
     await fireEvent.click(view.getByRole("button", { name: "Done" }));
     expect((view.getByLabelText("Ideas reasoning") as HTMLSelectElement).value).toBe("high");
     if (mode === "babysit") await fireEvent.click(view.getByRole("radio", { name: /Controlled/ }));
@@ -972,9 +956,9 @@ describe("settings surfaces preserve launch configuration", () => {
       purpose: researchMode === "known-problem" ? "known-problem" : "discovery", mode,
       brief: researchMode === "known-problem" ? "Approvals take too long" : "Parts sourcing",
       scope: { title: "Repair shops", audience: "Shops", domain: "Parts sourcing", riskEvaluationCriteria: "Low setup effort", offLimits: ["No hardware", "No migration"] },
-      runConfig: { ...DEFAULT_RUN_CONFIG, ideaCount: 5, maxRunMinutes: 80, researchMode, knownProblem: researchMode === "known-problem" ? "Approvals take too long" : "",
+      runConfig: { ...DEFAULT_RUN_CONFIG, ideaCount: 5, maxRunMinutes: DEFAULT_RUN_CONFIG.maxRunMinutes, researchMode, knownProblem: researchMode === "known-problem" ? "Approvals take too long" : "",
         ...(researchMode === "explore-market" ? { discoveryDepth: "deep", audienceSourcePolicy: "communities", searchProvider: "perplexity" } : {}) },
-      limits: { maxMinutes: 80, maxModelCalls: 200, maxSearches: 80 },
+      limits: { enforced: false },
       instructions: { research: "Research context", ideas: "Generate carefully", review: "Check evidence" },
       ...(mode === "vibe" ? { ideas: { model: ideasModel, reasoningEffort: "high", reviewModel: ideasModel, reviewReasoningEffort: "high" } } : {}),
     }));
@@ -987,7 +971,7 @@ describe("settings surfaces preserve launch configuration", () => {
     expect(onStartWorkflow.mock.calls[0]?.[0].proposal).toMatchObject(expected);
   });
 
-  test("hides preview errors before Start, then reveals and focuses an invalid limit", async () => {
+  test("hides preview errors before Start and exposes retry after a real preview failure", async () => {
     const state = workspace();
     state.validation.exa = { valid: true };
     const onPreviewWorkflow = vi.fn().mockRejectedValue(new Error("Preview temporarily unavailable"));
@@ -995,22 +979,11 @@ describe("settings surfaces preserve launch configuration", () => {
     await waitFor(() => expect(onPreviewWorkflow).toHaveBeenCalledTimes(1));
     expect(view.queryByText("Preview temporarily unavailable")).toBeNull();
     expect(view.queryByRole("button", { name: "Retry preview" })).toBeNull();
-    await fireEvent.click(view.getByRole("button", { name: "Edit limits" }));
-    await fireEvent.input(view.getByLabelText("Time limit"), { target: { value: "1" } });
-    await fireEvent.click(view.getByRole("button", { name: "Done" }));
-    expect(view.queryByRole("dialog")).toBeNull();
-    // Nothing is flagged until Start is clicked; the click opens the collapsed setting and focuses it.
-    expect(view.queryByRole("button", { name: "Review settings" })).toBeNull();
-    const start = view.getByRole("button", { name: "Start" });
-    start.focus();
-    await fireEvent.click(start);
-    await waitFor(() => expect(view.getByRole("dialog", { name: "Advanced settings" })).toBeTruthy());
-    await waitFor(() => expect(document.activeElement).toBe(view.getByLabelText("Time limit")));
-    expect(view.getByText("Choose 5 to 240 minutes.", { selector: ".field-error" })).toBeTruthy();
-    await fireEvent.input(view.getByLabelText("Time limit"), { target: { value: "30" } });
-    await fireEvent.click(view.getByRole("button", { name: "Done" }));
-    expect(view.queryByRole("button", { name: "Review settings" })).toBeNull();
-    expect(document.activeElement).toBe(start);
+    await fireEvent.click(view.getByRole("button", { name: "Start" }));
+    await waitFor(() => expect(view.getByText("Preview temporarily unavailable")).toBeTruthy());
+    expect(view.getByRole("button", { name: "Retry preview" })).toBeTruthy();
+    await fireEvent.click(view.getByRole("button", { name: "Retry preview" }));
+    await waitFor(() => expect(onPreviewWorkflow.mock.calls.length).toBeGreaterThan(1));
   });
 });
 

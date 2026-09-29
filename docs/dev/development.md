@@ -68,7 +68,7 @@ This is an explicit desktop check, not the default preview. The installed Start 
 
 ## Verification and handoff
 
-For offline setup and navigation checks, run `bun run test:ui` and open `http://127.0.0.1:5176/?history=18&long=1`. This mounts the real renderer with synthetic projects and a local mock transport. It cannot launch research or contact a provider. Use `history=0` or `history=80` for empty and large collections, `active=70` with the large collection to place the current project outside recent history, and `connection=offline` for a disconnected search provider. `account=signed-out` opens the welcome sign-in, which succeeds on click, and `search=none` starts without search keys. Saving a search key accepts any key except one containing `invalid`. Reloading resets the fixture. Settings and archive/restore changes last for the current page session.
+For offline setup and navigation checks, run `bun run test:ui` and open `http://127.0.0.1:5176/?history=18&long=1`. This mounts the real renderer with synthetic projects and a local mock transport. It cannot launch research or contact a provider. Use `history=0` or `history=80` for empty and large collections, `active=70` with the large collection to place the current project outside recent history, `progress=guided` for research progress with actual usage, and `connection=offline` for a disconnected search provider. `account=signed-out` opens the welcome sign-in, which succeeds on click, and `search=none` starts without search keys. Saving a search key accepts any key except one containing `invalid`. Reloading resets the fixture. Settings and archive/restore changes last for the current page session.
 
 | Change | Local verification |
 | --- | --- |
@@ -97,7 +97,9 @@ Users add Exa and Perplexity API keys in the app: the welcome prompt asks after 
 
 Connect OpenAI through Scraply's account controls. The app opens OpenAI login in your browser and bundles its `scraply-agent` worker. These credentials stay separate from other Codex installations on the computer. The worker source lives in [runtime/](../../runtime/README.md); `nylow0/scraply-agent` is legacy. Pinned upstream source supplies OpenAI login and Responses transport libraries. Scraply does not package or invoke the Codex CLI.
 
-Native OpenAI does not support output-token ceilings. Scraply omits that field for this provider. Request deadlines and the runtime output-size limit still apply, but they do not guarantee a token or billing ceiling. Other providers retain their configured token ceiling.
+Research generations wait for provider completion, an actual provider or transport failure, or explicit cancellation. Scraply does not impose a generation deadline or stop a run because its estimated duration elapsed. The runtime still validates responses and bounds input/output size. Native OpenAI does not support output-token ceilings; other providers retain their configured token ceiling.
+
+New workflows use Research depth to guide query planning and evidence collection. Call and search counts are estimates, not dispatch limits. Older saved workflows retain their explicit count limits. Search provider is available in the main setup. Exa uses `auto` search; Perplexity uses its Search API with a 2,000-token page extraction limit. Quick, Standard, and Deep are Scraply workflow settings, not interchangeable provider modes. Perplexity's `web`/`fast` search types and `low`/`medium`/`high` extraction settings are documented in its [Search API reference](https://docs.perplexity.ai/api-reference/search-post); Exa's modes are documented in its [Search reference](https://exa.ai/docs/reference/search).
 
 ## Usefulness evaluation
 

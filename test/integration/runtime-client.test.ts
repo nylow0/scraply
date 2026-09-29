@@ -55,6 +55,14 @@ afterEach(async () => {
 });
 
 describe("persistent native runtime client", () => {
+  test("an unbounded generation waits for the full native response despite the terminal grace period", async () => {
+    const runtime = client("slow-complete", { terminalGraceMs: 1 });
+    const { deadlineMs: _deadline, ...generation } = request("slow-research");
+    void _deadline;
+    const result = await runtime.structuredCompletion(generation);
+    expect(result.output).toEqual({ answer: "right" });
+    expect(result.metadata.attempts[0]?.providerCompletion).toBe("confirmed");
+  });
   test("handles split UTF-8, coalesced frames, and only the correlated terminal event", async () => {
     const runtime = client("normal");
     expect((await runtime.listModels("openai-subscription"))[0]?.displayName).toBe("Modèle");

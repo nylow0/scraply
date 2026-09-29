@@ -5,7 +5,7 @@ import App from "../../src/renderer/App.svelte";
 import { createScraplyApi } from "../../src/shared/scraply-api";
 import { DEFAULT_RUN_CONFIG, type Thread } from "../../src/shared/schemas";
 import { IPC_CHANNELS, RemoveSearchKeySchema, SaveScopeSchema, SaveRunConfigSchema, SaveSearchKeySchema, type WorkspaceState } from "../../src/shared/ipc";
-import { PreviewWorkflowRequestSchema } from "../../src/shared/workflow-contracts";
+import { PreviewWorkflowRequestSchema, type WorkflowDetail } from "../../src/shared/workflow-contracts";
 
 // This standalone renderer has no Electron bridge or network provider. URL parameters
 // select deterministic UI scenarios without touching the user's projects or credentials.
@@ -41,11 +41,29 @@ let state: WorkspaceState = {
   researchRequests: [], researchFindings: [], solutions: [], latestResearchRun: null, pendingRuns: [],
 };
 
+const guidedProgress: WorkflowDetail | null = params.get("progress") === "guided" && state.activeThreadId ? {
+  summary: {
+    sessionId: "fixture-guided", threadId: state.activeThreadId, purpose: "discovery", mode: "vibe", targetKind: "per-problem",
+    state: "running", outcome: null, revision: 1, activeSnapshotId: null, selectedProblemIds: [],
+    counts: { requested: 3, attempted: 0, validated: 0, accepted: 0, duplicate: 0, unresolved: 0, failed: 0, missing: 3, existing: 0, addedBySession: 0, total: 0 },
+    limits: { enforced: false, maxMinutes: 90, maxModelCalls: 72, maxSearches: 38 },
+    budget: { modelCalls: { limit: 72, spent: 1, reserved: 50, uncertain: 0 }, searches: { limit: 38, spent: 0, reserved: 24, uncertain: 0 }, remainingMs: 89 * 60_000 },
+    currentStage: "discovery", stopReason: null, startedAt: now, finishedAt: null,
+  },
+  tasks: [{ id: "fixture-discovery", parentItemId: null, kind: "discovery", scopeKey: "initial-research", state: "running", createdAt: now, finishedAt: null }],
+  nextCursor: null,
+} : null;
+if (guidedProgress) {
+  state.activeWorkflow = guidedProgress.summary;
+  state.threads = state.threads.map(thread => thread.id === state.activeThreadId ? { ...thread, status: "discovery-running" } : thread);
+}
+
 const fixtureApi = createScraplyApi({
   async invoke<T>(channel: string, payload?: unknown): Promise<T> {
     let result: unknown;
     switch (channel) {
       case IPC_CHANNELS.GET_WORKSPACE: result = state; break;
+      case IPC_CHANNELS.GET_WORKFLOW: result = { ok: true, data: guidedProgress }; break;
       case IPC_CHANNELS.GET_VALIDATION: result = state.validation; break;
       case IPC_CHANNELS.SELECT_THREAD: {
         const { threadId } = payload as { threadId: string };
@@ -74,8 +92,8 @@ const fixtureApi = createScraplyApi({
           type: "launch", proposal: { ...draft, resolvedInstructions: { research: "Fixture research", ideas: "Fixture ideas", review: "Fixture review" }, instructionHashes: { research: "r", ideas: "i", review: "v" } },
           previewHash: JSON.stringify(draft), capabilityFingerprint: "fixture", minimumWork: minimum, upperLimits: draft.limits,
           fieldErrors: [
-            ...(draft.limits.maxModelCalls < minimum.modelCalls ? [{ path: ["limits", "maxModelCalls"], code: "BUDGET_TOO_SMALL", message: `Allow at least ${minimum.modelCalls} model calls.` }] : []),
-            ...(draft.limits.maxSearches < minimum.searches ? [{ path: ["limits", "maxSearches"], code: "BUDGET_TOO_SMALL", message: `Allow at least ${minimum.searches} searches.` }] : []),
+            ...(draft.limits.enforced !== false && draft.limits.maxModelCalls < minimum.modelCalls ? [{ path: ["limits", "maxModelCalls"], code: "BUDGET_TOO_SMALL", message: `Allow at least ${minimum.modelCalls} model calls.` }] : []),
+            ...(draft.limits.enforced !== false && draft.limits.maxSearches < minimum.searches ? [{ path: ["limits", "maxSearches"], code: "BUDGET_TOO_SMALL", message: `Allow at least ${minimum.searches} searches.` }] : []),
           ], expiresAt: "2099-01-01T00:00:00.000Z",
         } }; break;
       }

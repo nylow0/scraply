@@ -60,7 +60,7 @@ export interface PreparedIdeaFollowUp {
     jsonSchema: object;
     repairPolicy: "disabled" | "one_retry";
     maxOutputTokens: number | null;
-    deadlineMs: number;
+    deadlineMs?: number;
     prompt: ResolvedWorkflowV2Prompt;
   };
 }
@@ -161,7 +161,6 @@ export function prepareIdeaFollowUp(input: IdeaFollowUpInput): PreparedIdeaFollo
     jsonSchema: deriveJsonSchema(WorkflowV2IdeaFollowUpOutputSchema),
     repairPolicy: input.allowance.maxModelCalls === 2 ? "one_retry" : "disabled",
     ...(input.model.providerId !== "openai-subscription" ? { maxOutputTokens: stage.maxOutputTokens } : {}),
-    deadlineMs: Math.min(stage.deadlineMs, input.allowance.maxMinutes * 60_000),
     ...(input.signal ? { signal: input.signal } : {}),
   };
   return {
@@ -177,7 +176,6 @@ export function prepareIdeaFollowUp(input: IdeaFollowUpInput): PreparedIdeaFollo
       jsonSchema: request.jsonSchema,
       repairPolicy: request.repairPolicy,
       maxOutputTokens: request.maxOutputTokens ?? null,
-      deadlineMs: request.deadlineMs,
       prompt,
     },
   };

@@ -146,7 +146,6 @@ export function prepareSolutionSetReview(input: SolutionSetReviewInput): Prepare
     jsonSchema: deriveJsonSchema(WorkflowV2SolutionSetReviewOutputSchema),
     repairPolicy: "disabled",
     ...(input.model.providerId === "openai-subscription" ? {} : { maxOutputTokens: stage.maxOutputTokens }),
-    deadlineMs: stage.deadlineMs,
     ...(input.signal ? { signal: input.signal } : {}),
   };
   return {

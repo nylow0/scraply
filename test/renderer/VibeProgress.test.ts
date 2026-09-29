@@ -30,6 +30,18 @@ function detail(summaryChanges: Partial<WorkflowSummary> = {}): WorkflowDetail {
 }
 
 describe("VibeProgress", () => {
+  test("shows actual usage without remaining limits for depth-guided research", () => {
+    const state = detail();
+    state.summary.limits.enforced = false;
+    const view = render(VibeProgress, { detail: state, busy: false,
+      onPause: vi.fn(async () => {}), onStop: vi.fn(async () => {}) });
+    expect(view.getByLabelText("Work completed")).toBeTruthy();
+    expect(view.getByText("Model calls used")).toBeTruthy();
+    expect(view.queryByText("Model calls left")).toBeNull();
+    expect(view.queryByText("Time left")).toBeNull();
+    expect(view.queryByText("Extend work allowance")).toBeNull();
+  });
+
   test("shows accepted work, requested and reviewed counts, remaining allowance, and current task", async () => {
     const onPause = vi.fn(async () => {});
     const onStop = vi.fn(async () => {});

@@ -7,7 +7,6 @@ import { SourceSchema, type Source } from "../shared/schemas";
 
 const MAX_RESULTS = 5;
 const MAX_CHARACTERS = 4_000;
-const TIMEOUT_MS = 45_000;
 const PROMPT_VERSION = "opportunity-gap-search-managed-v1";
 const SavedSearchInputSchema = z.object({
   gapId: z.string().min(1),
@@ -101,9 +100,9 @@ export async function runManagedCoverageSearch(input: ManagedCoverageSearchInput
     input.db.immediateTransaction(() => repository.markAttemptDispatched(
       input.threadId, attempt.attemptId, "none", input.sessionId));
     input.onDispatched?.(attempt.attemptId);
-    const signal = AbortSignal.any([input.signal, AbortSignal.timeout(TIMEOUT_MS)]);
+    const signal = input.signal;
     const result = await searchClient.search(searchInput.query, {
-      numResults: MAX_RESULTS, maxCharacters: MAX_CHARACTERS, timeoutMs: TIMEOUT_MS, signal,
+      numResults: MAX_RESULTS, maxCharacters: MAX_CHARACTERS, signal,
     });
     sources = usableSources(result);
   } catch (error) {

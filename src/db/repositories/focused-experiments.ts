@@ -353,7 +353,7 @@ function requestSnapshot<T>(request: StructuredStageRequest<T>): Record<string, 
     evidence: request.evidence,
     jsonSchema: request.jsonSchema,
     repairPolicy: request.repairPolicy,
-    deadlineMs: request.deadlineMs,
+    ...(request.deadlineMs === undefined ? {} : { deadlineMs: request.deadlineMs }),
     ...(request.maxOutputTokens === undefined ? {} : { maxOutputTokens: request.maxOutputTokens }),
   };
 }

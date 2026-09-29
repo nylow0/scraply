@@ -518,7 +518,10 @@ impl RuntimeHost {
         if !valid_operation_id(&payload.generation_id) {
             return invalid_payload("generationId is invalid");
         }
-        if payload.deadline_ms == 0 || Duration::from_millis(payload.deadline_ms) > MAX_TIMEOUT {
+        if payload
+            .deadline_ms
+            .is_some_and(|ms| ms == 0 || Duration::from_millis(ms) > MAX_TIMEOUT)
+        {
             return invalid_payload("deadlineMs is outside the supported range");
         }
         let Some(events) = generation_events else {
@@ -538,17 +541,19 @@ impl RuntimeHost {
             };
             entry.insert(cancellation.clone());
         }
-        let control =
-            match OperationControl::new(Duration::from_millis(payload.deadline_ms), cancellation) {
-                Ok(control) => control,
-                Err(error) => {
-                    self.generations
-                        .lock()
-                        .expect("generation map poisoned")
-                        .remove(&payload.generation_id);
-                    return core_failure(error);
-                }
-            };
+        let control = match payload.deadline_ms.map_or_else(
+            || Ok(OperationControl::until_cancelled(cancellation.clone())),
+            |ms| OperationControl::new(Duration::from_millis(ms), cancellation.clone()),
+        ) {
+            Ok(control) => control,
+            Err(error) => {
+                self.generations
+                    .lock()
+                    .expect("generation map poisoned")
+                    .remove(&payload.generation_id);
+                return core_failure(error);
+            }
+        };
         let generation_id = payload.generation_id;
         let request = payload.request;
         let provider = match self.provider(
@@ -813,7 +818,7 @@ struct GenerationIdPayload {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct GenerationStartPayload {
     generation_id: String,
-    deadline_ms: u64,
+    deadline_ms: Option<u64>,
     #[serde(flatten)]
     request: GenerationRequest,
 }

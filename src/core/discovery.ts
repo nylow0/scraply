@@ -24,7 +24,6 @@ import {
   SOURCE_MAX_CHARACTERS,
 } from "../shared/discovery-projection";
 import { loadPrompt } from "./prompts";
-import { DISCOVERY_SYNTHESIS_DEADLINE_MS, FACTOR_HARVEST_DEADLINE_MS } from "./stages";
 
 export {
   DEFAULT_PROBLEM_CANDIDATE_LIMIT,
@@ -97,6 +96,8 @@ export interface DiscoveryDependencies {
   model: ModelRef;
   reasoningEffort: ReasoningEffort;
   depth?: DiscoveryDepth;
+  /** Depth suggests search breadth; a useful plan can contain fewer or more queries. */
+  guided?: boolean;
   audienceSearch?: Pick<SearchOptions, "includeDomains" | "startPublishedDate"> & { category?: ExaCategory };
   candidateLimit?: number;
   signal?: AbortSignal;
@@ -140,8 +141,8 @@ export async function harvestFactors(
     let acceptedForMode = 0;
     const harvest = async (sources: HarvestedSource[], targetAccepted: number) => {
       const sourceById = new Map(allSources.map((source) => [source.id, source]));
-      // Audience searches return heterogeneous long-form discussions. Smaller packets keep Sol
-      // extraction comfortably inside its deadline while preserving deterministic source groups.
+      // Audience searches return heterogeneous long-form discussions. Smaller packets keep
+      // extraction focused while preserving deterministic source groups.
       const batches = batchSources(sources, mode === "audience" ? AUDIENCE_SOURCE_BATCH_CHARACTERS : SOURCE_BATCH_CHARACTERS);
       for (const [index, batch] of batches.entries()) {
         const remainingBatches = batches.length - index;
@@ -472,6 +473,7 @@ async function planQueries(
       inputs: {
         harvestMode: mode,
         queryCount: count,
+        ...(dependencies.guided ? { queryCountIsGuidance: true, researchDepth: dependencies.depth ?? "standard" } : {}),
         ...(dependencies.researchAngles?.length ? { angleAssignments: dependencies.researchAngles.filter((angle) =>
           mode === "domain"
             ? ["current-alternative", "contrary-evidence", "measured-behavior"].includes(angle.sourceClass)
@@ -495,7 +497,7 @@ async function planQueries(
     : { query: item.query.trim(), intent: "intent" in item ? item.intent as QueryIntent : "unclassified" });
   const queries = [...new Map(planned.filter((item) => item.query)
     .map((item) => [normalizeSearchQuery(item.query), item])).values()];
-  if (queries.length < count) {
+  if (queries.length === 0 || (!dependencies.guided && queries.length < count)) {
     throw new ProviderFailure(
       "schema",
       `Query planner returned ${queries.length} unique non-empty queries; expected ${count}`,
@@ -506,11 +508,11 @@ async function planQueries(
     && queries.every((item) => item.intent !== "unclassified")) {
     const intents = new Set(queries.map((item) => item.intent));
     const hasBuyerIntent = intents.has("firsthand-experience") || intents.has("buying-signal");
-    if (!hasBuyerIntent || intents.size < Math.min(3, count)) {
+    if (!hasBuyerIntent || intents.size < Math.min(3, dependencies.guided ? queries.length : count)) {
       throw new ProviderFailure("schema", "Query planner did not return enough distinct evidence intents", false);
     }
   }
-  const bounded = queries.slice(0, count);
+  const bounded = dependencies.guided ? queries : queries.slice(0, count);
   if (dependencies.workflowVersion !== 2 || bounded.some((item) => item.intent === "unclassified")) return bounded;
   const buyingIndex = bounded.findIndex((item) => item.intent === "buying-signal");
   const firsthandIndex = bounded.findIndex((item) => item.intent === "firsthand-experience");
@@ -689,13 +691,8 @@ async function structuredCall<T>(
     schema,
     jsonSchema: deriveJsonSchema(schema),
     repairPolicy: "one_retry",
-    // The subscription endpoint rejects token ceilings; its deadline and byte limit still apply.
+    // The subscription endpoint rejects token ceilings; the runtime still bounds output bytes.
     ...(dependencies.model.providerId !== "openai-subscription" ? { maxOutputTokens: 8_192 } : {}),
-    deadlineMs: stage.startsWith("factor-harvest:")
-      ? FACTOR_HARVEST_DEADLINE_MS
-      : stage === "problem-candidates" || stage.startsWith("problem-kill:")
-        ? DISCOVERY_SYNTHESIS_DEADLINE_MS
-        : 120_000,
     ...(dependencies.signal ? { signal: dependencies.signal } : {}),
   });
   return result.output;

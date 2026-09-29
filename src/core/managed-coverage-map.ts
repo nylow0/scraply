@@ -103,7 +103,7 @@ export async function runManagedCoverageMap(input: ManagedCoverageMapInput): Pro
       evidence: [{ sourceId: "scraply:opportunity-inventory", content: context }],
       schema: OpportunityCoverageMapOutputSchema,
       jsonSchema: deriveJsonSchema(OpportunityCoverageMapOutputSchema),
-      repairPolicy: "disabled", deadlineMs: 120_000, signal: input.signal,
+      repairPolicy: "disabled", signal: input.signal,
       onDispatched: () => {
         input.db.immediateTransaction(() => repository.markAttemptDispatched(
           input.threadId, attempt.attemptId, "none", input.sessionId));

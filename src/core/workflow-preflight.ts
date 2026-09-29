@@ -94,10 +94,10 @@ export function previewLaunch(draftInput: WorkflowLaunchDraft, capabilities: Wor
   // Each discovery stage reserves its schema correction. Every idea batch has
   // a generation reservation and an independent review reservation.
   const minimumWork = { modelCalls: discovery.modelCalls * 2 + initialBatches * 4, searches: discovery.searches };
-  if (contract.limits.maxModelCalls < minimumWork.modelCalls) {
+  if (contract.limits.enforced !== false && contract.limits.maxModelCalls < minimumWork.modelCalls) {
     fieldErrors.push({ path: ["limits", "maxModelCalls"], code: "BUDGET_TOO_SMALL", message: `Allow at least ${minimumWork.modelCalls} model calls for research, generation, and review.` });
   }
-  if (contract.limits.maxSearches < minimumWork.searches) {
+  if (contract.limits.enforced !== false && contract.limits.maxSearches < minimumWork.searches) {
     fieldErrors.push({ path: ["limits", "maxSearches"], code: "BUDGET_TOO_SMALL", message: `Allow at least ${minimumWork.searches} searches for this research depth.` });
   }
   const capabilityFingerprint = fingerprintCapabilities(capabilities);

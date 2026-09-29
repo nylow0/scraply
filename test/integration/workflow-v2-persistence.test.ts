@@ -311,7 +311,6 @@ describe("workflow v2 persistence", () => {
   test("reuses a completed factor batch after interruption before the full harvest is persisted", async () => {
     configurePromptPaths({ bundledDir: join(process.cwd(), "prompts"), overrideDir: null });
     const client = database();
-    const stage = WORKFLOW_V2_STAGE_REGISTRY["factor-harvest"];
     let providerCalls = 0;
     const provider: StructuredModelClient = { async structuredCompletion(request) {
       providerCalls += 1;
@@ -347,7 +346,7 @@ describe("workflow v2 persistence", () => {
           sources: partitioned ? [{ id: "source", text: "Operators repeat filing." }] : [{ id: "source", text: "Operators repeat filing." }, { id: "other", text: "Other evidence." }],
         },
       }], schema: FactorHarvestOutputSchema,
-      jsonSchema: deriveJsonSchema(FactorHarvestOutputSchema), repairPolicy: "one_retry", deadlineMs: stage.deadlineMs,
+      jsonSchema: deriveJsonSchema(FactorHarvestOutputSchema), repairPolicy: "one_retry",
     });
     try {
       await expect(new WorkflowExecution(client, "run-v2").discoveryClient(provider).structuredCompletion(request("first")))
@@ -412,7 +411,7 @@ describe("workflow v2 persistence", () => {
     const request: StructuredStageRequest<unknown> = {
       generationId: "candidate-original", stage: "problem-candidates:batch-1", model: { providerId: "test", modelId: "test" }, reasoningEffort: "high",
       workOrder: { stage: "problem-candidates", instruction: "Legacy instruction", goal: "Find problems", inputs: {}, requiredDecisions: [], definitionOfDone: [], constraints: [] },
-      evidence: [], schema: ProblemCandidatesOutputSchema, jsonSchema: deriveJsonSchema(ProblemCandidatesOutputSchema), repairPolicy: "one_retry", deadlineMs: stage.deadlineMs,
+      evidence: [], schema: ProblemCandidatesOutputSchema, jsonSchema: deriveJsonSchema(ProblemCandidatesOutputSchema), repairPolicy: "one_retry",
     };
     const output = stage.schema.parse({ problems: [{ statement: "Operators repeat filing.", whyItPersists: "Systems disagree.", affected: "Operators",
       scaleEstimate: "Unknown", scaleBasisFactorId: null, factorIds: [], alternativeExplanations: [], unknowns: ["Frequency"] }] });
@@ -446,12 +445,11 @@ describe("workflow v2 persistence", () => {
       const prompts = original.read<Record<string, Record<string, unknown>>>("prompts")!;
       client.db.prepare(`UPDATE workflow_snapshots SET value_json = ? WHERE research_run_id = 'run-v2' AND snapshot_key = 'prompts'`)
         .run(JSON.stringify({ ...prompts, "problem-kill": { ...prompts["problem-kill"], currentBundledSha256: "0".repeat(64) } }));
-      const stage = WORKFLOW_V2_STAGE_REGISTRY["problem-kill"];
       const request: StructuredStageRequest<unknown> = {
         generationId: "older-kill", stage: "problem-kill:older", model: { providerId: "test", modelId: "test" }, reasoningEffort: "low",
         workOrder: { stage: "problem-kill", instruction: "Saved instruction", goal: "Assess evidence", inputs: {}, definitionOfDone: [] },
         evidence: [], schema: ProblemKillOutputSchema, jsonSchema: deriveJsonSchema(ProblemKillOutputSchema),
-        repairPolicy: "one_retry", deadlineMs: stage.deadlineMs,
+        repairPolicy: "one_retry",
       };
       const olderOutput = {
         verdict: "insufficient-evidence", verdictReason: "The buyer has not been reached.", verdictSourceIds: [],
@@ -759,7 +757,6 @@ describe("workflow v2 persistence", () => {
       schema: stage.schema as import("zod").z.ZodType<unknown>,
       jsonSchema: deriveJsonSchema(stage.schema),
       repairPolicy: "one_retry",
-      deadlineMs: stage.deadlineMs,
     });
       attempts.markDispatched(prepared.id);
       attempts.interruptInFlight("process ended");

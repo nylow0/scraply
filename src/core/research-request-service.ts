@@ -833,7 +833,6 @@ export class ResearchRequestService {
       jsonSchema: deriveJsonSchema(ClassifiedWorkflowV2ProblemKillOutputSchema),
       repairPolicy: "disabled", // One reserved call means a schema repair would exceed this request's allowance.
       signal: controller.signal,
-      deadlineMs: Math.min(action.allowance.maxMinutes * 60_000, remainingMs(session), 300_000),
       ...(action.model.providerId === "openai-subscription" ? {} : { maxOutputTokens: 2_048 }),
     };
     const attempts = new GenerationAttemptRepository(this.options.db);

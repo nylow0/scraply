@@ -216,7 +216,7 @@ function effectiveRequestSnapshot<T>(
     evidence: request.evidence,
     jsonSchema: request.jsonSchema,
     repairPolicy: request.repairPolicy,
-    deadlineMs: request.deadlineMs,
+    ...(request.deadlineMs === undefined ? {} : { deadlineMs: request.deadlineMs }),
     compilerPrompt: runtimeIdentity.compilerPrompt ?? null,
     maxOutputTokens: request.maxOutputTokens ?? null,
   };

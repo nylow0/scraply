@@ -57,7 +57,8 @@ export interface WorkOrder { stage: string; instruction: string; goal: string; i
 export interface EvidenceSource { sourceId: string; content: unknown }
 export interface GenerationStartPayload {
   generationId: string;
-  deadlineMs: number;
+  /** Omit to wait for provider completion or explicit cancellation. */
+  deadlineMs?: number;
   model: QualifiedModel;
   promptRevision: "scraply.stage-worker.v1";
   workOrder: WorkOrder;

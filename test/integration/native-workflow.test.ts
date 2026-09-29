@@ -6,7 +6,7 @@ import { z } from "zod";
 import { DatabaseClient } from "../../src/db/client";
 import { ResearchRunRepository } from "../../src/db/repositories/research-runs";
 import { ThreadRepository } from "../../src/db/repositories/threads";
-import { WORKFLOW_V2_STAGE_REGISTRY, type WorkflowV2StageId } from "../../src/core/stages";
+import { PreviewWorkflowResultSchema, WorkflowAdmissionReceiptSchema } from "../../src/shared/workflow-contracts";
 import { FOCUSED_EXPERIMENT_DRAFT_INSTRUCTION, FOCUSED_EXPERIMENT_REVIEW_INSTRUCTION } from "../../src/core/experiment-review";
 import { WorkspaceStateSchema, SolutionViewSchema, type WorkspaceState, type ResearchEvent } from "../../src/shared/ipc";
 import { GenerationStartPayloadSchema } from "../../src/shared/runtime-protocol";
@@ -29,6 +29,32 @@ afterEach(async () => {
 });
 
 describe("native research workflow through the production backend", () => {
+  test("depth-guided discovery completes beyond its call and search estimates", async () => {
+    const item = await fixture();
+    const threadId = await item.createThread("explore-market");
+    const preview = await item.post("/workflows/preview", { type: "launch", threadId, draft: {
+      contractVersion: 1, purpose: "discovery", mode: "babysit", brief: scope.domain, scope,
+      runConfig: { ...DEFAULT_RUN_CONFIG, model, reasoningEffort: "medium", discoveryDepth: "quick", searchProvider: "exa" },
+      targets: { kind: "per-problem", ideaCount: 3 },
+      limits: { enforced: false, maxMinutes: 5, maxModelCalls: 1, maxSearches: 0 }, instructions: {},
+    } }, PreviewWorkflowResultSchema);
+    expect(preview.fieldErrors).toEqual([]);
+    const receipt = await item.post("/workflows/start", {
+      threadId, clientCommandId: "guided-discovery", contract: preview.proposal,
+      previewHash: preview.previewHash, capabilityFingerprint: preview.capabilityFingerprint,
+      previewExpiresAt: preview.expiresAt,
+    }, WorkflowAdmissionReceiptSchema);
+    const state = await item.waitFor((workspace) => workspace.activeWorkflow?.state === "waiting-for-review");
+    expect(state.activeWorkflow?.sessionId).toBe(receipt.sessionId);
+    expect(state.activeWorkflow?.limits.enforced).toBe(false);
+    expect(state.problemCandidates).toHaveLength(1);
+    expect(item.requests().length).toBeGreaterThan(1);
+    expect(item.searches.length).toBeGreaterThan(0);
+    expect(item.requests().every((request) => request.deadlineMs === undefined)).toBe(true);
+    await item.restart();
+    expect((await item.workspace()).activeWorkflow?.state).toBe("waiting-for-review");
+  }, 15_000);
+
   test("generates a title through the runtime and preserves archived research across restart", async () => {
     const item = await fixture({ searchEnabled: false });
     const threadId = await item.createThread("known-problem");
@@ -37,7 +63,7 @@ describe("native research workflow through the production backend", () => {
     const request = item.requests()[0]!;
     expect(request.model).toEqual(model);
     expect(request.reasoningEffort).toBe("low");
-    expect(request.deadlineMs).toBe(30000);
+    expect(request.deadlineMs).toBeUndefined();
     expect(request.workOrder.inputs).toEqual({ brief: statement });
     expect((await item.raw("/threads/title", { context: statement, model: { ...model, modelId: "unavailable" }, reasoningEffort: "low" })).status).toBe(409);
     expect(item.requests()).toHaveLength(1);
@@ -166,13 +192,13 @@ describe("native research workflow through the production backend", () => {
       expect(JSON.stringify(request.workOrder)).not.toContain(untrusted);
       expect(request.maxOutputTokens).toBeUndefined();
       if (request.workOrder.stage.startsWith("focused-experiment:")) {
-        expect(request.deadlineMs).toBe(300_000);
+        expect(request.deadlineMs).toBeUndefined();
         expect(request.workOrder.instruction).toBe(request.workOrder.stage.endsWith("review")
           ? FOCUSED_EXPERIMENT_REVIEW_INSTRUCTION
           : FOCUSED_EXPERIMENT_DRAFT_INSTRUCTION);
       } else {
         const promptName = request.workOrder.stage.split(":")[0]!;
-        expect(request.deadlineMs).toBe(WORKFLOW_V2_STAGE_REGISTRY[promptName as WorkflowV2StageId].deadlineMs);
+        expect(request.deadlineMs).toBeUndefined();
         expect(request.workOrder.instruction.startsWith(readFileSync(join(process.cwd(), "prompts", `workflow-v2-${promptName}.md`), "utf8").trim())).toBe(true);
       }
     }

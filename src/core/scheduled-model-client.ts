@@ -12,18 +12,18 @@ export function scheduledModelClient(
   client: StructuredModelClient, scheduler: WorkflowModelScheduler, projectId: string,
 ): StructuredModelClient {
   const completion = async <T>(request: StructuredStageRequest<T>): Promise<StructuredStageResult<T>> => {
-    const deadline = Date.now() + request.deadlineMs;
+    const deadline = request.deadlineMs === undefined ? null : Date.now() + request.deadlineMs;
     const deadlineController = new AbortController();
-    const timeout = setTimeout(() => deadlineController.abort(
+    const timeout = request.deadlineMs === undefined ? undefined : setTimeout(() => deadlineController.abort(
       new ProviderFailure("timeout", "Model generation exceeded its saved deadline", false),
     ), request.deadlineMs);
     const callSignal = request.signal
       ? AbortSignal.any([request.signal, deadlineController.signal]) : deadlineController.signal;
     const dispatch = (attemptRequest: StructuredStageRequest<T>) => scheduler.schedule(projectId,
       (signal) => {
-        if (Date.now() >= deadline) throw new ProviderFailure("timeout", "Model generation exceeded its saved deadline", false);
+        if (deadline !== null && Date.now() >= deadline) throw new ProviderFailure("timeout", "Model generation exceeded its saved deadline", false);
         return client.structuredCompletion({
-          ...attemptRequest, signal, deadlineMs: Math.max(1, deadline - Date.now()),
+          ...attemptRequest, signal, ...(deadline === null ? {} : { deadlineMs: Math.max(1, deadline - Date.now()) }),
         });
       }, callSignal);
     const firstRequest: StructuredStageRequest<T> = { ...request, repairPolicy: "disabled" };
@@ -31,7 +31,7 @@ export function scheduledModelClient(
       return await dispatch(firstRequest);
     } catch (error) {
       if (!(error instanceof ProviderFailure) || error.code !== "schema"
-        || request.repairPolicy !== "one_retry" || callSignal.aborted || Date.now() >= deadline) throw error;
+        || request.repairPolicy !== "one_retry" || callSignal.aborted || (deadline !== null && Date.now() >= deadline)) throw error;
       const firstAttempts = error.attempts ?? [];
       const retry: StructuredStageRequest<T> = {
         ...firstRequest, generationId: randomUUID(),

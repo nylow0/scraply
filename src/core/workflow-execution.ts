@@ -120,7 +120,6 @@ export class WorkflowExecution {
         workOrder: { ...original.workOrder, instruction: prompt.text, inputs: { routing: original.workOrder.inputs, workflowVersion: 2 } },
         schema: requestSchema,
         jsonSchema: deriveJsonSchema(requestSchema),
-        deadlineMs: stage.deadlineMs,
       };
       if (this.disableRepair) request.repairPolicy = "disabled";
       if (original.model.providerId === "openai-subscription") delete request.maxOutputTokens;
@@ -272,7 +271,8 @@ export class WorkflowExecution {
       effectiveRequest: {
         model: request.model, reasoningEffort: request.reasoningEffort, workOrder: request.workOrder,
         evidence: request.evidence, jsonSchema: request.jsonSchema, repairPolicy: request.repairPolicy,
-        deadlineMs: request.deadlineMs, ...(request.maxOutputTokens ? { maxOutputTokens: request.maxOutputTokens } : {}),
+        ...(request.deadlineMs === undefined ? {} : { deadlineMs: request.deadlineMs }),
+        ...(request.maxOutputTokens ? { maxOutputTokens: request.maxOutputTokens } : {}),
       },
     });
   }
@@ -435,8 +435,9 @@ function assertDiscoveryStageSemantics<T>(
   const evidence = request.evidence.map((item) => item.content);
   if (stageId === "query-plan") {
     const queries = WorkflowV2QueryPlanOutputSchema.parse(output).queries.map((item) => item.query.trim());
-    const expected = (request.workOrder.inputs as Record<string, unknown> | undefined)?.queryCount;
-    if (typeof expected === "number" && new Set(queries.filter(Boolean)).size < expected) {
+    const inputs = request.workOrder.inputs as Record<string, unknown> | undefined;
+    const expected = inputs?.queryCount;
+    if (inputs?.queryCountIsGuidance !== true && typeof expected === "number" && new Set(queries.filter(Boolean)).size < expected) {
       throw new Error(`Query planner returned fewer than ${expected} unique questions`);
     }
     return;
