@@ -1,0 +1,14 @@
+{
+  "id": "bookkeepers",
+  "goalKind": "market-opportunity",
+  "provenance": { "kind": "plan", "source": "Reconstructed from the plan's freelance bookkeeper example and frame review illustration; original saved scope was not available" },
+  "scope": {
+    "title": "Freelance bookkeepers and bank-feed reconciliation",
+    "domain": "Find a product that freelance bookkeepers would pay for, around reconciling client bank feeds. Explore bank-feed matching errors, client document chasing, month-end close, multi-client switching and categorization rules. Identify observed pain, paid substitutes or switching behavior, and the smallest sellable workflow.",
+    "audience": "",
+    "observations": "Major accounting platforms already include bank-feed matching rules. Look for bookkeepers' own accounts of where current workflows still fail; do not treat product claims as evidence of customer pain.",
+    "offLimits": ["Full accounting suites."],
+    "riskEvaluationCriteria": "Pain must be observed firsthand by bookkeepers. Prefer paid substitutes or switching evidence and a small sellable workflow over replacing an accounting platform. Clarify whether the opportunity serves solo freelancers or firms with 2-10 staff."
+  },
+  "runSettings": { "model": { "providerId": "openai-subscription", "modelId": "gpt-6-sol" }, "reasoningEffort": "xhigh", "searchProvider": "exa", "explorationPurpose": "startup-opportunities", "ideaCount": 1, "automaticProblemCap": 3 }
+}

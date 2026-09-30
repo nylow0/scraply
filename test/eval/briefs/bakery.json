@@ -1,0 +1,14 @@
+{
+  "id": "bakery",
+  "goalKind": "process-improvement",
+  "provenance": { "kind": "plan", "source": "Reconstructed from the plan's bakery custom-order and deposit example; original saved scope was not available" },
+  "scope": {
+    "title": "Bakery custom orders and deposits",
+    "domain": "Investigate problems in small bakeries' custom orders and deposits. Explore deposit disputes, late changes, allergen and specification mix-ups, no-shows and pricing quotes. Look for owner accounts of actual disputes or losses, existing workarounds and process improvements.",
+    "audience": "Bakery owners and staff in shops with 1-3 people handling custom orders and deposits.",
+    "observations": "Bakery order and policy pages explain shop rules, but do not establish the problems owners actually experience. Find owner accounts and leave open whether the goal is a product for many bakeries or a process fix for one shop.",
+    "offLimits": [],
+    "riskEvaluationCriteria": "Observed disputes or losses are required. A solution should fit a 1-3 person shop, have low setup cost, and be testable in a two-week pilot that counts disputes."
+  },
+  "runSettings": { "model": { "providerId": "openai-subscription", "modelId": "gpt-6-sol" }, "reasoningEffort": "xhigh", "searchProvider": "exa", "explorationPurpose": "general-solutions", "ideaCount": 1, "automaticProblemCap": 3 }
+}

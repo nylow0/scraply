@@ -1,0 +1,14 @@
+{
+  "id": "dorm-kitchen",
+  "goalKind": "community-or-personal",
+  "provenance": { "kind": "plan", "source": "Research workflow plan, section 11: chosen Ukrainian community brief" },
+  "scope": {
+    "title": "Харчові відходи на спільній кухні гуртожитку",
+    "domain": "У нашому університетському гуртожитку на спільній кухні щотижня викидають багато їжі: забуті продукти в холодильнику, зіпсовані залишки, куплене «про запас». Хочу знайти рішення, яким мешканці справді користуватимуться, а не спробують раз і забудуть.",
+    "audience": "Студенти, які живуть у гуртожитку зі спільною кухнею.",
+    "observations": "Холодильник спільний, продукти майже ніхто не підписує. Раз на кілька тижнів під час прибирання все просто викидають.",
+    "offLimits": ["Платні застосунки та обладнання дорожче за кілька сотень гривень."],
+    "riskEvaluationCriteria": "Рішення має працювати без одного відповідального волонтера, бо мешканці змінюються щосеместру."
+  },
+  "runSettings": { "model": { "providerId": "openai-subscription", "modelId": "gpt-6-sol" }, "reasoningEffort": "xhigh", "searchProvider": "exa", "explorationPurpose": "general-solutions", "ideaCount": 1, "automaticProblemCap": 3 }
+}
