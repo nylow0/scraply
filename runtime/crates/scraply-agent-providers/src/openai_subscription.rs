@@ -2179,9 +2179,10 @@ mod tests {
     #[test]
     fn websocket_activity_survives_the_runtime_error_summary_limit() {
         let now = Instant::now();
+        // A Windows monotonic clock may have less than an hour of history.
         let activity = WebsocketActivity {
-            started: now - Duration::from_secs(3600),
-            last_text: now - Duration::from_secs(3599),
+            started: now.checked_sub(Duration::from_secs(3600)).unwrap_or(now),
+            last_text: now.checked_sub(Duration::from_secs(3599)).unwrap_or(now),
             sent_pings: 121,
             received_pings: 181,
             received_pongs: 121,
