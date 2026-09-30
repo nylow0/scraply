@@ -36,7 +36,10 @@ function metrics() {
 
 describe("research evaluation", () => {
   test("baseline contains two quick repeats per brief and only the three selected standard cases", () => {
+    expect(briefs.map(brief => brief.id).sort()).toEqual(["bakery", "bookkeepers", "clinics", "developer-tools", "dorm-kitchen", "educators", "genius", "repair-shops"]);
     const matrix = evaluationMatrix(briefs, "baseline");
+    expect(matrix.length).toBe(19);
+    expect(evaluationMatrix(briefs, "acceptance").filter(item => item.depth === "deep").map(item => item.brief.id).sort()).toEqual(["clinics", "genius"]);
     for (const brief of briefs) expect(matrix.filter(item => item.brief.id === brief.id && item.depth === "quick").length).toBe(2);
     expect(matrix.filter(item => item.depth === "standard").map(item => item.brief.id).sort())
       .toEqual(briefs.filter(brief => ["genius", "bookkeepers", "dorm-kitchen"].includes(brief.id)).map(brief => brief.id).sort());
