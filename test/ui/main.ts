@@ -82,11 +82,16 @@ if (guidedProgress) {
     guidedProgress.tasks[0]!.state = "succeeded";
     guidedProgress.tasks[0]!.canReassessProblems = true;
   }
-  if (params.get("phase") === "completed-handoff") {
+  if (["completed-handoff", "acknowledged-restart"].includes(params.get("phase") ?? "")) {
     guidedProgress.summary.state = "paused";
     guidedProgress.summary.canResume = true;
     guidedProgress.summary.budget.modelCalls.uncertain = 50;
     guidedProgress.summary.budget.searches.uncertain = 24;
+  }
+  if (params.get("activity") === "long") {
+    guidedProgress.activity = Array.from({ length: 16 }, (_, index) => ({ id: `long-activity-${index}`,
+      message: `Reading source packet ${index + 1}: checking firsthand accounts of repair shops coordinating warranty approvals, supplier follow-ups, uncertain parts delivery windows, and customer expectations across locations.`,
+      stage: "extracting", createdAt: new Date(Date.parse(now) + index * 60_000).toISOString() }));
   }
   state.activeWorkflow = guidedProgress.summary;
   state.threads = state.threads.map(thread => thread.id === state.activeThreadId ? { ...thread, status: params.get("phase") === "failed" ? "failed" : "discovery-running" } : thread);
@@ -101,7 +106,7 @@ const fixtureApi = createScraplyApi({
       case IPC_CHANNELS.COMMAND_WORKFLOW: {
         const request = CommandWorkflowRequestSchema.parse(payload);
         const supported = request.action.type === "reassess-problems" && params.get("phase") === "audience-recovery"
-          || request.action.type === "resume" && params.get("phase") === "completed-handoff";
+          || request.action.type === "resume" && ["completed-handoff", "acknowledged-restart"].includes(params.get("phase") ?? "");
         if (!guidedProgress || !supported) {
           throw new Error("This fixture only simulates saved discovery recovery.");
         }

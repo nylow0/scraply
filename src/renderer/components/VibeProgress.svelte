@@ -399,7 +399,7 @@
   .research-heading { font-size:21px;font-weight:620;letter-spacing:-.02em; }
   .research-view .research-heading { font-size:clamp(22px,3vw,28px); }
   .research-activity { min-width:0; }
-  .activity-log { list-style:none;margin:0;padding:0;max-height:360px;overflow:auto; }
+  .activity-log { list-style:none;margin:0;padding:0; }
   .activity-log li { display:grid;grid-template-columns:8px minmax(0,1fr) auto;align-items:baseline;gap:12px;padding:9px 0;color:var(--muted);font-size:13px; }
   .activity-log li.latest { color:var(--text); }
   .activity-log p { margin:0;line-height:1.6;overflow-wrap:anywhere; }

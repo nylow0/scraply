@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { z } from "zod";
 import { GenerationAttemptRepository } from "./generation-attempts";
 import { canonicalJson, sha256 } from "../../shared/content-identity";
 import type { RunConfig } from "../../shared/schemas";
@@ -191,6 +192,7 @@ interface LineageRow {
 }
 
 const terminalWorkItemStates = new Set<WorkItemState>(["succeeded", "failed", "cancelled", "skipped", "unknown"]);
+const AcknowledgedRetrySchema = z.object({ attemptIds: z.array(z.string().min(1)) });
 const workItemTransitions: Record<WorkItemState, WorkItemState[]> = {
   planned: ["ready", "cancelled", "skipped"],
   ready: ["running", "cancelled", "skipped"],
@@ -559,11 +561,15 @@ export class WorkflowRepository {
     return row.count;
   }
 
-  hasUnknownProviderCompletion(runId: string): boolean {
+  /** Acknowledgement authorizes only the saved attempt IDs; later unknown requests still block resume. */
+  acknowledgedAttemptIds(runId: string): string[] {
     const audits = this.client.db.prepare(`SELECT value_json FROM workflow_snapshots
       WHERE research_run_id = ? AND snapshot_key LIKE 'acknowledged-retry:%'`).all(runId) as Array<{ value_json: string }>;
-    const acknowledged = [...new Set(audits.flatMap(row => (JSON.parse(row.value_json) as { attemptIds: string[] }).attemptIds))];
-    return !new GenerationAttemptRepository(this.client).getResumeSafety(runId, acknowledged).canResume;
+    return [...new Set(audits.flatMap(row => AcknowledgedRetrySchema.parse(JSON.parse(row.value_json)).attemptIds))];
+  }
+
+  hasUnknownProviderCompletion(runId: string): boolean {
+    return !new GenerationAttemptRepository(this.client).getResumeSafety(runId, this.acknowledgedAttemptIds(runId)).canResume;
   }
 
   settleBudget(id: string, input: {

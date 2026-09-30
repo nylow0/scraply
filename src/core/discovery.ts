@@ -873,7 +873,7 @@ function hasIntendedBuyerObservation(factors: Array<Omit<HarvestedFactor, "sourc
   return factors.some(qualifiesAsIntendedBuyerObservation);
 }
 
-export function qualifiesAsIntendedBuyerObservation(factor: Omit<HarvestedFactor, "source">): boolean {
+export function qualifiesAsIntendedBuyerObservation<T extends Pick<DiscoveryFactorRecord, "audienceFit" | "sourceRole">>(factor: T): boolean {
   if (factor.audienceFit !== "intended-buyer") return false;
   return factor.sourceRole === "firsthand" || factor.sourceRole === "measured";
 }

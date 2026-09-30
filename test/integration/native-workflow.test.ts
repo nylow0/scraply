@@ -306,6 +306,98 @@ describe("native research workflow through the production backend", () => {
     expect(restored.activity).toEqual(progress.activity);
   }, 15_000);
 
+  test.each([
+    { freshUnknown: false, rejectResume: false },
+    { freshUnknown: true, rejectResume: false },
+    { freshUnknown: false, rejectResume: true },
+  ])("restart preserves acknowledged checkpoints, blocks unknown work, and settles rejected resumes", async ({ freshUnknown, rejectResume }) => {
+    const item = await fixture();
+    const threadId = await item.createThread("explore-market");
+    const preview = await item.post("/workflows/preview", { type: "launch", threadId, draft: {
+      contractVersion: 1, purpose: "discovery", mode: "babysit", brief: scope.domain, scope,
+      runConfig: { ...DEFAULT_RUN_CONFIG, model, reasoningEffort: "medium", discoveryDepth: "quick", searchProvider: "exa" },
+      targets: { kind: "per-problem", ideaCount: 3 },
+      limits: { enforced: false, maxMinutes: 30, maxModelCalls: 30, maxSearches: 10 }, instructions: {},
+    } }, PreviewWorkflowResultSchema);
+    const receipt = await item.post("/workflows/start", { threadId, clientCommandId: "restart-checkpoints",
+      contract: preview.proposal, previewHash: preview.previewHash, capabilityFingerprint: preview.capabilityFingerprint,
+      previewExpiresAt: preview.expiresAt }, WorkflowAdmissionReceiptSchema);
+    await item.waitFor(workspace => workspace.activeWorkflow?.state === "waiting-for-review");
+    const detail = await item.post(`/workflows/${receipt.sessionId}`, undefined, WorkflowDetailSchema);
+    const task = detail.tasks.find(task => task.kind === "discovery")!;
+    const requestCount = item.requests().length;
+    const searchCount = item.searches.length;
+    const db = new DatabaseClient(item.dbPath);
+    try {
+      const { runId } = db.db.prepare("SELECT json_extract(output_refs_json, '$.runId') AS runId FROM workflow_work_items WHERE id = ?")
+        .get(task.id) as { runId: string };
+      const repository = new WorkflowRepository(db);
+      const now = new Date().toISOString();
+      // Restore a crash between saved checkpoints and terminal handoff, retaining an older acknowledged interruption.
+      const insertAttempt = db.db.prepare(`INSERT INTO generation_attempts
+        (id, generation_id, research_run_id, stage_key, provider_id, model_id, reasoning_effort, status,
+          request_json, wire_request_sha256, request_sha256, work_order_sha256, inputs_sha256, evidence_sha256,
+          schema_sha256, terminal_kind, created_at, updated_at)
+        VALUES (?, ?, ?, 'factor-harvest:historical', ?, ?, 'medium', 'interrupted', '{}', ?, ?, ?, ?, ?, ?, 'stream-interrupted', ?, ?)`);
+      for (const id of ["acknowledged-attempt", ...(freshUnknown ? ["fresh-unknown-attempt"] : [])]) {
+        insertAttempt.run(id, `generation-${id}`, runId, model.providerId, model.modelId,
+          ...Array<string>(6).fill("0".repeat(64)), now, now);
+      }
+      db.db.prepare("INSERT INTO workflow_snapshots VALUES (?, ?, ?)").run(runId,
+        "acknowledged-retry:before-restart", JSON.stringify({ attemptIds: ["acknowledged-attempt"] }));
+      db.immediateTransaction(() => {
+        const reservation = repository.reserveBudget({ sessionId: receipt.sessionId, workItemId: task.id,
+          operationKey: "historical-unknown", kind: "model-call", reservedUnits: 30 });
+        repository.settleBudget(reservation.id, { state: "uncertain", settledUnits: 30 });
+      });
+      db.db.prepare("UPDATE research_runs SET status = 'running', interrupted = 1 WHERE id = ?").run(runId);
+      if (rejectResume) {
+        // A saved config can fail rehydration before the engine starts; the UI must receive a terminal error.
+        const savedConfig = db.db.prepare("SELECT config_json FROM research_runs WHERE id = ?").get(runId) as { config_json: string };
+        db.db.prepare("UPDATE research_runs SET config_json = ? WHERE id = ?")
+          .run(JSON.stringify({ ...JSON.parse(savedConfig.config_json) as Record<string, unknown>, workflowVersion: 1 }), runId);
+      }
+      db.db.prepare("UPDATE workflow_work_items SET state = 'running', output_refs_json = ?, finished_at = NULL WHERE id = ?")
+        .run(JSON.stringify({ runId }), task.id);
+      db.db.prepare(`UPDATE workflow_sessions SET state = 'running', outcome = NULL, finished_at = NULL,
+        active_snapshot_id = NULL, running_since = ?, revision = revision + 1 WHERE id = ?`).run(now, receipt.sessionId);
+      const historicalBudget = repository.listBudgetEntries(receipt.sessionId);
+      expect(repository.hasUnknownProviderCompletion(runId)).toBe(freshUnknown);
+      await item.restart();
+      expect(repository.hasUnknownProviderCompletion(runId)).toBe(freshUnknown);
+      const restored = await item.post(`/workflows/${receipt.sessionId}`, undefined, WorkflowDetailSchema);
+      expect(item.requests()).toHaveLength(requestCount);
+      expect(item.searches).toHaveLength(searchCount);
+      if (freshUnknown) {
+        expect(restored.summary).toMatchObject({ state: "finished", outcome: "needs-attention" });
+        expect(restored.summary.canResume).not.toBe(true);
+        expect((await item.raw("/workflows/command", { threadId, sessionId: receipt.sessionId,
+          clientCommandId: "blocked-restart-resume", expectedRevision: restored.summary.revision,
+          action: { type: "resume" } })).ok).toBe(false);
+      } else {
+        expect(restored.summary.state).toBe("paused");
+        expect(restored.summary.canResume).toBe(true);
+        expect(restored.summary.budget.modelCalls.uncertain).toBe(30);
+        await item.post("/workflows/command", { threadId, sessionId: receipt.sessionId,
+          clientCommandId: "acknowledged-restart-resume", expectedRevision: restored.summary.revision,
+          action: { type: "resume" } }, WorkflowAdmissionReceiptSchema);
+        const recovered = await item.waitFor(workspace => workspace.activeWorkflow?.state === (rejectResume ? "finished" : "waiting-for-review"));
+        if (rejectResume) {
+          expect(recovered.activeWorkflow?.outcome).toBe("failed");
+          const rejected = await item.post(`/workflows/${receipt.sessionId}`, undefined, WorkflowDetailSchema);
+          expect(rejected.tasks.find(item => item.id === task.id)?.error).toContain("Legacy generation has been retired");
+          expect(db.db.prepare("SELECT status FROM research_runs WHERE id = ?").get(runId)).toEqual({ status: "failed" });
+        }
+        expect(item.requests()).toHaveLength(requestCount);
+        expect(item.searches).toHaveLength(searchCount);
+        for (const entry of historicalBudget) expect(repository.listBudgetEntries(receipt.sessionId)).toContainEqual(entry);
+      }
+      expect(db.db.prepare("SELECT status FROM generation_attempts WHERE id = 'acknowledged-attempt'").get())
+        .toEqual({ status: "interrupted" });
+      expect(db.db.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
+    } finally { db.close(); }
+  }, 15_000);
+
   test("generates a title through the runtime and preserves archived research across restart", async () => {
     const item = await fixture({ searchEnabled: false });
     const threadId = await item.createThread("known-problem");

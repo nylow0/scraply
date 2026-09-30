@@ -236,7 +236,7 @@ export class ResearchEngine {
     }
   }
 
-  // Explicit recovery supplies acknowledged attempts; completed discovery additionally needs a saved reassessment policy.
+  // Restart and explicit recovery honor saved acknowledgements; completed discovery also needs a reassessment policy.
   async resumeRun(runId: string, acknowledgedAttemptIds: readonly string[] = [], reassessProblems = false): Promise<void> {
     if (this.activeRuns.has(runId)) return;
     const row = this.options.db.db.prepare(`SELECT thread_id, status, config_json, problem_id FROM research_runs WHERE id = ?`)
@@ -254,7 +254,8 @@ export class ResearchEngine {
     if (!row || !config || (!completedAssessment && !["queued", "running", ...(config.workflowVersion === 2 ? ["failed", "cancelled"] : [])].includes(row.status))) {
       throw new AppError("conflict", "This research run has already ended and cannot be resumed.");
     }
-    const resumeSafety = this.generationAttempts.getResumeSafety(runId, acknowledgedAttemptIds);
+    const acknowledged = [...new Set([...new WorkflowRepository(this.options.db).acknowledgedAttemptIds(runId), ...acknowledgedAttemptIds])];
+    const resumeSafety = this.generationAttempts.getResumeSafety(runId, acknowledged);
     if (!resumeSafety.canResume) {
       this.ledger.settleUncertain(runId, "A dispatched generation lost its terminal result during restart");
       throw new AppError("conflict", `${resumeSafety.resumeBlockedReason} Review this request before explicitly retrying it.`);
@@ -278,7 +279,7 @@ export class ResearchEngine {
         resumedOpportunityInitialization = true;
       }
     }
-    this.begin(runId, row.thread_id, row.problem_id, config, true, acknowledgedAttemptIds);
+    this.begin(runId, row.thread_id, row.problem_id, config, true, acknowledged);
     if (resumedOpportunityInitialization) {
       this.emit({ type: "opportunity-progress", threadId: row.thread_id, status: "mapping-coverage" });
     }
