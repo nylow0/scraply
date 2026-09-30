@@ -105,6 +105,7 @@ describe("research evaluation", () => {
       expect(summary.medianMustHaveFailures).toBeNull();
       expect(summary.failedRuns).toBe(1);
       expect(summary.zeroIdeaRuns).toBe(2);
+      expect(summarizeEvaluation([{ ...first, status: "running" }])[0]!.medianConfirmed).toBeNull();
       expect(median([null, null])).toBeNull();
       expect(median([0, null, 2])).toBe(1);
     } finally { db.close(); }
