@@ -13,7 +13,7 @@ import { ResearchRunRepository, type ResearchRunWorkflowLink } from "../../src/d
 import { WorkflowRepository } from "../../src/db/repositories/workflows";
 import { ResearchFrameRepository } from "../../src/db/repositories/research-frames";
 import { OpportunityExplorationRepository } from "../../src/db/repositories/opportunity-exploration";
-import { DEFAULT_RUN_CONFIG } from "../../src/shared/schemas";
+import { DEFAULT_RUN_CONFIG, type RunConfig } from "../../src/shared/schemas";
 import { SavedProblemCandidateSchema } from "../../src/shared/structured-output-schemas";
 import { PreviewWorkflowResultSchema } from "../../src/shared/workflow-contracts";
 import type { ProblemCandidate } from "../../src/shared/ipc";
@@ -25,7 +25,7 @@ const scope = { title: "Filing", audience: "Shop owners", domain: "Invoices", ob
 const model = { providerId: "fixture", modelId: "fixture-model" };
 const config = { ...DEFAULT_RUN_CONFIG, model, discoveryDepth: "quick" as const };
 
-function fixture(maxModelCalls = 30) {
+function fixture(maxModelCalls = 30, searchProvider: RunConfig["searchProvider"] = "exa", dispatchGate?: Promise<void>) {
   const directory = mkdtempSync(join(tmpdir(), "scraply-candidate-workflow-")); directories.push(directory);
   const db = new DatabaseClient(join(directory, "test.db"));
   const now = new Date().toISOString();
@@ -47,7 +47,7 @@ function fixture(maxModelCalls = 30) {
   db.db.prepare("UPDATE problems SET area_id = 'filing' WHERE discovery_run_id = 'source'").run();
   const repository = new WorkflowRepository(db);
   const session = db.immediateTransaction(() => repository.createSession({ id: "session", threadId: "project", purpose: "discovery", mode: "babysit", remainingMs: 60 * 60_000,
-    contract: { contractVersion: 1, purpose: "discovery", mode: "babysit", brief: "Research filing", scope, runConfig: config,
+    contract: { contractVersion: 1, purpose: "discovery", mode: "babysit", brief: "Research filing", scope, runConfig: { ...config, searchProvider },
       targets: { kind: "per-problem", ideaCount: 1 }, limits: { maxMinutes: 60, maxModelCalls, maxSearches: 20 }, instructions: {},
       resolvedInstructions: { research: "", ideas: "", review: "" }, instructionHashes: { research: "r", ideas: "i", review: "v" } } }));
   const snapshot = db.immediateTransaction(() => {
@@ -60,16 +60,20 @@ function fixture(maxModelCalls = 30) {
     .get(snapshot.materializationRunId) as { id: string; candidate_json: string };
   const dispatches: string[] = [];
   const errors: string[] = [];
+  let notifyDispatch: () => void = () => undefined;
+  const whenDispatched = new Promise<void>(resolve => { notifyDispatch = resolve; });
   const engine = { async startCandidateAssessment(threadId: string, _sourceRunId: string, _candidateId: string, _config: typeof config, link: ResearchRunWorkflowLink) {
+    if (dispatchGate) await dispatchGate;
     const run = new ResearchRunRepository(db).create(threadId, config, null, randomUUID(), link);
+    if (link.frameId) new ResearchFrameRepository(db).bindRun(run.runId, threadId, link.frameId);
     discovery.persistScope(run.runId, scope);
-    link.onRunCreated?.(run.runId); dispatches.push(run.runId); return run.runId;
+    link.onRunCreated?.(run.runId); dispatches.push(run.runId); notifyDispatch(); return run.runId;
   } } as unknown as ResearchEngine;
   const coordinator = new WorkflowCoordinator({ db, engine: () => engine, capabilities: async () => ({ nativeConnected: true, searchReady: { exa: true, perplexity: false },
     modelOptions: [{ ...model, displayName: "Fixture", defaultReasoningEffort: "medium", reasoningEfforts: [{ id: "medium", description: "Medium" }] }] }),
     listProblems: (_threadId, runId) => db.db.prepare("SELECT id FROM problems WHERE discovery_run_id = ? ORDER BY rowid").all(runId) as ProblemCandidate[], onProgress() {},
     onError(error) { errors.push(String(error)); } });
-  return { db, repository, coordinator, snapshot, candidateRow, dispatches, errors };
+  return { db, repository, coordinator, snapshot, candidateRow, dispatches, errors, whenDispatched };
 }
 
 async function command(f: ReturnType<typeof fixture>) {
@@ -87,11 +91,71 @@ test("preview is read-only, and an insufficient allowance retains the full candi
     const before = f.repository.getSession("session");
     const { preview, request } = await command(f);
     expect(preview.minimumWork).toEqual({ modelCalls: 2, searches: 1 });
+    expect(preview.proposal).toMatchObject({ frameId: null, frameVersion: null, assessmentFrameSource: "scope-derived" });
     expect(preview.fieldErrors).toContainEqual(expect.objectContaining({ code: "BUDGET_TOO_SMALL" }));
     expect(f.repository.getSession("session")).toEqual(before);
     await expect(f.coordinator.command(request)).rejects.toMatchObject({ code: "BUDGET_TOO_SMALL" });
     expect(f.dispatches).toEqual([]);
     expect(f.db.db.prepare("SELECT candidate_json FROM rejected_problem_candidates WHERE id = ?").get(f.candidateRow.id)).toEqual({ candidate_json: f.candidateRow.candidate_json });
+  } finally { f.db.close(); }
+});
+
+test("candidate admission freezes the latest approved frame while source evidence keeps its original frame", async () => {
+  let releaseDispatch: () => void = () => undefined;
+  const gate = new Promise<void>(resolve => { releaseDispatch = resolve; });
+  const f = fixture(30, "exa", gate);
+  try {
+    const frames = new ResearchFrameRepository(f.db);
+    const first = frames.createDraft({ threadId: "project", runId: "source", knownProblem: true, sources: [], frame: {
+      goal: "Reduce filing delays", goalKind: "process-improvement", contextFacts: [],
+      successCriteria: [{ id: "delay", name: "Less time filing", weight: "must", howJudged: "Observe time", basis: "brief" }],
+      constraints: [], languages: ["en"], exclusions: [], openQuestions: [], areas: [],
+    } });
+    frames.approve(first.id, "project", first.draft);
+    frames.bindRun(f.snapshot.materializationRunId, "project", first.id);
+    const edited = frames.createApprovedVersion(first.id, "project", { ...first.draft, goal: "Reduce duplicate data entry",
+      exclusions: ["Replacing accounting systems"], languages: ["en", "uk"] });
+    const { preview, request } = await command(f);
+    expect(preview.proposal).toMatchObject({ frameId: edited.id, frameVersion: edited.version, assessmentFrameSource: "approved" });
+    await f.coordinator.command(request);
+    const task = f.repository.listWorkItems("session").find(item => item.kind === "assess-candidate")!;
+    expect(task.input).toMatchObject({ frameId: edited.id, frameVersion: edited.version, assessmentFrameSource: "approved",
+      candidateId: f.candidateRow.id, sourceRunId: f.snapshot.materializationRunId });
+    frames.createApprovedVersion(edited.id, "project", { ...edited.approved!, goal: "A later unrelated goal", exclusions: [] });
+    releaseDispatch();
+    await f.whenDispatched;
+    expect(frames.forRun(f.dispatches[0]!)?.approved).toEqual(edited.approved);
+    expect(frames.forRun(f.snapshot.materializationRunId)?.id).toBe(first.id);
+    expect(f.db.db.prepare("SELECT candidate_json FROM rejected_problem_candidates WHERE id = ?").get(f.candidateRow.id))
+      .toEqual({ candidate_json: f.candidateRow.candidate_json });
+    expect(f.db.db.prepare("SELECT quote,area_id FROM factors WHERE research_run_id = 'source'").get())
+      .toEqual({ quote: "I repeat filing every week.", area_id: "filing" });
+  } finally { releaseDispatch(); f.db.close(); }
+});
+
+test("a frame edit after candidate preview requires a fresh review before assessment admission", async () => {
+  const f = fixture();
+  try {
+    const { request } = await command(f);
+    const frames = new ResearchFrameRepository(f.db);
+    const first = frames.createDraft({ threadId: "project", runId: "source", knownProblem: true, sources: [], frame: {
+      goal: "Reduce filing delays", goalKind: "process-improvement", contextFacts: [],
+      successCriteria: [{ id: "delay", name: "Less time filing", weight: "must", howJudged: "Observe time", basis: "brief" }],
+      constraints: [], languages: ["en"], exclusions: [], openQuestions: [], areas: [],
+    } });
+    frames.approve(first.id, "project", first.draft);
+    await expect(f.coordinator.command(request)).rejects.toMatchObject({ code: "PREVIEW_STALE" });
+    expect(f.dispatches).toEqual([]);
+    expect(f.repository.listWorkItems("session")).toEqual([]);
+  } finally { f.db.close(); }
+});
+
+test("automatic search accepts an available physical provider during candidate assessment preview", async () => {
+  const f = fixture(30, "auto");
+  try {
+    const { preview } = await command(f);
+    expect(preview.fieldErrors).toEqual([]);
+    expect(f.dispatches).toEqual([]);
   } finally { f.db.close(); }
 });
 

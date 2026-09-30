@@ -1,7 +1,7 @@
 import { deriveJsonSchema } from "../shared/json-schema";
 import { z } from "zod";
 import { ResearchFrameSchema } from "../shared/research-frame";
-import { ProblemFactorAssessmentSchema } from "../shared/structured-output-schemas";
+import { ProblemFactorAssessmentSchema, SavedProblemCandidateSchema } from "../shared/structured-output-schemas";
 import { applyProblemFactorAssessments } from "../core/problem-evidence";
 import { randomBytes, randomUUID } from "node:crypto";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
@@ -800,18 +800,29 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
     const archivedConfig: unknown = JSON.parse(String(run.config_json));
     const parsedConfig = RunConfigSchema.safeParse(archivedConfig);
     const frame = new ResearchFrameRepository(db).forRun(runId);
-    const assessmentFrameRow = !frame ? db.db.prepare(`SELECT value_json FROM workflow_snapshots
-      WHERE research_run_id = ? AND snapshot_key = 'candidate-assessment-frame'`).get(runId) as { value_json: string } | undefined : undefined;
-    const assessmentFrame = assessmentFrameRow ? z.object({ frame: ResearchFrameSchema, provenance: z.object({
-      kind: z.literal("reconstructed-from-saved-scope"), sourceRunId: z.string().min(1), note: z.string().min(1),
-    }).strict() }).strict().parse(JSON.parse(assessmentFrameRow.value_json)) : null;
+    const assessmentFrameRow = db.db.prepare(`SELECT value_json FROM workflow_snapshots
+      WHERE research_run_id = ? AND snapshot_key = 'candidate-assessment-frame'`).get(runId) as { value_json: string } | undefined;
+    const assessmentFrame = assessmentFrameRow ? z.object({ frame: ResearchFrameSchema, provenance: z.discriminatedUnion("kind", [
+      z.object({ kind: z.literal("approved-frame"), frameId: z.string().min(1), frameVersion: z.number().int().positive(),
+        sourceRunId: z.string().min(1), candidateId: z.string().min(1) }).strict(),
+      z.object({ kind: z.literal("reconstructed-from-saved-scope"), sourceRunId: z.string().min(1),
+        candidateId: z.string().min(1).optional(), note: z.string().min(1) }).strict(),
+    ]) }).strict().parse(JSON.parse(assessmentFrameRow.value_json)) : null;
+    const sourceCandidate = assessmentFrame?.provenance.candidateId ? db.db.prepare(`SELECT candidate_json
+      FROM rejected_problem_candidates WHERE id = ? AND discovery_run_id = ?`)
+      .get(assessmentFrame.provenance.candidateId, assessmentFrame.provenance.sourceRunId) as { candidate_json: string | null } | undefined : undefined;
+    const sourceResearchFrame = assessmentFrame ? new ResearchFrameRepository(db).forRun(assessmentFrame.provenance.sourceRunId) : null;
     return {
       schemaVersion: 1,
       exportedAt: new Date().toISOString(),
       thread,
       ...(frame ? { researchFrame: { id: frame.id, version: frame.version, draft: frame.draft, approved: frame.approved, sources: frame.sources,
         createdAt: frame.createdAt, approvedAt: frame.approvedAt } } : {}),
-      ...(assessmentFrame ? { assessmentFrame } : {}),
+      ...(assessmentFrame ? { assessmentFrame: { ...assessmentFrame,
+        ...(sourceCandidate?.candidate_json ? { sourceCandidate: SavedProblemCandidateSchema.parse(JSON.parse(sourceCandidate.candidate_json)) } : {}),
+        ...(sourceResearchFrame ? { sourceResearchFrame: { id: sourceResearchFrame.id, version: sourceResearchFrame.version,
+          approved: sourceResearchFrame.approved, sources: sourceResearchFrame.sources } } : {}),
+      } } : {}),
       researchRun: {
         id: String(run.id), status: String(run.status), completionReason: run.completion_reason === null ? null : String(run.completion_reason),
         ...(run.status === "completed" ? {} : { exportNote: "This run did not complete; the export contains only saved artifacts." }),
@@ -1128,7 +1139,9 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
           AND terminal.snapshot_key = 'search-terminal:' || json_extract(attempt.value_json, '$.id'))), 0) AS unknownCount
       FROM workflow_snapshots attempt WHERE attempt.research_run_id = ? AND attempt.snapshot_key LIKE 'search-attempt:%'`)
       .get(runId) as { attemptCount: number; unknownCount: number };
-    return summarizeRunUsage(rows, searches);
+    const workflows = new WorkflowRepository(db);
+    return summarizeRunUsage(rows, { attemptCount: searches.attemptCount + workflows.countInvestigatorSearches(runId),
+      unknownCount: searches.unknownCount + workflows.unknownInvestigatorSearches(runId).length });
   }
   function latestRun(threadId: string) {
     const row = db.db.prepare(`SELECT id, status, problem_id, config_json, workflow_version, awaiting_selection,
@@ -1160,8 +1173,10 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
     const projection = row.problem_id ? { modelCalls: row.workflow_version === 2 ? developmentCalls : developmentProjection(runConfig?.ideaCount ?? 5), searches: 0 } : discoveryRunProjection(runConfig?.discoveryDepth ?? "standard");
     const activity = db.db.prepare("SELECT payload_json FROM job_events WHERE run_id = ? AND type = 'run-progress' ORDER BY id DESC LIMIT 1")
       .get(row.id) as { payload_json: string } | undefined;
-    const resumeSafety = generationAttempts.getResumeSafety(row.id);
-    const unknownSearch = unknownSearchAttempts(db, row.id).length > 0;
+    const acknowledged = workflows.acknowledgedAttemptIds(row.id);
+    const resumeSafety = generationAttempts.getResumeSafety(row.id, acknowledged);
+    const unknownSearch = unknownSearchAttempts(db, row.id, acknowledged).length > 0
+      || workflows.unknownInvestigatorSearches(row.id, acknowledged).length > 0;
     const usage = runUsage(row.id);
     const providerRemoved = !runConfig || runConfig.model.providerId === HISTORICAL_CODEX_CLI_PROVIDER_ID;
     // Match resumeRun: ended legacy runs have no resumable stage checkpoints.
@@ -1172,7 +1187,8 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
       runConfig,
       workflowVersion: row.workflow_version, awaitingSelection: Boolean(row.awaiting_selection), interrupted: Boolean(row.interrupted),
       codexCalls: counts.find((item) => item.provider === runConfig?.model.providerId)?.count ?? 0,
-      searches: usage.searchAttemptCount || counts.filter((item) => item.provider === "exa" || item.provider === "perplexity").reduce((sum, item) => sum + item.count, 0),
+      searches: Math.max(usage.searchAttemptCount ?? 0,
+        counts.filter((item) => item.provider === "exa" || item.provider === "perplexity").reduce((sum, item) => sum + item.count, 0)),
       projectedCodexCalls: projection.modelCalls, projectedSearches: projection.searches,
       lastActivity: activity ? String(JSON.parse(activity.payload_json).message ?? "") : null,
       completionReason: row.completion_reason,

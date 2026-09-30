@@ -146,7 +146,7 @@ const frameWorkflow: WorkflowDetail | null = frameScenario && state.activeThread
     ...(frameScenario === "review" ? { reviewKind: "frame" as const } : {}),
     counts: { requested: 0, attempted: 0, validated: 0, accepted: 0, duplicate: 0, unresolved: 0, failed: 0, missing: 0, existing: 0, addedBySession: 0, total: 0 },
     limits: { enforced: params.get("allowance") === "empty", maxMinutes: 90, maxModelCalls: params.get("allowance") === "empty" ? 2 : 200, maxSearches: knownProblemFrame ? 0 : 200 },
-    budget: { modelCalls: { limit: params.get("allowance") === "empty" ? 2 : 200, spent: 2, reserved: 0, uncertain: 0 }, searches: { limit: knownProblemFrame ? 0 : 200, spent: knownProblemFrame ? 0 : 4, reserved: 0, uncertain: 0 }, remainingMs: 90 * 60_000 },
+    budget: { modelCalls: { limit: params.get("allowance") === "empty" ? 2 : 200, spent: knownProblemFrame ? 1 : 2, reserved: 0, uncertain: 0 }, searches: { limit: knownProblemFrame ? 0 : 200, spent: knownProblemFrame ? 0 : 4, reserved: 0, uncertain: 0 }, remainingMs: 90 * 60_000 },
     currentStage: frameScenario === "investigators" ? "investigate-area" : "frame", stopReason: frameScenario === "approved" ? "Saved fixture research is ready to inspect." : null,
     startedAt: now, finishedAt: frameScenario === "approved" ? now : null,
   },

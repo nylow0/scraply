@@ -10,6 +10,11 @@ import { OpportunityRepository } from "../../src/db/repositories/opportunities";
 import type { OpportunityReviewOutput } from "../../src/shared/opportunity-review";
 import { DEFAULT_OPPORTUNITY_EXPLORATION_CONFIG } from "../../src/shared/opportunity-exploration";
 import { DEFAULT_RUN_CONFIG } from "../../src/shared/schemas";
+import { WorkflowV2Repository } from "../../src/db/repositories/workflow-v2";
+import { WorkflowRepository } from "../../src/db/repositories/workflows";
+import { WorkflowCoordinator } from "../../src/core/workflow-coordinator";
+import type { ResearchEngine } from "../../src/core/research-engine";
+import { resolveWorkflowV2Prompt } from "../../src/core/prompts";
 
 const directories: string[] = [];
 
@@ -20,6 +25,44 @@ afterEach(() => {
 });
 
 describe("opportunity review", () => {
+  test("final rejection overrides preliminary acceptance before family projection and in later sessions", () => {
+    const db = database();
+    try {
+      seedOptions(db, ["option-a", "option-b"]);
+      const stages = new WorkflowV2Repository(db);
+      const prompt = resolveWorkflowV2Prompt("solution-set-review");
+      for (const review of [
+        { runId: "run-0", optionId: "option-a", selectionId: "preliminary:problem-1", status: "accepted" as const, reason: "Ready for novelty review" },
+        { runId: "run-0", optionId: "option-a", selectionId: "problem-1", status: "rejected" as const, reason: "The final review fails a must-have criterion" },
+        { runId: "run-1", optionId: "option-b", selectionId: null, status: "accepted" as const, reason: "Historical final review accepted this business" },
+      ]) {
+        db.immediateTransaction(() => stages.saveStageResult({ researchRunId: review.runId, stageId: "solution-set-review", selectionId: review.selectionId,
+          context: { solutionSetReview: { acceptedSolutionIds: review.status === "accepted" ? [review.optionId] : [],
+            decisions: [{ candidateId: review.optionId, status: review.status, reason: review.reason, matchingSolutionId: null }] } },
+          output: { assessments: [{ candidateId: review.optionId, decision: review.status === "accepted" ? "distinct" : "rejected",
+            reason: review.reason, matchingSolutionId: null, citedEvidenceIds: [] }] }, prompt,
+          schema: {}, inputs: {}, evidence: [], runtimePrompt: { id: "test", sha256: "a".repeat(64) }, effectiveRequest: {} }));
+      }
+      const workflows = new WorkflowRepository(db);
+      const session = db.immediateTransaction(() => workflows.createSession({ threadId: "thread-1", purpose: "known-problem", mode: "babysit", remainingMs: 60 * 60_000,
+        contract: { contractVersion: 1, purpose: "known-problem", mode: "babysit", brief: "Review saved business ideas",
+          scope: { title: "Repairs", audience: "Small teams", domain: "Repairs", observations: "", offLimits: [] }, runConfig: DEFAULT_RUN_CONFIG,
+          targets: { kind: "project", ideaCount: 2, distinctBusinessCount: 2 }, limits: { maxMinutes: 60, maxModelCalls: 12, maxSearches: 0 }, instructions: {},
+          resolvedInstructions: { research: "", ideas: "", review: "" }, instructionHashes: { research: "r", ideas: "i", review: "v" } } }));
+      const coordinator = new WorkflowCoordinator({ db, engine: () => ({}) as ResearchEngine, listProblems: () => [], onProgress() {},
+        capabilities: async () => ({ nativeConnected: false, modelOptions: [], searchReady: { exa: false, perplexity: false } }) });
+      expect(coordinator.summary(session.id).counts.accepted).toBe(1);
+      const opportunities = new OpportunityRepository(db);
+      db.immediateTransaction(() => opportunities.materializeSolutionSetReviews("thread-1"));
+      const view = opportunities.familyView("thread-1");
+      expect(view.acceptedFamilyCount).toBe(1);
+      expect(view.families.flatMap(family => family.members.map(member => member.optionId))).toEqual(["option-b"]);
+      expect(view.unresolved).toContainEqual(expect.objectContaining({ membership: expect.objectContaining({ optionId: "option-a",
+        reason: "The final review fails a must-have criterion" }) }));
+      expect(coordinator.summary(session.id).counts.accepted).toBe(1);
+    } finally { db.close(); }
+  });
+
   test("business-family counts exclude practical ideas in an automatic mixed collection", () => {
     const db = database();
     seedOptions(db, ["business"]);

@@ -39,7 +39,7 @@ function problem(factors = [factor("one")]): DiscoveryProblem {
     factors, sourceHostnames: ["forum.example.test"], singleHarvestModeWarning: true };
 }
 
-function fixture(options: { depth?: DiscoveryDepth; vendor?: boolean; duplicateOrigin?: boolean; forceConfirmedCheck?: boolean; drop?: boolean } = {}) {
+function fixture(options: { depth?: DiscoveryDepth; vendor?: boolean; duplicateOrigin?: boolean; forceConfirmedCheck?: boolean; drop?: boolean; social?: boolean } = {}) {
   const snapshots = new Map<string, unknown>();
   const calls: string[] = [];
   const searches: InvestigatorSearchRequest[] = [];
@@ -53,7 +53,7 @@ function fixture(options: { depth?: DiscoveryDepth; vendor?: boolean; duplicateO
         const confirmed = options.forceConfirmedCheck || packet.problem?.verdict === "confirmed";
         output = { decision: options.drop ? "drop" : confirmed ? "confirmed" : "follow-up", reason: "Find a second affected actor",
           gaps: confirmed || options.drop ? [] : [{ kind: "second-independent-observation", evidenceNeeded: "An independent bookkeeper account",
-            query: "duplicate bank feed entries bookkeeper experience", route: "community" }] };
+            query: "duplicate bank feed entries bookkeeper experience", route: options.social ? "social" : "community" }] };
       } else if (request.stage.startsWith("factor-harvest:")) {
         output = { factors: packet.sources!.map(item => ({ subject: "Bookkeeper", behavior: "Fixes duplicate entries", quote,
           sourceId: item.id, modelConfidence: 0.8, uncertainty: "Scope unknown", sourceRole: options.vendor ? "vendor" : "firsthand",
@@ -65,7 +65,7 @@ function fixture(options: { depth?: DiscoveryDepth; vendor?: boolean; duplicateO
           briefFit: "direct", contraryEvidence: "resolved", workflowKey: "reconcile-bank-feeds" };
       } else if (request.stage.startsWith("area-gap:")) {
         output = { reason: "One group remains unsearched", gaps: [{ name: "Multi-client close", evidenceNeeded: "Bookkeepers with several clients",
-          query: "multi-client close duplicate bank feeds", route: "community" }] };
+          query: "multi-client close duplicate bank feeds", route: options.social ? "social" : "community" }] };
       } else throw new Error(`Unexpected stage ${request.stage}`);
       return { output: request.schema.parse(output), metadata: { model: request.model, usage: { status: "unknown" },
         latencyMs: 1, repairCount: 0, providerRequestIds: [], attempts: [] } };
@@ -137,6 +137,21 @@ describe("bounded evidence investigators", () => {
     expect(item.searches.map(search => search.route)).toEqual(["community", "issue-tracker"]);
     expect(result.rounds).toHaveLength(3);
     expect(result.rounds.flatMap(round => round.searches).map(search => search.qualifyingFacts)).toEqual([0, 0]);
+  });
+
+  test("explicit social gaps remain opt-in for candidate and area investigators", async () => {
+    const disabled = fixture({ social: true });
+    await runCandidateEvidenceInvestigator({ ...disabled.input, problem: problem() });
+    await runAreaGapInvestigation({ ...disabled.input, completedResearch: {} });
+    expect(disabled.searches.map(search => search.route)).toEqual(["community", "community"]);
+    const enabled = fixture({ social: true });
+    enabled.input.dependencies.sourceRouting = { socialEnabled: true };
+    await runCandidateEvidenceInvestigator({ ...enabled.input, problem: problem() });
+    expect(enabled.searches.map(search => search.route)).toEqual(["social"]);
+    const pending = fixture({ social: true });
+    await runCandidateEvidenceInvestigator({ ...pending.input, savedSearchRoute: () => "social", problem: problem() });
+    await runAreaGapInvestigation({ ...pending.input, savedSearchRoute: () => "social", completedResearch: {} });
+    expect(pending.searches.map(search => search.route)).toEqual(["social", "social"]);
   });
 
   test("exhausted search budget preserves the candidate and explains the skipped gap", async () => {

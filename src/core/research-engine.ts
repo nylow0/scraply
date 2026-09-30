@@ -19,7 +19,7 @@ import { AppError } from "../shared/errors";
 import { WorkflowLaunchContractSchema } from "../shared/workflow-contracts";
 import { framedDiscoveryProjection } from "../shared/discovery-projection";
 import { ResearchFrameSchema, scopeResearchArea, type ResearchFrame, type ResearchArea } from "../shared/research-frame";
-import { RESEARCH_TARGETS, candidateAssessmentProjection, researchTargetProgress } from "../shared/evidence-investigators";
+import { RESEARCH_TARGETS, candidateAssessmentProjection, InvestigatorSearchRouteSchema, researchTargetProgress } from "../shared/evidence-investigators";
 import { SavedProblemCandidateSchema } from "../shared/structured-output-schemas";
 import { assertFocusedDemandTestSemantics } from "../shared/focused-experiment";
 import { deriveJsonSchema } from "../shared/json-schema";
@@ -39,9 +39,9 @@ import {
 import { DEFAULT_IDEA_COUNT, ModelRefSchema, ReasoningEffortSchema, RunConfigSchema, SourceSchema, sameModelRef, type ModelRef, type ReasoningEffort, type RunConfig, type Source } from "../shared/schemas";
 import { ScopeSchema, WorkflowV2CompatibleDecisionAnalysisOutputSchema, WorkflowV2RiskEvaluationOutputSchema, WorkflowV2RiskReassessmentOutputSchema, WorkflowV2SolutionOptionSchema, WorkflowV2SolutionsOutputSchema, WorkflowV2StartupSolutionOptionSchema, type Scope } from "../shared/structured-output-schemas";
 import { analyzeSelectedOption, developmentStageEvidence, evaluateSelectedOptionRisk, produceDevelopmentOptions, reassessSelectedOption, reassessSelectedOptionRisk, WorkflowGenerationAngleSchema, WorkflowGenerationEvidenceSchema, type WorkflowV2DevelopmentContext, type WorkflowV2EvidenceItem } from "./development";
-import { DEFAULT_PROBLEM_CANDIDATE_LIMIT, discoverProblems, discoveryRunProjection, harvestEvidenceFollowUp, harvestFactors, normalizeSearchQuery,
+import { DEFAULT_PROBLEM_CANDIDATE_LIMIT, DISCOVERY_DEPTHS, discoverProblems, discoveryRunProjection, harvestEvidenceFollowUp, harvestFactors, normalizeSearchQuery,
   type HarvestMode, type HarvestResult, type PlannedQuery, type DiscoveryProblem, type HarvestedFactor, type HarvestedSource,
-  quoteAppearsVerbatim, safeCanonicalizeUrl, type ProblemDiscoveryResult, type DiscoveryDependencies } from "./discovery";
+  qualifiesAsIntendedBuyerObservation, quoteAppearsVerbatim, safeCanonicalizeUrl, type ProblemDiscoveryResult, type DiscoveryDependencies } from "./discovery";
 import { assessNotAssessedCandidate, ensureAreaInvestigatorWorkItems, ensureEvidenceCheckWorkItem,
   enforceConfirmationRule, runAreaGapInvestigation, runCandidateEvidenceInvestigator, runManagedInvestigatorSearch,
   type InvestigatorDependencies } from "./evidence-investigators";
@@ -284,7 +284,9 @@ export class ResearchEngine {
     this.discovery.persistScope(created.runId, scope);
     this.options.db.db.prepare("INSERT INTO workflow_snapshots VALUES (?, 'workflow-kind', ?)")
       .run(created.runId, JSON.stringify({ kind: "candidate-assessment", sourceRunId, candidateId, candidate }));
-    const frame = new ResearchFrameRepository(this.options.db).forRun(sourceRunId);
+    const frames = new ResearchFrameRepository(this.options.db);
+    // New admissions explicitly freeze an approved frame or a scope-derived fallback; older pending requests retain their source run's frame.
+    const frame = workflow.frameId === undefined ? frames.forRun(sourceRunId) : workflow.frameId ? frames.get(workflow.frameId) : null;
     if (frame?.approved) new ResearchFrameRepository(this.options.db).bindRun(created.runId, threadId, frame.id);
     if (this.admitWorkflowRun(created.runId, threadId, workflow)) this.begin(created.runId, threadId, null, config);
     return created.runId;
@@ -340,6 +342,10 @@ export class ResearchEngine {
       throw new AppError("conflict", "This research run has already ended and cannot be resumed.");
     }
     const acknowledged = [...new Set([...new WorkflowRepository(this.options.db).acknowledgedAttemptIds(runId), ...acknowledgedAttemptIds])];
+    if (new WorkflowRepository(this.options.db).unknownInvestigatorSearches(runId, acknowledged).length) {
+      this.ledger.settleUncertain(runId, "A dispatched investigator search lost its terminal result during restart");
+      throw new AppError("conflict", "A previous investigator search may have completed before its result was saved. Review this request before explicitly retrying it.");
+    }
     const resumeSafety = this.generationAttempts.getResumeSafety(runId, acknowledged);
     if (!resumeSafety.canResume) {
       this.ledger.settleUncertain(runId, "A dispatched generation lost its terminal result during restart");
@@ -1546,7 +1552,8 @@ export class ResearchEngine {
     else if (active.problemId) await this.executeDevelopment(active);
     else await this.executeDiscovery(active);
     if (active.abortController.signal.aborted || this.activeRuns.get(active.runId) !== active) return;
-    const targetOutcome = active.workflow.read<{ outcome: string; reason: string }>("research-target-outcome");
+    const targetOutcome = active.workflow.read<{ outcome: string; reason: string }>("research-target-outcome")
+      ?? active.workflow.read<{ outcome: string; reason: string }>("generation-partial-outcome");
     this.runs.finish(active.runId, "completed", targetOutcome?.outcome === "partial" ? targetOutcome.reason : undefined);
     this.activeRuns.delete(active.runId);
     this.emit({ type: "run-completed", runId: active.runId, threadId: active.threadId, problemId: active.problemId });
@@ -1652,7 +1659,8 @@ export class ResearchEngine {
     const scope = this.readScope(active.runId);
     const sourceArea = this.options.db.db.prepare(`SELECT area_id FROM factors WHERE research_run_id = ? AND id = ?`)
       .get(kind.sourceRunId, original.factorIds[0] ?? "") as { area_id: string | null } | undefined;
-    const approved = new ResearchFrameRepository(this.options.db).forRun(active.runId)?.approved;
+    const bound = new ResearchFrameRepository(this.options.db).forRun(active.runId);
+    const approved = bound?.approved;
     const area: ResearchArea = approved?.areas.find(item => item.id === sourceArea?.area_id) ?? {
       id: sourceArea?.area_id ?? "saved-candidate", name: "Saved candidate evidence", whyRelevant: original.statement,
       affectedPeople: original.affected, venues: [{ name: "Open web", kind: "publication" }], exampleProblems: [original.statement], included: true, priority: 1,
@@ -1662,10 +1670,10 @@ export class ResearchEngine {
         howJudged: "Use the original scope and quoted observations to assess this candidate", basis: "brief" }],
       constraints: scope.offLimits.map(text => ({ text, kind: "scope", basis: "brief" })),
       languages: ["en"], areas: [area], exclusions: scope.offLimits, openQuestions: [] });
-    if (!approved) workflow.save("candidate-assessment-frame", { frame, provenance: {
-      kind: "reconstructed-from-saved-scope", sourceRunId: kind.sourceRunId,
-      note: "Reconstructed for this assessment from the saved scope and candidate. It is not an approved project frame.",
-    } });
+    if (!workflow.read("candidate-assessment-frame")) workflow.save("candidate-assessment-frame", { frame, provenance: approved && bound
+      ? { kind: "approved-frame", frameId: bound.id, frameVersion: bound.version, sourceRunId: kind.sourceRunId, candidateId: kind.candidateId }
+      : { kind: "reconstructed-from-saved-scope", sourceRunId: kind.sourceRunId, candidateId: kind.candidateId,
+        note: "Reconstructed for this assessment from the saved scope and candidate. It is not an approved project frame." } });
     const evidenceKey = "candidate-assessment-evidence";
     let copied = workflow.read<{ candidate: typeof original; sources: HarvestedSource[]; factors: HarvestedFactor[] }>(evidenceKey);
     if (!copied) {
@@ -1703,6 +1711,7 @@ export class ResearchEngine {
       });
     }
     const owner = this.workflowRunOwner(active);
+    await this.validateFrameSourceVenues(active, frame);
     const lane = ensureAreaInvestigatorWorkItems(this.options.db, owner.sessionId, owner.workItemId, area);
     this.startInvestigatorItem(lane.parent.id); this.startInvestigatorItem(lane.candidates.id);
     this.skipInvestigatorItem(lane.research.id, "Uses the saved candidate and its original evidence without resynthesis.");
@@ -1710,7 +1719,7 @@ export class ResearchEngine {
     const check = ensureEvidenceCheckWorkItem(this.options.db, owner.sessionId, lane.candidates.id, area.id, problemId);
     this.startInvestigatorItem(check.id);
     const result = await assessNotAssessedCandidate({ ...this.investigatorDependencies(active, scope, frame, area, lane.parent.id,
-      { ...this.dependencies(active), frame, area, stageScope: `area-${sha256Area(area.id)}` }),
+      { ...this.areaDependencies(active, frame, area), stageScope: `area-${sha256Area(area.id)}` }),
       candidateId: problemId, candidate: copied.candidate, factors: copied.factors, existingSources: copied.sources });
     if (result.assessed) {
       this.persistAreaEvidence(active, area.id, result.sources, result.factors);
@@ -1739,6 +1748,7 @@ export class ResearchEngine {
     const frame = saved?.approved;
     if (!frame || saved.knownProblem) throw new AppError("INVALID_REFERENCE", "An approved discovery frame is required.");
     this.seedFrameDiscoverySources(active.runId, saved.sources);
+    await this.validateFrameSourceVenues(active, frame);
     const scans: AreaScan[] = [];
     for (const area of frame.areas.filter(area => area.included)) {
       active.abortController.signal.throwIfAborted();
@@ -1747,7 +1757,8 @@ export class ResearchEngine {
       if (!scan) {
         scan = await scanResearchArea(scope, frame, area, { ...this.areaDependencies(active, frame, area), depth: "quick", repairPolicy: "disabled",
           stageScope: `scan-${sha256Area(area.id)}`, idFactory: workflow.idFactory(key), random: () => 0.5 });
-        scan = { ...scan, ...this.reconcileAreaEvidence(active.runId, scan.sources, workflow.withFactorUncertainty(scan.factors)) };
+        const validated = this.reconcileAreaEvidence(active.runId, scan.sources, workflow.withFactorUncertainty(scan.factors));
+        scan = { ...scan, ...validated, qualifyingFacts: validated.factors.filter(qualifiesAsIntendedBuyerObservation).length };
         const completed = scan;
         this.discovery.persistFactors(active.runId, scan.sources, scan.factors, () => {
           this.assignArea("factors", scan!.factors.map(factor => factor.id), area.id);
@@ -1769,6 +1780,12 @@ export class ResearchEngine {
     const session = new WorkflowRepository(this.options.db).getSession(owner.sessionId)!;
     const contract = WorkflowLaunchContractSchema.parse(session.contract);
     const target = contract.targets.research ?? RESEARCH_TARGETS[active.config.discoveryDepth];
+    const settledProblems = new Map<string, DiscoveryProblem & { areaId: string }>();
+    for (const area of selected) for (const problem of workflow.read<ProblemDiscoveryResult>(`area:${area.id}:investigation-completed`)?.problems ?? []) {
+      settledProblems.set(problem.id, { ...problem, areaId: area.id });
+    }
+    const targetStop = () => researchTargetProgress(target, [...settledProblems.values()]).outcome === "target-met"
+      ? "The declared research target was met. Further evidence gaps and rounds were skipped." : null;
     const results: Array<{ areaId: string; result: ProblemDiscoveryResult }> = [];
     const partialReasons = new Map<string, string>();
     const maxModelCalls = Math.floor((this.remainingWorkflowTaskCalls(active, "model-call") ?? Infinity) / Math.max(1, selected.length));
@@ -1785,6 +1802,7 @@ export class ResearchEngine {
       if (alreadyInvestigated) {
         return { areaId: area.id, result: alreadyInvestigated };
       }
+      if (targetStop()) { partialReasons.set(area.id, targetStop()!); return null; }
       this.startInvestigatorItem(lane.parent.id);
       this.startInvestigatorItem(lane.research.id);
       this.updateInvestigatorLane(lane.parent.id, area, "Planning and reading sources", null);
@@ -1837,15 +1855,23 @@ export class ResearchEngine {
         }
         workflow.save(`${key}:problems`, result);
       }
+      if (result.partialReason) partialReasons.set(area.id, result.partialReason);
       const finalKey = `${key}:investigation-completed`;
       let investigated = workflow.read<ProblemDiscoveryResult>(finalKey);
       if (!investigated) {
         // Contrary sources must exist before a follow-up factor can cite one.
         result = this.reconcileProblemEvidence(active.runId, result);
         this.persistAreaEvidence(active, area.id, result.killSources, []);
-        const investigator = this.investigatorDependencies(active, scoped, frame, area, lane.parent.id, dependencies);
+        const investigator = { ...this.investigatorDependencies(active, scoped, frame, area, lane.parent.id, dependencies), stopRequested: targetStop };
         const finalProblems: DiscoveryProblem[] = [];
         const blocked = [...result.blockedCandidates];
+        const retainUninvestigated = (problem: DiscoveryProblem, selectionId: string) => {
+          const output = workflow.repository.findStageResult(active.runId, "problem-candidates", selectionId)?.output as { problems: unknown[] } | undefined;
+          const candidate = output?.problems.map(value => SavedProblemCandidateSchema.parse(value))
+            .find(candidate => candidate.statement.trim() === problem.statement);
+          blocked.push({ statement: problem.statement, reason: targetStop()!, disposition: "not-assessed",
+            ...(candidate ? { candidate } : {}) });
+        };
         const investigate = async (problem: DiscoveryProblem, sources: HarvestedSource[]) => {
           const check = ensureEvidenceCheckWorkItem(this.options.db, owner.sessionId, lane.parent.id, area.id, problem.id);
           this.startInvestigatorItem(check.id);
@@ -1857,23 +1883,27 @@ export class ResearchEngine {
           this.persistAreaEvidence(active, area.id, outcome.sources, outcome.factors);
           if (outcome.dropped) blocked.push({ statement: outcome.problem.statement,
             reason: `Dropped during evidence investigation: ${outcome.stopReason}`, disposition: "blocked" });
-          else finalProblems.push(outcome.problem);
+          else { finalProblems.push(outcome.problem); settledProblems.set(outcome.problem.id, { ...outcome.problem, areaId: area.id }); }
           this.finishInvestigatorItem(check.id, { problemId: problem.id, dropped: outcome.dropped, verdict: outcome.problem.verdict,
             rounds: outcome.rounds, stopReason: outcome.stopReason });
           this.updateInvestigatorLane(lane.parent.id, area, "Checking evidence gaps", { problems: finalProblems, blockedCandidates: blocked });
         };
-        for (const problem of result.problems) await investigate(problem, [...harvest.sources, ...result.killSources]);
+        for (const problem of result.problems) {
+          if (targetStop()) retainUninvestigated(problem, dependencies.stageScope);
+          else await investigate(problem, [...harvest.sources, ...result.killSources]);
+        }
         const rawGap = await runAreaGapInvestigation({ ...investigator,
           completedResearch: { problems: finalProblems, blockedCandidates: blocked, factors: harvest.factors },
           existingSources: [...harvest.sources, ...result.killSources] });
         const gap = { ...rawGap, ...this.reconcileAreaEvidence(active.runId, rawGap.sources, rawGap.factors) };
         this.persistAreaEvidence(active, area.id, gap.sources, gap.factors);
         if (gap.partial) partialReasons.set(area.id, gap.stopReason);
-        if (gap.factors.length > 0 && this.investigatorBudgetAvailable(active, 1, 0)) {
+        if (gap.factors.length > 0 && !targetStop() && this.investigatorBudgetAvailable(active, 1, 0)) {
           const rawGapResult = await discoverProblems(scoped, [...harvest.factors, ...gap.factors],
             [...harvest.sources, ...result.killSources, ...gap.sources], { ...dependencies, repairPolicy: "disabled",
               stageScope: `area-${sha256Area(area.id)}:gap`,
-              candidateLimit: Math.max(0, (dependencies.candidateLimit ?? DEFAULT_PROBLEM_CANDIDATE_LIMIT) - result.problems.length),
+              candidateLimit: Math.max(0, (dependencies.candidateLimit ?? (workflow.rankProblemCandidates
+                ? DISCOVERY_DEPTHS[active.config.discoveryDepth].candidateLimit : DEFAULT_PROBLEM_CANDIDATE_LIMIT)) - result.problems.length),
               idFactory: workflow.idFactory(`${key}:gap-problems`) });
           const gapResult = this.reconcileProblemEvidence(active.runId, rawGapResult);
           this.persistAreaEvidence(active, area.id, gapResult.killSources, []);
@@ -1881,7 +1911,8 @@ export class ResearchEngine {
           for (const problem of gapResult.problems) {
             if (finalProblems.some(existing => existing.statement.trim().toLowerCase() === problem.statement.trim().toLowerCase())) {
               blocked.push({ statement: problem.statement, reason: "The area gap repeated an already assessed candidate.", disposition: "blocked" });
-            } else await investigate(problem, [...harvest.sources, ...result.killSources, ...gap.sources, ...gapResult.killSources]);
+            } else if (targetStop()) retainUninvestigated(problem, `${dependencies.stageScope}:gap`);
+            else await investigate(problem, [...harvest.sources, ...result.killSources, ...gap.sources, ...gapResult.killSources]);
           }
         }
         investigated = { ...result, problems: finalProblems, blockedCandidates: blocked, killSources: [] };
@@ -1917,6 +1948,72 @@ export class ResearchEngine {
     if (failed?.status === "rejected") throw failed.reason;
     this.progress(active, `${problems.length} problems across ${selected.length} investigated areas ready for review`);
   }
+
+  private workflowRunOwner(active: ActiveRun): { sessionId: string; workItemId: string } {
+    const row = this.options.db.db.prepare(`SELECT item.session_id AS sessionId, item.id AS workItemId
+      FROM workflow_work_items item JOIN research_runs run ON run.workflow_session_id = item.session_id
+      WHERE run.id = ? AND json_extract(item.output_refs_json, '$.runId') = run.id
+      ORDER BY item.created_at LIMIT 1`).get(active.runId) as { sessionId: string; workItemId: string } | undefined;
+    if (!row) throw new AppError("INVALID_REFERENCE", "This bounded research assignment has no admitted task.");
+    return row;
+  }
+
+  private investigatorDependencies(active: ActiveRun, scope: Scope, frame: ResearchFrame, area: ResearchArea,
+    workItemId: string, dependencies: DiscoveryDependencies): InvestigatorDependencies {
+    const owner = this.workflowRunOwner(active);
+    return { runId: active.runId, scope, frame, area, dependencies: { ...dependencies, repairPolicy: "disabled" },
+      checkpoints: active.workflow!,
+      budgetAvailable: (modelCalls, searches) => this.investigatorBudgetAvailable(active, modelCalls, searches),
+      savedSearchRoute: key => {
+        const saved = new OpportunityExplorationRepository(this.options.db).loadAttempt(active.threadId, `investigator-search:${key}`, owner.sessionId);
+        return saved ? InvestigatorSearchRouteSchema.parse((saved.input as { request: { route: unknown } }).request.route) : undefined;
+      },
+      durableSearch: async request => {
+        const result = await runManagedInvestigatorSearch({ db: this.options.db, threadId: active.threadId,
+          sessionId: owner.sessionId, workItemId, request, searchProvider: active.config.searchProvider,
+          searchClient: this.instrumentedSearch(active), sourceRouting: { ...dependencies.sourceRouting,
+            goalKind: frame.goalKind, languages: frame.languages },
+          ...(active.acknowledgedAttemptIds ? { acknowledgedAttemptIds: active.acknowledgedAttemptIds } : {}),
+          signal: active.abortController.signal });
+        return result.sources;
+      },
+      onStep: step => { this.progress(active, step.message); this.updateInvestigatorLane(workItemId, area, step.message, null, true); },
+    };
+  }
+
+  private investigatorBudgetAvailable(active: ActiveRun, modelCalls: number, searches: number): boolean {
+    const availableModels = modelCalls > 0 ? this.remainingWorkflowTaskCalls(active, "model-call") ?? Infinity : Infinity;
+    const availableSearches = searches > 0 ? this.remainingWorkflowTaskCalls(active, "search") ?? Infinity : Infinity;
+    const allowance = active.areaBudget;
+    if (availableModels < modelCalls || availableSearches < searches) return false;
+    if (!allowance) return true;
+    const modelsUsed = this.options.db.db.prepare(`SELECT coalesce(sum(CASE
+      WHEN attempt_metadata_json IS NOT NULL AND json_type(attempt_metadata_json,'$.attempts') = 'array'
+        THEN max(1,json_array_length(attempt_metadata_json,'$.attempts'))
+      WHEN status <> 'prepared' AND terminal_kind IS NOT 'never-dispatched' THEN 1 ELSE 0 END),0) AS count
+      FROM generation_attempts WHERE research_run_id = ? AND
+        (instr(stage_key,?) > 0 OR instr(stage_key,?) > 0 OR stage_key = ?)`)
+      .get(active.runId, `area-${sha256Area(allowance.areaId)}`, `:${allowance.areaId}:`, `area-gap:${allowance.areaId}`) as { count: number };
+    const searchesUsed = this.options.db.db.prepare(`SELECT count(*) AS count FROM cost_ledger WHERE research_run_id = ?
+      AND operation = 'search' AND status = 'committed' AND json_extract(usage_json,'$.areaId') = ?`)
+      .get(active.runId, allowance.areaId) as { count: number };
+    return modelsUsed.count + modelCalls <= allowance.maxModelCalls
+      && searchesUsed.count + (allowance.pendingSearches ?? 0) + searches <= allowance.maxSearches;
+  }
+
+  private persistAreaEvidence(active: ActiveRun, areaId: string, sources: HarvestedSource[], factors: HarvestedFactor[]): void {
+    const sourceIds = new Set((this.options.db.db.prepare("SELECT id FROM sources WHERE research_run_id = ?").all(active.runId) as Array<{ id: string }>).map(row => row.id));
+    const factorIds = new Set((this.options.db.db.prepare("SELECT id FROM factors WHERE research_run_id = ?").all(active.runId) as Array<{ id: string }>).map(row => row.id));
+    this.discovery.persistFactors(active.runId, sources.filter(source => !sourceIds.has(source.id)), factors.filter(factor => !factorIds.has(factor.id)),
+      () => this.assignArea("factors", factors.map(factor => factor.id), areaId));
+  }
+
+  private savedRunSources(runId: string): HarvestedSource[] {
+    return (this.options.db.db.prepare(`SELECT id, provider_source_id AS providerSourceId, canonical_url AS canonicalUrl,
+      canonical_url AS url, title, retrieved_text AS retrievedText, author, published_at AS publishedAt,
+      content_hash AS contentHash, retrieved_at AS retrievedAt FROM sources WHERE research_run_id = ?`).all(runId) as HarvestedSource[]);
+  }
+
   private async validateFrameSourceVenues(active: ActiveRun, frame: ResearchFrame): Promise<void> {
     const workflow = active.workflow!;
     if (!workflow.read("source-routes") || workflow.read("frame-source-venues")) return;
@@ -1946,68 +2043,6 @@ export class ResearchEngine {
         venue.name === verified.name && venue.kind === verified.kind && venue.domain?.toLowerCase() === verified.domain)),
         ...(area.region ? { region: area.region } : {}) } : {}),
     } };
-  }
-
-  private workflowRunOwner(active: ActiveRun): { sessionId: string; workItemId: string } {
-    const row = this.options.db.db.prepare(`SELECT item.session_id AS sessionId, item.id AS workItemId
-      FROM workflow_work_items item JOIN research_runs run ON run.workflow_session_id = item.session_id
-      WHERE run.id = ? AND json_extract(item.output_refs_json, '$.runId') = run.id
-      ORDER BY item.created_at LIMIT 1`).get(active.runId) as { sessionId: string; workItemId: string } | undefined;
-    if (!row) throw new AppError("INVALID_REFERENCE", "This bounded research assignment has no admitted task.");
-    return row;
-  }
-
-  private investigatorDependencies(active: ActiveRun, scope: Scope, frame: ResearchFrame, area: ResearchArea,
-    workItemId: string, dependencies: DiscoveryDependencies): InvestigatorDependencies {
-    const owner = this.workflowRunOwner(active);
-    return { runId: active.runId, scope, frame, area, dependencies: { ...dependencies, repairPolicy: "disabled" },
-      checkpoints: active.workflow!,
-      budgetAvailable: (modelCalls, searches) => this.investigatorBudgetAvailable(active, modelCalls, searches),
-      durableSearch: async request => {
-        const includeDomains = request.route === "community" || request.route === "issue-tracker" || request.route === "social"
-          ? area.venues.filter(venue => venue.kind === request.route || request.route === "community" && venue.kind === "community")
-            .flatMap(venue => venue.domain ? [venue.domain] : []) : [];
-        const result = await runManagedInvestigatorSearch({ db: this.options.db, threadId: active.threadId,
-          sessionId: owner.sessionId, workItemId, request, searchProvider: active.config.searchProvider,
-          searchClient: this.instrumentedSearch(active), searchOptions: includeDomains.length ? { includeDomains } : {},
-          signal: active.abortController.signal });
-        return result.sources;
-      },
-      onStep: step => { this.progress(active, step.message); this.updateInvestigatorLane(workItemId, area, step.message, null, true); },
-    };
-  }
-
-  private investigatorBudgetAvailable(active: ActiveRun, modelCalls: number, searches: number): boolean {
-    const availableModels = this.remainingWorkflowTaskCalls(active, "model-call") ?? Infinity;
-    const availableSearches = this.remainingWorkflowTaskCalls(active, "search") ?? Infinity;
-    const allowance = active.areaBudget;
-    if (availableModels < modelCalls || availableSearches < searches) return false;
-    if (!allowance) return true;
-    const modelsUsed = this.options.db.db.prepare(`SELECT coalesce(sum(CASE
-      WHEN attempt_metadata_json IS NOT NULL AND json_type(attempt_metadata_json,'$.attempts') = 'array'
-        THEN max(1,json_array_length(attempt_metadata_json,'$.attempts'))
-      WHEN status <> 'prepared' AND terminal_kind IS NOT 'never-dispatched' THEN 1 ELSE 0 END),0) AS count
-      FROM generation_attempts WHERE research_run_id = ? AND
-        (instr(stage_key,?) > 0 OR instr(stage_key,?) > 0 OR stage_key = ?)`)
-      .get(active.runId, `area-${sha256Area(allowance.areaId)}`, `:${allowance.areaId}:`, `area-gap:${allowance.areaId}`) as { count: number };
-    const searchesUsed = this.options.db.db.prepare(`SELECT count(*) AS count FROM cost_ledger WHERE research_run_id = ?
-      AND operation = 'search' AND status = 'committed' AND json_extract(usage_json,'$.areaId') = ?`)
-      .get(active.runId, allowance.areaId) as { count: number };
-    return modelsUsed.count + modelCalls <= allowance.maxModelCalls
-      && searchesUsed.count + (allowance.pendingSearches ?? 0) + searches <= allowance.maxSearches;
-  }
-
-  private persistAreaEvidence(active: ActiveRun, areaId: string, sources: HarvestedSource[], factors: HarvestedFactor[]): void {
-    const sourceIds = new Set((this.options.db.db.prepare("SELECT id FROM sources WHERE research_run_id = ?").all(active.runId) as Array<{ id: string }>).map(row => row.id));
-    const factorIds = new Set((this.options.db.db.prepare("SELECT id FROM factors WHERE research_run_id = ?").all(active.runId) as Array<{ id: string }>).map(row => row.id));
-    this.discovery.persistFactors(active.runId, sources.filter(source => !sourceIds.has(source.id)), factors.filter(factor => !factorIds.has(factor.id)),
-      () => this.assignArea("factors", factors.map(factor => factor.id), areaId));
-  }
-
-  private savedRunSources(runId: string): HarvestedSource[] {
-    return (this.options.db.db.prepare(`SELECT id, provider_source_id AS providerSourceId, canonical_url AS canonicalUrl,
-      canonical_url AS url, title, retrieved_text AS retrievedText, author, published_at AS publishedAt,
-      content_hash AS contentHash, retrieved_at AS retrievedAt FROM sources WHERE research_run_id = ?`).all(runId) as HarvestedSource[]);
   }
 
   /** Frames retain their original citation IDs; copied observations must belong to this research run. */
@@ -2639,7 +2674,6 @@ export class ResearchEngine {
       reasoningEffort: active.config.reasoningEffort,
       depth: active.config.discoveryDepth,
       ...(workflow.read("source-routes") && frame ? { frame } : {}),
-      existingSources: () => this.savedRunSources(active.runId),
       guided: this.usesWorkGuidance(active.runId),
       smallHarvestBatches: workflow.smallHarvestBatches,
       rankCandidates: workflow.rankProblemCandidates,
@@ -2910,7 +2944,7 @@ export class ResearchEngine {
     };
   }
 
-    /** Older bounded sessions may dispatch only within their saved work-item reservations. */
+  /** Bounded tasks spend saved reservations; explicit retries count work after their admission baseline. */
   private remainingWorkflowTaskCalls(active: ActiveRun, kind: "model-call" | "search"): number | null {
     if (this.usesWorkGuidance(active.runId)) return null;
     const linked = this.options.db.db.prepare(`SELECT workflow_session_id FROM research_runs WHERE id = ?`)
@@ -2945,7 +2979,12 @@ export class ResearchEngine {
               AND terminal_kind IS NOT 'never-dispatched' THEN 1 ELSE 0 END
           ),0) AS count FROM generation_attempts WHERE research_run_id = ?`)
         .get(active.runId) as { count: number }).count;
-    return reserved.units - used;
+    const baselineRow = this.options.db.db.prepare(`SELECT value_json FROM workflow_snapshots WHERE research_run_id = ?
+      AND snapshot_key LIKE 'task-budget-retry-baseline:%' ORDER BY rowid DESC LIMIT 1`)
+      .get(active.runId) as { value_json: string } | undefined;
+    const baseline = baselineRow ? JSON.parse(baselineRow.value_json) as { modelCalls: number; searches: number } : null;
+    // Explicit retries reserve fresh work. Earlier settled usage and uncertainty stay charged to their original entries.
+    return reserved.units - Math.max(0, used - (kind === "model-call" ? baseline?.modelCalls ?? 0 : baseline?.searches ?? 0));
   }
 
   /** Estimates must not become dispatch limits in a depth-guided workflow. */
