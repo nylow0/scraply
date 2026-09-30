@@ -199,7 +199,13 @@ function browserBackend(origin: string, databasePath: string, traceModule: strin
   }
   return {
     async create(item) {
+      if (!existsSync(databasePath)) throw new Error("The isolated profile database was not created. A reused dev server may belong to another profile; stop it from its owning checkout before evaluation.");
       const workspace = await invoke(IPC_CHANNELS.GET_WORKSPACE, WorkspaceStateSchema);
+      const profileDb = new Database(databasePath, { readonly: true });
+      try {
+        const storedIds = new Set(z.array(z.object({ id: z.string() })).parse(profileDb.query("SELECT id FROM threads").all()).map(thread => thread.id));
+        if (workspace.threads.some(thread => !storedIds.has(thread.id))) throw new Error("The running backend does not use the evaluation profile. No evaluation project was created.");
+      } finally { profileDb.close(); }
       const search = item.brief.runSettings.searchProvider;
       if (!workspace.validation.native.connected || !(search === "auto" ? workspace.validation.exa.valid || workspace.validation.perplexity.valid : workspace.validation[search].valid)) {
         throw new Error("Existing OpenAI and search credentials must be connected. Evaluation never changes accounts or keys.");
