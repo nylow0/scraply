@@ -1037,7 +1037,7 @@ fn websocket_interrupted(
         }
     };
     let mut detail = format!(
-        "The OpenAI response stream ended before confirming completion. Completion and usage are unknown; review before retrying. WebSocket: {category}."
+        "The OpenAI stream ended before completion. Completion and usage are unknown. WebSocket: {category}."
     );
     if let Some(activity) = activity {
         detail.push_str(&format!(" Sent pings {}, received pings {}, received pongs {}; elapsed {} ms, text silence {} ms.", activity.sent_pings, activity.received_pings, activity.received_pongs, activity.started.elapsed().as_millis(), activity.last_text.elapsed().as_millis()));
@@ -2161,6 +2161,32 @@ mod tests {
         .unwrap();
         assert_eq!(response.output, b"{}");
         server.await.unwrap();
+    }
+
+    #[test]
+    fn websocket_activity_survives_the_runtime_error_summary_limit() {
+        let now = Instant::now();
+        let activity = WebsocketActivity {
+            started: now - Duration::from_secs(3600),
+            last_text: now - Duration::from_secs(3599),
+            sent_pings: 121,
+            received_pings: 181,
+            received_pongs: 121,
+        };
+        let transport_error = WebSocketError::Protocol(ProtocolError::ResetWithoutClosingHandshake);
+        // Generation converts provider errors through this bounded core summary.
+        let error: CoreError = websocket_interrupted(
+            WebsocketTermination::Error(&transport_error),
+            Some(&activity),
+        )
+        .into();
+        let detail = error.failure().detail;
+        assert!(detail.contains("Completion and usage are unknown"));
+        assert!(detail.contains("protocol-reset-without-close"));
+        assert!(detail.contains("Sent pings 121, received pings 181, received pongs 121"));
+        assert!(detail.contains("elapsed "));
+        assert!(detail.contains("text silence "));
+        assert!(detail.ends_with(" ms."));
     }
 
     #[test]
