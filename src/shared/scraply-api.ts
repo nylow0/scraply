@@ -10,6 +10,7 @@ import {
   type SolutionView, type SourceDetail, type ValidationState, type WorkspaceState,
 } from "./ipc";
 import { AppError } from "./errors";
+import { GetRunTraceRequestSchema, GetRunTraceStepRequestSchema, RunTraceSchema, RunTraceStepDetailSchema } from "./run-trace";
 import { z } from "zod";
 import {
   PreviewWorkflowRequestSchema, PreviewWorkflowResultSchema, StartWorkflowRequestSchema,
@@ -42,6 +43,10 @@ export function createScraplyApi(transport: ApiTransport) {
       workflowInvoke(IPC_CHANNELS.START_WORKFLOW, StartWorkflowRequestSchema.parse(payload), WorkflowAdmissionReceiptSchema),
     getWorkflow: (payload: z.infer<typeof GetWorkflowRequestSchema>) =>
       workflowInvoke(IPC_CHANNELS.GET_WORKFLOW, GetWorkflowRequestSchema.parse(payload), WorkflowDetailSchema),
+    getRunTrace: (payload: z.infer<typeof GetRunTraceRequestSchema>) =>
+      workflowInvoke(IPC_CHANNELS.GET_RUN_TRACE, GetRunTraceRequestSchema.parse(payload), RunTraceSchema),
+    getRunTraceStep: (payload: z.infer<typeof GetRunTraceStepRequestSchema>) =>
+      workflowInvoke(IPC_CHANNELS.GET_RUN_TRACE_STEP, GetRunTraceStepRequestSchema.parse(payload), RunTraceStepDetailSchema),
     commandWorkflow: (payload: z.infer<typeof CommandWorkflowRequestSchema>) =>
       workflowInvoke(IPC_CHANNELS.COMMAND_WORKFLOW, CommandWorkflowRequestSchema.parse(payload), WorkflowAdmissionReceiptSchema),
     getIdeaConversation: (payload: z.infer<typeof GetIdeaConversationRequestSchema>) =>

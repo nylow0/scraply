@@ -1,18 +1,20 @@
 <script lang="ts">
   import Icon from "./Icon.svelte";
-  export type WorkflowStep = "setup" | "research" | "ideas";
+  export type WorkflowStep = "setup" | "research" | "ideas" | "trace";
 
   let {
     active,
     setupReady,
     researchReady,
     ideasReady,
+    traceReady = false,
     onSelect,
   }: {
     active: WorkflowStep;
     setupReady: boolean;
     researchReady: boolean;
     ideasReady: boolean;
+    traceReady?: boolean;
     onSelect: (step: WorkflowStep) => void;
   } = $props();
 
@@ -20,10 +22,11 @@
     { id: "setup", label: "Setup" },
     { id: "research", label: "Research" },
     { id: "ideas", label: "Solutions" },
+    { id: "trace", label: "Trace" },
   ];
 
   function ready(step: WorkflowStep): boolean {
-    return step === "setup" ? setupReady : step === "research" ? researchReady : ideasReady;
+    return step === "setup" ? setupReady : step === "research" ? researchReady : step === "ideas" ? ideasReady : traceReady;
   }
 
   function handleKeydown(event: KeyboardEvent, current: WorkflowStep) {
@@ -61,7 +64,7 @@
         onclick={() => onSelect(step.id)}
         onkeydown={(event) => handleKeydown(event, step.id)}
       >
-        <span class="step-icon"><Icon name={step.id === "setup" ? "brief" : step.id === "research" ? "research" : "ideas"} size={16} /></span>
+        <span class="step-icon"><Icon name={step.id === "setup" ? "brief" : step.id === "research" ? "research" : step.id === "ideas" ? "ideas" : "progress"} size={16} /></span>
         <span>{step.label}</span>
       </button>
     {/each}

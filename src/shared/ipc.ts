@@ -357,6 +357,7 @@ export type RunUsage = z.infer<typeof RunUsageSchema>;
 export const IPC_CHANNELS = {
   PREVIEW_WORKFLOW: "scraply:preview-workflow", START_WORKFLOW: "scraply:start-workflow",
   GET_WORKFLOW: "scraply:get-workflow", COMMAND_WORKFLOW: "scraply:command-workflow",
+  GET_RUN_TRACE: "scraply:get-run-trace", GET_RUN_TRACE_STEP: "scraply:get-run-trace-step",
   GET_IDEA_CONVERSATION: "scraply:get-idea-conversation", SUBMIT_IDEA_TURN: "scraply:submit-idea-turn",
   SELECT_IDEA_VERSION: "scraply:select-idea-version",
   APP_COMMAND: "scraply:app-command", DISCARD_IDEA: "scraply:discard-idea",
