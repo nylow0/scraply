@@ -22,7 +22,7 @@ test("excludes inherited authentication tokens and endpoint overrides from the n
     CODEX_REFRESH_TOKEN_URL_OVERRIDE: "https://fixture.invalid", CODEX_REVOKE_TOKEN_URL_OVERRIDE: "https://fixture.invalid",
     CODEX_APP_SERVER_LOGIN_CLIENT_ID: "fixture-only", codex_api_key: "fixture-only", OPENAI_API_KEY: "fixture-only",
   } });
-  expect((await runtime.start()).selectedProtocolVersion).toBe("1.1");
+  expect((await runtime.start()).selectedProtocolVersion).toBe("1.2");
 });
 
 function client(mode: string, overrides: {
@@ -88,6 +88,20 @@ describe("persistent native runtime client", () => {
     expect(dispatched).toEqual(["first", "second"]);
   });
 
+  test("retains correlated live summaries and saves them separately from structured output", async () => {
+    const runtime = client("summary-stream");
+    const completion = runtime.structuredCompletion(request("summary-call"));
+    await waitUntil(() => runtime.liveReasoningSummary("summary-call") !== null);
+    expect(runtime.liveReasoningSummary("summary-call")).toBe("Checking evidence. é🧩");
+    const result = await completion;
+    expect(result.output).toEqual({ answer: "right" });
+    expect(result.metadata.reasoningSummary).toBe("Checking evidence. é🧩");
+    expect(runtime.liveReasoningSummary("summary-call")).toBeNull();
+
+    runtime.setReasoningSummaries(false);
+    const disabled = await runtime.structuredCompletion(request("summaries-disabled"));
+    expect(disabled.metadata.reasoningSummary).toBeUndefined();
+  });
   test("an unbounded generation waits for the full native response despite the terminal grace period", async () => {
     const runtime = client("slow-complete", { terminalGraceMs: 1 });
     const { deadlineMs: _deadline, ...generation } = request("slow-research");
@@ -125,7 +139,7 @@ describe("persistent native runtime client", () => {
       stdoutBuffer: Buffer;
       stdoutBytes: number;
     };
-    const envelope = { protocolVersion: "1.1", id: "ignored", operation: "account.list", result: { padding: "" } };
+    const envelope = { protocolVersion: "1.2", id: "ignored", operation: "account.list", result: { padding: "" } };
     const baseLength = Buffer.byteLength(JSON.stringify(envelope));
     const frame = Buffer.from(JSON.stringify({ ...envelope, result: { padding: "x".repeat(16_777_216 - baseLength) } }));
     expect(frame.length).toBe(16_777_216);

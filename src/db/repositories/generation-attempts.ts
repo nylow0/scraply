@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { z } from "zod";
 import type { GenerationAcceptanceMetadata, StructuredStageRequest } from "../../providers/structured";
 import { canonicalJson, sha256 } from "../../shared/content-identity";
 import type { DatabaseClient } from "../client";
@@ -182,7 +183,7 @@ export class GenerationAttemptRepository {
       terminal.output === undefined ? null : canonicalJson(terminal.output),
       terminal.errorCode ?? null,
       terminal.errorMessage ?? null,
-      terminal.attemptMetadata === undefined ? null : canonicalJson(terminal.attemptMetadata),
+      terminal.attemptMetadata === undefined ? null : canonicalJson(withReasoningSummary(terminal.attemptMetadata)),
       terminal.usage === undefined ? null : canonicalJson(terminal.usage),
       terminal.reportedCostUsd ?? null,
       now,
@@ -231,4 +232,16 @@ function effectiveRequestSnapshot<T>(
     compilerPrompt: runtimeIdentity.compilerPrompt ?? null,
     maxOutputTokens: request.maxOutputTokens ?? null,
   };
+}
+
+// Failed generations retain summaries on their provider attempts. Keep the top-level
+// text too, so completed and interrupted generations have the same trace read path.
+function withReasoningSummary(metadata: unknown): unknown {
+  const parsed = z.object({
+    reasoningSummary: z.string().optional(),
+    attempts: z.array(z.object({ reasoningSummary: z.string().optional() }).passthrough()).optional(),
+  }).passthrough().safeParse(metadata);
+  if (!parsed.success || parsed.data.reasoningSummary) return metadata;
+  const reasoningSummary = parsed.data.attempts?.map((attempt) => attempt.reasoningSummary ?? "").join("");
+  return reasoningSummary ? { ...parsed.data, reasoningSummary } : metadata;
 }

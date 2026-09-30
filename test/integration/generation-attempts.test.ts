@@ -19,6 +19,35 @@ afterEach(() => {
 });
 
 describe("durable generation snapshots", () => {
+  test("keeps completed and interrupted summary text after the database reopens", () => {
+    const directory = mkdtempSync(join(tmpdir(), "scraply-reasoning-summaries-"));
+    directories.push(directory);
+    const dbPath = join(directory, "scraply.db");
+    const db = new DatabaseClient(dbPath);
+    const now = new Date().toISOString();
+    db.db.prepare("INSERT INTO threads (id, title, status, created_at, updated_at) VALUES ('summary-thread', 'Summaries', 'configuring', ?, ?)")
+      .run(now, now);
+    const config: RunConfig = { configVersion: 2, model: { providerId: "openai-subscription", modelId: "gpt-fixture" },
+      reasoningEffort: "medium", discoveryDepth: "quick", maxRunMinutes: 5,
+      researchMode: "known-problem", knownProblem: "Parts arrive late.", searchProvider: "exa" };
+    const runId = new ResearchRunRepository(db).create("summary-thread", config).runId;
+    const repository = new GenerationAttemptRepository(db);
+    const completed = repository.prepare(runId, request("summary-completed"), {});
+    repository.recordTerminal(completed.id, { status: "completed", terminalKind: "completed", output: { answer: "saved" },
+      attemptMetadata: { reasoningSummary: "Checking independent evidence.", attempts: [] } });
+    const interrupted = repository.prepare(runId, request("summary-interrupted"), {});
+    repository.recordTerminal(interrupted.id, { status: "interrupted", terminalKind: "interrupted",
+      attemptMetadata: { attempts: [{ reasoningSummary: "Partial evidence check.", providerCompletion: "unknown" }] } });
+    db.close();
+    const reopened = new DatabaseClient(dbPath);
+    try {
+      const rows = reopened.db.prepare("SELECT status, attempt_metadata_json FROM generation_attempts WHERE research_run_id = ? ORDER BY rowid")
+        .all(runId) as Array<{ status: string; attempt_metadata_json: string }>;
+      expect(JSON.parse(rows[0]!.attempt_metadata_json).reasoningSummary).toBe("Checking independent evidence.");
+      expect(JSON.parse(rows[1]!.attempt_metadata_json).reasoningSummary).toBe("Partial evidence check.");
+      expect(new GenerationAttemptRepository(reopened).getResumeSafety(runId).canResume).toBe(false);
+    } finally { reopened.close(); }
+  });
   test("reuses a stable logical request across transport IDs and guards one terminal", () => {
     const directory = mkdtempSync(join(tmpdir(), "scraply-generation-attempts-"));
     directories.push(directory);

@@ -1,12 +1,16 @@
 import { z } from "zod";
 
-export const RUNTIME_PROTOCOL_VERSION = "1.1" as const;
+export const RUNTIME_PROTOCOL_VERSION = "1.2" as const;
+export const MAX_REASONING_SUMMARY_BYTES = 16_384;
+const ReasoningSummarySchema = z.string().refine((text) => new TextEncoder().encode(text).byteLength <= MAX_REASONING_SUMMARY_BYTES,
+  "Reasoning summary exceeds the byte limit");
 export const RUNTIME_REQUIRED_CAPABILITIES = [
   "envelope_limits",
   "account_refresh",
   "credential_persistence_ack",
   "generation_attempt_metadata",
   "exactly_one_terminal",
+  "reasoning_summary_stream",
 ] as const;
 export const RUNTIME_PROMPT_ID = "scraply.stage-worker.v1" as const;
 
@@ -83,6 +87,7 @@ export const GenerationStartPayloadSchema = z.object({
   evidence: z.array(EvidenceSourceSchema).optional(),
   outputSchema: z.record(z.unknown()),
   reasoningEffort: z.enum(["low", "medium", "high", "xhigh", "max", "ultra"]).optional(),
+  reasoningSummaries: z.boolean().optional(),
   maxOutputTokens: z.number().int().positive().optional(),
   repairPolicy: z.enum(["disabled", "one_retry"]).optional(),
 }).strict();
@@ -118,6 +123,7 @@ export const GenerationAttemptMetadataSchema = z.object({
   finishReason: FinishReasonSchema.optional(),
   latencyMs: z.number().int().nonnegative(),
   providerRequestId: z.string().min(1).optional(),
+  reasoningSummary: ReasoningSummarySchema.optional(),
 }).strict();
 export const GenerationMetadataSchema = z.object({
   model: QualifiedModelSchema,
@@ -128,6 +134,7 @@ export const GenerationMetadataSchema = z.object({
   latencyMs: z.number().int().nonnegative(),
   repairCount: z.number().int().nonnegative(),
   providerRequestIds: z.array(z.string().min(1)),
+  reasoningSummary: ReasoningSummarySchema.optional(),
   attempts: z.array(GenerationAttemptMetadataSchema),
 }).strict();
 export const RuntimeFailureSchema = z.object({
@@ -135,7 +142,8 @@ export const RuntimeFailureSchema = z.object({
 }).strict();
 export const GenerationEventSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("generation.started"), generationId: z.string().min(1) }).strict(),
-  z.object({ kind: z.literal("generation.delta"), generationId: z.string().min(1), sequence: z.number().int().nonnegative(), delta: z.unknown() }).strict(),
+  z.object({ kind: z.literal("generation.delta"), generationId: z.string().min(1), sequence: z.number().int().nonnegative(),
+    delta: z.object({ type: z.literal("reasoning-summary"), text: ReasoningSummarySchema }).strict() }).strict(),
   z.object({ kind: z.literal("generation.completed"), generationId: z.string().min(1), result: z.object({ output: z.unknown(), metadata: GenerationMetadataSchema }).strict() }).strict(),
   z.object({ kind: z.literal("generation.failed"), generationId: z.string().min(1), error: RuntimeFailureSchema, attempts: z.array(GenerationAttemptMetadataSchema).optional() }).strict(),
   z.object({ kind: z.literal("generation.cancelled"), generationId: z.string().min(1), attempts: z.array(GenerationAttemptMetadataSchema).optional() }).strict(),

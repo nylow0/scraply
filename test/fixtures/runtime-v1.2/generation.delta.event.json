@@ -1,0 +1,1 @@
+{"protocolVersion":"1.2","requestId":"generation-request-1","operation":"generation.start","event":{"kind":"generation.delta","generationId":"generation-1","sequence":0,"delta":{"type":"reasoning-summary","text":"Checking the saved evidence before answering."}}}

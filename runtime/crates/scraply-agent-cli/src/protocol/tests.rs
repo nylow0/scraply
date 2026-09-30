@@ -127,7 +127,7 @@ fn unknown_operations_get_a_stable_correlated_failure() {
 fn version_negotiation_selects_only_a_shared_version() {
     let offered = [
         ProtocolVersion::new("2.0").unwrap(),
-        ProtocolVersion::new("1.1").unwrap(),
+        ProtocolVersion::new("1.2").unwrap(),
         ProtocolVersion::new("1.0").unwrap(),
     ];
     assert_eq!(
@@ -338,13 +338,13 @@ fn unfinished_input_at_eof_is_rejected_without_echoing_content() {
 #[test]
 fn frozen_protocol_1_1_fixtures_deserialize_and_pin_identity() {
     let request_fixtures = [
-        include_str!("../../../../contracts/runtime/v1.1/initialize.request.json"),
-        include_str!("../../../../contracts/runtime/v1.1/generation.start.request.json"),
+        include_str!("../../../../contracts/runtime/v1.2/initialize.request.json"),
+        include_str!("../../../../contracts/runtime/v1.2/generation.start.request.json"),
         include_str!(
-            "../../../../contracts/runtime/v1.1/credential.session.persisted.request.json"
+            "../../../../contracts/runtime/v1.2/credential.session.persisted.request.json"
         ),
-        include_str!("../../../../contracts/runtime/v1.1/generation.cancel.request.json"),
-        include_str!("../../../../contracts/runtime/v1.1/runtime.shutdown.request.json"),
+        include_str!("../../../../contracts/runtime/v1.2/generation.cancel.request.json"),
+        include_str!("../../../../contracts/runtime/v1.2/runtime.shutdown.request.json"),
     ];
     for fixture in request_fixtures {
         let request: RequestEnvelope = serde_json::from_str(fixture).unwrap();
@@ -352,15 +352,15 @@ fn frozen_protocol_1_1_fixtures_deserialize_and_pin_identity() {
     }
 
     let server_fixtures = [
-        include_str!("../../../../contracts/runtime/v1.1/initialize.response.json"),
-        include_str!("../../../../contracts/runtime/v1.1/account.refresh.response.json"),
-        include_str!("../../../../contracts/runtime/v1.1/generation.completed.event.json"),
-        include_str!("../../../../contracts/runtime/v1.1/generation.repair-failed.event.json"),
-        include_str!("../../../../contracts/runtime/v1.1/generation.accepted.response.json"),
-        include_str!("../../../../contracts/runtime/v1.1/account.list.response.json"),
-        include_str!("../../../../contracts/runtime/v1.1/model.list.response.json"),
-        include_str!("../../../../contracts/runtime/v1.1/generation.cancel.response.json"),
-        include_str!("../../../../contracts/runtime/v1.1/runtime.shutdown.response.json"),
+        include_str!("../../../../contracts/runtime/v1.2/initialize.response.json"),
+        include_str!("../../../../contracts/runtime/v1.2/account.refresh.response.json"),
+        include_str!("../../../../contracts/runtime/v1.2/generation.completed.event.json"),
+        include_str!("../../../../contracts/runtime/v1.2/generation.repair-failed.event.json"),
+        include_str!("../../../../contracts/runtime/v1.2/generation.accepted.response.json"),
+        include_str!("../../../../contracts/runtime/v1.2/account.list.response.json"),
+        include_str!("../../../../contracts/runtime/v1.2/model.list.response.json"),
+        include_str!("../../../../contracts/runtime/v1.2/generation.cancel.response.json"),
+        include_str!("../../../../contracts/runtime/v1.2/runtime.shutdown.response.json"),
     ];
     for fixture in server_fixtures {
         let _: ServerEnvelope = serde_json::from_str(fixture).unwrap();
@@ -377,5 +377,5 @@ fn frozen_protocol_1_1_fixtures_deserialize_and_pin_identity() {
         "277d724f20acb1f32fa0a8b7c454c670971e3c40bfc921db40c044caa760e6f1"
     );
     assert_eq!(result.limits, super::ProtocolLimits::current());
-    assert_eq!(result.capabilities, Capability::V1_1);
+    assert_eq!(result.capabilities, Capability::V1_2);
 }

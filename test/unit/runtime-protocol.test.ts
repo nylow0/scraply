@@ -7,14 +7,14 @@ import {
 } from "../../src/shared/runtime-protocol";
 import { encodeRuntimeEnvelope } from "../../src/providers/runtime";
 
-const FIXTURE_DIRECTORY = join(import.meta.dir, "..", "fixtures", "runtime-v1.1");
+const FIXTURE_DIRECTORY = join(import.meta.dir, "..", "fixtures", "runtime-v1.2");
 const FROZEN_RUNTIME_COMMIT = "ab9fcfc859ee19fff8dfd4c05c854ab5d145baf8";
 
 function fixture(name: string): unknown {
   return JSON.parse(readFileSync(join(FIXTURE_DIRECTORY, name), "utf8"));
 }
 
-describe(`runtime 1.1 contract snapshots from ${FROZEN_RUNTIME_COMMIT}`, () => {
+describe(`runtime 1.2 contract snapshots from ${FROZEN_RUNTIME_COMMIT}`, () => {
   test("parses every copied server envelope without projecting away terminal metadata", () => {
     const responseNames = readdirSync(FIXTURE_DIRECTORY).filter((name) => name.endsWith("response.json") || name.endsWith("event.json"));
     for (const name of responseNames) ServerEnvelopeSchema.parse(fixture(name));

@@ -1,4 +1,4 @@
-use crate::{CoreError, FailureKind, MAX_TIMEOUT};
+use crate::{CoreError, FailureKind, GenerationAttempt, MAX_TIMEOUT};
 use std::{
     sync::{
         Arc, Condvar, Mutex,
@@ -95,6 +95,8 @@ impl CancellationToken {
 pub struct OperationControl {
     cancellation: CancellationToken,
     deadline: Option<Instant>,
+    summaries: Arc<Mutex<[String; 2]>>,
+    summary_sink: Option<tokio::sync::mpsc::Sender<String>>,
 }
 
 impl OperationControl {
@@ -111,6 +113,8 @@ impl OperationControl {
         Ok(Self {
             cancellation,
             deadline: Some(deadline),
+            summaries: Arc::default(),
+            summary_sink: None,
         })
     }
 
@@ -119,11 +123,45 @@ impl OperationControl {
         Self {
             cancellation,
             deadline: None,
+            summaries: Arc::default(),
+            summary_sink: None,
         }
     }
 
     pub fn cancellation(&self) -> &CancellationToken {
         &self.cancellation
+    }
+
+    pub fn with_summary_sink(mut self, sink: tokio::sync::mpsc::Sender<String>) -> Self {
+        self.summary_sink = Some(sink);
+        self
+    }
+
+    /// Summaries are provider-facing text, separate from the schema-valid output.
+    /// The entire generation, including a repair, retains at most 16 KiB of UTF-8.
+    pub async fn emit_reasoning_summary(&self, attempt: GenerationAttempt, text: &str) {
+        let retained = {
+            let mut summaries = self.summaries.lock().expect("summary state poisoned");
+            let remaining = 16_384_usize.saturating_sub(summaries.iter().map(String::len).sum());
+            let mut end = remaining.min(text.len());
+            while !text.is_char_boundary(end) {
+                end -= 1;
+            }
+            let retained = text[..end].to_owned();
+            summaries[usize::from(attempt == GenerationAttempt::SchemaRepair)].push_str(&retained);
+            retained
+        };
+        if !retained.is_empty()
+            && let Some(sink) = &self.summary_sink
+        {
+            let _ = sink.send(retained).await;
+        }
+    }
+
+    pub fn reasoning_summary(&self, attempt: GenerationAttempt) -> Option<String> {
+        let summaries = self.summaries.lock().expect("summary state poisoned");
+        let summary = &summaries[usize::from(attempt == GenerationAttempt::SchemaRepair)];
+        (!summary.is_empty()).then(|| summary.clone())
     }
 
     pub fn remaining(&self) -> Option<Duration> {
