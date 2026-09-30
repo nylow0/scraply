@@ -354,14 +354,14 @@ export class WorkflowRepository {
   }
 
   /** Explicit recovery keeps run-local checkpoints and all prior attempt/accounting records. */
-  reopenUnknownDiscovery(sessionId: string, expectedRevision: number, taskId: string): WorkflowSession {
+  reopenGuidedDiscovery(sessionId: string, expectedRevision: number, taskId: string): WorkflowSession {
     this.client.requireImmediateTransaction();
     const session = this.requireSession(sessionId);
     const task = this.requireWorkItemInSession(taskId, sessionId);
-    if (session.revision !== expectedRevision || session.state !== "finished" || session.outcome !== "needs-attention"
+    if (session.revision !== expectedRevision || session.state !== "finished" || !["needs-attention", "failed", "partial"].includes(session.outcome ?? "")
       || task.kind !== "discovery" || !["unknown", "failed"].includes(task.state)
       || (session.contract as { limits?: { enforced?: boolean } }).limits?.enforced !== false) {
-      throw new WorkflowConflictError("REVISION_CONFLICT", "Only a settled guided discovery with an unknown result can reopen");
+      throw new WorkflowConflictError("REVISION_CONFLICT", "Only a settled guided discovery failure can reopen");
     }
     this.client.db.prepare(`UPDATE workflow_work_items SET state = 'running', error_json = NULL,
       finished_at = NULL WHERE id = ?`).run(taskId);

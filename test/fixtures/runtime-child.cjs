@@ -143,6 +143,14 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
     if (mode === "hang-cancel") return;
     const isHarvest = request.payload.workOrder.stage.startsWith("factor-harvest");
     if (isHarvest) harvestCalls++;
+    if (mode === "output-limit" || (mode === "workflow-checkpoint-recovery-output-limit" && harvestCalls === 9 && isHarvest)) {
+      send({ protocolVersion: "1.1", requestId: request.id, operation: "generation.start", event: {
+        kind: "generation.failed", generationId: request.payload.generationId,
+        error: { code: "output_limit", retryable: false, detail: "OpenAI returned an incomplete response because its output token limit was reached." },
+        attempts: [{ attempt: "initial", outcome: "failed", providerCompletion: "confirmed", model, usage: { status: "unknown" }, cost: { status: "unknown" }, latencyMs: 1 }],
+      } });
+      return;
+    }
     const streamFailureLimit = mode === "workflow-stream-interrupted-twice" ? 2 : mode === "workflow-stream-interrupted" ? 1 : 0;
     if (mode === "stream-interrupted" || (streamFailures < streamFailureLimit && isHarvest)
       || (mode === "workflow-checkpoint-recovery" && [9, 10].includes(harvestCalls))) {

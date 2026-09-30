@@ -19,7 +19,7 @@ import {
   WorkflowV2Repository,
 } from "../../src/db/repositories/workflow-v2";
 import { deriveJsonSchema } from "../../src/shared/json-schema";
-import { FactorHarvestOutputSchema, ProblemCandidatesOutputSchema, ProblemKillOutputSchema } from "../../src/shared/structured-output-schemas";
+import { FactorHarvestOutputSchema, ProblemCandidatesOutputSchema, ProblemKillOutputSchema, WorkflowV2FactorHarvestOutputSchema } from "../../src/shared/structured-output-schemas";
 import { WorkflowExecution } from "../../src/core/workflow-execution";
 import { configurePromptPaths } from "../../src/core/prompts";
 import { discoverProblems, harvestFactors, type HarvestedFactor, type HarvestedSource } from "../../src/core/discovery";
@@ -320,27 +320,32 @@ describe("workflow v2 persistence", () => {
     } finally { client.close(); }
   });
 
-  test("reuses a completed factor batch after interruption before the full harvest is persisted", async () => {
+  test("reuses a completed legacy factor batch while bounding oversized notes without changing raw history", async () => {
     configurePromptPaths({ bundledDir: join(process.cwd(), "prompts"), overrideDir: null });
     const client = database();
+    const longNote = "Uncertain applicability. ".repeat(4_000).trim();
     let providerCalls = 0;
     const provider: StructuredModelClient = { async structuredCompletion(request) {
       providerCalls += 1;
       if (providerCalls > 1) throw new Error("Completed batch was sent to the provider again");
-      const output = request.schema.parse({ factors: [{
+      const legacySchema = WorkflowV2FactorHarvestOutputSchema.extend({ factors: WorkflowV2FactorHarvestOutputSchema.shape.factors.max(15) });
+      const legacyOutput = { factors: [{
         subject: "Operators", behavior: "repeat filing", quote: "Operators repeat filing.",
-        sourceId: "source", modelConfidence: 0.8, uncertainty: "One source",
+        sourceId: "source", modelConfidence: 0.8, uncertainty: longNote,
       }, {
         subject: "Operators", behavior: "reconcile duplicates", quote: "Operators reconcile duplicate records.",
         sourceId: "source", modelConfidence: 0.7, uncertainty: "One source",
-      }] });
+      }] };
+      // Fresh provider output is bounded; this terminal fixture represents an older saved contract.
+      expect(request.schema.safeParse(legacyOutput).success).toBe(false);
+      const output = legacySchema.parse(legacyOutput);
       const metadata = {
         model: request.model, usage: { status: "unknown" as const }, latencyMs: 1, repairCount: 0,
         providerRequestIds: [], attempts: [],
         prompt: { id: "scraply.stage-worker.v1", sha256: createHash("sha256").update("runtime-prompt").digest("hex") },
       };
       const attempts = new GenerationAttemptRepository(client);
-      const prepared = attempts.prepare("run-v2", { ...request, deadlineMs: 120_000 });
+      const prepared = attempts.prepare("run-v2", { ...request, jsonSchema: deriveJsonSchema(legacySchema), deadlineMs: 120_000 });
       attempts.markDispatched(prepared.id);
       attempts.markAccepted(prepared.id, { compilerPrompt: metadata.prompt });
       attempts.recordTerminal(prepared.id, {
@@ -398,6 +403,12 @@ describe("workflow v2 persistence", () => {
       await expectsFreshDispatch({ ...smaller, model: { ...smaller.model, modelId: "different-model" } });
       expect(rejectedReuseDispatches).toBe(6);
 
+      const sameStage = new WorkflowExecution(client, "run-v2");
+      await sameStage.discoveryClient(provider).structuredCompletion(request("resume-original"));
+      const savedRaw = client.db.prepare("SELECT output_json FROM stage_results WHERE selection_key = ?")
+        .get("domain:source,other") as { output_json: string };
+      expect(JSON.parse(savedRaw.output_json).factors[0].uncertainty).toBe(longNote);
+
       const resumed = new WorkflowExecution(client, "run-v2");
       const recovered = await resumed.discoveryClient(provider).structuredCompletion(request("resume", true));
 
@@ -407,12 +418,12 @@ describe("workflow v2 persistence", () => {
         sourceRole: "unknown", audienceFit: "unknown", independentSourceKey: null, supportsDemand: false,
         demandEvidenceUncertainty: "Not classified in the saved output.",
       })] });
-      expect(resumed.withFactorUncertainty([{
+      const compacted = resumed.withFactorUncertainty([{
         subject: "Operators", behavior: "repeat filing", quote: "Operators repeat filing.", sourceId: "source",
-      }])).toEqual([{
-        subject: "Operators", behavior: "repeat filing", quote: "Operators repeat filing.", sourceId: "source",
-        uncertainty: "One source",
-      }]);
+      }])[0]!;
+      expect(compacted.uncertainty?.length).toBeLessThanOrEqual(600);
+      expect(compacted.uncertainty?.startsWith("Uncertain applicability.")).toBe(true);
+      expect(compacted.quote).toBe("Operators repeat filing.");
     } finally { client.close(); }
   });
 

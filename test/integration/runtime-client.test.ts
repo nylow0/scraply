@@ -176,6 +176,17 @@ describe("persistent native runtime client", () => {
     expect((failure as ProviderFailure).attempts?.[0]?.providerCompletion).toBe("unknown");
   });
 
+  test("preserves a confirmed output limit for explicit recovery without automatic replay", async () => {
+    const runtime = client("output-limit");
+    let failure: unknown;
+    try { await runtime.structuredCompletion(request("generation-output-limit")); }
+    catch (error) { failure = error; }
+    expect(failure).toBeInstanceOf(ProviderFailure);
+    expect((failure as ProviderFailure).code).toBe("output-limit");
+    expect((failure as ProviderFailure).retryable).toBe(false);
+    expect((failure as ProviderFailure).attempts?.[0]?.providerCompletion).toBe("confirmed");
+  });
+
   test("waits for terminal metadata after a prompt mismatch before releasing the generation queue", async () => {
     const runtime = client("prompt-mismatch", { requestTimeoutMs: 1_000, controlTimeoutMs: 100, terminalGraceMs: 100 });
     const started = Date.now();

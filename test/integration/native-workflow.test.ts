@@ -30,6 +30,49 @@ afterEach(async () => {
 });
 
 describe("native research workflow through the production backend", () => {
+  test("explicit output-limit retry preserves the guided contract, searches, and completed packets", async () => {
+    const item = await fixture({ mode: "workflow-checkpoint-recovery-output-limit" });
+    const threadId = await item.createThread("explore-market");
+    const preview = await item.post("/workflows/preview", { type: "launch", threadId, draft: {
+      contractVersion: 1, purpose: "discovery", mode: "babysit", brief: scope.domain, scope,
+      runConfig: { ...DEFAULT_RUN_CONFIG, model, reasoningEffort: "xhigh", discoveryDepth: "deep", searchProvider: "exa" },
+      targets: { kind: "per-problem", ideaCount: 3 },
+      limits: { enforced: false, maxMinutes: 90, maxModelCalls: 62, maxSearches: 26 }, instructions: {},
+    } }, PreviewWorkflowResultSchema);
+    const receipt = await item.post("/workflows/start", { threadId, clientCommandId: "output-limit-research",
+      contract: preview.proposal, previewHash: preview.previewHash, capabilityFingerprint: preview.capabilityFingerprint,
+      previewExpiresAt: preview.expiresAt }, WorkflowAdmissionReceiptSchema);
+    await item.waitFor(workspace => workspace.activeWorkflow?.state === "finished");
+    const failed = await item.post(`/workflows/${receipt.sessionId}`, undefined, WorkflowDetailSchema);
+    const task = failed.tasks.find(task => task.kind === "discovery")!;
+    expect(task.state).toBe("failed");
+    expect(item.requests()).toHaveLength(10);
+    expect(item.searches).toHaveLength(9);
+    const originalSearches = item.searches.map(search => z.object({ query: z.string() }).parse(search).query);
+    const originalRunId = (await item.workspace()).latestResearchRun!.runId;
+    const db = new DatabaseClient(item.dbPath);
+    try {
+      const originalContract = db.db.prepare("SELECT contract_sha256 FROM workflow_sessions WHERE id = ?").get(receipt.sessionId);
+      const failedAttempt = db.db.prepare("SELECT * FROM generation_attempts WHERE id = ?").get(task.terminalAttemptId!);
+      const savedStages = item.requests().slice(0, 9).map(request => request.workOrder.stage);
+      const retry = { threadId, sessionId: receipt.sessionId, clientCommandId: "retry-output-limit",
+        expectedRevision: failed.summary.revision, action: { type: "retry-task", taskId: task.id,
+          expectedTerminalAttemptId: task.terminalAttemptId, acknowledgeUnknownCompletion: false } };
+      const retried = await item.post("/workflows/command", retry, WorkflowAdmissionReceiptSchema);
+      expect(retried.sessionId).toBe(receipt.sessionId);
+      await item.waitFor(workspace => workspace.activeWorkflow?.state === "waiting-for-review");
+      const recoveredSearches = item.searches.map(search => z.object({ query: z.string() }).parse(search).query);
+      for (const query of originalSearches) expect(recoveredSearches.filter(saved => saved === query)).toHaveLength(1);
+      expect(item.requests().slice(10).some(request => savedStages.includes(request.workOrder.stage))).toBe(false);
+      expect(item.requests()[10]!.workOrder.stage).toBe(item.requests()[9]!.workOrder.stage);
+      expect(item.requests().every(request => request.model.modelId === model.modelId && request.reasoningEffort === "xhigh")).toBe(true);
+      expect(db.db.prepare("SELECT contract_sha256 FROM workflow_sessions WHERE id = ?").get(receipt.sessionId)).toEqual(originalContract);
+      expect(db.db.prepare("SELECT * FROM generation_attempts WHERE id = ?").get(task.terminalAttemptId!)).toEqual(failedAttempt);
+      expect(db.db.prepare("SELECT json_extract(output_refs_json, '$.runId') AS runId FROM workflow_work_items WHERE id = ?")
+        .get(task.id)).toEqual({ runId: originalRunId });
+    } finally { db.close(); }
+  }, 20_000);
+
   test("acknowledged discovery recovery reuses eight harvests and nine searches without replaying confirmed work", async () => {
     const item = await fixture({ mode: "workflow-checkpoint-recovery" });
     const threadId = await item.createThread("explore-market");

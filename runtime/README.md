@@ -59,6 +59,8 @@ Every request has a unique string or integer `id`. `runtime.initialize` must be 
 
 The `generation.start` payload contains a qualified `{ providerId, modelId }`, trusted `workOrder`, untrusted `evidence`, Scraply's `outputSchema`, and the explicit repair policy. Omit `deadlineMs` to wait for provider completion or cancellation, as research does. Explicit bounded callers can still supply a positive deadline. OpenAI generation streams have no local idle cutoff; transport errors and provider failures still terminate them. The immediate success response accepts the generation and echoes the compiler prompt identity. Later `generation.started`, `generation.completed`, `generation.failed`, or `generation.cancelled` events keep the start request ID. Terminal events retain per-attempt completion, usage, cost, latency, and provider request IDs when known; unknown accounting is never represented as zero.
 
+Output allowance failures use `output_limit`, separately from `output_invalid` schema failures. A provider token-limit result must not become an automatic schema-repair request. Scraply can explicitly retry the failed task while preserving completed discovery packets and its saved contract.
+
 The frozen app-facing TypeScript declarations and JSON examples live under `contracts/runtime/v1.1`. Protocol `1.0` was an unreleased draft and is rejected.
 
 OpenAI subscription requests must omit `maxOutputTokens`: its endpoint rejects `max_output_tokens` with HTTP 400. The adapter rejects an explicit ceiling locally rather than silently ignoring it. Deadlines and the runtime output-byte limit still apply, but they are not token or billing ceilings. Providers that support token ceilings retain them.

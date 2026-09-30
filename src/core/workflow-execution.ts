@@ -8,7 +8,7 @@ import { canonicalJson, sha256 } from "../shared/content-identity";
 import { deriveJsonSchema } from "../shared/json-schema";
 import { OpportunityExpansionOutputSchema } from "../shared/opportunity-exploration";
 import { SourceSchema } from "../shared/schemas";
-import { ClassifiedWorkflowV2ProblemKillOutputSchema, WorkflowV2QueryPlanOutputSchema, WorkflowV2FactorHarvestOutputSchema, WorkflowV2ProblemCandidatesOutputSchema, WorkflowV2ProblemKillOutputSchema, WorkflowV2SolutionsOutputSchema } from "../shared/structured-output-schemas";
+import { BoundedWorkflowV2FactorHarvestOutputSchema, FACTOR_EXPLANATION_CHARACTERS, ClassifiedWorkflowV2ProblemKillOutputSchema, WorkflowV2QueryPlanOutputSchema, WorkflowV2FactorHarvestOutputSchema, WorkflowV2ProblemCandidatesOutputSchema, WorkflowV2ProblemKillOutputSchema, WorkflowV2SolutionsOutputSchema } from "../shared/structured-output-schemas";
 import type { WorkflowV2DevelopmentContext } from "./development";
 import { resolveWorkflowV2Prompt, type ResolvedWorkflowV2Prompt } from "./prompts";
 import { WORKFLOW_V2_STAGE_IDS, WORKFLOW_V2_STAGE_REGISTRY, type WorkflowV2StageId } from "./stages";
@@ -109,12 +109,25 @@ export class WorkflowExecution {
       const stageId = id as WorkflowV2StageId;
       const stage = WORKFLOW_V2_STAGE_REGISTRY[stageId];
       const prompt = this.resolvePrompt(stageId);
+      const selectionId = selection.join(":") || null;
+      // Pin completed contracts, including a native result saved before its stage commit.
+      // Only unfinished extraction gets the new limits; completed work is never regenerated.
+      const completedFactor = stageId === "factor-harvest"
+        ? this.db.db.prepare(`SELECT request_json FROM generation_attempts
+            WHERE research_run_id = ? AND stage_key = ? AND status = 'completed'
+            ORDER BY terminal_at DESC LIMIT 1`).get(this.runId, original.stage) as { request_json: string } | undefined
+        : undefined;
+      const savedFactorSchema = stageId === "factor-harvest"
+        ? this.repository.findStageResult(this.runId, stageId, selectionId)?.schema
+          ?? (completedFactor ? (JSON.parse(completedFactor.request_json) as { jsonSchema: unknown }).jsonSchema : undefined)
+        : undefined;
+      const factorSchema = savedFactorSchema ? WorkflowV2FactorHarvestOutputSchema : BoundedWorkflowV2FactorHarvestOutputSchema;
       const factorLimit = stageId === "factor-harvest"
         ? Number((original.workOrder.inputs as { factorLimit?: unknown }).factorLimit)
         : Number.NaN;
       const requestSchema = stageId === "factor-harvest" && Number.isInteger(factorLimit) && factorLimit >= 0
-        ? WorkflowV2FactorHarvestOutputSchema.extend({
-            factors: WorkflowV2FactorHarvestOutputSchema.shape.factors.max(factorLimit),
+        ? factorSchema.extend({
+            factors: factorSchema.shape.factors.max(factorLimit),
           })
         // A saved run keeps its original prompt and schema so completed kill reviews can resume.
         : stageId === "problem-kill" && prompt.currentBundledSha256 !== resolveWorkflowV2Prompt("problem-kill").currentBundledSha256
@@ -124,13 +137,12 @@ export class WorkflowExecution {
         ...original,
         workOrder: { ...original.workOrder, instruction: prompt.text, inputs: { routing: original.workOrder.inputs, workflowVersion: 2 } },
         schema: requestSchema,
-        jsonSchema: deriveJsonSchema(requestSchema),
+        jsonSchema: savedFactorSchema ?? deriveJsonSchema(requestSchema),
       };
       if (this.disableRepair) request.repairPolicy = "disabled";
       if (original.model.providerId === "openai-subscription") delete request.maxOutputTokens;
       else request.maxOutputTokens = stage.maxOutputTokens;
       const context = { inputs: request.workOrder.inputs, evidence: request.evidence };
-      const selectionId = selection.join(":") || null;
       const evidence = request.evidence.map((item) => ({ sourceId: item.sourceId, content: item.content }));
       const previous = this.repository.getStageResumeState({
         researchRunId: this.runId,
@@ -167,14 +179,14 @@ export class WorkflowExecution {
       }
       if (stageId === "factor-harvest") {
         for (const factor of WorkflowV2FactorHarvestOutputSchema.parse(output).factors) {
-          this.factorUncertainty.set(factorIdentity(factor), factor.uncertainty);
+          this.factorUncertainty.set(factorIdentity(factor), boundedExcerpt(factor.uncertainty, FACTOR_EXPLANATION_CHARACTERS));
         }
       }
       // Discovery keeps its deterministic search and quote checks while retaining v2 evidence labels.
       let adapted: unknown = output;
       if (stageId === "query-plan") adapted = { queries: WorkflowV2QueryPlanOutputSchema.parse(output).queries };
       if (stageId === "factor-harvest") adapted = {
-        factors: WorkflowV2FactorHarvestOutputSchema.parse(output).factors.map((factor) => "sourceRole" in factor ? factor : {
+        factors: WorkflowV2FactorHarvestOutputSchema.parse(output).factors.map(compactFactorExplanations).map((factor) => "sourceRole" in factor ? factor : {
           ...factor,
           sourceRole: "unknown" as const,
           audienceFit: "unknown" as const,
@@ -230,7 +242,7 @@ export class WorkflowExecution {
         const parsed = WorkflowV2FactorHarvestOutputSchema.safeParse(JSON.parse(row.output_json));
         if (!parsed.success) continue;
         const factorLimit = Number((request.workOrder.inputs as { routing?: { factorLimit?: unknown } }).routing?.factorLimit);
-        const matchingFactors = parsed.data.factors.filter((factor) => sourceIds.has(factor.sourceId));
+        const matchingFactors = parsed.data.factors.filter((factor) => sourceIds.has(factor.sourceId)).map(compactFactorExplanations);
         const factors = Number.isInteger(factorLimit) && factorLimit >= 0
           ? matchingFactors.slice(0, factorLimit)
           : matchingFactors;
@@ -303,9 +315,9 @@ export class WorkflowExecution {
       source: sources.get(sourceId),
       factors: base.factors.filter((factor) => factor.sourceId === sourceId).map((factor) => ({
         ...factor,
-        uncertainty: factor.uncertainty
+        uncertainty: boundedExcerpt(factor.uncertainty
           ?? uncertaintyByFactor.get(`${factor.sourceId}\u0000${factor.subject.trim()}\u0000${factor.quote.trim()}`)
-          ?? "Not recorded",
+          ?? "Not recorded", FACTOR_EXPLANATION_CHARACTERS),
       })),
     });
     const priorProjectMechanisms = this.priorProjectMechanisms();
@@ -522,6 +534,12 @@ function recoverableFactorPartitionSourceIds(
     const properties = jsonSchema.properties as Record<string, unknown> | undefined;
     const factors = properties?.factors as Record<string, unknown> | undefined;
     if (factors) delete factors.maxItems;
+    // This specific tightening is compatible with cached observations after compacting notes.
+    // Every other schema, model, prompt, and evidence change still prevents partition reuse.
+    const historicalSchema = deriveJsonSchema(WorkflowV2FactorHarvestOutputSchema);
+    if (canonicalJson(jsonSchema) === canonicalJson(deriveJsonSchema(BoundedWorkflowV2FactorHarvestOutputSchema))) {
+      Object.assign(jsonSchema, historicalSchema);
+    }
     const evidence = structuredClone(value.evidence) as unknown;
     if (Array.isArray(evidence)) {
       const partition = evidence[0] as { sourceId?: unknown; content?: unknown } | undefined;
@@ -559,6 +577,15 @@ function boundedExcerpt(value: string, maxCharacters: number): string {
   const characters = Array.from(normalized);
   if (characters.length <= maxCharacters) return normalized;
   return `${characters.slice(0, maxCharacters - 1).join("")}…`;
+}
+
+function compactFactorExplanations(factor: ReturnType<typeof WorkflowV2FactorHarvestOutputSchema.parse>["factors"][number]) {
+  return {
+    ...factor,
+    uncertainty: boundedExcerpt(factor.uncertainty, FACTOR_EXPLANATION_CHARACTERS),
+    ...("demandEvidenceUncertainty" in factor
+      ? { demandEvidenceUncertainty: boundedExcerpt(factor.demandEvidenceUncertainty, FACTOR_EXPLANATION_CHARACTERS) } : {}),
+  };
 }
 
 function uniqueStrings(values: string[]): string[] {
