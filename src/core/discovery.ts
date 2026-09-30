@@ -27,6 +27,7 @@ import {
 import { loadPrompt } from "./prompts";
 import { applyProblemFactorAssessments } from "./problem-evidence";
 import type { ResearchArea, ResearchFrame } from "../shared/research-frame";
+import { filterRoutedSources, isContentFarm, routeSearchOptions, routingLanguages, searchRoutes, vendorDominatedDomains, type SourceRoutingContext } from "../providers/source-routes";
 
 export {
   DEFAULT_PROBLEM_CANDIDATE_LIMIT,
@@ -39,7 +40,13 @@ export {
 export type { DiscoveryDepth };
 export type HarvestMode = "domain" | "audience";
 type QueryIntent = "firsthand-experience" | "measured-behavior" | "current-alternative" | "buying-signal" | "contrary-evidence";
-export interface PlannedQuery { query: string; intent: QueryIntent | "unclassified" }
+export interface PlannedQuery {
+  query: string;
+  intent: QueryIntent | "unclassified";
+  uncertainty?: string;
+  intendedSourceType?: string;
+  translations?: Array<{ language: string; query: string }>;
+}
 
 export const FACTOR_SUBJECT_MAX_CHARACTERS = 160;
 export const FACTOR_BEHAVIOR_MAX_CHARACTERS = 280;
@@ -105,6 +112,7 @@ export interface DiscoveryDependencies {
   smallHarvestBatches?: boolean;
   assessProblemAudience?: boolean;
   audienceSearch?: Pick<SearchOptions, "includeDomains" | "startPublishedDate"> & { category?: ExaCategory };
+  sourceRouting?: SourceRoutingContext;
   candidateLimit?: number;
   /** Older runs retain their ordering so completed verdict identities remain reusable. */
   rankCandidates?: boolean;
@@ -138,10 +146,11 @@ export async function harvestFactors(
   const rejections: FactorRejection[] = [];
   const extracted: Record<HarvestMode, number> = { domain: 0, audience: 0 };
 
-  // Hold one planned search in reserve. Run it only when the returned evidence mix still lacks
-  // firsthand or measured intended-buyer evidence, without exceeding the configured search count.
+  // Hold one planned question in reserve for a missing qualifying observation.
   for (const mode of ["domain", "audience"] as const) {
-    const queries = await planQueries(scope, mode, dependencies.queryCountByMode?.[mode] ?? depthConfig.queriesPerMode, dependencies);
+    const queryCount = dependencies.queryCountByMode?.[mode] ?? depthConfig.queriesPerMode;
+    if (queryCount < 1) continue;
+    const queries = await planQueries(scope, mode, queryCount, dependencies);
     const reserveCount = dependencies.workflowVersion === 2 && queries.length > 1 ? 1 : 0;
     const initialQueries = queries.slice(0, queries.length - reserveCount);
     const reservedQueries = queries.slice(queries.length - reserveCount);
@@ -205,9 +214,23 @@ export async function harvestFactors(
           if (acceptedForMode >= targetAccepted) break;
         }
       }
+      if (dependencies.sourceRouting) {
+        const excluded = vendorDominatedDomains(rawFactors.map((factor) => ({
+          sourceRole: factor.sourceRole ?? "unknown", source: sourceById.get(factor.sourceId)!,
+        })));
+        const previous = new Set(dependencies.sourceRouting.excludedFirsthandDomains ?? []);
+        for (const domain of excluded) if (!previous.has(domain)) {
+          dependencies.onProjection?.(`Firsthand routes will exclude ${domain}: at least 80% of its observations are vendor or illustration content.`);
+        }
+        dependencies.sourceRouting.excludedFirsthandDomains = excluded;
+      }
     };
     await harvest(modeSources, modeFactorLimit - reservedFactorCapacity);
     if (reservedQueries.length > 0 && !hasIntendedBuyerObservation(rawFactors.filter((factor) => factor.harvestMode === mode))) {
+      if (dependencies.sourceRouting && initialQueries.some((query) => query.intent === "firsthand-experience")) {
+        dependencies.sourceRouting.previousFirsthandRoute = searchRoutes("firsthand-experience", dependencies.sourceRouting)[1]!;
+        dependencies.onProjection?.("No qualifying firsthand observation was found. The next firsthand question uses a different route.");
+      }
       dependencies.onPlannedQueries?.(mode, reservedQueries);
       const additional = dedupeSources(
         await searchQueries(reservedQueries, mode, depthConfig.searchResultsPerQuery, dependencies),
@@ -329,9 +352,13 @@ export async function discoverProblems(
     const searched = await dependencies.search.search(buildKillQuery(candidate.statement), {
       numResults: DISCOVERY_DEPTHS[dependencies.depth ?? "standard"].searchResultsPerQuery,
       maxCharacters: SOURCE_MAX_CHARACTERS,
+      ...(dependencies.sourceRouting ? {
+        ...routeSearchOptions("contrary", dependencies.sourceRouting),
+        legacySearchOptions: { numResults: DISCOVERY_DEPTHS[dependencies.depth ?? "standard"].searchResultsPerQuery, maxCharacters: SOURCE_MAX_CHARACTERS },
+      } : {}),
       ...(dependencies.signal ? { signal: dependencies.signal } : {}),
     });
-    const { all: candidateSources, fresh } = resolveSources(searched, sourcesByUrl, dependencies.onProjection, dependencies.idFactory);
+    const { all: candidateSources, fresh } = resolveSources(searched, sourcesByUrl, dependencies.onProjection, dependencies.idFactory, dependencies.sourceRouting?.preserveHistoricalSources);
     for (const source of fresh) {
       sourcesByUrl.set(source.canonicalUrl, source);
       killSources.push(source);
@@ -555,11 +582,15 @@ async function planQueries(
         harvestMode: mode,
         queryCount: count,
         ...(dependencies.guided ? { queryCountIsGuidance: true, researchDepth: dependencies.depth ?? "standard" } : {}),
+        ...(dependencies.sourceRouting?.goalKind ? { goalKind: dependencies.sourceRouting.goalKind } : {}),
+        ...(dependencies.sourceRouting?.languages?.length ? { languages: routingLanguages(dependencies.sourceRouting.languages) } : {}),
         ...(dependencies.researchAngles?.length ? { angleAssignments: dependencies.researchAngles.filter((angle) =>
           mode === "domain"
             ? ["current-alternative", "contrary-evidence", "measured-behavior"].includes(angle.sourceClass)
             : ["firsthand-experience", "buying-signal", "measured-behavior"].includes(angle.sourceClass)) } : {}),
-        sourcePolicy: mode === "audience"
+        sourcePolicy: dependencies.sourceRouting && !dependencies.audienceSearch
+          ? { routing: "intent", pairedFirsthand: true }
+          : mode === "audience"
           ? {
               includeDomains: dependencies.audienceSearch?.includeDomains ?? DEFAULT_AUDIENCE_DOMAINS,
               ...(dependencies.audienceSearch?.startPublishedDate
@@ -575,9 +606,30 @@ async function planQueries(
   );
   const planned = response.queries.map((item): PlannedQuery => typeof item === "string"
     ? { query: item.trim(), intent: "unclassified" }
-    : { query: item.query.trim(), intent: "intent" in item ? item.intent as QueryIntent : "unclassified" });
+    : { query: item.query.trim(), intent: "intent" in item ? item.intent as QueryIntent : "unclassified",
+      uncertainty: item.uncertainty, intendedSourceType: item.intendedSourceType,
+      ...("translations" in item && item.translations ? { translations: item.translations } : {}),
+    });
   const queries = [...new Map(planned.filter((item) => item.query)
     .map((item) => [normalizeSearchQuery(item.query), item])).values()];
+  const marketGoal = dependencies.sourceRouting?.goalKind === undefined || dependencies.sourceRouting.goalKind === "market-opportunity";
+  if (!marketGoal && queries.some((query) => query.intent === "buying-signal")) {
+    throw new ProviderFailure("schema", "Buying-signal searches require a market goal.", false);
+  }
+  for (const query of queries) {
+    if (query.intent !== "firsthand-experience" && query.intent !== "measured-behavior") continue;
+    const languages = routingLanguages(dependencies.sourceRouting?.languages).filter((language) => language !== "en");
+    if ((query.translations ?? []).some((translation) => !languages.includes(translation.language))) {
+      throw new ProviderFailure("schema", "Query planner supplied an unrequested language.", false);
+    }
+    for (const language of languages) {
+      const translations = query.translations?.filter((translation) => translation.language === language && translation.query.trim());
+      if (translations?.length !== 1) throw new ProviderFailure("schema", `Query planner must supply one ${language} translation for each firsthand or measured question.`, false);
+      if (normalizeSearchQuery(translations[0]!.query) === normalizeSearchQuery(query.query)) {
+        throw new ProviderFailure("schema", `The ${language} query must be translated, rather than repeating its English wording.`, false);
+      }
+    }
+  }
   if (queries.length === 0 || (!dependencies.guided && queries.length < count)) {
     throw new ProviderFailure(
       "schema",
@@ -588,8 +640,8 @@ async function planQueries(
   if (dependencies.workflowVersion === 2 && !dependencies.researchAngles?.length
     && queries.every((item) => item.intent !== "unclassified")) {
     const intents = new Set(queries.map((item) => item.intent));
-    const hasBuyerIntent = intents.has("firsthand-experience") || intents.has("buying-signal");
-    if (!hasBuyerIntent || intents.size < Math.min(3, dependencies.guided ? queries.length : count)) {
+    const hasRelevantIntent = intents.has("firsthand-experience") || (marketGoal ? intents.has("buying-signal") : intents.has("measured-behavior"));
+    if (!hasRelevantIntent || intents.size < Math.min(3, dependencies.guided ? queries.length : count)) {
       throw new ProviderFailure("schema", "Query planner did not return enough distinct evidence intents", false);
     }
   }
@@ -615,14 +667,32 @@ async function searchQueries(
     dependencies.signal?.throwIfAborted();
     // Wait for both reservations to settle before ending a failed batch. Flatten in query order
     // so response timing cannot change deduplication, source IDs, or the evidence shown downstream.
-    const batch = await Promise.allSettled(queries.slice(index, index + concurrency).map(({ query }) => dependencies.search.search(query, {
-      numResults: resultsPerQuery,
-      maxCharacters: SOURCE_MAX_CHARACTERS,
-      ...(mode === "audience"
-        ? { includeDomains: DEFAULT_AUDIENCE_DOMAINS, ...dependencies.audienceSearch }
-        : {}),
-      ...(dependencies.signal ? { signal: dependencies.signal } : {}),
-    })));
+    const batch = await Promise.allSettled(queries.slice(index, index + concurrency).map(async (planned) => {
+      const legacySearchOptions = {
+        numResults: resultsPerQuery,
+        maxCharacters: SOURCE_MAX_CHARACTERS,
+        ...(mode === "audience" ? { includeDomains: DEFAULT_AUDIENCE_DOMAINS, ...dependencies.audienceSearch } : {}),
+      };
+      if (!dependencies.sourceRouting) return dependencies.search.search(planned.query, {
+        ...legacySearchOptions, ...(dependencies.signal ? { signal: dependencies.signal } : {}),
+      });
+      const sources: Source[] = [];
+      const languages = planned.intent === "firsthand-experience" || planned.intent === "measured-behavior"
+        ? routingLanguages(dependencies.sourceRouting.languages) : ["en"];
+      for (const language of languages) for (const route of searchRoutes(planned.intent, dependencies.sourceRouting)) {
+        const query = language === "en" ? planned.query : planned.translations!.find((translation) => translation.language === language)!.query.trim();
+        const routed = routeSearchOptions(route, { ...dependencies.sourceRouting, languages: [language] }, planned.intent === "firsthand-experience");
+        // English is supplied as the base query; each other language uses the model's validated translation.
+        if (routed.languages) routed.languages = [language];
+        dependencies.onProjection?.(`Searching ${route} in ${language} for ${planned.intent}: ${query}`);
+        const result = await dependencies.search.search(query, {
+          numResults: resultsPerQuery, maxCharacters: SOURCE_MAX_CHARACTERS, ...routed,
+          legacySearchOptions, ...(dependencies.signal ? { signal: dependencies.signal } : {}),
+        });
+        sources.push(...(dependencies.sourceRouting.preserveHistoricalSources ? result : filterRoutedSources(result, routed)));
+      }
+      return sources;
+    }));
     for (const [offset, result] of batch.entries()) {
       const planned = queries[index + offset]!;
       dependencies.onQueryResult?.(mode, planned, result.status === "fulfilled" ? result.value : null,
@@ -632,7 +702,7 @@ async function searchQueries(
     const failure = batch.find((result) => result.status === "rejected");
     if (failure?.status === "rejected") throw failure.reason;
   }
-  return resolveSources(gathered, new Map(), dependencies.onProjection, dependencies.idFactory).fresh;
+  return resolveSources(gathered, new Map(), dependencies.onProjection, dependencies.idFactory, dependencies.sourceRouting?.preserveHistoricalSources).fresh;
 }
 
 export function normalizeSearchQuery(query: string): string {
@@ -648,11 +718,16 @@ function resolveSources(
   known: Map<string, HarvestedSource>,
   onSkipped?: (message: string) => void,
   idFactory: () => string = randomUUID,
+  preserveHistoricalSources = false,
 ): { all: HarvestedSource[]; fresh: HarvestedSource[] } {
   const all: HarvestedSource[] = [];
   const fresh: HarvestedSource[] = [];
   const seen = new Set<string>();
   for (const source of sources) {
+    if (!preserveHistoricalSources && isContentFarm(source.url)) {
+      onSkipped?.(`Excluded content-farm source before reading: ${source.url}`);
+      continue;
+    }
     const canonicalUrl = safeCanonicalizeUrl(source.url);
     if (!canonicalUrl) {
       onSkipped?.(`Skipped a search result with an unparsable URL: ${source.url}`);
@@ -795,9 +870,13 @@ export async function harvestEvidenceFollowUp(
   const searched = await dependencies.search.search(query, {
     numResults: DISCOVERY_DEPTHS[dependencies.depth ?? "standard"].searchResultsPerQuery,
     maxCharacters: SOURCE_MAX_CHARACTERS,
+    ...(dependencies.sourceRouting ? {
+      ...routeSearchOptions("open-web", dependencies.sourceRouting),
+      legacySearchOptions: { numResults: DISCOVERY_DEPTHS[dependencies.depth ?? "standard"].searchResultsPerQuery, maxCharacters: SOURCE_MAX_CHARACTERS },
+    } : {}),
     ...(dependencies.signal ? { signal: dependencies.signal } : {}),
   });
-  const sources = resolveSources(searched, new Map(), dependencies.onProjection, dependencies.idFactory).fresh;
+  const sources = resolveSources(searched, new Map(), dependencies.onProjection, dependencies.idFactory, dependencies.sourceRouting?.preserveHistoricalSources).fresh;
   const factors: HarvestedFactor[] = [];
   const rejections: FactorRejection[] = [];
   if (sources.length > 0) {

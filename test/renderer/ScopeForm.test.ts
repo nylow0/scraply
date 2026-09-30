@@ -9,6 +9,17 @@ import { DEFAULT_RUN_CONFIG, RunConfigSchema, modelRefKey } from "../../src/shar
 import type { WorkflowLaunchDraft } from "../../src/shared/workflow-contracts";
 
 describe("ScopeForm search provider selection", () => {
+  test("defaults a new setup to automatic when both providers are connected", async () => {
+    const state = workspace();
+    state.scope = null;
+    state.runConfig = null;
+    state.validation.exa = { valid: true };
+    state.validation.perplexity = { valid: true };
+    const view = render(ScopeForm, { workspace: state, busy: false, onSave: vi.fn(), onStart: vi.fn(), onRetry: vi.fn() });
+    await waitFor(() => expect((view.getByLabelText("Search provider") as HTMLSelectElement).value).toBe("auto"));
+    expect(view.queryByLabelText("Search coverage")).toBeNull();
+    expect((view.getByRole("button", { name: "Discover problems" }) as HTMLButtonElement).disabled).toBe(false);
+  });
   test("uses the connected provider for a new setup after Perplexity-only onboarding", async () => {
     const storageKey = "scraply.research-defaults.v1";
     const previous = localStorage.getItem(storageKey);
@@ -268,24 +279,22 @@ describe("ScopeForm search provider selection", () => {
     expect(RunConfigSchema.parse(onSave.mock.calls[1]?.[1]).explorationPurpose).toBe("auto");
   });
 
-  test("persists advanced search defaults for new research and preserves saved setup choices", async () => {
+  test("loads older coverage defaults without offering the retired source setting", async () => {
     const storageKey = "scraply.research-defaults.v1";
     const previous = localStorage.getItem(storageKey);
     try {
-      localStorage.removeItem(storageKey);
+      localStorage.setItem(storageKey, JSON.stringify({ model: DEFAULT_RUN_CONFIG.model, searchProvider: "exa", audienceSourcePolicy: "communities" }));
       const settingsView = renderSettings({ workspace: workspace() });
       await fireEvent.click(settingsView.getByRole("button", { name: "Research defaults" }));
-      const coverage = settingsView.getByLabelText("Default search coverage") as HTMLSelectElement;
-      expect(coverage.value).toBe("web");
-      expect(coverage.selectedOptions[0]?.textContent).toBe("Web and communities");
-      await fireEvent.change(coverage, { target: { value: "communities" } });
+      expect(settingsView.queryByLabelText("Default search coverage")).toBeNull();
       await fireEvent.change(settingsView.getByLabelText("Default research depth"), { target: { value: "deep" } });
       await fireEvent.click(settingsView.getByRole("button", { name: "Save defaults" }));
       settingsView.unmount();
 
       const reopened = renderSettings({ workspace: workspace() });
       await fireEvent.click(reopened.getByRole("button", { name: "Research defaults" }));
-      expect((reopened.getByLabelText("Default search coverage") as HTMLSelectElement).value).toBe("communities");
+      expect(reopened.queryByLabelText("Default search coverage")).toBeNull();
+      expect(JSON.parse(localStorage.getItem(storageKey)!).audienceSourcePolicy).toBeUndefined();
       expect((reopened.getByLabelText("Default research depth") as HTMLSelectElement).value).toBe("deep");
       reopened.unmount();
 
@@ -294,16 +303,17 @@ describe("ScopeForm search provider selection", () => {
       state.validation.exa = { valid: true };
       const onSave = vi.fn().mockResolvedValue(undefined);
       const view = render(ScopeForm, { workspace: state, busy: false, onSave, onStart: vi.fn(), onRetry: vi.fn() });
-      expect((view.getByLabelText("Search coverage") as HTMLSelectElement).value).toBe("communities");
+      expect(view.queryByLabelText("Search coverage")).toBeNull();
       expect((view.getByLabelText("Research depth") as HTMLSelectElement).value).toBe("deep");
       await fireEvent.input(view.getByLabelText(/What do you want to explore/), { target: { value: "Repair shop delays" } });
       await fireEvent.click(view.getByRole("button", { name: "Discover problems" }));
       await waitFor(() => expect(onSave).toHaveBeenCalledTimes(1));
-      expect(RunConfigSchema.parse(onSave.mock.calls[0]?.[1])).toMatchObject({ audienceSourcePolicy: "communities", discoveryDepth: "deep" });
+      expect(RunConfigSchema.parse(onSave.mock.calls[0]?.[1])).toMatchObject({ discoveryDepth: "deep" });
+      expect(RunConfigSchema.parse(onSave.mock.calls[0]?.[1]).audienceSourcePolicy).toBeUndefined();
       view.unmount();
 
       const savedView = render(ScopeForm, { workspace: workspace(), busy: false, onSave, onStart: vi.fn(), onRetry: vi.fn() });
-      expect((savedView.getByLabelText("Search coverage") as HTMLSelectElement).value).toBe("web");
+      expect(savedView.queryByLabelText("Search coverage")).toBeNull();
       expect((savedView.getByLabelText("Research depth") as HTMLSelectElement).value).toBe("standard");
     } finally {
       if (previous === null) localStorage.removeItem(storageKey);
@@ -939,7 +949,7 @@ describe("settings surfaces preserve launch configuration", () => {
     if (researchMode === "explore-market") {
       await fireEvent.change(view.getByLabelText("Research depth"), { target: { value: "deep" } });
       await fireEvent.click(view.getByRole("button", { name: "Advanced settings" }));
-      await fireEvent.change(view.getByLabelText("Search coverage"), { target: { value: "communities" } });
+      expect(view.queryByLabelText("Search coverage")).toBeNull();
       await fireEvent.change(view.getByLabelText("Search provider"), { target: { value: "perplexity" } });
     }
     if (researchMode === "known-problem") await fireEvent.click(view.getByRole("button", { name: "Advanced settings" }));
@@ -961,7 +971,7 @@ describe("settings surfaces preserve launch configuration", () => {
       brief: researchMode === "known-problem" ? "Approvals take too long" : "Parts sourcing",
       scope: { title: "Repair shops", audience: "Shops", domain: "Parts sourcing", riskEvaluationCriteria: "Low setup effort", offLimits: ["No hardware", "No migration"] },
       runConfig: { ...DEFAULT_RUN_CONFIG, ideaCount: 5, maxRunMinutes: DEFAULT_RUN_CONFIG.maxRunMinutes, researchMode, knownProblem: researchMode === "known-problem" ? "Approvals take too long" : "",
-        ...(researchMode === "explore-market" ? { discoveryDepth: "deep", audienceSourcePolicy: "communities", searchProvider: "perplexity" } : {}) },
+        ...(researchMode === "explore-market" ? { discoveryDepth: "deep", searchProvider: "perplexity" } : {}) },
       limits: { enforced: false },
       instructions: { research: "Research context", ideas: "Generate carefully", review: "Check evidence" },
       ...(mode === "vibe" ? { ideas: { model: ideasModel, reasoningEffort: "high", reviewModel: ideasModel, reviewReasoningEffort: "high" } } : {}),

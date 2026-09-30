@@ -106,7 +106,9 @@ if (!sessionId) {
   if (before.activeWorkflow && before.activeWorkflow.state !== "finished" && before.activeWorkflow.state !== "waiting-for-review") {
     throw new Error("The development project already has an active workflow. Do not start another paid verification concurrently.");
   }
-  if (!before.validation.native.connected || !before.validation[contract.runConfig.searchProvider].valid) {
+  const searchReady = contract.runConfig.searchProvider === "auto"
+    ? before.validation.exa.valid || before.validation.perplexity.valid : before.validation[contract.runConfig.searchProvider].valid;
+  if (!before.validation.native.connected || !searchReady) {
     throw new Error("Connect the existing OpenAI account and selected search provider in development before verification.");
   }
   const created = await invoke(IPC_CHANNELS.CREATE_THREAD, z.object({ workspace: WorkspaceStateSchema }), {

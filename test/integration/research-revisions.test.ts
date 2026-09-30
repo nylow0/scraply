@@ -480,12 +480,12 @@ describe("research snapshot materialization", () => {
       type: "request-research", kind: "new-question", question: "What changed in buyer approval?",
       baseSnapshotId: snapshotId,
       model: { providerId: "openai-subscription", modelId: "test-model" }, reasoningEffort: "medium",
-      allowance: { maxModelCalls: 12, maxSearches: 2, maxMinutes: 10 },
+      allowance: { maxModelCalls: 12, maxSearches: 4, maxMinutes: 10 },
     }));
     expect(continued.session.mode).toBe("babysit");
     expect(continued.session.purpose).toBe("research-followup");
     expect(continued.session.contract).toMatchObject({ mode: "babysit", purpose: "research-followup",
-      limits: { maxModelCalls: 12, maxSearches: 2, maxMinutes: 10 } });
+      limits: { maxModelCalls: 12, maxSearches: 4, maxMinutes: 10 } });
     expect(continued.session.remainingMs).toBe(10 * 60_000);
     expect(repository.getSession(sessionId)).toEqual(original);
     const linkedId = continued.session.activeSnapshotId!;
@@ -538,7 +538,7 @@ describe("research snapshot materialization", () => {
       type: "request-research", kind: "redo", question: "Find newer evidence",
       targetFindingId: original.activeSnapshotId ? repository.getSnapshot(original.activeSnapshotId)!.selection.problemIds[0]! : "",
       baseSnapshotId: snapshotId, model: { providerId: "openai-subscription", modelId: "test-model" },
-      reasoningEffort: "medium", allowance: { maxModelCalls: 5, maxSearches: 2, maxMinutes: 10 },
+      reasoningEffort: "medium", allowance: { maxModelCalls: 6, maxSearches: 4, maxMinutes: 10 },
     }));
     const second = client.immediateTransaction(() => {
       repository.updateWorkItem(continued.workItemId, "running");
@@ -634,7 +634,7 @@ describe("research snapshot materialization", () => {
         type: "request-research", kind: "redo", question: "Check newer evidence",
         targetFindingId: oldProblemId, baseSnapshotId: snapshotId,
         model: { providerId: "openai-subscription", modelId: "test-model" }, reasoningEffort: "medium",
-        allowance: { maxModelCalls: 5, maxSearches: 2, maxMinutes: 10 },
+        allowance: { maxModelCalls: 6, maxSearches: 4, maxMinutes: 10 },
       }));
     client.immediateTransaction(() => {
       repository.updateWorkItem(continued.workItemId, "running");
@@ -671,7 +671,7 @@ describe("research snapshot materialization", () => {
       repository.getSession(sessionId)!.revision, {
         type: "request-research", kind: "new-question", question: "Any new buying evidence?",
         baseSnapshotId: snapshotId, model: { providerId: "openai-subscription", modelId: "test-model" },
-        reasoningEffort: "medium", allowance: { maxModelCalls: 5, maxSearches: 2, maxMinutes: 10 },
+        reasoningEffort: "medium", allowance: { maxModelCalls: 6, maxSearches: 4, maxMinutes: 10 },
       }));
     saveFinding(client, "run-new", "new-apply-finding", "new-apply-source", "new-apply-factor", "Buyers approved a new workflow");
     client.immediateTransaction(() => {

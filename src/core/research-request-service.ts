@@ -95,7 +95,7 @@ export class ResearchRequestService {
     const allocation = researchSearchAllocation(draft.allowance.maxSearches);
     const minimum = action.kind === "reevaluate"
       ? { modelCalls: 1, searches: 0 }
-      : { modelCalls: allocation.modelCalls, searches: 2 };
+      : { modelCalls: allocation.modelCalls, searches: 4 };
     if (draft.allowance.maxModelCalls < minimum.modelCalls || draft.allowance.maxSearches < minimum.searches
       || draft.allowance.maxMinutes < 5) {
       throw new AppError("BUDGET_TOO_SMALL",

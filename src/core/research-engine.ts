@@ -11,7 +11,8 @@ import { OpportunityExplorationRepository } from "../db/repositories/opportunity
 import { WorkflowV2Repository } from "../db/repositories/workflow-v2";
 import { WorkflowRepository } from "../db/repositories/workflows";
 import { ResearchFrameRepository } from "../db/repositories/research-frames";
-import type { SearchClient, SearchOptions, SearchProvider } from "../providers/search";
+import type { SearchClient, SearchOptions, SearchProvider, SearchProviderChoice } from "../providers/search";
+import { chooseSearchProvider, filterRoutedSources } from "../providers/source-routes";
 import { ProviderFailure, type GenerationMetadata, type StructuredModelClient, type StructuredStageRequest } from "../providers/structured";
 import { AppError } from "../shared/errors";
 import { WorkflowLaunchContractSchema } from "../shared/workflow-contracts";
@@ -53,6 +54,7 @@ export interface ResearchEngineOptions {
   modelClients?: Partial<Record<string, StructuredModelClient>>;
   modelScheduler?: WorkflowModelScheduler;
   searchClients?: Partial<Record<SearchProvider, SearchClient>>;
+  searchReady?: () => Partial<Record<SearchProvider, boolean>>;
   onEvent: (event: ResearchEvent) => void;
 }
 
@@ -147,7 +149,12 @@ export class ResearchEngine {
       ? scheduledModelClient(client, this.options.modelScheduler, threadId) : client;
   }
 
-  workflowSearchClient(provider: SearchProvider): SearchClient {
+  workflowSearchClient(choice: SearchProviderChoice): SearchClient {
+    const readiness = this.options.searchReady?.();
+    const provider = chooseSearchProvider(choice, {
+      exa: Boolean(this.options.searchClients?.exa) && readiness?.exa !== false,
+      perplexity: Boolean(this.options.searchClients?.perplexity) && readiness?.perplexity !== false,
+    });
     const client = this.options.searchClients?.[provider];
     if (!client) throw new AppError("conflict", `Search provider ${provider} is unavailable`);
     return client;
@@ -807,13 +814,13 @@ export class ResearchEngine {
     const saved = repository.completedAttemptResult(threadId, stageKey);
     if (saved) return this.usableOpportunitySearchSources(threadId, SourceSchema.array().parse(saved));
     const config = this.savedRunConfig(threadId);
-    const search = this.options.searchClients?.[config.searchProvider];
+    const search = this.workflowSearchClient(config.searchProvider);
     if (!search) throw new Error(`Search provider ${config.searchProvider} is unavailable.`);
     const attempt = this.options.db.immediateTransaction(() => repository.prepareAttempt(threadId, {
       stageKey,
       stageName: "gap-search",
       input: { gapId: gap.id, evidenceNeeded: gap.evidenceNeeded, query: gap.searchQuery, numResults: 5 },
-      model: { providerId: config.searchProvider, modelId: "search", reasoningEffort: "bounded" },
+      model: { providerId: search.provider, modelId: "search", reasoningEffort: "bounded" },
       promptVersion: "opportunity-gap-search-v1",
       promptText: gap.searchQuery!,
     }));
@@ -2126,7 +2133,12 @@ export class ResearchEngine {
     const modelClient = this.instrumentedModel(active);
     const search = this.instrumentedSearch(active);
     const allocation = active.researchAllowance
-      ? researchSearchAllocation(active.researchAllowance.maxSearches, workflow.rankProblemCandidates ? active.config.discoveryDepth : "standard") : null;
+      ? researchSearchAllocation(active.researchAllowance.maxSearches,
+        workflow.rankProblemCandidates ? active.config.discoveryDepth : "standard", Boolean(workflow.read("source-routes"))) : null;
+    if (!workflow.read("source-routes") && !workflow.read("source-routing-legacy-notice")) {
+      workflow.save("source-routing-legacy-notice", { previousPolicy: active.config.audienceSourcePolicy ?? "web" });
+      this.progress(active, "This saved run now routes new searches by evidence intent. Completed searches and planner outputs are reused.");
+    }
     return {
       modelClient: workflow.discoveryClient(modelClient),
       search: workflow.search(search),
@@ -2154,8 +2166,14 @@ export class ResearchEngine {
       onProjection: (message: string) => this.progress(active, message),
       workflowVersion: 2 as const,
       prompt: (name: string) => workflow.resolvePrompt(name as WorkflowV2StageId).text,
-      // "web" is unrestricted, including community sites; only "communities" adds a domain filter.
-      audienceSearch: { includeDomains: active.config.audienceSourcePolicy === "communities" ? ["reddit.com", "news.ycombinator.com"] : [] },
+      sourceRouting: {
+        now: new Date(workflow.read<string>("source-route-start")!),
+        preserveHistoricalSources: !workflow.read("source-routes"),
+      },
+      // Old planner stage inputs must remain identical so its completed output can be reused.
+      ...(!workflow.read("source-routes") ? {
+        audienceSearch: { includeDomains: active.config.audienceSourcePolicy === "communities" ? ["reddit.com", "news.ycombinator.com"] : [] },
+      } : {}),
     };
   }
 
@@ -2336,12 +2354,20 @@ export class ResearchEngine {
     };
   }
 
-  private instrumentedSearch(active: ActiveRun): Pick<SearchClient, "provider" | "search"> {
-    const provider = active.config.searchProvider;
-    const client = this.options.searchClients?.[provider];
+  private instrumentedSearch(active: ActiveRun): Pick<SearchClient, "provider" | "search" | "providerForRoute"> {
+    const readiness = this.options.searchReady?.();
+    const available = {
+      exa: Boolean(this.options.searchClients?.exa) && readiness?.exa !== false,
+      perplexity: Boolean(this.options.searchClients?.perplexity) && readiness?.perplexity !== false,
+    };
+    const defaultProvider = active.config.searchProvider === "auto"
+      ? available.exa || available.perplexity ? chooseSearchProvider("auto", available) : "exa" : active.config.searchProvider;
     return {
-      provider,
+      provider: defaultProvider,
+      providerForRoute: (route) => chooseSearchProvider(active.config.searchProvider, available, route),
       search: async (query: string, options?: SearchOptions) => {
+        const provider = options?.provider ?? chooseSearchProvider(active.config.searchProvider, available, options?.route);
+        const client = this.options.searchClients?.[provider];
         active.abortController.signal.throwIfAborted();
         if (!client) throw new AppError("conflict", `Connect ${provider === "exa" ? "Exa" : "Perplexity"} before discovering problems.`);
         const remainingTaskSearches = this.remainingWorkflowTaskCalls(active, "search");
@@ -2349,7 +2375,7 @@ export class ResearchEngine {
           throw new AppError("BUDGET_TOO_SMALL", "This workflow task used its search reservation.");
         }
         if (active.researchAllowance
-          && this.ledger.countProviderCalls(active.runId, provider) >= active.researchAllowance.maxSearches) {
+          && this.ledger.countProviderCalls(active.runId, "exa") + this.ledger.countProviderCalls(active.runId, "perplexity") >= active.researchAllowance.maxSearches) {
           throw new AppError("BUDGET_TOO_SMALL", "This research request used its search allowance.");
         }
         this.enforceRunawayBackstop(active, provider, active.projectedSearches);
@@ -2357,8 +2383,12 @@ export class ResearchEngine {
           ?? this.ledger.reserve(active.runId, "search", provider, null, provider === "exa" ? 0.02 : 0.005);
         active.followUpSearchReservation = null;
         this.progress(active, `Searching ${provider === "exa" ? "Exa" : "Perplexity"}: ${query}`, "searching", null);
+        if (provider === "perplexity" && options?.category) this.progress(active,
+          `${options.route ?? "Search"} uses Perplexity without Exa's ${options.category} category; domain and date filters still apply.`, "searching", null);
+        if (provider === "exa" && options?.languages?.some((language) => language !== "en")) this.progress(active,
+          "Exa has no language filter. This leg relies on the language of its query.", "searching", null);
         try {
-          const sources = await client.search(query, options);
+          const sources = filterRoutedSources(await client.search(query, options), options);
           if (this.activeRuns.get(active.runId) === active) this.progress(active,
             `Found ${sources.length} ${sources.length === 1 ? "source" : "sources"} for: ${query}`, "searching", null);
           return sources;
@@ -2432,7 +2462,7 @@ export class ResearchEngine {
     if (stage) active.stage = stage;
     if (modelState !== undefined) active.modelState = modelState;
     const codexCalls = this.ledger.countProviderCalls(active.runId, active.config.model.providerId);
-    const searches = this.ledger.countProviderCalls(active.runId, active.config.searchProvider);
+    const searches = this.ledger.countProviderCalls(active.runId, "exa") + this.ledger.countProviderCalls(active.runId, "perplexity");
     const details = { message, codexCalls, searches, ...(active.stage ? { stage: active.stage } : {}),
       modelState: active.modelState ?? null, elapsedMs: Math.max(0, Date.now() - active.startedAt),
       operationStartedAt: new Date(active.startedAt).toISOString(), operationElapsedMs: Math.max(0, Date.now() - active.startedAt),
@@ -2504,7 +2534,8 @@ export class ResearchEngine {
     });
     const providerId = active.config.model.providerId;
     this.enforceRunawayBackstop(active, providerId, active.projectedCodexCalls);
-    this.enforceRunawayBackstop(active, active.config.searchProvider, active.projectedSearches);
+    const searchProvider = this.workflowSearchClient(active.config.searchProvider).provider;
+    this.enforceRunawayBackstop(active, searchProvider, active.projectedSearches);
     active.followUpModelReservation = this.ledger.reserve(
       active.runId, "evidence-follow-up", providerId, active.config.model.modelId, 0,
     );
@@ -2512,9 +2543,9 @@ export class ResearchEngine {
       active.followUpSearchReservation = this.ledger.reserve(
         active.runId,
         "evidence-follow-up-search",
-        active.config.searchProvider,
+        searchProvider,
         null,
-        active.config.searchProvider === "exa" ? 0.02 : 0.005,
+        searchProvider === "exa" ? 0.02 : 0.005,
       );
     } catch (error) {
       this.ledger.release(active.followUpModelReservation.id);
