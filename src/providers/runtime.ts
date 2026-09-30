@@ -6,6 +6,7 @@ import { z } from "zod";
 import {
   CredentialResultSchema, GenerationMetadataSchema, InitializeResultSchema, ModelMetadataSchema,
   PromptIdentitySchema, ProviderAccountSchema, RUNTIME_PROTOCOL_VERSION, RUNTIME_REQUIRED_CAPABILITIES,
+  MAX_REASONING_SUMMARY_BYTES,
   ServerEnvelopeSchema, type CredentialResult, type InitializeResult, type ModelMetadata,
   type RuntimeFailure, type RuntimeOperation, type ServerEnvelope,
 } from "../shared/runtime-protocol";
@@ -34,6 +35,7 @@ export interface RuntimeClientOptions {
   terminalGraceMs?: number;
   /** Defaults to one until a subscription account has been measured. */
   maxConcurrentGenerations?: number;
+  reasoningSummaries?: boolean;
 }
 
 interface PendingRequest {
@@ -44,6 +46,8 @@ interface PendingRequest {
 }
 interface PendingGeneration {
   requestId: string;
+  reasoningSummary: string;
+  lastSequence: number;
   timer: ReturnType<typeof setTimeout> | undefined;
   resolve: (value: { output: unknown; metadata: z.infer<typeof GenerationMetadataSchema> }) => void;
   reject: (error: Error) => void;
@@ -65,6 +69,7 @@ export class RuntimeClient implements StructuredModelClient {
   private writeTail: Promise<void> = Promise.resolve();
   private activeGenerationCount = 0;
   private generationCapacity: number;
+  private reasoningSummaries: boolean;
   private readonly generationWaiters: GenerationWaiter[] = [];
   private readonly pendingRequests = new Map<string, PendingRequest>();
   private readonly pendingGenerations = new Map<string, PendingGeneration>();
@@ -72,11 +77,20 @@ export class RuntimeClient implements StructuredModelClient {
 
   constructor(private readonly options: RuntimeClientOptions) {
     this.generationCapacity = validateGenerationCapacity(options.maxConcurrentGenerations ?? 1);
+    this.reasoningSummaries = options.reasoningSummaries ?? true;
   }
 
   setMaxConcurrentGenerations(maxActive: number): void {
     this.generationCapacity = validateGenerationCapacity(maxActive);
     this.admitGenerationWaiters();
+  }
+
+  setReasoningSummaries(enabled: boolean): void {
+    this.reasoningSummaries = enabled;
+  }
+
+  liveReasoningSummary(generationId: string): string | null {
+    return this.pendingGenerations.get(generationId)?.reasoningSummary || null;
   }
 
   setSessionInitializer(
@@ -197,7 +211,7 @@ export class RuntimeClient implements StructuredModelClient {
         const generation = this.pendingGenerations.get(request.generationId);
         if (generation?.requestId === requestId) void this.cancelGeneration(request.generationId, "Native runtime did not emit a terminal generation event");
       }, request.deadlineMs + this.terminalGraceMs);
-      this.pendingGenerations.set(request.generationId, { requestId, timer, resolve, reject });
+      this.pendingGenerations.set(request.generationId, { requestId, timer, resolve, reject, reasoningSummary: "", lastSequence: -1 });
     });
     const terminalOutcome = terminal.then(
       (value) => ({ status: "fulfilled" as const, value }),
@@ -223,6 +237,7 @@ export class RuntimeClient implements StructuredModelClient {
           evidence: request.evidence,
           outputSchema: request.jsonSchema,
           reasoningEffort: request.reasoningEffort,
+          reasoningSummaries: request.reasoningSummaries ?? this.reasoningSummaries,
           ...(request.maxOutputTokens ? { maxOutputTokens: request.maxOutputTokens } : {}),
           repairPolicy: request.repairPolicy,
           }, { id: requestId, ...(request.onDispatched ? { onDispatched: request.onDispatched } : {}) }),
@@ -445,9 +460,27 @@ export class RuntimeClient implements StructuredModelClient {
       const event = envelope.event;
       const generation = this.pendingGenerations.get(event.generationId);
       if (!generation || String(envelope.requestId) !== generation.requestId) return;
-      if (event.kind === "generation.started" || event.kind === "generation.delta") return;
+      if (event.kind === "generation.started") return;
+      if (event.kind === "generation.delta") {
+        if (event.sequence <= generation.lastSequence) return;
+        generation.lastSequence = event.sequence;
+        const remaining = MAX_REASONING_SUMMARY_BYTES - Buffer.byteLength(generation.reasoningSummary, "utf8");
+        let retained = "";
+        let bytes = 0;
+        for (const character of event.delta.text) {
+          const size = Buffer.byteLength(character, "utf8");
+          if (bytes + size > remaining) break;
+          bytes += size;
+          retained += character;
+        }
+        generation.reasoningSummary += retained;
+        return;
+      }
       this.removeGeneration(event.generationId, generation.requestId);
-      if (event.kind === "generation.completed") generation.resolve(event.result as { output: unknown; metadata: z.infer<typeof GenerationMetadataSchema> });
+      if (event.kind === "generation.completed") generation.resolve({ output: event.result.output, metadata: {
+        ...event.result.metadata,
+        ...(generation.reasoningSummary && !event.result.metadata.reasoningSummary ? { reasoningSummary: generation.reasoningSummary } : {}),
+      } });
       else if (event.kind === "generation.cancelled") generation.reject(new ProviderFailure("cancelled", "Generation was cancelled", false, event.attempts ? { attempts: event.attempts } : undefined));
       else generation.reject(providerFailure(event.error, event.attempts));
       return;

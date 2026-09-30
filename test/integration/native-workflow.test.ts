@@ -5,9 +5,10 @@ import { join } from "node:path";
 import { z } from "zod";
 import { DatabaseClient } from "../../src/db/client";
 import { ResearchRunRepository } from "../../src/db/repositories/research-runs";
+import { DiscoveryRepository } from "../../src/db/repositories/discovery";
 import { GenerationAttemptRepository } from "../../src/db/repositories/generation-attempts";
 import { ThreadRepository } from "../../src/db/repositories/threads";
-import { PreviewWorkflowResultSchema, WorkflowAdmissionReceiptSchema, WorkflowDetailSchema } from "../../src/shared/workflow-contracts";
+import { PreviewWorkflowResultSchema, WorkflowAdmissionReceiptSchema, WorkflowDetailSchema, WorkflowLaunchContractSchema, WorkflowLaunchDraftSchema } from "../../src/shared/workflow-contracts";
 import { FOCUSED_EXPERIMENT_DRAFT_INSTRUCTION, FOCUSED_EXPERIMENT_REVIEW_INSTRUCTION } from "../../src/core/experiment-review";
 import { WorkspaceStateSchema, SolutionViewSchema, type WorkspaceState, type ResearchEvent } from "../../src/shared/ipc";
 import { GenerationStartPayloadSchema } from "../../src/shared/runtime-protocol";
@@ -17,9 +18,13 @@ import { NATIVE_WORKFLOW_MODEL as model, UNTRUSTED_WORKFLOW_TEXT as untrusted, s
 import { resolveWorkflowV2Prompt } from "../../src/core/prompts";
 import { WORKFLOW_V2_STAGE_IDS } from "../../src/core/stages";
 import { WorkflowRepository } from "../../src/db/repositories/workflows";
-import { getRunTrace } from "../../src/core/run-trace";
+import { getRunTrace, savedSearchKey } from "../../src/core/run-trace";
 import { RunTraceSchema, RunTraceStepDetailSchema } from "../../src/shared/run-trace";
 import { WorkflowV2Repository } from "../../src/db/repositories/workflow-v2";
+import { createHash } from "node:crypto";
+import { discoveryRunProjection } from "../../src/shared/discovery-projection";
+import { sha256 } from "../../src/shared/content-identity";
+import { AppSettingsSchema } from "../../src/shared/app-settings";
 
 const statement = "Repair shops cannot reliably predict parts arrival times.";
 const scope = {
@@ -46,7 +51,7 @@ describe("native research workflow through the production backend", () => {
     const trace = await item.post(`/runs/${runId}/trace`, undefined, RunTraceSchema);
     expect(trace.live).toBe(false);
     expect(trace.steps.filter(step => step.kind === "model").map(step => step.stage.split(":")[0])).toEqual([
-      "query-plan", "factor-harvest", "query-plan", "problem-candidates", "problem-kill",
+      "query-plan", "factor-harvest", "query-plan", "factor-harvest", "problem-candidates", "problem-kill",
     ]);
     expect(trace.metrics.modelCalls).toBe(item.requests().length);
     expect(trace.metrics.searches).toBe(item.searches.length);
@@ -68,7 +73,17 @@ describe("native research workflow through the production backend", () => {
       const changed = db.db.prepare("SELECT total_changes() AS count").get();
       expect(getRunTrace(db, runId).metrics).toEqual(trace.metrics);
       expect(db.db.prepare("SELECT total_changes() AS count").get()).toEqual(changed);
-      // Pre-trace runs did not save query snapshots; links still reconstruct from the unchanged key.
+      // A pre-routing run used no-provider identities. Recreate that historical format before dropping its query receipts.
+      for (const step of trace.steps.filter(step => step.search)) {
+        const search = step.search!;
+        const legacyKey = savedSearchKey(search.query, {
+          numResults: search.parameters.numResults, maxCharacters: search.parameters.maxCharacters,
+        });
+        const savedSearch = db.db.prepare("SELECT value_json FROM workflow_snapshots WHERE research_run_id = ? AND snapshot_key = ?")
+          .get(runId, search.key) as { value_json: string };
+        db.db.prepare("INSERT OR REPLACE INTO workflow_snapshots VALUES (?, ?, ?)").run(runId, legacyKey, savedSearch.value_json);
+        db.db.prepare("DELETE FROM workflow_snapshots WHERE research_run_id = ? AND snapshot_key = ?").run(runId, search.key);
+      }
       db.db.prepare("DELETE FROM workflow_snapshots WHERE research_run_id = ? AND snapshot_key LIKE 'search-query:%'").run(runId);
       const olderTrace = getRunTrace(db, runId);
       expect(olderTrace.steps.filter(step => step.kind === "search" && step.search?.query === "Query not recorded in this older run")
@@ -85,6 +100,21 @@ describe("native research workflow through the production backend", () => {
       const archive = getRunTrace(db, newRun);
       expect(archive.metrics.candidateFunnel).toMatchObject({ total: 2, assessed: 0, notAssessed: 2 });
       expect(archive.candidates.every(candidate => candidate.derived && candidate.reason.includes("No saved verdict"))).toBe(true);
+      const frame = JSON.stringify({ areas: [{ id: "orders", name: "Order disputes" }], successCriteria: [{ id: "relevant", weight: "must" }] });
+      db.db.prepare(`INSERT INTO research_frames (id, thread_id, version, known_problem, draft_json, approved_json, sources_json, created_at, approved_at)
+        VALUES ('trace-frame', ?, 1, 0, ?, ?, '[]', ?, ?)`).run(threadId, frame, frame, new Date().toISOString(), new Date().toISOString());
+      db.db.prepare("UPDATE research_runs SET frame_id = 'trace-frame' WHERE id = ?").run(newRun);
+      expect(getRunTrace(db, newRun).metrics.acceptedIdeasFailingMustHave).toBeNull();
+      db.db.prepare("INSERT INTO workflow_snapshots VALUES (?, 'goal-fit', ?)").run(newRun, JSON.stringify({ version: 1 }));
+      const queryStage = repository.findStageResult(runId, "query-plan", "domain")!;
+      const { id: _queryId, ...queryCheckpoint } = queryStage;
+      void _queryId;
+      const scopeHash = createHash("sha256").update("orders").digest("hex").slice(0, 16);
+      db.immediateTransaction(() => repository.saveStageResult({ ...queryCheckpoint, researchRunId: newRun, selectionId: `area-${scopeHash}:domain` }));
+      const framedTrace = getRunTrace(db, newRun);
+      expect(framedTrace.metrics.acceptedIdeasFailingMustHave).toBe(0);
+      expect(framedTrace.investigators).toEqual([{ id: "orders", name: "Order disputes", state: "completed",
+        stepIds: framedTrace.steps.filter(step => step.phase === "orders").map(step => step.id) }]);
     } finally { db.close(); }
   }, 20_000);
 
@@ -92,16 +122,13 @@ describe("native research workflow through the production backend", () => {
     const item = await fixture({ mode: "workflow-audience-many", legacyAudienceCheckpoint: true });
     const threadId = await item.createThread("explore-market", 5);
     const broadScope = { ...scope, audience: "", riskEvaluationCriteria: "Two students can test it within one month." };
-    const preview = await item.post("/workflows/preview", { type: "launch", threadId, draft: {
+    const receipt = await item.startLegacyWorkflow(threadId, {
       contractVersion: 1, purpose: "discovery", mode: "vibe", brief: scope.domain, scope: broadScope,
       runConfig: { ...DEFAULT_RUN_CONFIG, model, reasoningEffort: "xhigh", discoveryDepth: "quick", searchProvider: "exa" },
       targets: { kind: "per-problem", ideaCount: 5, automaticProblemCap: 3 },
       ideas: { model, reasoningEffort: "xhigh", reviewModel: model, reviewReasoningEffort: "xhigh" },
       limits: { enforced: false, maxMinutes: 49, maxModelCalls: 62, maxSearches: 26 }, instructions: {},
-    } }, PreviewWorkflowResultSchema);
-    const receipt = await item.post("/workflows/start", { threadId, clientCommandId: "broad-discovery",
-      contract: preview.proposal, previewHash: preview.previewHash, capabilityFingerprint: preview.capabilityFingerprint,
-      previewExpiresAt: preview.expiresAt }, WorkflowAdmissionReceiptSchema);
+    });
     const original = await item.waitFor(state => state.activeWorkflow?.outcome === "no-qualifying-ideas");
     const runId = original.latestResearchRun!.runId;
     const detail = await item.post(`/workflows/${receipt.sessionId}`, undefined, WorkflowDetailSchema);
@@ -155,15 +182,12 @@ describe("native research workflow through the production backend", () => {
   test("explicit output-limit retry preserves the guided contract, searches, and completed packets", async () => {
     const item = await fixture({ mode: "workflow-checkpoint-recovery-output-limit" });
     const threadId = await item.createThread("explore-market");
-    const preview = await item.post("/workflows/preview", { type: "launch", threadId, draft: {
+    const receipt = await item.startLegacyWorkflow(threadId, {
       contractVersion: 1, purpose: "discovery", mode: "babysit", brief: scope.domain, scope,
       runConfig: { ...DEFAULT_RUN_CONFIG, model, reasoningEffort: "xhigh", discoveryDepth: "deep", searchProvider: "exa" },
       targets: { kind: "per-problem", ideaCount: 3 },
       limits: { enforced: false, maxMinutes: 90, maxModelCalls: 62, maxSearches: 26 }, instructions: {},
-    } }, PreviewWorkflowResultSchema);
-    const receipt = await item.post("/workflows/start", { threadId, clientCommandId: "output-limit-research",
-      contract: preview.proposal, previewHash: preview.previewHash, capabilityFingerprint: preview.capabilityFingerprint,
-      previewExpiresAt: preview.expiresAt }, WorkflowAdmissionReceiptSchema);
+    });
     await item.waitFor(workspace => workspace.activeWorkflow?.state === "finished");
     const failed = await item.post(`/workflows/${receipt.sessionId}`, undefined, WorkflowDetailSchema);
     const task = failed.tasks.find(task => task.kind === "discovery")!;
@@ -204,15 +228,12 @@ describe("native research workflow through the production backend", () => {
   test("acknowledged discovery recovery reuses eight harvests and paired searches without replaying confirmed work", async () => {
     const item = await fixture({ mode: "workflow-checkpoint-recovery" });
     const threadId = await item.createThread("explore-market");
-    const preview = await item.post("/workflows/preview", { type: "launch", threadId, draft: {
+    const receipt = await item.startLegacyWorkflow(threadId, {
       contractVersion: 1, purpose: "discovery", mode: "babysit", brief: scope.domain, scope,
       runConfig: { ...DEFAULT_RUN_CONFIG, model, reasoningEffort: "xhigh", discoveryDepth: "deep", searchProvider: "exa" },
       targets: { kind: "per-problem", ideaCount: 3 },
       limits: { enforced: false, maxMinutes: 90, maxModelCalls: 62, maxSearches: 26 }, instructions: {},
-    } }, PreviewWorkflowResultSchema);
-    const receipt = await item.post("/workflows/start", { threadId, clientCommandId: "checkpoint-research",
-      contract: preview.proposal, previewHash: preview.previewHash, capabilityFingerprint: preview.capabilityFingerprint,
-      previewExpiresAt: preview.expiresAt }, WorkflowAdmissionReceiptSchema);
+    });
     await item.waitFor(workspace => workspace.activeWorkflow?.state === "finished");
     const first = await item.post(`/workflows/${receipt.sessionId}`, undefined, WorkflowDetailSchema);
     expect(first.summary.outcome).toBe("needs-attention");
@@ -277,16 +298,12 @@ describe("native research workflow through the production backend", () => {
   test("a lost OpenAI stream requires acknowledgement before a retry can complete research", async () => {
     const item = await fixture({ mode: "workflow-stream-interrupted-twice" });
     const threadId = await item.createThread("explore-market");
-    const preview = await item.post("/workflows/preview", { type: "launch", threadId, draft: {
+    const receipt = await item.startLegacyWorkflow(threadId, {
       contractVersion: 1, purpose: "discovery", mode: "babysit", brief: scope.domain, scope,
       runConfig: { ...DEFAULT_RUN_CONFIG, model, reasoningEffort: "medium", discoveryDepth: "quick", searchProvider: "exa" },
       targets: { kind: "per-problem", ideaCount: 3 },
       limits: { enforced: false, maxMinutes: 5, maxModelCalls: 1, maxSearches: 0 }, instructions: {},
-    } }, PreviewWorkflowResultSchema);
-    const receipt = await item.post("/workflows/start", {
-      threadId, clientCommandId: "interrupted-discovery", contract: preview.proposal,
-      previewHash: preview.previewHash, capabilityFingerprint: preview.capabilityFingerprint, previewExpiresAt: preview.expiresAt,
-    }, WorkflowAdmissionReceiptSchema);
+    });
     await item.waitFor(workspace => workspace.activeWorkflow?.state === "finished");
     const interrupted = await item.post(`/workflows/${receipt.sessionId}`, undefined, WorkflowDetailSchema);
     expect(interrupted.summary.outcome).toBe("needs-attention");
@@ -345,7 +362,16 @@ describe("native research workflow through the production backend", () => {
       previewHash: preview.previewHash, capabilityFingerprint: preview.capabilityFingerprint,
       previewExpiresAt: preview.expiresAt,
     }, WorkflowAdmissionReceiptSchema);
-    const state = await item.waitFor((workspace) => workspace.activeWorkflow?.state === "waiting-for-review");
+    await item.waitFor(workspace => workspace.activeWorkflow?.reviewKind === "frame");
+    const preparation = await item.post(`/workflows/${receipt.sessionId}`, undefined, WorkflowDetailSchema);
+    expect(preparation.researchFrame?.approved).toBeNull();
+    expect(preparation.tasks.some(task => task.kind === "discovery")).toBe(false);
+    const frame = preparation.researchFrame!;
+    const approvedFrame = { ...frame.draft, openQuestions: frame.draft.openQuestions.map(question => ({ ...question, answer: "One supplier" })) };
+    await item.post("/workflows/command", { threadId, sessionId: receipt.sessionId,
+      clientCommandId: "approve-guided-frame", expectedRevision: preparation.summary.revision,
+      action: { type: "approve-frame", frameId: frame.id, frame: approvedFrame } }, WorkflowAdmissionReceiptSchema);
+    const state = await item.waitFor(workspace => workspace.activeWorkflow?.reviewKind === "research");
     expect(state.activeWorkflow?.sessionId).toBe(receipt.sessionId);
     expect(state.activeWorkflow?.limits.enforced).toBe(false);
     expect(state.problemCandidates).toHaveLength(1);
@@ -353,6 +379,14 @@ describe("native research workflow through the production backend", () => {
     expect(item.searches.length).toBeGreaterThan(0);
     expect(item.requests().every((request) => request.deadlineMs === undefined)).toBe(true);
     const progress = await item.post(`/workflows/${receipt.sessionId}`, undefined, WorkflowDetailSchema);
+    expect(progress.researchFrame?.approved).toEqual(approvedFrame);
+    expect(progress.tasks.some(task => task.kind === "investigate-area" && task.state === "succeeded")).toBe(true);
+    const stageNames = item.requests().map(request => request.workOrder.stage.split(":")[0]);
+    expect(stageNames).toContain("frame-search-plan");
+    expect(stageNames).toContain("frame");
+    expect(stageNames).toContain("area-ranking");
+    expect(stageNames).toContain("evidence-check");
+    expect(stageNames).toContain("area-gap");
     expect(progress.summary.ideaTargetReady).toBe(false);
     expect(progress.summary.counts.requested).toBe(progress.summary.selectedProblemIds.length * 3);
     expect(progress.activity?.length).toBeGreaterThan(0);
@@ -373,15 +407,12 @@ describe("native research workflow through the production backend", () => {
   ])("restart preserves acknowledged checkpoints, blocks unknown work, and settles rejected resumes", async ({ freshUnknown, rejectResume }) => {
     const item = await fixture();
     const threadId = await item.createThread("explore-market");
-    const preview = await item.post("/workflows/preview", { type: "launch", threadId, draft: {
+    const receipt = await item.startLegacyWorkflow(threadId, {
       contractVersion: 1, purpose: "discovery", mode: "babysit", brief: scope.domain, scope,
       runConfig: { ...DEFAULT_RUN_CONFIG, model, reasoningEffort: "medium", discoveryDepth: "quick", searchProvider: "exa" },
       targets: { kind: "per-problem", ideaCount: 3 },
       limits: { enforced: false, maxMinutes: 30, maxModelCalls: 30, maxSearches: 10 }, instructions: {},
-    } }, PreviewWorkflowResultSchema);
-    const receipt = await item.post("/workflows/start", { threadId, clientCommandId: "restart-checkpoints",
-      contract: preview.proposal, previewHash: preview.previewHash, capabilityFingerprint: preview.capabilityFingerprint,
-      previewExpiresAt: preview.expiresAt }, WorkflowAdmissionReceiptSchema);
+    });
     await item.waitFor(workspace => workspace.activeWorkflow?.state === "waiting-for-review");
     const detail = await item.post(`/workflows/${receipt.sessionId}`, undefined, WorkflowDetailSchema);
     const task = detail.tasks.find(task => task.kind === "discovery")!;
@@ -458,6 +489,46 @@ describe("native research workflow through the production backend", () => {
     } finally { db.close(); }
   }, 15_000);
 
+  test("a fresh known-problem Vibe run approves its frame and reviews goal-aware ideas without search", async () => {
+    const item = await fixture({ searchEnabled: false });
+    const threadId = await item.createThread("known-problem", 2);
+    const preview = await item.post("/workflows/preview", { type: "launch", threadId, draft: {
+      contractVersion: 1, purpose: "known-problem", mode: "vibe", brief: statement, scope,
+      runConfig: { ...DEFAULT_RUN_CONFIG, model, researchMode: "known-problem", knownProblem: statement,
+        discoveryDepth: "quick", searchProvider: "exa" },
+      targets: { kind: "per-problem", ideaCount: 2 },
+      ideas: { model, reasoningEffort: "medium", reviewModel: model, reviewReasoningEffort: "medium" },
+      limits: { enforced: false, maxMinutes: 5, maxModelCalls: 1, maxSearches: 0 }, instructions: {},
+    } }, PreviewWorkflowResultSchema);
+    expect(preview.fieldErrors).toEqual([]);
+    expect(WorkflowLaunchContractSchema.parse(preview.proposal).frameWorkflowVersion).toBe(1);
+    const receipt = await item.post("/workflows/start", { threadId, clientCommandId: "fresh-known-vibe",
+      contract: preview.proposal, previewHash: preview.previewHash, capabilityFingerprint: preview.capabilityFingerprint,
+      previewExpiresAt: preview.expiresAt }, WorkflowAdmissionReceiptSchema);
+    const completed = await item.waitFor(workspace => workspace.activeWorkflow?.outcome === "target-met");
+    expect(item.searches).toHaveLength(0);
+    expect(item.requests().map(request => request.workOrder.stage.split(":")[0])).toEqual(["frame", "solutions", "solution-set-review"]);
+    const detail = await item.post(`/workflows/${receipt.sessionId}`, undefined, WorkflowDetailSchema);
+    const approved = detail.researchFrame!.approved!;
+    expect(approved.areas).toEqual([]);
+    expect(approved.openQuestions[0]?.answer).toBeUndefined();
+    expect(completed.solutions).toHaveLength(2);
+    for (const summary of completed.solutions) {
+      const idea = await item.post(`/ideas/${summary.id}`, undefined, SolutionViewSchema);
+      expect(idea.firstTest?.kind).toBe("demand-test");
+      expect(idea.biggerProblem?.scaleKnown).toBe(false);
+      expect(idea.criteriaFit?.map(fit => fit.criterionId)).toEqual(approved.successCriteria.map(criterion => criterion.id));
+      expect(idea.criteriaFit?.every(fit => fit.status === "unknown" && fit.evidenceIds.length === 0)).toBe(true);
+    }
+    const solutionsRequest = item.requests().find(request => request.workOrder.stage === "solutions")!;
+    expect((solutionsRequest.workOrder.inputs as { frame: unknown }).frame).toEqual(approved);
+    expect((solutionsRequest.outputSchema as JsonSchema).required).toContain("options");
+    const requestCount = item.requests().length;
+    await item.restart();
+    expect((await item.workspace()).solutions).toEqual(completed.solutions);
+    expect(item.requests()).toHaveLength(requestCount);
+  }, 15_000);
+
   test("generates a title through the runtime and preserves archived research across restart", async () => {
     const item = await fixture({ searchEnabled: false });
     const threadId = await item.createThread("known-problem");
@@ -509,7 +580,7 @@ describe("native research workflow through the production backend", () => {
     writeFileSync(overridePath, " \n");
     const brokenThread = await item.createThread("known-problem");
     await item.post("/research/start", { threadId: brokenThread }, z.object({ runId: z.string() }));
-    await item.waitFor((state) => state.threads.find((thread) => thread.id === brokenThread)?.status === "failed");
+    await item.waitFor(state => state.threads.find(thread => thread.id === brokenThread)?.status === "failed");
     expect(item.requests()).toHaveLength(0);
     item.assertAccounting(0);
 
@@ -664,6 +735,7 @@ describe("native research workflow through the production backend", () => {
 
   test("cancels a queued project without inventing provider usage after restart", async () => {
     const item = await fixture({ mode: "workflow-cancel", searchEnabled: false });
+    await item.post("/settings/advanced", AppSettingsSchema.parse({ maxConcurrentModelCalls: 1 }), AppSettingsSchema);
     const firstThread = await item.createThread("known-problem");
     const first = await item.post("/research/start", { threadId: firstThread }, z.object({ runId: z.string() }));
     await item.waitForAttempt("accepted");
@@ -1151,27 +1223,7 @@ async function fixture({ mode = "workflow", searchEnabled = true, workflowVersio
 
   async function open() {
     backend = await startNativeWorkflowBackend(directory, { mode, searchEnabled, searches, hangFollowUpSearch,
-      onError: error => backendErrors.push(error instanceof Error ? error.message : String(error)), onEvent: (event) => {
-      events.push(event);
-      if (legacyAudienceCheckpoint && event.type === "run-started" && !event.problemId) {
-        // Seed a pre-policy archive before execution starts, without mutating completed history.
-        const saved = new DatabaseClient(dbPath);
-        try {
-          const insert = saved.db.prepare("INSERT INTO workflow_snapshots VALUES (?, ?, ?)");
-          insert.run(event.runId, "prompts", JSON.stringify(Object.fromEntries(WORKFLOW_V2_STAGE_IDS.map(stage => [stage, resolveWorkflowV2Prompt(stage)]))));
-          insert.run(event.runId, "identifier-characters", "24");
-          insert.run(event.runId, "small-harvest-batches", JSON.stringify({ version: 1 }));
-          // A resumed archive retains uncertain reservations from its earlier interruption.
-          const session = saved.db.prepare("SELECT workflow_session_id FROM research_runs WHERE id = ?").get(event.runId) as { workflow_session_id: string };
-          const workflows = new WorkflowRepository(saved);
-          saved.immediateTransaction(() => {
-            for (const entry of workflows.listBudgetEntries(session.workflow_session_id).filter(entry => entry.state === "reserved")) {
-              workflows.settleBudget(entry.id, { state: "uncertain", settledUnits: entry.reservedUnits });
-            }
-          });
-        } finally { saved.close(); }
-      }
-    } });
+      onError: error => backendErrors.push(error instanceof Error ? error.message : String(error)), onEvent: event => events.push(event) });
     closed = false;
   }
   async function close() {
@@ -1201,6 +1253,60 @@ async function fixture({ mode = "workflow", searchEnabled = true, workflowVersio
     operations: () => lines(operationsCapture), processIds: () => lines(pids),
     requests: () => lines(capture).map((line) => z.object({ payload: GenerationStartPayloadSchema }).parse(JSON.parse(line)).payload),
     async restart(nextMode = mode) { await close(); mode = nextMode; await open(); },
+    async startLegacyWorkflow(threadId: string, input: z.input<typeof WorkflowLaunchDraftSchema>) {
+      const draft = WorkflowLaunchDraftSchema.parse(input);
+      const instruction = (stages: Array<Parameters<typeof resolveWorkflowV2Prompt>[0]>, extra?: string) => [
+        ...stages.map(stage => {
+          const prompt = resolveWorkflowV2Prompt(stage);
+          return `## ${stage} (${prompt.resolvedSha256})\n${prompt.text}`;
+        }),
+        ...(extra?.trim() ? [`## Project instruction\n${extra.trim()}`] : []),
+      ].join("\n\n");
+      const resolvedInstructions = {
+        research: instruction(["query-plan", "factor-harvest", "problem-candidates", "problem-kill"], draft.instructions.research),
+        ideas: instruction(["solutions"], draft.instructions.ideas),
+        review: instruction(["solution-set-review"], draft.instructions.review),
+      };
+      const contract = WorkflowLaunchContractSchema.parse({ ...draft, resolvedInstructions,
+        instructionHashes: Object.fromEntries(Object.entries(resolvedInstructions).map(([kind, text]) => [kind, sha256(text)])),
+      });
+      expect(contract.frameWorkflowVersion).toBeUndefined();
+      const db = new DatabaseClient(dbPath);
+      let sessionId: string;
+      try {
+        // These recovery tests resume an admitted pre-frame contract. A fresh preview must keep using framing.
+        sessionId = db.immediateTransaction(() => {
+          const workflows = new WorkflowRepository(db);
+          const session = workflows.createSession({ threadId, purpose: contract.purpose, mode: contract.mode,
+            contract, remainingMs: contract.limits.maxMinutes * 60_000 });
+          const task = workflows.createWorkItem({ sessionId: session.id, kind: contract.purpose,
+            scopeKey: "initial-research", input: { brief: contract.brief, purpose: contract.purpose }, state: "ready" });
+          const projection = contract.purpose === "discovery" ? discoveryRunProjection(contract.runConfig.discoveryDepth)
+            : { modelCalls: 0, searches: 0 };
+          if (projection.modelCalls) workflows.reserveBudget({ sessionId: session.id, workItemId: task.id,
+            operationKey: `research-model:${task.id}`, kind: "model-call", reservedUnits: projection.modelCalls * 2 });
+          if (projection.searches) workflows.reserveBudget({ sessionId: session.id, workItemId: task.id,
+            operationKey: `research-search:${task.id}`, kind: "search", reservedUnits: projection.searches });
+          if (legacyAudienceCheckpoint) {
+            const config = { ...contract.runConfig, ideaCount: contract.targets.ideaCount };
+            const { runId } = workflows.createRunWithinTransaction({ threadId, sessionId: session.id, purpose: "discovery", config });
+            new DiscoveryRepository(db).persistScope(runId, contract.scope);
+            const insert = db.db.prepare("INSERT INTO workflow_snapshots VALUES (?, ?, ?)");
+            insert.run(runId, "prompts", JSON.stringify(Object.fromEntries(WORKFLOW_V2_STAGE_IDS.map(stage => [stage, resolveWorkflowV2Prompt(stage)]))));
+            insert.run(runId, "identifier-characters", "24");
+            insert.run(runId, "small-harvest-batches", JSON.stringify({ version: 1 }));
+            workflows.updateWorkItem(task.id, "running", { outputRefs: { runId } });
+            for (const entry of workflows.listBudgetEntries(session.id).filter(entry => entry.state === "reserved")) {
+              workflows.settleBudget(entry.id, { state: "uncertain", settledUnits: entry.reservedUnits });
+            }
+          }
+          workflows.updateSession(session.id, 0, { state: "paused", runningSince: null });
+          return session.id;
+        });
+      } finally { db.close(); }
+      return post("/workflows/command", { threadId, sessionId, clientCommandId: "resume-admitted-legacy-workflow",
+        expectedRevision: 1, action: { type: "resume" } }, WorkflowAdmissionReceiptSchema);
+    },
     async createThread(
       researchMode: "explore-market" | "known-problem",
       ideaCount = 3,

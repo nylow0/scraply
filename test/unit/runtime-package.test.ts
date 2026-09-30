@@ -110,7 +110,7 @@ function createPackageFixture(options: PackageFixtureOptions = {}): {
     platform: "windows-x64",
     executable: "scraply-agent.exe",
     version,
-    protocolVersions: ["1.1"],
+    protocolVersions: ["1.2"],
     sourceRepository: "https://github.com/nylow0/scraply-agent",
     sourceCommit,
     upstreamCommit: "8c68d4c87dc54d38861f5114e920c3de2efa5876",

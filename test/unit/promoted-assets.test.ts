@@ -53,7 +53,7 @@ function createBundle(overrides: BundleOverrides = {}): BundleFixture {
     platform: "windows-x64",
     executable: "scraply-agent.exe",
     version: "0.1.0",
-    protocolVersions: ["1.1"],
+    protocolVersions: ["1.2"],
     sourceRepository: "https://github.com/nylow0/scraply",
     sourceCommit: approvedSha,
     upstreamCommit: "8c68d4c87dc54d38861f5114e920c3de2efa5876",

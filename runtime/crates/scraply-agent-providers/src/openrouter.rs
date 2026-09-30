@@ -460,6 +460,7 @@ mod tests {
             },
             output_schema: json!({"type":"object"}),
             reasoning_effort: None,
+            reasoning_summaries: false,
             max_output_tokens: None,
             attempt: GenerationAttempt::Initial,
         }

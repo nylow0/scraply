@@ -649,7 +649,25 @@ fn spawn_generation(
                 generation_id: generation_id.clone(),
             })
             .await;
-        let result = Runtime::new(provider).generate(request, &control).await;
+        let (summary_sender, mut summaries) = tokio::sync::mpsc::channel(8);
+        let control = control.with_summary_sink(summary_sender);
+        let runtime = Runtime::new(provider);
+        let generation = runtime.generate(request, &control);
+        tokio::pin!(generation);
+        let mut sequence = 0;
+        let result = loop {
+            tokio::select! {
+                biased;
+                Some(text) = summaries.recv() => {
+                    let _ = events.send(GenerationStreamEvent::Delta {
+                        generation_id: generation_id.clone(), sequence,
+                        delta: json!({"type": "reasoning-summary", "text": text}),
+                    }).await;
+                    sequence += 1;
+                }
+                result = &mut generation => break result,
+            }
+        };
         generations
             .lock()
             .expect("generation map poisoned")

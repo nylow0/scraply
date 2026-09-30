@@ -24,7 +24,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, HashSet},
     path::PathBuf,
     sync::Arc,
     time::{Duration, Instant},
@@ -424,6 +424,7 @@ impl OpenAiSubscription {
     async fn generate_request(
         &self,
         request: &ProviderRequest,
+        control: &OperationControl,
     ) -> Result<ProviderResponse, ProviderError> {
         validate_model(request, OPENAI_SUBSCRIPTION_PROVIDER_ID)?;
         if request.max_output_tokens.is_some() {
@@ -517,6 +518,7 @@ impl OpenAiSubscription {
         let mut output = String::new();
         let mut response_id = None;
         let mut usage = None;
+        let mut seen_summary_parts = HashSet::new();
         while let Some(event) = stream.next().await {
             match event.map_err(|mut error| {
                 error.request_id = stream
@@ -535,6 +537,27 @@ impl OpenAiSubscription {
                         ));
                     }
                     output.push_str(&delta);
+                }
+                ResponseEvent::ReasoningSummaryDelta {
+                    delta,
+                    summary_index,
+                } if request.reasoning_summaries => {
+                    if seen_summary_parts.len() < 64 {
+                        seen_summary_parts.insert(summary_index);
+                    }
+                    control
+                        .emit_reasoning_summary(request.attempt, &delta)
+                        .await;
+                }
+                ResponseEvent::ReasoningSummaryDone {
+                    text,
+                    summary_index,
+                    ..
+                } if request.reasoning_summaries
+                    && seen_summary_parts.len() < 64
+                    && seen_summary_parts.insert(summary_index) =>
+                {
+                    control.emit_reasoning_summary(request.attempt, &text).await;
                 }
                 ResponseEvent::ServerModel(model) if model != request.model.model_id => {
                     return Err(ProviderError::new(
@@ -824,6 +847,33 @@ impl SubscriptionStream {
                 )));
             }
             match event.kind.as_str() {
+                "response.reasoning_summary_text.delta" => {
+                    return Some(
+                        event
+                            .delta
+                            .map(|delta| ResponseEvent::ReasoningSummaryDelta {
+                                delta,
+                                summary_index: event.summary_index.unwrap_or(0),
+                            })
+                            .ok_or_else(|| {
+                                map_api_error(ApiError::Stream("invalid summary event".into()))
+                            }),
+                    );
+                }
+                "response.reasoning_summary_text.done" => {
+                    return Some(
+                        event
+                            .text
+                            .map(|text| ResponseEvent::ReasoningSummaryDone {
+                                text,
+                                item_id: event.item_id.unwrap_or_default(),
+                                summary_index: event.summary_index.unwrap_or(0),
+                            })
+                            .ok_or_else(|| {
+                                map_api_error(ApiError::Stream("invalid summary event".into()))
+                            }),
+                    );
+                }
                 "response.output_text.delta" => {
                     return Some(event.delta.map(ResponseEvent::OutputTextDelta).ok_or_else(
                         || {
@@ -898,6 +948,9 @@ struct SubscriptionEvent {
     #[serde(rename = "type")]
     kind: String,
     delta: Option<String>,
+    text: Option<String>,
+    item_id: Option<String>,
+    summary_index: Option<i64>,
     response: Option<SubscriptionResponse>,
     headers: Option<Value>,
     error: Option<SubscriptionResponseError>,
@@ -1086,7 +1139,7 @@ impl GenerationProvider for OpenAiSubscription {
         control: &OperationControl,
     ) -> Result<ProviderResponse, CoreError> {
         control.check()?;
-        Ok(controlled(self.generate_request(&request), control).await??)
+        Ok(controlled(self.generate_request(&request, control), control).await??)
     }
 }
 
@@ -1301,6 +1354,9 @@ fn generation_body(request: &ProviderRequest) -> Value {
     });
     if let Some(effort) = request.reasoning_effort {
         body["reasoning"] = json!({"effort": effort});
+    }
+    if request.reasoning_summaries {
+        body["reasoning"]["summary"] = json!("auto");
     }
     body
 }
@@ -1548,6 +1604,7 @@ mod tests {
             },
             output_schema: json!({"type":"object"}),
             reasoning_effort: None,
+            reasoning_summaries: false,
             max_output_tokens: None,
             attempt: GenerationAttempt::Initial,
         }
@@ -1659,15 +1716,85 @@ mod tests {
         let provider = local_test_provider(address).await;
         let mut request = generation_request("gpt-6-astra");
         request.reasoning_effort = Some(scraply_agent_core::ReasoningEffort::Xhigh);
-        let result =
-            tokio::time::timeout(Duration::from_secs(5), provider.generate_request(&request))
-                .await
-                .unwrap()
-                .unwrap();
+        let result = tokio::time::timeout(
+            Duration::from_secs(5),
+            provider.generate_request(
+                &request,
+                &OperationControl::until_cancelled(scraply_agent_core::CancellationToken::new()),
+            ),
+        )
+        .await
+        .unwrap()
+        .unwrap();
         assert_eq!(result.output, b"{}");
         assert_eq!(result.request_id.as_deref(), Some("response-ws-test"));
         assert_eq!(result.usage.unwrap().total_tokens, 6);
         server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn websocket_summaries_are_bounded_and_never_change_structured_output() {
+        for enabled in [true, false] {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let server = tokio::spawn(async move {
+                let (socket, _) = listener.accept().await.unwrap();
+                let mut socket = tokio_tungstenite::accept_async(socket).await.unwrap();
+                let message = socket.next().await.unwrap().unwrap();
+                let body: Value = serde_json::from_str(message.to_text().unwrap()).unwrap();
+                assert_eq!(
+                    body["reasoning"]["summary"],
+                    if enabled { json!("auto") } else { Value::Null }
+                );
+                for event in [
+                    json!({"type":"response.reasoning_summary_text.delta", "summary_index":0, "delta":"Checking evidence. é"}),
+                    json!({"type":"response.reasoning_summary_text.done", "summary_index":0, "text":"Checking evidence. é"}),
+                    json!({"type":"response.reasoning_summary_text.done", "summary_index":1, "text":"Done-only part. "}),
+                    json!({"type":"response.reasoning_text.delta", "delta":"private raw reasoning must never be forwarded"}),
+                    json!({"type":"response.reasoning_summary_text.delta", "summary_index":2, "delta":"🧩".repeat(10_000)}),
+                    json!({"type":"response.output_text.delta", "delta":"{}"}),
+                    json!({"type":"response.completed", "response":{"id":"summary-test"}}),
+                ] {
+                    socket
+                        .send(Message::Text(event.to_string().into()))
+                        .await
+                        .unwrap();
+                }
+            });
+            let provider = local_test_provider(address).await;
+            let mut request = generation_request("gpt-6-astra");
+            request.reasoning_summaries = enabled;
+            let (sender, mut deltas) = tokio::sync::mpsc::channel(8);
+            let control =
+                OperationControl::until_cancelled(scraply_agent_core::CancellationToken::new())
+                    .with_summary_sink(sender);
+            let response = provider.generate_request(&request, &control).await.unwrap();
+            assert_eq!(response.output, b"{}");
+            let mut forwarded = String::new();
+            while let Ok(delta) = deltas.try_recv() {
+                forwarded.push_str(&delta);
+            }
+            if enabled {
+                assert!(forwarded.starts_with("Checking evidence. éDone-only part. "));
+                assert!(!forwarded.contains("private raw"));
+                assert!(forwarded.len() <= 16_384);
+                assert!(forwarded.len() > 16_380);
+                assert_eq!(
+                    control
+                        .reasoning_summary(scraply_agent_core::GenerationAttempt::Initial)
+                        .as_deref(),
+                    Some(forwarded.as_str())
+                );
+            } else {
+                assert!(forwarded.is_empty());
+                assert!(
+                    control
+                        .reasoning_summary(scraply_agent_core::GenerationAttempt::Initial)
+                        .is_none()
+                );
+            }
+            server.await.unwrap();
+        }
     }
 
     #[tokio::test]
@@ -1719,12 +1846,18 @@ mod tests {
                 }
             });
             let provider = local_test_provider(address).await;
-            let result = tokio::time::timeout(
-                Duration::from_secs(5),
-                provider.generate_request(&generation_request("gpt-6-astra")),
-            )
-            .await
-            .unwrap();
+            let result =
+                tokio::time::timeout(
+                    Duration::from_secs(5),
+                    provider.generate_request(
+                        &generation_request("gpt-6-astra"),
+                        &OperationControl::until_cancelled(
+                            scraply_agent_core::CancellationToken::new(),
+                        ),
+                    ),
+                )
+                .await
+                .unwrap();
             if rejects_model {
                 let error = result.unwrap_err();
                 assert_eq!(error.code, ProviderErrorCode::InvalidResponse);
@@ -1800,13 +1933,19 @@ mod tests {
                     .unwrap();
             });
             let provider = local_test_provider(address).await;
-            let error = tokio::time::timeout(
-                Duration::from_secs(5),
-                provider.generate_request(&generation_request("gpt-6-astra")),
-            )
-            .await
-            .unwrap()
-            .unwrap_err();
+            let error =
+                tokio::time::timeout(
+                    Duration::from_secs(5),
+                    provider.generate_request(
+                        &generation_request("gpt-6-astra"),
+                        &OperationControl::until_cancelled(
+                            scraply_agent_core::CancellationToken::new(),
+                        ),
+                    ),
+                )
+                .await
+                .unwrap()
+                .unwrap_err();
             assert_eq!(error.code, expected_code);
             assert_eq!(error.retryable, retryable);
             assert!(!error.detail.contains("private rejected request"));
@@ -1883,7 +2022,10 @@ mod tests {
             .await
             .unwrap();
         let error = provider
-            .generate_request(&generation_request("gpt-test"))
+            .generate_request(
+                &generation_request("gpt-test"),
+                &OperationControl::until_cancelled(scraply_agent_core::CancellationToken::new()),
+            )
             .await
             .unwrap_err();
         server.join().unwrap();
@@ -1984,7 +2126,10 @@ mod tests {
         });
         let provider = local_test_provider(address).await;
         let error = provider
-            .generate_request(&generation_request("gpt-6-astra"))
+            .generate_request(
+                &generation_request("gpt-6-astra"),
+                &OperationControl::until_cancelled(scraply_agent_core::CancellationToken::new()),
+            )
             .await
             .unwrap_err();
         server.join().unwrap();
@@ -2037,7 +2182,10 @@ mod tests {
         });
         let provider = local_test_provider(address).await;
         let error = provider
-            .generate_request(&generation_request("gpt-6-astra"))
+            .generate_request(
+                &generation_request("gpt-6-astra"),
+                &OperationControl::until_cancelled(scraply_agent_core::CancellationToken::new()),
+            )
             .await
             .unwrap_err();
         assert_eq!(error.code, ProviderErrorCode::Transport);
@@ -2103,13 +2251,19 @@ mod tests {
                 );
             });
             let provider = local_test_provider(address).await;
-            let error = tokio::time::timeout(
-                Duration::from_secs(5),
-                provider.generate_request(&generation_request("gpt-6-astra")),
-            )
-            .await
-            .unwrap()
-            .unwrap_err();
+            let error =
+                tokio::time::timeout(
+                    Duration::from_secs(5),
+                    provider.generate_request(
+                        &generation_request("gpt-6-astra"),
+                        &OperationControl::until_cancelled(
+                            scraply_agent_core::CancellationToken::new(),
+                        ),
+                    ),
+                )
+                .await
+                .unwrap()
+                .unwrap_err();
             assert_eq!(error.code, ProviderErrorCode::Transport);
             assert!(error.detail.contains("Completion and usage are unknown"));
             assert!(error.detail.contains(expected), "{}", error.detail);
@@ -2167,7 +2321,10 @@ mod tests {
         let provider = local_test_provider(address).await;
         let response = tokio::time::timeout(
             Duration::from_secs(35),
-            provider.generate_request(&generation_request("gpt-6-astra")),
+            provider.generate_request(
+                &generation_request("gpt-6-astra"),
+                &OperationControl::until_cancelled(scraply_agent_core::CancellationToken::new()),
+            ),
         )
         .await
         .unwrap()
@@ -2565,7 +2722,13 @@ mod tests {
         let provider = OpenAiSubscription::ephemeral().await.unwrap();
         let mut request = generation_request("gpt-5.6-sol");
         request.max_output_tokens = Some(8192);
-        let error = provider.generate_request(&request).await.unwrap_err();
+        let error = provider
+            .generate_request(
+                &request,
+                &OperationControl::until_cancelled(scraply_agent_core::CancellationToken::new()),
+            )
+            .await
+            .unwrap_err();
         assert_eq!(error.code, ProviderErrorCode::InvalidRequest);
         assert_eq!(
             error.detail,
