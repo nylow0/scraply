@@ -42,6 +42,28 @@ function props(initialFrame = frame()) {
 }
 
 describe("FrameReview", () => {
+  test("keeps unsaved edits through unchanged polling and replaces them with a regenerated frame", async () => {
+    const input = props();
+    const view = render(FrameReview, input);
+    await fireEvent.input(view.getByLabelText("Goal"), { target: { value: "Keep my draft while reviewing." } });
+    await fireEvent.click(view.getByRole("button", { name: "Solo freelancers" }));
+    await fireEvent.input(view.getByLabelText("Solo freelancers or small firms?"), { target: { value: "" } });
+    await fireEvent.click(view.getAllByText("Edit area")[0]!);
+    await fireEvent.input(view.getByLabelText("Venue domain 1.1"), { target: { value: "" } });
+
+    await view.rerender({ ...input, frame: structuredClone(input.frame) });
+    expect((view.getByLabelText("Goal") as HTMLTextAreaElement).value).toBe("Keep my draft while reviewing.");
+    await fireEvent.click(view.getByRole("button", { name: "Start research with this frame" }));
+    const expected = structuredClone(input.frame);
+    expected.goal = "Keep my draft while reviewing.";
+    delete expected.areas[0]!.venues[0]!.domain;
+    await waitFor(() => expect(input.onCommit).toHaveBeenCalledWith(expected));
+
+    const regenerated = { ...input.frame, goal: "A regenerated research goal." };
+    await view.rerender({ ...input, frame: regenerated });
+    await waitFor(() => expect((view.getByLabelText("Goal") as HTMLTextAreaElement).value).toBe(regenerated.goal));
+  });
+
   test("submits exactly the edited frame without changing the supplied frame", async () => {
     const input = props();
     const original = structuredClone(input.frame);
