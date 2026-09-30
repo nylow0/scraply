@@ -160,6 +160,9 @@ if (liveFingerprint !== fingerprint) throw new Error("The monitored workflow doe
 let previousStatus = "";
 let completed = false;
 let stopAfterTimeout = false;
+// A saved run can resume hours later. Bound this observation, not the original
+// launch, and keep monitor-only invocations from cancelling someone else's work.
+const verificationStartedAt = Date.now();
 try {
   for (;;) {
     const result = await invoke(IPC_CHANNELS.GET_WORKFLOW, ApiResponseSchema(WorkflowDetailSchema), { sessionId });
@@ -210,9 +213,10 @@ try {
       }));
       break;
     }
-    if (Date.now() - Date.parse(detail.summary.startedAt) > timeoutMinutes * 60_000) {
-      stopAfterTimeout = true;
-      throw new Error(`Verification exceeded ${timeoutMinutes} minutes; stopping this development workflow.`);
+    if (Date.now() - verificationStartedAt > timeoutMinutes * 60_000) {
+      stopAfterTimeout = values.live;
+      throw new Error(`Verification exceeded ${timeoutMinutes} minutes; ${stopAfterTimeout
+        ? "stopping this development workflow" : "the monitored workflow remains running"}.`);
     }
     await delay(5_000);
   }
