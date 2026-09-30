@@ -1,6 +1,13 @@
 import { z } from "zod";
 
 export const HarvestModeSchema = z.enum(["domain", "audience"]);
+export const EvidenceSourceRoleSchema = z.enum(["firsthand", "measured", "vendor", "recommendation", "illustration", "unknown"]);
+export const EvidenceAudienceFitSchema = z.enum(["intended-buyer", "adjacent", "general", "unknown"]);
+export const ProblemFactorAssessmentSchema = z.object({
+  factorId: z.string().trim().min(1).max(256), sourceRole: EvidenceSourceRoleSchema, audienceFit: EvidenceAudienceFitSchema,
+  independentSourceKey: z.string().trim().min(1).max(160).nullable(), reason: z.string().trim().min(1).max(500),
+}).strict();
+export type ProblemFactorAssessment = z.infer<typeof ProblemFactorAssessmentSchema>;
 export const ProblemVerdictSchema = z.enum([
   "confirmed",
   "overstated",
@@ -141,10 +148,15 @@ const ExplicitProblemKillOutputSchema = ClassifiedProblemKillOutputSchema.extend
   workflowKey: ProblemWorkflowKeySchema,
 }).strict();
 
+const AssessedProblemKillOutputSchema = ExplicitProblemKillOutputSchema.extend({
+  factorAssessments: z.array(ProblemFactorAssessmentSchema).max(120),
+}).strict();
+
 export const ProblemKillOutputSchema = z.union([
   LegacyProblemKillOutputSchema,
   ClassifiedProblemKillOutputSchema,
   ExplicitProblemKillOutputSchema,
+  AssessedProblemKillOutputSchema,
 ]);
 
 export const SolutionsOutputSchema = z.object({
@@ -211,22 +223,6 @@ export const WorkflowV2QueryIntentSchema = z.enum([
   "contrary-evidence",
 ]);
 
-export const EvidenceSourceRoleSchema = z.enum([
-  "firsthand",
-  "measured",
-  "vendor",
-  "recommendation",
-  "illustration",
-  "unknown",
-]);
-
-export const EvidenceAudienceFitSchema = z.enum([
-  "intended-buyer",
-  "adjacent",
-  "general",
-  "unknown",
-]);
-
 const LegacyWorkflowV2QueryPlanItemSchema = z.object({
   query: WorkflowV2RequiredTextSchema,
   uncertainty: WorkflowV2RequiredTextSchema,
@@ -265,6 +261,26 @@ export const WorkflowV2FactorSchema = FactorSchema.omit({ harvestMode: true }).e
 
 export const WorkflowV2FactorHarvestOutputSchema = z.object({
   factors: z.array(z.union([LegacyWorkflowV2FactorSchema, WorkflowV2FactorSchema])),
+}).strict();
+
+// Historical outputs remain readable; fresh extraction must not emit book-length annotations.
+export const FACTOR_EXPLANATION_CHARACTERS = 600;
+const FactorRequestText = {
+  subject: WorkflowV2RequiredTextSchema.max(160),
+  behavior: WorkflowV2RequiredTextSchema.max(280),
+  quote: WorkflowV2RequiredTextSchema.max(1_000),
+  sourceId: WorkflowV2RequiredTextSchema.max(256),
+  uncertainty: WorkflowV2RequiredTextSchema.max(FACTOR_EXPLANATION_CHARACTERS),
+};
+export const BoundedWorkflowV2FactorHarvestOutputSchema = z.object({
+  factors: z.array(z.union([
+    LegacyWorkflowV2FactorSchema.extend(FactorRequestText),
+    WorkflowV2FactorSchema.extend({
+      ...FactorRequestText,
+      independentSourceKey: WorkflowV2RequiredTextSchema.max(160).nullable(),
+      demandEvidenceUncertainty: WorkflowV2RequiredTextSchema.max(FACTOR_EXPLANATION_CHARACTERS),
+    }),
+  ])),
 }).strict();
 
 export const WorkflowV2ProblemCandidateSchema = ProblemSchema.pick({
@@ -324,10 +340,18 @@ export const ExplicitWorkflowV2ProblemKillOutputSchema = ClassifiedWorkflowV2Pro
   workflowKey: ProblemWorkflowKeySchema,
 }).strict();
 
+export const AssessedWorkflowV2ProblemKillOutputSchema = ExplicitWorkflowV2ProblemKillOutputSchema.extend({
+  verdictReason: z.string().trim().min(1).max(1600), evidenceGap: z.string().trim().min(1).max(600).nullable(),
+  unresolvedAssumptions: z.array(z.string().trim().min(1).max(600)).max(20),
+  wouldChangeConclusion: z.array(z.string().trim().min(1).max(600)).max(20),
+  factorAssessments: z.array(ProblemFactorAssessmentSchema).max(120),
+}).strict();
+
 export const WorkflowV2ProblemKillOutputSchema = z.union([
   LegacyWorkflowV2ProblemKillOutputSchema,
   ClassifiedWorkflowV2ProblemKillOutputSchema,
   ExplicitWorkflowV2ProblemKillOutputSchema,
+  AssessedWorkflowV2ProblemKillOutputSchema,
 ]);
 
 export const WorkflowV2SolutionOptionSchema = z.object({

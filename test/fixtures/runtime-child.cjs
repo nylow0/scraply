@@ -19,6 +19,8 @@ let pendingLogin;
 let loginSequence = 0;
 let heldGeneration;
 let reassessmentFailed = false;
+let streamFailures = 0;
+let harvestCalls = 0;
 if (process.env.SCRAPLY_RUNTIME_PID_CAPTURE) fs.appendFileSync(process.env.SCRAPLY_RUNTIME_PID_CAPTURE, `${process.pid}\n`);
 const prompt = { id: "scraply.stage-worker.v1", sha256: "277d724f20acb1f32fa0a8b7c454c670971e3c40bfc921db40c044caa760e6f1" };
 const model = { providerId: "openai-subscription", modelId: "gpt-fixture" };
@@ -66,7 +68,8 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
       send({ protocolVersion: "1.1", id: request.id, operation: "account.list", error: { code: "operation_unavailable", retryable: true, detail: "wrong operation" } });
       return;
     }
-    const bytes = Buffer.from(`${JSON.stringify({ protocolVersion: "1.1", id: request.id, operation: request.operation, result: { models: [{ identity: model, displayName: "Modèle", supportsStructuredOutput: true }] } })}\n`);
+    const bytes = Buffer.from(`${JSON.stringify({ protocolVersion: "1.1", id: request.id, operation: request.operation, result: { models: [{ identity: model, displayName: "Modèle", supportsStructuredOutput: true,
+      ...(mode.startsWith("workflow-checkpoint-recovery") || mode === "workflow-audience-many" ? { supportedReasoningEfforts: ["medium", "xhigh"], defaultReasoningEffort: "medium" } : {}) }] } })}\n`);
     // Workflow requests overlap. Fragment only the dedicated framing fixture so
     // another response cannot be spliced into the middle of this JSON envelope.
     if (workflow) { process.stdout.write(bytes); return; }
@@ -138,6 +141,27 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
       return;
     }
     if (mode === "hang-cancel") return;
+    const isHarvest = request.payload.workOrder.stage.startsWith("factor-harvest");
+    if (isHarvest) harvestCalls++;
+    if (mode === "output-limit" || (mode === "workflow-checkpoint-recovery-output-limit" && harvestCalls === 9 && isHarvest)) {
+      send({ protocolVersion: "1.1", requestId: request.id, operation: "generation.start", event: {
+        kind: "generation.failed", generationId: request.payload.generationId,
+        error: { code: "output_limit", retryable: false, detail: "OpenAI returned an incomplete response because its output token limit was reached." },
+        attempts: [{ attempt: "initial", outcome: "failed", providerCompletion: "confirmed", model, usage: { status: "unknown" }, cost: { status: "unknown" }, latencyMs: 1 }],
+      } });
+      return;
+    }
+    const streamFailureLimit = mode === "workflow-stream-interrupted-twice" ? 2 : mode === "workflow-stream-interrupted" ? 1 : 0;
+    if (mode === "stream-interrupted" || (streamFailures < streamFailureLimit && isHarvest)
+      || (mode === "workflow-checkpoint-recovery" && [9, 10].includes(harvestCalls))) {
+      streamFailures++;
+      send({ protocolVersion: "1.1", requestId: request.id, operation: "generation.start", event: {
+        kind: "generation.failed", generationId: request.payload.generationId,
+        error: { code: "provider_unavailable", retryable: true, detail: "OpenAI closed the response stream before confirming completion. Completion and usage are unknown; review before retrying." },
+        attempts: [{ attempt: "initial", outcome: "failed", providerCompletion: "unknown", model, usage: { status: "unknown" }, cost: { status: "unknown" }, latencyMs: 1 }],
+      } });
+      return;
+    }
     const metadata = {
       model, prompt, usage: { status: "unknown" }, finishReason: "stop", latencyMs: 1,
       repairCount: 0, providerRequestIds: ["fixture-provider-request"],
@@ -146,7 +170,11 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
     const isReassessmentAnalysis = request.payload.workOrder.stage === "decision-analysis" && request.payload.workOrder.inputs?.reassessment === true;
     const failReassessment = mode === "workflow-reassessment-fail-once" && isReassessmentAnalysis && !reassessmentFailed;
     if (failReassessment) reassessmentFailed = true;
-    const output = (mode === "workflow-analysis-fail" && request.payload.workOrder.stage === "decision-analysis") || failReassessment ? { invalid: true }
+    const output = mode.startsWith("workflow-checkpoint-recovery") && request.payload.workOrder.stage.startsWith("query-plan")
+      ? { queries: Array.from({ length: 10 }, (_, index) => ({ query: `delivery evidence ${request.payload.workOrder.inputs.routing.harvestMode} ${index}`,
+        intent: index === 9 ? "buying-signal" : index === 8 ? "current-alternative" : "firsthand-experience",
+        uncertainty: "How often deliveries slip", intendedSourceType: "Operational records" })) }
+      : (mode === "workflow-analysis-fail" && request.payload.workOrder.stage === "decision-analysis") || failReassessment ? { invalid: true }
       : workflow ? require("./runtime-workflow.cjs")(request.payload)
       : mode === "invalid-output" ? { invalid: true } : request.payload.workOrder.stage.startsWith("query-plan")
       ? { queries: ["one", "two", "three"] }
@@ -154,7 +182,7 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
     const wrong = { protocolVersion: "1.1", requestId: "unrelated-request", operation: "generation.start", event: { kind: "generation.completed", generationId: request.payload.generationId, result: { output: { answer: "wrong" }, metadata } } };
     const correct = { protocolVersion: "1.1", requestId: request.id, operation: "generation.start", event: { kind: "generation.completed", generationId: request.payload.generationId, result: { output, metadata } } };
     const writeTerminal = () => process.stdout.write(`${JSON.stringify(wrong)}\n${JSON.stringify(correct)}\n${JSON.stringify(correct)}\n`);
-    if (mode === "prompt-mismatch") setTimeout(writeTerminal, 75);
+    if (mode === "prompt-mismatch" || mode === "slow-complete") setTimeout(writeTerminal, 75);
     else writeTerminal();
     return;
   }

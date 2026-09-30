@@ -64,6 +64,19 @@ describe("discovery", () => {
 
   const model = { providerId: "test-provider", modelId: "test-model" };
   const reasoningEffort = "medium" as const;
+  test.each([1, 5])("guided depth accepts %s useful queries instead of enforcing the three-query estimate", async (count) => {
+    const searches: string[] = [];
+    await harvestFactors(scope(), {
+      model, reasoningEffort, depth: "quick", guided: true, workflowVersion: 2,
+      prompt: () => "Plan useful searches.",
+      modelClient: modelClient(async (request) => request.schema.parse({
+        queries: Array.from({ length: count }, (_, index) => `Question ${index + 1}`),
+      })),
+      search: { async search(query) { searches.push(query); return []; } },
+    });
+    expect(searches).toHaveLength(count * 2);
+  });
+
   test("normalizes typography and whitespace before checking a quote", () => {
     const source = "People said “this\u00a0takes — far too long” after filing.";
     expect(normalizeEvidenceText(source)).toBe('People said "this takes - far too long" after filing.');
@@ -181,6 +194,32 @@ describe("discovery", () => {
     expect(batches.flat().map((item) => item.id)).toEqual(["one", "two"]);
   });
 
+  test("guided discovery processes a 23-source result in small complete evidence batches", async () => {
+    const batches: Array<{ sources: Array<{ id: string }>; factorLimit: number }> = [];
+    const activity: string[] = [];
+    await harvestFactors(scope(), {
+      model, reasoningEffort: "xhigh", guided: true, depth: "standard", workflowVersion: 2,
+      prompt: () => "Extract verified observations.", onProjection: message => activity.push(message),
+      modelClient: modelClient(async request => {
+        if (request.stage.startsWith("query-plan")) return { queries: ["one"] };
+        expect(request.model).toEqual(model);
+        expect(request.reasoningEffort).toBe("xhigh");
+        const content = request.evidence[0]!.content as { sources: Array<{ id: string }> };
+        const factorLimit = Number((request.workOrder.inputs as { factorLimit: number }).factorLimit);
+        batches.push({ ...content, factorLimit });
+        expect(content.sources.length).toBeLessThanOrEqual(3);
+        expect(factorLimit).toBeLessThanOrEqual(6);
+        return { factors: [] };
+      }),
+      search: { async search() { return Array.from({ length: 23 }, (_, index) => ({
+        id: String(index), url: `https://example.test/source/${index}`, title: `Source ${index}`, text: "Evidence. ".repeat(200),
+      })); } },
+    });
+    expect(batches.length).toBeGreaterThanOrEqual(8);
+    expect(new Set(batches.flatMap(batch => batch.sources.map(source => source.id))).size).toBe(23);
+    expect(activity.some(message => message.includes("batch 1 of 8"))).toBe(true);
+  });
+
   test("keeps standard audience extraction packets below the Sol timeout boundary", () => {
     const sources = Array.from({ length: 18 }, (_, index) => source(`audience-${index}`, "a".repeat(3_000)));
     const batches = batchSources(sources, AUDIENCE_SOURCE_BATCH_CHARACTERS);
@@ -256,7 +295,7 @@ describe("discovery", () => {
     });
     expect(harvestRequests.length).toBeGreaterThan(0);
     for (const request of harvestRequests) {
-      expect(request.deadlineMs).toBe(300_000);
+      expect(request.deadlineMs).toBeUndefined();
       expect(request.stage.length).toBeGreaterThan(256);
       expect(Buffer.byteLength(request.evidence[0]!.sourceId)).toBeLessThanOrEqual(256);
       const content = request.evidence[0]!.content as { sources: Array<{ id: string }> };
@@ -362,7 +401,7 @@ describe("discovery", () => {
       { id: "factor-2", subject: "Operators", behavior: "repeat filing", quote: "Supporting evidence.", sourceId: other.id, harvestMode: "audience", modelConfidence: 0.8, sourceRole: "measured", audienceFit: "intended-buyer", independentSourceKey: "study-two", supportsDemand: false, source: other },
     ];
     let killEvidence: unknown;
-    const synthesisDeadlines: Array<{ stage: string; deadlineMs: number }> = [];
+    const synthesisDeadlines: Array<{ stage: string; deadlineMs: number | undefined }> = [];
     const result = await discoverProblems(scope(), factors, [existing, other], {
       prompt: () => "Fixture discovery instructions",
       workflowVersion: 2,
@@ -399,8 +438,8 @@ describe("discovery", () => {
 
     expect(JSON.stringify(killEvidence)).toContain(existing.canonicalUrl);
     expect(synthesisDeadlines).toEqual([
-      { stage: "problem-candidates", deadlineMs: 300_000 },
-      { stage: expect.stringMatching(/^problem-kill:/), deadlineMs: 300_000 },
+      { stage: "problem-candidates", deadlineMs: undefined },
+      { stage: expect.stringMatching(/^problem-kill:/), deadlineMs: undefined },
     ]);
     expect(result.killSources).toEqual([]);
     expect(result.problems[0]?.verdictSourceIds).toEqual([existing.id]);
@@ -527,6 +566,39 @@ describe("discovery", () => {
 
     expect(result.sources.map((source) => source.canonicalUrl)).toEqual(["https://example.test/a?a=1&b=2"]);
   });
+});
+
+test.each([
+  ["", ["study-one", "study-two"], "confirmed"],
+  ["", ["same-study", "same-study"], "insufficient-evidence"],
+  ["specified audience", ["study-one", "study-two"], "insufficient-evidence"],
+] as const)("assesses discovered users without inventing independence or changing a named audience: %s", async (audience, keys, verdict) => {
+  const sources = [source("one", "Operators repeat filing."), source("two", "Other operators repeat filing.")];
+  const factors: HarvestedFactor[] = sources.map((item, index) => ({
+    id: `factor-${index}`, subject: "Operators", behavior: "repeat filing", quote: item.retrievedText,
+    sourceId: item.id, harvestMode: "domain", modelConfidence: 0.8, sourceRole: "unknown",
+    audienceFit: "unknown", independentSourceKey: null, supportsDemand: false, source: item,
+  }));
+  const before = structuredClone(factors);
+  const assessments = factors.map((factor, index) => ({ factorId: factor.id, sourceRole: "firsthand" as const,
+    audienceFit: "intended-buyer" as const, independentSourceKey: keys[index]!, reason: "Direct account by the affected operators." }));
+  const result = await discoverProblems({ ...scope(), audience }, factors, sources, {
+    workflowVersion: 2, assessProblemAudience: true,
+    model: { providerId: "openai-subscription", modelId: "gpt-6-astra" }, reasoningEffort: "xhigh", prompt: () => "Assess supplied evidence",
+    search: { async search() { return []; } },
+    modelClient: modelClient(async request => request.schema.parse(request.stage === "problem-candidates"
+      ? { problems: [{ statement: "Operators duplicate recurring filings.", whyItPersists: "Systems do not share state.",
+          affected: "Operators", scaleEstimate: "Unmeasured", scaleBasisFactorId: null,
+          factorIds: factors.map(factor => factor.id), intendedBuyerEvidenceFactorIds: [], evidenceGap: "Audience was not specified." }] }
+      : { verdict: "confirmed", verdictReason: "Direct accounts support the workflow problem.", verdictSourceIds: sources.map(item => item.id),
+          intendedBuyerEvidenceFactorIds: factors.map(factor => factor.id), evidenceGap: null, briefFit: "direct",
+          contraryEvidence: "resolved", workflowKey: "operators: recurring filing", factorAssessments: assessments })),
+  });
+  expect(result.problems[0]?.verdict).toBe(verdict);
+  expect(factors).toEqual(before);
+  expect(result.problems[0]?.factors.map(factor => factor.quote)).toEqual(before.map(factor => factor.quote));
+  expect(result.problems[0]?.factors.every(factor => !factor.supportsDemand)).toBe(true);
+  if (!audience) expect(result.problems[0]?.factorAssessments).toEqual(assessments);
 });
 
 function source(id: string, text: string): HarvestedSource {

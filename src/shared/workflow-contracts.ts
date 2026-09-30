@@ -21,6 +21,8 @@ export const WorkflowTargetSchema = z.object({
   automaticProblemCap: z.number().int().min(1).max(20).optional(),
 }).strict();
 export const WorkflowLimitsSchema = z.object({
+  /** New research uses estimates; omitted preserves an older run's explicit limits. */
+  enforced: z.boolean().optional(),
   maxMinutes: z.number().int().min(1).max(240),
   maxModelCalls: z.number().int().positive(),
   maxSearches: NonnegativeCountSchema,
@@ -107,18 +109,21 @@ export const WorkflowSummarySchema = z.object({
   revision: NonnegativeCountSchema,
   activeSnapshotId: IdSchema.nullable(),
   researchApplied: z.literal(true).optional(),
+  ideaTargetReady: z.boolean().optional(),
   selectedProblemIds: z.array(IdSchema),
   counts: WorkflowCountsSchema,
   limits: WorkflowLimitsSchema,
   budget: WorkflowBudgetStatusSchema,
   currentStage: z.string().nullable(),
   stopReason: z.string().nullable(),
+  canResume: z.boolean().optional(),
   startedAt: z.string().datetime(),
   finishedAt: z.string().datetime().nullable(),
 }).strict();
 export const WorkflowTaskSchema = z.object({
   id: IdSchema,
   terminalAttemptId: IdSchema.optional(),
+  canReassessProblems: z.boolean().optional(),
   parentItemId: IdSchema.nullable(),
   kind: z.string().min(1),
   scopeKey: z.string().min(1),
@@ -129,7 +134,12 @@ export const WorkflowTaskSchema = z.object({
   finishedAt: z.string().datetime().nullable(),
 }).strict();
 export const GetWorkflowRequestSchema = z.object({ sessionId: IdSchema, cursor: z.string().max(512).optional() }).strict();
-export const WorkflowDetailSchema = z.object({ summary: WorkflowSummarySchema, tasks: z.array(WorkflowTaskSchema), nextCursor: z.string().nullable() }).strict();
+export const WorkflowDetailSchema = z.object({
+  summary: WorkflowSummarySchema, tasks: z.array(WorkflowTaskSchema), nextCursor: z.string().nullable(),
+  activity: z.array(z.object({
+    id: IdSchema, message: z.string(), stage: z.string().nullable(), createdAt: z.string().datetime(),
+  }).strict()).optional(),
+}).strict();
 export const WorkflowAdmissionReceiptSchema = z.object({ sessionId: IdSchema, revision: NonnegativeCountSchema, summary: WorkflowSummarySchema }).strict();
 
 export const WorkflowActionSchema = z.discriminatedUnion("type", [
@@ -151,6 +161,7 @@ export const WorkflowActionSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("resume"), reason: z.string().max(1_000).optional() }).strict(),
   z.object({ type: z.literal("stop"), reason: z.string().max(1_000).optional() }).strict(),
   z.object({ type: z.literal("retry-task"), taskId: IdSchema, expectedTerminalAttemptId: IdSchema, acknowledgeUnknownCompletion: z.boolean().optional() }).strict(),
+  z.object({ type: z.literal("reassess-problems"), taskId: IdSchema }).strict(),
   z.object({ type: z.literal("extend-budget"), previewHash: z.string().min(1), capabilityFingerprint: z.string().min(1), previewExpiresAt: z.string().datetime(), extension: WorkflowBudgetExtensionSchema }).strict(),
   z.object({ type: z.literal("select-version"), rootSolutionId: IdSchema, solutionId: IdSchema }).strict(),
 ]).superRefine((value, ctx) => {

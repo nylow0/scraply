@@ -5,7 +5,7 @@ import App from "../../src/renderer/App.svelte";
 import { createScraplyApi } from "../../src/shared/scraply-api";
 import { DEFAULT_RUN_CONFIG, type Thread } from "../../src/shared/schemas";
 import { IPC_CHANNELS, RemoveSearchKeySchema, SaveScopeSchema, SaveRunConfigSchema, SaveSearchKeySchema, type WorkspaceState } from "../../src/shared/ipc";
-import { PreviewWorkflowRequestSchema } from "../../src/shared/workflow-contracts";
+import { CommandWorkflowRequestSchema, PreviewWorkflowRequestSchema, type WorkflowDetail } from "../../src/shared/workflow-contracts";
 
 // This standalone renderer has no Electron bridge or network provider. URL parameters
 // select deterministic UI scenarios without touching the user's projects or credentials.
@@ -41,11 +41,90 @@ let state: WorkspaceState = {
   researchRequests: [], researchFindings: [], solutions: [], latestResearchRun: null, pendingRuns: [],
 };
 
+const guidedProgress: WorkflowDetail | null = params.get("progress") === "guided" && state.activeThreadId ? {
+  summary: {
+    sessionId: "fixture-guided", threadId: state.activeThreadId, purpose: "discovery", mode: "vibe", targetKind: "per-problem",
+    state: "running", outcome: null, revision: 1, activeSnapshotId: null, selectedProblemIds: [],
+    ideaTargetReady: false,
+    counts: { requested: 0, attempted: 0, validated: 0, accepted: 0, duplicate: 0, unresolved: 0, failed: 0, missing: 0, existing: 0, addedBySession: 0, total: 0 },
+    limits: { enforced: false, maxMinutes: 90, maxModelCalls: 72, maxSearches: 38 },
+    budget: { modelCalls: { limit: 72, spent: 1, reserved: 50, uncertain: 0 }, searches: { limit: 38, spent: 0, reserved: 24, uncertain: 0 }, remainingMs: 89 * 60_000 },
+    currentStage: "discovery", stopReason: null, startedAt: now, finishedAt: null,
+  },
+  tasks: [{ id: "fixture-discovery", parentItemId: null, kind: "discovery", scopeKey: "initial-research", state: "running", createdAt: now, finishedAt: null }],
+  activity: [
+    { id: "1", message: "Model call completed", stage: "searching", createdAt: now },
+    { id: "2", message: "Searching Perplexity: repair shop warranty approval delays", stage: "searching", createdAt: now },
+    { id: "3", message: "Found 8 sources for: repair shop warranty approval delays", stage: "searching", createdAt: now },
+    { id: "4", message: "Model request accepted", stage: "extracting", createdAt: now },
+  ],
+  nextCursor: null,
+} : null;
+if (guidedProgress) {
+  if (params.get("phase") === "ideas") {
+    guidedProgress.summary.ideaTargetReady = true;
+    guidedProgress.summary.selectedProblemIds = ["problem-1", "problem-2"];
+    guidedProgress.summary.counts.requested = 6;
+    guidedProgress.summary.counts.missing = 6;
+    guidedProgress.summary.currentStage = "generate-ideas";
+  }
+  if (params.get("phase") === "failed") {
+    guidedProgress.summary.state = "finished";
+    guidedProgress.summary.outcome = "failed";
+    guidedProgress.summary.stopReason = "Search provider is unavailable.";
+    guidedProgress.summary.finishedAt = now;
+    guidedProgress.tasks[0]!.state = "failed";
+  }
+  if (params.get("phase") === "audience-recovery") {
+    guidedProgress.summary.state = "finished";
+    guidedProgress.summary.outcome = "no-qualifying-ideas";
+    guidedProgress.summary.finishedAt = now;
+    guidedProgress.tasks[0]!.state = "succeeded";
+    guidedProgress.tasks[0]!.canReassessProblems = true;
+  }
+  if (["completed-handoff", "acknowledged-restart"].includes(params.get("phase") ?? "")) {
+    guidedProgress.summary.state = "paused";
+    guidedProgress.summary.canResume = true;
+    guidedProgress.summary.budget.modelCalls.uncertain = 50;
+    guidedProgress.summary.budget.searches.uncertain = 24;
+  }
+  if (params.get("activity") === "long") {
+    guidedProgress.activity = Array.from({ length: 16 }, (_, index) => ({ id: `long-activity-${index}`,
+      message: `Reading source packet ${index + 1}: checking firsthand accounts of repair shops coordinating warranty approvals, supplier follow-ups, uncertain parts delivery windows, and customer expectations across locations.`,
+      stage: "extracting", createdAt: new Date(Date.parse(now) + index * 60_000).toISOString() }));
+  }
+  state.activeWorkflow = guidedProgress.summary;
+  state.threads = state.threads.map(thread => thread.id === state.activeThreadId ? { ...thread, status: params.get("phase") === "failed" ? "failed" : "discovery-running" } : thread);
+}
+
+let progressReads = 0;
 const fixtureApi = createScraplyApi({
   async invoke<T>(channel: string, payload?: unknown): Promise<T> {
     let result: unknown;
     switch (channel) {
       case IPC_CHANNELS.GET_WORKSPACE: result = state; break;
+      case IPC_CHANNELS.COMMAND_WORKFLOW: {
+        const request = CommandWorkflowRequestSchema.parse(payload);
+        const supported = request.action.type === "reassess-problems" && params.get("phase") === "audience-recovery"
+          || request.action.type === "resume" && ["completed-handoff", "acknowledged-restart"].includes(params.get("phase") ?? "");
+        if (!guidedProgress || !supported) {
+          throw new Error("This fixture only simulates saved discovery recovery.");
+        }
+        guidedProgress.summary.state = "running";
+        guidedProgress.summary.outcome = null;
+        guidedProgress.summary.finishedAt = null;
+        guidedProgress.summary.revision += 1;
+        guidedProgress.tasks[0]!.state = "running";
+        guidedProgress.tasks[0]!.canReassessProblems = false;
+        result = { ok: true, data: { sessionId: guidedProgress.summary.sessionId,
+          revision: guidedProgress.summary.revision, summary: guidedProgress.summary } };
+        break;
+      }
+      case IPC_CHANNELS.GET_WORKFLOW:
+        if (guidedProgress && params.has("live") && ++progressReads === 2) {
+          guidedProgress.activity?.push({ id: "5", message: "12 observations from 8 sources", stage: "extracting", createdAt: now });
+        }
+        result = { ok: true, data: guidedProgress }; break;
       case IPC_CHANNELS.GET_VALIDATION: result = state.validation; break;
       case IPC_CHANNELS.SELECT_THREAD: {
         const { threadId } = payload as { threadId: string };
@@ -74,8 +153,8 @@ const fixtureApi = createScraplyApi({
           type: "launch", proposal: { ...draft, resolvedInstructions: { research: "Fixture research", ideas: "Fixture ideas", review: "Fixture review" }, instructionHashes: { research: "r", ideas: "i", review: "v" } },
           previewHash: JSON.stringify(draft), capabilityFingerprint: "fixture", minimumWork: minimum, upperLimits: draft.limits,
           fieldErrors: [
-            ...(draft.limits.maxModelCalls < minimum.modelCalls ? [{ path: ["limits", "maxModelCalls"], code: "BUDGET_TOO_SMALL", message: `Allow at least ${minimum.modelCalls} model calls.` }] : []),
-            ...(draft.limits.maxSearches < minimum.searches ? [{ path: ["limits", "maxSearches"], code: "BUDGET_TOO_SMALL", message: `Allow at least ${minimum.searches} searches.` }] : []),
+            ...(draft.limits.enforced !== false && draft.limits.maxModelCalls < minimum.modelCalls ? [{ path: ["limits", "maxModelCalls"], code: "BUDGET_TOO_SMALL", message: `Allow at least ${minimum.modelCalls} model calls.` }] : []),
+            ...(draft.limits.enforced !== false && draft.limits.maxSearches < minimum.searches ? [{ path: ["limits", "maxSearches"], code: "BUDGET_TOO_SMALL", message: `Allow at least ${minimum.searches} searches.` }] : []),
           ], expiresAt: "2099-01-01T00:00:00.000Z",
         } }; break;
       }

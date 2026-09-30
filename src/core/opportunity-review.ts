@@ -302,7 +302,6 @@ async function dispatchOrReuse(
     // repair disabled so an invalid first response cannot spend an untracked extra call.
     repairPolicy: "disabled",
     ...(input.model.providerId === "openai-subscription" ? {} : { maxOutputTokens: 12_000 }),
-    deadlineMs: input.deadlineMs,
     ...(input.signal ? { signal: input.signal } : {}),
     onDispatched: () => {
       dispatched = true;

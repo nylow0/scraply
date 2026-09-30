@@ -17,14 +17,6 @@ import {
 import { MAX_IDEA_COUNT } from "../shared/schemas";
 
 export const WORKFLOW_VERSION_V2 = 2 as const;
-// A full 60,000-character source batch can take more than two minutes with high reasoning.
-export const FACTOR_HARVEST_DEADLINE_MS = 300_000;
-// Candidate synthesis carries the full retained factor set, while each kill review carries
-// contrary pages and the candidate's supporting factors. High reasoning can exceed two minutes.
-export const DISCOVERY_SYNTHESIS_DEADLINE_MS = 300_000;
-// Decision analysis can carry the selected option, independent risk review, and prior
-// experiment history. Subscription providers have exceeded the generic two-minute limit.
-export const DECISION_ANALYSIS_DEADLINE_MS = 300_000;
 
 export const WORKFLOW_V2_STAGE_IDS = [
   "query-plan",
@@ -47,7 +39,6 @@ export interface WorkflowV2StageDefinition {
   schemaRevision: 1;
   schema: ZodType<unknown>;
   maxOutputTokens: number;
-  deadlineMs: number;
 }
 
 export const WORKFLOW_V2_STAGE_REGISTRY = {
@@ -58,7 +49,6 @@ export const WORKFLOW_V2_STAGE_REGISTRY = {
     schemaRevision: 1,
     schema: WorkflowV2QueryPlanOutputSchema,
     maxOutputTokens: 2_048,
-    deadlineMs: 60_000,
   },
   "factor-harvest": {
     id: "factor-harvest",
@@ -67,7 +57,6 @@ export const WORKFLOW_V2_STAGE_REGISTRY = {
     schemaRevision: 1,
     schema: WorkflowV2FactorHarvestOutputSchema,
     maxOutputTokens: 4_096,
-    deadlineMs: FACTOR_HARVEST_DEADLINE_MS,
   },
   "problem-candidates": {
     id: "problem-candidates",
@@ -76,7 +65,6 @@ export const WORKFLOW_V2_STAGE_REGISTRY = {
     schemaRevision: 1,
     schema: WorkflowV2ProblemCandidatesOutputSchema,
     maxOutputTokens: 4_096,
-    deadlineMs: DISCOVERY_SYNTHESIS_DEADLINE_MS,
   },
   "problem-kill": {
     id: "problem-kill",
@@ -85,7 +73,6 @@ export const WORKFLOW_V2_STAGE_REGISTRY = {
     schemaRevision: 1,
     schema: ExplicitWorkflowV2ProblemKillOutputSchema,
     maxOutputTokens: 2_048,
-    deadlineMs: DISCOVERY_SYNTHESIS_DEADLINE_MS,
   },
   solutions: {
     id: "solutions",
@@ -94,7 +81,6 @@ export const WORKFLOW_V2_STAGE_REGISTRY = {
     schemaRevision: 1,
     schema: WorkflowV2SolutionsOutputSchema,
     maxOutputTokens: 4_096,
-    deadlineMs: 120_000,
   },
   "solution-set-review": {
     id: "solution-set-review",
@@ -103,7 +89,6 @@ export const WORKFLOW_V2_STAGE_REGISTRY = {
     schemaRevision: 1,
     schema: WorkflowV2SolutionSetReviewOutputSchema,
     maxOutputTokens: 4_096,
-    deadlineMs: 120_000,
   },
   "idea-follow-up": {
     id: "idea-follow-up",
@@ -112,7 +97,6 @@ export const WORKFLOW_V2_STAGE_REGISTRY = {
     schemaRevision: 1,
     schema: WorkflowV2IdeaFollowUpOutputSchema,
     maxOutputTokens: 4_096,
-    deadlineMs: 120_000,
   },
   "decision-analysis": {
     id: "decision-analysis",
@@ -121,7 +105,6 @@ export const WORKFLOW_V2_STAGE_REGISTRY = {
     schemaRevision: 1,
     schema: WorkflowV2DecisionAnalysisOutputSchema,
     maxOutputTokens: 6_144,
-    deadlineMs: DECISION_ANALYSIS_DEADLINE_MS,
   },
   "risk-evaluation": {
     id: "risk-evaluation",
@@ -130,7 +113,6 @@ export const WORKFLOW_V2_STAGE_REGISTRY = {
     schemaRevision: 1,
     schema: WorkflowV2RiskEvaluationOutputSchema,
     maxOutputTokens: 4_096,
-    deadlineMs: 120_000,
   },
 } as const satisfies Record<WorkflowV2StageId, WorkflowV2StageDefinition>;
 

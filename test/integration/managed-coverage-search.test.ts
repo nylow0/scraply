@@ -53,7 +53,8 @@ test("managed gap search saves bounded evidence, marks the gap ready, and replay
     async search(query, options) {
       calls += 1;
       expect(query).toBe("repair shop approval delay interviews");
-      expect(options).toMatchObject({ numResults: 5, maxCharacters: 4_000, timeoutMs: 45_000 });
+      expect(options).toMatchObject({ numResults: 5, maxCharacters: 4_000 });
+      expect(options?.timeoutMs).toBeUndefined();
       expect(options?.signal).toBeDefined();
       return [{ ...source("one"), title: "T".repeat(600), author: "A".repeat(250),
         publishedDate: "D".repeat(120) }, source("one"), source("two"), source("three"),

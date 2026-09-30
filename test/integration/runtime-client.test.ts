@@ -55,6 +55,14 @@ afterEach(async () => {
 });
 
 describe("persistent native runtime client", () => {
+  test("an unbounded generation waits for the full native response despite the terminal grace period", async () => {
+    const runtime = client("slow-complete", { terminalGraceMs: 1 });
+    const { deadlineMs: _deadline, ...generation } = request("slow-research");
+    void _deadline;
+    const result = await runtime.structuredCompletion(generation);
+    expect(result.output).toEqual({ answer: "right" });
+    expect(result.metadata.attempts[0]?.providerCompletion).toBe("confirmed");
+  });
   test("handles split UTF-8, coalesced frames, and only the correlated terminal event", async () => {
     const runtime = client("normal");
     expect((await runtime.listModels("openai-subscription"))[0]?.displayName).toBe("Modèle");
@@ -155,6 +163,28 @@ describe("persistent native runtime client", () => {
     } finally {
       process.off("unhandledRejection", listener);
     }
+  });
+
+  test("keeps an interrupted provider stream as unknown completion instead of a retryable failure", async () => {
+    const runtime = client("stream-interrupted");
+    let failure: unknown;
+    try { await runtime.structuredCompletion(request("generation-stream")); }
+    catch (error) { failure = error; }
+    expect(failure).toBeInstanceOf(ProviderFailure);
+    expect((failure as ProviderFailure).code).toBe("interrupted");
+    expect((failure as ProviderFailure).retryable).toBe(false);
+    expect((failure as ProviderFailure).attempts?.[0]?.providerCompletion).toBe("unknown");
+  });
+
+  test("preserves a confirmed output limit for explicit recovery without automatic replay", async () => {
+    const runtime = client("output-limit");
+    let failure: unknown;
+    try { await runtime.structuredCompletion(request("generation-output-limit")); }
+    catch (error) { failure = error; }
+    expect(failure).toBeInstanceOf(ProviderFailure);
+    expect((failure as ProviderFailure).code).toBe("output-limit");
+    expect((failure as ProviderFailure).retryable).toBe(false);
+    expect((failure as ProviderFailure).attempts?.[0]?.providerCompletion).toBe("confirmed");
   });
 
   test("waits for terminal metadata after a prompt mismatch before releasing the generation queue", async () => {

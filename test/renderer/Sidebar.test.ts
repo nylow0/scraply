@@ -17,12 +17,25 @@ function show(threads: Thread[], activeThreadId: string | null = null) {
 }
 
 describe("compact research navigation", () => {
+  test("selection changes the highlight without moving recent research", async () => {
+    const view = show(history(6), "0");
+    const list = within(view.getByRole("list", { name: "Research threads" }));
+    const order = list.getAllByRole("button", { name: /^Open thread/ }).map(row => row.getAttribute("aria-label"));
+    for (const id of ["3", "1", "5", "0"]) {
+      await fireEvent.click(list.getByRole("button", { name: `Open thread Research ${id}` }));
+      expect(view.callbacks.onSelect).toHaveBeenLastCalledWith(id);
+      await view.rerender({ ...view.props, activeThreadId: id });
+      expect(list.getAllByRole("button", { name: /^Open thread/ }).map(row => row.getAttribute("aria-label"))).toEqual(order);
+      expect(list.getByRole("button", { name: `Open thread Research ${id}` }).getAttribute("aria-current")).toBe("true");
+    }
+  });
+
   test.each([18, 80])("keeps six deduplicated rows with the current item outside %i recent projects", async (count) => {
     const view = show(history(count), String(count - 3));
     const list = within(view.getByRole("list", { name: "Research threads" }));
     const rows = list.getAllByRole("button", { name: /^Open thread/ });
     expect(rows).toHaveLength(6);
-    expect(rows[0]?.getAttribute("aria-current")).toBe("true");
+    expect(rows[5]?.getAttribute("aria-current")).toBe("true");
     expect(new Set(rows.map((row) => row.textContent)).size).toBe(6);
     expect(list.getByRole("button", { name: "Open thread Research 1" }).getAttribute("aria-describedby")).toBe("thread-status-1");
     expect(view.getByText("Problems ready", { selector: "#thread-status-1" })).toBeTruthy();

@@ -48,7 +48,8 @@ export class ExaClient implements SearchClient {
       throw new ProviderFailure("cancelled", "Exa search was cancelled", false, { cause: options.signal.reason });
     }
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(new Error("timeout")), options.timeoutMs ?? 30_000);
+    const timeout = options.timeoutMs === undefined ? undefined
+      : setTimeout(() => controller.abort(new Error("timeout")), options.timeoutMs);
     const onAbort = () => controller.abort(options.signal?.reason);
     options.signal?.addEventListener("abort", onAbort, { once: true });
     try {

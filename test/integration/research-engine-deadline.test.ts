@@ -269,7 +269,7 @@ describe("research engine deadlines", () => {
     db.close();
   });
 
-  test("fails without reserving spend when its provider never dispatches", async () => {
+  test("waits past the saved run duration and allows cancellation before dispatch", async () => {
     const directory = mkdtempSync(join(tmpdir(), "scraply-deadline-"));
     tempDirectories.push(directory);
     const db = new DatabaseClient(join(directory, "scraply.db"));
@@ -305,19 +305,24 @@ describe("research engine deadlines", () => {
         offLimits: [],
       }, config);
 
+      // The old run timer expired after 60 ms, even with no provider error.
+      await new Promise((resolve) => setTimeout(resolve, 120));
+      expect(engine.getActiveRunIds().has(runId)).toBe(true);
+      expect(events.filter((event) => event.type === "run-failed")).toEqual([]);
+      engine.cancelRun(runId);
       await waitFor(() => !engine.getActiveRunIds().has(runId));
 
       const run = db.db.prepare("SELECT status, cancelled, completion_reason FROM research_runs WHERE id = ?")
         .get(runId) as { status: string; cancelled: number; completion_reason: string | null };
       const thread = db.db.prepare("SELECT status FROM threads WHERE id = 'thread-1'").get() as { status: string };
       expect(run).toEqual({
-        status: "failed",
-        cancelled: 0,
-        completion_reason: "Run attempt exceeded its hang-detection deadline",
+        status: "cancelled",
+        cancelled: 1,
+        completion_reason: "Cancelled by user",
       });
       expect(thread.status).toBe("failed");
       expect(db.db.prepare("SELECT status FROM cost_ledger WHERE research_run_id = ?").all(runId)).toEqual([]);
-      expect(events.filter((event) => event.type === "run-failed")).toHaveLength(1);
+      expect(events.filter((event) => event.type === "run-failed")).toHaveLength(0);
     } finally {
       db.close();
     }

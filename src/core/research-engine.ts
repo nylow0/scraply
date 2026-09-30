@@ -58,12 +58,12 @@ interface ActiveRun {
   config: RunConfig;
   abortController: AbortController;
   startedAt: number;
-  deadlineTimer?: ReturnType<typeof setTimeout>;
   projectedCodexCalls: number;
   projectedSearches: number;
   researchAllowance?: { maxModelCalls: number; maxSearches: number };
   researchRequest?: { sessionId: string; workItemId: string };
   workflow?: WorkflowExecution;
+  acknowledgedAttemptIds?: readonly string[];
   followUpModelReservation: CostReservation | null;
   followUpSearchReservation: CostReservation | null;
   generationProvenance: Map<string, string>;
@@ -236,7 +236,8 @@ export class ResearchEngine {
     }
   }
 
-  async resumeRun(runId: string): Promise<void> {
+  // Restart and explicit recovery honor saved acknowledgements; completed discovery also needs a reassessment policy.
+  async resumeRun(runId: string, acknowledgedAttemptIds: readonly string[] = [], reassessProblems = false): Promise<void> {
     if (this.activeRuns.has(runId)) return;
     const row = this.options.db.db.prepare(`SELECT thread_id, status, config_json, problem_id FROM research_runs WHERE id = ?`)
       .get(runId) as { thread_id: string; status: string; config_json: string; problem_id: string | null } | undefined;
@@ -244,13 +245,20 @@ export class ResearchEngine {
     if (config && config.workflowVersion !== 2) {
       throw new AppError("conflict", "Legacy generation has been retired. Your saved results are preserved. Start a new run to use the current prompts.");
     }
-    if (!row || !config || !["queued", "running", ...(config.workflowVersion === 2 ? ["failed", "cancelled"] : [])].includes(row.status)) {
+    const completedAssessment = reassessProblems && row?.status === "completed" && !row.problem_id
+      && this.options.db.db.prepare(`SELECT 1 FROM scopes scope JOIN workflow_snapshots snapshot ON snapshot.research_run_id = scope.research_run_id
+        WHERE scope.research_run_id = ? AND trim(scope.audience) = '' AND snapshot.snapshot_key = 'problem-audience-assessment'
+          AND json_extract(snapshot.value_json, '$.version') = 1
+          AND NOT EXISTS(SELECT 1 FROM workflow_snapshots WHERE research_run_id = scope.research_run_id AND snapshot_key = 'discovery-completed:audience-v1')`)
+        .get(runId);
+    if (!row || !config || (!completedAssessment && !["queued", "running", ...(config.workflowVersion === 2 ? ["failed", "cancelled"] : [])].includes(row.status))) {
       throw new AppError("conflict", "This research run has already ended and cannot be resumed.");
     }
-    const resumeSafety = this.generationAttempts.getResumeSafety(runId);
+    const acknowledged = [...new Set([...new WorkflowRepository(this.options.db).acknowledgedAttemptIds(runId), ...acknowledgedAttemptIds])];
+    const resumeSafety = this.generationAttempts.getResumeSafety(runId, acknowledged);
     if (!resumeSafety.canResume) {
       this.ledger.settleUncertain(runId, "A dispatched generation lost its terminal result during restart");
-      throw new AppError("conflict", `${resumeSafety.resumeBlockedReason} Cancel this run and start a new one to avoid an automatic duplicate charge.`);
+      throw new AppError("conflict", `${resumeSafety.resumeBlockedReason} Review this request before explicitly retrying it.`);
     }
     this.assertThreadIdle(row.thread_id, runId);
     this.ledger.settleUncertain(runId, "The app restarted before an operation reached a durable result");
@@ -271,7 +279,7 @@ export class ResearchEngine {
         resumedOpportunityInitialization = true;
       }
     }
-    this.begin(runId, row.thread_id, row.problem_id, config, true);
+    this.begin(runId, row.thread_id, row.problem_id, config, true, acknowledged);
     if (resumedOpportunityInitialization) {
       this.emit({ type: "opportunity-progress", threadId: row.thread_id, status: "mapping-coverage" });
     }
@@ -435,9 +443,6 @@ export class ResearchEngine {
         generationProvenance: new Map(),
       };
       this.activeRuns.set(runId, active);
-      active.deadlineTimer = setTimeout(() => {
-        controller.abort(new Error("Focused experiment planning exceeded the run deadline"));
-      }, config.maxRunMinutes * 60_000);
       try {
         await runFocusedExperimentFlow({
           researchRunId: runId,
@@ -456,7 +461,6 @@ export class ResearchEngine {
           onStage: () => this.progress(active, "Planning and reviewing one focused experiment", "analyzing-option"),
         });
       } finally {
-        if (active.deadlineTimer) clearTimeout(active.deadlineTimer);
         if (this.activeRuns.get(runId) === active) this.activeRuns.delete(runId);
         this.options.db.db.prepare("UPDATE research_runs SET status = 'completed', cancelled = 0, updated_at = ? WHERE id = ?")
           .run(new Date().toISOString(), runId);
@@ -752,7 +756,6 @@ export class ResearchEngine {
         schema: OpportunityCoverageMapOutputSchema,
         jsonSchema: deriveJsonSchema(OpportunityCoverageMapOutputSchema),
         repairPolicy: "disabled",
-        deadlineMs: 120_000,
         signal,
         onDispatched: () => this.options.db.immediateTransaction(() => repository.markAttemptDispatched(threadId, attempt.attemptId, "none")),
       });
@@ -880,7 +883,6 @@ export class ResearchEngine {
         schema: OpportunityExpansionOutputSchema,
         jsonSchema: deriveJsonSchema(OpportunityExpansionOutputSchema),
         repairPolicy: "disabled",
-        deadlineMs: 180_000,
         signal,
         onDispatched: () => this.options.db.immediateTransaction(() => repository.markAttemptDispatched(threadId, attempt.attemptId, "none")),
       });
@@ -1140,6 +1142,7 @@ export class ResearchEngine {
   }
 
   private opportunityRunModel(active: ActiveRun, threadId: string): StructuredModelClient {
+    if (this.usesWorkGuidance(active.runId)) return this.instrumentedModel(active);
     return {
       structuredCompletion: async <T>(request: StructuredStageRequest<T>) => {
         const repository = new OpportunityExplorationRepository(this.options.db);
@@ -1293,7 +1296,6 @@ export class ResearchEngine {
       generationProvenance: new Map(),
     };
     this.activeRuns.set(runId, active);
-    this.scheduleDeadline(active);
     this.emit({ type: "run-resumed", runId, threadId });
     const execution = this.executeEvidenceFollowUp(active)
       .catch((error) => this.failEvidenceFollowUp(active, error))
@@ -1321,7 +1323,7 @@ export class ResearchEngine {
       .get(runId) as { thread_id: string; problem_id: string; config_json: string } | undefined;
     if (!row || row.thread_id !== threadId) throw new AppError("not_found", "Completed v2 analysis run not found.");
     const safety = this.generationAttempts.getResumeSafety(runId);
-    if (!safety.canResume) throw new AppError("conflict", `${safety.resumeBlockedReason} Cancel this run and start a new one to avoid an automatic duplicate charge.`);
+    if (!safety.canResume) throw new AppError("conflict", `${safety.resumeBlockedReason} Review this request before explicitly retrying it.`);
     this.assertThreadIdle(threadId, runId);
     try { this.options.db.immediateTransaction(() => this.followUps.beginReassessment(runId)); }
     catch (error) { throw new AppError("conflict", error instanceof Error ? error.message : "Evidence reassessment cannot be started."); }
@@ -1332,7 +1334,6 @@ export class ResearchEngine {
       projectedCodexCalls: completedCalls + 2, projectedSearches: 0, workflow: new WorkflowExecution(this.options.db, runId), followUpModelReservation: null, followUpSearchReservation: null,
       generationProvenance: new Map() };
     this.activeRuns.set(runId, active);
-    this.scheduleDeadline(active);
     this.emit({ type: "run-resumed", runId, threadId });
     const execution = this.executeEvidenceReassessment(active).catch((error) => this.failEvidenceReassessment(active, error)).finally(() => {
       this.executions.delete(execution);
@@ -1350,7 +1351,6 @@ export class ResearchEngine {
     const active = this.activeRuns.get(runId);
     const followUp = this.followUps.find(runId);
     if (active) {
-      if (active.deadlineTimer) clearTimeout(active.deadlineTimer);
       active.abortController.abort(new Error("Cancelled by user"));
       if (active.followUpModelReservation) {
         this.ledger.release(active.followUpModelReservation.id);
@@ -1401,7 +1401,8 @@ export class ResearchEngine {
     this.emit({ type: "run-cancelled", runId, threadId });
   }
 
-  private begin(runId: string, threadId: string, problemId: string | null, config: RunConfig, resumed = false): void {
+  private begin(runId: string, threadId: string, problemId: string | null, config: RunConfig, resumed = false,
+    acknowledgedAttemptIds: readonly string[] = []): void {
     if (config.workflowVersion !== 2) throw new AppError("conflict", "Legacy generation has been retired. Start a new run to use the current prompts.");
     const selected = problemId && this.options.db.db.prepare(`SELECT 1 FROM solutions
       WHERE research_run_id = ? AND selected_at IS NOT NULL LIMIT 1`).get(runId);
@@ -1413,6 +1414,7 @@ export class ResearchEngine {
       projectedCodexCalls: projection.modelCalls, projectedSearches: projection.searches,
       followUpModelReservation: null, followUpSearchReservation: null,
       generationProvenance: new Map(),
+      acknowledgedAttemptIds,
     };
     const request = this.options.db.db.prepare(`
       SELECT wi.id, wi.session_id,
@@ -1428,7 +1430,6 @@ export class ResearchEngine {
     };
     if (request) active.researchRequest = { sessionId: request.session_id, workItemId: request.id };
     this.activeRuns.set(runId, active);
-    this.scheduleDeadline(active);
     this.updateThread(threadId, problemId ? "development-running" : "discovery-running");
     this.emit(resumed
       ? { type: "run-resumed", runId, threadId }
@@ -1444,12 +1445,11 @@ export class ResearchEngine {
   }
 
   private async execute(active: ActiveRun): Promise<void> {
-    active.workflow = new WorkflowExecution(this.options.db, active.runId);
+    active.workflow = new WorkflowExecution(this.options.db, active.runId, active.acknowledgedAttemptIds);
     if (active.problemId) await this.executeDevelopment(active);
     else await this.executeDiscovery(active);
     if (active.abortController.signal.aborted || this.activeRuns.get(active.runId) !== active) return;
     this.runs.finish(active.runId, "completed");
-    if (active.deadlineTimer) clearTimeout(active.deadlineTimer);
     this.activeRuns.delete(active.runId);
     this.emit({ type: "run-completed", runId: active.runId, threadId: active.threadId, problemId: active.problemId });
     if (!active.problemId) { this.updateThread(active.threadId, "problems-ready"); return; }
@@ -1494,7 +1494,9 @@ export class ResearchEngine {
     const deps = this.dependencies(active);
     if (active.workflow) {
       const workflow = active.workflow;
-      if (workflow.read("discovery-completed")) return;
+      const completionKey = !scope.audience.trim() && workflow.read<{ version: number }>("problem-audience-assessment")?.version === 1
+        ? "discovery-completed:audience-v1" : "discovery-completed";
+      if (workflow.read(completionKey)) return;
       let harvest = workflow.read<HarvestResult>("harvest");
       if (!harvest) {
         harvest = await harvestFactors(scope, { ...deps, idFactory: workflow.idFactory("harvest"), random: () => 0.5 });
@@ -1507,7 +1509,7 @@ export class ResearchEngine {
       this.progress(active, `${harvest.factors.length} observations from ${harvest.sources.length} sources`);
       const result = await discoverProblems(scope, harvest.factors, harvest.sources, { ...deps, idFactory: workflow.idFactory("problems") });
       this.discovery.persistProblems(active.runId, result.killSources, result.problems, result.blockedCandidates, () => {
-        workflow.save("discovery-completed", result);
+        workflow.save(completionKey, result);
       });
       this.progress(active, `${result.problems.length} problems ready for your review`);
       return;
@@ -2006,6 +2008,9 @@ export class ResearchEngine {
       model: active.config.model,
       reasoningEffort: active.config.reasoningEffort,
       depth: active.config.discoveryDepth,
+      guided: this.usesWorkGuidance(active.runId),
+      smallHarvestBatches: workflow.smallHarvestBatches,
+      assessProblemAudience: workflow.read<{ version: number }>("problem-audience-assessment")?.version === 1,
       ...(allocation ? {
         candidateLimit: allocation.candidateLimit,
         queryCountByMode: { domain: allocation.domainQueries, audience: allocation.audienceQueries },
@@ -2224,19 +2229,29 @@ export class ResearchEngine {
         const reservation = active.followUpSearchReservation
           ?? this.ledger.reserve(active.runId, "search", provider, null, provider === "exa" ? 0.02 : 0.005);
         active.followUpSearchReservation = null;
-        try { return await client.search(query, options); }
+        this.progress(active, `Searching ${provider === "exa" ? "Exa" : "Perplexity"}: ${query}`, "searching", null);
+        try {
+          const sources = await client.search(query, options);
+          if (this.activeRuns.get(active.runId) === active) this.progress(active,
+            `Found ${sources.length} ${sources.length === 1 ? "source" : "sources"} for: ${query}`, "searching", null);
+          return sources;
+        } catch (error) {
+          if (this.activeRuns.get(active.runId) === active) this.progress(active,
+            `${active.abortController.signal.aborted ? "Cancelled search" : "Search failed"}: ${query}`, "searching", null);
+          throw error;
+        }
         finally {
           if (this.activeRuns.get(active.runId) === active) {
             this.ledger.commit(reservation.id, reservation.reservedUsd);
-            this.progress(active, `Search: ${query}`);
           }
         }
       },
     };
   }
 
-  /** New session runs may dispatch only within their saved work-item reservations. */
+    /** Older bounded sessions may dispatch only within their saved work-item reservations. */
   private remainingWorkflowTaskCalls(active: ActiveRun, kind: "model-call" | "search"): number | null {
+    if (this.usesWorkGuidance(active.runId)) return null;
     const linked = this.options.db.db.prepare(`SELECT workflow_session_id FROM research_runs WHERE id = ?`)
       .get(active.runId) as { workflow_session_id: string | null } | undefined;
     if (!linked?.workflow_session_id) return null;
@@ -2272,7 +2287,16 @@ export class ResearchEngine {
     return reserved.units - used;
   }
 
+  /** Estimates must not become dispatch limits in a depth-guided workflow. */
+  private usesWorkGuidance(runId: string): boolean {
+    const row = this.options.db.db.prepare(`SELECT json_extract(session.contract_json, '$.limits.enforced') AS enforced
+      FROM research_runs run JOIN workflow_sessions session ON session.id = run.workflow_session_id
+      WHERE run.id = ?`).get(runId) as { enforced: number | null } | undefined;
+    return row?.enforced === 0;
+  }
+
   private enforceRunawayBackstop(active: ActiveRun, provider: string, projection: number): void {
+    if (this.usesWorkGuidance(active.runId)) return;
     const count = this.ledger.countProviderCalls(active.runId, provider);
     if (count >= Math.max(6, projection * 3)) throw new Error(`Runaway backstop triggered for ${provider}; the run exceeded 3× its projected calls.`);
   }
@@ -2286,7 +2310,6 @@ export class ResearchEngine {
       modelState: active.modelState ?? null, elapsedMs: Math.max(0, Date.now() - active.startedAt),
       operationStartedAt: new Date(active.startedAt).toISOString(), operationElapsedMs: Math.max(0, Date.now() - active.startedAt),
       lastSuccessfulCheckpoint: this.lastSuccessfulCheckpoint(active.runId) };
-    this.logJob(active.runId, active.threadId, "run-progress", details);
     this.emit({ type: "run-progress", runId: active.runId, threadId: active.threadId, ...details });
   }
 
@@ -2298,7 +2321,6 @@ export class ResearchEngine {
 
   private fail(active: ActiveRun, error: unknown, status?: "failed" | "cancelled"): void {
     if (this.activeRuns.get(active.runId) !== active) return;
-    if (active.deadlineTimer) clearTimeout(active.deadlineTimer);
     this.activeRuns.delete(active.runId);
     const message = error instanceof Error ? error.message : "Research failed";
     this.ledger.settleUncertain(active.runId, message);
@@ -2316,17 +2338,6 @@ export class ResearchEngine {
     }
   }
 
-  private scheduleDeadline(active: ActiveRun): void {
-    active.deadlineTimer = setTimeout(() => {
-      if (this.activeRuns.get(active.runId) !== active) return;
-      const error = new Error("Run attempt exceeded its hang-detection deadline");
-      active.abortController.abort(error);
-      const followUp = this.followUps.find(active.runId);
-      if (followUp && ["requested", "running"].includes(followUp.status)) this.failEvidenceFollowUp(active, error);
-      else if (followUp?.reassessmentStatus === "running") this.failEvidenceReassessment(active, error);
-      else this.fail(active, error, "failed");
-    }, active.config.maxRunMinutes * 60_000);
-  }
 
   private updateThread(threadId: string, status: string): void {
     this.options.db.db.prepare("UPDATE threads SET status = ?, updated_at = ? WHERE id = ?")
@@ -2404,7 +2415,6 @@ export class ResearchEngine {
       );
     });
     this.runs.finish(active.runId, "completed", "Evidence follow-up completed");
-    if (active.deadlineTimer) clearTimeout(active.deadlineTimer);
     this.activeRuns.delete(active.runId);
     this.progress(active, `${result.factors.length} quote-verified follow-up observations saved`);
     this.updateThread(active.threadId, "solutions-ready");
@@ -2414,7 +2424,6 @@ export class ResearchEngine {
   private failEvidenceFollowUp(active: ActiveRun, error: unknown): void {
     const saved = this.followUps.find(active.runId);
     if (!saved || ["completed", "failed"].includes(saved.status)) return;
-    if (active.deadlineTimer) clearTimeout(active.deadlineTimer);
     this.activeRuns.delete(active.runId);
     if (active.followUpModelReservation) this.ledger.release(active.followUpModelReservation.id);
     if (active.followUpSearchReservation) this.ledger.release(active.followUpSearchReservation.id);
@@ -2467,7 +2476,6 @@ export class ResearchEngine {
         analysisGenerationId: this.generationIdFor(active, analysisResult.request.generationId) });
     });
     this.runs.finish(active.runId, "completed", "Evidence reassessment completed");
-    if (active.deadlineTimer) clearTimeout(active.deadlineTimer);
     this.activeRuns.delete(active.runId);
     this.updateThread(active.threadId, "solutions-ready");
     this.emit({ type: "run-completed", runId: active.runId, threadId: active.threadId, problemId: active.problemId });
@@ -2509,7 +2517,6 @@ export class ResearchEngine {
 
   private failEvidenceReassessment(active: ActiveRun, error: unknown): void {
     if (this.activeRuns.get(active.runId) !== active) return;
-    if (active.deadlineTimer) clearTimeout(active.deadlineTimer);
     this.activeRuns.delete(active.runId);
     const message = error instanceof Error ? error.message : "Evidence reassessment failed";
     this.ledger.settleUncertain(active.runId, message);

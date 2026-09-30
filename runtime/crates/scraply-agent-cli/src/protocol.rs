@@ -396,6 +396,7 @@ pub enum ErrorCode {
     RateLimited,
     SchemaInvalid,
     OutputInvalid,
+    OutputLimit,
     Internal,
 }
 

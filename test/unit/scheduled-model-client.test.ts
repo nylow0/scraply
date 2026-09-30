@@ -91,3 +91,24 @@ test("a queued project deadline expires without dispatching a native attempt", a
   await first;
   expect(seen).toEqual(["first"]);
 });
+
+test("research without a deadline waits through the queue and returns the complete response", async () => {
+  const scheduler = new WorkflowModelScheduler();
+  const raw: StructuredModelClient = {
+    async structuredCompletion<T>(input: StructuredStageRequest<T>) {
+      await Bun.sleep(25);
+      input.signal?.throwIfAborted();
+      return { output: input.schema.parse({ answer: "complete response" }), metadata: {
+        model, usage: { status: "unknown" }, latencyMs: 25, repairCount: 0,
+        providerRequestIds: [], attempts: [attempt("initial")],
+      } };
+    },
+  };
+  const { deadlineMs: _deadline, ...unlimited } = request("research", "disabled");
+  void _deadline;
+  const results = await Promise.all([
+    scheduledModelClient(raw, scheduler, "first").structuredCompletion(unlimited),
+    scheduledModelClient(raw, scheduler, "second").structuredCompletion(unlimited),
+  ]);
+  expect(results.map((result) => result.output.answer)).toEqual(["complete response", "complete response"]);
+});

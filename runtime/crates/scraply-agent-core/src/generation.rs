@@ -263,7 +263,12 @@ where
     ) -> Result<ProviderResponse, CoreError> {
         control.check()?;
         let cancellation = control.cancellation().clone();
-        let deadline = tokio::time::sleep(control.remaining());
+        let deadline = async {
+            match control.remaining() {
+                Some(remaining) => tokio::time::sleep(remaining).await,
+                None => std::future::pending::<()>().await,
+            }
+        };
         tokio::pin!(deadline);
         let generation = self.provider.generate(request, control);
         tokio::pin!(generation);

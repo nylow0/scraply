@@ -19,7 +19,7 @@ import {
   WorkflowV2Repository,
 } from "../../src/db/repositories/workflow-v2";
 import { deriveJsonSchema } from "../../src/shared/json-schema";
-import { FactorHarvestOutputSchema, ProblemCandidatesOutputSchema, ProblemKillOutputSchema } from "../../src/shared/structured-output-schemas";
+import { FactorHarvestOutputSchema, ProblemCandidatesOutputSchema, ProblemKillOutputSchema, WorkflowV2FactorHarvestOutputSchema } from "../../src/shared/structured-output-schemas";
 import { WorkflowExecution } from "../../src/core/workflow-execution";
 import { configurePromptPaths } from "../../src/core/prompts";
 import { discoverProblems, harvestFactors, type HarvestedFactor, type HarvestedSource } from "../../src/core/discovery";
@@ -34,6 +34,18 @@ afterEach(() => {
 });
 
 describe("workflow v2 persistence", () => {
+  test("keeps saved extraction batch policy when an older run is reopened", () => {
+    configurePromptPaths({ bundledDir: join(process.cwd(), "prompts"), overrideDir: null });
+    const client = database();
+    try {
+      expect(new WorkflowExecution(client, "run-v2").smallHarvestBatches).toBe(true);
+      expect(new WorkflowExecution(client, "run-v2").smallHarvestBatches).toBe(true);
+      client.db.prepare("DELETE FROM workflow_snapshots WHERE research_run_id = ? AND snapshot_key = ?")
+        .run("run-v2", "small-harvest-batches");
+      expect(new WorkflowExecution(client, "run-v2").smallHarvestBatches).toBe(false);
+    } finally { client.close(); }
+  });
+
   test("harvests formatted source quotes and rejects bad factors without aborting the research stage", async () => {
     configurePromptPaths({ bundledDir: join(process.cwd(), "prompts"), overrideDir: null });
     const client = database();
@@ -308,28 +320,32 @@ describe("workflow v2 persistence", () => {
     } finally { client.close(); }
   });
 
-  test("reuses a completed factor batch after interruption before the full harvest is persisted", async () => {
+  test("reuses a completed legacy factor batch while bounding oversized notes without changing raw history", async () => {
     configurePromptPaths({ bundledDir: join(process.cwd(), "prompts"), overrideDir: null });
     const client = database();
-    const stage = WORKFLOW_V2_STAGE_REGISTRY["factor-harvest"];
+    const longNote = "Uncertain applicability. 🌍 ".repeat(4_000).trim();
     let providerCalls = 0;
     const provider: StructuredModelClient = { async structuredCompletion(request) {
       providerCalls += 1;
       if (providerCalls > 1) throw new Error("Completed batch was sent to the provider again");
-      const output = request.schema.parse({ factors: [{
+      const legacySchema = WorkflowV2FactorHarvestOutputSchema.extend({ factors: WorkflowV2FactorHarvestOutputSchema.shape.factors.max(15) });
+      const legacyOutput = { factors: [{
         subject: "Operators", behavior: "repeat filing", quote: "Operators repeat filing.",
-        sourceId: "source", modelConfidence: 0.8, uncertainty: "One source",
+        sourceId: "source", modelConfidence: 0.8, uncertainty: longNote,
       }, {
         subject: "Operators", behavior: "reconcile duplicates", quote: "Operators reconcile duplicate records.",
         sourceId: "source", modelConfidence: 0.7, uncertainty: "One source",
-      }] });
+      }] };
+      // Fresh provider output is bounded; this terminal fixture represents an older saved contract.
+      expect(request.schema.safeParse(legacyOutput).success).toBe(false);
+      const output = legacySchema.parse(legacyOutput);
       const metadata = {
         model: request.model, usage: { status: "unknown" as const }, latencyMs: 1, repairCount: 0,
         providerRequestIds: [], attempts: [],
         prompt: { id: "scraply.stage-worker.v1", sha256: createHash("sha256").update("runtime-prompt").digest("hex") },
       };
       const attempts = new GenerationAttemptRepository(client);
-      const prepared = attempts.prepare("run-v2", { ...request, deadlineMs: 120_000 });
+      const prepared = attempts.prepare("run-v2", { ...request, jsonSchema: deriveJsonSchema(legacySchema), deadlineMs: 120_000 });
       attempts.markDispatched(prepared.id);
       attempts.markAccepted(prepared.id, { compilerPrompt: metadata.prompt });
       attempts.recordTerminal(prepared.id, {
@@ -347,7 +363,7 @@ describe("workflow v2 persistence", () => {
           sources: partitioned ? [{ id: "source", text: "Operators repeat filing." }] : [{ id: "source", text: "Operators repeat filing." }, { id: "other", text: "Other evidence." }],
         },
       }], schema: FactorHarvestOutputSchema,
-      jsonSchema: deriveJsonSchema(FactorHarvestOutputSchema), repairPolicy: "one_retry", deadlineMs: stage.deadlineMs,
+      jsonSchema: deriveJsonSchema(FactorHarvestOutputSchema), repairPolicy: "one_retry",
     });
     try {
       await expect(new WorkflowExecution(client, "run-v2").discoveryClient(provider).structuredCompletion(request("first")))
@@ -387,6 +403,12 @@ describe("workflow v2 persistence", () => {
       await expectsFreshDispatch({ ...smaller, model: { ...smaller.model, modelId: "different-model" } });
       expect(rejectedReuseDispatches).toBe(6);
 
+      const sameStage = new WorkflowExecution(client, "run-v2");
+      await sameStage.discoveryClient(provider).structuredCompletion(request("resume-original"));
+      const savedRaw = client.db.prepare("SELECT output_json FROM stage_results WHERE selection_key = ?")
+        .get("domain:source,other") as { output_json: string };
+      expect(JSON.parse(savedRaw.output_json).factors[0].uncertainty).toBe(longNote);
+
       const resumed = new WorkflowExecution(client, "run-v2");
       const recovered = await resumed.discoveryClient(provider).structuredCompletion(request("resume", true));
 
@@ -396,12 +418,12 @@ describe("workflow v2 persistence", () => {
         sourceRole: "unknown", audienceFit: "unknown", independentSourceKey: null, supportsDemand: false,
         demandEvidenceUncertainty: "Not classified in the saved output.",
       })] });
-      expect(resumed.withFactorUncertainty([{
+      const compacted = resumed.withFactorUncertainty([{
         subject: "Operators", behavior: "repeat filing", quote: "Operators repeat filing.", sourceId: "source",
-      }])).toEqual([{
-        subject: "Operators", behavior: "repeat filing", quote: "Operators repeat filing.", sourceId: "source",
-        uncertainty: "One source",
-      }]);
+      }])[0]!;
+      expect(compacted.uncertainty?.length).toBeLessThanOrEqual(600);
+      expect(compacted.uncertainty?.startsWith("Uncertain applicability.")).toBe(true);
+      expect(compacted.quote).toBe("Operators repeat filing.");
     } finally { client.close(); }
   });
 
@@ -412,7 +434,7 @@ describe("workflow v2 persistence", () => {
     const request: StructuredStageRequest<unknown> = {
       generationId: "candidate-original", stage: "problem-candidates:batch-1", model: { providerId: "test", modelId: "test" }, reasoningEffort: "high",
       workOrder: { stage: "problem-candidates", instruction: "Legacy instruction", goal: "Find problems", inputs: {}, requiredDecisions: [], definitionOfDone: [], constraints: [] },
-      evidence: [], schema: ProblemCandidatesOutputSchema, jsonSchema: deriveJsonSchema(ProblemCandidatesOutputSchema), repairPolicy: "one_retry", deadlineMs: stage.deadlineMs,
+      evidence: [], schema: ProblemCandidatesOutputSchema, jsonSchema: deriveJsonSchema(ProblemCandidatesOutputSchema), repairPolicy: "one_retry",
     };
     const output = stage.schema.parse({ problems: [{ statement: "Operators repeat filing.", whyItPersists: "Systems disagree.", affected: "Operators",
       scaleEstimate: "Unknown", scaleBasisFactorId: null, factorIds: [], alternativeExplanations: [], unknowns: ["Frequency"] }] });
@@ -446,12 +468,11 @@ describe("workflow v2 persistence", () => {
       const prompts = original.read<Record<string, Record<string, unknown>>>("prompts")!;
       client.db.prepare(`UPDATE workflow_snapshots SET value_json = ? WHERE research_run_id = 'run-v2' AND snapshot_key = 'prompts'`)
         .run(JSON.stringify({ ...prompts, "problem-kill": { ...prompts["problem-kill"], currentBundledSha256: "0".repeat(64) } }));
-      const stage = WORKFLOW_V2_STAGE_REGISTRY["problem-kill"];
       const request: StructuredStageRequest<unknown> = {
         generationId: "older-kill", stage: "problem-kill:older", model: { providerId: "test", modelId: "test" }, reasoningEffort: "low",
         workOrder: { stage: "problem-kill", instruction: "Saved instruction", goal: "Assess evidence", inputs: {}, definitionOfDone: [] },
         evidence: [], schema: ProblemKillOutputSchema, jsonSchema: deriveJsonSchema(ProblemKillOutputSchema),
-        repairPolicy: "one_retry", deadlineMs: stage.deadlineMs,
+        repairPolicy: "one_retry",
       };
       const olderOutput = {
         verdict: "insufficient-evidence", verdictReason: "The buyer has not been reached.", verdictSourceIds: [],
@@ -759,7 +780,6 @@ describe("workflow v2 persistence", () => {
       schema: stage.schema as import("zod").z.ZodType<unknown>,
       jsonSchema: deriveJsonSchema(stage.schema),
       repairPolicy: "one_retry",
-      deadlineMs: stage.deadlineMs,
     });
       attempts.markDispatched(prepared.id);
       attempts.interruptInFlight("process ended");

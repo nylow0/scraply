@@ -141,9 +141,9 @@ function saveAttemptFixture(input: {
   return { sessionId: session.id, taskId, attemptId, runId, revision };
 }
 
-test("a classified transient failure retries once in a bounded continuation and replays its command", async () => {
+test.each(["timeout", "output-limit"] as const)("a classified %s failure retries once in a bounded continuation and replays its command", async (errorCode) => {
   const { directory, threadId, contract, request } = await fixture();
-  const saved = saveAttemptFixture({ directory, threadId, contract, taskState: "failed", attemptStatus: "failed", errorCode: "timeout" });
+  const saved = saveAttemptFixture({ directory, threadId, contract, taskState: "failed", attemptStatus: "failed", errorCode });
   const before = await request(`/workflows/${saved.sessionId}`);
   expect(before.status).toBe(200);
   const detail = WorkflowDetailSchema.parse((await before.json() as { data: unknown }).data);

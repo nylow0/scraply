@@ -30,6 +30,77 @@ function detail(summaryChanges: Partial<WorkflowSummary> = {}): WorkflowDetail {
 }
 
 describe("VibeProgress", () => {
+  test("resumes server-verified paused work while retaining historical uncertain budget entries", async () => {
+    const state = detail({ state: "paused", canResume: true });
+    state.tasks = [state.tasks[0]!];
+    const onResume = vi.fn(async () => {});
+    const view = render(VibeProgress, { detail: state, busy: false, onPause: vi.fn(async () => {}), onStop: vi.fn(async () => {}), onResume });
+    await fireEvent.click(view.getByRole("button", { name: "Resume" }));
+    expect(onResume).toHaveBeenCalledOnce();
+  });
+
+  test("offers the explicit saved-problem reassessment for an eligible completed discovery", async () => {
+    const state = detail({ state: "finished", outcome: "no-qualifying-ideas" });
+    state.tasks = [{ ...state.tasks[0]!, id: "discovery-1", kind: "discovery", state: "succeeded", canReassessProblems: true }];
+    const onReassessProblems = vi.fn(async () => {});
+    const view = render(VibeProgress, { detail: state, busy: false, onPause: vi.fn(async () => {}),
+      onStop: vi.fn(async () => {}), onReassessProblems });
+    await fireEvent.click(view.getByRole("button", { name: "Re-evaluate problems" }));
+    expect(onReassessProblems).toHaveBeenCalledWith("discovery-1");
+    expect(view.queryByRole("button", { name: "Retry task" })).toBeNull();
+  });
+
+  test("shows one activity row for consecutive events describing the same action", () => {
+    const state = detail({ ideaTargetReady: false });
+    state.activity = ["Model request dispatched", "Model request accepted", "Model request accepted"]
+      .map((message, index) => ({ id: `event-${index}`, message, stage: "extracting", createdAt: `2026-09-23T12:00:0${index}.000Z` }));
+    const view = render(VibeProgress, { detail: state, busy: false, onPause: vi.fn(async () => {}), onStop: vi.fn(async () => {}) });
+    expect(view.getAllByText("Reading sources and extracting evidence")).toHaveLength(1);
+    expect(view.getByRole("log").querySelector("time")?.dateTime).toBe("2026-09-23T12:00:02.000Z");
+  });
+
+  test("shows research activity and accessible controls until the idea assignments exist", async () => {
+    const state = detail({ ideaTargetReady: false, selectedProblemIds: [] });
+    state.activity = [{ id: "event-1", message: "Searching Perplexity: repair shop warranty delays", stage: "searching", createdAt: "2026-09-23T12:00:00.000Z" }];
+    const onPause = vi.fn(async () => {});
+    const onStop = vi.fn(async () => {});
+    const view = render(VibeProgress, { detail: state, busy: false, onPause, onStop });
+    expect(view.getByRole("heading", { name: "Researching your brief" })).toBeTruthy();
+    expect(view.getByRole("log").textContent).toContain("repair shop warranty delays");
+    expect(view.queryByRole("progressbar")).toBeNull();
+    expect(view.queryByLabelText("Idea review counts")).toBeNull();
+    expect(view.container.querySelector("details")?.open).toBe(false);
+    await fireEvent.click(view.getByRole("button", { name: "Pause" }));
+    await fireEvent.click(view.getByRole("button", { name: "Stop" }));
+    expect(onPause).toHaveBeenCalledOnce();
+    expect(onStop).toHaveBeenCalledOnce();
+    await view.rerender({ detail: { ...state, summary: { ...state.summary, ideaTargetReady: true,
+      selectedProblemIds: ["problem-1", "problem-2"], counts: { ...state.summary.counts, requested: 6, accepted: 0, missing: 6 } } } });
+    expect(view.getByRole("progressbar").getAttribute("aria-valuetext")).toBe("0 of 6 distinct ideas accepted");
+  });
+
+  test("failed discovery keeps its error without presenting an unallocated idea target", () => {
+    const state = detail({ ideaTargetReady: false, state: "finished", outcome: "failed",
+      stopReason: "Search provider is unavailable.", finishedAt: "2026-09-23T12:01:00.000Z" });
+    const view = render(VibeProgress, { detail: state, busy: false, onPause: vi.fn(async () => {}), onStop: vi.fn(async () => {}) });
+    expect(view.getByRole("heading", { name: "Research stopped" })).toBeTruthy();
+    expect(view.getByRole("status").textContent).toContain("Search provider is unavailable.");
+    expect(view.queryByText(/distinct ideas/)).toBeNull();
+    expect(view.queryByRole("button", { name: "Pause" })).toBeNull();
+  });
+
+  test("shows actual usage without remaining limits for depth-guided research", () => {
+    const state = detail();
+    state.summary.limits.enforced = false;
+    const view = render(VibeProgress, { detail: state, busy: false,
+      onPause: vi.fn(async () => {}), onStop: vi.fn(async () => {}) });
+    expect(view.getByLabelText("Work completed")).toBeTruthy();
+    expect(view.getByText("Model calls used")).toBeTruthy();
+    expect(view.queryByText("Model calls left")).toBeNull();
+    expect(view.queryByText("Time left")).toBeNull();
+    expect(view.queryByText("Extend work allowance")).toBeNull();
+  });
+
   test("shows accepted work, requested and reviewed counts, remaining allowance, and current task", async () => {
     const onPause = vi.fn(async () => {});
     const onStop = vi.fn(async () => {});
@@ -145,7 +216,7 @@ describe("VibeProgress", () => {
     expect((busy.getByRole("button", { name: "Stop" }) as HTMLButtonElement).disabled).toBe(true);
   });
 
-  test("requires acknowledgement before retrying an unknown task attempt", async () => {
+  test("requires fresh acknowledgement when the same task has a new unknown attempt", async () => {
     const onRetryTask = vi.fn(async () => {});
     const run = detail({ state: "finished", outcome: "needs-attention" });
     run.tasks[1] = { ...run.tasks[1]!, terminalAttemptId: "attempt-unknown" };
@@ -157,6 +228,20 @@ describe("VibeProgress", () => {
     expect(retry.disabled).toBe(false);
     await fireEvent.click(retry);
     expect(onRetryTask).toHaveBeenCalledWith("search-1", "attempt-unknown", true);
+
+    await view.rerender({ detail: { ...run, tasks: run.tasks.map(task => task.id === "search-1"
+      ? { ...task, terminalAttemptId: "attempt-unknown-again" } : task) } });
+    const checkbox = view.getByRole("checkbox", { name: /may have completed/ }) as HTMLInputElement;
+    const retryAgain = view.getByRole("button", { name: "Retry task" }) as HTMLButtonElement;
+    expect(checkbox.checked).toBe(false);
+    expect(retryAgain.disabled).toBe(true);
+    retryAgain.click();
+    expect(onRetryTask).toHaveBeenCalledOnce();
+    await fireEvent.click(checkbox);
+    expect(retryAgain.disabled).toBe(false);
+    await fireEvent.click(retryAgain);
+    expect(onRetryTask).toHaveBeenLastCalledWith("search-1", "attempt-unknown-again", true);
+    expect(onRetryTask).toHaveBeenCalledTimes(2);
   });
 
   test("shows startup family totals and applies only a previewed extension", async () => {
