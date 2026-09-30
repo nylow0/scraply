@@ -41,10 +41,10 @@ export interface PlannedQuery { query: string; intent: QueryIntent | "unclassifi
 export const FACTOR_SUBJECT_MAX_CHARACTERS = 160;
 export const FACTOR_BEHAVIOR_MAX_CHARACTERS = 280;
 export const DEFAULT_AUDIENCE_DOMAINS = ["reddit.com", "news.ycombinator.com"];
-// Bound a single extraction assignment, not the amount of research in a run.
-const GUIDED_HARVEST_SOURCES = 6;
-const GUIDED_HARVEST_CHARACTERS = 18_000;
-const GUIDED_HARVEST_FACTORS = 12;
+// Keep each assignment small enough for reasoning plus output. Research breadth and factor caps stay intact.
+const GUIDED_HARVEST_SOURCES = 3;
+const GUIDED_HARVEST_CHARACTERS = 9_000;
+const GUIDED_HARVEST_FACTORS = 6;
 
 export interface HarvestedSource extends DiscoverySourceRecord {
   url: string;

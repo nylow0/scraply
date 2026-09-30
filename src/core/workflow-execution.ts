@@ -49,7 +49,7 @@ export class WorkflowExecution {
       this.save("focused-experiments", { version: 1 });
       this.save("small-harvest-batches", { version: 1 });
     }
-    // Reopening an older run must reproduce its original source groups and checkpoint identities.
+    // Runs without the marker keep their original source groups and checkpoint identities.
     this.smallHarvestBatches = this.read<{ version: number }>("small-harvest-batches")?.version === 1;
   }
 
