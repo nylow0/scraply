@@ -1,10 +1,14 @@
 import type { DatabaseClient } from "../db/client";
+import { z } from "zod";
 import { DiscoveryRepository } from "../db/repositories/discovery";
 import { GenerationAttemptRepository } from "../db/repositories/generation-attempts";
 import { OpportunityRepository } from "../db/repositories/opportunities";
 import { WorkflowRepository, type WorkflowSession, type WorkflowWorkItem } from "../db/repositories/workflows";
 import { ResearchFrameRepository, type SavedResearchFrame } from "../db/repositories/research-frames";
 import { canonicalJson, sha256 } from "../shared/content-identity";
+import { SavedProblemCandidateSchema } from "../shared/structured-output-schemas";
+import { candidateAssessmentProjection } from "../shared/evidence-investigators";
+import { copySavedProblemCandidates } from "./saved-candidate-archive";
 import { AppError } from "../shared/errors";
 import type { ProblemCandidate, ResearchEvent } from "../shared/ipc";
 import { ReasoningEffortSchema, RunConfigSchema } from "../shared/schemas";
@@ -24,6 +28,7 @@ import { fillGenerationAngle, initialGenerationAngles } from "./idea-assignments
 import { loadManagedCoverageGaps, markManagedCoverageGapCovered, runManagedCoverageMap } from "./managed-coverage-map";
 import { loadManagedCoverageSearchSources, runManagedCoverageSearch } from "./managed-coverage-search";
 import { materializeResearchSnapshot } from "./research-revisions";
+import { UnknownSearchCompletionError, unknownSearchAttempts } from "./workflow-search-attempts";
 import { remainingWorkflowMs as remainingMs } from "./workflow-time";
 import { DEFAULT_OPPORTUNITY_EXPLORATION_CONFIG, OpportunityExplorationConfigSchema } from "../shared/opportunity-exploration";
 
@@ -51,6 +56,11 @@ export interface WorkflowCoordinatorOptions {
     selectVersion?: (threadId: string, rootSolutionId: string, solutionId: string) => void;
   };
 }
+
+type RetryTaskRequest = {
+  threadId: string; sessionId: string; clientCommandId: string; expectedRevision: number;
+  action: Extract<WorkflowAction, { type: "retry-task" }>;
+};
 
 /** The coordinator admits work before dispatch and advances only from committed run events. */
 export class WorkflowCoordinator {
@@ -209,6 +219,16 @@ export class WorkflowCoordinator {
     }
     const session = this.requireSession(request.sessionId, request.threadId);
     if (session.revision !== request.expectedRevision) throw new AppError("REVISION_CONFLICT");
+    if (request.type === "candidate-assessment") {
+      const proposal = this.candidateAssessmentProposal(session, request.candidateId);
+      const capabilityFingerprint = capabilityHash(capabilities);
+      const expiresAt = new Date(Date.now() + 10 * 60_000).toISOString();
+      const fieldErrors = this.candidateAssessmentErrors(session, proposal, capabilities);
+      return { type: "candidate-assessment" as const, proposal, capabilityFingerprint, expiresAt,
+        previewHash: sha256(canonicalJson({ sessionId: session.id, revision: session.revision, proposal, capabilityFingerprint, expiresAt })),
+        minimumWork: { modelCalls: proposal.modelCalls, searches: proposal.searches },
+        upperLimits: this.summary(session.id).limits, fieldErrors };
+    }
     if (session.state === "finished") throw new AppError("REVISION_CONFLICT", "Start a new session to continue completed work.");
     const contract = WorkflowLaunchContractSchema.parse(session.contract);
     const proposal = request.extension;
@@ -274,7 +294,8 @@ export class WorkflowCoordinator {
           : discoveryRunProjection(contract.runConfig.discoveryDepth)
         : { modelCalls: 0, searches: 0 };
       if (projection.modelCalls) this.repository.reserveBudget({ sessionId: session.id, workItemId: initial.id,
-        operationKey: `research-model:${initial.id}`, kind: "model-call", reservedUnits: projection.modelCalls * 2 });
+        operationKey: `research-model:${initial.id}`, kind: "model-call",
+        reservedUnits: projection.modelCalls * (initial.kind === "discovery" && contract.frameWorkflowVersion === 1 ? 1 : 2) });
       if (projection.searches) this.repository.reserveBudget({ sessionId: session.id, workItemId: initial.id,
         operationKey: `research-search:${initial.id}`, kind: "search", reservedUnits: projection.searches });
       const result = this.receipt(session.id);
@@ -314,7 +335,7 @@ export class WorkflowCoordinator {
           id: item.id, parentItemId: item.parentItemId, kind: item.kind, scopeKey: item.scopeKey,
           state: attempt?.completion_unknown ? "unknown" : item.state, question: questionFromItem(item),
           error: errorFromItem(item), createdAt: item.createdAt, finishedAt: item.finishedAt,
-          ...(attempt ? { terminalAttemptId: attempt.id } : {}),
+          ...(attempt ? { terminalAttemptId: attempt.id, terminalAttemptKind: attempt.kind } : {}),
           ...(this.canReassessProblems(session, item) ? { canReassessProblems: true } : {}),
           ...((item.outputRefs as { investigator?: unknown } | null)?.investigator
             ? { investigator: (item.outputRefs as { investigator: unknown }).investigator } : {}),
@@ -451,7 +472,10 @@ export class WorkflowCoordinator {
     if (runId) return frames.forRun(runId);
     const initial = items.find(item => item.kind === "discovery" || item.kind === "known-problem");
     const frameId = (initial?.input as { frameId?: string } | undefined)?.frameId;
-    return frameId ? frames.get(frameId) : null;
+    if (frameId) return frames.get(frameId);
+    const assessment = [...items].reverse().find(item => item.kind === "assess-candidate");
+    const assessmentRunId = assessment ? runIdFromItem(assessment) : null;
+    return assessmentRunId ? frames.forRun(assessmentRunId) : null;
   }
 
   private frameDetail(frame: SavedResearchFrame): NonNullable<WorkflowDetail["researchFrame"]> {
@@ -464,7 +488,8 @@ export class WorkflowCoordinator {
     const contract = WorkflowLaunchContractSchema.parse(session.contract);
     const projection = contract.purpose === "discovery" ? framedDiscoveryProjection(contract.runConfig.discoveryDepth)
       : { modelCalls: 0, searches: 0 };
-    if ((this.availableBudget(session, "model-call") ?? Infinity) < projection.modelCalls * 2
+    const modelCalls = projection.modelCalls * (contract.frameWorkflowVersion === 1 ? 1 : 2);
+    if ((this.availableBudget(session, "model-call") ?? Infinity) < modelCalls
       || (this.availableBudget(session, "search") ?? Infinity) < projection.searches) {
       throw new AppError("BUDGET_TOO_SMALL", "Extend this run's allowance before approving the frame.");
     }
@@ -472,7 +497,7 @@ export class WorkflowCoordinator {
       kind: contract.purpose === "known-problem" ? "known-problem" : "discovery", scopeKey: `framed-research:${frameId}`,
       ordinal: this.repository.listWorkItems(session.id).length, input: { frameId }, state: "ready" });
     if (projection.modelCalls) this.repository.reserveBudget({ sessionId: session.id, workItemId: item.id,
-      operationKey: `research-model:${item.id}`, kind: "model-call", reservedUnits: projection.modelCalls * 2 });
+      operationKey: `research-model:${item.id}`, kind: "model-call", reservedUnits: modelCalls });
     if (projection.searches) this.repository.reserveBudget({ sessionId: session.id, workItemId: item.id,
       operationKey: `research-search:${item.id}`, kind: "search", reservedUnits: projection.searches });
     return item.id;
@@ -500,7 +525,8 @@ export class WorkflowCoordinator {
     ]);
     const previousRows = this.options.db.db.prepare(`SELECT stage.context_json FROM stage_results stage
       JOIN research_runs run ON run.id = stage.research_run_id
-      WHERE run.thread_id = ? AND run.workflow_session_id IS NOT ? AND stage.stage_id = 'solution-set-review'`)
+      WHERE run.thread_id = ? AND run.workflow_session_id IS NOT ? AND stage.stage_id = 'solution-set-review'
+        AND stage.selection_key NOT LIKE 'preliminary:%'`)
       .all(threadId, sessionId) as Array<{ context_json: string }>;
     const previousAccepted = new Set<string>();
     for (const row of previousRows) {
@@ -570,6 +596,7 @@ export class WorkflowCoordinator {
     const action = request.action;
     if (action.type === "retry-task") return this.retryTask({ ...request, action });
     if (action.type === "reassess-problems") return this.reassessProblems({ ...request, action });
+    if (action.type === "assess-not-assessed") return this.assessSavedCandidate({ ...request, action });
     if (action.type === "generate-ideas" || action.type === "request-research") {
       await this.assertModelAvailable(action.model, action.reasoningEffort);
     }
@@ -690,7 +717,7 @@ export class WorkflowCoordinator {
           if (this.repository.listWorkItems(current.id).some((item) => item.state === "unknown")) throw new AppError("UNKNOWN_COMPLETION");
           const items = this.repository.listWorkItems(current.id);
           const running = items.find((item) => item.state === "running");
-          const readyInitial = items.find((item) => ["prepare-frame", "discovery", "known-problem"].includes(item.kind) && item.state === "ready");
+          const readyInitial = items.find((item) => ["prepare-frame", "discovery", "known-problem", "assess-candidate"].includes(item.kind) && item.state === "ready");
           const readyResearch = items.some((item) => item.kind === "research-request" && item.state === "ready");
           const readyCoverage = items.some((item) => ["coverage-map", "coverage-search"].includes(item.kind) && item.state === "ready");
           const existingIdeas = items.some((item) => item.kind === "generate-ideas");
@@ -850,7 +877,7 @@ export class WorkflowCoordinator {
     const safety = new GenerationAttemptRepository(this.options.db).getResumeSafety(runId, acknowledgedAttemptIds);
     if (!safety.canResume) throw new AppError("UNKNOWN_COMPLETION", safety.resumeBlockedReason ?? undefined);
     const receipt = this.options.db.immediateTransaction(() => {
-      this.repository.reopenGuidedDiscovery(session.id, request.expectedRevision, task.id, true);
+      this.repository.reopenResearchRecovery(session.id, request.expectedRevision, task.id, true);
       this.options.db.db.prepare("INSERT INTO workflow_snapshots VALUES (?, ?, ?)").run(runId,
         "problem-audience-assessment", canonicalJson({ version: 1, taskId: task.id,
           commandId: request.clientCommandId, requestedAt: new Date().toISOString() }));
@@ -865,20 +892,23 @@ export class WorkflowCoordinator {
     return receipt;
   }
 
-  private async retryTask(request: {
-    threadId: string; sessionId: string; clientCommandId: string; expectedRevision: number;
-    action: Extract<WorkflowAction, { type: "retry-task" }>;
-  }): Promise<WorkflowAdmissionReceipt> {
+  private async retryTask(request: RetryTaskRequest): Promise<WorkflowAdmissionReceipt> {
     const previous = this.repository.getCommand(request.threadId, request.clientCommandId);
     if (previous) return this.replay(previous.payloadSha256, previous.result, request);
     const original = this.requireSession(request.sessionId, request.threadId);
     if (original.revision !== request.expectedRevision) throw new AppError("REVISION_CONFLICT");
     if (original.state !== "finished") throw new AppError("conflict", "Retry a settled task after its session ends.");
     const task = this.repository.getWorkItem(request.action.taskId);
-    if (!task || task.sessionId !== original.id || !["prepare-frame", "discovery", "known-problem", "generate-ideas"].includes(task.kind)
+    if (!task || task.sessionId !== original.id || !["prepare-frame", "discovery", "known-problem", "generate-ideas", "assess-candidate"].includes(task.kind)
       || (task.state !== "failed" && task.state !== "unknown")) throw new AppError("INVALID_REFERENCE");
     const runId = runIdFromItem(task);
     if (!runId) throw new AppError("UNKNOWN_COMPLETION", "This task has no saved provider attempt to classify.");
+    const searchAttempt = [...unknownSearchAttempts(this.options.db, runId), ...this.repository.unknownInvestigatorSearches(runId)]
+      .find(attempt => attempt.id === request.action.expectedTerminalAttemptId);
+    if (searchAttempt) {
+      if (!request.action.acknowledgeUnknownCompletion) throw new AppError("UNKNOWN_COMPLETION");
+      return this.recoverResearchTask(request, original, task, runId, searchAttempt.id);
+    }
     const attempt = this.options.db.db.prepare(`SELECT id, status, terminal_kind, error_code,
       EXISTS(SELECT 1 FROM json_each(attempt_metadata_json, '$.attempts')
         WHERE json_extract(value, '$.providerCompletion') = 'unknown') AS completion_unknown FROM generation_attempts
@@ -901,30 +931,10 @@ export class WorkflowCoordinator {
       throw new AppError("conflict", "This attempt already has a retry. Open its latest attempt to continue.");
     }
     const contract = WorkflowLaunchContractSchema.parse(original.contract);
-    if ((task.kind === "discovery" && (ambiguous || outputLimit)
-      || task.kind === "prepare-frame" && (ambiguous || outputLimit || safeTransient)) && contract.limits.enforced === false) {
-      const latest = terminalAttempt(this.options.db, task);
-      if (latest?.id !== attempt.id) throw new AppError("INVALID_REFERENCE", "Retry the latest failed model request.");
-      const unresolved = new GenerationAttemptRepository(this.options.db).unresolvedAttemptIds(runId);
-      const priorIds = new Set(this.repository.acknowledgedAttemptIds(runId));
-      const acknowledgedAttemptIds = unresolved.filter(id => id === attempt.id || priorIds.has(id));
-      if (acknowledgedAttemptIds.length !== unresolved.length) throw new AppError("UNKNOWN_COMPLETION");
-      await this.assertModelAvailable(contract.runConfig.model, contract.runConfig.reasoningEffort);
-      this.requireProjectIdle(request.threadId);
-      const receipt = this.options.db.immediateTransaction(() => {
-        this.repository.reopenGuidedDiscovery(original.id, request.expectedRevision, task.id);
-        this.options.db.db.prepare("INSERT INTO workflow_snapshots VALUES (?, ?, ?)").run(runId,
-          `acknowledged-retry:${request.clientCommandId}`, canonicalJson({ attemptIds: acknowledgedAttemptIds,
-            taskId: task.id, terminalAttemptId: attempt.id, acknowledgedAt: new Date().toISOString() }));
-        const result = this.receipt(original.id);
-        this.repository.recordCommand({ threadId: request.threadId, sessionId: original.id,
-          clientCommandId: request.clientCommandId, payload: request, result });
-        return result;
-      });
-      this.progress(original.id, [task.id]);
-      void this.options.engine().resumeRun(runId, acknowledgedAttemptIds)
-        .catch(error => this.failDispatch(original.id, task.id, error));
-      return receipt;
+    if (task.kind === "assess-candidate" || ambiguous && ["discovery", "prepare-frame", "generate-ideas"].includes(task.kind)
+      || contract.limits.enforced === false && (task.kind === "discovery" && outputLimit
+        || task.kind === "prepare-frame" && (outputLimit || safeTransient))) {
+      return this.recoverResearchTask(request, original, task, runId, attempt.id);
     }
     const originalItems = this.repository.listWorkItems(original.id);
     const generationItems = originalItems.filter((item) => item.kind === "generate-ideas");
@@ -940,9 +950,11 @@ export class WorkflowCoordinator {
     } : task.kind === "discovery" ? contract.frameWorkflowVersion === 1
       ? framedDiscoveryProjection(contract.runConfig.discoveryDepth) : discoveryRunProjection(contract.runConfig.discoveryDepth)
       : { modelCalls: 0, searches: 0 };
-    const runCalls = task.kind === "generate-ideas" ? 4 * pendingGeneration.length : projection.modelCalls * (regenerating ? 1 : 2);
+    const runCalls = task.kind === "generate-ideas" ? 4 * pendingGeneration.length
+      : projection.modelCalls * (regenerating || task.kind === "discovery" && contract.frameWorkflowVersion === 1 ? 1 : 2);
+    const searchCalls = projection.searches;
     const minimumCalls = task.kind === "generate-ideas" ? runCalls : runCalls + 4;
-    if (contract.limits.enforced !== false && ((modelCalls ?? 0) < minimumCalls || (searches ?? 0) < projection.searches || remainingMs(original) < 5 * 60_000)) {
+    if (contract.limits.enforced !== false && ((modelCalls ?? 0) < minimumCalls || (searches ?? 0) < searchCalls || remainingMs(original) < 5 * 60_000)) {
       throw new AppError("BUDGET_TOO_SMALL", "The original session has too little reserved time or capacity for a retry.");
     }
     const input = task.input as { model?: { providerId: string; modelId: string }; reasoningEffort?: string };
@@ -1021,6 +1033,68 @@ export class WorkflowCoordinator {
     return receipt;
   }
 
+  /** Each receipt authorizes one saved dispatch. Resume only after every lost result is acknowledged. */
+  private async recoverResearchTask(request: RetryTaskRequest, original: WorkflowSession, task: WorkflowWorkItem,
+    runId: string, terminalId: string): Promise<WorkflowAdmissionReceipt> {
+    const contract = WorkflowLaunchContractSchema.parse(original.contract);
+    const latest = terminalAttempt(this.options.db, task);
+    if (latest?.id !== terminalId) throw new AppError("INVALID_REFERENCE", "Review the latest unacknowledged request before retrying.");
+    if (!["discovery", "prepare-frame", "assess-candidate", "generate-ideas"].includes(task.kind)) {
+      throw new AppError("conflict", "This task cannot resume a saved research request.");
+    }
+    const acknowledgedAttemptIds = [...new Set([...this.repository.acknowledgedAttemptIds(runId), terminalId])];
+    const unresolved = [
+      ...new GenerationAttemptRepository(this.options.db).unresolvedAttemptIds(runId),
+      ...unknownSearchAttempts(this.options.db, runId).map(attempt => attempt.id),
+      ...this.repository.unknownInvestigatorSearches(runId).map(attempt => attempt.id),
+    ];
+    const stillUnresolved = unresolved.some(id => !acknowledgedAttemptIds.includes(id));
+    const allowance = task.kind === "assess-candidate" ? candidateAssessmentProjection(contract.runConfig.discoveryDepth)
+      : task.kind === "generate-ideas" ? { modelCalls: 4, searches: contract.purpose === "known-problem" ? 0 : 5 }
+      : contract.limits.enforced !== false ? task.kind === "prepare-frame"
+        ? { modelCalls: 4, searches: contract.purpose === "known-problem" ? 0 : 5 }
+        : contract.frameWorkflowVersion === 1 ? framedDiscoveryProjection(contract.runConfig.discoveryDepth)
+          : { ...discoveryRunProjection(contract.runConfig.discoveryDepth),
+            modelCalls: discoveryRunProjection(contract.runConfig.discoveryDepth).modelCalls * 2 } : null;
+    if (!stillUnresolved) {
+      if (allowance && contract.limits.enforced !== false && ((this.availableBudget(original, "model-call") ?? 0) < allowance.modelCalls
+        || (this.availableBudget(original, "search") ?? 0) < allowance.searches)) {
+        throw new AppError("BUDGET_TOO_SMALL", "The remaining allowance cannot cover another attempt for this task.");
+      }
+      await this.assertModelAvailable(contract.runConfig.model, contract.runConfig.reasoningEffort);
+      this.requireProjectIdle(request.threadId);
+    }
+    const receipt = this.options.db.immediateTransaction(() => {
+      const current = this.requireSession(original.id, original.threadId);
+      if (current.revision !== request.expectedRevision) throw new AppError("REVISION_CONFLICT");
+      if (!stillUnresolved) this.repository.reopenResearchRecovery(original.id, request.expectedRevision, task.id);
+      if (!stillUnresolved && allowance) {
+        const searches = (this.options.db.db.prepare(`SELECT COUNT(*) AS count FROM cost_ledger
+          WHERE research_run_id = ? AND operation = 'search' AND status IN ('reserved','committed')`)
+          .get(runId) as { count: number }).count;
+        this.options.db.db.prepare("INSERT INTO workflow_snapshots VALUES (?, ?, ?)").run(runId,
+          `task-budget-retry-baseline:${request.clientCommandId}`, canonicalJson({
+            modelCalls: this.repository.countProviderAttempts(runId), searches, searchAttempts: this.searchAttemptCount(runId),
+          }));
+        for (const [kind, units] of [["model-call", allowance.modelCalls], ["search", allowance.searches]] as const) {
+          this.repository.reserveBudget({ sessionId: original.id, workItemId: task.id,
+            operationKey: `research-recovery:${request.clientCommandId}:${kind}`, kind, reservedUnits: units });
+        }
+      }
+      this.options.db.db.prepare("INSERT INTO workflow_snapshots VALUES (?, ?, ?)").run(runId,
+        `acknowledged-retry:${request.clientCommandId}`, canonicalJson({ attemptIds: acknowledgedAttemptIds,
+          taskId: task.id, terminalAttemptId: terminalId, acknowledgedAt: new Date().toISOString() }));
+      const result = this.receipt(original.id);
+      this.repository.recordCommand({ threadId: request.threadId, sessionId: original.id,
+        clientCommandId: request.clientCommandId, payload: request, result });
+      return result;
+    });
+    this.progress(original.id, [task.id]);
+    if (!stillUnresolved) void this.options.engine().resumeRun(runId, acknowledgedAttemptIds)
+      .catch(error => this.failDispatch(original.id, task.id, error));
+    return receipt;
+  }
+
   getConversation(input: unknown): unknown {
     if (!this.options.ideaService) throw new AppError("conflict", "Idea conversations are unavailable.");
     return this.options.ideaService.getConversation(input);
@@ -1048,6 +1122,16 @@ export class WorkflowCoordinator {
       const contract = WorkflowLaunchContractSchema.parse(session.contract);
       const item = this.repository.getWorkItem(taskId);
       if (!item || item.state !== "ready") return;
+      if (item.kind === "assess-candidate") {
+        const assessment = item.input as { candidateId: string; sourceRunId: string; frameId?: string | null };
+        this.options.db.immediateTransaction(() => this.repository.updateWorkItem(taskId, "running"));
+        this.progress(sessionId, [taskId]);
+        await this.options.engine().startCandidateAssessment(session.threadId, assessment.sourceRunId, assessment.candidateId,
+          contract.runConfig, { sessionId, purpose: "research-followup",
+            ...(assessment.frameId !== undefined ? { frameId: assessment.frameId } : {}),
+            onRunCreated: runId => this.linkDispatchedRun(sessionId, taskId, runId) });
+        return;
+      }
       const input = item.input as { frameId?: string; regeneration?: { frameId: string; edited: import("../shared/research-frame").ResearchFrame } };
       if (item.kind === "prepare-frame") {
         this.options.db.immediateTransaction(() => this.repository.updateWorkItem(taskId, "running"));
@@ -1098,6 +1182,156 @@ export class WorkflowCoordinator {
     }
   }
 
+  private candidateAssessmentProposal(session: WorkflowSession, candidateId: string) {
+    if (!["waiting-for-review", "finished"].includes(session.state)) throw new AppError("PROJECT_BUSY", "Wait for the current work to settle before assessing another candidate.");
+    const row = this.options.db.db.prepare(`SELECT candidate.discovery_run_id, candidate.candidate_json FROM rejected_problem_candidates candidate
+      JOIN research_runs run ON run.id = candidate.discovery_run_id
+      WHERE candidate.id = ? AND run.thread_id = ? AND run.status = 'completed' AND candidate.disposition = 'not-assessed'`)
+      .get(candidateId, session.threadId) as { discovery_run_id: string; candidate_json: string | null } | undefined;
+    if (!row?.candidate_json) throw new AppError("INVALID_REFERENCE", "The saved candidate is no longer awaiting assessment.");
+    const base = session.activeSnapshotId ? this.repository.getSnapshot(session.activeSnapshotId) : null;
+    const archiveSaved = base && this.options.db.db.prepare(`SELECT 1 FROM rejected_problem_candidates WHERE discovery_run_id = ?
+      UNION ALL SELECT 1 FROM workflow_snapshots WHERE research_run_id = ? AND snapshot_key = 'candidate-archive-complete' LIMIT 1`)
+      .get(base.materializationRunId, base.materializationRunId);
+    if (archiveSaved && row.discovery_run_id !== base!.materializationRunId) throw new AppError("INVALID_REFERENCE", "Choose a candidate from the current research archive.");
+    SavedProblemCandidateSchema.parse(JSON.parse(row.candidate_json));
+    const contract = WorkflowLaunchContractSchema.parse(session.contract);
+    const depth = contract.runConfig.discoveryDepth;
+    const frame = new ResearchFrameRepository(this.options.db).latestApproved(session.threadId);
+    return { candidateId, sourceRunId: row.discovery_run_id, depth, ...candidateAssessmentProjection(depth),
+      frameId: frame?.id ?? null, frameVersion: frame?.version ?? null,
+      assessmentFrameSource: frame ? "approved" as const : "scope-derived" as const };
+  }
+
+  private candidateAssessmentErrors(session: WorkflowSession, proposal: ReturnType<WorkflowCoordinator["candidateAssessmentProposal"]>, capabilities: WorkflowCapabilities) {
+    const errors: Array<{ path: string[]; code: string; message: string }> = [];
+    const contract = WorkflowLaunchContractSchema.parse(session.contract);
+    if (this.repository.listWorkItems(session.id).some(item => item.kind === "assess-candidate"
+      && (item.input as { candidateId?: unknown }).candidateId === proposal.candidateId
+      && (item.state === "unknown" || Boolean(runIdFromItem(item) && this.repository.hasUnknownProviderCompletion(runIdFromItem(item)!))))) {
+      errors.push({ path: ["candidateId"], code: "UNKNOWN_COMPLETION", message: "A previous assessment has an unknown provider outcome. Its requests will not be replayed automatically." });
+    }
+    if (!capabilities.nativeConnected) errors.push({ path: ["candidateId"], code: "MODEL_UNAVAILABLE", message: "Connect a model account before assessing this candidate." });
+    const searchReady = contract.runConfig.searchProvider === "auto"
+      ? capabilities.searchReady.exa || capabilities.searchReady.perplexity
+      : capabilities.searchReady[contract.runConfig.searchProvider];
+    if (!searchReady) errors.push({ path: ["candidateId"], code: "MODEL_UNAVAILABLE", message: "Configure the run's search provider before assessing this candidate." });
+    if ((this.availableBudget(session, "model-call") ?? Infinity) < proposal.modelCalls
+      || (this.availableBudget(session, "search") ?? Infinity) < proposal.searches
+      || (contract.limits.enforced !== false && remainingMs(session) < 60_000)) {
+      errors.push({ path: ["candidateId"], code: "BUDGET_TOO_SMALL", message: "The remaining allowance cannot cover this assessment. The candidate will stay not assessed." });
+    }
+    return errors;
+  }
+
+  private async assessSavedCandidate(request: Omit<ReturnType<typeof CommandWorkflowRequestSchema.parse>, "action"> & {
+    action: Extract<WorkflowAction, { type: "assess-not-assessed" }>;
+  }): Promise<WorkflowAdmissionReceipt> {
+    const capabilities = await this.options.capabilities();
+    const original = this.requireSession(request.sessionId, request.threadId);
+    const proposal = this.candidateAssessmentProposal(original, request.action.candidateId);
+    const errors = this.candidateAssessmentErrors(original, proposal, capabilities);
+    if (errors.length) throw new AppError(errors[0]!.code as "BUDGET_TOO_SMALL" | "MODEL_UNAVAILABLE" | "UNKNOWN_COMPLETION", errors[0]!.message);
+    const capabilityFingerprint = capabilityHash(capabilities);
+    const expiresAt = request.action.previewExpiresAt;
+    if (Date.parse(expiresAt) <= Date.now() || capabilityFingerprint !== request.action.capabilityFingerprint
+      || request.action.previewHash !== sha256(canonicalJson({ sessionId: original.id, revision: original.revision, proposal, capabilityFingerprint, expiresAt }))) {
+      throw new AppError("PREVIEW_STALE");
+    }
+    const originalContract = WorkflowLaunchContractSchema.parse(original.contract);
+    await this.assertModelAvailable(originalContract.runConfig.model, originalContract.runConfig.reasoningEffort);
+    let taskId = "";
+    const receipt = this.options.db.immediateTransaction(() => {
+      const current = this.requireSession(request.sessionId, request.threadId);
+      if (current.revision !== request.expectedRevision) throw new AppError("REVISION_CONFLICT");
+      if (canonicalJson(this.candidateAssessmentProposal(current, request.action.candidateId)) !== canonicalJson(proposal)) {
+        throw new AppError("PREVIEW_STALE");
+      }
+      let admitted = current;
+      const base = current.activeSnapshotId ? this.repository.getSnapshot(current.activeSnapshotId) : null;
+      let baseSnapshotId = base?.id ?? null;
+      let baseRunId = base?.materializationRunId ?? proposal.sourceRunId;
+      let baseProblemIds = base?.selection.problemIds ?? this.options.listProblems(current.threadId, proposal.sourceRunId).map(problem => problem.id);
+      let assessmentCandidateId = proposal.candidateId;
+      let assessmentSourceRunId = proposal.sourceRunId;
+      if (current.state === "finished") {
+        if (this.repository.getActiveSession(current.threadId)) throw new AppError("PROJECT_BUSY");
+        const contract = { ...originalContract, purpose: "research-followup" as const, mode: "babysit" as const,
+          limits: { ...this.summary(current.id).limits, maxModelCalls: proposal.modelCalls, maxSearches: proposal.searches,
+            maxMinutes: Math.max(1, Math.min(240, Math.ceil(remainingMs(current) / 60_000))) } };
+        admitted = this.repository.createSession({ threadId: current.threadId, purpose: "research-followup", mode: "babysit",
+          contract, remainingMs: contract.limits.maxMinutes * 60_000 });
+        const carried = materializeResearchSnapshot(this.options.db, { threadId: current.threadId, baseRunId,
+          sourceProblemIds: baseProblemIds, sessionId: admitted.id, allowEmpty: true });
+        const mappedCandidateId = carried.candidateIds[proposal.candidateId];
+        // Older snapshots did not copy deferred rows; recover their original saved graph first.
+        const imported = mappedCandidateId ? {} : copySavedProblemCandidates(this.options.db, {
+          sourceRunIds: [proposal.sourceRunId], targetRunId: carried.runId, originMap: carried.originMap });
+        assessmentCandidateId = mappedCandidateId ?? imported[proposal.candidateId]!;
+        assessmentSourceRunId = carried.runId;
+        const linked = this.repository.createSnapshot({ sessionId: admitted.id, ...(baseSnapshotId ? { parentSnapshotId: baseSnapshotId } : {}),
+          materializationRunId: carried.runId, selection: { problemIds: carried.problemIds }, originMap: carried.originMap });
+        baseSnapshotId = linked.id; baseRunId = carried.runId; baseProblemIds = carried.problemIds;
+        admitted = this.repository.updateSession(admitted.id, admitted.revision, { activeSnapshotId: linked.id });
+      }
+      const item = this.repository.createWorkItem({ sessionId: admitted.id, kind: "assess-candidate", scopeKey: `assess-candidate:${proposal.candidateId}:${request.clientCommandId}`,
+        ordinal: this.repository.listWorkItems(admitted.id).length, state: "ready", input: {
+          ...proposal, candidateId: assessmentCandidateId, sourceRunId: assessmentSourceRunId,
+          baseSnapshotId, baseRunId, baseProblemIds,
+        } });
+      taskId = item.id;
+      for (const [kind, units] of [["model-call", proposal.modelCalls], ["search", proposal.searches]] as const) {
+        this.repository.reserveBudget({ sessionId: admitted.id, workItemId: item.id,
+          operationKey: `candidate-assessment:${item.id}:${kind}`, kind, reservedUnits: units });
+      }
+      this.repository.updateSession(admitted.id, admitted.revision, { state: "running", runningSince: new Date().toISOString() });
+      const result = this.receipt(admitted.id);
+      this.repository.recordCommand({ threadId: current.threadId, sessionId: admitted.id, clientCommandId: request.clientCommandId, payload: request, result });
+      return result;
+    });
+    this.progress(receipt.sessionId, [taskId]);
+    void this.dispatchInitial(receipt.sessionId, taskId).catch(error => this.failDispatch(receipt.sessionId, taskId, error));
+    return receipt;
+  }
+
+  private completeCandidateAssessment(session: WorkflowSession, item: WorkflowWorkItem, runId: string): void {
+    const row = this.options.db.db.prepare("SELECT value_json FROM workflow_snapshots WHERE research_run_id = ? AND snapshot_key = 'candidate-assessment-result'")
+      .get(runId) as { value_json: string } | undefined;
+    const parsed = row ? z.object({ assessed: z.boolean(), candidateId: z.string().optional(), sourceRunId: z.string().optional(),
+      stopReason: z.string().optional(), verdict: z.string().optional(), dropped: z.boolean().optional() }).strict().safeParse(JSON.parse(row.value_json)) : null;
+    if (!parsed?.success) {
+      this.failDispatch(session.id, item.id, new Error("The assessment completed without a saved final outcome."));
+      return;
+    }
+    const result = parsed.data;
+    const input = item.input as { candidateId: string; sourceRunId: string; baseSnapshotId: string | null; baseRunId: string; baseProblemIds: string[] };
+    this.options.db.immediateTransaction(() => {
+      const refs: Record<string, unknown> = { runId, assessed: result.assessed };
+      let snapshotId = session.activeSnapshotId;
+      if (result.assessed) {
+        const problemIds = [...input.baseProblemIds, ...this.options.listProblems(session.threadId, runId).map(problem => problem.id)];
+        const combined = materializeResearchSnapshot(this.options.db, { threadId: session.threadId, baseRunId: input.baseRunId,
+          sourceProblemIds: problemIds, sessionId: session.id, allowEmpty: true, copyCandidates: false });
+        copySavedProblemCandidates(this.options.db, { sourceRunIds: [input.baseRunId, input.sourceRunId, runId], targetRunId: combined.runId,
+          excludeCandidateIds: [input.candidateId], originMap: combined.originMap });
+        this.options.db.db.prepare("INSERT OR REPLACE INTO workflow_snapshots VALUES (?, 'candidate-archive-complete', '{\"version\":1}')").run(combined.runId);
+        this.options.db.db.prepare(`INSERT OR REPLACE INTO workflow_snapshots (research_run_id,snapshot_key,value_json)
+          SELECT ?,snapshot_key,value_json FROM workflow_snapshots WHERE research_run_id = ? AND snapshot_key = 'candidate-assessment-frame'`).run(combined.runId, runId);
+        const snapshot = this.repository.createSnapshot({ sessionId: session.id, ...(input.baseSnapshotId ? { parentSnapshotId: input.baseSnapshotId } : {}),
+          materializationRunId: combined.runId, selection: { problemIds: combined.problemIds }, originMap: combined.originMap });
+        snapshotId = snapshot.id;
+        refs.snapshotId = snapshot.id;
+      }
+      this.repository.updateWorkItem(item.id, "succeeded", { outputRefs: refs,
+        ...(result.stopReason ? { error: { message: result.stopReason } } : {}) });
+      this.settleTaskBudget(item.id, "spent", this.repository.countProviderAttempts(runId));
+      this.repository.updateSession(session.id, session.revision, { state: session.state === "stop-requested" ? "finished"
+        : session.state === "pause-requested" ? "paused" : "waiting-for-review", activeSnapshotId: snapshotId,
+        ...(session.state === "stop-requested" ? { outcome: "cancelled" as const } : {}), remainingMs: remainingMs(session), runningSince: null });
+    });
+    this.progress(session.id, [item.id]);
+  }
+
   private linkDispatchedRun(sessionId: string, taskId: string, runId: string): boolean {
     let shouldBegin = false;
     this.options.db.immediateTransaction(() => {
@@ -1116,15 +1350,20 @@ export class WorkflowCoordinator {
     const session = this.repository.getSession(sessionId);
     const item = this.repository.getWorkItem(taskId);
     if (!session || !item || session.state === "finished") return;
+    const runId = runIdFromItem(item);
+    const unknown = error instanceof UnknownSearchCompletionError
+      || Boolean(runId && this.repository.hasUnknownProviderCompletion(runId));
     const skipped = this.options.db.immediateTransaction(() => {
       const current = this.repository.getWorkItem(taskId);
       if (current?.state === "ready") this.repository.updateWorkItem(taskId, "running");
       if (current?.state === "ready" || current?.state === "running") {
-        this.repository.updateWorkItem(taskId, "failed", { error: { message: safeError(error) } });
+        this.repository.updateWorkItem(taskId, unknown ? "unknown" : "failed", {
+          outputRefs: current.outputRefs, error: { message: safeError(error) },
+        });
       }
-      this.settleTaskBudget(taskId, "released", 0);
+      this.settleTaskBudget(taskId, unknown ? "uncertain" : "released", runId ? this.repository.countProviderAttempts(runId) : 0);
       const skippedIds = this.skipReadyTasks(sessionId, "upstream-failed");
-      this.repository.updateSession(sessionId, session.revision, { state: "finished", outcome: "failed", remainingMs: remainingMs(session) });
+      this.repository.updateSession(sessionId, session.revision, { state: "finished", outcome: unknown ? "needs-attention" : "failed", remainingMs: remainingMs(session) });
       return skippedIds;
     });
     this.progress(sessionId, [taskId, ...skipped]);
@@ -1162,6 +1401,7 @@ export class WorkflowCoordinator {
       if (item.kind === "prepare-frame") this.completeFrame(session, item, event.runId);
       else if (item.kind === "discovery") this.completeDiscovery(session, item, event.runId);
       else if (item.kind === "generate-ideas") this.completeGeneration(session, item, event.runId);
+      else if (item.kind === "assess-candidate") this.completeCandidateAssessment(session, item, event.runId);
       return;
     }
     const unknown = this.repository.hasUnknownProviderCompletion(event.runId);
@@ -1701,7 +1941,7 @@ export class WorkflowCoordinator {
               });
               this.repository.reserveBudget({ sessionId, workItemId: item.id, operationKey: `ideas:${item.id}`,
                 kind: "model-call", reservedUnits: 4 });
-              return item.id;
+                    return item.id;
             });
             this.repository.updateSession(sessionId, session.revision, {
               remainingMs: remainingMs(session), runningSince: new Date().toISOString(),
@@ -1739,6 +1979,12 @@ export class WorkflowCoordinator {
     opportunityAttemptId?: string): void {
     const item = this.repository.getWorkItem(taskId);
     if (!item) return;
+    const runId = runIdFromItem(item);
+    const baselineRow = runId ? this.options.db.db.prepare(`SELECT value_json FROM workflow_snapshots
+      WHERE research_run_id = ? AND snapshot_key LIKE 'task-budget-retry-baseline:%' ORDER BY rowid DESC LIMIT 1`)
+      .get(runId) as { value_json: string } | undefined : undefined;
+    const baseline = baselineRow ? z.object({ modelCalls: z.number().int().nonnegative(), searches: z.number().int().nonnegative(),
+      searchAttempts: z.number().int().nonnegative() }).strict().parse(JSON.parse(baselineRow.value_json)) : null;
     const entries = this.repository.listBudgetEntries(item.sessionId).filter(row => row.workItemId === taskId);
     for (const kind of ["model-call", "search"] as const) {
       const matching = entries.filter(entry => entry.kind === kind && entry.state === "reserved");
@@ -1750,7 +1996,8 @@ export class WorkflowCoordinator {
         : 0;
       // A reopened task keeps its prior accounting. Settle only newly observed work;
       // unknown reservations remain uncertain rather than being rewritten as spent.
-      let actual = Math.max(0, cumulative - alreadySpent);
+      const retryBaseline = baseline ? kind === "model-call" ? baseline.modelCalls : baseline.searchAttempts : 0;
+      let actual = Math.max(0, cumulative - Math.max(alreadySpent, retryBaseline));
       for (const entry of matching) {
         const settledUnits = state === "uncertain" ? entry.reservedUnits
           : state === "released" ? 0 : Math.min(entry.reservedUnits, actual);
@@ -1775,7 +2022,9 @@ export class WorkflowCoordinator {
     if (!runId) return 0;
     const row = this.options.db.db.prepare(`SELECT COUNT(*) AS count FROM cost_ledger
       WHERE research_run_id = ? AND operation = 'search' AND status = 'committed'`).get(runId) as { count: number };
-    return row.count;
+    const receipts = this.options.db.db.prepare(`SELECT COUNT(*) AS count FROM workflow_snapshots
+      WHERE research_run_id = ? AND snapshot_key LIKE 'search-attempt:%'`).get(runId) as { count: number };
+    return Math.max(row.count, receipts.count) + this.repository.countInvestigatorSearches(runId);
   }
 
   private availableBudget(session: WorkflowSession, kind: "model-call" | "search"): number | null {
@@ -1851,7 +2100,8 @@ interface SavedSolutionSetReview {
 
 function readSolutionSetReview(db: DatabaseClient, runId: string): SavedSolutionSetReview | null {
   const stage = db.db.prepare(`SELECT context_json FROM stage_results
-    WHERE research_run_id = ? AND stage_id = 'solution-set-review' ORDER BY completed_at DESC LIMIT 1`)
+    WHERE research_run_id = ? AND stage_id = 'solution-set-review'
+      AND selection_key NOT LIKE 'preliminary:%' ORDER BY completed_at DESC, rowid DESC LIMIT 1`)
     .get(runId) as { context_json: string } | undefined;
   if (!stage) return null;
   const context = JSON.parse(stage.context_json) as { solutionSetReview?: SavedSolutionSetReview };
@@ -1866,15 +2116,22 @@ function reviewFromItem(db: DatabaseClient, item: WorkflowWorkItem): SavedSoluti
   return runId ? readSolutionSetReview(db, runId) : null;
 }
 
-function terminalAttempt(db: DatabaseClient, item: WorkflowWorkItem): { id: string; completion_unknown: number } | null {
+function terminalAttempt(db: DatabaseClient, item: WorkflowWorkItem): { id: string; kind: "search" | "model"; completion_unknown: number } | null {
   const runId = runIdFromItem(item);
   if (!runId) return null;
+  const repository = new WorkflowRepository(db);
+  const acknowledgments = repository.acknowledgedAttemptIds(runId);
+  const search = [...unknownSearchAttempts(db, runId, acknowledgments), ...repository.unknownInvestigatorSearches(runId, acknowledgments)]
+    .sort((left, right) => left.createdAt.localeCompare(right.createdAt)).at(-1);
+  if (search) return { id: search.id, kind: "search", completion_unknown: 1 };
   // Older builds saved some lost streams as failures while retaining the native uncertainty.
-  const row = db.db.prepare(`SELECT id, EXISTS(SELECT 1 FROM json_each(attempt_metadata_json, '$.attempts')
+  const rows = db.db.prepare(`SELECT id, EXISTS(SELECT 1 FROM json_each(attempt_metadata_json, '$.attempts')
     WHERE json_extract(value, '$.providerCompletion') = 'unknown') AS completion_unknown
-    FROM generation_attempts WHERE research_run_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1`)
-    .get(runId) as { id: string; completion_unknown: number } | undefined;
-  return row ?? null;
+    FROM generation_attempts WHERE research_run_id = ? ORDER BY created_at DESC, rowid DESC`)
+    .all(runId) as Array<{ id: string; completion_unknown: number }>;
+  const unresolved = new Set(new GenerationAttemptRepository(db).unresolvedAttemptIds(runId).filter(id => !acknowledgments.includes(id)));
+  const row = rows.find(attempt => unresolved.has(attempt.id)) ?? rows[0];
+  return row ? { ...row, kind: "model" } : null;
 }
 
 function requestedFromItem(item: WorkflowWorkItem): number {

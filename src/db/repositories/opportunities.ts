@@ -495,6 +495,7 @@ export class OpportunityRepository {
       SELECT stage.id, stage.context_json, stage.research_run_id
       FROM stage_results stage JOIN research_runs run ON run.id = stage.research_run_id
       WHERE run.thread_id = ? AND stage.stage_id = 'solution-set-review'
+        AND stage.selection_key NOT LIKE 'preliminary:%'
       ORDER BY run.rowid, stage.completed_at, stage.id
     `).all(threadId) as Array<{ id: string; context_json: string; research_run_id: string }>;
     const projectedOptionIds: string[] = [];
@@ -660,6 +661,7 @@ export class OpportunityRepository {
       SELECT MAX(stage.completed_at) AS reviewed_at FROM stage_results stage
       JOIN research_runs run ON run.id = stage.research_run_id
       WHERE run.thread_id = ? AND stage.stage_id = 'solution-set-review'
+        AND stage.selection_key NOT LIKE 'preliminary:%'
         AND EXISTS (
           SELECT 1 FROM solutions option
           WHERE option.research_run_id = run.id AND option.startup_opportunity_json IS NOT NULL

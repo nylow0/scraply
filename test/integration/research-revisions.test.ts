@@ -11,9 +11,11 @@ import { WorkflowExecution } from "../../src/core/workflow-execution";
 import { DatabaseClient } from "../../src/db/client";
 import { DiscoveryRepository } from "../../src/db/repositories/discovery";
 import { WorkflowRepository } from "../../src/db/repositories/workflows";
+import { ResearchFrameRepository } from "../../src/db/repositories/research-frames";
 import { sha256 } from "../../src/shared/content-identity";
-import { previewResearchAngles } from "../../src/shared/research-revisions";
+import { previewResearchAngles, researchSearchAllocation } from "../../src/shared/research-revisions";
 import { DEFAULT_RUN_CONFIG } from "../../src/shared/schemas";
+import type { ResearchFrame } from "../../src/shared/research-frame";
 import type { StructuredModelClient } from "../../src/providers/structured";
 import { WorkflowAdmissionReceiptSchema } from "../../src/shared/workflow-contracts";
 
@@ -320,6 +322,99 @@ describe("research snapshot materialization", () => {
     expect(resumed.text).toBe(first.text);
     expect(resumed.resolvedSha256).toBe(first.resolvedSha256);
     client.close();
+  });
+
+  test("queued follow-up freezes the latest approved frame at admission", async () => {
+    const { client, repository, sessionId, snapshotId } = workflowFixture();
+    const frames = new ResearchFrameRepository(client);
+    const original = saveApprovedFrame(client);
+    const latest = frames.createApprovedVersion(original.id, "project-1", { ...original.approved!, goal: "Reduce Ukrainian filing work", languages: ["uk", "en"] });
+    let runId = "";
+    const service = new ResearchRequestService({
+      db: client, engine: () => ({ resumeRun: async (id: string) => { runId = id; } }),
+      modelClient: () => { throw new Error("No direct model call expected"); },
+    });
+    const admitted = client.immediateTransaction(() => service.admitRequest(sessionId, repository.getSession(sessionId)!.revision, {
+      type: "request-research", kind: "new-question", question: "How can teams stop repeating entries?",
+      baseSnapshotId: snapshotId, model: { providerId: "openai-subscription", modelId: "test-model" },
+      reasoningEffort: "medium", allowance: { maxModelCalls: 12, maxSearches: 12, maxMinutes: 10 },
+    }));
+    const future = frames.createApprovedVersion(latest.id, "project-1", { ...latest.approved!, goal: "Measure a future workflow", languages: ["en", "de"] });
+    expect((repository.getWorkItem(admitted.workItemId)!.input as { frameId: string }).frameId).toBe(latest.id);
+    await service.dispatchReady(sessionId);
+    expect(frames.forRun(runId)?.id).toBe(latest.id);
+    expect(frames.forRun(runId)?.approved?.languages).toEqual(["uk", "en"]);
+    expect(frames.latestApproved("project-1")?.id).toBe(future.id);
+    expect(frames.forRun("run-old")?.id).toBe(original.id);
+    const saved = client.db.prepare("SELECT config_json FROM research_runs WHERE id = ?").get(runId) as { config_json: string };
+    expect(JSON.parse(saved.config_json).discoveryDepth).toBe("quick");
+    client.close();
+  });
+
+  test.each([1, 2, 3])("follow-up allowance reserves both evidence phases in each of %s frozen languages", (languageCount) => {
+    const { client, repository, sessionId, snapshotId } = workflowFixture();
+    try {
+      saveApprovedFrame(client, ["en", "uk", "de"].slice(0, languageCount));
+      const service = new ResearchRequestService({ db: client, engine: () => ({ resumeRun: async () => {} }),
+        modelClient: () => { throw new Error("No direct model call expected"); } });
+      const minimum = 4 * languageCount;
+      const action = { type: "request-research" as const, kind: "new-question" as const, question: "What do people try today?",
+        baseSnapshotId: snapshotId, model: { providerId: "openai-subscription" as const, modelId: "test-model" }, reasoningEffort: "medium",
+        allowance: { maxModelCalls: 20, maxSearches: minimum - 1, maxMinutes: 10 } };
+      expect(() => client.immediateTransaction(() => service.admitRequest(sessionId, repository.getSession(sessionId)!.revision, action)))
+        .toThrow(`${minimum} searches`);
+      expect(repository.listWorkItems(sessionId)).toEqual([]);
+      const allocation = researchSearchAllocation(minimum, "quick", true, languageCount);
+      const admitted = client.immediateTransaction(() => service.admitRequest(sessionId, repository.getSession(sessionId)!.revision, {
+        ...action, allowance: { ...action.allowance, maxSearches: minimum, maxModelCalls: allocation.modelCalls },
+      }));
+      expect(service.listRequests(sessionId)[0]!.angles!.filter(angle => angle.status === "planned")).toHaveLength(2);
+      expect(repository.listBudgetEntries(sessionId).find(entry => entry.workItemId === admitted.workItemId && entry.kind === "model-call")?.reservedUnits)
+        .toBe(allocation.modelCalls);
+    } finally { client.close(); }
+  });
+
+  test("reevaluation survives restart with the frame admitted before a later edit", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "scraply-frozen-review-"));
+    const fixture = workflowFixture({}, directory);
+    const frames = new ResearchFrameRepository(fixture.client);
+    const original = saveApprovedFrame(fixture.client);
+    const admittedFrame = frames.createApprovedVersion(original.id, "project-1", { ...original.approved!,
+      goal: "Cut filing time for volunteers", exclusions: ["Paid tools"], languages: ["en", "uk"] });
+    const admission = new ResearchRequestService({ db: fixture.client, engine: () => ({ resumeRun: async () => {} }),
+      modelClient: () => { throw new Error("No model call before dispatch"); } });
+    const admitted = fixture.client.immediateTransaction(() => admission.admitRequest(fixture.sessionId, fixture.repository.getSession(fixture.sessionId)!.revision, {
+      type: "request-research", kind: "reevaluate", question: "Does this fit the volunteer goal?", targetFindingId: fixture.oldProblemId,
+      baseSnapshotId: fixture.snapshotId, model: { providerId: "openai-subscription", modelId: "test-model" }, reasoningEffort: "medium",
+      allowance: { maxModelCalls: 1, maxSearches: 0, maxMinutes: 5 },
+    }));
+    frames.createApprovedVersion(admittedFrame.id, "project-1", { ...admittedFrame.approved!, goal: "A future paid workflow", exclusions: ["Volunteer work"] });
+    fixture.client.close();
+    const client = new DatabaseClient(join(directory, "scraply.db"));
+    try {
+      let requestInputs: unknown;
+      let evidence: unknown;
+      const modelClient: StructuredModelClient = { structuredCompletion: async request => {
+        requestInputs = request.workOrder.inputs; evidence = request.evidence[0]!.content;
+        request.onDispatched?.(); request.onAccepted?.({});
+        return { output: request.schema.parse({ verdict: "insufficient-evidence", verdictReason: "Frequency is unknown.",
+          verdictSourceIds: [], intendedBuyerEvidenceFactorIds: [], evidenceGap: "Frequency", unresolvedAssumptions: [], wouldChangeConclusion: [] }),
+          metadata: { model: request.model, usage: { status: "unknown" }, providerCosts: [], finishReason: "stop", latencyMs: 1,
+            repairCount: 0, providerRequestIds: ["frozen-review"], attempts: [{ attempt: "initial", outcome: "completed", providerCompletion: "confirmed",
+              model: request.model, usage: { status: "unknown" }, cost: { status: "not_reported" }, latencyMs: 1 }] } };
+      } };
+      const service = new ResearchRequestService({ db: client, engine: () => ({ resumeRun: async () => { throw new Error("No search expected"); } }), modelClient: () => modelClient });
+      await service.dispatchReady(fixture.sessionId);
+      const item = new WorkflowRepository(client).getWorkItem(admitted.workItemId)!;
+      expect(item.state).toBe("succeeded");
+      expect(requestInputs).toMatchObject({ frameId: admittedFrame.id, frameVersion: admittedFrame.version, approvedFrame: admittedFrame.approved });
+      expect(evidence).toMatchObject({ frameId: admittedFrame.id, approvedFrame: admittedFrame.approved });
+      const { runId } = item.outputRefs as { runId: string };
+      const saved = client.db.prepare("SELECT request_json FROM generation_attempts WHERE research_run_id = ?").get(runId) as { request_json: string };
+      expect(JSON.parse(saved.request_json).workOrder.inputs.approvedFrame).toEqual(admittedFrame.approved);
+      expect(new ResearchFrameRepository(client).forRun(runId)?.id).toBe(admittedFrame.id);
+      expect(new WorkflowRepository(client).getSession(fixture.sessionId)?.activeSnapshotId).toBe(fixture.snapshotId);
+    } finally { client.close(); }
   });
 
   test("admits distinct angle tasks and exposes omitted coverage before dispatch", () => {
@@ -776,6 +871,20 @@ test("finished Controlled research command survives backend reopening with linke
     if (backend) await backend.close();
   }
 });
+
+function saveApprovedFrame(client: DatabaseClient, languages = ["en"]) {
+  const frames = new ResearchFrameRepository(client);
+  const frame: ResearchFrame = {
+    goal: "Reduce repeated filing", goalKind: "process-improvement", contextFacts: [],
+    successCriteria: [{ id: "time", name: "Less filing time", weight: "must", howJudged: "Compare weekly filing time", basis: "brief" }],
+    constraints: [], languages, exclusions: [], openQuestions: [],
+    areas: [{ id: "filing", name: "Repeated entries", whyRelevant: "Teams repeat the same entries",
+      affectedPeople: "Operations teams", venues: [{ name: "Operations community", kind: "community" }],
+      exampleProblems: ["Duplicate entries"], included: true, priority: 1 }],
+  };
+  const saved = frames.createDraft({ threadId: "project-1", runId: "run-old", frame, sources: [], knownProblem: false });
+  return frames.approve(saved.id, "project-1", frame);
+}
 
 function workflowFixture(options: { researchInstruction?: string; auditResearchText?: string;
   mode?: "babysit" | "vibe"; maxModelCalls?: number; maxSearches?: number; enforced?: boolean } = {}, directory?: string): {

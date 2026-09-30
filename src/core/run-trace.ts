@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import type { DatabaseClient } from "../db/client";
-import { canonicalJson } from "../shared/content-identity";
+import { workflowSearchKey as savedSearchKey } from "../shared/content-identity";
 import { DISCOVERY_DEPTHS, SOURCE_MAX_CHARACTERS } from "../shared/discovery-projection";
 import { AppError } from "../shared/errors";
 import { RunTraceSchema, RunTraceStepDetailSchema, type RunTrace, type RunTraceCandidate,
@@ -11,7 +11,7 @@ export interface RunTraceOptions { liveReasoningSummary?: (generationId: string)
 interface RunRow { id: string; thread_id: string; workflow_session_id: string | null; status: string;
   purpose: string | null; created_at: string; updated_at: string; config_json: string }
 interface StageRow { id: string; research_run_id: string; stage_id: string; selection_key: string; completed_at: string;
-  prompt_filename: string; prompt_source: string; prompt_sha256: string }
+  prompt_filename: string; prompt_source: string; prompt_sha256: string; stage_revision: number }
 interface AttemptRow { id: string; research_run_id: string; generation_id: string; stage_key: string; provider_id: string;
   model_id: string; reasoning_effort: string; status: string; created_at: string; terminal_at: string | null;
   usage_json: string | null; reported_cost_usd: number | null; error_code: string | null;
@@ -22,6 +22,8 @@ interface FactorRow { id: string; source_id: string; subject: string; behavior: 
 interface ProblemRow { id: string; statement: string; verdict: string; verdict_reason: string;
   factor_assessments_json: string; intended_buyer_evidence_factor_ids_json: string; area_id?: string | null }
 interface SnapshotRow { snapshot_key: string; value_json: string }
+interface InvestigatorSearchRow { id: string; stage_key: string; status: string; input_json: string;
+  result_json: string | null; model_json: string; prepared_at: string; completed_at: string | null; error_message: string | null }
 
 function record(value: unknown): Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
@@ -31,6 +33,11 @@ function objects(value: unknown): Record<string, unknown>[] {
   return Array.isArray(value) ? value.map(record) : [];
 }
 function text(value: unknown): string { return typeof value === "string" ? value : ""; }
+function matchesPlannedQuery(query: Record<string, unknown>, searched: string): boolean {
+  const normalized = searched.normalize("NFKC").trim().replace(/\s+/g, " ").toLowerCase();
+  const variants = [text(query.query), ...objects(query.translations).map(translation => text(translation.query))];
+  return variants.some(variant => variant.normalize("NFKC").trim().replace(/\s+/g, " ").toLowerCase() === normalized);
+}
 function strings(value: unknown): string[] { return Array.isArray(value) ? value.filter((id): id is string => typeof id === "string") : []; }
 function duration(start: string | null, end: string | null): number {
   const elapsed = start ? Date.parse(end ?? new Date().toISOString()) - Date.parse(start) : 0;
@@ -62,11 +69,7 @@ export function classifyTraceSource(url: string): "forum" | "review" | "study" |
   return "unknown";
 }
 
-/** Preserve the original checkpoint identity. Provider routing can opt into a future version separately. */
-export function savedSearchKey(query: string, parameters: Record<string, unknown>): string {
-  const normalized = query.normalize("NFKC").trim().replace(/\s+/g, " ").toLowerCase();
-  return `search:${createHash("sha256").update(canonicalJson({ query: normalized, parameters })).digest("hex")}`;
-}
+export { workflowSearchKey as savedSearchKey } from "../shared/content-identity";
 
 function load(db: TraceDatabase, runId: string) {
   const run = db.db.prepare("SELECT id, thread_id, workflow_session_id, status, purpose, created_at, updated_at, config_json FROM research_runs WHERE id = ?")
@@ -82,7 +85,7 @@ function load(db: TraceDatabase, runId: string) {
   const evidenceRunId = discoveryRun?.id ?? runId;
   const session = run.workflow_session_id ? db.db.prepare("SELECT state, started_at, finished_at FROM workflow_sessions WHERE id = ?")
     .get(run.workflow_session_id) as { state: string; started_at: string; finished_at: string | null } | undefined : undefined;
-  const stages = db.db.prepare(`SELECT id, research_run_id, stage_id, selection_key, completed_at, prompt_filename, prompt_source, prompt_sha256
+  const stages = db.db.prepare(`SELECT id, research_run_id, stage_id, selection_key, completed_at, prompt_filename, prompt_source, prompt_sha256, stage_revision
     FROM stage_results WHERE research_run_id IN (${placeholders}) ORDER BY completed_at, rowid`).all(...runIds) as StageRow[];
   const attempts = db.db.prepare(`SELECT id, research_run_id, generation_id, stage_key, provider_id, model_id, reasoning_effort, status,
     created_at, terminal_at, usage_json, reported_cost_usd, error_code, error_message, attempt_metadata_json
@@ -94,9 +97,33 @@ function load(db: TraceDatabase, runId: string) {
   const outputs = db.db.prepare(`SELECT id, stage_id, selection_key, output_json FROM stage_results
     WHERE research_run_id IN (${placeholders}) AND stage_id IN ('query-plan','problem-candidates','solution-set-review') ORDER BY completed_at, rowid`)
     .all(...runIds) as Array<{ id: string; stage_id: string; selection_key: string; output_json: string }>;
-  return { db, run, evidenceRunId, session, runIds, placeholders, stages, attempts, sources, factors, problems, snapshots, outputs };
+  const frameTable = db.db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'research_frames'").get();
+  const frames = frameTable ? db.db.prepare(`SELECT run.id AS run_id, frame.approved_json FROM research_runs run
+    JOIN research_frames frame ON frame.id = run.frame_id WHERE run.id IN (${placeholders})`).all(...runIds) as
+    Array<{ run_id: string; approved_json: string | null }> : [];
+  const areas = new Map<string, { id: string; name: string }>();
+  for (const frame of frames) for (const area of objects(record(json(frame.approved_json)).areas)) {
+    if (text(area.id)) areas.set(text(area.id), { id: text(area.id), name: text(area.name) || text(area.id) });
+  }
+  for (const snapshot of snapshots.filter(snapshot => snapshot.snapshot_key === "frame-selected-areas")) {
+    for (const area of objects(json(snapshot.value_json))) if (text(area.id)) areas.set(text(area.id), { id: text(area.id), name: text(area.name) || text(area.id) });
+  }
+  const investigatorSearches = run.workflow_session_id ? db.db.prepare(`SELECT attempt.id, attempt.stage_key, attempt.status, attempt.input_json,
+    attempt.result_json, attempt.model_json, attempt.prepared_at, attempt.completed_at, attempt.error_message
+    FROM opportunity_exploration_attempts attempt JOIN workflow_work_items work ON work.id = attempt.work_item_id
+    WHERE work.session_id = ? AND attempt.stage_name = 'investigator-search' ORDER BY attempt.prepared_at, attempt.rowid`)
+    .all(run.workflow_session_id) as InvestigatorSearchRow[] : [];
+  return { db, run, evidenceRunId, session, runIds, placeholders, stages, attempts, sources, factors, problems, snapshots, outputs, frames, areas, investigatorSearches };
 }
 type TraceData = ReturnType<typeof load>;
+
+function investigatorArea(data: TraceData, key: string): string | null {
+  for (const area of data.areas.values()) {
+    const hash = createHash("sha256").update(area.id).digest("hex").slice(0, 16);
+    if (key.includes(`:area-${hash}:`) || key.includes(`:scan-${hash}:`) || key.includes(`:${area.id}:`) || key.endsWith(`:${area.id}`)) return area.id;
+  }
+  return null;
+}
 
 function candidates(data: TraceData): RunTraceCandidate[] {
   const links = data.db.db.prepare(`SELECT pf.problem_id, pf.factor_id FROM problem_factors pf JOIN problems p ON p.id = pf.problem_id
@@ -169,10 +196,21 @@ function searches(data: TraceData): RunTraceSearch[] {
   const depth = config.discoveryDepth === "quick" || config.discoveryDepth === "deep" ? config.discoveryDepth : "standard";
   const parameters = { numResults: DISCOVERY_DEPTHS[depth].searchResultsPerQuery, maxCharacters: SOURCE_MAX_CHARACTERS };
   const saved = new Map(data.snapshots.map(snapshot => [snapshot.snapshot_key, snapshot.value_json]));
+  const querySnapshots: Array<Record<string, unknown> & { key: string }> = data.snapshots.filter(snapshot => snapshot.snapshot_key.startsWith("search-query:"))
+    .map(snapshot => ({ ...record(json(snapshot.value_json)), key: snapshot.snapshot_key.replace("search-query:", "search:") }));
+  const normalized = (query: string) => query.normalize("NFKC").trim().replace(/\s+/g, " ").toLowerCase();
   const queries: Array<{ query: string; intent: string; reason: string; expectedSourceType: string; parameters: Record<string, unknown>; key: string; provider: string | null; route: string | null }> = [];
   for (const stage of data.outputs.filter(stage => stage.stage_id === "query-plan")) {
     for (const query of objects(record(json(stage.output_json)).queries)) {
       const queryText = text(query.query);
+      const recordedLegs = querySnapshots.filter(snapshot => matchesPlannedQuery(query, text(snapshot.query)));
+      if (recordedLegs.length) {
+        for (const snapshot of recordedLegs) queries.push({ query: text(snapshot.query), intent: text(query.intent) || "unclassified",
+          reason: text(query.uncertainty), expectedSourceType: text(query.intendedSourceType), key: snapshot.key,
+          parameters: record(snapshot.parameters), provider: text(snapshot.provider) || text(config.searchProvider) || null,
+          route: text(snapshot.route) || text(record(snapshot.parameters).route) || null });
+        continue;
+      }
       const choices = [parameters, { ...parameters, includeDomains: [] }, { ...parameters, includeDomains: ["reddit.com", "news.ycombinator.com"] }];
       const fallback = stage.selection_key.includes("audience") ? config.audienceSourcePolicy === "communities" ? choices[2]! : choices[1]! : choices[0]!;
       const matched = [fallback, ...choices].find(choice => saved.has(savedSearchKey(queryText, choice)));
@@ -190,10 +228,23 @@ function searches(data: TraceData): RunTraceSearch[] {
     const item = record(json(snapshot.value_json));
     const key = text(item.key) || snapshot.snapshot_key.replace("search-query:", "search:");
     const existing = queries.find(query => query.key === key);
-    if (existing) { existing.provider = text(item.provider) || existing.provider; existing.route = text(item.route) || null; continue; }
-    queries.push({ query: text(item.query), key, parameters: record(item.parameters), intent: text(item.intent) || "unclassified",
-      reason: text(item.reason) || "Search recorded by the workflow.", expectedSourceType: text(item.expectedSourceType) || "Not recorded",
-      provider: text(item.provider) || text(config.searchProvider) || null, route: text(item.route) || null });
+    if (existing) { existing.provider = text(item.provider) || existing.provider; existing.route = text(item.route) || text(record(item.parameters).route) || existing.route; continue; }
+    const contrary = record(item.parameters).route === "contrary";
+    queries.push({ query: text(item.query), key, parameters: record(item.parameters), intent: text(item.intent) || (contrary ? "contrary-evidence" : "unclassified"),
+      reason: text(item.reason) || (contrary ? "Check contrary evidence before the verdict." : "Search recorded by the workflow."),
+      expectedSourceType: text(item.expectedSourceType) || (contrary ? "Independent accounts of existing solutions, scale and failed attempts." : "Not recorded"),
+      provider: text(item.provider) || text(config.searchProvider) || null, route: text(item.route) || text(record(item.parameters).route) || null });
+  }
+  for (const attempt of data.investigatorSearches) {
+    const input = record(json(attempt.input_json));
+    const request = record(input.request);
+    const matching = queries.find(query => normalized(query.query) === normalized(text(request.query)) && query.route === text(request.route));
+    if (matching) { matching.reason = text(request.evidenceNeeded); matching.expectedSourceType = text(request.route); continue; }
+    const parameters = { ...record(input.parameters), areaId: investigatorArea(data, attempt.stage_key) };
+    const provider = text(record(json(attempt.model_json)).providerId) || null;
+    queries.push({ key: attempt.stage_key, query: text(request.query), intent: "evidence-gap", reason: text(request.evidenceNeeded),
+      expectedSourceType: text(request.route), provider, route: text(request.route) || null, parameters });
+    if (attempt.status === "completed") saved.set(attempt.stage_key, JSON.stringify(record(json(attempt.result_json)).sources ?? []));
   }
   for (const snapshot of data.snapshots.filter(snapshot => snapshot.snapshot_key.startsWith("search:"))) {
     if (!queries.some(query => query.key === snapshot.snapshot_key)) queries.push({ query: "Query not recorded in this older run", key: snapshot.snapshot_key,
@@ -230,7 +281,7 @@ function steps(data: TraceData, options: RunTraceOptions): RunTraceStep[] {
     });
     const first = attempts[0];
     const last = attempts.at(-1);
-    const phase = key.includes("audience") ? "audience" : key.includes("domain") ? "domain" : null;
+    const phase = investigatorArea(data, key) ?? (key.includes("audience") ? "audience" : key.includes("domain") ? "domain" : null);
     const savedPrompts = data.snapshots.find(snapshot => snapshot.snapshot_key === "prompts");
     const savedPrompt = record(record(json(savedPrompts?.value_json ?? null))[key.split(":")[0]!]);
     return { id: stage?.id ?? `attempt:${first?.id ?? key}`, kind: "model", stage: key, label: key.split(":")[0]!.replaceAll("-", " "),
@@ -240,11 +291,19 @@ function steps(data: TraceData, options: RunTraceOptions): RunTraceStep[] {
         : savedPrompt.filename ? { filename: text(savedPrompt.filename), source: text(savedPrompt.source), sha256: text(savedPrompt.resolvedSha256) } : null, search: null };
   });
   // Saved searches lack timestamps. Keep them alongside their planner, without inventing durations.
-  for (const search of searches(data)) result.push({ id: search.key, kind: "search", stage: search.key, label: search.query,
-    phase: null, status: search.status, startedAt: null, finishedAt: null, durationMs: 0, attempts: [], prompt: null, search });
+  for (const search of searches(data)) {
+    const planner = data.outputs.find(output => output.stage_id === "query-plan" && objects(record(json(output.output_json)).queries).some(query => matchesPlannedQuery(query, search.query)));
+    const area = text(search.parameters.areaId) || (planner ? investigatorArea(data, `query-plan:${planner.selection_key}`) : null);
+    const managed = data.investigatorSearches.find(attempt => attempt.stage_key === search.key);
+    result.push({ id: search.key.length > 256 ? `search:${createHash("sha256").update(search.key).digest("hex")}` : search.key,
+      kind: "search", stage: search.key, label: search.query,
+      phase: area || investigatorArea(data, search.key), status: managed?.status ?? search.status,
+      startedAt: managed?.prepared_at ?? null, finishedAt: managed?.completed_at ?? null,
+      durationMs: managed ? duration(managed.prepared_at, managed.completed_at) : 0, attempts: [], prompt: null, search });
+  }
   const items = data.db.db.prepare(`SELECT id, kind, scope_key, state, created_at, finished_at FROM workflow_work_items
     WHERE session_id = ? ORDER BY ordinal, created_at`).all(data.run.workflow_session_id) as Array<{ id: string; kind: string; scope_key: string; state: string; created_at: string; finished_at: string | null }>;
-  for (const item of items) result.push({ id: `work:${item.id}`, kind: "work", stage: item.kind, label: item.kind.replaceAll("-", " "), phase: item.scope_key,
+  for (const item of items) result.push({ id: `work:${item.id}`, kind: "work", stage: item.kind, label: item.kind.replaceAll("-", " "), phase: investigatorArea(data, `work:${item.scope_key}`) ?? item.scope_key,
     status: item.state, startedAt: item.created_at, finishedAt: item.finished_at, durationMs: duration(item.created_at, item.finished_at), attempts: [], prompt: null, search: null });
   if (!result.length && (data.factors.length || data.problems.length || data.sources.length)) result.push({ id: "legacy:saved", kind: "work",
     stage: "saved-research", label: "Saved research", phase: null, status: data.run.status, startedAt: data.run.created_at,
@@ -300,9 +359,15 @@ export function getRunTrace(db: TraceDatabase, runId: string, options: RunTraceO
     FROM cost_ledger WHERE research_run_id IN (${data.placeholders}) AND status != 'released'`).get(...data.runIds) as
     { calls: number | null; searches: number | null } : null;
   const qualifyingObservations = data.factors.filter(factor => ["firsthand", "measured"].includes(factor.source_role) && factor.audience_fit === "intended-buyer").length;
+  const acceptedIdeasFailingMustHave = null;
+  const investigators = [...data.areas.values()].flatMap(area => {
+    const areaSteps = allSteps.filter(step => step.phase === area.id);
+    const current = areaSteps.filter(step => step.kind !== "search").at(-1);
+    return areaSteps.length ? [{ ...area, state: current?.status ?? "planned", stepIds: areaSteps.map(step => step.id) }] : [];
+  });
   return RunTraceSchema.parse({ runId, threadId: data.run.thread_id, sessionId: data.run.workflow_session_id,
     status: data.session?.state ?? data.run.status, purpose: data.run.purpose ?? "discovery", startedAt: data.session?.started_at ?? data.run.created_at,
-    finishedAt: data.session ? data.session.finished_at : live ? null : data.run.updated_at, live, steps: allSteps, candidates: allCandidates,
+    finishedAt: data.session ? data.session.finished_at : live ? null : data.run.updated_at, live, steps: allSteps, investigators, candidates: allCandidates,
     metrics: { factors: data.factors.length, totalSources: data.sources.length,
       evidenceMix: countBy(data.factors.map(factor => factor.source_role)), audienceFit: countBy(data.factors.map(factor => factor.audience_fit)),
       sourceMix: countBy(data.sources.map(source => { const classified = classifyTraceSource(source.canonical_url); return classified === "unknown" ? sourceRoles.get(source.id) ?? "unknown" : classified; })),
@@ -315,11 +380,12 @@ export function getRunTrace(db: TraceDatabase, runId: string, options: RunTraceO
       confirmationRate: assessed.length ? confirmed / assessed.length : null,
       coverage: { kind: hasAreas ? "areas" : "phases", groups: [...groups.values()] },
       modelCalls: data.attempts.filter(attempt => attempt.status !== "prepared").length || legacyCounts?.calls || 0,
-      searches: searchesSaved || legacyCounts?.searches || 0,
+      searches: (Math.max(searchesSaved, allSteps.filter(step => step.kind === "search" && step.search?.status === "completed").length)
+        + data.investigatorSearches.filter(attempt => ["dispatched", "unknown-dispatch", "failed"].includes(attempt.status)).length) || legacyCounts?.searches || 0,
       wallTimeMs: duration(data.session?.started_at ?? data.run.created_at, live ? null : data.session?.finished_at ?? data.run.updated_at),
       modelTimeMs: allSteps.reduce((sum, step) => sum + (step.kind === "model" ? step.durationMs : 0), 0),
       interruptionTimeMs: interruptions.reduce((sum, attempt) => sum + attempt.durationMs, 0), interruptions: interruptions.length,
-      ideas: ideas.count, acceptedIdeas: accepted.size },
+      ideas: ideas.count, acceptedIdeas: accepted.size, acceptedIdeasFailingMustHave },
     warnings: [...(allCandidates.some(candidate => candidate.derived) ? ["Some candidate states were derived from older saved outputs."] : []),
       ...(data.snapshots.some(snapshot => snapshot.snapshot_key.startsWith("search:")) && !data.snapshots.some(snapshot => snapshot.snapshot_key.startsWith("search-query:"))
         ? ["Older search links were reconstructed from saved query plans and parameters. Search timings were not saved."] : [])] });
@@ -336,7 +402,8 @@ export function getRunTraceStep(db: TraceDatabase, runId: string, stepId: string
     WHERE research_run_id IN (${data.placeholders}) AND id = ?`).get(...data.runIds, step.attempts.at(-1)?.id) as
     { request_json: string; output_json: string | null } | undefined : undefined;
   const request = record(json(attempt?.request_json ?? null));
-  const output = json(saved?.output_json ?? attempt?.output_json ?? null);
+  const managedSearch = data.investigatorSearches.find(attempt => attempt.stage_key === step.stage);
+  const output = json(saved?.output_json ?? attempt?.output_json ?? managedSearch?.result_json ?? null);
   const evidence = stepId === "legacy:saved" ? db.db.prepare("SELECT * FROM sources WHERE research_run_id = ? ORDER BY rowid").all(runId)
     : saved ? objects(json(saved.evidence_json)) : objects(request.evidence);
   const rawFactors = objects(record(output).factors);
@@ -355,15 +422,17 @@ export function getRunTraceStep(db: TraceDatabase, runId: string, stepId: string
   });
   const candidateStatement = evidence.map(item => text(record(record(record(item).content).candidate).statement)).find(Boolean);
   const relatedSearches = searches(data).filter(search => step.search?.key === search.key
-    || step.stage.startsWith("query-plan") && objects(record(output).queries).some(query => text(query.query) === search.query)
+    || step.stage.startsWith("query-plan") && objects(record(output).queries).some(query => matchesPlannedQuery(query, search.query))
     || step.stage.startsWith("problem-kill") && candidateStatement && search.query.startsWith(candidateStatement));
   const allCandidates = candidates(data);
   const relatedCandidates = stepId === "legacy:saved" || step.stage.startsWith("problem-candidates") ? allCandidates
     : step.stage.startsWith("problem-kill") ? allCandidates.filter(candidate => candidate.statement === candidateStatement) : [];
   const events = db.db.prepare(`SELECT type, created_at, payload_json FROM job_events WHERE run_id IN (${data.placeholders}) ORDER BY id`)
     .all(...data.runIds) as Array<{ type: string; created_at: string; payload_json: string }>;
-  return RunTraceStepDetailSchema.parse({ runId, step, inputs: saved ? json(saved.input_json) : record(request.workOrder).inputs ?? null,
+  return RunTraceStepDetailSchema.parse({ runId, step, inputs: saved ? json(saved.input_json) : managedSearch ? json(managedSearch.input_json) : record(request.workOrder).inputs ?? null,
     output, evidence, searches: relatedSearches, facts, candidates: relatedCandidates,
-    events: events.filter(event => !step.startedAt || event.created_at >= step.startedAt && (!step.finishedAt || event.created_at <= step.finishedAt))
-      .map(event => ({ type: event.type, createdAt: event.created_at, payload: json(event.payload_json) })) });
+    events: [...events.filter(event => !step.startedAt || event.created_at >= step.startedAt && (!step.finishedAt || event.created_at <= step.finishedAt))
+      .map(event => ({ type: event.type, createdAt: event.created_at, payload: json(event.payload_json) })),
+      ...(managedSearch?.error_message ? [{ type: "search-interrupted", createdAt: managedSearch.completed_at ?? managedSearch.prepared_at,
+        payload: { status: managedSearch.status, message: managedSearch.error_message } }] : [])] });
 }

@@ -15,7 +15,7 @@ export interface ResearchRunWorkflowLink {
   sessionId: string;
   purpose: "discovery" | "known-problem" | "research-followup" | "idea-turn";
   evidenceSnapshotId?: string | null;
-  frameId?: string;
+  frameId?: string | null;
   /** Link the new run to its reserved work item before any provider dispatch. False cancels it. */
   onRunCreated?: (runId: string) => boolean;
 }

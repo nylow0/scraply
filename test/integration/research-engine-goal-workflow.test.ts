@@ -150,6 +150,144 @@ function researchOutput(request: StructuredStageRequest<unknown>, options: {
   throw new Error(`Unexpected research stage ${request.stage}`);
 }
 
+test("a known budget stop retains the first verdict and every remaining full candidate for later assessment", async () => {
+  const f = await fixture(request => researchOutput(request, { initialCandidates: 3 }),
+    { bounded: true, singleArea: true, maxModelCalls: 9 });
+  try {
+    const runId = await f.start("discovery");
+    expect(f.errors).toEqual([]);
+    expect(f.stages.filter(stage => stage.startsWith("problem-kill:"))).toHaveLength(1);
+    expect(f.db.db.prepare("SELECT count(*) AS count FROM problems WHERE discovery_run_id = ?").get(runId)).toEqual({ count: 1 });
+    const archived = f.db.db.prepare(`SELECT id, candidate_json FROM rejected_problem_candidates
+      WHERE discovery_run_id = ? AND disposition = 'not-assessed' ORDER BY statement`).all(runId) as Array<{ id: string; candidate_json: string }>;
+    expect(archived).toHaveLength(2);
+    for (const row of archived) expect(JSON.parse(row.candidate_json)).toMatchObject({ alternativeExplanations: ["An unusual owner"], unknowns: ["Frequency"] });
+    expect(new WorkflowExecution(f.db, runId).read("research-target-outcome")).toMatchObject({ outcome: "partial" });
+    const item = f.db.immediateTransaction(() => {
+      const item = f.workflows.createWorkItem({ sessionId: "session", kind: "assess-candidate", scopeKey: "assess-budget-archive", state: "ready", input: {} });
+      f.workflows.reserveBudget({ sessionId: "session", workItemId: item.id, operationKey: "assess-models", kind: "model-call", reservedUnits: 2 });
+      f.workflows.reserveBudget({ sessionId: "session", workItemId: item.id, operationKey: "assess-search", kind: "search", reservedUnits: 1 });
+      return item;
+    });
+    const assessment = await f.engine.startCandidateAssessment("project", runId, archived[0]!.id, f.config, { sessionId: "session", purpose: "research-followup",
+      onRunCreated(created) { f.db.immediateTransaction(() => f.workflows.updateWorkItem(item.id, "running", { outputRefs: { runId: created } })); return true; } });
+    await until(() => !f.engine.getActiveRunIds().has(assessment));
+    expect(f.errors).toEqual([]);
+    expect(new WorkflowExecution(f.db, assessment).read("candidate-assessment-result")).toMatchObject({ assessed: true, candidateId: archived[0]!.id });
+    expect(f.db.db.prepare("SELECT candidate_json FROM rejected_problem_candidates WHERE id = ?").get(archived[0]!.id))
+      .toEqual({ candidate_json: archived[0]!.candidate_json });
+    expect(f.db.db.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
+  } finally { await f.close(); }
+});
+
+test("saved-candidate assessment uses copied original quotes without synthesizing a new candidate", async () => {
+  const candidatesSeen: unknown[] = [];
+  const f = await fixture(request => {
+    const evidence = request.evidence[0]?.content as { candidate?: unknown; supportingFactors?: Array<{ id: string }> };
+    if (request.stage.startsWith("problem-kill:")) {
+      candidatesSeen.push(evidence.candidate);
+      return { verdict: "confirmed", verdictReason: "The quote describes the saved workflow", verdictSourceIds: [],
+        unresolvedAssumptions: [], wouldChangeConclusion: ["A second independent observation"],
+        intendedBuyerEvidenceFactorIds: evidence.supportingFactors?.map(factor => factor.id) ?? [], evidenceGap: "Second independent observation required",
+        briefFit: "direct", contraryEvidence: "resolved", workflowKey: "original-filing" };
+    }
+    if (request.stage.startsWith("evidence-check:")) return { decision: "confirmed", reason: "No further bounded round at quick depth", gaps: [] };
+    throw new Error(`Assessment must not synthesize: ${request.stage}`);
+  });
+  try {
+    const sourceRun = new ResearchRunRepository(f.db).create("project", f.config).runId;
+    const discovery = new DiscoveryRepository(f.db); discovery.persistScope(sourceRun, scope);
+    const now = new Date().toISOString();
+    discovery.persistFactors(sourceRun, [{ id: "original-source", providerSourceId: "original-provider", canonicalUrl: "https://original.example/owner",
+      title: "Original owner", retrievedText: text, contentHash: hash(text), retrievedAt: now, author: null, publishedAt: null }],
+      [{ id: "original-factor", sourceId: "original-source", subject: "Bakery owner", behavior: "Repeats filing", quote: text,
+        harvestMode: "audience", modelConfidence: 0.8, sourceRole: "firsthand", audienceFit: "intended-buyer",
+        independentSourceKey: "original-owner", supportsDemand: true }]);
+    const candidate = { statement: "Owners repeat filing every week", whyItPersists: "Disconnected exports", affected: "Bakery owners", scaleEstimate: "Unknown",
+      scaleBasisFactorId: "original-factor", factorIds: ["original-factor"], intendedBuyerEvidenceFactorIds: ["original-factor"],
+      alternativeExplanations: ["One unusual owner"], unknowns: ["Other shops"], evidenceGap: "Second owner" };
+    discovery.persistProblems(sourceRun, [], [], [{ statement: candidate.statement, reason: "Depth candidate cap", disposition: "not-assessed", candidate }]);
+    f.db.db.prepare("UPDATE research_runs SET status = 'completed' WHERE id = ?").run(sourceRun);
+    const original = f.db.db.prepare("SELECT id,candidate_json FROM rejected_problem_candidates WHERE discovery_run_id = ?").get(sourceRun) as { id: string; candidate_json: string };
+    const item = f.db.immediateTransaction(() => f.workflows.createWorkItem({ sessionId: "session", kind: "assess-candidate", scopeKey: "assess", state: "ready", input: {} }));
+    const runId = await f.engine.startCandidateAssessment("project", sourceRun, original.id, f.config, { sessionId: "session", purpose: "research-followup",
+      onRunCreated(created) { f.db.immediateTransaction(() => f.workflows.updateWorkItem(item.id, "running", { outputRefs: { runId: created } })); return true; } });
+    await until(() => !f.engine.getActiveRunIds().has(runId));
+    expect(f.errors).toEqual([]); expect(candidatesSeen).toHaveLength(1); expect(f.queries).toHaveLength(1);
+    expect(f.stages.some(stage => stage.startsWith("problem-candidates"))).toBe(false);
+    expect(f.db.db.prepare("SELECT candidate_json FROM rejected_problem_candidates WHERE id = ?").get(original.id)).toEqual({ candidate_json: original.candidate_json });
+    const result = new WorkflowExecution(f.db, runId);
+    expect(result.read("candidate-assessment-result")).toMatchObject({ assessed: true, candidateId: original.id, sourceRunId: sourceRun, verdict: "insufficient-evidence" });
+    expect(result.read("candidate-assessment-frame")).toMatchObject({ provenance: { kind: "reconstructed-from-saved-scope", sourceRunId: sourceRun } });
+    const copied = f.db.db.prepare("SELECT id,quote,source_id FROM factors WHERE research_run_id = ?").get(runId) as { id: string; quote: string; source_id: string };
+    expect(copied.id).not.toBe("original-factor"); expect(copied.source_id).not.toBe("original-source"); expect(copied.quote).toBe(text);
+    const problem = f.db.db.prepare("SELECT scale_basis_factor_id,intended_buyer_evidence_factor_ids_json FROM problems WHERE discovery_run_id = ?").get(runId) as {
+      scale_basis_factor_id: string; intended_buyer_evidence_factor_ids_json: string;
+    };
+    expect(problem.scale_basis_factor_id).toBe(copied.id); expect(JSON.parse(problem.intended_buyer_evidence_factor_ids_json)).toEqual([copied.id]);
+    expect(f.db.db.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
+  } finally { await f.close(); }
+});
+
+test("a lost candidate gap search resumes only after its exact acknowledgment without resynthesis or source loss", async () => {
+  let gapDispatches = 0;
+  const f = await fixture(request => {
+    if (request.stage.startsWith("evidence-check:")) {
+      const packet = request.evidence[0]!.content as { problem: { verdict: string } };
+      return { decision: packet.problem.verdict === "confirmed" ? "confirmed" : "follow-up", reason: "Check another owner",
+        gaps: packet.problem.verdict === "confirmed" ? [] : [{ kind: "second-independent-observation", route: "community",
+          query: "second bakery owner filing", evidenceNeeded: "A second independent owner report" }] };
+    }
+    return researchOutput(request);
+  }, { depth: "standard", autoSearch: true, search: async (query, options, provider) => {
+    expect(provider).toBe("exa");
+    expect(options).toMatchObject({ provider: "exa", route: query === "second bakery owner filing" ? "community" : "contrary" });
+    if (query !== "second bakery owner filing") return [];
+    gapDispatches++;
+    if (gapDispatches === 1) throw new Error("Gap response lost after dispatch");
+    return [{ id: "second-owner", url: "https://another.example.org/owner", title: "Another owner", text }];
+  } });
+  try {
+    const sourceRun = new ResearchRunRepository(f.db).create("project", f.config).runId;
+    const discovery = new DiscoveryRepository(f.db); discovery.persistScope(sourceRun, scope);
+    discovery.persistFactors(sourceRun, [{ id: "original-source", providerSourceId: "original-provider", canonicalUrl: "https://original.example.org/owner",
+      title: "Original owner", retrievedText: text, contentHash: hash(text), retrievedAt: new Date().toISOString(), author: null, publishedAt: null }],
+      [{ id: "original-factor", sourceId: "original-source", subject: "Bakery owner", behavior: "Repeats filing", quote: text,
+        harvestMode: "audience", modelConfidence: 0.8, sourceRole: "firsthand", audienceFit: "intended-buyer",
+        independentSourceKey: "original-owner", supportsDemand: true }]);
+    const candidate = { statement: "Owners repeat filing", whyItPersists: "Disconnected exports", affected: "Bakery owners", scaleEstimate: "Unknown",
+      scaleBasisFactorId: null, factorIds: ["original-factor"], intendedBuyerEvidenceFactorIds: ["original-factor"],
+      alternativeExplanations: ["One unusual owner"], unknowns: ["Other shops"], evidenceGap: "Second owner" };
+    discovery.persistProblems(sourceRun, [], [], [{ statement: candidate.statement, reason: "Depth cap", disposition: "not-assessed", candidate }]);
+    f.db.db.prepare("UPDATE research_runs SET status = 'completed' WHERE id = ?").run(sourceRun);
+    const archived = f.db.db.prepare("SELECT id,candidate_json FROM rejected_problem_candidates WHERE discovery_run_id = ?").get(sourceRun) as { id: string; candidate_json: string };
+    const item = f.db.immediateTransaction(() => f.workflows.createWorkItem({ sessionId: "session", kind: "assess-candidate", scopeKey: "assess-lost-gap", state: "ready", input: {} }));
+    const runId = await f.engine.startCandidateAssessment("project", sourceRun, archived.id, f.config, { sessionId: "session", purpose: "research-followup", frameId: f.draft.id,
+      onRunCreated(created) { f.db.immediateTransaction(() => f.workflows.updateWorkItem(item.id, "running", { outputRefs: { runId: created } })); return true; } });
+    await until(() => !f.engine.getActiveRunIds().has(runId));
+    expect(f.errors).toEqual(["Gap response lost after dispatch"]);
+    expect(new WorkflowExecution(f.db, runId).read("candidate-assessment-frame")).toMatchObject({ frame: frame(),
+      provenance: { kind: "approved-frame", frameId: f.draft.id, sourceRunId: sourceRun, candidateId: archived.id } });
+    const lost = f.db.db.prepare("SELECT * FROM opportunity_exploration_attempts WHERE status = 'unknown-dispatch'").get() as { id: string; stage_key: string };
+    expect(lost.stage_key).toContain(":round-1:gap-1");
+    await expect(f.engine.resumeRun(runId)).rejects.toThrow("previous investigator search");
+    expect(gapDispatches).toBe(1);
+    await f.engine.resumeRun(runId, [lost.id]);
+    await until(() => !f.engine.getActiveRunIds().has(runId));
+    expect(gapDispatches).toBe(2);
+    expect(f.errors).toHaveLength(1);
+    expect(new WorkflowExecution(f.db, runId).read("candidate-assessment-result")).toMatchObject({ assessed: true, verdict: "confirmed" });
+    expect(f.stages.filter(stage => stage.startsWith("problem-kill:") && stage.endsWith(":assess"))).toHaveLength(1);
+    expect(f.stages.filter(stage => stage.startsWith("evidence-check:") && stage.endsWith(":round-0"))).toHaveLength(1);
+    expect(f.stages.some(stage => stage.startsWith("problem-candidates:"))).toBe(false);
+    expect(f.db.db.prepare("SELECT * FROM opportunity_exploration_attempts WHERE id = ?").get(lost.id)).toEqual(lost);
+    expect(f.db.db.prepare("SELECT candidate_json FROM rejected_problem_candidates WHERE id = ?").get(archived.id)).toEqual({ candidate_json: archived.candidate_json });
+    expect(f.db.db.prepare("SELECT quote FROM factors WHERE id = 'original-factor'").get()).toEqual({ quote: text });
+    expect(f.db.db.prepare("SELECT count(*) AS count FROM sources WHERE research_run_id = ?").get(runId)).toEqual({ count: 2 });
+    expect(f.db.db.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
+  } finally { await f.close(); }
+});
+
 test("frame venues expand routed searches only with saved retrieved proof and keep the area's region", async () => {
   const approved = frame();
   approved.areas.forEach(area => { area.region = "UA"; area.venues = [

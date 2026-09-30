@@ -901,6 +901,17 @@ describe("workflow v2 persistence", () => {
         selectionId: "fixture-selection",
         context: { problemId: "problem-1" },
       })).toEqual({ kind: "unknown-completion" });
+      const exactResume = { researchRunId: "run-v2", stageId: stage.id,
+        selectionId: "other-selection", context: { problemId: "problem-1" } };
+      expect(new WorkflowV2Repository(client).getStageResumeState({
+        ...exactResume, stageKey: `${stage.id}:other-selection`,
+      })).toEqual({ kind: "not-started" });
+      expect(new WorkflowV2Repository(client).getStageResumeState({
+        ...exactResume, stageKey: `${stage.id}:fixture-selection`,
+      })).toEqual({ kind: "unknown-completion" });
+      expect(new WorkflowV2Repository(client).getStageResumeState({
+        ...exactResume, stageKey: `${stage.id}:fixture-selection`, acknowledgedAttemptIds: [prepared.id],
+      })).toEqual({ kind: "not-started" });
       client.close();
     }
   });

@@ -1,10 +1,13 @@
 import { deriveJsonSchema } from "../shared/json-schema";
-import { ProblemFactorAssessmentSchema } from "../shared/structured-output-schemas";
+import { z } from "zod";
+import { ResearchFrameSchema } from "../shared/research-frame";
+import { ProblemFactorAssessmentSchema, SavedProblemCandidateSchema } from "../shared/structured-output-schemas";
 import { applyProblemFactorAssessments } from "../core/problem-evidence";
 import { randomBytes, randomUUID } from "node:crypto";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { recoverInterruptedEvidenceFollowUps, ResearchEngine } from "../core/research-engine";
 import { WorkflowCoordinator } from "../core/workflow-coordinator";
+import { unknownSearchAttempts } from "../core/workflow-search-attempts";
 import { IdeaConversationService } from "../core/idea-conversation-service";
 import { ResearchRequestService } from "../core/research-request-service";
 import { scheduledModelClient } from "../core/scheduled-model-client";
@@ -18,8 +21,8 @@ import { FocusedExperimentRepository } from "../db/repositories/focused-experime
 import { OpportunityCandidateOriginSchema } from "../shared/opportunity-exploration";
 import { ActiveRunConflictError } from "../db/repositories/research-runs";
 import { ThreadRepository } from "../db/repositories/threads";
-import { ResearchFrameRepository } from "../db/repositories/research-frames";
 import { WorkflowRepository } from "../db/repositories/workflows";
+import { ResearchFrameRepository } from "../db/repositories/research-frames";
 import { getRunTrace, getRunTraceStep } from "../core/run-trace";
 import { GetRunTraceRequestSchema, GetRunTraceStepRequestSchema } from "../shared/run-trace";
 import { ExaClient } from "../providers/exa";
@@ -415,7 +418,7 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
       modelCatalog: modelCatalog(),
       presets: threads.listPresets(),
       problemCandidates: snapshotProblems ?? (activeThreadId ? listProblems(activeThreadId) : []),
-      rejectedProblemCandidates: activeThreadId ? listRejectedProblemCandidates(activeThreadId) : [],
+      rejectedProblemCandidates: activeThreadId ? listRejectedProblemCandidates(activeThreadId, candidateArchiveRunId(activeSnapshot?.materializationRunId)) : [],
       solutions: activeThreadId ? listSolutions(activeThreadId, false) : [],
       ...(activeThreadId ? { opportunityFamilies: opportunities.familyView(activeThreadId) } : {}),
       opportunityExploration: activeThreadId ? exploration.find(activeThreadId) : null,
@@ -503,6 +506,12 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
       ORDER BY pvs.problem_id, pvs.position
     `).all(runId) as Array<{ problem_id: string; source_id: string }>;
     return groupRows(rows, "problem_id", (row) => String(row.source_id));
+  }
+  function candidateArchiveRunId(snapshotRunId?: string): string | undefined {
+    if (!snapshotRunId) return undefined;
+    return db.db.prepare(`SELECT 1 FROM rejected_problem_candidates WHERE discovery_run_id = ?
+      UNION ALL SELECT 1 FROM workflow_snapshots WHERE research_run_id = ? AND snapshot_key = 'candidate-archive-complete' LIMIT 1`)
+      .get(snapshotRunId, snapshotRunId) ? snapshotRunId : undefined;
   }
   function listRejectedProblemCandidates(threadId: string, discoveryRunId?: string): RejectedProblemCandidate[] {
     const runId = discoveryRunId ?? latestDiscoveryRun(threadId);
@@ -748,7 +757,9 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
     }));
   }
   function researchExport(threadId: string) {
-    const runId = latestDiscoveryRun(threadId) ?? latestPersistedDiscoveryRun(threadId);
+    const session = workflowCoordinator.findActiveSummary(threadId);
+    const snapshot = session?.activeSnapshotId ? workflows.getSnapshot(session.activeSnapshotId) : null;
+    const runId = snapshot?.materializationRunId ?? latestDiscoveryRun(threadId) ?? latestPersistedDiscoveryRun(threadId);
     if (!runId) throw new AppError("conflict", "No saved research run is available to export.");
     const thread = db.db.prepare("SELECT id, title FROM threads WHERE id = ?").get(threadId) as { id: string; title: string };
     const run = db.db.prepare(`
@@ -789,12 +800,29 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
     const archivedConfig: unknown = JSON.parse(String(run.config_json));
     const parsedConfig = RunConfigSchema.safeParse(archivedConfig);
     const frame = new ResearchFrameRepository(db).forRun(runId);
+    const assessmentFrameRow = db.db.prepare(`SELECT value_json FROM workflow_snapshots
+      WHERE research_run_id = ? AND snapshot_key = 'candidate-assessment-frame'`).get(runId) as { value_json: string } | undefined;
+    const assessmentFrame = assessmentFrameRow ? z.object({ frame: ResearchFrameSchema, provenance: z.discriminatedUnion("kind", [
+      z.object({ kind: z.literal("approved-frame"), frameId: z.string().min(1), frameVersion: z.number().int().positive(),
+        sourceRunId: z.string().min(1), candidateId: z.string().min(1) }).strict(),
+      z.object({ kind: z.literal("reconstructed-from-saved-scope"), sourceRunId: z.string().min(1),
+        candidateId: z.string().min(1).optional(), note: z.string().min(1) }).strict(),
+    ]) }).strict().parse(JSON.parse(assessmentFrameRow.value_json)) : null;
+    const sourceCandidate = assessmentFrame?.provenance.candidateId ? db.db.prepare(`SELECT candidate_json
+      FROM rejected_problem_candidates WHERE id = ? AND discovery_run_id = ?`)
+      .get(assessmentFrame.provenance.candidateId, assessmentFrame.provenance.sourceRunId) as { candidate_json: string | null } | undefined : undefined;
+    const sourceResearchFrame = assessmentFrame ? new ResearchFrameRepository(db).forRun(assessmentFrame.provenance.sourceRunId) : null;
     return {
       schemaVersion: 1,
       exportedAt: new Date().toISOString(),
       thread,
       ...(frame ? { researchFrame: { id: frame.id, version: frame.version, draft: frame.draft, approved: frame.approved, sources: frame.sources,
         createdAt: frame.createdAt, approvedAt: frame.approvedAt } } : {}),
+      ...(assessmentFrame ? { assessmentFrame: { ...assessmentFrame,
+        ...(sourceCandidate?.candidate_json ? { sourceCandidate: SavedProblemCandidateSchema.parse(JSON.parse(sourceCandidate.candidate_json)) } : {}),
+        ...(sourceResearchFrame ? { sourceResearchFrame: { id: sourceResearchFrame.id, version: sourceResearchFrame.version,
+          approved: sourceResearchFrame.approved, sources: sourceResearchFrame.sources } } : {}),
+      } } : {}),
       researchRun: {
         id: String(run.id), status: String(run.status), completionReason: run.completion_reason === null ? null : String(run.completion_reason),
         ...(run.status === "completed" ? {} : { exportNote: "This run did not complete; the export contains only saved artifacts." }),
@@ -814,7 +842,7 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
         ...problem,
         verdictSourceIds: verdictSourceIdsByProblem.get(problem.id) ?? [],
       })),
-      rejectedProblemCandidates: listRejectedProblemCandidates(threadId, runId),
+      rejectedProblemCandidates: listRejectedProblemCandidates(threadId, candidateArchiveRunId(snapshot?.materializationRunId) ?? (snapshot ? undefined : runId)),
       evidenceFollowUps: listEvidenceFollowUpExports(threadId),
       opportunityReview: opportunities.exportReview(threadId),
       opportunityExploration: exploration.find(threadId) ? exploration.exportExploration(threadId) : null,
@@ -1104,7 +1132,16 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
         }
       }
     }
-    return summarizeRunUsage(rows);
+    // Acknowledgment authorizes another request; it cannot recover the old search's completion or cost.
+    const searches = db.db.prepare(`SELECT COUNT(*) AS attemptCount,
+      COALESCE(SUM(NOT EXISTS(SELECT 1 FROM workflow_snapshots terminal
+        WHERE terminal.research_run_id = attempt.research_run_id
+          AND terminal.snapshot_key = 'search-terminal:' || json_extract(attempt.value_json, '$.id'))), 0) AS unknownCount
+      FROM workflow_snapshots attempt WHERE attempt.research_run_id = ? AND attempt.snapshot_key LIKE 'search-attempt:%'`)
+      .get(runId) as { attemptCount: number; unknownCount: number };
+    const workflows = new WorkflowRepository(db);
+    return summarizeRunUsage(rows, { attemptCount: searches.attemptCount + workflows.countInvestigatorSearches(runId),
+      unknownCount: searches.unknownCount + workflows.unknownInvestigatorSearches(runId).length });
   }
   function latestRun(threadId: string) {
     const row = db.db.prepare(`SELECT id, status, problem_id, config_json, workflow_version, awaiting_selection,
@@ -1136,7 +1173,11 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
     const projection = row.problem_id ? { modelCalls: row.workflow_version === 2 ? developmentCalls : developmentProjection(runConfig?.ideaCount ?? 5), searches: 0 } : discoveryRunProjection(runConfig?.discoveryDepth ?? "standard");
     const activity = db.db.prepare("SELECT payload_json FROM job_events WHERE run_id = ? AND type = 'run-progress' ORDER BY id DESC LIMIT 1")
       .get(row.id) as { payload_json: string } | undefined;
-    const resumeSafety = generationAttempts.getResumeSafety(row.id);
+    const acknowledged = workflows.acknowledgedAttemptIds(row.id);
+    const resumeSafety = generationAttempts.getResumeSafety(row.id, acknowledged);
+    const unknownSearch = unknownSearchAttempts(db, row.id, acknowledged).length > 0
+      || workflows.unknownInvestigatorSearches(row.id, acknowledged).length > 0;
+    const usage = runUsage(row.id);
     const providerRemoved = !runConfig || runConfig.model.providerId === HISTORICAL_CODEX_CLI_PROVIDER_ID;
     // Match resumeRun: ended legacy runs have no resumable stage checkpoints.
     const resumableStatus = ["queued", "running", ...(row.workflow_version === 2 ? ["failed", "cancelled"] : [])].includes(row.status);
@@ -1146,17 +1187,19 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
       runConfig,
       workflowVersion: row.workflow_version, awaitingSelection: Boolean(row.awaiting_selection), interrupted: Boolean(row.interrupted),
       codexCalls: counts.find((item) => item.provider === runConfig?.model.providerId)?.count ?? 0,
-      searches: counts.filter((item) => item.provider === "exa" || item.provider === "perplexity").reduce((sum, item) => sum + item.count, 0),
+      searches: Math.max(usage.searchAttemptCount ?? 0,
+        counts.filter((item) => item.provider === "exa" || item.provider === "perplexity").reduce((sum, item) => sum + item.count, 0)),
       projectedCodexCalls: projection.modelCalls, projectedSearches: projection.searches,
       lastActivity: activity ? String(JSON.parse(activity.payload_json).message ?? "") : null,
       completionReason: row.completion_reason,
-      canResume: row.workflow_version === 2 && resumableStatus && !providerRemoved && resumeSafety.canResume,
+      canResume: row.workflow_version === 2 && resumableStatus && !providerRemoved && resumeSafety.canResume && !unknownSearch,
       ...(row.workflow_version !== 2
         ? { resumeBlockedReason: "Legacy generation has been retired. Start a new run to use the current prompts. Saved results remain readable." }
         : providerRemoved
         ? { resumeBlockedReason: REMOVED_CODEX_CLI_MESSAGE }
+        : unknownSearch ? { resumeBlockedReason: "A search may have completed before interruption. Review and acknowledge its saved request before retrying." }
         : resumeSafety.resumeBlockedReason ? { resumeBlockedReason: resumeSafety.resumeBlockedReason } : {}),
-      usage: runUsage(row.id),
+      usage,
       ...runtime,
     };
   }

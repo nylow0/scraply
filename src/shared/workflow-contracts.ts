@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { ScopeSchema } from "./structured-output-schemas";
 import { ModelRefSchema, ReasoningEffortSchema, RunConfigSchema } from "./schemas";
+import { ResearchTargetSchema } from "./evidence-investigators";
 import { SourceSchema } from "./schemas";
 import { ResearchFrameSchema } from "./research-frame";
 
@@ -21,6 +22,7 @@ export const WorkflowTargetSchema = z.object({
   ideaCount: z.number().int().min(1).max(20),
   distinctBusinessCount: z.number().int().positive().optional(),
   automaticProblemCap: z.number().int().min(1).max(20).optional(),
+  research: ResearchTargetSchema.optional(),
 }).strict();
 export const WorkflowLimitsSchema = z.object({
   /** New research uses estimates; omitted preserves an older run's explicit limits. */
@@ -60,14 +62,21 @@ export const WorkflowBudgetExtensionSchema = z.object({
   additionalSearches: NonnegativeCountSchema,
   additionalMinutes: NonnegativeCountSchema,
 }).strict().refine((value) => value.additionalModelCalls + value.additionalSearches + value.additionalMinutes > 0, "Increase at least one limit.");
+export const CandidateAssessmentProposalSchema = z.object({
+  candidateId: IdSchema, sourceRunId: IdSchema, depth: z.enum(["quick", "standard", "deep"]),
+  modelCalls: NonnegativeCountSchema, searches: NonnegativeCountSchema,
+  frameId: IdSchema.nullable().optional(), frameVersion: z.number().int().positive().nullable().optional(),
+  assessmentFrameSource: z.enum(["approved", "scope-derived"]).optional(),
+}).strict();
 export const PreviewWorkflowRequestSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("launch"), threadId: IdSchema, draft: WorkflowLaunchDraftSchema }).strict(),
   z.object({ type: z.literal("budget-extension"), threadId: IdSchema, sessionId: IdSchema, expectedRevision: NonnegativeCountSchema, extension: WorkflowBudgetExtensionSchema }).strict(),
+  z.object({ type: z.literal("candidate-assessment"), threadId: IdSchema, sessionId: IdSchema, expectedRevision: NonnegativeCountSchema, candidateId: IdSchema }).strict(),
 ]);
 export const WorkflowFieldErrorSchema = z.object({ path: z.array(z.string()), code: z.string(), message: z.string() }).strict();
 export const PreviewWorkflowResultSchema = z.object({
-  type: z.enum(["launch", "budget-extension"]),
-  proposal: z.union([WorkflowLaunchContractSchema, WorkflowBudgetExtensionSchema]),
+  type: z.enum(["launch", "budget-extension", "candidate-assessment"]),
+  proposal: z.union([WorkflowLaunchContractSchema, WorkflowBudgetExtensionSchema, CandidateAssessmentProposalSchema]),
   previewHash: z.string().min(1),
   capabilityFingerprint: z.string().min(1),
   minimumWork: z.object({ modelCalls: NonnegativeCountSchema, searches: NonnegativeCountSchema }).strict(),
@@ -128,6 +137,7 @@ export const WorkflowSummarySchema = z.object({
 export const WorkflowTaskSchema = z.object({
   id: IdSchema,
   terminalAttemptId: IdSchema.optional(),
+  terminalAttemptKind: z.enum(["model", "search"]).optional(),
   canReassessProblems: z.boolean().optional(),
   investigator: z.object({ areaId: IdSchema, areaName: z.string().min(1), currentStep: z.string().nullable(),
     confirmedCount: NonnegativeCountSchema.nullable(), insufficientCount: NonnegativeCountSchema.nullable(),
@@ -158,6 +168,8 @@ export const WorkflowDetailSchema = z.object({
 export const WorkflowAdmissionReceiptSchema = z.object({ sessionId: IdSchema, revision: NonnegativeCountSchema, summary: WorkflowSummarySchema }).strict();
 
 export const WorkflowActionSchema = z.discriminatedUnion("type", [
+  z.object({ type: z.literal("assess-not-assessed"), candidateId: IdSchema,
+    previewHash: z.string().min(1), capabilityFingerprint: z.string().min(1), previewExpiresAt: z.string().datetime() }).strict(),
   z.object({ type: z.literal("approve-frame"), frameId: IdSchema, frame: ResearchFrameSchema }).strict(),
   z.object({ type: z.literal("regenerate-frame"), frameId: IdSchema, frame: ResearchFrameSchema }).strict(),
   z.object({ type: z.literal("edit-approved-frame"), frameId: IdSchema, frame: ResearchFrameSchema }).strict(),
@@ -226,6 +238,7 @@ export const SubmitIdeaTurnRequestSchema = z.object({
 export const SubmitIdeaTurnResultSchema = WorkflowAdmissionReceiptSchema.extend({ turnId: IdSchema }).strict();
 
 export type WorkflowLaunchDraft = z.infer<typeof WorkflowLaunchDraftSchema>;
+export type PreviewWorkflowResult = z.infer<typeof PreviewWorkflowResultSchema>;
 export type WorkflowLaunchContract = z.infer<typeof WorkflowLaunchContractSchema>;
 export type WorkflowAction = z.infer<typeof WorkflowActionSchema>;
 export type WorkflowSummary = z.infer<typeof WorkflowSummarySchema>;

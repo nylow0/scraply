@@ -9,6 +9,7 @@ import type { ResearchEngine } from "../../src/core/research-engine";
 import { sha256 } from "../../src/shared/content-identity";
 import { DatabaseClient } from "../../src/db/client";
 import { WorkflowRepository } from "../../src/db/repositories/workflows";
+import { ResearchFrameRepository } from "../../src/db/repositories/research-frames";
 import type { ResearchEvent } from "../../src/shared/ipc";
 import { DEFAULT_RUN_CONFIG } from "../../src/shared/schemas";
 import { IdeaConversationSchema, PreviewWorkflowResultSchema, WorkflowAdmissionReceiptSchema, WorkflowDetailSchema, WorkflowLaunchContractSchema } from "../../src/shared/workflow-contracts";
@@ -52,6 +53,20 @@ async function fixture() {
   const created = await request("/threads", {});
   expect(created.status).toBe(200);
   const { data } = await created.json() as { data: { thread: { id: string } } };
+  // These API fixtures exercise saved selection and checkpoint commands. Frame preparation
+  // and no-search approval use model fixtures in research-frame-workflow.test.ts.
+  const client = new DatabaseClient(dbPath);
+  const now = new Date().toISOString();
+  client.db.prepare(`INSERT INTO research_runs (id,thread_id,status,config_json,created_at,updated_at,purpose)
+    VALUES ('reusable-frame-run',?,'completed',?,?,?,'materialization')`).run(data.thread.id, JSON.stringify(DEFAULT_RUN_CONFIG), now, now);
+  const frames = new ResearchFrameRepository(client);
+  const frame = frames.createDraft({ threadId: data.thread.id, runId: "reusable-frame-run", knownProblem: true, sources: [], frame: {
+    goal: "Reduce parts approval delays", goalKind: "process-improvement", contextFacts: [],
+    successCriteria: [{ id: "delay", name: "Shorter approvals", weight: "must", howJudged: "Observe approval time", basis: "brief" }],
+    constraints: [], languages: ["en"], exclusions: [], openQuestions: [], areas: [],
+  } });
+  frames.approve(frame.id, data.thread.id, frame.draft);
+  client.close();
   return { request, threadId: data.thread.id, dbPath, errors, events };
 }
 
@@ -130,7 +145,7 @@ test("workflow preview, start, detail, and workspace use the same saved session"
     if (current.summary.state === "waiting-for-review") { checkpoint = current; break; }
     await new Promise((resolve) => setTimeout(resolve, 20));
   }
-  expect(checkpoint?.summary.state).toBe("waiting-for-review");
+  expect(checkpoint?.summary.state, JSON.stringify(events.filter(event => event.type === "run-failed"))).toBe("waiting-for-review");
   const client = new DatabaseClient(dbPath);
   const repository = new WorkflowRepository(client);
   const currentSession = repository.getSession(receipt.sessionId)!;
@@ -879,7 +894,8 @@ test("workspace keeps an earlier root idea after a new evidence snapshot while v
       evidenceSnapshots: Array<{ id: string; originMap: { problems: Record<string, unknown> } }>;
       runs: Array<{ id: string; sources: Array<{ id: string }>; problems: Array<{ id: string }> }> };
   };
-  expect(archived.researchRun.id).toBe("discovery-for-versions");
+  expect(archived.researchRun.id).not.toBe("discovery-for-versions");
+  expect(archived.history.runs.map(run => run.id)).toContain(archived.researchRun.id);
   expect(archived.history.researchRequests).toEqual([expect.objectContaining({ question: "How do shops approve purchases?", status: "completed", workflowSessionId: followupSession.id })]);
   expect(archived.history.evidenceSnapshots.map((snapshot) => snapshot.id)).toEqual(history.evidenceSnapshots.map((snapshot) => snapshot.id));
   expect(archived.history.runs.map((run) => run.id)).toContain("discovery-for-versions");
