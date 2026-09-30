@@ -149,12 +149,13 @@ export interface EvaluationBackend {
 
 /** The manifest is written before dispatch. Missing admission receipts are never resent. */
 export async function runEvaluation(matrix: EvaluationCase[], manifest: Manifest, backend: EvaluationBackend,
-  save: (manifest: Manifest) => void, wait: () => Promise<void> = () => delay(2000)) {
+  save: (manifest: Manifest) => void, wait: () => Promise<void> = () => delay(2000), shouldStopBeforeLaunch?: () => boolean) {
   for (const item of matrix) {
     const row = manifest.rows.find(row => row.key === item.key)!;
     if (row.status === "finished") continue;
     if (row.status === "launching" || row.status === "blocked") throw new Error(`${row.key} needs manual inspection before continuing. No automatic replay.`);
     if (!row.sessionId) {
+      if (shouldStopBeforeLaunch?.()) { save(manifest); return; }
       row.threadId = await backend.create(item);
       const preview = await backend.preview(row.threadId, evaluationDraft(item));
       if (preview.fieldErrors.length) throw new Error(`Preview rejected ${row.key}: ${preview.fieldErrors.map(error => error.message).join("; ")}`);
@@ -253,11 +254,12 @@ async function main() {
     "app-checkout": { type: "string" }, "runtime-dir": { type: "string" }, origin: { type: "string", default: "http://127.0.0.1:5179" },
     output: { type: "string" }, matrix: { type: "string", default: "baseline" }, briefs: { type: "string" },
     "trace-module": { type: "string" }, "require-app-sha": { type: "string" },
+    "pause-file": { type: "string" },
     "report-only": { type: "boolean", default: false }, "dry-run": { type: "boolean", default: false },
     help: { type: "boolean", default: false },
   } });
   if (values.help) {
-    console.log("bun scripts/eval-research.ts --app-checkout PATH --runtime-dir PATH [--matrix baseline|quick|acceptance] [--output build/eval/DATE] [--trace-module PATH] [--dry-run|--report-only]");
+    console.log("bun scripts/eval-research.ts --app-checkout PATH --runtime-dir PATH [--matrix baseline|quick|acceptance] [--output build/eval/DATE] [--trace-module PATH] [--pause-file PATH] [--dry-run|--report-only]");
     console.log("Live mode starts/reuses an isolated browser backend with existing shared credentials. It never resumes paused workflows or replays unknown calls. Rerunning resumes observation from manifest.json.");
     return;
   }
@@ -306,8 +308,8 @@ async function main() {
     Object.assign(environment, { SCRAPLY_AGENT_PATH: join(resolve(values["runtime-dir"]), "scraply-agent.exe"), SCRAPLY_AGENT_LOCK_PATH: join(resolve(values["runtime-dir"]), "scraply-agent.lock.json") });
   }
   console.log(await command(checkout, ["bun", "run", "dev"], environment));
-  await runEvaluation(matrix, manifest, backend, save);
-  console.log(JSON.stringify({ type: "complete", terminalRuns: manifest.rows.filter(row => row.status === "finished").length, output }));
+  await runEvaluation(matrix, manifest, backend, save, () => delay(2000), () => Boolean(values["pause-file"] && existsSync(resolve(values["pause-file"]))));
+  console.log(JSON.stringify({ type: manifest.rows.every(row => row.status === "finished") ? "complete" : "checkpoint", terminalRuns: manifest.rows.filter(row => row.status === "finished").length, output }));
 }
 
 if (import.meta.main) await main();
