@@ -5,10 +5,13 @@ import { EXCLUDED_SOURCE_DOMAINS, SourceVenueSchema, type SourceVenue } from "./
 
 export const RESEARCH_VENUE_DNS_TIMEOUT_MS = 2_000;
 export type ResearchVenueResolver = (domain: string, options: { signal: AbortSignal }) => Promise<readonly string[]>;
+export type VenueVerificationProof = { domain: string; method: "dns" }
+  | { domain: string; method: "saved-source"; sourceUrl: string };
 export interface VenueVerificationResult {
+  /** Only domains with a nonempty actual retrieved source may constrain provider searches. */
   verified: SourceVenue[];
   unresolved: Array<{ venue: SourceVenue; reason: string }>;
-  proofs: Array<{ domain: string; method: "dns" | "saved-source"; sourceUrl?: string }>;
+  proofs: VenueVerificationProof[];
 }
 
 const PRIVATE_DOMAIN_SUFFIXES = ["localhost", "local", "internal", "home", "lan", "corp", "onion", "test", "invalid", "example", "arpa"];
@@ -59,8 +62,8 @@ const resolvePublicAddresses: ResearchVenueResolver = async (domain, { signal })
 };
 
 /** Validate one flattened frame so repeated domains share a lookup. No pages or IPs are fetched.
- * DNS proves resolution, while a saved nonempty source proves the domain supplied retrieved content.
- * Neither proves a venue's proposed kind. The evidence extraction still has to check its content.
+ * DNS-only results remain unresolved until an actual provider result supplies nonempty content.
+ * Saved sources can verify retrieval, but extraction still checks the proposed venue's content and kind.
  */
 export async function validateResearchVenues(venues: readonly SourceVenue[], options: {
   signal?: AbortSignal;
@@ -120,7 +123,8 @@ export async function validateResearchVenues(venues: readonly SourceVenue[], opt
     for (const { venue, verification } of checked) {
       if ("reason" in verification) result.unresolved.push({ venue, reason: verification.reason });
       else {
-        result.verified.push(venue);
+        if (verification.method === "saved-source") result.verified.push(venue);
+        else result.unresolved.push({ venue, reason: "Domain resolves but has no retrieved source proof" });
         if (!result.proofs.some(proof => proof.domain === verification.domain)) result.proofs.push(verification);
       }
     }

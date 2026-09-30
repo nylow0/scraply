@@ -5,7 +5,7 @@ import { RESEARCH_VENUE_DNS_TIMEOUT_MS, validateResearchVenues } from "../../src
 const venue = (domain?: string): SourceVenue => ({ name: "Operators' forum", kind: "community", ...(domain ? { domain } : {}) });
 
 describe("research venue validation", () => {
-  test("a well-formed proposed domain still needs resolution before it enters a route", async () => {
+  test("an unresolved proposed domain keeps the common route fallback", async () => {
     const result = await validateResearchVenues([venue("made-up-forum.org")], { resolve: async () => [] });
     expect(result.verified).toEqual([]);
     expect(result.unresolved).toEqual([{ venue: venue("made-up-forum.org"), reason: "Domain did not resolve" }]);
@@ -30,10 +30,31 @@ describe("research venue validation", () => {
       { ...venue("forum.org"), name: "Maintainers", kind: "issue-tracker" as const }];
     const result = await validateResearchVenues(proposed, { resolve: async domain => { domains.push(domain); return ["1.1.1.1", "2606:4700:4700::1111"]; } });
     expect(domains).toEqual(["forum.org"]);
-    expect(result.verified).toEqual(proposed.map(item => ({ ...item, domain: "forum.org" })));
+    expect(result.verified).toEqual([]);
     expect(result.proofs).toEqual([{ domain: "forum.org", method: "dns" }]);
-    expect(result.unresolved).toEqual([]);
-    expect(routeSearchOptions("community", { venues: result.verified }).includeDomains).toContain("forum.org");
+    expect(result.unresolved).toEqual(proposed.map(item => ({
+      venue: { ...item, domain: "forum.org" }, reason: "Domain resolves but has no retrieved source proof",
+    })));
+    expect(routeSearchOptions("community", { venues: result.verified }).includeDomains).not.toContain("forum.org");
+  });
+
+  test("a DNS-only venue enters domain filters only after a provider returns a nonempty source", async () => {
+    const proposed = venue("forum.org");
+    const provisional = await validateResearchVenues([proposed], { resolve: async () => ["1.1.1.1"] });
+    expect(provisional.verified).toEqual([]);
+    expect(provisional.proofs).toEqual([{ domain: "forum.org", method: "dns" }]);
+    expect(routeSearchOptions("community", { venues: provisional.verified }).includeDomains).not.toContain("forum.org");
+    const empty = await validateResearchVenues([proposed], {
+      resolve: async () => ["1.1.1.1"], retrievedSources: [{ url: "https://forum.org/thread", text: " " }],
+    });
+    expect(empty.verified).toEqual([]);
+    const retrieved = await validateResearchVenues([proposed], {
+      resolve: async () => { throw new Error("Saved retrieval needs no new DNS lookup"); },
+      retrievedSources: [{ url: "https://forum.org/thread", text: "We repeated this filing last week." }],
+    });
+    expect(retrieved.verified).toEqual([proposed]);
+    expect(retrieved.proofs).toEqual([{ domain: "forum.org", method: "saved-source", sourceUrl: "https://forum.org/thread" }]);
+    expect(routeSearchOptions("community", { venues: retrieved.verified }).includeDomains).toContain("forum.org");
   });
 
   test.each(["127.0.0.1", "10.1.2.3", "172.16.0.2", "192.168.1.1", "169.254.169.254", "100.64.0.1",
