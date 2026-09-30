@@ -12,6 +12,8 @@ import {
   WorkflowV2DecisionAnalysisOutputSchema,
   WorkflowV2RiskReassessmentOutputSchema,
   WorkflowV2SolutionOptionSchema,
+  WorkflowV2GoalSolutionOptionSchema,
+  WorkflowV2GoalStartupSolutionOptionSchema,
   WorkflowV2StartupSolutionOptionSchema,
   WorkflowV2SolutionsOutputSchema,
   type WorkflowV2DecisionAnalysis,
@@ -19,6 +21,8 @@ import {
 } from "../../shared/structured-output-schemas";
 import type { DatabaseClient } from "../client";
 import { DEFAULT_IDEA_COUNT, RunConfigSchema } from "../../shared/schemas";
+import type { ResearchFrame } from "../../shared/research-frame";
+import { CriteriaFitSchema, assertCriteriaFit, type CriterionFit } from "../../shared/solution-goal-fit";
 
 export class WorkflowV2ConflictError extends Error {
   readonly code = "WORKFLOW_V2_CONFLICT";
@@ -44,10 +48,10 @@ export interface WorkflowV2EvidenceSnapshot {
 }
 
 export interface CompletedWorkflowV2Stage<T = unknown> {
-  schemaRevision?: number;
   id?: string;
   researchRunId: string;
   stageId: WorkflowV2StageId;
+  schemaRevision?: number;
   selectionId?: string | null;
   context: unknown;
   output: T;
@@ -136,9 +140,9 @@ export class WorkflowV2Repository {
     if (options.length > ideaCount) throw new Error(`This run requested at most ${ideaCount} ideas`);
     const parsed: Array<WorkflowV2SolutionOption & { id: string }> = options.map((option) => {
       const { id, ...candidate } = option;
-      const schema = "startupOpportunity" in candidate
-        ? WorkflowV2StartupSolutionOptionSchema
-        : WorkflowV2SolutionOptionSchema;
+      const schema = "criteriaFit" in candidate
+        ? "startupOpportunity" in candidate ? WorkflowV2GoalStartupSolutionOptionSchema : WorkflowV2GoalSolutionOptionSchema
+        : "startupOpportunity" in candidate ? WorkflowV2StartupSolutionOptionSchema : WorkflowV2SolutionOptionSchema;
       const parsedCandidate: WorkflowV2SolutionOption = schema.parse(candidate);
       return { ...parsedCandidate, id };
     });
@@ -147,7 +151,7 @@ export class WorkflowV2Repository {
       SELECT id, mechanism, description, respects_off_limits, respects_off_limits_why,
         option_position, key_assumption, why_current_approach_may_suffice,
         supporting_evidence_ids_json, contrary_evidence_ids_json, unknowns_json,
-        startup_opportunity_json
+        startup_opportunity_json, criteria_fit_json, first_test_json, bigger_problem_json, slice_json
       FROM solutions WHERE research_run_id = ? ORDER BY option_position, id
     `).all(researchRunId);
     const expected = parsed.map((option, position) => optionRow(option, position));
@@ -176,8 +180,8 @@ export class WorkflowV2Repository {
         respects_off_limits_why, option_position, key_assumption,
         why_current_approach_may_suffice, supporting_evidence_ids_json,
         contrary_evidence_ids_json, unknowns_json, created_at,
-        startup_opportunity_json
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        startup_opportunity_json, criteria_fit_json, first_test_json, bigger_problem_json, slice_json
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     for (const [position, option] of parsed.entries()) {
       insert.run(
@@ -196,6 +200,10 @@ export class WorkflowV2Repository {
         canonicalJson(option.unknowns),
         now,
         option.startupOpportunity ? canonicalJson(option.startupOpportunity) : null,
+        option.criteriaFit ? canonicalJson(option.criteriaFit) : null,
+        option.firstTest ? canonicalJson(option.firstTest) : null,
+        option.biggerProblem ? canonicalJson(option.biggerProblem) : null,
+        option.slice ? canonicalJson(option.slice) : null,
       );
     }
     return { created: true };
@@ -420,6 +428,17 @@ export class WorkflowV2Repository {
     `).get(researchRunId, stageId, selectionKey) as StageResultRow | undefined ?? null;
   }
 
+  /** Keep the generator's saved assessment for resume; the independent review drives the displayed fit. */
+  saveReviewedCriteriaFit(researchRunId: string, solutionId: string, fit: CriterionFit[], frame: ResearchFrame, evidenceSourceIds: readonly string[]): void {
+    this.client.requireImmediateTransaction();
+    const parsed = CriteriaFitSchema.parse(fit);
+    assertCriteriaFit(parsed, frame, evidenceSourceIds);
+    const solution = this.client.db.prepare("SELECT id FROM solutions WHERE id = ? AND research_run_id = ?").get(solutionId, researchRunId);
+    if (!solution) throw new Error("The reviewed idea does not belong to this run");
+    this.client.db.prepare("UPDATE solutions SET reviewed_criteria_fit_json = ? WHERE id = ? AND research_run_id = ?")
+      .run(canonicalJson(parsed), solutionId, researchRunId);
+  }
+
   private requireV2Run(researchRunId: string, problemId?: string): void {
     const run = this.client.db.prepare(`
       SELECT workflow_version, problem_id FROM research_runs WHERE id = ?
@@ -446,6 +465,10 @@ function optionRow(option: WorkflowV2SolutionOption & { id: string }, position: 
     contrary_evidence_ids_json: canonicalJson(option.contraryEvidenceIds),
     unknowns_json: canonicalJson(option.unknowns),
     startup_opportunity_json: option.startupOpportunity ? canonicalJson(option.startupOpportunity) : null,
+    criteria_fit_json: option.criteriaFit ? canonicalJson(option.criteriaFit) : null,
+    first_test_json: option.firstTest ? canonicalJson(option.firstTest) : null,
+    bigger_problem_json: option.biggerProblem ? canonicalJson(option.biggerProblem) : null,
+    slice_json: option.slice ? canonicalJson(option.slice) : null,
   };
 }
 

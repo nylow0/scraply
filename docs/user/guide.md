@@ -54,6 +54,8 @@ Scraply aims for distinct, eligible ideas, then makes at most two fill rounds, s
 
 Open an idea to read its evidence, assumptions, risks, and possible consequences. A source citation means the saved excerpt can be traced, not that the proposed business outcome has happened. The independent risk evaluation is a model judgment. Record your own decision and any real-world test outcome separately.
 
+Ideas from framed research show their fit against each success criterion, the larger problem, a feasible slice, and a first test suited to the goal. A failed must-have criterion prevents acceptance; unknown fit stays visible. **Meets all must-haves** filters the collection to ideas whose must-have criteria are all assessed as met. Older ideas without these assessments remain readable.
+
 The idea's conversation can explain the saved rationale, discuss other directions, or rethink the mechanism. A rethink saves a linked version. Earlier versions, their evidence snapshots, and their reviews remain readable. A conversation reply by itself does not add an idea to the collection. Revising an idea does not make an earlier risk review apply to the new version.
 
 By default, a reply uses the selected version's saved research. If you applied later research, check **Use newer research** before sending a reply that should consider the current snapshot. The reply records the snapshot it used. A rethink based on it creates a new version while the earlier idea, conversation, and evidence stay in history. Compare versions in the idea view; changing the selected version does not rerun the model.

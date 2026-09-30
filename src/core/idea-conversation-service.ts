@@ -4,6 +4,7 @@ import { CostLedgerRepository } from "../db/repositories/cost-ledger";
 import { GenerationAttemptRepository } from "../db/repositories/generation-attempts";
 import { ResearchRunRepository } from "../db/repositories/research-runs";
 import { WorkflowV2Repository } from "../db/repositories/workflow-v2";
+import { ResearchFrameRepository } from "../db/repositories/research-frames";
 import { WorkflowConflictError, WorkflowRepository, type IdeaTurn } from "../db/repositories/workflows";
 import { ProviderFailure, type GenerationAttemptMetadata, type StructuredModelClient } from "../providers/structured";
 import { canonicalJson, sha256 } from "../shared/content-identity";
@@ -16,6 +17,7 @@ import {
 } from "../shared/workflow-contracts";
 import { generateIdeaFollowUp, prepareIdeaFollowUp, type IdeaFollowUpInput, type PreparedIdeaFollowUp } from "./idea-conversation";
 import { remainingWorkflowMs } from "./workflow-time";
+import { CriteriaFitSchema, BiggerProblemSchema, SolutionSliceSchema, FirstTestSchema } from "../shared/solution-goal-fit";
 
 interface SolutionRow {
   id: string;
@@ -35,6 +37,11 @@ interface SolutionRow {
   contrary_evidence_ids_json: string | null;
   unknowns_json: string | null;
   startup_opportunity_json: string | null;
+  criteria_fit_json: string | null;
+  reviewed_criteria_fit_json: string | null;
+  bigger_problem_json: string | null;
+  slice_json: string | null;
+  first_test_json: string | null;
 }
 
 interface PendingDispatch {
@@ -255,6 +262,7 @@ export class IdeaConversationService {
           purpose: "idea-turn", config: childConfig,
           ...(request.evidenceSnapshotId ? { evidenceSnapshotId: request.evidenceSnapshotId } : {}),
         });
+        if (contextInput.frameId) new ResearchFrameRepository(this.options.db).bindRun(child.runId, request.threadId, contextInput.frameId);
         const turn = this.workflows.createIdeaTurn({
           rootSolutionId: root.id, branchId: branch.branchId, parentTurnId: branch.parentTurnId,
           baseSolutionId: base.id, evidenceSnapshotId: request.evidenceSnapshotId ?? null,
@@ -374,6 +382,14 @@ export class IdeaConversationService {
   }
 
   private contextInput(request: SubmitIdeaTurnRequest, base: SolutionRow, parentTurnId: string | null): IdeaFollowUpInput {
+    const approvedFrame = new ResearchFrameRepository(this.options.db).latestApproved(base.thread_id);
+    const criteriaFitJson = base.reviewed_criteria_fit_json ?? base.criteria_fit_json;
+    const goalFields = {
+      ...(criteriaFitJson ? { criteriaFit: CriteriaFitSchema.parse(JSON.parse(criteriaFitJson)) } : {}),
+      ...(base.bigger_problem_json ? { biggerProblem: BiggerProblemSchema.parse(JSON.parse(base.bigger_problem_json)) } : {}),
+      ...(base.slice_json ? { slice: SolutionSliceSchema.parse(JSON.parse(base.slice_json)) } : {}),
+      ...(base.first_test_json ? { firstTest: FirstTestSchema.parse(JSON.parse(base.first_test_json)) } : {}),
+    };
     const problem = this.options.db.db.prepare(`
       SELECT p.statement, p.why_it_persists, p.affected, p.verdict, s.off_limits_json
       FROM problems p JOIN scopes s ON s.research_run_id = p.discovery_run_id WHERE p.id = ?
@@ -385,6 +401,7 @@ export class IdeaConversationService {
     `).get(base.research_run_id) as { prompt_text: string } | undefined;
     const sourceIds = [
       ...parseIds(base.supporting_evidence_ids_json), ...parseIds(base.contrary_evidence_ids_json),
+      ...(goalFields.criteriaFit?.flatMap(entry => entry.evidenceIds) ?? []), ...(goalFields.biggerProblem?.scaleEvidenceIds ?? []),
     ];
     const evidence = this.loadEvidence(base.thread_id, request.evidenceSnapshotId ?? null, sourceIds);
     const history: IdeaFollowUpInput["history"] = [];
@@ -402,10 +419,12 @@ export class IdeaConversationService {
       current = turn.parentTurnId;
     }
     return {
+      ...(approvedFrame?.approved ? { frame: approvedFrame.approved, frameId: approvedFrame.id } : {}),
       rootSolutionId: request.rootSolutionId, baseSolutionId: base.id,
       evidenceSnapshotId: request.evidenceSnapshotId ?? null,
       intent: request.intent, userText: request.text,
       idea: { mechanism: base.mechanism, description: base.description,
+        ...goalFields,
         keyAssumption: base.key_assumption, whyCurrentApproachMaySuffice: base.why_current_approach_may_suffice,
         respectsOffLimits: Boolean(base.respects_off_limits), respectsOffLimitsWhy: base.respects_off_limits_why,
         supportingEvidenceIds: parseIds(base.supporting_evidence_ids_json),
@@ -502,6 +521,7 @@ export class IdeaConversationService {
           this.attempts.recordTerminal(pending.attemptId, { status: "completed", terminalKind: "completed",
             output: result.output, attemptMetadata: result.metadata, usage: result.metadata.usage });
           const stage = this.stages.saveStageResult({
+            schemaRevision: result.schemaRevision,
             researchRunId: pending.runId, stageId: "idea-follow-up", selectionId: pending.turnId,
             context: result.effectiveContext, output: result.output, prompt: result.prompt,
             schema: result.request.jsonSchema, inputs: result.request.workOrder.inputs,

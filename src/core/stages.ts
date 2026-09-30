@@ -9,14 +9,19 @@ import {
   RoutedWorkflowV2QueryPlanOutputSchema,
   LegacyWorkflowV2QueryPlanOutputSchema,
   WorkflowV2RiskEvaluationOutputSchema,
-  WorkflowV2SolutionsOutputSchema,
-  WorkflowV2SolutionSetReviewOutputSchema,
+  WorkflowV2LegacySolutionsOutputSchema,
+  WorkflowV2LegacySolutionSetReviewOutputSchema,
+  WorkflowV2GoalSolutionsOutputSchema,
+  WorkflowV2GoalSolutionSetReviewOutputSchema,
   WorkflowV2IdeaFollowUpOutputSchema,
+  WorkflowV2GoalIdeaFollowUpOutputSchema,
+  WorkflowV2CompatibleIdeaFollowUpOutputSchema,
   type WorkflowV2DecisionAnalysis,
   type WorkflowV2SolutionOption,
 } from "../shared/structured-output-schemas";
 import { MAX_IDEA_COUNT } from "../shared/schemas";
 import { FrameSearchPlanSchema, ResearchFrameOutputSchema, ResearchAreaRankingSchema } from "../shared/research-frame";
+import { z } from "zod";
 import { AreaGapOutputSchema, EvidenceCheckOutputSchema } from "../shared/evidence-investigators";
 
 export const WORKFLOW_VERSION_V2 = 2 as const;
@@ -114,24 +119,24 @@ export const WORKFLOW_V2_STAGE_REGISTRY = {
     id: "solutions",
     promptFilename: "workflow-v2-solutions.md",
     promptRevision: 1,
-    schemaRevision: 1,
-    schema: WorkflowV2SolutionsOutputSchema,
+    schemaRevision: 2,
+    schema: z.union([WorkflowV2GoalSolutionsOutputSchema, WorkflowV2LegacySolutionsOutputSchema]),
     maxOutputTokens: 4_096,
   },
   "solution-set-review": {
     id: "solution-set-review",
     promptFilename: "workflow-v2-solution-set-review.md",
     promptRevision: 1,
-    schemaRevision: 1,
-    schema: WorkflowV2SolutionSetReviewOutputSchema,
+    schemaRevision: 2,
+    schema: z.union([WorkflowV2GoalSolutionSetReviewOutputSchema, WorkflowV2LegacySolutionSetReviewOutputSchema]),
     maxOutputTokens: 4_096,
   },
   "idea-follow-up": {
     id: "idea-follow-up",
     promptFilename: "workflow-v2-idea-follow-up.md",
     promptRevision: 1,
-    schemaRevision: 1,
-    schema: WorkflowV2IdeaFollowUpOutputSchema,
+    schemaRevision: 2,
+    schema: WorkflowV2CompatibleIdeaFollowUpOutputSchema,
     maxOutputTokens: 4_096,
   },
   "decision-analysis": {
@@ -162,13 +167,19 @@ export function parseWorkflowV2StageOutput(
   value: unknown,
   evidence: readonly WorkflowV2CategorizedEvidence[] = [],
 ): unknown {
-  if (schemaRevision !== 1 && !(schemaRevision === 2 && stageId === "query-plan")) {
+  if (schemaRevision !== 1 && !(schemaRevision === 2 && ["query-plan", "solutions", "solution-set-review", "idea-follow-up"].includes(stageId))) {
     throw new Error(`Unsupported ${stageId} schema revision: ${schemaRevision}`);
   }
   // Keep this revision switch when adding schemas. Saved checkpoints must keep using the schema
   // version that created them instead of the currently bundled stage definition.
   const output = stageId === "query-plan"
     ? (schemaRevision === 1 ? LegacyWorkflowV2QueryPlanOutputSchema : RoutedWorkflowV2QueryPlanOutputSchema).parse(value)
+    : stageId === "solutions"
+    ? (schemaRevision === 1 ? WorkflowV2LegacySolutionsOutputSchema : WorkflowV2GoalSolutionsOutputSchema).parse(value)
+    : stageId === "solution-set-review"
+      ? (schemaRevision === 1 ? WorkflowV2LegacySolutionSetReviewOutputSchema : WorkflowV2GoalSolutionSetReviewOutputSchema).parse(value)
+    : stageId === "idea-follow-up"
+      ? (schemaRevision === 1 ? WorkflowV2IdeaFollowUpOutputSchema : WorkflowV2GoalIdeaFollowUpOutputSchema).parse(value)
     : stageId === "decision-analysis"
     ? WorkflowV2CompatibleDecisionAnalysisOutputSchema.parse(value)
     : stageId === "problem-kill"
@@ -197,7 +208,8 @@ export function assertWorkflowV2SolutionsSemantics(
   const suppliedIds = new Set([...categories.supporting, ...categories.contrary, ...categories.gapSearch]);
   for (const option of output.options) {
     const gapEvidenceIds = option.startupOpportunity?.gapAssessment.evidenceIds ?? [];
-    if ([...option.supportingEvidenceIds, ...option.contraryEvidenceIds, ...gapEvidenceIds].some((id) => !suppliedIds.has(id))) {
+    const goalEvidenceIds = [...(option.criteriaFit?.flatMap(entry => entry.evidenceIds) ?? []), ...(option.biggerProblem?.scaleEvidenceIds ?? [])];
+    if ([...option.supportingEvidenceIds, ...option.contraryEvidenceIds, ...gapEvidenceIds, ...goalEvidenceIds].some((id) => !suppliedIds.has(id))) {
       throw new Error("A v2 solution option referenced an unknown evidence source ID");
     }
     const gap = option.startupOpportunity?.gapAssessment;

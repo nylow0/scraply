@@ -2,6 +2,7 @@
   import type { RunTrace as RunTraceValue, RunTraceCandidate, RunTraceSearch, RunTraceStep, RunTraceStepDetail } from "../../shared/run-trace";
   import { ProblemFactorAssessmentSchema, WorkflowV2SolutionSetReviewOutputSchema } from "../../shared/structured-output-schemas";
   import Icon from "./Icon.svelte";
+  import CriteriaFit from "./CriteriaFit.svelte";
 
   let { runId, onOpenSource }: { runId: string; onOpenSource?: (url: string) => void | Promise<void> } = $props();
   let trace = $state<RunTraceValue | null>(null);
@@ -73,6 +74,7 @@
   });
 
   function stepVersion(step: RunTraceStep): string {
+    // Reasoning text renders from the polled step. Refresh the large detail body only when saved work changes.
     return JSON.stringify([step.status, step.finishedAt, step.attempts.map((attempt) => [attempt.id, attempt.status, attempt.finishedAt])]);
   }
 
@@ -268,6 +270,7 @@
       <div><dt>Qualifying per assessed candidate</dt><dd>{trace.metrics.qualifyingPerAssessedCandidate === null ? "Unknown" : trace.metrics.qualifyingPerAssessedCandidate.toLocaleString(undefined, { maximumFractionDigits: 2 })}</dd></div>
       <div><dt>Ideas</dt><dd>{trace.metrics.ideas}</dd></div>
       <div><dt>Accepted ideas</dt><dd>{trace.metrics.acceptedIdeas}</dd></div>
+      <div><dt>Accepted ideas failing must-have criteria</dt><dd>{trace.metrics.acceptedIdeasFailingMustHave ?? "Unknown"}</dd></div>
       <div><dt>Model calls</dt><dd>{trace.metrics.modelCalls}</dd></div>
       <div><dt>Searches</dt><dd>{trace.metrics.searches}</dd></div>
       <div><dt>Wall time</dt><dd>{duration(trace.metrics.wallTimeMs)}</dd></div>
@@ -347,7 +350,23 @@
                         </ul></section>
                       {/if}
                       {#if detail.candidates.length}<section><h4>Candidates and verdicts</h4>{#each detail.candidates as candidate (candidate.id)}{@render candidateOutcome(candidate)}{/each}</section>{/if}
-                      {#if review.success}<section><h4>Idea reviewer decisions</h4><ul class="assessment-list">{#each review.data.assessments as assessment (assessment.candidateId)}<li><strong>{assessment.candidateId}</strong><span class="badge">{label(assessment.decision)}</span><p>{assessment.reason}</p>{#if assessment.matchingSolutionId}<p class="muted">Matching idea: {assessment.matchingSolutionId}</p>{/if}{#if assessment.citedEvidenceIds.length}<p class="muted">Evidence IDs: {assessment.citedEvidenceIds.join(", ")}</p>{/if}</li>{/each}</ul></section>{/if}
+                      {#if review.success}
+                        <section><h4>Idea reviewer decisions</h4><ul class="assessment-list">
+                          {#each review.data.assessments as assessment (assessment.candidateId)}
+                            <li>
+                              <strong>{assessment.candidateId}</strong><span class="badge">{label(assessment.decision)}</span><p>{assessment.reason}</p>
+                              {#if assessment.matchingSolutionId}<p class="muted">Matching idea: {assessment.matchingSolutionId}</p>{/if}
+                              {#if assessment.citedEvidenceIds.length}<p class="muted">Evidence IDs: {assessment.citedEvidenceIds.join(", ")}</p>{/if}
+                              {#if assessment.criteriaFit}
+                                <CriteriaFit fit={assessment.criteriaFit} expanded={true} />
+                                {#each assessment.criteriaFit as criterion (criterion.criterionId)}
+                                  {#if criterion.evidenceIds.length}<p class="muted">{criterion.criterionName} evidence IDs: <code>{criterion.evidenceIds.join(", ")}</code></p>{/if}
+                                {/each}
+                              {/if}
+                            </li>
+                          {/each}
+                        </ul></section>
+                      {/if}
                       <details class="raw"><summary>Saved input</summary>{#if detail.inputs === null}<p>Input was not saved for this step.</p>{:else}<pre>{json(detail.inputs)}</pre>{/if}</details>
                       <details class="raw"><summary>Saved output</summary>{#if detail.output === null}<p>Output was not saved for this step.</p>{:else}<pre>{json(detail.output)}</pre>{/if}</details>
                       {#if detail.evidence.length}<details class="raw"><summary>Saved evidence</summary><pre>{json(detail.evidence)}</pre></details>{/if}

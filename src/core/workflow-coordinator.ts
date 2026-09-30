@@ -952,7 +952,8 @@ export class WorkflowCoordinator {
       : { modelCalls: 0, searches: 0 };
     const runCalls = task.kind === "generate-ideas" ? 4 * pendingGeneration.length
       : projection.modelCalls * (regenerating || task.kind === "discovery" && contract.frameWorkflowVersion === 1 ? 1 : 2);
-    const searchCalls = projection.searches;
+    const searchCalls = task.kind === "generate-ideas" && contract.purpose !== "known-problem"
+      ? 5 * pendingGeneration.length : projection.searches;
     const minimumCalls = task.kind === "generate-ideas" ? runCalls : runCalls + 4;
     if (contract.limits.enforced !== false && ((modelCalls ?? 0) < minimumCalls || (searches ?? 0) < searchCalls || remainingMs(original) < 5 * 60_000)) {
       throw new AppError("BUDGET_TOO_SMALL", "The original session has too little reserved time or capacity for a retry.");
@@ -1008,6 +1009,8 @@ export class WorkflowCoordinator {
           } else {
             this.repository.reserveBudget({ sessionId: session.id, workItemId: carried.id,
               operationKey: `continued-model:${carried.id}`, kind: "model-call", reservedUnits: 4 });
+            if (contract.purpose !== "known-problem") this.repository.reserveBudget({ sessionId: session.id, workItemId: carried.id,
+              operationKey: `continued-novelty:${carried.id}`, kind: "search", reservedUnits: 5 });
           }
         }
       } else {
@@ -1543,6 +1546,9 @@ export class WorkflowCoordinator {
     const available = this.availableBudget(session, "model-call");
     const required = allocations.allocations.reduce((total, item) => total + Math.ceil(item.quota / 5) * 4, 0);
     if (available !== null && required > available) throw new AppError("BUDGET_TOO_SMALL", `Reserve at least ${required} model calls for generation and independent review.`);
+    const availableSearches = this.availableBudget(session, "search");
+    const noveltySearches = contract.purpose === "known-problem" ? 0 : required / 4 * 5;
+    if (availableSearches !== null && noveltySearches > availableSearches) throw new AppError("BUDGET_TOO_SMALL", `Reserve at least ${noveltySearches} searches to check the proposed ideas against current alternatives.`);
     let ordinal = this.repository.listWorkItems(sessionId).length;
     for (const allocation of allocations.allocations) {
       const angles = initialGenerationAngles(this.options.db, allocation.problemId, Math.ceil(allocation.quota / 5));
@@ -1558,6 +1564,8 @@ export class WorkflowCoordinator {
         });
         this.repository.reserveBudget({ sessionId, workItemId: item.id, operationKey: `ideas:${item.id}`,
           kind: "model-call", reservedUnits: 4 });
+        if (contract.purpose !== "known-problem") this.repository.reserveBudget({ sessionId, workItemId: item.id,
+          operationKey: `ideas-novelty:${item.id}`, kind: "search", reservedUnits: 5 });
         created.push(item.id);
       }
     }
@@ -1917,6 +1925,9 @@ export class WorkflowCoordinator {
             .all(problemId) as Array<{ id: string; mechanism: string }> )
             .filter((solution) => acceptedIds.has(solution.id)).map((solution) => solution.mechanism)]));
         if (assigned.length === 0) collectionStop = { code: "no-useful-gap", reason: "No selected problem has capacity for another bounded fill batch." };
+        else if (contract.purpose !== "known-problem" && (this.availableBudget(session, "search") ?? Infinity) < assigned.length * 5) {
+          collectionStop = { code: "search-budget", reason: "The remaining search allowance cannot cover current-alternative checks for the next fill batch." };
+        }
         else {
           const created = this.options.db.immediateTransaction(() => {
             const batchItems = assigned.map((batch, index) => {
@@ -1941,7 +1952,9 @@ export class WorkflowCoordinator {
               });
               this.repository.reserveBudget({ sessionId, workItemId: item.id, operationKey: `ideas:${item.id}`,
                 kind: "model-call", reservedUnits: 4 });
-                    return item.id;
+              if (contract.purpose !== "known-problem") this.repository.reserveBudget({ sessionId, workItemId: item.id,
+                operationKey: `ideas-novelty:${item.id}`, kind: "search", reservedUnits: 5 });
+              return item.id;
             });
             this.repository.updateSession(sessionId, session.revision, {
               remainingMs: remainingMs(session), runningSince: new Date().toISOString(),
