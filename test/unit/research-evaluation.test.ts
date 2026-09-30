@@ -78,6 +78,10 @@ describe("research evaluation", () => {
     expect(evaluationMarkdown(manifest)).toContain("Origin: offline-fixture");
     await runEvaluation(matrix, manifest, backend, () => {}, async () => {});
     expect(launches.length).toBe(matrix.length);
+    manifest.rows[0]!.status = "planned";
+    manifest.rows[0]!.sessionId = null;
+    await runEvaluation(matrix, manifest, backend, () => {}, async () => {}, () => true);
+    expect(launches.length).toBe(matrix.length);
   });
 
   test("an uncertain admission is never automatically replayed", async () => {
