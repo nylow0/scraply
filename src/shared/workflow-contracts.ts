@@ -116,6 +116,7 @@ export const WorkflowSummarySchema = z.object({
   budget: WorkflowBudgetStatusSchema,
   currentStage: z.string().nullable(),
   stopReason: z.string().nullable(),
+  canResume: z.boolean().optional(),
   startedAt: z.string().datetime(),
   finishedAt: z.string().datetime().nullable(),
 }).strict();

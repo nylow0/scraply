@@ -82,6 +82,12 @@ if (guidedProgress) {
     guidedProgress.tasks[0]!.state = "succeeded";
     guidedProgress.tasks[0]!.canReassessProblems = true;
   }
+  if (params.get("phase") === "completed-handoff") {
+    guidedProgress.summary.state = "paused";
+    guidedProgress.summary.canResume = true;
+    guidedProgress.summary.budget.modelCalls.uncertain = 50;
+    guidedProgress.summary.budget.searches.uncertain = 24;
+  }
   state.activeWorkflow = guidedProgress.summary;
   state.threads = state.threads.map(thread => thread.id === state.activeThreadId ? { ...thread, status: params.get("phase") === "failed" ? "failed" : "discovery-running" } : thread);
 }
@@ -94,8 +100,10 @@ const fixtureApi = createScraplyApi({
       case IPC_CHANNELS.GET_WORKSPACE: result = state; break;
       case IPC_CHANNELS.COMMAND_WORKFLOW: {
         const request = CommandWorkflowRequestSchema.parse(payload);
-        if (!guidedProgress || request.action.type !== "reassess-problems" || params.get("phase") !== "audience-recovery") {
-          throw new Error("This fixture only simulates saved audience reassessment.");
+        const supported = request.action.type === "reassess-problems" && params.get("phase") === "audience-recovery"
+          || request.action.type === "resume" && params.get("phase") === "completed-handoff";
+        if (!guidedProgress || !supported) {
+          throw new Error("This fixture only simulates saved discovery recovery.");
         }
         guidedProgress.summary.state = "running";
         guidedProgress.summary.outcome = null;

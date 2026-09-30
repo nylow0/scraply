@@ -396,7 +396,11 @@ export class WorkflowCoordinator {
       };
     };
     const current = items.find((item) => item.state === "running") ?? items.find((item) => item.state === "ready") ?? null;
+    const resumeRunId = session.state === "paused" && current?.state === "running" ? runIdFromItem(current) : null;
+    const completedHandoff = resumeRunId && this.options.db.db.prepare("SELECT 1 FROM research_runs WHERE id = ? AND status = 'completed'")
+      .get(resumeRunId) && !this.repository.hasUnknownProviderCompletion(resumeRunId);
     return WorkflowSummarySchema.parse({
+      ...(completedHandoff ? { canResume: true } : {}),
       sessionId: session.id, threadId: session.threadId, purpose: session.purpose, mode: session.mode, targetKind,
       state: session.state, outcome: session.outcome, revision: session.revision,
       activeSnapshotId: session.activeSnapshotId, selectedProblemIds, counts, limits,
@@ -1578,14 +1582,18 @@ export class WorkflowCoordinator {
     opportunityAttemptId?: string): void {
     const item = this.repository.getWorkItem(taskId);
     if (!item) return;
-    const entries = this.repository.listBudgetEntries(item.sessionId)
-      .filter((row) => row.workItemId === taskId && row.state === "reserved");
+    const entries = this.repository.listBudgetEntries(item.sessionId).filter(row => row.workItemId === taskId);
     for (const kind of ["model-call", "search"] as const) {
-      const matching = entries.filter((entry) => entry.kind === kind);
-      let actual = state === "spent"
+      const matching = entries.filter(entry => entry.kind === kind && entry.state === "reserved");
+      const alreadySpent = entries.filter(entry => entry.kind === kind && entry.state === "spent")
+        .reduce((sum, entry) => sum + (entry.settledUnits ?? 0), 0);
+      const cumulative = state === "spent"
         ? kind === "model-call" ? item.kind === "coverage-search" ? 0 : attempts
           : item.kind === "coverage-search" ? attempts : this.searchAttemptCount(runIdFromItem(item))
         : 0;
+      // A reopened task keeps its prior accounting. Settle only newly observed work;
+      // unknown reservations remain uncertain rather than being rewritten as spent.
+      let actual = Math.max(0, cumulative - alreadySpent);
       for (const entry of matching) {
         const settledUnits = state === "uncertain" ? entry.reservedUnits
           : state === "released" ? 0 : Math.min(entry.reservedUnits, actual);
@@ -1597,7 +1605,7 @@ export class WorkflowCoordinator {
       if (state === "spent" && actual > 0) {
         const overrun = this.repository.reserveBudget({
           sessionId: item.sessionId, workItemId: taskId,
-          operationKey: `observed-overrun:${taskId}:${kind}`,
+          operationKey: `observed-overrun:${taskId}:${kind}:${cumulative}`,
           kind, reservedUnits: actual,
         });
         this.repository.settleBudget(overrun.id, { state: "spent", settledUnits: actual });

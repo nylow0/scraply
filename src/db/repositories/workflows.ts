@@ -560,7 +560,10 @@ export class WorkflowRepository {
   }
 
   hasUnknownProviderCompletion(runId: string): boolean {
-    return !new GenerationAttemptRepository(this.client).getResumeSafety(runId).canResume;
+    const audits = this.client.db.prepare(`SELECT value_json FROM workflow_snapshots
+      WHERE research_run_id = ? AND snapshot_key LIKE 'acknowledged-retry:%'`).all(runId) as Array<{ value_json: string }>;
+    const acknowledged = [...new Set(audits.flatMap(row => (JSON.parse(row.value_json) as { attemptIds: string[] }).attemptIds))];
+    return !new GenerationAttemptRepository(this.client).getResumeSafety(runId, acknowledged).canResume;
   }
 
   settleBudget(id: string, input: {
