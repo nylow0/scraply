@@ -1,7 +1,7 @@
 import { Database } from "bun:sqlite";
 import { createHash, randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync, unlinkSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
@@ -93,6 +93,29 @@ const ManifestSchema = z.object({
   profile: z.string(), rows: z.array(RowSchema),
 }).strict();
 type Manifest = z.infer<typeof ManifestSchema>;
+
+/** One observer owns progression, so two monitors cannot launch the next paid case twice. */
+export function acquireEvaluationLock(output: string): () => void {
+  const lockPath = join(output, "observer.lock");
+  const owner = { pid: process.pid, id: randomUUID() };
+  const ownerSchema = z.object({ pid: z.number().int().positive(), id: z.string().uuid() }).strict();
+  if (existsSync(lockPath)) {
+    const previous = ownerSchema.parse(JSON.parse(readFileSync(lockPath, "utf8")));
+    let alive = true;
+    try { process.kill(previous.pid, 0); } catch (error) {
+      if (error instanceof Error && "code" in error && error.code === "ESRCH") alive = false;
+    }
+    if (alive) throw new Error(`Evaluation observer ${previous.pid} already owns this output. Use --report-only to inspect it.`);
+    // Recover only a dead observer's unchanged lock, never its saved workflow or provider call.
+    if (readFileSync(lockPath, "utf8") !== JSON.stringify(previous)) throw new Error("Evaluation observer lock changed during recovery.");
+    unlinkSync(lockPath);
+  }
+  const file = openSync(lockPath, "wx");
+  try { writeFileSync(file, JSON.stringify(owner)); } finally { closeSync(file); }
+  return () => {
+    if (existsSync(lockPath) && readFileSync(lockPath, "utf8") === JSON.stringify(owner)) unlinkSync(lockPath);
+  };
+}
 
 export function median(values: Array<number | null>): number | null {
   const present = values.filter((value): value is number => value !== null).sort((left, right) => left - right);
@@ -307,9 +330,12 @@ async function main() {
   if (values["runtime-dir"]) {
     Object.assign(environment, { SCRAPLY_AGENT_PATH: join(resolve(values["runtime-dir"]), "scraply-agent.exe"), SCRAPLY_AGENT_LOCK_PATH: join(resolve(values["runtime-dir"]), "scraply-agent.lock.json") });
   }
-  console.log(await command(checkout, ["bun", "run", "dev"], environment));
-  await runEvaluation(matrix, manifest, backend, save, () => delay(2000), () => Boolean(values["pause-file"] && existsSync(resolve(values["pause-file"]))));
-  console.log(JSON.stringify({ type: manifest.rows.every(row => row.status === "finished") ? "complete" : "checkpoint", terminalRuns: manifest.rows.filter(row => row.status === "finished").length, output }));
+  const releaseLock = acquireEvaluationLock(output);
+  try {
+    console.log(await command(checkout, ["bun", "run", "dev"], environment));
+    await runEvaluation(matrix, manifest, backend, save, () => delay(2000), () => Boolean(values["pause-file"] && existsSync(resolve(values["pause-file"]))));
+    console.log(JSON.stringify({ type: manifest.rows.every(row => row.status === "finished") ? "complete" : "checkpoint", terminalRuns: manifest.rows.filter(row => row.status === "finished").length, output }));
+  } finally { releaseLock(); }
 }
 
 if (import.meta.main) await main();

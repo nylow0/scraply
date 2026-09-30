@@ -1,9 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
 import { join } from "node:path";
+import { mkdirSync, mkdtempSync, rmdirSync } from "node:fs";
 import {
   EvaluationMetricsSchema, evaluationDraft, evaluationMarkdown, evaluationMatrix, loadEvaluationBriefs,
-  median, runEvaluation, summarizeEvaluation, type EvaluationBackend, type EvaluationRow,
+  acquireEvaluationLock, median, runEvaluation, summarizeEvaluation, type EvaluationBackend, type EvaluationRow,
 } from "../../scripts/eval-research";
 import { WorkflowDetailSchema } from "../../src/shared/workflow-contracts";
 
@@ -35,6 +36,17 @@ function metrics() {
 }
 
 describe("research evaluation", () => {
+  test("two observers cannot both advance the same live evaluation", () => {
+    const build = join(import.meta.dir, "../../build");
+    mkdirSync(build, { recursive: true });
+    const output = mkdtempSync(join(build, "eval-observer-"));
+    try {
+      const release = acquireEvaluationLock(output);
+      try { expect(() => acquireEvaluationLock(output)).toThrow("already owns this output"); }
+      finally { release(); }
+      acquireEvaluationLock(output)();
+    } finally { rmdirSync(output); }
+  });
   test("baseline contains two quick repeats per brief and only the three selected standard cases", () => {
     expect(briefs.map(brief => brief.id).sort()).toEqual(["bakery", "bookkeepers", "clinics", "developer-tools", "dorm-kitchen", "educators", "repair-shops", "science-fair"]);
     const matrix = evaluationMatrix(briefs, "baseline");
