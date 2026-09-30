@@ -71,6 +71,19 @@ describe("run usage summaries", () => {
     expect(summary.attemptCount).toBe(0);
   });
 
+  test("keeps uncertain searches separate from model tokens and attempts", () => {
+    const models = [usageRow({ status: "completed" })];
+    const baseline = summarizeRunUsage(models);
+    const summary = summarizeRunUsage(models, { attemptCount: 2, unknownCount: 1 });
+    expect(summary.searchAttemptCount).toBe(2);
+    expect(summary.unknownSearchCount).toBe(1);
+    expect(summary.tokens).toEqual(baseline.tokens);
+    expect(summary.attemptCount).toBe(baseline.attemptCount);
+    expect(summary.unknownAttemptCount).toBe(baseline.unknownAttemptCount);
+    expect(summary.costs).toEqual(baseline.costs);
+    expect(summary.models).toEqual(baseline.models);
+  });
+
   test("uses legacy usage arrays when an old parent record has no attempt list", () => {
     const summary = summarizeRunUsage([usageRow({
       status: "completed",

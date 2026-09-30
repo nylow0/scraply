@@ -33,6 +33,37 @@ function props(requests: ResearchRequestView[] = []) {
 }
 
 describe("ResearchRevisions", () => {
+  test("reserves physical paired searches in each approved language before accepting a request", async () => {
+    const input = props();
+    const view = render(ResearchRevisions, { ...input, goalKind: "research-question", languageCount: 3 });
+    await fireEvent.click(view.getByRole("button", { name: "Add research" }));
+    await fireEvent.click(view.getByText("Angles and work limits"));
+    const searches = view.getByLabelText("Searches") as HTMLInputElement;
+    expect(searches.min).toBe("12");
+    expect(searches.value).toBe("12");
+    await fireEvent.input(view.getByPlaceholderText("What evidence would help test the goal or revisit this finding?"), { target: { value: "Which outcomes were measured?" } });
+    await fireEvent.input(searches, { target: { value: "10" } });
+    await fireEvent.click(view.getByRole("button", { name: "Start research request" }));
+    expect(searches.checkValidity()).toBe(false);
+    expect(input.onRequest).not.toHaveBeenCalled();
+    await fireEvent.input(searches, { target: { value: "12" } });
+    await fireEvent.click(view.getByRole("button", { name: "Start research request" }));
+    await waitFor(() => expect(input.onRequest).toHaveBeenCalledOnce());
+    expect(input.onRequest.mock.calls[0]?.[0].allowance.maxSearches).toBe(12);
+  });
+  test("previews evidence for the approved research goal when adding a request", async () => {
+    const view = render(ResearchRevisions, { ...props(), goalKind: "research-question" });
+    await fireEvent.click(view.getByRole("button", { name: "Add research" }));
+    expect(view.getByText("Measured outcomes and datasets")).toBeTruthy();
+    expect(view.getByText("Practitioner and participant accounts")).toBeTruthy();
+    expect(view.queryByText("Buying or adoption behavior")).toBeNull();
+    expect(view.getByText(/Find measured results, methods, and datasets that can test the research question/)).toBeTruthy();
+    expect(view.getByPlaceholderText("What evidence would help test the goal or revisit this finding?")).toBeTruthy();
+    await fireEvent.click(view.getByText("Angles and work limits"));
+    await fireEvent.input(view.getByLabelText(/Research angles, one per line/), { target: { value: "Sustained adoption" } });
+    expect(view.getByText(/measured behavior · Find evidence that answers the sustained adoption angle for the approved goal and affected people/)).toBeTruthy();
+  });
+
   test("shows all sources returned for an archived angle without offering to apply it", async () => {
     const input = props([{
       id: "old-request", kind: "new-question", question: "What do buyers use?", status: "completed",

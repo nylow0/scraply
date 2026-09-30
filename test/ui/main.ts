@@ -9,6 +9,7 @@ import { CommandWorkflowRequestSchema, PreviewWorkflowRequestSchema, StartWorkfl
 import { GetRunTraceRequestSchema, GetRunTraceStepRequestSchema, type RunTrace, type RunTraceStepDetail } from "../../src/shared/run-trace";
 import { ResearchFrameSchema } from "../../src/shared/research-frame";
 import { framedDiscoveryProjection } from "../../src/shared/discovery-projection";
+import { candidateAssessmentProjection } from "../../src/shared/evidence-investigators";
 
 // This standalone renderer has no Electron bridge or network provider. URL parameters
 // select deterministic UI scenarios without touching the user's projects or credentials.
@@ -170,13 +171,13 @@ const traceFixture: RunTrace | null = params.has("trace") && state.activeThreadI
   runId: "fixture-trace", threadId: state.activeThreadId, sessionId: guidedProgress?.summary.sessionId ?? null,
   status: params.get("trace") === "live" ? "running" : "completed", purpose: "discovery", startedAt: now,
   finishedAt: params.get("trace") === "live" ? null : "2026-09-23T12:08:00.000Z", live: params.get("trace") === "live",
-  warnings: ["Older searches are linked from their saved query and parameters. Missing usage remains unknown."],
+  warnings: ["Older searches are linked from their saved query and parameters. Missing usage remains unknown."], investigators: [],
   metrics: {
     factors: 8, totalSources: 5, evidenceMix: { firsthand: 2, vendor: 6 }, audienceFit: { "intended-buyer": 2, general: 6 },
     sourceMix: { forum: 2, vendor: 3 }, qualifyingObservations: 2, qualifyingPerAssessedCandidate: 1,
     candidateFunnel: { total: 5, assessed: 2, confirmed: 1, insufficient: 1, dropped: 1, notAssessed: 2, userAsserted: 0 },
     confirmationRate: 0.5, coverage: { kind: "phases", groups: [{ id: "domain", factors: 4, problems: 2, confirmed: 0 }, { id: "audience", factors: 4, problems: 3, confirmed: 1 }] },
-    modelCalls: 3, searches: 1, wallTimeMs: 480_000, modelTimeMs: 275_000, interruptionTimeMs: 45_000, interruptions: 1, ideas: 3, acceptedIdeas: 1,
+    modelCalls: 4, searches: 1, wallTimeMs: 480_000, modelTimeMs: 581_000, interruptionTimeMs: 45_000, interruptions: 1, ideas: 3, acceptedIdeas: 1, acceptedIdeasFailingMustHave: 0,
   },
   steps: [
     { id: "fixture-search", kind: "search", stage: "search", label: "Search for deposit problems", phase: "audience", status: "completed", startedAt: now, finishedAt: "2026-09-23T12:00:06.000Z", durationMs: 6_000, attempts: [], prompt: null,
@@ -199,13 +200,22 @@ const traceFixture: RunTrace | null = params.has("trace") && state.activeThreadI
   ],
 } : null;
 if (traceFixture) {
+  const reading = traceFixture.steps.find((step) => step.id === "fixture-reading");
+  if (reading) {
+    traceFixture.steps.push({ ...reading, id: "fixture-reading-b", label: "Read payment tracking observations", phase: "payment-tracking",
+      attempts: reading.attempts.filter((attempt) => attempt.status === "succeeded").map((attempt) => ({ ...attempt, id: `${attempt.id}-b` })) });
+    traceFixture.investigators = [
+      { id: "fixture-area-a", name: "Custom order deposits", state: traceFixture.live ? "researching" : "succeeded", stepIds: ["fixture-reading", "fixture-verdict"] },
+      { id: "fixture-area-b", name: "Payment tracking", state: traceFixture.live ? "researching" : "succeeded", stepIds: ["fixture-reading-b"] },
+    ];
+  }
   state.latestResearchRun = { runId: traceFixture.runId, status: traceFixture.live ? "running" : "completed", problemId: null,
-    codexCalls: traceFixture.metrics.modelCalls, searches: traceFixture.metrics.searches, projectedCodexCalls: 3, projectedSearches: 1, lastActivity: "Saved trace fixture", workflowVersion: 2 };
+    codexCalls: traceFixture.metrics.modelCalls, searches: traceFixture.metrics.searches, projectedCodexCalls: 4, projectedSearches: 1, lastActivity: "Saved trace fixture", workflowVersion: 2 };
   if (params.get("trace") === "empty") {
-    traceFixture.steps = []; traceFixture.candidates = []; traceFixture.warnings = [];
+    traceFixture.steps = []; traceFixture.candidates = []; traceFixture.warnings = []; traceFixture.investigators = [];
     traceFixture.metrics = { ...traceFixture.metrics, factors: 0, totalSources: 0, evidenceMix: {}, audienceFit: {}, sourceMix: {}, qualifyingObservations: 0,
       qualifyingPerAssessedCandidate: null, confirmationRate: null, candidateFunnel: { total: 0, assessed: 0, confirmed: 0, insufficient: 0, dropped: 0, notAssessed: 0, userAsserted: 0 },
-      coverage: { kind: "phases", groups: [] }, modelCalls: 0, searches: 0, wallTimeMs: 0, modelTimeMs: 0, interruptionTimeMs: 0, interruptions: 0, ideas: 0, acceptedIdeas: 0 };
+      coverage: { kind: "phases", groups: [] }, modelCalls: 0, searches: 0, wallTimeMs: 0, modelTimeMs: 0, interruptionTimeMs: 0, interruptions: 0, ideas: 0, acceptedIdeas: 0, acceptedIdeasFailingMustHave: null };
   }
 }
 
@@ -216,7 +226,7 @@ function traceStepDetail(stepId: string): RunTraceStepDetail {
     runId: traceFixture.runId, step, inputs: { scope: { audience: "Independent bakery owners", domain: "Custom orders and deposits" } },
     output: step.kind === "search" ? { results: step.search?.results } : { factsKept: 8 }, evidence: [],
     searches: step.search ? [step.search] : [], candidates: step.id === "fixture-verdict" ? traceFixture.candidates.slice(0, 2) : [],
-    facts: step.id === "fixture-reading" ? [
+    facts: step.id.startsWith("fixture-reading") ? [
       { id: "fixture-fact-1", sourceId: "fixture-source-1", subject: "Bakery owner", behavior: "Lost a custom order after waiting for a deposit", quote: "I kept the order in messages, and by the time they paid the deposit I had filled that weekend.", sourceRole: "firsthand", audienceFit: "intended-buyer", kept: true, reason: "The affected owner describes an actual missed order." },
       { id: null, sourceId: "fixture-source-2", subject: "Order management vendor", behavior: "Claims reminders remove deposit delays", quote: "Never lose another custom order with automated reminders.", sourceRole: "vendor", audienceFit: "general", kept: false, reason: "This claim does not describe a saved customer's experience." },
     ] : [],
@@ -270,6 +280,12 @@ const fixtureApi = createScraplyApi({
             frameWorkflow.summary.stopReason = request.action.reason ?? "Stopped by you.";
           } else if (request.action.type === "pause") frameWorkflow.summary.state = "paused";
           else if (request.action.type === "resume") frameWorkflow.summary.state = "running";
+          else if (request.action.type === "assess-not-assessed") {
+            frameWorkflow.summary.state = "running";
+            frameWorkflow.summary.currentStage = "candidate-assessment";
+            frameWorkflow.summary.outcome = null;
+            frameWorkflow.summary.finishedAt = null;
+          }
           else throw new Error("This frame fixture supports only review, editing, and run controls.");
           frameWorkflow.summary.revision += 1;
           state.activeWorkflow = frameWorkflow.summary;
@@ -341,6 +357,17 @@ const fixtureApi = createScraplyApi({
       case IPC_CHANNELS.SAVE_RUN_CONFIG: state = { ...state, runConfig: SaveRunConfigSchema.parse(payload).config }; result = state; break;
       case IPC_CHANNELS.PREVIEW_WORKFLOW: {
         const request = PreviewWorkflowRequestSchema.parse(payload);
+        if (request.type === "candidate-assessment") {
+          if (!frameWorkflow || !state.rejectedProblemCandidates.some(candidate => candidate.id === request.candidateId)) {
+            throw new Error("Select a saved candidate from the offline fixture.");
+          }
+          const depth = state.runConfig?.discoveryDepth ?? "standard";
+          const projection = candidateAssessmentProjection(depth);
+          result = { ok: true, data: { type: "candidate-assessment", proposal: { candidateId: request.candidateId, sourceRunId: "fixture-candidate-run", depth, ...projection },
+            previewHash: `fixture-assess-${request.candidateId}`, capabilityFingerprint: "fixture", minimumWork: projection,
+            upperLimits: frameWorkflow.summary.limits, fieldErrors: [], expiresAt: "2099-01-01T00:00:00.000Z" } };
+          break;
+        }
         if (request.type !== "launch") throw new Error("Only launch previews are available in the UI fixture.");
         const { draft } = request;
         const projection = framedDiscoveryProjection(draft.runConfig.discoveryDepth);

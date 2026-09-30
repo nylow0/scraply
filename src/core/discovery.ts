@@ -115,6 +115,8 @@ export interface DiscoveryDependencies {
   sourceRouting?: SourceRoutingContext;
   /** Rediscovered URLs reuse the saved quote and ID before the model reads them. */
   existingSources?: () => HarvestedSource[];
+  /** Demotion considers observations already saved by other areas and earlier research. */
+  existingFactors?: () => ReadonlyArray<{ sourceRole: string; source: { url: string } }>;
   candidateLimit?: number;
   /** Older runs retain their ordering so completed verdict identities remain reusable. */
   rankCandidates?: boolean;
@@ -131,6 +133,9 @@ export interface DiscoveryDependencies {
   stageScope?: string;
   queryCountByMode?: { domain: number; audience: number };
   searchConcurrency?: number;
+  /** Investigator extracts need a separate immutable checkpoint for each candidate, round, and gap. */
+  followUpKey?: string;
+  repairPolicy?: "disabled" | "one_retry";
   researchAngles?: Array<{ name: string; sourceClass: string }>;
   onPlannedQueries?: (mode: HarvestMode, queries: PlannedQuery[]) => void;
   onQueryResult?: (mode: HarvestMode, query: PlannedQuery, sources: Source[] | null, error?: unknown) => void;
@@ -217,14 +222,14 @@ export async function harvestFactors(
         }
       }
       if (dependencies.sourceRouting) {
-        const excluded = vendorDominatedDomains(rawFactors.map((factor) => ({
+        const excluded = vendorDominatedDomains([...(dependencies.existingFactors?.() ?? []), ...rawFactors.map((factor) => ({
           sourceRole: factor.sourceRole ?? "unknown", source: sourceById.get(factor.sourceId)!,
-        })));
+        }))]);
         const previous = new Set(dependencies.sourceRouting.excludedFirsthandDomains ?? []);
         for (const domain of excluded) if (!previous.has(domain)) {
           dependencies.onProjection?.(`Firsthand routes will exclude ${domain}: at least 80% of its observations are vendor or illustration content.`);
         }
-        dependencies.sourceRouting.excludedFirsthandDomains = excluded;
+        dependencies.sourceRouting.excludedFirsthandDomains = [...new Set([...previous, ...excluded])];
       }
     };
     await harvest(modeSources, modeFactorLimit - reservedFactorCapacity);
@@ -716,7 +721,7 @@ export function normalizeSearchQuery(query: string): string {
  * `all` is what the model must see; `fresh` is what may still be inserted. Rediscovered sources
  * stay in the kill prompt even though their existing records must not be inserted again.
  */
-function resolveSources(
+export function resolveSources(
   sources: Source[],
   known: Map<string, HarvestedSource>,
   onSkipped?: (message: string) => void,
@@ -854,7 +859,7 @@ async function structuredCall<T>(
     }],
     schema,
     jsonSchema: deriveJsonSchema(schema),
-    repairPolicy: "one_retry",
+    repairPolicy: dependencies.repairPolicy ?? "one_retry",
     // The subscription endpoint rejects token ceilings; the runtime still bounds output bytes.
     ...(dependencies.model.providerId !== "openai-subscription" ? { maxOutputTokens: 8_192 } : {}),
     ...(dependencies.signal ? { signal: dependencies.signal } : {}),
@@ -886,7 +891,7 @@ export async function harvestEvidenceFollowUp(
   if (sources.length > 0) {
     const response = await structuredCall(
       dependencies,
-      "factor-harvest:follow-up",
+      dependencies.followUpKey ? `factor-harvest:follow-up:${dependencies.followUpKey}` : "factor-harvest:follow-up",
       (dependencies.prompt ?? loadPrompt)("factor-harvest"),
       {
         inputs: { harvestMode: "domain", followUp: true },

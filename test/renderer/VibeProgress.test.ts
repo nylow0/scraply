@@ -30,6 +30,34 @@ function detail(summaryChanges: Partial<WorkflowSummary> = {}): WorkflowDetail {
 }
 
 describe("VibeProgress", () => {
+  test("an uncertain search retry requires acknowledgment and sends its exact search ID", async () => {
+    const state = detail({ state: "finished", outcome: "needs-attention" });
+    state.tasks = [{ ...state.tasks[1]!, kind: "discovery", terminalAttemptKind: "search",
+      terminalAttemptId: "search-request-uuid" }];
+    const onRetryTask = vi.fn(async () => {});
+    const view = render(VibeProgress, { detail: state, busy: false,
+      onPause: vi.fn(async () => {}), onStop: vi.fn(async () => {}), onRetryTask });
+    const button = view.getByRole("button", { name: "Retry search" }) as HTMLButtonElement;
+    expect(button.disabled).toBe(true);
+    await fireEvent.click(view.getByRole("checkbox", { name: /this search may have completed/ }));
+    expect(button.disabled).toBe(false);
+    await fireEvent.click(button);
+    expect(onRetryTask).toHaveBeenCalledWith("search-1", "search-request-uuid", true);
+  });
+
+  test("shows area investigators alongside live research and keeps run controls accessible", async () => {
+    const onPause = vi.fn(async () => {});
+    const view = render(VibeProgress, { detail: detail({ ideaTargetReady: false }), busy: false,
+      investigators: [{ areaId: "bank", areaName: "Bank matching", state: "running", currentStep: "Checking evidence gaps", confirmedCount: 1, insufficientCount: 2, droppedCount: 0 }],
+      onPause, onStop: vi.fn(async () => {}) });
+    expect(view.getByRole("region", { name: "Area investigators" })).toBeTruthy();
+    expect(view.getByRole("listitem", { name: "Bank matching investigator" }).textContent).toContain("Checking evidence gaps");
+    expect(view.getByText("Confirmed").nextElementSibling?.textContent).toBe("1");
+    await fireEvent.click(view.getByRole("button", { name: "Pause" }));
+    expect(onPause).toHaveBeenCalledOnce();
+    expect(view.queryByRole("progressbar")).toBeNull();
+  });
+
   test("resumes server-verified paused work while retaining historical uncertain budget entries", async () => {
     const state = detail({ state: "paused", canResume: true });
     state.tasks = [state.tasks[0]!];

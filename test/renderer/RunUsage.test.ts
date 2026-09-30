@@ -39,6 +39,16 @@ describe("RunUsage", () => {
     expect(view.getAllByText(/currency not reported\) plus unknown amounts/).length).toBeGreaterThan(0);
     expect(view.getAllByText(/1e-20|0\.00000000000000000001/).length).toBeGreaterThan(0);
   });
+
+  test("labels uncertain searches without adding them to model usage", () => {
+    const usage = { ...sampleUsage(), searchAttemptCount: 2, unknownSearchCount: 1 };
+    const view = render(RunUsage, { usage });
+    expect(view.getByText(/2 attempts/)).toBeTruthy();
+    expect(view.getByText(/20 tokens/)).toBeTruthy();
+    expect(view.getByText("2 search requests")).toBeTruthy();
+    expect(view.getByText("1 search completions unknown")).toBeTruthy();
+    expect(view.getByText(/Completion and cost are unknown for 1 search request/)).toBeTruthy();
+  });
 });
 
 function sampleUsage(): RunUsageValue {

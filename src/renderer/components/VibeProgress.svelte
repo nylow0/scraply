@@ -3,6 +3,8 @@
   import type { z } from "zod";
   import type { WorkflowDetail, WorkflowSummary } from "../../shared/workflow-contracts";
   import { PreviewWorkflowResultSchema } from "../../shared/workflow-contracts";
+  import InvestigatorProgress from "./InvestigatorProgress.svelte";
+  import type { InvestigatorLane } from "../lib/investigator-progress";
 
   type WorkflowTask = WorkflowDetail["tasks"][number];
   type BudgetExtension = { additionalModelCalls: number; additionalSearches: number; additionalMinutes: number };
@@ -10,6 +12,7 @@
 
   let {
     detail,
+    investigators = [],
     busy,
     onPause,
     onStop,
@@ -21,6 +24,7 @@
     onApplyExtension,
   }: {
     detail: WorkflowDetail;
+    investigators?: InvestigatorLane[];
     busy: boolean;
     onPause: () => Promise<void>;
     onStop: () => Promise<void>;
@@ -218,6 +222,8 @@
     <p class="pending-reason" role="status">{stateLabel(summary.state)}. Completed work remains saved.</p>
   {/if}
 
+  <InvestigatorProgress {investigators} />
+
   {#if researchView}
     <section class="research-activity" aria-label="Research activity">
       {#if activity.length}
@@ -227,7 +233,7 @@
           {/each}
         </ol>
       {:else}
-        <p class="activity-empty">{terminal ? "No research activity was saved." : summary.state === "waiting-for-review" ? "Choose which problems to develop below." : "Preparing the next research step…"}</p>
+        <p class="activity-empty">{terminal ? "No research activity was saved." : summary.state === "waiting-for-review" ? summary.reviewKind === "frame" ? "Review the frame before research starts." : "Choose which problems to develop below." : "Preparing the next research step…"}</p>
       {/if}
     </section>
     {#if canPause || canStop || canResume}
@@ -362,10 +368,10 @@
             {/if}
             {#if onRetryTask && task.terminalAttemptId && (task.state === "failed" || task.state === "unknown")}
               {#if task.state === "unknown"}
-                <label class="retry-acknowledge"><input type="checkbox" bind:checked={acknowledgedUnknown[task.terminalAttemptId]} />I understand this request may have completed and a retry may repeat its work.</label>
+                <label class="retry-acknowledge"><input type="checkbox" bind:checked={acknowledgedUnknown[task.terminalAttemptId]} />I understand this {task.terminalAttemptKind === "search" ? "search" : "request"} may have completed and a retry may repeat its work.</label>
               {/if}
               <button type="button" class="retry-button" disabled={busy || (task.state === "unknown" && !acknowledgedUnknown[task.terminalAttemptId])}
-                onclick={() => void onRetryTask(task.id, task.terminalAttemptId!, task.state === "unknown").catch(() => {})}>Retry task</button>
+                onclick={() => void onRetryTask(task.id, task.terminalAttemptId!, task.state === "unknown").catch(() => {})}>{task.terminalAttemptKind === "search" ? "Retry search" : "Retry task"}</button>
             {/if}
           </li>
         {/each}

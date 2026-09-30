@@ -16,6 +16,17 @@
   let refreshRevision = $state(0);
   let detailVersions: Record<string, string> = {};
   let loadEpoch = 0;
+  let timelineGroups = $derived.by(() => {
+    if (!trace) return [];
+    const steps = trace.steps;
+    const investigatorSteps = new Set(trace.investigators.flatMap((investigator) => investigator.stepIds));
+    const general = { id: "general", investigator: null, steps: steps.filter((step) => !investigatorSteps.has(step.id)) };
+    const investigators = trace.investigators.map((investigator) => {
+      const stepIds = new Set(investigator.stepIds);
+      return { id: `investigator:${investigator.id}`, investigator, steps: steps.filter((step) => stepIds.has(step.id)) };
+    });
+    return [general, ...investigators].filter((group) => group.investigator || group.steps.length);
+  });
 
   $effect(() => {
     const request = { runId, refreshRevision };
@@ -286,13 +297,19 @@
 
     <section class="timeline" aria-labelledby="trace-timeline-title">
       <div class="section-heading"><h3 id="trace-timeline-title">Step timeline</h3><span>{trace.steps.length} saved steps{trace.live ? ", updates every 2 seconds" : ""}</span></div>
-      {#if trace.steps.length === 0}<p class="empty">No saved steps are available for this run yet.</p>
+      {#if trace.steps.length === 0 && trace.investigators.length === 0}<p class="empty">No saved steps are available for this run yet.</p>
       {:else}
-        <ol class="steps">
-          {#each trace.steps as step, index (step.id)}
+        {#each timelineGroups as group (group.id)}
+          <section class="timeline-group" aria-label={group.investigator?.name ?? "General steps"}>
+            {#if group.investigator}
+              <div class="investigator-heading"><h4>{group.investigator.name}</h4><span class="badge">{label(group.investigator.state)}</span></div>
+            {:else if trace.investigators.length}<h4>General steps</h4>{/if}
+            {#if group.steps.length === 0}<p class="empty">No saved steps are available for this investigator yet.</p>{/if}
+            <ol class="steps">
+          {#each group.steps as step, index (step.id)}
             <li>
               <article class="step" class:step-open={expanded[step.id]}>
-                <button class="step-toggle" aria-expanded={Boolean(expanded[step.id])} aria-controls={`trace-step-${index}`} onclick={() => toggleStep(step)}>
+                <button class="step-toggle" aria-expanded={Boolean(expanded[step.id])} aria-controls={`trace-step-${encodeURIComponent(group.id)}-${encodeURIComponent(step.id)}`} onclick={() => toggleStep(step)}>
                   <span class="step-number">{index + 1}</span>
                   <span class="step-heading"><strong>{step.label}</strong><span>{label(step.kind)}{step.phase ? `, ${label(step.phase)}` : ""}</span></span>
                   <span class="step-state"><span class="badge">{label(step.status)}</span><span>{duration(step.durationMs)}</span></span>
@@ -318,7 +335,7 @@
                 {/if}
                 {#if expanded[step.id]}
                   {@const detail = details[step.id]}
-                  <div class="step-detail" id={`trace-step-${index}`}>
+                  <div class="step-detail" id={`trace-step-${encodeURIComponent(group.id)}-${encodeURIComponent(step.id)}`}>
                     {#if detailLoading[step.id]}<p role="status" class="muted">Loading saved step details...</p>{/if}
                     {#if detailErrors[step.id]}<div class="trace-error" role="alert">{detailErrors[step.id]}<button onclick={() => loadStep(step)}>Retry loading details</button></div>{/if}
                     {#if detail}
@@ -342,7 +359,9 @@
               </article>
             </li>
           {/each}
-        </ol>
+            </ol>
+          </section>
+        {/each}
       {/if}
     </section>
   {/if}
@@ -381,6 +400,7 @@
   .candidate { border-bottom:1px solid var(--border); }.candidate summary { display:flex;align-items:flex-start;gap:14px;padding:15px 0;cursor:pointer;font-size:13px; }.candidate summary > span:first-child { flex:1;line-height:1.6; }.candidate summary::before { content:"+";color:var(--muted); }.candidate[open] summary::before { content:"−"; }.candidate-body { padding:0 0 18px 24px;display:flex;flex-direction:column;gap:14px; }
   .inline-metrics { display:flex;flex-wrap:wrap;gap:12px 28px;margin:0; }.inline-metrics dd { margin:4px 0 0;font-size:13px; }
   .steps { display:flex;flex-direction:column;gap:14px;padding:0;margin:0;list-style:none; }
+  .timeline-group + .timeline-group { margin-top:28px; }.investigator-heading { display:flex;align-items:center;flex-wrap:wrap;gap:12px;margin-bottom:16px; }.investigator-heading h4 { margin:0; }
   .step { border:1px solid var(--border);border-radius:10px; }.step-open { border-color:var(--border-strong); }
   .step-toggle { display:flex;align-items:center;gap:14px;width:100%;padding:17px 18px;border:0;text-align:left; }.step-number { color:var(--subtle);font-size:12px;font-variant-numeric:tabular-nums;width:20px;flex:none; }
   .step-heading { flex:1;min-width:0;display:flex;flex-direction:column;gap:5px; }.step-heading strong { font-size:14px;font-weight:500;overflow-wrap:anywhere; }.step-heading > span { font-size:11px;color:var(--muted); }

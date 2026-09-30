@@ -41,6 +41,8 @@
       <span><span class="eyebrow">Run usage</span> {usage.availability === "unavailable" ? "Unavailable" : `${usage.attemptCount.toLocaleString()} attempt${usage.attemptCount === 1 ? "" : "s"}`}</span>
       {#if usage.availability === "available"}<span class="summary-detail">{dimension(usage.tokens.total, " tokens")} · {costLabel(usage.costs)}</span>{/if}
       {#if usage.unknownAttemptCount > 0}<span class="unknown">{usage.unknownAttemptCount} unknown</span>{/if}
+      {#if (usage.searchAttemptCount ?? 0) > 0}<span class="summary-detail">{usage.searchAttemptCount} search requests</span>{/if}
+      {#if (usage.unknownSearchCount ?? 0) > 0}<span class="unknown">{usage.unknownSearchCount} search completions unknown</span>{/if}
     </summary>
     {#if usage.availability === "available"}
     <dl class="usage-grid">
@@ -57,6 +59,9 @@
       <p class="models"><span>Models</span>{usage.models.map((model) => modelLabel(model.providerId, model.modelId)).join(", ")}</p>
     {/if}
     {:else}<p class="unavailable">No generation record is available for this run.</p>{/if}
+    {#if (usage.unknownSearchCount ?? 0) > 0}
+      <p class="unavailable">Completion and cost are unknown for {usage.unknownSearchCount} search {usage.unknownSearchCount === 1 ? "request" : "requests"}. Acknowledging a retry does not recover the original result or cost.</p>
+    {/if}
   </details>
 {/if}
 

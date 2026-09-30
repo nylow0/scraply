@@ -2,21 +2,25 @@ import { createHash } from "node:crypto";
 import type { DatabaseClient } from "../db/client";
 import { DevelopmentRepository } from "../db/repositories/development";
 import { WorkflowV2Repository } from "../db/repositories/workflow-v2";
-import type { SearchClient, SearchOptions } from "../providers/search";
+import type { SearchClient } from "../providers/search";
 import type { GenerationMetadata, StructuredModelClient, StructuredStageRequest } from "../providers/structured";
-import { canonicalJson, sha256 } from "../shared/content-identity";
+import { canonicalJson, sha256, workflowSearchKey } from "../shared/content-identity";
 import { deriveJsonSchema } from "../shared/json-schema";
 import { OpportunityExpansionOutputSchema } from "../shared/opportunity-exploration";
-import { SourceSchema } from "../shared/schemas";
+import { SourceSchema, type Source } from "../shared/schemas";
 import { AssessedWorkflowV2ProblemKillOutputSchema, BoundedWorkflowV2FactorHarvestOutputSchema, FACTOR_EXPLANATION_CHARACTERS, ClassifiedWorkflowV2ProblemKillOutputSchema, WorkflowV2QueryPlanOutputSchema, WorkflowV2FactorHarvestOutputSchema, WorkflowV2ProblemCandidatesOutputSchema, WorkflowV2ProblemKillOutputSchema, WorkflowV2SolutionsOutputSchema } from "../shared/structured-output-schemas";
 import { PROBLEM_AUDIENCE_ASSESSMENT_INSTRUCTION } from "./problem-evidence";
 import { LegacyWorkflowV2QueryPlanOutputSchema } from "../shared/structured-output-schemas";
 import type { WorkflowV2DevelopmentContext } from "./development";
 import { resolveWorkflowV2Prompt, type ResolvedWorkflowV2Prompt } from "./prompts";
 import { WORKFLOW_V2_STAGE_IDS, WORKFLOW_V2_STAGE_REGISTRY, type WorkflowV2StageId } from "./stages";
+import { prepareWorkflowSearch, recordWorkflowSearchTerminal, unknownSearchAttempts, UnknownSearchCompletionError } from "./workflow-search-attempts";
+
+export { workflowSearchKey } from "../shared/content-identity";
 
 /** Run-local snapshots never reuse fresh web results or prompt overrides across runs. */
 export class WorkflowExecution {
+  private static readonly activeSearches = new WeakMap<DatabaseClient, Map<string, Promise<Source[]>>>();
   readonly repository: WorkflowV2Repository;
   readonly smallHarvestBatches: boolean;
   readonly rankProblemCandidates: boolean;
@@ -96,28 +100,71 @@ export class WorkflowExecution {
     return () => createHash("sha256").update(`${this.runId}:${phase}:${sequence++}`).digest("hex").slice(0, characters);
   }
 
-  search(client: Pick<SearchClient, "search"> & Partial<Pick<SearchClient, "provider" | "providerForRoute">>): Pick<SearchClient, "search"> & Partial<Pick<SearchClient, "provider">> {
-    return { ...(client.provider ? { provider: client.provider } : {}), search: async (query, options) => {
+  search(client: Pick<SearchClient, "search"> & Partial<Pick<SearchClient, "provider" | "providerForRoute">>): Pick<SearchClient, "search"> & Partial<Pick<SearchClient, "provider" | "providerForRoute">> {
+    return { ...(client.provider ? { provider: client.provider } : {}),
+      ...(client.providerForRoute ? { providerForRoute: client.providerForRoute } : {}), search: async (query, options) => {
       options?.signal?.throwIfAborted();
-      const { signal: _signal, legacySearchOptions, ...parameters } = options ?? {};
+      const { signal: _signal, legacySearchOptions, provider: requestedProvider, ...parameters } = options ?? {};
       void _signal;
       const normalizedQuery = query.normalize("NFKC").trim().replace(/\s+/g, " ");
-      const provider = parameters.provider ?? client.providerForRoute?.(options?.route) ?? client.provider;
-      const key = workflowSearchKey(normalizedQuery, parameters, provider);
-      const saved = this.read<unknown>(key);
-      if (saved) return SourceSchema.array().parse(saved);
-      // Completed pre-routing searches retain their original question and parameters. Both
-      // new legs may read that checkpoint; neither dispatches paid work again.
-      if (!this.read("source-routes")) {
-        const legacyKey = workflowSearchKey(normalizedQuery, legacySearchOptions ?? parameters);
-        const legacy = this.read<unknown>(legacyKey);
-        if (legacy) return SourceSchema.array().parse(legacy);
+      let running = WorkflowExecution.activeSearches.get(this.db);
+      if (!running) {
+        running = new Map();
+        WorkflowExecution.activeSearches.set(this.db, running);
       }
-      this.save(`search-query:${key.slice("search:".length)}`, { key, query: normalizedQuery, parameters, ...(provider ? { provider } : {}) });
-      const results = await client.search(normalizedQuery, { ...options, ...(provider ? { provider } : {}) });
-      options?.signal?.throwIfAborted();
-      this.save(key, results);
-      return results;
+      const activeKey = canonicalJson({ runId: this.runId, key: workflowSearchKey(normalizedQuery, parameters) });
+      const active = running.get(activeKey);
+      if (active) return active;
+      const pending = (async () => {
+        // Completed pre-routing searches retain their original question and parameters. Both
+        // new legs may read that checkpoint; neither dispatches paid work again.
+        if (!this.read("source-routes")) {
+          const legacyKey = workflowSearchKey(normalizedQuery, legacySearchOptions ?? parameters);
+          const legacy = this.read<unknown>(legacyKey);
+          if (legacy) return SourceSchema.array().parse(legacy);
+        }
+        // Automatic routing may lose a key between restarts. Reuse the paid result before selecting a fallback.
+        if (!requestedProvider && client.providerForRoute) for (const provider of ["exa", "perplexity"] as const) {
+          const saved = this.read<unknown>(workflowSearchKey(normalizedQuery, parameters, provider));
+          if (saved) return SourceSchema.array().parse(saved);
+        }
+        if (this.read("source-routes")) {
+          const unknown = unknownSearchAttempts(this.db, this.runId).find(attempt =>
+            workflowSearchKey(attempt.query, attempt.parameters) === workflowSearchKey(normalizedQuery, parameters)
+            && !this.acknowledgedAttemptIds.includes(attempt.id));
+          if (unknown) throw new UnknownSearchCompletionError(unknown.id);
+        }
+        const provider = requestedProvider ?? client.providerForRoute?.(options?.route) ?? client.provider;
+        const key = workflowSearchKey(normalizedQuery, parameters, provider);
+        const saved = this.read<unknown>(key);
+        if (saved) return SourceSchema.array().parse(saved);
+        const queryReceipt = `search-query:${key.slice("search:".length)}`;
+        if (!this.read(queryReceipt)) this.save(queryReceipt, { key, query: normalizedQuery, parameters, ...(provider ? { provider } : {}) });
+        const attempt = this.read("source-routes") ? prepareWorkflowSearch(this.db, this.runId,
+          { key, query: normalizedQuery, parameters, ...(provider ? { provider } : {}) }, this.acknowledgedAttemptIds) : null;
+        const cancelled = () => {
+          if (attempt) recordWorkflowSearchTerminal(this.db, this.runId, attempt.id, "cancelled", "Cancelled by user");
+        };
+        options?.signal?.addEventListener("abort", cancelled, { once: true });
+        let results: Awaited<ReturnType<SearchClient["search"]>>;
+        try {
+          results = await client.search(normalizedQuery, { ...options, ...(provider ? { provider } : {}) });
+          options?.signal?.throwIfAborted();
+        } catch (error) {
+          if (attempt) recordWorkflowSearchTerminal(this.db, this.runId, attempt.id,
+            options?.signal?.aborted ? "cancelled" : "failed", error instanceof Error ? error.message : "Search failed");
+          throw error;
+        } finally { options?.signal?.removeEventListener("abort", cancelled); }
+        // If storing a paid result fails, retain its ambiguous dispatch for explicit acknowledgement.
+        this.db.immediateTransaction(() => {
+          this.save(key, results);
+          if (attempt) recordWorkflowSearchTerminal(this.db, this.runId, attempt.id, "completed", undefined, { transaction: "existing" });
+        });
+        return results;
+      })();
+      running.set(activeKey, pending);
+      try { return await pending; }
+      finally { if (running.get(activeKey) === pending) running.delete(activeKey); }
     } };
   }
 
@@ -172,6 +219,7 @@ export class WorkflowExecution {
         researchRunId: this.runId,
         stageId,
         selectionId,
+        stageKey: original.stage,
         context,
         acknowledgedAttemptIds: this.acknowledgedAttemptIds,
         identity: { promptSha256: prompt.resolvedSha256, schema: request.jsonSchema, inputs: request.workOrder.inputs, evidence },
@@ -469,12 +517,6 @@ export class WorkflowExecution {
     void focusedDemandTest;
     return workflowOption;
   }
-}
-
-/** A provider is part of new search identities; omitting it reproduces old saved keys. */
-export function workflowSearchKey(query: string, parameters: Omit<SearchOptions, "signal" | "legacySearchOptions">, provider?: SearchClient["provider"]): string {
-  const normalizedQuery = query.normalize("NFKC").trim().replace(/\s+/g, " ").toLowerCase();
-  return `search:${createHash("sha256").update(canonicalJson({ query: normalizedQuery, parameters, ...(provider ? { provider } : {}) })).digest("hex")}`;
 }
 
 function assertDiscoveryStageSemantics<T>(
