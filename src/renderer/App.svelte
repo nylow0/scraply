@@ -149,10 +149,7 @@
   let runFrame = $derived(workflowDetail?.summary.sessionId === activeWorkflow?.sessionId ? workflowDetail?.researchFrame ?? null : null);
   let latestApprovedFrame = $derived(workflowDetail?.summary.sessionId === activeWorkflow?.sessionId
     ? workflowDetail?.latestResearchFrame ?? (runFrame?.approved ? runFrame : null) : null);
-  let nextRequestFrame = $derived(latestApprovedFrame?.approved ?? runFrame?.approved ?? null);
   let reviewingFrame = $derived(workflowDetail?.summary.state === "waiting-for-review" && workflowDetail.summary.reviewKind === "frame" && runFrame?.approved === null);
-  let investigators = $derived(workflowDetail?.tasks.flatMap(task => task.kind === "investigate-area" && task.investigator
-    ? [{ ...task.investigator, state: task.state }] : []) ?? []);
   let canRegenerateFrame = $derived(Boolean(workflowDetail && (workflowDetail.summary.limits.enforced === false
     || workflowDetail.summary.budget.modelCalls.limit - workflowDetail.summary.budget.modelCalls.spent
       - workflowDetail.summary.budget.modelCalls.reserved - workflowDetail.summary.budget.modelCalls.uncertain >= 1)));
@@ -593,20 +590,6 @@
     activeStep = "setup";
     feedback = { text: "New frame version saved for future runs.", tone: "info", lifetime: "confirmation" };
   }
-  async function previewCandidateAssessment(candidateId: string): Promise<WorkflowPreview> {
-    const threadId = workspace?.activeThreadId;
-    const summary = workflowDetail?.summary ?? activeWorkflow;
-    if (!threadId || !summary) throw new Error("Open the saved workflow before assessing this candidate.");
-    return window.scraply.previewWorkflow({ type: "candidate-assessment", threadId, sessionId: summary.sessionId,
-      expectedRevision: summary.revision, candidateId });
-  }
-  async function assessCandidate(preview: WorkflowPreview) {
-    if (preview.type !== "candidate-assessment" || !("candidateId" in preview.proposal) || preview.fieldErrors.length) {
-      throw new Error("Preview a valid candidate assessment first.");
-    }
-    await commandWorkflow({ type: "assess-not-assessed", candidateId: preview.proposal.candidateId,
-      previewHash: preview.previewHash, capabilityFingerprint: preview.capabilityFingerprint, previewExpiresAt: preview.expiresAt });
-  }
   async function requestResearch(draft: ResearchRequestDraft & { model: ModelRef; reasoningEffort: string; baseSnapshotId: string | null }) {
     await commandWorkflow({
       type: "request-research", kind: draft.kind, question: draft.question,
@@ -974,7 +957,7 @@
       </header>
       {#if !activeWorkflow && activeStep !== "trace"}<RunUsage usage={activeRun?.usage} />{/if}
       {#if activeStep !== "trace" && workflowDetail && activeWorkflow && workflowDetail.summary.sessionId === activeWorkflow.sessionId && !(activeStep === "ideas" && ideaFocused && activeWorkflow.state === "finished")}
-        <div class="workflow-progress-wrap"><VibeProgress detail={workflowDetail} {investigators} {busy}
+        <div class="workflow-progress-wrap"><VibeProgress detail={workflowDetail} {busy}
           onPause={() => commandWorkflow({ type: "pause" })}
           onResume={() => commandWorkflow({ type: "resume" })}
           onStop={() => commandWorkflow({ type: "stop" })}
@@ -1024,7 +1007,7 @@
       {#if showSetupForm}
         <div id="workflow-panel-setup" role="tabpanel" aria-label="Research setup">
           {#key workspace.activeThreadId}
-            <ScopeForm {workspace} {busy} frameLanguages={latestApprovedFrame?.approved?.languages} onSave={saveScope} onStart={startResearch} onPreviewWorkflow={previewWorkflow} onStartWorkflow={startWorkflow} onGenerateTitle={generateResearchTitle} onRetry={retryConnections} onOpenSettings={() => settings?.show()} />
+            <ScopeForm {workspace} {busy} onSave={saveScope} onStart={startResearch} onPreviewWorkflow={previewWorkflow} onStartWorkflow={startWorkflow} onGenerateTitle={generateResearchTitle} onRetry={retryConnections} onOpenSettings={() => settings?.show()} />
           {/key}
         </div>
       {:else}
@@ -1075,8 +1058,7 @@
           {/key}
         </div>
       {:else if workspace.problemCandidates.length > 0 || workspace.rejectedProblemCandidates.length > 0}
-        <ResearchArchive problems={workspace.problemCandidates} rejectedCandidates={workspace.rejectedProblemCandidates} {busy} onExport={exportResearch} onOpenSource={openExternalUrl}
-          {...(activeWorkflow ? { previewCandidateAssessment, onAssessCandidate: assessCandidate } : {})} />
+        <ResearchArchive problems={workspace.problemCandidates} rejectedCandidates={workspace.rejectedProblemCandidates} {busy} onExport={exportResearch} onOpenSource={openExternalUrl} />
       {:else}
         <div class="failed" class:after-summary={Boolean(activeWorkflow)} id="workflow-panel-research" role="tabpanel" aria-label="Research" tabindex="0"><p class="eyebrow">{activeWorkflow ? "Research outcome" : "Research unavailable"}</p><h1>{activeWorkflow?.stopReason ?? "No completed research is ready yet."}</h1><p>{activeWorkflow ? "You can inspect the task record above or start a new run from setup." : "Return to setup and start a research run."}</p>{#if activeRun || activeWorkflow}<div class="zero-idea-actions"><button disabled={busy} onclick={exportResearch}>Export research JSON</button></div>{/if}</div>
       {/if}
@@ -1089,8 +1071,6 @@
             || (activeWorkflow.state === "finished" && !!activeWorkflow.activeSnapshotId))}
           activeSnapshotId={activeWorkflow.activeSnapshotId} modelOptions={workspace.modelOptions}
           researchModel={workspace.runConfig?.model ?? null} researchReasoningEffort={workspace.runConfig?.reasoningEffort ?? "medium"}
-          {...(nextRequestFrame ? { goalKind: nextRequestFrame.goalKind } : {})}
-          languageCount={nextRequestFrame?.languages.length ?? 1} depth={workspace.runConfig?.discoveryDepth ?? "quick"}
           {busy} onRequest={requestResearch} onApply={applyResearch} onKeep={keepResearch} onOpenSource={openExternalUrl} />
       {/if}
     {:else if activeThread.status === "development-running" && !activeWorkflow}

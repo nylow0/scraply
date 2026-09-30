@@ -27,9 +27,8 @@
 
   type WorkflowPreview = z.infer<typeof PreviewWorkflowResultSchema>;
 
-  let { workspace, busy, frameLanguages, onSave, onStart, onPreviewWorkflow, onStartWorkflow, onGenerateTitle, onRetry, onOpenSettings } : {
+  let { workspace, busy, onSave, onStart, onPreviewWorkflow, onStartWorkflow, onGenerateTitle, onRetry, onOpenSettings } : {
     workspace: WorkspaceState; busy: boolean;
-    frameLanguages?: string[] | undefined;
     // Names a new thread from its brief when Start is clicked; there is no name field.
     onGenerateTitle?: (context: string) => Promise<string>;
     onSave: (scope: NonNullable<WorkspaceState["scope"]>, config: NonNullable<WorkspaceState["runConfig"]>) => Promise<void>;
@@ -107,15 +106,15 @@
     ?? initialIdeasModelOption?.defaultReasoningEffort
     ?? "");
   let automaticProblemCap = $state(3);
-  const initialProjection = untrack(() => framedDiscoveryProjection(discoveryDepth, frameLanguages?.length ?? 3));
+  const initialProjection = untrack(() => framedDiscoveryProjection(discoveryDepth));
   let workflowModelLimit = $state(initialProjection.modelCalls * 2 + 12);
   let workflowSearchLimit = $state(initialProjection.searches + 2);
   let workflowModelLimitTouched = $state(false);
   let workflowSearchLimitTouched = $state(false);
   let discoveryReservation = $derived(researchMode === "known-problem"
     ? { modelCalls: 2, searches: 0 }
-    : { modelCalls: framedDiscoveryProjection(discoveryDepth, frameLanguages?.length ?? 3).modelCalls * 2,
-      searches: framedDiscoveryProjection(discoveryDepth, frameLanguages?.length ?? 3).searches });
+    : { modelCalls: framedDiscoveryProjection(discoveryDepth).modelCalls * 2,
+      searches: framedDiscoveryProjection(discoveryDepth).searches });
   let projectTargetEnabled = $derived(opportunityTargetEnabled);
   let projectInitialBatchCalls = $derived.by(() => {
     if (!projectTargetEnabled || !Number.isInteger(targetFamilies) || targetFamilies < 2 || targetFamilies > 30) return 0;
