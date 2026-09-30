@@ -1212,6 +1212,8 @@ function installApi(overrides: Partial<ScraplyApi>): void {
     getValidation: async () => workspace("alpha").validation,
     retryConnection: async () => undefined,
     getWorkspace: noWorkspace,
+    getAdvancedSettings: async () => ({ maxConcurrentModelCalls: 1 }),
+    saveAdvancedSettings: async (settings: { maxConcurrentModelCalls: number }) => settings,
     openDataFolder: async () => undefined,
     openLogsFolder: async () => undefined,
     createThread: async () => ({ workspace: workspace("alpha") }),

@@ -3,6 +3,7 @@ import "../../src/renderer/app.css";
 import { mount } from "svelte";
 import App from "../../src/renderer/App.svelte";
 import { createScraplyApi } from "../../src/shared/scraply-api";
+import { AppSettingsSchema } from "../../src/shared/app-settings";
 import { DEFAULT_RUN_CONFIG, type Thread } from "../../src/shared/schemas";
 import { IPC_CHANNELS, RemoveSearchKeySchema, SaveScopeSchema, SaveRunConfigSchema, SaveSearchKeySchema, type WorkspaceState } from "../../src/shared/ipc";
 import { CommandWorkflowRequestSchema, PreviewWorkflowRequestSchema, StartWorkflowRequestSchema, type WorkflowDetail, type WorkflowAction, type WorkflowLaunchContract } from "../../src/shared/workflow-contracts";
@@ -234,6 +235,7 @@ function traceStepDetail(stepId: string): RunTraceStepDetail {
   };
 }
 
+let advancedSettings = AppSettingsSchema.parse({});
 const fixtureApi = createScraplyApi({
   async invoke<T>(channel: string, payload?: unknown): Promise<T> {
     let result: unknown;
@@ -249,6 +251,8 @@ const fixtureApi = createScraplyApi({
         if (request.runId !== traceFixture?.runId) throw new Error("No saved trace exists for this run.");
         result = { ok: true, data: traceStepDetail(request.stepId) }; break;
       }
+      case IPC_CHANNELS.GET_ADVANCED_SETTINGS: result = advancedSettings; break;
+      case IPC_CHANNELS.SAVE_ADVANCED_SETTINGS: advancedSettings = AppSettingsSchema.parse(payload); result = advancedSettings; break;
       case IPC_CHANNELS.COMMAND_WORKFLOW: {
         const request = CommandWorkflowRequestSchema.parse(payload);
         fixtureHistory.actions.push(request.action);

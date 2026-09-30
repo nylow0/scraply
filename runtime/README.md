@@ -65,6 +65,8 @@ The frozen app-facing TypeScript declarations and JSON examples live under `cont
 
 OpenAI subscription requests must omit `maxOutputTokens`: its endpoint rejects `max_output_tokens` with HTTP 400. The adapter rejects an explicit ceiling locally rather than silently ignoring it. Deadlines and the runtime output-byte limit still apply, but they are not token or billing ceilings. Providers that support token ceilings retain them.
 
+The worker accepts at most three concurrent generations. The app admits two by default after a 30-call xhigh subscription transport measurement supported stable overlap. The Advanced setting can lower this to one or raise it to three. Cancellation retains a slot until the generation settles.
+
 Interactive login completion is polled with a fresh request ID. While the provider network exchange is pending, `account.login.complete` returns retryable `operation_unavailable`; `account.login.cancel` and `runtime.shutdown` remain serviceable and clean up the listener or exchange task.
 
 See [CONTEXT.md](CONTEXT.md) for the project language and [ADR 0001](docs/adr/0001-custom-runtime.md) for the ownership decision.

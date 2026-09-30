@@ -135,9 +135,19 @@ impl RuntimeProcess {
 
     fn start_generation(&mut self, request_id: u64, generation_id: &str) {
         self.request_generation_start(request_id, generation_id);
-        let accepted = self.read();
-        assert_eq!(accepted["id"], request_id);
+        let accepted = self.read_response(request_id);
         assert_eq!(accepted["result"]["generationId"], generation_id);
+    }
+
+    fn read_response(&mut self, request_id: u64) -> Value {
+        loop {
+            let message = self.read();
+            if message["id"] == request_id {
+                return message;
+            }
+            // A running generation may start before another request's acknowledgement.
+            assert_eq!(message["event"]["kind"], "generation.started");
+        }
     }
 
     fn request_generation_start(&mut self, request_id: u64, generation_id: &str) {
@@ -299,17 +309,74 @@ fn installed_runtime_cancels_an_active_generation() {
         }
     }
     let cancelled = cancelled.unwrap();
-    assert_eq!(cancelled["event"]["attempts"].as_array().unwrap().len(), 1);
-    assert_eq!(
-        cancelled["event"]["attempts"][0]["providerCompletion"],
-        "unknown"
-    );
-    assert_eq!(
-        cancelled["event"]["attempts"][0]["usage"]["status"],
-        "unknown"
-    );
+    // Acceptance occupies a slot before dispatch. An immediate cancellation can
+    // therefore report no attempts; a started provider call keeps unknown usage.
+    let attempts = match &cancelled["event"]["attempts"] {
+        Value::Null => &[][..],
+        Value::Array(attempts) => attempts.as_slice(),
+        _ => panic!("cancellation attempts must be an array when present"),
+    };
+    assert!(attempts.len() <= 1);
+    for attempt in attempts {
+        assert_eq!(attempt["outcome"], "cancelled");
+        assert_eq!(attempt["providerCompletion"], "unknown");
+        assert_eq!(attempt["usage"]["status"], "unknown");
+    }
 
     runtime.shutdown(4);
+}
+
+#[test]
+fn installed_runtime_bounds_parallel_generations_and_reuses_a_settled_slot() {
+    let mut runtime = RuntimeProcess::start(5_000);
+    runtime.initialize();
+    for id in 2..=4 {
+        runtime.start_generation(id, &format!("parallel-{id}"));
+    }
+    runtime.request_generation_start(5, "fourth-generation");
+    assert_eq!(
+        runtime.read_response(5)["error"]["code"],
+        "request_conflict"
+    );
+
+    runtime.request(
+        6,
+        "generation.cancel",
+        json!({"generationId": "parallel-2"}),
+    );
+    let mut saw_cancel_response = false;
+    let mut saw_cancel_event = false;
+    while !saw_cancel_response || !saw_cancel_event {
+        let message = runtime.read();
+        assert_ne!(message["event"]["kind"], "generation.completed");
+        saw_cancel_response |= message["id"] == 6;
+        saw_cancel_event |= message["event"]["kind"] == "generation.cancelled"
+            && message["event"]["generationId"] == "parallel-2";
+    }
+    runtime.start_generation(7, "fourth-generation");
+    for (id, generation_id) in [
+        (8, "parallel-3"),
+        (9, "parallel-4"),
+        (10, "fourth-generation"),
+    ] {
+        runtime.request(
+            id,
+            "generation.cancel",
+            json!({"generationId": generation_id}),
+        );
+    }
+    let mut terminals = 0;
+    let mut responses = 0;
+    while terminals < 3 || responses < 3 {
+        let message = runtime.read();
+        assert_ne!(message["event"]["kind"], "generation.completed");
+        if message["event"]["kind"] == "generation.cancelled" {
+            terminals += 1;
+        } else if message["operation"] == "generation.cancel" {
+            responses += 1;
+        }
+    }
+    runtime.shutdown(11);
 }
 
 #[test]

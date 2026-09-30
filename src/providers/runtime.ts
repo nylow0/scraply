@@ -32,6 +32,8 @@ export interface RuntimeClientOptions {
   requestTimeoutMs?: number;
   controlTimeoutMs?: number;
   terminalGraceMs?: number;
+  /** Defaults to one until a subscription account has been measured. */
+  maxConcurrentGenerations?: number;
 }
 
 interface PendingRequest {
@@ -61,13 +63,21 @@ export class RuntimeClient implements StructuredModelClient {
   private stdoutBuffer = Buffer.alloc(0);
   private stdoutBytes = 0;
   private writeTail: Promise<void> = Promise.resolve();
-  private generationActive = false;
+  private activeGenerationCount = 0;
+  private generationCapacity: number;
   private readonly generationWaiters: GenerationWaiter[] = [];
   private readonly pendingRequests = new Map<string, PendingRequest>();
   private readonly pendingGenerations = new Map<string, PendingGeneration>();
   private sessionInitializer: ((session: RuntimeSessionOperations) => Promise<void>) | null = null;
 
-  constructor(private readonly options: RuntimeClientOptions) {}
+  constructor(private readonly options: RuntimeClientOptions) {
+    this.generationCapacity = validateGenerationCapacity(options.maxConcurrentGenerations ?? 1);
+  }
+
+  setMaxConcurrentGenerations(maxActive: number): void {
+    this.generationCapacity = validateGenerationCapacity(maxActive);
+    this.admitGenerationWaiters();
+  }
 
   setSessionInitializer(
     initializer: (session: RuntimeSessionOperations) => Promise<void>,
@@ -258,8 +268,8 @@ export class RuntimeClient implements StructuredModelClient {
 
   private acquireGeneration(signal?: AbortSignal): Promise<() => void> {
     if (signal?.aborted) return Promise.reject(new ProviderFailure("cancelled", "Generation was cancelled before dispatch", false));
-    if (!this.generationActive) {
-      this.generationActive = true;
+    if (this.activeGenerationCount < this.generationCapacity) {
+      this.activeGenerationCount += 1;
       return Promise.resolve(() => this.releaseGeneration());
     }
     return new Promise((resolve, reject) => {
@@ -277,13 +287,18 @@ export class RuntimeClient implements StructuredModelClient {
   }
 
   private releaseGeneration(): void {
-    for (;;) {
+    this.activeGenerationCount -= 1;
+    this.admitGenerationWaiters();
+  }
+
+  private admitGenerationWaiters(): void {
+    while (this.activeGenerationCount < this.generationCapacity) {
       const waiter = this.generationWaiters.shift();
-      if (!waiter) { this.generationActive = false; return; }
+      if (!waiter) return;
       if (waiter.signal && waiter.onAbort) waiter.signal.removeEventListener("abort", waiter.onAbort);
       if (waiter.signal?.aborted) continue;
+      this.activeGenerationCount += 1;
       waiter.resolve(() => this.releaseGeneration());
-      return;
     }
   }
 
@@ -501,6 +516,13 @@ export class RuntimeClient implements StructuredModelClient {
     child.stdin.destroy();
     if (child.exitCode === null && !child.killed) child.kill();
   }
+}
+
+function validateGenerationCapacity(maxActive: number): number {
+  if (!Number.isInteger(maxActive) || maxActive < 1 || maxActive > 3) {
+    throw new Error("Concurrent native generations must be an integer from 1 to 3");
+  }
+  return maxActive;
 }
 
 export function encodeRuntimeEnvelope(id: string, operation: RuntimeOperation, payload: object): Buffer {

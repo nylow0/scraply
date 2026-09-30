@@ -533,8 +533,11 @@ impl RuntimeHost {
         let cancellation = CancellationToken::new();
         {
             let mut generations = self.generations.lock().expect("generation map poisoned");
-            if !generations.is_empty() {
-                return failure(ErrorCode::RequestConflict, "generationId is already active");
+            if generations.len() >= 3 {
+                return failure(
+                    ErrorCode::RequestConflict,
+                    "all three generation slots are active",
+                );
             }
             let Entry::Vacant(entry) = generations.entry(payload.generation_id.clone()) else {
                 return failure(ErrorCode::RequestConflict, "generationId is already active");

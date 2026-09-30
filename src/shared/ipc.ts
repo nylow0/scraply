@@ -357,6 +357,7 @@ export type SolutionView = z.infer<typeof SolutionViewSchema>;
 export type RunUsage = z.infer<typeof RunUsageSchema>;
 
 export const IPC_CHANNELS = {
+  GET_ADVANCED_SETTINGS: "scraply:get-advanced-settings", SAVE_ADVANCED_SETTINGS: "scraply:save-advanced-settings",
   PREVIEW_WORKFLOW: "scraply:preview-workflow", START_WORKFLOW: "scraply:start-workflow",
   GET_WORKFLOW: "scraply:get-workflow", COMMAND_WORKFLOW: "scraply:command-workflow",
   GET_RUN_TRACE: "scraply:get-run-trace", GET_RUN_TRACE_STEP: "scraply:get-run-trace-step",
