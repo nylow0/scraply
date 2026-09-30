@@ -1,4 +1,5 @@
 import { describe, expect, it } from "bun:test";
+import { canonicalJson } from "../../src/shared/content-identity";
 import { deriveJsonSchema, type JsonSchema } from "../../src/shared/json-schema";
 import {
   FrameSearchPlanSchema, parseResearchFrame, ResearchFrameOutputSchema, ResearchFrameSchema,
@@ -76,6 +77,11 @@ describe("research frame boundary", () => {
     expect(parsed.areas[0]!.region).toBeUndefined();
     expect(parsed.areas[0]!.venues[0]!.domain).toBeUndefined();
     expect(parsed.openQuestions[0]!.answer).toBeUndefined();
+    expect(Object.hasOwn(parsed, "version")).toBe(false);
+    expect(Object.hasOwn(parsed.areas[0]!, "region")).toBe(false);
+    expect(Object.hasOwn(parsed.areas[0]!.venues[0]!, "domain")).toBe(false);
+    expect(Object.hasOwn(parsed.openQuestions[0]!, "answer")).toBe(false);
+    expect(JSON.parse(canonicalJson(parsed))).toEqual(parsed);
     frame.areas[0]!.venues[0]!.domain = "https://reddit.com/r/Baking";
     expect(ResearchFrameSchema.safeParse(frame).success).toBe(false);
   });

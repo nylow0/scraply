@@ -305,6 +305,8 @@ export class WorkflowCoordinator {
     return WorkflowDetailSchema.parse({
       summary: this.summary(sessionId),
       ...(this.sessionFrame(sessionId) ? { researchFrame: this.frameDetail(this.sessionFrame(sessionId)!) } : {}),
+      ...(new ResearchFrameRepository(this.options.db).latestApproved(session.threadId)
+        ? { latestResearchFrame: this.frameDetail(new ResearchFrameRepository(this.options.db).latestApproved(session.threadId)!) } : {}),
       activity: activity.reverse(),
       tasks: page.map((item) => {
         const attempt = item.state === "failed" || item.state === "unknown" ? terminalAttempt(this.options.db, item) : null;
