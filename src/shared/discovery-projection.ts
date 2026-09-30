@@ -16,14 +16,16 @@ export const FRAME_SCAN_FACTORS_PER_AREA = 6;
 export const FRAME_INVESTIGATOR_COUNTS = { quick: 1, standard: 2, deep: 4 } as const;
 
 /** The launch cannot know the proposed areas yet, so reserve for the schema's maximum breadth. */
-export function framedDiscoveryProjection(depth: DiscoveryDepth): { searches: number; modelCalls: number; factorCap: number } {
-  const scoped = discoveryRunProjection(depth);
+export function framedDiscoveryProjection(depth: DiscoveryDepth, languageCount = 3): { searches: number; modelCalls: number; factorCap: number } {
+  const config = DISCOVERY_DEPTHS[depth];
+  const languages = Math.max(1, Math.min(3, Math.floor(languageCount)));
+  const physicalLegsPerMode = config.queriesPerMode * 2 * languages;
   const investigators = FRAME_INVESTIGATOR_COUNTS[depth];
-  const harvestCalls = Math.ceil(DISCOVERY_DEPTHS[depth].queriesPerMode * DISCOVERY_DEPTHS[depth].searchResultsPerQuery / 3) * 2;
+  const harvestCalls = Math.ceil(Math.min(Math.ceil(config.factorCap / 2), physicalLegsPerMode * config.searchResultsPerQuery) / 3) * 2;
   return {
-    searches: MAX_FRAME_AREAS * FRAME_SCAN_SEARCHES_PER_AREA * 2 + scoped.searches * investigators,
-    modelCalls: MAX_FRAME_AREAS * 4 + 1 + (2 + harvestCalls + 1 + DISCOVERY_DEPTHS[depth].candidateLimit) * investigators,
-    factorCap: MAX_FRAME_AREAS * FRAME_SCAN_FACTORS_PER_AREA + scoped.factorCap * investigators,
+    searches: MAX_FRAME_AREAS * FRAME_SCAN_SEARCHES_PER_AREA * 2 * languages + (physicalLegsPerMode * 2 + config.candidateLimit) * investigators,
+    modelCalls: MAX_FRAME_AREAS * 4 + 1 + (2 + harvestCalls + 1 + config.candidateLimit) * investigators,
+    factorCap: MAX_FRAME_AREAS * FRAME_SCAN_FACTORS_PER_AREA + config.factorCap * investigators,
   };
 }
 
