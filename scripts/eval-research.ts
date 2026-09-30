@@ -1,8 +1,8 @@
 import { Database } from "bun:sqlite";
 import { createHash, randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
-import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync, unlinkSync, writeFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { closeSync, copyFileSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync, realpathSync, unlinkSync, writeFileSync } from "node:fs";
+import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
 import { parseArgs } from "node:util";
@@ -15,6 +15,7 @@ import {
   PreviewWorkflowResultSchema, WorkflowAdmissionReceiptSchema, WorkflowDetailSchema,
   WorkflowLaunchContractSchema, WorkflowLaunchDraftSchema,
 } from "../src/shared/workflow-contracts";
+import { InstalledIdentitySchema, installedPackageIdentity, openInstalledDriver, type InstalledMethod } from "./eval-installed-driver";
 
 export const EvaluationBriefSchema = z.object({
   id: z.string().regex(/^[a-z0-9-]+$/),
@@ -91,6 +92,11 @@ const ManifestSchema = z.object({
   schemaVersion: z.literal(1), origin: z.enum(["live", "offline-fixture"]), appCommit: z.string(),
   fixtureSha256: z.string(), matrix: z.enum(["baseline", "quick", "acceptance"]), createdAt: z.string(),
   profile: z.string(), rows: z.array(RowSchema),
+  transport: z.discriminatedUnion("kind", [
+    z.object({ kind: z.literal("browser-dev"), origin: z.string() }).strict(),
+    z.object({ kind: z.literal("installed-preload"), driver: z.literal("node-playwright-electron-pipe"),
+      credentialSourceProfile: z.string(), package: InstalledIdentitySchema }).strict(),
+  ]).optional(),
 }).strict();
 type Manifest = z.infer<typeof ManifestSchema>;
 
@@ -153,6 +159,8 @@ export function evaluationMarkdown(manifest: Manifest): string {
   const format = (value: number | null) => value === null ? "unknown" : Number(value.toFixed(3)).toString();
   const rows = summarizeEvaluation(manifest.rows).map(row => `| ${row.key} | ${row.terminalRuns}/${row.plannedRuns} | ${format(row.medianConfirmed)} | ${format(row.medianConfirmedAreas)} | ${format(row.medianQualifyingPerCandidate)} | ${format(row.medianFirsthandMeasuredShare)} | ${format(row.medianVendorAdviceIllustrationShare)} | ${format(row.medianCommunitySourceShare)} | ${format(row.medianNotAssessed)} | ${format(row.medianAcceptedIdeas)} | ${format(row.medianMustHaveFailures)} | ${row.zeroIdeaRuns} | ${format(row.medianModelCalls)} | ${format(row.medianSearches)} | ${format(row.medianWallTimeMs === null ? null : row.medianWallTimeMs / 60_000)} | ${format(row.medianInterruptions)} | ${row.failedRuns} |`);
   return ["# Research workflow evaluation", "", `App commit: ${manifest.appCommit}. Origin: ${manifest.origin}. Matrix: ${manifest.matrix}.`,
+    `Transport: ${manifest.transport?.kind ?? "browser-dev"}.${manifest.transport?.kind === "installed-preload"
+      ? ` Installed executable SHA256: ${manifest.transport.package.executableSha256}. App ASAR SHA256: ${manifest.transport.package.asarSha256}.` : ""}`,
     `Fixture SHA256: ${manifest.fixtureSha256}. Started: ${manifest.createdAt}.`, "",
     "Each row uses medians across terminal repeats. Running and planned cases do not contribute quality measurements. Shares are fractions. Failed runs remain visible. Unknown values are excluded from medians and never replaced with zero.",
     "Area coverage is unknown for historical phase-based runs. Must-have failures are unknown before criterion assessments exist.",
@@ -213,7 +221,9 @@ async function command(checkout: string, args: string[], environment = process.e
   });
 }
 
-function browserBackend(origin: string, databasePath: string, traceModule: string): EvaluationBackend {
+type EvaluationInvoke = <T extends z.ZodType>(channel: string, schema: T, payload?: unknown) => Promise<z.infer<T>>;
+
+function browserInvoke(origin: string): EvaluationInvoke {
   async function invoke<T extends z.ZodType>(channel: string, schema: T, payload?: unknown): Promise<z.infer<T>> {
     const response = await fetch(`${origin}/__scraply_dev/invoke`, { method: "POST", headers: { Origin: origin, "Content-Type": "application/json" },
       body: JSON.stringify({ channel, args: payload === undefined ? [] : [payload] }), signal: AbortSignal.timeout(15_000) });
@@ -221,10 +231,14 @@ function browserBackend(origin: string, databasePath: string, traceModule: strin
     if (!response.ok) throw new Error(envelope.error ?? `Local backend returned HTTP ${response.status}.`);
     return schema.parse(envelope.data);
   }
+  return invoke;
+}
+
+export function evaluationBackend(invoke: EvaluationInvoke, databasePath: string, traceModule: string): EvaluationBackend {
   return {
     async create(item) {
-      if (!existsSync(databasePath)) throw new Error("The isolated profile database was not created. A reused dev server may belong to another profile; stop it from its owning checkout before evaluation.");
       const workspace = await invoke(IPC_CHANNELS.GET_WORKSPACE, WorkspaceStateSchema);
+      if (!existsSync(databasePath)) throw new Error("The isolated profile database was not created. The running app must use the evaluation profile before research.");
       const profileDb = new Database(databasePath, { readonly: true });
       try {
         const storedIds = new Set(z.array(z.object({ id: z.string() })).parse(profileDb.query("SELECT id FROM threads").all()).map(thread => thread.id));
@@ -272,24 +286,62 @@ function browserBackend(origin: string, databasePath: string, traceModule: strin
   };
 }
 
+/** Copy only the encrypted credential file and its Electron context. Existing evaluation state is never overwritten. */
+export function prepareInstalledEvaluationProfile(sourceProfile: string, profile: string): string {
+  const source = realpathSync(resolve(sourceProfile));
+  const target = existsSync(profile) ? realpathSync(profile) : join(realpathSync(dirname(profile)), basename(profile));
+  const separation = relative(source, target);
+  if (!separation || !isAbsolute(separation) && !separation.startsWith("..")) {
+    throw new Error("The evaluation profile must be outside the installed credential profile.");
+  }
+  const files = ["secrets.bin", "Local State"];
+  if (files.some(file => !existsSync(join(source, file)))) throw new Error("Installed profile must contain secrets.bin and Local State. No credentials were changed.");
+  const copied = files.filter(file => existsSync(join(target, file)));
+  if (copied.length && copied.length !== files.length) throw new Error("The evaluation credential copy is incomplete. Use a new output directory.");
+  if (!copied.length) {
+    mkdirSync(target, { recursive: true });
+    for (const file of files) copyFileSync(join(source, file), join(target, file));
+  }
+  return source;
+}
+
+export function installedEvaluationInvoke(driver: { invoke(method: InstalledMethod, payload?: unknown): Promise<unknown> }): EvaluationInvoke {
+  const methods: Record<string, InstalledMethod> = {
+    [IPC_CHANNELS.GET_WORKSPACE]: "getWorkspace", [IPC_CHANNELS.CREATE_THREAD]: "createThread",
+    [IPC_CHANNELS.PREVIEW_WORKFLOW]: "previewWorkflow", [IPC_CHANNELS.START_WORKFLOW]: "startWorkflow", [IPC_CHANNELS.GET_WORKFLOW]: "getWorkflow",
+  };
+  return async (channel, schema, payload) => {
+    const method = methods[channel];
+    if (!method) throw new Error("This evaluation channel is unavailable through the installed driver.");
+    const data = await driver.invoke(method, payload);
+    return schema.parse(["previewWorkflow", "startWorkflow", "getWorkflow"].includes(method) ? { ok: true, data } : data);
+  };
+}
+
 async function main() {
   const { values } = parseArgs({ options: {
     "app-checkout": { type: "string" }, "runtime-dir": { type: "string" }, origin: { type: "string", default: "http://127.0.0.1:5179" },
     output: { type: "string" }, matrix: { type: "string", default: "baseline" }, briefs: { type: "string" },
     "trace-module": { type: "string" }, "require-app-sha": { type: "string" },
     "pause-file": { type: "string" },
+    "installed-executable": { type: "string" }, "installed-profile": { type: "string" },
+    "verify-transport": { type: "boolean", default: false },
     "report-only": { type: "boolean", default: false }, "dry-run": { type: "boolean", default: false },
     help: { type: "boolean", default: false },
   } });
   if (values.help) {
-    console.log("bun scripts/eval-research.ts --app-checkout PATH --runtime-dir PATH [--matrix baseline|quick|acceptance] [--output build/eval/DATE] [--trace-module PATH] [--pause-file PATH] [--dry-run|--report-only]");
-    console.log("Live mode starts/reuses an isolated browser backend with existing shared credentials. It never resumes paused workflows or replays unknown calls. Rerunning resumes observation from manifest.json.");
+    console.log("bun scripts/eval-research.ts --app-checkout PATH [--runtime-dir PATH | --installed-executable PATH --installed-profile PATH] [--matrix baseline|quick|acceptance] [--output build/eval/DATE] [--trace-module PATH] [--pause-file PATH] [--dry-run|--report-only|--verify-transport]");
+    console.log("Installed mode drives the real preload through a local Playwright pipe and copies encrypted credentials into output/profile. --verify-transport only reads identity and workspace. Observer restarts never resume paused workflows or replay uncertain admissions.");
     return;
   }
   const root = resolve(import.meta.dir, "..");
   const checkout = resolve(values["app-checkout"] ?? root);
   const output = resolve(values.output ?? join(root, "build/eval", new Date().toISOString().replace(/[:.]/g, "-")));
   const profile = join(output, "profile");
+  const installed = Boolean(values["installed-executable"]);
+  if (installed !== Boolean(values["installed-profile"])) throw new Error("Use --installed-executable and --installed-profile together.");
+  if (installed && values["runtime-dir"]) throw new Error("Installed evaluation uses its bundled runtime; --runtime-dir is only for development.");
+  if (values["verify-transport"] && !installed) throw new Error("--verify-transport requires an installed executable and credential profile.");
   const origin = new URL(values.origin);
   if (origin.protocol !== "http:" || origin.hostname !== "127.0.0.1" || origin.pathname !== "/" || origin.search || origin.hash) throw new Error("Evaluation requires a local browser development origin.");
   const matrixName = z.enum(["baseline", "quick", "acceptance"]).parse(values.matrix);
@@ -298,12 +350,17 @@ async function main() {
   const matrix = evaluationMatrix(briefs, matrixName);
   const fixtureSha256 = createHash("sha256").update(JSON.stringify(briefs)).digest("hex");
   const appCommit = await command(checkout, ["git", "rev-parse", "HEAD"]);
-  if (values["require-app-sha"] && appCommit !== values["require-app-sha"]) throw new Error("Evaluation checkout does not match required baseline commit.");
+  if (values["require-app-sha"] && appCommit !== values["require-app-sha"]) throw new Error("Evaluation checkout does not match the required app commit.");
   if (await command(checkout, ["git", "status", "--porcelain", "--untracked-files=no"])) throw new Error("Evaluation app checkout has uncommitted changes.");
+  const packageManifest = join(checkout, "release/manifest.json");
+  const packageIdentity = installed ? installedPackageIdentity(values["installed-executable"]!, packageManifest) : null;
+  if (packageIdentity && packageIdentity.packageSourceSha !== appCommit) throw new Error("Installed package source does not match the evaluation checkout. Use the frozen packaged checkout.");
+  const transport: NonNullable<Manifest["transport"]> = packageIdentity ? { kind: "installed-preload", driver: "node-playwright-electron-pipe",
+    credentialSourceProfile: realpathSync(resolve(values["installed-profile"]!)), package: packageIdentity } : { kind: "browser-dev", origin: origin.origin };
   const planned = matrix.map(evaluationDraft);
   console.log(JSON.stringify({ type: "plan", appCommit, runs: matrix.length,
     estimatedModelCalls: planned.reduce((sum, draft) => sum + draft.limits.maxModelCalls, 0), estimatedSearches: planned.reduce((sum, draft) => sum + draft.limits.maxSearches, 0),
-    limitsAreEstimates: true, profile, output }));
+    limitsAreEstimates: true, profile, output, transport }));
   if (values["dry-run"]) return;
   mkdirSync(output, { recursive: true });
   const path = join(output, "manifest.json");
@@ -311,8 +368,12 @@ async function main() {
     schemaVersion: 1, origin: "live", appCommit, fixtureSha256, matrix: matrixName, createdAt: new Date().toISOString(), profile,
     rows: matrix.map(item => ({ key: item.key, briefId: item.brief.id, depth: item.depth, repeat: item.repeat,
       threadId: null, sessionId: null, runId: null, status: "planned", outcome: null, stopReason: null, metrics: null })),
+    transport,
   };
   if (manifest.appCommit !== appCommit || manifest.fixtureSha256 !== fixtureSha256 || manifest.matrix !== matrixName) throw new Error("Saved evaluation uses a different app, fixture, or matrix. Use a new output directory.");
+  if (JSON.stringify(manifest.transport ?? { kind: "browser-dev", origin: origin.origin }) !== JSON.stringify(transport)) {
+    throw new Error("Saved evaluation uses a different transport, installed package, or credential source. No workflow was dispatched.");
+  }
   const save = (value: Manifest) => {
     writeFileSync(path, JSON.stringify(value, null, 2));
     writeFileSync(join(output, "report.json"), JSON.stringify({ ...value, summary: summarizeEvaluation(value.rows) }, null, 2));
@@ -320,7 +381,8 @@ async function main() {
   };
   save(manifest);
   const traceModule = resolve(values["trace-module"] ?? join(root, "src/core/run-trace.ts"));
-  const backend = browserBackend(origin.origin, join(profile, "scraply/scraply.db"), traceModule);
+  const databasePath = join(profile, "scraply/scraply.db");
+  const backend = evaluationBackend(browserInvoke(origin.origin), databasePath, traceModule);
   if (values["report-only"]) {
     for (const row of manifest.rows) if (row.sessionId) { const measured = await backend.measure(row.sessionId); if (measured) { row.runId = measured.runId; row.metrics = measured.metrics; } }
     save(manifest); return;
@@ -332,8 +394,34 @@ async function main() {
   }
   const releaseLock = acquireEvaluationLock(output);
   try {
-    console.log(await command(checkout, ["bun", "run", "dev"], environment));
-    await runEvaluation(matrix, manifest, backend, save, () => delay(2000), () => Boolean(values["pause-file"] && existsSync(resolve(values["pause-file"]))));
+    if (packageIdentity) {
+      prepareInstalledEvaluationProfile(values["installed-profile"]!, profile);
+      const driver = await openInstalledDriver({ profile, executablePath: packageIdentity.executablePath, manifestPath: packageManifest });
+      try {
+        const identity = InstalledIdentitySchema.extend({ profile: z.string() }).parse(await driver.invoke("identity"));
+        const { profile: activeProfile, ...actualPackage } = identity;
+        if (resolve(activeProfile).toLowerCase() !== resolve(profile).toLowerCase() || JSON.stringify(actualPackage) !== JSON.stringify(packageIdentity)) {
+          throw new Error("The installed driver is observing another profile or package. No workflow was dispatched.");
+        }
+        const installedBackend = evaluationBackend(installedEvaluationInvoke(driver), databasePath, traceModule);
+        if (values["verify-transport"]) {
+          const workspace = WorkspaceStateSchema.parse(await driver.invoke("getWorkspace"));
+          const db = new Database(databasePath, { readonly: true });
+          try {
+            const storedIds = new Set(z.array(z.object({ id: z.string() })).parse(db.query("SELECT id FROM threads").all()).map(thread => thread.id));
+            if (workspace.threads.some(thread => !storedIds.has(thread.id))) throw new Error("Installed preload and profile database disagree.");
+          } finally { db.close(); }
+          console.log(JSON.stringify({ type: "transport-verified", transport: transport.kind, appVersion: identity.appVersion,
+            executableSha256: identity.executableSha256, asarSha256: identity.asarSha256, threads: workspace.threads.length, profile, output }));
+          await driver.invoke("shutdown"); return;
+        }
+        await runEvaluation(matrix, manifest, installedBackend, save, () => delay(2000), () => Boolean(values["pause-file"] && existsSync(resolve(values["pause-file"]))));
+        await driver.invoke("shutdown");
+      } finally { driver.disconnect(); }
+    } else {
+      console.log(await command(checkout, ["bun", "run", "dev"], environment));
+      await runEvaluation(matrix, manifest, backend, save, () => delay(2000), () => Boolean(values["pause-file"] && existsSync(resolve(values["pause-file"]))));
+    }
     console.log(JSON.stringify({ type: manifest.rows.every(row => row.status === "finished") ? "complete" : "checkpoint", terminalRuns: manifest.rows.filter(row => row.status === "finished").length, output }));
   } finally { releaseLock(); }
 }
