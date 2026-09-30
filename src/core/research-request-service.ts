@@ -3,6 +3,7 @@ import type { DatabaseClient } from "../db/client";
 import { CostLedgerRepository } from "../db/repositories/cost-ledger";
 import { DiscoveryRepository } from "../db/repositories/discovery";
 import { DevelopmentRepository } from "../db/repositories/development";
+import { ResearchFrameRepository } from "../db/repositories/research-frames";
 import { GenerationAttemptRepository } from "../db/repositories/generation-attempts";
 import { canonicalJson } from "../shared/content-identity";
 import {
@@ -30,7 +31,7 @@ import { qualifiesAsIntendedBuyerObservation } from "./discovery";
 type ResearchRequestAction = Extract<WorkflowAction, { type: "request-research" }>;
 type ApplyResearchAction = Extract<WorkflowAction, { type: "apply-research" }>;
 type KeepResearchAction = Extract<WorkflowAction, { type: "keep-research" }>;
-type RequestInput = { action: ResearchRequestAction; baseSnapshotId: string | null };
+type RequestInput = { action: ResearchRequestAction; baseSnapshotId: string | null; frameId?: string | null };
 type RequestOutput = { runId: string; problemIds?: string[]; appliedSnapshotId?: string; reviewDecision?: "kept-current" };
 type AngleInput = ResearchAngleProposal;
 type AngleOutput = { runId?: string | undefined; query?: string | undefined; intent?: string | undefined;
@@ -92,10 +93,12 @@ export class ResearchRequestService {
         throw new WorkflowConflictError("INVALID_REFERENCE", "The target request belongs to another project.");
       }
     }
-    const allocation = researchSearchAllocation(draft.allowance.maxSearches);
+    const frame = new ResearchFrameRepository(this.options.db).latestApproved(session.threadId);
+    const languageCount = frame?.approved?.languages.length ?? 1;
+    const allocation = researchSearchAllocation(draft.allowance.maxSearches, "quick", true, languageCount);
     const minimum = action.kind === "reevaluate"
       ? { modelCalls: 1, searches: 0 }
-      : { modelCalls: allocation.modelCalls, searches: 4 };
+      : { modelCalls: allocation.modelCalls, searches: 4 * languageCount };
     if (draft.allowance.maxModelCalls < minimum.modelCalls || draft.allowance.maxSearches < minimum.searches
       || draft.allowance.maxMinutes < 5) {
       throw new AppError("BUDGET_TOO_SMALL",
@@ -115,9 +118,10 @@ export class ResearchRequestService {
       ...(draft.instructions ? { instructions: draft.instructions } : {}) };
     const item = this.repository.createWorkItem({
       sessionId, kind: "research-request", scopeKey: `research-request:${randomUUID()}`,
-      ordinal, input: { action: normalizedAction, baseSnapshotId } satisfies RequestInput, state: "ready",
+      ordinal, input: { action: normalizedAction, baseSnapshotId, frameId: frame?.id ?? null } satisfies RequestInput, state: "ready",
     });
-    const angles = previewResearchAngles(draft.kind, draft.angles, draft.allowance);
+    const angles = previewResearchAngles(draft.kind, draft.angles, draft.allowance, frame?.approved?.goalKind,
+      { depth: "quick", languageCount, pairedFirsthand: true });
     for (const [index, angle] of [...angles.planned, ...angles.omitted].entries()) {
       const planned = index < angles.planned.length;
       const child = this.repository.createWorkItem({
@@ -260,6 +264,8 @@ export class ResearchRequestService {
             idempotencyKey: `research-request:${item.id}`,
           });
           if (run.created) this.discovery.persistScope(run.runId, scope);
+          const frameId = this.requestFrameId(input);
+          if (frameId) new ResearchFrameRepository(this.options.db).bindRun(run.runId, session.threadId, frameId);
           this.repository.updateWorkItem(item.id, "running", { outputRefs: { runId: run.runId } satisfies RequestOutput });
           return run.runId;
         });
@@ -765,6 +771,13 @@ export class ResearchRequestService {
         });
       }
     }
+  }
+
+  private requestFrameId(input: RequestInput): string | null {
+    if (input.frameId !== undefined) return input.frameId;
+    const base = input.baseSnapshotId ? this.repository.getSnapshot(input.baseSnapshotId) : null;
+    const frozen = base ? new ResearchFrameRepository(this.options.db).forRun(base.materializationRunId) : null;
+    return frozen?.approved ? frozen.id : null;
   }
 
   private async dispatchReevaluation(

@@ -13,11 +13,12 @@ import { WorkflowRepository } from "../db/repositories/workflows";
 import { ResearchFrameRepository } from "../db/repositories/research-frames";
 import type { SearchClient, SearchOptions, SearchProvider, SearchProviderChoice } from "../providers/search";
 import { chooseSearchProvider, filterRoutedSources } from "../providers/source-routes";
+import { validateResearchVenues, type ResearchVenueResolver, type VenueVerificationResult } from "../providers/venue-validation";
 import { ProviderFailure, type GenerationMetadata, type StructuredModelClient, type StructuredStageRequest } from "../providers/structured";
 import { AppError } from "../shared/errors";
 import { WorkflowLaunchContractSchema } from "../shared/workflow-contracts";
 import { framedDiscoveryProjection } from "../shared/discovery-projection";
-import { scopeResearchArea, type ResearchFrame } from "../shared/research-frame";
+import { scopeResearchArea, type ResearchArea, type ResearchFrame } from "../shared/research-frame";
 import { assertFocusedDemandTestSemantics } from "../shared/focused-experiment";
 import { deriveJsonSchema } from "../shared/json-schema";
 import type { ResearchEvent } from "../shared/ipc";
@@ -37,7 +38,7 @@ import { DEFAULT_IDEA_COUNT, ModelRefSchema, ReasoningEffortSchema, RunConfigSch
 import { ScopeSchema, WorkflowV2CompatibleDecisionAnalysisOutputSchema, WorkflowV2RiskEvaluationOutputSchema, WorkflowV2RiskReassessmentOutputSchema, WorkflowV2SolutionOptionSchema, WorkflowV2SolutionsOutputSchema, WorkflowV2StartupSolutionOptionSchema, type Scope } from "../shared/structured-output-schemas";
 import { analyzeSelectedOption, developmentStageEvidence, evaluateSelectedOptionRisk, produceDevelopmentOptions, reassessSelectedOption, reassessSelectedOptionRisk, WorkflowGenerationAngleSchema, WorkflowGenerationEvidenceSchema, type WorkflowV2DevelopmentContext, type WorkflowV2EvidenceItem } from "./development";
 import { DEFAULT_PROBLEM_CANDIDATE_LIMIT, discoverProblems, discoveryRunProjection, harvestEvidenceFollowUp, harvestFactors, normalizeSearchQuery,
-  type HarvestMode, type HarvestResult, type PlannedQuery } from "./discovery";
+  type HarvestMode, type HarvestResult, type HarvestedSource, type PlannedQuery } from "./discovery";
 import { generateResearchFrame } from "./research-frame";
 import { rankScannedAreas, scanResearchArea, type AreaScan } from "./frame-discovery";
 import { runFocusedExperimentFlow } from "./experiment-review";
@@ -55,6 +56,7 @@ export interface ResearchEngineOptions {
   modelScheduler?: WorkflowModelScheduler;
   searchClients?: Partial<Record<SearchProvider, SearchClient>>;
   searchReady?: () => Partial<Record<SearchProvider, boolean>>;
+  venueResolver?: ResearchVenueResolver;
   onEvent: (event: ResearchEvent) => void;
 }
 
@@ -1444,11 +1446,12 @@ export class ResearchEngine {
       WHERE research_run_id = ? AND selected_at IS NOT NULL LIMIT 1`).get(runId);
     const savedKind = new WorkflowExecution(this.options.db, runId).read<{ kind: string; knownProblem: boolean; regeneration?: unknown }>("workflow-kind");
     const framed = new WorkflowExecution(this.options.db, runId).read("frame-workflow");
+    const boundFrame = new ResearchFrameRepository(this.options.db).forRun(runId)?.approved;
     const projection = savedKind?.kind === "prepare-frame"
       ? { modelCalls: savedKind.regeneration || savedKind.knownProblem ? 1 : 2, searches: savedKind.regeneration || savedKind.knownProblem ? 0 : 5 }
       : problemId
       ? { modelCalls: selected ? this.ledger.countProviderCalls(runId, config.model.providerId) + 4 : 3, searches: 0 }
-      : framed ? framedDiscoveryProjection(config.discoveryDepth) : discoveryRunProjection(config.discoveryDepth);
+      : framed ? framedDiscoveryProjection(config.discoveryDepth, boundFrame?.languages.length ?? 3) : discoveryRunProjection(config.discoveryDepth);
     const active: ActiveRun = {
       runId, threadId, problemId, config, abortController: new AbortController(), startedAt: Date.now(),
       projectedCodexCalls: projection.modelCalls, projectedSearches: projection.searches,
@@ -1532,6 +1535,8 @@ export class ResearchEngine {
       offLimits: JSON.parse(scopeRow.off_limits_json),
       ...(scopeRow.risk_evaluation_criteria ? { riskEvaluationCriteria: scopeRow.risk_evaluation_criteria } : {}),
     });
+    const boundFrame = new ResearchFrameRepository(this.options.db).forRun(active.runId)?.approved;
+    if (boundFrame) await this.validateFrameSourceVenues(active, boundFrame);
     const deps = this.dependencies(active);
     if (active.workflow) {
       const workflow = active.workflow;
@@ -1596,7 +1601,7 @@ export class ResearchEngine {
       const key = `frame-scan:${area.id}`;
       let scan = workflow.read<AreaScan>(key);
       if (!scan) {
-        scan = await scanResearchArea(scope, frame, area, { ...this.dependencies(active), frame, area, depth: "quick",
+        scan = await scanResearchArea(scope, frame, area, { ...this.areaDependencies(active, frame, area), depth: "quick",
           stageScope: `scan-${sha256Area(area.id)}`, idFactory: workflow.idFactory(key), random: () => 0.5 });
         scan = { ...scan, factors: workflow.withFactorUncertainty(scan.factors) };
         const completed = scan;
@@ -1614,7 +1619,7 @@ export class ResearchEngine {
     for (const area of selected) {
       const key = `area:${area.id}`;
       const scoped = scopeResearchArea(scope, area, frame);
-      const dependencies = { ...this.dependencies(active), frame, area, stageScope: `area-${sha256Area(area.id)}` };
+      const dependencies = { ...this.areaDependencies(active, frame, area), stageScope: `area-${sha256Area(area.id)}` };
       let harvest = workflow.read<HarvestResult>(`${key}:harvest`);
       if (!harvest) {
         this.progress(active, `Investigating ${area.name}`);
@@ -1642,6 +1647,42 @@ export class ResearchEngine {
         workflow.save("discovery-completed", { areas: results.map(item => item.areaId), problemIds: problems.map(problem => problem.id) });
       });
     this.progress(active, `${problems.length} problems across ${selected.length} investigated areas ready for review`);
+  }
+  private async validateFrameSourceVenues(active: ActiveRun, frame: ResearchFrame): Promise<void> {
+    const workflow = active.workflow!;
+    if (!workflow.read("source-routes") || workflow.read("frame-source-venues")) return;
+    const started = this.options.db.db.prepare(`SELECT 1 FROM stage_results WHERE research_run_id = ?
+      AND stage_id IN ('query-plan','factor-harvest','problem-candidates','problem-kill') LIMIT 1`).get(active.runId);
+    if (started) {
+      workflow.save("frame-source-venues", { compatibility: "preserve-saved-routing" });
+      return;
+    }
+    const result = await validateResearchVenues(frame.areas.flatMap(area => area.venues), {
+      signal: active.abortController.signal,
+      ...(this.options.venueResolver ? { resolve: this.options.venueResolver } : {}),
+      retrievedSources: new ResearchFrameRepository(this.options.db).forRun(active.runId)?.sources ?? [],
+    });
+    workflow.save("frame-source-venues", { ...result, validated: true, version: 2 });
+    for (const unresolved of result.unresolved) this.progress(active,
+      `Source venue ${unresolved.venue.name} was left unverified. ${unresolved.reason}`);
+  }
+
+  private areaDependencies(active: ActiveRun, frame: ResearchFrame, area: ResearchArea) {
+    const dependencies = this.dependencies(active);
+    const validation = active.workflow!.read<VenueVerificationResult & { validated?: boolean }>("frame-source-venues");
+    // Earlier verification receipts allowed DNS alone. Only saved retrieved proof can expand routes.
+    const provenDomains = new Set(validation?.proofs?.filter(proof => proof.method === "saved-source" && proof.sourceUrl).map(proof => proof.domain));
+    return { ...dependencies, frame, area, sourceRouting: { ...dependencies.sourceRouting,
+      ...(validation?.validated ? { venues: validation.verified.filter(verified => provenDomains.has(verified.domain ?? "") && area.venues.some(venue =>
+        venue.name === verified.name && venue.kind === verified.kind && venue.domain?.toLowerCase() === verified.domain)),
+        ...(area.region ? { region: area.region } : {}) } : {}),
+    } };
+  }
+
+  private savedRunSources(runId: string): HarvestedSource[] {
+    return this.options.db.db.prepare(`SELECT id, provider_source_id AS providerSourceId, canonical_url AS canonicalUrl,
+      canonical_url AS url, title, retrieved_text AS retrievedText, author, published_at AS publishedAt,
+      content_hash AS contentHash, retrieved_at AS retrievedAt FROM sources WHERE research_run_id = ?`).all(runId) as HarvestedSource[];
   }
 
   private assignArea(table: "factors" | "problems", ids: readonly string[], areaId: string): void {
@@ -2132,9 +2173,10 @@ export class ResearchEngine {
     if (!workflow) throw new Error("The current workflow must be initialized before research starts");
     const modelClient = this.instrumentedModel(active);
     const search = this.instrumentedSearch(active);
+    const frame = new ResearchFrameRepository(this.options.db).forRun(active.runId)?.approved;
     const allocation = active.researchAllowance
       ? researchSearchAllocation(active.researchAllowance.maxSearches,
-        workflow.rankProblemCandidates ? active.config.discoveryDepth : "standard", Boolean(workflow.read("source-routes"))) : null;
+        workflow.rankProblemCandidates ? active.config.discoveryDepth : "standard", Boolean(workflow.read("source-routes")), frame?.languages.length ?? 1) : null;
     if (!workflow.read("source-routes") && !workflow.read("source-routing-legacy-notice")) {
       workflow.save("source-routing-legacy-notice", { previousPolicy: active.config.audienceSourcePolicy ?? "web" });
       this.progress(active, "This saved run now routes new searches by evidence intent. Completed searches and planner outputs are reused.");
@@ -2145,6 +2187,8 @@ export class ResearchEngine {
       model: active.config.model,
       reasoningEffort: active.config.reasoningEffort,
       depth: active.config.discoveryDepth,
+      ...(workflow.read("source-routes") && frame ? { frame } : {}),
+      existingSources: () => this.savedRunSources(active.runId),
       guided: this.usesWorkGuidance(active.runId),
       smallHarvestBatches: workflow.smallHarvestBatches,
       rankCandidates: workflow.rankProblemCandidates,
@@ -2169,6 +2213,7 @@ export class ResearchEngine {
       sourceRouting: {
         now: new Date(workflow.read<string>("source-route-start")!),
         preserveHistoricalSources: !workflow.read("source-routes"),
+        ...(workflow.read("source-routes") && frame ? { goalKind: frame.goalKind, languages: frame.languages } : {}),
       },
       // Old planner stage inputs must remain identical so its completed output can be reused.
       ...(!workflow.read("source-routes") ? {

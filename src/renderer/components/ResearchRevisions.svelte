@@ -4,14 +4,15 @@
     ResearchRequestView,
   } from "../../shared/research-revisions";
   import { previewResearchAngles, researchSearchAllocation } from "../../shared/research-revisions";
-  import { modelRefKey, type ModelOption, type ModelRef } from "../../shared/schemas";
+  import type { ResearchGoalKind } from "../../shared/research-frame";
+  import { modelRefKey, type DiscoveryDepth, type ModelOption, type ModelRef } from "../../shared/schemas";
   import { modelDisplayName } from "../lib/research-defaults";
   import { verdictLabel } from "../lib/status";
   import { untrack } from "svelte";
 
   let {
     requests, findings, activeSnapshotId, modelOptions, researchModel, researchReasoningEffort,
-    busy, readOnly = false, onRequest, onApply, onKeep, onOpenSource,
+    busy, readOnly = false, goalKind, depth = "quick", languageCount = 1, onRequest, onApply, onKeep, onOpenSource,
   }: {
     requests: ResearchRequestView[];
     findings: ResearchFindingView[];
@@ -21,6 +22,9 @@
     researchReasoningEffort: string;
     busy: boolean;
     readOnly?: boolean;
+    goalKind?: ResearchGoalKind;
+    depth?: DiscoveryDepth;
+    languageCount?: number;
     onRequest: (draft: ResearchRequestDraft & {
       model: ModelRef; reasoningEffort: string; baseSnapshotId: string | null;
     }) => Promise<void>;
@@ -42,7 +46,7 @@
   let anglesText = $state("");
   let instructionsText = $state("");
   let maxModelCalls = $state(12);
-  let maxSearches = $state(10);
+  let maxSearches = $state(Math.max(10, 4 * untrack(() => languageCount)));
   let maxMinutes = $state(10);
   let submitting = $state(false);
   let applying = $state(false);
@@ -53,9 +57,11 @@
   let chosenReplacements = $state<Record<string, string>>({});
   let selectedRequest = $derived(requests.find((item) => item.id === selectedRequestId) ?? null);
   let enteredAngles = $derived(anglesText.split("\n").map((angle) => angle.trim()).filter(Boolean));
+  const marketGoal = $derived(!goalKind || goalKind === "market-opportunity");
+  const minimumSearches = $derived(4 * Math.max(1, Math.min(3, Math.floor(languageCount))));
   let anglePreview = $derived(previewResearchAngles(kind, enteredAngles,
-    { maxSearches: kind === "reevaluate" ? 0 : maxSearches }));
-  let minimumModelCalls = $derived(kind === "reevaluate" ? 1 : researchSearchAllocation(maxSearches).modelCalls);
+    { maxSearches: kind === "reevaluate" ? 0 : maxSearches }, goalKind, { depth, languageCount }));
+  let minimumModelCalls = $derived(kind === "reevaluate" ? 1 : researchSearchAllocation(maxSearches, depth, true, languageCount).modelCalls);
   let includedRequests = $derived(requests.filter((item) => !item.archived && !item.reviewDecision && includedIds.includes(item.id)));
   let pendingCount = $derived(requests.filter((item) => !item.archived && item.status === "completed" && !item.appliedSnapshotId && !item.reviewDecision).length);
   let missingReplacement = $derived(includedRequests.some((item) =>
@@ -65,7 +71,7 @@
   function chooseKind(next: ResearchRequestKind) {
     kind = next;
     if (next === "reevaluate") { maxSearches = 0; maxModelCalls = 1; }
-    else { if (maxSearches === 0) maxSearches = 10; if (maxModelCalls === 1) maxModelCalls = 12; }
+    else { if (maxSearches < minimumSearches) maxSearches = Math.max(10, minimumSearches); if (maxModelCalls === 1) maxModelCalls = 12; }
     localError = "";
   }
 
@@ -93,7 +99,7 @@
     if (kind !== "new-question" && !targetFindingId) { localError = "Choose a finding to revisit."; return; }
     const angles = enteredAngles;
     if (angles.length > 4) { localError = "Use no more than four research angles."; return; }
-    if (kind !== "reevaluate" && maxSearches < 4) { localError = "Reserve at least four searches for paired research questions."; return; }
+    if (kind !== "reevaluate" && maxSearches < minimumSearches) { localError = `Reserve at least ${minimumSearches} searches for paired research questions.`; return; }
     if (maxModelCalls < minimumModelCalls) { localError = `Reserve at least ${minimumModelCalls} model calls for this search plan.`; return; }
     submitting = true;
     try {
@@ -188,7 +194,7 @@
         </select></label>
       {/if}
       <label class="field"><span>{kind === "new-question" ? "Research question" : "What was wrong or should change?"}</span>
-        <textarea bind:value={question} rows="3" maxlength="500" required disabled={busy} placeholder={kind === "new-question" ? "What do buyers do today when this problem appears?" : "Describe the gap in the earlier finding."}></textarea>
+        <textarea bind:value={question} rows="3" maxlength="500" required disabled={busy} placeholder={kind === "new-question" ? (marketGoal ? "What do buyers do today when this problem appears?" : "What evidence would help test the goal or revisit this finding?") : "Describe the gap in the earlier finding."}></textarea>
       </label>
       <div class="field-pair">
         <label class="field"><span>Research model</span><select bind:value={modelKey} onchange={chooseModel} disabled={busy || !availableModels.length} required>
@@ -200,15 +206,15 @@
         </select></label>
       </div>
       <details class="advanced"><summary>Angles and work limits</summary>
-        <label class="field"><span>Research angles, one per line</span><textarea bind:value={anglesText} rows="3" disabled={busy} placeholder="Buyer reports&#10;Existing alternatives&#10;Contrary evidence"></textarea><small>Up to four distinct angles inside this request.</small></label>
+        <label class="field"><span>Research angles, one per line</span><textarea bind:value={anglesText} rows="3" disabled={busy} placeholder={marketGoal ? "Buyer reports\nExisting alternatives\nContrary evidence" : "Affected people's reports\nExisting approaches\nContrary evidence"}></textarea><small>Up to four distinct angles inside this request.</small></label>
         <label class="field"><span>Focus on a saved request (optional)</span><select bind:value={targetRequestId} disabled={busy}>
           <option value="">No earlier request selected</option>
           {#each requests as request (request.id)}<option value={request.id}>{request.question}</option>{/each}
         </select></label>
-        <label class="field"><span>Instructions for this request (optional)</span><textarea bind:value={instructionsText} rows="3" maxlength="20000" disabled={busy} placeholder="Specify a source class, buyer context, or claim to challenge."></textarea><small>Saved with this request and used only for its work.</small></label>
+        <label class="field"><span>Instructions for this request (optional)</span><textarea bind:value={instructionsText} rows="3" maxlength="20000" disabled={busy} placeholder={marketGoal ? "Specify a source class, buyer context, or claim to challenge." : "Specify a source class, affected group, or claim to challenge."}></textarea><small>Saved with this request and used only for its work.</small></label>
         <div class="allowance-grid">
           <label class="field"><span>Model calls</span><input type="number" min="1" max="100" step="1" bind:value={maxModelCalls} disabled={busy} /></label>
-          <label class="field"><span>Searches</span><input type="number" min={kind === "reevaluate" ? 0 : 4} max="100" step="1" bind:value={maxSearches} disabled={busy || kind === "reevaluate"} /></label>
+          <label class="field"><span>Searches</span><input type="number" min={kind === "reevaluate" ? 0 : minimumSearches} max="100" step="1" bind:value={maxSearches} disabled={busy || kind === "reevaluate"} /></label>
           <label class="field"><span>Minutes</span><input type="number" min="5" max="90" step="1" bind:value={maxMinutes} disabled={busy} /></label>
         </div>
         {#if kind === "reevaluate"}<p class="quiet">Reevaluation uses only saved evidence and makes no search calls.</p>{/if}
