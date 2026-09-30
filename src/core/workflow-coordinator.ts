@@ -397,10 +397,10 @@ export class WorkflowCoordinator {
     };
     const current = items.find((item) => item.state === "running") ?? items.find((item) => item.state === "ready") ?? null;
     const resumeRunId = session.state === "paused" && current?.state === "running" ? runIdFromItem(current) : null;
-    const completedHandoff = resumeRunId && this.options.db.db.prepare("SELECT 1 FROM research_runs WHERE id = ? AND status = 'completed'")
+    const safeSavedRun = resumeRunId && this.options.db.db.prepare("SELECT 1 FROM research_runs WHERE id = ? AND status IN ('queued','running','completed')")
       .get(resumeRunId) && !this.repository.hasUnknownProviderCompletion(resumeRunId);
     return WorkflowSummarySchema.parse({
-      ...(completedHandoff ? { canResume: true } : {}),
+      ...(safeSavedRun ? { canResume: true } : {}),
       sessionId: session.id, threadId: session.threadId, purpose: session.purpose, mode: session.mode, targetKind,
       state: session.state, outcome: session.outcome, revision: session.revision,
       activeSnapshotId: session.activeSnapshotId, selectedProblemIds, counts, limits,
@@ -533,7 +533,7 @@ export class WorkflowCoordinator {
     let dispatchIdeas = false;
     let planIdeas = false;
     let initialTaskId: string | null = null;
-    let resumeRunId: string | null = null;
+    let resumeRun: { runId: string; taskId: string } | null = null;
     let resumeResearchRunId: string | null = null;
     let resumeCompletedRun: ResearchEvent | null = null;
     let cancelRunId: string | null = null;
@@ -605,6 +605,7 @@ export class WorkflowCoordinator {
           if (running) {
             const runId = runIdFromItem(running);
             if (!runId) throw new AppError("UNKNOWN_COMPLETION", "The running task has no saved run to resume.");
+            if (this.repository.hasUnknownProviderCompletion(runId)) throw new AppError("UNKNOWN_COMPLETION");
             const saved = this.options.db.db.prepare("SELECT status, problem_id FROM research_runs WHERE id = ?")
               .get(runId) as { status: string; problem_id: string | null } | undefined;
             if (!saved) throw new AppError("INVALID_REFERENCE");
@@ -612,7 +613,7 @@ export class WorkflowCoordinator {
               resumeCompletedRun = { type: "run-completed", runId, threadId: current.threadId, problemId: saved.problem_id };
             } else if (saved.status === "running" || saved.status === "queued") {
               if (running.kind === "research-request") resumeResearchRunId = runId;
-              else resumeRunId = runId;
+              else resumeRun = { runId, taskId: running.id };
             } else throw new AppError("UNKNOWN_COMPLETION", "Review the saved task before continuing.");
             this.repository.updateSession(current.id, current.revision, { state: "running", runningSince: new Date().toISOString() });
           } else if (readyInitial) {
@@ -693,9 +694,13 @@ export class WorkflowCoordinator {
     if (planIdeas) this.planGeneration(receipt.sessionId);
     if (initialTaskId) void this.dispatchInitial(receipt.sessionId, initialTaskId)
       .catch((error) => this.failDispatch(receipt.sessionId, initialTaskId!, error));
-    if (resumeRunId) {
-      const runId = resumeRunId;
-      void this.options.engine().resumeRun(runId).catch((error) => this.options.onError?.(error));
+    if (resumeRun) {
+      const { runId, taskId } = resumeRun;
+      void this.options.engine().resumeRun(runId).catch(error => {
+        this.options.db.db.prepare(`UPDATE research_runs SET status = 'failed', interrupted = 1, updated_at = ?
+          WHERE id = ? AND status IN ('queued','running')`).run(new Date().toISOString(), runId);
+        this.failDispatch(receipt.sessionId, taskId, error);
+      });
     }
     if (resumeResearchRunId && this.options.researchService?.resumeRequest) {
       const runId = resumeResearchRunId;
@@ -737,9 +742,7 @@ export class WorkflowCoordinator {
     await this.assertModelAvailable(contract.runConfig.model, contract.runConfig.reasoningEffort);
     this.requireProjectIdle(request.threadId);
     // Unknown older requests remain acknowledged by the explicit recovery audit, not erased.
-    const audits = this.options.db.db.prepare(`SELECT value_json FROM workflow_snapshots
-      WHERE research_run_id = ? AND snapshot_key LIKE 'acknowledged-retry:%'`).all(runId) as Array<{ value_json: string }>;
-    const acknowledgedAttemptIds = [...new Set(audits.flatMap(row => (JSON.parse(row.value_json) as { attemptIds: string[] }).attemptIds))];
+    const acknowledgedAttemptIds = this.repository.acknowledgedAttemptIds(runId);
     const safety = new GenerationAttemptRepository(this.options.db).getResumeSafety(runId, acknowledgedAttemptIds);
     if (!safety.canResume) throw new AppError("UNKNOWN_COMPLETION", safety.resumeBlockedReason ?? undefined);
     const receipt = this.options.db.immediateTransaction(() => {
@@ -798,10 +801,7 @@ export class WorkflowCoordinator {
       const latest = terminalAttempt(this.options.db, task);
       if (latest?.id !== attempt.id) throw new AppError("INVALID_REFERENCE", "Retry the latest failed model request.");
       const unresolved = new GenerationAttemptRepository(this.options.db).unresolvedAttemptIds(runId);
-      const audit = this.options.db.db.prepare(`SELECT value_json FROM workflow_snapshots
-        WHERE research_run_id = ? AND snapshot_key LIKE 'acknowledged-retry:%'`)
-        .all(runId) as Array<{ value_json: string }>;
-      const priorIds = new Set(audit.flatMap(row => (JSON.parse(row.value_json) as { attemptIds: string[] }).attemptIds));
+      const priorIds = new Set(this.repository.acknowledgedAttemptIds(runId));
       const acknowledgedAttemptIds = unresolved.filter(id => id === attempt.id || priorIds.has(id));
       if (acknowledgedAttemptIds.length !== unresolved.length) throw new AppError("UNKNOWN_COMPLETION");
       await this.assertModelAvailable(contract.runConfig.model, contract.runConfig.reasoningEffort);

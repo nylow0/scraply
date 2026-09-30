@@ -30,7 +30,7 @@ function detail(summaryChanges: Partial<WorkflowSummary> = {}): WorkflowDetail {
 }
 
 describe("VibeProgress", () => {
-  test("resumes a server-verified completed handoff while retaining historical uncertain budget entries", async () => {
+  test("resumes server-verified paused work while retaining historical uncertain budget entries", async () => {
     const state = detail({ state: "paused", canResume: true });
     state.tasks = [state.tasks[0]!];
     const onResume = vi.fn(async () => {});
