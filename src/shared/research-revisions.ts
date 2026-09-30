@@ -1,5 +1,6 @@
 import { DISCOVERY_DEPTHS } from "./discovery-projection";
 import type { DiscoveryDepth } from "./schemas";
+import type { ResearchGoalKind } from "./research-frame";
 
 export type ResearchRequestKind = "new-question" | "redo" | "reevaluate";
 
@@ -108,10 +109,34 @@ const DEFAULT_ANGLES: ResearchAngleProposal[] = [
     acceptanceCriterion: "Look for evidence that the need is already solved, narrower, or overstated." },
 ];
 
-function sourceClassFor(name: string): ResearchAngleSourceClass {
+/** Follow-up evidence keeps the project's goal instead of assuming a paying buyer. */
+export function researchAnglesForGoal(goalKind?: ResearchGoalKind): ResearchAngleProposal[] {
+  const contrary = DEFAULT_ANGLES[3]!;
+  const alternatives = { name: "Existing approaches and tools", sourceClass: "current-alternative" as const,
+    acceptanceCriterion: "Compare existing approaches against the goal and the approved criteria." };
+  if (!goalKind || goalKind === "market-opportunity") return [...DEFAULT_ANGLES];
+  if (goalKind === "research-question") return [
+    { name: "Measured outcomes and datasets", sourceClass: "measured-behavior", acceptanceCriterion: "Find measured results, methods, and datasets that can test the research question." },
+    { name: "Practitioner and participant accounts", sourceClass: "firsthand-experience", acceptanceCriterion: "Find attributable accounts from the affected people and implementers." },
+    alternatives, contrary,
+  ];
+  if (goalKind === "competition-entry") return [
+    { name: "Problem scale and affected people", sourceClass: "measured-behavior", acceptanceCriterion: "Find evidence of the problem's reach and importance to the affected people." },
+    alternatives,
+    { name: "Buildability and demonstration", sourceClass: "firsthand-experience", acceptanceCriterion: "Find real attempts, constraints, and measurable tests within the team's resources." }, contrary,
+  ];
+  return [
+    { name: "Affected people's experience", sourceClass: "firsthand-experience", acceptanceCriterion: "Find attributable accounts from the people who would use the proposed change." },
+    alternatives,
+    { name: "Adoption and sustained outcomes", sourceClass: "measured-behavior", acceptanceCriterion: "Find observed use, maintenance effort, and outcomes over time within the approved constraints." }, contrary,
+  ];
+}
+
+function sourceClassFor(name: string, goalKind?: ResearchGoalKind): ResearchAngleSourceClass {
   if (/contrary|against|disprov|overstat|already solved|failure/i.test(name)) return "contrary-evidence";
   if (/alternativ|substitut|competitor|current tool|existing/i.test(name)) return "current-alternative";
-  if (/buy|paid|payment|purchase|adopt/i.test(name)) return "buying-signal";
+  if (/buy|paid|payment|purchase/i.test(name)) return "buying-signal";
+  if (/adopt/i.test(name)) return goalKind && goalKind !== "market-opportunity" ? "measured-behavior" : "buying-signal";
   if (/measure|usage|observed|quantif/i.test(name)) return "measured-behavior";
   return "firsthand-experience";
 }
@@ -119,6 +144,8 @@ function sourceClassFor(name: string): ResearchAngleSourceClass {
 export function previewResearchAngles(
   kind: ResearchRequestKind, namedAngles: string[] | undefined,
   allowance: { maxSearches: number },
+  goalKind?: ResearchGoalKind,
+  routing?: { depth?: DiscoveryDepth; languageCount?: number; pairedFirsthand?: boolean },
 ): { planned: ResearchAngleProposal[]; omitted: ResearchAngleProposal[] } {
   if (kind === "reevaluate") return {
     planned: [{ name: "Saved evidence review", sourceClass: "saved-evidence",
@@ -126,15 +153,17 @@ export function previewResearchAngles(
   };
   const supplied = [...new Map((namedAngles ?? []).map((raw) => raw.trim()).filter(Boolean)
     .map((name) => [name.toLocaleLowerCase(), name])).values()]
-    .map((name): ResearchAngleProposal => ({ name, sourceClass: sourceClassFor(name),
-      acceptanceCriterion: `Find evidence that answers the ${name.toLocaleLowerCase()} angle for the selected buyer.` }));
-  const candidates = supplied.length ? [...supplied] : [...DEFAULT_ANGLES];
+    .map((name): ResearchAngleProposal => ({ name, sourceClass: sourceClassFor(name, goalKind),
+      acceptanceCriterion: goalKind && goalKind !== "market-opportunity"
+        ? `Find evidence that answers the ${name.toLocaleLowerCase()} angle for the approved goal and affected people.`
+        : `Find evidence that answers the ${name.toLocaleLowerCase()} angle for the selected buyer.` }));
+  const candidates = supplied.length ? [...supplied] : researchAnglesForGoal(goalKind);
   if (candidates.length < 4 && !candidates.some((angle) => angle.sourceClass === "contrary-evidence")) {
     candidates.push(DEFAULT_ANGLES[3]!);
   }
   const unique = [...new Map(candidates.map((angle) => [angle.name.toLocaleLowerCase(), angle])).values()];
   // Angles describe questions; allocation reserves their worst-case paired search legs first.
-  const allocation = researchSearchAllocation(allowance.maxSearches);
+  const allocation = researchSearchAllocation(allowance.maxSearches, routing?.depth, routing?.pairedFirsthand, routing?.languageCount);
   const slots = Math.min(4, allocation.domainQueries + allocation.audienceQueries);
   const planned = unique.slice(0, slots);
   if (slots >= 2 && !planned.some((angle) => angle.sourceClass === "contrary-evidence")) {
