@@ -5,10 +5,143 @@ import type { ScraplyApi } from "../../src/preload/index";
 import App from "../../src/renderer/App.svelte";
 import type { ResearchEvent, WorkspaceState } from "../../src/shared/ipc";
 import { DEFAULT_RUN_CONFIG } from "../../src/shared/schemas";
-import type { WorkflowSummary } from "../../src/shared/workflow-contracts";
+import type { WorkflowDetail, WorkflowSummary } from "../../src/shared/workflow-contracts";
+import { ResearchFrameSchema } from "../../src/shared/research-frame";
 import { summarizeRunUsage } from "../../src/backend/run-usage";
 
 describe("App workspace coordination", () => {
+  test("pauses Controlled research on the frame and approves exactly the user's edits", async () => {
+    const current = frameWorkflow();
+    const state = frameWorkspace(current);
+    const commandWorkflow = vi.fn(async (request: Parameters<ScraplyApi["commandWorkflow"]>[0]) => {
+      if (request.action.type !== "approve-frame") throw new Error("Unexpected frame action");
+      current.researchFrame!.approved = request.action.frame;
+      current.summary = { ...current.summary, state: "running", revision: 2 };
+      state.activeWorkflow = current.summary;
+      return { sessionId: current.summary.sessionId, revision: 2, summary: current.summary };
+    });
+    installApi({ getWorkspace: async () => state, getWorkflow: async () => structuredClone(current), commandWorkflow });
+    const view = render(App);
+    await view.findByRole("heading", { name: "Review research frame" });
+    await fireEvent.input(view.getByLabelText("Goal"), { target: { value: "Find a workflow for solo bookkeepers." } });
+    await fireEvent.input(view.getByLabelText("Language code"), { target: { value: "uk" } });
+    await fireEvent.click(view.getByRole("button", { name: "Add language" }));
+    await fireEvent.click(view.getByRole("button", { name: "Start research with this frame" }));
+    await waitFor(() => expect(commandWorkflow).toHaveBeenCalledWith(expect.objectContaining({
+      expectedRevision: 1, action: { type: "approve-frame", frameId: "frame-1", frame: { ...frameWorkflow().researchFrame!.draft,
+        goal: "Find a workflow for solo bookkeepers.", languages: ["en", "uk"] } },
+    })));
+    await waitFor(() => expect(view.queryByLabelText("Goal")).toBeNull());
+  });
+
+  test("regenerates a draft with one call and shows the returned version for review", async () => {
+    const current = frameWorkflow();
+    const state = frameWorkspace(current);
+    const commandWorkflow = vi.fn(async (request: Parameters<ScraplyApi["commandWorkflow"]>[0]) => {
+      if (request.action.type !== "regenerate-frame") throw new Error("Unexpected frame action");
+      current.researchFrame = { ...current.researchFrame!, id: "frame-2", version: 2,
+        draft: { ...request.action.frame, goal: "The regenerated goal." } };
+      current.summary.revision += 1;
+      current.summary.budget.modelCalls.spent += 1;
+      state.activeWorkflow = current.summary;
+      return { sessionId: current.summary.sessionId, revision: current.summary.revision, summary: current.summary };
+    });
+    installApi({ getWorkspace: async () => state, getWorkflow: async () => structuredClone(current), commandWorkflow });
+    const view = render(App);
+    await view.findByRole("heading", { name: "Review research frame" });
+    await fireEvent.click(view.getByRole("button", { name: "Regenerate frame (1 call)" }));
+    await waitFor(() => expect((view.getByLabelText("Goal") as HTMLTextAreaElement).value).toBe("The regenerated goal."));
+    expect(commandWorkflow).toHaveBeenCalledOnce();
+    expect(view.getByText("Spent so far: 3 model calls, 0 searches")).toBeTruthy();
+  });
+
+  test("reviews a known problem without research areas or a configured search provider", async () => {
+    const current = frameWorkflow({ knownProblem: true });
+    const state = frameWorkspace(current);
+    state.validation.exa = { valid: false, error: "Exa key missing" };
+    state.validation.native = { available: true, connected: true, accounts: [{ providerId: "openai-subscription" }] };
+    const commandWorkflow = vi.fn(async () => ({ sessionId: current.summary.sessionId, revision: 2, summary: current.summary }));
+    installApi({ getWorkspace: async () => state, getWorkflow: async () => structuredClone(current), commandWorkflow });
+    const view = render(App);
+    await view.findByRole("heading", { name: "Review research frame" });
+    expect(view.queryByRole("button", { name: "Add your own area" })).toBeNull();
+    expect(view.queryByRole("heading", { name: "Add web search" })).toBeNull();
+    await fireEvent.click(view.getByRole("button", { name: "Continue with this frame" }));
+    await waitFor(() => expect(commandWorkflow).toHaveBeenCalledWith(expect.objectContaining({
+      action: { type: "approve-frame", frameId: "frame-1", frame: current.researchFrame!.draft },
+    })));
+  });
+
+  test("ends the draft when editing the brief and marks the replacement launch for the frame workflow", async () => {
+    const current = frameWorkflow();
+    const state = frameWorkspace(current);
+    state.validation.native = { available: true, connected: true, accounts: [{ providerId: "openai-subscription" }] };
+    const commandWorkflow = vi.fn(async (request: Parameters<ScraplyApi["commandWorkflow"]>[0]) => {
+      if (request.action.type !== "stop") throw new Error("Unexpected frame action");
+      current.summary = { ...current.summary, state: "finished", outcome: "cancelled", revision: 2, finishedAt: current.summary.startedAt };
+      state.activeWorkflow = current.summary;
+      return { sessionId: current.summary.sessionId, revision: 2, summary: current.summary };
+    });
+    const previewWorkflow = vi.fn(async (request: Parameters<ScraplyApi["previewWorkflow"]>[0]) => {
+      if (request.type !== "launch") throw new Error("Unexpected preview");
+      return { type: "launch" as const, proposal: { ...request.draft, resolvedInstructions: { research: "research", ideas: "ideas", review: "review" }, instructionHashes: { research: "r", ideas: "i", review: "v" } },
+        previewHash: "frame-restart", capabilityFingerprint: "fixture", minimumWork: { modelCalls: 1, searches: 0 }, upperLimits: request.draft.limits, fieldErrors: [], expiresAt: "2099-01-01T00:00:00.000Z" };
+    });
+    const startWorkflow = vi.fn(async () => ({ sessionId: current.summary.sessionId, revision: 2, summary: current.summary }));
+    installApi({ getWorkspace: async () => state, getWorkflow: async () => structuredClone(current), commandWorkflow, previewWorkflow, startWorkflow,
+      saveScope: async ({ scope }) => { state.scope = scope; return state; }, saveRunConfig: async ({ config }) => { state.runConfig = config; return state; } });
+    const view = render(App);
+    await view.findByRole("heading", { name: "Review research frame" });
+    await fireEvent.click(view.getByRole("button", { name: "Edit brief" }));
+    await view.findByLabelText("What do you want to explore?");
+    expect(commandWorkflow).toHaveBeenCalledWith(expect.objectContaining({ action: { type: "stop", reason: "Brief reopened for editing." } }));
+    await fireEvent.input(view.getByLabelText("What do you want to explore?"), { target: { value: "A revised bookkeeping brief" } });
+    await waitFor(() => expect((view.getByRole("button", { name: /^Start$/ }) as HTMLButtonElement).disabled).toBe(false));
+    await fireEvent.click(view.getByRole("button", { name: /^Start$/ }));
+    await waitFor(() => expect(startWorkflow).toHaveBeenCalledWith(expect.objectContaining({ contract: expect.objectContaining({ frameWorkflowVersion: 1, brief: "A revised bookkeeping brief" }) })));
+    expect(current.researchFrame!.draft.goal).toBe("Find a useful bookkeeping workflow.");
+  });
+
+  test("saves an approved frame as a future version while keeping this run's frame unchanged", async () => {
+    const current = frameWorkflow({ approved: true });
+    const state = frameWorkspace(current);
+    const original = structuredClone(current.researchFrame);
+    const commandWorkflow = vi.fn(async (request: Parameters<ScraplyApi["commandWorkflow"]>[0]) => {
+      if (request.action.type !== "edit-approved-frame") throw new Error("Unexpected frame action");
+      current.latestResearchFrame = { ...current.latestResearchFrame!, id: "frame-2", version: 2, draft: request.action.frame, approved: request.action.frame };
+      return { sessionId: current.summary.sessionId, revision: 1, summary: current.summary };
+    });
+    installApi({ getWorkspace: async () => state, getWorkflow: async () => structuredClone(current), commandWorkflow });
+    const view = render(App);
+    await view.findByRole("heading", { name: "Research stopped" });
+    await fireEvent.click(view.getByRole("tab", { name: "Setup" }));
+    await fireEvent.click(view.getByRole("button", { name: "Edit approved frame" }));
+    await view.findByLabelText("Goal");
+    await fireEvent.input(view.getByLabelText("Goal"), { target: { value: "A goal for future runs." } });
+    expect(view.queryByRole("button", { name: "Regenerate frame (1 call)" })).toBeNull();
+    await fireEvent.click(view.getByRole("button", { name: "Save new version" }));
+    await view.findByText("Approved research frame, version 2");
+    expect(view.getByText("This run uses version 1. New runs use version 2.")).toBeTruthy();
+    expect(current.researchFrame).toEqual(original);
+    await fireEvent.click(view.getByRole("button", { name: "Edit approved frame" }));
+    await waitFor(() => expect((view.getByLabelText("Goal") as HTMLTextAreaElement).value).toBe("A goal for future runs."));
+  });
+
+  test("renders investigator lanes from actual workflow task records", async () => {
+    const current = frameWorkflow({ approved: true });
+    current.summary.state = "running";
+    current.summary.outcome = null;
+    current.tasks = [{ id: "investigator", parentItemId: null, kind: "investigate-area", scopeKey: "investigate-area:bank", state: "running", createdAt: current.summary.startedAt, finishedAt: null,
+      investigator: { areaId: "bank", areaName: "Bank matching", currentStep: "Checking independent sources", confirmedCount: 1, insufficientCount: 2, droppedCount: 0 } }];
+    const state = frameWorkspace(current);
+    installApi({ getWorkspace: async () => state, getWorkflow: async () => structuredClone(current) });
+    const view = render(App);
+    const lane = await view.findByRole("listitem", { name: "Bank matching investigator" });
+    expect(lane.textContent).toContain("Checking independent sources");
+    expect(within(lane).getByText("Confirmed").nextElementSibling?.textContent).toBe("1");
+    expect(view.queryByRole("progressbar")).toBeNull();
+  });
+
   test("retries using the finished task revision shown in the detail panel", async () => {
     const state = workspace("alpha");
     const summary: WorkflowSummary = {
@@ -114,6 +247,7 @@ describe("App workspace coordination", () => {
         upperLimits: { maxMinutes: 30, maxModelCalls: 46, maxSearches: 18 },
         fieldErrors: [], expiresAt: "2099-01-01T00:00:00.000Z",
       };
+      if (request.type !== "launch") throw new Error("This test previews only a launch.");
       return {
         type: "launch" as const,
         proposal: { ...request.draft,
@@ -984,6 +1118,30 @@ describe("App workspace coordination", () => {
     expect(view.getByRole("button", { name: "Edit setup" })).toBeTruthy();
   });
 });
+
+function frameWorkflow({ knownProblem = false, approved = false } = {}): WorkflowDetail {
+  const draft = ResearchFrameSchema.parse({ goal: "Find a useful bookkeeping workflow.", goalKind: "market-opportunity", contextFacts: [],
+    successCriteria: [{ id: "criterion", name: "Observed pain", weight: "must", howJudged: "Two independent firsthand accounts.", basis: "brief" }],
+    constraints: [], languages: ["en"], areas: knownProblem ? [] : [{ id: "bank", name: "Bank matching", whyRelevant: "Repeated reconciliation work.", affectedPeople: "Solo bookkeepers", venues: [{ name: "Bookkeeping forums", kind: "community" }], exampleProblems: [], included: true, priority: 1 }],
+    exclusions: [], openQuestions: [] });
+  const now = "2026-09-23T00:00:00.000Z";
+  const saved = { id: "frame-1", version: 1, knownProblem, draft, approved: approved ? structuredClone(draft) : null, sources: [], createdAt: now, approvedAt: approved ? now : null };
+  return { summary: {
+    sessionId: "frame-session", threadId: "alpha", purpose: knownProblem ? "known-problem" : "discovery", mode: "babysit", targetKind: "per-problem",
+    state: approved ? "finished" : "waiting-for-review", outcome: approved ? "partial" : null, revision: 1, activeSnapshotId: null, selectedProblemIds: [], ideaTargetReady: false,
+    ...(approved ? {} : { reviewKind: "frame" as const }), counts: { requested: 0, attempted: 0, validated: 0, accepted: 0, duplicate: 0, unresolved: 0, failed: 0, missing: 0, existing: 0, addedBySession: 0, total: 0 },
+    limits: { enforced: false, maxMinutes: 90, maxModelCalls: 200, maxSearches: 200 }, budget: { modelCalls: { limit: 200, spent: 2, reserved: 0, uncertain: 0 }, searches: { limit: 200, spent: 0, reserved: 0, uncertain: 0 }, remainingMs: 90 * 60_000 },
+    currentStage: "frame", stopReason: null, startedAt: now, finishedAt: approved ? now : null }, researchFrame: saved, ...(approved ? { latestResearchFrame: structuredClone(saved) } : {}), tasks: [], nextCursor: null };
+}
+
+function frameWorkspace(detail: WorkflowDetail): WorkspaceState {
+  const state = workspace("alpha");
+  state.activeWorkflow = detail.summary;
+  state.scope = { title: "Bookkeeping", domain: "Bookkeeping workflows", audience: "", observations: "", offLimits: [] };
+  state.runConfig = { ...DEFAULT_RUN_CONFIG, researchMode: detail.researchFrame?.knownProblem ? "known-problem" : "explore-market", knownProblem: detail.researchFrame?.knownProblem ? "Bookkeepers repeat reconciliation work." : "" };
+  state.threads[0] = { ...state.threads[0]!, status: detail.summary.state === "finished" ? "problems-ready" : "discovery-running" };
+  return state;
+}
 
 function workspace(activeThreadId: "alpha" | "beta"): WorkspaceState {
   const now = "2026-08-23T00:00:00.000Z";
