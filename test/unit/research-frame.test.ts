@@ -46,6 +46,9 @@ describe("research frame boundary", () => {
 
   it("rejects duplicate areas, unsupported regions and invalid language choices", () => {
     const frame = sampleFrame();
+    frame.areas.push({ ...frame.areas[0]!, name: "Refund disputes" });
+    expect(ResearchFrameSchema.safeParse(frame).success).toBe(false);
+    frame.areas.pop();
     frame.areas.push({ ...frame.areas[0]!, id: "refunds", name: "DEPOSIT EXPECTATIONS" });
     expect(ResearchFrameSchema.safeParse(frame).success).toBe(false);
     frame.areas.pop();
@@ -57,6 +60,11 @@ describe("research frame boundary", () => {
     frame.languages = ["en", "uk"];
     expect(ResearchFrameSchema.safeParse(frame).success).toBe(true);
     frame.languages = ["en", "zz"];
+    expect(ResearchFrameSchema.safeParse(frame).success).toBe(false);
+    frame.languages = ["en", "uk", "fr", "de"];
+    expect(ResearchFrameSchema.safeParse(frame).success).toBe(false);
+    frame.languages = ["en"];
+    frame.areas = Array.from({ length: 13 }, (_, index) => ({ ...frame.areas[0]!, id: `area-${index}`, name: `Area ${index}`, priority: 1 }));
     expect(ResearchFrameSchema.safeParse(frame).success).toBe(false);
   });
 
