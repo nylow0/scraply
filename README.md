@@ -8,9 +8,9 @@ You describe a topic, an audience, or a problem you already know. Scraply search
 
 ## How a project works
 
-1. **Setup.** Write a brief, then choose the model, research depth, search provider, and hard limits on model calls, searches, and time.
+1. **Setup.** Write a brief, then choose the model, research depth, and search provider. Depth guides the breadth and thoroughness of new research; call, search, and time estimates do not stop it.
 2. **Research.** Scraply searches with Exa or Perplexity and returns candidate problems. Every claim links to the excerpt and source behind it. You can ask follow-up questions or re-check a finding; a new result only replaces the current evidence when you apply it.
-3. **Ideas.** Scraply generates solutions for the selected problems, reviews their risks, and groups variants so only distinct ideas count toward your target. It stops at your limits and never pads the count.
+3. **Ideas.** Scraply generates solutions for the selected problems, reviews their risks, and groups variants so only distinct ideas count toward your target. It never pads the count. You can pause or stop a run; older saved runs retain their explicit count limits.
 4. **Develop an idea.** Discuss an idea, rethink it into a new version while the old ones stay readable, or draft a small experiment that tests one assumption with a metric and pass/fail thresholds.
 
 There are two run modes. **Vibe** (the default) runs research, problem selection, idea generation, and review in one pass. **Controlled** stops after research so you pick the problems and the ideas model yourself.
@@ -27,7 +27,7 @@ Research exports as JSON. Ideas export as Markdown or JSON.
 
 **Using Scraply**
 
-- [User guide](docs/user/guide.md): projects, run modes, models, limits, and exploring ideas
+- [User guide](docs/user/guide.md): projects, run modes, models, research depth, and exploring ideas
 - [Data and privacy](docs/user/data-and-privacy.md): what stays on your computer, what goes to providers, backups
 - [Troubleshooting](docs/user/troubleshooting.md): accounts, partial runs, startup errors
 

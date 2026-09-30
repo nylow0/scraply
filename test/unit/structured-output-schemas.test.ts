@@ -1,11 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import { deriveJsonSchema, type JsonSchema } from "../../src/shared/json-schema";
-import { STRUCTURED_OUTPUT_SCHEMAS } from "../../src/shared/structured-output-schemas";
+import { BoundedWorkflowV2FactorHarvestOutputSchema, STRUCTURED_OUTPUT_SCHEMAS } from "../../src/shared/structured-output-schemas";
 
 const FORBIDDEN_CONSTRAINTS = new Set([
   "minItems",
   "minLength",
-  "maxLength",
   "minimum",
   "maximum",
 ]);
@@ -31,6 +30,18 @@ function assertCodexCompatible(schema: JsonSchema, path = "$"): void {
 }
 
 describe("structured output schemas", () => {
+  test("factor text ceilings reach the provider schema, including nullable origin keys", () => {
+    const schema = deriveJsonSchema(BoundedWorkflowV2FactorHarvestOutputSchema);
+    const variants = schema.properties?.factors?.items?.anyOf;
+    expect(variants).toHaveLength(2);
+    for (const variant of variants ?? []) {
+      expect(variant.properties?.uncertainty).toEqual({ type: "string", maxLength: 600 });
+      expect(variant.properties?.quote).toEqual({ type: "string", maxLength: 1_000 });
+    }
+    expect(variants?.[1]?.properties?.independentSourceKey?.anyOf).toContainEqual({ type: "string", maxLength: 160 });
+    expect(variants?.[1]?.properties?.demandEvidenceUncertainty).toEqual({ type: "string", maxLength: 600 });
+  });
+
   for (const [name, zodSchema] of Object.entries(STRUCTURED_OUTPUT_SCHEMAS)) {
     test(`${name} derives a Codex-compatible JSON Schema`, () => {
       assertCodexCompatible(deriveJsonSchema(zodSchema));

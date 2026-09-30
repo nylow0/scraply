@@ -1,6 +1,9 @@
 import { randomUUID } from "node:crypto";
+import { z } from "zod";
+import { GenerationAttemptRepository } from "./generation-attempts";
 import { canonicalJson, sha256 } from "../../shared/content-identity";
 import type { RunConfig } from "../../shared/schemas";
+import { ProblemFactorAssessmentSchema } from "../../shared/structured-output-schemas";
 import type { DatabaseClient } from "../client";
 
 export type WorkflowPurpose = "discovery" | "known-problem" | "research-followup" | "idea-turn";
@@ -189,6 +192,7 @@ interface LineageRow {
 }
 
 const terminalWorkItemStates = new Set<WorkItemState>(["succeeded", "failed", "cancelled", "skipped", "unknown"]);
+const AcknowledgedRetrySchema = z.object({ attemptIds: z.array(z.string().min(1)) });
 const workItemTransitions: Record<WorkItemState, WorkItemState[]> = {
   planned: ["ready", "cancelled", "skipped"],
   ready: ["running", "cancelled", "skipped"],
@@ -350,6 +354,26 @@ export class WorkflowRepository {
     `).run(extension.modelCalls, extension.searches, extension.minutes,
       extension.minutes * 60_000, id, expectedRevision);
     return this.requireSession(id);
+  }
+
+  /** Explicit recovery keeps run-local checkpoints and all prior attempt/accounting records. */
+  reopenGuidedDiscovery(sessionId: string, expectedRevision: number, taskId: string, reassessProblems = false): WorkflowSession {
+    this.client.requireImmediateTransaction();
+    const session = this.requireSession(sessionId);
+    const task = this.requireWorkItemInSession(taskId, sessionId);
+    const settled = reassessProblems ? session.outcome === "no-qualifying-ideas" && task.state === "succeeded"
+      : ["needs-attention", "failed", "partial"].includes(session.outcome ?? "") && ["unknown", "failed"].includes(task.state);
+    if (session.revision !== expectedRevision || session.state !== "finished" || !settled
+      || task.kind !== "discovery"
+      || (session.contract as { limits?: { enforced?: boolean } }).limits?.enforced !== false) {
+      throw new WorkflowConflictError("REVISION_CONFLICT", "Only a settled guided discovery recovery can reopen");
+    }
+    this.client.db.prepare(`UPDATE workflow_work_items SET state = 'running', error_json = NULL,
+      finished_at = NULL WHERE id = ?`).run(taskId);
+    this.client.db.prepare(`UPDATE workflow_sessions SET state = 'running', outcome = NULL,
+      running_since = ?, finished_at = NULL, revision = revision + 1 WHERE id = ? AND revision = ?`)
+      .run(new Date().toISOString(), sessionId, expectedRevision);
+    return this.requireSession(sessionId);
   }
 
   getCommand(threadId: string, clientCommandId: string): WorkflowCommand | null {
@@ -537,10 +561,15 @@ export class WorkflowRepository {
     return row.count;
   }
 
+  /** Acknowledgement authorizes only the saved attempt IDs; later unknown requests still block resume. */
+  acknowledgedAttemptIds(runId: string): string[] {
+    const audits = this.client.db.prepare(`SELECT value_json FROM workflow_snapshots
+      WHERE research_run_id = ? AND snapshot_key LIKE 'acknowledged-retry:%'`).all(runId) as Array<{ value_json: string }>;
+    return [...new Set(audits.flatMap(row => AcknowledgedRetrySchema.parse(JSON.parse(row.value_json)).attemptIds))];
+  }
+
   hasUnknownProviderCompletion(runId: string): boolean {
-    return Boolean(this.client.db.prepare(`SELECT 1 FROM generation_attempts WHERE research_run_id = ?
-      AND (status IN ('dispatched','accepted') OR (status = 'interrupted' AND terminal_kind IS NOT 'never-dispatched'))
-      LIMIT 1`).get(runId));
+    return !new GenerationAttemptRepository(this.client).getResumeSafety(runId, this.acknowledgedAttemptIds(runId)).canResume;
   }
 
   settleBudget(id: string, input: {
@@ -1194,6 +1223,7 @@ function problemOriginHash(client: DatabaseClient, row: Record<string, unknown>)
     if (!factor) throw new WorkflowConflictError("INVALID_REFERENCE", "Original problem factor is missing");
     sourceIds.push(factor.source_id);
   }
+  const factorAssessments = ProblemFactorAssessmentSchema.array().parse(JSON.parse(String(row.factor_assessments_json ?? "[]")));
   return sha256(canonicalJson({
     statement: row.statement, whyItPersists: row.why_it_persists,
     affected: row.affected, scaleEstimate: row.scale_estimate,
@@ -1202,6 +1232,7 @@ function problemOriginHash(client: DatabaseClient, row: Record<string, unknown>)
     factorIds: distinctFactorIds, intendedBuyerEvidenceFactorIds: buyerFactorIds,
     evidenceGap: row.evidence_gap, briefFit: row.brief_fit,
     contraryEvidence: row.contrary_evidence, workflowKey: row.workflow_key,
+    ...(factorAssessments.length ? { factorAssessments } : {}),
   }));
 }
 

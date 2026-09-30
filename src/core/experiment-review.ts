@@ -253,7 +253,6 @@ async function executeStage<T>(options: ExecuteStageOptions<T>): Promise<{ outpu
     jsonSchema: deriveJsonSchema(providerSchema),
     repairPolicy: "one_retry",
     ...(options.model.providerId === "openai-subscription" ? {} : { maxOutputTokens: 6_144 }),
-    deadlineMs: 300_000,
     ...(options.dependencies.signal ? { signal: options.dependencies.signal } : {}),
   };
   const saved = options.dependencies.repository.findStage(

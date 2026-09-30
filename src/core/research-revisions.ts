@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { DatabaseClient } from "../db/client";
 import { canonicalJson, sha256 } from "../shared/content-identity";
+import { ProblemFactorAssessmentSchema } from "../shared/structured-output-schemas";
 import type { ResearchFindingComparison, ResearchReplacement, ResearchRequestDraft } from "../shared/research-revisions";
 export type {
   ResearchFindingComparison, ResearchFindingView, ResearchReplacement, ResearchRequestDraft,
@@ -116,6 +117,7 @@ type ProblemRow = {
   affected: string; scale_estimate: string; scale_basis_factor_id: string | null;
   verdict: string; verdict_reason: string; intended_buyer_evidence_factor_ids_json: string;
   evidence_gap: string | null; brief_fit: string; contrary_evidence: string; workflow_key: string | null;
+  factor_assessments_json: string;
 };
 type RunRow = { id: string; thread_id: string; status: string; config_json: string; workflow_version: number };
 
@@ -169,7 +171,7 @@ export function materializeResearchSnapshot(client: DatabaseClient, input: Mater
     const row = db.prepare(`SELECT p.id, p.discovery_run_id, p.statement, p.why_it_persists,
       p.affected, p.scale_estimate, p.scale_basis_factor_id, p.verdict, p.verdict_reason,
       p.intended_buyer_evidence_factor_ids_json, p.evidence_gap,
-      p.brief_fit, p.contrary_evidence, p.workflow_key
+      p.brief_fit, p.contrary_evidence, p.workflow_key, p.factor_assessments_json
       FROM problems p JOIN research_runs r ON r.id = p.discovery_run_id
       WHERE p.id = ? AND r.thread_id = ? AND r.status = 'completed'`).get(id, input.threadId) as ProblemRow | undefined;
     if (!row) throw new ResearchRevisionError("A selected finding is unavailable in this project.");
@@ -301,6 +303,12 @@ export function materializeResearchSnapshot(client: DatabaseClient, input: Mater
       if (!copied) throw new ResearchRevisionError("A buyer-evidence factor was not copied.");
       return copied;
     });
+    const factorAssessments = ProblemFactorAssessmentSchema.array().parse(JSON.parse(problem.factor_assessments_json));
+    const copiedAssessments = factorAssessments.map(assessment => {
+      const factorId = copiedFactors.get(assessment.factorId);
+      if (!factorId) throw new ResearchRevisionError("A reviewed problem factor was not copied.");
+      return { ...assessment, factorId };
+    });
     originMap.problems[copiedId] = {
       originalId: problem.id,
       originalRunId: problem.discovery_run_id,
@@ -313,18 +321,19 @@ export function materializeResearchSnapshot(client: DatabaseClient, input: Mater
         intendedBuyerEvidenceFactorIds: buyerFactorIds,
         evidenceGap: problem.evidence_gap, briefFit: problem.brief_fit,
         contraryEvidence: problem.contrary_evidence, workflowKey: problem.workflow_key,
+        ...(factorAssessments.length ? { factorAssessments } : {}),
       })),
     };
     db.prepare(`INSERT INTO problems
       (id, discovery_run_id, statement, why_it_persists, affected, scale_estimate,
         scale_basis_factor_id, verdict, verdict_reason, verdict_source_ids_json,
         intended_buyer_evidence_factor_ids_json, evidence_gap, brief_fit,
-        contrary_evidence, workflow_key, selected_at, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)`)
+        contrary_evidence, workflow_key, factor_assessments_json, selected_at, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)`)
       .run(copiedId, runId, problem.statement, problem.why_it_persists, problem.affected,
         problem.scale_estimate, copiedScaleBasis, problem.verdict, problem.verdict_reason,
         "[]", JSON.stringify(copiedBuyerFactors), problem.evidence_gap,
-        problem.brief_fit, problem.contrary_evidence, problem.workflow_key, now);
+        problem.brief_fit, problem.contrary_evidence, problem.workflow_key, JSON.stringify(copiedAssessments), now);
     for (const factorId of factorIdsByProblem.get(problem.id) ?? []) {
       const copied = copiedFactors.get(factorId);
       if (!copied) throw new ResearchRevisionError("A problem's cited factor was not copied.");

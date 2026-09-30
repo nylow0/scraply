@@ -42,7 +42,7 @@ interface PendingRequest {
 }
 interface PendingGeneration {
   requestId: string;
-  timer: ReturnType<typeof setTimeout>;
+  timer: ReturnType<typeof setTimeout> | undefined;
   resolve: (value: { output: unknown; metadata: z.infer<typeof GenerationMetadataSchema> }) => void;
   reject: (error: Error) => void;
 }
@@ -183,7 +183,7 @@ export class RuntimeClient implements StructuredModelClient {
     }
     const requestId = randomUUID();
     const terminal = new Promise<{ output: unknown; metadata: z.infer<typeof GenerationMetadataSchema> }>((resolve, reject) => {
-      const timer = setTimeout(() => {
+      const timer = request.deadlineMs === undefined ? undefined : setTimeout(() => {
         const generation = this.pendingGenerations.get(request.generationId);
         if (generation?.requestId === requestId) void this.cancelGeneration(request.generationId, "Native runtime did not emit a terminal generation event");
       }, request.deadlineMs + this.terminalGraceMs);
@@ -206,7 +206,7 @@ export class RuntimeClient implements StructuredModelClient {
         accepted = z.object({ generationId: z.literal(request.generationId), prompt: PromptIdentitySchema }).strict().parse(
           await this.request("generation.start", {
           generationId: request.generationId,
-          deadlineMs: request.deadlineMs,
+          ...(request.deadlineMs === undefined ? {} : { deadlineMs: request.deadlineMs }),
           model: request.model,
           promptRevision: initialized.prompt.id,
           workOrder: request.workOrder,
@@ -550,12 +550,18 @@ function waitForClose(child: ChildProcessWithoutNullStreams, timeoutMs: number):
 }
 
 function providerFailure(error: RuntimeFailure, attempts?: GenerationAttemptMetadata[]): ProviderFailure {
+  // A terminal worker event can still report that the remote completion was lost.
+  // Preserve that uncertainty so workflow recovery requires an explicit retry decision.
+  if (error.code !== "cancelled" && attempts?.some(attempt => attempt.providerCompletion === "unknown")) {
+    return new ProviderFailure("interrupted", error.detail, false, { runtimeCode: error.code, attempts });
+  }
   const code = error.code === "cancelled" ? "cancelled"
     : error.code === "deadline_exceeded" ? "timeout"
       : error.code === "authentication_failed" ? "auth"
         : error.code === "rate_limited" ? "rate-limit"
           : error.code === "schema_invalid" || error.code === "output_invalid" ? "schema"
-            : error.code === "provider_unavailable" || error.code === "reconnect_required" ? "unavailable"
-              : "failed";
+            : error.code === "output_limit" ? "output-limit"
+              : error.code === "provider_unavailable" || error.code === "reconnect_required" ? "unavailable"
+                : "failed";
   return new ProviderFailure(code, error.detail, error.retryable, { runtimeCode: error.code, ...(attempts ? { attempts } : {}) });
 }

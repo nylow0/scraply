@@ -8,7 +8,7 @@ import { fillGenerationAngle, initialGenerationAngles } from "../../src/core/ide
 import type { ResearchEngine } from "../../src/core/research-engine";
 import { DatabaseClient } from "../../src/db/client";
 import { WorkflowRepository } from "../../src/db/repositories/workflows";
-import type { StructuredModelClient } from "../../src/providers/structured";
+import { ProviderFailure, type StructuredModelClient } from "../../src/providers/structured";
 import type { SearchClient } from "../../src/providers/search";
 import { DEFAULT_RUN_CONFIG } from "../../src/shared/schemas";
 import type { Source } from "../../src/shared/schemas";
@@ -28,7 +28,7 @@ async function waitUntil(predicate: () => boolean): Promise<void> {
 function fixture(output: { gaps: unknown[]; noUsefulGapReason: string | null },
   options: { searchClient?: SearchClient; maxSearches?: number; target?: number;
     targetKind?: "project" | "per-problem"; acceptedIds?: string[]; proposedCount?: number;
-    maxModelCalls?: number } = {}) {
+    maxModelCalls?: number; enforced?: boolean; modelFailure?: ProviderFailure } = {}) {
   const directory = mkdtempSync(join(tmpdir(), "scraply-workflow-coverage-"));
   directories.push(directory);
   const db = new DatabaseClient(join(directory, "scraply.db"));
@@ -42,7 +42,8 @@ function fixture(output: { gaps: unknown[]; noUsefulGapReason: string | null },
     runConfig, ideas: { model: runConfig.model, reasoningEffort: "medium" },
     targets: { kind: options.targetKind ?? "project", ideaCount: options.target ?? 2,
       ...((options.targetKind ?? "project") === "project" ? { distinctBusinessCount: options.target ?? 2 } : {}) },
-    limits: { maxMinutes: 90, maxModelCalls: options.maxModelCalls ?? 10, maxSearches: options.maxSearches ?? 0 },
+    limits: { ...(options.enforced === undefined ? {} : { enforced: options.enforced }),
+      maxMinutes: 90, maxModelCalls: options.maxModelCalls ?? 10, maxSearches: options.maxSearches ?? 0 },
     instructions: {}, resolvedInstructions: { research: "", ideas: "", review: "" },
     instructionHashes: { research: "hash", ideas: "hash", review: "hash" },
   });
@@ -88,6 +89,7 @@ function fixture(output: { gaps: unknown[]; noUsefulGapReason: string | null },
       modelCalls += 1;
       expect(request.stage).toBe("coverage-map:1");
       expect(request.repairPolicy).toBe("disabled");
+      if (options.modelFailure) throw options.modelFailure;
       request.onDispatched?.();
       return { output: request.schema.parse(output), metadata: { model: request.model,
         usage: { status: "unknown" }, latencyMs: 1, repairCount: 0, providerRequestIds: [], attempts: [] } };
@@ -253,20 +255,26 @@ function evidenceGapOutput() {
     candidateOrigin: "evidence-only" }], noUsefulGapReason: null };
 }
 
-test("a search-needed managed gap settles one search and passes its saved source to fill generation", async () => {
+test.each([true, false])("a managed gap reaches fill generation with enforced limits = %s", async (enforced) => {
   let searchCalls = 0;
   const searchClient: SearchClient = {
     provider: "exa", validateKey: async () => ({ valid: true }),
     async search(query, options) {
       searchCalls += 1;
       expect(query).toBe("repair shop revised estimate signoff interview");
-      expect(options).toMatchObject({ numResults: 5, maxCharacters: 4_000, timeoutMs: 45_000 });
+      expect(options).toMatchObject({ numResults: 5, maxCharacters: 4_000 });
+      expect(options?.timeoutMs).toBeUndefined();
       return [buyerEvidence];
     },
   };
-  const caseFile = fixture(evidenceGapOutput(), { searchClient, maxSearches: 1 });
+  const caseFile = fixture(evidenceGapOutput(), { searchClient, enforced,
+    maxSearches: enforced ? 1 : 0, maxModelCalls: enforced ? 10 : 1 });
   const { db, workflows, coordinator, sessionId, generationCalls, errors } = caseFile;
   try {
+    if (!enforced) {
+      const session = workflows.getSession(sessionId)!;
+      db.immediateTransaction(() => workflows.updateSession(sessionId, session.revision, { remainingMs: 0 }));
+    }
     finishCollection(coordinator, sessionId);
     await waitUntil(() => generationCalls.length === 1);
     const items = workflows.listWorkItems(sessionId);
@@ -282,6 +290,29 @@ test("a search-needed managed gap settles one search and passes its saved source
     expect(ledger.opportunity_attempt_id).toBe((search?.outputRefs as { attemptId: string }).attemptId);
     expect(searchCalls).toBe(1);
     expect(errors).toEqual([]);
+  } finally { db.close(); }
+});
+
+test.each(["coverage-map", "coverage-search"])("a %s failure before dispatch with no accepted ideas is a failed run", async (stage) => {
+  const failure = new ProviderFailure("auth", "Provider unavailable before dispatch", false);
+  const { db, workflows, coordinator, sessionId, generationCalls } = fixture(evidenceGapOutput(), {
+    enforced: false, ...(stage === "coverage-map" ? { modelFailure: failure } : {}),
+  });
+  try {
+    finishCollection(coordinator, sessionId);
+    await waitUntil(() => workflows.getSession(sessionId)?.state === "finished");
+    expect(workflows.listWorkItems(sessionId).find((item) => item.kind === stage)?.state).toBe("failed");
+    expect(coordinator.summary(sessionId).counts.accepted).toBe(0);
+    expect(workflows.getSession(sessionId)?.outcome).toBe("failed");
+    expect(generationCalls).toEqual([]);
+    if (stage === "coverage-map") {
+      // Simulate exiting after the failed attempt was saved but before its task was settled.
+      db.db.prepare("UPDATE workflow_work_items SET state = 'running', finished_at = NULL WHERE session_id = ? AND kind = ?").run(sessionId, stage);
+      db.db.prepare("UPDATE workflow_sessions SET state = 'running', running_since = ?, outcome = NULL, finished_at = NULL WHERE id = ?")
+        .run(new Date().toISOString(), sessionId);
+      coordinator.reconcileInterrupted();
+      expect(workflows.getSession(sessionId)?.outcome).toBe("failed");
+    }
   } finally { db.close(); }
 });
 

@@ -155,7 +155,6 @@ impl RuntimeProcess {
             "generation.start",
             json!({
                 "generationId": generation_id,
-                "deadlineMs": 30_000,
                 "model": {
                     "providerId": "openai-subscription",
                     "modelId": "gpt-fixture"

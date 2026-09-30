@@ -15,6 +15,7 @@
     onStop,
     onResume,
     onRetryTask,
+    onReassessProblems,
     onLoadMoreTasks,
     onPreviewExtension,
     onApplyExtension,
@@ -25,12 +26,14 @@
     onStop: () => Promise<void>;
     onResume?: () => Promise<void>;
     onRetryTask?: (taskId: string, expectedTerminalAttemptId: string, acknowledgeUnknownCompletion: boolean) => Promise<void>;
+    onReassessProblems?: (taskId: string) => Promise<void>;
     onLoadMoreTasks?: (cursor: string) => Promise<void>;
     onPreviewExtension?: (extension: BudgetExtension) => Promise<WorkflowPreview>;
     onApplyExtension?: (preview: WorkflowPreview) => Promise<void>;
   } = $props();
 
   let summary = $derived(detail.summary);
+  let guided = $derived(summary.limits.enforced === false);
   let acknowledgedUnknown = $state<Record<string, boolean>>({});
   let additionalModelCalls = $state(0);
   let additionalSearches = $state(0);
@@ -61,11 +64,21 @@
   });
   let terminal = $derived(summary.state === "finished");
   let researchFollowUp = $derived(summary.purpose === "research-followup");
+  let researchView = $derived(!researchFollowUp && !(summary.ideaTargetReady
+    ?? (summary.counts.attempted > 0 || accepted > 0 || detail.tasks.some(task => task.kind === "generate-ideas"))));
+  let activity = $derived.by(() => {
+    const recent = [...(detail.activity ?? [])].reverse();
+    // Transport transitions and older duplicate saves can describe the same action.
+    return recent.filter((item, index) => index === 0 || activityText(item) !== activityText(recent[index - 1]!));
+  });
+  let researchHeading = $derived(terminal ? summary.outcome === "target-met" || summary.outcome === "no-qualifying-ideas" ? "Research finished" : "Research stopped"
+    : summary.state === "waiting-for-review" ? "Ready for your review"
+      : summary.state === "paused" ? "Research paused" : summary.purpose === "known-problem" ? "Preparing your ideas" : "Researching your brief");
   // Follow-up sessions inherit a snapshot before work starts; only an applied result earns this label.
   let researchUpdated = $derived(researchFollowUp && terminal && summary.researchApplied === true);
   let canPause = $derived(summary.state === "running");
   let canResume = $derived(summary.state === "paused" && !!onResume
-    && summary.budget.modelCalls.uncertain === 0 && summary.budget.searches.uncertain === 0
+    && (summary.canResume === true || (summary.budget.modelCalls.uncertain === 0 && summary.budget.searches.uncertain === 0))
     && !detail.tasks.some((task) => task.state === "unknown"));
   let canStop = $derived(["running", "waiting-for-review", "pause-requested", "paused"].includes(summary.state));
 
@@ -127,6 +140,17 @@
     return task.question?.trim() || readable(task.kind);
   }
 
+  function activityText(item: NonNullable<WorkflowDetail["activity"]>[number]): string {
+    if (!["Model request accepted", "Model request dispatched", "Model call completed", "Waiting for model availability"].includes(item.message)) return item.message;
+    const work = item.stage === "searching" ? "Planning search queries"
+      : item.stage === "extracting" ? "Reading sources and extracting evidence"
+        : item.stage === "synthesizing-problems" ? "Identifying and checking problems"
+          : item.stage === "generating-options" ? "Generating and reviewing ideas" : "Processing evidence";
+    if (item.message === "Waiting for model availability") return `Queued: ${work.toLowerCase()}`;
+    if (item.message === "Model call completed") return `${work} — complete`;
+    return work;
+  }
+
   async function previewExtension() {
     if (!onPreviewExtension || !extensionValid || extensionBusy) return;
     extensionBusy = true;
@@ -170,41 +194,62 @@
   }
 </script>
 
-<section class="vibe-progress" class:terminal aria-label={summary.mode === "vibe" ? "Vibe run progress" : "Controlled run progress"}>
+<section class="vibe-progress" class:terminal class:research-view={researchView} aria-label={summary.mode === "vibe" ? "Vibe run progress" : "Controlled run progress"}>
   <header class="overview">
     <div class="overview-copy">
-      <p class="stage">{terminal ? researchFollowUp ? "Research result" : "Run result" : summary.currentStage === "coverage-map"
+      <p class="stage">{researchView ? summary.mode === "vibe" ? "Vibe research" : "Controlled research" : terminal ? researchFollowUp ? "Research result" : "Run result" : summary.currentStage === "coverage-map"
         ? "Finding coverage gaps" : summary.currentStage === "coverage-search" ? "Checking gap evidence"
           : summary.currentStage ? readable(summary.currentStage) : stateLabel(summary.state)}</p>
-      {#if researchFollowUp}<h2 class="research-heading">Research follow-up</h2>{:else}<h2><span class="accepted">{accepted}</span><span class="target"> / {target} {targetUnit}</span></h2>{/if}
+      {#if researchView}<h2 class="research-heading">{researchHeading}</h2>{:else if researchFollowUp}<h2 class="research-heading">Research follow-up</h2>{:else}<h2><span class="accepted">{accepted}</span><span class="target"> / {target} {targetUnit}</span></h2>{/if}
       {#if !terminal}<p class="current-status">{stateLabel(summary.state)}</p>{/if}
     </div>
-    {#if !researchFollowUp && !terminal && summary.counts.missing > 0}
+    {#if !researchView && !researchFollowUp && !terminal && summary.counts.missing > 0}
       <span class="shortfall">{summary.counts.missing} still needed</span>
     {/if}
   </header>
 
-  {#if !researchFollowUp && !terminal}<div class="meter" role="progressbar" aria-label={`Accepted ${targetUnit}`} aria-valuemin="0" aria-valuemax={Math.max(1, target)} aria-valuenow={Math.min(accepted, Math.max(1, target))} aria-valuetext={`${accepted} of ${target} ${targetUnit} accepted`}>
+  {#if !researchView && !researchFollowUp && !terminal}<div class="meter" role="progressbar" aria-label={`Accepted ${targetUnit}`} aria-valuemin="0" aria-valuemax={Math.max(1, target)} aria-valuenow={Math.min(accepted, Math.max(1, target))} aria-valuetext={`${accepted} of ${target} ${targetUnit} accepted`}>
     <span style={`width:${targetPercent}%`}></span>
   </div>{/if}
 
   {#if terminal}
-    <p class="terminal-reason" role="status"><strong>{researchUpdated ? "Research updated" : outcomeLabel(summary.outcome)}.</strong> {terminalReason(summary)}</p>
+    <p class="terminal-reason" role="status"><strong>{researchUpdated ? "Research updated" : researchView && summary.outcome === "partial" ? "Research ended" : outcomeLabel(summary.outcome)}.</strong> {terminalReason(summary)}</p>
   {:else if summary.state === "pause-requested" || summary.state === "stop-requested"}
     <p class="pending-reason" role="status">{stateLabel(summary.state)}. Completed work remains saved.</p>
   {/if}
 
-  <details class="run-details" open={!terminal}>
+  {#if researchView}
+    <section class="research-activity" aria-label="Research activity">
+      {#if activity.length}
+        <ol class="activity-log" role="log" aria-label="Recent research activity" aria-live="polite" aria-relevant="additions text">
+          {#each activity as item, index (item.id)}
+            <li class:latest={index === 0}><span class="activity-dot" aria-hidden="true"></span><p>{activityText(item)}</p><time datetime={item.createdAt}>{new Date(item.createdAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</time></li>
+          {/each}
+        </ol>
+      {:else}
+        <p class="activity-empty">{terminal ? "No research activity was saved." : summary.state === "waiting-for-review" ? "Choose which problems to develop below." : "Preparing the next research step…"}</p>
+      {/if}
+    </section>
+    {#if canPause || canStop || canResume}
+      <div class="research-controls">
+        {#if canPause}<button class="pause-button" disabled={busy} onclick={() => void onPause().catch(() => {})}>Pause</button>
+        {:else if canResume && onResume}<button class="pause-button" disabled={busy} onclick={() => void onResume().catch(() => {})}>Resume</button>{/if}
+        {#if canStop}<button class="stop-button" disabled={busy} onclick={() => void onStop().catch(() => {})}>Stop</button>{/if}
+      </div>
+    {/if}
+  {/if}
+
+  <details class="run-details" open={!terminal && !researchView}>
   <summary>Run details</summary>
 
-  {#if !researchFollowUp}<dl class="counts" aria-label="Idea review counts">
+  {#if !researchView && !researchFollowUp}<dl class="counts" aria-label="Idea review counts">
     <div><dt>Requested</dt><dd>{summary.counts.requested}</dd></div>
     <div><dt>Validated</dt><dd>{summary.counts.validated}</dd></div>
     <div><dt>Duplicates</dt><dd>{summary.counts.duplicate}</dd></div>
     <div><dt>Missing</dt><dd>{summary.counts.missing}</dd></div>
   </dl>{/if}
 
-  {#if !researchFollowUp && summary.targetKind === "project"}
+  {#if !researchView && !researchFollowUp && summary.targetKind === "project"}
     <dl class="family-counts" aria-label="Business family totals">
       <div><dt>Existing families</dt><dd>{summary.counts.existing}</dd></div>
       <div><dt>Added this run</dt><dd>{summary.counts.addedBySession}</dd></div>
@@ -215,6 +260,13 @@
     {/if}
   {/if}
 
+  {#if guided}
+  <dl class="allowance" aria-label="Work completed">
+    <div><dt>Model calls used</dt><dd>{summary.budget.modelCalls.spent}</dd></div>
+    <div><dt>Searches used</dt><dd>{summary.budget.searches.spent}</dd></div>
+    <div><dt>Research pace</dt><dd>Guided by depth</dd></div>
+  </dl>
+  {:else}
   <dl class="allowance" aria-label="Remaining work allowance">
     <div>
       <dt>Model calls left</dt>
@@ -229,8 +281,9 @@
       <dd>{remainingTime(summary.budget.remainingMs)}</dd>
     </div>
   </dl>
+  {/if}
 
-  {#if !terminal && onPreviewExtension && onApplyExtension}
+  {#if !guided && !terminal && onPreviewExtension && onApplyExtension}
     <details class="extension">
       <summary>Extend work allowance</summary>
       <p>Choose additional limits, preview the new total, then apply it to this run.</p>
@@ -271,7 +324,7 @@
   {:else}
     <p class="empty-tasks">Tasks will appear here as the run advances.</p>
   {/if}
-  {#if canPause || canStop || canResume}
+  {#if !researchView && (canPause || canStop || canResume)}
     <div class="controls">
       <p>{summary.state === "paused" ? canResume ? "Resume uses the saved limits." : "This run is paused. Resolve any uncertain task before resuming." : canPause ? "Pause waits for the current request. Stop requests cancellation and keeps completed work." : "Stop keeps completed work."}</p>
       <div class="control-buttons">
@@ -302,11 +355,16 @@
               {#if task.parentItemId}<div><dt>Parent</dt><dd><code>{task.parentItemId}</code></dd></div>{/if}
               {#if task.error}<div><dt>Error</dt><dd>{task.error}</dd></div>{/if}
             </dl>
+            {#if onReassessProblems && task.canReassessProblems}
+              <p>Re-evaluate saved evidence against each problem's affected users. Your original brief and research remain saved.</p>
+              <button type="button" class="retry-button" disabled={busy}
+                onclick={() => void onReassessProblems(task.id).catch(() => {})}>Re-evaluate problems</button>
+            {/if}
             {#if onRetryTask && task.terminalAttemptId && (task.state === "failed" || task.state === "unknown")}
               {#if task.state === "unknown"}
-                <label class="retry-acknowledge"><input type="checkbox" bind:checked={acknowledgedUnknown[task.id]} />I understand this request may have completed and a retry may repeat its work.</label>
+                <label class="retry-acknowledge"><input type="checkbox" bind:checked={acknowledgedUnknown[task.terminalAttemptId]} />I understand this request may have completed and a retry may repeat its work.</label>
               {/if}
-              <button type="button" class="retry-button" disabled={busy || (task.state === "unknown" && !acknowledgedUnknown[task.id])}
+              <button type="button" class="retry-button" disabled={busy || (task.state === "unknown" && !acknowledgedUnknown[task.terminalAttemptId])}
                 onclick={() => void onRetryTask(task.id, task.terminalAttemptId!, task.state === "unknown").catch(() => {})}>Retry task</button>
             {/if}
           </li>
@@ -339,6 +397,17 @@
   .stage { margin:0 0 9px; color:var(--muted); font-size:13px; line-height:1.4; }
   h2 { display:flex; flex-wrap:wrap; align-items:baseline; gap:0; margin:0; font-size:17px; font-weight:500; line-height:1.2; }
   .research-heading { font-size:21px;font-weight:620;letter-spacing:-.02em; }
+  .research-view .research-heading { font-size:clamp(22px,3vw,28px); }
+  .research-activity { min-width:0; }
+  .activity-log { list-style:none;margin:0;padding:0; }
+  .activity-log li { display:grid;grid-template-columns:8px minmax(0,1fr) auto;align-items:baseline;gap:12px;padding:9px 0;color:var(--muted);font-size:13px; }
+  .activity-log li.latest { color:var(--text); }
+  .activity-log p { margin:0;line-height:1.6;overflow-wrap:anywhere; }
+  .activity-dot { width:5px;height:5px;border-radius:50%;background:var(--border-strong);align-self:start;margin-top:8px; }
+  .latest .activity-dot { background:var(--accent-strong); }
+  .activity-log time { font-size:11px;font-variant-numeric:tabular-nums;color:var(--muted); }
+  .activity-empty { color:var(--muted);font-size:13px;margin:0; }
+  .research-controls { display:flex;gap:8px; }
   .accepted { font-size:clamp(38px, 6vw, 56px); font-weight:680; letter-spacing:-.05em; font-variant-numeric:tabular-nums; }
   .target { color:var(--muted); }
   .current-status { margin:9px 0 0; color:var(--text); font-size:13px; }

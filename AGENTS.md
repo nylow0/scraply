@@ -11,7 +11,7 @@ I maintain Scraply alone. What I tell you in the conversation takes priority ove
 - **Evidence.** Every factor traces to a saved source quote. Generated text is never evidence, and model confidence is not calibrated.
 - **Honest results.** A run can finish with a partial set or zero ideas; never pad the count. Unreported usage shows as unknown, not zero. A request whose completion was lost is never replayed automatically.
 - **Local and private.** Projects stay on the user's computer, with no telemetry. Credentials are encrypted with Windows `safeStorage`, and the renderer only sees account status and masked key tails. Remote pages never get Electron privileges.
-- **Bounded spend.** Every run has limits on model calls, searches, and minutes, checked before dispatch. Spend is reserved before a call and settled after it. The app never raises a limit without the user's approval.
+- **Depth-guided work.** New research uses depth to guide breadth and thoroughness; call and search estimates do not stop it. Generations wait for provider completion, failure, or user cancellation. Preserve usage accounting and older saved count limits.
 - **Saved work stays readable.** Old projects, including v1 results and older run contracts, still open and export. A saved run resumes with the prompts it started with. Stored values outlive UI renames: Controlled mode is still stored as `babysit`.
 
 ## Terms
@@ -25,7 +25,7 @@ The UI and the code sometimes use different names.
 | run | workflow session | One launched workflow with a `purpose`, `mode`, `state`, and `outcome` (`src/shared/workflow-contracts.ts`). |
 | Vibe | `vibe` | Runs research, selection, generation, and review on its own. |
 | Controlled | `babysit` | Stops after research for the user's review. |
-| stage | stage | One bounded model step: a prompt in `prompts/workflow-v2-*.md`, an output schema, and a deadline, registered in `src/core/stages.ts`. |
+| stage | stage | One model step: a prompt in `prompts/workflow-v2-*.md` and an output schema, registered in `src/core/stages.ts`. |
 | factor | factor | One quoted observation extracted from a source. |
 | problem, finding | problem candidate | A problem synthesized from factors, then kept or killed by an independent review. |
 | evidence snapshot | snapshot | The research generation uses. A follow-up changes it only when the user applies the result. |

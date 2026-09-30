@@ -1,5 +1,6 @@
 import type { DatabaseClient } from "../db/client";
 import { DiscoveryRepository } from "../db/repositories/discovery";
+import { GenerationAttemptRepository } from "../db/repositories/generation-attempts";
 import { OpportunityRepository } from "../db/repositories/opportunities";
 import { WorkflowRepository, type WorkflowSession, type WorkflowWorkItem } from "../db/repositories/workflows";
 import { canonicalJson, sha256 } from "../shared/content-identity";
@@ -95,7 +96,8 @@ export class WorkflowCoordinator {
             });
             this.settleTaskBudget(running.id, unknown ? "uncertain" : "released", 0, attempt.id);
             this.repository.updateSession(session.id, session.revision, {
-              state: "finished", outcome: unknown ? "needs-attention" : "partial", remainingMs: remainingMs(session),
+              state: "finished", outcome: unknown ? "needs-attention" : this.summary(session.id).counts.accepted > 0 ? "partial" : "failed",
+              remainingMs: remainingMs(session),
             });
           });
           this.progress(session.id, [running.id]);
@@ -171,6 +173,19 @@ export class WorkflowCoordinator {
       });
       this.progress(session.id, []);
     }
+    // A settled unknown task has no live provider work. Older recovery left its run
+    // active, blocking explicit retry; retain interruption and attempt/accounting history.
+    this.options.db.immediateTransaction(() => {
+      this.options.db.db.prepare(`UPDATE research_runs SET status = 'failed', updated_at = ?
+        WHERE status IN ('queued','running') AND interrupted = 1
+          AND EXISTS (SELECT 1 FROM workflow_sessions session
+            JOIN workflow_work_items item ON item.session_id = session.id
+            WHERE session.id = research_runs.workflow_session_id
+              AND session.state = 'finished' AND session.outcome = 'needs-attention'
+              AND item.state = 'unknown'
+              AND json_extract(item.output_refs_json, '$.runId') = research_runs.id)`)
+        .run(new Date().toISOString());
+    });
   }
 
   async preview(input: unknown) {
@@ -269,15 +284,27 @@ export class WorkflowCoordinator {
     const offset = cursor ? Number(cursor) : 0;
     if (!Number.isSafeInteger(offset) || offset < 0) throw new AppError("validation_error", "Invalid task cursor.");
     const page = items.slice(offset, offset + 30);
+    // Reuse persisted progress, scoped to this session so reopening cannot show another run's activity.
+    const activity = this.options.db.db.prepare(`SELECT CAST(event.id AS TEXT) AS id,
+      json_extract(event.payload_json, '$.message') AS message,
+      json_extract(event.payload_json, '$.stage') AS stage, event.created_at AS createdAt
+      FROM job_events event JOIN research_runs run ON run.id = event.run_id
+      WHERE run.workflow_session_id = ? AND event.type = 'run-progress'
+        AND json_type(event.payload_json, '$.message') = 'text'
+      ORDER BY event.id DESC LIMIT 16`).all(sessionId);
     return WorkflowDetailSchema.parse({
       summary: this.summary(sessionId),
-      tasks: page.map((item) => ({
-        id: item.id, parentItemId: item.parentItemId, kind: item.kind, scopeKey: item.scopeKey,
-        state: item.state, question: questionFromItem(item),
-        error: errorFromItem(item), createdAt: item.createdAt, finishedAt: item.finishedAt,
-        ...((item.state === "failed" || item.state === "unknown") && terminalAttemptId(this.options.db, item)
-          ? { terminalAttemptId: terminalAttemptId(this.options.db, item)! } : {}),
-      })),
+      activity: activity.reverse(),
+      tasks: page.map((item) => {
+        const attempt = item.state === "failed" || item.state === "unknown" ? terminalAttempt(this.options.db, item) : null;
+        return {
+          id: item.id, parentItemId: item.parentItemId, kind: item.kind, scopeKey: item.scopeKey,
+          state: attempt?.completion_unknown ? "unknown" : item.state, question: questionFromItem(item),
+          error: errorFromItem(item), createdAt: item.createdAt, finishedAt: item.finishedAt,
+          ...(attempt ? { terminalAttemptId: attempt.id } : {}),
+          ...(this.canReassessProblems(session, item) ? { canReassessProblems: true } : {}),
+        };
+      }),
       nextCursor: offset + page.length < items.length ? String(offset + page.length) : null,
     });
   }
@@ -313,7 +340,7 @@ export class WorkflowCoordinator {
         : generationItems.filter((item) => fillRoundFromItem(item) === 0).reduce((count, item) => count + requestedFromItem(item), 0)
       : contract.targets.kind === "project"
         ? contract.targets.distinctBusinessCount ?? contract.targets.ideaCount
-        : contract.targets.ideaCount * Math.max(1, selectedProblemIds.length);
+        : contract.targets.ideaCount * selectedProblemIds.length;
     const creditedPerProblem = selectedProblemIds.reduce((sum, problemId) => {
       const assigned = generationItems.filter((item) => fillRoundFromItem(item) === 0 && problemIdFromItem(item) === problemId)
         .reduce((count, item) => count + requestedFromItem(item), 0);
@@ -341,24 +368,43 @@ export class WorkflowCoordinator {
       missing: Math.max(0, requested - credited), existing, addedBySession, total,
     };
     const limits = {
+      ...contract.limits,
       maxMinutes: Math.min(240, contract.limits.maxMinutes + session.additionalMinutes),
       maxModelCalls: contract.limits.maxModelCalls + session.additionalModelCalls,
       maxSearches: contract.limits.maxSearches + session.additionalSearches,
     };
     const budgetStatus = (kind: "model-call" | "search", limit: number) => {
       const matching = entries.filter((entry) => entry.kind === kind);
+      // Reservations are estimates, not usage. Keep dispatched counts when completion is unknown.
+      const liveRunIds = contract.limits.enforced === false ? new Set(matching
+        .filter((entry) => entry.state === "reserved" || entry.state === "uncertain")
+        .flatMap((entry) => {
+          const refs = items.find((item) => item.id === entry.workItemId)?.outputRefs as { runId?: string } | null | undefined;
+          return refs?.runId ? [refs.runId] : [];
+        })) : new Set<string>();
+      const liveUsage = [...liveRunIds].reduce((total, runId) => total
+        + (kind === "model-call" ? this.repository.countProviderAttempts(runId) : this.searchAttemptCount(runId)), 0);
       return {
         limit,
-        spent: matching.filter((entry) => entry.state === "spent").reduce((total, entry) => total + (entry.settledUnits ?? 0), 0),
+        spent: liveUsage + matching.filter((entry) => {
+          const item = items.find(item => item.id === entry.workItemId);
+          return entry.state === "spent" && (!item || !liveRunIds.has(runIdFromItem(item) ?? ""));
+        })
+          .reduce((total, entry) => total + (entry.settledUnits ?? 0), 0),
         reserved: matching.filter((entry) => entry.state === "reserved").reduce((total, entry) => total + entry.reservedUnits, 0),
         uncertain: matching.filter((entry) => entry.state === "uncertain").reduce((total, entry) => total + entry.reservedUnits, 0),
       };
     };
     const current = items.find((item) => item.state === "running") ?? items.find((item) => item.state === "ready") ?? null;
+    const resumeRunId = session.state === "paused" && current?.state === "running" ? runIdFromItem(current) : null;
+    const safeSavedRun = resumeRunId && this.options.db.db.prepare("SELECT 1 FROM research_runs WHERE id = ? AND status IN ('queued','running','completed')")
+      .get(resumeRunId) && !this.repository.hasUnknownProviderCompletion(resumeRunId);
     return WorkflowSummarySchema.parse({
+      ...(safeSavedRun ? { canResume: true } : {}),
       sessionId: session.id, threadId: session.threadId, purpose: session.purpose, mode: session.mode, targetKind,
       state: session.state, outcome: session.outcome, revision: session.revision,
       activeSnapshotId: session.activeSnapshotId, selectedProblemIds, counts, limits,
+      ideaTargetReady: generationItems.length > 0,
       ...(researchApplied ? { researchApplied: true } : {}),
       budget: {
         modelCalls: budgetStatus("model-call", limits.maxModelCalls),
@@ -471,6 +517,7 @@ export class WorkflowCoordinator {
     if (session.revision !== request.expectedRevision) throw new AppError("REVISION_CONFLICT");
     const action = request.action;
     if (action.type === "retry-task") return this.retryTask({ ...request, action });
+    if (action.type === "reassess-problems") return this.reassessProblems({ ...request, action });
     if (action.type === "generate-ideas" || action.type === "request-research") {
       await this.assertModelAvailable(action.model, action.reasoningEffort);
     }
@@ -486,7 +533,7 @@ export class WorkflowCoordinator {
     let dispatchIdeas = false;
     let planIdeas = false;
     let initialTaskId: string | null = null;
-    let resumeRunId: string | null = null;
+    let resumeRun: { runId: string; taskId: string } | null = null;
     let resumeResearchRunId: string | null = null;
     let resumeCompletedRun: ResearchEvent | null = null;
     let cancelRunId: string | null = null;
@@ -558,6 +605,7 @@ export class WorkflowCoordinator {
           if (running) {
             const runId = runIdFromItem(running);
             if (!runId) throw new AppError("UNKNOWN_COMPLETION", "The running task has no saved run to resume.");
+            if (this.repository.hasUnknownProviderCompletion(runId)) throw new AppError("UNKNOWN_COMPLETION");
             const saved = this.options.db.db.prepare("SELECT status, problem_id FROM research_runs WHERE id = ?")
               .get(runId) as { status: string; problem_id: string | null } | undefined;
             if (!saved) throw new AppError("INVALID_REFERENCE");
@@ -565,7 +613,7 @@ export class WorkflowCoordinator {
               resumeCompletedRun = { type: "run-completed", runId, threadId: current.threadId, problemId: saved.problem_id };
             } else if (saved.status === "running" || saved.status === "queued") {
               if (running.kind === "research-request") resumeResearchRunId = runId;
-              else resumeRunId = runId;
+              else resumeRun = { runId, taskId: running.id };
             } else throw new AppError("UNKNOWN_COMPLETION", "Review the saved task before continuing.");
             this.repository.updateSession(current.id, current.revision, { state: "running", runningSince: new Date().toISOString() });
           } else if (readyInitial) {
@@ -646,9 +694,13 @@ export class WorkflowCoordinator {
     if (planIdeas) this.planGeneration(receipt.sessionId);
     if (initialTaskId) void this.dispatchInitial(receipt.sessionId, initialTaskId)
       .catch((error) => this.failDispatch(receipt.sessionId, initialTaskId!, error));
-    if (resumeRunId) {
-      const runId = resumeRunId;
-      void this.options.engine().resumeRun(runId).catch((error) => this.options.onError?.(error));
+    if (resumeRun) {
+      const { runId, taskId } = resumeRun;
+      void this.options.engine().resumeRun(runId).catch(error => {
+        this.options.db.db.prepare(`UPDATE research_runs SET status = 'failed', interrupted = 1, updated_at = ?
+          WHERE id = ? AND status IN ('queued','running')`).run(new Date().toISOString(), runId);
+        this.failDispatch(receipt.sessionId, taskId, error);
+      });
     }
     if (resumeResearchRunId && this.options.researchService?.resumeRequest) {
       const runId = resumeResearchRunId;
@@ -662,6 +714,50 @@ export class WorkflowCoordinator {
       }
       else this.options.engine().cancelRun(cancelRunId);
     }
+    return receipt;
+  }
+
+  private canReassessProblems(session: WorkflowSession, task: WorkflowWorkItem): boolean {
+    const runId = runIdFromItem(task);
+    if (!runId || session.state !== "finished" || session.outcome !== "no-qualifying-ideas"
+      || task.kind !== "discovery" || task.state !== "succeeded"
+      || WorkflowLaunchContractSchema.parse(session.contract).limits.enforced !== false) return false;
+    return Boolean(this.options.db.db.prepare(`SELECT 1 FROM research_runs run JOIN scopes scope ON scope.research_run_id = run.id
+      WHERE run.id = ? AND run.status = 'completed' AND trim(scope.audience) = ''
+        AND NOT EXISTS(SELECT 1 FROM workflow_snapshots WHERE research_run_id = run.id AND snapshot_key = 'problem-audience-assessment')`)
+      .get(runId));
+  }
+
+  private async reassessProblems(request: {
+    threadId: string; sessionId: string; clientCommandId: string; expectedRevision: number;
+    action: Extract<WorkflowAction, { type: "reassess-problems" }>;
+  }): Promise<WorkflowAdmissionReceipt> {
+    const session = this.requireSession(request.sessionId, request.threadId);
+    const task = this.repository.getWorkItem(request.action.taskId);
+    if (!task || task.sessionId !== session.id || !this.canReassessProblems(session, task)) {
+      throw new AppError("INVALID_REFERENCE", "This discovery does not need the updated audience assessment.");
+    }
+    const runId = runIdFromItem(task)!;
+    const contract = WorkflowLaunchContractSchema.parse(session.contract);
+    await this.assertModelAvailable(contract.runConfig.model, contract.runConfig.reasoningEffort);
+    this.requireProjectIdle(request.threadId);
+    // Unknown older requests remain acknowledged by the explicit recovery audit, not erased.
+    const acknowledgedAttemptIds = this.repository.acknowledgedAttemptIds(runId);
+    const safety = new GenerationAttemptRepository(this.options.db).getResumeSafety(runId, acknowledgedAttemptIds);
+    if (!safety.canResume) throw new AppError("UNKNOWN_COMPLETION", safety.resumeBlockedReason ?? undefined);
+    const receipt = this.options.db.immediateTransaction(() => {
+      this.repository.reopenGuidedDiscovery(session.id, request.expectedRevision, task.id, true);
+      this.options.db.db.prepare("INSERT INTO workflow_snapshots VALUES (?, ?, ?)").run(runId,
+        "problem-audience-assessment", canonicalJson({ version: 1, taskId: task.id,
+          commandId: request.clientCommandId, requestedAt: new Date().toISOString() }));
+      const result = this.receipt(session.id);
+      this.repository.recordCommand({ threadId: request.threadId, sessionId: session.id,
+        clientCommandId: request.clientCommandId, payload: request, result });
+      return result;
+    });
+    this.progress(session.id, [task.id]);
+    void this.options.engine().resumeRun(runId, acknowledgedAttemptIds, true)
+      .catch(error => this.failDispatch(session.id, task.id, error));
     return receipt;
   }
 
@@ -679,25 +775,52 @@ export class WorkflowCoordinator {
       || (task.state !== "failed" && task.state !== "unknown")) throw new AppError("INVALID_REFERENCE");
     const runId = runIdFromItem(task);
     if (!runId) throw new AppError("UNKNOWN_COMPLETION", "This task has no saved provider attempt to classify.");
-    const attempt = this.options.db.db.prepare(`SELECT id, status, terminal_kind, error_code FROM generation_attempts
+    const attempt = this.options.db.db.prepare(`SELECT id, status, terminal_kind, error_code,
+      EXISTS(SELECT 1 FROM json_each(attempt_metadata_json, '$.attempts')
+        WHERE json_extract(value, '$.providerCompletion') = 'unknown') AS completion_unknown FROM generation_attempts
       WHERE id = ? AND research_run_id = ?`).get(request.action.expectedTerminalAttemptId, runId) as {
-        id: string; status: string; terminal_kind: string | null; error_code: string | null;
+        id: string; status: string; terminal_kind: string | null; error_code: string | null; completion_unknown: number;
       } | undefined;
     if (!attempt) throw new AppError("INVALID_REFERENCE", "The terminal attempt does not belong to this task.");
-    const ambiguous = task.state === "unknown" || ["dispatched", "accepted"].includes(attempt.status)
+    const ambiguous = Boolean(attempt.completion_unknown) || task.state === "unknown" || ["dispatched", "accepted"].includes(attempt.status)
       || (attempt.status === "interrupted" && attempt.terminal_kind !== "never-dispatched");
     if (ambiguous && !request.action.acknowledgeUnknownCompletion) throw new AppError("UNKNOWN_COMPLETION");
     const safeTransient = attempt.terminal_kind === "never-dispatched"
       || (attempt.status === "failed" && ["timeout", "rate-limit", "unavailable"].includes(attempt.error_code ?? ""));
-    if (!ambiguous && !safeTransient) throw new AppError("conflict", "Only a classified transient failure can retry.");
+    const outputLimit = attempt.status === "failed" && attempt.error_code === "output-limit";
+    if (!ambiguous && !safeTransient && !outputLimit) throw new AppError("conflict", "Only a classified transient or output-limit failure can retry.");
     const priorRetry = this.options.db.db.prepare(`SELECT 1 FROM workflow_work_items item
       JOIN workflow_sessions session ON session.id = item.session_id
       WHERE session.thread_id = ? AND json_extract(item.input_json, '$.retryOfTaskId') = ? LIMIT 1`)
       .get(request.threadId, task.id);
-    if (priorRetry || (task.input as { retryOfTaskId?: unknown }).retryOfTaskId) {
-      throw new AppError("conflict", "This task already used its one retry.");
+    if (priorRetry) {
+      throw new AppError("conflict", "This attempt already has a retry. Open its latest attempt to continue.");
     }
     const contract = WorkflowLaunchContractSchema.parse(original.contract);
+    if (task.kind === "discovery" && (ambiguous || outputLimit) && contract.limits.enforced === false) {
+      const latest = terminalAttempt(this.options.db, task);
+      if (latest?.id !== attempt.id) throw new AppError("INVALID_REFERENCE", "Retry the latest failed model request.");
+      const unresolved = new GenerationAttemptRepository(this.options.db).unresolvedAttemptIds(runId);
+      const priorIds = new Set(this.repository.acknowledgedAttemptIds(runId));
+      const acknowledgedAttemptIds = unresolved.filter(id => id === attempt.id || priorIds.has(id));
+      if (acknowledgedAttemptIds.length !== unresolved.length) throw new AppError("UNKNOWN_COMPLETION");
+      await this.assertModelAvailable(contract.runConfig.model, contract.runConfig.reasoningEffort);
+      this.requireProjectIdle(request.threadId);
+      const receipt = this.options.db.immediateTransaction(() => {
+        this.repository.reopenGuidedDiscovery(original.id, request.expectedRevision, task.id);
+        this.options.db.db.prepare("INSERT INTO workflow_snapshots VALUES (?, ?, ?)").run(runId,
+          `acknowledged-retry:${request.clientCommandId}`, canonicalJson({ attemptIds: acknowledgedAttemptIds,
+            taskId: task.id, terminalAttemptId: attempt.id, acknowledgedAt: new Date().toISOString() }));
+        const result = this.receipt(original.id);
+        this.repository.recordCommand({ threadId: request.threadId, sessionId: original.id,
+          clientCommandId: request.clientCommandId, payload: request, result });
+        return result;
+      });
+      this.progress(original.id, [task.id]);
+      void this.options.engine().resumeRun(runId, acknowledgedAttemptIds)
+        .catch(error => this.failDispatch(original.id, task.id, error));
+      return receipt;
+    }
     const originalItems = this.repository.listWorkItems(original.id);
     const generationItems = originalItems.filter((item) => item.kind === "generate-ideas");
     const pendingGeneration = task.kind === "generate-ideas"
@@ -708,7 +831,7 @@ export class WorkflowCoordinator {
     const projection = task.kind === "discovery" ? discoveryRunProjection(contract.runConfig.discoveryDepth) : { modelCalls: 0, searches: 0 };
     const runCalls = task.kind === "generate-ideas" ? 4 * pendingGeneration.length : projection.modelCalls * 2;
     const minimumCalls = task.kind === "generate-ideas" ? runCalls : runCalls + 4;
-    if (modelCalls < minimumCalls || searches < projection.searches || remainingMs(original) < 5 * 60_000) {
+    if (contract.limits.enforced !== false && ((modelCalls ?? 0) < minimumCalls || (searches ?? 0) < projection.searches || remainingMs(original) < 5 * 60_000)) {
       throw new AppError("BUDGET_TOO_SMALL", "The original session has too little reserved time or capacity for a retry.");
     }
     const input = task.input as { model?: { providerId: string; modelId: string }; reasoningEffort?: string };
@@ -717,8 +840,9 @@ export class WorkflowCoordinator {
     const receipt = this.options.db.immediateTransaction(() => {
       const retryContract = WorkflowLaunchContractSchema.parse({
         ...contract, limits: {
+          ...contract.limits,
           maxMinutes: Math.max(5, Math.min(240, Math.floor(remainingMs(original) / 60_000))),
-          maxModelCalls: modelCalls, maxSearches: searches,
+          maxModelCalls: modelCalls ?? contract.limits.maxModelCalls, maxSearches: searches ?? contract.limits.maxSearches,
         },
       });
       const session = this.repository.createSession({
@@ -920,11 +1044,12 @@ export class WorkflowCoordinator {
     const skipped = this.options.db.immediateTransaction(() => {
       this.repository.updateWorkItem(item.id, unknown ? "unknown" : event.type === "run-cancelled" ? "cancelled" : "failed", {
         outputRefs: { runId: event.runId },
-        error: { message: unknown ? "A dispatched provider result has no confirmed terminal record." : event.type === "run-failed" ? event.error : "Stopped by the user." },
+        error: { message: event.type === "run-failed" ? event.error : unknown ? "A dispatched provider result has no confirmed terminal record." : "Stopped by the user." },
       });
       this.settleTaskBudget(item.id, unknown ? "uncertain" : "spent", this.repository.countProviderAttempts(event.runId));
       const skippedIds = this.skipReadyTasks(session.id, event.type === "run-cancelled" ? "session-stopped" : "upstream-failed");
-      const outcome = unknown ? "needs-attention" : event.type === "run-cancelled" ? "cancelled" : "partial";
+      const hasResults = this.summary(session.id).counts.accepted > 0;
+      const outcome = unknown ? "needs-attention" : event.type === "run-cancelled" ? "cancelled" : hasResults ? "partial" : "failed";
       this.repository.updateSession(session.id, session.revision, { state: "finished", outcome, remainingMs: remainingMs(session) });
       return skippedIds;
     });
@@ -1020,7 +1145,7 @@ export class WorkflowCoordinator {
     const created: string[] = [];
     const available = this.availableBudget(session, "model-call");
     const required = allocations.allocations.reduce((total, item) => total + Math.ceil(item.quota / 5) * 4, 0);
-    if (required > available) throw new AppError("BUDGET_TOO_SMALL", `Reserve at least ${required} model calls for generation and independent review.`);
+    if (available !== null && required > available) throw new AppError("BUDGET_TOO_SMALL", `Reserve at least ${required} model calls for generation and independent review.`);
     let ordinal = this.repository.listWorkItems(sessionId).length;
     for (const allocation of allocations.allocations) {
       const angles = initialGenerationAngles(this.options.db, allocation.problemId, Math.ceil(allocation.quota / 5));
@@ -1127,7 +1252,8 @@ export class WorkflowCoordinator {
         });
         this.settleTaskBudget(item.id, unknown ? "uncertain" : spent ? "spent" : "released", spent ? 1 : 0, attempt?.id);
         this.repository.updateSession(sessionId, current.revision, {
-          state: "finished", outcome: current.state === "stop-requested" ? "cancelled" : unknown ? "needs-attention" : "partial",
+          state: "finished", outcome: current.state === "stop-requested" ? "cancelled" : unknown ? "needs-attention"
+            : this.summary(sessionId).counts.accepted > 0 ? "partial" : "failed",
           remainingMs: remainingMs(current),
         });
       });
@@ -1158,7 +1284,7 @@ export class WorkflowCoordinator {
       this.finishCollection(sessionId);
       return;
     }
-    if (remainingMs(session) < 5 * 60_000) {
+    if (WorkflowLaunchContractSchema.parse(session.contract).limits.enforced !== false && remainingMs(session) < 5 * 60_000) {
       const skipped = this.options.db.immediateTransaction(() => {
         const ready = this.repository.listWorkItems(sessionId).filter((item) =>
           ["generate-ideas", "coverage-map", "coverage-search"].includes(item.kind) && item.state === "ready");
@@ -1187,7 +1313,8 @@ export class WorkflowCoordinator {
     const input = item.input as { problemId: string; snapshotId: string; quota: number; model: WorkflowLaunchContract["runConfig"]["model"]; reasoningEffort: string };
     const contract = WorkflowLaunchContractSchema.parse(session.contract);
     const config = RunConfigSchema.parse({ ...contract.runConfig, model: input.model, reasoningEffort: input.reasoningEffort,
-      ideaCount: input.quota, maxRunMinutes: Math.min(contract.runConfig.maxRunMinutes, Math.floor(remainingMs(session) / 60_000)),
+      ideaCount: input.quota, maxRunMinutes: contract.limits.enforced === false ? contract.runConfig.maxRunMinutes
+        : Math.min(contract.runConfig.maxRunMinutes, Math.floor(remainingMs(session) / 60_000)),
       opportunityExploration: contract.targets.kind === "project" ? contract.runConfig.opportunityExploration : undefined });
     try {
       this.options.db.immediateTransaction(() => this.repository.updateWorkItem(item.id, "running"));
@@ -1300,8 +1427,10 @@ export class WorkflowCoordinator {
         acceptedDistinct: summary.counts.accepted, target: summary.counts.requested,
         rawCandidateCap: 2 * summary.counts.requested, rawCandidatesUsed: summary.counts.attempted,
         fillRoundsUsed: completedRounds.length, lastRoundAcceptedGain: lastGain,
-        remainingModelCalls: this.availableBudget(session, "model-call"),
-        remainingMs: remainingMs(session) - 5 * 60_000,
+        ...(contract.limits.enforced === false ? {} : {
+          remainingModelCalls: this.availableBudget(session, "model-call") ?? 0,
+          remainingMs: remainingMs(session) - 5 * 60_000,
+        }),
       };
       const gate = planIdeaFill({ ...fillInput, namedGapIds: namedGaps.length ? namedGaps : ["coverage-pending"] });
       const mapRound = Math.min(2, completedRounds.length + 1) as 1 | 2;
@@ -1316,7 +1445,7 @@ export class WorkflowCoordinator {
           const managedSearchesUsed = items.filter((item) => item.kind === "coverage-search" && item.state !== "skipped").length;
           if (priorSearch) {
             collectionStop = { code: "evidence-needed", reason: `The bounded search for "${evidenceGap.name}" did not make the gap ready for generation.` };
-          } else if (this.availableBudget(session, "search") < 1 || managedSearchesUsed >= managedSearchLimit) {
+          } else if (contract.limits.enforced !== false && ((this.availableBudget(session, "search") ?? 0) < 1 || managedSearchesUsed >= managedSearchLimit)) {
             collectionStop = { code: "search-budget", reason: `Coverage gap "${evidenceGap.name}" needs evidence: ${evidenceGap.evidenceNeeded?.replace(/[.!?]+$/, "")}. No search remains in this run.` };
           } else {
             const search = this.options.db.immediateTransaction(() => {
@@ -1341,7 +1470,7 @@ export class WorkflowCoordinator {
           collectionStop = { code: "no-useful-gap", reason: typeof output?.noUsefulGapReason === "string"
             ? output.noUsefulGapReason : searchOutput?.noEvidenceReason
               ?? "The saved inventory has no further concrete buyer or workflow gap for a fill batch." };
-        } else if (this.availableBudget(session, "model-call") < 5) {
+        } else if (contract.limits.enforced !== false && (this.availableBudget(session, "model-call") ?? 0) < 5) {
           collectionStop = { code: "model-budget", reason: "A targeted fill needs one coverage map call and four reserved generation and review calls." };
         } else {
           const first = generationItems.find((item) => fillRoundFromItem(item) === 0);
@@ -1453,14 +1582,18 @@ export class WorkflowCoordinator {
     opportunityAttemptId?: string): void {
     const item = this.repository.getWorkItem(taskId);
     if (!item) return;
-    const entries = this.repository.listBudgetEntries(item.sessionId)
-      .filter((row) => row.workItemId === taskId && row.state === "reserved");
+    const entries = this.repository.listBudgetEntries(item.sessionId).filter(row => row.workItemId === taskId);
     for (const kind of ["model-call", "search"] as const) {
-      const matching = entries.filter((entry) => entry.kind === kind);
-      let actual = state === "spent"
+      const matching = entries.filter(entry => entry.kind === kind && entry.state === "reserved");
+      const alreadySpent = entries.filter(entry => entry.kind === kind && entry.state === "spent")
+        .reduce((sum, entry) => sum + (entry.settledUnits ?? 0), 0);
+      const cumulative = state === "spent"
         ? kind === "model-call" ? item.kind === "coverage-search" ? 0 : attempts
           : item.kind === "coverage-search" ? attempts : this.searchAttemptCount(runIdFromItem(item))
         : 0;
+      // A reopened task keeps its prior accounting. Settle only newly observed work;
+      // unknown reservations remain uncertain rather than being rewritten as spent.
+      let actual = Math.max(0, cumulative - alreadySpent);
       for (const entry of matching) {
         const settledUnits = state === "uncertain" ? entry.reservedUnits
           : state === "released" ? 0 : Math.min(entry.reservedUnits, actual);
@@ -1472,7 +1605,7 @@ export class WorkflowCoordinator {
       if (state === "spent" && actual > 0) {
         const overrun = this.repository.reserveBudget({
           sessionId: item.sessionId, workItemId: taskId,
-          operationKey: `observed-overrun:${taskId}:${kind}`,
+          operationKey: `observed-overrun:${taskId}:${kind}:${cumulative}`,
           kind, reservedUnits: actual,
         });
         this.repository.settleBudget(overrun.id, { state: "spent", settledUnits: actual });
@@ -1488,8 +1621,9 @@ export class WorkflowCoordinator {
     return row.count;
   }
 
-  private availableBudget(session: WorkflowSession, kind: "model-call" | "search"): number {
+  private availableBudget(session: WorkflowSession, kind: "model-call" | "search"): number | null {
     const contract = WorkflowLaunchContractSchema.parse(session.contract);
+    if (contract.limits.enforced === false) return null;
     const limit = kind === "model-call"
       ? contract.limits.maxModelCalls + session.additionalModelCalls
       : contract.limits.maxSearches + session.additionalSearches;
@@ -1575,12 +1709,15 @@ function reviewFromItem(db: DatabaseClient, item: WorkflowWorkItem): SavedSoluti
   return runId ? readSolutionSetReview(db, runId) : null;
 }
 
-function terminalAttemptId(db: DatabaseClient, item: WorkflowWorkItem): string | null {
+function terminalAttempt(db: DatabaseClient, item: WorkflowWorkItem): { id: string; completion_unknown: number } | null {
   const runId = runIdFromItem(item);
   if (!runId) return null;
-  const row = db.db.prepare(`SELECT id FROM generation_attempts WHERE research_run_id = ?
-    ORDER BY created_at DESC, rowid DESC LIMIT 1`).get(runId) as { id: string } | undefined;
-  return row?.id ?? null;
+  // Older builds saved some lost streams as failures while retaining the native uncertainty.
+  const row = db.db.prepare(`SELECT id, EXISTS(SELECT 1 FROM json_each(attempt_metadata_json, '$.attempts')
+    WHERE json_extract(value, '$.providerCompletion') = 'unknown') AS completion_unknown
+    FROM generation_attempts WHERE research_run_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1`)
+    .get(runId) as { id: string; completion_unknown: number } | undefined;
+  return row ?? null;
 }
 
 function requestedFromItem(item: WorkflowWorkItem): number {

@@ -2,6 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { z } from "zod";
 import { startBackend, type BackendHandle } from "../../src/backend/server";
 import { materializeResearchSnapshot } from "../../src/core/research-revisions";
 import { ResearchRequestService } from "../../src/core/research-request-service";
@@ -169,6 +170,78 @@ describe("research snapshot materialization", () => {
     client.close();
   });
 
+  test.each([false, true])("saved-finding reevaluation uses scoped observations without inventing demand; repeated origin: %s", async (repeatedOrigin) => {
+    const { client, repository, sessionId, snapshotId, oldProblemId } = workflowFixture();
+    try {
+      const original = client.db.prepare("SELECT discovery_run_id FROM problems WHERE id = ?").get(oldProblemId) as { discovery_run_id: string };
+      const first = client.db.prepare(`SELECT f.id, f.source_id, f.quote FROM factors f
+        JOIN problem_factors pf ON pf.factor_id = f.id WHERE pf.problem_id = ?`).get(oldProblemId) as {
+          id: string; source_id: string; quote: string;
+        };
+      new DiscoveryRepository(client).persistFactors(original.discovery_run_id, [{
+        id: "second-source", providerSourceId: "second-source", canonicalUrl: "https://second-actor.test/filing",
+        title: "Another filing account", retrievedText: first.quote, author: null, publishedAt: null,
+        contentHash: sha256(first.quote), retrievedAt: "2026-09-20T00:00:00.000Z",
+      }], [{
+        id: "second-factor", sourceId: "second-source", subject: "Teams", behavior: "repeat filing",
+        quote: first.quote, harvestMode: "domain", modelConfidence: 0.8,
+        sourceRole: "unknown", audienceFit: "unknown", independentSourceKey: null, supportsDemand: false,
+      }]);
+      client.db.prepare("INSERT INTO problem_factors VALUES (?, ?)").run(oldProblemId, "second-factor");
+      const factorIds = [first.id, "second-factor"];
+      const assessments = factorIds.map((factorId, index) => ({ factorId, sourceRole: "firsthand", audienceFit: "intended-buyer",
+        independentSourceKey: repeatedOrigin ? "same-actor" : `actor-${index}`, reason: "An affected actor describes repeated filing." }));
+      client.db.prepare("UPDATE scopes SET audience = '' WHERE research_run_id = ?").run(original.discovery_run_id);
+      client.db.prepare(`UPDATE problems SET factor_assessments_json = ?, intended_buyer_evidence_factor_ids_json = ?,
+        brief_fit = 'direct', contrary_evidence = 'resolved' WHERE id = ?`)
+        .run(JSON.stringify(assessments), JSON.stringify(factorIds), oldProblemId);
+      const rawFactors = client.db.prepare("SELECT * FROM factors WHERE research_run_id = ? ORDER BY id").all(original.discovery_run_id);
+      let evidence: unknown;
+      const modelClient: StructuredModelClient = { structuredCompletion: async request => {
+        request.onDispatched?.();
+        request.onAccepted?.({});
+        evidence = request.evidence[0]!.content;
+        const supplied = z.object({ factors: z.array(z.object({ id: z.string() })), sources: z.array(z.object({ id: z.string() })) }).parse(evidence);
+        return { output: request.schema.parse({
+          verdict: "confirmed", verdictReason: "Two relevant quoted accounts support the problem.",
+          verdictSourceIds: supplied.sources.map(source => source.id), intendedBuyerEvidenceFactorIds: supplied.factors.map(factor => factor.id),
+          evidenceGap: null, unresolvedAssumptions: [], wouldChangeConclusion: [],
+        }), metadata: {
+          model: request.model, usage: { status: "unknown" }, providerCosts: [], finishReason: "stop", latencyMs: 1,
+          repairCount: 0, providerRequestIds: ["scoped-review"], attempts: [{ attempt: "initial", outcome: "completed",
+            providerCompletion: "confirmed", model: request.model, usage: { status: "unknown" }, cost: { status: "unknown" }, latencyMs: 1 }],
+        } };
+      } };
+      const service = new ResearchRequestService({ db: client,
+        engine: () => ({ resumeRun: async () => { throw new Error("Saved finding reevaluation must not search"); } }),
+        modelClient: () => modelClient });
+      const admitted = client.immediateTransaction(() => service.admitRequest(sessionId, repository.getSession(sessionId)!.revision, {
+        type: "request-research", kind: "reevaluate", question: "Recheck this affected workflow",
+        targetFindingId: oldProblemId, baseSnapshotId: snapshotId,
+        model: { providerId: "openai-subscription", modelId: "test-model" }, reasoningEffort: "medium",
+        allowance: { maxModelCalls: 1, maxSearches: 0, maxMinutes: 5 },
+      }));
+      await service.dispatchReady(sessionId);
+      const item = repository.getWorkItem(admitted.workItemId)!;
+      expect(item.state).toBe("succeeded");
+      const output = item.outputRefs as { runId: string; problemIds: string[] };
+      const result = service.listRequests(sessionId)[0]!.resultFindings[0]!;
+      expect(result.verdict).toBe(repeatedOrigin ? "insufficient-evidence" : "confirmed");
+      const reviewed = z.object({ factors: z.array(z.object({ id: z.string(), sourceRole: z.string(), audienceFit: z.string(), supportsDemand: z.boolean() })) }).parse(evidence);
+      expect(reviewed.factors).toHaveLength(2);
+      expect(reviewed.factors.every(factor => factor.sourceRole === "firsthand" && factor.audienceFit === "intended-buyer" && !factor.supportsDemand)).toBe(true);
+      const copied = client.db.prepare("SELECT factor_assessments_json, intended_buyer_evidence_factor_ids_json FROM problems WHERE id = ?")
+        .get(output.problemIds[0]!) as { factor_assessments_json: string; intended_buyer_evidence_factor_ids_json: string };
+      const mapped = JSON.parse(copied.factor_assessments_json) as Array<{ factorId: string }>;
+      expect(mapped.map(assessment => assessment.factorId).sort()).toEqual(reviewed.factors.map(factor => factor.id).sort());
+      expect(JSON.parse(copied.intended_buyer_evidence_factor_ids_json)).toHaveLength(2);
+      expect(client.db.prepare("SELECT * FROM factors WHERE research_run_id = ? ORDER BY id").all(original.discovery_run_id)).toEqual(rawFactors);
+      expect(client.db.prepare("SELECT verdict FROM problems WHERE id = ?").get(oldProblemId)).toEqual({ verdict: "confirmed" });
+      expect(count(client, "cost_ledger", "research_run_id", output.runId)).toBe(1);
+      expect(client.db.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
+    } finally { client.close(); }
+  });
+
   test("pauses after a running request reaches a terminal result", async () => {
     const { client, repository, sessionId, snapshotId } = workflowFixture();
     const service = new ResearchRequestService({
@@ -274,8 +347,8 @@ describe("research snapshot materialization", () => {
     client.close();
   });
 
-  test("late queued research stops before dispatch when the project time is exhausted", async () => {
-    const { client, repository, sessionId, snapshotId } = workflowFixture();
+  test.each([true, false])("queued research respects exhausted project time only when enforced = %s", async (enforced) => {
+    const { client, repository, sessionId, snapshotId } = workflowFixture({ enforced });
     const dispatched: string[] = [];
     const service = new ResearchRequestService({
       db: client, engine: () => ({ resumeRun: async (id: string) => { dispatched.push(id); } }),
@@ -296,9 +369,41 @@ describe("research snapshot materialization", () => {
     const runId = (repository.getWorkItem(first.workItemId)!.outputRefs as { runId: string }).runId;
     client.db.prepare("UPDATE research_runs SET status = 'completed' WHERE id = ?").run(runId);
     await service.handleRunEvent({ type: "run-completed", runId, threadId: "project-1", problemId: null });
+    expect(dispatched).toHaveLength(enforced ? 1 : 2);
+    expect(repository.getWorkItem(second.workItemId)?.state).toBe(enforced ? "failed" : "running");
+    expect(repository.getSession(sessionId)?.state).toBe(enforced ? "waiting-for-review" : "running");
+    client.close();
+  });
+
+  test("guided research can be added, completed, and applied after all session estimates are spent", async () => {
+    const { client, repository, sessionId, snapshotId } = workflowFixture({ enforced: false, maxModelCalls: 1, maxSearches: 0 });
+    client.immediateTransaction(() => repository.updateSession(sessionId, repository.getSession(sessionId)!.revision, {
+      remainingMs: 0,
+    }));
+    const dispatched: string[] = [];
+    const service = new ResearchRequestService({
+      db: client, engine: () => ({ resumeRun: async (id: string) => { dispatched.push(id); } }),
+      modelClient: () => { throw new Error("No direct model call expected"); },
+    });
+    const admitted = client.immediateTransaction(() => service.admitRequest(sessionId, repository.getSession(sessionId)!.revision, {
+      type: "request-research", kind: "new-question", question: "What do buyers use today?",
+      baseSnapshotId: snapshotId, model: { providerId: "openai-subscription", modelId: "test-model" },
+      reasoningEffort: "medium", allowance: { maxModelCalls: 12, maxSearches: 10, maxMinutes: 10 },
+    }));
+    await service.dispatchReady(sessionId);
     expect(dispatched).toHaveLength(1);
-    expect(repository.getWorkItem(second.workItemId)?.state).toBe("failed");
-    expect(repository.getSession(sessionId)?.state).toBe("waiting-for-review");
+    const runId = dispatched[0]!;
+    const run = client.db.prepare("SELECT config_json FROM research_runs WHERE id = ?").get(runId) as { config_json: string };
+    expect(JSON.parse(run.config_json).maxRunMinutes).toBe(10);
+    saveRunFinding(client, runId, "guided-finding", "guided-source", "guided-factor", "Buyers use spreadsheets");
+    client.db.prepare("UPDATE research_runs SET status = 'completed' WHERE id = ?").run(runId);
+    await service.handleRunEvent({ type: "run-completed", runId, threadId: "project-1", problemId: null });
+    expect(repository.getWorkItem(admitted.workItemId)?.state).toBe("succeeded");
+    const applied = client.immediateTransaction(() => service.applyResearch(sessionId, repository.getSession(sessionId)!.revision, {
+      type: "apply-research", baseSnapshotId: snapshotId, includedRequestIds: [admitted.workItemId], replacements: [],
+    }));
+    expect(applied.snapshot.selection.sourceProblemIds).toContain("guided-finding");
+    expect(repository.getSnapshot(snapshotId)).not.toBeNull();
     client.close();
   });
 
@@ -673,7 +778,7 @@ test("finished Controlled research command survives backend reopening with linke
 });
 
 function workflowFixture(options: { researchInstruction?: string; auditResearchText?: string;
-  mode?: "babysit" | "vibe"; maxSearches?: number } = {}, directory?: string): {
+  mode?: "babysit" | "vibe"; maxModelCalls?: number; maxSearches?: number; enforced?: boolean } = {}, directory?: string): {
   client: DatabaseClient; repository: WorkflowRepository; sessionId: string; snapshotId: string; oldProblemId: string;
 } {
   const client = setup(directory);
@@ -687,7 +792,8 @@ function workflowFixture(options: { researchInstruction?: string; auditResearchT
       scope: { title: "Operations", audience: "Small teams", domain: "Filing", observations: "Manual entries repeat", offLimits: [] },
       runConfig: DEFAULT_RUN_CONFIG,
       targets: { kind: "per-problem", ideaCount: 3 },
-      limits: { maxMinutes: 60, maxModelCalls: 50, maxSearches: options.maxSearches ?? 30 },
+      limits: { ...(options.enforced === undefined ? {} : { enforced: options.enforced }),
+        maxMinutes: 60, maxModelCalls: options.maxModelCalls ?? 50, maxSearches: options.maxSearches ?? 30 },
       instructions: { ...(options.researchInstruction ? { research: options.researchInstruction } : {}) },
       resolvedInstructions: { research: options.auditResearchText ?? "", ideas: "", review: "" },
       instructionHashes: { research: "hash-research", ideas: "hash-ideas", review: "hash-review" },

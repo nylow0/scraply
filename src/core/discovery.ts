@@ -24,7 +24,7 @@ import {
   SOURCE_MAX_CHARACTERS,
 } from "../shared/discovery-projection";
 import { loadPrompt } from "./prompts";
-import { DISCOVERY_SYNTHESIS_DEADLINE_MS, FACTOR_HARVEST_DEADLINE_MS } from "./stages";
+import { applyProblemFactorAssessments } from "./problem-evidence";
 
 export {
   DEFAULT_PROBLEM_CANDIDATE_LIMIT,
@@ -42,6 +42,10 @@ export interface PlannedQuery { query: string; intent: QueryIntent | "unclassifi
 export const FACTOR_SUBJECT_MAX_CHARACTERS = 160;
 export const FACTOR_BEHAVIOR_MAX_CHARACTERS = 280;
 export const DEFAULT_AUDIENCE_DOMAINS = ["reddit.com", "news.ycombinator.com"];
+// Keep each assignment small enough for reasoning plus output. Research breadth and factor caps stay intact.
+const GUIDED_HARVEST_SOURCES = 3;
+const GUIDED_HARVEST_CHARACTERS = 9_000;
+const GUIDED_HARVEST_FACTORS = 6;
 
 export interface HarvestedSource extends DiscoverySourceRecord {
   url: string;
@@ -97,6 +101,10 @@ export interface DiscoveryDependencies {
   model: ModelRef;
   reasoningEffort: ReasoningEffort;
   depth?: DiscoveryDepth;
+  /** Depth suggests search breadth; a useful plan can contain fewer or more queries. */
+  guided?: boolean;
+  smallHarvestBatches?: boolean;
+  assessProblemAudience?: boolean;
   audienceSearch?: Pick<SearchOptions, "includeDomains" | "startPublishedDate"> & { category?: ExaCategory };
   candidateLimit?: number;
   signal?: AbortSignal;
@@ -118,6 +126,7 @@ export async function harvestFactors(
 ): Promise<HarvestResult> {
   const depth = dependencies.depth ?? "standard";
   const depthConfig = DISCOVERY_DEPTHS[depth];
+  const smallBatches = dependencies.guided && dependencies.smallHarvestBatches !== false;
   const allSources: HarvestedSource[] = [];
   const rawFactors: Array<Omit<HarvestedFactor, "source">> = [];
   const rejections: FactorRejection[] = [];
@@ -140,13 +149,17 @@ export async function harvestFactors(
     let acceptedForMode = 0;
     const harvest = async (sources: HarvestedSource[], targetAccepted: number) => {
       const sourceById = new Map(allSources.map((source) => [source.id, source]));
-      // Audience searches return heterogeneous long-form discussions. Smaller packets keep Sol
-      // extraction comfortably inside its deadline while preserving deterministic source groups.
-      const batches = batchSources(sources, mode === "audience" ? AUDIENCE_SOURCE_BATCH_CHARACTERS : SOURCE_BATCH_CHARACTERS);
+      // Keep older contracts' packet identities. Guided runs checkpoint smaller assignments
+      // so one long reasoning call does not carry the entire search result.
+      const batches = batchSources(sources, smallBatches ? GUIDED_HARVEST_CHARACTERS
+        : mode === "audience" ? AUDIENCE_SOURCE_BATCH_CHARACTERS : SOURCE_BATCH_CHARACTERS,
+      smallBatches ? GUIDED_HARVEST_SOURCES : Infinity);
       for (const [index, batch] of batches.entries()) {
         const remainingBatches = batches.length - index;
-        const factorLimit = Math.ceil((targetAccepted - acceptedForMode) / remainingBatches);
+        const factorLimit = Math.min(smallBatches ? GUIDED_HARVEST_FACTORS : Infinity,
+          Math.ceil((targetAccepted - acceptedForMode) / remainingBatches));
         if (factorLimit <= 0) break;
+        dependencies.onProjection?.(`Reading ${mode} evidence: batch ${index + 1} of ${batches.length}, ${batch.length} sources`);
         const response = await structuredCall(
           dependencies,
           `factor-harvest:${mode}:${batch.map((source) => source.id).join(",")}`,
@@ -298,9 +311,10 @@ export async function discoverProblems(
       sourcesByUrl.set(source.canonicalUrl, source);
       killSources.push(source);
     }
+    const assessAudience = dependencies.workflowVersion === 2 && dependencies.assessProblemAudience && !scope.audience.trim();
     const kill = await structuredCall(
       dependencies,
-      `problem-kill:${createHash("sha256").update(JSON.stringify(candidate)).digest("hex")}`,
+      `problem-kill:${createHash("sha256").update(JSON.stringify(candidate)).digest("hex")}${assessAudience ? ":audience-v1" : ""}`,
       [
         (dependencies.prompt ?? loadPrompt)("problem-kill"),
         "Look for contrary evidence: already solved, overstated scale, self-correction, and prior attempts that failed.",
@@ -318,10 +332,17 @@ export async function discoverProblems(
       throw new ProviderFailure("schema", "Evidence assessment referenced an unknown source ID", false);
     }
     const factorIds = citedFactors.map((factor) => factor.id);
+    const factorAssessments = assessAudience && "factorAssessments" in kill ? kill.factorAssessments : [];
+    if (assessAudience && (factorAssessments.length !== factorIds.length
+      || new Set(factorAssessments.map(assessment => assessment.factorId)).size !== factorIds.length
+      || factorAssessments.some(assessment => !factorIds.includes(assessment.factorId)))) {
+      throw new ProviderFailure("schema", "Problem audience assessment must cover each exact supporting factor once", false);
+    }
+    const assessedFactors = applyProblemFactorAssessments(citedFactors, factorAssessments);
     const candidateBuyerIds = "intendedBuyerEvidenceFactorIds" in candidate ? candidate.intendedBuyerEvidenceFactorIds : [];
     const killBuyerIds = "intendedBuyerEvidenceFactorIds" in kill ? kill.intendedBuyerEvidenceFactorIds : candidateBuyerIds;
     const claimedBuyerIds = new Set(killBuyerIds);
-    const intendedBuyerFactors = citedFactors.filter((factor) => claimedBuyerIds.has(factor.id)
+    const intendedBuyerFactors = assessedFactors.filter((factor) => claimedBuyerIds.has(factor.id)
       && qualifiesAsIntendedBuyerObservation(factor));
     const independentBuyerSources = new Set(intendedBuyerFactors.map((factor) => factor.independentSourceKey).filter(Boolean));
     // A hostname is only a transport boundary. Separate buyer accounts or studies on the
@@ -357,7 +378,8 @@ export async function discoverProblems(
       briefFit: "briefFit" in kill ? kill.briefFit : "unknown",
       contraryEvidence: "contraryEvidence" in kill ? kill.contraryEvidence : "unknown",
       workflowKey: "workflowKey" in kill ? kill.workflowKey : null,
-      factors: citedFactors,
+      factorAssessments,
+      factors: assessedFactors,
       sourceHostnames: hostnames,
       singleHarvestModeWarning: new Set(citedFactors.map((factor) => factor.harvestMode)).size === 1 && citedFactors.length > 0,
     });
@@ -440,13 +462,13 @@ function characterBefore(value: string, index: number): string | undefined {
   return value.slice(startsSurrogatePair ? index - 2 : index - 1, index);
 }
 
-export function batchSources(sources: HarvestedSource[], maxCharacters = SOURCE_BATCH_CHARACTERS): HarvestedSource[][] {
+export function batchSources(sources: HarvestedSource[], maxCharacters = SOURCE_BATCH_CHARACTERS, maxSources = Infinity): HarvestedSource[][] {
   const batches: HarvestedSource[][] = [];
   let current: HarvestedSource[] = [];
   let characters = 0;
   for (const source of sources) {
     const size = JSON.stringify(toStageSource(source)).length;
-    if (current.length > 0 && characters + size > maxCharacters) {
+    if (current.length > 0 && (characters + size > maxCharacters || current.length >= maxSources)) {
       batches.push(current);
       current = [];
       characters = 0;
@@ -472,6 +494,7 @@ async function planQueries(
       inputs: {
         harvestMode: mode,
         queryCount: count,
+        ...(dependencies.guided ? { queryCountIsGuidance: true, researchDepth: dependencies.depth ?? "standard" } : {}),
         ...(dependencies.researchAngles?.length ? { angleAssignments: dependencies.researchAngles.filter((angle) =>
           mode === "domain"
             ? ["current-alternative", "contrary-evidence", "measured-behavior"].includes(angle.sourceClass)
@@ -495,7 +518,7 @@ async function planQueries(
     : { query: item.query.trim(), intent: "intent" in item ? item.intent as QueryIntent : "unclassified" });
   const queries = [...new Map(planned.filter((item) => item.query)
     .map((item) => [normalizeSearchQuery(item.query), item])).values()];
-  if (queries.length < count) {
+  if (queries.length === 0 || (!dependencies.guided && queries.length < count)) {
     throw new ProviderFailure(
       "schema",
       `Query planner returned ${queries.length} unique non-empty queries; expected ${count}`,
@@ -506,11 +529,11 @@ async function planQueries(
     && queries.every((item) => item.intent !== "unclassified")) {
     const intents = new Set(queries.map((item) => item.intent));
     const hasBuyerIntent = intents.has("firsthand-experience") || intents.has("buying-signal");
-    if (!hasBuyerIntent || intents.size < Math.min(3, count)) {
+    if (!hasBuyerIntent || intents.size < Math.min(3, dependencies.guided ? queries.length : count)) {
       throw new ProviderFailure("schema", "Query planner did not return enough distinct evidence intents", false);
     }
   }
-  const bounded = queries.slice(0, count);
+  const bounded = dependencies.guided ? queries : queries.slice(0, count);
   if (dependencies.workflowVersion !== 2 || bounded.some((item) => item.intent === "unclassified")) return bounded;
   const buyingIndex = bounded.findIndex((item) => item.intent === "buying-signal");
   const firsthandIndex = bounded.findIndex((item) => item.intent === "firsthand-experience");
@@ -689,13 +712,8 @@ async function structuredCall<T>(
     schema,
     jsonSchema: deriveJsonSchema(schema),
     repairPolicy: "one_retry",
-    // The subscription endpoint rejects token ceilings; its deadline and byte limit still apply.
+    // The subscription endpoint rejects token ceilings; the runtime still bounds output bytes.
     ...(dependencies.model.providerId !== "openai-subscription" ? { maxOutputTokens: 8_192 } : {}),
-    deadlineMs: stage.startsWith("factor-harvest:")
-      ? FACTOR_HARVEST_DEADLINE_MS
-      : stage === "problem-candidates" || stage.startsWith("problem-kill:")
-        ? DISCOVERY_SYNTHESIS_DEADLINE_MS
-        : 120_000,
     ...(dependencies.signal ? { signal: dependencies.signal } : {}),
   });
   return result.output;
@@ -855,7 +873,7 @@ function hasIntendedBuyerObservation(factors: Array<Omit<HarvestedFactor, "sourc
   return factors.some(qualifiesAsIntendedBuyerObservation);
 }
 
-export function qualifiesAsIntendedBuyerObservation(factor: Omit<HarvestedFactor, "source">): boolean {
+export function qualifiesAsIntendedBuyerObservation<T extends Pick<DiscoveryFactorRecord, "audienceFit" | "sourceRole">>(factor: T): boolean {
   if (factor.audienceFit !== "intended-buyer") return false;
   return factor.sourceRole === "firsthand" || factor.sourceRole === "measured";
 }

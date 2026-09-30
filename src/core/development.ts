@@ -294,7 +294,6 @@ export async function produceDevelopmentOptions(
     jsonSchema: deriveJsonSchema(outputSchema),
     repairPolicy: "one_retry",
     ...(dependencies.model.providerId !== "openai-subscription" ? { maxOutputTokens: Math.max(stage.maxOutputTokens, ideaCount * 1_024) } : {}),
-    deadlineMs: Math.max(stage.deadlineMs, ideaCount * 15_000),
     ...(dependencies.signal ? { signal: dependencies.signal } : {}),
   };
   dependencies.beforeGeneration?.(request, resolvedPrompt);
@@ -353,7 +352,6 @@ export async function evaluateSelectedOptionRisk(
     jsonSchema: deriveJsonSchema(WorkflowV2RiskEvaluationOutputSchema),
     repairPolicy: "one_retry",
     ...(dependencies.model.providerId !== "openai-subscription" ? { maxOutputTokens: stage.maxOutputTokens } : {}),
-    deadlineMs: stage.deadlineMs,
     ...(dependencies.signal ? { signal: dependencies.signal } : {}),
   };
   dependencies.beforeGeneration?.(request, resolvedPrompt);
@@ -423,7 +421,6 @@ export async function analyzeSelectedOption(
     jsonSchema: deriveJsonSchema(outputSchema),
     repairPolicy: "one_retry",
     ...(dependencies.model.providerId !== "openai-subscription" ? { maxOutputTokens: stage.maxOutputTokens } : {}),
-    deadlineMs: stage.deadlineMs,
     ...(dependencies.signal ? { signal: dependencies.signal } : {}),
   };
   dependencies.beforeGeneration?.(request, resolvedPrompt);
@@ -480,7 +477,7 @@ export async function reassessSelectedOptionRisk(
     schema: WorkflowV2RiskReassessmentOutputSchema,
     jsonSchema: deriveJsonSchema(WorkflowV2RiskReassessmentOutputSchema), repairPolicy: "one_retry",
     ...(dependencies.model.providerId !== "openai-subscription" ? { maxOutputTokens: stage.maxOutputTokens } : {}),
-    deadlineMs: stage.deadlineMs, ...(dependencies.signal ? { signal: dependencies.signal } : {}),
+    ...(dependencies.signal ? { signal: dependencies.signal } : {}),
   };
   dependencies.beforeGeneration?.(request, resolvedPrompt);
   const completion = await dependencies.modelClient.structuredCompletion(request);

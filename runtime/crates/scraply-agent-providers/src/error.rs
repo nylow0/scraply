@@ -126,7 +126,7 @@ impl From<ProviderError> for CoreError {
     }
 }
 
-fn safe_diagnostic(value: &str) -> Option<String> {
+pub(crate) fn safe_diagnostic(value: &str) -> Option<String> {
     if value.is_empty()
         || value.len() > MAX_DIAGNOSTIC_BYTES
         || !value

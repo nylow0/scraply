@@ -8,7 +8,8 @@ import { canonicalJson, sha256 } from "../shared/content-identity";
 import { deriveJsonSchema } from "../shared/json-schema";
 import { OpportunityExpansionOutputSchema } from "../shared/opportunity-exploration";
 import { SourceSchema } from "../shared/schemas";
-import { ClassifiedWorkflowV2ProblemKillOutputSchema, WorkflowV2QueryPlanOutputSchema, WorkflowV2FactorHarvestOutputSchema, WorkflowV2ProblemCandidatesOutputSchema, WorkflowV2ProblemKillOutputSchema, WorkflowV2SolutionsOutputSchema } from "../shared/structured-output-schemas";
+import { AssessedWorkflowV2ProblemKillOutputSchema, BoundedWorkflowV2FactorHarvestOutputSchema, FACTOR_EXPLANATION_CHARACTERS, ClassifiedWorkflowV2ProblemKillOutputSchema, WorkflowV2QueryPlanOutputSchema, WorkflowV2FactorHarvestOutputSchema, WorkflowV2ProblemCandidatesOutputSchema, WorkflowV2ProblemKillOutputSchema, WorkflowV2SolutionsOutputSchema } from "../shared/structured-output-schemas";
+import { PROBLEM_AUDIENCE_ASSESSMENT_INSTRUCTION } from "./problem-evidence";
 import type { WorkflowV2DevelopmentContext } from "./development";
 import { resolveWorkflowV2Prompt, type ResolvedWorkflowV2Prompt } from "./prompts";
 import { WORKFLOW_V2_STAGE_IDS, WORKFLOW_V2_STAGE_REGISTRY, type WorkflowV2StageId } from "./stages";
@@ -16,11 +17,13 @@ import { WORKFLOW_V2_STAGE_IDS, WORKFLOW_V2_STAGE_REGISTRY, type WorkflowV2Stage
 /** Run-local snapshots never reuse fresh web results or prompt overrides across runs. */
 export class WorkflowExecution {
   readonly repository: WorkflowV2Repository;
+  readonly smallHarvestBatches: boolean;
   private readonly prompts: Record<WorkflowV2StageId, ResolvedWorkflowV2Prompt>;
   private readonly disableRepair: boolean;
   private readonly factorUncertainty = new Map<string, string>();
 
-  constructor(private readonly db: DatabaseClient, readonly runId: string) {
+  constructor(private readonly db: DatabaseClient, readonly runId: string,
+    private readonly acknowledgedAttemptIds: readonly string[] = []) {
     this.repository = new WorkflowV2Repository(db);
     const run = db.db.prepare(`SELECT rr.purpose, ws.contract_json FROM research_runs rr
       LEFT JOIN workflow_sessions ws ON ws.id = rr.workflow_session_id WHERE rr.id = ?`)
@@ -45,7 +48,11 @@ export class WorkflowExecution {
       // Save the format per run: an older run without this marker must still reproduce its IDs.
       this.save("identifier-characters", 24);
       this.save("focused-experiments", { version: 1 });
+      this.save("small-harvest-batches", { version: 1 });
+      this.save("problem-audience-assessment", { version: 1 });
     }
+    // Runs without the marker keep their original source groups and checkpoint identities.
+    this.smallHarvestBatches = this.read<{ version: number }>("small-harvest-batches")?.version === 1;
   }
 
   resolvePrompt = (stage: WorkflowV2StageId): ResolvedWorkflowV2Prompt => this.prompts[stage];
@@ -103,15 +110,32 @@ export class WorkflowExecution {
       if (!WORKFLOW_V2_STAGE_IDS.includes(id as WorkflowV2StageId)) throw new Error(`Unknown stage ${id}`);
       const stageId = id as WorkflowV2StageId;
       const stage = WORKFLOW_V2_STAGE_REGISTRY[stageId];
-      const prompt = this.resolvePrompt(stageId);
+      const savedPrompt = this.resolvePrompt(stageId);
+      const assessAudience = stageId === "problem-kill" && original.stage.endsWith(":audience-v1");
+      const instruction = assessAudience ? `${savedPrompt.text}\n\n${PROBLEM_AUDIENCE_ASSESSMENT_INSTRUCTION}` : savedPrompt.text;
+      const prompt = { ...savedPrompt, text: instruction, resolvedSha256: sha256(instruction) };
+      const selectionId = selection.join(":") || null;
+      // Pin completed contracts, including a native result saved before its stage commit.
+      // Only unfinished extraction gets the new limits; completed work is never regenerated.
+      const completedFactor = stageId === "factor-harvest"
+        ? this.db.db.prepare(`SELECT request_json FROM generation_attempts
+            WHERE research_run_id = ? AND stage_key = ? AND status = 'completed'
+            ORDER BY terminal_at DESC LIMIT 1`).get(this.runId, original.stage) as { request_json: string } | undefined
+        : undefined;
+      const savedFactorSchema = stageId === "factor-harvest"
+        ? this.repository.findStageResult(this.runId, stageId, selectionId)?.schema
+          ?? (completedFactor ? (JSON.parse(completedFactor.request_json) as { jsonSchema: unknown }).jsonSchema : undefined)
+        : undefined;
+      const factorSchema = savedFactorSchema ? WorkflowV2FactorHarvestOutputSchema : BoundedWorkflowV2FactorHarvestOutputSchema;
       const factorLimit = stageId === "factor-harvest"
         ? Number((original.workOrder.inputs as { factorLimit?: unknown }).factorLimit)
         : Number.NaN;
       const requestSchema = stageId === "factor-harvest" && Number.isInteger(factorLimit) && factorLimit >= 0
-        ? WorkflowV2FactorHarvestOutputSchema.extend({
-            factors: WorkflowV2FactorHarvestOutputSchema.shape.factors.max(factorLimit),
+        ? factorSchema.extend({
+            factors: factorSchema.shape.factors.max(factorLimit),
           })
         // A saved run keeps its original prompt and schema so completed kill reviews can resume.
+        : assessAudience ? AssessedWorkflowV2ProblemKillOutputSchema
         : stageId === "problem-kill" && prompt.currentBundledSha256 !== resolveWorkflowV2Prompt("problem-kill").currentBundledSha256
           ? ClassifiedWorkflowV2ProblemKillOutputSchema
         : stage.schema;
@@ -119,23 +143,22 @@ export class WorkflowExecution {
         ...original,
         workOrder: { ...original.workOrder, instruction: prompt.text, inputs: { routing: original.workOrder.inputs, workflowVersion: 2 } },
         schema: requestSchema,
-        jsonSchema: deriveJsonSchema(requestSchema),
-        deadlineMs: stage.deadlineMs,
+        jsonSchema: savedFactorSchema ?? deriveJsonSchema(requestSchema),
       };
       if (this.disableRepair) request.repairPolicy = "disabled";
       if (original.model.providerId === "openai-subscription") delete request.maxOutputTokens;
       else request.maxOutputTokens = stage.maxOutputTokens;
       const context = { inputs: request.workOrder.inputs, evidence: request.evidence };
-      const selectionId = selection.join(":") || null;
       const evidence = request.evidence.map((item) => ({ sourceId: item.sourceId, content: item.content }));
       const previous = this.repository.getStageResumeState({
         researchRunId: this.runId,
         stageId,
         selectionId,
         context,
+        acknowledgedAttemptIds: this.acknowledgedAttemptIds,
         identity: { promptSha256: prompt.resolvedSha256, schema: request.jsonSchema, inputs: request.workOrder.inputs, evidence },
       });
-      if (previous.kind === "unknown-completion") throw new Error("A generation may have completed before interruption. Start a new run to avoid replaying it.");
+      if (previous.kind === "unknown-completion") throw new Error("A generation may have completed before interruption. Review this request before explicitly retrying it.");
       const recovered = previous.kind === "not-started"
         ? this.recoverCompletedStage(request)
         : null;
@@ -162,14 +185,14 @@ export class WorkflowExecution {
       }
       if (stageId === "factor-harvest") {
         for (const factor of WorkflowV2FactorHarvestOutputSchema.parse(output).factors) {
-          this.factorUncertainty.set(factorIdentity(factor), factor.uncertainty);
+          this.factorUncertainty.set(factorIdentity(factor), boundedExcerpt(factor.uncertainty, FACTOR_EXPLANATION_CHARACTERS));
         }
       }
       // Discovery keeps its deterministic search and quote checks while retaining v2 evidence labels.
       let adapted: unknown = output;
       if (stageId === "query-plan") adapted = { queries: WorkflowV2QueryPlanOutputSchema.parse(output).queries };
       if (stageId === "factor-harvest") adapted = {
-        factors: WorkflowV2FactorHarvestOutputSchema.parse(output).factors.map((factor) => "sourceRole" in factor ? factor : {
+        factors: WorkflowV2FactorHarvestOutputSchema.parse(output).factors.map(compactFactorExplanations).map((factor) => "sourceRole" in factor ? factor : {
           ...factor,
           sourceRole: "unknown" as const,
           audienceFit: "unknown" as const,
@@ -225,7 +248,7 @@ export class WorkflowExecution {
         const parsed = WorkflowV2FactorHarvestOutputSchema.safeParse(JSON.parse(row.output_json));
         if (!parsed.success) continue;
         const factorLimit = Number((request.workOrder.inputs as { routing?: { factorLimit?: unknown } }).routing?.factorLimit);
-        const matchingFactors = parsed.data.factors.filter((factor) => sourceIds.has(factor.sourceId));
+        const matchingFactors = parsed.data.factors.filter((factor) => sourceIds.has(factor.sourceId)).map(compactFactorExplanations);
         const factors = Number.isInteger(factorLimit) && factorLimit >= 0
           ? matchingFactors.slice(0, factorLimit)
           : matchingFactors;
@@ -272,7 +295,8 @@ export class WorkflowExecution {
       effectiveRequest: {
         model: request.model, reasoningEffort: request.reasoningEffort, workOrder: request.workOrder,
         evidence: request.evidence, jsonSchema: request.jsonSchema, repairPolicy: request.repairPolicy,
-        deadlineMs: request.deadlineMs, ...(request.maxOutputTokens ? { maxOutputTokens: request.maxOutputTokens } : {}),
+        ...(request.deadlineMs === undefined ? {} : { deadlineMs: request.deadlineMs }),
+        ...(request.maxOutputTokens ? { maxOutputTokens: request.maxOutputTokens } : {}),
       },
     });
   }
@@ -297,9 +321,9 @@ export class WorkflowExecution {
       source: sources.get(sourceId),
       factors: base.factors.filter((factor) => factor.sourceId === sourceId).map((factor) => ({
         ...factor,
-        uncertainty: factor.uncertainty
+        uncertainty: boundedExcerpt(factor.uncertainty
           ?? uncertaintyByFactor.get(`${factor.sourceId}\u0000${factor.subject.trim()}\u0000${factor.quote.trim()}`)
-          ?? "Not recorded",
+          ?? "Not recorded", FACTOR_EXPLANATION_CHARACTERS),
       })),
     });
     const priorProjectMechanisms = this.priorProjectMechanisms();
@@ -435,8 +459,9 @@ function assertDiscoveryStageSemantics<T>(
   const evidence = request.evidence.map((item) => item.content);
   if (stageId === "query-plan") {
     const queries = WorkflowV2QueryPlanOutputSchema.parse(output).queries.map((item) => item.query.trim());
-    const expected = (request.workOrder.inputs as Record<string, unknown> | undefined)?.queryCount;
-    if (typeof expected === "number" && new Set(queries.filter(Boolean)).size < expected) {
+    const inputs = request.workOrder.inputs as Record<string, unknown> | undefined;
+    const expected = inputs?.queryCount;
+    if (inputs?.queryCountIsGuidance !== true && typeof expected === "number" && new Set(queries.filter(Boolean)).size < expected) {
       throw new Error(`Query planner returned fewer than ${expected} unique questions`);
     }
     return;
@@ -452,6 +477,16 @@ function assertDiscoveryStageSemantics<T>(
       ...findRecords(evidence, "supportingFactors").flatMap((factor) => typeof factor.sourceId === "string" ? [factor.sourceId] : []),
     ]);
     const assessment = WorkflowV2ProblemKillOutputSchema.parse(output);
+    if (request.stage.endsWith(":audience-v1")) {
+      const factorIds = new Set(findRecords(evidence, "supportingFactors").flatMap(factor => typeof factor.id === "string" ? [factor.id] : []));
+      const reviewed = "factorAssessments" in assessment ? assessment.factorAssessments : [];
+      if (reviewed.length !== factorIds.size || new Set(reviewed.map(item => item.factorId)).size !== factorIds.size
+        || reviewed.some(item => !factorIds.has(item.factorId))
+        || !("intendedBuyerEvidenceFactorIds" in assessment)
+        || assessment.intendedBuyerEvidenceFactorIds.some(id => !factorIds.has(id))) {
+        throw new Error("Problem audience assessment must cite and review exact supporting factors");
+      }
+    }
     if (assessment.verdictSourceIds.some((id) => !sourceIds.has(id))) {
       throw new Error("Evidence assessment referenced an unknown source ID");
     }
@@ -515,6 +550,12 @@ function recoverableFactorPartitionSourceIds(
     const properties = jsonSchema.properties as Record<string, unknown> | undefined;
     const factors = properties?.factors as Record<string, unknown> | undefined;
     if (factors) delete factors.maxItems;
+    // This specific tightening is compatible with cached observations after compacting notes.
+    // Every other schema, model, prompt, and evidence change still prevents partition reuse.
+    const historicalSchema = deriveJsonSchema(WorkflowV2FactorHarvestOutputSchema);
+    if (canonicalJson(jsonSchema) === canonicalJson(deriveJsonSchema(BoundedWorkflowV2FactorHarvestOutputSchema))) {
+      Object.assign(jsonSchema, historicalSchema);
+    }
     const evidence = structuredClone(value.evidence) as unknown;
     if (Array.isArray(evidence)) {
       const partition = evidence[0] as { sourceId?: unknown; content?: unknown } | undefined;
@@ -550,8 +591,23 @@ function recoverableFactorPartitionSourceIds(
 function boundedExcerpt(value: string, maxCharacters: number): string {
   const normalized = value.replace(/\s+/g, " ").trim();
   const characters = Array.from(normalized);
-  if (characters.length <= maxCharacters) return normalized;
-  return `${characters.slice(0, maxCharacters - 1).join("")}…`;
+  if (normalized.length <= maxCharacters) return normalized;
+  // Zod counts UTF-16 units; preserve whole code points while meeting its text ceiling.
+  let units = 0;
+  const end = characters.findIndex((character) => {
+    units += character.length;
+    return units > maxCharacters - 1;
+  });
+  return `${characters.slice(0, end).join("")}…`;
+}
+
+function compactFactorExplanations(factor: ReturnType<typeof WorkflowV2FactorHarvestOutputSchema.parse>["factors"][number]) {
+  return {
+    ...factor,
+    uncertainty: boundedExcerpt(factor.uncertainty, FACTOR_EXPLANATION_CHARACTERS),
+    ...("demandEvidenceUncertainty" in factor
+      ? { demandEvidenceUncertainty: boundedExcerpt(factor.demandEvidenceUncertainty, FACTOR_EXPLANATION_CHARACTERS) } : {}),
+  };
 }
 
 function uniqueStrings(values: string[]): string[] {

@@ -110,16 +110,27 @@ export class GenerationAttemptRepository {
     };
   }
 
-  getResumeSafety(researchRunId: string): GenerationResumeSafety {
+  unresolvedAttemptIds(researchRunId: string): string[] {
     const ambiguous = this.client.db.prepare(`
-      SELECT 1 FROM generation_attempts
-      WHERE research_run_id = ? AND (
-        status IN ('dispatched', 'accepted')
-        OR (status = 'interrupted' AND terminal_kind IS NOT 'never-dispatched')
+      SELECT attempt.id FROM generation_attempts attempt
+      WHERE attempt.research_run_id = ? AND (
+        attempt.status IN ('dispatched', 'accepted')
+        OR (attempt.status = 'interrupted' AND attempt.terminal_kind IS NOT 'never-dispatched')
+        OR EXISTS (SELECT 1 FROM json_each(attempt.attempt_metadata_json, '$.attempts')
+          WHERE json_extract(value, '$.providerCompletion') = 'unknown')
+      ) AND NOT EXISTS (
+        SELECT 1 FROM generation_attempts completed
+        WHERE completed.research_run_id = attempt.research_run_id AND completed.status = 'completed'
+          AND completed.request_sha256 = attempt.request_sha256 AND completed.output_json IS NOT NULL
+          AND (completed.created_at > attempt.created_at
+            OR (completed.created_at = attempt.created_at AND completed.rowid > attempt.rowid))
       )
-      LIMIT 1
-    `).get(researchRunId);
-    return ambiguous
+    `).all(researchRunId) as Array<{ id: string }>;
+    return ambiguous.map(attempt => attempt.id);
+  }
+
+  getResumeSafety(researchRunId: string, acknowledgedAttemptIds: readonly string[] = []): GenerationResumeSafety {
+    return this.unresolvedAttemptIds(researchRunId).some(id => !acknowledgedAttemptIds.includes(id))
       ? {
           canResume: false,
           resumeBlockedReason: "A previous model request may have completed before its terminal result was saved.",
@@ -216,7 +227,7 @@ function effectiveRequestSnapshot<T>(
     evidence: request.evidence,
     jsonSchema: request.jsonSchema,
     repairPolicy: request.repairPolicy,
-    deadlineMs: request.deadlineMs,
+    ...(request.deadlineMs === undefined ? {} : { deadlineMs: request.deadlineMs }),
     compilerPrompt: runtimeIdentity.compilerPrompt ?? null,
     maxOutputTokens: request.maxOutputTokens ?? null,
   };

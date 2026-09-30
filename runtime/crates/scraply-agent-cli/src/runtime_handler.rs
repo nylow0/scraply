@@ -518,7 +518,10 @@ impl RuntimeHost {
         if !valid_operation_id(&payload.generation_id) {
             return invalid_payload("generationId is invalid");
         }
-        if payload.deadline_ms == 0 || Duration::from_millis(payload.deadline_ms) > MAX_TIMEOUT {
+        if payload
+            .deadline_ms
+            .is_some_and(|ms| ms == 0 || Duration::from_millis(ms) > MAX_TIMEOUT)
+        {
             return invalid_payload("deadlineMs is outside the supported range");
         }
         let Some(events) = generation_events else {
@@ -538,17 +541,19 @@ impl RuntimeHost {
             };
             entry.insert(cancellation.clone());
         }
-        let control =
-            match OperationControl::new(Duration::from_millis(payload.deadline_ms), cancellation) {
-                Ok(control) => control,
-                Err(error) => {
-                    self.generations
-                        .lock()
-                        .expect("generation map poisoned")
-                        .remove(&payload.generation_id);
-                    return core_failure(error);
-                }
-            };
+        let control = match payload.deadline_ms.map_or_else(
+            || Ok(OperationControl::until_cancelled(cancellation.clone())),
+            |ms| OperationControl::new(Duration::from_millis(ms), cancellation.clone()),
+        ) {
+            Ok(control) => control,
+            Err(error) => {
+                self.generations
+                    .lock()
+                    .expect("generation map poisoned")
+                    .remove(&payload.generation_id);
+                return core_failure(error);
+            }
+        };
         let generation_id = payload.generation_id;
         let request = payload.request;
         let provider = match self.provider(
@@ -725,7 +730,7 @@ fn runtime_failure_from_provider(error: ProviderError) -> RuntimeFailure {
         ProviderErrorCode::RateLimited => ErrorCode::RateLimited,
         ProviderErrorCode::Timeout => ErrorCode::DeadlineExceeded,
         ProviderErrorCode::Cancelled => ErrorCode::Cancelled,
-        ProviderErrorCode::OutputLimit => ErrorCode::OutputInvalid,
+        ProviderErrorCode::OutputLimit => ErrorCode::OutputLimit,
         ProviderErrorCode::InvalidResponse => ErrorCode::OutputInvalid,
         ProviderErrorCode::Transport => ErrorCode::ProviderUnavailable,
     };
@@ -753,7 +758,8 @@ fn runtime_failure_from_failure(failure: Failure) -> RuntimeFailure {
             ErrorCode::InvalidPayload
         }
         FailureCode::Schema => ErrorCode::SchemaInvalid,
-        FailureCode::InvalidOutput | FailureCode::OutputLimit => ErrorCode::OutputInvalid,
+        FailureCode::InvalidOutput => ErrorCode::OutputInvalid,
+        FailureCode::OutputLimit => ErrorCode::OutputLimit,
         FailureCode::UnavailableModel | FailureCode::Transport => ErrorCode::ProviderUnavailable,
         FailureCode::Io | FailureCode::Unknown => ErrorCode::Internal,
     };
@@ -813,7 +819,7 @@ struct GenerationIdPayload {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct GenerationStartPayload {
     generation_id: String,
-    deadline_ms: u64,
+    deadline_ms: Option<u64>,
     #[serde(flatten)]
     request: GenerationRequest,
 }
@@ -852,5 +858,31 @@ mod tests {
                 .map(ProviderRequestId::as_str),
             Some("request-safe_1")
         );
+    }
+
+    #[test]
+    fn output_limits_remain_distinct_from_schema_failures_on_the_wire() {
+        let provider = runtime_failure_from_provider(ProviderError {
+            code: ProviderErrorCode::OutputLimit,
+            provider_id: OPENROUTER_PROVIDER_ID.into(),
+            retryable: false,
+            status: None,
+            request_id: None,
+            detail: "output allowance exhausted".into(),
+        });
+        assert_eq!(
+            serde_json::to_value(provider).unwrap()["code"],
+            "output_limit"
+        );
+        let core = runtime_failure_from_core(CoreError::new(
+            FailureCode::OutputLimit,
+            "output allowance exhausted",
+        ));
+        assert_eq!(serde_json::to_value(core).unwrap()["code"], "output_limit");
+        let schema = runtime_failure_from_core(CoreError::new(
+            FailureCode::InvalidOutput,
+            "invalid structured output",
+        ));
+        assert_eq!(schema.code, ErrorCode::OutputInvalid);
     }
 }
