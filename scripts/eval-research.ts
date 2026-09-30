@@ -104,8 +104,8 @@ export function median(values: Array<number | null>): number | null {
 export function summarizeEvaluation(rows: EvaluationRow[]) {
   return [...new Set(rows.map(row => `${row.briefId}/${row.depth}`))].map(key => {
     const group = rows.filter(row => `${row.briefId}/${row.depth}` === key);
-    const metrics = group.flatMap(row => row.metrics ? [row.metrics] : []);
     const completed = group.filter(row => row.status === "finished");
+    const metrics = completed.flatMap(row => row.metrics ? [row.metrics] : []);
     return {
       key, plannedRuns: group.length, terminalRuns: completed.length, measuredRuns: metrics.length,
       failedRuns: completed.filter(row => ["failed", "cancelled", "needs-attention"].includes(row.outcome ?? "")).length,
@@ -131,7 +131,7 @@ export function evaluationMarkdown(manifest: Manifest): string {
   const rows = summarizeEvaluation(manifest.rows).map(row => `| ${row.key} | ${row.terminalRuns}/${row.plannedRuns} | ${format(row.medianConfirmed)} | ${format(row.medianConfirmedAreas)} | ${format(row.medianQualifyingPerCandidate)} | ${format(row.medianFirsthandMeasuredShare)} | ${format(row.medianVendorAdviceIllustrationShare)} | ${format(row.medianCommunitySourceShare)} | ${format(row.medianNotAssessed)} | ${format(row.medianAcceptedIdeas)} | ${format(row.medianMustHaveFailures)} | ${row.zeroIdeaRuns} | ${format(row.medianModelCalls)} | ${format(row.medianSearches)} | ${format(row.medianWallTimeMs === null ? null : row.medianWallTimeMs / 60_000)} | ${format(row.medianInterruptions)} | ${row.failedRuns} |`);
   return ["# Research workflow evaluation", "", `App commit: ${manifest.appCommit}. Origin: ${manifest.origin}. Matrix: ${manifest.matrix}.`,
     `Fixture SHA256: ${manifest.fixtureSha256}. Started: ${manifest.createdAt}.`, "",
-    "Each row uses medians across repeats. Shares are fractions. Failed runs remain visible. Unknown values are excluded from medians and never replaced with zero.",
+    "Each row uses medians across terminal repeats. Running and planned cases do not contribute quality measurements. Shares are fractions. Failed runs remain visible. Unknown values are excluded from medians and never replaced with zero.",
     "Area coverage is unknown for historical phase-based runs. Must-have failures are unknown before criterion assessments exist.",
     "Benchmark settings use one idea per selected problem, at most three automatic problems, gpt-6-sol/xhigh, and the fixture's selected provider. They stay identical across comparisons.", "",
     "| Brief/depth | Terminal | Confirmed | Areas | Qualifying/candidate | Firsthand+measured | Vendor+advice+illustration | Community sources | Not assessed | Accepted ideas | Must-have failures | Zero ideas | Calls | Searches | Minutes | Interruptions | Failed |",
