@@ -611,9 +611,27 @@ describe("cutover backend", () => {
     v2Client.db.prepare("UPDATE research_runs SET workflow_version = 2 WHERE id = 'development-selected'").run();
     v2Client.db.prepare("UPDATE solutions SET supporting_evidence_ids_json = ? WHERE id = 'solution-selected'")
       .run(JSON.stringify(["source-selected"]));
+    v2Client.db.prepare("INSERT INTO sources (id, research_run_id, canonical_url, title, retrieved_text, content_hash, retrieved_at) VALUES (?, 'discovery-latest', ?, ?, ?, ?, ?)")
+      .run("source-comparison", "https://example.test/existing-tool", "Existing supplier checklist", "An existing checklist already supports a small delivery pilot.", "comparison-hash", new Date().toISOString());
+    const criteriaFit = [{ criterionId: "pilot", criterionName: "One-month pilot", mustHave: true, status: "meets", evidenceIds: ["source-comparison"], note: "A saved alternative supports the bounded pilot" }];
+    const firstTest = { kind: "pilot", question: "Does the delivery pilot reduce delays?", method: "Measure ten deliveries", cost: "One week", metric: "Late deliveries", sample: 10, observationWindow: "One month", passCriterion: "Two or fewer late", failCriterion: "Five or more late", inconclusiveCriterion: "Fewer than ten deliveries" };
+    const biggerProblem = { statement: "Parts reach shops late", affected: "Regional shops", scale: "Unknown", scaleKnown: false, scaleEvidenceIds: [] };
+    const slice = { description: "One supplier reliability pilot", connectionToBiggerProblem: "Measure delays for one supply route", feasibilityWithinConstraints: "One month without new equipment" };
+    v2Client.db.prepare("UPDATE solutions SET criteria_fit_json = ?, first_test_json = ?, bigger_problem_json = ?, slice_json = ? WHERE id = 'solution-selected'")
+      .run(JSON.stringify(criteriaFit), JSON.stringify(firstTest), JSON.stringify(biggerProblem), JSON.stringify(slice));
     v2Client.db.prepare("INSERT INTO problem_verdict_sources (problem_id, source_id, research_run_id, position) VALUES ('problem-selected', 'source-selected', 'discovery-latest', 0)").run();
     v2Client.close();
+    const fitExport = await post("/ideas/export", { threadId: created.thread.id, format: "json" }) as { files: Array<{ filename: string; content: string }> };
+    const fitIdeas = JSON.parse(fitExport.files.find(file => file.filename.startsWith("selected-problem-"))!.content) as Array<{ criteriaFit?: unknown; firstTest?: unknown; biggerProblem?: unknown; slice?: unknown; goalSources?: Array<{ id: string; title: string; url: string }> }>;
+    expect(fitIdeas[0]).toMatchObject({ criteriaFit, firstTest, biggerProblem, slice });
+    expect(fitIdeas[1]?.criteriaFit).toBeUndefined();
+    expect(fitIdeas[0]?.goalSources).toEqual([expect.objectContaining({ id: "source-comparison", title: "Existing supplier checklist", url: "https://example.test/existing-tool" })]);
     const v2Markdown = await post("/ideas/export", { threadId: created.thread.id, format: "markdown" }) as { files: Array<{ filename: string; content: string }> };
+    const fitMarkdown = v2Markdown.files.find(file => file.filename.startsWith("selected-problem-"))!.content;
+    expect(fitMarkdown).toContain("One-month pilot (must-have): meets");
+    expect(fitMarkdown).toContain("Metric: Late deliveries. Sample: 10");
+    expect(fitMarkdown).toContain("One supplier reliability pilot");
+    expect(fitMarkdown).toContain("[Existing supplier checklist](https://example.test/existing-tool)");
     const [decisionMarkdown, followUpMarkdown] = v2Markdown.files.find((file) => file.filename.startsWith("selected-problem-"))!.content.split("\n## Evidence follow-up");
     expect(decisionMarkdown).toContain("## Observations about the problem");
     expect(decisionMarkdown).toContain("## Sources supporting this option\n\n- [Selected evidence](https://example.com/selected)");

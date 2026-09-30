@@ -2,6 +2,7 @@ import { deriveJsonSchema } from "../shared/json-schema";
 import { z } from "zod";
 import { ResearchFrameSchema } from "../shared/research-frame";
 import { ProblemFactorAssessmentSchema, SavedProblemCandidateSchema } from "../shared/structured-output-schemas";
+import { CriteriaFitSchema, BiggerProblemSchema } from "../shared/solution-goal-fit";
 import { applyProblemFactorAssessments } from "../core/problem-evidence";
 import { randomBytes, randomUUID } from "node:crypto";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
@@ -605,6 +606,18 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
     const factorsByProblem = details ? readProblemFactors(problemIds, readAll) : new Map<string, FactorView[]>();
     const contrarySourcesByProblem = details ? readContrarySources(problemIds, readAll) : new Map<string, NonNullable<SolutionView["contrarySources"]>>();
     const followUpsBySolution = details ? readEvidenceFollowUps(rows.map((row) => String(row.research_run_id)), readAll) : new Map();
+    const fitsBySolution = new Map(rows.map(row => {
+      const json = row.reviewed_criteria_fit_json ?? row.criteria_fit_json;
+      return [String(row.id), json ? CriteriaFitSchema.parse(JSON.parse(String(json))) : undefined] as const;
+    }));
+    const biggerProblemsBySolution = new Map(rows.map(row => [String(row.id), row.bigger_problem_json ? BiggerProblemSchema.parse(JSON.parse(String(row.bigger_problem_json))) : undefined] as const));
+    const goalEvidenceIds = [...new Set([...fitsBySolution.values()].flatMap(fit => fit?.flatMap(entry => entry.evidenceIds) ?? [])
+      .concat([...biggerProblemsBySolution.values()].flatMap(problem => problem?.scaleEvidenceIds ?? [])))];
+    const goalSourcesById = new Map((details && goalEvidenceIds.length > 0 ? readAll(`SELECT s.id, s.title, s.canonical_url, s.retrieved_text
+      FROM sources s JOIN research_runs rr ON rr.id = s.research_run_id
+      WHERE rr.thread_id = ? AND s.id IN (${placeholders(goalEvidenceIds)})`, [threadId, ...goalEvidenceIds]) : []).map(source => [String(source.id), {
+        id: String(source.id), title: String(source.title), url: String(source.canonical_url), text: String(source.retrieved_text),
+      }] as const));
     context.observeDataRead?.({ operation: details ? "solution-details" : "solution-summaries", queryCount, rowCount: rows.length });
     const discardedIds = new Set(JSON.parse(db.getSetting(`discarded-ideas:${threadId}`) ?? "[]") as string[]);
     const result = rows.map((row): SolutionView => {
@@ -633,12 +646,18 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
         keyAssumption: row.key_assumption === null ? undefined : String(row.key_assumption),
         whyCurrentApproachMaySuffice: row.why_current_approach_may_suffice === null ? undefined : String(row.why_current_approach_may_suffice),
         startupOpportunity: row.startup_opportunity_json === null ? undefined : JSON.parse(String(row.startup_opportunity_json)),
+        criteriaFit: fitsBySolution.get(String(row.id)),
+        firstTest: row.first_test_json ? JSON.parse(String(row.first_test_json)) : undefined,
+        biggerProblem: biggerProblemsBySolution.get(String(row.id)),
+        slice: row.slice_json ? JSON.parse(String(row.slice_json)) : undefined,
         focusedDemandTest: row.focused_demand_test_json ? FocusedDemandTestSchema.parse(JSON.parse(String(row.focused_demand_test_json))) : null,
         opportunityOrigin: row.opportunity_origin_json ? OpportunityCandidateOriginSchema.parse(JSON.parse(String(row.opportunity_origin_json))) : null,
         unknowns: JSON.parse(String(row.unknowns_json ?? "[]")),
         supportingEvidenceIds: JSON.parse(String(row.supporting_evidence_ids_json ?? "[]")),
         contraryEvidenceIds: JSON.parse(String(row.contrary_evidence_ids_json ?? "[]")),
         ...(details ? {
+          goalSources: [...new Set([...(fitsBySolution.get(String(row.id))?.flatMap(entry => entry.evidenceIds) ?? []), ...(biggerProblemsBySolution.get(String(row.id))?.scaleEvidenceIds ?? [])])]
+            .flatMap(id => { const source = goalSourcesById.get(id); return source ? [source] : []; }),
           decisionAnalysis: row.analysis_json ? JSON.parse(String(row.analysis_json)) : null,
           focusedExperiment: row.focused_experiment_json ? FocusedExperimentRecordSchema.parse(JSON.parse(String(row.focused_experiment_json))) : null,
           riskEvaluation: row.risk_evaluation_json ? JSON.parse(String(row.risk_evaluation_json)) : null,
@@ -1756,6 +1775,7 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
         const thread = db.db.prepare("SELECT title FROM threads WHERE id = ?").get(input.threadId) as { title: string };
         const citedIds = [...new Set(ideas.flatMap((idea) => [
           ...(idea.supportingEvidenceIds ?? []), ...(idea.contraryEvidenceIds ?? []),
+          ...(idea.criteriaFit?.flatMap(entry => entry.evidenceIds) ?? []), ...(idea.biggerProblem?.scaleEvidenceIds ?? []),
         ]))];
         const citedSources = citedIds.length ? db.db.prepare(`SELECT s.id, s.title, s.canonical_url AS url
           FROM sources s JOIN research_runs r ON r.id = s.research_run_id
@@ -1763,7 +1783,7 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
           .all(input.threadId, ...citedIds) as Array<{ id: string; title: string; url: string }> : [];
         const sourceById = new Map(citedSources.map((source) => [source.id, source]));
         const exportIdeas: ExportIdea[] = ideas.map((idea) => ({ ...idea,
-          sourceReferences: [...new Set([...(idea.supportingEvidenceIds ?? []), ...(idea.contraryEvidenceIds ?? [])])]
+          sourceReferences: [...new Set([...(idea.supportingEvidenceIds ?? []), ...(idea.contraryEvidenceIds ?? []), ...(idea.criteriaFit?.flatMap(entry => entry.evidenceIds) ?? []), ...(idea.biggerProblem?.scaleEvidenceIds ?? [])])]
             .flatMap((id) => { const source = sourceById.get(id); return source ? [source] : []; }),
         }));
         const emptyResults = db.db.prepare(`
@@ -2028,6 +2048,17 @@ function renderDecisionMarkdown(ideas: ExportIdea[]): string {
       ...(idea.opportunityOrigin ? [`Origin: ${idea.opportunityOrigin.kind}. ${idea.opportunityOrigin.kind === "exploratory-hypothesis" ? idea.opportunityOrigin.disclosure : idea.opportunityOrigin.evidenceGap ?? "Evidence presence does not establish customer demand."}`, ""] : []),
       `Key assumption: ${idea.keyAssumption}`, "", `Current approach may suffice: ${idea.whyCurrentApproachMaySuffice}`, "",
       `Constraints: ${idea.respectsOffLimitsWhy}`, "", "## Uncertainty", "", ...(idea.unknowns ?? []).map((item) => `- ${item}`), "",
+      ...(idea.biggerProblem ? ["## Wider problem", "", idea.biggerProblem.statement, "", `Affected: ${idea.biggerProblem.affected}. Scale: ${idea.biggerProblem.scale}${idea.biggerProblem.scaleKnown ? "" : " (unknown)"}.`, "",
+        ...exportEvidenceReferences(idea, idea.biggerProblem.scaleEvidenceIds).map(source => source.url ? `- [${source.title}](${source.url})` : `- ${source.title}`), ""] : []),
+      ...(idea.slice ? ["## Buildable slice", "", idea.slice.description, "", idea.slice.connectionToBiggerProblem, "", idea.slice.feasibilityWithinConstraints, ""] : []),
+      "## Criteria fit", "",
+      ...(idea.criteriaFit ? idea.criteriaFit.flatMap(entry => [
+        `- ${entry.criterionName}${entry.mustHave ? " (must-have)" : ""}: ${entry.status}. ${entry.note}`,
+        ...exportEvidenceReferences(idea, entry.evidenceIds).map(source => source.url ? `  - [${source.title}](${source.url})` : `  - ${source.title}`),
+      ]) : ["Not assessed."]), "",
+      ...(idea.firstTest ? ["## First test", "", `${idea.firstTest.kind}: ${idea.firstTest.question}`, "", idea.firstTest.method, "",
+        `Metric: ${idea.firstTest.metric}. Sample: ${idea.firstTest.sample}. Observe for: ${idea.firstTest.observationWindow}. Cost: ${idea.firstTest.cost}.`, "",
+        `Pass: ${idea.firstTest.passCriterion}`, "", `Fail: ${idea.firstTest.failCriterion}`, "", `Inconclusive: ${idea.firstTest.inconclusiveCriterion}`, ""] : []),
       `Evaluate risk against: ${idea.riskEvaluationCriteria || "The research goal and boundaries."}`, "",
       ...(idea.riskEvaluation && !analysis ? [
         "## Independent risk evaluation", "",

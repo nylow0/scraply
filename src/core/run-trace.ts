@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { summarizeRunUsage } from "../backend/run-usage";
 import type { DatabaseClient } from "../db/client";
 import { workflowSearchKey as savedSearchKey } from "../shared/content-identity";
 import { DISCOVERY_DEPTHS, SOURCE_MAX_CHARACTERS } from "../shared/discovery-projection";
@@ -14,6 +15,7 @@ interface StageRow { id: string; research_run_id: string; stage_id: string; sele
   prompt_filename: string; prompt_source: string; prompt_sha256: string; stage_revision: number }
 interface AttemptRow { id: string; research_run_id: string; generation_id: string; stage_key: string; provider_id: string;
   model_id: string; reasoning_effort: string; status: string; created_at: string; terminal_at: string | null;
+  terminal_kind: string | null;
   usage_json: string | null; reported_cost_usd: number | null; error_code: string | null;
   error_message: string | null; attempt_metadata_json: string | null }
 interface SourceRow { id: string; canonical_url: string; title: string }
@@ -47,6 +49,22 @@ function countBy(values: readonly string[]): Record<string, number> {
   const result: Record<string, number> = {};
   for (const value of values) result[value] = (result[value] ?? 0) + 1;
   return result;
+}
+
+/** Missing assessments remain unknown. A generator's must-have flag cannot override the approved criterion. */
+export function countAcceptedIdeasFailingMustHave(accepted: ReadonlyArray<{
+  criteriaFit: ReadonlyArray<{ criterionId: string; status: string }> | null;
+  successCriteria: ReadonlyArray<{ id: string; weight: string }> | null;
+}>, goalFitContractPresent: boolean): number | null {
+  if (!goalFitContractPresent) return null;
+  let failures = 0;
+  for (const idea of accepted) {
+    if (!idea.criteriaFit || !idea.successCriteria) return null;
+    if (idea.successCriteria.some(criterion => !idea.criteriaFit?.some(fit => fit.criterionId === criterion.id))) return null;
+    if (idea.successCriteria.some(criterion => criterion.weight === "must"
+      && idea.criteriaFit?.some(fit => fit.criterionId === criterion.id && fit.status === "fails"))) failures++;
+  }
+  return failures;
 }
 function hostIs(host: string, domains: readonly string[]): boolean {
   return domains.some(domain => host === domain || host.endsWith(`.${domain}`));
@@ -88,15 +106,15 @@ function load(db: TraceDatabase, runId: string) {
   const stages = db.db.prepare(`SELECT id, research_run_id, stage_id, selection_key, completed_at, prompt_filename, prompt_source, prompt_sha256, stage_revision
     FROM stage_results WHERE research_run_id IN (${placeholders}) ORDER BY completed_at, rowid`).all(...runIds) as StageRow[];
   const attempts = db.db.prepare(`SELECT id, research_run_id, generation_id, stage_key, provider_id, model_id, reasoning_effort, status,
-    created_at, terminal_at, usage_json, reported_cost_usd, error_code, error_message, attempt_metadata_json
+    created_at, terminal_at, terminal_kind, usage_json, reported_cost_usd, error_code, error_message, attempt_metadata_json
     FROM generation_attempts WHERE research_run_id IN (${placeholders}) ORDER BY created_at, rowid`).all(...runIds) as AttemptRow[];
   const sources = db.db.prepare("SELECT id, canonical_url, title FROM sources WHERE research_run_id = ? ORDER BY rowid").all(evidenceRunId) as SourceRow[];
   const factors = db.db.prepare("SELECT * FROM factors WHERE research_run_id = ? ORDER BY rowid").all(evidenceRunId) as FactorRow[];
   const problems = db.db.prepare("SELECT * FROM problems WHERE discovery_run_id = ? ORDER BY rowid").all(evidenceRunId) as ProblemRow[];
   const snapshots = db.db.prepare(`SELECT snapshot_key, value_json FROM workflow_snapshots WHERE research_run_id IN (${placeholders}) ORDER BY rowid`).all(...runIds) as SnapshotRow[];
-  const outputs = db.db.prepare(`SELECT id, stage_id, selection_key, output_json FROM stage_results
+  const outputs = db.db.prepare(`SELECT id, stage_id, selection_key, output_json, context_json FROM stage_results
     WHERE research_run_id IN (${placeholders}) AND stage_id IN ('query-plan','problem-candidates','solution-set-review') ORDER BY completed_at, rowid`)
-    .all(...runIds) as Array<{ id: string; stage_id: string; selection_key: string; output_json: string }>;
+    .all(...runIds) as Array<{ id: string; stage_id: string; selection_key: string; output_json: string; context_json: string }>;
   const frameTable = db.db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'research_frames'").get();
   const frames = frameTable ? db.db.prepare(`SELECT run.id AS run_id, frame.approved_json FROM research_runs run
     JOIN research_frames frame ON frame.id = run.frame_id WHERE run.id IN (${placeholders})`).all(...runIds) as
@@ -117,12 +135,60 @@ function load(db: TraceDatabase, runId: string) {
 }
 type TraceData = ReturnType<typeof load>;
 
+/** Only committed final decisions count. Older checkpoints can still use their raw review output. */
+function acceptedReviewSolutions(data: TraceData): Set<string> {
+  const accepted = new Set<string>();
+  for (const output of data.outputs.filter(output => output.stage_id === "solution-set-review"
+    && !output.selection_key.startsWith("preliminary:"))) {
+    const context = record(json(output.context_json));
+    const classified = context.solutionSetReview;
+    if (classified !== null && typeof classified === "object" && !Array.isArray(classified)) {
+      const review = record(classified);
+      const ids = Array.isArray(review.decisions)
+        ? objects(review.decisions).filter(decision => decision.status === "accepted").map(decision => text(decision.candidateId))
+        : strings(review.acceptedSolutionIds);
+      for (const id of ids) if (id) accepted.add(id);
+      continue;
+    }
+    const review = record(json(output.output_json));
+    for (const decision of objects(review.assessments ?? review.decisions ?? review.reviews)) {
+      if (!["accept", "distinct"].includes(text(decision.decision)) && decision.status !== "accepted") continue;
+      const id = text(decision.candidateId ?? decision.solutionId ?? decision.optionId);
+      if (id) accepted.add(id);
+    }
+    for (const id of strings(review.acceptedSolutionIds ?? review.acceptedOptionIds)) if (id) accepted.add(id);
+  }
+  return accepted;
+}
+
 function investigatorArea(data: TraceData, key: string): string | null {
   for (const area of data.areas.values()) {
     const hash = createHash("sha256").update(area.id).digest("hex").slice(0, 16);
     if (key.includes(`:area-${hash}:`) || key.includes(`:scan-${hash}:`) || key.includes(`:${area.id}:`) || key.endsWith(`:${area.id}`)) return area.id;
   }
   return null;
+}
+
+function goalFitFailures(data: TraceData, accepted: ReadonlySet<string>): number | null {
+  const columns = data.db.db.prepare("PRAGMA table_info(solutions)").all() as Array<{ name: string }>;
+  const hasFit = columns.some(column => column.name === "criteria_fit_json");
+  const hasReviewedFit = columns.some(column => column.name === "reviewed_criteria_fit_json");
+  if (!hasFit) return null;
+  const goalFitContract = data.frames.some(frame => frame.approved_json !== null)
+    && (data.snapshots.some(snapshot => ["goal-fit", "goal-fit-contract", "goal-fit-ideas"].includes(snapshot.snapshot_key)
+      && record(json(snapshot.value_json)).version === 1) || data.stages.some(stage => stage.stage_id === "solutions" && stage.stage_revision >= 2));
+  const rows = data.db.db.prepare(`SELECT id, research_run_id, criteria_fit_json${hasReviewedFit ? ", reviewed_criteria_fit_json" : ""}
+    FROM solutions WHERE research_run_id IN (${data.placeholders})`).all(...data.runIds) as
+    Array<{ id: string; research_run_id: string; criteria_fit_json: string | null; reviewed_criteria_fit_json?: string | null }>;
+  const acceptedRows = rows.filter(row => accepted.has(row.id));
+  if (acceptedRows.length !== accepted.size) return null;
+  return countAcceptedIdeasFailingMustHave(acceptedRows.map(row => {
+    const frame = data.frames.find(frame => frame.run_id === row.research_run_id);
+    const fit = json(row.reviewed_criteria_fit_json ?? row.criteria_fit_json);
+    const criteria = frame ? record(json(frame.approved_json)).successCriteria : null;
+    return { criteriaFit: Array.isArray(fit) ? objects(fit).map(item => ({ criterionId: text(item.criterionId), status: text(item.status) })) : null,
+      successCriteria: Array.isArray(criteria) ? objects(criteria).map(item => ({ id: text(item.id), weight: text(item.weight) })) : null };
+  }), goalFitContract);
 }
 
 function candidates(data: TraceData): RunTraceCandidate[] {
@@ -346,12 +412,11 @@ export function getRunTrace(db: TraceDatabase, runId: string, options: RunTraceO
     }
   }
   const ideas = db.db.prepare(`SELECT COUNT(*) AS count FROM solutions WHERE research_run_id IN (${data.placeholders})`).get(...data.runIds) as { count: number };
-  const accepted = new Set<string>();
-  for (const output of data.outputs.filter(output => output.stage_id === "solution-set-review")) {
-    const review = record(json(output.output_json));
-    for (const decision of objects(review.assessments ?? review.decisions ?? review.reviews)) if (["accept", "distinct"].includes(text(decision.decision)) || decision.status === "accepted") accepted.add(text(decision.candidateId ?? decision.solutionId ?? decision.optionId));
-    for (const id of strings(review.acceptedSolutionIds ?? review.acceptedOptionIds)) accepted.add(id);
-  }
+  const accepted = acceptedReviewSolutions(data);
+  const usage = summarizeRunUsage(data.attempts.filter(attempt => attempt.status !== "prepared"));
+  const unknownCompletion = data.attempts.some(attempt => attempt.terminal_kind !== "never-dispatched"
+    && (["dispatched", "accepted", "interrupted"].includes(attempt.status)
+      || objects(record(json(attempt.attempt_metadata_json)).attempts).some(item => item.providerCompletion === "unknown")));
   const searchesSaved = data.snapshots.filter(snapshot => snapshot.snapshot_key.startsWith("search:")).length;
   const legacyCounts = data.attempts.length === 0 ? db.db.prepare(`SELECT
     SUM(CASE WHEN model IS NOT NULL AND operation NOT LIKE '%search%' THEN 1 ELSE 0 END) AS calls,
@@ -359,7 +424,7 @@ export function getRunTrace(db: TraceDatabase, runId: string, options: RunTraceO
     FROM cost_ledger WHERE research_run_id IN (${data.placeholders}) AND status != 'released'`).get(...data.runIds) as
     { calls: number | null; searches: number | null } : null;
   const qualifyingObservations = data.factors.filter(factor => ["firsthand", "measured"].includes(factor.source_role) && factor.audience_fit === "intended-buyer").length;
-  const acceptedIdeasFailingMustHave = null;
+  const acceptedIdeasFailingMustHave = goalFitFailures(data, accepted);
   const investigators = [...data.areas.values()].flatMap(area => {
     const areaSteps = allSteps.filter(step => step.phase === area.id);
     const current = areaSteps.filter(step => step.kind !== "search").at(-1);
@@ -379,7 +444,7 @@ export function getRunTrace(db: TraceDatabase, runId: string, options: RunTraceO
         userAsserted: allCandidates.filter(candidate => candidate.state === "user-asserted").length },
       confirmationRate: assessed.length ? confirmed / assessed.length : null,
       coverage: { kind: hasAreas ? "areas" : "phases", groups: [...groups.values()] },
-      modelCalls: data.attempts.filter(attempt => attempt.status !== "prepared").length || legacyCounts?.calls || 0,
+      modelCalls: data.attempts.length ? usage.attemptCount : legacyCounts?.calls ?? 0,
       searches: (Math.max(searchesSaved, allSteps.filter(step => step.kind === "search" && step.search?.status === "completed").length)
         + data.investigatorSearches.filter(attempt => ["dispatched", "unknown-dispatch", "failed"].includes(attempt.status)).length) || legacyCounts?.searches || 0,
       wallTimeMs: duration(data.session?.started_at ?? data.run.created_at, live ? null : data.session?.finished_at ?? data.run.updated_at),
@@ -387,6 +452,9 @@ export function getRunTrace(db: TraceDatabase, runId: string, options: RunTraceO
       interruptionTimeMs: interruptions.reduce((sum, attempt) => sum + attempt.durationMs, 0), interruptions: interruptions.length,
       ideas: ideas.count, acceptedIdeas: accepted.size, acceptedIdeasFailingMustHave },
     warnings: [...(allCandidates.some(candidate => candidate.derived) ? ["Some candidate states were derived from older saved outputs."] : []),
+      ...(unknownCompletion ? ["Some recorded model attempts have unknown provider completion. They are included in the call count."] : []),
+      ...(accepted.size && data.frames.length && acceptedIdeasFailingMustHave === null
+        ? ["Accepted ideas do not all have a saved assessment against the bound frame. Must-have failures are unknown."] : []),
       ...(data.snapshots.some(snapshot => snapshot.snapshot_key.startsWith("search:")) && !data.snapshots.some(snapshot => snapshot.snapshot_key.startsWith("search-query:"))
         ? ["Older search links were reconstructed from saved query plans and parameters. Search timings were not saved."] : [])] });
 }

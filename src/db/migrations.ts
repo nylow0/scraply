@@ -6,6 +6,7 @@ import { OPPORTUNITY_EXPLORATION_MIGRATION_SQL } from "./repositories/opportunit
 import { OPPORTUNITY_SESSION_MIGRATION_SQL } from "./migrate-opportunity-sessions";
 import { MANAGED_COVERAGE_MIGRATION_SQL } from "./migrate-managed-coverage";
 import { addResearchStageIds, RESEARCH_AREAS_MIGRATION_SQL, RESEARCH_FRAMES_MIGRATION_SQL } from "./migrate-research-frames";
+import { SOLUTION_GOAL_FIT_MIGRATION_SQL } from "./migrate-solution-goal-fit";
 import type { DatabaseClient } from "./client";
 
 export const MIGRATIONS = [
@@ -1537,4 +1538,5 @@ export const MIGRATIONS = [
   { id: 37, sql: RESEARCH_FRAMES_MIGRATION_SQL },
   { id: 38, sql: "", rebuildReferencedTable: true, afterSql: addResearchStageIds },
   { id: 39, sql: RESEARCH_AREAS_MIGRATION_SQL },
+  { id: 40, sql: SOLUTION_GOAL_FIT_MIGRATION_SQL },
 ] as const;
