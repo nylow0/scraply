@@ -173,6 +173,19 @@ export class WorkflowCoordinator {
       });
       this.progress(session.id, []);
     }
+    // A settled unknown task has no live provider work. Older recovery left its run
+    // active, blocking explicit retry; retain interruption and attempt/accounting history.
+    this.options.db.immediateTransaction(() => {
+      this.options.db.db.prepare(`UPDATE research_runs SET status = 'failed', updated_at = ?
+        WHERE status IN ('queued','running') AND interrupted = 1
+          AND EXISTS (SELECT 1 FROM workflow_sessions session
+            JOIN workflow_work_items item ON item.session_id = session.id
+            WHERE session.id = research_runs.workflow_session_id
+              AND session.state = 'finished' AND session.outcome = 'needs-attention'
+              AND item.state = 'unknown'
+              AND json_extract(item.output_refs_json, '$.runId') = research_runs.id)`)
+        .run(new Date().toISOString());
+    });
   }
 
   async preview(input: unknown) {
