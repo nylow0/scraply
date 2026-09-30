@@ -202,20 +202,22 @@ describe("discovery", () => {
       prompt: () => "Extract verified observations.", onProjection: message => activity.push(message),
       modelClient: modelClient(async request => {
         if (request.stage.startsWith("query-plan")) return { queries: ["one"] };
+        expect(request.model).toEqual(model);
+        expect(request.reasoningEffort).toBe("xhigh");
         const content = request.evidence[0]!.content as { sources: Array<{ id: string }> };
         const factorLimit = Number((request.workOrder.inputs as { factorLimit: number }).factorLimit);
         batches.push({ ...content, factorLimit });
-        expect(content.sources.length).toBeLessThanOrEqual(6);
-        expect(factorLimit).toBeLessThanOrEqual(12);
+        expect(content.sources.length).toBeLessThanOrEqual(3);
+        expect(factorLimit).toBeLessThanOrEqual(6);
         return { factors: [] };
       }),
       search: { async search() { return Array.from({ length: 23 }, (_, index) => ({
         id: String(index), url: `https://example.test/source/${index}`, title: `Source ${index}`, text: "Evidence. ".repeat(200),
       })); } },
     });
-    expect(batches.length).toBeGreaterThanOrEqual(4);
+    expect(batches.length).toBeGreaterThanOrEqual(8);
     expect(new Set(batches.flatMap(batch => batch.sources.map(source => source.id))).size).toBe(23);
-    expect(activity.some(message => message.includes("batch 1 of 4"))).toBe(true);
+    expect(activity.some(message => message.includes("batch 1 of 8"))).toBe(true);
   });
 
   test("keeps standard audience extraction packets below the Sol timeout boundary", () => {
