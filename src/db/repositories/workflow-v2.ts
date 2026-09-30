@@ -44,6 +44,7 @@ export interface WorkflowV2EvidenceSnapshot {
 }
 
 export interface CompletedWorkflowV2Stage<T = unknown> {
+  schemaRevision?: number;
   id?: string;
   researchRunId: string;
   stageId: WorkflowV2StageId;
@@ -59,6 +60,7 @@ export interface CompletedWorkflowV2Stage<T = unknown> {
 }
 
 export interface SavedWorkflowV2Stage<T = unknown> {
+  schemaRevision: number;
   id: string;
   researchRunId: string;
   stageId: WorkflowV2StageId;
@@ -226,9 +228,11 @@ export class WorkflowV2Repository {
     assertSha256(stage.prompt.currentBundledSha256, "bundled prompt");
     assertSha256(stage.runtimePrompt.sha256, "runtime prompt");
     verifyHash(stage.prompt.text, stage.prompt.resolvedSha256, "resolved prompt");
+    // Existing callers are legacy contracts. New contracts choose their revision explicitly.
+    const schemaRevision = stage.schemaRevision ?? 1;
     const parsedOutput = stage.stageId === "risk-evaluation" && isEvidenceReassessmentKey(stage.selectionId)
       ? WorkflowV2RiskReassessmentOutputSchema.parse(stage.output)
-      : parseWorkflowV2StageOutput(stage.stageId, 1, stage.output, stage.evidence);
+      : parseWorkflowV2StageOutput(stage.stageId, schemaRevision, stage.output, stage.evidence);
     const selectionKey = normalizeSelectionKey(stage.selectionId);
     const contextJson = canonicalJson(stage.context);
     const outputJson = canonicalJson(parsedOutput);
@@ -272,12 +276,13 @@ export class WorkflowV2Repository {
         evidence_sha256,
         runtime_prompt_id, runtime_prompt_sha256, effective_request_json,
         effective_request_sha256, completed_at
-      ) VALUES (?, ?, ?, ?, 2, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, 2, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       id,
       stage.researchRunId,
       stage.stageId,
       selectionKey,
+      schemaRevision,
       contextJson,
       identity.contextSha256,
       outputJson,
@@ -466,6 +471,7 @@ function decodeStageRow(row: StageResultRow): SavedWorkflowV2Stage {
     ? WorkflowV2RiskReassessmentOutputSchema.parse(rawOutput)
     : parseWorkflowV2StageOutput(row.stage_id, row.stage_revision, rawOutput, evidence);
   return {
+    schemaRevision: row.stage_revision,
     id: row.id,
     researchRunId: row.research_run_id,
     stageId: row.stage_id,

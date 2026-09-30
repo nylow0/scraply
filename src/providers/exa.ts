@@ -2,6 +2,7 @@ import { z } from "zod";
 import { SourceSchema, type Source } from "../shared/schemas";
 import { ProviderFailure } from "./structured";
 import type { SearchClient, SearchOptions, ValidationResult } from "./search";
+import { EXCLUDED_SOURCE_DOMAINS, filterRoutedSources } from "./source-routes";
 
 type Fetcher = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
 
@@ -18,13 +19,10 @@ const ExaResponseSchema = z.object({
 
 export const EXA_CATEGORIES = [
   "company",
-  "research paper",
+  "publication",
   "news",
-  "pdf",
-  "github",
-  "tweet",
   "personal site",
-  "linkedin profile",
+  "people",
   "financial report",
 ] as const;
 
@@ -44,6 +42,7 @@ export class ExaClient implements SearchClient {
   ) {}
 
   async search(query: string, options: ExaSearchOptions = {}): Promise<Source[]> {
+    const excludeDomains = [...new Set([...EXCLUDED_SOURCE_DOMAINS, ...options.excludeDomains ?? []])];
     if (options.signal?.aborted) {
       throw new ProviderFailure("cancelled", "Exa search was cancelled", false, { cause: options.signal.reason });
     }
@@ -60,9 +59,13 @@ export class ExaClient implements SearchClient {
           query,
           type: "auto",
           numResults: options.numResults ?? 5,
-          ...(options.includeDomains ? { includeDomains: options.includeDomains } : {}),
+          ...(options.includeDomains?.length ? { includeDomains: options.includeDomains.slice(0, 1200) } : {}),
+          ...(options.category !== "company" && options.category !== "people"
+            ? { excludeDomains: excludeDomains.slice(0, 1200) } : {}),
           ...(options.category ? { category: options.category } : {}),
-          ...(options.startPublishedDate ? { startPublishedDate: options.startPublishedDate } : {}),
+          ...(options.startPublishedDate && options.category !== "company" && options.category !== "people"
+            ? { startPublishedDate: options.startPublishedDate } : {}),
+          ...(options.userLocation ? { userLocation: options.userLocation } : {}),
           contents: { text: { maxCharacters: options.maxCharacters ?? 6000 } },
         }),
         signal: controller.signal,
@@ -89,7 +92,7 @@ export class ExaClient implements SearchClient {
       if (!parsed.success) {
         throw new ProviderFailure("schema", "Exa returned an unexpected response", true, { cause: parsed.error });
       }
-      return parsed.data.results
+      return filterRoutedSources(parsed.data.results
         .filter((result): result is typeof result & { text: string } => Boolean(result.text?.trim()))
         .map((result, index) => SourceSchema.parse({
           id: result.id ?? `source-${index + 1}`,
@@ -98,7 +101,7 @@ export class ExaClient implements SearchClient {
           text: result.text.trim().slice(0, options.maxCharacters ?? 6000),
           ...(result.author ? { author: result.author } : {}),
           ...(result.publishedDate ? { publishedDate: result.publishedDate } : {}),
-        }));
+        })), options);
     } catch (error) {
       if (error instanceof ProviderFailure) throw error;
       if (options.signal?.aborted) throw new ProviderFailure("cancelled", "Exa search was cancelled", false, { cause: error });

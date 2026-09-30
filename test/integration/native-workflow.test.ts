@@ -174,7 +174,7 @@ describe("native research workflow through the production backend", () => {
     for (const variant of harvestSchema.properties?.factors?.items?.anyOf ?? []) {
       expect(variant.properties?.uncertainty?.maxLength).toBe(600);
     }
-    expect(item.searches).toHaveLength(9);
+    expect(item.searches).toHaveLength(17);
     const originalSearches = item.searches.map(search => z.object({ query: z.string() }).parse(search).query);
     const originalRunId = (await item.workspace()).latestResearchRun!.runId;
     const db = new DatabaseClient(item.dbPath);
@@ -189,7 +189,8 @@ describe("native research workflow through the production backend", () => {
       expect(retried.sessionId).toBe(receipt.sessionId);
       await item.waitFor(workspace => workspace.activeWorkflow?.state === "waiting-for-review");
       const recoveredSearches = item.searches.map(search => z.object({ query: z.string() }).parse(search).query);
-      for (const query of originalSearches) expect(recoveredSearches.filter(saved => saved === query)).toHaveLength(1);
+      for (const query of new Set(originalSearches)) expect(recoveredSearches.filter(saved => saved === query))
+        .toHaveLength(originalSearches.filter(saved => saved === query).length);
       expect(item.requests().slice(10).some(request => savedStages.includes(request.workOrder.stage))).toBe(false);
       expect(item.requests()[10]!.workOrder.stage).toBe(item.requests()[9]!.workOrder.stage);
       expect(item.requests().every(request => request.model.modelId === model.modelId && request.reasoningEffort === "xhigh")).toBe(true);
@@ -200,7 +201,7 @@ describe("native research workflow through the production backend", () => {
     } finally { db.close(); }
   }, 20_000);
 
-  test("acknowledged discovery recovery reuses eight harvests and nine searches without replaying confirmed work", async () => {
+  test("acknowledged discovery recovery reuses eight harvests and paired searches without replaying confirmed work", async () => {
     const item = await fixture({ mode: "workflow-checkpoint-recovery" });
     const threadId = await item.createThread("explore-market");
     const preview = await item.post("/workflows/preview", { type: "launch", threadId, draft: {
@@ -216,7 +217,7 @@ describe("native research workflow through the production backend", () => {
     const first = await item.post(`/workflows/${receipt.sessionId}`, undefined, WorkflowDetailSchema);
     expect(first.summary.outcome).toBe("needs-attention");
     expect(item.requests()).toHaveLength(10);
-    expect(item.searches).toHaveLength(9);
+    expect(item.searches).toHaveLength(17);
     const runId = (await item.workspace()).latestResearchRun!.runId;
     const db = new DatabaseClient(item.dbPath);
     const confirmedStageKeys = item.requests().slice(0, 9).map(request => request.workOrder.stage);
@@ -236,9 +237,9 @@ describe("native research workflow through the production backend", () => {
     const second = await item.post(`/workflows/${receipt.sessionId}`, undefined, WorkflowDetailSchema);
     expect(second.summary.outcome).toBe("needs-attention");
     expect(second.summary.budget.modelCalls.spent).toBe(11);
-    expect(second.summary.budget.searches.spent).toBe(9);
+    expect(second.summary.budget.searches.spent).toBe(17);
     expect(item.requests()).toHaveLength(11);
-    expect(item.searches).toHaveLength(9);
+    expect(item.searches).toHaveLength(17);
     expect(item.requests()[10]!.workOrder.stage).toBe(item.requests()[9]!.workOrder.stage);
     expect(db.db.prepare("SELECT * FROM generation_attempts WHERE id = ?").get(task.terminalAttemptId!)).toEqual(originalUnknown);
     expect((await item.raw("/research/resume", { runId })).ok).toBe(false);
@@ -538,8 +539,8 @@ describe("native research workflow through the production backend", () => {
     expect(discovered.problemCandidates).toHaveLength(1);
     expect(discovered.problemCandidates[0]?.verdict).toBe("overstated");
     expect(discovered.problemCandidates[0]?.verdictReason).toContain("disagrees");
-    expect(discovered.problemCandidates[0]?.factors).toHaveLength(2);
-    expect(item.searches).toHaveLength(6);
+    expect(discovered.problemCandidates[0]?.factors).toHaveLength(6);
+    expect(item.searches).toHaveLength(5);
 
     await item.post("/research/select-problems", { threadId, problemIds: [discovered.problemCandidates[0]!.id], userProblem: null,
       model, reasoningEffort: "medium", explorationPurpose: "startup-opportunities" }, WorkspaceStateSchema);
@@ -576,7 +577,7 @@ describe("native research workflow through the production backend", () => {
     expect(JSON.parse(ideas.files[0]!.content)).toHaveLength(2);
 
     const requests = item.requests();
-    expect(requests).toHaveLength(10); // Five discovery calls, options, risk, focused draft/review, and analysis.
+    expect(requests).toHaveLength(11); // Six discovery calls, options, risk, focused draft/review, and analysis.
     expect(requests.filter((request) => request.workOrder.stage === "solutions")).toHaveLength(1);
     expect(requests.find((request) => request.workOrder.stage === "solutions")?.workOrder.inputs)
       .toMatchObject({ explorationPurpose: "auto" });
@@ -588,7 +589,7 @@ describe("native research workflow through the production backend", () => {
       reasoningEffort: "medium",
     }, WorkspaceStateSchema);
     expect(reused.problemCandidates[0]?.developmentCompleted).toBe(true);
-    expect(item.requests()).toHaveLength(10);
+    expect(item.requests()).toHaveLength(11);
     for (const request of requests) {
       expect(request.repairPolicy).toBe("one_retry");
       expect(JSON.stringify(request.workOrder)).not.toContain(untrusted);
@@ -608,7 +609,7 @@ describe("native research workflow through the production backend", () => {
     expect(JSON.stringify(requests)).not.toContain("synthetic-credential");
     expect(exported.content).not.toContain("synthetic-credential");
     expect(ideas.files[0]?.content).not.toContain("synthetic-credential");
-    item.assertAccounting(10);
+    item.assertAccounting(11);
     expect(item.processIds()).toHaveLength(1);
 
     await item.restart();
@@ -617,8 +618,8 @@ describe("native research workflow through the production backend", () => {
     expect(reopened.problemCandidates).toEqual(developed.problemCandidates);
     const replay = await item.raw("/research/resume", { runId });
     expect(replay.status).toBe(409);
-    expect(item.requests()).toHaveLength(10);
-    item.assertAccounting(10);
+    expect(item.requests()).toHaveLength(11);
+    item.assertAccounting(11);
     const validation = await item.post("/validation", undefined, z.object({ native: z.object({ connected: z.boolean() }) }));
     expect(validation.native.connected).toBe(true);
     expect(item.processIds()).toHaveLength(2);

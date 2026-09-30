@@ -43,5 +43,8 @@ describe("provider setup requirements", () => {
     const search = { exa: { valid: true }, perplexity: { valid: false } };
     expect(isResearchModeReady({ researchMode: "explore-market", searchProvider: "perplexity", model: nativeModel }, search, nativeReady)).toBe(false);
     expect(isResearchModeReady({ researchMode: "explore-market", searchProvider: "exa", model: nativeModel }, search, nativeReady)).toBe(true);
+    expect(isResearchModeReady({ researchMode: "explore-market", searchProvider: "auto", model: nativeModel }, search, nativeReady)).toBe(true);
+    expect(isResearchModeReady({ researchMode: "explore-market", searchProvider: "auto", model: nativeModel },
+      { exa: { valid: false }, perplexity: { valid: false } }, nativeReady)).toBe(false);
   });
 });

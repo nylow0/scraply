@@ -95,6 +95,9 @@ export const QueryPlanOutputSchema = z.object({
     intent: z.string(),
     uncertainty: z.string(),
     intendedSourceType: z.string(),
+  }).strict(), z.object({
+    query: z.string(), intent: z.string(), uncertainty: z.string(), intendedSourceType: z.string(),
+    translations: z.array(z.object({ language: z.string().regex(/^[a-z]{2}$/), query: z.string().trim().min(1) }).strict()).max(2),
   }).strict()])),
 }).strict();
 
@@ -231,16 +234,24 @@ const LegacyWorkflowV2QueryPlanItemSchema = z.object({
   intendedSourceType: WorkflowV2RequiredTextSchema,
 }).strict();
 
-export const WorkflowV2QueryPlanItemSchema = z.object({
+const ClassifiedWorkflowV2QueryPlanItemSchema = z.object({
   query: WorkflowV2RequiredTextSchema,
   intent: WorkflowV2QueryIntentSchema,
   uncertainty: WorkflowV2RequiredTextSchema,
   intendedSourceType: WorkflowV2RequiredTextSchema,
 }).strict();
 
-export const WorkflowV2QueryPlanOutputSchema = z.object({
-  queries: z.array(z.union([LegacyWorkflowV2QueryPlanItemSchema, WorkflowV2QueryPlanItemSchema])),
+export const LegacyWorkflowV2QueryPlanOutputSchema = z.object({
+  queries: z.array(z.union([LegacyWorkflowV2QueryPlanItemSchema, ClassifiedWorkflowV2QueryPlanItemSchema])),
 }).strict();
+
+export const WorkflowV2QueryPlanItemSchema = ClassifiedWorkflowV2QueryPlanItemSchema.extend({
+  translations: z.array(z.object({ language: z.string().regex(/^[a-z]{2}$/), query: WorkflowV2RequiredTextSchema }).strict()).max(2),
+}).strict();
+export const WorkflowV2QueryPlanOutputSchema = z.object({
+  queries: z.array(z.union([LegacyWorkflowV2QueryPlanItemSchema, ClassifiedWorkflowV2QueryPlanItemSchema, WorkflowV2QueryPlanItemSchema])),
+}).strict();
+export const RoutedWorkflowV2QueryPlanOutputSchema = z.object({ queries: z.array(z.union([ClassifiedWorkflowV2QueryPlanItemSchema, WorkflowV2QueryPlanItemSchema])) }).strict();
 
 const LegacyWorkflowV2FactorSchema = FactorSchema.omit({ harvestMode: true }).extend({
   subject: WorkflowV2RequiredTextSchema, behavior: WorkflowV2RequiredTextSchema,

@@ -3,6 +3,23 @@ import { PerplexityClient } from "../../src/providers/perplexity";
 import { ProviderFailure } from "../../src/providers/structured";
 
 describe("PerplexityClient", () => {
+  test("bounds allow or deny lists, filters blocked results locally, and sends language and region filters", async () => {
+    const bodies: unknown[] = [];
+    const client = new PerplexityClient("secret", async (_input, init) => {
+      bodies.push(JSON.parse(String(init?.body)));
+      return Response.json({ results: [{ url: "https://worldmetrics.org/page", snippet: "Blocked quote" },
+        { url: "https://reddit.com/page", snippet: "Undated firsthand quote" }] });
+    });
+    expect(await client.search("topic", { includeDomains: Array.from({ length: 25 }, (_, index) => `forum${index}.test`),
+      excludeDomains: ["worldmetrics.org"], languages: ["en", "uk"], userLocation: "UA" }))
+      .toEqual([{ id: "source-2", url: "https://reddit.com/page", title: "https://reddit.com/page", text: "Undated firsthand quote" }]);
+    expect(bodies[0]).toMatchObject({ search_language_filter: ["en", "uk"], country: "UA",
+      search_domain_filter: Array.from({ length: 20 }, (_, index) => `forum${index}.test`) });
+    await client.search("topic", { excludeDomains: Array.from({ length: 25 }, (_, index) => `blocked${index}.test`) });
+    const deny = (bodies[1] as { search_domain_filter: string[] }).search_domain_filter;
+    expect(deny).toHaveLength(20);
+    expect(deny[0]).toBe("-worldmetrics.org");
+  });
   test("maps search options and normalizes non-empty sources", async () => {
     let request: Request | undefined;
     const fetcher = async (input: string | URL | Request, init?: RequestInit) => {

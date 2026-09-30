@@ -93,7 +93,7 @@
     if (kind !== "new-question" && !targetFindingId) { localError = "Choose a finding to revisit."; return; }
     const angles = enteredAngles;
     if (angles.length > 4) { localError = "Use no more than four research angles."; return; }
-    if (kind !== "reevaluate" && maxSearches < 2) { localError = "Reserve at least two searches to investigate a new question."; return; }
+    if (kind !== "reevaluate" && maxSearches < 4) { localError = "Reserve at least four searches for paired research questions."; return; }
     if (maxModelCalls < minimumModelCalls) { localError = `Reserve at least ${minimumModelCalls} model calls for this search plan.`; return; }
     submitting = true;
     try {
@@ -208,7 +208,7 @@
         <label class="field"><span>Instructions for this request (optional)</span><textarea bind:value={instructionsText} rows="3" maxlength="20000" disabled={busy} placeholder="Specify a source class, buyer context, or claim to challenge."></textarea><small>Saved with this request and used only for its work.</small></label>
         <div class="allowance-grid">
           <label class="field"><span>Model calls</span><input type="number" min="1" max="100" step="1" bind:value={maxModelCalls} disabled={busy} /></label>
-          <label class="field"><span>Searches</span><input type="number" min="0" max="100" step="1" bind:value={maxSearches} disabled={busy || kind === "reevaluate"} /></label>
+          <label class="field"><span>Searches</span><input type="number" min={kind === "reevaluate" ? 0 : 4} max="100" step="1" bind:value={maxSearches} disabled={busy || kind === "reevaluate"} /></label>
           <label class="field"><span>Minutes</span><input type="number" min="5" max="90" step="1" bind:value={maxMinutes} disabled={busy} /></label>
         </div>
         {#if kind === "reevaluate"}<p class="quiet">Reevaluation uses only saved evidence and makes no search calls.</p>{/if}
