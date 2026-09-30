@@ -5,12 +5,15 @@ import App from "../../src/renderer/App.svelte";
 import { createScraplyApi } from "../../src/shared/scraply-api";
 import { DEFAULT_RUN_CONFIG, type Thread } from "../../src/shared/schemas";
 import { IPC_CHANNELS, RemoveSearchKeySchema, SaveScopeSchema, SaveRunConfigSchema, SaveSearchKeySchema, type WorkspaceState } from "../../src/shared/ipc";
-import { CommandWorkflowRequestSchema, PreviewWorkflowRequestSchema, type WorkflowDetail } from "../../src/shared/workflow-contracts";
+import { CommandWorkflowRequestSchema, PreviewWorkflowRequestSchema, StartWorkflowRequestSchema, type WorkflowDetail, type WorkflowAction, type WorkflowLaunchContract } from "../../src/shared/workflow-contracts";
 import { GetRunTraceRequestSchema, GetRunTraceStepRequestSchema, type RunTrace, type RunTraceStepDetail } from "../../src/shared/run-trace";
+import { ResearchFrameSchema } from "../../src/shared/research-frame";
+import { framedDiscoveryProjection } from "../../src/shared/discovery-projection";
 
 // This standalone renderer has no Electron bridge or network provider. URL parameters
 // select deterministic UI scenarios without touching the user's projects or credentials.
 const params = new URLSearchParams(location.search);
+const fixtureHistory = { actions: [] as WorkflowAction[], launches: [] as WorkflowLaunchContract[] };
 const count = Math.min(200, Math.max(0, Number(params.get("history") ?? 18)));
 const active = Math.min(count - 1, Math.max(0, Number(params.get("active") ?? 0)));
 const now = "2026-09-23T12:00:00.000Z";
@@ -115,6 +118,53 @@ if (guidedProgress) {
   state.threads = state.threads.map(thread => thread.id === state.activeThreadId ? { ...thread, status: params.get("phase") === "failed" ? "failed" : "discovery-running" } : thread);
 }
 
+const knownProblemFrame = params.get("known") === "1";
+const frameScenario = params.get("frame");
+const frameDraft = ResearchFrameSchema.parse({
+  version: 1,
+  goal: knownProblemFrame ? "Reduce missed deposits in one independent bakery." : "Find a useful workflow for freelance bookkeepers.",
+  goalKind: params.get("goal") === "community" ? "community-or-personal" : params.get("goal") === "research" ? "research-question" : "market-opportunity",
+  contextFacts: knownProblemFrame && noSearch ? [] : [{ fact: "Accounting platforms include bank-feed matching rules.", sourceIds: ["frame-source-1"] }],
+  successCriteria: [{ id: "criterion-observed", name: "Observed firsthand pain", weight: "must", howJudged: "At least two independent accounts from affected people.", basis: "brief" },
+    { id: "criterion-build", name: "Smallest useful workflow", weight: "high", howJudged: "Can be built and tested by one person within a month.", basis: "brief" }],
+  constraints: [{ text: "One person, one month", kind: "team", basis: "brief" }],
+  languages: params.get("goal") === "community" ? ["en", "uk"] : ["en"],
+  areas: knownProblemFrame ? [] : [
+    { id: "bank", name: "Bank-feed matching", whyRelevant: "Matching mistakes create repeated manual work.", affectedPeople: "Freelance bookkeepers", venues: [{ name: "Bookkeeping communities", domain: "reddit.com", kind: "community" }], exampleProblems: ["A matching rule stops recognizing changed bank descriptions."], included: true, priority: 1 },
+    { id: "documents", name: "Client document chasing", whyRelevant: "Missing documents delay a client's close.", affectedPeople: "Solo bookkeepers with recurring clients", venues: [{ name: "Accounting software issues", domain: "github.com", kind: "issue-tracker" }], exampleProblems: [], included: true, priority: 2 },
+    { id: "payroll", name: "Payroll reconciliation", whyRelevant: "Payments can be hard to match.", affectedPeople: "Small accounting firms", venues: [{ name: "Accounting forums", kind: "community" }], exampleProblems: [], included: false, priority: 3 },
+  ],
+  exclusions: ["Full accounting suites"],
+  openQuestions: [{ id: "question-audience", question: "Solo freelancers or small firms?", whyItMatters: "Changes the areas and communities to explore.", options: ["Solo freelancers", "Small firms"] }],
+});
+const frameWorkflow: WorkflowDetail | null = frameScenario && state.activeThreadId ? {
+  summary: {
+    sessionId: "fixture-frame", threadId: state.activeThreadId, purpose: knownProblemFrame ? "known-problem" : "discovery", mode: frameScenario === "investigators" ? "vibe" : "babysit", targetKind: "per-problem",
+    state: frameScenario === "approved" ? "finished" : frameScenario === "investigators" ? "running" : "waiting-for-review",
+    outcome: frameScenario === "approved" ? "partial" : null, revision: 1, activeSnapshotId: frameScenario === "approved" ? "fixture-frame-snapshot" : null, selectedProblemIds: [], ideaTargetReady: false,
+    ...(frameScenario === "review" ? { reviewKind: "frame" as const } : {}),
+    counts: { requested: 0, attempted: 0, validated: 0, accepted: 0, duplicate: 0, unresolved: 0, failed: 0, missing: 0, existing: 0, addedBySession: 0, total: 0 },
+    limits: { enforced: params.get("allowance") === "empty", maxMinutes: 90, maxModelCalls: params.get("allowance") === "empty" ? 2 : 200, maxSearches: knownProblemFrame ? 0 : 200 },
+    budget: { modelCalls: { limit: params.get("allowance") === "empty" ? 2 : 200, spent: 2, reserved: 0, uncertain: 0 }, searches: { limit: knownProblemFrame ? 0 : 200, spent: knownProblemFrame ? 0 : 4, reserved: 0, uncertain: 0 }, remainingMs: 90 * 60_000 },
+    currentStage: frameScenario === "investigators" ? "investigate-area" : "frame", stopReason: frameScenario === "approved" ? "Saved fixture research is ready to inspect." : null,
+    startedAt: now, finishedAt: frameScenario === "approved" ? now : null,
+  },
+  researchFrame: { id: "frame-v1", version: 1, knownProblem: knownProblemFrame, draft: frameDraft, approved: frameScenario === "review" ? null : structuredClone(frameDraft),
+    sources: knownProblemFrame && noSearch ? [] : [{ id: "frame-source-1", title: "Bank-feed matching documentation", url: "https://example.org/matching", text: "Matching rules compare incoming bank descriptions." }], createdAt: now, approvedAt: frameScenario === "review" ? null : now },
+  tasks: frameScenario === "investigators" ? [
+    { id: "investigator-bank", parentItemId: null, kind: "investigate-area", scopeKey: "investigate-area:bank", state: "running", createdAt: now, finishedAt: null, investigator: { areaId: "bank", areaName: "Bank-feed matching", currentStep: "Checking a second independent account", confirmedCount: 1, insufficientCount: 2, droppedCount: 0 } },
+    { id: "investigator-documents", parentItemId: null, kind: "investigate-area", scopeKey: "investigate-area:documents", state: "ready", createdAt: now, finishedAt: null, investigator: { areaId: "documents", areaName: "Client document chasing", currentStep: null, confirmedCount: null, insufficientCount: null, droppedCount: null } },
+  ] : [{ id: "fixture-prepare-frame", parentItemId: null, kind: "prepare-frame", scopeKey: "frame", state: "succeeded", createdAt: now, finishedAt: now }],
+  nextCursor: null,
+} : null;
+if (frameWorkflow) {
+  if (frameWorkflow.researchFrame?.approved) frameWorkflow.latestResearchFrame = structuredClone(frameWorkflow.researchFrame);
+  state.activeWorkflow = frameWorkflow.summary;
+  state.runConfig = { ...DEFAULT_RUN_CONFIG, researchMode: knownProblemFrame ? "known-problem" : "explore-market", knownProblem: knownProblemFrame ? "Bakeries miss deposits on custom orders." : "" };
+  state.scope = { title: knownProblemFrame ? "Bakery deposits" : "Bookkeeping workflows", domain: knownProblemFrame ? "Bakery custom orders" : "Freelance bookkeeping", audience: "", observations: "", offLimits: ["Full accounting suites"] };
+  state.threads = state.threads.map(thread => thread.id === state.activeThreadId ? { ...thread, title: state.scope!.title, status: frameScenario === "approved" ? "problems-ready" : "discovery-running" } : thread);
+}
+
 let progressReads = 0;
 const traceFixture: RunTrace | null = params.has("trace") && state.activeThreadId ? {
   runId: "fixture-trace", threadId: state.activeThreadId, sessionId: guidedProgress?.summary.sessionId ?? null,
@@ -191,6 +241,41 @@ const fixtureApi = createScraplyApi({
       }
       case IPC_CHANNELS.COMMAND_WORKFLOW: {
         const request = CommandWorkflowRequestSchema.parse(payload);
+        fixtureHistory.actions.push(request.action);
+        if (frameWorkflow) {
+          const saved = frameWorkflow.researchFrame!;
+          if (request.action.type === "approve-frame") {
+            saved.approved = ResearchFrameSchema.parse(request.action.frame);
+            saved.approvedAt = now;
+            frameWorkflow.latestResearchFrame = structuredClone(saved);
+            frameWorkflow.summary.state = "running";
+            delete frameWorkflow.summary.reviewKind;
+            frameWorkflow.summary.currentStage = knownProblemFrame ? "generate-ideas" : "scan-areas";
+          } else if (request.action.type === "regenerate-frame") {
+            saved.draft = ResearchFrameSchema.parse({ ...request.action.frame, goal: `${request.action.frame.goal} Refine the most useful workflow.` });
+            saved.id = `frame-v${saved.version + 1}`;
+            saved.version += 1;
+            frameWorkflow.summary.budget.modelCalls.spent += 1;
+          } else if (request.action.type === "edit-approved-frame") {
+            const latest = frameWorkflow.latestResearchFrame;
+            if (!latest?.approved) throw new Error("Approve the frame before editing a new version.");
+            latest.approved = ResearchFrameSchema.parse(request.action.frame);
+            latest.draft = latest.approved;
+            latest.id = `frame-v${latest.version + 1}`;
+            latest.version += 1;
+          } else if (request.action.type === "stop") {
+            frameWorkflow.summary.state = "finished";
+            frameWorkflow.summary.outcome = "cancelled";
+            frameWorkflow.summary.finishedAt = now;
+            frameWorkflow.summary.stopReason = request.action.reason ?? "Stopped by you.";
+          } else if (request.action.type === "pause") frameWorkflow.summary.state = "paused";
+          else if (request.action.type === "resume") frameWorkflow.summary.state = "running";
+          else throw new Error("This frame fixture supports only review, editing, and run controls.");
+          frameWorkflow.summary.revision += 1;
+          state.activeWorkflow = frameWorkflow.summary;
+          result = { ok: true, data: { sessionId: frameWorkflow.summary.sessionId, revision: frameWorkflow.summary.revision, summary: frameWorkflow.summary } };
+          break;
+        }
         const supported = request.action.type === "reassess-problems" && params.get("phase") === "audience-recovery"
           || request.action.type === "resume" && ["completed-handoff", "acknowledged-restart"].includes(params.get("phase") ?? "");
         if (!guidedProgress || !supported) {
@@ -207,11 +292,35 @@ const fixtureApi = createScraplyApi({
         break;
       }
       case IPC_CHANNELS.GET_WORKFLOW:
+        if (frameWorkflow && params.has("live") && ++progressReads >= 2 && frameWorkflow.tasks[0]?.investigator) {
+          frameWorkflow.tasks[0].state = "succeeded";
+          frameWorkflow.tasks[0].investigator.currentStep = "Evidence checks finished";
+          frameWorkflow.tasks[0].investigator.confirmedCount = 2;
+          frameWorkflow.tasks[0].investigator.insufficientCount = 0;
+          frameWorkflow.tasks[0].investigator.droppedCount = 1;
+          const next = frameWorkflow.tasks[1];
+          if (next?.investigator) { next.state = "running"; next.investigator.currentStep = "Reading firsthand sources"; next.investigator.confirmedCount = 0; next.investigator.insufficientCount = 1; next.investigator.droppedCount = 0; }
+        }
         if (guidedProgress && params.has("live") && ++progressReads === 2) {
           guidedProgress.activity?.push({ id: "5", message: "12 observations from 8 sources", stage: "extracting", createdAt: now });
         }
-        result = { ok: true, data: guidedProgress }; break;
+        result = { ok: true, data: frameWorkflow ?? guidedProgress }; break;
       case IPC_CHANNELS.GET_VALIDATION: result = state.validation; break;
+      case IPC_CHANNELS.START_WORKFLOW: {
+        if (!frameWorkflow) throw new Error("Only the frame fixture can simulate a replacement launch.");
+        const request = StartWorkflowRequestSchema.parse(payload);
+        fixtureHistory.launches.push(request.contract);
+        frameWorkflow.summary = { ...frameWorkflow.summary, sessionId: "fixture-restarted", revision: 1,
+          purpose: request.contract.purpose, mode: request.contract.mode, state: request.contract.mode === "babysit" ? "waiting-for-review" : "running",
+          outcome: null, stopReason: null, finishedAt: null, currentStage: "frame",
+          ...(request.contract.mode === "babysit" ? { reviewKind: "frame" as const } : {}) };
+        const draft = ResearchFrameSchema.parse({ ...frameDraft, goal: request.contract.brief });
+        frameWorkflow.researchFrame = { ...frameWorkflow.researchFrame!, id: "frame-restarted", version: 1, draft,
+          approved: request.contract.mode === "babysit" ? null : structuredClone(draft) };
+        state.activeWorkflow = frameWorkflow.summary;
+        result = { ok: true, data: { sessionId: frameWorkflow.summary.sessionId, revision: 1, summary: frameWorkflow.summary } };
+        break;
+      }
       case IPC_CHANNELS.SELECT_THREAD: {
         const { threadId } = payload as { threadId: string };
         state = { ...state, activeThreadId: threadId, scope: null, runConfig: null };
@@ -234,7 +343,8 @@ const fixtureApi = createScraplyApi({
         const request = PreviewWorkflowRequestSchema.parse(payload);
         if (request.type !== "launch") throw new Error("Only launch previews are available in the UI fixture.");
         const { draft } = request;
-        const minimum = draft.purpose === "known-problem" ? { modelCalls: 4, searches: 0 } : { modelCalls: draft.mode === "vibe" ? 44 : 32, searches: 16 };
+        const projection = framedDiscoveryProjection(draft.runConfig.discoveryDepth);
+        const minimum = draft.purpose === "known-problem" ? { modelCalls: 4, searches: 0 } : { modelCalls: projection.modelCalls * 2 + (draft.mode === "vibe" ? 12 : 0), searches: projection.searches };
         result = { ok: true, data: {
           type: "launch", proposal: { ...draft, resolvedInstructions: { research: "Fixture research", ideas: "Fixture ideas", review: "Fixture review" }, instructionHashes: { research: "r", ideas: "i", review: "v" } },
           previewHash: JSON.stringify(draft), capabilityFingerprint: "fixture", minimumWork: minimum, upperLimits: draft.limits,
@@ -274,6 +384,6 @@ const fixtureApi = createScraplyApi({
   onAppCommand: () => () => {},
   onBackendEvent: () => () => {},
 });
-Object.assign(window, { scraply: fixtureApi });
+Object.assign(window, { scraply: fixtureApi, scraplyFixture: fixtureHistory });
 const target = document.getElementById("app");
 if (target) mount(App, { target });

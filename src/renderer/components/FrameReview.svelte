@@ -2,7 +2,7 @@
   import { untrack } from "svelte";
   import { ResearchFrameSchema, type ResearchFrame, type ResearchVenue } from "../../shared/research-frame";
 
-  let { frame, sources = [], purpose = "discovery", usage, busy = false, canRegenerate = true,
+  let { frame, sources = [], purpose = "discovery", usage, busy = false, canRegenerate = true, commitLabel,
     onCommit, onRegenerate, onEditBrief, onOpenSource }: {
     frame: ResearchFrame;
     sources?: { id: string; title: string; url: string }[];
@@ -10,9 +10,10 @@
     usage?: { modelCalls: number; searches: number };
     busy?: boolean;
     canRegenerate?: boolean;
+    commitLabel?: string;
     onCommit: (frame: ResearchFrame) => Promise<void>;
-    onRegenerate: (frame: ResearchFrame) => Promise<void>;
-    onEditBrief: () => Promise<void>;
+    onRegenerate?: (frame: ResearchFrame) => Promise<void>;
+    onEditBrief?: () => Promise<void>;
     onOpenSource?: (url: string) => Promise<void>;
   } = $props();
 
@@ -74,7 +75,7 @@
   }
 
   async function submit(action: "commit" | "regenerate") {
-    if (disabled || (action === "regenerate" && !canRegenerate)) return;
+    if (disabled || (action === "regenerate" && (!canRegenerate || !onRegenerate))) return;
     error = "";
     const result = ResearchFrameSchema.safeParse($state.snapshot(draft));
     if (!result.success) {
@@ -97,13 +98,16 @@
       return;
     }
     pending = action;
-    try { await (action === "commit" ? onCommit : onRegenerate)(result.data); }
+    try {
+      if (action === "commit") await onCommit(result.data);
+      else await onRegenerate?.(result.data);
+    }
     catch (cause) { error = cause instanceof Error ? cause.message : "The frame could not be saved. Try again."; }
     finally { pending = null; }
   }
 
   async function editBrief() {
-    if (disabled) return;
+    if (disabled || !onEditBrief) return;
     pending = "brief";
     error = "";
     try { await onEditBrief(); }
@@ -240,11 +244,11 @@
   <footer>
     {#if error}<p class="error" role="alert">{error}</p>{/if}
     <div class="footer-actions">
-      <button type="button" class="primary" disabled={disabled} onclick={() => submit("commit")}>{pending === "commit" ? "Starting…" : purpose === "known-problem" ? "Continue with this frame" : "Start research with this frame"}</button>
-      <button type="button" class="quiet" disabled={disabled || !canRegenerate} onclick={() => submit("regenerate")}>{pending === "regenerate" ? "Regenerating…" : "Regenerate frame (1 call)"}</button>
-      <button type="button" class="text-button" disabled={disabled} onclick={editBrief}>Edit brief</button>
+      <button type="button" class="primary" disabled={disabled} onclick={() => submit("commit")}>{pending === "commit" ? commitLabel ? "Saving…" : "Starting…" : commitLabel ?? (purpose === "known-problem" ? "Continue with this frame" : "Start research with this frame")}</button>
+      {#if onRegenerate}<button type="button" class="quiet" disabled={disabled || !canRegenerate} onclick={() => submit("regenerate")}>{pending === "regenerate" ? "Regenerating…" : "Regenerate frame (1 call)"}</button>{/if}
+      {#if onEditBrief}<button type="button" class="text-button" disabled={disabled} onclick={editBrief}>Edit brief</button>{/if}
     </div>
-    {#if !canRegenerate}<p class="hint">No model-call allowance remains for regeneration.</p>{/if}
+    {#if onRegenerate && !canRegenerate}<p class="hint">No model-call allowance remains for regeneration.</p>{/if}
   </footer>
 </section>
 
