@@ -20,7 +20,7 @@ import { WorkflowLaunchContractSchema } from "../shared/workflow-contracts";
 import { framedDiscoveryProjection } from "../shared/discovery-projection";
 import { ResearchFrameSchema, scopeResearchArea, type ResearchFrame, type ResearchArea } from "../shared/research-frame";
 import { RESEARCH_TARGETS, candidateAssessmentProjection, InvestigatorSearchRouteSchema, researchTargetProgress } from "../shared/evidence-investigators";
-import { SavedProblemCandidateSchema } from "../shared/structured-output-schemas";
+import { assertCriteriaFit, frameNeedsNoveltySearch } from "../shared/solution-goal-fit";
 import { assertFocusedDemandTestSemantics } from "../shared/focused-experiment";
 import { deriveJsonSchema } from "../shared/json-schema";
 import type { ResearchEvent } from "../shared/ipc";
@@ -30,14 +30,13 @@ import {
   type OpportunityBudgetExtension,
   type OpportunityBudgetExtensionPreview,
   OpportunityCoverageMapOutputSchema,
-  OpportunityExpansionOutputSchema,
   type OpportunityCoverageGap,
   type OpportunityExpansionOutput,
   type OpportunityExplorationConfig,
   type OpportunityExplorationProgress,
 } from "../shared/opportunity-exploration";
 import { DEFAULT_IDEA_COUNT, ModelRefSchema, ReasoningEffortSchema, RunConfigSchema, SourceSchema, sameModelRef, type ModelRef, type ReasoningEffort, type RunConfig, type Source } from "../shared/schemas";
-import { ScopeSchema, WorkflowV2CompatibleDecisionAnalysisOutputSchema, WorkflowV2RiskEvaluationOutputSchema, WorkflowV2RiskReassessmentOutputSchema, WorkflowV2SolutionOptionSchema, WorkflowV2SolutionsOutputSchema, WorkflowV2StartupSolutionOptionSchema, type Scope } from "../shared/structured-output-schemas";
+import { ScopeSchema, SavedProblemCandidateSchema, WorkflowV2CompatibleDecisionAnalysisOutputSchema, WorkflowV2GoalSolutionOptionSchema, WorkflowV2RiskEvaluationOutputSchema, WorkflowV2RiskReassessmentOutputSchema, WorkflowV2SolutionOptionSchema, WorkflowV2SolutionsOutputSchema, WorkflowV2StartupSolutionOptionSchema, type Scope } from "../shared/structured-output-schemas";
 import { analyzeSelectedOption, developmentStageEvidence, evaluateSelectedOptionRisk, produceDevelopmentOptions, reassessSelectedOption, reassessSelectedOptionRisk, WorkflowGenerationAngleSchema, WorkflowGenerationEvidenceSchema, type WorkflowV2DevelopmentContext, type WorkflowV2EvidenceItem } from "./development";
 import { DEFAULT_PROBLEM_CANDIDATE_LIMIT, DISCOVERY_DEPTHS, discoverProblems, discoveryRunProjection, harvestEvidenceFollowUp, harvestFactors, normalizeSearchQuery,
   type HarvestMode, type HarvestResult, type PlannedQuery, type DiscoveryProblem, type HarvestedFactor, type HarvestedSource,
@@ -45,12 +44,14 @@ import { DEFAULT_PROBLEM_CANDIDATE_LIMIT, DISCOVERY_DEPTHS, discoverProblems, di
 import { assessNotAssessedCandidate, ensureAreaInvestigatorWorkItems, ensureEvidenceCheckWorkItem,
   enforceConfirmationRule, runAreaGapInvestigation, runCandidateEvidenceInvestigator, runManagedInvestigatorSearch,
   type InvestigatorDependencies } from "./evidence-investigators";
+import { ensureSolutionNoveltyEvidence } from "./solution-novelty";
+import { opportunityExpansionContract, parseOpportunityExpansionOutput } from "./opportunity-expansion-contract";
 import { generateResearchFrame } from "./research-frame";
 import { rankScannedAreas, scanResearchArea, type AreaScan } from "./frame-discovery";
 import { runFocusedExperimentFlow } from "./experiment-review";
 import { planOpportunityStep, previewOpportunityBudgetExtension } from "./opportunity-planning";
 import { reviewSavedOpportunities as runOpportunityReview } from "./opportunity-review";
-import { classifySolutionSetReview, prepareSolutionSetReview, reviewSolutionSet, type SolutionSetItem } from "./solution-set-review";
+import { classifySolutionSetReview, prepareSolutionSetReview, reviewSolutionSet, type SolutionSetItem, type SolutionSetReviewOutput } from "./solution-set-review";
 import { scheduledModelClient } from "./scheduled-model-client";
 import type { WorkflowModelScheduler } from "./workflow-scheduler";
 import { WorkflowExecution } from "./workflow-execution";
@@ -260,7 +261,12 @@ export class ResearchEngine {
     if (created.created) {
       const frames = new ResearchFrameRepository(this.options.db);
       const frame = workflow?.frameId ? frames.get(workflow.frameId) : frames.latestApproved(threadId);
-      if (frame?.approved) frames.bindRun(created.runId, threadId, frame.id);
+      if (frame?.approved) {
+        frames.bindRun(created.runId, threadId, frame.id);
+        this.options.db.db.prepare("INSERT INTO workflow_snapshots VALUES (?, 'goal-fit', ?)").run(created.runId, JSON.stringify({ version: 1 }));
+        this.options.db.db.prepare("INSERT INTO workflow_snapshots VALUES (?, 'goal-fit-frame', ?)")
+          .run(created.runId, JSON.stringify({ frameId: frame.id, frame: frame.approved }));
+      }
     }
     if (created.created && this.admitWorkflowRun(created.runId, threadId, workflow)) {
       this.begin(created.runId, threadId, problemId, config);
@@ -939,15 +945,21 @@ export class ResearchEngine {
     const stageKey = `gap-generation:${batchId}`;
     const saved = repository.completedAttemptResult(threadId, stageKey);
     if (saved) return parseSavedExpansion(saved);
+    const existingAttempt = repository.loadAttempt(threadId, stageKey);
+    const frozenInput = existingAttempt?.input as { frame?: ResearchFrame; frameId?: string; schemaRevision?: number } | undefined;
+    const approved = existingAttempt ? null : new ResearchFrameRepository(this.options.db).latestApproved(threadId);
+    const expansionContract = opportunityExpansionContract(frozenInput?.frame ?? approved?.approved ?? undefined);
+    const frameId = frozenInput?.frameId ?? approved?.id;
     const evidence = this.opportunityExpansionEvidence(threadId, searchedSources);
     const view = this.opportunities.familyView(threadId);
-    const instruction = "Generate one small batch for the named coverage gap. Every option must be a distinct startup opportunity with a paying customer, smallest sellable workflow, and one structured focusedDemandTest for the most decision-relevant demand assumption. Do not repeat accepted families. Preserve weak evidence as uncertainty. Reference only supplied evidence IDs. An evidence-backed new problem must name nonempty problemHypothesis.evidenceIds that directly support the problem. When exploratory mode is used, every evidence-ID list must be empty and the gap assessment must remain a hypothesis.";
+    const instruction = ["Generate one small batch for the named coverage gap. Every option must be a distinct startup opportunity with a paying customer, smallest sellable workflow, and one structured focusedDemandTest for the most decision-relevant demand assumption. Do not repeat accepted families. Preserve weak evidence as uncertainty. Reference only supplied evidence IDs. An evidence-backed new problem must name nonempty problemHypothesis.evidenceIds that directly support the problem. When exploratory mode is used, every evidence-ID list must be empty and the gap assessment must remain a hypothesis.", expansionContract.instruction].filter(Boolean).join("\n\n");
     const attempt = this.options.db.immediateTransaction(() => repository.prepareAttempt(threadId, {
       stageKey,
       stageName: "gap-generation",
-      input: { batchId, gap, candidateCount, acceptedFamilies: view.families, evidenceIds: evidence.map((item) => item.sourceId) },
+      input: { batchId, gap, candidateCount, acceptedFamilies: view.families, evidenceIds: evidence.map((item) => item.sourceId),
+        schemaRevision: expansionContract.schemaRevision, ...(expansionContract.frame ? { frame: expansionContract.frame, frameId } : {}) },
       model: { ...model, reasoningEffort },
-      promptVersion: "opportunity-expansion-v1",
+      promptVersion: expansionContract.promptVersion,
       promptText: instruction,
     }));
     if (attempt.kind === "unknown-dispatch") throw new Error(`Batch for "${gap.name}" may have completed before its result was saved. It will not be replayed automatically.`);
@@ -963,7 +975,8 @@ export class ResearchEngine {
           stage: stageKey,
           instruction,
           goal: `Generate up to ${candidateCount} startup candidates for the named gap "${gap.name}".`,
-          inputs: { gap, candidateCount, allowedEvidenceIds: evidence.map((item) => item.sourceId) },
+          inputs: { gap, candidateCount, allowedEvidenceIds: evidence.map((item) => item.sourceId),
+            ...(expansionContract.frame ? { frame: expansionContract.frame } : {}) },
           definitionOfDone: ["Return fewer candidates rather than padding.", "Keep problem evidence and exploratory origin explicit.", "Give every option a stable short demand test with an explicit selection reason and decision impact."],
           constraints: ["Do not invent evidence or repeat an accepted family."],
         },
@@ -971,28 +984,31 @@ export class ResearchEngine {
           { sourceId: "scraply:accepted-opportunity-families", content: view.families },
           ...evidence,
         ],
-        schema: OpportunityExpansionOutputSchema,
-        jsonSchema: deriveJsonSchema(OpportunityExpansionOutputSchema),
+        schema: expansionContract.schema,
+        jsonSchema: deriveJsonSchema(expansionContract.schema),
         repairPolicy: "disabled",
         signal,
         onDispatched: () => this.options.db.immediateTransaction(() => repository.markAttemptDispatched(threadId, attempt.attemptId, "none")),
       });
-      const parsed = OpportunityExpansionOutputSchema.parse(result.output);
+      const parsed = parseOpportunityExpansionOutput(result.output, { schemaRevision: expansionContract.schemaRevision,
+        ...(expansionContract.frame ? { frame: expansionContract.frame } : {}), evidenceSourceIds: evidence.map(item => item.sourceId) });
       for (const option of parsed.options) assertFocusedDemandTestSemantics(option.focusedDemandTest);
       if (parsed.options.length > candidateCount) throw new Error("Opportunity expansion returned more candidates than requested.");
       const problemSupported = validateExpansionEvidence(parsed, evidence.map((item) => item.sourceId), gap);
       const acceptedOutput = problemSupported ? parsed : { ...parsed, options: [] };
       const candidateIds = acceptedOutput.options.map(() => randomUUID());
-      const savedResult = problemSupported
+      const savedResult = { ...(problemSupported
         ? { output: acceptedOutput, candidateIds }
         : {
             output: acceptedOutput,
             candidateIds,
             rejectedOutput: parsed,
             rejectionReason: "The evidence-only expansion did not cite supplied evidence for its new problem hypothesis.",
-          };
+          }), schemaRevision: expansionContract.schemaRevision,
+        ...(expansionContract.frame ? { frame: expansionContract.frame, frameId } : {}), evidenceSourceIds: evidence.map(item => item.sourceId) };
       this.options.db.immediateTransaction(() => repository.completeAttempt(threadId, attempt.attemptId, savedResult));
-      return withExpansionIds(acceptedOutput, candidateIds);
+      return { ...withExpansionIds(acceptedOutput, candidateIds),
+        ...(expansionContract.frame ? { frame: expansionContract.frame, ...(frameId ? { frameId } : {}) } : {}) };
     } catch (error) {
       this.options.db.immediateTransaction(() => repository.failAttempt(threadId, attempt.attemptId, errorMessage(error), false));
       throw error;
@@ -1093,6 +1109,11 @@ export class ResearchEngine {
           budget_limit, created_at, updated_at, workflow_version, awaiting_selection
         ) VALUES (?, ?, 'completed', ?, 0, ?, ?, 1000, ?, ?, 2, 1)
       `).run(runId, threadId, JSON.stringify(runConfig), `Opportunity expansion for ${gap.name}`, problemId, now, now);
+      if (expansion.frameId && expansion.frame) {
+        new ResearchFrameRepository(this.options.db).bindRun(runId, threadId, expansion.frameId);
+        new WorkflowExecution(this.options.db, runId).save("goal-fit", { version: 1 });
+        new WorkflowExecution(this.options.db, runId).save("goal-fit-frame", { frameId: expansion.frameId, frame: expansion.frame });
+      }
       new WorkflowV2Repository(this.options.db).saveSolutionOptions(runId, problemId, expansion.options.map((option) => {
         const { focusedDemandTest, ...savedOption } = option;
         void focusedDemandTest;
@@ -2173,6 +2194,18 @@ export class ResearchEngine {
     if (active.workflow) {
       const workflow = active.workflow;
       let context = workflow.developmentContext(active.problemId!);
+      if (workflow.read<{ version: number }>("goal-fit")?.version === 1) {
+        const frozen = workflow.read<{ frame: ResearchFrame }>("goal-fit-frame");
+        if (!frozen) throw new Error("This goal-aware generation has no frozen approved frame.");
+        const frame = new ResearchFrameRepository(this.options.db).forRun(active.runId);
+        this.persistFrameSources(active.runId, frame?.sources ?? []);
+        const frameEvidence = (frame?.sources ?? []).map(source => ({ sourceId: source.id, content: source }));
+        context = { ...context, frame: frozen.frame, generationEvidence: [
+          ...(context.generationEvidence ?? []), ...frameEvidence.filter(item =>
+            ![...context.supportingEvidence, ...context.contraryEvidence, ...(context.generationEvidence ?? [])]
+              .some(existing => existing.sourceId === item.sourceId)),
+        ] };
+      }
       const sessionRow = this.options.db.db.prepare("SELECT workflow_session_id FROM research_runs WHERE id = ?")
         .get(active.runId) as { workflow_session_id: string | null };
       const isWorkflowSession = Boolean(sessionRow.workflow_session_id);
@@ -2192,10 +2225,13 @@ export class ResearchEngine {
           WorkflowGenerationEvidenceSchema.parse(savedEvidence));
         const alreadySupplied = new Set([...context.supportingEvidence, ...context.contraryEvidence]
           .map((item) => item.sourceId));
-        context = { ...context, generationEvidence: generationEvidence.filter((item) => !alreadySupplied.has(item.sourceId)) };
+        context = { ...context, generationEvidence: [...(context.generationEvidence ?? []),
+          ...generationEvidence.filter((item) => !alreadySupplied.has(item.sourceId)
+            && !context.generationEvidence?.some(existing => existing.sourceId === item.sourceId))] };
       }
       // Session-scoped collections use the bounded reviewer for both practical and startup targets.
-      const opportunityConfig = isWorkflowSession ? undefined : active.config.opportunityExploration;
+      const opportunityConfig = isWorkflowSession || context.frame && context.frame.goalKind !== "market-opportunity"
+        ? undefined : active.config.opportunityExploration;
       if (opportunityConfig) {
         const exploration = new OpportunityExplorationRepository(this.options.db);
         if (!exploration.find(active.threadId)) {
@@ -2281,7 +2317,7 @@ export class ResearchEngine {
           workflow.commitStage("solutions", result.request, result.resolvedPrompt, result.metadata,
             { options: result.options.map(({ id, problemId, focusedDemandTest, ...option }) => {
               void id; void problemId; void focusedDemandTest; return option;
-            }) }, context);
+            }) }, context, null, result.schemaRevision);
         });
         if (opportunityConfig) {
           this.syncOpportunityInventory(active.threadId);
@@ -2464,7 +2500,7 @@ export class ResearchEngine {
       generationInput?.reviewReasoningEffort ?? contract.ideas?.reviewReasoningEffort ?? active.config.reasoningEffort,
     );
     const inventory = this.loadPracticalInventory(active, sessionId);
-    const prepared = prepareSolutionSetReview({
+    const prepare = (evidence: WorkflowV2EvidenceItem[]) => prepareSolutionSetReview({
       candidates,
       existingSolutions: inventory.accepted,
       otherExistingSolutions: inventory.other,
@@ -2475,12 +2511,33 @@ export class ResearchEngine {
       savedInstructions: contract.instructions.review ?? "",
       ...(active.config.explorationPurpose ? { explorationPurpose: active.config.explorationPurpose } : {}),
       startupOnly: active.config.explorationPurpose === "startup-opportunities",
-      evidence: developmentStageEvidence(context).slice(1),
+      ...(context.frame ? { frame: context.frame } : {}),
+      evidence,
       model: reviewModel,
       reasoningEffort: reviewReasoningEffort,
       signal: active.abortController.signal,
       resolvePrompt: workflow.resolvePrompt,
     });
+    let prepared = prepare(developmentStageEvidence(context).slice(1));
+    const applyNoveltyRequirement = (classification: ReturnType<typeof classifySolutionSetReview>) => {
+      if (!context.frame || !frameNeedsNoveltySearch(context.frame)) return classification;
+      const decisions = classification.decisions.map(decision => decision.status === "accepted"
+        && !workflow.read(`solution-novelty:${decision.candidateId}`) ? { ...decision, status: "unresolved" as const,
+          reason: `${decision.reason} ${workflow.read<{ reason: string }>(`solution-novelty:${decision.candidateId}:unavailable`)?.reason
+            ?? "The required existing-tools search has not completed for this candidate."}` } : decision);
+      const addedDistinctCount = decisions.filter(decision => decision.status === "accepted").length;
+      return { ...classification, decisions, addedDistinctCount, acceptedDistinctCount: prepared.acceptedInventoryCount + addedDistinctCount };
+    };
+    const persistFits = (output: SolutionSetReviewOutput, evidenceSourceIds: readonly string[]) => {
+      if (!context.frame) return;
+      for (const candidate of candidates) {
+        const assessments = output.assessments.filter(assessment => assessment.candidateId === candidate.id);
+        const fit = assessments.length === 1 ? assessments[0]?.criteriaFit : undefined;
+        if (!fit) continue;
+        try { assertCriteriaFit(fit, context.frame, evidenceSourceIds); } catch { continue; }
+        workflow.repository.saveReviewedCriteriaFit(active.runId, candidate.id, fit, context.frame, evidenceSourceIds);
+      }
+    };
     const reviewContext = (classification: ReturnType<typeof classifySolutionSetReview>) => ({
       developmentContext: context,
       solutionSetReview: {
@@ -2494,21 +2551,16 @@ export class ResearchEngine {
         omittedSolutionIds: prepared.omittedSolutionIds,
       },
     });
-    const identity = {
-      promptSha256: prepared.prompt.resolvedSha256,
-      schema: prepared.request.jsonSchema,
-      inputs: prepared.request.workOrder.inputs,
-      evidence: prepared.request.evidence.map((item) => ({ sourceId: item.sourceId, content: item.content })),
-    };
     const savedReview = workflow.repository.findStageResult(active.runId, "solution-set-review", active.problemId);
     if (savedReview) {
-      const classification = classifySolutionSetReview(candidates, prepared.existingSolutions,
-        prepared.evidenceSourceIds, savedReview.output, {
+      const classification = applyNoveltyRequirement(classifySolutionSetReview(candidates, prepared.existingSolutions,
+        savedReview.evidence.map(item => item.sourceId), savedReview.output, {
           otherExistingSolutions: prepared.otherExistingSolutions,
           omittedSolutionIds: prepared.omittedSolutionIds,
           acceptedInventoryCount: prepared.acceptedInventoryCount,
           startupOnly: prepared.startupOnly,
-        });
+          ...(context.frame ? { frame: context.frame } : {}),
+        }));
       workflow.repository.getStageResumeState({
         researchRunId: active.runId, stageId: "solution-set-review", selectionId: active.problemId,
         context: reviewContext(classification),
@@ -2521,9 +2573,118 @@ export class ResearchEngine {
       });
       return;
     }
+    if (context.frame && frameNeedsNoveltySearch(context.frame)) {
+      const preliminaryId = `preliminary:${active.problemId}`;
+      const savedPreliminary = workflow.repository.findStageResult(active.runId, "solution-set-review", preliminaryId);
+      let preliminary;
+      if (savedPreliminary) {
+        preliminary = classifySolutionSetReview(candidates, prepared.existingSolutions, prepared.evidenceSourceIds, savedPreliminary.output, {
+          otherExistingSolutions: prepared.otherExistingSolutions, omittedSolutionIds: prepared.omittedSolutionIds,
+          acceptedInventoryCount: prepared.acceptedInventoryCount, startupOnly: prepared.startupOnly, frame: context.frame,
+        });
+      } else {
+        const request = { ...prepared.request, stage: "solution-set-review:preliminary",
+          workOrder: { ...prepared.request.workOrder, stage: "solution-set-review:preliminary" } };
+        preliminary = await reviewSolutionSet({ ...prepared, request }, this.instrumentedModel(active, undefined, reviewModel), completed => {
+          this.options.db.immediateTransaction(() => workflow.commitStage("solution-set-review", completed.request,
+            completed.prompt, completed.metadata, completed.output, reviewContext(completed), preliminaryId, completed.schemaRevision));
+        });
+      }
+      if (!preliminary.decisions.some(decision => decision.status === "accepted")) {
+        const checkpoint = workflow.repository.findStageResult(active.runId, "solution-set-review", preliminaryId)!;
+        this.options.db.immediateTransaction(() => {
+          persistFits(prepared.request.schema.parse(checkpoint.output), prepared.evidenceSourceIds);
+          workflow.repository.saveStageResult({ researchRunId: active.runId, stageId: "solution-set-review", selectionId: active.problemId,
+            schemaRevision: checkpoint.schemaRevision, context: reviewContext(preliminary), output: checkpoint.output,
+            prompt: checkpoint.prompt, schema: checkpoint.schema, inputs: checkpoint.inputs, evidence: checkpoint.evidence,
+            runtimePrompt: checkpoint.runtimePrompt, effectiveRequest: checkpoint.effectiveRequest });
+        });
+        return;
+      }
+      const noveltyEvidence: WorkflowV2EvidenceItem[] = [];
+      const unavailableNoveltyChecks: Array<{ candidateId: string; reason: string }> = [];
+      for (const candidate of candidates.filter(item => preliminary.decisions.some(decision =>
+        decision.candidateId === item.id && decision.status === "accepted"))) {
+        const owner = this.workflowRunOwner(active);
+        const attempts = new OpportunityExplorationRepository(this.options.db);
+        const key = `solution-novelty:${candidate.id}`;
+        const unavailable = workflow.read<{ reason: string }>(`${key}:unavailable`);
+        if (unavailable) { unavailableNoveltyChecks.push({ candidateId: candidate.id, reason: unavailable.reason }); continue; }
+        let unavailableReason: string | null = null;
+        let sources: Source[];
+        try { sources = await ensureSolutionNoveltyEvidence(context.frame, candidate, {
+          loadCompleted: value => {
+            const saved = workflow.read<unknown>(value);
+            if (saved !== undefined && saved !== null) return WorkflowGenerationEvidenceSchema.parse(saved);
+            const attempt = attempts.loadAttempt(active.threadId, `investigator-search:${value}`, owner.sessionId);
+            if (attempt?.status !== "completed") return undefined;
+            const sources = WorkflowGenerationEvidenceSchema.parse((attempt.result as { sources: unknown }).sources);
+            workflow.save(value, sources);
+            return sources;
+          },
+          wasStarted: value => {
+            const attempt = attempts.loadAttempt(active.threadId, `investigator-search:${value}`, owner.sessionId);
+            return Boolean(attempt && (attempt.status === "dispatched" || attempt.status === "unknown-dispatch")
+              && !active.acknowledgedAttemptIds?.includes(attempt.attemptId));
+          },
+          reserveSearch: () => {
+            const readiness = this.options.searchReady?.();
+            const available = { exa: Boolean(this.options.searchClients?.exa) && readiness?.exa !== false,
+              perplexity: Boolean(this.options.searchClients?.perplexity) && readiness?.perplexity !== false };
+            if (active.config.searchProvider === "auto" ? !available.exa && !available.perplexity : !available[active.config.searchProvider]) {
+              unavailableReason = "The required existing-tools search was unavailable because no connected search provider could run it. Novelty remains unresolved.";
+              throw new AppError("conflict", unavailableReason);
+            }
+            try {
+              if ((this.remainingWorkflowTaskCalls(active, "search") ?? Infinity) < 1) throw new AppError("BUDGET_TOO_SMALL");
+            } catch (error) {
+              if (!(error instanceof AppError) || error.code !== "BUDGET_TOO_SMALL") throw error;
+              unavailableReason = "The required existing-tools search was skipped because this task has no remaining search allowance. Novelty remains unresolved.";
+              throw error;
+            }
+          },
+          markStarted: (value, query) => workflow.save(`${value}:request`, { query }),
+          search: async query => (await runManagedInvestigatorSearch({ db: this.options.db, threadId: active.threadId,
+            sessionId: owner.sessionId, workItemId: owner.workItemId,
+            request: { key, query, evidenceNeeded: "Existing tools and alternatives for the approved novelty criterion", route: "alternatives" },
+            searchProvider: active.config.searchProvider, searchClient: this.instrumentedSearch(active),
+            sourceRouting: { goalKind: context.frame!.goalKind, languages: context.frame!.languages,
+              now: new Date(workflow.read<string>("source-route-start")!) },
+            ...(active.acknowledgedAttemptIds ? { acknowledgedAttemptIds: active.acknowledgedAttemptIds } : {}), signal: active.abortController.signal })).sources,
+          saveCompleted: (value, query, evidence) => { workflow.save(value, evidence); workflow.save(`${value}:completed`, { query, sourceIds: evidence.map(source => source.id) }); },
+        }); } catch (error) {
+          if (!unavailableReason) throw error;
+          workflow.save(`${key}:unavailable`, { reason: unavailableReason });
+          unavailableNoveltyChecks.push({ candidateId: candidate.id, reason: unavailableReason });
+          this.progress(active, unavailableReason);
+          continue;
+        }
+        noveltyEvidence.push(...this.materializeGenerationEvidence(active.runId, sources));
+      }
+      prepared = prepare([...new Map([...developmentStageEvidence(context).slice(1), ...noveltyEvidence]
+        .map(item => [item.sourceId, item])).values()]);
+      if (unavailableNoveltyChecks.length) {
+        workflow.save("generation-partial-outcome", { outcome: "partial", reason: unavailableNoveltyChecks.map(item => item.reason).join(" ") });
+        prepared = { ...prepared, request: { ...prepared.request, workOrder: { ...prepared.request.workOrder,
+          inputs: { ...(prepared.request.workOrder.inputs as Record<string, unknown>), unavailableNoveltyChecks } } } };
+        if ((this.remainingWorkflowTaskCalls(active, "model-call") ?? Infinity) < 1) {
+          const checkpoint = workflow.repository.findStageResult(active.runId, "solution-set-review", preliminaryId)!;
+          this.options.db.immediateTransaction(() => {
+            persistFits(prepared.request.schema.parse(checkpoint.output), checkpoint.evidence.map(item => item.sourceId));
+            workflow.repository.saveStageResult({ researchRunId: active.runId, stageId: "solution-set-review", selectionId: active.problemId,
+              schemaRevision: checkpoint.schemaRevision, context: reviewContext(applyNoveltyRequirement(preliminary)), output: checkpoint.output,
+              prompt: checkpoint.prompt, schema: checkpoint.schema, inputs: checkpoint.inputs, evidence: checkpoint.evidence,
+              runtimePrompt: checkpoint.runtimePrompt, effectiveRequest: checkpoint.effectiveRequest });
+          });
+          return;
+        }
+      }
+    }
     const resume = workflow.repository.getStageResumeState({
       researchRunId: active.runId, stageId: "solution-set-review", selectionId: active.problemId,
-      context, identity,
+      context, identity: { promptSha256: prepared.prompt.resolvedSha256, schema: prepared.request.jsonSchema,
+        inputs: prepared.request.workOrder.inputs,
+        evidence: prepared.request.evidence.map(item => ({ sourceId: item.sourceId, content: item.content })) },
     });
     if (resume.kind === "unknown-completion") {
       throw new Error("A solution review may have completed before interruption. Review the saved attempt before retrying.");
@@ -2531,10 +2692,12 @@ export class ResearchEngine {
     this.progress(active, `Reviewing ${candidates.length} idea${candidates.length === 1 ? "" : "s"}`, "generating-options");
     await reviewSolutionSet(prepared, this.instrumentedModel(active, undefined, reviewModel), (completed) => {
       active.abortController.signal.throwIfAborted();
-      this.options.db.immediateTransaction(() => workflow.commitStage(
-        "solution-set-review", completed.request, completed.prompt, completed.metadata,
-        completed.output, reviewContext(completed), active.problemId,
-      ));
+      const classification = applyNoveltyRequirement(completed);
+      this.options.db.immediateTransaction(() => {
+        persistFits(completed.output, completed.evidenceSourceIds);
+        workflow.commitStage("solution-set-review", completed.request, completed.prompt, completed.metadata,
+          completed.output, reviewContext(classification), active.problemId, completed.schemaRevision);
+      });
     });
   }
 
@@ -2560,7 +2723,7 @@ export class ResearchEngine {
       SELECT stage.context_json FROM stage_results stage
       JOIN research_runs previous ON previous.id = stage.research_run_id
       WHERE previous.thread_id = ? AND previous.rowid < (SELECT rowid FROM research_runs WHERE id = ?)
-        AND stage.stage_id = 'solution-set-review'
+        AND stage.stage_id = 'solution-set-review' AND stage.selection_key NOT LIKE 'preliminary:%'
     `).all(active.threadId, active.runId) as Array<{ context_json: string }>;
     const acceptedIds = new Set<string>();
     for (const row of reviewRows) {
@@ -2576,7 +2739,8 @@ export class ResearchEngine {
         solution.respects_off_limits_why, solution.key_assumption,
         solution.why_current_approach_may_suffice, solution.supporting_evidence_ids_json,
         solution.contrary_evidence_ids_json, solution.unknowns_json,
-        solution.startup_opportunity_json
+        solution.startup_opportunity_json, solution.bigger_problem_json, solution.slice_json,
+        solution.criteria_fit_json, solution.first_test_json
       FROM solutions solution JOIN research_runs previous ON previous.id = solution.research_run_id
       WHERE previous.thread_id = ? AND previous.id <> ?
       ORDER BY previous.rowid DESC, solution.option_position, solution.id
@@ -2587,6 +2751,7 @@ export class ResearchEngine {
       why_current_approach_may_suffice: string | null;
       supporting_evidence_ids_json: string | null; contrary_evidence_ids_json: string | null;
       unknowns_json: string | null; startup_opportunity_json: string | null;
+      bigger_problem_json: string | null; slice_json: string | null; criteria_fit_json: string | null; first_test_json: string | null;
     }>;
     const currentRun = this.options.db.db.prepare("SELECT rowid AS run_rowid FROM research_runs WHERE id = ?")
       .get(active.runId) as { run_rowid: number };
@@ -2618,7 +2783,14 @@ export class ResearchEngine {
       };
       return {
         id: row.id,
-        option: row.startup_opportunity_json
+        option: row.criteria_fit_json
+          ? WorkflowV2GoalSolutionOptionSchema.parse({ ...option,
+            biggerProblem: JSON.parse(row.bigger_problem_json ?? "null") as unknown,
+            slice: JSON.parse(row.slice_json ?? "null") as unknown,
+            criteriaFit: JSON.parse(row.criteria_fit_json) as unknown,
+            firstTest: JSON.parse(row.first_test_json ?? "null") as unknown,
+            ...(row.startup_opportunity_json ? { startupOpportunity: JSON.parse(row.startup_opportunity_json) as unknown } : {}) })
+          : row.startup_opportunity_json
           ? WorkflowV2StartupSolutionOptionSchema.parse({ ...option,
             startupOpportunity: JSON.parse(row.startup_opportunity_json) as unknown })
           : WorkflowV2SolutionOptionSchema.parse(option),
@@ -3273,16 +3445,25 @@ function parseStringArray(json: string): string[] {
 
 type PersistableOpportunityExpansion = Omit<OpportunityExpansionOutput, "options"> & {
   options: Array<OpportunityExpansionOutput["options"][number] & { id: string }>;
+  frame?: ResearchFrame;
+  frameId?: string;
 };
 
 function parseSavedExpansion(value: unknown): PersistableOpportunityExpansion {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Saved opportunity expansion is invalid.");
   const record = value as Record<string, unknown>;
-  const output = OpportunityExpansionOutputSchema.parse(record.output);
+  const frame = record.frame === undefined ? undefined : ResearchFrameSchema.parse(record.frame);
+  const output = parseOpportunityExpansionOutput(record.output, {
+    ...(typeof record.schemaRevision === "number" ? { schemaRevision: record.schemaRevision } : {}),
+    ...(frame ? { frame } : {}),
+    ...(Array.isArray(record.evidenceSourceIds) && record.evidenceSourceIds.every(id => typeof id === "string")
+      ? { evidenceSourceIds: record.evidenceSourceIds as string[] } : {}),
+  });
   if (!Array.isArray(record.candidateIds) || record.candidateIds.some((id) => typeof id !== "string")) {
     throw new Error("Saved opportunity expansion candidate IDs are invalid.");
   }
-  return withExpansionIds(output, record.candidateIds as string[]);
+  return { ...withExpansionIds(output, record.candidateIds as string[]),
+    ...(frame ? { frame } : {}), ...(typeof record.frameId === "string" ? { frameId: record.frameId } : {}) };
 }
 
 function withExpansionIds(output: OpportunityExpansionOutput, ids: string[]): PersistableOpportunityExpansion {

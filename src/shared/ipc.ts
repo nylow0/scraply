@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { ProblemBriefFitSchema, ProblemContraryEvidenceSchema, SavedProblemCandidateSchema, ScopeSchema, WorkflowV2CompatibleDecisionAnalysisOutputSchema, WorkflowV2RiskEvaluationOutputSchema, WorkflowV2RiskReassessmentOutputSchema } from "./structured-output-schemas";
+import { GoalFitFields } from "./solution-goal-fit";
 import {
   MessageSchema,
   ModelCatalogSchema,
@@ -195,6 +196,10 @@ export const OutcomeViewSchema = z.object({
   affects: z.string(), addressesCore: z.boolean(),
 });
 export const SolutionViewSchema = z.object({
+  biggerProblem: GoalFitFields.biggerProblem.optional(),
+  slice: GoalFitFields.slice.optional(),
+  criteriaFit: GoalFitFields.criteriaFit.optional(),
+  firstTest: GoalFitFields.firstTest.optional(),
   discarded: z.boolean().optional(),
   detailsLoaded: z.boolean().optional(),
   highestRisk: RiskViewSchema.omit({ mitigations: true }).nullable().optional(),
@@ -214,6 +219,7 @@ export const SolutionViewSchema = z.object({
   }).strict().optional(),
   unknowns: z.array(z.string()).optional(), supportingEvidenceIds: z.array(z.string()).optional(), contraryEvidenceIds: z.array(z.string()).optional(),
   contrarySources: z.array(z.object({ id: EntityIdSchema, title: z.string(), url: z.string().url(), text: z.string() })).optional(),
+  goalSources: z.array(z.object({ id: EntityIdSchema, title: z.string(), url: z.string().url(), text: z.string() })).optional(),
   decisionAnalysis: WorkflowV2CompatibleDecisionAnalysisOutputSchema.nullable().optional(),
   focusedExperiment: FocusedExperimentRecordSchema.nullable().optional(),
   focusedDemandTest: FocusedDemandTestSchema.nullable().optional(),

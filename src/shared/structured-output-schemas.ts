@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { GoalFitFields, CriteriaFitSchema, type GoalFit } from "./solution-goal-fit";
 
 export const HarvestModeSchema = z.enum(["domain", "audience"]);
 export const EvidenceSourceRoleSchema = z.enum(["firsthand", "measured", "vendor", "recommendation", "illustration", "unknown"]);
@@ -390,9 +391,16 @@ export const WorkflowV2StartupSolutionOptionSchema = WorkflowV2SolutionOptionSch
   startupOpportunity: StartupOpportunityDetailsSchema,
 }).strict();
 
-export const WorkflowV2SolutionsOutputSchema = z.object({
-  options: z.array(z.union([WorkflowV2StartupSolutionOptionSchema, WorkflowV2SolutionOptionSchema])),
+export const WorkflowV2GoalSolutionOptionSchema = WorkflowV2SolutionOptionSchema.extend(GoalFitFields);
+export const WorkflowV2GoalStartupSolutionOptionSchema = WorkflowV2StartupSolutionOptionSchema.extend(GoalFitFields);
+export const WorkflowV2GoalSolutionsOutputSchema = z.object({
+  options: z.array(z.union([WorkflowV2GoalStartupSolutionOptionSchema, WorkflowV2GoalSolutionOptionSchema])),
 }).strict();
+const LegacySolutionOptionSchema = WorkflowV2SolutionOptionSchema;
+export const WorkflowV2LegacySolutionsOutputSchema = z.object({
+  options: z.array(z.union([LegacySolutionOptionSchema.extend({ startupOpportunity: StartupOpportunityDetailsSchema }), LegacySolutionOptionSchema])),
+}).strict();
+export const WorkflowV2SolutionsOutputSchema = z.union([WorkflowV2GoalSolutionsOutputSchema, WorkflowV2LegacySolutionsOutputSchema]);
 
 export const WorkflowV2SolutionSetReviewOutputSchema = z.object({
   assessments: z.array(z.object({
@@ -401,8 +409,16 @@ export const WorkflowV2SolutionSetReviewOutputSchema = z.object({
     reason: WorkflowV2RequiredTextSchema,
     matchingSolutionId: WorkflowV2RequiredTextSchema.nullable(),
     citedEvidenceIds: z.array(WorkflowV2RequiredTextSchema),
+    criteriaFit: CriteriaFitSchema.optional(),
   }).strict()),
 }).strict();
+
+export const WorkflowV2GoalSolutionSetReviewOutputSchema = WorkflowV2SolutionSetReviewOutputSchema.extend({
+  assessments: z.array(WorkflowV2SolutionSetReviewOutputSchema.shape.assessments.element.extend({ criteriaFit: CriteriaFitSchema })),
+});
+export const WorkflowV2LegacySolutionSetReviewOutputSchema = WorkflowV2SolutionSetReviewOutputSchema.extend({
+  assessments: z.array(WorkflowV2SolutionSetReviewOutputSchema.shape.assessments.element.omit({ criteriaFit: true })),
+});
 
 export const WorkflowV2IdeaFollowUpOutputSchema = z.object({
   reply: WorkflowV2RequiredTextSchema,
@@ -411,6 +427,10 @@ export const WorkflowV2IdeaFollowUpOutputSchema = z.object({
   changeSummary: WorkflowV2RequiredTextSchema.nullable(),
   candidate: z.union([WorkflowV2StartupSolutionOptionSchema, WorkflowV2SolutionOptionSchema]).nullable(),
 }).strict();
+export const WorkflowV2GoalIdeaFollowUpOutputSchema = WorkflowV2IdeaFollowUpOutputSchema.extend({
+  candidate: z.union([WorkflowV2GoalStartupSolutionOptionSchema, WorkflowV2GoalSolutionOptionSchema]).nullable(),
+});
+export const WorkflowV2CompatibleIdeaFollowUpOutputSchema = z.union([WorkflowV2GoalIdeaFollowUpOutputSchema, WorkflowV2IdeaFollowUpOutputSchema]);
 
 export const WorkflowV2ConsequenceSchema = z.object({
   description: WorkflowV2RequiredTextSchema,
@@ -507,8 +527,8 @@ export const WORKFLOW_V2_STRUCTURED_OUTPUT_SCHEMAS = {
   workflowV2ProblemCandidates: WorkflowV2ProblemCandidatesOutputSchema,
   workflowV2ProblemKill: WorkflowV2ProblemKillOutputSchema,
   workflowV2Solutions: WorkflowV2SolutionsOutputSchema,
-  workflowV2SolutionSetReview: WorkflowV2SolutionSetReviewOutputSchema,
-  workflowV2IdeaFollowUp: WorkflowV2IdeaFollowUpOutputSchema,
+  workflowV2SolutionSetReview: z.union([WorkflowV2GoalSolutionSetReviewOutputSchema, WorkflowV2LegacySolutionSetReviewOutputSchema]),
+  workflowV2IdeaFollowUp: WorkflowV2CompatibleIdeaFollowUpOutputSchema,
   workflowV2DecisionAnalysis: WorkflowV2DecisionAnalysisOutputSchema,
 } as const satisfies Record<string, z.ZodType<unknown>>;
 
@@ -522,8 +542,8 @@ export type ProposedMitigation = z.infer<typeof ProposedMitigationSchema>;
 export type StartupOpportunityDetails = z.infer<typeof StartupOpportunityDetailsSchema>;
 export type WorkflowV2SolutionOption = z.infer<typeof WorkflowV2SolutionOptionSchema> & {
   startupOpportunity?: StartupOpportunityDetails;
-};
-export type WorkflowV2IdeaFollowUp = z.infer<typeof WorkflowV2IdeaFollowUpOutputSchema>;
+} & Partial<GoalFit>;
+export type WorkflowV2IdeaFollowUp = Omit<z.infer<typeof WorkflowV2IdeaFollowUpOutputSchema>, "candidate"> & { candidate: WorkflowV2SolutionOption | null };
 export type WorkflowV2DecisionAnalysis = z.infer<typeof WorkflowV2DecisionAnalysisOutputSchema>;
 export type WorkflowV2DecisionAnalysisDraft = z.infer<typeof WorkflowV2DecisionAnalysisDraftSchema>;
 export type WorkflowV2RiskReassessment = z.infer<typeof WorkflowV2RiskReassessmentOutputSchema>;

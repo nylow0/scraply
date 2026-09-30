@@ -95,10 +95,10 @@ export function previewLaunch(draftInput: WorkflowLaunchDraft, capabilities: Wor
         .reduce((count, allocation) => count + Math.ceil(allocation.quota / 5), 0);
     }));
   // Framed discovery disables correction calls. Frame creation may repair once;
-  // each idea batch reserves generation and independent review, each with a correction reservation.
+  // each idea batch reserves generation plus repair, preliminary review, and novelty review.
   // Known-problem launches retain the supported path with no search account or allowance.
   const minimumWork = { modelCalls: frame.modelCalls * 2 + discovery.modelCalls + initialBatches * 4,
-    searches: frame.searches + discovery.searches };
+    searches: frame.searches + discovery.searches + (contract.purpose === "discovery" ? initialBatches * 5 : 0) };
   if (contract.limits.enforced !== false && contract.limits.maxModelCalls < minimumWork.modelCalls) {
     fieldErrors.push({ path: ["limits", "maxModelCalls"], code: "BUDGET_TOO_SMALL", message: `Allow at least ${minimumWork.modelCalls} model calls for research, generation, and review.` });
   }

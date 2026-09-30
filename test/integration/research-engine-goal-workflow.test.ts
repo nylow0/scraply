@@ -4,6 +4,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ResearchEngine } from "../../src/core/research-engine";
+import { getRunTrace } from "../../src/core/run-trace";
 import { WorkflowModelScheduler } from "../../src/core/workflow-scheduler";
 import { configurePromptPaths } from "../../src/core/prompts";
 import { WorkflowExecution } from "../../src/core/workflow-execution";
@@ -29,6 +30,21 @@ function frame(novelty = false): ResearchFrame {
       howJudged: "Compare tools and observe the actual process", basis: "brief" }], constraints: [], languages: ["en"], exclusions: [], openQuestions: [],
     areas: ["filing", "handoff"].map((id, index) => ({ id, name: id, affectedPeople: "Bakery owners", whyRelevant: "Repeated entries",
       venues: [{ name: "Owner reports", kind: "publication" }], exampleProblems: [], included: true, priority: index + 1 })) };
+}
+
+function fit(status: "unknown" | "meets" | "fails", evidenceId?: string, novelty = false) {
+  return [{ criterionId: "useful", criterionName: novelty ? "Different from existing tools" : "Reduce repeated entries", mustHave: true,
+    status, evidenceIds: evidenceId ? [evidenceId] : [], note: status === "unknown" ? "Still unverified" : "Compared with saved evidence" }];
+}
+
+function option(novelty = false) {
+  return { mechanism: "Local filing comparison", description: "Compare two local exports and flag repeated entries", keyAssumption: "Stable record IDs",
+    whyCurrentApproachMaySuffice: "Manual filing may be sufficient", supportingEvidenceIds: ["frame-source"], contraryEvidenceIds: [], unknowns: ["Effect on time"],
+    respectsOffLimits: true, respectsOffLimitsWhy: "Uses local exports",
+    biggerProblem: { statement: "Repeated entries waste owner time", affected: "Bakery owners", scale: "Unknown", scaleKnown: false, scaleEvidenceIds: [] },
+    slice: { description: "One export comparison", connectionToBiggerProblem: "Removes repeated entries", feasibilityWithinConstraints: "One local workflow" },
+    criteriaFit: fit("unknown", undefined, novelty), firstTest: { kind: "process-test", question: "Does comparison reduce repeat work?", method: "Compare one week",
+      cost: "One hour", metric: "Repeated entries", sample: 5, observationWindow: "One week", passCriterion: "Fewer entries", failCriterion: "More entries", inconclusiveCriterion: "No change" } };
 }
 
 function input(request: StructuredStageRequest<unknown>): Record<string, unknown> {
@@ -73,7 +89,7 @@ async function fixture(output: (request: StructuredStageRequest<unknown>) => Pro
     return { output: request.schema.parse(await output(request)), metadata: { model, prompt: { id: "fixture", sha256: "a".repeat(64) },
       usage: { status: "unknown" }, latencyMs: 0, repairCount: 0, providerRequestIds: [], attempts: [] } };
   } };
-  const scheduler = new WorkflowModelScheduler();
+  const scheduler = new WorkflowModelScheduler(options.modelCapacity ?? 1);
   function searchClient(provider: SearchProvider): SearchClient {
     return { provider, async validateKey() { return { valid: true }; }, async search(query, searchOptions) {
       queries.push(query);
@@ -150,6 +166,136 @@ function researchOutput(request: StructuredStageRequest<unknown>, options: {
   throw new Error(`Unexpected research stage ${request.stage}`);
 }
 
+test("goal generation saves revision two, globally readable frame citations, and independent reviewed fit", async () => {
+  const f = await fixture(request => {
+    if (request.stage === "solutions") { expect(input(request).frame).toEqual(frame()); return { options: [option()] }; }
+    const id = (input(request).candidateIds as string[])[0];
+    return { assessments: [{ candidateId: id, decision: "distinct", reason: "Useful distinct local workflow", matchingSolutionId: null,
+      citedEvidenceIds: ["frame-source"], criteriaFit: fit("meets", "frame-source") }] };
+  });
+  try {
+    const runId = await f.start("generate-ideas");
+    expect(f.errors).toEqual([]);
+    expect(f.stages).toEqual(["solutions", "solution-set-review"]);
+    expect(f.db.db.prepare("SELECT stage_id,stage_revision FROM stage_results WHERE research_run_id = ? ORDER BY rowid").all(runId))
+      .toEqual([{ stage_id: "solutions", stage_revision: 2 }, { stage_id: "solution-set-review", stage_revision: 2 }]);
+    const row = f.db.db.prepare("SELECT criteria_fit_json,reviewed_criteria_fit_json FROM solutions WHERE research_run_id = ?").get(runId) as { criteria_fit_json: string; reviewed_criteria_fit_json: string };
+    expect(JSON.parse(row.criteria_fit_json)).toEqual(fit("unknown"));
+    expect(JSON.parse(row.reviewed_criteria_fit_json)).toEqual(fit("meets", "frame-source"));
+    expect(f.db.db.prepare("SELECT retrieved_text FROM sources WHERE id = 'frame-source'").get()).toEqual({ retrieved_text: text });
+    expect(new WorkflowExecution(f.db, runId).read<{ version: number }>("goal-fit")).toEqual({ version: 1 });
+    expect(f.db.db.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
+  } finally { await f.close(); }
+});
+
+test("novelty acceptance waits for its durable search and a final review, preserving failed must-have fit", async () => {
+  const f = await fixture(request => {
+    if (request.stage === "solutions") return { options: [option(true)] };
+    const id = (input(request).candidateIds as string[])[0];
+    const isFinal = request.stage === "solution-set-review";
+    const evidence = isFinal ? request.evidence.find(item => item.sourceId !== "frame-source")?.sourceId : undefined;
+    if (isFinal) expect(evidence).toBeDefined();
+    return { assessments: [{ candidateId: id, decision: "distinct", reason: "Compared with the available tools", matchingSolutionId: null,
+      citedEvidenceIds: evidence ? [evidence] : [], criteriaFit: isFinal ? fit("fails", evidence, true) : fit("unknown", undefined, true) }] };
+  }, { novelty: true, bounded: true, autoSearch: true });
+  try {
+    const runId = await f.start("generate-ideas");
+    expect(f.errors).toEqual([]);
+    expect(f.stages).toEqual(["solutions", "solution-set-review:preliminary", "solution-set-review"]);
+    expect(f.queries).toHaveLength(1);
+    const review = new WorkflowExecution(f.db, runId).repository.findStageResult(runId, "solution-set-review",
+      (f.db.db.prepare("SELECT problem_id FROM research_runs WHERE id = ?").get(runId) as { problem_id: string }).problem_id)!;
+    expect((review.context as { solutionSetReview: { decisions: Array<{ status: string }> } }).solutionSetReview.decisions[0]?.status).toBe("rejected");
+    const row = f.db.db.prepare("SELECT reviewed_criteria_fit_json FROM solutions WHERE research_run_id = ?").get(runId) as { reviewed_criteria_fit_json: string };
+    expect(JSON.parse(row.reviewed_criteria_fit_json)[0]?.status).toBe("fails");
+    expect(f.db.db.prepare("SELECT COUNT(*) AS count FROM opportunity_exploration_attempts WHERE status = 'completed' AND stage_name = 'investigator-search'").get())
+      .toEqual({ count: 1 });
+    expect(f.db.db.prepare("SELECT json_extract(model_json,'$.providerId') AS provider FROM opportunity_exploration_attempts WHERE stage_name = 'investigator-search'").get())
+      .toEqual({ provider: "perplexity" });
+    expect(getRunTrace(f.db, runId).metrics).toMatchObject({ acceptedIdeas: 0, acceptedIdeasFailingMustHave: 0, modelCalls: f.stages.length });
+  } finally { await f.close(); }
+});
+
+test.each([{ noSearchProvider: false, maxSearches: 0, maxModelCalls: 8 }, { noSearchProvider: true, maxSearches: 5, maxModelCalls: 8 },
+  { noSearchProvider: false, maxSearches: 0, maxModelCalls: 2 }])(
+  "known-problem novelty remains explained and unresolved when search is unavailable (%s)", async options => {
+    const f = await fixture(request => {
+      if (request.stage === "solutions") return { options: [option(true)] };
+      if (request.stage === "solution-set-review") expect(input(request).unavailableNoveltyChecks).toHaveLength(1);
+      const id = (input(request).candidateIds as string[])[0];
+      return { assessments: [{ candidateId: id, decision: "distinct", reason: "The local workflow is distinct", matchingSolutionId: null,
+        citedEvidenceIds: [], criteriaFit: fit("unknown", undefined, true) }] };
+    }, { novelty: true, bounded: true, ...options });
+    try {
+      const runId = await f.start("generate-ideas");
+      expect(f.errors).toEqual([]);
+      expect(f.stages).toEqual(options.maxModelCalls === 2 ? ["solutions", "solution-set-review:preliminary"]
+        : ["solutions", "solution-set-review:preliminary", "solution-set-review"]);
+      expect(f.queries).toHaveLength(0);
+      expect(getRunTrace(f.db, runId).metrics).toMatchObject({ acceptedIdeas: 0, acceptedIdeasFailingMustHave: 0, modelCalls: f.stages.length });
+      const workflow = new WorkflowExecution(f.db, runId);
+      const review = workflow.repository.findStageResult(runId, "solution-set-review",
+        (f.db.db.prepare("SELECT problem_id FROM research_runs WHERE id = ?").get(runId) as { problem_id: string }).problem_id)!;
+      const decision = (review.context as { solutionSetReview: { decisions: Array<{ status: string; reason: string }> } }).solutionSetReview.decisions[0]!;
+      expect(decision.status).toBe("unresolved");
+      expect(decision.reason).toContain(options.noSearchProvider ? "no connected search provider" : "no remaining search allowance");
+      expect(workflow.read("generation-partial-outcome")).toMatchObject({ outcome: "partial" });
+      expect(f.db.db.prepare("SELECT count(*) AS count FROM opportunity_exploration_attempts WHERE stage_name = 'investigator-search'").get()).toEqual({ count: 0 });
+      expect(f.db.db.prepare("SELECT status FROM research_runs WHERE id = ?").get(runId)).toEqual({ status: "completed" });
+      expect(f.db.db.prepare("SELECT count(*) AS count FROM workflow_snapshots WHERE research_run_id = ? AND snapshot_key LIKE 'solution-novelty:%:unavailable'").get(runId))
+        .toEqual({ count: 1 });
+      expect(f.db.db.prepare("SELECT count(*) AS count FROM workflow_snapshots WHERE research_run_id = ? AND snapshot_key LIKE 'solution-novelty:%:completed'").get(runId))
+        .toEqual({ count: 0 });
+    } finally { await f.close(); }
+  });
+
+test("a shared target stops a peer's next round and skips new area gaps after dispatched checks settle", async () => {
+  const checking = new Set<string>(); let release: () => void = () => {};
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const f = await fixture(async request => {
+    const packet = request.evidence[0]?.content as { area?: { id: string } };
+    if (request.stage.startsWith("evidence-check:")) {
+      const id = packet.area!.id; checking.add(id);
+      if (checking.size === 2) release();
+      await gate;
+      if (id === "handoff") { await Bun.sleep(10); return { decision: "follow-up", reason: "Another owner is needed", gaps: [{
+        kind: "second-independent-observation", evidenceNeeded: "A second owner", query: "handoff owner experience", route: "community" }] }; }
+    }
+    return researchOutput(request, { insufficient: request.stage.startsWith("problem-kill:")
+      && (input(request).area as { id: string }).id === "handoff", gap: true });
+  }, { depth: "standard", bounded: true, modelCapacity: 2, researchTarget: { confirmedProblems: 1, minAreas: 1 } });
+  try {
+    const runId = await f.start("discovery");
+    expect(f.errors).toEqual([]);
+    expect(checking.size).toBe(2);
+    expect(f.scheduler.activeCallCount).toBe(0);
+    expect(f.stages.filter(stage => stage.startsWith("area-gap:") || stage.includes(":round-1"))).toEqual([]);
+    expect(f.db.db.prepare("SELECT count(*) AS count FROM opportunity_exploration_attempts WHERE stage_name = 'investigator-search'").get()).toEqual({ count: 0 });
+    expect(new WorkflowExecution(f.db, runId).read("research-target-outcome")).toMatchObject({ outcome: "target-met", confirmedProblems: 1, areas: 1 });
+    expect(f.db.db.prepare("SELECT verdict FROM problems WHERE discovery_run_id = ? ORDER BY statement").all(runId))
+      .toEqual([{ verdict: "confirmed" }, { verdict: "insufficient-evidence" }]);
+    const handoff = f.workflows.listWorkItems("session").find(item => item.kind === "evidence-check" && item.scopeKey.includes(":handoff:"))!;
+    expect(handoff.state).toBe("succeeded");
+    expect((handoff.outputRefs as { stopReason: string }).stopReason).toContain("research target was met");
+  } finally { release(); await f.close(); }
+});
+
+test.each([{ depth: "quick" as const, expected: 3 }, { depth: "deep" as const, expected: 8 }])(
+  "gap assessment respects the whole area's depth candidate limit (%s)", async ({ depth, expected }) => {
+    const f = await fixture(request => researchOutput(request, { gap: true, gapCandidates: 8, insufficient: true }),
+      { depth, singleArea: true, search: async query => [{ id: query === "new coverage" ? "new-group" : "owner-one",
+        url: query === "new coverage" ? "https://other.example/group" : "https://owners.example/filing", title: "Owner", text }] });
+    try {
+      const runId = await f.start("discovery");
+      expect(f.errors).toEqual([]);
+      expect(f.stages.filter(stage => stage.startsWith("problem-kill:"))).toHaveLength(expected);
+      expect(f.db.db.prepare("SELECT count(*) AS count FROM problems WHERE discovery_run_id = ?").get(runId)).toEqual({ count: expected });
+      expect(f.db.db.prepare("SELECT count(*) AS count FROM rejected_problem_candidates WHERE discovery_run_id = ? AND disposition = 'not-assessed'").get(runId))
+        .toEqual({ count: 9 - expected });
+      expect(f.db.db.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
+    } finally { await f.close(); }
+  });
+
 test("a known budget stop retains the first verdict and every remaining full candidate for later assessment", async () => {
   const f = await fixture(request => researchOutput(request, { initialCandidates: 3 }),
     { bounded: true, singleArea: true, maxModelCalls: 9 });
@@ -178,6 +324,80 @@ test("a known budget stop retains the first verdict and every remaining full can
       .toEqual({ candidate_json: archived[0]!.candidate_json });
     expect(f.db.db.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
   } finally { await f.close(); }
+});
+
+test.each([{ failedArea: null }, { failedArea: "handoff" }])("selected area lanes overlap, retain source IDs, and settle their independent results (%s)", async ({ failedArea }) => {
+  const planning = new Set<string>(); let release: () => void = () => {};
+  let activePlans = 0; let maximumActivePlans = 0;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const f = await fixture(async request => {
+    const stage = request.stage.split(":")[0]; const routing = input(request);
+    const evidence = request.evidence[0]?.content as Record<string, unknown>;
+    if (stage === "query-plan") {
+      if (request.stage.includes(":area-")) {
+        planning.add((routing.area as { id: string }).id);
+        activePlans += 1;
+        maximumActivePlans = Math.max(maximumActivePlans, activePlans);
+        if (planning.size === 2) release();
+        await Promise.race([gate, Bun.sleep(250)]);
+        activePlans -= 1;
+        if ((routing.area as { id: string }).id === failedArea) throw new Error("The handoff investigator failed after both lanes started");
+      }
+      return { queries: Array.from({ length: Number(routing.queryCount) }, (_, index) => ({ query: `${(evidence.scope as { domain: string }).domain} ${routing.harvestMode} ${index}`,
+        intent: ["firsthand-experience", "measured-behavior", "contrary-evidence"][index % 3], uncertainty: "Scale unknown", intendedSourceType: "Owner reports" })) };
+    }
+    if (stage === "factor-harvest") return { factors: (evidence.sources as Array<{ id: string }>).map(source => ({ sourceId: source.id,
+      subject: "Bakery owner", behavior: "Repeats filing", quote: text, modelConfidence: 0.8, uncertainty: "Scale unknown",
+      sourceRole: "firsthand", audienceFit: "intended-buyer", independentSourceKey: source.id, supportsDemand: true, demandEvidenceUncertainty: "Payment unknown" })) };
+    if (stage === "area-ranking") return { areas: frame().areas.map((area, index) => ({ areaId: area.id, rank: index + 1, reason: "Independent quotes",
+      evidenceStrength: "strong", fit: "meets" })) };
+    if (stage === "problem-candidates") {
+      const factors = (evidence.factors as Array<{ id: string }>).slice(0, 2);
+      return { problems: [{ statement: `${(routing.area as { id: string }).id} takes repeated work`, whyItPersists: "Repeated entries", affected: "Bakery owners", scaleEstimate: "Unknown",
+        scaleBasisFactorId: null, factorIds: factors.map(factor => factor.id), alternativeExplanations: ["One unusual shop"], unknowns: ["Frequency"],
+        intendedBuyerEvidenceFactorIds: factors.map(factor => factor.id), evidenceGap: null }] };
+    }
+    if (stage === "problem-kill") return { verdict: "confirmed", verdictReason: "Two independent owner reports", verdictSourceIds: [],
+      unresolvedAssumptions: [], wouldChangeConclusion: ["Contrary observations"], intendedBuyerEvidenceFactorIds: (evidence.supportingFactors as Array<{ id: string }>).map(factor => factor.id),
+      evidenceGap: null, briefFit: "direct", contraryEvidence: "resolved", workflowKey: "repeated-filing" };
+    if (stage === "evidence-check") return { decision: "drop", reason: "The observed workflow does not fit the approved criteria", gaps: [] };
+    if (stage === "area-gap") return { gaps: [], reason: "No additional bounded workflows" };
+    throw new Error(`Unexpected fixture stage ${request.stage}`);
+  }, { depth: "standard", bounded: true, modelCapacity: 2 });
+  try {
+    const runId = await f.start("discovery");
+    const scans = f.db.db.prepare("SELECT snapshot_key,json_extract(value_json,'$.qualifyingFacts') AS facts FROM workflow_snapshots WHERE research_run_id = ? AND snapshot_key LIKE 'frame-scan:%'").all(runId);
+    expect({ errors: f.errors, scans, stages: f.stages.filter(stage => stage.includes(":area-")), planning: [...planning] })
+      .toMatchObject({ errors: failedArea ? ["The handoff investigator failed after both lanes started"] : [], planning: ["filing", "handoff"] });
+    expect(maximumActivePlans).toBe(2);
+    expect(f.scheduler.activeCallCount).toBe(0);
+    expect(f.db.db.prepare("SELECT COUNT(*) AS count FROM problems WHERE discovery_run_id = ?").get(runId)).toEqual({ count: 0 });
+    expect(f.db.db.prepare("SELECT COUNT(*) AS count FROM rejected_problem_candidates WHERE discovery_run_id = ? AND disposition = 'blocked'").get(runId))
+      .toEqual({ count: failedArea ? 1 : 2 });
+    const lanes = f.workflows.listWorkItems("session").filter(item => item.kind === "investigate-area");
+    expect(lanes).toHaveLength(2);
+    for (const lane of lanes) {
+      const failed = lane.scopeKey === `investigate-area:${failedArea}`;
+      expect(lane.state).toBe(failed ? "failed" : "succeeded");
+      if (!failed) expect((lane.outputRefs as { investigator: { confirmedCount: number; droppedCount: number } }).investigator)
+        .toMatchObject({ confirmedCount: 0, droppedCount: 1 });
+    }
+    const allowances = f.db.db.prepare(`SELECT snapshot_key, value_json FROM workflow_snapshots
+      WHERE research_run_id = ? AND snapshot_key LIKE 'area:%:allowance' ORDER BY snapshot_key`).all(runId) as Array<{ snapshot_key: string; value_json: string }>;
+    expect(allowances.map(row => JSON.parse(row.value_json).areaId)).toEqual(["filing", "handoff"]);
+    expect(allowances.every(row => JSON.parse(row.value_json).maxModelCalls > 0 && JSON.parse(row.value_json).maxSearches > 0)).toBe(true);
+    const searches = f.db.db.prepare(`SELECT json_extract(usage_json,'$.areaId') AS areaId, count(*) AS count FROM cost_ledger
+      WHERE research_run_id = ? AND operation = 'search' AND json_extract(usage_json,'$.areaId') IS NOT NULL GROUP BY areaId ORDER BY areaId`).all(runId) as Array<{ areaId: string; count: number }>;
+    expect(searches.map(row => row.areaId)).toEqual(failedArea ? ["filing"] : ["filing", "handoff"]);
+    expect(searches.every(row => row.count > 0)).toBe(true);
+    expect(f.db.db.prepare("SELECT COUNT(*) AS count FROM sources WHERE research_run_id = ?").get(runId)).toEqual({ count: 2 });
+    expect(f.db.db.prepare("SELECT retrieved_text FROM sources WHERE id = 'frame-source'").get()).toEqual({ retrieved_text: text });
+    if (failedArea) expect(f.workflows.listWorkItems("session").filter(item =>
+      ["investigate-area", "area-research", "area-candidates", "evidence-check"].includes(item.kind))
+      .every(item => ["succeeded", "failed", "skipped"].includes(item.state))).toBe(true);
+    else expect(new WorkflowExecution(f.db, runId).read("research-target-outcome")).toMatchObject({ outcome: "partial", confirmedProblems: 0 });
+    expect(f.db.db.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
+  } finally { release(); await f.close(); }
 });
 
 test("saved-candidate assessment uses copied original quotes without synthesizing a new candidate", async () => {
@@ -344,5 +564,50 @@ test("new ordinary research follow-ups use their frozen approved goal, criteria,
     expect(new ResearchFrameRepository(f.db).latestApproved("project")?.approved?.goal).toBe("A later unrelated project goal");
     expect(f.stages.some(stage => stage.startsWith("area-ranking"))).toBe(false);
     expect(new WorkflowExecution(f.db, runId).read("discovery-completed")).toBeDefined();
+  } finally { await f.close(); }
+});
+
+test("same-run novelty recovery spends only its fresh allowance while old uncertainty and released reservations stay settled", async () => {
+  let searchCalls = 0;
+  const f = await fixture(request => {
+    if (request.stage === "solutions") return { options: [option(true)] };
+    const id = (input(request).candidateIds as string[])[0]!;
+    const final = request.stage === "solution-set-review";
+    if (final) expect(request.repairPolicy).toBe("disabled");
+    const sourceId = final ? request.evidence.find(source => source.sourceId !== "frame-source")?.sourceId : undefined;
+    return { assessments: [{ candidateId: id, decision: "distinct", reason: "Compared against saved existing-tool evidence", matchingSolutionId: null,
+      citedEvidenceIds: sourceId ? [sourceId] : [], criteriaFit: final ? fit("meets", sourceId, true) : fit("unknown", undefined, true) }] };
+  }, { novelty: true, bounded: true, autoSearch: true, maxModelCalls: 10, maxSearches: 10, taskModelReservation: 3, taskSearchReservation: 1,
+    search: async (_query, options, provider) => {
+      expect(provider).toBe("perplexity"); expect(options).toMatchObject({ route: "alternatives", provider: "perplexity" });
+      searchCalls++;
+      if (searchCalls === 1) throw new Error("Novelty search response was lost");
+      return [{ id: "existing-tool", url: "https://tools.example.org/filing", title: "Existing filing tool", text: "The tool compares local filing exports." }];
+    } });
+  try {
+    const runId = await f.start("generate-ideas");
+    expect(f.errors).toEqual(["Novelty search response was lost"]);
+    const lost = f.db.db.prepare("SELECT * FROM opportunity_exploration_attempts WHERE status = 'unknown-dispatch'").get() as { id: string };
+    const task = f.workflows.listWorkItems("session").find(item => (item.outputRefs as { runId?: string })?.runId === runId)!;
+    const originalEntries = f.workflows.listBudgetEntries("session").filter(entry => entry.workItemId === task.id);
+    f.db.immediateTransaction(() => {
+      for (const entry of originalEntries) f.workflows.settleBudget(entry.id, { state: "uncertain", settledUnits: entry.reservedUnits });
+      const unused = f.workflows.reserveBudget({ sessionId: "session", workItemId: task.id, operationKey: "unused-model-allowance", kind: "model-call", reservedUnits: 5 });
+      f.workflows.settleBudget(unused.id, { state: "released", settledUnits: 0 });
+      f.db.db.prepare("INSERT INTO workflow_snapshots VALUES (?, 'task-budget-retry-baseline:explicit-retry', ?)").run(runId,
+        JSON.stringify({ modelCalls: f.workflows.countProviderAttempts(runId), searches: 1, searchAttempts: 1 }));
+      f.workflows.reserveBudget({ sessionId: "session", workItemId: task.id, operationKey: "fresh-retry-models", kind: "model-call", reservedUnits: 1 });
+      f.workflows.reserveBudget({ sessionId: "session", workItemId: task.id, operationKey: "fresh-retry-searches", kind: "search", reservedUnits: 1 });
+    });
+    const settledBefore = f.workflows.listBudgetEntries("session").filter(entry => entry.state !== "reserved");
+    await f.engine.resumeRun(runId, [lost.id]);
+    await until(() => !f.engine.getActiveRunIds().has(runId));
+    expect(f.errors).toHaveLength(1); expect(searchCalls).toBe(2);
+    expect(f.stages).toEqual(["solutions", "solution-set-review:preliminary", "solution-set-review"]);
+    expect(f.db.db.prepare("SELECT status FROM research_runs WHERE id = ?").get(runId)).toEqual({ status: "completed" });
+    expect(getRunTrace(f.db, runId).metrics).toMatchObject({ acceptedIdeas: 1, acceptedIdeasFailingMustHave: 0, modelCalls: 3 });
+    expect(f.workflows.listBudgetEntries("session").filter(entry => entry.state !== "reserved")).toEqual(settledBefore);
+    expect(f.db.db.prepare("SELECT * FROM opportunity_exploration_attempts WHERE id = ?").get(lost.id)).toEqual(lost);
+    expect(f.db.db.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
   } finally { await f.close(); }
 });

@@ -48,6 +48,22 @@ function countBy(values: readonly string[]): Record<string, number> {
   for (const value of values) result[value] = (result[value] ?? 0) + 1;
   return result;
 }
+
+/** Missing assessments remain unknown. A generator's must-have flag cannot override the approved criterion. */
+export function countAcceptedIdeasFailingMustHave(accepted: ReadonlyArray<{
+  criteriaFit: ReadonlyArray<{ criterionId: string; status: string }> | null;
+  successCriteria: ReadonlyArray<{ id: string; weight: string }> | null;
+}>, goalFitContractPresent: boolean): number | null {
+  if (!goalFitContractPresent) return null;
+  let failures = 0;
+  for (const idea of accepted) {
+    if (!idea.criteriaFit || !idea.successCriteria) return null;
+    if (idea.successCriteria.some(criterion => !idea.criteriaFit?.some(fit => fit.criterionId === criterion.id))) return null;
+    if (idea.successCriteria.some(criterion => criterion.weight === "must"
+      && idea.criteriaFit?.some(fit => fit.criterionId === criterion.id && fit.status === "fails"))) failures++;
+  }
+  return failures;
+}
 function hostIs(host: string, domains: readonly string[]): boolean {
   return domains.some(domain => host === domain || host.endsWith(`.${domain}`));
 }
@@ -123,6 +139,28 @@ function investigatorArea(data: TraceData, key: string): string | null {
     if (key.includes(`:area-${hash}:`) || key.includes(`:scan-${hash}:`) || key.includes(`:${area.id}:`) || key.endsWith(`:${area.id}`)) return area.id;
   }
   return null;
+}
+
+function goalFitFailures(data: TraceData, accepted: ReadonlySet<string>): number | null {
+  const columns = data.db.db.prepare("PRAGMA table_info(solutions)").all() as Array<{ name: string }>;
+  const hasFit = columns.some(column => column.name === "criteria_fit_json");
+  const hasReviewedFit = columns.some(column => column.name === "reviewed_criteria_fit_json");
+  if (!hasFit) return null;
+  const goalFitContract = data.frames.some(frame => frame.approved_json !== null)
+    && (data.snapshots.some(snapshot => ["goal-fit", "goal-fit-contract", "goal-fit-ideas"].includes(snapshot.snapshot_key)
+      && record(json(snapshot.value_json)).version === 1) || data.stages.some(stage => stage.stage_id === "solutions" && stage.stage_revision >= 2));
+  const rows = data.db.db.prepare(`SELECT id, research_run_id, criteria_fit_json${hasReviewedFit ? ", reviewed_criteria_fit_json" : ""}
+    FROM solutions WHERE research_run_id IN (${data.placeholders})`).all(...data.runIds) as
+    Array<{ id: string; research_run_id: string; criteria_fit_json: string | null; reviewed_criteria_fit_json?: string | null }>;
+  const acceptedRows = rows.filter(row => accepted.has(row.id));
+  if (acceptedRows.length !== accepted.size) return null;
+  return countAcceptedIdeasFailingMustHave(acceptedRows.map(row => {
+    const frame = data.frames.find(frame => frame.run_id === row.research_run_id);
+    const fit = json(row.reviewed_criteria_fit_json ?? row.criteria_fit_json);
+    const criteria = frame ? record(json(frame.approved_json)).successCriteria : null;
+    return { criteriaFit: Array.isArray(fit) ? objects(fit).map(item => ({ criterionId: text(item.criterionId), status: text(item.status) })) : null,
+      successCriteria: Array.isArray(criteria) ? objects(criteria).map(item => ({ id: text(item.id), weight: text(item.weight) })) : null };
+  }), goalFitContract);
 }
 
 function candidates(data: TraceData): RunTraceCandidate[] {
@@ -359,7 +397,7 @@ export function getRunTrace(db: TraceDatabase, runId: string, options: RunTraceO
     FROM cost_ledger WHERE research_run_id IN (${data.placeholders}) AND status != 'released'`).get(...data.runIds) as
     { calls: number | null; searches: number | null } : null;
   const qualifyingObservations = data.factors.filter(factor => ["firsthand", "measured"].includes(factor.source_role) && factor.audience_fit === "intended-buyer").length;
-  const acceptedIdeasFailingMustHave = null;
+  const acceptedIdeasFailingMustHave = goalFitFailures(data, accepted);
   const investigators = [...data.areas.values()].flatMap(area => {
     const areaSteps = allSteps.filter(step => step.phase === area.id);
     const current = areaSteps.filter(step => step.kind !== "search").at(-1);
@@ -387,6 +425,8 @@ export function getRunTrace(db: TraceDatabase, runId: string, options: RunTraceO
       interruptionTimeMs: interruptions.reduce((sum, attempt) => sum + attempt.durationMs, 0), interruptions: interruptions.length,
       ideas: ideas.count, acceptedIdeas: accepted.size, acceptedIdeasFailingMustHave },
     warnings: [...(allCandidates.some(candidate => candidate.derived) ? ["Some candidate states were derived from older saved outputs."] : []),
+      ...(accepted.size && data.frames.length && acceptedIdeasFailingMustHave === null
+        ? ["Accepted ideas do not all have a saved assessment against the bound frame. Must-have failures are unknown."] : []),
       ...(data.snapshots.some(snapshot => snapshot.snapshot_key.startsWith("search:")) && !data.snapshots.some(snapshot => snapshot.snapshot_key.startsWith("search-query:"))
         ? ["Older search links were reconstructed from saved query plans and parameters. Search timings were not saved."] : [])] });
 }

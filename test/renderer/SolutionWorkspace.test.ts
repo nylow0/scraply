@@ -88,6 +88,23 @@ describe("SolutionListItem risk summary", () => {
 });
 
 describe("SolutionWorkspace ordering explanation", () => {
+  test("filters on all must-haves and leaves legacy ideas explicitly unassessed", async () => {
+    const legacy = { ...solution(), id: "legacy", mechanism: "Legacy saved idea" };
+    const fit = [{ criterionId: "build", criterionName: "Build in one month", mustHave: true, status: "meets" as const, evidenceIds: ["source"], note: "Measured prototype effort" }];
+    const assessed = { ...solution(), id: "assessed", mechanism: "Assessed idea", criteriaFit: fit };
+    const unknown = { ...solution(), id: "unknown", mechanism: "Unknown fit idea", criteriaFit: [{ ...fit[0]!, status: "unknown" as const, evidenceIds: [] }] };
+    const view = render(SolutionWorkspace, { solutions: [legacy, assessed, unknown], busy: false, onExport: vi.fn(), onOpenSource: vi.fn(), onReview: vi.fn() });
+    expect(view.getByText("Criteria fit not assessed")).toBeTruthy();
+    expect(view.getByText("Build in one month · must-have: meets")).toBeTruthy();
+    const checkbox = view.getByRole("checkbox", { name: "Meets all must-haves" });
+    await fireEvent.click(checkbox);
+    expect(view.getByText("Assessed idea").closest(".idea-row")?.hasAttribute("hidden")).toBe(false);
+    expect(view.getByText("Legacy saved idea").closest(".idea-row")?.hasAttribute("hidden")).toBe(true);
+    expect(view.getByText("Unknown fit idea").closest(".idea-row")?.hasAttribute("hidden")).toBe(true);
+    await fireEvent.click(checkbox);
+    expect(view.getByText("Legacy saved idea").closest(".idea-row")?.hasAttribute("hidden")).toBe(false);
+  });
+
   test("keeps business grouping available without hiding the idea list", async () => {
     const opportunities: OpportunityFamiliesView = {
       rawOptionCount: 1, reviewedOptionCount: 0, acceptedFamilyCount: 0,

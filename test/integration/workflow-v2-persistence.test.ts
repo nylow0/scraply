@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { DEFAULT_RUN_CONFIG } from "../../src/shared/schemas";
+import type { ResearchFrame } from "../../src/shared/research-frame";
 import { Database } from "bun:sqlite";
 import { MIGRATIONS } from "../../src/db/migrations";
 import { DevelopmentRepository } from "../../src/db/repositories/development";
@@ -21,6 +22,7 @@ import {
 import { deriveJsonSchema } from "../../src/shared/json-schema";
 import { FactorHarvestOutputSchema, ProblemCandidatesOutputSchema, ProblemKillOutputSchema, QueryPlanOutputSchema, LegacyWorkflowV2QueryPlanOutputSchema, WorkflowV2FactorHarvestOutputSchema } from "../../src/shared/structured-output-schemas";
 import { WorkflowExecution, workflowSearchKey } from "../../src/core/workflow-execution";
+import { prepareWorkflowSearch, unknownSearchAttempts, UnknownSearchCompletionError } from "../../src/core/workflow-search-attempts";
 import { configurePromptPaths } from "../../src/core/prompts";
 import { discoverProblems, harvestFactors, type HarvestedFactor, type HarvestedSource } from "../../src/core/discovery";
 import type { StructuredModelClient, StructuredStageRequest } from "../../src/providers/structured";
@@ -34,6 +36,44 @@ afterEach(() => {
 });
 
 describe("workflow v2 persistence", () => {
+  test("goal fit, a first test, and the wider problem survive reopening without changing older ideas", () => {
+    const client = database();
+    const repository = new WorkflowV2Repository(client);
+    const candidate = { ...solution("goal-idea"),
+      criteriaFit: [{ criterionId: "month", criterionName: "Build in one month", mustHave: true, status: "unknown" as const, evidenceIds: [], note: "Requires a prototype" }],
+      biggerProblem: { statement: "Claims repeat across firms", affected: "Operators", scale: "Unknown", scaleKnown: false, scaleEvidenceIds: [] },
+      slice: { description: "One filing checkpoint", connectionToBiggerProblem: "Prevent one repeated claim", feasibilityWithinConstraints: "One month prototype" },
+      firstTest: { kind: "measurable-demo" as const, question: "Does the checkpoint reduce repeats?", method: "Compare ten filings", cost: "One day", metric: "Repeated claims", sample: 10, observationWindow: "One week", passCriterion: "Zero repeats", failCriterion: "Two repeats", inconclusiveCriterion: "Fewer than ten claims" },
+    };
+    const { id: _candidateId, ...goalOutput } = candidate;
+    void _candidateId;
+    client.immediateTransaction(() => {
+      repository.saveSolutionOptions("run-v2", "problem-1", [candidate]);
+      repository.saveStageResult({ ...stageResult({ options: [goalOutput] }), schemaRevision: 2 });
+    });
+    const frame: ResearchFrame = { goal: "Build a demo", goalKind: "competition-entry", contextFacts: [],
+      successCriteria: [{ id: "month", name: "Build in one month", weight: "must", howJudged: "Prototype effort", basis: "brief" }],
+      constraints: [], areas: [], exclusions: [], openQuestions: [], languages: ["en"] };
+    const reviewedFit = [{ ...candidate.criteriaFit[0]!, status: "partial" as const, evidenceIds: ["source-1"], note: "A saved account supports a shorter prototype" }];
+    client.immediateTransaction(() => repository.saveReviewedCriteriaFit("run-v2", candidate.id, reviewedFit, frame, ["source-1"]));
+    expect(client.immediateTransaction(() => repository.saveSolutionOptions("run-v2", "problem-1", [candidate])).created).toBe(false);
+    const path = join(directories[directories.length - 1]!, "scraply.db");
+    client.close();
+    const reopened = new DatabaseClient(path);
+    try {
+      const saved = new WorkflowV2Repository(reopened).findStageResult("run-v2", "solutions");
+      expect(saved?.schemaRevision).toBe(2);
+      expect(saved?.output).toEqual({ options: [goalOutput] });
+      const row = reopened.db.prepare("SELECT criteria_fit_json, reviewed_criteria_fit_json, first_test_json, bigger_problem_json, slice_json FROM solutions WHERE id = ?").get("goal-idea") as Record<string, string>;
+      expect(JSON.parse(row.criteria_fit_json!)).toEqual(candidate.criteriaFit);
+      expect(JSON.parse(row.reviewed_criteria_fit_json!)).toEqual(reviewedFit);
+      expect(JSON.parse(row.first_test_json!)).toEqual(candidate.firstTest);
+      expect(JSON.parse(row.bigger_problem_json!)).toEqual(candidate.biggerProblem);
+      expect(JSON.parse(row.slice_json!)).toEqual(candidate.slice);
+      expect(reopened.db.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
+    } finally { reopened.close(); }
+  });
+
   test("replays a revision-one query plan with its original request schema after the language schema upgrade", async () => {
     configurePromptPaths({ bundledDir: join(process.cwd(), "prompts"), overrideDir: null });
     const client = database();
@@ -70,11 +110,13 @@ describe("workflow v2 persistence", () => {
       let calls = 0;
       const options = { numResults: 1, route: "open-web" as const };
       const source = { id: "saved", url: "https://forum.test/quote", title: "Quote", text: "Quoted report" };
-      const exa = execution.search({ provider: "exa", async search() { calls += 1; return [source]; } });
+      const exa = execution.search({ provider: "exa", providerForRoute: () => "exa" as const, async search() { calls += 1; return [source]; } });
       const perplexity = execution.search({ provider: "perplexity", async search() { calls += 1; return [source]; } });
       await exa.search("  user   report ", options);
       await perplexity.search("user report", options);
       await exa.search("USER REPORT", options);
+      await exa.search("user report", { ...options, provider: "exa" });
+      expect(exa.providerForRoute?.("community")).toBe("exa");
       expect(calls).toBe(2);
       const key = workflowSearchKey("user report", options, "exa");
       expect(execution.read(`search-query:${key.slice("search:".length)}`)).toMatchObject({ key, query: "user report", provider: "exa" });
@@ -82,6 +124,127 @@ describe("workflow v2 persistence", () => {
     } finally { client.close(); }
   });
 
+  test("reuses automatic paid search results before selecting a fallback after a key disconnects", async () => {
+    const client = database();
+    try {
+      const execution = new WorkflowExecution(client, "run-v2");
+      const options = { numResults: 1, route: "community" as const };
+      let calls = 0;
+      const source = { id: "saved", url: "https://reddit.com/quote", title: "Quote", text: "A saved report" };
+      const first = execution.search({ provider: "exa", providerForRoute: () => "exa" as const, async search() { calls++; return [source]; } });
+      expect(await first.search("Saved question", options)).toEqual([source]);
+      const reopened = new WorkflowExecution(client, "run-v2").search({ provider: "perplexity", providerForRoute: () => { throw new Error("Keys disconnected"); }, async search() { calls++; return []; } });
+      expect(await reopened.search("Saved question", options)).toEqual([source]);
+      expect(calls).toBe(1);
+    } finally { client.close(); }
+  });
+  test("blocks a lost search completion before choosing a fallback and keeps explicit retry history", async () => {
+    const client = database();
+    try {
+      new WorkflowExecution(client, "run-v2");
+      const parameters = { numResults: 1, route: "community" as const };
+      const prior = prepareWorkflowSearch(client, "run-v2", {
+        key: workflowSearchKey("Saved question", parameters, "exa"), query: "Saved question", parameters, provider: "exa",
+      }, []);
+      let calls = 0;
+      const disconnected = new WorkflowExecution(client, "run-v2").search({
+        providerForRoute: () => { throw new Error("Keys disconnected"); }, async search() { calls++; return []; },
+      });
+      try {
+        await disconnected.search("Saved question", parameters);
+        throw new Error("Unknown completion was replayed");
+      } catch (error) {
+        expect(error).toBeInstanceOf(UnknownSearchCompletionError);
+        expect((error as UnknownSearchCompletionError).attemptId).toBe(prior.id);
+      }
+      expect(calls).toBe(0);
+      expect(unknownSearchAttempts(client, "run-v2").map(attempt => attempt.id)).toEqual([prior.id]);
+      expect(unknownSearchAttempts(client, "run-v2", [prior.id])).toEqual([]);
+      const source = { id: "retry", url: "https://reddit.com/retry", title: "Report", text: "A saved report" };
+      const acknowledged = new WorkflowExecution(client, "run-v2", [prior.id]).search({
+        provider: "perplexity", providerForRoute: () => "perplexity" as const, async search() { calls++; return [source]; },
+      });
+      expect(await acknowledged.search("Saved question", parameters)).toEqual([source]);
+      expect(calls).toBe(1);
+      expect(unknownSearchAttempts(client, "run-v2")).toEqual([]);
+      expect(client.db.prepare("SELECT snapshot_key FROM workflow_snapshots WHERE research_run_id = ? AND snapshot_key LIKE 'search-attempt:%'")
+        .all("run-v2")).toHaveLength(2);
+      expect(new WorkflowExecution(client, "run-v2").read(`search-acknowledged:${prior.id}`)).toMatchObject({ attemptId: prior.id });
+      expect(await disconnected.search("Saved question", parameters)).toEqual([source]);
+      expect(calls).toBe(1);
+    } finally { client.close(); }
+  });
+
+  test("a saved search checkpoint proves completion even if its terminal receipt was lost", async () => {
+    const client = database();
+    try {
+      const execution = new WorkflowExecution(client, "run-v2");
+      const parameters = { numResults: 1, route: "community" as const };
+      const key = workflowSearchKey("Saved question", parameters, "exa");
+      prepareWorkflowSearch(client, "run-v2", { key, query: "Saved question", parameters, provider: "exa" }, []);
+      const source = { id: "saved", url: "https://reddit.com/report", title: "Report", text: "A saved report" };
+      execution.save(key, [source]);
+      expect(unknownSearchAttempts(client, "run-v2")).toEqual([]);
+      const disconnected = new WorkflowExecution(client, "run-v2").search({
+        providerForRoute: () => { throw new Error("Keys disconnected"); }, async search() { throw new Error("Unexpected dispatch"); },
+      });
+      expect(await disconnected.search("Saved question", parameters)).toEqual([source]);
+    } finally { client.close(); }
+  });
+
+  test("parallel area executions share one live search instead of reporting its completion as lost", async () => {
+    const client = database();
+    try {
+      let release: (() => void) | undefined;
+      const waiting = new Promise<void>(resolve => { release = resolve; });
+      let calls = 0;
+      const source = { id: "shared", url: "https://reddit.com/report", title: "Report", text: "A saved report" };
+      const provider = { provider: "exa" as const, async search() { calls++; await waiting; return [source]; } };
+      const first = new WorkflowExecution(client, "run-v2").search(provider).search("Shared question", { route: "community" });
+      const second = new WorkflowExecution(client, "run-v2").search(provider).search("SHARED QUESTION", { route: "community" });
+      expect(calls).toBe(1);
+      release!();
+      expect(await Promise.all([first, second])).toEqual([[source], [source]]);
+      expect(unknownSearchAttempts(client, "run-v2")).toEqual([]);
+      expect(client.db.prepare("SELECT snapshot_key FROM workflow_snapshots WHERE research_run_id = ? AND snapshot_key LIKE 'search-attempt:%'")
+        .all("run-v2")).toHaveLength(1);
+    } finally { client.close(); }
+  });
+
+  test("a storage failure after provider completion remains uncertain and cannot replay automatically", async () => {
+    const client = database();
+    try {
+      const execution = new WorkflowExecution(client, "run-v2");
+      client.db.exec(`CREATE TRIGGER reject_paid_result BEFORE INSERT ON workflow_snapshots
+        WHEN NEW.snapshot_key LIKE 'search:%' BEGIN SELECT RAISE(ABORT, 'Result storage unavailable'); END`);
+      let calls = 0;
+      const provider = { provider: "exa" as const, async search() { calls++; return []; } };
+      await expect(execution.search(provider).search("Completed question", { route: "community" }))
+        .rejects.toThrow("Result storage unavailable");
+      expect(unknownSearchAttempts(client, "run-v2")).toHaveLength(1);
+      await expect(new WorkflowExecution(client, "run-v2").search(provider).search("Completed question", { route: "community" }))
+        .rejects.toBeInstanceOf(UnknownSearchCompletionError);
+      expect(calls).toBe(1);
+    } finally { client.close(); }
+  });
+
+  test("a known failed search permits a later attempt while retaining both dispatches", async () => {
+    const client = database();
+    try {
+      const execution = new WorkflowExecution(client, "run-v2");
+      const parameters = { numResults: 1, route: "community" as const };
+      const failed = execution.search({ provider: "exa", async search() { throw new Error("Provider rejected request"); } });
+      await expect(failed.search("Saved question", parameters)).rejects.toThrow("Provider rejected request");
+      expect(unknownSearchAttempts(client, "run-v2")).toEqual([]);
+      let calls = 0;
+      const retry = new WorkflowExecution(client, "run-v2").search({ provider: "exa", async search() { calls++; return []; } });
+      expect(await retry.search("Saved question", parameters)).toEqual([]);
+      expect(calls).toBe(1);
+      const terminals = client.db.prepare("SELECT value_json FROM workflow_snapshots WHERE research_run_id = ? AND snapshot_key LIKE 'search-terminal:%' ORDER BY rowid")
+        .all("run-v2") as Array<{ value_json: string }>;
+      expect(terminals.map(row => (JSON.parse(row.value_json) as { status: string }).status)).toEqual(["failed", "completed"]);
+    } finally { client.close(); }
+  });
   test("reuses completed legacy community searches for both routed legs without spending again", async () => {
     configurePromptPaths({ bundledDir: join(process.cwd(), "prompts"), overrideDir: null });
     const client = database();
@@ -92,7 +255,7 @@ describe("workflow v2 persistence", () => {
       const source = { id: "saved", url: "https://reddit.com/old-report", title: "Quote", text: "Completed report" };
       execution.save(workflowSearchKey("user report", legacySearchOptions), [source]);
       let calls = 0;
-      const search = new WorkflowExecution(client, "run-v2").search({ provider: "exa", async search() { calls += 1; return []; } });
+      const search = new WorkflowExecution(client, "run-v2").search({ provider: "exa", providerForRoute: () => { throw new Error("Disconnected key"); }, async search() { calls += 1; return []; } });
       for (const route of ["open-web", "community"] as const) expect(await search.search("USER REPORT", {
         numResults: 4, maxCharacters: 6000, route, excludeDomains: ["worldmetrics.org"], legacySearchOptions,
       })).toEqual([source]);

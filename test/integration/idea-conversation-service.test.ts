@@ -8,6 +8,8 @@ import { ResearchRequestService } from "../../src/core/research-request-service"
 import { materializeResearchSnapshot } from "../../src/core/research-revisions";
 import { DatabaseClient } from "../../src/db/client";
 import { WorkflowV2Repository } from "../../src/db/repositories/workflow-v2";
+import { ResearchFrameRepository } from "../../src/db/repositories/research-frames";
+import type { ResearchFrame } from "../../src/shared/research-frame";
 import { WorkflowRepository } from "../../src/db/repositories/workflows";
 import { ProviderFailure, type StructuredModelClient, type StructuredStageRequest } from "../../src/providers/structured";
 import { DEFAULT_RUN_CONFIG } from "../../src/shared/schemas";
@@ -94,6 +96,45 @@ async function waitForTurn(db: DatabaseClient, turnId: string): Promise<string> 
 }
 
 describe("idea conversation service", () => {
+  test("a new rethink of an older idea freezes the latest approved frame and saves its goal fit", async () => {
+    const db = fixture();
+    const frame: ResearchFrame = { goal: "Build a competition demo", goalKind: "competition-entry", contextFacts: [],
+      successCriteria: [{ id: "month", name: "One-month build", weight: "must", howJudged: "Two students can demonstrate it", basis: "brief" }],
+      constraints: [{ text: "Two students in one month", kind: "team", basis: "brief" }], areas: [], exclusions: [], openQuestions: [], languages: ["en"] };
+    const frames = new ResearchFrameRepository(db);
+    const draft = frames.createDraft({ threadId: "thread-1", runId: "discovery-1", frame, knownProblem: true, sources: [] });
+    const approved = frames.approve(draft.id, "thread-1", frame);
+    let release: (() => void) | undefined;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const candidate = { mechanism: "Show dependency changes inside the release checklist", description: "A checklist demo for one team", keyAssumption: "Owners see changes in time", whyCurrentApproachMaySuffice: "An existing checklist may suffice", supportingEvidenceIds: ["source-1"], contraryEvidenceIds: [], unknowns: [], respectsOffLimits: true, respectsOffLimitsWhy: "Existing process only",
+      biggerProblem: { statement: "Upgrades bypass reviews across teams", affected: "Release owners", scale: "Unknown", scaleKnown: false, scaleEvidenceIds: [] },
+      slice: { description: "One checklist demo", connectionToBiggerProblem: "Tests a missed review checkpoint", feasibilityWithinConstraints: "Two students in one month" },
+      criteriaFit: [{ criterionId: "month", criterionName: "One-month build", mustHave: true, status: "unknown", evidenceIds: [], note: "Requires a measured demo" }],
+      firstTest: { kind: "measurable-demo", question: "Does the demo expose missed reviews?", method: "Inspect ten releases", cost: "One day", metric: "Missed reviews found", sample: 10, observationWindow: "One week", passCriterion: "All missed reviews found", failCriterion: "Two reviews missed", inconclusiveCriterion: "Fewer than ten releases" },
+    };
+    const output = { reply: "A demo can test the checkpoint", citedEvidenceIds: ["source-1"], assumptions: [], changeSummary: "Narrowed to a demonstrable checkpoint", candidate };
+    const client: StructuredModelClient = { async structuredCompletion<T>(prepared: StructuredStageRequest<T>) {
+      expect(prepared.workOrder.inputs).toMatchObject({ context: { frame, frameId: approved.id } });
+      await gate;
+      return completion(output).structuredCompletion(prepared);
+    } };
+    const service = new IdeaConversationService({ db, modelClient: () => client, modelAvailable: () => true, onProgress: () => {} });
+    const admitted = await service.submitTurn({ ...request("framed-message"), intent: "rethink" });
+    const revisedFrame = { ...frame, goal: "A later competition goal" };
+    const next = frames.createApprovedVersion(approved.id, "thread-1", revisedFrame);
+    expect(next.id).not.toBe(approved.id);
+    release?.();
+    expect(await waitForTurn(db, admitted.turnId)).toBe("completed");
+    const conversation = service.getConversation({ ideaId: "idea-1" });
+    const version = conversation.versions[1]!;
+    const saved = db.db.prepare("SELECT criteria_fit_json, first_test_json, research_run_id FROM solutions WHERE id = ?").get(version.solutionId) as { criteria_fit_json: string; first_test_json: string; research_run_id: string };
+    expect(JSON.parse(saved.criteria_fit_json)).toEqual(candidate.criteriaFit);
+    expect(JSON.parse(saved.first_test_json)).toEqual(candidate.firstTest);
+    expect(frames.forRun(saved.research_run_id)?.id).toBe(approved.id);
+    expect(new WorkflowV2Repository(db).findStageResult(saved.research_run_id, "idea-follow-up", admitted.turnId)?.schemaRevision).toBe(2);
+    expect(db.db.prepare("SELECT criteria_fit_json FROM solutions WHERE id = 'idea-1'").get()).toEqual({ criteria_fit_json: null });
+  });
+
   test("admits before dispatch, persists the reply, and replays the same client message ID", async () => {
     const db = fixture();
     const service = new IdeaConversationService({ db, modelClient: () => completion({

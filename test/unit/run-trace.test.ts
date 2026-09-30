@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { classifyTraceSource, savedSearchKey } from "../../src/core/run-trace";
+import { classifyTraceSource, countAcceptedIdeasFailingMustHave, savedSearchKey } from "../../src/core/run-trace";
 
 describe("saved run trace source classes", () => {
   test.each([
@@ -27,5 +27,25 @@ describe("saved run trace source classes", () => {
     const options = { numResults: 4, maxCharacters: 6000, includeDomains: ["reddit.com"] };
     expect(savedSearchKey("  Ｂakery\n orders  ", options)).toBe(savedSearchKey("bakery orders", options));
     expect(savedSearchKey("bakery orders", options)).not.toBe(savedSearchKey("bakery orders", { ...options, includeDomains: [] }));
+  });
+});
+
+describe("accepted idea criterion failures", () => {
+  const successCriteria = [{ id: "environment", weight: "must" }, { id: "novelty", weight: "high" }];
+  test("counts accepted must-have failures against approved criterion weights", () => {
+    expect(countAcceptedIdeasFailingMustHave([
+      { successCriteria, criteriaFit: [{ criterionId: "environment", status: "fails" }, { criterionId: "novelty", status: "meets" }] },
+      { successCriteria, criteriaFit: [{ criterionId: "environment", status: "unknown" }, { criterionId: "novelty", status: "fails" }] },
+    ], true)).toBe(1);
+  });
+  test("reports legacy and incomplete assessments as unknown", () => {
+    expect(countAcceptedIdeasFailingMustHave([], false)).toBeNull();
+    expect(countAcceptedIdeasFailingMustHave([{ successCriteria, criteriaFit: null }], true)).toBeNull();
+    expect(countAcceptedIdeasFailingMustHave([{ successCriteria: null, criteriaFit: [] }], true)).toBeNull();
+    expect(countAcceptedIdeasFailingMustHave([{ successCriteria, criteriaFit: [{ criterionId: "environment", status: "meets" }] }], true)).toBeNull();
+  });
+  test("zero accepted ideas is zero only for a goal-fit contract", () => {
+    expect(countAcceptedIdeasFailingMustHave([], true)).toBe(0);
+    expect(countAcceptedIdeasFailingMustHave([], false)).toBeNull();
   });
 });

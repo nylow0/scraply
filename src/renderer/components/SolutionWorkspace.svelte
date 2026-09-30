@@ -5,6 +5,8 @@
   import type { IdeaConversation as ConversationView, SubmitIdeaTurnRequest } from "../../shared/workflow-contracts";
   import SolutionListItem from "./SolutionListItem.svelte";
   import DecisionOption from "./DecisionOption.svelte";
+  import CriteriaFit from "./CriteriaFit.svelte";
+  import { meetsAllMustHaves } from "../../shared/solution-goal-fit";
   import IdeaConversation from "./IdeaConversation.svelte";
   import OpportunityFamilies from "./OpportunityFamilies.svelte";
   import type { OpportunityFamiliesView, OpportunityMembershipCommand } from "../../shared/opportunity-review";
@@ -77,6 +79,7 @@
   } = $props();
 
   let query = $state("");
+  let mustHavesOnly = $state(false);
   let showDiscarded = $state(false);
   let discardedCount = $derived(solutions.filter((idea) => idea.discarded).length);
   let unaddressedOnly = $state(false);
@@ -188,7 +191,7 @@
       ? rankedSolutions.filter(({ idea }) => idea.unaddressedCatastrophicRisks > 0)
       : rankedSolutions,
   );
-  let matchCount = $derived(visible.filter(({ idea }) => !!idea.discarded === showDiscarded && matchesQuery(idea)).length);
+  let matchCount = $derived(visible.filter(({ idea }) => !!idea.discarded === showDiscarded && matchesQuery(idea) && (!mustHavesOnly || meetsAllMustHaves(idea.criteriaFit))).length);
 </script>
 
 <svelte:window onkeydown={(event) => {
@@ -223,14 +226,16 @@
   {/if}
 
   <ResultsToolbar bind:query label="Search ideas" count={matchCount} />
+  <label class="must-have-filter"><input type="checkbox" bind:checked={mustHavesOnly} /> Meets all must-haves</label>
   {#if solutions.length > 0 && matchCount === 0}<p class="filter-empty">{query ? `No ideas match "${query}".` : showDiscarded ? "No discarded ideas." : discardedCount === solutions.length ? "All ideas discarded. Open Discarded to review or restore them." : "No ideas match this filter."}</p>{/if}
   <div class="solutions">
     {#each rankedSolutions as item (item.idea.id)}
-      <div class="idea-row" hidden={!!item.idea.discarded !== showDiscarded || (unaddressedOnly && item.idea.unaddressedCatastrophicRisks === 0) || !matchesQuery(item.idea)}>
+      <div class="idea-row" hidden={!!item.idea.discarded !== showDiscarded || (unaddressedOnly && item.idea.unaddressedCatastrophicRisks === 0) || !matchesQuery(item.idea) || (mustHavesOnly && !meetsAllMustHaves(item.idea.criteriaFit))}>
         <div class="idea-card">
           <div class="card-copy">
             <h2>{shortTitle(item.idea.mechanism)}</h2>
             <p class="card-summary">{preview(item.idea.description)}</p>
+            <CriteriaFit fit={item.idea.criteriaFit} />
             {#if preview(item.idea.description) !== item.idea.description.trim() || shortTitle(item.idea.mechanism) !== item.idea.mechanism.trim()}<span class="more-copy">Full explanation inside</span>{/if}
             <div class="card-status"><span class:needs-review={item.idea.problemVerdict !== "confirmed"}>{evidenceLabel(item.idea)}</span>{#if item.idea.workflowVersion === 2}<span>{reviewLabel(item.idea)}</span>{/if}</div>
           </div>
@@ -334,6 +339,7 @@
   .conversation-status,.conversation-error { margin:0 0 18px;padding:18px;border:1px solid var(--border);border-radius:10px;color:var(--muted);font-size:14px; }
   .conversation-error p { margin:0 0 12px; }
   [hidden] { display:none; }
+  .must-have-filter { display:flex; align-items:center; gap:8px; color:var(--muted); font-size:13px; margin:0 0 18px; cursor:pointer; }
   @container page (max-width:700px) { .workspace { padding:28px 22px 60px; }.actions { justify-content:flex-start; }.idea-card { flex-direction:column;gap:15px; }.card-actions { flex-wrap:wrap; } }
   @container page (max-width:440px) { .workspace { padding-inline:16px; }.idea-card { padding:17px; }.card-actions .open-idea { flex:1; } }
 </style>
