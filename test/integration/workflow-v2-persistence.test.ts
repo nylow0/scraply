@@ -455,7 +455,7 @@ describe("workflow v2 persistence", () => {
       const recovered = await adapter.structuredCompletion({ ...request, generationId: "candidate-resume" });
       expect(providerCalls).toBe(1);
       expect(recovered.output).toEqual({ problems: [{ statement: "Operators repeat filing.", whyItPersists: "Systems disagree.", affected: "Operators",
-        scaleEstimate: "Unknown", scaleBasisFactorId: null, factorIds: [] }] });
+        scaleEstimate: "Unknown", scaleBasisFactorId: null, factorIds: [], alternativeExplanations: [], unknowns: ["Frequency"] }] });
       expect(new WorkflowExecution(client, "run-v2").repository.findStageResult("run-v2", "problem-candidates", "batch-1")).not.toBeNull();
     } finally { client.close(); }
   });
@@ -548,6 +548,50 @@ describe("workflow v2 persistence", () => {
       expect(result.problems[0]!.factorIds).toEqual(["factor"]);
       expect(result.blockedCandidates).toEqual([{ statement: "Untraceable candidate", reason: "Candidate cited an unknown factor ID; its evidence could not be verified." }]);
       expect(assessments).toBe(1);
+    });
+  });
+
+  test("only new runs opt into ranked depth-based candidate accounting", () => {
+    configurePromptPaths({ bundledDir: join(process.cwd(), "prompts"), overrideDir: null });
+    const client = database();
+    try {
+      expect(new WorkflowExecution(client, "run-v2").rankProblemCandidates).toBe(true);
+      client.db.prepare("DELETE FROM workflow_snapshots WHERE research_run_id = ? AND snapshot_key = ?")
+        .run("run-v2", "candidate-accounting");
+      expect(new WorkflowExecution(client, "run-v2").rankProblemCandidates).toBe(false);
+      expect(new WorkflowExecution(client, "run-v2").read("candidate-accounting")).toBeNull();
+    } finally { client.close(); }
+  });
+
+  test("retains complete V2 candidates when the assessment limit leaves one unassessed", async () => {
+    await withDiscoveryFixture(async ({ execution, source }) => {
+      const candidate = {
+        statement: "Operators repeat filing", whyItPersists: "Disconnected state", affected: "Operators",
+        scaleEstimate: "Unknown", scaleBasisFactorId: null, factorIds: ["factor"],
+        alternativeExplanations: ["A manual export may suffice"], unknowns: ["Frequency"],
+        intendedBuyerEvidenceFactorIds: [], evidenceGap: "Second observation required",
+      };
+      const extra = { ...candidate, statement: "Operators repeat verification" };
+      let verdictStage = "";
+      const modelClient = discoveryModelClient(request => {
+        if (request.stage !== "problem-candidates") verdictStage = request.stage;
+        return request.stage === "problem-candidates"
+        ? { problems: [candidate, extra] }
+        : { verdict: "insufficient-evidence", verdictReason: "More support needed", verdictSourceIds: [],
+            unresolvedAssumptions: [], wouldChangeConclusion: [], intendedBuyerEvidenceFactorIds: [], evidenceGap: "Second observation required",
+            briefFit: "direct", contraryEvidence: "unknown", workflowKey: "operator: repeated filing" };
+      });
+      const result = await discoverProblems({ title: "Filing", audience: "Operators", domain: "Filing", observations: "", offLimits: [] }, [discoveryFactor(source)], [source], {
+        candidateLimit: 1, workflowVersion: 2, model: DEFAULT_RUN_CONFIG.model, reasoningEffort: "low",
+        modelClient: execution.discoveryClient(modelClient), prompt: () => "Assess evidence", search: { async search() { return []; } },
+      });
+      expect(result.blockedCandidates).toEqual([{
+        statement: extra.statement, disposition: "not-assessed", candidate: extra,
+        reason: "Not assessed: this run assesses up to 1 problem candidate, ranked by independent cited sources with research phases alternating on ties.",
+      }]);
+      const { alternativeExplanations, unknowns, ...legacyCandidate } = candidate;
+      void alternativeExplanations; void unknowns;
+      expect(verdictStage).toBe(`problem-kill:${hash(JSON.stringify(legacyCandidate))}`);
     });
   });
 

@@ -14,9 +14,74 @@ import {
 import type { StructuredModelClient, StructuredStageRequest } from "../../src/providers/structured";
 import { ProviderFailure } from "../../src/providers/structured";
 import { QueryPlanOutputSchema } from "../../src/shared/structured-output-schemas";
-import { AUDIENCE_SOURCE_BATCH_CHARACTERS, discoveryRunProjection } from "../../src/shared/discovery-projection";
+import { AUDIENCE_SOURCE_BATCH_CHARACTERS, DISCOVERY_DEPTHS, discoveryRunProjection } from "../../src/shared/discovery-projection";
+import { researchSearchAllocation } from "../../src/shared/research-revisions";
 
 describe("discovery", () => {
+  test.each(["quick", "standard", "deep"] as const)("budgets the candidate limit for %s depth", (depth) => {
+    const expected = ({ quick: 3, standard: 4, deep: 8 } as const)[depth];
+    expect(DISCOVERY_DEPTHS[depth].candidateLimit).toBe(expected);
+    expect(discoveryRunProjection(depth).searches).toBe(DISCOVERY_DEPTHS[depth].queriesPerMode * 2 + expected);
+    const allocation = researchSearchAllocation(20, depth);
+    expect(allocation.candidateLimit).toBe(expected);
+    expect(allocation.domainQueries + allocation.audienceQueries + allocation.candidateLimit).toBeLessThanOrEqual(20);
+  });
+
+  test.each([true, false])("accounts for all nine candidates while preserving the ranked policy (%s)", async (rankCandidates) => {
+    const sources = Array.from({ length: 9 }, (_, index) => source(`support-${index}`, "Operators repeat filing."));
+    const factors: HarvestedFactor[] = sources.map((item, index) => ({
+      id: `factor-${index}`, subject: "Operators", behavior: "repeat filing", quote: item.retrievedText,
+      sourceId: item.id, harvestMode: index < 5 ? "domain" : "audience", modelConfidence: 0.8,
+      independentSourceKey: `operator-${index}`, sourceRole: "firsthand", audienceFit: "intended-buyer", source: item,
+    }));
+    const candidates = factors.map((factor, index) => ({
+      statement: `Candidate ${index}`, whyItPersists: "Disconnected state", affected: "Operators", scaleEstimate: "Unknown",
+      scaleBasisFactorId: null, factorIds: index === 5 ? [factor.id, "factor-6"] : [factor.id],
+      intendedBuyerEvidenceFactorIds: [], evidenceGap: "More direct accounts needed",
+      alternativeExplanations: ["An existing workflow may suffice"], unknowns: ["How often it happens"],
+    }));
+    let searches = 0;
+    const result = await discoverProblems(scope(), factors, sources, {
+      depth: "standard", workflowVersion: 2, rankCandidates, model, reasoningEffort, prompt: () => "Fixture instructions",
+      modelClient: modelClient(request => request.schema.parse(request.stage === "problem-candidates"
+        ? { problems: candidates } : { verdict: "insufficient-evidence", verdictReason: "More support needed", verdictSourceIds: [] })),
+      search: { async search() { searches++; return []; } },
+    });
+    expect(result.problems.map((problem) => problem.statement)).toEqual(rankCandidates
+      ? ["Candidate 5", "Candidate 0", "Candidate 6", "Candidate 1"]
+      : ["Candidate 0", "Candidate 1", "Candidate 2", "Candidate 3"]);
+    expect(searches).toBe(4);
+    expect(result.blockedCandidates).toHaveLength(5);
+    expect(result.blockedCandidates.map((candidate) => candidate.statement)).toEqual(rankCandidates
+      ? ["Candidate 7", "Candidate 2", "Candidate 8", "Candidate 3", "Candidate 4"]
+      : ["Candidate 4", "Candidate 5", "Candidate 6", "Candidate 7", "Candidate 8"]);
+    for (const skipped of result.blockedCandidates) {
+      expect(skipped.disposition).toBe("not-assessed");
+      expect(skipped.reason).toContain("up to 4");
+      expect(skipped.candidate).toEqual(candidates.find((candidate) => candidate.statement === skipped.statement));
+    }
+  });
+
+  test("does not inflate independent support with duplicate citations or transport URLs", async () => {
+    const sources = [source("one", "One report"), source("mirror", "Same report"), source("two", "Second report")];
+    const factors: HarvestedFactor[] = sources.map((item, index) => ({
+      id: `factor-${index}`, subject: "Operators", behavior: "repeat filing", quote: item.retrievedText,
+      sourceId: item.id, harvestMode: "domain", modelConfidence: 0.8,
+      independentSourceKey: index === 2 ? "operator-two" : "operator-one", source: item,
+    }));
+    const base = { whyItPersists: "Disconnected state", affected: "Operators", scaleEstimate: "Unknown", scaleBasisFactorId: null };
+    const result = await discoverProblems(scope(), factors, sources, {
+      candidateLimit: 1, workflowVersion: 2, model, reasoningEffort, prompt: () => "Fixture instructions",
+      modelClient: modelClient(request => request.schema.parse(request.stage === "problem-candidates" ? { problems: [
+        { ...base, statement: "One origin repeated", factorIds: ["factor-0", "factor-0", "factor-1"] },
+        { ...base, statement: "Two independent origins", factorIds: ["factor-0", "factor-2"] },
+      ] } : { verdict: "insufficient-evidence", verdictReason: "Unknown", verdictSourceIds: [] })),
+      search: { async search() { return []; } },
+    });
+    expect(result.problems[0]?.statement).toBe("Two independent origins");
+    expect(result.blockedCandidates[0]?.statement).toBe("One origin repeated");
+  });
+
   test.each([
     ["STUDENTS WHO FELL BEHIND EARLY STRUGGLED TO CATCH UP", "Students who fell behind early struggled to catch up"],
     ["most respondents (31%) keep a mental list of tasks, while 29%rely on digital reminders", "most respondents (31%) keep a mental list of tasks, while 29% rely on digital reminders"],

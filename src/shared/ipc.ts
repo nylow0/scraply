@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { ProblemBriefFitSchema, ProblemContraryEvidenceSchema, ScopeSchema, WorkflowV2CompatibleDecisionAnalysisOutputSchema, WorkflowV2RiskEvaluationOutputSchema, WorkflowV2RiskReassessmentOutputSchema } from "./structured-output-schemas";
+import { ProblemBriefFitSchema, ProblemContraryEvidenceSchema, SavedProblemCandidateSchema, ScopeSchema, WorkflowV2CompatibleDecisionAnalysisOutputSchema, WorkflowV2RiskEvaluationOutputSchema, WorkflowV2RiskReassessmentOutputSchema } from "./structured-output-schemas";
 import {
   MessageSchema,
   ModelCatalogSchema,
@@ -179,6 +179,8 @@ export const RejectedProblemCandidateSchema = z.object({
   id: EntityIdSchema,
   statement: z.string(),
   reason: z.string(),
+  disposition: z.enum(["blocked", "not-assessed"]).optional(),
+  candidate: SavedProblemCandidateSchema.nullable().optional(),
 });
 export const MitigationViewSchema = z.object({
   id: EntityIdSchema, approach: z.string(), cost: z.string(), failsIf: z.string(), riskIds: z.array(EntityIdSchema),

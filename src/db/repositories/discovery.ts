@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { ProblemBriefFit, ProblemContraryEvidence, ProblemFactorAssessment, Scope } from "../../shared/structured-output-schemas";
+import { SavedProblemCandidateSchema, type ProblemBriefFit, type ProblemContraryEvidence, type ProblemFactorAssessment, type SavedProblemCandidate, type Scope } from "../../shared/structured-output-schemas";
 import type { RunConfig } from "../../shared/schemas";
 import type { DatabaseClient } from "../client";
 import type { SqlStatement } from "../sqlite";
@@ -55,6 +55,8 @@ export interface DiscoveryProblemRecord {
 export interface RejectedProblemCandidateRecord {
   statement: string;
   reason: string;
+  disposition?: "blocked" | "not-assessed";
+  candidate?: SavedProblemCandidate | null;
 }
 
 export class DiscoveryRepository {
@@ -167,8 +169,8 @@ export class DiscoveryRepository {
       `);
       const insertRejectedCandidate = db.prepare(`
         INSERT INTO rejected_problem_candidates (
-          id, discovery_run_id, statement, reason, created_at
-        ) VALUES (?, ?, ?, ?, ?)
+          id, discovery_run_id, statement, reason, disposition, candidate_json, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
       `);
       db.prepare("DELETE FROM rejected_problem_candidates WHERE discovery_run_id = ?").run(researchRunId);
       for (const problem of problems) {
@@ -213,6 +215,8 @@ export class DiscoveryRepository {
           researchRunId,
           candidate.statement.trim(),
           candidate.reason.trim(),
+          candidate.disposition ?? "blocked",
+          candidate.candidate ? JSON.stringify(SavedProblemCandidateSchema.parse(candidate.candidate)) : null,
           now,
         );
       }

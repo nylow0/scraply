@@ -1,3 +1,6 @@
+import { DISCOVERY_DEPTHS } from "./discovery-projection";
+import type { DiscoveryDepth } from "./schemas";
+
 export type ResearchRequestKind = "new-question" | "redo" | "reevaluate";
 
 export interface ResearchRequestDraft {
@@ -72,14 +75,15 @@ export interface ResearchAngleProposal {
   acceptanceCriterion: string;
 }
 
-export function researchSearchAllocation(maxSearches: number): {
+export function researchSearchAllocation(maxSearches: number, depth: DiscoveryDepth = "quick"): {
   domainQueries: number; audienceQueries: number; candidateLimit: number; modelCalls: number;
 } {
   const searches = Math.max(0, Math.floor(maxSearches));
-  const plannedQueries = Math.min(6, searches < 2 ? searches : Math.max(2, searches - 4));
+  const depthLimit = DISCOVERY_DEPTHS[depth].candidateLimit;
+  const plannedQueries = Math.min(6, searches < 2 ? searches : Math.max(2, searches - depthLimit));
   const domainQueries = Math.ceil(plannedQueries / 2);
   const audienceQueries = Math.floor(plannedQueries / 2);
-  const candidateLimit = Math.min(4, Math.max(0, searches - plannedQueries));
+  const candidateLimit = Math.min(depthLimit, Math.max(0, searches - plannedQueries));
   const domainBatches = Math.max(1, Math.ceil(domainQueries * 4 * 6_000 / 60_000));
   const audienceBatches = Math.max(1, Math.ceil(audienceQueries * 4 * 6_000 / 30_000));
   return {
@@ -124,7 +128,7 @@ export function previewResearchAngles(
     candidates.push(DEFAULT_ANGLES[3]!);
   }
   const unique = [...new Map(candidates.map((angle) => [angle.name.toLocaleLowerCase(), angle])).values()];
-  // A quick discovery can spend four searches testing candidate problems. Reserve those
+  // A quick discovery can spend three searches testing candidate problems. Reserve those
   // before assigning named angles to its six planned evidence searches.
   const allocation = researchSearchAllocation(allowance.maxSearches);
   const slots = Math.min(4, allocation.domainQueries + allocation.audienceQueries);

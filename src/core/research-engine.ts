@@ -32,7 +32,7 @@ import {
 import { DEFAULT_IDEA_COUNT, ModelRefSchema, ReasoningEffortSchema, RunConfigSchema, SourceSchema, sameModelRef, type ModelRef, type ReasoningEffort, type RunConfig, type Source } from "../shared/schemas";
 import { ScopeSchema, WorkflowV2CompatibleDecisionAnalysisOutputSchema, WorkflowV2RiskEvaluationOutputSchema, WorkflowV2RiskReassessmentOutputSchema, WorkflowV2SolutionOptionSchema, WorkflowV2SolutionsOutputSchema, WorkflowV2StartupSolutionOptionSchema, type Scope } from "../shared/structured-output-schemas";
 import { analyzeSelectedOption, developmentStageEvidence, evaluateSelectedOptionRisk, produceDevelopmentOptions, reassessSelectedOption, reassessSelectedOptionRisk, WorkflowGenerationAngleSchema, WorkflowGenerationEvidenceSchema, type WorkflowV2DevelopmentContext, type WorkflowV2EvidenceItem } from "./development";
-import { discoverProblems, discoveryRunProjection, harvestEvidenceFollowUp, harvestFactors, normalizeSearchQuery,
+import { DEFAULT_PROBLEM_CANDIDATE_LIMIT, discoverProblems, discoveryRunProjection, harvestEvidenceFollowUp, harvestFactors, normalizeSearchQuery,
   type HarvestMode, type HarvestResult, type PlannedQuery } from "./discovery";
 import { runFocusedExperimentFlow } from "./experiment-review";
 import { planOpportunityStep, previewOpportunityBudgetExtension } from "./opportunity-planning";
@@ -2001,7 +2001,7 @@ export class ResearchEngine {
     const modelClient = this.instrumentedModel(active);
     const search = this.instrumentedSearch(active);
     const allocation = active.researchAllowance
-      ? researchSearchAllocation(active.researchAllowance.maxSearches) : null;
+      ? researchSearchAllocation(active.researchAllowance.maxSearches, workflow.rankProblemCandidates ? active.config.discoveryDepth : "standard") : null;
     return {
       modelClient: workflow.discoveryClient(modelClient),
       search: workflow.search(search),
@@ -2010,6 +2010,8 @@ export class ResearchEngine {
       depth: active.config.discoveryDepth,
       guided: this.usesWorkGuidance(active.runId),
       smallHarvestBatches: workflow.smallHarvestBatches,
+      rankCandidates: workflow.rankProblemCandidates,
+      ...(!workflow.rankProblemCandidates ? { candidateLimit: DEFAULT_PROBLEM_CANDIDATE_LIMIT } : {}),
       assessProblemAudience: workflow.read<{ version: number }>("problem-audience-assessment")?.version === 1,
       ...(allocation ? {
         candidateLimit: allocation.candidateLimit,

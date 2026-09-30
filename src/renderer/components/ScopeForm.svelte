@@ -17,7 +17,7 @@
   } from "../../shared/opportunity-exploration";
   import { tick, untrack } from "svelte";
   import { modelDisplayName, readResearchDefaults } from "../lib/research-defaults";
-  import { discoveryRunProjection } from "../../shared/discovery-projection";
+  import { DISCOVERY_DEPTHS, discoveryRunProjection } from "../../shared/discovery-projection";
   import { allocateIdeaTargets } from "../../core/opportunity-planning";
   import type { WorkflowLaunchDraft } from "../../shared/workflow-contracts";
   import type { z } from "zod";
@@ -557,6 +557,9 @@
         <button type="button" class="text-action" bind:this={advancedSettingsButton} onclick={() => showConfiguration()}>Advanced settings <Icon name="settings" size={16} /></button>
       </section>
       <div class="launch-content">
+        {#if researchMode === "explore-market"}
+          <p class="help">Assess up to {DISCOVERY_DEPTHS[discoveryDepth].candidateLimit} problem candidates. Additional candidates are saved under Not assessed.</p>
+        {/if}
         <div class="launch-row">
           <!-- Stays clickable while the brief is incomplete: the click is what reveals the missing fields. -->
           <button type="submit" class="primary" disabled={locked || !providersReady || (useWorkflow && previewing)}>{locked ? "Starting…" : useWorkflow ? "Start" : (researchMode === "explore-market" ? "Discover problems" : "Generate solutions")}<Icon name="arrow" size={17} /></button>

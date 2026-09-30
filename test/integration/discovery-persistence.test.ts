@@ -19,6 +19,32 @@ afterEach(() => {
 });
 
 describe("discovery persistence", () => {
+  test("keeps unassessed candidate details and legacy blocked records after reopening SQLite", () => {
+    const { client, runId, dbPath } = setup();
+    const candidate = {
+      statement: "Operators re-enter already filed data", whyItPersists: "Disconnected state", affected: "Operators",
+      scaleEstimate: "Unknown", scaleBasisFactorId: null, factorIds: ["factor-a", "factor-b"],
+      intendedBuyerEvidenceFactorIds: ["factor-a"], evidenceGap: "Second buyer account required",
+      alternativeExplanations: ["Existing exports might suffice"], unknowns: ["Frequency"],
+    };
+    new DiscoveryRepository(client).persistProblems(runId, [], [], [
+      { statement: "Older blocked candidate", reason: "Unverifiable evidence" },
+      { statement: candidate.statement, reason: "Standard depth assesses up to 4 candidates", disposition: "not-assessed", candidate },
+    ]);
+    client.close();
+    const restored = new DatabaseClient(dbPath);
+    try {
+      const rows = restored.db.prepare("SELECT statement, reason, disposition, candidate_json FROM rejected_problem_candidates ORDER BY statement")
+        .all() as Array<{ statement: string; reason: string; disposition: string; candidate_json: string | null }>;
+      expect(rows).toEqual([
+        { statement: "Older blocked candidate", reason: "Unverifiable evidence", disposition: "blocked", candidate_json: null },
+        { statement: candidate.statement, reason: "Standard depth assesses up to 4 candidates", disposition: "not-assessed", candidate_json: expect.any(String) },
+      ]);
+      expect(JSON.parse(rows[1]!.candidate_json!)).toEqual(candidate);
+      expect(restored.db.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
+    } finally { restored.close(); }
+  });
+
   test("persists the Stage 1 graph and cascades it with the run", () => {
     const { client, runId } = setup();
     const repository = new DiscoveryRepository(client);
@@ -148,10 +174,11 @@ describe("discovery persistence", () => {
   });
 });
 
-function setup(): { client: DatabaseClient; runId: string } {
+function setup(): { client: DatabaseClient; runId: string; dbPath: string } {
   const directory = mkdtempSync(join(tmpdir(), "scraply-discovery-"));
   tempDirectories.push(directory);
-  const client = new DatabaseClient(join(directory, "scraply.db"));
+  const dbPath = join(directory, "scraply.db");
+  const client = new DatabaseClient(dbPath);
   const now = new Date().toISOString();
   client.db.prepare(`
     INSERT INTO threads (id, title, status, created_at, updated_at)
@@ -161,7 +188,7 @@ function setup(): { client: DatabaseClient; runId: string } {
     INSERT INTO research_runs (id, thread_id, status, config_json, created_at, updated_at)
     VALUES ('run-1', 'thread-1', 'running', '{}', ?, ?)
   `).run(now, now);
-  return { client, runId: "run-1" };
+  return { client, runId: "run-1", dbPath };
 }
 
 function source(id: string) {
