@@ -7,6 +7,7 @@ import { DatabaseClient } from "../../src/db/client";
 import { DiscoveryRepository } from "../../src/db/repositories/discovery";
 import type { ValidationResult } from "../../src/providers/search";
 import { DEFAULT_RUN_CONFIG } from "../../src/shared/schemas";
+import type { RejectedProblemCandidate } from "../../src/shared/ipc";
 
 const dirs: string[] = [];
 const handles: BackendHandle[] = [];
@@ -814,6 +815,20 @@ describe("cutover backend", () => {
       INSERT INTO rejected_problem_candidates (id, discovery_run_id, statement, reason, created_at)
       VALUES ('rejected-export', 'discovery-export', 'One-source candidate', 'Cited factors span one source hostname; two are required.', ?)
     `).run(now);
+    const unassessedCandidate = {
+      statement: "Shops repeat supplier follow-ups", whyItPersists: "Supplier status is fragmented", affected: "Independent shops",
+      scaleEstimate: "Unknown", scaleBasisFactorId: null, factorIds: ["factor-export"],
+      alternativeExplanations: ["A shared spreadsheet may suffice"], unknowns: ["Frequency"],
+      intendedBuyerEvidenceFactorIds: ["factor-export"], evidenceGap: "Another independent account required",
+    };
+    const unassessedView: RejectedProblemCandidate = {
+      id: "unassessed-export", statement: unassessedCandidate.statement, reason: "Standard depth assesses up to 4 candidates",
+      disposition: "not-assessed", candidate: unassessedCandidate,
+    };
+    client.db.prepare(`
+      INSERT INTO rejected_problem_candidates (id, discovery_run_id, statement, reason, disposition, candidate_json, created_at)
+      VALUES (?, 'discovery-export', ?, ?, 'not-assessed', ?, ?)
+    `).run(unassessedView.id, unassessedView.statement, unassessedView.reason, JSON.stringify(unassessedCandidate), now);
     client.close();
 
     const workspaceResponse = await fetch(`http://127.0.0.1:${handle.port}/workspace`, {
@@ -821,7 +836,7 @@ describe("cutover backend", () => {
     });
     const workspace = (await workspaceResponse.json() as { data: {
       problemCandidates: Array<{ id: string; developmentCompleted: boolean; briefFit: string; contraryEvidence: string; workflowKey?: string }>;
-      rejectedProblemCandidates: Array<{ id: string; statement: string; reason: string }>;
+      rejectedProblemCandidates: RejectedProblemCandidate[];
     } }).data;
     expect(workspace.problemCandidates).toEqual([expect.objectContaining({
       id: "problem-export",
@@ -842,7 +857,8 @@ describe("cutover backend", () => {
       id: "rejected-export",
       statement: "One-source candidate",
       reason: "Cited factors span one source hostname; two are required.",
-    }]);
+      disposition: "blocked", candidate: null,
+    }, unassessedView]);
 
     // Editing the scope after the run must not rewrite what the completed run is exported as having used.
     await post("/scope", { threadId: created.thread.id, scope: { ...scope, title: "Edited later", domain: "Something else" } });
@@ -869,11 +885,12 @@ describe("cutover backend", () => {
       briefFit: "direct", contraryEvidence: "resolved", workflowKey: "repair shop: reorder parts after stockout",
       factors: [expect.objectContaining({ sourceRole: "firsthand" })],
     });
-    expect(exported.rejectedProblemCandidates).toEqual([{
+    expect(exported.rejectedProblemCandidates as RejectedProblemCandidate[]).toEqual([{
       id: "rejected-export",
       statement: "One-source candidate",
       reason: "Cited factors span one source hostname; two are required.",
-    }]);
+      disposition: "blocked", candidate: null,
+    }, unassessedView]);
   });
 
   test("keeps evidence-gate failures separate until the user asserts the statement", async () => {
@@ -895,7 +912,7 @@ describe("cutover backend", () => {
         thread?: { id: string };
         latestResearchRun?: { runConfig?: { model: { providerId: string; modelId: string }; reasoningEffort: string } | null } | null;
         problemCandidates?: Array<{ statement: string; verdict: string }>;
-        rejectedProblemCandidates?: Array<{ id: string; statement: string; reason: string }>;
+        rejectedProblemCandidates?: RejectedProblemCandidate[];
       }; error?: { message: string } } };
     };
     const created = await request("/threads", {});
@@ -952,7 +969,7 @@ describe("cutover backend", () => {
       statement: "One-source candidate",
       verdict: "user-asserted",
     })]);
-    expect(asserted.body.data?.rejectedProblemCandidates).toEqual([{ id: "rejected-1", statement: "One-source candidate", reason: "Only one source hostname." }]);
+    expect(asserted.body.data?.rejectedProblemCandidates).toEqual([{ id: "rejected-1", statement: "One-source candidate", reason: "Only one source hostname.", disposition: "blocked", candidate: null }]);
     expect(asserted.body.data?.latestResearchRun?.runConfig).toMatchObject({
       model: { providerId: "openai-subscription", modelId: "gpt-test" }, reasoningEffort: "medium",
     });

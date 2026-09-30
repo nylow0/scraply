@@ -113,20 +113,22 @@ export const FactorHarvestOutputSchema = z.object({
   ])),
 }).strict();
 
+const LegacyProblemCandidateSchema = ProblemSchema.pick({
+  statement: true, whyItPersists: true, affected: true, scaleEstimate: true,
+  scaleBasisFactorId: true, factorIds: true,
+});
+const ClassifiedProblemCandidateSchema = LegacyProblemCandidateSchema.extend({
+  intendedBuyerEvidenceFactorIds: z.array(z.string()), evidenceGap: z.string().nullable(),
+});
+const CandidateExplanationsShape = {
+  alternativeExplanations: z.array(z.string()), unknowns: z.array(z.string()),
+};
 export const ProblemCandidatesOutputSchema = z.object({
-  problems: z.array(z.union([ProblemSchema.pick({
-    statement: true,
-    whyItPersists: true,
-    affected: true,
-    scaleEstimate: true,
-    scaleBasisFactorId: true,
-    factorIds: true,
-  }), ProblemSchema.pick({
-    statement: true, whyItPersists: true, affected: true, scaleEstimate: true,
-    scaleBasisFactorId: true, factorIds: true,
-  }).extend({
-    intendedBuyerEvidenceFactorIds: z.array(z.string()), evidenceGap: z.string().nullable(),
-  }).strict()])),
+  problems: z.array(z.union([
+    LegacyProblemCandidateSchema, ClassifiedProblemCandidateSchema,
+    LegacyProblemCandidateSchema.extend(CandidateExplanationsShape),
+    ClassifiedProblemCandidateSchema.extend(CandidateExplanationsShape),
+  ])),
 }).strict();
 
 const LegacyProblemKillOutputSchema = ProblemSchema.pick({
@@ -309,6 +311,13 @@ const LegacyWorkflowV2ProblemCandidateSchema = WorkflowV2ProblemCandidateSchema.
 export const WorkflowV2ProblemCandidatesOutputSchema = z.object({
   problems: z.array(z.union([LegacyWorkflowV2ProblemCandidateSchema, WorkflowV2ProblemCandidateSchema])),
 }).strict();
+
+/** Unassessed candidates retain the entire output, including older stage shapes. */
+export const SavedProblemCandidateSchema = z.union([
+  WorkflowV2ProblemCandidatesOutputSchema.shape.problems.element,
+  ProblemCandidatesOutputSchema.shape.problems.element,
+]);
+export type SavedProblemCandidate = z.infer<typeof SavedProblemCandidateSchema>;
 
 const LegacyWorkflowV2ProblemKillOutputSchema = ProblemSchema.pick({
   verdict: true, verdictReason: true, verdictSourceIds: true,

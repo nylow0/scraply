@@ -23,13 +23,38 @@ function tableNames(db: Database): string[] {
 }
 
 describe("destructive graph cutover", () => {
+  test("migration 36 preserves rejected candidates as blocked without inventing their old JSON", () => {
+    const dbPath = pathForTest();
+    const setup = new DatabaseClient(dbPath);
+    // Recreate the v35 table shape in a disposable database, with every earlier migration applied.
+    setup.db.exec(`
+      ALTER TABLE rejected_problem_candidates DROP COLUMN disposition;
+      ALTER TABLE rejected_problem_candidates DROP COLUMN candidate_json;
+      DELETE FROM schema_migrations WHERE id = 36;
+    `);
+    setup.close();
+    const legacy = new Database(dbPath);
+    const now = "2026-09-30T00:00:00.000Z";
+    legacy.prepare("INSERT INTO threads (id, title, status, created_at, updated_at) VALUES ('legacy-thread', 'Saved research', 'problems-ready', ?, ?)").run(now, now);
+    legacy.prepare("INSERT INTO research_runs (id, thread_id, status, config_json, created_at, updated_at) VALUES ('legacy-run', 'legacy-thread', 'completed', '{}', ?, ?)").run(now, now);
+    legacy.prepare("INSERT INTO rejected_problem_candidates (id, discovery_run_id, statement, reason, created_at) VALUES ('legacy-candidate', 'legacy-run', 'Saved statement', 'Saved reason', ?)").run(now);
+    legacy.close();
+    const migrated = new DatabaseClient(dbPath);
+    try {
+      expect(migrated.db.prepare("SELECT id, statement, reason, disposition, candidate_json FROM rejected_problem_candidates").all()).toEqual([
+        { id: "legacy-candidate", statement: "Saved statement", reason: "Saved reason", disposition: "blocked", candidate_json: null },
+      ]);
+      expect(migrated.db.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
+    } finally { migrated.close(); }
+  });
+
   test("creates only the surviving runtime and graph tables on a fresh database", () => {
     const client = new DatabaseClient(pathForTest());
     expect(client.preMigrationBackupPath).toBeNull();
     const tables = tableNames(client.db as unknown as Database);
     for (const name of ["threads", "messages", "run_configs", "research_runs", "job_events", "sources", "cost_ledger", "generation_attempts", "scopes", "factors", "problems", "problem_factors", "problem_verdict_sources", "rejected_problem_candidates", "solutions", "outcomes", "risks", "mitigations", "risk_mitigations", "stage_results", "decision_analyses", "evidence_follow_ups"]) expect(tables).toContain(name);
     for (const name of ["intake_answers", "briefs", "stream_runs", "claims", "claim_evidence", "ideas", "reports", "branch_contexts", "ratings", "idea_ratings", "rating_history"]) expect(tables).not.toContain(name);
-    expect(client.db.prepare("SELECT MAX(id) AS id FROM schema_migrations").get()).toEqual({ id: 35 });
+    expect(client.db.prepare("SELECT MAX(id) AS id FROM schema_migrations").get()).toEqual({ id: 36 });
     client.close();
   });
 
