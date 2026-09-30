@@ -3,17 +3,19 @@ import { DiscoveryRepository } from "../db/repositories/discovery";
 import { GenerationAttemptRepository } from "../db/repositories/generation-attempts";
 import { OpportunityRepository } from "../db/repositories/opportunities";
 import { WorkflowRepository, type WorkflowSession, type WorkflowWorkItem } from "../db/repositories/workflows";
+import { ResearchFrameRepository, type SavedResearchFrame } from "../db/repositories/research-frames";
 import { canonicalJson, sha256 } from "../shared/content-identity";
 import { AppError } from "../shared/errors";
 import type { ProblemCandidate, ResearchEvent } from "../shared/ipc";
 import { ReasoningEffortSchema, RunConfigSchema } from "../shared/schemas";
+import { parseResearchFrame } from "../shared/research-frame";
 import {
   CommandWorkflowRequestSchema, PreviewWorkflowRequestSchema, StartWorkflowRequestSchema,
   WorkflowLaunchContractSchema, WorkflowSummarySchema, WorkflowDetailSchema,
   type WorkflowAction, type WorkflowAdmissionReceipt, type WorkflowDetail, type WorkflowLaunchContract,
   type WorkflowSummary,
 } from "../shared/workflow-contracts";
-import { discoveryRunProjection } from "../shared/discovery-projection";
+import { discoveryRunProjection, framedDiscoveryProjection } from "../shared/discovery-projection";
 import type { ResearchEngine } from "./research-engine";
 import { previewLaunch, verifyLaunchPreview, type WorkflowCapabilities } from "./workflow-preflight";
 import { selectVibeProblems } from "./vibe-selection";
@@ -246,6 +248,9 @@ export class WorkflowCoordinator {
         undefined, undefined, { fieldErrors: fresh.fieldErrors });
     }
     this.requireProjectIdle(request.threadId);
+    const approved = contract.frameWorkflowVersion === 1
+      ? new ResearchFrameRepository(this.options.db).latestApproved(request.threadId) : null;
+    const reusableFrame = approved?.knownProblem === (contract.purpose === "known-problem") ? approved : null;
     let initialTaskId = "";
     const receipt = this.options.db.immediateTransaction(() => {
       const session = this.repository.createSession({
@@ -255,13 +260,18 @@ export class WorkflowCoordinator {
       const familyBaseline = contract.targets.kind === "project"
         ? this.projectFamilyProgress(session.id, session.threadId, []).baseline : null;
       const initial = this.repository.createWorkItem({
-        sessionId: session.id, kind: contract.purpose === "known-problem" ? "known-problem" : "discovery",
+        sessionId: session.id, kind: contract.frameWorkflowVersion === 1 && !reusableFrame ? "prepare-frame"
+          : contract.purpose === "known-problem" ? "known-problem" : "discovery",
         scopeKey: "initial-research", input: { brief: contract.brief, purpose: contract.purpose,
+          ...(reusableFrame ? { frameId: reusableFrame.id } : {}),
           ...(familyBaseline ? { familyBaseline } : {}) }, state: "ready",
       });
       initialTaskId = initial.id;
-      const projection = contract.purpose === "discovery"
-        ? discoveryRunProjection(contract.runConfig.discoveryDepth)
+      const projection = initial.kind === "prepare-frame"
+        ? { modelCalls: contract.purpose === "known-problem" ? 1 : 2, searches: contract.purpose === "known-problem" ? 0 : 5 }
+        : contract.purpose === "discovery"
+        ? contract.frameWorkflowVersion === 1 ? framedDiscoveryProjection(contract.runConfig.discoveryDepth)
+          : discoveryRunProjection(contract.runConfig.discoveryDepth)
         : { modelCalls: 0, searches: 0 };
       if (projection.modelCalls) this.repository.reserveBudget({ sessionId: session.id, workItemId: initial.id,
         operationKey: `research-model:${initial.id}`, kind: "model-call", reservedUnits: projection.modelCalls * 2 });
@@ -294,6 +304,9 @@ export class WorkflowCoordinator {
       ORDER BY event.id DESC LIMIT 16`).all(sessionId);
     return WorkflowDetailSchema.parse({
       summary: this.summary(sessionId),
+      ...(this.sessionFrame(sessionId) ? { researchFrame: this.frameDetail(this.sessionFrame(sessionId)!) } : {}),
+      ...(new ResearchFrameRepository(this.options.db).latestApproved(session.threadId)
+        ? { latestResearchFrame: this.frameDetail(new ResearchFrameRepository(this.options.db).latestApproved(session.threadId)!) } : {}),
       activity: activity.reverse(),
       tasks: page.map((item) => {
         const attempt = item.state === "failed" || item.state === "unknown" ? terminalAttempt(this.options.db, item) : null;
@@ -303,6 +316,8 @@ export class WorkflowCoordinator {
           error: errorFromItem(item), createdAt: item.createdAt, finishedAt: item.finishedAt,
           ...(attempt ? { terminalAttemptId: attempt.id } : {}),
           ...(this.canReassessProblems(session, item) ? { canReassessProblems: true } : {}),
+          ...((item.outputRefs as { investigator?: unknown } | null)?.investigator
+            ? { investigator: (item.outputRefs as { investigator: unknown }).investigator } : {}),
         };
       }),
       nextCursor: offset + page.length < items.length ? String(offset + page.length) : null,
@@ -396,6 +411,7 @@ export class WorkflowCoordinator {
       };
     };
     const current = items.find((item) => item.state === "running") ?? items.find((item) => item.state === "ready") ?? null;
+    const frame = this.sessionFrame(sessionId);
     const resumeRunId = session.state === "paused" && current?.state === "running" ? runIdFromItem(current) : null;
     const safeSavedRun = resumeRunId && this.options.db.db.prepare("SELECT 1 FROM research_runs WHERE id = ? AND status IN ('queued','running','completed')")
       .get(resumeRunId) && !this.repository.hasUnknownProviderCompletion(resumeRunId);
@@ -406,6 +422,7 @@ export class WorkflowCoordinator {
       activeSnapshotId: session.activeSnapshotId, selectedProblemIds, counts, limits,
       ideaTargetReady: generationItems.length > 0,
       ...(researchApplied ? { researchApplied: true } : {}),
+      ...(session.state === "waiting-for-review" ? { reviewKind: frame && !frame.approved ? "frame" : "research" } : {}),
       budget: {
         modelCalls: budgetStatus("model-call", limits.maxModelCalls),
         searches: budgetStatus("search", limits.maxSearches),
@@ -424,6 +441,41 @@ export class WorkflowCoordinator {
   private receipt(sessionId: string): WorkflowAdmissionReceipt {
     const summary = this.summary(sessionId);
     return { sessionId, revision: summary.revision, summary };
+  }
+
+  private sessionFrame(sessionId: string): SavedResearchFrame | null {
+    const frames = new ResearchFrameRepository(this.options.db);
+    const items = this.repository.listWorkItems(sessionId);
+    const latest = [...items].reverse().find(item => item.kind === "prepare-frame");
+    const runId = latest ? runIdFromItem(latest) : null;
+    if (runId) return frames.forRun(runId);
+    const initial = items.find(item => item.kind === "discovery" || item.kind === "known-problem");
+    const frameId = (initial?.input as { frameId?: string } | undefined)?.frameId;
+    return frameId ? frames.get(frameId) : null;
+  }
+
+  private frameDetail(frame: SavedResearchFrame): NonNullable<WorkflowDetail["researchFrame"]> {
+    const { threadId: _threadId, ...detail } = frame;
+    void _threadId;
+    return detail;
+  }
+
+  private admitInitialResearch(session: WorkflowSession, frameId: string, parentItemId: string): string {
+    const contract = WorkflowLaunchContractSchema.parse(session.contract);
+    const projection = contract.purpose === "discovery" ? framedDiscoveryProjection(contract.runConfig.discoveryDepth)
+      : { modelCalls: 0, searches: 0 };
+    if ((this.availableBudget(session, "model-call") ?? Infinity) < projection.modelCalls * 2
+      || (this.availableBudget(session, "search") ?? Infinity) < projection.searches) {
+      throw new AppError("BUDGET_TOO_SMALL", "Extend this run's allowance before approving the frame.");
+    }
+    const item = this.repository.createWorkItem({ sessionId: session.id, parentItemId,
+      kind: contract.purpose === "known-problem" ? "known-problem" : "discovery", scopeKey: `framed-research:${frameId}`,
+      ordinal: this.repository.listWorkItems(session.id).length, input: { frameId }, state: "ready" });
+    if (projection.modelCalls) this.repository.reserveBudget({ sessionId: session.id, workItemId: item.id,
+      operationKey: `research-model:${item.id}`, kind: "model-call", reservedUnits: projection.modelCalls * 2 });
+    if (projection.searches) this.repository.reserveBudget({ sessionId: session.id, workItemId: item.id,
+      operationKey: `research-search:${item.id}`, kind: "search", reservedUnits: projection.searches });
+    return item.id;
   }
 
   private projectFamilyProgress(sessionId: string, threadId: string, generationItems: WorkflowWorkItem[]): {
@@ -544,6 +596,47 @@ export class WorkflowCoordinator {
       if (current.revision !== request.expectedRevision) throw new AppError("REVISION_CONFLICT");
       let receiptSessionId = current.id;
       switch (action.type) {
+        case "approve-frame": {
+          const frame = this.sessionFrame(current.id);
+          if (current.state !== "waiting-for-review" || !frame || frame.approved || frame.id !== action.frameId) {
+            throw new AppError("conflict", "Review the current draft research frame before approving it.");
+          }
+          const approved = new ResearchFrameRepository(this.options.db).approve(frame.id, current.threadId, action.frame, { transaction: "existing" });
+          const preparation = [...this.repository.listWorkItems(current.id)].reverse().find(item => item.kind === "prepare-frame")!;
+          initialTaskId = this.admitInitialResearch(current, approved.id, preparation.id);
+          changedTaskIds = [initialTaskId];
+          this.repository.updateSession(current.id, current.revision, { state: "running", runningSince: new Date().toISOString() });
+          break;
+        }
+        case "regenerate-frame": {
+          const frame = this.sessionFrame(current.id);
+          if (current.state !== "waiting-for-review" || !frame || frame.approved || frame.id !== action.frameId) {
+            throw new AppError("conflict", "Only the current draft frame can be regenerated.");
+          }
+          parseResearchFrame(action.frame, { purpose: frame.knownProblem ? "known-problem" : "discovery",
+            sourceIds: frame.sources.map(source => source.id) });
+          // A regeneration is exactly one call. Its request disables schema repair.
+          if ((this.availableBudget(current, "model-call") ?? Infinity) < 1) throw new AppError("BUDGET_TOO_SMALL");
+          const task = this.repository.createWorkItem({ sessionId: current.id, kind: "prepare-frame",
+            scopeKey: `regenerate-frame:${frame.id}`, ordinal: this.repository.listWorkItems(current.id).length,
+            state: "ready", input: { regeneration: { frameId: frame.id, edited: action.frame } } });
+          this.repository.reserveBudget({ sessionId: current.id, workItemId: task.id,
+            operationKey: `frame-regeneration:${task.id}`, kind: "model-call", reservedUnits: 1 });
+          initialTaskId = task.id;
+          changedTaskIds = [task.id];
+          this.repository.updateSession(current.id, current.revision, { state: "running", runningSince: new Date().toISOString() });
+          break;
+        }
+        case "edit-approved-frame": {
+          if (current.state !== "finished" && current.state !== "waiting-for-review") {
+            throw new AppError("conflict", "Wait for the active work to settle before editing the frame for future runs.");
+          }
+          const frames = new ResearchFrameRepository(this.options.db);
+          if (frames.latestApproved(current.threadId)?.id !== action.frameId) throw new AppError("REVISION_CONFLICT");
+          frames.createApprovedVersion(action.frameId, current.threadId, action.frame, { transaction: "existing" });
+          if (current.state !== "finished") this.repository.updateSession(current.id, current.revision, {});
+          break;
+        }
         case "request-research": {
           if (!this.options.researchService) throw new AppError("conflict", "Research requests are unavailable.");
           const admitted = current.state === "finished"
@@ -597,7 +690,7 @@ export class WorkflowCoordinator {
           if (this.repository.listWorkItems(current.id).some((item) => item.state === "unknown")) throw new AppError("UNKNOWN_COMPLETION");
           const items = this.repository.listWorkItems(current.id);
           const running = items.find((item) => item.state === "running");
-          const readyInitial = items.find((item) => (item.kind === "discovery" || item.kind === "known-problem") && item.state === "ready");
+          const readyInitial = items.find((item) => ["prepare-frame", "discovery", "known-problem"].includes(item.kind) && item.state === "ready");
           const readyResearch = items.some((item) => item.kind === "research-request" && item.state === "ready");
           const readyCoverage = items.some((item) => ["coverage-map", "coverage-search"].includes(item.kind) && item.state === "ready");
           const existingIdeas = items.some((item) => item.kind === "generate-ideas");
@@ -624,6 +717,17 @@ export class WorkflowCoordinator {
             this.repository.updateSession(current.id, current.revision, { state: "running", runningSince: new Date().toISOString() });
           } else if (readyCoverage) {
             dispatchIdeas = true;
+            this.repository.updateSession(current.id, current.revision, { state: "running", runningSince: new Date().toISOString() });
+          } else if (!existingIdeas && contract.mode === "vibe" && this.sessionFrame(current.id)?.approved === null) {
+            const frame = this.sessionFrame(current.id)!;
+            const frames = new ResearchFrameRepository(this.options.db);
+            frames.approve(frame.id, current.threadId, frame.draft, { transaction: "existing" });
+            const preparation = [...items].reverse().find(item => item.kind === "prepare-frame")!;
+            const runId = runIdFromItem(preparation)!;
+            this.options.db.db.prepare("INSERT OR IGNORE INTO workflow_snapshots VALUES (?, ?, ?)").run(runId,
+              "frame-autoapproval", canonicalJson({ frameId: frame.id,
+                unansweredQuestionIds: frame.draft.openQuestions.filter(question => !question.answer).map(question => question.id) }));
+            initialTaskId = this.admitInitialResearch(current, frame.id, preparation.id);
             this.repository.updateSession(current.id, current.revision, { state: "running", runningSince: new Date().toISOString() });
           } else if (!existingIdeas && contract.mode === "babysit") {
             this.repository.updateSession(current.id, current.revision, { state: "waiting-for-review", runningSince: null });
@@ -771,7 +875,7 @@ export class WorkflowCoordinator {
     if (original.revision !== request.expectedRevision) throw new AppError("REVISION_CONFLICT");
     if (original.state !== "finished") throw new AppError("conflict", "Retry a settled task after its session ends.");
     const task = this.repository.getWorkItem(request.action.taskId);
-    if (!task || task.sessionId !== original.id || !["discovery", "known-problem", "generate-ideas"].includes(task.kind)
+    if (!task || task.sessionId !== original.id || !["prepare-frame", "discovery", "known-problem", "generate-ideas"].includes(task.kind)
       || (task.state !== "failed" && task.state !== "unknown")) throw new AppError("INVALID_REFERENCE");
     const runId = runIdFromItem(task);
     if (!runId) throw new AppError("UNKNOWN_COMPLETION", "This task has no saved provider attempt to classify.");
@@ -797,7 +901,8 @@ export class WorkflowCoordinator {
       throw new AppError("conflict", "This attempt already has a retry. Open its latest attempt to continue.");
     }
     const contract = WorkflowLaunchContractSchema.parse(original.contract);
-    if (task.kind === "discovery" && (ambiguous || outputLimit) && contract.limits.enforced === false) {
+    if ((task.kind === "discovery" && (ambiguous || outputLimit)
+      || task.kind === "prepare-frame" && (ambiguous || outputLimit || safeTransient)) && contract.limits.enforced === false) {
       const latest = terminalAttempt(this.options.db, task);
       if (latest?.id !== attempt.id) throw new AppError("INVALID_REFERENCE", "Retry the latest failed model request.");
       const unresolved = new GenerationAttemptRepository(this.options.db).unresolvedAttemptIds(runId);
@@ -828,8 +933,14 @@ export class WorkflowCoordinator {
       : [];
     const modelCalls = this.availableBudget(original, "model-call");
     const searches = this.availableBudget(original, "search");
-    const projection = task.kind === "discovery" ? discoveryRunProjection(contract.runConfig.discoveryDepth) : { modelCalls: 0, searches: 0 };
-    const runCalls = task.kind === "generate-ideas" ? 4 * pendingGeneration.length : projection.modelCalls * 2;
+    const regenerating = task.kind === "prepare-frame" && Boolean((task.input as { regeneration?: unknown }).regeneration);
+    const projection = task.kind === "prepare-frame" ? {
+      modelCalls: regenerating || contract.purpose === "known-problem" ? 1 : 2,
+      searches: regenerating || contract.purpose === "known-problem" ? 0 : 5,
+    } : task.kind === "discovery" ? contract.frameWorkflowVersion === 1
+      ? framedDiscoveryProjection(contract.runConfig.discoveryDepth) : discoveryRunProjection(contract.runConfig.discoveryDepth)
+      : { modelCalls: 0, searches: 0 };
+    const runCalls = task.kind === "generate-ideas" ? 4 * pendingGeneration.length : projection.modelCalls * (regenerating ? 1 : 2);
     const minimumCalls = task.kind === "generate-ideas" ? runCalls : runCalls + 4;
     if (contract.limits.enforced !== false && ((modelCalls ?? 0) < minimumCalls || (searches ?? 0) < projection.searches || remainingMs(original) < 5 * 60_000)) {
       throw new AppError("BUDGET_TOO_SMALL", "The original session has too little reserved time or capacity for a retry.");
@@ -935,11 +1046,22 @@ export class WorkflowCoordinator {
       const session = this.repository.getSession(sessionId);
       if (!session || session.state !== "running") return;
       const contract = WorkflowLaunchContractSchema.parse(session.contract);
+      const item = this.repository.getWorkItem(taskId);
+      if (!item || item.state !== "ready") return;
+      const input = item.input as { frameId?: string; regeneration?: { frameId: string; edited: import("../shared/research-frame").ResearchFrame } };
+      if (item.kind === "prepare-frame") {
+        this.options.db.immediateTransaction(() => this.repository.updateWorkItem(taskId, "running"));
+        this.progress(sessionId, [taskId]);
+        await this.options.engine().startResearchFrame(session.threadId, contract.scope, contract.runConfig,
+          { sessionId, purpose: contract.purpose, onRunCreated: runId => this.linkDispatchedRun(sessionId, taskId, runId) }, input.regeneration);
+        return;
+      }
       if (contract.purpose === "known-problem") {
         const root = new DiscoveryRepository(this.options.db).createKnownProblemRoot(
           session.threadId, contract.scope, contract.runConfig.knownProblem,
           RunConfigSchema.parse(contract.runConfig), { sessionId, purpose: "known-problem" },
         );
+        if (input.frameId) new ResearchFrameRepository(this.options.db).bindRun(root.runId, session.threadId, input.frameId);
         this.options.db.immediateTransaction(() => {
           const materialized = materializeResearchSnapshot(this.options.db, {
             threadId: session.threadId, baseRunId: root.runId, sourceProblemIds: [root.problemId], sessionId,
@@ -968,6 +1090,7 @@ export class WorkflowCoordinator {
           maxRunMinutes: Math.min(contract.runConfig.maxRunMinutes, contract.limits.maxMinutes),
         }),
         { sessionId, purpose: contract.purpose,
+          ...(input.frameId ? { frameId: input.frameId } : {}),
           onRunCreated: (runId) => this.linkDispatchedRun(sessionId, taskId, runId) },
       );
     } finally {
@@ -1036,7 +1159,8 @@ export class WorkflowCoordinator {
       return;
     }
     if (event.type === "run-completed") {
-      if (item.kind === "discovery") this.completeDiscovery(session, item, event.runId);
+      if (item.kind === "prepare-frame") this.completeFrame(session, item, event.runId);
+      else if (item.kind === "discovery") this.completeDiscovery(session, item, event.runId);
       else if (item.kind === "generate-ideas") this.completeGeneration(session, item, event.runId);
       return;
     }
@@ -1054,6 +1178,39 @@ export class WorkflowCoordinator {
       return skippedIds;
     });
     this.progress(session.id, [item.id, ...skipped]);
+  }
+
+  private completeFrame(session: WorkflowSession, item: WorkflowWorkItem, runId: string): void {
+    const frames = new ResearchFrameRepository(this.options.db);
+    const frame = frames.forRun(runId);
+    if (!frame) {
+      this.failDispatch(session.id, item.id, new AppError("INVALID_REFERENCE", "The frame call ended without a saved frame."));
+      return;
+    }
+    const contract = WorkflowLaunchContractSchema.parse(session.contract);
+    let nextTask: string | null = null;
+    this.options.db.immediateTransaction(() => {
+      this.repository.updateWorkItem(item.id, "succeeded", { outputRefs: { runId, frameId: frame.id } });
+      this.settleTaskBudget(item.id, "spent", this.repository.countProviderAttempts(runId));
+      const stopped = session.state === "stop-requested";
+      const paused = session.state === "pause-requested";
+      if (stopped || paused || contract.mode === "babysit") {
+        this.repository.updateSession(session.id, session.revision, {
+          state: stopped ? "finished" : paused ? "paused" : "waiting-for-review",
+          ...(stopped ? { outcome: "cancelled" as const } : {}), remainingMs: remainingMs(session), runningSince: null,
+        });
+      } else {
+        frames.approve(frame.id, session.threadId, frame.draft, { transaction: "existing" });
+        this.options.db.db.prepare("INSERT OR IGNORE INTO workflow_snapshots VALUES (?, ?, ?)").run(runId,
+          "frame-autoapproval", canonicalJson({ frameId: frame.id,
+            unansweredQuestionIds: frame.draft.openQuestions.filter(question => !question.answer).map(question => question.id) }));
+        nextTask = this.admitInitialResearch(session, frame.id, item.id);
+        this.repository.updateSession(session.id, session.revision, { state: "running", runningSince: new Date().toISOString(),
+          remainingMs: remainingMs(session) });
+      }
+    });
+    this.progress(session.id, nextTask ? [item.id, nextTask] : [item.id]);
+    if (nextTask) void this.dispatchInitial(session.id, nextTask).catch(error => this.failDispatch(session.id, nextTask!, error));
   }
 
   private completeDiscovery(session: WorkflowSession, item: WorkflowWorkItem, runId: string): void {

@@ -17,7 +17,7 @@
   } from "../../shared/opportunity-exploration";
   import { tick, untrack } from "svelte";
   import { modelDisplayName, readResearchDefaults } from "../lib/research-defaults";
-  import { DISCOVERY_DEPTHS, discoveryRunProjection } from "../../shared/discovery-projection";
+  import { DISCOVERY_DEPTHS, framedDiscoveryProjection } from "../../shared/discovery-projection";
   import { allocateIdeaTargets } from "../../core/opportunity-planning";
   import type { WorkflowLaunchDraft } from "../../shared/workflow-contracts";
   import type { z } from "zod";
@@ -106,14 +106,15 @@
     ?? initialIdeasModelOption?.defaultReasoningEffort
     ?? "");
   let automaticProblemCap = $state(3);
-  const initialProjection = untrack(() => discoveryRunProjection(discoveryDepth));
+  const initialProjection = untrack(() => framedDiscoveryProjection(discoveryDepth));
   let workflowModelLimit = $state(initialProjection.modelCalls * 2 + 12);
   let workflowSearchLimit = $state(initialProjection.searches + 2);
   let workflowModelLimitTouched = $state(false);
   let workflowSearchLimitTouched = $state(false);
   let discoveryReservation = $derived(researchMode === "known-problem"
-    ? { modelCalls: 0, searches: 0 }
-    : { modelCalls: discoveryRunProjection(discoveryDepth).modelCalls * 2, searches: discoveryRunProjection(discoveryDepth).searches });
+    ? { modelCalls: 2, searches: 0 }
+    : { modelCalls: framedDiscoveryProjection(discoveryDepth).modelCalls * 2,
+      searches: framedDiscoveryProjection(discoveryDepth).searches });
   let projectTargetEnabled = $derived(opportunityTargetEnabled);
   let projectInitialBatchCalls = $derived.by(() => {
     if (!projectTargetEnabled || !Number.isInteger(targetFamilies) || targetFamilies < 2 || targetFamilies > 30) return 0;
@@ -261,7 +262,7 @@
       ...(opportunityExploration ? { opportunityExploration } : {}),
     };
     return {
-      contractVersion: 1, purpose: researchMode === "known-problem" ? "known-problem" : "discovery",
+      contractVersion: 1, frameWorkflowVersion: 1, purpose: researchMode === "known-problem" ? "known-problem" : "discovery",
       mode: workflowMode, brief, scope, runConfig,
       ...(workflowMode === "vibe" ? { ideas: { model: ideaModel, reasoningEffort: ideaReasoningEffort,
         reviewModel: ideaModel, reviewReasoningEffort: ideaReasoningEffort } } : {}),
@@ -516,7 +517,7 @@
               <label><input type="radio" name="workflow-mode" value="babysit" checked={workflowMode === "babysit"} onchange={() => workflowMode = "babysit"} /><strong>Controlled</strong></label>
               <span class="mode-info" role="presentation" onmouseenter={() => modeHelp = "babysit"} onmouseleave={hideModeHelpOnLeave} onfocusin={() => modeHelp = "babysit"} onfocusout={() => modeHelp = null}>
                 <button type="button" class="info-button" aria-label="About Controlled" aria-describedby="controlled-help" onclick={() => modeHelp = "babysit"} onkeydown={dismissModeHelp}><Icon name="info" size={16} /></button>
-                <span id="controlled-help" class="mode-tooltip glass-dense" role="tooltip" hidden={modeHelp !== "babysit"}>{researchMode === "known-problem" ? "Scraply uses your stated problem, then waits for you to choose the next step." : "Scraply researches your brief, then pauses so you can review the problems and choose which ones become ideas."} You control when idea generation begins.</span>
+                <span id="controlled-help" class="mode-tooltip glass-dense" role="tooltip" hidden={modeHelp !== "babysit"}>{researchMode === "known-problem" ? "Scraply prepares a frame for your stated problem, then pauses for your review." : "Scraply frames your brief and pauses for approval before research. After research, you choose which problems become ideas."} You control when idea generation begins.</span>
               </span>
             </div>
           </fieldset>
@@ -558,7 +559,7 @@
       </section>
       <div class="launch-content">
         {#if researchMode === "explore-market"}
-          <p class="help">Assess up to {DISCOVERY_DEPTHS[discoveryDepth].candidateLimit} problem candidates. Additional candidates are saved under Not assessed.</p>
+          <p class="help">Research begins with a frame, then scans its included areas. Assess up to {DISCOVERY_DEPTHS[discoveryDepth].candidateLimit} problem candidates per selected area. Additional candidates are saved under Not assessed.</p>
         {/if}
         <div class="launch-row">
           <!-- Stays clickable while the brief is incomplete: the click is what reveals the missing fields. -->

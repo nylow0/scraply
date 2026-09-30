@@ -27,6 +27,8 @@
   import RunTrace from "./components/RunTrace.svelte";
   import VibeProgress from "./components/VibeProgress.svelte";
   import ResearchRevisions from "./components/ResearchRevisions.svelte";
+  import FrameReview from "./components/FrameReview.svelte";
+  import type { ResearchFrame } from "../shared/research-frame";
 
   type Feedback = { text: string; source?: "workspace-load" } & (
     { tone: "error"; lifetime?: never } | { tone: "info"; lifetime: "progress" | "confirmation" }
@@ -59,6 +61,7 @@
   let reviewSelection = $state(false);
   let activeStep = $state<WorkflowStep>("setup");
   let editingScopeThreadId = $state<string | null>(null);
+  let editingApprovedFrameId = $state<string | null>(null);
   let nativeLogin = $state<NativeLoginStartResult | null>(null);
   let nativeLoginEpoch = 0;
   let settings: Settings | undefined;
@@ -74,7 +77,7 @@
   // Masked keys are reported even while keys are still being checked, so saved keys don't flash the search step either.
   let welcomeStep = $derived<"sign-in" | "search" | null>(!workspace?.validation.native.available ? null
     : !workspace.validation.native.connected ? "sign-in"
-    : !searchKeySaved || holdSearchStep ? "search" : null);
+    : holdSearchStep || (!searchKeySaved && workspace.activeWorkflow?.purpose !== "known-problem" && workspace.runConfig?.researchMode !== "known-problem") ? "search" : null);
   let signInPromptOpen = $derived(welcomeStep !== null && !signInDismissed && !settingsOpen);
   // Navigation is always present: expanded, or as an icon rail. Wide windows dock the expanded sidebar and
   // Ctrl+B toggles it to the rail. Compact windows keep the rail docked and open the full list as an overlay
@@ -143,6 +146,13 @@
   let activeThread = $derived(workspace?.threads.find((item) => item.id === workspace?.activeThreadId) ?? null);
   let activeRun = $derived(workspace?.latestResearchRun ?? null);
   let activeWorkflow = $derived(workspace?.activeWorkflow ?? null);
+  let runFrame = $derived(workflowDetail?.summary.sessionId === activeWorkflow?.sessionId ? workflowDetail?.researchFrame ?? null : null);
+  let latestApprovedFrame = $derived(workflowDetail?.summary.sessionId === activeWorkflow?.sessionId
+    ? workflowDetail?.latestResearchFrame ?? (runFrame?.approved ? runFrame : null) : null);
+  let reviewingFrame = $derived(workflowDetail?.summary.state === "waiting-for-review" && workflowDetail.summary.reviewKind === "frame" && runFrame?.approved === null);
+  let canRegenerateFrame = $derived(Boolean(workflowDetail && (workflowDetail.summary.limits.enforced === false
+    || workflowDetail.summary.budget.modelCalls.limit - workflowDetail.summary.budget.modelCalls.spent
+      - workflowDetail.summary.budget.modelCalls.reserved - workflowDetail.summary.budget.modelCalls.uncertain >= 1)));
   let appliedResearchSnapshotId = $derived(activeWorkflow?.activeSnapshotId && workspace?.researchRequests.some((request) => request.appliedSnapshotId === activeWorkflow.activeSnapshotId)
     ? activeWorkflow.activeSnapshotId : null);
   type RuntimeProgress = {
@@ -555,6 +565,30 @@
       busy = false;
       if (reconcilePending) reconcileSoon();
     }
+  }
+  async function approveFrame(frame: ResearchFrame) {
+    if (!runFrame) throw new Error("Reload the current research frame before approving it.");
+    const knownProblem = runFrame.knownProblem;
+    await commandWorkflow({ type: "approve-frame", frameId: runFrame.id, frame });
+    activeStep = knownProblem && activeWorkflow?.mode === "vibe" ? "ideas" : "research";
+  }
+  async function regenerateFrame(frame: ResearchFrame) {
+    if (!runFrame) throw new Error("Reload the current research frame before regenerating it.");
+    await commandWorkflow({ type: "regenerate-frame", frameId: runFrame.id, frame });
+  }
+  async function editFrameBrief() {
+    const threadId = workspace?.activeThreadId;
+    if (!threadId) return;
+    await commandWorkflow({ type: "stop", reason: "Brief reopened for editing." });
+    editingScopeThreadId = threadId;
+    activeStep = "setup";
+  }
+  async function saveApprovedFrame(frame: ResearchFrame) {
+    if (!latestApprovedFrame?.approved) throw new Error("Reload the approved frame before editing it.");
+    await commandWorkflow({ type: "edit-approved-frame", frameId: latestApprovedFrame.id, frame });
+    editingApprovedFrameId = null;
+    activeStep = "setup";
+    feedback = { text: "New frame version saved for future runs.", tone: "info", lifetime: "confirmation" };
   }
   async function requestResearch(draft: ResearchRequestDraft & { model: ModelRef; reasoningEffort: string; baseSnapshotId: string | null }) {
     await commandWorkflow({
@@ -983,8 +1017,31 @@
           <SetupArchive {workspace} />
         {/if}
       {/if}
+      {#if latestApprovedFrame?.approved}
+        <section class="approved-frame" aria-label="Approved research frame">
+          <details><summary>Approved research frame, version {latestApprovedFrame.version}</summary>
+            <div class="approved-frame-content"><h2>Goal</h2><p>{latestApprovedFrame.approved.goal}</p><h2>Success criteria</h2><ul>{#each latestApprovedFrame.approved.successCriteria as criterion (criterion.id)}<li>{criterion.name} <span>{criterion.weight}</span></li>{/each}</ul>
+              <h2>Search languages</h2><p>{latestApprovedFrame.approved.languages.join(", ")}</p>
+              {#if latestApprovedFrame.approved.areas.length}<h2>Research areas</h2><ul>{#each latestApprovedFrame.approved.areas as area (area.id)}<li>{area.name}{area.included ? "" : " (excluded)"}</li>{/each}</ul>{/if}
+            </div>
+          </details>
+          <p>{runFrame?.version !== latestApprovedFrame.version ? `This run uses version ${runFrame?.version}. New runs use version ${latestApprovedFrame.version}.` : "Changes create a new version for future runs. This run keeps its approved frame."}</p>
+          <button type="button" disabled={busy || !["finished", "waiting-for-review"].includes(activeWorkflow?.state ?? "")} onclick={() => { editingApprovedFrameId = latestApprovedFrame!.id; activeStep = "research"; }}>Edit approved frame</button>
+        </section>
+      {/if}
     {:else if activeStep === "research"}
-      {#if activeWorkflow && ["running", "paused", "pause-requested", "stop-requested"].includes(activeWorkflow.state)}
+      {#if latestApprovedFrame?.approved && editingApprovedFrameId === latestApprovedFrame.id}
+        <div id="workflow-panel-research" role="tabpanel" aria-label="Research frame editing">
+          <div class="frame-edit-note"><p>Save a new version for future runs. The current run keeps its frame.</p><button type="button" disabled={busy} onclick={() => editingApprovedFrameId = null}>Cancel frame edits</button></div>
+          <FrameReview frame={latestApprovedFrame.approved} sources={latestApprovedFrame.sources} purpose={latestApprovedFrame.knownProblem ? "known-problem" : "discovery"} {busy} commitLabel="Save new version" onCommit={saveApprovedFrame} onOpenSource={openExternalUrl} />
+        </div>
+      {:else if reviewingFrame && runFrame && workflowDetail}
+        <div id="workflow-panel-research" role="tabpanel" aria-label="Research frame review">
+          {#key runFrame.id}<FrameReview frame={runFrame.draft} sources={runFrame.sources} purpose={runFrame.knownProblem ? "known-problem" : "discovery"}
+            usage={{ modelCalls: workflowDetail.summary.budget.modelCalls.spent, searches: workflowDetail.summary.budget.searches.spent }}
+            {busy} canRegenerate={canRegenerateFrame} onCommit={approveFrame} onRegenerate={regenerateFrame} onEditBrief={editFrameBrief} onOpenSource={openExternalUrl} />{/key}
+        </div>
+      {:else if activeWorkflow && ["running", "paused", "pause-requested", "stop-requested"].includes(activeWorkflow.state)}
         <div id="workflow-panel-research" role="tabpanel" aria-label="Research"></div>
       {:else if activeThread.status === "discovery-running" && !activeWorkflow}
         <div class="running" id="workflow-panel-research" role="tabpanel" aria-label="Research" tabindex="0">
@@ -1010,7 +1067,7 @@
           <p class="followup-note">You can start a separate research follow-up. The finished Vibe result and its ideas stay saved; apply the new research when you want to use it in a later idea conversation.</p>
         {/if}
         <ResearchRevisions requests={workspace.researchRequests} findings={workspace.researchFindings}
-          readOnly={(activeWorkflow.mode === "vibe" && activeWorkflow.state !== "finished") || !(["running", "waiting-for-review"].includes(activeWorkflow.state)
+          readOnly={reviewingFrame || editingApprovedFrameId === latestApprovedFrame?.id || (activeWorkflow.mode === "vibe" && activeWorkflow.state !== "finished") || !(["running", "waiting-for-review"].includes(activeWorkflow.state)
             || (activeWorkflow.state === "finished" && !!activeWorkflow.activeSnapshotId))}
           activeSnapshotId={activeWorkflow.activeSnapshotId} modelOptions={workspace.modelOptions}
           researchModel={workspace.runConfig?.model ?? null} researchReasoningEffort={workspace.runConfig?.reasoningEffort ?? "medium"}
@@ -1076,6 +1133,7 @@
 
 <style>
   .workflow-progress-wrap { padding:18px var(--page-gutter) 0; }
+  .approved-frame { margin:24px var(--page-gutter);padding:20px 0;border-top:1px solid var(--border); }.approved-frame summary { cursor:pointer;font-size:15px; }.approved-frame p { color:var(--muted);font-size:13px;max-width:76ch; }.approved-frame-content { padding-top:12px; }.approved-frame-content h2 { margin:16px 0 7px;font-size:14px;font-weight:550; }.approved-frame-content ul { list-style:disc;padding-left:20px;color:var(--muted);font-size:13px; }.approved-frame-content li { margin:6px 0; }.approved-frame-content li span { margin-left:10px;color:var(--subtle); }.approved-frame button,.frame-edit-note button { padding:9px 12px;border:1px solid var(--border-strong);border-radius:8px;background:var(--surface);color:var(--text);font-size:13px; }.frame-edit-note { display:flex;align-items:center;justify-content:space-between;gap:16px;padding:18px var(--page-gutter) 0; }.frame-edit-note p { color:var(--muted);font-size:13px; }
   /* Research requests follow the problem list as the next section, so the list drops its end-of-page padding. */
   .main-content > :global(.archive:has(~ .research-revisions)),
   .main-content > :global(#workflow-panel-research:has(~ .research-revisions) > .checkpoint) { padding-bottom:24px; }

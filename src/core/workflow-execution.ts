@@ -37,7 +37,7 @@ export class WorkflowExecution {
       : undefined;
     this.prompts = saved ?? Object.fromEntries(WORKFLOW_V2_STAGE_IDS.map((stage) => {
       const prompt = resolveWorkflowV2Prompt(stage);
-      const kind = ["query-plan", "factor-harvest", "problem-candidates", "problem-kill"].includes(stage)
+      const kind = ["frame-search-plan", "frame", "area-ranking", "evidence-check", "area-gap", "query-plan", "factor-harvest", "problem-candidates", "problem-kill"].includes(stage)
         ? "research" : ["solutions", "idea-follow-up"].includes(stage) ? "ideas" : "review";
       const instruction = instructionSet?.[kind]?.trim();
       if (!instruction) return [stage, prompt];

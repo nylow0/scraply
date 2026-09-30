@@ -5,6 +5,7 @@ import { OPPORTUNITY_REVIEW_MIGRATION_SQL } from "./repositories/opportunities";
 import { OPPORTUNITY_EXPLORATION_MIGRATION_SQL } from "./repositories/opportunity-exploration";
 import { OPPORTUNITY_SESSION_MIGRATION_SQL } from "./migrate-opportunity-sessions";
 import { MANAGED_COVERAGE_MIGRATION_SQL } from "./migrate-managed-coverage";
+import { addResearchStageIds, RESEARCH_AREAS_MIGRATION_SQL, RESEARCH_FRAMES_MIGRATION_SQL } from "./migrate-research-frames";
 import type { DatabaseClient } from "./client";
 
 export const MIGRATIONS = [
@@ -1533,4 +1534,7 @@ export const MIGRATIONS = [
         CHECK(candidate_json IS NULL OR (json_valid(candidate_json) AND json_type(candidate_json) = 'object'));
     `,
   },
+  { id: 37, sql: RESEARCH_FRAMES_MIGRATION_SQL },
+  { id: 38, sql: "", rebuildReferencedTable: true, afterSql: addResearchStageIds },
+  { id: 39, sql: RESEARCH_AREAS_MIGRATION_SQL },
 ] as const;
