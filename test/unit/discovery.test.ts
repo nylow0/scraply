@@ -21,7 +21,7 @@ describe("discovery", () => {
   test.each(["quick", "standard", "deep"] as const)("budgets the candidate limit for %s depth", (depth) => {
     const expected = ({ quick: 3, standard: 4, deep: 8 } as const)[depth];
     expect(DISCOVERY_DEPTHS[depth].candidateLimit).toBe(expected);
-    expect(discoveryRunProjection(depth).searches).toBe(DISCOVERY_DEPTHS[depth].queriesPerMode * 2 + expected);
+    expect(discoveryRunProjection(depth).searches).toBe(({ quick: 11, standard: 20, deep: 36 } as const)[depth]);
     const allocation = researchSearchAllocation(20, depth);
     expect(allocation.candidateLimit).toBe(expected);
     expect(allocation.domainQueries + allocation.audienceQueries + allocation.candidateLimit).toBeLessThanOrEqual(20);
@@ -82,6 +82,95 @@ describe("discovery", () => {
     expect(result.blockedCandidates[0]?.statement).toBe("One origin repeated");
   });
 
+  test("sends actual Ukrainian queries through both firsthand legs and retains the planner's reason", async () => {
+    const searches: Array<{ query: string; route?: string; languages?: string[] }> = [];
+    const planned: Array<{ query: string; uncertainty?: string; intendedSourceType?: string }> = [];
+    await harvestFactors(scope(), {
+      model, reasoningEffort, depth: "quick", workflowVersion: 2,
+      queryCountByMode: { domain: 1, audience: 0 }, sourceRouting: { goalKind: "community-or-personal", languages: ["en", "uk"] },
+      prompt: () => "Plan translated fixture evidence",
+      modelClient: modelClient(async () => ({ queries: [{ query: "Dorm kitchen wasted food", intent: "firsthand-experience",
+        uncertainty: "Shared food discarded", intendedSourceType: "Student accounts",
+        translations: [{ language: "uk", query: "Харчові відходи на спільній кухні гуртожитку" }] }] })),
+      onPlannedQueries: (_mode, queries) => planned.push(...queries),
+      search: { async search(query, options) {
+        searches.push({ query, ...(options?.route ? { route: options.route } : {}), ...(options?.languages ? { languages: options.languages } : {}) });
+        return [];
+      } },
+    });
+    expect(searches).toEqual([
+      { query: "Dorm kitchen wasted food", route: "open-web", languages: ["en"] },
+      { query: "Dorm kitchen wasted food", route: "community", languages: ["en"] },
+      { query: "Харчові відходи на спільній кухні гуртожитку", route: "open-web", languages: ["uk"] },
+      { query: "Харчові відходи на спільній кухні гуртожитку", route: "community", languages: ["uk"] },
+    ]);
+    expect(planned[0]).toMatchObject({ uncertainty: "Shared food discarded", intendedSourceType: "Student accounts" });
+  });
+
+  test("rejects a missing translation before any paid search is dispatched", async () => {
+    let searches = 0;
+    await expect(harvestFactors(scope(), {
+      model, reasoningEffort, depth: "quick", workflowVersion: 2,
+      queryCountByMode: { domain: 1, audience: 0 }, sourceRouting: { goalKind: "research-question", languages: ["en", "uk"] },
+      prompt: () => "Plan fixture evidence",
+      modelClient: modelClient(async () => ({ queries: [{ query: "Observed clinic retention", intent: "measured-behavior",
+        uncertainty: "Retention rate", intendedSourceType: "Field studies" }] })),
+      search: { async search() { searches += 1; return []; } },
+    })).rejects.toThrow("one uk translation");
+    expect(searches).toBe(0);
+  });
+  test("permits a measured-only scan for a research question without a buyer intent", async () => {
+    const searches: string[] = [];
+    await harvestFactors(scope(), {
+      model, reasoningEffort, depth: "quick", workflowVersion: 2,
+      queryCountByMode: { domain: 1, audience: 0 }, sourceRouting: { goalKind: "research-question" },
+      prompt: () => "Plan fixture measurements",
+      modelClient: modelClient(async () => ({ queries: [{ query: "Measured clinic outcomes", intent: "measured-behavior",
+        uncertainty: "Observed retention", intendedSourceType: "Field studies" }] })),
+      search: { async search(_query, options) { searches.push(options?.route ?? "missing"); return []; } },
+    });
+    expect(searches).toEqual(["studies-official"]);
+  });
+  test("routes each planned firsthand question through two legs and excludes content farms before extraction", async () => {
+    const routes: string[] = [];
+    let extractionCalls = 0;
+    const result = await harvestFactors(scope(), {
+      model, reasoningEffort, depth: "quick", workflowVersion: 2, sourceRouting: { now: new Date("2026-09-30T00:00:00.000Z") },
+      prompt: () => "Plan and read fixture evidence",
+      modelClient: modelClient(async (request) => {
+        if (request.stage.startsWith("query-plan:")) return { queries: ["current-alternative", "measured-behavior", "firsthand-experience"].map((intent) => ({
+          query: `${request.stage} ${intent}`, intent, uncertainty: "An unknown", intendedSourceType: "Evidence",
+        })) };
+        extractionCalls += 1;
+        return { factors: [] };
+      }),
+      search: { async search(_query, options) {
+        routes.push(options?.route ?? "missing");
+        return [{ id: "farm", url: "https://worldmetrics.org/page", title: "Content farm", text: "Untrusted statistics" }];
+      } },
+    });
+    expect(routes).toEqual(["alternatives", "studies-official", "open-web", "community", "alternatives", "studies-official", "open-web", "community"]);
+    expect(extractionCalls).toBe(0);
+    expect(result.sources).toEqual([]);
+    expect(result.factors).toEqual([]);
+  });
+  test("retains historical source packets when reopening an older completed extraction", async () => {
+    let extractionCalls = 0;
+    const result = await harvestFactors(scope(), {
+      model, reasoningEffort, depth: "quick", workflowVersion: 2,
+      queryCountByMode: { domain: 1, audience: 0 },
+      sourceRouting: { preserveHistoricalSources: true },
+      prompt: () => "Read a saved source packet",
+      modelClient: modelClient(async (request) => {
+        if (request.stage.startsWith("query-plan:")) return { queries: [{ query: "Saved question", intent: "firsthand-experience", uncertainty: "Saved uncertainty", intendedSourceType: "Saved reports" }] };
+        extractionCalls += 1;
+        return { factors: [] };
+      }),
+      search: { async search() { return [{ id: "historical", url: "https://worldmetrics.org/saved", title: "Historical result", text: "Saved source contents" }]; } },
+    });
+    expect(extractionCalls).toBe(1);
+    expect(result.sources.map((source) => source.url)).toEqual(["https://worldmetrics.org/saved"]);
+  });
   test.each([
     ["STUDENTS WHO FELL BEHIND EARLY STRUGGLED TO CATCH UP", "Students who fell behind early struggled to catch up"],
     ["most respondents (31%) keep a mental list of tasks, while 29%rely on digital reminders", "most respondents (31%) keep a mental list of tasks, while 29% rely on digital reminders"],
@@ -290,7 +379,7 @@ describe("discovery", () => {
     const batches = batchSources(sources, AUDIENCE_SOURCE_BATCH_CHARACTERS);
     expect(batches.length).toBeGreaterThan(1);
     expect(batches.flat().map((item) => item.id)).toEqual(sources.map((item) => item.id));
-    expect(discoveryRunProjection("standard").modelCalls).toBe(16);
+    expect(discoveryRunProjection("standard")).toMatchObject({ modelCalls: 19, searches: 20 });
   });
 
   test.each([

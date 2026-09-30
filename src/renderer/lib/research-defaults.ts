@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { DEFAULT_RUN_CONFIG, DiscoveryDepthSchema, HISTORICAL_CODEX_CLI_PROVIDER_ID, ModelRefSchema, OPENAI_SUBSCRIPTION_PROVIDER_ID, ReasoningEffortSchema } from "../../shared/schemas";
+import { SearchProviderChoiceSchema } from "../../providers/search";
 
 const storageKey = "scraply.research-defaults.v1";
 const ResearchDefaultsSchema = z.object({
@@ -8,8 +9,7 @@ const ResearchDefaultsSchema = z.object({
   reasoningEffort: ReasoningEffortSchema.optional(),
   ideasModel: ModelRefSchema.optional(),
   ideasReasoningEffort: ReasoningEffortSchema.optional(),
-  searchProvider: z.enum(["exa", "perplexity"]),
-  audienceSourcePolicy: z.enum(["web", "communities"]).default("web"),
+  searchProvider: SearchProviderChoiceSchema,
   discoveryDepth: DiscoveryDepthSchema.default("standard"),
   titleModel: ModelRefSchema.default({ providerId: "openai-subscription", modelId: "gpt-6-luna" }),
   titleReasoningEffort: ReasoningEffortSchema.default("low"),

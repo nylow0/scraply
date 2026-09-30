@@ -2,15 +2,15 @@ import { createHash } from "node:crypto";
 import type { DatabaseClient } from "../db/client";
 import { DevelopmentRepository } from "../db/repositories/development";
 import { WorkflowV2Repository } from "../db/repositories/workflow-v2";
-import type { SearchClient } from "../providers/search";
+import type { SearchClient, SearchOptions } from "../providers/search";
 import type { GenerationMetadata, StructuredModelClient, StructuredStageRequest } from "../providers/structured";
 import { canonicalJson, sha256 } from "../shared/content-identity";
-import { savedSearchKey } from "./run-trace";
 import { deriveJsonSchema } from "../shared/json-schema";
 import { OpportunityExpansionOutputSchema } from "../shared/opportunity-exploration";
 import { SourceSchema } from "../shared/schemas";
 import { AssessedWorkflowV2ProblemKillOutputSchema, BoundedWorkflowV2FactorHarvestOutputSchema, FACTOR_EXPLANATION_CHARACTERS, ClassifiedWorkflowV2ProblemKillOutputSchema, WorkflowV2QueryPlanOutputSchema, WorkflowV2FactorHarvestOutputSchema, WorkflowV2ProblemCandidatesOutputSchema, WorkflowV2ProblemKillOutputSchema, WorkflowV2SolutionsOutputSchema } from "../shared/structured-output-schemas";
 import { PROBLEM_AUDIENCE_ASSESSMENT_INSTRUCTION } from "./problem-evidence";
+import { LegacyWorkflowV2QueryPlanOutputSchema } from "../shared/structured-output-schemas";
 import type { WorkflowV2DevelopmentContext } from "./development";
 import { resolveWorkflowV2Prompt, type ResolvedWorkflowV2Prompt } from "./prompts";
 import { WORKFLOW_V2_STAGE_IDS, WORKFLOW_V2_STAGE_REGISTRY, type WorkflowV2StageId } from "./stages";
@@ -53,9 +53,12 @@ export class WorkflowExecution {
       this.save("small-harvest-batches", { version: 1 });
       this.save("problem-audience-assessment", { version: 1 });
       this.save("candidate-accounting", { version: 1 });
+      this.save("source-routes", { version: 1 });
+      this.save("query-plan-languages", { version: 1 });
     }
     // Runs without the marker keep their original source groups and checkpoint identities.
     this.smallHarvestBatches = this.read<{ version: number }>("small-harvest-batches")?.version === 1;
+    if (!this.read("source-route-start")) this.save("source-route-start", new Date().toISOString());
     // Candidate order controls sequential source IDs in completed verdict requests.
     this.rankProblemCandidates = this.read<{ version: number }>("candidate-accounting")?.version === 1;
   }
@@ -93,21 +96,25 @@ export class WorkflowExecution {
     return () => createHash("sha256").update(`${this.runId}:${phase}:${sequence++}`).digest("hex").slice(0, characters);
   }
 
-  search(client: Pick<SearchClient, "search"> & Partial<Pick<SearchClient, "provider">>): Pick<SearchClient, "search"> & Partial<Pick<SearchClient, "provider">> {
+  search(client: Pick<SearchClient, "search"> & Partial<Pick<SearchClient, "provider" | "providerForRoute">>): Pick<SearchClient, "search"> & Partial<Pick<SearchClient, "provider">> {
     return { ...(client.provider ? { provider: client.provider } : {}), search: async (query, options) => {
       options?.signal?.throwIfAborted();
-      const { signal: _signal, ...parameters } = options ?? {};
+      const { signal: _signal, legacySearchOptions, ...parameters } = options ?? {};
       void _signal;
       const normalizedQuery = query.normalize("NFKC").trim().replace(/\s+/g, " ");
-      const key = savedSearchKey(normalizedQuery, parameters);
-      // Record the request separately without changing the search checkpoint identity of older runs.
-      const queryKey = key.replace("search:", "search-query:");
-      if (!this.read(queryKey)) this.save(queryKey, {
-        key, query: normalizedQuery, parameters, ...(client.provider ? { provider: client.provider } : {}),
-      });
+      const provider = parameters.provider ?? client.providerForRoute?.(options?.route) ?? client.provider;
+      const key = workflowSearchKey(normalizedQuery, parameters, provider);
       const saved = this.read<unknown>(key);
       if (saved) return SourceSchema.array().parse(saved);
-      const results = await client.search(normalizedQuery, options);
+      // Completed pre-routing searches retain their original question and parameters. Both
+      // new legs may read that checkpoint; neither dispatches paid work again.
+      if (!this.read("source-routes")) {
+        const legacyKey = workflowSearchKey(normalizedQuery, legacySearchOptions ?? parameters);
+        const legacy = this.read<unknown>(legacyKey);
+        if (legacy) return SourceSchema.array().parse(legacy);
+      }
+      this.save(`search-query:${key.slice("search:".length)}`, { key, query: normalizedQuery, parameters, ...(provider ? { provider } : {}) });
+      const results = await client.search(normalizedQuery, { ...options, ...(provider ? { provider } : {}) });
       options?.signal?.throwIfAborted();
       this.save(key, results);
       return results;
@@ -145,6 +152,7 @@ export class WorkflowExecution {
             factors: factorSchema.shape.factors.max(factorLimit),
           })
         // A saved run keeps its original prompt and schema so completed kill reviews can resume.
+        : stageId === "query-plan" && !this.read("query-plan-languages") ? LegacyWorkflowV2QueryPlanOutputSchema
         : assessAudience ? AssessedWorkflowV2ProblemKillOutputSchema
         : stageId === "problem-kill" && prompt.currentBundledSha256 !== resolveWorkflowV2Prompt("problem-kill").currentBundledSha256
           ? ClassifiedWorkflowV2ProblemKillOutputSchema
@@ -283,7 +291,8 @@ export class WorkflowExecution {
     selectionId: string | null,
   ): void {
     this.db.immediateTransaction(() => {
-      this.commitStage(stageId, request, prompt, metadata, output, context, selectionId);
+      this.commitStage(stageId, request, prompt, metadata, output, context, selectionId,
+        stageId === "query-plan" && this.read("query-plan-languages") ? 2 : 1);
       this.save(`metadata:${stageKey}`, metadata);
     });
   }
@@ -296,10 +305,11 @@ export class WorkflowExecution {
   }
 
   commitStage<T>(stageId: WorkflowV2StageId, request: StructuredStageRequest<T>, prompt: ResolvedWorkflowV2Prompt,
-    metadata: GenerationMetadata, output: unknown, context: unknown, selectionId: string | null = null) {
+    metadata: GenerationMetadata, output: unknown, context: unknown, selectionId: string | null = null,
+    schemaRevision: 1 | 2 = 1) {
     if (!metadata.prompt) throw new Error("The model provider did not identify its prompt compiler");
     return this.repository.saveStageResult({
-      researchRunId: this.runId, stageId, selectionId, context, output, prompt,
+      researchRunId: this.runId, stageId, selectionId, context, output, prompt, schemaRevision,
       schema: request.jsonSchema, inputs: request.workOrder.inputs, evidence: request.evidence.map((item) => ({ sourceId: item.sourceId, content: item.content })),
       runtimePrompt: metadata.prompt,
       effectiveRequest: {
@@ -459,6 +469,12 @@ export class WorkflowExecution {
     void focusedDemandTest;
     return workflowOption;
   }
+}
+
+/** A provider is part of new search identities; omitting it reproduces old saved keys. */
+export function workflowSearchKey(query: string, parameters: Omit<SearchOptions, "signal" | "legacySearchOptions">, provider?: SearchClient["provider"]): string {
+  const normalizedQuery = query.normalize("NFKC").trim().replace(/\s+/g, " ").toLowerCase();
+  return `search:${createHash("sha256").update(canonicalJson({ query: normalizedQuery, parameters, ...(provider ? { provider } : {}) })).digest("hex")}`;
 }
 
 function assertDiscoveryStageSemantics<T>(

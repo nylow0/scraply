@@ -2,20 +2,20 @@
   import { untrack } from "svelte";
   import { SvelteMap } from "svelte/reactivity";
   import type { WorkspaceState } from "../../shared/ipc";
-  import { modelRefKey, type ModelRef, type SearchProvider } from "../../shared/schemas";
+  import { modelRefKey, type ModelRef } from "../../shared/schemas";
+  import type { SearchProviderChoice } from "../../providers/search";
   import { modelDisplayName, readResearchDefaults, saveResearchDefaults } from "../lib/research-defaults";
   import ProviderLogo from "./ProviderLogo.svelte";
 
   let { workspace }: { workspace: WorkspaceState | null } = $props();
   const initial = untrack(readResearchDefaults);
-  let searchProvider = $state<SearchProvider>(initial.searchProvider);
+  let searchProvider = $state<SearchProviderChoice>(initial.searchProvider);
   let modelKey = $state(modelRefKey(initial.model));
   let reasoningEffort = $state(initial.reasoningEffort ?? "");
   let ideasModelKey = $state(modelRefKey(initial.ideasModel ?? initial.model));
   let ideasReasoningEffort = $state(initial.ideasReasoningEffort ?? "");
   let titleModelKey = $state(modelRefKey(initial.titleModel));
   let titleReasoningEffort = $state(initial.titleReasoningEffort);
-  let audienceSourcePolicy = $state(initial.audienceSourcePolicy);
   let discoveryDepth = $state(initial.discoveryDepth);
   let researchEfforts = $derived(workspace?.modelOptions.find((model) => modelRefKey(model) === modelKey)?.reasoningEfforts ?? []);
   let ideasEfforts = $derived(workspace?.modelOptions.find((model) => modelRefKey(model) === ideasModelKey)?.reasoningEfforts ?? []);
@@ -60,7 +60,7 @@
     if (!selectedModel || !ideasModel || !titleModel) return;
     error = "";
     try {
-      saveResearchDefaults({ searchProvider, audienceSourcePolicy, discoveryDepth,
+      saveResearchDefaults({ searchProvider, discoveryDepth,
         model: { providerId: selectedModel.providerId, modelId: selectedModel.modelId },
         ...(reasoningEffort ? { reasoningEffort } : {}),
         ideasModel: { providerId: ideasModel.providerId, modelId: ideasModel.modelId },
@@ -73,7 +73,7 @@
   }
 </script>
 <form onsubmit={(event) => { event.preventDefault(); save(); }}>
-  <label><span>Default search provider</span><div class="provider-select"><ProviderLogo provider={searchProvider} size={18} /><select aria-label="Default search provider" bind:value={searchProvider} onchange={() => saved = false}><option value="exa">Exa</option><option value="perplexity">Perplexity</option></select></div></label>
+  <label><span>Default search provider</span><div class="provider-select">{#if searchProvider !== "auto"}<ProviderLogo provider={searchProvider} size={18} />{/if}<select aria-label="Default search provider" bind:value={searchProvider} onchange={() => saved = false}><option value="auto">Automatic</option><option value="exa">Exa</option><option value="perplexity">Perplexity</option></select></div></label>
   <label><span>Default model</span><select aria-label="Default model" bind:value={modelKey} onchange={() => { saved = false; reasoningEffort = catalogEffort(modelKey) ?? ""; }}>
     {#each models as model (modelRefKey(model))}<option value={modelRefKey(model)}>{model.displayName}{model.available ? "" : workspace?.validation.native.connected ? " (unavailable)" : ""}</option>{/each}
   </select></label>
@@ -108,9 +108,8 @@
   <fieldset class="advanced-search">
     <legend>Advanced search defaults</legend>
     <p>Applied to new research. Each setup can override these choices.</p>
-    <label><span>Search coverage</span><select aria-label="Default search coverage" bind:value={audienceSourcePolicy} onchange={() => saved = false} aria-describedby="default-coverage-help"><option value="web">Web and communities</option><option value="communities">Communities only</option></select></label>
     <label><span>Research depth</span><select aria-label="Default research depth" bind:value={discoveryDepth} onchange={() => saved = false} aria-describedby="default-depth-help"><option value="quick">Quick</option><option value="standard">Standard</option><option value="deep">Deep</option></select></label>
-    <p id="default-coverage-help">Web and communities allows all sites, including forums. Communities only limits audience evidence to Reddit and Hacker News. Market research always searches all sites.</p>
+    <p>Research searches the web and places where affected people share their experiences.</p>
     <p id="default-depth-help">Quick uses fewer searches and sources. Deep explores more sources and cross-checks. Standard balances the two.</p>
   </fieldset>
   <footer><button type="submit">Save defaults</button>{#if saved}<span role="status">Defaults saved</span>{/if}</footer>

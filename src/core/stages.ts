@@ -6,7 +6,8 @@ import {
   WorkflowV2ProblemCandidatesOutputSchema,
   WorkflowV2ProblemKillOutputSchema,
   ExplicitWorkflowV2ProblemKillOutputSchema,
-  WorkflowV2QueryPlanOutputSchema,
+  RoutedWorkflowV2QueryPlanOutputSchema,
+  LegacyWorkflowV2QueryPlanOutputSchema,
   WorkflowV2RiskEvaluationOutputSchema,
   WorkflowV2SolutionsOutputSchema,
   WorkflowV2SolutionSetReviewOutputSchema,
@@ -40,7 +41,7 @@ export interface WorkflowV2StageDefinition {
   id: WorkflowV2StageId;
   promptFilename: `workflow-v2-${WorkflowV2StageId}.md` | "workflow-v2-frame-search.md";
   promptRevision: 1;
-  schemaRevision: 1;
+  schemaRevision: 1 | 2;
   schema: ZodType<unknown>;
   maxOutputTokens: number;
 }
@@ -62,8 +63,8 @@ export const WORKFLOW_V2_STAGE_REGISTRY = {
     id: "query-plan",
     promptFilename: "workflow-v2-query-plan.md",
     promptRevision: 1,
-    schemaRevision: 1,
-    schema: WorkflowV2QueryPlanOutputSchema,
+    schemaRevision: 2,
+    schema: RoutedWorkflowV2QueryPlanOutputSchema,
     maxOutputTokens: 2_048,
   },
   "factor-harvest": {
@@ -142,12 +143,14 @@ export function parseWorkflowV2StageOutput(
   value: unknown,
   evidence: readonly WorkflowV2CategorizedEvidence[] = [],
 ): unknown {
-  if (schemaRevision !== 1) {
+  if (schemaRevision !== 1 && !(schemaRevision === 2 && stageId === "query-plan")) {
     throw new Error(`Unsupported ${stageId} schema revision: ${schemaRevision}`);
   }
   // Keep this revision switch when adding schemas. Saved checkpoints must keep using the schema
   // version that created them instead of the currently bundled stage definition.
-  const output = stageId === "decision-analysis"
+  const output = stageId === "query-plan"
+    ? (schemaRevision === 1 ? LegacyWorkflowV2QueryPlanOutputSchema : RoutedWorkflowV2QueryPlanOutputSchema).parse(value)
+    : stageId === "decision-analysis"
     ? WorkflowV2CompatibleDecisionAnalysisOutputSchema.parse(value)
     : stageId === "problem-kill"
       ? WorkflowV2ProblemKillOutputSchema.parse(value)

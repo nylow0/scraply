@@ -2,6 +2,7 @@ import { z } from "zod";
 import { SourceSchema, type Source } from "../shared/schemas";
 import type { SearchClient, SearchOptions, ValidationResult } from "./search";
 import { ProviderFailure } from "./structured";
+import { EXCLUDED_SOURCE_DOMAINS, filterRoutedSources } from "./source-routes";
 
 type Fetcher = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
 
@@ -31,6 +32,7 @@ export class PerplexityClient implements SearchClient {
   ) {}
 
   async search(query: string, options: SearchOptions = {}): Promise<Source[]> {
+    const excludeDomains = [...new Set([...EXCLUDED_SOURCE_DOMAINS, ...options.excludeDomains ?? []])];
     if (options.signal?.aborted) {
       throw new ProviderFailure("cancelled", "Perplexity search was cancelled", false, { cause: options.signal.reason });
     }
@@ -50,7 +52,10 @@ export class PerplexityClient implements SearchClient {
           query,
           max_results: Math.min(options.numResults ?? 5, 20),
           max_tokens_per_page: 2_000,
-          ...(options.includeDomains ? { search_domain_filter: options.includeDomains } : {}),
+          ...(options.includeDomains?.length ? { search_domain_filter: options.includeDomains.slice(0, 20) }
+            : { search_domain_filter: excludeDomains.slice(0, 20).map((domain) => `-${domain}`) }),
+          ...(options.languages?.length ? { search_language_filter: options.languages.slice(0, 20) } : {}),
+          ...(options.userLocation ? { country: options.userLocation } : {}),
           ...(options.startPublishedDate
             ? { search_after_date_filter: formatSearchDate(options.startPublishedDate) }
             : {}),
@@ -84,7 +89,7 @@ export class PerplexityClient implements SearchClient {
         throw new ProviderFailure("schema", "Perplexity returned an unexpected response", true, { cause: parsed.error });
       }
       const maxCharacters = options.maxCharacters ?? 6000;
-      return parsed.data.results
+      return filterRoutedSources(parsed.data.results
         .filter((result): result is typeof result & { snippet: string } => Boolean(result.snippet?.trim()))
         .map((result, index) => SourceSchema.parse({
           id: parsed.data.id ? `${parsed.data.id}-${index + 1}` : `source-${index + 1}`,
@@ -92,7 +97,7 @@ export class PerplexityClient implements SearchClient {
           title: result.title?.trim() || result.url,
           text: result.snippet.trim().slice(0, maxCharacters),
           ...(result.date ? { publishedDate: result.date } : {}),
-        }));
+        })), options);
     } catch (error) {
       if (error instanceof ProviderFailure) throw error;
       if (options.signal?.aborted) {

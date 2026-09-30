@@ -31,16 +31,22 @@ export function framedDiscoveryProjection(depth: DiscoveryDepth): { searches: nu
 export function discoveryRunProjection(
   depth: DiscoveryDepth,
   candidateLimit: number = DISCOVERY_DEPTHS[depth].candidateLimit,
+  languageCount = 1,
 ): { searches: number; modelCalls: number; factorCap: number } {
   const config = DISCOVERY_DEPTHS[depth];
+  // Planning covers at least three evidence intents; firsthand questions have two search legs.
+  const pairedFirsthandQuestions = Math.ceil(config.queriesPerMode / 3);
+  const languages = Math.max(1, Math.min(3, Math.floor(languageCount)));
+  const searchesPerMode = config.queriesPerMode + pairedFirsthandQuestions
+    + pairedFirsthandQuestions * 3 * (languages - 1);
   const domainBatches = Math.max(1, Math.ceil(
-    (config.queriesPerMode * config.searchResultsPerQuery * SOURCE_MAX_CHARACTERS) / SOURCE_BATCH_CHARACTERS,
+    (searchesPerMode * config.searchResultsPerQuery * SOURCE_MAX_CHARACTERS) / SOURCE_BATCH_CHARACTERS,
   ));
   const audienceBatches = Math.max(1, Math.ceil(
-    (config.queriesPerMode * config.searchResultsPerQuery * SOURCE_MAX_CHARACTERS) / AUDIENCE_SOURCE_BATCH_CHARACTERS,
+    (searchesPerMode * config.searchResultsPerQuery * SOURCE_MAX_CHARACTERS) / AUDIENCE_SOURCE_BATCH_CHARACTERS,
   ));
   return {
-    searches: config.queriesPerMode * 2 + candidateLimit,
+    searches: searchesPerMode * 2 + candidateLimit,
     modelCalls: 2 + domainBatches + audienceBatches + 1 + candidateLimit,
     factorCap: config.factorCap,
   };
