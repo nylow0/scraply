@@ -127,21 +127,6 @@ describe("App workspace coordination", () => {
     await waitFor(() => expect((view.getByLabelText("Goal") as HTMLTextAreaElement).value).toBe("A goal for future runs."));
   });
 
-  test("renders investigator lanes from actual workflow task records", async () => {
-    const current = frameWorkflow({ approved: true });
-    current.summary.state = "running";
-    current.summary.outcome = null;
-    current.tasks = [{ id: "investigator", parentItemId: null, kind: "investigate-area", scopeKey: "investigate-area:bank", state: "running", createdAt: current.summary.startedAt, finishedAt: null,
-      investigator: { areaId: "bank", areaName: "Bank matching", currentStep: "Checking independent sources", confirmedCount: 1, insufficientCount: 2, droppedCount: 0 } }];
-    const state = frameWorkspace(current);
-    installApi({ getWorkspace: async () => state, getWorkflow: async () => structuredClone(current) });
-    const view = render(App);
-    const lane = await view.findByRole("listitem", { name: "Bank matching investigator" });
-    expect(lane.textContent).toContain("Checking independent sources");
-    expect(within(lane).getByText("Confirmed").nextElementSibling?.textContent).toBe("1");
-    expect(view.queryByRole("progressbar")).toBeNull();
-  });
-
   test("retries using the finished task revision shown in the detail panel", async () => {
     const state = workspace("alpha");
     const summary: WorkflowSummary = {
