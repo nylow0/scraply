@@ -163,8 +163,16 @@ export class WorkflowExecution {
         return results;
       })();
       running.set(activeKey, pending);
+      // Cancellation releases this live operation immediately. A provider that ignores abort
+      // must not make a same-run replacement inherit its promise or remove the new operation later.
+      const releaseActive = () => { if (running.get(activeKey) === pending) running.delete(activeKey); };
+      options?.signal?.addEventListener("abort", releaseActive, { once: true });
+      if (options?.signal?.aborted) releaseActive();
       try { return await pending; }
-      finally { if (running.get(activeKey) === pending) running.delete(activeKey); }
+      finally {
+        options?.signal?.removeEventListener("abort", releaseActive);
+        releaseActive();
+      }
     } };
   }
 

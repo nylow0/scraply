@@ -7,6 +7,7 @@ import { DatabaseClient } from "../../src/db/client";
 import { CostLedgerRepository } from "../../src/db/repositories/cost-ledger";
 import { ResearchRunRepository } from "../../src/db/repositories/research-runs";
 import { WorkflowExecution } from "../../src/core/workflow-execution";
+import { UnknownSearchCompletionError, unknownSearchAttempts } from "../../src/core/workflow-search-attempts";
 import type { Source } from "../../src/shared/schemas";
 import type { GenerationAcceptanceMetadata, StructuredModelClient } from "../../src/providers/structured";
 import type { SearchOptions } from "../../src/providers/search";
@@ -43,23 +44,76 @@ async function until(predicate: () => boolean) {
   expect(predicate()).toBe(true);
 }
 
-test("a cancelled search cannot save over its replacement's checkpoint", async () => {
+test.each(["old-first", "replacement-first"] as const)("a cancelled search cannot save over its replacement's checkpoint (%s)", async settlement => {
   const db = database();
   try {
     const runId = new ResearchRunRepository(db).create("thread", config).runId;
     const pending: Array<(sources: Source[]) => void> = [];
-    const search = new WorkflowExecution(db, runId).search({ provider: "exa", search: () => new Promise(resolve => pending.push(resolve)) });
+    const client = { provider: "exa" as const, search: () => new Promise<Source[]>(resolve => pending.push(resolve)) };
+    const search = new WorkflowExecution(db, runId).search(client);
     const abort = new AbortController();
     const old = search.search("parts", { signal: abort.signal });
+    const oldOutcome = old.then(sources => ({ sources }), (error: unknown) => ({ error }));
+    expect(pending).toHaveLength(1);
     abort.abort();
     const resumed = search.search("parts");
+    expect(pending).toHaveLength(2);
     const source = { id: "new", url: "https://source.example/parts", title: "Parts", text: "New evidence" };
-    pending[0]!([{ ...source, id: "old" }]);
-    await expect(old).rejects.toThrow();
+    if (settlement === "old-first") {
+      pending[0]!([{ ...source, id: "old" }]);
+      expect(await oldOutcome).toMatchObject({ error: { name: "AbortError" } });
+    }
+    // The old operation's finally must not remove the live replacement and allow a third paid dispatch.
+    const joined = search.search("parts");
+    expect(pending).toHaveLength(2);
     pending[1]!([source]);
     expect(await resumed).toEqual([source]);
+    expect(await joined).toEqual([source]);
+    if (settlement === "replacement-first") {
+      // Resolve the canceled provider after the replacement's result is already durable.
+      pending[0]!([{ ...source, id: "old" }]);
+      expect(await oldOutcome).toMatchObject({ error: { name: "AbortError" } });
+    }
     expect(await search.search("parts")).toEqual([source]);
+    expect(pending).toHaveLength(2);
+    expect(db.db.prepare("SELECT COUNT(*) AS count FROM workflow_snapshots WHERE research_run_id = ? AND snapshot_key LIKE 'search-attempt:%'").get(runId))
+      .toEqual({ count: 2 });
   } finally { db.close(); }
+});
+
+test("a reopened execution requires the interrupted search's exact UUID before replacement dispatch", async () => {
+  const db = database();
+  let reopened: DatabaseClient | undefined;
+  try {
+    const runId = new ResearchRunRepository(db).create("thread", config).runId;
+    const pending: Array<(sources: Source[]) => void> = [];
+    const client = { provider: "exa" as const, search: () => new Promise<Source[]>(resolve => pending.push(resolve)) };
+    const abort = new AbortController();
+    const old = new WorkflowExecution(db, runId).search(client).search("parts", { signal: abort.signal });
+    const oldOutcome = old.then(sources => ({ sources }), (error: unknown) => ({ error }));
+    const original = unknownSearchAttempts(db, runId)[0]!;
+    const path = (db.db.prepare("PRAGMA database_list").get() as { file: string }).file;
+    reopened = new DatabaseClient(path);
+    await expect(new WorkflowExecution(reopened, runId).search(client).search("parts")).rejects.toBeInstanceOf(UnknownSearchCompletionError);
+    await expect(new WorkflowExecution(reopened, runId, ["unrelated-attempt"]).search(client).search("parts"))
+      .rejects.toBeInstanceOf(UnknownSearchCompletionError);
+    expect(pending).toHaveLength(1);
+    const replacement = new WorkflowExecution(reopened, runId, [original.id]).search(client);
+    const resumed = replacement.search("parts");
+    expect(pending).toHaveLength(2);
+    abort.abort();
+    const source = { id: "new", url: "https://source.example/parts", title: "Parts", text: "Replacement evidence" };
+    pending[1]!([source]);
+    expect(await resumed).toEqual([source]);
+    pending[0]!([{ ...source, id: "old" }]);
+    expect(await oldOutcome).toMatchObject({ error: { name: "AbortError" } });
+    expect(await replacement.search("parts")).toEqual([source]);
+    expect(pending).toHaveLength(2);
+    expect(reopened.db.prepare("SELECT COUNT(*) AS count FROM workflow_snapshots WHERE research_run_id = ? AND snapshot_key LIKE 'search-attempt:%'").get(runId))
+      .toEqual({ count: 2 });
+    expect(reopened.db.prepare("SELECT snapshot_key FROM workflow_snapshots WHERE research_run_id = ? AND snapshot_key = ?")
+      .get(runId, `search-acknowledged:${original.id}`)).toEqual({ snapshot_key: `search-acknowledged:${original.id}` });
+  } finally { reopened?.close(); db.close(); }
 });
 
 function deferredIdentity() {
