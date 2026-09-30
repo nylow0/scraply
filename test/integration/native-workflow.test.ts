@@ -127,7 +127,11 @@ describe("native research workflow through the production backend", () => {
     expect((await item.raw("/workflows/command", nextRetry)).ok).toBe(false);
     expect((await item.raw("/workflows/command", { ...nextRetry, action: { ...nextRetry.action,
       expectedTerminalAttemptId: task.terminalAttemptId, acknowledgeUnknownCompletion: true } })).ok).toBe(false);
+    // Reproduce older startup recovery: the unknown task was settled but its run stayed active.
+    db.db.prepare("UPDATE research_runs SET status = 'running', interrupted = 1 WHERE id = ?").run(runId);
     await item.restart("workflow-checkpoint-recovery-complete");
+    expect(db.db.prepare("SELECT status, interrupted FROM research_runs WHERE id = ?").get(runId))
+      .toEqual({ status: "failed", interrupted: 1 });
     expect((await item.raw("/research/resume", { runId })).ok).toBe(false);
     await item.post("/workflows/command", { ...nextRetry, action: { ...nextRetry.action, acknowledgeUnknownCompletion: true } }, WorkflowAdmissionReceiptSchema);
     const completed = await item.waitFor(workspace => workspace.activeWorkflow?.state === "waiting-for-review");
