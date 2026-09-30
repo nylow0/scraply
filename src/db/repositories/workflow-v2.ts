@@ -324,6 +324,7 @@ export class WorkflowV2Repository {
     researchRunId: string;
     stageId: WorkflowV2StageId;
     selectionId?: string | null;
+    stageKey?: string;
     context: unknown;
     acknowledgedAttemptIds?: readonly string[];
     identity?: {
@@ -347,9 +348,13 @@ export class WorkflowV2Repository {
       return { kind: "reusable", result: saved };
     }
     const unresolved = new Set(new GenerationAttemptRepository(this.client).unresolvedAttemptIds(input.researchRunId));
-    const attempts = this.client.db.prepare(`SELECT id FROM generation_attempts
-      WHERE research_run_id = ? AND (stage_key = ? OR stage_key LIKE ?)`)
-      .all(input.researchRunId, input.stageId, `${input.stageId}:%`) as Array<{ id: string }>;
+    // Parallel selections share a stage ID, but their saved dispatch identities are distinct.
+    const attempts = (input.stageKey
+      ? this.client.db.prepare(`SELECT id FROM generation_attempts WHERE research_run_id = ? AND stage_key = ?`)
+        .all(input.researchRunId, input.stageKey)
+      : this.client.db.prepare(`SELECT id FROM generation_attempts
+          WHERE research_run_id = ? AND (stage_key = ? OR stage_key LIKE ?)`)
+        .all(input.researchRunId, input.stageId, `${input.stageId}:%`)) as Array<{ id: string }>;
     const ambiguous = attempts.some(attempt => unresolved.has(attempt.id)
       && !input.acknowledgedAttemptIds?.includes(attempt.id));
     return ambiguous ? { kind: "unknown-completion" } : { kind: "not-started" };

@@ -10,6 +10,38 @@ import { ResearchFrameSchema } from "../../src/shared/research-frame";
 import { summarizeRunUsage } from "../../src/backend/run-usage";
 
 describe("App workspace coordination", () => {
+  test("previews a not-assessed candidate from the Controlled checkpoint before starting its assessment", async () => {
+    const current = frameWorkflow({ approved: true });
+    current.summary = { ...current.summary, state: "waiting-for-review", reviewKind: "research", outcome: null, revision: 4, finishedAt: null };
+    const state = frameWorkspace(current);
+    state.activeWorkflow = { ...current.summary, revision: 1 };
+    state.rejectedProblemCandidates = [{ id: "saved-candidate", statement: "Bookkeepers repeat manual matching", reason: "Depth limit", disposition: "not-assessed",
+      candidate: { statement: "Bookkeepers repeat manual matching", whyItPersists: "Rules lose context", affected: "Bookkeepers", scaleEstimate: "Unknown", scaleBasisFactorId: null, factorIds: [] } }];
+    const preview = { type: "candidate-assessment" as const, proposal: { candidateId: "saved-candidate", sourceRunId: "saved-run", depth: "standard" as const, modelCalls: 6, searches: 3 },
+      previewHash: "candidate-preview", capabilityFingerprint: "models", minimumWork: { modelCalls: 6, searches: 3 },
+      upperLimits: { maxModelCalls: 20, maxSearches: 10, maxMinutes: 30 }, fieldErrors: [], expiresAt: "2099-01-01T00:00:00.000Z" };
+    const previewWorkflow = vi.fn(async () => preview);
+    const commandWorkflow = vi.fn(async () => {
+      current.summary = { ...current.summary, state: "running", revision: 5 };
+      state.activeWorkflow = current.summary;
+      return { sessionId: current.summary.sessionId, revision: 5, summary: current.summary };
+    });
+    installApi({ getWorkspace: async () => state, getWorkflow: async () => structuredClone(current), previewWorkflow, commandWorkflow });
+    const view = render(App);
+    await view.findByRole("heading", { name: "Choose problems to develop" });
+    await fireEvent.click(view.getByText("Not assessed"));
+    await fireEvent.click(view.getByRole("button", { name: "Assess" }));
+    await view.findByText(/6 model calls and 3 searches/);
+    expect(previewWorkflow).toHaveBeenCalledWith({ type: "candidate-assessment", threadId: "alpha", sessionId: "frame-session", expectedRevision: 4, candidateId: "saved-candidate" });
+    expect(commandWorkflow).not.toHaveBeenCalled();
+    expect(state.rejectedProblemCandidates[0]?.disposition).toBe("not-assessed");
+    await fireEvent.click(view.getByRole("button", { name: "Assess candidate" }));
+    await waitFor(() => expect(commandWorkflow).toHaveBeenCalledWith(expect.objectContaining({ expectedRevision: 4,
+      action: { type: "assess-not-assessed", candidateId: "saved-candidate", previewHash: "candidate-preview", capabilityFingerprint: "models", previewExpiresAt: "2099-01-01T00:00:00.000Z" },
+    })));
+    await waitFor(() => expect(view.queryByRole("button", { name: "Assess candidate" })).toBeNull());
+  });
+
   test("pauses Controlled research on the frame and approves exactly the user's edits", async () => {
     const current = frameWorkflow();
     const state = frameWorkspace(current);
@@ -125,6 +157,21 @@ describe("App workspace coordination", () => {
     expect(current.researchFrame).toEqual(original);
     await fireEvent.click(view.getByRole("button", { name: "Edit approved frame" }));
     await waitFor(() => expect((view.getByLabelText("Goal") as HTMLTextAreaElement).value).toBe("A goal for future runs."));
+  });
+
+  test("renders investigator lanes from actual workflow task records", async () => {
+    const current = frameWorkflow({ approved: true });
+    current.summary.state = "running";
+    current.summary.outcome = null;
+    current.tasks = [{ id: "investigator", parentItemId: null, kind: "investigate-area", scopeKey: "investigate-area:bank", state: "running", createdAt: current.summary.startedAt, finishedAt: null,
+      investigator: { areaId: "bank", areaName: "Bank matching", currentStep: "Checking independent sources", confirmedCount: 1, insufficientCount: 2, droppedCount: 0 } }];
+    const state = frameWorkspace(current);
+    installApi({ getWorkspace: async () => state, getWorkflow: async () => structuredClone(current) });
+    const view = render(App);
+    const lane = await view.findByRole("listitem", { name: "Bank matching investigator" });
+    expect(lane.textContent).toContain("Checking independent sources");
+    expect(within(lane).getByText("Confirmed").nextElementSibling?.textContent).toBe("1");
+    expect(view.queryByRole("progressbar")).toBeNull();
   });
 
   test("retries using the finished task revision shown in the detail panel", async () => {

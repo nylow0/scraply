@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { GenerationAttemptRepository } from "./generation-attempts";
+import { unknownSearchAttempts } from "../../core/workflow-search-attempts";
 import { canonicalJson, sha256 } from "../../shared/content-identity";
 import type { RunConfig } from "../../shared/schemas";
 import { ProblemFactorAssessmentSchema } from "../../shared/structured-output-schemas";
@@ -569,7 +570,23 @@ export class WorkflowRepository {
   }
 
   hasUnknownProviderCompletion(runId: string): boolean {
-    return !new GenerationAttemptRepository(this.client).getResumeSafety(runId, this.acknowledgedAttemptIds(runId)).canResume;
+    if (unknownSearchAttempts(this.client, runId, this.acknowledgedAttemptIds(runId)).length > 0) return true;
+    if (!new GenerationAttemptRepository(this.client).getResumeSafety(runId, this.acknowledgedAttemptIds(runId)).canResume) return true;
+    return Boolean(this.client.db.prepare(`WITH RECURSIVE linked(id) AS (
+      SELECT id FROM workflow_work_items WHERE json_extract(output_refs_json, '$.runId') = ?
+      UNION SELECT child.id FROM workflow_work_items child JOIN linked parent ON child.parent_item_id = parent.id
+    ) SELECT 1 FROM opportunity_exploration_attempts attempt JOIN linked ON linked.id = attempt.work_item_id
+      WHERE attempt.stage_name = 'investigator-search' AND attempt.dispatched_at IS NOT NULL
+        AND attempt.status IN ('dispatched','unknown-dispatch','failed') LIMIT 1`).get(runId));
+  }
+
+  countInvestigatorSearches(runId: string): number {
+    const row = this.client.db.prepare(`WITH RECURSIVE linked(id) AS (
+      SELECT id FROM workflow_work_items WHERE json_extract(output_refs_json, '$.runId') = ?
+      UNION SELECT child.id FROM workflow_work_items child JOIN linked parent ON child.parent_item_id = parent.id
+    ) SELECT COUNT(*) AS count FROM opportunity_exploration_attempts attempt JOIN linked ON linked.id = attempt.work_item_id
+      WHERE attempt.stage_name = 'investigator-search' AND attempt.dispatched_at IS NOT NULL`).get(runId) as { count: number };
+    return row.count;
   }
 
   settleBudget(id: string, input: {
@@ -1196,7 +1213,7 @@ function decodeLineage(row: LineageRow): SolutionLineage {
   };
 }
 
-function factorOriginHash(row: Record<string, unknown>): string {
+export function factorOriginHash(row: Record<string, unknown>): string {
   return sha256(canonicalJson({
     subject: row.subject, behavior: row.behavior, quote: row.quote,
     sourceId: row.source_id, modelConfidence: row.model_confidence,

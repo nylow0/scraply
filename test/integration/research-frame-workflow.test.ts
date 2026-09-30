@@ -66,6 +66,7 @@ async function setup(mode: "babysit" | "vibe" = "babysit", knownProblem = false,
         modelConfidence: 0.8, uncertainty: "Frequency unknown", sourceRole: "firsthand", audienceFit: "intended-buyer",
         independentSourceKey: source.id, supportsDemand: true, demandEvidenceUncertainty: "Payment not established" })) };
     } else if (stage === "problem-candidates") output = { problems: [] };
+    else if (stage === "area-gap") output = { gaps: [], reason: "No further bounded gaps were identified" };
     else if (stage === "solutions") output = { options: [] };
     else if (stage === "solution-set-review") output = { assessments: [] };
     else throw new Error(`Unexpected stage ${request.stage}`);
@@ -156,7 +157,8 @@ test("A scan resumes committed searches and stages without replaying them", asyn
     expect(db.db.prepare("SELECT status FROM research_runs WHERE id = ?").get(runId)).toEqual({ status: "completed" });
     for (const query of searchesBefore) {
       // Investigator questions intentionally repeat the scan's first question. A saved scan itself never repeats it.
-      if (query.includes("changes")) expect(fixture.queries.filter(item => item === query)).toHaveLength(searchesBefore.filter(item => item === query).length);
+      if (query.includes("changes")) expect(fixture.queries.filter(item => item === query))
+        .toHaveLength(searchesBefore.filter(item => item === query).length);
     }
     const depositHash = createHash("sha256").update("deposits").digest("hex").slice(0, 16);
     expect(fixture.stages.filter(item => item.stage.startsWith(`query-plan:scan-${depositHash}:`))).toHaveLength(2);

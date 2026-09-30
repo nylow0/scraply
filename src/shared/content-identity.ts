@@ -4,6 +4,12 @@ export function sha256(value: string): string {
   return createHash("sha256").update(value, "utf8").digest("hex");
 }
 
+/** A provider is part of new search identities; omitting it reproduces old saved keys. */
+export function workflowSearchKey(query: string, parameters: unknown, provider?: string): string {
+  const normalized = query.normalize("NFKC").trim().replace(/\s+/g, " ").toLowerCase();
+  return `search:${sha256(canonicalJson({ query: normalized, parameters, ...(provider ? { provider } : {}) }))}`;
+}
+
 export function canonicalJson(value: unknown): string {
   return JSON.stringify(canonicalValue(value));
 }

@@ -21,7 +21,9 @@ type ParsedAttempt = {
 
 const terminalStatuses = new Set(["completed", "failed", "cancelled", "interrupted"]);
 
-export function summarizeRunUsage(rows: readonly GenerationAttemptUsageRow[]): RunUsage {
+export function summarizeRunUsage(rows: readonly GenerationAttemptUsageRow[], searches?: {
+  attemptCount: number; unknownCount: number;
+}): RunUsage {
   const input = dimension();
   const output = dimension();
   const total = dimension();
@@ -89,6 +91,7 @@ export function summarizeRunUsage(rows: readonly GenerationAttemptUsageRow[]): R
     availability: attemptCount > 0 ? "available" : "unavailable",
     attemptCount,
     unknownAttemptCount,
+    ...(searches ? { searchAttemptCount: searches.attemptCount, unknownSearchCount: searches.unknownCount } : {}),
     models: [...models.values()],
     tokens: { input, output, total, cachedInput, reasoning },
     latencyMs: latency,

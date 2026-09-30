@@ -11,9 +11,11 @@ import { WorkflowExecution } from "../../src/core/workflow-execution";
 import { DatabaseClient } from "../../src/db/client";
 import { DiscoveryRepository } from "../../src/db/repositories/discovery";
 import { WorkflowRepository } from "../../src/db/repositories/workflows";
+import { ResearchFrameRepository } from "../../src/db/repositories/research-frames";
 import { sha256 } from "../../src/shared/content-identity";
 import { previewResearchAngles } from "../../src/shared/research-revisions";
 import { DEFAULT_RUN_CONFIG } from "../../src/shared/schemas";
+import type { ResearchFrame } from "../../src/shared/research-frame";
 import type { StructuredModelClient } from "../../src/providers/structured";
 import { WorkflowAdmissionReceiptSchema } from "../../src/shared/workflow-contracts";
 
@@ -319,6 +321,42 @@ describe("research snapshot materialization", () => {
     const resumed = new WorkflowExecution(client, runId).resolvePrompt("query-plan");
     expect(resumed.text).toBe(first.text);
     expect(resumed.resolvedSha256).toBe(first.resolvedSha256);
+    client.close();
+  });
+
+  test("queued follow-up freezes the latest approved frame at admission", async () => {
+    const { client, repository, sessionId, snapshotId } = workflowFixture();
+    const frames = new ResearchFrameRepository(client);
+    const frame: ResearchFrame = {
+      goal: "Reduce repeated filing", goalKind: "process-improvement", contextFacts: [],
+      successCriteria: [{ id: "time", name: "Less filing time", weight: "must", howJudged: "Compare weekly filing time", basis: "brief" }],
+      constraints: [], languages: ["en"], exclusions: [], openQuestions: [],
+      areas: [{ id: "filing", name: "Repeated entries", whyRelevant: "Teams repeat the same entries",
+        affectedPeople: "Operations teams", venues: [{ name: "Operations community", kind: "community" }],
+        exampleProblems: ["Duplicate entries"], included: true, priority: 1 }],
+    };
+    const original = frames.createDraft({ threadId: "project-1", runId: "run-old", frame, sources: [], knownProblem: false });
+    frames.approve(original.id, "project-1", frame);
+    const latest = frames.createApprovedVersion(original.id, "project-1", { ...frame, goal: "Reduce Ukrainian filing work", languages: ["uk", "en"] });
+    let runId = "";
+    const service = new ResearchRequestService({
+      db: client, engine: () => ({ resumeRun: async (id: string) => { runId = id; } }),
+      modelClient: () => { throw new Error("No direct model call expected"); },
+    });
+    const admitted = client.immediateTransaction(() => service.admitRequest(sessionId, repository.getSession(sessionId)!.revision, {
+      type: "request-research", kind: "new-question", question: "How can teams stop repeating entries?",
+      baseSnapshotId: snapshotId, model: { providerId: "openai-subscription", modelId: "test-model" },
+      reasoningEffort: "medium", allowance: { maxModelCalls: 12, maxSearches: 12, maxMinutes: 10 },
+    }));
+    const future = frames.createApprovedVersion(latest.id, "project-1", { ...latest.approved!, goal: "Measure a future workflow", languages: ["en", "de"] });
+    expect((repository.getWorkItem(admitted.workItemId)!.input as { frameId: string }).frameId).toBe(latest.id);
+    await service.dispatchReady(sessionId);
+    expect(frames.forRun(runId)?.id).toBe(latest.id);
+    expect(frames.forRun(runId)?.approved?.languages).toEqual(["uk", "en"]);
+    expect(frames.latestApproved("project-1")?.id).toBe(future.id);
+    expect(frames.forRun("run-old")?.id).toBe(original.id);
+    const saved = client.db.prepare("SELECT config_json FROM research_runs WHERE id = ?").get(runId) as { config_json: string };
+    expect(JSON.parse(saved.config_json).discoveryDepth).toBe("quick");
     client.close();
   });
 

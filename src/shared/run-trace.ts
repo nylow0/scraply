@@ -17,6 +17,7 @@ export const RunTraceMetricsSchema = z.object({
   })) }),
   modelCalls: Count, searches: Count, wallTimeMs: Count, modelTimeMs: Count,
   interruptionTimeMs: Count, interruptions: Count, ideas: Count, acceptedIdeas: Count,
+  acceptedIdeasFailingMustHave: Count.nullable().default(null),
 });
 export const RunTraceAttemptSchema = z.object({
   id: Id, status: z.string(), model: z.string(), effort: z.string(), provider: z.string(),
@@ -60,6 +61,7 @@ export const RunTraceSchema = z.object({
   runId: Id, threadId: Id, sessionId: z.string().nullable(), status: z.string(), purpose: z.string(),
   startedAt: z.string(), finishedAt: z.string().nullable(), live: z.boolean(),
   metrics: RunTraceMetricsSchema, steps: z.array(RunTraceStepSchema),
+  investigators: z.array(z.object({ id: z.string(), name: z.string(), state: z.string(), stepIds: z.array(z.string()) })).default([]),
   candidates: z.array(RunTraceCandidateSchema), warnings: z.array(z.string()),
 });
 

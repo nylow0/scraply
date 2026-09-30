@@ -1,8 +1,24 @@
 import { describe, expect, test } from "bun:test";
 import { chooseSearchProvider, filterRoutedSources, isContentFarm, routeSearchOptions, routingLanguages, searchRoutes, vendorDominatedDomains } from "../../src/providers/source-routes";
 import { researchSearchAllocation } from "../../src/shared/research-revisions";
+import { discoveryRunProjection, framedDiscoveryProjection } from "../../src/shared/discovery-projection";
 
 describe("source routing", () => {
+  test("counts paired translated scans and scoped investigations while retaining legacy projections", () => {
+    expect(framedDiscoveryProjection("quick")).toEqual(framedDiscoveryProjection("quick", 3));
+    expect(framedDiscoveryProjection("quick", 1)).toMatchObject({ searches: 66 });
+    expect(framedDiscoveryProjection("quick", 3)).toMatchObject({ searches: 186 });
+    expect(framedDiscoveryProjection("standard", 3)).toMatchObject({ searches: 318 });
+    expect(discoveryRunProjection("standard", 4, 1, false)).toEqual({ modelCalls: 16, searches: 16, factorCap: 80 });
+    expect(framedDiscoveryProjection("quick", 3).modelCalls).toBe(framedDiscoveryProjection("quick", 1).modelCalls);
+  });
+  test("keeps verified official reports outside the publication category", () => {
+    expect(routeSearchOptions("studies-official", { venues: [{ name: "Government reports", domain: "ons.gov.uk", kind: "official" }] }))
+      .toMatchObject({ includeDomains: ["ons.gov.uk"] });
+    expect(routeSearchOptions("studies-official", { venues: [{ name: "Government reports", domain: "ons.gov.uk", kind: "official" }] }).category).toBeUndefined();
+    expect(routeSearchOptions("studies-official", { venues: [{ name: "Research publications", domain: "nature.com", kind: "publication" }] }))
+      .toMatchObject({ includeDomains: ["nature.com"], category: "publication" });
+  });
   test("reserves every paired search leg within an explicit allowance and retains legacy allocations", () => {
     for (const depth of ["quick", "standard", "deep"] as const) for (const languageCount of [1, 2, 3]) for (let searches = 0; searches <= 30; searches += 1) {
       const allocation = researchSearchAllocation(searches, depth, true, languageCount);
