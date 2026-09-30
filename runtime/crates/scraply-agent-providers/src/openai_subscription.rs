@@ -1443,6 +1443,17 @@ fn map_api_error(error: ApiError) -> ProviderError {
             true,
             "OpenAI is temporarily overloaded",
         ),
+        // A terminal token-limit response confirms provider completion, unlike a disconnected stream.
+        ApiError::Stream(message)
+            if message == "Incomplete response returned, reason: max_output_tokens" =>
+        {
+            ProviderError::new(
+                OPENAI_SUBSCRIPTION_PROVIDER_ID,
+                ProviderErrorCode::OutputLimit,
+                false,
+                "OpenAI returned an incomplete response because its output token limit was reached.",
+            )
+        }
         ApiError::Stream(message) => ProviderError::new(
             OPENAI_SUBSCRIPTION_PROVIDER_ID,
             ProviderErrorCode::Transport,
@@ -1457,9 +1468,6 @@ fn map_api_error(error: ApiError) -> ProviderError {
                 }
                 "response.failed event received" => {
                     "OpenAI reported a failed response without a specific reason."
-                }
-                "Incomplete response returned, reason: max_output_tokens" => {
-                    "OpenAI returned an incomplete response because its output token limit was reached."
                 }
                 "Incomplete response returned, reason: content_filter" => {
                     "OpenAI returned an incomplete response because of content filtering."
@@ -1734,6 +1742,11 @@ mod tests {
     #[tokio::test]
     async fn websocket_failures_keep_subscription_error_classification() {
         for (event, expected_code, retryable) in [
+            (
+                json!({"type":"response.incomplete","response":{"id":"response-rejected","incomplete_details":{"reason":"max_output_tokens"}}}),
+                ProviderErrorCode::OutputLimit,
+                false,
+            ),
             (
                 json!({"type":"response.failed","response":{"id":"response-rejected","error":{"code":"invalid_prompt","message":"private rejected request"}}}),
                 ProviderErrorCode::InvalidRequest,
@@ -2468,6 +2481,14 @@ mod tests {
     #[test]
     fn generation_api_errors_keep_safe_actionable_classification() {
         let cases = [
+            (
+                ApiError::Stream(
+                    "Incomplete response returned, reason: max_output_tokens".to_owned(),
+                ),
+                ProviderErrorCode::OutputLimit,
+                false,
+                "OpenAI returned an incomplete response because its output token limit was reached.",
+            ),
             (
                 ApiError::Stream("secret streamed provider payload".to_owned()),
                 ProviderErrorCode::Transport,
