@@ -61,6 +61,7 @@ import { resolveRuntimeLaunch } from "../shared/runtime-artifact";
 import { createFileLogger, type FileLogger } from "./logging";
 import { createCredentialStore } from "./credential-store";
 import { configureCredentialProfile } from "./credential-profile";
+import { AppSettingsSchema } from "../shared/app-settings";
 import { revokeNativeAccount } from "./native-account";
 import { isAllowedRendererUrl, parseExternalHttpsUrl, rendererEntryUrl } from "./security";
 import { readWindowState, saveWindowState } from "./window-state";
@@ -652,6 +653,8 @@ function registerIpc(): void {
   handle(IPC_CHANNELS.GET_VALIDATION, () => backendRequest("/validation"));
   handle(IPC_CHANNELS.RETRY_CONNECTION, retryAutomaticConnection);
   handle(IPC_CHANNELS.GET_WORKSPACE, () => backendRequest("/workspace"));
+  handle(IPC_CHANNELS.GET_ADVANCED_SETTINGS, () => backendRequest("/settings/advanced"));
+  handle(IPC_CHANNELS.SAVE_ADVANCED_SETTINGS, (body) => post("/settings/advanced", AppSettingsSchema.parse(body)));
   handle(IPC_CHANNELS.OPEN_DATA_FOLDER, async () => {
     await shell.openPath(getPaths().dataDir);
   });
