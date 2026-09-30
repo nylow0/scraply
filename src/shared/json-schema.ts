@@ -51,6 +51,13 @@ export function deriveJsonSchema(schema: z.ZodTypeAny): JsonSchema {
       return { anyOf: [deriveJsonSchema(definition.innerType), { type: "null" }] };
     case z.ZodFirstPartyTypeKind.ZodUnion:
       return { anyOf: definition.options.map((option: z.ZodTypeAny) => deriveJsonSchema(option)) };
+    case z.ZodFirstPartyTypeKind.ZodEffects:
+      // Refinements and preprocessing still run on the app boundary. The provider sees the underlying shape.
+      return deriveJsonSchema(definition.schema);
+    case z.ZodFirstPartyTypeKind.ZodOptional:
+      // Both native providers use strict JSON schemas, where every property must be required.
+      // Optional output fields use null on the wire, then their boundary schema normalizes absence.
+      return { anyOf: [deriveJsonSchema(definition.innerType), { type: "null" }] };
     default:
       throw new Error(`Unsupported structured-output schema type: ${String(definition.typeName)}`);
   }
