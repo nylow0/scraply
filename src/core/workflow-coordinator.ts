@@ -302,6 +302,7 @@ export class WorkflowCoordinator {
           state: attempt?.completion_unknown ? "unknown" : item.state, question: questionFromItem(item),
           error: errorFromItem(item), createdAt: item.createdAt, finishedAt: item.finishedAt,
           ...(attempt ? { terminalAttemptId: attempt.id } : {}),
+          ...(this.canReassessProblems(session, item) ? { canReassessProblems: true } : {}),
         };
       }),
       nextCursor: offset + page.length < items.length ? String(offset + page.length) : null,
@@ -512,6 +513,7 @@ export class WorkflowCoordinator {
     if (session.revision !== request.expectedRevision) throw new AppError("REVISION_CONFLICT");
     const action = request.action;
     if (action.type === "retry-task") return this.retryTask({ ...request, action });
+    if (action.type === "reassess-problems") return this.reassessProblems({ ...request, action });
     if (action.type === "generate-ideas" || action.type === "request-research") {
       await this.assertModelAvailable(action.model, action.reasoningEffort);
     }
@@ -703,6 +705,52 @@ export class WorkflowCoordinator {
       }
       else this.options.engine().cancelRun(cancelRunId);
     }
+    return receipt;
+  }
+
+  private canReassessProblems(session: WorkflowSession, task: WorkflowWorkItem): boolean {
+    const runId = runIdFromItem(task);
+    if (!runId || session.state !== "finished" || session.outcome !== "no-qualifying-ideas"
+      || task.kind !== "discovery" || task.state !== "succeeded"
+      || WorkflowLaunchContractSchema.parse(session.contract).limits.enforced !== false) return false;
+    return Boolean(this.options.db.db.prepare(`SELECT 1 FROM research_runs run JOIN scopes scope ON scope.research_run_id = run.id
+      WHERE run.id = ? AND run.status = 'completed' AND trim(scope.audience) = ''
+        AND NOT EXISTS(SELECT 1 FROM workflow_snapshots WHERE research_run_id = run.id AND snapshot_key = 'problem-audience-assessment')`)
+      .get(runId));
+  }
+
+  private async reassessProblems(request: {
+    threadId: string; sessionId: string; clientCommandId: string; expectedRevision: number;
+    action: Extract<WorkflowAction, { type: "reassess-problems" }>;
+  }): Promise<WorkflowAdmissionReceipt> {
+    const session = this.requireSession(request.sessionId, request.threadId);
+    const task = this.repository.getWorkItem(request.action.taskId);
+    if (!task || task.sessionId !== session.id || !this.canReassessProblems(session, task)) {
+      throw new AppError("INVALID_REFERENCE", "This discovery does not need the updated audience assessment.");
+    }
+    const runId = runIdFromItem(task)!;
+    const contract = WorkflowLaunchContractSchema.parse(session.contract);
+    await this.assertModelAvailable(contract.runConfig.model, contract.runConfig.reasoningEffort);
+    this.requireProjectIdle(request.threadId);
+    // Unknown older requests remain acknowledged by the explicit recovery audit, not erased.
+    const audits = this.options.db.db.prepare(`SELECT value_json FROM workflow_snapshots
+      WHERE research_run_id = ? AND snapshot_key LIKE 'acknowledged-retry:%'`).all(runId) as Array<{ value_json: string }>;
+    const acknowledgedAttemptIds = [...new Set(audits.flatMap(row => (JSON.parse(row.value_json) as { attemptIds: string[] }).attemptIds))];
+    const safety = new GenerationAttemptRepository(this.options.db).getResumeSafety(runId, acknowledgedAttemptIds);
+    if (!safety.canResume) throw new AppError("UNKNOWN_COMPLETION", safety.resumeBlockedReason ?? undefined);
+    const receipt = this.options.db.immediateTransaction(() => {
+      this.repository.reopenGuidedDiscovery(session.id, request.expectedRevision, task.id, true);
+      this.options.db.db.prepare("INSERT INTO workflow_snapshots VALUES (?, ?, ?)").run(runId,
+        "problem-audience-assessment", canonicalJson({ version: 1, taskId: task.id,
+          commandId: request.clientCommandId, requestedAt: new Date().toISOString() }));
+      const result = this.receipt(session.id);
+      this.repository.recordCommand({ threadId: request.threadId, sessionId: session.id,
+        clientCommandId: request.clientCommandId, payload: request, result });
+      return result;
+    });
+    this.progress(session.id, [task.id]);
+    void this.options.engine().resumeRun(runId, acknowledgedAttemptIds, true)
+      .catch(error => this.failDispatch(session.id, task.id, error));
     return receipt;
   }
 

@@ -236,8 +236,8 @@ export class ResearchEngine {
     }
   }
 
-  // Only an explicitly accepted discovery retry supplies attempt IDs. Generic resume remains guarded.
-  async resumeRun(runId: string, acknowledgedAttemptIds: readonly string[] = []): Promise<void> {
+  // Explicit recovery supplies acknowledged attempts; completed discovery additionally needs a saved reassessment policy.
+  async resumeRun(runId: string, acknowledgedAttemptIds: readonly string[] = [], reassessProblems = false): Promise<void> {
     if (this.activeRuns.has(runId)) return;
     const row = this.options.db.db.prepare(`SELECT thread_id, status, config_json, problem_id FROM research_runs WHERE id = ?`)
       .get(runId) as { thread_id: string; status: string; config_json: string; problem_id: string | null } | undefined;
@@ -245,7 +245,13 @@ export class ResearchEngine {
     if (config && config.workflowVersion !== 2) {
       throw new AppError("conflict", "Legacy generation has been retired. Your saved results are preserved. Start a new run to use the current prompts.");
     }
-    if (!row || !config || !["queued", "running", ...(config.workflowVersion === 2 ? ["failed", "cancelled"] : [])].includes(row.status)) {
+    const completedAssessment = reassessProblems && row?.status === "completed" && !row.problem_id
+      && this.options.db.db.prepare(`SELECT 1 FROM scopes scope JOIN workflow_snapshots snapshot ON snapshot.research_run_id = scope.research_run_id
+        WHERE scope.research_run_id = ? AND trim(scope.audience) = '' AND snapshot.snapshot_key = 'problem-audience-assessment'
+          AND json_extract(snapshot.value_json, '$.version') = 1
+          AND NOT EXISTS(SELECT 1 FROM workflow_snapshots WHERE research_run_id = scope.research_run_id AND snapshot_key = 'discovery-completed:audience-v1')`)
+        .get(runId);
+    if (!row || !config || (!completedAssessment && !["queued", "running", ...(config.workflowVersion === 2 ? ["failed", "cancelled"] : [])].includes(row.status))) {
       throw new AppError("conflict", "This research run has already ended and cannot be resumed.");
     }
     const resumeSafety = this.generationAttempts.getResumeSafety(runId, acknowledgedAttemptIds);
@@ -1487,7 +1493,9 @@ export class ResearchEngine {
     const deps = this.dependencies(active);
     if (active.workflow) {
       const workflow = active.workflow;
-      if (workflow.read("discovery-completed")) return;
+      const completionKey = !scope.audience.trim() && workflow.read<{ version: number }>("problem-audience-assessment")?.version === 1
+        ? "discovery-completed:audience-v1" : "discovery-completed";
+      if (workflow.read(completionKey)) return;
       let harvest = workflow.read<HarvestResult>("harvest");
       if (!harvest) {
         harvest = await harvestFactors(scope, { ...deps, idFactory: workflow.idFactory("harvest"), random: () => 0.5 });
@@ -1500,7 +1508,7 @@ export class ResearchEngine {
       this.progress(active, `${harvest.factors.length} observations from ${harvest.sources.length} sources`);
       const result = await discoverProblems(scope, harvest.factors, harvest.sources, { ...deps, idFactory: workflow.idFactory("problems") });
       this.discovery.persistProblems(active.runId, result.killSources, result.problems, result.blockedCandidates, () => {
-        workflow.save("discovery-completed", result);
+        workflow.save(completionKey, result);
       });
       this.progress(active, `${result.problems.length} problems ready for your review`);
       return;
@@ -2001,6 +2009,7 @@ export class ResearchEngine {
       depth: active.config.discoveryDepth,
       guided: this.usesWorkGuidance(active.runId),
       smallHarvestBatches: workflow.smallHarvestBatches,
+      assessProblemAudience: workflow.read<{ version: number }>("problem-audience-assessment")?.version === 1,
       ...(allocation ? {
         candidateLimit: allocation.candidateLimit,
         queryCountByMode: { domain: allocation.domainQueries, audience: allocation.audienceQueries },

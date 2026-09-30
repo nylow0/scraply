@@ -14,6 +14,8 @@ import { GenerationStartPayloadSchema } from "../../src/shared/runtime-protocol"
 import { DEFAULT_RUN_CONFIG } from "../../src/shared/schemas";
 import type { JsonSchema } from "../../src/shared/json-schema";
 import { NATIVE_WORKFLOW_MODEL as model, UNTRUSTED_WORKFLOW_TEXT as untrusted, startNativeWorkflowBackend } from "../fixtures/native-workflow-backend";
+import { resolveWorkflowV2Prompt } from "../../src/core/prompts";
+import { WORKFLOW_V2_STAGE_IDS } from "../../src/core/stages";
 
 const statement = "Repair shops cannot reliably predict parts arrival times.";
 const scope = {
@@ -31,6 +33,60 @@ afterEach(async () => {
 });
 
 describe("native research workflow through the production backend", () => {
+  test("re-evaluates a completed blank-audience archive and finishes five reviewed ideas without replaying research", async () => {
+    const item = await fixture({ mode: "workflow-audience-many", legacyAudienceCheckpoint: true });
+    const threadId = await item.createThread("explore-market", 5);
+    const broadScope = { ...scope, audience: "", riskEvaluationCriteria: "Two students can test it within one month." };
+    const preview = await item.post("/workflows/preview", { type: "launch", threadId, draft: {
+      contractVersion: 1, purpose: "discovery", mode: "vibe", brief: scope.domain, scope: broadScope,
+      runConfig: { ...DEFAULT_RUN_CONFIG, model, reasoningEffort: "xhigh", discoveryDepth: "quick", searchProvider: "exa" },
+      targets: { kind: "per-problem", ideaCount: 5, automaticProblemCap: 3 },
+      ideas: { model, reasoningEffort: "xhigh", reviewModel: model, reviewReasoningEffort: "xhigh" },
+      limits: { enforced: false, maxMinutes: 49, maxModelCalls: 62, maxSearches: 26 }, instructions: {},
+    } }, PreviewWorkflowResultSchema);
+    const receipt = await item.post("/workflows/start", { threadId, clientCommandId: "broad-discovery",
+      contract: preview.proposal, previewHash: preview.previewHash, capabilityFingerprint: preview.capabilityFingerprint,
+      previewExpiresAt: preview.expiresAt }, WorkflowAdmissionReceiptSchema);
+    const original = await item.waitFor(state => state.activeWorkflow?.outcome === "no-qualifying-ideas");
+    const runId = original.latestResearchRun!.runId;
+    const detail = await item.post(`/workflows/${receipt.sessionId}`, undefined, WorkflowDetailSchema);
+    const task = detail.tasks.find(task => task.kind === "discovery")!;
+    expect(task.canReassessProblems).toBe(true);
+    const requestsBefore = item.requests().length;
+    const searchesBefore = item.searches.length;
+    const saved = new DatabaseClient(item.dbPath);
+    try {
+      const contract = saved.db.prepare("SELECT contract_json, contract_sha256 FROM workflow_sessions WHERE id = ?").get(receipt.sessionId);
+      const factors = saved.db.prepare("SELECT * FROM factors WHERE research_run_id = ? ORDER BY id").all(runId);
+      const stages = saved.db.prepare("SELECT * FROM stage_results WHERE research_run_id = ? ORDER BY id").all(runId) as Array<{ id: string }>;
+      const command = { threadId, sessionId: receipt.sessionId, clientCommandId: "reassess-broad",
+        expectedRevision: detail.summary.revision, action: { type: "reassess-problems", taskId: task.id } };
+      const resumed = await item.post("/workflows/command", command, WorkflowAdmissionReceiptSchema);
+      expect(resumed.sessionId).toBe(receipt.sessionId);
+      const completed = await item.waitFor(state => state.activeWorkflow?.outcome === "target-met");
+      expect(completed.solutions).toHaveLength(5);
+      expect(completed.activeWorkflow?.counts.accepted).toBe(5);
+      expect(item.searches).toHaveLength(searchesBefore);
+      const fresh = item.requests().slice(requestsBefore);
+      expect(fresh.filter(request => /^(query-plan|factor-harvest|problem-candidates)/.test(request.workOrder.stage))).toEqual([]);
+      const review = fresh.find(request => request.workOrder.stage.endsWith(":audience-v1"))!;
+      expect(review.workOrder.instruction).toContain("blank audience alone is not a missing brief fit");
+      expect((review.outputSchema as JsonSchema).properties?.factorAssessments).toBeDefined();
+      expect(fresh.some(request => request.workOrder.stage === "solution-set-review")).toBe(true);
+      expect(completed.problemCandidates[0]?.factors.every(factor => factor.audienceFit === "intended-buyer")).toBe(true);
+      expect(fresh.every(request => request.reasoningEffort === "xhigh" && request.model.modelId === model.modelId)).toBe(true);
+      expect(saved.db.prepare("SELECT contract_json, contract_sha256 FROM workflow_sessions WHERE id = ?").get(receipt.sessionId)).toEqual(contract);
+      expect(saved.db.prepare("SELECT * FROM factors WHERE research_run_id = ? ORDER BY id").all(runId)).toEqual(factors);
+      for (const stage of stages) expect(saved.db.prepare("SELECT * FROM stage_results WHERE id = ?").get(stage.id)).toEqual(stage);
+      expect(saved.db.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
+      expect((await item.post("/workflows/command", command, WorkflowAdmissionReceiptSchema)).sessionId).toBe(receipt.sessionId);
+      const requestCount = item.requests().length;
+      await item.restart();
+      expect((await item.workspace()).solutions).toEqual(completed.solutions);
+      expect(item.requests()).toHaveLength(requestCount);
+    } finally { saved.close(); }
+  }, 20_000);
+
   test("explicit output-limit retry preserves the guided contract, searches, and completed packets", async () => {
     const item = await fixture({ mode: "workflow-checkpoint-recovery-output-limit" });
     const threadId = await item.createThread("explore-market");
@@ -920,8 +976,8 @@ describe("native v2 decisions through the production backend", () => {
   }, 20_000);
 });
 
-async function fixture({ mode = "workflow", searchEnabled = true, workflowVersion = 2, hangFollowUpSearch = false }: {
-  mode?: string; searchEnabled?: boolean; workflowVersion?: 1 | 2; hangFollowUpSearch?: boolean;
+async function fixture({ mode = "workflow", searchEnabled = true, workflowVersion = 2, hangFollowUpSearch = false, legacyAudienceCheckpoint = false }: {
+  mode?: string; searchEnabled?: boolean; workflowVersion?: 1 | 2; hangFollowUpSearch?: boolean; legacyAudienceCheckpoint?: boolean;
 } = {}) {
   const directory = mkdtempSync(join(tmpdir(), "scraply-native-workflow-"));
   const dbPath = join(directory, "scraply.db");
@@ -930,12 +986,26 @@ async function fixture({ mode = "workflow", searchEnabled = true, workflowVersio
   const operationsCapture = join(directory, "operations.txt");
   const searches: unknown[] = [];
   const events: ResearchEvent[] = [];
+  const backendErrors: string[] = [];
   let backend: Awaited<ReturnType<typeof startNativeWorkflowBackend>>;
   let closed = true;
   const lines = (path: string) => existsSync(path) ? readFileSync(path, "utf8").trim().split("\n").filter(Boolean) : [];
 
   async function open() {
-    backend = await startNativeWorkflowBackend(directory, { mode, searchEnabled, searches, hangFollowUpSearch, onEvent: (event) => events.push(event) });
+    backend = await startNativeWorkflowBackend(directory, { mode, searchEnabled, searches, hangFollowUpSearch,
+      onError: error => backendErrors.push(error instanceof Error ? error.message : String(error)), onEvent: (event) => {
+      events.push(event);
+      if (legacyAudienceCheckpoint && event.type === "run-started" && !event.problemId) {
+        // Seed a pre-policy archive before execution starts, without mutating completed history.
+        const saved = new DatabaseClient(dbPath);
+        try {
+          const insert = saved.db.prepare("INSERT INTO workflow_snapshots VALUES (?, ?, ?)");
+          insert.run(event.runId, "prompts", JSON.stringify(Object.fromEntries(WORKFLOW_V2_STAGE_IDS.map(stage => [stage, resolveWorkflowV2Prompt(stage)]))));
+          insert.run(event.runId, "identifier-characters", "24");
+          insert.run(event.runId, "small-harvest-batches", JSON.stringify({ version: 1 }));
+        } finally { saved.close(); }
+      }
+    } });
     closed = false;
   }
   async function close() {
@@ -998,7 +1068,10 @@ async function fixture({ mode = "workflow", searchEnabled = true, workflowVersio
         await new Promise((resolve) => setTimeout(resolve, 20));
         state = await workspace();
       }
-      expect(predicate(state)).toBe(true);
+      if (!predicate(state)) throw new Error(`Workflow did not reach its expected outcome: ${JSON.stringify({
+        state: state.activeWorkflow?.state, outcome: state.activeWorkflow?.outcome, stopReason: state.activeWorkflow?.stopReason,
+        counts: state.activeWorkflow?.counts, errors: backendErrors, problems: state.problemCandidates.map(problem => ({ verdict: problem.verdict, evidenceGap: problem.evidenceGap })),
+      })}`);
       return state;
     },
     async waitForAttempt(status: string) {

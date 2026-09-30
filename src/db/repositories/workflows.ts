@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { GenerationAttemptRepository } from "./generation-attempts";
 import { canonicalJson, sha256 } from "../../shared/content-identity";
 import type { RunConfig } from "../../shared/schemas";
+import { ProblemFactorAssessmentSchema } from "../../shared/structured-output-schemas";
 import type { DatabaseClient } from "../client";
 
 export type WorkflowPurpose = "discovery" | "known-problem" | "research-followup" | "idea-turn";
@@ -354,14 +355,16 @@ export class WorkflowRepository {
   }
 
   /** Explicit recovery keeps run-local checkpoints and all prior attempt/accounting records. */
-  reopenGuidedDiscovery(sessionId: string, expectedRevision: number, taskId: string): WorkflowSession {
+  reopenGuidedDiscovery(sessionId: string, expectedRevision: number, taskId: string, reassessProblems = false): WorkflowSession {
     this.client.requireImmediateTransaction();
     const session = this.requireSession(sessionId);
     const task = this.requireWorkItemInSession(taskId, sessionId);
-    if (session.revision !== expectedRevision || session.state !== "finished" || !["needs-attention", "failed", "partial"].includes(session.outcome ?? "")
-      || task.kind !== "discovery" || !["unknown", "failed"].includes(task.state)
+    const settled = reassessProblems ? session.outcome === "no-qualifying-ideas" && task.state === "succeeded"
+      : ["needs-attention", "failed", "partial"].includes(session.outcome ?? "") && ["unknown", "failed"].includes(task.state);
+    if (session.revision !== expectedRevision || session.state !== "finished" || !settled
+      || task.kind !== "discovery"
       || (session.contract as { limits?: { enforced?: boolean } }).limits?.enforced !== false) {
-      throw new WorkflowConflictError("REVISION_CONFLICT", "Only a settled guided discovery failure can reopen");
+      throw new WorkflowConflictError("REVISION_CONFLICT", "Only a settled guided discovery recovery can reopen");
     }
     this.client.db.prepare(`UPDATE workflow_work_items SET state = 'running', error_json = NULL,
       finished_at = NULL WHERE id = ?`).run(taskId);
@@ -1211,6 +1214,7 @@ function problemOriginHash(client: DatabaseClient, row: Record<string, unknown>)
     if (!factor) throw new WorkflowConflictError("INVALID_REFERENCE", "Original problem factor is missing");
     sourceIds.push(factor.source_id);
   }
+  const factorAssessments = ProblemFactorAssessmentSchema.array().parse(JSON.parse(String(row.factor_assessments_json ?? "[]")));
   return sha256(canonicalJson({
     statement: row.statement, whyItPersists: row.why_it_persists,
     affected: row.affected, scaleEstimate: row.scale_estimate,
@@ -1219,6 +1223,7 @@ function problemOriginHash(client: DatabaseClient, row: Record<string, unknown>)
     factorIds: distinctFactorIds, intendedBuyerEvidenceFactorIds: buyerFactorIds,
     evidenceGap: row.evidence_gap, briefFit: row.brief_fit,
     contraryEvidence: row.contrary_evidence, workflowKey: row.workflow_key,
+    ...(factorAssessments.length ? { factorAssessments } : {}),
   }));
 }
 

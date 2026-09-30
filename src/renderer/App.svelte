@@ -922,6 +922,7 @@
           onResume={() => commandWorkflow({ type: "resume" })}
           onStop={() => commandWorkflow({ type: "stop" })}
           onRetryTask={(taskId, expectedTerminalAttemptId, acknowledgeUnknownCompletion) => commandWorkflow({ type: "retry-task", taskId, expectedTerminalAttemptId, acknowledgeUnknownCompletion })}
+          onReassessProblems={(taskId) => commandWorkflow({ type: "reassess-problems", taskId })}
           onLoadMoreTasks={loadMoreWorkflowTasks}
           onPreviewExtension={previewWorkflowExtension} onApplyExtension={applyWorkflowExtension} /></div>
       {/if}

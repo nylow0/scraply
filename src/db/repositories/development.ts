@@ -6,7 +6,8 @@ import type {
   DevelopmentFactor,
   DevelopmentProblem,
 } from "../../core/development";
-import type { Scope } from "../../shared/structured-output-schemas";
+import { ProblemFactorAssessmentSchema, type Scope } from "../../shared/structured-output-schemas";
+import { applyProblemFactorAssessments } from "../../core/problem-evidence";
 import type { DatabaseClient } from "../client";
 
 export interface DevelopmentContext {
@@ -61,7 +62,7 @@ export class DevelopmentRepository {
         verdictReason: String(problemRow.verdict_reason),
         verdictSourceIds: verdictSourceRows.map((row) => row.source_id),
       },
-      factors: factorRows.map((row) => ({
+      factors: applyProblemFactorAssessments(factorRows.map((row) => ({
         id: String(row.id),
         subject: String(row.subject),
         behavior: String(row.behavior),
@@ -77,7 +78,7 @@ export class DevelopmentRepository {
         supportsDemand: Number(row.supports_demand ?? 0) === 1,
         ...(row.demand_evidence_uncertainty === null || row.demand_evidence_uncertainty === undefined
           ? {} : { demandEvidenceUncertainty: String(row.demand_evidence_uncertainty) }),
-      })),
+      })), ProblemFactorAssessmentSchema.array().parse(JSON.parse(String(problemRow.factor_assessments_json ?? "[]")))),
     };
   }
 

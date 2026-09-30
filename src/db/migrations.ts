@@ -1522,4 +1522,6 @@ export const MIGRATIONS = [
     `,
   },
   { id: 34, rebuildReferencedTable: true, sql: MANAGED_COVERAGE_MIGRATION_SQL },
+  { id: 35, sql: `ALTER TABLE problems ADD COLUMN factor_assessments_json TEXT NOT NULL DEFAULT '[]'
+    CHECK(json_valid(factor_assessments_json) AND json_type(factor_assessments_json) = 'array');` },
 ] as const;

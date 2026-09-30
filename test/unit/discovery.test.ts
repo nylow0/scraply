@@ -568,6 +568,39 @@ describe("discovery", () => {
   });
 });
 
+test.each([
+  ["", ["study-one", "study-two"], "confirmed"],
+  ["", ["same-study", "same-study"], "insufficient-evidence"],
+  ["specified audience", ["study-one", "study-two"], "insufficient-evidence"],
+] as const)("assesses discovered users without inventing independence or changing a named audience: %s", async (audience, keys, verdict) => {
+  const sources = [source("one", "Operators repeat filing."), source("two", "Other operators repeat filing.")];
+  const factors: HarvestedFactor[] = sources.map((item, index) => ({
+    id: `factor-${index}`, subject: "Operators", behavior: "repeat filing", quote: item.retrievedText,
+    sourceId: item.id, harvestMode: "domain", modelConfidence: 0.8, sourceRole: "unknown",
+    audienceFit: "unknown", independentSourceKey: null, supportsDemand: false, source: item,
+  }));
+  const before = structuredClone(factors);
+  const assessments = factors.map((factor, index) => ({ factorId: factor.id, sourceRole: "firsthand" as const,
+    audienceFit: "intended-buyer" as const, independentSourceKey: keys[index]!, reason: "Direct account by the affected operators." }));
+  const result = await discoverProblems({ ...scope(), audience }, factors, sources, {
+    workflowVersion: 2, assessProblemAudience: true,
+    model: { providerId: "openai-subscription", modelId: "gpt-6-astra" }, reasoningEffort: "xhigh", prompt: () => "Assess supplied evidence",
+    search: { async search() { return []; } },
+    modelClient: modelClient(async request => request.schema.parse(request.stage === "problem-candidates"
+      ? { problems: [{ statement: "Operators duplicate recurring filings.", whyItPersists: "Systems do not share state.",
+          affected: "Operators", scaleEstimate: "Unmeasured", scaleBasisFactorId: null,
+          factorIds: factors.map(factor => factor.id), intendedBuyerEvidenceFactorIds: [], evidenceGap: "Audience was not specified." }] }
+      : { verdict: "confirmed", verdictReason: "Direct accounts support the workflow problem.", verdictSourceIds: sources.map(item => item.id),
+          intendedBuyerEvidenceFactorIds: factors.map(factor => factor.id), evidenceGap: null, briefFit: "direct",
+          contraryEvidence: "resolved", workflowKey: "operators: recurring filing", factorAssessments: assessments })),
+  });
+  expect(result.problems[0]?.verdict).toBe(verdict);
+  expect(factors).toEqual(before);
+  expect(result.problems[0]?.factors.map(factor => factor.quote)).toEqual(before.map(factor => factor.quote));
+  expect(result.problems[0]?.factors.every(factor => !factor.supportsDemand)).toBe(true);
+  if (!audience) expect(result.problems[0]?.factorAssessments).toEqual(assessments);
+});
+
 function source(id: string, text: string): HarvestedSource {
   return {
     id,

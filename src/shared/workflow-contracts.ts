@@ -122,6 +122,7 @@ export const WorkflowSummarySchema = z.object({
 export const WorkflowTaskSchema = z.object({
   id: IdSchema,
   terminalAttemptId: IdSchema.optional(),
+  canReassessProblems: z.boolean().optional(),
   parentItemId: IdSchema.nullable(),
   kind: z.string().min(1),
   scopeKey: z.string().min(1),
@@ -159,6 +160,7 @@ export const WorkflowActionSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("resume"), reason: z.string().max(1_000).optional() }).strict(),
   z.object({ type: z.literal("stop"), reason: z.string().max(1_000).optional() }).strict(),
   z.object({ type: z.literal("retry-task"), taskId: IdSchema, expectedTerminalAttemptId: IdSchema, acknowledgeUnknownCompletion: z.boolean().optional() }).strict(),
+  z.object({ type: z.literal("reassess-problems"), taskId: IdSchema }).strict(),
   z.object({ type: z.literal("extend-budget"), previewHash: z.string().min(1), capabilityFingerprint: z.string().min(1), previewExpiresAt: z.string().datetime(), extension: WorkflowBudgetExtensionSchema }).strict(),
   z.object({ type: z.literal("select-version"), rootSolutionId: IdSchema, solutionId: IdSchema }).strict(),
 ]).superRefine((value, ctx) => {

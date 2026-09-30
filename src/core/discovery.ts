@@ -24,6 +24,7 @@ import {
   SOURCE_MAX_CHARACTERS,
 } from "../shared/discovery-projection";
 import { loadPrompt } from "./prompts";
+import { applyProblemFactorAssessments } from "./problem-evidence";
 
 export {
   DEFAULT_PROBLEM_CANDIDATE_LIMIT,
@@ -103,6 +104,7 @@ export interface DiscoveryDependencies {
   /** Depth suggests search breadth; a useful plan can contain fewer or more queries. */
   guided?: boolean;
   smallHarvestBatches?: boolean;
+  assessProblemAudience?: boolean;
   audienceSearch?: Pick<SearchOptions, "includeDomains" | "startPublishedDate"> & { category?: ExaCategory };
   candidateLimit?: number;
   signal?: AbortSignal;
@@ -309,9 +311,10 @@ export async function discoverProblems(
       sourcesByUrl.set(source.canonicalUrl, source);
       killSources.push(source);
     }
+    const assessAudience = dependencies.workflowVersion === 2 && dependencies.assessProblemAudience && !scope.audience.trim();
     const kill = await structuredCall(
       dependencies,
-      `problem-kill:${createHash("sha256").update(JSON.stringify(candidate)).digest("hex")}`,
+      `problem-kill:${createHash("sha256").update(JSON.stringify(candidate)).digest("hex")}${assessAudience ? ":audience-v1" : ""}`,
       [
         (dependencies.prompt ?? loadPrompt)("problem-kill"),
         "Look for contrary evidence: already solved, overstated scale, self-correction, and prior attempts that failed.",
@@ -329,10 +332,17 @@ export async function discoverProblems(
       throw new ProviderFailure("schema", "Evidence assessment referenced an unknown source ID", false);
     }
     const factorIds = citedFactors.map((factor) => factor.id);
+    const factorAssessments = assessAudience && "factorAssessments" in kill ? kill.factorAssessments : [];
+    if (assessAudience && (factorAssessments.length !== factorIds.length
+      || new Set(factorAssessments.map(assessment => assessment.factorId)).size !== factorIds.length
+      || factorAssessments.some(assessment => !factorIds.includes(assessment.factorId)))) {
+      throw new ProviderFailure("schema", "Problem audience assessment must cover each exact supporting factor once", false);
+    }
+    const assessedFactors = applyProblemFactorAssessments(citedFactors, factorAssessments);
     const candidateBuyerIds = "intendedBuyerEvidenceFactorIds" in candidate ? candidate.intendedBuyerEvidenceFactorIds : [];
     const killBuyerIds = "intendedBuyerEvidenceFactorIds" in kill ? kill.intendedBuyerEvidenceFactorIds : candidateBuyerIds;
     const claimedBuyerIds = new Set(killBuyerIds);
-    const intendedBuyerFactors = citedFactors.filter((factor) => claimedBuyerIds.has(factor.id)
+    const intendedBuyerFactors = assessedFactors.filter((factor) => claimedBuyerIds.has(factor.id)
       && qualifiesAsIntendedBuyerObservation(factor));
     const independentBuyerSources = new Set(intendedBuyerFactors.map((factor) => factor.independentSourceKey).filter(Boolean));
     // A hostname is only a transport boundary. Separate buyer accounts or studies on the
@@ -368,7 +378,8 @@ export async function discoverProblems(
       briefFit: "briefFit" in kill ? kill.briefFit : "unknown",
       contraryEvidence: "contraryEvidence" in kill ? kill.contraryEvidence : "unknown",
       workflowKey: "workflowKey" in kill ? kill.workflowKey : null,
-      factors: citedFactors,
+      factorAssessments,
+      factors: assessedFactors,
       sourceHostnames: hostnames,
       singleHarvestModeWarning: new Set(citedFactors.map((factor) => factor.harvestMode)).size === 1 && citedFactors.length > 0,
     });

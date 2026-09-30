@@ -1,4 +1,6 @@
 import { deriveJsonSchema } from "../shared/json-schema";
+import { ProblemFactorAssessmentSchema } from "../shared/structured-output-schemas";
+import { applyProblemFactorAssessments } from "../core/problem-evidence";
 import { randomBytes, randomUUID } from "node:crypto";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { recoverInterruptedEvidenceFollowUps, ResearchEngine } from "../core/research-engine";
@@ -456,7 +458,8 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
     `).all(runId) as Array<Record<string, unknown>>;
     const factorsByProblem = listProblemFactorsForRun(runId);
     return rows.map((row) => {
-      const factors = factorsByProblem.get(String(row.id)) ?? [];
+      const factors = applyProblemFactorAssessments(factorsByProblem.get(String(row.id)) ?? [],
+        ProblemFactorAssessmentSchema.array().parse(JSON.parse(String(row.factor_assessments_json ?? "[]"))));
       return {
         id: String(row.id), statement: String(row.statement), whyItPersists: String(row.why_it_persists),
         affected: String(row.affected), scaleEstimate: String(row.scale_estimate), verdict: String(row.verdict) as ProblemCandidate["verdict"],
@@ -676,11 +679,18 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
   function readProblemFactors(problemIds: string[], readAll: DataRead): Map<string, FactorView[]> {
     if (problemIds.length === 0) return new Map();
     const rows = readAll(`
-      SELECT pf.problem_id, f.*, s.title AS source_title, s.canonical_url
-      FROM problem_factors pf JOIN factors f ON f.id = pf.factor_id JOIN sources s ON s.id = f.source_id
+      SELECT pf.problem_id, f.*, s.title AS source_title, s.canonical_url, p.factor_assessments_json
+      FROM problem_factors pf JOIN problems p ON p.id = pf.problem_id
+      JOIN factors f ON f.id = pf.factor_id JOIN sources s ON s.id = f.source_id
       WHERE pf.problem_id IN (${placeholders(problemIds)}) ORDER BY f.created_at, f.id
     `, problemIds);
-    return groupRows(rows, "problem_id", mapFactor);
+    const grouped = groupRows(rows, "problem_id", mapFactor);
+    const assessmentsById = new Map(rows.map(row => [String(row.problem_id), String(row.factor_assessments_json ?? "[]")]));
+    for (const [id, factors] of grouped) {
+      grouped.set(id, applyProblemFactorAssessments(factors,
+        ProblemFactorAssessmentSchema.array().parse(JSON.parse(assessmentsById.get(id) ?? "[]"))));
+    }
+    return grouped;
   }
   function readContrarySources(problemIds: string[], readAll: DataRead): Map<string, NonNullable<SolutionView["contrarySources"]>> {
     if (problemIds.length === 0) return new Map();
