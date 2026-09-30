@@ -55,6 +55,7 @@ const ManualReviewSchema = z.object({
 const { values } = parseArgs({ options: {
   live: { type: "boolean", default: false }, host: { type: "boolean", default: false },
   "continue-untouched": { type: "boolean", default: false },
+  "only-fixture": { type: "string" },
   checkout: { type: "string" }, fixtures: { type: "string" }, output: { type: "string" },
   revision: { type: "string", default: "1" }, review: { type: "string" },
   "runtime-path": { type: "string" }, "runtime-lock": { type: "string" },
@@ -67,9 +68,10 @@ async function main() {
   const revision = Number(values.revision);
   if (!Number.isInteger(revision) || revision < 1 || revision > 3) throw new PrototypeError("Prototype prompt revision must be 1, 2 or 3. Redesign after the third failed gate.");
   if (values.help) {
-    console.log("bun scripts/prototype-research-frame.ts [--live] [--fixtures DIRECTORY] [--revision 1..3] [--output build/prototypes/RUN] [--continue-untouched] [--runtime-path EXE --runtime-lock JSON]");
+    console.log("bun scripts/prototype-research-frame.ts [--live] [--fixtures DIRECTORY] [--revision 1..3] [--output build/prototypes/RUN] [--continue-untouched | --only-fixture ID] [--runtime-path EXE --runtime-lock JSON]");
     console.log("Without --live: validate the eight fixture briefs and print the bounded call/search estimate. --review FILE rechecks saved results and records explicit semantic review.");
     console.log("--continue-untouched requires an existing run and skips every fixture with any generation ledger, including failed or uncertain calls. It never retries them.");
+    console.log("--only-fixture creates a separate bounded probe for one suite brief. An incomplete earlier request needs explicit user authorization before a fresh probe.");
     return;
   }
   const output = resolve(values.output ?? join(checkout, "build/prototypes", `research-frame-r${revision}-${new Date().toISOString().replaceAll(/[:.]/g, "-")}`));
@@ -80,11 +82,14 @@ async function main() {
     summarize(output, ManualReviewSchema.parse(JSON.parse(readFileSync(resolve(values.review), "utf8"))));
     return;
   }
-  const fixtures = readdirSync(fixtureDirectory).filter(file => file.endsWith(".json")).sort()
+  const suite = readdirSync(fixtureDirectory).filter(file => file.endsWith(".json")).sort()
     .map(file => FixtureSchema.parse(JSON.parse(readFileSync(join(fixtureDirectory, file), "utf8"))));
-  if (fixtures.length !== 8 || new Set(fixtures.map(fixture => fixture.id)).size !== 8) throw new PrototypeError("The gate requires all eight distinct suite briefs.");
+  if (suite.length !== 8 || new Set(suite.map(fixture => fixture.id)).size !== 8) throw new PrototypeError("The gate requires all eight distinct suite briefs.");
+  if (values["only-fixture"] && values["continue-untouched"]) throw new PrototypeError("A fresh single-brief probe cannot continue an earlier run.");
+  const fixtures = values["only-fixture"] ? suite.filter(fixture => fixture.id === values["only-fixture"]) : suite;
+  if (fixtures.length === 0) throw new PrototypeError("--only-fixture must name one of the eight saved suite briefs.");
   if (!values.live) {
-    console.log(JSON.stringify({ fixtures: fixtures.map(fixture => fixture.id), upperBound: { modelCalls: 16, searches: 40 }, promptRevision: revision, live: false }));
+    console.log(JSON.stringify({ fixtures: fixtures.map(fixture => fixture.id), upperBound: { modelCalls: fixtures.length * 2, searches: fixtures.length * 5 }, promptRevision: revision, live: false }));
     return;
   }
   if (values.host) {
@@ -101,6 +106,7 @@ async function main() {
   delete environment.ELECTRON_RUN_AS_NODE;
   const args = [join(output, "prototype-host.cjs"), "--host", "--live", "--checkout", checkout, "--fixtures", fixtureDirectory, "--output", output, "--revision", String(revision)];
   if (values["continue-untouched"]) args.push("--continue-untouched");
+  if (values["only-fixture"]) args.push("--only-fixture", values["only-fixture"]);
   if (values["runtime-path"]) args.push("--runtime-path", resolve(values["runtime-path"]));
   if (values["runtime-lock"]) args.push("--runtime-lock", resolve(values["runtime-lock"]));
   const host = spawn(String(electronPath), args, { windowsHide: true, shell: false, env: environment, stdio: "inherit" });
@@ -154,7 +160,7 @@ async function runHost(checkout: string, output: string, fixtures: z.infer<typeo
       save(output, "manifest.json", { ...existing, continuedAt: new Date().toISOString() });
     } else {
       save(output, "manifest.json", { promptRevision: revision, startedAt: new Date().toISOString(), runtimeArtifact: artifact,
-        promptHashes, fixtures: fixtures.map(fixture => fixture.id),
+        promptHashes, fixtures: fixtures.map(fixture => fixture.id), runKind: values["only-fixture"] ? "single-brief-probe" : "suite",
         limits: { perBriefModelCalls: 2, perBriefSearches: 5, repairPolicy: "disabled" }, credentials: "installed safeStorage, read-only, host memory only" });
     }
     for (const fixture of fixtures) {
@@ -246,6 +252,13 @@ function mechanicalFrameChecks(fixture: z.infer<typeof FixtureSchema>, frame: Re
     { name: "source references and frame invariants", passed: true, note: "Strict schema and all context/criterion/constraint source IDs validated against saved packets." },
     { name: "English language", passed: frame.languages.includes("en"), note: frame.languages.join(", ") },
   ];
+  const areaCount = frame.areas.length;
+  const narrow = fixture.id === "bakery" || fixture.id === "dorm-kitchen";
+  const explicitBookkeeperWorkflows = fixture.id === "bookkeepers" && areaCount === 5;
+  checks.push({ name: "suite area breadth", passed: explicitBookkeeperWorkflows || (narrow ? areaCount >= 1 && areaCount <= 3 : areaCount >= 6 && areaCount <= 10),
+    note: explicitBookkeeperWorkflows
+      ? "Five areas cover the five workflows explicitly requested in this fixture and illustrated in the plan; this suite-specific breadth exception avoids inventing a sixth workflow."
+      : `${areaCount} areas; ${narrow ? "1–3 for this narrow brief" : "6–10 for this broad brief"}.` });
   if (fixture.id === "dorm-kitchen" || fixture.id === "science-fair") checks.push({ name: "Ukrainian brief language", passed: frame.languages.includes("uk"), note: "The supplied brief is in Ukrainian." });
   else if (fixture.id === "clinics") checks.push({ name: "regional language grounding", passed: frame.languages.length === 1 || frame.areas.some(area => area.region !== undefined), note: "Extra regional languages require an explicitly regional area; semantic match is checked manually." });
   else checks.push({ name: "English-only brief language", passed: frame.languages.length === 1 && frame.languages[0] === "en", note: "These suite briefs do not request another language or localize to another country." });
@@ -256,7 +269,12 @@ function summarize(output: string, review?: z.infer<typeof ManualReviewSchema>) 
   const manifest = z.object({ fixtures: z.array(z.string()) }).parse(JSON.parse(readFileSync(join(output, "manifest.json"), "utf8")));
   const results = manifest.fixtures.flatMap(id => {
     const path = join(output, id, "result.json");
-    return existsSync(path) ? [ResultSchema.parse(JSON.parse(readFileSync(path, "utf8")))] : [];
+    if (!existsSync(path)) return [];
+    const result = ResultSchema.parse(JSON.parse(readFileSync(path, "utf8")));
+    const fixture = FixtureSchema.parse(JSON.parse(readFileSync(join(output, id, "fixture.json"), "utf8")));
+    const sources = z.array(SourceSchema).parse(JSON.parse(readFileSync(join(output, id, "sources.json"), "utf8")));
+    const frame = parseResearchFrame(result.frame, { purpose: "discovery", sourceIds: sources.map(source => source.id) });
+    return [{ ...result, frame, mechanicalChecks: mechanicalFrameChecks(fixture, frame, sources.map(source => source.id)) }];
   });
   if (review) {
     if (review.fixtures.length !== manifest.fixtures.length || new Set(review.fixtures.map(fixture => fixture.fixtureId)).size !== manifest.fixtures.length) throw new PrototypeError("Semantic review must cover every fixture exactly once.");
@@ -275,7 +293,7 @@ function summarize(output: string, review?: z.infer<typeof ManualReviewSchema>) 
     return { fixtureId: result.fixtureId, goalKind: result.frame.goalKind, goal: result.frame.goal, areas: result.frame.areas.map(area => area.name), languages: result.frame.languages,
       contextFacts: result.frame.contextFacts.length, sources: result.sourceCount, searches: result.searches, calls: result.modelCalls,
       wallMs: result.wallMs, generationMs: result.generationMetadata.map(metadata => metadata.latencyMs), tokens, reportedCost: cost,
-      mechanical: result.mechanicalChecks.every(check => check.passed) ? "pass" : "fail", manual: manualStatus };
+      mechanical: result.mechanicalChecks.every(check => check.passed) ? "pass" : "fail", mechanicalChecks: result.mechanicalChecks, manual: manualStatus };
   });
   const gate = rows.length !== 8 || rows.some(row => row.manual === "pending") ? "pending" : rows.every(row => row.manual === "pass" && row.mechanical === "pass") ? "go" : "no-go";
   const unfinished = manifest.fixtures.filter(id => !results.some(result => result.fixtureId === id)).map(fixtureId => ({ fixtureId,
