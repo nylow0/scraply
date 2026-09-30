@@ -6,17 +6,40 @@ interface ScheduledCall {
 }
 
 /**
- * Serializes provider calls and gives each project one call before returning to a project
+ * Bounds provider calls and gives each project one call before returning to a project
  * that still has queued work. An active call keeps the slot until it settles, even after abort.
  */
 export class WorkflowModelScheduler {
   private readonly pending = new Map<string, ScheduledCall[]>();
   private readonly readyProjects: string[] = [];
-  private active: ScheduledCall | null = null;
+  private readonly active = new Set<ScheduledCall>();
   private pumpQueued = false;
+  private capacity: number;
+
+  constructor(maxActive = 1) {
+    this.capacity = validateCapacity(maxActive);
+  }
+
+  get maxActive(): number {
+    return this.capacity;
+  }
+
+  setMaxActive(maxActive: number): void {
+    this.capacity = validateCapacity(maxActive);
+    // Lowering capacity leaves admitted calls running until they settle.
+    this.requestPump();
+  }
 
   get activeProjectId(): string | null {
-    return this.active?.projectId ?? null;
+    return this.active.values().next().value?.projectId ?? null;
+  }
+
+  get activeCallCount(): number {
+    return this.active.size;
+  }
+
+  get activeProjectIds(): string[] {
+    return [...new Set([...this.active].map((call) => call.projectId))];
   }
 
   get pendingCallCount(): number {
@@ -51,7 +74,7 @@ export class WorkflowModelScheduler {
         rejectQueued: () => finish({ error: abortError(callSignal) }),
       };
       const onAbort = () => {
-        if (this.active === call) return;
+        if (this.active.has(call)) return;
         this.removeQueued(call);
         call.rejectQueued();
       };
@@ -59,19 +82,28 @@ export class WorkflowModelScheduler {
       const queue = this.pending.get(projectId) ?? [];
       queue.push(call);
       this.pending.set(projectId, queue);
-      if (queue.length === 1 && this.active?.projectId !== projectId) this.readyProjects.push(projectId);
+      if (queue.length === 1) {
+        // A new project gets its first turn before more work from active projects.
+        const activeReadyIndex = this.readyProjects.findIndex((readyId) =>
+          [...this.active].some((activeCall) => activeCall.projectId === readyId));
+        if (![...this.active].some((activeCall) => activeCall.projectId === projectId) && activeReadyIndex >= 0) {
+          this.readyProjects.splice(activeReadyIndex, 0, projectId);
+        } else this.readyProjects.push(projectId);
+      }
       this.requestPump();
     });
   }
 
   cancelProject(projectId: string, reason?: Error): void {
     for (const call of [...(this.pending.get(projectId) ?? [])]) call.controller.abort(reason);
-    if (this.active?.projectId === projectId) this.active.controller.abort(reason);
+    for (const call of this.active) {
+      if (call.projectId === projectId) call.controller.abort(reason);
+    }
   }
 
   cancelAll(reason?: Error): void {
     for (const projectId of [...this.pending.keys()]) this.cancelProject(projectId, reason);
-    if (this.active) this.active.controller.abort(reason);
+    for (const call of this.active) call.controller.abort(reason);
   }
 
   private removeQueued(call: ScheduledCall): void {
@@ -96,22 +128,27 @@ export class WorkflowModelScheduler {
   }
 
   private pump(): void {
-    if (this.active) return;
-    while (this.readyProjects.length > 0) {
+    while (this.active.size < this.capacity && this.readyProjects.length > 0) {
       const projectId = this.readyProjects.shift()!;
       const queue = this.pending.get(projectId);
       if (!queue?.length) continue;
       const call = queue.shift()!;
       if (queue.length === 0) this.pending.delete(projectId);
-      this.active = call;
+      else this.readyProjects.push(projectId);
+      this.active.add(call);
       void call.run().finally(() => {
-        this.active = null;
-        if (this.pending.has(projectId)) this.readyProjects.push(projectId);
+        this.active.delete(call);
         this.requestPump();
       });
-      return;
     }
   }
+}
+
+function validateCapacity(maxActive: number): number {
+  if (!Number.isInteger(maxActive) || maxActive < 1 || maxActive > 3) {
+    throw new Error("Concurrent model calls must be an integer from 1 to 3");
+  }
+  return maxActive;
 }
 
 function abortError(signal: AbortSignal): Error {

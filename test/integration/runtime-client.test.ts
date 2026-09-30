@@ -27,6 +27,7 @@ test("excludes inherited authentication tokens and endpoint overrides from the n
 
 function client(mode: string, overrides: {
   requestTimeoutMs?: number; controlTimeoutMs?: number; terminalGraceMs?: number; environment?: NodeJS.ProcessEnv;
+  maxConcurrentGenerations?: number;
 } = {}) {
   const executablePath = process.execPath;
   const { environment, ...timings } = overrides;
@@ -55,6 +56,38 @@ afterEach(async () => {
 });
 
 describe("persistent native runtime client", () => {
+  test("admits only the configured number of native requests and lowers capacity without cancelling", async () => {
+    const runtime = client("slow-complete", { maxConcurrentGenerations: 2 });
+    const dispatched: string[] = [];
+    const start = (id: string) => runtime.structuredCompletion({ ...request(id), onDispatched: () => dispatched.push(id) });
+    const first = start("first");
+    const second = start("second");
+    const third = start("third");
+    await waitUntil(() => dispatched.length === 2);
+    expect(dispatched).toEqual(["first", "second"]);
+    runtime.setMaxConcurrentGenerations(1);
+    expect((await first).output).toEqual({ answer: "right" });
+    expect((await second).output).toEqual({ answer: "right" });
+    expect((await third).output).toEqual({ answer: "right" });
+    expect(dispatched).toEqual(["first", "second", "third"]);
+    expect(() => runtime.setMaxConcurrentGenerations(4)).toThrow("1 to 3");
+  });
+
+  test("an aborted waiting generation never dispatches when concurrent slots are occupied", async () => {
+    const runtime = client("slow-complete", { maxConcurrentGenerations: 2 });
+    const dispatched: string[] = [];
+    const first = runtime.structuredCompletion({ ...request("first"), onDispatched: () => dispatched.push("first") });
+    const second = runtime.structuredCompletion({ ...request("second"), onDispatched: () => dispatched.push("second") });
+    const controller = new AbortController();
+    const queued = runtime.structuredCompletion({ ...request("cancelled"), signal: controller.signal,
+      onDispatched: () => dispatched.push("cancelled") }).catch((error: unknown) => error);
+    await waitUntil(() => dispatched.length === 2);
+    controller.abort();
+    expect(await queued).toMatchObject({ code: "cancelled" });
+    await Promise.all([first, second]);
+    expect(dispatched).toEqual(["first", "second"]);
+  });
+
   test("an unbounded generation waits for the full native response despite the terminal grace period", async () => {
     const runtime = client("slow-complete", { terminalGraceMs: 1 });
     const { deadlineMs: _deadline, ...generation } = request("slow-research");
