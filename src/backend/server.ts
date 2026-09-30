@@ -18,6 +18,7 @@ import { FocusedExperimentRepository } from "../db/repositories/focused-experime
 import { OpportunityCandidateOriginSchema } from "../shared/opportunity-exploration";
 import { ActiveRunConflictError } from "../db/repositories/research-runs";
 import { ThreadRepository } from "../db/repositories/threads";
+import { ResearchFrameRepository } from "../db/repositories/research-frames";
 import { WorkflowRepository } from "../db/repositories/workflows";
 import { getRunTrace, getRunTraceStep } from "../core/run-trace";
 import { GetRunTraceRequestSchema, GetRunTraceStepRequestSchema } from "../shared/run-trace";
@@ -783,10 +784,13 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
     `).get(runId) as { title: string; audience: string; domain: string; observations: string; off_limits_json: string; risk_evaluation_criteria: string } | undefined;
     const archivedConfig: unknown = JSON.parse(String(run.config_json));
     const parsedConfig = RunConfigSchema.safeParse(archivedConfig);
+    const frame = new ResearchFrameRepository(db).forRun(runId);
     return {
       schemaVersion: 1,
       exportedAt: new Date().toISOString(),
       thread,
+      ...(frame ? { researchFrame: { id: frame.id, version: frame.version, draft: frame.draft, approved: frame.approved, sources: frame.sources,
+        createdAt: frame.createdAt, approvedAt: frame.approvedAt } } : {}),
       researchRun: {
         id: String(run.id), status: String(run.status), completionReason: run.completion_reason === null ? null : String(run.completion_reason),
         ...(run.status === "completed" ? {} : { exportNote: "This run did not complete; the export contains only saved artifacts." }),
