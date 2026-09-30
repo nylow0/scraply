@@ -38,7 +38,7 @@ import { DEFAULT_IDEA_COUNT, ModelRefSchema, ReasoningEffortSchema, RunConfigSch
 import { ScopeSchema, WorkflowV2CompatibleDecisionAnalysisOutputSchema, WorkflowV2RiskEvaluationOutputSchema, WorkflowV2RiskReassessmentOutputSchema, WorkflowV2SolutionOptionSchema, WorkflowV2SolutionsOutputSchema, WorkflowV2StartupSolutionOptionSchema, type Scope } from "../shared/structured-output-schemas";
 import { analyzeSelectedOption, developmentStageEvidence, evaluateSelectedOptionRisk, produceDevelopmentOptions, reassessSelectedOption, reassessSelectedOptionRisk, WorkflowGenerationAngleSchema, WorkflowGenerationEvidenceSchema, type WorkflowV2DevelopmentContext, type WorkflowV2EvidenceItem } from "./development";
 import { DEFAULT_PROBLEM_CANDIDATE_LIMIT, discoverProblems, discoveryRunProjection, harvestEvidenceFollowUp, harvestFactors, normalizeSearchQuery,
-  type HarvestMode, type HarvestResult, type PlannedQuery } from "./discovery";
+  type HarvestMode, type HarvestResult, type HarvestedSource, type PlannedQuery } from "./discovery";
 import { generateResearchFrame } from "./research-frame";
 import { rankScannedAreas, scanResearchArea, type AreaScan } from "./frame-discovery";
 import { runFocusedExperimentFlow } from "./experiment-review";
@@ -1679,6 +1679,12 @@ export class ResearchEngine {
     } };
   }
 
+  private savedRunSources(runId: string): HarvestedSource[] {
+    return this.options.db.db.prepare(`SELECT id, provider_source_id AS providerSourceId, canonical_url AS canonicalUrl,
+      canonical_url AS url, title, retrieved_text AS retrievedText, author, published_at AS publishedAt,
+      content_hash AS contentHash, retrieved_at AS retrievedAt FROM sources WHERE research_run_id = ?`).all(runId) as HarvestedSource[];
+  }
+
   private assignArea(table: "factors" | "problems", ids: readonly string[], areaId: string): void {
     const update = this.options.db.db.prepare(`UPDATE ${table} SET area_id = ? WHERE id = ?`);
     for (const id of ids) update.run(areaId, id);
@@ -2181,6 +2187,8 @@ export class ResearchEngine {
       model: active.config.model,
       reasoningEffort: active.config.reasoningEffort,
       depth: active.config.discoveryDepth,
+      ...(workflow.read("source-routes") && frame ? { frame } : {}),
+      existingSources: () => this.savedRunSources(active.runId),
       guided: this.usesWorkGuidance(active.runId),
       smallHarvestBatches: workflow.smallHarvestBatches,
       rankCandidates: workflow.rankProblemCandidates,
