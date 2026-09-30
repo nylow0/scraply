@@ -7,7 +7,7 @@ const RuntimeLockSchema = z.object({
   platform: z.literal("windows-x64"),
   executable: z.literal("scraply-agent.exe"),
   version: z.string().regex(/^\d+\.\d+\.\d+$/),
-  protocolVersions: z.array(z.literal("1.1")).min(1),
+  protocolVersions: z.array(z.literal("1.2")).min(1),
   sourceCommit: z.string().regex(/^[a-f0-9]{40}$/),
   sha256: z.string().regex(/^[a-f0-9]{64}$/),
   sizeBytes: z.number().int().positive().max(20 * 1024 * 1024),

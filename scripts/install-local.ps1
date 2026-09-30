@@ -145,8 +145,8 @@ if ($runtimeLock.schemaVersion -ne 1 -or
     $runtimeLock.sourceCommit -ne $runtime.sourceCommit -or
     $runtimeLock.sha256 -ne $runtime.executable.sha256 -or
     $runtimeLock.sizeBytes -ne $runtime.executable.bytes -or
-    (@($runtimeLock.protocolVersions) -join ",") -ne "1.1") {
-  throw "Installed runtime lock does not match the release manifest or required native protocol 1.1."
+    (@($runtimeLock.protocolVersions) -join ",") -ne "1.2") {
+  throw "Installed runtime lock does not match the release manifest or required native protocol 1.2."
 }
 
 $runtimeVersion = (& $runtimeExe --version | Out-String).Trim()

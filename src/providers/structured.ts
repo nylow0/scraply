@@ -51,6 +51,7 @@ export interface GenerationAttemptMetadata {
   finishReason?: FinishReason | undefined;
   latencyMs: number;
   providerRequestId?: string | undefined;
+  reasoningSummary?: string | undefined;
 }
 export interface GenerationMetadata {
   model: ModelRef;
@@ -61,6 +62,7 @@ export interface GenerationMetadata {
   latencyMs: number;
   repairCount: number;
   providerRequestIds: string[];
+  reasoningSummary?: string | undefined;
   attempts: GenerationAttemptMetadata[];
 }
 
@@ -80,6 +82,7 @@ export interface StructuredStageRequest<T> {
   stage: string;
   model: ModelRef;
   reasoningEffort: ReasoningEffort;
+  reasoningSummaries?: boolean;
   workOrder: WorkOrder;
   evidence: EvidenceSource[];
   schema: z.ZodType<T>;

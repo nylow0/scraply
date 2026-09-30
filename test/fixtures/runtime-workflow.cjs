@@ -78,12 +78,46 @@ module.exports = function workflowOutput(request) {
     };
   }
   const stage = request.workOrder.stage.split(":")[0];
+  const inputs = request.workOrder.inputs.routing ?? request.workOrder.inputs;
+  if (stage === "frame-search-plan") return { queries: [{ query: "repair shops parts delivery workflow reports",
+    reason: "Find operational context for the delivery-estimation brief." }] };
+  if (stage === "frame") {
+    const scope = inputs.scope;
+    return { frame: {
+      version: 1, goal: `Reduce uncertain delivery estimates for ${scope.audience || "repair shops"}`,
+      goalKind: "market-opportunity",
+      contextFacts: request.evidence.slice(0, 2).map(source => ({ fact: source.content.text.split("\n")[0], sourceIds: [source.sourceId] })),
+      successCriteria: [{ id: "observed-problem", name: "Observed recurring delivery problem", weight: "must",
+        howJudged: "Independent accounts or measured records about affected repair shops.", basis: "brief" }],
+      constraints: scope.offLimits.map(text => ({ text, kind: "scope", basis: "brief" })),
+      languages: ["en"], exclusions: scope.offLimits,
+      areas: inputs.knownProblem ? [] : [{ id: "parts-delivery", name: "Parts delivery estimates",
+        whyRelevant: "A late part changes the promised repair date.", affectedPeople: scope.audience || "Repair shops",
+        venues: [{ name: "Repair shop community", domain: "reddit.com", kind: "community" }], region: null,
+        exampleProblems: ["Uncertain supplier delivery windows"], included: true, priority: 1 }],
+      openQuestions: [{ id: "supplier-scope", question: "One supplier or several?", whyItMatters: "Changes the pilot's comparison.",
+        options: ["One supplier", "Several suppliers"], answer: null }],
+    } };
+  }
+  if (stage === "area-ranking") return { areas: inputs.frame.areas.filter(area => area.included).map((area, index) => ({
+    areaId: area.id, rank: index + 1, reason: "The scan retained quote-verified operational observations for this workflow.",
+    evidenceStrength: inputs.scans.find(scan => scan.areaId === area.id)?.qualifyingFacts ? "strong" : "weak", fit: "meets",
+  })) };
+  const data = request.evidence[0]?.content ?? {};
+  if (stage === "evidence-check") {
+    if (data.problem.verdict === "confirmed") return { decision: "confirmed", reason: "The saved verdict has independent relevant observations.", gaps: [] };
+    if (data.problem.verdict !== "insufficient-evidence") return { decision: "drop", reason: "The contrary review did not retain this candidate.", gaps: [] };
+    return { decision: "follow-up", reason: "The affected workflow needs another independent observation.",
+      gaps: [{ kind: "second-independent-observation", evidenceNeeded: "An independent repair shop account of uncertain supplier arrival windows",
+        query: "repair shop supplier arrival window firsthand account", route: "community" }] };
+  }
+  if (stage === "area-gap") return { reason: "The fixture area has no additional unsearched workflow or group.", gaps: [] };
   if (stage === "research-title") return { title: "Reducing repair shop delays" };
   if (stage === "solution-set-review") return { assessments: request.workOrder.inputs.candidateIds.map((candidateId) => ({
     candidateId, decision: "distinct", reason: "The fixture treats each proposed workflow as a distinct option.",
     matchingSolutionId: null, citedEvidenceIds: [],
+    ...(inputs.frame ? { criteriaFit: criterionFit(inputs.frame) } : {}),
   })) };
-  const data = request.evidence[0].content;
   const v2 = request.workOrder.inputs?.workflowVersion === 2;
   if (v2) {
     switch (stage) {
@@ -94,12 +128,21 @@ module.exports = function workflowOutput(request) {
         { query: "delivery windows", intent: "measured-behavior" },
         { query: "supplier reliability", intent: "current-alternative" },
         { query: "repair scheduling", intent: "firsthand-experience" },
-      ].map(({ query, intent }) => ({ query, intent, uncertainty: "How often deliveries slip", intendedSourceType: "Operational records and customer reports" })) };
+      ].slice(0, inputs.queryCountIsGuidance === false ? inputs.queryCount : undefined)
+        .map(({ query, intent }) => ({ query, intent, uncertainty: "How often deliveries slip", intendedSourceType: "Operational records and customer reports",
+          ...(request.outputSchema.properties.queries.items.properties?.reason ? { reason: "Find quoted operational observations for this delivery question." } : {}),
+        })) };
       case "factor-harvest": return { factors: data.sources.map((source) => ({ subject: "Repair shops", behavior: "record uncertain parts delivery windows", quote: source.text.split("\n")[0], sourceId: source.id, modelConfidence: 0.7, uncertainty: "This source may not represent other shops", sourceRole: "measured", audienceFit: process.env.SCRAPLY_RUNTIME_CHILD_MODE === "workflow-audience-many" ? "unknown" : "intended-buyer", independentSourceKey: new URL(source.url).hostname, supportsDemand: source.text.startsWith("Parts delivery windows are uncertain."), demandEvidenceUncertainty: "The synthetic report covers one repair shop" })) };
       case "problem-candidates": return { problems: data.factors.length ? [{ ...stageOutputs.problemCandidates.problems[0], factorIds: data.factors.map((factor) => factor.id), scaleBasisFactorId: null, alternativeExplanations: ["Delays may cluster around one supplier"], unknowns: ["Frequency across suppliers"], intendedBuyerEvidenceFactorIds: data.factors.filter((factor) => factor.supportsDemand).map((factor) => factor.id), evidenceGap: null }] : [] };
       case "problem-kill": {
         const reviewedAudience = request.workOrder.stage.endsWith(":audience-v1");
-        return { verdict: reviewedAudience ? "confirmed" : "overstated", verdictReason: reviewedAudience ? "Independent reports support the affected repair shops; on-time deliveries do not eliminate uncertain windows." : "The supplied vendor report disagrees with the customer complaints.", verdictSourceIds: data.sources.map((source) => source.id), unresolvedAssumptions: ["The complaints represent all suppliers"], wouldChangeConclusion: ["A representative delivery log"], intendedBuyerEvidenceFactorIds: data.supportingFactors.filter((factor) => reviewedAudience || factor.supportsDemand).map((factor) => factor.id), evidenceGap: null, briefFit: "direct", contraryEvidence: reviewedAudience ? "resolved" : "unresolved", workflowKey: "repair shop: estimate part arrival for a repair",
+        // Fresh framed cases retain a problem only with two quote-checked buyer origins. Older adverse fixtures stay adverse.
+        const framedConfirmation = Boolean(inputs.frame) && new Set(data.supportingFactors
+          .filter(factor => factor.supportsDemand && factor.audienceFit === "intended-buyer"
+            && factor.source.retrievedText.includes(factor.quote))
+          .map(factor => new URL(factor.source.url).hostname)).size >= 2;
+        const confirmed = reviewedAudience || framedConfirmation;
+        return { verdict: confirmed ? "confirmed" : "overstated", verdictReason: reviewedAudience ? "Independent reports support the affected repair shops; on-time deliveries do not eliminate uncertain windows." : framedConfirmation ? "Two quote-checked buyer origins describe uncertain delivery windows; on-time arrivals do not resolve that uncertainty." : "The supplied vendor report disagrees with the customer complaints.", verdictSourceIds: data.sources.map((source) => source.id), unresolvedAssumptions: ["The complaints represent all suppliers"], wouldChangeConclusion: ["A representative delivery log"], intendedBuyerEvidenceFactorIds: data.supportingFactors.filter((factor) => reviewedAudience || factor.supportsDemand).map((factor) => factor.id), evidenceGap: null, briefFit: "direct", contraryEvidence: confirmed ? "resolved" : "unresolved", workflowKey: "repair shop: estimate part arrival for a repair",
           ...(reviewedAudience ? { factorAssessments: data.supportingFactors.map(factor => ({ factorId: factor.id, sourceRole: "measured", audienceFit: "intended-buyer", independentSourceKey: new URL(factor.source.url).hostname, reason: "The supplied report describes this affected shop workflow." })) } : {}) };
       }
       case "solutions": return { options: [stageOutputs.solutions.solutions[0], { mechanism: "Manual supplier check", description: "Call before quoting a delivery window.", respectsOffLimits: true, respectsOffLimitsWhy: "No inventory." }].flatMap((option, index) => process.env.SCRAPLY_RUNTIME_CHILD_MODE?.includes("many") ? Array.from({ length: Math.ceil((request.workOrder.inputs.ideaCount - index) / 2) }, (_, copy) => ({ ...option, mechanism: `${option.mechanism} ${copy * 2 + index + 1}` })) : [option]).map((option, index) => ({
@@ -109,6 +152,7 @@ module.exports = function workflowOutput(request) {
         supportingEvidenceIds: request.evidence.filter((item) => item.content.categories?.includes("supporting")).map((item) => item.sourceId),
         contraryEvidenceIds: request.evidence.filter((item) => item.content.categories?.includes("contrary")).map((item) => item.sourceId),
         unknowns: ["Whether the saved time exceeds the recording effort"],
+        ...(inputs.frame ? goalFitFields(inputs.frame) : {}),
         ...(request.workOrder.inputs.focusedExperimentVersion === 1 ? {
           startupOpportunity: {
             opportunityType: "startup-opportunity",
@@ -200,3 +244,29 @@ module.exports = function workflowOutput(request) {
       throw new Error(`Unexpected workflow stage: ${stage}`);
   }
 };
+
+function criterionFit(frame) {
+  return frame.successCriteria.map(criterion => ({ criterionId: criterion.id, criterionName: criterion.name,
+    mustHave: criterion.weight === "must", status: "unknown", evidenceIds: [],
+    note: "The supplied fixture evidence does not establish this criterion for the proposed mechanism." }));
+}
+
+function goalFitFields(frame) {
+  const kind = { "market-opportunity": "demand-test", "competition-entry": "measurable-demo", "research-question": "validation-dataset",
+    "community-or-personal": "pilot", "process-improvement": "process-test", other: "goal-test" }[frame.goalKind];
+  return {
+    biggerProblem: { statement: "Repair shops cannot reliably predict parts arrival times.", affected: "Repair shops",
+      scale: "The prevalence beyond the supplied observations is unknown.", scaleEvidenceIds: [], scaleKnown: false },
+    slice: { description: "Record delivery estimates and arrivals for one shop and one supplier.",
+      connectionToBiggerProblem: "A narrow comparison tests whether saved delivery records improve the next estimate.",
+      feasibilityWithinConstraints: "Use current records and a manual pilot without holding inventory." },
+    criteriaFit: criterionFit(frame),
+    firstTest: { kind, question: "Will affected repair coordinators use the record-assisted workflow?",
+      method: "Offer the same manual pilot to ten eligible coordinators and record the declared outcome.", cost: "One coordinator day",
+      metric: kind === "demand-test" ? "Paid pilot commitments" : "Estimates within the declared delivery window",
+      sample: 10, observationWindow: "Three weeks",
+      passCriterion: kind === "demand-test" ? "At least three coordinators pay for the pilot." : "At least eight estimates match the recorded arrivals.",
+      failCriterion: kind === "demand-test" ? "No coordinator pays for the pilot." : "At most five estimates match the recorded arrivals.",
+      inconclusiveCriterion: "The outcome falls between the thresholds, or fewer than ten usable observations are recorded." },
+  };
+}

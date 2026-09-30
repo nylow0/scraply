@@ -156,7 +156,7 @@ try {
     platform = "windows-x64"
     executable = "scraply-agent.exe"
     version = $version
-    protocolVersions = @("1.1")
+    protocolVersions = @("1.2")
     sourceRepository = "https://github.com/nylow0/scraply"
     sourceCommit = $sourceCommit
     upstreamCommit = $upstreamCommit

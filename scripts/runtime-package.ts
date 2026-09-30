@@ -49,7 +49,7 @@ export const runtimePackageLockSchema = z.object({
   platform: z.literal("windows-x64"),
   executable: z.literal("scraply-agent.exe"),
   version: semverSchema,
-  protocolVersions: z.tuple([z.literal("1.1")]),
+  protocolVersions: z.tuple([z.literal("1.2")]),
   sourceRepository: z.enum(["https://github.com/nylow0/scraply", "https://github.com/nylow0/scraply-agent"]),
   sourceCommit: sourceCommitSchema,
   upstreamCommit: sourceCommitSchema,

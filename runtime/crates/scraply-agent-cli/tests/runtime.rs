@@ -86,7 +86,7 @@ impl RuntimeProcess {
         serde_json::to_writer(
             &mut self.input,
             &json!({
-                "protocolVersion": "1.1",
+                "protocolVersion": "1.2",
                 "id": id,
                 "operation": operation,
                 "payload": payload,
@@ -113,7 +113,7 @@ impl RuntimeProcess {
             1,
             "runtime.initialize",
             json!({
-                "supportedProtocolVersions": ["1.1"],
+                "supportedProtocolVersions": ["1.2"],
                 "requiredCapabilities": [
                     "envelope_limits",
                     "account_refresh",
@@ -126,7 +126,7 @@ impl RuntimeProcess {
         );
         let initialized = self.read();
         assert_eq!(initialized["id"], 1);
-        assert_eq!(initialized["result"]["selectedProtocolVersion"], "1.1");
+        assert_eq!(initialized["result"]["selectedProtocolVersion"], "1.2");
         assert_eq!(
             initialized["result"]["limits"]["maxEnvelopeBytes"],
             16 * 1024 * 1024
@@ -436,11 +436,11 @@ fn installed_runtime_resynchronizes_after_malformed_oversized_and_invalid_utf8_l
 fn installed_runtime_accepts_a_request_split_across_pipe_writes() {
     let mut runtime = RuntimeProcess::start(0);
     let mut initialize = serde_json::to_vec(&json!({
-        "protocolVersion": "1.1",
+        "protocolVersion": "1.2",
         "id": 1,
         "operation": "runtime.initialize",
         "payload": {
-            "supportedProtocolVersions": ["1.1"],
+            "supportedProtocolVersions": ["1.2"],
             "requiredCapabilities": ["envelope_limits"],
             "client": {"name": "split-test", "version": "1"}
         }
@@ -450,7 +450,7 @@ fn installed_runtime_accepts_a_request_split_across_pipe_writes() {
     let split = initialize.len() / 2;
     runtime.write_raw(&initialize[..split]);
     runtime.write_raw(&initialize[split..]);
-    assert_eq!(runtime.read()["result"]["selectedProtocolVersion"], "1.1");
+    assert_eq!(runtime.read()["result"]["selectedProtocolVersion"], "1.2");
     runtime.shutdown(2);
 }
 

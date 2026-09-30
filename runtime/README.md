@@ -29,7 +29,7 @@ cargo +stable-x86_64-pc-windows-msvc test --workspace
 
 The executable is `target\debug\scraply-agent.exe` for a normal debug build.
 
-The packaging gate allows at most 6000 nonblank production Rust lines. Phase 1 uses 5601 lines after adding protocol negotiation, bounded envelopes, session credential acknowledgement, refresh recovery, and per-attempt terminal accounting; test-only and debug-only items remain excluded by the existing scanner.
+The packaging gate allows at most 6000 nonblank production Rust lines. Test-only and debug-only items remain excluded by the existing scanner.
 
 ## Runtime protocol
 
@@ -39,7 +39,7 @@ Start one process for the Scraply desktop session:
 .\target\debug\scraply-agent.exe runtime
 ```
 
-Requests and responses are one JSON object per line on stdin and stdout. Native protocol version `1.1` is the only negotiable version and supports these operations:
+Requests and responses are one JSON object per line on stdin and stdout. Native protocol version `1.2` is the only negotiable version and supports these operations:
 
 - `runtime.initialize`
 - `account.list`
@@ -61,11 +61,13 @@ The `generation.start` payload contains a qualified `{ providerId, modelId }`, t
 
 Output allowance failures use `output_limit`, separately from `output_invalid` schema failures. A provider token-limit result must not become an automatic schema-repair request. Scraply can explicitly retry the failed task while preserving completed discovery packets and its saved contract.
 
-The frozen app-facing TypeScript declarations and JSON examples live under `contracts/runtime/v1.1`. Protocol `1.0` was an unreleased draft and is rejected.
+The frozen app-facing TypeScript declarations and JSON examples live under `contracts/runtime/v1.2`. Older protocol versions are rejected.
+
+OpenAI can stream short reasoning summaries as `generation.delta` events of type `reasoning-summary`. They are separate from the structured output and bounded to 16 KiB across a generation and its optional schema correction. Terminal metadata retains the available summary. Raw reasoning is never forwarded. The app can disable summaries for new requests.
+
+The worker accepts at most three concurrent generations. The app defaults to two, with a saved preference of one through three shared by the scheduler, client, and worker. A 30-call subscription transport measurement confirmed overlap at all three settings with no failed calls; two reduced batch time by 49% compared with one. This short-call measurement does not establish deep-workflow performance. Cancellation retains a slot until the generation settles.
 
 OpenAI subscription requests must omit `maxOutputTokens`: its endpoint rejects `max_output_tokens` with HTTP 400. The adapter rejects an explicit ceiling locally rather than silently ignoring it. Deadlines and the runtime output-byte limit still apply, but they are not token or billing ceilings. Providers that support token ceilings retain them.
-
-The worker accepts at most three concurrent generations. The app admits two by default after a 30-call xhigh subscription transport measurement supported stable overlap. The Advanced setting can lower this to one or raise it to three. Cancellation retains a slot until the generation settles.
 
 Interactive login completion is polled with a fresh request ID. While the provider network exchange is pending, `account.login.complete` returns retryable `operation_unavailable`; `account.login.cancel` and `runtime.shutdown` remain serviceable and clean up the listener or exchange task.
 
@@ -75,7 +77,7 @@ See [CONTEXT.md](CONTEXT.md) for the project language and [ADR 0001](docs/adr/00
 
 OpenAI subscription supports browser login, device login, refresh, logout, live account-scoped model discovery, and one structured Responses call. Generation uses a WebSocket owned by the request, sends an empty keepalive ping every 30 seconds, answers provider pings during silent reasoning, and closes the socket on cancellation. HTTP/SSE is used only when the WebSocket upgrade returns HTTP 405 or 426, before a generation is sent. A dispatched request is never replayed automatically after a stream failure. Disconnect errors retain safe close/error categories and activity counts without copying raw provider messages. It reuses the pinned OpenAI login, TLS, and proxy transport code under `vendor/openai-codex`.
 
-OpenRouter supports PKCE S256 with a host-owned callback, manual API key sessions, live structured-output model discovery, strict JSON Schema generation, and exact provider-reported cost. After login or an OpenAI refresh, the runtime returns the credential once so Scraply can encrypt it with Electron `safeStorage`. Protocol 1.1 blocks model listing and generation for that provider until Scraply acknowledges the exact `{ providerId, sessionId, rotationId }` through `credential.session.persisted`. A stale acknowledgement cannot unlock a later rotation. On relaunch, Scraply restores the encrypted value through `credential.session.set`.
+OpenRouter supports PKCE S256 with a host-owned callback, manual API key sessions, live structured-output model discovery, strict JSON Schema generation, and exact provider-reported cost. After login or an OpenAI refresh, the runtime returns the credential once so Scraply can encrypt it with Electron `safeStorage`. The protocol blocks model listing and generation for that provider until Scraply acknowledges the exact `{ providerId, sessionId, rotationId }` through `credential.session.persisted`. A stale acknowledgement cannot unlock a later rotation. On relaunch, Scraply restores the encrypted value through `credential.session.set`.
 
 Credentials never belong in argv, environment variables, repository files, telemetry, or error bodies. The runtime stores session credentials only in memory. The debug test fixture is compiled out of release builds and packaging checks the binary for its marker.
 

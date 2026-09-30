@@ -17,7 +17,7 @@ use serde::de::{self, Deserializer};
 use serde::{Deserialize, Serialize, Serializer};
 use serde_json::Value;
 
-pub const CURRENT_PROTOCOL_VERSION: &str = "1.1";
+pub const CURRENT_PROTOCOL_VERSION: &str = "1.2";
 /// Historical draft identifier retained only for rejection and drift tests.
 #[cfg(test)]
 pub const LEGACY_PROTOCOL_VERSION: &str = "1.0";
@@ -281,21 +281,23 @@ pub enum Capability {
     CredentialPersistenceAck,
     GenerationAttemptMetadata,
     ExactlyOneTerminal,
+    ReasoningSummaryStream,
 }
 
 impl Capability {
-    pub const V1_1: [Self; 5] = [
+    pub const V1_2: [Self; 6] = [
         Self::EnvelopeLimits,
         Self::AccountRefresh,
         Self::CredentialPersistenceAck,
         Self::GenerationAttemptMetadata,
         Self::ExactlyOneTerminal,
+        Self::ReasoningSummaryStream,
     ];
 }
 
 pub fn capabilities_for(version: &ProtocolVersion) -> Vec<Capability> {
     if version.as_str() == CURRENT_PROTOCOL_VERSION {
-        Capability::V1_1.to_vec()
+        Capability::V1_2.to_vec()
     } else {
         Vec::new()
     }

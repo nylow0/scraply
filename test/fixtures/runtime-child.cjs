@@ -25,7 +25,7 @@ if (process.env.SCRAPLY_RUNTIME_PID_CAPTURE) fs.appendFileSync(process.env.SCRAP
 const prompt = { id: "scraply.stage-worker.v1", sha256: "277d724f20acb1f32fa0a8b7c454c670971e3c40bfc921db40c044caa760e6f1" };
 const model = { providerId: "openai-subscription", modelId: "gpt-fixture" };
 const send = (value) => process.stdout.write(`${JSON.stringify(value)}\n`);
-const reply = (request, result) => send({ protocolVersion: "1.1", id: request.id, operation: request.operation, result });
+const reply = (request, result) => send({ protocolVersion: "1.2", id: request.id, operation: request.operation, result });
 
 readline.createInterface({ input: process.stdin }).on("line", (line) => {
   const request = JSON.parse(line);
@@ -42,10 +42,10 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
       && !fs.existsSync(process.env.SCRAPLY_RUNTIME_MARKER);
     if (incompatibleOnce) fs.writeFileSync(process.env.SCRAPLY_RUNTIME_MARKER, "seen");
     reply(request, {
-      selectedProtocolVersion: "1.1", sessionId: "fixture-session",
+      selectedProtocolVersion: "1.2", sessionId: "fixture-session",
       runtime: { name: "scraply-agent", version: incompatibleOnce ? "9.9.9" : "0.1.0" }, prompt,
       operations: ["runtime.initialize", "account.list", "account.login.start", "account.login.complete", "account.login.cancel", "account.logout", "account.refresh", "credential.session.set", "credential.session.persisted", "model.list", "generation.start", "generation.cancel", "runtime.shutdown"],
-      capabilities: ["envelope_limits", "account_refresh", "credential_persistence_ack", "generation_attempt_metadata", "exactly_one_terminal"],
+      capabilities: ["envelope_limits", "account_refresh", "credential_persistence_ack", "generation_attempt_metadata", "exactly_one_terminal", "reasoning_summary_stream"],
       limits: { maxEnvelopeBytes: 16777216, maxInputBytes: 2097152, maxSchemaBytes: 262144, maxOutputBytes: 2097152 },
     });
     return;
@@ -60,15 +60,15 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
   if (request.operation === "account.list") { reply(request, { accounts: workflow && connected ? [{ providerId: model.providerId, accountId: "synthetic-account" }] : [] }); return; }
   if (request.operation === "model.list") {
     if (mode === "workflow-auth" && credential === "rejected-credential") {
-      send({ protocolVersion: "1.1", id: request.id, operation: request.operation,
+      send({ protocolVersion: "1.2", id: request.id, operation: request.operation,
         error: { code: "authentication_failed", retryable: false, detail: "provider request failed with HTTP 401" } });
       return;
     }
     if (mode === "wrong-operation") {
-      send({ protocolVersion: "1.1", id: request.id, operation: "account.list", error: { code: "operation_unavailable", retryable: true, detail: "wrong operation" } });
+      send({ protocolVersion: "1.2", id: request.id, operation: "account.list", error: { code: "operation_unavailable", retryable: true, detail: "wrong operation" } });
       return;
     }
-    const bytes = Buffer.from(`${JSON.stringify({ protocolVersion: "1.1", id: request.id, operation: request.operation, result: { models: [{ identity: model, displayName: "Modèle", supportsStructuredOutput: true,
+    const bytes = Buffer.from(`${JSON.stringify({ protocolVersion: "1.2", id: request.id, operation: request.operation, result: { models: [{ identity: model, displayName: "Modèle", supportsStructuredOutput: true,
       ...(mode.startsWith("workflow-checkpoint-recovery") || mode === "workflow-audience-many" ? { supportedReasoningEfforts: ["medium", "xhigh"], defaultReasoningEffort: "medium" } : {}) }] } })}\n`);
     // Workflow requests overlap. Fragment only the dedicated framing fixture so
     // another response cannot be spliced into the middle of this JSON envelope.
@@ -80,7 +80,7 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
   }
   if (request.operation === "account.refresh") {
     if (mode === "workflow-auth" && credential === "rejected-credential") {
-      send({ protocolVersion: "1.1", id: request.id, operation: request.operation,
+      send({ protocolVersion: "1.2", id: request.id, operation: request.operation,
         error: { code: "authentication_failed", retryable: false, detail: "provider request failed with HTTP 401" } });
       return;
     }
@@ -100,7 +100,7 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
   }
   if (request.operation === "account.login.complete") {
     if (!pendingLogin || pendingLogin.loginId !== request.payload.loginId || pendingLogin.method === "device") {
-      send({ protocolVersion: "1.1", id: request.id, operation: request.operation,
+      send({ protocolVersion: "1.2", id: request.id, operation: request.operation,
         error: { code: "operation_unavailable", retryable: true, detail: "Sign-in is still pending" } });
       return;
     }
@@ -144,7 +144,7 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
     const isHarvest = request.payload.workOrder.stage.startsWith("factor-harvest");
     if (isHarvest) harvestCalls++;
     if (mode === "output-limit" || (mode === "workflow-checkpoint-recovery-output-limit" && harvestCalls === 9 && isHarvest)) {
-      send({ protocolVersion: "1.1", requestId: request.id, operation: "generation.start", event: {
+      send({ protocolVersion: "1.2", requestId: request.id, operation: "generation.start", event: {
         kind: "generation.failed", generationId: request.payload.generationId,
         error: { code: "output_limit", retryable: false, detail: "OpenAI returned an incomplete response because its output token limit was reached." },
         attempts: [{ attempt: "initial", outcome: "failed", providerCompletion: "confirmed", model, usage: { status: "unknown" }, cost: { status: "unknown" }, latencyMs: 1 }],
@@ -155,7 +155,7 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
     if (mode === "stream-interrupted" || (streamFailures < streamFailureLimit && isHarvest)
       || (mode === "workflow-checkpoint-recovery" && [9, 10].includes(harvestCalls))) {
       streamFailures++;
-      send({ protocolVersion: "1.1", requestId: request.id, operation: "generation.start", event: {
+      send({ protocolVersion: "1.2", requestId: request.id, operation: "generation.start", event: {
         kind: "generation.failed", generationId: request.payload.generationId,
         error: { code: "provider_unavailable", retryable: true, detail: "OpenAI closed the response stream before confirming completion. Completion and usage are unknown; review before retrying." },
         attempts: [{ attempt: "initial", outcome: "failed", providerCompletion: "unknown", model, usage: { status: "unknown" }, cost: { status: "unknown" }, latencyMs: 1 }],
@@ -179,9 +179,19 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
       : mode === "invalid-output" ? { invalid: true } : request.payload.workOrder.stage.startsWith("query-plan")
       ? { queries: ["one", "two", "three"] }
       : request.payload.workOrder.stage.startsWith("factor-harvest") ? { factors: [] } : { answer: "right" };
-    const wrong = { protocolVersion: "1.1", requestId: "unrelated-request", operation: "generation.start", event: { kind: "generation.completed", generationId: request.payload.generationId, result: { output: { answer: "wrong" }, metadata } } };
-    const correct = { protocolVersion: "1.1", requestId: request.id, operation: "generation.start", event: { kind: "generation.completed", generationId: request.payload.generationId, result: { output, metadata } } };
+    const wrong = { protocolVersion: "1.2", requestId: "unrelated-request", operation: "generation.start", event: { kind: "generation.completed", generationId: request.payload.generationId, result: { output: { answer: "wrong" }, metadata } } };
+    const correct = { protocolVersion: "1.2", requestId: request.id, operation: "generation.start", event: { kind: "generation.completed", generationId: request.payload.generationId, result: { output, metadata } } };
     const writeTerminal = () => process.stdout.write(`${JSON.stringify(wrong)}\n${JSON.stringify(correct)}\n${JSON.stringify(correct)}\n`);
+    if (mode === "summary-stream" && request.payload.reasoningSummaries) {
+      for (const [requestId, sequence, text] of [["unrelated-request", 0, "Ignore me"], [request.id, 0, "Checking evidence. "], [request.id, 0, "Duplicate"], [request.id, 1, "é🧩"]]) {
+        send({ protocolVersion: "1.2", requestId, operation: "generation.start", event: {
+          kind: "generation.delta", generationId: request.payload.generationId, sequence,
+          delta: { type: "reasoning-summary", text },
+        } });
+      }
+      setTimeout(writeTerminal, 75);
+      return;
+    }
     if (mode === "prompt-mismatch" || mode === "slow-complete") setTimeout(writeTerminal, 75);
     else writeTerminal();
     return;
@@ -189,7 +199,7 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
   if (request.operation === "generation.cancel") {
     reply(request, { generationId: request.payload.generationId, cancelled: true });
     if (heldGeneration) {
-      send({ protocolVersion: "1.1", requestId: heldGeneration.id, operation: "generation.start", event: {
+      send({ protocolVersion: "1.2", requestId: heldGeneration.id, operation: "generation.start", event: {
         kind: "generation.cancelled", generationId: heldGeneration.payload.generationId,
         attempts: [],
       } });
