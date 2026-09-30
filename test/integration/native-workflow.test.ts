@@ -16,6 +16,7 @@ import type { JsonSchema } from "../../src/shared/json-schema";
 import { NATIVE_WORKFLOW_MODEL as model, UNTRUSTED_WORKFLOW_TEXT as untrusted, startNativeWorkflowBackend } from "../fixtures/native-workflow-backend";
 import { resolveWorkflowV2Prompt } from "../../src/core/prompts";
 import { WORKFLOW_V2_STAGE_IDS } from "../../src/core/stages";
+import { WorkflowRepository } from "../../src/db/repositories/workflows";
 
 const statement = "Repair shops cannot reliably predict parts arrival times.";
 const scope = {
@@ -58,6 +59,7 @@ describe("native research workflow through the production backend", () => {
     try {
       const contract = saved.db.prepare("SELECT contract_json, contract_sha256 FROM workflow_sessions WHERE id = ?").get(receipt.sessionId);
       const factors = saved.db.prepare("SELECT * FROM factors WHERE research_run_id = ? ORDER BY id").all(runId);
+      const budget = saved.db.prepare("SELECT * FROM workflow_budget_entries WHERE session_id = ? ORDER BY id").all(receipt.sessionId) as Array<{ id: string }>;
       const stages = saved.db.prepare("SELECT * FROM stage_results WHERE research_run_id = ? ORDER BY id").all(runId) as Array<{ id: string }>;
       const command = { threadId, sessionId: receipt.sessionId, clientCommandId: "reassess-broad",
         expectedRevision: detail.summary.revision, action: { type: "reassess-problems", taskId: task.id } };
@@ -78,6 +80,10 @@ describe("native research workflow through the production backend", () => {
       expect(saved.db.prepare("SELECT contract_json, contract_sha256 FROM workflow_sessions WHERE id = ?").get(receipt.sessionId)).toEqual(contract);
       expect(saved.db.prepare("SELECT * FROM factors WHERE research_run_id = ? ORDER BY id").all(runId)).toEqual(factors);
       for (const stage of stages) expect(saved.db.prepare("SELECT * FROM stage_results WHERE id = ?").get(stage.id)).toEqual(stage);
+      for (const entry of budget) expect(saved.db.prepare("SELECT * FROM workflow_budget_entries WHERE id = ?").get(entry.id)).toEqual(entry);
+      const spent = saved.db.prepare(`SELECT SUM(settled_units) AS units FROM workflow_budget_entries
+        WHERE work_item_id = ? AND kind = 'model-call' AND state = 'spent'`).get(task.id) as { units: number };
+      expect(spent.units).toBe(new WorkflowRepository(saved).countProviderAttempts(runId));
       expect(saved.db.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
       expect((await item.post("/workflows/command", command, WorkflowAdmissionReceiptSchema)).sessionId).toBe(receipt.sessionId);
       const requestCount = item.requests().length;
@@ -1003,6 +1009,14 @@ async function fixture({ mode = "workflow", searchEnabled = true, workflowVersio
           insert.run(event.runId, "prompts", JSON.stringify(Object.fromEntries(WORKFLOW_V2_STAGE_IDS.map(stage => [stage, resolveWorkflowV2Prompt(stage)]))));
           insert.run(event.runId, "identifier-characters", "24");
           insert.run(event.runId, "small-harvest-batches", JSON.stringify({ version: 1 }));
+          // A resumed archive retains uncertain reservations from its earlier interruption.
+          const session = saved.db.prepare("SELECT workflow_session_id FROM research_runs WHERE id = ?").get(event.runId) as { workflow_session_id: string };
+          const workflows = new WorkflowRepository(saved);
+          saved.immediateTransaction(() => {
+            for (const entry of workflows.listBudgetEntries(session.workflow_session_id).filter(entry => entry.state === "reserved")) {
+              workflows.settleBudget(entry.id, { state: "uncertain", settledUnits: entry.reservedUnits });
+            }
+          });
         } finally { saved.close(); }
       }
     } });

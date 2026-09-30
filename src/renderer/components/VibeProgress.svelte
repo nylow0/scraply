@@ -78,7 +78,7 @@
   let researchUpdated = $derived(researchFollowUp && terminal && summary.researchApplied === true);
   let canPause = $derived(summary.state === "running");
   let canResume = $derived(summary.state === "paused" && !!onResume
-    && summary.budget.modelCalls.uncertain === 0 && summary.budget.searches.uncertain === 0
+    && (summary.canResume === true || (summary.budget.modelCalls.uncertain === 0 && summary.budget.searches.uncertain === 0))
     && !detail.tasks.some((task) => task.state === "unknown"));
   let canStop = $derived(["running", "waiting-for-review", "pause-requested", "paused"].includes(summary.state));
 
