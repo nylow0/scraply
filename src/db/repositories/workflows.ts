@@ -364,9 +364,9 @@ export class WorkflowRepository {
     const settled = reassessProblems ? session.outcome === "no-qualifying-ideas" && task.state === "succeeded"
       : ["needs-attention", "failed", "partial"].includes(session.outcome ?? "") && ["unknown", "failed"].includes(task.state);
     if (session.revision !== expectedRevision || session.state !== "finished" || !settled
-      || task.kind !== "discovery"
+      || (task.kind !== "discovery" && (reassessProblems || task.kind !== "prepare-frame"))
       || (session.contract as { limits?: { enforced?: boolean } }).limits?.enforced !== false) {
-      throw new WorkflowConflictError("REVISION_CONFLICT", "Only a settled guided discovery recovery can reopen");
+      throw new WorkflowConflictError("REVISION_CONFLICT", "Only settled guided research recovery can reopen");
     }
     this.client.db.prepare(`UPDATE workflow_work_items SET state = 'running', error_json = NULL,
       finished_at = NULL WHERE id = ?`).run(taskId);

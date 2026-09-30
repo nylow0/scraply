@@ -49,6 +49,7 @@ export class ResearchFrameRepository {
       const owner = this.client.db.prepare("SELECT frame_id FROM research_runs WHERE id = ? AND thread_id = ?")
         .get(input.runId, input.threadId) as { frame_id: string | null } | undefined;
       if (!owner) throw new Error("The research frame run does not belong to this project");
+      if (owner.frame_id) throw new Error("A saved run cannot change its research frame");
       const version = this.client.db.prepare("SELECT coalesce(max(version), 0) + 1 AS version FROM research_frames WHERE thread_id = ?")
         .get(input.threadId) as { version: number };
       const id = randomUUID();
@@ -61,8 +62,8 @@ export class ResearchFrameRepository {
     });
   }
 
-  approve(id: string, threadId: string, edited: ResearchFrame): SavedResearchFrame {
-    return this.client.immediateTransaction(() => {
+  approve(id: string, threadId: string, edited: ResearchFrame, options?: { transaction: "existing" }): SavedResearchFrame {
+    const mutation = () => {
       const saved = this.get(id);
       if (!saved || saved.threadId !== threadId) throw new Error("The research frame does not belong to this project");
       validateFrame(edited, saved.sources, saved.knownProblem);
@@ -73,7 +74,12 @@ export class ResearchFrameRepository {
       this.client.db.prepare("UPDATE research_frames SET approved_json = ?, approved_at = ? WHERE id = ?")
         .run(canonicalJson(edited), new Date().toISOString(), id);
       return this.get(id)!;
-    });
+    };
+    if (options?.transaction === "existing") {
+      this.client.requireImmediateTransaction();
+      return mutation();
+    }
+    return this.client.immediateTransaction(mutation);
   }
 
   bindRun(runId: string, threadId: string, frameId: string): void {
@@ -84,6 +90,29 @@ export class ResearchFrameRepository {
     if (!run) throw new Error("The research run does not belong to this project");
     if (run.frame_id && run.frame_id !== frameId) throw new Error("A saved run cannot change its research frame");
     this.client.db.prepare("UPDATE research_runs SET frame_id = ? WHERE id = ?").run(frameId, runId);
+  }
+
+  /** A project edit becomes the version for future runs; existing run bindings stay frozen. */
+  createApprovedVersion(id: string, threadId: string, edited: ResearchFrame, options?: { transaction: "existing" }): SavedResearchFrame {
+    const mutation = () => {
+      const previous = this.get(id);
+      if (!previous?.approved || previous.threadId !== threadId) throw new Error("An approved frame for this project is required");
+      validateFrame(edited, previous.sources, previous.knownProblem);
+      const next = this.client.db.prepare("SELECT coalesce(max(version), 0) + 1 AS version FROM research_frames WHERE thread_id = ?")
+        .get(threadId) as { version: number };
+      const nextId = randomUUID();
+      const now = new Date().toISOString();
+      this.client.db.prepare(`INSERT INTO research_frames
+        (id, thread_id, version, known_problem, draft_json, approved_json, sources_json, created_at, approved_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(nextId, threadId, next.version, Number(previous.knownProblem),
+          canonicalJson(edited), canonicalJson(edited), canonicalJson(previous.sources), now, now);
+      return this.get(nextId)!;
+    };
+    if (options?.transaction === "existing") {
+      this.client.requireImmediateTransaction();
+      return mutation();
+    }
+    return this.client.immediateTransaction(mutation);
   }
 }
 
