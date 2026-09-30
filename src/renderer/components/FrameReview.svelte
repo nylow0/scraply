@@ -19,6 +19,7 @@
 
   // Parse makes an independent draft. A new frame after regeneration replaces it.
   let draft = $state(untrack(() => ResearchFrameSchema.parse(frame)));
+  let loadedFrame = untrack(() => JSON.stringify(frame));
   let pending = $state<"commit" | "regenerate" | "brief" | null>(null);
   let error = $state("");
   let languageCode = $state("");
@@ -42,7 +43,15 @@
 
   $effect(() => {
     const replacement = frame;
-    untrack(() => { draft = ResearchFrameSchema.parse(replacement); newAreaId = null; error = ""; });
+    const content = JSON.stringify(replacement);
+    untrack(() => {
+      // Polling returns new objects for unchanged frames. Keep the user's unsaved edits.
+      if (content === loadedFrame) return;
+      loadedFrame = content;
+      draft = ResearchFrameSchema.parse(replacement);
+      newAreaId = null;
+      error = "";
+    });
   });
 
   function moveArea(index: number, direction: -1 | 1) {
@@ -171,7 +180,7 @@
         <h2>Open questions</h2>
         {#each draft.openQuestions as question (question.id)}
           <div>
-            <label><span>{question.question}</span><textarea rows="2" value={question.answer ?? ""} oninput={event => { const answer = event.currentTarget.value; question.answer = answer.trim() ? answer : undefined; }}></textarea></label>
+            <label><span>{question.question}</span><textarea rows="2" value={question.answer ?? ""} oninput={event => { const answer = event.currentTarget.value; if (answer.trim()) question.answer = answer; else delete question.answer; }}></textarea></label>
             <p class="hint">{question.whyItMatters}</p>
             {#if question.options.length > 0}<div class="answer-options">{#each question.options as option, index (index)}<button type="button" class="quiet" onclick={() => question.answer = option}>{option}</button>{/each}</div>{/if}
           </div>
@@ -217,7 +226,7 @@
                       <div class="venue">
                         <label><span>Venue</span><input aria-label={`Venue name ${index + 1}.${venueIndex + 1}`} bind:value={venue.name} /></label>
                         <label><span>Kind</span><select aria-label={`Venue kind ${index + 1}.${venueIndex + 1}`} bind:value={venue.kind}>{#each venueKinds as kind (kind.value)}<option value={kind.value}>{kind.label}</option>{/each}</select></label>
-                        <label><span>Domain, optional</span><input aria-label={`Venue domain ${index + 1}.${venueIndex + 1}`} placeholder="example.org" value={venue.domain ?? ""} oninput={event => { const domain = event.currentTarget.value.trim(); venue.domain = domain || undefined; }} /></label>
+                        <label><span>Domain, optional</span><input aria-label={`Venue domain ${index + 1}.${venueIndex + 1}`} placeholder="example.org" value={venue.domain ?? ""} oninput={event => { const domain = event.currentTarget.value.trim(); if (domain) venue.domain = domain; else delete venue.domain; }} /></label>
                         <button type="button" class="quiet" disabled={area.venues.length === 1} aria-label={`Remove venue ${index + 1}.${venueIndex + 1}`} onclick={() => area.venues.splice(venueIndex, 1)}>Remove</button>
                       </div>
                     {/each}
