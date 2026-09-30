@@ -17,7 +17,7 @@ export interface SuccessEnvelope<TOperation extends RuntimeOperation = RuntimeOp
   result: TResult;
 }
 
-export type RuntimeErrorCode = "malformed_json" | "invalid_envelope" | "invalid_request_id" | "unsupported_protocol_version" | "unsupported_operation" | "invalid_payload" | "line_too_large" | "not_initialized" | "already_initialized" | "request_conflict" | "operation_unavailable" | "required_capability_unavailable" | "credential_persistence_required" | "reconnect_required" | "generation_not_found" | "login_not_found" | "cancelled" | "deadline_exceeded" | "authentication_failed" | "provider_unavailable" | "rate_limited" | "schema_invalid" | "output_invalid" | "internal";
+export type RuntimeErrorCode = "malformed_json" | "invalid_envelope" | "invalid_request_id" | "unsupported_protocol_version" | "unsupported_operation" | "invalid_payload" | "line_too_large" | "not_initialized" | "already_initialized" | "request_conflict" | "operation_unavailable" | "required_capability_unavailable" | "credential_persistence_required" | "reconnect_required" | "generation_not_found" | "login_not_found" | "cancelled" | "deadline_exceeded" | "authentication_failed" | "provider_unavailable" | "rate_limited" | "schema_invalid" | "output_invalid" | "output_limit" | "internal";
 export interface RuntimeFailure { code: RuntimeErrorCode; retryable: boolean; providerRequestId?: string; detail: string }
 export interface FailureEnvelope { protocolVersion: ProtocolVersion; id?: RequestId; operation?: RuntimeOperation; error: RuntimeFailure }
 

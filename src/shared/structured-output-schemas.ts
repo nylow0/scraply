@@ -267,6 +267,26 @@ export const WorkflowV2FactorHarvestOutputSchema = z.object({
   factors: z.array(z.union([LegacyWorkflowV2FactorSchema, WorkflowV2FactorSchema])),
 }).strict();
 
+// Historical outputs remain readable; fresh extraction must not emit book-length annotations.
+export const FACTOR_EXPLANATION_CHARACTERS = 600;
+const FactorRequestText = {
+  subject: WorkflowV2RequiredTextSchema.max(160),
+  behavior: WorkflowV2RequiredTextSchema.max(280),
+  quote: WorkflowV2RequiredTextSchema.max(1_000),
+  sourceId: WorkflowV2RequiredTextSchema.max(256),
+  uncertainty: WorkflowV2RequiredTextSchema.max(FACTOR_EXPLANATION_CHARACTERS),
+};
+export const BoundedWorkflowV2FactorHarvestOutputSchema = z.object({
+  factors: z.array(z.union([
+    LegacyWorkflowV2FactorSchema.extend(FactorRequestText),
+    WorkflowV2FactorSchema.extend({
+      ...FactorRequestText,
+      independentSourceKey: WorkflowV2RequiredTextSchema.max(160).nullable(),
+      demandEvidenceUncertainty: WorkflowV2RequiredTextSchema.max(FACTOR_EXPLANATION_CHARACTERS),
+    }),
+  ])),
+}).strict();
+
 export const WorkflowV2ProblemCandidateSchema = ProblemSchema.pick({
   statement: true,
   whyItPersists: true,

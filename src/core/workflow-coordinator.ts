@@ -719,7 +719,8 @@ export class WorkflowCoordinator {
     if (ambiguous && !request.action.acknowledgeUnknownCompletion) throw new AppError("UNKNOWN_COMPLETION");
     const safeTransient = attempt.terminal_kind === "never-dispatched"
       || (attempt.status === "failed" && ["timeout", "rate-limit", "unavailable"].includes(attempt.error_code ?? ""));
-    if (!ambiguous && !safeTransient) throw new AppError("conflict", "Only a classified transient failure can retry.");
+    const outputLimit = attempt.status === "failed" && attempt.error_code === "output-limit";
+    if (!ambiguous && !safeTransient && !outputLimit) throw new AppError("conflict", "Only a classified transient or output-limit failure can retry.");
     const priorRetry = this.options.db.db.prepare(`SELECT 1 FROM workflow_work_items item
       JOIN workflow_sessions session ON session.id = item.session_id
       WHERE session.thread_id = ? AND json_extract(item.input_json, '$.retryOfTaskId') = ? LIMIT 1`)
@@ -728,9 +729,9 @@ export class WorkflowCoordinator {
       throw new AppError("conflict", "This attempt already has a retry. Open its latest attempt to continue.");
     }
     const contract = WorkflowLaunchContractSchema.parse(original.contract);
-    if (task.kind === "discovery" && ambiguous && contract.limits.enforced === false) {
+    if (task.kind === "discovery" && (ambiguous || outputLimit) && contract.limits.enforced === false) {
       const latest = terminalAttempt(this.options.db, task);
-      if (latest?.id !== attempt.id) throw new AppError("INVALID_REFERENCE", "Acknowledge the latest failed model request.");
+      if (latest?.id !== attempt.id) throw new AppError("INVALID_REFERENCE", "Retry the latest failed model request.");
       const unresolved = new GenerationAttemptRepository(this.options.db).unresolvedAttemptIds(runId);
       const audit = this.options.db.db.prepare(`SELECT value_json FROM workflow_snapshots
         WHERE research_run_id = ? AND snapshot_key LIKE 'acknowledged-retry:%'`)
@@ -741,7 +742,7 @@ export class WorkflowCoordinator {
       await this.assertModelAvailable(contract.runConfig.model, contract.runConfig.reasoningEffort);
       this.requireProjectIdle(request.threadId);
       const receipt = this.options.db.immediateTransaction(() => {
-        this.repository.reopenUnknownDiscovery(original.id, request.expectedRevision, task.id);
+        this.repository.reopenGuidedDiscovery(original.id, request.expectedRevision, task.id);
         this.options.db.db.prepare("INSERT INTO workflow_snapshots VALUES (?, ?, ?)").run(runId,
           `acknowledged-retry:${request.clientCommandId}`, canonicalJson({ attemptIds: acknowledgedAttemptIds,
             taskId: task.id, terminalAttemptId: attempt.id, acknowledgedAt: new Date().toISOString() }));

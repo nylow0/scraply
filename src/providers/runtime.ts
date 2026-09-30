@@ -560,7 +560,8 @@ function providerFailure(error: RuntimeFailure, attempts?: GenerationAttemptMeta
       : error.code === "authentication_failed" ? "auth"
         : error.code === "rate_limited" ? "rate-limit"
           : error.code === "schema_invalid" || error.code === "output_invalid" ? "schema"
-            : error.code === "provider_unavailable" || error.code === "reconnect_required" ? "unavailable"
-              : "failed";
+            : error.code === "output_limit" ? "output-limit"
+              : error.code === "provider_unavailable" || error.code === "reconnect_required" ? "unavailable"
+                : "failed";
   return new ProviderFailure(code, error.detail, error.retryable, { runtimeCode: error.code, ...(attempts ? { attempts } : {}) });
 }

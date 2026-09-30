@@ -13,6 +13,7 @@ export type ProviderFailureCode =
   | "auth"
   | "rate-limit"
   | "schema"
+  | "output-limit"
   | "unavailable"
   | "failed";
 

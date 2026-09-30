@@ -730,7 +730,7 @@ fn runtime_failure_from_provider(error: ProviderError) -> RuntimeFailure {
         ProviderErrorCode::RateLimited => ErrorCode::RateLimited,
         ProviderErrorCode::Timeout => ErrorCode::DeadlineExceeded,
         ProviderErrorCode::Cancelled => ErrorCode::Cancelled,
-        ProviderErrorCode::OutputLimit => ErrorCode::OutputInvalid,
+        ProviderErrorCode::OutputLimit => ErrorCode::OutputLimit,
         ProviderErrorCode::InvalidResponse => ErrorCode::OutputInvalid,
         ProviderErrorCode::Transport => ErrorCode::ProviderUnavailable,
     };
@@ -758,7 +758,8 @@ fn runtime_failure_from_failure(failure: Failure) -> RuntimeFailure {
             ErrorCode::InvalidPayload
         }
         FailureCode::Schema => ErrorCode::SchemaInvalid,
-        FailureCode::InvalidOutput | FailureCode::OutputLimit => ErrorCode::OutputInvalid,
+        FailureCode::InvalidOutput => ErrorCode::OutputInvalid,
+        FailureCode::OutputLimit => ErrorCode::OutputLimit,
         FailureCode::UnavailableModel | FailureCode::Transport => ErrorCode::ProviderUnavailable,
         FailureCode::Io | FailureCode::Unknown => ErrorCode::Internal,
     };
@@ -857,5 +858,31 @@ mod tests {
                 .map(ProviderRequestId::as_str),
             Some("request-safe_1")
         );
+    }
+
+    #[test]
+    fn output_limits_remain_distinct_from_schema_failures_on_the_wire() {
+        let provider = runtime_failure_from_provider(ProviderError {
+            code: ProviderErrorCode::OutputLimit,
+            provider_id: OPENROUTER_PROVIDER_ID.into(),
+            retryable: false,
+            status: None,
+            request_id: None,
+            detail: "output allowance exhausted".into(),
+        });
+        assert_eq!(
+            serde_json::to_value(provider).unwrap()["code"],
+            "output_limit"
+        );
+        let core = runtime_failure_from_core(CoreError::new(
+            FailureCode::OutputLimit,
+            "output allowance exhausted",
+        ));
+        assert_eq!(serde_json::to_value(core).unwrap()["code"], "output_limit");
+        let schema = runtime_failure_from_core(CoreError::new(
+            FailureCode::InvalidOutput,
+            "invalid structured output",
+        ));
+        assert_eq!(schema.code, ErrorCode::OutputInvalid);
     }
 }
