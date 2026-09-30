@@ -12,6 +12,7 @@ import { FOCUSED_EXPERIMENT_DRAFT_INSTRUCTION, FOCUSED_EXPERIMENT_REVIEW_INSTRUC
 import { WorkspaceStateSchema, SolutionViewSchema, type WorkspaceState, type ResearchEvent } from "../../src/shared/ipc";
 import { GenerationStartPayloadSchema } from "../../src/shared/runtime-protocol";
 import { DEFAULT_RUN_CONFIG } from "../../src/shared/schemas";
+import type { JsonSchema } from "../../src/shared/json-schema";
 import { NATIVE_WORKFLOW_MODEL as model, UNTRUSTED_WORKFLOW_TEXT as untrusted, startNativeWorkflowBackend } from "../fixtures/native-workflow-backend";
 
 const statement = "Repair shops cannot reliably predict parts arrival times.";
@@ -47,6 +48,11 @@ describe("native research workflow through the production backend", () => {
     const task = failed.tasks.find(task => task.kind === "discovery")!;
     expect(task.state).toBe("failed");
     expect(item.requests()).toHaveLength(10);
+    const harvestSchema = item.requests()[1]!.outputSchema as JsonSchema;
+    expect(harvestSchema.properties?.factors?.items?.anyOf).toHaveLength(2);
+    for (const variant of harvestSchema.properties?.factors?.items?.anyOf ?? []) {
+      expect(variant.properties?.uncertainty?.maxLength).toBe(600);
+    }
     expect(item.searches).toHaveLength(9);
     const originalSearches = item.searches.map(search => z.object({ query: z.string() }).parse(search).query);
     const originalRunId = (await item.workspace()).latestResearchRun!.runId;

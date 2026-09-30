@@ -7,6 +7,7 @@ export type JsonSchema = {
   additionalProperties?: false;
   items?: JsonSchema;
   maxItems?: number;
+  maxLength?: number;
   enum?: Array<string | number | boolean>;
   anyOf?: JsonSchema[];
 };
@@ -29,8 +30,11 @@ export function deriveJsonSchema(schema: z.ZodTypeAny): JsonSchema {
         // Preserve zero: known-problem requests have no citable research sources.
         ...(definition.maxLength ? { maxItems: definition.maxLength.value } : {}),
       };
-    case z.ZodFirstPartyTypeKind.ZodString:
-      return { type: "string" };
+    case z.ZodFirstPartyTypeKind.ZodString: {
+      const maxLength = (schema as z.ZodString).maxLength;
+      // Send text ceilings to the provider, rather than only rejecting oversized output afterward.
+      return { type: "string", ...(maxLength !== null ? { maxLength } : {}) };
+    }
     case z.ZodFirstPartyTypeKind.ZodNumber: {
       const isInteger = definition.checks.some((check: { kind: string }) => check.kind === "int");
       return { type: isInteger ? "integer" : "number" };
