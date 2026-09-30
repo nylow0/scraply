@@ -14,12 +14,14 @@ describe("WorkflowTabs", () => {
     });
     const tabs = view.getAllByRole("tab") as HTMLButtonElement[];
 
-    expect(tabs).toHaveLength(3);
+    expect(tabs).toHaveLength(4);
     expect(tabs[0]?.getAttribute("aria-selected")).toBe("true");
     expect(tabs[0]?.getAttribute("aria-controls")).toBe("workflow-panel-setup");
     expect(tabs[0]?.tabIndex).toBe(0);
     expect(tabs[1]?.tabIndex).toBe(-1);
     expect(tabs[2]?.disabled).toBe(true);
+    expect(tabs[3]?.disabled).toBe(true);
+    expect(tabs[3]?.getAttribute("aria-controls")).toBe("workflow-panel-trace");
 
     tabs[0]?.focus();
     await fireEvent.keyDown(tabs[0]!, { key: "ArrowRight" });
@@ -35,6 +37,7 @@ describe("WorkflowTabs", () => {
       setupReady: true,
       researchReady: false,
       ideasReady: true,
+      traceReady: true,
       onSelect,
     });
     const tabs = view.getAllByRole("tab") as HTMLButtonElement[];
@@ -43,6 +46,7 @@ describe("WorkflowTabs", () => {
     expect(onSelect).toHaveBeenLastCalledWith("setup");
 
     await fireEvent.keyDown(tabs[0]!, { key: "End" });
-    expect(onSelect).toHaveBeenLastCalledWith("ideas");
+    expect(onSelect).toHaveBeenLastCalledWith("trace");
+    await waitFor(() => expect(document.activeElement).toBe(tabs[3]));
   });
 });
