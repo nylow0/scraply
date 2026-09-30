@@ -8,7 +8,8 @@ import { canonicalJson, sha256 } from "../shared/content-identity";
 import { deriveJsonSchema } from "../shared/json-schema";
 import { OpportunityExpansionOutputSchema } from "../shared/opportunity-exploration";
 import { SourceSchema } from "../shared/schemas";
-import { BoundedWorkflowV2FactorHarvestOutputSchema, FACTOR_EXPLANATION_CHARACTERS, ClassifiedWorkflowV2ProblemKillOutputSchema, WorkflowV2QueryPlanOutputSchema, WorkflowV2FactorHarvestOutputSchema, WorkflowV2ProblemCandidatesOutputSchema, WorkflowV2ProblemKillOutputSchema, WorkflowV2SolutionsOutputSchema } from "../shared/structured-output-schemas";
+import { AssessedWorkflowV2ProblemKillOutputSchema, BoundedWorkflowV2FactorHarvestOutputSchema, FACTOR_EXPLANATION_CHARACTERS, ClassifiedWorkflowV2ProblemKillOutputSchema, WorkflowV2QueryPlanOutputSchema, WorkflowV2FactorHarvestOutputSchema, WorkflowV2ProblemCandidatesOutputSchema, WorkflowV2ProblemKillOutputSchema, WorkflowV2SolutionsOutputSchema } from "../shared/structured-output-schemas";
+import { PROBLEM_AUDIENCE_ASSESSMENT_INSTRUCTION } from "./problem-evidence";
 import type { WorkflowV2DevelopmentContext } from "./development";
 import { resolveWorkflowV2Prompt, type ResolvedWorkflowV2Prompt } from "./prompts";
 import { WORKFLOW_V2_STAGE_IDS, WORKFLOW_V2_STAGE_REGISTRY, type WorkflowV2StageId } from "./stages";
@@ -48,6 +49,7 @@ export class WorkflowExecution {
       this.save("identifier-characters", 24);
       this.save("focused-experiments", { version: 1 });
       this.save("small-harvest-batches", { version: 1 });
+      this.save("problem-audience-assessment", { version: 1 });
     }
     // Runs without the marker keep their original source groups and checkpoint identities.
     this.smallHarvestBatches = this.read<{ version: number }>("small-harvest-batches")?.version === 1;
@@ -108,7 +110,10 @@ export class WorkflowExecution {
       if (!WORKFLOW_V2_STAGE_IDS.includes(id as WorkflowV2StageId)) throw new Error(`Unknown stage ${id}`);
       const stageId = id as WorkflowV2StageId;
       const stage = WORKFLOW_V2_STAGE_REGISTRY[stageId];
-      const prompt = this.resolvePrompt(stageId);
+      const savedPrompt = this.resolvePrompt(stageId);
+      const assessAudience = stageId === "problem-kill" && original.stage.endsWith(":audience-v1");
+      const instruction = assessAudience ? `${savedPrompt.text}\n\n${PROBLEM_AUDIENCE_ASSESSMENT_INSTRUCTION}` : savedPrompt.text;
+      const prompt = { ...savedPrompt, text: instruction, resolvedSha256: sha256(instruction) };
       const selectionId = selection.join(":") || null;
       // Pin completed contracts, including a native result saved before its stage commit.
       // Only unfinished extraction gets the new limits; completed work is never regenerated.
@@ -130,6 +135,7 @@ export class WorkflowExecution {
             factors: factorSchema.shape.factors.max(factorLimit),
           })
         // A saved run keeps its original prompt and schema so completed kill reviews can resume.
+        : assessAudience ? AssessedWorkflowV2ProblemKillOutputSchema
         : stageId === "problem-kill" && prompt.currentBundledSha256 !== resolveWorkflowV2Prompt("problem-kill").currentBundledSha256
           ? ClassifiedWorkflowV2ProblemKillOutputSchema
         : stage.schema;
@@ -471,6 +477,16 @@ function assertDiscoveryStageSemantics<T>(
       ...findRecords(evidence, "supportingFactors").flatMap((factor) => typeof factor.sourceId === "string" ? [factor.sourceId] : []),
     ]);
     const assessment = WorkflowV2ProblemKillOutputSchema.parse(output);
+    if (request.stage.endsWith(":audience-v1")) {
+      const factorIds = new Set(findRecords(evidence, "supportingFactors").flatMap(factor => typeof factor.id === "string" ? [factor.id] : []));
+      const reviewed = "factorAssessments" in assessment ? assessment.factorAssessments : [];
+      if (reviewed.length !== factorIds.size || new Set(reviewed.map(item => item.factorId)).size !== factorIds.size
+        || reviewed.some(item => !factorIds.has(item.factorId))
+        || !("intendedBuyerEvidenceFactorIds" in assessment)
+        || assessment.intendedBuyerEvidenceFactorIds.some(id => !factorIds.has(id))) {
+        throw new Error("Problem audience assessment must cite and review exact supporting factors");
+      }
+    }
     if (assessment.verdictSourceIds.some((id) => !sourceIds.has(id))) {
       throw new Error("Evidence assessment referenced an unknown source ID");
     }
@@ -575,8 +591,14 @@ function recoverableFactorPartitionSourceIds(
 function boundedExcerpt(value: string, maxCharacters: number): string {
   const normalized = value.replace(/\s+/g, " ").trim();
   const characters = Array.from(normalized);
-  if (characters.length <= maxCharacters) return normalized;
-  return `${characters.slice(0, maxCharacters - 1).join("")}…`;
+  if (normalized.length <= maxCharacters) return normalized;
+  // Zod counts UTF-16 units; preserve whole code points while meeting its text ceiling.
+  let units = 0;
+  const end = characters.findIndex((character) => {
+    units += character.length;
+    return units > maxCharacters - 1;
+  });
+  return `${characters.slice(0, end).join("")}…`;
 }
 
 function compactFactorExplanations(factor: ReturnType<typeof WorkflowV2FactorHarvestOutputSchema.parse>["factors"][number]) {

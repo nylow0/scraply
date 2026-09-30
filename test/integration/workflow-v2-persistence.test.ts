@@ -323,7 +323,7 @@ describe("workflow v2 persistence", () => {
   test("reuses a completed legacy factor batch while bounding oversized notes without changing raw history", async () => {
     configurePromptPaths({ bundledDir: join(process.cwd(), "prompts"), overrideDir: null });
     const client = database();
-    const longNote = "Uncertain applicability. ".repeat(4_000).trim();
+    const longNote = "Uncertain applicability. 🌍 ".repeat(4_000).trim();
     let providerCalls = 0;
     const provider: StructuredModelClient = { async structuredCompletion(request) {
       providerCalls += 1;

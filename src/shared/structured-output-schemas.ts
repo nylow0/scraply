@@ -1,6 +1,13 @@
 import { z } from "zod";
 
 export const HarvestModeSchema = z.enum(["domain", "audience"]);
+export const EvidenceSourceRoleSchema = z.enum(["firsthand", "measured", "vendor", "recommendation", "illustration", "unknown"]);
+export const EvidenceAudienceFitSchema = z.enum(["intended-buyer", "adjacent", "general", "unknown"]);
+export const ProblemFactorAssessmentSchema = z.object({
+  factorId: z.string().trim().min(1).max(256), sourceRole: EvidenceSourceRoleSchema, audienceFit: EvidenceAudienceFitSchema,
+  independentSourceKey: z.string().trim().min(1).max(160).nullable(), reason: z.string().trim().min(1).max(500),
+}).strict();
+export type ProblemFactorAssessment = z.infer<typeof ProblemFactorAssessmentSchema>;
 export const ProblemVerdictSchema = z.enum([
   "confirmed",
   "overstated",
@@ -141,10 +148,15 @@ const ExplicitProblemKillOutputSchema = ClassifiedProblemKillOutputSchema.extend
   workflowKey: ProblemWorkflowKeySchema,
 }).strict();
 
+const AssessedProblemKillOutputSchema = ExplicitProblemKillOutputSchema.extend({
+  factorAssessments: z.array(ProblemFactorAssessmentSchema).max(120),
+}).strict();
+
 export const ProblemKillOutputSchema = z.union([
   LegacyProblemKillOutputSchema,
   ClassifiedProblemKillOutputSchema,
   ExplicitProblemKillOutputSchema,
+  AssessedProblemKillOutputSchema,
 ]);
 
 export const SolutionsOutputSchema = z.object({
@@ -209,22 +221,6 @@ export const WorkflowV2QueryIntentSchema = z.enum([
   "current-alternative",
   "buying-signal",
   "contrary-evidence",
-]);
-
-export const EvidenceSourceRoleSchema = z.enum([
-  "firsthand",
-  "measured",
-  "vendor",
-  "recommendation",
-  "illustration",
-  "unknown",
-]);
-
-export const EvidenceAudienceFitSchema = z.enum([
-  "intended-buyer",
-  "adjacent",
-  "general",
-  "unknown",
 ]);
 
 const LegacyWorkflowV2QueryPlanItemSchema = z.object({
@@ -344,10 +340,18 @@ export const ExplicitWorkflowV2ProblemKillOutputSchema = ClassifiedWorkflowV2Pro
   workflowKey: ProblemWorkflowKeySchema,
 }).strict();
 
+export const AssessedWorkflowV2ProblemKillOutputSchema = ExplicitWorkflowV2ProblemKillOutputSchema.extend({
+  verdictReason: z.string().trim().min(1).max(1600), evidenceGap: z.string().trim().min(1).max(600).nullable(),
+  unresolvedAssumptions: z.array(z.string().trim().min(1).max(600)).max(20),
+  wouldChangeConclusion: z.array(z.string().trim().min(1).max(600)).max(20),
+  factorAssessments: z.array(ProblemFactorAssessmentSchema).max(120),
+}).strict();
+
 export const WorkflowV2ProblemKillOutputSchema = z.union([
   LegacyWorkflowV2ProblemKillOutputSchema,
   ClassifiedWorkflowV2ProblemKillOutputSchema,
   ExplicitWorkflowV2ProblemKillOutputSchema,
+  AssessedWorkflowV2ProblemKillOutputSchema,
 ]);
 
 export const WorkflowV2SolutionOptionSchema = z.object({

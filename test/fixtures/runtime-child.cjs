@@ -69,7 +69,7 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
       return;
     }
     const bytes = Buffer.from(`${JSON.stringify({ protocolVersion: "1.1", id: request.id, operation: request.operation, result: { models: [{ identity: model, displayName: "Modèle", supportsStructuredOutput: true,
-      ...(mode.startsWith("workflow-checkpoint-recovery") ? { supportedReasoningEfforts: ["medium", "xhigh"], defaultReasoningEffort: "medium" } : {}) }] } })}\n`);
+      ...(mode.startsWith("workflow-checkpoint-recovery") || mode === "workflow-audience-many" ? { supportedReasoningEfforts: ["medium", "xhigh"], defaultReasoningEffort: "medium" } : {}) }] } })}\n`);
     // Workflow requests overlap. Fragment only the dedicated framing fixture so
     // another response cannot be spliced into the middle of this JSON envelope.
     if (workflow) { process.stdout.write(bytes); return; }

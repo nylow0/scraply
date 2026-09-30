@@ -30,6 +30,17 @@ function detail(summaryChanges: Partial<WorkflowSummary> = {}): WorkflowDetail {
 }
 
 describe("VibeProgress", () => {
+  test("offers the explicit saved-problem reassessment for an eligible completed discovery", async () => {
+    const state = detail({ state: "finished", outcome: "no-qualifying-ideas" });
+    state.tasks = [{ ...state.tasks[0]!, id: "discovery-1", kind: "discovery", state: "succeeded", canReassessProblems: true }];
+    const onReassessProblems = vi.fn(async () => {});
+    const view = render(VibeProgress, { detail: state, busy: false, onPause: vi.fn(async () => {}),
+      onStop: vi.fn(async () => {}), onReassessProblems });
+    await fireEvent.click(view.getByRole("button", { name: "Re-evaluate problems" }));
+    expect(onReassessProblems).toHaveBeenCalledWith("discovery-1");
+    expect(view.queryByRole("button", { name: "Retry task" })).toBeNull();
+  });
+
   test("shows one activity row for consecutive events describing the same action", () => {
     const state = detail({ ideaTargetReady: false });
     state.activity = ["Model request dispatched", "Model request accepted", "Model request accepted"]

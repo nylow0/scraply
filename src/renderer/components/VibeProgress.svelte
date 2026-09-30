@@ -15,6 +15,7 @@
     onStop,
     onResume,
     onRetryTask,
+    onReassessProblems,
     onLoadMoreTasks,
     onPreviewExtension,
     onApplyExtension,
@@ -25,6 +26,7 @@
     onStop: () => Promise<void>;
     onResume?: () => Promise<void>;
     onRetryTask?: (taskId: string, expectedTerminalAttemptId: string, acknowledgeUnknownCompletion: boolean) => Promise<void>;
+    onReassessProblems?: (taskId: string) => Promise<void>;
     onLoadMoreTasks?: (cursor: string) => Promise<void>;
     onPreviewExtension?: (extension: BudgetExtension) => Promise<WorkflowPreview>;
     onApplyExtension?: (preview: WorkflowPreview) => Promise<void>;
@@ -353,6 +355,11 @@
               {#if task.parentItemId}<div><dt>Parent</dt><dd><code>{task.parentItemId}</code></dd></div>{/if}
               {#if task.error}<div><dt>Error</dt><dd>{task.error}</dd></div>{/if}
             </dl>
+            {#if onReassessProblems && task.canReassessProblems}
+              <p>Re-evaluate saved evidence against each problem's affected users. Your original brief and research remain saved.</p>
+              <button type="button" class="retry-button" disabled={busy}
+                onclick={() => void onReassessProblems(task.id).catch(() => {})}>Re-evaluate problems</button>
+            {/if}
             {#if onRetryTask && task.terminalAttemptId && (task.state === "failed" || task.state === "unknown")}
               {#if task.state === "unknown"}
                 <label class="retry-acknowledge"><input type="checkbox" bind:checked={acknowledgedUnknown[task.terminalAttemptId]} />I understand this request may have completed and a retry may repeat its work.</label>

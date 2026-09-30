@@ -5,7 +5,7 @@ import App from "../../src/renderer/App.svelte";
 import { createScraplyApi } from "../../src/shared/scraply-api";
 import { DEFAULT_RUN_CONFIG, type Thread } from "../../src/shared/schemas";
 import { IPC_CHANNELS, RemoveSearchKeySchema, SaveScopeSchema, SaveRunConfigSchema, SaveSearchKeySchema, type WorkspaceState } from "../../src/shared/ipc";
-import { PreviewWorkflowRequestSchema, type WorkflowDetail } from "../../src/shared/workflow-contracts";
+import { CommandWorkflowRequestSchema, PreviewWorkflowRequestSchema, type WorkflowDetail } from "../../src/shared/workflow-contracts";
 
 // This standalone renderer has no Electron bridge or network provider. URL parameters
 // select deterministic UI scenarios without touching the user's projects or credentials.
@@ -75,6 +75,13 @@ if (guidedProgress) {
     guidedProgress.summary.finishedAt = now;
     guidedProgress.tasks[0]!.state = "failed";
   }
+  if (params.get("phase") === "audience-recovery") {
+    guidedProgress.summary.state = "finished";
+    guidedProgress.summary.outcome = "no-qualifying-ideas";
+    guidedProgress.summary.finishedAt = now;
+    guidedProgress.tasks[0]!.state = "succeeded";
+    guidedProgress.tasks[0]!.canReassessProblems = true;
+  }
   state.activeWorkflow = guidedProgress.summary;
   state.threads = state.threads.map(thread => thread.id === state.activeThreadId ? { ...thread, status: params.get("phase") === "failed" ? "failed" : "discovery-running" } : thread);
 }
@@ -85,6 +92,21 @@ const fixtureApi = createScraplyApi({
     let result: unknown;
     switch (channel) {
       case IPC_CHANNELS.GET_WORKSPACE: result = state; break;
+      case IPC_CHANNELS.COMMAND_WORKFLOW: {
+        const request = CommandWorkflowRequestSchema.parse(payload);
+        if (!guidedProgress || request.action.type !== "reassess-problems" || params.get("phase") !== "audience-recovery") {
+          throw new Error("This fixture only simulates saved audience reassessment.");
+        }
+        guidedProgress.summary.state = "running";
+        guidedProgress.summary.outcome = null;
+        guidedProgress.summary.finishedAt = null;
+        guidedProgress.summary.revision += 1;
+        guidedProgress.tasks[0]!.state = "running";
+        guidedProgress.tasks[0]!.canReassessProblems = false;
+        result = { ok: true, data: { sessionId: guidedProgress.summary.sessionId,
+          revision: guidedProgress.summary.revision, summary: guidedProgress.summary } };
+        break;
+      }
       case IPC_CHANNELS.GET_WORKFLOW:
         if (guidedProgress && params.has("live") && ++progressReads === 2) {
           guidedProgress.activity?.push({ id: "5", message: "12 observations from 8 sources", stage: "extracting", createdAt: now });
