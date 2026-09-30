@@ -142,13 +142,15 @@ export const WorkflowTaskSchema = z.object({
   finishedAt: z.string().datetime().nullable(),
 }).strict();
 export const GetWorkflowRequestSchema = z.object({ sessionId: IdSchema, cursor: z.string().max(512).optional() }).strict();
+const WorkflowFrameDetailSchema = z.object({
+  id: IdSchema, version: z.number().int().positive(), knownProblem: z.boolean(),
+  draft: ResearchFrameSchema, approved: ResearchFrameSchema.nullable(), sources: z.array(SourceSchema),
+  createdAt: z.string().datetime(), approvedAt: z.string().datetime().nullable(),
+}).strict();
 export const WorkflowDetailSchema = z.object({
   summary: WorkflowSummarySchema, tasks: z.array(WorkflowTaskSchema), nextCursor: z.string().nullable(),
-  researchFrame: z.object({
-    id: IdSchema, version: z.number().int().positive(), knownProblem: z.boolean(),
-    draft: ResearchFrameSchema, approved: ResearchFrameSchema.nullable(), sources: z.array(SourceSchema),
-    createdAt: z.string().datetime(), approvedAt: z.string().datetime().nullable(),
-  }).strict().optional(),
+  researchFrame: WorkflowFrameDetailSchema.optional(),
+  latestResearchFrame: WorkflowFrameDetailSchema.optional(),
   activity: z.array(z.object({
     id: IdSchema, message: z.string(), stage: z.string().nullable(), createdAt: z.string().datetime(),
   }).strict()).optional(),

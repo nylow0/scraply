@@ -8,6 +8,7 @@ import { SourceSchema, type ModelRef, type ReasoningEffort, type Source } from "
 import type { Scope } from "../shared/structured-output-schemas";
 import type { WorkflowExecution } from "./workflow-execution";
 import type { WorkflowV2StageId } from "./stages";
+import { safeCanonicalizeUrl } from "./discovery";
 
 export interface ResearchFrameDependencies {
   workflow: WorkflowExecution;
@@ -34,7 +35,10 @@ export async function generateResearchFrame(scope: Scope, knownProblem: boolean,
         signal.throwIfAborted();
         dependencies.onProgress(`Context search: ${item.query}`);
         const results = await dependencies.search.search(item.query, { numResults: 4, maxCharacters: 2_500, signal });
-        for (const source of results) if (!sources.some((existing) => existing.url === source.url)) sources.push(source);
+        for (const source of results) {
+          const url = safeCanonicalizeUrl(source.url);
+          if (url && !sources.some((existing) => existing.url === url)) sources.push({ ...source, url });
+        }
       }
     }
     workflow.save("frame-context-sources", sources);

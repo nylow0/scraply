@@ -79,7 +79,16 @@ export const ResearchFrameSchema = z.object({
   unique(frame.openQuestions.map(question => question.id), "openQuestions", "Question IDs");
   unique(frame.languages, "languages", "Languages");
   if (!frame.languages.includes("en")) ctx.addIssue({ code: "custom", path: ["languages"], message: "English must be included." });
-});
+}).transform(({ version, areas, openQuestions, ...frame }) => ({
+  ...frame,
+  ...(version === undefined ? {} : { version }),
+  areas: areas.map(({ region, venues, ...area }) => ({
+    ...area,
+    ...(region === undefined ? {} : { region }),
+    venues: venues.map(({ domain, ...venue }) => ({ ...venue, ...(domain === undefined ? {} : { domain }) })),
+  })),
+  openQuestions: openQuestions.map(({ answer, ...question }) => ({ ...question, ...(answer === undefined ? {} : { answer }) })),
+}));
 
 export const FrameSearchPlanSchema = z.object({
   queries: z.array(z.object({
@@ -104,9 +113,9 @@ export type ResearchGoalKind = z.infer<typeof ResearchGoalKindSchema>;
 export type ResearchFrameGoalKind = ResearchGoalKind;
 export type ResearchCriterion = z.infer<typeof ResearchCriterionSchema>;
 export type ResearchConstraint = z.infer<typeof ResearchConstraintSchema>;
-export type ResearchVenue = z.infer<typeof ResearchVenueSchema>;
-export type ResearchArea = z.infer<typeof ResearchAreaSchema>;
 export type ResearchFrame = z.infer<typeof ResearchFrameSchema>;
+export type ResearchArea = ResearchFrame["areas"][number];
+export type ResearchVenue = ResearchArea["venues"][number];
 export type FrameSearchPlan = z.infer<typeof FrameSearchPlanSchema>;
 export type ResearchAreaRanking = z.infer<typeof ResearchAreaRankingSchema>;
 
