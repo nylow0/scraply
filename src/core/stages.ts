@@ -15,10 +15,14 @@ import {
   type WorkflowV2SolutionOption,
 } from "../shared/structured-output-schemas";
 import { MAX_IDEA_COUNT } from "../shared/schemas";
+import { FrameSearchPlanSchema, ResearchFrameOutputSchema, ResearchAreaRankingSchema } from "../shared/research-frame";
 
 export const WORKFLOW_VERSION_V2 = 2 as const;
 
 export const WORKFLOW_V2_STAGE_IDS = [
+  "frame-search-plan",
+  "frame",
+  "area-ranking",
   "query-plan",
   "factor-harvest",
   "problem-candidates",
@@ -34,7 +38,7 @@ export type WorkflowV2StageId = typeof WORKFLOW_V2_STAGE_IDS[number];
 
 export interface WorkflowV2StageDefinition {
   id: WorkflowV2StageId;
-  promptFilename: `workflow-v2-${WorkflowV2StageId}.md`;
+  promptFilename: `workflow-v2-${WorkflowV2StageId}.md` | "workflow-v2-frame-search.md";
   promptRevision: 1;
   schemaRevision: 1;
   schema: ZodType<unknown>;
@@ -42,6 +46,18 @@ export interface WorkflowV2StageDefinition {
 }
 
 export const WORKFLOW_V2_STAGE_REGISTRY = {
+  "frame-search-plan": {
+    id: "frame-search-plan", promptFilename: "workflow-v2-frame-search.md",
+    promptRevision: 1, schemaRevision: 1, schema: FrameSearchPlanSchema, maxOutputTokens: 2_048,
+  },
+  frame: {
+    id: "frame", promptFilename: "workflow-v2-frame.md",
+    promptRevision: 1, schemaRevision: 1, schema: ResearchFrameOutputSchema, maxOutputTokens: 8_192,
+  },
+  "area-ranking": {
+    id: "area-ranking", promptFilename: "workflow-v2-area-ranking.md",
+    promptRevision: 1, schemaRevision: 1, schema: ResearchAreaRankingSchema, maxOutputTokens: 4_096,
+  },
   "query-plan": {
     id: "query-plan",
     promptFilename: "workflow-v2-query-plan.md",
