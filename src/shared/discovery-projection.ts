@@ -21,7 +21,7 @@ export function framedDiscoveryProjection(depth: DiscoveryDepth): { searches: nu
   const investigators = FRAME_INVESTIGATOR_COUNTS[depth];
   const harvestCalls = Math.ceil(DISCOVERY_DEPTHS[depth].queriesPerMode * DISCOVERY_DEPTHS[depth].searchResultsPerQuery / 3) * 2;
   return {
-    searches: MAX_FRAME_AREAS * FRAME_SCAN_SEARCHES_PER_AREA + scoped.searches * investigators,
+    searches: MAX_FRAME_AREAS * FRAME_SCAN_SEARCHES_PER_AREA * 2 + scoped.searches * investigators,
     modelCalls: MAX_FRAME_AREAS * 4 + 1 + (2 + harvestCalls + 1 + DISCOVERY_DEPTHS[depth].candidateLimit) * investigators,
     factorCap: MAX_FRAME_AREAS * FRAME_SCAN_FACTORS_PER_AREA + scoped.factorCap * investigators,
   };
