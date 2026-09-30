@@ -29,10 +29,20 @@
   }
 </script>
 
-<button disabled={busy || assessing} onclick={previewAssessment}>Assess</button>
+<button class="preview" disabled={busy || assessing} onclick={previewAssessment}>{assessing && !preview ? "Previewing…" : "Assess"}</button>
 {#if preview}
   <p>This assessment allows up to {preview.minimumWork.modelCalls} model calls and {preview.minimumWork.searches} searches. It uses the saved candidate and its evidence.</p>
   {#each preview.fieldErrors as error, index (index)}<p role="alert">{error.message}</p>{/each}
-  <button disabled={busy || assessing || preview.fieldErrors.length > 0} onclick={assessCandidate}>Assess candidate</button>
+  <button class="start" disabled={busy || assessing || preview.fieldErrors.length > 0} onclick={assessCandidate}>{assessing ? "Starting…" : "Assess candidate"}</button>
 {/if}
 {#if errorMessage}<p role="alert">{errorMessage}</p>{/if}
+
+<style>
+  button { margin-top: 12px; padding: 8px 12px; border: 1px solid var(--border); border-radius: 7px; font-size: 0.82rem; font-weight: 600; cursor: pointer; }
+  .preview { background: transparent; color: var(--text); }
+  .preview:hover:not(:disabled) { background: var(--surface-2); }
+  .start { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+  button:disabled { opacity: 0.5; cursor: default; }
+  p { margin-top: 10px; color: var(--muted); font-size: 0.82rem; line-height: 1.5; }
+  p[role="alert"] { color: var(--danger); }
+</style>

@@ -65,6 +65,8 @@ export interface InvestigatorDependencies {
   checkpoints: InvestigatorCheckpoints;
   /** The host reserves and settles spend and never automatically replays an uncertain dispatch. */
   durableSearch(request: InvestigatorSearchRequest): Promise<Source[]>;
+  /** A pending request keeps its saved route when route defaults change between versions. */
+  savedSearchRoute?: (key: string) => InvestigatorSearchRoute | undefined;
   /** One call per operation; saved checkpoints are loaded before this is consulted. */
   budgetAvailable(modelCalls: number, searches: number, operationKey: string): boolean;
   /** Stops new optional work after the shared target is met; dispatched operations still settle. */
@@ -190,8 +192,9 @@ export async function runCandidateEvidenceInvestigator(input: InvestigatorDepend
         budgetExhausted = true;
         break;
       }
+      const requestedRoute = gap.route === "social" && input.dependencies.sourceRouting?.socialEnabled !== true ? "community" : gap.route;
       const request = { key, query: gap.query, evidenceNeeded: gap.evidenceNeeded,
-        route: zeroYieldRoutes.has(gap.route) ? nextInvestigatorRoute(gap.route, input.area) : gap.route };
+        route: input.savedSearchRoute?.(key) ?? (zeroYieldRoutes.has(requestedRoute) ? nextInvestigatorRoute(requestedRoute, input.area) : requestedRoute) };
       const harvest = await investigatorHarvest(input, request);
       if (!harvest) {
         budgetExhausted = true;
@@ -251,8 +254,10 @@ export async function runAreaGapInvestigation(input: InvestigatorDependencies & 
   const knownSources = new Map((input.existingSources ?? []).map(source => [source.canonicalUrl, source]));
   const zeroYieldRoutes = new Set<InvestigatorSearchRoute>();
   for (const [index, gap] of output.gaps.entries()) {
-    const request = { key: `${key}:gap-${index + 1}`, query: gap.query, evidenceNeeded: gap.evidenceNeeded,
-      route: zeroYieldRoutes.has(gap.route) ? nextInvestigatorRoute(gap.route, input.area) : gap.route };
+    const requestKey = `${key}:gap-${index + 1}`;
+    const requestedRoute = gap.route === "social" && input.dependencies.sourceRouting?.socialEnabled !== true ? "community" : gap.route;
+    const request = { key: requestKey, query: gap.query, evidenceNeeded: gap.evidenceNeeded,
+      route: input.savedSearchRoute?.(requestKey) ?? (zeroYieldRoutes.has(requestedRoute) ? nextInvestigatorRoute(requestedRoute, input.area) : requestedRoute) };
     const targetStop = input.stopRequested?.();
     if (targetStop && !input.checkpoints.read(`investigator-harvest:${request.key}`)) return { factors, sources, searches,
       stopReason: targetStop, partial: false };
@@ -273,23 +278,37 @@ export async function runManagedInvestigatorSearch(input: {
   request: InvestigatorSearchRequest; searchProvider: SearchProviderChoice;
   searchClient?: Pick<SearchClient, "provider" | "search" | "providerForRoute">; searchOptions?: Omit<SearchOptions, "signal">;
   sourceRouting?: SourceRoutingContext;
+  acknowledgedAttemptIds?: readonly string[];
   signal: AbortSignal; onDispatched?: (attemptId: string) => void;
 }): Promise<{ attemptId: string; sources: Source[]; replayed: boolean }> {
   input.signal.throwIfAborted();
   const request = SearchRequestSchema.parse(input.request);
   const repository = new OpportunityExplorationRepository(input.db);
-  const stageKey = `investigator-search:${request.key}`;
-  const existing = repository.loadAttempt(input.threadId, stageKey, input.sessionId);
-  const savedInput = existing?.input as { parameters: Omit<SearchOptions, "signal"> } | undefined;
-  const provider = existing ? SearchProviderSchema.parse((existing.model as { providerId: unknown }).providerId)
+  let stageKey = `investigator-search:${request.key}`;
+  let existing = repository.loadAttempt(input.threadId, stageKey, input.sessionId);
+  let acknowledgedOrigin: typeof existing = null;
+  const acknowledged = new Set(input.acknowledgedAttemptIds ?? []);
+  while (existing && acknowledged.has(existing.attemptId) && (["dispatched", "unknown-dispatch"].includes(existing.status)
+    || existing.status === "failed" && input.db.db.prepare("SELECT 1 FROM opportunity_exploration_attempts WHERE id = ? AND dispatched_at IS NOT NULL").get(existing.attemptId))) {
+    if (canonicalJson((existing.input as { request: unknown }).request) !== canonicalJson(request)) {
+      throw new Error("Investigator search checkpoint identity changed. Start a new research assignment.");
+    }
+    acknowledgedOrigin = existing;
+    stageKey = `${stageKey}:retry:${existing.attemptId}`;
+    existing = repository.loadAttempt(input.threadId, stageKey, input.sessionId);
+  }
+  const frozen = existing ?? acknowledgedOrigin;
+  const savedInput = frozen?.input as { parameters: Omit<SearchOptions, "signal"> } | undefined;
+  const provider = frozen ? SearchProviderSchema.parse((frozen.model as { providerId: unknown }).providerId)
     : input.searchProvider === "auto" ? input.searchClient?.providerForRoute?.(request.route) ?? input.searchClient?.provider
     : input.searchProvider;
   if (!provider) throw new Error("Search provider is unavailable for this new investigator search.");
   const parameters = savedInput?.parameters ?? { ...routeSearchOptions(request.route, input.sourceRouting),
     ...input.searchOptions, route: request.route, provider, numResults: 5, maxCharacters: 4_000 };
-  const model = existing?.model ?? { providerId: provider, modelId: "search", reasoningEffort: "bounded" };
+  const model = z.object({ providerId: z.string(), modelId: z.string(), reasoningEffort: z.string() }).strict()
+    .parse(frozen?.model ?? { providerId: provider, modelId: "search", reasoningEffort: "bounded" });
   const attempt = input.db.immediateTransaction(() => repository.prepareAttempt(input.threadId, {
-    stageKey, stageName: "investigator-search", input: { request, parameters }, model: model as { providerId: string; modelId: string; reasoningEffort: string },
+    stageKey, stageName: "investigator-search", input: { request, parameters }, model,
     promptVersion: SEARCH_PROMPT_VERSION, promptText: request.query, workItemId: input.workItemId,
   }, input.sessionId));
   if (attempt.kind === "completed") {
@@ -440,7 +459,10 @@ function nextInvestigatorRoute(route: InvestigatorSearchRoute, area: ResearchAre
 
 function ensureWorkItem(repository: WorkflowRepository, sessionId: string, parentItemId: string,
   kind: string, scopeKey: string, input: unknown): WorkflowWorkItem {
-  const saved = repository.listWorkItems(sessionId).find(item => item.scopeKey === scopeKey && item.parentItemId === parentItemId);
+  const items = repository.listWorkItems(sessionId);
+  // An assessment can investigate an area already visited by another task in the same session.
+  if (items.some(item => item.scopeKey === scopeKey && item.parentItemId !== parentItemId)) scopeKey = `${scopeKey}:${parentItemId}`;
+  const saved = items.find(item => item.scopeKey === scopeKey && item.parentItemId === parentItemId);
   if (saved) {
     if (saved.kind !== kind || canonicalJson(saved.input) !== canonicalJson(input)) throw new Error("Saved investigator work item identity changed.");
     return saved;

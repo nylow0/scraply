@@ -358,16 +358,16 @@ export class WorkflowRepository {
   }
 
   /** Explicit recovery keeps run-local checkpoints and all prior attempt/accounting records. */
-  reopenGuidedDiscovery(sessionId: string, expectedRevision: number, taskId: string, reassessProblems = false): WorkflowSession {
+  reopenResearchRecovery(sessionId: string, expectedRevision: number, taskId: string, reassessProblems = false): WorkflowSession {
     this.client.requireImmediateTransaction();
     const session = this.requireSession(sessionId);
     const task = this.requireWorkItemInSession(taskId, sessionId);
     const settled = reassessProblems ? session.outcome === "no-qualifying-ideas" && task.state === "succeeded"
       : ["needs-attention", "failed", "partial"].includes(session.outcome ?? "") && ["unknown", "failed"].includes(task.state);
     if (session.revision !== expectedRevision || session.state !== "finished" || !settled
-      || (task.kind !== "discovery" && (reassessProblems || task.kind !== "prepare-frame"))
-      || (session.contract as { limits?: { enforced?: boolean } }).limits?.enforced !== false) {
-      throw new WorkflowConflictError("REVISION_CONFLICT", "Only settled guided research recovery can reopen");
+      || (reassessProblems ? task.kind !== "discovery" || (session.contract as { limits?: { enforced?: boolean } }).limits?.enforced !== false
+        : !["discovery", "prepare-frame", "assess-candidate", "generate-ideas"].includes(task.kind))) {
+      throw new WorkflowConflictError("REVISION_CONFLICT", "Only a settled research task can reopen for explicit recovery");
     }
     this.client.db.prepare(`UPDATE workflow_work_items SET state = 'running', error_json = NULL,
       finished_at = NULL WHERE id = ?`).run(taskId);
@@ -572,12 +572,19 @@ export class WorkflowRepository {
   hasUnknownProviderCompletion(runId: string): boolean {
     if (unknownSearchAttempts(this.client, runId, this.acknowledgedAttemptIds(runId)).length > 0) return true;
     if (!new GenerationAttemptRepository(this.client).getResumeSafety(runId, this.acknowledgedAttemptIds(runId)).canResume) return true;
-    return Boolean(this.client.db.prepare(`WITH RECURSIVE linked(id) AS (
+    return this.unknownInvestigatorSearches(runId, this.acknowledgedAttemptIds(runId)).length > 0;
+  }
+
+  /** A retry acknowledges exact dispatch IDs without rewriting their lost terminal history. */
+  unknownInvestigatorSearches(runId: string, acknowledgedAttemptIds: readonly string[] = []): Array<{ id: string; createdAt: string }> {
+    const rows = this.client.db.prepare(`WITH RECURSIVE linked(id) AS (
       SELECT id FROM workflow_work_items WHERE json_extract(output_refs_json, '$.runId') = ?
       UNION SELECT child.id FROM workflow_work_items child JOIN linked parent ON child.parent_item_id = parent.id
-    ) SELECT 1 FROM opportunity_exploration_attempts attempt JOIN linked ON linked.id = attempt.work_item_id
+    ) SELECT attempt.id, attempt.prepared_at AS createdAt FROM opportunity_exploration_attempts attempt JOIN linked ON linked.id = attempt.work_item_id
       WHERE attempt.stage_name = 'investigator-search' AND attempt.dispatched_at IS NOT NULL
-        AND attempt.status IN ('dispatched','unknown-dispatch','failed') LIMIT 1`).get(runId));
+        AND attempt.status IN ('dispatched','unknown-dispatch','failed') ORDER BY attempt.prepared_at, attempt.rowid`)
+      .all(runId) as Array<{ id: string; createdAt: string }>;
+    return rows.filter(attempt => !acknowledgedAttemptIds.includes(attempt.id));
   }
 
   countInvestigatorSearches(runId: string): number {

@@ -1,9 +1,9 @@
 import { z } from "zod";
 import { ScopeSchema } from "./structured-output-schemas";
 import { ModelRefSchema, ReasoningEffortSchema, RunConfigSchema } from "./schemas";
+import { ResearchTargetSchema } from "./evidence-investigators";
 import { SourceSchema } from "./schemas";
 import { ResearchFrameSchema } from "./research-frame";
-import { ResearchTargetSchema } from "./evidence-investigators";
 
 const IdSchema = z.string().trim().min(1).max(128);
 const TextSchema = z.string().trim().min(1).max(20_000);
@@ -65,6 +65,8 @@ export const WorkflowBudgetExtensionSchema = z.object({
 export const CandidateAssessmentProposalSchema = z.object({
   candidateId: IdSchema, sourceRunId: IdSchema, depth: z.enum(["quick", "standard", "deep"]),
   modelCalls: NonnegativeCountSchema, searches: NonnegativeCountSchema,
+  frameId: IdSchema.nullable().optional(), frameVersion: z.number().int().positive().nullable().optional(),
+  assessmentFrameSource: z.enum(["approved", "scope-derived"]).optional(),
 }).strict();
 export const PreviewWorkflowRequestSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("launch"), threadId: IdSchema, draft: WorkflowLaunchDraftSchema }).strict(),

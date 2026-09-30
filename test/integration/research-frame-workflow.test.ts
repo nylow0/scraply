@@ -15,6 +15,7 @@ import { ProviderFailure, type StructuredModelClient, type StructuredStageReques
 import { DEFAULT_RUN_CONFIG } from "../../src/shared/schemas";
 import type { ResearchFrame } from "../../src/shared/research-frame";
 import type { WorkflowLaunchContract, WorkflowLaunchDraft } from "../../src/shared/workflow-contracts";
+import { framedDiscoveryProjection } from "../../src/shared/discovery-projection";
 
 const scope = { title: "Bakery orders", domain: "Custom orders", audience: "", observations: "Orders change after deposits", offLimits: [] };
 const model = { providerId: "fixture", modelId: "fixture-model" };
@@ -34,7 +35,7 @@ function inputs(request: StructuredStageRequest<unknown>): Record<string, unknow
 }
 
 async function setup(mode: "babysit" | "vibe" = "babysit", knownProblem = false,
-  beforeStage?: (stage: string) => void) {
+  beforeStage?: (stage: string) => void, boundedAtPreviewMinimum = false) {
   const directory = mkdtempSync(join(tmpdir(), "scraply-frame-workflow-"));
   const db = new DatabaseClient(join(directory, "test.db"));
   configurePromptPaths({ bundledDir: join(process.cwd(), "prompts"), overrideDir: join(directory, "prompts") });
@@ -88,7 +89,11 @@ async function setup(mode: "babysit" | "vibe" = "babysit", knownProblem = false,
       researchMode: knownProblem ? "known-problem" : "explore-market", knownProblem: knownProblem ? "Order changes take too much time" : "" },
     ideas: { model, reasoningEffort: "medium" }, targets: { kind: "per-problem", ideaCount: 1 },
     limits: { enforced: false, maxMinutes: 90, maxModelCalls: 500, maxSearches: 500 }, instructions: {} };
-  const preview = await coordinator.preview({ type: "launch", threadId: "project", draft });
+  let preview = await coordinator.preview({ type: "launch", threadId: "project", draft });
+  if (boundedAtPreviewMinimum) {
+    draft.limits = { enforced: true, maxMinutes: 90, maxModelCalls: preview.minimumWork.modelCalls, maxSearches: preview.minimumWork.searches };
+    preview = await coordinator.preview({ type: "launch", threadId: "project", draft });
+  }
   expect(preview.fieldErrors).toEqual([]);
   const receipt = await coordinator.start({ threadId: "project", clientCommandId: "launch", contract: preview.proposal,
     previewHash: preview.previewHash, capabilityFingerprint: preview.capabilityFingerprint, previewExpiresAt: preview.expiresAt });
@@ -101,6 +106,24 @@ async function until(predicate: () => boolean): Promise<void> {
   while (!predicate() && Date.now() < deadline) await Bun.sleep(5);
   expect(predicate()).toBe(true);
 }
+
+test("bounded Controlled research admits frame approval at the shown launch minimum", async () => {
+  const fixture = await setup("babysit", false, undefined, true);
+  try {
+    const { coordinator, sessionId, db } = fixture;
+    await until(() => coordinator.summary(sessionId).reviewKind === "frame");
+    const saved = coordinator.get(sessionId).researchFrame!;
+    await coordinator.command({ threadId: "project", sessionId, clientCommandId: "approve-minimum", expectedRevision: coordinator.summary(sessionId).revision,
+      action: { type: "approve-frame", frameId: saved.id, frame: saved.draft } });
+    const repository = new WorkflowRepository(db);
+    const research = repository.listWorkItems(sessionId).find(item => item.kind === "discovery")!;
+    expect(repository.listBudgetEntries(sessionId).find(entry => entry.workItemId === research.id && entry.kind === "model-call")?.reservedUnits)
+      .toBe(framedDiscoveryProjection("quick").modelCalls);
+    await until(() => ["waiting-for-review", "finished"].includes(coordinator.summary(sessionId).state));
+    expect(fixture.errors).toEqual([]);
+    expect(coordinator.summary(sessionId).budget.modelCalls.spent).toBeLessThanOrEqual(fixture.draft.limits.maxModelCalls);
+  } finally { await fixture.close(); }
+});
 
 test("Controlled persists the frame review, then scans included areas and saves area IDs", async () => {
   const fixture = await setup();
