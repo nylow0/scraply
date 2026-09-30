@@ -1,4 +1,5 @@
 import { installApplicationMenu } from "./app-menu";
+import { GetRunTraceRequestSchema, GetRunTraceStepRequestSchema, RunTraceSchema, RunTraceStepDetailSchema } from "../shared/run-trace";
 import { app, BrowserWindow, dialog, ipcMain, safeStorage, screen, shell, utilityProcess, type IpcMainInvokeEvent } from "electron";
 import { randomUUID } from "node:crypto";
 import { startBrowserDevHost, type AppRequestHandler } from "./browser-dev";
@@ -624,6 +625,14 @@ function registerIpc(): void {
     const { sessionId, cursor } = GetWorkflowRequestSchema.parse(body);
     const path = `/workflows/${encodeURIComponent(sessionId)}${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ""}`;
     return WorkflowDetailSchema.parse(await backendRequest(path));
+  }));
+  handle(IPC_CHANNELS.GET_RUN_TRACE, (body) => workflow(async () => {
+    const { runId } = GetRunTraceRequestSchema.parse(body);
+    return RunTraceSchema.parse(await backendRequest(`/runs/${encodeURIComponent(runId)}/trace`));
+  }));
+  handle(IPC_CHANNELS.GET_RUN_TRACE_STEP, (body) => workflow(async () => {
+    const { runId, stepId } = GetRunTraceStepRequestSchema.parse(body);
+    return RunTraceStepDetailSchema.parse(await backendRequest(`/runs/${encodeURIComponent(runId)}/trace/steps/${encodeURIComponent(stepId)}`));
   }));
   handle(IPC_CHANNELS.COMMAND_WORKFLOW, (body) => workflow(async () =>
     WorkflowAdmissionReceiptSchema.parse(await post("/workflows/command", CommandWorkflowRequestSchema.parse(body)))));

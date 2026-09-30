@@ -17,6 +17,9 @@ import { NATIVE_WORKFLOW_MODEL as model, UNTRUSTED_WORKFLOW_TEXT as untrusted, s
 import { resolveWorkflowV2Prompt } from "../../src/core/prompts";
 import { WORKFLOW_V2_STAGE_IDS } from "../../src/core/stages";
 import { WorkflowRepository } from "../../src/db/repositories/workflows";
+import { getRunTrace } from "../../src/core/run-trace";
+import { RunTraceSchema, RunTraceStepDetailSchema } from "../../src/shared/run-trace";
+import { WorkflowV2Repository } from "../../src/db/repositories/workflow-v2";
 
 const statement = "Repair shops cannot reliably predict parts arrival times.";
 const scope = {
@@ -34,6 +37,57 @@ afterEach(async () => {
 });
 
 describe("native research workflow through the production backend", () => {
+  test("traces native saved steps, query results, arithmetic and older unassessed candidates without writes", async () => {
+    const item = await fixture({ workflowVersion: 2 });
+    const threadId = await item.createThread("explore-market");
+    await item.post("/research/start", { threadId }, z.object({ runId: z.string() }));
+    const workspace = await item.waitFor(state => state.threads.find(thread => thread.id === threadId)?.status === "problems-ready");
+    const runId = workspace.latestResearchRun!.runId;
+    const trace = await item.post(`/runs/${runId}/trace`, undefined, RunTraceSchema);
+    expect(trace.live).toBe(false);
+    expect(trace.steps.filter(step => step.kind === "model").map(step => step.stage.split(":")[0])).toEqual([
+      "query-plan", "factor-harvest", "query-plan", "problem-candidates", "problem-kill",
+    ]);
+    expect(trace.metrics.modelCalls).toBe(item.requests().length);
+    expect(trace.metrics.searches).toBe(item.searches.length);
+    expect(trace.metrics.candidateFunnel).toMatchObject({ total: 1, assessed: 1, confirmed: 0, dropped: 1, notAssessed: 0 });
+    expect(trace.metrics.confirmationRate).toBe(0);
+    expect(Object.values(trace.metrics.evidenceMix).reduce((sum, count) => sum + count, 0)).toBe(trace.metrics.factors);
+    expect(Object.values(trace.metrics.sourceMix).reduce((sum, count) => sum + count, 0)).toBe(trace.metrics.totalSources);
+    expect(trace.steps.some(step => step.attempts.some(attempt => attempt.inputTokens === null))).toBe(true);
+    const plan = trace.steps.find(step => step.stage.startsWith("query-plan"))!;
+    const detail = await item.post(`/runs/${runId}/trace/steps/${encodeURIComponent(plan.id)}`, undefined, RunTraceStepDetailSchema);
+    expect(detail.searches.length).toBeGreaterThan(0);
+    expect(detail.searches.every(search => search.status === "completed" && search.results.every(source => source.sourceId && source.factsKept > 0))).toBe(true);
+    const kill = trace.steps.find(step => step.stage.startsWith("problem-kill"))!;
+    const killDetail = await item.post(`/runs/${runId}/trace/steps/${encodeURIComponent(kill.id)}`, undefined, RunTraceStepDetailSchema);
+    expect(killDetail.searches).toHaveLength(1);
+    expect(killDetail.candidates[0]?.state).toBe("dropped");
+    const db = new DatabaseClient(item.dbPath);
+    try {
+      const changed = db.db.prepare("SELECT total_changes() AS count").get();
+      expect(getRunTrace(db, runId).metrics).toEqual(trace.metrics);
+      expect(db.db.prepare("SELECT total_changes() AS count").get()).toEqual(changed);
+      // Pre-trace runs did not save query snapshots; links still reconstruct from the unchanged key.
+      db.db.prepare("DELETE FROM workflow_snapshots WHERE research_run_id = ? AND snapshot_key LIKE 'search-query:%'").run(runId);
+      const olderTrace = getRunTrace(db, runId);
+      expect(olderTrace.steps.filter(step => step.kind === "search" && step.search?.query === "Query not recorded in this older run")
+        .map(step => trace.steps.find(original => original.id === step.id)?.search)).toEqual([]);
+      const repository = new WorkflowV2Repository(db);
+      const saved = repository.findStageResult(runId, "problem-candidates")!;
+      const { id: _stageId, ...checkpoint } = saved;
+      void _stageId;
+      const original = saved.output as { problems: Array<Record<string, unknown>> };
+      const newRun = new ResearchRunRepository(db).create(threadId, { ...DEFAULT_RUN_CONFIG, workflowVersion: 2 }).runId;
+      db.immediateTransaction(() => repository.saveStageResult({ ...checkpoint,
+        researchRunId: newRun, output: { problems: [...original.problems, { ...original.problems[0], statement: "Another saved candidate beyond the old limit." }] },
+      }));
+      const archive = getRunTrace(db, newRun);
+      expect(archive.metrics.candidateFunnel).toMatchObject({ total: 2, assessed: 0, notAssessed: 2 });
+      expect(archive.candidates.every(candidate => candidate.derived && candidate.reason.includes("No saved verdict"))).toBe(true);
+    } finally { db.close(); }
+  }, 20_000);
+
   test("re-evaluates a completed blank-audience archive and finishes five reviewed ideas without replaying research", async () => {
     const item = await fixture({ mode: "workflow-audience-many", legacyAudienceCheckpoint: true });
     const threadId = await item.createThread("explore-market", 5);
@@ -68,6 +122,11 @@ describe("native research workflow through the production backend", () => {
       const completed = await item.waitFor(state => state.activeWorkflow?.outcome === "target-met");
       expect(completed.solutions).toHaveLength(5);
       expect(completed.activeWorkflow?.counts.accepted).toBe(5);
+      const completedTrace = getRunTrace(saved, completed.latestResearchRun!.runId);
+      expect(completedTrace.metrics).toMatchObject({ ideas: 5, acceptedIdeas: 5 });
+      expect(completedTrace.metrics.candidateFunnel).toMatchObject({ total: 1, confirmed: 1 });
+      expect(completedTrace.steps.some(step => step.stage === "solutions")).toBe(true);
+      expect(completedTrace.steps.some(step => step.stage === "solution-set-review")).toBe(true);
       expect(item.searches).toHaveLength(searchesBefore);
       const fresh = item.requests().slice(requestsBefore);
       expect(fresh.filter(request => /^(query-plan|factor-harvest|problem-candidates)/.test(request.workOrder.stage))).toEqual([]);
