@@ -10,10 +10,13 @@ import { OpportunityRepository } from "../db/repositories/opportunities";
 import { OpportunityExplorationRepository } from "../db/repositories/opportunity-exploration";
 import { WorkflowV2Repository } from "../db/repositories/workflow-v2";
 import { WorkflowRepository } from "../db/repositories/workflows";
+import { ResearchFrameRepository } from "../db/repositories/research-frames";
 import type { SearchClient, SearchOptions, SearchProvider } from "../providers/search";
 import { ProviderFailure, type GenerationMetadata, type StructuredModelClient, type StructuredStageRequest } from "../providers/structured";
 import { AppError } from "../shared/errors";
 import { WorkflowLaunchContractSchema } from "../shared/workflow-contracts";
+import { framedDiscoveryProjection } from "../shared/discovery-projection";
+import { scopeResearchArea, type ResearchFrame } from "../shared/research-frame";
 import { assertFocusedDemandTestSemantics } from "../shared/focused-experiment";
 import { deriveJsonSchema } from "../shared/json-schema";
 import type { ResearchEvent } from "../shared/ipc";
@@ -34,6 +37,8 @@ import { ScopeSchema, WorkflowV2CompatibleDecisionAnalysisOutputSchema, Workflow
 import { analyzeSelectedOption, developmentStageEvidence, evaluateSelectedOptionRisk, produceDevelopmentOptions, reassessSelectedOption, reassessSelectedOptionRisk, WorkflowGenerationAngleSchema, WorkflowGenerationEvidenceSchema, type WorkflowV2DevelopmentContext, type WorkflowV2EvidenceItem } from "./development";
 import { DEFAULT_PROBLEM_CANDIDATE_LIMIT, discoverProblems, discoveryRunProjection, harvestEvidenceFollowUp, harvestFactors, normalizeSearchQuery,
   type HarvestMode, type HarvestResult, type PlannedQuery } from "./discovery";
+import { generateResearchFrame } from "./research-frame";
+import { rankScannedAreas, scanResearchArea, type AreaScan } from "./frame-discovery";
 import { runFocusedExperimentFlow } from "./experiment-review";
 import { planOpportunityStep, previewOpportunityBudgetExtension } from "./opportunity-planning";
 import { reviewSavedOpportunities as runOpportunityReview } from "./opportunity-review";
@@ -163,6 +168,25 @@ export class ResearchEngine {
     const created = this.runs.create(threadId, config, null, undefined, workflow);
     if (!created.created) return created.runId;
     this.discovery.persistScope(created.runId, parsedScope);
+    if (workflow?.frameId) {
+      new ResearchFrameRepository(this.options.db).bindRun(created.runId, threadId, workflow.frameId);
+      new WorkflowExecution(this.options.db, created.runId).save("frame-workflow", { version: 1 });
+    }
+    if (!this.admitWorkflowRun(created.runId, threadId, workflow)) return created.runId;
+    this.begin(created.runId, threadId, null, config);
+    return created.runId;
+  }
+
+  /** Frame preparation is a normal checkpointed run, linked before any provider call. */
+  async startResearchFrame(threadId: string, scope: Scope, config: RunConfig, workflow: ResearchRunWorkflowLink,
+    regeneration?: { frameId: string; edited: ResearchFrame }): Promise<string> {
+    config = { ...config, workflowVersion: 2 };
+    const created = this.runs.create(threadId, config, null, undefined, workflow);
+    if (!created.created) return created.runId;
+    this.discovery.persistScope(created.runId, ScopeSchema.parse(scope));
+    const execution = new WorkflowExecution(this.options.db, created.runId);
+    execution.save("workflow-kind", { kind: "prepare-frame", knownProblem: config.researchMode === "known-problem",
+      ...(regeneration ? { regeneration } : {}) });
     if (!this.admitWorkflowRun(created.runId, threadId, workflow)) return created.runId;
     this.begin(created.runId, threadId, null, config);
     return created.runId;
@@ -218,6 +242,11 @@ export class ResearchEngine {
   private startProblem(threadId: string, problemId: string, config: RunConfig, workflow?: ResearchRunWorkflowLink): string {
     config = { ...config, workflowVersion: 2 };
     const created = this.runs.create(threadId, config, problemId, undefined, workflow);
+    if (created.created) {
+      const frames = new ResearchFrameRepository(this.options.db);
+      const frame = workflow?.frameId ? frames.get(workflow.frameId) : frames.latestApproved(threadId);
+      if (frame?.approved) frames.bindRun(created.runId, threadId, frame.id);
+    }
     if (created.created && this.admitWorkflowRun(created.runId, threadId, workflow)) {
       this.begin(created.runId, threadId, problemId, config);
     }
@@ -1406,9 +1435,13 @@ export class ResearchEngine {
     if (config.workflowVersion !== 2) throw new AppError("conflict", "Legacy generation has been retired. Start a new run to use the current prompts.");
     const selected = problemId && this.options.db.db.prepare(`SELECT 1 FROM solutions
       WHERE research_run_id = ? AND selected_at IS NOT NULL LIMIT 1`).get(runId);
-    const projection = problemId
+    const savedKind = new WorkflowExecution(this.options.db, runId).read<{ kind: string; knownProblem: boolean; regeneration?: unknown }>("workflow-kind");
+    const framed = new WorkflowExecution(this.options.db, runId).read("frame-workflow");
+    const projection = savedKind?.kind === "prepare-frame"
+      ? { modelCalls: savedKind.regeneration || savedKind.knownProblem ? 1 : 2, searches: savedKind.regeneration || savedKind.knownProblem ? 0 : 5 }
+      : problemId
       ? { modelCalls: selected ? this.ledger.countProviderCalls(runId, config.model.providerId) + 4 : 3, searches: 0 }
-      : discoveryRunProjection(config.discoveryDepth);
+      : framed ? framedDiscoveryProjection(config.discoveryDepth) : discoveryRunProjection(config.discoveryDepth);
     const active: ActiveRun = {
       runId, threadId, problemId, config, abortController: new AbortController(), startedAt: Date.now(),
       projectedCodexCalls: projection.modelCalls, projectedSearches: projection.searches,
@@ -1446,7 +1479,8 @@ export class ResearchEngine {
 
   private async execute(active: ActiveRun): Promise<void> {
     active.workflow = new WorkflowExecution(this.options.db, active.runId, active.acknowledgedAttemptIds);
-    if (active.problemId) await this.executeDevelopment(active);
+    if (active.workflow.read<{ kind: string }>("workflow-kind")?.kind === "prepare-frame") await this.executeFrame(active);
+    else if (active.problemId) await this.executeDevelopment(active);
     else await this.executeDiscovery(active);
     if (active.abortController.signal.aborted || this.activeRuns.get(active.runId) !== active) return;
     this.runs.finish(active.runId, "completed");
@@ -1494,6 +1528,10 @@ export class ResearchEngine {
     const deps = this.dependencies(active);
     if (active.workflow) {
       const workflow = active.workflow;
+      if (workflow.read("frame-workflow")) {
+        await this.executeFramedDiscovery(active, scope);
+        return;
+      }
       const completionKey = !scope.audience.trim() && workflow.read<{ version: number }>("problem-audience-assessment")?.version === 1
         ? "discovery-completed:audience-v1" : "discovery-completed";
       if (workflow.read(completionKey)) return;
@@ -1515,6 +1553,93 @@ export class ResearchEngine {
       return;
     }
     throw new AppError("conflict", "Legacy generation has been retired. Start a new run to use the current prompts.");
+  }
+
+  private async executeFrame(active: ActiveRun): Promise<void> {
+    const workflow = active.workflow!;
+    if (new ResearchFrameRepository(this.options.db).forRun(active.runId)) return;
+    const kind = workflow.read<{ knownProblem: boolean; regeneration?: { frameId: string; edited: ResearchFrame } }>("workflow-kind")!;
+    const scopeRow = this.options.db.db.prepare(`SELECT title, audience, domain, observations,
+      off_limits_json, risk_evaluation_criteria FROM scopes WHERE research_run_id = ?`).get(active.runId) as {
+        title: string; audience: string; domain: string; observations: string; off_limits_json: string; risk_evaluation_criteria: string;
+      };
+    const scope = ScopeSchema.parse({ title: scopeRow.title, audience: scopeRow.audience, domain: scopeRow.domain,
+      observations: scopeRow.observations, offLimits: JSON.parse(scopeRow.off_limits_json),
+      ...(scopeRow.risk_evaluation_criteria ? { riskEvaluationCriteria: scopeRow.risk_evaluation_criteria } : {}) });
+    const frames = new ResearchFrameRepository(this.options.db);
+    const previous = kind.regeneration ? frames.get(kind.regeneration.frameId) : null;
+    if (kind.regeneration && (!previous || previous.threadId !== active.threadId)) throw new AppError("INVALID_REFERENCE");
+    if (previous) workflow.save("frame-context-sources", previous.sources);
+    const result = await generateResearchFrame(scope, kind.knownProblem, { ...this.dependencies(active), workflow,
+      knownProblemStatement: active.config.knownProblem,
+      onProgress: message => this.progress(active, message) }, kind.regeneration && previous
+        ? { version: previous.version + 1, edited: kind.regeneration.edited } : undefined);
+    frames.createDraft({ threadId: active.threadId, runId: active.runId, knownProblem: kind.knownProblem, ...result });
+  }
+
+  private async executeFramedDiscovery(active: ActiveRun, scope: Scope): Promise<void> {
+    const workflow = active.workflow!;
+    if (workflow.read("discovery-completed")) return;
+    const saved = new ResearchFrameRepository(this.options.db).forRun(active.runId);
+    const frame = saved?.approved;
+    if (!frame || saved.knownProblem) throw new AppError("INVALID_REFERENCE", "An approved discovery frame is required.");
+    const scans: AreaScan[] = [];
+    for (const area of frame.areas.filter(area => area.included)) {
+      active.abortController.signal.throwIfAborted();
+      const key = `frame-scan:${area.id}`;
+      let scan = workflow.read<AreaScan>(key);
+      if (!scan) {
+        scan = await scanResearchArea(scope, frame, area, { ...this.dependencies(active), frame, area, depth: "quick",
+          stageScope: `scan-${sha256Area(area.id)}`, idFactory: workflow.idFactory(key), random: () => 0.5 });
+        scan = { ...scan, factors: workflow.withFactorUncertainty(scan.factors) };
+        const completed = scan;
+        this.discovery.persistFactors(active.runId, scan.sources, scan.factors, () => {
+          this.assignArea("factors", scan!.factors.map(factor => factor.id), area.id);
+          workflow.save(key, completed);
+        });
+      }
+      scans.push(scan);
+    }
+    const selected = await rankScannedAreas(frame, scans, active.config.discoveryDepth,
+      { ...this.dependencies(active), workflow, onProgress: message => this.progress(active, message) });
+    workflow.save("frame-selected-areas", selected);
+    const results: Array<{ areaId: string; result: Awaited<ReturnType<typeof discoverProblems>> }> = [];
+    for (const area of selected) {
+      const key = `area:${area.id}`;
+      const scoped = scopeResearchArea(scope, area, frame);
+      const dependencies = { ...this.dependencies(active), frame, area, stageScope: `area-${sha256Area(area.id)}` };
+      let harvest = workflow.read<HarvestResult>(`${key}:harvest`);
+      if (!harvest) {
+        this.progress(active, `Investigating ${area.name}`);
+        harvest = await harvestFactors(scoped, { ...dependencies, idFactory: workflow.idFactory(`${key}:harvest`), random: () => 0.5 });
+        harvest = { ...harvest, factors: workflow.withFactorUncertainty(harvest.factors) };
+        const completed = harvest;
+        this.discovery.persistFactors(active.runId, harvest.sources, harvest.factors, () => {
+          this.assignArea("factors", completed.factors.map(factor => factor.id), area.id);
+          workflow.save(`${key}:harvest`, completed);
+        });
+      }
+      let result = workflow.read<Awaited<ReturnType<typeof discoverProblems>>>(`${key}:problems`);
+      if (!result) {
+        result = await discoverProblems(scoped, harvest.factors, harvest.sources, {
+          ...dependencies, idFactory: workflow.idFactory(`${key}:problems`),
+        });
+        workflow.save(`${key}:problems`, result);
+      }
+      results.push({ areaId: area.id, result });
+    }
+    const problems = results.flatMap(item => item.result.problems);
+    this.discovery.persistProblems(active.runId, results.flatMap(item => item.result.killSources), problems,
+      results.flatMap(item => item.result.blockedCandidates), () => {
+        for (const item of results) this.assignArea("problems", item.result.problems.map(problem => problem.id), item.areaId);
+        workflow.save("discovery-completed", { areas: results.map(item => item.areaId), problemIds: problems.map(problem => problem.id) });
+      });
+    this.progress(active, `${problems.length} problems across ${selected.length} investigated areas ready for review`);
+  }
+
+  private assignArea(table: "factors" | "problems", ids: readonly string[], areaId: string): void {
+    const update = this.options.db.db.prepare(`UPDATE ${table} SET area_id = ? WHERE id = ?`);
+    for (const id of ids) update.run(areaId, id);
   }
 
   private async executeDevelopment(active: ActiveRun): Promise<void> {
@@ -2259,7 +2384,7 @@ export class ResearchEngine {
     if (!linked?.workflow_session_id) return null;
     const item = this.options.db.db.prepare(`SELECT id, state FROM workflow_work_items
       WHERE session_id = ? AND json_extract(output_refs_json, '$.runId') = ?
-        AND kind IN ('discovery','known-problem','generate-ideas','research-request') LIMIT 1`)
+        AND kind IN ('prepare-frame','discovery','known-problem','generate-ideas','research-request') LIMIT 1`)
       .get(linked.workflow_session_id, active.runId) as { id: string; state: string } | undefined;
     if (!item) {
       const existing = this.options.db.db.prepare(`SELECT 1 FROM workflow_budget_entries
@@ -2534,6 +2659,10 @@ type RuntimeStage =
   | "queued" | "searching" | "extracting" | "synthesizing-problems"
   | "generating-options" | "awaiting-option-selection" | "evaluating-risk"
   | "analyzing-option" | "evidence-follow-up" | "completed" | "failed" | "cancelled";
+
+function sha256Area(areaId: string): string {
+  return createHash("sha256").update(areaId).digest("hex").slice(0, 16);
+}
 
 function runtimeStage(stageKey: string): RuntimeStage {
   const stage = stageKey.split(":")[0];

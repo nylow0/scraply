@@ -10,6 +10,22 @@ export const SOURCE_BATCH_CHARACTERS = 60_000;
 export const AUDIENCE_SOURCE_BATCH_CHARACTERS = 30_000;
 export const SOURCE_MAX_CHARACTERS = 6_000;
 export const DEFAULT_PROBLEM_CANDIDATE_LIMIT = DISCOVERY_DEPTHS.standard.candidateLimit;
+export const MAX_FRAME_AREAS = 12;
+export const FRAME_SCAN_SEARCHES_PER_AREA = 2;
+export const FRAME_SCAN_FACTORS_PER_AREA = 6;
+export const FRAME_INVESTIGATOR_COUNTS = { quick: 1, standard: 2, deep: 4 } as const;
+
+/** The launch cannot know the proposed areas yet, so reserve for the schema's maximum breadth. */
+export function framedDiscoveryProjection(depth: DiscoveryDepth): { searches: number; modelCalls: number; factorCap: number } {
+  const scoped = discoveryRunProjection(depth);
+  const investigators = FRAME_INVESTIGATOR_COUNTS[depth];
+  const harvestCalls = Math.ceil(DISCOVERY_DEPTHS[depth].queriesPerMode * DISCOVERY_DEPTHS[depth].searchResultsPerQuery / 3) * 2;
+  return {
+    searches: MAX_FRAME_AREAS * FRAME_SCAN_SEARCHES_PER_AREA + scoped.searches * investigators,
+    modelCalls: MAX_FRAME_AREAS * 4 + 1 + (2 + harvestCalls + 1 + DISCOVERY_DEPTHS[depth].candidateLimit) * investigators,
+    factorCap: MAX_FRAME_AREAS * FRAME_SCAN_FACTORS_PER_AREA + scoped.factorCap * investigators,
+  };
+}
 
 /** Kept free of node-only imports so the renderer and backend use the same runtime estimate. */
 export function discoveryRunProjection(

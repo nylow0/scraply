@@ -1,6 +1,8 @@
 import { z } from "zod";
 import { ScopeSchema } from "./structured-output-schemas";
 import { ModelRefSchema, ReasoningEffortSchema, RunConfigSchema } from "./schemas";
+import { SourceSchema } from "./schemas";
+import { ResearchFrameSchema } from "./research-frame";
 
 const IdSchema = z.string().trim().min(1).max(128);
 const TextSchema = z.string().trim().min(1).max(20_000);
@@ -36,6 +38,8 @@ export const WorkflowInstructionsSchema = z.object({
 /** A preview normalizes this editable draft into the immutable launch contract. */
 export const WorkflowLaunchDraftSchema = z.object({
   contractVersion: z.literal(1),
+  /** Absent on saved contracts created before the frame workflow. */
+  frameWorkflowVersion: z.literal(1).optional(),
   purpose: WorkflowPurposeSchema,
   mode: WorkflowModeSchema,
   brief: TextSchema,
@@ -109,6 +113,7 @@ export const WorkflowSummarySchema = z.object({
   revision: NonnegativeCountSchema,
   activeSnapshotId: IdSchema.nullable(),
   researchApplied: z.literal(true).optional(),
+  reviewKind: z.enum(["frame", "research"]).optional(),
   ideaTargetReady: z.boolean().optional(),
   selectedProblemIds: z.array(IdSchema),
   counts: WorkflowCountsSchema,
@@ -124,6 +129,9 @@ export const WorkflowTaskSchema = z.object({
   id: IdSchema,
   terminalAttemptId: IdSchema.optional(),
   canReassessProblems: z.boolean().optional(),
+  investigator: z.object({ areaId: IdSchema, areaName: z.string().min(1), currentStep: z.string().nullable(),
+    confirmedCount: NonnegativeCountSchema.nullable(), insufficientCount: NonnegativeCountSchema.nullable(),
+    droppedCount: NonnegativeCountSchema.nullable() }).strict().optional(),
   parentItemId: IdSchema.nullable(),
   kind: z.string().min(1),
   scopeKey: z.string().min(1),
@@ -136,6 +144,11 @@ export const WorkflowTaskSchema = z.object({
 export const GetWorkflowRequestSchema = z.object({ sessionId: IdSchema, cursor: z.string().max(512).optional() }).strict();
 export const WorkflowDetailSchema = z.object({
   summary: WorkflowSummarySchema, tasks: z.array(WorkflowTaskSchema), nextCursor: z.string().nullable(),
+  researchFrame: z.object({
+    id: IdSchema, version: z.number().int().positive(), knownProblem: z.boolean(),
+    draft: ResearchFrameSchema, approved: ResearchFrameSchema.nullable(), sources: z.array(SourceSchema),
+    createdAt: z.string().datetime(), approvedAt: z.string().datetime().nullable(),
+  }).strict().optional(),
   activity: z.array(z.object({
     id: IdSchema, message: z.string(), stage: z.string().nullable(), createdAt: z.string().datetime(),
   }).strict()).optional(),
@@ -143,6 +156,9 @@ export const WorkflowDetailSchema = z.object({
 export const WorkflowAdmissionReceiptSchema = z.object({ sessionId: IdSchema, revision: NonnegativeCountSchema, summary: WorkflowSummarySchema }).strict();
 
 export const WorkflowActionSchema = z.discriminatedUnion("type", [
+  z.object({ type: z.literal("approve-frame"), frameId: IdSchema, frame: ResearchFrameSchema }).strict(),
+  z.object({ type: z.literal("regenerate-frame"), frameId: IdSchema, frame: ResearchFrameSchema }).strict(),
+  z.object({ type: z.literal("edit-approved-frame"), frameId: IdSchema, frame: ResearchFrameSchema }).strict(),
   z.object({
     type: z.literal("request-research"), kind: z.enum(["new-question", "redo", "reevaluate"]), question: ResearchQuestionSchema,
     baseSnapshotId: IdSchema.optional(), targetFindingId: IdSchema.optional(), targetRequestId: IdSchema.optional(),

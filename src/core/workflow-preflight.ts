@@ -1,5 +1,5 @@
 import { canonicalJson, sha256 } from "../shared/content-identity";
-import { discoveryRunProjection } from "../shared/discovery-projection";
+import { framedDiscoveryProjection } from "../shared/discovery-projection";
 import { modelRefKey, sameModelRef, type ModelOption, type ModelRef } from "../shared/schemas";
 import {
   WorkflowLaunchContractSchema, WorkflowLaunchDraftSchema,
@@ -37,9 +37,9 @@ export function previewLaunch(draftInput: WorkflowLaunchDraft, capabilities: Wor
     reviewModel: draft.ideas.reviewModel ?? draft.ideas.model,
     reviewReasoningEffort: draft.ideas.reviewReasoningEffort ?? draft.ideas.reasoningEffort,
   } : undefined;
-  const normalized = { ...draft, targets, ...(ideas ? { ideas } : {}) };
+  const normalized = { ...draft, frameWorkflowVersion: 1, targets, ...(ideas ? { ideas } : {}) };
   const resolvedInstructions = {
-    research: resolveInstructions(["query-plan", "factor-harvest", "problem-candidates", "problem-kill"], draft.instructions.research),
+    research: resolveInstructions(["frame-search-plan", "frame", "area-ranking", "query-plan", "factor-harvest", "problem-candidates", "problem-kill"], draft.instructions.research),
     ideas: resolveInstructions(["solutions"], draft.instructions.ideas),
     review: resolveInstructions(["solution-set-review"], draft.instructions.review),
   };
@@ -80,7 +80,9 @@ export function previewLaunch(draftInput: WorkflowLaunchDraft, capabilities: Wor
   if (contract.mode === "vibe" && contract.purpose !== "discovery" && contract.purpose !== "known-problem") {
     fieldErrors.push({ path: ["purpose"], code: "INVALID_PURPOSE", message: "Vibe starts with discovery or a known problem." });
   }
-  const discovery = contract.purpose === "discovery" ? discoveryRunProjection(contract.runConfig.discoveryDepth) : { modelCalls: 0, searches: 0 };
+  const discovery = contract.purpose === "discovery" ? framedDiscoveryProjection(contract.runConfig.discoveryDepth) : { modelCalls: 0, searches: 0 };
+  const frame = contract.purpose === "discovery" ? { modelCalls: 2, searches: 5 }
+    : contract.purpose === "known-problem" ? { modelCalls: 1, searches: 0 } : { modelCalls: 0, searches: 0 };
   const possibleProblems = contract.purpose === "known-problem" ? 1
     : contract.mode === "vibe" ? contract.targets.automaticProblemCap ?? 3 : 1;
   const target = contract.targets.distinctBusinessCount ?? contract.targets.ideaCount;
@@ -93,7 +95,8 @@ export function previewLaunch(draftInput: WorkflowLaunchDraft, capabilities: Wor
     }));
   // Each discovery stage reserves its schema correction. Every idea batch has
   // a generation reservation and an independent review reservation.
-  const minimumWork = { modelCalls: discovery.modelCalls * 2 + initialBatches * 4, searches: discovery.searches };
+  const minimumWork = { modelCalls: (frame.modelCalls + discovery.modelCalls) * 2 + initialBatches * 4,
+    searches: frame.searches + discovery.searches };
   if (contract.limits.enforced !== false && contract.limits.maxModelCalls < minimumWork.modelCalls) {
     fieldErrors.push({ path: ["limits", "maxModelCalls"], code: "BUDGET_TOO_SMALL", message: `Allow at least ${minimumWork.modelCalls} model calls for research, generation, and review.` });
   }
