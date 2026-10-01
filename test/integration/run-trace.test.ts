@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { z } from "zod";
-import { getRunTrace, getRunTraceStep, savedSearchKey } from "../../src/core/run-trace";
+import { getRunTrace, getRunTraceStep, savedSearchKey, selectSessionEvidenceRunId } from "../../src/core/run-trace";
 import { prepareWorkflowSearch, recordWorkflowSearchTerminal } from "../../src/core/workflow-search-attempts";
 import { DatabaseClient } from "../../src/db/client";
 import { DiscoveryRepository } from "../../src/db/repositories/discovery";
@@ -83,6 +83,91 @@ function fixture(goalFit = false) {
   }
   return { db, runId, saveReview, prepareAttempt };
 }
+
+describe("Trace session evidence selection", () => {
+  function sessionRuns(preparation: "metadata" | "work-item" | "legacy", includeDiscovery = true) {
+    const f = fixture();
+    const config = { ...DEFAULT_RUN_CONFIG, workflowVersion: 2 as const };
+    const workflows = new WorkflowRepository(f.db);
+    f.db.immediateTransaction(() => workflows.createSession({ id: "research-session", threadId: "project", purpose: "discovery",
+      mode: "babysit", contract: {}, remainingMs: 60_000 }));
+    const runs = new ResearchRunRepository(f.db);
+    const link = { sessionId: "research-session", purpose: "discovery" as const };
+    const frameRunId = runs.create("project", config, null, undefined, link).runId;
+    if (preparation === "metadata") f.db.db.prepare("INSERT INTO workflow_snapshots VALUES (?, 'workflow-kind', ?)")
+      .run(frameRunId, JSON.stringify({ kind: "prepare-frame", knownProblem: false }));
+    if (preparation === "work-item") f.db.immediateTransaction(() => {
+      const task = workflows.createWorkItem({ sessionId: link.sessionId, kind: "prepare-frame", scopeKey: "initial-research", input: {}, state: "ready" });
+      workflows.updateWorkItem(task.id, "running", { outputRefs: { runId: frameRunId } });
+      workflows.updateWorkItem(task.id, "succeeded", { outputRefs: { runId: frameRunId } });
+    });
+    runs.finish(frameRunId, "completed");
+    const discoveryRunId = includeDiscovery ? runs.create("project", config, null, undefined, link).runId : null;
+    if (discoveryRunId) runs.finish(discoveryRunId, "completed");
+    return { ...f, frameRunId, discoveryRunId, sessionId: link.sessionId };
+  }
+
+  test.each(["metadata", "work-item"] as const)("saved preparation %s does not replace discovery evidence or derived candidate support", preparation => {
+    const f = sessionRuns(preparation);
+    const runId = f.discoveryRunId!;
+    const now = new Date().toISOString();
+    const sources = [1, 2].map(index => ({ id: `source-${index}`, providerSourceId: null, canonicalUrl: `https://owners.example/${index}`,
+      title: "Owner account", retrievedText: "I repeat filing entries", author: null, publishedAt: null,
+      contentHash: "a".repeat(64), retrievedAt: now }));
+    const factors = sources.map(source => ({ id: `factor-${source.id}`, sourceId: source.id, subject: "Owner",
+      behavior: "Repeats filing entries", quote: source.retrievedText, harvestMode: "audience" as const, modelConfidence: 0.8,
+      sourceRole: "firsthand" as const, audienceFit: "intended-buyer" as const, independentSourceKey: source.id }));
+    new DiscoveryRepository(f.db).persistFactors(runId, sources, factors);
+    const candidate = { statement: "Owners repeat filing entries", whyItPersists: "Manual copying", affected: "Owners", scaleEstimate: "Unknown",
+      scaleBasisFactorId: null, factorIds: factors.map(factor => factor.id), alternativeExplanations: [], unknowns: [],
+      intendedBuyerEvidenceFactorIds: factors.map(factor => factor.id), evidenceGap: null };
+    const repository = new WorkflowV2Repository(f.db);
+    for (const stageId of ["problem-candidates", "problem-kill"] as const) {
+      const promptText = "Read the saved owner accounts.";
+      const promptHash = createHash("sha256").update(promptText).digest("hex");
+      f.db.immediateTransaction(() => repository.saveStageResult({ researchRunId: runId, stageId, selectionId: stageId === "problem-kill" ? "candidate" : null,
+        context: {}, output: stageId === "problem-candidates" ? { problems: [candidate] } : { verdict: "confirmed", verdictReason: "Two independent owner accounts",
+          verdictSourceIds: sources.map(source => source.id), unresolvedAssumptions: [], wouldChangeConclusion: [],
+          intendedBuyerEvidenceFactorIds: candidate.intendedBuyerEvidenceFactorIds, evidenceGap: null },
+        prompt: { stageId, filename: `workflow-v2-${stageId}.md`, revision: 1, source: "bundled", currentBundledSha256: promptHash,
+          overrideBaseline: null, resolvedSha256: promptHash, text: promptText }, schema: {}, inputs: {},
+        evidence: [{ sourceId: "candidate", content: { candidate } }], runtimePrompt: { id: "trace-fixture", sha256: "a".repeat(64) }, effectiveRequest: {} }));
+    }
+    const checkpointRows = f.db.db.prepare("SELECT * FROM stage_results ORDER BY rowid").all();
+    const changes = f.db.db.prepare("SELECT total_changes() AS count").get();
+    expect(selectSessionEvidenceRunId(f.db, f.sessionId)).toBe(runId);
+    for (const requestedRunId of [f.frameRunId, runId]) {
+      const trace = getRunTrace(f.db, requestedRunId);
+      expect(trace.metrics).toMatchObject({ factors: 2, totalSources: 2, qualifyingObservations: 2,
+        candidateFunnel: { confirmed: 1 }, qualifyingPerAssessedCandidate: 2 });
+      expect(trace.candidates).toContainEqual(expect.objectContaining({ derived: true, state: "confirmed", qualifyingObservations: 2, independentSources: 2 }));
+    }
+    expect(f.db.db.prepare("SELECT * FROM stage_results ORDER BY rowid").all()).toEqual(checkpointRows);
+    expect(f.db.db.prepare("SELECT total_changes() AS count").get()).toEqual(changes);
+  });
+
+  test("legacy unmarked discovery keeps its original first-run selection", () => {
+    const f = sessionRuns("legacy");
+    expect(selectSessionEvidenceRunId(f.db, f.sessionId)).toBe(f.frameRunId);
+  });
+
+  test("a frame-only session retains its requested context without inventing discovery", () => {
+    const f = sessionRuns("metadata", false);
+    expect(selectSessionEvidenceRunId(f.db, f.sessionId)).toBeNull();
+    expect(getRunTrace(f.db, f.frameRunId).metrics).toMatchObject({ factors: 0, qualifyingObservations: 0 });
+  });
+
+  test("known-problem evidence keeps the requested-run fallback", () => {
+    const f = fixture();
+    const root = f.db.db.prepare("SELECT discovery_run_id FROM problems WHERE verdict = 'user-asserted'").get() as { discovery_run_id: string };
+    f.db.immediateTransaction(() => {
+      new WorkflowRepository(f.db).createSession({ id: "known-session", threadId: "project", purpose: "known-problem", mode: "babysit", contract: {}, remainingMs: 60_000 });
+      f.db.db.prepare("UPDATE research_runs SET workflow_session_id = 'known-session', purpose = 'known-problem' WHERE id = ?").run(root.discovery_run_id);
+    });
+    expect(selectSessionEvidenceRunId(f.db, "known-session")).toBeNull();
+    expect(getRunTrace(f.db, root.discovery_run_id).candidates).toContainEqual(expect.objectContaining({ state: "user-asserted", derived: false }));
+  });
+});
 
 describe("Trace committed idea decisions", () => {
   test.each([
