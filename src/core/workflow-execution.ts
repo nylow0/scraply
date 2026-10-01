@@ -11,7 +11,7 @@ import { OpportunityExpansionOutputSchema } from "../shared/opportunity-explorat
 import { LegacyResearchFrameOutputSchema, ResearchFrameOutputSchema } from "../shared/research-frame";
 import { SourceSchema, type Source } from "../shared/schemas";
 import { AssessedWorkflowV2ProblemKillOutputSchema, BoundedWorkflowV2FactorHarvestOutputSchema, FACTOR_EXPLANATION_CHARACTERS, ClassifiedWorkflowV2ProblemKillOutputSchema, WorkflowV2QueryPlanOutputSchema, WorkflowV2FactorHarvestOutputSchema, WorkflowV2ProblemCandidatesOutputSchema, WorkflowV2ProblemKillOutputSchema, WorkflowV2SolutionsOutputSchema } from "../shared/structured-output-schemas";
-import { PROBLEM_AUDIENCE_ASSESSMENT_INSTRUCTION } from "./problem-evidence";
+import { PROBLEM_AUDIENCE_ASSESSMENT_INSTRUCTION, repairVerdictSourceIds, scopeFactorAssessments } from "./problem-evidence";
 import { LegacyWorkflowV2QueryPlanOutputSchema } from "../shared/structured-output-schemas";
 import type { WorkflowV2DevelopmentContext } from "./development";
 import { resolveWorkflowV2Prompt, type ResolvedWorkflowV2Prompt } from "./prompts";
@@ -265,7 +265,7 @@ export class WorkflowExecution {
         if (!savedMetadata) throw new Error("Checkpoint metadata is missing");
         metadata = savedMetadata;
       } else if (recovered) {
-        output = recovered.output;
+        output = repairDiscoveryStageOutput(stageId, recovered.output, original);
         metadata = recovered.metadata;
         assertDiscoveryStageSemantics(stageId, output, original);
         this.persistCompletedStage(original.stage, stageId,
@@ -273,7 +273,7 @@ export class WorkflowExecution {
           prompt, metadata, output, context, selectionId);
       } else {
         const completion = await client.structuredCompletion(request);
-        output = requestSchema.parse(completion.output);
+        output = repairDiscoveryStageOutput(stageId, requestSchema.parse(completion.output), original);
         metadata = completion.metadata;
         assertDiscoveryStageSemantics(stageId, output, original);
         // Each validated provider result is its own durable replay boundary. Domain rows may be
@@ -553,6 +553,38 @@ export class WorkflowExecution {
   }
 }
 
+/**
+ * Repairs citation slips in an evidence assessment instead of discarding the run:
+ * fact IDs cited as sources map to their source, unknown IDs are dropped, factor reviews
+ * are scoped to the supplied factors, and "confirmed" without supplied factors is downgraded.
+ * Unreviewed factors keep their extracted classification; discovery re-applies the confirmation rule.
+ */
+function repairDiscoveryStageOutput<T>(stageId: WorkflowV2StageId, output: unknown, request: StructuredStageRequest<T>): unknown {
+  if (stageId !== "problem-kill" || typeof output !== "object" || output === null || !("verdictSourceIds" in output)
+    || !Array.isArray(output.verdictSourceIds)) return output;
+  const evidence = request.evidence.map((item) => item.content);
+  const factors = findRecords(evidence, "supportingFactors");
+  const sourceIds = new Set([
+    ...findRecords(evidence, "sources").flatMap((source) => typeof source.id === "string" ? [source.id] : []),
+    ...factors.flatMap((factor) => typeof factor.sourceId === "string" ? [factor.sourceId] : []),
+  ]);
+  const factorSources = new Map(factors.flatMap((factor) => typeof factor.id === "string" && typeof factor.sourceId === "string"
+    ? [[factor.id, factor.sourceId] as const] : []));
+  const factorIds = [...factorSources.keys()];
+  const known = new Set(factorIds);
+  const repaired: Record<string, unknown> = { ...output, verdictSourceIds: repairVerdictSourceIds(
+    output.verdictSourceIds.filter((id): id is string => typeof id === "string"), sourceIds, factorSources) };
+  if (Array.isArray(repaired.factorAssessments)) {
+    repaired.factorAssessments = scopeFactorAssessments(repaired.factorAssessments.filter((item): item is { factorId: string } =>
+      typeof item === "object" && item !== null && "factorId" in item && typeof item.factorId === "string"), factorIds);
+  }
+  if (Array.isArray(repaired.intendedBuyerEvidenceFactorIds)) {
+    repaired.intendedBuyerEvidenceFactorIds = repaired.intendedBuyerEvidenceFactorIds.filter((id) => typeof id === "string" && known.has(id));
+  }
+  if (repaired.verdict === "confirmed" && factors.length === 0) repaired.verdict = "insufficient-evidence";
+  return repaired;
+}
+
 function assertDiscoveryStageSemantics<T>(
   stageId: WorkflowV2StageId,
   output: unknown,
@@ -578,16 +610,10 @@ function assertDiscoveryStageSemantics<T>(
       ...findRecords(evidence, "sources").flatMap((source) => typeof source.id === "string" ? [source.id] : []),
       ...findRecords(evidence, "supportingFactors").flatMap((factor) => typeof factor.sourceId === "string" ? [factor.sourceId] : []),
     ]);
+    // Citation slips were repaired before this check; anything left here is an app bug.
     const assessment = WorkflowV2ProblemKillOutputSchema.parse(output);
-    if (request.stage.endsWith(":audience-v1")) {
-      const factorIds = new Set(findRecords(evidence, "supportingFactors").flatMap(factor => typeof factor.id === "string" ? [factor.id] : []));
-      const reviewed = "factorAssessments" in assessment ? assessment.factorAssessments : [];
-      if (reviewed.length !== factorIds.size || new Set(reviewed.map(item => item.factorId)).size !== factorIds.size
-        || reviewed.some(item => !factorIds.has(item.factorId))
-        || !("intendedBuyerEvidenceFactorIds" in assessment)
-        || assessment.intendedBuyerEvidenceFactorIds.some(id => !factorIds.has(id))) {
-        throw new Error("Problem audience assessment must cite and review exact supporting factors");
-      }
+    if (request.stage.endsWith(":audience-v1") && !("intendedBuyerEvidenceFactorIds" in assessment)) {
+      throw new Error("Problem audience assessment must cite supporting factors");
     }
     if (assessment.verdictSourceIds.some((id) => !sourceIds.has(id))) {
       throw new Error("Evidence assessment referenced an unknown source ID");

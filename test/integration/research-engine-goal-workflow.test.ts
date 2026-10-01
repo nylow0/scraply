@@ -642,3 +642,22 @@ test("a second idea round reloads a saved startup idea judged against a market g
     expect(f.stages).toEqual(["solutions", "solution-set-review", "solutions", "solution-set-review"]);
   } finally { await f.close(); }
 });
+
+test("a verdict citing a fact ID or an invented ID keeps research going with mapped citations", async () => {
+  // Live Bookkeepers stopped here: the verdict cited fact IDs as source IDs.
+  const f = await fixture(request => {
+    const output = researchOutput(request) as Record<string, unknown>;
+    if (!request.stage.startsWith("problem-kill")) return output;
+    const factors = (request.evidence[0]?.content as { supportingFactors?: Array<{ id: string }> }).supportingFactors ?? [];
+    return { ...output, verdictSourceIds: [...factors.map(factor => factor.id), "invented-source"] };
+  }, { singleArea: true });
+  try {
+    const runId = await f.start("discovery");
+    expect(f.errors).toEqual([]);
+    const cited = f.db.db.prepare(`SELECT pvs.source_id FROM problem_verdict_sources pvs JOIN problems p ON p.id = pvs.problem_id
+      WHERE p.discovery_run_id = ?`).all(runId) as Array<{ source_id: string }>;
+    const sources = new Set((f.db.db.prepare("SELECT id FROM sources WHERE research_run_id = ?").all(runId) as Array<{ id: string }>).map(row => row.id));
+    expect(cited.length).toBeGreaterThan(0);
+    expect(cited.every(row => sources.has(row.source_id))).toBe(true);
+  } finally { await f.close(); }
+});

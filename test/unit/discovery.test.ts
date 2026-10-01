@@ -107,17 +107,34 @@ describe("discovery", () => {
     expect(planned[0]).toMatchObject({ uncertainty: "Shared food discarded", intendedSourceType: "Student accounts" });
   });
 
-  test("rejects a missing translation before any paid search is dispatched", async () => {
-    let searches = 0;
-    await expect(harvestFactors(scope(), {
+  test("a missing translation searches in English instead of ending the run", async () => {
+    const searched: string[] = [];
+    await harvestFactors(scope(), {
       model, reasoningEffort, depth: "quick", workflowVersion: 2,
       queryCountByMode: { domain: 1, audience: 0 }, sourceRouting: { goalKind: "research-question", languages: ["en", "uk"] },
       prompt: () => "Plan fixture evidence",
       modelClient: modelClient(async () => ({ queries: [{ query: "Observed clinic retention", intent: "measured-behavior",
         uncertainty: "Retention rate", intendedSourceType: "Field studies" }] })),
-      search: { async search() { searches += 1; return []; } },
-    })).rejects.toThrow("one uk translation");
-    expect(searches).toBe(0);
+      search: { async search(query) { searched.push(query); return []; } },
+    });
+    expect(searched.length).toBeGreaterThan(0);
+    expect(searched.every(query => query.includes("Observed clinic retention"))).toBe(true);
+  });
+
+  test("a buying-intent search planned for a research question is skipped, not run-ending", async () => {
+    const searched: string[] = [];
+    await harvestFactors(scope(), {
+      model, reasoningEffort, depth: "quick", workflowVersion: 2,
+      queryCountByMode: { domain: 1, audience: 0 }, sourceRouting: { goalKind: "research-question", languages: ["en"] },
+      prompt: () => "Plan fixture evidence",
+      modelClient: modelClient(async () => ({ queries: [
+        { query: "Clinic software pricing", intent: "buying-signal", uncertainty: "Budget", intendedSourceType: "Vendor pages" },
+        { query: "Observed clinic retention", intent: "measured-behavior", uncertainty: "Retention rate", intendedSourceType: "Field studies" },
+      ] })),
+      search: { async search(query) { searched.push(query); return []; } },
+    });
+    expect(searched.length).toBeGreaterThan(0);
+    expect(searched.some(query => query.includes("pricing"))).toBe(false);
   });
 
   test("rediscovered evidence keeps the saved source ID and quote before extraction", async () => {

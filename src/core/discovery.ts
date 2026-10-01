@@ -26,7 +26,7 @@ import {
   SOURCE_MAX_CHARACTERS,
 } from "../shared/discovery-projection";
 import { loadPrompt } from "./prompts";
-import { applyProblemFactorAssessments, qualifiesAsProblemObservation } from "./problem-evidence";
+import { applyProblemFactorAssessments, qualifiesAsProblemObservation, repairVerdictSourceIds, scopeFactorAssessments } from "./problem-evidence";
 
 export { qualifiesAsProblemObservation, reliesOnCloseRoles } from "./problem-evidence";
 import type { ResearchArea, ResearchFrame } from "../shared/research-frame";
@@ -392,17 +392,10 @@ export async function discoverProblems(
         ...candidateSources.map((source) => source.id),
         ...(dependencies.workflowVersion === 2 ? citedFactors.map((factor) => factor.sourceId) : []),
       ]);
-      const validVerdictSourceIds = [...new Set(kill.verdictSourceIds.filter((id) => suppliedSourceIds.has(id)))];
-      if (dependencies.workflowVersion === 2 && validVerdictSourceIds.length !== new Set(kill.verdictSourceIds).size) {
-        throw new ProviderFailure("schema", "Evidence assessment referenced an unknown source ID", false);
-      }
+      const validVerdictSourceIds = repairVerdictSourceIds(kill.verdictSourceIds, suppliedSourceIds,
+        new Map(citedFactors.map((factor) => [factor.id, factor.sourceId])));
       const factorIds = citedFactors.map((factor) => factor.id);
-      const factorAssessments = assessAudience && "factorAssessments" in kill ? kill.factorAssessments : [];
-      if (assessAudience && (factorAssessments.length !== factorIds.length
-        || new Set(factorAssessments.map(assessment => assessment.factorId)).size !== factorIds.length
-        || factorAssessments.some(assessment => !factorIds.includes(assessment.factorId)))) {
-        throw new ProviderFailure("schema", "Problem audience assessment must cover each exact supporting factor once", false);
-      }
+      const factorAssessments = assessAudience && "factorAssessments" in kill ? scopeFactorAssessments(kill.factorAssessments, factorIds) : [];
       const assessedFactors = applyProblemFactorAssessments(citedFactors, factorAssessments);
       const candidateBuyerIds = "intendedBuyerEvidenceFactorIds" in candidate ? candidate.intendedBuyerEvidenceFactorIds : [];
       const killBuyerIds = "intendedBuyerEvidenceFactorIds" in kill ? kill.intendedBuyerEvidenceFactorIds : candidateBuyerIds;
@@ -633,26 +626,19 @@ async function planQueries(
       uncertainty: item.uncertainty, intendedSourceType: item.intendedSourceType,
       ...("translations" in item && item.translations ? { translations: item.translations } : {}),
     });
-  const queries = [...new Map(planned.filter((item) => item.query)
-    .map((item) => [normalizeSearchQuery(item.query), item])).values()];
   const marketGoal = dependencies.sourceRouting?.goalKind === undefined || dependencies.sourceRouting.goalKind === "market-opportunity";
-  if (!marketGoal && queries.some((query) => query.intent === "buying-signal")) {
-    throw new ProviderFailure("schema", "Buying-signal searches require a market goal.", false);
-  }
-  for (const query of queries) {
-    if (query.intent !== "firsthand-experience" && query.intent !== "measured-behavior") continue;
-    const languages = routingLanguages(dependencies.sourceRouting?.languages).filter((language) => language !== "en");
-    if ((query.translations ?? []).some((translation) => !languages.includes(translation.language))) {
-      throw new ProviderFailure("schema", "Query planner supplied an unrequested language.", false);
-    }
-    for (const language of languages) {
-      const translations = query.translations?.filter((translation) => translation.language === language && translation.query.trim());
-      if (translations?.length !== 1) throw new ProviderFailure("schema", `Query planner must supply one ${language} translation for each firsthand or measured question.`, false);
-      if (normalizeSearchQuery(translations[0]!.query) === normalizeSearchQuery(query.query)) {
-        throw new ProviderFailure("schema", `The ${language} query must be translated, rather than repeating its English wording.`, false);
-      }
-    }
-  }
+  const languages = routingLanguages(dependencies.sourceRouting?.languages).filter((language) => language !== "en");
+  // Planner slips are repaired rather than ending the run: buying searches need a market goal, and a
+  // question keeps only one real translation per requested language (otherwise it searches in English).
+  const queries = [...new Map(planned.filter((item) => item.query && (marketGoal || item.intent !== "buying-signal"))
+    .map((item) => [normalizeSearchQuery(item.query), item])).values()].map((query) => {
+    if (!query.translations) return query;
+    const translations = languages.flatMap((language) => {
+      const matches = query.translations!.filter((translation) => translation.language === language && translation.query.trim());
+      return matches.length === 1 && normalizeSearchQuery(matches[0]!.query) !== normalizeSearchQuery(query.query) ? matches : [];
+    });
+    return { ...query, translations };
+  });
   if (queries.length === 0 || (!dependencies.guided && queries.length < count)) {
     throw new ProviderFailure(
       "schema",
@@ -665,7 +651,7 @@ async function planQueries(
     const intents = new Set(queries.map((item) => item.intent));
     const hasRelevantIntent = intents.has("firsthand-experience") || (marketGoal ? intents.has("buying-signal") : intents.has("measured-behavior"));
     if (!hasRelevantIntent || intents.size < Math.min(3, dependencies.guided ? queries.length : count)) {
-      throw new ProviderFailure("schema", "Query planner did not return enough distinct evidence intents", false);
+      dependencies.onProjection?.("The search plan has fewer kinds of evidence than requested; continuing with it.");
     }
   }
   const bounded = dependencies.guided ? queries : queries.slice(0, count);
@@ -701,7 +687,8 @@ async function searchQueries(
       });
       const sources: Source[] = [];
       const languages = planned.intent === "firsthand-experience" || planned.intent === "measured-behavior"
-        ? routingLanguages(dependencies.sourceRouting.languages) : ["en"];
+        ? routingLanguages(dependencies.sourceRouting.languages)
+          .filter((language) => language === "en" || planned.translations?.some((translation) => translation.language === language)) : ["en"];
       for (const language of languages) for (const route of searchRoutes(planned.intent, dependencies.sourceRouting)) {
         const query = language === "en" ? planned.query : planned.translations!.find((translation) => translation.language === language)!.query.trim();
         const routed = routeSearchOptions(route, { ...dependencies.sourceRouting, languages: [language] }, planned.intent === "firsthand-experience");
