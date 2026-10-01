@@ -4,12 +4,15 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { z } from "zod";
-import { getRunTrace } from "../../src/core/run-trace";
+import { getRunTrace, getRunTraceStep, savedSearchKey } from "../../src/core/run-trace";
+import { prepareWorkflowSearch, recordWorkflowSearchTerminal } from "../../src/core/workflow-search-attempts";
 import { DatabaseClient } from "../../src/db/client";
 import { DiscoveryRepository } from "../../src/db/repositories/discovery";
 import { GenerationAttemptRepository } from "../../src/db/repositories/generation-attempts";
 import { ResearchRunRepository } from "../../src/db/repositories/research-runs";
 import { WorkflowV2Repository } from "../../src/db/repositories/workflow-v2";
+import { WorkflowRepository } from "../../src/db/repositories/workflows";
+import { OpportunityExplorationRepository } from "../../src/db/repositories/opportunity-exploration";
 import type { StructuredStageRequest } from "../../src/providers/structured";
 import { DEFAULT_RUN_CONFIG } from "../../src/shared/schemas";
 
@@ -161,5 +164,124 @@ describe("Trace physical model calls", () => {
     const trace = getRunTrace(f.db, f.runId);
     expect(trace.metrics.modelCalls).toBe(1);
     expect(trace.warnings).toContain("Some recorded model attempts have unknown provider completion. They are included in the call count.");
+  });
+});
+
+describe("Trace physical search dispatches", () => {
+  const query = "bookkeeper matching errors";
+  const parameters = { numResults: 5, maxCharacters: 4000, route: "firsthand-web" };
+  const input = { query, parameters, provider: "exa" as const, key: savedSearchKey(query, parameters, "exa") };
+
+  function managedSearch(f: ReturnType<typeof fixture>, status: "completed" | "prepared" | "failed-before-dispatch") {
+    const workflows = new WorkflowRepository(f.db);
+    f.db.immediateTransaction(() => {
+      workflows.createSession({ id: "session", threadId: "project", purpose: "discovery", mode: "babysit", contract: {}, remainingMs: 60_000 });
+      workflows.createWorkItem({ id: "search-task", sessionId: "session", kind: "evidence-check", scopeKey: "owner", input: {}, state: "ready" });
+      f.db.db.prepare("UPDATE research_runs SET workflow_session_id = 'session' WHERE id = ?").run(f.runId);
+    });
+    const query = "managed owner follow-up";
+    const request = { key: "owner-follow-up", query, route: "firsthand-web", evidenceNeeded: "Another owner account" };
+    const repository = new OpportunityExplorationRepository(f.db);
+    const attempt = f.db.immediateTransaction(() => repository.prepareAttempt("project", {
+      stageKey: "investigator-search:owner-follow-up", stageName: "investigator-search", input: { request, parameters: { ...parameters, provider: "exa" } },
+      model: { providerId: "exa", modelId: "search", reasoningEffort: "bounded" }, promptVersion: "fixture", promptText: query, workItemId: "search-task",
+    }, "session"));
+    if (attempt.kind !== "prepared") throw new Error("Expected a fresh managed fixture");
+    f.db.immediateTransaction(() => {
+      if (status === "completed") {
+        repository.markAttemptDispatched("project", attempt.attemptId, "none", "session");
+        repository.completeAttempt("project", attempt.attemptId, { sources: [] }, "session");
+      } else if (status === "failed-before-dispatch") repository.failAttempt("project", attempt.attemptId, "Provider unavailable before dispatch", true, "session");
+      workflows.updateSession("session", 0, { state: "finished", outcome: "partial", runningSince: null });
+    });
+    return { key: savedSearchKey(query, parameters, "exa"), query, attemptId: attempt.attemptId };
+  }
+
+  test("same-query cancellation and replacement remain two physical searches", () => {
+    const f = fixture();
+    const cancelled = prepareWorkflowSearch(f.db, f.runId, input, []);
+    recordWorkflowSearchTerminal(f.db, f.runId, cancelled.id, "cancelled", "Cancelled during the provider request");
+    const replacement = prepareWorkflowSearch(f.db, f.runId, input, []);
+    recordWorkflowSearchTerminal(f.db, f.runId, replacement.id, "completed");
+    f.db.db.prepare("INSERT INTO workflow_snapshots VALUES (?, ?, '[]')").run(f.runId, input.key);
+    const trace = getRunTrace(f.db, f.runId);
+    expect(trace.metrics.searches).toBe(2);
+    expect(trace.steps.filter(step => step.kind === "search").map(step => step.status)).toEqual(["cancelled", "completed"]);
+    expect(getRunTraceStep(f.db, f.runId, `search-attempt:${cancelled.id}`).output).toBeNull();
+  });
+
+  test.each(["failed", "unknown-dispatch"] as const)("an ordinary %s search remains visible with its UUID and inputs", status => {
+    const f = fixture();
+    const attempt = prepareWorkflowSearch(f.db, f.runId, input, []);
+    if (status === "failed") recordWorkflowSearchTerminal(f.db, f.runId, attempt.id, "failed", "Provider request failed");
+    const trace = getRunTrace(f.db, f.runId);
+    expect(trace.metrics.searches).toBe(1);
+    const step = trace.steps.find(step => step.id === `search-attempt:${attempt.id}`);
+    expect(step).toMatchObject({ kind: "search", status, search: { query, provider: "exa", results: [] } });
+    const detail = getRunTraceStep(f.db, f.runId, step!.id);
+    expect(detail.inputs).toEqual(attempt);
+    if (status === "failed") expect(detail.events).toContainEqual({ type: "search-interrupted",
+      createdAt: step!.finishedAt!, payload: { attemptId: attempt.id, status, message: "Provider request failed" } });
+  });
+
+  test("acknowledged lost requests keep unknown status after a same-query replacement completes", () => {
+    const f = fixture();
+    const lost = prepareWorkflowSearch(f.db, f.runId, input, []);
+    const replacement = prepareWorkflowSearch(f.db, f.runId, input, [lost.id]);
+    recordWorkflowSearchTerminal(f.db, f.runId, replacement.id, "completed");
+    f.db.db.prepare("INSERT INTO workflow_snapshots VALUES (?, ?, '[]')").run(f.runId, input.key);
+    const receipts = f.db.db.prepare("SELECT * FROM workflow_snapshots ORDER BY rowid").all();
+    const trace = getRunTrace(f.db, f.runId);
+    expect(trace.metrics.searches).toBe(2);
+    expect(trace.warnings).toContain("Some recorded search attempts have unknown provider completion. They are included in the search count.");
+    const old = getRunTraceStep(f.db, f.runId, `search-attempt:${lost.id}`);
+    expect(old.step).toMatchObject({ status: "unknown-dispatch", finishedAt: null, search: { status: "not-saved", results: [] } });
+    expect(old.output).toBeNull();
+    expect(f.db.db.prepare("SELECT * FROM workflow_snapshots ORDER BY rowid").all()).toEqual(receipts);
+  });
+
+  test("managed dispatches and their matching checkpoints count once beside ordinary and legacy searches", () => {
+    const f = fixture();
+    const managed = managedSearch(f, "completed");
+    f.db.db.prepare("INSERT INTO workflow_snapshots VALUES (?, ?, '[]')").run(f.runId, managed.key);
+    f.db.db.prepare("INSERT INTO workflow_snapshots VALUES (?, ?, ?)").run(f.runId, managed.key.replace("search:", "search-query:"),
+      JSON.stringify({ key: managed.key, query: managed.query, parameters, provider: "exa" }));
+    const ordinary = prepareWorkflowSearch(f.db, f.runId, input, []);
+    recordWorkflowSearchTerminal(f.db, f.runId, ordinary.id, "completed");
+    f.db.db.prepare("INSERT INTO workflow_snapshots VALUES (?, ?, '[]')").run(f.runId, input.key);
+    f.db.db.prepare("INSERT INTO workflow_snapshots VALUES (?, ?, '[]')").run(f.runId, savedSearchKey("older different query", parameters));
+    const trace = getRunTrace(f.db, f.runId);
+    expect(trace.metrics.searches).toBe(3);
+    expect(trace.steps.filter(step => step.kind === "search")).toHaveLength(3);
+    expect(trace.steps.filter(step => step.kind === "search" && step.search?.query === managed.query)).toHaveLength(1);
+  });
+
+  test.each(["prepared", "failed-before-dispatch"] as const)("a managed %s request counts zero", status => {
+    const f = fixture();
+    managedSearch(f, status);
+    const trace = getRunTrace(f.db, f.runId);
+    expect(trace.metrics.searches).toBe(0);
+    expect(trace.warnings.some(warning => warning.includes("unknown provider completion"))).toBe(false);
+  });
+
+  test("legacy successful checkpoints remain readable without dispatch receipts", () => {
+    const f = fixture();
+    f.db.db.prepare("INSERT INTO workflow_snapshots VALUES (?, ?, '[]')").run(f.runId, input.key);
+    const trace = getRunTrace(f.db, f.runId);
+    expect(trace.metrics.searches).toBe(1);
+    expect(trace.steps.filter(step => step.kind === "search")).toHaveLength(1);
+  });
+
+  test("a prepared managed request cannot hide an older paid result with the same identity", () => {
+    const f = fixture();
+    const managed = managedSearch(f, "prepared");
+    f.db.db.prepare("INSERT INTO workflow_snapshots VALUES (?, ?, '[]')").run(f.runId, managed.key);
+    const trace = getRunTrace(f.db, f.runId);
+    expect(trace.metrics.searches).toBe(1);
+    const completed = trace.steps.find(step => step.kind === "search" && step.search?.key === managed.key && step.status === "completed");
+    expect(completed).toBeDefined();
+    const detail = getRunTraceStep(f.db, f.runId, completed!.id);
+    expect(detail.step).toEqual(completed!);
+    expect(detail.searches).toContainEqual({ ...completed!.search!, key: managed.key, status: "completed", results: [] });
   });
 });

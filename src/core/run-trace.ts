@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { summarizeRunUsage } from "../backend/run-usage";
 import type { DatabaseClient } from "../db/client";
+import { WorkflowSearchAttemptSchema, WorkflowSearchTerminalSchema, type WorkflowSearchAttempt } from "./workflow-search-attempts";
 import { workflowSearchKey as savedSearchKey } from "../shared/content-identity";
 import { DISCOVERY_DEPTHS, SOURCE_MAX_CHARACTERS } from "../shared/discovery-projection";
 import { AppError } from "../shared/errors";
@@ -23,9 +24,12 @@ interface FactorRow { id: string; source_id: string; subject: string; behavior: 
   source_role: string; audience_fit: string; independent_source_key: string | null; harvest_mode: string; area_id?: string | null }
 interface ProblemRow { id: string; statement: string; verdict: string; verdict_reason: string;
   factor_assessments_json: string; intended_buyer_evidence_factor_ids_json: string; area_id?: string | null }
-interface SnapshotRow { snapshot_key: string; value_json: string }
+interface SnapshotRow { research_run_id: string; snapshot_key: string; value_json: string }
+interface SearchAttempt { runId: string; receipt: WorkflowSearchAttempt;
+  terminal: ReturnType<typeof WorkflowSearchTerminalSchema.parse> | null }
 interface InvestigatorSearchRow { id: string; stage_key: string; status: string; input_json: string;
-  result_json: string | null; model_json: string; prepared_at: string; completed_at: string | null; error_message: string | null }
+  result_json: string | null; model_json: string; prepared_at: string; dispatched_at: string | null;
+  completed_at: string | null; error_message: string | null }
 
 function record(value: unknown): Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
@@ -111,7 +115,12 @@ function load(db: TraceDatabase, runId: string) {
   const sources = db.db.prepare("SELECT id, canonical_url, title FROM sources WHERE research_run_id = ? ORDER BY rowid").all(evidenceRunId) as SourceRow[];
   const factors = db.db.prepare("SELECT * FROM factors WHERE research_run_id = ? ORDER BY rowid").all(evidenceRunId) as FactorRow[];
   const problems = db.db.prepare("SELECT * FROM problems WHERE discovery_run_id = ? ORDER BY rowid").all(evidenceRunId) as ProblemRow[];
-  const snapshots = db.db.prepare(`SELECT snapshot_key, value_json FROM workflow_snapshots WHERE research_run_id IN (${placeholders}) ORDER BY rowid`).all(...runIds) as SnapshotRow[];
+  const snapshots = db.db.prepare(`SELECT research_run_id, snapshot_key, value_json FROM workflow_snapshots WHERE research_run_id IN (${placeholders}) ORDER BY rowid`).all(...runIds) as SnapshotRow[];
+  const searchAttempts: SearchAttempt[] = snapshots.filter(snapshot => snapshot.snapshot_key.startsWith("search-attempt:")).map(snapshot => {
+    const receipt = WorkflowSearchAttemptSchema.parse(json(snapshot.value_json));
+    const terminal = snapshots.find(item => item.research_run_id === snapshot.research_run_id && item.snapshot_key === `search-terminal:${receipt.id}`);
+    return { runId: snapshot.research_run_id, receipt, terminal: terminal ? WorkflowSearchTerminalSchema.parse(json(terminal.value_json)) : null };
+  });
   const outputs = db.db.prepare(`SELECT id, stage_id, selection_key, output_json, context_json FROM stage_results
     WHERE research_run_id IN (${placeholders}) AND stage_id IN ('query-plan','problem-candidates','solution-set-review') ORDER BY completed_at, rowid`)
     .all(...runIds) as Array<{ id: string; stage_id: string; selection_key: string; output_json: string; context_json: string }>;
@@ -127,13 +136,35 @@ function load(db: TraceDatabase, runId: string) {
     for (const area of objects(json(snapshot.value_json))) if (text(area.id)) areas.set(text(area.id), { id: text(area.id), name: text(area.name) || text(area.id) });
   }
   const investigatorSearches = run.workflow_session_id ? db.db.prepare(`SELECT attempt.id, attempt.stage_key, attempt.status, attempt.input_json,
-    attempt.result_json, attempt.model_json, attempt.prepared_at, attempt.completed_at, attempt.error_message
+    attempt.result_json, attempt.model_json, attempt.prepared_at, attempt.dispatched_at, attempt.completed_at, attempt.error_message
     FROM opportunity_exploration_attempts attempt JOIN workflow_work_items work ON work.id = attempt.work_item_id
     WHERE work.session_id = ? AND attempt.stage_name = 'investigator-search' ORDER BY attempt.prepared_at, attempt.rowid`)
     .all(run.workflow_session_id) as InvestigatorSearchRow[] : [];
-  return { db, run, evidenceRunId, session, runIds, placeholders, stages, attempts, sources, factors, problems, snapshots, outputs, frames, areas, investigatorSearches };
+  return { db, run, evidenceRunId, session, runIds, placeholders, stages, attempts, sources, factors, problems, snapshots, searchAttempts, outputs, frames, areas, investigatorSearches };
 }
 type TraceData = ReturnType<typeof load>;
+
+function investigatorResultKeys(attempt: InvestigatorSearchRow): string[] {
+  const input = record(json(attempt.input_json));
+  const parameters = record(input.parameters);
+  const query = text(record(input.request).query);
+  const provider = text(record(json(attempt.model_json)).providerId);
+  // Ordinary searches store the provider beside parameters; managed inputs keep it inside them.
+  const { provider: _provider, ...ordinaryParameters } = parameters;
+  void _provider;
+  return [attempt.stage_key, savedSearchKey(query, parameters), savedSearchKey(query, ordinaryParameters, provider)];
+}
+
+/** Receipts count physical dispatches. Successful old checkpoints fill only gaps with no receipt. */
+function searchCallCount(data: TraceData, legacyCount: number | null | undefined): number {
+  const managedKeys = new Set(data.investigatorSearches.filter(attempt => attempt.dispatched_at !== null).flatMap(investigatorResultKeys));
+  const legacyResults = data.snapshots.filter(snapshot => snapshot.snapshot_key.startsWith("search:")
+    && !data.searchAttempts.some(attempt => attempt.runId === snapshot.research_run_id && attempt.receipt.key === snapshot.snapshot_key)
+    && !managedKeys.has(snapshot.snapshot_key));
+  const calls = data.searchAttempts.length + data.investigatorSearches.filter(attempt => attempt.dispatched_at !== null).length
+    + legacyResults.length;
+  return data.searchAttempts.length || data.investigatorSearches.length || legacyResults.length ? calls : legacyCount ?? 0;
+}
 
 /** Only committed final decisions count. Older checkpoints can still use their raw review output. */
 function acceptedReviewSolutions(data: TraceData): Set<string> {
@@ -257,6 +288,15 @@ function candidates(data: TraceData): RunTraceCandidate[] {
   return result;
 }
 
+function searchResults(data: TraceData, value: string | null): RunTraceSearch["results"] {
+  return objects(json(value)).map(item => {
+    const url = text(item.url) || text(item.canonicalUrl);
+    const source = data.sources.find(source => source.canonical_url === url);
+    return { sourceId: source?.id ?? null, url, title: text(item.title), sourceClass: classifyTraceSource(url),
+      factsKept: source ? data.factors.filter(factor => factor.source_id === source.id).length : 0 };
+  });
+}
+
 function searches(data: TraceData): RunTraceSearch[] {
   const config = record(json(data.run.config_json));
   const depth = config.discoveryDepth === "quick" || config.discoveryDepth === "deep" ? config.discoveryDepth : "standard";
@@ -305,7 +345,7 @@ function searches(data: TraceData): RunTraceSearch[] {
     const input = record(json(attempt.input_json));
     const request = record(input.request);
     const matching = queries.find(query => normalized(query.query) === normalized(text(request.query)) && query.route === text(request.route));
-    if (matching) { matching.reason = text(request.evidenceNeeded); matching.expectedSourceType = text(request.route); continue; }
+    if (matching) { matching.reason = text(request.evidenceNeeded); matching.expectedSourceType = text(request.route); }
     const parameters = { ...record(input.parameters), areaId: investigatorArea(data, attempt.stage_key) };
     const provider = text(record(json(attempt.model_json)).providerId) || null;
     queries.push({ key: attempt.stage_key, query: text(request.query), intent: "evidence-gap", reason: text(request.evidenceNeeded),
@@ -317,14 +357,8 @@ function searches(data: TraceData): RunTraceSearch[] {
       parameters: {}, intent: "unclassified", reason: "No matching query plan or query snapshot was saved.", expectedSourceType: "Not recorded", provider: text(config.searchProvider) || null, route: null });
   }
   return [...new Map(queries.map(query => [query.key, query])).values()].map(query => {
-    const sourceResults = objects(json(saved.get(query.key) ?? null));
     return { ...query, status: saved.has(query.key) ? "completed" as const : "not-saved" as const,
-      results: sourceResults.map(item => {
-        const url = text(item.url) || text(item.canonicalUrl);
-        const source = data.sources.find(source => source.canonical_url === url);
-        return { sourceId: source?.id ?? null, url, title: text(item.title), sourceClass: classifyTraceSource(url),
-          factsKept: source ? data.factors.filter(factor => factor.source_id === source.id).length : 0 };
-      }) };
+      results: searchResults(data, saved.get(query.key) ?? null) };
   });
 }
 
@@ -357,7 +391,11 @@ function steps(data: TraceData, options: RunTraceOptions): RunTraceStep[] {
         : savedPrompt.filename ? { filename: text(savedPrompt.filename), source: text(savedPrompt.source), sha256: text(savedPrompt.resolvedSha256) } : null, search: null };
   });
   // Saved searches lack timestamps. Keep them alongside their planner, without inventing durations.
-  for (const search of searches(data)) {
+  const allSearches = searches(data);
+  const managedKeys = new Set(data.investigatorSearches.filter(attempt => attempt.dispatched_at !== null).flatMap(investigatorResultKeys));
+  for (const search of allSearches) {
+    if (data.searchAttempts.some(attempt => attempt.receipt.key === search.key)
+      || managedKeys.has(search.key) && !data.investigatorSearches.some(attempt => attempt.stage_key === search.key)) continue;
     const planner = data.outputs.find(output => output.stage_id === "query-plan" && objects(record(json(output.output_json)).queries).some(query => matchesPlannedQuery(query, search.query)));
     const area = text(search.parameters.areaId) || (planner ? investigatorArea(data, `query-plan:${planner.selection_key}`) : null);
     const managed = data.investigatorSearches.find(attempt => attempt.stage_key === search.key);
@@ -366,6 +404,28 @@ function steps(data: TraceData, options: RunTraceOptions): RunTraceStep[] {
       phase: area || investigatorArea(data, search.key), status: managed?.status ?? search.status,
       startedAt: managed?.prepared_at ?? null, finishedAt: managed?.completed_at ?? null,
       durationMs: managed ? duration(managed.prepared_at, managed.completed_at) : 0, attempts: [], prompt: null, search });
+  }
+  for (const attempt of data.searchAttempts) {
+    const { receipt, terminal } = attempt;
+    const savedSearch = allSearches.find(search => search.key === receipt.key);
+    const latestCompleted = data.searchAttempts.filter(item => item.runId === attempt.runId && item.receipt.key === receipt.key
+      && item.terminal?.status === "completed").at(-1);
+    const savedResult = terminal?.status === "completed" && latestCompleted === attempt ? data.snapshots.find(snapshot =>
+      snapshot.research_run_id === attempt.runId && snapshot.snapshot_key === receipt.key) : undefined;
+    const search: RunTraceSearch = { ...savedSearch, key: receipt.key, query: receipt.query, parameters: receipt.parameters,
+      provider: receipt.provider ?? savedSearch?.provider ?? null, route: text(receipt.parameters.route) || savedSearch?.route || null,
+      intent: savedSearch?.intent ?? "unclassified", reason: savedSearch?.reason ?? "Search recorded by the workflow.",
+      expectedSourceType: savedSearch?.expectedSourceType ?? "Not recorded", status: savedResult ? "completed" : "not-saved",
+      results: searchResults(data, savedResult?.value_json ?? null) };
+    const planner = data.outputs.find(output => output.stage_id === "query-plan"
+      && objects(record(json(output.output_json)).queries).some(query => matchesPlannedQuery(query, receipt.query)));
+    const phase = text(receipt.parameters.areaId) || (planner ? investigatorArea(data, `query-plan:${planner.selection_key}`) : null);
+    // A later replacement's checkpoint cannot prove how an earlier lost request ended.
+    const step: RunTraceStep = { id: `search-attempt:${receipt.id}`, kind: "search", stage: receipt.key, label: receipt.query,
+      phase: phase || null, status: terminal?.status ?? "unknown-dispatch", startedAt: receipt.createdAt,
+      finishedAt: terminal?.finishedAt ?? null, durationMs: terminal ? duration(receipt.createdAt, terminal.finishedAt) : 0,
+      attempts: [], prompt: null, search };
+    result.push(step);
   }
   const items = data.db.db.prepare(`SELECT id, kind, scope_key, state, created_at, finished_at FROM workflow_work_items
     WHERE session_id = ? ORDER BY ordinal, created_at`).all(data.run.workflow_session_id) as Array<{ id: string; kind: string; scope_key: string; state: string; created_at: string; finished_at: string | null }>;
@@ -417,7 +477,6 @@ export function getRunTrace(db: TraceDatabase, runId: string, options: RunTraceO
   const unknownCompletion = data.attempts.some(attempt => attempt.terminal_kind !== "never-dispatched"
     && (["dispatched", "accepted", "interrupted"].includes(attempt.status)
       || objects(record(json(attempt.attempt_metadata_json)).attempts).some(item => item.providerCompletion === "unknown")));
-  const searchesSaved = data.snapshots.filter(snapshot => snapshot.snapshot_key.startsWith("search:")).length;
   const legacyCounts = data.attempts.length === 0 ? db.db.prepare(`SELECT
     SUM(CASE WHEN model IS NOT NULL AND operation NOT LIKE '%search%' THEN 1 ELSE 0 END) AS calls,
     SUM(CASE WHEN operation LIKE '%search%' THEN 1 ELSE 0 END) AS searches
@@ -445,14 +504,16 @@ export function getRunTrace(db: TraceDatabase, runId: string, options: RunTraceO
       confirmationRate: assessed.length ? confirmed / assessed.length : null,
       coverage: { kind: hasAreas ? "areas" : "phases", groups: [...groups.values()] },
       modelCalls: data.attempts.length ? usage.attemptCount : legacyCounts?.calls ?? 0,
-      searches: (Math.max(searchesSaved, allSteps.filter(step => step.kind === "search" && step.search?.status === "completed").length)
-        + data.investigatorSearches.filter(attempt => ["dispatched", "unknown-dispatch", "failed"].includes(attempt.status)).length) || legacyCounts?.searches || 0,
+      searches: searchCallCount(data, legacyCounts?.searches),
       wallTimeMs: duration(data.session?.started_at ?? data.run.created_at, live ? null : data.session?.finished_at ?? data.run.updated_at),
       modelTimeMs: allSteps.reduce((sum, step) => sum + (step.kind === "model" ? step.durationMs : 0), 0),
       interruptionTimeMs: interruptions.reduce((sum, attempt) => sum + attempt.durationMs, 0), interruptions: interruptions.length,
       ideas: ideas.count, acceptedIdeas: accepted.size, acceptedIdeasFailingMustHave },
     warnings: [...(allCandidates.some(candidate => candidate.derived) ? ["Some candidate states were derived from older saved outputs."] : []),
       ...(unknownCompletion ? ["Some recorded model attempts have unknown provider completion. They are included in the call count."] : []),
+      ...(data.searchAttempts.some(attempt => attempt.terminal === null)
+        || data.investigatorSearches.some(attempt => attempt.dispatched_at !== null && ["dispatched", "unknown-dispatch", "failed"].includes(attempt.status))
+        ? ["Some recorded search attempts have unknown provider completion. They are included in the search count."] : []),
       ...(accepted.size && data.frames.length && acceptedIdeasFailingMustHave === null
         ? ["Accepted ideas do not all have a saved assessment against the bound frame. Must-have failures are unknown."] : []),
       ...(data.snapshots.some(snapshot => snapshot.snapshot_key.startsWith("search:")) && !data.snapshots.some(snapshot => snapshot.snapshot_key.startsWith("search-query:"))
@@ -471,7 +532,10 @@ export function getRunTraceStep(db: TraceDatabase, runId: string, stepId: string
     { request_json: string; output_json: string | null } | undefined : undefined;
   const request = record(json(attempt?.request_json ?? null));
   const managedSearch = data.investigatorSearches.find(attempt => attempt.stage_key === step.stage);
-  const output = json(saved?.output_json ?? attempt?.output_json ?? managedSearch?.result_json ?? null);
+  const ordinarySearch = data.searchAttempts.find(attempt => stepId === `search-attempt:${attempt.receipt.id}`);
+  const searchOutput = ordinarySearch?.terminal?.status === "completed" && step.search?.status === "completed" ? data.snapshots.find(snapshot =>
+    snapshot.research_run_id === ordinarySearch.runId && snapshot.snapshot_key === ordinarySearch.receipt.key) : null;
+  const output = json(saved?.output_json ?? attempt?.output_json ?? managedSearch?.result_json ?? searchOutput?.value_json ?? null);
   const evidence = stepId === "legacy:saved" ? db.db.prepare("SELECT * FROM sources WHERE research_run_id = ? ORDER BY rowid").all(runId)
     : saved ? objects(json(saved.evidence_json)) : objects(request.evidence);
   const rawFactors = objects(record(output).factors);
@@ -489,7 +553,7 @@ export function getRunTraceStep(db: TraceDatabase, runId: string, stepId: string
         : !source ? "No persisted source with this ID." : settled ? "Not kept after validation, deduplication or the saved factor limit." : "Materialization is still in progress." };
   });
   const candidateStatement = evidence.map(item => text(record(record(record(item).content).candidate).statement)).find(Boolean);
-  const relatedSearches = searches(data).filter(search => step.search?.key === search.key
+  const relatedSearches = ordinarySearch && step.search ? [step.search] : searches(data).filter(search => step.search?.key === search.key
     || step.stage.startsWith("query-plan") && objects(record(output).queries).some(query => matchesPlannedQuery(query, search.query))
     || step.stage.startsWith("problem-kill") && candidateStatement && search.query.startsWith(candidateStatement));
   const allCandidates = candidates(data);
@@ -497,10 +561,15 @@ export function getRunTraceStep(db: TraceDatabase, runId: string, stepId: string
     : step.stage.startsWith("problem-kill") ? allCandidates.filter(candidate => candidate.statement === candidateStatement) : [];
   const events = db.db.prepare(`SELECT type, created_at, payload_json FROM job_events WHERE run_id IN (${data.placeholders}) ORDER BY id`)
     .all(...data.runIds) as Array<{ type: string; created_at: string; payload_json: string }>;
-  return RunTraceStepDetailSchema.parse({ runId, step, inputs: saved ? json(saved.input_json) : managedSearch ? json(managedSearch.input_json) : record(request.workOrder).inputs ?? null,
+  return RunTraceStepDetailSchema.parse({ runId, step, inputs: saved ? json(saved.input_json) : managedSearch ? json(managedSearch.input_json)
+    : ordinarySearch?.receipt ?? record(request.workOrder).inputs ?? null,
     output, evidence, searches: relatedSearches, facts, candidates: relatedCandidates,
     events: [...events.filter(event => !step.startedAt || event.created_at >= step.startedAt && (!step.finishedAt || event.created_at <= step.finishedAt))
       .map(event => ({ type: event.type, createdAt: event.created_at, payload: json(event.payload_json) })),
       ...(managedSearch?.error_message ? [{ type: "search-interrupted", createdAt: managedSearch.completed_at ?? managedSearch.prepared_at,
-        payload: { status: managedSearch.status, message: managedSearch.error_message } }] : [])] });
+        payload: { status: managedSearch.status, message: managedSearch.error_message } }] : []),
+      ...(ordinarySearch && ordinarySearch.terminal?.status !== "completed" ? [{ type: "search-interrupted",
+        createdAt: ordinarySearch.terminal?.finishedAt ?? ordinarySearch.receipt.createdAt,
+        payload: { attemptId: ordinarySearch.receipt.id, status: ordinarySearch.terminal?.status ?? "unknown-dispatch",
+          message: ordinarySearch.terminal?.message ?? "Search may have completed before interruption. No terminal result was saved." } }] : [])] });
 }
