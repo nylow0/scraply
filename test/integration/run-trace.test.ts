@@ -302,7 +302,8 @@ describe("Trace physical search dispatches", () => {
     const trace = getRunTrace(f.db, f.runId);
     expect(trace.metrics.searches).toBe(1);
     const step = trace.steps.find(step => step.id === `search-attempt:${attempt.id}`);
-    expect(step).toMatchObject({ kind: "search", status, search: { query, provider: "exa", results: [] } });
+    expect(step).toMatchObject({ kind: "search", status, search: { query, provider: "exa", results: [],
+      reason: "Search recorded by the workflow.", expectedSourceType: "Not recorded" } });
     const detail = getRunTraceStep(f.db, f.runId, step!.id);
     expect(detail.inputs).toEqual(attempt);
     if (status === "failed") expect(detail.events).toContainEqual({ type: "search-interrupted",
@@ -355,6 +356,17 @@ describe("Trace physical search dispatches", () => {
     const trace = getRunTrace(f.db, f.runId);
     expect(trace.metrics.searches).toBe(1);
     expect(trace.steps.filter(step => step.kind === "search")).toHaveLength(1);
+    expect(trace.steps.find(step => step.kind === "search")?.search?.reason).toBe("No matching query plan or query snapshot was saved.");
+  });
+
+  test("a legacy query snapshot without a planned reason keeps the generic explanation", () => {
+    const f = fixture();
+    f.db.db.prepare("INSERT INTO workflow_snapshots VALUES (?, ?, '[]')").run(f.runId, input.key);
+    f.db.db.prepare("INSERT INTO workflow_snapshots VALUES (?, ?, ?)").run(f.runId, input.key.replace("search:", "search-query:"), JSON.stringify(input));
+    const trace = getRunTrace(f.db, f.runId);
+    const search = trace.steps.find(step => step.kind === "search")!;
+    expect(search.search).toMatchObject({ reason: "Search recorded by the workflow.", expectedSourceType: "Not recorded" });
+    expect(getRunTraceStep(f.db, f.runId, search.id).searches).toContainEqual(expect.objectContaining({ reason: "Search recorded by the workflow." }));
   });
 
   test("a prepared managed request cannot hide an older paid result with the same identity", () => {

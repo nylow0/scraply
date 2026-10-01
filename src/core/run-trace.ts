@@ -132,7 +132,7 @@ function load(db: TraceDatabase, runId: string) {
     return { runId: snapshot.research_run_id, receipt, terminal: terminal ? WorkflowSearchTerminalSchema.parse(json(terminal.value_json)) : null };
   });
   const outputs = db.db.prepare(`SELECT id, stage_id, selection_key, output_json, context_json FROM stage_results
-    WHERE research_run_id IN (${placeholders}) AND stage_id IN ('query-plan','problem-candidates','solution-set-review') ORDER BY completed_at, rowid`)
+    WHERE research_run_id IN (${placeholders}) AND stage_id IN ('query-plan','frame-search-plan','problem-candidates','solution-set-review') ORDER BY completed_at, rowid`)
     .all(...runIds) as Array<{ id: string; stage_id: string; selection_key: string; output_json: string; context_json: string }>;
   const frameTable = db.db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'research_frames'").get();
   const frames = frameTable ? db.db.prepare(`SELECT run.id AS run_id, frame.approved_json FROM research_runs run
@@ -316,13 +316,14 @@ function searches(data: TraceData): RunTraceSearch[] {
     .map(snapshot => ({ ...record(json(snapshot.value_json)), key: snapshot.snapshot_key.replace("search-query:", "search:") }));
   const normalized = (query: string) => query.normalize("NFKC").trim().replace(/\s+/g, " ").toLowerCase();
   const queries: Array<{ query: string; intent: string; reason: string; expectedSourceType: string; parameters: Record<string, unknown>; key: string; provider: string | null; route: string | null }> = [];
-  for (const stage of data.outputs.filter(stage => stage.stage_id === "query-plan")) {
+  for (const stage of data.outputs.filter(stage => stage.stage_id === "query-plan" || stage.stage_id === "frame-search-plan")) {
     for (const query of objects(record(json(stage.output_json)).queries)) {
       const queryText = text(query.query);
       const recordedLegs = querySnapshots.filter(snapshot => matchesPlannedQuery(query, text(snapshot.query)));
       if (recordedLegs.length) {
         for (const snapshot of recordedLegs) queries.push({ query: text(snapshot.query), intent: text(query.intent) || "unclassified",
-          reason: text(query.uncertainty), expectedSourceType: text(query.intendedSourceType), key: snapshot.key,
+          reason: text(query.reason) || text(query.uncertainty) || "Search recorded by the workflow.",
+          expectedSourceType: text(query.intendedSourceType) || "Not recorded", key: snapshot.key,
           parameters: record(snapshot.parameters), provider: text(snapshot.provider) || text(config.searchProvider) || null,
           route: text(snapshot.route) || text(record(snapshot.parameters).route) || null });
         continue;
@@ -331,8 +332,8 @@ function searches(data: TraceData): RunTraceSearch[] {
       const fallback = stage.selection_key.includes("audience") ? config.audienceSourcePolicy === "communities" ? choices[2]! : choices[1]! : choices[0]!;
       const matched = [fallback, ...choices].find(choice => saved.has(savedSearchKey(queryText, choice)));
       const selected = matched ?? fallback;
-      queries.push({ query: queryText, intent: text(query.intent) || "unclassified", reason: text(query.uncertainty),
-        expectedSourceType: text(query.intendedSourceType), parameters: selected, key: savedSearchKey(queryText, selected), provider: text(config.searchProvider) || null, route: null });
+      queries.push({ query: queryText, intent: text(query.intent) || "unclassified", reason: text(query.reason) || text(query.uncertainty) || "Search recorded by the workflow.",
+        expectedSourceType: text(query.intendedSourceType) || "Not recorded", parameters: selected, key: savedSearchKey(queryText, selected), provider: text(config.searchProvider) || null, route: null });
     }
   }
   for (const candidate of candidates(data).filter(candidate => candidate.state !== "not-assessed" && candidate.state !== "user-asserted")) {
@@ -406,7 +407,8 @@ function steps(data: TraceData, options: RunTraceOptions): RunTraceStep[] {
   for (const search of allSearches) {
     if (data.searchAttempts.some(attempt => attempt.receipt.key === search.key)
       || managedKeys.has(search.key) && !data.investigatorSearches.some(attempt => attempt.stage_key === search.key)) continue;
-    const planner = data.outputs.find(output => output.stage_id === "query-plan" && objects(record(json(output.output_json)).queries).some(query => matchesPlannedQuery(query, search.query)));
+    const planner = data.outputs.find(output => (output.stage_id === "query-plan" || output.stage_id === "frame-search-plan")
+      && objects(record(json(output.output_json)).queries).some(query => matchesPlannedQuery(query, search.query)));
     const area = text(search.parameters.areaId) || (planner ? investigatorArea(data, `query-plan:${planner.selection_key}`) : null);
     const managed = data.investigatorSearches.find(attempt => attempt.stage_key === search.key);
     result.push({ id: search.key.length > 256 ? `search:${createHash("sha256").update(search.key).digest("hex")}` : search.key,
@@ -427,7 +429,7 @@ function steps(data: TraceData, options: RunTraceOptions): RunTraceStep[] {
       intent: savedSearch?.intent ?? "unclassified", reason: savedSearch?.reason ?? "Search recorded by the workflow.",
       expectedSourceType: savedSearch?.expectedSourceType ?? "Not recorded", status: savedResult ? "completed" : "not-saved",
       results: searchResults(data, savedResult?.value_json ?? null) };
-    const planner = data.outputs.find(output => output.stage_id === "query-plan"
+    const planner = data.outputs.find(output => (output.stage_id === "query-plan" || output.stage_id === "frame-search-plan")
       && objects(record(json(output.output_json)).queries).some(query => matchesPlannedQuery(query, receipt.query)));
     const phase = text(receipt.parameters.areaId) || (planner ? investigatorArea(data, `query-plan:${planner.selection_key}`) : null);
     // A later replacement's checkpoint cannot prove how an earlier lost request ended.
@@ -564,7 +566,7 @@ export function getRunTraceStep(db: TraceDatabase, runId: string, stepId: string
   });
   const candidateStatement = evidence.map(item => text(record(record(record(item).content).candidate).statement)).find(Boolean);
   const relatedSearches = ordinarySearch && step.search ? [step.search] : searches(data).filter(search => step.search?.key === search.key
-    || step.stage.startsWith("query-plan") && objects(record(output).queries).some(query => matchesPlannedQuery(query, search.query))
+    || (step.stage.startsWith("query-plan") || step.stage.startsWith("frame-search-plan")) && objects(record(output).queries).some(query => matchesPlannedQuery(query, search.query))
     || step.stage.startsWith("problem-kill") && candidateStatement && search.query.startsWith(candidateStatement));
   const allCandidates = candidates(data);
   const relatedCandidates = stepId === "legacy:saved" || step.stage.startsWith("problem-candidates") ? allCandidates
