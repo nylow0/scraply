@@ -17,6 +17,63 @@ const ExaResponseSchema = z.object({
   })),
 });
 
+const ExaErrorSchema = z.object({
+  requestId: z.string().optional(),
+  tag: z.string().optional(),
+  error: z.string().optional(),
+});
+
+// Failed search receipts retain Error.message. Keep only bounded provider diagnostics,
+// never headers, arbitrary error pages, or an API key echoed in the response.
+async function readExaErrorDetails(response: Response, apiKey: string): Promise<string> {
+  if (!response.body) return "";
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let bytes = 0;
+  let body = "";
+  let expired = false;
+  const timeout = setTimeout(() => {
+    expired = true;
+    void reader.cancel().catch(() => undefined);
+  }, 2000);
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (expired) return "";
+      if (done) break;
+      bytes += value.byteLength;
+      if (bytes > 8192) return "";
+      body += decoder.decode(value, { stream: true });
+    }
+    const payload: unknown = JSON.parse(body + decoder.decode());
+    const parsed = ExaErrorSchema.safeParse(payload);
+    if (!parsed.success) return "";
+    const details: Partial<Record<"requestId" | "tag" | "error", string>> = {};
+    for (const field of ["requestId", "tag", "error"] as const) {
+      const text = parsed.data[field];
+      if (!text) continue;
+      const redacted = apiKey ? text.replaceAll(apiKey, "[redacted]") : text;
+      const value = redacted.replace(/\p{C}/gu, " ").replace(/\s+/g, " ").trim()
+        .slice(0, field === "error" ? 1000 : 200);
+      if (value) details[field] = value;
+    }
+    if (!Object.keys(details).length) return "";
+    let encoded = JSON.stringify(details);
+    // Search terminals cap messages at 2000 characters, including JSON escaping.
+    while (encoded.length > 1800 && details.error?.length) {
+      details.error = details.error.slice(0, -100);
+      encoded = JSON.stringify(details);
+    }
+    return encoded;
+  } catch {
+    return "";
+  } finally {
+    clearTimeout(timeout);
+    void reader.cancel().catch(() => undefined);
+    reader.releaseLock();
+  }
+}
+
 export const EXA_CATEGORIES = [
   "company",
   "publication",
@@ -71,14 +128,15 @@ export class ExaClient implements SearchClient {
         signal: controller.signal,
       });
       if (!response.ok) {
-        await response.body?.cancel().catch(() => undefined);
+        const details = await readExaErrorDetails(response, this.apiKey);
+        const suffix = details ? `: ${details}` : "";
         if (response.status === 401 || response.status === 403) {
-          throw new ProviderFailure("auth", "Exa API key was rejected", false);
+          throw new ProviderFailure("auth", `Exa API key was rejected${suffix}`, false);
         }
         if (response.status === 429) {
-          throw new ProviderFailure("rate-limit", "Exa rate limit reached", true);
+          throw new ProviderFailure("rate-limit", `Exa rate limit reached${suffix}`, true);
         }
-        throw new ProviderFailure("failed", `Exa search failed (${response.status})`, response.status >= 500 || response.status === 408);
+        throw new ProviderFailure("failed", `Exa search failed (${response.status})${suffix}`, response.status >= 500 || response.status === 408);
       }
 
       let payload: unknown;
