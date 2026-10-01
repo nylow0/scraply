@@ -26,7 +26,9 @@ import {
   SOURCE_MAX_CHARACTERS,
 } from "../shared/discovery-projection";
 import { loadPrompt } from "./prompts";
-import { applyProblemFactorAssessments } from "./problem-evidence";
+import { applyProblemFactorAssessments, qualifiesAsProblemObservation } from "./problem-evidence";
+
+export { qualifiesAsProblemObservation, reliesOnCloseRoles } from "./problem-evidence";
 import type { ResearchArea, ResearchFrame } from "../shared/research-frame";
 import { filterRoutedSources, isContentFarm, routeSearchOptions, routingLanguages, searchRoutes, vendorDominatedDomains, type SourceRoutingContext } from "../providers/source-routes";
 
@@ -406,7 +408,7 @@ export async function discoverProblems(
       const killBuyerIds = "intendedBuyerEvidenceFactorIds" in kill ? kill.intendedBuyerEvidenceFactorIds : candidateBuyerIds;
       const claimedBuyerIds = new Set(killBuyerIds);
       const intendedBuyerFactors = assessedFactors.filter((factor) => claimedBuyerIds.has(factor.id)
-        && qualifiesAsIntendedBuyerObservation(factor));
+        && qualifiesAsProblemObservation(factor));
       const independentBuyerSources = new Set(intendedBuyerFactors.map((factor) => factor.independentSourceKey).filter(Boolean));
       // A hostname is only a transport boundary. Separate buyer accounts or studies on the
       // same forum are independent when extraction gave them distinct source keys.
@@ -1037,13 +1039,9 @@ function selectDiverseSources(sources: HarvestedSource[], limit: number): Harves
 }
 
 function hasIntendedBuyerObservation(factors: Array<Omit<HarvestedFactor, "source">>): boolean {
-  return factors.some(qualifiesAsIntendedBuyerObservation);
+  return factors.some(qualifiesAsProblemObservation);
 }
 
-export function qualifiesAsIntendedBuyerObservation<T extends Pick<DiscoveryFactorRecord, "audienceFit" | "sourceRole">>(factor: T): boolean {
-  if (factor.audienceFit !== "intended-buyer") return false;
-  return factor.sourceRole === "firsthand" || factor.sourceRole === "measured";
-}
 
 function preserveRecommendationWording(
   behavior: string,

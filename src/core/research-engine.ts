@@ -40,7 +40,7 @@ import { ScopeSchema, SavedProblemCandidateSchema, WorkflowV2CompatibleDecisionA
 import { analyzeSelectedOption, developmentStageEvidence, evaluateSelectedOptionRisk, produceDevelopmentOptions, reassessSelectedOption, reassessSelectedOptionRisk, WorkflowGenerationAngleSchema, WorkflowGenerationEvidenceSchema, type WorkflowV2DevelopmentContext, type WorkflowV2EvidenceItem } from "./development";
 import { DEFAULT_PROBLEM_CANDIDATE_LIMIT, DISCOVERY_DEPTHS, discoverProblems, discoveryRunProjection, harvestEvidenceFollowUp, harvestFactors, normalizeSearchQuery,
   type HarvestMode, type HarvestResult, type PlannedQuery, type DiscoveryProblem, type HarvestedFactor, type HarvestedSource,
-  qualifiesAsIntendedBuyerObservation, quoteAppearsVerbatim, safeCanonicalizeUrl, type ProblemDiscoveryResult, type DiscoveryDependencies } from "./discovery";
+  qualifiesAsProblemObservation, quoteAppearsVerbatim, safeCanonicalizeUrl, type ProblemDiscoveryResult, type DiscoveryDependencies } from "./discovery";
 import { assessNotAssessedCandidate, ensureAreaInvestigatorWorkItems, ensureEvidenceCheckWorkItem,
   enforceConfirmationRule, runAreaGapInvestigation, runCandidateEvidenceInvestigator, runManagedInvestigatorSearch,
   type InvestigatorDependencies } from "./evidence-investigators";
@@ -1779,7 +1779,7 @@ export class ResearchEngine {
         scan = await scanResearchArea(scope, frame, area, { ...this.areaDependencies(active, frame, area), depth: "quick", repairPolicy: "disabled",
           stageScope: `scan-${sha256Area(area.id)}`, idFactory: workflow.idFactory(key), random: () => 0.5 });
         const validated = this.reconcileAreaEvidence(active.runId, scan.sources, workflow.withFactorUncertainty(scan.factors));
-        scan = { ...scan, ...validated, qualifyingFacts: validated.factors.filter(qualifiesAsIntendedBuyerObservation).length };
+        scan = { ...scan, ...validated, qualifyingFacts: validated.factors.filter(qualifiesAsProblemObservation).length };
         const completed = scan;
         this.discovery.persistFactors(active.runId, scan.sources, scan.factors, () => {
           this.assignArea("factors", scan!.factors.map(factor => factor.id), area.id);

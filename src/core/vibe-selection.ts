@@ -1,4 +1,5 @@
 import type { ProblemCandidate } from "../shared/ipc";
+import { qualifiesAsProblemObservation } from "./problem-evidence";
 
 export type VibeProblemOrigin = "problem-evidence" | "user-asserted";
 export type VibeBriefFit = "direct" | "partial" | "unknown" | "outside";
@@ -67,8 +68,7 @@ export function selectVibeProblems(input: VibeSelectionInput): VibeSelectionResu
   const qualified = input.candidates.map((candidate): QualifiedCandidate => {
     const citedIds = new Set(candidate.intendedBuyerEvidenceFactorIds);
     const directFactors = candidate.factors.filter((factor) => citedIds.has(factor.id)
-      && factor.audienceFit === "intended-buyer"
-      && (factor.sourceRole === "firsthand" || factor.sourceRole === "measured")
+      && qualifiesAsProblemObservation(factor)
       && factor.sourceId.trim().length > 0
       && factor.sourceUrl.trim().length > 0
       && factor.quote.trim().length > 0);

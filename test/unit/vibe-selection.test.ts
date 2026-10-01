@@ -48,19 +48,22 @@ describe("unattended problem selection", () => {
     expect(result.decisions[0]?.reason).toContain("independent source key");
   });
 
-  test("only cited intended-buyer observations count, even if other factors look strong", () => {
+  test("only cited firsthand or measured observations from the audience or a close role count", () => {
     const unsupported = candidate("uncited", {
       factors: [{ ...candidate("uncited").factors[0]!, id: "another-factor" }],
     });
-    const adjacent = candidate("adjacent", {
-      factors: [{ ...candidate("adjacent").factors[0]!, audienceFit: "adjacent" }],
+    const closeRole = candidate("close-role", {
+      factors: [{ ...candidate("close-role").factors[0]!, audienceFit: "adjacent" }],
+    });
+    const general = candidate("general", {
+      factors: [{ ...candidate("general").factors[0]!, audienceFit: "general" }],
     });
     const vendor = candidate("vendor", {
       factors: [{ ...candidate("vendor").factors[0]!, sourceRole: "vendor" }],
     });
-    const result = selectVibeProblems({ candidates: [unsupported, adjacent, vendor] });
-    expect(result.selectedProblemIds).toEqual([]);
-    expect(result.rejectedProblemIds).toEqual(["uncited", "adjacent", "vendor"]);
+    const result = selectVibeProblems({ candidates: [unsupported, closeRole, general, vendor] });
+    expect(result.selectedProblemIds).toEqual(["close-role"]);
+    expect(result.rejectedProblemIds).toEqual(["uncited", "general", "vendor"]);
   });
 
   test("open gaps, unresolved contradictions, and outside-brief fit block selection", () => {
