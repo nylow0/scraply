@@ -19,7 +19,7 @@ import {
   ProblemContraryEvidenceSchema, ProblemFactorAssessmentSchema, ProblemKillOutputSchema, ProblemSchema, type Scope,
 } from "../shared/structured-output-schemas";
 import {
-  harvestEvidenceFollowUp, qualifiesAsIntendedBuyerObservation, resolveSources, type DiscoveryDependencies,
+  harvestEvidenceFollowUp, qualifiesAsProblemObservation, resolveSources, type DiscoveryDependencies,
   type DiscoveryProblem, type HarvestedFactor, type HarvestedSource,
 } from "./discovery";
 import { applyProblemFactorAssessments } from "./problem-evidence";
@@ -154,6 +154,15 @@ export async function runCandidateEvidenceInvestigator(input: InvestigatorDepend
     input.dependencies.signal?.throwIfAborted();
     const checkKey = `evidence-check:${input.area.id}:${problem.id}:round-${round}`;
     const savedCheck = input.checkpoints.read(checkKey);
+    // Extra searching is only worth it for a candidate exactly one independent source short.
+    // A confirmed candidate still gets its check so it can be dropped; saved checks keep their original path.
+    const origins = qualifyingEvidence(problem).origins.size;
+    if (!savedCheck && problem.verdict !== "confirmed" && origins !== 1) {
+      stopReason = origins === 0
+        ? "No qualifying observation yet, so no extra searches were made for this candidate."
+        : "The verdict did not rest on a missing source, so no extra searches were made for this candidate.";
+      break;
+    }
     const targetStop = input.stopRequested?.();
     if (!savedCheck && targetStop) { stopReason = targetStop; break; }
     if (!savedCheck && !input.budgetAvailable(1, 0, checkKey)) {
@@ -205,7 +214,7 @@ export async function runCandidateEvidenceInvestigator(input: InvestigatorDepend
       factors.push(...accepted);
       const merged = new Map([...problem.factors, ...accepted].map(factor => [factor.id, factor]));
       problem = { ...problem, factors: [...merged.values()], factorIds: [...merged.keys()] };
-      const qualifyingFacts = accepted.filter(qualifiesAsIntendedBuyerObservation).length;
+      const qualifyingFacts = accepted.filter(qualifiesAsProblemObservation).length;
       if (qualifyingFacts === 0) zeroYieldRoutes.add(request.route);
       entry.searches.push({ ...request, qualifyingFacts, factors: accepted.length });
     }
@@ -265,7 +274,7 @@ export async function runAreaGapInvestigation(input: InvestigatorDependencies & 
     if (!harvest) return { factors, sources, searches, stopReason: `Budget exhausted before area gap ${index + 1}: ${gap.name}.`, partial: true };
     const accepted = mergeHarvest(harvest, knownSources, sources);
     factors.push(...accepted);
-    const qualifyingFacts = accepted.filter(qualifiesAsIntendedBuyerObservation).length;
+    const qualifyingFacts = accepted.filter(qualifiesAsProblemObservation).length;
     if (qualifyingFacts === 0) zeroYieldRoutes.add(request.route);
     searches.push({ ...request, qualifyingFacts, factors: accepted.length });
   }
@@ -439,11 +448,15 @@ async function reassessInvestigatorProblem(input: InvestigatorDependencies, prob
     singleHarvestModeWarning: new Set(problem.factors.map(factor => factor.harvestMode)).size === 1 && problem.factors.length > 0 });
 }
 
+function qualifyingEvidence(problem: DiscoveryProblem) {
+  const claimed = new Set(problem.intendedBuyerEvidenceFactorIds ?? []);
+  const qualifying = problem.factors.filter(factor => claimed.has(factor.id) && qualifiesAsProblemObservation(factor));
+  return { qualifying, origins: new Set(qualifying.map(factor => factor.independentSourceKey).filter(Boolean)) };
+}
+
 /** All investigator paths use the same classification and origin rule as discovery's initial verdict. */
 export function enforceConfirmationRule(problem: DiscoveryProblem): DiscoveryProblem {
-  const claimed = new Set(problem.intendedBuyerEvidenceFactorIds ?? []);
-  const qualifying = problem.factors.filter(factor => claimed.has(factor.id) && qualifiesAsIntendedBuyerObservation(factor));
-  const origins = new Set(qualifying.map(factor => factor.independentSourceKey).filter(Boolean));
+  const { qualifying, origins } = qualifyingEvidence(problem);
   if (problem.verdict !== "confirmed" || origins.size >= 2) return problem;
   const gap = problem.evidenceGap ?? "Two independent firsthand or measured observations about the affected people are required.";
   return { ...problem, verdict: "insufficient-evidence", intendedBuyerEvidenceFactorIds: qualifying.map(factor => factor.id),
