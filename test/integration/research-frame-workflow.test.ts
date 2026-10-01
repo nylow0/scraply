@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
 import { ResearchEngine } from "../../src/core/research-engine";
+import { getRunTrace, getRunTraceStep } from "../../src/core/run-trace";
 import { WorkflowCoordinator } from "../../src/core/workflow-coordinator";
 import { configurePromptPaths } from "../../src/core/prompts";
 import { DatabaseClient } from "../../src/db/client";
@@ -150,6 +151,37 @@ test("Controlled persists the frame review, then scans included areas and saves 
     expect(rows.length).toBeGreaterThan(0);
     expect(new Set(rows.map(row => row.area_id))).toEqual(new Set(["changes", "deposits"]));
     expect(db.db.prepare("SELECT COUNT(*) AS count FROM stage_results WHERE stage_id = 'area-ranking'").get()).toEqual({ count: 1 });
+  } finally { await fixture.close(); }
+});
+
+test("Trace reads framed discovery evidence while retaining frame preparation usage and steps", async () => {
+  const fixture = await setup();
+  try {
+    const { coordinator, sessionId, db } = fixture;
+    await until(() => coordinator.summary(sessionId).reviewKind === "frame");
+    const repository = new WorkflowRepository(db);
+    const preparation = repository.listWorkItems(sessionId).find(item => item.kind === "prepare-frame")!;
+    const preparationRunId = (preparation.outputRefs as { runId: string }).runId;
+    expect(getRunTrace(db, preparationRunId).metrics.factors).toBe(0);
+    const saved = coordinator.get(sessionId).researchFrame!;
+    await coordinator.command({ threadId: "project", sessionId, clientCommandId: "approve-trace", expectedRevision: coordinator.summary(sessionId).revision,
+      action: { type: "approve-frame", frameId: saved.id, frame: saved.draft } });
+    await until(() => coordinator.summary(sessionId).reviewKind === "research");
+    expect(fixture.errors).toEqual([]);
+    const discovery = repository.listWorkItems(sessionId).find(item => item.kind === "discovery")!;
+    const discoveryRunId = (discovery.outputRefs as { runId: string }).runId;
+    expect(discoveryRunId).not.toBe(preparationRunId);
+    const factors = db.db.prepare("SELECT COUNT(*) AS count FROM factors WHERE research_run_id = ?").get(discoveryRunId) as { count: number };
+    const sources = db.db.prepare("SELECT COUNT(*) AS count FROM sources WHERE research_run_id = ?").get(discoveryRunId) as { count: number };
+    expect(factors.count).toBeGreaterThan(0);
+    for (const runId of [preparationRunId, discoveryRunId]) {
+      const trace = getRunTrace(db, runId);
+      expect(trace.metrics).toMatchObject({ factors: factors.count, totalSources: sources.count,
+        qualifyingObservations: factors.count, modelCalls: fixture.stages.length, searches: fixture.queries.length });
+      expect(trace.steps.some(step => step.stage === "frame")).toBe(true);
+      const harvest = trace.steps.find(step => step.stage.startsWith("factor-harvest"))!;
+      expect(getRunTraceStep(db, runId, harvest.id).facts.some(fact => fact.kept === true)).toBe(true);
+    }
   } finally { await fixture.close(); }
 });
 

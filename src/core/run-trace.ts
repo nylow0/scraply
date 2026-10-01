@@ -93,6 +93,18 @@ export function classifyTraceSource(url: string): "forum" | "review" | "study" |
 
 export { workflowSearchKey as savedSearchKey } from "../shared/content-identity";
 
+/** Frame preparation shares the discovery purpose, but its context sources are not research evidence. */
+export function selectSessionEvidenceRunId(db: TraceDatabase, sessionId: string): string | null {
+  const run = db.db.prepare(`SELECT run.id FROM research_runs run
+    WHERE run.workflow_session_id = ? AND run.purpose = 'discovery'
+      AND NOT EXISTS (SELECT 1 FROM workflow_snapshots snapshot WHERE snapshot.research_run_id = run.id
+        AND snapshot.snapshot_key = 'workflow-kind' AND json_extract(snapshot.value_json, '$.kind') = 'prepare-frame')
+      AND NOT EXISTS (SELECT 1 FROM workflow_work_items work WHERE work.session_id = run.workflow_session_id
+        AND work.kind = 'prepare-frame' AND json_extract(work.output_refs_json, '$.runId') = run.id)
+    ORDER BY run.created_at, run.rowid LIMIT 1`).get(sessionId) as { id: string } | undefined;
+  return run?.id ?? null;
+}
+
 function load(db: TraceDatabase, runId: string) {
   const run = db.db.prepare("SELECT id, thread_id, workflow_session_id, status, purpose, created_at, updated_at, config_json FROM research_runs WHERE id = ?")
     .get(runId) as RunRow | undefined;
@@ -102,9 +114,7 @@ function load(db: TraceDatabase, runId: string) {
     .all(run.workflow_session_id) as Array<{ id: string }>).map(item => item.id) : [runId];
   const placeholders = runIds.map(() => "?").join(",");
   // When the latest task is idea generation, retain the discovery task's evidence in its trace.
-  const discoveryRun = run.workflow_session_id ? db.db.prepare("SELECT id FROM research_runs WHERE workflow_session_id = ? AND purpose = 'discovery' ORDER BY created_at LIMIT 1")
-    .get(run.workflow_session_id) as { id: string } | undefined : undefined;
-  const evidenceRunId = discoveryRun?.id ?? runId;
+  const evidenceRunId = (run.workflow_session_id ? selectSessionEvidenceRunId(db, run.workflow_session_id) : null) ?? runId;
   const session = run.workflow_session_id ? db.db.prepare("SELECT state, started_at, finished_at FROM workflow_sessions WHERE id = ?")
     .get(run.workflow_session_id) as { state: string; started_at: string; finished_at: string | null } | undefined : undefined;
   const stages = db.db.prepare(`SELECT id, research_run_id, stage_id, selection_key, completed_at, prompt_filename, prompt_source, prompt_sha256, stage_revision
