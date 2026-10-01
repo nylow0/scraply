@@ -1,6 +1,8 @@
 # Use Scraply
 
-Scraply keeps a project in three places: **Setup** for the brief and research settings, **Research** for evidence, and **Ideas** for the resulting options. Work is saved locally. Reopening a project reads its saved state; it does not start another model or search request.
+Use **Setup** for the brief and research settings, **Research** for evidence, **Ideas** for the resulting options, and **Trace** to inspect the saved steps behind a run. Work is saved locally. Reopening a project reads its saved state; it does not start another model or search request.
+
+Open **Trace** after starting a run to see the candidate outcomes, evidence and source mix, searches, model calls, and interruptions. Expand a step to read its saved quotes, decisions, and available reasoning summary. The view updates while the run is active, and **Export trace JSON** includes the details of every step. Older runs can have missing query links or derived candidate outcomes, which the trace labels.
 
 ## Start a project
 

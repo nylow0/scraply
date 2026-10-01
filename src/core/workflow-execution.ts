@@ -5,6 +5,7 @@ import { WorkflowV2Repository } from "../db/repositories/workflow-v2";
 import type { SearchClient } from "../providers/search";
 import type { GenerationMetadata, StructuredModelClient, StructuredStageRequest } from "../providers/structured";
 import { canonicalJson, sha256 } from "../shared/content-identity";
+import { savedSearchKey } from "./run-trace";
 import { deriveJsonSchema } from "../shared/json-schema";
 import { OpportunityExpansionOutputSchema } from "../shared/opportunity-exploration";
 import { SourceSchema } from "../shared/schemas";
@@ -98,7 +99,12 @@ export class WorkflowExecution {
       const { signal: _signal, ...parameters } = options ?? {};
       void _signal;
       const normalizedQuery = query.normalize("NFKC").trim().replace(/\s+/g, " ");
-      const key = `search:${createHash("sha256").update(canonicalJson({ query: normalizedQuery.toLowerCase(), parameters })).digest("hex")}`;
+      const key = savedSearchKey(normalizedQuery, parameters);
+      // Record the request separately without changing the search checkpoint identity of older runs.
+      const queryKey = key.replace("search:", "search-query:");
+      if (!this.read(queryKey)) this.save(queryKey, {
+        key, query: normalizedQuery, parameters, ...(client.provider ? { provider: client.provider } : {}),
+      });
       const saved = this.read<unknown>(key);
       if (saved) return SourceSchema.array().parse(saved);
       const results = await client.search(normalizedQuery, options);
