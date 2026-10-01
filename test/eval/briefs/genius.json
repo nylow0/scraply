@@ -1,0 +1,14 @@
+{
+  "id": "genius",
+  "goalKind": "competition-entry",
+  "provenance": { "kind": "saved-scope", "source": "Installed project: GENIUS Olympiad project research" },
+  "scope": {
+    "title": "GENIUS Olympiad project research",
+    "domain": "Мені потрібні ідеї для проєкту для GENIUS olympiad в категорії програмування. Мені потрібно вийти на міжнародний фінал в США, тому проєкт має бути сильним і точно задовільняти суддів, і бути по просту корисним для суспільства, мати якесь значення, real world use case. Це не значить що ми, два 11-классника які роблять цей проєкт маємо побудувати 1 billion dollar startup, але щось, що буде корисним і актуальним.",
+    "audience": "",
+    "observations": "Пошукай проєкти фіналісти-переможці у цій галузі з минулих років, evaluate them against current conditions і знайди щось дійсно унікальне і потрібне суспільству",
+    "offLimits": ["Я хочу не просто просто якісь банальні ідеї, а щось по дійсному корисне, в що навіть треті особи, що побачать цей проєкт на олімпіаді потенційно захочуть інвестувати свої кошти."],
+    "riskEvaluationCriteria": "Найбільше треба фокус на результат, цей проєкт ми будемо робити в двох, і часу у нас приблизно місяць. З допомогою AI agents ми можемо зробити дуже багато за цей час."
+  },
+  "runSettings": { "model": { "providerId": "openai-subscription", "modelId": "gpt-6-sol" }, "reasoningEffort": "xhigh", "searchProvider": "exa", "explorationPurpose": "general-solutions", "ideaCount": 1, "automaticProblemCap": 3 }
+}

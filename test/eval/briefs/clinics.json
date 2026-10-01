@@ -1,0 +1,14 @@
+{
+  "id": "clinics",
+  "goalKind": "research-question",
+  "provenance": { "kind": "plan", "source": "Research workflow plan, section 11: chosen research question brief" },
+  "scope": {
+    "title": "Digital patient records after donor-funded pilots",
+    "domain": "Why do many small clinics in low-resource settings stop using digital patient records after donor-funded pilots end, and what has kept some systems in use?",
+    "audience": "",
+    "observations": "Pilot reports usually describe successful rollouts. Later follow-ups are harder to find.",
+    "offLimits": ["Answers that depend on new donor funding to keep running."],
+    "riskEvaluationCriteria": "Separate technical, staffing, funding and governance causes, and say which evidence is measured and which is reported."
+  },
+  "runSettings": { "model": { "providerId": "openai-subscription", "modelId": "gpt-6-sol" }, "reasoningEffort": "xhigh", "searchProvider": "exa", "explorationPurpose": "general-solutions", "ideaCount": 1, "automaticProblemCap": 3 }
+}
