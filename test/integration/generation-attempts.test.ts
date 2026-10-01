@@ -102,6 +102,14 @@ describe("durable generation snapshots", () => {
         attemptMetadata: { attempts: [{ providerCompletion: "unknown" }] } });
       expect(repository.getResumeSafety(runId).canResume).toBe(false);
       expect(repository.getResumeSafety(runId, [lost.id]).canResume).toBe(true);
+      // A call the app stopped waiting on at its own time limit is resolved: its result is never used.
+      const timedOut = repository.prepare(runId, { ...request("generation-timed-out"), workOrder: {
+        ...request("generation-timed-out").workOrder, instruction: "Return the slow answer.",
+      } }, identity);
+      repository.markDispatched(timedOut.id);
+      repository.recordTerminal(timedOut.id, { status: "failed", terminalKind: "timeout", errorCode: "timeout",
+        attemptMetadata: { attempts: [{ providerCompletion: "unknown" }] } });
+      expect(repository.getResumeSafety(runId, [lost.id]).canResume).toBe(true);
       const workflows = new WorkflowRepository(db);
       expect(workflows.hasUnknownProviderCompletion(runId)).toBe(true);
       db.db.prepare("INSERT INTO workflow_snapshots VALUES (?, ?, ?)").run(runId, "acknowledged-retry:explicit",

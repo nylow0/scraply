@@ -121,6 +121,49 @@ describe("discovery", () => {
     expect(searched.every(query => query.includes("Observed clinic retention"))).toBe(true);
   });
 
+  test("an evidence read that runs too long is split into smaller reads, and one unreadable source is skipped", async () => {
+    // Live Bookkeepers ended when one follow-up read of every search result ran 38 minutes into the output limit.
+    const stages: string[] = [];
+    const projections: string[] = [];
+    const result = await harvestEvidenceFollowUp(scope(), "Do operators repeat filing?", {
+      model, reasoningEffort, workflowVersion: 2, followUpKey: "gap-1", prompt: () => "Extract fixture evidence",
+      onProjection: (message) => projections.push(message),
+      modelClient: modelClient(request => {
+        stages.push(request.stage);
+        const sources = (request.evidence[0]!.content as { sources: Array<{ id: string; url: string; text: string }> }).sources;
+        if (sources.length > 1) throw new ProviderFailure("output-limit", "Output limit reached", false);
+        if (sources[0]!.url.endsWith("/stalls")) throw new ProviderFailure("timeout", "Call time limit reached", false);
+        return { factors: [{ subject: "Operators", behavior: "repeat filing", quote: sources[0]!.text, sourceId: sources[0]!.id, modelConfidence: 0.8 }] };
+      }),
+      search: { async search() { return ["first", "second", "stalls"].map(name => ({ id: name, url: `https://example.test/${name}`,
+        title: name, text: `Operators repeat filing at ${name}.` })); } },
+    });
+    expect(result.factors.map(factor => factor.source.canonicalUrl)).toEqual(["https://example.test/first", "https://example.test/second"]);
+    // The whole batch, its first half, each single source, and one retry of the stalled source.
+    expect(stages).toHaveLength(6);
+    expect(stages[0]).toBe("factor-harvest:follow-up:gap-1");
+    expect(new Set(stages).size).toBe(5);
+    expect(stages[5]).toBe(stages[4]);
+    expect(projections.filter(message => message.includes("two smaller batches"))).toHaveLength(2);
+    expect(projections).toContain("Skipped https://example.test/stalls: the model could not finish reading it.");
+  });
+
+  test("new runs read follow-up sources in small capped batches", async () => {
+    const batches: Array<{ size: number; factorLimit: unknown }> = [];
+    await harvestEvidenceFollowUp(scope(), "Do operators repeat filing?", {
+      model, reasoningEffort, workflowVersion: 2, boundedFollowUpHarvest: true, prompt: () => "Extract fixture evidence",
+      modelClient: modelClient(request => {
+        const sources = (request.evidence[0]!.content as { sources: unknown[] }).sources;
+        batches.push({ size: sources.length, factorLimit: (request.workOrder.inputs as { factorLimit?: unknown }).factorLimit });
+        return { factors: [] };
+      }),
+      search: { async search() { return Array.from({ length: 5 }, (_, index) => ({ id: `s${index}`, url: `https://example.test/${index}`,
+        title: "Owner", text: "Operators repeat filing." })); } },
+    });
+    expect(batches.map(batch => batch.size)).toEqual([3, 2]);
+    expect(batches.every(batch => batch.factorLimit === 6)).toBe(true);
+  });
+
   test("a buying-intent search planned for a research question is skipped, not run-ending", async () => {
     const searched: string[] = [];
     await harvestFactors(scope(), {

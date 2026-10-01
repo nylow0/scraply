@@ -207,11 +207,14 @@ export class RuntimeClient implements StructuredModelClient {
       throw new ProviderFailure("failed", "Native runtime output schema exceeds the protocol limit", false);
     }
     const requestId = randomUUID();
+    // The call limit starts here, after any queueing, and tightens an explicit deadline.
+    const deadlineMs = request.callTimeLimitMs === undefined ? request.deadlineMs
+      : Math.min(request.callTimeLimitMs, request.deadlineMs ?? Infinity);
     const terminal = new Promise<{ output: unknown; metadata: z.infer<typeof GenerationMetadataSchema> }>((resolve, reject) => {
-      const timer = request.deadlineMs === undefined ? undefined : setTimeout(() => {
+      const timer = deadlineMs === undefined ? undefined : setTimeout(() => {
         const generation = this.pendingGenerations.get(request.generationId);
         if (generation?.requestId === requestId) void this.cancelGeneration(request.generationId, "Native runtime did not emit a terminal generation event");
-      }, request.deadlineMs + this.terminalGraceMs);
+      }, deadlineMs + this.terminalGraceMs);
       this.pendingGenerations.set(request.generationId, { requestId, timer, resolve, reject, reasoningSummary: "", lastSequence: -1 });
     });
     const terminalOutcome = terminal.then(
@@ -231,7 +234,7 @@ export class RuntimeClient implements StructuredModelClient {
         accepted = z.object({ generationId: z.literal(request.generationId), prompt: PromptIdentitySchema }).strict().parse(
           await this.request("generation.start", {
           generationId: request.generationId,
-          ...(request.deadlineMs === undefined ? {} : { deadlineMs: request.deadlineMs }),
+          ...(deadlineMs === undefined ? {} : { deadlineMs }),
           model: request.model,
           promptRevision: initialized.prompt.id,
           workOrder: request.workOrder,
@@ -620,7 +623,8 @@ function waitForClose(child: ChildProcessWithoutNullStreams, timeoutMs: number):
 function providerFailure(error: RuntimeFailure, attempts?: GenerationAttemptMetadata[]): ProviderFailure {
   // A terminal worker event can still report that the remote completion was lost.
   // Preserve that uncertainty so workflow recovery requires an explicit retry decision.
-  if (error.code !== "cancelled" && attempts?.some(attempt => attempt.providerCompletion === "unknown")) {
+  // Cancellation and an app-imposed deadline are the app's own decision to stop waiting, not a lost result.
+  if (error.code !== "cancelled" && error.code !== "deadline_exceeded" && attempts?.some(attempt => attempt.providerCompletion === "unknown")) {
     return new ProviderFailure("interrupted", error.detail, false, { runtimeCode: error.code, attempts });
   }
   const code = error.code === "cancelled" ? "cancelled"

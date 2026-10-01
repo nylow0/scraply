@@ -1944,11 +1944,22 @@ export class ResearchEngine {
       return { areaId: area.id, result: investigated };
     };
     const settled = await Promise.allSettled(selected.map(investigateArea));
+    let failed: PromiseRejectedResult | undefined;
     for (const [index, result] of settled.entries()) {
       if (result.status === "fulfilled" && result.value) results.push(result.value);
-      if (result.status === "rejected") this.settleInvestigatorFailure(active, lanes.get(selected[index]!.id)!.parent.id, result.reason);
+      if (result.status !== "rejected") continue;
+      const area = selected[index]!;
+      this.settleInvestigatorFailure(active, lanes.get(area.id)!.parent.id, result.reason);
+      // A model answer that timed out, ran past its output limit, or broke the schema ends only
+      // its own area. Problems that area already checked are kept; app errors still fail the run.
+      const modelFailure = result.reason instanceof ProviderFailure && ["timeout", "output-limit", "schema"].includes(result.reason.code);
+      if (!modelFailure || active.abortController.signal.aborted) { failed ??= result; continue; }
+      const kept = [...settledProblems.values()].filter(problem => problem.areaId === area.id).map(({ areaId, ...problem }) => { void areaId; return problem; });
+      const partialReason = `Research in ${area.name} stopped early because a model call failed: ${errorMessage(result.reason)} `
+        + `${kept.length} already checked problem${kept.length === 1 ? " was" : "s were"} kept.`;
+      partialReasons.set(area.id, partialReason);
+      results.push({ areaId: area.id, result: { problems: kept, blockedCandidates: [], killSources: [], factorUtilizationRate: 0, partialReason } });
     }
-    const failed = settled.find(result => result.status === "rejected");
     const partialReason = selected.map(area => partialReasons.get(area.id)).find(reason => reason !== undefined);
     const skippedAreas = selected.filter(area => !results.some(result => result.areaId === area.id));
     for (const area of skippedAreas) {
@@ -2850,6 +2861,7 @@ export class ResearchEngine {
       ...(workflow.read("source-routes") && frame ? { frame } : {}),
       guided: this.usesWorkGuidance(active.runId),
       smallHarvestBatches: workflow.smallHarvestBatches,
+      boundedFollowUpHarvest: workflow.boundedFollowUpHarvest,
       rankCandidates: workflow.rankProblemCandidates,
       ...(!workflow.rankProblemCandidates ? { candidateLimit: DEFAULT_PROBLEM_CANDIDATE_LIMIT } : {}),
       assessProblemAudience: workflow.read<{ version: number }>("problem-audience-assessment")?.version === 1,

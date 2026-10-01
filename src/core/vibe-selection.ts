@@ -50,6 +50,8 @@ interface QualifiedCandidate {
   candidate: VibeProblemCandidate;
   decision: VibeProblemDecision;
   workflowKey: string;
+  /** The independent origins behind the problem; two problems on exactly the same origins are one finding. */
+  evidenceKey: string;
 }
 
 /**
@@ -115,6 +117,7 @@ export function selectVibeProblems(input: VibeSelectionInput): VibeSelectionResu
     return {
       candidate,
       workflowKey: normalize(candidate.workflowKey?.trim() || candidate.statement),
+      evidenceKey: [...sourceKeys].sort().join("|"),
       decision: {
         problemId: candidate.id,
         selected: eligible,
@@ -128,16 +131,21 @@ export function selectVibeProblems(input: VibeSelectionInput): VibeSelectionResu
 
   const selected: QualifiedCandidate[] = [];
   const workflowKeys = new Set<string>();
+  const evidenceKeys = new Set<string>();
   for (const entry of qualified.filter((item) => item.decision.selected).sort(compareCandidates)) {
     if (workflowKeys.has(entry.workflowKey)) {
       entry.decision.selected = false;
       entry.decision.reason = "A stronger selected problem already covers this buyer workflow.";
+    } else if (entry.evidenceKey && evidenceKeys.has(entry.evidenceKey)) {
+      entry.decision.selected = false;
+      entry.decision.reason = "A selected problem rests on exactly the same independent sources, so this is treated as the same finding.";
     } else if (selected.length >= maxProblems) {
       entry.decision.selected = false;
       entry.decision.reason = `The automatic selection cap of ${maxProblems} problem${maxProblems === 1 ? "" : "s"} was reached.`;
     } else {
       selected.push(entry);
       workflowKeys.add(entry.workflowKey);
+      evidenceKeys.add(entry.evidenceKey);
     }
   }
 
