@@ -11,11 +11,18 @@ export const EvidenceGapSchema = z.object({
   query: z.string().trim().min(1).max(500),
   route: InvestigatorSearchRouteSchema,
 }).strict();
-export const EvidenceCheckOutputSchema = z.union([
-  z.object({ decision: z.literal("confirmed"), reason: TextSchema, gaps: z.array(EvidenceGapSchema).max(0) }).strict(),
-  z.object({ decision: z.literal("drop"), reason: TextSchema, gaps: z.array(EvidenceGapSchema).max(0) }).strict(),
-  z.object({ decision: z.literal("follow-up"), reason: TextSchema, gaps: z.array(EvidenceGapSchema).min(1).max(2) }).strict(),
-]);
+// Native strict structured output requires an object root. Keep conditional gap rules at the app boundary.
+export const EvidenceCheckOutputSchema = z.object({
+  decision: z.enum(["confirmed", "drop", "follow-up"]),
+  reason: TextSchema,
+  gaps: z.array(EvidenceGapSchema).max(2),
+}).strict().superRefine((output, context) => {
+  if (output.decision === "follow-up" ? output.gaps.length === 0 : output.gaps.length !== 0) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ["gaps"], message: output.decision === "follow-up"
+      ? "A follow-up requires one or two evidence gaps."
+      : "Confirmed and drop decisions cannot contain evidence gaps." });
+  }
+});
 export const AreaGapOutputSchema = z.object({
   reason: TextSchema,
   gaps: z.array(z.object({
