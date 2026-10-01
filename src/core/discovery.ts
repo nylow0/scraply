@@ -3,6 +3,7 @@ import type {
   DiscoveryFactorRecord,
   DiscoveryProblemRecord,
   DiscoverySourceRecord,
+  RejectedProblemCandidateRecord,
 } from "../db/repositories/discovery";
 import type { ExaCategory } from "../providers/exa";
 import type { SearchClient, SearchOptions } from "../providers/search";
@@ -13,11 +14,11 @@ import {
   ProblemCandidatesOutputSchema,
   ProblemKillOutputSchema,
   QueryPlanOutputSchema,
+  type SavedProblemCandidate,
   type Scope,
 } from "../shared/structured-output-schemas";
 import type { DiscoveryDepth, ModelRef, ReasoningEffort, Source } from "../shared/schemas";
 import {
-  DEFAULT_PROBLEM_CANDIDATE_LIMIT,
   DISCOVERY_DEPTHS,
   SOURCE_BATCH_CHARACTERS,
   AUDIENCE_SOURCE_BATCH_CHARACTERS,
@@ -83,10 +84,7 @@ export interface DiscoveryProblem extends DiscoveryProblemRecord {
   singleHarvestModeWarning: boolean;
 }
 
-export interface BlockedProblemCandidate {
-  statement: string;
-  reason: string;
-}
+export type BlockedProblemCandidate = RejectedProblemCandidateRecord;
 
 export interface ProblemDiscoveryResult {
   problems: DiscoveryProblem[];
@@ -107,6 +105,8 @@ export interface DiscoveryDependencies {
   assessProblemAudience?: boolean;
   audienceSearch?: Pick<SearchOptions, "includeDomains" | "startPublishedDate"> & { category?: ExaCategory };
   candidateLimit?: number;
+  /** Older runs retain their ordering so completed verdict identities remain reusable. */
+  rankCandidates?: boolean;
   signal?: AbortSignal;
   random?: () => number;
   onProjection?: (message: string) => void;
@@ -261,13 +261,13 @@ export async function discoverProblems(
     buildProblemCandidatesInput(scope, factors),
     ProblemCandidatesOutputSchema,
   );
-  const candidateLimit = dependencies.candidateLimit ?? DEFAULT_PROBLEM_CANDIDATE_LIMIT;
+  const candidateLimit = dependencies.candidateLimit ?? DISCOVERY_DEPTHS[dependencies.depth ?? "standard"].candidateLimit;
   const factorById = new Map(factors.map((factor) => [factor.id, factor]));
   const sourcesByUrl = new Map(existingSources.map((source) => [source.canonicalUrl, source]));
   const killSources: HarvestedSource[] = [];
   const problems: DiscoveryProblem[] = [];
   const blockedCandidates: BlockedProblemCandidate[] = [];
-  const candidates = response.problems.flatMap((candidate) => {
+  const validCandidates = response.problems.flatMap((candidate) => {
     if (dependencies.workflowVersion === 2 && candidate.scaleBasisFactorId !== null
       && (!factorById.has(candidate.scaleBasisFactorId) || !candidate.factorIds.includes(candidate.scaleBasisFactorId))) {
       blockedCandidates.push({
@@ -295,12 +295,30 @@ export async function discoverProblems(
       return [];
     }
     return [{ candidate, citedFactors, hostnames }];
-  }).slice(0, candidateLimit);
+  });
+  const ranked = dependencies.rankCandidates === false ? validCandidates
+    : rankProblemCandidates(validCandidates, dependencies.workflowVersion === 2);
+  const candidates = ranked.slice(0, candidateLimit);
+  for (const { candidate } of ranked.slice(candidateLimit)) {
+    blockedCandidates.push({
+      statement: candidate.statement,
+      reason: `Not assessed: this run assesses up to ${candidateLimit} problem ${candidateLimit === 1 ? "candidate" : "candidates"}, ${dependencies.rankCandidates === false ? "kept in the saved run order" : "ranked by independent cited sources with research phases alternating on ties"}.`,
+      disposition: "not-assessed",
+      candidate,
+    });
+  }
   dependencies.onProjection?.(
     `${candidates.length} problem candidates · ${candidates.length} kill searches · ${candidates.length + 1} model calls`,
   );
 
   for (const { candidate, citedFactors, hostnames } of candidates) {
+    let assessmentCandidate = candidate;
+    if ("alternativeExplanations" in candidate) {
+      const { alternativeExplanations, unknowns, ...withoutExplanations } = candidate;
+      void alternativeExplanations; void unknowns;
+      // Keep completed verdict request identities from before full candidate accounting.
+      assessmentCandidate = withoutExplanations;
+    }
     const searched = await dependencies.search.search(buildKillQuery(candidate.statement), {
       numResults: DISCOVERY_DEPTHS[dependencies.depth ?? "standard"].searchResultsPerQuery,
       maxCharacters: SOURCE_MAX_CHARACTERS,
@@ -314,12 +332,12 @@ export async function discoverProblems(
     const assessAudience = dependencies.workflowVersion === 2 && dependencies.assessProblemAudience && !scope.audience.trim();
     const kill = await structuredCall(
       dependencies,
-      `problem-kill:${createHash("sha256").update(JSON.stringify(candidate)).digest("hex")}${assessAudience ? ":audience-v1" : ""}`,
+      `problem-kill:${createHash("sha256").update(JSON.stringify(assessmentCandidate)).digest("hex")}${assessAudience ? ":audience-v1" : ""}`,
       [
         (dependencies.prompt ?? loadPrompt)("problem-kill"),
         "Look for contrary evidence: already solved, overstated scale, self-correction, and prior attempts that failed.",
       ].join("\n\n"),
-      { inputs: {}, evidence: { ...buildProblemKillInput(candidate, candidateSources).evidence, scope, supportingFactors: citedFactors } },
+      { inputs: {}, evidence: { ...buildProblemKillInput(assessmentCandidate, candidateSources).evidence, scope, supportingFactors: citedFactors } },
       ProblemKillOutputSchema,
     );
     // V2 assesses both sides of the evidence, including support absent from the contrary search.
@@ -392,6 +410,41 @@ export async function discoverProblems(
     killSources,
     factorUtilizationRate: rate(usedFactorIds.size, factors.length),
   };
+}
+
+type RankedProblemCandidate = {
+  candidate: SavedProblemCandidate;
+  citedFactors: HarvestedFactor[];
+  hostnames: string[];
+};
+
+/** Rank support first, then share tied assessment slots across the research phases. */
+function rankProblemCandidates(candidates: RankedProblemCandidate[], classified: boolean): RankedProblemCandidate[] {
+  const bySourceCount = new Map<number, RankedProblemCandidate[]>();
+  for (const item of candidates) {
+    // Unclassified legacy factors lack origin keys. Their saved source URLs are the only
+    // available distinction; missing keys in classified evidence do not imply independence.
+    const sourceCount = new Set(item.citedFactors.map((factor) => factor.independentSourceKey?.trim()
+      || (classified ? null : `url:${factor.source.canonicalUrl}`)).filter(Boolean)).size;
+    const group = bySourceCount.get(sourceCount) ?? [];
+    group.push(item);
+    bySourceCount.set(sourceCount, group);
+  }
+  const ranked: RankedProblemCandidate[] = [];
+  for (const [, tied] of [...bySourceCount].sort(([left], [right]) => right - left)) {
+    const phases: Record<HarvestMode | "mixed", RankedProblemCandidate[]> = { domain: [], audience: [], mixed: [] };
+    for (const item of tied) {
+      const modes = new Set(item.citedFactors.map((factor) => factor.harvestMode));
+      phases[modes.size === 1 ? item.citedFactors[0]!.harvestMode : "mixed"].push(item);
+    }
+    while (Object.values(phases).some((items) => items.length > 0)) {
+      for (const phase of ["domain", "audience", "mixed"] as const) {
+        const next = phases[phase].shift();
+        if (next) ranked.push(next);
+      }
+    }
+  }
+  return ranked;
 }
 
 export function normalizeEvidenceText(value: string): string {

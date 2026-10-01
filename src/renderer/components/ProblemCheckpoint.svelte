@@ -38,6 +38,11 @@
   function useAsUserAsserted(statement:string){userProblem=statement;userProblemTextarea?.focus()}
   let query = $state("");
   let filteredProblems = $derived(problems.filter((problem) => problem.statement.toLowerCase().includes(query.trim().toLowerCase())));
+  let candidateGroups = $derived([
+    { label: "Not assessed", candidates: rejectedCandidates.filter((candidate) => candidate.disposition === "not-assessed") },
+    { label: "Failed evidence requirements", candidates: rejectedCandidates.filter((candidate) => candidate.disposition !== "not-assessed") },
+  ]);
+  let hasUnassessedCandidates = $derived(candidateGroups[0]!.candidates.length > 0);
   type EvidenceMetadata = {
     sourceRole?: "firsthand"|"measured"|"vendor"|"recommendation"|"illustration"|"unknown";
     audienceFit?: "intended-buyer"|"adjacent"|"general"|"unknown";
@@ -84,15 +89,16 @@
           </div>
         </details>
       </article>
-    {:else}{#if query}<p class="empty">No problems match "{query}".</p>{:else}<div class="empty"><h2>No candidates passed the evidence requirements.</h2><p>Review what failed below, state the problem yourself, or edit the scope and run discovery again.</p></div>{/if}{/each}
+    {:else}{#if query}<p class="empty">No problems match "{query}".</p>{:else}<div class="empty"><h2>{hasUnassessedCandidates ? "No assessed problems to show." : "No candidates passed the evidence requirements."}</h2><p>Review the saved candidates below, state the problem yourself, or edit the scope and run discovery again.</p></div>{/if}{/each}
   </div>
-  {#if rejectedCandidates.length > 0}
+  {#each candidateGroups as group (group.label)}
+  {#if group.candidates.length > 0}
     <details class="rejected">
-      <summary>Failed evidence requirements <span>{rejectedCandidates.length}</span></summary>
+      <summary>{group.label} <span>{group.candidates.length}</span></summary>
       <div class="rejected-list">
-        {#each rejectedCandidates as candidate, index (candidate.id)}
+        {#each group.candidates as candidate, index (candidate.id)}
           <article class="rejected-item" style={`--index:${problems.length + index}`}>
-            <div class="verdict"><span>Not evidence-backed</span></div>
+            <div class="verdict"><span>{candidate.disposition === "not-assessed" ? "Awaiting evidence assessment" : "Not evidence-backed"}</span></div>
             <h2>{candidate.statement}</h2>
             <p>{candidate.reason}</p>
             {#if !fixedExplorationPurpose}<button class="use-rejected" type="button" disabled={busy} onclick={() => useAsUserAsserted(candidate.statement)}>Use as user-asserted problem</button>{/if}
@@ -101,6 +107,7 @@
       </div>
     </details>
   {/if}
+  {/each}
   {#if !fixedExplorationPurpose}<div class="escape"><label><span>Or state the problem yourself.</span><textarea bind:this={userProblemTextarea} bind:value={userProblem} disabled={busy} rows="3" placeholder="Describe the problem in one direct sentence."></textarea></label></div>{/if}
   <section class="development-settings" aria-label="Development settings">
     <label><span>Development model</span><select aria-label="Development model" bind:value={modelKey} onchange={selectModel} disabled={busy||availableModels.length===0}>{#if modelKey&&!selectedModel}<option value={modelKey}>{modelDisplayName(initialModel??DEFAULT_RUN_CONFIG.model)} (unavailable)</option>{/if}{#each availableModels as item (modelRefKey(item))}<option value={modelRefKey(item)}>{modelDisplayName(item)}</option>{/each}</select></label>

@@ -1,20 +1,20 @@
 import type { DiscoveryDepth } from "./schemas";
 
 export const DISCOVERY_DEPTHS = {
-  quick: { queriesPerMode: 3, searchResultsPerQuery: 4, factorCap: 30 },
-  standard: { queriesPerMode: 6, searchResultsPerQuery: 5, factorCap: 80 },
-  deep: { queriesPerMode: 10, searchResultsPerQuery: 6, factorCap: 150 },
+  quick: { queriesPerMode: 3, searchResultsPerQuery: 4, factorCap: 30, candidateLimit: 3 },
+  standard: { queriesPerMode: 6, searchResultsPerQuery: 5, factorCap: 80, candidateLimit: 4 },
+  deep: { queriesPerMode: 10, searchResultsPerQuery: 6, factorCap: 150, candidateLimit: 8 },
 } as const;
 
 export const SOURCE_BATCH_CHARACTERS = 60_000;
 export const AUDIENCE_SOURCE_BATCH_CHARACTERS = 30_000;
 export const SOURCE_MAX_CHARACTERS = 6_000;
-export const DEFAULT_PROBLEM_CANDIDATE_LIMIT = 4;
+export const DEFAULT_PROBLEM_CANDIDATE_LIMIT = DISCOVERY_DEPTHS.standard.candidateLimit;
 
 /** Kept free of node-only imports so the renderer and backend use the same runtime estimate. */
 export function discoveryRunProjection(
   depth: DiscoveryDepth,
-  candidateLimit = DEFAULT_PROBLEM_CANDIDATE_LIMIT,
+  candidateLimit: number = DISCOVERY_DEPTHS[depth].candidateLimit,
 ): { searches: number; modelCalls: number; factorCap: number } {
   const config = DISCOVERY_DEPTHS[depth];
   const domainBatches = Math.max(1, Math.ceil(
