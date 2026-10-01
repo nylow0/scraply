@@ -21,6 +21,7 @@ let heldGeneration;
 let reassessmentFailed = false;
 let streamFailures = 0;
 let harvestCalls = 0;
+let criterionCalls = 0;
 if (process.env.SCRAPLY_RUNTIME_PID_CAPTURE) fs.appendFileSync(process.env.SCRAPLY_RUNTIME_PID_CAPTURE, `${process.pid}\n`);
 const prompt = { id: "scraply.stage-worker.v1", sha256: "277d724f20acb1f32fa0a8b7c454c670971e3c40bfc921db40c044caa760e6f1" };
 const model = { providerId: "openai-subscription", modelId: "gpt-fixture" };
@@ -163,9 +164,12 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
       return;
     }
     const metadata = {
-      model, prompt, usage: { status: "unknown" }, finishReason: "stop", latencyMs: 1,
+      model, prompt, usage: mode === "workflow-criterion-evidence"
+        ? { status: "known", value: { inputTokens: 10, outputTokens: 5, totalTokens: 15 } } : { status: "unknown" }, finishReason: "stop", latencyMs: 1,
       repairCount: 0, providerRequestIds: ["fixture-provider-request"],
-      attempts: [{ attempt: "initial", outcome: "completed", providerCompletion: "confirmed", model, usage: { status: "unknown" }, cost: { status: "not_reported" }, finishReason: "stop", latencyMs: 1, providerRequestId: "fixture-provider-request" }],
+      attempts: [{ attempt: "initial", outcome: "completed", providerCompletion: "confirmed", model,
+        usage: mode === "workflow-criterion-evidence" ? { status: "known", value: { inputTokens: 10, outputTokens: 5, totalTokens: 15 } } : { status: "unknown" },
+        cost: { status: "not_reported" }, finishReason: "stop", latencyMs: 1, providerRequestId: "fixture-provider-request" }],
     };
     const isReassessmentAnalysis = request.payload.workOrder.stage === "decision-analysis" && request.payload.workOrder.inputs?.reassessment === true;
     const failReassessment = mode === "workflow-reassessment-fail-once" && isReassessmentAnalysis && !reassessmentFailed;
@@ -175,6 +179,7 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
         intent: index === 9 ? "buying-signal" : index === 8 ? "current-alternative" : "firsthand-experience",
         uncertainty: "How often deliveries slip", intendedSourceType: "Operational records" })) }
       : (mode === "workflow-analysis-fail" && request.payload.workOrder.stage === "decision-analysis") || failReassessment ? { invalid: true }
+      : mode === "workflow-criterion-evidence" ? JSON.parse(fs.readFileSync(process.env.SCRAPLY_CRITERION_OUTPUTS, "utf8"))[criterionCalls++]
       : workflow ? require("./runtime-workflow.cjs")(request.payload)
       : mode === "invalid-output" ? { invalid: true } : request.payload.workOrder.stage.startsWith("query-plan")
       ? { queries: ["one", "two", "three"] }
