@@ -675,6 +675,9 @@ test("a research call that times out is retried once with its stage time limit",
     const runId = await f.start("discovery");
     expect(f.errors).toEqual([]);
     expect(kills.slice(0, 2)).toEqual([480_000, 480_000]);
+    const saved = f.db.db.prepare(`SELECT status, json_extract(request_json, '$.callTimeLimitMs') AS limitMs FROM generation_attempts
+      WHERE research_run_id = ? AND stage_key LIKE 'problem-kill%' ORDER BY created_at, rowid`).all(runId) as Array<{ status: string; limitMs: number }>;
+    expect(saved.slice(0, 2)).toEqual([{ status: "failed", limitMs: 480_000 }, { status: "completed", limitMs: 480_000 }]);
     const confirmed = f.db.db.prepare("SELECT COUNT(*) AS count FROM problems WHERE discovery_run_id = ? AND verdict = 'confirmed'").get(runId) as { count: number };
     expect(confirmed.count).toBeGreaterThan(0);
   } finally { await f.close(); }

@@ -53,7 +53,10 @@ export class GenerationAttemptRepository {
   ): PreparedGenerationAttempt {
     const id = randomUUID();
     const effectiveRequest = effectiveRequestSnapshot(request, runtimeIdentity);
-    const requestJson = canonicalJson({ generationId: request.generationId, ...effectiveRequest });
+    // The call time limit is recorded for the trace but kept out of the identity hash, so older
+    // completed attempts without it still match on resume.
+    const requestJson = canonicalJson({ generationId: request.generationId, ...effectiveRequest,
+      ...(request.callTimeLimitMs === undefined ? {} : { callTimeLimitMs: request.callTimeLimitMs }) });
     const now = new Date().toISOString();
     const wireRequestSha256 = sha256(requestJson);
     const requestSha256 = sha256(canonicalJson(effectiveRequest));
