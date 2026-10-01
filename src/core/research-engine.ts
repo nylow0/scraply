@@ -36,7 +36,7 @@ import {
   type OpportunityExplorationProgress,
 } from "../shared/opportunity-exploration";
 import { DEFAULT_IDEA_COUNT, ModelRefSchema, ReasoningEffortSchema, RunConfigSchema, SourceSchema, sameModelRef, type ModelRef, type ReasoningEffort, type RunConfig, type Source } from "../shared/schemas";
-import { ScopeSchema, SavedProblemCandidateSchema, WorkflowV2CompatibleDecisionAnalysisOutputSchema, WorkflowV2GoalSolutionOptionSchema, WorkflowV2RiskEvaluationOutputSchema, WorkflowV2RiskReassessmentOutputSchema, WorkflowV2SolutionOptionSchema, WorkflowV2SolutionsOutputSchema, WorkflowV2StartupSolutionOptionSchema, type Scope } from "../shared/structured-output-schemas";
+import { ScopeSchema, SavedProblemCandidateSchema, WorkflowV2CompatibleDecisionAnalysisOutputSchema, WorkflowV2GoalSolutionOptionSchema, WorkflowV2GoalStartupSolutionOptionSchema, WorkflowV2RiskEvaluationOutputSchema, WorkflowV2RiskReassessmentOutputSchema, WorkflowV2SolutionOptionSchema, WorkflowV2SolutionsOutputSchema, WorkflowV2StartupSolutionOptionSchema, type Scope } from "../shared/structured-output-schemas";
 import { analyzeSelectedOption, developmentStageEvidence, evaluateSelectedOptionRisk, produceDevelopmentOptions, reassessSelectedOption, reassessSelectedOptionRisk, WorkflowGenerationAngleSchema, WorkflowGenerationEvidenceSchema, type WorkflowV2DevelopmentContext, type WorkflowV2EvidenceItem } from "./development";
 import { DEFAULT_PROBLEM_CANDIDATE_LIMIT, DISCOVERY_DEPTHS, discoverProblems, discoveryRunProjection, harvestEvidenceFollowUp, harvestFactors, normalizeSearchQuery,
   type HarvestMode, type HarvestResult, type PlannedQuery, type DiscoveryProblem, type HarvestedFactor, type HarvestedSource,
@@ -2784,8 +2784,9 @@ export class ResearchEngine {
       };
       return {
         id: row.id,
+        // A goal-judged idea can also be a startup option, so its schema follows the saved startup details.
         option: row.criteria_fit_json
-          ? WorkflowV2GoalSolutionOptionSchema.parse({ ...option,
+          ? (row.startup_opportunity_json ? WorkflowV2GoalStartupSolutionOptionSchema : WorkflowV2GoalSolutionOptionSchema).parse({ ...option,
             biggerProblem: JSON.parse(row.bigger_problem_json ?? "null") as unknown,
             slice: JSON.parse(row.slice_json ?? "null") as unknown,
             criteriaFit: JSON.parse(row.criteria_fit_json) as unknown,
