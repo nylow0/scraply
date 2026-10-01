@@ -88,7 +88,8 @@ export interface StructuredStageRequest<T> {
   reasoningSummaries?: boolean;
   workOrder: WorkOrder;
   evidence: EvidenceSource[];
-  schema: z.ZodType<T>;
+  /** Input is unknown: a schema may repair app-owned fields before validating. */
+  schema: z.ZodType<T, z.ZodTypeDef, unknown>;
   jsonSchema: object;
   repairPolicy: "disabled" | "one_retry";
   maxOutputTokens?: number;

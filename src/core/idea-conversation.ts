@@ -10,7 +10,7 @@ import {
 import { resolveWorkflowV2Prompt, type ResolvedWorkflowV2Prompt } from "./prompts";
 import { WORKFLOW_V2_STAGE_REGISTRY } from "./stages";
 import type { ResearchFrame } from "../shared/research-frame";
-import { assertGoalFit, GoalFitFields } from "../shared/solution-goal-fit";
+import { assertGoalFit, GoalFitFields, normalizeGoalFitInput } from "../shared/solution-goal-fit";
 import { z } from "zod";
 
 export type IdeaTurnIntent = "explain" | "explore-directions" | "rethink";
@@ -147,7 +147,11 @@ export function prepareIdeaFollowUp(input: IdeaFollowUpInput): PreparedIdeaFollo
 
   const stage = WORKFLOW_V2_STAGE_REGISTRY["idea-follow-up"];
   const prompt = resolveWorkflowV2Prompt(stage.id);
-  const schema = input.frame ? WorkflowV2GoalIdeaFollowUpOutputSchema : WorkflowV2IdeaFollowUpOutputSchema;
+  const frame = input.frame;
+  // The provider sees the plain shape; app-owned goal fields of a revised idea are repaired before validation.
+  const schema = frame ? z.preprocess((raw) => typeof raw === "object" && raw !== null && "candidate" in raw
+    ? { ...raw, candidate: normalizeGoalFitInput((raw as { candidate: unknown }).candidate, frame, evidenceSourceIds) }
+    : raw, WorkflowV2GoalIdeaFollowUpOutputSchema) : WorkflowV2IdeaFollowUpOutputSchema;
   const request: StructuredStageRequest<WorkflowV2IdeaFollowUp> = {
     generationId: randomUUID(),
     stage: stage.id,
