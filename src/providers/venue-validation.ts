@@ -1,4 +1,4 @@
-import { Resolver } from "node:dns/promises";
+import { lookup } from "node:dns/promises";
 import { isIP } from "node:net";
 import type { Source } from "../shared/schemas";
 import { EXCLUDED_SOURCE_DOMAINS, SourceVenueSchema, type SourceVenue } from "./source-routes";
@@ -48,17 +48,11 @@ function publicAddress(address: string): boolean {
 
 const resolvePublicAddresses: ResearchVenueResolver = async (domain, { signal }) => {
   signal.throwIfAborted();
-  const resolver = new Resolver({ timeout: RESEARCH_VENUE_DNS_TIMEOUT_MS, tries: 1 });
-  const cancel = () => resolver.cancel();
-  signal.addEventListener("abort", cancel, { once: true });
-  try {
-    const responses = await Promise.allSettled([resolver.resolve4(domain), resolver.resolve6(domain)]);
-    signal.throwIfAborted();
-    if (responses.every(response => response.status === "rejected")) {
-      throw new Error("Domain lookup failed");
-    }
-    return responses.flatMap(response => response.status === "fulfilled" ? response.value : []);
-  } finally { signal.removeEventListener("abort", cancel); }
+  // Use the OS resolver used by ordinary clients; direct DNS can be refused on an
+  // otherwise connected machine. The caller bounds waiting for non-cancellable getaddrinfo.
+  const responses = await lookup(domain, { all: true });
+  signal.throwIfAborted();
+  return responses.map(response => response.address);
 };
 
 /** Validate one flattened frame so repeated domains share a lookup. No pages or IPs are fetched.
