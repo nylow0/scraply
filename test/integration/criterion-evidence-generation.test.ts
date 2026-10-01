@@ -1,0 +1,208 @@
+import { afterEach, expect, test } from "bun:test";
+import { createHash } from "node:crypto";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { produceDevelopmentOptions, type WorkflowV2DevelopmentContext } from "../../src/core/development";
+import { scheduledModelClient } from "../../src/core/scheduled-model-client";
+import { WorkflowModelScheduler } from "../../src/core/workflow-scheduler";
+import { ProviderFailure } from "../../src/providers/structured";
+import { RuntimeClient } from "../../src/providers/runtime";
+import { DatabaseClient } from "../../src/db/client";
+import { GenerationAttemptRepository } from "../../src/db/repositories/generation-attempts";
+import { z } from "zod";
+import { meetsAllMustHaves } from "../../src/shared/solution-goal-fit";
+import type { WorkflowV2SolutionOption } from "../../src/shared/structured-output-schemas";
+
+const model = { providerId: "openai-subscription", modelId: "gpt-fixture" };
+const context: WorkflowV2DevelopmentContext = {
+  scope: { title: "Bakery", domain: "Deposits", audience: "Small shop owners", observations: "Disputes repeat", offLimits: [] },
+  problem: { id: "problem", statement: "Orders go uncollected", whyItPersists: "A balance remains unpaid", affected: "Owners",
+    scaleEstimate: "Unknown", scaleBasisFactorId: null, factorIds: [], verdict: "confirmed", verdictReason: "Owner accounts", verdictSourceIds: ["owner-source"] },
+  supportingEvidence: [{ sourceId: "owner-source", content: { quote: "The customer never picked up or paid the balance." } }],
+  contraryEvidence: [], priorFailedAttempts: [],
+  frame: { goal: "Reduce disputes", goalKind: "process-improvement", contextFacts: [],
+    successCriteria: [{ id: "owner-evidence", name: "Grounded in observed disputes or losses", weight: "must", howJudged: "A direct owner account", basis: "brief" },
+      { id: "small-team-fit", name: "Fits a small shop team", weight: "high", howJudged: "Check work for 1–3 people", basis: "brief" },
+      { id: "pilot-test", name: "Testable with a two-week dispute count", weight: "high", howJudged: "A two-week log", basis: "brief" }],
+    constraints: [], areas: [], exclusions: [], openQuestions: [], languages: ["en"] },
+};
+const option = {
+  mechanism: "Record approval and payment before baking", description: "Keep one order card and payment cutoff",
+  keyAssumption: "Staff can enforce the cutoff", whyCurrentApproachMaySuffice: "The current shop policy may suffice",
+  supportingEvidenceIds: ["owner-source"], contraryEvidenceIds: [], unknowns: ["Team capacity"], respectsOffLimits: true, respectsOffLimitsWhy: "No excluded work",
+  biggerProblem: { statement: "Uncollected orders leave unpaid work", affected: "Owners", scale: "Unknown", scaleKnown: false, scaleEvidenceIds: [] },
+  slice: { description: "One order card", connectionToBiggerProblem: "Prevent unpaid work", feasibilityWithinConstraints: "Test in one shop" },
+  criteriaFit: [
+    { criterionId: "owner-evidence", criterionName: "Grounded in observed disputes or losses", mustHave: true,
+      status: "meets", evidenceIds: ["owner-source"], note: "A saved owner account documents unpaid work" },
+    { criterionId: "small-team-fit", criterionName: "Fits a small shop team", mustHave: false,
+      status: "partial", evidenceIds: [], note: "Capacity in a 1–3 person shop has not been tested; the reported bakers’ team sizes are unknown." },
+    { criterionId: "pilot-test", criterionName: "Testable with a two-week dispute count", mustHave: false,
+      status: "partial", evidenceIds: [], note: "The proposed two-week log can count disputes; enough eligible orders may not occur in that window." },
+  ],
+  firstTest: { kind: "process-test", question: "Does the cutoff reduce disputes?", method: "Log orders", cost: "One staff hour", metric: "Dispute count",
+    sample: 10, observationWindow: "Two weeks", passCriterion: "Fewer disputes", failCriterion: "More disputes", inconclusiveCriterion: "Too few orders" },
+} satisfies WorkflowV2SolutionOption;
+const corrected = { ...option, criteriaFit: option.criteriaFit.map(fit => fit.evidenceIds.length ? fit : { ...fit, status: "unknown" as const }) };
+const cleanups: Array<() => Promise<void>> = [];
+afterEach(async () => { for (const close of cleanups.splice(0)) await close(); });
+
+function native(outputs: unknown[], mode = "workflow-criterion-evidence") {
+  const directory = mkdtempSync(join(tmpdir(), "scraply-criterion-evidence-"));
+  const outputPath = join(directory, "outputs.json");
+  const capturePath = join(directory, "requests.jsonl");
+  writeFileSync(outputPath, JSON.stringify(outputs));
+  const runtime = new RuntimeClient({ executablePath: process.execPath,
+    argumentPrefix: [join(process.cwd(), "test/fixtures/runtime-child.cjs")],
+    artifact: { version: "0.1.0", sourceCommit: "ab9fcfc859ee19fff8dfd4c05c854ab5d145baf8",
+      sha256: createHash("sha256").update(readFileSync(process.execPath)).digest("hex") },
+    appVersion: "test", controlTimeoutMs: 250, terminalGraceMs: 250,
+    environment: { ...process.env, SCRAPLY_RUNTIME_CHILD_MODE: mode,
+      SCRAPLY_CRITERION_OUTPUTS: outputPath, SCRAPLY_RUNTIME_CAPTURE: capturePath } });
+  cleanups.push(async () => { await runtime.close(); rmSync(directory, { recursive: true, force: true }); });
+  return { runtime, requests: () => readFileSync(capturePath, "utf8").trim().split("\n").map(line => (JSON.parse(line) as { payload: {
+    generationId: string; repairPolicy: string; outputSchema: object; workOrder: { constraints?: string[] };
+  } }).payload) };
+}
+
+test("unsupported partial criterion verdicts reach the one permitted native schema repair", async () => {
+  const fixture = native([{ options: [option] }, { options: [corrected] }]);
+  await fixture.runtime.restoreCredential(model.providerId, "synthetic-credential");
+  const result = await produceDevelopmentOptions(context, {
+    modelClient: scheduledModelClient(fixture.runtime, new WorkflowModelScheduler(), "bakery"), model, reasoningEffort: "medium", ideaCount: 1 });
+  expect(result.options[0]!.criteriaFit).toEqual(corrected.criteriaFit);
+  expect(result.metadata.repairCount).toBe(1);
+  expect(result.metadata.attempts.map(attempt => attempt.attempt)).toEqual(["initial", "schema_repair"]);
+  expect(result.metadata.attempts.every(attempt => attempt.providerCompletion === "confirmed")).toBe(true);
+  expect(result.metadata.usage).toEqual({ status: "known", value: { inputTokens: 20, outputTokens: 10, totalTokens: 30 } });
+  expect(result.metadata.attempts.every(attempt => attempt.cost.status === "not_reported")).toBe(true);
+  const requests = fixture.requests();
+  expect(requests).toHaveLength(2);
+  expect(requests[0]!.generationId).not.toBe(requests[1]!.generationId);
+  expect(requests.map(request => request.repairPolicy)).toEqual(["disabled", "disabled"]);
+  expect(requests[1]!.workOrder.constraints?.some(constraint => constraint.includes("prior response"))).toBe(true);
+  expect(requests[0]!.outputSchema).toEqual(requests[1]!.outputSchema);
+  expect(meetsAllMustHaves(result.options[0]!.criteriaFit)).toBe(true);
+});
+
+test("a second unsupported criterion verdict exhausts repair without a third native dispatch", async () => {
+  const fixture = native([{ options: [option] }, { options: [option] }]);
+  await fixture.runtime.restoreCredential(model.providerId, "synthetic-credential");
+  const failure = await produceDevelopmentOptions(context, {
+    modelClient: scheduledModelClient(fixture.runtime, new WorkflowModelScheduler(), "bakery"), model, reasoningEffort: "medium", ideaCount: 1,
+  }).catch((error: unknown) => error);
+  expect(failure).toBeInstanceOf(ProviderFailure);
+  expect(failure).toMatchObject({ code: "schema", attempts: [
+    { attempt: "initial", providerCompletion: "confirmed", usage: { status: "known" } },
+    { attempt: "schema_repair", providerCompletion: "confirmed", usage: { status: "known" } },
+  ] });
+  expect(fixture.requests()).toHaveLength(2);
+});
+
+test.each([
+  { reason: "known scale without evidence", output: { ...corrected, biggerProblem: { ...corrected.biggerProblem, scaleKnown: true } } },
+  { reason: "unknown scale citation", output: { ...corrected, biggerProblem: { ...corrected.biggerProblem, scaleEvidenceIds: ["invented"] } } },
+  { reason: "wrong first-test goal", output: { ...corrected, firstTest: { ...corrected.firstTest, kind: "demand-test" } } },
+  { reason: "changed criterion identity", output: { ...corrected, criteriaFit: corrected.criteriaFit.map((fit, index) => index ? fit : { ...fit, criterionName: "Invented criterion" }) } },
+  { reason: "repeated criterion", output: { ...corrected, criteriaFit: [corrected.criteriaFit[0]!, corrected.criteriaFit[0]!, corrected.criteriaFit[2]!] } },
+])("contextual goal-fit validation uses the same bounded native repair ($reason)", async scenario => {
+  const fixture = native([{ options: [scenario.output] }, { options: [corrected] }]);
+  await fixture.runtime.restoreCredential(model.providerId, "synthetic-credential");
+  const result = await produceDevelopmentOptions(context, {
+    modelClient: scheduledModelClient(fixture.runtime, new WorkflowModelScheduler(), "bakery"), model, reasoningEffort: "medium", ideaCount: 1 });
+  expect(result.options[0]!.biggerProblem).toEqual(corrected.biggerProblem);
+  expect(result.options[0]!.firstTest).toEqual(corrected.firstTest);
+  expect(result.options[0]!.criteriaFit).toEqual(corrected.criteriaFit);
+  expect(result.metadata.repairCount).toBe(1);
+  expect(fixture.requests()).toHaveLength(2);
+});
+
+test("explicit unknown criterion fit remains unknown with one completed native attempt", async () => {
+  const unknown = { ...corrected, criteriaFit: corrected.criteriaFit.map(fit => ({ ...fit, status: "unknown" as const, evidenceIds: [] })) };
+  const fixture = native([{ options: [unknown] }]);
+  await fixture.runtime.restoreCredential(model.providerId, "synthetic-credential");
+  const result = await produceDevelopmentOptions(context, {
+    modelClient: scheduledModelClient(fixture.runtime, new WorkflowModelScheduler(), "bakery"), model, reasoningEffort: "medium", ideaCount: 1 });
+  expect(result.options[0]!.criteriaFit).toEqual(unknown.criteriaFit);
+  expect(result.metadata.repairCount).toBe(0);
+  expect(result.metadata.attempts).toHaveLength(1);
+  expect(fixture.requests()).toHaveLength(1);
+  expect(meetsAllMustHaves(result.options[0]!.criteriaFit)).toBe(false);
+});
+
+test("an unsupported must-have verdict is repaired by the model without passing the must-have filter", async () => {
+  const initial = { ...corrected, criteriaFit: corrected.criteriaFit.map((fit, index) => index ? fit : { ...fit, evidenceIds: [] }) };
+  const repaired = { ...initial, criteriaFit: initial.criteriaFit.map((fit, index) => index ? fit : { ...fit, status: "unknown" as const }) };
+  const fixture = native([{ options: [initial] }, { options: [repaired] }]);
+  await fixture.runtime.restoreCredential(model.providerId, "synthetic-credential");
+  const result = await produceDevelopmentOptions(context, {
+    modelClient: scheduledModelClient(fixture.runtime, new WorkflowModelScheduler(), "bakery"), model, reasoningEffort: "medium", ideaCount: 1 });
+  expect(result.options[0]!.criteriaFit).toEqual(repaired.criteriaFit);
+  expect(meetsAllMustHaves(result.options[0]!.criteriaFit)).toBe(false);
+  expect(result.metadata.repairCount).toBe(1);
+  expect(fixture.requests()).toHaveLength(2);
+});
+
+test("an explicitly disabled repair allowance rejects invalid fit after one confirmed native attempt", async () => {
+  const fixture = native([{ options: [option] }]);
+  await fixture.runtime.restoreCredential(model.providerId, "synthetic-credential");
+  const scheduled = scheduledModelClient(fixture.runtime, new WorkflowModelScheduler(), "bakery");
+  const failure = await produceDevelopmentOptions(context, { model, reasoningEffort: "medium", ideaCount: 1,
+    modelClient: { structuredCompletion: request => scheduled.structuredCompletion({ ...request, repairPolicy: "disabled" }) },
+  }).catch((error: unknown) => error);
+  expect(failure).toMatchObject({ code: "schema", attempts: [{ providerCompletion: "confirmed", usage: { status: "known" } }] });
+  expect(fixture.requests()).toHaveLength(1);
+});
+
+test("a lost native completion is not replayed as criterion schema repair", async () => {
+  const fixture = native([], "stream-interrupted");
+  await fixture.runtime.restoreCredential(model.providerId, "synthetic-credential");
+  const failure = await produceDevelopmentOptions(context, {
+    modelClient: scheduledModelClient(fixture.runtime, new WorkflowModelScheduler(), "bakery"), model, reasoningEffort: "medium", ideaCount: 1,
+  }).catch((error: unknown) => error);
+  expect(failure).toMatchObject({ code: "interrupted", attempts: [{ providerCompletion: "unknown", usage: { status: "unknown" } }] });
+  expect(fixture.requests()).toHaveLength(1);
+});
+
+test.each([false, true])("completed historical criterion output keeps its wire identity and never dispatches on cache read (invalid: %s)", async invalid => {
+  const fixture = native([{ options: [corrected] }]);
+  await fixture.runtime.restoreCredential(model.providerId, "synthetic-credential");
+  const generated = await produceDevelopmentOptions(context, { modelClient: fixture.runtime, model, reasoningEffort: "medium", ideaCount: 1 });
+  const directory = mkdtempSync(join(tmpdir(), "scraply-criterion-cache-"));
+  const db = new DatabaseClient(join(directory, "scraply.db"));
+  cleanups.push(async () => { db.close(); rmSync(directory, { recursive: true, force: true }); });
+  const now = new Date().toISOString();
+  db.db.prepare("INSERT INTO threads (id,title,status,created_at,updated_at) VALUES ('thread','Bakery','configuring',?,?)").run(now, now);
+  db.db.prepare("INSERT INTO research_runs (id,thread_id,status,config_json,workflow_version,created_at,updated_at) VALUES ('run','thread','failed','{}',2,?,?)").run(now, now);
+  const repository = new GenerationAttemptRepository(db);
+  // App refinements are not part of the persisted native wire identity. This old
+  // completion was accepted before the new app-side criterion check was attached.
+  const originalRequest = { ...generated.request, schema: z.unknown() };
+  const attempt = repository.prepare("run", originalRequest);
+  repository.markDispatched(attempt.id);
+  const savedOutput = { options: [invalid ? option : corrected] };
+  repository.recordTerminal(attempt.id, { status: "completed", terminalKind: "completed", output: savedOutput,
+    attemptMetadata: generated.metadata, usage: generated.metadata.attempts.map(item => item.usage) });
+  const originalRow = db.db.prepare("SELECT * FROM generation_attempts WHERE id = ?").get(attempt.id);
+  let cachedGenerationId: string | undefined;
+  const resumed = produceDevelopmentOptions(context, { model, reasoningEffort: "medium", ideaCount: 1,
+    modelClient: { async structuredCompletion(request) {
+      expect(request.jsonSchema).toEqual(originalRequest.jsonSchema);
+      expect(request.workOrder).toEqual(originalRequest.workOrder);
+      expect(request.evidence).toEqual(originalRequest.evidence);
+      const cached = repository.findCompleted("run", request);
+      if (!cached) throw new Error("Historical wire identity changed");
+      cachedGenerationId = cached.generationId;
+      return { output: cached.output, metadata: generated.metadata };
+    } } });
+  if (invalid) await expect(resumed).rejects.toThrow("A criterion verdict needs saved evidence");
+  else {
+    const recovered = await resumed;
+    expect(recovered.options[0]!.criteriaFit).toEqual(corrected.criteriaFit);
+    expect(cachedGenerationId).toBe(originalRequest.generationId);
+  }
+  expect(fixture.requests()).toHaveLength(1);
+  expect(db.db.prepare("SELECT * FROM generation_attempts WHERE id = ?").get(attempt.id)).toEqual(originalRow);
+  expect(db.db.prepare("SELECT count(*) AS count FROM generation_attempts").get()).toEqual({ count: 1 });
+});
