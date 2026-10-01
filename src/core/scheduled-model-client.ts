@@ -52,6 +52,7 @@ export function scheduledModelClient(
             ...attempt, attempt: "schema_repair" as const,
           }))],
           ...(retryError.runtimeCode ? { runtimeCode: retryError.runtimeCode } : {}),
+          ...(retryError.unretainedSchemaFailure ? { unretainedSchemaFailure: retryError.unretainedSchemaFailure } : {}),
         });
       }
     } finally {

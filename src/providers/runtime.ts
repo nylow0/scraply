@@ -11,6 +11,7 @@ import {
   type RuntimeFailure, type RuntimeOperation, type ServerEnvelope,
 } from "../shared/runtime-protocol";
 import { ProviderFailure, type GenerationAttemptMetadata, type StructuredModelClient, type StructuredStageRequest } from "./structured";
+import type { SchemaValidationFailure } from "../shared/generation-diagnostics";
 
 const execFileAsync = promisify(execFile);
 const MAX_ENVELOPE_BYTES = 16_777_216;
@@ -270,6 +271,18 @@ export class RuntimeClient implements StructuredModelClient {
       }
       try { return { output: request.schema.parse(completed.output), metadata: completed.metadata }; }
       catch (error) {
+        const failure: SchemaValidationFailure = { generationId: request.generationId, output: completed.output,
+          issues: error instanceof z.ZodError ? error.issues.map(issue => ({ code: issue.code, path: issue.path, message: issue.message }))
+            : [{ code: "custom", path: [], message: error instanceof Error ? error.message : String(error) }],
+          metadata: completed.metadata };
+        try { request.onSchemaInvalid?.(failure); }
+        catch (persistenceError) {
+          // Completion is known, but repair must not proceed if its original rejection cannot be retained.
+          throw new ProviderFailure("failed", `Could not retain schema-invalid output: ${persistenceError instanceof Error ? persistenceError.message : String(persistenceError)}. Validation: ${failure.issues.map(issue => issue.message).join("; ")}`, false, {
+            cause: new AggregateError([error, persistenceError], "Schema validation and diagnostic persistence failed"),
+            attempts: completed.metadata.attempts, unretainedSchemaFailure: failure,
+          });
+        }
         throw new ProviderFailure("schema", "Native runtime output did not match the requested schema", false, {
           cause: error,
           attempts: completed.metadata.attempts,
