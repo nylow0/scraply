@@ -27,7 +27,8 @@ const ExaErrorSchema = z.object({
 // never headers, arbitrary error pages, or an API key echoed in the response.
 async function readExaErrorDetails(response: Response, apiKey: string): Promise<string> {
   if (!response.body) return "";
-  const reader = response.body.getReader();
+  let reader: ReadableStreamDefaultReader<Uint8Array>;
+  try { reader = response.body.getReader(); } catch { return ""; }
   const decoder = new TextDecoder();
   let bytes = 0;
   let body = "";
@@ -70,7 +71,7 @@ async function readExaErrorDetails(response: Response, apiKey: string): Promise<
   } finally {
     clearTimeout(timeout);
     void reader.cancel().catch(() => undefined);
-    reader.releaseLock();
+    try { reader.releaseLock(); } catch { /* Diagnostics must preserve the original HTTP failure. */ }
   }
 }
 
