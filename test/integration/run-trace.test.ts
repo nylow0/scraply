@@ -211,6 +211,29 @@ describe("Trace committed idea decisions", () => {
 });
 
 describe("Trace physical model calls", () => {
+  test.each(["failed", "completed"] as const)("historical %s schema repair details stay explicitly unavailable without rewriting saved records", status => {
+    const f = fixture();
+    const attempt = f.prepareAttempt();
+    attempt.repository.markDispatched(attempt.id);
+    const calls = ["initial", "schema_repair"].map(kind => ({ attempt: kind, model: { providerId: "fixture", modelId: "fixture" },
+      usage: { status: "unknown" }, cost: { status: "unknown" }, latencyMs: 1, providerCompletion: "confirmed" }));
+    attempt.repository.recordTerminal(attempt.id, { status, terminalKind: status,
+      ...(status === "failed" ? { errorCode: "schema", errorMessage: "Native runtime output did not match the requested schema" } : {}),
+      attemptMetadata: { attempts: calls } });
+    const saved = f.db.db.prepare("SELECT * FROM generation_attempts WHERE id = ?").get(attempt.id);
+    const trace = getRunTrace(f.db, f.runId);
+    const step = trace.steps.find(step => step.attempts.some(item => item.id === attempt.id))!;
+    const detail = getRunTraceStep(f.db, f.runId, step.id);
+    expect(detail.events.find(event => event.type === "schema-validation-unavailable")?.payload).toEqual({
+      parentAttemptId: attempt.id, message: "Rejected output and validation details were not retained for this historical attempt.",
+    });
+    expect(detail.events.some(event => event.type === "schema-validation-failed")).toBe(false);
+    expect(detail.output).toBeNull();
+    expect(trace.metrics.modelCalls).toBe(2);
+    expect(f.db.db.prepare("SELECT * FROM generation_attempts WHERE id = ?").get(attempt.id)).toEqual(saved);
+    expect(f.db.db.prepare("SELECT count(*) AS count FROM workflow_snapshots WHERE snapshot_key LIKE 'generation-schema-invalid:%'").get()).toEqual({ count: 0 });
+  });
+
   test("counts an initial and schema repair call once each within one durable row", () => {
     const f = fixture();
     const attempt = f.prepareAttempt();

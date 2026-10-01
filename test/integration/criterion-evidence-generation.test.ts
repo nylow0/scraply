@@ -13,6 +13,11 @@ import { GenerationAttemptRepository } from "../../src/db/repositories/generatio
 import { z } from "zod";
 import { meetsAllMustHaves } from "../../src/shared/solution-goal-fit";
 import type { WorkflowV2SolutionOption } from "../../src/shared/structured-output-schemas";
+import { ResearchEngine } from "../../src/core/research-engine";
+import { WorkflowRepository } from "../../src/db/repositories/workflows";
+import { getRunTrace, getRunTraceStep } from "../../src/core/run-trace";
+import { DEFAULT_RUN_CONFIG } from "../../src/shared/schemas";
+import type { StructuredModelClient } from "../../src/providers/structured";
 
 const model = { providerId: "openai-subscription", modelId: "gpt-fixture" };
 const context: WorkflowV2DevelopmentContext = {
@@ -48,7 +53,7 @@ const corrected = { ...option, criteriaFit: option.criteriaFit.map(fit => fit.ev
 const cleanups: Array<() => Promise<void>> = [];
 afterEach(async () => { for (const close of cleanups.splice(0)) await close(); });
 
-function native(outputs: unknown[], mode = "workflow-criterion-evidence") {
+function native(outputs: unknown[], mode = "workflow-criterion-evidence", interruptAt?: number) {
   const directory = mkdtempSync(join(tmpdir(), "scraply-criterion-evidence-"));
   const outputPath = join(directory, "outputs.json");
   const capturePath = join(directory, "requests.jsonl");
@@ -59,12 +64,124 @@ function native(outputs: unknown[], mode = "workflow-criterion-evidence") {
       sha256: createHash("sha256").update(readFileSync(process.execPath)).digest("hex") },
     appVersion: "test", controlTimeoutMs: 250, terminalGraceMs: 250,
     environment: { ...process.env, SCRAPLY_RUNTIME_CHILD_MODE: mode,
-      SCRAPLY_CRITERION_OUTPUTS: outputPath, SCRAPLY_RUNTIME_CAPTURE: capturePath } });
+      SCRAPLY_CRITERION_OUTPUTS: outputPath, SCRAPLY_RUNTIME_CAPTURE: capturePath,
+      ...(interruptAt === undefined ? {} : { SCRAPLY_CRITERION_INTERRUPT_AT: String(interruptAt) }) } });
   cleanups.push(async () => { await runtime.close(); rmSync(directory, { recursive: true, force: true }); });
   return { runtime, requests: () => readFileSync(capturePath, "utf8").trim().split("\n").map(line => (JSON.parse(line) as { payload: {
     generationId: string; repairPolicy: string; outputSchema: object; workOrder: { constraints?: string[] };
   } }).payload) };
 }
+
+async function recordedNative(outputs: unknown[], mode?: string, interruptAt?: number) {
+  const fixture = native(outputs, mode, interruptAt);
+  await fixture.runtime.restoreCredential(model.providerId, "synthetic-credential");
+  const directory = mkdtempSync(join(tmpdir(), "scraply-invalid-output-trace-"));
+  const db = new DatabaseClient(join(directory, "scraply.db"));
+  cleanups.push(async () => { db.close(); rmSync(directory, { recursive: true, force: true }); });
+  const now = new Date().toISOString();
+  const config = { ...DEFAULT_RUN_CONFIG, workflowVersion: 2 as const, model };
+  db.db.prepare("INSERT INTO threads (id,title,status,created_at,updated_at) VALUES ('thread','Bakery','configuring',?,?)").run(now, now);
+  db.immediateTransaction(() => new WorkflowRepository(db).createSession({ id: "session", threadId: "thread",
+    purpose: "discovery", mode: "vibe", contract: { limits: { enforced: false } }, remainingMs: 60_000 }));
+  db.db.prepare(`INSERT INTO research_runs (id,thread_id,status,config_json,workflow_version,workflow_session_id,created_at,updated_at)
+    VALUES ('run','thread','running',?,2,'session',?,?)`).run(JSON.stringify(config), now, now);
+  const engine = new ResearchEngine({ db, modelClients: { [model.providerId]: fixture.runtime },
+    modelScheduler: new WorkflowModelScheduler(), onEvent: () => {} });
+  const active = { runId: "run", threadId: "thread", problemId: null, config, abortController: new AbortController(),
+    startedAt: Date.now(), projectedCodexCalls: 2, projectedSearches: 0,
+    followUpModelReservation: null, followUpSearchReservation: null, generationProvenance: new Map<string, string>() };
+  // Use the production recorder and scheduled native client without running unrelated research stages.
+  const access = engine as unknown as { activeRuns: Map<string, typeof active>;
+    instrumentedModel(run: typeof active): StructuredModelClient };
+  access.activeRuns.set(active.runId, active);
+  const client = access.instrumentedModel(active);
+  const dispatchSnapshots: number[] = [];
+  const diagnostics = () => db.db.prepare("SELECT * FROM workflow_snapshots WHERE snapshot_key LIKE 'generation-schema-invalid:%' ORDER BY rowid").all();
+  const generate = (onSchemaInvalid?: () => void) => produceDevelopmentOptions(context, { modelClient: client, model, reasoningEffort: "medium", ideaCount: 1,
+    beforeGeneration: request => {
+      request.onDispatched = () => dispatchSnapshots.push(diagnostics().length);
+      if (onSchemaInvalid) request.onSchemaInvalid = onSchemaInvalid;
+    } });
+  const detail = () => {
+    const step = getRunTrace(db, "run").steps.find(step => step.stage === "solutions")!;
+    return getRunTraceStep(db, "run", step.id);
+  };
+  const resume = () => { access.activeRuns.clear(); return engine.resumeRun("run"); };
+  return { ...fixture, db, generate, diagnostics, dispatchSnapshots, detail, resume };
+}
+
+test("confirmed invalid output is durable before native repair and readable in persisted Trace after success", async () => {
+  const fixture = await recordedNative([{ options: [option] }, { options: [corrected] }]);
+  await fixture.generate();
+  expect(fixture.dispatchSnapshots).toEqual([0, 1]);
+  expect(fixture.diagnostics()).toHaveLength(1);
+  expect(JSON.stringify(getRunTrace(fixture.db, "run"))).not.toContain(option.mechanism);
+  const detail = fixture.detail();
+  expect(detail.output).toEqual({ options: [corrected] });
+  const invalid = detail.events.find(event => event.type === "schema-validation-failed");
+  expect(invalid?.payload).toMatchObject({ output: { options: [option] }, issues: [
+    { code: "custom", path: ["options", 0], message: "A criterion verdict needs saved evidence; use unknown when it is not established" },
+  ] });
+  expect(getRunTrace(fixture.db, "run").metrics.modelCalls).toBe(2);
+});
+
+test("both confirmed invalid responses survive terminal failure with exact native UUIDs and actual validation issues", async () => {
+  const fixture = await recordedNative([{ options: [option] }, { options: [option] }]);
+  expect(await fixture.generate().catch((error: unknown) => error)).toMatchObject({ code: "schema" });
+  expect(fixture.diagnostics()).toHaveLength(2);
+  const failures = fixture.detail().events.filter(event => event.type === "schema-validation-failed");
+  expect(failures).toHaveLength(2);
+  expect(failures.map(event => (event.payload as { generationId: string }).generationId))
+    .toEqual(fixture.requests().map(request => request.generationId));
+  expect(fixture.detail().output).toBeNull();
+});
+
+test.each(["storage", "callback"])("a diagnostic %s failure preserves the confirmed invalid result and stops repair", async mode => {
+  const fixture = await recordedNative([{ options: [option] }, { options: [corrected] }]);
+  if (mode === "storage") fixture.db.db.exec(`CREATE TRIGGER reject_schema_diagnostic BEFORE INSERT ON workflow_snapshots
+    WHEN NEW.snapshot_key LIKE 'generation-schema-invalid:%'
+    BEGIN SELECT RAISE(ABORT, 'Diagnostic storage unavailable'); END`);
+  const failure = await fixture.generate(mode === "callback" ? () => { throw new Error("Diagnostic callback unavailable"); } : undefined)
+    .catch((error: unknown) => error);
+  expect(failure).toMatchObject({ code: "failed", attempts: [{ providerCompletion: "confirmed", usage: { status: "known" } }] });
+  expect(fixture.requests()).toHaveLength(1);
+  const detail = fixture.detail();
+  expect(detail.step.status).toBe("failed");
+  expect(detail.events.find(event => event.type === "schema-validation-failed" && (event.payload as { retentionFailed?: boolean }).retentionFailed)?.payload)
+    .toMatchObject({ output: { options: [option] }, retentionFailed: true, issues: [
+      { message: "A criterion verdict needs saved evidence; use unknown when it is not established" },
+    ] });
+  expect(getRunTrace(fixture.db, "run").metrics.modelCalls).toBe(1);
+  expect(fixture.db.db.prepare("SELECT status, usage_json FROM generation_attempts").get())
+    .toEqual({ status: "failed", usage_json: JSON.stringify([{ status: "known", value: { inputTokens: 10, outputTokens: 5, totalTokens: 15 } }]) });
+});
+
+test("an unknown repair completion retains the first invalid response without replay", async () => {
+  const fixture = await recordedNative([{ options: [option] }], undefined, 1);
+  expect(await fixture.generate().catch((error: unknown) => error)).toMatchObject({ code: "interrupted", attempts: [
+    { providerCompletion: "confirmed", usage: { status: "known" } },
+    { providerCompletion: "unknown", usage: { status: "unknown" } },
+  ] });
+  expect(fixture.diagnostics()).toHaveLength(1);
+  expect(fixture.detail().events.filter(event => event.type === "schema-validation-failed")).toHaveLength(1);
+  const saved = fixture.db.db.prepare("SELECT * FROM generation_attempts").all();
+  expect(await fixture.resume().catch((error: unknown) => error)).toMatchObject({ code: "conflict" });
+  expect(fixture.requests()).toHaveLength(2);
+  expect(fixture.db.db.prepare("SELECT * FROM generation_attempts").all()).toEqual(saved);
+  expect(getRunTrace(fixture.db, "run").metrics.modelCalls).toBe(2);
+});
+
+test("valid cached output keeps its saved identity and app diagnostics stay outside the native wire request", async () => {
+  const fixture = await recordedNative([{ options: [corrected] }]);
+  await fixture.generate();
+  const saved = fixture.db.db.prepare("SELECT * FROM generation_attempts").all();
+  await fixture.generate();
+  expect(fixture.requests()).toHaveLength(1);
+  expect(JSON.stringify(fixture.requests())).not.toContain("onSchemaInvalid");
+  expect(fixture.diagnostics()).toHaveLength(0);
+  expect(fixture.db.db.prepare("SELECT * FROM generation_attempts").all()).toEqual(saved);
+  expect(fixture.detail().output).toEqual({ options: [corrected] });
+});
 
 test("unsupported partial criterion verdicts reach the one permitted native schema repair", async () => {
   const fixture = native([{ options: [option] }, { options: [corrected] }]);

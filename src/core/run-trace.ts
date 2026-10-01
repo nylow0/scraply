@@ -5,6 +5,7 @@ import { WorkflowSearchAttemptSchema, WorkflowSearchDispatchSchema, WorkflowSear
 import { workflowSearchKey as savedSearchKey } from "../shared/content-identity";
 import { DISCOVERY_DEPTHS, SOURCE_MAX_CHARACTERS } from "../shared/discovery-projection";
 import { AppError } from "../shared/errors";
+import { SavedSchemaValidationFailureSchema } from "../shared/generation-diagnostics";
 import { RunTraceSchema, RunTraceStepDetailSchema, type RunTrace, type RunTraceCandidate,
   type RunTraceSearch, type RunTraceStep, type RunTraceStepDetail } from "../shared/run-trace";
 
@@ -126,7 +127,9 @@ function load(db: TraceDatabase, runId: string) {
   const sources = db.db.prepare("SELECT id, canonical_url, title FROM sources WHERE research_run_id = ? ORDER BY rowid").all(evidenceRunId) as SourceRow[];
   const factors = db.db.prepare("SELECT * FROM factors WHERE research_run_id = ? ORDER BY rowid").all(evidenceRunId) as FactorRow[];
   const problems = db.db.prepare("SELECT * FROM problems WHERE discovery_run_id = ? ORDER BY rowid").all(evidenceRunId) as ProblemRow[];
-  const snapshots = db.db.prepare(`SELECT research_run_id, snapshot_key, value_json FROM workflow_snapshots WHERE research_run_id IN (${placeholders}) ORDER BY rowid`).all(...runIds) as SnapshotRow[];
+  // Rejected response bodies are fetched only when their model step is opened.
+  const snapshots = db.db.prepare(`SELECT research_run_id, snapshot_key, value_json FROM workflow_snapshots
+    WHERE research_run_id IN (${placeholders}) AND snapshot_key NOT LIKE 'generation-schema-invalid:%' ORDER BY rowid`).all(...runIds) as SnapshotRow[];
   const searchAttempts: SearchAttempt[] = snapshots.filter(snapshot => snapshot.snapshot_key.startsWith("search-attempt:")).map(snapshot => {
     const receipt = WorkflowSearchAttemptSchema.parse(json(snapshot.value_json));
     const terminal = snapshots.find(item => item.research_run_id === snapshot.research_run_id && item.snapshot_key === `search-terminal:${receipt.id}`);
@@ -577,11 +580,34 @@ export function getRunTraceStep(db: TraceDatabase, runId: string, stepId: string
     : step.stage.startsWith("problem-kill") ? allCandidates.filter(candidate => candidate.statement === candidateStatement) : [];
   const events = db.db.prepare(`SELECT type, created_at, payload_json FROM job_events WHERE run_id IN (${data.placeholders}) ORDER BY id`)
     .all(...data.runIds) as Array<{ type: string; created_at: string; payload_json: string }>;
+  const parentIds = new Set(step.attempts.map(attempt => attempt.id));
+  const parents = data.attempts.filter(attempt => parentIds.has(attempt.id));
+  const diagnosticRows = parents.length ? db.db.prepare(`SELECT value_json FROM workflow_snapshots
+    WHERE research_run_id IN (${data.placeholders}) AND snapshot_key LIKE 'generation-schema-invalid:%'
+      AND json_extract(value_json, '$.parentAttemptId') IN (${parents.map(() => "?").join(",")}) ORDER BY rowid`)
+    .all(...data.runIds, ...parents.map(parent => parent.id)) as Array<{ value_json: string }> : [];
+  const diagnostics = diagnosticRows.map(row => SavedSchemaValidationFailureSchema.parse(json(row.value_json)));
+  const retentionFailures = parents.flatMap(parent => {
+    const failure = record(record(json(parent.attempt_metadata_json)).unretainedSchemaFailure);
+    if (!text(failure.generationId)) return [];
+    const raw = db.db.prepare("SELECT output_json FROM generation_attempts WHERE id = ?").get(parent.id) as { output_json: string | null };
+    return [{ type: "schema-validation-failed", createdAt: parent.terminal_at ?? parent.created_at,
+      payload: { ...failure, output: json(raw.output_json), parentAttemptId: parent.id, retentionFailed: true,
+        persistenceError: parent.error_message } }];
+  });
+  const unavailable = parents.filter(parent => (parent.error_code === "schema"
+      || objects(record(json(parent.attempt_metadata_json)).attempts).some(attempt => attempt.attempt === "schema_repair"))
+    && !diagnostics.some(diagnostic => diagnostic.parentAttemptId === parent.id)).map(parent => ({
+      type: "schema-validation-unavailable", createdAt: parent.terminal_at ?? parent.created_at,
+      payload: { parentAttemptId: parent.id, message: "Rejected output and validation details were not retained for this historical attempt." },
+    }));
   return RunTraceStepDetailSchema.parse({ runId, step, inputs: saved ? json(saved.input_json) : managedSearch ? json(managedSearch.input_json)
     : ordinarySearch?.receipt ?? record(request.workOrder).inputs ?? null,
     output, evidence, searches: relatedSearches, facts, candidates: relatedCandidates,
     events: [...events.filter(event => !step.startedAt || event.created_at >= step.startedAt && (!step.finishedAt || event.created_at <= step.finishedAt))
       .map(event => ({ type: event.type, createdAt: event.created_at, payload: json(event.payload_json) })),
+      ...diagnostics.map(diagnostic => ({ type: "schema-validation-failed", createdAt: diagnostic.capturedAt, payload: diagnostic })),
+      ...retentionFailures, ...unavailable,
       ...(managedSearch?.error_message ? [{ type: "search-interrupted", createdAt: managedSearch.completed_at ?? managedSearch.prepared_at,
         payload: { status: managedSearch.status, message: managedSearch.error_message } }] : []),
       ...(ordinarySearch?.dispatch ? [{ type: "search-dispatched", createdAt: ordinarySearch.dispatch.dispatchedAt,

@@ -3008,6 +3008,10 @@ export class ResearchEngine {
               if (this.activeRuns.get(active.runId)?.abortController === active.abortController) this.progress(active, "Model request accepted", stage, "accepted");
               request.onAccepted?.(metadata);
             },
+            onSchemaInvalid: (failure) => {
+              this.generationAttempts.recordSchemaInvalidOutput(attempt.id, failure);
+              request.onSchemaInvalid?.(failure);
+            },
           });
           if (!reservation) {
             reservation = this.ledger.reserve(active.runId, "structured-completion", providerId, stageModel.modelId, 0, attempt.id);
@@ -3029,6 +3033,7 @@ export class ResearchEngine {
           return result;
         } catch (error) {
           const failedAttempts = error instanceof ProviderFailure ? error.attempts : undefined;
+          const unretained = error instanceof ProviderFailure ? error.unretainedSchemaFailure : undefined;
           const failedCostUsd = failedAttempts ? reportedAttemptCost(failedAttempts) : null;
           if (!reservation && failedAttempts?.length) {
             reservation = this.ledger.reserve(active.runId, "structured-completion", providerId, stageModel.modelId, 0, attempt.id);
@@ -3042,8 +3047,11 @@ export class ResearchEngine {
               terminalKind: dispatched || accepted || failedAttempts?.length ? code : "never-dispatched",
               errorCode: code,
               errorMessage: error instanceof Error ? error.message : "Model generation failed",
+              ...(unretained ? { output: unretained.output } : {}),
               ...(failedAttempts ? {
-                attemptMetadata: { attempts: failedAttempts },
+                attemptMetadata: { attempts: failedAttempts, ...(unretained ? { unretainedSchemaFailure: {
+                  generationId: unretained.generationId, issues: unretained.issues,
+                } } : {}) },
                 usage: failedAttempts.map((item) => item.usage),
               } : {}),
               ...(failedCostUsd === null ? {} : { reportedCostUsd: failedCostUsd }),
