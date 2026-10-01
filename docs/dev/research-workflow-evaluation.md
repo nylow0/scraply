@@ -16,4 +16,6 @@ Rerun the same command and output to continue observation. The observer reconnec
 
 `--report-only` recalculates metrics from the disposable database without opening the installed app or making provider calls. Keep the frozen checkout and its trace reader available. Use a new output directory when changing the package, fixture, matrix, transport, or credential source.
 
+New matrix rows save the actual launch preview before admission, including its work estimate and unenforced limits. Quality medians include completed and honest partial outcomes, with an explicit `Quality N`; failed, cancelled, and interrupted rows retain their recorded calls, searches, and time without contributing quality zeros. The qualifying-per-candidate column is a median of run averages, so a candidate-level acceptance target needs a separate candidate distribution audit.
+
 Browser baseline evaluation retains `--runtime-dir` and the local development transport. Installed mode always uses its packaged worker and refuses that runtime override.
