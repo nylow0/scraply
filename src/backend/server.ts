@@ -19,6 +19,8 @@ import { OpportunityCandidateOriginSchema } from "../shared/opportunity-explorat
 import { ActiveRunConflictError } from "../db/repositories/research-runs";
 import { ThreadRepository } from "../db/repositories/threads";
 import { WorkflowRepository } from "../db/repositories/workflows";
+import { getRunTrace, getRunTraceStep } from "../core/run-trace";
+import { GetRunTraceRequestSchema, GetRunTraceStepRequestSchema } from "../shared/run-trace";
 import { ExaClient } from "../providers/exa";
 import { PerplexityClient } from "../providers/perplexity";
 import type { SearchClient, SearchProvider, ValidationResult } from "../providers/search";
@@ -1254,6 +1256,17 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
       if (method === "GET" && route === "/health") return sendJson(res, 200, HealthResponseSchema.parse({ ok: true, version: context.appVersion, persistenceCheck: db.getMeta("persistence_probe") ?? undefined }));
       if (method === "GET" && route === "/validation") return sendJson(res, 200, await validateProviders());
       if (method === "GET" && route === "/workspace") return sendJson(res, 200, await workspaceState());
+      const traceRoute = /^\/runs\/([^/]+)\/trace(?:\/steps\/([^/]+))?$/.exec(route);
+      if (method === "GET" && traceRoute) {
+        const runId = decodeRouteSegment(traceRoute[1]!);
+        const runtime = context.nativeRuntime as Partial<{ liveReasoningSummary: (generationId: string) => string | null }> | undefined;
+        const options = runtime?.liveReasoningSummary ? { liveReasoningSummary: runtime.liveReasoningSummary.bind(runtime) } : {};
+        if (traceRoute[2]) {
+          const input = GetRunTraceStepRequestSchema.parse({ runId, stepId: decodeRouteSegment(traceRoute[2]) });
+          return sendJson(res, 200, getRunTraceStep(db, input.runId, input.stepId, options));
+        }
+        return sendJson(res, 200, getRunTrace(db, GetRunTraceRequestSchema.parse({ runId }).runId, options));
+      }
       if (method === "GET" && route.startsWith("/workflows/")) {
         const input = GetWorkflowRequestSchema.parse({
           sessionId: decodeRouteSegment(route.slice("/workflows/".length)),

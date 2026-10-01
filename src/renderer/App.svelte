@@ -24,6 +24,7 @@
   import OpportunityProgress, { TERMINAL_OPPORTUNITY_STATUSES } from "./components/OpportunityProgress.svelte";
   import WorkflowTabs, { type WorkflowStep } from "./components/WorkflowTabs.svelte";
   import RunUsage from "./components/RunUsage.svelte";
+  import RunTrace from "./components/RunTrace.svelte";
   import VibeProgress from "./components/VibeProgress.svelte";
   import ResearchRevisions from "./components/ResearchRevisions.svelte";
 
@@ -166,6 +167,7 @@
   let researchReady = $derived(Boolean(activeThread && (activeWorkflow || workspace?.problemCandidates.length || workspace?.rejectedProblemCandidates.length || activeThread.status === "discovery-running")));
   let ideasReady = $derived(Boolean(activeThread && (workspace?.solutions.length || activeThread.status === "development-running" || activeThread.status === "solutions-ready"
     || activeWorkflow?.purpose === "known-problem" || activeWorkflow?.state === "finished")));
+  let traceReady = $derived(Boolean(activeRun));
 
   onMount(() => {
     const viewport = window.matchMedia?.(COMPACT_NAVIGATION_QUERY);
@@ -200,8 +202,10 @@
       if (event.type === "workflow-progress") {
         if (event.threadId === workspace?.activeThreadId) {
           if (event.sessionId === workspace?.activeWorkflow?.sessionId) {
-            if (event.state === "finished" && workspace.activeWorkflow.mode === "vibe") activeStep = "ideas";
-            else if (event.state === "waiting-for-review") activeStep = "research";
+            if (activeStep !== "trace") {
+              if (event.state === "finished" && workspace.activeWorkflow.mode === "vibe") activeStep = "ideas";
+              else if (event.state === "waiting-for-review") activeStep = "research";
+            }
           }
           if (conversationIdeaId && event.sessionId !== workspace?.activeWorkflow?.sessionId) void refreshConversation(conversationIdeaId);
         }
@@ -384,6 +388,7 @@
   function openStep(step: WorkflowStep) {
     if (step === "research" && !researchReady) return;
     if (step === "ideas" && !ideasReady) return;
+    if (step === "trace" && !traceReady) return;
     activeStep = step;
     reviewSelection = false;
   }
@@ -912,11 +917,12 @@
         setupReady={true}
         {researchReady}
         {ideasReady}
+        {traceReady}
         onSelect={openStep}
       />
       </header>
-      {#if !activeWorkflow}<RunUsage usage={activeRun?.usage} />{/if}
-      {#if workflowDetail && activeWorkflow && workflowDetail.summary.sessionId === activeWorkflow.sessionId && !(activeStep === "ideas" && ideaFocused && activeWorkflow.state === "finished")}
+      {#if !activeWorkflow && activeStep !== "trace"}<RunUsage usage={activeRun?.usage} />{/if}
+      {#if activeStep !== "trace" && workflowDetail && activeWorkflow && workflowDetail.summary.sessionId === activeWorkflow.sessionId && !(activeStep === "ideas" && ideaFocused && activeWorkflow.state === "finished")}
         <div class="workflow-progress-wrap"><VibeProgress detail={workflowDetail} {busy}
           onPause={() => commandWorkflow({ type: "pause" })}
           onResume={() => commandWorkflow({ type: "resume" })}
@@ -926,17 +932,17 @@
           onLoadMoreTasks={loadMoreWorkflowTasks}
           onPreviewExtension={previewWorkflowExtension} onApplyExtension={applyWorkflowExtension} /></div>
       {/if}
-      {#if !activeWorkflow && workspace.opportunityExploration}
+      {#if activeStep !== "trace" && !activeWorkflow && workspace.opportunityExploration}
         <!-- Like the workflow summary above, a finished exploration steps aside while one idea is open. -->
         {#if !(activeStep === "ideas" && ideaFocused && TERMINAL_OPPORTUNITY_STATUSES.includes(workspace.opportunityExploration.status))}
           <div class="workflow-progress-wrap"><OpportunityProgress progress={workspace.opportunityExploration} {busy} onPause={pauseOpportunities} onResume={startOrResumeOpportunities} onPreviewExtension={previewOpportunityExtension} onApplyExtension={applyOpportunityExtension} /></div>
         {/if}
-      {:else if !activeWorkflow && workspace.runConfig?.opportunityExploration && workspace.solutions.length > 0}
+      {:else if activeStep !== "trace" && !activeWorkflow && workspace.runConfig?.opportunityExploration && workspace.solutions.length > 0}
         <div class="notice"><button disabled={busy || workspace.opportunityReviewStatus?.running} onclick={startOrResumeOpportunities}>Continue toward {workspace.runConfig.opportunityExploration.targetFamilies} distinct hypotheses</button></div>
       {/if}
       {#if workspace.opportunityReviewStatus?.kind === "review" && workspace.opportunityReviewStatus.running}<div class="notice" role="status">Reviewing saved business ideas. Completed comparisons are being saved.</div>{/if}
       {#if workspace.opportunityReviewStatus?.kind === "experiment" && workspace.opportunityReviewStatus.running}<div class="notice" role="status">Planning and reviewing a focused experiment. No customer test is being run.</div>{/if}
-      {#if activeThread.status === "failed" && !activeWorkflow}
+      {#if activeStep !== "trace" && activeThread.status === "failed" && !activeWorkflow}
         <div class="run-stopped" role="status">
           <div><strong>Run stopped</strong><span>{activeRun?.resumeBlockedReason ?? activeRun?.completionReason ?? activeRun?.lastActivity ?? "The last run failed or was cancelled. Review the setup, then retry explicitly."}</span></div>
           <div class="run-stopped-actions">
@@ -957,6 +963,12 @@
       <div class="skeleton" role="status" aria-label="Loading workspace"><i></i><i></i><i></i></div>
     {:else if !workspace || !activeThread}
       <div class="empty-workspace"><button disabled={busy} onclick={createThread}>New research</button></div>
+    {:else if activeStep === "trace"}
+      <div id="workflow-panel-trace" role="tabpanel" aria-labelledby="workflow-tab-trace">
+        {#if activeRun}
+          <RunTrace runId={activeRun.runId} onOpenSource={openExternalUrl} />
+        {/if}
+      </div>
     {:else if activeStep === "setup"}
       {#if showSetupForm}
         <div id="workflow-panel-setup" role="tabpanel" aria-label="Research setup">

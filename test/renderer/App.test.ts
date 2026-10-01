@@ -1045,6 +1045,8 @@ function installApi(overrides: Partial<ScraplyApi>): void {
     previewWorkflow: async () => { throw new Error("unused"); },
     startWorkflow: async () => { throw new Error("unused"); },
     getWorkflow: async () => { throw new Error("unused"); },
+    getRunTrace: async () => { throw new Error("unused"); },
+    getRunTraceStep: async () => { throw new Error("unused"); },
     commandWorkflow: async () => { throw new Error("unused"); },
     getIdeaConversation: async () => { throw new Error("unused"); },
     submitIdeaTurn: async () => { throw new Error("unused"); },
