@@ -18,6 +18,7 @@ import { WORKFLOW_V2_STAGE_IDS, WORKFLOW_V2_STAGE_REGISTRY, type WorkflowV2Stage
 export class WorkflowExecution {
   readonly repository: WorkflowV2Repository;
   readonly smallHarvestBatches: boolean;
+  readonly rankProblemCandidates: boolean;
   private readonly prompts: Record<WorkflowV2StageId, ResolvedWorkflowV2Prompt>;
   private readonly disableRepair: boolean;
   private readonly factorUncertainty = new Map<string, string>();
@@ -50,9 +51,12 @@ export class WorkflowExecution {
       this.save("focused-experiments", { version: 1 });
       this.save("small-harvest-batches", { version: 1 });
       this.save("problem-audience-assessment", { version: 1 });
+      this.save("candidate-accounting", { version: 1 });
     }
     // Runs without the marker keep their original source groups and checkpoint identities.
     this.smallHarvestBatches = this.read<{ version: number }>("small-harvest-batches")?.version === 1;
+    // Candidate order controls sequential source IDs in completed verdict requests.
+    this.rankProblemCandidates = this.read<{ version: number }>("candidate-accounting")?.version === 1;
   }
 
   resolvePrompt = (stage: WorkflowV2StageId): ResolvedWorkflowV2Prompt => this.prompts[stage];
@@ -201,7 +205,7 @@ export class WorkflowExecution {
           demandEvidenceUncertainty: "Not classified in the saved output.",
         }),
       };
-      if (stageId === "problem-candidates") adapted = { problems: WorkflowV2ProblemCandidatesOutputSchema.parse(output).problems.map(({ alternativeExplanations, unknowns, ...problem }) => { void alternativeExplanations; void unknowns; return problem; }) };
+      if (stageId === "problem-candidates") adapted = WorkflowV2ProblemCandidatesOutputSchema.parse(output);
       if (stageId === "problem-kill") {
         const { unresolvedAssumptions, wouldChangeConclusion, ...assessment } = WorkflowV2ProblemKillOutputSchema.parse(output);
         void unresolvedAssumptions; void wouldChangeConclusion;

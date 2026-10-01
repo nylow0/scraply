@@ -41,6 +41,23 @@ let state: WorkspaceState = {
   researchRequests: [], researchFindings: [], solutions: [], latestResearchRun: null, pendingRuns: [],
 };
 
+if (params.has("unassessed") && state.activeThreadId) {
+  const extras = Math.min(20, Math.max(1, Number(params.get("unassessed") || 5)));
+  state.runConfig = DEFAULT_RUN_CONFIG;
+  state.scope = { title: "Candidate limit fixture", audience: "Operators", domain: "Filing", observations: "", offLimits: [] };
+  state.threads = state.threads.map((thread) => thread.id === state.activeThreadId ? { ...thread, status: "solutions-ready" } : thread);
+  state.rejectedProblemCandidates = Array.from({ length: extras }, (_, index) => ({
+    id: `unassessed-${index}`, statement: `Operators repeat filing step ${index + 1}`,
+    reason: "Not assessed: this standard-depth run assesses up to 4 problem candidates.", disposition: "not-assessed",
+    candidate: {
+      statement: `Operators repeat filing step ${index + 1}`, whyItPersists: "Their systems do not share state.",
+      affected: "Operators", scaleEstimate: "Frequency has not been measured", scaleBasisFactorId: null,
+      factorIds: [`fixture-factor-${index}`], alternativeExplanations: ["An existing export may suffice"],
+      unknowns: ["Workflow frequency"], intendedBuyerEvidenceFactorIds: [], evidenceGap: "Needs evidence assessment",
+    },
+  }));
+}
+
 const guidedProgress: WorkflowDetail | null = params.get("progress") === "guided" && state.activeThreadId ? {
   summary: {
     sessionId: "fixture-guided", threadId: state.activeThreadId, purpose: "discovery", mode: "vibe", targetKind: "per-problem",

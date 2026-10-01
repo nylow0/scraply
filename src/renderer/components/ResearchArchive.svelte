@@ -22,6 +22,8 @@
   let factorCount = $derived(new Set(problems.flatMap((problem) => problem.factors.map((factor) => factor.id))).size);
   let evidenceBacked = $derived(factorCount > 0);
   let discoveryRan = $derived(evidenceBacked || rejectedCandidates.length > 0);
+  let blockedCandidates = $derived(rejectedCandidates.filter((candidate) => candidate.disposition !== "not-assessed"));
+  let unassessedCandidates = $derived(rejectedCandidates.filter((candidate) => candidate.disposition === "not-assessed"));
   let query = $state("");
   let filteredProblems = $derived(problems.filter((problem) => problem.statement.toLowerCase().includes(query.trim().toLowerCase())));
 </script>
@@ -31,7 +33,7 @@
     <div>
       <h1>Research</h1>
       {#if !evidenceBacked}<p class="intro">{discoveryRan
-          ? "These candidates did not pass the evidence requirements."
+          ? unassessedCandidates.length > 0 ? "Some candidates have not been assessed yet." : "These candidates did not pass the evidence requirements."
           : "User-stated problems. No discovery evidence was gathered."}</p>{/if}
     </div>
     <button class="export" disabled={busy} onclick={onExport}>{busy ? "Exporting…" : "Export research JSON"}</button>
@@ -81,15 +83,37 @@
       </article>
     {:else}{#if query}<p class="empty">No problems match "{query}".</p>
     {:else}
-      <div class="empty"><h2>No candidates passed the evidence requirements.</h2><p>The rejected candidates remain available below.</p></div>
+      <div class="empty"><h2>{unassessedCandidates.length > 0 ? "No assessed problems to show." : "No candidates passed the evidence requirements."}</h2><p>The saved candidates remain available below.</p></div>
     {/if}{/each}
   </div>
 
-  {#if rejectedCandidates.length > 0}
+  {#if unassessedCandidates.length > 0}
     <details class="rejected">
-      <summary>Failed evidence requirements <span>{rejectedCandidates.length}</span></summary>
+      <summary>Not assessed <span>{unassessedCandidates.length}</span></summary>
       <div class="rejected-list">
-        {#each rejectedCandidates as candidate, index (candidate.id)}
+        {#each unassessedCandidates as candidate, index (candidate.id)}
+          <article class="rejected-item" style={`--index:${problems.length + index}`}>
+            <div class="meta"><span>Awaiting evidence assessment</span></div>
+            <h2>{candidate.statement}</h2>
+            <p>{candidate.reason}</p>
+            {#if candidate.candidate}
+              <p>{candidate.candidate.whyItPersists}</p>
+              <dl class="problem-data">
+                <div><dt>Affected</dt><dd>{candidate.candidate.affected}</dd></div>
+                <div><dt>Scale estimate</dt><dd class="estimated">{candidate.candidate.scaleEstimate}</dd></div>
+              </dl>
+            {/if}
+          </article>
+        {/each}
+      </div>
+    </details>
+  {/if}
+
+  {#if blockedCandidates.length > 0}
+    <details class="rejected">
+      <summary>Failed evidence requirements <span>{blockedCandidates.length}</span></summary>
+      <div class="rejected-list">
+        {#each blockedCandidates as candidate, index (candidate.id)}
           <article class="rejected-item" style={`--index:${problems.length + index}`}>
             <div class="meta"><span>Not evidence-backed</span></div>
             <h2>{candidate.statement}</h2>

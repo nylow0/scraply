@@ -146,6 +146,7 @@ describe("ScopeForm search provider selection", () => {
     expect(view.getByLabelText("Search provider").closest("dialog")).toBeNull();
     expect(view.queryByLabelText("Maximum model calls")).toBeNull();
     await fireEvent.change(view.getByLabelText("Research depth"), { target: { value: "deep" } });
+    expect(view.getByText("Assess up to 8 problem candidates. Additional candidates are saved under Not assessed.")).toBeTruthy();
     await waitFor(() => expect(onPreviewWorkflow.mock.lastCall?.[0].runConfig.discoveryDepth).toBe("deep"));
     await waitFor(() => expect((view.getByRole("button", { name: "Start" }) as HTMLButtonElement).disabled).toBe(false));
     await fireEvent.click(view.getByRole("button", { name: "Start" }));

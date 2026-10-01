@@ -44,6 +44,46 @@ const rejected = [{
 }];
 
 describe("rejected problem evidence", () => {
+  test("shows unassessed candidates separately with their count and saved details", async () => {
+    const candidate = {
+      statement: "Operators re-enter already filed data", whyItPersists: "Disconnected state", affected: "Operators",
+      scaleEstimate: "Unknown", scaleBasisFactorId: null, factorIds: ["factor-a"],
+    };
+    const view = render(ResearchArchive, {
+      problems: [], rejectedCandidates: [...rejected, {
+        id: "unassessed", statement: candidate.statement, reason: "Standard depth assesses up to 4 candidates",
+        disposition: "not-assessed", candidate,
+      }], busy: false, onExport: vi.fn(), onOpenSource: vi.fn(),
+    });
+    const group = view.getByText("Not assessed").closest("details") as HTMLElement;
+    expect(within(group).getByText("1")).toBeTruthy();
+    await fireEvent.click(group.querySelector("summary")!);
+    expect(within(group).getByRole("heading", { name: candidate.statement })).toBeTruthy();
+    expect(within(group).getByText(candidate.whyItPersists)).toBeTruthy();
+    expect(within(group).getByText("Awaiting evidence assessment")).toBeTruthy();
+    expect(within(group).queryByText(rejected[0]!.statement)).toBeNull();
+    expect(view.getByText("Some candidates have not been assessed yet.")).toBeTruthy();
+  });
+
+  test("omits the Not assessed group when it has no candidates", () => {
+    const view = render(ResearchArchive, {
+      problems: [], rejectedCandidates: rejected, busy: false, onExport: vi.fn(), onOpenSource: vi.fn(),
+    });
+    expect(view.queryByText("Not assessed")).toBeNull();
+    expect(view.getByText("Failed evidence requirements")).toBeTruthy();
+  });
+
+  test("Controlled keeps unassessed candidates out of the failed evidence group", () => {
+    const view = render(ProblemCheckpoint, {
+      problems: [], rejectedCandidates: [{ id: "unassessed", statement: "Candidate awaiting assessment", reason: "Depth limit reached", disposition: "not-assessed" }],
+      busy: false, ...checkpointDefaults, onCommit: vi.fn(), onExport: vi.fn(), onOpenSource: vi.fn(),
+    });
+    expect(view.getByText("Not assessed")).toBeTruthy();
+    expect(view.getByText("No assessed problems to show.")).toBeTruthy();
+    expect(view.queryByText("Failed evidence requirements")).toBeNull();
+    expect(view.queryByText("Not evidence-backed")).toBeNull();
+  });
+
   test("uses the saved output rule for managed work and the brief for automatic work", async () => {
     const managedCommit = vi.fn(async () => {});
     const managed = render(ProblemCheckpoint, {

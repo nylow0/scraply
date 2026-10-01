@@ -35,7 +35,7 @@ import {
   NativeLoginCancelSchema, NativeLoginCompleteSchema, NativeLoginStartSchema, NativeProviderSchema,
   ResumeResearchSchema, SaveFavoriteModelSchema, SaveRunConfigSchema, SaveScopeSchema, SearchKeyPreflightSchema,
   SelectProblemsSchema, SelectOptionSchema, SaveDecisionSchema, SelectThreadRequestSchema, SourceDetailSchema, StartResearchSchema,
-  ValidationStateSchema, WorkspaceStateSchema, type FactorView, type ProblemCandidate, type RejectedProblemCandidate, type ResearchEvent,
+  RejectedProblemCandidateSchema, ValidationStateSchema, WorkspaceStateSchema, type FactorView, type ProblemCandidate, type RejectedProblemCandidate, type ResearchEvent,
   type SolutionView, type ValidationState,
 } from "../shared/ipc";
 import {
@@ -501,14 +501,16 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
     const runId = discoveryRunId ?? latestDiscoveryRun(threadId);
     if (!runId) return [];
     return (db.db.prepare(`
-      SELECT id, statement, reason
+      SELECT id, statement, reason, disposition, candidate_json
       FROM rejected_problem_candidates
       WHERE discovery_run_id = ?
       ORDER BY created_at, id
-    `).all(runId) as Array<{ id: string; statement: string; reason: string }>).map((candidate) => ({
+    `).all(runId) as Array<{ id: string; statement: string; reason: string; disposition: "blocked" | "not-assessed"; candidate_json: string | null }>).map((candidate) => ({
       id: candidate.id,
       statement: candidate.statement,
       reason: candidate.reason,
+      disposition: candidate.disposition,
+      candidate: candidate.candidate_json ? RejectedProblemCandidateSchema.shape.candidate.parse(JSON.parse(candidate.candidate_json)) : null,
     }));
   }
   function listSolutions(threadId: string, details = true, solutionId?: string): SolutionView[] {
