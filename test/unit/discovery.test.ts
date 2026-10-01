@@ -6,7 +6,7 @@ import {
   harvestEvidenceFollowUp,
   harvestFactors,
   normalizeEvidenceText,
-  qualifiesAsIntendedBuyerObservation,
+  qualifiesAsProblemObservation,
   quoteAppearsVerbatim,
   type HarvestedFactor,
   type HarvestedSource,
@@ -282,7 +282,7 @@ describe("discovery", () => {
   test.each(["vendor", "recommendation", "illustration", "unknown"] as const)(
     "does not treat %s evidence as an observed intended-buyer behavior",
     (sourceRole) => {
-    expect(qualifiesAsIntendedBuyerObservation({
+    expect(qualifiesAsProblemObservation({
       id: "factor", subject: "Teams", behavior: "compare prices", quote: "Pricing details", sourceId: "source",
       harvestMode: "domain", modelConfidence: 0.8, sourceRole, audienceFit: "intended-buyer",
       independentSourceKey: "comparison", supportsDemand: false,
@@ -312,13 +312,13 @@ describe("discovery", () => {
   });
 
   test("keeps a genuine buyer outcome when only prevalence is unmeasured", () => {
-    expect(qualifiesAsIntendedBuyerObservation({
+    expect(qualifiesAsProblemObservation({
       id: "factor", subject: "One shop", behavior: "paid $50 after leaving the free plan", quote: "We paid $50", sourceId: "source",
       harvestMode: "audience", modelConfidence: 0.9, sourceRole: "firsthand", audienceFit: "intended-buyer",
       independentSourceKey: "shop-one", supportsDemand: true,
       uncertainty: "One shop paid $50 after leaving the free plan; prevalence was not measured.",
     })).toBe(true);
-    expect(qualifiesAsIntendedBuyerObservation({
+    expect(qualifiesAsProblemObservation({
       id: "factor-two", subject: "One small repair shop", behavior: "loses two hours each week copying repair status",
       quote: "I lose two hours each week", sourceId: "source", harvestMode: "audience", modelConfidence: 0.9,
       sourceRole: "firsthand", audienceFit: "intended-buyer", independentSourceKey: "shop-one",
@@ -327,7 +327,7 @@ describe("discovery", () => {
   });
 
   test("keeps firsthand problem evidence separate from missing purchase evidence", () => {
-    expect(qualifiesAsIntendedBuyerObservation({
+    expect(qualifiesAsProblemObservation({
       id: "factor", subject: "One small repair shop", behavior: "loses two hours each week copying repair status into spreadsheets",
       quote: "I lose two hours each week copying repair status into spreadsheets", sourceId: "source",
       harvestMode: "audience", modelConfidence: 0.9, sourceRole: "firsthand", audienceFit: "intended-buyer",
