@@ -16,7 +16,8 @@ import { DEFAULT_RUN_CONFIG } from "../../src/shared/schemas";
 import type { JsonSchema } from "../../src/shared/json-schema";
 import { NATIVE_WORKFLOW_MODEL as model, UNTRUSTED_WORKFLOW_TEXT as untrusted, startNativeWorkflowBackend } from "../fixtures/native-workflow-backend";
 import { resolveWorkflowV2Prompt } from "../../src/core/prompts";
-import { WORKFLOW_V2_STAGE_IDS } from "../../src/core/stages";
+import { WORKFLOW_V2_STAGE_IDS, type WorkflowV2StageId } from "../../src/core/stages";
+import { RESEARCH_CALL_TIME_LIMIT_MS } from "../../src/core/workflow-execution";
 import { WorkflowRepository } from "../../src/db/repositories/workflows";
 import { getRunTrace, savedSearchKey } from "../../src/core/run-trace";
 import { RunTraceSchema, RunTraceStepDetailSchema } from "../../src/shared/run-trace";
@@ -179,7 +180,7 @@ describe("native research workflow through the production backend", () => {
     } finally { saved.close(); }
   }, 20_000);
 
-  test("explicit output-limit retry preserves the guided contract, searches, and completed packets", async () => {
+  test("an evidence read that hits the output limit is split and the run reaches review without a retry", async () => {
     const item = await fixture({ mode: "workflow-checkpoint-recovery-output-limit" });
     const threadId = await item.createThread("explore-market");
     const receipt = await item.startLegacyWorkflow(threadId, {
@@ -188,40 +189,20 @@ describe("native research workflow through the production backend", () => {
       targets: { kind: "per-problem", ideaCount: 3 },
       limits: { enforced: false, maxMinutes: 90, maxModelCalls: 62, maxSearches: 26 }, instructions: {},
     });
-    await item.waitFor(workspace => workspace.activeWorkflow?.state === "finished");
-    const failed = await item.post(`/workflows/${receipt.sessionId}`, undefined, WorkflowDetailSchema);
-    const task = failed.tasks.find(task => task.kind === "discovery")!;
-    expect(task.state).toBe("failed");
-    expect(item.requests()).toHaveLength(10);
-    const harvestSchema = item.requests()[1]!.outputSchema as JsonSchema;
-    expect(harvestSchema.properties?.factors?.items?.anyOf).toHaveLength(2);
-    for (const variant of harvestSchema.properties?.factors?.items?.anyOf ?? []) {
-      expect(variant.properties?.uncertainty?.maxLength).toBe(600);
-    }
-    expect(item.searches).toHaveLength(17);
-    const originalSearches = item.searches.map(search => z.object({ query: z.string() }).parse(search).query);
-    const originalRunId = (await item.workspace()).latestResearchRun!.runId;
+    await item.waitFor(workspace => workspace.activeWorkflow?.state === "waiting-for-review");
+    const detail = await item.post(`/workflows/${receipt.sessionId}`, undefined, WorkflowDetailSchema);
+    expect(detail.tasks.find(task => task.kind === "discovery")!.state).not.toBe("failed");
+    const harvests = item.requests().filter(request => request.workOrder.stage.startsWith("factor-harvest"));
+    const sourceIds = (request: (typeof harvests)[number]) =>
+      (request.evidence![0]!.content as { sources: Array<{ id: string }> }).sources.map(source => source.id);
+    // The fixture fails the ninth read once; its two halves cover exactly the same sources under new keys.
+    const [failed, firstHalf, secondHalf] = harvests.slice(8, 11);
+    expect([...sourceIds(firstHalf!), ...sourceIds(secondHalf!)]).toEqual(sourceIds(failed!));
+    expect(new Set([failed!.workOrder.stage, firstHalf!.workOrder.stage, secondHalf!.workOrder.stage]).size).toBe(3);
+    expect(item.requests().every(request => request.model.modelId === model.modelId && request.reasoningEffort === "xhigh")).toBe(true);
     const db = new DatabaseClient(item.dbPath);
     try {
-      const originalContract = db.db.prepare("SELECT contract_sha256 FROM workflow_sessions WHERE id = ?").get(receipt.sessionId);
-      const failedAttempt = db.db.prepare("SELECT * FROM generation_attempts WHERE id = ?").get(task.terminalAttemptId!);
-      const savedStages = item.requests().slice(0, 9).map(request => request.workOrder.stage);
-      const retry = { threadId, sessionId: receipt.sessionId, clientCommandId: "retry-output-limit",
-        expectedRevision: failed.summary.revision, action: { type: "retry-task", taskId: task.id,
-          expectedTerminalAttemptId: task.terminalAttemptId, acknowledgeUnknownCompletion: false } };
-      const retried = await item.post("/workflows/command", retry, WorkflowAdmissionReceiptSchema);
-      expect(retried.sessionId).toBe(receipt.sessionId);
-      await item.waitFor(workspace => workspace.activeWorkflow?.state === "waiting-for-review");
-      const recoveredSearches = item.searches.map(search => z.object({ query: z.string() }).parse(search).query);
-      for (const query of new Set(originalSearches)) expect(recoveredSearches.filter(saved => saved === query))
-        .toHaveLength(originalSearches.filter(saved => saved === query).length);
-      expect(item.requests().slice(10).some(request => savedStages.includes(request.workOrder.stage))).toBe(false);
-      expect(item.requests()[10]!.workOrder.stage).toBe(item.requests()[9]!.workOrder.stage);
-      expect(item.requests().every(request => request.model.modelId === model.modelId && request.reasoningEffort === "xhigh")).toBe(true);
-      expect(db.db.prepare("SELECT contract_sha256 FROM workflow_sessions WHERE id = ?").get(receipt.sessionId)).toEqual(originalContract);
-      expect(db.db.prepare("SELECT * FROM generation_attempts WHERE id = ?").get(task.terminalAttemptId!)).toEqual(failedAttempt);
-      expect(db.db.prepare("SELECT json_extract(output_refs_json, '$.runId') AS runId FROM workflow_work_items WHERE id = ?")
-        .get(task.id)).toEqual({ runId: originalRunId });
+      expect(db.db.prepare("SELECT COUNT(*) AS count FROM generation_attempts WHERE error_code = 'output-limit'").get()).toEqual({ count: 1 });
     } finally { db.close(); }
   }, 20_000);
 
@@ -377,7 +358,9 @@ describe("native research workflow through the production backend", () => {
     expect(state.problemCandidates).toHaveLength(1);
     expect(item.requests().length).toBeGreaterThan(1);
     expect(item.searches.length).toBeGreaterThan(0);
-    expect(item.requests().every((request) => request.deadlineMs === undefined)).toBe(true);
+    // Research calls carry their stage time limit; no estimate or saved deadline bounds the run itself.
+    expect(item.requests().every((request) => request.deadlineMs
+      === RESEARCH_CALL_TIME_LIMIT_MS[request.workOrder.stage.split(":")[0] as WorkflowV2StageId])).toBe(true);
     const progress = await item.post(`/workflows/${receipt.sessionId}`, undefined, WorkflowDetailSchema);
     expect(progress.researchFrame?.approved).toEqual(approvedFrame);
     expect(progress.tasks.some(task => task.kind === "investigate-area" && task.state === "succeeded")).toBe(true);
@@ -672,7 +655,7 @@ describe("native research workflow through the production backend", () => {
           : FOCUSED_EXPERIMENT_DRAFT_INSTRUCTION);
       } else {
         const promptName = request.workOrder.stage.split(":")[0]!;
-        expect(request.deadlineMs).toBeUndefined();
+        expect(request.deadlineMs).toBe(RESEARCH_CALL_TIME_LIMIT_MS[promptName as WorkflowV2StageId]);
         expect(request.workOrder.instruction.startsWith(readFileSync(join(process.cwd(), "prompts", `workflow-v2-${promptName}.md`), "utf8").trim())).toBe(true);
       }
     }
@@ -971,8 +954,9 @@ describe("native v2 decisions through the production backend", () => {
     }));
     const exportedIdeas = siblingExport.files.flatMap((file) => JSON.parse(file.content) as Array<{ id: string; evidenceFollowUp?: unknown }>);
     expect(exportedIdeas.find((solution) => solution.id === sibling.id)?.evidenceFollowUp).toBeUndefined();
-    const followUpRequest = item.requests().find((request) => request.workOrder.stage === "factor-harvest:follow-up")!;
-    expect(followUpRequest.workOrder.inputs).toEqual({ routing: { harvestMode: "domain", followUp: true }, workflowVersion: 2 });
+    // New runs read follow-up sources in small capped batches named by their source IDs.
+    const followUpRequest = item.requests().find((request) => request.workOrder.stage.startsWith("factor-harvest:follow-up:"))!;
+    expect(followUpRequest.workOrder.inputs).toEqual({ routing: { harvestMode: "domain", followUp: true, factorLimit: 6 }, workflowVersion: 2 });
     expect(JSON.stringify(followUpRequest.workOrder)).not.toContain(question);
     expect(JSON.stringify(followUpRequest.evidence)).toContain(question);
     expect(item.searches.at(-1)).toEqual(expect.objectContaining({ query: question }));

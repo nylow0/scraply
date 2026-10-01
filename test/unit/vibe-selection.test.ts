@@ -20,6 +20,16 @@ function candidate(id: string, changes: Partial<VibeProblemCandidate> = {}): Vib
 }
 
 describe("unattended problem selection", () => {
+  test("two problems resting on exactly the same independent sources get ideas only once", () => {
+    // Live Bookkeepers confirmed two reconciliation problems from the same two bookkeepers' posts.
+    const shared = (id: string) => candidate(id, { intendedBuyerEvidenceFactorIds: [`${id}:amanda`, `${id}:divyadeep`],
+      factors: ["amanda", "divyadeep"].map(person => ({ ...candidate(id).factors[0]!, id: `${id}:${person}`,
+        sourceId: `${person}:post`, independentSourceKey: `${person}-post` })) });
+    const result = selectVibeProblems({ candidates: [shared("duplicates"), shared("discrepancies"), candidate("categories")] });
+    expect(result.selectedProblemIds).toEqual(["discrepancies", "categories"]);
+    expect(result.decisions.find(decision => decision.problemId === "duplicates")?.reason).toContain("same independent sources");
+  });
+
   test("a confirmed label alone cannot qualify a problem", () => {
     const result = selectVibeProblems({ candidates: [candidate("weak", {
       intendedBuyerEvidenceFactorIds: [],

@@ -114,6 +114,8 @@ export interface DiscoveryDependencies {
   /** Depth suggests search breadth; a useful plan can contain fewer or more queries. */
   guided?: boolean;
   smallHarvestBatches?: boolean;
+  /** Follow-up questions read their sources in small capped batches, like guided harvests. */
+  boundedFollowUpHarvest?: boolean;
   assessProblemAudience?: boolean;
   audienceSearch?: Pick<SearchOptions, "includeDomains" | "startPublishedDate"> & { category?: ExaCategory };
   sourceRouting?: SourceRoutingContext;
@@ -187,15 +189,18 @@ export async function harvestFactors(
           Math.ceil((targetAccepted - acceptedForMode) / remainingBatches));
         if (factorLimit <= 0) break;
         dependencies.onProjection?.(`Reading ${mode} evidence: batch ${index + 1} of ${batches.length}, ${batch.length} sources`);
-        const response = await structuredCall(
-          dependencies,
-          `factor-harvest:${mode}:${batch.map((source) => source.id).join(",")}`,
-          (dependencies.prompt ?? loadPrompt)("factor-harvest"),
-          buildFactorHarvestInput(scope, mode, batch, factorLimit),
-          FactorHarvestOutputSchema.extend({ factors: FactorHarvestOutputSchema.shape.factors.max(factorLimit) }),
-        );
-        extracted[mode] += response.factors.length;
-        for (const candidate of response.factors) {
+        const factors = await readSourcesSplitting(batch, async (part) => {
+          const limit = part === batch ? factorLimit : Math.max(1, Math.ceil(factorLimit * part.length / batch.length));
+          return (await structuredCall(
+            dependencies,
+            `factor-harvest:${mode}:${part.map((source) => source.id).join(",")}`,
+            (dependencies.prompt ?? loadPrompt)("factor-harvest"),
+            buildFactorHarvestInput(scope, mode, part, limit),
+            FactorHarvestOutputSchema.extend({ factors: FactorHarvestOutputSchema.shape.factors.max(limit) }),
+          )).factors;
+        }, dependencies.onProjection);
+        extracted[mode] += factors.length;
+        for (const candidate of factors) {
           const rejection = validateFactor(candidate, mode, sourceById);
           if (rejection) {
             rejections.push(rejection);
@@ -565,6 +570,32 @@ function characterBefore(value: string, index: number): string | undefined {
   return value.slice(startsSurrogatePair ? index - 2 : index - 1, index);
 }
 
+/**
+ * Reads sources with one model call. When the call times out or reaches its output limit, the
+ * sources are split in half and read again, so one oversized or stalled batch cannot end the run.
+ * A single source gets one more try after a timeout; if it still fails, it is skipped and reported.
+ */
+async function readSourcesSplitting<T>(sources: HarvestedSource[], read: (part: HarvestedSource[]) => Promise<T[]>,
+  onProjection?: (message: string) => void): Promise<T[]> {
+  const recoverable = (error: unknown) => error instanceof ProviderFailure && (error.code === "timeout" || error.code === "output-limit");
+  try {
+    return await read(sources);
+  } catch (error) {
+    if (!recoverable(error)) throw error;
+    if (sources.length > 1) {
+      const middle = Math.ceil(sources.length / 2);
+      onProjection?.(`Reading ${sources.length} sources took too long; reading them as two smaller batches.`);
+      return [...await readSourcesSplitting(sources.slice(0, middle), read, onProjection),
+        ...await readSourcesSplitting(sources.slice(middle), read, onProjection)];
+    }
+    if ((error as ProviderFailure).code === "timeout") {
+      try { return await read(sources); } catch (retryError) { if (!recoverable(retryError)) throw retryError; }
+    }
+    onProjection?.(`Skipped ${sources[0]!.canonicalUrl}: the model could not finish reading it.`);
+    return [];
+  }
+}
+
 export function batchSources(sources: HarvestedSource[], maxCharacters = SOURCE_BATCH_CHARACTERS, maxSources = Infinity): HarvestedSource[][] {
   const batches: HarvestedSource[][] = [];
   let current: HarvestedSource[] = [];
@@ -892,18 +923,24 @@ export async function harvestEvidenceFollowUp(
   const factors: HarvestedFactor[] = [];
   const rejections: FactorRejection[] = [];
   if (sources.length > 0) {
-    const response = await structuredCall(
+    const baseKey = dependencies.followUpKey ? `factor-harvest:follow-up:${dependencies.followUpKey}` : "factor-harvest:follow-up";
+    // Older runs keep one packet under the original key; a split or bounded batch names its sources.
+    const batches = dependencies.boundedFollowUpHarvest ? batchSources(sources, GUIDED_HARVEST_CHARACTERS, GUIDED_HARVEST_SOURCES) : [sources];
+    const extractedFactors: typeof FactorHarvestOutputSchema["_output"]["factors"] = [];
+    for (const batch of batches) extractedFactors.push(...await readSourcesSplitting(batch, async (part) => (await structuredCall(
       dependencies,
-      dependencies.followUpKey ? `factor-harvest:follow-up:${dependencies.followUpKey}` : "factor-harvest:follow-up",
+      dependencies.boundedFollowUpHarvest || part !== sources ? `${baseKey}:${part.map((source) => source.id).join(",")}` : baseKey,
       (dependencies.prompt ?? loadPrompt)("factor-harvest"),
       {
-        inputs: { harvestMode: "domain", followUp: true },
-        evidence: { scope, decisiveQuestion: query, sources: sources.map(toStageSource) },
+        inputs: { harvestMode: "domain", followUp: true, ...(dependencies.boundedFollowUpHarvest ? { factorLimit: GUIDED_HARVEST_FACTORS } : {}) },
+        evidence: { scope, decisiveQuestion: query, sources: part.map(toStageSource) },
       },
-      FactorHarvestOutputSchema,
-    );
+      dependencies.boundedFollowUpHarvest
+        ? FactorHarvestOutputSchema.extend({ factors: FactorHarvestOutputSchema.shape.factors.max(GUIDED_HARVEST_FACTORS) })
+        : FactorHarvestOutputSchema,
+    )).factors, dependencies.onProjection));
     const sourceById = new Map(sources.map((source) => [source.id, source]));
-    for (const candidate of response.factors) {
+    for (const candidate of extractedFactors) {
       const rejection = validateFactor(candidate, "domain", sourceById);
       if (rejection) {
         rejections.push(rejection);

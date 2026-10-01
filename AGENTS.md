@@ -9,9 +9,9 @@ I maintain Scraply alone. What I tell you in the conversation takes priority ove
 ## Product rules
 
 - **Evidence.** Every factor traces to a saved source quote. Generated text is never evidence, and model confidence is not calibrated.
-- **Honest results.** A run can finish with a partial set or zero ideas; never pad the count. Unreported usage shows as unknown, not zero. A request whose completion was lost is never replayed automatically.
+- **Honest results.** A run can finish with a partial set or zero ideas; never pad the count. Unreported usage shows as unknown, not zero. A request whose completion was lost is never replayed automatically. The exception is a research call the app stopped waiting on at its own time limit: that result is never used, and its usage stays unknown.
 - **Local and private.** Projects stay on the user's computer, with no telemetry. Credentials are encrypted with Windows `safeStorage`, and the renderer only sees account status and masked key tails. Remote pages never get Electron privileges.
-- **Depth-guided work.** New research uses depth to guide breadth and thoroughness; call and search estimates do not stop it. Generations wait for provider completion, failure, or user cancellation. Preserve usage accounting and older saved count limits.
+- **Depth-guided work.** New research uses depth to guide breadth and thoroughness; call and search estimates do not stop it. Idea generations wait for provider completion, failure, or user cancellation. Research calls have per-stage time limits (`src/core/workflow-execution.ts`): a timed-out call is retried once, evidence reading splits its sources instead, and a failed model answer ends only its own area. Preserve usage accounting and older saved count limits.
 - **Saved work stays readable.** Old projects, including v1 results and older run contracts, still open and export. A saved run resumes with the prompts it started with. Stored values outlive UI renames: Controlled mode is still stored as `babysit`.
 
 ## Terms

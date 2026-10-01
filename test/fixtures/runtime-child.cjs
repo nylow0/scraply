@@ -142,6 +142,15 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
       return;
     }
     if (mode === "hang-cancel") return;
+    if (mode === "deadline-exceeded") {
+      // Echo the deadline the worker received; the real worker reports completion as unknown.
+      send({ protocolVersion: "1.2", requestId: request.id, operation: "generation.start", event: {
+        kind: "generation.failed", generationId: request.payload.generationId,
+        error: { code: "deadline_exceeded", retryable: false, detail: `operation timed out after ${request.payload.deadlineMs}ms` },
+        attempts: [{ attempt: "initial", outcome: "deadline_exceeded", providerCompletion: "unknown", model, usage: { status: "unknown" }, cost: { status: "unknown" }, latencyMs: 1 }],
+      } });
+      return;
+    }
     const isHarvest = request.payload.workOrder.stage.startsWith("factor-harvest");
     if (isHarvest) harvestCalls++;
     if (mode === "output-limit" || (mode === "workflow-checkpoint-recovery-output-limit" && harvestCalls === 9 && isHarvest)) {

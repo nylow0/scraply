@@ -94,8 +94,13 @@ export interface StructuredStageRequest<T> {
   repairPolicy: "disabled" | "one_retry";
   maxOutputTokens?: number;
   signal?: AbortSignal;
-  /** Optional for explicit bounded probes. Research waits for completion or cancellation. */
+  /** Optional for explicit bounded probes, measured from the request including queue time. */
   deadlineMs?: number;
+  /**
+   * Longest one provider call may run once the runtime starts it; queue time does not count.
+   * Research sets this so a stalled or runaway call fails with `timeout` instead of holding the run.
+   */
+  callTimeLimitMs?: number;
   onDispatched?: () => void;
   onAccepted?: (metadata: GenerationAcceptanceMetadata) => void;
   /** Synchronous durable app checkpoint before a confirmed invalid response can enter schema repair. */

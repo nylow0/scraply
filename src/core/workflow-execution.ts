@@ -1,9 +1,9 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type { DatabaseClient } from "../db/client";
 import { DevelopmentRepository } from "../db/repositories/development";
 import { WorkflowV2Repository } from "../db/repositories/workflow-v2";
 import type { SearchClient } from "../providers/search";
-import type { GenerationMetadata, StructuredModelClient, StructuredStageRequest } from "../providers/structured";
+import { ProviderFailure, type GenerationMetadata, type StructuredModelClient, type StructuredStageRequest } from "../providers/structured";
 import { canonicalJson, sha256, workflowSearchKey } from "../shared/content-identity";
 import { EvidenceCheckOutputSchema, LegacyEvidenceCheckOutputSchema } from "../shared/evidence-investigators";
 import { deriveJsonSchema } from "../shared/json-schema";
@@ -25,6 +25,7 @@ export class WorkflowExecution {
   private static readonly activeSearches = new WeakMap<DatabaseClient, Map<string, Promise<Source[]>>>();
   readonly repository: WorkflowV2Repository;
   readonly smallHarvestBatches: boolean;
+  readonly boundedFollowUpHarvest: boolean;
   readonly rankProblemCandidates: boolean;
   private readonly prompts: Record<WorkflowV2StageId, ResolvedWorkflowV2Prompt>;
   private readonly disableRepair: boolean;
@@ -61,9 +62,11 @@ export class WorkflowExecution {
       this.save("candidate-accounting", { version: 1 });
       this.save("source-routes", { version: 2 });
       this.save("query-plan-languages", { version: 1 });
+      this.save("bounded-follow-up-harvest", { version: 1 });
     }
     // Runs without the marker keep their original source groups and checkpoint identities.
     this.smallHarvestBatches = this.read<{ version: number }>("small-harvest-batches")?.version === 1;
+    this.boundedFollowUpHarvest = this.read<{ version: number }>("bounded-follow-up-harvest")?.version === 1;
     if (!this.read("source-route-start")) this.save("source-route-start", new Date().toISOString());
     // Candidate order controls sequential source IDs in completed verdict requests.
     this.rankProblemCandidates = this.read<{ version: number }>("candidate-accounting")?.version === 1;
@@ -272,7 +275,7 @@ export class WorkflowExecution {
           recovered.jsonSchema ? { ...request, jsonSchema: recovered.jsonSchema } : request,
           prompt, metadata, output, context, selectionId);
       } else {
-        const completion = await client.structuredCompletion(request);
+        const completion = await completeWithinTimeLimit(client, request, stageId);
         output = repairDiscoveryStageOutput(stageId, requestSchema.parse(completion.output), original);
         metadata = completion.metadata;
         assertDiscoveryStageSemantics(stageId, output, original);
@@ -550,6 +553,28 @@ export class WorkflowExecution {
     const { focusedDemandTest, ...workflowOption } = option;
     void focusedDemandTest;
     return workflowOption;
+  }
+}
+
+/**
+ * Research call limits, from Sol xhigh runs: normal calls finish within about two minutes, while
+ * stalled or runaway calls ran 7 to 38 minutes. Idea stages legitimately run longer and stay unlimited.
+ */
+export const RESEARCH_CALL_TIME_LIMIT_MS: Partial<Record<WorkflowV2StageId, number>> = {
+  "frame-search-plan": 240_000, "area-ranking": 240_000, "query-plan": 240_000, "factor-harvest": 240_000,
+  "evidence-check": 240_000, "area-gap": 240_000, frame: 480_000, "problem-candidates": 480_000, "problem-kill": 480_000,
+};
+
+/** A timed-out research call is retried once. Evidence reading instead splits its sources (see discovery.ts). */
+async function completeWithinTimeLimit<T>(client: StructuredModelClient, request: StructuredStageRequest<T>, stageId: WorkflowV2StageId) {
+  const limit = RESEARCH_CALL_TIME_LIMIT_MS[stageId];
+  if (limit === undefined || request.callTimeLimitMs !== undefined) return client.structuredCompletion(request);
+  const limited: StructuredStageRequest<T> = { ...request, callTimeLimitMs: limit };
+  try {
+    return await client.structuredCompletion(limited);
+  } catch (error) {
+    if (stageId === "factor-harvest" || !(error instanceof ProviderFailure) || error.code !== "timeout" || request.signal?.aborted) throw error;
+    return client.structuredCompletion({ ...limited, generationId: randomUUID() });
   }
 }
 

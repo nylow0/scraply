@@ -13,7 +13,7 @@ import { DiscoveryRepository } from "../../src/db/repositories/discovery";
 import { ResearchFrameRepository } from "../../src/db/repositories/research-frames";
 import { ResearchRunRepository } from "../../src/db/repositories/research-runs";
 import { WorkflowRepository } from "../../src/db/repositories/workflows";
-import type { StructuredModelClient, StructuredStageRequest } from "../../src/providers/structured";
+import { ProviderFailure, type StructuredModelClient, type StructuredStageRequest } from "../../src/providers/structured";
 import type { SearchClient, SearchOptions, SearchProvider } from "../../src/providers/search";
 import type { ResearchVenueResolver } from "../../src/providers/venue-validation";
 import type { ResearchFrame } from "../../src/shared/research-frame";
@@ -659,5 +659,40 @@ test("a verdict citing a fact ID or an invented ID keeps research going with map
     const sources = new Set((f.db.db.prepare("SELECT id FROM sources WHERE research_run_id = ?").all(runId) as Array<{ id: string }>).map(row => row.id));
     expect(cited.length).toBeGreaterThan(0);
     expect(cited.every(row => sources.has(row.source_id))).toBe(true);
+  } finally { await f.close(); }
+});
+
+test("a research call that times out is retried once with its stage time limit", async () => {
+  const kills: Array<number | undefined> = [];
+  const f = await fixture(request => {
+    if (request.stage.startsWith("problem-kill")) {
+      kills.push(request.callTimeLimitMs);
+      if (kills.length === 1) throw new ProviderFailure("timeout", "Call time limit reached", false);
+    }
+    return researchOutput(request);
+  }, { singleArea: true });
+  try {
+    const runId = await f.start("discovery");
+    expect(f.errors).toEqual([]);
+    expect(kills.slice(0, 2)).toEqual([480_000, 480_000]);
+    const confirmed = f.db.db.prepare("SELECT COUNT(*) AS count FROM problems WHERE discovery_run_id = ? AND verdict = 'confirmed'").get(runId) as { count: number };
+    expect(confirmed.count).toBeGreaterThan(0);
+  } finally { await f.close(); }
+});
+
+test("a model failure late in an area keeps the problems it already checked and the run continues", async () => {
+  // Live Bookkeepers lost a confirmed categorization problem when a later call in its area failed.
+  const f = await fixture(request => {
+    if (request.stage.startsWith("area-gap")) throw new ProviderFailure("output-limit", "Output limit reached", false);
+    return researchOutput(request);
+  }, { singleArea: true });
+  try {
+    const runId = await f.start("discovery");
+    expect(f.errors).toEqual([]);
+    const confirmed = f.db.db.prepare("SELECT COUNT(*) AS count FROM problems WHERE discovery_run_id = ? AND verdict = 'confirmed'").get(runId) as { count: number };
+    expect(confirmed.count).toBeGreaterThan(0);
+    const outcome = f.db.db.prepare("SELECT value_json FROM workflow_snapshots WHERE research_run_id = ? AND snapshot_key = 'research-target-outcome'")
+      .get(runId) as { value_json: string } | undefined;
+    expect(JSON.parse(outcome!.value_json).reason).toContain("stopped early because a model call failed");
   } finally { await f.close(); }
 });
