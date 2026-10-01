@@ -11,6 +11,12 @@ export const EvidenceGapSchema = z.object({
   query: z.string().trim().min(1).max(500),
   route: InvestigatorSearchRouteSchema,
 }).strict();
+// Replay identity for completed historical checks only. New dispatches use the object-root schema below.
+export const LegacyEvidenceCheckOutputSchema = z.union([
+  z.object({ decision: z.literal("confirmed"), reason: TextSchema, gaps: z.array(EvidenceGapSchema).max(0) }).strict(),
+  z.object({ decision: z.literal("drop"), reason: TextSchema, gaps: z.array(EvidenceGapSchema).max(0) }).strict(),
+  z.object({ decision: z.literal("follow-up"), reason: TextSchema, gaps: z.array(EvidenceGapSchema).min(1).max(2) }).strict(),
+]);
 // Native strict structured output requires an object root. Keep conditional gap rules at the app boundary.
 export const EvidenceCheckOutputSchema = z.object({
   decision: z.enum(["confirmed", "drop", "follow-up"]),

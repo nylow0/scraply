@@ -5,6 +5,7 @@ import { WorkflowV2Repository } from "../db/repositories/workflow-v2";
 import type { SearchClient } from "../providers/search";
 import type { GenerationMetadata, StructuredModelClient, StructuredStageRequest } from "../providers/structured";
 import { canonicalJson, sha256, workflowSearchKey } from "../shared/content-identity";
+import { EvidenceCheckOutputSchema, LegacyEvidenceCheckOutputSchema } from "../shared/evidence-investigators";
 import { deriveJsonSchema } from "../shared/json-schema";
 import { OpportunityExpansionOutputSchema } from "../shared/opportunity-exploration";
 import { SourceSchema, type Source } from "../shared/schemas";
@@ -221,6 +222,15 @@ export class WorkflowExecution {
       if (this.disableRepair) request.repairPolicy = "disabled";
       if (original.model.providerId === "openai-subscription") delete request.maxOutputTokens;
       else request.maxOutputTokens = stage.maxOutputTokens;
+      const savedEvidenceCheck = stageId === "evidence-check"
+        ? this.repository.findStageResult(this.runId, stageId, selectionId) : null;
+      const savedEvidenceRequest = (savedEvidenceCheck?.effectiveRequest as { request?: Record<string, unknown> } | undefined)?.request;
+      if (savedEvidenceCheck && savedEvidenceRequest && recoverableHistoricalEvidenceCheck(request, {
+        ...savedEvidenceRequest, stage: original.stage, jsonSchema: savedEvidenceCheck.schema,
+      })) {
+        // Only completed work pins the old union. Unfinished requests always dispatch the object root.
+        request.jsonSchema = savedEvidenceCheck.schema as object;
+      }
       const context = { inputs: request.workOrder.inputs, evidence: request.evidence };
       const evidence = request.evidence.map((item) => ({ sourceId: item.sourceId, content: item.content }));
       const previous = this.repository.getStageResumeState({
@@ -247,7 +257,9 @@ export class WorkflowExecution {
         output = recovered.output;
         metadata = recovered.metadata;
         assertDiscoveryStageSemantics(stageId, output, original);
-        this.persistCompletedStage(original.stage, stageId, request, prompt, metadata, output, context, selectionId);
+        this.persistCompletedStage(original.stage, stageId,
+          recovered.jsonSchema ? { ...request, jsonSchema: recovered.jsonSchema } : request,
+          prompt, metadata, output, context, selectionId);
       } else {
         const completion = await client.structuredCompletion(request);
         output = requestSchema.parse(completion.output);
@@ -288,6 +300,7 @@ export class WorkflowExecution {
   private recoverCompletedStage(request: StructuredStageRequest<unknown>): {
     output: unknown;
     metadata: GenerationMetadata;
+    jsonSchema?: StructuredStageRequest<unknown>["jsonSchema"];
   } | null {
     const rows = this.db.db.prepare(`
       SELECT request_json, output_json, attempt_metadata_json
@@ -302,11 +315,12 @@ export class WorkflowExecution {
     const expected = completedAttemptIdentity(request);
     for (const row of rows) {
       const savedRequest = JSON.parse(row.request_json) as Record<string, unknown>;
-      if (canonicalJson(completedAttemptIdentity(savedRequest)) !== canonicalJson(expected)) continue;
+      const exactIdentity = canonicalJson(completedAttemptIdentity(savedRequest)) === canonicalJson(expected);
+      if (!exactIdentity && !recoverableHistoricalEvidenceCheck(request, savedRequest)) continue;
       const output = request.schema.parse(JSON.parse(row.output_json));
       const metadata = JSON.parse(row.attempt_metadata_json) as GenerationMetadata;
       if (!metadata.prompt) continue;
-      return { output, metadata };
+      return { output, metadata, ...(!exactIdentity ? { jsonSchema: savedRequest.jsonSchema as StructuredStageRequest<unknown>["jsonSchema"] } : {}) };
     }
     if (request.stage.startsWith("factor-harvest:")) {
       const earlier = this.db.db.prepare(`
@@ -606,6 +620,17 @@ function completedAttemptIdentity(request: Record<string, unknown> | StructuredS
     repairPolicy: request.repairPolicy,
     maxOutputTokens: request.maxOutputTokens ?? null,
   };
+}
+
+function recoverableHistoricalEvidenceCheck(
+  request: StructuredStageRequest<unknown>, savedRequest: Record<string, unknown>,
+): boolean {
+  if (request.stage.split(":")[0] !== "evidence-check"
+    || canonicalJson(request.jsonSchema) !== canonicalJson(deriveJsonSchema(EvidenceCheckOutputSchema))
+    || canonicalJson(savedRequest.jsonSchema) !== canonicalJson(deriveJsonSchema(LegacyEvidenceCheckOutputSchema))) return false;
+  // The root union changed only its wire shape. Model, prompt, evidence, inputs, repair policy and output limit still match.
+  return canonicalJson(completedAttemptIdentity({ ...savedRequest, jsonSchema: request.jsonSchema }))
+    === canonicalJson(completedAttemptIdentity(request));
 }
 
 function recoverableFactorPartitionSourceIds(
