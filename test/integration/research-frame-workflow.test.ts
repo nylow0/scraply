@@ -36,7 +36,8 @@ function inputs(request: StructuredStageRequest<unknown>): Record<string, unknow
 }
 
 async function setup(mode: "babysit" | "vibe" = "babysit", knownProblem = false,
-  beforeStage?: (stage: string) => void, boundedAtPreviewMinimum = false, contextSource?: Source) {
+  beforeStage?: (stage: string) => void, boundedAtPreviewMinimum = false, contextSource?: Source,
+  frameQueries = [{ query: "Bakery deposit context", reason: "Understand the scope" }]) {
   const directory = mkdtempSync(join(tmpdir(), "scraply-frame-workflow-"));
   const db = new DatabaseClient(join(directory, "test.db"));
   configurePromptPaths({ bundledDir: join(process.cwd(), "prompts"), overrideDir: join(directory, "prompts") });
@@ -52,7 +53,7 @@ async function setup(mode: "babysit" | "vibe" = "babysit", knownProblem = false,
     const stage = request.stage.split(":")[0];
     const input = inputs(request);
     let output: unknown;
-    if (stage === "frame-search-plan") output = { queries: [{ query: "Bakery deposit context", reason: "Understand the scope" }] };
+    if (stage === "frame-search-plan") output = { queries: frameQueries };
     else if (stage === "frame") {
       const generated = frame(Boolean(input.knownProblem));
       if (contextSource) {
@@ -184,8 +185,12 @@ test("Controlled persists the frame review, then scans included areas and saves 
   } finally { await fixture.close(); }
 });
 
-test("Trace reads framed discovery evidence while retaining frame preparation usage and steps", async () => {
-  const fixture = await setup();
+test("Trace reads framed discovery evidence while retaining frame preparation usage, steps and saved search reasons", async () => {
+  const frameQueries = [
+    { query: "Bakery owner deposit workflow", reason: "Understand the owner workflow beyond published policies." },
+    { query: "Bakery order software documentation", reason: "Find existing tools that the pilot must account for." },
+  ];
+  const fixture = await setup("babysit", false, undefined, false, undefined, frameQueries);
   try {
     const { coordinator, sessionId, db } = fixture;
     await until(() => coordinator.summary(sessionId).reviewKind === "frame");
@@ -201,6 +206,7 @@ test("Trace reads framed discovery evidence while retaining frame preparation us
     const discovery = repository.listWorkItems(sessionId).find(item => item.kind === "discovery")!;
     const discoveryRunId = (discovery.outputRefs as { runId: string }).runId;
     expect(discoveryRunId).not.toBe(preparationRunId);
+    const plan = db.db.prepare("SELECT id FROM stage_results WHERE research_run_id = ? AND stage_id = 'frame-search-plan'").get(preparationRunId) as { id: string };
     const factors = db.db.prepare("SELECT COUNT(*) AS count FROM factors WHERE research_run_id = ?").get(discoveryRunId) as { count: number };
     const sources = db.db.prepare("SELECT COUNT(*) AS count FROM sources WHERE research_run_id = ?").get(discoveryRunId) as { count: number };
     expect(factors.count).toBeGreaterThan(0);
@@ -209,6 +215,12 @@ test("Trace reads framed discovery evidence while retaining frame preparation us
       expect(trace.metrics).toMatchObject({ factors: factors.count, totalSources: sources.count,
         qualifyingObservations: factors.count, modelCalls: fixture.stages.length, searches: fixture.queries.length });
       expect(trace.steps.some(step => step.stage === "frame")).toBe(true);
+      for (const query of frameQueries) {
+        const search = trace.steps.find(step => step.kind === "search" && step.search?.query === query.query)!;
+        expect(search.search?.reason).toBe(query.reason);
+        expect(getRunTraceStep(db, runId, search.id).searches).toContainEqual(expect.objectContaining({ query: query.query, reason: query.reason }));
+        expect(getRunTraceStep(db, runId, plan.id).searches).toContainEqual(expect.objectContaining({ query: query.query, reason: query.reason }));
+      }
       const harvest = trace.steps.find(step => step.stage.startsWith("factor-harvest"))!;
       expect(getRunTraceStep(db, runId, harvest.id).facts.some(fact => fact.kept === true)).toBe(true);
     }
