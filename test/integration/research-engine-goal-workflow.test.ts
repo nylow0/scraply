@@ -101,9 +101,9 @@ async function fixture(output: (request: StructuredStageRequest<unknown>) => Pro
     ...(options.venueResolver ? { venueResolver: options.venueResolver } : {}),
     searchClients: options.noSearchProvider ? {} : { exa: searchClient("exa"), ...(options.autoSearch ? { perplexity: searchClient("perplexity") } : {}) },
     onEvent(event) { if (event.type === "run-failed") errors.push(event.error); } });
-  async function start(kind: "discovery" | "generate-ideas", followUp = false) {
+  async function start(kind: "discovery" | "generate-ideas", followUp = false, scopeKey: string = kind) {
     const item = db.immediateTransaction(() => {
-      const item = workflows.createWorkItem({ sessionId: "session", kind: followUp ? "research-request" : kind, scopeKey: kind, state: "ready",
+      const item = workflows.createWorkItem({ sessionId: "session", kind: followUp ? "research-request" : kind, scopeKey, state: "ready",
         input: followUp ? { action: { allowance: { maxModelCalls: 100, maxSearches: 100 } } } : {} });
       if (options.bounded) {
         workflows.reserveBudget({ sessionId: "session", workItemId: item.id, operationKey: "models", kind: "model-call",
@@ -609,5 +609,36 @@ test("same-run novelty recovery spends only its fresh allowance while old uncert
     expect(f.workflows.listBudgetEntries("session").filter(entry => entry.state !== "reserved")).toEqual(settledBefore);
     expect(f.db.db.prepare("SELECT * FROM opportunity_exploration_attempts WHERE id = ?").get(lost.id)).toEqual(lost);
     expect(f.db.db.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
+  } finally { await f.close(); }
+});
+
+test("a second idea round reloads a saved startup idea judged against a market goal", async () => {
+  // Live Bookkeepers stopped here: the saved idea had both goal fit and startup details.
+  const marketFrame: ResearchFrame = { ...frame(), goalKind: "market-opportunity" };
+  const startup = { opportunityType: "startup-opportunity", payingCustomerSegment: "Bakery owners", trigger: "Weekly filing", existingSubstitute: "Spreadsheets",
+    gapAssessment: { kind: "hypothesis", description: "Spreadsheets may miss repeats", evidenceIds: [] }, smallestSellableWorkflow: "One export comparison",
+    firstCustomerRoute: "Local bakery owners", disconfirmingDemandTest: "Owners refuse a paid pilot" };
+  const focusedDemandTest = { schemaVersion: 1, assumption: { id: "filing.adoption", category: "adoption", testableClaim: "Owners keep using the comparison",
+    decisionImpact: "Stop if use falls", selectionReason: "Use is the main unknown" }, methodSummary: "Observe five owners for a week",
+    disconfirmingObservation: "Owners stop comparing exports", paymentTerms: null };
+  let rounds = 0;
+  const f = await fixture(request => {
+    if (request.stage === "solutions") {
+      rounds += 1;
+      const base = option();
+      return { options: [{ ...base, mechanism: `${base.mechanism} ${rounds}`, startupOpportunity: startup, focusedDemandTest,
+        firstTest: { ...base.firstTest, kind: "demand-test" } }] };
+    }
+    const id = (input(request).candidateIds as string[])[0];
+    return { assessments: [{ candidateId: id, decision: "distinct", reason: "Reviewed", matchingSolutionId: null,
+      citedEvidenceIds: ["frame-source"], criteriaFit: fit("meets", "frame-source") }] };
+  }, { frameValue: marketFrame });
+  try {
+    await f.start("generate-ideas");
+    // A second idea task in the same session reviews against the first task's saved idea.
+    await f.start("generate-ideas", false, "generate-ideas:second-problem");
+    expect(f.errors).toEqual([]);
+    expect(rounds).toBe(2);
+    expect(f.stages).toEqual(["solutions", "solution-set-review", "solutions", "solution-set-review"]);
   } finally { await f.close(); }
 });
