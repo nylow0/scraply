@@ -9,7 +9,7 @@ import { parseArgs } from "node:util";
 import { z } from "zod";
 import { ApiResponseSchema, IPC_CHANNELS, WorkspaceStateSchema } from "../src/shared/ipc";
 import { discoveryRunProjection } from "../src/shared/discovery-projection";
-import { ModelRefSchema, ReasoningEffortSchema } from "../src/shared/schemas";
+import { ModelRefSchema, ReasoningEffortSchema, sameModelRef } from "../src/shared/schemas";
 import { ScopeSchema } from "../src/shared/structured-output-schemas";
 import {
   PreviewWorkflowResultSchema, WorkflowAdmissionReceiptSchema, WorkflowDetailSchema,
@@ -240,20 +240,54 @@ function browserInvoke(origin: string): EvaluationInvoke {
   return invoke;
 }
 
-export function evaluationBackend(invoke: EvaluationInvoke, databasePath: string, traceModule: string): EvaluationBackend {
+type ReadinessClock = { now(): number; wait(ms: number): Promise<void> };
+
+/** Read startup validation only. Pending checks may settle; settled failures never trigger retries. */
+async function waitForEvaluationReadiness(invoke: EvaluationInvoke, item: EvaluationCase, clock: ReadinessClock) {
+  const deadline = clock.now() + 45_000;
+  const timeout = () => new Error("Startup validation did not become ready within 45 seconds. No evaluation project was created.");
+  while (clock.now() < deadline) {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const workspace = await Promise.race([
+      invoke(IPC_CHANNELS.GET_WORKSPACE, WorkspaceStateSchema),
+      new Promise<never>((_, reject) => { timer = setTimeout(() => reject(timeout()), deadline - clock.now()); }),
+    ]).finally(() => clearTimeout(timer));
+    const native = workspace.validation.native;
+    const nativePending = native.error === "Checking native runtime";
+    if (!nativePending && (!native.available || !native.connected)) {
+      throw new Error("Existing OpenAI credentials must be connected and the native runtime available. Evaluation never changes accounts.");
+    }
+    const selectedSearch = item.brief.runSettings.searchProvider;
+    const searches = selectedSearch === "auto" ? [workspace.validation.exa, workspace.validation.perplexity] : [workspace.validation[selectedSearch]];
+    const searchReady = searches.some(search => search.valid && !search.checking);
+    if (!searchReady && !searches.some(search => search.checking)) {
+      throw new Error(`Existing ${selectedSearch === "auto" ? "search" : selectedSearch === "exa" ? "Exa" : "Perplexity"} credentials must be connected. Evaluation never changes keys.`);
+    }
+    if (!nativePending) {
+      const settings = item.brief.runSettings;
+      const model = workspace.modelOptions.find(option => sameModelRef(option, settings.model));
+      if (!model) throw new Error(`Evaluation model ${settings.model.providerId}:${settings.model.modelId} is unavailable.`);
+      if (!model.reasoningEfforts.some(effort => effort.id === settings.reasoningEffort)) {
+        throw new Error(`Evaluation model ${settings.model.modelId} does not support ${settings.reasoningEffort} reasoning.`);
+      }
+      if (searchReady) return workspace;
+    }
+    await clock.wait(Math.min(500, Math.max(0, deadline - clock.now())));
+  }
+  throw timeout();
+}
+
+export function evaluationBackend(invoke: EvaluationInvoke, databasePath: string, traceModule: string,
+  readinessClock: ReadinessClock = { now: Date.now, wait: delay }): EvaluationBackend {
   return {
     async create(item) {
-      const workspace = await invoke(IPC_CHANNELS.GET_WORKSPACE, WorkspaceStateSchema);
+      const workspace = await waitForEvaluationReadiness(invoke, item, readinessClock);
       if (!existsSync(databasePath)) throw new Error("The isolated profile database was not created. The running app must use the evaluation profile before research.");
       const profileDb = new Database(databasePath, { readonly: true });
       try {
         const storedIds = new Set(z.array(z.object({ id: z.string() })).parse(profileDb.query("SELECT id FROM threads").all()).map(thread => thread.id));
         if (workspace.threads.some(thread => !storedIds.has(thread.id))) throw new Error("The running backend does not use the evaluation profile. No evaluation project was created.");
       } finally { profileDb.close(); }
-      const search = item.brief.runSettings.searchProvider;
-      if (!workspace.validation.native.connected || !(search === "auto" ? workspace.validation.exa.valid || workspace.validation.perplexity.valid : workspace.validation[search].valid)) {
-        throw new Error("Existing OpenAI and search credentials must be connected. Evaluation never changes accounts or keys.");
-      }
       const created = await invoke(IPC_CHANNELS.CREATE_THREAD, z.object({ workspace: WorkspaceStateSchema }), { title: `Evaluation ${item.key}` });
       const threadId = created.workspace.activeThreadId;
       if (!threadId) throw new Error("The backend did not select the new evaluation project.");
