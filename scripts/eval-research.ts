@@ -253,7 +253,7 @@ async function waitForEvaluationReadiness(invoke: EvaluationInvoke, item: Evalua
       new Promise<never>((_, reject) => { timer = setTimeout(() => reject(timeout()), deadline - clock.now()); }),
     ]).finally(() => clearTimeout(timer));
     const native = workspace.validation.native;
-    const nativePending = native.error === "Checking native runtime";
+    const nativePending = native.error === "Checking native runtime" || native.error === "Native runtime is starting";
     if (!nativePending && (!native.available || !native.connected)) {
       throw new Error("Existing OpenAI credentials must be connected and the native runtime available. Evaluation never changes accounts.");
     }

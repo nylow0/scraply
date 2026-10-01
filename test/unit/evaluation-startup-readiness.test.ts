@@ -52,9 +52,10 @@ function fixture(workspaces: Workspace[]) {
 }
 
 describe("evaluation startup readiness", () => {
-  test("waits for native, catalog and fixture-selected Exa before creating a project", async () => {
+  test.each(["Checking native runtime", "Native runtime is starting"])("waits through %s for native, catalog and fixture-selected Exa before creating a project", async error => {
     const checkingSearch = { ...readyWorkspace, validation: { ...readyWorkspace.validation, exa: { valid: false, checking: true } } };
-    const run = fixture([pendingWorkspace, checkingSearch, readyWorkspace]);
+    const run = fixture([{ ...pendingWorkspace, validation: { ...pendingWorkspace.validation,
+      native: { ...pendingWorkspace.validation.native, error } } }, checkingSearch, readyWorkspace]);
     try {
       expect(await run.backend.create(item)).toBe("created-after-ready");
       expect(run.channels).toEqual([IPC_CHANNELS.GET_WORKSPACE, IPC_CHANNELS.GET_WORKSPACE, IPC_CHANNELS.GET_WORKSPACE, IPC_CHANNELS.CREATE_THREAD]);
