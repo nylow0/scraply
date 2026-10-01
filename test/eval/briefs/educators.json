@@ -1,0 +1,14 @@
+{
+  "id": "educators",
+  "goalKind": "market-opportunity",
+  "provenance": { "kind": "saved-scope", "source": "Browser development project: Live test - Independent educator tools" },
+  "scope": {
+    "title": "Live test - Independent educator tools",
+    "domain": "Explore recurring problems faced by independent educators running paid technical courses, cohort programs, and small tutoring businesses. Look for software startup opportunities in learner feedback, assessment, practice, course maintenance, scheduling, and business operations. Seek first-hand evidence, existing alternatives, and willingness-to-pay signals. Cover distinct problems rather than variations of a generic AI tutor.",
+    "audience": "Independent technical educators, cohort-course operators, and small tutoring businesses with 1-10 staff",
+    "observations": "Prefer simple focused products with a clear paying buyer. Separate observed evidence from inference. We intend to explore 30 ideas across three distinct discovered problems, 10 ideas per problem.",
+    "offLimits": ["Software-first; no proprietary hardware manufacturing", "No dependence on exclusive enterprise data or major partnerships to launch", "No unsupported market-size or revenue claims"],
+    "riskEvaluationCriteria": "A student developer building a bootstrapped software business. A useful first version should be feasible for one strong TypeScript developer in 6-8 weeks, with modest operating costs and reachable early customers. Evaluate demand, competition, access to necessary data, and realistic sales effort."
+  },
+  "runSettings": { "model": { "providerId": "openai-subscription", "modelId": "gpt-6-sol" }, "reasoningEffort": "xhigh", "searchProvider": "exa", "explorationPurpose": "startup-opportunities", "ideaCount": 1, "automaticProblemCap": 3 }
+}

@@ -1,0 +1,14 @@
+{
+  "id": "science-fair",
+  "goalKind": "competition-entry",
+  "provenance": { "kind": "plan", "source": "Written for the evaluation suite as a neutral Ukrainian competition-entry brief" },
+  "scope": {
+    "title": "Science fair software project research",
+    "domain": "Потрібні ідеї для програмного проєкту на міжнародний шкільний науковий конкурс у категорії програмування. Проєкт має бути достатньо сильним, щоб пройти у фінал, відповідати критеріям суддів і мати реальну користь для суспільства та практичне застосування. Це не має бути великий стартап, але щось корисне й актуальне.",
+    "audience": "",
+    "observations": "Знайди проєкти фіналістів і переможців у цій категорії за минулі роки, оціни їх з огляду на теперішні умови і знайди щось справді унікальне та потрібне суспільству.",
+    "offLimits": ["Не банальні ідеї: проєкт має бути настільки корисним, щоб сторонні відвідувачі конкурсу захотіли його підтримати."],
+    "riskEvaluationCriteria": "Головне — результат. Над проєктом працює невелика шкільна команда, часу приблизно місяць. AI-агенти допомагають із розробкою, тож за цей час можна зробити багато."
+  },
+  "runSettings": { "model": { "providerId": "openai-subscription", "modelId": "gpt-6-sol" }, "reasoningEffort": "xhigh", "searchProvider": "exa", "explorationPurpose": "general-solutions", "ideaCount": 1, "automaticProblemCap": 3 }
+}
