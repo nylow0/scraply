@@ -13,7 +13,7 @@ import { WorkflowRepository } from "../../src/db/repositories/workflows";
 import { ResearchRunRepository } from "../../src/db/repositories/research-runs";
 import { DiscoveryRepository } from "../../src/db/repositories/discovery";
 import { ProviderFailure, type StructuredModelClient, type StructuredStageRequest } from "../../src/providers/structured";
-import { DEFAULT_RUN_CONFIG } from "../../src/shared/schemas";
+import { DEFAULT_RUN_CONFIG, type Source } from "../../src/shared/schemas";
 import type { ResearchFrame } from "../../src/shared/research-frame";
 import type { WorkflowLaunchContract, WorkflowLaunchDraft } from "../../src/shared/workflow-contracts";
 import { framedDiscoveryProjection } from "../../src/shared/discovery-projection";
@@ -36,7 +36,7 @@ function inputs(request: StructuredStageRequest<unknown>): Record<string, unknow
 }
 
 async function setup(mode: "babysit" | "vibe" = "babysit", knownProblem = false,
-  beforeStage?: (stage: string) => void, boundedAtPreviewMinimum = false) {
+  beforeStage?: (stage: string) => void, boundedAtPreviewMinimum = false, contextSource?: Source) {
   const directory = mkdtempSync(join(tmpdir(), "scraply-frame-workflow-"));
   const db = new DatabaseClient(join(directory, "test.db"));
   configurePromptPaths({ bundledDir: join(process.cwd(), "prompts"), overrideDir: join(directory, "prompts") });
@@ -53,7 +53,16 @@ async function setup(mode: "babysit" | "vibe" = "babysit", knownProblem = false,
     const input = inputs(request);
     let output: unknown;
     if (stage === "frame-search-plan") output = { queries: [{ query: "Bakery deposit context", reason: "Understand the scope" }] };
-    else if (stage === "frame") output = { frame: frame(Boolean(input.knownProblem)) };
+    else if (stage === "frame") {
+      const generated = frame(Boolean(input.knownProblem));
+      if (contextSource) {
+        const sourceId = request.evidence[0]!.sourceId;
+        generated.contextFacts = [{ fact: "Bank rules apply in priority order.", sourceIds: [sourceId] }];
+        generated.successCriteria[0]!.basis = [sourceId];
+        generated.constraints = [{ text: "Work alongside the built-in bank rules", kind: "scope", basis: [sourceId] }];
+      }
+      output = { frame: generated };
+    }
     else if (stage === "area-ranking") output = { areas: frame().areas.filter(area => area.included).map((area, index) => ({
       areaId: area.id, rank: index + 1, reason: "Quoted owners describe disputes", evidenceStrength: "strong", fit: "meets" })) };
     else if (stage === "query-plan") {
@@ -77,7 +86,8 @@ async function setup(mode: "babysit" | "vibe" = "babysit", knownProblem = false,
   } };
   const engine = new ResearchEngine({ db, modelClients: { fixture: client },
     searchClients: { exa: { provider: "exa", async validateKey() { return { valid: true }; }, async search(query) {
-      queries.push(query); return [{ id: `provider-${queries.length}`, url: `https://owners.example/${encodeURIComponent(query)}`,
+      queries.push(query); if (contextSource) return [contextSource];
+      return [{ id: `provider-${queries.length}`, url: `https://owners.example/${encodeURIComponent(query)}`,
         title: "An owner account", text: "I lose time handling order changes." }];
     } } }, onEvent(event) { if (event.type === "run-failed") errors.push(event.error); coordinator.handleRunEvent(event); } });
   const capabilities = async () => ({ nativeConnected: true, searchReady: { exa: !knownProblem, perplexity: false },
@@ -107,6 +117,26 @@ async function until(predicate: () => boolean): Promise<void> {
   while (!predicate() && Date.now() < deadline) await Bun.sleep(5);
   expect(predicate()).toBe(true);
 }
+
+test("frame preparation cites the full supplied provider URL in facts and externally sourced bases", async () => {
+  const sourceId = "https://quickbooks.intuit.com/learn-support/en-global/help-article/banking/set-bank-rules-categorise-online-banking-online/L0mjJl0nD_ROW_en";
+  const source = { id: sourceId, url: sourceId, title: "QuickBooks bank rules", text: "Bank rules apply in priority order." };
+  const fixture = await setup("babysit", false, undefined, false, source);
+  try {
+    await until(() => ["waiting-for-review", "finished"].includes(fixture.coordinator.summary(fixture.sessionId).state));
+    expect(fixture.errors).toEqual([]);
+    expect(fixture.coordinator.summary(fixture.sessionId).reviewKind).toBe("frame");
+    const saved = fixture.coordinator.get(fixture.sessionId).researchFrame!;
+    expect(saved.draft.contextFacts[0]!.sourceIds).toEqual([sourceId]);
+    expect(saved.draft.successCriteria[0]!.basis).toEqual([sourceId]);
+    expect(saved.draft.constraints[0]!.basis).toEqual([sourceId]);
+    expect(saved.sources).toEqual([source]);
+    expect(fixture.db.db.prepare("SELECT id,provider_source_id,canonical_url FROM sources").get())
+      .toEqual({ id: sourceId, provider_source_id: sourceId, canonical_url: sourceId });
+    expect(fixture.stages.map(stage => stage.stage)).toEqual(["frame-search-plan", "frame"]);
+    expect(fixture.queries).toEqual(["Bakery deposit context"]);
+  } finally { await fixture.close(); }
+});
 
 test("bounded Controlled research admits frame approval at the shown launch minimum", async () => {
   const fixture = await setup("babysit", false, undefined, true);
