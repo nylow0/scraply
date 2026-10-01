@@ -16,7 +16,7 @@ import { LegacyWorkflowV2QueryPlanOutputSchema } from "../shared/structured-outp
 import type { WorkflowV2DevelopmentContext } from "./development";
 import { resolveWorkflowV2Prompt, type ResolvedWorkflowV2Prompt } from "./prompts";
 import { WORKFLOW_V2_STAGE_IDS, WORKFLOW_V2_STAGE_REGISTRY, type WorkflowV2StageId } from "./stages";
-import { prepareWorkflowSearch, recordWorkflowSearchTerminal, unknownSearchAttempts, UnknownSearchCompletionError } from "./workflow-search-attempts";
+import { prepareWorkflowSearch, recordWorkflowSearchDispatched, recordWorkflowSearchTerminal, unknownSearchAttempts, UnknownSearchCompletionError } from "./workflow-search-attempts";
 
 export { workflowSearchKey } from "../shared/content-identity";
 
@@ -102,7 +102,7 @@ export class WorkflowExecution {
     return () => createHash("sha256").update(`${this.runId}:${phase}:${sequence++}`).digest("hex").slice(0, characters);
   }
 
-  search(client: Pick<SearchClient, "search"> & Partial<Pick<SearchClient, "provider" | "providerForRoute">>): Pick<SearchClient, "search"> & Partial<Pick<SearchClient, "provider" | "providerForRoute">> {
+  search(client: Pick<SearchClient, "search"> & Partial<Pick<SearchClient, "provider" | "providerForRoute" | "searchWithDispatch">>): Pick<SearchClient, "search"> & Partial<Pick<SearchClient, "provider" | "providerForRoute">> {
     return { ...(client.provider ? { provider: client.provider } : {}),
       ...(client.providerForRoute ? { providerForRoute: client.providerForRoute } : {}), search: async (query, options) => {
       options?.signal?.throwIfAborted();
@@ -143,14 +143,23 @@ export class WorkflowExecution {
         const queryReceipt = `search-query:${key.slice("search:".length)}`;
         if (!this.read(queryReceipt)) this.save(queryReceipt, { key, query: normalizedQuery, parameters, ...(provider ? { provider } : {}) });
         const attempt = this.read("source-routes") ? prepareWorkflowSearch(this.db, this.runId,
-          { key, query: normalizedQuery, parameters, ...(provider ? { provider } : {}) }, this.acknowledgedAttemptIds) : null;
+          { key, query: normalizedQuery, parameters, dispatchProofVersion: 1, ...(provider ? { provider } : {}) }, this.acknowledgedAttemptIds) : null;
         const cancelled = () => {
           if (attempt) recordWorkflowSearchTerminal(this.db, this.runId, attempt.id, "cancelled", "Cancelled by user");
         };
         options?.signal?.addEventListener("abort", cancelled, { once: true });
         let results: Awaited<ReturnType<SearchClient["search"]>>;
         try {
-          results = await client.search(normalizedQuery, { ...options, ...(provider ? { provider } : {}) });
+          const dispatched = () => {
+            options?.signal?.throwIfAborted();
+            if (attempt) recordWorkflowSearchDispatched(this.db, this.runId, attempt.id);
+          };
+          const dispatchOptions = { ...options, ...(provider ? { provider } : {}) };
+          if (client.searchWithDispatch) results = await client.searchWithDispatch(normalizedQuery, dispatchOptions, dispatched, attempt?.id);
+          else {
+            dispatched();
+            results = await client.search(normalizedQuery, dispatchOptions);
+          }
           options?.signal?.throwIfAborted();
         } catch (error) {
           if (attempt) recordWorkflowSearchTerminal(this.db, this.runId, attempt.id,

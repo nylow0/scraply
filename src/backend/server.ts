@@ -8,7 +8,7 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { recoverInterruptedEvidenceFollowUps, ResearchEngine } from "../core/research-engine";
 import { WorkflowCoordinator } from "../core/workflow-coordinator";
-import { unknownSearchAttempts } from "../core/workflow-search-attempts";
+import { unknownSearchAttempts, workflowSearchDispatchUsage } from "../core/workflow-search-attempts";
 import { IdeaConversationService } from "../core/idea-conversation-service";
 import { ResearchRequestService } from "../core/research-request-service";
 import { scheduledModelClient } from "../core/scheduled-model-client";
@@ -1158,12 +1158,7 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
       }
     }
     // Acknowledgment authorizes another request; it cannot recover the old search's completion or cost.
-    const searches = db.db.prepare(`SELECT COUNT(*) AS attemptCount,
-      COALESCE(SUM(NOT EXISTS(SELECT 1 FROM workflow_snapshots terminal
-        WHERE terminal.research_run_id = attempt.research_run_id
-          AND terminal.snapshot_key = 'search-terminal:' || json_extract(attempt.value_json, '$.id'))), 0) AS unknownCount
-      FROM workflow_snapshots attempt WHERE attempt.research_run_id = ? AND attempt.snapshot_key LIKE 'search-attempt:%'`)
-      .get(runId) as { attemptCount: number; unknownCount: number };
+    const searches = workflowSearchDispatchUsage(db, runId);
     const workflows = new WorkflowRepository(db);
     return summarizeRunUsage(rows, { attemptCount: searches.attemptCount + workflows.countInvestigatorSearches(runId),
       unknownCount: searches.unknownCount + workflows.unknownInvestigatorSearches(runId).length });
