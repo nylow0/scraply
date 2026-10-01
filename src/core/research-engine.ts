@@ -2649,6 +2649,7 @@ export class ResearchEngine {
             request: { key, query, evidenceNeeded: "Existing tools and alternatives for the approved novelty criterion", route: "alternatives" },
             searchProvider: active.config.searchProvider, searchClient: this.instrumentedSearch(active),
             sourceRouting: { goalKind: context.frame!.goalKind, languages: context.frame!.languages,
+              legacyPublicationDomainCategory: workflow.read<{ version: number }>("source-routes")?.version !== 2,
               now: new Date(workflow.read<string>("source-route-start")!) },
             ...(active.acknowledgedAttemptIds ? { acknowledgedAttemptIds: active.acknowledgedAttemptIds } : {}), signal: active.abortController.signal })).sources,
           saveCompleted: (value, query, evidence) => { workflow.save(value, evidence); workflow.save(`${value}:completed`, { query, sourceIds: evidence.map(source => source.id) }); },
@@ -2870,6 +2871,8 @@ export class ResearchEngine {
       sourceRouting: {
         now: new Date(workflow.read<string>("source-route-start")!),
         preserveHistoricalSources: !workflow.read("source-routes"),
+        // A run's routing contract also fixes the canonical identity of each paid search.
+        legacyPublicationDomainCategory: workflow.read<{ version: number }>("source-routes")?.version !== 2,
         ...(workflow.read("source-routes") && frame ? { goalKind: frame.goalKind, languages: frame.languages } : {}),
       },
       // Old planner stage inputs must remain identical so its completed output can be reused.

@@ -59,7 +59,7 @@ export class WorkflowExecution {
       this.save("small-harvest-batches", { version: 1 });
       this.save("problem-audience-assessment", { version: 1 });
       this.save("candidate-accounting", { version: 1 });
-      this.save("source-routes", { version: 1 });
+      this.save("source-routes", { version: 2 });
       this.save("query-plan-languages", { version: 1 });
     }
     // Runs without the marker keep their original source groups and checkpoint identities.
