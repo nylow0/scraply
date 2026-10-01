@@ -36,6 +36,12 @@ describe("ExaClient", () => {
       const client = new ExaClient("secret", async () => new Response(text, { status: 400 }));
       await expect(client.search("topic")).rejects.toMatchObject({ retryable: false, message: "Exa search failed (400)" });
     }
+    const locked = Response.json({ error: "Already consumed" }, { status: 400 });
+    const reader = locked.body!.getReader();
+    try {
+      await expect(new ExaClient("secret", async () => locked).search("topic"))
+        .rejects.toMatchObject({ retryable: false, message: "Exa search failed (400)" });
+    } finally { reader.releaseLock(); }
   });
 
   test("bounds parsed Exa diagnostic fields and cancels a stalled rejected body", async () => {
