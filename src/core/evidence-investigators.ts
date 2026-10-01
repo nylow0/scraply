@@ -5,7 +5,6 @@ import { OpportunityExplorationRepository } from "../db/repositories/opportunity
 import { WorkflowRepository, type WorkflowWorkItem } from "../db/repositories/workflows";
 import { SearchProviderSchema, type SearchClient, type SearchOptions, type SearchProviderChoice } from "../providers/search";
 import { filterRoutedSources, routeSearchOptions, type SourceRoutingContext } from "../providers/source-routes";
-import { ProviderFailure } from "../providers/structured";
 import { canonicalJson } from "../shared/content-identity";
 import {
   AreaGapOutputSchema, EvidenceCheckOutputSchema, EVIDENCE_INVESTIGATION_ROUNDS,
@@ -22,7 +21,7 @@ import {
   harvestEvidenceFollowUp, qualifiesAsProblemObservation, resolveSources, type DiscoveryDependencies,
   type DiscoveryProblem, type HarvestedFactor, type HarvestedSource,
 } from "./discovery";
-import { applyProblemFactorAssessments } from "./problem-evidence";
+import { applyProblemFactorAssessments, repairVerdictSourceIds, scopeFactorAssessments } from "./problem-evidence";
 import { loadPrompt } from "./prompts";
 
 const SavedSourceSchema = z.object({
@@ -428,18 +427,13 @@ async function reassessInvestigatorProblem(input: InvestigatorDependencies, prob
     { scope: input.scope, frame: input.frame, area: input.area, candidate: problem,
       supportingFactors: problem.factors, sources: sources.map(source => ({ id: source.id, url: source.canonicalUrl,
         title: source.title, text: source.retrievedText })) }, ProblemKillOutputSchema);
-  const suppliedIds = new Set(sources.map(source => source.id));
-  if (kill.verdictSourceIds.some(id => !suppliedIds.has(id))) throw new ProviderFailure("schema", "Evidence assessment referenced an unknown source ID", false);
-  const assessments = "factorAssessments" in kill ? kill.factorAssessments : [];
-  if (assessAudience && (assessments.length !== problem.factorIds.length
-    || new Set(assessments.map(assessment => assessment.factorId)).size !== problem.factorIds.length
-    || assessments.some(assessment => !problem.factorIds.includes(assessment.factorId)))) {
-    throw new ProviderFailure("schema", "Problem audience assessment must cover each exact supporting factor once", false);
-  }
-  const claimedIds = "intendedBuyerEvidenceFactorIds" in kill ? kill.intendedBuyerEvidenceFactorIds : [];
-  if (claimedIds.some(id => !problem.factorIds.includes(id))) throw new ProviderFailure("schema", "Evidence assessment referenced an unknown factor ID", false);
+  const suppliedIds = new Set([...sources.map(source => source.id), ...problem.factors.map(factor => factor.sourceId)]);
+  const verdictSourceIds = repairVerdictSourceIds(kill.verdictSourceIds, suppliedIds, new Map(problem.factors.map(factor => [factor.id, factor.sourceId])));
+  const assessments = "factorAssessments" in kill ? scopeFactorAssessments(kill.factorAssessments, problem.factorIds) : [];
+  // Claims about factors that were not supplied are dropped; the confirmation rule then checks what remains.
+  const claimedIds = ("intendedBuyerEvidenceFactorIds" in kill ? kill.intendedBuyerEvidenceFactorIds : []).filter(id => problem.factorIds.includes(id));
   return enforceConfirmationRule({ ...problem, factors: applyProblemFactorAssessments(problem.factors, assessments),
-    verdict: kill.verdict, verdictReason: kill.verdictReason.trim(), verdictSourceIds: [...new Set(kill.verdictSourceIds)],
+    verdict: kill.verdict, verdictReason: kill.verdictReason.trim(), verdictSourceIds,
     intendedBuyerEvidenceFactorIds: claimedIds, evidenceGap: "evidenceGap" in kill ? kill.evidenceGap : problem.evidenceGap ?? null,
     briefFit: "briefFit" in kill ? kill.briefFit : problem.briefFit ?? "unknown",
     contraryEvidence: "contraryEvidence" in kill ? kill.contraryEvidence : problem.contraryEvidence ?? "unknown",

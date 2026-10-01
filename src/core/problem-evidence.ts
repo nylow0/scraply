@@ -17,7 +17,28 @@ export function reliesOnCloseRoles(factors: ReadonlyArray<{ audienceFit?: string
   return exact.size < 2 && qualifying.some(factor => factor.audienceFit === "adjacent");
 }
 
+/**
+ * Verdict citations must name supplied sources. Models sometimes cite a fact ID instead: map it to
+ * that fact's source and drop IDs that match nothing. Confirmation rests on factors, so this never
+ * weakens it; it only stops one mislabelled citation from ending a run.
+ */
+export function repairVerdictSourceIds(ids: readonly string[], sourceIds: ReadonlySet<string>,
+  factorSources: ReadonlyMap<string, string>): string[] {
+  return [...new Set(ids.flatMap(id => sourceIds.has(id) ? [id]
+    : factorSources.has(id) && sourceIds.has(factorSources.get(id)!) ? [factorSources.get(id)!] : []))];
+}
+
 /** Reviews are scoped to one problem; extraction labels and quotes remain immutable. */
+/**
+ * Keeps the first assessment for each supplied factor and drops unknown or repeated ones. A factor the
+ * model skipped keeps its extraction labels, which never counts for more than before.
+ */
+export function scopeFactorAssessments<T extends { factorId: string }>(assessments: readonly T[], factorIds: readonly string[]): T[] {
+  const known = new Set(factorIds);
+  const seen = new Set<string>();
+  return assessments.filter(assessment => known.has(assessment.factorId) && !seen.has(assessment.factorId) && seen.add(assessment.factorId));
+}
+
 export function applyProblemFactorAssessments<T extends { id: string }>(factors: T[], assessments: readonly ProblemFactorAssessment[]): T[] {
   const byId = new Map(assessments.map(assessment => [assessment.factorId, assessment]));
   return factors.map(factor => {

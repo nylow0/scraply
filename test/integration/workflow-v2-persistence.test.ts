@@ -978,7 +978,7 @@ describe("workflow v2 persistence", () => {
     } finally { client.close(); }
   });
 
-  test.each([false, true])("assesses supplied supporting and contrary sources while rejecting invented citations (%s)", async (invented) => {
+  test.each([false, true])("assesses supplied supporting and contrary sources while dropping invented citations (%s)", async (invented) => {
     await withDiscoveryFixture(async ({ execution, source }) => {
       const modelClient = discoveryModelClient((request) => {
         const evidence = request.evidence[0]!.content as { sources?: Array<{ id: string }> };
@@ -1001,14 +1001,11 @@ describe("workflow v2 persistence", () => {
         prompt: (stage) => execution.resolvePrompt(stage as keyof typeof WORKFLOW_V2_STAGE_REGISTRY).text,
         search: { async search() { return [{ id: "contrary", url: "https://contrary.test/page", title: "Alternative", text: "Use a checklist." }]; } },
       });
-      if (invented) await expect(result).rejects.toThrow("unknown source ID");
-      else {
-        const discovery = await result;
-        expect(discovery.problems[0]!.verdictSourceIds).toEqual(["support", discovery.killSources[0]!.id]);
-        expect(discovery.problems[0]).toEqual(expect.objectContaining({
-          briefFit: "direct", contraryEvidence: "resolved", workflowKey: "operator: repeat filing after status change",
-        }));
-      }
+      const discovery = await result;
+      expect(discovery.problems[0]!.verdictSourceIds).toEqual(["support", discovery.killSources[0]!.id]);
+      expect(discovery.problems[0]).toEqual(expect.objectContaining({
+        briefFit: "direct", contraryEvidence: "resolved", workflowKey: "operator: repeat filing after status change",
+      }));
     });
   });
 
