@@ -50,6 +50,11 @@ const option = {
     sample: 10, observationWindow: "Two weeks", passCriterion: "Fewer disputes", failCriterion: "More disputes", inconclusiveCriterion: "Too few orders" },
 } satisfies WorkflowV2SolutionOption;
 const corrected = { ...option, criteriaFit: option.criteriaFit.map(fit => fit.evidenceIds.length ? fit : { ...fit, status: "unknown" as const }) };
+// What the app saves for `option`, the real Bakery output that used to fail the whole batch.
+const repaired = { ...option, criteriaFit: option.criteriaFit.map(fit => fit.evidenceIds.length ? fit
+  : { ...fit, status: "unknown" as const, note: `${fit.note} Marked unknown because no saved evidence was cited.` }) };
+// Still invalid after app repair, so it exercises schema repair and diagnostics.
+const broken = { ...corrected, mechanism: "" };
 const cleanups: Array<() => Promise<void>> = [];
 afterEach(async () => { for (const close of cleanups.splice(0)) await close(); });
 
@@ -111,7 +116,7 @@ async function recordedNative(outputs: unknown[], mode?: string, interruptAt?: n
 }
 
 test("confirmed invalid output is durable before native repair and readable in persisted Trace after success", async () => {
-  const fixture = await recordedNative([{ options: [option] }, { options: [corrected] }]);
+  const fixture = await recordedNative([{ options: [broken] }, { options: [corrected] }]);
   await fixture.generate();
   expect(fixture.dispatchSnapshots).toEqual([0, 1]);
   expect(fixture.diagnostics()).toHaveLength(1);
@@ -119,14 +124,12 @@ test("confirmed invalid output is durable before native repair and readable in p
   const detail = fixture.detail();
   expect(detail.output).toEqual({ options: [corrected] });
   const invalid = detail.events.find(event => event.type === "schema-validation-failed");
-  expect(invalid?.payload).toMatchObject({ output: { options: [option] }, issues: [
-    { code: "custom", path: ["options", 0], message: "A criterion verdict needs saved evidence; use unknown when it is not established" },
-  ] });
+  expect(invalid?.payload).toMatchObject({ output: { options: [broken] }, issues: [{ path: ["options", 0, "mechanism"] }] });
   expect(getRunTrace(fixture.db, "run").metrics.modelCalls).toBe(2);
 });
 
 test("both confirmed invalid responses survive terminal failure with exact native UUIDs and actual validation issues", async () => {
-  const fixture = await recordedNative([{ options: [option] }, { options: [option] }]);
+  const fixture = await recordedNative([{ options: [broken] }, { options: [broken] }]);
   expect(await fixture.generate().catch((error: unknown) => error)).toMatchObject({ code: "schema" });
   expect(fixture.diagnostics()).toHaveLength(2);
   const failures = fixture.detail().events.filter(event => event.type === "schema-validation-failed");
@@ -137,7 +140,7 @@ test("both confirmed invalid responses survive terminal failure with exact nativ
 });
 
 test.each(["storage", "callback"])("a diagnostic %s failure preserves the confirmed invalid result and stops repair", async mode => {
-  const fixture = await recordedNative([{ options: [option] }, { options: [corrected] }]);
+  const fixture = await recordedNative([{ options: [broken] }, { options: [corrected] }]);
   if (mode === "storage") fixture.db.db.exec(`CREATE TRIGGER reject_schema_diagnostic BEFORE INSERT ON workflow_snapshots
     WHEN NEW.snapshot_key LIKE 'generation-schema-invalid:%'
     BEGIN SELECT RAISE(ABORT, 'Diagnostic storage unavailable'); END`);
@@ -148,16 +151,14 @@ test.each(["storage", "callback"])("a diagnostic %s failure preserves the confir
   const detail = fixture.detail();
   expect(detail.step.status).toBe("failed");
   expect(detail.events.find(event => event.type === "schema-validation-failed" && (event.payload as { retentionFailed?: boolean }).retentionFailed)?.payload)
-    .toMatchObject({ output: { options: [option] }, retentionFailed: true, issues: [
-      { message: "A criterion verdict needs saved evidence; use unknown when it is not established" },
-    ] });
+    .toMatchObject({ output: { options: [broken] }, retentionFailed: true, issues: [{ path: ["options", 0, "mechanism"] }] });
   expect(getRunTrace(fixture.db, "run").metrics.modelCalls).toBe(1);
   expect(fixture.db.db.prepare("SELECT status, usage_json FROM generation_attempts").get())
     .toEqual({ status: "failed", usage_json: JSON.stringify([{ status: "known", value: { inputTokens: 10, outputTokens: 5, totalTokens: 15 } }]) });
 });
 
 test("an unknown repair completion retains the first invalid response without replay", async () => {
-  const fixture = await recordedNative([{ options: [option] }], undefined, 1);
+  const fixture = await recordedNative([{ options: [broken] }], undefined, 1);
   expect(await fixture.generate().catch((error: unknown) => error)).toMatchObject({ code: "interrupted", attempts: [
     { providerCompletion: "confirmed", usage: { status: "known" } },
     { providerCompletion: "unknown", usage: { status: "unknown" } },
@@ -183,28 +184,34 @@ test("valid cached output keeps its saved identity and app diagnostics stay outs
   expect(fixture.detail().output).toEqual({ options: [corrected] });
 });
 
-test("unsupported partial criterion verdicts reach the one permitted native schema repair", async () => {
-  const fixture = native([{ options: [option] }, { options: [corrected] }]);
+test("the real Bakery output with uncited partial verdicts is kept as unknown in one call", async () => {
+  const fixture = native([{ options: [option] }]);
+  await fixture.runtime.restoreCredential(model.providerId, "synthetic-credential");
+  const result = await produceDevelopmentOptions(context, {
+    modelClient: scheduledModelClient(fixture.runtime, new WorkflowModelScheduler(), "bakery"), model, reasoningEffort: "medium", ideaCount: 1 });
+  expect(result.options[0]!.criteriaFit).toEqual(repaired.criteriaFit);
+  expect(result.metadata.repairCount).toBe(0);
+  expect(fixture.requests()).toHaveLength(1);
+  expect(meetsAllMustHaves(result.options[0]!.criteriaFit)).toBe(true);
+});
+
+test("schema repair still runs once for output the app cannot repair", async () => {
+  const fixture = native([{ options: [broken] }, { options: [corrected] }]);
   await fixture.runtime.restoreCredential(model.providerId, "synthetic-credential");
   const result = await produceDevelopmentOptions(context, {
     modelClient: scheduledModelClient(fixture.runtime, new WorkflowModelScheduler(), "bakery"), model, reasoningEffort: "medium", ideaCount: 1 });
   expect(result.options[0]!.criteriaFit).toEqual(corrected.criteriaFit);
   expect(result.metadata.repairCount).toBe(1);
   expect(result.metadata.attempts.map(attempt => attempt.attempt)).toEqual(["initial", "schema_repair"]);
-  expect(result.metadata.attempts.every(attempt => attempt.providerCompletion === "confirmed")).toBe(true);
   expect(result.metadata.usage).toEqual({ status: "known", value: { inputTokens: 20, outputTokens: 10, totalTokens: 30 } });
-  expect(result.metadata.attempts.every(attempt => attempt.cost.status === "not_reported")).toBe(true);
   const requests = fixture.requests();
   expect(requests).toHaveLength(2);
-  expect(requests[0]!.generationId).not.toBe(requests[1]!.generationId);
-  expect(requests.map(request => request.repairPolicy)).toEqual(["disabled", "disabled"]);
   expect(requests[1]!.workOrder.constraints?.some(constraint => constraint.includes("prior response"))).toBe(true);
   expect(requests[0]!.outputSchema).toEqual(requests[1]!.outputSchema);
-  expect(meetsAllMustHaves(result.options[0]!.criteriaFit)).toBe(true);
 });
 
-test("a second unsupported criterion verdict exhausts repair without a third native dispatch", async () => {
-  const fixture = native([{ options: [option] }, { options: [option] }]);
+test("a second unrepairable response exhausts repair without a third native dispatch", async () => {
+  const fixture = native([{ options: [broken] }, { options: [broken] }]);
   await fixture.runtime.restoreCredential(model.providerId, "synthetic-credential");
   const failure = await produceDevelopmentOptions(context, {
     modelClient: scheduledModelClient(fixture.runtime, new WorkflowModelScheduler(), "bakery"), model, reasoningEffort: "medium", ideaCount: 1,
@@ -217,22 +224,25 @@ test("a second unsupported criterion verdict exhausts repair without a third nat
   expect(fixture.requests()).toHaveLength(2);
 });
 
+const unassessed = { criterionId: "small-team-fit", criterionName: "Fits a small shop team", mustHave: false,
+  status: "unknown" as const, evidenceIds: [], note: "The model did not assess this criterion." };
 test.each([
   { reason: "known scale without evidence", output: { ...corrected, biggerProblem: { ...corrected.biggerProblem, scaleKnown: true } } },
   { reason: "unknown scale citation", output: { ...corrected, biggerProblem: { ...corrected.biggerProblem, scaleEvidenceIds: ["invented"] } } },
-  { reason: "wrong first-test goal", output: { ...corrected, firstTest: { ...corrected.firstTest, kind: "demand-test" } } },
-  { reason: "changed criterion identity", output: { ...corrected, criteriaFit: corrected.criteriaFit.map((fit, index) => index ? fit : { ...fit, criterionName: "Invented criterion" }) } },
-  { reason: "repeated criterion", output: { ...corrected, criteriaFit: [corrected.criteriaFit[0]!, corrected.criteriaFit[0]!, corrected.criteriaFit[2]!] } },
-])("contextual goal-fit validation uses the same bounded native repair ($reason)", async scenario => {
-  const fixture = native([{ options: [scenario.output] }, { options: [corrected] }]);
+  { reason: "first test named for another goal", output: { ...corrected, firstTest: { ...corrected.firstTest, kind: "pilot" } } },
+  { reason: "renamed criterion", output: { ...corrected, criteriaFit: corrected.criteriaFit.map((fit, index) => index ? fit : { ...fit, criterionName: "Invented criterion" }) } },
+  { reason: "repeated criterion", output: { ...corrected, criteriaFit: [corrected.criteriaFit[0]!, corrected.criteriaFit[0]!, corrected.criteriaFit[2]!] },
+    criteriaFit: [corrected.criteriaFit[0]!, unassessed, corrected.criteriaFit[2]!] as typeof corrected.criteriaFit },
+])("the app fills its own goal fields without a model retry ($reason)", async scenario => {
+  const fixture = native([{ options: [scenario.output] }]);
   await fixture.runtime.restoreCredential(model.providerId, "synthetic-credential");
   const result = await produceDevelopmentOptions(context, {
     modelClient: scheduledModelClient(fixture.runtime, new WorkflowModelScheduler(), "bakery"), model, reasoningEffort: "medium", ideaCount: 1 });
   expect(result.options[0]!.biggerProblem).toEqual(corrected.biggerProblem);
   expect(result.options[0]!.firstTest).toEqual(corrected.firstTest);
-  expect(result.options[0]!.criteriaFit).toEqual(corrected.criteriaFit);
-  expect(result.metadata.repairCount).toBe(1);
-  expect(fixture.requests()).toHaveLength(2);
+  expect(result.options[0]!.criteriaFit).toEqual(scenario.criteriaFit ?? corrected.criteriaFit);
+  expect(result.metadata.repairCount).toBe(0);
+  expect(fixture.requests()).toHaveLength(1);
 });
 
 test("explicit unknown criterion fit remains unknown with one completed native attempt", async () => {
@@ -248,21 +258,20 @@ test("explicit unknown criterion fit remains unknown with one completed native a
   expect(meetsAllMustHaves(result.options[0]!.criteriaFit)).toBe(false);
 });
 
-test("an unsupported must-have verdict is repaired by the model without passing the must-have filter", async () => {
+test("an uncited must-have verdict becomes unknown and leaves the must-have shortlist", async () => {
   const initial = { ...corrected, criteriaFit: corrected.criteriaFit.map((fit, index) => index ? fit : { ...fit, evidenceIds: [] }) };
-  const repaired = { ...initial, criteriaFit: initial.criteriaFit.map((fit, index) => index ? fit : { ...fit, status: "unknown" as const }) };
-  const fixture = native([{ options: [initial] }, { options: [repaired] }]);
+  const fixture = native([{ options: [initial] }]);
   await fixture.runtime.restoreCredential(model.providerId, "synthetic-credential");
   const result = await produceDevelopmentOptions(context, {
     modelClient: scheduledModelClient(fixture.runtime, new WorkflowModelScheduler(), "bakery"), model, reasoningEffort: "medium", ideaCount: 1 });
-  expect(result.options[0]!.criteriaFit).toEqual(repaired.criteriaFit);
+  expect(result.options[0]!.criteriaFit![0]).toMatchObject({ criterionId: "owner-evidence", mustHave: true, status: "unknown", evidenceIds: [] });
   expect(meetsAllMustHaves(result.options[0]!.criteriaFit)).toBe(false);
-  expect(result.metadata.repairCount).toBe(1);
-  expect(fixture.requests()).toHaveLength(2);
+  expect(result.metadata.repairCount).toBe(0);
+  expect(fixture.requests()).toHaveLength(1);
 });
 
-test("an explicitly disabled repair allowance rejects invalid fit after one confirmed native attempt", async () => {
-  const fixture = native([{ options: [option] }]);
+test("an explicitly disabled repair allowance rejects invalid output after one confirmed native attempt", async () => {
+  const fixture = native([{ options: [broken] }]);
   await fixture.runtime.restoreCredential(model.providerId, "synthetic-credential");
   const scheduled = scheduledModelClient(fixture.runtime, new WorkflowModelScheduler(), "bakery");
   const failure = await produceDevelopmentOptions(context, { model, reasoningEffort: "medium", ideaCount: 1,
@@ -282,7 +291,7 @@ test("a lost native completion is not replayed as criterion schema repair", asyn
   expect(fixture.requests()).toHaveLength(1);
 });
 
-test.each([false, true])("completed historical criterion output keeps its wire identity and never dispatches on cache read (invalid: %s)", async invalid => {
+test.each([false, true])("completed historical criterion output keeps its wire identity and never dispatches on cache read (needs repair: %s)", async invalid => {
   const fixture = native([{ options: [corrected] }]);
   await fixture.runtime.restoreCredential(model.providerId, "synthetic-credential");
   const generated = await produceDevelopmentOptions(context, { modelClient: fixture.runtime, model, reasoningEffort: "medium", ideaCount: 1 });
@@ -313,12 +322,10 @@ test.each([false, true])("completed historical criterion output keeps its wire i
       cachedGenerationId = cached.generationId;
       return { output: cached.output, metadata: generated.metadata };
     } } });
-  if (invalid) await expect(resumed).rejects.toThrow("A criterion verdict needs saved evidence");
-  else {
-    const recovered = await resumed;
-    expect(recovered.options[0]!.criteriaFit).toEqual(corrected.criteriaFit);
-    expect(cachedGenerationId).toBe(originalRequest.generationId);
-  }
+  // A saved completion that failed only on app-owned fields is repaired on read; the saved row stays untouched.
+  const recovered = await resumed;
+  expect(recovered.options[0]!.criteriaFit).toEqual(invalid ? repaired.criteriaFit : corrected.criteriaFit);
+  expect(cachedGenerationId).toBe(originalRequest.generationId);
   expect(fixture.requests()).toHaveLength(1);
   expect(db.db.prepare("SELECT * FROM generation_attempts WHERE id = ?").get(attempt.id)).toEqual(originalRow);
   expect(db.db.prepare("SELECT count(*) AS count FROM generation_attempts").get()).toEqual({ count: 1 });

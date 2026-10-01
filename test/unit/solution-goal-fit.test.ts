@@ -81,6 +81,24 @@ test("independent review controls must-have acceptance while both assessments re
   expect(() => prepareSolutionSetReview({ candidates, existingSolutions: [], frame, problem: {}, projectConstraints: {}, evidence: [], savedInstructions: "", model: { providerId: "test", modelId: "test" }, reasoningEffort: "low" })).not.toThrow();
 });
 
+test("the review schema repairs copy slips and uncited verdicts instead of leaving the idea unresolved", () => {
+  const candidates = [{ id: "idea", option }];
+  const prepared = prepareSolutionSetReview({ candidates, existingSolutions: [], frame, problem: {}, projectConstraints: {},
+    evidence: [{ sourceId: "source", content: "A dorm reported weekly waste." }], savedInstructions: "",
+    model: { providerId: "test", modelId: "test" }, reasoningEffort: "low" });
+  const output = prepared.request.schema.parse({ assessments: [{ candidateId: "idea", decision: "distinct", matchingSolutionId: null,
+    reason: "Distinct", citedEvidenceIds: [], criteriaFit: [
+      { criterionId: "scope", criterionName: "Buildable in a month", mustHave: false, status: "partial", evidenceIds: [], note: "Likely" },
+      { criterionId: "novelty", criterionName: "Novelty", mustHave: false, status: "meets", evidenceIds: ["source", "invented"], note: "New" },
+    ] }] });
+  expect(output.assessments[0]!.criteriaFit).toEqual([
+    { criterionId: "scope", criterionName: "Build in one month", mustHave: true, status: "unknown", evidenceIds: [],
+      note: "Likely Marked unknown because no saved evidence was cited." },
+    { criterionId: "novelty", criterionName: "Novelty", mustHave: false, status: "meets", evidenceIds: ["source"], note: "New" },
+  ]);
+  expect(classifySolutionSetReview(candidates, [], ["source"], output, { frame }).decisions[0]?.status).toBe("accepted");
+});
+
 test("risk and decision use frame constraints, and the decision preserves the selected first test", async () => {
   const context: WorkflowV2DevelopmentContext = {
     frame, scope: { title: "Ecology", audience: "Residents", domain: "Food waste", observations: "Waste repeats", offLimits: [] },
