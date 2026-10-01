@@ -11,6 +11,9 @@ import { harvestFactors } from "../../src/core/discovery";
 import { DatabaseClient } from "../../src/db/client";
 import { ResearchEngine } from "../../src/core/research-engine";
 import type { RunConfig } from "../../src/shared/schemas";
+import { AreaGapOutputSchema, EvidenceCheckOutputSchema } from "../../src/shared/evidence-investigators";
+import { deriveJsonSchema } from "../../src/shared/json-schema";
+import { GenerationStartPayloadSchema } from "../../src/shared/runtime-protocol";
 
 const fixtureScript = join(import.meta.dir, "..", "fixtures", "runtime-child.cjs");
 const scratchDirectories: string[] = [];
@@ -56,6 +59,47 @@ afterEach(async () => {
 });
 
 describe("persistent native runtime client", () => {
+  test("investigator stages dispatch native strict object roots without a provider envelope", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "scraply-investigator-transport-"));
+    scratchDirectories.push(directory);
+    const capturePath = join(directory, "requests.jsonl");
+    const runtime = client("workflow-normal", { environment: { SCRAPLY_RUNTIME_CAPTURE: capturePath } });
+    await runtime.restoreCredential("openai-subscription", "fixture-only-credential");
+
+    const check = await runtime.structuredCompletion({
+      generationId: "evidence-check-transport", stage: "evidence-check:area:problem:round-0",
+      model: { providerId: "openai-subscription", modelId: "gpt-fixture" }, reasoningEffort: "medium",
+      workOrder: { stage: "evidence-check:area:problem:round-0", instruction: "Check the saved evidence.",
+        goal: "Return a bounded evidence decision.", inputs: {}, definitionOfDone: ["Return the evidence-check object."] },
+      evidence: [{ sourceId: "saved-problem", content: { problem: { verdict: "insufficient-evidence" } } }],
+      schema: EvidenceCheckOutputSchema, jsonSchema: deriveJsonSchema(EvidenceCheckOutputSchema), repairPolicy: "disabled",
+    });
+    expect(check.output).toMatchObject({ decision: "follow-up", gaps: [expect.objectContaining({ kind: "second-independent-observation" })] });
+    const area = await runtime.structuredCompletion({
+      generationId: "area-gap-transport", stage: "area-gap:area",
+      model: { providerId: "openai-subscription", modelId: "gpt-fixture" }, reasoningEffort: "medium",
+      workOrder: { stage: "area-gap:area", instruction: "Check the saved area.",
+        goal: "Return bounded area gaps.", inputs: {}, definitionOfDone: ["Return the area-gap object."] },
+      evidence: [], schema: AreaGapOutputSchema, jsonSchema: deriveJsonSchema(AreaGapOutputSchema), repairPolicy: "disabled",
+    });
+    expect(area.output.gaps).toEqual([]);
+
+    const captured = readFileSync(capturePath, "utf8").trim().split("\n").map(line =>
+      z.object({ operation: z.literal("generation.start"), payload: GenerationStartPayloadSchema }).parse(JSON.parse(line)).payload);
+    expect(captured).toHaveLength(2);
+    for (const payload of captured) {
+      // Native adapters send this schema unchanged with strict:true. Root anyOf causes provider HTTP 400.
+      expect(payload.outputSchema.type, payload.workOrder.stage).toBe("object");
+      expect(payload.outputSchema).not.toHaveProperty("anyOf");
+      expect(payload.outputSchema.additionalProperties).toBe(false);
+      expect(payload.outputSchema.required).toEqual(Object.keys(payload.outputSchema.properties as object));
+      expect(payload.repairPolicy).toBe("disabled");
+    }
+    expect(captured[0]?.outputSchema).toMatchObject({
+      properties: { decision: { enum: ["confirmed", "drop", "follow-up"] }, gaps: { maxItems: 2 } },
+    });
+  });
+
   test("admits only the configured number of native requests and lowers capacity without cancelling", async () => {
     const runtime = client("slow-complete", { maxConcurrentGenerations: 2 });
     const dispatched: string[] = [];
