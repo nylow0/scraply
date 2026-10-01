@@ -1,5 +1,9 @@
 import { randomUUID } from "node:crypto";
+import { z } from "zod";
 import type { DatabaseClient } from "../client";
+import { WorkflowSearchAttemptSchema } from "../../core/workflow-search-attempts";
+
+const SearchDispatchLinkSchema = z.object({ version: z.literal(1), attemptId: z.string().uuid() }).strict();
 
 export class BudgetExceededError extends Error {
   readonly code = "BUDGET_EXCEEDED";
@@ -40,6 +44,7 @@ export class CostLedgerRepository {
     model: string | null,
     upperBoundUsd: number,
     generationAttemptId?: string,
+    usage?: Record<string, unknown>,
   ): CostReservation {
     if (!Number.isFinite(upperBoundUsd) || upperBoundUsd < 0) throw new Error("Invalid cost reservation");
     const db = this.client.db;
@@ -66,9 +71,9 @@ export class CostLedgerRepository {
       db.prepare(`
         INSERT INTO cost_ledger (
           id, research_run_id, operation, provider, model, reservation_usd,
-          committed_usd, status, generation_attempt_id, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, NULL, 'reserved', ?, ?, ?)
-      `).run(id, runId, operation, provider, model, upperBoundUsd, generationAttemptId ?? null, now, now);
+          committed_usd, status, generation_attempt_id, usage_json, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, NULL, 'reserved', ?, ?, ?, ?)
+      `).run(id, runId, operation, provider, model, upperBoundUsd, generationAttemptId ?? null, usage ? JSON.stringify(usage) : null, now, now);
       db.prepare(`
         UPDATE research_runs SET reserved_cost = reserved_cost + ?, updated_at = ? WHERE id = ?
       `).run(upperBoundUsd, now, runId);
@@ -126,9 +131,32 @@ export class CostLedgerRepository {
 
   settleUncertain(runId: string, reason: string): void {
     const rows = this.client.db.prepare(`
-      SELECT id FROM cost_ledger WHERE research_run_id = ? AND status = 'reserved'
-    `).all(runId) as Array<{ id: string }>;
-    for (const row of rows) this.commit(row.id, null, { uncertain: true, reason });
+      SELECT id, operation, usage_json FROM cost_ledger WHERE research_run_id = ? AND status = 'reserved'
+    `).all(runId) as Array<{ id: string; operation: string; usage_json: string | null }>;
+    for (const row of rows) {
+      let usage: Record<string, unknown> = {};
+      try { usage = z.record(z.unknown()).parse(JSON.parse(row.usage_json ?? "{}")); }
+      catch { /* Invalid historical metadata cannot prove that a provider was never called. */ }
+      // Preallocated follow-up allowances lack a query UUID and keep their conservative recovery contract.
+      const link = row.operation === "search" ? SearchDispatchLinkSchema.safeParse(usage.searchDispatch) : null;
+      if (link?.success) {
+        const receipt = this.client.db.prepare(`SELECT snapshot_key, value_json FROM workflow_snapshots
+          WHERE research_run_id = ? AND snapshot_key LIKE ?`).get(runId, `search-attempt:%:${link.data.attemptId}`) as { snapshot_key: string; value_json: string } | undefined;
+        let prepared = false;
+        try {
+          const parsed = WorkflowSearchAttemptSchema.safeParse(JSON.parse(receipt?.value_json ?? "null"));
+          prepared = parsed.success && parsed.data.id === link.data.attemptId && parsed.data.dispatchProofVersion === 1
+            && receipt?.snapshot_key === `search-attempt:${parsed.data.key.slice("search:".length)}:${parsed.data.id}`;
+        } catch { /* A corrupt receipt retains conservative settlement. */ }
+        const dispatch = this.client.db.prepare("SELECT 1 FROM workflow_snapshots WHERE research_run_id = ? AND snapshot_key = ?")
+          .get(runId, `search-dispatched:${link.data.attemptId}`);
+        if (prepared && !dispatch) {
+          this.release(row.id);
+          continue;
+        }
+      }
+      this.commit(row.id, null, { ...usage, uncertain: true, reason });
+    }
   }
 
   release(reservationId: string): void {

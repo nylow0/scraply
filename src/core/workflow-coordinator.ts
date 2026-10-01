@@ -28,7 +28,7 @@ import { fillGenerationAngle, initialGenerationAngles } from "./idea-assignments
 import { loadManagedCoverageGaps, markManagedCoverageGapCovered, runManagedCoverageMap } from "./managed-coverage-map";
 import { loadManagedCoverageSearchSources, runManagedCoverageSearch } from "./managed-coverage-search";
 import { materializeResearchSnapshot } from "./research-revisions";
-import { UnknownSearchCompletionError, unknownSearchAttempts } from "./workflow-search-attempts";
+import { UnknownSearchCompletionError, unknownSearchAttempts, workflowSearchDispatchUsage } from "./workflow-search-attempts";
 import { remainingWorkflowMs as remainingMs } from "./workflow-time";
 import { DEFAULT_OPPORTUNITY_EXPLORATION_CONFIG, OpportunityExplorationConfigSchema } from "../shared/opportunity-exploration";
 
@@ -2035,9 +2035,7 @@ export class WorkflowCoordinator {
     if (!runId) return 0;
     const row = this.options.db.db.prepare(`SELECT COUNT(*) AS count FROM cost_ledger
       WHERE research_run_id = ? AND operation = 'search' AND status = 'committed'`).get(runId) as { count: number };
-    const receipts = this.options.db.db.prepare(`SELECT COUNT(*) AS count FROM workflow_snapshots
-      WHERE research_run_id = ? AND snapshot_key LIKE 'search-attempt:%'`).get(runId) as { count: number };
-    return Math.max(row.count, receipts.count) + this.repository.countInvestigatorSearches(runId);
+    return Math.max(row.count, workflowSearchDispatchUsage(this.options.db, runId).attemptCount) + this.repository.countInvestigatorSearches(runId);
   }
 
   private availableBudget(session: WorkflowSession, kind: "model-call" | "search"): number | null {
