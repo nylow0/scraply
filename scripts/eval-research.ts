@@ -9,7 +9,7 @@ import { parseArgs } from "node:util";
 import { z } from "zod";
 import { ApiResponseSchema, IPC_CHANNELS, WorkspaceStateSchema } from "../src/shared/ipc";
 import { discoveryRunProjection } from "../src/shared/discovery-projection";
-import { ModelRefSchema, ReasoningEffortSchema } from "../src/shared/schemas";
+import { ModelRefSchema, ReasoningEffortSchema, sameModelRef } from "../src/shared/schemas";
 import { ScopeSchema } from "../src/shared/structured-output-schemas";
 import {
   PreviewWorkflowResultSchema, WorkflowAdmissionReceiptSchema, WorkflowDetailSchema,
@@ -86,6 +86,8 @@ const RowSchema = z.object({
   threadId: z.string().nullable(), sessionId: z.string().nullable(), runId: z.string().nullable(),
   status: z.enum(["planned", "launching", "running", "finished", "blocked"]), outcome: z.string().nullable(),
   stopReason: z.string().nullable(), metrics: EvaluationMetricsSchema.nullable(),
+  // Retain the actual launch estimate before dispatch; older manifests may lack it.
+  launchPreview: PreviewWorkflowResultSchema.extend({ type: z.literal("launch"), proposal: WorkflowLaunchContractSchema }).optional(),
 }).strict();
 export type EvaluationRow = z.infer<typeof RowSchema>;
 const ManifestSchema = z.object({
@@ -135,20 +137,22 @@ export function summarizeEvaluation(rows: EvaluationRow[]) {
     const group = rows.filter(row => `${row.briefId}/${row.depth}` === key);
     const completed = group.filter(row => row.status === "finished");
     const metrics = completed.flatMap(row => row.metrics ? [row.metrics] : []);
+    const qualityRows = completed.filter(row => ["target-met", "partial", "no-qualifying-ideas"].includes(row.outcome ?? ""));
+    const quality = qualityRows.flatMap(row => row.metrics ? [row.metrics] : []);
     return {
-      key, plannedRuns: group.length, terminalRuns: completed.length, measuredRuns: metrics.length,
+      key, plannedRuns: group.length, terminalRuns: completed.length, measuredRuns: metrics.length, qualityRuns: quality.length,
       failedRuns: completed.filter(row => ["failed", "cancelled", "needs-attention"].includes(row.outcome ?? "")).length,
-      medianConfirmed: median(metrics.map(value => value.candidateFunnel.confirmed)),
-      medianConfirmedAreas: median(metrics.map(value => value.coverage.kind === "areas" ? value.coverage.groups.filter(area => area.confirmed > 0).length : null)),
-      medianQualifyingPerCandidate: median(metrics.map(value => value.qualifyingPerAssessedCandidate)),
-      medianFirsthandMeasuredShare: median(metrics.map(value => value.factors ? ((value.evidenceMix.firsthand ?? 0) + (value.evidenceMix.measured ?? 0)) / value.factors : null)),
-      medianVendorAdviceIllustrationShare: median(metrics.map(value => value.factors ? ((value.evidenceMix.vendor ?? 0) + (value.evidenceMix.recommendation ?? 0) + (value.evidenceMix.illustration ?? 0)) / value.factors : null)),
-      medianCommunitySourceShare: median(metrics.map(value => value.totalSources ? Object.entries(value.sourceMix)
+      medianConfirmed: median(quality.map(value => value.candidateFunnel.confirmed)),
+      medianConfirmedAreas: median(quality.map(value => value.coverage.kind === "areas" ? value.coverage.groups.filter(area => area.confirmed > 0).length : null)),
+      medianQualifyingPerCandidate: median(quality.map(value => value.qualifyingPerAssessedCandidate)),
+      medianFirsthandMeasuredShare: median(quality.map(value => value.factors ? ((value.evidenceMix.firsthand ?? 0) + (value.evidenceMix.measured ?? 0)) / value.factors : null)),
+      medianVendorAdviceIllustrationShare: median(quality.map(value => value.factors ? ((value.evidenceMix.vendor ?? 0) + (value.evidenceMix.recommendation ?? 0) + (value.evidenceMix.illustration ?? 0)) / value.factors : null)),
+      medianCommunitySourceShare: median(quality.map(value => value.totalSources ? Object.entries(value.sourceMix)
         .filter(([kind]) => ["forum", "qa", "q-and-a", "issue-tracker", "social"].includes(kind)).reduce((sum, [, count]) => sum + count, 0) / value.totalSources : null)),
-      medianNotAssessed: median(metrics.map(value => value.candidateFunnel.notAssessed)),
-      medianAcceptedIdeas: median(metrics.map(value => value.acceptedIdeas)),
-      medianMustHaveFailures: median(metrics.map(value => value.acceptedIdeasFailingMustHave ?? null)),
-      zeroIdeaRuns: completed.filter(row => row.metrics?.acceptedIdeas === 0).length,
+      medianNotAssessed: median(quality.map(value => value.candidateFunnel.notAssessed)),
+      medianAcceptedIdeas: median(quality.map(value => value.acceptedIdeas)),
+      medianMustHaveFailures: median(quality.map(value => value.acceptedIdeasFailingMustHave ?? null)),
+      zeroIdeaRuns: qualityRows.filter(row => row.metrics?.acceptedIdeas === 0).length,
       medianModelCalls: median(metrics.map(value => value.modelCalls)), medianSearches: median(metrics.map(value => value.searches)),
       medianWallTimeMs: median(metrics.map(value => value.wallTimeMs)), medianInterruptions: median(metrics.map(value => value.interruptions)),
     };
@@ -157,16 +161,17 @@ export function summarizeEvaluation(rows: EvaluationRow[]) {
 
 export function evaluationMarkdown(manifest: Manifest): string {
   const format = (value: number | null) => value === null ? "unknown" : Number(value.toFixed(3)).toString();
-  const rows = summarizeEvaluation(manifest.rows).map(row => `| ${row.key} | ${row.terminalRuns}/${row.plannedRuns} | ${format(row.medianConfirmed)} | ${format(row.medianConfirmedAreas)} | ${format(row.medianQualifyingPerCandidate)} | ${format(row.medianFirsthandMeasuredShare)} | ${format(row.medianVendorAdviceIllustrationShare)} | ${format(row.medianCommunitySourceShare)} | ${format(row.medianNotAssessed)} | ${format(row.medianAcceptedIdeas)} | ${format(row.medianMustHaveFailures)} | ${row.zeroIdeaRuns} | ${format(row.medianModelCalls)} | ${format(row.medianSearches)} | ${format(row.medianWallTimeMs === null ? null : row.medianWallTimeMs / 60_000)} | ${format(row.medianInterruptions)} | ${row.failedRuns} |`);
+  const rows = summarizeEvaluation(manifest.rows).map(row => `| ${row.key} | ${row.terminalRuns}/${row.plannedRuns} | ${row.qualityRuns} | ${format(row.medianConfirmed)} | ${format(row.medianConfirmedAreas)} | ${format(row.medianQualifyingPerCandidate)} | ${format(row.medianFirsthandMeasuredShare)} | ${format(row.medianVendorAdviceIllustrationShare)} | ${format(row.medianCommunitySourceShare)} | ${format(row.medianNotAssessed)} | ${format(row.medianAcceptedIdeas)} | ${format(row.medianMustHaveFailures)} | ${row.zeroIdeaRuns} | ${format(row.medianModelCalls)} | ${format(row.medianSearches)} | ${format(row.medianWallTimeMs === null ? null : row.medianWallTimeMs / 60_000)} | ${format(row.medianInterruptions)} | ${row.failedRuns} |`);
   return ["# Research workflow evaluation", "", `App commit: ${manifest.appCommit}. Origin: ${manifest.origin}. Matrix: ${manifest.matrix}.`,
     `Transport: ${manifest.transport?.kind ?? "browser-dev"}.${manifest.transport?.kind === "installed-preload"
       ? ` Installed executable SHA256: ${manifest.transport.package.executableSha256}. App ASAR SHA256: ${manifest.transport.package.asarSha256}.` : ""}`,
     `Fixture SHA256: ${manifest.fixtureSha256}. Started: ${manifest.createdAt}.`, "",
-    "Each row uses medians across terminal repeats. Running and planned cases do not contribute quality measurements. Shares are fractions. Failed runs remain visible. Unknown values are excluded from medians and never replaced with zero.",
+    "Quality medians use completed target-met, partial, and no-qualifying-ideas runs; Quality N shows their measured count. Failed, cancelled, interrupted, running, and planned cases do not contribute quality measurements. Calls, searches, time, and interruptions retain all measured terminal runs. Shares are fractions. Unknown values are excluded from medians and never replaced with zero.",
+    "Qualifying/candidate is the median of each run's mean qualifying observations per assessed candidate, not the median of individual candidate counts. New rows retain the actual launch preview before dispatch; older rows may lack it.",
     "Area coverage is unknown for historical phase-based runs. Must-have failures are unknown before criterion assessments exist.",
     "Benchmark settings use one idea per selected problem, at most three automatic problems, gpt-6-sol/xhigh, and the fixture's selected provider. They stay identical across comparisons.", "",
-    "| Brief/depth | Terminal | Confirmed | Areas | Qualifying/candidate | Firsthand+measured | Vendor+advice+illustration | Community sources | Not assessed | Accepted ideas | Must-have failures | Zero ideas | Calls | Searches | Minutes | Interruptions | Failed |",
-    "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |", ...rows, "",
+    "| Brief/depth | Terminal | Quality N | Confirmed | Areas | Qualifying/candidate | Firsthand+measured | Vendor+advice+illustration | Community sources | Not assessed | Accepted ideas | Must-have failures | Zero ideas | Calls | Searches | Minutes | Interruptions | Failed |",
+    "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |", ...rows, "",
     "## Outcomes", "", ...manifest.rows.map(row => `- ${row.key}: ${row.status}, ${row.outcome ?? "pending"}. ${row.stopReason ?? ""}`), ""].join("\n");
 }
 
@@ -190,6 +195,7 @@ export async function runEvaluation(matrix: EvaluationCase[], manifest: Manifest
       row.threadId = await backend.create(item);
       const preview = await backend.preview(row.threadId, evaluationDraft(item));
       if (preview.fieldErrors.length) throw new Error(`Preview rejected ${row.key}: ${preview.fieldErrors.map(error => error.message).join("; ")}`);
+      row.launchPreview = RowSchema.shape.launchPreview.unwrap().parse(preview);
       row.status = "launching"; save(manifest);
       const receipt = await backend.start(row.threadId, randomUUID(), preview);
       row.sessionId = receipt.sessionId; row.status = "running"; save(manifest);
@@ -234,20 +240,54 @@ function browserInvoke(origin: string): EvaluationInvoke {
   return invoke;
 }
 
-export function evaluationBackend(invoke: EvaluationInvoke, databasePath: string, traceModule: string): EvaluationBackend {
+type ReadinessClock = { now(): number; wait(ms: number): Promise<void> };
+
+/** Read startup validation only. Pending checks may settle; settled failures never trigger retries. */
+async function waitForEvaluationReadiness(invoke: EvaluationInvoke, item: EvaluationCase, clock: ReadinessClock) {
+  const deadline = clock.now() + 45_000;
+  const timeout = () => new Error("Startup validation did not become ready within 45 seconds. No evaluation project was created.");
+  while (clock.now() < deadline) {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const workspace = await Promise.race([
+      invoke(IPC_CHANNELS.GET_WORKSPACE, WorkspaceStateSchema),
+      new Promise<never>((_, reject) => { timer = setTimeout(() => reject(timeout()), deadline - clock.now()); }),
+    ]).finally(() => clearTimeout(timer));
+    const native = workspace.validation.native;
+    const nativePending = native.error === "Checking native runtime";
+    if (!nativePending && (!native.available || !native.connected)) {
+      throw new Error("Existing OpenAI credentials must be connected and the native runtime available. Evaluation never changes accounts.");
+    }
+    const selectedSearch = item.brief.runSettings.searchProvider;
+    const searches = selectedSearch === "auto" ? [workspace.validation.exa, workspace.validation.perplexity] : [workspace.validation[selectedSearch]];
+    const searchReady = searches.some(search => search.valid && !search.checking);
+    if (!searchReady && !searches.some(search => search.checking)) {
+      throw new Error(`Existing ${selectedSearch === "auto" ? "search" : selectedSearch === "exa" ? "Exa" : "Perplexity"} credentials must be connected. Evaluation never changes keys.`);
+    }
+    if (!nativePending) {
+      const settings = item.brief.runSettings;
+      const model = workspace.modelOptions.find(option => sameModelRef(option, settings.model));
+      if (!model) throw new Error(`Evaluation model ${settings.model.providerId}:${settings.model.modelId} is unavailable.`);
+      if (!model.reasoningEfforts.some(effort => effort.id === settings.reasoningEffort)) {
+        throw new Error(`Evaluation model ${settings.model.modelId} does not support ${settings.reasoningEffort} reasoning.`);
+      }
+      if (searchReady) return workspace;
+    }
+    await clock.wait(Math.min(500, Math.max(0, deadline - clock.now())));
+  }
+  throw timeout();
+}
+
+export function evaluationBackend(invoke: EvaluationInvoke, databasePath: string, traceModule: string,
+  readinessClock: ReadinessClock = { now: Date.now, wait: delay }): EvaluationBackend {
   return {
     async create(item) {
-      const workspace = await invoke(IPC_CHANNELS.GET_WORKSPACE, WorkspaceStateSchema);
+      const workspace = await waitForEvaluationReadiness(invoke, item, readinessClock);
       if (!existsSync(databasePath)) throw new Error("The isolated profile database was not created. The running app must use the evaluation profile before research.");
       const profileDb = new Database(databasePath, { readonly: true });
       try {
         const storedIds = new Set(z.array(z.object({ id: z.string() })).parse(profileDb.query("SELECT id FROM threads").all()).map(thread => thread.id));
         if (workspace.threads.some(thread => !storedIds.has(thread.id))) throw new Error("The running backend does not use the evaluation profile. No evaluation project was created.");
       } finally { profileDb.close(); }
-      const search = item.brief.runSettings.searchProvider;
-      if (!workspace.validation.native.connected || !(search === "auto" ? workspace.validation.exa.valid || workspace.validation.perplexity.valid : workspace.validation[search].valid)) {
-        throw new Error("Existing OpenAI and search credentials must be connected. Evaluation never changes accounts or keys.");
-      }
       const created = await invoke(IPC_CHANNELS.CREATE_THREAD, z.object({ workspace: WorkspaceStateSchema }), { title: `Evaluation ${item.key}` });
       const threadId = created.workspace.activeThreadId;
       if (!threadId) throw new Error("The backend did not select the new evaluation project.");

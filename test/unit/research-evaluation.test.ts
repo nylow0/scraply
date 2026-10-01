@@ -86,7 +86,9 @@ describe("research evaluation", () => {
       async detail(sessionId) { const finished = polled.has(sessionId); polled.add(sessionId); return detail(sessionId, finished); },
       async measure(sessionId) { return { runId: sessionId, metrics: metrics() }; },
     };
-    await runEvaluation(matrix, manifest, backend, value => { savedLaunching = value.rows.some(row => row.status === "launching"); }, async () => { waits++; });
+    await runEvaluation(matrix, manifest, backend, value => {
+      savedLaunching = value.rows.some(row => row.status === "launching" && row.launchPreview?.minimumWork.searches === 1);
+    }, async () => { waits++; });
     expect(launches).toEqual(matrix.map(item => item.key));
     expect(waits).toBe(matrix.length);
     expect(manifest.rows.every(row => row.status === "finished" && row.sessionId && row.metrics)).toBe(true);
@@ -113,9 +115,11 @@ describe("research evaluation", () => {
       db.exec("CREATE TABLE observations(role TEXT); INSERT INTO observations VALUES ('firsthand'),('measured'),('vendor'),('vendor');");
       const evidenceMix = Object.fromEntries((db.query("SELECT role, count(*) AS count FROM observations GROUP BY role").all() as Array<{ role: string; count: number }>).map(value => [value.role, value.count]));
       const first = { ...row("a"), status: "finished" as const, outcome: "no-qualifying-ideas", metrics: { ...metrics(), evidenceMix } };
-      const second = { ...row("b"), status: "finished" as const, outcome: "failed", metrics: { ...metrics(), candidateFunnel: { ...metrics().candidateFunnel, confirmed: 2 }, modelCalls: 5 } };
+      const second = { ...row("b"), status: "finished" as const, outcome: "failed", metrics: { ...metrics(), evidenceMix: { vendor: 4 }, candidateFunnel: { ...metrics().candidateFunnel, confirmed: 2 }, modelCalls: 5 } };
       const summary = summarizeEvaluation([first, second])[0]!;
-      expect(summary.medianConfirmed).toBe(1);
+      expect(summary.medianConfirmed).toBe(0);
+      expect(summary.qualityRuns).toBe(1);
+      expect(summary.measuredRuns).toBe(2);
       expect(summary.medianFirsthandMeasuredShare).toBe(0.5);
       expect(summary.medianVendorAdviceIllustrationShare).toBe(0.5);
       expect(summary.medianCommunitySourceShare).toBe(0.25);
@@ -123,10 +127,31 @@ describe("research evaluation", () => {
       expect(summary.medianConfirmedAreas).toBeNull();
       expect(summary.medianMustHaveFailures).toBeNull();
       expect(summary.failedRuns).toBe(1);
-      expect(summary.zeroIdeaRuns).toBe(2);
+      expect(summary.zeroIdeaRuns).toBe(1);
       expect(summarizeEvaluation([{ ...first, status: "running" }])[0]!.medianConfirmed).toBeNull();
       expect(median([null, null])).toBeNull();
       expect(median([0, null, 2])).toBe(1);
     } finally { db.close(); }
+  });
+
+  test("interrupted accounting stays recorded without treating its missing quality as zero", () => {
+    const completed = { ...row("completed"), status: "finished" as const, outcome: "partial", metrics: {
+      ...metrics(), candidateFunnel: { ...metrics().candidateFunnel, confirmed: 4 }, acceptedIdeas: 1,
+    } };
+    const unknown = { ...row("unknown"), status: "finished" as const, outcome: "needs-attention", metrics: {
+      ...metrics(), modelCalls: 9, searches: 4,
+    } };
+    const cancelled = { ...unknown, key: "cancelled", outcome: "cancelled" };
+    const summary = summarizeEvaluation([completed, unknown, cancelled])[0]!;
+    expect(summary.terminalRuns).toBe(3);
+    expect(summary.measuredRuns).toBe(3);
+    expect(summary.qualityRuns).toBe(1);
+    expect(summary.failedRuns).toBe(2);
+    expect(summary.medianConfirmed).toBe(4);
+    expect(summary.medianAcceptedIdeas).toBe(1);
+    expect(summary.zeroIdeaRuns).toBe(0);
+    expect(summary.medianModelCalls).toBe(9);
+    expect(summary.medianSearches).toBe(4);
+    expect(summarizeEvaluation([unknown, cancelled])[0]!.medianConfirmed).toBeNull();
   });
 });
