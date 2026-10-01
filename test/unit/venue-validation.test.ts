@@ -1,10 +1,40 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
+import * as dns from "node:dns/promises";
 import { routeSearchOptions, type SourceVenue } from "../../src/providers/source-routes";
 import { RESEARCH_VENUE_DNS_TIMEOUT_MS, validateResearchVenues } from "../../src/providers/venue-validation";
 
 const venue = (domain?: string): SourceVenue => ({ name: "Operators' forum", kind: "community", ...(domain ? { domain } : {}) });
 
 describe("research venue validation", () => {
+  test("uses OS resolution when direct DNS is refused, while keeping DNS-only venues provisional", async () => {
+    const refused = Object.assign(new Error("Direct DNS refused"), { code: "ECONNREFUSED" });
+    const raw4 = spyOn(dns.Resolver.prototype, "resolve4").mockRejectedValue(refused);
+    const raw6 = spyOn(dns.Resolver.prototype, "resolve6").mockRejectedValue(refused);
+    const osDns: { lookup: (host: string, options: { all: true }) => Promise<Array<{ address: string; family: number }>> } = dns;
+    const system = spyOn(osDns, "lookup").mockResolvedValue([
+      { address: "104.21.38.205", family: 4 }, { address: "2606:4700:4700::1111", family: 6 },
+    ]);
+    const proposed = [venue("cakecentral.com"), { ...venue("cakecentral.com"), name: "Cake business forum" }];
+    try {
+      const result = await validateResearchVenues(proposed);
+      expect(system).toHaveBeenCalledTimes(1);
+      expect(system).toHaveBeenCalledWith("cakecentral.com", { all: true });
+      expect(result.proofs).toEqual([{ domain: "cakecentral.com", method: "dns" }]);
+      expect(result.verified).toEqual([]);
+      expect(result.unresolved).toEqual(proposed.map(item => ({
+        venue: item, reason: "Domain resolves but has no retrieved source proof",
+      })));
+      expect(raw4).not.toHaveBeenCalled();
+      expect(raw6).not.toHaveBeenCalled();
+      expect(routeSearchOptions("community", { venues: result.verified }).includeDomains).not.toContain("cakecentral.com");
+      system.mockResolvedValue([{ address: "104.21.38.205", family: 4 }, { address: "127.0.0.1", family: 4 }]);
+      const unsafe = await validateResearchVenues([venue("cakecentral.com")]);
+      expect(unsafe.proofs).toEqual([]);
+      expect(unsafe.verified).toEqual([]);
+      expect(unsafe.unresolved[0]?.reason).toBe("Domain resolved to an unsafe or reserved address");
+    } finally { system.mockRestore(); raw4.mockRestore(); raw6.mockRestore(); }
+  });
+
   test("an unresolved proposed domain keeps the common route fallback", async () => {
     const result = await validateResearchVenues([venue("made-up-forum.org")], { resolve: async () => [] });
     expect(result.verified).toEqual([]);

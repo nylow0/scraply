@@ -253,7 +253,7 @@ async function waitForEvaluationReadiness(invoke: EvaluationInvoke, item: Evalua
       new Promise<never>((_, reject) => { timer = setTimeout(() => reject(timeout()), deadline - clock.now()); }),
     ]).finally(() => clearTimeout(timer));
     const native = workspace.validation.native;
-    const nativePending = native.error === "Checking native runtime";
+    const nativePending = native.error === "Checking native runtime" || native.error === "Native runtime is starting";
     if (!nativePending && (!native.available || !native.connected)) {
       throw new Error("Existing OpenAI credentials must be connected and the native runtime available. Evaluation never changes accounts.");
     }
@@ -316,11 +316,17 @@ export function evaluationBackend(invoke: EvaluationInvoke, databasePath: string
       if (!existsSync(traceModule)) return null;
       const db = new Database(databasePath, { readonly: true });
       try {
-        const run = z.object({ id: z.string() }).nullable().parse(db.prepare("SELECT id FROM research_runs WHERE workflow_session_id = ? AND purpose = 'discovery' ORDER BY created_at LIMIT 1").get(sessionId) ?? null);
-        if (!run) return null;
-        const module = await import(pathToFileURL(traceModule).href) as { getRunTrace: (reader: { db: Database }, runId: string) => unknown };
-        const trace = z.object({ metrics: EvaluationMetricsSchema }).parse(module.getRunTrace({ db }, run.id));
-        return { runId: run.id, metrics: trace.metrics };
+        const module = await import(pathToFileURL(traceModule).href) as {
+          getRunTrace: (reader: { db: Database }, runId: string) => unknown;
+          selectSessionEvidenceRunId?: (reader: { db: Database }, sessionId: string) => string | null;
+        };
+        // Older baseline readers have no selector; keep their original unframed discovery lookup.
+        const runId = module.selectSessionEvidenceRunId
+          ? module.selectSessionEvidenceRunId({ db }, sessionId)
+          : z.object({ id: z.string() }).nullable().parse(db.prepare("SELECT id FROM research_runs WHERE workflow_session_id = ? AND purpose = 'discovery' ORDER BY created_at LIMIT 1").get(sessionId) ?? null)?.id;
+        if (!runId) return null;
+        const trace = z.object({ metrics: EvaluationMetricsSchema }).parse(module.getRunTrace({ db }, runId));
+        return { runId, metrics: trace.metrics };
       } finally { db.close(); }
     },
   };

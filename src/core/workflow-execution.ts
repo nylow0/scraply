@@ -5,8 +5,10 @@ import { WorkflowV2Repository } from "../db/repositories/workflow-v2";
 import type { SearchClient } from "../providers/search";
 import type { GenerationMetadata, StructuredModelClient, StructuredStageRequest } from "../providers/structured";
 import { canonicalJson, sha256, workflowSearchKey } from "../shared/content-identity";
+import { EvidenceCheckOutputSchema, LegacyEvidenceCheckOutputSchema } from "../shared/evidence-investigators";
 import { deriveJsonSchema } from "../shared/json-schema";
 import { OpportunityExpansionOutputSchema } from "../shared/opportunity-exploration";
+import { LegacyResearchFrameOutputSchema, ResearchFrameOutputSchema } from "../shared/research-frame";
 import { SourceSchema, type Source } from "../shared/schemas";
 import { AssessedWorkflowV2ProblemKillOutputSchema, BoundedWorkflowV2FactorHarvestOutputSchema, FACTOR_EXPLANATION_CHARACTERS, ClassifiedWorkflowV2ProblemKillOutputSchema, WorkflowV2QueryPlanOutputSchema, WorkflowV2FactorHarvestOutputSchema, WorkflowV2ProblemCandidatesOutputSchema, WorkflowV2ProblemKillOutputSchema, WorkflowV2SolutionsOutputSchema } from "../shared/structured-output-schemas";
 import { PROBLEM_AUDIENCE_ASSESSMENT_INSTRUCTION } from "./problem-evidence";
@@ -14,7 +16,7 @@ import { LegacyWorkflowV2QueryPlanOutputSchema } from "../shared/structured-outp
 import type { WorkflowV2DevelopmentContext } from "./development";
 import { resolveWorkflowV2Prompt, type ResolvedWorkflowV2Prompt } from "./prompts";
 import { WORKFLOW_V2_STAGE_IDS, WORKFLOW_V2_STAGE_REGISTRY, type WorkflowV2StageId } from "./stages";
-import { prepareWorkflowSearch, recordWorkflowSearchTerminal, unknownSearchAttempts, UnknownSearchCompletionError } from "./workflow-search-attempts";
+import { prepareWorkflowSearch, recordWorkflowSearchDispatched, recordWorkflowSearchTerminal, unknownSearchAttempts, UnknownSearchCompletionError } from "./workflow-search-attempts";
 
 export { workflowSearchKey } from "../shared/content-identity";
 
@@ -57,7 +59,7 @@ export class WorkflowExecution {
       this.save("small-harvest-batches", { version: 1 });
       this.save("problem-audience-assessment", { version: 1 });
       this.save("candidate-accounting", { version: 1 });
-      this.save("source-routes", { version: 1 });
+      this.save("source-routes", { version: 2 });
       this.save("query-plan-languages", { version: 1 });
     }
     // Runs without the marker keep their original source groups and checkpoint identities.
@@ -100,7 +102,7 @@ export class WorkflowExecution {
     return () => createHash("sha256").update(`${this.runId}:${phase}:${sequence++}`).digest("hex").slice(0, characters);
   }
 
-  search(client: Pick<SearchClient, "search"> & Partial<Pick<SearchClient, "provider" | "providerForRoute">>): Pick<SearchClient, "search"> & Partial<Pick<SearchClient, "provider" | "providerForRoute">> {
+  search(client: Pick<SearchClient, "search"> & Partial<Pick<SearchClient, "provider" | "providerForRoute" | "searchWithDispatch">>): Pick<SearchClient, "search"> & Partial<Pick<SearchClient, "provider" | "providerForRoute">> {
     return { ...(client.provider ? { provider: client.provider } : {}),
       ...(client.providerForRoute ? { providerForRoute: client.providerForRoute } : {}), search: async (query, options) => {
       options?.signal?.throwIfAborted();
@@ -141,14 +143,23 @@ export class WorkflowExecution {
         const queryReceipt = `search-query:${key.slice("search:".length)}`;
         if (!this.read(queryReceipt)) this.save(queryReceipt, { key, query: normalizedQuery, parameters, ...(provider ? { provider } : {}) });
         const attempt = this.read("source-routes") ? prepareWorkflowSearch(this.db, this.runId,
-          { key, query: normalizedQuery, parameters, ...(provider ? { provider } : {}) }, this.acknowledgedAttemptIds) : null;
+          { key, query: normalizedQuery, parameters, dispatchProofVersion: 1, ...(provider ? { provider } : {}) }, this.acknowledgedAttemptIds) : null;
         const cancelled = () => {
           if (attempt) recordWorkflowSearchTerminal(this.db, this.runId, attempt.id, "cancelled", "Cancelled by user");
         };
         options?.signal?.addEventListener("abort", cancelled, { once: true });
         let results: Awaited<ReturnType<SearchClient["search"]>>;
         try {
-          results = await client.search(normalizedQuery, { ...options, ...(provider ? { provider } : {}) });
+          const dispatched = () => {
+            options?.signal?.throwIfAborted();
+            if (attempt) recordWorkflowSearchDispatched(this.db, this.runId, attempt.id);
+          };
+          const dispatchOptions = { ...options, ...(provider ? { provider } : {}) };
+          if (client.searchWithDispatch) results = await client.searchWithDispatch(normalizedQuery, dispatchOptions, dispatched, attempt?.id);
+          else {
+            dispatched();
+            results = await client.search(normalizedQuery, dispatchOptions);
+          }
           options?.signal?.throwIfAborted();
         } catch (error) {
           if (attempt) recordWorkflowSearchTerminal(this.db, this.runId, attempt.id,
@@ -221,6 +232,16 @@ export class WorkflowExecution {
       if (this.disableRepair) request.repairPolicy = "disabled";
       if (original.model.providerId === "openai-subscription") delete request.maxOutputTokens;
       else request.maxOutputTokens = stage.maxOutputTokens;
+      const savedStage = stageId === "evidence-check" || stageId === "frame"
+        ? this.repository.findStageResult(this.runId, stageId, selectionId) : null;
+      const savedRequest = (savedStage?.effectiveRequest as { request?: Record<string, unknown> } | undefined)?.request;
+      const savedStageIdentity = savedStage && savedRequest
+        ? { ...savedRequest, stage: original.stage, jsonSchema: savedStage.schema } : null;
+      if (savedStage && savedStageIdentity && (recoverableHistoricalEvidenceCheck(request, savedStageIdentity)
+        || recoverableHistoricalFrame(request, savedStageIdentity))) {
+        // Only completed work pins a historical contract. Unfinished requests use the current schema.
+        request.jsonSchema = savedStage.schema as object;
+      }
       const context = { inputs: request.workOrder.inputs, evidence: request.evidence };
       const evidence = request.evidence.map((item) => ({ sourceId: item.sourceId, content: item.content }));
       const previous = this.repository.getStageResumeState({
@@ -247,7 +268,9 @@ export class WorkflowExecution {
         output = recovered.output;
         metadata = recovered.metadata;
         assertDiscoveryStageSemantics(stageId, output, original);
-        this.persistCompletedStage(original.stage, stageId, request, prompt, metadata, output, context, selectionId);
+        this.persistCompletedStage(original.stage, stageId,
+          recovered.jsonSchema ? { ...request, jsonSchema: recovered.jsonSchema } : request,
+          prompt, metadata, output, context, selectionId);
       } else {
         const completion = await client.structuredCompletion(request);
         output = requestSchema.parse(completion.output);
@@ -288,6 +311,7 @@ export class WorkflowExecution {
   private recoverCompletedStage(request: StructuredStageRequest<unknown>): {
     output: unknown;
     metadata: GenerationMetadata;
+    jsonSchema?: StructuredStageRequest<unknown>["jsonSchema"];
   } | null {
     const rows = this.db.db.prepare(`
       SELECT request_json, output_json, attempt_metadata_json
@@ -302,11 +326,13 @@ export class WorkflowExecution {
     const expected = completedAttemptIdentity(request);
     for (const row of rows) {
       const savedRequest = JSON.parse(row.request_json) as Record<string, unknown>;
-      if (canonicalJson(completedAttemptIdentity(savedRequest)) !== canonicalJson(expected)) continue;
+      const exactIdentity = canonicalJson(completedAttemptIdentity(savedRequest)) === canonicalJson(expected);
+      if (!exactIdentity && !recoverableHistoricalEvidenceCheck(request, savedRequest)
+        && !recoverableHistoricalFrame(request, savedRequest)) continue;
       const output = request.schema.parse(JSON.parse(row.output_json));
       const metadata = JSON.parse(row.attempt_metadata_json) as GenerationMetadata;
       if (!metadata.prompt) continue;
-      return { output, metadata };
+      return { output, metadata, ...(!exactIdentity ? { jsonSchema: savedRequest.jsonSchema as StructuredStageRequest<unknown>["jsonSchema"] } : {}) };
     }
     if (request.stage.startsWith("factor-harvest:")) {
       const earlier = this.db.db.prepare(`
@@ -606,6 +632,28 @@ function completedAttemptIdentity(request: Record<string, unknown> | StructuredS
     repairPolicy: request.repairPolicy,
     maxOutputTokens: request.maxOutputTokens ?? null,
   };
+}
+
+function recoverableHistoricalEvidenceCheck(
+  request: StructuredStageRequest<unknown>, savedRequest: Record<string, unknown>,
+): boolean {
+  if (request.stage.split(":")[0] !== "evidence-check"
+    || canonicalJson(request.jsonSchema) !== canonicalJson(deriveJsonSchema(EvidenceCheckOutputSchema))
+    || canonicalJson(savedRequest.jsonSchema) !== canonicalJson(deriveJsonSchema(LegacyEvidenceCheckOutputSchema))) return false;
+  // The root union changed only its wire shape. Model, prompt, evidence, inputs, repair policy and output limit still match.
+  return canonicalJson(completedAttemptIdentity({ ...savedRequest, jsonSchema: request.jsonSchema }))
+    === canonicalJson(completedAttemptIdentity(request));
+}
+
+function recoverableHistoricalFrame(
+  request: StructuredStageRequest<unknown>, savedRequest: Record<string, unknown>,
+): boolean {
+  if (request.stage.split(":")[0] !== "frame"
+    || canonicalJson(request.jsonSchema) !== canonicalJson(deriveJsonSchema(ResearchFrameOutputSchema))
+    || canonicalJson(savedRequest.jsonSchema) !== canonicalJson(deriveJsonSchema(LegacyResearchFrameOutputSchema))) return false;
+  // Only source-reference length changed. Model, prompt, evidence, inputs, repair policy and output limit still match.
+  return canonicalJson(completedAttemptIdentity({ ...savedRequest, jsonSchema: request.jsonSchema }))
+    === canonicalJson(completedAttemptIdentity(request));
 }
 
 function recoverableFactorPartitionSourceIds(

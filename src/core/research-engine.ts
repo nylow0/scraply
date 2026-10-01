@@ -2649,6 +2649,7 @@ export class ResearchEngine {
             request: { key, query, evidenceNeeded: "Existing tools and alternatives for the approved novelty criterion", route: "alternatives" },
             searchProvider: active.config.searchProvider, searchClient: this.instrumentedSearch(active),
             sourceRouting: { goalKind: context.frame!.goalKind, languages: context.frame!.languages,
+              legacyPublicationDomainCategory: workflow.read<{ version: number }>("source-routes")?.version !== 2,
               now: new Date(workflow.read<string>("source-route-start")!) },
             ...(active.acknowledgedAttemptIds ? { acknowledgedAttemptIds: active.acknowledgedAttemptIds } : {}), signal: active.abortController.signal })).sources,
           saveCompleted: (value, query, evidence) => { workflow.save(value, evidence); workflow.save(`${value}:completed`, { query, sourceIds: evidence.map(source => source.id) }); },
@@ -2870,6 +2871,8 @@ export class ResearchEngine {
       sourceRouting: {
         now: new Date(workflow.read<string>("source-route-start")!),
         preserveHistoricalSources: !workflow.read("source-routes"),
+        // A run's routing contract also fixes the canonical identity of each paid search.
+        legacyPublicationDomainCategory: workflow.read<{ version: number }>("source-routes")?.version !== 2,
         ...(workflow.read("source-routes") && frame ? { goalKind: frame.goalKind, languages: frame.languages } : {}),
       },
       // Old planner stage inputs must remain identical so its completed output can be reused.
@@ -3005,6 +3008,10 @@ export class ResearchEngine {
               if (this.activeRuns.get(active.runId)?.abortController === active.abortController) this.progress(active, "Model request accepted", stage, "accepted");
               request.onAccepted?.(metadata);
             },
+            onSchemaInvalid: (failure) => {
+              this.generationAttempts.recordSchemaInvalidOutput(attempt.id, failure);
+              request.onSchemaInvalid?.(failure);
+            },
           });
           if (!reservation) {
             reservation = this.ledger.reserve(active.runId, "structured-completion", providerId, stageModel.modelId, 0, attempt.id);
@@ -3026,6 +3033,7 @@ export class ResearchEngine {
           return result;
         } catch (error) {
           const failedAttempts = error instanceof ProviderFailure ? error.attempts : undefined;
+          const unretained = error instanceof ProviderFailure ? error.unretainedSchemaFailure : undefined;
           const failedCostUsd = failedAttempts ? reportedAttemptCost(failedAttempts) : null;
           if (!reservation && failedAttempts?.length) {
             reservation = this.ledger.reserve(active.runId, "structured-completion", providerId, stageModel.modelId, 0, attempt.id);
@@ -3039,8 +3047,11 @@ export class ResearchEngine {
               terminalKind: dispatched || accepted || failedAttempts?.length ? code : "never-dispatched",
               errorCode: code,
               errorMessage: error instanceof Error ? error.message : "Model generation failed",
+              ...(unretained ? { output: unretained.output } : {}),
               ...(failedAttempts ? {
-                attemptMetadata: { attempts: failedAttempts },
+                attemptMetadata: { attempts: failedAttempts, ...(unretained ? { unretainedSchemaFailure: {
+                  generationId: unretained.generationId, issues: unretained.issues,
+                } } : {}) },
                 usage: failedAttempts.map((item) => item.usage),
               } : {}),
               ...(failedCostUsd === null ? {} : { reportedCostUsd: failedCostUsd }),
@@ -3059,7 +3070,7 @@ export class ResearchEngine {
     };
   }
 
-  private instrumentedSearch(active: ActiveRun): Pick<SearchClient, "provider" | "search" | "providerForRoute"> {
+  private instrumentedSearch(active: ActiveRun): Pick<SearchClient, "provider" | "search" | "providerForRoute" | "searchWithDispatch"> {
     const readiness = this.options.searchReady?.();
     const available = {
       exa: Boolean(this.options.searchClients?.exa) && readiness?.exa !== false,
@@ -3067,52 +3078,64 @@ export class ResearchEngine {
     };
     const defaultProvider = active.config.searchProvider === "auto"
       ? available.exa || available.perplexity ? chooseSearchProvider("auto", available) : "exa" : active.config.searchProvider;
-    return {
-      provider: defaultProvider,
-      providerForRoute: (route) => chooseSearchProvider(active.config.searchProvider, available, route),
-      search: async (query: string, options?: SearchOptions) => {
-        const provider = options?.provider ?? chooseSearchProvider(active.config.searchProvider, available, options?.route);
-        const client = this.options.searchClients?.[provider];
-        active.abortController.signal.throwIfAborted();
-        if (!client) throw new AppError("conflict", `Connect ${provider === "exa" ? "Exa" : "Perplexity"} before discovering problems.`);
-        const remainingTaskSearches = this.remainingWorkflowTaskCalls(active, "search");
-        if (remainingTaskSearches !== null && remainingTaskSearches < 1) {
-          throw new AppError("BUDGET_TOO_SMALL", "This workflow task used its search reservation.");
-        }
-        if (active.areaBudget && !this.investigatorBudgetAvailable(active, 0, 1)) {
-          throw new AppError("BUDGET_TOO_SMALL", "This research area used its saved search allowance.");
-        }
-        if (active.researchAllowance
-          && this.ledger.countProviderCalls(active.runId, "exa") + this.ledger.countProviderCalls(active.runId, "perplexity") >= active.researchAllowance.maxSearches) {
-          throw new AppError("BUDGET_TOO_SMALL", "This research request used its search allowance.");
-        }
-        this.enforceRunawayBackstop(active, provider, active.projectedSearches);
-        const reservation = active.followUpSearchReservation
-          ?? this.ledger.reserve(active.runId, "search", provider, null, provider === "exa" ? 0.02 : 0.005);
-        active.followUpSearchReservation = null;
-        if (active.areaBudget) active.areaBudget.pendingSearches = (active.areaBudget.pendingSearches ?? 0) + 1;
+    const dispatch = async (query: string, options?: SearchOptions, onDispatched?: () => void, preparedAttemptId?: string) => {
+      const provider = options?.provider ?? chooseSearchProvider(active.config.searchProvider, available, options?.route);
+      const client = this.options.searchClients?.[provider];
+      active.abortController.signal.throwIfAborted();
+      if (!client) throw new AppError("conflict", `Connect ${provider === "exa" ? "Exa" : "Perplexity"} before discovering problems.`);
+      const remainingTaskSearches = this.remainingWorkflowTaskCalls(active, "search");
+      if (remainingTaskSearches !== null && remainingTaskSearches < 1) {
+        throw new AppError("BUDGET_TOO_SMALL", "This workflow task used its search reservation.");
+      }
+      if (active.areaBudget && !this.investigatorBudgetAvailable(active, 0, 1)) {
+        throw new AppError("BUDGET_TOO_SMALL", "This research area used its saved search allowance.");
+      }
+      if (active.researchAllowance
+        && this.ledger.countProviderCalls(active.runId, "exa") + this.ledger.countProviderCalls(active.runId, "perplexity") >= active.researchAllowance.maxSearches) {
+        throw new AppError("BUDGET_TOO_SMALL", "This research request used its search allowance.");
+      }
+      this.enforceRunawayBackstop(active, provider, active.projectedSearches);
+      const reservation = active.followUpSearchReservation
+        ?? this.ledger.reserve(active.runId, "search", provider, null, provider === "exa" ? 0.02 : 0.005, undefined,
+          preparedAttemptId ? { searchDispatch: { version: 1, attemptId: preparedAttemptId } } : undefined);
+      active.followUpSearchReservation = null;
+      if (active.areaBudget) active.areaBudget.pendingSearches = (active.areaBudget.pendingSearches ?? 0) + 1;
+      let providerInvoked = false;
+      try {
         this.progress(active, `Searching ${provider === "exa" ? "Exa" : "Perplexity"}: ${query}`, "searching", null);
         if (provider === "perplexity" && options?.category) this.progress(active,
           `${options.route ?? "Search"} uses Perplexity without Exa's ${options.category} category; domain and date filters still apply.`, "searching", null);
         if (provider === "exa" && options?.languages?.some((language) => language !== "en")) this.progress(active,
           "Exa has no language filter. This leg relies on the language of its query.", "searching", null);
-        try {
-          const sources = filterRoutedSources(await client.search(query, options), options);
-          if (this.activeRuns.get(active.runId)?.abortController === active.abortController) this.progress(active,
-            `Found ${sources.length} ${sources.length === 1 ? "source" : "sources"} for: ${query}`, "searching", null);
-          return sources;
-        } catch (error) {
-          if (this.activeRuns.get(active.runId)?.abortController === active.abortController) this.progress(active,
-            `${active.abortController.signal.aborted ? "Cancelled search" : "Search failed"}: ${query}`, "searching", null);
-          throw error;
+        active.abortController.signal.throwIfAborted();
+        options?.signal?.throwIfAborted();
+        onDispatched?.();
+        providerInvoked = true;
+        const sources = filterRoutedSources(await client.search(query, options), options);
+        if (this.activeRuns.get(active.runId)?.abortController === active.abortController) this.progress(active,
+          `Found ${sources.length} ${sources.length === 1 ? "source" : "sources"} for: ${query}`, "searching", null);
+        return sources;
+      } catch (error) {
+        if (this.activeRuns.get(active.runId)?.abortController === active.abortController) this.progress(active,
+          `${active.abortController.signal.aborted ? "Cancelled search" : "Search failed"}: ${query}`, "searching", null);
+        throw error;
+      }
+      finally {
+        if (active.areaBudget) active.areaBudget.pendingSearches = Math.max(0, (active.areaBudget.pendingSearches ?? 0) - 1);
+        if (!providerInvoked) this.ledger.release(reservation.id);
+        else if (this.activeRuns.get(active.runId)?.abortController === active.abortController) {
+          this.ledger.commit(reservation.id, reservation.reservedUsd, {
+            ...(active.areaBudget ? { areaId: active.areaBudget.areaId } : {}),
+            ...(preparedAttemptId ? { searchDispatch: { version: 1, attemptId: preparedAttemptId } } : {}),
+          });
         }
-        finally {
-          if (active.areaBudget) active.areaBudget.pendingSearches = Math.max(0, (active.areaBudget.pendingSearches ?? 0) - 1);
-          if (this.activeRuns.get(active.runId)?.abortController === active.abortController) {
-            this.ledger.commit(reservation.id, reservation.reservedUsd, active.areaBudget ? { areaId: active.areaBudget.areaId } : undefined);
-          }
-        }
-      },
+      }
+    };
+    return {
+      provider: defaultProvider,
+      providerForRoute: (route) => chooseSearchProvider(active.config.searchProvider, available, route),
+      search: dispatch,
+      searchWithDispatch: dispatch,
     };
   }
 

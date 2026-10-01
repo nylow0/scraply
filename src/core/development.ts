@@ -234,7 +234,19 @@ export async function produceDevelopmentOptions(
         : baseOptionSchema.extend(evidenceFields);
   const outputSchema = z.object({
     options: z.array(optionSchema).max(ideaCount),
-  }).strict();
+  }).strict().superRefine((output, validation) => {
+    const frame = context.frame;
+    if (!frame) return;
+    // Keep contextual goal checks inside the native schema boundary so the saved
+    // one-retry policy can repair known invalid output before recording completion.
+    // Refinements leave the native wire schema and valid historical identities intact.
+    const goalSchema = z.object(GoalFitFields);
+    output.options.forEach((option, index) => {
+      try { assertGoalFit(goalSchema.parse(option), frame, evidenceSourceIds); }
+      catch (error) { validation.addIssue({ code: z.ZodIssueCode.custom, path: ["options", index],
+        message: error instanceof Error ? error.message : "Invalid goal fit" }); }
+    });
+  });
   const request: StructuredStageRequest<{ options: WorkflowV2SolutionOption[] }> = {
     generationId: randomUUID(),
     stage: stage.id,

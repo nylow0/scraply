@@ -32,5 +32,7 @@ export interface SearchClient {
   readonly provider: SearchProvider;
   providerForRoute?(route?: SourceRoute): SearchProvider;
   search(query: string, options?: SearchOptions): Promise<Source[]>;
+  /** Admission wrappers call the durable hook before provider invocation; the optional UUID links the cost reservation. */
+  searchWithDispatch?(query: string, options: SearchOptions | undefined, onDispatched: () => void, preparedAttemptId?: string): Promise<Source[]>;
   validateKey(): Promise<ValidationResult>;
 }

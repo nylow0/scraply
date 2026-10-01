@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { z } from "zod";
 import { DEFAULT_RUN_CONFIG } from "../../src/shared/schemas";
 import type { ResearchFrame } from "../../src/shared/research-frame";
 import { Database } from "bun:sqlite";
@@ -20,6 +21,7 @@ import {
   WorkflowV2Repository,
 } from "../../src/db/repositories/workflow-v2";
 import { deriveJsonSchema } from "../../src/shared/json-schema";
+import { EvidenceCheckOutputSchema, EvidenceGapSchema } from "../../src/shared/evidence-investigators";
 import { FactorHarvestOutputSchema, ProblemCandidatesOutputSchema, ProblemKillOutputSchema, QueryPlanOutputSchema, LegacyWorkflowV2QueryPlanOutputSchema, WorkflowV2FactorHarvestOutputSchema } from "../../src/shared/structured-output-schemas";
 import { WorkflowExecution, workflowSearchKey } from "../../src/core/workflow-execution";
 import { prepareWorkflowSearch, unknownSearchAttempts, UnknownSearchCompletionError } from "../../src/core/workflow-search-attempts";
@@ -690,6 +692,260 @@ describe("workflow v2 persistence", () => {
     } finally { client.close(); }
   });
 
+  test("recovers a historical evidence check saved before stage commit without another client call", async () => {
+    configurePromptPaths({ bundledDir: join(process.cwd(), "prompts"), overrideDir: null });
+    const client = database();
+    const request = evidenceCheckRequest();
+    const output = { decision: "follow-up", reason: "A second observation is missing.", gaps: [{
+      kind: "second-independent-observation", evidenceNeeded: "An independent buyer account.",
+      query: "filing repeated buyer account", route: "community",
+    }] };
+    const metadata = evidenceCheckMetadata(request);
+    let providerCalls = 0;
+    try {
+      const execution = new WorkflowExecution(client, "run-v2");
+      const provider: StructuredModelClient = { structuredCompletion: async (received) => {
+        providerCalls++;
+        if (providerCalls > 1) throw new Error("Completed evidence checks must not dispatch again");
+        const attempts = new GenerationAttemptRepository(client);
+        const prepared = attempts.prepare("run-v2", { ...received, jsonSchema: historicalEvidenceCheckSchema() });
+        attempts.markDispatched(prepared.id);
+        attempts.markAccepted(prepared.id, { compilerPrompt: metadata.prompt });
+        attempts.recordTerminal(prepared.id, { status: "completed", terminalKind: "completed", output, attemptMetadata: metadata });
+        throw new Error("Process ended before stage commit");
+      } };
+      const adapter = execution.discoveryClient(provider);
+      await expect(adapter.structuredCompletion(request)).rejects.toThrow("Process ended before stage commit");
+      const originalAttempt = client.db.prepare("SELECT * FROM generation_attempts WHERE research_run_id = 'run-v2'").get();
+      expect(execution.repository.findStageResult("run-v2", "evidence-check", "area:problem:round-0")).toBeNull();
+
+      const resumed = new WorkflowExecution(client, "run-v2");
+      const result = await resumed.discoveryClient(provider).structuredCompletion({ ...request, generationId: "check-resume" });
+
+      expect(result.output).toEqual(output);
+      expect(providerCalls).toBe(1);
+      expect(client.db.prepare("SELECT * FROM generation_attempts WHERE research_run_id = 'run-v2'").get()).toEqual(originalAttempt);
+      expect(resumed.repository.findStageResult("run-v2", "evidence-check", "area:problem:round-0")?.schema)
+        .toEqual(historicalEvidenceCheckSchema());
+      const recoveredStage = client.db.prepare("SELECT * FROM stage_results WHERE research_run_id = 'run-v2'").get();
+      expect((await new WorkflowExecution(client, "run-v2").discoveryClient(provider)
+        .structuredCompletion({ ...request, generationId: "check-reopen" })).output).toEqual(output);
+      expect(providerCalls).toBe(1);
+      expect(client.db.prepare("SELECT * FROM stage_results WHERE research_run_id = 'run-v2'").get()).toEqual(recoveredStage);
+    } finally { client.close(); }
+  });
+
+  test("reuses a historical evidence check committed before its investigator snapshot without changing saved identity", async () => {
+    configurePromptPaths({ bundledDir: join(process.cwd(), "prompts"), overrideDir: null });
+    const client = database();
+    const request = evidenceCheckRequest();
+    const output = { decision: "confirmed", reason: "Two independent buyer observations agree.", gaps: [] };
+    const metadata = evidenceCheckMetadata(request);
+    let providerCalls = 0;
+    try {
+      const execution = new WorkflowExecution(client, "run-v2");
+      const provider: StructuredModelClient = { structuredCompletion: async (received) => {
+        providerCalls++;
+        if (providerCalls > 1) throw new Error("Completed evidence checks must not dispatch again");
+        const savedRequest = { ...received, jsonSchema: historicalEvidenceCheckSchema() };
+        const attempts = new GenerationAttemptRepository(client);
+        const prepared = attempts.prepare("run-v2", savedRequest);
+        attempts.markDispatched(prepared.id);
+        attempts.markAccepted(prepared.id, { compilerPrompt: metadata.prompt });
+        attempts.recordTerminal(prepared.id, { status: "completed", terminalKind: "completed", output, attemptMetadata: metadata });
+        client.immediateTransaction(() => {
+          execution.commitStage("evidence-check", savedRequest, execution.resolvePrompt("evidence-check"), metadata, output,
+            { inputs: received.workOrder.inputs, evidence: received.evidence }, "area:problem:round-0");
+          execution.save(`metadata:${request.stage}`, metadata);
+        });
+        throw new Error("Process ended before investigator snapshot");
+      } };
+      await expect(execution.discoveryClient(provider).structuredCompletion(request)).rejects.toThrow("Process ended before investigator snapshot");
+      const originalAttempt = client.db.prepare("SELECT * FROM generation_attempts WHERE research_run_id = 'run-v2'").get();
+      const originalStage = client.db.prepare("SELECT * FROM stage_results WHERE research_run_id = 'run-v2'").get();
+
+      const result = await new WorkflowExecution(client, "run-v2").discoveryClient(provider)
+        .structuredCompletion({ ...request, generationId: "check-resume" });
+
+      expect(result.output).toEqual(output);
+      expect(providerCalls).toBe(1);
+      for (const changed of [
+        { ...request, workOrder: { ...request.workOrder, inputs: { areaId: "other-area", round: 0 } } },
+        { ...request, evidence: [{ sourceId: "problem", content: { statement: "A different observation." } }] },
+        { ...request, model: { ...request.model, modelId: "other-model" } },
+      ]) {
+        await expect(new WorkflowExecution(client, "run-v2").discoveryClient(provider).structuredCompletion(changed))
+          .rejects.toThrow(WorkflowV2ContextMismatchError);
+      }
+      expect(providerCalls).toBe(1);
+      expect(client.db.prepare("SELECT * FROM generation_attempts WHERE research_run_id = 'run-v2'").get()).toEqual(originalAttempt);
+      expect(client.db.prepare("SELECT * FROM stage_results WHERE research_run_id = 'run-v2'").get()).toEqual(originalStage);
+    } finally { client.close(); }
+  });
+
+  test("an unknown historical evidence check blocks object-root dispatch until its exact attempt is acknowledged", async () => {
+    configurePromptPaths({ bundledDir: join(process.cwd(), "prompts"), overrideDir: null });
+    const client = database();
+    const request = evidenceCheckRequest();
+    const output = { decision: "drop", reason: "The buyer observation is unsupported.", gaps: [] };
+    let providerCalls = 0;
+    let oldAttemptId = "";
+    try {
+      const provider = discoveryModelClient((received) => {
+        providerCalls++;
+        const attempts = new GenerationAttemptRepository(client);
+        if (providerCalls === 1) {
+          const prepared = attempts.prepare("run-v2", { ...received, jsonSchema: historicalEvidenceCheckSchema() });
+          oldAttemptId = prepared.id;
+          attempts.markDispatched(prepared.id);
+          attempts.interruptInFlight("Process ended without a terminal result");
+          throw new Error("Process ended without a terminal result");
+        }
+        expect(received.jsonSchema).toEqual(deriveJsonSchema(EvidenceCheckOutputSchema));
+        expect(received.jsonSchema).toMatchObject({ type: "object" });
+        expect(received.jsonSchema).not.toHaveProperty("anyOf");
+        const prepared = attempts.prepare("run-v2", received);
+        attempts.markDispatched(prepared.id);
+        attempts.recordTerminal(prepared.id, { status: "completed", terminalKind: "completed", output, attemptMetadata: evidenceCheckMetadata(received) });
+        return output;
+      });
+      await expect(new WorkflowExecution(client, "run-v2").discoveryClient(provider).structuredCompletion(request))
+        .rejects.toThrow("Process ended without a terminal result");
+      const originalAttempt = client.db.prepare("SELECT * FROM generation_attempts WHERE id = ?").get(oldAttemptId);
+      const retryRequest = { ...request, generationId: "check-explicit-retry" };
+      for (const acknowledged of [[], ["different-attempt"]]) {
+        await expect(new WorkflowExecution(client, "run-v2", acknowledged).discoveryClient(provider).structuredCompletion(retryRequest))
+          .rejects.toThrow("Review this request before explicitly retrying it");
+      }
+      expect(providerCalls).toBe(1);
+      expect(client.db.prepare("SELECT * FROM generation_attempts WHERE id = ?").get(oldAttemptId)).toEqual(originalAttempt);
+
+      const result = await new WorkflowExecution(client, "run-v2", [oldAttemptId]).discoveryClient(provider).structuredCompletion(retryRequest);
+
+      expect(result.output).toEqual(output);
+      expect(providerCalls).toBe(2);
+      expect(client.db.prepare("SELECT * FROM generation_attempts WHERE id = ?").get(oldAttemptId)).toEqual(originalAttempt);
+    } finally { client.close(); }
+  });
+
+  test.each(["prepared", "known-failed"] as const)("an authorized retry of a %s historical evidence check dispatches the object root", async (status) => {
+    configurePromptPaths({ bundledDir: join(process.cwd(), "prompts"), overrideDir: null });
+    const client = database();
+    const request = evidenceCheckRequest();
+    const output = { decision: "drop", reason: "The buyer observation is unsupported.", gaps: [] };
+    let providerCalls = 0;
+    let oldAttemptId = "";
+    try {
+      const provider = discoveryModelClient((received) => {
+        providerCalls++;
+        const attempts = new GenerationAttemptRepository(client);
+        if (providerCalls === 1) {
+          const prepared = attempts.prepare("run-v2", { ...received, jsonSchema: historicalEvidenceCheckSchema() });
+          oldAttemptId = prepared.id;
+          if (status === "known-failed") {
+            attempts.markDispatched(prepared.id);
+            attempts.recordTerminal(prepared.id, { status: "failed", terminalKind: "provider-rejected",
+              errorMessage: "Root union unsupported", attemptMetadata: evidenceCheckMetadata(received) });
+          }
+          throw new Error("Historical request did not complete");
+        }
+        expect(received.jsonSchema).toEqual(deriveJsonSchema(EvidenceCheckOutputSchema));
+        expect(received.jsonSchema).toMatchObject({ type: "object" });
+        expect(received.jsonSchema).not.toHaveProperty("anyOf");
+        return output;
+      });
+      await expect(new WorkflowExecution(client, "run-v2").discoveryClient(provider).structuredCompletion(request))
+        .rejects.toThrow("Historical request did not complete");
+      const originalAttempt = client.db.prepare("SELECT * FROM generation_attempts WHERE id = ?").get(oldAttemptId);
+
+      // Calling the execution seam represents the coordinator's authorized retry admission.
+      const result = await new WorkflowExecution(client, "run-v2").discoveryClient(provider)
+        .structuredCompletion({ ...request, generationId: "check-authorized-retry" });
+
+      expect(result.output).toEqual(output);
+      expect(providerCalls).toBe(2);
+      expect(client.db.prepare("SELECT * FROM generation_attempts WHERE id = ?").get(oldAttemptId)).toEqual(originalAttempt);
+    } finally { client.close(); }
+  });
+
+  test.each(["model", "reasoning", "goal", "inputs", "evidence", "other-union"] as const)(
+    "historical evidence-check recovery cannot reuse a completed request with different %s", async (changedField) => {
+      configurePromptPaths({ bundledDir: join(process.cwd(), "prompts"), overrideDir: null });
+      const client = database();
+      const request = evidenceCheckRequest();
+      const oldOutput = { decision: "confirmed", reason: "The original evidence agrees.", gaps: [] };
+      const freshOutput = { decision: "drop", reason: "The changed request requires a fresh check.", gaps: [] };
+      let providerCalls = 0;
+      let oldAttemptId = "";
+      try {
+        const provider = discoveryModelClient((received) => {
+          providerCalls++;
+          if (providerCalls === 1) {
+            const legacySchema = historicalEvidenceCheckSchema();
+            const attempts = new GenerationAttemptRepository(client);
+            const prepared = attempts.prepare("run-v2", { ...received, jsonSchema: changedField === "other-union"
+              ? { ...legacySchema, anyOf: [...legacySchema.anyOf!, { type: "object" }] } : legacySchema });
+            oldAttemptId = prepared.id;
+            attempts.markDispatched(prepared.id);
+            attempts.recordTerminal(prepared.id, { status: "completed", terminalKind: "completed", output: oldOutput,
+              attemptMetadata: evidenceCheckMetadata(received) });
+            throw new Error("Process ended before stage commit");
+          }
+          expect(received.jsonSchema).toEqual(deriveJsonSchema(EvidenceCheckOutputSchema));
+          expect(received.jsonSchema).not.toHaveProperty("anyOf");
+          return freshOutput;
+        });
+        await expect(new WorkflowExecution(client, "run-v2").discoveryClient(provider).structuredCompletion(request))
+          .rejects.toThrow("Process ended before stage commit");
+        const originalAttempt = client.db.prepare("SELECT * FROM generation_attempts WHERE id = ?").get(oldAttemptId);
+        const changed: StructuredStageRequest<unknown> = { ...request, generationId: "check-new-contract",
+          ...(changedField === "model" ? { model: { ...request.model, modelId: "other-model" } } : {}),
+          ...(changedField === "reasoning" ? { reasoningEffort: "low" as const } : {}),
+          ...(changedField === "goal" ? { workOrder: { ...request.workOrder, goal: "A different goal" } } : {}),
+          ...(changedField === "inputs" ? { workOrder: { ...request.workOrder, inputs: { areaId: "other-area", round: 0 } } } : {}),
+          ...(changedField === "evidence" ? { evidence: [{ sourceId: "problem", content: { statement: "A different observation." } }] } : {}),
+        };
+
+        const result = await new WorkflowExecution(client, "run-v2").discoveryClient(provider).structuredCompletion(changed);
+
+        expect(result.output).toEqual(freshOutput);
+        expect(providerCalls).toBe(2);
+        expect(client.db.prepare("SELECT * FROM generation_attempts WHERE id = ?").get(oldAttemptId)).toEqual(originalAttempt);
+      } finally { client.close(); }
+    },
+  );
+
+  test("a committed evidence check with an unrelated root union retains its identity conflict", async () => {
+    configurePromptPaths({ bundledDir: join(process.cwd(), "prompts"), overrideDir: null });
+    const client = database();
+    const request = evidenceCheckRequest();
+    let providerCalls = 0;
+    try {
+      const execution = new WorkflowExecution(client, "run-v2");
+      const provider = discoveryModelClient((received) => {
+        providerCalls++;
+        const legacySchema = historicalEvidenceCheckSchema();
+        const savedRequest = { ...received, jsonSchema: { ...legacySchema, anyOf: [...legacySchema.anyOf!, { type: "object" }] } };
+        const metadata = evidenceCheckMetadata(received);
+        client.immediateTransaction(() => {
+          execution.commitStage("evidence-check", savedRequest, execution.resolvePrompt("evidence-check"), metadata,
+            { decision: "drop", reason: "No supported buyer observation.", gaps: [] },
+            { inputs: received.workOrder.inputs, evidence: received.evidence }, "area:problem:round-0");
+          execution.save(`metadata:${request.stage}`, metadata);
+        });
+        throw new Error("Process ended before investigator snapshot");
+      });
+      await expect(execution.discoveryClient(provider).structuredCompletion(request)).rejects.toThrow("Process ended");
+      const originalStage = client.db.prepare("SELECT * FROM stage_results WHERE research_run_id = 'run-v2'").get();
+
+      await expect(new WorkflowExecution(client, "run-v2").discoveryClient(provider).structuredCompletion(request))
+        .rejects.toThrow(WorkflowV2ContextMismatchError);
+
+      expect(providerCalls).toBe(1);
+      expect(client.db.prepare("SELECT * FROM stage_results WHERE research_run_id = 'run-v2'").get()).toEqual(originalStage);
+    } finally { client.close(); }
+  });
+
   test("resumes an older problem-kill run with its saved output contract", async () => {
     configurePromptPaths({ bundledDir: join(process.cwd(), "prompts"), overrideDir: null });
     const client = database();
@@ -1203,6 +1459,34 @@ async function withDiscoveryFixture(
   } finally {
     client.close();
   }
+}
+
+// Frozen pre-object-root contract. This fixture must not follow the current provider schema.
+function historicalEvidenceCheckSchema() {
+  const reason = z.string().trim().min(1).max(1_000);
+  return deriveJsonSchema(z.union([
+    z.object({ decision: z.literal("confirmed"), reason, gaps: z.array(EvidenceGapSchema).max(0) }).strict(),
+    z.object({ decision: z.literal("drop"), reason, gaps: z.array(EvidenceGapSchema).max(0) }).strict(),
+    z.object({ decision: z.literal("follow-up"), reason, gaps: z.array(EvidenceGapSchema).min(1).max(2) }).strict(),
+  ]));
+}
+
+function evidenceCheckRequest(): StructuredStageRequest<unknown> {
+  return {
+    generationId: "check-original", stage: "evidence-check:area:problem:round-0",
+    model: { providerId: "test", modelId: "test" }, reasoningEffort: "high",
+    workOrder: { stage: "evidence-check", instruction: "Check supplied evidence.", goal: "Assess missing evidence",
+      inputs: { areaId: "area", round: 0 }, definitionOfDone: [] },
+    evidence: [{ sourceId: "problem", content: { statement: "Operators repeat filing." } }],
+    schema: EvidenceCheckOutputSchema, jsonSchema: deriveJsonSchema(EvidenceCheckOutputSchema), repairPolicy: "disabled",
+  };
+}
+
+function evidenceCheckMetadata(request: StructuredStageRequest<unknown>) {
+  return {
+    model: request.model, usage: { status: "unknown" as const }, latencyMs: 1, repairCount: 0,
+    providerRequestIds: [], attempts: [], prompt: { id: "scraply.stage-worker.v1", sha256: hash("runtime-prompt") },
+  };
 }
 
 function discoveryFactor(source: HarvestedSource, id = "factor", modelConfidence = 0.9): HarvestedFactor {
