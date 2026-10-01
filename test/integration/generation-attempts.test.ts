@@ -68,8 +68,11 @@ describe("durable generation snapshots", () => {
         compilerPrompt: { id: "scraply.stage-worker.v1", sha256: "c".repeat(64) },
       };
       const first = repository.prepare(runId, request("generation-a"), identity);
-      const second = repository.prepare(runId, request("generation-b"), identity);
+      const second = repository.prepare(runId, { ...request("generation-b"), callTimeLimitMs: 240_000 }, identity);
+      // A call time limit is saved for the trace without changing the request identity.
       expect(first.requestSha256).toBe(second.requestSha256);
+      expect(JSON.parse((db.db.prepare("SELECT request_json FROM generation_attempts WHERE id = ?").get(second.id) as { request_json: string })
+        .request_json).callTimeLimitMs).toBe(240_000);
       expect(first.wireRequestSha256).not.toBe(second.wireRequestSha256);
 
       const metadata = {
