@@ -24,7 +24,7 @@ Scraply's selectors can show GPT-6 Astra, Sol, and Luna when the connected accou
 
 ## Controlled research
 
-Research presents candidate problems with cited factors and source links. Read the excerpt and open its source before treating a claim as established. A matched excerpt supports only what it actually says. Model confidence is uncalibrated, and a problem's presence does not prove customer demand.
+Research presents candidate problems with cited factors and source links. Read the excerpt and open its source before treating a claim as established. A matched excerpt supports only what it actually says. Model confidence is uncalibrated, and a problem's presence does not prove customer demand. A problem is confirmed by two independent firsthand or measured accounts from the people you described or from people in a close role doing the same task, such as bookkeepers at a small firm for a freelance-bookkeeper brief. When it needed close roles, the problem shows **Evidence from close roles**.
 
 At the checkpoint, you can select the problems worth developing and choose the idea-generation model and effort. You can also request more research. A new question adds a named request; extra threads investigate different angles inside that request. From a finding, ask Scraply to search for new evidence or reevaluate saved evidence. A redo keeps the earlier finding in the archive. Compare the claims and sources, then choose whether the new result becomes the active evidence snapshot. A failed or unapplied redo leaves the current snapshot in place.
 
@@ -40,7 +40,7 @@ Vibe selects evidence-qualified problems and records why it chose them. Discover
 
 During discovery, the progress view shows recent research actions, including search queries, returned source counts, and evidence processing. This activity is saved and returns when you reopen the research. The idea counter appears once generation assignments exist; for per-problem research, its target comes from the selected problems and solutions per problem. Run details contain usage and individual tasks. Pause and Stop remain directly accessible while research runs. Closing the app or putting the machine to sleep does not promise background progress. Reopening reads the saved result and offers continuation only when the remaining work is safe to resume.
 
-New research scans the included areas, then investigates the strongest areas in more depth. Each investigator shows its current step and confirmed, insufficient, and dropped findings. Standard and Deep can make bounded evidence checks when an assessment has a specific gap. The run can finish with a partial set when further checks do not establish enough evidence.
+New research scans the included areas, then investigates the strongest areas in more depth. Each investigator shows its current step and confirmed, insufficient, and dropped findings. Standard investigates three areas and Deep four. They search for more evidence only for a finding that is one independent source short of confirmation. The run can finish with a partial set when further checks do not establish enough evidence.
 
 A settled Vibe run opens the idea collection. It may contain the target, a useful partial set, or zero qualifying ideas. A provider or authentication failure should end with the work saved and a reason you can act on. A request with an unknown completion is conservatively counted and is not silently replayed.
 
