@@ -3,7 +3,7 @@ import type { DatabaseClient } from "../db/client";
 import { DevelopmentRepository } from "../db/repositories/development";
 import { WorkflowV2Repository } from "../db/repositories/workflow-v2";
 import type { SearchClient } from "../providers/search";
-import { ProviderFailure, type GenerationMetadata, type StructuredModelClient, type StructuredStageRequest } from "../providers/structured";
+import { isDroppedStream, ProviderFailure, type GenerationMetadata, type StructuredModelClient, type StructuredStageRequest } from "../providers/structured";
 import { canonicalJson, sha256, workflowSearchKey } from "../shared/content-identity";
 import { EvidenceCheckOutputSchema, LegacyEvidenceCheckOutputSchema } from "../shared/evidence-investigators";
 import { deriveJsonSchema } from "../shared/json-schema";
@@ -91,6 +91,16 @@ export class WorkflowExecution {
     const row = this.db.db.prepare("SELECT value_json FROM workflow_snapshots WHERE research_run_id = ? AND snapshot_key = ?")
       .get(this.runId, key) as { value_json: string } | undefined;
     return row ? JSON.parse(row.value_json) as T : null;
+  }
+
+  /**
+   * Records a call whose stream dropped and that the app is starting over. Its result is never used;
+   * resume and the run outcome treat it as settled instead of waiting for the user to acknowledge it.
+   */
+  acknowledgeStreamRestart(generationId: string): void {
+    const lost = this.db.db.prepare("SELECT id FROM generation_attempts WHERE research_run_id = ? AND generation_id = ?")
+      .all(this.runId, generationId) as Array<{ id: string }>;
+    this.save(`acknowledged-retry:stream-restart:${generationId}`, { attemptIds: lost.map((attempt) => attempt.id) });
   }
 
   save(key: string, value: unknown): void {
@@ -279,11 +289,7 @@ export class WorkflowExecution {
           recovered.jsonSchema ? { ...request, jsonSchema: recovered.jsonSchema } : request,
           prompt, metadata, output, context, selectionId);
       } else {
-        const completion = await completeWithinTimeLimit(client, request, stageId, (generationId) => {
-          const lost = this.db.db.prepare("SELECT id FROM generation_attempts WHERE research_run_id = ? AND generation_id = ?")
-            .all(this.runId, generationId) as Array<{ id: string }>;
-          this.save(`acknowledged-retry:read-restart:${generationId}`, { attemptIds: lost.map((attempt) => attempt.id) });
-        });
+        const completion = await completeWithinTimeLimit(client, request, stageId, (generationId) => this.acknowledgeStreamRestart(generationId));
         output = repairDiscoveryStageOutput(stageId, requestSchema.parse(completion.output), original);
         metadata = completion.metadata;
         assertDiscoveryStageSemantics(stageId, output, original);
@@ -577,9 +583,10 @@ export const RESEARCH_CALL_TIME_LIMIT_MS: Partial<Record<WorkflowV2StageId, numb
 
 /**
  * A timed-out research call is retried once. Evidence reading handles its own timeout restart and split
- * (see discovery.ts). A read whose OpenAI stream dropped is started over once here: `acknowledgeRestart`
- * records the lost attempt as deliberately replaced, and its result is never used. A second drop is not
- * acknowledged, so the run still stops for review.
+ * (see discovery.ts). A research call whose OpenAI stream dropped is started over once here:
+ * `acknowledgeRestart` records the lost attempt as deliberately replaced, and its result is never used.
+ * A second drop is not acknowledged; framed research then ends only that area (see research-engine.ts).
+ * Idea stages have no time limit and are never started over.
  */
 async function completeWithinTimeLimit<T>(client: StructuredModelClient, request: StructuredStageRequest<T>, stageId: WorkflowV2StageId,
   acknowledgeRestart: (generationId: string) => void) {
@@ -590,8 +597,7 @@ async function completeWithinTimeLimit<T>(client: StructuredModelClient, request
     return await client.structuredCompletion(limited);
   } catch (error) {
     if (!(error instanceof ProviderFailure) || request.signal?.aborted) throw error;
-    const streamDropped = error.code === "interrupted" && Boolean(error.attempts?.some((attempt) => attempt.providerCompletion === "unknown"));
-    if (stageId === "factor-harvest" && streamDropped) acknowledgeRestart(request.generationId);
+    if (isDroppedStream(error)) acknowledgeRestart(request.generationId);
     else if (stageId === "factor-harvest" || error.code !== "timeout") throw error;
     return client.structuredCompletion({ ...limited, generationId: randomUUID() });
   }

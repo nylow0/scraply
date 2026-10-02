@@ -228,7 +228,7 @@ describe("native research workflow through the production backend", () => {
     const task = first.tasks.find(task => task.kind === "discovery")!;
     const originalUnknown = db.db.prepare("SELECT * FROM generation_attempts WHERE id = ?").get(task.terminalAttemptId!);
     expect(originalUnknown).toMatchObject({ status: "interrupted", generation_id: item.requests()[10]!.generationId });
-    expect(db.db.prepare("SELECT COUNT(*) AS count FROM workflow_snapshots WHERE snapshot_key LIKE 'acknowledged-retry:read-restart:%'").get()).toEqual({ count: 1 });
+    expect(db.db.prepare("SELECT COUNT(*) AS count FROM workflow_snapshots WHERE snapshot_key LIKE 'acknowledged-retry:stream-restart:%'").get()).toEqual({ count: 1 });
     const originalLedger = db.db.prepare("SELECT * FROM cost_ledger ORDER BY created_at,id").all();
     expect(db.db.prepare("SELECT COUNT(*) AS count FROM stage_results WHERE stage_id = 'factor-harvest'").get()).toEqual({ count: 8 });
     expect(new GenerationAttemptRepository(db).getResumeSafety(runId).canResume).toBe(false);

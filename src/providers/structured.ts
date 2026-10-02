@@ -37,6 +37,15 @@ export class ProviderFailure extends Error {
   readonly unretainedSchemaFailure: SchemaValidationFailure | undefined;
 }
 
+/**
+ * True when a dispatched call lost its provider stream: the provider may have finished, but the result
+ * never arrived. A lost runtime process carries no provider attempts and is not a dropped stream.
+ */
+export function isDroppedStream(error: unknown): boolean {
+  return error instanceof ProviderFailure && error.code === "interrupted"
+    && Boolean(error.attempts?.some((attempt) => attempt.providerCompletion === "unknown"));
+}
+
 export type { AttemptUsage };
 
 export type FinishReason = "stop" | "length" | "content_filter" | { other: string };
