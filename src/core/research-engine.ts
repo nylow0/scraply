@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { setTimeout as sleep } from "node:timers/promises";
 import type { DatabaseClient } from "../db/client";
 import { CostLedgerRepository, type CostReservation } from "../db/repositories/cost-ledger";
 import { DiscoveryRepository } from "../db/repositories/discovery";
@@ -14,7 +15,7 @@ import { ResearchFrameRepository } from "../db/repositories/research-frames";
 import type { SearchClient, SearchOptions, SearchProvider, SearchProviderChoice } from "../providers/search";
 import { chooseSearchProvider, filterRoutedSources } from "../providers/source-routes";
 import { validateResearchVenues, type ResearchVenueResolver, type VenueVerificationResult } from "../providers/venue-validation";
-import { isDroppedStream, ProviderFailure, type GenerationMetadata, type StructuredModelClient, type StructuredStageRequest } from "../providers/structured";
+import { isDroppedStream, ProviderFailure, type GenerationMetadata, type StructuredModelClient, type StructuredStageRequest, type StructuredStageResult } from "../providers/structured";
 import { AppError } from "../shared/errors";
 import { WorkflowLaunchContractSchema } from "../shared/workflow-contracts";
 import { framedDiscoveryProjection, PARALLEL_SOURCE_READS } from "../shared/discovery-projection";
@@ -61,6 +62,8 @@ export interface ResearchEngineOptions {
   db: DatabaseClient;
   modelClients?: Partial<Record<string, StructuredModelClient>>;
   modelScheduler?: WorkflowModelScheduler;
+  /** Pauses before retrying a rate-limited model call; tests shorten them. */
+  rateLimitPausesMs?: readonly number[];
   searchClients?: Partial<Record<SearchProvider, SearchClient>>;
   searchReady?: () => Partial<Record<SearchProvider, boolean>>;
   venueResolver?: ResearchVenueResolver;
@@ -3136,19 +3139,36 @@ export class ResearchEngine {
         }
       },
     };
+    // A rate-limited call was refused before it ran, so it is tried again after a pause; a short burst
+    // limit must not end a run. A usage cap still fails after the last pause.
+    const completeWithRateLimitRetry = async <T>(request: StructuredStageRequest<T>, originalId = request.generationId,
+      pauses: readonly number[] = this.options.rateLimitPausesMs ?? RATE_LIMIT_PAUSES_MS): Promise<StructuredStageResult<T>> => {
+      try {
+        return await instrumented.structuredCompletion(request);
+      } catch (error) {
+        const [pause, ...later] = pauses;
+        if (pause === undefined || !(error instanceof ProviderFailure) || error.code !== "rate-limit"
+          || active.abortController.signal.aborted) throw error;
+        this.progress(active, "OpenAI asked to slow down; trying the call again shortly", runtimeStage(request.stage), "waiting");
+        await sleep(pause, undefined, { signal: active.abortController.signal });
+        const retryId = randomUUID();
+        active.generationProvenance.set(originalId, retryId);
+        return completeWithRateLimitRetry({ ...request, generationId: retryId }, originalId, later);
+      }
+    };
     // An idea or review call whose stream dropped starts over once, so one lost connection does not end
     // the run and skip every remaining problem. Research calls restart in workflow-execution.ts instead.
     return {
       structuredCompletion: async <T>(request: StructuredStageRequest<T>) => {
         try {
-          return await instrumented.structuredCompletion(request);
+          return await completeWithRateLimitRetry(request);
         } catch (error) {
           if (!isDroppedStream(error) || !/^(solutions|solution-set-review)(:|$)/.test(request.stage)
             || !active.workflow || active.abortController.signal.aborted) throw error;
           active.workflow.acknowledgeStreamRestart(request.generationId);
           const restartId = randomUUID();
           active.generationProvenance.set(request.generationId, restartId);
-          return instrumented.structuredCompletion({ ...request, generationId: restartId });
+          return completeWithRateLimitRetry({ ...request, generationId: restartId });
         }
       },
     };
@@ -3512,6 +3532,9 @@ type RuntimeStage =
   | "queued" | "searching" | "extracting" | "synthesizing-problems"
   | "generating-options" | "awaiting-option-selection" | "evaluating-risk"
   | "analyzing-option" | "evidence-follow-up" | "completed" | "failed" | "cancelled";
+
+/** Pauses before retrying a rate-limited model call (see ResearchEngineOptions.rateLimitPausesMs). */
+const RATE_LIMIT_PAUSES_MS = [20_000, 60_000] as const;
 
 function sha256Area(areaId: string): string {
   return createHash("sha256").update(areaId).digest("hex").slice(0, 16);

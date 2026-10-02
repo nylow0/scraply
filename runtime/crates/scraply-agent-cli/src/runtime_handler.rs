@@ -21,6 +21,8 @@ use crate::protocol::{
 };
 
 const MAX_GENERATION_ID_BYTES: usize = 128;
+/// Matches the highest "Concurrent model calls" setting the app offers (src/shared/app-settings.ts).
+const MAX_ACTIVE_GENERATIONS: usize = 6;
 
 macro_rules! decode_payload {
     ($payload:expr) => {
@@ -533,10 +535,10 @@ impl RuntimeHost {
         let cancellation = CancellationToken::new();
         {
             let mut generations = self.generations.lock().expect("generation map poisoned");
-            if generations.len() >= 3 {
+            if generations.len() >= MAX_ACTIVE_GENERATIONS {
                 return failure(
                     ErrorCode::RequestConflict,
-                    "all three generation slots are active",
+                    "all six generation slots are active",
                 );
             }
             let Entry::Vacant(entry) = generations.entry(payload.generation_id.clone()) else {

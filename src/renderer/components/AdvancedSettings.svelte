@@ -2,7 +2,7 @@
   import { onMount } from "svelte";
 
   let reasoningSummaries = $state(true);
-  let maxConcurrentModelCalls = $state(3);
+  let maxConcurrentModelCalls = $state(6);
   let loading = $state(true);
   let loaded = $state(false);
   let saving = $state(false);
@@ -36,9 +36,9 @@
     onchange={() => saved = false} />Show reasoning summaries in the trace</label>
   <p>OpenAI summaries help you follow a run. They stay on this device and appear in the trace export. Some calls return no summary.</p>
   <label class="concurrency"><span>Concurrent model calls</span><select bind:value={maxConcurrentModelCalls} disabled={!loaded || loading || saving} onchange={() => saved = false}>
-    <option value={1}>1</option><option value={2}>2</option><option value={3}>3</option>
+    {#each [1, 2, 3, 4, 5, 6] as count (count)}<option value={count}>{count}</option>{/each}
   </select></label>
-  <p>The default is 3 simultaneous calls, so research reads several sources at once. Choose 1 or 2 if your account reaches its limits.</p>
+  <p>The default is 6 simultaneous calls, so research investigates several areas and reads several sources at once. Choose fewer if your account reaches its limits.</p>
   {#if error}<p class="error" role="alert">{error}</p>{/if}
   <footer><button type="submit" disabled={!loaded || loading || saving}>{saving ? "Saving…" : "Save advanced settings"}</button>
     {#if saved}<span role="status">Advanced settings saved</span>{/if}</footer>

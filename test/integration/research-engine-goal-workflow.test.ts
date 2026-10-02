@@ -97,7 +97,7 @@ async function fixture(output: (request: StructuredStageRequest<unknown>) => Pro
         url: `https://owners.example/${index === 1 ? "filing" : "handoff"}?utm_source=${encodeURIComponent(query)}`, title: "Owner", text }));
     } };
   }
-  const engine = new ResearchEngine({ db, modelScheduler: scheduler, modelClients: { fixture: client },
+  const engine = new ResearchEngine({ db, modelScheduler: scheduler, modelClients: { fixture: client }, rateLimitPausesMs: [1, 1],
     ...(options.venueResolver ? { venueResolver: options.venueResolver } : {}),
     searchClients: options.noSearchProvider ? {} : { exa: searchClient("exa"), ...(options.autoSearch ? { perplexity: searchClient("perplexity") } : {}) },
     onEvent(event) { if (event.type === "run-failed") errors.push(event.error); } });
@@ -743,6 +743,31 @@ test("a call that loses its stream twice ends only its own area, and the run goe
     expect(f.db.db.prepare("SELECT COUNT(*) AS count FROM workflow_snapshots WHERE research_run_id = ? AND snapshot_key = 'discovery-completed'").get(runId))
       .toEqual({ count: 1 });
   } finally { await f.close(); }
+});
+
+test("a rate-limited call is tried again after a pause, and a lasting limit still ends the call", async () => {
+  // Six calls at once must not end a run on a short burst limit.
+  let kills = 0;
+  const f = await fixture(request => {
+    if (request.stage.startsWith("problem-kill") && ++kills <= 2) throw new ProviderFailure("rate-limit", "Rate limit reached", true);
+    return researchOutput(request);
+  }, { singleArea: true });
+  try {
+    const runId = await f.start("discovery");
+    expect(f.errors).toEqual([]);
+    expect(f.db.db.prepare(`SELECT status, error_code AS code FROM generation_attempts WHERE research_run_id = ? AND stage_key LIKE 'problem-kill%'
+      ORDER BY created_at, rowid LIMIT 3`).all(runId)).toEqual([{ status: "failed", code: "rate-limit" }, { status: "failed", code: "rate-limit" },
+      { status: "completed", code: null }]);
+  } finally { await f.close(); }
+  const lasting = await fixture(request => {
+    if (request.stage === "solutions") throw new ProviderFailure("rate-limit", "Usage limit reached", true);
+    return researchOutput(request);
+  });
+  try {
+    await lasting.start("generate-ideas");
+    expect(lasting.errors).toEqual(["Usage limit reached"]);
+    expect(lasting.stages).toEqual(["solutions", "solutions", "solutions"]);
+  } finally { await lasting.close(); }
 });
 
 test("an idea call whose stream drops is started over once and its idea is still reviewed and saved", async () => {

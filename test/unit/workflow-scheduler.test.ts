@@ -102,8 +102,8 @@ describe("workflow model scheduler", () => {
     await Promise.all(active);
     expect(await next).toBe("b");
     expect(scheduler.maxActive).toBe(1);
-    expect(() => scheduler.setMaxActive(4)).toThrow("1 to 3");
-    expect(() => new WorkflowModelScheduler(1.5)).toThrow("1 to 3");
+    expect(() => scheduler.setMaxActive(7)).toThrow("1 to 6");
+    expect(() => new WorkflowModelScheduler(1.5)).toThrow("1 to 6");
   });
 
   test("rotates projects after one call even when the first project has queued more work", async () => {
