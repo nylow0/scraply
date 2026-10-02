@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { deriveJsonSchema, type JsonSchema } from "../../src/shared/json-schema";
-import { BoundedWorkflowV2FactorHarvestOutputSchema, STRUCTURED_OUTPUT_SCHEMAS } from "../../src/shared/structured-output-schemas";
+import { BoundedWorkflowV2FactorHarvestOutputSchema, LabeledWorkflowV2FactorHarvestOutputSchema, STRUCTURED_OUTPUT_SCHEMAS } from "../../src/shared/structured-output-schemas";
 
 const FORBIDDEN_CONSTRAINTS = new Set([
   "minItems",
@@ -40,6 +40,16 @@ describe("structured output schemas", () => {
     }
     expect(variants?.[1]?.properties?.independentSourceKey?.anyOf).toContainEqual({ type: "string", maxLength: 160 });
     expect(variants?.[1]?.properties?.demandEvidenceUncertainty).toEqual({ type: "string", maxLength: 600 });
+  });
+
+  test("new runs accept only labeled facts", () => {
+    const fact = { subject: "Bookkeepers", behavior: "chase receipts", quote: "I chase receipts weekly.", sourceId: "source-1",
+      uncertainty: "One account.", modelConfidence: 0.8 };
+    expect(BoundedWorkflowV2FactorHarvestOutputSchema.safeParse({ factors: [fact] }).success).toBe(true);
+    expect(LabeledWorkflowV2FactorHarvestOutputSchema.safeParse({ factors: [fact] }).success).toBe(false);
+    expect(LabeledWorkflowV2FactorHarvestOutputSchema.safeParse({ factors: [{ ...fact, sourceRole: "firsthand", audienceFit: "intended-buyer",
+      independentSourceKey: "Example bookkeeper", supportsDemand: false, demandEvidenceUncertainty: "No purchase described." }] }).success).toBe(true);
+    assertCodexCompatible(deriveJsonSchema(LabeledWorkflowV2FactorHarvestOutputSchema));
   });
 
   for (const [name, zodSchema] of Object.entries(STRUCTURED_OUTPUT_SCHEMAS)) {
