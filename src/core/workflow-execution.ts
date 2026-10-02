@@ -279,7 +279,11 @@ export class WorkflowExecution {
           recovered.jsonSchema ? { ...request, jsonSchema: recovered.jsonSchema } : request,
           prompt, metadata, output, context, selectionId);
       } else {
-        const completion = await completeWithinTimeLimit(client, request, stageId);
+        const completion = await completeWithinTimeLimit(client, request, stageId, (generationId) => {
+          const lost = this.db.db.prepare("SELECT id FROM generation_attempts WHERE research_run_id = ? AND generation_id = ?")
+            .all(this.runId, generationId) as Array<{ id: string }>;
+          this.save(`acknowledged-retry:read-restart:${generationId}`, { attemptIds: lost.map((attempt) => attempt.id) });
+        });
         output = repairDiscoveryStageOutput(stageId, requestSchema.parse(completion.output), original);
         metadata = completion.metadata;
         assertDiscoveryStageSemantics(stageId, output, original);
@@ -562,22 +566,33 @@ export class WorkflowExecution {
 
 /**
  * Research call limits, from Sol xhigh runs: normal calls finish within about two minutes, while
- * stalled or runaway calls ran 7 to 38 minutes. Idea stages legitimately run longer and stay unlimited.
+ * stalled or runaway calls ran 7 to 38 minutes. Evidence reads are shorter: 99% of 236 successful
+ * reads finished within 54 seconds (the slowest took 115), and a stalled read is started over.
+ * Idea stages legitimately run longer and stay unlimited.
  */
 export const RESEARCH_CALL_TIME_LIMIT_MS: Partial<Record<WorkflowV2StageId, number>> = {
-  "frame-search-plan": 240_000, "area-ranking": 240_000, "query-plan": 240_000, "factor-harvest": 240_000,
+  "frame-search-plan": 240_000, "area-ranking": 240_000, "query-plan": 240_000, "factor-harvest": 90_000,
   "evidence-check": 240_000, "area-gap": 240_000, frame: 480_000, "problem-candidates": 480_000, "problem-kill": 480_000,
 };
 
-/** A timed-out research call is retried once. Evidence reading instead splits its sources (see discovery.ts). */
-async function completeWithinTimeLimit<T>(client: StructuredModelClient, request: StructuredStageRequest<T>, stageId: WorkflowV2StageId) {
+/**
+ * A timed-out research call is retried once. Evidence reading handles its own timeout restart and split
+ * (see discovery.ts). A read whose OpenAI stream dropped is started over once here: `acknowledgeRestart`
+ * records the lost attempt as deliberately replaced, and its result is never used. A second drop is not
+ * acknowledged, so the run still stops for review.
+ */
+async function completeWithinTimeLimit<T>(client: StructuredModelClient, request: StructuredStageRequest<T>, stageId: WorkflowV2StageId,
+  acknowledgeRestart: (generationId: string) => void) {
   const limit = RESEARCH_CALL_TIME_LIMIT_MS[stageId];
   if (limit === undefined || request.callTimeLimitMs !== undefined) return client.structuredCompletion(request);
   const limited: StructuredStageRequest<T> = { ...request, callTimeLimitMs: limit };
   try {
     return await client.structuredCompletion(limited);
   } catch (error) {
-    if (stageId === "factor-harvest" || !(error instanceof ProviderFailure) || error.code !== "timeout" || request.signal?.aborted) throw error;
+    if (!(error instanceof ProviderFailure) || request.signal?.aborted) throw error;
+    const streamDropped = error.code === "interrupted" && Boolean(error.attempts?.some((attempt) => attempt.providerCompletion === "unknown"));
+    if (stageId === "factor-harvest" && streamDropped) acknowledgeRestart(request.generationId);
+    else if (stageId === "factor-harvest" || error.code !== "timeout") throw error;
     return client.structuredCompletion({ ...limited, generationId: randomUUID() });
   }
 }

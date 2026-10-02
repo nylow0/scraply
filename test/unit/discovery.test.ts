@@ -139,13 +139,34 @@ describe("discovery", () => {
         title: name, text: `Operators repeat filing at ${name}.` })); } },
     });
     expect(result.factors.map(factor => factor.source.canonicalUrl)).toEqual(["https://example.test/first", "https://example.test/second"]);
-    // The whole batch, its first half, each single source, and one retry of the stalled source.
+    // The whole batch, its first half, each single source, and one restart of the stalled source.
     expect(stages).toHaveLength(6);
     expect(stages[0]).toBe("factor-harvest:follow-up:gap-1");
     expect(new Set(stages).size).toBe(5);
     expect(stages[5]).toBe(stages[4]);
     expect(projections.filter(message => message.includes("two smaller batches"))).toHaveLength(2);
+    expect(projections).toContain("Reading 1 source stalled; starting it again.");
     expect(projections).toContain("Skipped https://example.test/stalls: the model could not finish reading it.");
+  });
+
+  test("a stalled evidence read starts over with the same sources instead of splitting them", async () => {
+    // In live Bookkeepers runs, every read that hit the time limit finished in seconds on its next try.
+    const stages: string[] = [];
+    let stalls = 1;
+    const result = await harvestEvidenceFollowUp(scope(), "Do operators repeat filing?", {
+      model, reasoningEffort, workflowVersion: 2, followUpKey: "gap-1", prompt: () => "Extract fixture evidence",
+      modelClient: modelClient(request => {
+        stages.push(request.stage);
+        if (stalls-- > 0) throw new ProviderFailure("timeout", "Call time limit reached", false);
+        const sources = (request.evidence[0]!.content as { sources: Array<{ id: string; text: string }> }).sources;
+        return { factors: sources.map(source => ({ subject: "Operators", behavior: "repeat filing", quote: source.text,
+          sourceId: source.id, modelConfidence: 0.8 })) };
+      }),
+      search: { async search() { return ["first", "second"].map(name => ({ id: name, url: `https://example.test/${name}`,
+        title: name, text: `Operators repeat filing at ${name}.` })); } },
+    });
+    expect(stages).toEqual(["factor-harvest:follow-up:gap-1", "factor-harvest:follow-up:gap-1"]);
+    expect(result.factors.map(factor => factor.source.canonicalUrl)).toEqual(["https://example.test/first", "https://example.test/second"]);
   });
 
   test("reading source batches in parallel keeps the same facts, in the same order, as reading them one by one", async () => {
