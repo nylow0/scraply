@@ -583,9 +583,10 @@ function characterBefore(value: string, index: number): string | undefined {
 }
 
 /**
- * Reads sources with one model call. When the call times out or reaches its output limit, the
- * sources are split in half and read again, so one oversized or stalled batch cannot end the run.
- * A single source gets one more try after a timeout; if it still fails, it is skipped and reported.
+ * Reads sources with one model call. A timed-out read starts over once with the same sources: in live
+ * runs a stalled read finished normally on its next try. If it fails again, or reaches its output limit,
+ * the sources are split in half and read again, so one oversized or stalled batch cannot end the run.
+ * A single source that still fails is skipped and reported.
  */
 async function readSourcesSplitting<T>(sources: HarvestedSource[], read: (part: HarvestedSource[]) => Promise<T[]>,
   onProjection?: (message: string) => void): Promise<T[]> {
@@ -594,14 +595,15 @@ async function readSourcesSplitting<T>(sources: HarvestedSource[], read: (part: 
     return await read(sources);
   } catch (error) {
     if (!recoverable(error)) throw error;
+    if ((error as ProviderFailure).code === "timeout") {
+      onProjection?.(`Reading ${sources.length} source${sources.length === 1 ? "" : "s"} stalled; starting it again.`);
+      try { return await read(sources); } catch (retryError) { if (!recoverable(retryError)) throw retryError; }
+    }
     if (sources.length > 1) {
       const middle = Math.ceil(sources.length / 2);
       onProjection?.(`Reading ${sources.length} sources took too long; reading them as two smaller batches.`);
       return [...await readSourcesSplitting(sources.slice(0, middle), read, onProjection),
         ...await readSourcesSplitting(sources.slice(middle), read, onProjection)];
-    }
-    if ((error as ProviderFailure).code === "timeout") {
-      try { return await read(sources); } catch (retryError) { if (!recoverable(retryError)) throw retryError; }
     }
     onProjection?.(`Skipped ${sources[0]!.canonicalUrl}: the model could not finish reading it.`);
     return [];
