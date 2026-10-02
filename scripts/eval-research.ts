@@ -30,7 +30,8 @@ export const EvaluationBriefSchema = z.object({
   }).strict(),
 }).strict();
 export type EvaluationBrief = z.infer<typeof EvaluationBriefSchema>;
-export type EvaluationCase = { key: string; brief: EvaluationBrief; depth: "quick" | "standard" | "deep"; repeat: number };
+/** `allProblems` drops the brief's automatic problem cap so Vibe develops every qualifying problem. */
+export type EvaluationCase = { key: string; brief: EvaluationBrief; depth: "quick" | "standard" | "deep"; repeat: number; allProblems?: boolean };
 const ModelOverrideSchema = EvaluationBriefSchema.shape.runSettings.pick({ model: true, reasoningEffort: true });
 
 export function parseEvaluationModel(value: string) {
@@ -46,7 +47,8 @@ export function loadEvaluationBriefs(directory: string): EvaluationBrief[] {
   return briefs;
 }
 
-export function evaluationMatrix(briefs: EvaluationBrief[], matrix: "baseline" | "quick" | "acceptance", modelOverride?: z.infer<typeof ModelOverrideSchema>): EvaluationCase[] {
+export function evaluationMatrix(briefs: EvaluationBrief[], matrix: "baseline" | "quick" | "acceptance", modelOverride?: z.infer<typeof ModelOverrideSchema>,
+  allProblems = false): EvaluationCase[] {
   const rows: EvaluationCase[] = [];
   for (const brief of briefs) {
     const selectedBrief = modelOverride ? { ...brief, runSettings: { ...brief.runSettings, ...modelOverride } } : brief;
@@ -55,7 +57,7 @@ export function evaluationMatrix(briefs: EvaluationBrief[], matrix: "baseline" |
     for (const depth of depths) {
       const parsedDepth = z.enum(["quick", "standard", "deep"]).parse(depth);
       for (let repeat = 1; repeat <= (parsedDepth === "quick" ? 2 : 1); repeat++) {
-        rows.push({ key: `${brief.id}-${parsedDepth}-${repeat}`, brief: selectedBrief, depth: parsedDepth, repeat });
+        rows.push({ key: `${brief.id}-${parsedDepth}-${repeat}`, brief: selectedBrief, depth: parsedDepth, repeat, ...(allProblems ? { allProblems } : {}) });
       }
     }
   }
@@ -72,7 +74,7 @@ export function evaluationDraft(item: EvaluationCase) {
     runConfig: { configVersion: 2, workflowVersion: 2, audienceSourcePolicy: "web", ...runSettings,
       discoveryDepth: item.depth, maxRunMinutes: 240, researchMode: "explore-market", knownProblem: "" },
     ideas: { model: settings.model, reasoningEffort: settings.reasoningEffort },
-    targets: { kind: "per-problem", ideaCount: settings.ideaCount, automaticProblemCap },
+    targets: { kind: "per-problem", ideaCount: settings.ideaCount, ...(item.allProblems ? {} : { automaticProblemCap }) },
     limits: { enforced: false, maxMinutes: 240, maxModelCalls: projection.modelCalls * 2 + settings.automaticProblemCap * Math.ceil(settings.ideaCount / 5) * 4,
       maxSearches: projection.searches }, instructions: {},
   });
@@ -103,6 +105,7 @@ const ManifestSchema = z.object({
   fixtureSha256: z.string(), matrix: z.enum(["baseline", "quick", "acceptance"]), createdAt: z.string(),
   profile: z.string(), rows: z.array(RowSchema),
   modelOverride: ModelOverrideSchema.optional(),
+  allProblems: z.boolean().optional(),
   transport: z.discriminatedUnion("kind", [
     z.object({ kind: z.literal("browser-dev"), origin: z.string() }).strict(),
     z.object({ kind: z.literal("installed-preload"), driver: z.literal("node-playwright-electron-pipe"),
@@ -178,7 +181,7 @@ export function evaluationMarkdown(manifest: Manifest): string {
     "Quality medians use completed target-met, partial, and no-qualifying-ideas runs; Quality N shows their measured count. Failed, cancelled, interrupted, running, and planned cases do not contribute quality measurements. Calls, searches, time, and interruptions retain all measured terminal runs. Shares are fractions. Unknown values are excluded from medians and never replaced with zero.",
     "Qualifying/candidate is the median of each run's mean qualifying observations per assessed candidate, not the median of individual candidate counts. New rows retain the actual launch preview before dispatch; older rows may lack it.",
     "Area coverage is unknown for historical phase-based runs. Must-have failures are unknown before criterion assessments exist.",
-    `Benchmark settings use one idea per selected problem, at most three automatic problems, and the fixture's selected provider. Model override: ${manifest.modelOverride ? `${manifest.modelOverride.model.providerId}/${manifest.modelOverride.model.modelId}:${manifest.modelOverride.reasoningEffort}` : "none, using fixture models and reasoning"}.`, "",
+    `Benchmark settings use one idea per selected problem, ${manifest.allProblems ? "every qualifying problem (--all-problems)" : "at most three automatic problems"}, and the fixture's selected provider. Model override: ${manifest.modelOverride ? `${manifest.modelOverride.model.providerId}/${manifest.modelOverride.model.modelId}:${manifest.modelOverride.reasoningEffort}` : "none, using fixture models and reasoning"}.`, "",
     "| Brief/depth | Terminal | Quality N | Confirmed | Areas | Qualifying/candidate | Firsthand+measured | Vendor+advice+illustration | Community sources | Not assessed | Accepted ideas | Must-have failures | Zero ideas | Calls | Searches | Minutes | Interruptions | Failed |",
     "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |", ...rows, "",
     "## Outcomes", "", ...manifest.rows.map(row => `- ${row.key}: ${row.status}, ${row.outcome ?? "pending"}. ${row.stopReason ?? ""}`), ""].join("\n");
@@ -377,7 +380,7 @@ async function main() {
   const { values } = parseArgs({ options: {
     "app-checkout": { type: "string" }, "runtime-dir": { type: "string" }, origin: { type: "string", default: "http://127.0.0.1:5179" },
     output: { type: "string" }, matrix: { type: "string", default: "baseline" }, briefs: { type: "string" },
-    model: { type: "string" }, case: { type: "string" },
+    model: { type: "string" }, case: { type: "string" }, "all-problems": { type: "boolean", default: false },
     "trace-module": { type: "string" }, "require-app-sha": { type: "string" },
     "pause-file": { type: "string" },
     "installed-executable": { type: "string" }, "installed-profile": { type: "string" },
@@ -404,7 +407,8 @@ async function main() {
   const briefs = loadEvaluationBriefs(join(root, "test/eval/briefs")).filter(brief => !values.briefs || values.briefs.split(",").includes(brief.id));
   if (!briefs.length) throw new Error("No evaluation briefs selected.");
   const modelOverride = values.model ? parseEvaluationModel(values.model) : undefined;
-  const matrix = evaluationMatrix(briefs, matrixName, modelOverride).filter(item => !values.case || item.key === values.case);
+  const allProblems = values["all-problems"];
+  const matrix = evaluationMatrix(briefs, matrixName, modelOverride, allProblems).filter(item => !values.case || item.key === values.case);
   if (!matrix.length) throw new Error("No evaluation cases selected.");
   const fixtureSha256 = createHash("sha256").update(JSON.stringify(briefs)).digest("hex");
   const appCommit = await command(checkout, ["git", "rev-parse", "HEAD"]);
@@ -433,10 +437,10 @@ async function main() {
     schemaVersion: 1, origin: "live", appCommit, fixtureSha256, matrix: matrixName, createdAt: new Date().toISOString(), profile,
     rows: matrix.map(item => ({ key: item.key, briefId: item.brief.id, depth: item.depth, repeat: item.repeat,
       threadId: null, sessionId: null, runId: null, status: "planned", outcome: null, stopReason: null, metrics: null })),
-    transport, modelOverride,
+    transport, modelOverride, ...(allProblems ? { allProblems } : {}),
   };
   if (manifest.appCommit !== appCommit || manifest.fixtureSha256 !== fixtureSha256 || manifest.matrix !== matrixName) throw new Error("Saved evaluation uses a different app, fixture, or matrix. Use a new output directory.");
-  if (JSON.stringify(manifest.modelOverride) !== JSON.stringify(modelOverride)
+  if (JSON.stringify(manifest.modelOverride) !== JSON.stringify(modelOverride) || Boolean(manifest.allProblems) !== allProblems
     || JSON.stringify(manifest.rows.map(row => row.key)) !== JSON.stringify(matrix.map(item => item.key))) {
     throw new Error("Saved evaluation uses a different model override or case selection. No workflow was dispatched.");
   }

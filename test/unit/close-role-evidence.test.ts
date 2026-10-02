@@ -28,4 +28,6 @@ test("Vibe selects a problem confirmed by a freelancer and a firm bookkeeper", (
   const result = selectVibeProblems({ candidates: [problem] });
   expect(result.selectedProblemIds).toEqual(["bank-feeds"]);
   expect(result.decisions[0]).toMatchObject({ directObservationCount: 2, independentSourceCount: 2 });
+  // The live Bookkeepers run called a close-role origin an intended-buyer source.
+  expect(result.decisions[0]?.reason).toContain("2 independent firsthand or measured sources (1 from close role) support the problem.");
 });

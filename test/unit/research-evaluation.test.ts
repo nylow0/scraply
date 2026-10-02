@@ -58,6 +58,18 @@ describe("research evaluation", () => {
     }
   });
 
+  test("--all-problems drops the brief's problem cap without changing the locked fixtures", () => {
+    const before = JSON.stringify(briefs);
+    const capped = evaluationDraft(evaluationMatrix(briefs, "acceptance")[0]!);
+    const uncapped = evaluationDraft(evaluationMatrix(briefs, "acceptance", undefined, true)[0]!);
+    expect(capped.targets.automaticProblemCap).toBe(briefs[0]!.runSettings.automaticProblemCap);
+    expect(uncapped.targets.automaticProblemCap).toBeUndefined();
+    expect(JSON.stringify(briefs)).toBe(before);
+    const manifest = { schemaVersion: 1 as const, origin: "offline-fixture" as const, appCommit: "fixture", fixtureSha256: "fixture",
+      matrix: "acceptance" as const, createdAt: "2026-10-02T00:00:00.000Z", profile: "fixture", rows: [], allProblems: true };
+    expect(evaluationMarkdown(manifest)).toContain("every qualifying problem (--all-problems)");
+  });
+
   test("two observers cannot both advance the same live evaluation", () => {
     const build = join(import.meta.dir, "../../build");
     mkdirSync(build, { recursive: true });

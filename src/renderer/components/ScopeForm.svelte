@@ -18,6 +18,7 @@
   import { tick, untrack } from "svelte";
   import { modelDisplayName, readResearchDefaults } from "../lib/research-defaults";
   import { DISCOVERY_DEPTHS, framedDiscoveryProjection } from "../../shared/discovery-projection";
+  import { RESEARCH_TARGETS } from "../../shared/evidence-investigators";
   import { allocateIdeaTargets } from "../../core/opportunity-planning";
   import type { WorkflowLaunchDraft } from "../../shared/workflow-contracts";
   import type { z } from "zod";
@@ -107,7 +108,8 @@
   let ideaReasoningEffort = $state(defaults.ideasReasoningEffort
     ?? initialIdeasModelOption?.defaultReasoningEffort
     ?? "");
-  let automaticProblemCap = $state(3);
+  /** Empty means every qualifying problem is developed. */
+  let automaticProblemCap = $state<number | null>(null);
   const initialProjection = untrack(() => framedDiscoveryProjection(discoveryDepth, frameLanguages?.length ?? 3));
   let workflowModelLimit = $state(initialProjection.modelCalls * 2 + 12);
   let workflowSearchLimit = $state(initialProjection.searches + 2);
@@ -120,7 +122,8 @@
   let projectTargetEnabled = $derived(opportunityTargetEnabled);
   let projectInitialBatchCalls = $derived.by(() => {
     if (!projectTargetEnabled || !Number.isInteger(targetFamilies) || targetFamilies < 2 || targetFamilies > 30) return 0;
-    const possibleProblems = researchMode === "known-problem" ? 1 : workflowMode === "vibe" ? automaticProblemCap : 1;
+    const possibleProblems = researchMode === "known-problem" ? 1
+      : workflowMode === "vibe" ? automaticProblemCap ?? RESEARCH_TARGETS[discoveryDepth].confirmedProblems : 1;
     if (!Number.isInteger(possibleProblems) || possibleProblems < 1 || possibleProblems > 20) return 0;
     return Math.max(...Array.from({ length: possibleProblems }, (_, index) => {
       const problemIds = Array.from({ length: index + 1 }, (_, problem) => `preview-problem-${problem}`);
@@ -274,7 +277,7 @@
         kind: opportunityExploration ? "project" : "per-problem",
         ideaCount: ideaCount ?? DEFAULT_IDEA_COUNT,
         ...(opportunityExploration ? { distinctBusinessCount: targetFamilies } : {}),
-        ...(workflowMode === "vibe" && researchMode === "explore-market" ? { automaticProblemCap } : {}),
+        ...(workflowMode === "vibe" && researchMode === "explore-market" && automaticProblemCap !== null ? { automaticProblemCap } : {}),
       },
       limits: { enforced: false, maxMinutes: maxRunMinutes, maxModelCalls: workflowModelLimit, maxSearches: workflowSearchLimit },
       instructions: { research: researchInstruction.trim(), ideas: ideasInstruction.trim(), review: reviewInstruction.trim() },
@@ -321,7 +324,8 @@
       if (workflowMode === "vibe") {
         if (!ideaModelAvailable) next.ideaModel = "Choose an available ideas model.";
         else if (!ideaReasoningAvailable) next.ideaReasoning = "Choose an available reasoning effort for ideas.";
-        if (researchMode === "explore-market" && (!Number.isInteger(automaticProblemCap) || automaticProblemCap < 1 || automaticProblemCap > 20)) next.automaticProblemCap = "Choose 1 to 20 problems.";
+        if (researchMode === "explore-market" && automaticProblemCap !== null
+          && (!Number.isInteger(automaticProblemCap) || automaticProblemCap < 1 || automaticProblemCap > 20)) next.automaticProblemCap = "Choose 1 to 20 problems, or leave it empty for all.";
       }
     }
     return next;
@@ -607,7 +611,7 @@
         </section>
         <section class="settings-panel" aria-label="Research scope configuration" inert={settingsSection !== "limits"}>
           <p class="help">{researchMode === "explore-market" ? "Depth guides research breadth and evidence collection. " : ""}Model calls and searches are tracked without a fixed cutoff.</p>
-          {#if useWorkflow && workflowMode === "vibe" && researchMode === "explore-market"}<label><span>Problems to develop</span><input aria-label="Automatic problem cap" data-field="automaticProblemCap" type="number" min="1" max="20" step="1" bind:value={automaticProblemCap} aria-invalid={Boolean(errors.automaticProblemCap)} />{#if errors.automaticProblemCap}<small class="field-error">{errors.automaticProblemCap}</small>{/if}</label>{/if}
+          {#if useWorkflow && workflowMode === "vibe" && researchMode === "explore-market"}<label><span>Problems to develop</span><input aria-label="Automatic problem cap" data-field="automaticProblemCap" type="number" min="1" max="20" step="1" placeholder="All qualifying" bind:value={automaticProblemCap} aria-invalid={Boolean(errors.automaticProblemCap)} /><small>Leave empty to develop every confirmed problem that qualifies.</small>{#if errors.automaticProblemCap}<small class="field-error">{errors.automaticProblemCap}</small>{/if}</label>{/if}
         </section>
         <section class="settings-panel instructions-panel" aria-label="Custom instructions" inert={settingsSection !== "instructions"}>
           <!-- One editor per stage keeps this tab as short as the others; the dot marks stages that have text. -->

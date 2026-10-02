@@ -116,6 +116,8 @@ export interface DiscoveryDependencies {
   smallHarvestBatches?: boolean;
   /** Follow-up questions read their sources in small capped batches, like guided harvests. */
   boundedFollowUpHarvest?: boolean;
+  /** How many source batches one harvest reads at once; the shared model scheduler still caps calls. */
+  parallelReads?: number;
   assessProblemAudience?: boolean;
   audienceSearch?: Pick<SearchOptions, "includeDomains" | "startPublishedDate"> & { category?: ExaCategory };
   sourceRouting?: SourceRoutingContext;
@@ -183,13 +185,18 @@ export async function harvestFactors(
       const batches = batchSources(sources, smallBatches ? GUIDED_HARVEST_CHARACTERS
         : mode === "audience" ? AUDIENCE_SOURCE_BATCH_CHARACTERS : SOURCE_BATCH_CHARACTERS,
       smallBatches ? GUIDED_HARVEST_SOURCES : Infinity);
-      for (const [index, batch] of batches.entries()) {
-        const remainingBatches = batches.length - index;
+      // Parallel runs read a window of batches at once; every batch in a window gets the limit
+      // computed at its start, and results are accepted in batch order so factor IDs stay stable.
+      const window = Math.max(1, dependencies.parallelReads ?? 1);
+      readBatches: for (let start = 0; start < batches.length; start += window) {
         const factorLimit = Math.min(smallBatches ? GUIDED_HARVEST_FACTORS : Infinity,
-          Math.ceil((targetAccepted - acceptedForMode) / remainingBatches));
+          Math.ceil((targetAccepted - acceptedForMode) / (batches.length - start)));
         if (factorLimit <= 0) break;
-        dependencies.onProjection?.(`Reading ${mode} evidence: batch ${index + 1} of ${batches.length}, ${batch.length} sources`);
-        const factors = await readSourcesSplitting(batch, async (part) => {
+        const group = batches.slice(start, start + window);
+        dependencies.onProjection?.(group.length === 1
+          ? `Reading ${mode} evidence: batch ${start + 1} of ${batches.length}, ${group[0]!.length} sources`
+          : `Reading ${mode} evidence: batches ${start + 1}-${start + group.length} of ${batches.length} at once`);
+        const reads = await Promise.allSettled(group.map((batch) => readSourcesSplitting(batch, async (part) => {
           const limit = part === batch ? factorLimit : Math.max(1, Math.ceil(factorLimit * part.length / batch.length));
           return (await structuredCall(
             dependencies,
@@ -198,36 +205,41 @@ export async function harvestFactors(
             buildFactorHarvestInput(scope, mode, part, limit),
             FactorHarvestOutputSchema.extend({ factors: FactorHarvestOutputSchema.shape.factors.max(limit) }),
           )).factors;
-        }, dependencies.onProjection);
-        extracted[mode] += factors.length;
-        for (const candidate of factors) {
-          const rejection = validateFactor(candidate, mode, sourceById);
-          if (rejection) {
-            rejections.push(rejection);
-            continue;
+        }, dependencies.onProjection)));
+        // Every read in the window settles before a failure ends the harvest, so none keeps running unowned.
+        const failed = reads.find((read) => read.status === "rejected");
+        if (failed) throw failed.reason;
+        for (const factors of reads.flatMap((read) => read.status === "fulfilled" ? [read.value] : [])) {
+          extracted[mode] += factors.length;
+          for (const candidate of factors) {
+            const rejection = validateFactor(candidate, mode, sourceById);
+            if (rejection) {
+              rejections.push(rejection);
+              continue;
+            }
+            const source = sourceById.get(candidate.sourceId)!;
+            const classification = "sourceRole" in candidate ? candidate : null;
+            rawFactors.push({
+              id: (dependencies.idFactory ?? randomUUID)(),
+              subject: candidate.subject.trim(),
+              behavior: preserveRecommendationWording(candidate.behavior.trim(), classification?.sourceRole),
+              quote: candidate.quote.trim(),
+              sourceId: source.id,
+              harvestMode: mode,
+              modelConfidence: candidate.modelConfidence,
+              uncertainty: classification?.uncertainty.trim() ?? null,
+              sourceRole: classification?.sourceRole ?? "unknown",
+              audienceFit: classification?.audienceFit ?? "unknown",
+              independentSourceKey: classification?.independentSourceKey?.trim() || null,
+              supportsDemand: classification?.supportsDemand === true
+                && classification.audienceFit === "intended-buyer"
+                && (classification.sourceRole === "firsthand" || classification.sourceRole === "measured"),
+              demandEvidenceUncertainty: classification?.demandEvidenceUncertainty.trim()
+                ?? "Not classified in the saved output.",
+            });
+            acceptedForMode += 1;
+            if (acceptedForMode >= targetAccepted) break readBatches;
           }
-          const source = sourceById.get(candidate.sourceId)!;
-          const classification = "sourceRole" in candidate ? candidate : null;
-          rawFactors.push({
-            id: (dependencies.idFactory ?? randomUUID)(),
-            subject: candidate.subject.trim(),
-            behavior: preserveRecommendationWording(candidate.behavior.trim(), classification?.sourceRole),
-            quote: candidate.quote.trim(),
-            sourceId: source.id,
-            harvestMode: mode,
-            modelConfidence: candidate.modelConfidence,
-            uncertainty: classification?.uncertainty.trim() ?? null,
-            sourceRole: classification?.sourceRole ?? "unknown",
-            audienceFit: classification?.audienceFit ?? "unknown",
-            independentSourceKey: classification?.independentSourceKey?.trim() || null,
-            supportsDemand: classification?.supportsDemand === true
-              && classification.audienceFit === "intended-buyer"
-              && (classification.sourceRole === "firsthand" || classification.sourceRole === "measured"),
-            demandEvidenceUncertainty: classification?.demandEvidenceUncertainty.trim()
-              ?? "Not classified in the saved output.",
-          });
-          acceptedForMode += 1;
-          if (acceptedForMode >= targetAccepted) break;
         }
       }
       if (dependencies.sourceRouting) {
@@ -926,8 +938,7 @@ export async function harvestEvidenceFollowUp(
     const baseKey = dependencies.followUpKey ? `factor-harvest:follow-up:${dependencies.followUpKey}` : "factor-harvest:follow-up";
     // Older runs keep one packet under the original key; a split or bounded batch names its sources.
     const batches = dependencies.boundedFollowUpHarvest ? batchSources(sources, GUIDED_HARVEST_CHARACTERS, GUIDED_HARVEST_SOURCES) : [sources];
-    const extractedFactors: typeof FactorHarvestOutputSchema["_output"]["factors"] = [];
-    for (const batch of batches) extractedFactors.push(...await readSourcesSplitting(batch, async (part) => (await structuredCall(
+    const read = (batch: HarvestedSource[]) => readSourcesSplitting(batch, async (part) => (await structuredCall(
       dependencies,
       dependencies.boundedFollowUpHarvest || part !== sources ? `${baseKey}:${part.map((source) => source.id).join(",")}` : baseKey,
       (dependencies.prompt ?? loadPrompt)("factor-harvest"),
@@ -938,7 +949,16 @@ export async function harvestEvidenceFollowUp(
       dependencies.boundedFollowUpHarvest
         ? FactorHarvestOutputSchema.extend({ factors: FactorHarvestOutputSchema.shape.factors.max(GUIDED_HARVEST_FACTORS) })
         : FactorHarvestOutputSchema,
-    )).factors, dependencies.onProjection));
+    )).factors, dependencies.onProjection);
+    // Batches in one window read at once; results are kept in batch order.
+    const extractedFactors: typeof FactorHarvestOutputSchema["_output"]["factors"] = [];
+    const window = Math.max(1, dependencies.parallelReads ?? 1);
+    for (let start = 0; start < batches.length; start += window) {
+      const reads = await Promise.allSettled(batches.slice(start, start + window).map(read));
+      const failed = reads.find((result) => result.status === "rejected");
+      if (failed) throw failed.reason;
+      for (const result of reads) if (result.status === "fulfilled") extractedFactors.push(...result.value);
+    }
     const sourceById = new Map(sources.map((source) => [source.id, source]));
     for (const candidate of extractedFactors) {
       const rejection = validateFactor(candidate, "domain", sourceById);

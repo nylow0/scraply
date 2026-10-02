@@ -2,7 +2,7 @@
   import { onMount } from "svelte";
 
   let reasoningSummaries = $state(true);
-  let maxConcurrentModelCalls = $state(2);
+  let maxConcurrentModelCalls = $state(3);
   let loading = $state(true);
   let loaded = $state(false);
   let saving = $state(false);
@@ -38,7 +38,7 @@
   <label class="concurrency"><span>Concurrent model calls</span><select bind:value={maxConcurrentModelCalls} disabled={!loaded || loading || saving} onchange={() => saved = false}>
     <option value={1}>1</option><option value={2}>2</option><option value={3}>3</option>
   </select></label>
-  <p>The default is 2 simultaneous calls. Choose 1 to reduce overlap, or 3 for more parallel work. Higher concurrency can reach account limits sooner.</p>
+  <p>The default is 3 simultaneous calls, so research reads several sources at once. Choose 1 or 2 if your account reaches its limits.</p>
   {#if error}<p class="error" role="alert">{error}</p>{/if}
   <footer><button type="submit" disabled={!loaded || loading || saving}>{saving ? "Saving…" : "Save advanced settings"}</button>
     {#if saved}<span role="status">Advanced settings saved</span>{/if}</footer>

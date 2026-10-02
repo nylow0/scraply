@@ -26,6 +26,7 @@ export class WorkflowExecution {
   readonly repository: WorkflowV2Repository;
   readonly smallHarvestBatches: boolean;
   readonly boundedFollowUpHarvest: boolean;
+  readonly parallelResearch: boolean;
   readonly rankProblemCandidates: boolean;
   private readonly prompts: Record<WorkflowV2StageId, ResolvedWorkflowV2Prompt>;
   private readonly disableRepair: boolean;
@@ -63,10 +64,13 @@ export class WorkflowExecution {
       this.save("source-routes", { version: 2 });
       this.save("query-plan-languages", { version: 1 });
       this.save("bounded-follow-up-harvest", { version: 1 });
+      this.save("parallel-research", { version: 1 });
     }
     // Runs without the marker keep their original source groups and checkpoint identities.
     this.smallHarvestBatches = this.read<{ version: number }>("small-harvest-batches")?.version === 1;
     this.boundedFollowUpHarvest = this.read<{ version: number }>("bounded-follow-up-harvest")?.version === 1;
+    // Older runs keep their sequential reads, whose factor limits are part of saved request identities.
+    this.parallelResearch = this.read<{ version: number }>("parallel-research")?.version === 1;
     if (!this.read("source-route-start")) this.save("source-route-start", new Date().toISOString());
     // Candidate order controls sequential source IDs in completed verdict requests.
     this.rankProblemCandidates = this.read<{ version: number }>("candidate-accounting")?.version === 1;

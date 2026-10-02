@@ -157,12 +157,10 @@ test("new discovery admissions search retrieved publication venues outside the p
 test.each([1, null])("a resumed historical discovery retains its publication-domain contract (%s)", async version => {
   const source = { id: "study", url: "https://bmchealthservres.biomedcentral.com/articles/saved-study",
     title: "A retrieved study", text: "I lose time handling order changes." };
-  let interrupted = false;
+  // Every area scan is interrupted, as parallel scans start together; no scan completes under the newer routes.
+  let interrupting = true;
   const fixture = await setup("babysit", false, stage => {
-    if (!interrupted && stage.startsWith("query-plan:scan-")) {
-      interrupted = true;
-      throw new ProviderFailure("unavailable", "Interrupted before scan dispatch", true);
-    }
+    if (interrupting && stage.startsWith("query-plan:scan-")) throw new ProviderFailure("unavailable", "Interrupted before scan dispatch", true);
   }, false, source, version === null ? undefined : "measured-behavior");
   try {
     const { coordinator, sessionId, db, engine } = fixture;
@@ -181,6 +179,7 @@ test.each([1, null])("a resumed historical discovery retains its publication-dom
     if (version === null) db.db.prepare("DELETE FROM workflow_snapshots WHERE research_run_id = ? AND snapshot_key = 'source-routes'").run(runId);
     else db.db.prepare("UPDATE workflow_snapshots SET value_json = ? WHERE research_run_id = ? AND snapshot_key = 'source-routes'")
       .run('{"version":1}', runId);
+    interrupting = false;
     await engine.resumeRun(runId);
     await until(() => !engine.getActiveRunIds().has(runId));
     expect(fixture.errors).toEqual(["Interrupted before scan dispatch"]);
