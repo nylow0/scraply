@@ -14,7 +14,7 @@ import { ResearchFrameRepository } from "../db/repositories/research-frames";
 import type { SearchClient, SearchOptions, SearchProvider, SearchProviderChoice } from "../providers/search";
 import { chooseSearchProvider, filterRoutedSources } from "../providers/source-routes";
 import { validateResearchVenues, type ResearchVenueResolver, type VenueVerificationResult } from "../providers/venue-validation";
-import { ProviderFailure, type GenerationMetadata, type StructuredModelClient, type StructuredStageRequest } from "../providers/structured";
+import { isDroppedStream, ProviderFailure, type GenerationMetadata, type StructuredModelClient, type StructuredStageRequest } from "../providers/structured";
 import { AppError } from "../shared/errors";
 import { WorkflowLaunchContractSchema } from "../shared/workflow-contracts";
 import { framedDiscoveryProjection, PARALLEL_SOURCE_READS } from "../shared/discovery-projection";
@@ -1990,13 +1990,24 @@ export class ResearchEngine {
       if (result.status === "fulfilled" && result.value) results.push(result.value);
       if (result.status !== "rejected") continue;
       const area = selected[index]!;
+      // A model answer that timed out, ran past its output limit, broke the schema, or lost its stream
+      // twice ends only its own area. Problems that area already checked are kept; app errors still fail the run.
+      const dropped = isDroppedStream(result.reason);
+      const modelFailure = dropped || result.reason instanceof ProviderFailure && ["timeout", "output-limit", "schema"].includes(result.reason.code);
+      if (dropped && !active.abortController.signal.aborted) {
+        // The area's lost calls are never used or replayed. Recording them lets the other areas go on to ideas.
+        const unresolved = new Set(new GenerationAttemptRepository(this.options.db).unresolvedAttemptIds(active.runId));
+        const lost = (this.options.db.db.prepare(`SELECT id FROM generation_attempts WHERE research_run_id = ?
+          AND (instr(stage_key,?) > 0 OR instr(stage_key,?) > 0 OR stage_key = ?)`)
+          .all(active.runId, `area-${sha256Area(area.id)}`, `:${area.id}:`, `area-gap:${area.id}`) as Array<{ id: string }>)
+          .map(attempt => attempt.id).filter(id => unresolved.has(id));
+        if (lost.length) workflow.save(`acknowledged-retry:area-stopped:${area.id}:${lost[0]}`, { attemptIds: lost });
+      }
       this.settleInvestigatorFailure(active, lanes.get(area.id)!.parent.id, result.reason);
-      // A model answer that timed out, ran past its output limit, or broke the schema ends only
-      // its own area. Problems that area already checked are kept; app errors still fail the run.
-      const modelFailure = result.reason instanceof ProviderFailure && ["timeout", "output-limit", "schema"].includes(result.reason.code);
       if (!modelFailure || active.abortController.signal.aborted) { failed ??= result; continue; }
       const kept = [...settledProblems.values()].filter(problem => problem.areaId === area.id).map(({ areaId, ...problem }) => { void areaId; return problem; });
-      const partialReason = `Research in ${area.name} stopped early because a model call failed: ${errorMessage(result.reason)} `
+      const cause = dropped ? "its connection to OpenAI dropped twice." : errorMessage(result.reason);
+      const partialReason = `Research in ${area.name} stopped early because a model call failed: ${cause} `
         + `${kept.length} already checked problem${kept.length === 1 ? " was" : "s were"} kept.`;
       partialReasons.set(area.id, partialReason);
       results.push({ areaId: area.id, result: { problems: kept, blockedCandidates: [], killSources: [], factorUtilizationRate: 0, partialReason } });
@@ -3004,7 +3015,7 @@ export class ResearchEngine {
       .get(active.runId) as { workflow_session_id: string | null } | undefined;
     const client = session?.workflow_session_id && this.options.modelScheduler
       ? scheduledModelClient(baseClient, this.options.modelScheduler, active.threadId) : baseClient;
-    return {
+    const instrumented: StructuredModelClient = {
       structuredCompletion: async <T>(request: StructuredStageRequest<T>) => {
         active.abortController.signal.throwIfAborted();
         const stage = runtimeStage(request.stage);
@@ -3120,6 +3131,22 @@ export class ResearchEngine {
           }
           else if (reservation) this.ledger.release(reservation.id);
           throw error;
+        }
+      },
+    };
+    // An idea or review call whose stream dropped starts over once, so one lost connection does not end
+    // the run and skip every remaining problem. Research calls restart in workflow-execution.ts instead.
+    return {
+      structuredCompletion: async <T>(request: StructuredStageRequest<T>) => {
+        try {
+          return await instrumented.structuredCompletion(request);
+        } catch (error) {
+          if (!isDroppedStream(error) || !/^(solutions|solution-set-review)(:|$)/.test(request.stage)
+            || !active.workflow || active.abortController.signal.aborted) throw error;
+          active.workflow.acknowledgeStreamRestart(request.generationId);
+          const restartId = randomUUID();
+          active.generationProvenance.set(request.generationId, restartId);
+          return instrumented.structuredCompletion({ ...request, generationId: restartId });
         }
       },
     };
