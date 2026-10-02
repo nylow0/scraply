@@ -170,7 +170,12 @@ export function scopeResearchArea(scope: Scope, area: ResearchArea, frame?: Rese
   };
 }
 
-/** Mechanical selection uses actual qualifying counts, never the ranker's confidence label. */
+/**
+ * Picks the areas to investigate, up to the depth's investigator count. Areas whose scan found a qualifying
+ * observation come first, by rank. The scan reads only a few sources per area, so the remaining slots go to
+ * the next areas by rank, skipping any the ranking says fail the goal. The ranker's confidence label never
+ * moves an area ahead of one with actual qualifying observations.
+ */
 export function selectResearchAreas(frame: ResearchFrame, ranking: ResearchAreaRanking,
   qualifyingFactCounts: Readonly<Record<string, number>>, depth: DiscoveryDepth): ResearchArea[] {
   const included = frame.areas.filter(area => area.included);
@@ -183,8 +188,9 @@ export function selectResearchAreas(frame: ResearchFrame, ranking: ResearchAreaR
     usedRanks.add(item.rank);
   }
   if (ranks.size !== included.length) throw new Error("Area ranking is missing an included area.");
-  const anyQualifying = included.some(area => (qualifyingFactCounts[area.id] ?? 0) > 0);
-  const eligible = anyQualifying ? included.filter(area => (qualifyingFactCounts[area.id] ?? 0) > 0) : included;
-  return eligible.sort((left, right) => ranks.get(left.id)! - ranks.get(right.id)!)
-    .slice(0, FRAME_INVESTIGATOR_COUNTS[depth]);
+  const fits = new Map(ranking.areas.map(item => [item.areaId, item.fit]));
+  const byRank = (left: ResearchArea, right: ResearchArea) => ranks.get(left.id)! - ranks.get(right.id)!;
+  const evidenced = included.filter(area => (qualifyingFactCounts[area.id] ?? 0) > 0).sort(byRank);
+  const others = included.filter(area => !evidenced.includes(area) && fits.get(area.id) !== "fails").sort(byRank);
+  return [...evidenced, ...others].slice(0, FRAME_INVESTIGATOR_COUNTS[depth]);
 }

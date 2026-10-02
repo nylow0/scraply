@@ -132,12 +132,16 @@ describe("scoped research and area selection", () => {
     expect(scoped.offLimits).toEqual(["New hardware", "Replacing the accounting system"]);
   });
 
-  it("selects evidence-bearing areas by rank and depth, excludes removed areas, and falls back honestly when all are empty", () => {
+  it("selects evidence-bearing areas first, fills the depth's slots by rank, and excludes removed and failing areas", () => {
     const frame = sampleFrame();
     frame.areas = Array.from({ length: 5 }, (_, index) => ({ ...frame.areas[0]!, id: `area-${index}`, name: `Area ${index}`, priority: index + 1, included: index !== 4 }));
     const ranking: ResearchAreaRanking = { areas: frame.areas.filter(area => area.included).map((area, index) => ({ areaId: area.id, rank: index + 1,
       reason: "Observed relevance", evidenceStrength: "strong", fit: "meets" })) };
-    expect(selectResearchAreas(frame, ranking, { "area-1": 1, "area-2": 2 }, "standard").map(area => area.id)).toEqual(["area-1", "area-2"]);
+    // Live Bookkeepers investigated one area when only its quick scan found a qualifying observation.
+    expect(selectResearchAreas(frame, ranking, { "area-3": 1 }, "standard").map(area => area.id)).toEqual(["area-3", "area-0", "area-1"]);
+    expect(selectResearchAreas(frame, ranking, { "area-1": 1, "area-2": 2 }, "standard").map(area => area.id)).toEqual(["area-1", "area-2", "area-0"]);
+    const failing: ResearchAreaRanking = { areas: ranking.areas.map(item => item.areaId === "area-0" ? { ...item, fit: "fails" } : item) };
+    expect(selectResearchAreas(frame, failing, { "area-3": 1 }, "standard").map(area => area.id)).toEqual(["area-3", "area-1", "area-2"]);
     // Standard investigates three evidence-bearing areas; live runs stopped at two while this count lived in two places.
     expect(selectResearchAreas(frame, ranking, { "area-0": 1, "area-1": 1, "area-2": 2, "area-3": 4 }, "standard").map(area => area.id))
       .toEqual(["area-0", "area-1", "area-2"]);

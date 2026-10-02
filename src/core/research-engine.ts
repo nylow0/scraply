@@ -1798,9 +1798,11 @@ export class ResearchEngine {
       }
       scans.push(scan);
     }
-    const selected = await rankScannedAreas(frame, scans, active.config.discoveryDepth,
+    // A resumed run keeps the areas it already chose, even if the selection rule changed since.
+    const savedSelection = workflow.read<ResearchArea[]>("frame-selected-areas");
+    const selected = savedSelection ?? await rankScannedAreas(frame, scans, active.config.discoveryDepth,
       { ...this.dependencies(active), workflow, onProgress: message => this.progress(active, message) });
-    workflow.save("frame-selected-areas", selected);
+    if (!savedSelection) workflow.save("frame-selected-areas", selected);
     const owner = this.workflowRunOwner(active);
     const lanes = new Map(selected.map(area => [area.id, ensureAreaInvestigatorWorkItems(this.options.db,
       owner.sessionId, owner.workItemId, area)]));

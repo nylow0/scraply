@@ -10,7 +10,7 @@ import { deriveJsonSchema } from "../shared/json-schema";
 import { OpportunityExpansionOutputSchema } from "../shared/opportunity-exploration";
 import { LegacyResearchFrameOutputSchema, ResearchFrameOutputSchema } from "../shared/research-frame";
 import { SourceSchema, type Source } from "../shared/schemas";
-import { AssessedWorkflowV2ProblemKillOutputSchema, BoundedWorkflowV2FactorHarvestOutputSchema, FACTOR_EXPLANATION_CHARACTERS, ClassifiedWorkflowV2ProblemKillOutputSchema, WorkflowV2QueryPlanOutputSchema, WorkflowV2FactorHarvestOutputSchema, WorkflowV2ProblemCandidatesOutputSchema, WorkflowV2ProblemKillOutputSchema, WorkflowV2SolutionsOutputSchema } from "../shared/structured-output-schemas";
+import { AssessedWorkflowV2ProblemKillOutputSchema, BoundedWorkflowV2FactorHarvestOutputSchema, LabeledWorkflowV2FactorHarvestOutputSchema, FACTOR_EXPLANATION_CHARACTERS, ClassifiedWorkflowV2ProblemKillOutputSchema, WorkflowV2QueryPlanOutputSchema, WorkflowV2FactorHarvestOutputSchema, WorkflowV2ProblemCandidatesOutputSchema, WorkflowV2ProblemKillOutputSchema, WorkflowV2SolutionsOutputSchema } from "../shared/structured-output-schemas";
 import { PROBLEM_AUDIENCE_ASSESSMENT_INSTRUCTION, repairVerdictSourceIds, scopeFactorAssessments } from "./problem-evidence";
 import { LegacyWorkflowV2QueryPlanOutputSchema } from "../shared/structured-output-schemas";
 import type { WorkflowV2DevelopmentContext } from "./development";
@@ -27,6 +27,7 @@ export class WorkflowExecution {
   readonly smallHarvestBatches: boolean;
   readonly boundedFollowUpHarvest: boolean;
   readonly parallelResearch: boolean;
+  readonly labeledFactors: boolean;
   readonly rankProblemCandidates: boolean;
   private readonly prompts: Record<WorkflowV2StageId, ResolvedWorkflowV2Prompt>;
   private readonly disableRepair: boolean;
@@ -65,12 +66,15 @@ export class WorkflowExecution {
       this.save("query-plan-languages", { version: 1 });
       this.save("bounded-follow-up-harvest", { version: 1 });
       this.save("parallel-research", { version: 1 });
+      this.save("labeled-factors", { version: 1 });
     }
     // Runs without the marker keep their original source groups and checkpoint identities.
     this.smallHarvestBatches = this.read<{ version: number }>("small-harvest-batches")?.version === 1;
     this.boundedFollowUpHarvest = this.read<{ version: number }>("bounded-follow-up-harvest")?.version === 1;
     // Older runs keep their sequential reads, whose factor limits are part of saved request identities.
     this.parallelResearch = this.read<{ version: number }>("parallel-research")?.version === 1;
+    // Older runs keep the read schema their completed reads were requested with.
+    this.labeledFactors = this.read<{ version: number }>("labeled-factors")?.version === 1;
     if (!this.read("source-route-start")) this.save("source-route-start", new Date().toISOString());
     // Candidate order controls sequential source IDs in completed verdict requests.
     this.rankProblemCandidates = this.read<{ version: number }>("candidate-accounting")?.version === 1;
@@ -226,7 +230,8 @@ export class WorkflowExecution {
         ? this.repository.findStageResult(this.runId, stageId, selectionId)?.schema
           ?? (completedFactor ? (JSON.parse(completedFactor.request_json) as { jsonSchema: unknown }).jsonSchema : undefined)
         : undefined;
-      const factorSchema = savedFactorSchema ? WorkflowV2FactorHarvestOutputSchema : BoundedWorkflowV2FactorHarvestOutputSchema;
+      const factorSchema = savedFactorSchema ? WorkflowV2FactorHarvestOutputSchema
+        : this.labeledFactors ? LabeledWorkflowV2FactorHarvestOutputSchema : BoundedWorkflowV2FactorHarvestOutputSchema;
       const factorLimit = stageId === "factor-harvest"
         ? Number((original.workOrder.inputs as { factorLimit?: unknown }).factorLimit)
         : Number.NaN;

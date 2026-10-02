@@ -390,7 +390,7 @@ async function main() {
   } });
   if (values.help) {
     console.log("bun scripts/eval-research.ts --app-checkout PATH [--runtime-dir PATH | --installed-executable PATH --installed-profile PATH] [--matrix baseline|quick|acceptance] [--briefs IDS] [--case KEY] [--model providerId/modelId:effort] [--output build/eval/DATE] [--trace-module PATH] [--pause-file PATH] [--dry-run|--report-only|--verify-transport]");
-    console.log("Installed mode drives the real preload through a local Playwright pipe and copies encrypted credentials into output/profile. --verify-transport only reads identity and workspace. Observer restarts never resume paused workflows or replay uncertain admissions.");
+    console.log("Installed mode drives the real preload through a local Playwright pipe and copies encrypted credentials into output/profile. --verify-transport only reads identity and workspace, and waits for startup validation to confirm each case's model, reasoning effort and search key. Observer restarts never resume paused workflows or replay uncertain admissions.");
     return;
   }
   const root = resolve(import.meta.dir, "..");
@@ -478,7 +478,9 @@ async function main() {
         }
         const installedBackend = evaluationBackend(installedEvaluationInvoke(driver), databasePath, traceModule);
         if (values["verify-transport"]) {
-          const workspace = WorkspaceStateSchema.parse(await driver.invoke("getWorkspace"));
+          // Wait for startup validation as a real run does, so a missing model, effort or search key fails here.
+          let workspace = WorkspaceStateSchema.parse(await driver.invoke("getWorkspace"));
+          for (const item of matrix) workspace = await waitForEvaluationReadiness(installedEvaluationInvoke(driver), item, { now: () => Date.now(), wait: delay });
           const db = new Database(databasePath, { readonly: true });
           try {
             const storedIds = new Set(z.array(z.object({ id: z.string() })).parse(db.query("SELECT id FROM threads").all()).map(thread => thread.id));

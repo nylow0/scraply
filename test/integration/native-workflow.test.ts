@@ -383,6 +383,14 @@ describe("native research workflow through the production backend", () => {
     // Research calls carry their stage time limit; no estimate or saved deadline bounds the run itself.
     expect(item.requests().every((request) => request.deadlineMs
       === RESEARCH_CALL_TIME_LIMIT_MS[request.workOrder.stage.split(":")[0] as WorkflowV2StageId])).toBe(true);
+    // Every read in a new run must label each fact; an unlabeled fact can never count as evidence.
+    const reads = item.requests().filter(request => request.workOrder.stage.startsWith("factor-harvest"));
+    expect(reads.length).toBeGreaterThan(0);
+    for (const read of reads) {
+      const fact = (read.outputSchema as { properties: { factors: { items: { anyOf?: unknown; required?: string[] } } } }).properties.factors.items;
+      expect(fact.anyOf).toBeUndefined();
+      expect(fact.required).toEqual(expect.arrayContaining(["sourceRole", "audienceFit", "independentSourceKey", "supportsDemand"]));
+    }
     const progress = await item.post(`/workflows/${receipt.sessionId}`, undefined, WorkflowDetailSchema);
     expect(progress.researchFrame?.approved).toEqual(approvedFrame);
     expect(progress.tasks.some(task => task.kind === "investigate-area" && task.state === "succeeded")).toBe(true);
