@@ -568,8 +568,9 @@ export class RuntimeClient implements StructuredModelClient {
 }
 
 function validateGenerationCapacity(maxActive: number): number {
-  if (!Number.isInteger(maxActive) || maxActive < 1 || maxActive > 3) {
-    throw new Error("Concurrent native generations must be an integer from 1 to 3");
+  // The bundled worker holds six generation slots (runtime_handler.rs MAX_ACTIVE_GENERATIONS).
+  if (!Number.isInteger(maxActive) || maxActive < 1 || maxActive > 6) {
+    throw new Error("Concurrent native generations must be an integer from 1 to 6");
   }
   return maxActive;
 }

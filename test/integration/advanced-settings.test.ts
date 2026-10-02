@@ -27,8 +27,8 @@ test("advanced settings default on, reject invalid concurrency, and survive a ba
   const save = async (settings: unknown) => fetch(`http://127.0.0.1:${backend.port}/settings/advanced`, {
     method: "POST", headers: { authorization: `Bearer ${backend.token}`, "content-type": "application/json" }, body: JSON.stringify(settings),
   });
-  expect(await read()).toEqual({ reasoningSummaries: true, maxConcurrentModelCalls: 3 });
-  expect((await save({ reasoningSummaries: false, maxConcurrentModelCalls: 4 })).status).toBe(400);
+  expect(await read()).toEqual({ reasoningSummaries: true, maxConcurrentModelCalls: 6 });
+  expect((await save({ reasoningSummaries: false, maxConcurrentModelCalls: 7 })).status).toBe(400);
   expect((await save({ reasoningSummaries: false, maxConcurrentModelCalls: 1 })).status).toBe(200);
   await backend.close();
   handles.pop();
