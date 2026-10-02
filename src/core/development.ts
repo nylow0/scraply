@@ -35,7 +35,7 @@ import {
 } from "../shared/structured-output-schemas";
 import { DEFAULT_IDEA_COUNT, IdeaCountSchema, SourceSchema, type ExplorationPurpose, type ModelRef, type ReasoningEffort } from "../shared/schemas";
 import type { ResearchFrame } from "../shared/research-frame";
-import { GoalFitFields, assertGoalFit } from "../shared/solution-goal-fit";
+import { GoalFitFields, assertGoalFit, normalizeGoalFitInput } from "../shared/solution-goal-fit";
 import {
   resolveWorkflowV2Prompt,
   type ResolvedWorkflowV2Prompt,
@@ -232,7 +232,14 @@ export async function produceDevelopmentOptions(
             baseOptionSchema.extend(evidenceFields),
           ])
         : baseOptionSchema.extend(evidenceFields);
-  const outputSchema = z.object({
+  const repairGoalFit = (raw: unknown) => {
+    const frame = context.frame;
+    if (!frame || typeof raw !== "object" || raw === null || !Array.isArray((raw as { options?: unknown }).options)) return raw;
+    const output = raw as { options: unknown[] };
+    return { ...output, options: output.options.map(option => normalizeGoalFitInput(option, frame, evidenceSourceIds)) };
+  };
+  // The provider sees the plain shape; app-owned goal fields are repaired before validation.
+  const outputSchema = z.preprocess(repairGoalFit, z.object({
     options: z.array(optionSchema).max(ideaCount),
   }).strict().superRefine((output, validation) => {
     const frame = context.frame;
@@ -246,7 +253,7 @@ export async function produceDevelopmentOptions(
       catch (error) { validation.addIssue({ code: z.ZodIssueCode.custom, path: ["options", index],
         message: error instanceof Error ? error.message : "Invalid goal fit" }); }
     });
-  });
+  }));
   const request: StructuredStageRequest<{ options: WorkflowV2SolutionOption[] }> = {
     generationId: randomUUID(),
     stage: stage.id,

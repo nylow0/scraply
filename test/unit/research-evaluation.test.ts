@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { mkdirSync, mkdtempSync, rmdirSync } from "node:fs";
 import {
   EvaluationMetricsSchema, evaluationDraft, evaluationMarkdown, evaluationMatrix, loadEvaluationBriefs,
-  acquireEvaluationLock, median, runEvaluation, summarizeEvaluation, type EvaluationBackend, type EvaluationRow,
+  acquireEvaluationLock, median, parseEvaluationModel, runEvaluation, summarizeEvaluation, type EvaluationBackend, type EvaluationRow,
 } from "../../scripts/eval-research";
 import { WorkflowDetailSchema } from "../../src/shared/workflow-contracts";
 
@@ -36,6 +36,40 @@ function metrics() {
 }
 
 describe("research evaluation", () => {
+  test("a model override reaches research and ideas for every row without changing the locked fixtures", () => {
+    const before = JSON.stringify(briefs);
+    const modelOverride = parseEvaluationModel("openai-subscription/gpt-6-luna:medium");
+    const matrix = evaluationMatrix(briefs, "baseline", modelOverride);
+    for (const item of matrix) {
+      const draft = evaluationDraft(item);
+      expect({ model: draft.runConfig.model, reasoningEffort: draft.runConfig.reasoningEffort }).toEqual(modelOverride);
+      expect(draft.ideas).toEqual(modelOverride);
+      expect(item.brief.runSettings.searchProvider).toBe(briefs.find(brief => brief.id === item.brief.id)!.runSettings.searchProvider);
+    }
+    expect(JSON.stringify(briefs)).toBe(before);
+    expect(evaluationDraft(evaluationMatrix(briefs, "baseline")[0]!).ideas).toEqual({
+      model: briefs[0]!.runSettings.model, reasoningEffort: briefs[0]!.runSettings.reasoningEffort,
+    });
+    const manifest = { schemaVersion: 1 as const, origin: "offline-fixture" as const, appCommit: "fixture", fixtureSha256: "fixture",
+      matrix: "baseline" as const, createdAt: "2026-10-01T00:00:00.000Z", profile: "fixture", rows: [], modelOverride };
+    expect(evaluationMarkdown(JSON.parse(JSON.stringify(manifest)) as typeof manifest)).toContain("openai-subscription/gpt-6-luna:medium");
+    for (const invalid of ["gpt-6-luna:medium", "openai-subscription/gpt-6-luna", "openai-subscription/:medium", "openai-subscription/gpt-6-luna:medium:extra"]) {
+      expect(() => parseEvaluationModel(invalid)).toThrow();
+    }
+  });
+
+  test("--all-problems drops the brief's problem cap without changing the locked fixtures", () => {
+    const before = JSON.stringify(briefs);
+    const capped = evaluationDraft(evaluationMatrix(briefs, "acceptance")[0]!);
+    const uncapped = evaluationDraft(evaluationMatrix(briefs, "acceptance", undefined, true)[0]!);
+    expect(capped.targets.automaticProblemCap).toBe(briefs[0]!.runSettings.automaticProblemCap);
+    expect(uncapped.targets.automaticProblemCap).toBeUndefined();
+    expect(JSON.stringify(briefs)).toBe(before);
+    const manifest = { schemaVersion: 1 as const, origin: "offline-fixture" as const, appCommit: "fixture", fixtureSha256: "fixture",
+      matrix: "acceptance" as const, createdAt: "2026-10-02T00:00:00.000Z", profile: "fixture", rows: [], allProblems: true };
+    expect(evaluationMarkdown(manifest)).toContain("every qualifying problem (--all-problems)");
+  });
+
   test("two observers cannot both advance the same live evaluation", () => {
     const build = join(import.meta.dir, "../../build");
     mkdirSync(build, { recursive: true });

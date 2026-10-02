@@ -13,7 +13,7 @@ import { DiscoveryRepository } from "../../src/db/repositories/discovery";
 import { ResearchFrameRepository } from "../../src/db/repositories/research-frames";
 import { ResearchRunRepository } from "../../src/db/repositories/research-runs";
 import { WorkflowRepository } from "../../src/db/repositories/workflows";
-import type { StructuredModelClient, StructuredStageRequest } from "../../src/providers/structured";
+import { ProviderFailure, type StructuredModelClient, type StructuredStageRequest } from "../../src/providers/structured";
 import type { SearchClient, SearchOptions, SearchProvider } from "../../src/providers/search";
 import type { ResearchVenueResolver } from "../../src/providers/venue-validation";
 import type { ResearchFrame } from "../../src/shared/research-frame";
@@ -101,9 +101,9 @@ async function fixture(output: (request: StructuredStageRequest<unknown>) => Pro
     ...(options.venueResolver ? { venueResolver: options.venueResolver } : {}),
     searchClients: options.noSearchProvider ? {} : { exa: searchClient("exa"), ...(options.autoSearch ? { perplexity: searchClient("perplexity") } : {}) },
     onEvent(event) { if (event.type === "run-failed") errors.push(event.error); } });
-  async function start(kind: "discovery" | "generate-ideas", followUp = false) {
+  async function start(kind: "discovery" | "generate-ideas", followUp = false, scopeKey: string = kind) {
     const item = db.immediateTransaction(() => {
-      const item = workflows.createWorkItem({ sessionId: "session", kind: followUp ? "research-request" : kind, scopeKey: kind, state: "ready",
+      const item = workflows.createWorkItem({ sessionId: "session", kind: followUp ? "research-request" : kind, scopeKey, state: "ready",
         input: followUp ? { action: { allowance: { maxModelCalls: 100, maxSearches: 100 } } } : {} });
       if (options.bounded) {
         workflows.reserveBudget({ sessionId: "session", workItemId: item.id, operationKey: "models", kind: "model-call",
@@ -609,5 +609,181 @@ test("same-run novelty recovery spends only its fresh allowance while old uncert
     expect(f.workflows.listBudgetEntries("session").filter(entry => entry.state !== "reserved")).toEqual(settledBefore);
     expect(f.db.db.prepare("SELECT * FROM opportunity_exploration_attempts WHERE id = ?").get(lost.id)).toEqual(lost);
     expect(f.db.db.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
+  } finally { await f.close(); }
+});
+
+test("a second idea round reloads a saved startup idea judged against a market goal", async () => {
+  // Live Bookkeepers stopped here: the saved idea had both goal fit and startup details.
+  const marketFrame: ResearchFrame = { ...frame(), goalKind: "market-opportunity" };
+  const startup = { opportunityType: "startup-opportunity", payingCustomerSegment: "Bakery owners", trigger: "Weekly filing", existingSubstitute: "Spreadsheets",
+    gapAssessment: { kind: "hypothesis", description: "Spreadsheets may miss repeats", evidenceIds: [] }, smallestSellableWorkflow: "One export comparison",
+    firstCustomerRoute: "Local bakery owners", disconfirmingDemandTest: "Owners refuse a paid pilot" };
+  const focusedDemandTest = { schemaVersion: 1, assumption: { id: "filing.adoption", category: "adoption", testableClaim: "Owners keep using the comparison",
+    decisionImpact: "Stop if use falls", selectionReason: "Use is the main unknown" }, methodSummary: "Observe five owners for a week",
+    disconfirmingObservation: "Owners stop comparing exports", paymentTerms: null };
+  let rounds = 0;
+  const f = await fixture(request => {
+    if (request.stage === "solutions") {
+      rounds += 1;
+      const base = option();
+      return { options: [{ ...base, mechanism: `${base.mechanism} ${rounds}`, startupOpportunity: startup, focusedDemandTest,
+        firstTest: { ...base.firstTest, kind: "demand-test" } }] };
+    }
+    const id = (input(request).candidateIds as string[])[0];
+    return { assessments: [{ candidateId: id, decision: "distinct", reason: "Reviewed", matchingSolutionId: null,
+      citedEvidenceIds: ["frame-source"], criteriaFit: fit("meets", "frame-source") }] };
+  }, { frameValue: marketFrame });
+  try {
+    await f.start("generate-ideas");
+    // A second idea task in the same session reviews against the first task's saved idea.
+    await f.start("generate-ideas", false, "generate-ideas:second-problem");
+    expect(f.errors).toEqual([]);
+    expect(rounds).toBe(2);
+    expect(f.stages).toEqual(["solutions", "solution-set-review", "solutions", "solution-set-review"]);
+  } finally { await f.close(); }
+});
+
+test("a verdict citing a fact ID or an invented ID keeps research going with mapped citations", async () => {
+  // Live Bookkeepers stopped here: the verdict cited fact IDs as source IDs.
+  const f = await fixture(request => {
+    const output = researchOutput(request) as Record<string, unknown>;
+    if (!request.stage.startsWith("problem-kill")) return output;
+    const factors = (request.evidence[0]?.content as { supportingFactors?: Array<{ id: string }> }).supportingFactors ?? [];
+    return { ...output, verdictSourceIds: [...factors.map(factor => factor.id), "invented-source"] };
+  }, { singleArea: true });
+  try {
+    const runId = await f.start("discovery");
+    expect(f.errors).toEqual([]);
+    const cited = f.db.db.prepare(`SELECT pvs.source_id FROM problem_verdict_sources pvs JOIN problems p ON p.id = pvs.problem_id
+      WHERE p.discovery_run_id = ?`).all(runId) as Array<{ source_id: string }>;
+    const sources = new Set((f.db.db.prepare("SELECT id FROM sources WHERE research_run_id = ?").all(runId) as Array<{ id: string }>).map(row => row.id));
+    expect(cited.length).toBeGreaterThan(0);
+    expect(cited.every(row => sources.has(row.source_id))).toBe(true);
+  } finally { await f.close(); }
+});
+
+test("a research call that times out is retried once with its stage time limit", async () => {
+  const kills: Array<number | undefined> = [];
+  const f = await fixture(request => {
+    if (request.stage.startsWith("problem-kill")) {
+      kills.push(request.callTimeLimitMs);
+      if (kills.length === 1) throw new ProviderFailure("timeout", "Call time limit reached", false);
+    }
+    return researchOutput(request);
+  }, { singleArea: true });
+  try {
+    const runId = await f.start("discovery");
+    expect(f.errors).toEqual([]);
+    expect(kills.slice(0, 2)).toEqual([480_000, 480_000]);
+    const saved = f.db.db.prepare(`SELECT status, json_extract(request_json, '$.callTimeLimitMs') AS limitMs FROM generation_attempts
+      WHERE research_run_id = ? AND stage_key LIKE 'problem-kill%' ORDER BY created_at, rowid`).all(runId) as Array<{ status: string; limitMs: number }>;
+    expect(saved.slice(0, 2)).toEqual([{ status: "failed", limitMs: 480_000 }, { status: "completed", limitMs: 480_000 }]);
+    const confirmed = f.db.db.prepare("SELECT COUNT(*) AS count FROM problems WHERE discovery_run_id = ? AND verdict = 'confirmed'").get(runId) as { count: number };
+    expect(confirmed.count).toBeGreaterThan(0);
+  } finally { await f.close(); }
+});
+
+test("a model failure late in an area keeps the problems it already checked and the run continues", async () => {
+  // Live Bookkeepers lost a confirmed categorization problem when a later call in its area failed.
+  const f = await fixture(request => {
+    if (request.stage.startsWith("area-gap")) throw new ProviderFailure("output-limit", "Output limit reached", false);
+    return researchOutput(request);
+  }, { singleArea: true });
+  try {
+    const runId = await f.start("discovery");
+    expect(f.errors).toEqual([]);
+    const confirmed = f.db.db.prepare("SELECT COUNT(*) AS count FROM problems WHERE discovery_run_id = ? AND verdict = 'confirmed'").get(runId) as { count: number };
+    expect(confirmed.count).toBeGreaterThan(0);
+    const outcome = f.db.db.prepare("SELECT value_json FROM workflow_snapshots WHERE research_run_id = ? AND snapshot_key = 'research-target-outcome'")
+      .get(runId) as { value_json: string } | undefined;
+    expect(JSON.parse(outcome!.value_json).reason).toContain("stopped early because a model call failed");
+  } finally { await f.close(); }
+});
+
+const droppedStream = () => new ProviderFailure("interrupted", "The OpenAI stream ended before completion. Completion and usage are unknown.", false, {
+  attempts: [{ attempt: "initial", outcome: "failed", providerCompletion: "unknown", model: DEFAULT_RUN_CONFIG.model,
+    usage: { status: "unknown" }, cost: { status: "unknown" }, latencyMs: 1 }],
+});
+
+test("a research call whose stream drops is started over once and the run continues", async () => {
+  // Live Bookkeepers on Sol 6.1 stopped before ideas when one problem-candidates call lost its stream.
+  let candidateCalls = 0;
+  const f = await fixture(request => {
+    if (request.stage.startsWith("problem-candidates") && ++candidateCalls === 1) throw droppedStream();
+    return researchOutput(request);
+  }, { singleArea: true });
+  try {
+    const runId = await f.start("discovery");
+    expect(f.errors).toEqual([]);
+    expect(f.db.db.prepare(`SELECT status FROM generation_attempts WHERE research_run_id = ? AND stage_key LIKE 'problem-candidates%'
+      ORDER BY created_at, rowid LIMIT 2`).all(runId)).toEqual([{ status: "interrupted" }, { status: "completed" }]);
+    expect(new WorkflowRepository(f.db).hasUnknownProviderCompletion(runId)).toBe(false);
+    const confirmed = f.db.db.prepare("SELECT COUNT(*) AS count FROM problems WHERE discovery_run_id = ? AND verdict = 'confirmed'").get(runId) as { count: number };
+    expect(confirmed.count).toBeGreaterThan(0);
+  } finally { await f.close(); }
+});
+
+test("a call that loses its stream twice ends only its own area, and the run goes on with the problems it checked", async () => {
+  const f = await fixture(request => {
+    if (request.stage.startsWith("area-gap")) throw droppedStream();
+    return researchOutput(request);
+  }, { singleArea: true });
+  try {
+    const runId = await f.start("discovery");
+    expect(f.errors).toEqual([]);
+    expect(f.db.db.prepare("SELECT status FROM generation_attempts WHERE research_run_id = ? AND stage_key LIKE 'area-gap%'").all(runId))
+      .toEqual([{ status: "interrupted" }, { status: "interrupted" }]);
+    // Both lost calls are recorded as deliberately abandoned, so the run is not left waiting for review.
+    expect(new WorkflowRepository(f.db).hasUnknownProviderCompletion(runId)).toBe(false);
+    const confirmed = f.db.db.prepare("SELECT COUNT(*) AS count FROM problems WHERE discovery_run_id = ? AND verdict = 'confirmed'").get(runId) as { count: number };
+    expect(confirmed.count).toBeGreaterThan(0);
+    const outcome = f.db.db.prepare("SELECT value_json FROM workflow_snapshots WHERE research_run_id = ? AND snapshot_key = 'research-target-outcome'")
+      .get(runId) as { value_json: string } | undefined;
+    expect(JSON.parse(outcome!.value_json).reason).toContain("its connection to OpenAI dropped twice");
+    expect(f.db.db.prepare("SELECT COUNT(*) AS count FROM workflow_snapshots WHERE research_run_id = ? AND snapshot_key = 'discovery-completed'").get(runId))
+      .toEqual({ count: 1 });
+  } finally { await f.close(); }
+});
+
+test("an idea call whose stream drops is started over once and its idea is still reviewed and saved", async () => {
+  // In Vibe, one lost idea call ended the run and skipped every remaining problem's ideas.
+  let solutionCalls = 0;
+  const f = await fixture(request => {
+    if (request.stage === "solutions") {
+      if (++solutionCalls === 1) throw droppedStream();
+      return { options: [option()] };
+    }
+    const id = (input(request).candidateIds as string[])[0];
+    return { assessments: [{ candidateId: id, decision: "distinct", reason: "Reviewed", matchingSolutionId: null,
+      citedEvidenceIds: ["frame-source"], criteriaFit: fit("meets", "frame-source") }] };
+  });
+  try {
+    const runId = await f.start("generate-ideas");
+    expect(f.errors).toEqual([]);
+    expect(f.stages).toEqual(["solutions", "solutions", "solution-set-review"]);
+    expect(new WorkflowRepository(f.db).hasUnknownProviderCompletion(runId)).toBe(false);
+    expect(getRunTrace(f.db, runId).metrics).toMatchObject({ acceptedIdeas: 1 });
+  } finally { await f.close(); }
+});
+
+test("a new run scans areas and checks candidates at the same time, within the shared call cap", async () => {
+  const active = new Map<string, number>();
+  const peak = new Map<string, number>();
+  const f = await fixture(async request => {
+    const family = request.stage.includes(":scan-") ? "scan" : request.stage.split(":")[0]!;
+    active.set(family, (active.get(family) ?? 0) + 1);
+    peak.set(family, Math.max(peak.get(family) ?? 0, active.get(family)!));
+    await Bun.sleep(10);
+    active.set(family, active.get(family)! - 1);
+    return researchOutput(request, { initialCandidates: 2 });
+  }, { modelCapacity: 3, depth: "standard" });
+  try {
+    const runId = await f.start("discovery");
+    expect(f.errors).toEqual([]);
+    expect(peak.get("scan")).toBeGreaterThan(1);
+    expect(peak.get("evidence-check")).toBeGreaterThan(1);
+    expect([...peak.values()].every(count => count <= 3)).toBe(true);
+    const checked = f.db.db.prepare("SELECT COUNT(*) AS count FROM problems WHERE discovery_run_id = ? AND verdict = 'confirmed'").get(runId) as { count: number };
+    expect(checked.count).toBeGreaterThan(1);
   } finally { await f.close(); }
 });

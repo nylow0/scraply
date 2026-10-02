@@ -1,4 +1,5 @@
 import type { ProblemCandidate } from "../shared/ipc";
+import { qualifiesAsProblemObservation } from "./problem-evidence";
 
 export type VibeProblemOrigin = "problem-evidence" | "user-asserted";
 export type VibeBriefFit = "direct" | "partial" | "unknown" | "outside";
@@ -42,6 +43,7 @@ export interface VibeSelectionInput {
   candidates: readonly VibeProblemCandidate[];
   /** Discovery is the safe default. User assertions need the known-problem path. */
   purpose?: "discovery" | "known-problem";
+  /** Optional cap from older contracts or an explicit launch limit; without it every qualifying problem is selected. */
   maxProblems?: number;
 }
 
@@ -49,6 +51,8 @@ interface QualifiedCandidate {
   candidate: VibeProblemCandidate;
   decision: VibeProblemDecision;
   workflowKey: string;
+  /** The independent origins behind the problem; two problems on exactly the same origins are one finding. */
+  evidenceKey: string;
 }
 
 /**
@@ -56,8 +60,8 @@ interface QualifiedCandidate {
  * checks the underlying cited observations; a model's "confirmed" verdict cannot pass alone.
  */
 export function selectVibeProblems(input: VibeSelectionInput): VibeSelectionResult {
-  const maxProblems = input.maxProblems ?? 3;
-  if (!Number.isSafeInteger(maxProblems) || maxProblems < 1) {
+  const maxProblems = input.maxProblems ?? Infinity;
+  if (maxProblems !== Infinity && (!Number.isSafeInteger(maxProblems) || maxProblems < 1)) {
     throw new Error("Automatic problem cap must be a positive integer.");
   }
   const ids = input.candidates.map((candidate) => candidate.id);
@@ -67,8 +71,7 @@ export function selectVibeProblems(input: VibeSelectionInput): VibeSelectionResu
   const qualified = input.candidates.map((candidate): QualifiedCandidate => {
     const citedIds = new Set(candidate.intendedBuyerEvidenceFactorIds);
     const directFactors = candidate.factors.filter((factor) => citedIds.has(factor.id)
-      && factor.audienceFit === "intended-buyer"
-      && (factor.sourceRole === "firsthand" || factor.sourceRole === "measured")
+      && qualifiesAsProblemObservation(factor)
       && factor.sourceId.trim().length > 0
       && factor.sourceUrl.trim().length > 0
       && factor.quote.trim().length > 0);
@@ -107,14 +110,20 @@ export function selectVibeProblems(input: VibeSelectionInput): VibeSelectionResu
       reason = "The direct observation lacks an independent source key, so its fit and independence cannot be checked.";
     } else {
       const count = sourceKeys.size;
+      // An origin counts as a close role when none of its observations come from the intended buyer.
+      const buyerKeys = new Set(identifiedFactors.filter((factor) => factor.audienceFit === "intended-buyer")
+        .map((factor) => factor.independentSourceKey!.trim()));
+      const closeRoles = [...sourceKeys].filter((key) => !buyerKeys.has(key)).length;
+      const closeNote = closeRoles ? ` (${closeRoles} from close role${closeRoles === 1 ? "" : "s"})` : "";
       const fit = briefFit === "unknown" ? "Brief fit was not separately assessed. " : briefFit === "partial" ? "Brief fit is partial. " : "";
       const contradiction = contraryEvidence === "unknown" ? "Contradictions were not separately classified. " : "";
-      reason = `${count} independent intended-buyer source${count === 1 ? "" : "s"} support${count === 1 ? "s" : ""} the problem. ${fit}${contradiction}Buyer demand is not established by this selection.`;
+      reason = `${count} independent firsthand or measured source${count === 1 ? "" : "s"}${closeNote} support${count === 1 ? "s" : ""} the problem. ${fit}${contradiction}Buyer demand is not established by this selection.`;
     }
 
     return {
       candidate,
       workflowKey: normalize(candidate.workflowKey?.trim() || candidate.statement),
+      evidenceKey: [...sourceKeys].sort().join("|"),
       decision: {
         problemId: candidate.id,
         selected: eligible,
@@ -128,16 +137,21 @@ export function selectVibeProblems(input: VibeSelectionInput): VibeSelectionResu
 
   const selected: QualifiedCandidate[] = [];
   const workflowKeys = new Set<string>();
+  const evidenceKeys = new Set<string>();
   for (const entry of qualified.filter((item) => item.decision.selected).sort(compareCandidates)) {
     if (workflowKeys.has(entry.workflowKey)) {
       entry.decision.selected = false;
       entry.decision.reason = "A stronger selected problem already covers this buyer workflow.";
+    } else if (entry.evidenceKey && evidenceKeys.has(entry.evidenceKey)) {
+      entry.decision.selected = false;
+      entry.decision.reason = "A selected problem rests on exactly the same independent sources, so this is treated as the same finding.";
     } else if (selected.length >= maxProblems) {
       entry.decision.selected = false;
       entry.decision.reason = `The automatic selection cap of ${maxProblems} problem${maxProblems === 1 ? "" : "s"} was reached.`;
     } else {
       selected.push(entry);
       workflowKeys.add(entry.workflowKey);
+      evidenceKeys.add(entry.evidenceKey);
     }
   }
 

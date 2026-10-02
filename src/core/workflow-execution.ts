@@ -1,9 +1,9 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type { DatabaseClient } from "../db/client";
 import { DevelopmentRepository } from "../db/repositories/development";
 import { WorkflowV2Repository } from "../db/repositories/workflow-v2";
 import type { SearchClient } from "../providers/search";
-import type { GenerationMetadata, StructuredModelClient, StructuredStageRequest } from "../providers/structured";
+import { isDroppedStream, ProviderFailure, type GenerationMetadata, type StructuredModelClient, type StructuredStageRequest } from "../providers/structured";
 import { canonicalJson, sha256, workflowSearchKey } from "../shared/content-identity";
 import { EvidenceCheckOutputSchema, LegacyEvidenceCheckOutputSchema } from "../shared/evidence-investigators";
 import { deriveJsonSchema } from "../shared/json-schema";
@@ -11,7 +11,7 @@ import { OpportunityExpansionOutputSchema } from "../shared/opportunity-explorat
 import { LegacyResearchFrameOutputSchema, ResearchFrameOutputSchema } from "../shared/research-frame";
 import { SourceSchema, type Source } from "../shared/schemas";
 import { AssessedWorkflowV2ProblemKillOutputSchema, BoundedWorkflowV2FactorHarvestOutputSchema, FACTOR_EXPLANATION_CHARACTERS, ClassifiedWorkflowV2ProblemKillOutputSchema, WorkflowV2QueryPlanOutputSchema, WorkflowV2FactorHarvestOutputSchema, WorkflowV2ProblemCandidatesOutputSchema, WorkflowV2ProblemKillOutputSchema, WorkflowV2SolutionsOutputSchema } from "../shared/structured-output-schemas";
-import { PROBLEM_AUDIENCE_ASSESSMENT_INSTRUCTION } from "./problem-evidence";
+import { PROBLEM_AUDIENCE_ASSESSMENT_INSTRUCTION, repairVerdictSourceIds, scopeFactorAssessments } from "./problem-evidence";
 import { LegacyWorkflowV2QueryPlanOutputSchema } from "../shared/structured-output-schemas";
 import type { WorkflowV2DevelopmentContext } from "./development";
 import { resolveWorkflowV2Prompt, type ResolvedWorkflowV2Prompt } from "./prompts";
@@ -25,6 +25,8 @@ export class WorkflowExecution {
   private static readonly activeSearches = new WeakMap<DatabaseClient, Map<string, Promise<Source[]>>>();
   readonly repository: WorkflowV2Repository;
   readonly smallHarvestBatches: boolean;
+  readonly boundedFollowUpHarvest: boolean;
+  readonly parallelResearch: boolean;
   readonly rankProblemCandidates: boolean;
   private readonly prompts: Record<WorkflowV2StageId, ResolvedWorkflowV2Prompt>;
   private readonly disableRepair: boolean;
@@ -61,9 +63,14 @@ export class WorkflowExecution {
       this.save("candidate-accounting", { version: 1 });
       this.save("source-routes", { version: 2 });
       this.save("query-plan-languages", { version: 1 });
+      this.save("bounded-follow-up-harvest", { version: 1 });
+      this.save("parallel-research", { version: 1 });
     }
     // Runs without the marker keep their original source groups and checkpoint identities.
     this.smallHarvestBatches = this.read<{ version: number }>("small-harvest-batches")?.version === 1;
+    this.boundedFollowUpHarvest = this.read<{ version: number }>("bounded-follow-up-harvest")?.version === 1;
+    // Older runs keep their sequential reads, whose factor limits are part of saved request identities.
+    this.parallelResearch = this.read<{ version: number }>("parallel-research")?.version === 1;
     if (!this.read("source-route-start")) this.save("source-route-start", new Date().toISOString());
     // Candidate order controls sequential source IDs in completed verdict requests.
     this.rankProblemCandidates = this.read<{ version: number }>("candidate-accounting")?.version === 1;
@@ -84,6 +91,16 @@ export class WorkflowExecution {
     const row = this.db.db.prepare("SELECT value_json FROM workflow_snapshots WHERE research_run_id = ? AND snapshot_key = ?")
       .get(this.runId, key) as { value_json: string } | undefined;
     return row ? JSON.parse(row.value_json) as T : null;
+  }
+
+  /**
+   * Records a call whose stream dropped and that the app is starting over. Its result is never used;
+   * resume and the run outcome treat it as settled instead of waiting for the user to acknowledge it.
+   */
+  acknowledgeStreamRestart(generationId: string): void {
+    const lost = this.db.db.prepare("SELECT id FROM generation_attempts WHERE research_run_id = ? AND generation_id = ?")
+      .all(this.runId, generationId) as Array<{ id: string }>;
+    this.save(`acknowledged-retry:stream-restart:${generationId}`, { attemptIds: lost.map((attempt) => attempt.id) });
   }
 
   save(key: string, value: unknown): void {
@@ -265,15 +282,15 @@ export class WorkflowExecution {
         if (!savedMetadata) throw new Error("Checkpoint metadata is missing");
         metadata = savedMetadata;
       } else if (recovered) {
-        output = recovered.output;
+        output = repairDiscoveryStageOutput(stageId, recovered.output, original);
         metadata = recovered.metadata;
         assertDiscoveryStageSemantics(stageId, output, original);
         this.persistCompletedStage(original.stage, stageId,
           recovered.jsonSchema ? { ...request, jsonSchema: recovered.jsonSchema } : request,
           prompt, metadata, output, context, selectionId);
       } else {
-        const completion = await client.structuredCompletion(request);
-        output = requestSchema.parse(completion.output);
+        const completion = await completeWithinTimeLimit(client, request, stageId, (generationId) => this.acknowledgeStreamRestart(generationId));
+        output = repairDiscoveryStageOutput(stageId, requestSchema.parse(completion.output), original);
         metadata = completion.metadata;
         assertDiscoveryStageSemantics(stageId, output, original);
         // Each validated provider result is its own durable replay boundary. Domain rows may be
@@ -553,6 +570,71 @@ export class WorkflowExecution {
   }
 }
 
+/**
+ * Research call limits, from Sol xhigh runs: normal calls finish within about two minutes, while
+ * stalled or runaway calls ran 7 to 38 minutes. Evidence reads are shorter: 99% of 236 successful
+ * reads finished within 54 seconds (the slowest took 115), and a stalled read is started over.
+ * Idea stages legitimately run longer and stay unlimited.
+ */
+export const RESEARCH_CALL_TIME_LIMIT_MS: Partial<Record<WorkflowV2StageId, number>> = {
+  "frame-search-plan": 240_000, "area-ranking": 240_000, "query-plan": 240_000, "factor-harvest": 90_000,
+  "evidence-check": 240_000, "area-gap": 240_000, frame: 480_000, "problem-candidates": 480_000, "problem-kill": 480_000,
+};
+
+/**
+ * A timed-out research call is retried once. Evidence reading handles its own timeout restart and split
+ * (see discovery.ts). A research call whose OpenAI stream dropped is started over once here:
+ * `acknowledgeRestart` records the lost attempt as deliberately replaced, and its result is never used.
+ * A second drop is not acknowledged; framed research then ends only that area (see research-engine.ts).
+ * Idea stages have no time limit and are never started over.
+ */
+async function completeWithinTimeLimit<T>(client: StructuredModelClient, request: StructuredStageRequest<T>, stageId: WorkflowV2StageId,
+  acknowledgeRestart: (generationId: string) => void) {
+  const limit = RESEARCH_CALL_TIME_LIMIT_MS[stageId];
+  if (limit === undefined || request.callTimeLimitMs !== undefined) return client.structuredCompletion(request);
+  const limited: StructuredStageRequest<T> = { ...request, callTimeLimitMs: limit };
+  try {
+    return await client.structuredCompletion(limited);
+  } catch (error) {
+    if (!(error instanceof ProviderFailure) || request.signal?.aborted) throw error;
+    if (isDroppedStream(error)) acknowledgeRestart(request.generationId);
+    else if (stageId === "factor-harvest" || error.code !== "timeout") throw error;
+    return client.structuredCompletion({ ...limited, generationId: randomUUID() });
+  }
+}
+
+/**
+ * Repairs citation slips in an evidence assessment instead of discarding the run:
+ * fact IDs cited as sources map to their source, unknown IDs are dropped, factor reviews
+ * are scoped to the supplied factors, and "confirmed" without supplied factors is downgraded.
+ * Unreviewed factors keep their extracted classification; discovery re-applies the confirmation rule.
+ */
+function repairDiscoveryStageOutput<T>(stageId: WorkflowV2StageId, output: unknown, request: StructuredStageRequest<T>): unknown {
+  if (stageId !== "problem-kill" || typeof output !== "object" || output === null || !("verdictSourceIds" in output)
+    || !Array.isArray(output.verdictSourceIds)) return output;
+  const evidence = request.evidence.map((item) => item.content);
+  const factors = findRecords(evidence, "supportingFactors");
+  const sourceIds = new Set([
+    ...findRecords(evidence, "sources").flatMap((source) => typeof source.id === "string" ? [source.id] : []),
+    ...factors.flatMap((factor) => typeof factor.sourceId === "string" ? [factor.sourceId] : []),
+  ]);
+  const factorSources = new Map(factors.flatMap((factor) => typeof factor.id === "string" && typeof factor.sourceId === "string"
+    ? [[factor.id, factor.sourceId] as const] : []));
+  const factorIds = [...factorSources.keys()];
+  const known = new Set(factorIds);
+  const repaired: Record<string, unknown> = { ...output, verdictSourceIds: repairVerdictSourceIds(
+    output.verdictSourceIds.filter((id): id is string => typeof id === "string"), sourceIds, factorSources) };
+  if (Array.isArray(repaired.factorAssessments)) {
+    repaired.factorAssessments = scopeFactorAssessments(repaired.factorAssessments.filter((item): item is { factorId: string } =>
+      typeof item === "object" && item !== null && "factorId" in item && typeof item.factorId === "string"), factorIds);
+  }
+  if (Array.isArray(repaired.intendedBuyerEvidenceFactorIds)) {
+    repaired.intendedBuyerEvidenceFactorIds = repaired.intendedBuyerEvidenceFactorIds.filter((id) => typeof id === "string" && known.has(id));
+  }
+  if (repaired.verdict === "confirmed" && factors.length === 0) repaired.verdict = "insufficient-evidence";
+  return repaired;
+}
+
 function assertDiscoveryStageSemantics<T>(
   stageId: WorkflowV2StageId,
   output: unknown,
@@ -578,16 +660,10 @@ function assertDiscoveryStageSemantics<T>(
       ...findRecords(evidence, "sources").flatMap((source) => typeof source.id === "string" ? [source.id] : []),
       ...findRecords(evidence, "supportingFactors").flatMap((factor) => typeof factor.sourceId === "string" ? [factor.sourceId] : []),
     ]);
+    // Citation slips were repaired before this check; anything left here is an app bug.
     const assessment = WorkflowV2ProblemKillOutputSchema.parse(output);
-    if (request.stage.endsWith(":audience-v1")) {
-      const factorIds = new Set(findRecords(evidence, "supportingFactors").flatMap(factor => typeof factor.id === "string" ? [factor.id] : []));
-      const reviewed = "factorAssessments" in assessment ? assessment.factorAssessments : [];
-      if (reviewed.length !== factorIds.size || new Set(reviewed.map(item => item.factorId)).size !== factorIds.size
-        || reviewed.some(item => !factorIds.has(item.factorId))
-        || !("intendedBuyerEvidenceFactorIds" in assessment)
-        || assessment.intendedBuyerEvidenceFactorIds.some(id => !factorIds.has(id))) {
-        throw new Error("Problem audience assessment must cite and review exact supporting factors");
-      }
+    if (request.stage.endsWith(":audience-v1") && !("intendedBuyerEvidenceFactorIds" in assessment)) {
+      throw new Error("Problem audience assessment must cite supporting factors");
     }
     if (assessment.verdictSourceIds.some((id) => !sourceIds.has(id))) {
       throw new Error("Evidence assessment referenced an unknown source ID");

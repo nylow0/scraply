@@ -142,6 +142,15 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
       return;
     }
     if (mode === "hang-cancel") return;
+    if (mode === "deadline-exceeded") {
+      // Echo the deadline the worker received; the real worker reports completion as unknown.
+      send({ protocolVersion: "1.2", requestId: request.id, operation: "generation.start", event: {
+        kind: "generation.failed", generationId: request.payload.generationId,
+        error: { code: "deadline_exceeded", retryable: false, detail: `operation timed out after ${request.payload.deadlineMs}ms` },
+        attempts: [{ attempt: "initial", outcome: "deadline_exceeded", providerCompletion: "unknown", model, usage: { status: "unknown" }, cost: { status: "unknown" }, latencyMs: 1 }],
+      } });
+      return;
+    }
     const isHarvest = request.payload.workOrder.stage.startsWith("factor-harvest");
     if (isHarvest) harvestCalls++;
     if (mode === "output-limit" || (mode === "workflow-checkpoint-recovery-output-limit" && harvestCalls === 9 && isHarvest)) {
@@ -155,7 +164,7 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
     const streamFailureLimit = mode === "workflow-stream-interrupted-twice" ? 2 : mode === "workflow-stream-interrupted" ? 1 : 0;
     if (mode === "stream-interrupted" || (mode === "workflow-criterion-evidence"
       && criterionCalls === Number(process.env.SCRAPLY_CRITERION_INTERRUPT_AT)) || (streamFailures < streamFailureLimit && isHarvest)
-      || (mode === "workflow-checkpoint-recovery" && [9, 10].includes(harvestCalls))) {
+      || (mode === "workflow-checkpoint-recovery" && [9, 10, 11, 12].includes(harvestCalls))) {
       streamFailures++;
       send({ protocolVersion: "1.2", requestId: request.id, operation: "generation.start", event: {
         kind: "generation.failed", generationId: request.payload.generationId,

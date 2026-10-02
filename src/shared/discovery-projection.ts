@@ -14,7 +14,9 @@ export const DEFAULT_PROBLEM_CANDIDATE_LIMIT = DISCOVERY_DEPTHS.standard.candida
 export const MAX_FRAME_AREAS = 12;
 export const FRAME_SCAN_SEARCHES_PER_AREA = 2;
 export const FRAME_SCAN_FACTORS_PER_AREA = 6;
-export const FRAME_INVESTIGATOR_COUNTS = { quick: 1, standard: 2, deep: 4 } as const;
+export const FRAME_INVESTIGATOR_COUNTS = { quick: 1, standard: 3, deep: 4 } as const;
+/** Source batches one investigator reads at once in new runs; the shared model scheduler still caps calls. */
+export const PARALLEL_SOURCE_READS = 3;
 
 /** The launch cannot know the proposed areas yet, so reserve for the schema's maximum breadth. */
 export function framedDiscoveryProjection(depth: DiscoveryDepth, languageCount = 3): { searches: number; modelCalls: number; factorCap: number } {

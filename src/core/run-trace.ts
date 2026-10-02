@@ -5,6 +5,7 @@ import { WorkflowSearchAttemptSchema, WorkflowSearchDispatchSchema, WorkflowSear
 import { workflowSearchKey as savedSearchKey } from "../shared/content-identity";
 import { DISCOVERY_DEPTHS, SOURCE_MAX_CHARACTERS } from "../shared/discovery-projection";
 import { AppError } from "../shared/errors";
+import { qualifiesAsProblemObservation } from "./problem-evidence";
 import { SavedSchemaValidationFailureSchema } from "../shared/generation-diagnostics";
 import { RunTraceSchema, RunTraceStepDetailSchema, type RunTrace, type RunTraceCandidate,
   type RunTraceSearch, type RunTraceStep, type RunTraceStepDetail } from "../shared/run-trace";
@@ -254,7 +255,7 @@ function candidates(data: TraceData): RunTraceCandidate[] {
       const role = assessment ? text(assessment.sourceRole) : factor.source_role;
       const fit = assessment ? text(assessment.audienceFit) : factor.audience_fit;
       const key = assessment ? text(assessment.independentSourceKey) : factor.independent_source_key;
-      return (role === "firsthand" || role === "measured") && fit === "intended-buyer" ? [{ id, key }] : [];
+      return qualifiesAsProblemObservation({ sourceRole: role, audienceFit: fit }) ? [{ id, key }] : [];
     });
     return { id: problem.id, statement: problem.statement,
       state: problem.verdict === "confirmed" ? "confirmed" : problem.verdict === "insufficient-evidence" ? "insufficient"
@@ -288,7 +289,7 @@ function candidates(data: TraceData): RunTraceCandidate[] {
         const assessment = assessments.find(assessment => assessment.factorId === id);
         const role = assessment ? text(assessment.sourceRole) : factor.source_role;
         const fit = assessment ? text(assessment.audienceFit) : factor.audience_fit;
-        return ["firsthand", "measured"].includes(role) && fit === "intended-buyer"
+        return qualifiesAsProblemObservation({ sourceRole: role, audienceFit: fit })
           ? [{ key: assessment ? text(assessment.independentSourceKey) : factor.independent_source_key }] : [];
       });
       const independentSources = new Set(qualifying.map(factor => factor.key).filter(Boolean)).size;
@@ -501,7 +502,7 @@ export function getRunTrace(db: TraceDatabase, runId: string, options: RunTraceO
     SUM(CASE WHEN operation LIKE '%search%' THEN 1 ELSE 0 END) AS searches
     FROM cost_ledger WHERE research_run_id IN (${data.placeholders}) AND status != 'released'`).get(...data.runIds) as
     { calls: number | null; searches: number | null } : null;
-  const qualifyingObservations = data.factors.filter(factor => ["firsthand", "measured"].includes(factor.source_role) && factor.audience_fit === "intended-buyer").length;
+  const qualifyingObservations = data.factors.filter(factor => qualifiesAsProblemObservation({ sourceRole: factor.source_role, audienceFit: factor.audience_fit })).length;
   const acceptedIdeasFailingMustHave = goalFitFailures(data, accepted);
   const investigators = [...data.areas.values()].flatMap(area => {
     const areaSteps = allSteps.filter(step => step.phase === area.id);

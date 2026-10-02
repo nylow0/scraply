@@ -14,10 +14,10 @@ import { ResearchFrameRepository } from "../db/repositories/research-frames";
 import type { SearchClient, SearchOptions, SearchProvider, SearchProviderChoice } from "../providers/search";
 import { chooseSearchProvider, filterRoutedSources } from "../providers/source-routes";
 import { validateResearchVenues, type ResearchVenueResolver, type VenueVerificationResult } from "../providers/venue-validation";
-import { ProviderFailure, type GenerationMetadata, type StructuredModelClient, type StructuredStageRequest } from "../providers/structured";
+import { isDroppedStream, ProviderFailure, type GenerationMetadata, type StructuredModelClient, type StructuredStageRequest } from "../providers/structured";
 import { AppError } from "../shared/errors";
 import { WorkflowLaunchContractSchema } from "../shared/workflow-contracts";
-import { framedDiscoveryProjection } from "../shared/discovery-projection";
+import { framedDiscoveryProjection, PARALLEL_SOURCE_READS } from "../shared/discovery-projection";
 import { ResearchFrameSchema, scopeResearchArea, type ResearchFrame, type ResearchArea } from "../shared/research-frame";
 import { RESEARCH_TARGETS, candidateAssessmentProjection, InvestigatorSearchRouteSchema, researchTargetProgress } from "../shared/evidence-investigators";
 import { assertCriteriaFit, frameNeedsNoveltySearch } from "../shared/solution-goal-fit";
@@ -36,11 +36,11 @@ import {
   type OpportunityExplorationProgress,
 } from "../shared/opportunity-exploration";
 import { DEFAULT_IDEA_COUNT, ModelRefSchema, ReasoningEffortSchema, RunConfigSchema, SourceSchema, sameModelRef, type ModelRef, type ReasoningEffort, type RunConfig, type Source } from "../shared/schemas";
-import { ScopeSchema, SavedProblemCandidateSchema, WorkflowV2CompatibleDecisionAnalysisOutputSchema, WorkflowV2GoalSolutionOptionSchema, WorkflowV2RiskEvaluationOutputSchema, WorkflowV2RiskReassessmentOutputSchema, WorkflowV2SolutionOptionSchema, WorkflowV2SolutionsOutputSchema, WorkflowV2StartupSolutionOptionSchema, type Scope } from "../shared/structured-output-schemas";
+import { ScopeSchema, SavedProblemCandidateSchema, WorkflowV2CompatibleDecisionAnalysisOutputSchema, WorkflowV2GoalSolutionOptionSchema, WorkflowV2GoalStartupSolutionOptionSchema, WorkflowV2RiskEvaluationOutputSchema, WorkflowV2RiskReassessmentOutputSchema, WorkflowV2SolutionOptionSchema, WorkflowV2SolutionsOutputSchema, WorkflowV2StartupSolutionOptionSchema, type Scope } from "../shared/structured-output-schemas";
 import { analyzeSelectedOption, developmentStageEvidence, evaluateSelectedOptionRisk, produceDevelopmentOptions, reassessSelectedOption, reassessSelectedOptionRisk, WorkflowGenerationAngleSchema, WorkflowGenerationEvidenceSchema, type WorkflowV2DevelopmentContext, type WorkflowV2EvidenceItem } from "./development";
 import { DEFAULT_PROBLEM_CANDIDATE_LIMIT, DISCOVERY_DEPTHS, discoverProblems, discoveryRunProjection, harvestEvidenceFollowUp, harvestFactors, normalizeSearchQuery,
   type HarvestMode, type HarvestResult, type PlannedQuery, type DiscoveryProblem, type HarvestedFactor, type HarvestedSource,
-  qualifiesAsIntendedBuyerObservation, quoteAppearsVerbatim, safeCanonicalizeUrl, type ProblemDiscoveryResult, type DiscoveryDependencies } from "./discovery";
+  qualifiesAsProblemObservation, quoteAppearsVerbatim, safeCanonicalizeUrl, type ProblemDiscoveryResult, type DiscoveryDependencies } from "./discovery";
 import { assessNotAssessedCandidate, ensureAreaInvestigatorWorkItems, ensureEvidenceCheckWorkItem,
   enforceConfirmationRule, runAreaGapInvestigation, runCandidateEvidenceInvestigator, runManagedInvestigatorSearch,
   type InvestigatorDependencies } from "./evidence-investigators";
@@ -1771,15 +1771,25 @@ export class ResearchEngine {
     this.seedFrameDiscoverySources(active.runId, saved.sources);
     await this.validateFrameSourceVenues(active, frame);
     const scans: AreaScan[] = [];
-    for (const area of frame.areas.filter(area => area.included)) {
+    const included = frame.areas.filter(area => area.included);
+    const runScan = (area: ResearchArea) => scanResearchArea(scope, frame, area, { ...this.areaDependencies(active, frame, area),
+      depth: "quick", repairPolicy: "disabled", stageScope: `scan-${sha256Area(area.id)}`, idFactory: workflow.idFactory(`frame-scan:${area.id}`),
+      random: () => 0.5 });
+    // New runs scan every unsaved area at once. Results are still reconciled and saved in frame order,
+    // so a source found by two areas gets the same owner and ID as in a sequential run.
+    const prefetched = new Map<string, Promise<AreaScan>>();
+    if (workflow.parallelResearch) {
+      for (const area of included) if (!workflow.read<AreaScan>(`frame-scan:${area.id}`)) prefetched.set(area.id, runScan(area));
+      await Promise.allSettled(prefetched.values());
+    }
+    for (const area of included) {
       active.abortController.signal.throwIfAborted();
       const key = `frame-scan:${area.id}`;
       let scan = workflow.read<AreaScan>(key);
       if (!scan) {
-        scan = await scanResearchArea(scope, frame, area, { ...this.areaDependencies(active, frame, area), depth: "quick", repairPolicy: "disabled",
-          stageScope: `scan-${sha256Area(area.id)}`, idFactory: workflow.idFactory(key), random: () => 0.5 });
+        scan = await (prefetched.get(area.id) ?? runScan(area));
         const validated = this.reconcileAreaEvidence(active.runId, scan.sources, workflow.withFactorUncertainty(scan.factors));
-        scan = { ...scan, ...validated, qualifyingFacts: validated.factors.filter(qualifiesAsIntendedBuyerObservation).length };
+        scan = { ...scan, ...validated, qualifyingFacts: validated.factors.filter(qualifiesAsProblemObservation).length };
         const completed = scan;
         this.discovery.persistFactors(active.runId, scan.sources, scan.factors, () => {
           this.assignArea("factors", scan!.factors.map(factor => factor.id), area.id);
@@ -1902,16 +1912,37 @@ export class ResearchEngine {
           const outcome = { ...rawOutcome, problem: reconciled.problems[0]!, sources: reconciled.killSources,
             factors: this.reconcileAreaEvidence(active.runId, rawOutcome.sources, rawOutcome.factors).factors };
           this.persistAreaEvidence(active, area.id, outcome.sources, outcome.factors);
-          if (outcome.dropped) blocked.push({ statement: outcome.problem.statement,
-            reason: `Dropped during evidence investigation: ${outcome.stopReason}`, disposition: "blocked" });
-          else { finalProblems.push(outcome.problem); settledProblems.set(outcome.problem.id, { ...outcome.problem, areaId: area.id }); }
+          // Kept problems count toward the target, and survive a later failure in this area, as soon as they settle.
+          if (!outcome.dropped) settledProblems.set(outcome.problem.id, { ...outcome.problem, areaId: area.id });
           this.finishInvestigatorItem(check.id, { problemId: problem.id, dropped: outcome.dropped, verdict: outcome.problem.verdict,
             rounds: outcome.rounds, stopReason: outcome.stopReason });
+          return outcome;
+        };
+        const record = (outcome: Awaited<ReturnType<typeof investigate>>) => {
+          if (outcome.dropped) blocked.push({ statement: outcome.problem.statement,
+            reason: `Dropped during evidence investigation: ${outcome.stopReason}`, disposition: "blocked" });
+          else finalProblems.push(outcome.problem);
           this.updateInvestigatorLane(lane.parent.id, area, "Checking evidence gaps", { problems: finalProblems, blockedCandidates: blocked });
         };
-        for (const problem of result.problems) {
+        /**
+         * New runs check every candidate at once, recording outcomes in candidate order. The target is
+         * checked once at the start, so a candidate already started finishes even if the target is met.
+         */
+        const investigateAll = async (problems: DiscoveryProblem[], sources: HarvestedSource[], selectionId: string) => {
+          const started = problems.flatMap(problem => {
+            if (!targetStop()) return [investigate(problem, sources)];
+            retainUninvestigated(problem, selectionId);
+            return [];
+          });
+          const settled = await Promise.allSettled(started);
+          for (const run of settled) if (run.status === "fulfilled") record(run.value);
+          const failed = settled.find(run => run.status === "rejected");
+          if (failed) throw failed.reason;
+        };
+        if (workflow.parallelResearch) await investigateAll(result.problems, [...harvest.sources, ...result.killSources], dependencies.stageScope);
+        else for (const problem of result.problems) {
           if (targetStop()) retainUninvestigated(problem, dependencies.stageScope);
-          else await investigate(problem, [...harvest.sources, ...result.killSources]);
+          else record(await investigate(problem, [...harvest.sources, ...result.killSources]));
         }
         const rawGap = await runAreaGapInvestigation({ ...investigator,
           completedResearch: { problems: finalProblems, blockedCandidates: blocked, factors: harvest.factors },
@@ -1929,11 +1960,21 @@ export class ResearchEngine {
           const gapResult = this.reconcileProblemEvidence(active.runId, rawGapResult);
           this.persistAreaEvidence(active, area.id, gapResult.killSources, []);
           blocked.push(...gapResult.blockedCandidates);
-          for (const problem of gapResult.problems) {
-            if (finalProblems.some(existing => existing.statement.trim().toLowerCase() === problem.statement.trim().toLowerCase())) {
-              blocked.push({ statement: problem.statement, reason: "The area gap repeated an already assessed candidate.", disposition: "blocked" });
-            } else if (targetStop()) retainUninvestigated(problem, `${dependencies.stageScope}:gap`);
-            else await investigate(problem, [...harvest.sources, ...result.killSources, ...gap.sources, ...gapResult.killSources]);
+          const gapSources = [...harvest.sources, ...result.killSources, ...gap.sources, ...gapResult.killSources];
+          const repeated = (problem: DiscoveryProblem, known: readonly DiscoveryProblem[]) =>
+            known.some(existing => existing.statement.trim().toLowerCase() === problem.statement.trim().toLowerCase());
+          const repeatReason = "The area gap repeated an already assessed candidate.";
+          if (workflow.parallelResearch) {
+            const fresh: DiscoveryProblem[] = [];
+            for (const problem of gapResult.problems) {
+              if (repeated(problem, [...finalProblems, ...fresh])) blocked.push({ statement: problem.statement, reason: repeatReason, disposition: "blocked" });
+              else fresh.push(problem);
+            }
+            await investigateAll(fresh, gapSources, `${dependencies.stageScope}:gap`);
+          } else for (const problem of gapResult.problems) {
+            if (repeated(problem, finalProblems)) blocked.push({ statement: problem.statement, reason: repeatReason, disposition: "blocked" });
+            else if (targetStop()) retainUninvestigated(problem, `${dependencies.stageScope}:gap`);
+            else record(await investigate(problem, gapSources));
           }
         }
         investigated = { ...result, problems: finalProblems, blockedCandidates: blocked, killSources: [] };
@@ -1944,11 +1985,33 @@ export class ResearchEngine {
       return { areaId: area.id, result: investigated };
     };
     const settled = await Promise.allSettled(selected.map(investigateArea));
+    let failed: PromiseRejectedResult | undefined;
     for (const [index, result] of settled.entries()) {
       if (result.status === "fulfilled" && result.value) results.push(result.value);
-      if (result.status === "rejected") this.settleInvestigatorFailure(active, lanes.get(selected[index]!.id)!.parent.id, result.reason);
+      if (result.status !== "rejected") continue;
+      const area = selected[index]!;
+      // A model answer that timed out, ran past its output limit, broke the schema, or lost its stream
+      // twice ends only its own area. Problems that area already checked are kept; app errors still fail the run.
+      const dropped = isDroppedStream(result.reason);
+      const modelFailure = dropped || result.reason instanceof ProviderFailure && ["timeout", "output-limit", "schema"].includes(result.reason.code);
+      if (dropped && !active.abortController.signal.aborted) {
+        // The area's lost calls are never used or replayed. Recording them lets the other areas go on to ideas.
+        const unresolved = new Set(new GenerationAttemptRepository(this.options.db).unresolvedAttemptIds(active.runId));
+        const lost = (this.options.db.db.prepare(`SELECT id FROM generation_attempts WHERE research_run_id = ?
+          AND (instr(stage_key,?) > 0 OR instr(stage_key,?) > 0 OR stage_key = ?)`)
+          .all(active.runId, `area-${sha256Area(area.id)}`, `:${area.id}:`, `area-gap:${area.id}`) as Array<{ id: string }>)
+          .map(attempt => attempt.id).filter(id => unresolved.has(id));
+        if (lost.length) workflow.save(`acknowledged-retry:area-stopped:${area.id}:${lost[0]}`, { attemptIds: lost });
+      }
+      this.settleInvestigatorFailure(active, lanes.get(area.id)!.parent.id, result.reason);
+      if (!modelFailure || active.abortController.signal.aborted) { failed ??= result; continue; }
+      const kept = [...settledProblems.values()].filter(problem => problem.areaId === area.id).map(({ areaId, ...problem }) => { void areaId; return problem; });
+      const cause = dropped ? "its connection to OpenAI dropped twice." : errorMessage(result.reason);
+      const partialReason = `Research in ${area.name} stopped early because a model call failed: ${cause} `
+        + `${kept.length} already checked problem${kept.length === 1 ? " was" : "s were"} kept.`;
+      partialReasons.set(area.id, partialReason);
+      results.push({ areaId: area.id, result: { problems: kept, blockedCandidates: [], killSources: [], factorUtilizationRate: 0, partialReason } });
     }
-    const failed = settled.find(result => result.status === "rejected");
     const partialReason = selected.map(area => partialReasons.get(area.id)).find(reason => reason !== undefined);
     const skippedAreas = selected.filter(area => !results.some(result => result.areaId === area.id));
     for (const area of skippedAreas) {
@@ -2784,8 +2847,9 @@ export class ResearchEngine {
       };
       return {
         id: row.id,
+        // A goal-judged idea can also be a startup option, so its schema follows the saved startup details.
         option: row.criteria_fit_json
-          ? WorkflowV2GoalSolutionOptionSchema.parse({ ...option,
+          ? (row.startup_opportunity_json ? WorkflowV2GoalStartupSolutionOptionSchema : WorkflowV2GoalSolutionOptionSchema).parse({ ...option,
             biggerProblem: JSON.parse(row.bigger_problem_json ?? "null") as unknown,
             slice: JSON.parse(row.slice_json ?? "null") as unknown,
             criteriaFit: JSON.parse(row.criteria_fit_json) as unknown,
@@ -2849,6 +2913,8 @@ export class ResearchEngine {
       ...(workflow.read("source-routes") && frame ? { frame } : {}),
       guided: this.usesWorkGuidance(active.runId),
       smallHarvestBatches: workflow.smallHarvestBatches,
+      boundedFollowUpHarvest: workflow.boundedFollowUpHarvest,
+      parallelReads: workflow.parallelResearch ? PARALLEL_SOURCE_READS : 1,
       rankCandidates: workflow.rankProblemCandidates,
       ...(!workflow.rankProblemCandidates ? { candidateLimit: DEFAULT_PROBLEM_CANDIDATE_LIMIT } : {}),
       assessProblemAudience: workflow.read<{ version: number }>("problem-audience-assessment")?.version === 1,
@@ -2949,7 +3015,7 @@ export class ResearchEngine {
       .get(active.runId) as { workflow_session_id: string | null } | undefined;
     const client = session?.workflow_session_id && this.options.modelScheduler
       ? scheduledModelClient(baseClient, this.options.modelScheduler, active.threadId) : baseClient;
-    return {
+    const instrumented: StructuredModelClient = {
       structuredCompletion: async <T>(request: StructuredStageRequest<T>) => {
         active.abortController.signal.throwIfAborted();
         const stage = runtimeStage(request.stage);
@@ -3065,6 +3131,22 @@ export class ResearchEngine {
           }
           else if (reservation) this.ledger.release(reservation.id);
           throw error;
+        }
+      },
+    };
+    // An idea or review call whose stream dropped starts over once, so one lost connection does not end
+    // the run and skip every remaining problem. Research calls restart in workflow-execution.ts instead.
+    return {
+      structuredCompletion: async <T>(request: StructuredStageRequest<T>) => {
+        try {
+          return await instrumented.structuredCompletion(request);
+        } catch (error) {
+          if (!isDroppedStream(error) || !/^(solutions|solution-set-review)(:|$)/.test(request.stage)
+            || !active.workflow || active.abortController.signal.aborted) throw error;
+          active.workflow.acknowledgeStreamRestart(request.generationId);
+          const restartId = randomUUID();
+          active.generationProvenance.set(request.generationId, restartId);
+          return instrumented.structuredCompletion({ ...request, generationId: restartId });
         }
       },
     };
