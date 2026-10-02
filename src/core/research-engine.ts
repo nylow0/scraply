@@ -17,7 +17,7 @@ import { validateResearchVenues, type ResearchVenueResolver, type VenueVerificat
 import { ProviderFailure, type GenerationMetadata, type StructuredModelClient, type StructuredStageRequest } from "../providers/structured";
 import { AppError } from "../shared/errors";
 import { WorkflowLaunchContractSchema } from "../shared/workflow-contracts";
-import { framedDiscoveryProjection } from "../shared/discovery-projection";
+import { framedDiscoveryProjection, PARALLEL_SOURCE_READS } from "../shared/discovery-projection";
 import { ResearchFrameSchema, scopeResearchArea, type ResearchFrame, type ResearchArea } from "../shared/research-frame";
 import { RESEARCH_TARGETS, candidateAssessmentProjection, InvestigatorSearchRouteSchema, researchTargetProgress } from "../shared/evidence-investigators";
 import { assertCriteriaFit, frameNeedsNoveltySearch } from "../shared/solution-goal-fit";
@@ -1771,13 +1771,23 @@ export class ResearchEngine {
     this.seedFrameDiscoverySources(active.runId, saved.sources);
     await this.validateFrameSourceVenues(active, frame);
     const scans: AreaScan[] = [];
-    for (const area of frame.areas.filter(area => area.included)) {
+    const included = frame.areas.filter(area => area.included);
+    const runScan = (area: ResearchArea) => scanResearchArea(scope, frame, area, { ...this.areaDependencies(active, frame, area),
+      depth: "quick", repairPolicy: "disabled", stageScope: `scan-${sha256Area(area.id)}`, idFactory: workflow.idFactory(`frame-scan:${area.id}`),
+      random: () => 0.5 });
+    // New runs scan every unsaved area at once. Results are still reconciled and saved in frame order,
+    // so a source found by two areas gets the same owner and ID as in a sequential run.
+    const prefetched = new Map<string, Promise<AreaScan>>();
+    if (workflow.parallelResearch) {
+      for (const area of included) if (!workflow.read<AreaScan>(`frame-scan:${area.id}`)) prefetched.set(area.id, runScan(area));
+      await Promise.allSettled(prefetched.values());
+    }
+    for (const area of included) {
       active.abortController.signal.throwIfAborted();
       const key = `frame-scan:${area.id}`;
       let scan = workflow.read<AreaScan>(key);
       if (!scan) {
-        scan = await scanResearchArea(scope, frame, area, { ...this.areaDependencies(active, frame, area), depth: "quick", repairPolicy: "disabled",
-          stageScope: `scan-${sha256Area(area.id)}`, idFactory: workflow.idFactory(key), random: () => 0.5 });
+        scan = await (prefetched.get(area.id) ?? runScan(area));
         const validated = this.reconcileAreaEvidence(active.runId, scan.sources, workflow.withFactorUncertainty(scan.factors));
         scan = { ...scan, ...validated, qualifyingFacts: validated.factors.filter(qualifiesAsProblemObservation).length };
         const completed = scan;
@@ -1902,16 +1912,37 @@ export class ResearchEngine {
           const outcome = { ...rawOutcome, problem: reconciled.problems[0]!, sources: reconciled.killSources,
             factors: this.reconcileAreaEvidence(active.runId, rawOutcome.sources, rawOutcome.factors).factors };
           this.persistAreaEvidence(active, area.id, outcome.sources, outcome.factors);
-          if (outcome.dropped) blocked.push({ statement: outcome.problem.statement,
-            reason: `Dropped during evidence investigation: ${outcome.stopReason}`, disposition: "blocked" });
-          else { finalProblems.push(outcome.problem); settledProblems.set(outcome.problem.id, { ...outcome.problem, areaId: area.id }); }
+          // Kept problems count toward the target, and survive a later failure in this area, as soon as they settle.
+          if (!outcome.dropped) settledProblems.set(outcome.problem.id, { ...outcome.problem, areaId: area.id });
           this.finishInvestigatorItem(check.id, { problemId: problem.id, dropped: outcome.dropped, verdict: outcome.problem.verdict,
             rounds: outcome.rounds, stopReason: outcome.stopReason });
+          return outcome;
+        };
+        const record = (outcome: Awaited<ReturnType<typeof investigate>>) => {
+          if (outcome.dropped) blocked.push({ statement: outcome.problem.statement,
+            reason: `Dropped during evidence investigation: ${outcome.stopReason}`, disposition: "blocked" });
+          else finalProblems.push(outcome.problem);
           this.updateInvestigatorLane(lane.parent.id, area, "Checking evidence gaps", { problems: finalProblems, blockedCandidates: blocked });
         };
-        for (const problem of result.problems) {
+        /**
+         * New runs check every candidate at once, recording outcomes in candidate order. The target is
+         * checked once at the start, so a candidate already started finishes even if the target is met.
+         */
+        const investigateAll = async (problems: DiscoveryProblem[], sources: HarvestedSource[], selectionId: string) => {
+          const started = problems.flatMap(problem => {
+            if (!targetStop()) return [investigate(problem, sources)];
+            retainUninvestigated(problem, selectionId);
+            return [];
+          });
+          const settled = await Promise.allSettled(started);
+          for (const run of settled) if (run.status === "fulfilled") record(run.value);
+          const failed = settled.find(run => run.status === "rejected");
+          if (failed) throw failed.reason;
+        };
+        if (workflow.parallelResearch) await investigateAll(result.problems, [...harvest.sources, ...result.killSources], dependencies.stageScope);
+        else for (const problem of result.problems) {
           if (targetStop()) retainUninvestigated(problem, dependencies.stageScope);
-          else await investigate(problem, [...harvest.sources, ...result.killSources]);
+          else record(await investigate(problem, [...harvest.sources, ...result.killSources]));
         }
         const rawGap = await runAreaGapInvestigation({ ...investigator,
           completedResearch: { problems: finalProblems, blockedCandidates: blocked, factors: harvest.factors },
@@ -1929,11 +1960,21 @@ export class ResearchEngine {
           const gapResult = this.reconcileProblemEvidence(active.runId, rawGapResult);
           this.persistAreaEvidence(active, area.id, gapResult.killSources, []);
           blocked.push(...gapResult.blockedCandidates);
-          for (const problem of gapResult.problems) {
-            if (finalProblems.some(existing => existing.statement.trim().toLowerCase() === problem.statement.trim().toLowerCase())) {
-              blocked.push({ statement: problem.statement, reason: "The area gap repeated an already assessed candidate.", disposition: "blocked" });
-            } else if (targetStop()) retainUninvestigated(problem, `${dependencies.stageScope}:gap`);
-            else await investigate(problem, [...harvest.sources, ...result.killSources, ...gap.sources, ...gapResult.killSources]);
+          const gapSources = [...harvest.sources, ...result.killSources, ...gap.sources, ...gapResult.killSources];
+          const repeated = (problem: DiscoveryProblem, known: readonly DiscoveryProblem[]) =>
+            known.some(existing => existing.statement.trim().toLowerCase() === problem.statement.trim().toLowerCase());
+          const repeatReason = "The area gap repeated an already assessed candidate.";
+          if (workflow.parallelResearch) {
+            const fresh: DiscoveryProblem[] = [];
+            for (const problem of gapResult.problems) {
+              if (repeated(problem, [...finalProblems, ...fresh])) blocked.push({ statement: problem.statement, reason: repeatReason, disposition: "blocked" });
+              else fresh.push(problem);
+            }
+            await investigateAll(fresh, gapSources, `${dependencies.stageScope}:gap`);
+          } else for (const problem of gapResult.problems) {
+            if (repeated(problem, finalProblems)) blocked.push({ statement: problem.statement, reason: repeatReason, disposition: "blocked" });
+            else if (targetStop()) retainUninvestigated(problem, `${dependencies.stageScope}:gap`);
+            else record(await investigate(problem, gapSources));
           }
         }
         investigated = { ...result, problems: finalProblems, blockedCandidates: blocked, killSources: [] };
@@ -2862,6 +2903,7 @@ export class ResearchEngine {
       guided: this.usesWorkGuidance(active.runId),
       smallHarvestBatches: workflow.smallHarvestBatches,
       boundedFollowUpHarvest: workflow.boundedFollowUpHarvest,
+      parallelReads: workflow.parallelResearch ? PARALLEL_SOURCE_READS : 1,
       rankCandidates: workflow.rankProblemCandidates,
       ...(!workflow.rankProblemCandidates ? { candidateLimit: DEFAULT_PROBLEM_CANDIDATE_LIMIT } : {}),
       assessProblemAudience: workflow.read<{ version: number }>("problem-audience-assessment")?.version === 1,

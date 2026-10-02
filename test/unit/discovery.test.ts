@@ -148,6 +148,38 @@ describe("discovery", () => {
     expect(projections).toContain("Skipped https://example.test/stalls: the model could not finish reading it.");
   });
 
+  test("reading source batches in parallel keeps the same facts, in the same order, as reading them one by one", async () => {
+    const run = async (parallelReads: number) => {
+      let active = 0;
+      let peak = 0;
+      let next = 0;
+      const result = await harvestFactors(scope(), {
+        model, reasoningEffort, depth: "standard", workflowVersion: 2, guided: true, smallHarvestBatches: true, parallelReads,
+        queryCountByMode: { domain: 1, audience: 0 }, prompt: () => "Read fixture evidence", idFactory: () => `fact-${next++}`, random: () => 0.5,
+        modelClient: modelClient(async request => {
+          if (request.stage.startsWith("query-plan")) return { queries: [{ query: "operators repeat filing", intent: "firsthand-experience",
+            uncertainty: "Frequency", intendedSourceType: "Operator reports" }] };
+          active += 1;
+          peak = Math.max(peak, active);
+          const sources = (request.evidence[0]!.content as { sources: Array<{ id: string; text: string }> }).sources;
+          // Earlier batches answer later, so completion order differs from batch order.
+          await Bun.sleep(5 * (10 - sources[0]!.text.length % 10));
+          active -= 1;
+          return { factors: sources.map(item => ({ subject: "Operators", behavior: "repeat filing", quote: item.text, sourceId: item.id, modelConfidence: 0.8 })) };
+        }),
+        search: { async search() { return Array.from({ length: 9 }, (_, index) => ({ id: `s${index}`, url: `https://example.test/${index}`,
+          title: "Operator", text: `Operators repeat filing ${"x".repeat(index)}.` })); } },
+      });
+      return { peak, facts: result.factors.map(factor => [factor.id, factor.source.canonicalUrl]) };
+    };
+    const sequential = await run(1);
+    const parallel = await run(3);
+    expect(sequential.peak).toBe(1);
+    expect(parallel.peak).toBe(3);
+    expect(parallel.facts.length).toBeGreaterThan(3);
+    expect(parallel.facts).toEqual(sequential.facts);
+  });
+
   test("new runs read follow-up sources in small capped batches", async () => {
     const batches: Array<{ size: number; factorLimit: unknown }> = [];
     await harvestEvidenceFollowUp(scope(), "Do operators repeat filing?", {

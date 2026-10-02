@@ -90,7 +90,7 @@ describe("unattended problem selection", () => {
     ]);
   });
 
-  test("ranks brief fit and independent evidence, removes duplicate workflows, and defaults to three", () => {
+  test("ranks brief fit and independent evidence, removes duplicate workflows, and selects every qualifying problem by default", () => {
     const stronger = candidate("b", { briefFit: "direct", workflowKey: "Invoice approval", factors: [
       ...candidate("b").factors,
       { ...candidate("b").factors[0]!, id: "b:second", sourceId: "b:second-source", independentSourceKey: "b:second-account" },
@@ -98,9 +98,12 @@ describe("unattended problem selection", () => {
     const weakerDuplicate = candidate("a", { briefFit: "direct", workflowKey: "  invoice  approval " });
     const input = [candidate("z", { briefFit: "unknown" }), weakerDuplicate, candidate("d", { briefFit: "partial" }), stronger, candidate("c", { briefFit: "direct" })];
     const result = selectVibeProblems({ candidates: input });
-    expect(result.selectedProblemIds).toEqual(["b", "c", "d"]);
+    expect(result.selectedProblemIds).toEqual(["b", "c", "d", "z"]);
     expect(result.decisions.find((item) => item.problemId === "a")?.reason).toContain("already covers this buyer workflow");
-    expect(result.decisions.find((item) => item.problemId === "z")?.reason).toContain("cap of 3");
+    // Older contracts saved an explicit cap of three, which still applies.
+    const capped = selectVibeProblems({ candidates: input, maxProblems: 3 });
+    expect(capped.selectedProblemIds).toEqual(["b", "c", "d"]);
+    expect(capped.decisions.find((item) => item.problemId === "z")?.reason).toContain("cap of 3");
     expect(input.map((item) => item.id)).toEqual(["z", "a", "d", "b", "c"]);
   });
 

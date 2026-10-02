@@ -36,7 +36,7 @@ For a known problem, you can enter it at the checkpoint and proceed without pret
 
 ## Vibe runs
 
-Vibe selects evidence-qualified problems and records why it chose them. Discovery favors fit to the brief and buyer, direct evidence, and distinct workflows. It can return research with zero ideas if no problem qualifies. It does not turn rejected evidence into a supported claim.
+Vibe develops every evidence-qualified problem and records why it chose each one. Problems describing the same workflow, or resting on exactly the same sources, are developed once. To develop fewer, set **Problems to develop** under Limits before Start; the strongest fit to the brief and buyer goes first. It can return research with zero ideas if no problem qualifies. It does not turn rejected evidence into a supported claim.
 
 During discovery, the progress view shows recent research actions, including search queries, returned source counts, and evidence processing. This activity is saved and returns when you reopen the research. The idea counter appears once generation assignments exist; for per-problem research, its target comes from the selected problems and solutions per problem. Run details contain usage and individual tasks. Pause and Stop remain directly accessible while research runs. Closing the app or putting the machine to sleep does not promise background progress. Reopening reads the saved result and offers continuation only when the remaining work is safe to resume.
 

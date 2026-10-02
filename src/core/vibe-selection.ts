@@ -43,6 +43,7 @@ export interface VibeSelectionInput {
   candidates: readonly VibeProblemCandidate[];
   /** Discovery is the safe default. User assertions need the known-problem path. */
   purpose?: "discovery" | "known-problem";
+  /** Optional cap from older contracts or an explicit launch limit; without it every qualifying problem is selected. */
   maxProblems?: number;
 }
 
@@ -59,8 +60,8 @@ interface QualifiedCandidate {
  * checks the underlying cited observations; a model's "confirmed" verdict cannot pass alone.
  */
 export function selectVibeProblems(input: VibeSelectionInput): VibeSelectionResult {
-  const maxProblems = input.maxProblems ?? 3;
-  if (!Number.isSafeInteger(maxProblems) || maxProblems < 1) {
+  const maxProblems = input.maxProblems ?? Infinity;
+  if (maxProblems !== Infinity && (!Number.isSafeInteger(maxProblems) || maxProblems < 1)) {
     throw new Error("Automatic problem cap must be a positive integer.");
   }
   const ids = input.candidates.map((candidate) => candidate.id);
@@ -109,9 +110,14 @@ export function selectVibeProblems(input: VibeSelectionInput): VibeSelectionResu
       reason = "The direct observation lacks an independent source key, so its fit and independence cannot be checked.";
     } else {
       const count = sourceKeys.size;
+      // An origin counts as a close role when none of its observations come from the intended buyer.
+      const buyerKeys = new Set(identifiedFactors.filter((factor) => factor.audienceFit === "intended-buyer")
+        .map((factor) => factor.independentSourceKey!.trim()));
+      const closeRoles = [...sourceKeys].filter((key) => !buyerKeys.has(key)).length;
+      const closeNote = closeRoles ? ` (${closeRoles} from close role${closeRoles === 1 ? "" : "s"})` : "";
       const fit = briefFit === "unknown" ? "Brief fit was not separately assessed. " : briefFit === "partial" ? "Brief fit is partial. " : "";
       const contradiction = contraryEvidence === "unknown" ? "Contradictions were not separately classified. " : "";
-      reason = `${count} independent intended-buyer source${count === 1 ? "" : "s"} support${count === 1 ? "s" : ""} the problem. ${fit}${contradiction}Buyer demand is not established by this selection.`;
+      reason = `${count} independent firsthand or measured source${count === 1 ? "" : "s"}${closeNote} support${count === 1 ? "s" : ""} the problem. ${fit}${contradiction}Buyer demand is not established by this selection.`;
     }
 
     return {

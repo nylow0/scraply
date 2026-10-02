@@ -699,3 +699,25 @@ test("a model failure late in an area keeps the problems it already checked and 
     expect(JSON.parse(outcome!.value_json).reason).toContain("stopped early because a model call failed");
   } finally { await f.close(); }
 });
+
+test("a new run scans areas and checks candidates at the same time, within the shared call cap", async () => {
+  const active = new Map<string, number>();
+  const peak = new Map<string, number>();
+  const f = await fixture(async request => {
+    const family = request.stage.includes(":scan-") ? "scan" : request.stage.split(":")[0]!;
+    active.set(family, (active.get(family) ?? 0) + 1);
+    peak.set(family, Math.max(peak.get(family) ?? 0, active.get(family)!));
+    await Bun.sleep(10);
+    active.set(family, active.get(family)! - 1);
+    return researchOutput(request, { initialCandidates: 2 });
+  }, { modelCapacity: 3, depth: "standard" });
+  try {
+    const runId = await f.start("discovery");
+    expect(f.errors).toEqual([]);
+    expect(peak.get("scan")).toBeGreaterThan(1);
+    expect(peak.get("evidence-check")).toBeGreaterThan(1);
+    expect([...peak.values()].every(count => count <= 3)).toBe(true);
+    const checked = f.db.db.prepare("SELECT COUNT(*) AS count FROM problems WHERE discovery_run_id = ? AND verdict = 'confirmed'").get(runId) as { count: number };
+    expect(checked.count).toBeGreaterThan(1);
+  } finally { await f.close(); }
+});
