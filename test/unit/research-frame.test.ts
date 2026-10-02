@@ -138,6 +138,9 @@ describe("scoped research and area selection", () => {
     const ranking: ResearchAreaRanking = { areas: frame.areas.filter(area => area.included).map((area, index) => ({ areaId: area.id, rank: index + 1,
       reason: "Observed relevance", evidenceStrength: "strong", fit: "meets" })) };
     expect(selectResearchAreas(frame, ranking, { "area-1": 1, "area-2": 2 }, "standard").map(area => area.id)).toEqual(["area-1", "area-2"]);
+    // Standard investigates three evidence-bearing areas; live runs stopped at two while this count lived in two places.
+    expect(selectResearchAreas(frame, ranking, { "area-0": 1, "area-1": 1, "area-2": 2, "area-3": 4 }, "standard").map(area => area.id))
+      .toEqual(["area-0", "area-1", "area-2"]);
     expect(selectResearchAreas(frame, ranking, { "area-1": 1, "area-2": 2 }, "quick").map(area => area.id)).toEqual(["area-1"]);
     expect(selectResearchAreas(frame, ranking, {}, "deep").map(area => area.id)).toEqual(["area-0", "area-1", "area-2", "area-3"]);
     expect(() => selectResearchAreas(frame, { areas: ranking.areas.slice(1) }, {}, "quick")).toThrow("missing");
