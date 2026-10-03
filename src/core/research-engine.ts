@@ -55,7 +55,7 @@ import { reviewSavedOpportunities as runOpportunityReview } from "./opportunity-
 import { classifySolutionSetReview, prepareSolutionSetReview, reviewSolutionSet, type SolutionSetItem, type SolutionSetReviewOutput } from "./solution-set-review";
 import { scheduledModelClient } from "./scheduled-model-client";
 import type { WorkflowModelScheduler } from "./workflow-scheduler";
-import { WorkflowExecution } from "./workflow-execution";
+import { streamRestarts, WorkflowExecution } from "./workflow-execution";
 import type { WorkflowV2StageId } from "./stages";
 
 export interface ResearchEngineOptions {
@@ -3156,22 +3156,25 @@ export class ResearchEngine {
         return completeWithRateLimitRetry({ ...request, generationId: retryId }, originalId, later);
       }
     };
-    // An idea or review call whose stream dropped starts over once, so one lost connection does not end
-    // the run and skip every remaining problem. Research calls restart in workflow-execution.ts instead.
-    return {
-      structuredCompletion: async <T>(request: StructuredStageRequest<T>) => {
-        try {
-          return await completeWithRateLimitRetry(request);
-        } catch (error) {
-          if (!isDroppedStream(error) || !/^(solutions|solution-set-review)(:|$)/.test(request.stage)
-            || !active.workflow || active.abortController.signal.aborted) throw error;
-          active.workflow.acknowledgeStreamRestart(request.generationId);
-          const restartId = randomUUID();
-          active.generationProvenance.set(request.generationId, restartId);
-          return completeWithRateLimitRetry({ ...request, generationId: restartId });
-        }
-      },
+    // An idea or review call whose stream dropped starts over after a pause, up to twice, so a burst of lost
+    // connections does not end the run and skip every remaining problem. Research calls restart in
+    // workflow-execution.ts instead.
+    const completeWithStreamRestarts = async <T>(request: StructuredStageRequest<T>, originalId = request.generationId,
+      pauses: readonly number[] = streamRestarts.pausesMs): Promise<StructuredStageResult<T>> => {
+      try {
+        return await completeWithRateLimitRetry(request);
+      } catch (error) {
+        const [pause, ...later] = pauses;
+        if (pause === undefined || !isDroppedStream(error) || !/^(solutions|solution-set-review)(:|$)/.test(request.stage)
+          || !active.workflow || active.abortController.signal.aborted) throw error;
+        active.workflow.acknowledgeStreamRestart(request.generationId);
+        await sleep(pause, undefined, { signal: active.abortController.signal });
+        const restartId = randomUUID();
+        active.generationProvenance.set(originalId, restartId);
+        return completeWithStreamRestarts({ ...request, generationId: restartId }, originalId, later);
+      }
     };
+    return { structuredCompletion: <T>(request: StructuredStageRequest<T>) => completeWithStreamRestarts(request) };
   }
 
   private instrumentedSearch(active: ActiveRun): Pick<SearchClient, "provider" | "search" | "providerForRoute" | "searchWithDispatch"> {
