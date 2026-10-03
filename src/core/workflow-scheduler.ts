@@ -145,8 +145,8 @@ export class WorkflowModelScheduler {
 }
 
 function validateCapacity(maxActive: number): number {
-  if (!Number.isInteger(maxActive) || maxActive < 1 || maxActive > 6) {
-    throw new Error("Concurrent model calls must be an integer from 1 to 6");
+  if (!Number.isInteger(maxActive) || maxActive < 1 || maxActive > 8) {
+    throw new Error("Concurrent model calls must be an integer from 1 to 8");
   }
   return maxActive;
 }

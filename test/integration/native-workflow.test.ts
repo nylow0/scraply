@@ -199,7 +199,11 @@ describe("native research workflow through the production backend", () => {
     const [failed, firstHalf, secondHalf] = harvests.slice(8, 11);
     expect([...sourceIds(firstHalf!), ...sourceIds(secondHalf!)]).toEqual(sourceIds(failed!));
     expect(new Set([failed!.workOrder.stage, firstHalf!.workOrder.stage, secondHalf!.workOrder.stage]).size).toBe(3);
-    expect(item.requests().every(request => request.model.modelId === model.modelId && request.reasoningEffort === "xhigh")).toBe(true);
+    expect(item.requests().every(request => request.model.modelId === model.modelId)).toBe(true);
+    // Reads quote and label facts at medium effort; every judging stage keeps the run's xhigh.
+    const isRead = (request: (typeof harvests)[number]) => request.workOrder.stage.startsWith("factor-harvest");
+    expect(new Set(item.requests().filter(isRead).map(request => request.reasoningEffort))).toEqual(new Set(["medium"]));
+    expect(new Set(item.requests().filter(request => !isRead(request)).map(request => request.reasoningEffort))).toEqual(new Set(["xhigh"]));
     const db = new DatabaseClient(item.dbPath);
     try {
       expect(db.db.prepare("SELECT COUNT(*) AS count FROM generation_attempts WHERE error_code = 'output-limit'").get()).toEqual({ count: 1 });
