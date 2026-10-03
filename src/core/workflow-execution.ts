@@ -1,9 +1,10 @@
 import { createHash, randomUUID } from "node:crypto";
+import { setTimeout as sleep } from "node:timers/promises";
 import type { DatabaseClient } from "../db/client";
 import { DevelopmentRepository } from "../db/repositories/development";
 import { WorkflowV2Repository } from "../db/repositories/workflow-v2";
 import type { SearchClient } from "../providers/search";
-import { isDroppedStream, ProviderFailure, type GenerationMetadata, type StructuredModelClient, type StructuredStageRequest } from "../providers/structured";
+import { isDroppedStream, ProviderFailure, type GenerationMetadata, type StructuredModelClient, type StructuredStageRequest, type StructuredStageResult } from "../providers/structured";
 import { canonicalJson, sha256, workflowSearchKey } from "../shared/content-identity";
 import { EvidenceCheckOutputSchema, LegacyEvidenceCheckOutputSchema } from "../shared/evidence-investigators";
 import { deriveJsonSchema } from "../shared/json-schema";
@@ -605,25 +606,39 @@ export const RESEARCH_CALL_TIME_LIMIT_MS: Partial<Record<WorkflowV2StageId, numb
 };
 
 /**
+ * Pauses before restarting a call whose OpenAI stream dropped. Drops come in bursts: three reads lost
+ * their streams within ten seconds in one run, and an immediate restart dropped again. Tests shorten them.
+ */
+export const streamRestarts = { pausesMs: [15_000, 45_000] as readonly number[] };
+
+/**
  * A timed-out research call is retried once. Evidence reading handles its own timeout restart and split
- * (see discovery.ts). A research call whose OpenAI stream dropped is started over once here:
- * `acknowledgeRestart` records the lost attempt as deliberately replaced, and its result is never used.
- * A second drop is not acknowledged; framed research then ends only that area (see research-engine.ts).
- * Idea stages have no time limit and are never started over.
+ * (see discovery.ts). A research call whose OpenAI stream dropped is started over after a pause, up to
+ * twice: `acknowledgeRestart` records each lost attempt as deliberately replaced, and its result is never
+ * used. A third drop is not acknowledged; framed research then ends only that area (see research-engine.ts).
+ * Idea stages have no time limit and restart in research-engine.ts.
  */
 async function completeWithinTimeLimit<T>(client: StructuredModelClient, request: StructuredStageRequest<T>, stageId: WorkflowV2StageId,
   acknowledgeRestart: (generationId: string) => void) {
   const limit = RESEARCH_CALL_TIME_LIMIT_MS[stageId];
   if (limit === undefined || request.callTimeLimitMs !== undefined) return client.structuredCompletion(request);
   const limited: StructuredStageRequest<T> = { ...request, callTimeLimitMs: limit };
-  try {
-    return await client.structuredCompletion(limited);
-  } catch (error) {
-    if (!(error instanceof ProviderFailure) || request.signal?.aborted) throw error;
-    if (isDroppedStream(error)) acknowledgeRestart(request.generationId);
-    else if (stageId === "factor-harvest" || error.code !== "timeout") throw error;
-    return client.structuredCompletion({ ...limited, generationId: randomUUID() });
-  }
+  const complete = async (current: StructuredStageRequest<T>, pauses: readonly number[]): Promise<StructuredStageResult<T>> => {
+    try {
+      return await client.structuredCompletion(current);
+    } catch (error) {
+      if (!(error instanceof ProviderFailure) || request.signal?.aborted) throw error;
+      const [pause, ...later] = pauses;
+      if (isDroppedStream(error) && pause !== undefined) {
+        acknowledgeRestart(current.generationId);
+        await sleep(pause, undefined, { signal: request.signal });
+        return complete({ ...current, generationId: randomUUID() }, later);
+      }
+      if (stageId === "factor-harvest" || error.code !== "timeout" || current !== limited) throw error;
+      return client.structuredCompletion({ ...limited, generationId: randomUUID() });
+    }
+  };
+  return complete(limited, streamRestarts.pausesMs);
 }
 
 /**

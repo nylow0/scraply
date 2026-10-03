@@ -7,7 +7,7 @@ import { ResearchEngine } from "../../src/core/research-engine";
 import { getRunTrace } from "../../src/core/run-trace";
 import { WorkflowModelScheduler } from "../../src/core/workflow-scheduler";
 import { configurePromptPaths } from "../../src/core/prompts";
-import { WorkflowExecution } from "../../src/core/workflow-execution";
+import { streamRestarts, WorkflowExecution } from "../../src/core/workflow-execution";
 import { DatabaseClient } from "../../src/db/client";
 import { DiscoveryRepository } from "../../src/db/repositories/discovery";
 import { ResearchFrameRepository } from "../../src/db/repositories/research-frames";
@@ -700,30 +700,35 @@ test("a model failure late in an area keeps the problems it already checked and 
   } finally { await f.close(); }
 });
 
+// Restarts after a dropped stream wait seconds in a real run; these fixtures drop on purpose.
+streamRestarts.pausesMs = [1, 1];
 const droppedStream = () => new ProviderFailure("interrupted", "The OpenAI stream ended before completion. Completion and usage are unknown.", false, {
   attempts: [{ attempt: "initial", outcome: "failed", providerCompletion: "unknown", model: DEFAULT_RUN_CONFIG.model,
     usage: { status: "unknown" }, cost: { status: "unknown" }, latencyMs: 1 }],
 });
 
-test("a research call whose stream drops is started over once and the run continues", async () => {
-  // Live Bookkeepers on Sol 6.1 stopped before ideas when one problem-candidates call lost its stream.
-  let candidateCalls = 0;
+test("a research call whose stream drops is started over after a pause and the run continues", async () => {
+  // Live Bookkeepers on Sol 6.1 stopped before ideas when one problem-candidates call lost its stream, and
+  // a later run lost a read whose immediate restart hit the same burst of dropped connections.
+  const calledAt: number[] = [];
+  streamRestarts.pausesMs = [80, 80];
   const f = await fixture(request => {
-    if (request.stage.startsWith("problem-candidates") && ++candidateCalls === 1) throw droppedStream();
+    if (request.stage.startsWith("problem-candidates") && calledAt.push(Date.now()) === 1) throw droppedStream();
     return researchOutput(request);
   }, { singleArea: true });
   try {
     const runId = await f.start("discovery");
     expect(f.errors).toEqual([]);
+    expect(calledAt[1]! - calledAt[0]!).toBeGreaterThanOrEqual(75);
     expect(f.db.db.prepare(`SELECT status FROM generation_attempts WHERE research_run_id = ? AND stage_key LIKE 'problem-candidates%'
       ORDER BY created_at, rowid LIMIT 2`).all(runId)).toEqual([{ status: "interrupted" }, { status: "completed" }]);
     expect(new WorkflowRepository(f.db).hasUnknownProviderCompletion(runId)).toBe(false);
     const confirmed = f.db.db.prepare("SELECT COUNT(*) AS count FROM problems WHERE discovery_run_id = ? AND verdict = 'confirmed'").get(runId) as { count: number };
     expect(confirmed.count).toBeGreaterThan(0);
-  } finally { await f.close(); }
+  } finally { streamRestarts.pausesMs = [1, 1]; await f.close(); }
 });
 
-test("a call that loses its stream twice ends only its own area, and the run goes on with the problems it checked", async () => {
+test("a call that loses its stream three times ends only its own area, and the run goes on with the problems it checked", async () => {
   const f = await fixture(request => {
     if (request.stage.startsWith("area-gap")) throw droppedStream();
     return researchOutput(request);
@@ -732,7 +737,7 @@ test("a call that loses its stream twice ends only its own area, and the run goe
     const runId = await f.start("discovery");
     expect(f.errors).toEqual([]);
     expect(f.db.db.prepare("SELECT status FROM generation_attempts WHERE research_run_id = ? AND stage_key LIKE 'area-gap%'").all(runId))
-      .toEqual([{ status: "interrupted" }, { status: "interrupted" }]);
+      .toEqual([{ status: "interrupted" }, { status: "interrupted" }, { status: "interrupted" }]);
     // Both lost calls are recorded as deliberately abandoned, so the run is not left waiting for review.
     expect(new WorkflowRepository(f.db).hasUnknownProviderCompletion(runId)).toBe(false);
     const confirmed = f.db.db.prepare("SELECT COUNT(*) AS count FROM problems WHERE discovery_run_id = ? AND verdict = 'confirmed'").get(runId) as { count: number };
