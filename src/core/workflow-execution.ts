@@ -30,6 +30,7 @@ export class WorkflowExecution {
   readonly parallelResearch: boolean;
   readonly labeledFactors: boolean;
   readonly mediumReads: boolean;
+  readonly mediumSynthesis: boolean;
   readonly rankProblemCandidates: boolean;
   private readonly prompts: Record<WorkflowV2StageId, ResolvedWorkflowV2Prompt>;
   private readonly disableRepair: boolean;
@@ -70,6 +71,7 @@ export class WorkflowExecution {
       this.save("parallel-research", { version: 1 });
       this.save("labeled-factors", { version: 1 });
       this.save("medium-reads", { version: 1 });
+      this.save("medium-synthesis", { version: 1 });
     }
     // Runs without the marker keep their original source groups and checkpoint identities.
     this.smallHarvestBatches = this.read<{ version: number }>("small-harvest-batches")?.version === 1;
@@ -80,6 +82,7 @@ export class WorkflowExecution {
     this.labeledFactors = this.read<{ version: number }>("labeled-factors")?.version === 1;
     // Reasoning effort is part of a saved read request, so older runs keep their configured effort.
     this.mediumReads = this.read<{ version: number }>("medium-reads")?.version === 1;
+    this.mediumSynthesis = this.read<{ version: number }>("medium-synthesis")?.version === 1;
     if (!this.read("source-route-start")) this.save("source-route-start", new Date().toISOString());
     // Candidate order controls sequential source IDs in completed verdict requests.
     this.rankProblemCandidates = this.read<{ version: number }>("candidate-accounting")?.version === 1;
@@ -252,7 +255,8 @@ export class WorkflowExecution {
         : stage.schema;
       const request: StructuredStageRequest<unknown> = {
         ...original,
-        ...(stageId === "factor-harvest" && this.mediumReads ? { reasoningEffort: readReasoningEffort(original) } : {}),
+        ...((stageId === "factor-harvest" && this.mediumReads) || (MEDIUM_SYNTHESIS_STAGES.has(stageId) && this.mediumSynthesis)
+          ? { reasoningEffort: mediumReasoningEffort(original) } : {}),
         workOrder: { ...original.workOrder, instruction: prompt.text, inputs: { routing: original.workOrder.inputs, workflowVersion: 2 } },
         schema: requestSchema,
         jsonSchema: savedFactorSchema ?? deriveJsonSchema(requestSchema),
@@ -590,11 +594,16 @@ export class WorkflowExecution {
 const REASONING_EFFORT_ORDER = ["minimal", "low", "medium", "high", "xhigh", "max", "ultra"];
 
 /**
- * Evidence reads quote and label facts; the judging stages that use those labels keep the run's effort.
- * In Sol 6.1 high runs, reads were 62% of model time and half of each read's output was reasoning, so new
- * runs read with OpenAI at medium effort, never above the effort chosen for the run.
+ * Single long calls that every area waits on. In a Sol 6.1 high run, area ranking took 2 minutes and each
+ * problem-candidates call 2-3 minutes while other areas sat idle. Verdicts and evidence checks keep the run's effort.
  */
-function readReasoningEffort(request: StructuredStageRequest<unknown>): string {
+const MEDIUM_SYNTHESIS_STAGES = new Set<WorkflowV2StageId>(["area-ranking", "problem-candidates"]);
+
+/**
+ * Caps OpenAI calls at medium effort, never above the effort chosen for the run. Evidence reads quote and label
+ * facts: in Sol 6.1 high runs they were 62% of model time and half of each read's output was reasoning.
+ */
+function mediumReasoningEffort(request: StructuredStageRequest<unknown>): string {
   const chosen = REASONING_EFFORT_ORDER.indexOf(request.reasoningEffort);
   return request.model.providerId === "openai-subscription" && chosen > REASONING_EFFORT_ORDER.indexOf("medium")
     ? "medium" : request.reasoningEffort;

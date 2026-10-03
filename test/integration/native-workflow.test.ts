@@ -206,10 +206,13 @@ describe("native research workflow through the production backend", () => {
     expect([...sourceIds(firstHalf!), ...sourceIds(secondHalf!)]).toEqual(sourceIds(failed!));
     expect(new Set([failed!.workOrder.stage, firstHalf!.workOrder.stage, secondHalf!.workOrder.stage]).size).toBe(3);
     expect(item.requests().every(request => request.model.modelId === model.modelId)).toBe(true);
-    // Reads quote and label facts at medium effort; every judging stage keeps the run's xhigh.
-    const isRead = (request: (typeof harvests)[number]) => request.workOrder.stage.startsWith("factor-harvest");
-    expect(new Set(item.requests().filter(isRead).map(request => request.reasoningEffort))).toEqual(new Set(["medium"]));
-    expect(new Set(item.requests().filter(request => !isRead(request)).map(request => request.reasoningEffort))).toEqual(new Set(["xhigh"]));
+    // Reads and problem synthesis run at medium effort; verdicts and every other judging stage keep the run's xhigh.
+    const atMedium = (request: (typeof harvests)[number]) =>
+      ["factor-harvest", "area-ranking", "problem-candidates"].includes(request.workOrder.stage.split(":")[0]!);
+    expect(item.requests().some(request => request.workOrder.stage.startsWith("problem-candidates"))).toBe(true);
+    expect(new Set(item.requests().filter(atMedium).map(request => request.reasoningEffort))).toEqual(new Set(["medium"]));
+    expect(new Set(item.requests().filter(request => !atMedium(request)).map(request => request.workOrder.stage.split(":")[0]))).toContain("problem-kill");
+    expect(new Set(item.requests().filter(request => !atMedium(request)).map(request => request.reasoningEffort))).toEqual(new Set(["xhigh"]));
     const db = new DatabaseClient(item.dbPath);
     try {
       expect(db.db.prepare("SELECT COUNT(*) AS count FROM generation_attempts WHERE error_code = 'output-limit'").get()).toEqual({ count: 1 });
