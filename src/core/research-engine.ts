@@ -2902,6 +2902,7 @@ export class ResearchEngine {
       workflow.save("source-routing-legacy-notice", { previousPolicy: active.config.audienceSourcePolicy ?? "web" });
       this.progress(active, "This saved run now routes new searches by evidence intent. Completed searches and planner outputs are reused.");
     }
+    const guided = this.usesWorkGuidance(active.runId);
     return {
       modelClient: workflow.discoveryClient(modelClient),
       search: workflow.search(search),
@@ -2916,10 +2917,12 @@ export class ResearchEngine {
       reasoningEffort: active.config.reasoningEffort,
       depth: active.config.discoveryDepth,
       ...(workflow.read("source-routes") && frame ? { frame } : {}),
-      guided: this.usesWorkGuidance(active.runId),
+      guided,
       smallHarvestBatches: workflow.smallHarvestBatches,
       boundedFollowUpHarvest: workflow.boundedFollowUpHarvest,
       parallelReads: workflow.parallelResearch ? PARALLEL_SOURCE_READS : 1,
+      // Saved call counts are checked against finished calls, so only runs that counts cannot stop check candidates at once.
+      parallelChecks: workflow.parallelResearch && guided && !active.researchAllowance,
       rankCandidates: workflow.rankProblemCandidates,
       ...(!workflow.rankProblemCandidates ? { candidateLimit: DEFAULT_PROBLEM_CANDIDATE_LIMIT } : {}),
       assessProblemAudience: workflow.read<{ version: number }>("problem-audience-assessment")?.version === 1,

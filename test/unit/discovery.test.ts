@@ -62,6 +62,52 @@ describe("discovery", () => {
     }
   });
 
+  test("checking candidates side by side keeps the same problems, sources and IDs as checking them one by one", async () => {
+    const sources = Array.from({ length: 4 }, (_, index) => source(`support-${index}`, "Operators repeat filing."));
+    const factors: HarvestedFactor[] = sources.map((item, index) => ({
+      id: `factor-${index}`, subject: "Operators", behavior: "repeat filing", quote: item.retrievedText,
+      sourceId: item.id, harvestMode: "domain", modelConfidence: 0.8,
+      independentSourceKey: `operator-${index}`, sourceRole: "firsthand", audienceFit: "intended-buyer", source: item,
+    }));
+    const candidates = factors.map((factor, index) => ({
+      statement: `Candidate ${index}`, whyItPersists: "Disconnected state", affected: "Operators", scaleEstimate: "Unknown",
+      scaleBasisFactorId: null, factorIds: [factor.id], intendedBuyerEvidenceFactorIds: [], evidenceGap: "More direct accounts needed",
+    }));
+    const run = async (parallelChecks: boolean) => {
+      let active = 0;
+      let peak = 0;
+      let next = 0;
+      const verdictEvidence: string[] = [];
+      const result = await discoverProblems(scope(), factors, sources, {
+        depth: "standard", workflowVersion: 2, rankCandidates: true, parallelChecks, model, reasoningEffort,
+        prompt: () => "Fixture instructions", idFactory: () => `id-${next++}`,
+        modelClient: modelClient(async request => {
+          if (request.stage === "problem-candidates") return request.schema.parse({ problems: candidates });
+          verdictEvidence.push(JSON.stringify(request.evidence));
+          peak = Math.max(peak, ++active);
+          await Bun.sleep(5);
+          active--;
+          return request.schema.parse({ verdict: "insufficient-evidence", verdictReason: "More support needed", verdictSourceIds: [] });
+        }),
+        // Every contrary search returns one shared page, so its source ID depends on the order candidates are recorded in.
+        search: { async search(query) {
+          await Bun.sleep(query.length % 4);
+          return [{ id: "shared", url: "https://example.test/shared", title: "Shared", text: "Operators repeat filing." },
+            { id: query, url: `https://example.test/${encodeURIComponent(query)}`, title: query, text: `Contrary page for ${query}.` }];
+        } },
+      });
+      return { result, peak, verdictEvidence: verdictEvidence.sort() };
+    };
+    const sequential = await run(false);
+    const parallel = await run(true);
+    expect(sequential.peak).toBe(1);
+    expect(parallel.peak).toBeGreaterThan(1);
+    // Retrieval timestamps are wall-clock; everything else, including every ID, must match.
+    const comparable = (value: unknown) => JSON.parse(JSON.stringify(value, (key, field) => key === "retrievedAt" ? undefined : field));
+    expect(comparable(parallel.result)).toEqual(comparable(sequential.result));
+    expect(parallel.verdictEvidence).toEqual(sequential.verdictEvidence);
+  });
+
   test("does not inflate independent support with duplicate citations or transport URLs", async () => {
     const sources = [source("one", "One report"), source("mirror", "Same report"), source("two", "Second report")];
     const factors: HarvestedFactor[] = sources.map((item, index) => ({

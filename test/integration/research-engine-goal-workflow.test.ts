@@ -817,3 +817,23 @@ test("a new run scans areas and checks candidates at the same time, within the s
     expect(checked.count).toBeGreaterThan(1);
   } finally { await f.close(); }
 });
+
+test("one area checks its candidates at the same time and keeps every verdict", async () => {
+  let active = 0;
+  let peak = 0;
+  const f = await fixture(async request => {
+    if (!request.stage.startsWith("problem-kill:")) return researchOutput(request, { initialCandidates: 3 });
+    peak = Math.max(peak, ++active);
+    await Bun.sleep(10);
+    active -= 1;
+    return researchOutput(request, { initialCandidates: 3 });
+  }, { modelCapacity: 3, depth: "standard", singleArea: true });
+  try {
+    const runId = await f.start("discovery");
+    expect(f.errors).toEqual([]);
+    expect(peak).toBeGreaterThan(1);
+    expect(peak).toBeLessThanOrEqual(3);
+    const kills = f.stages.filter(stage => stage.startsWith("problem-kill:")).length;
+    expect(f.db.db.prepare("SELECT COUNT(*) AS count FROM problems WHERE discovery_run_id = ?").get(runId)).toEqual({ count: kills });
+  } finally { await f.close(); }
+});
