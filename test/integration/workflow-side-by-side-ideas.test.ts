@@ -212,3 +212,19 @@ test("a project allows idea runs of one session side by side, and nothing else b
     expect(() => insert.run("research-b", JSON.stringify(config), now, now)).toThrow();
   } finally { f.db.close(); }
 });
+
+test("pausing waits for every idea task running side by side, and resuming continues the rest", async () => {
+  const f = fixture();
+  try {
+    await f.generate();
+    const runIds = f.ideaTasks().map(f.runIdOf);
+    await f.coordinator.command({ threadId: "project", sessionId: f.session.id, clientCommandId: "pause", expectedRevision: f.state().revision,
+      action: { type: "pause" } });
+    f.complete(runIds[0]!);
+    f.complete(runIds[1]!);
+    expect(f.state().state).toBe("pause-requested");
+    f.complete(runIds[2]!);
+    expect(f.state().state).toBe("paused");
+    expect(f.dispatched).toHaveLength(3);
+  } finally { f.db.close(); }
+});
