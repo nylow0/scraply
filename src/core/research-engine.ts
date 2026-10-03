@@ -6,7 +6,7 @@ import { DiscoveryRepository } from "../db/repositories/discovery";
 import { EvidenceFollowUpRepository } from "../db/repositories/evidence-follow-ups";
 import { GenerationAttemptRepository } from "../db/repositories/generation-attempts";
 import { FocusedExperimentRepository } from "../db/repositories/focused-experiments";
-import { ResearchRunRepository, type ResearchRunWorkflowLink } from "../db/repositories/research-runs";
+import { blockingActiveRun, ResearchRunRepository, type ResearchRunWorkflowLink } from "../db/repositories/research-runs";
 import { OpportunityRepository } from "../db/repositories/opportunities";
 import { OpportunityExplorationRepository } from "../db/repositories/opportunity-exploration";
 import { WorkflowV2Repository } from "../db/repositories/workflow-v2";
@@ -335,8 +335,8 @@ export class ResearchEngine {
   // Restart and explicit recovery honor saved acknowledgements; completed discovery also needs a reassessment policy.
   async resumeRun(runId: string, acknowledgedAttemptIds: readonly string[] = [], reassessProblems = false): Promise<void> {
     if (this.activeRuns.has(runId)) return;
-    const row = this.options.db.db.prepare(`SELECT thread_id, status, config_json, problem_id FROM research_runs WHERE id = ?`)
-      .get(runId) as { thread_id: string; status: string; config_json: string; problem_id: string | null } | undefined;
+    const row = this.options.db.db.prepare(`SELECT thread_id, status, config_json, problem_id, workflow_session_id FROM research_runs WHERE id = ?`)
+      .get(runId) as { thread_id: string; status: string; config_json: string; problem_id: string | null; workflow_session_id: string | null } | undefined;
     const config = row ? RunConfigSchema.parse(JSON.parse(row.config_json)) : null;
     if (config && config.workflowVersion !== 2) {
       throw new AppError("conflict", "Legacy generation has been retired. Your saved results are preserved. Start a new run to use the current prompts.");
@@ -360,7 +360,10 @@ export class ResearchEngine {
       this.ledger.settleUncertain(runId, "A dispatched generation lost its terminal result during restart");
       throw new AppError("conflict", `${resumeSafety.resumeBlockedReason} Review this request before explicitly retrying it.`);
     }
-    this.assertThreadIdle(row.thread_id, runId);
+    // Idea runs that were running side by side resume together.
+    if (blockingActiveRun(this.options.db, row.thread_id, { id: runId, problemId: row.problem_id, sessionId: row.workflow_session_id })) {
+      throw new AppError("conflict", "This project already has another active run.");
+    }
     this.ledger.settleUncertain(runId, "The app restarted before an operation reached a durable result");
     this.options.db.db.prepare("UPDATE research_runs SET status = 'running', cancelled = 0, updated_at = ? WHERE id = ?")
       .run(new Date().toISOString(), runId);
@@ -1587,7 +1590,8 @@ export class ResearchEngine {
     const session = this.options.db.db.prepare("SELECT workflow_session_id FROM research_runs WHERE id = ?")
       .get(active.runId) as { workflow_session_id: string | null };
     if (session.workflow_session_id) {
-      this.updateThread(active.threadId, "solutions-ready");
+      // Side-by-side idea runs share their project; its status follows the last one to end.
+      if (![...this.activeRuns.values()].some((run) => run.threadId === active.threadId)) this.updateThread(active.threadId, "solutions-ready");
       return;
     }
     if (active.workflow) {
@@ -2285,6 +2289,9 @@ export class ResearchEngine {
         : undefined;
       const savedAngle = generationTask
         ? (JSON.parse(generationTask.input_json) as { generationAngle?: unknown }).generationAngle : undefined;
+      // Idea tasks that run side by side review in task order, so each review sees every earlier task's accepted ideas.
+      const reviewsInOrder = generationTask
+        ? (JSON.parse(generationTask.input_json) as { parallel?: unknown }).parallel === true : false;
       const generationAngle = savedAngle === undefined ? undefined : WorkflowGenerationAngleSchema.parse(savedAngle);
       const savedEvidence = generationTask
         ? (JSON.parse(generationTask.input_json) as { generationEvidence?: unknown }).generationEvidence : undefined;
@@ -2410,6 +2417,7 @@ export class ResearchEngine {
         }
       }
       if (isWorkflowSession && sessionRow.workflow_session_id) {
+        if (reviewsInOrder) await this.waitForEarlierIdeaRuns(active, sessionRow.workflow_session_id);
         await this.reviewPracticalSolutions(active, workflow, context, sessionRow.workflow_session_id);
       }
       const option = workflow.selectedOption(active.problemId!);
@@ -2531,6 +2539,24 @@ export class ResearchEngine {
         },
       }];
     }));
+  }
+
+  /**
+   * Waits until this session's earlier idea runs end. The review inventory lists ideas from earlier runs only,
+   * so after the wait a review sees what it would have seen with the tasks run one by one.
+   */
+  private async waitForEarlierIdeaRuns(active: ActiveRun, sessionId: string): Promise<void> {
+    const earlier = (this.options.db.db.prepare(`SELECT id FROM research_runs
+      WHERE workflow_session_id = ? AND problem_id IS NOT NULL AND rowid < (SELECT rowid FROM research_runs WHERE id = ?)`)
+      .all(sessionId, active.runId) as Array<{ id: string }>).flatMap((run) => this.executionsByRun.get(run.id) ?? []);
+    if (!earlier.length) return;
+    this.progress(active, "Waiting for earlier idea reviews");
+    const signal = active.abortController.signal;
+    await new Promise<void>((resolve) => {
+      signal.addEventListener("abort", () => resolve(), { once: true });
+      void Promise.allSettled(earlier).then(() => resolve());
+    });
+    signal.throwIfAborted();
   }
 
   private async reviewPracticalSolutions(
@@ -3330,7 +3356,7 @@ export class ResearchEngine {
     const message = error instanceof Error ? error.message : "Research failed";
     this.ledger.settleUncertain(active.runId, message);
     this.runs.finish(active.runId, status ?? (active.abortController.signal.aborted ? "cancelled" : "failed"), message);
-    this.updateThread(active.threadId, "failed");
+    if (![...this.activeRuns.values()].some((run) => run.threadId === active.threadId)) this.updateThread(active.threadId, "failed");
     this.emit({ type: "run-failed", runId: active.runId, threadId: active.threadId, error: message });
     if (active.problemId && active.config.opportunityExploration && !active.abortController.signal.aborted) {
       const exploration = new OpportunityExplorationRepository(this.options.db);

@@ -116,47 +116,35 @@ export class WorkflowCoordinator {
           continue;
         }
       }
-      if (running && !["coverage-map", "coverage-search"].includes(running.kind) && !runIdFromItem(running)) {
+      // Idea tasks may have been running side by side; each one is linked to its saved run, or settled, the same way.
+      let settledForReview = false;
+      for (const item of this.repository.listWorkItems(session.id).filter((candidate) => candidate.state === "running"
+        && !["coverage-map", "coverage-search"].includes(candidate.kind) && !runIdFromItem(candidate))) {
         const unlinked = this.options.db.db.prepare(`SELECT run.id, run.status FROM research_runs run
           WHERE run.workflow_session_id = ? AND run.created_at >= ?
             AND NOT EXISTS (SELECT 1 FROM workflow_work_items item
               WHERE item.session_id = ? AND json_extract(item.output_refs_json, '$.runId') = run.id)
           ORDER BY run.created_at, run.id`)
-          .all(session.id, running.createdAt, session.id) as Array<{ id: string; status: string }>;
+          .all(session.id, item.createdAt, session.id) as Array<{ id: string; status: string }>;
         if (unlinked.length === 1 && ["queued", "running"].includes(unlinked[0]!.status)) {
-          this.options.db.immediateTransaction(() => this.repository.linkRunToRunningWorkItem(running.id, unlinked[0]!.id));
+          this.options.db.immediateTransaction(() => this.repository.linkRunToRunningWorkItem(item.id, unlinked[0]!.id));
         } else if (unlinked.length > 0) {
-          this.options.db.immediateTransaction(() => {
-            this.repository.updateWorkItem(running.id, "unknown", {
-              error: { message: "A research run was saved without a task link. Review it before retrying." },
-            });
-            this.settleTaskBudget(running.id, "uncertain", 0);
-            this.repository.updateSession(session.id, session.revision, {
-              state: "finished", outcome: "needs-attention", remainingMs: remainingMs(session),
-            });
-          });
-          this.progress(session.id, [running.id]);
-          continue;
+          this.settleRunningForReview(session, new Map([[item.id, "A research run was saved without a task link. Review it before retrying."]]));
+          settledForReview = true;
+          break;
         } else if (session.state !== "stop-requested") {
-          this.options.db.immediateTransaction(() => this.repository.returnUndispatchedWorkItemToReady(running.id));
+          this.options.db.immediateTransaction(() => this.repository.returnUndispatchedWorkItemToReady(item.id));
         }
       }
-      const linkedRunning = this.repository.getWorkItem(running?.id ?? "");
-      if (linkedRunning?.state === "running") {
-        const runId = runIdFromItem(linkedRunning);
-        if (runId && this.repository.hasUnknownProviderCompletion(runId)) {
-          this.options.db.immediateTransaction(() => {
-            this.repository.updateWorkItem(linkedRunning.id, "unknown", {
-              outputRefs: linkedRunning.outputRefs, error: { message: "A provider call may have completed while the app was closed." },
-            });
-            this.settleTaskBudget(linkedRunning.id, "uncertain", this.repository.countProviderAttempts(runId));
-            this.repository.updateSession(session.id, session.revision, {
-              state: "finished", outcome: "needs-attention", remainingMs: remainingMs(session),
-            });
-          });
-          this.progress(session.id, [linkedRunning.id]);
-          continue;
-        }
+      if (settledForReview) continue;
+      const unknownItems = this.repository.listWorkItems(session.id).filter((item) => {
+        const runId = item.state === "running" ? runIdFromItem(item) : null;
+        return runId !== null && this.repository.hasUnknownProviderCompletion(runId);
+      });
+      if (unknownItems.length) {
+        this.settleRunningForReview(session, new Map(unknownItems.map((item) =>
+          [item.id, "A provider call may have completed while the app was closed."])));
+        continue;
       }
       if (session.state === "stop-requested") {
         this.options.db.immediateTransaction(() => {
@@ -198,6 +186,26 @@ export class WorkflowCoordinator {
               AND json_extract(item.output_refs_json, '$.runId') = research_runs.id)`)
         .run(new Date().toISOString());
     });
+  }
+
+  /**
+   * Startup recovery settles every task still running for review, so a finished session never keeps a running task.
+   * A task without its own reason was running beside one that needs review.
+   */
+  private settleRunningForReview(session: WorkflowSession, reasons: Map<string, string>): void {
+    const running = this.repository.listWorkItems(session.id).filter((item) => item.state === "running");
+    this.options.db.immediateTransaction(() => {
+      for (const item of running) {
+        const runId = runIdFromItem(item);
+        this.repository.updateWorkItem(item.id, "unknown", { ...(runId ? { outputRefs: item.outputRefs } : {}),
+          error: { message: reasons.get(item.id) ?? "This idea task was running beside one that needs review. Review it before continuing." } });
+        this.settleTaskBudget(item.id, "uncertain", runId ? this.repository.countProviderAttempts(runId) : 0);
+      }
+      this.repository.updateSession(session.id, session.revision, {
+        state: "finished", outcome: "needs-attention", remainingMs: remainingMs(session),
+      });
+    });
+    this.progress(session.id, running.map((item) => item.id));
   }
 
   async preview(input: unknown) {
@@ -612,10 +620,11 @@ export class WorkflowCoordinator {
     let dispatchIdeas = false;
     let planIdeas = false;
     let initialTaskId: string | null = null;
-    let resumeRun: { runId: string; taskId: string } | null = null;
+    const resumeRuns: Array<{ runId: string; taskId: string }> = [];
     let resumeResearchRunId: string | null = null;
-    let resumeCompletedRun: ResearchEvent | null = null;
+    const resumeCompletedRuns: ResearchEvent[] = [];
     let cancelRunId: string | null = null;
+    let cancelSiblingRunIds: string[] = [];
     let cancelResearchRun = false;
     let cancelCoverageTaskId: string | null = null;
     const receipt = this.options.db.immediateTransaction(() => {
@@ -716,25 +725,29 @@ export class WorkflowCoordinator {
           if (current.state !== "paused") throw new AppError("conflict", "Only a safely paused workflow can resume.");
           if (this.repository.listWorkItems(current.id).some((item) => item.state === "unknown")) throw new AppError("UNKNOWN_COMPLETION");
           const items = this.repository.listWorkItems(current.id);
-          const running = items.find((item) => item.state === "running");
+          const runningItems = items.filter((item) => item.state === "running");
+          const running = runningItems[0];
           const readyInitial = items.find((item) => ["prepare-frame", "discovery", "known-problem", "assess-candidate"].includes(item.kind) && item.state === "ready");
           const readyResearch = items.some((item) => item.kind === "research-request" && item.state === "ready");
           const readyCoverage = items.some((item) => ["coverage-map", "coverage-search"].includes(item.kind) && item.state === "ready");
           const existingIdeas = items.some((item) => item.kind === "generate-ideas");
           const contract = WorkflowLaunchContractSchema.parse(current.contract);
           if (running) {
-            const runId = runIdFromItem(running);
-            if (!runId) throw new AppError("UNKNOWN_COMPLETION", "The running task has no saved run to resume.");
-            if (this.repository.hasUnknownProviderCompletion(runId)) throw new AppError("UNKNOWN_COMPLETION");
-            const saved = this.options.db.db.prepare("SELECT status, problem_id FROM research_runs WHERE id = ?")
-              .get(runId) as { status: string; problem_id: string | null } | undefined;
-            if (!saved) throw new AppError("INVALID_REFERENCE");
-            if (saved.status === "completed") {
-              resumeCompletedRun = { type: "run-completed", runId, threadId: current.threadId, problemId: saved.problem_id };
-            } else if (saved.status === "running" || saved.status === "queued") {
-              if (running.kind === "research-request") resumeResearchRunId = runId;
-              else resumeRun = { runId, taskId: running.id };
-            } else throw new AppError("UNKNOWN_COMPLETION", "Review the saved task before continuing.");
+            // Several running tasks are idea tasks that were running side by side.
+            for (const item of runningItems) {
+              const runId = runIdFromItem(item);
+              if (!runId) throw new AppError("UNKNOWN_COMPLETION", "The running task has no saved run to resume.");
+              if (this.repository.hasUnknownProviderCompletion(runId)) throw new AppError("UNKNOWN_COMPLETION");
+              const saved = this.options.db.db.prepare("SELECT status, problem_id FROM research_runs WHERE id = ?")
+                .get(runId) as { status: string; problem_id: string | null } | undefined;
+              if (!saved) throw new AppError("INVALID_REFERENCE");
+              if (saved.status === "completed") {
+                resumeCompletedRuns.push({ type: "run-completed", runId, threadId: current.threadId, problemId: saved.problem_id });
+              } else if (saved.status === "running" || saved.status === "queued") {
+                if (item.kind === "research-request") resumeResearchRunId = runId;
+                else resumeRuns.push({ runId, taskId: item.id });
+              } else throw new AppError("UNKNOWN_COMPLETION", "Review the saved task before continuing.");
+            }
             this.repository.updateSession(current.id, current.revision, { state: "running", runningSince: new Date().toISOString() });
           } else if (readyInitial) {
             initialTaskId = readyInitial.id;
@@ -767,8 +780,11 @@ export class WorkflowCoordinator {
         }
         case "stop": {
           if (current.state === "finished") throw new AppError("conflict", "This workflow already finished.");
-          const runningItem = this.repository.listWorkItems(current.id).find((item) => item.state === "running");
+          const runningItems = this.repository.listWorkItems(current.id).filter((item) => item.state === "running");
+          const runningItem = runningItems[0];
           cancelRunId = runningItem ? runIdFromItem(runningItem) : null;
+          // Idea tasks running side by side are all cancelled; each settles as its run reports back.
+          cancelSiblingRunIds = runningItems.slice(1).flatMap((item) => runIdFromItem(item) ?? []);
           cancelResearchRun = runningItem?.kind === "research-request";
           cancelCoverageTaskId = runningItem && ["coverage-map", "coverage-search"].includes(runningItem.kind) ? runningItem.id : null;
           if (runningItem) this.repository.updateSession(current.id, current.revision, { state: "stop-requested" });
@@ -825,25 +841,31 @@ export class WorkflowCoordinator {
     if (planIdeas) this.planGeneration(receipt.sessionId);
     if (initialTaskId) void this.dispatchInitial(receipt.sessionId, initialTaskId)
       .catch((error) => this.failDispatch(receipt.sessionId, initialTaskId!, error));
-    if (resumeRun) {
-      const { runId, taskId } = resumeRun;
-      void this.options.engine().resumeRun(runId).catch(error => {
-        this.options.db.db.prepare(`UPDATE research_runs SET status = 'failed', interrupted = 1, updated_at = ?
-          WHERE id = ? AND status IN ('queued','running')`).run(new Date().toISOString(), runId);
-        this.failDispatch(receipt.sessionId, taskId, error);
-      });
-    }
+    // Runs resume one after another, so an earlier idea run is active before a later one waits on its review.
+    if (resumeRuns.length) void (async () => {
+      for (const { runId, taskId } of resumeRuns) {
+        await this.options.engine().resumeRun(runId).catch(error => {
+          this.options.db.db.prepare(`UPDATE research_runs SET status = 'failed', interrupted = 1, updated_at = ?
+            WHERE id = ? AND status IN ('queued','running')`).run(new Date().toISOString(), runId);
+          this.failDispatch(receipt.sessionId, taskId, error);
+        });
+      }
+    })();
     if (resumeResearchRunId && this.options.researchService?.resumeRequest) {
       const runId = resumeResearchRunId;
       void this.options.researchService.resumeRequest(receipt.sessionId, runId)
         .catch((error) => this.options.onError?.(error));
     }
-    if (resumeCompletedRun) this.handleRunEvent(resumeCompletedRun);
+    for (const event of resumeCompletedRuns) this.handleRunEvent(event);
     if (cancelRunId) {
       if (cancelResearchRun && this.options.researchService?.cancelRequestRun) {
         void this.options.researchService.cancelRequestRun(cancelRunId).catch((error) => this.options.onError?.(error));
       }
       else this.options.engine().cancelRun(cancelRunId);
+    }
+    for (const runId of cancelSiblingRunIds) {
+      try { this.options.engine().cancelRun(runId); }
+      catch (error) { this.options.onError?.(error); }
     }
     return receipt;
   }
@@ -1366,6 +1388,9 @@ export class WorkflowCoordinator {
       }
       this.settleTaskBudget(taskId, unknown ? "uncertain" : "released", runId ? this.repository.countProviderAttempts(runId) : 0);
       const skippedIds = this.skipReadyTasks(sessionId, "upstream-failed");
+      // The last idea task running beside it finishes the session, with this failure in its outcome.
+      if (runsSideBySide(item) && this.repository.listWorkItems(sessionId)
+        .some((candidate) => candidate.kind === "generate-ideas" && candidate.state === "running")) return skippedIds;
       this.repository.updateSession(sessionId, session.revision, { state: "finished", outcome: unknown ? "needs-attention" : "failed", remainingMs: remainingMs(session) });
       return skippedIds;
     });
@@ -1415,8 +1440,12 @@ export class WorkflowCoordinator {
       });
       this.settleTaskBudget(item.id, unknown ? "uncertain" : "spent", this.repository.countProviderAttempts(event.runId));
       const skippedIds = this.skipReadyTasks(session.id, event.type === "run-cancelled" ? "session-stopped" : "upstream-failed");
+      const items = this.repository.listWorkItems(session.id);
+      // Idea tasks running side by side settle one by one; the last of them finishes the session.
+      if (items.some((candidate) => candidate.kind === "generate-ideas" && candidate.state === "running")) return skippedIds;
       const hasResults = this.summary(session.id).counts.accepted > 0;
-      const outcome = unknown ? "needs-attention" : event.type === "run-cancelled" ? "cancelled" : hasResults ? "partial" : "failed";
+      const outcome = unknown || items.some((candidate) => candidate.state === "unknown") ? "needs-attention"
+        : event.type === "run-cancelled" ? "cancelled" : hasResults ? "partial" : "failed";
       this.repository.updateSession(session.id, session.revision, { state: "finished", outcome, remainingMs: remainingMs(session) });
       return skippedIds;
     });
@@ -1558,9 +1587,10 @@ export class WorkflowCoordinator {
         const item = this.repository.createWorkItem({
           sessionId, kind: "generate-ideas", scopeKey: `ideas:${snapshotId}:${allocation.problemId}:${batch}`,
           ordinal: ordinal++, state: "ready",
+          // New tasks may run side by side; older saved tasks lack the flag and keep running one at a time.
           input: { problemId: allocation.problemId, snapshotId, quota, model, reasoningEffort,
             reviewModel, reviewReasoningEffort, fillRound: 0, batch, targetKind, requestedTarget: target,
-            generationAngle: angles[batch] },
+            generationAngle: angles[batch], parallel: true },
         });
         this.repository.reserveBudget({ sessionId, workItemId: item.id, operationKey: `ideas:${item.id}`,
           kind: "model-call", reservedUnits: 4 });
@@ -1672,8 +1702,9 @@ export class WorkflowCoordinator {
   private async dispatchNextGeneration(sessionId: string): Promise<void> {
     const session = this.repository.getSession(sessionId);
     if (!session || session.state !== "running") return;
-    const running = this.repository.listWorkItems(sessionId).some((item) => item.kind === "generate-ideas" && item.state === "running");
-    if (running) return;
+    const generations = this.repository.listWorkItems(sessionId).filter((item) => item.kind === "generate-ideas");
+    const running = generations.filter((item) => item.state === "running");
+    if (running.some((item) => !runsSideBySide(item))) return;
     const progress = this.summary(sessionId);
     if (progress.counts.accepted >= progress.counts.requested) {
       const skipped = this.options.db.immediateTransaction(() => {
@@ -1686,7 +1717,7 @@ export class WorkflowCoordinator {
         return ready.map((item) => item.id);
       });
       if (skipped.length) this.progress(sessionId, skipped);
-      this.finishCollection(sessionId);
+      if (!running.length) this.finishCollection(sessionId);
       return;
     }
     if (WorkflowLaunchContractSchema.parse(session.contract).limits.enforced !== false && remainingMs(session) < 5 * 60_000) {
@@ -1700,20 +1731,30 @@ export class WorkflowCoordinator {
         return ready.map((item) => item.id);
       });
       if (skipped.length) this.progress(sessionId, skipped);
-      this.finishCollection(sessionId);
+      if (!running.length) this.finishCollection(sessionId);
       return;
     }
     const coverage = this.repository.listWorkItems(sessionId).find((item) =>
       ["coverage-map", "coverage-search"].includes(item.kind) && (item.state === "ready" || item.state === "running"));
     if (coverage) {
-      if (coverage.state === "ready") {
+      if (coverage.state === "ready" && !running.length) {
         void this.dispatchCoverage(sessionId, coverage);
       }
       return;
     }
-    const item = this.repository.listWorkItems(sessionId).find((candidate) => candidate.kind === "generate-ideas" && candidate.state === "ready");
-    if (!item) { this.finishCollection(sessionId); return; }
-    if (this.dispatching.has(item.id)) return;
+    const ready = generations.filter((item) => item.state === "ready");
+    if (!ready[0]) { if (!running.length) this.finishCollection(sessionId); return; }
+    if (running.length && !runsSideBySide(ready[0])) return;
+    const batch = runsSideBySide(ready[0])
+      ? ready.filter(runsSideBySide).slice(0, Math.max(0, SIDE_BY_SIDE_IDEA_TASKS - running.length)) : [ready[0]];
+    // Tasks start in order, so their runs are created in order and the engine reviews them in that order.
+    for (const item of batch) await this.dispatchGeneration(session, item);
+  }
+
+  private async dispatchGeneration(session: WorkflowSession, item: WorkflowWorkItem): Promise<void> {
+    const sessionId = session.id;
+    if (this.dispatching.has(item.id) || this.repository.getWorkItem(item.id)?.state !== "ready"
+      || this.repository.getSession(sessionId)?.state !== "running") return;
     this.dispatching.add(item.id);
     const input = item.input as { problemId: string; snapshotId: string; quota: number; model: WorkflowLaunchContract["runConfig"]["model"]; reasoningEffort: string };
     const contract = WorkflowLaunchContractSchema.parse(session.contract);
@@ -1762,13 +1803,15 @@ export class WorkflowCoordinator {
     });
     this.progress(session.id, [item.id]);
     const current = this.repository.getSession(session.id)!;
+    // Idea tasks running side by side pause or stop the session together, once the last of them settles.
+    const siblingsRunning = this.repository.listWorkItems(session.id).some((candidate) => candidate.kind === "generate-ideas" && candidate.state === "running");
     if (current.state === "pause-requested") {
-      this.options.db.immediateTransaction(() => this.repository.updateSession(session.id, current.revision, { state: "paused", remainingMs: remainingMs(current) }));
+      if (!siblingsRunning) this.options.db.immediateTransaction(() => this.repository.updateSession(session.id, current.revision, { state: "paused", remainingMs: remainingMs(current) }));
       this.progress(session.id, []);
       return;
     }
     if (current.state === "stop-requested") {
-      this.options.db.immediateTransaction(() => this.repository.updateSession(session.id, current.revision, { state: "finished", outcome: "cancelled", remainingMs: remainingMs(current) }));
+      if (!siblingsRunning) this.options.db.immediateTransaction(() => this.repository.updateSession(session.id, current.revision, { state: "finished", outcome: "cancelled", remainingMs: remainingMs(current) }));
       this.progress(session.id, []);
       return;
     }
@@ -2170,6 +2213,14 @@ function terminalReason(items: WorkflowWorkItem[], session: WorkflowSession): st
   if (session.outcome === "partial") return "The saved limit was reached before the requested distinct count.";
   return "The workflow finished.";
 }
+
+/** Idea tasks admitted with this flag may run side by side; the engine still reviews them in task order. */
+function runsSideBySide(item: WorkflowWorkItem): boolean {
+  return item.kind === "generate-ideas" && (item.input as { parallel?: unknown }).parallel === true;
+}
+
+/** Each idea run makes one model call at a time; the shared call cap still limits calls across them. */
+const SIDE_BY_SIDE_IDEA_TASKS = 4;
 
 function runIdFromItem(item: WorkflowWorkItem): string | null {
   const output = item.outputRefs as { runId?: unknown } | null;
