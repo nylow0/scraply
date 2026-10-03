@@ -837,3 +837,52 @@ test("one area checks its candidates at the same time and keeps every verdict", 
     expect(f.db.db.prepare("SELECT COUNT(*) AS count FROM problems WHERE discovery_run_id = ?").get(runId)).toEqual({ count: kills });
   } finally { await f.close(); }
 });
+
+test("idea runs started side by side generate at once and review in task order, so a repeated idea is caught", async () => {
+  const events: Array<{ label: string; at: number }> = [];
+  let solutionsCalls = 0;
+  const f = await fixture(async request => {
+    if (request.stage === "solutions") {
+      const call = ++solutionsCalls;
+      events.push({ label: `solutions ${call} start`, at: performance.now() });
+      // The first task generates slowly, so the second finishes generating first.
+      await Bun.sleep(call === 1 ? 80 : 5);
+      events.push({ label: `solutions ${call} end`, at: performance.now() });
+      return { options: [option()] };
+    }
+    if (request.stage === "solution-set-review") {
+      const id = (input(request).candidateIds as string[])[0]!;
+      events.push({ label: `review ${id} start`, at: performance.now() });
+      await Bun.sleep(10);
+      events.push({ label: `review ${id} end`, at: performance.now() });
+      return { assessments: [{ candidateId: id, decision: "distinct", reason: "Useful distinct local workflow", matchingSolutionId: null,
+        citedEvidenceIds: ["frame-source"], criteriaFit: fit("meets", "frame-source") }] };
+    }
+    return researchOutput(request, { initialCandidates: 2 });
+  }, { singleArea: true, modelCapacity: 3 });
+  try {
+    const discoveryRun = await f.start("discovery");
+    const problemIds = (f.db.db.prepare("SELECT id FROM problems WHERE discovery_run_id = ? AND verdict = 'confirmed' ORDER BY rowid")
+      .all(discoveryRun) as Array<{ id: string }>).map(row => row.id).slice(0, 2);
+    expect(problemIds).toHaveLength(2);
+    const tasks = f.db.immediateTransaction(() => problemIds.map((problemId, index) => f.workflows.createWorkItem({ sessionId: "session",
+      kind: "generate-ideas", scopeKey: `ideas:${index}`, state: "ready", input: { problemId, quota: 1, parallel: true } })));
+    const runIds: string[] = [];
+    for (const [index, problemId] of problemIds.entries()) {
+      runIds.push(await f.engine.startSelectedProblem("project", problemId, { ...f.config, ideaCount: 1 }, { sessionId: "session", purpose: "discovery",
+        onRunCreated(runId) { f.db.immediateTransaction(() => f.workflows.updateWorkItem(tasks[index]!.id, "running", { outputRefs: { runId } })); return true; } }));
+    }
+    await until(() => runIds.every(runId => !f.engine.getActiveRunIds().has(runId)));
+    expect(f.errors).toEqual([]);
+    const at = (label: string) => events.find(event => event.label === label)!.at;
+    expect(at("solutions 2 start")).toBeLessThan(at("solutions 1 end"));
+    const [first, second] = runIds.map(runId => (f.db.db.prepare("SELECT id FROM solutions WHERE research_run_id = ?").get(runId) as { id: string }).id);
+    expect(at(`review ${second} start`)).toBeGreaterThan(at(`review ${first} end`));
+    const decisions = runIds.map(runId => {
+      const problemId = (f.db.db.prepare("SELECT problem_id FROM research_runs WHERE id = ?").get(runId) as { problem_id: string }).problem_id;
+      const review = new WorkflowExecution(f.db, runId).repository.findStageResult(runId, "solution-set-review", problemId)!;
+      return (review.context as { solutionSetReview: { decisions: Array<{ status: string; matchingSolutionId: string | null }> } }).solutionSetReview.decisions[0];
+    });
+    expect(decisions).toEqual([expect.objectContaining({ status: "accepted" }), expect.objectContaining({ status: "duplicate", matchingSolutionId: first })]);
+  } finally { await f.close(); }
+});

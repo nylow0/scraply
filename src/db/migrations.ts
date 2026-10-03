@@ -1539,4 +1539,10 @@ export const MIGRATIONS = [
   { id: 38, sql: "", rebuildReferencedTable: true, afterSql: addResearchStageIds },
   { id: 39, sql: RESEARCH_AREAS_MIGRATION_SQL },
   { id: 40, sql: SOLUTION_GOAL_FIT_MIGRATION_SQL },
+  // Idea runs of one workflow session may run side by side; blockingActiveRun decides which runs may overlap.
+  { id: 41, sql: `
+      DROP INDEX IF EXISTS idx_research_runs_one_active;
+      CREATE UNIQUE INDEX idx_research_runs_one_active_research ON research_runs(thread_id)
+        WHERE status IN ('queued', 'running') AND problem_id IS NULL;
+    ` },
 ] as const;
