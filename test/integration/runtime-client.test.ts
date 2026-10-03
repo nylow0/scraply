@@ -114,7 +114,7 @@ describe("persistent native runtime client", () => {
     expect((await second).output).toEqual({ answer: "right" });
     expect((await third).output).toEqual({ answer: "right" });
     expect(dispatched).toEqual(["first", "second", "third"]);
-    expect(() => runtime.setMaxConcurrentGenerations(7)).toThrow("1 to 6");
+    expect(() => runtime.setMaxConcurrentGenerations(9)).toThrow("1 to 8");
   });
 
   test("an aborted waiting generation never dispatches when concurrent slots are occupied", async () => {

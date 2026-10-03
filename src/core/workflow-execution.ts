@@ -28,6 +28,7 @@ export class WorkflowExecution {
   readonly boundedFollowUpHarvest: boolean;
   readonly parallelResearch: boolean;
   readonly labeledFactors: boolean;
+  readonly mediumReads: boolean;
   readonly rankProblemCandidates: boolean;
   private readonly prompts: Record<WorkflowV2StageId, ResolvedWorkflowV2Prompt>;
   private readonly disableRepair: boolean;
@@ -67,6 +68,7 @@ export class WorkflowExecution {
       this.save("bounded-follow-up-harvest", { version: 1 });
       this.save("parallel-research", { version: 1 });
       this.save("labeled-factors", { version: 1 });
+      this.save("medium-reads", { version: 1 });
     }
     // Runs without the marker keep their original source groups and checkpoint identities.
     this.smallHarvestBatches = this.read<{ version: number }>("small-harvest-batches")?.version === 1;
@@ -75,6 +77,8 @@ export class WorkflowExecution {
     this.parallelResearch = this.read<{ version: number }>("parallel-research")?.version === 1;
     // Older runs keep the read schema their completed reads were requested with.
     this.labeledFactors = this.read<{ version: number }>("labeled-factors")?.version === 1;
+    // Reasoning effort is part of a saved read request, so older runs keep their configured effort.
+    this.mediumReads = this.read<{ version: number }>("medium-reads")?.version === 1;
     if (!this.read("source-route-start")) this.save("source-route-start", new Date().toISOString());
     // Candidate order controls sequential source IDs in completed verdict requests.
     this.rankProblemCandidates = this.read<{ version: number }>("candidate-accounting")?.version === 1;
@@ -247,6 +251,7 @@ export class WorkflowExecution {
         : stage.schema;
       const request: StructuredStageRequest<unknown> = {
         ...original,
+        ...(stageId === "factor-harvest" && this.mediumReads ? { reasoningEffort: readReasoningEffort(original) } : {}),
         workOrder: { ...original.workOrder, instruction: prompt.text, inputs: { routing: original.workOrder.inputs, workflowVersion: 2 } },
         schema: requestSchema,
         jsonSchema: savedFactorSchema ?? deriveJsonSchema(requestSchema),
@@ -581,6 +586,19 @@ export class WorkflowExecution {
  * reads finished within 54 seconds (the slowest took 115), and a stalled read is started over.
  * Idea stages legitimately run longer and stay unlimited.
  */
+const REASONING_EFFORT_ORDER = ["minimal", "low", "medium", "high", "xhigh", "max", "ultra"];
+
+/**
+ * Evidence reads quote and label facts; the judging stages that use those labels keep the run's effort.
+ * In Sol 6.1 high runs, reads were 62% of model time and half of each read's output was reasoning, so new
+ * runs read with OpenAI at medium effort, never above the effort chosen for the run.
+ */
+function readReasoningEffort(request: StructuredStageRequest<unknown>): string {
+  const chosen = REASONING_EFFORT_ORDER.indexOf(request.reasoningEffort);
+  return request.model.providerId === "openai-subscription" && chosen > REASONING_EFFORT_ORDER.indexOf("medium")
+    ? "medium" : request.reasoningEffort;
+}
+
 export const RESEARCH_CALL_TIME_LIMIT_MS: Partial<Record<WorkflowV2StageId, number>> = {
   "frame-search-plan": 240_000, "area-ranking": 240_000, "query-plan": 240_000, "factor-harvest": 90_000,
   "evidence-check": 240_000, "area-gap": 240_000, frame: 480_000, "problem-candidates": 480_000, "problem-kill": 480_000,

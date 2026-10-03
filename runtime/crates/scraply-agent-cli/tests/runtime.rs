@@ -330,18 +330,18 @@ fn installed_runtime_cancels_an_active_generation() {
 fn installed_runtime_bounds_parallel_generations_and_reuses_a_settled_slot() {
     let mut runtime = RuntimeProcess::start(5_000);
     runtime.initialize();
-    // Six slots, matching the app's highest "Concurrent model calls" setting.
-    for id in 2..=7 {
+    // Eight slots, matching the app's highest "Concurrent model calls" setting.
+    for id in 2..=9 {
         runtime.start_generation(id, &format!("parallel-{id}"));
     }
-    runtime.request_generation_start(8, "overflow-generation");
+    runtime.request_generation_start(10, "overflow-generation");
     assert_eq!(
-        runtime.read_response(8)["error"]["code"],
+        runtime.read_response(10)["error"]["code"],
         "request_conflict"
     );
 
     runtime.request(
-        9,
+        11,
         "generation.cancel",
         json!({"generationId": "parallel-2"}),
     );
@@ -350,18 +350,20 @@ fn installed_runtime_bounds_parallel_generations_and_reuses_a_settled_slot() {
     while !saw_cancel_response || !saw_cancel_event {
         let message = runtime.read();
         assert_ne!(message["event"]["kind"], "generation.completed");
-        saw_cancel_response |= message["id"] == 9;
+        saw_cancel_response |= message["id"] == 11;
         saw_cancel_event |= message["event"]["kind"] == "generation.cancelled"
             && message["event"]["generationId"] == "parallel-2";
     }
-    runtime.start_generation(10, "overflow-generation");
+    runtime.start_generation(12, "overflow-generation");
     for (id, generation_id) in [
-        (11, "parallel-3"),
-        (12, "parallel-4"),
-        (13, "parallel-5"),
-        (14, "parallel-6"),
-        (15, "parallel-7"),
-        (16, "overflow-generation"),
+        (13, "parallel-3"),
+        (14, "parallel-4"),
+        (15, "parallel-5"),
+        (16, "parallel-6"),
+        (17, "parallel-7"),
+        (18, "parallel-8"),
+        (19, "parallel-9"),
+        (20, "overflow-generation"),
     ] {
         runtime.request(
             id,
@@ -371,7 +373,7 @@ fn installed_runtime_bounds_parallel_generations_and_reuses_a_settled_slot() {
     }
     let mut terminals = 0;
     let mut responses = 0;
-    while terminals < 6 || responses < 6 {
+    while terminals < 8 || responses < 8 {
         let message = runtime.read();
         assert_ne!(message["event"]["kind"], "generation.completed");
         if message["event"]["kind"] == "generation.cancelled" {
@@ -380,7 +382,7 @@ fn installed_runtime_bounds_parallel_generations_and_reuses_a_settled_slot() {
             responses += 1;
         }
     }
-    runtime.shutdown(17);
+    runtime.shutdown(21);
 }
 
 #[test]
