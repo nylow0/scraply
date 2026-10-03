@@ -286,15 +286,21 @@ const FactorRequestText = {
   sourceId: WorkflowV2RequiredTextSchema.max(256),
   uncertainty: WorkflowV2RequiredTextSchema.max(FACTOR_EXPLANATION_CHARACTERS),
 };
+const BoundedLabeledFactorSchema = WorkflowV2FactorSchema.extend({
+  ...FactorRequestText,
+  independentSourceKey: WorkflowV2RequiredTextSchema.max(160).nullable(),
+  demandEvidenceUncertainty: WorkflowV2RequiredTextSchema.max(FACTOR_EXPLANATION_CHARACTERS),
+});
+/** Runs started before the `labeled-factors` marker: the model could still return the unlabeled shape. */
 export const BoundedWorkflowV2FactorHarvestOutputSchema = z.object({
-  factors: z.array(z.union([
-    LegacyWorkflowV2FactorSchema.extend(FactorRequestText),
-    WorkflowV2FactorSchema.extend({
-      ...FactorRequestText,
-      independentSourceKey: WorkflowV2RequiredTextSchema.max(160).nullable(),
-      demandEvidenceUncertainty: WorkflowV2RequiredTextSchema.max(FACTOR_EXPLANATION_CHARACTERS),
-    }),
-  ])),
+  factors: z.array(z.union([LegacyWorkflowV2FactorSchema.extend(FactorRequestText), BoundedLabeledFactorSchema])),
+}).strict();
+/**
+ * New runs: every fact must carry its source role, audience fit and origin. Sol 6.1 returned the
+ * unlabeled shape for 26-36% of facts when it was allowed, and an unlabeled fact can never count as evidence.
+ */
+export const LabeledWorkflowV2FactorHarvestOutputSchema = z.object({
+  factors: z.array(BoundedLabeledFactorSchema),
 }).strict();
 
 export const WorkflowV2ProblemCandidateSchema = ProblemSchema.pick({

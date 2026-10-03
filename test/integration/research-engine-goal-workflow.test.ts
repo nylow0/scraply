@@ -7,7 +7,7 @@ import { ResearchEngine } from "../../src/core/research-engine";
 import { getRunTrace } from "../../src/core/run-trace";
 import { WorkflowModelScheduler } from "../../src/core/workflow-scheduler";
 import { configurePromptPaths } from "../../src/core/prompts";
-import { WorkflowExecution } from "../../src/core/workflow-execution";
+import { streamRestarts, WorkflowExecution } from "../../src/core/workflow-execution";
 import { DatabaseClient } from "../../src/db/client";
 import { DiscoveryRepository } from "../../src/db/repositories/discovery";
 import { ResearchFrameRepository } from "../../src/db/repositories/research-frames";
@@ -97,7 +97,7 @@ async function fixture(output: (request: StructuredStageRequest<unknown>) => Pro
         url: `https://owners.example/${index === 1 ? "filing" : "handoff"}?utm_source=${encodeURIComponent(query)}`, title: "Owner", text }));
     } };
   }
-  const engine = new ResearchEngine({ db, modelScheduler: scheduler, modelClients: { fixture: client },
+  const engine = new ResearchEngine({ db, modelScheduler: scheduler, modelClients: { fixture: client }, rateLimitPausesMs: [1, 1],
     ...(options.venueResolver ? { venueResolver: options.venueResolver } : {}),
     searchClients: options.noSearchProvider ? {} : { exa: searchClient("exa"), ...(options.autoSearch ? { perplexity: searchClient("perplexity") } : {}) },
     onEvent(event) { if (event.type === "run-failed") errors.push(event.error); } });
@@ -700,30 +700,35 @@ test("a model failure late in an area keeps the problems it already checked and 
   } finally { await f.close(); }
 });
 
+// Restarts after a dropped stream wait seconds in a real run; these fixtures drop on purpose.
+streamRestarts.pausesMs = [1, 1];
 const droppedStream = () => new ProviderFailure("interrupted", "The OpenAI stream ended before completion. Completion and usage are unknown.", false, {
   attempts: [{ attempt: "initial", outcome: "failed", providerCompletion: "unknown", model: DEFAULT_RUN_CONFIG.model,
     usage: { status: "unknown" }, cost: { status: "unknown" }, latencyMs: 1 }],
 });
 
-test("a research call whose stream drops is started over once and the run continues", async () => {
-  // Live Bookkeepers on Sol 6.1 stopped before ideas when one problem-candidates call lost its stream.
-  let candidateCalls = 0;
+test("a research call whose stream drops is started over after a pause and the run continues", async () => {
+  // Live Bookkeepers on Sol 6.1 stopped before ideas when one problem-candidates call lost its stream, and
+  // a later run lost a read whose immediate restart hit the same burst of dropped connections.
+  const calledAt: number[] = [];
+  streamRestarts.pausesMs = [80, 80];
   const f = await fixture(request => {
-    if (request.stage.startsWith("problem-candidates") && ++candidateCalls === 1) throw droppedStream();
+    if (request.stage.startsWith("problem-candidates") && calledAt.push(Date.now()) === 1) throw droppedStream();
     return researchOutput(request);
   }, { singleArea: true });
   try {
     const runId = await f.start("discovery");
     expect(f.errors).toEqual([]);
+    expect(calledAt[1]! - calledAt[0]!).toBeGreaterThanOrEqual(75);
     expect(f.db.db.prepare(`SELECT status FROM generation_attempts WHERE research_run_id = ? AND stage_key LIKE 'problem-candidates%'
       ORDER BY created_at, rowid LIMIT 2`).all(runId)).toEqual([{ status: "interrupted" }, { status: "completed" }]);
     expect(new WorkflowRepository(f.db).hasUnknownProviderCompletion(runId)).toBe(false);
     const confirmed = f.db.db.prepare("SELECT COUNT(*) AS count FROM problems WHERE discovery_run_id = ? AND verdict = 'confirmed'").get(runId) as { count: number };
     expect(confirmed.count).toBeGreaterThan(0);
-  } finally { await f.close(); }
+  } finally { streamRestarts.pausesMs = [1, 1]; await f.close(); }
 });
 
-test("a call that loses its stream twice ends only its own area, and the run goes on with the problems it checked", async () => {
+test("a call that loses its stream three times ends only its own area, and the run goes on with the problems it checked", async () => {
   const f = await fixture(request => {
     if (request.stage.startsWith("area-gap")) throw droppedStream();
     return researchOutput(request);
@@ -732,7 +737,7 @@ test("a call that loses its stream twice ends only its own area, and the run goe
     const runId = await f.start("discovery");
     expect(f.errors).toEqual([]);
     expect(f.db.db.prepare("SELECT status FROM generation_attempts WHERE research_run_id = ? AND stage_key LIKE 'area-gap%'").all(runId))
-      .toEqual([{ status: "interrupted" }, { status: "interrupted" }]);
+      .toEqual([{ status: "interrupted" }, { status: "interrupted" }, { status: "interrupted" }]);
     // Both lost calls are recorded as deliberately abandoned, so the run is not left waiting for review.
     expect(new WorkflowRepository(f.db).hasUnknownProviderCompletion(runId)).toBe(false);
     const confirmed = f.db.db.prepare("SELECT COUNT(*) AS count FROM problems WHERE discovery_run_id = ? AND verdict = 'confirmed'").get(runId) as { count: number };
@@ -743,6 +748,31 @@ test("a call that loses its stream twice ends only its own area, and the run goe
     expect(f.db.db.prepare("SELECT COUNT(*) AS count FROM workflow_snapshots WHERE research_run_id = ? AND snapshot_key = 'discovery-completed'").get(runId))
       .toEqual({ count: 1 });
   } finally { await f.close(); }
+});
+
+test("a rate-limited call is tried again after a pause, and a lasting limit still ends the call", async () => {
+  // Six calls at once must not end a run on a short burst limit.
+  let kills = 0;
+  const f = await fixture(request => {
+    if (request.stage.startsWith("problem-kill") && ++kills <= 2) throw new ProviderFailure("rate-limit", "Rate limit reached", true);
+    return researchOutput(request);
+  }, { singleArea: true });
+  try {
+    const runId = await f.start("discovery");
+    expect(f.errors).toEqual([]);
+    expect(f.db.db.prepare(`SELECT status, error_code AS code FROM generation_attempts WHERE research_run_id = ? AND stage_key LIKE 'problem-kill%'
+      ORDER BY created_at, rowid LIMIT 3`).all(runId)).toEqual([{ status: "failed", code: "rate-limit" }, { status: "failed", code: "rate-limit" },
+      { status: "completed", code: null }]);
+  } finally { await f.close(); }
+  const lasting = await fixture(request => {
+    if (request.stage === "solutions") throw new ProviderFailure("rate-limit", "Usage limit reached", true);
+    return researchOutput(request);
+  });
+  try {
+    await lasting.start("generate-ideas");
+    expect(lasting.errors).toEqual(["Usage limit reached"]);
+    expect(lasting.stages).toEqual(["solutions", "solutions", "solutions"]);
+  } finally { await lasting.close(); }
 });
 
 test("an idea call whose stream drops is started over once and its idea is still reviewed and saved", async () => {
@@ -785,5 +815,74 @@ test("a new run scans areas and checks candidates at the same time, within the s
     expect([...peak.values()].every(count => count <= 3)).toBe(true);
     const checked = f.db.db.prepare("SELECT COUNT(*) AS count FROM problems WHERE discovery_run_id = ? AND verdict = 'confirmed'").get(runId) as { count: number };
     expect(checked.count).toBeGreaterThan(1);
+  } finally { await f.close(); }
+});
+
+test("one area checks its candidates at the same time and keeps every verdict", async () => {
+  let active = 0;
+  let peak = 0;
+  const f = await fixture(async request => {
+    if (!request.stage.startsWith("problem-kill:")) return researchOutput(request, { initialCandidates: 3 });
+    peak = Math.max(peak, ++active);
+    await Bun.sleep(10);
+    active -= 1;
+    return researchOutput(request, { initialCandidates: 3 });
+  }, { modelCapacity: 3, depth: "standard", singleArea: true });
+  try {
+    const runId = await f.start("discovery");
+    expect(f.errors).toEqual([]);
+    expect(peak).toBeGreaterThan(1);
+    expect(peak).toBeLessThanOrEqual(3);
+    const kills = f.stages.filter(stage => stage.startsWith("problem-kill:")).length;
+    expect(f.db.db.prepare("SELECT COUNT(*) AS count FROM problems WHERE discovery_run_id = ?").get(runId)).toEqual({ count: kills });
+  } finally { await f.close(); }
+});
+
+test("idea runs started side by side generate at once and review in task order, so a repeated idea is caught", async () => {
+  const events: Array<{ label: string; at: number }> = [];
+  let solutionsCalls = 0;
+  const f = await fixture(async request => {
+    if (request.stage === "solutions") {
+      const call = ++solutionsCalls;
+      events.push({ label: `solutions ${call} start`, at: performance.now() });
+      // The first task generates slowly, so the second finishes generating first.
+      await Bun.sleep(call === 1 ? 80 : 5);
+      events.push({ label: `solutions ${call} end`, at: performance.now() });
+      return { options: [option()] };
+    }
+    if (request.stage === "solution-set-review") {
+      const id = (input(request).candidateIds as string[])[0]!;
+      events.push({ label: `review ${id} start`, at: performance.now() });
+      await Bun.sleep(10);
+      events.push({ label: `review ${id} end`, at: performance.now() });
+      return { assessments: [{ candidateId: id, decision: "distinct", reason: "Useful distinct local workflow", matchingSolutionId: null,
+        citedEvidenceIds: ["frame-source"], criteriaFit: fit("meets", "frame-source") }] };
+    }
+    return researchOutput(request, { initialCandidates: 2 });
+  }, { singleArea: true, modelCapacity: 3 });
+  try {
+    const discoveryRun = await f.start("discovery");
+    const problemIds = (f.db.db.prepare("SELECT id FROM problems WHERE discovery_run_id = ? AND verdict = 'confirmed' ORDER BY rowid")
+      .all(discoveryRun) as Array<{ id: string }>).map(row => row.id).slice(0, 2);
+    expect(problemIds).toHaveLength(2);
+    const tasks = f.db.immediateTransaction(() => problemIds.map((problemId, index) => f.workflows.createWorkItem({ sessionId: "session",
+      kind: "generate-ideas", scopeKey: `ideas:${index}`, state: "ready", input: { problemId, quota: 1, parallel: true } })));
+    const runIds: string[] = [];
+    for (const [index, problemId] of problemIds.entries()) {
+      runIds.push(await f.engine.startSelectedProblem("project", problemId, { ...f.config, ideaCount: 1 }, { sessionId: "session", purpose: "discovery",
+        onRunCreated(runId) { f.db.immediateTransaction(() => f.workflows.updateWorkItem(tasks[index]!.id, "running", { outputRefs: { runId } })); return true; } }));
+    }
+    await until(() => runIds.every(runId => !f.engine.getActiveRunIds().has(runId)));
+    expect(f.errors).toEqual([]);
+    const at = (label: string) => events.find(event => event.label === label)!.at;
+    expect(at("solutions 2 start")).toBeLessThan(at("solutions 1 end"));
+    const [first, second] = runIds.map(runId => (f.db.db.prepare("SELECT id FROM solutions WHERE research_run_id = ?").get(runId) as { id: string }).id);
+    expect(at(`review ${second} start`)).toBeGreaterThan(at(`review ${first} end`));
+    const decisions = runIds.map(runId => {
+      const problemId = (f.db.db.prepare("SELECT problem_id FROM research_runs WHERE id = ?").get(runId) as { problem_id: string }).problem_id;
+      const review = new WorkflowExecution(f.db, runId).repository.findStageResult(runId, "solution-set-review", problemId)!;
+      return (review.context as { solutionSetReview: { decisions: Array<{ status: string; matchingSolutionId: string | null }> } }).solutionSetReview.decisions[0];
+    });
+    expect(decisions).toEqual([expect.objectContaining({ status: "accepted" }), expect.objectContaining({ status: "duplicate", matchingSolutionId: first })]);
   } finally { await f.close(); }
 });

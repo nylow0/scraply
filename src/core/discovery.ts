@@ -118,6 +118,8 @@ export interface DiscoveryDependencies {
   boundedFollowUpHarvest?: boolean;
   /** How many source batches one harvest reads at once; the shared model scheduler still caps calls. */
   parallelReads?: number;
+  /** Candidates get their contrary searches and verdicts at the same time instead of one after another. */
+  parallelChecks?: boolean;
   assessProblemAudience?: boolean;
   audienceSearch?: Pick<SearchOptions, "includeDomains" | "startPublishedDate"> & { category?: ExaCategory };
   sourceRouting?: SourceRoutingContext;
@@ -370,102 +372,143 @@ export async function discoverProblems(
   );
 
   let partialReason: string | undefined;
-  for (const [index, { candidate, citedFactors, hostnames }] of candidates.entries()) {
-    try {
-      let assessmentCandidate = candidate;
-      if ("alternativeExplanations" in candidate) {
-        const { alternativeExplanations, unknowns, ...withoutExplanations } = candidate;
-        void alternativeExplanations; void unknowns;
-        // Keep completed verdict request identities from before full candidate accounting.
-        assessmentCandidate = withoutExplanations;
+  const assessAudience = dependencies.workflowVersion === 2 && dependencies.assessProblemAudience && !scope.audience.trim();
+  const assessmentFor = (candidate: (typeof candidates)[number]["candidate"]) => {
+    let assessmentCandidate = candidate;
+    if ("alternativeExplanations" in candidate) {
+      const { alternativeExplanations, unknowns, ...withoutExplanations } = candidate;
+      void alternativeExplanations; void unknowns;
+      // Keep completed verdict request identities from before full candidate accounting.
+      assessmentCandidate = withoutExplanations;
+    }
+    return assessmentCandidate;
+  };
+  const searchContrary = (candidate: (typeof candidates)[number]["candidate"]) => dependencies.search.search(buildKillQuery(candidate.statement), {
+    numResults: DISCOVERY_DEPTHS[dependencies.depth ?? "standard"].searchResultsPerQuery,
+    maxCharacters: SOURCE_MAX_CHARACTERS,
+    ...(dependencies.sourceRouting ? {
+      ...routeSearchOptions("contrary", dependencies.sourceRouting),
+      legacySearchOptions: { numResults: DISCOVERY_DEPTHS[dependencies.depth ?? "standard"].searchResultsPerQuery, maxCharacters: SOURCE_MAX_CHARACTERS },
+    } : {}),
+    ...(dependencies.signal ? { signal: dependencies.signal } : {}),
+  });
+  const resolveContrary = (searched: Source[]) => {
+    const { all, fresh } = resolveSources(searched, sourcesByUrl, dependencies.onProjection, dependencies.idFactory, dependencies.sourceRouting?.preserveHistoricalSources);
+    for (const source of fresh) {
+      sourcesByUrl.set(source.canonicalUrl, source);
+      killSources.push(source);
+    }
+    return all;
+  };
+  const judge = (index: number, candidateSources: HarvestedSource[]) => {
+    const { candidate, citedFactors } = candidates[index]!;
+    const assessmentCandidate = assessmentFor(candidate);
+    return structuredCall(
+      dependencies,
+      `problem-kill:${createHash("sha256").update(JSON.stringify(assessmentCandidate)).digest("hex")}${assessAudience ? ":audience-v1" : ""}`,
+      [
+        (dependencies.prompt ?? loadPrompt)("problem-kill"),
+        "Look for contrary evidence: already solved, overstated scale, self-correction, and prior attempts that failed.",
+      ].join("\n\n"),
+      { inputs: {}, evidence: { ...buildProblemKillInput(assessmentCandidate, candidateSources).evidence, scope, supportingFactors: citedFactors } },
+      ProblemKillOutputSchema,
+    );
+  };
+  const recordVerdict = (index: number, candidateSources: HarvestedSource[], kill: Awaited<ReturnType<typeof judge>>,
+    problemId = (dependencies.idFactory ?? randomUUID)()) => {
+    const { candidate, citedFactors, hostnames } = candidates[index]!;
+    // V2 assesses both sides of the evidence, including support absent from the contrary search.
+    const suppliedSourceIds = new Set([
+      ...candidateSources.map((source) => source.id),
+      ...(dependencies.workflowVersion === 2 ? citedFactors.map((factor) => factor.sourceId) : []),
+    ]);
+    const validVerdictSourceIds = repairVerdictSourceIds(kill.verdictSourceIds, suppliedSourceIds,
+      new Map(citedFactors.map((factor) => [factor.id, factor.sourceId])));
+    const factorIds = citedFactors.map((factor) => factor.id);
+    const factorAssessments = assessAudience && "factorAssessments" in kill ? scopeFactorAssessments(kill.factorAssessments, factorIds) : [];
+    const assessedFactors = applyProblemFactorAssessments(citedFactors, factorAssessments);
+    const candidateBuyerIds = "intendedBuyerEvidenceFactorIds" in candidate ? candidate.intendedBuyerEvidenceFactorIds : [];
+    const killBuyerIds = "intendedBuyerEvidenceFactorIds" in kill ? kill.intendedBuyerEvidenceFactorIds : candidateBuyerIds;
+    const claimedBuyerIds = new Set(killBuyerIds);
+    const intendedBuyerFactors = assessedFactors.filter((factor) => claimedBuyerIds.has(factor.id)
+      && qualifiesAsProblemObservation(factor));
+    const independentBuyerSources = new Set(intendedBuyerFactors.map((factor) => factor.independentSourceKey).filter(Boolean));
+    // A hostname is only a transport boundary. Separate buyer accounts or studies on the
+    // same forum are independent when extraction gave them distinct source keys.
+    const hasSufficientBuyerEvidence = independentBuyerSources.size >= 2;
+    const resolvedEvidenceGap = hasSufficientBuyerEvidence
+      ? null
+      : evidenceGap(
+          "evidenceGap" in kill ? kill.evidenceGap : null,
+          "evidenceGap" in candidate ? candidate.evidenceGap : null,
+        );
+    problems.push({
+      id: problemId,
+      statement: candidate.statement.trim(),
+      whyItPersists: candidate.whyItPersists.trim(),
+      affected: candidate.affected.trim(),
+      scaleEstimate: candidate.scaleEstimate.trim(),
+      scaleBasisFactorId: dependencies.workflowVersion === 2
+        ? candidate.scaleBasisFactorId
+        : factorIds.includes(candidate.scaleBasisFactorId ?? "") ? candidate.scaleBasisFactorId : null,
+      factorIds,
+      verdict: dependencies.workflowVersion === 2
+        && kill.verdict === "confirmed"
+        && !hasSufficientBuyerEvidence
+        ? "insufficient-evidence" : kill.verdict,
+      verdictReason: dependencies.workflowVersion === 2
+        && !hasSufficientBuyerEvidence
+        ? `Intended-buyer evidence: ${intendedBuyerFactors.length} factor(s) across ${independentBuyerSources.size} independent source(s). ${resolvedEvidenceGap} ${kill.verdictReason.trim()}`
+        : kill.verdictReason.trim(),
+      verdictSourceIds: validVerdictSourceIds,
+      intendedBuyerEvidenceFactorIds: intendedBuyerFactors.map((factor) => factor.id),
+      evidenceGap: resolvedEvidenceGap,
+      briefFit: "briefFit" in kill ? kill.briefFit : "unknown",
+      contraryEvidence: "contraryEvidence" in kill ? kill.contraryEvidence : "unknown",
+      workflowKey: "workflowKey" in kill ? kill.workflowKey : null,
+      factorAssessments,
+      factors: assessedFactors,
+      sourceHostnames: hostnames,
+      singleHarvestModeWarning: new Set(citedFactors.map((factor) => factor.harvestMode)).size === 1 && citedFactors.length > 0,
+    });
+  };
+  const stopAtAllowance = (index: number, error: unknown) => {
+    // New candidate accounting keeps completed verdicts and full remaining candidates when a known allowance ends.
+    if (dependencies.rankCandidates !== true || !(error instanceof AppError) || error.code !== "BUDGET_TOO_SMALL") throw error;
+    partialReason = "The saved allowance ended before all candidates could be assessed. Completed verdicts and remaining candidates were retained.";
+    for (const { candidate } of candidates.slice(index)) blockedCandidates.push({ statement: candidate.statement,
+      reason: `Not assessed: ${partialReason}`, disposition: "not-assessed", candidate });
+    dependencies.onProjection?.(partialReason);
+  };
+  if (dependencies.parallelChecks) {
+    // Contrary searches and verdicts run side by side; sources and problems are still recorded in candidate
+    // order, so their IDs and every verdict request match a sequential run. As in a sequential run, the first
+    // failure in candidate order ends the assessment.
+    const searches = await Promise.allSettled(candidates.map(({ candidate }) => searchContrary(candidate)));
+    const resolved: Array<{ sources: HarvestedSource[]; problemId: string }> = [];
+    for (const search of searches) {
+      if (search.status === "rejected") break;
+      // IDs come from one ordered sequence: each candidate takes its new sources, then its problem, as one by one.
+      resolved.push({ sources: resolveContrary(search.value), problemId: (dependencies.idFactory ?? randomUUID)() });
+    }
+    const verdicts = await Promise.allSettled(resolved.map(({ sources }, index) => judge(index, sources)));
+    for (const [index, verdict] of verdicts.entries()) {
+      if (verdict.status === "rejected") { stopAtAllowance(index, verdict.reason); break; }
+      recordVerdict(index, resolved[index]!.sources, verdict.value, resolved[index]!.problemId);
+    }
+    const failedSearch = searches[resolved.length];
+    if (verdicts.every((verdict) => verdict.status === "fulfilled") && failedSearch?.status === "rejected") {
+      stopAtAllowance(resolved.length, failedSearch.reason);
+    }
+  } else {
+    for (const [index, { candidate }] of candidates.entries()) {
+      try {
+        const candidateSources = resolveContrary(await searchContrary(candidate));
+        recordVerdict(index, candidateSources, await judge(index, candidateSources));
+      } catch (error) {
+        stopAtAllowance(index, error);
+        break;
       }
-      const searched = await dependencies.search.search(buildKillQuery(candidate.statement), {
-        numResults: DISCOVERY_DEPTHS[dependencies.depth ?? "standard"].searchResultsPerQuery,
-        maxCharacters: SOURCE_MAX_CHARACTERS,
-        ...(dependencies.sourceRouting ? {
-          ...routeSearchOptions("contrary", dependencies.sourceRouting),
-          legacySearchOptions: { numResults: DISCOVERY_DEPTHS[dependencies.depth ?? "standard"].searchResultsPerQuery, maxCharacters: SOURCE_MAX_CHARACTERS },
-        } : {}),
-        ...(dependencies.signal ? { signal: dependencies.signal } : {}),
-      });
-      const { all: candidateSources, fresh } = resolveSources(searched, sourcesByUrl, dependencies.onProjection, dependencies.idFactory, dependencies.sourceRouting?.preserveHistoricalSources);
-      for (const source of fresh) {
-        sourcesByUrl.set(source.canonicalUrl, source);
-        killSources.push(source);
-      }
-      const assessAudience = dependencies.workflowVersion === 2 && dependencies.assessProblemAudience && !scope.audience.trim();
-      const kill = await structuredCall(
-        dependencies,
-        `problem-kill:${createHash("sha256").update(JSON.stringify(assessmentCandidate)).digest("hex")}${assessAudience ? ":audience-v1" : ""}`,
-        [
-          (dependencies.prompt ?? loadPrompt)("problem-kill"),
-          "Look for contrary evidence: already solved, overstated scale, self-correction, and prior attempts that failed.",
-        ].join("\n\n"),
-        { inputs: {}, evidence: { ...buildProblemKillInput(assessmentCandidate, candidateSources).evidence, scope, supportingFactors: citedFactors } },
-        ProblemKillOutputSchema,
-      );
-      // V2 assesses both sides of the evidence, including support absent from the contrary search.
-      const suppliedSourceIds = new Set([
-        ...candidateSources.map((source) => source.id),
-        ...(dependencies.workflowVersion === 2 ? citedFactors.map((factor) => factor.sourceId) : []),
-      ]);
-      const validVerdictSourceIds = repairVerdictSourceIds(kill.verdictSourceIds, suppliedSourceIds,
-        new Map(citedFactors.map((factor) => [factor.id, factor.sourceId])));
-      const factorIds = citedFactors.map((factor) => factor.id);
-      const factorAssessments = assessAudience && "factorAssessments" in kill ? scopeFactorAssessments(kill.factorAssessments, factorIds) : [];
-      const assessedFactors = applyProblemFactorAssessments(citedFactors, factorAssessments);
-      const candidateBuyerIds = "intendedBuyerEvidenceFactorIds" in candidate ? candidate.intendedBuyerEvidenceFactorIds : [];
-      const killBuyerIds = "intendedBuyerEvidenceFactorIds" in kill ? kill.intendedBuyerEvidenceFactorIds : candidateBuyerIds;
-      const claimedBuyerIds = new Set(killBuyerIds);
-      const intendedBuyerFactors = assessedFactors.filter((factor) => claimedBuyerIds.has(factor.id)
-        && qualifiesAsProblemObservation(factor));
-      const independentBuyerSources = new Set(intendedBuyerFactors.map((factor) => factor.independentSourceKey).filter(Boolean));
-      // A hostname is only a transport boundary. Separate buyer accounts or studies on the
-      // same forum are independent when extraction gave them distinct source keys.
-      const hasSufficientBuyerEvidence = independentBuyerSources.size >= 2;
-      const resolvedEvidenceGap = hasSufficientBuyerEvidence
-        ? null
-        : evidenceGap(
-            "evidenceGap" in kill ? kill.evidenceGap : null,
-            "evidenceGap" in candidate ? candidate.evidenceGap : null,
-          );
-      problems.push({
-        id: (dependencies.idFactory ?? randomUUID)(),
-        statement: candidate.statement.trim(),
-        whyItPersists: candidate.whyItPersists.trim(),
-        affected: candidate.affected.trim(),
-        scaleEstimate: candidate.scaleEstimate.trim(),
-        scaleBasisFactorId: dependencies.workflowVersion === 2
-          ? candidate.scaleBasisFactorId
-          : factorIds.includes(candidate.scaleBasisFactorId ?? "") ? candidate.scaleBasisFactorId : null,
-        factorIds,
-        verdict: dependencies.workflowVersion === 2
-          && kill.verdict === "confirmed"
-          && !hasSufficientBuyerEvidence
-          ? "insufficient-evidence" : kill.verdict,
-        verdictReason: dependencies.workflowVersion === 2
-          && !hasSufficientBuyerEvidence
-          ? `Intended-buyer evidence: ${intendedBuyerFactors.length} factor(s) across ${independentBuyerSources.size} independent source(s). ${resolvedEvidenceGap} ${kill.verdictReason.trim()}`
-          : kill.verdictReason.trim(),
-        verdictSourceIds: validVerdictSourceIds,
-        intendedBuyerEvidenceFactorIds: intendedBuyerFactors.map((factor) => factor.id),
-        evidenceGap: resolvedEvidenceGap,
-        briefFit: "briefFit" in kill ? kill.briefFit : "unknown",
-        contraryEvidence: "contraryEvidence" in kill ? kill.contraryEvidence : "unknown",
-        workflowKey: "workflowKey" in kill ? kill.workflowKey : null,
-        factorAssessments,
-        factors: assessedFactors,
-        sourceHostnames: hostnames,
-        singleHarvestModeWarning: new Set(citedFactors.map((factor) => factor.harvestMode)).size === 1 && citedFactors.length > 0,
-      });
-    } catch (error) {
-      // New candidate accounting keeps completed verdicts and full remaining candidates when a known allowance ends.
-      if (dependencies.rankCandidates !== true || !(error instanceof AppError) || error.code !== "BUDGET_TOO_SMALL") throw error;
-      partialReason = "The saved allowance ended before all candidates could be assessed. Completed verdicts and remaining candidates were retained.";
-      for (const { candidate } of candidates.slice(index)) blockedCandidates.push({ statement: candidate.statement,
-        reason: `Not assessed: ${partialReason}`, disposition: "not-assessed", candidate });
-      dependencies.onProjection?.(partialReason);
-      break;
     }
   }
 

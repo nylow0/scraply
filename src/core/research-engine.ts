@@ -1,11 +1,12 @@
 import { createHash, randomUUID } from "node:crypto";
+import { setTimeout as sleep } from "node:timers/promises";
 import type { DatabaseClient } from "../db/client";
 import { CostLedgerRepository, type CostReservation } from "../db/repositories/cost-ledger";
 import { DiscoveryRepository } from "../db/repositories/discovery";
 import { EvidenceFollowUpRepository } from "../db/repositories/evidence-follow-ups";
 import { GenerationAttemptRepository } from "../db/repositories/generation-attempts";
 import { FocusedExperimentRepository } from "../db/repositories/focused-experiments";
-import { ResearchRunRepository, type ResearchRunWorkflowLink } from "../db/repositories/research-runs";
+import { blockingActiveRun, ResearchRunRepository, type ResearchRunWorkflowLink } from "../db/repositories/research-runs";
 import { OpportunityRepository } from "../db/repositories/opportunities";
 import { OpportunityExplorationRepository } from "../db/repositories/opportunity-exploration";
 import { WorkflowV2Repository } from "../db/repositories/workflow-v2";
@@ -14,7 +15,7 @@ import { ResearchFrameRepository } from "../db/repositories/research-frames";
 import type { SearchClient, SearchOptions, SearchProvider, SearchProviderChoice } from "../providers/search";
 import { chooseSearchProvider, filterRoutedSources } from "../providers/source-routes";
 import { validateResearchVenues, type ResearchVenueResolver, type VenueVerificationResult } from "../providers/venue-validation";
-import { isDroppedStream, ProviderFailure, type GenerationMetadata, type StructuredModelClient, type StructuredStageRequest } from "../providers/structured";
+import { isDroppedStream, ProviderFailure, type GenerationMetadata, type StructuredModelClient, type StructuredStageRequest, type StructuredStageResult } from "../providers/structured";
 import { AppError } from "../shared/errors";
 import { WorkflowLaunchContractSchema } from "../shared/workflow-contracts";
 import { framedDiscoveryProjection, PARALLEL_SOURCE_READS } from "../shared/discovery-projection";
@@ -54,13 +55,15 @@ import { reviewSavedOpportunities as runOpportunityReview } from "./opportunity-
 import { classifySolutionSetReview, prepareSolutionSetReview, reviewSolutionSet, type SolutionSetItem, type SolutionSetReviewOutput } from "./solution-set-review";
 import { scheduledModelClient } from "./scheduled-model-client";
 import type { WorkflowModelScheduler } from "./workflow-scheduler";
-import { WorkflowExecution } from "./workflow-execution";
+import { streamRestarts, WorkflowExecution } from "./workflow-execution";
 import type { WorkflowV2StageId } from "./stages";
 
 export interface ResearchEngineOptions {
   db: DatabaseClient;
   modelClients?: Partial<Record<string, StructuredModelClient>>;
   modelScheduler?: WorkflowModelScheduler;
+  /** Pauses before retrying a rate-limited model call; tests shorten them. */
+  rateLimitPausesMs?: readonly number[];
   searchClients?: Partial<Record<SearchProvider, SearchClient>>;
   searchReady?: () => Partial<Record<SearchProvider, boolean>>;
   venueResolver?: ResearchVenueResolver;
@@ -332,8 +335,8 @@ export class ResearchEngine {
   // Restart and explicit recovery honor saved acknowledgements; completed discovery also needs a reassessment policy.
   async resumeRun(runId: string, acknowledgedAttemptIds: readonly string[] = [], reassessProblems = false): Promise<void> {
     if (this.activeRuns.has(runId)) return;
-    const row = this.options.db.db.prepare(`SELECT thread_id, status, config_json, problem_id FROM research_runs WHERE id = ?`)
-      .get(runId) as { thread_id: string; status: string; config_json: string; problem_id: string | null } | undefined;
+    const row = this.options.db.db.prepare(`SELECT thread_id, status, config_json, problem_id, workflow_session_id FROM research_runs WHERE id = ?`)
+      .get(runId) as { thread_id: string; status: string; config_json: string; problem_id: string | null; workflow_session_id: string | null } | undefined;
     const config = row ? RunConfigSchema.parse(JSON.parse(row.config_json)) : null;
     if (config && config.workflowVersion !== 2) {
       throw new AppError("conflict", "Legacy generation has been retired. Your saved results are preserved. Start a new run to use the current prompts.");
@@ -357,7 +360,10 @@ export class ResearchEngine {
       this.ledger.settleUncertain(runId, "A dispatched generation lost its terminal result during restart");
       throw new AppError("conflict", `${resumeSafety.resumeBlockedReason} Review this request before explicitly retrying it.`);
     }
-    this.assertThreadIdle(row.thread_id, runId);
+    // Idea runs that were running side by side resume together.
+    if (blockingActiveRun(this.options.db, row.thread_id, { id: runId, problemId: row.problem_id, sessionId: row.workflow_session_id })) {
+      throw new AppError("conflict", "This project already has another active run.");
+    }
     this.ledger.settleUncertain(runId, "The app restarted before an operation reached a durable result");
     this.options.db.db.prepare("UPDATE research_runs SET status = 'running', cancelled = 0, updated_at = ? WHERE id = ?")
       .run(new Date().toISOString(), runId);
@@ -1584,7 +1590,8 @@ export class ResearchEngine {
     const session = this.options.db.db.prepare("SELECT workflow_session_id FROM research_runs WHERE id = ?")
       .get(active.runId) as { workflow_session_id: string | null };
     if (session.workflow_session_id) {
-      this.updateThread(active.threadId, "solutions-ready");
+      // Side-by-side idea runs share their project; its status follows the last one to end.
+      if (![...this.activeRuns.values()].some((run) => run.threadId === active.threadId)) this.updateThread(active.threadId, "solutions-ready");
       return;
     }
     if (active.workflow) {
@@ -1798,9 +1805,11 @@ export class ResearchEngine {
       }
       scans.push(scan);
     }
-    const selected = await rankScannedAreas(frame, scans, active.config.discoveryDepth,
+    // A resumed run keeps the areas it already chose, even if the selection rule changed since.
+    const savedSelection = workflow.read<ResearchArea[]>("frame-selected-areas");
+    const selected = savedSelection ?? await rankScannedAreas(frame, scans, active.config.discoveryDepth,
       { ...this.dependencies(active), workflow, onProgress: message => this.progress(active, message) });
-    workflow.save("frame-selected-areas", selected);
+    if (!savedSelection) workflow.save("frame-selected-areas", selected);
     const owner = this.workflowRunOwner(active);
     const lanes = new Map(selected.map(area => [area.id, ensureAreaInvestigatorWorkItems(this.options.db,
       owner.sessionId, owner.workItemId, area)]));
@@ -2280,6 +2289,9 @@ export class ResearchEngine {
         : undefined;
       const savedAngle = generationTask
         ? (JSON.parse(generationTask.input_json) as { generationAngle?: unknown }).generationAngle : undefined;
+      // Idea tasks that run side by side review in task order, so each review sees every earlier task's accepted ideas.
+      const reviewsInOrder = generationTask
+        ? (JSON.parse(generationTask.input_json) as { parallel?: unknown }).parallel === true : false;
       const generationAngle = savedAngle === undefined ? undefined : WorkflowGenerationAngleSchema.parse(savedAngle);
       const savedEvidence = generationTask
         ? (JSON.parse(generationTask.input_json) as { generationEvidence?: unknown }).generationEvidence : undefined;
@@ -2405,6 +2417,7 @@ export class ResearchEngine {
         }
       }
       if (isWorkflowSession && sessionRow.workflow_session_id) {
+        if (reviewsInOrder) await this.waitForEarlierIdeaRuns(active, sessionRow.workflow_session_id);
         await this.reviewPracticalSolutions(active, workflow, context, sessionRow.workflow_session_id);
       }
       const option = workflow.selectedOption(active.problemId!);
@@ -2526,6 +2539,24 @@ export class ResearchEngine {
         },
       }];
     }));
+  }
+
+  /**
+   * Waits until this session's earlier idea runs end. The review inventory lists ideas from earlier runs only,
+   * so after the wait a review sees what it would have seen with the tasks run one by one.
+   */
+  private async waitForEarlierIdeaRuns(active: ActiveRun, sessionId: string): Promise<void> {
+    const earlier = (this.options.db.db.prepare(`SELECT id FROM research_runs
+      WHERE workflow_session_id = ? AND problem_id IS NOT NULL AND rowid < (SELECT rowid FROM research_runs WHERE id = ?)`)
+      .all(sessionId, active.runId) as Array<{ id: string }>).flatMap((run) => this.executionsByRun.get(run.id) ?? []);
+    if (!earlier.length) return;
+    this.progress(active, "Waiting for earlier idea reviews");
+    const signal = active.abortController.signal;
+    await new Promise<void>((resolve) => {
+      signal.addEventListener("abort", () => resolve(), { once: true });
+      void Promise.allSettled(earlier).then(() => resolve());
+    });
+    signal.throwIfAborted();
   }
 
   private async reviewPracticalSolutions(
@@ -2897,6 +2928,7 @@ export class ResearchEngine {
       workflow.save("source-routing-legacy-notice", { previousPolicy: active.config.audienceSourcePolicy ?? "web" });
       this.progress(active, "This saved run now routes new searches by evidence intent. Completed searches and planner outputs are reused.");
     }
+    const guided = this.usesWorkGuidance(active.runId);
     return {
       modelClient: workflow.discoveryClient(modelClient),
       search: workflow.search(search),
@@ -2911,10 +2943,12 @@ export class ResearchEngine {
       reasoningEffort: active.config.reasoningEffort,
       depth: active.config.discoveryDepth,
       ...(workflow.read("source-routes") && frame ? { frame } : {}),
-      guided: this.usesWorkGuidance(active.runId),
+      guided,
       smallHarvestBatches: workflow.smallHarvestBatches,
       boundedFollowUpHarvest: workflow.boundedFollowUpHarvest,
       parallelReads: workflow.parallelResearch ? PARALLEL_SOURCE_READS : 1,
+      // Saved call counts are checked against finished calls, so only runs that counts cannot stop check candidates at once.
+      parallelChecks: workflow.parallelResearch && guided && !active.researchAllowance,
       rankCandidates: workflow.rankProblemCandidates,
       ...(!workflow.rankProblemCandidates ? { candidateLimit: DEFAULT_PROBLEM_CANDIDATE_LIMIT } : {}),
       assessProblemAudience: workflow.read<{ version: number }>("problem-audience-assessment")?.version === 1,
@@ -3134,22 +3168,42 @@ export class ResearchEngine {
         }
       },
     };
-    // An idea or review call whose stream dropped starts over once, so one lost connection does not end
-    // the run and skip every remaining problem. Research calls restart in workflow-execution.ts instead.
-    return {
-      structuredCompletion: async <T>(request: StructuredStageRequest<T>) => {
-        try {
-          return await instrumented.structuredCompletion(request);
-        } catch (error) {
-          if (!isDroppedStream(error) || !/^(solutions|solution-set-review)(:|$)/.test(request.stage)
-            || !active.workflow || active.abortController.signal.aborted) throw error;
-          active.workflow.acknowledgeStreamRestart(request.generationId);
-          const restartId = randomUUID();
-          active.generationProvenance.set(request.generationId, restartId);
-          return instrumented.structuredCompletion({ ...request, generationId: restartId });
-        }
-      },
+    // A rate-limited call was refused before it ran, so it is tried again after a pause; a short burst
+    // limit must not end a run. A usage cap still fails after the last pause.
+    const completeWithRateLimitRetry = async <T>(request: StructuredStageRequest<T>, originalId = request.generationId,
+      pauses: readonly number[] = this.options.rateLimitPausesMs ?? RATE_LIMIT_PAUSES_MS): Promise<StructuredStageResult<T>> => {
+      try {
+        return await instrumented.structuredCompletion(request);
+      } catch (error) {
+        const [pause, ...later] = pauses;
+        if (pause === undefined || !(error instanceof ProviderFailure) || error.code !== "rate-limit"
+          || active.abortController.signal.aborted) throw error;
+        this.progress(active, "OpenAI asked to slow down; trying the call again shortly", runtimeStage(request.stage), "waiting");
+        await sleep(pause, undefined, { signal: active.abortController.signal });
+        const retryId = randomUUID();
+        active.generationProvenance.set(originalId, retryId);
+        return completeWithRateLimitRetry({ ...request, generationId: retryId }, originalId, later);
+      }
     };
+    // An idea or review call whose stream dropped starts over after a pause, up to twice, so a burst of lost
+    // connections does not end the run and skip every remaining problem. Research calls restart in
+    // workflow-execution.ts instead.
+    const completeWithStreamRestarts = async <T>(request: StructuredStageRequest<T>, originalId = request.generationId,
+      pauses: readonly number[] = streamRestarts.pausesMs): Promise<StructuredStageResult<T>> => {
+      try {
+        return await completeWithRateLimitRetry(request);
+      } catch (error) {
+        const [pause, ...later] = pauses;
+        if (pause === undefined || !isDroppedStream(error) || !/^(solutions|solution-set-review)(:|$)/.test(request.stage)
+          || !active.workflow || active.abortController.signal.aborted) throw error;
+        active.workflow.acknowledgeStreamRestart(request.generationId);
+        await sleep(pause, undefined, { signal: active.abortController.signal });
+        const restartId = randomUUID();
+        active.generationProvenance.set(originalId, restartId);
+        return completeWithStreamRestarts({ ...request, generationId: restartId }, originalId, later);
+      }
+    };
+    return { structuredCompletion: <T>(request: StructuredStageRequest<T>) => completeWithStreamRestarts(request) };
   }
 
   private instrumentedSearch(active: ActiveRun): Pick<SearchClient, "provider" | "search" | "providerForRoute" | "searchWithDispatch"> {
@@ -3302,7 +3356,7 @@ export class ResearchEngine {
     const message = error instanceof Error ? error.message : "Research failed";
     this.ledger.settleUncertain(active.runId, message);
     this.runs.finish(active.runId, status ?? (active.abortController.signal.aborted ? "cancelled" : "failed"), message);
-    this.updateThread(active.threadId, "failed");
+    if (![...this.activeRuns.values()].some((run) => run.threadId === active.threadId)) this.updateThread(active.threadId, "failed");
     this.emit({ type: "run-failed", runId: active.runId, threadId: active.threadId, error: message });
     if (active.problemId && active.config.opportunityExploration && !active.abortController.signal.aborted) {
       const exploration = new OpportunityExplorationRepository(this.options.db);
@@ -3510,6 +3564,9 @@ type RuntimeStage =
   | "queued" | "searching" | "extracting" | "synthesizing-problems"
   | "generating-options" | "awaiting-option-selection" | "evaluating-risk"
   | "analyzing-option" | "evidence-follow-up" | "completed" | "failed" | "cancelled";
+
+/** Pauses before retrying a rate-limited model call (see ResearchEngineOptions.rateLimitPausesMs). */
+const RATE_LIMIT_PAUSES_MS = [20_000, 60_000] as const;
 
 function sha256Area(areaId: string): string {
   return createHash("sha256").update(areaId).digest("hex").slice(0, 16);

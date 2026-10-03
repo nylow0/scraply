@@ -161,10 +161,10 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
       } });
       return;
     }
-    const streamFailureLimit = mode === "workflow-stream-interrupted-twice" ? 2 : mode === "workflow-stream-interrupted" ? 1 : 0;
+    const streamFailureLimit = mode === "workflow-stream-interrupted-three-times" ? 3 : mode === "workflow-stream-interrupted" ? 1 : 0;
     if (mode === "stream-interrupted" || (mode === "workflow-criterion-evidence"
       && criterionCalls === Number(process.env.SCRAPLY_CRITERION_INTERRUPT_AT)) || (streamFailures < streamFailureLimit && isHarvest)
-      || (mode === "workflow-checkpoint-recovery" && [9, 10, 11, 12].includes(harvestCalls))) {
+      || (mode === "workflow-checkpoint-recovery" && [9, 10, 11, 12, 13, 14].includes(harvestCalls))) {
       streamFailures++;
       send({ protocolVersion: "1.2", requestId: request.id, operation: "generation.start", event: {
         kind: "generation.failed", generationId: request.payload.generationId,

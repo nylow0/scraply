@@ -49,6 +49,7 @@ const KNOWN_BUNDLED_PROMPT_HASHES: Readonly<Record<string, readonly string[]>> =
   "workflow-v2-factor-harvest.md": [
     "6941720a3a26ac9c1735aee1b199ad59a48b8408cdb9470d6c7b1f3aa3646c69",
     "536c204ec64807fee03fc3081493c5117179b167be7f33628804f83c8c566bde",
+    "588f17dd8109b298233d50b8af48df72b70d9008e52c6dbb95ce104100baaf0c",
   ],
   "workflow-v2-problem-candidates.md": [
     "e2b602664164a3e636e9f13e4c30b99448b1d311dcade7c604c4f3a39cfd97a1",
