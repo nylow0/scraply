@@ -118,6 +118,10 @@ module.exports = function workflowOutput(request) {
     matchingSolutionId: null, citedEvidenceIds: [],
     ...(inputs.frame ? { criteriaFit: criterionFit(inputs.frame) } : {}),
   })) };
+  if (stage === "idea-ranking") return { ranking: request.workOrder.inputs.candidateIds.map((candidateId, index) => ({
+    candidateId, reason: `The fixture keeps proposal order; this is idea ${index + 1}.`, sameAsCandidateId: null,
+    ...(inputs.frame ? { criteriaFit: criterionFit(inputs.frame) } : {}),
+  })) };
   const v2 = request.workOrder.inputs?.workflowVersion === 2;
   if (v2) {
     switch (stage) {

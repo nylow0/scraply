@@ -10,7 +10,7 @@ Open **Trace** after starting a run to see the candidate outcomes, evidence and 
 2. Create a project. Choose **Find problems to solve** to research a topic or audience, or **I have a problem to solve** when you can state the problem already. A known-problem run can skip web search.
 3. Write what you want to explore or state your known problem. Add the intended audience, boundaries, and any risks you want evaluated. Choose the model and reasoning effort, research depth, and search provider when discovery needs them. **Auto** uses the available providers for the sources each search needs.
 4. Choose how much supervision you want. **Controlled** first pauses for you to review the research frame, then pauses again after research. **Vibe** asks for the idea model before launch and approves the frame automatically, recording unanswered questions before proceeding.
-5. Check the depth and target before starting. **Solutions per problem** controls each generation batch. For startup opportunities, **Build a project-wide set of distinct businesses** enables a separate **Distinct family target**. It counts accepted, independent business families, not every variant. A higher target can take more calls and may finish short when the evidence does not support enough distinct ideas.
+5. Check the depth and **Solutions per problem** (1 to 5, default 3) before starting. Each selected problem gets up to that many ideas.
 
 The project saves the resolved instructions and chosen model settings with each run. You can edit advanced instructions for research, generation, or review before launch. Existing `prompts/workflow-v2-*.md` overrides remain available for deeper customization; see [data and privacy](data-and-privacy.md#prompt-overrides-and-saved-runs).
 
@@ -50,11 +50,11 @@ After a Vibe run finishes, open **Research** to ask a separate question or revis
 
 ## Review ideas and explore one
 
-Scraply aims for distinct, eligible ideas, then makes at most two fill rounds, split into small assigned batches. It never pads the count. Review the accepted count, the requested count, unresolved comparisons, and the stopping reason. Variants and duplicates do not count as new business families. The saved-idea review button compares the current collection without generating more options; membership edits keep the original work and append to decision history.
+For each selected problem, one call writes all of its ideas so they can differ from each other, and a second call ranks them from best to worst against your brief and success criteria. A problem can end with fewer ideas than you asked for; Scraply never pads the count. The Solutions page shows one group per problem, best idea first. An idea is marked **Weak fit** and moved to the end of its group when it clearly fails a must-have criterion or nearly repeats a higher idea; an unknown criterion never makes an idea weak. Open the idea to read why it is ranked where it is. Projects from earlier versions keep their saved order and review labels.
 
 Open an idea to read its evidence, assumptions, risks, and possible consequences. A source citation means the saved excerpt can be traced, not that the proposed business outcome has happened. The independent risk evaluation is a model judgment. Record your own decision and any real-world test outcome separately.
 
-Ideas from framed research show their fit against each success criterion, the larger problem, a feasible slice, and a first test suited to the goal. A failed must-have criterion prevents acceptance; unknown fit stays visible. **Meets all must-haves** filters the collection to ideas whose must-have criteria are all assessed as met. Older ideas without these assessments remain readable.
+Ideas from framed research show their fit against each success criterion, the larger problem, a feasible slice, and a first test suited to the goal. Older ideas without these assessments remain readable.
 
 The idea's conversation can explain the saved rationale, discuss other directions, or rethink the mechanism. A rethink saves a linked version. Earlier versions, their evidence snapshots, and their reviews remain readable. A conversation reply by itself does not add an idea to the collection. Revising an idea does not make an earlier risk review apply to the new version.
 

@@ -33,6 +33,8 @@ export const HISTORICAL_CODEX_CLI_PROVIDER_ID = "legacy-codex-cli";
 export const OPENAI_SUBSCRIPTION_PROVIDER_ID = "openai-subscription";
 export const MAX_IDEA_COUNT = 20;
 export const DEFAULT_IDEA_COUNT = 3;
+/** One writer call makes all of a problem's ideas in ranked runs, so new runs ask for at most this many. */
+export const MAX_IDEAS_PER_PROBLEM = 5;
 export const IdeaCountSchema = z.number().int().min(1).max(MAX_IDEA_COUNT);
 
 const RunConfigInputSchema = z.object({

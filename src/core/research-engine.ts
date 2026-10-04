@@ -53,6 +53,7 @@ import { runFocusedExperimentFlow } from "./experiment-review";
 import { planOpportunityStep, previewOpportunityBudgetExtension } from "./opportunity-planning";
 import { reviewSavedOpportunities as runOpportunityReview } from "./opportunity-review";
 import { classifySolutionSetReview, prepareSolutionSetReview, reviewSolutionSet, type SolutionSetItem, type SolutionSetReviewOutput } from "./solution-set-review";
+import { prepareIdeaRanking, rankIdeas } from "./idea-ranking";
 import { scheduledModelClient } from "./scheduled-model-client";
 import type { WorkflowModelScheduler } from "./workflow-scheduler";
 import { streamRestarts, WorkflowExecution } from "./workflow-execution";
@@ -2287,12 +2288,15 @@ export class ResearchEngine {
             AND json_extract(output_refs_json, '$.runId') = ? LIMIT 1`)
           .get(sessionRow.workflow_session_id, active.runId) as { input_json: string } | undefined
         : undefined;
-      const savedAngle = generationTask
-        ? (JSON.parse(generationTask.input_json) as { generationAngle?: unknown }).generationAngle : undefined;
-      // Idea tasks that run side by side review in task order, so each review sees every earlier task's accepted ideas.
-      const reviewsInOrder = generationTask
-        ? (JSON.parse(generationTask.input_json) as { parallel?: unknown }).parallel === true : false;
-      const generationAngle = savedAngle === undefined ? undefined : WorkflowGenerationAngleSchema.parse(savedAngle);
+      const taskInput = generationTask
+        ? JSON.parse(generationTask.input_json) as { generationAngle?: unknown; generationAngles?: unknown; parallel?: unknown; ranked?: unknown }
+        : undefined;
+      // A ranked task writes all of one problem's ideas in one call, then ranks them; it never waits for other problems.
+      const ranked = taskInput?.ranked === true;
+      // Older idea tasks that run side by side review in task order, so each review sees every earlier task's accepted ideas.
+      const reviewsInOrder = !ranked && taskInput?.parallel === true;
+      const generationAngle = taskInput?.generationAngle === undefined ? undefined : WorkflowGenerationAngleSchema.parse(taskInput.generationAngle);
+      const generationAngles = taskInput?.generationAngles === undefined ? undefined : WorkflowGenerationAngleSchema.array().parse(taskInput.generationAngles);
       const savedEvidence = generationTask
         ? (JSON.parse(generationTask.input_json) as { generationEvidence?: unknown }).generationEvidence : undefined;
       if (savedEvidence !== undefined) {
@@ -2340,6 +2344,7 @@ export class ResearchEngine {
         explorationPurpose: active.config.explorationPurpose,
         focusedExperiments: workflow.hasFocusedExperiments(),
         ...(generationAngle ? { generationAngle } : {}),
+        ...(generationAngles ? { generationAngles } : {}),
         reasoningEffort: active.config.reasoningEffort, signal: active.abortController.signal,
         resolvePrompt: workflow.resolvePrompt,
       };
@@ -2417,8 +2422,11 @@ export class ResearchEngine {
         }
       }
       if (isWorkflowSession && sessionRow.workflow_session_id) {
-        if (reviewsInOrder) await this.waitForEarlierIdeaRuns(active, sessionRow.workflow_session_id);
-        await this.reviewPracticalSolutions(active, workflow, context, sessionRow.workflow_session_id);
+        if (ranked) await this.rankPracticalSolutions(active, workflow, context, sessionRow.workflow_session_id);
+        else {
+          if (reviewsInOrder) await this.waitForEarlierIdeaRuns(active, sessionRow.workflow_session_id);
+          await this.reviewPracticalSolutions(active, workflow, context, sessionRow.workflow_session_id);
+        }
       }
       const option = workflow.selectedOption(active.problemId!);
       if (!option) {
@@ -2557,6 +2565,59 @@ export class ResearchEngine {
       void Promise.allSettled(earlier).then(() => resolve());
     });
     signal.throwIfAborted();
+  }
+
+  /** Ranked runs: one call orders this problem's ideas, and the ranks are saved on the ideas themselves. */
+  private async rankPracticalSolutions(
+    active: ActiveRun,
+    workflow: WorkflowExecution,
+    context: WorkflowV2DevelopmentContext,
+    sessionId: string,
+  ): Promise<void> {
+    if (workflow.repository.findStageResult(active.runId, "idea-ranking", active.problemId)) return;
+    const solutionsStage = workflow.repository.findStageResult(active.runId, "solutions");
+    if (!solutionsStage) throw new Error("Ideas have no saved generation checkpoint");
+    const options = WorkflowV2SolutionsOutputSchema.parse(solutionsStage.output).options;
+    const rows = this.options.db.db.prepare("SELECT id, option_position FROM solutions WHERE research_run_id = ? ORDER BY option_position")
+      .all(active.runId) as Array<{ id: string; option_position: number }>;
+    if (rows.length !== options.length) throw new Error("Saved ideas do not match their generation checkpoint");
+    if (rows.length === 0) return;
+    const candidates = rows.map((row) => {
+      const option = options[row.option_position];
+      if (!option) throw new Error(`Saved idea ${row.id} has no checkpoint option`);
+      return { id: row.id, option };
+    });
+    const contractRow = this.options.db.db.prepare("SELECT contract_json FROM workflow_sessions WHERE id = ?")
+      .get(sessionId) as { contract_json: string } | undefined;
+    if (!contractRow) throw new Error("The idea session is missing");
+    const contract = WorkflowLaunchContractSchema.parse(JSON.parse(contractRow.contract_json));
+    const item = this.options.db.db.prepare(`SELECT input_json FROM workflow_work_items
+      WHERE kind = 'generate-ideas' AND session_id = ? AND json_extract(output_refs_json, '$.runId') = ? LIMIT 1`)
+      .get(sessionId, active.runId) as { input_json: string } | undefined;
+    const input = item ? JSON.parse(item.input_json) as { reviewModel?: unknown; reviewReasoningEffort?: unknown } : null;
+    const model = ModelRefSchema.parse(input?.reviewModel ?? contract.ideas?.reviewModel ?? active.config.model);
+    const prepared = prepareIdeaRanking({
+      ...(context.frame ? { frame: context.frame } : {}),
+      candidates, problem: context.problem, projectConstraints: context.scope,
+      savedInstructions: contract.instructions.review ?? "",
+      evidence: developmentStageEvidence(context).slice(1),
+      model, reasoningEffort: ReasoningEffortSchema.parse(input?.reviewReasoningEffort ?? contract.ideas?.reviewReasoningEffort ?? active.config.reasoningEffort),
+      signal: active.abortController.signal, resolvePrompt: workflow.resolvePrompt,
+    });
+    const resume = workflow.repository.getStageResumeState({ researchRunId: active.runId, stageId: "idea-ranking",
+      selectionId: active.problemId, context });
+    if (resume.kind === "unknown-completion") {
+      throw new Error("An idea ranking may have completed before interruption. Review the saved attempt before retrying.");
+    }
+    this.progress(active, `Ranking ${candidates.length} idea${candidates.length === 1 ? "" : "s"}`, "generating-options");
+    await rankIdeas(prepared, this.instrumentedModel(active, undefined, model), (completed) => {
+      active.abortController.signal.throwIfAborted();
+      this.options.db.immediateTransaction(() => {
+        workflow.repository.saveIdeaRanking(active.runId, completed.ranked, context.frame, completed.evidenceSourceIds);
+        workflow.commitStage("idea-ranking", completed.request, completed.prompt, completed.metadata, completed.output,
+          { developmentContext: context, ranking: completed.ranked }, active.problemId);
+      });
+    });
   }
 
   private async reviewPracticalSolutions(
@@ -3577,7 +3638,7 @@ function runtimeStage(stageKey: string): RuntimeStage {
   if (stage === "query-plan") return "searching";
   if (stage === "factor-harvest") return "extracting";
   if (stage === "problem-candidates" || stage === "problem-kill") return "synthesizing-problems";
-  if (stage === "solutions" || stage === "solution-set-review") return "generating-options";
+  if (stage === "solutions" || stage === "solution-set-review" || stage === "idea-ranking") return "generating-options";
   if (stage === "risk-evaluation") return "evaluating-risk";
   if (stage === "decision-analysis") return "analyzing-option";
   return "queued";

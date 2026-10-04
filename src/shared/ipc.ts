@@ -231,6 +231,10 @@ export const SolutionViewSchema = z.object({
   evidenceFollowUp: EvidenceFollowUpViewSchema.optional(),
   userDecision: z.string().nullable().optional(), observedResult: z.string().nullable().optional(),
   experimentOutcome: z.enum(["not-run", "pass", "fail", "inconclusive"]).optional(), detailRevision: z.string().optional(),
+  /** Ranked runs: place within the problem's group (1 is best), the ranker's reason, and why it is a weak fit. Null before ranking. */
+  rank: z.number().int().positive().nullable().optional(),
+  rankReason: z.string().nullable().optional(),
+  weakFitReason: z.string().nullable().optional(),
   id: EntityIdSchema, problemId: EntityIdSchema, problemStatement: z.string(), problemVerdict: ProblemCandidateSchema.shape.verdict,
   factors: z.array(FactorViewSchema),
   mechanism: z.string(), description: z.string(), respectsOffLimits: z.boolean(), respectsOffLimitsWhy: z.string(),

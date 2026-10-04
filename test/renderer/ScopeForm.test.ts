@@ -172,46 +172,33 @@ describe("ScopeForm search provider selection", () => {
     expect(onStart).not.toHaveBeenCalled();
   });
 
-  test("uses estimates for the managed project without fixed call or search controls", async () => {
+  test("new runs ask for ideas per problem, even in a project that saved a distinct business target", async () => {
     const state = workspace();
     state.validation.exa = { valid: true };
+    state.runConfig = { ...state.runConfig!, ideaCount: 3, explorationPurpose: "startup-opportunities",
+      opportunityExploration: { targetFamilies: 8, batchSize: 4, maxExpansionRounds: 2, maxRawCandidates: 16, maxModelCalls: 10, maxSearches: 6, allowExploratoryProblems: false } };
     const onPreviewWorkflow = vi.fn(async (draft: WorkflowLaunchDraft) => ({
       type: "launch" as const,
-      proposal: { ...draft,
-        resolvedInstructions: { research: "research", ideas: "ideas", review: "review" },
-        instructionHashes: { research: "r", ideas: "i", review: "v" },
-      },
-      previewHash: `preview-${draft.limits.maxModelCalls}-${draft.limits.maxSearches}`,
-      capabilityFingerprint: "catalogue", minimumWork: { modelCalls: 56, searches: 16 },
+      proposal: { ...draft, resolvedInstructions: { research: "research", ideas: "ideas", review: "review" },
+        instructionHashes: { research: "r", ideas: "i", review: "v" } },
+      previewHash: "per-problem", capabilityFingerprint: "catalogue", minimumWork: { modelCalls: 12, searches: 4 },
       upperLimits: draft.limits, fieldErrors: [], expiresAt: "2099-01-01T00:00:00.000Z",
     }));
-    const onStartWorkflow = vi.fn().mockResolvedValue(undefined);
     const view = render(ScopeForm, {
       workspace: state, busy: false, onSave: vi.fn(), onStart: vi.fn(), onRetry: vi.fn(),
-      onPreviewWorkflow, onStartWorkflow,
+      onPreviewWorkflow, onStartWorkflow: vi.fn().mockResolvedValue(undefined),
     });
+    expect(view.queryByText(/Distinct business target/)).toBeNull();
+    expect(view.queryByLabelText("Distinct family target")).toBeNull();
+    await waitFor(() => expect(onPreviewWorkflow.mock.lastCall?.[0]).toMatchObject({ targets: { kind: "per-problem", ideaCount: 3 } }));
+    const draft = onPreviewWorkflow.mock.lastCall![0];
+    expect(draft.targets).not.toHaveProperty("distinctBusinessCount");
+    expect(draft.runConfig.opportunityExploration).toBeUndefined();
+    expect(draft.runConfig.explorationPurpose).toBe("startup-opportunities");
 
-    await fireEvent.click(view.getByRole("radio", { name: /Vibe/ }));
-    await fireEvent.click(view.getByText("Distinct business target (optional)"));
-    await fireEvent.click(view.getByRole("checkbox", { name: /Find distinct businesses across this project/ }));
-    expect(view.queryByLabelText("Opportunity model-call limit")).toBeNull();
-    expect(view.queryByLabelText("Opportunity search limit")).toBeNull();
-    expect(view.getByText(/Research depth guides evidence collection/)).toBeTruthy();
-    expect(view.queryByLabelText("Maximum model calls")).toBeNull();
-    expect(view.queryByLabelText("Maximum searches")).toBeNull();
-    await waitFor(() => expect(onPreviewWorkflow.mock.lastCall?.[0]).toMatchObject({
-      targets: { kind: "project", distinctBusinessCount: 30 },
-      limits: { maxModelCalls: expect.any(Number), maxSearches: expect.any(Number) },
-      // Uncapped Vibe is estimated at Standard's target of four confirmed problems.
-      runConfig: { opportunityExploration: { maxModelCalls: 32, maxSearches: 6 } },
-    }));
-    expect(onPreviewWorkflow.mock.lastCall?.[0].limits.maxModelCalls).toBeGreaterThan(56);
-    expect(onPreviewWorkflow.mock.lastCall?.[0].limits.maxSearches).toBeGreaterThan(22);
-
-    expect(onPreviewWorkflow.mock.lastCall?.[0].limits.enforced).toBe(false);
-    await waitFor(() => expect((view.getByRole("button", { name: "Start" }) as HTMLButtonElement).disabled).toBe(false));
+    await fireEvent.input(view.getByLabelText("Solutions per problem"), { target: { value: "6" } });
     await fireEvent.click(view.getByRole("button", { name: "Start" }));
-    expect(onStartWorkflow).toHaveBeenCalledOnce();
+    expect(view.getAllByText("Choose a whole number from 1 to 5.").length).toBeGreaterThan(0);
   });
 
   test("treats preview estimates as guidance without mandatory limit controls", async () => {
@@ -235,35 +222,6 @@ describe("ScopeForm search provider selection", () => {
     await waitFor(() => expect(onPreviewWorkflow).toHaveBeenCalled());
     expect(onPreviewWorkflow.mock.calls.at(-1)?.[0].limits.enforced).toBe(false);
     expect(view.queryByLabelText("Maximum searches")).toBeNull();
-  });
-
-  test("saves an explicit family target separately from the per-problem idea count", async () => {
-    const state = workspace();
-    state.validation.exa = { valid: true };
-    const onSave = vi.fn().mockResolvedValue(undefined);
-    const onStart = vi.fn().mockResolvedValue(undefined);
-    const view = render(ScopeForm, { workspace: state, busy: false, onSave, onStart, onRetry: vi.fn() });
-    expect(view.queryByRole("radio", { name: /Startup opportunities/ })).toBeNull();
-    await fireEvent.click(view.getByText("Distinct business target (optional)"));
-    await fireEvent.click(view.getByRole("checkbox", { name: /Find distinct businesses across this project/ }));
-    await fireEvent.input(view.getByLabelText("Distinct family target"), { target: { value: "8" } });
-    await fireEvent.input(view.getByLabelText("Opportunity model-call limit"), { target: { value: "10" } });
-    await fireEvent.click(view.getByRole("button", { name: "Discover problems" }));
-    await waitFor(() => expect(onStart).toHaveBeenCalledTimes(1));
-    const saved = RunConfigSchema.parse(onSave.mock.calls[0]?.[1]);
-    expect(saved.ideaCount).toBe(state.runConfig!.ideaCount);
-    expect(saved.opportunityExploration).toMatchObject({ targetFamilies: 8, maxRawCandidates: 16, maxModelCalls: 10, allowExploratoryProblems: false });
-    view.unmount();
-    const reopened = render(ScopeForm, { workspace: { ...state, runConfig: saved }, busy: false, onSave, onStart, onRetry: vi.fn() });
-    expect((reopened.getByRole("checkbox", { name: /Find distinct businesses across this project/ }) as HTMLInputElement).checked).toBe(true);
-    expect((reopened.getByLabelText("Distinct family target") as HTMLInputElement).value).toBe("8");
-    expect(reopened.getByText("Distinct business target · On (8)")).toBeTruthy();
-    await fireEvent.click(reopened.getByRole("checkbox", { name: /Find distinct businesses across this project/ }));
-    await fireEvent.click(reopened.getByRole("button", { name: "Discover problems" }));
-    await waitFor(() => expect(onSave).toHaveBeenCalledTimes(2));
-    const withoutTarget = RunConfigSchema.parse(onSave.mock.calls[1]?.[1]);
-    expect(withoutTarget.explorationPurpose).toBe("auto");
-    expect(withoutTarget.opportunityExploration).toBeUndefined();
   });
 
   test("keeps a saved output rule until the user switches that project to the brief", async () => {

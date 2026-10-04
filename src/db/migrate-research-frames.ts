@@ -22,25 +22,29 @@ export const RESEARCH_FRAMES_MIGRATION_SQL = `
   BEGIN SELECT RAISE(ABORT, 'approved research frames are immutable'); END;
 `;
 
-/** Foreign keys are disabled by the migration runner while the parent table is replaced. */
+/** Migration 38. Foreign keys are disabled by the migration runner while the parent table is replaced. */
 export function addResearchStageIds(client: DatabaseClient): void {
+  addStageIds(client, ["frame-search-plan", "frame", "area-ranking", "evidence-check", "area-gap"]);
+}
+
+/** Extends the stage_results CHECK list by rebuilding the table. Run it from a rebuildReferencedTable migration. */
+export function addStageIds(client: DatabaseClient, stageIds: readonly string[]): void {
   const row = client.db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'stage_results'")
     .get() as { sql: string } | undefined;
   if (!row) throw new Error("Saved stage results table is missing");
-  const stageIds = ["frame-search-plan", "frame", "area-ranking", "evidence-check", "area-gap"];
   const replacement = row.sql
-    .replace(/^CREATE TABLE\s+["`\[]?stage_results["`\]]?/i, "CREATE TABLE stage_results_v38")
+    .replace(/^CREATE TABLE\s+["`\[]?stage_results["`\]]?/i, "CREATE TABLE stage_results_next")
     .replace(/(stage_id\s+TEXT\s+NOT NULL\s+CHECK\s*\(stage_id\s+IN\s*\()([\s\S]*?)(\)\))/i,
       (_match: string, before: string, existing: string, after: string) =>
         `${before}${existing}, ${stageIds.map((id) => `'${id}'`).join(", ")}${after}`);
-  if (replacement === row.sql || !replacement.includes("'frame-search-plan'")) {
+  if (replacement === row.sql || !replacement.includes(`'${stageIds[0]}'`)) {
     throw new Error("Saved stage results have an unsupported stage constraint");
   }
   client.db.exec(replacement);
   client.db.exec(`
-    INSERT INTO stage_results_v38 SELECT * FROM stage_results;
+    INSERT INTO stage_results_next SELECT * FROM stage_results;
     DROP TABLE stage_results;
-    ALTER TABLE stage_results_v38 RENAME TO stage_results;
+    ALTER TABLE stage_results_next RENAME TO stage_results;
     CREATE INDEX idx_stage_results_run_completed ON stage_results(research_run_id, completed_at, stage_id);
     CREATE TRIGGER prevent_stage_result_update BEFORE UPDATE ON stage_results
     BEGIN SELECT RAISE(ABORT, 'completed stage results are immutable'); END;

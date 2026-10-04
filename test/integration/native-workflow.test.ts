@@ -515,7 +515,7 @@ describe("native research workflow through the production backend", () => {
     } finally { db.close(); }
   }, 15_000);
 
-  test("a fresh known-problem Vibe run approves its frame and reviews goal-aware ideas without search", async () => {
+  test("a fresh known-problem Vibe run approves its frame and ranks goal-aware ideas without search", async () => {
     const item = await fixture({ searchEnabled: false });
     const threadId = await item.createThread("known-problem", 2);
     const preview = await item.post("/workflows/preview", { type: "launch", threadId, draft: {
@@ -533,7 +533,7 @@ describe("native research workflow through the production backend", () => {
       previewExpiresAt: preview.expiresAt }, WorkflowAdmissionReceiptSchema);
     const completed = await item.waitFor(workspace => workspace.activeWorkflow?.outcome === "target-met");
     expect(item.searches).toHaveLength(0);
-    expect(item.requests().map(request => request.workOrder.stage.split(":")[0])).toEqual(["frame", "solutions", "solution-set-review"]);
+    expect(item.requests().map(request => request.workOrder.stage.split(":")[0])).toEqual(["frame", "solutions", "idea-ranking"]);
     const detail = await item.post(`/workflows/${receipt.sessionId}`, undefined, WorkflowDetailSchema);
     const approved = detail.researchFrame!.approved!;
     expect(approved.areas).toEqual([]);

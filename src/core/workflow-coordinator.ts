@@ -11,7 +11,7 @@ import { candidateAssessmentProjection } from "../shared/evidence-investigators"
 import { copySavedProblemCandidates } from "./saved-candidate-archive";
 import { AppError } from "../shared/errors";
 import type { ProblemCandidate, ResearchEvent } from "../shared/ipc";
-import { ReasoningEffortSchema, RunConfigSchema } from "../shared/schemas";
+import { MAX_IDEAS_PER_PROBLEM, ReasoningEffortSchema, RunConfigSchema, type ModelRef } from "../shared/schemas";
 import { parseResearchFrame } from "../shared/research-frame";
 import {
   CommandWorkflowRequestSchema, PreviewWorkflowRequestSchema, StartWorkflowRequestSchema,
@@ -1559,8 +1559,12 @@ export class WorkflowCoordinator {
     const reviewModel = ideaChoice?.reviewModel ?? contract.ideas?.reviewModel ?? model;
     const reviewReasoningEffort = ideaChoice?.reviewReasoningEffort ?? contract.ideas?.reviewReasoningEffort ?? reasoningEffort;
     if (!model || !reasoningEffort) throw new AppError("MODEL_UNAVAILABLE", "Choose an ideas model before generating.");
-    const targetKind = ideaChoice?.target.kind ?? contract.targets.kind;
     const requestedPerProblem = ideaChoice?.target.kind === "per-problem" ? ideaChoice.target.count : contract.targets.ideaCount;
+    if (contract.ideaWorkflowVersion === 2) {
+      return this.admitRankedGenerationTasks(session, snapshotId, problemIds, Math.min(MAX_IDEAS_PER_PROBLEM, requestedPerProblem),
+        { model, reasoningEffort, reviewModel: reviewModel ?? model, reviewReasoningEffort: reviewReasoningEffort ?? reasoningEffort });
+    }
+    const targetKind = ideaChoice?.target.kind ?? contract.targets.kind;
     const target = targetKind === "project"
       ? ideaChoice?.target.count ?? contract.targets.distinctBusinessCount ?? contract.targets.ideaCount
       : problemIds.length * requestedPerProblem;
@@ -1600,6 +1604,30 @@ export class WorkflowCoordinator {
       }
     }
     return created;
+  }
+
+  /**
+   * Ranked runs: one task per problem, all side by side. Each writes up to `perProblem` ideas in one call,
+   * spread across the problem's angles, then ranks them in one more call. No novelty searches or fill rounds.
+   */
+  private admitRankedGenerationTasks(session: WorkflowSession, snapshotId: string, problemIds: string[], perProblem: number,
+    models: { model: ModelRef; reasoningEffort: string; reviewModel: ModelRef; reviewReasoningEffort: string }): string[] {
+    const available = this.availableBudget(session, "model-call");
+    if (available !== null && problemIds.length * 2 > available) {
+      throw new AppError("BUDGET_TOO_SMALL", `Reserve at least ${problemIds.length * 2} model calls for writing and ranking ideas.`);
+    }
+    let ordinal = this.repository.listWorkItems(session.id).length;
+    return problemIds.map((problemId) => {
+      const item = this.repository.createWorkItem({
+        sessionId: session.id, kind: "generate-ideas", scopeKey: `ideas:${snapshotId}:${problemId}:0`, ordinal: ordinal++, state: "ready",
+        input: { problemId, snapshotId, quota: perProblem, ...models, fillRound: 0, batch: 0, targetKind: "per-problem",
+          requestedTarget: problemIds.length * perProblem, generationAngles: initialGenerationAngles(this.options.db, problemId, perProblem),
+          ranked: true, parallel: true },
+      });
+      this.repository.reserveBudget({ sessionId: session.id, workItemId: item.id, operationKey: `ideas:${item.id}`,
+        kind: "model-call", reservedUnits: 2 });
+      return item.id;
+    });
   }
 
   private coverageAttempt(workItemId: string): { id: string; status: string; dispatched_at: string | null } | null {
@@ -1780,9 +1808,11 @@ export class WorkflowCoordinator {
     const allSolutions = (this.options.db.db.prepare("SELECT id FROM solutions WHERE research_run_id = ? ORDER BY created_at,id")
       .all(runId) as Array<{ id: string }>).map((row) => row.id);
     const review = readSolutionSetReview(this.options.db, runId);
-    const reviewed = review?.acceptedSolutionIds.filter((id) => allSolutions.includes(id)) ?? [];
-    // The engine skips the collection review when a batch proposes no ideas; that empty batch is a result, not a failure.
-    const settled = review !== null || allSolutions.length === 0;
+    // A ranked task keeps every idea it wrote; an older task keeps only the ideas its review accepted.
+    const ranked = isRankedTask(item);
+    const reviewed = ranked ? allSolutions : review?.acceptedSolutionIds.filter((id) => allSolutions.includes(id)) ?? [];
+    // The engine skips the review or ranking when a task proposes no ideas; that empty batch is a result, not a failure.
+    const settled = (ranked ? hasIdeaRanking(this.options.db, runId) : review !== null) || allSolutions.length === 0;
     this.options.db.immediateTransaction(() => {
       if (review && WorkflowLaunchContractSchema.parse(session.contract).runConfig.explorationPurpose !== "general-solutions") {
         new OpportunityRepository(this.options.db).materializeSolutionSetReviews(session.threadId);
@@ -1794,7 +1824,7 @@ export class WorkflowCoordinator {
       }
       this.repository.updateWorkItem(item.id, settled ? "succeeded" : "failed", {
         outputRefs: { runId, solutionIds: reviewed, proposedSolutionIds: allSolutions },
-        ...(settled ? {} : { error: { message: "Solution collection review was not saved." } }),
+        ...(settled ? {} : { error: { message: ranked ? "The idea ranking was not saved." : "Solution collection review was not saved." } }),
       });
       this.settleTaskBudget(item.id, "spent", this.repository.countProviderAttempts(runId));
       this.repository.updateSession(session.id, session.revision, {
@@ -1835,7 +1865,8 @@ export class WorkflowCoordinator {
     }
     const generationItems = items.filter((item) => item.kind === "generate-ideas");
     let collectionStop: { code: string; reason: string } | null = null;
-    if (summary.counts.accepted < summary.counts.requested
+    // Ranked runs report what the writers returned; only older runs fill toward a target.
+    if (summary.counts.accepted < summary.counts.requested && !generationItems.some(isRankedTask)
       && !generationItems.some((item) => item.state === "failed" || item.state === "unknown")) {
       const completedRounds = [...new Set(generationItems.map(fillRoundFromItem).filter((round) => round > 0))];
       const lastRound = completedRounds.length ? Math.max(...completedRounds) : null;
@@ -2150,6 +2181,14 @@ interface SavedSolutionSetReview {
   addedDistinctCount: number;
   acceptedDistinctCount: number;
   coverageErrors: string[];
+}
+
+function isRankedTask(item: WorkflowWorkItem): boolean {
+  return (item.input as { ranked?: unknown }).ranked === true;
+}
+
+function hasIdeaRanking(db: DatabaseClient, runId: string): boolean {
+  return Boolean(db.db.prepare("SELECT 1 FROM stage_results WHERE research_run_id = ? AND stage_id = 'idea-ranking' LIMIT 1").get(runId));
 }
 
 function readSolutionSetReview(db: DatabaseClient, runId: string): SavedSolutionSetReview | null {

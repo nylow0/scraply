@@ -3,7 +3,7 @@
   import {
     DEFAULT_RUN_CONFIG,
     DEFAULT_IDEA_COUNT,
-    MAX_IDEA_COUNT,
+    MAX_IDEAS_PER_PROBLEM,
     modelRefKey,
     sameModelRef,
     type ModelRef,
@@ -11,15 +11,9 @@
     type ResearchMode,
   } from "../../shared/schemas";
   import type { SearchProviderChoice } from "../../providers/search";
-  import {
-    DEFAULT_OPPORTUNITY_EXPLORATION_CONFIG,
-    type OpportunityExplorationConfig,
-  } from "../../shared/opportunity-exploration";
   import { tick, untrack } from "svelte";
   import { modelDisplayName, readResearchDefaults } from "../lib/research-defaults";
   import { DISCOVERY_DEPTHS, framedDiscoveryProjection } from "../../shared/discovery-projection";
-  import { RESEARCH_TARGETS } from "../../shared/evidence-investigators";
-  import { allocateIdeaTargets } from "../../core/opportunity-planning";
   import type { WorkflowLaunchDraft } from "../../shared/workflow-contracts";
   import type { z } from "zod";
   import { PreviewWorkflowResultSchema } from "../../shared/workflow-contracts";
@@ -46,17 +40,9 @@
   const defaults = untrack(readResearchDefaults);
   const startingModel = initial.scope ? initial.runConfig?.model : defaults.model;
   let researchMode = $state<ResearchMode>(initial.runConfig?.researchMode ?? "explore-market");
-  const initialOpportunityExploration = initial.runConfig?.opportunityExploration;
-  let opportunityTargetEnabled = $state(Boolean(initialOpportunityExploration));
-  let businessTargetOpen = $state(Boolean(initialOpportunityExploration));
   let purposeOverride = $state<ExplorationPurpose | null>(null);
-  let explorationPurpose = $derived<ExplorationPurpose>(opportunityTargetEnabled
-    ? "startup-opportunities" : purposeOverride ?? initial.runConfig?.explorationPurpose ?? "auto");
-  let targetFamilies = $state(initialOpportunityExploration?.targetFamilies ?? DEFAULT_OPPORTUNITY_EXPLORATION_CONFIG.targetFamilies);
-  let batchSize = $state(initialOpportunityExploration?.batchSize ?? DEFAULT_OPPORTUNITY_EXPLORATION_CONFIG.batchSize);
-  let maxModelCalls = $state(initialOpportunityExploration?.maxModelCalls ?? DEFAULT_OPPORTUNITY_EXPLORATION_CONFIG.maxModelCalls);
-  let maxSearches = $state(initialOpportunityExploration?.maxSearches ?? DEFAULT_OPPORTUNITY_EXPLORATION_CONFIG.maxSearches);
-  let allowExploratoryProblems = $state(initialOpportunityExploration?.allowExploratoryProblems ?? false);
+  // New runs always target x ideas per problem. A saved project keeps its purpose until the user follows the brief instead.
+  let explorationPurpose = $derived<ExplorationPurpose>(purposeOverride ?? initial.runConfig?.explorationPurpose ?? "auto");
   const workflowVersion = 2;
   let title = $state(initial.scope?.title ?? "");
   let audience = $state(initial.scope?.audience ?? "");
@@ -119,33 +105,6 @@
     ? { modelCalls: 2, searches: 0 }
     : { modelCalls: framedDiscoveryProjection(discoveryDepth, frameLanguages?.length ?? 3).modelCalls * 2,
       searches: framedDiscoveryProjection(discoveryDepth, frameLanguages?.length ?? 3).searches });
-  let projectTargetEnabled = $derived(opportunityTargetEnabled);
-  let projectInitialBatchCalls = $derived.by(() => {
-    if (!projectTargetEnabled || !Number.isInteger(targetFamilies) || targetFamilies < 2 || targetFamilies > 30) return 0;
-    const possibleProblems = researchMode === "known-problem" ? 1
-      : workflowMode === "vibe" ? automaticProblemCap ?? RESEARCH_TARGETS[discoveryDepth].confirmedProblems : 1;
-    if (!Number.isInteger(possibleProblems) || possibleProblems < 1 || possibleProblems > 20) return 0;
-    return Math.max(...Array.from({ length: possibleProblems }, (_, index) => {
-      const problemIds = Array.from({ length: index + 1 }, (_, problem) => `preview-problem-${problem}`);
-      return allocateIdeaTargets({ problemIds, target: targetFamilies, maxPerProblem: 20 }).allocations
-        .reduce((count, allocation) => count + Math.ceil(allocation.quota / 5), 0);
-    })) * 4;
-  });
-  let opportunityExploration = $derived<OpportunityExplorationConfig | undefined>(projectTargetEnabled
-    ? {
-        targetFamilies,
-        batchSize,
-        maxExpansionRounds: 2,
-        maxRawCandidates: Math.min(60, targetFamilies * 2),
-        maxModelCalls: useWorkflow
-          ? Math.min(40, Math.max(1, Number.isFinite(workflowModelLimit) ? workflowModelLimit - discoveryReservation.modelCalls : 1))
-          : maxModelCalls,
-        maxSearches: useWorkflow
-          ? Math.min(20, Math.max(0, Number.isFinite(workflowSearchLimit) ? workflowSearchLimit - discoveryReservation.searches : 0))
-          : maxSearches,
-        allowExploratoryProblems,
-      }
-    : undefined);
   let researchInstruction = $state("");
   let ideasInstruction = $state("");
   let reviewInstruction = $state("");
@@ -161,7 +120,7 @@
     researchMode, title: title.trim(), audience: audience.trim(), domain: domain.trim(), observations: observations.trim(),
     offLimits: offLimits.split("\n").map((item) => item.trim()).filter(Boolean), knownProblem: knownProblem.trim(),
     model, reasoningEffort, discoveryDepth, searchProvider, maxRunMinutes, workflowVersion, explorationPurpose,
-    riskEvaluationCriteria: riskEvaluationCriteria.trim(), ideaCount, opportunityExploration,
+    riskEvaluationCriteria: riskEvaluationCriteria.trim(), ideaCount,
   }));
   // An unavailable saved model remains selected, but it cannot start a new run.
   let savedFingerprint = $state<string | null>(untrack(() => initial.scope
@@ -211,10 +170,8 @@
   });
 
   $effect(() => {
-    if (!workflowModelLimitTouched) workflowModelLimit = discoveryReservation.modelCalls
-      + (projectTargetEnabled ? Math.max(DEFAULT_OPPORTUNITY_EXPLORATION_CONFIG.maxModelCalls, projectInitialBatchCalls) : 12);
-    if (!workflowSearchLimitTouched) workflowSearchLimit = discoveryReservation.searches
-      + (projectTargetEnabled ? DEFAULT_OPPORTUNITY_EXPLORATION_CONFIG.maxSearches : researchMode === "known-problem" ? 0 : 2);
+    if (!workflowModelLimitTouched) workflowModelLimit = discoveryReservation.modelCalls + 12;
+    if (!workflowSearchLimitTouched) workflowSearchLimit = discoveryReservation.searches + (researchMode === "known-problem" ? 0 : 2);
   });
 
   $effect(() => {
@@ -266,7 +223,6 @@
       configVersion: 2, workflowVersion, ideaCount: ideaCount ?? DEFAULT_IDEA_COUNT,
       model, reasoningEffort, discoveryDepth, searchProvider, maxRunMinutes,
       researchMode, knownProblem: knownProblem.trim(), explorationPurpose,
-      ...(opportunityExploration ? { opportunityExploration } : {}),
     };
     return {
       contractVersion: 1, frameWorkflowVersion: 1, purpose: researchMode === "known-problem" ? "known-problem" : "discovery",
@@ -274,9 +230,8 @@
       ...(workflowMode === "vibe" ? { ideas: { model: ideaModel, reasoningEffort: ideaReasoningEffort,
         reviewModel: ideaModel, reviewReasoningEffort: ideaReasoningEffort } } : {}),
       targets: {
-        kind: opportunityExploration ? "project" : "per-problem",
+        kind: "per-problem",
         ideaCount: ideaCount ?? DEFAULT_IDEA_COUNT,
-        ...(opportunityExploration ? { distinctBusinessCount: targetFamilies } : {}),
         ...(workflowMode === "vibe" && researchMode === "explore-market" && automaticProblemCap !== null ? { automaticProblemCap } : {}),
       },
       limits: { enforced: false, maxMinutes: maxRunMinutes, maxModelCalls: workflowModelLimit, maxSearches: workflowSearchLimit },
@@ -300,22 +255,8 @@
 
   function missingFields(): Record<string, string> {
     const next: Record<string, string> = {};
-    if (!Number.isInteger(ideaCount) || ideaCount === undefined || ideaCount < 1 || ideaCount > MAX_IDEA_COUNT) {
-      next.ideaCount = `Choose a whole number from 1 to ${MAX_IDEA_COUNT}.`;
-    }
-    if (opportunityExploration) {
-      if (!Number.isInteger(targetFamilies) || targetFamilies < 2 || targetFamilies > 30) {
-        next.targetFamilies = "Choose a whole number from 2 to 30.";
-      }
-      if (!Number.isInteger(batchSize) || batchSize < 4 || batchSize > 6) {
-        next.batchSize = "Choose a batch size from 4 to 6.";
-      }
-      if (!Number.isInteger(maxModelCalls) || maxModelCalls < 1 || maxModelCalls > 40) {
-        next.maxModelCalls = "Choose a model-call limit from 1 to 40.";
-      }
-      if (!Number.isInteger(maxSearches) || maxSearches < 0 || maxSearches > 20) {
-        next.maxSearches = "Choose a search limit from 0 to 20.";
-      }
+    if (!Number.isInteger(ideaCount) || ideaCount === undefined || ideaCount < 1 || ideaCount > MAX_IDEAS_PER_PROBLEM) {
+      next.ideaCount = `Choose a whole number from 1 to ${MAX_IDEAS_PER_PROBLEM}.`;
     }
     if (researchMode === "explore-market") {
       if (!domain.trim()) next.domain = "A starting context is required.";
@@ -362,7 +303,7 @@
       }, {
         configVersion: 2, workflowVersion, ideaCount, model, reasoningEffort,
         discoveryDepth, searchProvider, maxRunMinutes, researchMode, knownProblem: knownProblem.trim(),
-        explorationPurpose, ...(opportunityExploration ? { opportunityExploration } : {}),
+        explorationPurpose,
       });
       savedFingerprint = submittedFingerprint;
       await onStart();
@@ -397,9 +338,8 @@
     const trigger = configurationTrigger?.isConnected && configurationTrigger !== document.body ? configurationTrigger : advancedSettingsButton;
     trigger?.focus({ preventScroll: true });
   }
-  const fieldSections: Record<string, SettingsSection | "brief" | "business" | "main"> = {
+  const fieldSections: Record<string, SettingsSection | "brief" | "main"> = {
     domain: "brief", knownProblem: "brief", researchMode: "brief",
-    targetFamilies: "business", batchSize: "business", maxModelCalls: "business", maxSearches: "business",
     model: "main", reasoning: "main", searchProvider: "main", ideaCount: "main", ideaModel: "main", ideaReasoning: "main",
     maxRunMinutes: "limits", workflowModelLimit: "limits", workflowSearchLimit: "limits", automaticProblemCap: "limits",
   };
@@ -407,7 +347,7 @@
     "runConfig.model": "model", "runConfig.searchProvider": "searchProvider",
     "runConfig.researchMode": "researchMode", "runConfig.knownProblem": "knownProblem", purpose: "researchMode",
     ideas: "ideaModel", "ideas.model": "ideaModel", "ideas.reviewModel": "ideaModel", "ideas.reasoningEffort": "ideaReasoning",
-    "targets.distinctBusinessCount": "targetFamilies", "limits.maxModelCalls": "workflowModelLimit",
+    "limits.maxModelCalls": "workflowModelLimit",
     "limits.maxSearches": "workflowSearchLimit", "limits.maxMinutes": "maxRunMinutes",
   };
   let customInstructionCount = $derived([researchInstruction, ideasInstruction, reviewInstruction].filter((value) => value.trim()).length);
@@ -445,10 +385,9 @@
       key = previewFields[issue];
     }
     const section = key ? fieldSections[key] : undefined;
-    if (section === "business") businessTargetOpen = true;
     await tick();
     const field = key ? setupForm.querySelector<HTMLElement>(`[data-field="${key}"]`) : null;
-    if (section === "brief" || section === "business" || section === "main") {
+    if (section === "brief" || section === "main") {
       field?.focus();
       field?.scrollIntoView?.({ block: "nearest" });
     } else {
@@ -483,30 +422,9 @@
               <label><span>{researchMode === "explore-market" ? "Anything else to consider" : "Context"}</span><textarea bind:value={observations} rows="2" placeholder="Useful background"></textarea></label>
               <label><span>Boundaries</span><textarea bind:value={offLimits} rows="2" placeholder="What should solutions avoid? One limit per line."></textarea></label>
         </div>
-        {#if !opportunityTargetEnabled && explorationPurpose !== "auto"}
+        {#if explorationPurpose !== "auto"}
         <p class="saved-purpose-note">This saved project asks for {explorationPurpose === "startup-opportunities" ? "startup opportunities" : "practical solutions"}. <button type="button" onclick={() => purposeOverride = "auto"}>Follow the brief instead</button></p>
       {/if}
-      <details class="business-target" bind:open={businessTargetOpen}>
-        <summary>Distinct business target {opportunityTargetEnabled ? `· On (${targetFamilies})` : "(optional)"}</summary>
-        <section class="opportunity-target" aria-label="Distinct opportunity target">
-          <label class="target-toggle">
-            <input type="checkbox" checked={opportunityTargetEnabled} onchange={(event) => { opportunityTargetEnabled = event.currentTarget.checked; if (!opportunityTargetEnabled) purposeOverride = "auto"; }} />
-            <span><strong>Find distinct businesses across this project</strong></span>
-          </label>
-          {#if opportunityTargetEnabled}
-            <div class="target-grid">
-              <label><span>Distinct family target</span><input aria-label="Distinct family target" data-field="targetFamilies" type="number" min="2" max="30" step="1" bind:value={targetFamilies} aria-invalid={Boolean(errors.targetFamilies)} />{#if errors.targetFamilies}<small class="field-error">{errors.targetFamilies}</small>{/if}</label>
-              <label><span>Batch size</span><select aria-label="Opportunity batch size" data-field="batchSize" bind:value={batchSize}><option value={4}>4</option><option value={5}>5</option><option value={6}>6</option></select>{#if errors.batchSize}<small class="field-error">{errors.batchSize}</small>{/if}</label>
-              {#if !useWorkflow}
-                <label><span>Opportunity model-call limit</span><input aria-label="Opportunity model-call limit" data-field="maxModelCalls" type="number" min="1" max="40" step="1" bind:value={maxModelCalls} aria-invalid={Boolean(errors.maxModelCalls)} />{#if errors.maxModelCalls}<small class="field-error">{errors.maxModelCalls}</small>{/if}</label>
-                <label><span>Added opportunity search limit</span><input aria-label="Opportunity search limit" data-field="maxSearches" type="number" min="0" max="20" step="1" bind:value={maxSearches} aria-invalid={Boolean(errors.maxSearches)} />{#if errors.maxSearches}<small class="field-error">{errors.maxSearches}</small>{/if}</label>
-              {/if}
-            </div>
-            <p>Similar ideas count as one business. Up to 2 expansion rounds and {Math.min(60, targetFamilies * 2)} candidates.{#if useWorkflow}&nbsp;Research depth guides evidence collection; useful follow-up work can continue.{/if}</p>
-            <label class="exploratory-toggle"><input type="checkbox" bind:checked={allowExploratoryProblems} /><span><strong>Allow exploratory problem hypotheses</strong><small>Use only after the researched map is exhausted. Scraply labels these permanently and does not invent evidence for them.</small></span></label>
-          {/if}
-        </section>
-      </details>
 
       </div>
     </div>
@@ -540,7 +458,7 @@
       <div class="solution-count" class:paired={researchMode === "known-problem"}>
         <label for="solution-count">{researchMode === "known-problem" ? "Solutions" : "Solutions per problem"}</label>
         <div class="count-input">
-          <input id="solution-count" aria-label="Solutions per problem" data-field="ideaCount" type="number" bind:value={ideaCount} min="1" max={MAX_IDEA_COUNT} step="1" required aria-invalid={Boolean(errors.ideaCount)} aria-describedby={errors.ideaCount ? "idea-count-error" : undefined} />
+          <input id="solution-count" aria-label="Solutions per problem" data-field="ideaCount" type="number" bind:value={ideaCount} min="1" max={MAX_IDEAS_PER_PROBLEM} step="1" required aria-invalid={Boolean(errors.ideaCount)} aria-describedby={errors.ideaCount ? "idea-count-error" : undefined} />
 
         </div>
         {#if errors.ideaCount}<small id="idea-count-error" class="field-error">{errors.ideaCount}</small>{/if}
@@ -694,18 +612,8 @@
   button:hover:not(:disabled) { background:var(--surface-2); }
   .text-action { display:inline-flex;align-items:center;justify-content:center;gap:8px;border:0;background:transparent;color:var(--accent-strong);padding:6px 0;min-height:32px;font-size:13px;text-align:left; }
   .text-action:hover:not(:disabled) { background:transparent;text-decoration:underline; }
-  summary { display:flex;align-items:center;gap:12px;min-height:40px;cursor:pointer;list-style:none;color:var(--muted);font-size:13px; }
-  summary::-webkit-details-marker { display:none; }
-  summary::before { content:none; }
-  summary::after { content:"";flex:none;width:6px;height:6px;border-right:1.5px solid currentColor;border-bottom:1.5px solid currentColor;transform:rotate(-45deg);margin-left:auto;margin-right:4px; }
-  details[open] > summary::after { transform:rotate(45deg); }
-  summary:hover { color:var(--text); }
-  .opportunity-target { display:grid;gap:16px;padding:12px 0 20px; }
-  .target-grid,.run-settings,.output-settings,.limits-grid { display:grid;grid-template-columns:1fr 1fr;gap:16px; }
-  .target-toggle,.exploratory-toggle { display:flex;gap:10px;align-items:start; }
-  .target-toggle input,.exploratory-toggle input { flex:none;width:18px;height:18px;min-height:0;margin-top:2px;accent-color:var(--accent); }
-  .target-toggle span,.exploratory-toggle span { display:grid;gap:5px; }
-  .opportunity-target p,.saved-purpose-note { color:var(--muted);font-size:13px;line-height:1.6;margin:0; }
+  .run-settings,.output-settings,.limits-grid { display:grid;grid-template-columns:1fr 1fr;gap:16px; }
+  .saved-purpose-note { color:var(--muted);font-size:13px;line-height:1.6;margin:0; }
   .saved-purpose-note button { border:0;padding:0;color:var(--accent);background:none; }
   /* The run panel floats inside the page as its own glass card. */
   .launch-sidebar { min-height:0;overflow:auto;display:flex;flex-direction:column;gap:18px;margin:12px 12px 12px 0;padding:18px;border-radius:14px;scroll-padding-block:20px; }
@@ -759,7 +667,7 @@
   }
   @container page (max-width:560px) {
     .setup-body { padding:20px 16px;gap:20px; }.launch-sidebar { margin:0 12px 12px;padding:20px 16px;grid-template-columns:1fr; }
-    .main-brief > span { font-size:24px; }.mode-picker,.context-fields,.target-grid { grid-template-columns:1fr; }
+    .main-brief > span { font-size:24px; }.mode-picker,.context-fields { grid-template-columns:1fr; }
     .launch-row { align-items:stretch;flex-direction:column;gap:10px; }.primary { width:100%; }
   }
   @media(max-width:600px) {

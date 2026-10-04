@@ -426,6 +426,25 @@ export const WorkflowV2LegacySolutionSetReviewOutputSchema = WorkflowV2SolutionS
   assessments: z.array(WorkflowV2SolutionSetReviewOutputSchema.shape.assessments.element.omit({ criteriaFit: true })),
 });
 
+/**
+ * One problem's ideas, best first. The ranker never labels an idea weak: code marks weak fit from a failed
+ * must-have in criteriaFit (unknown never counts) or from sameAsCandidateId naming a higher-ranked idea.
+ */
+export const WorkflowV2IdeaRankingOutputSchema = z.object({
+  ranking: z.array(z.object({
+    candidateId: WorkflowV2RequiredTextSchema,
+    reason: WorkflowV2RequiredTextSchema,
+    sameAsCandidateId: WorkflowV2RequiredTextSchema.nullable(),
+    criteriaFit: CriteriaFitSchema.optional(),
+  }).strict()),
+}).strict();
+export const WorkflowV2GoalIdeaRankingOutputSchema = WorkflowV2IdeaRankingOutputSchema.extend({
+  ranking: z.array(WorkflowV2IdeaRankingOutputSchema.shape.ranking.element.extend({ criteriaFit: CriteriaFitSchema })),
+});
+export const WorkflowV2LegacyIdeaRankingOutputSchema = WorkflowV2IdeaRankingOutputSchema.extend({
+  ranking: z.array(WorkflowV2IdeaRankingOutputSchema.shape.ranking.element.omit({ criteriaFit: true })),
+});
+
 export const WorkflowV2IdeaFollowUpOutputSchema = z.object({
   reply: WorkflowV2RequiredTextSchema,
   citedEvidenceIds: z.array(WorkflowV2RequiredTextSchema),

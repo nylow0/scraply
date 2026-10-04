@@ -52,7 +52,7 @@ describe("VibeProgress", () => {
       onPause, onStop: vi.fn(async () => {}) });
     expect(view.getByRole("region", { name: "Area investigators" })).toBeTruthy();
     expect(view.getByRole("listitem", { name: "Bank matching investigator" }).textContent).toContain("Checking evidence gaps");
-    expect(view.getByText("Confirmed").nextElementSibling?.textContent).toBe("1");
+    expect(view.getByText("Problems").nextElementSibling?.textContent).toBe("1");
     await fireEvent.click(view.getByRole("button", { name: "Pause" }));
     expect(onPause).toHaveBeenCalledOnce();
     expect(view.queryByRole("progressbar")).toBeNull();

@@ -683,6 +683,9 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
           ...(evidenceFollowUp ? { evidenceFollowUp } : {}),
         } : {}),
         detailRevision: `${row.run_updated_at}:${row.decision_updated_at ?? ""}:${row.evidence_follow_up_updated_at ?? ""}:${row.risk_evaluation_key ?? ""}:${row.focused_experiment_updated_at ?? ""}`,
+        rank: row.rank === null || row.rank === undefined ? null : Number(row.rank),
+        rankReason: row.rank_reason === null || row.rank_reason === undefined ? null : String(row.rank_reason),
+        weakFitReason: row.weak_fit_reason === null || row.weak_fit_reason === undefined ? null : String(row.weak_fit_reason),
         id: String(row.id), problemId: String(row.problem_id), problemStatement: String(row.problem_statement),
         problemVerdict: String(row.problem_verdict) as SolutionView["problemVerdict"], mechanism: String(row.mechanism),
         factors: details ? factorsByProblem.get(String(row.problem_id)) ?? [] : [],
@@ -1819,6 +1822,8 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
           group.push(idea);
           ideasByProblem.set(idea.problemId, group);
         }
+        // Ranked groups export best first; ideas saved before ranking keep their saved order.
+        for (const group of ideasByProblem.values()) group.sort((a, b) => (a.rank ?? Infinity) - (b.rank ?? Infinity));
         const usageByRun = new Map<string, ReturnType<typeof runUsage>>();
         const files = [...ideasByProblem.values()].map((group, index) => {
           const filename = `${slug(group[0]!.problemStatement)}-${index + 1}.${input.format === "json" ? "json" : "md"}`;
@@ -2054,6 +2059,8 @@ function renderDecisionMarkdown(ideas: ExportIdea[]): string {
     const analysis = idea.decisionAnalysis;
     return [
       `# ${idea.mechanism}`, "", idea.description, "", `Problem: ${idea.problemStatement}`, "",
+      ...(idea.rank ? [`Rank ${idea.rank} for this problem. ${idea.rankReason ?? ""}`.trim(), ""] : []),
+      ...(idea.weakFitReason ? [`Weak fit: ${idea.weakFitReason}`, ""] : []),
       `Workflow: v2. ${idea.selected ? "Selected by the user." : "Not selected."} Problem evidence: ${idea.problemVerdict}.`, "",
       ...(idea.opportunityOrigin ? [`Origin: ${idea.opportunityOrigin.kind}. ${idea.opportunityOrigin.kind === "exploratory-hypothesis" ? idea.opportunityOrigin.disclosure : idea.opportunityOrigin.evidenceGap ?? "Evidence presence does not establish customer demand."}`, ""] : []),
       `Key assumption: ${idea.keyAssumption}`, "", `Current approach may suffice: ${idea.whyCurrentApproachMaySuffice}`, "",
