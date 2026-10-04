@@ -23,7 +23,7 @@
   import type { WorkflowLaunchDraft } from "../../shared/workflow-contracts";
   import type { z } from "zod";
   import { PreviewWorkflowResultSchema } from "../../shared/workflow-contracts";
-  import ProviderLogo from "./ProviderLogo.svelte";
+  import SearchProviderSelect from "./SearchProviderSelect.svelte";
   import Icon from "./Icon.svelte";
 
   type WorkflowPreview = z.infer<typeof PreviewWorkflowResultSchema>;
@@ -532,7 +532,14 @@
         {/if}
       <section class="main-settings" aria-label="Main research settings">
         <div class="main-settings-grid">
-      {#if researchMode === "explore-market"}<label class="run-setting search-setting model-setting"><span>Search provider</span><div class="provider-select">{#if searchProvider !== "auto"}<ProviderLogo provider={searchProvider} size={17} />{/if}<select aria-label="Search provider" data-field="searchProvider" bind:value={searchProvider} onchange={() => searchProviderTouched = true}><option value="auto">Automatic</option><option value="exa">Exa</option><option value="perplexity">Perplexity</option></select></div><small>{searchStatus}</small>{#each visiblePreviewIssues.filter((issue) => issue.path.join(".") === "runConfig.searchProvider") as issue (issue.code)}<small class="field-error" role="alert">{issue.message}</small>{/each}</label>{/if}
+      {#if researchMode === "explore-market"}
+        <label class="run-setting search-setting model-setting">
+          <span>Search provider</span>
+          <SearchProviderSelect bind:value={searchProvider} connected={{ exa: workspace.validation.exa.valid, perplexity: workspace.validation.perplexity.valid }} onchange={() => searchProviderTouched = true} />
+          <small>{searchStatus}</small>
+          {#each visiblePreviewIssues.filter((issue) => issue.path.join(".") === "runConfig.searchProvider") as issue (issue.code)}<small class="field-error" role="alert">{issue.message}</small>{/each}
+        </label>
+      {/if}
       <label class="run-setting model-setting"><span>Model</span><select aria-label="Model" data-field="model" bind:this={modelSelect} bind:value={modelKey} onchange={selectModel} disabled={nativeModelOptions.length === 0}>{#if !selectedModelAvailable}<option value={modelKey}>{legacyModelNeedsReplacement && !modelKey ? "Choose an OpenAI model" : workspace.validation.native.connected ? `${modelDisplayName(model)} (unavailable)` : "Sign in to choose"}</option>{/if}{#each gpt6Models as modelId (modelId)}{#if !nativeModelOptions.some((item) => item.modelId === modelId) && model.modelId !== modelId}<option value={`openai-subscription:${modelId}`} disabled>{modelDisplayName({ modelId })} (not in model list)</option>{/if}{/each}{#each nativeModelOptions as item (modelRefKey(item))}<option value={modelRefKey(item)}>{modelDisplayName(item)}</option>{/each}</select>{#if nativeModelOptions.length === 0}<small>Your available models appear here after you sign in.</small>{/if}</label>
       <label class="run-setting"><span>Reasoning</span><select aria-label="Reasoning" data-field="reasoning" title={reasoningDescription} bind:value={reasoningEffort}>{#if !selectedReasoningAvailable}<option value={reasoningEffort}>{reasoningEffort} (unavailable)</option>{/if}{#each (selectedModelOption?.reasoningEfforts ?? []) as effort (effort.id)}<option value={effort.id}>{effort.id.charAt(0).toUpperCase() + effort.id.slice(1)}</option>{/each}</select></label>
       {#if researchMode === "explore-market"}<label class="run-setting"><span>Research depth</span><select aria-label="Research depth" bind:value={discoveryDepth}><option value="quick">Quick</option><option value="standard">Standard</option><option value="deep">Deep</option></select></label>{/if}
@@ -744,9 +751,6 @@
   .model-setting,.search-setting { grid-column:1/-1; }
   .advanced-body { display:grid;gap:16px; }
   .output-settings { margin-top:20px;padding-top:20px;border-top:1px solid var(--border); }
-  .provider-select { position:relative; }
-  .provider-select :global(svg) { position:absolute;left:12px;top:50%;transform:translateY(-50%);pointer-events:none; }
-  .provider-select select { padding-left:38px; }
   .solution-count { display:grid;align-content:start;gap:8px; }
   .dialog-footer { display:flex;justify-content:space-between;align-items:center;gap:12px;padding:14px 24px;border-top:1px solid var(--border);font-size:13px;color:var(--muted); }
   /* Page-width breakpoints follow the page container; the dialog rules below follow the window it floats over. */

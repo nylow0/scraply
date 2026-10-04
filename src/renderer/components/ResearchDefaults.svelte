@@ -5,7 +5,7 @@
   import { modelRefKey, type ModelRef } from "../../shared/schemas";
   import type { SearchProviderChoice } from "../../providers/search";
   import { modelDisplayName, readResearchDefaults, saveResearchDefaults } from "../lib/research-defaults";
-  import ProviderLogo from "./ProviderLogo.svelte";
+  import SearchProviderSelect from "./SearchProviderSelect.svelte";
 
   let { workspace }: { workspace: WorkspaceState | null } = $props();
   const initial = untrack(readResearchDefaults);
@@ -73,7 +73,7 @@
   }
 </script>
 <form onsubmit={(event) => { event.preventDefault(); save(); }}>
-  <label><span>Default search provider</span><div class="provider-select">{#if searchProvider !== "auto"}<ProviderLogo provider={searchProvider} size={18} />{/if}<select aria-label="Default search provider" bind:value={searchProvider} onchange={() => saved = false}><option value="auto">Automatic</option><option value="exa">Exa</option><option value="perplexity">Perplexity</option></select></div></label>
+  <label><span>Default search provider</span><SearchProviderSelect label="Default search provider" bind:value={searchProvider} connected={{ exa: workspace?.validation.exa.valid ?? true, perplexity: workspace?.validation.perplexity.valid ?? true }} onchange={() => saved = false} /></label>
   <label><span>Default model</span><select aria-label="Default model" bind:value={modelKey} onchange={() => { saved = false; reasoningEffort = catalogEffort(modelKey) ?? ""; }}>
     {#each models as model (modelRefKey(model))}<option value={modelRefKey(model)}>{model.displayName}{model.available ? "" : workspace?.validation.native.connected ? " (unavailable)" : ""}</option>{/each}
   </select></label>
@@ -120,11 +120,8 @@
   legend { float:left;width:100%;font-size:16px;font-weight:600;margin-bottom:6px; }
   fieldset p { grid-column:1/-1;font-size:13px;color:var(--muted);margin:0; }
   form { display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:20px 12px; }
-  label { display:grid;align-content:start;gap:8px;min-width:0;font-size:13px; }
+  label { display:grid;align-content:start;gap:8px;min-width:0;font-size:13px;--search-provider-padding:12px;--search-provider-radius:9px;--search-provider-font-size:13px;--search-provider-option-height:45px; }
   select { width:100%;min-width:0;background:var(--surface);border:1px solid var(--border-strong);border-radius:9px;color:var(--text);padding:12px;font-size:13px; }
-  .provider-select { position:relative;color:var(--text); }
-  .provider-select :global(svg) { position:absolute;top:50%;left:13px;transform:translateY(-50%);pointer-events:none; }
-  .provider-select select { padding-left:42px; }
   footer { grid-column:1/-1;display:flex;flex-wrap:wrap;gap:14px;align-items:center; }
   button { padding:11px 16px;border:0;border-radius:8px;background:var(--accent-strong);color:var(--accent-ink);font-size:13px;font-weight:600; }
   footer span { color:var(--success);font-size:13px; }
