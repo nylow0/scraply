@@ -107,6 +107,10 @@ export function maskSearchKey(key: string | null | undefined): string | undefine
 }
 const REMOVED_CODEX_CLI_MESSAGE = "Codex CLI integration was removed. Start a new run using Native OpenAI.";
 type DataRead = (sql: string, params: readonly unknown[]) => Array<Record<string, unknown>>;
+const ReviewLabelsSchema = z.array(z.object({
+  candidateId: z.string(), status: z.enum(["accepted", "duplicate", "variant", "unresolved", "rejected"]), reason: z.string(),
+}).passthrough());
+type ReviewLabel = z.infer<typeof ReviewLabelsSchema>[number];
 export function isResearchModeReady(
   config: Pick<RunConfig, "researchMode" | "searchProvider"> & { model?: ModelRef },
   search: SearchValidation,
@@ -634,6 +638,7 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
       }] as const));
     context.observeDataRead?.({ operation: details ? "solution-details" : "solution-summaries", queryCount, rowCount: rows.length });
     const discardedIds = new Set(JSON.parse(db.getSetting(`discarded-ideas:${threadId}`) ?? "[]") as string[]);
+    const reviewLabels = details ? readReviewLabels(rows.map((row) => String(row.research_run_id)), readAll) : new Map<string, ReviewLabel>();
     const result = rows.map((row): SolutionView => {
       const highest = row.highest_risk_id === null ? null : {
         id: String(row.highest_risk_id), description: String(row.highest_risk_description),
@@ -683,6 +688,7 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
           ...(evidenceFollowUp ? { evidenceFollowUp } : {}),
         } : {}),
         detailRevision: `${row.run_updated_at}:${row.decision_updated_at ?? ""}:${row.evidence_follow_up_updated_at ?? ""}:${row.risk_evaluation_key ?? ""}:${row.focused_experiment_updated_at ?? ""}`,
+        ...(reviewLabels.get(String(row.id)) ? { reviewStatus: reviewLabels.get(String(row.id))!.status, reviewReason: reviewLabels.get(String(row.id))!.reason } : {}),
         rank: row.rank === null || row.rank === undefined ? null : Number(row.rank),
         rankReason: row.rank_reason === null || row.rank_reason === undefined ? null : String(row.rank_reason),
         weakFitReason: row.weak_fit_reason === null || row.weak_fit_reason === undefined ? null : String(row.weak_fit_reason),
@@ -695,6 +701,17 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
       };
     });
     return result;
+  }
+  // Runs before ranking saved one collection review per idea run; its decisions label each idea.
+  function readReviewLabels(runIds: string[], readAll: DataRead): Map<string, ReviewLabel> {
+    const unique = [...new Set(runIds)];
+    if (unique.length === 0) return new Map();
+    const rows = readAll(`SELECT json_extract(context_json, '$.solutionSetReview.decisions') AS decisions FROM stage_results
+      WHERE stage_id = 'solution-set-review' AND selection_key NOT LIKE 'preliminary:%' AND research_run_id IN (${placeholders(unique)})`, unique);
+    return new Map(rows.flatMap((row) => {
+      const decisions = ReviewLabelsSchema.safeParse(JSON.parse(String(row.decisions ?? "[]")));
+      return decisions.success ? decisions.data.map((decision) => [decision.candidateId, decision] as const) : [];
+    }));
   }
   function readOutcomes(solutionIds: string[], readAll: DataRead): Map<string, SolutionView["outcomes"]> {
     if (solutionIds.length === 0) return new Map();

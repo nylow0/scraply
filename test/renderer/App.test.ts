@@ -529,7 +529,7 @@ describe("App workspace coordination", () => {
       getWorkflow: async () => ({ summary: state.activeWorkflow!, tasks: [], nextCursor: null }), commandWorkflow });
     const view = render(App);
     await fireEvent.click(await view.findByRole("tab", { name: "Solutions" }));
-    expect(await view.findByText(/1 saved idea to inspect/)).toBeTruthy();
+    expect(await view.findByRole("heading", { level: 1, name: "1 idea" })).toBeTruthy();
     expect(view.queryByText(/0 accepted toward the run target/)).toBeNull();
     await fireEvent.click(view.getByRole("tab", { name: "Research" }));
     await fireEvent.click(view.getByRole("button", { name: /Recheck buyer evidence/ }));

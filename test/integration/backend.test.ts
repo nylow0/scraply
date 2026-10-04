@@ -588,10 +588,10 @@ describe("cutover backend", () => {
       sources: [expect.objectContaining({ text: "Source body stays in the source record." })],
       factors: [expect.objectContaining({ quote: "Parts arrive several days late." })],
     }));
-    expect([...dataReads].reverse().find((read) => read.operation === "solution-details")).toEqual({ operation: "solution-details", queryCount: 8, rowCount: 1 });
+    expect([...dataReads].reverse().find((read) => read.operation === "solution-details")).toEqual({ operation: "solution-details", queryCount: 9, rowCount: 1 });
     expect(workspace.latestResearchRun.problemId).toBe("problem-deselected");
     const exported = await post("/ideas/export", { threadId: created.thread.id, format: "json" }) as { filename: string; files: Array<{ filename: string; content: string }> };
-    expect([...dataReads].reverse().find((read) => read.operation === "solution-details")).toEqual({ operation: "solution-details", queryCount: 8, rowCount: 6 });
+    expect([...dataReads].reverse().find((read) => read.operation === "solution-details")).toEqual({ operation: "solution-details", queryCount: 9, rowCount: 6 });
     expect(exported.filename).toMatch(/^[a-z0-9-]+-ideas\.json$/);
     expect(exported.files).toHaveLength(3);
     expect(exported.files.find((file) => file.filename.startsWith("superseded-problem-"))).toBeDefined();

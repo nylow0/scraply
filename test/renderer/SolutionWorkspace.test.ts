@@ -87,78 +87,66 @@ describe("SolutionListItem risk summary", () => {
   });
 });
 
-describe("SolutionWorkspace ordering explanation", () => {
-  test("filters on all must-haves and leaves legacy ideas explicitly unassessed", async () => {
-    const legacy = { ...solution(), id: "legacy", mechanism: "Legacy saved idea" };
-    const fit = [{ criterionId: "build", criterionName: "Build in one month", mustHave: true, status: "meets" as const, evidenceIds: ["source"], note: "Measured prototype effort" }];
-    const assessed = { ...solution(), id: "assessed", mechanism: "Assessed idea", criteriaFit: fit };
-    const unknown = { ...solution(), id: "unknown", mechanism: "Unknown fit idea", criteriaFit: [{ ...fit[0]!, status: "unknown" as const, evidenceIds: [] }] };
-    const view = render(SolutionWorkspace, { solutions: [legacy, assessed, unknown], busy: false, onExport: vi.fn(), onOpenSource: vi.fn(), onReview: vi.fn() });
-    expect(view.getByText("Criteria fit not assessed")).toBeTruthy();
-    expect(view.getByText("Build in one month · must-have: meets")).toBeTruthy();
-    const checkbox = view.getByRole("checkbox", { name: "Meets all must-haves" });
-    await fireEvent.click(checkbox);
-    expect(view.getByText("Assessed idea").closest(".idea-row")?.hasAttribute("hidden")).toBe(false);
-    expect(view.getByText("Legacy saved idea").closest(".idea-row")?.hasAttribute("hidden")).toBe(true);
-    expect(view.getByText("Unknown fit idea").closest(".idea-row")?.hasAttribute("hidden")).toBe(true);
-    await fireEvent.click(checkbox);
-    expect(view.getByText("Legacy saved idea").closest(".idea-row")?.hasAttribute("hidden")).toBe(false);
+describe("SolutionWorkspace groups", () => {
+  test("shows one open group per problem with each idea's short name, best first, and marks weak fits", async () => {
+    const idea = (id: string, problemId: string, rank: number, name: string, weakFitReason: string | null = null) => ({ ...solution(), id, problemId,
+      problemStatement: `Problem ${problemId}`, workflowVersion: 2 as const, rank, rankReason: `Reason ${rank}`, weakFitReason,
+      mechanism: "Collect exports, then compare them line by line.", description: `${name}: a longer explanation of the idea.` });
+    const view = render(SolutionWorkspace, { solutions: [
+      idea("a3", "a", 3, "Shared checklist", 'fails "Fits a solo founder": needs a sales team'),
+      idea("a1", "a", 1, "History access pack"), idea("b1", "b", 1, "Weekend baseline alert"), idea("a2", "a", 2, "Savings checker"),
+    ], busy: false, onExport: vi.fn(), onOpenSource: vi.fn(), onReview: vi.fn() });
+
+    expect(view.getByRole("heading", { level: 1, name: "4 ideas" })).toBeTruthy();
+    const groups = [...view.container.querySelectorAll("details.problem-group")] as HTMLDetailsElement[];
+    expect(groups.map((group) => [group.querySelector("summary")?.textContent, group.open])).toEqual([["Problem a", true], ["Problem b", true]]);
+    expect([...groups[0]!.querySelectorAll(".idea-name")].map((row) => row.textContent)).toEqual(["History access pack", "Savings checker", "Shared checklist"]);
+    const weak = within(groups[0]!).getByRole("button", { name: "Open idea: Shared checklist" });
+    expect(within(weak).getByText("Weak fit")).toBeTruthy();
+    expect(view.getAllByText("Weak fit")).toHaveLength(1);
+    for (const gone of [/Discard/, /^Open idea$/, /Meets all must-haves/, /Criteria fit not assessed/, /Full explanation inside/, /saved order/]) {
+      expect(view.queryByText(gone)).toBeNull();
+    }
+
+    await fireEvent.click(weak);
+    expect(view.getByRole("heading", { level: 1, name: "Shared checklist" })).toBeTruthy();
+    expect(view.getByText('fails "Fits a solo founder": needs a sales team')).toBeTruthy();
+    expect(view.getByText("Ranked 3 for this problem: Reason 3")).toBeTruthy();
   });
 
-  test("keeps business grouping available without hiding the idea list", async () => {
+  test("an older idea without a short name or rank keeps its saved order and shows its first sentence", () => {
+    const first = { ...solution(), id: "first", description: "Pool delivery windows by supplier. Shops then compare them." };
+    const second = { ...solution(), id: "second", description: "Call suppliers before quoting." };
+    const view = render(SolutionWorkspace, { solutions: [first, second], busy: false, onExport: vi.fn(), onOpenSource: vi.fn(), onReview: vi.fn() });
+    expect([...view.container.querySelectorAll(".idea-name")].map((row) => row.textContent)).toEqual(["Pool delivery windows by supplier.", "Call suppliers before quoting."]);
+  });
+
+  test("keeps business grouping and exports below the groups", async () => {
     const opportunities: OpportunityFamiliesView = {
       rawOptionCount: 1, reviewedOptionCount: 0, acceptedFamilyCount: 0,
       families: [], unresolved: [], unreviewedOptionIds: ["solution-1"],
       lastReviewedAt: null, reviewStatus: "not-reviewed", reviewError: null,
     };
-    const props = {
+    const onExport = vi.fn();
+    const view = render(SolutionWorkspace, {
       solutions: [{ ...solution(), workflowVersion: 2 as const }], busy: false,
       opportunities, modelOptions: [], initialConfig: DEFAULT_RUN_CONFIG,
-      onReviewOpportunities: vi.fn().mockResolvedValue(undefined),
-      onEditMembership: vi.fn().mockResolvedValue(undefined),
-      onExport: vi.fn(), onOpenSource: vi.fn(), onReview: vi.fn(),
-    };
-    const practical = render(SolutionWorkspace, {
-      ...props, opportunities: { ...opportunities, rawOptionCount: 0, unreviewedOptionIds: [] },
+      onReviewOpportunities: vi.fn().mockResolvedValue(undefined), onEditMembership: vi.fn().mockResolvedValue(undefined),
+      onExport, onOpenSource: vi.fn(), onReview: vi.fn(),
     });
-    expect(practical.queryByText("0 accepted families")).toBeNull();
-    expect(practical.queryByRole("button", { name: "Review 1 saved idea" })).toBeNull();
-    expect(practical.getByText("Supplier reliability ledger")).toBeTruthy();
-    practical.unmount();
-
-    const startup = render(SolutionWorkspace, props);
-    expect(startup.getByText("0 accepted families")).toBeTruthy();
-    expect(startup.getByRole("button", { name: /Open idea:/ })).toBeTruthy();
-    await fireEvent.click(startup.getByText(/Review idea grouping/));
-    expect(startup.getByRole("button", { name: "Review 1 saved idea" })).toBeTruthy();
+    await fireEvent.click(view.getByText(/Review idea grouping/));
+    expect(view.getByRole("button", { name: "Review 1 saved idea" })).toBeTruthy();
+    await fireEvent.click(view.getByRole("button", { name: "Export JSON" }));
+    expect(onExport).toHaveBeenCalledWith("json");
   });
 
-  test("explains the ordering rule and names the project-ending risk filter", () => {
-    const view = render(SolutionWorkspace, {
-      solutions: [solution()],
-      busy: false,
-      onExport: vi.fn(),
-      onOpenSource: vi.fn(),
-      onReview: vi.fn(),
-    });
-
-    expect(view.getByText(/Ideas are shown in saved order/)).toBeTruthy();
-    expect(view.getByRole("button", { name: "Unaddressed project-ending" })).toBeTruthy();
-    expect(view.queryByText("Highest risk", { exact: true })).toBeNull();
-    expect(view.queryByText(/catastrophic gaps/i)).toBeNull();
-  });
-
-  test("explains a zero-option v2 result without relying on a returned option", () => {
+  test("says when a run returned no ideas", () => {
     const view = render(SolutionWorkspace, {
       solutions: [], workflowVersion: 2, busy: false,
       onExport: vi.fn(), onOpenSource: vi.fn(), onReview: vi.fn(),
     });
-
     expect(view.getByText("No ideas were returned.")).toBeTruthy();
-    expect(view.getByText(/Review the research and run result/)).toBeTruthy();
-    expect(view.queryByText("Highest risk")).toBeNull();
-    expect(view.queryByText("Evaluation snapshot")).toBeNull();
-    expect(view.queryByRole("button", { name: "Show every solution" })).toBeNull();
+    expect(view.getByRole("heading", { level: 1, name: "0 ideas" })).toBeTruthy();
   });
 });
 
@@ -287,7 +275,7 @@ describe("SolutionWorkspace idea conversation", () => {
     });
 
     expect(view.queryByRole("button", { name: /Explore idea:/ })).toBeNull();
-    expect(view.getByText("Supplier reliability ledger")).toBeTruthy();
+    expect(view.getByText("Pool observed delivery windows by supplier and part category.")).toBeTruthy();
   });
 });
 

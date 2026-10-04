@@ -235,6 +235,9 @@ export const SolutionViewSchema = z.object({
   rank: z.number().int().positive().nullable().optional(),
   rankReason: z.string().nullable().optional(),
   weakFitReason: z.string().nullable().optional(),
+  /** Ideas from runs before ranking: the label their saved review gave them. Only on detail reads. */
+  reviewStatus: z.enum(["accepted", "duplicate", "variant", "unresolved", "rejected"]).optional(),
+  reviewReason: z.string().optional(),
   id: EntityIdSchema, problemId: EntityIdSchema, problemStatement: z.string(), problemVerdict: ProblemCandidateSchema.shape.verdict,
   factors: z.array(FactorViewSchema),
   mechanism: z.string(), description: z.string(), respectsOffLimits: z.boolean(), respectsOffLimitsWhy: z.string(),

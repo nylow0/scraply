@@ -7,6 +7,10 @@
   import CriteriaFit from "./CriteriaFit.svelte";
   import { verdictLabel } from "../lib/status";
   type ExperimentOutcome = "not-run" | "pass" | "fail" | "inconclusive";
+  // Ideas from runs before ranking show the label their saved review gave them.
+  const REVIEW_LABELS: Record<NonNullable<SolutionView["reviewStatus"]>, string> = {
+    accepted: "Accepted", duplicate: "Duplicate", variant: "Variant", unresolved: "Unresolved", rejected: "Rejected",
+  };
   let { idea, busy, analysisBlocked = false, initiallyOpen = false, inDetailView = false, onSelect, onSave, onOpenSource, onEvidenceFollowUp, onEvidenceReassessment, onPlanExperiment }: {
     idea: SolutionView; busy: boolean;
     analysisBlocked?: boolean;
@@ -135,6 +139,7 @@
     <div class="disclosure-content" id={`option-body-${idea.id}`}>
     <header>
       <div><p class="status">{idea.selected ? "Your selected option" : "Option"} · Problem evidence: {confirmedEvidenceLabel(idea)}</p>
+        {#if detail?.reviewStatus}<p class="status">{REVIEW_LABELS[detail.reviewStatus]}: {detail.reviewReason}</p>{/if}
         {#if inDetailView}<p class="idea-description">{idea.description}</p><h3 class="mechanism-heading">How it works</h3>{/if}
         <p>{idea.mechanism}</p>
         {#if opportunityOrigin}
