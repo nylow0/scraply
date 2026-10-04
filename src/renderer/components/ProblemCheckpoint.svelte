@@ -1,12 +1,13 @@
 <script lang="ts">
   import "./problem-review.css";
   import ResultsToolbar from "./ResultsToolbar.svelte";
-  import CandidateAssessmentControl from "./CandidateAssessmentControl.svelte";
+  import ProblemLeads from "./ProblemLeads.svelte";
   import type { PreviewWorkflowResult } from "../../shared/workflow-contracts";
   import type { ProblemCandidate, RejectedProblemCandidate } from "../../shared/ipc";
   import { DEFAULT_RUN_CONFIG, modelRefKey, type ExplorationPurpose, type ModelOption, type ModelRef, type RunConfig } from "../../shared/schemas";
   import { modelDisplayName, readResearchDefaults } from "../lib/research-defaults";
   import { verdictLabel } from "../lib/status";
+  import { isProblem, problemLeads } from "../lib/problem-leads";
   import { untrack } from "svelte";
   import { SvelteSet } from "svelte/reactivity";
   let { problems, rejectedCandidates, modelOptions, initialConfig, priorDevelopment = false, fixedExplorationPurpose, busy, onCommit, onExport, onOpenSource,
@@ -41,12 +42,8 @@
   function toggle(id:string){if(selected.has(id))selected.delete(id);else selected.add(id)}
   function useAsUserAsserted(statement:string){userProblem=statement;userProblemTextarea?.focus()}
   let query = $state("");
-  let filteredProblems = $derived(problems.filter((problem) => problem.statement.toLowerCase().includes(query.trim().toLowerCase())));
-  let candidateGroups = $derived([
-    { label: "Not assessed", candidates: rejectedCandidates.filter((candidate) => candidate.disposition === "not-assessed") },
-    { label: "Failed evidence requirements", candidates: rejectedCandidates.filter((candidate) => candidate.disposition !== "not-assessed") },
-  ]);
-  let hasUnassessedCandidates = $derived(candidateGroups[0]!.candidates.length > 0);
+  let filteredProblems = $derived(problems.filter((problem) => isProblem(problem) && problem.statement.toLowerCase().includes(query.trim().toLowerCase())));
+  let leads = $derived(problemLeads(problems, rejectedCandidates));
   type EvidenceMetadata = {
     sourceRole?: "firsthand"|"measured"|"vendor"|"recommendation"|"illustration"|"unknown";
     audienceFit?: "intended-buyer"|"adjacent"|"general"|"unknown";
@@ -66,12 +63,6 @@
   function evidenceGap(problem: ProblemCandidate): string | null {
     return (problem as ProblemCandidate & { evidenceGap?: string|null }).evidenceGap ?? null;
   }
-  function verdictText(problem: ProblemCandidate): string {
-    if (problem.verdict !== "confirmed") return verdictLabel(problem.verdict);
-    return problem.factors.some((factor) => (factor as typeof factor & EvidenceMetadata).audienceFit === "intended-buyer")
-      ? "Confirmed with intended-buyer evidence"
-      : "Research marked confirmed; audience fit unassessed";
-  }
 </script>
 <section class="checkpoint problem-review">
   <header><div><h1>Choose problems to develop</h1></div><button class="export" disabled={busy} onclick={onExport}>Export research JSON</button></header>
@@ -79,12 +70,12 @@
   <ResultsToolbar bind:query label="Search problems" count={filteredProblems.length} />
   <div class="problems">
     {#each filteredProblems as problem,index (problem.id)}
-      <article class:picked={selected.has(problem.id)} class:warning={["insufficient-evidence","overstated","attempted-and-failed"].includes(problem.verdict)} style={`--index:${index}`}>
+      <article class:picked={selected.has(problem.id)} style={`--index:${index}`}>
         <details class="problem-disclosure">
           <summary class="disclosure-title" title={problem.statement}><span class="disclosure-label">{problem.statement}</span>{#if selected.has(problem.id)}<span aria-label="Selected for development">✓</span>{/if}</summary>
           <div class="disclosure-content">
             <label class="pick"><input type="checkbox" checked={selected.has(problem.id)} disabled={busy} onchange={()=>toggle(problem.id)} /><span>Develop this problem</span></label>
-            <div class="verdict"><span>{verdictText(problem)}</span>{#if problem.verdict === "confirmed"}<span>Demand not established</span>{/if}{#if problem.singleHarvestModeWarning}<span>One harvest mode</span>{/if}{#if problem.closeRoleEvidence}<span>Evidence from close roles</span>{/if}</div>
+            <div class="verdict">{#if problem.verdict !== "confirmed"}<span>{verdictLabel(problem.verdict)}</span>{/if}{#if problem.verdict === "confirmed"}<span>Demand not established</span>{/if}{#if problem.singleHarvestModeWarning}<span>One harvest mode</span>{/if}{#if problem.closeRoleEvidence}<span>Evidence from close roles</span>{/if}</div>
             <p>{problem.whyItPersists}</p>
             {#if problem.affected || problem.scaleEstimate}<dl>{#if problem.affected}<div><dt>Affected</dt><dd>{problem.affected}</dd></div>{/if}{#if problem.scaleEstimate}<div><dt>Scale</dt><dd class="estimated">{problem.scaleEstimate}</dd></div>{/if}</dl>{/if}
             <p class="reason">{problem.verdictReason}</p>
@@ -93,28 +84,14 @@
           </div>
         </details>
       </article>
-    {:else}{#if query}<p class="empty">No problems match "{query}".</p>{:else}<div class="empty"><h2>{hasUnassessedCandidates ? "No assessed problems to show." : "No candidates passed the evidence requirements."}</h2><p>Review the saved candidates below, state the problem yourself, or edit the scope and run discovery again.</p></div>{/if}{/each}
+    {:else}{#if query}<p class="empty">No problems match "{query}".</p>{:else}<div class="empty"><h2>No problems yet</h2></div>{/if}{/each}
   </div>
-  {#each candidateGroups as group (group.label)}
-  {#if group.candidates.length > 0}
-    <details class="rejected">
-      <summary>{group.label} <span>{group.candidates.length}</span></summary>
-      <div class="rejected-list">
-        {#each group.candidates as candidate, index (candidate.id)}
-          <article class="rejected-item" style={`--index:${problems.length + index}`}>
-            <div class="verdict"><span>{candidate.disposition === "not-assessed" ? "Awaiting evidence assessment" : "Not evidence-backed"}</span></div>
-            <h2>{candidate.statement}</h2>
-            <p>{candidate.reason}</p>
-            {#if candidate.disposition === "not-assessed" && candidate.candidate && previewCandidateAssessment && onAssessCandidate}
-              <CandidateAssessmentControl candidateId={candidate.id} {busy} {previewCandidateAssessment} {onAssessCandidate} />
-            {/if}
-            {#if !fixedExplorationPurpose}<button class="use-rejected" type="button" disabled={busy} onclick={() => useAsUserAsserted(candidate.statement)}>Use as user-asserted problem</button>{/if}
-          </article>
-        {/each}
-      </div>
-    </details>
-  {/if}
-  {/each}
+  <ProblemLeads {leads} {busy} {onOpenSource} {previewCandidateAssessment} {onAssessCandidate}>
+    {#snippet actions(lead)}
+      {#if lead.problem}<label class="pick"><input type="checkbox" checked={selected.has(lead.id)} disabled={busy} onchange={()=>toggle(lead.id)} /><span>Develop this problem</span></label>
+      {:else if !fixedExplorationPurpose}<button class="use-rejected" type="button" disabled={busy} onclick={() => useAsUserAsserted(lead.statement)}>Use as user-asserted problem</button>{/if}
+    {/snippet}
+  </ProblemLeads>
   {#if !fixedExplorationPurpose}<div class="escape"><label><span>Or state the problem yourself.</span><textarea bind:this={userProblemTextarea} bind:value={userProblem} disabled={busy} rows="3" placeholder="Describe the problem in one direct sentence."></textarea></label></div>{/if}
   <section class="development-settings" aria-label="Development settings">
     <label><span>Development model</span><select aria-label="Development model" bind:value={modelKey} onchange={selectModel} disabled={busy||availableModels.length===0}>{#if modelKey&&!selectedModel}<option value={modelKey}>{modelDisplayName(initialModel??DEFAULT_RUN_CONFIG.model)} (unavailable)</option>{/if}{#each availableModels as item (modelRefKey(item))}<option value={modelRefKey(item)}>{modelDisplayName(item)}</option>{/each}</select></label>

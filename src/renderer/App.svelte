@@ -1076,7 +1076,7 @@
           {/key}
         </div>
       {:else if workspace.problemCandidates.length > 0 || workspace.rejectedProblemCandidates.length > 0}
-        <ResearchArchive problems={workspace.problemCandidates} rejectedCandidates={workspace.rejectedProblemCandidates} {busy} onExport={exportResearch} onOpenSource={openExternalUrl}
+        <ResearchArchive problems={workspace.problemCandidates} rejectedCandidates={workspace.rejectedProblemCandidates} extraLeads={workspace.problemLeads} {busy} onExport={exportResearch} onOpenSource={openExternalUrl}
           {...(activeWorkflow ? { previewCandidateAssessment, onAssessCandidate: assessCandidate } : {})} />
       {:else}
         <div class="failed" class:after-summary={Boolean(activeWorkflow)} id="workflow-panel-research" role="tabpanel" aria-label="Research" tabindex="0"><p class="eyebrow">{activeWorkflow ? "Research outcome" : "Research unavailable"}</p><h1>{activeWorkflow?.stopReason ?? "No completed research is ready yet."}</h1><p>{activeWorkflow ? "You can inspect the task record above or start a new run from setup." : "Return to setup and start a research run."}</p>{#if activeRun || activeWorkflow}<div class="zero-idea-actions"><button disabled={busy} onclick={exportResearch}>Export research JSON</button></div>{/if}</div>

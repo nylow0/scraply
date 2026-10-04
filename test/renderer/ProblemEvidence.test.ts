@@ -44,44 +44,61 @@ const rejected = [{
 }];
 
 describe("rejected problem evidence", () => {
-  test("shows unassessed candidates separately with their count and saved details", async () => {
+  test("lists only problems and puts every other finding behind one leads button with one chip each", async () => {
     const candidate = {
       statement: "Operators re-enter already filed data", whyItPersists: "Disconnected state", affected: "Operators",
       scaleEstimate: "Unknown", scaleBasisFactorId: null, factorIds: ["factor-a"],
     };
     const view = render(ResearchArchive, {
-      problems: [], rejectedCandidates: [...rejected, {
-        id: "unassessed", statement: candidate.statement, reason: "Standard depth assesses up to 4 candidates",
+      problems: [problemCandidate("kept", false), problemCandidate("thin", false, "insufficient-evidence")],
+      rejectedCandidates: [...rejected, {
+        id: "unassessed", statement: candidate.statement, reason: "Standard depth assesses up to 0 problem candidates",
         disposition: "not-assessed", candidate,
-      }], busy: false, onExport: vi.fn(), onOpenSource: vi.fn(),
+      }],
+      extraLeads: [{ ...problemCandidate("overstated", false, "overstated"), selected: false }],
+      busy: false, onExport: vi.fn(), onOpenSource: vi.fn(),
     });
-    const group = view.getByText("Not assessed").closest("details") as HTMLElement;
-    expect(within(group).getByText("1")).toBeTruthy();
-    await fireEvent.click(group.querySelector("summary")!);
-    expect(within(group).getByRole("heading", { name: candidate.statement })).toBeTruthy();
-    expect(within(group).getByText(candidate.whyItPersists)).toBeTruthy();
-    expect(within(group).getByText("Awaiting evidence assessment")).toBeTruthy();
-    expect(within(group).queryByText(rejected[0]!.statement)).toBeNull();
-    expect(view.getByText("Some candidates have not been assessed yet.")).toBeTruthy();
+    expect(view.getByText("Problem kept")).toBeTruthy();
+    expect(view.queryByText("Problem thin")).toBeNull();
+    expect(view.queryByText("Confirmed")).toBeNull();
+    expect(view.container.textContent).not.toMatch(/unconfirmed/i);
+
+    await fireEvent.click(view.getByRole("button", { name: "Show 4 more leads" }));
+    const lead = (statement: string) => within(view.getByRole("heading", { name: statement }).closest("article") as HTMLElement);
+    expect(lead("Problem thin").getByText("Needs more evidence")).toBeTruthy();
+    expect(lead(candidate.statement).getByText("Not checked yet")).toBeTruthy();
+    expect(lead(candidate.statement).getByText(candidate.whyItPersists)).toBeTruthy();
+    expect(lead(candidate.statement).queryByText(/assesses up to 0/)).toBeNull();
+    expect(lead(rejected[0]!.statement).getByText("Ruled out")).toBeTruthy();
+    expect(lead(rejected[0]!.statement).getByText(rejected[0]!.reason)).toBeTruthy();
+    expect(lead("Problem overstated").getByText("Ruled out")).toBeTruthy();
+    expect(lead("Problem overstated").queryByRole("checkbox")).toBeNull();
+    await fireEvent.click(view.getByRole("button", { name: "Hide leads" }));
+    expect(view.queryByRole("heading", { name: candidate.statement })).toBeNull();
   });
 
-  test("omits the Not assessed group when it has no candidates", () => {
-    const view = render(ResearchArchive, {
-      problems: [], rejectedCandidates: rejected, busy: false, onExport: vi.fn(), onOpenSource: vi.fn(),
-    });
-    expect(view.queryByText("Not assessed")).toBeNull();
-    expect(view.getByText("Failed evidence requirements")).toBeTruthy();
-  });
-
-  test("Controlled keeps unassessed candidates out of the failed evidence group", () => {
+  test("Controlled keeps an unchecked lead out of the problems list", async () => {
     const view = render(ProblemCheckpoint, {
       problems: [], rejectedCandidates: [{ id: "unassessed", statement: "Candidate awaiting assessment", reason: "Depth limit reached", disposition: "not-assessed" }],
       busy: false, ...checkpointDefaults, onCommit: vi.fn(), onExport: vi.fn(), onOpenSource: vi.fn(),
     });
-    expect(view.getByText("Not assessed")).toBeTruthy();
-    expect(view.getByText("No assessed problems to show.")).toBeTruthy();
-    expect(view.queryByText("Failed evidence requirements")).toBeNull();
-    expect(view.queryByText("Not evidence-backed")).toBeNull();
+    expect(view.getByText("No problems yet")).toBeTruthy();
+    await fireEvent.click(view.getByRole("button", { name: "Show 1 more lead" }));
+    const lead = view.getByRole("heading", { name: "Candidate awaiting assessment" }).closest("article") as HTMLElement;
+    expect(within(lead).getByText("Not checked yet")).toBeTruthy();
+    expect(within(lead).queryByText("Ruled out")).toBeNull();
+  });
+
+  test("Controlled can still develop a checked lead it lists", async () => {
+    const onCommit = vi.fn().mockResolvedValue(undefined);
+    const view = render(ProblemCheckpoint, {
+      problems: [{ ...problemCandidate("thin", false, "insufficient-evidence"), selected: false }], rejectedCandidates: [],
+      busy: false, ...checkpointDefaults, onCommit, onExport: vi.fn(), onOpenSource: vi.fn(),
+    });
+    await fireEvent.click(view.getByRole("button", { name: "Show 1 more lead" }));
+    await fireEvent.click(view.getByRole("checkbox", { name: "Develop this problem" }));
+    await fireEvent.click(view.getByRole("button", { name: "Generate all selected" }));
+    expect(onCommit).toHaveBeenCalledWith(["thin"], null, DEFAULT_RUN_CONFIG.model, "medium", "auto");
   });
 
   test("uses the saved output rule for managed work and the brief for automatic work", async () => {
@@ -172,13 +189,10 @@ describe("rejected problem evidence", () => {
       onExport: vi.fn(),
       onOpenSource: vi.fn(),
     });
-    const sectionLabel = view.getByText("Failed evidence requirements");
-    const details = sectionLabel.closest("details") as HTMLDetailsElement;
-
-    expect(details.open).toBe(false);
-    await fireEvent.click(sectionLabel.closest("summary") as HTMLElement);
+    expect(view.queryByText(rejected[0]!.statement)).toBeNull();
+    await fireEvent.click(view.getByRole("button", { name: "Show 1 more lead" }));
     const rejectedCard = view.getByText(rejected[0]!.statement).closest("article") as HTMLElement;
-    expect(within(rejectedCard).getByText("Not evidence-backed")).toBeTruthy();
+    expect(within(rejectedCard).getByText("Ruled out")).toBeTruthy();
     expect(within(rejectedCard).queryByRole("checkbox")).toBeNull();
 
     await fireEvent.click(within(rejectedCard).getByRole("button", { name: "Use as user-asserted problem" }));
@@ -253,24 +267,6 @@ describe("rejected problem evidence", () => {
     expect((view.getByRole("button", { name: "Generate all selected" }) as HTMLButtonElement).disabled).toBe(true);
     await fireEvent.change(reasoning, { target: { value: "high" } });
     expect((view.getByRole("button", { name: "Generate all selected" }) as HTMLButtonElement).disabled).toBe(false);
-  });
-
-  test("keeps rejected candidates visible in the research archive without presenting them as evidence-backed", async () => {
-    const view = render(ResearchArchive, {
-      problems: [],
-      rejectedCandidates: rejected,
-      busy: false,
-      onExport: vi.fn(),
-      onOpenSource: vi.fn(),
-    });
-
-    await fireEvent.click(view.getByText("Failed evidence requirements").closest("summary") as HTMLElement);
-    expect(view.getByRole("heading", { name: "Research" })).toBeTruthy();
-    expect(view.getByText("These candidates did not pass the evidence requirements.")).toBeTruthy();
-    expect(view.queryByText(/discovery never ran/i)).toBeNull();
-    const rejectedCard = view.getByText(rejected[0]!.statement).closest("article") as HTMLElement;
-    expect(within(rejectedCard).getByText("Not evidence-backed")).toBeTruthy();
-    expect(within(rejectedCard).getByText(rejected[0]!.reason)).toBeTruthy();
   });
 });
 

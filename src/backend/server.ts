@@ -426,6 +426,7 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
       presets: threads.listPresets(),
       problemCandidates: snapshotProblems ?? (activeThreadId ? listProblems(activeThreadId) : []),
       rejectedProblemCandidates: activeThreadId ? listRejectedProblemCandidates(activeThreadId, candidateArchiveRunId(activeSnapshot?.materializationRunId)) : [],
+      problemLeads: activeThreadId && snapshotProblems && activeSnapshot ? listSnapshotLeads(activeThreadId, activeSnapshot) : [],
       solutions: activeThreadId ? listSolutions(activeThreadId, false) : [],
       ...(activeThreadId ? { opportunityFamilies: opportunities.familyView(activeThreadId) } : {}),
       opportunityExploration: activeThreadId ? exploration.find(activeThreadId) : null,
@@ -521,6 +522,16 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
     return db.db.prepare(`SELECT 1 FROM rejected_problem_candidates WHERE discovery_run_id = ?
       UNION ALL SELECT 1 FROM workflow_snapshots WHERE research_run_id = ? AND snapshot_key = 'candidate-archive-complete' LIMIT 1`)
       .get(snapshotRunId, snapshotRunId) ? snapshotRunId : undefined;
+  }
+  // A snapshot copies only the problems it carries forward. The leads its research checked and left
+  // behind (needs more evidence, overstated, ...) stay in the source runs named by the origin map.
+  function listSnapshotLeads(threadId: string, snapshot: { originMap: { problems: Record<string, { originalId: string; originalRunId: string }> } }): ProblemCandidate[] {
+    const origins = Object.values(snapshot.originMap.problems);
+    const carried = new Set(origins.map((origin) => origin.originalId));
+    return [...new Set(origins.map((origin) => origin.originalRunId))]
+      .flatMap((runId) => listProblems(threadId, runId, true))
+      .filter((problem) => !carried.has(problem.id) && problem.verdict !== "confirmed" && problem.verdict !== "user-asserted")
+      .map((problem) => ({ ...problem, selected: false }));
   }
   function listRejectedProblemCandidates(threadId: string, discoveryRunId?: string): RejectedProblemCandidate[] {
     const runId = discoveryRunId ?? latestDiscoveryRun(threadId);

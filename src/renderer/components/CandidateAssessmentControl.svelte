@@ -15,7 +15,7 @@
     errorMessage = null;
     assessing = true;
     try { preview = await previewCandidateAssessment(candidateId); }
-    catch (error) { errorMessage = error instanceof Error ? error.message : "Could not preview this assessment."; }
+    catch (error) { errorMessage = error instanceof Error ? error.message : "Could not preview this check."; }
     finally { assessing = false; }
   }
 
@@ -24,16 +24,16 @@
     assessing = true;
     errorMessage = null;
     try { await onAssessCandidate(preview); preview = null; }
-    catch (error) { errorMessage = error instanceof Error ? error.message : "Could not start this assessment."; }
+    catch (error) { errorMessage = error instanceof Error ? error.message : "Could not start this check."; }
     finally { assessing = false; }
   }
 </script>
 
-<button class="preview" disabled={busy || assessing} onclick={previewAssessment}>{assessing && !preview ? "Previewing…" : "Assess"}</button>
+<button class="preview" disabled={busy || assessing} onclick={previewAssessment}>{assessing && !preview ? "Previewing…" : "Check this lead"}</button>
 {#if preview}
-  <p>This assessment allows up to {preview.minimumWork.modelCalls} model calls and {preview.minimumWork.searches} searches. It uses the saved candidate and its evidence.</p>
+  <p>This check allows up to {preview.minimumWork.modelCalls} model calls and {preview.minimumWork.searches} searches.</p>
   {#each preview.fieldErrors as error, index (index)}<p role="alert">{error.message}</p>{/each}
-  <button class="start" disabled={busy || assessing || preview.fieldErrors.length > 0} onclick={assessCandidate}>{assessing ? "Starting…" : "Assess candidate"}</button>
+  <button class="start" disabled={busy || assessing || preview.fieldErrors.length > 0} onclick={assessCandidate}>{assessing ? "Starting…" : "Start check"}</button>
 {/if}
 {#if errorMessage}<p role="alert">{errorMessage}</p>{/if}
 

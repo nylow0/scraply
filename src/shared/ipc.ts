@@ -322,6 +322,8 @@ export const WorkspaceStateSchema = z.object({
   modelOptions: z.array(ModelOptionSchema),
   modelCatalog: ModelCatalogSchema, presets: z.array(z.object({ name: z.string(), config: RunConfigSchema })),
   problemCandidates: z.array(ProblemCandidateSchema), rejectedProblemCandidates: z.array(RejectedProblemCandidateSchema),
+  /** Checked leads the active snapshot did not carry forward. Read-only: they can never be picked for ideas. */
+  problemLeads: z.array(ProblemCandidateSchema).optional(),
   solutions: z.array(SolutionViewSchema),
   opportunityFamilies: OpportunityFamiliesViewSchema.optional(),
   opportunityExploration: OpportunityExplorationProgressSchema.nullable().optional(),

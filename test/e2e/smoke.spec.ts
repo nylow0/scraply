@@ -54,8 +54,8 @@ test("the renderer restores the problem-selection step after a restart", async (
     await page.getByRole("button", { name: "Start", exact: true }).click();
     await expect(page.getByText("Choose problems to develop")).toBeVisible();
     await expect(page.getByRole("button", { name: "Export research JSON" })).toBeVisible();
-    await page.getByText("Failed evidence requirements").click();
-    await expect(page.getByText("Not evidence-backed")).toBeVisible();
+    await page.getByRole("button", { name: "Show 1 more lead" }).click();
+    await expect(page.getByText("Ruled out")).toBeVisible();
     await page.getByRole("button", { name: "Use as user-asserted problem" }).click();
     const userProblem = page.getByRole("textbox", { name: "Or state the problem yourself." });
     await expect(userProblem).toHaveValue("Repair shops cannot compare every supplier on one marketplace.");

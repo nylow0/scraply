@@ -17,23 +17,23 @@ function fixture(blocked = false) {
   return { ...result, preview, previewCandidateAssessment, onAssessCandidate };
 }
 
-test("Assess shows bounded work before the explicit assessment command", async () => {
+test("Check this lead shows bounded work before the explicit assessment command", async () => {
   const f = fixture();
-  await fireEvent.click(f.getByText("Not assessed"));
-  await fireEvent.click(f.getByRole("button", { name: "Assess" }));
+  await fireEvent.click(f.getByRole("button", { name: "Show 1 more lead" }));
+  await fireEvent.click(f.getByRole("button", { name: "Check this lead" }));
   await waitFor(() => expect(f.getByText(/6 model calls and 3 searches/)).toBeTruthy());
   expect(f.previewCandidateAssessment).toHaveBeenCalledWith("candidate");
   expect(f.onAssessCandidate).not.toHaveBeenCalled();
-  await fireEvent.click(f.getByRole("button", { name: "Assess candidate" }));
+  await fireEvent.click(f.getByRole("button", { name: "Start check" }));
   await waitFor(() => expect(f.onAssessCandidate).toHaveBeenCalledWith(f.preview));
 });
 
 test("an insufficient preview keeps the candidate visible and prevents submission", async () => {
   const f = fixture(true);
-  await fireEvent.click(f.getByText("Not assessed"));
-  await fireEvent.click(f.getByRole("button", { name: "Assess" }));
+  await fireEvent.click(f.getByRole("button", { name: "Show 1 more lead" }));
+  await fireEvent.click(f.getByRole("button", { name: "Check this lead" }));
   await waitFor(() => expect(f.getByRole("alert").textContent).toContain("stay not assessed"));
-  expect((f.getByRole("button", { name: "Assess candidate" }) as HTMLButtonElement).disabled).toBe(true);
+  expect((f.getByRole("button", { name: "Start check" }) as HTMLButtonElement).disabled).toBe(true);
   expect(f.getByRole("heading", { name: "Owners repeat filing" })).toBeTruthy();
   expect(f.onAssessCandidate).not.toHaveBeenCalled();
 });

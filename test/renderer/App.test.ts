@@ -29,17 +29,17 @@ describe("App workspace coordination", () => {
     installApi({ getWorkspace: async () => state, getWorkflow: async () => structuredClone(current), previewWorkflow, commandWorkflow });
     const view = render(App);
     await view.findByRole("heading", { name: "Choose problems to develop" });
-    await fireEvent.click(view.getByText("Not assessed"));
-    await fireEvent.click(view.getByRole("button", { name: "Assess" }));
+    await fireEvent.click(view.getByRole("button", { name: /^Show \d+ more leads?$/ }));
+    await fireEvent.click(view.getByRole("button", { name: "Check this lead" }));
     await view.findByText(/6 model calls and 3 searches/);
     expect(previewWorkflow).toHaveBeenCalledWith({ type: "candidate-assessment", threadId: "alpha", sessionId: "frame-session", expectedRevision: 4, candidateId: "saved-candidate" });
     expect(commandWorkflow).not.toHaveBeenCalled();
     expect(state.rejectedProblemCandidates[0]?.disposition).toBe("not-assessed");
-    await fireEvent.click(view.getByRole("button", { name: "Assess candidate" }));
+    await fireEvent.click(view.getByRole("button", { name: "Start check" }));
     await waitFor(() => expect(commandWorkflow).toHaveBeenCalledWith(expect.objectContaining({ expectedRevision: 4,
       action: { type: "assess-not-assessed", candidateId: "saved-candidate", previewHash: "candidate-preview", capabilityFingerprint: "models", previewExpiresAt: "2099-01-01T00:00:00.000Z" },
     })));
-    await waitFor(() => expect(view.queryByRole("button", { name: "Assess candidate" })).toBeNull());
+    await waitFor(() => expect(view.queryByRole("button", { name: "Start check" })).toBeNull());
   });
 
   test("pauses Controlled research on the frame and approves exactly the user's edits", async () => {
@@ -170,7 +170,7 @@ describe("App workspace coordination", () => {
     const view = render(App);
     const lane = await view.findByRole("listitem", { name: "Bank matching investigator" });
     expect(lane.textContent).toContain("Checking independent sources");
-    expect(within(lane).getByText("Confirmed").nextElementSibling?.textContent).toBe("1");
+    expect(within(lane).getByText("Problems").nextElementSibling?.textContent).toBe("1");
     expect(view.queryByRole("progressbar")).toBeNull();
   });
 
@@ -700,8 +700,8 @@ describe("App workspace coordination", () => {
     const view = render(App);
 
     expect(await view.findByText("Choose problems to develop")).toBeTruthy();
-    expect(view.getByText("Failed evidence requirements")).toBeTruthy();
-    expect(view.getByText("No candidates passed the evidence requirements.")).toBeTruthy();
+    expect(view.getByRole("button", { name: /^Show \d+ more leads?$/ })).toBeTruthy();
+    expect(view.getByText("No problems yet")).toBeTruthy();
   });
 
   test("cancels an in-flight device-code poll from the setup UI", async () => {
