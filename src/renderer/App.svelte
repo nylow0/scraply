@@ -24,7 +24,6 @@
   import OpportunityProgress, { TERMINAL_OPPORTUNITY_STATUSES } from "./components/OpportunityProgress.svelte";
   import WorkflowTabs, { type WorkflowStep } from "./components/WorkflowTabs.svelte";
   import RunUsage from "./components/RunUsage.svelte";
-  import RunTrace from "./components/RunTrace.svelte";
   import VibeProgress from "./components/VibeProgress.svelte";
   import ResearchRevisions from "./components/ResearchRevisions.svelte";
   import FrameReview from "./components/FrameReview.svelte";
@@ -176,7 +175,9 @@
   let researchReady = $derived(Boolean(activeThread && (activeWorkflow || workspace?.problemCandidates.length || workspace?.rejectedProblemCandidates.length || activeThread.status === "discovery-running")));
   let ideasReady = $derived(Boolean(activeThread && (workspace?.solutions.length || activeThread.status === "development-running" || activeThread.status === "solutions-ready"
     || activeWorkflow?.purpose === "known-problem" || activeWorkflow?.state === "finished")));
-  let traceReady = $derived(Boolean(activeRun));
+  // The run panel sits on top while a run is active, and stays there when it failed or needs attention so the
+  // reason and Retry are in view. A run that ended normally keeps only "Run details" under its ideas.
+  let runFinished = $derived(activeWorkflow?.state === "finished" && activeWorkflow.outcome !== "failed" && activeWorkflow.outcome !== "needs-attention");
 
   onMount(() => {
     const viewport = window.matchMedia?.(COMPACT_NAVIGATION_QUERY);
@@ -211,10 +212,8 @@
       if (event.type === "workflow-progress") {
         if (event.threadId === workspace?.activeThreadId) {
           if (event.sessionId === workspace?.activeWorkflow?.sessionId) {
-            if (activeStep !== "trace") {
-              if (event.state === "finished" && workspace.activeWorkflow.mode === "vibe") activeStep = "ideas";
-              else if (event.state === "waiting-for-review") activeStep = "research";
-            }
+            if (event.state === "finished" && workspace.activeWorkflow.mode === "vibe") activeStep = "ideas";
+            else if (event.state === "waiting-for-review") activeStep = "research";
           }
           if (conversationIdeaId && event.sessionId !== workspace?.activeWorkflow?.sessionId) void refreshConversation(conversationIdeaId);
         }
@@ -397,7 +396,6 @@
   function openStep(step: WorkflowStep) {
     if (step === "research" && !researchReady) return;
     if (step === "ideas" && !ideasReady) return;
-    if (step === "trace" && !traceReady) return;
     activeStep = step;
     reviewSelection = false;
   }
@@ -952,6 +950,18 @@
   </Sidebar>
   </div>
 
+  {#snippet runPanel()}
+    {#if workflowDetail && activeWorkflow && workflowDetail.summary.sessionId === activeWorkflow.sessionId}
+      <VibeProgress detail={workflowDetail} {investigators} {busy}
+        onPause={() => commandWorkflow({ type: "pause" })}
+        onResume={() => commandWorkflow({ type: "resume" })}
+        onStop={() => commandWorkflow({ type: "stop" })}
+        onRetryTask={(taskId, expectedTerminalAttemptId, acknowledgeUnknownCompletion) => commandWorkflow({ type: "retry-task", taskId, expectedTerminalAttemptId, acknowledgeUnknownCompletion })}
+        onReassessProblems={(taskId) => commandWorkflow({ type: "reassess-problems", taskId })}
+        onLoadMoreTasks={loadMoreWorkflowTasks}
+        onPreviewExtension={previewWorkflowExtension} onApplyExtension={applyWorkflowExtension} />
+    {/if}
+  {/snippet}
   <main class="main-content" class:setup-active={activeStep === "setup" && showSetupForm} inert={settingsOpen}>
     {#if workspace && activeThread}
       <header class="workspace-header">
@@ -964,32 +974,22 @@
         setupReady={true}
         {researchReady}
         {ideasReady}
-        {traceReady}
         onSelect={openStep}
       />
       </header>
-      {#if !activeWorkflow && activeStep !== "trace"}<RunUsage usage={activeRun?.usage} />{/if}
-      {#if activeStep !== "trace" && workflowDetail && activeWorkflow && workflowDetail.summary.sessionId === activeWorkflow.sessionId && !(activeStep === "ideas" && ideaFocused && activeWorkflow.state === "finished")}
-        <div class="workflow-progress-wrap"><VibeProgress detail={workflowDetail} {investigators} {busy}
-          onPause={() => commandWorkflow({ type: "pause" })}
-          onResume={() => commandWorkflow({ type: "resume" })}
-          onStop={() => commandWorkflow({ type: "stop" })}
-          onRetryTask={(taskId, expectedTerminalAttemptId, acknowledgeUnknownCompletion) => commandWorkflow({ type: "retry-task", taskId, expectedTerminalAttemptId, acknowledgeUnknownCompletion })}
-          onReassessProblems={(taskId) => commandWorkflow({ type: "reassess-problems", taskId })}
-          onLoadMoreTasks={loadMoreWorkflowTasks}
-          onPreviewExtension={previewWorkflowExtension} onApplyExtension={applyWorkflowExtension} /></div>
-      {/if}
-      {#if activeStep !== "trace" && !activeWorkflow && workspace.opportunityExploration}
+      {#if !activeWorkflow}<RunUsage usage={activeRun?.usage} />{/if}
+      {#if !runFinished}<div class="workflow-progress-wrap">{@render runPanel()}</div>{/if}
+      {#if !activeWorkflow && workspace.opportunityExploration}
         <!-- Like the workflow summary above, a finished exploration steps aside while one idea is open. -->
         {#if !(activeStep === "ideas" && ideaFocused && TERMINAL_OPPORTUNITY_STATUSES.includes(workspace.opportunityExploration.status))}
           <div class="workflow-progress-wrap"><OpportunityProgress progress={workspace.opportunityExploration} {busy} onPause={pauseOpportunities} onResume={startOrResumeOpportunities} onPreviewExtension={previewOpportunityExtension} onApplyExtension={applyOpportunityExtension} /></div>
         {/if}
-      {:else if activeStep !== "trace" && !activeWorkflow && workspace.runConfig?.opportunityExploration && workspace.solutions.length > 0}
+      {:else if !activeWorkflow && workspace.runConfig?.opportunityExploration && workspace.solutions.length > 0}
         <div class="notice"><button disabled={busy || workspace.opportunityReviewStatus?.running} onclick={startOrResumeOpportunities}>Continue toward {workspace.runConfig.opportunityExploration.targetFamilies} distinct hypotheses</button></div>
       {/if}
       {#if workspace.opportunityReviewStatus?.kind === "review" && workspace.opportunityReviewStatus.running}<div class="notice" role="status">Reviewing saved business ideas. Completed comparisons are being saved.</div>{/if}
       {#if workspace.opportunityReviewStatus?.kind === "experiment" && workspace.opportunityReviewStatus.running}<div class="notice" role="status">Planning and reviewing a focused experiment. No customer test is being run.</div>{/if}
-      {#if activeStep !== "trace" && activeThread.status === "failed" && !activeWorkflow}
+      {#if activeThread.status === "failed" && !activeWorkflow}
         <div class="run-stopped" role="status">
           <div><strong>Run stopped</strong><span>{activeRun?.resumeBlockedReason ?? activeRun?.completionReason ?? activeRun?.lastActivity ?? "The last run failed or was cancelled. Review the setup, then retry explicitly."}</span></div>
           <div class="run-stopped-actions">
@@ -1010,12 +1010,6 @@
       <div class="skeleton" role="status" aria-label="Loading workspace"><i></i><i></i><i></i></div>
     {:else if !workspace || !activeThread}
       <div class="empty-workspace"><button disabled={busy} onclick={createThread}>New research</button></div>
-    {:else if activeStep === "trace"}
-      <div id="workflow-panel-trace" role="tabpanel" aria-labelledby="workflow-tab-trace">
-        {#if activeRun}
-          <RunTrace runId={activeRun.runId} onOpenSource={openExternalUrl} />
-        {/if}
-      </div>
     {:else if activeStep === "setup"}
       {#if showSetupForm}
         <div id="workflow-panel-setup" role="tabpanel" aria-label="Research setup">
@@ -1113,7 +1107,7 @@
           </section>
         {/if}
         {#key workspace.activeThreadId}
-        <SolutionWorkspace solutions={workspace.solutions} {busy} opportunities={workspace.opportunityFamilies} opportunityReviewRunning={workspace.opportunityReviewStatus?.running} modelOptions={workspace.modelOptions} initialConfig={workspace.runConfig} activeResearchSnapshotId={appliedResearchSnapshotId} onFocusChange={(focused) => ideaFocused = focused} onReviewOpportunities={reviewSavedOpportunities} onEditMembership={editOpportunityMembership} onPlanExperiment={requestFocusedExperiment} workflowVersion={activeRun?.workflowVersion} onSelect={selectOption} onSave={saveDecision} onExport={exportIdeas} onOpenSource={openExternalUrl} onEvidenceFollowUp={requestEvidenceFollowUp} onEvidenceReassessment={requestEvidenceReassessment} onReview={() => { activeStep = "research"; reviewSelection = true; }} {conversation} {conversationLoading} {conversationError} onOpenConversation={openConversation} onCloseConversation={closeConversation} onSubmitIdeaTurn={submitIdeaTurn} onSelectConversationVersion={selectConversationVersion} onLoadVersionDetail={window.scraply.getIdeaDetail} onLoadMoreConversation={(cursor) => refreshConversation(conversationIdeaId ?? "", cursor)} />
+        <SolutionWorkspace footer={runFinished ? runPanel : undefined} solutions={workspace.solutions} {busy} opportunities={workspace.opportunityFamilies} opportunityReviewRunning={workspace.opportunityReviewStatus?.running} modelOptions={workspace.modelOptions} initialConfig={workspace.runConfig} activeResearchSnapshotId={appliedResearchSnapshotId} onFocusChange={(focused) => ideaFocused = focused} onReviewOpportunities={reviewSavedOpportunities} onEditMembership={editOpportunityMembership} onPlanExperiment={requestFocusedExperiment} workflowVersion={activeRun?.workflowVersion} onSelect={selectOption} onSave={saveDecision} onExport={exportIdeas} onOpenSource={openExternalUrl} onEvidenceFollowUp={requestEvidenceFollowUp} onEvidenceReassessment={requestEvidenceReassessment} onReview={() => { activeStep = "research"; reviewSelection = true; }} {conversation} {conversationLoading} {conversationError} onOpenConversation={openConversation} onCloseConversation={closeConversation} onSubmitIdeaTurn={submitIdeaTurn} onSelectConversationVersion={selectConversationVersion} onLoadVersionDetail={window.scraply.getIdeaDetail} onLoadMoreConversation={(cursor) => refreshConversation(conversationIdeaId ?? "", cursor)} />
         {/key}
       </div>
     {:else if activeWorkflow}
@@ -1122,6 +1116,7 @@
         <h1>{activeWorkflow.stopReason ?? (activeWorkflow.state === "finished" ? "No qualifying ideas were produced." : "Ideas are being developed.")}</h1>
         <p>{activeWorkflow.state === "finished" ? "Research and task details remain available in the Research tab." : "Progress and remaining limits are shown above."}</p>
         {#if activeWorkflow.state === "finished"}<div class="zero-idea-actions"><button disabled={busy} onclick={() => exportIdeas("markdown")}>Export result</button><button disabled={busy} onclick={() => exportIdeas("json")}>Export JSON</button></div>{/if}
+        {#if runFinished}{@render runPanel()}{/if}
       </div>
     {:else if activeThread.status === "failed"}
       <div class="failed" id="workflow-panel-ideas" role="tabpanel" aria-label="Solutions" tabindex="0"><p class="eyebrow">No solutions</p><h1>The run stopped before any solutions were generated.</h1><p>{activeRun?.canResume ? "Resume the saved attempt or edit the setup." : "Edit the setup to start a new run."}</p></div>

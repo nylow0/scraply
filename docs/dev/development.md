@@ -89,6 +89,16 @@ Routine development does not create installers or rebuild Rust. Native preparati
 
 Remove a worktree once its pull request merges, because each one carries its own `node_modules` and build output. Confirm `git status` is clean, then run `git worktree remove <path>`. Git requires `--force` for worktrees that contain the runtime submodule.
 
+## Run trace
+
+The app has no Trace screen. To see what a run did, write its trace to a file:
+
+```
+bun scripts/trace.ts <session ID>
+```
+
+The session ID is in **Run details**, at the bottom of Solutions for a finished run and in the progress panel while it runs. The script writes `build/trace/<session ID>.json` with the lead funnel, model calls and searches per stage, timings, interruptions, warnings, and the details of every step. It opens the database read-only and contacts no provider. By default it reads the installed app's data in `%APPDATA%scraplyscraplyscraply.db`; pass `--db <path>` for a dev profile or an evaluation copy, and `--out <directory>` to write elsewhere. A run ID works in place of a session ID for runs that have no session.
+
 ## Provider setup
 
 Users add Exa and Perplexity API keys in the app: the welcome prompt asks after OpenAI sign-in, and **Settings → Accounts** adds, replaces, or removes them. Main validates a pasted key with its provider through the backend's `/search-keys/preflight` route before storing it with Windows-backed encryption. A rejected key changes nothing. The renderer only ever receives a key's masked tail (`maskedKey` in validation state). Changes are refused while research runs, because applying a key rebuilds the research engine and would cancel the run.

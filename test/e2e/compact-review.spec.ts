@@ -55,7 +55,7 @@ test("desktop navigation and compact idea review preserve dismissed ideas", asyn
       }
     }
     await page.getByRole("button", { name: "Open idea: Pool observed delivery windows by supplier and part category." }).click();
-    await expect(page.locator(".idea-detail").getByText("Pool observed delivery windows by supplier and part category.", { exact: true })).toBeVisible();
+    await expect(page.locator(".idea-detail").getByRole("heading", { level: 1, name: "Pool observed delivery windows by supplier and part category.", exact: true })).toBeVisible();
     await expect(page.getByText("Highest risk:", { exact: false })).not.toBeVisible();
     await page.screenshot({ animations: "disabled", path: testInfo.outputPath("idea-first.png") });
     await page.getByRole("button", { name: "Back to ideas" }).click();

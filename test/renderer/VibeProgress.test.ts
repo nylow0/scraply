@@ -104,14 +104,16 @@ describe("VibeProgress", () => {
     expect(onStop).toHaveBeenCalledOnce();
     await view.rerender({ detail: { ...state, summary: { ...state.summary, ideaTargetReady: true,
       selectedProblemIds: ["problem-1", "problem-2"], counts: { ...state.summary.counts, requested: 6, accepted: 0, missing: 6 } } } });
-    expect(view.getByRole("progressbar").getAttribute("aria-valuetext")).toBe("0 of 6 distinct ideas accepted");
+    expect(view.getByRole("heading", { name: "Writing and ranking ideas" })).toBeTruthy();
+    expect(view.queryByRole("progressbar")).toBeNull();
+    expect(view.queryByText(/distinct ideas/)).toBeNull();
   });
 
   test("failed discovery keeps its error without presenting an unallocated idea target", () => {
     const state = detail({ ideaTargetReady: false, state: "finished", outcome: "failed",
       stopReason: "Search provider is unavailable.", finishedAt: "2026-09-23T12:01:00.000Z" });
     const view = render(VibeProgress, { detail: state, busy: false, onPause: vi.fn(async () => {}), onStop: vi.fn(async () => {}) });
-    expect(view.getByRole("heading", { name: "Research stopped" })).toBeTruthy();
+    expect(view.queryByRole("heading", { level: 2 })).toBeNull();
     expect(view.getByRole("status").textContent).toContain("Search provider is unavailable.");
     expect(view.queryByText(/distinct ideas/)).toBeNull();
     expect(view.queryByRole("button", { name: "Pause" })).toBeNull();
@@ -123,22 +125,20 @@ describe("VibeProgress", () => {
     const view = render(VibeProgress, { detail: state, busy: false,
       onPause: vi.fn(async () => {}), onStop: vi.fn(async () => {}) });
     expect(view.getByLabelText("Work completed")).toBeTruthy();
-    expect(view.getByText("Model calls used")).toBeTruthy();
+    expect(view.getByText("Model calls").nextElementSibling?.textContent).toBe("5");
     expect(view.queryByText("Model calls left")).toBeNull();
     expect(view.queryByText("Time left")).toBeNull();
     expect(view.queryByText("Extend work allowance")).toBeNull();
   });
 
-  test("shows accepted work, requested and reviewed counts, remaining allowance, and current task", async () => {
+  test("shows the current stage, remaining allowance, and current task without idea counters", async () => {
     const onPause = vi.fn(async () => {});
     const onStop = vi.fn(async () => {});
     const view = render(VibeProgress, { detail: detail(), busy: false, onPause, onStop });
 
     expect(view.getByText("Checking alternatives")).toBeTruthy();
-    expect(view.getByRole("progressbar").getAttribute("aria-valuetext")).toBe("14 of 20 distinct ideas accepted");
-    expect(view.getByText("Validated").nextElementSibling?.textContent).toBe("15");
-    expect(view.getByText("Duplicates").nextElementSibling?.textContent).toBe("2");
-    expect(view.getByText("Missing").nextElementSibling?.textContent).toBe("6");
+    expect(view.queryByRole("progressbar")).toBeNull();
+    for (const gone of ["Requested", "Validated", "Duplicates", "Missing"]) expect(view.queryByText(gone)).toBeNull();
     expect(view.getByText("Model calls left").nextElementSibling?.textContent).toContain("3 of 10");
     expect(view.getByText("Searches left").nextElementSibling?.textContent).toContain("2 of 4");
     expect(view.getByText("Time left").nextElementSibling?.textContent).toBe("2 min");
@@ -170,16 +170,26 @@ describe("VibeProgress", () => {
     expect(view.getByText("buyer-source")).toBeTruthy();
   });
 
-  test("describes a completed research follow-up without an idea target", () => {
-    const view = render(VibeProgress, { detail: detail({
-      purpose: "research-followup", state: "finished", outcome: "partial",
-      activeSnapshotId: "snapshot-new", researchApplied: true, currentStage: null,
-      stopReason: "Selected research was applied to a new evidence snapshot.",
-      finishedAt: "2026-09-23T12:03:00.000Z",
-    }), busy: false, onPause: vi.fn(async () => {}), onStop: vi.fn(async () => {}) });
-    expect(view.getByText("Research follow-up")).toBeTruthy();
-    expect(view.getByRole("status").textContent).toContain("Research updated");
-    expect(view.queryByRole("progressbar", { name: /Accepted/ })).toBeNull();
+  test("a finished run keeps only Run details: calls, searches, time taken and a session ID to copy", async () => {
+    const writeText = vi.fn(async () => {});
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
+    const state = detail({ state: "finished", outcome: "partial", currentStage: null,
+      stopReason: "Short by 2 distinct ideas.", finishedAt: "2026-09-23T12:33:00.000Z" });
+    state.summary.limits.enforced = false;
+    const view = render(VibeProgress, { detail: state, busy: false, onPause: vi.fn(async () => {}), onStop: vi.fn(async () => {}),
+      investigators: [{ areaId: "bank", areaName: "Bank matching", state: "succeeded", currentStep: null, confirmedCount: 1, insufficientCount: 0, droppedCount: 0 }] });
+    expect(view.queryByRole("heading", { level: 2 })).toBeNull();
+    expect(view.queryByText(/Run result|distinct ideas|Partial result/)).toBeNull();
+    expect(view.queryByRole("region", { name: "Area investigators" })).toBeNull();
+    const details = view.container.querySelector("details.run-details") as HTMLDetailsElement;
+    expect(details.open).toBe(false);
+    expect(view.getByText("Model calls").nextElementSibling?.textContent).toBe("5");
+    expect(view.getByText("Searches").nextElementSibling?.textContent).toBe("2");
+    expect(view.getByText("Time taken").nextElementSibling?.textContent).toBe("33 min");
+    expect(view.getByText("session-1")).toBeTruthy();
+    await fireEvent.click(view.getByRole("button", { name: "Copy" }));
+    expect(writeText).toHaveBeenCalledWith("session-1");
+    await waitFor(() => expect(view.getByRole("button", { name: "Copied" })).toBeTruthy());
   });
 
   test("omits inherited idea shortfall and review counts while a research follow-up runs", () => {
@@ -202,17 +212,6 @@ describe("VibeProgress", () => {
     expect(view.getByRole("status").textContent).toContain("cancelled before applying");
     expect(view.queryByText("Research updated")).toBeNull();
     expect(view.queryByRole("progressbar", { name: /Accepted/ })).toBeNull();
-  });
-
-  test("does not call partial follow-up work an applied update", () => {
-    const view = render(VibeProgress, { detail: detail({
-      purpose: "research-followup", state: "finished", outcome: "partial",
-      activeSnapshotId: "snapshot-inherited", currentStage: null,
-      stopReason: "The request ended before new research was selected.",
-      finishedAt: "2026-09-23T12:03:00.000Z",
-    }), busy: false, onPause: vi.fn(async () => {}), onStop: vi.fn(async () => {}) });
-    expect(view.getByRole("status").textContent).toContain("Partial result.");
-    expect(view.queryByText("Research updated")).toBeNull();
   });
 
   test("paused runs offer Resume while pending stop and busy states cannot dispatch another action", async () => {
@@ -285,7 +284,6 @@ describe("VibeProgress", () => {
     const counts = { ...detail().summary.counts, accepted: 19, existing: 5, addedBySession: 14, total: 19, missing: 1 };
     const view = render(VibeProgress, { detail: detail({ counts, targetKind: "project" }), busy: false,
       onPause: vi.fn(async () => {}), onStop: vi.fn(async () => {}), onPreviewExtension, onApplyExtension });
-    expect(view.getByRole("progressbar").getAttribute("aria-valuetext")).toBe("19 of 20 distinct business families accepted");
     expect(view.getByText("Existing families").nextElementSibling?.textContent).toBe("5");
     expect(view.getByText("Added this run").nextElementSibling?.textContent).toBe("14");
     expect(view.getByText("Total families").nextElementSibling?.textContent).toBe("19");

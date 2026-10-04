@@ -98,7 +98,7 @@ test("the renderer restores the problem-selection step after a restart", async (
     await expect(page.getByText(/independently confirmed outcomes/)).toHaveCount(0);
     await expect(page.getByText("Highest risk: likely · project ends")).not.toBeVisible();
     await page.getByRole("button", { name: "Open idea: Pool observed delivery windows by supplier and part category." }).click();
-    await expect(page.locator(".idea-detail").getByText("Pool observed delivery windows by supplier and part category.")).toBeVisible();
+    await expect(page.locator(".idea-detail").getByRole("heading", { level: 1, name: "Pool observed delivery windows by supplier and part category." })).toBeVisible();
     await expect(page.getByText("Highest risk: likely · project ends")).not.toBeVisible();
     await page.getByText("Review all risks and responses").click();
     await expect(page.getByText("Volume is too sparse")).toBeVisible();

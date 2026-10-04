@@ -204,7 +204,7 @@
       <OpportunityFamilies {opportunities} {modelOptions} initialConfig={initialConfig ?? null} busy={busy || analysisBlocked || opportunityReviewRunning} onReview={onReviewOpportunities} onEdit={onEditMembership} />
     </details>
   {/if}
-  {@render footer?.()}
+  {#if footer}<div class="run-footer">{@render footer()}</div>{/if}
   <div class="export-links">
     <button class="link-button" disabled={busy} onclick={() => onExport("markdown")}>Export ideas</button>
     <button class="link-button" disabled={busy} onclick={() => onExport("json")}>Export JSON</button>
@@ -262,6 +262,7 @@
   .grouping > summary { display:flex;align-items:center;gap:12px;padding:13px 16px;color:var(--text);font-size:14px;font-weight:600;cursor:pointer; }
   .grouping > summary span { margin-left:auto;color:var(--muted);font-size:12px;font-weight:400;text-align:right; }
   .grouping :global(.opportunity-families) { border:0; }
+  .run-footer { margin-top:12px; }
   .export-links { display:flex;flex-wrap:wrap;gap:6px 18px;margin-top:28px; }
   .link-button { padding:0;border:0;background:transparent;color:var(--subtle);font-size:12px; }
   .link-button:hover:not(:disabled) { color:var(--text);text-decoration:underline; }

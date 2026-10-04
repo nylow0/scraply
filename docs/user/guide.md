@@ -1,8 +1,8 @@
 # Use Scraply
 
-Use **Setup** for the brief and research settings, **Research** for evidence, **Ideas** for the resulting options, and **Trace** to inspect the saved steps behind a run. Work is saved locally. Reopening a project reads its saved state; it does not start another model or search request.
+Use **Setup** for the brief and research settings, **Research** for evidence, and **Solutions** for the resulting ideas. Work is saved locally. Reopening a project reads its saved state; it does not start another model or search request.
 
-Open **Trace** after starting a run to see the candidate outcomes, evidence and source mix, searches, model calls, and interruptions. Expand a step to read its saved quotes, decisions, and available reasoning summary. The view updates while the run is active, and **Export trace JSON** includes the details of every step. Older runs can have missing query links or derived candidate outcomes, which the trace labels.
+While a run is active, its progress and the Pause and Stop controls sit above every tab. When it finishes, **Run details** at the bottom of Solutions keeps its model calls, searches, time taken, saved tasks, and the session ID. The step-by-step trace of a run is a file for debugging, not a screen: copy the session ID from Run details and give it to an agent, which can write the trace with `bun scripts/trace.ts <session ID>` from a Scraply checkout.
 
 ## Start a project
 
@@ -38,13 +38,13 @@ For a known problem, you can enter it at the checkpoint and proceed without pret
 
 Vibe develops every evidence-qualified problem and records why it chose each one. Problems describing the same workflow, or resting on exactly the same sources, are developed once. To develop fewer, set **Problems to develop** under Limits before Start; the strongest fit to the brief and buyer goes first. It can return research with zero ideas if no problem qualifies. It does not turn rejected evidence into a supported claim.
 
-During discovery, the progress view shows recent research actions, including search queries, returned source counts, and evidence processing. This activity is saved and returns when you reopen the research. The idea counter appears once generation assignments exist; for per-problem research, its target comes from the selected problems and solutions per problem. Run details contain usage and individual tasks. Pause and Stop remain directly accessible while research runs. Closing the app or putting the machine to sleep does not promise background progress. Reopening reads the saved result and offers continuation only when the remaining work is safe to resume.
+During discovery, the progress view shows recent research actions, including search queries, returned source counts, and evidence processing. This activity is saved and returns when you reopen the research. Run details contain usage and individual tasks. Pause and Stop remain directly accessible while research runs. Closing the app or putting the machine to sleep does not promise background progress. Reopening reads the saved result and offers continuation only when the remaining work is safe to resume.
 
 New research scans the included areas, then investigates the strongest areas in more depth. Each investigator shows its current step and confirmed, insufficient, and dropped findings. Standard investigates three areas and Deep four. They search for more evidence only for a finding that is one independent source short of confirmation. The run can finish with a partial set when further checks do not establish enough evidence.
 
 A settled Vibe run opens the idea collection. It may contain the target, a useful partial set, or zero qualifying ideas. A provider or authentication failure should end with the work saved and a reason you can act on. A request with an unknown completion is conservatively counted. If the connection drops during a model call, Scraply waits a few seconds, starts that call over, and records the lost attempt in the run trace. It tries up to twice. If the call drops a third time during research, only that research area stops; its checked problems are kept and the run continues.
 
-If it drops three times while ideas are generated or reviewed, the run stops: open **Run details**, then **Task details**. Review the warning before choosing **Retry task**. The retry starts a separate attempt at that task and can incur additional provider usage; the original run remains saved. New depth-guided research reads evidence in smaller batches, with batch progress in the activity list.
+If it drops three times while ideas are written or ranked, the run stops: open **Run details** at the bottom of Solutions, then **Task details**. Review the warning before choosing **Retry task**. The retry starts a separate attempt at that task and can incur additional provider usage; the original run remains saved. New depth-guided research reads evidence in smaller batches, with batch progress in the activity list.
 
 After a Vibe run finishes, open **Research** to ask a separate question or revisit a finding. This starts a new, explicitly limited research follow-up; it does not reopen the finished Vibe run or change its recorded idea count. Compare the result before applying it to a new evidence snapshot. The original ideas stay saved.
 

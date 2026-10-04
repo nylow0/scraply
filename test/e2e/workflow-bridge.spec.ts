@@ -204,10 +204,12 @@ test(`installed ${mode === "vibe" ? "Vibe" : "Controlled"} workflow previews, ru
     await expect(progress.getByRole("button", { name: "Resume" })).toBeVisible();
     await expect(progress.getByText("Paused after buyer evidence checkpoint")).toBeVisible();
     await progress.getByRole("button", { name: "Resume" }).click();
-    await expect(progress).toContainText(mode === "vibe" ? "Target reached" : "No qualifying ideas");
-    await expect(progress).toContainText(mode === "vibe"
-      ? "The approval status board passed review and was saved."
-      : "The research found no qualifying buyer problem.");
+    // A finished run leaves the top of the page: Vibe opens its ideas, Controlled keeps the reason on Solutions.
+    if (mode === "vibe") await expect(page.getByRole("button", { name: "Open idea: Track repair quote approvals in one shared view.", exact: true })).toBeVisible();
+    else {
+      await page.getByRole("tab", { name: "Solutions" }).click();
+      await expect(page.getByRole("tabpanel", { name: "Solutions" })).toContainText("The research found no qualifying buyer problem.");
+    }
 
     // Reopen the installed app using the same profile and saved fixture state.
     await app.close();
@@ -217,10 +219,8 @@ test(`installed ${mode === "vibe" ? "Vibe" : "Controlled"} workflow previews, ru
       SCRAPLY_E2E_BACKEND_TOKEN: "synthetic-workflow-fixture",
     });
     const reopenedPage = await reopened.firstWindow();
-    const restoredProgress = reopenedPage.getByLabel(mode === "vibe" ? "Vibe run progress" : "Controlled run progress");
-    await expect(restoredProgress).toBeVisible();
-    await expect(restoredProgress).toContainText(mode === "vibe" ? "Target reached" : "No qualifying ideas");
     if (mode === "vibe") {
+      await expect(reopenedPage.getByLabel("Vibe run progress").getByText("Run details")).toBeVisible();
       await expect(reopenedPage.getByRole("tabpanel", { name: "Solutions" })).toBeVisible();
       await expect(reopenedPage.getByRole("button", { name: "Open idea: Track repair quote approvals in one shared view.", exact: true })).toBeVisible();
       await reopenedPage.setViewportSize({ width: 1600, height: 1200 });
@@ -229,7 +229,7 @@ test(`installed ${mode === "vibe" ? "Vibe" : "Controlled"} workflow previews, ru
       await savedIdea.scrollIntoViewIfNeeded();
       await reopenedPage.screenshot({ path: testInfo.outputPath("vibe-saved-idea.png"), animations: "disabled" });
       await savedIdea.click();
-      await expect(reopenedPage.getByRole("heading", { name: "Approval status board", exact: true, level: 1 })).toBeVisible();
+      await expect(reopenedPage.getByRole("heading", { name: "Track repair quote approvals in one shared view.", exact: true, level: 1 })).toBeVisible();
       await expect(reopenedPage.getByText("Problem and fit")).toBeVisible();
     } else await reopenedPage.screenshot({ path: testInfo.outputPath(`${mode}-workflow-finished.png`), animations: "disabled" });
 

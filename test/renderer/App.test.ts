@@ -145,8 +145,7 @@ describe("App workspace coordination", () => {
     });
     installApi({ getWorkspace: async () => state, getWorkflow: async () => structuredClone(current), commandWorkflow });
     const view = render(App);
-    await view.findByRole("heading", { name: "Research stopped" });
-    await fireEvent.click(view.getByRole("tab", { name: "Setup" }));
+    await fireEvent.click(await view.findByRole("tab", { name: "Setup" }));
     await fireEvent.click(view.getByRole("button", { name: "Edit approved frame" }));
     await view.findByLabelText("Goal");
     await fireEvent.input(view.getByLabelText("Goal"), { target: { value: "A goal for future runs." } });
@@ -195,7 +194,7 @@ describe("App workspace coordination", () => {
         kind: "discovery", scopeKey: "initial-research", state: "unknown", terminalAttemptId: "attempt",
         createdAt: summary.startedAt, finishedAt: summary.finishedAt }], nextCursor: null }) });
     const view = render(App);
-    await view.findByRole("heading", { name: "Research stopped" });
+    expect(await view.findByText("Response stream interrupted")).toBeTruthy();
     await fireEvent.click(view.getByText("Run details"));
     await fireEvent.click(view.getByText("Task details"));
     await fireEvent.click(view.getByRole("checkbox", { name: /may have completed/ }));

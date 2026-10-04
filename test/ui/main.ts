@@ -7,7 +7,6 @@ import { AppSettingsSchema } from "../../src/shared/app-settings";
 import { DEFAULT_RUN_CONFIG, type Thread } from "../../src/shared/schemas";
 import { IPC_CHANNELS, RemoveSearchKeySchema, SaveScopeSchema, SaveRunConfigSchema, SaveSearchKeySchema, type WorkspaceState } from "../../src/shared/ipc";
 import { CommandWorkflowRequestSchema, PreviewWorkflowRequestSchema, StartWorkflowRequestSchema, type WorkflowDetail, type WorkflowAction, type WorkflowLaunchContract } from "../../src/shared/workflow-contracts";
-import { GetRunTraceRequestSchema, GetRunTraceStepRequestSchema, type RunTrace, type RunTraceStepDetail } from "../../src/shared/run-trace";
 import { ResearchFrameSchema } from "../../src/shared/research-frame";
 import { framedDiscoveryProjection } from "../../src/shared/discovery-projection";
 import { candidateAssessmentProjection } from "../../src/shared/evidence-investigators";
@@ -168,89 +167,12 @@ if (frameWorkflow) {
 }
 
 let progressReads = 0;
-const traceFixture: RunTrace | null = params.has("trace") && state.activeThreadId ? {
-  runId: "fixture-trace", threadId: state.activeThreadId, sessionId: guidedProgress?.summary.sessionId ?? null,
-  status: params.get("trace") === "live" ? "running" : "completed", purpose: "discovery", startedAt: now,
-  finishedAt: params.get("trace") === "live" ? null : "2026-09-23T12:08:00.000Z", live: params.get("trace") === "live",
-  warnings: ["Older searches are linked from their saved query and parameters. Missing usage remains unknown."], investigators: [],
-  metrics: {
-    factors: 8, totalSources: 5, evidenceMix: { firsthand: 2, vendor: 6 }, audienceFit: { "intended-buyer": 2, general: 6 },
-    sourceMix: { forum: 2, vendor: 3 }, qualifyingObservations: 2, qualifyingPerAssessedCandidate: 1,
-    candidateFunnel: { total: 5, assessed: 2, confirmed: 1, insufficient: 1, dropped: 1, notAssessed: 2, userAsserted: 0 },
-    confirmationRate: 0.5, coverage: { kind: "phases", groups: [{ id: "domain", factors: 4, problems: 2, confirmed: 0 }, { id: "audience", factors: 4, problems: 3, confirmed: 1 }] },
-    modelCalls: 4, searches: 1, wallTimeMs: 480_000, modelTimeMs: 581_000, interruptionTimeMs: 45_000, interruptions: 1, ideas: 3, acceptedIdeas: 1, acceptedIdeasFailingMustHave: 0,
-  },
-  steps: [
-    { id: "fixture-search", kind: "search", stage: "search", label: "Search for deposit problems", phase: "audience", status: "completed", startedAt: now, finishedAt: "2026-09-23T12:00:06.000Z", durationMs: 6_000, attempts: [], prompt: null,
-      search: { key: "fixture-search-key", query: "bakery custom orders deposit delays", intent: "complaints", reason: "Find firsthand accounts of missed deposits and lost custom orders.", expectedSourceType: "community", provider: "exa", route: null, parameters: { query: "bakery custom orders deposit delays", numResults: 5 }, status: "completed",
-        results: [{ sourceId: "fixture-source-1", title: "Keeping track of custom orders", url: "https://example.test/community/custom-orders", sourceClass: "forum", factsKept: 2 }, { sourceId: "fixture-source-2", title: "Bakery order management", url: "https://example.test/vendor/orders", sourceClass: "vendor", factsKept: 6 }] } },
-    { id: "fixture-reading", kind: "model", stage: "factor-harvest", label: "Read source observations", phase: "audience", status: "succeeded", startedAt: "2026-09-23T12:00:07.000Z", finishedAt: "2026-09-23T12:04:42.000Z", durationMs: 275_000,
-      prompt: { filename: "workflow-v2-factor-harvest.md", source: "bundled", sha256: "8b6cbf64fe4e172df675659b7c3ad28e9e3d42384658a8a9e5a98372b7357736" }, search: null,
-      attempts: [{ id: "fixture-attempt-1", status: "interrupted", model: "gpt-6-luna", effort: "high", provider: "openai-subscription", startedAt: "2026-09-23T12:00:07.000Z", finishedAt: "2026-09-23T12:00:52.000Z", durationMs: 45_000, inputTokens: null, outputTokens: null, reasoningTokens: null, costUsd: null, errorCode: "UNKNOWN_COMPLETION", message: "The application restarted before completion was saved. The user explicitly retried this step.", reasoningSummary: null },
-        { id: "fixture-attempt-2", status: "succeeded", model: "gpt-6-luna", effort: "high", provider: "openai-subscription", startedAt: "2026-09-23T12:00:53.000Z", finishedAt: "2026-09-23T12:04:42.000Z", durationMs: 229_000, inputTokens: 12_450, outputTokens: 2_080, reasoningTokens: 680, costUsd: null, errorCode: null, message: null, reasoningSummary: "Checked who described each problem and kept the source's own wording." }] },
-    { id: "fixture-verdict", kind: "model", stage: "problem-verdict", label: "Assess deposit friction", phase: "audience", status: "succeeded", startedAt: "2026-09-23T12:04:43.000Z", finishedAt: "2026-09-23T12:06:00.000Z", durationMs: 77_000,
-      prompt: { filename: "workflow-v2-problem-kill.md", source: "overridden", sha256: "6c94a4ee39e2c5a67cb8dc0da3be5e055b7ee5a8fa20baef7be0b276fbc73d79" }, search: null, attempts: [] },
-  ],
-  candidates: [
-    { id: "fixture-candidate-1", statement: "Bakery owners lose custom orders when deposits arrive late", state: "confirmed", reason: "Two firsthand accounts describe the same order and deposit failure.", derived: false, factorIds: ["fixture-fact-1", "fixture-fact-2"], qualifyingObservations: 2, independentSources: 2,
-      assessments: [{ factorId: "fixture-fact-1", sourceRole: "firsthand", audienceFit: "intended-buyer", independentSourceKey: "bakery-owner-1", reason: "The owner describes their own missed order." }], candidate: { contraryEvidence: { summary: "Small order volumes can be managed with a shared sheet." } } },
-    { id: "fixture-candidate-2", statement: "Existing order tools fail to support every local payment method", state: "insufficient", reason: "Only a vendor claim was saved. No affected buyer described this limitation.", derived: false, factorIds: ["fixture-fact-3"], qualifyingObservations: 0, independentSources: 0, assessments: [], candidate: null },
-    { id: "fixture-candidate-3", statement: "Automatic reminders would prevent every missed deposit", state: "dropped", reason: "The source supports late deposits, but not the proposed cause.", derived: true, factorIds: [], qualifyingObservations: 0, independentSources: 0, assessments: [], candidate: null },
-    { id: "fixture-candidate-4", statement: "Staff re-enter custom orders from messages", state: "not-assessed", reason: "No saved verdict was found for this candidate.", derived: true, factorIds: [], qualifyingObservations: 0, independentSources: 0, assessments: [], candidate: null },
-    { id: "fixture-candidate-5", statement: "Customers ask for deposits to be split across payments", state: "not-assessed", reason: "No saved verdict was found for this candidate.", derived: true, factorIds: [], qualifyingObservations: 0, independentSources: 0, assessments: [], candidate: null },
-  ],
-} : null;
-if (traceFixture) {
-  const reading = traceFixture.steps.find((step) => step.id === "fixture-reading");
-  if (reading) {
-    traceFixture.steps.push({ ...reading, id: "fixture-reading-b", label: "Read payment tracking observations", phase: "payment-tracking",
-      attempts: reading.attempts.filter((attempt) => attempt.status === "succeeded").map((attempt) => ({ ...attempt, id: `${attempt.id}-b` })) });
-    traceFixture.investigators = [
-      { id: "fixture-area-a", name: "Custom order deposits", state: traceFixture.live ? "researching" : "succeeded", stepIds: ["fixture-reading", "fixture-verdict"] },
-      { id: "fixture-area-b", name: "Payment tracking", state: traceFixture.live ? "researching" : "succeeded", stepIds: ["fixture-reading-b"] },
-    ];
-  }
-  state.latestResearchRun = { runId: traceFixture.runId, status: traceFixture.live ? "running" : "completed", problemId: null,
-    codexCalls: traceFixture.metrics.modelCalls, searches: traceFixture.metrics.searches, projectedCodexCalls: 4, projectedSearches: 1, lastActivity: "Saved trace fixture", workflowVersion: 2 };
-  if (params.get("trace") === "empty") {
-    traceFixture.steps = []; traceFixture.candidates = []; traceFixture.warnings = []; traceFixture.investigators = [];
-    traceFixture.metrics = { ...traceFixture.metrics, factors: 0, totalSources: 0, evidenceMix: {}, audienceFit: {}, sourceMix: {}, qualifyingObservations: 0,
-      qualifyingPerAssessedCandidate: null, confirmationRate: null, candidateFunnel: { total: 0, assessed: 0, confirmed: 0, insufficient: 0, dropped: 0, notAssessed: 0, userAsserted: 0 },
-      coverage: { kind: "phases", groups: [] }, modelCalls: 0, searches: 0, wallTimeMs: 0, modelTimeMs: 0, interruptionTimeMs: 0, interruptions: 0, ideas: 0, acceptedIdeas: 0, acceptedIdeasFailingMustHave: null };
-  }
-}
-
-function traceStepDetail(stepId: string): RunTraceStepDetail {
-  const step = traceFixture?.steps.find((item) => item.id === stepId);
-  if (!traceFixture || !step) throw new Error("No saved step exists in this trace fixture.");
-  return {
-    runId: traceFixture.runId, step, inputs: { scope: { audience: "Independent bakery owners", domain: "Custom orders and deposits" } },
-    output: step.kind === "search" ? { results: step.search?.results } : { factsKept: 8 }, evidence: [],
-    searches: step.search ? [step.search] : [], candidates: step.id === "fixture-verdict" ? traceFixture.candidates.slice(0, 2) : [],
-    facts: step.id.startsWith("fixture-reading") ? [
-      { id: "fixture-fact-1", sourceId: "fixture-source-1", subject: "Bakery owner", behavior: "Lost a custom order after waiting for a deposit", quote: "I kept the order in messages, and by the time they paid the deposit I had filled that weekend.", sourceRole: "firsthand", audienceFit: "intended-buyer", kept: true, reason: "The affected owner describes an actual missed order." },
-      { id: null, sourceId: "fixture-source-2", subject: "Order management vendor", behavior: "Claims reminders remove deposit delays", quote: "Never lose another custom order with automated reminders.", sourceRole: "vendor", audienceFit: "general", kept: false, reason: "This claim does not describe a saved customer's experience." },
-    ] : [],
-    events: step.id === "fixture-reading" ? [{ type: "interrupted", createdAt: "2026-09-23T12:00:52.000Z", payload: { message: "Application restart left provider completion unknown." } }] : [],
-  };
-}
-
 let advancedSettings = AppSettingsSchema.parse({});
 const fixtureApi = createScraplyApi({
   async invoke<T>(channel: string, payload?: unknown): Promise<T> {
     let result: unknown;
     switch (channel) {
       case IPC_CHANNELS.GET_WORKSPACE: result = state; break;
-      case IPC_CHANNELS.GET_RUN_TRACE: {
-        const request = GetRunTraceRequestSchema.parse(payload);
-        if (!traceFixture || request.runId !== traceFixture.runId) throw new Error("No trace fixture is selected. Add ?trace=1 to the URL.");
-        result = { ok: true, data: traceFixture }; break;
-      }
-      case IPC_CHANNELS.GET_RUN_TRACE_STEP: {
-        const request = GetRunTraceStepRequestSchema.parse(payload);
-        if (request.runId !== traceFixture?.runId) throw new Error("No saved trace exists for this run.");
-        result = { ok: true, data: traceStepDetail(request.stepId) }; break;
-      }
       case IPC_CHANNELS.GET_ADVANCED_SETTINGS: result = advancedSettings; break;
       case IPC_CHANNELS.SAVE_ADVANCED_SETTINGS: advancedSettings = AppSettingsSchema.parse(payload); result = advancedSettings; break;
       case IPC_CHANNELS.COMMAND_WORKFLOW: {
