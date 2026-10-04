@@ -636,9 +636,9 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
       WHERE rr.thread_id = ? AND s.id IN (${placeholders(goalEvidenceIds)})`, [threadId, ...goalEvidenceIds]) : []).map(source => [String(source.id), {
         id: String(source.id), title: String(source.title), url: String(source.canonical_url), text: String(source.retrieved_text),
       }] as const));
+    const reviewLabels = details ? readReviewLabels(rows.map((row) => String(row.research_run_id)), readAll) : new Map<string, ReviewLabel>();
     context.observeDataRead?.({ operation: details ? "solution-details" : "solution-summaries", queryCount, rowCount: rows.length });
     const discardedIds = new Set(JSON.parse(db.getSetting(`discarded-ideas:${threadId}`) ?? "[]") as string[]);
-    const reviewLabels = details ? readReviewLabels(rows.map((row) => String(row.research_run_id)), readAll) : new Map<string, ReviewLabel>();
     const result = rows.map((row): SolutionView => {
       const highest = row.highest_risk_id === null ? null : {
         id: String(row.highest_risk_id), description: String(row.highest_risk_description),
