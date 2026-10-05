@@ -85,6 +85,22 @@ function fixture(options: { depth?: DiscoveryDepth; vendor?: boolean; duplicateO
 }
 
 describe("bounded evidence investigators", () => {
+  test("keeps saved decision fields and conditional evidence-gap limits", () => {
+    const gap = { kind: "second-independent-observation", evidenceNeeded: "Another firsthand account",
+      query: "bookkeeper duplicate feed entry firsthand account", route: "community" } as const;
+    const allowedGapCounts = { confirmed: [0], drop: [0], "follow-up": [1, 2] };
+    for (const decision of ["confirmed", "drop", "follow-up"] as const) {
+      for (const count of [0, 1, 2, 3]) {
+        const saved = { decision, reason: "Saved evidence decision", gaps: Array.from({ length: count }, () => gap) };
+        const parsed = EvidenceCheckOutputSchema.safeParse(saved);
+        expect(parsed.success, `${decision} with ${count} gaps`).toBe(allowedGapCounts[decision].includes(count));
+        if (parsed.success) expect(parsed.data).toEqual(saved);
+      }
+    }
+    expect(EvidenceCheckOutputSchema.safeParse({ decision: "confirmed", reason: "Saved", gaps: [], extra: true }).success).toBe(false);
+    expect(EvidenceCheckOutputSchema.safeParse({ decision: "confirm", reason: "Saved", gaps: [] }).success).toBe(false);
+  });
+
   test("one origin becomes confirmed only after a quote-checked second independent observation", async () => {
     const item = fixture();
     const result = await runCandidateEvidenceInvestigator({ ...item.input, problem: problem() });

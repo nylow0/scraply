@@ -22,6 +22,23 @@ function sampleFrame(): ResearchFrame {
 }
 
 describe("research frame boundary", () => {
+  it("accepts complete source identities without changing entity-ID limits or accepting truncated citations", () => {
+    const sourceId = `provider-source:${"a".repeat(4_096)}`;
+    const frame = sampleFrame();
+    frame.contextFacts[0]!.sourceIds = [sourceId];
+    frame.successCriteria[0]!.basis = [sourceId];
+    frame.constraints[0]!.basis = [sourceId];
+    expect(parseResearchFrame(frame, { sourceIds: [sourceId], purpose: "discovery" })).toEqual(frame);
+    const shape = deriveJsonSchema(ResearchFrameOutputSchema).properties!.frame!.properties!;
+    expect(shape.contextFacts!.items!.properties!.sourceIds!.items).toEqual({ type: "string" });
+    expect(shape.successCriteria!.items!.properties!.basis!.anyOf![1]!.items).toEqual({ type: "string" });
+    expect(shape.constraints!.items!.properties!.basis!.anyOf![1]!.items).toEqual({ type: "string" });
+    frame.contextFacts[0]!.sourceIds = [sourceId.slice(0, 128)];
+    expect(() => parseResearchFrame(frame, { sourceIds: [sourceId], purpose: "discovery" })).toThrow("unknown source");
+    frame.successCriteria[0]!.id = "a".repeat(129);
+    expect(ResearchFrameSchema.safeParse(frame).success).toBe(false);
+  });
+
   it("keeps sourced context separate from brief-based decisions and rejects fabricated citation IDs", () => {
     const frame = sampleFrame();
     expect(parseResearchFrame(frame, { sourceIds: ["policy"], purpose: "discovery" })).toEqual(frame);

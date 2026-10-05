@@ -1,5 +1,6 @@
 import type { z } from "zod";
 import type { ModelRef, ReasoningEffort } from "../shared/schemas";
+import type { SchemaValidationFailure } from "../shared/generation-diagnostics";
 import type {
   AttemptUsage,
   EvidenceSource,
@@ -22,16 +23,18 @@ export class ProviderFailure extends Error {
     readonly code: ProviderFailureCode,
     message: string,
     readonly retryable: boolean,
-    options?: { cause?: unknown; attempts?: GenerationAttemptMetadata[]; runtimeCode?: string },
+    options?: { cause?: unknown; attempts?: GenerationAttemptMetadata[]; runtimeCode?: string; unretainedSchemaFailure?: SchemaValidationFailure },
   ) {
     super(message, options);
     this.name = "ProviderFailure";
     this.attempts = options?.attempts;
     this.runtimeCode = options?.runtimeCode;
+    this.unretainedSchemaFailure = options?.unretainedSchemaFailure;
   }
 
   readonly attempts: GenerationAttemptMetadata[] | undefined;
   readonly runtimeCode: string | undefined;
+  readonly unretainedSchemaFailure: SchemaValidationFailure | undefined;
 }
 
 export type { AttemptUsage };
@@ -94,6 +97,8 @@ export interface StructuredStageRequest<T> {
   deadlineMs?: number;
   onDispatched?: () => void;
   onAccepted?: (metadata: GenerationAcceptanceMetadata) => void;
+  /** Synchronous durable app checkpoint before a confirmed invalid response can enter schema repair. */
+  onSchemaInvalid?: (failure: SchemaValidationFailure) => void;
 }
 
 export interface StructuredStageResult<T> {

@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import type { GenerationAcceptanceMetadata, StructuredStageRequest } from "../../providers/structured";
 import { canonicalJson, sha256 } from "../../shared/content-identity";
+import { SavedSchemaValidationFailureSchema, type SchemaValidationFailure } from "../../shared/generation-diagnostics";
 import type { DatabaseClient } from "../client";
 
 export type GenerationAttemptStatus =
@@ -192,6 +193,28 @@ export class GenerationAttemptRepository {
     );
     const changed = this.client.db.prepare("SELECT changes() AS count").get() as { count: number };
     if (changed.count !== 1) throw new Error("Generation attempt already has a terminal result");
+  }
+
+  /** Retain each native rejection before repair, without changing the original request or terminal state. */
+  recordSchemaInvalidOutput(id: string, failure: SchemaValidationFailure): void {
+    this.client.immediateTransaction(() => {
+      const parent = this.client.db.prepare("SELECT research_run_id, request_sha256, status FROM generation_attempts WHERE id = ?")
+        .get(id) as { research_run_id: string; request_sha256: string; status: string } | undefined;
+      if (!parent || !["dispatched", "accepted"].includes(parent.status)) throw new Error("Schema diagnostic has no active dispatched parent");
+      const key = `generation-schema-invalid:${id}:${failure.generationId}`;
+      const payload = { ...failure, parentAttemptId: id, parentRequestSha256: parent.request_sha256 };
+      const previous = this.client.db.prepare("SELECT value_json FROM workflow_snapshots WHERE research_run_id = ? AND snapshot_key = ?")
+        .get(parent.research_run_id, key) as { value_json: string } | undefined;
+      if (previous) {
+        const { capturedAt: _capturedAt, ...saved } = SavedSchemaValidationFailureSchema.parse(JSON.parse(previous.value_json));
+        void _capturedAt;
+        if (canonicalJson(saved) !== canonicalJson(payload)) throw new Error("Schema diagnostic identity conflict");
+        return;
+      }
+      const diagnostic = SavedSchemaValidationFailureSchema.parse({ ...payload, capturedAt: new Date().toISOString() });
+      this.client.db.prepare("INSERT INTO workflow_snapshots VALUES (?, ?, ?)")
+        .run(parent.research_run_id, key, canonicalJson(diagnostic));
+    });
   }
 
   interruptInFlight(reason: string): number {

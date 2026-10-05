@@ -8,6 +8,8 @@ import { DiscoveryRepository } from "../../src/db/repositories/discovery";
 import type { ValidationResult } from "../../src/providers/search";
 import { DEFAULT_RUN_CONFIG } from "../../src/shared/schemas";
 import type { RejectedProblemCandidate } from "../../src/shared/ipc";
+import { prepareWorkflowSearch, recordWorkflowSearchDispatched, recordWorkflowSearchTerminal } from "../../src/core/workflow-search-attempts";
+import { workflowSearchKey } from "../../src/shared/content-identity";
 
 const dirs: string[] = [];
 const handles: BackendHandle[] = [];
@@ -1115,11 +1117,26 @@ describe("cutover backend", () => {
     }] });
     insertAttempt.run("old-attempt", "old-generation", "old-discovery", oldMetadata, JSON.stringify([{ status: "known", value: { inputTokens: 99, outputTokens: 1, totalTokens: 100 } }]), "2026-08-01T00:00:00.100Z", "2026-08-01T00:00:00.100Z", "2026-08-01T00:00:00.100Z");
     insertAttempt.run("new-attempt", "new-generation", "new-discovery", newMetadata, JSON.stringify([{ status: "known", value: { inputTokens: 99, outputTokens: 1, totalTokens: 100 } }]), "2026-08-02T00:00:00.100Z", "2026-08-02T00:00:00.100Z", "2026-08-02T00:00:00.100Z");
+    for (const state of ["prepared", "failed-before-dispatch", "completed", "legacy-unknown"] as const) {
+      const parameters = { numResults: 1 };
+      const attempt = prepareWorkflowSearch(client, "new-discovery", {
+        query: state, key: workflowSearchKey(state, parameters, "exa"), parameters, provider: "exa",
+        ...(state === "legacy-unknown" ? {} : { dispatchProofVersion: 1 as const }),
+      }, []);
+      if (state === "completed") {
+        recordWorkflowSearchDispatched(client, "new-discovery", attempt.id);
+        recordWorkflowSearchTerminal(client, "new-discovery", attempt.id, "completed");
+      } else if (state === "failed-before-dispatch") recordWorkflowSearchTerminal(client, "new-discovery", attempt.id, "failed");
+    }
     const workspace = await (await fetch(`http://127.0.0.1:${handle.port}/workspace`, { headers: { authorization: `Bearer ${handle.token}` } })).json() as { data: { latestResearchRun: { runId: string; usage: { tokens: { total: { known: number } } } } } };
-    expect(workspace.data.latestResearchRun).toMatchObject({ runId: "new-discovery", usage: { tokens: { total: { known: 14 } } } });
+    expect(workspace.data.latestResearchRun).toMatchObject({ runId: "new-discovery", usage: {
+      tokens: { total: { known: 14 } }, searchAttemptCount: 2, unknownSearchCount: 1,
+    } });
     const exported = await post("/research/export", { threadId: created.thread.id }) as { content: string };
     const archive = JSON.parse(exported.content) as { researchRun: { id: string; usage: { tokens: { total: { known: number } } } }; usage?: unknown; sources?: unknown };
-    expect(archive.researchRun).toMatchObject({ id: "new-discovery", usage: { tokens: { total: { known: 14 } } } });
+    expect(archive.researchRun).toMatchObject({ id: "new-discovery", usage: {
+      tokens: { total: { known: 14 } }, searchAttemptCount: 2, unknownSearchCount: 1,
+    } });
     expect(exported.content).not.toContain("request_json");
     expect(exported.content).not.toContain("attempt_metadata_json");
     expect(archive.usage).toBeUndefined();

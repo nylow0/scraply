@@ -8,6 +8,10 @@ export const WorkflowSearchAttemptSchema = z.object({
   id: z.string().uuid(), key: z.string().regex(/^search:[a-f0-9]{64}$/),
   query: z.string().min(1), parameters: z.record(z.unknown()), provider: SearchProviderSchema.optional(),
   createdAt: z.string().datetime(),
+  dispatchProofVersion: z.literal(1).optional(),
+}).strict();
+export const WorkflowSearchDispatchSchema = z.object({
+  attemptId: z.string().uuid(), dispatchedAt: z.string().datetime(),
 }).strict();
 export const WorkflowSearchTerminalSchema = z.object({
   status: z.enum(["completed", "failed", "cancelled"]), finishedAt: z.string().datetime(),
@@ -15,8 +19,21 @@ export const WorkflowSearchTerminalSchema = z.object({
 }).strict();
 export type WorkflowSearchAttempt = z.infer<typeof WorkflowSearchAttemptSchema>;
 
-/** Historical preparation is conservative physical work; damaged receipts cannot invent ledger linkage. */
-export function workflowSearchDispatches(db: Pick<DatabaseClient, "db">, runId: string): Array<{ id: string | null; unknown: boolean }> {
+/** Historical keys remain readable; new proof must describe the exact saved request and snapshot. */
+export function workflowSearchReceiptIdentityMatches(attempt: WorkflowSearchAttempt, snapshotKey: string): boolean {
+  return snapshotKey === `search-attempt:${attempt.key.slice("search:".length)}:${attempt.id}`
+    && (attempt.dispatchProofVersion === undefined || attempt.key === workflowSearchKey(attempt.query, attempt.parameters, attempt.provider));
+}
+
+export function workflowSearchWasDispatched(attempt: WorkflowSearchAttempt,
+  dispatch: unknown, snapshotKey?: string): boolean {
+  // A present proof, even malformed or contradictory, cannot establish that no request was sent.
+  return attempt.dispatchProofVersion !== 1 || dispatch !== null
+    || attempt.key !== workflowSearchKey(attempt.query, attempt.parameters, attempt.provider)
+    || (snapshotKey !== undefined && !workflowSearchReceiptIdentityMatches(attempt, snapshotKey));
+}
+
+function readWorkflowSearchAttempts(db: Pick<DatabaseClient, "db">, runId: string) {
   const rows = db.db.prepare(`SELECT snapshot_key, value_json FROM workflow_snapshots
     WHERE research_run_id = ? AND snapshot_key LIKE 'search-attempt:%' ORDER BY rowid`).all(runId) as
     Array<{ snapshot_key: string; value_json: string }>;
@@ -24,14 +41,30 @@ export function workflowSearchDispatches(db: Pick<DatabaseClient, "db">, runId: 
     Array<{ snapshot_key: string }>;
   const keys = new Set(saved.map(row => row.snapshot_key));
   return rows.map(row => {
+    let receipt: WorkflowSearchAttempt | null = null;
     try {
       const parsed = WorkflowSearchAttemptSchema.safeParse(JSON.parse(row.value_json));
-      if (parsed.success && row.snapshot_key === `search-attempt:${parsed.data.key.slice("search:".length)}:${parsed.data.id}`) {
-        return { id: parsed.data.id, unknown: !keys.has(`search-terminal:${parsed.data.id}`) };
-      }
-    } catch { /* Invalid data remains an unknown physical dispatch. */ }
-    return { id: null, unknown: true };
+      if (parsed.success) receipt = parsed.data;
+    } catch { /* Invalid saved data cannot establish absence of dispatch. */ }
+    const validReceipt = receipt !== null && workflowSearchReceiptIdentityMatches(receipt, row.snapshot_key) ? receipt : null;
+    return { ...row, receipt: validReceipt,
+      dispatched: validReceipt ? workflowSearchWasDispatched(validReceipt, keys.has(`search-dispatched:${validReceipt.id}`) ? true : null) : true,
+      terminal: validReceipt !== null && keys.has(`search-terminal:${validReceipt.id}`),
+      acknowledged: validReceipt !== null && keys.has(`search-acknowledged:${validReceipt.id}`),
+      checkpoint: validReceipt !== null && keys.has(validReceipt.key) };
   });
+}
+
+/** Damaged receipts still count, but cannot supply a fabricated UUID for retries or ledger linkage. */
+export function workflowSearchDispatches(db: Pick<DatabaseClient, "db">, runId: string): Array<{ id: string | null; unknown: boolean }> {
+  return readWorkflowSearchAttempts(db, runId).filter(attempt => attempt.dispatched)
+    .map(attempt => ({ id: attempt.receipt?.id ?? null, unknown: !attempt.terminal }));
+}
+
+/** Usage keeps uncertain historical dispatches even after acknowledgment permits a separate request. */
+export function workflowSearchDispatchUsage(db: Pick<DatabaseClient, "db">, runId: string): { attemptCount: number; unknownCount: number } {
+  const attempts = workflowSearchDispatches(db, runId);
+  return { attemptCount: attempts.length, unknownCount: attempts.filter(attempt => attempt.unknown).length };
 }
 
 export class UnknownSearchCompletionError extends Error {
@@ -41,25 +74,23 @@ export class UnknownSearchCompletionError extends Error {
   }
 }
 
-/** Missing terminals are ambiguous until the user acknowledges that exact dispatch. Old runs have no receipts. */
+/** Missing terminals are ambiguous only after dispatch, or for conservative historical receipts. */
 export function unknownSearchAttempts(db: Pick<DatabaseClient, "db">, runId: string,
   acknowledgedAttemptIds: readonly string[] = []): WorkflowSearchAttempt[] {
-  const rows = db.db.prepare(`SELECT attempt.value_json FROM workflow_snapshots attempt
-    WHERE attempt.research_run_id = ? AND attempt.snapshot_key LIKE 'search-attempt:%'
-      AND NOT EXISTS (SELECT 1 FROM workflow_snapshots terminal WHERE terminal.research_run_id = attempt.research_run_id
-        AND terminal.snapshot_key = 'search-terminal:' || json_extract(attempt.value_json, '$.id'))
-      AND NOT EXISTS (SELECT 1 FROM workflow_snapshots acknowledgment WHERE acknowledgment.research_run_id = attempt.research_run_id
-        AND acknowledgment.snapshot_key = 'search-acknowledged:' || json_extract(attempt.value_json, '$.id'))
-      AND NOT EXISTS (SELECT 1 FROM workflow_snapshots checkpoint WHERE checkpoint.research_run_id = attempt.research_run_id
-        AND checkpoint.snapshot_key = json_extract(attempt.value_json, '$.key'))
-    ORDER BY attempt.rowid`).all(runId) as Array<{ value_json: string }>;
-  return rows.map(row => WorkflowSearchAttemptSchema.parse(JSON.parse(row.value_json)))
-    .filter(attempt => !acknowledgedAttemptIds.includes(attempt.id));
+  return readWorkflowSearchAttempts(db, runId)
+    .filter(attempt => attempt.dispatched && !attempt.terminal && !attempt.acknowledged && !attempt.checkpoint)
+    .map(attempt => {
+      if (!attempt.receipt) {
+        WorkflowSearchAttemptSchema.parse(JSON.parse(attempt.value_json));
+        throw new Error("Search receipt identity conflict");
+      }
+      return attempt.receipt;
+    }).filter(attempt => !acknowledgedAttemptIds.includes(attempt.id));
 }
 
-/** The receipt commits before dispatch. Acknowledgments and older attempts remain immutable audit history. */
+/** The receipt commits before admission. Opt-in proof distinguishes new preparation from physical work. */
 export function prepareWorkflowSearch(db: DatabaseClient, runId: string,
-  input: Pick<WorkflowSearchAttempt, "key" | "query" | "parameters" | "provider">,
+  input: Pick<WorkflowSearchAttempt, "key" | "query" | "parameters" | "provider" | "dispatchProofVersion">,
   acknowledgedAttemptIds: readonly string[]): WorkflowSearchAttempt {
   return db.immediateTransaction(() => {
     for (const previous of unknownSearchAttempts(db, runId).filter(attempt =>
@@ -72,6 +103,22 @@ export function prepareWorkflowSearch(db: DatabaseClient, runId: string,
     db.db.prepare("INSERT INTO workflow_snapshots VALUES (?, ?, ?)")
       .run(runId, `search-attempt:${input.key.slice("search:".length)}:${attempt.id}`, canonicalJson(attempt));
     return attempt;
+  });
+}
+
+/** A saved intent precedes provider invocation; a crash after it remains conservatively uncertain. */
+export function recordWorkflowSearchDispatched(db: DatabaseClient, runId: string, attemptId: string): void {
+  db.immediateTransaction(() => {
+    const key = `search-dispatched:${attemptId}`;
+    const existing = db.db.prepare("SELECT value_json FROM workflow_snapshots WHERE research_run_id = ? AND snapshot_key = ?")
+      .get(runId, key) as { value_json: string } | undefined;
+    if (existing) {
+      const dispatch = WorkflowSearchDispatchSchema.parse(JSON.parse(existing.value_json));
+      if (dispatch.attemptId !== attemptId) throw new Error("Search dispatch identity conflict");
+      return;
+    }
+    const dispatch = WorkflowSearchDispatchSchema.parse({ attemptId, dispatchedAt: new Date().toISOString() });
+    db.db.prepare("INSERT INTO workflow_snapshots VALUES (?, ?, ?)").run(runId, key, canonicalJson(dispatch));
   });
 }
 

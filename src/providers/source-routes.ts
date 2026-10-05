@@ -31,6 +31,8 @@ export interface SourceRoutingContext {
   previousFirsthandRoute?: SourceRoute;
   /** Old completed extraction inputs must retain their saved sources; new provider results are still filtered. */
   preserveHistoricalSources?: boolean;
+  /** Saved routing version 1 retains its original publication filter and search receipt identities. */
+  legacyPublicationDomainCategory?: boolean;
   now?: Date;
 }
 
@@ -110,8 +112,10 @@ export function routeSearchOptions(route: SourceRoute, context: SourceRoutingCon
     route,
     excludeDomains: denied,
     ...(includeDomains.length ? { includeDomains } : {}),
-    // Publication categories can suppress agency reports, so verified official venues use ordinary web search.
-    ...(route === "studies-official" && !selectedVenues.some(venue => venue.kind === "official") ? { category: "publication" as const }
+    // Publication's index rejects some verified domains. Explicit venues use ordinary web search;
+    // only broad study searches use the publication index. Saved runs retain their original contract.
+    ...(route === "studies-official" && (context.legacyPublicationDomainCategory
+      ? !selectedVenues.some(venue => venue.kind === "official") : includeDomains.length === 0) ? { category: "publication" as const }
       : route === "contrary" ? { category: "news" as const } : {}),
     ...(firsthand || route === "buying" ? { startPublishedDate: start.toISOString() } : {}),
     ...(firsthand || route === "studies-official" ? { languages: routingLanguages(context.languages) } : {}),

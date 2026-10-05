@@ -2715,6 +2715,7 @@ export class ResearchEngine {
             request: { key, query, evidenceNeeded: "Existing tools and alternatives for the approved novelty criterion", route: "alternatives" },
             searchProvider: active.config.searchProvider, searchClient: this.instrumentedSearch(active),
             sourceRouting: { goalKind: context.frame!.goalKind, languages: context.frame!.languages,
+              legacyPublicationDomainCategory: workflow.read<{ version: number }>("source-routes")?.version !== 2,
               now: new Date(workflow.read<string>("source-route-start")!) },
             ...(active.acknowledgedAttemptIds ? { acknowledgedAttemptIds: active.acknowledgedAttemptIds } : {}), signal: active.abortController.signal })).sources,
           saveCompleted: (value, query, evidence) => { workflow.save(value, evidence); workflow.save(`${value}:completed`, { query, sourceIds: evidence.map(source => source.id) }); },
@@ -2936,6 +2937,8 @@ export class ResearchEngine {
       sourceRouting: {
         now: new Date(workflow.read<string>("source-route-start")!),
         preserveHistoricalSources: !workflow.read("source-routes"),
+        // A run's routing contract also fixes the canonical identity of each paid search.
+        legacyPublicationDomainCategory: workflow.read<{ version: number }>("source-routes")?.version !== 2,
         ...(workflow.read("source-routes") && frame ? { goalKind: frame.goalKind, languages: frame.languages } : {}),
       },
       // Old planner stage inputs must remain identical so its completed output can be reused.
@@ -3071,6 +3074,10 @@ export class ResearchEngine {
               if (this.activeRuns.get(active.runId)?.abortController === active.abortController) this.progress(active, "Model request accepted", stage, "accepted");
               request.onAccepted?.(metadata);
             },
+            onSchemaInvalid: (failure) => {
+              this.generationAttempts.recordSchemaInvalidOutput(attempt.id, failure);
+              request.onSchemaInvalid?.(failure);
+            },
           });
           if (!reservation) {
             reservation = this.ledger.reserve(active.runId, "structured-completion", providerId, stageModel.modelId, 0, attempt.id);
@@ -3092,6 +3099,7 @@ export class ResearchEngine {
           return result;
         } catch (error) {
           const failedAttempts = error instanceof ProviderFailure ? error.attempts : undefined;
+          const unretained = error instanceof ProviderFailure ? error.unretainedSchemaFailure : undefined;
           const failedCostUsd = failedAttempts ? reportedAttemptCost(failedAttempts) : null;
           if (!reservation && failedAttempts?.length) {
             reservation = this.ledger.reserve(active.runId, "structured-completion", providerId, stageModel.modelId, 0, attempt.id);
@@ -3105,8 +3113,11 @@ export class ResearchEngine {
               terminalKind: dispatched || accepted || failedAttempts?.length ? code : "never-dispatched",
               errorCode: code,
               errorMessage: error instanceof Error ? error.message : "Model generation failed",
+              ...(unretained ? { output: unretained.output } : {}),
               ...(failedAttempts ? {
-                attemptMetadata: { attempts: failedAttempts },
+                attemptMetadata: { attempts: failedAttempts, ...(unretained ? { unretainedSchemaFailure: {
+                  generationId: unretained.generationId, issues: unretained.issues,
+                } } : {}) },
                 usage: failedAttempts.map((item) => item.usage),
               } : {}),
               ...(failedCostUsd === null ? {} : { reportedCostUsd: failedCostUsd }),

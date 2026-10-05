@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
 import { ResearchEngine } from "../../src/core/research-engine";
+import { getRunTrace, getRunTraceStep } from "../../src/core/run-trace";
 import { WorkflowCoordinator } from "../../src/core/workflow-coordinator";
 import { configurePromptPaths } from "../../src/core/prompts";
 import { DatabaseClient } from "../../src/db/client";
@@ -12,7 +13,9 @@ import { WorkflowRepository } from "../../src/db/repositories/workflows";
 import { ResearchRunRepository } from "../../src/db/repositories/research-runs";
 import { DiscoveryRepository } from "../../src/db/repositories/discovery";
 import { ProviderFailure, type StructuredModelClient, type StructuredStageRequest } from "../../src/providers/structured";
-import { DEFAULT_RUN_CONFIG } from "../../src/shared/schemas";
+import type { SearchOptions } from "../../src/providers/search";
+import type { SearchIntent } from "../../src/providers/source-routes";
+import { DEFAULT_RUN_CONFIG, type Source } from "../../src/shared/schemas";
 import type { ResearchFrame } from "../../src/shared/research-frame";
 import type { WorkflowLaunchContract, WorkflowLaunchDraft } from "../../src/shared/workflow-contracts";
 import { framedDiscoveryProjection } from "../../src/shared/discovery-projection";
@@ -35,13 +38,16 @@ function inputs(request: StructuredStageRequest<unknown>): Record<string, unknow
 }
 
 async function setup(mode: "babysit" | "vibe" = "babysit", knownProblem = false,
-  beforeStage?: (stage: string) => void, boundedAtPreviewMinimum = false, sharedSource = false) {
+  beforeStage?: (stage: string) => void, boundedAtPreviewMinimum = false, contextSource?: Source,
+  queryIntent?: SearchIntent,
+  frameQueries = [{ query: "Bakery deposit context", reason: "Understand the scope" }], sharedSource = false) {
   const directory = mkdtempSync(join(tmpdir(), "scraply-frame-workflow-"));
   const db = new DatabaseClient(join(directory, "test.db"));
   configurePromptPaths({ bundledDir: join(process.cwd(), "prompts"), overrideDir: join(directory, "prompts") });
   db.db.prepare("INSERT INTO threads (id,title,status,created_at,updated_at) VALUES ('project','Bakery','configuring',?,?)")
     .run(new Date().toISOString(), new Date().toISOString());
   const queries: string[] = [];
+  const searches: Array<{ query: string; options: Omit<SearchOptions, "signal"> }> = [];
   const stages: Array<{ stage: string; repair: string }> = [];
   const errors: string[] = [];
   const client: StructuredModelClient = { async structuredCompletion(request) {
@@ -51,15 +57,24 @@ async function setup(mode: "babysit" | "vibe" = "babysit", knownProblem = false,
     const stage = request.stage.split(":")[0];
     const input = inputs(request);
     let output: unknown;
-    if (stage === "frame-search-plan") output = { queries: [{ query: "Bakery deposit context", reason: "Understand the scope" }] };
-    else if (stage === "frame") output = { frame: frame(Boolean(input.knownProblem)) };
+    if (stage === "frame-search-plan") output = { queries: frameQueries };
+    else if (stage === "frame") {
+      const generated = frame(Boolean(input.knownProblem));
+      if (contextSource) {
+        const sourceId = request.evidence[0]!.sourceId;
+        generated.contextFacts = [{ fact: "Bank rules apply in priority order.", sourceIds: [sourceId] }];
+        generated.successCriteria[0]!.basis = [sourceId];
+        generated.constraints = [{ text: "Work alongside the built-in bank rules", kind: "scope", basis: [sourceId] }];
+      }
+      output = { frame: generated };
+    }
     else if (stage === "area-ranking") output = { areas: frame().areas.filter(area => area.included).map((area, index) => ({
       areaId: area.id, rank: index + 1, reason: "Quoted owners describe disputes", evidenceStrength: "strong", fit: "meets" })) };
     else if (stage === "query-plan") {
       const evidence = request.evidence[0]!.content as { scope: { domain: string }; harvestMode: string };
       const count = Number(input.queryCount);
       output = { queries: Array.from({ length: count }, (_, index) => ({ query: `${evidence.scope.domain} ${input.harvestMode} ${index}`,
-        intent: ["firsthand-experience", "measured-behavior", "contrary-evidence"][index % 3], uncertainty: "Frequency unknown", intendedSourceType: "Owner accounts" })) };
+        intent: count === 1 && queryIntent ? queryIntent : ["firsthand-experience", "measured-behavior", "contrary-evidence"][index % 3], uncertainty: "Frequency unknown", intendedSourceType: "Owner accounts" })) };
     } else if (stage === "factor-harvest") {
       const evidence = request.evidence[0]!.content as { sources: Array<{ id: string }> };
       output = { factors: evidence.sources.slice(0, 1).map(source => ({ sourceId: source.id,
@@ -75,8 +90,12 @@ async function setup(mode: "babysit" | "vibe" = "babysit", knownProblem = false,
       usage: { status: "unknown" }, latencyMs: 0, repairCount: 0, providerRequestIds: [], attempts: [] } };
   } };
   const engine = new ResearchEngine({ db, modelClients: { fixture: client },
-    searchClients: { exa: { provider: "exa", async validateKey() { return { valid: true }; }, async search(query) {
-      queries.push(query); return [{ id: `provider-${queries.length}`, url: sharedSource ? "https://owners.example/shared" : `https://owners.example/${encodeURIComponent(query)}`,
+    searchClients: { exa: { provider: "exa", async validateKey() { return { valid: true }; }, async search(query, options) {
+      const { signal: _signal, ...parameters } = options ?? {};
+      void _signal;
+      searches.push({ query, options: parameters });
+      queries.push(query); if (contextSource) return [contextSource];
+      return [{ id: `provider-${queries.length}`, url: sharedSource ? "https://owners.example/shared" : `https://owners.example/${encodeURIComponent(query)}`,
         title: "An owner account", text: "I lose time handling order changes." }];
     } } }, onEvent(event) { if (event.type === "run-failed") errors.push(event.error); coordinator.handleRunEvent(event); } });
   const capabilities = async () => ({ nativeConnected: true, searchReady: { exa: !knownProblem, perplexity: false },
@@ -97,7 +116,7 @@ async function setup(mode: "babysit" | "vibe" = "babysit", knownProblem = false,
   expect(preview.fieldErrors).toEqual([]);
   const receipt = await coordinator.start({ threadId: "project", clientCommandId: "launch", contract: preview.proposal,
     previewHash: preview.previewHash, capabilityFingerprint: preview.capabilityFingerprint, previewExpiresAt: preview.expiresAt });
-  return { db, engine, coordinator, queries, stages, errors, sessionId: receipt.sessionId, draft,
+  return { db, engine, coordinator, queries, searches, stages, errors, sessionId: receipt.sessionId, draft,
     async close() { await engine.shutdown(); db.close(); rmSync(directory, { recursive: true, force: true }); } };
 }
 
@@ -106,6 +125,94 @@ async function until(predicate: () => boolean): Promise<void> {
   while (!predicate() && Date.now() < deadline) await Bun.sleep(5);
   expect(predicate()).toBe(true);
 }
+
+test("new discovery admissions search retrieved publication venues outside the publication index", async () => {
+  const source = { id: "study", url: "https://bmchealthservres.biomedcentral.com/articles/saved-study",
+    title: "A retrieved study", text: "I lose time handling order changes." };
+  const fixture = await setup("babysit", false, undefined, false, source, "measured-behavior");
+  try {
+    const { coordinator, sessionId, db } = fixture;
+    await until(() => coordinator.summary(sessionId).reviewKind === "frame");
+    const saved = coordinator.get(sessionId).researchFrame!;
+    const approved = { ...saved.draft, areas: saved.draft.areas.map(area => ({ ...area,
+      venues: [{ name: "BMC Health Services Research", domain: "bmchealthservres.biomedcentral.com", kind: "publication" as const }] })) };
+    await coordinator.command({ threadId: "project", sessionId, clientCommandId: "approve-studies",
+      expectedRevision: coordinator.summary(sessionId).revision,
+      action: { type: "approve-frame", frameId: saved.id, frame: approved } });
+    await until(() => ["waiting-for-review", "finished"].includes(coordinator.summary(sessionId).state));
+    expect(fixture.errors).toEqual([]);
+    const discovery = new WorkflowRepository(db).listWorkItems(sessionId).find(item => item.kind === "discovery")!;
+    const runId = (discovery.outputRefs as { runId: string }).runId;
+    expect(db.db.prepare("SELECT value_json FROM workflow_snapshots WHERE research_run_id = ? AND snapshot_key = 'source-routes'").get(runId))
+      .toEqual({ value_json: '{"version":2}' });
+    const studies = fixture.searches.filter(search => search.options.route === "studies-official");
+    expect(studies.length).toBeGreaterThan(0);
+    for (const search of studies) {
+      expect(search.options.includeDomains).toEqual(["bmchealthservres.biomedcentral.com"]);
+      expect(search.options.category).toBeUndefined();
+    }
+  } finally { await fixture.close(); }
+});
+
+test.each([1, null])("a resumed historical discovery retains its publication-domain contract (%s)", async version => {
+  const source = { id: "study", url: "https://bmchealthservres.biomedcentral.com/articles/saved-study",
+    title: "A retrieved study", text: "I lose time handling order changes." };
+  let interrupted = false;
+  const fixture = await setup("babysit", false, stage => {
+    if (!interrupted && stage.startsWith("query-plan:scan-")) {
+      interrupted = true;
+      throw new ProviderFailure("unavailable", "Interrupted before scan dispatch", true);
+    }
+  }, false, source, version === null ? undefined : "measured-behavior");
+  try {
+    const { coordinator, sessionId, db, engine } = fixture;
+    await until(() => coordinator.summary(sessionId).reviewKind === "frame");
+    const saved = coordinator.get(sessionId).researchFrame!;
+    await coordinator.command({ threadId: "project", sessionId, clientCommandId: "approve-historical-studies",
+      expectedRevision: coordinator.summary(sessionId).revision,
+      action: { type: "approve-frame", frameId: saved.id, frame: { ...saved.draft,
+        areas: saved.draft.areas.map(area => ({ ...area,
+          venues: [{ name: "BMC Health Services Research", domain: "bmchealthservres.biomedcentral.com", kind: "publication" as const }] })) } } });
+    await until(() => coordinator.summary(sessionId).state === "finished");
+    expect(fixture.errors).toEqual(["Interrupted before scan dispatch"]);
+    const discovery = new WorkflowRepository(db).listWorkItems(sessionId).find(item => item.kind === "discovery")!;
+    const runId = (discovery.outputRefs as { runId: string }).runId;
+    // Simulate a saved v1 or pre-marker contract without replacing its saved prompts or stages.
+    if (version === null) db.db.prepare("DELETE FROM workflow_snapshots WHERE research_run_id = ? AND snapshot_key = 'source-routes'").run(runId);
+    else db.db.prepare("UPDATE workflow_snapshots SET value_json = ? WHERE research_run_id = ? AND snapshot_key = 'source-routes'")
+      .run('{"version":1}', runId);
+    await engine.resumeRun(runId);
+    await until(() => !engine.getActiveRunIds().has(runId));
+    expect(fixture.errors).toEqual(["Interrupted before scan dispatch"]);
+    expect(db.db.prepare("SELECT status FROM research_runs WHERE id = ?").get(runId)).toEqual({ status: "completed" });
+    expect(db.db.prepare("SELECT value_json FROM workflow_snapshots WHERE research_run_id = ? AND snapshot_key = 'source-routes'").get(runId))
+      .toEqual(version === null ? null : { value_json: '{"version":1}' });
+    const studies = fixture.searches.filter(search => search.options.route === "studies-official");
+    expect(studies.length).toBeGreaterThan(0);
+    for (const search of studies) expect(search.options).toMatchObject({
+      includeDomains: ["bmchealthservres.biomedcentral.com"], category: "publication" });
+  } finally { await fixture.close(); }
+});
+
+test("frame preparation cites the full supplied provider URL in facts and externally sourced bases", async () => {
+  const sourceId = "https://quickbooks.intuit.com/learn-support/en-global/help-article/banking/set-bank-rules-categorise-online-banking-online/L0mjJl0nD_ROW_en";
+  const source = { id: sourceId, url: sourceId, title: "QuickBooks bank rules", text: "Bank rules apply in priority order." };
+  const fixture = await setup("babysit", false, undefined, false, source);
+  try {
+    await until(() => ["waiting-for-review", "finished"].includes(fixture.coordinator.summary(fixture.sessionId).state));
+    expect(fixture.errors).toEqual([]);
+    expect(fixture.coordinator.summary(fixture.sessionId).reviewKind).toBe("frame");
+    const saved = fixture.coordinator.get(fixture.sessionId).researchFrame!;
+    expect(saved.draft.contextFacts[0]!.sourceIds).toEqual([sourceId]);
+    expect(saved.draft.successCriteria[0]!.basis).toEqual([sourceId]);
+    expect(saved.draft.constraints[0]!.basis).toEqual([sourceId]);
+    expect(saved.sources).toEqual([source]);
+    expect(fixture.db.db.prepare("SELECT id,provider_source_id,canonical_url FROM sources").get())
+      .toEqual({ id: sourceId, provider_source_id: sourceId, canonical_url: sourceId });
+    expect(fixture.stages.map(stage => stage.stage)).toEqual(["frame-search-plan", "frame"]);
+    expect(fixture.queries).toEqual(["Bakery deposit context"]);
+  } finally { await fixture.close(); }
+});
 
 test("bounded Controlled research admits frame approval at the shown launch minimum", async () => {
   const fixture = await setup("babysit", false, undefined, true);
@@ -153,8 +260,50 @@ test("Controlled persists the frame review, then scans included areas and saves 
   } finally { await fixture.close(); }
 });
 
+test("Trace reads framed discovery evidence while retaining frame preparation usage, steps and saved search reasons", async () => {
+  const frameQueries = [
+    { query: "Bakery owner deposit workflow", reason: "Understand the owner workflow beyond published policies." },
+    { query: "Bakery order software documentation", reason: "Find existing tools that the pilot must account for." },
+  ];
+  const fixture = await setup("babysit", false, undefined, false, undefined, undefined, frameQueries);
+  try {
+    const { coordinator, sessionId, db } = fixture;
+    await until(() => coordinator.summary(sessionId).reviewKind === "frame");
+    const repository = new WorkflowRepository(db);
+    const preparation = repository.listWorkItems(sessionId).find(item => item.kind === "prepare-frame")!;
+    const preparationRunId = (preparation.outputRefs as { runId: string }).runId;
+    expect(getRunTrace(db, preparationRunId).metrics.factors).toBe(0);
+    const saved = coordinator.get(sessionId).researchFrame!;
+    await coordinator.command({ threadId: "project", sessionId, clientCommandId: "approve-trace", expectedRevision: coordinator.summary(sessionId).revision,
+      action: { type: "approve-frame", frameId: saved.id, frame: saved.draft } });
+    await until(() => coordinator.summary(sessionId).reviewKind === "research");
+    expect(fixture.errors).toEqual([]);
+    const discovery = repository.listWorkItems(sessionId).find(item => item.kind === "discovery")!;
+    const discoveryRunId = (discovery.outputRefs as { runId: string }).runId;
+    expect(discoveryRunId).not.toBe(preparationRunId);
+    const plan = db.db.prepare("SELECT id FROM stage_results WHERE research_run_id = ? AND stage_id = 'frame-search-plan'").get(preparationRunId) as { id: string };
+    const factors = db.db.prepare("SELECT COUNT(*) AS count FROM factors WHERE research_run_id = ?").get(discoveryRunId) as { count: number };
+    const sources = db.db.prepare("SELECT COUNT(*) AS count FROM sources WHERE research_run_id = ?").get(discoveryRunId) as { count: number };
+    expect(factors.count).toBeGreaterThan(0);
+    for (const runId of [preparationRunId, discoveryRunId]) {
+      const trace = getRunTrace(db, runId);
+      expect(trace.metrics).toMatchObject({ factors: factors.count, totalSources: sources.count,
+        qualifyingObservations: factors.count, modelCalls: fixture.stages.length, searches: fixture.queries.length });
+      expect(trace.steps.some(step => step.stage === "frame")).toBe(true);
+      for (const query of frameQueries) {
+        const search = trace.steps.find(step => step.kind === "search" && step.search?.query === query.query)!;
+        expect(search.search?.reason).toBe(query.reason);
+        expect(getRunTraceStep(db, runId, search.id).searches).toContainEqual(expect.objectContaining({ query: query.query, reason: query.reason }));
+        expect(getRunTraceStep(db, runId, plan.id).searches).toContainEqual(expect.objectContaining({ query: query.query, reason: query.reason }));
+      }
+      const harvest = trace.steps.find(step => step.stage.startsWith("factor-harvest"))!;
+      expect(getRunTraceStep(db, runId, harvest.id).facts.some(fact => fact.kept === true)).toBe(true);
+    }
+  } finally { await fixture.close(); }
+});
+
 test("different areas reuse one canonical source without aborting saved research", async () => {
-  const fixture = await setup("babysit", false, undefined, false, true);
+  const fixture = await setup("babysit", false, undefined, false, undefined, undefined, undefined, true);
   try {
     const { coordinator, sessionId, db } = fixture;
     await until(() => coordinator.summary(sessionId).state === "waiting-for-review");

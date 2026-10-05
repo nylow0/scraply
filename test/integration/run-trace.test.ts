@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { z } from "zod";
-import { getRunTrace, getRunTraceStep, savedSearchKey } from "../../src/core/run-trace";
+import { getRunTrace, getRunTraceStep, savedSearchKey, selectSessionEvidenceRunId } from "../../src/core/run-trace";
 import { prepareWorkflowSearch, recordWorkflowSearchTerminal } from "../../src/core/workflow-search-attempts";
 import { DatabaseClient } from "../../src/db/client";
 import { DiscoveryRepository } from "../../src/db/repositories/discovery";
@@ -84,6 +84,91 @@ function fixture(goalFit = false) {
   return { db, runId, saveReview, prepareAttempt };
 }
 
+describe("Trace session evidence selection", () => {
+  function sessionRuns(preparation: "metadata" | "work-item" | "legacy", includeDiscovery = true) {
+    const f = fixture();
+    const config = { ...DEFAULT_RUN_CONFIG, workflowVersion: 2 as const };
+    const workflows = new WorkflowRepository(f.db);
+    f.db.immediateTransaction(() => workflows.createSession({ id: "research-session", threadId: "project", purpose: "discovery",
+      mode: "babysit", contract: {}, remainingMs: 60_000 }));
+    const runs = new ResearchRunRepository(f.db);
+    const link = { sessionId: "research-session", purpose: "discovery" as const };
+    const frameRunId = runs.create("project", config, null, undefined, link).runId;
+    if (preparation === "metadata") f.db.db.prepare("INSERT INTO workflow_snapshots VALUES (?, 'workflow-kind', ?)")
+      .run(frameRunId, JSON.stringify({ kind: "prepare-frame", knownProblem: false }));
+    if (preparation === "work-item") f.db.immediateTransaction(() => {
+      const task = workflows.createWorkItem({ sessionId: link.sessionId, kind: "prepare-frame", scopeKey: "initial-research", input: {}, state: "ready" });
+      workflows.updateWorkItem(task.id, "running", { outputRefs: { runId: frameRunId } });
+      workflows.updateWorkItem(task.id, "succeeded", { outputRefs: { runId: frameRunId } });
+    });
+    runs.finish(frameRunId, "completed");
+    const discoveryRunId = includeDiscovery ? runs.create("project", config, null, undefined, link).runId : null;
+    if (discoveryRunId) runs.finish(discoveryRunId, "completed");
+    return { ...f, frameRunId, discoveryRunId, sessionId: link.sessionId };
+  }
+
+  test.each(["metadata", "work-item"] as const)("saved preparation %s does not replace discovery evidence or derived candidate support", preparation => {
+    const f = sessionRuns(preparation);
+    const runId = f.discoveryRunId!;
+    const now = new Date().toISOString();
+    const sources = [1, 2].map(index => ({ id: `source-${index}`, providerSourceId: null, canonicalUrl: `https://owners.example/${index}`,
+      title: "Owner account", retrievedText: "I repeat filing entries", author: null, publishedAt: null,
+      contentHash: "a".repeat(64), retrievedAt: now }));
+    const factors = sources.map(source => ({ id: `factor-${source.id}`, sourceId: source.id, subject: "Owner",
+      behavior: "Repeats filing entries", quote: source.retrievedText, harvestMode: "audience" as const, modelConfidence: 0.8,
+      sourceRole: "firsthand" as const, audienceFit: "intended-buyer" as const, independentSourceKey: source.id }));
+    new DiscoveryRepository(f.db).persistFactors(runId, sources, factors);
+    const candidate = { statement: "Owners repeat filing entries", whyItPersists: "Manual copying", affected: "Owners", scaleEstimate: "Unknown",
+      scaleBasisFactorId: null, factorIds: factors.map(factor => factor.id), alternativeExplanations: [], unknowns: [],
+      intendedBuyerEvidenceFactorIds: factors.map(factor => factor.id), evidenceGap: null };
+    const repository = new WorkflowV2Repository(f.db);
+    for (const stageId of ["problem-candidates", "problem-kill"] as const) {
+      const promptText = "Read the saved owner accounts.";
+      const promptHash = createHash("sha256").update(promptText).digest("hex");
+      f.db.immediateTransaction(() => repository.saveStageResult({ researchRunId: runId, stageId, selectionId: stageId === "problem-kill" ? "candidate" : null,
+        context: {}, output: stageId === "problem-candidates" ? { problems: [candidate] } : { verdict: "confirmed", verdictReason: "Two independent owner accounts",
+          verdictSourceIds: sources.map(source => source.id), unresolvedAssumptions: [], wouldChangeConclusion: [],
+          intendedBuyerEvidenceFactorIds: candidate.intendedBuyerEvidenceFactorIds, evidenceGap: null },
+        prompt: { stageId, filename: `workflow-v2-${stageId}.md`, revision: 1, source: "bundled", currentBundledSha256: promptHash,
+          overrideBaseline: null, resolvedSha256: promptHash, text: promptText }, schema: {}, inputs: {},
+        evidence: [{ sourceId: "candidate", content: { candidate } }], runtimePrompt: { id: "trace-fixture", sha256: "a".repeat(64) }, effectiveRequest: {} }));
+    }
+    const checkpointRows = f.db.db.prepare("SELECT * FROM stage_results ORDER BY rowid").all();
+    const changes = f.db.db.prepare("SELECT total_changes() AS count").get();
+    expect(selectSessionEvidenceRunId(f.db, f.sessionId)).toBe(runId);
+    for (const requestedRunId of [f.frameRunId, runId]) {
+      const trace = getRunTrace(f.db, requestedRunId);
+      expect(trace.metrics).toMatchObject({ factors: 2, totalSources: 2, qualifyingObservations: 2,
+        candidateFunnel: { confirmed: 1 }, qualifyingPerAssessedCandidate: 2 });
+      expect(trace.candidates).toContainEqual(expect.objectContaining({ derived: true, state: "confirmed", qualifyingObservations: 2, independentSources: 2 }));
+    }
+    expect(f.db.db.prepare("SELECT * FROM stage_results ORDER BY rowid").all()).toEqual(checkpointRows);
+    expect(f.db.db.prepare("SELECT total_changes() AS count").get()).toEqual(changes);
+  });
+
+  test("legacy unmarked discovery keeps its original first-run selection", () => {
+    const f = sessionRuns("legacy");
+    expect(selectSessionEvidenceRunId(f.db, f.sessionId)).toBe(f.frameRunId);
+  });
+
+  test("a frame-only session retains its requested context without inventing discovery", () => {
+    const f = sessionRuns("metadata", false);
+    expect(selectSessionEvidenceRunId(f.db, f.sessionId)).toBeNull();
+    expect(getRunTrace(f.db, f.frameRunId).metrics).toMatchObject({ factors: 0, qualifyingObservations: 0 });
+  });
+
+  test("known-problem evidence keeps the requested-run fallback", () => {
+    const f = fixture();
+    const root = f.db.db.prepare("SELECT discovery_run_id FROM problems WHERE verdict = 'user-asserted'").get() as { discovery_run_id: string };
+    f.db.immediateTransaction(() => {
+      new WorkflowRepository(f.db).createSession({ id: "known-session", threadId: "project", purpose: "known-problem", mode: "babysit", contract: {}, remainingMs: 60_000 });
+      f.db.db.prepare("UPDATE research_runs SET workflow_session_id = 'known-session', purpose = 'known-problem' WHERE id = ?").run(root.discovery_run_id);
+    });
+    expect(selectSessionEvidenceRunId(f.db, "known-session")).toBeNull();
+    expect(getRunTrace(f.db, root.discovery_run_id).candidates).toContainEqual(expect.objectContaining({ state: "user-asserted", derived: false }));
+  });
+});
+
 describe("Trace committed idea decisions", () => {
   test.each([
     { status: "rejected", fit: "fails" as const, reason: "Fails an approved must-have" },
@@ -126,6 +211,29 @@ describe("Trace committed idea decisions", () => {
 });
 
 describe("Trace physical model calls", () => {
+  test.each(["failed", "completed"] as const)("historical %s schema repair details stay explicitly unavailable without rewriting saved records", status => {
+    const f = fixture();
+    const attempt = f.prepareAttempt();
+    attempt.repository.markDispatched(attempt.id);
+    const calls = ["initial", "schema_repair"].map(kind => ({ attempt: kind, model: { providerId: "fixture", modelId: "fixture" },
+      usage: { status: "unknown" }, cost: { status: "unknown" }, latencyMs: 1, providerCompletion: "confirmed" }));
+    attempt.repository.recordTerminal(attempt.id, { status, terminalKind: status,
+      ...(status === "failed" ? { errorCode: "schema", errorMessage: "Native runtime output did not match the requested schema" } : {}),
+      attemptMetadata: { attempts: calls } });
+    const saved = f.db.db.prepare("SELECT * FROM generation_attempts WHERE id = ?").get(attempt.id);
+    const trace = getRunTrace(f.db, f.runId);
+    const step = trace.steps.find(step => step.attempts.some(item => item.id === attempt.id))!;
+    const detail = getRunTraceStep(f.db, f.runId, step.id);
+    expect(detail.events.find(event => event.type === "schema-validation-unavailable")?.payload).toEqual({
+      parentAttemptId: attempt.id, message: "Rejected output and validation details were not retained for this historical attempt.",
+    });
+    expect(detail.events.some(event => event.type === "schema-validation-failed")).toBe(false);
+    expect(detail.output).toBeNull();
+    expect(trace.metrics.modelCalls).toBe(2);
+    expect(f.db.db.prepare("SELECT * FROM generation_attempts WHERE id = ?").get(attempt.id)).toEqual(saved);
+    expect(f.db.db.prepare("SELECT count(*) AS count FROM workflow_snapshots WHERE snapshot_key LIKE 'generation-schema-invalid:%'").get()).toEqual({ count: 0 });
+  });
+
   test("counts an initial and schema repair call once each within one durable row", () => {
     const f = fixture();
     const attempt = f.prepareAttempt();
@@ -217,7 +325,8 @@ describe("Trace physical search dispatches", () => {
     const trace = getRunTrace(f.db, f.runId);
     expect(trace.metrics.searches).toBe(1);
     const step = trace.steps.find(step => step.id === `search-attempt:${attempt.id}`);
-    expect(step).toMatchObject({ kind: "search", status, search: { query, provider: "exa", results: [] } });
+    expect(step).toMatchObject({ kind: "search", status, search: { query, provider: "exa", results: [],
+      reason: "Search recorded by the workflow.", expectedSourceType: "Not recorded" } });
     const detail = getRunTraceStep(f.db, f.runId, step!.id);
     expect(detail.inputs).toEqual(attempt);
     if (status === "failed") expect(detail.events).toContainEqual({ type: "search-interrupted",
@@ -270,6 +379,17 @@ describe("Trace physical search dispatches", () => {
     const trace = getRunTrace(f.db, f.runId);
     expect(trace.metrics.searches).toBe(1);
     expect(trace.steps.filter(step => step.kind === "search")).toHaveLength(1);
+    expect(trace.steps.find(step => step.kind === "search")?.search?.reason).toBe("No matching query plan or query snapshot was saved.");
+  });
+
+  test("a legacy query snapshot without a planned reason keeps the generic explanation", () => {
+    const f = fixture();
+    f.db.db.prepare("INSERT INTO workflow_snapshots VALUES (?, ?, '[]')").run(f.runId, input.key);
+    f.db.db.prepare("INSERT INTO workflow_snapshots VALUES (?, ?, ?)").run(f.runId, input.key.replace("search:", "search-query:"), JSON.stringify(input));
+    const trace = getRunTrace(f.db, f.runId);
+    const search = trace.steps.find(step => step.kind === "search")!;
+    expect(search.search).toMatchObject({ reason: "Search recorded by the workflow.", expectedSourceType: "Not recorded" });
+    expect(getRunTraceStep(f.db, f.runId, search.id).searches).toContainEqual(expect.objectContaining({ reason: "Search recorded by the workflow." }));
   });
 
   test("a prepared managed request cannot hide an older paid result with the same identity", () => {

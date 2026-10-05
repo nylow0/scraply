@@ -1,10 +1,11 @@
 import { z } from "zod";
-import type { DiscoveryDepth } from "./schemas";
+import { SourceSchema, type DiscoveryDepth } from "./schemas";
 import type { Scope } from "./structured-output-schemas";
 
 const IdSchema = z.string().trim().min(1).max(128);
 const ShortTextSchema = z.string().trim().min(1).max(1_000);
-const SourceIdsSchema = z.array(IdSchema).min(1).max(20);
+// Provider source identities may be full URLs. Citation limits must match the supplied source contract.
+const SourceIdsSchema = z.array(SourceSchema.shape.id).min(1).max(20);
 const BasisSchema = z.union([z.literal("brief"), SourceIdsSchema]);
 // Strict provider schemas require every key. Null means omitted when the frame crosses back into the app.
 function optionalFrameField<T extends z.ZodType>(schema: T) {
@@ -47,7 +48,7 @@ export const ResearchAreaSchema = z.object({
   priority: z.number().int().min(1).max(12),
 }).strict();
 
-export const ResearchFrameSchema = z.object({
+const ResearchFrameShapeSchema = z.object({
   version: optionalFrameField(z.literal(1)),
   goal: z.string().trim().min(1).max(4_000),
   goalKind: ResearchGoalKindSchema,
@@ -64,7 +65,9 @@ export const ResearchFrameSchema = z.object({
     options: z.array(z.string().trim().min(1).max(300)).max(8),
     answer: optionalFrameField(z.string().trim().min(1).max(2_000)),
   }).strict()).max(10),
-}).strict().superRefine((frame, ctx) => {
+}).strict();
+
+export const ResearchFrameSchema = ResearchFrameShapeSchema.superRefine((frame, ctx) => {
   const unique = (values: readonly string[], path: string, label: string) => {
     const seen = new Set<string>();
     values.forEach((value, index) => {
@@ -98,6 +101,15 @@ export const FrameSearchPlanSchema = z.object({
 }).strict();
 
 export const ResearchFrameOutputSchema = z.object({ frame: ResearchFrameSchema }).strict();
+
+// Recognizes completed frames' saved wire identity only. Unfinished work uses full provider source IDs.
+const LegacyFrameSourceIdsSchema = z.array(IdSchema).min(1).max(20);
+const LegacyFrameBasisSchema = z.union([z.literal("brief"), LegacyFrameSourceIdsSchema]);
+export const LegacyResearchFrameOutputSchema = z.object({ frame: ResearchFrameShapeSchema.extend({
+  contextFacts: z.array(z.object({ fact: ShortTextSchema, sourceIds: LegacyFrameSourceIdsSchema }).strict()).max(20),
+  successCriteria: z.array(ResearchCriterionSchema.extend({ basis: LegacyFrameBasisSchema })).min(1).max(12),
+  constraints: z.array(ResearchConstraintSchema.extend({ basis: LegacyFrameBasisSchema })).max(20),
+}) }).strict();
 
 export const ResearchAreaRankingSchema = z.object({
   areas: z.array(z.object({
