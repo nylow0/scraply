@@ -160,6 +160,11 @@
     previousRoute = route;
   });
   let selectedIdea = $derived(solutions.find((idea) => idea.id === selectedIdeaId) ?? null);
+  let decisionOption = $state<DecisionOption>();
+  export function isReadyForScroll(ideaId: string): boolean {
+    if (selectedIdea?.id !== ideaId) return false;
+    return selectedIdea.workflowVersion !== 2 || !onSave || !!decisionOption?.isReadyForScroll(ideaId);
+  }
   let runBusy = $derived(!!run && ["queued", "running"].includes(run.status));
   // Selection is saved before analysis starts; root summaries retain it even on older runs.
   let analysisIdea = $derived(solutions.find(idea => idea.runId === run?.runId && idea.selected));
@@ -249,7 +254,7 @@
       {#if ideaContent(selectedIdea.description).summary}<p class="lead">{ideaContent(selectedIdea.description).summary}</p>{/if}
       {#if selectedIdea.weakFitReason}<p class="rank-note"><span class="weak-fit">Weak fit</span> {selectedIdea.weakFitReason}</p>{/if}
       {#if selectedIdea.workflowVersion === 2 && onSave}
-        <DecisionOption idea={selectedIdea} busy={busy || opportunityReviewRunning} {onSave} {onOpenSource} {onEvidenceFollowUp} {onEvidenceReassessment} {onPlanExperiment} />
+        <DecisionOption bind:this={decisionOption} idea={selectedIdea} busy={busy || opportunityReviewRunning} {onSave} {onOpenSource} {onEvidenceFollowUp} {onEvidenceReassessment} {onPlanExperiment} />
       {:else}<SolutionListItem idea={selectedIdea} rank={solutions.findIndex((idea) => idea.id === selectedIdea.id) + 1} initiallyOpen={true} inDetailView={true} {onOpenSource} />{/if}
     {/if}
   </div>

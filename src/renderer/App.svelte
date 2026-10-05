@@ -111,6 +111,7 @@
   let history = $state<NavigationHistory>({ entries: [], index: -1 });
   let knownIdeas = $state<Record<string, string[]>>({});
   let mainContent: HTMLElement | undefined;
+  let solutionWorkspace = $state<SolutionWorkspace>();
   let traversingHistory = $state(false);
   let historyScroll = $state<{ route: NavigationRoute; scrollTop: number } | null>(null);
   let resolveRoute = $derived(routeResolver(workspace?.threads ?? [], knownIdeas));
@@ -174,10 +175,12 @@
     history = rememberScroll(history, historyScroll && sameRoute(route, historyScroll.route) ? historyScroll.scrollTop : mainContent?.scrollTop ?? 0);
     await restoreHistory(traverseHistory(history, direction, resolveRoute));
   }
-  // A conversation reload hides its tall content. Wait for the matching request and render before restoring.
+  // Saved idea details and conversation reloads change page height. Restore after the matching content renders.
   $effect(() => {
     const pending = historyScroll;
     if (!pending || !sameRoute(route, pending.route)) return;
+    if (route.step === "ideas" && route.solution.kind === "idea"
+      && !solutionWorkspace?.isReadyForScroll(route.solution.ideaId)) return;
     if (route.step === "ideas" && route.solution.kind === "conversation"
       && (conversationLoading || conversationIdeaId !== route.solution.ideaId
         || !conversation?.versions.some(version => version.solutionId === conversationIdeaId))) return;
@@ -1153,7 +1156,7 @@
     {:else if activeThread.status === "development-running" || activeThread.status === "solutions-ready" || workspace.solutions.length > 0 || (workspace.ideaGroups?.length ?? 0) > 0}
       <div id="workflow-panel-ideas" role="tabpanel" aria-label="Solutions">
         {#key workspace.activeThreadId}
-        <SolutionWorkspace route={route.solution} onNavigate={navigateSolutions} onBack={(parent) => navigateSolutions(parent, true)} interactive={!settingsOpen} footer={runFinished ? runPanel : undefined} solutions={workspace.solutions} ideaGroups={workspace.ideaGroups} {busy} run={activeRun} elapsed={elapsedStatus ?? ""} runStage={stageLabel(runtimeProgress.stage)} onStop={cancelResearch} analysisBlocked={!!activeRun && ["queued", "running"].includes(activeRun.status)} opportunities={workspace.opportunityFamilies} opportunityReviewRunning={workspace.opportunityReviewStatus?.running} modelOptions={workspace.modelOptions} initialConfig={workspace.runConfig} activeResearchSnapshotId={appliedResearchSnapshotId} onFocusChange={(focused) => ideaFocused = focused} onReviewOpportunities={reviewSavedOpportunities} onEditMembership={editOpportunityMembership} onPlanExperiment={requestFocusedExperiment} workflowVersion={activeRun?.workflowVersion} onSelect={selectOption} onSave={saveDecision} onExport={exportIdeas} onOpenSource={openExternalUrl} onEvidenceFollowUp={requestEvidenceFollowUp} onEvidenceReassessment={requestEvidenceReassessment} {conversation} {conversationLoading} {conversationError} onOpenConversation={openConversation} onSubmitIdeaTurn={submitIdeaTurn} onSelectConversationVersion={selectConversationVersion} onLoadMoreConversation={(cursor) => refreshConversation(conversationIdeaId ?? "", cursor)} />
+        <SolutionWorkspace bind:this={solutionWorkspace} route={route.solution} onNavigate={navigateSolutions} onBack={(parent) => navigateSolutions(parent, true)} interactive={!settingsOpen} footer={runFinished ? runPanel : undefined} solutions={workspace.solutions} ideaGroups={workspace.ideaGroups} {busy} run={activeRun} elapsed={elapsedStatus ?? ""} runStage={stageLabel(runtimeProgress.stage)} onStop={cancelResearch} analysisBlocked={!!activeRun && ["queued", "running"].includes(activeRun.status)} opportunities={workspace.opportunityFamilies} opportunityReviewRunning={workspace.opportunityReviewStatus?.running} modelOptions={workspace.modelOptions} initialConfig={workspace.runConfig} activeResearchSnapshotId={appliedResearchSnapshotId} onFocusChange={(focused) => ideaFocused = focused} onReviewOpportunities={reviewSavedOpportunities} onEditMembership={editOpportunityMembership} onPlanExperiment={requestFocusedExperiment} workflowVersion={activeRun?.workflowVersion} onSelect={selectOption} onSave={saveDecision} onExport={exportIdeas} onOpenSource={openExternalUrl} onEvidenceFollowUp={requestEvidenceFollowUp} onEvidenceReassessment={requestEvidenceReassessment} {conversation} {conversationLoading} {conversationError} onOpenConversation={openConversation} onSubmitIdeaTurn={submitIdeaTurn} onSelectConversationVersion={selectConversationVersion} onLoadMoreConversation={(cursor) => refreshConversation(conversationIdeaId ?? "", cursor)} />
         {/key}
       </div>
     {:else if activeWorkflow}

@@ -57,6 +57,11 @@
   $effect(() => {
     if (revision !== `${idea.id}:${idea.detailRevision}`) void loadDetail();
   });
+  // History must wait for this revision's details, including a visible load error.
+  export function isReadyForScroll(ideaId: string): boolean {
+    return !loading && idea.id === ideaId && revision === `${idea.id}:${idea.detailRevision}`
+      && (detail !== null || error !== "");
+  }
   async function loadDetail() {
     const key = `${idea.id}:${idea.detailRevision}`;
     const requestEpoch = ++detailLoadEpoch;

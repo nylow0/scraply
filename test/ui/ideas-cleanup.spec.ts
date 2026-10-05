@@ -248,6 +248,26 @@ test("conversation history restores scroll after a delayed reload and ignores an
   expect(await page.locator(".main-content").evaluate(el => el.scrollTop)).toBe(ideaScroll);
 });
 
+for (const analysis of ["analysis=done", "analysis=failed&partial=1"]) {
+  test(`idea history restores deep scroll after saved analysis details render: ${analysis}`, async ({ page }) => {
+    await page.goto(`/?slice2=1&history=1&${analysis}`);
+    await page.getByRole("button", { name: "Open idea: History access and provenance pack" }).click();
+    await expect(page.locator(".idea-detail").getByText("Next experiment", { exact: true })).toBeVisible();
+    await page.evaluate(() => document.fonts.ready);
+    const saved = await page.locator(".main-content").evaluate(el => {
+      el.scrollTop = el.scrollHeight;
+      return el.scrollTop;
+    });
+    expect(saved).toBeGreaterThan(600);
+
+    await page.getByRole("button", { name: "Go back" }).click();
+    await expect(page.getByRole("button", { name: "Open idea: History access and provenance pack" })).toBeVisible();
+    await page.getByRole("button", { name: "Go forward" }).click();
+    await expect(page.locator(".idea-detail").getByText("Next experiment", { exact: true })).toBeVisible();
+    await expect.poll(() => page.locator(".main-content").evaluate(el => el.scrollTop)).toBe(saved);
+  });
+}
+
 test("saved partial analysis and the Solutions fallback remain readable", async ({ page }) => {
   await page.goto("/?slice2=1&history=1&analysis=failed&partial=1");
   await page.getByRole("button", { name: "Open idea: History access and provenance pack" }).click();
