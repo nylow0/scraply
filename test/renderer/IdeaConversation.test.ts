@@ -4,7 +4,7 @@ import IdeaConversation from "../../src/renderer/components/IdeaConversation.sve
 import type { IdeaConversation as ConversationView } from "../../src/shared/workflow-contracts";
 import { pickModel } from "./model-picker";
 import { createIdeasFixture } from "../ui/ideas-fixture";
-import { EXPLAIN_IDEA_PROMPT } from "../../src/renderer/lib/idea-content";
+import { EXPLAIN_IDEA_PROMPT } from "../../src/shared/idea-messages";
 
 const modelOptions = [{
   providerId: "test", modelId: "new-model", displayName: "New model", defaultReasoningEffort: "medium",

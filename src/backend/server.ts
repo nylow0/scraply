@@ -6,6 +6,7 @@ import { ProblemFactorAssessmentSchema, SavedProblemCandidateSchema } from "../s
 import { CriteriaFitSchema, BiggerProblemSchema } from "../shared/solution-goal-fit";
 import { applyProblemFactorAssessments, reliesOnCloseRoles } from "../core/problem-evidence";
 import { randomBytes, randomUUID } from "node:crypto";
+import { visibleIdeaMessage } from "../shared/idea-messages";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { recoverInterruptedEvidenceFollowUps, ResearchEngine } from "../core/research-engine";
 import { WorkflowCoordinator } from "../core/workflow-coordinator";
@@ -1079,7 +1080,7 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
         branchSequence: row.branch_sequence, parentTurnId: row.parent_turn_id,
         baseSolutionId: row.base_solution_id, evidenceSnapshotId: row.evidence_snapshot_id,
         sessionId: row.session_id, clientMessageId: row.client_message_id,
-        intent: row.intent, userText: row.user_text, context: JSON.parse(row.context_json) as unknown,
+        intent: row.intent, userText: visibleIdeaMessage(row.intent, row.user_text), context: JSON.parse(row.context_json) as unknown,
         contextSha256: row.context_sha256, state: row.state,
         assistant: row.assistant_json ? JSON.parse(row.assistant_json) as unknown : null,
         stageResultId: row.stage_result_id,
@@ -1127,7 +1128,7 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
           lines.push(`#### Turn ${turn.branchSequence} · \`${turn.id}\``, "",
             `Intent: ${turn.intent}. State: ${turn.state}. Base version: \`${turn.baseSolutionId}\`.${turn.parentTurnId ? ` Parent turn: \`${turn.parentTurnId}\`.` : ""}`,
             `Evidence snapshot: ${turn.evidenceSnapshotId ? `\`${turn.evidenceSnapshotId}\`` : "none"}. Generated version: ${turn.generatedSolutionId ? `\`${turn.generatedSolutionId}\`` : "none"}.`,
-            "", "**User**", "", markdownQuote(turn.userText), "");
+            "", "**User**", "", markdownQuote(visibleIdeaMessage(turn.intent, turn.userText)), "");
           const assistant = turn.assistant && typeof turn.assistant === "object" ? turn.assistant as Record<string, unknown> : null;
           const assistantText = typeof assistant?.reply === "string" ? assistant.reply
             : typeof assistant?.text === "string" ? assistant.text : null;

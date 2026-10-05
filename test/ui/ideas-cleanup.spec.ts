@@ -1,5 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
-import { EXPLAIN_IDEA_PROMPT } from "../../src/renderer/lib/idea-content";
+import { EXPLAIN_IDEA_PROMPT } from "../../src/shared/idea-messages";
 
 async function openConversation(page: Page, query = "") {
   await page.goto(`/?slice2=1&history=1${query}`);

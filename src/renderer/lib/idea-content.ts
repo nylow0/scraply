@@ -28,5 +28,3 @@ export function mechanismSteps(mechanism: string): string[] | null {
   if (text.slice(start).trim()) parts.push(text.slice(start).trim());
   return parts.length >= 3 ? parts : null;
 }
-
-export const EXPLAIN_IDEA_PROMPT = "Explain this idea to someone new to the field. Say what it is, who uses it, how it works step by step, and what would have to be true for it to work. Use short plain sentences.";

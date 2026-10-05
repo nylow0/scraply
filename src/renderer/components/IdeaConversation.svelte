@@ -2,7 +2,8 @@
   import { tick } from "svelte";
   import type { SolutionView, WorkspaceState } from "../../shared/ipc";
   import { loadIdeaDetail } from "../lib/idea-details";
-  import { ideaContent, EXPLAIN_IDEA_PROMPT } from "../lib/idea-content";
+  import { ideaContent } from "../lib/idea-content";
+  import { EXPLAIN_IDEA_PROMPT, visibleIdeaMessage } from "../../shared/idea-messages";
   import IdeaMechanism from "./IdeaMechanism.svelte";
   import AnalysisProgress from "./AnalysisProgress.svelte";
   import RiskAnalysis from "./RiskAnalysis.svelte";
@@ -236,7 +237,7 @@
       <div class="turns" aria-live="polite">
         {#each visibleTurns as turn (turn.id)}
           <article class="turn">
-            <div class="message user"><p>{turn.intent === "explain" && turn.userText === EXPLAIN_IDEA_PROMPT ? "Explain this idea" : turn.userText}</p></div>
+            <div class="message user"><p>{visibleIdeaMessage(turn.intent, turn.userText)}</p></div>
             {#if turn.assistant}
               <div class="message assistant"><p>{turn.assistant.text}</p>
                 {#if turn.assistant.citedEvidenceIds.length}<p class="citations">Evidence: {turn.assistant.citedEvidenceIds.join(", ")}</p>{/if}
