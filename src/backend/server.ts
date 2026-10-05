@@ -683,7 +683,7 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
         workflowVersion: Number(row.workflow_version) as 1 | 2,
         runId: String(row.research_run_id), selected: row.selected_at !== null,
         selectable: Boolean(row.awaiting_selection) && (row.selected_solution_id === null || row.selected_solution_id === row.id)
-          && (row.selected_at === null || generationAttempts.getResumeSafety(String(row.research_run_id)).canResume),
+          && generationAttempts.getResumeSafety(String(row.research_run_id), workflows.acknowledgedAttemptIds(String(row.research_run_id))).canResume,
         ...(row.evidence_follow_up_status === null ? {} : {
           evidenceFollowUpStatus: (row.evidence_follow_up_status === "requested" ? "running" : String(row.evidence_follow_up_status)) as "running" | "completed" | "failed",
         }),

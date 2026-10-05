@@ -872,6 +872,45 @@ describe("native v2 decisions through the production backend", () => {
     item.assertAccounting(5);
   });
 
+  test("Analyze risks uses saved paid-request acknowledgements and still blocks unknown requests", async () => {
+    const item = await fixture({ searchEnabled: false, workflowVersion: 2 });
+    const threadId = await item.createThread("known-problem");
+    await item.post("/research/start", { threadId }, z.object({ runId: z.string() }));
+    const options = await item.waitFor(state => state.latestResearchRun?.awaitingSelection === true);
+    const selected = options.solutions[0]!;
+    const db = new DatabaseClient(item.dbPath);
+    try {
+      const attempts = new GenerationAttemptRepository(db);
+      const request = {
+        generationId: "lost-paid-request", stage: "fixture", model, reasoningEffort: "medium",
+        deadlineMs: 1_000, repairPolicy: "one_retry" as const, maxOutputTokens: 128,
+        workOrder: { stage: "fixture", instruction: "Return an answer.", goal: "Recovery", definitionOfDone: ["One answer"] },
+        evidence: [], schema: z.object({ answer: z.string() }),
+        jsonSchema: { type: "object" as const, properties: { answer: { type: "string" as const } } },
+      };
+      const lost = attempts.prepare(selected.runId!, request, { compilerPrompt: { id: "fixture", sha256: "a".repeat(64) } });
+      attempts.markDispatched(lost.id);
+      attempts.recordTerminal(lost.id, { status: "interrupted", terminalKind: "interrupted",
+        attemptMetadata: { attempts: [{ providerCompletion: "unknown" }] } });
+      const replacement = attempts.prepare(selected.runId!, { ...request, generationId: "confirmed-changed-prompt" },
+        { compilerPrompt: { id: "fixture", sha256: "b".repeat(64) } });
+      attempts.recordTerminal(replacement.id, { status: "completed", terminalKind: "completed", output: { answer: "Saved" } });
+      expect(attempts.getResumeSafety(selected.runId!).canResume).toBe(false);
+      expect((await item.post(`/ideas/${selected.id}`, undefined, SolutionViewSchema)).selectable).toBe(false);
+      await expect(item.post("/research/select-option", { threadId, runId: selected.runId, solutionId: selected.id }, WorkspaceStateSchema))
+        .rejects.toThrow("Review this request");
+      // Retry of a previously selected idea must use the same persisted acknowledgement.
+      db.db.prepare("UPDATE solutions SET selected_at = ? WHERE id = ?").run(new Date().toISOString(), selected.id);
+      db.db.prepare("INSERT INTO workflow_snapshots VALUES (?, 'acknowledged-retry:explicit', ?)")
+        .run(selected.runId, JSON.stringify({ attemptIds: [lost.id] }));
+      expect((await item.post(`/ideas/${selected.id}`, undefined, SolutionViewSchema)).selectable).toBe(true);
+      await item.post("/research/select-option", { threadId, runId: selected.runId, solutionId: selected.id }, WorkspaceStateSchema);
+      await item.waitFor(state => state.latestResearchRun?.status === "completed" && !state.latestResearchRun.awaitingSelection);
+      expect((await item.post(`/ideas/${selected.id}`, undefined, SolutionViewSchema)).decisionAnalysis).not.toBeNull();
+      expect(attempts.getResumeSafety(selected.runId!).canResume).toBe(false);
+    } finally { db.close(); }
+  });
+
   test("retains and exports risk evaluation after analysis fails, then reuses it on resume", async () => {
     const item = await fixture({ mode: "workflow-analysis-fail", searchEnabled: false });
     const threadId = await item.createThread("known-problem");

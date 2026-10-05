@@ -399,16 +399,17 @@ export class ResearchEngine {
     if (!row || row.thread_id !== threadId) throw new AppError("not_found", "Option run does not belong to this project.");
     if (this.activeRuns.has(runId)) return;
     if (!row.awaiting_selection) throw new AppError("conflict", "This run is not awaiting an option selection.");
-    const safety = this.generationAttempts.getResumeSafety(runId);
+    const acknowledged = new WorkflowRepository(this.options.db).acknowledgedAttemptIds(runId);
+    const safety = this.generationAttempts.getResumeSafety(runId, acknowledged);
     if (!safety.canResume) throw new AppError("conflict", `${safety.resumeBlockedReason} Review this request before explicitly retrying it.`);
     this.assertThreadIdle(threadId, runId);
-    const workflow = new WorkflowExecution(this.options.db, runId);
+    const workflow = new WorkflowExecution(this.options.db, runId, acknowledged);
     this.options.db.immediateTransaction(() => {
       workflow.repository.selectSolution(runId, solutionId);
       this.options.db.db.prepare("UPDATE research_runs SET status = 'running', awaiting_selection = 0, interrupted = 0, cancelled = 0, completion_reason = NULL, updated_at = ? WHERE id = ?")
         .run(new Date().toISOString(), runId);
     });
-    this.begin(runId, threadId, row.problem_id, RunConfigSchema.parse(JSON.parse(row.config_json)), true);
+    this.begin(runId, threadId, row.problem_id, RunConfigSchema.parse(JSON.parse(row.config_json)), true, acknowledged);
   }
 
   getOpportunityExploration(threadId: string): OpportunityExplorationProgress | null {
