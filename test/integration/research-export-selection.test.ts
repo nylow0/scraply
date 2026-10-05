@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { startBackend, type BackendHandle } from "../../src/backend/server";
+import { materializeResearchSnapshot } from "../../src/core/research-revisions";
 import { DatabaseClient } from "../../src/db/client";
 import { WorkflowRepository } from "../../src/db/repositories/workflows";
 import { DEFAULT_RUN_CONFIG } from "../../src/shared/schemas";
@@ -112,4 +113,27 @@ test("malformed historical workflow-kind does not disqualify completed discovery
     saveRun(db, "partial-discovery", "failed", 3);
   });
   expect(exported.researchRun.id).toBe("completed-discovery");
+});
+
+test("explicit active snapshot wins over completed discovery and preparation", async () => {
+  let materializationRunId = "";
+  const exported = await exportResearch(db => {
+    saveRun(db, "snapshot-source", "completed", 1);
+    saveRun(db, "completed-discovery", "completed", 2);
+    saveRun(db, "preparation", "completed", 3);
+    markPreparation(db, "marker");
+    const workflows = new WorkflowRepository(db);
+    db.immediateTransaction(() => {
+      const session = workflows.createSession({ id: "active-session", threadId: "project", purpose: "discovery", mode: "babysit",
+        contract, remainingMs: 60_000 });
+      const materialized = materializeResearchSnapshot(db, { threadId: "project", baseRunId: "snapshot-source",
+        sourceProblemIds: ["problem-snapshot-source"], sessionId: session.id });
+      materializationRunId = materialized.runId;
+      const snapshot = workflows.createSnapshot({ sessionId: session.id, materializationRunId: materialized.runId,
+        selection: { problemIds: materialized.problemIds, sourceProblemIds: ["problem-snapshot-source"] }, originMap: materialized.originMap });
+      workflows.updateSession(session.id, session.revision, { state: "waiting-for-review", activeSnapshotId: snapshot.id });
+    });
+  });
+  expect(exported.researchRun.id).toBe(materializationRunId);
+  expect(exported.problems).toHaveLength(1);
 });

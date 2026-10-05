@@ -1,4 +1,6 @@
 import { randomUUID } from "node:crypto";
+import { copySavedProblemCandidates } from "./saved-candidate-archive";
+import { ResearchFrameRepository } from "../db/repositories/research-frames";
 import type { DatabaseClient } from "../db/client";
 import { canonicalJson, sha256 } from "../shared/content-identity";
 import { ProblemFactorAssessmentSchema } from "../shared/structured-output-schemas";
@@ -111,6 +113,7 @@ type FactorRow = {
   source_id: string; harvest_mode: string; model_confidence: number; uncertainty: string | null;
   source_role: string; audience_fit: string; independent_source_key: string | null;
   supports_demand: number; demand_evidence_uncertainty: string | null;
+  area_id: string | null;
 };
 type ProblemRow = {
   id: string; discovery_run_id: string; statement: string; why_it_persists: string;
@@ -118,6 +121,7 @@ type ProblemRow = {
   verdict: string; verdict_reason: string; intended_buyer_evidence_factor_ids_json: string;
   evidence_gap: string | null; brief_fit: string; contrary_evidence: string; workflow_key: string | null;
   factor_assessments_json: string;
+  area_id: string | null;
 };
 type RunRow = { id: string; thread_id: string; status: string; config_json: string; workflow_version: number };
 
@@ -139,12 +143,17 @@ export interface MaterializeResearchInput {
   sourceProblemIds: string[];
   sessionId?: string;
   runId?: string;
+  /** Candidate assessment also preserves archives whose first assessment returned no findings. */
+  allowEmpty?: boolean;
+  copyCandidates?: boolean;
+  frameId?: string | null;
 }
 
 export interface MaterializedResearch {
   runId: string;
   problemIds: string[];
   originMap: ResearchOriginMap;
+  candidateIds: Record<string, string>;
 }
 
 /**
@@ -155,7 +164,7 @@ export interface MaterializedResearch {
 export function materializeResearchSnapshot(client: DatabaseClient, input: MaterializeResearchInput): MaterializedResearch {
   client.requireImmediateTransaction();
   const db = client.db;
-  if (!input.sourceProblemIds.length || new Set(input.sourceProblemIds).size !== input.sourceProblemIds.length) {
+  if ((!input.allowEmpty && !input.sourceProblemIds.length) || new Set(input.sourceProblemIds).size !== input.sourceProblemIds.length) {
     throw new ResearchRevisionError("Choose distinct findings to include in the snapshot.");
   }
   const baseRun = db.prepare("SELECT id, thread_id, status, config_json, workflow_version FROM research_runs WHERE id = ?")
@@ -171,7 +180,7 @@ export function materializeResearchSnapshot(client: DatabaseClient, input: Mater
     const row = db.prepare(`SELECT p.id, p.discovery_run_id, p.statement, p.why_it_persists,
       p.affected, p.scale_estimate, p.scale_basis_factor_id, p.verdict, p.verdict_reason,
       p.intended_buyer_evidence_factor_ids_json, p.evidence_gap,
-      p.brief_fit, p.contrary_evidence, p.workflow_key, p.factor_assessments_json
+      p.brief_fit, p.contrary_evidence, p.workflow_key, p.factor_assessments_json, p.area_id
       FROM problems p JOIN research_runs r ON r.id = p.discovery_run_id
       WHERE p.id = ? AND r.thread_id = ? AND r.status = 'completed'`).get(id, input.threadId) as ProblemRow | undefined;
     if (!row) throw new ResearchRevisionError("A selected finding is unavailable in this project.");
@@ -218,6 +227,12 @@ export function materializeResearchSnapshot(client: DatabaseClient, input: Mater
     VALUES (?, ?, 'completed', ?, 0, 'Evidence snapshot materialization; no provider calls.',
       NULL, ?, ?, ?, ?, 'research-materialization')`)
     .run(runId, input.threadId, baseRun.config_json, now, now, baseRun.workflow_version, input.sessionId ?? null);
+  if (input.frameId !== undefined) {
+    if (input.frameId !== null) new ResearchFrameRepository(client).bindRun(runId, input.threadId, input.frameId);
+  } else {
+    db.prepare("UPDATE research_runs SET frame_id = (SELECT frame_id FROM research_runs WHERE id = ?) WHERE id = ?")
+      .run(baseRun.id, runId);
+  }
   db.prepare(`INSERT INTO scopes
     (id, research_run_id, title, audience, domain, observations, off_limits_json,
       risk_evaluation_criteria, created_at, updated_at)
@@ -226,6 +241,9 @@ export function materializeResearchSnapshot(client: DatabaseClient, input: Mater
       scope.off_limits_json, scope.risk_evaluation_criteria, now, now);
 
   const originMap: ResearchOriginMap = { sources: {}, factors: {}, problems: {} };
+  db.prepare(`INSERT INTO workflow_snapshots (research_run_id, snapshot_key, value_json)
+    SELECT ?, snapshot_key, value_json FROM workflow_snapshots
+    WHERE research_run_id = ? AND snapshot_key IN ('candidate-archive-complete', 'candidate-assessment-frame')`).run(runId, baseRun.id);
   const copiedSources = new Map<string, string>();
   const sourceByUrl = new Map<string, { id: string; contentHash: string }>();
   for (const source of sourceRows.values()) {
@@ -267,12 +285,12 @@ export function materializeResearchSnapshot(client: DatabaseClient, input: Mater
     db.prepare(`INSERT INTO factors
       (id, research_run_id, subject, behavior, quote, source_id, harvest_mode,
         model_confidence, uncertainty, source_role, audience_fit, independent_source_key,
-        supports_demand, demand_evidence_uncertainty, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+        supports_demand, demand_evidence_uncertainty, area_id, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
       .run(copiedId, runId, factor.subject, factor.behavior, factor.quote, copiedSourceId,
         factor.harvest_mode, factor.model_confidence, factor.uncertainty, factor.source_role,
         factor.audience_fit, factor.independent_source_key, factor.supports_demand,
-        factor.demand_evidence_uncertainty, now);
+        factor.demand_evidence_uncertainty, factor.area_id, now);
   }
 
   const copiedProblems: string[] = [];
@@ -328,12 +346,12 @@ export function materializeResearchSnapshot(client: DatabaseClient, input: Mater
       (id, discovery_run_id, statement, why_it_persists, affected, scale_estimate,
         scale_basis_factor_id, verdict, verdict_reason, verdict_source_ids_json,
         intended_buyer_evidence_factor_ids_json, evidence_gap, brief_fit,
-        contrary_evidence, workflow_key, factor_assessments_json, selected_at, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)`)
+        contrary_evidence, workflow_key, factor_assessments_json, area_id, selected_at, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)`)
       .run(copiedId, runId, problem.statement, problem.why_it_persists, problem.affected,
         problem.scale_estimate, copiedScaleBasis, problem.verdict, problem.verdict_reason,
         "[]", JSON.stringify(copiedBuyerFactors), problem.evidence_gap,
-        problem.brief_fit, problem.contrary_evidence, problem.workflow_key, JSON.stringify(copiedAssessments), now);
+        problem.brief_fit, problem.contrary_evidence, problem.workflow_key, JSON.stringify(copiedAssessments), problem.area_id, now);
     for (const factorId of factorIdsByProblem.get(problem.id) ?? []) {
       const copied = copiedFactors.get(factorId);
       if (!copied) throw new ResearchRevisionError("A problem's cited factor was not copied.");
@@ -345,7 +363,9 @@ export function materializeResearchSnapshot(client: DatabaseClient, input: Mater
         .run(copiedId, sourceId, runId, position);
     });
   }
-  return { runId, problemIds: copiedProblems, originMap };
+  const candidateIds = input.copyCandidates !== false
+    ? copySavedProblemCandidates(client, { sourceRunIds: [baseRun.id], targetRunId: runId, originMap }) : {};
+  return { runId, problemIds: copiedProblems, originMap, candidateIds };
 }
 
 function parseIdArray(value: string): string[] {

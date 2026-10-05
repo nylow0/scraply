@@ -40,6 +40,7 @@ export class CostLedgerRepository {
     model: string | null,
     upperBoundUsd: number,
     generationAttemptId?: string,
+    usage?: Record<string, unknown>,
   ): CostReservation {
     if (!Number.isFinite(upperBoundUsd) || upperBoundUsd < 0) throw new Error("Invalid cost reservation");
     const db = this.client.db;
@@ -66,9 +67,9 @@ export class CostLedgerRepository {
       db.prepare(`
         INSERT INTO cost_ledger (
           id, research_run_id, operation, provider, model, reservation_usd,
-          committed_usd, status, generation_attempt_id, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, NULL, 'reserved', ?, ?, ?)
-      `).run(id, runId, operation, provider, model, upperBoundUsd, generationAttemptId ?? null, now, now);
+          committed_usd, status, generation_attempt_id, usage_json, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, NULL, 'reserved', ?, ?, ?, ?)
+      `).run(id, runId, operation, provider, model, upperBoundUsd, generationAttemptId ?? null, usage ? JSON.stringify(usage) : null, now, now);
       db.prepare(`
         UPDATE research_runs SET reserved_cost = reserved_cost + ?, updated_at = ? WHERE id = ?
       `).run(upperBoundUsd, now, runId);

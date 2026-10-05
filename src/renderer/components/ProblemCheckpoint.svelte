@@ -1,13 +1,17 @@
 <script lang="ts">
   import "./problem-review.css";
   import ResultsToolbar from "./ResultsToolbar.svelte";
+  import CandidateAssessmentControl from "./CandidateAssessmentControl.svelte";
+  import type { PreviewWorkflowResult } from "../../shared/workflow-contracts";
   import type { ProblemCandidate, RejectedProblemCandidate } from "../../shared/ipc";
   import { DEFAULT_RUN_CONFIG, modelRefKey, type ExplorationPurpose, type ModelOption, type ModelRef, type RunConfig } from "../../shared/schemas";
   import { modelDisplayName, readResearchDefaults } from "../lib/research-defaults";
   import { verdictLabel } from "../lib/status";
   import { untrack } from "svelte";
   import { SvelteSet } from "svelte/reactivity";
-  let { problems, rejectedCandidates, modelOptions, initialConfig, priorDevelopment = false, fixedExplorationPurpose, busy, onCommit, onExport, onOpenSource }:{ problems:ProblemCandidate[];rejectedCandidates:RejectedProblemCandidate[];modelOptions:ModelOption[];initialConfig:RunConfig|null;priorDevelopment?:boolean;fixedExplorationPurpose?:ExplorationPurpose|undefined;workflowVersion?:1|2|undefined;ideaCount?:number|undefined;busy:boolean;onCommit:(ids:string[],userProblem:string|null,model:ModelRef,reasoningEffort:string,explorationPurpose:ExplorationPurpose)=>Promise<void>;onExport:()=>Promise<void>;onOpenSource:(url:string)=>Promise<void> }=$props();
+  let { problems, rejectedCandidates, modelOptions, initialConfig, priorDevelopment = false, fixedExplorationPurpose, busy, onCommit, onExport, onOpenSource,
+    previewCandidateAssessment, onAssessCandidate }:{ problems:ProblemCandidate[];rejectedCandidates:RejectedProblemCandidate[];modelOptions:ModelOption[];initialConfig:RunConfig|null;priorDevelopment?:boolean;fixedExplorationPurpose?:ExplorationPurpose|undefined;workflowVersion?:1|2|undefined;ideaCount?:number|undefined;busy:boolean;onCommit:(ids:string[],userProblem:string|null,model:ModelRef,reasoningEffort:string,explorationPurpose:ExplorationPurpose)=>Promise<void>;onExport:()=>Promise<void>;onOpenSource:(url:string)=>Promise<void>;
+    previewCandidateAssessment?:(candidateId:string)=>Promise<PreviewWorkflowResult>;onAssessCandidate?:(preview:PreviewWorkflowResult)=>Promise<void> }=$props();
   const initialProblems=untrack(()=>problems);
   const selected=new SvelteSet(initialProblems.filter((item)=>item.selected).map((item)=>item.id));
   let userProblem=$state("");
@@ -101,6 +105,9 @@
             <div class="verdict"><span>{candidate.disposition === "not-assessed" ? "Awaiting evidence assessment" : "Not evidence-backed"}</span></div>
             <h2>{candidate.statement}</h2>
             <p>{candidate.reason}</p>
+            {#if candidate.disposition === "not-assessed" && candidate.candidate && previewCandidateAssessment && onAssessCandidate}
+              <CandidateAssessmentControl candidateId={candidate.id} {busy} {previewCandidateAssessment} {onAssessCandidate} />
+            {/if}
             {#if !fixedExplorationPurpose}<button class="use-rejected" type="button" disabled={busy} onclick={() => useAsUserAsserted(candidate.statement)}>Use as user-asserted problem</button>{/if}
           </article>
         {/each}

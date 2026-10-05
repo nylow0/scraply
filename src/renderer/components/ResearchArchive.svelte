@@ -1,8 +1,10 @@
 <script lang="ts">
   import "./problem-review.css";
   import ResultsToolbar from "./ResultsToolbar.svelte";
+  import CandidateAssessmentControl from "./CandidateAssessmentControl.svelte";
   import { verdictLabel } from "../lib/status";
   import type { ProblemCandidate, RejectedProblemCandidate } from "../../shared/ipc";
+  import type { PreviewWorkflowResult } from "../../shared/workflow-contracts";
 
   let {
     problems,
@@ -10,12 +12,16 @@
     busy,
     onExport,
     onOpenSource,
+    previewCandidateAssessment,
+    onAssessCandidate,
   }: {
     problems: ProblemCandidate[];
     rejectedCandidates: RejectedProblemCandidate[];
     busy: boolean;
     onExport: () => Promise<void>;
     onOpenSource: (url: string) => Promise<void>;
+    previewCandidateAssessment?: (candidateId: string) => Promise<PreviewWorkflowResult>;
+    onAssessCandidate?: (preview: PreviewWorkflowResult) => Promise<void>;
   } = $props();
 
   let sourceCount = $derived(new Set(problems.flatMap((problem) => problem.factors.map((factor) => factor.sourceId))).size);
@@ -102,6 +108,9 @@
                 <div><dt>Affected</dt><dd>{candidate.candidate.affected}</dd></div>
                 <div><dt>Scale estimate</dt><dd class="estimated">{candidate.candidate.scaleEstimate}</dd></div>
               </dl>
+            {/if}
+            {#if candidate.candidate && previewCandidateAssessment && onAssessCandidate}
+              <CandidateAssessmentControl candidateId={candidate.id} {busy} {previewCandidateAssessment} {onAssessCandidate} />
             {/if}
           </article>
         {/each}

@@ -119,6 +119,47 @@ describe("discovery", () => {
     })).rejects.toThrow("one uk translation");
     expect(searches).toBe(0);
   });
+
+  test("rediscovered evidence keeps the saved source ID and quote before extraction", async () => {
+    const saved = source("saved-context", "Operators repeat filing.");
+    const result = await harvestEvidenceFollowUp(scope(), "What did the operator report?", {
+      model, reasoningEffort, workflowVersion: 2, existingSources: () => [saved],
+      prompt: () => "Extract fixture evidence",
+      modelClient: modelClient(request => {
+        const evidence = request.evidence[0]!.content as { sources: Array<{ id: string; text: string }> };
+        expect(evidence.sources[0]).toMatchObject({ id: saved.id, text: saved.retrievedText });
+        return { factors: [{ subject: "Operators", behavior: "repeat filing", quote: saved.retrievedText,
+          sourceId: saved.id, modelConfidence: 0.8 }] };
+      }),
+      search: { async search() { return [{ id: "provider-new", url: saved.url, title: "Updated page", text: "A different new summary." }]; } },
+    });
+    expect(result.sources).toEqual([saved]);
+    expect(result.factors[0]).toMatchObject({ sourceId: saved.id, quote: saved.retrievedText });
+  });
+
+  test("saved measured observations prevent one new vendor page from demoting the whole domain", async () => {
+    const exclusions: string[][] = [];
+    await harvestFactors(scope(), {
+      model, reasoningEffort, depth: "quick", workflowVersion: 2,
+      queryCountByMode: { domain: 1, audience: 1 }, sourceRouting: {},
+      existingFactors: () => Array.from({ length: 4 }, () => ({ sourceRole: "measured", source: { url: "https://example.test/study" } })),
+      prompt: () => "Extract fixture evidence",
+      modelClient: modelClient(request => {
+        if (request.stage.startsWith("query-plan")) return { queries: [{ query: request.stage, intent: "firsthand-experience",
+          uncertainty: "Operator workflow", intendedSourceType: "Operator report" }] };
+        const evidence = request.evidence[0]!.content as { sources: Array<{ id: string; text: string }> };
+        return { factors: [{ subject: "Vendor", behavior: "claims workflow savings", quote: evidence.sources[0]!.text,
+          sourceId: evidence.sources[0]!.id, modelConfidence: 0.8, sourceRole: "vendor", audienceFit: "not-intended-buyer",
+          uncertainty: "Vendor claim", independentSourceKey: null, supportsDemand: false, demandEvidenceUncertainty: "Not a buyer report" }] };
+      }),
+      search: { async search(query, options) {
+        exclusions.push(options?.excludeDomains ?? []);
+        return [{ id: query, url: `https://example.test/${query.includes("audience") ? "audience" : "domain"}`, title: "Vendor page", text: "We automate filing." }];
+      } },
+    });
+    expect(exclusions).toHaveLength(4);
+    expect(exclusions.every(domains => !domains.includes("example.test"))).toBe(true);
+  });
   test("permits a measured-only scan for a research question without a buyer intent", async () => {
     const searches: string[] = [];
     await harvestFactors(scope(), {

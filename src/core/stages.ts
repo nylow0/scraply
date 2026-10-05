@@ -17,6 +17,7 @@ import {
 } from "../shared/structured-output-schemas";
 import { MAX_IDEA_COUNT } from "../shared/schemas";
 import { FrameSearchPlanSchema, ResearchFrameOutputSchema, ResearchAreaRankingSchema } from "../shared/research-frame";
+import { AreaGapOutputSchema, EvidenceCheckOutputSchema } from "../shared/evidence-investigators";
 
 export const WORKFLOW_VERSION_V2 = 2 as const;
 
@@ -28,6 +29,8 @@ export const WORKFLOW_V2_STAGE_IDS = [
   "factor-harvest",
   "problem-candidates",
   "problem-kill",
+  "evidence-check",
+  "area-gap",
   "solutions",
   "solution-set-review",
   "idea-follow-up",
@@ -58,6 +61,22 @@ export const WORKFLOW_V2_STAGE_REGISTRY = {
   "area-ranking": {
     id: "area-ranking", promptFilename: "workflow-v2-area-ranking.md",
     promptRevision: 1, schemaRevision: 1, schema: ResearchAreaRankingSchema, maxOutputTokens: 4_096,
+  },
+  "evidence-check": {
+    id: "evidence-check",
+    promptFilename: "workflow-v2-evidence-check.md",
+    promptRevision: 1,
+    schemaRevision: 1,
+    schema: EvidenceCheckOutputSchema,
+    maxOutputTokens: 2_048,
+  },
+  "area-gap": {
+    id: "area-gap",
+    promptFilename: "workflow-v2-area-gap.md",
+    promptRevision: 1,
+    schemaRevision: 1,
+    schema: AreaGapOutputSchema,
+    maxOutputTokens: 2_048,
   },
   "query-plan": {
     id: "query-plan",

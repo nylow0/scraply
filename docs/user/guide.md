@@ -28,6 +28,8 @@ Research presents candidate problems with cited factors and source links. Read t
 
 At the checkpoint, you can select the problems worth developing and choose the idea-generation model and effort. You can also request more research. A new question adds a named request; extra threads investigate different angles inside that request. From a finding, ask Scraply to search for new evidence or reevaluate saved evidence. A redo keeps the earlier finding in the archive. Compare the claims and sources, then choose whether the new result becomes the active evidence snapshot. A failed or unapplied redo leaves the current snapshot in place.
 
+Candidates beyond the depth's assessment limit remain under **Not assessed**. **Assess** shows the proposed calls and searches before checking a saved candidate. It uses the existing candidate and evidence. If the available allowance is insufficient, the candidate stays available for later assessment.
+
 Generation uses the active evidence snapshot. Check which research updates you applied before generating. A pending or unapplied request stays outside that snapshot, so you can continue with the current research or wait and apply its result. Changing active research does not rewrite old ideas. Those ideas still point to the evidence used when they were made.
 
 For a known problem, you can enter it at the checkpoint and proceed without pretending that Scraply discovered evidence for it. Exploratory startup hypotheses are also an explicit setup choice and retain their exploratory origin.
@@ -37,6 +39,8 @@ For a known problem, you can enter it at the checkpoint and proceed without pret
 Vibe selects evidence-qualified problems and records why it chose them. Discovery favors fit to the brief and buyer, direct evidence, and distinct workflows. It can return research with zero ideas if no problem qualifies. It does not turn rejected evidence into a supported claim.
 
 During discovery, the progress view shows recent research actions, including search queries, returned source counts, and evidence processing. This activity is saved and returns when you reopen the research. The idea counter appears once generation assignments exist; for per-problem research, its target comes from the selected problems and solutions per problem. Run details contain usage and individual tasks. Pause and Stop remain directly accessible while research runs. Closing the app or putting the machine to sleep does not promise background progress. Reopening reads the saved result and offers continuation only when the remaining work is safe to resume.
+
+New research scans the included areas, then investigates the strongest areas in more depth. Each investigator shows its current step and confirmed, insufficient, and dropped findings. Standard and Deep can make bounded evidence checks when an assessment has a specific gap. The run can finish with a partial set when further checks do not establish enough evidence.
 
 A settled Vibe run opens the idea collection. It may contain the target, a useful partial set, or zero qualifying ideas. A provider or authentication failure should end with the work saved and a reason you can act on. A request with an unknown completion is conservatively counted and is not silently replayed.
 

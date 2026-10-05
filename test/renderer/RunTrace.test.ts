@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, waitFor } from "@testing-library/svelte";
+import { cleanup, fireEvent, render, waitFor, within } from "@testing-library/svelte";
 import { tick } from "svelte";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import RunTrace from "../../src/renderer/components/RunTrace.svelte";
@@ -48,6 +48,41 @@ describe("RunTrace", () => {
     await fireEvent.click(step);
     await fireEvent.click(step);
     expect(getRunTraceStep).toHaveBeenCalledTimes(1);
+  });
+
+  test("groups ordered steps by investigator after the general steps with distinct detail targets", async () => {
+    const trace = sampleTrace();
+    const first = trace.steps[0]!;
+    trace.steps = [
+      { ...first, id: "general-frame", label: "Frame research" },
+      { ...first, id: "area-a-read", label: "Read order deposit observations" },
+      { ...first, id: "area-b-read", label: "Read payment tracking observations" },
+    ];
+    trace.investigators = [
+      { id: "area-a", name: "Order deposits", state: "researching", stepIds: ["area-a-read"] },
+      { id: "area-b", name: "Payment tracking", state: "succeeded", stepIds: ["area-b-read"] },
+    ];
+    Object.assign(window, { scraply: {
+      getRunTrace: async () => trace,
+      getRunTraceStep: async ({ stepId }: { runId: string; stepId: string }) => ({ ...stepDetail(), step: trace.steps.find((step) => step.id === stepId)! }),
+    } });
+    const view = render(RunTrace, { runId: "run-1" });
+    await view.findByRole("heading", { name: "Order deposits" });
+    const general = view.getByRole("region", { name: "General steps" });
+    const order = view.getByRole("region", { name: "Order deposits" });
+    const payment = view.getByRole("region", { name: "Payment tracking" });
+    expect(within(general).getByRole("button", { name: /Frame research/ })).toBeTruthy();
+    expect(within(order).getByText("Researching")).toBeTruthy();
+    expect(within(order).queryByRole("button", { name: /payment tracking/ })).toBeNull();
+    expect(Array.from(view.container.querySelectorAll(".timeline-group")).map((group) => group.getAttribute("aria-label"))).toEqual(["General steps", "Order deposits", "Payment tracking"]);
+    const orderStep = within(order).getByRole("button", { name: /Read order deposit observations/ });
+    const paymentStep = within(payment).getByRole("button", { name: /Read payment tracking observations/ });
+    await fireEvent.click(orderStep);
+    await fireEvent.click(paymentStep);
+    await waitFor(() => expect(view.getAllByText("We lose custom orders when the deposit arrives late.")).toHaveLength(2));
+    const targets = [orderStep, paymentStep].map((button) => button.getAttribute("aria-controls"));
+    expect(new Set(targets).size).toBe(2);
+    for (const target of targets) expect(target && document.getElementById(target)).toBeTruthy();
   });
 
   test("exports every saved step, including unopened ones, as local JSON", async () => {
@@ -166,13 +201,13 @@ describe("Trace navigation", () => {
 function sampleTrace(): RunTraceValue {
   return {
     runId: "run-1", threadId: "thread-1", sessionId: "session-1", status: "completed", purpose: "discovery",
-    startedAt: "2026-09-30T08:00:00.000Z", finishedAt: "2026-09-30T08:01:30.000Z", live: false, warnings: [],
+    startedAt: "2026-09-30T08:00:00.000Z", finishedAt: "2026-09-30T08:01:30.000Z", live: false, warnings: [], investigators: [],
     metrics: {
       factors: 8, totalSources: 5, evidenceMix: { firsthand: 2, vendor: 6 }, audienceFit: { "intended-buyer": 2, general: 6 },
       sourceMix: { forum: 2, "vendor-page": 3 }, qualifyingObservations: 2, qualifyingPerAssessedCandidate: 1,
       candidateFunnel: { total: 5, assessed: 2, confirmed: 1, insufficient: 1, dropped: 1, notAssessed: 2, userAsserted: 0 },
       confirmationRate: 0.5, coverage: { kind: "phases", groups: [{ id: "audience", factors: 8, problems: 5, confirmed: 1 }] },
-      modelCalls: 2, searches: 3, wallTimeMs: 90_000, modelTimeMs: 70_000, interruptionTimeMs: 12_000, interruptions: 1, ideas: 3, acceptedIdeas: 1,
+      modelCalls: 2, searches: 3, wallTimeMs: 90_000, modelTimeMs: 70_000, interruptionTimeMs: 12_000, interruptions: 1, ideas: 3, acceptedIdeas: 1, acceptedIdeasFailingMustHave: null,
     },
     steps: [{
       id: "read-1", kind: "model", stage: "factor-harvest", label: "Read sources", phase: "audience", status: "succeeded",

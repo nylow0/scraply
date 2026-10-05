@@ -236,6 +236,8 @@ export const RunUsageSchema = z.object({
   availability: z.enum(["available", "unavailable"]),
   attemptCount: z.number().int().nonnegative(),
   unknownAttemptCount: z.number().int().nonnegative(),
+  searchAttemptCount: z.number().int().nonnegative().optional(),
+  unknownSearchCount: z.number().int().nonnegative().optional(),
   models: z.array(ModelRefSchema),
   tokens: z.object({ input: UsageDimensionSchema, output: UsageDimensionSchema, total: UsageDimensionSchema, cachedInput: UsageDimensionSchema, reasoning: UsageDimensionSchema }).strict(),
   latencyMs: UsageDimensionSchema,

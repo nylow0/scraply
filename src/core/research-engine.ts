@@ -18,7 +18,9 @@ import { ProviderFailure, type GenerationMetadata, type StructuredModelClient, t
 import { AppError } from "../shared/errors";
 import { WorkflowLaunchContractSchema } from "../shared/workflow-contracts";
 import { framedDiscoveryProjection } from "../shared/discovery-projection";
-import { scopeResearchArea, type ResearchArea, type ResearchFrame } from "../shared/research-frame";
+import { ResearchFrameSchema, scopeResearchArea, type ResearchFrame, type ResearchArea } from "../shared/research-frame";
+import { RESEARCH_TARGETS, candidateAssessmentProjection, InvestigatorSearchRouteSchema, researchTargetProgress } from "../shared/evidence-investigators";
+import { SavedProblemCandidateSchema } from "../shared/structured-output-schemas";
 import { assertFocusedDemandTestSemantics } from "../shared/focused-experiment";
 import { deriveJsonSchema } from "../shared/json-schema";
 import type { ResearchEvent } from "../shared/ipc";
@@ -37,8 +39,12 @@ import {
 import { DEFAULT_IDEA_COUNT, ModelRefSchema, ReasoningEffortSchema, RunConfigSchema, SourceSchema, sameModelRef, type ModelRef, type ReasoningEffort, type RunConfig, type Source } from "../shared/schemas";
 import { ScopeSchema, WorkflowV2CompatibleDecisionAnalysisOutputSchema, WorkflowV2RiskEvaluationOutputSchema, WorkflowV2RiskReassessmentOutputSchema, WorkflowV2SolutionOptionSchema, WorkflowV2SolutionsOutputSchema, WorkflowV2StartupSolutionOptionSchema, type Scope } from "../shared/structured-output-schemas";
 import { analyzeSelectedOption, developmentStageEvidence, evaluateSelectedOptionRisk, produceDevelopmentOptions, reassessSelectedOption, reassessSelectedOptionRisk, WorkflowGenerationAngleSchema, WorkflowGenerationEvidenceSchema, type WorkflowV2DevelopmentContext, type WorkflowV2EvidenceItem } from "./development";
-import { DEFAULT_PROBLEM_CANDIDATE_LIMIT, discoverProblems, discoveryRunProjection, harvestEvidenceFollowUp, harvestFactors, normalizeSearchQuery,
-  type HarvestMode, type HarvestResult, type HarvestedSource, type PlannedQuery } from "./discovery";
+import { DEFAULT_PROBLEM_CANDIDATE_LIMIT, DISCOVERY_DEPTHS, discoverProblems, discoveryRunProjection, harvestEvidenceFollowUp, harvestFactors, normalizeSearchQuery,
+  type HarvestMode, type HarvestResult, type PlannedQuery, type DiscoveryProblem, type HarvestedFactor, type HarvestedSource,
+  qualifiesAsIntendedBuyerObservation, quoteAppearsVerbatim, safeCanonicalizeUrl, type ProblemDiscoveryResult, type DiscoveryDependencies } from "./discovery";
+import { assessNotAssessedCandidate, ensureAreaInvestigatorWorkItems, ensureEvidenceCheckWorkItem,
+  enforceConfirmationRule, runAreaGapInvestigation, runCandidateEvidenceInvestigator, runManagedInvestigatorSearch,
+  type InvestigatorDependencies } from "./evidence-investigators";
 import { generateResearchFrame } from "./research-frame";
 import { rankScannedAreas, scanResearchArea, type AreaScan } from "./frame-discovery";
 import { runFocusedExperimentFlow } from "./experiment-review";
@@ -78,6 +84,7 @@ interface ActiveRun {
   generationProvenance: Map<string, string>;
   stage?: RuntimeStage;
   modelState?: "waiting" | "dispatched" | "accepted" | null;
+  areaBudget?: { areaId: string; maxModelCalls: number; maxSearches: number; pendingSearches?: number };
 }
 
 interface OpportunityTask {
@@ -179,7 +186,7 @@ export class ResearchEngine {
     this.discovery.persistScope(created.runId, parsedScope);
     if (workflow?.frameId) {
       new ResearchFrameRepository(this.options.db).bindRun(created.runId, threadId, workflow.frameId);
-      new WorkflowExecution(this.options.db, created.runId).save("frame-workflow", { version: 1 });
+      this.options.db.db.prepare("INSERT INTO workflow_snapshots VALUES (?, 'frame-workflow', ?)").run(created.runId, JSON.stringify({ version: 1 }));
     }
     if (!this.admitWorkflowRun(created.runId, threadId, workflow)) return created.runId;
     this.begin(created.runId, threadId, null, config);
@@ -193,9 +200,8 @@ export class ResearchEngine {
     const created = this.runs.create(threadId, config, null, undefined, workflow);
     if (!created.created) return created.runId;
     this.discovery.persistScope(created.runId, ScopeSchema.parse(scope));
-    const execution = new WorkflowExecution(this.options.db, created.runId);
-    execution.save("workflow-kind", { kind: "prepare-frame", knownProblem: config.researchMode === "known-problem",
-      ...(regeneration ? { regeneration } : {}) });
+    this.options.db.db.prepare("INSERT INTO workflow_snapshots VALUES (?, 'workflow-kind', ?)").run(created.runId,
+      JSON.stringify({ kind: "prepare-frame", knownProblem: config.researchMode === "known-problem", ...(regeneration ? { regeneration } : {}) }));
     if (!this.admitWorkflowRun(created.runId, threadId, workflow)) return created.runId;
     this.begin(created.runId, threadId, null, config);
     return created.runId;
@@ -262,6 +268,30 @@ export class ResearchEngine {
     return created.runId;
   }
 
+  /** A user-requested assessment preserves the saved candidate and copies its evidence into a new run. */
+  async startCandidateAssessment(threadId: string, sourceRunId: string, candidateId: string, config: RunConfig,
+    workflow: ResearchRunWorkflowLink): Promise<string> {
+    const row = this.options.db.db.prepare(`SELECT candidate.candidate_json FROM rejected_problem_candidates candidate
+      JOIN research_runs run ON run.id = candidate.discovery_run_id
+      WHERE candidate.id = ? AND candidate.discovery_run_id = ? AND run.thread_id = ?
+        AND candidate.disposition = 'not-assessed'`).get(candidateId, sourceRunId, threadId) as { candidate_json: string | null } | undefined;
+    if (!row?.candidate_json) throw new AppError("not_found", "This saved candidate is unavailable or has no complete evidence record.");
+    const candidate = SavedProblemCandidateSchema.parse(JSON.parse(row.candidate_json));
+    const scope = this.readScope(sourceRunId);
+    config = { ...config, workflowVersion: 2 };
+    const created = this.runs.create(threadId, config, null, undefined, workflow);
+    if (!created.created) return created.runId;
+    this.discovery.persistScope(created.runId, scope);
+    this.options.db.db.prepare("INSERT INTO workflow_snapshots VALUES (?, 'workflow-kind', ?)")
+      .run(created.runId, JSON.stringify({ kind: "candidate-assessment", sourceRunId, candidateId, candidate }));
+    const frames = new ResearchFrameRepository(this.options.db);
+    // New admissions explicitly freeze an approved frame or a scope-derived fallback; older pending requests retain their source run's frame.
+    const frame = workflow.frameId === undefined ? frames.forRun(sourceRunId) : workflow.frameId ? frames.get(workflow.frameId) : null;
+    if (frame?.approved) new ResearchFrameRepository(this.options.db).bindRun(created.runId, threadId, frame.id);
+    if (this.admitWorkflowRun(created.runId, threadId, workflow)) this.begin(created.runId, threadId, null, config);
+    return created.runId;
+  }
+
   private readScope(runId: string): Scope {
     const row = this.options.db.db.prepare(`SELECT title,audience,domain,observations,off_limits_json,risk_evaluation_criteria
       FROM scopes WHERE research_run_id = ?`).get(runId) as {
@@ -270,6 +300,15 @@ export class ResearchEngine {
     if (!row) throw new AppError("not_found", "The saved research scope is missing.");
     return ScopeSchema.parse({ title: row.title, audience: row.audience, domain: row.domain, observations: row.observations,
       offLimits: JSON.parse(row.off_limits_json), ...(row.risk_evaluation_criteria ? { riskEvaluationCriteria: row.risk_evaluation_criteria } : {}) });
+  }
+
+  private persistFrameSources(runId: string, sources: Source[]): void {
+    const now = new Date().toISOString();
+    const records = sources.filter(source => !this.options.db.db.prepare("SELECT 1 FROM sources WHERE id = ?").get(source.id))
+      .map(source => ({ id: source.id, providerSourceId: source.id, canonicalUrl: source.url, url: source.url,
+        title: source.title, retrievedText: source.text, author: source.author ?? null, publishedAt: source.publishedDate ?? null,
+        contentHash: createHash("sha256").update(source.text).digest("hex"), retrievedAt: now }));
+    if (records.length) this.discovery.persistFactors(runId, records, []);
   }
 
   private admitWorkflowRun(runId: string, threadId: string, workflow?: ResearchRunWorkflowLink): boolean {
@@ -303,6 +342,10 @@ export class ResearchEngine {
       throw new AppError("conflict", "This research run has already ended and cannot be resumed.");
     }
     const acknowledged = [...new Set([...new WorkflowRepository(this.options.db).acknowledgedAttemptIds(runId), ...acknowledgedAttemptIds])];
+    if (new WorkflowRepository(this.options.db).unknownInvestigatorSearches(runId, acknowledged).length) {
+      this.ledger.settleUncertain(runId, "A dispatched investigator search lost its terminal result during restart");
+      throw new AppError("conflict", "A previous investigator search may have completed before its result was saved. Review this request before explicitly retrying it.");
+    }
     const resumeSafety = this.generationAttempts.getResumeSafety(runId, acknowledged);
     if (!resumeSafety.canResume) {
       this.ledger.settleUncertain(runId, "A dispatched generation lost its terminal result during restart");
@@ -1454,14 +1497,19 @@ export class ResearchEngine {
     if (config.workflowVersion !== 2) throw new AppError("conflict", "Legacy generation has been retired. Start a new run to use the current prompts.");
     const selected = problemId && this.options.db.db.prepare(`SELECT 1 FROM solutions
       WHERE research_run_id = ? AND selected_at IS NOT NULL LIMIT 1`).get(runId);
-    const savedKind = new WorkflowExecution(this.options.db, runId).read<{ kind: string; knownProblem: boolean; regeneration?: unknown }>("workflow-kind");
-    const framed = new WorkflowExecution(this.options.db, runId).read("frame-workflow");
+    const kindRow = this.options.db.db.prepare("SELECT value_json FROM workflow_snapshots WHERE research_run_id = ? AND snapshot_key = 'workflow-kind'")
+      .get(runId) as { value_json: string } | undefined;
+    const savedKind = kindRow ? JSON.parse(kindRow.value_json) as { kind: string; knownProblem: boolean; regeneration?: unknown } : null;
+    const framed = this.options.db.db.prepare("SELECT 1 FROM workflow_snapshots WHERE research_run_id = ? AND snapshot_key = 'frame-workflow'").get(runId);
     const boundFrame = new ResearchFrameRepository(this.options.db).forRun(runId)?.approved;
+    const routedSearches = Boolean(this.options.db.db.prepare("SELECT 1 FROM workflow_snapshots WHERE research_run_id = ? AND snapshot_key = 'source-routes'").get(runId));
     const projection = savedKind?.kind === "prepare-frame"
       ? { modelCalls: savedKind.regeneration || savedKind.knownProblem ? 1 : 2, searches: savedKind.regeneration || savedKind.knownProblem ? 0 : 5 }
+      : savedKind?.kind === "candidate-assessment" ? candidateAssessmentProjection(config.discoveryDepth)
       : problemId
       ? { modelCalls: selected ? this.ledger.countProviderCalls(runId, config.model.providerId) + 4 : 3, searches: 0 }
-      : framed ? framedDiscoveryProjection(config.discoveryDepth, boundFrame?.languages.length ?? 3) : discoveryRunProjection(config.discoveryDepth);
+      : framed ? framedDiscoveryProjection(config.discoveryDepth, boundFrame?.languages.length ?? 3)
+        : discoveryRunProjection(config.discoveryDepth, routedSearches ? undefined : DEFAULT_PROBLEM_CANDIDATE_LIMIT, 1, routedSearches);
     const active: ActiveRun = {
       runId, threadId, problemId, config, abortController: new AbortController(), startedAt: Date.now(),
       projectedCodexCalls: projection.modelCalls, projectedSearches: projection.searches,
@@ -1500,10 +1548,13 @@ export class ResearchEngine {
   private async execute(active: ActiveRun): Promise<void> {
     active.workflow = new WorkflowExecution(this.options.db, active.runId, active.acknowledgedAttemptIds);
     if (active.workflow.read<{ kind: string }>("workflow-kind")?.kind === "prepare-frame") await this.executeFrame(active);
+    else if (active.workflow.read<{ kind: string }>("workflow-kind")?.kind === "candidate-assessment") await this.executeCandidateAssessment(active);
     else if (active.problemId) await this.executeDevelopment(active);
     else await this.executeDiscovery(active);
     if (active.abortController.signal.aborted || this.activeRuns.get(active.runId) !== active) return;
-    this.runs.finish(active.runId, "completed");
+    const targetOutcome = active.workflow.read<{ outcome: string; reason: string }>("research-target-outcome")
+      ?? active.workflow.read<{ outcome: string; reason: string }>("generation-partial-outcome");
+    this.runs.finish(active.runId, "completed", targetOutcome?.outcome === "partial" ? targetOutcome.reason : undefined);
     this.activeRuns.delete(active.runId);
     this.emit({ type: "run-completed", runId: active.runId, threadId: active.threadId, problemId: active.problemId });
     if (!active.problemId) { this.updateThread(active.threadId, "problems-ready"); return; }
@@ -1580,7 +1631,98 @@ export class ResearchEngine {
       knownProblemStatement: active.config.knownProblem,
       onProgress: message => this.progress(active, message) }, kind.regeneration && previous
         ? { version: previous.version + 1, edited: kind.regeneration.edited } : undefined);
+    this.persistFrameSources(active.runId, result.sources);
     frames.createDraft({ threadId: active.threadId, runId: active.runId, knownProblem: kind.knownProblem, ...result });
+  }
+
+  private async executeCandidateAssessment(active: ActiveRun): Promise<void> {
+    const workflow = active.workflow!;
+    const kind = workflow.read<{ sourceRunId: string; candidateId: string; candidate: unknown }>("workflow-kind")!;
+    if (workflow.read("candidate-assessment-result")) return;
+    const original = SavedProblemCandidateSchema.parse(kind.candidate);
+    const scope = this.readScope(active.runId);
+    const sourceArea = this.options.db.db.prepare(`SELECT area_id FROM factors WHERE research_run_id = ? AND id = ?`)
+      .get(kind.sourceRunId, original.factorIds[0] ?? "") as { area_id: string | null } | undefined;
+    const bound = new ResearchFrameRepository(this.options.db).forRun(active.runId);
+    const approved = bound?.approved;
+    const area: ResearchArea = approved?.areas.find(item => item.id === sourceArea?.area_id) ?? {
+      id: sourceArea?.area_id ?? "saved-candidate", name: "Saved candidate evidence", whyRelevant: original.statement,
+      affectedPeople: original.affected, venues: [{ name: "Open web", kind: "publication" }], exampleProblems: [original.statement], included: true, priority: 1,
+    };
+    const frame = approved ?? ResearchFrameSchema.parse({ goal: scope.title || original.statement, goalKind: "other",
+      contextFacts: [], successCriteria: [{ id: "saved-scope", name: "Fit the saved research scope", weight: "must",
+        howJudged: "Use the original scope and quoted observations to assess this candidate", basis: "brief" }],
+      constraints: scope.offLimits.map(text => ({ text, kind: "scope", basis: "brief" })),
+      languages: ["en"], areas: [area], exclusions: scope.offLimits, openQuestions: [] });
+    if (!workflow.read("candidate-assessment-frame")) workflow.save("candidate-assessment-frame", { frame, provenance: approved && bound
+      ? { kind: "approved-frame", frameId: bound.id, frameVersion: bound.version, sourceRunId: kind.sourceRunId, candidateId: kind.candidateId }
+      : { kind: "reconstructed-from-saved-scope", sourceRunId: kind.sourceRunId, candidateId: kind.candidateId,
+        note: "Reconstructed for this assessment from the saved scope and candidate. It is not an approved project frame." } });
+    const evidenceKey = "candidate-assessment-evidence";
+    let copied = workflow.read<{ candidate: typeof original; sources: HarvestedSource[]; factors: HarvestedFactor[] }>(evidenceKey);
+    if (!copied) {
+      const idFor = (id: string) => createHash("sha256").update(`${active.runId}:saved-candidate:${id}`).digest("hex").slice(0, 24);
+      const sources = new Map<string, HarvestedSource>();
+      const factors: HarvestedFactor[] = original.factorIds.map(id => {
+        const row = this.options.db.db.prepare(`SELECT factor.*, source.provider_source_id, source.canonical_url,
+          source.title, source.retrieved_text, source.author, source.published_at, source.content_hash, source.retrieved_at
+          FROM factors factor JOIN sources source ON source.id = factor.source_id AND source.research_run_id = factor.research_run_id
+          WHERE factor.id = ? AND factor.research_run_id = ?`).get(id, kind.sourceRunId) as {
+          id: string; source_id: string; subject: string; behavior: string; quote: string; harvest_mode: "domain" | "audience";
+          model_confidence: number; uncertainty: string | null; source_role: NonNullable<HarvestedFactor["sourceRole"]>;
+          audience_fit: NonNullable<HarvestedFactor["audienceFit"]>; independent_source_key: string | null;
+          supports_demand: number; demand_evidence_uncertainty: string | null;
+          provider_source_id: string | null; canonical_url: string; title: string; retrieved_text: string;
+          author: string | null; published_at: string | null; content_hash: string; retrieved_at: string;
+        } | undefined;
+        if (!row) throw new AppError("conflict", "A saved candidate factor or its quoted source is missing. The candidate was retained unchanged.");
+        const source: HarvestedSource = { id: idFor(row.source_id), providerSourceId: row.provider_source_id,
+          canonicalUrl: row.canonical_url, url: row.canonical_url, title: row.title, retrievedText: row.retrieved_text,
+          author: row.author, publishedAt: row.published_at, contentHash: row.content_hash, retrievedAt: row.retrieved_at };
+        sources.set(source.id, source);
+        return { id: idFor(row.id), sourceId: source.id, source, subject: row.subject, behavior: row.behavior, quote: row.quote,
+          harvestMode: row.harvest_mode, modelConfidence: row.model_confidence, uncertainty: row.uncertainty,
+          sourceRole: row.source_role, audienceFit: row.audience_fit, independentSourceKey: row.independent_source_key,
+          supportsDemand: Boolean(row.supports_demand), demandEvidenceUncertainty: row.demand_evidence_uncertainty };
+      });
+      copied = { candidate: { ...original, factorIds: original.factorIds.map(idFor),
+        scaleBasisFactorId: original.scaleBasisFactorId === null ? null : idFor(original.scaleBasisFactorId),
+        ...("intendedBuyerEvidenceFactorIds" in original ? { intendedBuyerEvidenceFactorIds: original.intendedBuyerEvidenceFactorIds.map(idFor) } : {}) },
+        factors, sources: [...sources.values()] };
+      this.discovery.persistFactors(active.runId, copied.sources, copied.factors, () => {
+        this.assignArea("factors", copied!.factors.map(factor => factor.id), area.id);
+        workflow.save(evidenceKey, copied);
+      });
+    }
+    const owner = this.workflowRunOwner(active);
+    await this.validateFrameSourceVenues(active, frame);
+    const lane = ensureAreaInvestigatorWorkItems(this.options.db, owner.sessionId, owner.workItemId, area);
+    this.startInvestigatorItem(lane.parent.id); this.startInvestigatorItem(lane.candidates.id);
+    this.skipInvestigatorItem(lane.research.id, "Uses the saved candidate and its original evidence without resynthesis.");
+    const problemId = createHash("sha256").update(`${active.runId}:${kind.candidateId}`).digest("hex").slice(0, 24);
+    const check = ensureEvidenceCheckWorkItem(this.options.db, owner.sessionId, lane.candidates.id, area.id, problemId);
+    this.startInvestigatorItem(check.id);
+    const result = await assessNotAssessedCandidate({ ...this.investigatorDependencies(active, scope, frame, area, lane.parent.id,
+      { ...this.areaDependencies(active, frame, area), stageScope: `area-${sha256Area(area.id)}` }),
+      candidateId: problemId, candidate: copied.candidate, factors: copied.factors, existingSources: copied.sources });
+    if (result.assessed) {
+      this.persistAreaEvidence(active, area.id, result.sources, result.factors);
+      this.discovery.persistProblems(active.runId, [], result.dropped ? [] : [result.problem], result.dropped
+        ? [{ statement: result.problem.statement, reason: result.stopReason, disposition: "blocked", candidate: copied.candidate }] : [], () => {
+          this.assignArea("problems", result.dropped ? [] : [problemId], area.id);
+          workflow.save("candidate-assessment-result", { assessed: true, candidateId: kind.candidateId, sourceRunId: kind.sourceRunId,
+            verdict: result.problem.verdict, dropped: result.dropped, stopReason: result.stopReason });
+        });
+      const view = this.investigatorView(area, "Assessment complete", { problems: result.dropped ? [] : [result.problem],
+        blockedCandidates: result.dropped ? [{ statement: result.problem.statement, reason: result.stopReason, disposition: "blocked" }] : [] });
+      this.finishInvestigatorItem(check.id, { verdict: result.problem.verdict, dropped: result.dropped, rounds: result.rounds });
+      this.finishInvestigatorItem(lane.candidates.id); this.finishInvestigatorItem(lane.parent.id, { investigator: view });
+    } else {
+      workflow.save("candidate-assessment-result", { assessed: false, candidateId: kind.candidateId,
+        sourceRunId: kind.sourceRunId, stopReason: result.stopReason });
+      this.finishInvestigatorItem(check.id, { assessed: false, stopReason: result.stopReason });
+      this.finishInvestigatorItem(lane.candidates.id); this.finishInvestigatorItem(lane.parent.id, { investigator: this.investigatorView(area, result.stopReason, null) });
+    }
   }
 
   private async executeFramedDiscovery(active: ActiveRun, scope: Scope): Promise<void> {
@@ -1589,15 +1731,24 @@ export class ResearchEngine {
     const saved = new ResearchFrameRepository(this.options.db).forRun(active.runId);
     const frame = saved?.approved;
     if (!frame || saved.knownProblem) throw new AppError("INVALID_REFERENCE", "An approved discovery frame is required.");
+    const prompts = workflow.read<Partial<Record<WorkflowV2StageId, unknown>>>("prompts");
+    // The frozen prompt set is the run's stage contract. Pre-investigator runs keep their original path.
+    if (!prompts?.["area-gap"] || !prompts["evidence-check"]) {
+      await this.executeLegacyFramedDiscovery(active, scope, frame);
+      return;
+    }
+    this.seedFrameDiscoverySources(active.runId, saved.sources);
+    await this.validateFrameSourceVenues(active, frame);
     const scans: AreaScan[] = [];
     for (const area of frame.areas.filter(area => area.included)) {
       active.abortController.signal.throwIfAborted();
       const key = `frame-scan:${area.id}`;
       let scan = workflow.read<AreaScan>(key);
       if (!scan) {
-        scan = await scanResearchArea(scope, frame, area, { ...this.areaDependencies(active, frame, area), depth: "quick",
+        scan = await scanResearchArea(scope, frame, area, { ...this.areaDependencies(active, frame, area), depth: "quick", repairPolicy: "disabled",
           stageScope: `scan-${sha256Area(area.id)}`, idFactory: workflow.idFactory(key), random: () => 0.5 });
-        scan = { ...scan, factors: workflow.withFactorUncertainty(scan.factors) };
+        const validated = this.reconcileAreaEvidence(active.runId, scan.sources, workflow.withFactorUncertainty(scan.factors));
+        scan = { ...scan, ...validated, qualifyingFacts: validated.factors.filter(qualifiesAsIntendedBuyerObservation).length };
         const completed = scan;
         this.discovery.persistFactors(active.runId, scan.sources, scan.factors, () => {
           this.assignArea("factors", scan!.factors.map(factor => factor.id), area.id);
@@ -1609,7 +1760,209 @@ export class ResearchEngine {
     const selected = await rankScannedAreas(frame, scans, active.config.discoveryDepth,
       { ...this.dependencies(active), workflow, onProgress: message => this.progress(active, message) });
     workflow.save("frame-selected-areas", selected);
-    const results: Array<{ areaId: string; result: Awaited<ReturnType<typeof discoverProblems>> }> = [];
+    const owner = this.workflowRunOwner(active);
+    const lanes = new Map(selected.map(area => [area.id, ensureAreaInvestigatorWorkItems(this.options.db,
+      owner.sessionId, owner.workItemId, area)]));
+    for (const area of selected) {
+      const parent = lanes.get(area.id)!.parent;
+      if (parent.state === "planned") this.updateInvestigatorLane(parent.id, area, "Queued", null);
+    }
+    const session = new WorkflowRepository(this.options.db).getSession(owner.sessionId)!;
+    const contract = WorkflowLaunchContractSchema.parse(session.contract);
+    const target = contract.targets.research ?? RESEARCH_TARGETS[active.config.discoveryDepth];
+    const settledProblems = new Map<string, DiscoveryProblem & { areaId: string }>();
+    for (const area of selected) for (const problem of workflow.read<ProblemDiscoveryResult>(`area:${area.id}:investigation-completed`)?.problems ?? []) {
+      settledProblems.set(problem.id, { ...problem, areaId: area.id });
+    }
+    const targetStop = () => researchTargetProgress(target, [...settledProblems.values()]).outcome === "target-met"
+      ? "The declared research target was met. Further evidence gaps and rounds were skipped." : null;
+    const results: Array<{ areaId: string; result: ProblemDiscoveryResult }> = [];
+    const partialReasons = new Map<string, string>();
+    const maxModelCalls = Math.floor((this.remainingWorkflowTaskCalls(active, "model-call") ?? Infinity) / Math.max(1, selected.length));
+    const maxSearches = Math.floor((this.remainingWorkflowTaskCalls(active, "search") ?? Infinity) / Math.max(1, selected.length));
+    const rootActive = active;
+    const investigateArea = async (area: ResearchArea): Promise<{ areaId: string; result: ProblemDiscoveryResult } | null> => {
+      // Provider scheduling remains global; mutable allowances and progress belong to one area.
+      const active: ActiveRun = { ...rootActive };
+      const key = `area:${area.id}`;
+      const scoped = scopeResearchArea(scope, area, frame);
+      const dependencies = { ...this.areaDependencies(active, frame, area), repairPolicy: "disabled" as const, stageScope: `area-${sha256Area(area.id)}` };
+      const lane = lanes.get(area.id)!;
+      const alreadyInvestigated = workflow.read<ProblemDiscoveryResult>(`${key}:investigation-completed`);
+      if (alreadyInvestigated) {
+        return { areaId: area.id, result: alreadyInvestigated };
+      }
+      if (targetStop()) { partialReasons.set(area.id, targetStop()!); return null; }
+      this.startInvestigatorItem(lane.parent.id);
+      this.startInvestigatorItem(lane.research.id);
+      this.updateInvestigatorLane(lane.parent.id, area, "Planning and reading sources", null);
+      if (contract.limits.enforced !== false) {
+        let allowance = workflow.read<NonNullable<ActiveRun["areaBudget"]>>(`${key}:allowance`);
+        if (!allowance) {
+          allowance = { areaId: area.id, maxModelCalls, maxSearches };
+          workflow.save(`${key}:allowance`, allowance);
+        }
+        active.areaBudget = allowance;
+      }
+      let harvest = workflow.read<HarvestResult>(`${key}:harvest`);
+      if (!harvest) {
+        this.progress(active, `Investigating ${area.name}`);
+        try {
+          harvest = await harvestFactors(scoped, { ...dependencies, idFactory: workflow.idFactory(`${key}:harvest`), random: () => 0.5 });
+        } catch (error) {
+          if (!(error instanceof AppError) || error.code !== "BUDGET_TOO_SMALL") throw error;
+          const partialReason = `The allowance ended while researching ${area.name}. Completed calls remain saved.`;
+          partialReasons.set(area.id, partialReason);
+          this.finishInvestigatorItem(lane.research.id, { stopReason: partialReason });
+          this.finishInvestigatorItem(lane.parent.id, { stopReason: partialReason,
+            investigator: this.investigatorView(area, "Allowance exhausted", null) });
+          return null;
+        }
+        harvest = { ...harvest, ...this.reconcileAreaEvidence(active.runId, harvest.sources, workflow.withFactorUncertainty(harvest.factors)) };
+        const completed = harvest;
+        this.discovery.persistFactors(active.runId, harvest.sources, harvest.factors, () => {
+          this.assignArea("factors", completed.factors.map(factor => factor.id), area.id);
+          workflow.save(`${key}:harvest`, completed);
+        });
+      }
+      this.finishInvestigatorItem(lane.research.id, { factorCount: harvest.factors.length });
+      this.startInvestigatorItem(lane.candidates.id);
+      this.updateInvestigatorLane(lane.parent.id, area, "Synthesizing and assessing candidates", null);
+      let result = workflow.read<ProblemDiscoveryResult>(`${key}:problems`);
+      if (!result) {
+        try {
+          result = await discoverProblems(scoped, harvest.factors, harvest.sources, {
+            ...dependencies, idFactory: workflow.idFactory(`${key}:problems`),
+          });
+        } catch (error) {
+          if (!(error instanceof AppError) || error.code !== "BUDGET_TOO_SMALL") throw error;
+          const partialReason = `The allowance ended before candidates in ${area.name} could be fully assessed. Completed evidence remains saved.`;
+          partialReasons.set(area.id, partialReason);
+          this.finishInvestigatorItem(lane.candidates.id, { stopReason: partialReason });
+          this.finishInvestigatorItem(lane.parent.id, { stopReason: partialReason,
+            investigator: this.investigatorView(area, "Allowance exhausted", null) });
+          return null;
+        }
+        workflow.save(`${key}:problems`, result);
+      }
+      if (result.partialReason) partialReasons.set(area.id, result.partialReason);
+      const finalKey = `${key}:investigation-completed`;
+      let investigated = workflow.read<ProblemDiscoveryResult>(finalKey);
+      if (!investigated) {
+        // Contrary sources must exist before a follow-up factor can cite one.
+        result = this.reconcileProblemEvidence(active.runId, result);
+        this.persistAreaEvidence(active, area.id, result.killSources, []);
+        const investigator = { ...this.investigatorDependencies(active, scoped, frame, area, lane.parent.id, dependencies), stopRequested: targetStop };
+        const finalProblems: DiscoveryProblem[] = [];
+        const blocked = [...result.blockedCandidates];
+        const retainUninvestigated = (problem: DiscoveryProblem, selectionId: string) => {
+          const output = workflow.repository.findStageResult(active.runId, "problem-candidates", selectionId)?.output as { problems: unknown[] } | undefined;
+          const candidate = output?.problems.map(value => SavedProblemCandidateSchema.parse(value))
+            .find(candidate => candidate.statement.trim() === problem.statement);
+          blocked.push({ statement: problem.statement, reason: targetStop()!, disposition: "not-assessed",
+            ...(candidate ? { candidate } : {}) });
+        };
+        const investigate = async (problem: DiscoveryProblem, sources: HarvestedSource[]) => {
+          const check = ensureEvidenceCheckWorkItem(this.options.db, owner.sessionId, lane.parent.id, area.id, problem.id);
+          this.startInvestigatorItem(check.id);
+          const rawOutcome = await runCandidateEvidenceInvestigator({ ...investigator, problem, existingSources: sources });
+          const reconciled = this.reconcileProblemEvidence(active.runId, { problems: [rawOutcome.problem], killSources: rawOutcome.sources,
+            blockedCandidates: [], factorUtilizationRate: 0 });
+          const outcome = { ...rawOutcome, problem: reconciled.problems[0]!, sources: reconciled.killSources,
+            factors: this.reconcileAreaEvidence(active.runId, rawOutcome.sources, rawOutcome.factors).factors };
+          this.persistAreaEvidence(active, area.id, outcome.sources, outcome.factors);
+          if (outcome.dropped) blocked.push({ statement: outcome.problem.statement,
+            reason: `Dropped during evidence investigation: ${outcome.stopReason}`, disposition: "blocked" });
+          else { finalProblems.push(outcome.problem); settledProblems.set(outcome.problem.id, { ...outcome.problem, areaId: area.id }); }
+          this.finishInvestigatorItem(check.id, { problemId: problem.id, dropped: outcome.dropped, verdict: outcome.problem.verdict,
+            rounds: outcome.rounds, stopReason: outcome.stopReason });
+          this.updateInvestigatorLane(lane.parent.id, area, "Checking evidence gaps", { problems: finalProblems, blockedCandidates: blocked });
+        };
+        for (const problem of result.problems) {
+          if (targetStop()) retainUninvestigated(problem, dependencies.stageScope);
+          else await investigate(problem, [...harvest.sources, ...result.killSources]);
+        }
+        const rawGap = await runAreaGapInvestigation({ ...investigator,
+          completedResearch: { problems: finalProblems, blockedCandidates: blocked, factors: harvest.factors },
+          existingSources: [...harvest.sources, ...result.killSources] });
+        const gap = { ...rawGap, ...this.reconcileAreaEvidence(active.runId, rawGap.sources, rawGap.factors) };
+        this.persistAreaEvidence(active, area.id, gap.sources, gap.factors);
+        if (gap.partial) partialReasons.set(area.id, gap.stopReason);
+        if (gap.factors.length > 0 && !targetStop() && this.investigatorBudgetAvailable(active, 1, 0)) {
+          const rawGapResult = await discoverProblems(scoped, [...harvest.factors, ...gap.factors],
+            [...harvest.sources, ...result.killSources, ...gap.sources], { ...dependencies, repairPolicy: "disabled",
+              stageScope: `area-${sha256Area(area.id)}:gap`,
+              candidateLimit: Math.max(0, (dependencies.candidateLimit ?? (workflow.rankProblemCandidates
+                ? DISCOVERY_DEPTHS[active.config.discoveryDepth].candidateLimit : DEFAULT_PROBLEM_CANDIDATE_LIMIT)) - result.problems.length),
+              idFactory: workflow.idFactory(`${key}:gap-problems`) });
+          const gapResult = this.reconcileProblemEvidence(active.runId, rawGapResult);
+          this.persistAreaEvidence(active, area.id, gapResult.killSources, []);
+          blocked.push(...gapResult.blockedCandidates);
+          for (const problem of gapResult.problems) {
+            if (finalProblems.some(existing => existing.statement.trim().toLowerCase() === problem.statement.trim().toLowerCase())) {
+              blocked.push({ statement: problem.statement, reason: "The area gap repeated an already assessed candidate.", disposition: "blocked" });
+            } else if (targetStop()) retainUninvestigated(problem, `${dependencies.stageScope}:gap`);
+            else await investigate(problem, [...harvest.sources, ...result.killSources, ...gap.sources, ...gapResult.killSources]);
+          }
+        }
+        investigated = { ...result, problems: finalProblems, blockedCandidates: blocked, killSources: [] };
+        workflow.save(finalKey, investigated);
+      }
+      this.finishInvestigatorItem(lane.candidates.id, { problemIds: investigated.problems.map(problem => problem.id) });
+      this.finishInvestigatorItem(lane.parent.id, { investigator: this.investigatorView(area, "Finished", investigated) });
+      return { areaId: area.id, result: investigated };
+    };
+    const settled = await Promise.allSettled(selected.map(investigateArea));
+    for (const [index, result] of settled.entries()) {
+      if (result.status === "fulfilled" && result.value) results.push(result.value);
+      if (result.status === "rejected") this.settleInvestigatorFailure(active, lanes.get(selected[index]!.id)!.parent.id, result.reason);
+    }
+    const failed = settled.find(result => result.status === "rejected");
+    const partialReason = selected.map(area => partialReasons.get(area.id)).find(reason => reason !== undefined);
+    const skippedAreas = selected.filter(area => !results.some(result => result.areaId === area.id));
+    for (const area of skippedAreas) {
+      const lane = lanes.get(area.id)!;
+      for (const item of [lane.research, lane.candidates, lane.parent]) this.skipInvestigatorItem(item.id,
+        partialReasons.get(area.id) ?? "This area ended without a completed investigation. Its saved evidence remains available.");
+    }
+    const problems = results.flatMap(item => item.result.problems);
+    const targetProgress = researchTargetProgress(target, results.flatMap(item => item.result.problems.map(problem => ({ ...problem, areaId: item.areaId }))));
+    if (!failed) workflow.save("research-target-outcome", { target, ...targetProgress, skippedAreaIds: skippedAreas.map(area => area.id),
+      reason: partialReason ?? (targetProgress.outcome === "target-met" ? "The declared confirmed-problem and area target was met."
+        : `Research finished with ${targetProgress.confirmedProblems} confirmed problem(s) across ${targetProgress.areas} area(s). The declared target remains incomplete.`) });
+    this.discovery.persistProblems(active.runId, [], problems,
+      results.flatMap(item => item.result.blockedCandidates), () => {
+        for (const item of results) this.assignArea("problems", item.result.problems.map(problem => problem.id), item.areaId);
+        if (!failed) workflow.save("discovery-completed", { areas: results.map(item => item.areaId), problemIds: problems.map(problem => problem.id) });
+      });
+    if (failed?.status === "rejected") throw failed.reason;
+    this.progress(active, `${problems.length} problems across ${selected.length} investigated areas ready for review`);
+  }
+
+  private async executeLegacyFramedDiscovery(active: ActiveRun, scope: Scope, frame: ResearchFrame): Promise<void> {
+    const workflow = active.workflow!;
+    const scans: AreaScan[] = [];
+    for (const area of frame.areas.filter(area => area.included)) {
+      active.abortController.signal.throwIfAborted();
+      const key = `frame-scan:${area.id}`;
+      let scan = workflow.read<AreaScan>(key);
+      if (!scan) {
+        scan = await scanResearchArea(scope, frame, area, { ...this.areaDependencies(active, frame, area), depth: "quick",
+          stageScope: `scan-${sha256Area(area.id)}`, idFactory: workflow.idFactory(key), random: () => 0.5 });
+        scan = { ...scan, factors: workflow.withFactorUncertainty(scan.factors) };
+        const completed = scan;
+        const evidence = this.reconcileAreaEvidence(active.runId, scan.sources, scan.factors);
+        this.discovery.persistFactors(active.runId, evidence.sources, evidence.factors, () => {
+          this.assignArea("factors", evidence.factors.map(factor => factor.id), area.id);
+          workflow.save(key, completed);
+        });
+      }
+      scans.push(scan);
+    }
+    const selected = workflow.read<ResearchArea[]>("frame-selected-areas") ?? await rankScannedAreas(frame, scans,
+      active.config.discoveryDepth, { ...this.dependencies(active), workflow, onProgress: message => this.progress(active, message) });
+    if (!workflow.read("frame-selected-areas")) workflow.save("frame-selected-areas", selected);
+    const results: Array<{ areaId: string; result: ProblemDiscoveryResult }> = [];
     for (const area of selected) {
       const key = `area:${area.id}`;
       const scoped = scopeResearchArea(scope, area, frame);
@@ -1620,12 +1973,13 @@ export class ResearchEngine {
         harvest = await harvestFactors(scoped, { ...dependencies, idFactory: workflow.idFactory(`${key}:harvest`), random: () => 0.5 });
         harvest = { ...harvest, factors: workflow.withFactorUncertainty(harvest.factors) };
         const completed = harvest;
-        this.discovery.persistFactors(active.runId, harvest.sources, harvest.factors, () => {
-          this.assignArea("factors", completed.factors.map(factor => factor.id), area.id);
+        const evidence = this.reconcileAreaEvidence(active.runId, harvest.sources, harvest.factors);
+        this.discovery.persistFactors(active.runId, evidence.sources, evidence.factors, () => {
+          this.assignArea("factors", evidence.factors.map(factor => factor.id), area.id);
           workflow.save(`${key}:harvest`, completed);
         });
       }
-      let result = workflow.read<Awaited<ReturnType<typeof discoverProblems>>>(`${key}:problems`);
+      let result = workflow.read<ProblemDiscoveryResult>(`${key}:problems`);
       if (!result) {
         result = await discoverProblems(scoped, harvest.factors, harvest.sources, {
           ...dependencies, idFactory: workflow.idFactory(`${key}:problems`),
@@ -1634,14 +1988,83 @@ export class ResearchEngine {
       }
       results.push({ areaId: area.id, result });
     }
-    const problems = results.flatMap(item => item.result.problems);
-    this.discovery.persistProblems(active.runId, results.flatMap(item => item.result.killSources), problems,
-      results.flatMap(item => item.result.blockedCandidates), () => {
+    // Reconcile copied database records across areas; their frozen packets and verdicts stay unchanged.
+    const completed = this.reconcileProblemEvidence(active.runId, { problems: results.flatMap(item => item.result.problems),
+      killSources: results.flatMap(item => item.result.killSources), blockedCandidates: results.flatMap(item => item.result.blockedCandidates),
+      factorUtilizationRate: 0 }, true);
+    const problems = completed.problems;
+    this.discovery.persistProblems(active.runId, completed.killSources, problems, completed.blockedCandidates, () => {
         for (const item of results) this.assignArea("problems", item.result.problems.map(problem => problem.id), item.areaId);
         workflow.save("discovery-completed", { areas: results.map(item => item.areaId), problemIds: problems.map(problem => problem.id) });
       });
     this.progress(active, `${problems.length} problems across ${selected.length} investigated areas ready for review`);
   }
+
+  private workflowRunOwner(active: ActiveRun): { sessionId: string; workItemId: string } {
+    const row = this.options.db.db.prepare(`SELECT item.session_id AS sessionId, item.id AS workItemId
+      FROM workflow_work_items item JOIN research_runs run ON run.workflow_session_id = item.session_id
+      WHERE run.id = ? AND json_extract(item.output_refs_json, '$.runId') = run.id
+      ORDER BY item.created_at LIMIT 1`).get(active.runId) as { sessionId: string; workItemId: string } | undefined;
+    if (!row) throw new AppError("INVALID_REFERENCE", "This bounded research assignment has no admitted task.");
+    return row;
+  }
+
+  private investigatorDependencies(active: ActiveRun, scope: Scope, frame: ResearchFrame, area: ResearchArea,
+    workItemId: string, dependencies: DiscoveryDependencies): InvestigatorDependencies {
+    const owner = this.workflowRunOwner(active);
+    return { runId: active.runId, scope, frame, area, dependencies: { ...dependencies, repairPolicy: "disabled" },
+      checkpoints: active.workflow!,
+      budgetAvailable: (modelCalls, searches) => this.investigatorBudgetAvailable(active, modelCalls, searches),
+      savedSearchRoute: key => {
+        const saved = new OpportunityExplorationRepository(this.options.db).loadAttempt(active.threadId, `investigator-search:${key}`, owner.sessionId);
+        return saved ? InvestigatorSearchRouteSchema.parse((saved.input as { request: { route: unknown } }).request.route) : undefined;
+      },
+      durableSearch: async request => {
+        const result = await runManagedInvestigatorSearch({ db: this.options.db, threadId: active.threadId,
+          sessionId: owner.sessionId, workItemId, request, searchProvider: active.config.searchProvider,
+          searchClient: this.instrumentedSearch(active), sourceRouting: { ...dependencies.sourceRouting,
+            goalKind: frame.goalKind, languages: frame.languages },
+          ...(active.acknowledgedAttemptIds ? { acknowledgedAttemptIds: active.acknowledgedAttemptIds } : {}),
+          signal: active.abortController.signal });
+        return result.sources;
+      },
+      onStep: step => { this.progress(active, step.message); this.updateInvestigatorLane(workItemId, area, step.message, null, true); },
+    };
+  }
+
+  private investigatorBudgetAvailable(active: ActiveRun, modelCalls: number, searches: number): boolean {
+    const availableModels = modelCalls > 0 ? this.remainingWorkflowTaskCalls(active, "model-call") ?? Infinity : Infinity;
+    const availableSearches = searches > 0 ? this.remainingWorkflowTaskCalls(active, "search") ?? Infinity : Infinity;
+    const allowance = active.areaBudget;
+    if (availableModels < modelCalls || availableSearches < searches) return false;
+    if (!allowance) return true;
+    const modelsUsed = this.options.db.db.prepare(`SELECT coalesce(sum(CASE
+      WHEN attempt_metadata_json IS NOT NULL AND json_type(attempt_metadata_json,'$.attempts') = 'array'
+        THEN max(1,json_array_length(attempt_metadata_json,'$.attempts'))
+      WHEN status <> 'prepared' AND terminal_kind IS NOT 'never-dispatched' THEN 1 ELSE 0 END),0) AS count
+      FROM generation_attempts WHERE research_run_id = ? AND
+        (instr(stage_key,?) > 0 OR instr(stage_key,?) > 0 OR stage_key = ?)`)
+      .get(active.runId, `area-${sha256Area(allowance.areaId)}`, `:${allowance.areaId}:`, `area-gap:${allowance.areaId}`) as { count: number };
+    const searchesUsed = this.options.db.db.prepare(`SELECT count(*) AS count FROM cost_ledger WHERE research_run_id = ?
+      AND operation = 'search' AND status = 'committed' AND json_extract(usage_json,'$.areaId') = ?`)
+      .get(active.runId, allowance.areaId) as { count: number };
+    return modelsUsed.count + modelCalls <= allowance.maxModelCalls
+      && searchesUsed.count + (allowance.pendingSearches ?? 0) + searches <= allowance.maxSearches;
+  }
+
+  private persistAreaEvidence(active: ActiveRun, areaId: string, sources: HarvestedSource[], factors: HarvestedFactor[]): void {
+    const sourceIds = new Set((this.options.db.db.prepare("SELECT id FROM sources WHERE research_run_id = ?").all(active.runId) as Array<{ id: string }>).map(row => row.id));
+    const factorIds = new Set((this.options.db.db.prepare("SELECT id FROM factors WHERE research_run_id = ?").all(active.runId) as Array<{ id: string }>).map(row => row.id));
+    this.discovery.persistFactors(active.runId, sources.filter(source => !sourceIds.has(source.id)), factors.filter(factor => !factorIds.has(factor.id)),
+      () => this.assignArea("factors", factors.map(factor => factor.id), areaId));
+  }
+
+  private savedRunSources(runId: string): HarvestedSource[] {
+    return (this.options.db.db.prepare(`SELECT id, provider_source_id AS providerSourceId, canonical_url AS canonicalUrl,
+      canonical_url AS url, title, retrieved_text AS retrievedText, author, published_at AS publishedAt,
+      content_hash AS contentHash, retrieved_at AS retrievedAt FROM sources WHERE research_run_id = ?`).all(runId) as HarvestedSource[]);
+  }
+
   private async validateFrameSourceVenues(active: ActiveRun, frame: ResearchFrame): Promise<void> {
     const workflow = active.workflow!;
     if (!workflow.read("source-routes") || workflow.read("frame-source-venues")) return;
@@ -1684,10 +2107,124 @@ export class ResearchEngine {
     } };
   }
 
-  private savedRunSources(runId: string): HarvestedSource[] {
-    return this.options.db.db.prepare(`SELECT id, provider_source_id AS providerSourceId, canonical_url AS canonicalUrl,
-      canonical_url AS url, title, retrieved_text AS retrievedText, author, published_at AS publishedAt,
-      content_hash AS contentHash, retrieved_at AS retrievedAt FROM sources WHERE research_run_id = ?`).all(runId) as HarvestedSource[];
+  /** Frames retain their original citation IDs; copied observations must belong to this research run. */
+  private seedFrameDiscoverySources(runId: string, sources: Source[]): void {
+    const known = new Map(this.savedRunSources(runId).map(source => [source.canonicalUrl, source]));
+    const copied: HarvestedSource[] = [];
+    for (const source of sources) {
+      const canonicalUrl = safeCanonicalizeUrl(source.url);
+      if (!canonicalUrl || known.has(canonicalUrl)) continue;
+      const record: HarvestedSource = { id: createHash("sha256").update(`${runId}:frame-context:${source.id}`).digest("hex").slice(0, 24),
+        providerSourceId: source.id, canonicalUrl, url: canonicalUrl, title: source.title, retrievedText: source.text,
+        author: source.author ?? null, publishedAt: source.publishedDate ?? null,
+        contentHash: createHash("sha256").update(source.text).digest("hex"), retrievedAt: new Date().toISOString() };
+      known.set(canonicalUrl, record);
+      copied.push(record);
+    }
+    if (copied.length) this.discovery.persistFactors(runId, copied, []);
+  }
+
+  /** Parallel lanes may rediscover a URL before another lane saves it. Resolve again at persistence. */
+  private reconcileAreaEvidence(runId: string, sources: HarvestedSource[], factors: HarvestedFactor[]) {
+    const known = new Map(this.savedRunSources(runId).map(source => [source.canonicalUrl, source]));
+    const resolved: HarvestedSource[] = [];
+    for (const source of [...sources, ...factors.map(factor => factor.source)]) {
+      const existing = known.get(source.canonicalUrl);
+      const saved = existing ?? source;
+      if (!existing) known.set(source.canonicalUrl, saved);
+      if (!resolved.some(item => item.id === saved.id)) resolved.push(saved);
+    }
+    return { sources: resolved, factors: factors.flatMap(factor => {
+      const source = known.get(factor.source.canonicalUrl)!;
+      // A later retrieval cannot replace the text cited by an earlier saved observation.
+      if (!quoteAppearsVerbatim(source.retrievedText, factor.quote)) return [];
+      return [{ ...factor, sourceId: source.id, source }];
+    }) };
+  }
+
+  private reconcileProblemEvidence(runId: string, result: ProblemDiscoveryResult, preserveVerdicts = false): ProblemDiscoveryResult {
+    const originalSources = [...result.killSources, ...result.problems.flatMap(problem => problem.factors.map(factor => factor.source))];
+    const evidence = this.reconcileAreaEvidence(runId, originalSources, result.problems.flatMap(problem => problem.factors));
+    const sourceByUrl = new Map(evidence.sources.map(source => [source.canonicalUrl, source]));
+    const sourceIds = new Map(originalSources.map(source => [source.id, sourceByUrl.get(source.canonicalUrl)!.id]));
+    const factorsById = new Map(evidence.factors.map(factor => [factor.id, factor]));
+    return { ...result, killSources: [...new Map(result.killSources.map(source => {
+      const saved = sourceByUrl.get(source.canonicalUrl)!;
+      return [saved.id, saved] as const;
+    })).values()], problems: result.problems.map(problem => {
+      const factors = problem.factors.flatMap(factor => factorsById.get(factor.id) ? [factorsById.get(factor.id)!] : []);
+      const factorIds = new Set(factors.map(factor => factor.id));
+      const reconciled = { ...problem, factors, factorIds: [...factorIds],
+        scaleBasisFactorId: factorIds.has(problem.scaleBasisFactorId ?? "") ? problem.scaleBasisFactorId : null,
+        ...(problem.intendedBuyerEvidenceFactorIds ? { intendedBuyerEvidenceFactorIds: problem.intendedBuyerEvidenceFactorIds.filter(id => factorIds.has(id)) } : {}),
+        ...(problem.factorAssessments ? { factorAssessments: problem.factorAssessments.filter(assessment => factorIds.has(assessment.factorId)) } : {}),
+        verdictSourceIds: [...new Set(problem.verdictSourceIds.map(id => sourceIds.get(id) ?? id))] };
+      return preserveVerdicts ? reconciled : enforceConfirmationRule(reconciled);
+    }) };
+  }
+
+  private startInvestigatorItem(id: string): void {
+    this.options.db.immediateTransaction(() => {
+      const repository = new WorkflowRepository(this.options.db);
+      let item = repository.getWorkItem(id)!;
+      if (item.state === "planned") item = repository.updateWorkItem(id, "ready", { outputRefs: item.outputRefs });
+      if (item.state === "ready") repository.updateWorkItem(id, "running", { outputRefs: item.outputRefs });
+    });
+  }
+
+  private finishInvestigatorItem(id: string, outputRefs: unknown = {}): void {
+    this.options.db.immediateTransaction(() => {
+      const repository = new WorkflowRepository(this.options.db);
+      if (repository.getWorkItem(id)?.state === "running") repository.updateWorkItem(id, "succeeded", { outputRefs });
+    });
+  }
+
+  private settleInvestigatorFailure(active: ActiveRun, parentId: string, error: unknown): void {
+    this.options.db.immediateTransaction(() => {
+      const repository = new WorkflowRepository(this.options.db);
+      const items = repository.listWorkItems(this.workflowRunOwner(active).sessionId);
+      const owned = new Set([parentId]);
+      for (const item of items) if (item.parentItemId && owned.has(item.parentItemId)) owned.add(item.id);
+      const state = active.abortController.signal.aborted ? "cancelled"
+        : repository.hasUnknownProviderCompletion(active.runId) ? "unknown" : "failed";
+      const message = errorMessage(error);
+      for (const item of items.filter(item => owned.has(item.id))) {
+        if (item.state === "running") repository.updateWorkItem(item.id, state, { outputRefs: item.outputRefs, error: { message } });
+        else if (item.state === "planned" || item.state === "ready") repository.updateWorkItem(item.id, "skipped", {
+          outputRefs: item.outputRefs, error: { message: `Area investigation stopped. ${message}` } });
+      }
+    });
+  }
+
+  private skipInvestigatorItem(id: string, reason: string): void {
+    this.options.db.immediateTransaction(() => {
+      const repository = new WorkflowRepository(this.options.db);
+      const item = repository.getWorkItem(id);
+      if (item?.state === "planned" || item?.state === "ready") repository.updateWorkItem(id, "skipped", {
+        outputRefs: item.outputRefs, error: { message: reason } });
+    });
+  }
+
+  private investigatorView(area: ResearchArea, currentStep: string,
+    result: Pick<ProblemDiscoveryResult, "problems" | "blockedCandidates"> | null) {
+    return { areaId: area.id, areaName: area.name, currentStep,
+      confirmedCount: result ? result.problems.filter(problem => problem.verdict === "confirmed").length : null,
+      insufficientCount: result ? result.problems.filter(problem => problem.verdict === "insufficient-evidence").length : null,
+      droppedCount: result ? result.blockedCandidates.filter(candidate => candidate.disposition !== "not-assessed").length : null };
+  }
+
+  private updateInvestigatorLane(id: string, area: ResearchArea, currentStep: string,
+    result: Pick<ProblemDiscoveryResult, "problems" | "blockedCandidates"> | null, preserveCounts = false): void {
+    this.options.db.immediateTransaction(() => {
+      const row = this.options.db.db.prepare("SELECT output_refs_json FROM workflow_work_items WHERE id = ?")
+        .get(id) as { output_refs_json: string | null } | undefined;
+      if (!row) return;
+      const previous = (row.output_refs_json ? JSON.parse(row.output_refs_json) as { investigator?: Record<string, unknown> } | null : null) ?? {};
+      const investigator = preserveCounts && previous.investigator ? { ...previous.investigator, currentStep }
+        : this.investigatorView(area, currentStep, result);
+      this.options.db.db.prepare("UPDATE workflow_work_items SET output_refs_json = ? WHERE id = ?")
+        .run(JSON.stringify({ ...previous, investigator }), id);
+    });
   }
 
   private assignArea(table: "factors" | "problems", ids: readonly string[], areaId: string): void {
@@ -2189,11 +2726,17 @@ export class ResearchEngine {
     return {
       modelClient: workflow.discoveryClient(modelClient),
       search: workflow.search(search),
+      existingSources: () => this.savedRunSources(active.runId),
+      existingFactors: () => this.options.db.db.prepare(`SELECT factor.source_role AS sourceRole,
+        source.canonical_url AS url FROM factors factor JOIN sources source ON source.id = factor.source_id
+        WHERE factor.research_run_id = ?`).all(active.runId).map(row => {
+          const factor = row as { sourceRole: string; url: string };
+          return { sourceRole: factor.sourceRole, source: { url: factor.url } };
+        }),
       model: active.config.model,
       reasoningEffort: active.config.reasoningEffort,
       depth: active.config.discoveryDepth,
       ...(workflow.read("source-routes") && frame ? { frame } : {}),
-      existingSources: () => this.savedRunSources(active.runId),
       guided: this.usesWorkGuidance(active.runId),
       smallHarvestBatches: workflow.smallHarvestBatches,
       rankCandidates: workflow.rankProblemCandidates,
@@ -2318,6 +2861,9 @@ export class ResearchEngine {
         if (remainingTaskCalls !== null && remainingTaskCalls < 1) {
           throw new AppError("BUDGET_TOO_SMALL", "This workflow task used its model-call reservation.");
         }
+        if (active.areaBudget && !this.investigatorBudgetAvailable(active, 1, 0)) {
+          throw new AppError("BUDGET_TOO_SMALL", "This research area used its saved model-call allowance.");
+        }
         if (active.researchAllowance
           && this.ledger.countProviderCalls(active.runId, providerId) >= active.researchAllowance.maxModelCalls) {
           throw new AppError("BUDGET_TOO_SMALL", "This research request used its model-call allowance.");
@@ -2341,13 +2887,13 @@ export class ResearchEngine {
               reservation ??= this.ledger.reserve(active.runId, "structured-completion", providerId, stageModel.modelId, 0, attempt.id);
               dispatched = true;
               this.generationAttempts.markDispatched(attempt.id);
-              if (this.activeRuns.get(active.runId) === active) this.progress(active, "Model request dispatched", stage, "dispatched");
+              if (this.activeRuns.get(active.runId)?.abortController === active.abortController) this.progress(active, "Model request dispatched", stage, "dispatched");
               request.onDispatched?.();
             },
             onAccepted: (metadata) => {
               accepted = true;
               this.generationAttempts.markAccepted(attempt.id, metadata);
-              if (this.activeRuns.get(active.runId) === active) this.progress(active, "Model request accepted", stage, "accepted");
+              if (this.activeRuns.get(active.runId)?.abortController === active.abortController) this.progress(active, "Model request accepted", stage, "accepted");
               request.onAccepted?.(metadata);
             },
           });
@@ -2367,7 +2913,7 @@ export class ResearchEngine {
           terminalRecorded = true;
           if (!reservation) throw new Error("Model completed without a recorded dispatch");
           this.ledger.commit(reservation.id, reportedCost(result.metadata), { generation: result.metadata });
-          if (this.activeRuns.get(active.runId) === active) this.progress(active, "Model call completed", stage, null);
+          if (this.activeRuns.get(active.runId)?.abortController === active.abortController) this.progress(active, "Model call completed", stage, null);
           return result;
         } catch (error) {
           const failedAttempts = error instanceof ProviderFailure ? error.attempts : undefined;
@@ -2404,7 +2950,7 @@ export class ResearchEngine {
     };
   }
 
-  private instrumentedSearch(active: ActiveRun): Pick<SearchClient, "provider" | "search" | "providerForRoute"> {
+  private instrumentedSearch(active: ActiveRun): Pick<SearchClient, "provider" | "search" | "providerForRoute" | "searchWithDispatch"> {
     const readiness = this.options.searchReady?.();
     const available = {
       exa: Boolean(this.options.searchClients?.exa) && readiness?.exa !== false,
@@ -2412,51 +2958,68 @@ export class ResearchEngine {
     };
     const defaultProvider = active.config.searchProvider === "auto"
       ? available.exa || available.perplexity ? chooseSearchProvider("auto", available) : "exa" : active.config.searchProvider;
-    return {
-      provider: defaultProvider,
-      providerForRoute: (route) => chooseSearchProvider(active.config.searchProvider, available, route),
-      search: async (query: string, options?: SearchOptions) => {
-        const provider = options?.provider ?? chooseSearchProvider(active.config.searchProvider, available, options?.route);
-        const client = this.options.searchClients?.[provider];
-        active.abortController.signal.throwIfAborted();
-        if (!client) throw new AppError("conflict", `Connect ${provider === "exa" ? "Exa" : "Perplexity"} before discovering problems.`);
-        const remainingTaskSearches = this.remainingWorkflowTaskCalls(active, "search");
-        if (remainingTaskSearches !== null && remainingTaskSearches < 1) {
-          throw new AppError("BUDGET_TOO_SMALL", "This workflow task used its search reservation.");
-        }
-        if (active.researchAllowance
-          && this.ledger.countProviderCalls(active.runId, "exa") + this.ledger.countProviderCalls(active.runId, "perplexity") >= active.researchAllowance.maxSearches) {
-          throw new AppError("BUDGET_TOO_SMALL", "This research request used its search allowance.");
-        }
-        this.enforceRunawayBackstop(active, provider, active.projectedSearches);
-        const reservation = active.followUpSearchReservation
-          ?? this.ledger.reserve(active.runId, "search", provider, null, provider === "exa" ? 0.02 : 0.005);
-        active.followUpSearchReservation = null;
+    const dispatch = async (query: string, options?: SearchOptions, onDispatched?: () => void, preparedAttemptId?: string) => {
+      const provider = options?.provider ?? chooseSearchProvider(active.config.searchProvider, available, options?.route);
+      const client = this.options.searchClients?.[provider];
+      active.abortController.signal.throwIfAborted();
+      if (!client) throw new AppError("conflict", `Connect ${provider === "exa" ? "Exa" : "Perplexity"} before discovering problems.`);
+      const remainingTaskSearches = this.remainingWorkflowTaskCalls(active, "search");
+      if (remainingTaskSearches !== null && remainingTaskSearches < 1) {
+        throw new AppError("BUDGET_TOO_SMALL", "This workflow task used its search reservation.");
+      }
+      if (active.areaBudget && !this.investigatorBudgetAvailable(active, 0, 1)) {
+        throw new AppError("BUDGET_TOO_SMALL", "This research area used its saved search allowance.");
+      }
+      if (active.researchAllowance
+        && this.ledger.countProviderCalls(active.runId, "exa") + this.ledger.countProviderCalls(active.runId, "perplexity") >= active.researchAllowance.maxSearches) {
+        throw new AppError("BUDGET_TOO_SMALL", "This research request used its search allowance.");
+      }
+      this.enforceRunawayBackstop(active, provider, active.projectedSearches);
+      const reservation = active.followUpSearchReservation
+        ?? this.ledger.reserve(active.runId, "search", provider, null, provider === "exa" ? 0.02 : 0.005, undefined,
+          preparedAttemptId ? { searchDispatch: { version: 1, attemptId: preparedAttemptId } } : undefined);
+      active.followUpSearchReservation = null;
+      if (active.areaBudget) active.areaBudget.pendingSearches = (active.areaBudget.pendingSearches ?? 0) + 1;
+      let providerInvoked = false;
+      try {
         this.progress(active, `Searching ${provider === "exa" ? "Exa" : "Perplexity"}: ${query}`, "searching", null);
         if (provider === "perplexity" && options?.category) this.progress(active,
           `${options.route ?? "Search"} uses Perplexity without Exa's ${options.category} category; domain and date filters still apply.`, "searching", null);
         if (provider === "exa" && options?.languages?.some((language) => language !== "en")) this.progress(active,
           "Exa has no language filter. This leg relies on the language of its query.", "searching", null);
-        try {
-          const sources = filterRoutedSources(await client.search(query, options), options);
-          if (this.activeRuns.get(active.runId) === active) this.progress(active,
-            `Found ${sources.length} ${sources.length === 1 ? "source" : "sources"} for: ${query}`, "searching", null);
-          return sources;
-        } catch (error) {
-          if (this.activeRuns.get(active.runId) === active) this.progress(active,
-            `${active.abortController.signal.aborted ? "Cancelled search" : "Search failed"}: ${query}`, "searching", null);
-          throw error;
+        active.abortController.signal.throwIfAborted();
+        options?.signal?.throwIfAborted();
+        onDispatched?.();
+        providerInvoked = true;
+        const sources = filterRoutedSources(await client.search(query, options), options);
+        if (this.activeRuns.get(active.runId)?.abortController === active.abortController) this.progress(active,
+          `Found ${sources.length} ${sources.length === 1 ? "source" : "sources"} for: ${query}`, "searching", null);
+        return sources;
+      } catch (error) {
+        if (this.activeRuns.get(active.runId)?.abortController === active.abortController) this.progress(active,
+          `${active.abortController.signal.aborted ? "Cancelled search" : "Search failed"}: ${query}`, "searching", null);
+        throw error;
+      }
+      finally {
+        if (active.areaBudget) active.areaBudget.pendingSearches = Math.max(0, (active.areaBudget.pendingSearches ?? 0) - 1);
+        if (!providerInvoked) this.ledger.release(reservation.id);
+        else if (this.activeRuns.get(active.runId)?.abortController === active.abortController) {
+          this.ledger.commit(reservation.id, reservation.reservedUsd, {
+            ...(active.areaBudget ? { areaId: active.areaBudget.areaId } : {}),
+            ...(preparedAttemptId ? { searchDispatch: { version: 1, attemptId: preparedAttemptId } } : {}),
+          });
         }
-        finally {
-          if (this.activeRuns.get(active.runId) === active) {
-            this.ledger.commit(reservation.id, reservation.reservedUsd);
-          }
-        }
-      },
+      }
+    };
+    return {
+      provider: defaultProvider,
+      providerForRoute: (route) => chooseSearchProvider(active.config.searchProvider, available, route),
+      search: dispatch,
+      searchWithDispatch: dispatch,
     };
   }
 
-    /** Older bounded sessions may dispatch only within their saved work-item reservations. */
+  /** Bounded tasks spend saved reservations; explicit retries count work after their admission baseline. */
   private remainingWorkflowTaskCalls(active: ActiveRun, kind: "model-call" | "search"): number | null {
     if (this.usesWorkGuidance(active.runId)) return null;
     const linked = this.options.db.db.prepare(`SELECT workflow_session_id FROM research_runs WHERE id = ?`)
@@ -2464,7 +3027,7 @@ export class ResearchEngine {
     if (!linked?.workflow_session_id) return null;
     const item = this.options.db.db.prepare(`SELECT id, state FROM workflow_work_items
       WHERE session_id = ? AND json_extract(output_refs_json, '$.runId') = ?
-        AND kind IN ('prepare-frame','discovery','known-problem','generate-ideas','research-request') LIMIT 1`)
+        AND kind IN ('prepare-frame','discovery','known-problem','generate-ideas','research-request','assess-candidate') LIMIT 1`)
       .get(linked.workflow_session_id, active.runId) as { id: string; state: string } | undefined;
     if (!item) {
       const existing = this.options.db.db.prepare(`SELECT 1 FROM workflow_budget_entries
@@ -2491,7 +3054,12 @@ export class ResearchEngine {
               AND terminal_kind IS NOT 'never-dispatched' THEN 1 ELSE 0 END
           ),0) AS count FROM generation_attempts WHERE research_run_id = ?`)
         .get(active.runId) as { count: number }).count;
-    return reserved.units - used;
+    const baselineRow = this.options.db.db.prepare(`SELECT value_json FROM workflow_snapshots WHERE research_run_id = ?
+      AND snapshot_key LIKE 'task-budget-retry-baseline:%' ORDER BY rowid DESC LIMIT 1`)
+      .get(active.runId) as { value_json: string } | undefined;
+    const baseline = baselineRow ? JSON.parse(baselineRow.value_json) as { modelCalls: number; searches: number } : null;
+    // Explicit retries reserve fresh work. Earlier settled usage and uncertainty stay charged to their original entries.
+    return reserved.units - Math.max(0, used - (kind === "model-call" ? baseline?.modelCalls ?? 0 : baseline?.searches ?? 0));
   }
 
   /** Estimates must not become dispatch limits in a depth-guided workflow. */
