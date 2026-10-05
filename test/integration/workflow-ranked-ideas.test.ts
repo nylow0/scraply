@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { configurePromptPaths } from "../../src/core/prompts";
 import { ResearchEngine } from "../../src/core/research-engine";
+import { getRunTrace } from "../../src/core/run-trace";
 import { materializeResearchSnapshot } from "../../src/core/research-revisions";
 import { WorkflowCoordinator } from "../../src/core/workflow-coordinator";
 import { WorkflowModelScheduler } from "../../src/core/workflow-scheduler";
@@ -94,7 +95,8 @@ async function rankedRun(ideasFor: (problemStatement: string) => number) {
   while (repository.getSession(session.id)!.state !== "finished" && Date.now() < deadline) await Bun.sleep(10);
   const ideas = db.db.prepare(`SELECT p.statement, s.mechanism, s.rank, s.rank_reason, s.weak_fit_reason FROM solutions s
     JOIN problems p ON p.id = s.problem_id ORDER BY p.statement, s.rank`).all() as Array<{ statement: string; mechanism: string; rank: number; rank_reason: string; weak_fit_reason: string | null }>;
-  const result = { session: repository.getSession(session.id)!, summary: coordinator.summary(session.id), calls, ideas,
+  const firstRun = db.db.prepare("SELECT id FROM research_runs WHERE workflow_session_id = ? LIMIT 1").get(session.id) as { id: string };
+  const result = { session: repository.getSession(session.id)!, summary: coordinator.summary(session.id), calls, ideas, trace: getRunTrace(db, firstRun.id).metrics,
     tasks: repository.listWorkItems(session.id).filter((item) => item.kind === "generate-ideas") };
   await engine.shutdown();
   db.close();
@@ -115,6 +117,8 @@ test("four problems make one writing and one ranking call each and save twelve r
   ]);
   expect(run.ideas.every((idea) => idea.rank_reason.startsWith("Ranked ") && idea.weak_fit_reason === null)).toBe(true);
   expect(run.summary.counts).toMatchObject({ requested: 12, accepted: 12, missing: 0 });
+  // The trace an agent reads counts ranked ideas too, so a ranked run is not reported as a zero-idea run.
+  expect(run.trace).toMatchObject({ ideas: 12, acceptedIdeas: 12 });
 });
 
 test("a writer that returns two of three ideas leaves a group of two, with no extra call", async () => {
