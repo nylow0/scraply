@@ -592,6 +592,8 @@ function boundedReassessmentEvidence(
     ...context,
     supportingEvidence: followUpEvidence,
     contraryEvidence: [],
+    // The base packet already contains the saved frame and generation sources.
+    generationEvidence: [],
   }, selectedOption).slice(1);
 }
 

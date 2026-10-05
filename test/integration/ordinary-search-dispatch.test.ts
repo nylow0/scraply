@@ -10,6 +10,7 @@ import { prepareWorkflowSearch, recordWorkflowSearchDispatched, recordWorkflowSe
   unknownSearchAttempts, UnknownSearchCompletionError, workflowSearchDispatchUsage } from "../../src/core/workflow-search-attempts";
 import { DatabaseClient } from "../../src/db/client";
 import { CostLedgerRepository, type CostReservation } from "../../src/db/repositories/cost-ledger";
+import { OpportunityExplorationRepository } from "../../src/db/repositories/opportunity-exploration";
 import { WorkflowRepository } from "../../src/db/repositories/workflows";
 import type { SearchClient } from "../../src/providers/search";
 import { configurePromptPaths } from "../../src/core/prompts";
@@ -98,6 +99,103 @@ for (const admission of ["task", "area", "request", "ready"] as const) {
     f.settle();
     expect(f.workflows.listBudgetEntries("session").reduce((sum, entry) => sum + (entry.settledUnits ?? 0), 0)).toBe(0);
     expect(f.db.db.prepare("SELECT * FROM cost_ledger").all()).toEqual([]);
+  });
+}
+
+for (const proof of ["mismatched", "malformed"] as const) {
+  test(`${proof} dispatch proof retains physical usage and requires the exact receipt acknowledgment`, async () => {
+    const f = fixture();
+    const prepared = prepareWorkflowSearch(f.db, "run", { ...input, dispatchProofVersion: 1 }, []);
+    const ledger = new CostLedgerRepository(f.db);
+    const reservation = ledger.reserve("run", "search", "exa", null, 0.02, undefined,
+      { searchDispatch: { version: 1, attemptId: prepared.id } });
+    const otherId = "00000000-0000-4000-8000-000000000099";
+    f.db.db.prepare("INSERT INTO workflow_snapshots VALUES (?, ?, ?)").run("run", `search-dispatched:${prepared.id}`,
+      JSON.stringify(proof === "mismatched" ? { attemptId: otherId, dispatchedAt: new Date().toISOString() } : { attemptId: prepared.id }));
+    const old = f.db.db.prepare("SELECT * FROM workflow_snapshots ORDER BY rowid").all();
+    expect(workflowSearchDispatchUsage(f.db, "run")).toEqual({ attemptCount: 1, unknownCount: 1 });
+    expect(f.physicalCount()).toBe(1);
+    expect(unknownSearchAttempts(f.db, "run")).toEqual([prepared]);
+    expect(f.workflows.hasUnknownProviderCompletion("run")).toBe(true);
+    expect(() => prepareWorkflowSearch(f.db, "run", input, [])).toThrow(UnknownSearchCompletionError);
+    expect(() => prepareWorkflowSearch(f.db, "run", input, [otherId])).toThrow(UnknownSearchCompletionError);
+    await expect(new WorkflowExecution(f.db, "run").search(f.instrumented).search(query, parameters))
+      .rejects.toBeInstanceOf(UnknownSearchCompletionError);
+    expect(f.dispatches()).toBe(0);
+    expect(f.db.db.prepare("SELECT * FROM workflow_snapshots ORDER BY rowid").all()).toEqual(old);
+    const trace = getRunTrace(f.db, "run");
+    expect(trace.metrics.searches).toBe(1);
+    expect(trace.steps.find(step => step.id === `search-attempt:${prepared.id}`)?.status).toBe("unknown-dispatch");
+    expect(getRunTraceStep(f.db, "run", `search-attempt:${prepared.id}`).step.status).toBe("unknown-dispatch");
+    prepareWorkflowSearch(f.db, "run", { ...input, dispatchProofVersion: 1 }, [prepared.id]);
+    expect(unknownSearchAttempts(f.db, "run")).toEqual([]);
+    expect(workflowSearchDispatchUsage(f.db, "run")).toEqual({ attemptCount: 1, unknownCount: 1 });
+    expect(f.db.db.prepare("SELECT * FROM workflow_snapshots ORDER BY rowid").all().slice(0, old.length)).toEqual(old);
+    ledger.settleUncertain("run", "Dispatch proof cannot establish non-dispatch");
+    expect(f.db.db.prepare("SELECT status FROM cost_ledger WHERE id=?").get(reservation.id)).toEqual({ status: "committed" });
+    f.settle();
+    expect(f.workflows.getBudgetTotals("session").searches.spent).toBe(1);
+  });
+}
+
+for (const damage of ["partial", "foreign-field", "proof-version", "snapshot-identity", "input-identity"] as const) {
+  test(`${damage} receipt cannot prove absence of dispatch or permit automatic replay`, () => {
+    const f = fixture();
+    const prepared = prepareWorkflowSearch(f.db, "run", { ...input, dispatchProofVersion: 1 }, []);
+    const ledger = new CostLedgerRepository(f.db);
+    const reservation = ledger.reserve("run", "search", "exa", null, 0.02, undefined,
+      { searchDispatch: { version: 1, attemptId: prepared.id } });
+    const value = damage === "partial" ? JSON.stringify({ id: prepared.id, dispatchProofVersion: 1 })
+      : damage === "foreign-field" ? JSON.stringify({ ...prepared, foreign: true })
+      : damage === "proof-version" ? JSON.stringify({ ...prepared, dispatchProofVersion: 2 })
+      : JSON.stringify(damage === "input-identity" ? { ...prepared, query: "Different question" } : prepared);
+    f.db.db.prepare("UPDATE workflow_snapshots SET value_json=?, snapshot_key=? WHERE snapshot_key LIKE 'search-attempt:%'")
+      .run(value, damage === "snapshot-identity" ? `search-attempt:${prepared.key.slice("search:".length)}:00000000-0000-4000-8000-000000000099`
+        : `search-attempt:${prepared.key.slice("search:".length)}:${prepared.id}`);
+    const old = f.db.db.prepare("SELECT * FROM workflow_snapshots ORDER BY rowid").all();
+    expect(workflowSearchDispatchUsage(f.db, "run")).toEqual({ attemptCount: 1, unknownCount: 1 });
+    expect(() => unknownSearchAttempts(f.db, "run")).toThrow();
+    expect(() => prepareWorkflowSearch(f.db, "run", input, [prepared.id])).toThrow();
+    expect(f.db.db.prepare("SELECT * FROM workflow_snapshots ORDER BY rowid").all()).toEqual(old);
+    ledger.settleUncertain("run", "Invalid receipt after restart");
+    expect(f.db.db.prepare("SELECT status FROM cost_ledger WHERE id=?").get(reservation.id)).toEqual({ status: "committed" });
+  });
+}
+
+for (const damage of ["partial-receipt", "invalid-receipt-json", "invalid-proof-json"] as const) {
+  test(`Trace reads saved work around ${damage} without inventing receipt details`, () => {
+    const f = fixture();
+    const prepared = prepareWorkflowSearch(f.db, "run", { ...input, dispatchProofVersion: 1 }, []);
+    // Corrupt-file fixtures may contain JSON that no current database writer admits.
+    f.db.db.exec("PRAGMA ignore_check_constraints = ON");
+    try {
+      if (damage === "invalid-proof-json") f.db.db.prepare("INSERT INTO workflow_snapshots VALUES (?, ?, ?)")
+        .run("run", `search-dispatched:${prepared.id}`, "{");
+      else f.db.db.prepare("UPDATE workflow_snapshots SET value_json=? WHERE snapshot_key LIKE 'search-attempt:%'")
+        .run(damage === "partial-receipt" ? JSON.stringify({ id: prepared.id, dispatchProofVersion: 1 }) : "{");
+    } finally { f.db.db.exec("PRAGMA ignore_check_constraints = OFF"); }
+    const completedQuery = "A readable saved search";
+    const completed = { ...input, query: completedQuery, key: workflowSearchKey(completedQuery, parameters, "exa"),
+      id: "00000000-0000-4000-8000-000000000098", dispatchProofVersion: 1, createdAt: new Date().toISOString() };
+    f.db.db.prepare("INSERT INTO workflow_snapshots VALUES (?, ?, ?)")
+      .run("run", `search-attempt:${completed.key.slice("search:".length)}:${completed.id}`, JSON.stringify(completed));
+    recordWorkflowSearchDispatched(f.db, "run", completed.id);
+    recordWorkflowSearchTerminal(f.db, "run", completed.id, "completed");
+    f.db.db.prepare("INSERT INTO workflow_snapshots VALUES (?, ?, '[]')").run("run", completed.key);
+    const old = f.db.db.prepare("SELECT * FROM workflow_snapshots ORDER BY rowid").all();
+    const trace = getRunTrace(f.db, "run");
+    expect(trace.metrics.searches).toBe(2);
+    expect(trace.warnings).toContain("Some recorded search attempts have unknown provider completion. They are included in the search count.");
+    expect(trace.warnings).toContain("Some saved search records are invalid. Their dispatches remain counted conservatively; unavailable details are omitted.");
+    expect(getRunTraceStep(f.db, "run", `search-attempt:${completed.id}`).inputs).toEqual(completed);
+    const damagedStep = trace.steps.find(step => step.id === `search-attempt:${prepared.id}`);
+    if (damage === "invalid-proof-json") {
+      expect(damagedStep?.status).toBe("unknown-dispatch");
+      const detail = getRunTraceStep(f.db, "run", `search-attempt:${prepared.id}`);
+      expect(detail.inputs).toEqual(prepared);
+      expect(detail.events.some(event => event.type === "search-never-dispatched")).toBe(false);
+    } else expect(damagedStep).toBeUndefined();
+    expect(f.db.db.prepare("SELECT * FROM workflow_snapshots ORDER BY rowid").all()).toEqual(old);
   });
 }
 
@@ -338,6 +436,52 @@ test("a malformed partial receipt cannot prove that its linked reservation was n
   ledger.settleUncertain("run", "Restart");
   expect(f.db.db.prepare("SELECT status FROM cost_ledger WHERE id=?").get(reservation.id)).toEqual({ status: "committed" });
 });
+
+for (const receipt of ["prepared", "dispatched", "foreign-run", "foreign-session", "unlinked", "ordinary-conflict", "dispatch-conflict", "terminal-conflict", "model-stage"] as const) {
+  test(`restart ${receipt === "prepared" ? "releases" : "retains"} a linked managed ${receipt} reservation`, () => {
+    const f = fixture();
+    const attempts = new OpportunityExplorationRepository(f.db);
+    const prepared = f.db.immediateTransaction(() => {
+      const sessionId = receipt === "foreign-session" ? "other-session" : "session";
+      if (receipt === "foreign-session") {
+        const original = f.workflows.getSession("session")!;
+        f.workflows.updateSession(original.id, original.revision, { state: "finished", outcome: "failed" });
+        f.workflows.createSession({ id: sessionId, threadId: "project", purpose: "discovery", mode: "babysit",
+          contract: { limits: { enforced: true } }, remainingMs: 60_000 });
+      }
+      let parentId = "task";
+      if (receipt === "foreign-run" || receipt === "foreign-session") {
+        const owner = f.workflows.createWorkItem({ sessionId, kind: "discovery", scopeKey: "another-run", input: {}, state: "ready" });
+        f.workflows.updateWorkItem(owner.id, "running", { outputRefs: { runId: receipt === "foreign-session" ? "run" : "other-run" } });
+        parentId = owner.id;
+      }
+      const child = f.workflows.createWorkItem({ sessionId, parentItemId: parentId, kind: "evidence-check", scopeKey: "managed-search", input: {}, state: "ready" });
+      const prepared = attempts.prepareAttempt("project", { stageKey: "investigator-search:receipt-recovery",
+        stageName: receipt === "model-stage" ? "evidence-check" : "investigator-search",
+        input: { request: { key: "receipt-recovery", query, route: "community", evidenceNeeded: "Find another owner" }, parameters },
+        model: { providerId: "exa", modelId: "search", reasoningEffort: "bounded" }, promptVersion: "1", promptText: query,
+        ...(receipt === "unlinked" ? {} : { workItemId: child.id }) }, sessionId);
+      if (prepared.kind !== "prepared") throw new Error("Expected prepared managed search");
+      if (receipt === "dispatched") attempts.markAttemptDispatched("project", prepared.attemptId, "none", sessionId);
+      return prepared;
+    });
+    if (receipt === "ordinary-conflict") f.db.db.prepare("INSERT INTO workflow_snapshots VALUES (?, ?, ?)")
+      .run("run", `search-attempt:${input.key.slice("search:".length)}:${prepared.attemptId}`, "{}");
+    if (receipt === "dispatch-conflict") f.db.db.prepare("INSERT INTO workflow_snapshots VALUES (?, ?, ?)")
+      .run("run", `search-dispatched:${prepared.attemptId}`, "{}");
+    if (receipt === "terminal-conflict") f.db.db.prepare("UPDATE opportunity_exploration_attempts SET result_json='{}' WHERE id=?").run(prepared.attemptId);
+    const ledger = new CostLedgerRepository(f.db);
+    const reservation = ledger.reserve("run", "search", "exa", null, 0.02, undefined,
+      { searchDispatch: { version: 1, attemptId: prepared.attemptId } });
+    const saved = f.db.db.prepare("SELECT * FROM opportunity_exploration_attempts ORDER BY rowid").all();
+    ledger.settleUncertain("run", "Restart before managed dispatch admission");
+    const row = f.db.db.prepare("SELECT status FROM cost_ledger WHERE id=?").get(reservation.id);
+    expect(row).toEqual(receipt === "prepared" ? null : { status: "committed" });
+    expect(f.db.db.prepare("SELECT reserved_cost FROM research_runs WHERE id='run'").get()).toEqual({ reserved_cost: 0 });
+    expect(f.db.db.prepare("SELECT * FROM opportunity_exploration_attempts ORDER BY rowid").all()).toEqual(saved);
+    if (receipt === "prepared") expect(f.physicalCount()).toBe(0);
+  });
+}
 
 test("a preallocated follow-up allowance releases on dispatch-proof failure and otherwise retains conservative unlinked recovery", async () => {
   const f = fixture();

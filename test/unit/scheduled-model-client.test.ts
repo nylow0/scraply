@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import { z } from "zod";
 import { scheduledModelClient } from "../../src/core/scheduled-model-client";
 import { WorkflowModelScheduler } from "../../src/core/workflow-scheduler";
+import { AppError } from "../../src/shared/errors";
 import { ProviderFailure, type GenerationAttemptMetadata, type StructuredModelClient,
   type StructuredStageRequest } from "../../src/providers/structured";
 
@@ -111,4 +112,26 @@ test("research without a deadline waits through the queue and returns the comple
     scheduledModelClient(raw, scheduler, "second").structuredCompletion(unlimited),
   ]);
   expect(results.map((result) => result.output.answer)).toEqual(["complete response", "complete response"]);
+});
+
+test("a schema repair rejected before its wire write keeps the first provider receipt", async () => {
+  const scheduler = new WorkflowModelScheduler();
+  const firstAttempt = { ...attempt("initial"), outcome: "failed" as const };
+  let dispatches = 0;
+  let wires = 0;
+  const raw: StructuredModelClient = {
+    async structuredCompletion(input) {
+      input.onDispatched?.();
+      wires++;
+      throw new ProviderFailure("schema", "First response did not match the schema", false, { attempts: [firstAttempt] });
+    },
+  };
+  const outcome = scheduledModelClient(raw, scheduler, "project").structuredCompletion({ ...request("repair", "one_retry"),
+    onDispatched() {
+      if (++dispatches > 1) throw new AppError("BUDGET_TOO_SMALL", "The remaining call was dispatched elsewhere");
+    },
+  });
+  await expect(outcome).rejects.toMatchObject({ code: "failed", attempts: [firstAttempt] });
+  expect(wires).toBe(1);
+  expect(dispatches).toBe(2);
 });

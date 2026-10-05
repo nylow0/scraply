@@ -7,7 +7,7 @@ import type {
 } from "../db/repositories/discovery";
 import type { ExaCategory } from "../providers/exa";
 import type { SearchClient, SearchOptions } from "../providers/search";
-import { ProviderFailure, type StructuredModelClient } from "../providers/structured";
+import { isDroppedStream, ProviderFailure, type StructuredModelClient } from "../providers/structured";
 import { AppError } from "../shared/errors";
 import { deriveJsonSchema } from "../shared/json-schema";
 import {
@@ -103,6 +103,8 @@ export interface ProblemDiscoveryResult {
   killSources: HarvestedSource[];
   factorUtilizationRate: number;
   partialReason?: string;
+  /** An exhausted model call ends this area after preserving completed verdicts. */
+  modelFailure?: { code: ProviderFailure["code"]; message: string; droppedStream: boolean };
 }
 
 export interface DiscoveryDependencies {
@@ -370,7 +372,9 @@ export async function discoverProblems(
   );
 
   let partialReason: string | undefined;
+  let modelFailure: ProblemDiscoveryResult["modelFailure"];
   for (const [index, { candidate, citedFactors, hostnames }] of candidates.entries()) {
+    let modelCall = false;
     try {
       let assessmentCandidate = candidate;
       if ("alternativeExplanations" in candidate) {
@@ -394,6 +398,7 @@ export async function discoverProblems(
         killSources.push(source);
       }
       const assessAudience = dependencies.workflowVersion === 2 && dependencies.assessProblemAudience && !scope.audience.trim();
+      modelCall = true;
       const kill = await structuredCall(
         dependencies,
         `problem-kill:${createHash("sha256").update(JSON.stringify(assessmentCandidate)).digest("hex")}${assessAudience ? ":audience-v1" : ""}`,
@@ -459,9 +464,16 @@ export async function discoverProblems(
         singleHarvestModeWarning: new Set(citedFactors.map((factor) => factor.harvestMode)).size === 1 && citedFactors.length > 0,
       });
     } catch (error) {
-      // New candidate accounting keeps completed verdicts and full remaining candidates when a known allowance ends.
-      if (dependencies.rankCandidates !== true || !(error instanceof AppError) || error.code !== "BUDGET_TOO_SMALL") throw error;
-      partialReason = "The saved allowance ended before all candidates could be assessed. Completed verdicts and remaining candidates were retained.";
+      dependencies.signal?.throwIfAborted();
+      const allowance = error instanceof AppError && error.code === "BUDGET_TOO_SMALL";
+      const droppedStream = modelCall && isDroppedStream(error);
+      const failedModel = modelCall && error instanceof ProviderFailure
+        && (droppedStream || ["timeout", "output-limit", "schema"].includes(error.code));
+      if (dependencies.rankCandidates !== true || (!allowance && !failedModel)) throw error;
+      if (failedModel && error instanceof ProviderFailure) {
+        modelFailure = { code: error.code, message: error.message, droppedStream };
+        partialReason = `Candidate assessment stopped because a model call failed: ${modelFailure.message} Completed verdicts and remaining candidates were retained.`;
+      } else partialReason = "The saved allowance ended before all candidates could be assessed. Completed verdicts and remaining candidates were retained.";
       for (const { candidate } of candidates.slice(index)) blockedCandidates.push({ statement: candidate.statement,
         reason: `Not assessed: ${partialReason}`, disposition: "not-assessed", candidate });
       dependencies.onProjection?.(partialReason);
@@ -476,6 +488,7 @@ export async function discoverProblems(
     killSources,
     factorUtilizationRate: rate(usedFactorIds.size, factors.length),
     ...(partialReason ? { partialReason } : {}),
+    ...(modelFailure ? { modelFailure } : {}),
   };
 }
 

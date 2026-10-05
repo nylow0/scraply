@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import type { DatabaseClient } from "../client";
-import { WorkflowSearchAttemptSchema } from "../../core/workflow-search-attempts";
+import { WorkflowSearchAttemptSchema, workflowSearchReceiptIdentityMatches } from "../../core/workflow-search-attempts";
 
 const SearchDispatchLinkSchema = z.object({ version: z.literal(1), attemptId: z.string().uuid() }).strict();
 
@@ -146,10 +146,27 @@ export class CostLedgerRepository {
         try {
           const parsed = WorkflowSearchAttemptSchema.safeParse(JSON.parse(receipt?.value_json ?? "null"));
           prepared = parsed.success && parsed.data.id === link.data.attemptId && parsed.data.dispatchProofVersion === 1
-            && receipt?.snapshot_key === `search-attempt:${parsed.data.key.slice("search:".length)}:${parsed.data.id}`;
+            && receipt !== undefined && workflowSearchReceiptIdentityMatches(parsed.data, receipt.snapshot_key);
         } catch { /* A corrupt receipt retains conservative settlement. */ }
         const dispatch = this.client.db.prepare("SELECT 1 FROM workflow_snapshots WHERE research_run_id = ? AND snapshot_key = ?")
           .get(runId, `search-dispatched:${link.data.attemptId}`);
+        if (!receipt && !dispatch) {
+          // Managed searches share the ledger link, but their durable intent belongs to this run's task tree.
+          const managed = this.client.db.prepare(`WITH RECURSIVE linked(id, session_id) AS (
+            SELECT work.id, work.session_id FROM workflow_work_items work JOIN research_runs run
+              ON run.id = ? AND work.session_id = run.workflow_session_id
+              WHERE json_extract(work.output_refs_json, '$.runId') = run.id
+            UNION SELECT child.id, child.session_id FROM workflow_work_items child JOIN linked parent
+              ON child.parent_item_id = parent.id AND child.session_id = parent.session_id
+          ) SELECT 1 FROM opportunity_exploration_attempts attempt JOIN linked
+            ON linked.id = attempt.work_item_id AND linked.session_id = attempt.session_id
+            JOIN research_runs run ON run.id = ? AND run.workflow_session_id = attempt.session_id
+              AND run.thread_id = attempt.thread_id
+            WHERE attempt.id = ? AND attempt.stage_name = 'investigator-search' AND attempt.status = 'prepared'
+              AND attempt.dispatched_at IS NULL AND attempt.completed_at IS NULL AND attempt.result_json IS NULL
+              AND attempt.error_message IS NULL`).get(runId, runId, link.data.attemptId);
+          prepared = Boolean(managed);
+        }
         if (prepared && !dispatch) {
           this.release(row.id);
           continue;

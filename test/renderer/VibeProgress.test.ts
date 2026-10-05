@@ -48,7 +48,7 @@ describe("VibeProgress", () => {
   test("shows area investigators alongside live research and keeps run controls accessible", async () => {
     const onPause = vi.fn(async () => {});
     const view = render(VibeProgress, { detail: detail({ ideaTargetReady: false }), busy: false,
-      investigators: [{ areaId: "bank", areaName: "Bank matching", state: "running", currentStep: "Checking evidence gaps", confirmedCount: 1, insufficientCount: 2, droppedCount: 0 }],
+      investigators: [{ taskId: "bank-task", areaId: "bank", areaName: "Bank matching", state: "running", currentStep: "Checking evidence gaps", confirmedCount: 1, insufficientCount: 2, droppedCount: 0 }],
       onPause, onStop: vi.fn(async () => {}) });
     expect(view.getByRole("region", { name: "Area investigators" })).toBeTruthy();
     expect(view.getByRole("listitem", { name: "Bank matching investigator" }).textContent).toContain("Checking evidence gaps");

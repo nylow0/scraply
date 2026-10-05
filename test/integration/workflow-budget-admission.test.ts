@@ -6,13 +6,15 @@ import { join } from "node:path";
 import { ResearchEngine } from "../../src/core/research-engine";
 import { materializeResearchSnapshot } from "../../src/core/research-revisions";
 import { WorkflowCoordinator } from "../../src/core/workflow-coordinator";
+import { prepareWorkflowSearch, recordWorkflowSearchDispatched, recordWorkflowSearchTerminal } from "../../src/core/workflow-search-attempts";
 import { DatabaseClient } from "../../src/db/client";
 import { DiscoveryRepository } from "../../src/db/repositories/discovery";
 import { ResearchRunRepository, type ResearchRunWorkflowLink } from "../../src/db/repositories/research-runs";
 import { WorkflowRepository } from "../../src/db/repositories/workflows";
+import { OpportunityExplorationRepository } from "../../src/db/repositories/opportunity-exploration";
 import { ProblemCandidateSchema } from "../../src/shared/ipc";
 import { DEFAULT_RUN_CONFIG, type RunConfig } from "../../src/shared/schemas";
-import { sha256 } from "../../src/shared/content-identity";
+import { sha256, workflowSearchKey } from "../../src/shared/content-identity";
 
 const directories: string[] = [];
 afterEach(() => { for (const directory of directories.splice(0)) rmSync(directory, { recursive: true, force: true }); });
@@ -125,5 +127,51 @@ test("a bounded fill receives its own novelty reservation after the first result
     const fill = f.repository.listWorkItems(f.session.id).find(item => item.kind === "generate-ideas" && (item.input as { fillRound?: number }).fillRound === 1)!;
     expect(fill.state).toBe("running");
     expect(f.repository.listBudgetEntries(f.session.id).find(entry => entry.workItemId === fill.id && entry.kind === "search")?.reservedUnits).toBe(5);
+  } finally { await f.engine.shutdown(); f.db.close(); }
+});
+
+test.each(["linked", "legacy-mixed", "malformed-ledger"] as const)("research settlement counts %s ordinary, managed, and ledger-only searches once", async accounting => {
+  const f = fixture("babysit");
+  try {
+    const task = f.db.immediateTransaction(() => {
+      const item = f.repository.createWorkItem({ sessionId: f.session.id, kind: "discovery", scopeKey: "research", input: {}, state: "ready" });
+      f.repository.updateWorkItem(item.id, "running", { outputRefs: { runId: "source" } });
+      f.repository.reserveBudget({ sessionId: f.session.id, workItemId: item.id, kind: "search", operationKey: "searches", reservedUnits: 5 });
+      return item;
+    });
+    const linked = accounting !== "legacy-mixed";
+    const parameters = { provider: "exa" };
+    const ordinary = prepareWorkflowSearch(f.db, "source", { key: workflowSearchKey("ordinary", parameters), query: "ordinary", parameters,
+      ...(linked ? { dispatchProofVersion: 1 as const } : {}) }, []);
+    if (linked) {
+      recordWorkflowSearchDispatched(f.db, "source", ordinary.id);
+      recordWorkflowSearchTerminal(f.db, "source", ordinary.id, "completed");
+    } else {
+      f.db.db.prepare("INSERT INTO workflow_snapshots VALUES ('source', ?, ?)").run(`search-acknowledged:${ordinary.id}`,
+        JSON.stringify({ attemptId: ordinary.id, acknowledgedAt: new Date().toISOString() }));
+    }
+    const attempts = new OpportunityExplorationRepository(f.db);
+    const managed = f.db.immediateTransaction(() => {
+      const attempt = attempts.prepareAttempt("project", { stageKey: "investigator-search:managed", stageName: "investigator-search",
+        input: {}, model: { ...f.model, reasoningEffort: "medium" }, promptVersion: "1", promptText: "managed query", workItemId: task.id }, f.session.id);
+      if (attempt.kind !== "prepared") throw new Error("Expected prepared managed search");
+      attempts.markAttemptDispatched("project", attempt.attemptId, "none", f.session.id);
+      attempts.completeAttempt("project", attempt.attemptId, { sources: [] }, f.session.id);
+      return attempt.attemptId;
+    });
+    const now = new Date().toISOString();
+    const insertLedger = f.db.db.prepare(`INSERT INTO cost_ledger (id,research_run_id,operation,provider,model,reservation_usd,committed_usd,status,usage_json,created_at,updated_at)
+      VALUES (?,'source','search','exa',NULL,0.02,0.02,'committed',?,?,?)`);
+    for (const attemptId of linked ? [ordinary.id, managed] : [managed, null]) {
+      const usage = accounting === "malformed-ledger" && attemptId === managed ? "invalid json"
+        : JSON.stringify(linked ? { searchDispatch: { version: 1, attemptId } } : {});
+      insertLedger.run(randomUUID(), usage, now, now);
+    }
+
+    f.coordinator.handleRunEvent({ type: "run-completed", threadId: "project", runId: "source", problemId: null });
+
+    expect(f.repository.getWorkItem(task.id)?.state).toBe("succeeded");
+    expect(f.coordinator.summary(f.session.id).budget.searches).toMatchObject({ spent: linked ? 2 : 3, reserved: 0, uncertain: 0 });
+    expect(f.repository.listBudgetEntries(f.session.id).filter(entry => entry.operationKey.startsWith("observed-overrun:"))).toEqual([]);
   } finally { await f.engine.shutdown(); f.db.close(); }
 });

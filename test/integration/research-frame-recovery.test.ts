@@ -5,6 +5,13 @@ import { join } from "node:path";
 import { configurePromptPaths } from "../../src/core/prompts";
 import { generateResearchFrame } from "../../src/core/research-frame";
 import { WorkflowExecution } from "../../src/core/workflow-execution";
+import { ResearchEngine } from "../../src/core/research-engine";
+import { WorkflowCoordinator } from "../../src/core/workflow-coordinator";
+import { ensureAreaInvestigatorWorkItems } from "../../src/core/evidence-investigators";
+import { DiscoveryRepository } from "../../src/db/repositories/discovery";
+import { ResearchFrameRepository } from "../../src/db/repositories/research-frames";
+import { WorkflowRepository } from "../../src/db/repositories/workflows";
+import { OpportunityExplorationRepository } from "../../src/db/repositories/opportunity-exploration";
 import { DatabaseClient } from "../../src/db/client";
 import { GenerationAttemptRepository } from "../../src/db/repositories/generation-attempts";
 import { WorkflowV2ContextMismatchError } from "../../src/db/repositories/workflow-v2";
@@ -12,6 +19,7 @@ import type { StructuredModelClient, StructuredStageRequest } from "../../src/pr
 import { deriveJsonSchema } from "../../src/shared/json-schema";
 import { ResearchFrameOutputSchema, type ResearchFrame } from "../../src/shared/research-frame";
 import { DEFAULT_RUN_CONFIG } from "../../src/shared/schemas";
+import { sha256 } from "../../src/shared/content-identity";
 
 const model = { providerId: "test", modelId: "test" };
 const source = { id: "saved-source", url: "https://source.example/rules", title: "Bank rules", text: "Bank rules apply in priority order." };
@@ -25,6 +33,236 @@ const frame: ResearchFrame = { goal: "Improve reconciliation", goalKind: "proces
     venues: [{ name: "Bookkeeping community", kind: "community" }], exampleProblems: [], included: true, priority: 1 }] };
 const metadata = { model, usage: { status: "unknown" as const }, latencyMs: 1, repairCount: 0,
   providerRequestIds: [], attempts: [], prompt: { id: "fixture", sha256: "a".repeat(64) } };
+
+test.each(["empty", "saved-candidate", "pending-candidates"] as const)(
+  "a pre-investigator framed run resumes its frozen path with %s research", async checkpoint => {
+    const fixture = recoveryFixture();
+    const { db, workflow } = fixture;
+    const calls: string[] = [];
+    const errors: string[] = [];
+    const provider: StructuredModelClient = { async structuredCompletion(request) {
+      calls.push(request.stage);
+      expect(request.stage.startsWith("problem-candidates:")).toBe(true);
+      expect(request.workOrder.instruction).toStartWith("Frozen pre-investigator prompt\n");
+      request.onDispatched?.();
+      return { output: request.schema.parse({ problems: [] }), metadata };
+    } };
+    const engine = new ResearchEngine({ db, modelClients: { test: provider }, searchClients: {},
+      onEvent(event) { if (event.type === "run-failed") errors.push(event.error); } });
+    try {
+      const stages = ["frame-search-plan", "frame", "area-ranking", "query-plan", "factor-harvest", "problem-candidates",
+        "problem-kill", "solutions", "solution-set-review", "idea-follow-up", "risk-evaluation", "decision-analysis"] as const;
+      const frozen = Object.fromEntries(stages.map(stage => {
+        const prompt = workflow.resolvePrompt(stage);
+        const text = `Frozen pre-investigator prompt\n${prompt.text}`;
+        return [stage, { ...prompt, text, resolvedSha256: sha256(text) }];
+      }));
+      db.db.prepare("UPDATE workflow_snapshots SET value_json = ? WHERE research_run_id = 'frame-run' AND snapshot_key = 'prompts'")
+        .run(JSON.stringify(frozen));
+      for (const key of ["bounded-follow-up-harvest", "parallel-research", "labeled-factors", "medium-reads", "medium-synthesis"]) {
+        db.db.prepare("DELETE FROM workflow_snapshots WHERE research_run_id = 'frame-run' AND snapshot_key = ?").run(key);
+      }
+      db.db.prepare("UPDATE workflow_snapshots SET value_json = ? WHERE research_run_id = 'frame-run' AND snapshot_key = 'source-routes'")
+        .run('{"version":1}');
+      workflow.save("frame-workflow", { version: 1 });
+      const savedPrompts = db.db.prepare("SELECT value_json FROM workflow_snapshots WHERE research_run_id = 'frame-run' AND snapshot_key = 'prompts'").get();
+      db.db.prepare("UPDATE research_runs SET config_json = ? WHERE id = 'frame-run'")
+        .run(JSON.stringify({ ...DEFAULT_RUN_CONFIG, model }));
+      const discovery = new DiscoveryRepository(db);
+      discovery.persistScope("frame-run", scope);
+      const frames = new ResearchFrameRepository(db);
+      const savedFrame = frames.createDraft({ threadId: "project", runId: "frame-run", frame, sources: [source], knownProblem: false });
+      frames.approve(savedFrame.id, "project", frame);
+      const area = frame.areas[0]!;
+      const harvestedSource = { ...source, canonicalUrl: source.url, providerSourceId: source.id, retrievedText: source.text,
+        author: null, publishedAt: null, contentHash: sha256(source.text), retrievedAt: new Date().toISOString() };
+      const factor = { id: "old-factor", sourceId: source.id, source: harvestedSource, subject: "Bookkeeper", behavior: "Applies bank rules",
+        quote: source.text, harvestMode: "domain" as const, modelConfidence: 0.8, uncertainty: null, sourceRole: "firsthand" as const,
+        audienceFit: "intended-buyer" as const, independentSourceKey: "bookkeeper", supportsDemand: false, demandEvidenceUncertainty: null };
+      discovery.persistFactors("frame-run", [harvestedSource], [factor]);
+      workflow.save(`frame-scan:${area.id}`, { areaId: area.id, qualifyingFacts: 1, sources: [harvestedSource], factors: [factor] });
+      workflow.save("frame-selected-areas", [area]);
+      workflow.save(`area:${area.id}:harvest`, { sources: [harvestedSource], factors: [factor] });
+      if (checkpoint !== "pending-candidates") workflow.save(`area:${area.id}:problems`, {
+        problems: checkpoint === "saved-candidate" ? [{ id: "old-problem", statement: "Bookkeepers repeat bank-rule setup",
+          whyItPersists: "Each bank uses a separate rule list", affected: "Bookkeepers", scaleEstimate: "Unknown",
+          scaleBasisFactorId: factor.id, factorIds: [factor.id], factors: [factor], verdict: "insufficient-evidence",
+          verdictReason: "Only one saved account", verdictSourceIds: [source.id], sourceHostnames: ["source.example"], singleHarvestModeWarning: true }] : [],
+        killSources: [], blockedCandidates: [], factorUtilizationRate: 0,
+      });
+
+      await engine.resumeRun("frame-run");
+      const deadline = Date.now() + 5_000;
+      while (engine.getActiveRunIds().size > 0 && Date.now() < deadline) await Bun.sleep(5);
+
+      expect(engine.getActiveRunIds().size).toBe(0);
+      expect(errors).toEqual([]);
+      expect(db.db.prepare("SELECT status FROM research_runs WHERE id = 'frame-run'").get()).toEqual({ status: "completed" });
+      expect(calls).toHaveLength(checkpoint === "pending-candidates" ? 1 : 0);
+      expect(db.db.prepare("SELECT COUNT(*) AS count FROM problems WHERE discovery_run_id = 'frame-run'").get())
+        .toEqual({ count: checkpoint === "saved-candidate" ? 1 : 0 });
+      expect(db.db.prepare("SELECT value_json FROM workflow_snapshots WHERE research_run_id = 'frame-run' AND snapshot_key = 'prompts'").get()).toEqual(savedPrompts);
+      expect(workflow.read("discovery-completed")).not.toBeNull();
+      expect(workflow.read(`area:${area.id}:investigation-completed`)).toBeNull();
+      expect(db.db.prepare("SELECT COUNT(*) AS count FROM workflow_work_items").get()).toEqual({ count: 0 });
+    } finally { await engine.shutdown(); fixture.close(); }
+  });
+
+test("legacy areas reconcile overlapping contrary sources without changing their frozen verdict packets", async () => {
+  const fixture = recoveryFixture();
+  const { db, workflow } = fixture;
+  const errors: string[] = [];
+  const engine = new ResearchEngine({ db, modelClients: { test: { async structuredCompletion() { throw new Error("Completed legacy packets must not dispatch"); } } },
+    onEvent(event) { if (event.type === "run-failed") errors.push(event.error); } });
+  try {
+    const prompts = workflow.read<Record<string, unknown>>("prompts")!;
+    delete prompts["area-gap"]; delete prompts["evidence-check"];
+    db.db.prepare("UPDATE workflow_snapshots SET value_json = ? WHERE research_run_id = 'frame-run' AND snapshot_key = 'prompts'").run(JSON.stringify(prompts));
+    db.db.prepare("DELETE FROM workflow_snapshots WHERE research_run_id = 'frame-run' AND snapshot_key = 'source-routes'").run();
+    db.db.prepare("UPDATE research_runs SET config_json = ? WHERE id = 'frame-run'").run(JSON.stringify({ ...DEFAULT_RUN_CONFIG, model }));
+    const areas = [frame.areas[0]!, { ...frame.areas[0]!, id: "history", name: "History", priority: 2 }];
+    const approved = { ...frame, areas };
+    const frames = new ResearchFrameRepository(db);
+    const saved = frames.createDraft({ threadId: "project", runId: "frame-run", frame: approved, sources: [source], knownProblem: false });
+    frames.approve(saved.id, "project", approved);
+    const discovery = new DiscoveryRepository(db);
+    discovery.persistScope("frame-run", scope);
+    const originalSource = { ...source, canonicalUrl: source.url, providerSourceId: source.id, retrievedText: source.text,
+      author: null, publishedAt: null, contentHash: sha256(source.text), retrievedAt: new Date().toISOString() };
+    const contraryText = "Bank rules already address this workflow.";
+    for (const area of areas) {
+      const factor = { id: `factor-${area.id}`, sourceId: source.id, source: originalSource, subject: "Bookkeeper", behavior: "Applies bank rules",
+        quote: source.text, harvestMode: "domain" as const, modelConfidence: 0.8, sourceRole: "firsthand" as const, audienceFit: "intended-buyer" as const,
+        independentSourceKey: "owner", supportsDemand: false };
+      discovery.persistFactors("frame-run", [originalSource], [factor]);
+      workflow.save(`frame-scan:${area.id}`, { areaId: area.id, qualifyingFacts: 1, sources: [originalSource], factors: [factor] });
+      workflow.save(`area:${area.id}:harvest`, { sources: [originalSource], factors: [factor] });
+      const contrary = { ...originalSource, id: `contrary-${area.id}`, canonicalUrl: "https://source.example/contrary", url: "https://source.example/contrary",
+        retrievedText: contraryText, contentHash: sha256(contraryText) };
+      workflow.save(`area:${area.id}:problems`, { problems: [{ id: `problem-${area.id}`, statement: `Bookkeepers repeat ${area.id} setup`,
+        whyItPersists: "Each bank uses a separate rule list", affected: "Bookkeepers", scaleEstimate: "Unknown", scaleBasisFactorId: factor.id,
+        factorIds: [factor.id], factors: [factor], verdict: "confirmed", verdictReason: "Frozen legacy verdict", verdictSourceIds: [contrary.id],
+        sourceHostnames: ["source.example"], singleHarvestModeWarning: true }], killSources: [contrary], blockedCandidates: [], factorUtilizationRate: 1 });
+    }
+    workflow.save("frame-workflow", { version: 1 }); workflow.save("frame-selected-areas", areas);
+    const packets = db.db.prepare("SELECT snapshot_key,value_json FROM workflow_snapshots WHERE research_run_id = 'frame-run' AND snapshot_key LIKE 'area:%' ORDER BY snapshot_key").all();
+
+    await engine.resumeRun("frame-run");
+    const deadline = Date.now() + 5_000;
+    while (engine.getActiveRunIds().size > 0 && Date.now() < deadline) await Bun.sleep(5);
+
+    expect(engine.getActiveRunIds().size).toBe(0);
+    expect(errors).toEqual([]);
+    expect(db.db.prepare("SELECT status FROM research_runs WHERE id = 'frame-run'").get()).toEqual({ status: "completed" });
+    expect(db.db.prepare("SELECT COUNT(*) AS count FROM sources WHERE research_run_id = 'frame-run'").get()).toEqual({ count: 2 });
+    expect(db.db.prepare("SELECT verdict FROM problems WHERE discovery_run_id = 'frame-run' ORDER BY id").all())
+      .toEqual([{ verdict: "confirmed" }, { verdict: "confirmed" }]);
+    expect(db.db.prepare("SELECT source_id FROM problem_verdict_sources WHERE research_run_id = 'frame-run' ORDER BY problem_id").all())
+      .toEqual([{ source_id: "contrary-matching" }, { source_id: "contrary-matching" }]);
+    expect(db.db.prepare("SELECT snapshot_key,value_json FROM workflow_snapshots WHERE research_run_id = 'frame-run' AND snapshot_key LIKE 'area:%' ORDER BY snapshot_key").all()).toEqual(packets);
+    expect(db.db.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
+  } finally { await engine.shutdown(); fixture.close(); }
+});
+
+test.each(["scan-failure", "investigation-completed"] as const)(
+  "explicit framed recovery retains an area's %s outcome while another area replaces its lost search", async settledCheckpoint => {
+    const fixture = recoveryFixture();
+    const { db, workflow } = fixture;
+    const repository = new WorkflowRepository(db);
+    const searches: string[] = [];
+    const errors: string[] = [];
+    const config = { ...DEFAULT_RUN_CONFIG, model, discoveryDepth: "quick" as const };
+    const engine = new ResearchEngine({ db,
+      modelClients: { test: { async structuredCompletion() { throw new Error("Saved model checkpoints must be reused"); } } },
+      searchClients: { exa: { provider: "exa", async validateKey() { return { valid: true }; },
+        async search(query) { searches.push(query); return []; } } },
+      onEvent(event) { if (event.type === "run-failed") errors.push(event.error); coordinator.handleRunEvent(event); } });
+    const coordinator = new WorkflowCoordinator({ db, engine: () => engine, listProblems: () => [], onProgress() {},
+      capabilities: async () => ({ nativeConnected: true, searchReady: { exa: true, perplexity: false }, modelOptions: [{ ...model,
+        displayName: "Fixture", defaultReasoningEffort: "medium", reasoningEfforts: [{ id: "medium", description: "Fixture" }] }] }) });
+    try {
+      const areas = [frame.areas[0]!, { ...frame.areas[0]!, id: "history", name: "History", priority: 2 }];
+      const approved = { ...frame, areas };
+      const frames = new ResearchFrameRepository(db);
+      const saved = frames.createDraft({ threadId: "project", runId: "frame-run", frame: approved, sources: [source], knownProblem: false });
+      frames.approve(saved.id, "project", approved);
+      new DiscoveryRepository(db).persistScope("frame-run", scope);
+      const owner = db.immediateTransaction(() => {
+        const session = repository.createSession({ id: "session", threadId: "project", purpose: "discovery", mode: "vibe", remainingMs: 600_000,
+          contract: { contractVersion: 1, frameWorkflowVersion: 1, purpose: "discovery", mode: "vibe", brief: "Research rules", scope, runConfig: config,
+            targets: { kind: "per-problem", ideaCount: 1 }, limits: { enforced: false, maxMinutes: 10, maxModelCalls: 30, maxSearches: 10 },
+            instructions: {}, resolvedInstructions: { research: "", ideas: "", review: "" }, instructionHashes: { research: "r", ideas: "i", review: "v" } } });
+        const task = repository.createWorkItem({ sessionId: session.id, kind: "discovery", scopeKey: "research", input: {}, state: "ready" });
+        repository.updateWorkItem(task.id, "running", { outputRefs: { runId: "frame-run" } });
+        repository.updateWorkItem(task.id, "unknown", { outputRefs: { runId: "frame-run" } });
+        repository.reserveBudget({ sessionId: session.id, workItemId: task.id, kind: "search", operationKey: "original-searches", reservedUnits: 3 });
+        repository.updateSession(session.id, session.revision, { state: "finished", outcome: "needs-attention" });
+        return task;
+      });
+      db.db.prepare("UPDATE research_runs SET config_json = ?,workflow_session_id = 'session',status = 'failed',budget_limit = 100 WHERE id = 'frame-run'")
+        .run(JSON.stringify(config));
+      db.db.prepare("DELETE FROM workflow_snapshots WHERE research_run_id = 'frame-run' AND snapshot_key = 'source-routes'").run();
+      workflow.save("frame-workflow", { version: 1 });
+      const terminalArea = areas[0]!;
+      const pendingArea = areas[1]!;
+      const terminal = ensureAreaInvestigatorWorkItems(db, "session", owner.id, terminalArea);
+      const pending = ensureAreaInvestigatorWorkItems(db, "session", owner.id, pendingArea);
+      db.immediateTransaction(() => {
+        for (const item of [terminal.parent, terminal.research]) {
+          repository.updateWorkItem(item.id, "ready"); repository.updateWorkItem(item.id, "running");
+          repository.updateWorkItem(item.id, "failed", { error: { message: "This area's model call exhausted its retries" },
+            outputRefs: { investigator: { areaId: terminalArea.id, areaName: terminalArea.name, currentStep: "Area stopped", confirmedCount: 0,
+              insufficientCount: 0, droppedCount: 0 } } });
+        }
+        repository.updateWorkItem(terminal.candidates.id, "skipped", { error: { message: "Area stopped" } });
+        for (const item of [pending.parent, pending.research, pending.candidates]) {
+          repository.updateWorkItem(item.id, "ready"); repository.updateWorkItem(item.id, "running");
+          repository.updateWorkItem(item.id, "unknown", { error: { message: "Search result was lost" } });
+        }
+      });
+      const empty = { problems: [], blockedCandidates: [], killSources: [], factorUtilizationRate: 0 };
+      if (settledCheckpoint === "scan-failure") workflow.save(`frame-scan-failure:${terminalArea.id}`, { partialReason: "The area scan stopped" });
+      else {
+        workflow.save(`frame-scan:${terminalArea.id}`, { areaId: terminalArea.id, qualifyingFacts: 0, sources: [], factors: [] });
+        workflow.save(`area:${terminalArea.id}:investigation-completed`, { ...empty, partialReason: "The area stopped after its verdict" });
+      }
+      workflow.save(`frame-scan:${pendingArea.id}`, { areaId: pendingArea.id, qualifyingFacts: 0, sources: [], factors: [] });
+      workflow.save("frame-selected-areas", areas);
+      workflow.save(`area:${pendingArea.id}:harvest`, { sources: [], factors: [] });
+      workflow.save(`area:${pendingArea.id}:problems`, empty);
+      const request = { key: `area-gap:${pendingArea.id}:gap-1`, query: "History workflow firsthand accounts", route: "open-web" as const,
+        evidenceNeeded: "An account of the history workflow" };
+      workflow.save(`area-gap:${pendingArea.id}`, { gaps: [{ name: "History workflow", query: request.query,
+        route: request.route, evidenceNeeded: request.evidenceNeeded }], reason: "One saved gap remains" });
+      const attempts = new OpportunityExplorationRepository(db);
+      const lost = db.immediateTransaction(() => {
+        const attempt = attempts.prepareAttempt("project", { stageKey: `investigator-search:${request.key}`, stageName: "investigator-search",
+          input: { request, parameters: { provider: "exa", route: "open-web", numResults: 5, maxCharacters: 4_000 } },
+          model: { providerId: "exa", modelId: "search", reasoningEffort: "bounded" }, promptVersion: "research-investigator-search-v1",
+          promptText: request.query, workItemId: pending.parent.id }, "session");
+        if (attempt.kind !== "prepared") throw new Error("Expected a prepared lost search");
+        attempts.markAttemptDispatched("project", attempt.attemptId, "none", "session");
+        return attempt.attemptId;
+      });
+      const oldArea = [terminal.parent, terminal.research, terminal.candidates].map(item => repository.getWorkItem(item.id));
+      const originalAttempt = db.db.prepare("SELECT * FROM opportunity_exploration_attempts WHERE id = ?").get(lost);
+
+      await coordinator.command({ threadId: "project", sessionId: "session", clientCommandId: `recover-${settledCheckpoint}`,
+        expectedRevision: repository.getSession("session")!.revision,
+        action: { type: "retry-task", taskId: owner.id, expectedTerminalAttemptId: lost, acknowledgeUnknownCompletion: true } });
+      const deadline = Date.now() + 5_000;
+      while (engine.getActiveRunIds().size > 0 && Date.now() < deadline) await Bun.sleep(5);
+
+      expect(engine.getActiveRunIds().size).toBe(0);
+      expect(errors).toEqual([]);
+      expect(searches).toEqual([request.query]);
+      expect(db.db.prepare("SELECT * FROM opportunity_exploration_attempts WHERE id = ?").get(lost)).toEqual(originalAttempt);
+      expect([terminal.parent, terminal.research, terminal.candidates].map(item => repository.getWorkItem(item.id))).toEqual(oldArea);
+      expect(repository.getWorkItem(pending.parent.id)).toMatchObject({ state: "succeeded", error: null,
+        outputRefs: { investigator: { currentStep: "Finished", confirmedCount: 0, insufficientCount: 0, droppedCount: 0 } } });
+      expect(repository.getSession("session")?.state).toBe("finished");
+    } finally { await engine.shutdown(); fixture.close(); }
+  });
 
 test("a valid completed legacy frame checkpoint resumes with its saved schema and no client call", async () => {
   const fixture = recoveryFixture();

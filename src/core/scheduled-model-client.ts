@@ -45,7 +45,10 @@ export function scheduledModelClient(
         const repaired = await dispatch(retry);
         return { output: repaired.output, metadata: mergeRepairMetadata(firstAttempts, repaired.metadata) };
       } catch (retryError) {
-        if (!(retryError instanceof ProviderFailure)) throw retryError;
+        if (!(retryError instanceof ProviderFailure)) throw new ProviderFailure("failed",
+          retryError instanceof Error ? retryError.message : "Schema repair was rejected before dispatch", false, {
+            cause: retryError, attempts: firstAttempts,
+          });
         throw new ProviderFailure(retryError.code, retryError.message, retryError.retryable, {
           cause: retryError,
           attempts: [...firstAttempts, ...(retryError.attempts ?? []).map((attempt) => ({
