@@ -147,7 +147,7 @@
   let nextRequestFrame = $derived(latestApprovedFrame?.approved ?? runFrame?.approved ?? null);
   let reviewingFrame = $derived(workflowDetail?.summary.state === "waiting-for-review" && workflowDetail.summary.reviewKind === "frame" && runFrame?.approved === null);
   let investigators = $derived(workflowDetail?.tasks.flatMap(task => task.kind === "investigate-area" && task.investigator
-    ? [{ ...task.investigator, state: task.state }] : []) ?? []);
+    ? [{ ...task.investigator, taskId: task.id, state: task.state }] : []) ?? []);
   let canRegenerateFrame = $derived(Boolean(workflowDetail && (workflowDetail.summary.limits.enforced === false
     || workflowDetail.summary.budget.modelCalls.limit - workflowDetail.summary.budget.modelCalls.spent
       - workflowDetail.summary.budget.modelCalls.reserved - workflowDetail.summary.budget.modelCalls.uncertain >= 1)));
@@ -173,7 +173,7 @@
   let editingScope = $derived(editingScopeThreadId !== null && editingScopeThreadId === activeThread?.id);
   let showSetupForm = $derived(Boolean(workspace && activeThread && (activeThread.status === "configuring" || editingScope || !workspace.scope)));
   let researchReady = $derived(Boolean(activeThread && (activeWorkflow || workspace?.problemCandidates.length || workspace?.rejectedProblemCandidates.length || activeThread.status === "discovery-running")));
-  let ideasReady = $derived(Boolean(activeThread && (workspace?.solutions.length || activeThread.status === "development-running" || activeThread.status === "solutions-ready"
+  let ideasReady = $derived(Boolean(activeThread && (workspace?.solutions.length || workspace?.ideaGroups?.length || activeThread.status === "development-running" || activeThread.status === "solutions-ready"
     || activeWorkflow?.purpose === "known-problem" || activeWorkflow?.state === "finished")));
   // The run panel sits on top while a run is active, and stays there when it failed or needs attention so the
   // reason and Retry are in view. A run that ended normally keeps only "Run details" under its ideas.
@@ -385,10 +385,10 @@
       if (workflow.purpose === "research-followup" || workflow.state === "waiting-for-review") return "research";
       if (workflow.selectedProblemIds.length > 0 && workflow.state === "running") return "ideas";
       if (workflow.mode === "vibe" && (workflow.state === "finished" || workflow.purpose === "known-problem")) return "ideas";
-      if (workflow.state === "finished" && state.solutions.length > 0) return "ideas";
+      if (workflow.state === "finished" && (state.solutions.length > 0 || (state.ideaGroups?.length ?? 0) > 0)) return "ideas";
       return "research";
     }
-    if (state.solutions.length > 0 || thread?.status === "solutions-ready") return "ideas";
+    if (state.solutions.length > 0 || (state.ideaGroups?.length ?? 0) > 0 || thread?.status === "solutions-ready") return "ideas";
     if (thread?.status === "development-running") return "ideas";
     if (thread?.status === "discovery-running" || state.problemCandidates.length > 0 || state.rejectedProblemCandidates.length > 0) return "research";
     return "setup";
@@ -1091,10 +1091,10 @@
         {#if activeRun}<div class="run-actions"><button class="cancel" disabled={busy} onclick={() => cancelResearch(activeRun.runId)}>Cancel run</button></div>{/if}
       </div>
       {#key workspace.activeThreadId}
-      {#if workspace.solutions.length > 0}<SolutionWorkspace solutions={workspace.solutions} {busy} analysisBlocked={true} opportunities={workspace.opportunityFamilies} opportunityReviewRunning={workspace.opportunityReviewStatus?.running} modelOptions={workspace.modelOptions} initialConfig={workspace.runConfig} activeResearchSnapshotId={appliedResearchSnapshotId} onFocusChange={(focused) => ideaFocused = focused} onReviewOpportunities={reviewSavedOpportunities} onEditMembership={editOpportunityMembership} onPlanExperiment={requestFocusedExperiment} workflowVersion={activeRun?.workflowVersion} onSelect={selectOption} onSave={saveDecision} onExport={exportIdeas} onOpenSource={openExternalUrl} onEvidenceFollowUp={requestEvidenceFollowUp} onEvidenceReassessment={requestEvidenceReassessment} onReview={() => { activeStep = "research"; reviewSelection = true; }} {conversation} {conversationLoading} {conversationError} onOpenConversation={openConversation} onCloseConversation={closeConversation} onSubmitIdeaTurn={submitIdeaTurn} onSelectConversationVersion={selectConversationVersion} onLoadVersionDetail={window.scraply.getIdeaDetail} onLoadMoreConversation={(cursor) => refreshConversation(conversationIdeaId ?? "", cursor)} />{/if}
+      {#if workspace.solutions.length > 0}<SolutionWorkspace solutions={workspace.solutions} ideaGroups={workspace.ideaGroups} {busy} analysisBlocked={true} opportunities={workspace.opportunityFamilies} opportunityReviewRunning={workspace.opportunityReviewStatus?.running} modelOptions={workspace.modelOptions} initialConfig={workspace.runConfig} activeResearchSnapshotId={appliedResearchSnapshotId} onFocusChange={(focused) => ideaFocused = focused} onReviewOpportunities={reviewSavedOpportunities} onEditMembership={editOpportunityMembership} onPlanExperiment={requestFocusedExperiment} workflowVersion={activeRun?.workflowVersion} onSelect={selectOption} onSave={saveDecision} onExport={exportIdeas} onOpenSource={openExternalUrl} onEvidenceFollowUp={requestEvidenceFollowUp} onEvidenceReassessment={requestEvidenceReassessment} onReview={() => { activeStep = "research"; reviewSelection = true; }} {conversation} {conversationLoading} {conversationError} onOpenConversation={openConversation} onCloseConversation={closeConversation} onSubmitIdeaTurn={submitIdeaTurn} onSelectConversationVersion={selectConversationVersion} onLoadVersionDetail={window.scraply.getIdeaDetail} onLoadMoreConversation={(cursor) => refreshConversation(conversationIdeaId ?? "", cursor)} />{/if}
       {/key}
       </div>
-    {:else if activeThread.status === "solutions-ready" || workspace.solutions.length > 0}
+    {:else if activeThread.status === "solutions-ready" || workspace.solutions.length > 0 || (workspace.ideaGroups?.length ?? 0) > 0}
       <div id="workflow-panel-ideas" role="tabpanel" aria-label="Solutions">
         {#if activeRun && !activeWorkflow && ["queued", "running"].includes(activeRun.status)}
           <section class="compact-progress" aria-label="Active solution work">
@@ -1103,7 +1103,7 @@
           </section>
         {/if}
         {#key workspace.activeThreadId}
-        <SolutionWorkspace footer={runFinished ? runPanel : undefined} solutions={workspace.solutions} {busy} opportunities={workspace.opportunityFamilies} opportunityReviewRunning={workspace.opportunityReviewStatus?.running} modelOptions={workspace.modelOptions} initialConfig={workspace.runConfig} activeResearchSnapshotId={appliedResearchSnapshotId} onFocusChange={(focused) => ideaFocused = focused} onReviewOpportunities={reviewSavedOpportunities} onEditMembership={editOpportunityMembership} onPlanExperiment={requestFocusedExperiment} workflowVersion={activeRun?.workflowVersion} onSelect={selectOption} onSave={saveDecision} onExport={exportIdeas} onOpenSource={openExternalUrl} onEvidenceFollowUp={requestEvidenceFollowUp} onEvidenceReassessment={requestEvidenceReassessment} onReview={() => { activeStep = "research"; reviewSelection = true; }} {conversation} {conversationLoading} {conversationError} onOpenConversation={openConversation} onCloseConversation={closeConversation} onSubmitIdeaTurn={submitIdeaTurn} onSelectConversationVersion={selectConversationVersion} onLoadVersionDetail={window.scraply.getIdeaDetail} onLoadMoreConversation={(cursor) => refreshConversation(conversationIdeaId ?? "", cursor)} />
+        <SolutionWorkspace footer={runFinished ? runPanel : undefined} solutions={workspace.solutions} ideaGroups={workspace.ideaGroups} {busy} opportunities={workspace.opportunityFamilies} opportunityReviewRunning={workspace.opportunityReviewStatus?.running} modelOptions={workspace.modelOptions} initialConfig={workspace.runConfig} activeResearchSnapshotId={appliedResearchSnapshotId} onFocusChange={(focused) => ideaFocused = focused} onReviewOpportunities={reviewSavedOpportunities} onEditMembership={editOpportunityMembership} onPlanExperiment={requestFocusedExperiment} workflowVersion={activeRun?.workflowVersion} onSelect={selectOption} onSave={saveDecision} onExport={exportIdeas} onOpenSource={openExternalUrl} onEvidenceFollowUp={requestEvidenceFollowUp} onEvidenceReassessment={requestEvidenceReassessment} onReview={() => { activeStep = "research"; reviewSelection = true; }} {conversation} {conversationLoading} {conversationError} onOpenConversation={openConversation} onCloseConversation={closeConversation} onSubmitIdeaTurn={submitIdeaTurn} onSelectConversationVersion={selectConversationVersion} onLoadVersionDetail={window.scraply.getIdeaDetail} onLoadMoreConversation={(cursor) => refreshConversation(conversationIdeaId ?? "", cursor)} />
         {/key}
       </div>
     {:else if activeWorkflow}

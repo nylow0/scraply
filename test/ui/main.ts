@@ -5,7 +5,7 @@ import App from "../../src/renderer/App.svelte";
 import { createScraplyApi } from "../../src/shared/scraply-api";
 import { AppSettingsSchema } from "../../src/shared/app-settings";
 import { DEFAULT_RUN_CONFIG, type Thread } from "../../src/shared/schemas";
-import { IPC_CHANNELS, RemoveSearchKeySchema, SaveScopeSchema, SaveRunConfigSchema, SaveSearchKeySchema, type WorkspaceState } from "../../src/shared/ipc";
+import { ExportIdeasRequestSchema, ExportResearchRequestSchema, GetIdeaDetailRequestSchema, IPC_CHANNELS, RemoveSearchKeySchema, SaveScopeSchema, SaveRunConfigSchema, SaveSearchKeySchema, SolutionViewSchema, type SolutionView, type WorkspaceState } from "../../src/shared/ipc";
 import { CommandWorkflowRequestSchema, PreviewWorkflowRequestSchema, StartWorkflowRequestSchema, type WorkflowDetail, type WorkflowAction, type WorkflowLaunchContract } from "../../src/shared/workflow-contracts";
 import { ResearchFrameSchema } from "../../src/shared/research-frame";
 import { framedDiscoveryProjection } from "../../src/shared/discovery-projection";
@@ -14,7 +14,8 @@ import { candidateAssessmentProjection } from "../../src/shared/evidence-investi
 // This standalone renderer has no Electron bridge or network provider. URL parameters
 // select deterministic UI scenarios without touching the user's projects or credentials.
 const params = new URLSearchParams(location.search);
-const fixtureHistory = { actions: [] as WorkflowAction[], launches: [] as WorkflowLaunchContract[] };
+const fixtureHistory = { actions: [] as WorkflowAction[], launches: [] as WorkflowLaunchContract[], detailReads: [] as string[],
+  exports: [] as Array<{ kind: "ideas" | "research"; threadId: string; format: "markdown" | "json"; files: Array<{ filename: string; content: string }> }> };
 const count = Math.min(200, Math.max(0, Number(params.get("history") ?? 18)));
 const active = Math.min(count - 1, Math.max(0, Number(params.get("active") ?? 0)));
 const now = "2026-09-23T12:00:00.000Z";
@@ -64,6 +65,31 @@ if (params.has("unassessed") && state.activeThreadId) {
       unknowns: ["Workflow frequency"], intendedBuyerEvidenceFactorIds: [], evidenceGap: "Needs evidence assessment",
     },
   }));
+}
+
+const ideasScenario = params.get("ideas");
+if (ideasScenario && state.activeThreadId) {
+  state.runConfig = { ...DEFAULT_RUN_CONFIG, workflowVersion: 2, ideaCount: 5 };
+  state.scope = { title: "Saved idea counts", audience: "Shop owners", domain: "Parts purchasing", observations: "", offLimits: [] };
+  state.threads = state.threads.map((thread) => thread.id === state.activeThreadId ? { ...thread,
+    title: "Saved idea counts", status: ideasScenario === "zero" ? "problems-ready" : "solutions-ready" } : thread);
+  const groups = ideasScenario === "zero"
+    ? [{ problemId: "empty", statement: "Shops repeat purchase approvals", requested: 3, returned: 0 }]
+    : [{ problemId: "complete", statement: "Suppliers hide delivery changes", requested: 3, returned: 3 },
+      ...(ideasScenario === "complete" ? [] : [
+        { problemId: "short", statement: "Shops repeat purchase approvals", requested: 3, returned: 2 },
+        { problemId: "empty", statement: "Owners cannot compare warranty delays", requested: 3, returned: 0 },
+      ])];
+  state.ideaGroups = groups.map((group) => ({ runId: `idea-run-${group.problemId}`, problemId: group.problemId,
+    problemStatement: group.statement, requestedIdeaCount: group.requested, returnedIdeaCount: group.returned }));
+  state.solutions = groups.flatMap((group) => Array.from({ length: group.returned }, (_, index) => ({
+    id: `${group.problemId}-idea-${index + 1}`, problemId: group.problemId, problemStatement: group.statement,
+    problemVerdict: "confirmed" as const, runId: `idea-run-${group.problemId}`, workflowVersion: 2 as const,
+    detailsLoaded: true, rank: index + 1, rankReason: "The saved ranker's order.", weakFitReason: null,
+    mechanism: "Compare saved approval records.", description: `${group.problemId === "complete" ? "Delivery" : "Approval"} idea ${index + 1}: compare saved records and flag changes.`,
+    factors: [], outcomes: [], risks: [], respectsOffLimits: true, respectsOffLimitsWhy: "Within the project boundaries.",
+    confirmedCoreOutcomes: 0, unaddressedCatastrophicRisks: 0,
+  })));
 }
 
 const guidedProgress: WorkflowDetail | null = params.get("progress") === "guided" && state.activeThreadId ? {
@@ -124,6 +150,7 @@ if (guidedProgress) {
 
 const knownProblemFrame = params.get("known") === "1";
 const frameScenario = params.get("frame");
+const duplicateInvestigator = params.get("duplicate") === "1";
 const frameDraft = ResearchFrameSchema.parse({
   version: 1,
   goal: knownProblemFrame ? "Reduce missed deposits in one independent bakery." : "Find a useful workflow for freelance bookkeepers.",
@@ -157,7 +184,7 @@ const frameWorkflow: WorkflowDetail | null = frameScenario && state.activeThread
     sources: knownProblemFrame && noSearch ? [] : [{ id: "frame-source-1", title: "Bank-feed matching documentation", url: "https://example.org/matching", text: "Matching rules compare incoming bank descriptions." }], createdAt: now, approvedAt: frameScenario === "review" ? null : now },
   tasks: frameScenario === "investigators" ? [
     { id: "investigator-bank", parentItemId: null, kind: "investigate-area", scopeKey: "investigate-area:bank", state: "running", createdAt: now, finishedAt: null, investigator: { areaId: "bank", areaName: "Bank-feed matching", currentStep: "Checking a second independent account", confirmedCount: 1, insufficientCount: 2, droppedCount: 0 } },
-    { id: "investigator-documents", parentItemId: null, kind: "investigate-area", scopeKey: "investigate-area:documents", state: "ready", createdAt: now, finishedAt: null, investigator: { areaId: "documents", areaName: "Client document chasing", currentStep: null, confirmedCount: null, insufficientCount: null, droppedCount: null } },
+    { id: duplicateInvestigator ? "investigator-bank-followup" : "investigator-documents", parentItemId: null, kind: "investigate-area", scopeKey: duplicateInvestigator ? "investigate-area:bank:followup" : "investigate-area:documents", state: "ready", createdAt: now, finishedAt: null, investigator: { areaId: duplicateInvestigator ? "bank" : "documents", areaName: duplicateInvestigator ? "Bank-feed matching" : "Client document chasing", currentStep: null, confirmedCount: null, insufficientCount: null, droppedCount: null } },
   ] : [{ id: "fixture-prepare-frame", parentItemId: null, kind: "prepare-frame", scopeKey: "frame", state: "succeeded", createdAt: now, finishedAt: now }],
   nextCursor: null,
 } : null;
@@ -176,6 +203,43 @@ const fixtureApi = createScraplyApi({
     let result: unknown;
     switch (channel) {
       case IPC_CHANNELS.GET_WORKSPACE: result = state; break;
+      case IPC_CHANNELS.GET_IDEA_DETAIL: {
+        const { ideaId } = GetIdeaDetailRequestSchema.parse(payload);
+        const idea = state.solutions.find((saved) => saved.id === ideaId);
+        if (!idea) throw new Error("Idea not found in the offline fixture.");
+        fixtureHistory.detailReads.push(ideaId);
+        result = SolutionViewSchema.parse({ ...idea, detailsLoaded: true });
+        break;
+      }
+      case IPC_CHANNELS.EXPORT_IDEAS: {
+        const { threadId, format } = ExportIdeasRequestSchema.parse(payload);
+        if (threadId !== state.activeThreadId) throw new Error("Select the fixture project before exporting.");
+        const groups = new Map<string, SolutionView[]>();
+        for (const idea of state.solutions) groups.set(idea.problemId, [...(groups.get(idea.problemId) ?? []), idea]);
+        for (const group of state.ideaGroups ?? []) if (group.returnedIdeaCount === 0 && !groups.has(group.problemId)) groups.set(group.problemId, []);
+        const files = [...groups].map(([problemId, ideas]) => {
+          const saved = state.ideaGroups?.find((group) => group.problemId === problemId);
+          const ordered = [...ideas].sort((a, b) => (a.rank ?? Infinity) - (b.rank ?? Infinity));
+          const statement = ordered[0]?.problemStatement ?? saved?.problemStatement ?? problemId;
+          const content = format === "json" ? JSON.stringify(ordered.length ? ordered : {
+            kind: "no-options", status: "completed", workflowVersion: 2, runId: saved?.runId, problemId, problemStatement: statement, options: [],
+          }, null, 2) : `# ${statement}\n\n${ordered.length ? ordered.map((idea) => `## ${idea.description}\n\n${idea.mechanism}`).join("\n\n") : "No ideas were returned."}\n`;
+          return { filename: `${problemId}.${format === "json" ? "json" : "md"}`, content };
+        });
+        fixtureHistory.exports.push({ kind: "ideas", threadId, format, files });
+        result = { cancelled: false, directory: "offline-fixture-exports", files: files.map((file) => file.filename) };
+        break;
+      }
+      case IPC_CHANNELS.EXPORT_RESEARCH: {
+        const { threadId } = ExportResearchRequestSchema.parse(payload);
+        if (threadId !== state.activeThreadId) throw new Error("Select the fixture project before exporting.");
+        const filename = "fixture-research.json";
+        const content = JSON.stringify({ problems: state.problemCandidates, rejectedCandidates: state.rejectedProblemCandidates,
+          researchFindings: state.researchFindings }, null, 2);
+        fixtureHistory.exports.push({ kind: "research", threadId, format: "json", files: [{ filename, content }] });
+        result = { cancelled: false, file: `offline-fixture-exports/${filename}` };
+        break;
+      }
       case IPC_CHANNELS.GET_ADVANCED_SETTINGS: result = advancedSettings; break;
       case IPC_CHANNELS.SAVE_ADVANCED_SETTINGS: advancedSettings = AppSettingsSchema.parse(payload); result = advancedSettings; break;
       case IPC_CHANNELS.COMMAND_WORKFLOW: {
@@ -207,8 +271,13 @@ const fixtureApi = createScraplyApi({
             frameWorkflow.summary.outcome = "cancelled";
             frameWorkflow.summary.finishedAt = now;
             frameWorkflow.summary.stopReason = request.action.reason ?? "Stopped by you.";
-          } else if (request.action.type === "pause") frameWorkflow.summary.state = "paused";
-          else if (request.action.type === "resume") frameWorkflow.summary.state = "running";
+          } else if (request.action.type === "pause") {
+            frameWorkflow.summary.state = "paused";
+            if (duplicateInvestigator) frameWorkflow.tasks.reverse();
+          } else if (request.action.type === "resume") {
+            frameWorkflow.summary.state = "running";
+            if (duplicateInvestigator) frameWorkflow.tasks.reverse();
+          }
           else if (request.action.type === "assess-not-assessed") {
             frameWorkflow.summary.state = "running";
             frameWorkflow.summary.currentStage = "candidate-assessment";
@@ -237,13 +306,17 @@ const fixtureApi = createScraplyApi({
         break;
       }
       case IPC_CHANNELS.GET_WORKFLOW:
-        if (frameWorkflow && params.has("live") && ++progressReads >= 2 && frameWorkflow.tasks[0]?.investigator) {
-          frameWorkflow.tasks[0].state = "succeeded";
-          frameWorkflow.tasks[0].investigator.currentStep = "Evidence checks finished";
-          frameWorkflow.tasks[0].investigator.confirmedCount = 2;
-          frameWorkflow.tasks[0].investigator.insufficientCount = 0;
-          frameWorkflow.tasks[0].investigator.droppedCount = 1;
-          const next = frameWorkflow.tasks[1];
+        if (frameWorkflow && frameWorkflow.summary.state === "running" && params.has("live") && ++progressReads >= 2) {
+          const first = frameWorkflow.tasks.find((task) => task.id === "investigator-bank");
+          if (first?.investigator) {
+            first.state = "succeeded";
+            first.finishedAt = now;
+            first.investigator.currentStep = "Evidence checks finished";
+            first.investigator.confirmedCount = 2;
+            first.investigator.insufficientCount = 0;
+            first.investigator.droppedCount = 1;
+          }
+          const next = frameWorkflow.tasks.find((task) => task.id === (duplicateInvestigator ? "investigator-bank-followup" : "investigator-documents"));
           if (next?.investigator) { next.state = "running"; next.investigator.currentStep = "Reading firsthand sources"; next.investigator.confirmedCount = 0; next.investigator.insufficientCount = 1; next.investigator.droppedCount = 0; }
         }
         if (guidedProgress && params.has("live") && ++progressReads === 2) {

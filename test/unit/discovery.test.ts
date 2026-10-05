@@ -108,6 +108,56 @@ describe("discovery", () => {
     expect(parallel.verdictEvidence).toEqual(sequential.verdictEvidence);
   });
 
+  test.each([false, true])("retains completed initial verdicts when another candidate's model call fails (%s)", async parallelChecks => {
+    const sources = [source("one", "First operator report."), source("two", "Second operator report.")];
+    const factors: HarvestedFactor[] = sources.map((item, index) => ({
+      id: `factor-${index}`, subject: "Operators", behavior: "repeat filing", quote: item.retrievedText,
+      sourceId: item.id, harvestMode: "domain", modelConfidence: 0.8, sourceRole: "firsthand", audienceFit: "intended-buyer",
+      independentSourceKey: `operator-${index}`, source: item,
+    }));
+    const candidates = ["A", "B", "C"].map(statement => ({ statement, whyItPersists: "Disconnected state", affected: "Operators",
+      scaleEstimate: "Unknown", scaleBasisFactorId: null, factorIds: factors.map(factor => factor.id),
+      intendedBuyerEvidenceFactorIds: factors.map(factor => factor.id), evidenceGap: null }));
+    const result = await discoverProblems(scope(), factors, sources, {
+      workflowVersion: 2, rankCandidates: true, parallelChecks, model, reasoningEffort, prompt: () => "Fixture instructions",
+      search: { async search() { return []; } },
+      modelClient: modelClient(async request => {
+        if (request.stage === "problem-candidates") return { problems: candidates };
+        const statement = (request.evidence[0]!.content as { candidate: { statement: string } }).candidate.statement;
+        if (statement === "B") throw new ProviderFailure("timeout", "Call time limit reached", false);
+        if (statement === "A") await Bun.sleep(5);
+        return { verdict: "confirmed", verdictReason: "Independent operator reports", verdictSourceIds: [],
+          intendedBuyerEvidenceFactorIds: factors.map(factor => factor.id), evidenceGap: null };
+      }),
+    });
+    expect(result.problems.map(problem => [problem.statement, problem.verdict])).toEqual(parallelChecks
+      ? [["A", "confirmed"], ["C", "confirmed"]] : [["A", "confirmed"]]);
+    expect(result.blockedCandidates.map(candidate => candidate.statement)).toEqual(parallelChecks ? ["B"] : ["B", "C"]);
+    for (const blocked of result.blockedCandidates) expect(blocked).toMatchObject({ disposition: "not-assessed",
+      candidate: candidates.find(candidate => candidate.statement === blocked.statement) });
+    expect(result.partialReason).toContain("model call failed: Call time limit reached");
+    expect(result.modelFailure).toEqual({ code: "timeout", message: "Call time limit reached", droppedStream: false });
+  });
+
+  test.each([false, true])("propagates unknown and cancelled verdict failures instead of returning a partial result (%s)", async parallelChecks => {
+    const item = source("one", "Operator report.");
+    const factor: HarvestedFactor = { id: "factor", subject: "Operators", behavior: "repeat filing", quote: item.retrievedText,
+      sourceId: item.id, harvestMode: "domain", modelConfidence: 0.8, source: item };
+    for (const failure of [new Error("Unexpected app failure"), new ProviderFailure("cancelled", "User stopped", false),
+      new ProviderFailure("interrupted", "Runtime disconnected before dispatch", false)]) {
+      const run = discoverProblems(scope(), [factor], [item], {
+        workflowVersion: 2, rankCandidates: true, parallelChecks, model, reasoningEffort, prompt: () => "Fixture instructions",
+        search: { async search() { return []; } },
+        modelClient: modelClient(request => {
+          if (request.stage !== "problem-candidates") throw failure;
+          return { problems: [{ statement: "A", whyItPersists: "Disconnected state", affected: "Operators", scaleEstimate: "Unknown",
+            scaleBasisFactorId: null, factorIds: [factor.id], intendedBuyerEvidenceFactorIds: [], evidenceGap: null }] };
+        }),
+      });
+      await expect(run).rejects.toBe(failure);
+    }
+  });
+
   test("does not inflate independent support with duplicate citations or transport URLs", async () => {
     const sources = [source("one", "One report"), source("mirror", "Same report"), source("two", "Second report")];
     const factors: HarvestedFactor[] = sources.map((item, index) => ({

@@ -48,7 +48,7 @@ describe("VibeProgress", () => {
   test("shows area investigators alongside live research and keeps run controls accessible", async () => {
     const onPause = vi.fn(async () => {});
     const view = render(VibeProgress, { detail: detail({ ideaTargetReady: false }), busy: false,
-      investigators: [{ areaId: "bank", areaName: "Bank matching", state: "running", currentStep: "Checking evidence gaps", confirmedCount: 1, insufficientCount: 2, droppedCount: 0 }],
+      investigators: [{ taskId: "bank-initial", areaId: "bank", areaName: "Bank matching", state: "running", currentStep: "Checking evidence gaps", confirmedCount: 1, insufficientCount: 2, droppedCount: 0 }],
       onPause, onStop: vi.fn(async () => {}) });
     expect(view.getByRole("region", { name: "Area investigators" })).toBeTruthy();
     expect(view.getByRole("listitem", { name: "Bank matching investigator" }).textContent).toContain("Checking evidence gaps");
@@ -177,7 +177,7 @@ describe("VibeProgress", () => {
       stopReason: "Short by 2 distinct ideas.", finishedAt: "2026-09-23T12:33:00.000Z" });
     state.summary.limits.enforced = false;
     const view = render(VibeProgress, { detail: state, busy: false, onPause: vi.fn(async () => {}), onStop: vi.fn(async () => {}),
-      investigators: [{ areaId: "bank", areaName: "Bank matching", state: "succeeded", currentStep: null, confirmedCount: 1, insufficientCount: 0, droppedCount: 0 }] });
+      investigators: [{ taskId: "bank-initial", areaId: "bank", areaName: "Bank matching", state: "succeeded", currentStep: null, confirmedCount: 1, insufficientCount: 0, droppedCount: 0 }] });
     expect(view.queryByRole("heading", { level: 2 })).toBeNull();
     expect(view.queryByText(/Run result|distinct ideas|Partial result/)).toBeNull();
     expect(view.queryByRole("region", { name: "Area investigators" })).toBeNull();

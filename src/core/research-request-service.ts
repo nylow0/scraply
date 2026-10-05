@@ -790,9 +790,24 @@ export class ResearchRequestService {
 
   private requestFrameId(input: RequestInput): string | null {
     if (input.frameId !== undefined) return input.frameId;
-    const base = input.baseSnapshotId ? this.repository.getSnapshot(input.baseSnapshotId) : null;
-    const frozen = base ? new ResearchFrameRepository(this.options.db).forRun(base.materializationRunId) : null;
-    return frozen?.approved ? frozen.id : null;
+    const frames = new ResearchFrameRepository(this.options.db);
+    const lineage = [];
+    let snapshot = input.baseSnapshotId ? this.repository.getSnapshot(input.baseSnapshotId) : null;
+    while (snapshot) {
+      const frozen = frames.forRun(snapshot.materializationRunId);
+      if (frozen?.approved) return frozen.id;
+      lineage.push(snapshot);
+      snapshot = snapshot.parentSnapshotId ? this.repository.getSnapshot(snapshot.parentSnapshotId) : null;
+    }
+    // Older materializations omitted the binding. Their saved origins still identify the approved frame.
+    for (const base of lineage.reverse()) {
+      const runIds = new Set([...Object.values(base.originMap.problems), ...Object.values(base.originMap.factors),
+        ...Object.values(base.originMap.sources).flat()].map(origin => origin.originalRunId));
+      const frameIds = new Set([...runIds].map(runId => frames.forRun(runId)).filter(frame => frame?.approved).map(frame => frame!.id));
+      if (frameIds.size === 1) return [...frameIds][0]!;
+      if (frameIds.size > 1) throw new WorkflowConflictError("INVALID_REFERENCE", "This saved request has ambiguous research frame origins.");
+    }
+    return null;
   }
 
   private async dispatchReevaluation(

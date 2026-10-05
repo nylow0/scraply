@@ -544,6 +544,28 @@ describe("App workspace coordination", () => {
     expect(view.queryByRole("button", { name: "Keep current research" })).toBeNull();
   });
 
+  test.each(["controlled", "history"])("reopens %s zero-return groups in Solutions and retains them across navigation", async (context) => {
+    const current = frameWorkflow({ approved: true });
+    current.summary.outcome = "no-qualifying-ideas";
+    const state = frameWorkspace(current);
+    if (context === "history") state.activeWorkflow = null;
+    state.ideaGroups = [{ runId: "zero-run", problemId: "empty-problem", problemStatement: "Bookkeepers repeat approvals",
+      requestedIdeaCount: 3, returnedIdeaCount: 0 }];
+    state.runConfig = { ...DEFAULT_RUN_CONFIG, ideaCount: 5 };
+    installApi({ getWorkspace: async () => structuredClone(state), getWorkflow: async () => structuredClone(current) });
+    const view = render(App);
+    expect(await view.findByRole("heading", { name: "0 ideas" })).toBeTruthy();
+    expect(view.getByText("0 of 3 ideas returned")).toBeTruthy();
+    expect(view.container.querySelectorAll(".idea-row")).toHaveLength(0);
+    await fireEvent.click(view.getByRole("tab", { name: "Setup" }));
+    await fireEvent.click(view.getByRole("tab", { name: "Solutions" }));
+    expect(view.getByText("0 of 3 ideas returned")).toBeTruthy();
+    view.unmount();
+    const reopened = render(App);
+    expect(await reopened.findByText("0 of 3 ideas returned")).toBeTruthy();
+    expect(reopened.getByRole("heading", { name: "0 ideas" })).toBeTruthy();
+  });
+
   test("exports a finished zero-idea result and a stopped research record", async () => {
     const state = workspace("alpha");
     state.threads[0]!.status = "solutions-ready";

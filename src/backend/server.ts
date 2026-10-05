@@ -44,7 +44,7 @@ import {
   ResumeResearchSchema, SaveFavoriteModelSchema, SaveRunConfigSchema, SaveScopeSchema, SearchKeyPreflightSchema,
   SelectProblemsSchema, SelectOptionSchema, SaveDecisionSchema, SelectThreadRequestSchema, SourceDetailSchema, StartResearchSchema,
   RejectedProblemCandidateSchema, ValidationStateSchema, WorkspaceStateSchema, type FactorView, type ProblemCandidate, type RejectedProblemCandidate, type ResearchEvent,
-  type SolutionView, type ValidationState,
+  type IdeaGroupView, type SolutionView, type ValidationState,
 } from "../shared/ipc";
 import {
   DEFAULT_RUN_CONFIG, HISTORICAL_CODEX_CLI_PROVIDER_ID, ModelCatalogSchema, OPENAI_SUBSCRIPTION_PROVIDER_ID, RunConfigSchema, sameModelRef,
@@ -432,6 +432,7 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
       rejectedProblemCandidates: activeThreadId ? listRejectedProblemCandidates(activeThreadId, candidateArchiveRunId(activeSnapshot?.materializationRunId)) : [],
       problemLeads: activeThreadId && snapshotProblems && activeSnapshot ? listSnapshotLeads(activeThreadId, activeSnapshot) : [],
       solutions: activeThreadId ? listSolutions(activeThreadId, false) : [],
+      ideaGroups: activeThreadId ? listIdeaGroups(activeThreadId) : [],
       ...(activeThreadId ? { opportunityFamilies: opportunities.familyView(activeThreadId) } : {}),
       opportunityExploration: activeThreadId ? exploration.find(activeThreadId) : null,
       opportunityReviewStatus: activeThreadId && engine ? engine.getOpportunityReviewStatus(activeThreadId) : { running: false, kind: null, error: null },
@@ -552,6 +553,26 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
       disposition: candidate.disposition,
       candidate: candidate.candidate_json ? RejectedProblemCandidateSchema.shape.candidate.parse(JSON.parse(candidate.candidate_json)) : null,
     }));
+  }
+  function listIdeaGroups(threadId: string): IdeaGroupView[] {
+    // The task quota is immutable and may differ from both the launch contract and today's project settings.
+    const rows = db.db.prepare(`SELECT rr.id AS run_id, p.id AS problem_id, p.statement,
+        json_extract(task.input_json, '$.quota') AS requested_count,
+        (SELECT COUNT(*) FROM solutions s WHERE s.research_run_id = rr.id
+          AND NOT EXISTS (SELECT 1 FROM solution_lineage lineage WHERE lineage.solution_id = s.id AND lineage.version_number > 1)) AS returned_count
+      FROM workflow_work_items task
+      JOIN research_runs rr ON rr.workflow_session_id = task.session_id
+        AND rr.id = json_extract(task.output_refs_json, '$.runId')
+      JOIN problems p ON p.id = rr.problem_id AND p.id = json_extract(task.input_json, '$.problemId')
+      WHERE rr.thread_id = ? AND rr.status = 'completed' AND task.kind = 'generate-ideas'
+        AND task.state = 'succeeded' AND json_extract(task.input_json, '$.ranked') = 1
+        AND json_type(task.input_json, '$.quota') = 'integer' AND json_extract(task.input_json, '$.quota') > 0
+        AND (p.selected_at IS NOT NULL OR rr.workflow_version = 2)
+      ORDER BY rr.created_at, rr.rowid, task.ordinal, rr.id`).all(threadId) as Array<{
+        run_id: string; problem_id: string; statement: string; requested_count: number; returned_count: number;
+      }>;
+    return rows.map((row) => ({ runId: row.run_id, problemId: row.problem_id, problemStatement: row.statement,
+      requestedIdeaCount: row.requested_count, returnedIdeaCount: row.returned_count }));
   }
   function listSolutions(threadId: string, details = true, solutionId?: string): SolutionView[] {
     let queryCount = 0;

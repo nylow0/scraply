@@ -20,11 +20,18 @@ export function scheduledModelClient(
     const callSignal = request.signal
       ? AbortSignal.any([request.signal, deadlineController.signal]) : deadlineController.signal;
     const dispatch = (attemptRequest: StructuredStageRequest<T>) => scheduler.schedule(projectId,
-      (signal) => {
+      async (signal) => {
         if (deadline !== null && Date.now() >= deadline) throw new ProviderFailure("timeout", "Model generation exceeded its saved deadline", false);
-        return client.structuredCompletion({
+        const result = await client.structuredCompletion({
           ...attemptRequest, signal, ...(deadline === null ? {} : { deadlineMs: Math.max(1, deadline - Date.now()) }),
         });
+        // A completion racing Stop remains an accounting receipt; its output must never reach domain writes.
+        if (signal.aborted) {
+          const reason = signal.reason;
+          throw new ProviderFailure(reason instanceof ProviderFailure ? reason.code : "cancelled",
+            reason instanceof Error ? reason.message : "Model call cancelled", false, { attempts: result.metadata.attempts });
+        }
+        return result;
       }, callSignal);
     const firstRequest: StructuredStageRequest<T> = { ...request, repairPolicy: "disabled" };
     try {
@@ -45,7 +52,10 @@ export function scheduledModelClient(
         const repaired = await dispatch(retry);
         return { output: repaired.output, metadata: mergeRepairMetadata(firstAttempts, repaired.metadata) };
       } catch (retryError) {
-        if (!(retryError instanceof ProviderFailure)) throw retryError;
+        if (!(retryError instanceof ProviderFailure)) throw new ProviderFailure("failed",
+          retryError instanceof Error ? retryError.message : "Schema repair was rejected before dispatch", false, {
+            cause: retryError, attempts: firstAttempts,
+          });
         throw new ProviderFailure(retryError.code, retryError.message, retryError.retryable, {
           cause: retryError,
           attempts: [...firstAttempts, ...(retryError.attempts ?? []).map((attempt) => ({

@@ -639,7 +639,7 @@ async function completeWithinTimeLimit<T>(client: StructuredModelClient, request
       if (!(error instanceof ProviderFailure) || request.signal?.aborted) throw error;
       const [pause, ...later] = pauses;
       if (isDroppedStream(error) && pause !== undefined) {
-        acknowledgeRestart(current.generationId);
+        acknowledgeRestart(error.failedGenerationId ?? current.generationId);
         await sleep(pause, undefined, { signal: request.signal });
         return complete({ ...current, generationId: randomUUID() }, later);
       }

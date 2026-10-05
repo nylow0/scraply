@@ -1,6 +1,6 @@
 <script lang="ts">
   import { tick, type Snippet } from "svelte";
-  import type { SolutionView } from "../../shared/ipc";
+  import type { IdeaGroupView, SolutionView } from "../../shared/ipc";
   import type { IdeaConversation as ConversationView, SubmitIdeaTurnRequest } from "../../shared/workflow-contracts";
   import SolutionListItem from "./SolutionListItem.svelte";
   import DecisionOption from "./DecisionOption.svelte";
@@ -11,6 +11,7 @@
 
   let {
     solutions,
+    ideaGroups = [],
     busy,
     onExport,
     onOpenSource,
@@ -42,6 +43,7 @@
     footer,
   }: {
     solutions: SolutionView[];
+    ideaGroups?: IdeaGroupView[] | undefined;
     busy: boolean;
     analysisBlocked?: boolean;
     opportunities?: OpportunityFamiliesView | undefined;
@@ -146,13 +148,22 @@
     ? selectedVersionDetail : solutions.find((idea) => idea.id === selectedIdeaId) ?? null);
   let hasV2 = $derived(workflowVersion === 2 || solutions.some((idea) => idea.workflowVersion === 2));
   /** One group per problem, in saved order. Ranked ideas come best first; ideas saved before ranking keep their order. */
-  let groups = $derived(solutions.reduce<Array<{ problemId: string; statement: string; ideas: SolutionView[] }>>((all, idea) => {
-    const group = all.find((item) => item.problemId === idea.problemId);
-    if (group) group.ideas.push(idea);
-    else all.push({ problemId: idea.problemId, statement: idea.problemStatement, ideas: [idea] });
-    return all;
-  }, []).map((group) => ({ ...group,
-    ideas: group.ideas.sort((a, b) => (a.rank ?? Number.MAX_SAFE_INTEGER) - (b.rank ?? Number.MAX_SAFE_INTEGER)) })));
+  let groups = $derived.by(() => {
+    const all = solutions.reduce<Array<{ problemId: string; statement: string; ideas: SolutionView[]; returns: IdeaGroupView[] }>>((groups, idea) => {
+      const group = groups.find((item) => item.problemId === idea.problemId);
+      if (group) group.ideas.push(idea);
+      else groups.push({ problemId: idea.problemId, statement: idea.problemStatement, ideas: [idea], returns: [] });
+      return groups;
+    }, []);
+    for (const result of ideaGroups) {
+      const group = all.find((item) => item.problemId === result.problemId);
+      // Counts describe the saved writer answer, not a filtered list or later idea versions.
+      if (group && (result.returnedIdeaCount === 0 || group.ideas.some((idea) => idea.runId === result.runId))) group.returns.push(result);
+      else if (result.returnedIdeaCount === 0) all.push({ problemId: result.problemId, statement: result.problemStatement, ideas: [], returns: [result] });
+    }
+    return all.map((group) => ({ ...group,
+      ideas: group.ideas.sort((a, b) => (a.rank ?? Number.MAX_SAFE_INTEGER) - (b.rank ?? Number.MAX_SAFE_INTEGER)) }));
+  });
   // The short name is the description's text before its first colon ("History access and provenance pack: ...").
   // Ideas written without one fall back to the description's first sentence.
   function ideaName(idea: SolutionView): string {
@@ -185,7 +196,11 @@
   <div class="groups">
     {#each groups as group (group.problemId)}
       <details class="problem-group" open>
-        <summary>{group.statement}</summary>
+        <summary>{group.statement}
+          {#each group.returns.filter((result) => result.returnedIdeaCount < result.requestedIdeaCount) as result (result.runId)}
+            <span class="return-count">{#if group.returns.length > 1 || group.ideas.some((idea) => idea.runId !== result.runId)}One run returned {result.returnedIdeaCount} of {result.requestedIdeaCount} {result.requestedIdeaCount === 1 ? "idea" : "ideas"}{:else}{result.returnedIdeaCount} of {result.requestedIdeaCount} {result.requestedIdeaCount === 1 ? "idea" : "ideas"} returned{/if}</span>
+          {/each}
+        </summary>
         <ol>
           {#each group.ideas as idea (idea.id)}
             <li><button class="idea-row" aria-label={`Open idea: ${ideaName(idea)}`} onclick={(event) => openIdea(event, idea.id)}>
@@ -254,6 +269,7 @@
   .groups { display:grid;gap:12px;margin-top:28px; }
   .problem-group { border:1px solid var(--border);border-radius:12px;background:var(--surface); }
   .problem-group > summary { padding:16px 20px;color:var(--text);font-size:15px;font-weight:600;line-height:1.45;cursor:pointer; }
+  .return-count { display:block;margin-top:4px;color:var(--muted);font-size:12px;font-weight:400; }
   .problem-group ol { margin:0;padding:0 8px 8px;list-style:none; }
   .idea-row { display:flex;align-items:center;gap:12px;width:100%;min-height:46px;padding:10px 12px;border:0;border-radius:8px;background:transparent;color:var(--text);text-align:left;font-size:15px;font-weight:550; }
   .idea-row:hover,.idea-row:focus-visible { background:var(--surface-2); }

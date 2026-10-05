@@ -2,7 +2,7 @@
 
 Use **Setup** for the brief and research settings, **Research** for evidence, and **Solutions** for the resulting ideas. Work is saved locally. Reopening a project reads its saved state; it does not start another model or search request.
 
-While a run is active, its progress and the Pause and Stop controls sit above every tab. When it finishes, **Run details** at the bottom of Solutions keeps its model calls, searches, time taken, saved tasks, and the session ID. The step-by-step trace of a run is a file for debugging, not a screen: copy the session ID from Run details and give it to an agent, which can write the trace with `bun scripts/trace.ts <session ID>` from a Scraply checkout.
+While a run is active, its progress and the Pause and Stop controls sit above every tab. When it finishes, **Run details** at the bottom of Solutions keeps its model calls, searches, time taken, saved tasks, and the session ID. Copy that ID when asking for help with a run.
 
 ## Start a project
 

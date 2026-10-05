@@ -35,6 +35,8 @@ export class ProviderFailure extends Error {
   readonly attempts: GenerationAttemptMetadata[] | undefined;
   readonly runtimeCode: string | undefined;
   readonly unretainedSchemaFailure: SchemaValidationFailure | undefined;
+  /** The app records the physical call's UUID so outer retries acknowledge only that lost call. */
+  failedGenerationId?: string;
 }
 
 /**

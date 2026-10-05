@@ -2,7 +2,7 @@ import { fireEvent, render, waitFor, within } from "@testing-library/svelte";
 import { describe, expect, test, vi } from "vitest";
 import SolutionListItem from "../../src/renderer/components/SolutionListItem.svelte";
 import SolutionWorkspace from "../../src/renderer/components/SolutionWorkspace.svelte";
-import type { SolutionView } from "../../src/shared/ipc";
+import type { IdeaGroupView, SolutionView } from "../../src/shared/ipc";
 import type { IdeaConversation as ConversationView } from "../../src/shared/workflow-contracts";
 import type { OpportunityFamiliesView } from "../../src/shared/opportunity-review";
 import { DEFAULT_RUN_CONFIG } from "../../src/shared/schemas";
@@ -87,6 +87,81 @@ describe("SolutionListItem risk summary", () => {
 });
 
 describe("SolutionWorkspace groups", () => {
+  const actions = { busy: false, onExport: vi.fn(), onOpenSource: vi.fn(), onReview: vi.fn() };
+  const savedGroup = (problemId: string, requestedIdeaCount: number, returnedIdeaCount: number): IdeaGroupView => ({
+    runId: `run-${problemId}`, problemId, problemStatement: `Problem ${problemId}`, requestedIdeaCount, returnedIdeaCount,
+  });
+  const rankedIdea = (problemId: string, rank: number): SolutionView => ({ ...solution(), id: `${problemId}-${rank}`,
+    runId: `run-${problemId}`, problemId, problemStatement: `Problem ${problemId}`, workflowVersion: 2, rank,
+    description: `Idea ${problemId}-${rank}: an explanation.`,
+  });
+
+  test("shows the saved writer's short count beside its problem and keeps every ranked idea", async () => {
+    const ideas = [rankedIdea("short", 2), rankedIdea("complete", 1), rankedIdea("short", 1)];
+    ideas[0]!.reviewStatus = "duplicate";
+    const props = { ...actions, solutions: ideas, ideaGroups: [savedGroup("short", 3, 2), savedGroup("complete", 1, 1)],
+      initialConfig: { ...DEFAULT_RUN_CONFIG, ideaCount: 5 } };
+    const view = render(SolutionWorkspace, props);
+    const short = view.getByText("2 of 3 ideas returned").closest("details") as HTMLDetailsElement;
+    expect(short.open).toBe(true);
+    expect(short.querySelector("summary")?.textContent).toContain("Problem short");
+    expect([...short.querySelectorAll(".idea-name")].map((row) => row.textContent)).toEqual(["Idea short-1", "Idea short-2"]);
+    expect(view.queryByText("1 of 1 idea returned")).toBeNull();
+    expect(view.getByRole("heading", { name: "3 ideas" })).toBeTruthy();
+
+    await view.rerender({ ...props, initialConfig: { ...DEFAULT_RUN_CONFIG, ideaCount: 1 } });
+    expect(view.getByText("2 of 3 ideas returned")).toBeTruthy();
+    await fireEvent.click(within(short).getByRole("button", { name: "Open idea: Idea short-2" }));
+    expect(view.getByRole("heading", { name: "Idea short-2" })).toBeTruthy();
+    await fireEvent.click(view.getByRole("button", { name: "Back to ideas" }));
+    expect(view.getByText("2 of 3 ideas returned")).toBeTruthy();
+  });
+
+  test("retains zero-return groups alongside complete and older saved groups", () => {
+    const legacy = { ...solution(), id: "legacy", problemId: "legacy", problemStatement: "Legacy problem", runId: "legacy-run" };
+    const view = render(SolutionWorkspace, { ...actions,
+      solutions: [rankedIdea("complete", 1), legacy], ideaGroups: [savedGroup("complete", 1, 1), savedGroup("empty", 3, 0)],
+      initialConfig: { ...DEFAULT_RUN_CONFIG, ideaCount: 5 },
+    });
+    expect(view.container.querySelectorAll("details.problem-group")).toHaveLength(3);
+    const empty = view.getByText("0 of 3 ideas returned").closest("details") as HTMLDetailsElement;
+    expect(empty.querySelector("summary")?.textContent).toContain("Problem empty");
+    expect(empty.querySelectorAll(".idea-row")).toHaveLength(0);
+    expect(view.container.querySelectorAll(".return-count")).toHaveLength(1);
+    expect(view.getByRole("heading", { name: "2 ideas" })).toBeTruthy();
+  });
+
+  test("keeps a source run's short count separate from other saved runs for the same problem", () => {
+    const older = { ...rankedIdea("shared", 3), runId: "older-run" };
+    const view = render(SolutionWorkspace, { ...actions,
+      solutions: [rankedIdea("shared", 1), rankedIdea("shared", 2), older],
+      ideaGroups: [savedGroup("shared", 3, 2), { ...savedGroup("shared", 5, 5), runId: "older-run" }],
+    });
+    expect(view.getByText("One run returned 2 of 3 ideas")).toBeTruthy();
+    expect(view.container.querySelectorAll("details.problem-group")).toHaveLength(1);
+    expect(view.getAllByRole("button", { name: /^Open idea:/ })).toHaveLength(3);
+    expect(view.container.querySelectorAll(".return-count")).toHaveLength(1);
+  });
+
+  test("opens an all-zero saved result without inventing ideas", () => {
+    const view = render(SolutionWorkspace, { ...actions, solutions: [], workflowVersion: 2,
+      ideaGroups: [savedGroup("empty", 3, 0), savedGroup("another", 1, 0)],
+    });
+    expect(view.getByText("0 of 3 ideas returned")).toBeTruthy();
+    expect(view.getByText("0 of 1 idea returned")).toBeTruthy();
+    expect(view.getByRole("heading", { name: "0 ideas" })).toBeTruthy();
+    expect(view.container.querySelectorAll(".idea-row")).toHaveLength(0);
+  });
+
+  test("uses saved returned counts for a filtered history and excludes metadata for unseen nonempty runs", () => {
+    const view = render(SolutionWorkspace, { ...actions, solutions: [rankedIdea("complete", 2)],
+      ideaGroups: [savedGroup("complete", 3, 3), savedGroup("unseen", 3, 2)],
+    });
+    expect(view.container.querySelectorAll("details.problem-group")).toHaveLength(1);
+    expect(view.container.querySelectorAll(".return-count")).toHaveLength(0);
+    expect(view.queryByText("Problem unseen")).toBeNull();
+  });
+
   test("shows one open group per problem with each idea's short name, best first, and marks weak fits", async () => {
     const idea = (id: string, problemId: string, rank: number, name: string, weakFitReason: string | null = null) => ({ ...solution(), id, problemId,
       problemStatement: `Problem ${problemId}`, workflowVersion: 2 as const, rank, rankReason: `Reason ${rank}`, weakFitReason,
@@ -98,7 +173,7 @@ describe("SolutionWorkspace groups", () => {
 
     expect(view.getByRole("heading", { level: 1, name: "4 ideas" })).toBeTruthy();
     const groups = [...view.container.querySelectorAll("details.problem-group")] as HTMLDetailsElement[];
-    expect(groups.map((group) => [group.querySelector("summary")?.textContent, group.open])).toEqual([["Problem a", true], ["Problem b", true]]);
+    expect(groups.map((group) => [group.querySelector("summary")?.textContent?.trim(), group.open])).toEqual([["Problem a", true], ["Problem b", true]]);
     expect([...groups[0]!.querySelectorAll(".idea-name")].map((row) => row.textContent)).toEqual(["History access pack", "Savings checker", "Shared checklist"]);
     const weak = within(groups[0]!).getByRole("button", { name: "Open idea: Shared checklist" });
     expect(within(weak).getByText("Weak fit")).toBeTruthy();

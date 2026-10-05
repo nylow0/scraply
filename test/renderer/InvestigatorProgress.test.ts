@@ -4,8 +4,8 @@ import InvestigatorProgress from "../../src/renderer/components/InvestigatorProg
 import type { InvestigatorLane } from "../../src/renderer/lib/investigator-progress";
 
 const investigators: InvestigatorLane[] = [
-  { areaId: "bank", areaName: "Bank matching", state: "running", currentStep: "Checking a second independent account", confirmedCount: 1, insufficientCount: 2, droppedCount: 0 },
-  { areaId: "documents", areaName: "Client documents", state: "ready", currentStep: null, confirmedCount: null, insufficientCount: null, droppedCount: null },
+  { taskId: "bank-initial", areaId: "bank", areaName: "Bank matching", state: "running", currentStep: "Checking a second independent account", confirmedCount: 1, insufficientCount: 2, droppedCount: 0 },
+  { taskId: "documents-initial", areaId: "documents", areaName: "Client documents", state: "ready", currentStep: null, confirmedCount: null, insufficientCount: null, droppedCount: null },
 ];
 
 describe("InvestigatorProgress", () => {
@@ -50,6 +50,26 @@ describe("InvestigatorProgress", () => {
     expect(view.getByText("Completion unknown")).toBeTruthy();
     expect(view.getByText("Problems").nextElementSibling?.textContent).toBe("1");
     expect(view.queryByText("Finished")).toBeNull();
+  });
+
+  test("keeps repeated assessments in one area distinct when tasks update and reorder", async () => {
+    const original = { ...investigators[0]!, state: "succeeded" as const, currentStep: "Original investigation finished" };
+    const assessment = { ...investigators[0]!, taskId: "bank-assessment", state: "running" as const,
+      currentStep: "Assessing the saved lead", confirmedCount: 0, insufficientCount: 1 };
+    const view = render(InvestigatorProgress, { investigators: [original, assessment] });
+    const originalRow = view.getAllByRole("listitem", { name: "Bank matching investigator" })[0]!;
+    const assessmentRow = view.getAllByRole("listitem", { name: "Bank matching investigator" })[1]!;
+
+    await view.rerender({ investigators: [
+      { ...assessment, state: "succeeded", currentStep: "Assessment complete", confirmedCount: 1, insufficientCount: 0 },
+      original,
+    ] });
+
+    expect(view.getAllByRole("listitem", { name: "Bank matching investigator" })).toEqual([assessmentRow, originalRow]);
+    expect(within(originalRow).getByText(/Original investigation finished/)).toBeTruthy();
+    expect(within(originalRow).getByText("Needs more evidence").nextElementSibling?.textContent).toBe("2");
+    expect(within(assessmentRow).getByText(/Assessment complete/)).toBeTruthy();
+    expect(within(assessmentRow).getByText("Needs more evidence").nextElementSibling?.textContent).toBe("0");
   });
 
   test("leaves old runs without investigator work unchanged", () => {

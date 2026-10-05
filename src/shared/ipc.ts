@@ -244,6 +244,11 @@ export const SolutionViewSchema = z.object({
   outcomes: z.array(OutcomeViewSchema), risks: z.array(RiskViewSchema),
   confirmedCoreOutcomes: z.number().int().nonnegative(), unaddressedCatastrophicRisks: z.number().int().nonnegative(),
 });
+/** Saved ranked writer results, including problems whose writer returned no ideas. */
+export const IdeaGroupViewSchema = z.object({
+  runId: EntityIdSchema, problemId: EntityIdSchema, problemStatement: z.string(),
+  requestedIdeaCount: z.number().int().positive(), returnedIdeaCount: z.number().int().nonnegative(),
+}).strict();
 const UsageDimensionSchema = z.object({ known: z.number().int().nonnegative(), unknownAttempts: z.number().int().nonnegative() }).strict();
 const UsageCostTotalSchema = z.object({ currency: z.string().min(1), amount: z.number().nonnegative() }).strict();
 export const RunUsageSchema = z.object({
@@ -332,6 +337,7 @@ export const WorkspaceStateSchema = z.object({
   /** Checked leads the active snapshot did not carry forward. Read-only: they can never be picked for ideas. */
   problemLeads: z.array(ProblemCandidateSchema).optional(),
   solutions: z.array(SolutionViewSchema),
+  ideaGroups: z.array(IdeaGroupViewSchema).optional(),
   opportunityFamilies: OpportunityFamiliesViewSchema.optional(),
   opportunityExploration: OpportunityExplorationProgressSchema.nullable().optional(),
   opportunityReviewStatus: z.object({ running: z.boolean(), kind: z.enum(["review", "exploration", "experiment"]).nullable(), error: z.string().nullable() }).optional(),
@@ -371,6 +377,7 @@ export type FactorView = z.infer<typeof FactorViewSchema>;
 export type ProblemCandidate = z.infer<typeof ProblemCandidateSchema>;
 export type RejectedProblemCandidate = z.infer<typeof RejectedProblemCandidateSchema>;
 export type SolutionView = z.infer<typeof SolutionViewSchema>;
+export type IdeaGroupView = z.infer<typeof IdeaGroupViewSchema>;
 export type RunUsage = z.infer<typeof RunUsageSchema>;
 
 export const IPC_CHANNELS = {

@@ -21,7 +21,7 @@ import { WorkflowLaunchContractSchema } from "../shared/workflow-contracts";
 import { framedDiscoveryProjection, PARALLEL_SOURCE_READS } from "../shared/discovery-projection";
 import { ResearchFrameSchema, scopeResearchArea, type ResearchFrame, type ResearchArea } from "../shared/research-frame";
 import { RESEARCH_TARGETS, candidateAssessmentProjection, InvestigatorSearchRouteSchema, researchTargetProgress } from "../shared/evidence-investigators";
-import { assertCriteriaFit, frameNeedsNoveltySearch } from "../shared/solution-goal-fit";
+import { assertCriteriaFit, assertGoalFit, frameNeedsNoveltySearch } from "../shared/solution-goal-fit";
 import { assertFocusedDemandTestSemantics } from "../shared/focused-experiment";
 import { deriveJsonSchema } from "../shared/json-schema";
 import type { ResearchEvent } from "../shared/ipc";
@@ -37,7 +37,7 @@ import {
   type OpportunityExplorationProgress,
 } from "../shared/opportunity-exploration";
 import { DEFAULT_IDEA_COUNT, ModelRefSchema, ReasoningEffortSchema, RunConfigSchema, SourceSchema, sameModelRef, type ModelRef, type ReasoningEffort, type RunConfig, type Source } from "../shared/schemas";
-import { ScopeSchema, SavedProblemCandidateSchema, WorkflowV2CompatibleDecisionAnalysisOutputSchema, WorkflowV2GoalSolutionOptionSchema, WorkflowV2GoalStartupSolutionOptionSchema, WorkflowV2RiskEvaluationOutputSchema, WorkflowV2RiskReassessmentOutputSchema, WorkflowV2SolutionOptionSchema, WorkflowV2SolutionsOutputSchema, WorkflowV2StartupSolutionOptionSchema, type Scope } from "../shared/structured-output-schemas";
+import { ScopeSchema, SavedProblemCandidateSchema, WorkflowV2CompatibleDecisionAnalysisOutputSchema, WorkflowV2GoalSolutionOptionSchema, WorkflowV2GoalStartupSolutionOptionSchema, WorkflowV2GoalSolutionsOutputSchema, WorkflowV2RiskEvaluationOutputSchema, WorkflowV2RiskReassessmentOutputSchema, WorkflowV2SolutionOptionSchema, WorkflowV2SolutionsOutputSchema, WorkflowV2StartupSolutionOptionSchema, type Scope } from "../shared/structured-output-schemas";
 import { analyzeSelectedOption, developmentStageEvidence, evaluateSelectedOptionRisk, produceDevelopmentOptions, reassessSelectedOption, reassessSelectedOptionRisk, WorkflowGenerationAngleSchema, WorkflowGenerationEvidenceSchema, type WorkflowV2DevelopmentContext, type WorkflowV2EvidenceItem } from "./development";
 import { DEFAULT_PROBLEM_CANDIDATE_LIMIT, DISCOVERY_DEPTHS, discoverProblems, discoveryRunProjection, harvestEvidenceFollowUp, harvestFactors, normalizeSearchQuery,
   type HarvestMode, type HarvestResult, type PlannedQuery, type DiscoveryProblem, type HarvestedFactor, type HarvestedSource,
@@ -129,6 +129,9 @@ export class ResearchEngine {
   // A cancelled execution can still be unwinding when its replacement starts.
   private readonly executions = new Set<Promise<void>>();
   private readonly executionsByRun = new Map<string, Promise<void>>();
+  // A repair may occupy a second allowance before its outer generation row contains both receipts.
+  // These transient claims constrain admission; only provider receipts become persisted usage.
+  private readonly pendingModelRepairs = new Map<string, { runId: string; providerId: string; areaId: string | null; calls: number }>();
   private readonly runs: ResearchRunRepository;
   private readonly ledger: CostLedgerRepository;
   private readonly generationAttempts: GenerationAttemptRepository;
@@ -153,7 +156,7 @@ export class ResearchEngine {
 
   getActiveRunIds(): ReadonlySet<string> { return new Set(this.activeRuns.keys()); }
 
-  hasActiveWork(): boolean { return this.activeRuns.size > 0 || this.opportunityTasks.size > 0; }
+  hasActiveWork(): boolean { return this.activeRuns.size > 0 || this.executions.size > 0 || this.opportunityTasks.size > 0; }
 
   /** Session work outside a research run shares the same per-project model scheduler. */
   scheduledWorkflowModelClient(threadId: string, model: ModelRef): StructuredModelClient {
@@ -1433,7 +1436,8 @@ export class ResearchEngine {
   }
 
   cancelRun(runId: string): void {
-    this.cancelRunInternal(runId, true);
+    const { threadId, completion } = this.cancelRunInternal(runId);
+    void completion.catch((error: unknown) => this.emit({ type: "run-failed", runId, threadId, error: errorMessage(error) }));
   }
 
   async requestEvidenceReassessment(threadId: string, runId: string): Promise<void> {
@@ -1462,12 +1466,13 @@ export class ResearchEngine {
     this.executionsByRun.set(runId, execution);
   }
 
-  private cancelRunInternal(runId: string, emitTerminalEvent: boolean): { threadId: string } {
+  private cancelRunInternal(runId: string): { threadId: string; completion: Promise<void> } {
     const row = this.options.db.db.prepare("SELECT thread_id, status FROM research_runs WHERE id = ?").get(runId) as
       { thread_id: string; status: string } | undefined;
     if (!row) throw new AppError("not_found", "Research run not found.");
     if (!["queued", "running"].includes(row.status)) throw new AppError("conflict", "This research run has already ended.");
     const active = this.activeRuns.get(runId);
+    const execution = this.executionsByRun.get(runId);
     const followUp = this.followUps.find(runId);
     if (active) {
       active.abortController.abort(new Error("Cancelled by user"));
@@ -1477,16 +1482,12 @@ export class ResearchEngine {
       }
       this.activeRuns.delete(runId);
     }
-    this.ledger.settleUncertain(runId, "Run cancelled while operations were in flight");
     const opportunityTask = this.opportunityTasks.get(row.thread_id);
     if (opportunityTask?.kind === "experiment") {
       this.options.db.db.prepare("UPDATE research_runs SET status = 'completed', cancelled = 0, updated_at = ? WHERE id = ?")
         .run(new Date().toISOString(), runId);
       this.updateThread(row.thread_id, "solutions-ready");
-      if (emitTerminalEvent) this.emit({ type: "run-cancelled", runId, threadId: row.thread_id });
-      return { threadId: row.thread_id };
-    }
-    if (followUp && ["requested", "running"].includes(followUp.status)) {
+    } else if (followUp && ["requested", "running"].includes(followUp.status)) {
       this.options.db.immediateTransaction(() => {
         this.followUps.fail(runId, "Cancelled by user");
         this.options.db.db.prepare(`
@@ -1494,30 +1495,36 @@ export class ResearchEngine {
         `).run("Analysis completed; evidence follow-up cancelled", new Date().toISOString(), runId);
       });
       this.updateThread(row.thread_id, "solutions-ready");
-      if (emitTerminalEvent) this.emit({ type: "run-cancelled", runId, threadId: row.thread_id });
-      return { threadId: row.thread_id };
-    }
-    if (followUp?.reassessmentStatus === "running") {
+    } else if (followUp?.reassessmentStatus === "running") {
       this.options.db.immediateTransaction(() => {
         this.followUps.failReassessment(runId, "Cancelled by user");
         this.options.db.db.prepare("UPDATE research_runs SET status = 'completed', completion_reason = ?, cancelled = 0, updated_at = ? WHERE id = ?")
           .run("Analysis completed; evidence reassessment cancelled", new Date().toISOString(), runId);
       });
       this.updateThread(row.thread_id, "solutions-ready");
-      if (emitTerminalEvent) this.emit({ type: "run-cancelled", runId, threadId: row.thread_id });
-      return { threadId: row.thread_id };
+    } else {
+      this.runs.cancel(runId);
+      this.updateThread(row.thread_id, "failed");
     }
-    this.runs.cancel(runId);
-    this.updateThread(row.thread_id, "failed");
-    if (emitTerminalEvent) this.emit({ type: "run-cancelled", runId, threadId: row.thread_id });
-    return { threadId: row.thread_id };
+    const settle = () => {
+      // A replacement may already be running while an old initialization unwinds.
+      if (this.activeRuns.has(runId) || this.executionsByRun.has(runId)) return;
+      this.ledger.settleUncertain(runId, "Run cancelled before an operation reached a durable terminal result");
+      this.emit({ type: "run-cancelled", runId, threadId: row.thread_id });
+    };
+    if (!execution) {
+      settle();
+      return { threadId: row.thread_id, completion: Promise.resolve() };
+    }
+    // Keep Stop pending until native cancellation receipts and occupied scheduler slots settle.
+    const completion: Promise<void> = execution.then(settle).finally(() => { this.executions.delete(completion); });
+    this.executions.add(completion);
+    return { threadId: row.thread_id, completion };
   }
 
   async cancelRunAndWait(runId: string): Promise<void> {
-    const { threadId } = this.cancelRunInternal(runId, false);
-    const execution = this.executionsByRun.get(runId);
-    if (execution) await execution;
-    this.emit({ type: "run-cancelled", runId, threadId });
+    const { completion } = this.cancelRunInternal(runId);
+    await completion;
   }
 
   private begin(runId: string, threadId: string, problemId: string | null, config: RunConfig, resumed = false,
@@ -1614,17 +1621,7 @@ export class ResearchEngine {
   }
 
   private async executeDiscovery(active: ActiveRun): Promise<void> {
-    const scopeRow = this.options.db.db.prepare("SELECT title, audience, domain, observations, off_limits_json, risk_evaluation_criteria FROM scopes WHERE research_run_id = ?")
-      .get(active.runId) as { title: string; audience: string; domain: string; observations: string; off_limits_json: string; risk_evaluation_criteria: string } | undefined;
-    if (!scopeRow) throw new Error("Discovery scope is missing");
-    const scope = ScopeSchema.parse({
-      title: scopeRow.title,
-      audience: scopeRow.audience,
-      domain: scopeRow.domain,
-      observations: scopeRow.observations,
-      offLimits: JSON.parse(scopeRow.off_limits_json),
-      ...(scopeRow.risk_evaluation_criteria ? { riskEvaluationCriteria: scopeRow.risk_evaluation_criteria } : {}),
-    });
+    const scope = this.readScope(active.runId);
     const boundFrame = new ResearchFrameRepository(this.options.db).forRun(active.runId)?.approved;
     if (boundFrame) await this.validateFrameSourceVenues(active, boundFrame);
     const deps = this.dependencies(active);
@@ -1661,13 +1658,7 @@ export class ResearchEngine {
     const workflow = active.workflow!;
     if (new ResearchFrameRepository(this.options.db).forRun(active.runId)) return;
     const kind = workflow.read<{ knownProblem: boolean; regeneration?: { frameId: string; edited: ResearchFrame } }>("workflow-kind")!;
-    const scopeRow = this.options.db.db.prepare(`SELECT title, audience, domain, observations,
-      off_limits_json, risk_evaluation_criteria FROM scopes WHERE research_run_id = ?`).get(active.runId) as {
-        title: string; audience: string; domain: string; observations: string; off_limits_json: string; risk_evaluation_criteria: string;
-      };
-    const scope = ScopeSchema.parse({ title: scopeRow.title, audience: scopeRow.audience, domain: scopeRow.domain,
-      observations: scopeRow.observations, offLimits: JSON.parse(scopeRow.off_limits_json),
-      ...(scopeRow.risk_evaluation_criteria ? { riskEvaluationCriteria: scopeRow.risk_evaluation_criteria } : {}) });
+    const scope = this.readScope(active.runId);
     const frames = new ResearchFrameRepository(this.options.db);
     const previous = kind.regeneration ? frames.get(kind.regeneration.frameId) : null;
     if (kind.regeneration && (!previous || previous.threadId !== active.threadId)) throw new AppError("INVALID_REFERENCE");
@@ -1776,10 +1767,26 @@ export class ResearchEngine {
     const saved = new ResearchFrameRepository(this.options.db).forRun(active.runId);
     const frame = saved?.approved;
     if (!frame || saved.knownProblem) throw new AppError("INVALID_REFERENCE", "An approved discovery frame is required.");
+    const prompts = workflow.read<Partial<Record<WorkflowV2StageId, unknown>>>("prompts");
+    // The frozen prompt set is the run's stage contract. Pre-investigator runs keep their original path.
+    if (!prompts?.["area-gap"] || !prompts["evidence-check"]) {
+      await this.executeLegacyFramedDiscovery(active, scope, frame);
+      return;
+    }
     this.seedFrameDiscoverySources(active.runId, saved.sources);
     await this.validateFrameSourceVenues(active, frame);
     const scans: AreaScan[] = [];
     const included = frame.areas.filter(area => area.included);
+    const owner = this.workflowRunOwner(active);
+    const partialReasons = new Map<string, string>();
+    const acknowledgeDroppedCalls = (area: ResearchArea) => {
+      const unresolved = new Set(new GenerationAttemptRepository(this.options.db).unresolvedAttemptIds(active.runId));
+      const lost = (this.options.db.db.prepare(`SELECT id FROM generation_attempts WHERE research_run_id = ?
+        AND (instr(stage_key,?) > 0 OR instr(stage_key,?) > 0 OR instr(stage_key,?) > 0 OR stage_key = ?)`)
+        .all(active.runId, `scan-${sha256Area(area.id)}`, `area-${sha256Area(area.id)}`, `:${area.id}:`, `area-gap:${area.id}`) as Array<{ id: string }>)
+        .map(attempt => attempt.id).filter(id => unresolved.has(id));
+      if (lost.length) workflow.save(`acknowledged-retry:area-stopped:${area.id}:${lost[0]}`, { attemptIds: lost });
+    };
     const runScan = (area: ResearchArea) => scanResearchArea(scope, frame, area, { ...this.areaDependencies(active, frame, area),
       depth: "quick", repairPolicy: "disabled", stageScope: `scan-${sha256Area(area.id)}`, idFactory: workflow.idFactory(`frame-scan:${area.id}`),
       random: () => 0.5 });
@@ -1787,15 +1794,33 @@ export class ResearchEngine {
     // so a source found by two areas gets the same owner and ID as in a sequential run.
     const prefetched = new Map<string, Promise<AreaScan>>();
     if (workflow.parallelResearch) {
-      for (const area of included) if (!workflow.read<AreaScan>(`frame-scan:${area.id}`)) prefetched.set(area.id, runScan(area));
+      for (const area of included) if (!workflow.read<AreaScan>(`frame-scan:${area.id}`)
+        && !workflow.read(`frame-scan-failure:${area.id}`)) prefetched.set(area.id, runScan(area));
       await Promise.allSettled(prefetched.values());
     }
     for (const area of included) {
       active.abortController.signal.throwIfAborted();
       const key = `frame-scan:${area.id}`;
+      const stopped = workflow.read<{ partialReason: string }>(`frame-scan-failure:${area.id}`);
+      if (stopped) { partialReasons.set(area.id, stopped.partialReason); continue; }
       let scan = workflow.read<AreaScan>(key);
       if (!scan) {
-        scan = await (prefetched.get(area.id) ?? runScan(area));
+        try {
+          scan = await (prefetched.get(area.id) ?? runScan(area));
+        } catch (error) {
+          active.abortController.signal.throwIfAborted();
+          const dropped = isDroppedStream(error);
+          if (!dropped && !(error instanceof ProviderFailure && ["timeout", "output-limit", "schema"].includes(error.code))) throw error;
+          if (dropped) acknowledgeDroppedCalls(area);
+          const partialReason = `The scan in ${area.name} stopped because a model call failed: ${errorMessage(error)} The area ended before candidate assessment.`;
+          workflow.save(`frame-scan-failure:${area.id}`, { partialReason });
+          partialReasons.set(area.id, partialReason);
+          const lane = ensureAreaInvestigatorWorkItems(this.options.db, owner.sessionId, owner.workItemId, area);
+          this.startInvestigatorItem(lane.parent.id);
+          this.startInvestigatorItem(lane.research.id);
+          this.settleInvestigatorFailure(active, lane.parent.id, error);
+          continue;
+        }
         const validated = this.reconcileAreaEvidence(active.runId, scan.sources, workflow.withFactorUncertainty(scan.factors));
         scan = { ...scan, ...validated, qualifyingFacts: validated.factors.filter(qualifiesAsProblemObservation).length };
         const completed = scan;
@@ -1808,10 +1833,11 @@ export class ResearchEngine {
     }
     // A resumed run keeps the areas it already chose, even if the selection rule changed since.
     const savedSelection = workflow.read<ResearchArea[]>("frame-selected-areas");
-    const selected = savedSelection ?? await rankScannedAreas(frame, scans, active.config.discoveryDepth,
-      { ...this.dependencies(active), workflow, onProgress: message => this.progress(active, message) });
+    const selectableFrame = { ...frame, areas: frame.areas.filter(area => !partialReasons.has(area.id)) };
+    const selected = savedSelection?.filter(area => !partialReasons.has(area.id)) ?? (scans.length === 0 ? []
+      : await rankScannedAreas(selectableFrame, scans, active.config.discoveryDepth,
+        { ...this.dependencies(active), workflow, onProgress: message => this.progress(active, message) }));
     if (!savedSelection) workflow.save("frame-selected-areas", selected);
-    const owner = this.workflowRunOwner(active);
     const lanes = new Map(selected.map(area => [area.id, ensureAreaInvestigatorWorkItems(this.options.db,
       owner.sessionId, owner.workItemId, area)]));
     for (const area of selected) {
@@ -1828,7 +1854,15 @@ export class ResearchEngine {
     const targetStop = () => researchTargetProgress(target, [...settledProblems.values()]).outcome === "target-met"
       ? "The declared research target was met. Further evidence gaps and rounds were skipped." : null;
     const results: Array<{ areaId: string; result: ProblemDiscoveryResult }> = [];
-    const partialReasons = new Map<string, string>();
+    const candidateStates = new Map<string, {
+      blocked: ProblemDiscoveryResult["blockedCandidates"];
+      pending: Map<string, { problem: DiscoveryProblem; selectionId: string }>;
+    }>();
+    const savedCandidateFor = (problem: DiscoveryProblem, selectionId: string) => {
+      const output = workflow.repository.findStageResult(active.runId, "problem-candidates", selectionId)?.output as { problems: unknown[] } | undefined;
+      return output?.problems.map(value => SavedProblemCandidateSchema.parse(value))
+        .find(candidate => candidate.statement.trim() === problem.statement);
+    };
     const maxModelCalls = Math.floor((this.remainingWorkflowTaskCalls(active, "model-call") ?? Infinity) / Math.max(1, selected.length));
     const maxSearches = Math.floor((this.remainingWorkflowTaskCalls(active, "search") ?? Infinity) / Math.max(1, selected.length));
     const rootActive = active;
@@ -1841,6 +1875,7 @@ export class ResearchEngine {
       const lane = lanes.get(area.id)!;
       const alreadyInvestigated = workflow.read<ProblemDiscoveryResult>(`${key}:investigation-completed`);
       if (alreadyInvestigated) {
+        if (alreadyInvestigated.partialReason) partialReasons.set(area.id, alreadyInvestigated.partialReason);
         return { areaId: area.id, result: alreadyInvestigated };
       }
       if (targetStop()) { partialReasons.set(area.id, targetStop()!); return null; }
@@ -1898,6 +1933,24 @@ export class ResearchEngine {
       }
       if (result.partialReason) partialReasons.set(area.id, result.partialReason);
       const finalKey = `${key}:investigation-completed`;
+      const initialFailure = result.modelFailure;
+      if (initialFailure) {
+        // Initial verdicts still require their evidence checks. Keep their receipts and exact candidates without promoting them.
+        result = this.reconcileProblemEvidence(active.runId, result);
+        this.persistAreaEvidence(active, area.id, result.killSources, []);
+        const blockedCandidates = [...result.blockedCandidates];
+        for (const problem of result.problems) {
+          const candidate = savedCandidateFor(problem, dependencies.stageScope);
+          blockedCandidates.push({ statement: problem.statement, reason: `Not assessed: ${result.partialReason ?? initialFailure.message}`,
+            disposition: "not-assessed", ...(candidate ? { candidate } : {}) });
+        }
+        result = { ...result, problems: [], blockedCandidates };
+        if (initialFailure.droppedStream) acknowledgeDroppedCalls(area);
+        workflow.save(finalKey, result);
+        this.settleInvestigatorFailure(active, lane.parent.id,
+          new ProviderFailure(initialFailure.code, initialFailure.message, false));
+        return { areaId: area.id, result };
+      }
       let investigated = workflow.read<ProblemDiscoveryResult>(finalKey);
       if (!investigated) {
         // Contrary sources must exist before a follow-up factor can cite one.
@@ -1906,29 +1959,32 @@ export class ResearchEngine {
         const investigator = { ...this.investigatorDependencies(active, scoped, frame, area, lane.parent.id, dependencies), stopRequested: targetStop };
         const finalProblems: DiscoveryProblem[] = [];
         const blocked = [...result.blockedCandidates];
-        const retainUninvestigated = (problem: DiscoveryProblem, selectionId: string) => {
-          const output = workflow.repository.findStageResult(active.runId, "problem-candidates", selectionId)?.output as { problems: unknown[] } | undefined;
-          const candidate = output?.problems.map(value => SavedProblemCandidateSchema.parse(value))
-            .find(candidate => candidate.statement.trim() === problem.statement);
-          blocked.push({ statement: problem.statement, reason: targetStop()!, disposition: "not-assessed",
+        const pending = new Map(result.problems.map(problem => [problem.id, { problem, selectionId: dependencies.stageScope }]));
+        candidateStates.set(area.id, { blocked, pending });
+        const retainUninvestigated = (problem: DiscoveryProblem, selectionId: string, reason = targetStop()!) => {
+          const candidate = savedCandidateFor(problem, selectionId);
+          blocked.push({ statement: problem.statement, reason, disposition: "not-assessed",
             ...(candidate ? { candidate } : {}) });
+          pending.delete(problem.id);
         };
         const investigate = async (problem: DiscoveryProblem, sources: HarvestedSource[]) => {
           const check = ensureEvidenceCheckWorkItem(this.options.db, owner.sessionId, lane.parent.id, area.id, problem.id);
           this.startInvestigatorItem(check.id);
           const rawOutcome = await runCandidateEvidenceInvestigator({ ...investigator, problem, existingSources: sources });
+          return { ...rawOutcome, checkId: check.id };
+        };
+        const record = (rawOutcome: Awaited<ReturnType<typeof investigate>>) => {
+          // Commit in candidate order, after concurrent computations settle. Source ownership must match a sequential run.
           const reconciled = this.reconcileProblemEvidence(active.runId, { problems: [rawOutcome.problem], killSources: rawOutcome.sources,
             blockedCandidates: [], factorUtilizationRate: 0 });
           const outcome = { ...rawOutcome, problem: reconciled.problems[0]!, sources: reconciled.killSources,
             factors: this.reconcileAreaEvidence(active.runId, rawOutcome.sources, rawOutcome.factors).factors };
           this.persistAreaEvidence(active, area.id, outcome.sources, outcome.factors);
-          // Kept problems count toward the target, and survive a later failure in this area, as soon as they settle.
+          pending.delete(outcome.problem.id);
+          // Kept problems count toward the target and survive a later failure in this area once committed.
           if (!outcome.dropped) settledProblems.set(outcome.problem.id, { ...outcome.problem, areaId: area.id });
-          this.finishInvestigatorItem(check.id, { problemId: problem.id, dropped: outcome.dropped, verdict: outcome.problem.verdict,
+          this.finishInvestigatorItem(rawOutcome.checkId, { problemId: outcome.problem.id, dropped: outcome.dropped, verdict: outcome.problem.verdict,
             rounds: outcome.rounds, stopReason: outcome.stopReason });
-          return outcome;
-        };
-        const record = (outcome: Awaited<ReturnType<typeof investigate>>) => {
           if (outcome.dropped) blocked.push({ statement: outcome.problem.statement,
             reason: `Dropped during evidence investigation: ${outcome.stopReason}`, disposition: "blocked" });
           else finalProblems.push(outcome.problem);
@@ -1970,6 +2026,20 @@ export class ResearchEngine {
           const gapResult = this.reconcileProblemEvidence(active.runId, rawGapResult);
           this.persistAreaEvidence(active, area.id, gapResult.killSources, []);
           blocked.push(...gapResult.blockedCandidates);
+          if (gapResult.modelFailure) {
+            // A failed gap verdict ends the area. Completed gap verdicts still await their own evidence checks.
+            const partialReason = gapResult.partialReason ?? `Area gap assessment stopped because a model call failed: ${gapResult.modelFailure.message}`;
+            for (const problem of gapResult.problems) retainUninvestigated(problem, `${dependencies.stageScope}:gap`, partialReason);
+            partialReasons.set(area.id, partialReason);
+            investigated = { ...result, problems: finalProblems, blockedCandidates: blocked, killSources: [], partialReason,
+              modelFailure: gapResult.modelFailure };
+            workflow.save(finalKey, investigated);
+            if (gapResult.modelFailure.droppedStream) acknowledgeDroppedCalls(area);
+            this.settleInvestigatorFailure(active, lane.parent.id,
+              new ProviderFailure(gapResult.modelFailure.code, gapResult.modelFailure.message, false));
+            return { areaId: area.id, result: investigated };
+          }
+          for (const problem of gapResult.problems) pending.set(problem.id, { problem, selectionId: `${dependencies.stageScope}:gap` });
           const gapSources = [...harvest.sources, ...result.killSources, ...gap.sources, ...gapResult.killSources];
           const repeated = (problem: DiscoveryProblem, known: readonly DiscoveryProblem[]) =>
             known.some(existing => existing.statement.trim().toLowerCase() === problem.statement.trim().toLowerCase());
@@ -1977,12 +2047,18 @@ export class ResearchEngine {
           if (workflow.parallelResearch) {
             const fresh: DiscoveryProblem[] = [];
             for (const problem of gapResult.problems) {
-              if (repeated(problem, [...finalProblems, ...fresh])) blocked.push({ statement: problem.statement, reason: repeatReason, disposition: "blocked" });
+              if (repeated(problem, [...finalProblems, ...fresh])) {
+                blocked.push({ statement: problem.statement, reason: repeatReason, disposition: "blocked" });
+                pending.delete(problem.id);
+              }
               else fresh.push(problem);
             }
             await investigateAll(fresh, gapSources, `${dependencies.stageScope}:gap`);
           } else for (const problem of gapResult.problems) {
-            if (repeated(problem, finalProblems)) blocked.push({ statement: problem.statement, reason: repeatReason, disposition: "blocked" });
+            if (repeated(problem, finalProblems)) {
+              blocked.push({ statement: problem.statement, reason: repeatReason, disposition: "blocked" });
+              pending.delete(problem.id);
+            }
             else if (targetStop()) retainUninvestigated(problem, `${dependencies.stageScope}:gap`);
             else record(await investigate(problem, gapSources));
           }
@@ -2000,29 +2076,42 @@ export class ResearchEngine {
       if (result.status === "fulfilled" && result.value) results.push(result.value);
       if (result.status !== "rejected") continue;
       const area = selected[index]!;
-      // A model answer that timed out, ran past its output limit, broke the schema, or lost its stream
-      // twice ends only its own area. Problems that area already checked are kept; app errors still fail the run.
+      // A model answer that timed out, ran past its output limit, broke the schema, or exhausted stream
+      // restarts ends only its own area. Already checked problems are kept; app errors still fail the run.
       const dropped = isDroppedStream(result.reason);
       const modelFailure = dropped || result.reason instanceof ProviderFailure && ["timeout", "output-limit", "schema"].includes(result.reason.code);
       if (dropped && !active.abortController.signal.aborted) {
         // The area's lost calls are never used or replayed. Recording them lets the other areas go on to ideas.
-        const unresolved = new Set(new GenerationAttemptRepository(this.options.db).unresolvedAttemptIds(active.runId));
-        const lost = (this.options.db.db.prepare(`SELECT id FROM generation_attempts WHERE research_run_id = ?
-          AND (instr(stage_key,?) > 0 OR instr(stage_key,?) > 0 OR stage_key = ?)`)
-          .all(active.runId, `area-${sha256Area(area.id)}`, `:${area.id}:`, `area-gap:${area.id}`) as Array<{ id: string }>)
-          .map(attempt => attempt.id).filter(id => unresolved.has(id));
-        if (lost.length) workflow.save(`acknowledged-retry:area-stopped:${area.id}:${lost[0]}`, { attemptIds: lost });
+        acknowledgeDroppedCalls(area);
       }
       this.settleInvestigatorFailure(active, lanes.get(area.id)!.parent.id, result.reason);
       if (!modelFailure || active.abortController.signal.aborted) { failed ??= result; continue; }
       const kept = [...settledProblems.values()].filter(problem => problem.areaId === area.id).map(({ areaId, ...problem }) => { void areaId; return problem; });
-      const cause = dropped ? "its connection to OpenAI dropped twice." : errorMessage(result.reason);
+      const cause = dropped ? "its connection to OpenAI kept dropping after the allowed restarts." : errorMessage(result.reason);
       const partialReason = `Research in ${area.name} stopped early because a model call failed: ${cause} `
         + `${kept.length} already checked problem${kept.length === 1 ? " was" : "s were"} kept.`;
       partialReasons.set(area.id, partialReason);
-      results.push({ areaId: area.id, result: { problems: kept, blockedCandidates: [], killSources: [], factorUtilizationRate: 0, partialReason } });
+      const candidates = candidateStates.get(area.id);
+      const blockedCandidates = [...(candidates?.blocked ?? [])];
+      for (const { problem, selectionId } of candidates?.pending.values() ?? []) {
+        // A later check can fail after a follow-up read completed. Publish its exact quoted graph without using the failed verdict.
+        const harvestKeys = this.options.db.db.prepare(`SELECT snapshot_key FROM workflow_snapshots WHERE research_run_id = ?
+          AND instr(snapshot_key, ?) = 1 ORDER BY snapshot_key`).all(active.runId,
+          `investigator-harvest:investigator:${area.id}:${problem.id}:`) as Array<{ snapshot_key: string }>;
+        for (const { snapshot_key } of harvestKeys) {
+          const saved = workflow.read<Pick<HarvestResult, "sources" | "factors">>(snapshot_key)!;
+          const evidence = this.reconcileAreaEvidence(active.runId, saved.sources, saved.factors);
+          this.persistAreaEvidence(active, area.id, evidence.sources, evidence.factors);
+        }
+        const candidate = savedCandidateFor(problem, selectionId);
+        blockedCandidates.push({ statement: problem.statement, reason: `Not assessed: ${partialReason}`,
+          disposition: "not-assessed", ...(candidate ? { candidate } : {}) });
+      }
+      const partial = { problems: kept, blockedCandidates, killSources: [], factorUtilizationRate: 0, partialReason };
+      workflow.save(`area:${area.id}:investigation-completed`, partial);
+      results.push({ areaId: area.id, result: partial });
     }
-    const partialReason = selected.map(area => partialReasons.get(area.id)).find(reason => reason !== undefined);
+    const partialReason = included.map(area => partialReasons.get(area.id)).find(reason => reason !== undefined);
     const skippedAreas = selected.filter(area => !results.some(result => result.areaId === area.id));
     for (const area of skippedAreas) {
       const lane = lanes.get(area.id)!;
@@ -2031,7 +2120,8 @@ export class ResearchEngine {
     }
     const problems = results.flatMap(item => item.result.problems);
     const targetProgress = researchTargetProgress(target, results.flatMap(item => item.result.problems.map(problem => ({ ...problem, areaId: item.areaId }))));
-    if (!failed) workflow.save("research-target-outcome", { target, ...targetProgress, skippedAreaIds: skippedAreas.map(area => area.id),
+    if (!failed) workflow.save("research-target-outcome", { target, ...targetProgress,
+      skippedAreaIds: [...included.filter(area => !scans.some(scan => scan.areaId === area.id)), ...skippedAreas].map(area => area.id),
       reason: partialReason ?? (targetProgress.outcome === "target-met" ? "The declared confirmed-problem and area target was met."
         : `Research finished with ${targetProgress.confirmedProblems} confirmed problem(s) across ${targetProgress.areas} area(s). The declared target remains incomplete.`) });
     this.discovery.persistProblems(active.runId, [], problems,
@@ -2040,6 +2130,67 @@ export class ResearchEngine {
         if (!failed) workflow.save("discovery-completed", { areas: results.map(item => item.areaId), problemIds: problems.map(problem => problem.id) });
       });
     if (failed?.status === "rejected") throw failed.reason;
+    this.progress(active, `${problems.length} problems across ${selected.length} investigated areas ready for review`);
+  }
+
+  private async executeLegacyFramedDiscovery(active: ActiveRun, scope: Scope, frame: ResearchFrame): Promise<void> {
+    const workflow = active.workflow!;
+    const scans: AreaScan[] = [];
+    for (const area of frame.areas.filter(area => area.included)) {
+      active.abortController.signal.throwIfAborted();
+      const key = `frame-scan:${area.id}`;
+      let scan = workflow.read<AreaScan>(key);
+      if (!scan) {
+        scan = await scanResearchArea(scope, frame, area, { ...this.areaDependencies(active, frame, area), depth: "quick",
+          stageScope: `scan-${sha256Area(area.id)}`, idFactory: workflow.idFactory(key), random: () => 0.5 });
+        scan = { ...scan, factors: workflow.withFactorUncertainty(scan.factors) };
+        const completed = scan;
+        const evidence = this.reconcileAreaEvidence(active.runId, scan.sources, scan.factors);
+        this.discovery.persistFactors(active.runId, evidence.sources, evidence.factors, () => {
+          this.assignArea("factors", evidence.factors.map(factor => factor.id), area.id);
+          workflow.save(key, completed);
+        });
+      }
+      scans.push(scan);
+    }
+    const selected = workflow.read<ResearchArea[]>("frame-selected-areas") ?? await rankScannedAreas(frame, scans,
+      active.config.discoveryDepth, { ...this.dependencies(active), workflow, onProgress: message => this.progress(active, message) });
+    if (!workflow.read("frame-selected-areas")) workflow.save("frame-selected-areas", selected);
+    const results: Array<{ areaId: string; result: ProblemDiscoveryResult }> = [];
+    for (const area of selected) {
+      const key = `area:${area.id}`;
+      const scoped = scopeResearchArea(scope, area, frame);
+      const dependencies = { ...this.areaDependencies(active, frame, area), stageScope: `area-${sha256Area(area.id)}` };
+      let harvest = workflow.read<HarvestResult>(`${key}:harvest`);
+      if (!harvest) {
+        this.progress(active, `Investigating ${area.name}`);
+        harvest = await harvestFactors(scoped, { ...dependencies, idFactory: workflow.idFactory(`${key}:harvest`), random: () => 0.5 });
+        harvest = { ...harvest, factors: workflow.withFactorUncertainty(harvest.factors) };
+        const completed = harvest;
+        const evidence = this.reconcileAreaEvidence(active.runId, harvest.sources, harvest.factors);
+        this.discovery.persistFactors(active.runId, evidence.sources, evidence.factors, () => {
+          this.assignArea("factors", evidence.factors.map(factor => factor.id), area.id);
+          workflow.save(`${key}:harvest`, completed);
+        });
+      }
+      let result = workflow.read<ProblemDiscoveryResult>(`${key}:problems`);
+      if (!result) {
+        result = await discoverProblems(scoped, harvest.factors, harvest.sources, {
+          ...dependencies, idFactory: workflow.idFactory(`${key}:problems`),
+        });
+        workflow.save(`${key}:problems`, result);
+      }
+      results.push({ areaId: area.id, result });
+    }
+    // Reconcile copied database records across areas; their frozen packets and verdicts stay unchanged.
+    const completed = this.reconcileProblemEvidence(active.runId, { problems: results.flatMap(item => item.result.problems),
+      killSources: results.flatMap(item => item.result.killSources), blockedCandidates: results.flatMap(item => item.result.blockedCandidates),
+      factorUtilizationRate: 0 }, true);
+    const problems = completed.problems;
+    this.discovery.persistProblems(active.runId, completed.killSources, problems, completed.blockedCandidates, () => {
+        for (const item of results) this.assignArea("problems", item.result.problems.map(problem => problem.id), item.areaId);
+        workflow.save("discovery-completed", { areas: results.map(item => item.areaId), problemIds: problems.map(problem => problem.id) });
+      });
     this.progress(active, `${problems.length} problems across ${selected.length} investigated areas ready for review`);
   }
 
@@ -2113,7 +2264,14 @@ export class ResearchEngine {
     if (!workflow.read("source-routes") || workflow.read("frame-source-venues")) return;
     const started = this.options.db.db.prepare(`SELECT 1 FROM stage_results WHERE research_run_id = ?
       AND stage_id IN ('query-plan','factor-harvest','problem-candidates','problem-kill') LIMIT 1`).get(active.runId);
-    if (started) {
+    const historicalPlan = this.options.db.db.prepare(`SELECT 1 FROM generation_attempts WHERE research_run_id = ?
+      AND stage_key LIKE 'query-plan:%'
+      AND json_type(request_json, '$.workOrder.inputs.routing.frame') = 'object'
+      AND json_type(request_json, '$.workOrder.inputs.routing.area') = 'object'
+      AND json_type(request_json, '$.workOrder.inputs.routing.goalKind') IS NULL
+      AND json_type(request_json, '$.workOrder.inputs.routing.languages') IS NULL LIMIT 1`).get(active.runId);
+    // A prepared or dispatched old planner fixes its contract even before its stage checkpoint is written.
+    if (started || historicalPlan) {
       workflow.save("frame-source-venues", { compatibility: "preserve-saved-routing" });
       return;
     }
@@ -2129,10 +2287,14 @@ export class ResearchEngine {
 
   private areaDependencies(active: ActiveRun, frame: ResearchFrame, area: ResearchArea) {
     const dependencies = this.dependencies(active);
-    const validation = active.workflow!.read<VenueVerificationResult & { validated?: boolean }>("frame-source-venues");
+    const validation = active.workflow!.read<VenueVerificationResult & { validated?: boolean; compatibility?: string }>("frame-source-venues");
+    const { goalKind, languages, ...savedRouting } = dependencies.sourceRouting;
+    // Pre-frame-routing planners already included the frame, but not these routing inputs.
+    const sourceRouting = validation?.compatibility === "preserve-saved-routing"
+      ? savedRouting : { ...savedRouting, ...(goalKind ? { goalKind } : {}), ...(languages ? { languages } : {}) };
     // Earlier verification receipts allowed DNS alone. Only saved retrieved proof can expand routes.
     const provenDomains = new Set(validation?.proofs?.filter(proof => proof.method === "saved-source" && proof.sourceUrl).map(proof => proof.domain));
-    return { ...dependencies, frame, area, sourceRouting: { ...dependencies.sourceRouting,
+    return { ...dependencies, frame, area, sourceRouting: { ...sourceRouting,
       ...(validation?.validated ? { venues: validation.verified.filter(verified => provenDomains.has(verified.domain ?? "") && area.venues.some(venue =>
         venue.name === verified.name && venue.kind === verified.kind && venue.domain?.toLowerCase() === verified.domain)),
         ...(area.region ? { region: area.region } : {}) } : {}),
@@ -2174,7 +2336,7 @@ export class ResearchEngine {
     }) };
   }
 
-  private reconcileProblemEvidence(runId: string, result: ProblemDiscoveryResult): ProblemDiscoveryResult {
+  private reconcileProblemEvidence(runId: string, result: ProblemDiscoveryResult, preserveVerdicts = false): ProblemDiscoveryResult {
     const originalSources = [...result.killSources, ...result.problems.flatMap(problem => problem.factors.map(factor => factor.source))];
     const evidence = this.reconcileAreaEvidence(runId, originalSources, result.problems.flatMap(problem => problem.factors));
     const sourceByUrl = new Map(evidence.sources.map(source => [source.canonicalUrl, source]));
@@ -2186,11 +2348,12 @@ export class ResearchEngine {
     })).values()], problems: result.problems.map(problem => {
       const factors = problem.factors.flatMap(factor => factorsById.get(factor.id) ? [factorsById.get(factor.id)!] : []);
       const factorIds = new Set(factors.map(factor => factor.id));
-      return enforceConfirmationRule({ ...problem, factors, factorIds: [...factorIds],
+      const reconciled = { ...problem, factors, factorIds: [...factorIds],
         scaleBasisFactorId: factorIds.has(problem.scaleBasisFactorId ?? "") ? problem.scaleBasisFactorId : null,
         ...(problem.intendedBuyerEvidenceFactorIds ? { intendedBuyerEvidenceFactorIds: problem.intendedBuyerEvidenceFactorIds.filter(id => factorIds.has(id)) } : {}),
         ...(problem.factorAssessments ? { factorAssessments: problem.factorAssessments.filter(assessment => factorIds.has(assessment.factorId)) } : {}),
-        verdictSourceIds: [...new Set(problem.verdictSourceIds.map(id => sourceIds.get(id) ?? id))] });
+        verdictSourceIds: [...new Set(problem.verdictSourceIds.map(id => sourceIds.get(id) ?? id))] };
+      return preserveVerdicts ? reconciled : enforceConfirmationRule(reconciled);
     }) };
   }
 
@@ -2605,7 +2768,8 @@ export class ResearchEngine {
       signal: active.abortController.signal, resolvePrompt: workflow.resolvePrompt,
     });
     const resume = workflow.repository.getStageResumeState({ researchRunId: active.runId, stageId: "idea-ranking",
-      selectionId: active.problemId, context });
+      selectionId: active.problemId, context,
+      ...(active.acknowledgedAttemptIds ? { acknowledgedAttemptIds: active.acknowledgedAttemptIds } : {}) });
     if (resume.kind === "unknown-completion") {
       throw new Error("An idea ranking may have completed before interruption. Review the saved attempt before retrying.");
     }
@@ -3103,6 +3267,7 @@ export class ResearchEngine {
     this.progress(active, error ? "A named research angle failed" : "A named research angle finished", "searching");
   }
 
+  /** The optional callback is a pure admission guard, checked during preparation and again before each physical dispatch. */
   private instrumentedModel(active: ActiveRun, beforeUncachedDispatch?: () => void, stageModel = active.config.model): StructuredModelClient {
     const baseClient = this.options.modelClients?.[stageModel.providerId];
     if (!baseClient) throw new Error(`Model provider ${stageModel.providerId} is unavailable`);
@@ -3130,23 +3295,17 @@ export class ResearchEngine {
           return { output: reusable.output, metadata: reusable.metadata as GenerationMetadata };
         }
         beforeUncachedDispatch?.();
-        const remainingTaskCalls = this.remainingWorkflowTaskCalls(active, "model-call");
-        if (remainingTaskCalls !== null && remainingTaskCalls < 1) {
-          throw new AppError("BUDGET_TOO_SMALL", "This workflow task used its model-call reservation.");
-        }
-        if (active.areaBudget && !this.investigatorBudgetAvailable(active, 1, 0)) {
-          throw new AppError("BUDGET_TOO_SMALL", "This research area used its saved model-call allowance.");
-        }
-        if (active.researchAllowance
-          && this.ledger.countProviderCalls(active.runId, providerId) >= active.researchAllowance.maxModelCalls) {
-          throw new AppError("BUDGET_TOO_SMALL", "This research request used its model-call allowance.");
+        if (!this.modelCallAllowanceAvailable(active, providerId, 1, active.followUpModelReservation?.id)) {
+          throw new AppError("BUDGET_TOO_SMALL", "This run used its saved model-call allowance.");
         }
         this.enforceRunawayBackstop(active, providerId, active.projectedCodexCalls);
-        const boundedRequest = remainingTaskCalls === 1 ? disabledRepairRequest : request;
+        const boundedRequest = request.repairPolicy === "one_retry"
+          && !this.modelCallAllowanceAvailable(active, providerId, 2, active.followUpModelReservation?.id) ? disabledRepairRequest : request;
         const attempt = this.generationAttempts.prepare(active.runId, boundedRequest, preparedIdentity);
         let reservation: ReturnType<CostLedgerRepository["reserve"]> | null = null;
         let accepted = false;
         let dispatched = false;
+        let dispatchCount = 0;
         let terminalRecorded = false;
         try {
           if (active.followUpModelReservation) {
@@ -3157,9 +3316,23 @@ export class ResearchEngine {
           const result = await client.structuredCompletion<T>({
             ...boundedRequest,
             onDispatched: () => {
+              active.abortController.signal.throwIfAborted();
+              beforeUncachedDispatch?.();
+              // Queued stages and every scheduler repair must recheck at the synchronous pre-wire boundary.
+              // An unscheduled native retry can make two calls behind one dispatch, so claim its upper bound.
+              const calls = session?.workflow_session_id && this.options.modelScheduler
+                ? 1 : boundedRequest.repairPolicy === "one_retry" ? 2 : 1;
+              if (!this.modelCallAllowanceAvailable(active, providerId, calls, !dispatched ? reservation?.id : undefined)) {
+                throw new AppError("BUDGET_TOO_SMALL", "This run used its saved model-call allowance.");
+              }
+              this.enforceRunawayBackstop(active, providerId, active.projectedCodexCalls);
               reservation ??= this.ledger.reserve(active.runId, "structured-completion", providerId, stageModel.modelId, 0, attempt.id);
+              dispatchCount += calls;
               dispatched = true;
               this.generationAttempts.markDispatched(attempt.id);
+              if (dispatchCount > 1) this.pendingModelRepairs.set(attempt.id, {
+                runId: active.runId, providerId, areaId: active.areaBudget?.areaId ?? null, calls: dispatchCount - 1,
+              });
               if (this.activeRuns.get(active.runId)?.abortController === active.abortController) this.progress(active, "Model request dispatched", stage, "dispatched");
               request.onDispatched?.();
             },
@@ -3225,7 +3398,10 @@ export class ResearchEngine {
             });
           }
           else if (reservation) this.ledger.release(reservation.id);
+          if (error instanceof ProviderFailure) error.failedGenerationId = request.generationId;
           throw error;
+        } finally {
+          this.pendingModelRepairs.delete(attempt.id);
         }
       },
     };
@@ -3255,9 +3431,10 @@ export class ResearchEngine {
         return await completeWithRateLimitRetry(request);
       } catch (error) {
         const [pause, ...later] = pauses;
-        if (pause === undefined || !isDroppedStream(error) || !/^(solutions|solution-set-review)(:|$)/.test(request.stage)
+        if (pause === undefined || !(error instanceof ProviderFailure) || !isDroppedStream(error)
+          || !/^(solutions|solution-set-review|idea-ranking)(:|$)/.test(request.stage)
           || !active.workflow || active.abortController.signal.aborted) throw error;
-        active.workflow.acknowledgeStreamRestart(request.generationId);
+        active.workflow.acknowledgeStreamRestart(error.failedGenerationId ?? request.generationId);
         await sleep(pause, undefined, { signal: active.abortController.signal });
         const restartId = randomUUID();
         active.generationProvenance.set(originalId, restartId);
@@ -3334,6 +3511,26 @@ export class ResearchEngine {
       search: dispatch,
       searchWithDispatch: dispatch,
     };
+  }
+
+  /** Compare persisted dispatches plus repairs whose second call is not reflected in their outer receipt yet. */
+  private modelCallAllowanceAvailable(active: ActiveRun, providerId: string, calls: number, ownReservationId?: string): boolean {
+    const pending = [...this.pendingModelRepairs.values()].filter(repair => repair.runId === active.runId);
+    const extraCalls = (repairs: typeof pending) => repairs.reduce((total, repair) => total + repair.calls, 0);
+    const taskRemaining = this.remainingWorkflowTaskCalls(active, "model-call");
+    if (taskRemaining !== null && taskRemaining - extraCalls(pending) < calls) return false;
+    const areaId = active.areaBudget?.areaId;
+    if (areaId && !this.investigatorBudgetAvailable(active,
+      calls + extraCalls(pending.filter(repair => repair.areaId === areaId)), 0)) return false;
+    if (active.researchAllowance) {
+      // Evidence follow-up can preallocate this call's ledger entry. It is not a competing physical dispatch.
+      const ownReservation = ownReservationId && this.options.db.db.prepare(`SELECT 1 FROM cost_ledger
+        WHERE id = ? AND research_run_id = ? AND provider = ? AND status = 'reserved'`)
+        .get(ownReservationId, active.runId, providerId);
+      const used = this.ledger.countProviderCalls(active.runId, providerId) - (ownReservation ? 1 : 0);
+      if (used + extraCalls(pending.filter(repair => repair.providerId === providerId)) + calls > active.researchAllowance.maxModelCalls) return false;
+    }
+    return true;
   }
 
   /** Bounded tasks spend saved reservations; explicit retries count work after their admission baseline. */
@@ -3544,7 +3741,23 @@ export class ResearchEngine {
     const originalRisk = WorkflowV2RiskEvaluationOutputSchema.parse(originalRiskStage.output);
     const originalAnalysis = WorkflowV2CompatibleDecisionAnalysisOutputSchema.parse(originalAnalysisStage.output);
     const followUpEvidence = this.evidenceFollowUpItems(followUp);
-    const context = workflow.developmentContext(active.problemId!);
+    let context = workflow.developmentContext(active.problemId!);
+    if (workflow.read<{ version: number }>("goal-fit")?.version === 1) {
+      const frozen = workflow.read<{ frame: ResearchFrame }>("goal-fit-frame");
+      if (!frozen) throw new Error("This goal-aware reassessment has no frozen approved frame.");
+      const boundFrame = new ResearchFrameRepository(this.options.db).forRun(active.runId);
+      this.persistFrameSources(active.runId, boundFrame?.sources ?? []);
+      const suppliedIds = new Set([...context.supportingEvidence, ...context.contraryEvidence, ...(context.generationEvidence ?? [])]
+        .map(item => item.sourceId));
+      context = { ...context, frame: frozen.frame, generationEvidence: [
+        ...(context.generationEvidence ?? []), ...(boundFrame?.sources ?? []).filter(source => !suppliedIds.has(source.id))
+          .map(source => ({ sourceId: source.id, content: source })),
+      ] };
+      const { id, problemId, ...savedOption } = option;
+      void id; void problemId;
+      const goalOption = WorkflowV2GoalSolutionsOutputSchema.parse({ options: [savedOption] }).options[0]!;
+      assertGoalFit(goalOption, frozen.frame, developmentStageEvidence(context, option).slice(1).map(item => item.sourceId));
+    }
     const evidenceRevision = createHash("sha256").update(JSON.stringify(followUpEvidence)).digest("hex").slice(0, 16);
     const selectionId = `${option.id}:evidence-reassessment:v2:${evidenceRevision}`;
     const deps = { modelClient: this.instrumentedModel(active), model: active.config.model, reasoningEffort: active.config.reasoningEffort,

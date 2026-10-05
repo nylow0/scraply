@@ -28,7 +28,7 @@ import { fillGenerationAngle, initialGenerationAngles } from "./idea-assignments
 import { loadManagedCoverageGaps, markManagedCoverageGapCovered, runManagedCoverageMap } from "./managed-coverage-map";
 import { loadManagedCoverageSearchSources, runManagedCoverageSearch } from "./managed-coverage-search";
 import { materializeResearchSnapshot } from "./research-revisions";
-import { UnknownSearchCompletionError, unknownSearchAttempts, workflowSearchDispatchUsage } from "./workflow-search-attempts";
+import { UnknownSearchCompletionError, unknownSearchAttempts, workflowSearchDispatches } from "./workflow-search-attempts";
 import { remainingWorkflowMs as remainingMs } from "./workflow-time";
 import { DEFAULT_OPPORTUNITY_EXPLORATION_CONFIG, OpportunityExplorationConfigSchema } from "../shared/opportunity-exploration";
 
@@ -2107,9 +2107,33 @@ export class WorkflowCoordinator {
 
   private searchAttemptCount(runId: string | null): number {
     if (!runId) return 0;
-    const row = this.options.db.db.prepare(`SELECT COUNT(*) AS count FROM cost_ledger
-      WHERE research_run_id = ? AND operation = 'search' AND status = 'committed'`).get(runId) as { count: number };
-    return Math.max(row.count, workflowSearchDispatchUsage(this.options.db, runId).attemptCount) + this.repository.countInvestigatorSearches(runId);
+    const managed = this.options.db.db.prepare(`WITH RECURSIVE linked(id) AS (
+      SELECT id FROM workflow_work_items WHERE json_extract(output_refs_json, '$.runId') = ?
+      UNION SELECT child.id FROM workflow_work_items child JOIN linked parent ON child.parent_item_id = parent.id
+    ) SELECT attempt.id, attempt.status <> 'completed' AS unknown
+      FROM opportunity_exploration_attempts attempt JOIN linked ON linked.id = attempt.work_item_id
+      WHERE attempt.stage_name = 'investigator-search' AND attempt.dispatched_at IS NOT NULL`)
+      .all(runId) as Array<{ id: string; unknown: number }>;
+    const receipts = [...workflowSearchDispatches(this.options.db, runId),
+      ...managed.map(attempt => ({ id: attempt.id, unknown: Boolean(attempt.unknown) }))];
+    const ledger = this.options.db.db.prepare(`SELECT CASE WHEN json_valid(usage_json) THEN json_extract(usage_json,'$.searchDispatch.version') END AS version,
+      CASE WHEN json_valid(usage_json) THEN json_extract(usage_json,'$.searchDispatch.attemptId') END AS attemptId FROM cost_ledger
+      WHERE research_run_id = ? AND operation = 'search' AND status = 'committed'`)
+      .all(runId) as Array<{ version: unknown; attemptId: unknown }>;
+    const linkedLedger = new Set<string>();
+    let legacyLedger = 0;
+    for (const row of ledger) {
+      const id = z.string().uuid().safeParse(row.attemptId);
+      if (row.version === 1 && id.success) linkedLedger.add(id.data);
+      else legacyLedger++;
+    }
+    const receiptIds = new Set(receipts.flatMap(receipt => receipt.id ? [receipt.id] : []));
+    const anonymousReceipts = receipts.filter(receipt => receipt.id === null).length;
+    const unmatchedLinked = [...linkedLedger].filter(id => !receiptIds.has(id)).length;
+    const unmatchedTerminal = receipts.filter(receipt => !receipt.unknown && (!receipt.id || !linkedLedger.has(receipt.id))).length;
+    // New ledger rows and receipts share one dispatch ID. Old rows can overlap completed receipts,
+    // but cannot erase an unmatched lost search or a historical ledger-only dispatch.
+    return receiptIds.size + anonymousReceipts + unmatchedLinked + Math.max(0, legacyLedger - unmatchedTerminal);
   }
 
   private availableBudget(session: WorkflowSession, kind: "model-call" | "search"): number | null {

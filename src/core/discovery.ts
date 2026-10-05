@@ -7,7 +7,7 @@ import type {
 } from "../db/repositories/discovery";
 import type { ExaCategory } from "../providers/exa";
 import type { SearchClient, SearchOptions } from "../providers/search";
-import { ProviderFailure, type StructuredModelClient } from "../providers/structured";
+import { isDroppedStream, ProviderFailure, type StructuredModelClient } from "../providers/structured";
 import { AppError } from "../shared/errors";
 import { deriveJsonSchema } from "../shared/json-schema";
 import {
@@ -103,6 +103,8 @@ export interface ProblemDiscoveryResult {
   killSources: HarvestedSource[];
   factorUtilizationRate: number;
   partialReason?: string;
+  /** An exhausted model call ends this area after preserving completed verdicts. */
+  modelFailure?: { code: ProviderFailure["code"]; message: string; droppedStream: boolean };
 }
 
 export interface DiscoveryDependencies {
@@ -472,19 +474,35 @@ export async function discoverProblems(
       singleHarvestModeWarning: new Set(citedFactors.map((factor) => factor.harvestMode)).size === 1 && citedFactors.length > 0,
     });
   };
-  const stopAtAllowance = (index: number, error: unknown) => {
-    // New candidate accounting keeps completed verdicts and full remaining candidates when a known allowance ends.
-    if (dependencies.rankCandidates !== true || !(error instanceof AppError) || error.code !== "BUDGET_TOO_SMALL") throw error;
-    partialReason = "The saved allowance ended before all candidates could be assessed. Completed verdicts and remaining candidates were retained.";
-    for (const { candidate } of candidates.slice(index)) blockedCandidates.push({ statement: candidate.statement,
-      reason: `Not assessed: ${partialReason}`, disposition: "not-assessed", candidate });
+  let modelFailure: ProblemDiscoveryResult["modelFailure"];
+  const stopAssessment = (indexes: number[], error: unknown, modelCall: boolean) => {
+    // Cancellation and unknown failures still escape; only a known allowance or exhausted model call keeps a partial assessment.
+    dependencies.signal?.throwIfAborted();
+    const allowance = error instanceof AppError && error.code === "BUDGET_TOO_SMALL";
+    const droppedStream = modelCall && isDroppedStream(error);
+    const failedModel = modelCall && error instanceof ProviderFailure
+      && (droppedStream || ["timeout", "output-limit", "schema"].includes(error.code));
+    if (dependencies.rankCandidates !== true || (!allowance && !failedModel)) throw error;
+    if (failedModel && error instanceof ProviderFailure) {
+      modelFailure ??= { code: error.code, message: error.message, droppedStream };
+      modelFailure.droppedStream ||= droppedStream;
+      partialReason = `Candidate assessment stopped because a model call failed: ${modelFailure.message} Completed verdicts and remaining candidates were retained.`;
+    } else partialReason ??= "The saved allowance ended before all candidates could be assessed. Completed verdicts and remaining candidates were retained.";
+    for (const index of indexes) {
+      const { candidate } = candidates[index]!;
+      blockedCandidates.push({ statement: candidate.statement,
+        reason: `Not assessed: ${partialReason}`, disposition: "not-assessed", candidate });
+    }
     dependencies.onProjection?.(partialReason);
   };
   if (dependencies.parallelChecks) {
     // Contrary searches and verdicts run side by side; sources and problems are still recorded in candidate
-    // order, so their IDs and every verdict request match a sequential run. As in a sequential run, the first
-    // failure in candidate order ends the assessment.
+    // order, so their IDs and every verdict request match a sequential run. Every already started verdict
+    // settles before the area ends, and successful verdicts survive another candidate's model failure.
     const searches = await Promise.allSettled(candidates.map(({ candidate }) => searchContrary(candidate)));
+    dependencies.signal?.throwIfAborted();
+    for (const search of searches) if (search.status === "rejected"
+      && (!(search.reason instanceof AppError) || search.reason.code !== "BUDGET_TOO_SMALL")) throw search.reason;
     const resolved: Array<{ sources: HarvestedSource[]; problemId: string }> = [];
     for (const search of searches) {
       if (search.status === "rejected") break;
@@ -492,21 +510,22 @@ export async function discoverProblems(
       resolved.push({ sources: resolveContrary(search.value), problemId: (dependencies.idFactory ?? randomUUID)() });
     }
     const verdicts = await Promise.allSettled(resolved.map(({ sources }, index) => judge(index, sources)));
-    for (const [index, verdict] of verdicts.entries()) {
-      if (verdict.status === "rejected") { stopAtAllowance(index, verdict.reason); break; }
+    dependencies.signal?.throwIfAborted();
+    const failedVerdicts = verdicts.flatMap((verdict, index) => verdict.status === "rejected" ? [{ index, error: verdict.reason }] : []);
+    for (const failed of failedVerdicts) stopAssessment([failed.index], failed.error, true);
+    for (const [index, verdict] of verdicts.entries()) if (verdict.status === "fulfilled")
       recordVerdict(index, resolved[index]!.sources, verdict.value, resolved[index]!.problemId);
-    }
     const failedSearch = searches[resolved.length];
-    if (verdicts.every((verdict) => verdict.status === "fulfilled") && failedSearch?.status === "rejected") {
-      stopAtAllowance(resolved.length, failedSearch.reason);
-    }
+    if (failedSearch?.status === "rejected") stopAssessment(candidates.slice(resolved.length).map((_, index) => resolved.length + index), failedSearch.reason, false);
   } else {
     for (const [index, { candidate }] of candidates.entries()) {
+      let modelCall = false;
       try {
         const candidateSources = resolveContrary(await searchContrary(candidate));
+        modelCall = true;
         recordVerdict(index, candidateSources, await judge(index, candidateSources));
       } catch (error) {
-        stopAtAllowance(index, error);
+        stopAssessment(candidates.slice(index).map((_, offset) => index + offset), error, modelCall);
         break;
       }
     }
@@ -519,6 +538,7 @@ export async function discoverProblems(
     killSources,
     factorUtilizationRate: rate(usedFactorIds.size, factors.length),
     ...(partialReason ? { partialReason } : {}),
+    ...(modelFailure ? { modelFailure } : {}),
   };
 }
 
