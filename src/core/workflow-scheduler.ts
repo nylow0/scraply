@@ -1,3 +1,5 @@
+import { ProviderFailure } from "../providers/structured";
+
 interface ScheduledCall {
   projectId: string;
   controller: AbortController;
@@ -166,4 +168,3 @@ function abortError(signal: AbortSignal): Error {
   if (signal.reason instanceof Error) return signal.reason;
   return new DOMException(typeof signal.reason === "string" ? signal.reason : "Model call cancelled", "AbortError");
 }
-import { ProviderFailure } from "../providers/structured";
