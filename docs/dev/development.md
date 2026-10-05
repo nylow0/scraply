@@ -97,7 +97,7 @@ The app has no Trace screen. To see what a run did, write its trace to a file:
 bun scripts/trace.ts <session ID>
 ```
 
-The session ID is in **Run details**, at the bottom of Solutions for a finished run and in the progress panel while it runs. The script writes `build/trace/<session ID>.json` with the lead funnel, model calls and searches per stage, timings, interruptions, warnings, and the details of every step. It opens the database read-only and contacts no provider. By default it reads the installed app's data in `%APPDATA%scraplyscraplyscraply.db`; pass `--db <path>` for a dev profile or an evaluation copy, and `--out <directory>` to write elsewhere. A run ID works in place of a session ID for runs that have no session.
+The session ID is in **Run details**, at the bottom of Solutions for a finished run and in the progress panel while it runs. The script writes `build/trace/<session ID>.json` with the lead funnel, model calls and searches per stage, timings, interruptions, warnings, and the details of every step. It opens the database read-only and contacts no provider. By default it reads the installed app's data in `%APPDATA%\scraply\scraply\scraply.db`; pass `--db <path>` for a dev profile or an evaluation copy, and `--out <directory>` to write elsewhere. A run ID works in place of a session ID for runs that have no session.
 
 ## Provider setup
 
