@@ -57,7 +57,18 @@
   let ideaFocused = $state(false);
   let workflowLoadEpoch = 0;
   let conversationLoadEpoch = 0;
-  let reviewSelection = $state(false);
+  let draftThreadId = $state<string | null>(null);
+  let setupDraft = $state<ReturnType<ScopeForm["captureDraft"]> | null>(null);
+  $effect(() => {
+    const thread = workspace?.threads.find((item) => item.id === workspace?.activeThreadId);
+    if (thread?.isUnstartedDraft && draftThreadId !== thread.id) {
+      draftThreadId = thread.id;
+      setupDraft = null;
+    }
+  });
+  function rememberDraft(threadId: string, draft: ReturnType<ScopeForm["captureDraft"]>) {
+    if (threadId === draftThreadId) setupDraft = draft;
+  }
   let activeStep = $state<WorkflowStep>("setup");
   let editingScopeThreadId = $state<string | null>(null);
   let editingApprovedFrameId = $state<string | null>(null);
@@ -397,15 +408,16 @@
     if (step === "research" && !researchReady) return;
     if (step === "ideas" && !ideasReady) return;
     activeStep = step;
-    reviewSelection = false;
   }
   async function createThread() {
     await action(async () => {
-      const result: WorkspaceResult = await window.scraply.createThread();
-      setWorkspace(result.workspace);
+      // Keep the slot reachable even if Start saved the scope before a launch failure.
+      const remembered = workspace?.threads.find((thread) => thread.id === draftThreadId && !thread.archivedAt);
+      const next = remembered ? await window.scraply.selectThread(remembered.id) : (await window.scraply.createThread()).workspace;
+      setWorkspace(next);
+      settingsOpen = false;
       activeStep = "setup";
       latestEvent = null;
-      reviewSelection = false;
       editingScopeThreadId = null;
     });
   }
@@ -415,7 +427,6 @@
       setWorkspace(next);
       activeStep = defaultStep(next);
       latestEvent = null;
-      reviewSelection = false;
       editingScopeThreadId = null;
     });
   }
@@ -429,7 +440,6 @@
       setWorkspace(next);
       activeStep = defaultStep(next);
       latestEvent = null;
-      reviewSelection = false;
       editingScopeThreadId = null;
     }
     catch (cause) { feedback = { text: message(cause), tone: "error" }; }
@@ -445,7 +455,6 @@
       setWorkspace(next);
       activeStep = defaultStep(next);
       editingScopeThreadId = null;
-      reviewSelection = false;
     });
   }
   // Research is always named by the title agent. If it cannot answer (for example, the title model is
@@ -487,6 +496,7 @@
     await action(async () => {
       const result: WorkspaceResult = await window.scraply.startResearch(threadId);
       const next = result.workspace;
+      if (threadId === draftThreadId) { draftThreadId = null; setupDraft = null; }
       setWorkspace(next);
       activeStep = defaultStep(next);
       editingScopeThreadId = null;
@@ -527,6 +537,7 @@
         previewHash: preview.previewHash, capabilityFingerprint: preview.capabilityFingerprint,
         previewExpiresAt: preview.expiresAt,
       });
+      if (threadId === draftThreadId) { draftThreadId = null; setupDraft = null; }
       setWorkspace(await window.scraply.getWorkspace());
       await refreshWorkflowDetail(receipt.sessionId, receipt.revision, true);
       activeStep = contract.purpose === "known-problem" && contract.mode === "vibe" ? "ideas" : "research";
@@ -797,7 +808,6 @@
       await commandWorkflow({ type: "generate-ideas", snapshotId: activeWorkflow.activeSnapshotId, problemIds,
         model, reasoningEffort, target });
       activeStep = "ideas";
-      reviewSelection = false;
       return;
     }
     await action(async () => {
@@ -806,7 +816,6 @@
       };
       setWorkspace(await api.selectProblems({ threadId, problemIds: ids, userProblem, model, reasoningEffort, explorationPurpose }));
       activeStep = "ideas";
-      reviewSelection = false;
     });
   }
   async function selectOption(idea: SolutionView) {
@@ -997,7 +1006,6 @@
               <button disabled={busy} onclick={() => resumeResearch(activeRun.runId)}>Resume attempt</button>
             {/if}
             {#if activeRun && ["queued", "running"].includes(activeRun.status)}<button class="cancel" disabled={busy} onclick={() => cancelResearch(activeRun.runId)}>Cancel run</button>{/if}
-            {#if workspace.problemCandidates.length > 0 || workspace.rejectedProblemCandidates.length > 0}<button disabled={busy} onclick={() => { activeStep = "research"; reviewSelection = true; }}>Review problems</button>{/if}
             <button disabled={busy} onclick={() => { activeStep = "setup"; editingScopeThreadId = activeThread?.id ?? null; }}>Edit setup</button>
           </div>
         </div>
@@ -1014,7 +1022,7 @@
       {#if showSetupForm}
         <div id="workflow-panel-setup" role="tabpanel" aria-label="Research setup">
           {#key workspace.activeThreadId}
-            <ScopeForm {workspace} {busy} frameLanguages={latestApprovedFrame?.approved?.languages} onSave={saveScope} onStart={startResearch} onPreviewWorkflow={previewWorkflow} onStartWorkflow={startWorkflow} onGenerateTitle={generateResearchTitle} onRetry={retryConnections} onOpenSettings={() => settings?.show()} />
+            <ScopeForm {workspace} {busy} initialDraft={workspace.activeThreadId === draftThreadId ? setupDraft : null} onRememberDraft={rememberDraft} frameLanguages={latestApprovedFrame?.approved?.languages} onSave={saveScope} onStart={startResearch} onPreviewWorkflow={previewWorkflow} onStartWorkflow={startWorkflow} onGenerateTitle={generateResearchTitle} onRetry={retryConnections} onOpenSettings={() => settings?.show()} />
           {/key}
         </div>
       {:else}
@@ -1058,7 +1066,7 @@
           {#if activeRun}<div class="progress-facts" aria-label="Run progress"><strong>{stageLabel(runtimeProgress.stage)}</strong>{#if runtimeProgress.modelState}<span>{runtimeProgress.modelState === "waiting" ? "Queued for model" : runtimeProgress.modelState === "dispatched" ? "Sent to model" : "Accepted by model"}</span>{/if}{#if elapsedStatus}<span>{elapsedStatus}</span>{/if}{#if runtimeProgress.lastSuccessfulCheckpoint}<span>Last checkpoint: {runtimeProgress.lastSuccessfulCheckpoint}</span>{/if}</div>{/if}
           {#if activeRun}<div class="run-actions"><button class="cancel" disabled={busy} onclick={() => cancelResearch(activeRun.runId)}>Cancel run</button></div>{/if}
         </div>
-      {:else if (activeWorkflow ? activeWorkflow.state === "waiting-for-review" : activeThread.status === "problems-ready" || reviewSelection) && (workspace.problemCandidates.length > 0 || workspace.rejectedProblemCandidates.length > 0)}
+      {:else if (activeWorkflow ? activeWorkflow.state === "waiting-for-review" : activeThread.status === "problems-ready") && (workspace.problemCandidates.length > 0 || workspace.rejectedProblemCandidates.length > 0)}
         <div id="workflow-panel-research" role="tabpanel" aria-label="Research">
           {#key workspace.activeThreadId}
             <ProblemCheckpoint problems={workspace.problemCandidates} rejectedCandidates={workspace.rejectedProblemCandidates} modelOptions={workspace.modelOptions} initialConfig={activeRun?.problemId ? activeRun.runConfig ?? workspace.runConfig : workspace.runConfig} priorDevelopment={Boolean(activeRun?.problemId)} fixedExplorationPurpose={activeWorkflow ? workspace.runConfig?.explorationPurpose ?? "general-solutions" : undefined} workflowVersion={activeRun?.workflowVersion} ideaCount={workspace.runConfig?.ideaCount} {busy} onCommit={selectProblems} onExport={exportResearch} onOpenSource={openExternalUrl}
@@ -1091,7 +1099,7 @@
         {#if activeRun}<div class="run-actions"><button class="cancel" disabled={busy} onclick={() => cancelResearch(activeRun.runId)}>Cancel run</button></div>{/if}
       </div>
       {#key workspace.activeThreadId}
-      {#if workspace.solutions.length > 0}<SolutionWorkspace solutions={workspace.solutions} ideaGroups={workspace.ideaGroups} {busy} analysisBlocked={true} opportunities={workspace.opportunityFamilies} opportunityReviewRunning={workspace.opportunityReviewStatus?.running} modelOptions={workspace.modelOptions} initialConfig={workspace.runConfig} activeResearchSnapshotId={appliedResearchSnapshotId} onFocusChange={(focused) => ideaFocused = focused} onReviewOpportunities={reviewSavedOpportunities} onEditMembership={editOpportunityMembership} onPlanExperiment={requestFocusedExperiment} workflowVersion={activeRun?.workflowVersion} onSelect={selectOption} onSave={saveDecision} onExport={exportIdeas} onOpenSource={openExternalUrl} onEvidenceFollowUp={requestEvidenceFollowUp} onEvidenceReassessment={requestEvidenceReassessment} onReview={() => { activeStep = "research"; reviewSelection = true; }} {conversation} {conversationLoading} {conversationError} onOpenConversation={openConversation} onCloseConversation={closeConversation} onSubmitIdeaTurn={submitIdeaTurn} onSelectConversationVersion={selectConversationVersion} onLoadVersionDetail={window.scraply.getIdeaDetail} onLoadMoreConversation={(cursor) => refreshConversation(conversationIdeaId ?? "", cursor)} />{/if}
+      {#if workspace.solutions.length > 0}<SolutionWorkspace solutions={workspace.solutions} ideaGroups={workspace.ideaGroups} {busy} analysisBlocked={true} opportunities={workspace.opportunityFamilies} opportunityReviewRunning={workspace.opportunityReviewStatus?.running} modelOptions={workspace.modelOptions} initialConfig={workspace.runConfig} activeResearchSnapshotId={appliedResearchSnapshotId} onFocusChange={(focused) => ideaFocused = focused} onReviewOpportunities={reviewSavedOpportunities} onEditMembership={editOpportunityMembership} onPlanExperiment={requestFocusedExperiment} workflowVersion={activeRun?.workflowVersion} onSelect={selectOption} onSave={saveDecision} onExport={exportIdeas} onOpenSource={openExternalUrl} onEvidenceFollowUp={requestEvidenceFollowUp} onEvidenceReassessment={requestEvidenceReassessment} {conversation} {conversationLoading} {conversationError} onOpenConversation={openConversation} onCloseConversation={closeConversation} onSubmitIdeaTurn={submitIdeaTurn} onSelectConversationVersion={selectConversationVersion} onLoadVersionDetail={window.scraply.getIdeaDetail} onLoadMoreConversation={(cursor) => refreshConversation(conversationIdeaId ?? "", cursor)} />{/if}
       {/key}
       </div>
     {:else if activeThread.status === "solutions-ready" || workspace.solutions.length > 0 || (workspace.ideaGroups?.length ?? 0) > 0}
@@ -1103,7 +1111,7 @@
           </section>
         {/if}
         {#key workspace.activeThreadId}
-        <SolutionWorkspace footer={runFinished ? runPanel : undefined} solutions={workspace.solutions} ideaGroups={workspace.ideaGroups} {busy} opportunities={workspace.opportunityFamilies} opportunityReviewRunning={workspace.opportunityReviewStatus?.running} modelOptions={workspace.modelOptions} initialConfig={workspace.runConfig} activeResearchSnapshotId={appliedResearchSnapshotId} onFocusChange={(focused) => ideaFocused = focused} onReviewOpportunities={reviewSavedOpportunities} onEditMembership={editOpportunityMembership} onPlanExperiment={requestFocusedExperiment} workflowVersion={activeRun?.workflowVersion} onSelect={selectOption} onSave={saveDecision} onExport={exportIdeas} onOpenSource={openExternalUrl} onEvidenceFollowUp={requestEvidenceFollowUp} onEvidenceReassessment={requestEvidenceReassessment} onReview={() => { activeStep = "research"; reviewSelection = true; }} {conversation} {conversationLoading} {conversationError} onOpenConversation={openConversation} onCloseConversation={closeConversation} onSubmitIdeaTurn={submitIdeaTurn} onSelectConversationVersion={selectConversationVersion} onLoadVersionDetail={window.scraply.getIdeaDetail} onLoadMoreConversation={(cursor) => refreshConversation(conversationIdeaId ?? "", cursor)} />
+        <SolutionWorkspace footer={runFinished ? runPanel : undefined} solutions={workspace.solutions} ideaGroups={workspace.ideaGroups} {busy} opportunities={workspace.opportunityFamilies} opportunityReviewRunning={workspace.opportunityReviewStatus?.running} modelOptions={workspace.modelOptions} initialConfig={workspace.runConfig} activeResearchSnapshotId={appliedResearchSnapshotId} onFocusChange={(focused) => ideaFocused = focused} onReviewOpportunities={reviewSavedOpportunities} onEditMembership={editOpportunityMembership} onPlanExperiment={requestFocusedExperiment} workflowVersion={activeRun?.workflowVersion} onSelect={selectOption} onSave={saveDecision} onExport={exportIdeas} onOpenSource={openExternalUrl} onEvidenceFollowUp={requestEvidenceFollowUp} onEvidenceReassessment={requestEvidenceReassessment} {conversation} {conversationLoading} {conversationError} onOpenConversation={openConversation} onCloseConversation={closeConversation} onSubmitIdeaTurn={submitIdeaTurn} onSelectConversationVersion={selectConversationVersion} onLoadVersionDetail={window.scraply.getIdeaDetail} onLoadMoreConversation={(cursor) => refreshConversation(conversationIdeaId ?? "", cursor)} />
         {/key}
       </div>
     {:else if activeWorkflow}

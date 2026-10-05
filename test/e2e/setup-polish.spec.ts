@@ -83,7 +83,7 @@ test("setup hierarchy, source preferences, keyboard controls, and sidebar fit in
     await expect(page.getByRole("button", { name: "Advanced settings" })).toBeFocused();
     await expect(page.getByText("1 custom instruction")).toBeVisible();
 
-    // Navigation shows at most six recent projects; the rest stay reachable through All research.
+    // Navigation shows at most six recent projects; the rest stay reachable through Search.
     const list = page.getByRole("list", { name: "Research threads" });
     await expect(list.getByRole("listitem")).toHaveCount(6);
     await expect(list.getByRole("listitem").last()).toBeInViewport({ ratio: 1 });

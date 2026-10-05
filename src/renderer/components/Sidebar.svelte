@@ -19,8 +19,10 @@
   let searchInput: HTMLInputElement;
   let searchTrigger: HTMLButtonElement;
   let returnFocus: HTMLElement | null = null;
-  let activeThreads = $derived(threads.filter((thread) => !isArchived(thread)));
-  let archivedThreads = $derived(threads.filter(isArchived));
+  let projects = $derived(threads.filter((thread) => !thread.isUnstartedDraft));
+  let draftOpen = $derived(threads.some((thread) => thread.id === activeThreadId && thread.isUnstartedDraft));
+  let activeThreads = $derived(projects.filter((thread) => !isArchived(thread)));
+  let archivedThreads = $derived(projects.filter(isArchived));
   let attentionThreads = $derived(activeThreads.filter((thread) => needsAttention(thread.status)));
   let recentThreads = $derived.by(() => {
     const recent = [...activeThreads].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
@@ -62,8 +64,8 @@
 
 <svelte:window onkeydown={(event) => { if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k") { event.preventDefault(); void showFinder(); } }} />
 <aside class="sidebar" class:collapsed aria-label="Research navigation">
-  <button class="new" aria-label="Create new research thread" title={collapsed ? "New research" : undefined} disabled={busy} onclick={onNew}><Icon name="plus" size={18} /><span class="label">New research</span></button>
-  <button bind:this={searchTrigger} class="find" aria-label="All research" title={collapsed ? "All research (Ctrl+K)" : undefined} onclick={() => showFinder()}><Icon name="search" size={18} /><span class="label">All research</span><kbd aria-hidden="true">Ctrl K</kbd></button>
+  <button class="new" class:active={draftOpen} aria-current={draftOpen ? "true" : undefined} aria-label="Create new research thread" title={collapsed ? "New research" : undefined} disabled={busy} onclick={onNew}><Icon name="plus" size={18} /><span class="label">New research</span></button>
+  <button bind:this={searchTrigger} class="find" aria-label="Search" title={collapsed ? "Search (Ctrl+K)" : undefined} onclick={() => showFinder()}><Icon name="search" size={18} /><span class="label">Search</span><kbd aria-hidden="true">Ctrl K</kbd></button>
   <div class="recent">
     <div class="list-head"><span class="label">Recent research</span></div>
     <div class="list" role="list" aria-label="Research threads">
@@ -82,8 +84,8 @@
   <div class="footer">{@render settingsControl()}</div>
 </aside>
 
-<dialog bind:this={finder} class="finder glass-dense" aria-label="All research" onclose={() => (returnFocus?.isConnected ? returnFocus : searchTrigger)?.focus({ preventScroll: true })}>
-  <header><h2>All research</h2><button aria-label="Close search" onclick={() => finder.close()}><Icon name="close" /></button></header>
+<dialog bind:this={finder} class="finder glass-dense" aria-label="Search" onclose={() => (returnFocus?.isConnected ? returnFocus : searchTrigger)?.focus({ preventScroll: true })}>
+  <header><h2>Search</h2><button aria-label="Close search" onclick={() => finder.close()}><Icon name="close" /></button></header>
   <div class="search-heading"><Icon name="search" size={18} /><input bind:this={searchInput} bind:value={search} aria-label="Search research" placeholder="Search research by name" onkeydown={searchKeys} /></div>
   <nav aria-label="Research filters">
     <button aria-pressed={filter === "all"} onclick={() => filter = "all"}>All</button>
@@ -114,7 +116,7 @@
   .sidebar > * { flex-shrink:0; }
   button { color:var(--text);font-size:14px; }
   .new,.find,.attention-link { width:100%;display:flex;align-items:center;gap:10px;border:0;border-radius:7px;padding:10px;min-height:42px;font-weight:500;text-align:left; }
-  .new { background:rgb(255 255 255 / .07);color:var(--text); }
+  .new { background:none;color:var(--muted); }
   .find,.attention-link { background:none;color:var(--muted); }
   .find kbd,.attention-link .count { margin-left:auto;font:12px var(--sans);color:var(--muted); }
   .new:hover:not(:disabled),.find:hover,.attention-link:hover { background:var(--surface-2);color:var(--text); }
@@ -124,9 +126,9 @@
   .list { display:grid;gap:3px; }
   .thread-row { display:grid;grid-template-columns:minmax(0,1fr) 32px;align-items:start;border-radius:7px; }
   .thread-row:hover { background:#ffffff07; }
-  .thread-row.active { background:var(--surface-2); }
+  .thread-row.active,.new.active { background:var(--surface-2); }
   .thread { display:flex;align-items:center;gap:9px;min-height:40px;padding:10px 4px 10px 10px;min-width:0;text-align:left;border:0;border-radius:7px;background:none;color:var(--muted); }
-  .active .thread { color:var(--text); }
+  .active .thread,.new.active { color:var(--text); }
   .title { min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;line-height:1.45; }
   .status-icon { flex:none;display:flex;color:var(--muted); }
   .status-icon[data-tone="attention"] { color:#e9bd7a; }.status-icon[data-tone="active"] { color:var(--accent); }

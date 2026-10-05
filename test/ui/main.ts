@@ -24,6 +24,7 @@ const threads: Thread[] = Array.from({ length: count }, (_, i) => ({
   id: `fixture-${i}`, title: i === 2 && params.has("long") ? "Understanding how independent repair businesses coordinate warranty approvals, supplier follow-ups, parts availability, and customer expectations across multiple locations" : names[i] ?? `Research project ${i + 1}`,
   status: i === active ? "configuring" : i === count - 1 ? "failed" : i === count - 2 ? "discovery-running" : i % 2 ? "problems-ready" : "solutions-ready",
   createdAt: now, updatedAt: new Date(Date.parse(now) - i * 60_000).toISOString(),
+  isUnstartedDraft: i === 0 && i === active,
 }));
 const noSearch = params.get("search") === "none";
 const connectedNative: WorkspaceState["validation"]["native"] = {
@@ -168,7 +169,7 @@ const frameDraft = ResearchFrameSchema.parse({
   exclusions: ["Full accounting suites"],
   openQuestions: [{ id: "question-audience", question: "Solo freelancers or small firms?", whyItMatters: "Changes the areas and communities to explore.", options: ["Solo freelancers", "Small firms"] }],
 });
-const frameWorkflow: WorkflowDetail | null = frameScenario && state.activeThreadId ? {
+let frameWorkflow: WorkflowDetail | null = frameScenario && state.activeThreadId ? {
   summary: {
     sessionId: "fixture-frame", threadId: state.activeThreadId, purpose: knownProblemFrame ? "known-problem" : "discovery", mode: frameScenario === "investigators" ? "vibe" : "babysit", targetKind: "per-problem",
     state: frameScenario === "approved" ? "finished" : frameScenario === "investigators" ? "running" : "waiting-for-review",
@@ -197,6 +198,23 @@ if (frameWorkflow) {
 }
 
 let progressReads = 0;
+// Keep each synthetic project separate when testing navigation and draft reuse.
+if (state.scope) state.threads = state.threads.map(thread => ({ ...thread, isUnstartedDraft: false }));
+type ProjectState = Pick<WorkspaceState, "scope" | "runConfig" | "messages" | "problemCandidates" | "rejectedProblemCandidates" | "solutions" | "ideaGroups" | "latestResearchRun" | "activeWorkflow" | "researchRequests" | "researchFindings">;
+const savedProjects = new Map<string, { state: ProjectState; workflow: WorkflowDetail | null }>();
+function selectFixture(threadId: string) {
+  if (state.activeThreadId) {
+    const { scope, runConfig, messages, problemCandidates, rejectedProblemCandidates, solutions, ideaGroups, latestResearchRun, activeWorkflow, researchRequests, researchFindings } = state;
+    savedProjects.set(state.activeThreadId, { state: { scope, runConfig, messages, problemCandidates, rejectedProblemCandidates, solutions, ideaGroups, latestResearchRun, activeWorkflow, researchRequests, researchFindings }, workflow: frameWorkflow });
+  }
+  const saved = savedProjects.get(threadId);
+  const thread = state.threads.find(thread => thread.id === threadId);
+  state = { ...state, activeThreadId: threadId, ...(saved?.state ?? {
+    scope: thread?.isUnstartedDraft ? null : { title: thread?.title ?? "", domain: thread?.title ?? "", audience: "", observations: "", offLimits: [] },
+    runConfig: thread?.isUnstartedDraft ? null : DEFAULT_RUN_CONFIG, messages: [], problemCandidates: [], rejectedProblemCandidates: [], solutions: [], ideaGroups: [], latestResearchRun: null, activeWorkflow: null, researchRequests: [], researchFindings: [],
+  }) };
+  frameWorkflow = saved?.workflow ?? null;
+}
 let advancedSettings = AppSettingsSchema.parse({});
 const fixtureApi = createScraplyApi({
   async invoke<T>(channel: string, payload?: unknown): Promise<T> {
@@ -325,9 +343,22 @@ const fixtureApi = createScraplyApi({
         result = { ok: true, data: frameWorkflow ?? guidedProgress }; break;
       case IPC_CHANNELS.GET_VALIDATION: result = state.validation; break;
       case IPC_CHANNELS.START_WORKFLOW: {
-        if (!frameWorkflow) throw new Error("Only the frame fixture can simulate a replacement launch.");
         const request = StartWorkflowRequestSchema.parse(payload);
         fixtureHistory.launches.push(request.contract);
+        if (!frameWorkflow) {
+          const { contract, threadId } = request;
+          frameWorkflow = { summary: {
+            sessionId: `fixture-launch-${threadId}`, threadId, purpose: contract.purpose, mode: contract.mode,
+            targetKind: "per-problem", state: "running", outcome: null, revision: 1, activeSnapshotId: null, selectedProblemIds: [], ideaTargetReady: false,
+            counts: { requested: 0, attempted: 0, validated: 0, accepted: 0, duplicate: 0, unresolved: 0, failed: 0, missing: 0, existing: 0, addedBySession: 0, total: 0 },
+            limits: contract.limits, budget: { modelCalls: { limit: contract.limits.maxModelCalls, spent: 0, reserved: 0, uncertain: 0 }, searches: { limit: contract.limits.maxSearches, spent: 0, reserved: 0, uncertain: 0 }, remainingMs: contract.limits.maxMinutes * 60_000 },
+            currentStage: "frame", stopReason: null, startedAt: now, finishedAt: null,
+          }, tasks: [], nextCursor: null };
+          state.activeWorkflow = frameWorkflow.summary;
+          state.threads = state.threads.map(thread => thread.id === threadId ? { ...thread, status: "discovery-running", isUnstartedDraft: false } : thread);
+          result = { ok: true, data: { sessionId: frameWorkflow.summary.sessionId, revision: 1, summary: frameWorkflow.summary } };
+          break;
+        }
         frameWorkflow.summary = { ...frameWorkflow.summary, sessionId: "fixture-restarted", revision: 1,
           purpose: request.contract.purpose, mode: request.contract.mode, state: request.contract.mode === "babysit" ? "waiting-for-review" : "running",
           outcome: null, stopReason: null, finishedAt: null, currentStage: "frame",
@@ -341,21 +372,26 @@ const fixtureApi = createScraplyApi({
       }
       case IPC_CHANNELS.SELECT_THREAD: {
         const { threadId } = payload as { threadId: string };
-        state = { ...state, activeThreadId: threadId, scope: null, runConfig: null };
+        selectFixture(threadId);
         result = state; break;
       }
       case IPC_CHANNELS.CREATE_THREAD: {
-        const thread = { id: `fixture-new-${state.threads.length}`, title: "New research", status: "configuring" as const, createdAt: now, updatedAt: now };
-        state = { ...state, threads: [thread, ...state.threads], activeThreadId: thread.id, scope: null, runConfig: null };
+        const thread = state.threads.find(thread => thread.isUnstartedDraft) ?? { id: `fixture-new-${state.threads.length}`, title: "New research", status: "configuring" as const, isUnstartedDraft: true, createdAt: now, updatedAt: now };
+        if (!state.threads.includes(thread)) state.threads = [thread, ...state.threads];
+        selectFixture(thread.id);
         result = { workspace: state }; break;
       }
       case IPC_CHANNELS.ARCHIVE_THREAD: {
         const { threadId, archived } = payload as { threadId: string; archived: boolean };
-        state = { ...state, threads: state.threads.map((thread) => thread.id === threadId ? { ...thread, archivedAt: archived ? now : null } : thread) };
+        state = { ...state, threads: state.threads.map((thread) => thread.id === threadId ? { ...thread, isUnstartedDraft: false, archivedAt: archived ? now : null } : thread) };
         if (archived && state.activeThreadId === threadId) state.activeThreadId = state.threads.find((thread) => !thread.archivedAt)?.id ?? null;
         result = state; break;
       }
-      case IPC_CHANNELS.SAVE_SCOPE: state = { ...state, scope: SaveScopeSchema.parse(payload).scope }; result = state; break;
+      case IPC_CHANNELS.SAVE_SCOPE: {
+        const { threadId, scope } = SaveScopeSchema.parse(payload);
+        state = { ...state, scope, threads: state.threads.map(thread => thread.id === threadId ? { ...thread, title: scope.title, status: "configuring", isUnstartedDraft: false } : thread) };
+        result = state; break;
+      }
       case IPC_CHANNELS.SAVE_RUN_CONFIG: state = { ...state, runConfig: SaveRunConfigSchema.parse(payload).config }; result = state; break;
       case IPC_CHANNELS.PREVIEW_WORKFLOW: {
         const request = PreviewWorkflowRequestSchema.parse(payload);
@@ -410,7 +446,18 @@ const fixtureApi = createScraplyApi({
     }
     return structuredClone(result) as T;
   },
-  onAppCommand: () => () => {},
+  onAppCommand: (listener) => {
+    const handler = (event: KeyboardEvent) => {
+      const key = event.key.toLowerCase();
+      const command = (event.ctrlKey || event.metaKey) && key === "n" ? "new-research"
+        : (event.ctrlKey || event.metaKey) && key === "b" ? "toggle-sidebar"
+        : (event.ctrlKey || event.metaKey) && key === "," ? "settings"
+        : event.altKey && key === "arrowleft" ? "back" : event.altKey && key === "arrowright" ? "forward" : null;
+      if (command) { event.preventDefault(); listener(command); }
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  },
   onBackendEvent: () => () => {},
 });
 Object.assign(window, { scraply: fixtureApi, scraplyFixture: fixtureHistory });

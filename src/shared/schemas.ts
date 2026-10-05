@@ -144,6 +144,8 @@ export const ThreadSchema = z.object({
   title: z.string().min(1),
   status: ThreadStatusSchema,
   archivedAt: z.string().datetime().nullable().optional(),
+  // Computed by the repository, never stored. Missing flags keep older clients' projects visible.
+  isUnstartedDraft: z.boolean().optional(),
   createdAt: z.string().datetime(),
   updatedAt: z.string().datetime(),
 });

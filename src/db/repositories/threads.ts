@@ -7,12 +7,19 @@ import {
 import { AppError } from "../../shared/errors";
 import type { DatabaseClient } from "../client";
 
+// Only untouched drafts are reusable or hidden. A deliberate rename or restore touches updated_at.
+const EMPTY_DRAFT = `t.archived_at IS NULL AND t.status = 'configuring' AND t.title = 'New research'
+  AND t.updated_at = t.created_at
+  AND NOT EXISTS (SELECT 1 FROM settings s WHERE s.key = 'scope:' || t.id)
+  AND NOT EXISTS (SELECT 1 FROM messages m WHERE m.thread_id = t.id)
+  AND NOT EXISTS (SELECT 1 FROM research_runs r WHERE r.thread_id = t.id)`;
+
 export class ThreadRepository {
   constructor(private readonly db: DatabaseClient) {}
 
   listThreads(): Thread[] {
-    return (this.db.db.prepare("SELECT * FROM threads ORDER BY updated_at DESC").all() as Array<Record<string, unknown>>)
-      .map((row) => ThreadSchema.parse({ id: row.id, title: row.title, status: row.status, archivedAt: row.archived_at ?? null, createdAt: row.created_at, updatedAt: row.updated_at }));
+    return (this.db.db.prepare(`SELECT t.*, (${EMPTY_DRAFT}) AS is_unstarted_draft FROM threads t ORDER BY updated_at DESC`).all() as Array<Record<string, unknown>>)
+      .map((row) => ThreadSchema.parse({ id: row.id, title: row.title, status: row.status, archivedAt: row.archived_at ?? null, isUnstartedDraft: Boolean(row.is_unstarted_draft), createdAt: row.created_at, updatedAt: row.updated_at }));
   }
 
   recoverStaleDevelopmentStatuses(): void {
@@ -108,10 +115,7 @@ export class ThreadRepository {
     // untouched draft without deleting older entries or resetting its model preferences.
     const row = this.db.db.prepare(`
       SELECT t.* FROM threads t
-      WHERE t.archived_at IS NULL AND t.status = 'configuring' AND t.title = 'New research'
-        AND NOT EXISTS (SELECT 1 FROM settings s WHERE s.key = 'scope:' || t.id)
-        AND NOT EXISTS (SELECT 1 FROM messages m WHERE m.thread_id = t.id)
-        AND NOT EXISTS (SELECT 1 FROM research_runs r WHERE r.thread_id = t.id)
+      WHERE ${EMPTY_DRAFT}
       ORDER BY t.updated_at DESC, t.rowid DESC LIMIT 1
     `).get() as Record<string, unknown> | undefined;
     return row ? ThreadSchema.parse({
@@ -124,13 +128,21 @@ export class ThreadRepository {
       .run(status, new Date().toISOString(), threadId);
   }
   renameThread(threadId: string, title: string): void {
-    this.db.db.prepare("UPDATE threads SET title = ?, updated_at = ? WHERE id = ?").run(title, new Date().toISOString(), threadId);
+    const now = new Date().toISOString();
+    this.db.db.prepare("UPDATE threads SET title = ?, updated_at = CASE WHEN created_at = ? THEN ? ELSE ? END WHERE id = ?")
+      .run(title, now, new Date(Date.parse(now) + 1).toISOString(), now, threadId);
   }
   archiveThread(threadId: string, archived: boolean): void {
     this.db.db.prepare("UPDATE threads SET archived_at = ? WHERE id = ?")
       .run(archived ? new Date().toISOString() : null, threadId);
-    // Older projects were archived by status; restoring them returns them to setup, as migration 9 did for inactive threads.
-    if (!archived) this.db.db.prepare("UPDATE threads SET status = 'configuring' WHERE id = ? AND status = 'archived'").run(threadId);
+    // Restoring is deliberate project work, including an empty legacy project. Touch it so it
+    // cannot become a hidden/reusable draft; preserve the legacy return-to-setup behavior.
+    if (!archived) {
+      const now = new Date().toISOString();
+      this.db.db.prepare(`UPDATE threads SET status = CASE WHEN status = 'archived' THEN 'configuring' ELSE status END,
+        updated_at = CASE WHEN created_at = ? THEN ? ELSE ? END WHERE id = ?`)
+        .run(now, new Date(Date.parse(now) + 1).toISOString(), now, threadId);
+    }
   }
   deleteThread(threadId: string): void { this.db.db.prepare("DELETE FROM threads WHERE id = ?").run(threadId); }
 

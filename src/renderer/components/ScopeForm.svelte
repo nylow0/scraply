@@ -11,7 +11,7 @@
     type ResearchMode,
   } from "../../shared/schemas";
   import type { SearchProviderChoice } from "../../providers/search";
-  import { tick, untrack } from "svelte";
+  import { onDestroy, onMount, tick, untrack } from "svelte";
   import { hasSavedResearchDefaults, modelDisplayName, readResearchDefaults } from "../lib/research-defaults";
   import { preferredModel } from "../../shared/latest-models";
   import ModelPicker from "./ModelPicker.svelte";
@@ -24,9 +24,11 @@
 
   type WorkflowPreview = z.infer<typeof PreviewWorkflowResultSchema>;
 
-  let { workspace, busy, frameLanguages, onSave, onStart, onPreviewWorkflow, onStartWorkflow, onGenerateTitle, onRetry, onOpenSettings } : {
+  let { workspace, busy, frameLanguages, initialDraft, onRememberDraft, onSave, onStart, onPreviewWorkflow, onStartWorkflow, onGenerateTitle, onRetry, onOpenSettings } : {
     workspace: WorkspaceState; busy: boolean;
     frameLanguages?: string[] | undefined;
+    initialDraft?: ReturnType<typeof captureDraft> | null;
+    onRememberDraft?: (threadId: string, draft: ReturnType<typeof captureDraft>) => void;
     // Names a new thread from its brief when Start is clicked; there is no name field.
     onGenerateTitle?: (context: string) => Promise<string>;
     onSave: (scope: NonNullable<WorkspaceState["scope"]>, config: NonNullable<WorkspaceState["runConfig"]>) => Promise<void>;
@@ -114,6 +116,28 @@
   let researchInstruction = $state("");
   let ideasInstruction = $state("");
   let reviewInstruction = $state("");
+
+  // Preserve raw input and choices in App's one in-memory slot, without saving a scope or config.
+  // Preview and dialog state are rebuilt on mount; they are not part of the user's draft.
+  export function captureDraft() {
+    return { researchMode, purposeOverride, title, audience, domain, observations, riskEvaluationCriteria,
+      ideaCount, offLimits, knownProblem, modelKey, selectedModelRef, reasoningEffort, discoveryDepth,
+      searchProvider, searchProviderTouched, maxRunMinutes, workflowMode, ideaModelKey, selectedIdeasModelRef,
+      ideaReasoningEffort, automaticProblemCap, workflowModelLimit, workflowSearchLimit,
+      workflowModelLimitTouched, workflowSearchLimitTouched, researchInstruction, ideasInstruction, reviewInstruction };
+  }
+  const rememberedDraft = untrack(() => initialDraft);
+  onMount(() => {
+    if (!rememberedDraft) return;
+    ({ researchMode, purposeOverride, title, audience, domain, observations, riskEvaluationCriteria,
+      ideaCount, offLimits, knownProblem, modelKey, selectedModelRef, reasoningEffort, discoveryDepth,
+      searchProvider, searchProviderTouched, maxRunMinutes, workflowMode, ideaModelKey, selectedIdeasModelRef,
+      ideaReasoningEffort, automaticProblemCap, workflowModelLimit, workflowSearchLimit,
+      workflowModelLimitTouched, workflowSearchLimitTouched, researchInstruction, ideasInstruction, reviewInstruction } = rememberedDraft);
+  });
+  onDestroy(() => {
+    if (initial.activeThreadId) onRememberDraft?.(initial.activeThreadId, captureDraft());
+  });
   let workflowPreview = $state<WorkflowPreview | null>(null);
   let previewFingerprint = $state<string | null>(null);
   let previewing = $state(false);

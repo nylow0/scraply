@@ -127,9 +127,10 @@ describe("cutover backend", () => {
         method: "POST", headers: { authorization: `Bearer ${handle.token}`, "content-type": "application/json" }, body: JSON.stringify(body),
       });
       expect(response.status).toBe(200);
-      return (await response.json() as { data: { thread: { id: string }; workspace: { activeThreadId: string; threads: Array<{ id: string }> } } }).data;
+      return (await response.json() as { data: { thread: { id: string }; workspace: { activeThreadId: string; threads: Array<{ id: string; isUnstartedDraft: boolean }> } } }).data;
     };
     const first = await post("/threads", {});
+    expect(first.workspace.threads[0]?.isUnstartedDraft).toBe(true);
     const repeated = await Promise.all(Array.from({ length: 5 }, () => post("/threads", {})));
     for (const result of repeated) {
       expect(result.thread.id).toBe(first.thread.id);
@@ -144,6 +145,9 @@ describe("cutover backend", () => {
     expect(reopened.thread.id).toBe(next.thread.id);
     expect(reopened.workspace.activeThreadId).toBe(next.thread.id);
     expect(reopened.workspace.threads).toHaveLength(3);
+    expect(reopened.workspace.threads.find(thread => thread.id === first.thread.id)?.isUnstartedDraft).toBe(false);
+    expect(reopened.workspace.threads.find(thread => thread.id === named.thread.id)?.isUnstartedDraft).toBe(false);
+    expect(reopened.workspace.threads.find(thread => thread.id === next.thread.id)?.isUnstartedDraft).toBe(true);
   });
 
   test("defaults a new thread to Perplexity when it is the only connected search provider", async () => {

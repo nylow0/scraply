@@ -15,7 +15,6 @@
     busy,
     onExport,
     onOpenSource,
-    onReview,
     onSelect,
     onSave,
     workflowVersion,
@@ -55,7 +54,6 @@
     opportunityReviewRunning?: boolean | undefined;
     onExport: (format: "markdown" | "json") => Promise<void>;
     onOpenSource: (url: string) => Promise<void>;
-    onReview: () => void;
     onSelect?: (idea: SolutionView) => Promise<void>;
     onSave?: (solutionId: string, decision: string, observed: string, outcome: "not-run" | "pass" | "fail" | "inconclusive") => Promise<void>;
     workflowVersion?: 1 | 2 | undefined;
@@ -190,7 +188,6 @@
   <div hidden={activeConversationId !== null || selectedIdeaId !== null}>
   <header>
     <h1>{solutions.length} {solutions.length === 1 ? "idea" : "ideas"}</h1>
-    <button class="review-problems" onclick={onReview}>Review problems</button>
   </header>
 
   <div class="groups">
@@ -264,8 +261,6 @@
   .workspace { max-width:var(--page-max);margin:0 auto;padding:var(--page-top) var(--page-inline) 80px;min-width:0; }
   header { display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:16px 24px; }
   h1 { font-size:clamp(27px,3vw,34px);font-weight:650;letter-spacing:-.035em;margin:0;line-height:1.2; }
-  .review-problems { min-height:38px;padding:8px 12px;background:transparent;border:1px solid var(--border);border-radius:8px;color:var(--muted);font-size:13px; }
-  .review-problems:hover { color:var(--text);background:var(--surface-2);border-color:var(--border-strong); }
   .groups { display:grid;gap:12px;margin-top:28px; }
   .problem-group { border:1px solid var(--border);border-radius:12px;background:var(--surface); }
   .problem-group > summary { padding:16px 20px;color:var(--text);font-size:15px;font-weight:600;line-height:1.45;cursor:pointer; }

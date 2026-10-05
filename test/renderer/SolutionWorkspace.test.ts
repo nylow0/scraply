@@ -87,7 +87,7 @@ describe("SolutionListItem risk summary", () => {
 });
 
 describe("SolutionWorkspace groups", () => {
-  const actions = { busy: false, onExport: vi.fn(), onOpenSource: vi.fn(), onReview: vi.fn() };
+  const actions = { busy: false, onExport: vi.fn(), onOpenSource: vi.fn() };
   const savedGroup = (problemId: string, requestedIdeaCount: number, returnedIdeaCount: number): IdeaGroupView => ({
     runId: `run-${problemId}`, problemId, problemStatement: `Problem ${problemId}`, requestedIdeaCount, returnedIdeaCount,
   });
@@ -169,7 +169,7 @@ describe("SolutionWorkspace groups", () => {
     const view = render(SolutionWorkspace, { solutions: [
       idea("a3", "a", 3, "Shared checklist", 'fails "Fits a solo founder": needs a sales team'),
       idea("a1", "a", 1, "History access pack"), idea("b1", "b", 1, "Weekend baseline alert"), idea("a2", "a", 2, "Savings checker"),
-    ], busy: false, onExport: vi.fn(), onOpenSource: vi.fn(), onReview: vi.fn() });
+    ], busy: false, onExport: vi.fn(), onOpenSource: vi.fn() });
 
     expect(view.getByRole("heading", { level: 1, name: "4 ideas" })).toBeTruthy();
     const groups = [...view.container.querySelectorAll("details.problem-group")] as HTMLDetailsElement[];
@@ -191,7 +191,7 @@ describe("SolutionWorkspace groups", () => {
   test("an older idea without a short name or rank keeps its saved order and shows its first sentence", () => {
     const first = { ...solution(), id: "first", description: "Pool delivery windows by supplier. Shops then compare them." };
     const second = { ...solution(), id: "second", description: "Call suppliers before quoting." };
-    const view = render(SolutionWorkspace, { solutions: [first, second], busy: false, onExport: vi.fn(), onOpenSource: vi.fn(), onReview: vi.fn() });
+    const view = render(SolutionWorkspace, { solutions: [first, second], busy: false, onExport: vi.fn(), onOpenSource: vi.fn() });
     expect([...view.container.querySelectorAll(".idea-name")].map((row) => row.textContent)).toEqual(["Pool delivery windows by supplier.", "Call suppliers before quoting."]);
   });
 
@@ -206,7 +206,7 @@ describe("SolutionWorkspace groups", () => {
       solutions: [{ ...solution(), workflowVersion: 2 as const }], busy: false,
       opportunities, modelOptions: [], initialConfig: DEFAULT_RUN_CONFIG,
       onReviewOpportunities: vi.fn().mockResolvedValue(undefined), onEditMembership: vi.fn().mockResolvedValue(undefined),
-      onExport, onOpenSource: vi.fn(), onReview: vi.fn(),
+      onExport, onOpenSource: vi.fn(),
     });
     await fireEvent.click(view.getByText(/Review idea grouping/));
     expect(view.getByRole("button", { name: "Review 1 saved idea" })).toBeTruthy();
@@ -222,7 +222,7 @@ describe("SolutionWorkspace groups", () => {
     const view = render(SolutionWorkspace, {
       solutions: [{ ...solution(), workflowVersion: 2 as const, rank: 1, rankReason: "Best", weakFitReason: null }], busy: false,
       opportunities, modelOptions: [], initialConfig: { ...DEFAULT_RUN_CONFIG, explorationPurpose: "startup-opportunities" },
-      onReviewOpportunities: vi.fn(), onEditMembership: vi.fn(), onExport: vi.fn(), onOpenSource: vi.fn(), onReview: vi.fn(),
+      onReviewOpportunities: vi.fn(), onEditMembership: vi.fn(), onExport: vi.fn(), onOpenSource: vi.fn(),
     });
     expect(view.queryByText(/Review idea grouping/)).toBeNull();
   });
@@ -230,7 +230,7 @@ describe("SolutionWorkspace groups", () => {
   test("says when a run returned no ideas", () => {
     const view = render(SolutionWorkspace, {
       solutions: [], workflowVersion: 2, busy: false,
-      onExport: vi.fn(), onOpenSource: vi.fn(), onReview: vi.fn(),
+      onExport: vi.fn(), onOpenSource: vi.fn(),
     });
     expect(view.getByText("No ideas were returned.")).toBeTruthy();
     expect(view.getByRole("heading", { level: 1, name: "0 ideas" })).toBeTruthy();
@@ -267,7 +267,7 @@ describe("SolutionWorkspace idea conversation", () => {
     const onSubmitIdeaTurn = vi.fn().mockResolvedValue(undefined);
     const props = {
       solutions: [idea], busy: false, modelOptions, conversation: conversation(),
-      onExport: vi.fn(), onOpenSource: vi.fn(), onReview: vi.fn(),
+      onExport: vi.fn(), onOpenSource: vi.fn(),
       onOpenConversation, onCloseConversation, onSelectConversationVersion, onSubmitIdeaTurn,
     };
     const view = render(SolutionWorkspace, props);
@@ -305,7 +305,7 @@ describe("SolutionWorkspace idea conversation", () => {
       value: { getIdeaDetail: vi.fn().mockResolvedValue(revised) } });
     const view = render(SolutionWorkspace, {
       solutions: [root], busy: false, modelOptions, conversation: conversation(),
-      onExport: vi.fn(), onOpenSource: vi.fn(), onReview: vi.fn(),
+      onExport: vi.fn(), onOpenSource: vi.fn(),
       onSelect: vi.fn(), onSave: vi.fn(),
       onOpenConversation: vi.fn().mockResolvedValue(undefined),
       onSubmitIdeaTurn: vi.fn().mockResolvedValue(undefined), onLoadVersionDetail,
@@ -326,7 +326,7 @@ describe("SolutionWorkspace idea conversation", () => {
     const onOpenConversation = vi.fn().mockRejectedValueOnce(new Error("Conversation could not load.")).mockResolvedValueOnce(undefined);
     const view = render(SolutionWorkspace, {
       solutions: [idea], busy: false, modelOptions, conversation: conversation(),
-      onExport: vi.fn(), onOpenSource: vi.fn(), onReview: vi.fn(),
+      onExport: vi.fn(), onOpenSource: vi.fn(),
       onOpenConversation, onSubmitIdeaTurn: vi.fn().mockResolvedValue(undefined),
     });
 
@@ -343,7 +343,7 @@ describe("SolutionWorkspace idea conversation", () => {
     const onOpenConversation = vi.fn().mockResolvedValue(undefined);
     const view = render(SolutionWorkspace, {
       solutions: [idea], busy: false, modelOptions, conversation: conversation(),
-      onExport: vi.fn(), onOpenSource: vi.fn(), onReview: vi.fn(),
+      onExport: vi.fn(), onOpenSource: vi.fn(),
       onOpenConversation, onSubmitIdeaTurn: vi.fn().mockResolvedValue(undefined),
     });
 
@@ -357,7 +357,7 @@ describe("SolutionWorkspace idea conversation", () => {
   test("does not offer new conversation controls for a legacy idea", () => {
     const view = render(SolutionWorkspace, {
       solutions: [solution()], busy: false,
-      onExport: vi.fn(), onOpenSource: vi.fn(), onReview: vi.fn(),
+      onExport: vi.fn(), onOpenSource: vi.fn(),
       onOpenConversation: vi.fn().mockResolvedValue(undefined),
     });
 

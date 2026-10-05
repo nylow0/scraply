@@ -11,6 +11,152 @@ import { ResearchFrameSchema } from "../../src/shared/research-frame";
 import { summarizeRunUsage } from "../../src/backend/run-usage";
 
 describe("App workspace coordination", () => {
+  test.each([false, true])("retains a hidden draft across navigation and clears it only after a successful launch, failure=%s", async (failStart) => {
+    let draft = workspace("alpha");
+    draft.validation.native = { available: true, connected: true, accounts: [{ providerId: "openai-subscription" }] };
+    draft.threads[0] = { ...draft.threads[0]!, title: "New research", isUnstartedDraft: true };
+    let state = draft;
+    let appCommand: Parameters<ScraplyApi["onAppCommand"]>[0] = () => {};
+    const previewWorkflow = vi.fn(async (request: Parameters<ScraplyApi["previewWorkflow"]>[0]) => {
+      if (request.type !== "launch") throw new Error("Expected launch");
+      return { type: "launch" as const, proposal: { ...request.draft,
+        resolvedInstructions: { research: "r", ideas: "i", review: "v" }, instructionHashes: { research: "r", ideas: "i", review: "v" } },
+        previewHash: "draft-preview", capabilityFingerprint: "fixture", minimumWork: { modelCalls: 1, searches: 1 },
+        upperLimits: request.draft.limits, fieldErrors: [], expiresAt: "2099-01-01T00:00:00.000Z" };
+    });
+    const saveScope = vi.fn(async ({ scope }: Parameters<ScraplyApi["saveScope"]>[0]) => {
+      draft = { ...draft, scope, threads: draft.threads.map(thread => thread.id === "alpha" ? { ...thread, title: scope.title, isUnstartedDraft: false } : thread) };
+      state = draft;
+      return structuredClone(state);
+    });
+    const current = frameWorkflow({ approved: true });
+    current.summary = { ...current.summary, state: "running", mode: "vibe", outcome: null, finishedAt: null };
+    const startWorkflow = vi.fn(async () => {
+      if (failStart) throw new Error("Simulated launch failure");
+      draft = { ...draft, activeWorkflow: current.summary };
+      state = draft;
+      return { sessionId: current.summary.sessionId, revision: current.summary.revision, summary: current.summary };
+    });
+    const createThread = vi.fn(async () => {
+      const fresh = { ...draft.threads[0]!, id: "fresh", title: "New research", status: "configuring" as const, isUnstartedDraft: true };
+      state = { ...draft, activeThreadId: fresh.id, scope: null, runConfig: null, activeWorkflow: null, threads: [...draft.threads, fresh] };
+      return { workspace: structuredClone(state) };
+    });
+    installApi({ getWorkspace: async () => structuredClone(state), createThread,
+      selectThread: async (id) => {
+        state = id === "alpha" ? draft : { ...workspace("beta"), validation: draft.validation, threads: draft.threads };
+        return structuredClone(state);
+      },
+      onAppCommand: listener => { appCommand = listener; return () => {}; },
+      generateTitle: async () => ({ title: "Repair approvals" }),
+      saveScope, saveRunConfig: async ({ config }) => { draft = { ...draft, runConfig: config }; state = draft; return structuredClone(state); },
+      previewWorkflow, startWorkflow, getWorkflow: async () => structuredClone(current),
+    });
+    const view = render(App);
+    const brief = "  Repair shop approvals\nKeep customer consent clear.  ";
+    await fireEvent.input(await view.findByPlaceholderText("Your topic or idea"), { target: { value: brief } });
+    await fireEvent.input(view.getByLabelText("Audience"), { target: { value: "Independent shops" } });
+    expect(view.queryByRole("button", { name: "Open thread New research" })).toBeNull();
+    expect(view.getByRole("button", { name: "Create new research thread" }).getAttribute("aria-current")).toBe("true");
+    await fireEvent.click(view.getByRole("button", { name: "Open thread Beta" }));
+    await waitFor(() => expect(view.getByRole("button", { name: "Open thread Beta" }).getAttribute("aria-current")).toBe("true"));
+    await fireEvent.click(view.getByRole("button", { name: "Go back" }));
+    await waitFor(() => expect((view.getByPlaceholderText("Your topic or idea") as HTMLTextAreaElement).value).toBe(brief));
+    await tick();
+    await fireEvent.click(view.getByRole("button", { name: "Go forward" }));
+    await waitFor(() => expect(view.getByRole("button", { name: "Open thread Beta" }).getAttribute("aria-current")).toBe("true"));
+    await fireEvent.click(view.getByRole("button", { name: "Create new research thread" }));
+    await waitFor(() => expect((view.getByPlaceholderText("Your topic or idea") as HTMLTextAreaElement).value).toBe(brief));
+    await fireEvent.click(view.getByRole("button", { name: "Settings" }));
+    await view.findByRole("region", { name: "Settings" });
+    appCommand("new-research");
+    await waitFor(() => expect(view.queryByRole("region", { name: "Settings" })).toBeNull());
+    expect((view.getByLabelText("Audience") as HTMLInputElement).value).toBe("Independent shops");
+    await fireEvent.click(view.getByRole("button", { name: "Open thread Beta" }));
+    await waitFor(() => expect(view.getByRole("button", { name: "Open thread Beta" }).getAttribute("aria-current")).toBe("true"));
+    appCommand("new-research");
+    await waitFor(() => expect((view.getByPlaceholderText("Your topic or idea") as HTMLTextAreaElement).value).toBe(brief));
+    expect(saveScope).not.toHaveBeenCalled();
+    expect(createThread).not.toHaveBeenCalled();
+    await waitFor(() => expect((view.getByRole("button", { name: "Start" }) as HTMLButtonElement).disabled).toBe(false));
+    await fireEvent.click(view.getByRole("button", { name: "Start" }));
+    await waitFor(() => expect(startWorkflow).toHaveBeenCalledOnce());
+    expect(await view.findByRole("button", { name: "Open thread Repair approvals" })).toBeTruthy();
+    expect(view.getByRole("button", { name: "Create new research thread" }).getAttribute("aria-current")).toBeNull();
+    await fireEvent.click(view.getByRole("button", { name: "Open thread Beta" }));
+    await waitFor(() => expect(view.getByRole("button", { name: "Open thread Beta" }).getAttribute("aria-current")).toBe("true"));
+    appCommand("new-research");
+    await waitFor(() => expect((view.getByPlaceholderText("Your topic or idea") as HTMLTextAreaElement).value).toBe(failStart ? brief : ""));
+    expect(createThread).toHaveBeenCalledTimes(failStart ? 0 : 1);
+  });
+
+  test("starting another saved project keeps the pending draft", async () => {
+    const draft = workspace("alpha");
+    draft.validation.native = { available: true, connected: true, accounts: [{ providerId: "openai-subscription" }] };
+    draft.threads[0] = { ...draft.threads[0]!, title: "New research", isUnstartedDraft: true };
+    const saved = { ...workspace("beta"), validation: draft.validation, threads: draft.threads,
+      scope: { title: "Beta", domain: "Saved beta brief", audience: "", observations: "", offLimits: [] } };
+    let state = draft;
+    const current = frameWorkflow({ approved: true });
+    current.summary = { ...current.summary, threadId: "beta", state: "running", mode: "vibe", outcome: null, finishedAt: null };
+    const createThread = vi.fn(async () => ({ workspace: workspace("alpha") }));
+    installApi({ getWorkspace: async () => structuredClone(state), createThread,
+      selectThread: async id => { state = id === "alpha" ? draft : saved; return structuredClone(state); },
+      previewWorkflow: async request => {
+        if (request.type !== "launch") throw new Error("Expected launch");
+        return { type: "launch", proposal: { ...request.draft, resolvedInstructions: { research: "r", ideas: "i", review: "v" }, instructionHashes: { research: "r", ideas: "i", review: "v" } },
+          previewHash: "preview", capabilityFingerprint: "fixture", minimumWork: { modelCalls: 1, searches: 1 }, upperLimits: request.draft.limits, fieldErrors: [], expiresAt: "2099-01-01T00:00:00.000Z" };
+      },
+      saveScope: async () => structuredClone(saved), saveRunConfig: async () => structuredClone(saved),
+      startWorkflow: async () => { saved.activeWorkflow = current.summary; return { sessionId: current.summary.sessionId, revision: 1, summary: current.summary }; },
+      getWorkflow: async () => structuredClone(current),
+    });
+    const view = render(App);
+    await fireEvent.input(await view.findByPlaceholderText("Your topic or idea"), { target: { value: "Keep this unfinished brief" } });
+    await fireEvent.click(view.getByRole("button", { name: "Open thread Beta" }));
+    await waitFor(() => expect(view.getByRole("button", { name: "Open thread Beta" }).getAttribute("aria-current")).toBe("true"));
+    await waitFor(() => expect((view.getByRole("button", { name: "Start" }) as HTMLButtonElement).disabled).toBe(false));
+    await fireEvent.click(view.getByRole("button", { name: "Start" }));
+    await waitFor(() => expect(view.queryByRole("button", { name: "Start" })).toBeNull());
+    await waitFor(() => expect((view.getByRole("button", { name: "Create new research thread" }) as HTMLButtonElement).disabled).toBe(false));
+    await fireEvent.click(view.getByRole("button", { name: "Create new research thread" }));
+    await waitFor(() => expect((view.getByPlaceholderText("Your topic or idea") as HTMLTextAreaElement).value).toBe("Keep this unfinished brief"));
+    expect(createThread).not.toHaveBeenCalled();
+  });
+
+  test("opens a hidden draft on an empty first launch", async () => {
+    const empty = { ...workspace("alpha"), threads: [], activeThreadId: null };
+    const draft = workspace("alpha");
+    draft.threads = [{ ...draft.threads[0]!, title: "New research", isUnstartedDraft: true }];
+    const createThread = vi.fn(async () => ({ workspace: draft }));
+    installApi({ getWorkspace: async () => empty, createThread });
+    const view = render(App);
+    expect(await view.findByPlaceholderText("Your topic or idea")).toBeTruthy();
+    expect(view.getByText("No research yet.")).toBeTruthy();
+    expect(view.queryByRole("button", { name: /^Open thread/ })).toBeNull();
+    expect(view.getByRole("button", { name: "Create new research thread" }).getAttribute("aria-current")).toBe("true");
+    expect(createThread).toHaveBeenCalledOnce();
+  });
+
+  test.each(["configuring", "discovery-running", "problems-ready", "development-running", "solutions-ready", "failed"] as const)("keeps the Research tab available for %s without Review problems", async (status) => {
+    const state = workspace("alpha");
+    state.threads[0]!.status = status;
+    state.rejectedProblemCandidates = [{ id: "rejected", statement: "Shops lose approval context", reason: "Needs a second firsthand account" }];
+    installApi({ getWorkspace: async () => state });
+    const view = render(App);
+    const research = await view.findByRole("tab", { name: "Research" });
+    expect(view.queryByRole("button", { name: "Review problems" })).toBeNull();
+    await fireEvent.click(research);
+    if (status === "discovery-running") {
+      expect(view.getByText("Following the evidence.")).toBeTruthy();
+    } else {
+      await fireEvent.click(view.getByRole("button", { name: /^Show \d+ more leads?$/ }));
+      expect(view.getAllByText("Shops lose approval context").length).toBeGreaterThan(0);
+      expect(view.getByRole("button", { name: "Export research JSON" })).toBeTruthy();
+    }
+    expect(view.queryByRole("button", { name: "Review problems" })).toBeNull();
+  });
+
   test("previews a not-assessed candidate from the Controlled checkpoint before starting its assessment", async () => {
     const current = frameWorkflow({ approved: true });
     current.summary = { ...current.summary, state: "waiting-for-review", reviewKind: "research", outcome: null, revision: 4, finishedAt: null };
@@ -226,7 +372,7 @@ describe("App workspace coordination", () => {
       expect(within(navigation).getByRole("button", { name: "Settings" })).toBeTruthy();
 
       await fireEvent.keyDown(window, { key: "k", ctrlKey: true });
-      expect(view.getByRole("dialog", { name: "All research" })).toBeTruthy();
+      expect(view.getByRole("dialog", { name: "Search" })).toBeTruthy();
       expect(document.activeElement).toBe(view.getByRole("textbox", { name: "Search research" }));
       await fireEvent.click(view.getByRole("button", { name: "Close search" }));
 

@@ -17,6 +17,29 @@ function show(threads: Thread[], activeThreadId: string | null = null) {
 }
 
 describe("compact research navigation", () => {
+  test("hides every untouched draft, selects New research, and searches only saved projects", async () => {
+    const drafts = ["draft", "old-draft"].map(id => ({ ...history(1)[0]!, id, title: "New research", status: "configuring" as const, isUnstartedDraft: true }));
+    const projects = history(3);
+    projects[0] = { ...projects[0]!, title: "New research", status: "configuring", isUnstartedDraft: false };
+    const view = show([...drafts, ...projects], "draft");
+    expect(view.getByRole("button", { name: "Create new research thread" }).getAttribute("aria-current")).toBe("true");
+    const list = within(view.getByRole("list", { name: "Research threads" }));
+    expect(list.getAllByRole("listitem")).toHaveLength(3);
+    expect(list.getAllByRole("button", { name: /^Open thread/ }).every(button => !button.hasAttribute("aria-current"))).toBe(true);
+    expect(view.getByRole("button", { name: "Running & attention 2" })).toBeTruthy();
+    await fireEvent.click(view.getByRole("button", { name: "Search" }));
+    const dialog = within(view.getByRole("dialog", { name: "Search" }));
+    expect(dialog.getByText("3 results")).toBeTruthy();
+    expect(dialog.getAllByText("New research")).toHaveLength(1);
+    await fireEvent.click(dialog.getByRole("button", { name: "Running & attention" }));
+    expect(dialog.getByText("2 results")).toBeTruthy();
+    await fireEvent.click(dialog.getByRole("button", { name: "Archived" }));
+    expect(dialog.getByText("0 results")).toBeTruthy();
+    await view.rerender({ ...view.props, threads: drafts });
+    expect(view.getByText("No research yet.")).toBeTruthy();
+    expect(view.queryByRole("button", { name: /^Running & attention \d/ })).toBeNull();
+  });
+
   test("selection changes the highlight without moving recent research", async () => {
     const view = show(history(6), "0");
     const list = within(view.getByRole("list", { name: "Research threads" }));
@@ -41,7 +64,7 @@ describe("compact research navigation", () => {
     expect(view.getByText("Problems ready", { selector: "#thread-status-1" })).toBeTruthy();
     expect(view.getByText("Solutions ready", { selector: "#thread-status-0" })).toBeTruthy();
     await fireEvent.click(view.getByRole("button", { name: "Running & attention 2" }));
-    const dialog = within(view.getByRole("dialog", { name: "All research" }));
+    const dialog = within(view.getByRole("dialog", { name: "Search" }));
     expect(dialog.getByText("2 results")).toBeTruthy();
     expect(dialog.getByText(`Research ${count - 2}`)).toBeTruthy();
     expect(dialog.getByText(`Research ${count - 1}`)).toBeTruthy();
@@ -60,7 +83,7 @@ describe("compact research navigation", () => {
     const view = show(threads, "8");
     const current = view.getByRole("button", { name: `Open thread ${threads[8]!.title}` });
     expect(current.getAttribute("title")).toContain(threads[8]!.title);
-    await fireEvent.click(view.getByRole("button", { name: "All research" }));
+    await fireEvent.click(view.getByRole("button", { name: "Search" }));
     const dialog = within(view.getByRole("dialog"));
     await fireEvent.click(dialog.getByRole("button", { name: `Archive research ${threads[8]!.title}` }));
     expect(view.callbacks.onArchive).toHaveBeenCalledWith("8");
