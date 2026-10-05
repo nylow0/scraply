@@ -1,7 +1,7 @@
 import { z } from "zod";
 import type { DatabaseClient } from "../db/client";
 import { OpportunityExplorationRepository } from "../db/repositories/opportunity-exploration";
-import type { SearchClient, SearchProvider } from "../providers/search";
+import { SearchProviderSchema, type SearchClient, type SearchProviderChoice } from "../providers/search";
 import { canonicalJson } from "../shared/content-identity";
 import { SourceSchema, type Source } from "../shared/schemas";
 
@@ -26,7 +26,7 @@ export interface ManagedCoverageSearchInput {
   sessionId: string;
   workItemId: string;
   gapId: string;
-  searchProvider: SearchProvider;
+  searchProvider: SearchProviderChoice;
   searchClient?: SearchClient | undefined;
   signal: AbortSignal;
   /** The caller records its own search reservation dispatch after this attempt is marked dispatched. */
@@ -56,14 +56,16 @@ export async function runManagedCoverageSearch(input: ManagedCoverageSearchInput
     throw new Error("Coverage gap has no bounded evidence request for this session.");
   }
   const stageKey = `gap-search:${gap.id}`;
-  const model = { providerId: input.searchProvider, modelId: "search", reasoningEffort: "bounded" };
   const saved = repository.loadAttempt(input.threadId, stageKey, input.sessionId);
+  const provider = saved ? z.object({ providerId: SearchProviderSchema }).parse(saved.model).providerId : input.searchClient?.provider ?? input.searchProvider;
+  const model = { providerId: provider, modelId: "search", reasoningEffort: "bounded" };
   const savedSearchInput = saved ? SavedSearchInputSchema.parse(saved.input) : null;
   if (saved) {
     if (savedSearchInput!.gapId !== input.gapId || saved.promptText !== savedSearchInput!.query) {
       throw new Error("Saved gap search input identity changed.");
     }
     if (saved.workItemId !== input.workItemId || canonicalJson(saved.model) !== canonicalJson(model)
+      || (input.searchProvider !== "auto" && provider !== input.searchProvider)
       || saved.promptVersion !== PROMPT_VERSION) {
       throw new Error("Saved gap search belongs to a different task or provider.");
     }
@@ -75,7 +77,7 @@ export async function runManagedCoverageSearch(input: ManagedCoverageSearchInput
     }
   }
   const searchClient = input.searchClient;
-  if (!searchClient || searchClient.provider !== input.searchProvider) {
+  if (!searchClient || searchClient.provider !== provider || (input.searchProvider !== "auto" && provider !== input.searchProvider)) {
     throw new Error(`Search provider ${input.searchProvider} is unavailable for a new gap search.`);
   }
   const searchInput = savedSearchInput ?? {

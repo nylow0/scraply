@@ -4,6 +4,24 @@ import { ExaClient } from "../../src/providers/exa";
 import { ProviderFailure } from "../../src/providers/structured";
 
 describe("ExaClient", () => {
+  test("sends current categories and bounded domain filters, location, and recency", async () => {
+    const bodies: unknown[] = [];
+    const client = new ExaClient("secret", async (_input, init) => {
+      bodies.push(JSON.parse(String(init?.body)));
+      return Response.json({ results: [{ url: "https://worldmetrics.org/page", text: "Blocked quote" },
+        { url: "https://github.com/tool/issues/1", text: "Undated user report" }] });
+    });
+    const result = await client.search("topic", { includeDomains: Array.from({ length: 1201 }, (_, index) => `forum${index}.test`),
+      excludeDomains: ["vendor.test"], category: "publication", userLocation: "UA", startPublishedDate: "2023-09-30T00:00:00.000Z" });
+    expect(result).toHaveLength(1);
+    expect(result[0]?.publishedDate).toBeUndefined();
+    expect(bodies[0]).toMatchObject({ excludeDomains: ["worldmetrics.org", "linkedin.com", "vendor.test"], category: "publication",
+      userLocation: "UA", startPublishedDate: "2023-09-30T00:00:00.000Z" });
+    expect((bodies[0] as { includeDomains: string[] }).includeDomains).toHaveLength(1200);
+    await client.search("topic", { category: "people", startPublishedDate: "2023-09-30T00:00:00.000Z" });
+    expect((bodies[1] as { excludeDomains?: string[] }).excludeDomains).toBeUndefined();
+    expect((bodies[1] as { startPublishedDate?: string }).startPublishedDate).toBeUndefined();
+  });
   test("posts search with contents and normalizes sources", async () => {
     let request: Request | undefined;
     const fetcher = async (input: string | URL | Request, init?: RequestInit) => {
@@ -14,7 +32,8 @@ describe("ExaClient", () => {
       numResults: 3,
       maxCharacters: 1234,
       includeDomains: ["reddit.com"],
-      category: "tweet",
+      category: "publication",
+      excludeDomains: ["worldmetrics.org", "linkedin.com"],
       startPublishedDate: "2025-01-01T00:00:00.000Z",
     });
     expect(request?.url).toBe("https://exa.test/search");
@@ -24,7 +43,8 @@ describe("ExaClient", () => {
       type: "auto",
       numResults: 3,
       includeDomains: ["reddit.com"],
-      category: "tweet",
+      category: "publication",
+      excludeDomains: ["worldmetrics.org", "linkedin.com"],
       startPublishedDate: "2025-01-01T00:00:00.000Z",
       contents: { text: { maxCharacters: 1234 } },
     });

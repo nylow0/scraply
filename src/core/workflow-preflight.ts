@@ -70,7 +70,8 @@ export function previewLaunch(draftInput: WorkflowLaunchDraft, capabilities: Wor
   if (contract.purpose === "known-problem" && (!contract.runConfig.knownProblem.trim() || contract.runConfig.researchMode !== "known-problem")) {
     fieldErrors.push({ path: ["runConfig", "knownProblem"], code: "INVALID_PURPOSE", message: "Enter a known problem before starting." });
   }
-  if (contract.purpose === "discovery" && !capabilities.searchReady[contract.runConfig.searchProvider]) {
+  if (contract.purpose === "discovery" && !(contract.runConfig.searchProvider === "auto"
+    ? capabilities.searchReady.exa || capabilities.searchReady.perplexity : capabilities.searchReady[contract.runConfig.searchProvider])) {
     fieldErrors.push({ path: ["runConfig", "searchProvider"], code: "SEARCH_UNAVAILABLE", message: "Connect the selected search provider." });
   }
   if (contract.targets.kind === "project" &&

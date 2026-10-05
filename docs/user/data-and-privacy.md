@@ -4,7 +4,7 @@ Scraply is a local desktop application, not a hosted workspace. Projects, resear
 
 ## What leaves the device
 
-When you start generation or research, Scraply sends the relevant prompt and selected context to the connected model provider. A web-research run sends its planned queries to the selected search provider, Exa or Perplexity, and retrieves search results. Review the project scope and provider choice before starting a paid or sensitive run. Local project storage does not make provider requests local.
+When you start generation or research, Scraply sends the relevant prompt and selected context to the connected model provider. A web-research run sends planned queries to Exa or Perplexity. Automatic search uses both when both connections are valid, choosing a provider for each kind of evidence. With one connection it uses that provider throughout. Review the project scope and provider choice before starting a paid or sensitive run. Local project storage does not make provider requests local.
 
 Scraply does not upload telemetry. Logs stay local, rotate, and omit credential values. Use **Open logs folder** to find them when troubleshooting. Report links open through a restricted external-browser action; remote pages cannot navigate the privileged Electron window or access Scraply IPC.
 

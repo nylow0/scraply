@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { SearchProviderSchema } from "../providers/search";
+import { SearchProviderSchema, SearchProviderChoiceSchema } from "../providers/search";
 import { OpportunityExplorationConfigSchema } from "./opportunity-exploration";
 
 export const SourceSchema = z.object({
@@ -44,7 +44,7 @@ const RunConfigInputSchema = z.object({
   reasoningEffort: ReasoningEffortSchema,
   discoveryDepth: DiscoveryDepthSchema,
   maxRunMinutes: z.number().int().min(5).max(240),
-  searchProvider: SearchProviderSchema.optional(),
+  searchProvider: SearchProviderChoiceSchema.optional(),
   researchMode: ResearchModeSchema.optional(),
   knownProblem: z.string().trim().max(2_000).optional(),
   explorationPurpose: ExplorationPurposeSchema.optional(),
@@ -82,7 +82,6 @@ export const RunConfigSchema = z.union([
 export const DEFAULT_RUN_CONFIG = {
   configVersion: 2,
   workflowVersion: 2,
-  audienceSourcePolicy: "web",
   ideaCount: DEFAULT_IDEA_COUNT,
   model: { providerId: OPENAI_SUBSCRIPTION_PROVIDER_ID, modelId: "gpt-6-sol" },
   reasoningEffort: "medium",

@@ -4,10 +4,12 @@ import { tmpdir } from "node:os";
 import { ResearchEngine } from "../../src/core/research-engine";
 import { configurePromptPaths } from "../../src/core/prompts";
 import { DatabaseClient } from "../../src/db/client";
+import { CostLedgerRepository } from "../../src/db/repositories/cost-ledger";
 import { ResearchRunRepository } from "../../src/db/repositories/research-runs";
 import { WorkflowExecution } from "../../src/core/workflow-execution";
 import type { Source } from "../../src/shared/schemas";
 import type { GenerationAcceptanceMetadata, StructuredModelClient } from "../../src/providers/structured";
+import type { SearchOptions } from "../../src/providers/search";
 import { RunConfigSchema } from "../../src/shared/schemas";
 import { join } from "node:path";
 
@@ -120,7 +122,9 @@ test.each(["exa", "perplexity"] as const)("%s discovery retains provider concurr
     async structuredCompletion(request) {
       const stage = request.stage.split(":")[0];
       const output = stage === "query-plan" ? {
-        queries: [1, 2, 3].map(index => ({ query: `${request.stage} query ${index}`, uncertainty: "How often parts arrive late", intendedSourceType: "Delivery records" })),
+        queries: [1, 2, 3].map(index => ({ query: `${request.stage} query ${index}`,
+          intent: ["firsthand-experience", "measured-behavior", "current-alternative"][index - 1],
+          uncertainty: "How often parts arrive late", intendedSourceType: "Delivery records" })),
       } : stage === "factor-harvest" ? { factors: [] } : { problems: [] };
       request.onDispatched?.();
       request.onAccepted?.({});
@@ -143,8 +147,53 @@ test.each(["exa", "perplexity"] as const)("%s discovery retains provider concurr
     const runId = await engine.startDiscovery("thread", scope, { ...config, searchProvider: provider });
     await until(() => !engine.getActiveRunIds().has(runId));
     expect(db.db.prepare("SELECT status FROM research_runs WHERE id = ?").get(runId)).toEqual({ status: "completed" });
-    expect(searches).toBe(6);
+    expect(searches).toBe(8);
     expect(peakConcurrent).toBe(provider === "exa" ? 2 : 1);
+  } finally {
+    await engine.shutdown();
+    db.close();
+  }
+});
+
+test.each([true, false])("automatic discovery accounts for both providers with Exa readiness %s", async (exaReady) => {
+  const db = database();
+  const calls = { exa: 0, perplexity: 0 };
+  const routes: Array<{ provider: string; route?: string }> = [];
+  const client: StructuredModelClient = {
+    async structuredCompletion(request) {
+      const stage = request.stage.split(":")[0];
+      const output = stage === "query-plan" ? {
+        queries: ["firsthand-experience", "measured-behavior", "current-alternative"].map(intent => ({
+          query: `${request.stage} ${intent}`, intent,
+          uncertainty: "Delivery behavior", intendedSourceType: "Delivery reports",
+        })),
+      } : stage === "factor-harvest" ? { factors: [] } : { problems: [] };
+      request.onDispatched?.();
+      request.onAccepted?.({});
+      return { output: request.schema.parse(output), metadata: {
+        model: config.model, prompt: { id: "fixture", sha256: "a".repeat(64) },
+        usage: { status: "unknown" }, latencyMs: 0, repairCount: 0, providerRequestIds: [], attempts: [],
+      } };
+    },
+  };
+  const searchClients = Object.fromEntries((["exa", "perplexity"] as const).map(provider => [provider, {
+    provider, async validateKey() { return { valid: true }; }, async search(_query: string, options?: SearchOptions) {
+      calls[provider] += 1;
+      routes.push({ provider, ...(options?.route ? { route: options.route } : {}) });
+      return [];
+    },
+  }]));
+  const engine = new ResearchEngine({ db, modelClients: { fixture: client }, searchClients,
+    searchReady: () => ({ exa: exaReady, perplexity: true }), onEvent() {} });
+  try {
+    const runId = await engine.startDiscovery("thread", scope, { ...config, searchProvider: "auto" });
+    await until(() => !engine.getActiveRunIds().has(runId));
+    expect(db.db.prepare("SELECT status FROM research_runs WHERE id = ?").get(runId)).toEqual({ status: "completed" });
+    expect(calls).toEqual(exaReady ? { exa: 4, perplexity: 4 } : { exa: 0, perplexity: 8 });
+    expect(routes.filter(route => route.route === "community").map(route => route.provider)).toEqual([exaReady ? "exa" : "perplexity", exaReady ? "exa" : "perplexity"]);
+    const ledger = new CostLedgerRepository(db);
+    expect(ledger.countProviderCalls(runId, "exa")).toBe(calls.exa);
+    expect(ledger.countProviderCalls(runId, "perplexity")).toBe(calls.perplexity);
   } finally {
     await engine.shutdown();
     db.close();

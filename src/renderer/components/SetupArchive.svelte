@@ -40,7 +40,7 @@
       <div><dt>Reasoning</dt><dd>{config.reasoningEffort.charAt(0).toUpperCase() + config.reasoningEffort.slice(1)}</dd></div>
       <div><dt>Solutions per problem</dt><dd>{config.ideaCount ?? (config.workflowVersion === 2 ? 3 : "3–5")}</dd></div>
       {#if !knownProblem}<div><dt>Research depth</dt><dd>{config.discoveryDepth.charAt(0).toUpperCase() + config.discoveryDepth.slice(1)}</dd></div>{/if}
-      {#if !knownProblem}<div><dt>Search provider</dt><dd>{config.searchProvider === "exa" ? "Exa" : "Perplexity"}</dd></div>{/if}
+      {#if !knownProblem}<div><dt>Search provider</dt><dd>{config.searchProvider === "auto" ? "Automatic" : config.searchProvider === "exa" ? "Exa" : "Perplexity"}</dd></div>{/if}
     </dl>
   {:else}
     <div class="empty"><h2>No setup has been saved.</h2><p>Complete this step to begin the workflow.</p></div>

@@ -107,7 +107,7 @@ export function isResearchModeReady(
   search: SearchValidation,
   native: { available: boolean; connected: boolean },
 ): boolean {
-  const selectedSearchReady = search[config.searchProvider].valid;
+  const selectedSearchReady = config.searchProvider === "auto" ? search.exa.valid || search.perplexity.valid : search[config.searchProvider].valid;
   const selectedModelReady = config.model?.providerId === OPENAI_SUBSCRIPTION_PROVIDER_ID
     && native.available && native.connected;
   return selectedModelReady
@@ -201,6 +201,10 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
         modelClients: context.modelClients ?? {},
         modelScheduler: workflowModelScheduler,
         searchClients,
+        searchReady: () => ({
+          exa: cachedValidation?.exa.valid ?? Boolean(searchClients.exa),
+          perplexity: cachedValidation?.perplexity.valid ?? Boolean(searchClients.perplexity),
+        }),
         onEvent: emitEvent,
       });
     }
@@ -1149,7 +1153,7 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
       runConfig,
       workflowVersion: row.workflow_version, awaitingSelection: Boolean(row.awaiting_selection), interrupted: Boolean(row.interrupted),
       codexCalls: counts.find((item) => item.provider === runConfig?.model.providerId)?.count ?? 0,
-      searches: counts.find((item) => item.provider === runConfig?.searchProvider)?.count ?? 0,
+      searches: counts.filter((item) => item.provider === "exa" || item.provider === "perplexity").reduce((sum, item) => sum + item.count, 0),
       projectedCodexCalls: projection.modelCalls, projectedSearches: projection.searches,
       lastActivity: activity ? String(JSON.parse(activity.payload_json).message ?? "") : null,
       completionReason: row.completion_reason,
@@ -1335,7 +1339,7 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
       if (route === "/threads") {
         const input = CreateThreadRequestSchema.parse(body);
         const validation = cachedValidation ?? await validateProviders();
-        const searchProvider = validation.exa.valid ? "exa" : validation.perplexity.valid ? "perplexity" : "exa";
+        const searchProvider = validation.exa.valid && validation.perplexity.valid ? "auto" : validation.exa.valid ? "exa" : validation.perplexity.valid ? "perplexity" : "exa";
         const defaultModel = cachedModels.some((model) => sameModelRef(model, DEFAULT_RUN_CONFIG.model))
           ? DEFAULT_RUN_CONFIG.model
           : cachedModels[0] ?? DEFAULT_RUN_CONFIG.model;

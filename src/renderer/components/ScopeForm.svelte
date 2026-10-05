@@ -9,8 +9,8 @@
     type ModelRef,
     type ExplorationPurpose,
     type ResearchMode,
-    type SearchProvider,
   } from "../../shared/schemas";
+  import type { SearchProviderChoice } from "../../providers/search";
   import {
     DEFAULT_OPPORTUNITY_EXPLORATION_CONFIG,
     type OpportunityExplorationConfig,
@@ -56,7 +56,6 @@
   let maxSearches = $state(initialOpportunityExploration?.maxSearches ?? DEFAULT_OPPORTUNITY_EXPLORATION_CONFIG.maxSearches);
   let allowExploratoryProblems = $state(initialOpportunityExploration?.allowExploratoryProblems ?? false);
   const workflowVersion = 2;
-  let audienceSourcePolicy = $state<"web" | "communities">(initial.scope ? initial.runConfig?.audienceSourcePolicy ?? "web" : defaults.audienceSourcePolicy);
   let title = $state(initial.scope?.title ?? "");
   let audience = $state(initial.scope?.audience ?? "");
   let domain = $state(initial.scope?.domain ?? "");
@@ -83,10 +82,12 @@
     ?? initialModelOption?.defaultReasoningEffort
     ?? "");
   let discoveryDepth = $state(initial.scope ? initial.runConfig?.discoveryDepth ?? DEFAULT_RUN_CONFIG.discoveryDepth : defaults.discoveryDepth);
-  let searchProvider = $state<SearchProvider>(initial.scope ? initial.runConfig?.searchProvider ?? defaults.searchProvider : defaults.searchProvider);
+  let searchProvider = $state<SearchProviderChoice>(initial.scope ? initial.runConfig?.searchProvider ?? defaults.searchProvider : defaults.searchProvider);
   let searchProviderTouched = $state(false);
   $effect(() => {
-    if (initial.scope || searchProviderTouched || workspace.validation[searchProvider].valid) return;
+    if (initial.scope || searchProviderTouched) return;
+    if (workspace.validation.exa.valid && workspace.validation.perplexity.valid) { searchProvider = "auto"; return; }
+    if (searchProvider === "auto" || workspace.validation[searchProvider].valid) return;
     const available = searchProvider === "exa" ? "perplexity" : "exa";
     if (workspace.validation[available].valid) searchProvider = available;
   });
@@ -155,7 +156,7 @@
   let draftFingerprint = $derived(JSON.stringify({
     researchMode, title: title.trim(), audience: audience.trim(), domain: domain.trim(), observations: observations.trim(),
     offLimits: offLimits.split("\n").map((item) => item.trim()).filter(Boolean), knownProblem: knownProblem.trim(),
-    model, reasoningEffort, discoveryDepth, searchProvider, maxRunMinutes, workflowVersion, audienceSourcePolicy, explorationPurpose,
+    model, reasoningEffort, discoveryDepth, searchProvider, maxRunMinutes, workflowVersion, explorationPurpose,
     riskEvaluationCriteria: riskEvaluationCriteria.trim(), ideaCount, opportunityExploration,
   }));
   // An unavailable saved model remains selected, but it cannot start a new run.
@@ -173,8 +174,10 @@
   let selectedModelReady = $derived(workspace.validation.native.available && workspace.validation.native.connected);
   let selectedModelAvailable = $derived(Boolean(modelKey) && workspace.models.some((item) => item.providerId === "openai-subscription" && sameModelRef(item, model)));
   let selectedReasoningAvailable = $derived(selectedModelOption?.reasoningEfforts.some((item) => item.id === reasoningEffort) ?? false);
-  let selectedSearchValidation = $derived(workspace.validation[searchProvider]);
-  let selectedSearchName = $derived(searchProvider === "exa" ? "Exa" : "Perplexity");
+  let selectedSearchValidation = $derived(searchProvider === "auto"
+    ? workspace.validation.perplexity.valid ? workspace.validation.perplexity : workspace.validation.exa
+    : workspace.validation[searchProvider]);
+  let selectedSearchName = $derived(searchProvider === "auto" ? "Exa or Perplexity" : searchProvider === "exa" ? "Exa" : "Perplexity");
   let nativeValidationPending = $derived(isValidationPending(workspace.validation.native.error));
   let searchValidationPending = $derived(researchMode === "explore-market" && isValidationPending(selectedSearchValidation.error));
   let connectionsChecking = $derived(nativeValidationPending || searchValidationPending);
@@ -256,7 +259,7 @@
       offLimits: offLimits.split("\n").map((item) => item.trim()).filter(Boolean),
     };
     const runConfig: NonNullable<WorkspaceState["runConfig"]> = {
-      configVersion: 2, workflowVersion, audienceSourcePolicy, ideaCount: ideaCount ?? DEFAULT_IDEA_COUNT,
+      configVersion: 2, workflowVersion, ideaCount: ideaCount ?? DEFAULT_IDEA_COUNT,
       model, reasoningEffort, discoveryDepth, searchProvider, maxRunMinutes,
       researchMode, knownProblem: knownProblem.trim(), explorationPurpose,
       ...(opportunityExploration ? { opportunityExploration } : {}),
@@ -352,7 +355,7 @@
         riskEvaluationCriteria: riskEvaluationCriteria.trim(),
         offLimits: offLimits.split("\n").map((item) => item.trim()).filter(Boolean),
       }, {
-        configVersion: 2, workflowVersion, audienceSourcePolicy, ideaCount, model, reasoningEffort,
+        configVersion: 2, workflowVersion, ideaCount, model, reasoningEffort,
         discoveryDepth, searchProvider, maxRunMinutes, researchMode, knownProblem: knownProblem.trim(),
         explorationPurpose, ...(opportunityExploration ? { opportunityExploration } : {}),
       });
@@ -524,7 +527,7 @@
         {/if}
       <section class="main-settings" aria-label="Main research settings">
         <div class="main-settings-grid">
-      {#if researchMode === "explore-market"}<label class="run-setting search-setting model-setting"><span>Search provider</span><div class="provider-select"><ProviderLogo provider={searchProvider} size={17} /><select aria-label="Search provider" data-field="searchProvider" bind:value={searchProvider} onchange={() => searchProviderTouched = true}><option value="exa">Exa</option><option value="perplexity">Perplexity</option></select></div><small>{searchStatus}</small>{#each visiblePreviewIssues.filter((issue) => issue.path.join(".") === "runConfig.searchProvider") as issue (issue.code)}<small class="field-error" role="alert">{issue.message}</small>{/each}</label>{/if}
+      {#if researchMode === "explore-market"}<label class="run-setting search-setting model-setting"><span>Search provider</span><div class="provider-select">{#if searchProvider !== "auto"}<ProviderLogo provider={searchProvider} size={17} />{/if}<select aria-label="Search provider" data-field="searchProvider" bind:value={searchProvider} onchange={() => searchProviderTouched = true}><option value="auto">Automatic</option><option value="exa">Exa</option><option value="perplexity">Perplexity</option></select></div><small>{searchStatus}</small>{#each visiblePreviewIssues.filter((issue) => issue.path.join(".") === "runConfig.searchProvider") as issue (issue.code)}<small class="field-error" role="alert">{issue.message}</small>{/each}</label>{/if}
       <label class="run-setting model-setting"><span>Model</span><select aria-label="Model" data-field="model" bind:this={modelSelect} bind:value={modelKey} onchange={selectModel} disabled={nativeModelOptions.length === 0}>{#if !selectedModelAvailable}<option value={modelKey}>{legacyModelNeedsReplacement && !modelKey ? "Choose an OpenAI model" : workspace.validation.native.connected ? `${modelDisplayName(model)} (unavailable)` : "Sign in to choose"}</option>{/if}{#each gpt6Models as modelId (modelId)}{#if !nativeModelOptions.some((item) => item.modelId === modelId) && model.modelId !== modelId}<option value={`openai-subscription:${modelId}`} disabled>{modelDisplayName({ modelId })} (not in model list)</option>{/if}{/each}{#each nativeModelOptions as item (modelRefKey(item))}<option value={modelRefKey(item)}>{modelDisplayName(item)}</option>{/each}</select>{#if nativeModelOptions.length === 0}<small>Your available models appear here after you sign in.</small>{/if}</label>
       <label class="run-setting"><span>Reasoning</span><select aria-label="Reasoning" data-field="reasoning" title={reasoningDescription} bind:value={reasoningEffort}>{#if !selectedReasoningAvailable}<option value={reasoningEffort}>{reasoningEffort} (unavailable)</option>{/if}{#each (selectedModelOption?.reasoningEfforts ?? []) as effort (effort.id)}<option value={effort.id}>{effort.id.charAt(0).toUpperCase() + effort.id.slice(1)}</option>{/each}</select></label>
       {#if researchMode === "explore-market"}<label class="run-setting"><span>Research depth</span><select aria-label="Research depth" bind:value={discoveryDepth}><option value="quick">Quick</option><option value="standard">Standard</option><option value="deep">Deep</option></select></label>{/if}
@@ -596,7 +599,6 @@
     </div>
 
       <div class="output-settings">
-      {#if researchMode === "explore-market"}<label class="source-coverage"><span>Search coverage</span><select aria-label="Search coverage" bind:value={audienceSourcePolicy} aria-describedby={audienceSourcePolicy === "communities" ? "source-coverage-help" : undefined}><option value="web">Web and communities</option><option value="communities">Communities only</option></select>{#if audienceSourcePolicy === "communities"}<small id="source-coverage-help">Audience evidence from Reddit and Hacker News. Market research still searches all sites.</small>{/if}</label>{/if}
 
       </div>
 
@@ -734,7 +736,7 @@
   .instruction-stages button[aria-pressed="true"] { color:var(--text);background:rgb(255 255 255 / .1); }
   .filled-dot { width:6px;height:6px;border-radius:50%;background:var(--accent-strong); }
   .settings-panel .help { margin:0 0 16px; }
-  .model-setting,.search-setting,.source-coverage { grid-column:1/-1; }
+  .model-setting,.search-setting { grid-column:1/-1; }
   .advanced-body { display:grid;gap:16px; }
   .output-settings { margin-top:20px;padding-top:20px;border-top:1px solid var(--border); }
   .provider-select { position:relative; }

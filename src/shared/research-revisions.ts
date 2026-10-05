@@ -75,20 +75,25 @@ export interface ResearchAngleProposal {
   acceptanceCriterion: string;
 }
 
-export function researchSearchAllocation(maxSearches: number, depth: DiscoveryDepth = "quick"): {
-  domainQueries: number; audienceQueries: number; candidateLimit: number; modelCalls: number;
+export function researchSearchAllocation(maxSearches: number, depth: DiscoveryDepth = "quick", pairedFirsthand = true, languageCount = 1): {
+  domainQueries: number; audienceQueries: number; candidateLimit: number; modelCalls: number; searchLegs: number;
 } {
   const searches = Math.max(0, Math.floor(maxSearches));
-  const depthLimit = DISCOVERY_DEPTHS[depth].candidateLimit;
-  const plannedQueries = Math.min(6, searches < 2 ? searches : Math.max(2, searches - depthLimit));
+  const candidateCap = DISCOVERY_DEPTHS[depth].candidateLimit;
+  const legsPerQuestion = pairedFirsthand ? 2 * Math.max(1, Math.min(3, Math.floor(languageCount))) : 1;
+  // An explicit allowance must fit even when every planned question asks for firsthand evidence.
+  // Preserve two research phases before allocating candidate verdicts from the remaining searches.
+  const plannedQueries = Math.min(6, searches < 2 * legsPerQuestion ? Math.floor(searches / legsPerQuestion)
+    : Math.max(2, Math.floor((searches - candidateCap) / legsPerQuestion)));
   const domainQueries = Math.ceil(plannedQueries / 2);
   const audienceQueries = Math.floor(plannedQueries / 2);
-  const candidateLimit = Math.min(depthLimit, Math.max(0, searches - plannedQueries));
-  const domainBatches = Math.max(1, Math.ceil(domainQueries * 4 * 6_000 / 60_000));
-  const audienceBatches = Math.max(1, Math.ceil(audienceQueries * 4 * 6_000 / 30_000));
+  const candidateLimit = Math.min(candidateCap, Math.max(0, searches - plannedQueries * legsPerQuestion));
+  const domainBatches = domainQueries === 0 ? 0 : Math.max(1, Math.ceil(domainQueries * legsPerQuestion * 4 * 6_000 / 60_000));
+  const audienceBatches = audienceQueries === 0 ? 0 : Math.max(1, Math.ceil(audienceQueries * legsPerQuestion * 4 * 6_000 / 30_000));
   return {
     domainQueries, audienceQueries, candidateLimit,
-    modelCalls: 2 + domainBatches + audienceBatches + 1 + candidateLimit,
+    modelCalls: Number(domainQueries > 0) + Number(audienceQueries > 0) + domainBatches + audienceBatches + 1 + candidateLimit,
+    searchLegs: plannedQueries * legsPerQuestion + candidateLimit,
   };
 }
 
@@ -128,8 +133,7 @@ export function previewResearchAngles(
     candidates.push(DEFAULT_ANGLES[3]!);
   }
   const unique = [...new Map(candidates.map((angle) => [angle.name.toLocaleLowerCase(), angle])).values()];
-  // A quick discovery can spend three searches testing candidate problems. Reserve those
-  // before assigning named angles to its six planned evidence searches.
+  // Angles describe questions; allocation reserves their worst-case paired search legs first.
   const allocation = researchSearchAllocation(allowance.maxSearches);
   const slots = Math.min(4, allocation.domainQueries + allocation.audienceQueries);
   const planned = unique.slice(0, slots);

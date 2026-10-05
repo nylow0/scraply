@@ -19,8 +19,8 @@ import {
   WorkflowV2Repository,
 } from "../../src/db/repositories/workflow-v2";
 import { deriveJsonSchema } from "../../src/shared/json-schema";
-import { FactorHarvestOutputSchema, ProblemCandidatesOutputSchema, ProblemKillOutputSchema, WorkflowV2FactorHarvestOutputSchema } from "../../src/shared/structured-output-schemas";
-import { WorkflowExecution } from "../../src/core/workflow-execution";
+import { FactorHarvestOutputSchema, ProblemCandidatesOutputSchema, ProblemKillOutputSchema, QueryPlanOutputSchema, LegacyWorkflowV2QueryPlanOutputSchema, WorkflowV2FactorHarvestOutputSchema } from "../../src/shared/structured-output-schemas";
+import { WorkflowExecution, workflowSearchKey } from "../../src/core/workflow-execution";
 import { configurePromptPaths } from "../../src/core/prompts";
 import { discoverProblems, harvestFactors, type HarvestedFactor, type HarvestedSource } from "../../src/core/discovery";
 import type { StructuredModelClient, StructuredStageRequest } from "../../src/providers/structured";
@@ -34,6 +34,71 @@ afterEach(() => {
 });
 
 describe("workflow v2 persistence", () => {
+  test("replays a revision-one query plan with its original request schema after the language schema upgrade", async () => {
+    configurePromptPaths({ bundledDir: join(process.cwd(), "prompts"), overrideDir: null });
+    const client = database();
+    try {
+      new WorkflowExecution(client, "run-v2");
+      client.db.prepare("DELETE FROM workflow_snapshots WHERE research_run_id = ? AND snapshot_key = ?").run("run-v2", "query-plan-languages");
+      let calls = 0;
+      const modelClient: StructuredModelClient = { async structuredCompletion(request) {
+        calls += 1;
+        expect(request.jsonSchema).toEqual(deriveJsonSchema(LegacyWorkflowV2QueryPlanOutputSchema));
+        return { output: request.schema.parse({ queries: [{ query: "Saved question", uncertainty: "Saved reason", intendedSourceType: "User report" }] }),
+          metadata: { model: request.model, usage: { status: "unknown" }, latencyMs: 1, repairCount: 0, providerRequestIds: [], attempts: [],
+            prompt: { id: "scraply.stage-worker.v1", sha256: hash("runtime-prompt") } } };
+      } };
+      const request = {
+        generationId: "legacy-query-plan",
+        model: DEFAULT_RUN_CONFIG.model, reasoningEffort: "low", stage: "query-plan:domain",
+        workOrder: { stage: "query-plan", goal: "Plan one question", definitionOfDone: ["Return one question"], instruction: "Original instruction", inputs: { queryCount: 1 } }, evidence: [],
+        schema: QueryPlanOutputSchema, jsonSchema: deriveJsonSchema(QueryPlanOutputSchema), repairPolicy: "one_retry" as const,
+      };
+      const before = await new WorkflowExecution(client, "run-v2").discoveryClient(modelClient).structuredCompletion(request);
+      const after = await new WorkflowExecution(client, "run-v2").discoveryClient(modelClient).structuredCompletion(request);
+      expect(before.output).toEqual(after.output);
+      expect(calls).toBe(1);
+      expect(client.db.prepare("SELECT stage_revision FROM stage_results WHERE research_run_id = ? AND stage_id = ?")
+        .get("run-v2", "query-plan")).toEqual({ stage_revision: 1 });
+    } finally { client.close(); }
+  });
+  test("keeps provider search identities separate and records the dispatched question", async () => {
+    configurePromptPaths({ bundledDir: join(process.cwd(), "prompts"), overrideDir: null });
+    const client = database();
+    try {
+      const execution = new WorkflowExecution(client, "run-v2");
+      let calls = 0;
+      const options = { numResults: 1, route: "open-web" as const };
+      const source = { id: "saved", url: "https://forum.test/quote", title: "Quote", text: "Quoted report" };
+      const exa = execution.search({ provider: "exa", async search() { calls += 1; return [source]; } });
+      const perplexity = execution.search({ provider: "perplexity", async search() { calls += 1; return [source]; } });
+      await exa.search("  user   report ", options);
+      await perplexity.search("user report", options);
+      await exa.search("USER REPORT", options);
+      expect(calls).toBe(2);
+      const key = workflowSearchKey("user report", options, "exa");
+      expect(execution.read(`search-query:${key.slice("search:".length)}`)).toMatchObject({ key, query: "user report", provider: "exa" });
+      expect(execution.read<string>("source-route-start")).toBe(new WorkflowExecution(client, "run-v2").read<string>("source-route-start"));
+    } finally { client.close(); }
+  });
+
+  test("reuses completed legacy community searches for both routed legs without spending again", async () => {
+    configurePromptPaths({ bundledDir: join(process.cwd(), "prompts"), overrideDir: null });
+    const client = database();
+    try {
+      const execution = new WorkflowExecution(client, "run-v2");
+      client.db.prepare("DELETE FROM workflow_snapshots WHERE research_run_id = ? AND snapshot_key = ?").run("run-v2", "source-routes");
+      const legacySearchOptions = { numResults: 4, maxCharacters: 6000, includeDomains: ["reddit.com", "news.ycombinator.com"] };
+      const source = { id: "saved", url: "https://reddit.com/old-report", title: "Quote", text: "Completed report" };
+      execution.save(workflowSearchKey("user report", legacySearchOptions), [source]);
+      let calls = 0;
+      const search = new WorkflowExecution(client, "run-v2").search({ provider: "exa", async search() { calls += 1; return []; } });
+      for (const route of ["open-web", "community"] as const) expect(await search.search("USER REPORT", {
+        numResults: 4, maxCharacters: 6000, route, excludeDomains: ["worldmetrics.org"], legacySearchOptions,
+      })).toEqual([source]);
+      expect(calls).toBe(0);
+    } finally { client.close(); }
+  });
   test("keeps saved extraction batch policy when an older run is reopened", () => {
     configurePromptPaths({ bundledDir: join(process.cwd(), "prompts"), overrideDir: null });
     const client = database();
@@ -55,7 +120,9 @@ describe("workflow v2 persistence", () => {
       const factor = { subject: "Students", behavior: "miss deadlines", sourceId: evidence.sources?.[0]?.id,
         quote: "Students do not submit their assignments on time", modelConfidence: 0.8, uncertainty: "One source" };
       const output = request.stage.startsWith("query-plan")
-        ? { queries: ["one", "two", "three"].map(query => ({ query, uncertainty: "Deadline challenges", intendedSourceType: "Student reports" })) }
+        ? { queries: ["one", "two", "three"].map((query, index) => ({ query,
+          intent: ["firsthand-experience", "current-alternative", "contrary-evidence"][index],
+          uncertainty: "Deadline challenges", intendedSourceType: "Student reports" })) }
         : { factors: [factor, { ...factor, quote: "Students do submit their assignments on time" }, { ...factor, sourceId: "invented" }] };
       return { output: request.schema.parse(output), metadata: {
         model: request.model, usage: { status: "unknown" }, latencyMs: 1, repairCount: 0, providerRequestIds: [], attempts: [],

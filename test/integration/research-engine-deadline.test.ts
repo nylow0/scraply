@@ -13,6 +13,7 @@ import { DevelopmentRepository } from "../../src/db/repositories/development";
 import { GenerationAttemptRepository } from "../../src/db/repositories/generation-attempts";
 import { ResearchRunRepository } from "../../src/db/repositories/research-runs";
 import type { ExaClient } from "../../src/providers/exa";
+import type { SearchOptions } from "../../src/providers/search";
 import { ProviderFailure, type StructuredModelClient, type StructuredStageRequest } from "../../src/providers/structured";
 import type { ResearchEvent } from "../../src/shared/ipc";
 import type { RunConfig } from "../../src/shared/schemas";
@@ -372,33 +373,36 @@ describe("research engine deadlines", () => {
     }
   });
 
-  test("routes discovery and metering through the provider saved on the run", async () => {
+  test("resumes old discovery and metering through the immutable provider saved on the run", async () => {
     const directory = mkdtempSync(join(tmpdir(), "scraply-search-provider-"));
     tempDirectories.push(directory);
     const db = new DatabaseClient(join(directory, "scraply.db"));
     let perplexitySearches = 0;
+    let exaSearches = 0;
+    const searches: Array<{ query: string; options: SearchOptions | undefined }> = [];
+    const events: ResearchEvent[] = [];
+    const stages: string[] = [];
     const modelClient: StructuredModelClient = {
       async structuredCompletion(request) {
-        for (const payload of [
-          { queries: ["query one", "query two", "query three"].map(query => ({ query, uncertainty: "Frequency", intendedSourceType: "Records" })) },
-          { factors: [] },
-          { problems: [] },
-        ]) {
-          const parsed = request.schema.safeParse(payload);
-          if (parsed.success) return { output: parsed.data, metadata: metadata(request.model) };
+        stages.push(request.stage);
+        if (request.stage.startsWith("query-plan:")) {
+          const mode = request.stage.split(":")[1];
+          return result(request, { queries: ["records", "repeated work", "current tools"].map(query => ({
+            query: `${mode} ${query}`, uncertainty: "Frequency", intendedSourceType: "Records" })) });
         }
-        throw new Error("Unexpected discovery schema");
+        if (request.stage === "problem-candidates") return result(request, { problems: [] });
+        throw new Error(`Unexpected saved discovery stage ${request.stage}`);
       },
     };
     const exa = {
       provider: "exa" as const,
       validateKey: async () => ({ valid: true as const }),
-      search: async () => { throw new Error("Exa must not receive a Perplexity run"); },
+      search: async () => { exaSearches += 1; throw new Error("Exa must not receive a Perplexity run"); },
     };
     const perplexity = {
       provider: "perplexity" as const,
       validateKey: async () => ({ valid: true as const }),
-      search: async () => { perplexitySearches += 1; return []; },
+      search: async (query: string, options?: SearchOptions) => { perplexitySearches += 1; searches.push({ query, options }); return []; },
     };
 
     try {
@@ -409,18 +413,38 @@ describe("research engine deadlines", () => {
         db,
         modelClients: { [TEST_PROVIDER]: modelClient },
         searchClients: { exa, perplexity },
-        onEvent: () => undefined,
+        onEvent: event => events.push(event),
       });
-      const runId = await engine.startDiscovery("thread-provider", {
-        title: "Provider", audience: "Operators", domain: "Operations", observations: "", offLimits: [],
-      }, {
+      const config: RunConfig = {
         configVersion: 2, workflowVersion: 2, model: TEST_MODEL, reasoningEffort: "medium", discoveryDepth: "quick", maxRunMinutes: 90,
         searchProvider: "perplexity", researchMode: "explore-market", knownProblem: "",
+      };
+      const runId = new ResearchRunRepository(db).create("thread-provider", config).runId;
+      new DiscoveryRepository(db).persistScope(runId, {
+        title: "Provider", audience: "Operators", domain: "Operations", observations: "", offLimits: [],
       });
+      new WorkflowExecution(db, runId);
+      // Older saved v2 runs froze their prompts before frame and intent-routing markers existed.
+      db.db.prepare("DELETE FROM workflow_snapshots WHERE research_run_id = ? AND snapshot_key <> 'prompts'").run(runId);
+      const frozenPrompts = db.db.prepare("SELECT value_json FROM workflow_snapshots WHERE research_run_id = ? AND snapshot_key = 'prompts'").get(runId);
+      await engine.resumeRun(runId);
       await waitFor(() => !engine.getActiveRunIds().has(runId));
 
+      expect(events.filter(event => event.type === "run-failed")).toEqual([]);
+      expect(stages).toEqual(["query-plan:domain", "query-plan:audience", "problem-candidates"]);
       expect(perplexitySearches).toBe(6);
+      expect(exaSearches).toBe(0);
+      expect(searches.map(search => search.query)).toEqual(["domain records", "domain repeated work", "domain current tools",
+        "audience records", "audience repeated work", "audience current tools"]);
+      expect(searches.every(search => search.options?.provider === "perplexity")).toBe(true);
       expect(db.db.prepare("SELECT status FROM research_runs WHERE id = ?").get(runId)).toEqual({ status: "completed" });
+      expect(db.db.prepare("SELECT config_json FROM research_runs WHERE id = ?").get(runId)).toEqual({ config_json: JSON.stringify(config) });
+      expect(db.db.prepare("SELECT value_json FROM workflow_snapshots WHERE research_run_id = ? AND snapshot_key = 'prompts'").get(runId)).toEqual(frozenPrompts);
+      expect(db.db.prepare("SELECT count(*) AS count FROM workflow_snapshots WHERE research_run_id = ? AND snapshot_key IN ('frame-workflow','source-routes')").get(runId))
+        .toEqual({ count: 0 });
+      const receipts = db.db.prepare(`SELECT json_extract(value_json,'$.query') AS query, json_extract(value_json,'$.provider') AS provider
+        FROM workflow_snapshots WHERE research_run_id = ? AND snapshot_key LIKE 'search-query:%' ORDER BY query`).all(runId);
+      expect(receipts).toEqual(searches.map(search => ({ query: search.query, provider: "perplexity" })).sort((first, second) => first.query.localeCompare(second.query)));
       expect(db.db.prepare("SELECT provider, reservation_usd, committed_usd, status FROM cost_ledger WHERE research_run_id = ? AND operation = 'search' ORDER BY created_at, id").all(runId))
         .toEqual(Array.from({ length: 6 }, () => ({ provider: "perplexity", reservation_usd: 0.005, committed_usd: 0.005, status: "committed" })));
     } finally {
