@@ -1028,6 +1028,22 @@ describe("App workspace coordination", () => {
     await waitFor(() => expect(exportResearch).toHaveBeenCalledWith("alpha"));
   });
 
+  test.each(["finished", "running"] as const)("Solutions fallback keeps its heading and actions without an eyebrow: %s", async status => {
+    const fixture = createIdeasFixture(new URLSearchParams(), "alpha");
+    const state = workspace("alpha");
+    state.scope = { title: "Alpha", domain: "School", audience: "", observations: "", offLimits: [] };
+    state.threads[0]!.status = "problems-ready";
+    state.activeWorkflow = { ...fixture.workflow.summary, state: status, purpose: "known-problem", stopReason: null,
+      outcome: status === "finished" ? "no-qualifying-ideas" : null };
+    installApi({ getWorkspace: async () => structuredClone(state), getWorkflow: async () => ({ ...fixture.workflow, summary: state.activeWorkflow! }) });
+    const view = render(App);
+    await fireEvent.click(await view.findByRole("tab", { name: "Solutions" }));
+    const panel = view.getByRole("tabpanel", { name: "Solutions" });
+    expect(within(panel).getByRole("heading", { name: status === "finished" ? "No qualifying ideas were produced." : "Ideas are being developed." })).toBeTruthy();
+    expect(panel.querySelector(":scope > .eyebrow")).toBeNull();
+    if (status === "finished") expect(within(panel).getByRole("button", { name: "Export result" })).toBeTruthy();
+  });
+
   test("anchors elapsed time when switching to a run after browsing another thread", async () => {
     let now = 1_000;
     const dateNow = vi.spyOn(Date, "now").mockImplementation(() => now);

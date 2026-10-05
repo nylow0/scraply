@@ -238,6 +238,13 @@ if (slice2) {
   }
 }
 let progressReads = 0;
+if (params.has("fallback") && slice2 && state.activeThreadId) {
+  state.solutions = [];
+  state.ideaGroups = [];
+  state.threads = state.threads.map(thread => thread.id === state.activeThreadId ? { ...thread, status: "problems-ready" } : thread);
+  frameWorkflow = { ...slice2.workflow, summary: { ...slice2.workflow.summary, outcome: "no-qualifying-ideas", stopReason: "No qualifying ideas were produced." } };
+  state.activeWorkflow = frameWorkflow.summary;
+}
 // Keep each synthetic project separate when testing navigation and draft reuse.
 if (state.scope) state.threads = state.threads.map(thread => ({ ...thread, isUnstartedDraft: false }));
 type ProjectState = Pick<WorkspaceState, "scope" | "runConfig" | "messages" | "problemCandidates" | "rejectedProblemCandidates" | "solutions" | "ideaGroups" | "latestResearchRun" | "activeWorkflow" | "researchRequests" | "researchFindings">;

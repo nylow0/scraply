@@ -59,6 +59,29 @@ export function createIdeasFixture(params = new URLSearchParams(), threadId = "f
     decisionAnalysis: index === 0 && params.get("analysis") === "done" ? fixtureAnalysis : null,
   }));
   if (params.get("analysis") === "done") solutions[0]!.selectable = false;
+  if (params.has("partial")) {
+    solutions[0]!.riskEvaluation = { risks: fixtureAnalysis.risks, unknowns: fixtureAnalysis.unknowns };
+    solutions[0]!.focusedExperiment = {
+      schemaVersion: 1, status: "approved", correctionCount: 0, finalReview: null,
+      initialReview: { schemaVersion: 1, verdict: "approved", isolatesAssumption: true, measuresBehavior: true,
+        controlsComparison: true, outcomeRulesCoherent: true, rationale: "The same retrieval task checks access and coverage.", issues: [], correctionInstruction: null },
+      plan: { schemaVersion: 1,
+        assumption: { id: "record-access", category: "mechanism-value", testableClaim: "Staff can retrieve a period and judge what its records support.",
+          decisionImpact: "A failed retrieval stops the pack prototype.", selectionReason: "Usable access is the main untested assumption." },
+        shortDemandTestAssumptionId: null, assumptionChangeReason: null,
+        participantsAndCases: { eligibilityCriteria: ["School staff who previously lacked access"], caseSelection: "Use one approved school export.",
+          exclusions: ["The staff member who prepared the pack"], recruitmentMethod: "Invite three staff responsible for conservation reviews." },
+        primaryMetric: { name: "correct unassisted retrievals", unit: "retrievals", numerator: null, denominator: null,
+          collectionMethod: "Ask each participant to find the same period and explain its coverage.", comparisonBaseline: "The same task with the current account access." },
+        sample: { targetObservations: 3, recruitmentLimit: 3, observationWindow: { value: 4, unit: "hours" }, feasibilityRationale: "Three staff can attend one afternoon session." },
+        outcomeRules: { kind: "numeric-threshold", direction: "higher-is-better", passThreshold: 3, failThreshold: 2, metricRange: { minimum: 0, maximum: 3 },
+          thresholdRationale: "Every participant must retrieve the period correctly.", minimumUsableObservations: 3,
+          insufficientDataReason: "Fewer than three attempts cannot decide the result.", unusableObservationRule: "Exclude attempts without a complete export." },
+        resources: { estimatedEffort: "One afternoon", dependencies: ["An approved meter export"], spendingLimit: { amount: 0, currency: "USD" } },
+        paymentTerms: null, followOnDecision: { pass: "Build the one-format importer.", fail: "Stop and review the access barrier.", inconclusive: "Complete the missing retrievals." },
+      },
+    };
+  }
   const versions: IdeaConversation["versions"] = Array.from({ length: params.get("versions") === "3" ? 3 : 1 }, (_, index) => ({
     solutionId: index ? `school-version-${index + 1}` : solutions[0]!.id, parentSolutionId: index === 2 ? "school-version-2" : index ? solutions[0]!.id : null,
     versionNumber: index + 1, evidenceSnapshotId: "school-snapshot", changeSummary: index === 1 ? "Limit the pack to one approved meter export and add a coverage check." : null,

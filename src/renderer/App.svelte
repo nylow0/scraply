@@ -1157,15 +1157,14 @@
       </div>
     {:else if activeWorkflow}
       <div class="failed" id="workflow-panel-ideas" role="tabpanel" aria-label="Solutions" tabindex="0">
-        <p class="eyebrow">{activeWorkflow.state === "finished" ? "Idea outcome" : "Idea development"}</p>
         <h1>{activeWorkflow.stopReason ?? (activeWorkflow.state === "finished" ? "No qualifying ideas were produced." : "Ideas are being developed.")}</h1>
         {#if activeWorkflow.state === "finished"}<div class="zero-idea-actions"><button disabled={busy} onclick={() => exportIdeas("markdown")}>Export result</button><button disabled={busy} onclick={() => exportIdeas("json")}>Export JSON</button></div>{/if}
         {#if runFinished}{@render runPanel()}{/if}
       </div>
     {:else if activeThread.status === "failed"}
-      <div class="failed" id="workflow-panel-ideas" role="tabpanel" aria-label="Solutions" tabindex="0"><p class="eyebrow">No solutions</p><h1>The run stopped before any solutions were generated.</h1></div>
+      <div class="failed" id="workflow-panel-ideas" role="tabpanel" aria-label="Solutions" tabindex="0"><h1>The run stopped before any solutions were generated.</h1></div>
     {:else}
-      <div class="failed" id="workflow-panel-ideas" role="tabpanel" aria-label="Solutions" tabindex="0"><p class="eyebrow">Solutions not ready</p><h1>Complete the research step first.</h1></div>
+      <div class="failed" id="workflow-panel-ideas" role="tabpanel" aria-label="Solutions" tabindex="0"><h1>Complete the research step first.</h1></div>
     {/if}
   </main>
   <Settings bind:this={settings} open={settingsOpen} onOpenChange={(open) => navigateTo({ ...route, settings: open })} feedback={feedback?.tone === "error" || feedback?.lifetime === "progress" ? feedback : null} {workspace} {busy} {nativeLogin}

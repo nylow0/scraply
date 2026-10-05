@@ -245,3 +245,17 @@ test("conversation history restores scroll after a delayed reload and ignores an
   await expect(page.getByRole("button", { name: "Explore this idea" })).toBeVisible();
   expect(await page.locator(".main-content").evaluate(el => el.scrollTop)).toBe(ideaScroll);
 });
+
+test("saved partial analysis and the Solutions fallback remain readable", async ({ page }) => {
+  await page.goto("/?slice2=1&history=1&analysis=failed&partial=1");
+  await page.getByRole("button", { name: "Open idea: History access and provenance pack" }).click();
+  await page.getByText("Risks", { exact: true }).click();
+  await expect(page.getByText("The authorized holder cannot share usable consumption records.", { exact: true })).toBeVisible();
+  await expect(page.getByRole("region", { name: "Focused experiment" })).toBeVisible();
+  await expect(page.getByText("Staff can retrieve a period and judge what its records support.", { exact: true })).toBeVisible();
+  await page.goto("/?slice2=1&history=1&fallback=1");
+  const panel = page.getByRole("tabpanel", { name: "Solutions" });
+  await expect(panel.getByRole("heading", { name: "No qualifying ideas were produced.", exact: true })).toBeVisible();
+  await expect(panel.locator(":scope > .eyebrow")).toHaveCount(0);
+  await expect(panel.getByRole("button", { name: "Export result", exact: true })).toBeVisible();
+});

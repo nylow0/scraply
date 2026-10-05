@@ -231,7 +231,7 @@ test(`installed ${mode === "vibe" ? "Vibe" : "Controlled"} workflow previews, ru
       await savedIdea.scrollIntoViewIfNeeded();
       await reopenedPage.screenshot({ path: testInfo.outputPath("vibe-saved-idea.png"), animations: "disabled" });
       await savedIdea.click();
-      await expect(reopenedPage.getByRole("heading", { name: "Track repair quote approvals in one shared view.", exact: true, level: 1 })).toBeVisible();
+      await expect(reopenedPage.getByRole("heading", { name: "Track repair quote approvals in one shared view", exact: true, level: 1 })).toBeVisible();
       await expect(reopenedPage.getByText("Problem and fit")).toBeVisible();
     } else await reopenedPage.screenshot({ path: testInfo.outputPath(`${mode}-workflow-finished.png`), animations: "disabled" });
 
