@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
+import type { ScraplyApi } from "../../src/preload/index";
 import { EXPLAIN_IDEA_PROMPT } from "../../src/shared/idea-messages";
 
 async function openConversation(page: Page, query = "") {
@@ -224,8 +225,9 @@ test("conversation history restores scroll after a delayed reload and ignores an
   const saved = await page.locator(".main-content").evaluate(el => el.scrollTop);
   expect(saved).toBe(900);
   await page.evaluate(() => {
-    const original = window.scraply.getIdeaConversation;
-    window.scraply.getIdeaConversation = async request => {
+    const { scraply } = window as unknown as { scraply: Pick<ScraplyApi, "getIdeaConversation"> };
+    const original = scraply.getIdeaConversation;
+    scraply.getIdeaConversation = async request => {
       await new Promise(resolve => setTimeout(resolve, 600));
       return original(request);
     };
