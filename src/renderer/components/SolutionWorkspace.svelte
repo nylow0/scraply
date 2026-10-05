@@ -199,7 +199,8 @@
     {/each}
   </div>
 
-  {#if opportunities && onReviewOpportunities && onEditMembership && (initialConfig?.explorationPurpose === "startup-opportunities" || opportunities.rawOptionCount > 0 || opportunities.families.some((family) => family.active) || opportunities.unresolved.length > 0)}
+  <!-- Business families come from the older review; ranked ideas are never grouped into families, so they skip it. -->
+  {#if opportunities && onReviewOpportunities && onEditMembership && solutions.some((idea) => idea.rank == null) && (initialConfig?.explorationPurpose === "startup-opportunities" || opportunities.rawOptionCount > 0 || opportunities.families.some((family) => family.active) || opportunities.unresolved.length > 0)}
     <details class="grouping"><summary>Review idea grouping <span>{opportunities.acceptedFamilyCount} accepted families, {opportunities.unreviewedOptionIds.length + opportunities.unresolved.length} need review</span></summary>
       <OpportunityFamilies {opportunities} {modelOptions} initialConfig={initialConfig ?? null} busy={busy || analysisBlocked || opportunityReviewRunning} onReview={onReviewOpportunities} onEdit={onEditMembership} />
     </details>

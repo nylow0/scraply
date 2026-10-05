@@ -139,6 +139,19 @@ describe("SolutionWorkspace groups", () => {
     expect(onExport).toHaveBeenCalledWith("json");
   });
 
+  test("ranked ideas skip the business grouping review", () => {
+    const opportunities: OpportunityFamiliesView = {
+      rawOptionCount: 1, reviewedOptionCount: 0, acceptedFamilyCount: 0, families: [], unresolved: [], unreviewedOptionIds: ["solution-1"],
+      lastReviewedAt: null, reviewStatus: "not-reviewed", reviewError: null,
+    };
+    const view = render(SolutionWorkspace, {
+      solutions: [{ ...solution(), workflowVersion: 2 as const, rank: 1, rankReason: "Best", weakFitReason: null }], busy: false,
+      opportunities, modelOptions: [], initialConfig: { ...DEFAULT_RUN_CONFIG, explorationPurpose: "startup-opportunities" },
+      onReviewOpportunities: vi.fn(), onEditMembership: vi.fn(), onExport: vi.fn(), onOpenSource: vi.fn(), onReview: vi.fn(),
+    });
+    expect(view.queryByText(/Review idea grouping/)).toBeNull();
+  });
+
   test("says when a run returned no ideas", () => {
     const view = render(SolutionWorkspace, {
       solutions: [], workflowVersion: 2, busy: false,
