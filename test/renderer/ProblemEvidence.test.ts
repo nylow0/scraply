@@ -111,11 +111,10 @@ describe("rejected problem evidence", () => {
       fixedExplorationPurpose: "general-solutions",
       onCommit: managedCommit, onExport: vi.fn(), onOpenSource: vi.fn(),
     });
-    expect(managed.getByText("This project asks for practical solutions.")).toBeTruthy();
     expect(managed.queryByRole("combobox", { name: "Option type" })).toBeNull();
     expect(managed.queryByRole("textbox", { name: "Or state the problem yourself." })).toBeNull();
     expect(managed.queryByRole("button", { name: "Use as user-asserted problem" })).toBeNull();
-    expect(managed.getByText(/Each idea batch reserves up to 4 model calls for generation and review/)).toBeTruthy();
+    expect(managed.getByText("problems selected", { exact: false })).toBeTruthy();
     expect(managed.queryByText(/model calls projected/)).toBeNull();
     await fireEvent.click(managed.getByRole("button", { name: "Generate all selected" }));
     expect(managedCommit).toHaveBeenCalledWith(["managed"], null, DEFAULT_RUN_CONFIG.model, "medium", "general-solutions");
@@ -128,7 +127,6 @@ describe("rejected problem evidence", () => {
     });
     expect(legacy.getByText(/~3 model calls projected/)).toBeTruthy();
     expect(legacy.queryByRole("combobox", { name: "Option type" })).toBeNull();
-    expect(legacy.getByText("Ideas will follow your brief and each selected problem.")).toBeTruthy();
     await fireEvent.click(legacy.getByRole("button", { name: "Generate all selected" }));
     expect(legacyCommit).toHaveBeenCalledWith(["legacy"], null, DEFAULT_RUN_CONFIG.model, "medium", "auto");
   });

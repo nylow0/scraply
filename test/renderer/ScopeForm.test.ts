@@ -91,7 +91,9 @@ describe("ScopeForm search provider selection", () => {
     await fireEvent.click(view.getByRole("radio", { name: /I have a problem to solve/ }));
     await fireEvent.click(view.getByRole("radio", { name: /Vibe/ }));
     expect(view.queryByLabelText("Automatic problem cap")).toBeNull();
-    expect(view.getByText("Describe the problem to start.")).toBeTruthy();
+    // The empty brief is flagged on the field after Start, not by a standing sentence and link beside the button.
+    expect(view.queryByText("Describe the problem to start.")).toBeNull();
+    expect(view.queryByRole("button", { name: "Edit brief" })).toBeNull();
   });
 
   test("names a new thread with the title agent before launching it", async () => {
@@ -124,7 +126,7 @@ describe("ScopeForm search provider selection", () => {
     });
   });
 
-  test("defaults to Vibe and refreshes depth guidance before launch", async () => {
+  test("defaults to Vibe and previews the chosen depth before launch", async () => {
     const state = workspace();
     state.validation.exa = { valid: true };
     const onPreviewWorkflow = vi.fn(async (draft: WorkflowLaunchDraft) => ({
@@ -165,7 +167,6 @@ describe("ScopeForm search provider selection", () => {
     expect(view.getByLabelText("Search provider").closest("dialog")).toBeNull();
     expect(view.queryByLabelText("Maximum model calls")).toBeNull();
     await fireEvent.change(view.getByLabelText("Research depth"), { target: { value: "deep" } });
-    expect(view.getByText(/Assess up to 8 problem candidates per selected area/)).toBeTruthy();
     await waitFor(() => expect(onPreviewWorkflow.mock.lastCall?.[0].runConfig.discoveryDepth).toBe("deep"));
     await waitFor(() => expect((view.getByRole("button", { name: "Start" }) as HTMLButtonElement).disabled).toBe(false));
     await fireEvent.click(view.getByRole("button", { name: "Start" }));
@@ -734,7 +735,6 @@ describe("ScopeForm search provider selection", () => {
       workspace: state, busy: false, onSave: vi.fn(), onStart: vi.fn(), onRetry: vi.fn(),
     });
 
-    expect(view.getByText("Your available models appear here after you sign in.")).toBeTruthy();
     expect(view.getByText("No compatible models are available")).toBeTruthy();
     expect((view.getByRole("combobox", { name: /Model/ }) as HTMLSelectElement).disabled).toBe(true);
   });

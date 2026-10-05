@@ -43,7 +43,7 @@
       {#if !knownProblem}<div><dt>Search provider</dt><dd>{config.searchProvider === "auto" ? "Automatic" : config.searchProvider === "exa" ? "Exa" : "Perplexity"}</dd></div>{/if}
     </dl>
   {:else}
-    <div class="empty"><h2>No setup has been saved.</h2><p>Complete this step to begin the workflow.</p></div>
+    <div class="empty"><h2>No setup has been saved.</h2></div>
   {/if}
 </div>
 

@@ -31,7 +31,6 @@
       {experiment.status === "approved" ? "Reviewed" : "Needs revision"}
     </span>
   </div>
-  <p class="planning-note">This is a plan. It has not been run and does not confirm customer demand.</p>
   <dl class="assumption-grid">
     <!-- The claim itself is the heading above; the assumption's stored id is an internal key, so only its type is shown. -->
     <div><dt>Assumption type</dt><dd><span class="category">{plan.assumption.category.replaceAll("-", " ")}</span></dd></div>
@@ -112,7 +111,6 @@
   h3 { margin:0;max-width:70ch;font-size:16px;line-height:1.6; }
   h4 { margin:0 0 12px;font-size:13px; }
   p,li,dd { color:var(--muted);font-size:13px;line-height:1.7; }
-  .planning-note { color:var(--subtle);margin:8px 0 20px; }
   .review-status { flex-shrink:0;border:1px solid #e6a34a66;border-radius:999px;padding:4px 9px;color:#e6a34a;font-size:11px; }
   .review-status.approved { border-color:#bdbdbd66;color:var(--accent-strong); }
   .category { display:inline-block;margin-right:6px;padding:2px 6px;border:1px solid var(--border-strong);border-radius:5px;text-transform:capitalize; }

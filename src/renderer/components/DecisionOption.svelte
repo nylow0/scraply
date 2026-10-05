@@ -51,14 +51,14 @@
   type EvidenceMetadata = { sourceRole?: string; audienceFit?: string; independentSourceKey?: string|null; supportsDemand?: boolean; demandEvidenceUncertainty?: string };
   function evidenceSummary(factor: SolutionView["factors"][number]): string {
     const evidence = factor as typeof factor & EvidenceMetadata;
-    return `Source role: ${evidence.sourceRole ?? "unknown"} · Audience: ${evidence.audienceFit ?? "unknown"} · ${evidence.independentSourceKey ? "Independent origin identified" : "Independence unknown"} · ${evidence.supportsDemand ? "Supports demand" : "Does not establish demand"}`;
+    return `Source role: ${evidence.sourceRole ?? "unknown"} · Audience: ${evidence.audienceFit ?? "unknown"} · ${evidence.independentSourceKey ? "Independent origin identified" : "Independence unknown"}${evidence.supportsDemand ? " · Supports demand" : ""}`;
   }
   function confirmedEvidenceLabel(solution: SolutionView): string {
     if (solution.problemVerdict !== "confirmed") return verdictLabel(solution.problemVerdict).toLowerCase();
     const hasIntendedBuyerEvidence = solution.factors.some((factor) => (factor as typeof factor & EvidenceMetadata).audienceFit === "intended-buyer");
     return hasIntendedBuyerEvidence
-      ? "confirmed with intended-buyer evidence; demand not established"
-      : "research marked confirmed; audience fit unassessed; demand not established";
+      ? "confirmed with intended-buyer evidence"
+      : "confirmed";
   }
   function reassessedRiskLabel(risk: NonNullable<SolutionView["decisionAnalysis"]>["risks"][number]): string {
     if (enhancedFollowUp?.riskReassessment?.newRisks.some((item) => item.riskId === risk.riskId)) {
@@ -203,7 +203,7 @@
       {#if loading}<p role="status">Loading saved details…</p>{/if}
       {#if error}<p role="alert">{error}</p><button onclick={loadDetail}>Retry details</button>{/if}
       {#if detail}
-        {#if analysis}<p class="analysis-status" role="status">Analysis completed. The experiment and model judgments are ready to review.</p>{/if}
+        {#if analysis}{/if}
         <details class="deep-review"><summary>Evidence and sources</summary>
         <div class="source-columns">
         <section aria-label="Sources supporting this option"><h3>Sources supporting this option</h3>
@@ -213,15 +213,14 @@
           <ul>{#each contraryReferences as source (source.id)}<li>{#if source.url}<a href={source.url} onclick={(event) => { event.preventDefault(); void onOpenSource(source.url!); }}>{source.title}</a>{:else}{source.title}{/if}</li>{:else}<li>No contrary sources cited for this option.</li>{/each}</ul>
         </section>
         </div>
-        <p class="status">These roles are the model's assessment of this option. The original problem evidence follows.</p>
         <h3>Observations about the problem</h3>
         {#each detail.factors as factor (factor.id)}
-          <blockquote>{factor.quote}<p class="status">{evidenceSummary(factor)}</p>{#if factor.uncertainty}<p class="status">Uncertainty: {factor.uncertainty}</p>{/if}{#if (factor as typeof factor & EvidenceMetadata).demandEvidenceUncertainty}<p class="status">Demand evidence gap: {(factor as typeof factor & EvidenceMetadata).demandEvidenceUncertainty}</p>{/if}<small class="estimated">Matched against the saved search excerpt. Model confidence is uncalibrated.</small><footer><a href={factor.sourceUrl} onclick={(event) => { event.preventDefault(); void onOpenSource(factor.sourceUrl); }}>{factor.sourceTitle}</a></footer></blockquote>
-        {:else}<p>No source-backed observations. Treat the problem as an assertion to test.</p>{/each}
+          <blockquote>{factor.quote}<p class="status">{evidenceSummary(factor)}</p>{#if factor.uncertainty}<p class="status">Uncertainty: {factor.uncertainty}</p>{/if}{#if (factor as typeof factor & EvidenceMetadata).demandEvidenceUncertainty}<p class="status">Demand evidence gap: {(factor as typeof factor & EvidenceMetadata).demandEvidenceUncertainty}</p>{/if}<footer><a href={factor.sourceUrl} onclick={(event) => { event.preventDefault(); void onOpenSource(factor.sourceUrl); }}>{factor.sourceTitle}</a></footer></blockquote>
+        {:else}<p>No source-backed observations.</p>{/each}
         <h3>Sources used to assess the problem</h3>
         {#each detail.contrarySources ?? [] as source (source.id)}
           <details><summary>{source.title}</summary><a href={source.url} onclick={(event) => { event.preventDefault(); void onOpenSource(source.url); }}>Open source</a><p class="source-text">{source.text}</p></details>
-        {:else}<p>No contrary sources were collected. Their absence does not confirm the premise.</p>{/each}
+        {:else}<p>No contrary sources were collected.</p>{/each}
         </details>
         {#if detail.riskEvaluation && !analysis}
           <details aria-label="Independent risk evaluation"><summary>Risk review</summary>
@@ -243,16 +242,14 @@
           {/if}
           {#if idea.selected && !focusedExperiment && onPlanExperiment}
             <button class="plan-experiment" disabled={busy} onclick={() => onPlanExperiment?.(idea)}>Plan a focused experiment</button>
-            <p class="status">This creates a reviewed plan. It does not run a customer experiment.</p>
           {/if}
           <details class="deep-review"><summary>Possible outcomes</summary>
-          <h3>Possible consequences</h3><p class="status">Model judgments. These have not been observed.</p>
-          {#each analysis.consequences as consequence, index (index)}<div class="finding"><strong>{consequence.direction}: {consequence.description}</strong><p>Affects {consequence.affects}. {consequence.rationale}</p></div>{/each}
+          <h3>Possible consequences</h3>          {#each analysis.consequences as consequence, index (index)}<div class="finding"><strong>{consequence.direction}: {consequence.description}</strong><p>Affects {consequence.affects}. {consequence.rationale}</p></div>{/each}
           </details>
           <details class="deep-review"><summary>Risks and responses</summary>
           <h3>{detail.riskEvaluation ? "Independent risk evaluation" : "Decisive risks"}</h3>
           <p class="status">Evaluated against: {detail.riskEvaluationCriteria || "The research goal and boundaries."}</p>
-          {#each analysis.risks as risk (risk.riskId)}<div class="finding"><strong>{risk.description}</strong><p>{risk.whyDecisive}</p></div>{:else}<p>No decisive risk identified by the model. This is not a safety guarantee.</p>{/each}
+          {#each analysis.risks as risk (risk.riskId)}<div class="finding"><strong>{risk.description}</strong><p>{risk.whyDecisive}</p></div>{:else}<p>No decisive risk identified by the model.</p>{/each}
           <h3>Proposed responses, untested</h3>
           {#each analysis.proposedResponses as response, index (index)}<div class="finding"><strong>{response.approach}</strong><p>Addresses: {analysis.risks.filter((risk) => response.riskIds.includes(risk.riskId)).map((risk) => risk.description).join("; ")}</p><p>Cost: {response.cost}</p><p>Fails if: {response.failsIf}</p></div>{/each}
           {#if analysis.unknowns.length}<h3>Open questions</h3><ul>{#each analysis.unknowns as unknown, index (index)}<li>{unknown}</li>{/each}</ul>{/if}
@@ -276,11 +273,9 @@
               {#if enhancedFollowUp?.reassessmentStatus === "failed"}<p role="alert">{enhancedFollowUp.reassessmentError ?? "The reassessment failed."}</p>{/if}
               {#if enhancedFollowUp?.reassessmentAnalysis}
                 <details class="reassessment"><summary>Reassessment with new evidence</summary>
-                  <p class="status">This is a separate assessment. The original analysis above remains unchanged.</p>
                   <h3>Updated consequences</h3>
                   {#each enhancedFollowUp.reassessmentAnalysis.consequences as consequence, index (index)}<div class="finding"><strong>{consequence.direction}: {consequence.description}</strong><p>{consequence.rationale}</p></div>{/each}
                   <h3>Reassessed risks</h3>
-                  <p class="status">New and changed risks are labeled. Unchanged risks remain in the complete reassessed analysis.</p>
                   {#each enhancedFollowUp.reassessmentAnalysis.risks as risk (risk.riskId)}
                     <div class="finding"><strong>{reassessedRiskLabel(risk)}</strong><p>{risk.whyDecisive}</p>{#if reassessedRiskChange(risk.riskId)}<p class="status">Evidence change: {reassessedRiskChange(risk.riskId)}</p>{/if}</div>
                   {:else}<p>No decisive risks were identified in the reassessment.</p>{/each}
@@ -291,25 +286,22 @@
                 </details>
               {:else if detail.evidenceFollowUp.status === "completed" && detail.canReassessEvidence && idea.runId && onEvidenceReassessment}
                 <button class="reassess" disabled={busy} onclick={() => onEvidenceReassessment?.(idea.runId!)}>Reassess with new evidence</button>
-                <p class="status">Your prior analysis will remain unchanged and the reassessment will appear separately.</p>
               {/if}
             </section>
           {:else if idea.selected && idea.runId && analysis && idea.canRequestEvidenceFollowUp && onEvidenceFollowUp}
             <form onsubmit={(event) => { event.preventDefault(); void onEvidenceFollowUp(idea.runId!, followUpQuestion.trim()); }}>
               <h3>Ask one evidence question</h3>
-              <p>One follow-up search per solution.</p>
               <label>Question<textarea rows="2" maxlength="500" bind:value={followUpQuestion} placeholder="What should we verify next?"></textarea></label>
               <button disabled={busy || !followUpQuestion.trim()}>Check evidence</button>
             </form>
           {/if}
           <form class="decision-editor" onsubmit={(event) => { event.preventDefault(); void save(); }}>
-            <h3>Your decision and actual result</h3><p>Record what you decided and observed.</p>
-            <label>Your decision<textarea rows="3" maxlength="8000" bind:value={userDecision} oninput={() => saved = false} placeholder="What did you decide?"></textarea></label>
+            <h3>Your decision and actual result</h3>            <label>Your decision<textarea rows="3" maxlength="8000" bind:value={userDecision} oninput={() => saved = false} placeholder="What did you decide?"></textarea></label>
             <label>Observed test result<textarea rows="3" maxlength="8000" bind:value={observedResult} oninput={() => saved = false} placeholder="What happened?"></textarea></label>
             <label>Experiment outcome<select bind:value={experimentOutcome} oninput={() => saved = false}><option value="not-run">Not run</option><option value="pass">Pass</option><option value="fail">Fail</option><option value="inconclusive">Inconclusive</option></select></label>
             <button disabled={busy}>Save decision and result</button>{#if saved}<span role="status">Saved</span>{/if}
           </form>
-        {:else if idea.selected}<p>The analysis has not completed. Saved options remain available.</p>{/if}
+        {:else if idea.selected}<p>The analysis has not completed.</p>{/if}
       {/if}
     </div>
   {/if}
@@ -332,7 +324,6 @@
   p,li { line-height:1.8;font-size:13px;max-width:78ch;color:var(--muted); }
   ul { padding-left:20px; }li + li { margin-top:7px; }
   .status,.problem { color:var(--subtle);font-size:13px;line-height:1.7; }
-  .analysis-status { color:var(--success);font-size:13px; }
   .option-overview { padding:0;background:transparent;border:0;border-top:1px solid var(--border);border-radius:0;margin-top:0; }
   .startup-details { border-top:1px solid var(--border); }
   .startup-details dl { grid-template-columns:repeat(2,minmax(0,1fr)); }
@@ -346,19 +337,19 @@
   .source-columns { display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:24px;border-bottom:1px solid var(--border);padding-bottom:18px; }
   .source-columns section { min-width:0; }.source-columns h3 { font-size:13px; }.source-columns ul { padding-left:16px; }.source-columns a { overflow-wrap:anywhere; }
   blockquote { margin:16px 0;padding:18px 20px;border:1px solid var(--border);border-left:2px solid #bdbdbd55;border-radius:0 10px 10px 0;background:var(--surface);font-size:13px;line-height:1.8;max-width:78ch; }
-  footer { margin-top:10px;font-size:13px; }.estimated { display:block;color:var(--subtle);font-size:13px;margin-top:8px; }
+  footer { margin-top:10px;font-size:13px; }
   .finding { border-bottom:1px solid var(--border);padding:18px 0; }.finding strong { font-size:13px;font-weight:550; }.finding p { margin-bottom:0; }
   .experiment { border:1px solid #bdbdbd38;border-radius:14px;padding:22px;margin-top:28px;background:#bdbdbd05; }
   .experiment h3 { margin:0 0 14px;color:var(--accent-strong);font-size:13px; }.experiment > strong { font-size:16px;font-weight:600;line-height:1.6;display:block;max-width:70ch; }
   .experiment dl { padding-top:18px;border-top:1px solid var(--border);margin-top:18px; }
   form { border:1px solid var(--border);padding:22px;border-radius:14px;background:var(--surface);margin-top:24px; }
-  form h3 { margin:0 0 8px; }form > p { margin:0 0 20px; }
+  form h3 { margin:0 0 8px; }
   label { display:grid;gap:8px;margin:16px 0;font-size:13px;color:var(--muted); }
   textarea { width:100%;background:var(--bg);color:var(--text);border:1px solid var(--border-strong);border-radius:9px;padding:12px;resize:none;font-size:13px; }
   select { width:100%;background:#000;color:var(--text);border:1px solid var(--border-strong);border-radius:9px;padding:11px;font-size:13px; }
   .reassess { margin-top:14px; }
   .plan-experiment { margin-top:14px; }
-  .decision-editor { display:grid;grid-template-columns:1fr 1fr;gap:0 20px; }.decision-editor h3,.decision-editor > p { grid-column:1/-1; }.decision-editor button { width:fit-content;align-self:end;margin-bottom:16px; }.decision-editor label { margin-top:0; }
+  .decision-editor { display:grid;grid-template-columns:1fr 1fr;gap:0 20px; }.decision-editor h3 { grid-column:1/-1; }.decision-editor button { width:fit-content;align-self:end;margin-bottom:16px; }.decision-editor label { margin-top:0; }
   .source-text { white-space:pre-wrap;max-height:360px;overflow:auto; }form span { margin-left:12px;font-size:13px;color:var(--success); }
   @container page (max-width:700px) { dl { grid-template-columns:1fr;gap:16px; }.source-columns { grid-template-columns:1fr;gap:0; }.decision-editor { grid-template-columns:1fr; }.disclosure-content { padding:20px; }header { flex-direction:column;gap:16px; } }
 </style>

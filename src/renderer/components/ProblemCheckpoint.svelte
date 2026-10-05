@@ -60,7 +60,7 @@
       `Source role: ${evidence.sourceRole ?? "unknown"}`,
       `Audience: ${evidence.audienceFit ?? "unknown"}`,
       `Origin: ${evidence.independentSourceKey ? "identified" : "independence unknown"}`,
-      evidence.supportsDemand ? "Supports demand" : "Does not establish demand",
+      ...(evidence.supportsDemand ? ["Supports demand"] : []),
     ];
   }
   function evidenceGap(problem: ProblemCandidate): string | null {
@@ -68,8 +68,7 @@
   }
 </script>
 <section class="checkpoint problem-review">
-  <header><div><h1>Choose problems to develop</h1></div><button class="export" disabled={busy} onclick={onExport}>Export research JSON</button></header>
-  <details class="evidence-key"><summary>How to read the evidence</summary><p>Quoted text was matched against the saved search excerpt. This does not verify the original page or establish buyer demand. Dotted text is model-estimated. Amber borders mark weak or adverse verdicts.</p></details>
+  <header><div><h1>Choose problems to develop</h1></div></header>
   <ResultsToolbar bind:query label="Search problems" count={filteredProblems.length} />
   <div class="problems">
     {#each filteredProblems as problem,index (problem.id)}
@@ -78,12 +77,12 @@
           <summary class="disclosure-title" title={problem.statement}><span class="disclosure-label">{problem.statement}</span>{#if selected.has(problem.id)}<span aria-label="Selected for development">✓</span>{/if}</summary>
           <div class="disclosure-content">
             <label class="pick"><input type="checkbox" checked={selected.has(problem.id)} disabled={busy} onchange={()=>toggle(problem.id)} /><span>Develop this problem</span></label>
-            <div class="verdict">{#if problem.verdict !== "confirmed"}<span>{verdictLabel(problem.verdict)}</span>{/if}{#if problem.verdict === "confirmed"}<span>Demand not established</span>{/if}{#if problem.singleHarvestModeWarning}<span>One harvest mode</span>{/if}{#if problem.closeRoleEvidence}<span>Evidence from close roles</span>{/if}</div>
+            <div class="verdict">{#if problem.verdict !== "confirmed"}<span>{verdictLabel(problem.verdict)}</span>{/if}{#if problem.singleHarvestModeWarning}<span>One harvest mode</span>{/if}{#if problem.closeRoleEvidence}<span>Evidence from close roles</span>{/if}</div>
             <p>{problem.whyItPersists}</p>
             {#if problem.affected || problem.scaleEstimate}<dl>{#if problem.affected}<div><dt>Affected</dt><dd>{problem.affected}</dd></div>{/if}{#if problem.scaleEstimate}<div><dt>Scale</dt><dd class="estimated">{problem.scaleEstimate}</dd></div>{/if}</dl>{/if}
             <p class="reason">{problem.verdictReason}</p>
             {#if evidenceGap(problem)}<p class="evidence-gap">Evidence gap: {evidenceGap(problem)}</p>{/if}
-              {#if problem.factors.length === 0}<p class="no-factors">No cited factors</p>{:else}<details><summary>{problem.factors.length} cited {problem.factors.length === 1 ? "factor" : "factors"}</summary>{#each problem.factors as factor (factor.id)}<blockquote><p>{factor.subject} — {factor.behavior}</p><q>{factor.quote}</q><p class="factor-meta">{evidenceDetails(factor).join(" · ")}</p>{#if factor.uncertainty}<p>Uncertainty: {factor.uncertainty}</p>{/if}{#if (factor as typeof factor & EvidenceMetadata).demandEvidenceUncertainty}<p>Demand evidence gap: {(factor as typeof factor & EvidenceMetadata).demandEvidenceUncertainty}</p>{/if}<small class="estimated">Matched against the saved search excerpt. Model confidence is uncalibrated.</small><button disabled={busy} onclick={()=>onOpenSource(factor.sourceUrl)}>{factor.sourceTitle}</button></blockquote>{/each}</details>{/if}
+              {#if problem.factors.length === 0}<p class="no-factors">No cited factors</p>{:else}<details><summary>{problem.factors.length} cited {problem.factors.length === 1 ? "factor" : "factors"}</summary>{#each problem.factors as factor (factor.id)}<blockquote><p>{factor.subject} — {factor.behavior}</p><q>{factor.quote}</q><p class="factor-meta">{evidenceDetails(factor).join(" · ")}</p>{#if factor.uncertainty}<p>Uncertainty: {factor.uncertainty}</p>{/if}{#if (factor as typeof factor & EvidenceMetadata).demandEvidenceUncertainty}<p>Demand evidence gap: {(factor as typeof factor & EvidenceMetadata).demandEvidenceUncertainty}</p>{/if}<button disabled={busy} onclick={()=>onOpenSource(factor.sourceUrl)}>{factor.sourceTitle}</button></blockquote>{/each}</details>{/if}
           </div>
         </details>
       </article>
@@ -99,14 +98,14 @@
   <section class="development-settings" aria-label="Development settings">
     <label><span>Development model</span><ModelPicker label="Development model" options={availableModels} bind:value={modelKey} onchange={selectModel} disabled={busy||availableModels.length===0} {...(modelKey&&!selectedModel?{missingLabel:`${modelDisplayName(initialModel??DEFAULT_RUN_CONFIG.model)} (unavailable)`}:{})} /></label>
     <label><span>Development reasoning</span><select aria-label="Development reasoning" bind:value={reasoningEffort} disabled={busy||!selectedModel}>{#if !reasoningAvailable}<option value={reasoningEffort}>{reasoningEffort} (unavailable)</option>{/if}{#each (selectedModel?.reasoningEfforts??[]) as effort (effort.id)}<option value={effort.id}>{effort.id.charAt(0).toUpperCase()+effort.id.slice(1)}</option>{/each}</select></label>
-    <p>{selectedPurpose === "auto" ? "Ideas will follow your brief and each selected problem." : selectedPurpose === "startup-opportunities" ? "This project asks for startup opportunities." : "This project asks for practical solutions."}</p>
     {#if modelKey&&!selectedModel}<p role="status">The saved development model is unavailable. Choose an available model before generating.</p>{:else if selectedModel&&!reasoningAvailable}<p role="status">The saved reasoning effort is unavailable for this model. Choose an available effort before generating.</p>{/if}
   </section>
+  <div class="export-links"><button class="link-button" disabled={busy} onclick={onExport}>Export research JSON</button></div>
   <footer>
     {#if fixedExplorationPurpose}
-      <p><strong>{selected.size}</strong> problems selected · Each idea batch reserves up to 4 model calls for generation and review. The total number of batches depends on the target and accepted ideas; remaining allowance is shown above.</p>
+      <p><strong>{selected.size}</strong> problems selected</p>
     {:else}
-      <p><strong>{selected.size+(userProblem.trim()?1:0)}</strong> problems selected · ~{projected} model calls projected. Scraply will reuse completed development and generate a batch for each remaining selection. It may return fewer options than requested when the evidence does not support more.</p>
+      <p><strong>{selected.size+(userProblem.trim()?1:0)}</strong> problems selected · ~{projected} model calls projected</p>
     {/if}
     <button disabled={busy||!selectedModel||!reasoningAvailable||(!selected.size&&!userProblem.trim())} onclick={()=>onCommit([...selected],userProblem.trim()||null,model,reasoningEffort,selectedPurpose)}>{busy?"Starting…":"Generate all selected"}</button>
   </footer>
@@ -114,8 +113,6 @@
 <style>
 
   .checkpoint { max-width:var(--page-max);margin:auto;padding:38px var(--page-inline) 80px; }
-  .evidence-key { margin-top:20px;padding:0;border:0;font-size:13px;color:var(--muted); }
-  .evidence-key p { max-width:76ch;margin:10px 0 0; }
   article.picked { border-color:#bdbdbd60; }
   .pick { display:flex;gap:9px;align-items:center;width:fit-content;padding:10px 14px;border:1px solid #bdbdbd30;border-radius:8px;background:#bdbdbd08;font-size:13px;color:var(--accent-strong); }
   .pick input { width:15px;height:15px;accent-color:var(--accent); }

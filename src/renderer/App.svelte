@@ -987,8 +987,8 @@
       {:else if !activeWorkflow && workspace.runConfig?.opportunityExploration && workspace.solutions.length > 0}
         <div class="notice"><button disabled={busy || workspace.opportunityReviewStatus?.running} onclick={startOrResumeOpportunities}>Continue toward {workspace.runConfig.opportunityExploration.targetFamilies} distinct hypotheses</button></div>
       {/if}
-      {#if workspace.opportunityReviewStatus?.kind === "review" && workspace.opportunityReviewStatus.running}<div class="notice" role="status">Reviewing saved business ideas. Completed comparisons are being saved.</div>{/if}
-      {#if workspace.opportunityReviewStatus?.kind === "experiment" && workspace.opportunityReviewStatus.running}<div class="notice" role="status">Planning and reviewing a focused experiment. No customer test is being run.</div>{/if}
+      {#if workspace.opportunityReviewStatus?.kind === "review" && workspace.opportunityReviewStatus.running}<div class="notice" role="status">Reviewing saved business ideas</div>{/if}
+      {#if workspace.opportunityReviewStatus?.kind === "experiment" && workspace.opportunityReviewStatus.running}<div class="notice" role="status">Planning and reviewing a focused experiment</div>{/if}
       {#if activeThread.status === "failed" && !activeWorkflow}
         <div class="run-stopped" role="status">
           <div><strong>Run stopped</strong><span>{activeRun?.resumeBlockedReason ?? activeRun?.completionReason ?? activeRun?.lastActivity ?? "The last run failed or was cancelled. Review the setup, then retry explicitly."}</span></div>
@@ -1039,7 +1039,7 @@
     {:else if activeStep === "research"}
       {#if latestApprovedFrame?.approved && editingApprovedFrameId === latestApprovedFrame.id}
         <div id="workflow-panel-research" role="tabpanel" aria-label="Research frame editing">
-          <div class="frame-edit-note"><p>Save a new version for future runs. The current run keeps its frame.</p><button type="button" disabled={busy} onclick={() => editingApprovedFrameId = null}>Cancel frame edits</button></div>
+          <div class="frame-edit-note"><button type="button" disabled={busy} onclick={() => editingApprovedFrameId = null}>Cancel frame edits</button></div>
           <FrameReview frame={latestApprovedFrame.approved} sources={latestApprovedFrame.sources} purpose={latestApprovedFrame.knownProblem ? "known-problem" : "discovery"} {busy} commitLabel="Save new version" onCommit={saveApprovedFrame} onOpenSource={openExternalUrl} />
         </div>
       {:else if reviewingFrame && runFrame && workflowDetail}
@@ -1072,9 +1072,6 @@
         <div class="failed" class:after-summary={Boolean(activeWorkflow)} id="workflow-panel-research" role="tabpanel" aria-label="Research" tabindex="0"><p class="eyebrow">{activeWorkflow ? "Research outcome" : "Research unavailable"}</p><h1>{activeWorkflow?.stopReason ?? "No completed research is ready yet."}</h1><p>{activeWorkflow ? "You can inspect the task record above or start a new run from setup." : "Return to setup and start a research run."}</p>{#if activeRun || activeWorkflow}<div class="zero-idea-actions"><button disabled={busy} onclick={exportResearch}>Export research JSON</button></div>{/if}</div>
       {/if}
       {#if activeWorkflow}
-        {#if activeWorkflow.mode === "vibe" && activeWorkflow.state === "finished" && activeWorkflow.activeSnapshotId}
-          <p class="followup-note">You can start a separate research follow-up. The finished Vibe result and its ideas stay saved; apply the new research when you want to use it in a later idea conversation.</p>
-        {/if}
         <ResearchRevisions requests={workspace.researchRequests} findings={workspace.researchFindings}
           readOnly={reviewingFrame || editingApprovedFrameId === latestApprovedFrame?.id || (activeWorkflow.mode === "vibe" && activeWorkflow.state !== "finished") || !(["running", "waiting-for-review"].includes(activeWorkflow.state)
             || (activeWorkflow.state === "finished" && !!activeWorkflow.activeSnapshotId))}
@@ -1089,7 +1086,6 @@
       <div class="running development-progress">
         <div class="activity-symbol"><Icon name="ideas" size={30} /></div><p class="eyebrow">Development in progress</p>
         <h1>{runtimeProgress.stage === "analyzing-option" || runtimeProgress.stage === "evaluating-risk" ? "Analyzing the selected option." : workspace.solutions.length ? "Generating the next options." : "Turning problems into possibilities."}</h1>
-        <p class="research-export-hint">The research archive is already available. Open the Research tab to inspect or export it while solutions are generated.</p>
         <div class="activity"><span></span><p>{runActivity}</p></div>
         {#if activeRun}<div class="progress-facts" aria-label="Run progress"><strong>{stageLabel(runtimeProgress.stage)}</strong>{#if runtimeProgress.modelState}<span>{runtimeProgress.modelState === "waiting" ? "Queued for model" : runtimeProgress.modelState === "dispatched" ? "Sent to model" : "Accepted by model"}</span>{/if}{#if elapsedStatus}<span>{elapsedStatus}</span>{/if}{#if runtimeProgress.lastSuccessfulCheckpoint}<span>Last checkpoint: {runtimeProgress.lastSuccessfulCheckpoint}</span>{/if}</div>{/if}
         {#if activeRun}<div class="run-actions"><button class="cancel" disabled={busy} onclick={() => cancelResearch(activeRun.runId)}>Cancel run</button></div>{/if}
@@ -1114,7 +1110,6 @@
       <div class="failed" id="workflow-panel-ideas" role="tabpanel" aria-label="Solutions" tabindex="0">
         <p class="eyebrow">{activeWorkflow.state === "finished" ? "Idea outcome" : "Idea development"}</p>
         <h1>{activeWorkflow.stopReason ?? (activeWorkflow.state === "finished" ? "No qualifying ideas were produced." : "Ideas are being developed.")}</h1>
-        <p>{activeWorkflow.state === "finished" ? "Research and task details remain available in the Research tab." : "Progress and remaining limits are shown above."}</p>
         {#if activeWorkflow.state === "finished"}<div class="zero-idea-actions"><button disabled={busy} onclick={() => exportIdeas("markdown")}>Export result</button><button disabled={busy} onclick={() => exportIdeas("json")}>Export JSON</button></div>{/if}
         {#if runFinished}{@render runPanel()}{/if}
       </div>
@@ -1145,7 +1140,7 @@
 
 <style>
   .workflow-progress-wrap { padding:18px var(--page-gutter) 0; }
-  .approved-frame { margin:24px var(--page-gutter);padding:20px 0;border-top:1px solid var(--border); }.approved-frame summary { cursor:pointer;font-size:15px; }.approved-frame p { color:var(--muted);font-size:13px;max-width:76ch; }.approved-frame-content { padding-top:12px; }.approved-frame-content h2 { margin:16px 0 7px;font-size:14px;font-weight:550; }.approved-frame-content ul { list-style:disc;padding-left:20px;color:var(--muted);font-size:13px; }.approved-frame-content li { margin:6px 0; }.approved-frame-content li span { margin-left:10px;color:var(--subtle); }.approved-frame button,.frame-edit-note button { padding:9px 12px;border:1px solid var(--border-strong);border-radius:8px;background:var(--surface);color:var(--text);font-size:13px; }.frame-edit-note { display:flex;align-items:center;justify-content:space-between;gap:16px;padding:18px var(--page-gutter) 0; }.frame-edit-note p { color:var(--muted);font-size:13px; }
+  .approved-frame { margin:24px var(--page-gutter);padding:20px 0;border-top:1px solid var(--border); }.approved-frame summary { cursor:pointer;font-size:15px; }.approved-frame p { color:var(--muted);font-size:13px;max-width:76ch; }.approved-frame-content { padding-top:12px; }.approved-frame-content h2 { margin:16px 0 7px;font-size:14px;font-weight:550; }.approved-frame-content ul { list-style:disc;padding-left:20px;color:var(--muted);font-size:13px; }.approved-frame-content li { margin:6px 0; }.approved-frame-content li span { margin-left:10px;color:var(--subtle); }.approved-frame button,.frame-edit-note button { padding:9px 12px;border:1px solid var(--border-strong);border-radius:8px;background:var(--surface);color:var(--text);font-size:13px; }.frame-edit-note { display:flex;align-items:center;justify-content:space-between;gap:16px;padding:18px var(--page-gutter) 0; }
   /* Research requests follow the problem list as the next section, so the list drops its end-of-page padding. */
   .main-content > :global(.archive:has(~ .research-revisions)),
   .main-content > :global(#workflow-panel-research:has(~ .research-revisions) > .checkpoint) { padding-bottom:24px; }
@@ -1186,10 +1181,9 @@
   /* Under a run summary the outcome follows it at the page edge instead of centering in the window. */
   .failed.after-summary { min-height:0;max-width:none;margin:0;justify-content:flex-start;padding:36px var(--page-gutter) 48px; }
   .running h1,.failed h1 { font-size:38px;font-weight:600;letter-spacing:-.035em;line-height:1.25;max-width:620px;margin:10px 0 20px; }
-  .failed > p:not(.eyebrow),.research-export-hint { color:var(--muted);font-size:13px;line-height:1.8;max-width:650px;margin:0; }
+  .failed > p:not(.eyebrow) { color:var(--muted);font-size:13px;line-height:1.8;max-width:650px;margin:0; }
   .zero-idea-actions { display:flex;flex-wrap:wrap;gap:8px;margin-top:22px; }
   .zero-idea-actions button { min-height:38px;padding:8px 12px;border:1px solid var(--border-strong);border-radius:8px;background:#000;color:var(--text);font-size:13px; }
-  .followup-note { max-width:75ch;margin:20px var(--page-gutter) 0;color:var(--muted);font-size:13px;line-height:1.6; }
   .activity-symbol { position:relative; }.activity-symbol::after { content:"";position:absolute;inset:-5px;border:1px solid transparent;border-top-color:var(--accent);border-radius:28px;animation:orbit 4s linear infinite; }
   .activity { width:100%;display:flex;gap:14px;border:1px solid var(--border);border-radius:14px;padding:20px;background:var(--surface);margin:24px 0;align-items:center; }
   .activity p { margin:0;font-size:13px;color:var(--muted); }.activity span { width:7px;height:7px;border-radius:50%;background:var(--accent);flex:none;animation:pulse 1.5s ease infinite alternate; }

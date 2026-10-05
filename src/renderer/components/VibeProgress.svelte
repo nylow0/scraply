@@ -214,7 +214,7 @@
   </header>
 
   {#if summary.state === "pause-requested" || summary.state === "stop-requested"}
-    <p class="pending-reason" role="status">{stateLabel(summary.state)}. Completed work remains saved.</p>
+    <p class="pending-reason" role="status">{stateLabel(summary.state)}</p>
   {/if}
 
   <InvestigatorProgress {investigators} />
@@ -285,7 +285,6 @@
   {#if !guided && !terminal && onPreviewExtension && onApplyExtension}
     <details class="extension">
       <summary>Extend work allowance</summary>
-      <p>Choose additional limits, preview the new total, then apply it to this run.</p>
       <div class="extension-fields">
         <label>Model calls <input aria-label="Additional model calls" type="number" min="0" step="1" bind:value={additionalModelCalls} oninput={() => extensionError = null} /></label>
         <label>Searches <input aria-label="Additional searches" type="number" min="0" step="1" bind:value={additionalSearches} oninput={() => extensionError = null} /></label>
@@ -320,12 +319,10 @@
         {/each}
       </ul>
     </section>
-  {:else}
-    <p class="empty-tasks">Tasks will appear here as the run advances.</p>
   {/if}
   {#if !researchView && (canPause || canStop || canResume)}
     <div class="controls">
-      <p>{summary.state === "paused" ? canResume ? "Resume uses the saved limits." : "This run is paused. Resolve any uncertain task before resuming." : canPause ? "Pause waits for the current request. Stop requests cancellation and keeps completed work." : "Stop keeps completed work."}</p>
+      {#if summary.state === "paused" && !canResume}<p>Resolve any uncertain task before resuming.</p>{/if}
       <div class="control-buttons">
         {#if canPause}
           <button type="button" class="pause-button" disabled={busy} onclick={() => void onPause().catch(() => {})}>Pause</button>
@@ -355,7 +352,6 @@
               {#if task.error}<div><dt>Error</dt><dd>{task.error}</dd></div>{/if}
             </dl>
             {#if onReassessProblems && task.canReassessProblems}
-              <p>Re-evaluate saved evidence against each problem's affected users. Your original brief and research remain saved.</p>
               <button type="button" class="retry-button" disabled={busy}
                 onclick={() => void onReassessProblems(task.id).catch(() => {})}>Re-evaluate problems</button>
             {/if}
@@ -441,7 +437,6 @@
   .task-error { color:var(--danger); font-size:12px; }
   .task-state { flex:none; color:var(--muted); font-size:12px; }
   .task-state.task-problem { color:var(--danger); }
-  .empty-tasks { margin:0; color:var(--muted); font-size:13px; }
   .controls { display:flex; justify-content:space-between; align-items:center; gap:18px; padding-top:15px; border-top:1px solid var(--border); }
   .controls p { max-width:55ch; margin:0; color:var(--muted); font-size:12px; line-height:1.5; }
   .control-buttons { display:flex; flex:none; flex-wrap:wrap; gap:8px; }

@@ -15,7 +15,7 @@
   import { hasSavedResearchDefaults, modelDisplayName, readResearchDefaults } from "../lib/research-defaults";
   import { preferredModel } from "../../shared/latest-models";
   import ModelPicker from "./ModelPicker.svelte";
-  import { DISCOVERY_DEPTHS, framedDiscoveryProjection } from "../../shared/discovery-projection";
+  import { framedDiscoveryProjection } from "../../shared/discovery-projection";
   import type { WorkflowLaunchDraft } from "../../shared/workflow-contracts";
   import type { z } from "zod";
   import { PreviewWorkflowResultSchema } from "../../shared/workflow-contracts";
@@ -360,8 +360,8 @@
   let blockingMessage = $derived.by(() => {
     if (!providersReady) return connectionsChecking ? "Checking connections…" : connectionNeedsAttention ? "Connect the required providers to start." : modelChoiceRequired ? "Choose an available model to start." : "Choose an available reasoning effort to start.";
     const firstField = Object.keys(missing)[0];
-    if (firstField) return firstField === "domain" ? "Add a topic to your brief to start."
-      : firstField === "knownProblem" ? "Describe the problem to start." : missing[firstField];
+    if (firstField) return firstField === "domain" ? null
+      : firstField === "knownProblem" ? null : missing[firstField];
     if (validationAttempted && previewError) return previewError;
     const previewFieldError = visiblePreviewIssues[0];
     if (previewFieldError) return previewFieldError.message;
@@ -456,7 +456,7 @@
         <div class="main-settings-grid">
       {#if researchMode === "explore-market"}<label class="run-setting search-setting model-setting"><span>Search provider</span><div class="provider-select">{#if searchProvider !== "auto"}<ProviderLogo provider={searchProvider} size={17} />{/if}<select aria-label="Search provider" data-field="searchProvider" bind:value={searchProvider} onchange={() => searchProviderTouched = true}><option value="auto">Automatic</option><option value="exa">Exa</option><option value="perplexity">Perplexity</option></select></div><small>{searchStatus}</small>{#each visiblePreviewIssues.filter((issue) => issue.path.join(".") === "runConfig.searchProvider") as issue (issue.code)}<small class="field-error" role="alert">{issue.message}</small>{/each}</label>{/if}
       <label class="run-setting model-setting"><span>Model</span><ModelPicker label="Model" field="model" options={nativeModelOptions} bind:value={modelKey} onchange={selectModel} disabled={nativeModelOptions.length === 0}
-        missingLabel={legacyModelNeedsReplacement && !modelKey ? "Choose an OpenAI model" : workspace.validation.native.connected ? `${modelDisplayName(model)} (unavailable)` : "Sign in to choose"} />{#if nativeModelOptions.length === 0}<small>Your available models appear here after you sign in.</small>{/if}</label>
+        missingLabel={legacyModelNeedsReplacement && !modelKey ? "Choose an OpenAI model" : workspace.validation.native.connected ? `${modelDisplayName(model)} (unavailable)` : "Sign in to choose"} /></label>
       <label class="run-setting"><span>Reasoning</span><select aria-label="Reasoning" data-field="reasoning" title={reasoningDescription} bind:value={reasoningEffort}>{#if !selectedReasoningAvailable}<option value={reasoningEffort}>{reasoningEffort} (unavailable)</option>{/if}{#each (selectedModelOption?.reasoningEfforts ?? []) as effort (effort.id)}<option value={effort.id}>{effort.id.charAt(0).toUpperCase() + effort.id.slice(1)}</option>{/each}</select></label>
       {#if researchMode === "explore-market"}<label class="run-setting"><span>Research depth</span><select aria-label="Research depth" bind:value={discoveryDepth}><option value="quick">Quick</option><option value="standard">Standard</option><option value="deep">Deep</option></select></label>{/if}
       <!-- A stated problem has no research depth, so the count takes that grid cell instead of its own row. -->
@@ -487,16 +487,13 @@
         <button type="button" class="text-action" bind:this={advancedSettingsButton} onclick={() => showConfiguration()}>Advanced settings <Icon name="settings" size={16} /></button>
       </section>
       <div class="launch-content">
-        {#if researchMode === "explore-market"}
-          <p class="help">Research begins with a frame, then scans its included areas. Assess up to {DISCOVERY_DEPTHS[discoveryDepth].candidateLimit} problem candidates per selected area. Additional candidates are saved under Not assessed.</p>
-        {/if}
         <div class="launch-row">
           <!-- Stays clickable while the brief is incomplete: the click is what reveals the missing fields. -->
           <button type="submit" class="primary" disabled={locked || !providersReady || (useWorkflow && previewing)}>{locked ? "Starting…" : useWorkflow ? "Start" : (researchMode === "explore-market" ? "Discover problems" : "Generate solutions")}<Icon name="arrow" size={17} /></button>
         </div>
         <div class="launch-status" role="status">
           {#if blockingMessage}<span>{blockingMessage}</span>{/if}
-          {#if configurationIssues || missing.domain || missing.knownProblem}<button type="button" class="text-action" onclick={revealBlockingField}>{modelChoiceRequired ? "Choose model" : configurationIssues ? "Review settings" : "Edit brief"}</button>{/if}
+          {#if configurationIssues}<button type="button" class="text-action" onclick={revealBlockingField}>{modelChoiceRequired ? "Choose model" : "Review settings"}</button>{/if}
           {#if validationAttempted && previewError}<button type="button" class="text-action" onclick={() => previewAttempt += 1}>Retry preview</button>{/if}
           {#if saved}<span>Saved</span>{/if}
         </div>
@@ -531,8 +528,7 @@
 
         </section>
         <section class="settings-panel" aria-label="Research scope configuration" inert={settingsSection !== "limits"}>
-          <p class="help">{researchMode === "explore-market" ? "Depth guides research breadth and evidence collection. " : ""}Model calls and searches are tracked without a fixed cutoff.</p>
-          {#if useWorkflow && workflowMode === "vibe" && researchMode === "explore-market"}<label><span>Problems to develop</span><input aria-label="Automatic problem cap" data-field="automaticProblemCap" type="number" min="1" max="20" step="1" placeholder="All qualifying" bind:value={automaticProblemCap} aria-invalid={Boolean(errors.automaticProblemCap)} /><small>Leave empty to develop every confirmed problem that qualifies.</small>{#if errors.automaticProblemCap}<small class="field-error">{errors.automaticProblemCap}</small>{/if}</label>{/if}
+          {#if useWorkflow && workflowMode === "vibe" && researchMode === "explore-market"}<label><span>Problems to develop</span><input aria-label="Automatic problem cap" data-field="automaticProblemCap" type="number" min="1" max="20" step="1" placeholder="All qualifying" bind:value={automaticProblemCap} aria-invalid={Boolean(errors.automaticProblemCap)} />{#if errors.automaticProblemCap}<small class="field-error">{errors.automaticProblemCap}</small>{/if}</label>{/if}
         </section>
         <section class="settings-panel instructions-panel" aria-label="Custom instructions" inert={settingsSection !== "instructions"}>
           <!-- One editor per stage keeps this tab as short as the others; the dot marks stages that have text. -->
@@ -547,7 +543,7 @@
         </section>
         </div>
       </div>
-      <div class="dialog-footer"><span>Changes apply to this research.</span><button type="button" onclick={() => configuration.close()}>Done</button></div>
+      <div class="dialog-footer"><button type="button" onclick={() => configuration.close()}>Done</button></div>
     </dialog>
   </form>
 </section>
@@ -566,7 +562,7 @@
   label > span { font-weight:500; }
   input,select,textarea { width:100%;min-width:0;min-height:42px;padding:9px 12px;border:1px solid var(--border-strong);border-radius:7px;color:var(--text);background:var(--surface);font-size:14px; }
   textarea { line-height:1.65; }
-  small,.help { color:var(--muted);font-size:13px;font-weight:400;line-height:1.5; }
+  small { color:var(--muted);font-size:13px;font-weight:400;line-height:1.5; }
   label > span > small { margin-left:6px; }
   .field-error { color:var(--danger);font-size:13px; }
   input[aria-invalid="true"],textarea[aria-invalid="true"],select[aria-invalid="true"] { border-color:var(--danger); }
@@ -651,7 +647,6 @@
   .instruction-stages button:hover:not([aria-pressed="true"]) { color:var(--text); }
   .instruction-stages button[aria-pressed="true"] { color:var(--text);background:rgb(255 255 255 / .1); }
   .filled-dot { width:6px;height:6px;border-radius:50%;background:var(--accent-strong); }
-  .settings-panel .help { margin:0 0 16px; }
   .model-setting,.search-setting { grid-column:1/-1; }
   .advanced-body { display:grid;gap:16px; }
   .output-settings { margin-top:20px;padding-top:20px;border-top:1px solid var(--border); }

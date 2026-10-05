@@ -74,7 +74,6 @@
   {#if selectedModel && !offered(modelKey) && workspace?.validation.native.connected}<p class="availability" role="status">{modelDisplayName(selectedModel)} isn't in the current model list. Refresh your account or choose another model.</p>{/if}
   <fieldset>
     <legend>Research titles</legend>
-    <p>This model names each research when you start it.</p>
     <label><span>Title model</span><ModelPicker label="Title model" {options} bind:value={titleModelKey} missingLabel={missingLabel(titleModelKey)} disabled={options.length === 0}
       onchange={() => { saved = false; titleReasoningEffort = catalogEffort(titleModelKey) ?? titleEfforts[0]?.id ?? "low"; }} /></label>
     <label><span>Title reasoning</span><select aria-label="Title reasoning" bind:value={titleReasoningEffort} onchange={() => saved = false}>
@@ -84,7 +83,6 @@
   </fieldset>
   <fieldset>
     <legend>Ideas defaults</legend>
-    <p>Used for new idea generation and review. Each setup can override these choices.</p>
     <label><span>Ideas model</span><ModelPicker label="Default ideas model" {options} bind:value={ideasModelKey} missingLabel={missingLabel(ideasModelKey)} disabled={options.length === 0}
       onchange={() => { saved = false; ideasReasoningEffort = catalogEffort(ideasModelKey) ?? ""; }} /></label>
     <label><span>Ideas reasoning</span><select aria-label="Default ideas reasoning" bind:value={ideasReasoningEffort} onchange={() => saved = false}>
@@ -95,10 +93,7 @@
   </fieldset>
   <fieldset class="advanced-search">
     <legend>Advanced search defaults</legend>
-    <p>Applied to new research. Each setup can override these choices.</p>
-    <label><span>Research depth</span><select aria-label="Default research depth" bind:value={discoveryDepth} onchange={() => saved = false} aria-describedby="default-depth-help"><option value="quick">Quick</option><option value="standard">Standard</option><option value="deep">Deep</option></select></label>
-    <p>Research searches the web and places where affected people share their experiences.</p>
-    <p id="default-depth-help">Quick uses fewer searches and sources. Deep explores more sources and cross-checks. Standard balances the two.</p>
+    <label><span>Research depth</span><select aria-label="Default research depth" bind:value={discoveryDepth} onchange={() => saved = false}><option value="quick">Quick</option><option value="standard">Standard</option><option value="deep">Deep</option></select></label>
   </fieldset>
   <footer><button type="submit">Save defaults</button>{#if saved}<span role="status">Defaults saved</span>{/if}</footer>
   {#if error}<p role="alert">{error}</p>{/if}

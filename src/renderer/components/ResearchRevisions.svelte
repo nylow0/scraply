@@ -181,7 +181,7 @@
 
   {#if drafting && !readOnly}
     <form class="request-form" onsubmit={(event) => { event.preventDefault(); void submitRequest(); }}>
-      <div class="form-heading"><h3>What should Scraply investigate?</h3><p>This creates a saved request in this project. The current research stays active.</p></div>
+      <div class="form-heading"><h3>What should Scraply investigate?</h3></div>
       <fieldset class="request-kind"><legend>Request type</legend>
         <label class:chosen={kind === "new-question"}><input type="radio" name="request-kind" checked={kind === "new-question"} onchange={() => chooseKind("new-question")} />New question</label>
         <label class:chosen={kind === "redo"}><input type="radio" name="request-kind" checked={kind === "redo"} onchange={() => chooseKind("redo")} />Find new evidence</label>
@@ -203,18 +203,18 @@
         </select></label>
       </div>
       <details class="advanced"><summary>Angles and work limits</summary>
-        <label class="field"><span>Research angles, one per line</span><textarea bind:value={anglesText} rows="3" disabled={busy} placeholder={marketGoal ? "Buyer reports\nExisting alternatives\nContrary evidence" : "Affected people's reports\nExisting approaches\nContrary evidence"}></textarea><small>Up to four distinct angles inside this request.</small></label>
+        <label class="field"><span>Research angles, one per line</span><textarea bind:value={anglesText} rows="3" disabled={busy} placeholder={marketGoal ? "Buyer reports\nExisting alternatives\nContrary evidence" : "Affected people's reports\nExisting approaches\nContrary evidence"}></textarea></label>
         <label class="field"><span>Focus on a saved request (optional)</span><select bind:value={targetRequestId} disabled={busy}>
           <option value="">No earlier request selected</option>
           {#each requests as request (request.id)}<option value={request.id}>{request.question}</option>{/each}
         </select></label>
-        <label class="field"><span>Instructions for this request (optional)</span><textarea bind:value={instructionsText} rows="3" maxlength="20000" disabled={busy} placeholder={marketGoal ? "Specify a source class, buyer context, or claim to challenge." : "Specify a source class, affected group, or claim to challenge."}></textarea><small>Saved with this request and used only for its work.</small></label>
+        <label class="field"><span>Instructions for this request (optional)</span><textarea bind:value={instructionsText} rows="3" maxlength="20000" disabled={busy} placeholder={marketGoal ? "Specify a source class, buyer context, or claim to challenge." : "Specify a source class, affected group, or claim to challenge."}></textarea></label>
         <div class="allowance-grid">
           <label class="field"><span>Model calls</span><input type="number" min="1" max="100" step="1" bind:value={maxModelCalls} disabled={busy} /></label>
           <label class="field"><span>Searches</span><input type="number" min={kind === "reevaluate" ? 0 : minimumSearches} max="100" step="1" bind:value={maxSearches} disabled={busy || kind === "reevaluate"} /></label>
           <label class="field"><span>Minutes</span><input type="number" min="5" max="90" step="1" bind:value={maxMinutes} disabled={busy} /></label>
         </div>
-        {#if kind === "reevaluate"}<p class="quiet">Reevaluation uses only saved evidence and makes no search calls.</p>{/if}
+        {#if kind === "reevaluate"}{/if}
       </details>
       <div class="angle-preview" aria-label="Research plan preview">
         <div class="preview-heading"><strong>Planned research angles</strong><span>Up to {kind === "reevaluate" ? 0 : maxSearches} searches · {maxModelCalls} model calls · {maxMinutes} minutes</span></div>
@@ -260,8 +260,7 @@
             {#each selectedRequest.angles as angle (angle.id)}
               <div class="angle-result"><div><span>{angle.name}</span><small>{angle.sourceClass.replaceAll("-", " ")}</small></div><em>{angle.status}</em>
                 {#if angle.query}<p>Search: {angle.query}</p>{/if}
-                {#if selectedRequest.kind === "reevaluate"}<p>Uses saved research; no new search.</p>
-                {:else if angle.sourceCount !== undefined}<p>{angle.sourceCount} {angle.sourceCount === 1 ? "source" : "sources"} returned</p>{/if}
+                {#if selectedRequest.kind !== "reevaluate" && angle.sourceCount !== undefined}<p>{angle.sourceCount} {angle.sourceCount === 1 ? "source" : "sources"} returned</p>{/if}
                 {#if angle.sources?.length}<ul class="angle-sources">{#each angle.sources as source (source.url)}<li><button type="button" onclick={() => onOpenSource(source.url)}>{source.title}</button></li>{/each}</ul>{/if}
                 {#if selectedRequest.kind !== "reevaluate" && angle.gap}<p class="gap-text">{angle.gap}</p>{/if}
               </div>
@@ -303,7 +302,7 @@
           {/if}
         {/if}
       {:else}
-        <div class="detail-empty"><h3>Compare before you use a result.</h3><p>Select a saved request to inspect its findings, sources, and remaining gaps. The current snapshot changes only when you apply selected results.</p></div>
+        <div class="detail-empty"><h3>Compare before you use a result.</h3></div>
       {/if}
     </div>
   </div>
@@ -330,15 +329,15 @@
   .pending-note{background:#bdbdbd12;border:1px solid #bdbdbd30;color:var(--accent-strong)}
   .error-note{background:#b7555517;border:1px solid #d9777740;color:#f2aaaa}
   .request-form{display:grid;gap:18px;padding:22px;margin-bottom:18px;background:#000;border:1px solid var(--border-strong);border-radius:12px}
-  .form-heading h3{margin:0}.form-heading p{font-size:13px;color:var(--muted);margin:5px 0 0}
+  .form-heading h3{margin:0}
   .request-kind{display:flex;flex-wrap:wrap;gap:8px;border:0;padding:0;margin:0}.request-kind legend{font-size:12px;color:var(--muted);margin-bottom:8px}
   .request-kind label{display:flex;align-items:center;gap:7px;padding:8px 11px;border:1px solid var(--border-strong);border-radius:8px;color:var(--muted);font-size:13px;cursor:pointer}
   .request-kind label.chosen{border-color:#bdbdbd70;background:#bdbdbd0e;color:var(--text)}.request-kind input{accent-color:var(--accent)}
-  .field{display:grid;gap:7px;font-size:13px;color:var(--muted)}.field span{font-weight:550}.field small{font-size:12px;color:var(--subtle)}
+  .field{display:grid;gap:7px;font-size:13px;color:var(--muted)}.field span{font-weight:550}
   .field textarea,.field select,.field input{width:100%;min-height:38px;padding:10px 11px;background:var(--bg);border:1px solid var(--border-strong);border-radius:8px;color:var(--text)}
   .field textarea{line-height:1.5}.field-pair{display:grid;grid-template-columns:1fr 1fr;gap:12px}
   .advanced{border-top:1px solid var(--border);padding-top:13px}.advanced summary{font-size:13px;color:var(--muted);cursor:pointer}.advanced[open]{display:grid;gap:14px}.advanced .field{margin-top:12px}
-  .allowance-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}.quiet{color:var(--muted);font-size:12px;margin:0}
+  .allowance-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}
   .angle-preview{display:grid;gap:9px;padding:14px;border:1px solid var(--border-strong);border-radius:9px;background:var(--surface)}.preview-heading{display:flex;justify-content:space-between;gap:12px;color:var(--text);font-size:12px}.preview-heading span{color:var(--muted);font-size:11px}.preview-row{display:flex;gap:10px;align-items:start;padding:7px 0;border-top:1px solid var(--border);font-size:12px}.preview-dot{width:6px;height:6px;margin-top:6px;border-radius:50%;background:var(--accent);flex:none}.preview-row strong{display:block;font-weight:600}.preview-row small{display:block;color:var(--subtle);line-height:1.45;margin-top:3px}.preview-gap,.preview-omitted{margin:0;color:var(--muted);font-size:12px}.preview-omitted{display:grid;gap:3px;padding-top:8px;border-top:1px solid var(--border)}.preview-omitted strong{color:#f0b9a1}.angle-results{display:grid;gap:8px;margin:0 0 16px;padding:13px;border:1px solid var(--border);border-radius:9px;background:var(--surface)}.angle-results>strong{font-size:11px}.angle-result{display:grid;grid-template-columns:1fr auto;gap:3px;padding-top:8px;border-top:1px solid var(--border);font-size:12px}.angle-result small{display:block;color:var(--subtle);margin-top:2px}.angle-result em{font-style:normal;color:var(--accent);text-transform:capitalize;font-size:11px}.angle-result p{grid-column:1/-1;margin:2px 0 0;color:var(--muted);font-size:11px}.angle-result .gap-text{color:#f0b9a1}.angle-sources{grid-column:1/-1;display:grid;gap:4px;margin:4px 0 0;padding:0;list-style:none}.angle-sources button{padding:0;border:0;background:transparent;color:var(--accent);font-size:11px;text-align:left;cursor:pointer}.angle-sources button:hover{text-decoration:underline}
   .form-actions{display:flex;align-items:center;justify-content:space-between;gap:14px;color:var(--subtle);font-size:12px;border-top:1px solid var(--border);padding-top:14px}
   .primary{padding:10px 15px;border:0;border-radius:8px;background:var(--accent-strong);color:var(--accent-ink);font-size:13px;font-weight:650;white-space:nowrap}
@@ -351,7 +350,7 @@
   .request-name{display:block;font-size:13px;font-weight:500;line-height:1.45}.request-meta{display:block;margin-top:5px;font-size:11px;color:var(--muted)}
   .include-toggle{display:grid;justify-items:center;gap:2px;padding:7px 10px 7px 0;color:var(--subtle);font-size:10px;cursor:pointer}.include-toggle input{accent-color:var(--accent)}
   .request-detail{padding:22px;min-width:0}.detail-head{display:flex;align-items:center;gap:8px;color:var(--muted);font-size:11px}.status-dot{width:7px;height:7px;border-radius:50%;background:var(--muted)}.status-dot.complete{background:var(--accent)}
-  .request-detail h3{margin:8px 0 16px}.detail-empty{max-width:45ch;margin:auto;padding:30px 0}.detail-empty h3{margin:0 0 7px}.detail-empty p,.detail-message{color:var(--muted);font-size:13px;margin:0}
+  .request-detail h3{margin:8px 0 16px}.detail-empty{max-width:45ch;margin:auto;padding:30px 0}.detail-empty h3{margin:0 0 7px}.detail-message{color:var(--muted);font-size:13px;margin:0}
   .comparison{display:grid;grid-template-columns:1fr 1fr;gap:10px}.finding,.new-findings{padding:15px;border:1px solid var(--border);border-radius:9px;background:var(--surface)}.finding.proposed{border-color:#bdbdbd50}
   .finding>span,.new-findings>span{font-size:11px;color:var(--subtle)}.finding h4,.new-findings h4{margin:8px 0}.finding p,.new-findings p{color:var(--muted);font-size:12px;margin:0 0 9px}.finding small{font-size:11px;color:var(--accent)}
   .evidence-detail{border-top:1px solid var(--border);margin-top:16px;padding-top:14px}.evidence-detail summary{font-size:12px;color:var(--muted);cursor:pointer}.evidence-columns{display:grid;grid-template-columns:1fr 1fr;gap:18px;margin-top:14px}

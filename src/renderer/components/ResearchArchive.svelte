@@ -40,7 +40,6 @@
     <div>
       <h1>Research</h1>
     </div>
-    <button class="export" disabled={busy} onclick={onExport}>{busy ? "Exporting…" : "Export research JSON"}</button>
   </header>
 
   <dl class="summary">
@@ -77,8 +76,7 @@
               {#each problem.factors as factor (factor.id)}
                 <blockquote>
                   <p>{factor.subject} — {factor.behavior}</p>
-                  <q>{factor.quote}</q>{#if factor.uncertainty}<p>Uncertainty: {factor.uncertainty}</p>{/if}<small class="estimated">Model confidence is uncalibrated.</small>
-                  <button disabled={busy} onclick={() => onOpenSource(factor.sourceUrl)}>{factor.sourceTitle}</button>
+                  <q>{factor.quote}</q>{#if factor.uncertainty}<p>Uncertainty: {factor.uncertainty}</p>{/if}                  <button disabled={busy} onclick={() => onOpenSource(factor.sourceUrl)}>{factor.sourceTitle}</button>
                 </blockquote>
               {/each}
             </details>
@@ -93,6 +91,7 @@
   </div>
 
   <ProblemLeads {leads} {busy} {onOpenSource} {previewCandidateAssessment} {onAssessCandidate} />
+  <div class="export-links"><button class="link-button" disabled={busy} onclick={onExport}>{busy ? "Exporting…" : "Export research JSON"}</button></div>
 </div>
 
 <style>

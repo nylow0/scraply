@@ -2,7 +2,10 @@
 .problem-review {
   header { display:flex;align-items:center;justify-content:space-between;gap:24px; }
   h1 { font-size:32px;font-weight:650;letter-spacing:-.045em;line-height:1.2;margin:0 0 10px; }
-  .export { min-height:36px;padding:9px 12px;border:1px solid var(--border);border-radius:8px;background:transparent;color:var(--text);font-size:13px;white-space:nowrap; }
+  /* Exports sit at the bottom of the page as small gray links. */
+  .export-links { display:flex;flex-wrap:wrap;gap:6px 18px;margin-top:28px; }
+  .link-button { padding:0;border:0;background:transparent;color:var(--subtle);font-size:12px; }
+  .link-button:hover:not(:disabled) { color:var(--text);text-decoration:underline; }
   .problems { display:grid;gap:10px; }
   article { border:1px solid var(--border);border-radius:13px;background:var(--surface);overflow:hidden; }
   article:has(> .problem-disclosure[open]) { border-color:var(--border-strong);background:var(--bg); }

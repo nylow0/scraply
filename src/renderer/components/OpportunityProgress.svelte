@@ -98,7 +98,7 @@
 
   {#if canExtend}
     <section class="extension" aria-label="Budget extension">
-      <div><h3>Preview one bounded extension</h3><p>Hard limits stay at two expansion rounds and twice the family target. This preview only adds provider calls for the saved gap.</p></div>
+      <div><h3>Preview one bounded extension</h3></div>
       <div class="extension-inputs">
         <label><span>More model calls</span><input aria-label="Additional opportunity model calls" type="number" min="0" max="20" step="1" bind:value={additionalModelCalls} /></label>
         <label><span>More searches</span><input aria-label="Additional opportunity searches" type="number" min="0" max="10" step="1" bind:value={additionalSearches} /></label>

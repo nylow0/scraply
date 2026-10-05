@@ -39,7 +39,6 @@ describe("DecisionOption interactions", () => {
     await fireEvent.click(view.getByRole("button", { name: "Compare observed delivery windows." }));
     await fireEvent.click(await view.findByRole("button", { name: "Plan a focused experiment" }));
     expect(onPlanExperiment).toHaveBeenCalledWith(idea);
-    expect(view.getByText("This creates a reviewed plan. It does not run a customer experiment.")).toBeTruthy();
   });
 
   test("renders the structured plan and its review state instead of the legacy experiment summary", async () => {
@@ -51,7 +50,6 @@ describe("DecisionOption interactions", () => {
     const view = render(DecisionOption, handlers(idea));
     await fireEvent.click(view.getByRole("button", { name: "Compare observed delivery windows." }));
     const experiment = await view.findByRole("region", { name: "Focused experiment" });
-    expect(view.getByText("This is a plan. It has not been run and does not confirm customer demand.")).toBeTruthy();
     expect(view.getByText("additional confirmed contradictions is at least 8 contradictions")).toBeTruthy();
     expect(within(experiment).getByText("Maintains answer keys").closest("li")).not.toBeNull();
     expect(within(experiment).getByText("Revision access").closest("li")).not.toBeNull();
