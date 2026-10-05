@@ -3,9 +3,10 @@ export function ideaContent(description: string): { name: string; summary: strin
   const text = description.trim();
   const colon = text.match(/^([^\n:]{1,160}):\s+/);
   const sentence = text.match(/^(.+?[.!?])(?:\s+|$)/);
-  const lead = colon?.[1] ?? sentence?.[1] ?? text.split("\n")[0] ?? "";
+  const title = colon && (!sentence || colon[0].length < sentence[0].length) ? colon : sentence;
+  const lead = title?.[1] ?? text.split("\n")[0] ?? "";
   const name = lead.trim().replace(/[.!?]+$/, "");
-  return { name, summary: text.slice(colon?.[0].length ?? sentence?.[0].length ?? lead.length).trim() };
+  return { name, summary: text.slice(title?.[0].length ?? lead.length).trim() };
 }
 
 /** Keep ambiguous prose intact. Newlines take precedence over sentence boundaries. */

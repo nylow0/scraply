@@ -8,6 +8,9 @@ describe("saved idea content", () => {
   });
   test("leaves a name-only idea without a summary", () => {
     expect(ideaContent("Energy log.")).toEqual({ name: "Energy log", summary: "" });
+    expect(ideaContent("Energy log. The input is simple: an approved export.")).toEqual({
+      name: "Energy log", summary: "The input is simple: an approved export.",
+    });
   });
   test("turns the real school's mechanism into its nine steps", () => {
     const steps = mechanismSteps(HISTORY_MECHANISM);
