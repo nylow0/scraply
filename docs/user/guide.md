@@ -9,10 +9,12 @@ Open **Trace** after starting a run to see the candidate outcomes, evidence and 
 1. Connect an OpenAI account in Scraply. For web discovery, add an Exa or Perplexity API key too. The welcome prompt asks for both after you sign in, and **Settings → Accounts** can add, replace, or remove a key later. Scraply checks each key with its provider before saving it and afterwards shows only its last four characters. Selectable models come from the connected account's live catalog.
 2. Create a project. Choose **Find problems to solve** to research a topic or audience, or **I have a problem to solve** when you can state the problem already. A known-problem run can skip web search.
 3. Write what you want to explore or state your known problem. Add the intended audience, boundaries, and any risks you want evaluated. Choose the model and reasoning effort, research depth and search provider when discovery needs them.
-4. Choose how much supervision you want. **Controlled** stops after research for your review. **Vibe** asks for the idea model before launch, then advances through research, selection, generation, and review while the local app host remains open.
+4. Choose how much supervision you want. **Controlled** first pauses for you to review the research frame, then pauses again after research. **Vibe** asks for the idea model before launch and approves the frame automatically, recording unanswered questions before proceeding.
 5. Check the depth and target before starting. **Solutions per problem** controls each generation batch. For startup opportunities, **Build a project-wide set of distinct businesses** enables a separate **Distinct family target**. It counts accepted, independent business families, not every variant. A higher target can take more calls and may finish short when the evidence does not support enough distinct ideas.
 
 The project saves the resolved instructions and chosen model settings with each run. You can edit advanced instructions for research, generation, or review before launch. Existing `prompts/workflow-v2-*.md` overrides remain available for deeper customization; see [data and privacy](data-and-privacy.md#prompt-overrides-and-saved-runs).
+
+The frame records the goal, success criteria, constraints, research areas, source venues, and languages. In Controlled mode, edit these before starting research, answer useful open questions, or regenerate the draft with one model call. English stays included; you can add up to two other languages. A known-problem frame has no research areas and can proceed without search. Editing an approved frame creates a new version for future work. Earlier runs keep the version they used.
 
 ## Models and research depth
 

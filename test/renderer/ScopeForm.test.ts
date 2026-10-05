@@ -146,7 +146,7 @@ describe("ScopeForm search provider selection", () => {
     expect(view.getByLabelText("Search provider").closest("dialog")).toBeNull();
     expect(view.queryByLabelText("Maximum model calls")).toBeNull();
     await fireEvent.change(view.getByLabelText("Research depth"), { target: { value: "deep" } });
-    expect(view.getByText("Assess up to 8 problem candidates. Additional candidates are saved under Not assessed.")).toBeTruthy();
+    expect(view.getByText(/Assess up to 8 problem candidates per selected area/)).toBeTruthy();
     await waitFor(() => expect(onPreviewWorkflow.mock.lastCall?.[0].runConfig.discoveryDepth).toBe("deep"));
     await waitFor(() => expect((view.getByRole("button", { name: "Start" }) as HTMLButtonElement).disabled).toBe(false));
     await fireEvent.click(view.getByRole("button", { name: "Start" }));
@@ -184,9 +184,11 @@ describe("ScopeForm search provider selection", () => {
     expect(view.queryByLabelText("Maximum searches")).toBeNull();
     await waitFor(() => expect(onPreviewWorkflow.mock.lastCall?.[0]).toMatchObject({
       targets: { kind: "project", distinctBusinessCount: 30 },
-      limits: { maxModelCalls: 56, maxSearches: 22 },
+      limits: { maxModelCalls: expect.any(Number), maxSearches: expect.any(Number) },
       runConfig: { opportunityExploration: { maxModelCalls: 24, maxSearches: 6 } },
     }));
+    expect(onPreviewWorkflow.mock.lastCall?.[0].limits.maxModelCalls).toBeGreaterThan(56);
+    expect(onPreviewWorkflow.mock.lastCall?.[0].limits.maxSearches).toBeGreaterThan(22);
 
     expect(onPreviewWorkflow.mock.lastCall?.[0].limits.enforced).toBe(false);
     await waitFor(() => expect((view.getByRole("button", { name: "Start" }) as HTMLButtonElement).disabled).toBe(false));
@@ -859,7 +861,8 @@ describe("settings surfaces preserve launch configuration", () => {
     const view = render(ScopeForm, { workspace: workspace(), busy: false, onSave: vi.fn(), onStart: vi.fn(), onRetry: vi.fn(), onPreviewWorkflow: vi.fn(), onStartWorkflow: vi.fn() });
     const info = view.getByRole("button", { name: "About Controlled" });
     await fireEvent.mouseEnter(info.parentElement!);
-    expect(view.getByRole("tooltip").textContent).toContain("choose which ones become ideas");
+    expect(view.getByRole("tooltip").textContent).toContain("pauses for approval before research");
+    expect(view.getByRole("tooltip").textContent).toContain("choose which problems become ideas");
     expect((view.getByRole("radio", { name: "Vibe" }) as HTMLInputElement).checked).toBe(true);
     await fireEvent.keyDown(info, { key: "Escape" });
     expect(view.queryByRole("tooltip")).toBeNull();

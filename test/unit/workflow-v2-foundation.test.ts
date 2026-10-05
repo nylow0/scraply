@@ -73,7 +73,7 @@ describe("workflow v2 foundation", () => {
 
   test("registers the production stages independent of config version", () => {
     expect(Object.keys(WORKFLOW_V2_STAGE_REGISTRY).sort()).toEqual([...WORKFLOW_V2_STAGE_IDS].sort());
-    expect(WORKFLOW_V2_STAGE_IDS).toHaveLength(9);
+    expect(WORKFLOW_V2_STAGE_IDS).toHaveLength(12);
     expect(WORKFLOW_VERSION_V2).toBe(2);
     expect(WORKFLOW_V2_STAGE_REGISTRY.solutions.schema).toBeDefined();
     expect(WORKFLOW_V2_STAGE_REGISTRY["factor-harvest"]).not.toHaveProperty("deadlineMs");
