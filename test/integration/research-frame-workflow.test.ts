@@ -34,7 +34,7 @@ function inputs(request: StructuredStageRequest<unknown>): Record<string, unknow
 }
 
 async function setup(mode: "babysit" | "vibe" = "babysit", knownProblem = false,
-  beforeStage?: (stage: string) => void) {
+  beforeStage?: (stage: string) => void, sharedSource = false) {
   const directory = mkdtempSync(join(tmpdir(), "scraply-frame-workflow-"));
   const db = new DatabaseClient(join(directory, "test.db"));
   configurePromptPaths({ bundledDir: join(process.cwd(), "prompts"), overrideDir: join(directory, "prompts") });
@@ -74,7 +74,7 @@ async function setup(mode: "babysit" | "vibe" = "babysit", knownProblem = false,
   } };
   const engine = new ResearchEngine({ db, modelClients: { fixture: client },
     searchClients: { exa: { provider: "exa", async validateKey() { return { valid: true }; }, async search(query) {
-      queries.push(query); return [{ id: `provider-${queries.length}`, url: `https://owners.example/${encodeURIComponent(query)}`,
+      queries.push(query); return [{ id: `provider-${queries.length}`, url: sharedSource ? "https://owners.example/shared" : `https://owners.example/${encodeURIComponent(query)}`,
         title: "An owner account", text: "I lose time handling order changes." }];
     } } }, onEvent(event) { if (event.type === "run-failed") errors.push(event.error); coordinator.handleRunEvent(event); } });
   const capabilities = async () => ({ nativeConnected: true, searchReady: { exa: !knownProblem, perplexity: false },
@@ -126,6 +126,24 @@ test("Controlled persists the frame review, then scans included areas and saves 
     expect(rows.length).toBeGreaterThan(0);
     expect(new Set(rows.map(row => row.area_id))).toEqual(new Set(["changes", "deposits"]));
     expect(db.db.prepare("SELECT COUNT(*) AS count FROM stage_results WHERE stage_id = 'area-ranking'").get()).toEqual({ count: 1 });
+  } finally { await fixture.close(); }
+});
+
+test("different areas reuse one canonical source without aborting saved research", async () => {
+  const fixture = await setup("babysit", false, undefined, true);
+  try {
+    const { coordinator, sessionId, db } = fixture;
+    await until(() => coordinator.summary(sessionId).state === "waiting-for-review");
+    const saved = coordinator.get(sessionId).researchFrame!;
+    await coordinator.command({ threadId: "project", sessionId, clientCommandId: "approve-shared-source",
+      expectedRevision: coordinator.summary(sessionId).revision, action: { type: "approve-frame", frameId: saved.id, frame: saved.draft } });
+    await until(() => ["waiting-for-review", "finished"].includes(coordinator.summary(sessionId).state));
+    expect(fixture.errors).toEqual([]);
+    expect(coordinator.summary(sessionId).reviewKind).toBe("research");
+    const runId = (db.db.prepare("SELECT research_run_id FROM factors LIMIT 1").get() as { research_run_id: string }).research_run_id;
+    expect(db.db.prepare("SELECT COUNT(*) AS count FROM sources WHERE research_run_id = ?").get(runId)).toEqual({ count: 1 });
+    expect(db.db.prepare("SELECT COUNT(DISTINCT source_id) AS count FROM factors WHERE research_run_id = ?").get(runId)).toEqual({ count: 1 });
+    expect(db.db.prepare("SELECT COUNT(DISTINCT area_id) AS count FROM factors WHERE research_run_id = ?").get(runId)).toEqual({ count: 2 });
   } finally { await fixture.close(); }
 });
 

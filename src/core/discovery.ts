@@ -105,6 +105,8 @@ export interface DiscoveryDependencies {
   smallHarvestBatches?: boolean;
   assessProblemAudience?: boolean;
   audienceSearch?: Pick<SearchOptions, "includeDomains" | "startPublishedDate"> & { category?: ExaCategory };
+  /** Rediscovered URLs reuse the saved quote and ID before the model reads them. */
+  existingSources?: () => HarvestedSource[];
   candidateLimit?: number;
   /** Older runs retain their ordering so completed verdict identities remain reusable. */
   rankCandidates?: boolean;
@@ -632,7 +634,8 @@ async function searchQueries(
     const failure = batch.find((result) => result.status === "rejected");
     if (failure?.status === "rejected") throw failure.reason;
   }
-  return resolveSources(gathered, new Map(), dependencies.onProjection, dependencies.idFactory).fresh;
+  const known = new Map(dependencies.existingSources?.().map(source => [source.canonicalUrl, source]));
+  return resolveSources(gathered, known, dependencies.onProjection, dependencies.idFactory).all;
 }
 
 export function normalizeSearchQuery(query: string): string {
@@ -797,7 +800,8 @@ export async function harvestEvidenceFollowUp(
     maxCharacters: SOURCE_MAX_CHARACTERS,
     ...(dependencies.signal ? { signal: dependencies.signal } : {}),
   });
-  const sources = resolveSources(searched, new Map(), dependencies.onProjection, dependencies.idFactory).fresh;
+  const known = new Map(dependencies.existingSources?.().map(source => [source.canonicalUrl, source]));
+  const sources = resolveSources(searched, known, dependencies.onProjection, dependencies.idFactory).all;
   const factors: HarvestedFactor[] = [];
   const rejections: FactorRejection[] = [];
   if (sources.length > 0) {

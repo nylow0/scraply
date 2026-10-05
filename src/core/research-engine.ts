@@ -36,7 +36,7 @@ import { DEFAULT_IDEA_COUNT, ModelRefSchema, ReasoningEffortSchema, RunConfigSch
 import { ScopeSchema, WorkflowV2CompatibleDecisionAnalysisOutputSchema, WorkflowV2RiskEvaluationOutputSchema, WorkflowV2RiskReassessmentOutputSchema, WorkflowV2SolutionOptionSchema, WorkflowV2SolutionsOutputSchema, WorkflowV2StartupSolutionOptionSchema, type Scope } from "../shared/structured-output-schemas";
 import { analyzeSelectedOption, developmentStageEvidence, evaluateSelectedOptionRisk, produceDevelopmentOptions, reassessSelectedOption, reassessSelectedOptionRisk, WorkflowGenerationAngleSchema, WorkflowGenerationEvidenceSchema, type WorkflowV2DevelopmentContext, type WorkflowV2EvidenceItem } from "./development";
 import { DEFAULT_PROBLEM_CANDIDATE_LIMIT, discoverProblems, discoveryRunProjection, harvestEvidenceFollowUp, harvestFactors, normalizeSearchQuery,
-  type HarvestMode, type HarvestResult, type PlannedQuery } from "./discovery";
+  type HarvestMode, type HarvestResult, type HarvestedSource, type PlannedQuery } from "./discovery";
 import { generateResearchFrame } from "./research-frame";
 import { rankScannedAreas, scanResearchArea, type AreaScan } from "./frame-discovery";
 import { runFocusedExperimentFlow } from "./experiment-review";
@@ -251,6 +251,16 @@ export class ResearchEngine {
       this.begin(created.runId, threadId, problemId, config);
     }
     return created.runId;
+  }
+
+  private readScope(runId: string): Scope {
+    const row = this.options.db.db.prepare(`SELECT title,audience,domain,observations,off_limits_json,risk_evaluation_criteria
+      FROM scopes WHERE research_run_id = ?`).get(runId) as {
+      title: string; audience: string; domain: string; observations: string; off_limits_json: string; risk_evaluation_criteria: string;
+    } | undefined;
+    if (!row) throw new AppError("not_found", "The saved research scope is missing.");
+    return ScopeSchema.parse({ title: row.title, audience: row.audience, domain: row.domain, observations: row.observations,
+      offLimits: JSON.parse(row.off_limits_json), ...(row.risk_evaluation_criteria ? { riskEvaluationCriteria: row.risk_evaluation_criteria } : {}) });
   }
 
   private admitWorkflowRun(runId: string, threadId: string, workflow?: ResearchRunWorkflowLink): boolean {
@@ -1514,17 +1524,7 @@ export class ResearchEngine {
   }
 
   private async executeDiscovery(active: ActiveRun): Promise<void> {
-    const scopeRow = this.options.db.db.prepare("SELECT title, audience, domain, observations, off_limits_json, risk_evaluation_criteria FROM scopes WHERE research_run_id = ?")
-      .get(active.runId) as { title: string; audience: string; domain: string; observations: string; off_limits_json: string; risk_evaluation_criteria: string } | undefined;
-    if (!scopeRow) throw new Error("Discovery scope is missing");
-    const scope = ScopeSchema.parse({
-      title: scopeRow.title,
-      audience: scopeRow.audience,
-      domain: scopeRow.domain,
-      observations: scopeRow.observations,
-      offLimits: JSON.parse(scopeRow.off_limits_json),
-      ...(scopeRow.risk_evaluation_criteria ? { riskEvaluationCriteria: scopeRow.risk_evaluation_criteria } : {}),
-    });
+    const scope = this.readScope(active.runId);
     const deps = this.dependencies(active);
     if (active.workflow) {
       const workflow = active.workflow;
@@ -1559,13 +1559,7 @@ export class ResearchEngine {
     const workflow = active.workflow!;
     if (new ResearchFrameRepository(this.options.db).forRun(active.runId)) return;
     const kind = workflow.read<{ knownProblem: boolean; regeneration?: { frameId: string; edited: ResearchFrame } }>("workflow-kind")!;
-    const scopeRow = this.options.db.db.prepare(`SELECT title, audience, domain, observations,
-      off_limits_json, risk_evaluation_criteria FROM scopes WHERE research_run_id = ?`).get(active.runId) as {
-        title: string; audience: string; domain: string; observations: string; off_limits_json: string; risk_evaluation_criteria: string;
-      };
-    const scope = ScopeSchema.parse({ title: scopeRow.title, audience: scopeRow.audience, domain: scopeRow.domain,
-      observations: scopeRow.observations, offLimits: JSON.parse(scopeRow.off_limits_json),
-      ...(scopeRow.risk_evaluation_criteria ? { riskEvaluationCriteria: scopeRow.risk_evaluation_criteria } : {}) });
+    const scope = this.readScope(active.runId);
     const frames = new ResearchFrameRepository(this.options.db);
     const previous = kind.regeneration ? frames.get(kind.regeneration.frameId) : null;
     if (kind.regeneration && (!previous || previous.threadId !== active.threadId)) throw new AppError("INVALID_REFERENCE");
@@ -1635,6 +1629,12 @@ export class ResearchEngine {
         workflow.save("discovery-completed", { areas: results.map(item => item.areaId), problemIds: problems.map(problem => problem.id) });
       });
     this.progress(active, `${problems.length} problems across ${selected.length} investigated areas ready for review`);
+  }
+
+  private savedRunSources(runId: string): HarvestedSource[] {
+    return this.options.db.db.prepare(`SELECT id, provider_source_id AS providerSourceId, canonical_url AS canonicalUrl,
+      canonical_url AS url, title, retrieved_text AS retrievedText, author, published_at AS publishedAt,
+      content_hash AS contentHash, retrieved_at AS retrievedAt FROM sources WHERE research_run_id = ?`).all(runId) as HarvestedSource[];
   }
 
   private assignArea(table: "factors" | "problems", ids: readonly string[], areaId: string): void {
@@ -2133,6 +2133,7 @@ export class ResearchEngine {
       model: active.config.model,
       reasoningEffort: active.config.reasoningEffort,
       depth: active.config.discoveryDepth,
+      existingSources: () => this.savedRunSources(active.runId),
       guided: this.usesWorkGuidance(active.runId),
       smallHarvestBatches: workflow.smallHarvestBatches,
       rankCandidates: workflow.rankProblemCandidates,
