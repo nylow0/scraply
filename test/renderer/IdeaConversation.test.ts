@@ -91,7 +91,7 @@ describe("IdeaConversation", () => {
     expect(input.value).toBe("Explain this idea");
     expect(view.queryByText(EXPLAIN_IDEA_PROMPT)).toBeNull();
     await pickModel(view.getByLabelText("Model"), "test:new-model");
-    await fireEvent.click(view.getByRole("button", { name: "Retry", exact: true }));
+    await fireEvent.click(view.getByRole("button", { name: /^Retry$/ }));
     await waitFor(() => expect(onSubmit).toHaveBeenCalledOnce());
     expect(onSubmit.mock.calls[0]?.[0]).toMatchObject({ intent: "explain", text: EXPLAIN_IDEA_PROMPT });
     expect(input.value).toBe("");
