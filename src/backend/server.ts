@@ -30,6 +30,7 @@ import { PerplexityClient } from "../providers/perplexity";
 import type { SearchClient, SearchProvider, ValidationResult } from "../providers/search";
 import { ProviderFailure, type StructuredModelClient } from "../providers/structured";
 import { RuntimeClient } from "../providers/runtime";
+import { AppSettingsSchema } from "../shared/app-settings";
 import { AppError, toErrorPayload } from "../shared/errors";
 import { developmentProjection } from "../shared/development-projection";
 import {
@@ -160,6 +161,10 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
   let searchKeyUpdatePending = false;
   let pendingPosts = 0;
   const workflowModelScheduler = new WorkflowModelScheduler();
+  const savedAdvancedSettings = db.getSetting("advanced_settings");
+  let advancedSettings = AppSettingsSchema.parse(savedAdvancedSettings ? JSON.parse(savedAdvancedSettings) : {});
+  workflowModelScheduler.setMaxActive(advancedSettings.maxConcurrentModelCalls);
+  context.nativeRuntime?.setMaxConcurrentGenerations(advancedSettings.maxConcurrentModelCalls);
   const invalidateProviderCache = () => {
     validationGeneration += 1;
     validationPromise = null;
@@ -1325,6 +1330,7 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
         }
         return sendJson(res, 200, getRunTrace(db, GetRunTraceRequestSchema.parse({ runId }).runId, options));
       }
+      if (method === "GET" && route === "/settings/advanced") return sendJson(res, 200, advancedSettings);
       if (method === "GET" && route.startsWith("/workflows/")) {
         const input = GetWorkflowRequestSchema.parse({
           sessionId: decodeRouteSegment(route.slice("/workflows/".length)),
@@ -1359,6 +1365,13 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
         return sendJson(res, 200, idea);
       }
       if (method !== "POST") throw new AppError("not_found", "Route not found.");
+      if (route === "/settings/advanced") {
+        advancedSettings = AppSettingsSchema.parse(await readBody(req));
+        db.setSetting("advanced_settings", JSON.stringify(advancedSettings));
+        workflowModelScheduler.setMaxActive(advancedSettings.maxConcurrentModelCalls);
+        context.nativeRuntime?.setMaxConcurrentGenerations(advancedSettings.maxConcurrentModelCalls);
+        return sendJson(res, 200, advancedSettings);
+      }
       const body = await readBody(req);
       if (route === "/workflows/preview") {
         return sendJson(res, 200, PreviewWorkflowResultSchema.parse(await workflowCoordinator.preview(PreviewWorkflowRequestSchema.parse(body))));

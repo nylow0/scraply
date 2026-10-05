@@ -11,6 +11,7 @@ import {
 } from "./ipc";
 import { AppError } from "./errors";
 import { GetRunTraceRequestSchema, GetRunTraceStepRequestSchema, RunTraceSchema, RunTraceStepDetailSchema } from "./run-trace";
+import { AppSettingsSchema, type AppSettings } from "./app-settings";
 import { z } from "zod";
 import {
   PreviewWorkflowRequestSchema, PreviewWorkflowResultSchema, StartWorkflowRequestSchema,
@@ -37,6 +38,9 @@ export function createScraplyApi(transport: ApiTransport) {
   }
 
   return {
+    getAdvancedSettings: async () => AppSettingsSchema.parse(await transport.invoke(IPC_CHANNELS.GET_ADVANCED_SETTINGS)),
+    saveAdvancedSettings: async (settings: AppSettings) => AppSettingsSchema.parse(
+      await transport.invoke(IPC_CHANNELS.SAVE_ADVANCED_SETTINGS, AppSettingsSchema.parse(settings))),
     previewWorkflow: (payload: z.infer<typeof PreviewWorkflowRequestSchema>) =>
       workflowInvoke(IPC_CHANNELS.PREVIEW_WORKFLOW, PreviewWorkflowRequestSchema.parse(payload), PreviewWorkflowResultSchema),
     startWorkflow: (payload: z.infer<typeof StartWorkflowRequestSchema>) =>

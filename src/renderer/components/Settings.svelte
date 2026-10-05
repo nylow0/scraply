@@ -1,6 +1,7 @@
 <script lang="ts">
   import { tick } from "svelte";
   import ResearchDefaults from "./ResearchDefaults.svelte";
+  import AdvancedSettings from "./AdvancedSettings.svelte";
   import ProviderLogo from "./ProviderLogo.svelte";
   import Icon from "./Icon.svelte";
   import OpenAILogo from "./OpenAILogo.svelte";
@@ -34,7 +35,7 @@
     onDelete: (id: string) => Promise<void>;
   } = $props();
 
-  let section = $state<"accounts" | "defaults" | "archive" | "local">("accounts");
+  let section = $state<"accounts" | "defaults" | "archive" | "local" | "advanced">("accounts");
   let heading: HTMLHeadingElement;
   let screen: HTMLElement;
   let archived = $derived(workspace?.threads.filter(isArchived) ?? []);
@@ -78,11 +79,13 @@
       <button class:active={section === "defaults"} aria-pressed={section === "defaults"} onclick={() => section = "defaults"}><Icon name="brief" size={18} />Research defaults</button>
       <button class:active={section === "archive"} aria-pressed={section === "archive"} onclick={() => section = "archive"}><Icon name="archive" size={18} />Archived research</button>
       <button class:active={section === "local"} aria-pressed={section === "local"} onclick={() => section = "local"}><Icon name="folder" size={18} />Local files</button>
+      <button class:active={section === "advanced"} aria-pressed={section === "advanced"} onclick={() => section = "advanced"}><Icon name="settings" size={18} />Advanced</button>
     </nav>
     <div class="footer"><button class="back" onclick={back}><Icon name="back" size={20} />Back</button></div>
   </aside>
     <div class="settings-content">
-      <header><div><h2>{section === "accounts" ? "Accounts" : section === "defaults" ? "Research defaults" : section === "archive" ? "Archived research" : "Local files"}</h2></div></header>
+      <header><div><h2>{section === "accounts" ? "Accounts" : section === "defaults" ? "Research defaults" : section === "archive" ? "Archived research" : section === "advanced" ? "Advanced" : "Local files"}</h2></div></header>
+  {#if section === "advanced"}<AdvancedSettings />{/if}
   <div hidden={section !== "archive"} class="archive-list">
     {#each archived as thread (thread.id)}
       <article><div><strong>{thread.title}</strong><span>{thread.archivedAt ? new Date(thread.archivedAt).toLocaleDateString() : "Archived"}</span></div><button disabled={busy} onclick={() => onRestore(thread.id)} aria-label={`Restore ${thread.title}`}>Restore</button><button class="danger" disabled={busy} onclick={() => deleteArchived(thread.id, thread.title)} aria-label={`Delete ${thread.title}`}>Delete</button></article>
