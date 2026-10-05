@@ -952,6 +952,8 @@ export class ResearchEngine {
     const frozenInput = existingAttempt?.input as { frame?: ResearchFrame; frameId?: string; schemaRevision?: number } | undefined;
     const approved = existingAttempt ? null : new ResearchFrameRepository(this.options.db).latestApproved(threadId);
     const expansionContract = opportunityExpansionContract(frozenInput?.frame ?? approved?.approved ?? undefined);
+    // Pre-revision prepared attempts keep their saved identity. New attempts always freeze the revision.
+    const unversionedLegacyAttempt = existingAttempt && frozenInput?.schemaRevision === undefined && expansionContract.schemaRevision === 1;
     const frameId = frozenInput?.frameId ?? approved?.id;
     const evidence = this.opportunityExpansionEvidence(threadId, searchedSources);
     const view = this.opportunities.familyView(threadId);
@@ -960,7 +962,8 @@ export class ResearchEngine {
       stageKey,
       stageName: "gap-generation",
       input: { batchId, gap, candidateCount, acceptedFamilies: view.families, evidenceIds: evidence.map((item) => item.sourceId),
-        schemaRevision: expansionContract.schemaRevision, ...(expansionContract.frame ? { frame: expansionContract.frame, frameId } : {}) },
+        ...(unversionedLegacyAttempt ? {} : { schemaRevision: expansionContract.schemaRevision }),
+        ...(expansionContract.frame ? { frame: expansionContract.frame, frameId } : {}) },
       model: { ...model, reasoningEffort },
       promptVersion: expansionContract.promptVersion,
       promptText: instruction,
