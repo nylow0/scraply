@@ -4,8 +4,8 @@
   import { modelRefKey, type ModelRef } from "../../shared/schemas";
   import type { SearchProviderChoice } from "../../providers/search";
   import { modelDisplayName, readResearchDefaults, saveResearchDefaults } from "../lib/research-defaults";
-  import ProviderLogo from "./ProviderLogo.svelte";
   import ModelPicker from "./ModelPicker.svelte";
+  import SearchProviderSelect from "./SearchProviderSelect.svelte";
 
   let { workspace }: { workspace: WorkspaceState | null } = $props();
   const initial = untrack(readResearchDefaults);
@@ -66,7 +66,7 @@
 <form class="settings-cards" onsubmit={(event) => { event.preventDefault(); save(); }}>
   <fieldset class="settings-card">
   <legend>Research</legend>
-  <label><span>Default search provider</span><div class="provider-select">{#if searchProvider !== "auto"}<ProviderLogo provider={searchProvider} size={18} />{/if}<select aria-label="Default search provider" bind:value={searchProvider} onchange={() => saved = false}><option value="auto">Automatic</option><option value="exa">Exa</option><option value="perplexity">Perplexity</option></select></div></label>
+  <label><span>Default search provider</span><SearchProviderSelect label="Default search provider" bind:value={searchProvider} connected={{ exa: workspace?.validation.exa.valid ?? true, perplexity: workspace?.validation.perplexity.valid ?? true }} onchange={() => saved = false} /></label>
   <label><span>Default model</span><ModelPicker label="Default model" {options} bind:value={modelKey} missingLabel={missingLabel(modelKey)} disabled={options.length === 0}
     onchange={() => { saved = false; reasoningEffort = catalogEffort(modelKey) ?? ""; }} /></label>
   <label><span>Default reasoning</span><select aria-label="Default reasoning" bind:value={reasoningEffort} onchange={() => saved = false}>
@@ -105,13 +105,10 @@
   /* A floated legend sits inside the card instead of on its border. */
   legend { float:left;width:100%;padding:0;font-size:15px;font-weight:600; }
   legend + * { clear:both; }
-  label { display:grid;align-content:start;gap:8px;min-width:0;font-size:13px; }
+  label { display:grid;align-content:start;gap:8px;min-width:0;font-size:13px;--search-provider-padding:12px;--search-provider-radius:9px;--search-provider-font-size:13px;--search-provider-option-height:45px; }
   select { width:100%;min-width:0;background:var(--surface);border:1px solid var(--border-strong);border-radius:9px;color:var(--text);padding:12px;font-size:13px; }
   /* The model picker matches the selects beside it. */
   label :global(.model-picker button) { min-height:45px;border-radius:9px;background:var(--surface); }
-  .provider-select { position:relative;color:var(--text); }
-  .provider-select :global(svg) { position:absolute;top:50%;left:13px;transform:translateY(-50%);pointer-events:none; }
-  .provider-select select { padding-left:42px; }
   footer { grid-column:1/-1;display:flex;flex-wrap:wrap;gap:14px;align-items:center; }
   button { padding:11px 16px;border:0;border-radius:8px;background:var(--accent-strong);color:var(--accent-ink);font-size:13px;font-weight:600; }
   footer span { color:var(--success);font-size:13px; }
