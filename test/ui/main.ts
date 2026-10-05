@@ -434,9 +434,15 @@ const fixtureApi = createScraplyApi({
         result = state; break;
       }
       case IPC_CHANNELS.GET_IDEA_CONVERSATION: {
-        GetIdeaConversationRequestSchema.parse(payload);
+        const { ideaId } = GetIdeaConversationRequestSchema.parse(payload);
         if (!slice2) throw new Error("No conversation in this fixture.");
-        result = { ok: true, data: slice2.conversation }; break;
+        const idea = state.solutions.find(idea => idea.id === ideaId);
+        const saved = slice2.conversation.versions.some(version => version.solutionId === ideaId) ? slice2.conversation
+          : idea ? { ...slice2.conversation, rootSolutionId: ideaId, selectedVersionId: ideaId, branches: [], turns: [],
+            versions: [{ ...slice2.conversation.versions[0]!, solutionId: ideaId, description: idea.description, mechanism: idea.mechanism }] }
+          : null;
+        if (!saved) throw new Error("Idea not found in the offline fixture.");
+        result = { ok: true, data: saved }; break;
       }
       case IPC_CHANNELS.SELECT_IDEA_VERSION: {
         const request = SelectIdeaVersionRequestSchema.parse(payload);

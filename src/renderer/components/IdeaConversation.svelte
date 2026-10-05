@@ -63,7 +63,9 @@
   let detailEpoch = 0;
   let selectedSummary = $derived(solutions.find(idea => idea.id === selectedVersionId));
   let runBusy = $derived(!!run && ["queued", "running"].includes(run.status));
-  let analysisError = $derived(detail?.analysisError ?? (run?.status === "failed" && run.runId === detail?.runId && !detail?.decisionAnalysis ? run.completionReason ?? "The analysis failed." : null));
+  let analysisIdea = $derived(solutions.find(idea => idea.runId === run?.runId && idea.selected));
+  let ownAnalysis = $derived(analysisIdea?.id === selectedVersionId);
+  let analysisError = $derived(detail?.analysisError ?? (ownAnalysis && run?.status === "failed" && run.runId === detail?.runId && !detail?.decisionAnalysis ? run.completionReason ?? "The analysis failed." : null));
   let turnBusy = $derived(conversation.turns.some(turn => turn.state === "pending" || turn.state === "running"));
   let controlsBusy = $derived(busy || sending || analysisBlocked || runBusy || turnBusy);
   let analysisAvailable = $derived(!loadingDetail && !!detail?.selectable && !!onAnalyze && !solutions.some(idea => idea.id !== detail?.id && idea.runId === detail?.runId && idea.selected));
@@ -246,15 +248,15 @@
             <button class="reply-here" disabled={controlsBusy} onclick={() => { replyToTurnId = turn.id; retryParentTurnId = undefined; mobilePane = "conversation"; }}>Reply from here</button>
           </article>
         {/each}
-        {#if runBusy && run && onStop}<AnalysisProgress {run} {elapsed} stage={runStage} {onStop} {busy} />
+        {#if runBusy && ownAnalysis && run && onStop}<AnalysisProgress {run} {elapsed} stage={runStage} {onStop} {busy} />
         {:else if analysisError}<div class="analysis-error" role="alert"><p>{analysisError}</p><button disabled={!canAnalyze} onclick={analyze}>Retry</button></div>
         {:else if detail?.decisionAnalysis}<RiskAnalysis analysis={detail.decisionAnalysis} />{/if}
       </div>
       {#if conversation.nextCursor && onLoadMore}<button class="load-more" onclick={() => onLoadMore?.(conversation.nextCursor!)}>Load more turns</button>{/if}
-      <div class="composer" class:analysis-running={runBusy && !!onStop}>
+      <div class="composer" class:analysis-running={runBusy && ownAnalysis && !!onStop}>
         <div class="one-click-actions">
           <button disabled={!canAct} onclick={() => submit(EXPLAIN_IDEA_PROMPT, "explain")}>Explain</button>
-          {#if analysisAvailable && !detail?.decisionAnalysis && !analysisError}<button disabled={!canAnalyze} onclick={analyze}>Analyze risks</button>{/if}
+          {#if (analysisAvailable || runBusy) && !detail?.decisionAnalysis && !analysisError}<button disabled={!canAnalyze} onclick={analyze}>Analyze risks</button>{/if}
         </div>
         {#if detailError}<div class="error" role="alert">{detailError} <button onclick={() => refreshDetail(selectedVersionId, selectedSummary)}>Retry details</button></div>{/if}
         {#if retryParentTurnId !== undefined}<div class="reply-context">Retrying from before the failed turn <button onclick={() => { retryParentTurnId = undefined; replyToTurnId = null; }}>Use latest</button></div>

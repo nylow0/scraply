@@ -161,6 +161,9 @@
   });
   let selectedIdea = $derived(solutions.find((idea) => idea.id === selectedIdeaId) ?? null);
   let runBusy = $derived(!!run && ["queued", "running"].includes(run.status));
+  // Selection is saved before analysis starts; root summaries retain it even on older runs.
+  let analysisIdea = $derived(solutions.find(idea => idea.runId === run?.runId && idea.selected));
+  let ownConversation = $derived(conversationMatchesSelection && retainedConversation?.selectedVersionId === analysisIdea?.id);
   let hasV2 = $derived(workflowVersion === 2 || solutions.some((idea) => idea.workflowVersion === 2));
   /** One group per problem, in saved order. Ranked ideas come best first; ideas saved before ranking keep their order. */
   let groups = $derived.by(() => {
@@ -193,11 +196,11 @@
 }} />
 
 <section class="workspace">
+  {#if runBusy && run && !ownConversation && onStop}<AnalysisProgress {run} ideaName={analysisIdea ? ideaContent(analysisIdea.description).name : ""} {elapsed} stage={runStage} {busy} {onStop} />{/if}
   <div hidden={activeConversationId !== null || selectedIdeaId !== null}>
   <header>
     <h1>{solutions.length} {solutions.length === 1 ? "idea" : "ideas"}</h1>
   </header>
-  {#if runBusy && run && onStop}<AnalysisProgress {run} {elapsed} stage={runStage} {busy} {onStop} />{/if}
 
   <div class="groups">
     {#each groups as group (group.problemId)}
@@ -240,7 +243,6 @@
   <div class="idea-detail" hidden={activeConversationId !== null || selectedIdeaId === null}>
     {#if selectedIdea}
       <div class="detail-navigation"><BackLink destination="ideas" onclick={closeIdea} /></div>
-      {#if runBusy && run && onStop}<AnalysisProgress {run} {elapsed} stage={runStage} {busy} {onStop} />{/if}
       <div class="detail-heading"><h1>{ideaContent(selectedIdea.description).name}</h1>
         {#if selectedIdea.workflowVersion === 2 && (onOpenConversation || onNavigate)}<button class="explore-button" onclick={(event) => openConversation(event, selectedIdea.id)}>Explore this idea</button>{/if}
       </div>
@@ -273,6 +275,7 @@
 
 <style>
   .workspace { max-width:var(--page-max);margin:0 auto;padding:var(--page-top) var(--page-inline) 80px;min-width:0; }
+  .workspace > :global(.analysis-progress) { margin-bottom:24px; }
   header { display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:16px 24px; }
   h1 { font-size:clamp(27px,3vw,34px);font-weight:650;letter-spacing:-.035em;margin:0;line-height:1.2; }
   .groups { display:grid;gap:12px;margin-top:28px; }

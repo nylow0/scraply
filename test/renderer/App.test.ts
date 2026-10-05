@@ -12,6 +12,49 @@ import { summarizeRunUsage } from "../../src/backend/run-usage";
 import { createIdeasFixture } from "../ui/ideas-fixture";
 
 describe("App workspace coordination", () => {
+  test("history waits for a delayed conversation render and ignores a later stale response", async () => {
+    const fixture = createIdeasFixture(new URLSearchParams(), "alpha");
+    const state = workspace("alpha");
+    state.scope = { title: "Alpha", domain: "School", audience: "", observations: "", offLimits: [] };
+    state.threads[0]!.status = "solutions-ready";
+    state.solutions = fixture.solutions;
+    const delayed = deferred<typeof fixture.conversation>();
+    const stale = deferred<typeof fixture.conversation>();
+    const getIdeaConversation = vi.fn().mockResolvedValueOnce(fixture.conversation).mockImplementationOnce(() => {
+      // Loading removes tall content and the browser clamps its scroll offset.
+      const main = document.querySelector<HTMLElement>(".main-content")!;
+      main.scrollTop = 0;
+      return delayed.promise;
+    }).mockReturnValueOnce(stale.promise);
+    installApi({ getWorkspace: async () => structuredClone(state), getIdeaConversation,
+      getIdeaDetail: async id => structuredClone(state.solutions.find(idea => idea.id === id)!) });
+    const view = render(App);
+    await fireEvent.click(await view.findByRole("button", { name: "Open idea: History access and provenance pack" }));
+    await fireEvent.click(view.getByRole("button", { name: "Explore this idea" }));
+    await view.findByRole("heading", { name: "Conversation" });
+    const main = view.container.querySelector<HTMLElement>(".main-content")!;
+    main.scrollTop = 900;
+    await fireEvent.click(view.getByRole("button", { name: "Go back" }));
+    await view.findByRole("button", { name: "Explore this idea" });
+    await fireEvent.click(view.getByRole("button", { name: "Go forward" }));
+    await waitFor(() => expect(getIdeaConversation).toHaveBeenCalledTimes(2));
+    expect(main.scrollTop).toBe(0);
+    delayed.resolve(structuredClone(fixture.conversation));
+    await view.findByRole("heading", { name: "Conversation" });
+    await waitFor(() => expect(main.scrollTop).toBe(900));
+    await fireEvent.click(view.getByRole("button", { name: "Go back" }));
+    await view.findByRole("button", { name: "Explore this idea" });
+    await fireEvent.click(view.getByRole("button", { name: "Go forward" }));
+    await waitFor(() => expect(getIdeaConversation).toHaveBeenCalledTimes(3));
+    await fireEvent.click(view.getByRole("button", { name: "Go back" }));
+    await view.findByRole("button", { name: "Explore this idea" });
+    main.scrollTop = 75;
+    stale.resolve(structuredClone(fixture.conversation));
+    await tick(); await tick();
+    expect(main.scrollTop).toBe(75);
+    expect(view.queryByRole("heading", { name: "Conversation" })).toBeNull();
+  });
+
   test("history restores list, idea and conversation through arrows, parent Back, projects and Settings", async () => {
     const fixture = createIdeasFixture(new URLSearchParams(), "alpha");
     const alpha = workspace("alpha");

@@ -112,6 +112,7 @@
   let knownIdeas = $state<Record<string, string[]>>({});
   let mainContent: HTMLElement | undefined;
   let traversingHistory = $state(false);
+  let historyScroll = $state<{ route: NavigationRoute; scrollTop: number } | null>(null);
   let resolveRoute = $derived(routeResolver(workspace?.threads ?? [], knownIdeas));
   let backIndex = $derived(findHistoryIndex(history, -1, resolveRoute));
   let forwardIndex = $derived(findHistoryIndex(history, 1, resolveRoute));
@@ -133,6 +134,7 @@
   });
   function navigateTo(target: NavigationRoute) {
     if (traversingHistory || sameRoute(route, target)) return;
+    historyScroll = null;
     history = rememberScroll(history, mainContent?.scrollTop ?? 0);
     const scrollTop = route.threadId === target.threadId && route.step === target.step
       && sameRoute({ ...route, settings: target.settings }, target) ? mainContent?.scrollTop ?? 0 : 0;
@@ -159,17 +161,32 @@
       if (!resolved) return;
       history = reconcileHistory(next, resolveRoute);
       route = resolved;
+      const scrollTop = history.entries[history.index]!.scrollTop;
+      historyScroll = { route: resolved, scrollTop };
       await tick();
-      if (mainContent) mainContent.scrollTop = history.entries[history.index]!.scrollTop;
       if (route.settings) settings?.focusHeading();
       else if (leavingSettings) document.getElementById("settings-button")?.focus({ preventScroll: true });
     } finally { traversingHistory = false; }
   }
   async function navigateHistory(direction: -1 | 1) {
     if (busy || traversingHistory) return;
-    history = rememberScroll(history, mainContent?.scrollTop ?? 0);
+    history = rememberScroll(history, historyScroll && sameRoute(route, historyScroll.route) ? historyScroll.scrollTop : mainContent?.scrollTop ?? 0);
     await restoreHistory(traverseHistory(history, direction, resolveRoute));
   }
+  // A conversation reload hides its tall content. Wait for the matching request and render before restoring.
+  $effect(() => {
+    const pending = historyScroll;
+    if (!pending || !sameRoute(route, pending.route)) return;
+    if (route.step === "ideas" && route.solution.kind === "conversation"
+      && (conversationLoading || conversationIdeaId !== route.solution.ideaId
+        || !conversation?.versions.some(version => version.solutionId === conversationIdeaId))) return;
+    const epoch = conversationLoadEpoch;
+    void tick().then(() => {
+      if (historyScroll !== pending || !sameRoute(route, pending.route) || epoch !== conversationLoadEpoch) return;
+      if (mainContent) mainContent.scrollTop = pending.scrollTop;
+      historyScroll = null;
+    });
+  });
   $effect(() => {
     const solution = route.solution;
     if (busy || traversingHistory || route.threadId !== workspace?.activeThreadId) return;

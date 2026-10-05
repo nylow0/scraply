@@ -2,7 +2,8 @@ import { fireEvent, render, waitFor, within } from "@testing-library/svelte";
 import { describe, expect, test, vi } from "vitest";
 import SolutionListItem from "../../src/renderer/components/SolutionListItem.svelte";
 import SolutionWorkspace from "../../src/renderer/components/SolutionWorkspace.svelte";
-import type { IdeaGroupView, SolutionView } from "../../src/shared/ipc";
+import type { IdeaGroupView, SolutionView, WorkspaceState } from "../../src/shared/ipc";
+import { createIdeasFixture } from "../ui/ideas-fixture";
 import type { IdeaConversation as ConversationView } from "../../src/shared/workflow-contracts";
 import type { OpportunityFamiliesView } from "../../src/shared/opportunity-review";
 import { DEFAULT_RUN_CONFIG } from "../../src/shared/schemas";
@@ -87,6 +88,41 @@ describe("SolutionListItem risk summary", () => {
 });
 
 describe("SolutionWorkspace groups", () => {
+  test.each(["list", "idea", "own", "sibling", "other-run", "other-version"] as const)("analysis ownership on %s", async destination => {
+    const fixture = createIdeasFixture(new URLSearchParams("analysis=running"), "alpha");
+    const owner = fixture.solutions[0]!;
+    const other = fixture.solutions[destination === "other-run" ? 8 : 1]!;
+    const own = destination === "own" || destination === "other-version";
+    const selectedId = own ? owner.id : other.id;
+    const saved = { ...fixture.conversation, rootSolutionId: selectedId, selectedVersionId: selectedId,
+      versions: [{ ...fixture.conversation.versions[0]!, solutionId: selectedId, description: (own ? owner : other).description }] };
+    if (destination === "other-version") {
+      saved.selectedVersionId = "newer-version";
+      saved.versions.push({ ...saved.versions[0]!, solutionId: "newer-version", parentSolutionId: owner.id, versionNumber: 2 });
+    }
+    Object.defineProperty(window, "scraply", { configurable: true, value: { getIdeaDetail: vi.fn(async id => fixture.solutions.find(idea => idea.id === id) ?? { ...owner, id, selected: false, decisionAnalysis: null }) } });
+    const run: NonNullable<WorkspaceState["latestResearchRun"]> = { runId: owner.runId!, status: "running", stage: "evaluating-risk", problemId: owner.problemId,
+      codexCalls: 1, searches: 0, projectedCodexCalls: 5, projectedSearches: 0, lastActivity: null };
+    const onStop = vi.fn().mockResolvedValue(undefined);
+    const route = destination === "list" ? { kind: "list" as const } : destination === "idea" ? { kind: "idea" as const, ideaId: other.id }
+      : { kind: "conversation" as const, ideaId: selectedId };
+    const view = render(SolutionWorkspace, { solutions: fixture.solutions, busy: false, route, conversation: saved,
+      modelOptions: [], run, onStop, onSelect: vi.fn(), onSubmitIdeaTurn: vi.fn(), onExport: vi.fn(), onOpenSource: vi.fn() });
+    const progress = await view.findByRole("status", { name: "Active idea work" });
+    expect(view.getAllByRole("status", { name: "Active idea work" })).toHaveLength(1);
+    expect(!!progress.closest(".conversation-panel")).toBe(destination === "own");
+    expect(progress.textContent?.includes("History access and provenance pack")).toBe(destination !== "own");
+    if (route.kind === "conversation") {
+      await waitFor(() => expect((view.getByRole("button", { name: "Analyze risks" }) as HTMLButtonElement).disabled).toBe(true));
+      expect((view.getByRole("button", { name: "Explain" }) as HTMLButtonElement).disabled).toBe(true);
+      expect((view.getByRole("button", { name: "Send" }) as HTMLButtonElement).disabled).toBe(true);
+      expect(view.queryByRole("heading", { name: "Risk analysis" })).toBeNull();
+      expect(view.container.querySelector(".analysis-error")).toBeNull();
+    }
+    await fireEvent.click(within(progress).getByRole("button", { name: "Stop" }));
+    expect(onStop).toHaveBeenCalledWith(owner.runId);
+  });
+
   test("numbers ideas per problem, separates both saved name formats, and opens the selected row", async () => {
     const ideas = [
       { ...solution(), id: "old", description: "History pack. Share approved consumption records." },

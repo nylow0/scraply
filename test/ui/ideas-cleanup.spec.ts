@@ -96,6 +96,32 @@ test("a failed analysis shows an explicit Retry and a completed analysis stays o
   await expect(page.locator(".idea-detail").getByText("Next experiment", { exact: true })).toBeVisible();
 });
 
+for (const other of ["Prospective closure-period evidence recorder", "Shared closure checklist"]) {
+  test(`another idea's conversation names the running owner and Stop cancels it: ${other}`, async ({ page }) => {
+    await openConversation(page);
+    await page.getByRole("button", { name: "Analyze risks", exact: true }).click();
+    const own = page.getByRole("region", { name: "Idea conversation" }).getByRole("status", { name: "Active idea work" });
+    await expect(own).toBeVisible();
+    await expect(own).not.toContainText("History access and provenance pack");
+    await page.getByRole("button", { name: "Back to idea" }).click();
+    await page.getByRole("button", { name: "Back to ideas" }).click();
+    await expect(page.getByRole("status", { name: "Active idea work" })).toContainText("History access and provenance pack");
+    await page.getByRole("button", { name: `Open idea: ${other}` }).click();
+    await page.getByRole("button", { name: "Explore this idea" }).click();
+    const progress = page.getByRole("status", { name: "Active idea work" });
+    await expect(progress).toHaveCount(1);
+    await expect(progress).toContainText("History access and provenance pack");
+    const conversation = page.getByRole("region", { name: "Idea conversation" });
+    await expect(conversation.getByRole("status", { name: "Active idea work" })).toHaveCount(0);
+    await expect(conversation.getByRole("heading", { name: "Risk analysis" })).toHaveCount(0);
+    await expect(conversation.locator(".analysis-error")).toHaveCount(0);
+    for (const name of ["Explain", "Analyze risks", "Send"]) await expect(conversation.getByRole("button", { name, exact: true })).toBeDisabled();
+    await progress.getByRole("button", { name: "Stop", exact: true }).click();
+    await expect(progress).toHaveCount(0);
+    expect(await page.evaluate(() => (window as unknown as { scraplyFixture: { stops: string[] } }).scraplyFixture.stops)).toEqual(["school-run"]);
+  });
+}
+
 test("version history and narrow tabs keep names and real changes", async ({ page }) => {
   await openConversation(page, "&versions=3&turns=many");
   await expect(page.locator(".versions li")).toHaveCount(3);
@@ -190,4 +216,32 @@ test("browser history restores nested views, list scroll, Settings, projects and
   await expect(page.getByRole("button", { name: "Explore this idea" })).toBeVisible();
   await page.keyboard.press("Alt+ArrowRight");
   await expect(page.getByPlaceholder("Your topic or idea")).toHaveValue("Draft that survives history");
+});
+
+test("conversation history restores scroll after a delayed reload and ignores an abandoned load", async ({ page }) => {
+  await openConversation(page, "&turns=many");
+  await page.locator(".main-content").evaluate(el => { el.scrollTop = 900; });
+  const saved = await page.locator(".main-content").evaluate(el => el.scrollTop);
+  expect(saved).toBe(900);
+  await page.evaluate(() => {
+    const original = window.scraply.getIdeaConversation;
+    window.scraply.getIdeaConversation = async request => {
+      await new Promise(resolve => setTimeout(resolve, 600));
+      return original(request);
+    };
+  });
+  await page.getByRole("button", { name: "Go back" }).click();
+  await page.getByRole("button", { name: "Go forward" }).click();
+  await expect(page.getByText("Opening conversation…", { exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Conversation", exact: true })).toBeVisible();
+  await expect.poll(() => page.locator(".main-content").evaluate(el => el.scrollTop)).toBe(saved);
+  await page.getByRole("button", { name: "Go back" }).click();
+  await page.getByRole("button", { name: "Go forward" }).click();
+  await expect(page.getByText("Opening conversation…", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Go back" }).click();
+  await page.locator(".main-content").evaluate(el => { el.scrollTop = 120; });
+  const ideaScroll = await page.locator(".main-content").evaluate(el => el.scrollTop);
+  await page.waitForTimeout(750);
+  await expect(page.getByRole("button", { name: "Explore this idea" })).toBeVisible();
+  expect(await page.locator(".main-content").evaluate(el => el.scrollTop)).toBe(ideaScroll);
 });
