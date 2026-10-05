@@ -192,9 +192,8 @@ export async function runCandidateEvidenceInvestigator(input: InvestigatorDepend
         budgetExhausted = true;
         break;
       }
-      const requestedRoute = gap.route === "social" && input.dependencies.sourceRouting?.socialEnabled !== true ? "community" : gap.route;
       const request = { key, query: gap.query, evidenceNeeded: gap.evidenceNeeded,
-        route: input.savedSearchRoute?.(key) ?? (zeroYieldRoutes.has(requestedRoute) ? nextInvestigatorRoute(requestedRoute, input.area) : requestedRoute) };
+        route: investigatorRoute(input, key, gap.route, zeroYieldRoutes) };
       const harvest = await investigatorHarvest(input, request);
       if (!harvest) {
         budgetExhausted = true;
@@ -255,9 +254,8 @@ export async function runAreaGapInvestigation(input: InvestigatorDependencies & 
   const zeroYieldRoutes = new Set<InvestigatorSearchRoute>();
   for (const [index, gap] of output.gaps.entries()) {
     const requestKey = `${key}:gap-${index + 1}`;
-    const requestedRoute = gap.route === "social" && input.dependencies.sourceRouting?.socialEnabled !== true ? "community" : gap.route;
     const request = { key: requestKey, query: gap.query, evidenceNeeded: gap.evidenceNeeded,
-      route: input.savedSearchRoute?.(requestKey) ?? (zeroYieldRoutes.has(requestedRoute) ? nextInvestigatorRoute(requestedRoute, input.area) : requestedRoute) };
+      route: investigatorRoute(input, requestKey, gap.route, zeroYieldRoutes) };
     const targetStop = input.stopRequested?.();
     if (targetStop && !input.checkpoints.read(`investigator-harvest:${request.key}`)) return { factors, sources, searches,
       stopReason: targetStop, partial: false };
@@ -276,7 +274,7 @@ export async function runAreaGapInvestigation(input: InvestigatorDependencies & 
 export async function runManagedInvestigatorSearch(input: {
   db: DatabaseClient; threadId: string; sessionId: string; workItemId: string;
   request: InvestigatorSearchRequest; searchProvider: SearchProviderChoice;
-  searchClient?: Pick<SearchClient, "provider" | "search" | "providerForRoute">; searchOptions?: Omit<SearchOptions, "signal">;
+  searchClient?: Pick<SearchClient, "provider" | "search" | "searchWithDispatch" | "providerForRoute">; searchOptions?: Omit<SearchOptions, "signal">;
   sourceRouting?: SourceRoutingContext;
   acknowledgedAttemptIds?: readonly string[];
   signal: AbortSignal; onDispatched?: (attemptId: string) => void;
@@ -322,9 +320,18 @@ export async function runManagedInvestigatorSearch(input: {
     throw new Error(`Search provider ${provider} is unavailable for this new investigator search.`);
   }
   try {
-    input.db.immediateTransaction(() => repository.markAttemptDispatched(input.threadId, attempt.attemptId, "none", input.sessionId));
-    input.onDispatched?.(attempt.attemptId);
-    const searched = await input.searchClient.search(request.query, { ...parameters, signal: input.signal });
+    const onDispatched = () => {
+      input.db.immediateTransaction(() => repository.markAttemptDispatched(input.threadId, attempt.attemptId, "none", input.sessionId));
+      input.onDispatched?.(attempt.attemptId);
+    };
+    const options = { ...parameters, signal: input.signal };
+    let searched: Source[];
+    if (input.searchClient.searchWithDispatch) {
+      searched = await input.searchClient.searchWithDispatch(request.query, options, onDispatched, attempt.attemptId);
+    } else {
+      onDispatched();
+      searched = await input.searchClient.search(request.query, options);
+    }
     const seen = new Set<string>();
     const sources = filterRoutedSources(searched, parameters).flatMap(source => {
       const parsed = SourceSchema.safeParse({ ...source, text: source.text?.slice(0, 4_000), title: source.title?.slice(0, 500) });
@@ -448,6 +455,15 @@ export function enforceConfirmationRule(problem: DiscoveryProblem): DiscoveryPro
   const gap = problem.evidenceGap ?? "Two independent firsthand or measured observations about the affected people are required.";
   return { ...problem, verdict: "insufficient-evidence", intendedBuyerEvidenceFactorIds: qualifying.map(factor => factor.id),
     evidenceGap: gap, verdictReason: `Relevant evidence: ${qualifying.length} factor(s) across ${origins.size} independent source(s). ${gap} ${problem.verdictReason}` };
+}
+
+/** Saved routes stay frozen; new routes share the social opt-in and zero-yield fallback policy. */
+function investigatorRoute(input: InvestigatorDependencies, key: string, route: InvestigatorSearchRoute,
+  zeroYieldRoutes: ReadonlySet<InvestigatorSearchRoute>): InvestigatorSearchRoute {
+  const saved = input.savedSearchRoute?.(key);
+  if (saved) return saved;
+  const requested = route === "social" && input.dependencies.sourceRouting?.socialEnabled !== true ? "community" : route;
+  return zeroYieldRoutes.has(requested) ? nextInvestigatorRoute(requested, input.area) : requested;
 }
 
 function nextInvestigatorRoute(route: InvestigatorSearchRoute, area: ResearchArea): InvestigatorSearchRoute {
