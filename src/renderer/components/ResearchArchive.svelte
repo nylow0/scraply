@@ -62,6 +62,7 @@
               <span class="verdict">{verdictLabel(problem.verdict)}</span>
               {#if problem.selected}<span class="selected">Used for solutions</span>{/if}
               {#if problem.singleHarvestModeWarning}<span>One harvest mode</span>{/if}
+              {#if problem.closeRoleEvidence}<span>Evidence from close roles</span>{/if}
             </div>
 
             <p>{problem.whyItPersists}</p>

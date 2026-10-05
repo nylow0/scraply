@@ -3,7 +3,7 @@ import { z } from "zod";
 import { ResearchFrameSchema } from "../shared/research-frame";
 import { ProblemFactorAssessmentSchema, SavedProblemCandidateSchema } from "../shared/structured-output-schemas";
 import { CriteriaFitSchema, BiggerProblemSchema } from "../shared/solution-goal-fit";
-import { applyProblemFactorAssessments } from "../core/problem-evidence";
+import { applyProblemFactorAssessments, reliesOnCloseRoles } from "../core/problem-evidence";
 import { randomBytes, randomUUID } from "node:crypto";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { recoverInterruptedEvidenceFollowUps, ResearchEngine } from "../core/research-engine";
@@ -495,6 +495,8 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
         ...(row.workflow_key ? { workflowKey: String(row.workflow_key) } : {}),
         factors,
         singleHarvestModeWarning: factors.length > 0 && new Set(factors.map((factor) => factor.harvestMode)).size === 1,
+        closeRoleEvidence: row.verdict === "confirmed" && reliesOnCloseRoles(factors.filter(factor =>
+          (JSON.parse(String(row.intended_buyer_evidence_factor_ids_json ?? "[]")) as string[]).includes(factor.id))),
         developmentCompleted: Number(row.development_completed) === 1,
       };
     });

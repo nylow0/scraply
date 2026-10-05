@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { z } from "zod";
 import type { GenerationMetadata, StructuredModelClient, StructuredStageRequest } from "../providers/structured";
 import { deriveJsonSchema } from "../shared/json-schema";
 import type { ExplorationPurpose, ModelRef, ReasoningEffort } from "../shared/schemas";
@@ -11,7 +12,7 @@ import {
 import { resolveWorkflowV2Prompt, type ResolvedWorkflowV2Prompt } from "./prompts";
 import { WORKFLOW_V2_STAGE_REGISTRY } from "./stages";
 import type { ResearchFrame } from "../shared/research-frame";
-import { assertCriteriaFit } from "../shared/solution-goal-fit";
+import { assertCriteriaFit, normalizeCriteriaFit } from "../shared/solution-goal-fit";
 
 export interface SolutionSetItem {
   id: string;
@@ -102,7 +103,15 @@ export function prepareSolutionSetReview(input: SolutionSetReviewInput): Prepare
   const stage = WORKFLOW_V2_STAGE_REGISTRY["solution-set-review"];
   const startupOnly = input.frame ? input.frame.goalKind === "market-opportunity" : input.startupOnly === true;
   const explorationPurpose = input.frame ? startupOnly ? "startup-opportunities" : "general-solutions" : input.explorationPurpose;
-  const schema = input.frame ? WorkflowV2GoalSolutionSetReviewOutputSchema : WorkflowV2LegacySolutionSetReviewOutputSchema;
+  const frame = input.frame;
+  // The provider sees the plain shape; app-owned criterion fields are repaired before validation.
+  const schema = frame ? z.preprocess((raw) => {
+    if (typeof raw !== "object" || raw === null || !Array.isArray((raw as { assessments?: unknown }).assessments)) return raw;
+    const output = raw as { assessments: unknown[] };
+    return { ...output, assessments: output.assessments.map(assessment => typeof assessment === "object" && assessment !== null
+      ? { ...assessment, criteriaFit: normalizeCriteriaFit((assessment as { criteriaFit?: unknown }).criteriaFit, frame, evidenceSourceIds) }
+      : assessment) };
+  }, WorkflowV2GoalSolutionSetReviewOutputSchema) : WorkflowV2LegacySolutionSetReviewOutputSchema;
   const prompt = (input.resolvePrompt ?? resolveWorkflowV2Prompt)(stage.id);
   const request: StructuredStageRequest<SolutionSetReviewOutput> = {
     generationId: randomUUID(),

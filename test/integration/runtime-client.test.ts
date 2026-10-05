@@ -267,6 +267,19 @@ describe("persistent native runtime client", () => {
     expect((failure as ProviderFailure).attempts?.[0]?.providerCompletion).toBe("unknown");
   });
 
+  test("a call time limit reaches the worker and its timeout is the app's own decision, not a lost result", async () => {
+    const runtime = client("deadline-exceeded");
+    const { deadlineMs: _deadline, ...unbounded } = request("generation-call-limit");
+    void _deadline;
+    let failure: unknown;
+    try { await runtime.structuredCompletion({ ...unbounded, callTimeLimitMs: 240_000 }); }
+    catch (error) { failure = error; }
+    expect(failure).toBeInstanceOf(ProviderFailure);
+    expect((failure as ProviderFailure).code).toBe("timeout");
+    expect((failure as ProviderFailure).message).toContain("240000ms");
+    expect((failure as ProviderFailure).attempts?.[0]?.providerCompletion).toBe("unknown");
+  });
+
   test("preserves a confirmed output limit for explicit recovery without automatic replay", async () => {
     const runtime = client("output-limit");
     let failure: unknown;

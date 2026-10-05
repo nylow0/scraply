@@ -53,7 +53,10 @@ export class GenerationAttemptRepository {
   ): PreparedGenerationAttempt {
     const id = randomUUID();
     const effectiveRequest = effectiveRequestSnapshot(request, runtimeIdentity);
-    const requestJson = canonicalJson({ generationId: request.generationId, ...effectiveRequest });
+    // The call time limit is recorded for the trace but kept out of the identity hash, so older
+    // completed attempts without it still match on resume.
+    const requestJson = canonicalJson({ generationId: request.generationId, ...effectiveRequest,
+      ...(request.callTimeLimitMs === undefined ? {} : { callTimeLimitMs: request.callTimeLimitMs }) });
     const now = new Date().toISOString();
     const wireRequestSha256 = sha256(requestJson);
     const requestSha256 = sha256(canonicalJson(effectiveRequest));
@@ -120,7 +123,9 @@ export class GenerationAttemptRepository {
         OR (attempt.status = 'interrupted' AND attempt.terminal_kind IS NOT 'never-dispatched')
         OR EXISTS (SELECT 1 FROM json_each(attempt.attempt_metadata_json, '$.attempts')
           WHERE json_extract(value, '$.providerCompletion') = 'unknown')
-      ) AND NOT EXISTS (
+      ) AND NOT (attempt.status = 'failed' AND attempt.error_code IS 'timeout')
+      -- The app stopped waiting on a timed-out call by its own limit; its result is never used.
+      AND NOT EXISTS (
         SELECT 1 FROM generation_attempts completed
         WHERE completed.research_run_id = attempt.research_run_id AND completed.status = 'completed'
           AND completed.request_sha256 = attempt.request_sha256 AND completed.output_json IS NOT NULL

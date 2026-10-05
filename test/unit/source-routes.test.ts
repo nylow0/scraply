@@ -11,7 +11,7 @@ describe("source routing", () => {
     expect(framedDiscoveryProjection("quick")).toEqual(framedDiscoveryProjection("quick", 3));
     expect(framedDiscoveryProjection("quick", 1)).toMatchObject({ searches: 66 });
     expect(framedDiscoveryProjection("quick", 3)).toMatchObject({ searches: 186 });
-    expect(framedDiscoveryProjection("standard", 3)).toMatchObject({ searches: 318 });
+    expect(framedDiscoveryProjection("standard", 3)).toMatchObject({ searches: 405 });
     expect(discoveryRunProjection("standard", 4, 1, false)).toEqual({ modelCalls: 16, searches: 16, factorCap: 80 });
     expect(framedDiscoveryProjection("quick", 3).modelCalls).toBe(framedDiscoveryProjection("quick", 1).modelCalls);
   });

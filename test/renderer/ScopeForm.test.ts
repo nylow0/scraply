@@ -149,7 +149,13 @@ describe("ScopeForm search provider selection", () => {
     expect(defaultMode?.checked).toBe(true);
     await waitFor(() => expect(onPreviewWorkflow).toHaveBeenCalled());
     const latestDraft = onPreviewWorkflow.mock.lastCall?.[0];
-    expect(latestDraft).toMatchObject({ mode: "vibe", ideas: { model: DEFAULT_RUN_CONFIG.model }, targets: { automaticProblemCap: 3 } });
+    expect(latestDraft).toMatchObject({ mode: "vibe", ideas: { model: DEFAULT_RUN_CONFIG.model } });
+    // No cap by default: Vibe develops every qualifying problem. A typed number still limits it.
+    expect(latestDraft?.targets.automaticProblemCap).toBeUndefined();
+    const cap = view.getByLabelText("Automatic problem cap") as HTMLInputElement;
+    expect(cap.placeholder).toBe("All qualifying");
+    await fireEvent.input(cap, { target: { value: "2" } });
+    await waitFor(() => expect(onPreviewWorkflow.mock.lastCall?.[0].targets.automaticProblemCap).toBe(2));
     expect(view.getByLabelText("Ideas model")).toBeTruthy();
     await waitFor(() => expect((view.getByRole("button", { name: "Start" }) as HTMLButtonElement).disabled).toBe(false));
 
@@ -196,7 +202,8 @@ describe("ScopeForm search provider selection", () => {
     await waitFor(() => expect(onPreviewWorkflow.mock.lastCall?.[0]).toMatchObject({
       targets: { kind: "project", distinctBusinessCount: 30 },
       limits: { maxModelCalls: expect.any(Number), maxSearches: expect.any(Number) },
-      runConfig: { opportunityExploration: { maxModelCalls: 24, maxSearches: 6 } },
+      // Uncapped Vibe is estimated at Standard's target of four confirmed problems.
+      runConfig: { opportunityExploration: { maxModelCalls: 32, maxSearches: 6 } },
     }));
     expect(onPreviewWorkflow.mock.lastCall?.[0].limits.maxModelCalls).toBeGreaterThan(56);
     expect(onPreviewWorkflow.mock.lastCall?.[0].limits.maxSearches).toBeGreaterThan(22);

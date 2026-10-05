@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { SourceSchema, type DiscoveryDepth } from "./schemas";
+import { FRAME_INVESTIGATOR_COUNTS } from "./discovery-projection";
 import type { Scope } from "./structured-output-schemas";
 
 const IdSchema = z.string().trim().min(1).max(128);
@@ -185,5 +186,5 @@ export function selectResearchAreas(frame: ResearchFrame, ranking: ResearchAreaR
   const anyQualifying = included.some(area => (qualifyingFactCounts[area.id] ?? 0) > 0);
   const eligible = anyQualifying ? included.filter(area => (qualifyingFactCounts[area.id] ?? 0) > 0) : included;
   return eligible.sort((left, right) => ranks.get(left.id)! - ranks.get(right.id)!)
-    .slice(0, { quick: 1, standard: 2, deep: 4 }[depth]);
+    .slice(0, FRAME_INVESTIGATOR_COUNTS[depth]);
 }

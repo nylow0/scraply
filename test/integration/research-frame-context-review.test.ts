@@ -77,12 +77,8 @@ function fixture(approvedFrame = frame()) {
     const inputs = routing(request);
     const output = request.stage.startsWith("query-plan")
       ? { queries: Array.from({ length: Number(inputs.queryCount) }, (_, index) => ({ query: `filing ${inputs.harvestMode} ${index}`,
-          intent: ["firsthand-experience", "measured-behavior", "contrary-evidence"][index % 3], intendedSourceType: "Owner report", uncertainty: "Scale unknown",
-          ...(index % 3 !== 2 && Array.isArray(inputs.languages) && inputs.languages.includes("uk")
-            ? { translations: [{ language: "uk", query: `облік ${inputs.harvestMode} ${index}` }] } : {}) })) }
-      : request.stage === "area-ranking" ? { areas: approvedFrame.areas.map((area, index) => ({ areaId: area.id,
-          rank: index + 1, reason: "Bounded fixture", evidenceStrength: "none", fit: "unknown" })) }
-      : request.stage.startsWith("problem-candidates") ? { problems: [] }
+          intent: "firsthand-experience", intendedSourceType: "Owner report", uncertainty: "Scale unknown",
+          translations: [{ language: "uk", query: `облік ${inputs.harvestMode} ${index}` }] })) }
       : request.stage === "solutions" ? { options: [option()] }
       : request.stage === "risk-evaluation" ? (inputs.reassessment ? { affectedRisks: [], newRisks: [], additionalUnknowns: [] } : { risks: [], unknowns: [] })
       : request.stage === "decision-analysis" ? { consequences: [], proposedResponses: [], additionalUnknowns: [],
@@ -113,7 +109,8 @@ function discoveryWorkflow(f: ReturnType<typeof fixture>, legacy = false) {
   f.frames.bindRun(runId, "project", f.draft.id);
   const workflow = new WorkflowExecution(f.db, runId);
   workflow.save("frame-workflow", { version: 1 });
-  // This endpoint completes the bounded scan and empty-candidate investigation.
+  workflow.save("frame-selected-areas", []);
+  // This interrupted fixture stops at scan reconciliation, before candidate investigation.
   const prompts = workflow.read<Record<string, unknown>>("prompts")!;
   delete prompts["area-gap"]; delete prompts["evidence-check"];
   f.db.db.prepare("UPDATE workflow_snapshots SET value_json = ? WHERE research_run_id = ? AND snapshot_key = 'prompts'")
@@ -132,17 +129,18 @@ test("an interrupted pre-frame-routing scan reuses its exact saved planners and 
     await scanResearchArea(scope, approved, area, { modelClient: workflow.discoveryClient(f.client), search: workflow.search(f.search),
       model, reasoningEffort: config.reasoningEffort, depth: "quick", workflowVersion: 2, frame: approved, area,
       prompt: name => workflow.resolvePrompt(name as WorkflowV2StageId).text,
-      sourceRouting: { now: new Date(workflow.read<string>("source-route-start")!) },
+      sourceRouting: { now: new Date(workflow.read<string>("source-route-start")!), legacyPublicationDomainCategory: true },
       stageScope: `scan-${sha256(area.id).slice(0, 16)}`, idFactory: workflow.idFactory(`frame-scan:${area.id}`), random: () => 0.5 });
     const stages = f.db.db.prepare("SELECT * FROM stage_results WHERE research_run_id = ? ORDER BY rowid").all(runId);
     expect(stages).toHaveLength(2);
     expect(routing(f.requests[0]!)).not.toHaveProperty("goalKind");
     expect(routing(f.requests[0]!)).not.toHaveProperty("languages");
     expect(workflow.read(`frame-scan:${area.id}`)).toBeNull();
+    const calls = { models: f.requests.length, searches: f.searches.length };
     await f.engine.resumeRun(runId); await f.wait(runId);
     expect(f.errors).toEqual([]);
-    expect(f.requests.filter(request => request.stage.includes(":scan-"))).toHaveLength(2);
-    expect(f.db.db.prepare("SELECT * FROM stage_results WHERE research_run_id = ? ORDER BY rowid LIMIT 2").all(runId)).toEqual(stages);
+    expect({ models: f.requests.length, searches: f.searches.length }).toEqual(calls);
+    expect(f.db.db.prepare("SELECT * FROM stage_results WHERE research_run_id = ? ORDER BY rowid").all(runId)).toEqual(stages);
     expect(workflow.read<unknown>("frame-source-venues")).toEqual({ compatibility: "preserve-saved-routing" });
     expect(workflow.read(`frame-scan:${area.id}`)).not.toBeNull();
     expect(f.frames.forRun(runId)?.id).toBe(f.draft.id);
@@ -171,7 +169,7 @@ test.each(["legacy", "current"] as const)("a %s completed planner before stage c
     await expect(scanResearchArea(scope, approved, area, { modelClient: workflow.discoveryClient(provider), search: workflow.search(f.search),
       model, reasoningEffort: config.reasoningEffort, depth: "quick", workflowVersion: 2, frame: approved, area,
       prompt: name => workflow.resolvePrompt(name as WorkflowV2StageId).text,
-      sourceRouting: { now: new Date(workflow.read<string>("source-route-start")!),
+      sourceRouting: { now: new Date(workflow.read<string>("source-route-start")!), legacyPublicationDomainCategory: legacy,
         ...(!legacy ? { goalKind: approved.goalKind, languages: approved.languages } : {}) },
       stageScope: `scan-${sha256(area.id).slice(0, 16)}`, idFactory: workflow.idFactory(`frame-scan:${area.id}`), random: () => 0.5 }))
       .rejects.toThrow("Process stopped after completion");
@@ -181,19 +179,17 @@ test.each(["legacy", "current"] as const)("a %s completed planner before stage c
     expect(f.requests).toHaveLength(1);
     await f.engine.resumeRun(runId); await f.wait(runId);
     expect(f.errors).toEqual([]);
-    expect(f.requests.filter(item => item.stage.includes(":scan-")).map(item => routing(item).harvestMode)).toEqual(["domain", "audience"]);
+    expect(f.requests.map(item => routing(item).harvestMode)).toEqual(["domain", "audience"]);
     expect(f.db.db.prepare("SELECT * FROM generation_attempts WHERE id = ?").get(originalAttemptId)).toEqual(original);
     expect(f.db.db.prepare("SELECT id FROM generation_attempts WHERE research_run_id = ? AND stage_key = ?").all(runId, request.stage))
       .toEqual([{ id: originalAttemptId }]);
     const recovered = workflow.repository.findStageResult(runId, "query-plan", request.stage.split(":").slice(1).join(":"))!;
     expect(recovered.inputs).toEqual(request.workOrder.inputs);
     expect(recovered.output).toEqual({ queries: [{ query: "filing domain 0", intent: "firsthand-experience", intendedSourceType: "Owner report",
-      uncertainty: "Scale unknown", ...(!legacy ? { translations: [{ language: "uk", query: "облік domain 0" }] } : {}) }] });
+      uncertainty: "Scale unknown", translations: [{ language: "uk", query: "облік domain 0" }] }] });
     expect(workflow.read<unknown>("frame-source-venues")).toMatchObject(legacy
       ? { compatibility: "preserve-saved-routing" } : { validated: true, version: 2 });
-    if (!legacy) for (const next of f.requests.filter(item => item.stage.includes(":scan-"))) {
-      expect(routing(next)).toMatchObject({ goalKind: approved.goalKind, languages: approved.languages });
-    }
+    if (!legacy) for (const next of f.requests) expect(routing(next)).toMatchObject({ goalKind: approved.goalKind, languages: approved.languages });
     expect(f.db.db.prepare("SELECT status FROM research_runs WHERE id = ?").get(runId)).toEqual({ status: "completed" });
   } finally { await f.close(); }
 });
@@ -204,11 +200,9 @@ test("new scans still plan the approved goal and languages and use proven area v
     const { runId } = discoveryWorkflow(f);
     await f.engine.resumeRun(runId); await f.wait(runId);
     expect(f.errors).toEqual([]);
-    expect(f.requests.filter(request => request.stage.includes(":scan-"))).toHaveLength(2);
-    for (const request of f.requests.filter(item => item.stage.includes(":scan-"))) {
-      expect(routing(request)).toMatchObject({ goalKind: "process-improvement", languages: ["en", "uk"] });
-    }
-    expect(f.searches.length).toBeGreaterThanOrEqual(8);
+    expect(f.requests).toHaveLength(2);
+    for (const request of f.requests) expect(routing(request)).toMatchObject({ goalKind: "process-improvement", languages: ["en", "uk"] });
+    expect(f.searches).toHaveLength(8);
     expect(f.searches.some(item => item.query.startsWith("облік"))).toBe(true);
     expect(f.searches.every(item => item.options?.userLocation === "UA")).toBe(true);
     expect(f.searches.filter(item => item.options?.route === "community").every(item => item.options?.includeDomains?.includes("reddit.com"))).toBe(true);

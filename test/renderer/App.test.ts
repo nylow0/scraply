@@ -330,8 +330,9 @@ describe("App workspace coordination", () => {
     expect(view.queryByRole("alert")?.textContent).toBeFalsy();
     await waitFor(() => expect(startWorkflow).toHaveBeenCalledOnce());
     expect(startWorkflow.mock.calls[0]?.[0]).toMatchObject({ threadId: "alpha", contract: {
-      mode: "vibe", brief: "Independent repair shops", targets: { automaticProblemCap: 3 },
+      mode: "vibe", brief: "Independent repair shops",
     } });
+    expect(startWorkflow.mock.calls[0]?.[0].contract.targets.automaticProblemCap).toBeUndefined();
     expect(await view.findByLabelText("Vibe run progress")).toBeTruthy();
     expect(view.getByRole("heading", { name: "Researching your brief" })).toBeTruthy();
     expect(view.queryByText(/distinct ideas/)).toBeNull();

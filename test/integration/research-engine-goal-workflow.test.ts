@@ -13,7 +13,7 @@ import { DiscoveryRepository } from "../../src/db/repositories/discovery";
 import { ResearchFrameRepository } from "../../src/db/repositories/research-frames";
 import { ResearchRunRepository } from "../../src/db/repositories/research-runs";
 import { WorkflowRepository } from "../../src/db/repositories/workflows";
-import type { StructuredModelClient, StructuredStageRequest } from "../../src/providers/structured";
+import { ProviderFailure, type StructuredModelClient, type StructuredStageRequest } from "../../src/providers/structured";
 import type { SearchClient, SearchOptions, SearchProvider } from "../../src/providers/search";
 import type { ResearchVenueResolver } from "../../src/providers/venue-validation";
 import type { ResearchFrame } from "../../src/shared/research-frame";
@@ -55,7 +55,7 @@ function input(request: StructuredStageRequest<unknown>): Record<string, unknown
 async function fixture(output: (request: StructuredStageRequest<unknown>) => Promise<unknown> | unknown,
   options: { novelty?: boolean; bounded?: boolean; depth?: DiscoveryDepth; modelCapacity?: number;
     noSearchProvider?: boolean; maxSearches?: number; maxModelCalls?: number; singleArea?: boolean;
-    taskModelReservation?: number; taskSearchReservation?: number;
+    taskModelReservation?: number; taskSearchReservation?: number; parallelResearch?: boolean;
     researchTarget?: { confirmedProblems: number; minAreas: number };
     frameValue?: ResearchFrame; frameSourceUrl?: string; venueResolver?: ResearchVenueResolver; autoSearch?: boolean;
     search?: (query: string, options?: SearchOptions, provider?: SearchProvider) => Promise<Source[]> } = {}) {
@@ -114,8 +114,13 @@ async function fixture(output: (request: StructuredStageRequest<unknown>) => Pro
       return item;
     });
     const link = { sessionId: "session", ...(!followUp ? { frameId: draft.id } : {}),
-      purpose: followUp ? "research-followup" as const : "discovery" as const, onRunCreated(runId: string) {
+    purpose: followUp ? "research-followup" as const : "discovery" as const, onRunCreated(runId: string) {
       if (followUp) frames.bindRun(runId, "project", draft.id);
+      if (options.parallelResearch === false) {
+        new WorkflowExecution(db, runId);
+        db.db.prepare("UPDATE workflow_snapshots SET value_json = ? WHERE research_run_id = ? AND snapshot_key = 'parallel-research'")
+          .run('{"version":0}', runId);
+      }
       db.immediateTransaction(() => workflows.updateWorkItem(item.id, "running", { outputRefs: { runId } })); return true;
     } };
     const runId = kind === "discovery" ? await engine.startDiscovery("project", scope, config, link)
@@ -184,6 +189,264 @@ test("goal generation saves revision two, globally readable frame citations, and
     expect(JSON.parse(row.reviewed_criteria_fit_json)).toEqual(fit("meets", "frame-source"));
     expect(f.db.db.prepare("SELECT retrieved_text FROM sources WHERE id = 'frame-source'").get()).toEqual({ retrieved_text: text });
     expect(new WorkflowExecution(f.db, runId).read<{ version: number }>("goal-fit")).toEqual({ version: 1 });
+    expect(f.db.db.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
+  } finally { await f.close(); }
+});
+
+test.each(["timeout", "dropped-stream"] as const)("an exhausted area scan keeps the other area's completed research (%s)", async failure => {
+  const f = await fixture(request => {
+    if (request.stage.startsWith("query-plan:scan-") && (input(request).area as { id: string }).id === "filing") {
+      if (failure === "dropped-stream") throw droppedStream();
+      throw new ProviderFailure("timeout", "Scan call time limit reached", false);
+    }
+    return researchOutput(request);
+  }, { modelCapacity: 3 });
+  try {
+    const runId = await f.start("discovery");
+    expect(f.errors).toEqual([]);
+    expect(f.db.db.prepare("SELECT status FROM research_runs WHERE id = ?").get(runId)).toEqual({ status: "completed" });
+    expect(f.db.db.prepare("SELECT area_id,verdict FROM problems WHERE discovery_run_id = ?").all(runId))
+      .toEqual([{ area_id: "handoff", verdict: "confirmed" }]);
+    const failed = f.workflows.listWorkItems("session").find(item => item.scopeKey === "investigate-area:filing")!;
+    const successful = f.workflows.listWorkItems("session").find(item => item.scopeKey === "investigate-area:handoff")!;
+    expect(failed.state).toBe("failed"); expect(successful.state).toBe("succeeded");
+    expect(new WorkflowExecution(f.db, runId).read("research-target-outcome")).toMatchObject({
+      reason: expect.stringContaining("scan in filing stopped because a model call failed"),
+      skippedAreaIds: ["filing"],
+    });
+    expect(new WorkflowExecution(f.db, runId).read("frame-scan-failure:filing")).toMatchObject({
+      partialReason: expect.stringContaining("ended before candidate assessment"),
+    });
+    expect(new WorkflowRepository(f.db).hasUnknownProviderCompletion(runId)).toBe(false);
+    const calls = f.db.db.prepare(`SELECT status FROM generation_attempts WHERE research_run_id = ?
+      AND stage_key LIKE ? ORDER BY created_at,rowid`).all(runId, `query-plan:scan-${hash("filing").slice(0, 12)}%`);
+    expect(calls).toHaveLength(2);
+    expect(f.db.db.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
+  } finally { await f.close(); }
+});
+
+test.each([[false, "timeout"], [false, "dropped-stream"]] as const)(
+  "an exhausted initial verdict keeps earlier verdicts and unassessed candidates (%s, %s)", async (parallelResearch, failure) => {
+  const f = await fixture(request => {
+    if (request.stage.startsWith("problem-kill:")) {
+      const candidate = (request.evidence[0]!.content as { candidate: { statement: string } }).candidate;
+      if (candidate.statement.endsWith(" 2")) {
+        if (failure === "dropped-stream") throw droppedStream();
+        throw new ProviderFailure("timeout", "Verdict call time limit reached", false);
+      }
+    }
+    return researchOutput(request, { initialCandidates: 3 });
+  }, { singleArea: true, parallelResearch, modelCapacity: 3 });
+  try {
+    const runId = await f.start("discovery");
+    expect(f.errors).toEqual([]);
+    expect(f.db.db.prepare("SELECT status FROM research_runs WHERE id = ?").get(runId)).toEqual({ status: "completed" });
+    expect(f.db.db.prepare("SELECT statement,verdict FROM problems WHERE discovery_run_id = ? ORDER BY statement").all(runId)).toEqual([]);
+    const unassessed = f.db.db.prepare(`SELECT id,statement,candidate_json FROM rejected_problem_candidates
+      WHERE discovery_run_id = ? AND disposition = 'not-assessed' ORDER BY statement`).all(runId) as Array<{ id: string; statement: string; candidate_json: string }>;
+    expect(unassessed.map(candidate => candidate.statement)).toEqual(["filing initial workflow 1", "filing initial workflow 2", "filing initial workflow 3"]);
+    for (const candidate of unassessed) expect(JSON.parse(candidate.candidate_json)).toMatchObject({ unknowns: ["Frequency"] });
+    expect(f.stages.filter(stage => stage.startsWith("evidence-check:") || stage.startsWith("area-gap:"))).toEqual([]);
+    expect(new WorkflowExecution(f.db, runId).read("research-target-outcome")).toMatchObject({
+      reason: expect.stringContaining(failure === "timeout" ? "model call failed: Verdict call time limit reached"
+        : "model call failed: The OpenAI stream ended before completion"),
+    });
+    expect(new WorkflowRepository(f.db).hasUnknownProviderCompletion(runId)).toBe(false);
+    expect(f.workflows.listWorkItems("session").find(item => item.kind === "investigate-area")!.state).toBe("failed");
+    const stagesBefore = f.stages.length;
+    const item = f.db.immediateTransaction(() => f.workflows.createWorkItem({ sessionId: "session", kind: "assess-candidate",
+      scopeKey: "assess-after-initial-verdict-failure", state: "ready", input: {} }));
+    const assessedRun = await f.engine.startCandidateAssessment("project", runId, unassessed[0]!.id, f.config,
+      { sessionId: "session", purpose: "research-followup", onRunCreated(created) {
+        f.db.immediateTransaction(() => f.workflows.updateWorkItem(item.id, "running", { outputRefs: { runId: created } })); return true;
+      } });
+    await until(() => !f.engine.getActiveRunIds().has(assessedRun));
+    expect(f.errors).toEqual([]);
+    expect(f.stages.slice(stagesBefore).filter(stage => stage.startsWith("evidence-check:"))).toHaveLength(1);
+    expect(new WorkflowExecution(f.db, assessedRun).read("candidate-assessment-result")).toMatchObject({ assessed: true });
+    expect(f.db.db.prepare("SELECT candidate_json FROM rejected_problem_candidates WHERE id = ?").get(unassessed[0]!.id))
+      .toEqual({ candidate_json: unassessed[0]!.candidate_json });
+    expect(f.db.db.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
+  } finally { await f.close(); }
+});
+
+test("candidate follow-up sources commit in input order regardless of completion delays", async () => {
+  const run = async (parallelResearch: boolean, firstFinishesLast: boolean) => {
+    const finished: string[] = [];
+    const firstQuote = "First candidate's owner reports lost filing.";
+    const secondQuote = "Second candidate's owner reports delayed filing.";
+    const f = await fixture(async request => {
+      const stage = request.stage.split(":")[0];
+      const packet = request.evidence[0]?.content as Record<string, unknown>;
+      if (stage === "problem-candidates") {
+        const output = researchOutput(request, { initialCandidates: 2 }) as { problems: Array<{ factorIds: string[]; intendedBuyerEvidenceFactorIds: string[] }> };
+        for (const problem of output.problems) {
+          problem.factorIds = problem.factorIds.slice(0, 1);
+          problem.intendedBuyerEvidenceFactorIds = problem.factorIds;
+        }
+        return output;
+      }
+      if (stage === "evidence-check") {
+        const problem = packet.problem as { statement: string };
+        const first = problem.statement.endsWith(" 1");
+        if (request.stage.includes(":round-0")) return { decision: "follow-up", reason: "One more independent owner needed", gaps: [{
+          kind: "second-independent-observation", query: first ? "follow-up first" : "follow-up second", evidenceNeeded: "Another firsthand account", route: "open-web" }] };
+        await Bun.sleep(first === firstFinishesLast ? 35 : 1);
+        finished.push(problem.statement);
+        return { decision: "confirmed", reason: "Review completed", gaps: [] };
+      }
+      if (stage === "factor-harvest" && request.stage.includes(":follow-up:")) {
+        const first = packet.decisiveQuestion === "follow-up first";
+        const sources = packet.sources as Array<{ id: string }>;
+        return { factors: [{ sourceId: sources[0]!.id, subject: "Bakery owner", behavior: "Repeats filing",
+          quote: first ? firstQuote : secondQuote, modelConfidence: 0.8, uncertainty: "Scale unknown", sourceRole: "firsthand",
+          audienceFit: "intended-buyer", independentSourceKey: first ? "followup-first-owner" : "followup-second-owner",
+          supportsDemand: true, demandEvidenceUncertainty: "Payment unknown" }] };
+      }
+      return researchOutput(request);
+    }, { depth: "standard", singleArea: true, parallelResearch, modelCapacity: 3, researchTarget: { confirmedProblems: 10, minAreas: 1 },
+      search: async query => query.startsWith("follow-up")
+        ? [{ id: query, url: "https://new-owner.example/shared", title: "New owner", text: query.endsWith("first") ? firstQuote : secondQuote }]
+        : [1, 2].map(index => ({ id: `owner-${index}`, url: `https://owners.example/${index === 1 ? "filing" : "handoff"}`, title: "Owner", text })) });
+    try {
+      const runId = await f.start("discovery");
+      expect(f.errors).toEqual([]);
+      const initial = new WorkflowExecution(f.db, runId).read<{ problems: Array<{ id: string }> }>("area:filing:problems")!;
+      expect(f.queries).toEqual(expect.arrayContaining(["follow-up first", "follow-up second"]));
+      const sourceId = hash(`${runId}:investigator:filing:${initial.problems[0]!.id}:round-1:gap-1:0`).slice(0, 24);
+      expect(f.db.db.prepare("SELECT id,retrieved_text FROM sources WHERE research_run_id = ? AND canonical_url = ?")
+        .get(runId, "https://new-owner.example/shared")).toEqual({ id: sourceId, retrieved_text: firstQuote });
+      expect(f.db.db.prepare("SELECT id,source_id,quote FROM factors WHERE research_run_id = ? AND source_id = ?").all(runId, sourceId))
+        .toEqual([{ id: hash(`${runId}:investigator:filing:${initial.problems[0]!.id}:round-1:gap-1:1`).slice(0, 24), source_id: sourceId, quote: firstQuote }]);
+      expect(f.workflows.listWorkItems("session").filter(item => item.kind === "evidence-check").every(item => item.state === "succeeded")).toBe(true);
+      expect(f.db.db.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
+      return { finished, problems: f.db.db.prepare("SELECT statement,verdict FROM problems WHERE discovery_run_id = ? ORDER BY statement").all(runId) };
+    } finally { await f.close(); }
+  };
+  const sequential = await run(false, true);
+  const parallelFirst = await run(true, false);
+  const parallelSecond = await run(true, true);
+  expect(sequential.problems).toEqual([{ statement: "filing initial workflow 1", verdict: "confirmed" },
+    { statement: "filing initial workflow 2", verdict: "insufficient-evidence" }]);
+  expect(sequential.finished).toEqual(["filing initial workflow 1", "filing initial workflow 2"]);
+  expect(parallelSecond.finished).toEqual(["filing initial workflow 2", "filing initial workflow 1"]);
+  expect(parallelFirst.problems).toEqual(sequential.problems);
+  expect(parallelSecond.problems).toEqual(sequential.problems);
+});
+
+test.each([[false, 0], [true, 0], [false, 1], [true, 1]] as const)(
+  "an exhausted investigator check archives unfinished candidates with their quoted graph (%s, round %s)", async (parallelResearch, failedRound) => {
+  let assessing = false;
+  const f = await fixture(request => {
+    if (request.stage.startsWith("evidence-check:")) {
+      if (!assessing && request.stage.endsWith(`:round-${failedRound}`)) {
+        const problem = (request.evidence[0]!.content as { problem: { statement: string } }).problem;
+        if (problem.statement.endsWith(" 1")) throw new ProviderFailure("timeout", "Evidence check exhausted retry", false);
+      }
+      if (!assessing && failedRound === 1 && request.stage.endsWith(":round-0")) return {
+        decision: "follow-up", reason: "Another owner is needed", gaps: [{ kind: "second-independent-observation",
+          query: "new owner observation", evidenceNeeded: "An independent owner account", route: "open-web" }],
+      };
+    }
+    const initialVerdict = request.stage.startsWith("problem-kill:area-") && !request.stage.includes(":round-");
+    return researchOutput(request, { initialCandidates: failedRound === 0 ? 2 : 1,
+      insufficient: !assessing && failedRound === 1 && initialVerdict });
+  }, { singleArea: true, depth: failedRound === 1 ? "standard" : "quick", parallelResearch, modelCapacity: 3,
+    researchTarget: { confirmedProblems: 10, minAreas: 1 }, search: async query => query === "new owner observation"
+      ? [{ id: "new-owner", url: "https://new-owner.example/after-harvest", title: "Another owner", text }]
+      : [1, 2].map(index => ({ id: `owner-${index}`, url: `https://owners.example/${index === 1 ? "filing" : "handoff"}`, title: "Owner", text })) });
+  try {
+    const runId = await f.start("discovery");
+    expect(f.errors).toEqual([]);
+    const initial = new WorkflowExecution(f.db, runId).read<{ problems: Array<{ statement: string; verdict: string }> }>("area:filing:problems")!;
+    expect(initial.problems[0]!.verdict).toBe(failedRound === 0 ? "confirmed" : "insufficient-evidence");
+    expect(f.db.db.prepare("SELECT statement FROM problems WHERE discovery_run_id = ? ORDER BY statement").all(runId))
+      .toEqual(parallelResearch && failedRound === 0 ? [{ statement: "filing initial workflow 2" }] : []);
+    const synthesis = f.db.db.prepare("SELECT output_json FROM stage_results WHERE research_run_id = ? AND stage_id = 'problem-candidates'")
+      .get(runId) as { output_json: string };
+    const originalCandidates = JSON.parse(synthesis.output_json) as { problems: Array<{ statement: string; factorIds: string[] }> };
+    const archived = f.db.db.prepare(`SELECT id,statement,candidate_json FROM rejected_problem_candidates
+      WHERE discovery_run_id = ? AND disposition = 'not-assessed' ORDER BY statement`).all(runId) as Array<{ id: string; statement: string; candidate_json: string }>;
+    expect(archived.map(candidate => candidate.statement)).toEqual(!parallelResearch && failedRound === 0
+      ? ["filing initial workflow 1", "filing initial workflow 2"] : ["filing initial workflow 1"]);
+    for (const candidate of archived) {
+      const original = originalCandidates.problems.find(problem => problem.statement === candidate.statement)!;
+      expect(JSON.parse(candidate.candidate_json)).toEqual(original);
+      for (const factorId of original.factorIds) expect(f.db.db.prepare(`SELECT factor.quote,source.retrieved_text FROM factors factor
+        JOIN sources source ON source.id = factor.source_id AND source.research_run_id = factor.research_run_id
+        WHERE factor.id = ? AND factor.research_run_id = ?`).get(factorId, runId)).toEqual({ quote: text, retrieved_text: text });
+    }
+    const attempts = f.db.db.prepare("SELECT status FROM generation_attempts WHERE research_run_id = ? AND stage_key LIKE ? ORDER BY created_at,rowid")
+      .all(runId, `evidence-check:filing:%:round-${failedRound}`) as Array<{ status: string }>;
+    expect(attempts.filter(attempt => attempt.status === "failed")).toHaveLength(2);
+    if (failedRound === 1) {
+      const receipt = f.db.db.prepare(`SELECT value_json FROM workflow_snapshots WHERE research_run_id = ?
+        AND snapshot_key LIKE 'investigator-harvest:%'`).get(runId) as { value_json: string };
+      const harvest = JSON.parse(receipt.value_json) as { sources: Array<{ id: string; canonicalUrl: string; retrievedText: string }>;
+        factors: Array<{ id: string; sourceId: string; quote: string }> };
+      expect(harvest.sources).toHaveLength(1); expect(harvest.factors).toHaveLength(1);
+      for (const source of harvest.sources) expect(f.db.db.prepare("SELECT id,retrieved_text FROM sources WHERE research_run_id = ? AND canonical_url = ?")
+        .get(runId, source.canonicalUrl)).toEqual({ id: source.id, retrieved_text: source.retrievedText });
+      for (const factor of harvest.factors) expect(f.db.db.prepare("SELECT source_id,quote FROM factors WHERE research_run_id = ? AND id = ?")
+        .get(runId, factor.id)).toEqual({ source_id: factor.sourceId, quote: factor.quote });
+    }
+    const frozen = f.db.db.prepare("SELECT stage_id,selection_key,output_json FROM stage_results WHERE research_run_id = ? ORDER BY stage_id,selection_key").all(runId);
+    const receiptSnapshots = f.db.db.prepare("SELECT snapshot_key,value_json FROM workflow_snapshots WHERE research_run_id = ? ORDER BY snapshot_key").all(runId);
+    expect(new WorkflowExecution(f.db, runId).read("research-target-outcome")).toMatchObject({
+      reason: expect.stringContaining("model call failed: Evidence check exhausted retry"),
+    });
+    expect(f.stages.some(stage => stage.startsWith("area-gap:"))).toBe(false);
+    assessing = true;
+    const item = f.db.immediateTransaction(() => f.workflows.createWorkItem({ sessionId: "session", kind: "assess-candidate",
+      scopeKey: "assess-after-failed-check", state: "ready", input: {} }));
+    const stagesBefore = f.stages.length;
+    const assessedRun = await f.engine.startCandidateAssessment("project", runId, archived[0]!.id, f.config,
+      { sessionId: "session", purpose: "research-followup", onRunCreated(created) {
+        f.db.immediateTransaction(() => f.workflows.updateWorkItem(item.id, "running", { outputRefs: { runId: created } })); return true;
+      } });
+    await until(() => !f.engine.getActiveRunIds().has(assessedRun));
+    expect(f.errors).toEqual([]);
+    expect(new WorkflowExecution(f.db, assessedRun).read("candidate-assessment-result")).toMatchObject({ assessed: true, candidateId: archived[0]!.id });
+    expect(f.stages.slice(stagesBefore).some(stage => stage.startsWith("problem-candidates:"))).toBe(false);
+    expect(f.db.db.prepare("SELECT candidate_json FROM rejected_problem_candidates WHERE id = ?").get(archived[0]!.id))
+      .toEqual({ candidate_json: archived[0]!.candidate_json });
+    expect(f.db.db.prepare("SELECT stage_id,selection_key,output_json FROM stage_results WHERE research_run_id = ? ORDER BY stage_id,selection_key").all(runId)).toEqual(frozen);
+    expect(f.db.db.prepare("SELECT snapshot_key,value_json FROM workflow_snapshots WHERE research_run_id = ? ORDER BY snapshot_key").all(runId)).toEqual(receiptSnapshots);
+    expect(f.db.db.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
+  } finally { await f.close(); }
+});
+
+test.each(["timeout", "dropped-stream"] as const)("a failed gap verdict stops the area and retains candidates without more checks (%s)", async failure => {
+  const f = await fixture(request => {
+    if (request.stage.startsWith("problem-kill:area-") && request.stage.includes(":gap:")) {
+      const candidate = (request.evidence[0]!.content as { candidate: { statement: string } }).candidate;
+      if (candidate.statement.endsWith(" 2")) {
+        if (failure === "dropped-stream") throw droppedStream();
+        throw new ProviderFailure("timeout", "Gap verdict exhausted retry", false);
+      }
+    }
+    return researchOutput(request, { gap: true, gapCandidates: 2 });
+  }, { singleArea: true, depth: "standard", modelCapacity: 3, researchTarget: { confirmedProblems: 10, minAreas: 1 },
+    search: async query => query === "new coverage" ? [{ id: "gap-owner", url: "https://gap-owner.example/report", title: "Gap owner", text }]
+      : [1, 2].map(index => ({ id: `owner-${index}`, url: `https://owners.example/${index === 1 ? "filing" : "handoff"}`, title: "Owner", text })) });
+  try {
+    const runId = await f.start("discovery");
+    expect(f.errors).toEqual([]);
+    expect(f.db.db.prepare("SELECT statement,verdict FROM problems WHERE discovery_run_id = ?").all(runId))
+      .toEqual([{ statement: "filing initial workflow 1", verdict: "confirmed" }]);
+    const unassessed = f.db.db.prepare(`SELECT statement,candidate_json FROM rejected_problem_candidates
+      WHERE discovery_run_id = ? AND disposition = 'not-assessed' ORDER BY statement`).all(runId) as Array<{ statement: string; candidate_json: string }>;
+    expect(unassessed.map(candidate => candidate.statement)).toEqual(["filing unsearched workflow 1", "filing unsearched workflow 2"]);
+    const gapSynthesis = f.db.db.prepare("SELECT output_json FROM stage_results WHERE research_run_id = ? AND stage_id = 'problem-candidates' AND selection_key LIKE '%:gap'")
+      .get(runId) as { output_json: string };
+    const originals = JSON.parse(gapSynthesis.output_json) as { problems: Array<{ statement: string }> };
+    for (const candidate of unassessed) expect(JSON.parse(candidate.candidate_json)).toEqual(originals.problems.find(problem => problem.statement === candidate.statement));
+    expect(f.stages.filter(stage => stage.startsWith("evidence-check:"))).toHaveLength(1);
+    expect(new WorkflowExecution(f.db, runId).read("research-target-outcome")).toMatchObject({
+      reason: expect.stringContaining(failure === "timeout" ? "Gap verdict exhausted retry" : "The OpenAI stream ended before completion"),
+    });
+    expect(new WorkflowRepository(f.db).hasUnknownProviderCompletion(runId)).toBe(false);
+    expect(f.workflows.listWorkItems("session").find(item => item.kind === "investigate-area")!.state).toBe("failed");
     expect(f.db.db.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
   } finally { await f.close(); }
 });
@@ -640,5 +903,150 @@ test("a second idea round reloads a saved startup idea judged against a market g
     expect(f.errors).toEqual([]);
     expect(rounds).toBe(2);
     expect(f.stages).toEqual(["solutions", "solution-set-review", "solutions", "solution-set-review"]);
+  } finally { await f.close(); }
+});
+
+test("a verdict citing a fact ID or an invented ID keeps research going with mapped citations", async () => {
+  // Live Bookkeepers stopped here: the verdict cited fact IDs as source IDs.
+  const f = await fixture(request => {
+    const output = researchOutput(request) as Record<string, unknown>;
+    if (!request.stage.startsWith("problem-kill")) return output;
+    const factors = (request.evidence[0]?.content as { supportingFactors?: Array<{ id: string }> }).supportingFactors ?? [];
+    return { ...output, verdictSourceIds: [...factors.map(factor => factor.id), "invented-source"] };
+  }, { singleArea: true });
+  try {
+    const runId = await f.start("discovery");
+    expect(f.errors).toEqual([]);
+    const cited = f.db.db.prepare(`SELECT pvs.source_id FROM problem_verdict_sources pvs JOIN problems p ON p.id = pvs.problem_id
+      WHERE p.discovery_run_id = ?`).all(runId) as Array<{ source_id: string }>;
+    const sources = new Set((f.db.db.prepare("SELECT id FROM sources WHERE research_run_id = ?").all(runId) as Array<{ id: string }>).map(row => row.id));
+    expect(cited.length).toBeGreaterThan(0);
+    expect(cited.every(row => sources.has(row.source_id))).toBe(true);
+  } finally { await f.close(); }
+});
+
+test("a research call that times out is retried once with its stage time limit", async () => {
+  const kills: Array<number | undefined> = [];
+  const f = await fixture(request => {
+    if (request.stage.startsWith("problem-kill")) {
+      kills.push(request.callTimeLimitMs);
+      if (kills.length === 1) throw new ProviderFailure("timeout", "Call time limit reached", false);
+    }
+    return researchOutput(request);
+  }, { singleArea: true });
+  try {
+    const runId = await f.start("discovery");
+    expect(f.errors).toEqual([]);
+    expect(kills.slice(0, 2)).toEqual([480_000, 480_000]);
+    const saved = f.db.db.prepare(`SELECT status, json_extract(request_json, '$.callTimeLimitMs') AS limitMs FROM generation_attempts
+      WHERE research_run_id = ? AND stage_key LIKE 'problem-kill%' ORDER BY created_at, rowid`).all(runId) as Array<{ status: string; limitMs: number }>;
+    expect(saved.slice(0, 2)).toEqual([{ status: "failed", limitMs: 480_000 }, { status: "completed", limitMs: 480_000 }]);
+    const confirmed = f.db.db.prepare("SELECT COUNT(*) AS count FROM problems WHERE discovery_run_id = ? AND verdict = 'confirmed'").get(runId) as { count: number };
+    expect(confirmed.count).toBeGreaterThan(0);
+  } finally { await f.close(); }
+});
+
+test("a model failure late in an area keeps the problems it already checked and the run continues", async () => {
+  // Live Bookkeepers lost a confirmed categorization problem when a later call in its area failed.
+  const f = await fixture(request => {
+    if (request.stage.startsWith("area-gap")) throw new ProviderFailure("output-limit", "Output limit reached", false);
+    return researchOutput(request);
+  }, { singleArea: true });
+  try {
+    const runId = await f.start("discovery");
+    expect(f.errors).toEqual([]);
+    const confirmed = f.db.db.prepare("SELECT COUNT(*) AS count FROM problems WHERE discovery_run_id = ? AND verdict = 'confirmed'").get(runId) as { count: number };
+    expect(confirmed.count).toBeGreaterThan(0);
+    const outcome = f.db.db.prepare("SELECT value_json FROM workflow_snapshots WHERE research_run_id = ? AND snapshot_key = 'research-target-outcome'")
+      .get(runId) as { value_json: string } | undefined;
+    expect(JSON.parse(outcome!.value_json).reason).toContain("stopped early because a model call failed");
+  } finally { await f.close(); }
+});
+
+const droppedStream = () => new ProviderFailure("interrupted", "The OpenAI stream ended before completion. Completion and usage are unknown.", false, {
+  attempts: [{ attempt: "initial", outcome: "failed", providerCompletion: "unknown", model: DEFAULT_RUN_CONFIG.model,
+    usage: { status: "unknown" }, cost: { status: "unknown" }, latencyMs: 1 }],
+});
+
+test("a research call whose stream drops is started over once and the run continues", async () => {
+  // Live Bookkeepers on Sol 6.1 stopped before ideas when one problem-candidates call lost its stream.
+  let candidateCalls = 0;
+  const f = await fixture(request => {
+    if (request.stage.startsWith("problem-candidates") && ++candidateCalls === 1) throw droppedStream();
+    return researchOutput(request);
+  }, { singleArea: true });
+  try {
+    const runId = await f.start("discovery");
+    expect(f.errors).toEqual([]);
+    expect(f.db.db.prepare(`SELECT status FROM generation_attempts WHERE research_run_id = ? AND stage_key LIKE 'problem-candidates%'
+      ORDER BY created_at, rowid LIMIT 2`).all(runId)).toEqual([{ status: "interrupted" }, { status: "completed" }]);
+    expect(new WorkflowRepository(f.db).hasUnknownProviderCompletion(runId)).toBe(false);
+    const confirmed = f.db.db.prepare("SELECT COUNT(*) AS count FROM problems WHERE discovery_run_id = ? AND verdict = 'confirmed'").get(runId) as { count: number };
+    expect(confirmed.count).toBeGreaterThan(0);
+  } finally { await f.close(); }
+});
+
+test("a call that loses its stream twice ends only its own area, and the run goes on with the problems it checked", async () => {
+  const f = await fixture(request => {
+    if (request.stage.startsWith("area-gap")) throw droppedStream();
+    return researchOutput(request);
+  }, { singleArea: true });
+  try {
+    const runId = await f.start("discovery");
+    expect(f.errors).toEqual([]);
+    expect(f.db.db.prepare("SELECT status FROM generation_attempts WHERE research_run_id = ? AND stage_key LIKE 'area-gap%'").all(runId))
+      .toEqual([{ status: "interrupted" }, { status: "interrupted" }]);
+    // Both lost calls are recorded as deliberately abandoned, so the run is not left waiting for review.
+    expect(new WorkflowRepository(f.db).hasUnknownProviderCompletion(runId)).toBe(false);
+    const confirmed = f.db.db.prepare("SELECT COUNT(*) AS count FROM problems WHERE discovery_run_id = ? AND verdict = 'confirmed'").get(runId) as { count: number };
+    expect(confirmed.count).toBeGreaterThan(0);
+    const outcome = f.db.db.prepare("SELECT value_json FROM workflow_snapshots WHERE research_run_id = ? AND snapshot_key = 'research-target-outcome'")
+      .get(runId) as { value_json: string } | undefined;
+    expect(JSON.parse(outcome!.value_json).reason).toContain("its connection to OpenAI kept dropping after the allowed restarts");
+    expect(f.db.db.prepare("SELECT COUNT(*) AS count FROM workflow_snapshots WHERE research_run_id = ? AND snapshot_key = 'discovery-completed'").get(runId))
+      .toEqual({ count: 1 });
+  } finally { await f.close(); }
+});
+
+test("an idea call whose stream drops is started over once and its idea is still reviewed and saved", async () => {
+  // In Vibe, one lost idea call ended the run and skipped every remaining problem's ideas.
+  let solutionCalls = 0;
+  const f = await fixture(request => {
+    if (request.stage === "solutions") {
+      if (++solutionCalls === 1) throw droppedStream();
+      return { options: [option()] };
+    }
+    const id = (input(request).candidateIds as string[])[0];
+    return { assessments: [{ candidateId: id, decision: "distinct", reason: "Reviewed", matchingSolutionId: null,
+      citedEvidenceIds: ["frame-source"], criteriaFit: fit("meets", "frame-source") }] };
+  });
+  try {
+    const runId = await f.start("generate-ideas");
+    expect(f.errors).toEqual([]);
+    expect(f.stages).toEqual(["solutions", "solutions", "solution-set-review"]);
+    expect(new WorkflowRepository(f.db).hasUnknownProviderCompletion(runId)).toBe(false);
+    expect(getRunTrace(f.db, runId).metrics).toMatchObject({ acceptedIdeas: 1 });
+  } finally { await f.close(); }
+});
+
+test("a new run scans areas and checks candidates at the same time, within the shared call cap", async () => {
+  const active = new Map<string, number>();
+  const peak = new Map<string, number>();
+  const f = await fixture(async request => {
+    const family = request.stage.includes(":scan-") ? "scan" : request.stage.split(":")[0]!;
+    active.set(family, (active.get(family) ?? 0) + 1);
+    peak.set(family, Math.max(peak.get(family) ?? 0, active.get(family)!));
+    await Bun.sleep(10);
+    active.set(family, active.get(family)! - 1);
+    return researchOutput(request, { initialCandidates: 2 });
+  }, { modelCapacity: 3, depth: "standard" });
+  try {
+    const runId = await f.start("discovery");
+    expect(f.errors).toEqual([]);
+    expect(peak.get("scan")).toBeGreaterThan(1);
+    expect(peak.get("evidence-check")).toBeGreaterThan(1);
+    expect([...peak.values()].every(count => count <= 3)).toBe(true);
+    const checked = f.db.db.prepare("SELECT COUNT(*) AS count FROM problems WHERE discovery_run_id = ? AND verdict = 'confirmed'").get(runId) as { count: number };
+    expect(checked.count).toBeGreaterThan(1);
   } finally { await f.close(); }
 });

@@ -84,7 +84,7 @@
           <summary class="disclosure-title" title={problem.statement}><span class="disclosure-label">{problem.statement}</span>{#if selected.has(problem.id)}<span aria-label="Selected for development">✓</span>{/if}</summary>
           <div class="disclosure-content">
             <label class="pick"><input type="checkbox" checked={selected.has(problem.id)} disabled={busy} onchange={()=>toggle(problem.id)} /><span>Develop this problem</span></label>
-            <div class="verdict"><span>{verdictText(problem)}</span>{#if problem.verdict === "confirmed"}<span>Demand not established</span>{/if}{#if problem.singleHarvestModeWarning}<span>One harvest mode</span>{/if}</div>
+            <div class="verdict"><span>{verdictText(problem)}</span>{#if problem.verdict === "confirmed"}<span>Demand not established</span>{/if}{#if problem.singleHarvestModeWarning}<span>One harvest mode</span>{/if}{#if problem.closeRoleEvidence}<span>Evidence from close roles</span>{/if}</div>
             <p>{problem.whyItPersists}</p>
             {#if problem.affected || problem.scaleEstimate}<dl>{#if problem.affected}<div><dt>Affected</dt><dd>{problem.affected}</dd></div>{/if}{#if problem.scaleEstimate}<div><dt>Scale</dt><dd class="estimated">{problem.scaleEstimate}</dd></div>{/if}</dl>{/if}
             <p class="reason">{problem.verdictReason}</p>

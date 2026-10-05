@@ -273,3 +273,19 @@ describe("rejected problem evidence", () => {
     expect(within(rejectedCard).getByText(rejected[0]!.reason)).toBeTruthy();
   });
 });
+
+describe("close-role evidence label", () => {
+  test("labels only confirmed problems that needed close-role accounts", async () => {
+    const view = render(ResearchArchive, {
+      problems: [{ ...problemCandidate("bank-feeds", false), statement: "Suggested bank-feed matches need manual correction", closeRoleEvidence: true },
+        { ...problemCandidate("rules", false), statement: "Bank rules assign wrong categories", closeRoleEvidence: false }],
+      rejectedCandidates: [], busy: false, onExport: vi.fn(), onOpenSource: vi.fn(),
+    });
+    const labelled = view.getByText("Suggested bank-feed matches need manual correction").closest("article") as HTMLElement;
+    const plain = view.getByText("Bank rules assign wrong categories").closest("article") as HTMLElement;
+    await fireEvent.click(labelled.querySelector("summary")!);
+    await fireEvent.click(plain.querySelector("summary")!);
+    expect(within(labelled).getByText("Evidence from close roles")).toBeTruthy();
+    expect(within(plain).queryByText("Evidence from close roles")).toBeNull();
+  });
+});

@@ -26,7 +26,7 @@ import {
   type ResearchFindingView, type ResearchRequestView,
 } from "./research-revisions";
 import { remainingWorkflowMs as remainingMs } from "./workflow-time";
-import { qualifiesAsIntendedBuyerObservation } from "./discovery";
+import { qualifiesAsProblemObservation } from "./discovery";
 import { unknownSearchAttempts } from "./workflow-search-attempts";
 
 type ResearchRequestAction = Extract<WorkflowAction, { type: "request-research" }>;
@@ -990,7 +990,7 @@ export class ResearchRequestService {
     }
     const qualifyingBuyerFactors = output.intendedBuyerEvidenceFactorIds
       .map((id) => factorsById.get(id)!)
-      .filter(qualifiesAsIntendedBuyerObservation);
+      .filter(qualifiesAsProblemObservation);
     const independentSources = new Set(qualifyingBuyerFactors.map(factor => factor.independentSourceKey).filter(Boolean));
     const problemEvidenceEstablished = independentSources.size >= 2;
     const verdict = output.verdict === "confirmed" && !problemEvidenceEstablished ? "insufficient-evidence" : output.verdict;

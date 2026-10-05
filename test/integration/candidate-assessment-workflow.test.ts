@@ -152,7 +152,7 @@ test("a real deferred assessment counts its managed search once and retains both
     expect(f.realEngine!.getActiveRunIds().size).toBe(0);
     expect(f.errors).toEqual([]);
     expect(f.searches).toHaveLength(1);
-    expect(stages).toHaveLength(2);
+    expect(stages).toHaveLength(1);
     const runId = f.dispatches[0]!;
     const attempt = f.db.db.prepare("SELECT id FROM opportunity_exploration_attempts WHERE stage_name = 'investigator-search'").get() as { id: string };
     expect(f.db.db.prepare("SELECT status,json_extract(usage_json,'$.searchDispatch.attemptId') AS attemptId FROM cost_ledger WHERE research_run_id = ? AND operation = 'search'").get(runId))

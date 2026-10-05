@@ -6,8 +6,12 @@ import { configurePromptPaths } from "../../src/core/prompts";
 import { generateResearchFrame } from "../../src/core/research-frame";
 import { WorkflowExecution } from "../../src/core/workflow-execution";
 import { ResearchEngine } from "../../src/core/research-engine";
+import { WorkflowCoordinator } from "../../src/core/workflow-coordinator";
+import { ensureAreaInvestigatorWorkItems } from "../../src/core/evidence-investigators";
 import { DiscoveryRepository } from "../../src/db/repositories/discovery";
 import { ResearchFrameRepository } from "../../src/db/repositories/research-frames";
+import { WorkflowRepository } from "../../src/db/repositories/workflows";
+import { OpportunityExplorationRepository } from "../../src/db/repositories/opportunity-exploration";
 import { DatabaseClient } from "../../src/db/client";
 import { GenerationAttemptRepository } from "../../src/db/repositories/generation-attempts";
 import { WorkflowV2ContextMismatchError } from "../../src/db/repositories/workflow-v2";
@@ -159,6 +163,106 @@ test("legacy areas reconcile overlapping contrary sources without changing their
     expect(db.db.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
   } finally { await engine.shutdown(); fixture.close(); }
 });
+
+test.each(["scan-failure", "investigation-completed"] as const)(
+  "explicit framed recovery retains an area's %s outcome while another area replaces its lost search", async settledCheckpoint => {
+    const fixture = recoveryFixture();
+    const { db, workflow } = fixture;
+    const repository = new WorkflowRepository(db);
+    const searches: string[] = [];
+    const errors: string[] = [];
+    const config = { ...DEFAULT_RUN_CONFIG, model, discoveryDepth: "quick" as const };
+    const engine = new ResearchEngine({ db,
+      modelClients: { test: { async structuredCompletion() { throw new Error("Saved model checkpoints must be reused"); } } },
+      searchClients: { exa: { provider: "exa", async validateKey() { return { valid: true }; },
+        async search(query) { searches.push(query); return []; } } },
+      onEvent(event) { if (event.type === "run-failed") errors.push(event.error); coordinator.handleRunEvent(event); } });
+    const coordinator = new WorkflowCoordinator({ db, engine: () => engine, listProblems: () => [], onProgress() {},
+      capabilities: async () => ({ nativeConnected: true, searchReady: { exa: true, perplexity: false }, modelOptions: [{ ...model,
+        displayName: "Fixture", defaultReasoningEffort: "medium", reasoningEfforts: [{ id: "medium", description: "Fixture" }] }] }) });
+    try {
+      const areas = [frame.areas[0]!, { ...frame.areas[0]!, id: "history", name: "History", priority: 2 }];
+      const approved = { ...frame, areas };
+      const frames = new ResearchFrameRepository(db);
+      const saved = frames.createDraft({ threadId: "project", runId: "frame-run", frame: approved, sources: [source], knownProblem: false });
+      frames.approve(saved.id, "project", approved);
+      new DiscoveryRepository(db).persistScope("frame-run", scope);
+      const owner = db.immediateTransaction(() => {
+        const session = repository.createSession({ id: "session", threadId: "project", purpose: "discovery", mode: "vibe", remainingMs: 600_000,
+          contract: { contractVersion: 1, frameWorkflowVersion: 1, purpose: "discovery", mode: "vibe", brief: "Research rules", scope, runConfig: config,
+            targets: { kind: "per-problem", ideaCount: 1 }, limits: { enforced: false, maxMinutes: 10, maxModelCalls: 30, maxSearches: 10 },
+            instructions: {}, resolvedInstructions: { research: "", ideas: "", review: "" }, instructionHashes: { research: "r", ideas: "i", review: "v" } } });
+        const task = repository.createWorkItem({ sessionId: session.id, kind: "discovery", scopeKey: "research", input: {}, state: "ready" });
+        repository.updateWorkItem(task.id, "running", { outputRefs: { runId: "frame-run" } });
+        repository.updateWorkItem(task.id, "unknown", { outputRefs: { runId: "frame-run" } });
+        repository.reserveBudget({ sessionId: session.id, workItemId: task.id, kind: "search", operationKey: "original-searches", reservedUnits: 3 });
+        repository.updateSession(session.id, session.revision, { state: "finished", outcome: "needs-attention" });
+        return task;
+      });
+      db.db.prepare("UPDATE research_runs SET config_json = ?,workflow_session_id = 'session',status = 'failed',budget_limit = 100 WHERE id = 'frame-run'")
+        .run(JSON.stringify(config));
+      db.db.prepare("DELETE FROM workflow_snapshots WHERE research_run_id = 'frame-run' AND snapshot_key = 'source-routes'").run();
+      workflow.save("frame-workflow", { version: 1 });
+      const terminalArea = areas[0]!;
+      const pendingArea = areas[1]!;
+      const terminal = ensureAreaInvestigatorWorkItems(db, "session", owner.id, terminalArea);
+      const pending = ensureAreaInvestigatorWorkItems(db, "session", owner.id, pendingArea);
+      db.immediateTransaction(() => {
+        for (const item of [terminal.parent, terminal.research]) {
+          repository.updateWorkItem(item.id, "ready"); repository.updateWorkItem(item.id, "running");
+          repository.updateWorkItem(item.id, "failed", { error: { message: "This area's model call exhausted its retries" },
+            outputRefs: { investigator: { areaId: terminalArea.id, areaName: terminalArea.name, currentStep: "Area stopped", confirmedCount: 0,
+              insufficientCount: 0, droppedCount: 0 } } });
+        }
+        repository.updateWorkItem(terminal.candidates.id, "skipped", { error: { message: "Area stopped" } });
+        for (const item of [pending.parent, pending.research, pending.candidates]) {
+          repository.updateWorkItem(item.id, "ready"); repository.updateWorkItem(item.id, "running");
+          repository.updateWorkItem(item.id, "unknown", { error: { message: "Search result was lost" } });
+        }
+      });
+      const empty = { problems: [], blockedCandidates: [], killSources: [], factorUtilizationRate: 0 };
+      if (settledCheckpoint === "scan-failure") workflow.save(`frame-scan-failure:${terminalArea.id}`, { partialReason: "The area scan stopped" });
+      else {
+        workflow.save(`frame-scan:${terminalArea.id}`, { areaId: terminalArea.id, qualifyingFacts: 0, sources: [], factors: [] });
+        workflow.save(`area:${terminalArea.id}:investigation-completed`, { ...empty, partialReason: "The area stopped after its verdict" });
+      }
+      workflow.save(`frame-scan:${pendingArea.id}`, { areaId: pendingArea.id, qualifyingFacts: 0, sources: [], factors: [] });
+      workflow.save("frame-selected-areas", areas);
+      workflow.save(`area:${pendingArea.id}:harvest`, { sources: [], factors: [] });
+      workflow.save(`area:${pendingArea.id}:problems`, empty);
+      const request = { key: `area-gap:${pendingArea.id}:gap-1`, query: "History workflow firsthand accounts", route: "open-web" as const,
+        evidenceNeeded: "An account of the history workflow" };
+      workflow.save(`area-gap:${pendingArea.id}`, { gaps: [{ name: "History workflow", query: request.query,
+        route: request.route, evidenceNeeded: request.evidenceNeeded }], reason: "One saved gap remains" });
+      const attempts = new OpportunityExplorationRepository(db);
+      const lost = db.immediateTransaction(() => {
+        const attempt = attempts.prepareAttempt("project", { stageKey: `investigator-search:${request.key}`, stageName: "investigator-search",
+          input: { request, parameters: { provider: "exa", route: "open-web", numResults: 5, maxCharacters: 4_000 } },
+          model: { providerId: "exa", modelId: "search", reasoningEffort: "bounded" }, promptVersion: "research-investigator-search-v1",
+          promptText: request.query, workItemId: pending.parent.id }, "session");
+        if (attempt.kind !== "prepared") throw new Error("Expected a prepared lost search");
+        attempts.markAttemptDispatched("project", attempt.attemptId, "none", "session");
+        return attempt.attemptId;
+      });
+      const oldArea = [terminal.parent, terminal.research, terminal.candidates].map(item => repository.getWorkItem(item.id));
+      const originalAttempt = db.db.prepare("SELECT * FROM opportunity_exploration_attempts WHERE id = ?").get(lost);
+
+      await coordinator.command({ threadId: "project", sessionId: "session", clientCommandId: `recover-${settledCheckpoint}`,
+        expectedRevision: repository.getSession("session")!.revision,
+        action: { type: "retry-task", taskId: owner.id, expectedTerminalAttemptId: lost, acknowledgeUnknownCompletion: true } });
+      const deadline = Date.now() + 5_000;
+      while (engine.getActiveRunIds().size > 0 && Date.now() < deadline) await Bun.sleep(5);
+
+      expect(engine.getActiveRunIds().size).toBe(0);
+      expect(errors).toEqual([]);
+      expect(searches).toEqual([request.query]);
+      expect(db.db.prepare("SELECT * FROM opportunity_exploration_attempts WHERE id = ?").get(lost)).toEqual(originalAttempt);
+      expect([terminal.parent, terminal.research, terminal.candidates].map(item => repository.getWorkItem(item.id))).toEqual(oldArea);
+      expect(repository.getWorkItem(pending.parent.id)).toMatchObject({ state: "succeeded", error: null,
+        outputRefs: { investigator: { currentStep: "Finished", confirmedCount: 0, insufficientCount: 0, droppedCount: 0 } } });
+      expect(repository.getSession("session")?.state).toBe("finished");
+    } finally { await engine.shutdown(); fixture.close(); }
+  });
 
 test("a valid completed legacy frame checkpoint resumes with its saved schema and no client call", async () => {
   const fixture = recoveryFixture();

@@ -43,8 +43,8 @@ const CHATGPT_CODEX_BASE_URL: &str = "https://chatgpt.com/backend-api/codex";
 const ACCOUNT_ID_HEADER: &str = "chatgpt-account-id";
 const RESPONSES_WEBSOCKET_BETA: &str = "responses_websockets=2026-02-06";
 // Subscription catalog visibility is version-gated; use a client version that
-// includes the September 2026 GPT-6 Sol and Luna release.
-const MODEL_CATALOG_CLIENT_VERSION: &str = "0.156.1";
+// includes the October 2026 GPT-6.1 Sol release (0.156.1 stops at GPT-6).
+const MODEL_CATALOG_CLIENT_VERSION: &str = "0.160.0";
 const MAX_SESSION_CREDENTIAL_BYTES: usize = 64 * 1024;
 static EPHEMERAL_AUTH_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
@@ -2789,7 +2789,8 @@ mod tests {
                 json!({"slug":"gpt-reserve","visibility":"hide"}),
                 json!({"slug":"gpt-5.6-sol","visibility":"list"}),
             ];
-            if request.starts_with("GET /models?client_version=0.156.1 ") {
+            if request.starts_with("GET /models?client_version=0.160.0 ") {
+                models.push(json!({"slug":"gpt-6.1-sol","visibility":"list","supported_reasoning_levels":[{"effort":"high"}]}));
                 models.push(json!({"slug":"gpt-6-astra","visibility":"list","supported_reasoning_levels":[{"effort":"low"}]}));
                 models.push(json!({"slug":"gpt-6-sol","visibility":"hide","supported_reasoning_levels":[{"effort":"medium"}]}));
                 models.push(json!({"slug":"gpt-6-luna","visibility":"list","supported_reasoning_levels":[{"effort":"high"}]}));
@@ -2807,7 +2808,7 @@ mod tests {
             .unwrap();
         let models = provider.list_models().await.unwrap();
         server.join().unwrap();
-        for model_id in ["gpt-6-astra", "gpt-6-sol", "gpt-6-luna"] {
+        for model_id in ["gpt-6.1-sol", "gpt-6-astra", "gpt-6-sol", "gpt-6-luna"] {
             assert!(
                 models
                     .iter()

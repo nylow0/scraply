@@ -175,6 +175,8 @@ export const ProblemCandidateSchema = z.object({
   briefFit: ProblemBriefFitSchema.optional(), contraryEvidence: ProblemContraryEvidenceSchema.optional(),
   workflowKey: z.string().trim().min(1).max(160).optional(),
   singleHarvestModeWarning: z.boolean(), developmentCompleted: z.boolean(),
+  /** Confirmation needed observations from people in a close role, not only the exact audience. */
+  closeRoleEvidence: z.boolean().optional(),
 });
 export const RejectedProblemCandidateSchema = z.object({
   id: EntityIdSchema,

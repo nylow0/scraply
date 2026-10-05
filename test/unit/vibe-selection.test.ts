@@ -20,6 +20,26 @@ function candidate(id: string, changes: Partial<VibeProblemCandidate> = {}): Vib
 }
 
 describe("unattended problem selection", () => {
+  test("distinct origin sets stay distinct when an origin contains the separator character", () => {
+    const fromOrigins = (id: string, origins: string[]) => candidate(id, {
+      intendedBuyerEvidenceFactorIds: origins.map((_, index) => `${id}:${index}`),
+      factors: origins.map((origin, index) => ({ ...candidate(id).factors[0]!,
+        id: `${id}:${index}`, sourceId: `${id}:source:${index}`, independentSourceKey: origin })),
+    });
+    const result = selectVibeProblems({ candidates: [fromOrigins("one", ["a|b", "c"]), fromOrigins("two", ["a", "b|c"])] });
+    expect(result.selectedProblemIds).toEqual(["one", "two"]);
+  });
+
+  test("two problems resting on exactly the same independent sources get ideas only once", () => {
+    // Live Bookkeepers confirmed two reconciliation problems from the same two bookkeepers' posts.
+    const shared = (id: string) => candidate(id, { intendedBuyerEvidenceFactorIds: [`${id}:amanda`, `${id}:divyadeep`],
+      factors: ["amanda", "divyadeep"].map(person => ({ ...candidate(id).factors[0]!, id: `${id}:${person}`,
+        sourceId: `${person}:post`, independentSourceKey: `${person}-post` })) });
+    const result = selectVibeProblems({ candidates: [shared("duplicates"), shared("discrepancies"), candidate("categories")] });
+    expect(result.selectedProblemIds).toEqual(["discrepancies", "categories"]);
+    expect(result.decisions.find(decision => decision.problemId === "duplicates")?.reason).toContain("same independent sources");
+  });
+
   test("a confirmed label alone cannot qualify a problem", () => {
     const result = selectVibeProblems({ candidates: [candidate("weak", {
       intendedBuyerEvidenceFactorIds: [],
@@ -48,19 +68,22 @@ describe("unattended problem selection", () => {
     expect(result.decisions[0]?.reason).toContain("independent source key");
   });
 
-  test("only cited intended-buyer observations count, even if other factors look strong", () => {
+  test("only cited firsthand or measured observations from the audience or a close role count", () => {
     const unsupported = candidate("uncited", {
       factors: [{ ...candidate("uncited").factors[0]!, id: "another-factor" }],
     });
-    const adjacent = candidate("adjacent", {
-      factors: [{ ...candidate("adjacent").factors[0]!, audienceFit: "adjacent" }],
+    const closeRole = candidate("close-role", {
+      factors: [{ ...candidate("close-role").factors[0]!, audienceFit: "adjacent" }],
+    });
+    const general = candidate("general", {
+      factors: [{ ...candidate("general").factors[0]!, audienceFit: "general" }],
     });
     const vendor = candidate("vendor", {
       factors: [{ ...candidate("vendor").factors[0]!, sourceRole: "vendor" }],
     });
-    const result = selectVibeProblems({ candidates: [unsupported, adjacent, vendor] });
-    expect(result.selectedProblemIds).toEqual([]);
-    expect(result.rejectedProblemIds).toEqual(["uncited", "adjacent", "vendor"]);
+    const result = selectVibeProblems({ candidates: [unsupported, closeRole, general, vendor] });
+    expect(result.selectedProblemIds).toEqual(["close-role"]);
+    expect(result.rejectedProblemIds).toEqual(["uncited", "general", "vendor"]);
   });
 
   test("open gaps, unresolved contradictions, and outside-brief fit block selection", () => {
@@ -77,7 +100,7 @@ describe("unattended problem selection", () => {
     ]);
   });
 
-  test("ranks brief fit and independent evidence, removes duplicate workflows, and defaults to three", () => {
+  test("ranks brief fit and independent evidence, removes duplicate workflows, and selects every qualifying problem by default", () => {
     const stronger = candidate("b", { briefFit: "direct", workflowKey: "Invoice approval", factors: [
       ...candidate("b").factors,
       { ...candidate("b").factors[0]!, id: "b:second", sourceId: "b:second-source", independentSourceKey: "b:second-account" },
@@ -85,9 +108,12 @@ describe("unattended problem selection", () => {
     const weakerDuplicate = candidate("a", { briefFit: "direct", workflowKey: "  invoice  approval " });
     const input = [candidate("z", { briefFit: "unknown" }), weakerDuplicate, candidate("d", { briefFit: "partial" }), stronger, candidate("c", { briefFit: "direct" })];
     const result = selectVibeProblems({ candidates: input });
-    expect(result.selectedProblemIds).toEqual(["b", "c", "d"]);
+    expect(result.selectedProblemIds).toEqual(["b", "c", "d", "z"]);
     expect(result.decisions.find((item) => item.problemId === "a")?.reason).toContain("already covers this buyer workflow");
-    expect(result.decisions.find((item) => item.problemId === "z")?.reason).toContain("cap of 3");
+    // Older contracts saved an explicit cap of three, which still applies.
+    const capped = selectVibeProblems({ candidates: input, maxProblems: 3 });
+    expect(capped.selectedProblemIds).toEqual(["b", "c", "d"]);
+    expect(capped.decisions.find((item) => item.problemId === "z")?.reason).toContain("cap of 3");
     expect(input.map((item) => item.id)).toEqual(["z", "a", "d", "b", "c"]);
   });
 

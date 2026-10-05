@@ -1,5 +1,6 @@
 import { canonicalJson, sha256 } from "../shared/content-identity";
 import { framedDiscoveryProjection } from "../shared/discovery-projection";
+import { RESEARCH_TARGETS } from "../shared/evidence-investigators";
 import { modelRefKey, sameModelRef, type ModelOption, type ModelRef } from "../shared/schemas";
 import {
   WorkflowLaunchContractSchema, WorkflowLaunchDraftSchema,
@@ -28,10 +29,8 @@ const PREVIEW_LIFETIME_MS = 10 * 60_000;
 /** A preview is deterministic for its contract, catalog, and expiry. Start checks all three. */
 export function previewLaunch(draftInput: WorkflowLaunchDraft, capabilities: WorkflowCapabilities, now = new Date()): WorkflowPreview {
   const draft = WorkflowLaunchDraftSchema.parse(draftInput);
-  const targets = {
-    ...draft.targets,
-    automaticProblemCap: draft.targets.automaticProblemCap ?? 3,
-  };
+  // Without an explicit cap, Vibe develops every qualifying problem.
+  const targets = draft.targets;
   const ideas = draft.ideas ? {
     ...draft.ideas,
     reviewModel: draft.ideas.reviewModel ?? draft.ideas.model,
@@ -84,8 +83,9 @@ export function previewLaunch(draftInput: WorkflowLaunchDraft, capabilities: Wor
   const discovery = contract.purpose === "discovery" ? framedDiscoveryProjection(contract.runConfig.discoveryDepth) : { modelCalls: 0, searches: 0 };
   const frame = contract.purpose === "discovery" ? { modelCalls: 2, searches: 5 }
     : contract.purpose === "known-problem" ? { modelCalls: 1, searches: 0 } : { modelCalls: 0, searches: 0 };
+  // An uncapped Vibe run is estimated at its depth's confirmed-problem target.
   const possibleProblems = contract.purpose === "known-problem" ? 1
-    : contract.mode === "vibe" ? contract.targets.automaticProblemCap ?? 3 : 1;
+    : contract.mode === "vibe" ? contract.targets.automaticProblemCap ?? RESEARCH_TARGETS[contract.runConfig.discoveryDepth].confirmedProblems : 1;
   const target = contract.targets.distinctBusinessCount ?? contract.targets.ideaCount;
   const initialBatches = contract.targets.kind === "per-problem"
     ? possibleProblems * Math.ceil(contract.targets.ideaCount / 5)

@@ -68,8 +68,11 @@ describe("durable generation snapshots", () => {
         compilerPrompt: { id: "scraply.stage-worker.v1", sha256: "c".repeat(64) },
       };
       const first = repository.prepare(runId, request("generation-a"), identity);
-      const second = repository.prepare(runId, request("generation-b"), identity);
+      const second = repository.prepare(runId, { ...request("generation-b"), callTimeLimitMs: 240_000 }, identity);
+      // A call time limit is saved for the trace without changing the request identity.
       expect(first.requestSha256).toBe(second.requestSha256);
+      expect(JSON.parse((db.db.prepare("SELECT request_json FROM generation_attempts WHERE id = ?").get(second.id) as { request_json: string })
+        .request_json).callTimeLimitMs).toBe(240_000);
       expect(first.wireRequestSha256).not.toBe(second.wireRequestSha256);
 
       const metadata = {
@@ -101,6 +104,14 @@ describe("durable generation snapshots", () => {
       repository.recordTerminal(lost.id, { status: "interrupted", terminalKind: "interrupted",
         attemptMetadata: { attempts: [{ providerCompletion: "unknown" }] } });
       expect(repository.getResumeSafety(runId).canResume).toBe(false);
+      expect(repository.getResumeSafety(runId, [lost.id]).canResume).toBe(true);
+      // A call the app stopped waiting on at its own time limit is resolved: its result is never used.
+      const timedOut = repository.prepare(runId, { ...request("generation-timed-out"), workOrder: {
+        ...request("generation-timed-out").workOrder, instruction: "Return the slow answer.",
+      } }, identity);
+      repository.markDispatched(timedOut.id);
+      repository.recordTerminal(timedOut.id, { status: "failed", terminalKind: "timeout", errorCode: "timeout",
+        attemptMetadata: { attempts: [{ providerCompletion: "unknown" }] } });
       expect(repository.getResumeSafety(runId, [lost.id]).canResume).toBe(true);
       const workflows = new WorkflowRepository(db);
       expect(workflows.hasUnknownProviderCompletion(runId)).toBe(true);

@@ -2,7 +2,7 @@ import { FRAME_SCAN_FACTORS_PER_AREA } from "../shared/discovery-projection";
 import { ResearchAreaRankingSchema, scopeResearchArea, selectResearchAreas,
   type ResearchArea, type ResearchFrame } from "../shared/research-frame";
 import type { Scope } from "../shared/structured-output-schemas";
-import { harvestFactors, qualifiesAsIntendedBuyerObservation,
+import { harvestFactors, qualifiesAsProblemObservation,
   type DiscoveryDependencies, type HarvestResult } from "./discovery";
 import { frameCompletion, type ResearchFrameDependencies } from "./research-frame";
 
@@ -16,7 +16,7 @@ export async function scanResearchArea(scope: Scope, frame: ResearchFrame, area:
     // A scan is bounded even when the later investigator uses depth as guidance.
     guided: false, smallHarvestBatches: true,
   });
-  return { ...result, areaId: area.id, qualifyingFacts: result.factors.filter(qualifiesAsIntendedBuyerObservation).length };
+  return { ...result, areaId: area.id, qualifyingFacts: result.factors.filter(qualifiesAsProblemObservation).length };
 }
 
 export async function rankScannedAreas(frame: ResearchFrame, scans: readonly AreaScan[], depth: "quick" | "standard" | "deep",

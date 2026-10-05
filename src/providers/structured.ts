@@ -37,6 +37,15 @@ export class ProviderFailure extends Error {
   readonly unretainedSchemaFailure: SchemaValidationFailure | undefined;
 }
 
+/**
+ * True when a dispatched call lost its provider stream: the provider may have finished, but the result
+ * never arrived. A lost runtime process carries no provider attempts and is not a dropped stream.
+ */
+export function isDroppedStream(error: unknown): boolean {
+  return error instanceof ProviderFailure && error.code === "interrupted"
+    && Boolean(error.attempts?.some((attempt) => attempt.providerCompletion === "unknown"));
+}
+
 export type { AttemptUsage };
 
 export type FinishReason = "stop" | "length" | "content_filter" | { other: string };
@@ -88,13 +97,19 @@ export interface StructuredStageRequest<T> {
   reasoningSummaries?: boolean;
   workOrder: WorkOrder;
   evidence: EvidenceSource[];
-  schema: z.ZodType<T>;
+  /** Input is unknown: a schema may repair app-owned fields before validating. */
+  schema: z.ZodType<T, z.ZodTypeDef, unknown>;
   jsonSchema: object;
   repairPolicy: "disabled" | "one_retry";
   maxOutputTokens?: number;
   signal?: AbortSignal;
-  /** Optional for explicit bounded probes. Research waits for completion or cancellation. */
+  /** Optional for explicit bounded probes, measured from the request including queue time. */
   deadlineMs?: number;
+  /**
+   * Longest one provider call may run once the runtime starts it; queue time does not count.
+   * Research sets this so a stalled or runaway call fails with `timeout` instead of holding the run.
+   */
+  callTimeLimitMs?: number;
   onDispatched?: () => void;
   onAccepted?: (metadata: GenerationAcceptanceMetadata) => void;
   /** Synchronous durable app checkpoint before a confirmed invalid response can enter schema repair. */
