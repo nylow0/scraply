@@ -446,10 +446,17 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
   }
 
   function latestDiscoveryRun(threadId: string): string | null {
-    const row = db.db.prepare(`SELECT id FROM research_runs
-      WHERE thread_id = ? AND problem_id IS NULL AND status = 'completed'
-        AND (purpose IS NULL OR purpose IN ('discovery', 'known-problem'))
-      ORDER BY created_at DESC, rowid DESC LIMIT 1`)
+    // Frame preparation shares the discovery purpose, but does not complete its evidence collection.
+    const row = db.db.prepare(`SELECT run.id FROM research_runs run
+      WHERE run.thread_id = ? AND run.problem_id IS NULL AND run.status = 'completed'
+        AND (run.purpose IS NULL OR run.purpose IN ('discovery', 'known-problem'))
+        AND NOT EXISTS (SELECT 1 FROM workflow_snapshots snapshot WHERE snapshot.research_run_id = run.id
+          AND snapshot.snapshot_key = 'workflow-kind'
+          AND CASE WHEN json_valid(snapshot.value_json) THEN json_extract(snapshot.value_json, '$.kind') END = 'prepare-frame')
+        AND NOT EXISTS (SELECT 1 FROM workflow_work_items work WHERE work.session_id = run.workflow_session_id
+          AND work.kind = 'prepare-frame'
+          AND CASE WHEN json_valid(work.output_refs_json) THEN json_extract(work.output_refs_json, '$.runId') END = run.id)
+      ORDER BY run.created_at DESC, run.rowid DESC LIMIT 1`)
       .get(threadId) as { id: string } | undefined;
     return row?.id ?? null;
   }
