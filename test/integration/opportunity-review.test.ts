@@ -14,7 +14,7 @@ import { WorkflowV2Repository } from "../../src/db/repositories/workflow-v2";
 import { WorkflowRepository } from "../../src/db/repositories/workflows";
 import { WorkflowCoordinator } from "../../src/core/workflow-coordinator";
 import type { ResearchEngine } from "../../src/core/research-engine";
-import { configurePromptPaths, loadWritingGuidance, resolveWorkflowV2Prompt } from "../../src/core/prompts";
+import { configurePromptPaths, resolveWorkflowV2Prompt } from "../../src/core/prompts";
 
 const directories: string[] = [];
 
@@ -300,7 +300,7 @@ describe("opportunity review", () => {
     expect(exported.reviews.map((review) => review.correctionNumber)).toEqual([0, 1]);
     for (const review of exported.reviews) {
       const instruction = (review.request as { instruction: string }).instruction;
-      expect(instruction.split(loadWritingGuidance())).toHaveLength(2);
+      expect(instruction).not.toContain("# Unslop");
     }
     expect(exported.coverage.some((entry) => !entry.complete)).toBe(true);
     expect(exported.coverage.some((entry) => entry.complete)).toBe(true);
@@ -437,7 +437,7 @@ class PairwiseModel implements StructuredModelClient {
 
   async structuredCompletion<T>(request: StructuredStageRequest<T>): Promise<StructuredStageResult<T>> {
     this.calls += 1;
-    expect(JSON.stringify(request).match(/# Unslop/g)).toHaveLength(1);
+    expect(JSON.stringify(request)).not.toContain("# Unslop");
     request.onDispatched?.();
     request.onAccepted?.({ protocolVersion: "test" });
     const inputs = request.workOrder.inputs as {

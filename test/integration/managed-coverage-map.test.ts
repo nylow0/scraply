@@ -109,3 +109,44 @@ test("a dispatched managed map with unknown completion cannot call the model aga
     expect(calls).toBe(1);
   } finally { db.close(); }
 });
+
+test.each(["legacy-prepared", "legacy-completed", "guided-prepared", "guided-completed"] as const)(
+  "managed coverage resumes a saved %s attempt without repeating completed work", async kind => {
+    const { db, input } = fixture();
+    const repository = new OpportunityExplorationRepository(db);
+    const writingGuidance = kind.startsWith("guided") ? "Writing rules saved before the bundle changed." : "";
+    const instruction = "Name concrete gaps in the saved startup inventory. A mechanism gap is a workflow gap with a specific different operating method. Name a new buyer or workflow only when the existing problem map is exhausted. Ask for one bounded search query when evidence is required. Return no gap rather than generic 'more ideas'. Exploratory hypotheses are allowed only when the project flag says so."
+      + (writingGuidance ? `\n\n${writingGuidance}` : "");
+    const output = { gaps: [], noUsefulGapReason: "The saved inventory covers the current scope." };
+    const attempt = db.immediateTransaction(() => repository.prepareAttempt("thread", {
+      stageKey: "coverage-map:0", stageName: "coverage-map",
+      input: { round: 0, explorationConfig: input.explorationConfig, context: { saved: "inventory" },
+        ...(writingGuidance ? { writingGuidance } : {}) },
+      model: { ...input.model, reasoningEffort: input.reasoningEffort },
+      promptVersion: "opportunity-coverage-managed-v1", promptText: instruction, workItemId: input.workItemId,
+    }, input.sessionId));
+    if (attempt.kind !== "prepared") throw new Error("Fixture attempt was not prepared");
+    const completed = kind.endsWith("completed");
+    if (completed) db.immediateTransaction(() => {
+      repository.markAttemptDispatched("thread", attempt.attemptId, "none", input.sessionId);
+      repository.completeAttempt("thread", attempt.attemptId, output, input.sessionId);
+    });
+    let calls = 0;
+    const modelClient: StructuredModelClient = { async structuredCompletion(request) {
+      calls += 1;
+      if (completed) throw new Error("Completed map must not dispatch again");
+      expect(request.workOrder.instruction).toBe(instruction);
+      expect(request.evidence[0]?.content).toEqual({ saved: "inventory" });
+      request.onDispatched?.();
+      return { output: request.schema.parse(output), metadata: { model: request.model, usage: { status: "unknown" },
+        latencyMs: 1, repairCount: 0, providerRequestIds: [], attempts: [] } };
+    } };
+    try {
+      const resumed = await runManagedCoverageMap({ ...input, modelClient });
+      expect(resumed).toMatchObject({ attemptId: attempt.attemptId, replayed: completed, gaps: [],
+        noUsefulGapReason: output.noUsefulGapReason });
+      expect(calls).toBe(completed ? 0 : 1);
+      expect(repository.loadAttempt("thread", "coverage-map:0", input.sessionId)?.promptText).toBe(instruction);
+    } finally { db.close(); }
+  },
+);

@@ -77,7 +77,10 @@ Removing patterns is half the job. Sterile, voiceless writing is just as obvious
 ## Writing for Scraply
 
 - **Know the reader.** Write for a smart reader who does not know the domain. A student, not a consultant.
-- **Name the thing.** Idea names are two to five plain words that say what the thing is. No stacked hyphenated modifiers such as "evidence-gated", "exception-aware", or "staff-supervised".
+- **Name the thing.** Idea names are two to five plain words that say what the thing is. No stacked hyphenated modifiers such as "evidence-gated", "exception-aware", or "staff-supervised". Good: "Weekend energy log", "Meter history export", "Savings claim checker". Bad: "Evidence-gated weekend incident tracker", "Exception-aware operating-schedule auditor".
+- **Put opinions in their place.** Reasons, rankings, risks and replies may take a clear position. Never add opinion, colour or emphasis to observations, quotes or facts.
+- **Keep saved research out of first person.** No first person in problems, ideas, reasons, risks or plans. A conversation reply may use it.
+- **Lead with the verdict.** A reason or review note is at most three short sentences and starts with the verdict in plain words.
 - **Keep it easy to read.** One idea per sentence. Short sentences, common words. Say who does what.
 - **Drop internal process words.** Never use provenance, remediable, substantiate, mechanism when "how it works" will do, workflow improvement, deliverable, handoff, or similar words in user-visible text. Say the concrete thing.
 - **Protect facts and structure.** These writing rules apply only to free-text fields you author. Never change required JSON structure, IDs, enum values, or evidence. Keep source quotes exact. Keep names and other text that the schema requires you to copy exact. Never invent, drop, or soften facts or uncertainty to make the writing cleaner. State an uncertainty once, plainly. When a style rule conflicts with a required fact, quote, copied field, or schema, preserve that requirement.

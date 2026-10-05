@@ -33,15 +33,17 @@ function fixture() {
   return { db, path, directory };
 }
 
-test("an old saved run dispatches its original prompt after reopening with the new bundle", async () => {
+test.each(["legacy", "saved-guidance"] as const)("a saved %s run reuses its completed stage after reopening with the new bundle", async kind => {
   const { db, path } = fixture();
-  const originalText = "  Original problem instructions.\r\nKeep the original uncertainty.\r\n";
+  const savedGuidance = kind === "legacy" ? "" : "Writing rules saved before the bundle changed.";
+  const originalText = `  Original problem instructions.\r\nKeep the original uncertainty.\r\n${savedGuidance}`;
   const oldPrompts = Object.fromEntries(WORKFLOW_V2_STAGE_IDS.map(stage => {
     const current = resolveWorkflowV2Prompt(stage);
     const text = stage === "problem-candidates" ? originalText : `Original ${stage} instructions.`;
     return [stage, { ...current, text, resolvedSha256: sha256(text) }];
   }));
   db.db.prepare("INSERT INTO workflow_snapshots VALUES ('run','prompts',?)").run(JSON.stringify(oldPrompts));
+  if (savedGuidance) db.db.prepare("INSERT INTO workflow_snapshots VALUES ('run','writing-guidance',?)").run(JSON.stringify(savedGuidance));
   db.close();
   const reopened = new DatabaseClient(path);
   try {
@@ -49,7 +51,7 @@ test("an old saved run dispatches its original prompt after reopening with the n
     expect(workflow.resolvePrompt("problem-candidates").text).toBe(originalText);
     expect(workflow.resolvePrompt("problem-candidates").resolvedSha256).toBe(sha256(originalText));
     expect(workflow.read<Record<string, ResolvedWorkflowV2Prompt>>("prompts")).toEqual(oldPrompts);
-    expect(workflow.read("writing-guidance")).toBeNull();
+    expect(workflow.read<string>("writing-guidance")).toBe(savedGuidance || null);
     let calls = 0;
     const model: StructuredModelClient = { async structuredCompletion(request) {
       calls += 1;
@@ -62,13 +64,23 @@ test("an old saved run dispatches its original prompt after reopening with the n
       } };
     } };
     const schema = ProblemCandidatesOutputSchema;
-    await workflow.discoveryClient(model).structuredCompletion({
+    const request = {
       generationId: "offline-old-run", stage: "problem-candidates", model: { providerId: "fixture", modelId: "fixture" },
-      reasoningEffort: "low", workOrder: { stage: "problem-candidates", instruction: "Fresh instructions must not leak in.",
+      reasoningEffort: "low" as const, workOrder: { stage: "problem-candidates", instruction: "Fresh instructions must not leak in.",
         goal: "Find problems", inputs: {}, definitionOfDone: [] }, evidence: [],
-      schema, jsonSchema: deriveJsonSchema(schema), repairPolicy: "disabled",
-    });
+      schema, jsonSchema: deriveJsonSchema(schema), repairPolicy: "disabled" as const,
+    };
+    const first = await workflow.discoveryClient(model).structuredCompletion(request);
     expect(calls).toBe(1);
+    const resumeDb = new DatabaseClient(path);
+    try {
+      const resumed = new WorkflowExecution(resumeDb, "run");
+      const reused = await resumed.discoveryClient({
+        async structuredCompletion() { throw new Error("Completed stage must not dispatch again"); },
+      }).structuredCompletion({ ...request, generationId: "offline-resumed-run" });
+      expect(reused.output).toEqual(first.output);
+      expect(calls).toBe(1);
+    } finally { resumeDb.close(); }
   } finally { reopened.close(); }
 });
 
