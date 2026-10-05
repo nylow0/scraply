@@ -768,6 +768,10 @@ describe("App workspace coordination", () => {
     expect(view.getByRole("heading", { name: "Researching your brief" })).toBeTruthy();
     expect(view.queryByText(/distinct ideas/)).toBeNull();
     expect(view.queryByRole("button", { name: "Add research" })).toBeNull();
+    await fireEvent.click(view.getByRole("tab", { name: "Setup" }));
+    await waitFor(() => expect((view.getByRole("button", { name: "Go back" }) as HTMLButtonElement).disabled).toBe(false));
+    await fireEvent.click(view.getByRole("button", { name: "Go back" }));
+    await view.findByRole("heading", { name: "Researching your brief" });
     await fireEvent.click(view.getByText("Run details"));
     await fireEvent.click(view.getByText("Extend work allowance"));
     await fireEvent.input(view.getByLabelText("Additional model calls"), { target: { value: "2" } });

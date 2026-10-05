@@ -135,7 +135,8 @@
   function navigateTo(target: NavigationRoute) {
     if (traversingHistory || sameRoute(route, target)) return;
     historyScroll = null;
-    history = rememberScroll(history, mainContent?.scrollTop ?? 0);
+    // A run-driven route can change before the history effect reconciles it.
+    history = replaceHistory(history, route, mainContent?.scrollTop ?? 0);
     const scrollTop = route.threadId === target.threadId && route.step === target.step
       && sameRoute({ ...route, settings: target.settings }, target) ? mainContent?.scrollTop ?? 0 : 0;
     history = pushHistory(history, target, scrollTop);

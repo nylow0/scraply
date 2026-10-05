@@ -29,10 +29,11 @@ test("desktop navigation and compact idea review preserve dismissed ideas", asyn
     await page.getByRole("radio", { name: /^Controlled/ }).check();
     await page.getByRole("button", { name: "Start", exact: true }).click();
     await expect(page.getByRole("tabpanel", { name: "Research" })).toBeVisible();
-    await expect(page.getByRole("button", { name: "Go back", exact: true })).toBeEnabled();
+    await expect(page.getByRole("button", { name: "Go back", exact: true })).toBeDisabled();
     await page.getByRole("tab", { name: /Setup/ }).click();
     await expect(page.getByRole("tab", { name: /Setup/ })).toHaveAttribute("aria-selected", "true");
     await expect(page.getByRole("heading", { name: "Reducing repair shop delays" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Go back", exact: true })).toBeEnabled();
     await page.getByRole("button", { name: "Go back", exact: true }).click();
     await expect(page.getByRole("tab", { name: /Research/ })).toHaveAttribute("aria-selected", "true");
     await page.getByRole("button", { name: "Go forward", exact: true }).click();
