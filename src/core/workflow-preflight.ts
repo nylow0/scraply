@@ -36,11 +36,13 @@ export function previewLaunch(draftInput: WorkflowLaunchDraft, capabilities: Wor
     reviewModel: draft.ideas.reviewModel ?? draft.ideas.model,
     reviewReasoningEffort: draft.ideas.reviewReasoningEffort ?? draft.ideas.reasoningEffort,
   } : undefined;
-  const normalized = { ...draft, frameWorkflowVersion: 1, targets, ...(ideas ? { ideas } : {}) };
+  // New runs rank x ideas per problem; a total (project) target only survives in saved contracts.
+  const normalized = { ...draft, frameWorkflowVersion: 1, ...(targets.kind === "per-problem" ? { ideaWorkflowVersion: 2 } : {}),
+    targets, ...(ideas ? { ideas } : {}) };
   const resolvedInstructions = {
     research: resolveInstructions(["frame-search-plan", "frame", "area-ranking", "query-plan", "factor-harvest", "problem-candidates", "problem-kill"], draft.instructions.research),
     ideas: resolveInstructions(["solutions"], draft.instructions.ideas),
-    review: resolveInstructions(["solution-set-review"], draft.instructions.review),
+    review: resolveInstructions([targets.kind === "per-problem" ? "idea-ranking" : "solution-set-review"], draft.instructions.review),
   };
   const contract = WorkflowLaunchContractSchema.parse({
     ...normalized,
@@ -87,18 +89,20 @@ export function previewLaunch(draftInput: WorkflowLaunchDraft, capabilities: Wor
   const possibleProblems = contract.purpose === "known-problem" ? 1
     : contract.mode === "vibe" ? contract.targets.automaticProblemCap ?? RESEARCH_TARGETS[contract.runConfig.discoveryDepth].confirmedProblems : 1;
   const target = contract.targets.distinctBusinessCount ?? contract.targets.ideaCount;
-  const initialBatches = contract.targets.kind === "per-problem"
+  const ranked = contract.ideaWorkflowVersion === 2;
+  const initialBatches = ranked ? possibleProblems
+    : contract.targets.kind === "per-problem"
     ? possibleProblems * Math.ceil(contract.targets.ideaCount / 5)
     : Math.max(...Array.from({ length: possibleProblems }, (_, index) => {
       const problemIds = Array.from({ length: index + 1 }, (_, problem) => `preview-problem-${problem}`);
       return allocateIdeaTargets({ problemIds, target, maxPerProblem: 20 }).allocations
         .reduce((count, allocation) => count + Math.ceil(allocation.quota / 5), 0);
     }));
-  // Framed discovery disables correction calls. Frame creation may repair once;
-  // each idea batch reserves generation plus repair, preliminary review, and novelty review.
-  // Known-problem launches retain the supported path with no search account or allowance.
-  const minimumWork = { modelCalls: frame.modelCalls * 2 + discovery.modelCalls + initialBatches * 4,
-    searches: frame.searches + discovery.searches + (contract.purpose === "discovery" ? initialBatches * 5 : 0) };
+  // Framed discovery disables correction calls. Frame creation may repair once. A ranked problem reserves
+  // one writer and one ranker; an older idea batch reserves generation plus repair, preliminary review, and
+  // novelty review. Known-problem launches retain the supported path with no search account or allowance.
+  const minimumWork = { modelCalls: frame.modelCalls * 2 + discovery.modelCalls + initialBatches * (ranked ? 2 : 4),
+    searches: frame.searches + discovery.searches + (contract.purpose === "discovery" && !ranked ? initialBatches * 5 : 0) };
   if (contract.limits.enforced !== false && contract.limits.maxModelCalls < minimumWork.modelCalls) {
     fieldErrors.push({ path: ["limits", "maxModelCalls"], code: "BUDGET_TOO_SMALL", message: `Allow at least ${minimumWork.modelCalls} model calls for research, generation, and review.` });
   }

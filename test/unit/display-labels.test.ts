@@ -12,7 +12,8 @@ describe("display labels", () => {
 
   test("shows problem verdicts as words instead of stored codes", () => {
     expect(verdictLabel("user-asserted")).toBe("User-stated");
-    expect(verdictLabel("insufficient-evidence")).toBe("Insufficient evidence");
+    expect(verdictLabel("insufficient-evidence")).toBe("Needs more evidence");
+    expect(verdictLabel("overstated")).toBe("Ruled out");
     expect(verdictLabel("newly-added-verdict")).toBe("Newly added verdict");
   });
 

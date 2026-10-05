@@ -231,12 +231,24 @@ export const SolutionViewSchema = z.object({
   evidenceFollowUp: EvidenceFollowUpViewSchema.optional(),
   userDecision: z.string().nullable().optional(), observedResult: z.string().nullable().optional(),
   experimentOutcome: z.enum(["not-run", "pass", "fail", "inconclusive"]).optional(), detailRevision: z.string().optional(),
+  /** Ranked runs: place within the problem's group (1 is best), the ranker's reason, and why it is a weak fit. Null before ranking. */
+  rank: z.number().int().positive().nullable().optional(),
+  rankReason: z.string().nullable().optional(),
+  weakFitReason: z.string().nullable().optional(),
+  /** Ideas from runs before ranking: the label their saved review gave them. Only on detail reads. */
+  reviewStatus: z.enum(["accepted", "duplicate", "variant", "unresolved", "rejected"]).optional(),
+  reviewReason: z.string().optional(),
   id: EntityIdSchema, problemId: EntityIdSchema, problemStatement: z.string(), problemVerdict: ProblemCandidateSchema.shape.verdict,
   factors: z.array(FactorViewSchema),
   mechanism: z.string(), description: z.string(), respectsOffLimits: z.boolean(), respectsOffLimitsWhy: z.string(),
   outcomes: z.array(OutcomeViewSchema), risks: z.array(RiskViewSchema),
   confirmedCoreOutcomes: z.number().int().nonnegative(), unaddressedCatastrophicRisks: z.number().int().nonnegative(),
 });
+/** Saved ranked writer results, including problems whose writer returned no ideas. */
+export const IdeaGroupViewSchema = z.object({
+  runId: EntityIdSchema, problemId: EntityIdSchema, problemStatement: z.string(),
+  requestedIdeaCount: z.number().int().positive(), returnedIdeaCount: z.number().int().nonnegative(),
+}).strict();
 const UsageDimensionSchema = z.object({ known: z.number().int().nonnegative(), unknownAttempts: z.number().int().nonnegative() }).strict();
 const UsageCostTotalSchema = z.object({ currency: z.string().min(1), amount: z.number().nonnegative() }).strict();
 export const RunUsageSchema = z.object({
@@ -322,7 +334,10 @@ export const WorkspaceStateSchema = z.object({
   modelOptions: z.array(ModelOptionSchema),
   modelCatalog: ModelCatalogSchema, presets: z.array(z.object({ name: z.string(), config: RunConfigSchema })),
   problemCandidates: z.array(ProblemCandidateSchema), rejectedProblemCandidates: z.array(RejectedProblemCandidateSchema),
+  /** Checked leads the active snapshot did not carry forward. Read-only: they can never be picked for ideas. */
+  problemLeads: z.array(ProblemCandidateSchema).optional(),
   solutions: z.array(SolutionViewSchema),
+  ideaGroups: z.array(IdeaGroupViewSchema).optional(),
   opportunityFamilies: OpportunityFamiliesViewSchema.optional(),
   opportunityExploration: OpportunityExplorationProgressSchema.nullable().optional(),
   opportunityReviewStatus: z.object({ running: z.boolean(), kind: z.enum(["review", "exploration", "experiment"]).nullable(), error: z.string().nullable() }).optional(),
@@ -362,6 +377,7 @@ export type FactorView = z.infer<typeof FactorViewSchema>;
 export type ProblemCandidate = z.infer<typeof ProblemCandidateSchema>;
 export type RejectedProblemCandidate = z.infer<typeof RejectedProblemCandidateSchema>;
 export type SolutionView = z.infer<typeof SolutionViewSchema>;
+export type IdeaGroupView = z.infer<typeof IdeaGroupViewSchema>;
 export type RunUsage = z.infer<typeof RunUsageSchema>;
 
 export const IPC_CHANNELS = {

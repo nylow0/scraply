@@ -52,7 +52,7 @@ async function fixture(problemCount = 1, capacity = 1) {
   const scope = { title: "Filing", audience: "Shop owners", domain: "Invoices", observations: "Weekly delays", offLimits: [] };
   db.db.prepare("INSERT INTO threads (id,title,status,created_at,updated_at) VALUES ('project','Filing','researching',?,?)").run(now, now);
   const session = db.immediateTransaction(() => repository.createSession({ id: "session", threadId: "project", purpose: "discovery", mode: "babysit",
-    remainingMs: 60 * 60_000, contract: { contractVersion: 1, purpose: "discovery", mode: "babysit", brief: "Research filing", scope,
+    remainingMs: 60 * 60_000, contract: { contractVersion: 1, ideaWorkflowVersion: 2, purpose: "discovery", mode: "babysit", brief: "Research filing", scope,
       runConfig: config, ideas: { model, reasoningEffort: "medium" }, targets: { kind: "per-problem", ideaCount: 1 },
       limits: { enforced: false, maxMinutes: 60, maxModelCalls: 100, maxSearches: 50 }, instructions: {},
       resolvedInstructions: { research: "", ideas: "", review: "" }, instructionHashes: { research: "r", ideas: "i", review: "v" } } }));
@@ -164,7 +164,7 @@ test.each(["unknown", "process-lost"] as const)("Stop keeps a genuinely %s compl
     expect(f.tasks().map(item => item.state)).toEqual(["unknown"]);
     expect(f.usage()).toMatchObject({ attemptCount: 1, unknownAttemptCount: 1 });
     expect(f.calls).toEqual(["solutions"]);
-    expect(f.repository.getBudgetTotals("session").modelCalls).toMatchObject({ spent: 0, reserved: 0, uncertain: 4 });
+    expect(f.repository.getBudgetTotals("session").modelCalls).toMatchObject({ spent: 0, reserved: 0, uncertain: 2 });
     expect(f.scheduler.activeCallCount).toBe(0);
   } finally { await f.close(); }
 });

@@ -63,22 +63,25 @@ test("setup hierarchy, source preferences, keyboard controls, and sidebar fit in
     await expect(count).toHaveValue("3");
     await page.screenshot({ path: testInfo.outputPath("run-controls.png") });
 
+    // Advanced settings opens on the research scope; search sources are chosen by research itself, not here.
     await page.getByRole("button", { name: "Advanced settings" }).click();
-    const coverage = page.getByLabel("Search coverage", { exact: true });
-    await expect(coverage).toHaveValue("web");
-    expect(await coverage.evaluate(el => getComputedStyle(el, "::picker-icon").content)).toBe('""');
-    expect(await coverage.evaluate(el => getComputedStyle(el, "::picker(select)").transitionDuration)).toBe("0s");
-    await coverage.click();
-    await page.screenshot({ path: testInfo.outputPath("source-picker.png") });
-    await page.keyboard.press("ArrowDown");
-    await page.keyboard.press("Enter");
-    await expect(coverage).toHaveValue("communities");
-    await expect(page.getByText("Audience evidence from Reddit and Hacker News. Market research still searches all sites.")).toBeVisible();
-    await coverage.click();
+    const advanced = page.getByRole("dialog", { name: "Advanced settings" });
+    const groups = advanced.getByRole("navigation", { name: "Settings groups" });
+    await expect(groups.getByRole("button")).toHaveText(["Research scope", "Instructions"]);
+    await expect(groups.getByRole("button", { name: "Research scope" })).toHaveAttribute("aria-pressed", "true");
+    await expect(advanced.getByLabel("Automatic problem cap")).toBeVisible();
+    await expect(advanced.getByLabel("Search coverage", { exact: true })).toHaveCount(0);
+    await groups.getByRole("button", { name: "Instructions" }).click();
+    await advanced.getByRole("group", { name: "Instruction stage" }).getByRole("button", { name: "Ideas" }).click();
+    await advanced.getByLabel("Ideas instructions").fill("Prefer tools a solo bookkeeper can run.");
+    await advanced.getByRole("group", { name: "Instruction stage" }).getByRole("button", { name: "Research" }).click();
+    await advanced.getByRole("group", { name: "Instruction stage" }).getByRole("button", { name: "Ideas" }).click();
+    await expect(advanced.getByLabel("Ideas instructions")).toHaveValue("Prefer tools a solo bookkeeper can run.");
+    await page.screenshot({ path: testInfo.outputPath("advanced-settings.png") });
     await page.keyboard.press("Escape");
-    await expect(coverage).toBeFocused();
-    await coverage.selectOption("web");
-    await page.getByRole("button", { name: "Done", exact: true }).click();
+    await expect(advanced).toBeHidden();
+    await expect(page.getByRole("button", { name: "Advanced settings" })).toBeFocused();
+    await expect(page.getByText("1 custom instruction")).toBeVisible();
 
     // Navigation shows at most six recent projects; the rest stay reachable through All research.
     const list = page.getByRole("list", { name: "Research threads" });
@@ -93,20 +96,16 @@ test("setup hierarchy, source preferences, keyboard controls, and sidebar fit in
     await expect(dialog.locator(".provider-name").getByText("Exa", { exact: true })).toBeVisible();
     await page.screenshot({ path: testInfo.outputPath("account.png") });
     await dialog.getByRole("button", { name: "Research defaults", exact: true }).click();
-    await expect(page.getByLabel("Default model").getByRole("option", { name: "GPT-6 Astra", exact: true })).toHaveCount(1);
-    await expect(page.getByLabel("Title model").getByRole("option", { name: "GPT-6 Astra", exact: true })).toHaveCount(1);
-    await page.getByLabel("Default model", { exact: true }).click();
-    await page.screenshot({ path: testInfo.outputPath("model-picker.png") });
-    await page.keyboard.press("Escape");
-    const defaultCoverage = page.getByLabel("Default search coverage");
-    await defaultCoverage.selectOption("communities");
+    // The pickers list only what the account offers; with none yet, they name the saved defaults.
+    await expect(page.getByLabel("Default model", { exact: true })).toHaveText(/GPT-6\.1 Sol/);
+    await expect(page.getByLabel("Title model", { exact: true })).toHaveText(/GPT-6 Luna/);
+    await expect(page.getByLabel("Default search coverage")).toHaveCount(0);
     await page.getByLabel("Default research depth").selectOption("deep");
     await page.getByRole("button", { name: "Save defaults" }).click();
     await expect(page.getByText("Defaults saved", { exact: true })).toBeVisible();
     await page.screenshot({ path: testInfo.outputPath("advanced-search.png") });
     await page.getByRole("button", { name: "Back", exact: true }).click();
     await page.reload();
-    await expect(coverage).toHaveValue("communities");
     await expect(page.getByLabel("Research depth", { exact: true })).toHaveValue("deep");
 
     await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]!.setSize(960, 800));

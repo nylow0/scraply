@@ -2,7 +2,7 @@
 
 Scraply is a Windows desktop app that finds real problems people have and turns them into business ideas you can check against the evidence.
 
-You describe a topic, an audience, or a problem you already know. Scraply searches the web and online communities, extracts candidate problems with quoted sources, and generates ideas for the problems worth solving. A separate review pass checks each idea for risks and duplicates. Everything stays in a local SQLite database, and you decide what to pursue.
+You describe a topic, an audience, or a problem you already know. Scraply searches the web and online communities, extracts candidate problems with quoted sources, and generates ideas for the problems worth solving. A separate pass ranks the ideas for each problem against your approved goal. Everything stays in a local SQLite database, and you decide what to pursue.
 
 **Status:** early development. Download the [latest release](https://github.com/nylow0/scraply/releases/latest): the installer or the portable build. Releases are not code-signed yet, so Windows SmartScreen asks for confirmation on first launch (**More info → Run anyway**).
 
@@ -10,7 +10,7 @@ You describe a topic, an audience, or a problem you already know. Scraply search
 
 1. **Setup.** Write a brief, then choose the model, research depth, and search provider. Depth guides the breadth and thoroughness of new research; call, search, and time estimates do not stop it.
 2. **Research.** Scraply searches with Exa or Perplexity and returns candidate problems. Every claim links to the excerpt and source behind it. You can ask follow-up questions or re-check a finding; a new result only replaces the current evidence when you apply it.
-3. **Ideas.** Scraply generates solutions for the selected problems, reviews their risks, and groups variants so only distinct ideas count toward your target. It never pads the count. You can pause or stop a run; older saved runs retain their explicit count limits.
+3. **Ideas.** Choose how many ideas to request for each selected problem. Scraply writes and ranks each problem's ideas against your approved goal, and shows when fewer ideas were returned. It never pads the count. You can pause or stop a run. Older saved runs keep their original risk reviews, business-family grouping, and count limits.
 4. **Develop an idea.** Discuss an idea, rethink it into a new version while the old ones stay readable, or draft a small experiment that tests one assumption with a metric and pass/fail thresholds.
 
 There are two run modes. **Vibe** (the default) runs research, problem selection, idea generation, and review in one pass. **Controlled** stops after research so you pick the problems and the ideas model yourself.

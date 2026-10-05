@@ -157,7 +157,7 @@ function load(db: TraceDatabase, runId: string) {
       terminal: terminal ? WorkflowSearchTerminalSchema.parse(json(terminal.value_json)) : null }];
   });
   const outputs = db.db.prepare(`SELECT id, stage_id, selection_key, output_json, context_json FROM stage_results
-    WHERE research_run_id IN (${placeholders}) AND stage_id IN ('query-plan','frame-search-plan','problem-candidates','solution-set-review') ORDER BY completed_at, rowid`)
+    WHERE research_run_id IN (${placeholders}) AND stage_id IN ('query-plan','frame-search-plan','problem-candidates','solution-set-review','idea-ranking') ORDER BY completed_at, rowid`)
     .all(...runIds) as Array<{ id: string; stage_id: string; selection_key: string; output_json: string; context_json: string }>;
   const frameTable = db.db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'research_frames'").get();
   const frames = frameTable ? db.db.prepare(`SELECT run.id AS run_id, frame.approved_json FROM research_runs run
@@ -202,9 +202,17 @@ function searchCallCount(data: TraceData, legacyCount: number | null | undefined
   return data.searchReceiptCount || data.investigatorSearches.length || legacyResults.length ? calls : legacyCount ?? 0;
 }
 
-/** Only committed final decisions count. Older checkpoints can still use their raw review output. */
+/**
+ * Only committed final decisions count. Older checkpoints can still use their raw review output.
+ * Ranked runs have no review: every ranked idea that is not a weak fit counts.
+ */
 function acceptedReviewSolutions(data: TraceData): Set<string> {
   const accepted = new Set<string>();
+  for (const output of data.outputs.filter(output => output.stage_id === "idea-ranking")) {
+    for (const idea of objects(record(json(output.context_json)).ranking)) {
+      if (idea.weakFitReason === null && text(idea.candidateId)) accepted.add(text(idea.candidateId));
+    }
+  }
   for (const output of data.outputs.filter(output => output.stage_id === "solution-set-review"
     && !output.selection_key.startsWith("preliminary:"))) {
     const context = record(json(output.context_json));

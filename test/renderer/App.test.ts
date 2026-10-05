@@ -2,6 +2,7 @@ import { fireEvent, render, waitFor, within } from "@testing-library/svelte";
 import { tick } from "svelte";
 import { describe, expect, test, vi } from "vitest";
 import type { ScraplyApi } from "../../src/preload/index";
+import { listedModels } from "./model-picker";
 import App from "../../src/renderer/App.svelte";
 import type { ResearchEvent, WorkspaceState } from "../../src/shared/ipc";
 import { DEFAULT_RUN_CONFIG } from "../../src/shared/schemas";
@@ -29,17 +30,17 @@ describe("App workspace coordination", () => {
     installApi({ getWorkspace: async () => state, getWorkflow: async () => structuredClone(current), previewWorkflow, commandWorkflow });
     const view = render(App);
     await view.findByRole("heading", { name: "Choose problems to develop" });
-    await fireEvent.click(view.getByText("Not assessed"));
-    await fireEvent.click(view.getByRole("button", { name: "Assess" }));
+    await fireEvent.click(view.getByRole("button", { name: /^Show \d+ more leads?$/ }));
+    await fireEvent.click(view.getByRole("button", { name: "Check this lead" }));
     await view.findByText(/6 model calls and 3 searches/);
     expect(previewWorkflow).toHaveBeenCalledWith({ type: "candidate-assessment", threadId: "alpha", sessionId: "frame-session", expectedRevision: 4, candidateId: "saved-candidate" });
     expect(commandWorkflow).not.toHaveBeenCalled();
     expect(state.rejectedProblemCandidates[0]?.disposition).toBe("not-assessed");
-    await fireEvent.click(view.getByRole("button", { name: "Assess candidate" }));
+    await fireEvent.click(view.getByRole("button", { name: "Start check" }));
     await waitFor(() => expect(commandWorkflow).toHaveBeenCalledWith(expect.objectContaining({ expectedRevision: 4,
       action: { type: "assess-not-assessed", candidateId: "saved-candidate", previewHash: "candidate-preview", capabilityFingerprint: "models", previewExpiresAt: "2099-01-01T00:00:00.000Z" },
     })));
-    await waitFor(() => expect(view.queryByRole("button", { name: "Assess candidate" })).toBeNull());
+    await waitFor(() => expect(view.queryByRole("button", { name: "Start check" })).toBeNull());
   });
 
   test("pauses Controlled research on the frame and approves exactly the user's edits", async () => {
@@ -145,8 +146,7 @@ describe("App workspace coordination", () => {
     });
     installApi({ getWorkspace: async () => state, getWorkflow: async () => structuredClone(current), commandWorkflow });
     const view = render(App);
-    await view.findByRole("heading", { name: "Research stopped" });
-    await fireEvent.click(view.getByRole("tab", { name: "Setup" }));
+    await fireEvent.click(await view.findByRole("tab", { name: "Setup" }));
     await fireEvent.click(view.getByRole("button", { name: "Edit approved frame" }));
     await view.findByLabelText("Goal");
     await fireEvent.input(view.getByLabelText("Goal"), { target: { value: "A goal for future runs." } });
@@ -170,7 +170,7 @@ describe("App workspace coordination", () => {
     const view = render(App);
     const lane = await view.findByRole("listitem", { name: "Bank matching investigator" });
     expect(lane.textContent).toContain("Checking independent sources");
-    expect(within(lane).getByText("Confirmed").nextElementSibling?.textContent).toBe("1");
+    expect(within(lane).getByText("Problems").nextElementSibling?.textContent).toBe("1");
     expect(view.queryByRole("progressbar")).toBeNull();
   });
 
@@ -195,7 +195,7 @@ describe("App workspace coordination", () => {
         kind: "discovery", scopeKey: "initial-research", state: "unknown", terminalAttemptId: "attempt",
         createdAt: summary.startedAt, finishedAt: summary.finishedAt }], nextCursor: null }) });
     const view = render(App);
-    await view.findByRole("heading", { name: "Research stopped" });
+    expect(await view.findByText("Response stream interrupted")).toBeTruthy();
     await fireEvent.click(view.getByText("Run details"));
     await fireEvent.click(view.getByText("Task details"));
     await fireEvent.click(view.getByRole("checkbox", { name: /may have completed/ }));
@@ -363,7 +363,6 @@ describe("App workspace coordination", () => {
       runConfig: { ...state.runConfig!, explorationPurpose: "startup-opportunities" } };
     const restored = render(App);
     await waitFor(() => expect(restored.getByRole("tab", { name: "Research" }).getAttribute("aria-selected")).toBe("true"));
-    expect(restored.getByText("Ideas will follow your brief and each selected problem.")).toBeTruthy();
     expect(restored.queryByRole("combobox", { name: "Option type" })).toBeNull();
     expect(restored.queryByRole("textbox", { name: "Or state the problem yourself." })).toBeNull();
     restored.unmount();
@@ -529,7 +528,7 @@ describe("App workspace coordination", () => {
       getWorkflow: async () => ({ summary: state.activeWorkflow!, tasks: [], nextCursor: null }), commandWorkflow });
     const view = render(App);
     await fireEvent.click(await view.findByRole("tab", { name: "Solutions" }));
-    expect(await view.findByText(/1 saved idea to inspect/)).toBeTruthy();
+    expect(await view.findByRole("heading", { level: 1, name: "1 idea" })).toBeTruthy();
     expect(view.queryByText(/0 accepted toward the run target/)).toBeNull();
     await fireEvent.click(view.getByRole("tab", { name: "Research" }));
     await fireEvent.click(view.getByRole("button", { name: /Recheck buyer evidence/ }));
@@ -543,6 +542,28 @@ describe("App workspace coordination", () => {
     await fireEvent.click(view.getByRole("button", { name: /Recheck buyer evidence/ }));
     expect(view.getAllByText("Kept current research").length).toBeGreaterThan(0);
     expect(view.queryByRole("button", { name: "Keep current research" })).toBeNull();
+  });
+
+  test.each(["controlled", "history"])("reopens %s zero-return groups in Solutions and retains them across navigation", async (context) => {
+    const current = frameWorkflow({ approved: true });
+    current.summary.outcome = "no-qualifying-ideas";
+    const state = frameWorkspace(current);
+    if (context === "history") state.activeWorkflow = null;
+    state.ideaGroups = [{ runId: "zero-run", problemId: "empty-problem", problemStatement: "Bookkeepers repeat approvals",
+      requestedIdeaCount: 3, returnedIdeaCount: 0 }];
+    state.runConfig = { ...DEFAULT_RUN_CONFIG, ideaCount: 5 };
+    installApi({ getWorkspace: async () => structuredClone(state), getWorkflow: async () => structuredClone(current) });
+    const view = render(App);
+    expect(await view.findByRole("heading", { name: "0 ideas" })).toBeTruthy();
+    expect(view.getByText("0 of 3 ideas returned")).toBeTruthy();
+    expect(view.container.querySelectorAll(".idea-row")).toHaveLength(0);
+    await fireEvent.click(view.getByRole("tab", { name: "Setup" }));
+    await fireEvent.click(view.getByRole("tab", { name: "Solutions" }));
+    expect(view.getByText("0 of 3 ideas returned")).toBeTruthy();
+    view.unmount();
+    const reopened = render(App);
+    expect(await reopened.findByText("0 of 3 ideas returned")).toBeTruthy();
+    expect(reopened.getByRole("heading", { name: "0 ideas" })).toBeTruthy();
   });
 
   test("exports a finished zero-idea result and a stopped research record", async () => {
@@ -700,8 +721,8 @@ describe("App workspace coordination", () => {
     const view = render(App);
 
     expect(await view.findByText("Choose problems to develop")).toBeTruthy();
-    expect(view.getByText("Failed evidence requirements")).toBeTruthy();
-    expect(view.getByText("No candidates passed the evidence requirements.")).toBeTruthy();
+    expect(view.getByRole("button", { name: /^Show \d+ more leads?$/ })).toBeTruthy();
+    expect(view.getByText("No problems yet")).toBeTruthy();
   });
 
   test("cancels an in-flight device-code poll from the setup UI", async () => {
@@ -772,7 +793,8 @@ describe("App workspace coordination", () => {
     expect(startNativeLogin).toHaveBeenCalledWith({ providerId: "openai-subscription", method: "browser" });
     expect(await view.findByText("Native model account connected.")).toBeTruthy();
     expect(view.queryByText("provider request failed with HTTP 401")).toBeNull();
-    expect(within(view.getByLabelText("Model", { exact: true })).getByRole("option", { name: "GPT-6 Sol", hidden: true })).toBeTruthy();
+    expect((view.getByLabelText("Model", { exact: true }) as HTMLButtonElement).disabled).toBe(false);
+    expect(await listedModels(view.getByLabelText("Model", { exact: true }))).toContain("GPT-6.1 Sol");
   });
 
   test("shows discovered models as soon as browser sign-in completes", async () => {
@@ -797,7 +819,8 @@ describe("App workspace coordination", () => {
 
     await fireEvent.click(await view.findByRole("button", { name: "Sign in with OpenAI" }));
     expect(await view.findByText("Native model account connected.")).toBeTruthy();
-    expect(within(view.getByLabelText("Model", { exact: true })).getByRole("option", { name: "GPT-6 Sol", hidden: true })).toBeTruthy();
+    expect((view.getByLabelText("Model", { exact: true }) as HTMLButtonElement).disabled).toBe(false);
+    expect(await listedModels(view.getByLabelText("Model", { exact: true }))).toContain("GPT-6.1 Sol");
     // The connected account is listed, with its email hidden until the user reveals it.
     expect(within(view.getByLabelText("OpenAI account")).getByRole("button", { name: "Show account email" })).toBeTruthy();
     expect(view.queryByText("dany@example.test")).toBeNull();
@@ -1051,7 +1074,8 @@ describe("App workspace coordination", () => {
     await fireEvent.click(await view.findByRole("button", { name: "Sign in with OpenAI" }));
 
     expect(await view.findByText("OpenAI sign-in finished.")).toBeTruthy();
-    expect(await within(view.getByLabelText("Model", { exact: true })).findByRole("option", { name: "GPT-6 Sol", hidden: true }, { timeout: 1_500 })).toBeTruthy();
+    await waitFor(() => expect((view.getByLabelText("Model", { exact: true }) as HTMLButtonElement).disabled).toBe(false), { timeout: 1_500 });
+    expect(await listedModels(view.getByLabelText("Model", { exact: true }))).toContain("GPT-6.1 Sol");
     expect(view.queryByText("Checking available OpenAI models")).toBeNull();
   });
 

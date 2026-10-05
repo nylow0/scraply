@@ -5,7 +5,7 @@ import { OPPORTUNITY_REVIEW_MIGRATION_SQL } from "./repositories/opportunities";
 import { OPPORTUNITY_EXPLORATION_MIGRATION_SQL } from "./repositories/opportunity-exploration";
 import { OPPORTUNITY_SESSION_MIGRATION_SQL } from "./migrate-opportunity-sessions";
 import { MANAGED_COVERAGE_MIGRATION_SQL } from "./migrate-managed-coverage";
-import { addResearchStageIds, RESEARCH_AREAS_MIGRATION_SQL, RESEARCH_FRAMES_MIGRATION_SQL } from "./migrate-research-frames";
+import { addResearchStageIds, addStageIds, RESEARCH_AREAS_MIGRATION_SQL, RESEARCH_FRAMES_MIGRATION_SQL } from "./migrate-research-frames";
 import { SOLUTION_GOAL_FIT_MIGRATION_SQL } from "./migrate-solution-goal-fit";
 import type { DatabaseClient } from "./client";
 
@@ -1545,4 +1545,11 @@ export const MIGRATIONS = [
       CREATE UNIQUE INDEX idx_research_runs_one_active_research ON research_runs(thread_id)
         WHERE status IN ('queued', 'running') AND problem_id IS NULL;
     ` },
+  // Ranked ideas: each idea's place in its problem's group, the ranker's reason, and why it is a weak fit.
+  // Ideas saved before ranking keep NULL and show in saved order.
+  { id: 42, rebuildReferencedTable: true, sql: `
+      ALTER TABLE solutions ADD COLUMN rank INTEGER CHECK(rank IS NULL OR rank > 0);
+      ALTER TABLE solutions ADD COLUMN rank_reason TEXT CHECK(rank_reason IS NULL OR length(trim(rank_reason)) > 0);
+      ALTER TABLE solutions ADD COLUMN weak_fit_reason TEXT CHECK(weak_fit_reason IS NULL OR length(trim(weak_fit_reason)) > 0);
+    `, afterSql: (client: DatabaseClient) => addStageIds(client, ["idea-ranking"]) },
 ] as const;

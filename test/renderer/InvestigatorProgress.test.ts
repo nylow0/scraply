@@ -15,9 +15,9 @@ describe("InvestigatorProgress", () => {
     expect(bank.getByRole("heading", { name: "Bank matching" })).toBeTruthy();
     expect(bank.getByText("Running")).toBeTruthy();
     expect(bank.getByText(/Checking a second independent account/)).toBeTruthy();
-    expect(bank.getByText("Confirmed").nextElementSibling?.textContent).toBe("1");
-    expect(bank.getByText("Insufficient").nextElementSibling?.textContent).toBe("2");
-    expect(bank.getByText("Dropped").nextElementSibling?.textContent).toBe("0");
+    expect(bank.getByText("Problems").nextElementSibling?.textContent).toBe("1");
+    expect(bank.getByText("Needs more evidence").nextElementSibling?.textContent).toBe("2");
+    expect(bank.getByText("Ruled out").nextElementSibling?.textContent).toBe("0");
     const documents = within(view.getByRole("listitem", { name: "Client documents investigator" }));
     expect(documents.getByText("Queued")).toBeTruthy();
     expect(documents.getAllByText("Unknown")).toHaveLength(3);
@@ -34,13 +34,13 @@ describe("InvestigatorProgress", () => {
     const bank = within(view.getByRole("listitem", { name: "Bank matching investigator" }));
     expect(bank.getByText("Finished")).toBeTruthy();
     expect(bank.getByText(/Evidence checks finished/)).toBeTruthy();
-    expect(bank.getByText("Confirmed").nextElementSibling?.textContent).toBe("2");
-    expect(bank.getByText("Insufficient").nextElementSibling?.textContent).toBe("0");
-    expect(bank.getByText("Dropped").nextElementSibling?.textContent).toBe("1");
+    expect(bank.getByText("Problems").nextElementSibling?.textContent).toBe("2");
+    expect(bank.getByText("Needs more evidence").nextElementSibling?.textContent).toBe("0");
+    expect(bank.getByText("Ruled out").nextElementSibling?.textContent).toBe("1");
     const documents = within(view.getByRole("listitem", { name: "Client documents investigator" }));
     expect(documents.getByText("Running")).toBeTruthy();
     expect(documents.getByText(/Reading firsthand sources/)).toBeTruthy();
-    expect(documents.getByText("Insufficient").nextElementSibling?.textContent).toBe("1");
+    expect(documents.getByText("Needs more evidence").nextElementSibling?.textContent).toBe("1");
   });
 
   test("labels a lost completion honestly and preserves already saved counts", () => {
@@ -48,7 +48,7 @@ describe("InvestigatorProgress", () => {
       ...investigators[0]!, state: "unknown", currentStep: "Waiting for a verdict result", confirmedCount: 1,
     }] });
     expect(view.getByText("Completion unknown")).toBeTruthy();
-    expect(view.getByText("Confirmed").nextElementSibling?.textContent).toBe("1");
+    expect(view.getByText("Problems").nextElementSibling?.textContent).toBe("1");
     expect(view.queryByText("Finished")).toBeNull();
   });
 
@@ -67,9 +67,9 @@ describe("InvestigatorProgress", () => {
 
     expect(view.getAllByRole("listitem", { name: "Bank matching investigator" })).toEqual([assessmentRow, originalRow]);
     expect(within(originalRow).getByText(/Original investigation finished/)).toBeTruthy();
-    expect(within(originalRow).getByText("Insufficient").nextElementSibling?.textContent).toBe("2");
+    expect(within(originalRow).getByText("Needs more evidence").nextElementSibling?.textContent).toBe("2");
     expect(within(assessmentRow).getByText(/Assessment complete/)).toBeTruthy();
-    expect(within(assessmentRow).getByText("Insufficient").nextElementSibling?.textContent).toBe("0");
+    expect(within(assessmentRow).getByText("Needs more evidence").nextElementSibling?.textContent).toBe("0");
   });
 
   test("leaves old runs without investigator work unchanged", () => {

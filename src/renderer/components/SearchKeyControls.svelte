@@ -103,24 +103,23 @@
 {/if}
 
 <style>
-  /* Idle actions match the OpenAI row's compact ghost buttons; the negative margin lines their text up with the status above. */
-  .key-actions { display:flex;flex-wrap:wrap;align-items:center;justify-content:flex-end;gap:2px;margin-right:-10px;color:var(--muted);font-size:13px; }
+  /* Idle actions match the OpenAI card's compact ghost buttons and sit at the bottom of the card. */
+  .key-actions { display:flex;flex-wrap:wrap;align-items:center;gap:2px;margin-top:auto;color:var(--muted);font-size:13px; }
+  .key-actions > button:first-child { margin-left:-10px; }
   .key-actions > span { margin-right:8px; }
   .key-actions button { padding:6px 10px;border:0;border-radius:7px;background:transparent;color:var(--muted);font-size:13px; }
   .key-actions button:hover:not(:disabled) { background:var(--surface-2);color:var(--text); }
   .key-actions .danger,.key-actions .danger:hover:not(:disabled) { color:var(--danger); }
   .masked-key { font:12px var(--mono);letter-spacing:.06em; }
   .sr-only { position:absolute;width:1px;height:1px;padding:0;overflow:hidden;clip-path:inset(50%);white-space:nowrap; }
-  /* The form lines up with the provider name, past the logo. */
-  .key-form { display:grid;gap:8px;margin:4px 0 0 36px; }
-  .key-row { display:flex;align-items:center;gap:8px; }
+  .key-form { display:grid;gap:8px;margin-top:auto; }
+  .key-row { display:flex;flex-wrap:wrap;align-items:center;gap:8px; }
   .key-row > button { flex:none;padding:10px 14px;border:1px solid var(--border-strong);border-radius:8px;background:var(--surface-2);color:var(--text);font-size:13px; }
   .key-row > button:hover:not(:disabled) { background:var(--border); }
   .key-row > .primary { border-color:transparent;background:var(--accent-strong);color:var(--accent-ink);font-weight:600; }
   .key-row > .primary:hover:not(:disabled) { background:var(--accent); }
   .key-note { margin:0;color:var(--muted);font-size:12px;line-height:1.6;overflow-wrap:anywhere; }
   .key-note.error { color:var(--danger); }
-  .key-actions + .key-note { text-align:right; }
   .key-note a { display:inline-flex;align-items:center;gap:4px;color:var(--text);text-decoration:underline;text-decoration-color:var(--border-strong);text-underline-offset:3px; }
   .key-note a:hover { text-decoration-color:currentColor; }
 </style>

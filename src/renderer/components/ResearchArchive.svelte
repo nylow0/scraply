@@ -1,14 +1,16 @@
 <script lang="ts">
   import "./problem-review.css";
   import ResultsToolbar from "./ResultsToolbar.svelte";
-  import CandidateAssessmentControl from "./CandidateAssessmentControl.svelte";
+  import ProblemLeads from "./ProblemLeads.svelte";
   import { verdictLabel } from "../lib/status";
+  import { isProblem, problemLeads } from "../lib/problem-leads";
   import type { ProblemCandidate, RejectedProblemCandidate } from "../../shared/ipc";
   import type { PreviewWorkflowResult } from "../../shared/workflow-contracts";
 
   let {
-    problems,
+    problems: allProblems,
     rejectedCandidates,
+    extraLeads = [],
     busy,
     onExport,
     onOpenSource,
@@ -17,6 +19,7 @@
   }: {
     problems: ProblemCandidate[];
     rejectedCandidates: RejectedProblemCandidate[];
+    extraLeads?: ProblemCandidate[] | undefined;
     busy: boolean;
     onExport: () => Promise<void>;
     onOpenSource: (url: string) => Promise<void>;
@@ -24,12 +27,10 @@
     onAssessCandidate?: (preview: PreviewWorkflowResult) => Promise<void>;
   } = $props();
 
+  let problems = $derived(allProblems.filter(isProblem));
+  let leads = $derived(problemLeads(allProblems, rejectedCandidates, extraLeads));
   let sourceCount = $derived(new Set(problems.flatMap((problem) => problem.factors.map((factor) => factor.sourceId))).size);
   let factorCount = $derived(new Set(problems.flatMap((problem) => problem.factors.map((factor) => factor.id))).size);
-  let evidenceBacked = $derived(factorCount > 0);
-  let discoveryRan = $derived(evidenceBacked || rejectedCandidates.length > 0);
-  let blockedCandidates = $derived(rejectedCandidates.filter((candidate) => candidate.disposition !== "not-assessed"));
-  let unassessedCandidates = $derived(rejectedCandidates.filter((candidate) => candidate.disposition === "not-assessed"));
   let query = $state("");
   let filteredProblems = $derived(problems.filter((problem) => problem.statement.toLowerCase().includes(query.trim().toLowerCase())));
 </script>
@@ -38,11 +39,7 @@
   <header>
     <div>
       <h1>Research</h1>
-      {#if !evidenceBacked}<p class="intro">{discoveryRan
-          ? unassessedCandidates.length > 0 ? "Some candidates have not been assessed yet." : "These candidates did not pass the evidence requirements."
-          : "User-stated problems. No discovery evidence was gathered."}</p>{/if}
     </div>
-    <button class="export" disabled={busy} onclick={onExport}>{busy ? "Exporting…" : "Export research JSON"}</button>
   </header>
 
   <dl class="summary">
@@ -54,12 +51,12 @@
   <ResultsToolbar bind:query label="Search problems" count={filteredProblems.length} />
   <div class="problems">
     {#each filteredProblems as problem, index (problem.id)}
-      <article class:warning={["insufficient-evidence", "overstated", "attempted-and-failed"].includes(problem.verdict)} style={`--index:${index}`}>
+      <article style={`--index:${index}`}>
         <details class="problem-disclosure">
           <summary class="disclosure-title" title={problem.statement}><span class="disclosure-label">{problem.statement}</span></summary>
           <div class="disclosure-content">
             <div class="meta">
-              <span class="verdict">{verdictLabel(problem.verdict)}</span>
+              {#if problem.verdict !== "confirmed"}<span class="verdict">{verdictLabel(problem.verdict)}</span>{/if}
               {#if problem.selected}<span class="selected">Used for solutions</span>{/if}
               {#if problem.singleHarvestModeWarning}<span>One harvest mode</span>{/if}
               {#if problem.closeRoleEvidence}<span>Evidence from close roles</span>{/if}
@@ -79,8 +76,7 @@
               {#each problem.factors as factor (factor.id)}
                 <blockquote>
                   <p>{factor.subject} — {factor.behavior}</p>
-                  <q>{factor.quote}</q>{#if factor.uncertainty}<p>Uncertainty: {factor.uncertainty}</p>{/if}<small class="estimated">Model confidence is uncalibrated.</small>
-                  <button disabled={busy} onclick={() => onOpenSource(factor.sourceUrl)}>{factor.sourceTitle}</button>
+                  <q>{factor.quote}</q>{#if factor.uncertainty}<p>Uncertainty: {factor.uncertainty}</p>{/if}                  <button disabled={busy} onclick={() => onOpenSource(factor.sourceUrl)}>{factor.sourceTitle}</button>
                 </blockquote>
               {/each}
             </details>
@@ -90,53 +86,15 @@
       </article>
     {:else}{#if query}<p class="empty">No problems match "{query}".</p>
     {:else}
-      <div class="empty"><h2>{unassessedCandidates.length > 0 ? "No assessed problems to show." : "No candidates passed the evidence requirements."}</h2><p>The saved candidates remain available below.</p></div>
+      <div class="empty"><h2>No problems yet</h2></div>
     {/if}{/each}
   </div>
 
-  {#if unassessedCandidates.length > 0}
-    <details class="rejected">
-      <summary>Not assessed <span>{unassessedCandidates.length}</span></summary>
-      <div class="rejected-list">
-        {#each unassessedCandidates as candidate, index (candidate.id)}
-          <article class="rejected-item" style={`--index:${problems.length + index}`}>
-            <div class="meta"><span>Awaiting evidence assessment</span></div>
-            <h2>{candidate.statement}</h2>
-            <p>{candidate.reason}</p>
-            {#if candidate.candidate}
-              <p>{candidate.candidate.whyItPersists}</p>
-              <dl class="problem-data">
-                <div><dt>Affected</dt><dd>{candidate.candidate.affected}</dd></div>
-                <div><dt>Scale estimate</dt><dd class="estimated">{candidate.candidate.scaleEstimate}</dd></div>
-              </dl>
-            {/if}
-            {#if candidate.candidate && previewCandidateAssessment && onAssessCandidate}
-              <CandidateAssessmentControl candidateId={candidate.id} {busy} {previewCandidateAssessment} {onAssessCandidate} />
-            {/if}
-          </article>
-        {/each}
-      </div>
-    </details>
-  {/if}
-
-  {#if blockedCandidates.length > 0}
-    <details class="rejected">
-      <summary>Failed evidence requirements <span>{blockedCandidates.length}</span></summary>
-      <div class="rejected-list">
-        {#each blockedCandidates as candidate, index (candidate.id)}
-          <article class="rejected-item" style={`--index:${problems.length + index}`}>
-            <div class="meta"><span>Not evidence-backed</span></div>
-            <h2>{candidate.statement}</h2>
-            <p>{candidate.reason}</p>
-          </article>
-        {/each}
-      </div>
-    </details>
-  {/if}
+  <ProblemLeads {leads} {busy} {onOpenSource} {previewCandidateAssessment} {onAssessCandidate} />
+  <div class="export-links"><button class="link-button" disabled={busy} onclick={onExport}>{busy ? "Exporting…" : "Export research JSON"}</button></div>
 </div>
 
 <style>
-  header p:last-child { font-size:13px;margin:0;color:var(--muted); }
 
   .archive { max-width:var(--page-max);margin:auto;padding:38px var(--page-inline) 80px; }
   .summary { display:flex;gap:24px;border:0;margin:24px 0 0; }

@@ -54,8 +54,8 @@ test("the renderer restores the problem-selection step after a restart", async (
     await page.getByRole("button", { name: "Start", exact: true }).click();
     await expect(page.getByText("Choose problems to develop")).toBeVisible();
     await expect(page.getByRole("button", { name: "Export research JSON" })).toBeVisible();
-    await page.getByText("Failed evidence requirements").click();
-    await expect(page.getByText("Not evidence-backed")).toBeVisible();
+    await page.getByRole("button", { name: "Show 1 more lead" }).click();
+    await expect(page.getByText("Ruled out")).toBeVisible();
     await page.getByRole("button", { name: "Use as user-asserted problem" }).click();
     const userProblem = page.getByRole("textbox", { name: "Or state the problem yourself." });
     await expect(userProblem).toHaveValue("Repair shops cannot compare every supplier on one marketplace.");
@@ -89,16 +89,13 @@ test("the renderer restores the problem-selection step after a restart", async (
     await page.locator(".problem-disclosure > summary").first().click();
     await expect(page.getByRole("checkbox", { name: "Develop this problem" })).toBeChecked();
     await page.getByRole("button", { name: "Generate all selected" }).click();
-    await expect(page.getByText("Supplier reliability ledger")).toBeVisible();
+    // The idea is a row in its problem's group, named by its short name.
+    await expect(page.getByRole("button", { name: "Open idea: Pool observed delivery windows by supplier and part category." })).toBeVisible();
     await page.screenshot({ animations: "disabled", path: testInfo.outputPath("ideas.png") });
-    await page.getByRole("textbox", { name: "Search ideas" }).fill("nothing matches");
-    await expect(page.getByText('No ideas match "nothing matches".')).toBeVisible();
-    await page.getByRole("button", { name: "Clear filter" }).click();
-    await expect(page.getByText(/Ideas are shown in saved order/)).toBeVisible();
     await expect(page.getByText(/independently confirmed outcomes/)).toHaveCount(0);
     await expect(page.getByText("Highest risk: likely · project ends")).not.toBeVisible();
     await page.getByRole("button", { name: "Open idea: Pool observed delivery windows by supplier and part category." }).click();
-    await expect(page.locator(".idea-detail").getByText("Pool observed delivery windows by supplier and part category.")).toBeVisible();
+    await expect(page.locator(".idea-detail").getByRole("heading", { level: 1, name: "Pool observed delivery windows by supplier and part category." })).toBeVisible();
     await expect(page.getByText("Highest risk: likely · project ends")).not.toBeVisible();
     await page.getByText("Review all risks and responses").click();
     await expect(page.getByText("Volume is too sparse")).toBeVisible();
@@ -114,7 +111,7 @@ test("the renderer restores the problem-selection step after a restart", async (
     // No name was entered: the title agent named the research.
     await expect(page.locator(".fields .primary strong")).toHaveText("Reducing repair shop delays");
     await page.getByRole("tab", { name: /Solutions/ }).click();
-    await expect(page.getByText("Supplier reliability ledger")).toBeVisible();
+    await expect(page.getByRole("button", { name: "Open idea: Pool observed delivery windows by supplier and part category." })).toBeVisible();
     await page.setViewportSize({ width: 960, height: 640 });
     await expect(page.getByRole("button", { name: "Settings", exact: true })).toBeVisible();
     expect(await page.locator(".main-content").evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true);

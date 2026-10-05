@@ -58,6 +58,14 @@ describe("research evaluation", () => {
     }
   });
 
+  test("--ideas-per-problem asks every case for that many ideas without changing the locked fixtures", () => {
+    const before = JSON.stringify(briefs);
+    const draft = evaluationDraft(evaluationMatrix(briefs, "acceptance", undefined, true, 3)[0]!);
+    expect(draft.targets).toMatchObject({ kind: "per-problem", ideaCount: 3 });
+    expect(draft.runConfig.ideaCount).toBe(3);
+    expect(JSON.stringify(briefs)).toBe(before);
+  });
+
   test("--all-problems drops the brief's problem cap without changing the locked fixtures", () => {
     const before = JSON.stringify(briefs);
     const capped = evaluationDraft(evaluationMatrix(briefs, "acceptance")[0]!);

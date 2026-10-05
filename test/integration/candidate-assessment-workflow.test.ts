@@ -114,111 +114,6 @@ test("preview is read-only, and an insufficient allowance retains the full candi
   } finally { f.db.close(); }
 });
 
-test("a real deferred assessment counts its managed search once and retains both investigators for the same area", async () => {
-  const stages: string[] = [];
-  const client: StructuredModelClient = { async structuredCompletion(request) {
-    stages.push(request.stage);
-    request.onDispatched?.();
-    const output = request.schema.parse(request.stage.startsWith("evidence-check:")
-      ? { decision: "follow-up", reason: "Another owner account is required.", gaps: [{ kind: "second-independent-observation",
-          evidenceNeeded: "Another owner account", query: "filing owner report", route: "community" }] }
-      : { verdict: "insufficient-evidence", verdictReason: "Only the saved owner account is available.",
-      verdictSourceIds: [], intendedBuyerEvidenceFactorIds: [], evidenceGap: "Another independent owner account",
-      briefFit: "direct", contraryEvidence: "unresolved", workflowKey: null,
-      unresolvedAssumptions: [], wouldChangeConclusion: [] });
-    return { output, metadata: { model, usage: { status: "unknown" }, latencyMs: 0, repairCount: 0,
-      providerRequestIds: [], attempts: [], prompt: { id: "fixture", sha256: "a".repeat(64) } } };
-  } };
-  const f = fixture(30, "exa", undefined, client);
-  try {
-    const task = f.db.immediateTransaction(() => {
-      const task = f.repository.createWorkItem({ sessionId: "session", kind: "discovery", scopeKey: "original-discovery", input: {}, state: "ready" });
-      f.repository.updateWorkItem(task.id, "running");
-      f.repository.updateWorkItem(task.id, "succeeded", { outputRefs: { runId: f.snapshot.materializationRunId } });
-      return task;
-    });
-    const lane = ensureAreaInvestigatorWorkItems(f.db, "session", task.id, { id: "filing", name: "Filing", whyRelevant: "Owners repeat filing",
-      affectedPeople: "Shop owners", venues: [], exampleProblems: [], included: true, priority: 1 });
-    const original = f.db.immediateTransaction(() => {
-      f.repository.updateWorkItem(lane.parent.id, "ready"); f.repository.updateWorkItem(lane.parent.id, "running");
-      f.repository.updateWorkItem(lane.parent.id, "succeeded", { outputRefs: { investigator: { areaId: "filing", areaName: "Filing",
-        currentStep: "Original investigation finished", confirmedCount: 1, insufficientCount: 0, droppedCount: 0 } } });
-      return lane.parent.id;
-    });
-    const { request } = await command(f);
-    await f.coordinator.command(request);
-    const deadline = Date.now() + 5_000;
-    while (f.realEngine!.getActiveRunIds().size > 0 && Date.now() < deadline) await Bun.sleep(5);
-    expect(f.realEngine!.getActiveRunIds().size).toBe(0);
-    expect(f.errors).toEqual([]);
-    expect(f.searches).toHaveLength(1);
-    expect(stages).toHaveLength(1);
-    const runId = f.dispatches[0]!;
-    const attempt = f.db.db.prepare("SELECT id FROM opportunity_exploration_attempts WHERE stage_name = 'investigator-search'").get() as { id: string };
-    expect(f.db.db.prepare("SELECT status,json_extract(usage_json,'$.searchDispatch.attemptId') AS attemptId FROM cost_ledger WHERE research_run_id = ? AND operation = 'search'").get(runId))
-      .toEqual({ status: "committed", attemptId: attempt.id });
-    expect(f.coordinator.summary("session").budget.searches).toMatchObject({ spent: 1, reserved: 0, uncertain: 0 });
-    expect(f.repository.listBudgetEntries("session").filter(entry => entry.operationKey.startsWith("observed-overrun:"))).toEqual([]);
-    const lanes = f.coordinator.get("session").tasks.filter(task => task.kind === "investigate-area" && task.investigator?.areaId === "filing");
-    expect(lanes).toHaveLength(2);
-    expect(new Set(lanes.map(task => task.id)).size).toBe(2);
-    expect(lanes.find(task => task.id === original)?.investigator).toMatchObject({ currentStep: "Original investigation finished", confirmedCount: 1 });
-    expect(lanes.find(task => task.id !== original)).toMatchObject({ state: "succeeded", investigator: { insufficientCount: 1 } });
-  } finally { await f.realEngine!.shutdown(); f.db.close(); }
-});
-
-test("explicit recovery restarts interrupted investigators and records the replacement assessment outcome", async () => {
-  const client: StructuredModelClient = { async structuredCompletion(request) {
-    request.onDispatched?.();
-    return { output: request.schema.parse(request.stage.startsWith("evidence-check:")
-      ? { decision: "follow-up", reason: "Another owner account is required.", gaps: [{ kind: "second-independent-observation",
-          evidenceNeeded: "Another owner account", query: "filing owner report", route: "community" }] }
-      : { verdict: "insufficient-evidence", verdictReason: "Only the saved owner account is available.",
-      verdictSourceIds: [], intendedBuyerEvidenceFactorIds: [], evidenceGap: "Another owner account", briefFit: "direct",
-      contraryEvidence: "unresolved", workflowKey: null, unresolvedAssumptions: [], wouldChangeConclusion: [] }),
-    metadata: { model, usage: { status: "unknown" }, latencyMs: 0, repairCount: 0,
-      providerRequestIds: [], attempts: [], prompt: { id: "fixture", sha256: "a".repeat(64) } } };
-  } };
-  let searches = 0;
-  const f = fixture(30, "exa", undefined, client, async () => {
-    if (++searches === 1) throw new Error("Search completion lost");
-    return [];
-  });
-  try {
-    const { request } = await command(f);
-    await f.coordinator.command(request);
-    const waitForSettlement = async () => {
-      const deadline = Date.now() + 5_000;
-      while (f.realEngine!.getActiveRunIds().size > 0 && Date.now() < deadline) await Bun.sleep(5);
-      expect(f.realEngine!.getActiveRunIds().size).toBe(0);
-    };
-    await waitForSettlement();
-    expect(f.coordinator.summary("session").outcome).toBe("needs-attention");
-    const owner = f.repository.listWorkItems("session").find(item => item.kind === "assess-candidate")!;
-    const lane = f.repository.listWorkItems("session").find(item => item.kind === "investigate-area")!;
-    f.db.immediateTransaction(() => {
-      for (const item of f.repository.listWorkItems("session").filter(item => item.state === "running")) {
-        f.repository.updateWorkItem(item.id, item.id === lane.id ? "unknown" : "failed", { outputRefs: item.outputRefs, error: { message: "Interrupted" } });
-      }
-    });
-    const attempt = f.db.db.prepare("SELECT id FROM opportunity_exploration_attempts WHERE stage_name = 'investigator-search'").get() as { id: string };
-    const originalAttempt = f.db.db.prepare("SELECT * FROM opportunity_exploration_attempts WHERE id = ?").get(attempt.id);
-    const current = f.repository.getSession("session")!;
-    await f.coordinator.command({ threadId: "project", sessionId: "session", expectedRevision: current.revision, clientCommandId: "recover-assessment",
-      action: { type: "retry-task", taskId: owner.id, expectedTerminalAttemptId: attempt.id, acknowledgeUnknownCompletion: true } });
-    await waitForSettlement();
-
-    expect(f.errors).toEqual(["Search completion lost"]);
-    expect(f.searches).toHaveLength(2);
-    expect(f.db.db.prepare("SELECT * FROM opportunity_exploration_attempts WHERE id = ?").get(attempt.id)).toEqual(originalAttempt);
-    expect(f.repository.getWorkItem(lane.id)).toMatchObject({ state: "succeeded", error: null,
-      outputRefs: { investigator: { currentStep: "Assessment complete", insufficientCount: 1 } } });
-    expect(f.repository.getWorkItem(lane.id)?.finishedAt).not.toBeNull();
-    expect(f.coordinator.summary("session").budget.searches).toMatchObject({ spent: 1, uncertain: 1, reserved: 0 });
-    expect(f.repository.listBudgetEntries("session").filter(entry => entry.operationKey.startsWith("observed-overrun:"))).toEqual([]);
-  } finally { await f.realEngine!.shutdown(); f.db.close(); }
-});
-
 test("candidate admission freezes the latest approved frame while source evidence keeps its original frame", async () => {
   let releaseDispatch: () => void = () => undefined;
   const gate = new Promise<void>(resolve => { releaseDispatch = resolve; });
@@ -331,6 +226,105 @@ test("a lost investigator search is needs-attention on restart and never resumes
     const preview = await f.coordinator.preview({ type: "candidate-assessment", threadId: "project", sessionId: "session", expectedRevision: result.revision, candidateId: f.candidateRow.id });
     expect(preview.fieldErrors).toContainEqual(expect.objectContaining({ code: "UNKNOWN_COMPLETION" }));
   } finally { f.db.close(); }
+});
+
+test("a real deferred assessment counts its managed search once and retains both investigators for the same area", async () => {
+  const stages: string[] = [];
+  const client: StructuredModelClient = { async structuredCompletion(request) {
+    stages.push(request.stage);
+    request.onDispatched?.();
+    const output = request.schema.parse({ verdict: "insufficient-evidence", verdictReason: "Only the saved owner account is available.",
+      verdictSourceIds: [], intendedBuyerEvidenceFactorIds: [], evidenceGap: "Another independent owner account",
+      briefFit: "direct", contraryEvidence: "unresolved", workflowKey: null,
+      unresolvedAssumptions: [], wouldChangeConclusion: [] });
+    return { output, metadata: { model, usage: { status: "unknown" }, latencyMs: 0, repairCount: 0,
+      providerRequestIds: [], attempts: [], prompt: { id: "fixture", sha256: "a".repeat(64) } } };
+  } };
+  const f = fixture(30, "exa", undefined, client);
+  try {
+    const task = f.db.immediateTransaction(() => {
+      const task = f.repository.createWorkItem({ sessionId: "session", kind: "discovery", scopeKey: "original-discovery", input: {}, state: "ready" });
+      f.repository.updateWorkItem(task.id, "running");
+      f.repository.updateWorkItem(task.id, "succeeded", { outputRefs: { runId: f.snapshot.materializationRunId } });
+      return task;
+    });
+    const lane = ensureAreaInvestigatorWorkItems(f.db, "session", task.id, { id: "filing", name: "Filing", whyRelevant: "Owners repeat filing",
+      affectedPeople: "Shop owners", venues: [], exampleProblems: [], included: true, priority: 1 });
+    const original = f.db.immediateTransaction(() => {
+      f.repository.updateWorkItem(lane.parent.id, "ready"); f.repository.updateWorkItem(lane.parent.id, "running");
+      f.repository.updateWorkItem(lane.parent.id, "succeeded", { outputRefs: { investigator: { areaId: "filing", areaName: "Filing",
+        currentStep: "Original investigation finished", confirmedCount: 1, insufficientCount: 0, droppedCount: 0 } } });
+      return lane.parent.id;
+    });
+    const { request } = await command(f);
+    await f.coordinator.command(request);
+    const deadline = Date.now() + 5_000;
+    while (f.realEngine!.getActiveRunIds().size > 0 && Date.now() < deadline) await Bun.sleep(5);
+    expect(f.realEngine!.getActiveRunIds().size).toBe(0);
+    expect(f.errors).toEqual([]);
+    expect(f.searches).toHaveLength(1);
+    expect(stages).toHaveLength(1);
+    const runId = f.dispatches[0]!;
+    const attempt = f.db.db.prepare("SELECT id FROM opportunity_exploration_attempts WHERE stage_name = 'investigator-search'").get() as { id: string };
+    expect(f.db.db.prepare("SELECT status,json_extract(usage_json,'$.searchDispatch.attemptId') AS attemptId FROM cost_ledger WHERE research_run_id = ? AND operation = 'search'").get(runId))
+      .toEqual({ status: "committed", attemptId: attempt.id });
+    expect(f.coordinator.summary("session").budget.searches).toMatchObject({ spent: 1, reserved: 0, uncertain: 0 });
+    expect(f.repository.listBudgetEntries("session").filter(entry => entry.operationKey.startsWith("observed-overrun:"))).toEqual([]);
+    const lanes = f.coordinator.get("session").tasks.filter(task => task.kind === "investigate-area" && task.investigator?.areaId === "filing");
+    expect(lanes).toHaveLength(2);
+    expect(new Set(lanes.map(task => task.id)).size).toBe(2);
+    expect(lanes.find(task => task.id === original)?.investigator).toMatchObject({ currentStep: "Original investigation finished", confirmedCount: 1 });
+    expect(lanes.find(task => task.id !== original)).toMatchObject({ state: "succeeded", investigator: { insufficientCount: 1 } });
+  } finally { await f.realEngine!.shutdown(); f.db.close(); }
+});
+
+test("explicit recovery restarts interrupted investigators and records the replacement assessment outcome", async () => {
+  const client: StructuredModelClient = { async structuredCompletion(request) {
+    request.onDispatched?.();
+    return { output: request.schema.parse({ verdict: "insufficient-evidence", verdictReason: "Only the saved owner account is available.",
+      verdictSourceIds: [], intendedBuyerEvidenceFactorIds: [], evidenceGap: "Another owner account", briefFit: "direct",
+      contraryEvidence: "unresolved", workflowKey: null, unresolvedAssumptions: [], wouldChangeConclusion: [] }),
+    metadata: { model, usage: { status: "unknown" }, latencyMs: 0, repairCount: 0,
+      providerRequestIds: [], attempts: [], prompt: { id: "fixture", sha256: "a".repeat(64) } } };
+  } };
+  let searches = 0;
+  const f = fixture(30, "exa", undefined, client, async () => {
+    if (++searches === 1) throw new Error("Search completion lost");
+    return [];
+  });
+  try {
+    const { request } = await command(f);
+    await f.coordinator.command(request);
+    const waitForSettlement = async () => {
+      const deadline = Date.now() + 5_000;
+      while (f.realEngine!.getActiveRunIds().size > 0 && Date.now() < deadline) await Bun.sleep(5);
+      expect(f.realEngine!.getActiveRunIds().size).toBe(0);
+    };
+    await waitForSettlement();
+    expect(f.coordinator.summary("session").outcome).toBe("needs-attention");
+    const owner = f.repository.listWorkItems("session").find(item => item.kind === "assess-candidate")!;
+    const lane = f.repository.listWorkItems("session").find(item => item.kind === "investigate-area")!;
+    f.db.immediateTransaction(() => {
+      for (const item of f.repository.listWorkItems("session").filter(item => item.state === "running")) {
+        f.repository.updateWorkItem(item.id, item.id === lane.id ? "unknown" : "failed", { outputRefs: item.outputRefs, error: { message: "Interrupted" } });
+      }
+    });
+    const attempt = f.db.db.prepare("SELECT id FROM opportunity_exploration_attempts WHERE stage_name = 'investigator-search'").get() as { id: string };
+    const originalAttempt = f.db.db.prepare("SELECT * FROM opportunity_exploration_attempts WHERE id = ?").get(attempt.id);
+    const current = f.repository.getSession("session")!;
+    await f.coordinator.command({ threadId: "project", sessionId: "session", expectedRevision: current.revision, clientCommandId: "recover-assessment",
+      action: { type: "retry-task", taskId: owner.id, expectedTerminalAttemptId: attempt.id, acknowledgeUnknownCompletion: true } });
+    await waitForSettlement();
+
+    expect(f.errors).toEqual(["Search completion lost"]);
+    expect(f.searches).toHaveLength(2);
+    expect(f.db.db.prepare("SELECT * FROM opportunity_exploration_attempts WHERE id = ?").get(attempt.id)).toEqual(originalAttempt);
+    expect(f.repository.getWorkItem(lane.id)).toMatchObject({ state: "succeeded", error: null,
+      outputRefs: { investigator: { currentStep: "Assessment complete", insufficientCount: 1 } } });
+    expect(f.repository.getWorkItem(lane.id)?.finishedAt).not.toBeNull();
+    expect(f.coordinator.summary("session").budget.searches).toMatchObject({ spent: 1, uncertain: 1, reserved: 0 });
+    expect(f.repository.listBudgetEntries("session").filter(entry => entry.operationKey.startsWith("observed-overrun:"))).toEqual([]);
+  } finally { await f.realEngine!.shutdown(); f.db.close(); }
 });
 
 test("a finished project starts a linked assessment and still shows its previous snapshot after an incomplete assessment", async () => {

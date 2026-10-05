@@ -24,7 +24,6 @@
   import OpportunityProgress, { TERMINAL_OPPORTUNITY_STATUSES } from "./components/OpportunityProgress.svelte";
   import WorkflowTabs, { type WorkflowStep } from "./components/WorkflowTabs.svelte";
   import RunUsage from "./components/RunUsage.svelte";
-  import RunTrace from "./components/RunTrace.svelte";
   import VibeProgress from "./components/VibeProgress.svelte";
   import ResearchRevisions from "./components/ResearchRevisions.svelte";
   import FrameReview from "./components/FrameReview.svelte";
@@ -132,10 +131,6 @@
       await tick();
     } finally { traversingHistory = false; }
   }
-  async function discardIdea(ideaId: string, discarded: boolean) {
-    const threadId = workspace?.activeThreadId;
-    if (threadId) await action(async () => setWorkspace(await window.scraply.discardIdea(threadId, ideaId, discarded)));
-  }
   let reconcileTimer: ReturnType<typeof setTimeout> | null = null;
   let reconcilePending = false;
   let loadEpoch = 0;
@@ -178,9 +173,11 @@
   let editingScope = $derived(editingScopeThreadId !== null && editingScopeThreadId === activeThread?.id);
   let showSetupForm = $derived(Boolean(workspace && activeThread && (activeThread.status === "configuring" || editingScope || !workspace.scope)));
   let researchReady = $derived(Boolean(activeThread && (activeWorkflow || workspace?.problemCandidates.length || workspace?.rejectedProblemCandidates.length || activeThread.status === "discovery-running")));
-  let ideasReady = $derived(Boolean(activeThread && (workspace?.solutions.length || activeThread.status === "development-running" || activeThread.status === "solutions-ready"
+  let ideasReady = $derived(Boolean(activeThread && (workspace?.solutions.length || workspace?.ideaGroups?.length || activeThread.status === "development-running" || activeThread.status === "solutions-ready"
     || activeWorkflow?.purpose === "known-problem" || activeWorkflow?.state === "finished")));
-  let traceReady = $derived(Boolean(activeRun));
+  // The run panel sits on top while a run is active, and stays there when it failed or needs attention so the
+  // reason and Retry are in view. A run that ended normally keeps only "Run details" under its ideas.
+  let runFinished = $derived(activeWorkflow?.state === "finished" && activeWorkflow.outcome !== "failed" && activeWorkflow.outcome !== "needs-attention");
 
   onMount(() => {
     const viewport = window.matchMedia?.(COMPACT_NAVIGATION_QUERY);
@@ -215,10 +212,8 @@
       if (event.type === "workflow-progress") {
         if (event.threadId === workspace?.activeThreadId) {
           if (event.sessionId === workspace?.activeWorkflow?.sessionId) {
-            if (activeStep !== "trace") {
-              if (event.state === "finished" && workspace.activeWorkflow.mode === "vibe") activeStep = "ideas";
-              else if (event.state === "waiting-for-review") activeStep = "research";
-            }
+            if (event.state === "finished" && workspace.activeWorkflow.mode === "vibe") activeStep = "ideas";
+            else if (event.state === "waiting-for-review") activeStep = "research";
           }
           if (conversationIdeaId && event.sessionId !== workspace?.activeWorkflow?.sessionId) void refreshConversation(conversationIdeaId);
         }
@@ -390,10 +385,10 @@
       if (workflow.purpose === "research-followup" || workflow.state === "waiting-for-review") return "research";
       if (workflow.selectedProblemIds.length > 0 && workflow.state === "running") return "ideas";
       if (workflow.mode === "vibe" && (workflow.state === "finished" || workflow.purpose === "known-problem")) return "ideas";
-      if (workflow.state === "finished" && state.solutions.length > 0) return "ideas";
+      if (workflow.state === "finished" && (state.solutions.length > 0 || (state.ideaGroups?.length ?? 0) > 0)) return "ideas";
       return "research";
     }
-    if (state.solutions.length > 0 || thread?.status === "solutions-ready") return "ideas";
+    if (state.solutions.length > 0 || (state.ideaGroups?.length ?? 0) > 0 || thread?.status === "solutions-ready") return "ideas";
     if (thread?.status === "development-running") return "ideas";
     if (thread?.status === "discovery-running" || state.problemCandidates.length > 0 || state.rejectedProblemCandidates.length > 0) return "research";
     return "setup";
@@ -401,7 +396,6 @@
   function openStep(step: WorkflowStep) {
     if (step === "research" && !researchReady) return;
     if (step === "ideas" && !ideasReady) return;
-    if (step === "trace" && !traceReady) return;
     activeStep = step;
     reviewSelection = false;
   }
@@ -956,6 +950,18 @@
   </Sidebar>
   </div>
 
+  {#snippet runPanel()}
+    {#if workflowDetail && activeWorkflow && workflowDetail.summary.sessionId === activeWorkflow.sessionId}
+      <VibeProgress detail={workflowDetail} {investigators} {busy}
+        onPause={() => commandWorkflow({ type: "pause" })}
+        onResume={() => commandWorkflow({ type: "resume" })}
+        onStop={() => commandWorkflow({ type: "stop" })}
+        onRetryTask={(taskId, expectedTerminalAttemptId, acknowledgeUnknownCompletion) => commandWorkflow({ type: "retry-task", taskId, expectedTerminalAttemptId, acknowledgeUnknownCompletion })}
+        onReassessProblems={(taskId) => commandWorkflow({ type: "reassess-problems", taskId })}
+        onLoadMoreTasks={loadMoreWorkflowTasks}
+        onPreviewExtension={previewWorkflowExtension} onApplyExtension={applyWorkflowExtension} />
+    {/if}
+  {/snippet}
   <main class="main-content" class:setup-active={activeStep === "setup" && showSetupForm} inert={settingsOpen}>
     {#if workspace && activeThread}
       <header class="workspace-header">
@@ -968,32 +974,22 @@
         setupReady={true}
         {researchReady}
         {ideasReady}
-        {traceReady}
         onSelect={openStep}
       />
       </header>
-      {#if !activeWorkflow && activeStep !== "trace"}<RunUsage usage={activeRun?.usage} />{/if}
-      {#if activeStep !== "trace" && workflowDetail && activeWorkflow && workflowDetail.summary.sessionId === activeWorkflow.sessionId && !(activeStep === "ideas" && ideaFocused && activeWorkflow.state === "finished")}
-        <div class="workflow-progress-wrap"><VibeProgress detail={workflowDetail} {investigators} {busy}
-          onPause={() => commandWorkflow({ type: "pause" })}
-          onResume={() => commandWorkflow({ type: "resume" })}
-          onStop={() => commandWorkflow({ type: "stop" })}
-          onRetryTask={(taskId, expectedTerminalAttemptId, acknowledgeUnknownCompletion) => commandWorkflow({ type: "retry-task", taskId, expectedTerminalAttemptId, acknowledgeUnknownCompletion })}
-          onReassessProblems={(taskId) => commandWorkflow({ type: "reassess-problems", taskId })}
-          onLoadMoreTasks={loadMoreWorkflowTasks}
-          onPreviewExtension={previewWorkflowExtension} onApplyExtension={applyWorkflowExtension} /></div>
-      {/if}
-      {#if activeStep !== "trace" && !activeWorkflow && workspace.opportunityExploration}
+      {#if !activeWorkflow}<RunUsage usage={activeRun?.usage} />{/if}
+      {#if !runFinished}<div class="workflow-progress-wrap">{@render runPanel()}</div>{/if}
+      {#if !activeWorkflow && workspace.opportunityExploration}
         <!-- Like the workflow summary above, a finished exploration steps aside while one idea is open. -->
         {#if !(activeStep === "ideas" && ideaFocused && TERMINAL_OPPORTUNITY_STATUSES.includes(workspace.opportunityExploration.status))}
           <div class="workflow-progress-wrap"><OpportunityProgress progress={workspace.opportunityExploration} {busy} onPause={pauseOpportunities} onResume={startOrResumeOpportunities} onPreviewExtension={previewOpportunityExtension} onApplyExtension={applyOpportunityExtension} /></div>
         {/if}
-      {:else if activeStep !== "trace" && !activeWorkflow && workspace.runConfig?.opportunityExploration && workspace.solutions.length > 0}
+      {:else if !activeWorkflow && workspace.runConfig?.opportunityExploration && workspace.solutions.length > 0}
         <div class="notice"><button disabled={busy || workspace.opportunityReviewStatus?.running} onclick={startOrResumeOpportunities}>Continue toward {workspace.runConfig.opportunityExploration.targetFamilies} distinct hypotheses</button></div>
       {/if}
-      {#if workspace.opportunityReviewStatus?.kind === "review" && workspace.opportunityReviewStatus.running}<div class="notice" role="status">Reviewing saved business ideas. Completed comparisons are being saved.</div>{/if}
-      {#if workspace.opportunityReviewStatus?.kind === "experiment" && workspace.opportunityReviewStatus.running}<div class="notice" role="status">Planning and reviewing a focused experiment. No customer test is being run.</div>{/if}
-      {#if activeStep !== "trace" && activeThread.status === "failed" && !activeWorkflow}
+      {#if workspace.opportunityReviewStatus?.kind === "review" && workspace.opportunityReviewStatus.running}<div class="notice" role="status">Reviewing saved business ideas</div>{/if}
+      {#if workspace.opportunityReviewStatus?.kind === "experiment" && workspace.opportunityReviewStatus.running}<div class="notice" role="status">Planning and reviewing a focused experiment</div>{/if}
+      {#if activeThread.status === "failed" && !activeWorkflow}
         <div class="run-stopped" role="status">
           <div><strong>Run stopped</strong><span>{activeRun?.resumeBlockedReason ?? activeRun?.completionReason ?? activeRun?.lastActivity ?? "The last run failed or was cancelled. Review the setup, then retry explicitly."}</span></div>
           <div class="run-stopped-actions">
@@ -1014,12 +1010,6 @@
       <div class="skeleton" role="status" aria-label="Loading workspace"><i></i><i></i><i></i></div>
     {:else if !workspace || !activeThread}
       <div class="empty-workspace"><button disabled={busy} onclick={createThread}>New research</button></div>
-    {:else if activeStep === "trace"}
-      <div id="workflow-panel-trace" role="tabpanel" aria-labelledby="workflow-tab-trace">
-        {#if activeRun}
-          <RunTrace runId={activeRun.runId} onOpenSource={openExternalUrl} />
-        {/if}
-      </div>
     {:else if activeStep === "setup"}
       {#if showSetupForm}
         <div id="workflow-panel-setup" role="tabpanel" aria-label="Research setup">
@@ -1042,14 +1032,14 @@
               {#if latestApprovedFrame.approved.areas.length}<h2>Research areas</h2><ul>{#each latestApprovedFrame.approved.areas as area (area.id)}<li>{area.name}{area.included ? "" : " (excluded)"}</li>{/each}</ul>{/if}
             </div>
           </details>
-          <p>{runFrame?.version !== latestApprovedFrame.version ? `This run uses version ${runFrame?.version}. New runs use version ${latestApprovedFrame.version}.` : "Changes create a new version for future runs. This run keeps its approved frame."}</p>
+          {#if runFrame?.version !== latestApprovedFrame.version}<p>This run uses version {runFrame?.version}. New runs use version {latestApprovedFrame.version}.</p>{/if}
           <button type="button" disabled={busy || !["finished", "waiting-for-review"].includes(activeWorkflow?.state ?? "")} onclick={() => { editingApprovedFrameId = latestApprovedFrame!.id; activeStep = "research"; }}>Edit approved frame</button>
         </section>
       {/if}
     {:else if activeStep === "research"}
       {#if latestApprovedFrame?.approved && editingApprovedFrameId === latestApprovedFrame.id}
         <div id="workflow-panel-research" role="tabpanel" aria-label="Research frame editing">
-          <div class="frame-edit-note"><p>Save a new version for future runs. The current run keeps its frame.</p><button type="button" disabled={busy} onclick={() => editingApprovedFrameId = null}>Cancel frame edits</button></div>
+          <div class="frame-edit-note"><button type="button" disabled={busy} onclick={() => editingApprovedFrameId = null}>Cancel frame edits</button></div>
           <FrameReview frame={latestApprovedFrame.approved} sources={latestApprovedFrame.sources} purpose={latestApprovedFrame.knownProblem ? "known-problem" : "discovery"} {busy} commitLabel="Save new version" onCommit={saveApprovedFrame} onOpenSource={openExternalUrl} />
         </div>
       {:else if reviewingFrame && runFrame && workflowDetail}
@@ -1076,15 +1066,12 @@
           {/key}
         </div>
       {:else if workspace.problemCandidates.length > 0 || workspace.rejectedProblemCandidates.length > 0}
-        <ResearchArchive problems={workspace.problemCandidates} rejectedCandidates={workspace.rejectedProblemCandidates} {busy} onExport={exportResearch} onOpenSource={openExternalUrl}
+        <ResearchArchive problems={workspace.problemCandidates} rejectedCandidates={workspace.rejectedProblemCandidates} extraLeads={workspace.problemLeads} {busy} onExport={exportResearch} onOpenSource={openExternalUrl}
           {...(activeWorkflow ? { previewCandidateAssessment, onAssessCandidate: assessCandidate } : {})} />
       {:else}
-        <div class="failed" class:after-summary={Boolean(activeWorkflow)} id="workflow-panel-research" role="tabpanel" aria-label="Research" tabindex="0"><p class="eyebrow">{activeWorkflow ? "Research outcome" : "Research unavailable"}</p><h1>{activeWorkflow?.stopReason ?? "No completed research is ready yet."}</h1><p>{activeWorkflow ? "You can inspect the task record above or start a new run from setup." : "Return to setup and start a research run."}</p>{#if activeRun || activeWorkflow}<div class="zero-idea-actions"><button disabled={busy} onclick={exportResearch}>Export research JSON</button></div>{/if}</div>
+        <div class="failed" class:after-summary={Boolean(activeWorkflow)} id="workflow-panel-research" role="tabpanel" aria-label="Research" tabindex="0"><p class="eyebrow">{activeWorkflow ? "Research outcome" : "Research unavailable"}</p><h1>{activeWorkflow?.stopReason ?? "No completed research is ready yet."}</h1>{#if activeRun || activeWorkflow}<div class="zero-idea-actions"><button disabled={busy} onclick={exportResearch}>Export research JSON</button></div>{/if}</div>
       {/if}
       {#if activeWorkflow}
-        {#if activeWorkflow.mode === "vibe" && activeWorkflow.state === "finished" && activeWorkflow.activeSnapshotId}
-          <p class="followup-note">You can start a separate research follow-up. The finished Vibe result and its ideas stay saved; apply the new research when you want to use it in a later idea conversation.</p>
-        {/if}
         <ResearchRevisions requests={workspace.researchRequests} findings={workspace.researchFindings}
           readOnly={reviewingFrame || editingApprovedFrameId === latestApprovedFrame?.id || (activeWorkflow.mode === "vibe" && activeWorkflow.state !== "finished") || !(["running", "waiting-for-review"].includes(activeWorkflow.state)
             || (activeWorkflow.state === "finished" && !!activeWorkflow.activeSnapshotId))}
@@ -1099,16 +1086,15 @@
       <div class="running development-progress">
         <div class="activity-symbol"><Icon name="ideas" size={30} /></div><p class="eyebrow">Development in progress</p>
         <h1>{runtimeProgress.stage === "analyzing-option" || runtimeProgress.stage === "evaluating-risk" ? "Analyzing the selected option." : workspace.solutions.length ? "Generating the next options." : "Turning problems into possibilities."}</h1>
-        <p class="research-export-hint">The research archive is already available. Open the Research tab to inspect or export it while solutions are generated.</p>
         <div class="activity"><span></span><p>{runActivity}</p></div>
         {#if activeRun}<div class="progress-facts" aria-label="Run progress"><strong>{stageLabel(runtimeProgress.stage)}</strong>{#if runtimeProgress.modelState}<span>{runtimeProgress.modelState === "waiting" ? "Queued for model" : runtimeProgress.modelState === "dispatched" ? "Sent to model" : "Accepted by model"}</span>{/if}{#if elapsedStatus}<span>{elapsedStatus}</span>{/if}{#if runtimeProgress.lastSuccessfulCheckpoint}<span>Last checkpoint: {runtimeProgress.lastSuccessfulCheckpoint}</span>{/if}</div>{/if}
         {#if activeRun}<div class="run-actions"><button class="cancel" disabled={busy} onclick={() => cancelResearch(activeRun.runId)}>Cancel run</button></div>{/if}
       </div>
       {#key workspace.activeThreadId}
-      {#if workspace.solutions.length > 0}<SolutionWorkspace solutions={workspace.solutions} {busy} analysisBlocked={true} opportunities={workspace.opportunityFamilies} opportunityReviewRunning={workspace.opportunityReviewStatus?.running} modelOptions={workspace.modelOptions} initialConfig={workspace.runConfig} acceptedCount={null} activeResearchSnapshotId={appliedResearchSnapshotId} onFocusChange={(focused) => ideaFocused = focused} onReviewOpportunities={reviewSavedOpportunities} onEditMembership={editOpportunityMembership} onPlanExperiment={requestFocusedExperiment} onDiscard={discardIdea} workflowVersion={activeRun?.workflowVersion} onSelect={selectOption} onSave={saveDecision} onExport={exportIdeas} onOpenSource={openExternalUrl} onEvidenceFollowUp={requestEvidenceFollowUp} onEvidenceReassessment={requestEvidenceReassessment} onReview={() => { activeStep = "research"; reviewSelection = true; }} {conversation} {conversationLoading} {conversationError} onOpenConversation={openConversation} onCloseConversation={closeConversation} onSubmitIdeaTurn={submitIdeaTurn} onSelectConversationVersion={selectConversationVersion} onLoadVersionDetail={window.scraply.getIdeaDetail} onLoadMoreConversation={(cursor) => refreshConversation(conversationIdeaId ?? "", cursor)} />{/if}
+      {#if workspace.solutions.length > 0}<SolutionWorkspace solutions={workspace.solutions} ideaGroups={workspace.ideaGroups} {busy} analysisBlocked={true} opportunities={workspace.opportunityFamilies} opportunityReviewRunning={workspace.opportunityReviewStatus?.running} modelOptions={workspace.modelOptions} initialConfig={workspace.runConfig} activeResearchSnapshotId={appliedResearchSnapshotId} onFocusChange={(focused) => ideaFocused = focused} onReviewOpportunities={reviewSavedOpportunities} onEditMembership={editOpportunityMembership} onPlanExperiment={requestFocusedExperiment} workflowVersion={activeRun?.workflowVersion} onSelect={selectOption} onSave={saveDecision} onExport={exportIdeas} onOpenSource={openExternalUrl} onEvidenceFollowUp={requestEvidenceFollowUp} onEvidenceReassessment={requestEvidenceReassessment} onReview={() => { activeStep = "research"; reviewSelection = true; }} {conversation} {conversationLoading} {conversationError} onOpenConversation={openConversation} onCloseConversation={closeConversation} onSubmitIdeaTurn={submitIdeaTurn} onSelectConversationVersion={selectConversationVersion} onLoadVersionDetail={window.scraply.getIdeaDetail} onLoadMoreConversation={(cursor) => refreshConversation(conversationIdeaId ?? "", cursor)} />{/if}
       {/key}
       </div>
-    {:else if activeThread.status === "solutions-ready" || workspace.solutions.length > 0}
+    {:else if activeThread.status === "solutions-ready" || workspace.solutions.length > 0 || (workspace.ideaGroups?.length ?? 0) > 0}
       <div id="workflow-panel-ideas" role="tabpanel" aria-label="Solutions">
         {#if activeRun && !activeWorkflow && ["queued", "running"].includes(activeRun.status)}
           <section class="compact-progress" aria-label="Active solution work">
@@ -1117,18 +1103,18 @@
           </section>
         {/if}
         {#key workspace.activeThreadId}
-        <SolutionWorkspace solutions={workspace.solutions} {busy} opportunities={workspace.opportunityFamilies} opportunityReviewRunning={workspace.opportunityReviewStatus?.running} modelOptions={workspace.modelOptions} initialConfig={workspace.runConfig} acceptedCount={activeWorkflow?.purpose === "research-followup" ? null : activeWorkflow?.counts.accepted ?? null} activeResearchSnapshotId={appliedResearchSnapshotId} onFocusChange={(focused) => ideaFocused = focused} onReviewOpportunities={reviewSavedOpportunities} onEditMembership={editOpportunityMembership} onPlanExperiment={requestFocusedExperiment} onDiscard={discardIdea} workflowVersion={activeRun?.workflowVersion} onSelect={selectOption} onSave={saveDecision} onExport={exportIdeas} onOpenSource={openExternalUrl} onEvidenceFollowUp={requestEvidenceFollowUp} onEvidenceReassessment={requestEvidenceReassessment} onReview={() => { activeStep = "research"; reviewSelection = true; }} {conversation} {conversationLoading} {conversationError} onOpenConversation={openConversation} onCloseConversation={closeConversation} onSubmitIdeaTurn={submitIdeaTurn} onSelectConversationVersion={selectConversationVersion} onLoadVersionDetail={window.scraply.getIdeaDetail} onLoadMoreConversation={(cursor) => refreshConversation(conversationIdeaId ?? "", cursor)} />
+        <SolutionWorkspace footer={runFinished ? runPanel : undefined} solutions={workspace.solutions} ideaGroups={workspace.ideaGroups} {busy} opportunities={workspace.opportunityFamilies} opportunityReviewRunning={workspace.opportunityReviewStatus?.running} modelOptions={workspace.modelOptions} initialConfig={workspace.runConfig} activeResearchSnapshotId={appliedResearchSnapshotId} onFocusChange={(focused) => ideaFocused = focused} onReviewOpportunities={reviewSavedOpportunities} onEditMembership={editOpportunityMembership} onPlanExperiment={requestFocusedExperiment} workflowVersion={activeRun?.workflowVersion} onSelect={selectOption} onSave={saveDecision} onExport={exportIdeas} onOpenSource={openExternalUrl} onEvidenceFollowUp={requestEvidenceFollowUp} onEvidenceReassessment={requestEvidenceReassessment} onReview={() => { activeStep = "research"; reviewSelection = true; }} {conversation} {conversationLoading} {conversationError} onOpenConversation={openConversation} onCloseConversation={closeConversation} onSubmitIdeaTurn={submitIdeaTurn} onSelectConversationVersion={selectConversationVersion} onLoadVersionDetail={window.scraply.getIdeaDetail} onLoadMoreConversation={(cursor) => refreshConversation(conversationIdeaId ?? "", cursor)} />
         {/key}
       </div>
     {:else if activeWorkflow}
       <div class="failed" id="workflow-panel-ideas" role="tabpanel" aria-label="Solutions" tabindex="0">
         <p class="eyebrow">{activeWorkflow.state === "finished" ? "Idea outcome" : "Idea development"}</p>
         <h1>{activeWorkflow.stopReason ?? (activeWorkflow.state === "finished" ? "No qualifying ideas were produced." : "Ideas are being developed.")}</h1>
-        <p>{activeWorkflow.state === "finished" ? "Research and task details remain available in the Research tab." : "Progress and remaining limits are shown above."}</p>
         {#if activeWorkflow.state === "finished"}<div class="zero-idea-actions"><button disabled={busy} onclick={() => exportIdeas("markdown")}>Export result</button><button disabled={busy} onclick={() => exportIdeas("json")}>Export JSON</button></div>{/if}
+        {#if runFinished}{@render runPanel()}{/if}
       </div>
     {:else if activeThread.status === "failed"}
-      <div class="failed" id="workflow-panel-ideas" role="tabpanel" aria-label="Solutions" tabindex="0"><p class="eyebrow">No solutions</p><h1>The run stopped before any solutions were generated.</h1><p>{activeRun?.canResume ? "Resume the saved attempt or edit the setup." : "Edit the setup to start a new run."}</p></div>
+      <div class="failed" id="workflow-panel-ideas" role="tabpanel" aria-label="Solutions" tabindex="0"><p class="eyebrow">No solutions</p><h1>The run stopped before any solutions were generated.</h1></div>
     {:else}
       <div class="failed" id="workflow-panel-ideas" role="tabpanel" aria-label="Solutions" tabindex="0"><p class="eyebrow">Solutions not ready</p><h1>Complete the research step first.</h1></div>
     {/if}
@@ -1154,7 +1140,7 @@
 
 <style>
   .workflow-progress-wrap { padding:18px var(--page-gutter) 0; }
-  .approved-frame { margin:24px var(--page-gutter);padding:20px 0;border-top:1px solid var(--border); }.approved-frame summary { cursor:pointer;font-size:15px; }.approved-frame p { color:var(--muted);font-size:13px;max-width:76ch; }.approved-frame-content { padding-top:12px; }.approved-frame-content h2 { margin:16px 0 7px;font-size:14px;font-weight:550; }.approved-frame-content ul { list-style:disc;padding-left:20px;color:var(--muted);font-size:13px; }.approved-frame-content li { margin:6px 0; }.approved-frame-content li span { margin-left:10px;color:var(--subtle); }.approved-frame button,.frame-edit-note button { padding:9px 12px;border:1px solid var(--border-strong);border-radius:8px;background:var(--surface);color:var(--text);font-size:13px; }.frame-edit-note { display:flex;align-items:center;justify-content:space-between;gap:16px;padding:18px var(--page-gutter) 0; }.frame-edit-note p { color:var(--muted);font-size:13px; }
+  .approved-frame { margin:24px var(--page-gutter);padding:20px 0;border-top:1px solid var(--border); }.approved-frame summary { cursor:pointer;font-size:15px; }.approved-frame p { color:var(--muted);font-size:13px;max-width:76ch; }.approved-frame-content { padding-top:12px; }.approved-frame-content h2 { margin:16px 0 7px;font-size:14px;font-weight:550; }.approved-frame-content ul { list-style:disc;padding-left:20px;color:var(--muted);font-size:13px; }.approved-frame-content li { margin:6px 0; }.approved-frame-content li span { margin-left:10px;color:var(--subtle); }.approved-frame button,.frame-edit-note button { padding:9px 12px;border:1px solid var(--border-strong);border-radius:8px;background:var(--surface);color:var(--text);font-size:13px; }.frame-edit-note { display:flex;align-items:center;justify-content:space-between;gap:16px;padding:18px var(--page-gutter) 0; }
   /* Research requests follow the problem list as the next section, so the list drops its end-of-page padding. */
   .main-content > :global(.archive:has(~ .research-revisions)),
   .main-content > :global(#workflow-panel-research:has(~ .research-revisions) > .checkpoint) { padding-bottom:24px; }
@@ -1195,10 +1181,9 @@
   /* Under a run summary the outcome follows it at the page edge instead of centering in the window. */
   .failed.after-summary { min-height:0;max-width:none;margin:0;justify-content:flex-start;padding:36px var(--page-gutter) 48px; }
   .running h1,.failed h1 { font-size:38px;font-weight:600;letter-spacing:-.035em;line-height:1.25;max-width:620px;margin:10px 0 20px; }
-  .failed > p:not(.eyebrow),.research-export-hint { color:var(--muted);font-size:13px;line-height:1.8;max-width:650px;margin:0; }
+  .failed > p:not(.eyebrow) { color:var(--muted);font-size:13px;line-height:1.8;max-width:650px;margin:0; }
   .zero-idea-actions { display:flex;flex-wrap:wrap;gap:8px;margin-top:22px; }
   .zero-idea-actions button { min-height:38px;padding:8px 12px;border:1px solid var(--border-strong);border-radius:8px;background:#000;color:var(--text);font-size:13px; }
-  .followup-note { max-width:75ch;margin:20px var(--page-gutter) 0;color:var(--muted);font-size:13px;line-height:1.6; }
   .activity-symbol { position:relative; }.activity-symbol::after { content:"";position:absolute;inset:-5px;border:1px solid transparent;border-top-color:var(--accent);border-radius:28px;animation:orbit 4s linear infinite; }
   .activity { width:100%;display:flex;gap:14px;border:1px solid var(--border);border-radius:14px;padding:20px;background:var(--surface);margin:24px 0;align-items:center; }
   .activity p { margin:0;font-size:13px;color:var(--muted); }.activity span { width:7px;height:7px;border-radius:50%;background:var(--accent);flex:none;animation:pulse 1.5s ease infinite alternate; }

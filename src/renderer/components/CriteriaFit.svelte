@@ -11,7 +11,7 @@
       </span>
       {#if expanded}<p>{entry.note}</p>{/if}
     {:else}<span class="unassessed">No criteria in this frame.</span>{/each}
-  {:else}<span class="unassessed">Criteria fit not assessed</span>{/if}
+  {/if}
 </div>
 
 <style>

@@ -2,6 +2,7 @@ import { fireEvent, render, waitFor } from "@testing-library/svelte";
 import { describe, expect, test, vi } from "vitest";
 import IdeaConversation from "../../src/renderer/components/IdeaConversation.svelte";
 import type { IdeaConversation as ConversationView } from "../../src/shared/workflow-contracts";
+import { pickModel } from "./model-picker";
 
 const modelOptions = [{
   providerId: "test", modelId: "new-model", displayName: "New model", defaultReasoningEffort: "medium",
@@ -39,7 +40,7 @@ describe("IdeaConversation", () => {
     await fireEvent.input(view.getByLabelText("Follow-up message"), { target: { value: "Move this into the release checklist." } });
     expect((view.getByRole("button", { name: "Send follow-up" }) as HTMLButtonElement).disabled).toBe(true);
     expect(view.getByText(/model used for this version is unavailable/i)).toBeTruthy();
-    await fireEvent.change(view.getByLabelText("Model"), { target: { value: "test:new-model" } });
+    await pickModel(view.getByLabelText("Model"), "test:new-model");
     await fireEvent.click(view.getByRole("button", { name: "Send follow-up" }));
     await waitFor(() => expect(onSubmit).toHaveBeenCalledOnce());
     expect(onSubmit.mock.calls[0]?.[0]).toMatchObject({
@@ -55,9 +56,9 @@ describe("IdeaConversation", () => {
     expect(view.getByText("The provider was unavailable.")).toBeTruthy();
     await fireEvent.click(view.getByRole("button", { name: "Edit and retry" }));
     expect((view.getByLabelText("Follow-up message") as HTMLTextAreaElement).value).toBe("Why this timing?");
-    expect(view.getByText(/failed turn stays in history/i)).toBeTruthy();
+    expect(view.getByText(/send it as a new turn/i)).toBeTruthy();
     expect(view.getByText("The provider was unavailable.")).toBeTruthy();
-    await fireEvent.change(view.getByLabelText("Model"), { target: { value: "test:new-model" } });
+    await pickModel(view.getByLabelText("Model"), "test:new-model");
     await fireEvent.click(view.getByRole("button", { name: "Send follow-up" }));
     await waitFor(() => expect(onSubmit).toHaveBeenCalledOnce());
     expect(onSubmit.mock.calls[0]?.[0]).toMatchObject({ parentTurnId: null, expectedHeadTurnId: null });
@@ -70,7 +71,7 @@ describe("IdeaConversation", () => {
       conversation: conversation(), modelOptions, onSubmit, activeResearchSnapshotId: "snapshot-3",
     });
     expect(view.getByText("Changed: How it works and Description.")).toBeTruthy();
-    await fireEvent.change(view.getByLabelText("Model"), { target: { value: "test:new-model" } });
+    await pickModel(view.getByLabelText("Model"), "test:new-model");
     await fireEvent.input(view.getByLabelText("Follow-up message"), { target: { value: "Explain the saved evidence." } });
     await fireEvent.click(view.getByRole("button", { name: "Send follow-up" }));
     await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));

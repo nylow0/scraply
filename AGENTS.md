@@ -65,6 +65,7 @@ A change often works on the path you tested and breaks somewhere else. Before ca
 - `bun run test:ui` serves the real renderer on synthetic data at `http://127.0.0.1:5176`, with no providers. It is the fastest way to reach and screenshot UI states; the development guide lists its query parameters.
 - Agent hosts often export `ELECTRON_RUN_AS_NODE=1`, which breaks Electron. Unset it for `dev`, `build:installed`, and e2e runs.
 - Run throwaway Playwright scripts with `node`; they hang under `bun`.
+- To debug a run, write its trace with `bun scripts/trace.ts <session ID>` (see the development guide). The session ID is in the app's Run details.
 
 ## Verifying
 

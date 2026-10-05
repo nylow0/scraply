@@ -128,7 +128,6 @@
 <section class="frame-review" aria-label="Research frame review">
   <header>
     <h1>Review research frame</h1>
-    <p>Check the goal and where to look before research starts.</p>
     {#if usage}<p class="usage">Spent so far: {usage.modelCalls} model {usage.modelCalls === 1 ? "call" : "calls"}, {usage.searches} {usage.searches === 1 ? "search" : "searches"}</p>{/if}
   </header>
 
@@ -141,7 +140,6 @@
 
     <section class="review-section">
       <h2>Context facts</h2>
-      <p class="hint">Sourced background for the brief. Remove anything that does not belong.</p>
       {#each draft.contextFacts as fact, index (fact)}
         <div class="fact-row">
           <div><p>{fact.fact}</p><div class="citations">
@@ -158,7 +156,6 @@
 
     <section class="review-section">
       <h2>Success criteria</h2>
-      <p class="hint">Ideas will be checked against each criterion.</p>
       <div class="criteria">
         {#each draft.successCriteria as criterion, index (criterion.id)}
           <div class="criterion">
@@ -185,7 +182,6 @@
             {#if question.options.length > 0}<div class="answer-options">{#each question.options as option, index (index)}<button type="button" class="quiet" onclick={() => question.answer = option}>{option}</button>{/each}</div>{/if}
           </div>
         {/each}
-        <p class="hint">You can leave a question unanswered and continue.</p>
       </section>
     {/if}
 
@@ -204,7 +200,6 @@
     {#if purpose === "discovery"}
       <section class="review-section">
         <div class="section-heading"><h2>Areas and where people talk</h2><span class="hint">{includedCount} of {draft.areas.length} included</span></div>
-        <p class="hint">Include the areas to explore. Move the most relevant ones higher.</p>
         <div class="areas">
           {#each draft.areas as area, index (area.id)}
             <article class="area" class:excluded={!area.included}>
@@ -232,7 +227,7 @@
                     {/each}
                     <button type="button" class="quiet" disabled={area.venues.length >= 8} onclick={() => area.venues.push({ name: "", kind: "community" })}>Add venue</button>
                   </div>
-                  {#if area.exampleProblems.length > 0}<div class="hypotheses"><h3>Example problems to investigate</h3><p class="hint">These are hypotheses to check.</p><ul>{#each area.exampleProblems as problem, index (index)}<li>{problem}</li>{/each}</ul></div>{/if}
+                  {#if area.exampleProblems.length > 0}<div class="hypotheses"><h3>Example problems to investigate</h3><ul>{#each area.exampleProblems as problem, index (index)}<li>{problem}</li>{/each}</ul></div>{/if}
                 </div>
               </details>
             </article>
@@ -270,9 +265,9 @@
   .goal-kind { margin-top:14px;max-width:300px; }.hint { color:var(--muted);font-size:12px;line-height:1.6; }.fact-row { display:flex;gap:20px;align-items:flex-start;padding:14px 0;border-bottom:1px solid var(--border); }.fact-row:last-child { border-bottom:0; }.fact-row > div { flex:1;min-width:0; }.fact-row p { margin:0;max-width:76ch; }.citations { display:flex;gap:10px;flex-wrap:wrap;margin-top:7px;font-size:12px;color:var(--muted); }
   button.quiet { padding:8px 11px;border:1px solid var(--border-strong);border-radius:8px;background:var(--surface);color:var(--text);font-size:12px;white-space:nowrap; }.text-button { padding:0;border:0;background:transparent;color:var(--accent-strong);font-size:12px;text-align:left; }.quiet:hover:not(:disabled) { background:var(--surface-2); }button:disabled { opacity:.45;cursor:not-allowed; }
   .criteria { display:flex;flex-direction:column;gap:22px; }.criterion-heading { display:flex;gap:12px;align-items:flex-end;margin-bottom:12px; }.grow { flex:1; }.criterion-heading select { min-width:110px; }.remove-criterion { margin-bottom:2px; }.criterion > .hint { margin:8px 0 0; }
-  .questions > div + div { margin-top:22px; }.questions .hint { margin:8px 0; }.answer-options { display:flex;flex-wrap:wrap;gap:8px; }.questions > .hint:last-child { margin:16px 0 0; }
+  .questions > div + div { margin-top:22px; }.questions .hint { margin:8px 0; }.answer-options { display:flex;flex-wrap:wrap;gap:8px; }
   .languages { display:flex;flex-wrap:wrap;align-items:center;gap:9px; }.language-chip { display:inline-flex;gap:8px;align-items:center;padding:7px 11px;border:1px solid var(--border-strong);border-radius:999px;font-size:12px; }.code { color:var(--subtle); }.language-chip button { border:0;background:none;color:var(--muted);font-size:17px;line-height:1;padding:0 2px; }.language-input { width:60px; }.language-input input { padding:7px 10px; }
-  .section-heading { display:flex;justify-content:space-between;align-items:baseline;gap:12px; }.section-heading h2 { margin-bottom:14px; }.areas { display:flex;flex-direction:column;gap:12px; }.area { padding:16px 18px;border:1px solid var(--border);border-radius:12px;background:var(--surface); }.area.excluded { border-style:dashed; }.area.excluded .include > span { color:var(--subtle); }.area-heading { display:flex;justify-content:space-between;align-items:center;gap:10px; }.include { flex-direction:row;align-items:center;gap:10px; }.include input { width:15px;height:15px;accent-color:var(--accent); }.include > span { color:var(--text);font-size:14px;font-weight:550; }.area-order { display:flex;gap:6px; }.area-order button { padding:4px 9px;font-size:16px; }.area-summary { margin:10px 0 5px;font-size:13px; }.area > .hint { margin:0; }.area details { margin-top:14px; }.area summary { width:fit-content;color:var(--accent-strong);font-size:12px;cursor:pointer; }.area-fields { display:flex;flex-direction:column;gap:14px;margin-top:16px; }.venue { display:grid;grid-template-columns:1.1fr 1fr 1.2fr auto;gap:10px;align-items:end;margin:12px 0; }.venue .quiet { margin-bottom:2px; }.hypotheses .hint { margin:5px 0; }
+  .section-heading { display:flex;justify-content:space-between;align-items:baseline;gap:12px; }.section-heading h2 { margin-bottom:14px; }.areas { display:flex;flex-direction:column;gap:12px; }.area { padding:16px 18px;border:1px solid var(--border);border-radius:12px;background:var(--surface); }.area.excluded { border-style:dashed; }.area.excluded .include > span { color:var(--subtle); }.area-heading { display:flex;justify-content:space-between;align-items:center;gap:10px; }.include { flex-direction:row;align-items:center;gap:10px; }.include input { width:15px;height:15px;accent-color:var(--accent); }.include > span { color:var(--text);font-size:14px;font-weight:550; }.area-order { display:flex;gap:6px; }.area-order button { padding:4px 9px;font-size:16px; }.area-summary { margin:10px 0 5px;font-size:13px; }.area > .hint { margin:0; }.area details { margin-top:14px; }.area summary { width:fit-content;color:var(--accent-strong);font-size:12px;cursor:pointer; }.area-fields { display:flex;flex-direction:column;gap:14px;margin-top:16px; }.venue { display:grid;grid-template-columns:1.1fr 1fr 1.2fr auto;gap:10px;align-items:end;margin:12px 0; }.venue .quiet { margin-bottom:2px; }
   ul { padding-left:20px;margin:10px 0 0;list-style:disc;color:var(--muted);font-size:13px; }li + li { margin-top:6px; }.boundaries { display:flex;gap:32px; }.boundaries > div { flex:1; }
   footer { position:sticky;bottom:0;margin-top:10px;padding:18px 0;background:var(--bg);border-top:1px solid var(--border);z-index:1; }.footer-actions { display:flex;align-items:center;gap:12px;flex-wrap:wrap; }.primary { padding:11px 16px;border:1px solid transparent;border-radius:9px;background:var(--accent);color:var(--accent-ink);font-size:13px;font-weight:600; }.primary:hover:not(:disabled) { background:var(--accent-strong); }.error { color:var(--danger);margin:0 0 12px;font-size:13px; }footer > .hint { margin:9px 0 0; }.sr-only { position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap; }
   @media(max-width:760px) { .criterion-heading { flex-wrap:wrap; }.criterion-heading .grow { flex-basis:100%; }.venue { grid-template-columns:1fr 1fr; }.venue label:first-child { grid-column:1 / -1; }.venue .quiet { justify-self:start; }.boundaries { flex-direction:column;gap:24px; }.footer-actions { align-items:stretch; }.footer-actions .primary { width:100%; }.section-heading { align-items:flex-start; }.section-heading .hint { white-space:nowrap; } }

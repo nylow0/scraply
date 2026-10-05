@@ -1,20 +1,18 @@
 <script lang="ts">
   import Icon from "./Icon.svelte";
-  export type WorkflowStep = "setup" | "research" | "ideas" | "trace";
+  export type WorkflowStep = "setup" | "research" | "ideas";
 
   let {
     active,
     setupReady,
     researchReady,
     ideasReady,
-    traceReady = false,
     onSelect,
   }: {
     active: WorkflowStep;
     setupReady: boolean;
     researchReady: boolean;
     ideasReady: boolean;
-    traceReady?: boolean;
     onSelect: (step: WorkflowStep) => void;
   } = $props();
 
@@ -22,11 +20,10 @@
     { id: "setup", label: "Setup" },
     { id: "research", label: "Research" },
     { id: "ideas", label: "Solutions" },
-    { id: "trace", label: "Trace" },
   ];
 
   function ready(step: WorkflowStep): boolean {
-    return step === "setup" ? setupReady : step === "research" ? researchReady : step === "ideas" ? ideasReady : traceReady;
+    return step === "setup" ? setupReady : step === "research" ? researchReady : ideasReady;
   }
 
   function handleKeydown(event: KeyboardEvent, current: WorkflowStep) {

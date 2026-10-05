@@ -96,7 +96,7 @@ describe("ResearchRevisions", () => {
     expect(input.onApply).not.toHaveBeenCalled();
   });
 
-  test("describes a zero-search reevaluation as using saved research", async () => {
+  test("shows no source count for a zero-search reevaluation", async () => {
     const input = props([{
       id: "reevaluate-1", kind: "reevaluate", question: "Recheck the saved finding", status: "completed",
       targetFindingId: "old", previousFinding: previous, resultFindings: [proposed],
@@ -106,7 +106,6 @@ describe("ResearchRevisions", () => {
     }]);
     const view = render(ResearchRevisions, input);
     await fireEvent.click(view.getByRole("button", { name: /Recheck the saved finding/ }));
-    expect(view.getByText("Uses saved research; no new search.")).toBeTruthy();
     expect(view.queryByText("0 sources returned")).toBeNull();
     expect(view.queryByText("No saved sources were available")).toBeNull();
     expect(view.getByText("New report")).toBeTruthy();

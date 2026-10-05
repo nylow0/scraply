@@ -5,9 +5,8 @@ import App from "../../src/renderer/App.svelte";
 import { createScraplyApi } from "../../src/shared/scraply-api";
 import { AppSettingsSchema } from "../../src/shared/app-settings";
 import { DEFAULT_RUN_CONFIG, type Thread } from "../../src/shared/schemas";
-import { IPC_CHANNELS, RemoveSearchKeySchema, SaveScopeSchema, SaveRunConfigSchema, SaveSearchKeySchema, type WorkspaceState } from "../../src/shared/ipc";
+import { ExportIdeasRequestSchema, ExportResearchRequestSchema, GetIdeaDetailRequestSchema, IPC_CHANNELS, RemoveSearchKeySchema, SaveScopeSchema, SaveRunConfigSchema, SaveSearchKeySchema, SolutionViewSchema, type SolutionView, type WorkspaceState } from "../../src/shared/ipc";
 import { CommandWorkflowRequestSchema, PreviewWorkflowRequestSchema, StartWorkflowRequestSchema, type WorkflowDetail, type WorkflowAction, type WorkflowLaunchContract } from "../../src/shared/workflow-contracts";
-import { GetRunTraceRequestSchema, GetRunTraceStepRequestSchema, type RunTrace, type RunTraceStepDetail } from "../../src/shared/run-trace";
 import { ResearchFrameSchema } from "../../src/shared/research-frame";
 import { framedDiscoveryProjection } from "../../src/shared/discovery-projection";
 import { candidateAssessmentProjection } from "../../src/shared/evidence-investigators";
@@ -15,7 +14,8 @@ import { candidateAssessmentProjection } from "../../src/shared/evidence-investi
 // This standalone renderer has no Electron bridge or network provider. URL parameters
 // select deterministic UI scenarios without touching the user's projects or credentials.
 const params = new URLSearchParams(location.search);
-const fixtureHistory = { actions: [] as WorkflowAction[], launches: [] as WorkflowLaunchContract[] };
+const fixtureHistory = { actions: [] as WorkflowAction[], launches: [] as WorkflowLaunchContract[], detailReads: [] as string[],
+  exports: [] as Array<{ kind: "ideas" | "research"; threadId: string; format: "markdown" | "json"; files: Array<{ filename: string; content: string }> }> };
 const count = Math.min(200, Math.max(0, Number(params.get("history") ?? 18)));
 const active = Math.min(count - 1, Math.max(0, Number(params.get("active") ?? 0)));
 const now = "2026-09-23T12:00:00.000Z";
@@ -29,6 +29,9 @@ const noSearch = params.get("search") === "none";
 const connectedNative: WorkspaceState["validation"]["native"] = {
   available: true, connected: true, accounts: [{ providerId: "openai-subscription", email: "dany@example.test", plan: "pro" }],
 };
+// Listed out of display order, like an account catalog: the picker sorts latest models first and puts the rest under Legacy.
+const fixtureModels = ["gpt-6-sol", "gpt-6-luna", DEFAULT_RUN_CONFIG.model.modelId, "gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-luna"]
+  .map((modelId) => ({ providerId: "openai-subscription", modelId }));
 let state: WorkspaceState = {
   validation: {
     exa: noSearch ? { valid: false, error: "Exa key missing" }
@@ -38,8 +41,8 @@ let state: WorkspaceState = {
     setupComplete: !noSearch && params.get("account") !== "signed-out",
   },
   threads, activeThreadId: threads[active]?.id ?? null, messages: [], scope: null, runConfig: null,
-  models: [DEFAULT_RUN_CONFIG.model, { providerId: "openai-subscription", modelId: "gpt-6-astra" }],
-  modelOptions: [DEFAULT_RUN_CONFIG.model, { providerId: "openai-subscription", modelId: "gpt-6-astra" }].map((model) => ({
+  models: fixtureModels,
+  modelOptions: fixtureModels.map((model) => ({
     ...model, displayName: model.modelId, defaultReasoningEffort: "medium",
     reasoningEfforts: [{ id: "low", description: "Less reasoning" }, { id: "medium", description: "Balanced reasoning" }, { id: "high", description: "More reasoning" }],
   })),
@@ -62,6 +65,31 @@ if (params.has("unassessed") && state.activeThreadId) {
       unknowns: ["Workflow frequency"], intendedBuyerEvidenceFactorIds: [], evidenceGap: "Needs evidence assessment",
     },
   }));
+}
+
+const ideasScenario = params.get("ideas");
+if (ideasScenario && state.activeThreadId) {
+  state.runConfig = { ...DEFAULT_RUN_CONFIG, workflowVersion: 2, ideaCount: 5 };
+  state.scope = { title: "Saved idea counts", audience: "Shop owners", domain: "Parts purchasing", observations: "", offLimits: [] };
+  state.threads = state.threads.map((thread) => thread.id === state.activeThreadId ? { ...thread,
+    title: "Saved idea counts", status: ideasScenario === "zero" ? "problems-ready" : "solutions-ready" } : thread);
+  const groups = ideasScenario === "zero"
+    ? [{ problemId: "empty", statement: "Shops repeat purchase approvals", requested: 3, returned: 0 }]
+    : [{ problemId: "complete", statement: "Suppliers hide delivery changes", requested: 3, returned: 3 },
+      ...(ideasScenario === "complete" ? [] : [
+        { problemId: "short", statement: "Shops repeat purchase approvals", requested: 3, returned: 2 },
+        { problemId: "empty", statement: "Owners cannot compare warranty delays", requested: 3, returned: 0 },
+      ])];
+  state.ideaGroups = groups.map((group) => ({ runId: `idea-run-${group.problemId}`, problemId: group.problemId,
+    problemStatement: group.statement, requestedIdeaCount: group.requested, returnedIdeaCount: group.returned }));
+  state.solutions = groups.flatMap((group) => Array.from({ length: group.returned }, (_, index) => ({
+    id: `${group.problemId}-idea-${index + 1}`, problemId: group.problemId, problemStatement: group.statement,
+    problemVerdict: "confirmed" as const, runId: `idea-run-${group.problemId}`, workflowVersion: 2 as const,
+    detailsLoaded: true, rank: index + 1, rankReason: "The saved ranker's order.", weakFitReason: null,
+    mechanism: "Compare saved approval records.", description: `${group.problemId === "complete" ? "Delivery" : "Approval"} idea ${index + 1}: compare saved records and flag changes.`,
+    factors: [], outcomes: [], risks: [], respectsOffLimits: true, respectsOffLimitsWhy: "Within the project boundaries.",
+    confirmedCoreOutcomes: 0, unaddressedCatastrophicRisks: 0,
+  })));
 }
 
 const guidedProgress: WorkflowDetail | null = params.get("progress") === "guided" && state.activeThreadId ? {
@@ -122,6 +150,7 @@ if (guidedProgress) {
 
 const knownProblemFrame = params.get("known") === "1";
 const frameScenario = params.get("frame");
+const duplicateInvestigator = params.get("duplicate") === "1";
 const frameDraft = ResearchFrameSchema.parse({
   version: 1,
   goal: knownProblemFrame ? "Reduce missed deposits in one independent bakery." : "Find a useful workflow for freelance bookkeepers.",
@@ -155,7 +184,7 @@ const frameWorkflow: WorkflowDetail | null = frameScenario && state.activeThread
     sources: knownProblemFrame && noSearch ? [] : [{ id: "frame-source-1", title: "Bank-feed matching documentation", url: "https://example.org/matching", text: "Matching rules compare incoming bank descriptions." }], createdAt: now, approvedAt: frameScenario === "review" ? null : now },
   tasks: frameScenario === "investigators" ? [
     { id: "investigator-bank", parentItemId: null, kind: "investigate-area", scopeKey: "investigate-area:bank", state: "running", createdAt: now, finishedAt: null, investigator: { areaId: "bank", areaName: "Bank-feed matching", currentStep: "Checking a second independent account", confirmedCount: 1, insufficientCount: 2, droppedCount: 0 } },
-    { id: "investigator-documents", parentItemId: null, kind: "investigate-area", scopeKey: "investigate-area:documents", state: "ready", createdAt: now, finishedAt: null, investigator: { areaId: "documents", areaName: "Client document chasing", currentStep: null, confirmedCount: null, insufficientCount: null, droppedCount: null } },
+    { id: duplicateInvestigator ? "investigator-bank-followup" : "investigator-documents", parentItemId: null, kind: "investigate-area", scopeKey: duplicateInvestigator ? "investigate-area:bank:followup" : "investigate-area:documents", state: "ready", createdAt: now, finishedAt: null, investigator: { areaId: duplicateInvestigator ? "bank" : "documents", areaName: duplicateInvestigator ? "Bank-feed matching" : "Client document chasing", currentStep: null, confirmedCount: null, insufficientCount: null, droppedCount: null } },
   ] : [{ id: "fixture-prepare-frame", parentItemId: null, kind: "prepare-frame", scopeKey: "frame", state: "succeeded", createdAt: now, finishedAt: now }],
   nextCursor: null,
 } : null;
@@ -168,88 +197,48 @@ if (frameWorkflow) {
 }
 
 let progressReads = 0;
-const traceFixture: RunTrace | null = params.has("trace") && state.activeThreadId ? {
-  runId: "fixture-trace", threadId: state.activeThreadId, sessionId: guidedProgress?.summary.sessionId ?? null,
-  status: params.get("trace") === "live" ? "running" : "completed", purpose: "discovery", startedAt: now,
-  finishedAt: params.get("trace") === "live" ? null : "2026-09-23T12:08:00.000Z", live: params.get("trace") === "live",
-  warnings: ["Older searches are linked from their saved query and parameters. Missing usage remains unknown."], investigators: [],
-  metrics: {
-    factors: 8, totalSources: 5, evidenceMix: { firsthand: 2, vendor: 6 }, audienceFit: { "intended-buyer": 2, general: 6 },
-    sourceMix: { forum: 2, vendor: 3 }, qualifyingObservations: 2, qualifyingPerAssessedCandidate: 1,
-    candidateFunnel: { total: 5, assessed: 2, confirmed: 1, insufficient: 1, dropped: 1, notAssessed: 2, userAsserted: 0 },
-    confirmationRate: 0.5, coverage: { kind: "phases", groups: [{ id: "domain", factors: 4, problems: 2, confirmed: 0 }, { id: "audience", factors: 4, problems: 3, confirmed: 1 }] },
-    modelCalls: 4, searches: 1, wallTimeMs: 480_000, modelTimeMs: 581_000, interruptionTimeMs: 45_000, interruptions: 1, ideas: 3, acceptedIdeas: 1, acceptedIdeasFailingMustHave: 0,
-  },
-  steps: [
-    { id: "fixture-search", kind: "search", stage: "search", label: "Search for deposit problems", phase: "audience", status: "completed", startedAt: now, finishedAt: "2026-09-23T12:00:06.000Z", durationMs: 6_000, attempts: [], prompt: null,
-      search: { key: "fixture-search-key", query: "bakery custom orders deposit delays", intent: "complaints", reason: "Find firsthand accounts of missed deposits and lost custom orders.", expectedSourceType: "community", provider: "exa", route: null, parameters: { query: "bakery custom orders deposit delays", numResults: 5 }, status: "completed",
-        results: [{ sourceId: "fixture-source-1", title: "Keeping track of custom orders", url: "https://example.test/community/custom-orders", sourceClass: "forum", factsKept: 2 }, { sourceId: "fixture-source-2", title: "Bakery order management", url: "https://example.test/vendor/orders", sourceClass: "vendor", factsKept: 6 }] } },
-    { id: "fixture-reading", kind: "model", stage: "factor-harvest", label: "Read source observations", phase: "audience", status: "succeeded", startedAt: "2026-09-23T12:00:07.000Z", finishedAt: "2026-09-23T12:04:42.000Z", durationMs: 275_000,
-      prompt: { filename: "workflow-v2-factor-harvest.md", source: "bundled", sha256: "8b6cbf64fe4e172df675659b7c3ad28e9e3d42384658a8a9e5a98372b7357736" }, search: null,
-      attempts: [{ id: "fixture-attempt-1", status: "interrupted", model: "gpt-6-luna", effort: "high", provider: "openai-subscription", startedAt: "2026-09-23T12:00:07.000Z", finishedAt: "2026-09-23T12:00:52.000Z", durationMs: 45_000, inputTokens: null, outputTokens: null, reasoningTokens: null, costUsd: null, errorCode: "UNKNOWN_COMPLETION", message: "The application restarted before completion was saved. The user explicitly retried this step.", reasoningSummary: null },
-        { id: "fixture-attempt-2", status: "succeeded", model: "gpt-6-luna", effort: "high", provider: "openai-subscription", startedAt: "2026-09-23T12:00:53.000Z", finishedAt: "2026-09-23T12:04:42.000Z", durationMs: 229_000, inputTokens: 12_450, outputTokens: 2_080, reasoningTokens: 680, costUsd: null, errorCode: null, message: null, reasoningSummary: "Checked who described each problem and kept the source's own wording." }] },
-    { id: "fixture-verdict", kind: "model", stage: "problem-verdict", label: "Assess deposit friction", phase: "audience", status: "succeeded", startedAt: "2026-09-23T12:04:43.000Z", finishedAt: "2026-09-23T12:06:00.000Z", durationMs: 77_000,
-      prompt: { filename: "workflow-v2-problem-kill.md", source: "overridden", sha256: "6c94a4ee39e2c5a67cb8dc0da3be5e055b7ee5a8fa20baef7be0b276fbc73d79" }, search: null, attempts: [] },
-  ],
-  candidates: [
-    { id: "fixture-candidate-1", statement: "Bakery owners lose custom orders when deposits arrive late", state: "confirmed", reason: "Two firsthand accounts describe the same order and deposit failure.", derived: false, factorIds: ["fixture-fact-1", "fixture-fact-2"], qualifyingObservations: 2, independentSources: 2,
-      assessments: [{ factorId: "fixture-fact-1", sourceRole: "firsthand", audienceFit: "intended-buyer", independentSourceKey: "bakery-owner-1", reason: "The owner describes their own missed order." }], candidate: { contraryEvidence: { summary: "Small order volumes can be managed with a shared sheet." } } },
-    { id: "fixture-candidate-2", statement: "Existing order tools fail to support every local payment method", state: "insufficient", reason: "Only a vendor claim was saved. No affected buyer described this limitation.", derived: false, factorIds: ["fixture-fact-3"], qualifyingObservations: 0, independentSources: 0, assessments: [], candidate: null },
-    { id: "fixture-candidate-3", statement: "Automatic reminders would prevent every missed deposit", state: "dropped", reason: "The source supports late deposits, but not the proposed cause.", derived: true, factorIds: [], qualifyingObservations: 0, independentSources: 0, assessments: [], candidate: null },
-    { id: "fixture-candidate-4", statement: "Staff re-enter custom orders from messages", state: "not-assessed", reason: "No saved verdict was found for this candidate.", derived: true, factorIds: [], qualifyingObservations: 0, independentSources: 0, assessments: [], candidate: null },
-    { id: "fixture-candidate-5", statement: "Customers ask for deposits to be split across payments", state: "not-assessed", reason: "No saved verdict was found for this candidate.", derived: true, factorIds: [], qualifyingObservations: 0, independentSources: 0, assessments: [], candidate: null },
-  ],
-} : null;
-if (traceFixture) {
-  const reading = traceFixture.steps.find((step) => step.id === "fixture-reading");
-  if (reading) {
-    traceFixture.steps.push({ ...reading, id: "fixture-reading-b", label: "Read payment tracking observations", phase: "payment-tracking",
-      attempts: reading.attempts.filter((attempt) => attempt.status === "succeeded").map((attempt) => ({ ...attempt, id: `${attempt.id}-b` })) });
-    traceFixture.investigators = [
-      { id: "fixture-area-a", name: "Custom order deposits", state: traceFixture.live ? "researching" : "succeeded", stepIds: ["fixture-reading", "fixture-verdict"] },
-      { id: "fixture-area-b", name: "Payment tracking", state: traceFixture.live ? "researching" : "succeeded", stepIds: ["fixture-reading-b"] },
-    ];
-  }
-  state.latestResearchRun = { runId: traceFixture.runId, status: traceFixture.live ? "running" : "completed", problemId: null,
-    codexCalls: traceFixture.metrics.modelCalls, searches: traceFixture.metrics.searches, projectedCodexCalls: 4, projectedSearches: 1, lastActivity: "Saved trace fixture", workflowVersion: 2 };
-  if (params.get("trace") === "empty") {
-    traceFixture.steps = []; traceFixture.candidates = []; traceFixture.warnings = []; traceFixture.investigators = [];
-    traceFixture.metrics = { ...traceFixture.metrics, factors: 0, totalSources: 0, evidenceMix: {}, audienceFit: {}, sourceMix: {}, qualifyingObservations: 0,
-      qualifyingPerAssessedCandidate: null, confirmationRate: null, candidateFunnel: { total: 0, assessed: 0, confirmed: 0, insufficient: 0, dropped: 0, notAssessed: 0, userAsserted: 0 },
-      coverage: { kind: "phases", groups: [] }, modelCalls: 0, searches: 0, wallTimeMs: 0, modelTimeMs: 0, interruptionTimeMs: 0, interruptions: 0, ideas: 0, acceptedIdeas: 0, acceptedIdeasFailingMustHave: null };
-  }
-}
-
-function traceStepDetail(stepId: string): RunTraceStepDetail {
-  const step = traceFixture?.steps.find((item) => item.id === stepId);
-  if (!traceFixture || !step) throw new Error("No saved step exists in this trace fixture.");
-  return {
-    runId: traceFixture.runId, step, inputs: { scope: { audience: "Independent bakery owners", domain: "Custom orders and deposits" } },
-    output: step.kind === "search" ? { results: step.search?.results } : { factsKept: 8 }, evidence: [],
-    searches: step.search ? [step.search] : [], candidates: step.id === "fixture-verdict" ? traceFixture.candidates.slice(0, 2) : [],
-    facts: step.id.startsWith("fixture-reading") ? [
-      { id: "fixture-fact-1", sourceId: "fixture-source-1", subject: "Bakery owner", behavior: "Lost a custom order after waiting for a deposit", quote: "I kept the order in messages, and by the time they paid the deposit I had filled that weekend.", sourceRole: "firsthand", audienceFit: "intended-buyer", kept: true, reason: "The affected owner describes an actual missed order." },
-      { id: null, sourceId: "fixture-source-2", subject: "Order management vendor", behavior: "Claims reminders remove deposit delays", quote: "Never lose another custom order with automated reminders.", sourceRole: "vendor", audienceFit: "general", kept: false, reason: "This claim does not describe a saved customer's experience." },
-    ] : [],
-    events: step.id === "fixture-reading" ? [{ type: "interrupted", createdAt: "2026-09-23T12:00:52.000Z", payload: { message: "Application restart left provider completion unknown." } }] : [],
-  };
-}
-
 let advancedSettings = AppSettingsSchema.parse({});
 const fixtureApi = createScraplyApi({
   async invoke<T>(channel: string, payload?: unknown): Promise<T> {
     let result: unknown;
     switch (channel) {
       case IPC_CHANNELS.GET_WORKSPACE: result = state; break;
-      case IPC_CHANNELS.GET_RUN_TRACE: {
-        const request = GetRunTraceRequestSchema.parse(payload);
-        if (!traceFixture || request.runId !== traceFixture.runId) throw new Error("No trace fixture is selected. Add ?trace=1 to the URL.");
-        result = { ok: true, data: traceFixture }; break;
+      case IPC_CHANNELS.GET_IDEA_DETAIL: {
+        const { ideaId } = GetIdeaDetailRequestSchema.parse(payload);
+        const idea = state.solutions.find((saved) => saved.id === ideaId);
+        if (!idea) throw new Error("Idea not found in the offline fixture.");
+        fixtureHistory.detailReads.push(ideaId);
+        result = SolutionViewSchema.parse({ ...idea, detailsLoaded: true });
+        break;
       }
-      case IPC_CHANNELS.GET_RUN_TRACE_STEP: {
-        const request = GetRunTraceStepRequestSchema.parse(payload);
-        if (request.runId !== traceFixture?.runId) throw new Error("No saved trace exists for this run.");
-        result = { ok: true, data: traceStepDetail(request.stepId) }; break;
+      case IPC_CHANNELS.EXPORT_IDEAS: {
+        const { threadId, format } = ExportIdeasRequestSchema.parse(payload);
+        if (threadId !== state.activeThreadId) throw new Error("Select the fixture project before exporting.");
+        const groups = new Map<string, SolutionView[]>();
+        for (const idea of state.solutions) groups.set(idea.problemId, [...(groups.get(idea.problemId) ?? []), idea]);
+        for (const group of state.ideaGroups ?? []) if (group.returnedIdeaCount === 0 && !groups.has(group.problemId)) groups.set(group.problemId, []);
+        const files = [...groups].map(([problemId, ideas]) => {
+          const saved = state.ideaGroups?.find((group) => group.problemId === problemId);
+          const ordered = [...ideas].sort((a, b) => (a.rank ?? Infinity) - (b.rank ?? Infinity));
+          const statement = ordered[0]?.problemStatement ?? saved?.problemStatement ?? problemId;
+          const content = format === "json" ? JSON.stringify(ordered.length ? ordered : {
+            kind: "no-options", status: "completed", workflowVersion: 2, runId: saved?.runId, problemId, problemStatement: statement, options: [],
+          }, null, 2) : `# ${statement}\n\n${ordered.length ? ordered.map((idea) => `## ${idea.description}\n\n${idea.mechanism}`).join("\n\n") : "No ideas were returned."}\n`;
+          return { filename: `${problemId}.${format === "json" ? "json" : "md"}`, content };
+        });
+        fixtureHistory.exports.push({ kind: "ideas", threadId, format, files });
+        result = { cancelled: false, directory: "offline-fixture-exports", files: files.map((file) => file.filename) };
+        break;
+      }
+      case IPC_CHANNELS.EXPORT_RESEARCH: {
+        const { threadId } = ExportResearchRequestSchema.parse(payload);
+        if (threadId !== state.activeThreadId) throw new Error("Select the fixture project before exporting.");
+        const filename = "fixture-research.json";
+        const content = JSON.stringify({ problems: state.problemCandidates, rejectedCandidates: state.rejectedProblemCandidates,
+          researchFindings: state.researchFindings }, null, 2);
+        fixtureHistory.exports.push({ kind: "research", threadId, format: "json", files: [{ filename, content }] });
+        result = { cancelled: false, file: `offline-fixture-exports/${filename}` };
+        break;
       }
       case IPC_CHANNELS.GET_ADVANCED_SETTINGS: result = advancedSettings; break;
       case IPC_CHANNELS.SAVE_ADVANCED_SETTINGS: advancedSettings = AppSettingsSchema.parse(payload); result = advancedSettings; break;
@@ -282,8 +271,13 @@ const fixtureApi = createScraplyApi({
             frameWorkflow.summary.outcome = "cancelled";
             frameWorkflow.summary.finishedAt = now;
             frameWorkflow.summary.stopReason = request.action.reason ?? "Stopped by you.";
-          } else if (request.action.type === "pause") frameWorkflow.summary.state = "paused";
-          else if (request.action.type === "resume") frameWorkflow.summary.state = "running";
+          } else if (request.action.type === "pause") {
+            frameWorkflow.summary.state = "paused";
+            if (duplicateInvestigator) frameWorkflow.tasks.reverse();
+          } else if (request.action.type === "resume") {
+            frameWorkflow.summary.state = "running";
+            if (duplicateInvestigator) frameWorkflow.tasks.reverse();
+          }
           else if (request.action.type === "assess-not-assessed") {
             frameWorkflow.summary.state = "running";
             frameWorkflow.summary.currentStage = "candidate-assessment";
@@ -312,13 +306,17 @@ const fixtureApi = createScraplyApi({
         break;
       }
       case IPC_CHANNELS.GET_WORKFLOW:
-        if (frameWorkflow && params.has("live") && ++progressReads >= 2 && frameWorkflow.tasks[0]?.investigator) {
-          frameWorkflow.tasks[0].state = "succeeded";
-          frameWorkflow.tasks[0].investigator.currentStep = "Evidence checks finished";
-          frameWorkflow.tasks[0].investigator.confirmedCount = 2;
-          frameWorkflow.tasks[0].investigator.insufficientCount = 0;
-          frameWorkflow.tasks[0].investigator.droppedCount = 1;
-          const next = frameWorkflow.tasks[1];
+        if (frameWorkflow && frameWorkflow.summary.state === "running" && params.has("live") && ++progressReads >= 2) {
+          const first = frameWorkflow.tasks.find((task) => task.id === "investigator-bank");
+          if (first?.investigator) {
+            first.state = "succeeded";
+            first.finishedAt = now;
+            first.investigator.currentStep = "Evidence checks finished";
+            first.investigator.confirmedCount = 2;
+            first.investigator.insufficientCount = 0;
+            first.investigator.droppedCount = 1;
+          }
+          const next = frameWorkflow.tasks.find((task) => task.id === (duplicateInvestigator ? "investigator-bank-followup" : "investigator-documents"));
           if (next?.investigator) { next.state = "running"; next.investigator.currentStep = "Reading firsthand sources"; next.investigator.confirmedCount = 0; next.investigator.insufficientCount = 1; next.investigator.droppedCount = 0; }
         }
         if (guidedProgress && params.has("live") && ++progressReads === 2) {

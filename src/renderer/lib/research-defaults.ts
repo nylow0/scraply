@@ -28,6 +28,11 @@ export function readResearchDefaults(): ResearchDefaults {
   return ResearchDefaultsSchema.parse({ model: { ...DEFAULT_RUN_CONFIG.model }, searchProvider: DEFAULT_RUN_CONFIG.searchProvider });
 }
 
+/** False until the user saves defaults in Settings; a new project then starts on the first latest model offered. */
+export function hasSavedResearchDefaults(): boolean {
+  try { return localStorage.getItem(storageKey) !== null; } catch { return false; }
+}
+
 export function saveResearchDefaults(defaults: ResearchDefaults): void {
   localStorage.setItem(storageKey, JSON.stringify(ResearchDefaultsSchema.parse(defaults)));
 }

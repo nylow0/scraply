@@ -62,9 +62,6 @@
         {:else}
           <div class="no-evidence">
             <strong>{idea.problemVerdict === "user-asserted" ? "User-asserted problem" : "No source-backed evidence"}</strong>
-            <p>{idea.problemVerdict === "user-asserted"
-              ? "This problem was stated directly. Discovery did not gather source-backed factors for it."
-              : "No source-backed factors are attached to this idea."}</p>
           </div>
         {/each}
       </div>
@@ -382,8 +379,7 @@
   }
 
   .evidence-item p,
-  .evidence-item blockquote,
-  .no-evidence p {
+  .evidence-item blockquote {
     margin: 0;
   }
 
@@ -408,10 +404,6 @@
     color: var(--accent-strong);
   }
 
-  .no-evidence p {
-    margin-top: 6px;
-    color: var(--muted);
-  }
 
   .nested-item > summary {
     display: grid;

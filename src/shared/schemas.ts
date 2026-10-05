@@ -33,6 +33,8 @@ export const HISTORICAL_CODEX_CLI_PROVIDER_ID = "legacy-codex-cli";
 export const OPENAI_SUBSCRIPTION_PROVIDER_ID = "openai-subscription";
 export const MAX_IDEA_COUNT = 20;
 export const DEFAULT_IDEA_COUNT = 3;
+/** One writer call makes all of a problem's ideas in ranked runs, so new runs ask for at most this many. */
+export const MAX_IDEAS_PER_PROBLEM = 5;
 export const IdeaCountSchema = z.number().int().min(1).max(MAX_IDEA_COUNT);
 
 const RunConfigInputSchema = z.object({
@@ -83,7 +85,7 @@ export const DEFAULT_RUN_CONFIG = {
   configVersion: 2,
   workflowVersion: 2,
   ideaCount: DEFAULT_IDEA_COUNT,
-  model: { providerId: OPENAI_SUBSCRIPTION_PROVIDER_ID, modelId: "gpt-6-sol" },
+  model: { providerId: OPENAI_SUBSCRIPTION_PROVIDER_ID, modelId: "gpt-6.1-sol" },
   reasoningEffort: "medium",
   discoveryDepth: "standard",
   maxRunMinutes: 90,

@@ -3,7 +3,7 @@
   import {
     DEFAULT_RUN_CONFIG,
     DEFAULT_IDEA_COUNT,
-    MAX_IDEA_COUNT,
+    MAX_IDEAS_PER_PROBLEM,
     modelRefKey,
     sameModelRef,
     type ModelRef,
@@ -11,15 +11,11 @@
     type ResearchMode,
   } from "../../shared/schemas";
   import type { SearchProviderChoice } from "../../providers/search";
-  import {
-    DEFAULT_OPPORTUNITY_EXPLORATION_CONFIG,
-    type OpportunityExplorationConfig,
-  } from "../../shared/opportunity-exploration";
   import { tick, untrack } from "svelte";
-  import { modelDisplayName, readResearchDefaults } from "../lib/research-defaults";
-  import { DISCOVERY_DEPTHS, framedDiscoveryProjection } from "../../shared/discovery-projection";
-  import { RESEARCH_TARGETS } from "../../shared/evidence-investigators";
-  import { allocateIdeaTargets } from "../../core/opportunity-planning";
+  import { hasSavedResearchDefaults, modelDisplayName, readResearchDefaults } from "../lib/research-defaults";
+  import { preferredModel } from "../../shared/latest-models";
+  import ModelPicker from "./ModelPicker.svelte";
+  import { framedDiscoveryProjection } from "../../shared/discovery-projection";
   import type { WorkflowLaunchDraft } from "../../shared/workflow-contracts";
   import type { z } from "zod";
   import { PreviewWorkflowResultSchema } from "../../shared/workflow-contracts";
@@ -44,19 +40,15 @@
 
   const initial = untrack(() => workspace);
   const defaults = untrack(readResearchDefaults);
-  const startingModel = initial.scope ? initial.runConfig?.model : defaults.model;
+  // A saved project keeps its model, and a new one starts on the default saved in Settings. With neither,
+  // it starts on the first latest model the account offers (GPT-6.1 Sol when available).
+  const startingModel = initial.scope ? initial.runConfig?.model
+    : untrack(hasSavedResearchDefaults) ? defaults.model
+    : preferredModel(initial.modelOptions.filter((item) => item.providerId === "openai-subscription")) ?? defaults.model;
   let researchMode = $state<ResearchMode>(initial.runConfig?.researchMode ?? "explore-market");
-  const initialOpportunityExploration = initial.runConfig?.opportunityExploration;
-  let opportunityTargetEnabled = $state(Boolean(initialOpportunityExploration));
-  let businessTargetOpen = $state(Boolean(initialOpportunityExploration));
   let purposeOverride = $state<ExplorationPurpose | null>(null);
-  let explorationPurpose = $derived<ExplorationPurpose>(opportunityTargetEnabled
-    ? "startup-opportunities" : purposeOverride ?? initial.runConfig?.explorationPurpose ?? "auto");
-  let targetFamilies = $state(initialOpportunityExploration?.targetFamilies ?? DEFAULT_OPPORTUNITY_EXPLORATION_CONFIG.targetFamilies);
-  let batchSize = $state(initialOpportunityExploration?.batchSize ?? DEFAULT_OPPORTUNITY_EXPLORATION_CONFIG.batchSize);
-  let maxModelCalls = $state(initialOpportunityExploration?.maxModelCalls ?? DEFAULT_OPPORTUNITY_EXPLORATION_CONFIG.maxModelCalls);
-  let maxSearches = $state(initialOpportunityExploration?.maxSearches ?? DEFAULT_OPPORTUNITY_EXPLORATION_CONFIG.maxSearches);
-  let allowExploratoryProblems = $state(initialOpportunityExploration?.allowExploratoryProblems ?? false);
+  // New runs always target x ideas per problem. A saved project keeps its purpose until the user follows the brief instead.
+  let explorationPurpose = $derived<ExplorationPurpose>(purposeOverride ?? initial.runConfig?.explorationPurpose ?? "auto");
   const workflowVersion = 2;
   let title = $state(initial.scope?.title ?? "");
   let audience = $state(initial.scope?.audience ?? "");
@@ -73,22 +65,22 @@
       : initial.modelOptions.find((item) => item.providerId === "openai-subscription") ?? DEFAULT_RUN_CONFIG.model);
   let modelKey = $state(legacyModelNeedsReplacement ? "" : modelRefKey(initialModel));
   let nativeModelOptions = $derived(workspace.modelOptions.filter((item) => item.providerId === "openai-subscription"));
-  const gpt6Models = ["gpt-6-astra", "gpt-6-sol", "gpt-6-luna"] as const;
   let selectedModelOption = $derived(nativeModelOptions.find((item) => modelRefKey(item) === modelKey));
   let selectedModelRef = $state<ModelRef>(initialModel);
   let resolvedModel = $derived(selectedModelOption ?? selectedModelRef);
   let model = $derived<ModelRef>({ providerId: resolvedModel.providerId, modelId: resolvedModel.modelId });
   let initialModelOption = initial.modelOptions.find((item) => sameModelRef(item, initialModel));
-  let modelSelect: HTMLSelectElement;
   let reasoningEffort = $state((initial.scope ? initial.runConfig?.reasoningEffort : defaults.reasoningEffort)
     ?? initialModelOption?.defaultReasoningEffort
     ?? "");
   let discoveryDepth = $state(initial.scope ? initial.runConfig?.discoveryDepth ?? DEFAULT_RUN_CONFIG.discoveryDepth : defaults.discoveryDepth);
   let searchProvider = $state<SearchProviderChoice>(initial.scope ? initial.runConfig?.searchProvider ?? defaults.searchProvider : defaults.searchProvider);
   let searchProviderTouched = $state(false);
+  // A provider saved in Settings stays chosen while it is connected. Without one, a new project uses both when it can.
+  const savedSearchProvider = untrack(hasSavedResearchDefaults);
   $effect(() => {
     if (initial.scope || searchProviderTouched) return;
-    if (workspace.validation.exa.valid && workspace.validation.perplexity.valid) { searchProvider = "auto"; return; }
+    if (!savedSearchProvider && workspace.validation.exa.valid && workspace.validation.perplexity.valid) { searchProvider = "auto"; return; }
     if (searchProvider === "auto" || workspace.validation[searchProvider].valid) return;
     const available = searchProvider === "exa" ? "perplexity" : "exa";
     if (workspace.validation[available].valid) searchProvider = available;
@@ -119,33 +111,6 @@
     ? { modelCalls: 2, searches: 0 }
     : { modelCalls: framedDiscoveryProjection(discoveryDepth, frameLanguages?.length ?? 3).modelCalls * 2,
       searches: framedDiscoveryProjection(discoveryDepth, frameLanguages?.length ?? 3).searches });
-  let projectTargetEnabled = $derived(opportunityTargetEnabled);
-  let projectInitialBatchCalls = $derived.by(() => {
-    if (!projectTargetEnabled || !Number.isInteger(targetFamilies) || targetFamilies < 2 || targetFamilies > 30) return 0;
-    const possibleProblems = researchMode === "known-problem" ? 1
-      : workflowMode === "vibe" ? automaticProblemCap ?? RESEARCH_TARGETS[discoveryDepth].confirmedProblems : 1;
-    if (!Number.isInteger(possibleProblems) || possibleProblems < 1 || possibleProblems > 20) return 0;
-    return Math.max(...Array.from({ length: possibleProblems }, (_, index) => {
-      const problemIds = Array.from({ length: index + 1 }, (_, problem) => `preview-problem-${problem}`);
-      return allocateIdeaTargets({ problemIds, target: targetFamilies, maxPerProblem: 20 }).allocations
-        .reduce((count, allocation) => count + Math.ceil(allocation.quota / 5), 0);
-    })) * 4;
-  });
-  let opportunityExploration = $derived<OpportunityExplorationConfig | undefined>(projectTargetEnabled
-    ? {
-        targetFamilies,
-        batchSize,
-        maxExpansionRounds: 2,
-        maxRawCandidates: Math.min(60, targetFamilies * 2),
-        maxModelCalls: useWorkflow
-          ? Math.min(40, Math.max(1, Number.isFinite(workflowModelLimit) ? workflowModelLimit - discoveryReservation.modelCalls : 1))
-          : maxModelCalls,
-        maxSearches: useWorkflow
-          ? Math.min(20, Math.max(0, Number.isFinite(workflowSearchLimit) ? workflowSearchLimit - discoveryReservation.searches : 0))
-          : maxSearches,
-        allowExploratoryProblems,
-      }
-    : undefined);
   let researchInstruction = $state("");
   let ideasInstruction = $state("");
   let reviewInstruction = $state("");
@@ -161,7 +126,7 @@
     researchMode, title: title.trim(), audience: audience.trim(), domain: domain.trim(), observations: observations.trim(),
     offLimits: offLimits.split("\n").map((item) => item.trim()).filter(Boolean), knownProblem: knownProblem.trim(),
     model, reasoningEffort, discoveryDepth, searchProvider, maxRunMinutes, workflowVersion, explorationPurpose,
-    riskEvaluationCriteria: riskEvaluationCriteria.trim(), ideaCount, opportunityExploration,
+    riskEvaluationCriteria: riskEvaluationCriteria.trim(), ideaCount,
   }));
   // An unavailable saved model remains selected, but it cannot start a new run.
   let savedFingerprint = $state<string | null>(untrack(() => initial.scope
@@ -211,10 +176,8 @@
   });
 
   $effect(() => {
-    if (!workflowModelLimitTouched) workflowModelLimit = discoveryReservation.modelCalls
-      + (projectTargetEnabled ? Math.max(DEFAULT_OPPORTUNITY_EXPLORATION_CONFIG.maxModelCalls, projectInitialBatchCalls) : 12);
-    if (!workflowSearchLimitTouched) workflowSearchLimit = discoveryReservation.searches
-      + (projectTargetEnabled ? DEFAULT_OPPORTUNITY_EXPLORATION_CONFIG.maxSearches : researchMode === "known-problem" ? 0 : 2);
+    if (!workflowModelLimitTouched) workflowModelLimit = discoveryReservation.modelCalls + 12;
+    if (!workflowSearchLimitTouched) workflowSearchLimit = discoveryReservation.searches + (researchMode === "known-problem" ? 0 : 2);
   });
 
   $effect(() => {
@@ -243,14 +206,14 @@
     return () => clearTimeout(timer);
   });
 
-  function selectModel(event: Event) {
-    const selected = workspace.modelOptions.find((item) => modelRefKey(item) === (event.currentTarget as HTMLSelectElement).value);
+  function selectModel(key: string) {
+    const selected = workspace.modelOptions.find((item) => modelRefKey(item) === key);
     if (selected) selectedModelRef = { providerId: selected.providerId, modelId: selected.modelId };
     reasoningEffort = selected?.defaultReasoningEffort ?? DEFAULT_RUN_CONFIG.reasoningEffort;
   }
 
-  function selectIdeaModel(event: Event) {
-    const selected = workspace.modelOptions.find((item) => modelRefKey(item) === (event.currentTarget as HTMLSelectElement).value);
+  function selectIdeaModel(key: string) {
+    const selected = workspace.modelOptions.find((item) => modelRefKey(item) === key);
     if (selected) selectedIdeasModelRef = { providerId: selected.providerId, modelId: selected.modelId };
     ideaReasoningEffort = selected?.defaultReasoningEffort ?? DEFAULT_RUN_CONFIG.reasoningEffort;
   }
@@ -266,7 +229,6 @@
       configVersion: 2, workflowVersion, ideaCount: ideaCount ?? DEFAULT_IDEA_COUNT,
       model, reasoningEffort, discoveryDepth, searchProvider, maxRunMinutes,
       researchMode, knownProblem: knownProblem.trim(), explorationPurpose,
-      ...(opportunityExploration ? { opportunityExploration } : {}),
     };
     return {
       contractVersion: 1, frameWorkflowVersion: 1, purpose: researchMode === "known-problem" ? "known-problem" : "discovery",
@@ -274,9 +236,8 @@
       ...(workflowMode === "vibe" ? { ideas: { model: ideaModel, reasoningEffort: ideaReasoningEffort,
         reviewModel: ideaModel, reviewReasoningEffort: ideaReasoningEffort } } : {}),
       targets: {
-        kind: opportunityExploration ? "project" : "per-problem",
+        kind: "per-problem",
         ideaCount: ideaCount ?? DEFAULT_IDEA_COUNT,
-        ...(opportunityExploration ? { distinctBusinessCount: targetFamilies } : {}),
         ...(workflowMode === "vibe" && researchMode === "explore-market" && automaticProblemCap !== null ? { automaticProblemCap } : {}),
       },
       limits: { enforced: false, maxMinutes: maxRunMinutes, maxModelCalls: workflowModelLimit, maxSearches: workflowSearchLimit },
@@ -300,22 +261,8 @@
 
   function missingFields(): Record<string, string> {
     const next: Record<string, string> = {};
-    if (!Number.isInteger(ideaCount) || ideaCount === undefined || ideaCount < 1 || ideaCount > MAX_IDEA_COUNT) {
-      next.ideaCount = `Choose a whole number from 1 to ${MAX_IDEA_COUNT}.`;
-    }
-    if (opportunityExploration) {
-      if (!Number.isInteger(targetFamilies) || targetFamilies < 2 || targetFamilies > 30) {
-        next.targetFamilies = "Choose a whole number from 2 to 30.";
-      }
-      if (!Number.isInteger(batchSize) || batchSize < 4 || batchSize > 6) {
-        next.batchSize = "Choose a batch size from 4 to 6.";
-      }
-      if (!Number.isInteger(maxModelCalls) || maxModelCalls < 1 || maxModelCalls > 40) {
-        next.maxModelCalls = "Choose a model-call limit from 1 to 40.";
-      }
-      if (!Number.isInteger(maxSearches) || maxSearches < 0 || maxSearches > 20) {
-        next.maxSearches = "Choose a search limit from 0 to 20.";
-      }
+    if (!Number.isInteger(ideaCount) || ideaCount === undefined || ideaCount < 1 || ideaCount > MAX_IDEAS_PER_PROBLEM) {
+      next.ideaCount = `Choose a whole number from 1 to ${MAX_IDEAS_PER_PROBLEM}.`;
     }
     if (researchMode === "explore-market") {
       if (!domain.trim()) next.domain = "A starting context is required.";
@@ -362,7 +309,7 @@
       }, {
         configVersion: 2, workflowVersion, ideaCount, model, reasoningEffort,
         discoveryDepth, searchProvider, maxRunMinutes, researchMode, knownProblem: knownProblem.trim(),
-        explorationPurpose, ...(opportunityExploration ? { opportunityExploration } : {}),
+        explorationPurpose,
       });
       savedFingerprint = submittedFingerprint;
       await onStart();
@@ -373,11 +320,11 @@
     }
   }
 
-  type SettingsSection = "research" | "instructions" | "limits";
+  type SettingsSection = "instructions" | "limits";
   let configuration: HTMLDialogElement;
   let setupForm: HTMLFormElement;
   let configurationTrigger: HTMLElement | null = null;
-  let settingsSection = $state<SettingsSection>("research");
+  let settingsSection = $state<SettingsSection>("limits");
   let instructionStage = $state<"research" | "ideas" | "review">("research");
   let modeHelp = $state<"vibe" | "babysit" | null>(null);
   let advancedSettingsButton: HTMLButtonElement;
@@ -397,9 +344,8 @@
     const trigger = configurationTrigger?.isConnected && configurationTrigger !== document.body ? configurationTrigger : advancedSettingsButton;
     trigger?.focus({ preventScroll: true });
   }
-  const fieldSections: Record<string, SettingsSection | "brief" | "business" | "main"> = {
+  const fieldSections: Record<string, SettingsSection | "brief" | "main"> = {
     domain: "brief", knownProblem: "brief", researchMode: "brief",
-    targetFamilies: "business", batchSize: "business", maxModelCalls: "business", maxSearches: "business",
     model: "main", reasoning: "main", searchProvider: "main", ideaCount: "main", ideaModel: "main", ideaReasoning: "main",
     maxRunMinutes: "limits", workflowModelLimit: "limits", workflowSearchLimit: "limits", automaticProblemCap: "limits",
   };
@@ -407,7 +353,7 @@
     "runConfig.model": "model", "runConfig.searchProvider": "searchProvider",
     "runConfig.researchMode": "researchMode", "runConfig.knownProblem": "knownProblem", purpose: "researchMode",
     ideas: "ideaModel", "ideas.model": "ideaModel", "ideas.reviewModel": "ideaModel", "ideas.reasoningEffort": "ideaReasoning",
-    "targets.distinctBusinessCount": "targetFamilies", "limits.maxModelCalls": "workflowModelLimit",
+    "limits.maxModelCalls": "workflowModelLimit",
     "limits.maxSearches": "workflowSearchLimit", "limits.maxMinutes": "maxRunMinutes",
   };
   let customInstructionCount = $derived([researchInstruction, ideasInstruction, reviewInstruction].filter((value) => value.trim()).length);
@@ -416,8 +362,8 @@
   let blockingMessage = $derived.by(() => {
     if (!providersReady) return connectionsChecking ? "Checking connections…" : connectionNeedsAttention ? "Connect the required providers to start." : modelChoiceRequired ? "Choose an available model to start." : "Choose an available reasoning effort to start.";
     const firstField = Object.keys(missing)[0];
-    if (firstField) return firstField === "domain" ? "Add a topic to your brief to start."
-      : firstField === "knownProblem" ? "Describe the problem to start." : missing[firstField];
+    if (firstField) return firstField === "domain" ? null
+      : firstField === "knownProblem" ? null : missing[firstField];
     if (validationAttempted && previewError) return previewError;
     const previewFieldError = visiblePreviewIssues[0];
     if (previewFieldError) return previewFieldError.message;
@@ -425,8 +371,8 @@
     return null;
   });
 
-  async function showConfiguration(section: SettingsSection = "research", field?: HTMLElement) {
-    settingsSection = section === "research" && researchMode === "known-problem" ? "limits" : section;
+  async function showConfiguration(section: SettingsSection = "limits", field?: HTMLElement) {
+    settingsSection = section;
     if (!configuration.open) {
       configurationTrigger = document.activeElement instanceof HTMLElement ? document.activeElement : null;
       configuration.showModal();
@@ -445,14 +391,13 @@
       key = previewFields[issue];
     }
     const section = key ? fieldSections[key] : undefined;
-    if (section === "business") businessTargetOpen = true;
     await tick();
     const field = key ? setupForm.querySelector<HTMLElement>(`[data-field="${key}"]`) : null;
-    if (section === "brief" || section === "business" || section === "main") {
+    if (section === "brief" || section === "main") {
       field?.focus();
       field?.scrollIntoView?.({ block: "nearest" });
     } else {
-      await showConfiguration(section ?? "research", field ?? (modelChoiceRequired ? modelSelect : undefined));
+      await showConfiguration(section ?? "limits", field ?? (modelChoiceRequired ? setupForm.querySelector<HTMLElement>('[data-field="model"]') ?? undefined : undefined));
     }
   }
 </script>
@@ -483,30 +428,9 @@
               <label><span>{researchMode === "explore-market" ? "Anything else to consider" : "Context"}</span><textarea bind:value={observations} rows="2" placeholder="Useful background"></textarea></label>
               <label><span>Boundaries</span><textarea bind:value={offLimits} rows="2" placeholder="What should solutions avoid? One limit per line."></textarea></label>
         </div>
-        {#if !opportunityTargetEnabled && explorationPurpose !== "auto"}
+        {#if explorationPurpose !== "auto"}
         <p class="saved-purpose-note">This saved project asks for {explorationPurpose === "startup-opportunities" ? "startup opportunities" : "practical solutions"}. <button type="button" onclick={() => purposeOverride = "auto"}>Follow the brief instead</button></p>
       {/if}
-      <details class="business-target" bind:open={businessTargetOpen}>
-        <summary>Distinct business target {opportunityTargetEnabled ? `· On (${targetFamilies})` : "(optional)"}</summary>
-        <section class="opportunity-target" aria-label="Distinct opportunity target">
-          <label class="target-toggle">
-            <input type="checkbox" checked={opportunityTargetEnabled} onchange={(event) => { opportunityTargetEnabled = event.currentTarget.checked; if (!opportunityTargetEnabled) purposeOverride = "auto"; }} />
-            <span><strong>Find distinct businesses across this project</strong></span>
-          </label>
-          {#if opportunityTargetEnabled}
-            <div class="target-grid">
-              <label><span>Distinct family target</span><input aria-label="Distinct family target" data-field="targetFamilies" type="number" min="2" max="30" step="1" bind:value={targetFamilies} aria-invalid={Boolean(errors.targetFamilies)} />{#if errors.targetFamilies}<small class="field-error">{errors.targetFamilies}</small>{/if}</label>
-              <label><span>Batch size</span><select aria-label="Opportunity batch size" data-field="batchSize" bind:value={batchSize}><option value={4}>4</option><option value={5}>5</option><option value={6}>6</option></select>{#if errors.batchSize}<small class="field-error">{errors.batchSize}</small>{/if}</label>
-              {#if !useWorkflow}
-                <label><span>Opportunity model-call limit</span><input aria-label="Opportunity model-call limit" data-field="maxModelCalls" type="number" min="1" max="40" step="1" bind:value={maxModelCalls} aria-invalid={Boolean(errors.maxModelCalls)} />{#if errors.maxModelCalls}<small class="field-error">{errors.maxModelCalls}</small>{/if}</label>
-                <label><span>Added opportunity search limit</span><input aria-label="Opportunity search limit" data-field="maxSearches" type="number" min="0" max="20" step="1" bind:value={maxSearches} aria-invalid={Boolean(errors.maxSearches)} />{#if errors.maxSearches}<small class="field-error">{errors.maxSearches}</small>{/if}</label>
-              {/if}
-            </div>
-            <p>Similar ideas count as one business. Up to 2 expansion rounds and {Math.min(60, targetFamilies * 2)} candidates.{#if useWorkflow}&nbsp;Research depth guides evidence collection; useful follow-up work can continue.{/if}</p>
-            <label class="exploratory-toggle"><input type="checkbox" bind:checked={allowExploratoryProblems} /><span><strong>Allow exploratory problem hypotheses</strong><small>Use only after the researched map is exhausted. Scraply labels these permanently and does not invent evidence for them.</small></span></label>
-          {/if}
-        </section>
-      </details>
 
       </div>
     </div>
@@ -540,24 +464,23 @@
           {#each visiblePreviewIssues.filter((issue) => issue.path.join(".") === "runConfig.searchProvider") as issue (issue.code)}<small class="field-error" role="alert">{issue.message}</small>{/each}
         </label>
       {/if}
-      <label class="run-setting model-setting"><span>Model</span><select aria-label="Model" data-field="model" bind:this={modelSelect} bind:value={modelKey} onchange={selectModel} disabled={nativeModelOptions.length === 0}>{#if !selectedModelAvailable}<option value={modelKey}>{legacyModelNeedsReplacement && !modelKey ? "Choose an OpenAI model" : workspace.validation.native.connected ? `${modelDisplayName(model)} (unavailable)` : "Sign in to choose"}</option>{/if}{#each gpt6Models as modelId (modelId)}{#if !nativeModelOptions.some((item) => item.modelId === modelId) && model.modelId !== modelId}<option value={`openai-subscription:${modelId}`} disabled>{modelDisplayName({ modelId })} (not in model list)</option>{/if}{/each}{#each nativeModelOptions as item (modelRefKey(item))}<option value={modelRefKey(item)}>{modelDisplayName(item)}</option>{/each}</select>{#if nativeModelOptions.length === 0}<small>Your available models appear here after you sign in.</small>{/if}</label>
+      <label class="run-setting model-setting"><span>Model</span><ModelPicker label="Model" field="model" options={nativeModelOptions} bind:value={modelKey} onchange={selectModel} disabled={nativeModelOptions.length === 0}
+        missingLabel={legacyModelNeedsReplacement && !modelKey ? "Choose an OpenAI model" : workspace.validation.native.connected ? `${modelDisplayName(model)} (unavailable)` : "Sign in to choose"} /></label>
       <label class="run-setting"><span>Reasoning</span><select aria-label="Reasoning" data-field="reasoning" title={reasoningDescription} bind:value={reasoningEffort}>{#if !selectedReasoningAvailable}<option value={reasoningEffort}>{reasoningEffort} (unavailable)</option>{/if}{#each (selectedModelOption?.reasoningEfforts ?? []) as effort (effort.id)}<option value={effort.id}>{effort.id.charAt(0).toUpperCase() + effort.id.slice(1)}</option>{/each}</select></label>
       {#if researchMode === "explore-market"}<label class="run-setting"><span>Research depth</span><select aria-label="Research depth" bind:value={discoveryDepth}><option value="quick">Quick</option><option value="standard">Standard</option><option value="deep">Deep</option></select></label>{/if}
       <!-- A stated problem has no research depth, so the count takes that grid cell instead of its own row. -->
       <div class="solution-count" class:paired={researchMode === "known-problem"}>
         <label for="solution-count">{researchMode === "known-problem" ? "Solutions" : "Solutions per problem"}</label>
         <div class="count-input">
-          <input id="solution-count" aria-label="Solutions per problem" data-field="ideaCount" type="number" bind:value={ideaCount} min="1" max={MAX_IDEA_COUNT} step="1" required aria-invalid={Boolean(errors.ideaCount)} aria-describedby={errors.ideaCount ? "idea-count-error" : undefined} />
+          <input id="solution-count" aria-label="Solutions per problem" data-field="ideaCount" type="number" bind:value={ideaCount} min="1" max={MAX_IDEAS_PER_PROBLEM} step="1" required aria-invalid={Boolean(errors.ideaCount)} aria-describedby={errors.ideaCount ? "idea-count-error" : undefined} />
 
         </div>
         {#if errors.ideaCount}<small id="idea-count-error" class="field-error">{errors.ideaCount}</small>{/if}
       </div>
       <!-- Vibe generates and reviews ideas itself, so their model is chosen up front; Controlled picks it when developing problems. -->
       {#if useWorkflow && workflowMode === "vibe"}
-        <label class="run-setting"><span>Ideas model</span><select aria-label="Ideas model" data-field="ideaModel" bind:value={ideaModelKey} onchange={selectIdeaModel} aria-invalid={Boolean(errors.ideaModel || ideasPreviewIssue)}>
-          {#if !ideaModelAvailable}<option value={ideaModelKey}>{modelDisplayName(ideaModel)} (unavailable)</option>{/if}
-          {#each nativeModelOptions as option (modelRefKey(option))}<option value={modelRefKey(option)}>{modelDisplayName(option)}</option>{/each}
-        </select></label>
+        <label class="run-setting"><span>Ideas model</span><ModelPicker label="Ideas model" field="ideaModel" options={nativeModelOptions} bind:value={ideaModelKey} onchange={selectIdeaModel}
+          invalid={Boolean(errors.ideaModel || ideasPreviewIssue)} missingLabel={`${modelDisplayName(ideaModel)} (unavailable)`} /></label>
         <label class="run-setting"><span>Ideas reasoning</span><select aria-label="Ideas reasoning" data-field="ideaReasoning" bind:value={ideaReasoningEffort} aria-invalid={Boolean(errors.ideaReasoning)}>
           {#if !ideaReasoningAvailable}<option value={ideaReasoningEffort}>{ideaReasoningEffort} (unavailable)</option>{/if}
           {#each (ideaModelOption?.reasoningEfforts ?? []) as effort (effort.id)}<option value={effort.id}>{effort.id.charAt(0).toUpperCase() + effort.id.slice(1)}</option>{/each}
@@ -573,16 +496,13 @@
         <button type="button" class="text-action" bind:this={advancedSettingsButton} onclick={() => showConfiguration()}>Advanced settings <Icon name="settings" size={16} /></button>
       </section>
       <div class="launch-content">
-        {#if researchMode === "explore-market"}
-          <p class="help">Research begins with a frame, then scans its included areas. Assess up to {DISCOVERY_DEPTHS[discoveryDepth].candidateLimit} problem candidates per selected area. Additional candidates are saved under Not assessed.</p>
-        {/if}
         <div class="launch-row">
           <!-- Stays clickable while the brief is incomplete: the click is what reveals the missing fields. -->
           <button type="submit" class="primary" disabled={locked || !providersReady || (useWorkflow && previewing)}>{locked ? "Starting…" : useWorkflow ? "Start" : (researchMode === "explore-market" ? "Discover problems" : "Generate solutions")}<Icon name="arrow" size={17} /></button>
         </div>
         <div class="launch-status" role="status">
           {#if blockingMessage}<span>{blockingMessage}</span>{/if}
-          {#if configurationIssues || missing.domain || missing.knownProblem}<button type="button" class="text-action" onclick={revealBlockingField}>{modelChoiceRequired ? "Choose model" : configurationIssues ? "Review settings" : "Edit brief"}</button>{/if}
+          {#if configurationIssues}<button type="button" class="text-action" onclick={revealBlockingField}>{modelChoiceRequired ? "Choose model" : "Review settings"}</button>{/if}
           {#if validationAttempted && previewError}<button type="button" class="text-action" onclick={() => previewAttempt += 1}>Retry preview</button>{/if}
           {#if saved}<span>Saved</span>{/if}
         </div>
@@ -599,26 +519,14 @@
     <dialog bind:this={configuration} class="settings-dialog glass-dense" aria-label="Advanced settings" onclose={restoreConfigurationFocus} onkeydown={(event) => { if (event.key === "Enter" && event.target instanceof HTMLInputElement) event.preventDefault(); }}>
       <header><h2>Advanced settings</h2><button type="button" aria-label="Close advanced settings" onclick={() => configuration.close()}><Icon name="close" /></button></header>
       <nav aria-label="Settings groups">
-        {#if researchMode === "explore-market"}<button type="button" aria-pressed={settingsSection === "research"} onclick={() => settingsSection = "research"}>Search</button>{/if}
         <button type="button" aria-pressed={settingsSection === "limits"} onclick={() => settingsSection = "limits"}>Research scope</button>
         {#if useWorkflow}<button type="button" aria-pressed={settingsSection === "instructions"} onclick={() => settingsSection = "instructions"}>Instructions</button>{/if}
       </nav>
       <div class="settings-content">
         {#each visiblePreviewIssues.filter((issue) => issue.path[0] !== "limits" && issue.path[0] !== "ideas") as issue (issue.path.join(".") + issue.code)}<p class="field-error" role="alert">{issue.message}</p>{/each}
         <div class="settings-panels">
-        <section class="settings-panel" aria-label="Research configuration" inert={settingsSection !== "research"}>
-          <div class="run-settings">
-    </div>
-
-      <div class="output-settings">
-
-      </div>
-
-
-        </section>
         <section class="settings-panel" aria-label="Research scope configuration" inert={settingsSection !== "limits"}>
-          <p class="help">{researchMode === "explore-market" ? "Depth guides research breadth and evidence collection. " : ""}Model calls and searches are tracked without a fixed cutoff.</p>
-          {#if useWorkflow && workflowMode === "vibe" && researchMode === "explore-market"}<label><span>Problems to develop</span><input aria-label="Automatic problem cap" data-field="automaticProblemCap" type="number" min="1" max="20" step="1" placeholder="All qualifying" bind:value={automaticProblemCap} aria-invalid={Boolean(errors.automaticProblemCap)} /><small>Leave empty to develop every confirmed problem that qualifies.</small>{#if errors.automaticProblemCap}<small class="field-error">{errors.automaticProblemCap}</small>{/if}</label>{/if}
+          {#if useWorkflow && workflowMode === "vibe" && researchMode === "explore-market"}<label><span>Problems to develop</span><input aria-label="Automatic problem cap" data-field="automaticProblemCap" type="number" min="1" max="20" step="1" placeholder="All qualifying" bind:value={automaticProblemCap} aria-invalid={Boolean(errors.automaticProblemCap)} />{#if errors.automaticProblemCap}<small class="field-error">{errors.automaticProblemCap}</small>{/if}</label>{/if}
         </section>
         <section class="settings-panel instructions-panel" aria-label="Custom instructions" inert={settingsSection !== "instructions"}>
           <!-- One editor per stage keeps this tab as short as the others; the dot marks stages that have text. -->
@@ -633,7 +541,7 @@
         </section>
         </div>
       </div>
-      <div class="dialog-footer"><span>Changes apply to this research.</span><button type="button" onclick={() => configuration.close()}>Done</button></div>
+      <div class="dialog-footer"><button type="button" onclick={() => configuration.close()}>Done</button></div>
     </dialog>
   </form>
 </section>
@@ -652,7 +560,7 @@
   label > span { font-weight:500; }
   input,select,textarea { width:100%;min-width:0;min-height:42px;padding:9px 12px;border:1px solid var(--border-strong);border-radius:7px;color:var(--text);background:var(--surface);font-size:14px; }
   textarea { line-height:1.65; }
-  small,.help { color:var(--muted);font-size:13px;font-weight:400;line-height:1.5; }
+  small { color:var(--muted);font-size:13px;font-weight:400;line-height:1.5; }
   label > span > small { margin-left:6px; }
   .field-error { color:var(--danger);font-size:13px; }
   input[aria-invalid="true"],textarea[aria-invalid="true"],select[aria-invalid="true"] { border-color:var(--danger); }
@@ -701,18 +609,8 @@
   button:hover:not(:disabled) { background:var(--surface-2); }
   .text-action { display:inline-flex;align-items:center;justify-content:center;gap:8px;border:0;background:transparent;color:var(--accent-strong);padding:6px 0;min-height:32px;font-size:13px;text-align:left; }
   .text-action:hover:not(:disabled) { background:transparent;text-decoration:underline; }
-  summary { display:flex;align-items:center;gap:12px;min-height:40px;cursor:pointer;list-style:none;color:var(--muted);font-size:13px; }
-  summary::-webkit-details-marker { display:none; }
-  summary::before { content:none; }
-  summary::after { content:"";flex:none;width:6px;height:6px;border-right:1.5px solid currentColor;border-bottom:1.5px solid currentColor;transform:rotate(-45deg);margin-left:auto;margin-right:4px; }
-  details[open] > summary::after { transform:rotate(45deg); }
-  summary:hover { color:var(--text); }
-  .opportunity-target { display:grid;gap:16px;padding:12px 0 20px; }
-  .target-grid,.run-settings,.output-settings,.limits-grid { display:grid;grid-template-columns:1fr 1fr;gap:16px; }
-  .target-toggle,.exploratory-toggle { display:flex;gap:10px;align-items:start; }
-  .target-toggle input,.exploratory-toggle input { flex:none;width:18px;height:18px;min-height:0;margin-top:2px;accent-color:var(--accent); }
-  .target-toggle span,.exploratory-toggle span { display:grid;gap:5px; }
-  .opportunity-target p,.saved-purpose-note { color:var(--muted);font-size:13px;line-height:1.6;margin:0; }
+
+  .saved-purpose-note { color:var(--muted);font-size:13px;line-height:1.6;margin:0; }
   .saved-purpose-note button { border:0;padding:0;color:var(--accent);background:none; }
   /* The run panel floats inside the page as its own glass card. */
   .launch-sidebar { min-height:0;overflow:auto;display:flex;flex-direction:column;gap:18px;margin:12px 12px 12px 0;padding:18px;border-radius:14px;scroll-padding-block:20px; }
@@ -747,10 +645,7 @@
   .instruction-stages button:hover:not([aria-pressed="true"]) { color:var(--text); }
   .instruction-stages button[aria-pressed="true"] { color:var(--text);background:rgb(255 255 255 / .1); }
   .filled-dot { width:6px;height:6px;border-radius:50%;background:var(--accent-strong); }
-  .settings-panel .help { margin:0 0 16px; }
   .model-setting,.search-setting { grid-column:1/-1; }
-  .advanced-body { display:grid;gap:16px; }
-  .output-settings { margin-top:20px;padding-top:20px;border-top:1px solid var(--border); }
   .solution-count { display:grid;align-content:start;gap:8px; }
   .dialog-footer { display:flex;justify-content:space-between;align-items:center;gap:12px;padding:14px 24px;border-top:1px solid var(--border);font-size:13px;color:var(--muted); }
   /* Page-width breakpoints follow the page container; the dialog rules below follow the window it floats over. */
@@ -763,11 +658,11 @@
   }
   @container page (max-width:560px) {
     .setup-body { padding:20px 16px;gap:20px; }.launch-sidebar { margin:0 12px 12px;padding:20px 16px;grid-template-columns:1fr; }
-    .main-brief > span { font-size:24px; }.mode-picker,.context-fields,.target-grid { grid-template-columns:1fr; }
+    .main-brief > span { font-size:24px; }.mode-picker,.context-fields { grid-template-columns:1fr; }
     .launch-row { align-items:stretch;flex-direction:column;gap:10px; }.primary { width:100%; }
   }
   @media(max-width:600px) {
-    .run-settings,.output-settings,.limits-grid { grid-template-columns:1fr; }
+
     .settings-dialog header,.settings-content { padding:16px; }.settings-dialog nav { padding-inline:10px; }.dialog-footer { padding:12px 16px; }
   }
   @media(max-height:600px) { @container page (min-width:841px) { .scope-page,form { height:auto; }.setup-scroll { overflow:visible;flex:none; }.launch-sidebar { position:sticky;top:0;align-self:start;max-height:100dvh; } } }

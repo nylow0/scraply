@@ -47,11 +47,12 @@ export function loadEvaluationBriefs(directory: string): EvaluationBrief[] {
   return briefs;
 }
 
+/** `ideasPerProblem` replaces each brief's idea count, so a run can ask for more ideas without changing the shared briefs. */
 export function evaluationMatrix(briefs: EvaluationBrief[], matrix: "baseline" | "quick" | "acceptance", modelOverride?: z.infer<typeof ModelOverrideSchema>,
-  allProblems = false): EvaluationCase[] {
+  allProblems = false, ideasPerProblem?: number): EvaluationCase[] {
   const rows: EvaluationCase[] = [];
   for (const brief of briefs) {
-    const selectedBrief = modelOverride ? { ...brief, runSettings: { ...brief.runSettings, ...modelOverride } } : brief;
+    const selectedBrief = { ...brief, runSettings: { ...brief.runSettings, ...modelOverride, ...(ideasPerProblem ? { ideaCount: ideasPerProblem } : {}) } };
     const depths = matrix === "acceptance" ? ["standard", ...(["science-fair", "clinics"].includes(brief.id) ? ["deep"] : [])]
       : ["quick", ...(matrix === "baseline" && ["science-fair", "bookkeepers", "dorm-kitchen"].includes(brief.id) ? ["standard"] : [])];
     for (const depth of depths) {
@@ -106,6 +107,7 @@ const ManifestSchema = z.object({
   profile: z.string(), rows: z.array(RowSchema),
   modelOverride: ModelOverrideSchema.optional(),
   allProblems: z.boolean().optional(),
+  ideasPerProblem: z.number().int().min(1).max(5).optional(),
   transport: z.discriminatedUnion("kind", [
     z.object({ kind: z.literal("browser-dev"), origin: z.string() }).strict(),
     z.object({ kind: z.literal("installed-preload"), driver: z.literal("node-playwright-electron-pipe"),
@@ -380,7 +382,7 @@ async function main() {
   const { values } = parseArgs({ options: {
     "app-checkout": { type: "string" }, "runtime-dir": { type: "string" }, origin: { type: "string", default: "http://127.0.0.1:5179" },
     output: { type: "string" }, matrix: { type: "string", default: "baseline" }, briefs: { type: "string" },
-    model: { type: "string" }, case: { type: "string" }, "all-problems": { type: "boolean", default: false },
+    model: { type: "string" }, case: { type: "string" }, "all-problems": { type: "boolean", default: false }, "ideas-per-problem": { type: "string" },
     "trace-module": { type: "string" }, "require-app-sha": { type: "string" },
     "pause-file": { type: "string" },
     "installed-executable": { type: "string" }, "installed-profile": { type: "string" },
@@ -389,7 +391,7 @@ async function main() {
     help: { type: "boolean", default: false },
   } });
   if (values.help) {
-    console.log("bun scripts/eval-research.ts --app-checkout PATH [--runtime-dir PATH | --installed-executable PATH --installed-profile PATH] [--matrix baseline|quick|acceptance] [--briefs IDS] [--case KEY] [--model providerId/modelId:effort] [--output build/eval/DATE] [--trace-module PATH] [--pause-file PATH] [--dry-run|--report-only|--verify-transport]");
+    console.log("bun scripts/eval-research.ts --app-checkout PATH [--runtime-dir PATH | --installed-executable PATH --installed-profile PATH] [--matrix baseline|quick|acceptance] [--briefs IDS] [--case KEY] [--model providerId/modelId:effort] [--ideas-per-problem 1-5] [--output build/eval/DATE] [--trace-module PATH] [--pause-file PATH] [--dry-run|--report-only|--verify-transport]");
     console.log("Installed mode drives the real preload through a local Playwright pipe and copies encrypted credentials into output/profile. --verify-transport only reads identity and workspace, and waits for startup validation to confirm each case's model, reasoning effort and search key. Observer restarts never resume paused workflows or replay uncertain admissions.");
     return;
   }
@@ -408,7 +410,9 @@ async function main() {
   if (!briefs.length) throw new Error("No evaluation briefs selected.");
   const modelOverride = values.model ? parseEvaluationModel(values.model) : undefined;
   const allProblems = values["all-problems"];
-  const matrix = evaluationMatrix(briefs, matrixName, modelOverride, allProblems).filter(item => !values.case || item.key === values.case);
+  const ideasPerProblem = values["ideas-per-problem"] === undefined ? undefined
+    : z.coerce.number().int().min(1).max(5).parse(values["ideas-per-problem"]);
+  const matrix = evaluationMatrix(briefs, matrixName, modelOverride, allProblems, ideasPerProblem).filter(item => !values.case || item.key === values.case);
   if (!matrix.length) throw new Error("No evaluation cases selected.");
   const fixtureSha256 = createHash("sha256").update(JSON.stringify(briefs)).digest("hex");
   const appCommit = await command(checkout, ["git", "rev-parse", "HEAD"]);
@@ -437,10 +441,11 @@ async function main() {
     schemaVersion: 1, origin: "live", appCommit, fixtureSha256, matrix: matrixName, createdAt: new Date().toISOString(), profile,
     rows: matrix.map(item => ({ key: item.key, briefId: item.brief.id, depth: item.depth, repeat: item.repeat,
       threadId: null, sessionId: null, runId: null, status: "planned", outcome: null, stopReason: null, metrics: null })),
-    transport, modelOverride, ...(allProblems ? { allProblems } : {}),
+    transport, modelOverride, ...(allProblems ? { allProblems } : {}), ...(ideasPerProblem ? { ideasPerProblem } : {}),
   };
   if (manifest.appCommit !== appCommit || manifest.fixtureSha256 !== fixtureSha256 || manifest.matrix !== matrixName) throw new Error("Saved evaluation uses a different app, fixture, or matrix. Use a new output directory.");
   if (JSON.stringify(manifest.modelOverride) !== JSON.stringify(modelOverride) || Boolean(manifest.allProblems) !== allProblems
+    || manifest.ideasPerProblem !== ideasPerProblem
     || JSON.stringify(manifest.rows.map(row => row.key)) !== JSON.stringify(matrix.map(item => item.key))) {
     throw new Error("Saved evaluation uses a different model override or case selection. No workflow was dispatched.");
   }

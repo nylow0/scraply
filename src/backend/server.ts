@@ -44,7 +44,7 @@ import {
   ResumeResearchSchema, SaveFavoriteModelSchema, SaveRunConfigSchema, SaveScopeSchema, SearchKeyPreflightSchema,
   SelectProblemsSchema, SelectOptionSchema, SaveDecisionSchema, SelectThreadRequestSchema, SourceDetailSchema, StartResearchSchema,
   RejectedProblemCandidateSchema, ValidationStateSchema, WorkspaceStateSchema, type FactorView, type ProblemCandidate, type RejectedProblemCandidate, type ResearchEvent,
-  type SolutionView, type ValidationState,
+  type IdeaGroupView, type SolutionView, type ValidationState,
 } from "../shared/ipc";
 import {
   DEFAULT_RUN_CONFIG, HISTORICAL_CODEX_CLI_PROVIDER_ID, ModelCatalogSchema, OPENAI_SUBSCRIPTION_PROVIDER_ID, RunConfigSchema, sameModelRef,
@@ -107,6 +107,10 @@ export function maskSearchKey(key: string | null | undefined): string | undefine
 }
 const REMOVED_CODEX_CLI_MESSAGE = "Codex CLI integration was removed. Start a new run using Native OpenAI.";
 type DataRead = (sql: string, params: readonly unknown[]) => Array<Record<string, unknown>>;
+const ReviewLabelsSchema = z.array(z.object({
+  candidateId: z.string(), status: z.enum(["accepted", "duplicate", "variant", "unresolved", "rejected"]), reason: z.string(),
+}).passthrough());
+type ReviewLabel = z.infer<typeof ReviewLabelsSchema>[number];
 export function isResearchModeReady(
   config: Pick<RunConfig, "researchMode" | "searchProvider"> & { model?: ModelRef },
   search: SearchValidation,
@@ -426,7 +430,9 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
       presets: threads.listPresets(),
       problemCandidates: snapshotProblems ?? (activeThreadId ? listProblems(activeThreadId) : []),
       rejectedProblemCandidates: activeThreadId ? listRejectedProblemCandidates(activeThreadId, candidateArchiveRunId(activeSnapshot?.materializationRunId)) : [],
+      problemLeads: activeThreadId && snapshotProblems && activeSnapshot ? listSnapshotLeads(activeThreadId, activeSnapshot) : [],
       solutions: activeThreadId ? listSolutions(activeThreadId, false) : [],
+      ideaGroups: activeThreadId ? listIdeaGroups(activeThreadId) : [],
       ...(activeThreadId ? { opportunityFamilies: opportunities.familyView(activeThreadId) } : {}),
       opportunityExploration: activeThreadId ? exploration.find(activeThreadId) : null,
       opportunityReviewStatus: activeThreadId && engine ? engine.getOpportunityReviewStatus(activeThreadId) : { running: false, kind: null, error: null },
@@ -529,6 +535,16 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
       UNION ALL SELECT 1 FROM workflow_snapshots WHERE research_run_id = ? AND snapshot_key = 'candidate-archive-complete' LIMIT 1`)
       .get(snapshotRunId, snapshotRunId) ? snapshotRunId : undefined;
   }
+  // A snapshot copies only the problems it carries forward. The leads its research checked and left
+  // behind (needs more evidence, overstated, ...) stay in the source runs named by the origin map.
+  function listSnapshotLeads(threadId: string, snapshot: { originMap: { problems: Record<string, { originalId: string; originalRunId: string }> } }): ProblemCandidate[] {
+    const origins = Object.values(snapshot.originMap.problems);
+    const carried = new Set(origins.map((origin) => origin.originalId));
+    return [...new Set(origins.map((origin) => origin.originalRunId))]
+      .flatMap((runId) => listProblems(threadId, runId, true))
+      .filter((problem) => !carried.has(problem.id) && problem.verdict !== "confirmed" && problem.verdict !== "user-asserted")
+      .map((problem) => ({ ...problem, selected: false }));
+  }
   function listRejectedProblemCandidates(threadId: string, discoveryRunId?: string): RejectedProblemCandidate[] {
     const runId = discoveryRunId ?? latestDiscoveryRun(threadId);
     if (!runId) return [];
@@ -544,6 +560,26 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
       disposition: candidate.disposition,
       candidate: candidate.candidate_json ? RejectedProblemCandidateSchema.shape.candidate.parse(JSON.parse(candidate.candidate_json)) : null,
     }));
+  }
+  function listIdeaGroups(threadId: string): IdeaGroupView[] {
+    // The task quota is immutable and may differ from both the launch contract and today's project settings.
+    const rows = db.db.prepare(`SELECT rr.id AS run_id, p.id AS problem_id, p.statement,
+        json_extract(task.input_json, '$.quota') AS requested_count,
+        (SELECT COUNT(*) FROM solutions s WHERE s.research_run_id = rr.id
+          AND NOT EXISTS (SELECT 1 FROM solution_lineage lineage WHERE lineage.solution_id = s.id AND lineage.version_number > 1)) AS returned_count
+      FROM workflow_work_items task
+      JOIN research_runs rr ON rr.workflow_session_id = task.session_id
+        AND rr.id = json_extract(task.output_refs_json, '$.runId')
+      JOIN problems p ON p.id = rr.problem_id AND p.id = json_extract(task.input_json, '$.problemId')
+      WHERE rr.thread_id = ? AND rr.status = 'completed' AND task.kind = 'generate-ideas'
+        AND task.state = 'succeeded' AND json_extract(task.input_json, '$.ranked') = 1
+        AND json_type(task.input_json, '$.quota') = 'integer' AND json_extract(task.input_json, '$.quota') > 0
+        AND (p.selected_at IS NOT NULL OR rr.workflow_version = 2)
+      ORDER BY rr.created_at, rr.rowid, task.ordinal, rr.id`).all(threadId) as Array<{
+        run_id: string; problem_id: string; statement: string; requested_count: number; returned_count: number;
+      }>;
+    return rows.map((row) => ({ runId: row.run_id, problemId: row.problem_id, problemStatement: row.statement,
+      requestedIdeaCount: row.requested_count, returnedIdeaCount: row.returned_count }));
   }
   function listSolutions(threadId: string, details = true, solutionId?: string): SolutionView[] {
     let queryCount = 0;
@@ -628,6 +664,7 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
       WHERE rr.thread_id = ? AND s.id IN (${placeholders(goalEvidenceIds)})`, [threadId, ...goalEvidenceIds]) : []).map(source => [String(source.id), {
         id: String(source.id), title: String(source.title), url: String(source.canonical_url), text: String(source.retrieved_text),
       }] as const));
+    const reviewLabels = details ? readReviewLabels(rows.map((row) => String(row.research_run_id)), readAll) : new Map<string, ReviewLabel>();
     context.observeDataRead?.({ operation: details ? "solution-details" : "solution-summaries", queryCount, rowCount: rows.length });
     const discardedIds = new Set(JSON.parse(db.getSetting(`discarded-ideas:${threadId}`) ?? "[]") as string[]);
     const result = rows.map((row): SolutionView => {
@@ -679,6 +716,10 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
           ...(evidenceFollowUp ? { evidenceFollowUp } : {}),
         } : {}),
         detailRevision: `${row.run_updated_at}:${row.decision_updated_at ?? ""}:${row.evidence_follow_up_updated_at ?? ""}:${row.risk_evaluation_key ?? ""}:${row.focused_experiment_updated_at ?? ""}`,
+        ...(reviewLabels.get(String(row.id)) ? { reviewStatus: reviewLabels.get(String(row.id))!.status, reviewReason: reviewLabels.get(String(row.id))!.reason } : {}),
+        rank: row.rank === null || row.rank === undefined ? null : Number(row.rank),
+        rankReason: row.rank_reason === null || row.rank_reason === undefined ? null : String(row.rank_reason),
+        weakFitReason: row.weak_fit_reason === null || row.weak_fit_reason === undefined ? null : String(row.weak_fit_reason),
         id: String(row.id), problemId: String(row.problem_id), problemStatement: String(row.problem_statement),
         problemVerdict: String(row.problem_verdict) as SolutionView["problemVerdict"], mechanism: String(row.mechanism),
         factors: details ? factorsByProblem.get(String(row.problem_id)) ?? [] : [],
@@ -688,6 +729,17 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
       };
     });
     return result;
+  }
+  // Runs before ranking saved one collection review per idea run; its decisions label each idea.
+  function readReviewLabels(runIds: string[], readAll: DataRead): Map<string, ReviewLabel> {
+    const unique = [...new Set(runIds)];
+    if (unique.length === 0) return new Map();
+    const rows = readAll(`SELECT json_extract(context_json, '$.solutionSetReview.decisions') AS decisions FROM stage_results
+      WHERE stage_id = 'solution-set-review' AND selection_key NOT LIKE 'preliminary:%' AND research_run_id IN (${placeholders(unique)})`, unique);
+    return new Map(rows.flatMap((row) => {
+      const decisions = ReviewLabelsSchema.safeParse(JSON.parse(String(row.decisions ?? "[]")));
+      return decisions.success ? decisions.data.map((decision) => [decision.candidateId, decision] as const) : [];
+    }));
   }
   function readOutcomes(solutionIds: string[], readAll: DataRead): Map<string, SolutionView["outcomes"]> {
     if (solutionIds.length === 0) return new Map();
@@ -1815,6 +1867,8 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
           group.push(idea);
           ideasByProblem.set(idea.problemId, group);
         }
+        // Ranked groups export best first; ideas saved before ranking keep their saved order.
+        for (const group of ideasByProblem.values()) group.sort((a, b) => (a.rank ?? Infinity) - (b.rank ?? Infinity));
         const usageByRun = new Map<string, ReturnType<typeof runUsage>>();
         const files = [...ideasByProblem.values()].map((group, index) => {
           const filename = `${slug(group[0]!.problemStatement)}-${index + 1}.${input.format === "json" ? "json" : "md"}`;
@@ -2050,6 +2104,8 @@ function renderDecisionMarkdown(ideas: ExportIdea[]): string {
     const analysis = idea.decisionAnalysis;
     return [
       `# ${idea.mechanism}`, "", idea.description, "", `Problem: ${idea.problemStatement}`, "",
+      ...(idea.rank ? [`Rank ${idea.rank} for this problem. ${idea.rankReason ?? ""}`.trim(), ""] : []),
+      ...(idea.weakFitReason ? [`Weak fit: ${idea.weakFitReason}`, ""] : []),
       `Workflow: v2. ${idea.selected ? "Selected by the user." : "Not selected."} Problem evidence: ${idea.problemVerdict}.`, "",
       ...(idea.opportunityOrigin ? [`Origin: ${idea.opportunityOrigin.kind}. ${idea.opportunityOrigin.kind === "exploratory-hypothesis" ? idea.opportunityOrigin.disclosure : idea.opportunityOrigin.evidenceGap ?? "Evidence presence does not establish customer demand."}`, ""] : []),
       `Key assumption: ${idea.keyAssumption}`, "", `Current approach may suffice: ${idea.whyCurrentApproachMaySuffice}`, "",

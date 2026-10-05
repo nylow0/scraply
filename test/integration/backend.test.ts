@@ -20,7 +20,7 @@ const modelOption = (id: string) => ({
   defaultReasoningEffort: "medium",
   reasoningEfforts: [{ id: "medium", description: "Balanced reasoning" }],
 });
-const nativeInspection = (models = [modelOption("gpt-6-sol")]) => ({
+const nativeInspection = (models = [modelOption("gpt-6.1-sol")]) => ({
   available: true, connected: true, accounts: [{ providerId: "openai-subscription" }], models,
 });
 afterEach(async () => {
@@ -92,7 +92,7 @@ describe("cutover backend", () => {
     const handle = await startBackend({
       dataDir: dir, dbPath: join(dir, "scraply.db"), bundledPromptsDir: join(process.cwd(), "prompts"),
       promptOverridesDir: join(dir, "prompts"), appVersion: "test", getSecrets: () => ({ exaApiKey: "test-key" }),
-      providerValidation: { inspectNative: async () => nativeInspection([modelOption("gpt-6-sol"), modelOption("gpt-test")]), validateExa: async () => ({ valid: true }) },
+      providerValidation: { inspectNative: async () => nativeInspection([modelOption("gpt-6.1-sol"), modelOption("gpt-test")]), validateExa: async () => ({ valid: true }) },
     }, () => undefined); handles.push(handle);
 
     const post = async (path: string, body: unknown) => {
@@ -105,10 +105,10 @@ describe("cutover backend", () => {
     };
     expect(created.thread.status).toBe("configuring");
     expect(created.workspace.models).toEqual([
-      { providerId: "openai-subscription", modelId: "gpt-6-sol" },
+      { providerId: "openai-subscription", modelId: "gpt-6.1-sol" },
       { providerId: "openai-subscription", modelId: "gpt-test" },
     ]);
-    expect(created.workspace.runConfig.model).toEqual({ providerId: "openai-subscription", modelId: "gpt-6-sol" });
+    expect(created.workspace.runConfig.model).toEqual({ providerId: "openai-subscription", modelId: "gpt-6.1-sol" });
     const removedEventsEndpoint = await fetch(`http://127.0.0.1:${handle.port}/events`, { headers: { authorization: `Bearer ${handle.token}` } });
     expect(removedEventsEndpoint.status).toBe(404);
     const workspace = await post("/scope", { threadId: created.thread.id, scope: { title: "Repair shops", audience: "Independent shops", domain: "Parts sourcing", observations: "", offLimits: ["Inventory"] } }) as { scope: { title: string; audience: string; domain: string; observations: string; offLimits: string[] } };
@@ -588,10 +588,10 @@ describe("cutover backend", () => {
       sources: [expect.objectContaining({ text: "Source body stays in the source record." })],
       factors: [expect.objectContaining({ quote: "Parts arrive several days late." })],
     }));
-    expect([...dataReads].reverse().find((read) => read.operation === "solution-details")).toEqual({ operation: "solution-details", queryCount: 8, rowCount: 1 });
+    expect([...dataReads].reverse().find((read) => read.operation === "solution-details")).toEqual({ operation: "solution-details", queryCount: 9, rowCount: 1 });
     expect(workspace.latestResearchRun.problemId).toBe("problem-deselected");
     const exported = await post("/ideas/export", { threadId: created.thread.id, format: "json" }) as { filename: string; files: Array<{ filename: string; content: string }> };
-    expect([...dataReads].reverse().find((read) => read.operation === "solution-details")).toEqual({ operation: "solution-details", queryCount: 8, rowCount: 6 });
+    expect([...dataReads].reverse().find((read) => read.operation === "solution-details")).toEqual({ operation: "solution-details", queryCount: 9, rowCount: 6 });
     expect(exported.filename).toMatch(/^[a-z0-9-]+-ideas\.json$/);
     expect(exported.files).toHaveLength(3);
     expect(exported.files.find((file) => file.filename.startsWith("superseded-problem-"))).toBeDefined();

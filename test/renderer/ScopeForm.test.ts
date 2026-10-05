@@ -1,5 +1,5 @@
 import { fireEvent, render, waitFor, within } from "@testing-library/svelte";
-import type { ComponentProps } from "svelte";
+import { tick, type ComponentProps } from "svelte";
 import { describe, expect, test, vi } from "vitest";
 import Settings from "../../src/renderer/components/Settings.svelte";
 import ScopeForm from "../../src/renderer/components/ScopeForm.svelte";
@@ -7,6 +7,8 @@ import ProblemCheckpoint from "../../src/renderer/components/ProblemCheckpoint.s
 import type { WorkspaceState } from "../../src/shared/ipc";
 import { DEFAULT_RUN_CONFIG, RunConfigSchema, modelRefKey } from "../../src/shared/schemas";
 import type { WorkflowLaunchDraft } from "../../src/shared/workflow-contracts";
+import { listedModels, pickModel } from "./model-picker";
+import { modelDisplayName } from "../../src/renderer/lib/research-defaults";
 
 describe("ScopeForm search provider selection", () => {
   test.each(["exa", "perplexity"] as const)("shows only %s and the disabled other provider when one is connected", async (connectedProvider) => {
@@ -64,6 +66,24 @@ describe("ScopeForm search provider selection", () => {
     await waitFor(() => expect((view.getByLabelText("Search provider") as HTMLSelectElement).value).toBe("auto"));
     expect(view.queryByLabelText("Search coverage")).toBeNull();
     expect((view.getByRole("button", { name: "Discover problems" }) as HTMLButtonElement).disabled).toBe(false);
+  });
+  test("keeps the search provider saved in Settings even when both providers are connected", async () => {
+    const storageKey = "scraply.research-defaults.v1";
+    const previous = localStorage.getItem(storageKey);
+    try {
+      localStorage.setItem(storageKey, JSON.stringify({ model: DEFAULT_RUN_CONFIG.model, searchProvider: "perplexity" }));
+      const state = workspace();
+      state.scope = null;
+      state.runConfig = null;
+      state.validation.exa = { valid: true };
+      state.validation.perplexity = { valid: true };
+      const view = render(ScopeForm, { workspace: state, busy: false, onSave: vi.fn(), onStart: vi.fn(), onRetry: vi.fn() });
+      await tick();
+      expect((view.getByLabelText("Search provider") as HTMLSelectElement).value).toBe("perplexity");
+    } finally {
+      if (previous === null) localStorage.removeItem(storageKey);
+      else localStorage.setItem(storageKey, previous);
+    }
   });
   test("uses the connected provider for a new setup after Perplexity-only onboarding", async () => {
     const storageKey = "scraply.research-defaults.v1";
@@ -136,7 +156,9 @@ describe("ScopeForm search provider selection", () => {
     await fireEvent.click(view.getByRole("radio", { name: /I have a problem to solve/ }));
     await fireEvent.click(view.getByRole("radio", { name: /Vibe/ }));
     expect(view.queryByLabelText("Automatic problem cap")).toBeNull();
-    expect(view.getByText("Describe the problem to start.")).toBeTruthy();
+    // The empty brief is flagged on the field after Start, not by a standing sentence and link beside the button.
+    expect(view.queryByText("Describe the problem to start.")).toBeNull();
+    expect(view.queryByRole("button", { name: "Edit brief" })).toBeNull();
   });
 
   test("names a new thread with the title agent before launching it", async () => {
@@ -169,7 +191,7 @@ describe("ScopeForm search provider selection", () => {
     });
   });
 
-  test("defaults to Vibe and refreshes depth guidance before launch", async () => {
+  test("defaults to Vibe and previews the chosen depth before launch", async () => {
     const state = workspace();
     state.validation.exa = { valid: true };
     const onPreviewWorkflow = vi.fn(async (draft: WorkflowLaunchDraft) => ({
@@ -210,7 +232,6 @@ describe("ScopeForm search provider selection", () => {
     expect(view.getByLabelText("Search provider").closest("dialog")).toBeNull();
     expect(view.queryByLabelText("Maximum model calls")).toBeNull();
     await fireEvent.change(view.getByLabelText("Research depth"), { target: { value: "deep" } });
-    expect(view.getByText(/Assess up to 8 problem candidates per selected area/)).toBeTruthy();
     await waitFor(() => expect(onPreviewWorkflow.mock.lastCall?.[0].runConfig.discoveryDepth).toBe("deep"));
     await waitFor(() => expect((view.getByRole("button", { name: "Start" }) as HTMLButtonElement).disabled).toBe(false));
     await fireEvent.click(view.getByRole("button", { name: "Start" }));
@@ -219,46 +240,33 @@ describe("ScopeForm search provider selection", () => {
     expect(onStart).not.toHaveBeenCalled();
   });
 
-  test("uses estimates for the managed project without fixed call or search controls", async () => {
+  test("new runs ask for ideas per problem, even in a project that saved a distinct business target", async () => {
     const state = workspace();
     state.validation.exa = { valid: true };
+    state.runConfig = { ...state.runConfig!, ideaCount: 3, explorationPurpose: "startup-opportunities",
+      opportunityExploration: { targetFamilies: 8, batchSize: 4, maxExpansionRounds: 2, maxRawCandidates: 16, maxModelCalls: 10, maxSearches: 6, allowExploratoryProblems: false } };
     const onPreviewWorkflow = vi.fn(async (draft: WorkflowLaunchDraft) => ({
       type: "launch" as const,
-      proposal: { ...draft,
-        resolvedInstructions: { research: "research", ideas: "ideas", review: "review" },
-        instructionHashes: { research: "r", ideas: "i", review: "v" },
-      },
-      previewHash: `preview-${draft.limits.maxModelCalls}-${draft.limits.maxSearches}`,
-      capabilityFingerprint: "catalogue", minimumWork: { modelCalls: 56, searches: 16 },
+      proposal: { ...draft, resolvedInstructions: { research: "research", ideas: "ideas", review: "review" },
+        instructionHashes: { research: "r", ideas: "i", review: "v" } },
+      previewHash: "per-problem", capabilityFingerprint: "catalogue", minimumWork: { modelCalls: 12, searches: 4 },
       upperLimits: draft.limits, fieldErrors: [], expiresAt: "2099-01-01T00:00:00.000Z",
     }));
-    const onStartWorkflow = vi.fn().mockResolvedValue(undefined);
     const view = render(ScopeForm, {
       workspace: state, busy: false, onSave: vi.fn(), onStart: vi.fn(), onRetry: vi.fn(),
-      onPreviewWorkflow, onStartWorkflow,
+      onPreviewWorkflow, onStartWorkflow: vi.fn().mockResolvedValue(undefined),
     });
+    expect(view.queryByText(/Distinct business target/)).toBeNull();
+    expect(view.queryByLabelText("Distinct family target")).toBeNull();
+    await waitFor(() => expect(onPreviewWorkflow.mock.lastCall?.[0]).toMatchObject({ targets: { kind: "per-problem", ideaCount: 3 } }));
+    const draft = onPreviewWorkflow.mock.lastCall![0];
+    expect(draft.targets).not.toHaveProperty("distinctBusinessCount");
+    expect(draft.runConfig.opportunityExploration).toBeUndefined();
+    expect(draft.runConfig.explorationPurpose).toBe("startup-opportunities");
 
-    await fireEvent.click(view.getByRole("radio", { name: /Vibe/ }));
-    await fireEvent.click(view.getByText("Distinct business target (optional)"));
-    await fireEvent.click(view.getByRole("checkbox", { name: /Find distinct businesses across this project/ }));
-    expect(view.queryByLabelText("Opportunity model-call limit")).toBeNull();
-    expect(view.queryByLabelText("Opportunity search limit")).toBeNull();
-    expect(view.getByText(/Research depth guides evidence collection/)).toBeTruthy();
-    expect(view.queryByLabelText("Maximum model calls")).toBeNull();
-    expect(view.queryByLabelText("Maximum searches")).toBeNull();
-    await waitFor(() => expect(onPreviewWorkflow.mock.lastCall?.[0]).toMatchObject({
-      targets: { kind: "project", distinctBusinessCount: 30 },
-      limits: { maxModelCalls: expect.any(Number), maxSearches: expect.any(Number) },
-      // Uncapped Vibe is estimated at Standard's target of four confirmed problems.
-      runConfig: { opportunityExploration: { maxModelCalls: 32, maxSearches: 6 } },
-    }));
-    expect(onPreviewWorkflow.mock.lastCall?.[0].limits.maxModelCalls).toBeGreaterThan(56);
-    expect(onPreviewWorkflow.mock.lastCall?.[0].limits.maxSearches).toBeGreaterThan(22);
-
-    expect(onPreviewWorkflow.mock.lastCall?.[0].limits.enforced).toBe(false);
-    await waitFor(() => expect((view.getByRole("button", { name: "Start" }) as HTMLButtonElement).disabled).toBe(false));
+    await fireEvent.input(view.getByLabelText("Solutions per problem"), { target: { value: "6" } });
     await fireEvent.click(view.getByRole("button", { name: "Start" }));
-    expect(onStartWorkflow).toHaveBeenCalledOnce();
+    expect(view.getAllByText("Choose a whole number from 1 to 5.").length).toBeGreaterThan(0);
   });
 
   test("treats preview estimates as guidance without mandatory limit controls", async () => {
@@ -282,35 +290,6 @@ describe("ScopeForm search provider selection", () => {
     await waitFor(() => expect(onPreviewWorkflow).toHaveBeenCalled());
     expect(onPreviewWorkflow.mock.calls.at(-1)?.[0].limits.enforced).toBe(false);
     expect(view.queryByLabelText("Maximum searches")).toBeNull();
-  });
-
-  test("saves an explicit family target separately from the per-problem idea count", async () => {
-    const state = workspace();
-    state.validation.exa = { valid: true };
-    const onSave = vi.fn().mockResolvedValue(undefined);
-    const onStart = vi.fn().mockResolvedValue(undefined);
-    const view = render(ScopeForm, { workspace: state, busy: false, onSave, onStart, onRetry: vi.fn() });
-    expect(view.queryByRole("radio", { name: /Startup opportunities/ })).toBeNull();
-    await fireEvent.click(view.getByText("Distinct business target (optional)"));
-    await fireEvent.click(view.getByRole("checkbox", { name: /Find distinct businesses across this project/ }));
-    await fireEvent.input(view.getByLabelText("Distinct family target"), { target: { value: "8" } });
-    await fireEvent.input(view.getByLabelText("Opportunity model-call limit"), { target: { value: "10" } });
-    await fireEvent.click(view.getByRole("button", { name: "Discover problems" }));
-    await waitFor(() => expect(onStart).toHaveBeenCalledTimes(1));
-    const saved = RunConfigSchema.parse(onSave.mock.calls[0]?.[1]);
-    expect(saved.ideaCount).toBe(state.runConfig!.ideaCount);
-    expect(saved.opportunityExploration).toMatchObject({ targetFamilies: 8, maxRawCandidates: 16, maxModelCalls: 10, allowExploratoryProblems: false });
-    view.unmount();
-    const reopened = render(ScopeForm, { workspace: { ...state, runConfig: saved }, busy: false, onSave, onStart, onRetry: vi.fn() });
-    expect((reopened.getByRole("checkbox", { name: /Find distinct businesses across this project/ }) as HTMLInputElement).checked).toBe(true);
-    expect((reopened.getByLabelText("Distinct family target") as HTMLInputElement).value).toBe("8");
-    expect(reopened.getByText("Distinct business target · On (8)")).toBeTruthy();
-    await fireEvent.click(reopened.getByRole("checkbox", { name: /Find distinct businesses across this project/ }));
-    await fireEvent.click(reopened.getByRole("button", { name: "Discover problems" }));
-    await waitFor(() => expect(onSave).toHaveBeenCalledTimes(2));
-    const withoutTarget = RunConfigSchema.parse(onSave.mock.calls[1]?.[1]);
-    expect(withoutTarget.explorationPurpose).toBe("auto");
-    expect(withoutTarget.opportunityExploration).toBeUndefined();
   });
 
   test("keeps a saved output rule until the user switches that project to the brief", async () => {
@@ -396,7 +375,7 @@ describe("ScopeForm search provider selection", () => {
       const settings = renderSettings({ workspace: state });
       await fireEvent.click(settings.getByRole("button", { name: "Research defaults" }));
       await fireEvent.change(settings.getByLabelText("Default reasoning"), { target: { value: "low" } });
-      await fireEvent.change(settings.getByLabelText("Default ideas model"), { target: { value: modelRefKey(luna) } });
+      await pickModel(settings.getByLabelText("Default ideas model"), modelRefKey(luna));
       expect((settings.getByLabelText("Default ideas reasoning") as HTMLSelectElement).value).toBe("low");
       await fireEvent.change(settings.getByLabelText("Default ideas reasoning"), { target: { value: "high" } });
       await fireEvent.click(settings.getByRole("button", { name: "Save defaults" }));
@@ -507,7 +486,7 @@ describe("ScopeForm search provider selection", () => {
     }
   });
 
-  test("uses catalog efforts after changing models while choices load", async () => {
+  test("saved default models show while the model list loads and take catalog efforts when it arrives", async () => {
     const storageKey = "scraply.research-defaults.v1";
     const previous = localStorage.getItem(storageKey);
     const sol = DEFAULT_RUN_CONFIG.model;
@@ -518,15 +497,15 @@ describe("ScopeForm search provider selection", () => {
       { ...luna, displayName: "Luna", defaultReasoningEffort: "low", reasoningEfforts: [{ id: "low", description: "Fast" }] },
     ] };
     try {
-      localStorage.setItem(storageKey, JSON.stringify({ model: sol, searchProvider: "exa" }));
+      localStorage.setItem(storageKey, JSON.stringify({ model: luna, ideasModel: luna, searchProvider: "exa" }));
       const props = { workspace: loading, open: true, busy: false, nativeLogin: null,
         onRetry: vi.fn(), onConnectNative: vi.fn(), onCancelNative: vi.fn(), onRefreshNative: vi.fn(),
         onLogoutNative: vi.fn(), onSaveSearchKey: vi.fn(), onRemoveSearchKey: vi.fn(), onOpenUrl: vi.fn(),
         onOpenData: vi.fn(), onOpenLogs: vi.fn(), onRestore: vi.fn(), onDelete: vi.fn() };
       const settings = render(Settings, props);
       await fireEvent.click(settings.getByRole("button", { name: "Research defaults" }));
-      await fireEvent.change(settings.getByLabelText("Default model"), { target: { value: modelRefKey(luna) } });
-      await fireEvent.change(settings.getByLabelText("Default ideas model"), { target: { value: modelRefKey(luna) } });
+      expect((settings.getByLabelText("Default model") as HTMLButtonElement).disabled).toBe(true);
+      expect(settings.getByLabelText("Default model").textContent).toContain("GPT-6 Luna");
       await settings.rerender({ ...props, workspace: ready });
       await waitFor(() => expect((settings.getByLabelText("Default reasoning") as HTMLSelectElement).value).toBe("low"));
       expect((settings.getByLabelText("Default ideas reasoning") as HTMLSelectElement).value).toBe("low");
@@ -549,10 +528,10 @@ describe("ScopeForm search provider selection", () => {
       const props = { workspace: { ...state, scope: null, runConfig: null }, busy: false,
         onSave: vi.fn(), onStart: vi.fn(), onRetry: vi.fn(), onPreviewWorkflow: vi.fn(), onStartWorkflow: vi.fn() };
       const setup = render(ScopeForm, props);
-      expect(setup.getByRole("option", { name: "GPT-6 Luna (unavailable)" })).toBeTruthy();
-      await fireEvent.change(setup.getByLabelText("Ideas model"), { target: { value: modelRefKey(sol) } });
+      expect(setup.getByLabelText("Ideas model").textContent).toContain("GPT-6 Luna (unavailable)");
+      await pickModel(setup.getByLabelText("Ideas model"), modelRefKey(sol));
       await setup.rerender({ ...props, workspace: { ...props.workspace, models: [], modelOptions: [] } });
-      expect((setup.getByLabelText("Ideas model") as HTMLSelectElement).selectedOptions[0]?.textContent).toBe("GPT-6 Sol (unavailable)");
+      expect(setup.getByLabelText("Ideas model").textContent?.trim()).toBe(`${modelDisplayName(sol)} (unavailable)`);
     } finally {
       if (previous === null) localStorage.removeItem(storageKey);
       else localStorage.setItem(storageKey, previous);
@@ -573,35 +552,33 @@ describe("ScopeForm search provider selection", () => {
     const onSave = vi.fn().mockResolvedValue(undefined);
     const onStart = vi.fn().mockResolvedValue(undefined);
     const view = render(ScopeForm, { workspace: state, busy: false, onSave, onStart, onRetry: vi.fn() });
-    expect(view.getByRole("option", { name: "GPT-6 Sol" })).toBeTruthy();
-    expect(view.queryByRole("option", { name: "Sol legacy" })).toBeNull();
-    const select = view.getByRole("combobox", { name: /Model/ }) as HTMLSelectElement;
+    const select = view.getByRole("combobox", { name: /Model/ }) as HTMLButtonElement;
+    expect(await listedModels(select)).toEqual([modelDisplayName(nativeModel)]);
     expect(select.value).toBe(modelRefKey(DEFAULT_RUN_CONFIG.model));
-    await fireEvent.change(select, { target: { value: modelRefKey(nativeModel) } });
     await fireEvent.click(view.getByRole("button", { name: "Discover problems" }));
     await waitFor(() => expect(onStart).toHaveBeenCalledTimes(1));
     expect(RunConfigSchema.parse(onSave.mock.calls[0]?.[1]).model).toEqual(nativeModel);
   });
 
-  test("keeps unavailable GPT-6 models visible without changing the title model", async () => {
+  test("saving a default model keeps the title model, even one the account does not offer", async () => {
     const storageKey = "scraply.research-defaults.v1";
     const previous = localStorage.getItem(storageKey);
     try {
       localStorage.removeItem(storageKey);
       const view = renderSettings({ workspace: workspace() });
       await fireEvent.click(view.getByRole("button", { name: "Research defaults" }));
-      const model = view.getByLabelText("Default model") as HTMLSelectElement;
-      const titleModel = view.getByLabelText("Title model") as HTMLSelectElement;
-      expect([...model.options].map((option) => option.textContent)).toContain("GPT-6 Sol");
-      expect([...model.options].map((option) => option.textContent)).toContain("GPT-6 Luna (unavailable)");
+      const model = view.getByLabelText("Default model") as HTMLButtonElement;
+      const titleModel = view.getByLabelText("Title model") as HTMLButtonElement;
+      const offered = workspace().modelOptions.map((item) => modelRefKey(item));
+      expect(titleModel.textContent).toContain(offered.includes("openai-subscription:gpt-6-luna") ? "GPT-6 Luna" : "GPT-6 Luna (unavailable)");
       const originalTitle = titleModel.value;
-      await fireEvent.change(model, { target: { value: "openai-subscription:gpt-6-sol" } });
+      await pickModel(model, offered[0]!);
       await fireEvent.click(view.getByRole("button", { name: "Save defaults" }));
       view.unmount();
 
       const reopened = renderSettings({ workspace: workspace() });
       await fireEvent.click(reopened.getByRole("button", { name: "Research defaults" }));
-      expect((reopened.getByLabelText("Default model") as HTMLSelectElement).value).toBe("openai-subscription:gpt-6-sol");
+      expect((reopened.getByLabelText("Default model") as HTMLSelectElement).value).toBe(modelRefKey(workspace().modelOptions[0]!));
       expect((reopened.getByLabelText("Title model") as HTMLSelectElement).value).toBe(originalTitle);
     } finally {
       if (previous === null) localStorage.removeItem(storageKey);
@@ -621,12 +598,12 @@ describe("ScopeForm search provider selection", () => {
     ];
     const onSave = vi.fn().mockResolvedValue(undefined);
     const view = render(ScopeForm, { workspace: state, busy: false, onSave, onStart: vi.fn(), onRetry: vi.fn() });
-    const modelSelect = view.getByRole("combobox", { name: "Model" }) as HTMLSelectElement;
-    expect(view.getByRole("option", { name: "GPT-6 Sol" })).toBeTruthy();
-    expect(view.getByRole("option", { name: "GPT-6 Luna" })).toBeTruthy();
-    await fireEvent.change(modelSelect, { target: { value: modelRefKey(sol) } });
+    const modelSelect = view.getByRole("combobox", { name: "Model" });
+    // Luna is a latest model; GPT-6 Sol is now behind "Legacy models".
+    expect(await listedModels(modelSelect)).toEqual(["GPT-6 Luna", "Legacy models1", "GPT-6 Sol"]);
+    await pickModel(modelSelect, modelRefKey(sol));
     expect((view.getByRole("combobox", { name: /Reasoning/ }) as HTMLSelectElement).value).toBe("high");
-    await fireEvent.change(modelSelect, { target: { value: modelRefKey(luna) } });
+    await pickModel(modelSelect, modelRefKey(luna));
     expect((view.getByRole("combobox", { name: /Reasoning/ }) as HTMLSelectElement).value).toBe("minimal");
     await fireEvent.click(view.getByRole("button", { name: "Discover problems" }));
     await waitFor(() => expect(onSave).toHaveBeenCalledTimes(1));
@@ -821,7 +798,6 @@ describe("ScopeForm search provider selection", () => {
       workspace: state, busy: false, onSave: vi.fn(), onStart: vi.fn(), onRetry: vi.fn(),
     });
 
-    expect(view.getByText("Your available models appear here after you sign in.")).toBeTruthy();
     expect(view.getByText("No compatible models are available")).toBeTruthy();
     expect((view.getByRole("combobox", { name: /Model/ }) as HTMLSelectElement).disabled).toBe(true);
   });
@@ -839,9 +815,9 @@ describe("ScopeForm search provider selection", () => {
       workspace: state, busy: false, onSave, onStart, onRetry: vi.fn(),
     });
 
-    const modelSelect = view.getByRole("combobox", { name: /Model/ }) as HTMLSelectElement;
+    const modelSelect = view.getByRole("combobox", { name: /Model/ }) as HTMLButtonElement;
     expect(modelSelect.value).toBe("");
-    expect(view.getByRole("option", { name: "Choose an OpenAI model" })).toBeTruthy();
+    expect(modelSelect.textContent).toContain("Choose an OpenAI model");
     expect(view.getByText("This project used the removed CLI integration. Choose an available OpenAI model.")).toBeTruthy();
     expect(view.queryByRole("button", { name: "Retry connections" })).toBeNull();
     await fireEvent.click(view.getByRole("button", { name: "Choose model" }));
@@ -851,7 +827,7 @@ describe("ScopeForm search provider selection", () => {
     expect(onSave).not.toHaveBeenCalled();
     expect(onStart).not.toHaveBeenCalled();
 
-    await fireEvent.change(modelSelect, { target: { value: modelRefKey(DEFAULT_RUN_CONFIG.model) } });
+    await pickModel(modelSelect, modelRefKey(DEFAULT_RUN_CONFIG.model));
     expect(view.queryByText("This project used the removed CLI integration.", { exact: false })).toBeNull();
     expect((view.getByRole("button", { name: "Discover problems" }) as HTMLButtonElement).disabled).toBe(false);
     await fireEvent.click(view.getByRole("button", { name: "Discover problems" }));
@@ -997,7 +973,7 @@ describe("settings surfaces preserve launch configuration", () => {
     expect(view.getByLabelText("Solutions per problem").closest("aside")).toBeTruthy();
     await fireEvent.input(view.getByLabelText("Solutions per problem"), { target: { value: "5" } });
     // Vibe (the default mode) shows the ideas model in the run panel, not in Advanced settings.
-    await fireEvent.change(view.getByLabelText("Ideas model"), { target: { value: modelRefKey(ideasModel) } });
+    await pickModel(view.getByLabelText("Ideas model"), modelRefKey(ideasModel));
     expect(view.getByLabelText("Ideas model").closest("aside")).toBeTruthy();
     if (researchMode === "explore-market") {
       await fireEvent.change(view.getByLabelText("Research depth"), { target: { value: "deep" } });

@@ -42,6 +42,11 @@ export const WorkflowLaunchDraftSchema = z.object({
   contractVersion: z.literal(1),
   /** Absent on saved contracts created before the frame workflow. */
   frameWorkflowVersion: z.literal(1).optional(),
+  /**
+   * 2: one writer per problem writes all its ideas in one call and a ranker orders them; no review or fill rounds.
+   * Absent on saved contracts created before ranked ideas, which keep their batches, review and fill rounds.
+   */
+  ideaWorkflowVersion: z.literal(2).optional(),
   purpose: WorkflowPurposeSchema,
   mode: WorkflowModeSchema,
   brief: TextSchema,

@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { startMockBackend } from "./mock-backend";
+import { pickModel } from "./model-picker";
 
 test("research defaults persist after reopen while a saved project keeps its choices", async ({}, testInfo) => {
   // Both providers are connected, so a new setup keeps the saved default instead of switching to an available provider.
@@ -19,10 +20,12 @@ test("research defaults persist after reopen while a saved project keeps its cho
     await page.getByRole("button", { name: "Settings", exact: true }).click();
     await page.getByRole("button", { name: "Research defaults", exact: true }).click();
     await expect(page.getByLabel("Default search provider", { exact: true })).toHaveValue("exa");
-    await expect(page.getByLabel("Default model", { exact: true })).toHaveValue("openai-subscription:gpt-6-sol");
-    await expect(page.getByLabel("Default model").getByRole("option", { name: "GPT-6 Astra", exact: true })).toHaveCount(1);
+    await expect(page.getByLabel("Default model", { exact: true })).toHaveAttribute("data-value", "openai-subscription:gpt-6.1-sol");
+    await page.getByLabel("Default model", { exact: true }).click();
+    await expect(page.getByRole("listbox").getByRole("option", { name: "GPT-6 Astra", exact: true })).toHaveCount(1);
+    await page.keyboard.press("Escape");
     await page.getByLabel("Default search provider", { exact: true }).selectOption("perplexity");
-    await page.getByLabel("Default model", { exact: true }).selectOption("openai-subscription:gpt-6-astra");
+    await pickModel(page.getByLabel("Default model", { exact: true }), "openai-subscription:gpt-6-astra");
     await page.getByRole("button", { name: "Save defaults" }).click();
     await expect(page.getByText("Defaults saved", { exact: true })).toBeVisible();
     await page.screenshot({ animations: "disabled", path: testInfo.outputPath("defaults.png") });
@@ -32,13 +35,13 @@ test("research defaults persist after reopen while a saved project keeps its cho
     await page.getByRole("button", { name: "Settings", exact: true }).click();
     await page.getByRole("button", { name: "Research defaults", exact: true }).click();
     await expect(page.getByLabel("Default search provider", { exact: true })).toHaveValue("perplexity");
-    await expect(page.getByLabel("Default model", { exact: true })).toHaveValue("openai-subscription:gpt-6-astra");
+    await expect(page.getByLabel("Default model", { exact: true })).toHaveAttribute("data-value", "openai-subscription:gpt-6-astra");
     await page.keyboard.press("Escape");
     await expect(page.getByLabel("Audience", { exact: true })).toBeVisible();
-    await expect(page.getByLabel("Model", { exact: true })).toHaveValue("openai-subscription:gpt-6-astra");
+    await expect(page.getByLabel("Model", { exact: true })).toHaveAttribute("data-value", "openai-subscription:gpt-6-astra");
     await expect(page.getByLabel("Search provider", { exact: true })).toHaveValue("perplexity");
     // Per-run overrides remain separate from the defaults saved in Settings.
-    await page.getByLabel("Model", { exact: true }).selectOption("openai-subscription:gpt-6-sol");
+    await pickModel(page.getByLabel("Model", { exact: true }), "openai-subscription:gpt-6.1-sol");
     await page.getByRole("button", { name: "Advanced settings" }).click();
     await page.getByLabel("Search provider", { exact: true }).selectOption("exa");
     await page.getByRole("button", { name: "Done", exact: true }).click();
@@ -50,11 +53,11 @@ test("research defaults persist after reopen while a saved project keeps its cho
     electron = await launch();
     page = await electron.firstWindow();
     await page.getByRole("tab", { name: /Setup/ }).click();
-    await expect(page.locator(".setup .run-settings").getByText("GPT-6 Sol", { exact: true })).toBeVisible();
+    await expect(page.locator(".setup .run-settings").getByText("GPT-6.1 Sol", { exact: true })).toBeVisible();
     await expect(page.locator(".setup .run-settings").getByText("Exa", { exact: true })).toBeVisible();
     await page.getByRole("button", { name: "Settings", exact: true }).click();
     await page.getByRole("button", { name: "Research defaults", exact: true }).click();
-    await expect(page.getByLabel("Default model", { exact: true })).toHaveValue("openai-subscription:gpt-6-astra");
+    await expect(page.getByLabel("Default model", { exact: true })).toHaveAttribute("data-value", "openai-subscription:gpt-6-astra");
     await expect(page.getByLabel("Default search provider", { exact: true })).toHaveValue("perplexity");
   } finally {
     await electron?.close();

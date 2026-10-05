@@ -86,17 +86,17 @@
     <div class="settings-content">
       <header><div><h2>{section === "accounts" ? "Accounts" : section === "defaults" ? "Research defaults" : section === "archive" ? "Archived research" : section === "advanced" ? "Advanced" : "Local files"}</h2></div></header>
   {#if section === "advanced"}<AdvancedSettings />{/if}
-  <div hidden={section !== "archive"} class="archive-list">
+  <div hidden={section !== "archive"} class="archive-list settings-cards">
     {#each archived as thread (thread.id)}
-      <article><div><strong>{thread.title}</strong><span>{thread.archivedAt ? new Date(thread.archivedAt).toLocaleDateString() : "Archived"}</span></div><button disabled={busy} onclick={() => onRestore(thread.id)} aria-label={`Restore ${thread.title}`}>Restore</button><button class="danger" disabled={busy} onclick={() => deleteArchived(thread.id, thread.title)} aria-label={`Delete ${thread.title}`}>Delete</button></article>
+      <article class="settings-card"><div><strong>{thread.title}</strong><span>{thread.archivedAt ? new Date(thread.archivedAt).toLocaleDateString() : "Archived"}</span></div><div class="card-actions"><button disabled={busy} onclick={() => onRestore(thread.id)} aria-label={`Restore ${thread.title}`}>Restore</button><button class="danger" disabled={busy} onclick={() => deleteArchived(thread.id, thread.title)} aria-label={`Delete ${thread.title}`}>Delete</button></div></article>
     {:else}<p class="archive-empty">No archived research.</p>{/each}
   </div>
   <div hidden={section !== "defaults"}><ResearchDefaults {workspace} /></div>
   {#if feedback}<p class="feedback" class:error={feedback.tone === "error"} role={feedback.tone === "error" ? "alert" : "status"}>{feedback.text}</p>{/if}
   {#if workspace}
-    <!-- Every account Scraply uses, as one list: the OpenAI model account first, then the search providers. -->
-    <div hidden={section !== "accounts"} class="accounts">
-      <div class="provider native-account" class:needs-connection={!workspace.validation.native.connected && !nativeValidationPending} class:checking={nativeValidationPending} aria-label="OpenAI account">
+    <!-- Every account Scraply uses, one card each: the OpenAI model account first, then the search providers. -->
+    <div hidden={section !== "accounts"} class="accounts settings-cards">
+      <div class="provider settings-card native-account" class:needs-connection={!workspace.validation.native.connected && !nativeValidationPending} class:checking={nativeValidationPending} aria-label="OpenAI account">
         <div class="provider-row">
           <div class="provider-name"><OpenAILogo size={22} /><strong>OpenAI</strong></div>
           <div class="provider-status">
@@ -144,7 +144,7 @@
       {#each SEARCH_PROVIDERS as provider (provider.id)}
         {@const status = workspace.validation[provider.id]}
         {@const checking = status.checking === true}
-        <div class="provider search-account" aria-label={`${provider.name} account`}>
+        <div class="provider settings-card search-account" aria-label={`${provider.name} account`}>
           <div class="provider-row">
             <div class="provider-name"><ProviderLogo provider={provider.id} size={22} /><strong>{provider.name}</strong></div>
             <div class="provider-status">
@@ -162,7 +162,7 @@
   {/if}
   <div hidden={section !== "local"}>
   <section class="local" aria-label="Local files">
-    <div><button disabled={busy} onclick={onOpenData}><Icon name="folder" size={18} />Open data folder</button><button disabled={busy} onclick={onOpenLogs}><Icon name="folder" size={18} />Open logs folder</button></div>
+    <div class="settings-cards"><button class="settings-card" disabled={busy} onclick={onOpenData}><Icon name="folder" size={18} />Open data folder</button><button class="settings-card" disabled={busy} onclick={onOpenLogs}><Icon name="folder" size={18} />Open logs folder</button></div>
   </section>
   </div>
     </div>
@@ -189,7 +189,7 @@
   .back:hover:not(:disabled) { color:var(--text);background:var(--surface-2); }
   /* The column starts on the research page title's left edge and uses its heading type, rather than floating centred. */
   .settings-content { padding:18px 24px 32px;min-width:0;min-height:0;overflow:auto;scrollbar-gutter:stable;border:1px solid var(--glass-edge);border-radius:var(--panel-radius);background:var(--bg);box-shadow:var(--glass-rim); }
-  .settings-content > * { max-width:720px; }
+  .settings-content > * { max-width:1440px; }
   .settings-content > header { display:flex;align-items:start;justify-content:space-between;gap:16px;margin-bottom:24px; }
   h2 { margin:0;font-size:24px;font-weight:600;letter-spacing:-.025em; }
   button { padding:10px 14px;border:1px solid var(--border-strong);border-radius:8px;background:var(--surface-2);color:var(--text);font-size:13px; }
@@ -199,34 +199,33 @@
   .primary:hover:not(:disabled) { background:var(--accent); }
   .login-progress { border:1px solid var(--border-strong);padding:16px;border-radius:12px;background:var(--surface); }
   .login-progress code { padding:8px 12px;border:1px solid var(--border-strong);border-radius:6px;font:600 17px var(--mono);letter-spacing:.1em; }
-  /* One row per account: logo and name on the left, status on the right. OpenAI actions sit under its name. */
-  .provider { display:grid;gap:16px;padding:22px 0;border-bottom:1px solid var(--border);font-size:13px; }
-  .provider:first-child { border-top:1px solid var(--border); }
-  .provider-row { display:flex;align-items:center;justify-content:space-between;gap:20px; }
+  /* One card per account: logo and name, then status, with the actions held at the bottom so the cards line up. */
+  .provider { font-size:13px; }
+  .provider-row { display:grid;gap:12px; }
   .provider-name { flex:none;display:flex;align-items:center;gap:14px;color:var(--text); }
   .provider-name :global(svg) { flex:none; }
   .provider strong { font-size:14px;font-weight:600; }
-  .provider-status { display:grid;gap:6px;justify-items:end;max-width:70%;min-width:0;text-align:right; }
+  .provider-status { display:grid;gap:6px;min-width:0; }
   .provider-status span { color:var(--muted);overflow-wrap:anywhere; }
   .provider .ok { color:var(--success); }
   .provider .account-error { color:var(--danger); }
-  .native-account,.search-account { gap:10px; }
-  .native-account > .login-progress { margin:6px 0 0 36px; }
-  /* OpenAI's actions are compact ghost buttons under its status, so the row keeps the list's two-column rhythm.
-     The negative margin lines the button text up with the status text above it. */
-  .native-account > .account-actions { justify-content:flex-end;gap:2px;margin-right:-10px; }
+  .native-account > .login-progress { margin-top:auto; }
+  /* Compact ghost buttons; the negative margin lines the first button's text up with the status above it. */
+  .native-account > .account-actions { gap:2px;margin:auto 0 0 -10px; }
+  .native-account > .account-actions:has(.primary) { gap:8px;margin-left:0; }
   .account-actions button { padding:6px 10px;border-color:transparent;border-radius:7px;background:transparent;color:var(--muted); }
   .account-actions button:hover:not(:disabled) { background:var(--surface-2);color:var(--text); }
   .account-actions .primary { background:var(--accent-strong);color:var(--accent-ink); }
   .account-actions .primary:hover:not(:disabled) { background:var(--accent);color:var(--accent-ink); }
-  .retry { margin-top:24px; }
-  .local > div { display:grid;gap:12px; }.local button { display:flex;align-items:center;gap:12px;padding:16px;text-align:left;background:var(--surface);border-color:var(--border); }
+  .retry { grid-column:1/-1;justify-self:start;margin-top:10px; }
+  .local button { flex-direction:row;align-items:center;gap:12px;text-align:left; }
   .local button :global(svg) { flex:none;color:var(--muted); }
   .feedback { padding:12px;border:1px solid var(--border);border-radius:8px;color:var(--muted);font-size:13px;overflow-wrap:anywhere; }
   .feedback.error { color:var(--danger); }
   [hidden] { display:none; }
-  .archive-list article { display:flex;align-items:center;gap:10px;padding:22px 0;border-bottom:1px solid var(--border); }
-  .archive-list article > div { flex:1;min-width:0;display:grid;gap:6px; }
+  .archive-list article > div:first-child { min-width:0;display:grid;gap:6px; }
+  .card-actions { display:flex;gap:8px;margin-top:auto; }
+  .archive-empty { grid-column:1/-1; }
   .archive-list strong { font-size:14px;overflow-wrap:anywhere; }
   .archive-list span,.archive-empty { font-size:13px;color:var(--muted); }
   .danger { color:var(--danger); }

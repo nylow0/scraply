@@ -439,6 +439,19 @@ export class WorkflowV2Repository {
       .run(canonicalJson(parsed), solutionId, researchRunId);
   }
 
+  /** Saves one problem's ranked group: rank, reason line, weak-fit reason, and the ranker's criterion fit. */
+  saveIdeaRanking(researchRunId: string, ranked: ReadonlyArray<{ candidateId: string; rank: number; reason: string;
+    weakFitReason: string | null; criteriaFit?: CriterionFit[] }>, frame: ResearchFrame | undefined, evidenceSourceIds: readonly string[]): void {
+    this.client.requireImmediateTransaction();
+    const owned = this.client.db.prepare("SELECT 1 FROM solutions WHERE id = ? AND research_run_id = ?");
+    const update = this.client.db.prepare("UPDATE solutions SET rank = ?, rank_reason = ?, weak_fit_reason = ? WHERE id = ? AND research_run_id = ?");
+    for (const idea of ranked) {
+      if (!owned.get(idea.candidateId, researchRunId)) throw new Error("A ranked idea does not belong to this run");
+      update.run(idea.rank, idea.reason, idea.weakFitReason, idea.candidateId, researchRunId);
+      if (frame && idea.criteriaFit) this.saveReviewedCriteriaFit(researchRunId, idea.candidateId, idea.criteriaFit, frame, evidenceSourceIds);
+    }
+  }
+
   private requireV2Run(researchRunId: string, problemId?: string): void {
     const run = this.client.db.prepare(`
       SELECT workflow_version, problem_id FROM research_runs WHERE id = ?

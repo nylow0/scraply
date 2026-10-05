@@ -1,7 +1,7 @@
 <script lang="ts">
+  import ModelPicker from "./ModelPicker.svelte";
   import type { IdeaConversation as ConversationView, SubmitIdeaTurnRequest } from "../../shared/workflow-contracts";
   import type { ModelOption, ModelRef } from "../../shared/schemas";
-  import { modelDisplayName } from "../lib/research-defaults";
 
   type Draft = Omit<SubmitIdeaTurnRequest, "threadId" | "rootSolutionId">;
 
@@ -143,7 +143,7 @@
     retryParentTurnId = turn.parentTurnId;
     selectedVersionId = turn.baseSolutionId;
     mobilePane = "conversation";
-    error = edit ? "Edit the message, then send it as a new turn. The failed turn stays in history." : null;
+    error = edit ? "Edit the message, then send it as a new turn." : null;
     document.getElementById("idea-follow-up-draft")?.focus();
   }
 </script>
@@ -187,7 +187,7 @@
         <p class="lineage">Based on v{conversation.versions.find((item) => item.solutionId === selectedVersion?.parentSolutionId)?.versionNumber ?? "?"}. Its earlier review and conversation remain in history.</p>
         {#if parentVersion}
           <details class="version-comparison"><summary>Compare with v{parentVersion.versionNumber}</summary>
-            <p>{selectedVersion.changeSummary ?? "This version changes the saved idea."}</p>
+            {#if selectedVersion.changeSummary}<p>{selectedVersion.changeSummary}</p>{/if}
             <p>{changedFields.length ? `Changed: ${changedFields.join(" and ")}.` : "The explanation is unchanged."}</p>
             {#if changedFields.includes("How it works")}<div><strong>Earlier mechanism</strong><p>{parentVersion.mechanism}</p><strong>Current mechanism</strong><p>{selectedVersion.mechanism}</p></div>{/if}
             {#if changedFields.includes("Description")}<div><strong>Earlier description</strong><p>{parentVersion.description}</p><strong>Current description</strong><p>{selectedVersion.description}</p></div>{/if}
@@ -206,7 +206,7 @@
         </label>
       {/if}
       <div class="turns" aria-live="polite">
-        {#if visibleTurns.length === 0}<p class="empty">Ask why this idea might work, explore another direction, or rethink it using the saved research.</p>{/if}
+        {#if visibleTurns.length === 0}{/if}
         {#each visibleTurns as turn (turn.id)}
           <article class="turn">
             <div class="message user"><span class="message-label">You · v{conversation.versions.find((version) => version.solutionId === turn.baseSolutionId)?.versionNumber ?? "?"}</span><p>{turn.userText}</p></div>
@@ -214,7 +214,7 @@
               <div class="message assistant"><span class="message-label">Assistant</span><p>{turn.assistant.text}</p>
                 {#if turn.assistant.citedEvidenceIds.length}<p class="citations">Evidence: {turn.assistant.citedEvidenceIds.join(", ")}</p>{/if}
                 {#if turn.assistant.assumptions.length}<details><summary>Assumptions</summary><ul>{#each turn.assistant.assumptions as assumption, index (index)}<li>{assumption}</li>{/each}</ul></details>{/if}
-                {#if turn.assistant.generatedSolutionId}<p class="new-version">A new version was saved. Its risk review is still pending.</p>{/if}
+                {#if turn.assistant.generatedSolutionId}<p class="new-version">A new version was saved.</p>{/if}
               </div>
             {:else if turn.state === "pending" || turn.state === "running"}
               <p class="turn-state" role="status">{turn.state === "pending" ? "Waiting to start" : "Preparing a reply"}</p>
@@ -231,16 +231,14 @@
           <button class:active={intent === "rethink"} aria-pressed={intent === "rethink"} onclick={() => intent = "rethink"}>Rethink</button>
         </div>
         {#if retryParentTurnId !== undefined}<div class="reply-context">Retrying creates a new branch before the failed turn. <button onclick={() => { retryParentTurnId = undefined; replyToTurnId = null; }}>Use latest</button></div>
-        {:else if replyToTurnId}<div class="reply-context">{replyToTurnId !== branch?.headTurnId ? "Replying from an earlier turn creates a branch." : "Replying to the latest turn."} <button onclick={() => replyToTurnId = null}>Use latest</button></div>{/if}
+        {:else if replyToTurnId}<div class="reply-context">{replyToTurnId !== branch?.headTurnId ? "Replying from an earlier turn" : "Replying to the latest turn"} <button onclick={() => replyToTurnId = null}>Use latest</button></div>{/if}
         <label for="idea-follow-up-draft" class="visually-hidden">Follow-up message</label>
         <textarea id="idea-follow-up-draft" bind:value={draft} maxlength="4000" rows="3" placeholder="Write a follow-up…"></textarea>
-        {#if newerResearchAvailable}<label class="research-choice"><input type="checkbox" bind:checked={useNewerResearch} /><span><strong>Use newer research</strong><small>Use the current research snapshot for this reply. The saved idea and earlier versions stay as they are.</small></span></label>{/if}
+        {#if newerResearchAvailable}<label class="research-choice"><input type="checkbox" bind:checked={useNewerResearch} /><span><strong>Use newer research</strong></span></label>{/if}
         <div class="send-controls">
           <label>Model
-            <select value={effectiveModelKey ?? ""} onchange={(event) => { modelKey = event.currentTarget.value || null; effort = null; }}>
-              {#if !selectedModelOption}<option value="">Choose an available model</option>{/if}
-              {#each modelOptions as option (`${option.providerId}:${option.modelId}`)}<option value={`${option.providerId}:${option.modelId}`}>{modelDisplayName(option)}</option>{/each}
-            </select>
+            <ModelPicker label="Model" options={modelOptions} value={effectiveModelKey ?? ""} missingLabel="Choose an available model"
+              onchange={(key) => { modelKey = key; effort = null; }} />
           </label>
           <label>Effort
             <select value={effectiveEffort} onchange={(event) => effort = event.currentTarget.value} disabled={!selectedModelOption}>
@@ -286,7 +284,6 @@
   .version-comparison div { margin-top:15px;padding-top:12px;border-top:1px solid var(--border); }
   .version-comparison strong { display:block;color:var(--text);font-size:12px; }
   .turns { display:grid;gap:18px;margin-top:16px;max-height:550px;overflow:auto; }
-  .empty { color:var(--muted);padding:30px 0;line-height:1.6; }
   .turn { border-top:1px solid var(--border);padding-top:17px; }
   .message { padding:12px 14px;border:1px solid var(--border);border-radius:9px;margin-bottom:8px; }
   .message.user { margin-left:24px;background:rgb(255 255 255 / .05); }
@@ -307,7 +304,7 @@
   textarea { width:100%;min-height:88px;background:var(--surface);border:1px solid var(--border-strong);border-radius:8px;padding:11px;color:var(--text); }
   .research-choice { display:flex;align-items:flex-start;gap:10px;margin:11px 0;padding:11px 12px;border:1px solid var(--border);border-radius:8px;color:var(--text);font-size:13px;cursor:pointer; }
   .research-choice input { width:16px;height:16px;accent-color:var(--accent);margin:2px 0 0;flex:none; }
-  .research-choice span { display:grid;gap:3px; }.research-choice small { color:var(--muted);font-size:12px;line-height:1.45; }
+  .research-choice span { display:grid;gap:3px; }
   .send-controls { display:flex;align-items:end;gap:10px;flex-wrap:wrap;margin-top:10px; }
   .send-controls label,.branch-picker { display:grid;gap:4px;color:var(--subtle);font-size:11px; }
   .send-controls select,.branch-picker select { max-width:210px;min-height:34px;background:var(--surface);border:1px solid var(--border);border-radius:6px;color:var(--text);padding:5px 7px; }
