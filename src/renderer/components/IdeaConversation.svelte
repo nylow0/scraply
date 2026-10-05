@@ -179,7 +179,8 @@
   }
 
   async function retryTurn(turn: ConversationView["turns"][number], edit: boolean) {
-    draft = turn.userText;
+    const fixedExplanation = turn.intent === "explain" && turn.userText === EXPLAIN_IDEA_PROMPT;
+    draft = fixedExplanation ? (edit ? "Explain this idea" : "") : turn.userText;
     intent = turn.intent === "explain" ? "explore-directions" : turn.intent;
     replyToTurnId = null;
     retryParentTurnId = turn.parentTurnId;

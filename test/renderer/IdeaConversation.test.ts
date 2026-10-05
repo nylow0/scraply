@@ -80,6 +80,23 @@ describe("IdeaConversation", () => {
     expect(onSubmit.mock.calls[0]?.[0].branchId).toBeUndefined();
   });
 
+  test("keeps the fixed Explain instructions hidden during failed-turn editing and retry", async () => {
+    const saved = conversation();
+    saved.turns[0]!.userText = EXPLAIN_IDEA_PROMPT;
+    const onSubmit = vi.fn().mockResolvedValue(undefined);
+    const view = render(IdeaConversation, { conversation: saved, modelOptions, onSubmit });
+    expect(view.getByText("Explain this idea")).toBeTruthy();
+    await fireEvent.click(view.getByRole("button", { name: "Edit and retry" }));
+    const input = view.getByLabelText("Follow-up message") as HTMLTextAreaElement;
+    expect(input.value).toBe("Explain this idea");
+    expect(view.queryByText(EXPLAIN_IDEA_PROMPT)).toBeNull();
+    await pickModel(view.getByLabelText("Model"), "test:new-model");
+    await fireEvent.click(view.getByRole("button", { name: "Retry", exact: true }));
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledOnce());
+    expect(onSubmit.mock.calls[0]?.[0]).toMatchObject({ intent: "explain", text: EXPLAIN_IDEA_PROMPT });
+    expect(input.value).toBe("");
+  });
+
   test("keeps saved evidence by default and opts into newer research for a reply", async () => {
     const onSubmit = vi.fn().mockResolvedValue(undefined);
     const view = render(IdeaConversation, {
