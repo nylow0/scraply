@@ -262,6 +262,16 @@ export class ResearchEngine {
     return created.runId;
   }
 
+  private readScope(runId: string): Scope {
+    const row = this.options.db.db.prepare(`SELECT title,audience,domain,observations,off_limits_json,risk_evaluation_criteria
+      FROM scopes WHERE research_run_id = ?`).get(runId) as {
+      title: string; audience: string; domain: string; observations: string; off_limits_json: string; risk_evaluation_criteria: string;
+    } | undefined;
+    if (!row) throw new AppError("not_found", "The saved research scope is missing.");
+    return ScopeSchema.parse({ title: row.title, audience: row.audience, domain: row.domain, observations: row.observations,
+      offLimits: JSON.parse(row.off_limits_json), ...(row.risk_evaluation_criteria ? { riskEvaluationCriteria: row.risk_evaluation_criteria } : {}) });
+  }
+
   private admitWorkflowRun(runId: string, threadId: string, workflow?: ResearchRunWorkflowLink): boolean {
     try {
       if (workflow?.onRunCreated?.(runId) !== false) return true;
@@ -1524,17 +1534,7 @@ export class ResearchEngine {
   }
 
   private async executeDiscovery(active: ActiveRun): Promise<void> {
-    const scopeRow = this.options.db.db.prepare("SELECT title, audience, domain, observations, off_limits_json, risk_evaluation_criteria FROM scopes WHERE research_run_id = ?")
-      .get(active.runId) as { title: string; audience: string; domain: string; observations: string; off_limits_json: string; risk_evaluation_criteria: string } | undefined;
-    if (!scopeRow) throw new Error("Discovery scope is missing");
-    const scope = ScopeSchema.parse({
-      title: scopeRow.title,
-      audience: scopeRow.audience,
-      domain: scopeRow.domain,
-      observations: scopeRow.observations,
-      offLimits: JSON.parse(scopeRow.off_limits_json),
-      ...(scopeRow.risk_evaluation_criteria ? { riskEvaluationCriteria: scopeRow.risk_evaluation_criteria } : {}),
-    });
+    const scope = this.readScope(active.runId);
     const boundFrame = new ResearchFrameRepository(this.options.db).forRun(active.runId)?.approved;
     if (boundFrame) await this.validateFrameSourceVenues(active, boundFrame);
     const deps = this.dependencies(active);
@@ -1571,13 +1571,7 @@ export class ResearchEngine {
     const workflow = active.workflow!;
     if (new ResearchFrameRepository(this.options.db).forRun(active.runId)) return;
     const kind = workflow.read<{ knownProblem: boolean; regeneration?: { frameId: string; edited: ResearchFrame } }>("workflow-kind")!;
-    const scopeRow = this.options.db.db.prepare(`SELECT title, audience, domain, observations,
-      off_limits_json, risk_evaluation_criteria FROM scopes WHERE research_run_id = ?`).get(active.runId) as {
-        title: string; audience: string; domain: string; observations: string; off_limits_json: string; risk_evaluation_criteria: string;
-      };
-    const scope = ScopeSchema.parse({ title: scopeRow.title, audience: scopeRow.audience, domain: scopeRow.domain,
-      observations: scopeRow.observations, offLimits: JSON.parse(scopeRow.off_limits_json),
-      ...(scopeRow.risk_evaluation_criteria ? { riskEvaluationCriteria: scopeRow.risk_evaluation_criteria } : {}) });
+    const scope = this.readScope(active.runId);
     const frames = new ResearchFrameRepository(this.options.db);
     const previous = kind.regeneration ? frames.get(kind.regeneration.frameId) : null;
     if (kind.regeneration && (!previous || previous.threadId !== active.threadId)) throw new AppError("INVALID_REFERENCE");
@@ -1653,7 +1647,14 @@ export class ResearchEngine {
     if (!workflow.read("source-routes") || workflow.read("frame-source-venues")) return;
     const started = this.options.db.db.prepare(`SELECT 1 FROM stage_results WHERE research_run_id = ?
       AND stage_id IN ('query-plan','factor-harvest','problem-candidates','problem-kill') LIMIT 1`).get(active.runId);
-    if (started) {
+    const historicalPlan = this.options.db.db.prepare(`SELECT 1 FROM generation_attempts WHERE research_run_id = ?
+      AND stage_key LIKE 'query-plan:%'
+      AND json_type(request_json, '$.workOrder.inputs.routing.frame') = 'object'
+      AND json_type(request_json, '$.workOrder.inputs.routing.area') = 'object'
+      AND json_type(request_json, '$.workOrder.inputs.routing.goalKind') IS NULL
+      AND json_type(request_json, '$.workOrder.inputs.routing.languages') IS NULL LIMIT 1`).get(active.runId);
+    // A prepared or dispatched old planner fixes its contract even before its stage checkpoint is written.
+    if (started || historicalPlan) {
       workflow.save("frame-source-venues", { compatibility: "preserve-saved-routing" });
       return;
     }
@@ -1669,10 +1670,14 @@ export class ResearchEngine {
 
   private areaDependencies(active: ActiveRun, frame: ResearchFrame, area: ResearchArea) {
     const dependencies = this.dependencies(active);
-    const validation = active.workflow!.read<VenueVerificationResult & { validated?: boolean }>("frame-source-venues");
+    const validation = active.workflow!.read<VenueVerificationResult & { validated?: boolean; compatibility?: string }>("frame-source-venues");
+    const { goalKind, languages, ...savedRouting } = dependencies.sourceRouting;
+    // Pre-frame-routing planners already included the frame, but not these routing inputs.
+    const sourceRouting = validation?.compatibility === "preserve-saved-routing"
+      ? savedRouting : { ...savedRouting, ...(goalKind ? { goalKind } : {}), ...(languages ? { languages } : {}) };
     // Earlier verification receipts allowed DNS alone. Only saved retrieved proof can expand routes.
     const provenDomains = new Set(validation?.proofs?.filter(proof => proof.method === "saved-source" && proof.sourceUrl).map(proof => proof.domain));
-    return { ...dependencies, frame, area, sourceRouting: { ...dependencies.sourceRouting,
+    return { ...dependencies, frame, area, sourceRouting: { ...sourceRouting,
       ...(validation?.validated ? { venues: validation.verified.filter(verified => provenDomains.has(verified.domain ?? "") && area.venues.some(venue =>
         venue.name === verified.name && venue.kind === verified.kind && venue.domain?.toLowerCase() === verified.domain)),
         ...(area.region ? { region: area.region } : {}) } : {}),
