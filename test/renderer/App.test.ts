@@ -2,6 +2,7 @@ import { fireEvent, render, waitFor, within } from "@testing-library/svelte";
 import { tick } from "svelte";
 import { describe, expect, test, vi } from "vitest";
 import type { ScraplyApi } from "../../src/preload/index";
+import { listedModels } from "./model-picker";
 import App from "../../src/renderer/App.svelte";
 import type { ResearchEvent, WorkspaceState } from "../../src/shared/ipc";
 import { DEFAULT_RUN_CONFIG } from "../../src/shared/schemas";
@@ -771,7 +772,8 @@ describe("App workspace coordination", () => {
     expect(startNativeLogin).toHaveBeenCalledWith({ providerId: "openai-subscription", method: "browser" });
     expect(await view.findByText("Native model account connected.")).toBeTruthy();
     expect(view.queryByText("provider request failed with HTTP 401")).toBeNull();
-    expect(within(view.getByLabelText("Model", { exact: true })).getByRole("option", { name: "GPT-6 Sol", hidden: true })).toBeTruthy();
+    expect((view.getByLabelText("Model", { exact: true }) as HTMLButtonElement).disabled).toBe(false);
+    expect(await listedModels(view.getByLabelText("Model", { exact: true }))).toContain("GPT-6.1 Sol");
   });
 
   test("shows discovered models as soon as browser sign-in completes", async () => {
@@ -796,7 +798,8 @@ describe("App workspace coordination", () => {
 
     await fireEvent.click(await view.findByRole("button", { name: "Sign in with OpenAI" }));
     expect(await view.findByText("Native model account connected.")).toBeTruthy();
-    expect(within(view.getByLabelText("Model", { exact: true })).getByRole("option", { name: "GPT-6 Sol", hidden: true })).toBeTruthy();
+    expect((view.getByLabelText("Model", { exact: true }) as HTMLButtonElement).disabled).toBe(false);
+    expect(await listedModels(view.getByLabelText("Model", { exact: true }))).toContain("GPT-6.1 Sol");
     // The connected account is listed, with its email hidden until the user reveals it.
     expect(within(view.getByLabelText("OpenAI account")).getByRole("button", { name: "Show account email" })).toBeTruthy();
     expect(view.queryByText("dany@example.test")).toBeNull();
@@ -1050,7 +1053,8 @@ describe("App workspace coordination", () => {
     await fireEvent.click(await view.findByRole("button", { name: "Sign in with OpenAI" }));
 
     expect(await view.findByText("OpenAI sign-in finished.")).toBeTruthy();
-    expect(await within(view.getByLabelText("Model", { exact: true })).findByRole("option", { name: "GPT-6 Sol", hidden: true }, { timeout: 1_500 })).toBeTruthy();
+    await waitFor(() => expect((view.getByLabelText("Model", { exact: true }) as HTMLButtonElement).disabled).toBe(false), { timeout: 1_500 });
+    expect(await listedModels(view.getByLabelText("Model", { exact: true }))).toContain("GPT-6.1 Sol");
     expect(view.queryByText("Checking available OpenAI models")).toBeNull();
   });
 

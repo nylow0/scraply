@@ -12,7 +12,9 @@
   } from "../../shared/schemas";
   import type { SearchProviderChoice } from "../../providers/search";
   import { tick, untrack } from "svelte";
-  import { modelDisplayName, readResearchDefaults } from "../lib/research-defaults";
+  import { hasSavedResearchDefaults, modelDisplayName, readResearchDefaults } from "../lib/research-defaults";
+  import { preferredModel } from "../../shared/latest-models";
+  import ModelPicker from "./ModelPicker.svelte";
   import { DISCOVERY_DEPTHS, framedDiscoveryProjection } from "../../shared/discovery-projection";
   import type { WorkflowLaunchDraft } from "../../shared/workflow-contracts";
   import type { z } from "zod";
@@ -38,7 +40,11 @@
 
   const initial = untrack(() => workspace);
   const defaults = untrack(readResearchDefaults);
-  const startingModel = initial.scope ? initial.runConfig?.model : defaults.model;
+  // A saved project keeps its model, and a new one starts on the default saved in Settings. With neither,
+  // it starts on the first latest model the account offers (GPT-6.1 Sol when available).
+  const startingModel = initial.scope ? initial.runConfig?.model
+    : untrack(hasSavedResearchDefaults) ? defaults.model
+    : preferredModel(initial.modelOptions.filter((item) => item.providerId === "openai-subscription")) ?? defaults.model;
   let researchMode = $state<ResearchMode>(initial.runConfig?.researchMode ?? "explore-market");
   let purposeOverride = $state<ExplorationPurpose | null>(null);
   // New runs always target x ideas per problem. A saved project keeps its purpose until the user follows the brief instead.
@@ -59,13 +65,11 @@
       : initial.modelOptions.find((item) => item.providerId === "openai-subscription") ?? DEFAULT_RUN_CONFIG.model);
   let modelKey = $state(legacyModelNeedsReplacement ? "" : modelRefKey(initialModel));
   let nativeModelOptions = $derived(workspace.modelOptions.filter((item) => item.providerId === "openai-subscription"));
-  const gpt6Models = ["gpt-6-astra", "gpt-6-sol", "gpt-6-luna"] as const;
   let selectedModelOption = $derived(nativeModelOptions.find((item) => modelRefKey(item) === modelKey));
   let selectedModelRef = $state<ModelRef>(initialModel);
   let resolvedModel = $derived(selectedModelOption ?? selectedModelRef);
   let model = $derived<ModelRef>({ providerId: resolvedModel.providerId, modelId: resolvedModel.modelId });
   let initialModelOption = initial.modelOptions.find((item) => sameModelRef(item, initialModel));
-  let modelSelect: HTMLSelectElement;
   let reasoningEffort = $state((initial.scope ? initial.runConfig?.reasoningEffort : defaults.reasoningEffort)
     ?? initialModelOption?.defaultReasoningEffort
     ?? "");
@@ -200,14 +204,14 @@
     return () => clearTimeout(timer);
   });
 
-  function selectModel(event: Event) {
-    const selected = workspace.modelOptions.find((item) => modelRefKey(item) === (event.currentTarget as HTMLSelectElement).value);
+  function selectModel(key: string) {
+    const selected = workspace.modelOptions.find((item) => modelRefKey(item) === key);
     if (selected) selectedModelRef = { providerId: selected.providerId, modelId: selected.modelId };
     reasoningEffort = selected?.defaultReasoningEffort ?? DEFAULT_RUN_CONFIG.reasoningEffort;
   }
 
-  function selectIdeaModel(event: Event) {
-    const selected = workspace.modelOptions.find((item) => modelRefKey(item) === (event.currentTarget as HTMLSelectElement).value);
+  function selectIdeaModel(key: string) {
+    const selected = workspace.modelOptions.find((item) => modelRefKey(item) === key);
     if (selected) selectedIdeasModelRef = { providerId: selected.providerId, modelId: selected.modelId };
     ideaReasoningEffort = selected?.defaultReasoningEffort ?? DEFAULT_RUN_CONFIG.reasoningEffort;
   }
@@ -391,7 +395,7 @@
       field?.focus();
       field?.scrollIntoView?.({ block: "nearest" });
     } else {
-      await showConfiguration(section ?? "research", field ?? (modelChoiceRequired ? modelSelect : undefined));
+      await showConfiguration(section ?? "research", field ?? (modelChoiceRequired ? setupForm.querySelector<HTMLElement>('[data-field="model"]') ?? undefined : undefined));
     }
   }
 </script>
@@ -451,7 +455,8 @@
       <section class="main-settings" aria-label="Main research settings">
         <div class="main-settings-grid">
       {#if researchMode === "explore-market"}<label class="run-setting search-setting model-setting"><span>Search provider</span><div class="provider-select">{#if searchProvider !== "auto"}<ProviderLogo provider={searchProvider} size={17} />{/if}<select aria-label="Search provider" data-field="searchProvider" bind:value={searchProvider} onchange={() => searchProviderTouched = true}><option value="auto">Automatic</option><option value="exa">Exa</option><option value="perplexity">Perplexity</option></select></div><small>{searchStatus}</small>{#each visiblePreviewIssues.filter((issue) => issue.path.join(".") === "runConfig.searchProvider") as issue (issue.code)}<small class="field-error" role="alert">{issue.message}</small>{/each}</label>{/if}
-      <label class="run-setting model-setting"><span>Model</span><select aria-label="Model" data-field="model" bind:this={modelSelect} bind:value={modelKey} onchange={selectModel} disabled={nativeModelOptions.length === 0}>{#if !selectedModelAvailable}<option value={modelKey}>{legacyModelNeedsReplacement && !modelKey ? "Choose an OpenAI model" : workspace.validation.native.connected ? `${modelDisplayName(model)} (unavailable)` : "Sign in to choose"}</option>{/if}{#each gpt6Models as modelId (modelId)}{#if !nativeModelOptions.some((item) => item.modelId === modelId) && model.modelId !== modelId}<option value={`openai-subscription:${modelId}`} disabled>{modelDisplayName({ modelId })} (not in model list)</option>{/if}{/each}{#each nativeModelOptions as item (modelRefKey(item))}<option value={modelRefKey(item)}>{modelDisplayName(item)}</option>{/each}</select>{#if nativeModelOptions.length === 0}<small>Your available models appear here after you sign in.</small>{/if}</label>
+      <label class="run-setting model-setting"><span>Model</span><ModelPicker label="Model" field="model" options={nativeModelOptions} bind:value={modelKey} onchange={selectModel} disabled={nativeModelOptions.length === 0}
+        missingLabel={legacyModelNeedsReplacement && !modelKey ? "Choose an OpenAI model" : workspace.validation.native.connected ? `${modelDisplayName(model)} (unavailable)` : "Sign in to choose"} />{#if nativeModelOptions.length === 0}<small>Your available models appear here after you sign in.</small>{/if}</label>
       <label class="run-setting"><span>Reasoning</span><select aria-label="Reasoning" data-field="reasoning" title={reasoningDescription} bind:value={reasoningEffort}>{#if !selectedReasoningAvailable}<option value={reasoningEffort}>{reasoningEffort} (unavailable)</option>{/if}{#each (selectedModelOption?.reasoningEfforts ?? []) as effort (effort.id)}<option value={effort.id}>{effort.id.charAt(0).toUpperCase() + effort.id.slice(1)}</option>{/each}</select></label>
       {#if researchMode === "explore-market"}<label class="run-setting"><span>Research depth</span><select aria-label="Research depth" bind:value={discoveryDepth}><option value="quick">Quick</option><option value="standard">Standard</option><option value="deep">Deep</option></select></label>{/if}
       <!-- A stated problem has no research depth, so the count takes that grid cell instead of its own row. -->
@@ -465,10 +470,8 @@
       </div>
       <!-- Vibe generates and reviews ideas itself, so their model is chosen up front; Controlled picks it when developing problems. -->
       {#if useWorkflow && workflowMode === "vibe"}
-        <label class="run-setting"><span>Ideas model</span><select aria-label="Ideas model" data-field="ideaModel" bind:value={ideaModelKey} onchange={selectIdeaModel} aria-invalid={Boolean(errors.ideaModel || ideasPreviewIssue)}>
-          {#if !ideaModelAvailable}<option value={ideaModelKey}>{modelDisplayName(ideaModel)} (unavailable)</option>{/if}
-          {#each nativeModelOptions as option (modelRefKey(option))}<option value={modelRefKey(option)}>{modelDisplayName(option)}</option>{/each}
-        </select></label>
+        <label class="run-setting"><span>Ideas model</span><ModelPicker label="Ideas model" field="ideaModel" options={nativeModelOptions} bind:value={ideaModelKey} onchange={selectIdeaModel}
+          invalid={Boolean(errors.ideaModel || ideasPreviewIssue)} missingLabel={`${modelDisplayName(ideaModel)} (unavailable)`} /></label>
         <label class="run-setting"><span>Ideas reasoning</span><select aria-label="Ideas reasoning" data-field="ideaReasoning" bind:value={ideaReasoningEffort} aria-invalid={Boolean(errors.ideaReasoning)}>
           {#if !ideaReasoningAvailable}<option value={ideaReasoningEffort}>{ideaReasoningEffort} (unavailable)</option>{/if}
           {#each (ideaModelOption?.reasoningEfforts ?? []) as effort (effort.id)}<option value={effort.id}>{effort.id.charAt(0).toUpperCase() + effort.id.slice(1)}</option>{/each}

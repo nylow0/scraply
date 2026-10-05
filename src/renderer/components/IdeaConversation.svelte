@@ -1,7 +1,7 @@
 <script lang="ts">
+  import ModelPicker from "./ModelPicker.svelte";
   import type { IdeaConversation as ConversationView, SubmitIdeaTurnRequest } from "../../shared/workflow-contracts";
   import type { ModelOption, ModelRef } from "../../shared/schemas";
-  import { modelDisplayName } from "../lib/research-defaults";
 
   type Draft = Omit<SubmitIdeaTurnRequest, "threadId" | "rootSolutionId">;
 
@@ -237,10 +237,8 @@
         {#if newerResearchAvailable}<label class="research-choice"><input type="checkbox" bind:checked={useNewerResearch} /><span><strong>Use newer research</strong><small>Use the current research snapshot for this reply. The saved idea and earlier versions stay as they are.</small></span></label>{/if}
         <div class="send-controls">
           <label>Model
-            <select value={effectiveModelKey ?? ""} onchange={(event) => { modelKey = event.currentTarget.value || null; effort = null; }}>
-              {#if !selectedModelOption}<option value="">Choose an available model</option>{/if}
-              {#each modelOptions as option (`${option.providerId}:${option.modelId}`)}<option value={`${option.providerId}:${option.modelId}`}>{modelDisplayName(option)}</option>{/each}
-            </select>
+            <ModelPicker label="Model" options={modelOptions} value={effectiveModelKey ?? ""} missingLabel="Choose an available model"
+              onchange={(key) => { modelKey = key; effort = null; }} />
           </label>
           <label>Effort
             <select value={effectiveEffort} onchange={(event) => effort = event.currentTarget.value} disabled={!selectedModelOption}>

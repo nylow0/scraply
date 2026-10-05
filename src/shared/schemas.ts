@@ -85,7 +85,7 @@ export const DEFAULT_RUN_CONFIG = {
   configVersion: 2,
   workflowVersion: 2,
   ideaCount: DEFAULT_IDEA_COUNT,
-  model: { providerId: OPENAI_SUBSCRIPTION_PROVIDER_ID, modelId: "gpt-6-sol" },
+  model: { providerId: OPENAI_SUBSCRIPTION_PROVIDER_ID, modelId: "gpt-6.1-sol" },
   reasoningEffort: "medium",
   discoveryDepth: "standard",
   maxRunMinutes: 90,

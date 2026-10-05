@@ -28,6 +28,9 @@ const noSearch = params.get("search") === "none";
 const connectedNative: WorkspaceState["validation"]["native"] = {
   available: true, connected: true, accounts: [{ providerId: "openai-subscription", email: "dany@example.test", plan: "pro" }],
 };
+// Listed out of display order, like an account catalog: the picker sorts latest models first and puts the rest under Legacy.
+const fixtureModels = ["gpt-6-sol", "gpt-6-luna", DEFAULT_RUN_CONFIG.model.modelId, "gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-luna"]
+  .map((modelId) => ({ providerId: "openai-subscription", modelId }));
 let state: WorkspaceState = {
   validation: {
     exa: noSearch ? { valid: false, error: "Exa key missing" }
@@ -37,8 +40,8 @@ let state: WorkspaceState = {
     setupComplete: !noSearch && params.get("account") !== "signed-out",
   },
   threads, activeThreadId: threads[active]?.id ?? null, messages: [], scope: null, runConfig: null,
-  models: [DEFAULT_RUN_CONFIG.model, { providerId: "openai-subscription", modelId: "gpt-6-astra" }],
-  modelOptions: [DEFAULT_RUN_CONFIG.model, { providerId: "openai-subscription", modelId: "gpt-6-astra" }].map((model) => ({
+  models: fixtureModels,
+  modelOptions: fixtureModels.map((model) => ({
     ...model, displayName: model.modelId, defaultReasoningEffort: "medium",
     reasoningEfforts: [{ id: "low", description: "Less reasoning" }, { id: "medium", description: "Balanced reasoning" }, { id: "high", description: "More reasoning" }],
   })),

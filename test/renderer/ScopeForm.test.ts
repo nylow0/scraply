@@ -7,6 +7,8 @@ import ProblemCheckpoint from "../../src/renderer/components/ProblemCheckpoint.s
 import type { WorkspaceState } from "../../src/shared/ipc";
 import { DEFAULT_RUN_CONFIG, RunConfigSchema, modelRefKey } from "../../src/shared/schemas";
 import type { WorkflowLaunchDraft } from "../../src/shared/workflow-contracts";
+import { listedModels, pickModel } from "./model-picker";
+import { modelDisplayName } from "../../src/renderer/lib/research-defaults";
 
 describe("ScopeForm search provider selection", () => {
   test("defaults a new setup to automatic when both providers are connected", async () => {
@@ -307,7 +309,7 @@ describe("ScopeForm search provider selection", () => {
       const settings = renderSettings({ workspace: state });
       await fireEvent.click(settings.getByRole("button", { name: "Research defaults" }));
       await fireEvent.change(settings.getByLabelText("Default reasoning"), { target: { value: "low" } });
-      await fireEvent.change(settings.getByLabelText("Default ideas model"), { target: { value: modelRefKey(luna) } });
+      await pickModel(settings.getByLabelText("Default ideas model"), modelRefKey(luna));
       expect((settings.getByLabelText("Default ideas reasoning") as HTMLSelectElement).value).toBe("low");
       await fireEvent.change(settings.getByLabelText("Default ideas reasoning"), { target: { value: "high" } });
       await fireEvent.click(settings.getByRole("button", { name: "Save defaults" }));
@@ -418,7 +420,7 @@ describe("ScopeForm search provider selection", () => {
     }
   });
 
-  test("uses catalog efforts after changing models while choices load", async () => {
+  test("saved default models show while the model list loads and take catalog efforts when it arrives", async () => {
     const storageKey = "scraply.research-defaults.v1";
     const previous = localStorage.getItem(storageKey);
     const sol = DEFAULT_RUN_CONFIG.model;
@@ -429,15 +431,15 @@ describe("ScopeForm search provider selection", () => {
       { ...luna, displayName: "Luna", defaultReasoningEffort: "low", reasoningEfforts: [{ id: "low", description: "Fast" }] },
     ] };
     try {
-      localStorage.setItem(storageKey, JSON.stringify({ model: sol, searchProvider: "exa" }));
+      localStorage.setItem(storageKey, JSON.stringify({ model: luna, ideasModel: luna, searchProvider: "exa" }));
       const props = { workspace: loading, open: true, busy: false, nativeLogin: null,
         onRetry: vi.fn(), onConnectNative: vi.fn(), onCancelNative: vi.fn(), onRefreshNative: vi.fn(),
         onLogoutNative: vi.fn(), onSaveSearchKey: vi.fn(), onRemoveSearchKey: vi.fn(), onOpenUrl: vi.fn(),
         onOpenData: vi.fn(), onOpenLogs: vi.fn(), onRestore: vi.fn(), onDelete: vi.fn() };
       const settings = render(Settings, props);
       await fireEvent.click(settings.getByRole("button", { name: "Research defaults" }));
-      await fireEvent.change(settings.getByLabelText("Default model"), { target: { value: modelRefKey(luna) } });
-      await fireEvent.change(settings.getByLabelText("Default ideas model"), { target: { value: modelRefKey(luna) } });
+      expect((settings.getByLabelText("Default model") as HTMLButtonElement).disabled).toBe(true);
+      expect(settings.getByLabelText("Default model").textContent).toContain("GPT-6 Luna");
       await settings.rerender({ ...props, workspace: ready });
       await waitFor(() => expect((settings.getByLabelText("Default reasoning") as HTMLSelectElement).value).toBe("low"));
       expect((settings.getByLabelText("Default ideas reasoning") as HTMLSelectElement).value).toBe("low");
@@ -460,10 +462,10 @@ describe("ScopeForm search provider selection", () => {
       const props = { workspace: { ...state, scope: null, runConfig: null }, busy: false,
         onSave: vi.fn(), onStart: vi.fn(), onRetry: vi.fn(), onPreviewWorkflow: vi.fn(), onStartWorkflow: vi.fn() };
       const setup = render(ScopeForm, props);
-      expect(setup.getByRole("option", { name: "GPT-6 Luna (unavailable)" })).toBeTruthy();
-      await fireEvent.change(setup.getByLabelText("Ideas model"), { target: { value: modelRefKey(sol) } });
+      expect(setup.getByLabelText("Ideas model").textContent).toContain("GPT-6 Luna (unavailable)");
+      await pickModel(setup.getByLabelText("Ideas model"), modelRefKey(sol));
       await setup.rerender({ ...props, workspace: { ...props.workspace, models: [], modelOptions: [] } });
-      expect((setup.getByLabelText("Ideas model") as HTMLSelectElement).selectedOptions[0]?.textContent).toBe("GPT-6 Sol (unavailable)");
+      expect(setup.getByLabelText("Ideas model").textContent?.trim()).toBe(`${modelDisplayName(sol)} (unavailable)`);
     } finally {
       if (previous === null) localStorage.removeItem(storageKey);
       else localStorage.setItem(storageKey, previous);
@@ -484,35 +486,33 @@ describe("ScopeForm search provider selection", () => {
     const onSave = vi.fn().mockResolvedValue(undefined);
     const onStart = vi.fn().mockResolvedValue(undefined);
     const view = render(ScopeForm, { workspace: state, busy: false, onSave, onStart, onRetry: vi.fn() });
-    expect(view.getByRole("option", { name: "GPT-6 Sol" })).toBeTruthy();
-    expect(view.queryByRole("option", { name: "Sol legacy" })).toBeNull();
-    const select = view.getByRole("combobox", { name: /Model/ }) as HTMLSelectElement;
+    const select = view.getByRole("combobox", { name: /Model/ }) as HTMLButtonElement;
+    expect(await listedModels(select)).toEqual([modelDisplayName(nativeModel)]);
     expect(select.value).toBe(modelRefKey(DEFAULT_RUN_CONFIG.model));
-    await fireEvent.change(select, { target: { value: modelRefKey(nativeModel) } });
     await fireEvent.click(view.getByRole("button", { name: "Discover problems" }));
     await waitFor(() => expect(onStart).toHaveBeenCalledTimes(1));
     expect(RunConfigSchema.parse(onSave.mock.calls[0]?.[1]).model).toEqual(nativeModel);
   });
 
-  test("keeps unavailable GPT-6 models visible without changing the title model", async () => {
+  test("saving a default model keeps the title model, even one the account does not offer", async () => {
     const storageKey = "scraply.research-defaults.v1";
     const previous = localStorage.getItem(storageKey);
     try {
       localStorage.removeItem(storageKey);
       const view = renderSettings({ workspace: workspace() });
       await fireEvent.click(view.getByRole("button", { name: "Research defaults" }));
-      const model = view.getByLabelText("Default model") as HTMLSelectElement;
-      const titleModel = view.getByLabelText("Title model") as HTMLSelectElement;
-      expect([...model.options].map((option) => option.textContent)).toContain("GPT-6 Sol");
-      expect([...model.options].map((option) => option.textContent)).toContain("GPT-6 Luna (unavailable)");
+      const model = view.getByLabelText("Default model") as HTMLButtonElement;
+      const titleModel = view.getByLabelText("Title model") as HTMLButtonElement;
+      const offered = workspace().modelOptions.map((item) => modelRefKey(item));
+      expect(titleModel.textContent).toContain(offered.includes("openai-subscription:gpt-6-luna") ? "GPT-6 Luna" : "GPT-6 Luna (unavailable)");
       const originalTitle = titleModel.value;
-      await fireEvent.change(model, { target: { value: "openai-subscription:gpt-6-sol" } });
+      await pickModel(model, offered[0]!);
       await fireEvent.click(view.getByRole("button", { name: "Save defaults" }));
       view.unmount();
 
       const reopened = renderSettings({ workspace: workspace() });
       await fireEvent.click(reopened.getByRole("button", { name: "Research defaults" }));
-      expect((reopened.getByLabelText("Default model") as HTMLSelectElement).value).toBe("openai-subscription:gpt-6-sol");
+      expect((reopened.getByLabelText("Default model") as HTMLSelectElement).value).toBe(modelRefKey(workspace().modelOptions[0]!));
       expect((reopened.getByLabelText("Title model") as HTMLSelectElement).value).toBe(originalTitle);
     } finally {
       if (previous === null) localStorage.removeItem(storageKey);
@@ -532,12 +532,12 @@ describe("ScopeForm search provider selection", () => {
     ];
     const onSave = vi.fn().mockResolvedValue(undefined);
     const view = render(ScopeForm, { workspace: state, busy: false, onSave, onStart: vi.fn(), onRetry: vi.fn() });
-    const modelSelect = view.getByRole("combobox", { name: "Model" }) as HTMLSelectElement;
-    expect(view.getByRole("option", { name: "GPT-6 Sol" })).toBeTruthy();
-    expect(view.getByRole("option", { name: "GPT-6 Luna" })).toBeTruthy();
-    await fireEvent.change(modelSelect, { target: { value: modelRefKey(sol) } });
+    const modelSelect = view.getByRole("combobox", { name: "Model" });
+    // Luna is a latest model; GPT-6 Sol is now behind "Legacy models".
+    expect(await listedModels(modelSelect)).toEqual(["GPT-6 Luna", "Legacy models1", "GPT-6 Sol"]);
+    await pickModel(modelSelect, modelRefKey(sol));
     expect((view.getByRole("combobox", { name: /Reasoning/ }) as HTMLSelectElement).value).toBe("high");
-    await fireEvent.change(modelSelect, { target: { value: modelRefKey(luna) } });
+    await pickModel(modelSelect, modelRefKey(luna));
     expect((view.getByRole("combobox", { name: /Reasoning/ }) as HTMLSelectElement).value).toBe("minimal");
     await fireEvent.click(view.getByRole("button", { name: "Discover problems" }));
     await waitFor(() => expect(onSave).toHaveBeenCalledTimes(1));
@@ -752,9 +752,9 @@ describe("ScopeForm search provider selection", () => {
       workspace: state, busy: false, onSave, onStart, onRetry: vi.fn(),
     });
 
-    const modelSelect = view.getByRole("combobox", { name: /Model/ }) as HTMLSelectElement;
+    const modelSelect = view.getByRole("combobox", { name: /Model/ }) as HTMLButtonElement;
     expect(modelSelect.value).toBe("");
-    expect(view.getByRole("option", { name: "Choose an OpenAI model" })).toBeTruthy();
+    expect(modelSelect.textContent).toContain("Choose an OpenAI model");
     expect(view.getByText("This project used the removed CLI integration. Choose an available OpenAI model.")).toBeTruthy();
     expect(view.queryByRole("button", { name: "Retry connections" })).toBeNull();
     await fireEvent.click(view.getByRole("button", { name: "Choose model" }));
@@ -764,7 +764,7 @@ describe("ScopeForm search provider selection", () => {
     expect(onSave).not.toHaveBeenCalled();
     expect(onStart).not.toHaveBeenCalled();
 
-    await fireEvent.change(modelSelect, { target: { value: modelRefKey(DEFAULT_RUN_CONFIG.model) } });
+    await pickModel(modelSelect, modelRefKey(DEFAULT_RUN_CONFIG.model));
     expect(view.queryByText("This project used the removed CLI integration.", { exact: false })).toBeNull();
     expect((view.getByRole("button", { name: "Discover problems" }) as HTMLButtonElement).disabled).toBe(false);
     await fireEvent.click(view.getByRole("button", { name: "Discover problems" }));
@@ -909,7 +909,7 @@ describe("settings surfaces preserve launch configuration", () => {
     expect(view.getByLabelText("Solutions per problem").closest("aside")).toBeTruthy();
     await fireEvent.input(view.getByLabelText("Solutions per problem"), { target: { value: "5" } });
     // Vibe (the default mode) shows the ideas model in the run panel, not in Advanced settings.
-    await fireEvent.change(view.getByLabelText("Ideas model"), { target: { value: modelRefKey(ideasModel) } });
+    await pickModel(view.getByLabelText("Ideas model"), modelRefKey(ideasModel));
     expect(view.getByLabelText("Ideas model").closest("aside")).toBeTruthy();
     if (researchMode === "explore-market") {
       await fireEvent.change(view.getByLabelText("Research depth"), { target: { value: "deep" } });

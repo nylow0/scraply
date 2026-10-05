@@ -1,4 +1,5 @@
 <script lang="ts">
+  import ModelPicker from "./ModelPicker.svelte";
   import "./problem-review.css";
   import ResultsToolbar from "./ResultsToolbar.svelte";
   import ProblemLeads from "./ProblemLeads.svelte";
@@ -7,6 +8,7 @@
   import { DEFAULT_RUN_CONFIG, modelRefKey, type ExplorationPurpose, type ModelOption, type ModelRef, type RunConfig } from "../../shared/schemas";
   import { modelDisplayName, readResearchDefaults } from "../lib/research-defaults";
   import { verdictLabel } from "../lib/status";
+  import { preferredModel } from "../../shared/latest-models";
   import { isProblem, problemLeads } from "../lib/problem-leads";
   import { untrack } from "svelte";
   import { SvelteSet } from "svelte/reactivity";
@@ -25,7 +27,7 @@
   const defaults=untrack(readResearchDefaults);
   const hadPriorDevelopment=untrack(()=>priorDevelopment);
   const initialModel=untrack(()=>(hadPriorDevelopment?savedConfig?.model:defaults.ideasModel)
-    ??savedConfig?.model??modelOptions.find((item)=>item.providerId==="openai-subscription"));
+    ??savedConfig?.model??preferredModel(modelOptions.filter((item)=>item.providerId==="openai-subscription")));
   let modelKey=$state(initialModel?modelRefKey(initialModel):"");
   const initialModelOption=untrack(()=>modelOptions.find((item)=>modelRefKey(item)===modelKey));
   let selectedModel=$derived(availableModels.find((item)=>modelRefKey(item)===modelKey));
@@ -35,7 +37,8 @@
   let selectedPurpose=$derived(fixedExplorationPurpose??savedConfig?.explorationPurpose??DEFAULT_RUN_CONFIG.explorationPurpose);
   let model=$derived<ModelRef>({providerId:selectedModel?.providerId??"",modelId:selectedModel?.modelId??""});
   $effect(()=>{
-    if(!modelKey&&!savedConfig?.model&&availableModels[0]) modelKey=modelRefKey(availableModels[0]);
+    const preferred=preferredModel(availableModels);
+    if(!modelKey&&!savedConfig?.model&&preferred) modelKey=modelRefKey(preferred);
     if(!reasoningEffort&&selectedModel) reasoningEffort=selectedModel.defaultReasoningEffort;
   });
   function selectModel(){reasoningEffort=selectedModel?.defaultReasoningEffort??DEFAULT_RUN_CONFIG.reasoningEffort}
@@ -94,7 +97,7 @@
   </ProblemLeads>
   {#if !fixedExplorationPurpose}<div class="escape"><label><span>Or state the problem yourself.</span><textarea bind:this={userProblemTextarea} bind:value={userProblem} disabled={busy} rows="3" placeholder="Describe the problem in one direct sentence."></textarea></label></div>{/if}
   <section class="development-settings" aria-label="Development settings">
-    <label><span>Development model</span><select aria-label="Development model" bind:value={modelKey} onchange={selectModel} disabled={busy||availableModels.length===0}>{#if modelKey&&!selectedModel}<option value={modelKey}>{modelDisplayName(initialModel??DEFAULT_RUN_CONFIG.model)} (unavailable)</option>{/if}{#each availableModels as item (modelRefKey(item))}<option value={modelRefKey(item)}>{modelDisplayName(item)}</option>{/each}</select></label>
+    <label><span>Development model</span><ModelPicker label="Development model" options={availableModels} bind:value={modelKey} onchange={selectModel} disabled={busy||availableModels.length===0} {...(modelKey&&!selectedModel?{missingLabel:`${modelDisplayName(initialModel??DEFAULT_RUN_CONFIG.model)} (unavailable)`}:{})} /></label>
     <label><span>Development reasoning</span><select aria-label="Development reasoning" bind:value={reasoningEffort} disabled={busy||!selectedModel}>{#if !reasoningAvailable}<option value={reasoningEffort}>{reasoningEffort} (unavailable)</option>{/if}{#each (selectedModel?.reasoningEfforts??[]) as effort (effort.id)}<option value={effort.id}>{effort.id.charAt(0).toUpperCase()+effort.id.slice(1)}</option>{/each}</select></label>
     <p>{selectedPurpose === "auto" ? "Ideas will follow your brief and each selected problem." : selectedPurpose === "startup-opportunities" ? "This project asks for startup opportunities." : "This project asks for practical solutions."}</p>
     {#if modelKey&&!selectedModel}<p role="status">The saved development model is unavailable. Choose an available model before generating.</p>{:else if selectedModel&&!reasoningAvailable}<p role="status">The saved reasoning effort is unavailable for this model. Choose an available effort before generating.</p>{/if}

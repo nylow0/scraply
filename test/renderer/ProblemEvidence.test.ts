@@ -4,6 +4,7 @@ import ProblemCheckpoint from "../../src/renderer/components/ProblemCheckpoint.s
 import ResearchArchive from "../../src/renderer/components/ResearchArchive.svelte";
 import type { ProblemCandidate } from "../../src/shared/ipc";
 import { DEFAULT_RUN_CONFIG } from "../../src/shared/schemas";
+import { pickModel } from "./model-picker";
 
 const modelOptions = [{
   ...DEFAULT_RUN_CONFIG.model,
@@ -209,7 +210,7 @@ describe("rejected problem evidence", () => {
       onCommit, onExport: vi.fn(), onOpenSource: vi.fn(),
     });
     await fireEvent.input(view.getByRole("textbox", { name: "Or state the problem yourself." }), { target: { value: "A user-asserted problem." } });
-    await fireEvent.change(view.getByRole("combobox", { name: "Development model" }), { target: { value: "openai-subscription:gpt-6-astra" } });
+    await pickModel(view.getByRole("combobox", { name: "Development model" }), "openai-subscription:gpt-6-astra");
     expect((view.getByRole("combobox", { name: "Development reasoning" }) as HTMLSelectElement).value).toBe("high");
     await fireEvent.change(view.getByRole("combobox", { name: "Development reasoning" }), { target: { value: "xhigh" } });
     await fireEvent.click(view.getByRole("button", { name: "Generate all selected" }));
@@ -243,12 +244,12 @@ describe("rejected problem evidence", () => {
       onCommit, onExport: vi.fn(), onOpenSource: vi.fn(),
     });
     await fireEvent.input(view.getByRole("textbox", { name: "Or state the problem yourself." }), { target: { value: "A user-asserted problem." } });
-    const model = view.getByRole("combobox", { name: "Development model" }) as HTMLSelectElement;
+    const model = view.getByRole("combobox", { name: "Development model" }) as HTMLButtonElement;
     expect(model.value).toBe("openai-subscription:gpt-6-luna");
-    expect(view.getByRole("option", { name: "GPT-6 Luna (unavailable)" })).toBeTruthy();
+    expect(model.textContent).toContain("GPT-6 Luna (unavailable)");
     const generate = view.getByRole("button", { name: "Generate all selected" }) as HTMLButtonElement;
     expect(generate.disabled).toBe(true);
-    await fireEvent.change(model, { target: { value: "openai-subscription:gpt-6-astra" } });
+    await pickModel(model, "openai-subscription:gpt-6-astra");
     expect(generate.disabled).toBe(false);
     await fireEvent.click(generate);
     expect(onCommit).toHaveBeenCalledWith([], "A user-asserted problem.", { providerId: "openai-subscription", modelId: "gpt-6-astra" }, "high", "auto");

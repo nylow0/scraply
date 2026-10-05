@@ -1,4 +1,5 @@
 <script lang="ts">
+  import ModelPicker from "./ModelPicker.svelte";
   import type {
     ResearchFindingView, ResearchReplacement, ResearchRequestDraft, ResearchRequestKind,
     ResearchRequestView,
@@ -6,7 +7,6 @@
   import { previewResearchAngles, researchSearchAllocation } from "../../shared/research-revisions";
   import type { ResearchGoalKind } from "../../shared/research-frame";
   import { modelRefKey, type DiscoveryDepth, type ModelOption, type ModelRef } from "../../shared/schemas";
-  import { modelDisplayName } from "../lib/research-defaults";
   import { verdictLabel } from "../lib/status";
   import { untrack } from "svelte";
 
@@ -197,10 +197,7 @@
         <textarea bind:value={question} rows="3" maxlength="500" required disabled={busy} placeholder={kind === "new-question" ? (marketGoal ? "What do buyers do today when this problem appears?" : "What evidence would help test the goal or revisit this finding?") : "Describe the gap in the earlier finding."}></textarea>
       </label>
       <div class="field-pair">
-        <label class="field"><span>Research model</span><select bind:value={modelKey} onchange={chooseModel} disabled={busy || !availableModels.length} required>
-          {#if !modelKey}<option value="">Choose a model</option>{/if}
-          {#each availableModels as item (modelRefKey(item))}<option value={modelRefKey(item)}>{modelDisplayName(item)}</option>{/each}
-        </select></label>
+        <label class="field"><span>Research model</span><ModelPicker label="Research model" options={availableModels} bind:value={modelKey} onchange={chooseModel} disabled={busy || !availableModels.length} /></label>
         <label class="field"><span>Reasoning</span><select bind:value={reasoningEffort} disabled={busy || !selectedModel}>
           {#each selectedModel?.reasoningEfforts ?? [] as effort (effort.id)}<option value={effort.id}>{effort.id.charAt(0).toUpperCase() + effort.id.slice(1)}</option>{/each}
         </select></label>

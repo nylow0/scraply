@@ -1,4 +1,5 @@
 <script lang="ts">
+  import ModelPicker from "./ModelPicker.svelte";
   import type { OpportunityFamiliesView, OpportunityMembershipCommand } from "../../shared/opportunity-review";
   import {
     DEFAULT_RUN_CONFIG,
@@ -129,10 +130,8 @@
   <div class="review-controls">
     <label>
       <span>Review model</span>
-      <select aria-label="Opportunity review model" bind:value={modelKey} onchange={selectModel} disabled={busy || availableModels.length === 0}>
-        {#if modelKey && !selectedModel}<option value={modelKey}>{modelDisplayName(savedConfig?.model ?? DEFAULT_RUN_CONFIG.model)} (unavailable)</option>{/if}
-        {#each availableModels as item (modelRefKey(item))}<option value={modelRefKey(item)}>{modelDisplayName(item)}</option>{/each}
-      </select>
+      <ModelPicker label="Opportunity review model" options={availableModels} bind:value={modelKey} onchange={selectModel} disabled={busy || availableModels.length === 0}
+        {...(modelKey && !selectedModel ? { missingLabel: `${modelDisplayName(savedConfig?.model ?? DEFAULT_RUN_CONFIG.model)} (unavailable)` } : {})} />
     </label>
     <label>
       <span>Review reasoning</span>

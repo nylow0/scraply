@@ -4,6 +4,7 @@ import { rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { startMockBackend } from "./mock-backend";
+import { pickModel } from "./model-picker";
 
 test("compact settings, consistent fields, title defaults, and archive recovery", async ({}, testInfo) => {
   const mock = await startMockBackend();
@@ -47,7 +48,7 @@ test("compact settings, consistent fields, title defaults, and archive recovery"
     await page.keyboard.press("Tab");
     expect(await page.evaluate(() => document.activeElement?.closest(".settings-screen") !== null)).toBe(true);
     await page.getByRole("button", { name: "Research defaults", exact: true }).click();
-    await expect(page.getByLabel("Title model", { exact: true })).toHaveValue("openai-subscription:gpt-6-luna");
+    await expect(page.getByLabel("Title model", { exact: true })).toHaveAttribute("data-value", "openai-subscription:gpt-6-luna");
     await expect(page.getByLabel("Title model").getByRole("option", { name: "GPT-6 Luna", exact: true })).toHaveCount(1);
     await expect(page.getByLabel("Title reasoning", { exact: true })).toHaveValue("low");
     const provider = page.getByLabel("Default search provider", { exact: true });
@@ -95,7 +96,7 @@ test("compact settings, consistent fields, title defaults, and archive recovery"
     await page.getByRole("button", { name: "Delete Reducing repair shop delays", exact: true }).click();
     await expect(page.getByText("No archived research.", { exact: true })).toBeVisible();
     await page.getByRole("button", { name: "Research defaults", exact: true }).click();
-    await page.getByLabel("Title model", { exact: true }).selectOption("openai-subscription:gpt-6-astra");
+    await pickModel(page.getByLabel("Title model", { exact: true }), "openai-subscription:gpt-6-astra");
     await page.getByLabel("Title reasoning", { exact: true }).selectOption("medium");
     await page.getByRole("button", { name: "Save defaults", exact: true }).click();
     await expect(page.getByText("Defaults saved", { exact: true })).toBeVisible();
@@ -104,7 +105,7 @@ test("compact settings, consistent fields, title defaults, and archive recovery"
     page = await app.firstWindow();
     await page.getByRole("button", { name: "Settings", exact: true }).click();
     await page.getByRole("button", { name: "Research defaults", exact: true }).click();
-    await expect(page.getByLabel("Title model", { exact: true })).toHaveValue("openai-subscription:gpt-6-astra");
+    await expect(page.getByLabel("Title model", { exact: true })).toHaveAttribute("data-value", "openai-subscription:gpt-6-astra");
     await expect(page.getByLabel("Title reasoning", { exact: true })).toHaveValue("medium");
   } finally {
     await app?.close();

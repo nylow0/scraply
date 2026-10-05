@@ -7,6 +7,7 @@ import { createInterface } from "node:readline";
 import { IPC_CHANNELS, BackendReadySchema, ResearchEventSchema, type ResearchEvent } from "../../src/shared/ipc";
 import type { ScraplyApi } from "../../src/preload/index";
 import { createInstalledApp, dismissSignInPrompt } from "./installed-app";
+import { pickModel } from "./model-picker";
 
 // Installed renderer/preload/main with the production backend loaded from source. Only the native
 // child and Exa HTTP responses are fixtures. Live bundled-runtime parity is a separate gate.
@@ -118,7 +119,7 @@ test("native v2 research survives the installed selection, risk evaluation, and 
       const modelSelect = page.getByRole("combobox", { name: /Model/ });
       await page.getByRole("button", { name: "Choose model", exact: true }).click();
       await expect(modelSelect).toBeFocused();
-      await modelSelect.selectOption("openai-subscription:gpt-fixture");
+      await pickModel(modelSelect, "openai-subscription:gpt-fixture");
       await expect(page.getByText("This project used the removed CLI integration.", { exact: false })).toHaveCount(0);
     }
     await expect(page.getByRole("combobox", { name: /Research workflow/ })).toHaveCount(0);
