@@ -186,6 +186,7 @@
       {#if loading}<p role="status">Loading saved details…</p>{/if}
       {#if error}<p role="alert">{error}</p><button onclick={loadDetail}>Retry details</button>{/if}
       {#if detail}
+        {#if supportingReferences.length || contraryReferences.length || detail.factors.length || detail.contrarySources?.length}
         <details class="deep-review"><summary>Evidence and sources</summary>
         <div class="source-columns">
         {#if supportingReferences.length}<section aria-label="Sources supporting this option"><h3>Supporting sources</h3>
@@ -204,6 +205,7 @@
           <details><summary>{source.title}</summary><a href={source.url} onclick={(event) => { event.preventDefault(); void onOpenSource(source.url); }}>Open source</a><p class="source-text">{source.text}</p></details>
         {/each}{/if}
         </details>
+        {/if}
         {#if analysis}
           <details class="next-experiment" open><summary>Next experiment</summary>
           {#if focusedExperiment}<FocusedExperiment experiment={focusedExperiment} quiet={inDetailView} />{:else}<strong>{analysis.experiment.question}</strong><p>{analysis.experiment.method}</p>
@@ -212,15 +214,15 @@
           {#if idea.selected && !focusedExperiment && onPlanExperiment}
             <button class="plan-experiment" disabled={busy} onclick={() => onPlanExperiment?.(idea)}>Plan a focused experiment</button>
           {/if}
-          <details class="deep-review"><summary>Risks and responses</summary>
+          {#if analysis.risks.length || analysis.proposedResponses.length || analysis.unknowns.length}<details class="deep-review"><summary>Risks and responses</summary>
           {#each analysis.risks as risk (risk.riskId)}<div class="finding"><strong>{risk.description}</strong><p>{risk.whyDecisive}</p></div>{/each}
-          <h3>What to try</h3>
+          {#if analysis.proposedResponses.length}<h3>What to try</h3>{/if}
           {#each analysis.proposedResponses as response, index (index)}<div class="finding"><strong>{response.approach}</strong><p>Addresses: {analysis.risks.filter((risk) => response.riskIds.includes(risk.riskId)).map((risk) => risk.description).join("; ")}</p><p>Cost: {response.cost}</p><p>Fails if: {response.failsIf}</p></div>{/each}
           {#if analysis.unknowns.length}<h3>Open questions</h3><ul>{#each analysis.unknowns as unknown, index (index)}<li>{unknown}</li>{/each}</ul>{/if}
-          </details>
-          <details class="deep-review"><summary>Possible outcomes</summary>
+          </details>{/if}
+          {#if analysis.consequences.length}<details class="deep-review"><summary>Possible outcomes</summary>
           {#each analysis.consequences as consequence, index (index)}<div class="finding"><strong>{consequence.direction}: {consequence.description}</strong><p>Affects {consequence.affects}. {consequence.rationale}</p></div>{/each}
-          </details>
+          </details>{/if}
           {#if detail.evidenceFollowUp}
             <section class="follow-up" aria-label="Evidence follow-up result">
               <h3>Evidence follow-up</h3>
