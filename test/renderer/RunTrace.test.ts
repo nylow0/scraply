@@ -23,6 +23,7 @@ describe("RunTrace", () => {
     expect(view.getByText("Not assessed").parentElement?.querySelector("dd")?.textContent).toBe("2");
     expect(view.getByText("50% confirmed among assessed")).toBeTruthy();
     expect(view.getByText("Time lost to interruptions").parentElement?.querySelector("dd")?.textContent).toBe("12s");
+    expect(view.getByText("Accepted ideas failing must-have criteria").parentElement?.querySelector("dd")?.textContent).toBe("Unknown");
     expect(view.getByRole("heading", { name: "Evidence mix" })).toBeTruthy();
     expect(view.getByRole("heading", { name: "Source mix" })).toBeTruthy();
     expect(view.getByRole("heading", { name: "Phases covered" })).toBeTruthy();
@@ -62,6 +63,7 @@ describe("RunTrace", () => {
       { id: "area-a", name: "Order deposits", state: "researching", stepIds: ["area-a-read"] },
       { id: "area-b", name: "Payment tracking", state: "succeeded", stepIds: ["area-b-read"] },
     ];
+    trace.metrics.acceptedIdeasFailingMustHave = 1;
     Object.assign(window, { scraply: {
       getRunTrace: async () => trace,
       getRunTraceStep: async ({ stepId }: { runId: string; stepId: string }) => ({ ...stepDetail(), step: trace.steps.find((step) => step.id === stepId)! }),
@@ -74,6 +76,7 @@ describe("RunTrace", () => {
     expect(within(general).getByRole("button", { name: /Frame research/ })).toBeTruthy();
     expect(within(order).getByText("Researching")).toBeTruthy();
     expect(within(order).queryByRole("button", { name: /payment tracking/ })).toBeNull();
+    expect(view.getByText("Accepted ideas failing must-have criteria").parentElement?.querySelector("dd")?.textContent).toBe("1");
     expect(Array.from(view.container.querySelectorAll(".timeline-group")).map((group) => group.getAttribute("aria-label"))).toEqual(["General steps", "Order deposits", "Payment tracking"]);
     const orderStep = within(order).getByRole("button", { name: /Read order deposit observations/ });
     const paymentStep = within(payment).getByRole("button", { name: /Read payment tracking observations/ });
@@ -166,6 +169,68 @@ describe("RunTrace", () => {
     await vi.advanceTimersByTimeAsync(6_000);
     expect(getRunTrace).toHaveBeenCalledTimes(2);
     view.unmount();
+  });
+
+  test("updates an open reasoning summary every two seconds while status stays active without reloading evidence", async () => {
+    vi.useFakeTimers();
+    const live = sampleTrace();
+    live.live = true;
+    live.status = "running";
+    live.finishedAt = null;
+    const step = live.steps[0]!;
+    step.status = "accepted";
+    step.finishedAt = null;
+    step.attempts[0]!.status = "accepted";
+    step.attempts[0]!.finishedAt = null;
+    step.attempts[0]!.reasoningSummary = "Checking the quoted deposit accounts.";
+    const next = structuredClone(live);
+    next.steps[0]!.attempts[0]!.reasoningSummary = "Checking the quoted deposit accounts. Comparing independent sources.";
+    const getRunTrace = vi.fn().mockResolvedValueOnce(live).mockResolvedValue(next);
+    // The cached detail stays old, so this verifies the visible summary uses the fresh polled step.
+    const getRunTraceStep = vi.fn(async () => ({ ...stepDetail(), step: structuredClone(step) }));
+    Object.assign(window, { scraply: { getRunTrace, getRunTraceStep } });
+    const view = render(RunTrace, { runId: "run-1" });
+    await tick();
+    await vi.advanceTimersByTimeAsync(0);
+    await fireEvent.click(view.getByRole("button", { name: /Read sources/ }));
+    await tick();
+    await fireEvent.click(view.getByText("Reasoning summary"));
+    expect(view.getByText("Checking the quoted deposit accounts.")).toBeTruthy();
+    expect(view.getByText("Reasoning summary").closest("details")?.open).toBe(true);
+    await vi.advanceTimersByTimeAsync(1_999);
+    expect(getRunTrace).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(1);
+    await tick();
+    expect(view.getByText("Checking the quoted deposit accounts. Comparing independent sources.")).toBeTruthy();
+    expect(view.queryByText("Checking the quoted deposit accounts.")).toBeNull();
+    expect(view.getByText("Reasoning summary").closest("details")?.open).toBe(true);
+    expect(getRunTraceStep).toHaveBeenCalledTimes(1);
+    expect(getRunTrace).toHaveBeenCalledTimes(2);
+  });
+
+  test.each([false, true])("shows saved idea review decisions with goal fit enabled=%s", async (goalFit) => {
+    const trace = sampleTrace();
+    const step = { ...trace.steps[0]!, id: "review-1", label: "Review ideas", stage: "solution-set-review" };
+    trace.steps = [step];
+    const assessment = {
+      candidateId: "idea-1", decision: "distinct", reason: "The idea targets a separate observed workflow.",
+      matchingSolutionId: null, citedEvidenceIds: ["factor-1"],
+      ...(goalFit ? { criteriaFit: [{ criterionId: "environment", criterionName: "Environmental relevance", mustHave: true,
+        status: "partial", evidenceIds: ["factor-1"], note: "The source describes waste, but its environmental effect is not measured." }] } : {}),
+    };
+    Object.assign(window, { scraply: {
+      getRunTrace: async () => trace,
+      getRunTraceStep: async () => ({ ...stepDetail(), step, facts: [], searches: [], candidates: [], output: { assessments: [assessment] } }),
+    } });
+    const view = render(RunTrace, { runId: "run-1" });
+    await fireEvent.click(await view.findByRole("button", { name: /Review ideas/ }));
+    expect(await view.findByRole("heading", { name: "Idea reviewer decisions" })).toBeTruthy();
+    expect(view.getByText("The idea targets a separate observed workflow.")).toBeTruthy();
+    if (goalFit) {
+      expect(view.getByText("Environmental relevance · must-have: partial")).toBeTruthy();
+      expect(view.getByText("The source describes waste, but its environmental effect is not measured.")).toBeTruthy();
+      expect(view.getByText("Environmental relevance evidence IDs:", { exact: false }).textContent).toContain("factor-1");
+    } else expect(view.queryByText("Environmental relevance", { exact: false })).toBeNull();
   });
 
   test("discards step details that arrive after navigating to another run", async () => {

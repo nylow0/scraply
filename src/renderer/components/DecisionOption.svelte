@@ -4,6 +4,7 @@
   import { optionEvidenceReferences } from "../../shared/option-evidence";
   import { loadIdeaDetail } from "../lib/idea-details";
   import FocusedExperiment from "./FocusedExperiment.svelte";
+  import CriteriaFit from "./CriteriaFit.svelte";
   import { verdictLabel } from "../lib/status";
   type ExperimentOutcome = "not-run" | "pass" | "fail" | "inconclusive";
   let { idea, busy, analysisBlocked = false, initiallyOpen = false, inDetailView = false, onSelect, onSave, onOpenSource, onEvidenceFollowUp, onEvidenceReassessment, onPlanExperiment }: {
@@ -143,6 +144,24 @@
       {#if idea.selectable}<button class="primary" disabled={busy || analysisBlocked} title={analysisBlocked ? "Wait for the current generation batch to finish" : undefined} onclick={() => onSelect(idea)}>Choose and analyze</button>{/if}
     </header>
     <details class="option-overview"><summary>Problem and fit</summary>
+    <CriteriaFit fit={idea.criteriaFit} expanded={true} />
+    {#if detail?.criteriaFit?.some(entry => entry.evidenceIds.length > 0)}
+      <section aria-label="Criterion evidence">
+        {#each detail.criteriaFit as entry (entry.criterionId)}
+          {#if entry.evidenceIds.length > 0}<h3>{entry.criterionName}</h3><ul>
+            {#each optionEvidenceReferences(detail, entry.evidenceIds) as source (source.id)}<li>
+              {#if source.url}<a href={source.url} onclick={(event) => { event.preventDefault(); void onOpenSource(source.url!); }}>{source.title}</a>{:else}{source.title}{/if}
+            </li>{/each}
+          </ul>{/if}
+        {/each}
+      </section>
+    {/if}
+    {#if idea.biggerProblem}<h3>Wider problem</h3><p>{idea.biggerProblem.statement}</p><p>{idea.biggerProblem.affected}. {idea.biggerProblem.scale}{idea.biggerProblem.scaleKnown ? "" : " · scale unknown"}</p>
+      {#if detail && idea.biggerProblem.scaleEvidenceIds.length > 0}<ul aria-label="Problem scale evidence">
+        {#each optionEvidenceReferences(detail, idea.biggerProblem.scaleEvidenceIds) as source (source.id)}<li>{#if source.url}<a href={source.url} onclick={(event) => { event.preventDefault(); void onOpenSource(source.url!); }}>{source.title}</a>{:else}{source.title}{/if}</li>{/each}
+      </ul>{/if}
+    {/if}
+    {#if idea.slice}<h3>Buildable slice</h3><p>{idea.slice.description}</p><p>{idea.slice.connectionToBiggerProblem}</p><p>{idea.slice.feasibilityWithinConstraints}</p>{/if}
     <p class="problem">{idea.problemStatement}</p>
     <dl>
       <div><dt>Key assumption</dt><dd>{idea.keyAssumption}</dd></div>
@@ -151,6 +170,10 @@
     </dl>
     {#if idea.unknowns?.length}<h3>Still uncertain</h3><ul>{#each idea.unknowns as unknown, index (index)}<li>{unknown}</li>{/each}</ul>{/if}
     </details>
+    {#if idea.firstTest}<details class="option-overview"><summary>First test</summary>
+      <p>{idea.firstTest.question}</p><p>{idea.firstTest.method}</p>
+      <dl><div><dt>Metric</dt><dd>{idea.firstTest.metric}</dd></div><div><dt>Sample and duration</dt><dd>{idea.firstTest.sample} observations over {idea.firstTest.observationWindow}</dd></div><div><dt>Cost</dt><dd>{idea.firstTest.cost}</dd></div><div><dt>Pass</dt><dd>{idea.firstTest.passCriterion}</dd></div><div><dt>Fail</dt><dd>{idea.firstTest.failCriterion}</dd></div><div><dt>Inconclusive</dt><dd>{idea.firstTest.inconclusiveCriterion}</dd></div></dl>
+    </details>{/if}
     {#if idea.startupOpportunity}
       <details class="startup-details"><summary>Startup opportunity</summary>
         <dl>

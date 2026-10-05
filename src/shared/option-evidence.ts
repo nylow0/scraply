@@ -5,6 +5,7 @@ export function optionEvidenceReferences(idea: SolutionView, ids: readonly strin
   const sources = new Map([
     ...idea.factors.map((factor) => [factor.sourceId, { title: factor.sourceTitle, url: factor.sourceUrl }] as const),
     ...(idea.contrarySources ?? []).map((source) => [source.id, { title: source.title, url: source.url }] as const),
+    ...(idea.goalSources ?? []).map((source) => [source.id, { title: source.title, url: source.url }] as const),
   ]);
   return [...new Set(ids)].map((id) => ({
     id,

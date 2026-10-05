@@ -6,17 +6,22 @@ import { configurePromptPaths } from "../../src/core/prompts";
 import type { WorkflowV2StageId } from "../../src/core/stages";
 import { scanResearchArea } from "../../src/core/frame-discovery";
 import { ResearchEngine } from "../../src/core/research-engine";
+import { ResearchRequestService } from "../../src/core/research-request-service";
+import { materializeResearchSnapshot } from "../../src/core/research-revisions";
 import { WorkflowExecution } from "../../src/core/workflow-execution";
 import { DatabaseClient } from "../../src/db/client";
 import { DiscoveryRepository } from "../../src/db/repositories/discovery";
+import { EvidenceFollowUpRepository } from "../../src/db/repositories/evidence-follow-ups";
 import { GenerationAttemptRepository } from "../../src/db/repositories/generation-attempts";
 import { ResearchFrameRepository } from "../../src/db/repositories/research-frames";
 import { ResearchRunRepository } from "../../src/db/repositories/research-runs";
+import { WorkflowRepository } from "../../src/db/repositories/workflows";
 import type { StructuredModelClient, StructuredStageRequest } from "../../src/providers/structured";
 import type { SearchClient, SearchOptions } from "../../src/providers/search";
 import { canonicalJson, sha256 } from "../../src/shared/content-identity";
 import type { ResearchFrame } from "../../src/shared/research-frame";
 import { DEFAULT_RUN_CONFIG } from "../../src/shared/schemas";
+import { WorkflowV2CompatibleDecisionAnalysisOutputSchema, WorkflowV2GoalSolutionsOutputSchema } from "../../src/shared/structured-output-schemas";
 
 const model = { providerId: "fixture", modelId: "frame-context" };
 const scope = { title: "Filing", domain: "Repeated entries", audience: "Owners", observations: "", offLimits: [] };
@@ -207,5 +212,134 @@ test("new scans still plan the approved goal and languages and use proven area v
     expect(f.searches.some(item => item.query.startsWith("облік"))).toBe(true);
     expect(f.searches.every(item => item.options?.userLocation === "UA")).toBe(true);
     expect(f.searches.filter(item => item.options?.route === "community").every(item => item.options?.includeDomains?.includes("reddit.com"))).toBe(true);
+  } finally { await f.close(); }
+});
+
+async function completedFollowUp(f: ReturnType<typeof fixture>) {
+  const runId = await f.engine.startKnownProblem("project", scope, "Owners repeat entries", config);
+  await f.wait(runId);
+  const workflow = new WorkflowExecution(f.db, runId);
+  f.db.db.prepare("UPDATE workflow_snapshots SET value_json = ? WHERE research_run_id = ? AND snapshot_key = 'focused-experiments'")
+    .run(canonicalJson({ version: 0 }), runId);
+  const selected = f.db.db.prepare("SELECT id FROM solutions WHERE research_run_id = ?").get(runId) as { id: string };
+  await f.engine.selectOption("project", runId, selected.id); await f.wait(runId);
+  await f.engine.requestEvidenceFollowUp("project", runId, "What contrary evidence exists?"); await f.wait(runId);
+  expect(f.errors).toEqual([]);
+  expect(new EvidenceFollowUpRepository(f.db).find(runId)?.status).toBe("completed");
+  return { runId, workflow };
+}
+
+test("risk and decision reassessment use the run's frozen frame and preserve its approved first test", async () => {
+  const f = fixture();
+  try {
+    const { runId, workflow } = await completedFollowUp(f);
+    expect(workflow.read<{ frame?: ResearchFrame }>("development-context")?.frame).toBeUndefined();
+    const future = f.frames.createApprovedVersion(f.draft.id, "project", { ...frame(), goal: "A future competition", goalKind: "competition-entry",
+      constraints: [{ text: "A future tool is allowed", kind: "scope", basis: "brief" }] });
+    const original = f.db.db.prepare("SELECT * FROM decision_analyses WHERE research_run_id = ?").get(runId);
+    const before = { models: f.requests.length, searches: f.searches.length };
+    await f.engine.requestEvidenceReassessment("project", runId); await f.wait(runId);
+    expect(f.errors).toEqual([]);
+    const calls = f.requests.slice(before.models);
+    expect(calls.map(request => request.stage)).toEqual(["risk-evaluation", "decision-analysis"]);
+    for (const request of calls) expect((request.evidence[0]?.content as { frame: ResearchFrame }).frame).toEqual(frame());
+    expect(routing(calls[1]!)).toMatchObject({ frame: frame(), firstTest: option().firstTest });
+    expect(calls.every(request => request.evidence.some(item => item.sourceId === source.id))).toBe(true);
+    expect(calls.every(request => new Set(request.evidence.map(item => item.sourceId)).size === request.evidence.length)).toBe(true);
+    const reassessment = new EvidenceFollowUpRepository(f.db).find(runId)!;
+    expect(reassessment.reassessmentStatus).toBe("completed");
+    expect(reassessment.reassessmentAnalysis?.experiment).toMatchObject({ question: "Approved local test", cost: "One hour",
+      method: "Compare one week\nMetric: Repeat entries. Sample: 5. Observation window: One week." });
+    expect(f.searches).toHaveLength(before.searches);
+    expect(f.db.db.prepare("SELECT * FROM decision_analyses WHERE research_run_id = ?").get(runId)).toEqual(original);
+    expect(f.frames.forRun(runId)?.id).toBe(f.draft.id);
+    expect(f.frames.latestApproved("project")?.id).toBe(future.id);
+  } finally { await f.close(); }
+});
+
+test.each(["goal-kind", "unsupported-fit", "unsupported-scale"] as const)("reassessment rejects saved %s before model dispatch", async invalid => {
+  const f = fixture();
+  try {
+    const original = await completedFollowUp(f);
+    const saved = original.workflow.repository.findStageResult(original.runId, "solutions")!;
+    const output = WorkflowV2GoalSolutionsOutputSchema.parse(saved.output);
+    const selected = output.options[0]!;
+    if (invalid === "goal-kind") selected.firstTest!.kind = "demand-test";
+    if (invalid === "unsupported-fit") selected.criteriaFit![0]!.evidenceIds = [];
+    if (invalid === "unsupported-scale") selected.biggerProblem = { ...selected.biggerProblem!, scaleKnown: true, scaleEvidenceIds: [] };
+    // Preserve the original immutable result. This separate saved run has a structurally valid but semantically invalid option.
+    const oldSolution = f.db.db.prepare("SELECT id, problem_id FROM solutions WHERE research_run_id = ?").get(original.runId) as { id: string; problem_id: string };
+    const runId = new ResearchRunRepository(f.db).create("project", config, oldSolution.problem_id).runId;
+    const workflow = new WorkflowExecution(f.db, runId);
+    f.frames.bindRun(runId, "project", f.draft.id);
+    workflow.save("goal-fit", { version: 1 });
+    workflow.save("goal-fit-frame", { frameId: f.draft.id, frame: frame() });
+    workflow.developmentContext(oldSolution.problem_id);
+    const risk = original.workflow.repository.findStageResult(original.runId, "risk-evaluation", oldSolution.id)!;
+    const analysis = original.workflow.repository.findStageResult(original.runId, "decision-analysis", oldSolution.id)!;
+    const solutionId = `${runId}-solution`;
+    f.db.immediateTransaction(() => {
+      const repository = workflow.repository;
+      repository.saveSolutionOptions(runId, oldSolution.problem_id, [{ ...selected, id: solutionId }]);
+      repository.selectSolution(runId, solutionId);
+      repository.saveStageResult({ ...saved, id: `${runId}-options`, researchRunId: runId, output });
+      repository.saveStageResult({ ...risk, id: `${runId}-risk`, researchRunId: runId, selectionId: solutionId });
+      const checkpoint = repository.saveStageResult({ ...analysis, id: `${runId}-analysis`, researchRunId: runId, selectionId: solutionId });
+      repository.saveDecisionAnalysis({ researchRunId: runId, solutionId, stageResultId: checkpoint.id,
+        analysis: WorkflowV2CompatibleDecisionAnalysisOutputSchema.parse(analysis.output) });
+      f.db.db.prepare("UPDATE research_runs SET status = 'completed' WHERE id = ?").run(runId);
+      const followUps = new EvidenceFollowUpRepository(f.db);
+      followUps.request(runId, solutionId, "What contrary evidence exists?");
+      followUps.markRunning(runId);
+      followUps.complete(runId, [], []);
+    });
+    const calls = f.requests.length;
+    await f.engine.requestEvidenceReassessment("project", runId); await f.wait(runId);
+    expect(f.requests).toHaveLength(calls);
+    const result = new EvidenceFollowUpRepository(f.db).find(runId)!;
+    expect(result.reassessmentStatus).toBe("failed");
+    expect(result.reassessmentError).toContain(invalid === "goal-kind" ? "approved goal kind"
+      : invalid === "unsupported-fit" ? "needs saved evidence" : "Known problem scale needs saved evidence");
+  } finally { await f.close(); }
+});
+
+test.each(["legacy-absent", "explicit-null"] as const)("queued follow-up respects its %s frame identity after a project edit", async identity => {
+  const f = fixture(frame(["en", "uk"]));
+  try {
+    const discovery = new DiscoveryRepository(f.db);
+    discovery.persistProblems(f.seedRun, [], [{ id: "problem", statement: "Owners repeat entries", whyItPersists: "Disconnected exports",
+      affected: "Owners", scaleEstimate: "Unknown", scaleBasisFactorId: null, factorIds: [], verdict: "insufficient-evidence",
+      verdictReason: "Only a background report is saved", verdictSourceIds: [source.id], intendedBuyerEvidenceFactorIds: [] }]);
+    const repository = new WorkflowRepository(f.db);
+    f.db.immediateTransaction(() => repository.createSession({ id: "session", threadId: "project", purpose: "discovery", mode: "babysit",
+      remainingMs: 60 * 60_000, contract: { contractVersion: 1, purpose: "discovery", mode: "babysit", brief: "Reduce filing", scope, runConfig: config,
+        targets: { kind: "per-problem", ideaCount: 1 }, limits: { maxMinutes: 60, maxModelCalls: 50, maxSearches: 40 }, instructions: {},
+        resolvedInstructions: { research: "", ideas: "", review: "" }, instructionHashes: { research: "r", ideas: "i", review: "v" } } }));
+    const snapshot = f.db.immediateTransaction(() => {
+      const copied = materializeResearchSnapshot(f.db, { threadId: "project", baseRunId: f.seedRun, sourceProblemIds: ["problem"], sessionId: "session" });
+      // Historical materializations saved source origins but omitted the frame binding.
+      f.db.db.prepare("UPDATE research_runs SET frame_id = NULL WHERE id = ?").run(copied.runId);
+      const snapshot = repository.createSnapshot({ sessionId: "session", materializationRunId: copied.runId,
+        selection: { problemIds: copied.problemIds }, originMap: copied.originMap });
+      repository.updateSession("session", 0, { state: "waiting-for-review", activeSnapshotId: snapshot.id, runningSince: null });
+      return snapshot;
+    });
+    let dispatched = "";
+    const service = new ResearchRequestService({ db: f.db, engine: () => ({ async resumeRun(runId) { dispatched = runId; } }),
+      modelClient: () => { throw new Error("Queued admission must not call a model"); } });
+    const action = {
+      type: "request-research", kind: "new-question", question: "What helps owners today?", baseSnapshotId: snapshot.id, model,
+      reasoningEffort: "medium", allowance: { maxMinutes: 10, maxModelCalls: 20, maxSearches: 12 } };
+    const input = { action, baseSnapshotId: snapshot.id, ...(identity === "explicit-null" ? { frameId: null } : {}) };
+    const item = f.db.immediateTransaction(() => repository.createWorkItem({ sessionId: "session", kind: "research-request",
+      scopeKey: "saved-queued-request", state: "ready", input }));
+    const savedInput = canonicalJson(input);
+    const future = f.frames.createApprovedVersion(f.draft.id, "project", { ...frame(), goal: "A future goal", languages: ["en", "de"] });
+    await service.dispatchReady("session");
+    expect(dispatched).not.toBe("");
+    expect(f.frames.forRun(dispatched)?.id ?? null).toBe(identity === "legacy-absent" ? f.draft.id : null);
+    expect(f.frames.latestApproved("project")?.id).toBe(future.id);
+    expect(f.db.db.prepare("SELECT input_json FROM workflow_work_items WHERE id = ?").get(item.id)).toEqual({ input_json: savedInput });
+    expect(f.db.db.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
   } finally { await f.close(); }
 });

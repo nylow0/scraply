@@ -9,6 +9,7 @@ export type {
   ResearchFindingComparison, ResearchFindingView, ResearchReplacement, ResearchRequestDraft,
   ResearchRequestKind, ResearchRequestView,
 } from "../shared/research-revisions";
+export { researchAnglesForGoal } from "../shared/research-revisions";
 
 export class ResearchRevisionError extends Error {
   readonly code = "INVALID_REFERENCE";

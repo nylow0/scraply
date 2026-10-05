@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { FocusedDemandTestSchema } from "./focused-experiment";
-import { WorkflowV2StartupSolutionOptionSchema } from "./structured-output-schemas";
+import { WorkflowV2StartupSolutionOptionSchema, WorkflowV2GoalStartupSolutionOptionSchema } from "./structured-output-schemas";
 
 export const DEFAULT_OPPORTUNITY_EXPLORATION_CONFIG = {
   targetFamilies: 30,
@@ -84,7 +84,7 @@ export const OpportunityCoverageMapOutputSchema = z.object({
   noUsefulGapReason: z.string().trim().min(1).max(1_000).nullable(),
 }).strict();
 
-export const OpportunityExpansionOutputSchema = z.object({
+export const OpportunityLegacyExpansionOutputSchema = z.object({
   problemHypothesis: z.object({
     statement: z.string().trim().min(1).max(2_000),
     whyItPersists: z.string().trim().min(1).max(2_000),
@@ -97,6 +97,10 @@ export const OpportunityExpansionOutputSchema = z.object({
     focusedDemandTest: FocusedDemandTestSchema,
   }).strict()).max(6),
 }).strict();
+export const OpportunityGoalExpansionOutputSchema = OpportunityLegacyExpansionOutputSchema.extend({
+  options: z.array(WorkflowV2GoalStartupSolutionOptionSchema.extend({ focusedDemandTest: FocusedDemandTestSchema })).max(6),
+});
+export const OpportunityExpansionOutputSchema = z.union([OpportunityGoalExpansionOutputSchema, OpportunityLegacyExpansionOutputSchema]);
 
 const OpportunityProblemEvidenceOriginSchema = z.object({
   kind: z.literal("problem-evidence"),
