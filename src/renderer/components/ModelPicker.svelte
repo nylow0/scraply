@@ -92,7 +92,9 @@
   </button>
   {#if open}
     <!-- Keys are handled on the combobox button, which keeps focus and points at the active row. -->
-    <ul id={`${id}-list`} role="listbox" aria-label={label} style={position} popover="manual" use:topLayer>
+    <!-- Pickers usually sit inside a <label>, whose default click action would also click the trigger and toggle the list. -->
+    <!-- svelte-ignore a11y_click_events_have_key_events -->
+    <ul id={`${id}-list`} role="listbox" aria-label={label} style={position} popover="manual" use:topLayer onclick={(event) => event.preventDefault()}>
       {#each rows as item, index (item.kind === "model" ? item.key : "legacy")}
         <!-- svelte-ignore a11y_click_events_have_key_events -->
         <li id={`${id}-${index}`} role="option" tabindex="-1" data-value={item.kind === "model" ? item.key : undefined} class:active={index === active} class:legacy-row={item.kind === "legacy"}

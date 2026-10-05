@@ -49,7 +49,7 @@ test("compact settings, consistent fields, title defaults, and archive recovery"
     expect(await page.evaluate(() => document.activeElement?.closest(".settings-screen") !== null)).toBe(true);
     await page.getByRole("button", { name: "Research defaults", exact: true }).click();
     await expect(page.getByLabel("Title model", { exact: true })).toHaveAttribute("data-value", "openai-subscription:gpt-6-luna");
-    await expect(page.getByLabel("Title model").getByRole("option", { name: "GPT-6 Luna", exact: true })).toHaveCount(1);
+    await expect(page.getByLabel("Title model", { exact: true })).toHaveText("GPT-6 Luna");
     await expect(page.getByLabel("Title reasoning", { exact: true })).toHaveValue("low");
     const provider = page.getByLabel("Default search provider", { exact: true });
     expect(await provider.evaluate((el) => getComputedStyle(el).appearance)).toBe("base-select");

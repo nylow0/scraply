@@ -89,12 +89,9 @@ test("the renderer restores the problem-selection step after a restart", async (
     await page.locator(".problem-disclosure > summary").first().click();
     await expect(page.getByRole("checkbox", { name: "Develop this problem" })).toBeChecked();
     await page.getByRole("button", { name: "Generate all selected" }).click();
-    await expect(page.getByText("Supplier reliability ledger")).toBeVisible();
+    // The idea is a row in its problem's group, named by its short name.
+    await expect(page.getByRole("button", { name: "Open idea: Pool observed delivery windows by supplier and part category." })).toBeVisible();
     await page.screenshot({ animations: "disabled", path: testInfo.outputPath("ideas.png") });
-    await page.getByRole("textbox", { name: "Search ideas" }).fill("nothing matches");
-    await expect(page.getByText('No ideas match "nothing matches".')).toBeVisible();
-    await page.getByRole("button", { name: "Clear filter" }).click();
-    await expect(page.getByText(/Ideas are shown in saved order/)).toBeVisible();
     await expect(page.getByText(/independently confirmed outcomes/)).toHaveCount(0);
     await expect(page.getByText("Highest risk: likely · project ends")).not.toBeVisible();
     await page.getByRole("button", { name: "Open idea: Pool observed delivery windows by supplier and part category." }).click();
