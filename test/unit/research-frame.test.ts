@@ -142,6 +142,11 @@ describe("scoped research and area selection", () => {
     expect(selectResearchAreas(frame, ranking, { "area-1": 1, "area-2": 2 }, "standard").map(area => area.id)).toEqual(["area-1", "area-2", "area-0"]);
     const failing: ResearchAreaRanking = { areas: ranking.areas.map(item => item.areaId === "area-0" ? { ...item, fit: "fails" } : item) };
     expect(selectResearchAreas(frame, failing, { "area-3": 1 }, "standard").map(area => area.id)).toEqual(["area-3", "area-1", "area-2"]);
+    // Evidence cannot make an area that fails the approved goal eligible for investigation.
+    expect(selectResearchAreas(frame, failing, { "area-0": 3, "area-3": 1 }, "standard").map(area => area.id))
+      .toEqual(["area-3", "area-1", "area-2"]);
+    expect(selectResearchAreas(frame, { areas: ranking.areas.map(item => ({ ...item, fit: "fails" })) },
+      { "area-0": 3, "area-3": 1 }, "standard")).toEqual([]);
     // Standard investigates three evidence-bearing areas; live runs stopped at two while this count lived in two places.
     expect(selectResearchAreas(frame, ranking, { "area-0": 1, "area-1": 1, "area-2": 2, "area-3": 4 }, "standard").map(area => area.id))
       .toEqual(["area-0", "area-1", "area-2"]);

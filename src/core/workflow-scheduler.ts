@@ -68,7 +68,18 @@ export class WorkflowModelScheduler {
             const value = await operation(callSignal);
             finish(callSignal.aborted ? { error: abortError(callSignal) } : { value });
           } catch (error) {
-            finish({ error: callSignal.aborted ? abortError(callSignal) : error });
+            // An active provider's terminal receipt owns usage and completion safety.
+            // Replacing it with the abort reason would discard confirmed cancellation or lost-process metadata.
+            if (error instanceof ProviderFailure) {
+              const reason = callSignal.reason;
+              const deadlineCancellation = callSignal.aborted && reason instanceof ProviderFailure
+                && reason.code === "timeout" && error.code === "cancelled";
+              finish({ error: deadlineCancellation ? new ProviderFailure("timeout", reason.message, reason.retryable, {
+                cause: error,
+                ...(error.attempts ? { attempts: error.attempts } : {}),
+                ...(error.runtimeCode ? { runtimeCode: error.runtimeCode } : {}),
+              }) : error });
+            } else finish({ error: callSignal.aborted ? abortError(callSignal) : error });
           }
         },
         rejectQueued: () => finish({ error: abortError(callSignal) }),
@@ -155,3 +166,4 @@ function abortError(signal: AbortSignal): Error {
   if (signal.reason instanceof Error) return signal.reason;
   return new DOMException(typeof signal.reason === "string" ? signal.reason : "Model call cancelled", "AbortError");
 }
+import { ProviderFailure } from "../providers/structured";

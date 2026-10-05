@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { parseArgs } from "node:util";
@@ -10,6 +10,7 @@ import { PerplexityClient } from "../src/providers/perplexity";
 import { RuntimeClient } from "../src/providers/runtime";
 import { ProviderFailure, type StructuredStageResult } from "../src/providers/structured";
 import { deriveJsonSchema } from "../src/shared/json-schema";
+import { sha256 } from "../src/shared/content-identity";
 import {
   FrameSearchPlanSchema, parseResearchFrame, ResearchFrameOutputSchema, ResearchFrameSchema, ResearchGoalKindSchema,
   type ResearchFrame,
@@ -319,10 +320,6 @@ function summarize(output: string, review?: z.infer<typeof ManualReviewSchema>) 
 
 function save(directory: string, filename: string, value: unknown) {
   writeFileSync(join(directory, filename), `${JSON.stringify(value, null, 2)}\n`);
-}
-
-function sha256(value: string) {
-  return createHash("sha256").update(value).digest("hex");
 }
 
 function safeFailure(error: unknown) {

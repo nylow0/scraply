@@ -20,6 +20,16 @@ function candidate(id: string, changes: Partial<VibeProblemCandidate> = {}): Vib
 }
 
 describe("unattended problem selection", () => {
+  test("distinct origin sets stay distinct when an origin contains the separator character", () => {
+    const fromOrigins = (id: string, origins: string[]) => candidate(id, {
+      intendedBuyerEvidenceFactorIds: origins.map((_, index) => `${id}:${index}`),
+      factors: origins.map((origin, index) => ({ ...candidate(id).factors[0]!,
+        id: `${id}:${index}`, sourceId: `${id}:source:${index}`, independentSourceKey: origin })),
+    });
+    const result = selectVibeProblems({ candidates: [fromOrigins("one", ["a|b", "c"]), fromOrigins("two", ["a", "b|c"])] });
+    expect(result.selectedProblemIds).toEqual(["one", "two"]);
+  });
+
   test("two problems resting on exactly the same independent sources get ideas only once", () => {
     // Live Bookkeepers confirmed two reconciliation problems from the same two bookkeepers' posts.
     const shared = (id: string) => candidate(id, { intendedBuyerEvidenceFactorIds: [`${id}:amanda`, `${id}:divyadeep`],

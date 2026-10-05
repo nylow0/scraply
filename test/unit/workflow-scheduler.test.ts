@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { WorkflowModelScheduler } from "../../src/core/workflow-scheduler";
+import { ProviderFailure, type GenerationAttemptMetadata } from "../../src/providers/structured";
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -104,6 +105,49 @@ describe("workflow model scheduler", () => {
     expect(scheduler.maxActive).toBe(1);
     expect(() => scheduler.setMaxActive(9)).toThrow("1 to 8");
     expect(() => new WorkflowModelScheduler(1.5)).toThrow("1 to 8");
+  });
+
+  test.each(["cancelled", "interrupted"] as const)("keeps an active provider's %s terminal receipt after Stop", async (code) => {
+    const scheduler = new WorkflowModelScheduler();
+    const release = deferred<void>();
+    const attempts: GenerationAttemptMetadata[] = [{
+      attempt: "initial", outcome: "cancelled", providerCompletion: code === "cancelled" ? "confirmed" : "unknown",
+      model: { providerId: "fixture", modelId: "fixture" },
+      usage: { status: "known", value: { inputTokens: 40, outputTokens: 2, totalTokens: 42 } },
+      cost: { status: "not_reported" }, latencyMs: 5,
+    }];
+    const terminal = new ProviderFailure(code, "Provider terminal", false, { attempts, runtimeCode: "fixture_terminal" });
+    const active = scheduler.schedule("project", async () => { await release.promise; throw terminal; })
+      .catch((error: unknown) => error);
+    await until(() => scheduler.activeCallCount === 1);
+    scheduler.cancelProject("project", new Error("Cancelled by user"));
+    expect(scheduler.activeCallCount).toBe(1);
+    release.resolve();
+    expect(await active).toBe(terminal);
+    expect(terminal.attempts).toBe(attempts);
+    await until(() => scheduler.activeCallCount === 0);
+  });
+
+  test.each(["cancelled", "interrupted"] as const)("a deadline keeps %s receipt metadata and preserves completion uncertainty", async (code) => {
+    const scheduler = new WorkflowModelScheduler();
+    const controller = new AbortController();
+    const release = deferred<void>();
+    const attempts: GenerationAttemptMetadata[] = [{
+      attempt: "initial", outcome: "cancelled", providerCompletion: code === "cancelled" ? "confirmed" : "unknown",
+      model: { providerId: "fixture", modelId: "fixture" }, usage: { status: "unknown" },
+      cost: { status: "unknown" }, latencyMs: 5,
+    }];
+    const terminal = new ProviderFailure(code, "Provider terminal", false, { attempts, runtimeCode: "fixture_terminal" });
+    const active = scheduler.schedule("project", async () => { await release.promise; throw terminal; }, controller.signal)
+      .catch((error: unknown) => error);
+    await until(() => scheduler.activeCallCount === 1);
+    controller.abort(new ProviderFailure("timeout", "Saved deadline expired", false));
+    release.resolve();
+    const error = await active;
+    expect(error).toBeInstanceOf(ProviderFailure);
+    expect(error).toMatchObject({ code: code === "cancelled" ? "timeout" : "interrupted", attempts, runtimeCode: "fixture_terminal" });
+    if (code === "interrupted") expect(error).toBe(terminal);
+    await until(() => scheduler.activeCallCount === 0);
   });
 
   test("rotates projects after one call even when the first project has queued more work", async () => {

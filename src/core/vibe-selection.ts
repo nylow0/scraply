@@ -123,7 +123,7 @@ export function selectVibeProblems(input: VibeSelectionInput): VibeSelectionResu
     return {
       candidate,
       workflowKey: normalize(candidate.workflowKey?.trim() || candidate.statement),
-      evidenceKey: [...sourceKeys].sort().join("|"),
+      evidenceKey: sourceKeys.size ? JSON.stringify([...sourceKeys].sort()) : "",
       decision: {
         problemId: candidate.id,
         selected: eligible,

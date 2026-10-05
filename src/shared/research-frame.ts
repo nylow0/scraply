@@ -190,7 +190,8 @@ export function selectResearchAreas(frame: ResearchFrame, ranking: ResearchAreaR
   if (ranks.size !== included.length) throw new Error("Area ranking is missing an included area.");
   const fits = new Map(ranking.areas.map(item => [item.areaId, item.fit]));
   const byRank = (left: ResearchArea, right: ResearchArea) => ranks.get(left.id)! - ranks.get(right.id)!;
-  const evidenced = included.filter(area => (qualifyingFactCounts[area.id] ?? 0) > 0).sort(byRank);
-  const others = included.filter(area => !evidenced.includes(area) && fits.get(area.id) !== "fails").sort(byRank);
+  const eligible = included.filter(area => fits.get(area.id) !== "fails");
+  const evidenced = eligible.filter(area => (qualifyingFactCounts[area.id] ?? 0) > 0).sort(byRank);
+  const others = eligible.filter(area => !evidenced.includes(area)).sort(byRank);
   return [...evidenced, ...others].slice(0, FRAME_INVESTIGATOR_COUNTS[depth]);
 }

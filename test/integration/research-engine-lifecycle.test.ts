@@ -6,10 +6,14 @@ import { configurePromptPaths } from "../../src/core/prompts";
 import { DatabaseClient } from "../../src/db/client";
 import { CostLedgerRepository } from "../../src/db/repositories/cost-ledger";
 import { ResearchRunRepository } from "../../src/db/repositories/research-runs";
-import { WorkflowExecution } from "../../src/core/workflow-execution";
+import { GenerationAttemptRepository } from "../../src/db/repositories/generation-attempts";
+import { ResearchFrameRepository } from "../../src/db/repositories/research-frames";
+import { WorkflowRepository } from "../../src/db/repositories/workflows";
+import { streamRestarts, WorkflowExecution } from "../../src/core/workflow-execution";
 import { UnknownSearchCompletionError, unknownSearchAttempts } from "../../src/core/workflow-search-attempts";
 import type { Source } from "../../src/shared/schemas";
-import type { GenerationAcceptanceMetadata, StructuredModelClient } from "../../src/providers/structured";
+import { ProviderFailure, type GenerationAcceptanceMetadata, type StructuredModelClient } from "../../src/providers/structured";
+import type { ResearchFrame } from "../../src/shared/research-frame";
 import type { SearchOptions } from "../../src/providers/search";
 import { RunConfigSchema } from "../../src/shared/schemas";
 import { join } from "node:path";
@@ -166,6 +170,114 @@ test.each(["resolve", "reject"] as const)("cancel/resume survives old identity i
     db.close();
   }
 });
+
+test.each([{ drops: 1, unrelated: false }, { drops: 1, unrelated: true }, { drops: 3, unrelated: true }])(
+  "research acknowledges exact drops after rate-limit replacement and keeps other areas running (%s)", async ({ drops, unrelated }) => {
+    const db = database();
+    const pauses = streamRestarts.pausesMs;
+    streamRestarts.pausesMs = [1, 1];
+    const runConfig = { ...config, discoveryDepth: "standard" as const };
+    const frame: ResearchFrame = { goal: "Reduce late parts", goalKind: "process-improvement", contextFacts: [],
+      successCriteria: [{ id: "timely", name: "Parts arrive on time", weight: "must", howJudged: "Check delivery records", basis: "brief" }],
+      constraints: [], languages: ["en"], exclusions: [], openQuestions: [],
+      areas: ["ordering", "delivery"].map((id, index) => ({ id, name: id, affectedPeople: "Repair shops", whyRelevant: "Late parts",
+        venues: [{ name: "Shop reports", kind: "publication" }], exampleProblems: [], included: true, priority: index + 1 })) };
+    const frameRun = new ResearchRunRepository(db).create("thread", runConfig).runId;
+    const frames = new ResearchFrameRepository(db);
+    const draft = frames.createDraft({ threadId: "thread", runId: frameRun, knownProblem: false, frame, sources: [] });
+    frames.approve(draft.id, "thread", draft.draft);
+    db.db.prepare("UPDATE research_runs SET status = 'completed' WHERE id = ?").run(frameRun);
+    const workflows = new WorkflowRepository(db);
+    const item = db.immediateTransaction(() => {
+      workflows.createSession({ id: "retry-session", threadId: "thread", purpose: "discovery", mode: "babysit", remainingMs: 300_000,
+        contract: { contractVersion: 1, frameWorkflowVersion: 1, purpose: "discovery", mode: "babysit", brief: "Reduce late parts", scope,
+          runConfig, targets: { kind: "project", ideaCount: 1 }, limits: { enforced: false, maxMinutes: 5, maxModelCalls: 100, maxSearches: 100 },
+          instructions: {}, resolvedInstructions: { research: "", ideas: "", review: "" }, instructionHashes: { research: "r", ideas: "i", review: "v" } } });
+      return workflows.createWorkItem({ sessionId: "retry-session", kind: "discovery", scopeKey: "discovery", state: "ready", input: {} });
+    });
+    const calls: Array<{ stage: string; generationId: string }> = [];
+    const errors: string[] = [];
+    let targetCalls = 0;
+    let unrelatedAttemptId: string | undefined;
+    const client: StructuredModelClient = { async structuredCompletion(request) {
+      calls.push({ stage: request.stage, generationId: request.generationId });
+      if (request.stage === "area-gap:ordering") {
+        targetCalls++;
+        if (targetCalls === 1) throw new ProviderFailure("rate-limit", "Rate limit reached", true);
+        const dropped = new ProviderFailure("interrupted", "Stream dropped", false, { attempts: [{
+          attempt: "initial", outcome: "failed", providerCompletion: "unknown", model: config.model,
+          usage: { status: "unknown" }, cost: { status: "unknown" }, latencyMs: 1,
+        }] });
+        if (unrelated && !unrelatedAttemptId) {
+          const owner = db.db.prepare("SELECT research_run_id FROM generation_attempts WHERE generation_id = ?").get(request.generationId) as { research_run_id: string };
+          const attempts = new GenerationAttemptRepository(db);
+          const other = attempts.prepare(owner.research_run_id, { ...request, generationId: "unrelated-generation", stage: "unrelated-probe" });
+          attempts.markDispatched(other.id);
+          attempts.recordTerminal(other.id, { status: "interrupted", terminalKind: "interrupted", attemptMetadata: { attempts: dropped.attempts } });
+          unrelatedAttemptId = other.id;
+        }
+        if (targetCalls <= drops + 1) {
+          request.onDispatched?.(); request.onAccepted?.({});
+          throw dropped;
+        }
+      }
+      request.onDispatched?.(); request.onAccepted?.({});
+      const stage = request.stage.split(":")[0];
+      const inputs = request.workOrder.inputs as { routing: { queryCount?: number } };
+      const packet = request.evidence[0]?.content as { sources?: Array<{ id: string }> } | undefined;
+      const output = stage === "query-plan" ? { queries: Array.from({ length: inputs.routing.queryCount ?? 1 }, (_, index) => ({
+        query: `${request.stage} parts ${index}`, intent: "firsthand-experience", uncertainty: "Delivery frequency", intendedSourceType: "Shop reports" })) }
+        : stage === "factor-harvest" ? { factors: packet!.sources!.map(source => ({ sourceId: source.id, subject: "Repair shop",
+          behavior: "Waits for parts", quote: "Parts arrive late.", modelConfidence: 0.8, uncertainty: "Frequency unknown",
+          sourceRole: "firsthand", audienceFit: "intended-buyer", independentSourceKey: source.id, supportsDemand: false, demandEvidenceUncertainty: "Payment unknown" })) }
+        : stage === "area-ranking" ? { areas: frame.areas.map((area, index) => ({ areaId: area.id, rank: index + 1,
+          reason: "Shop reports", evidenceStrength: "strong", fit: "meets" })) }
+        : stage === "problem-candidates" ? { problems: [] }
+        : stage === "area-gap" ? { reason: "No additional evidence gap", gaps: [] } : null;
+      if (!output) throw new Error(`Unexpected stage ${request.stage}`);
+      return { output: request.schema.parse(output), metadata: { model: config.model, prompt: { id: "fixture", sha256: "a".repeat(64) },
+        usage: { status: "unknown" }, latencyMs: 0, repairCount: 0, providerRequestIds: [], attempts: [] } };
+    } };
+    const engine = new ResearchEngine({ db, modelClients: { fixture: client }, rateLimitPausesMs: [1, 1],
+      searchClients: { exa: { provider: "exa", async validateKey() { return { valid: true }; }, async search(query) {
+        return [{ id: query, url: `https://shops.example/${encodeURIComponent(query)}`, title: "Shop report", text: "Parts arrive late." }];
+      } } }, onEvent(event) { if (event.type === "run-failed") errors.push(event.error); } });
+    try {
+      const runId = await engine.startDiscovery("thread", scope, runConfig, { sessionId: "retry-session", frameId: draft.id, purpose: "discovery",
+        onRunCreated(id) { db.immediateTransaction(() => workflows.updateWorkItem(item.id, "running", { outputRefs: { runId: id } })); return true; } });
+      await until(() => !engine.getActiveRunIds().has(runId));
+      expect(errors).toEqual([]);
+      expect(db.db.prepare("SELECT status FROM research_runs WHERE id = ?").get(runId)).toEqual({ status: "completed" });
+      const lost = db.db.prepare(`SELECT id, generation_id AS generationId, usage_json AS usage FROM generation_attempts
+        WHERE research_run_id = ? AND stage_key = 'area-gap:ordering' AND status = 'interrupted' ORDER BY rowid`)
+        .all(runId) as Array<{ id: string; generationId: string; usage: string }>;
+      const audits = db.db.prepare(`SELECT snapshot_key AS key, value_json AS value FROM workflow_snapshots
+        WHERE research_run_id = ? AND snapshot_key LIKE 'acknowledged-retry:stream-restart:%' ORDER BY rowid`)
+        .all(runId) as Array<{ key: string; value: string }>;
+      expect(lost).toHaveLength(drops);
+      expect(audits).toEqual(lost.slice(0, 2).map(attempt => ({ key: `acknowledged-retry:stream-restart:${attempt.generationId}`,
+        value: JSON.stringify({ attemptIds: [attempt.id] }) })));
+      expect(lost.map(attempt => JSON.parse(attempt.usage))).toEqual(Array.from({ length: drops }, () => [{ status: "unknown" }]));
+      expect(targetCalls).toBe(drops === 1 ? 3 : 4);
+      expect(calls.filter(call => call.stage === "area-gap:delivery")).toHaveLength(1);
+      expect(new CostLedgerRepository(db).countProviderCalls(runId, "fixture")).toBe(calls.length - 1);
+      if (unrelated) {
+        expect(workflows.acknowledgedAttemptIds(runId)).not.toContain(unrelatedAttemptId!);
+        expect(workflows.hasUnknownProviderCompletion(runId)).toBe(true);
+      } else expect(workflows.hasUnknownProviderCompletion(runId)).toBe(false);
+      if (drops === 3) {
+        expect(audits.flatMap(row => JSON.parse(row.value).attemptIds)).not.toContain(lost[2]!.id);
+        // Stopping an area records its abandonment separately from authorizing a stream restart.
+        expect(new WorkflowExecution(db, runId).read<{ reason: string }>("research-target-outcome")!.reason)
+          .toContain("Research in ordering stopped early because a model call failed");
+      }
+    } finally {
+      streamRestarts.pausesMs = pauses;
+      await engine.shutdown();
+      db.close();
+    }
+  },
+);
 
 test.each(["exa", "perplexity"] as const)("%s discovery retains provider concurrency through engine instrumentation", async (provider) => {
   const db = database();
