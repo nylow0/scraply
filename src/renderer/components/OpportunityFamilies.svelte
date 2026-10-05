@@ -13,6 +13,7 @@
 
   let {
     opportunities,
+    quiet = false,
     modelOptions,
     initialConfig,
     busy,
@@ -20,6 +21,7 @@
     onEdit,
   }: {
     opportunities: OpportunityFamiliesView;
+    quiet?: boolean;
     modelOptions: ModelOption[];
     initialConfig?: RunConfig | null;
     busy: boolean;
@@ -114,14 +116,14 @@
   }
 </script>
 
-<section class="opportunity-review" aria-labelledby="opportunity-review-title">
+<section class="opportunity-review" class:quiet aria-labelledby="opportunity-review-title">
   <header>
     <div>
-      <p class="eyebrow">Business grouping</p>
+      {#if !quiet}<p class="eyebrow">Business grouping</p>{/if}
       <h2 id="opportunity-review-title">{opportunities.acceptedFamilyCount} accepted {opportunities.acceptedFamilyCount === 1 ? "family" : "families"}</h2>
-      <p>{opportunities.reviewedOptionCount}/{opportunities.rawOptionCount} saved ideas reviewed. Variants and duplicates stay visible without increasing the family count.</p>
+      {#if !quiet}<p>{opportunities.reviewedOptionCount}/{opportunities.rawOptionCount} saved ideas reviewed. Variants and duplicates stay visible without increasing the family count.</p>{/if}
     </div>
-    <span class:warning={opportunities.reviewStatus === "failed" || opportunities.reviewStatus === "blocked" || opportunities.unresolved.length > 0} class="status">{opportunities.reviewStatus === "completed" && opportunities.unresolved.length > 0 ? `${opportunities.unresolved.length} need a decision` : opportunities.reviewStatus === "not-reviewed" ? "Not reviewed" : opportunities.reviewStatus.charAt(0).toUpperCase() + opportunities.reviewStatus.slice(1)}</span>
+    {#if !quiet || opportunities.unresolved.length > 0 || ["running", "failed", "blocked"].includes(opportunities.reviewStatus)}<span class:warning={opportunities.reviewStatus === "failed" || opportunities.reviewStatus === "blocked" || opportunities.unresolved.length > 0} class="status">{(quiet || opportunities.reviewStatus === "completed") && opportunities.unresolved.length > 0 ? `${opportunities.unresolved.length} need a decision` : opportunities.reviewStatus === "not-reviewed" ? "Not reviewed" : opportunities.reviewStatus.charAt(0).toUpperCase() + opportunities.reviewStatus.slice(1)}</span>{/if}
   </header>
 
   {#if opportunities.reviewError}<p class="review-error" role="alert">{opportunities.reviewError}</p>{/if}
@@ -143,15 +145,15 @@
     <button class="review-button" disabled={busy || !selectedModel || !reasoningAvailable || opportunities.unreviewedOptionIds.length === 0} onclick={() => onReview(reviewModel, reasoningEffort, opportunities.reviewStatus === "blocked")}>
       {busy && opportunities.reviewStatus === "running" ? "Reviewing…" : opportunities.reviewStatus === "blocked" ? "Start a new review" : opportunities.unreviewedOptionIds.length > 0 ? `Review ${opportunities.unreviewedOptionIds.length} saved ${opportunities.unreviewedOptionIds.length === 1 ? "idea" : "ideas"}` : "Saved ideas reviewed"}
     </button>
-    {#if modelKey && !selectedModel}<p role="status">The saved review model is unavailable. Choose an available model to review ideas.</p>{:else if selectedModel && !reasoningAvailable}<p role="status">The saved reasoning effort is unavailable for this model. Choose an available effort to review ideas.</p>{/if}
+    {#if !quiet && modelKey && !selectedModel}<p role="status">The saved review model is unavailable. Choose an available model to review ideas.</p>{:else if !quiet && selectedModel && !reasoningAvailable}<p role="status">The saved reasoning effort is unavailable for this model. Choose an available effort to review ideas.</p>{/if}
   </div>
 
   {#if opportunities.reviewedOptionCount > 0}
     <label class="decision-note">
       <span>Reason for a grouping change</span>
-      <input bind:value={editReason} maxlength="2000" placeholder="Describe the overlap, distinction, or uncertainty" aria-describedby="grouping-reason-help" disabled={busy} />
+      <input bind:value={editReason} maxlength="2000" placeholder="Describe the overlap, distinction, or uncertainty" aria-describedby={quiet ? undefined : "grouping-reason-help"} disabled={busy} />
     </label>
-    <small id="grouping-reason-help" class="decision-help">Add a reason to enable manual decisions. Scraply saves it with each change.</small>
+    {#if !quiet}<small id="grouping-reason-help" class="decision-help">Add a reason to enable manual decisions. Scraply saves it with each change.</small>{/if}
   {/if}
 
   <div class="families">
@@ -159,7 +161,7 @@
       <article class:uncounted={!family.counted}>
         <div class="family-heading">
           <div><h3>{family.title}</h3><p>{family.summary}</p></div>
-          <span>{family.counted ? "Counted startup family" : "Not counted"}</span>
+          {#if !quiet || !family.counted}<span>{family.counted ? "Counted startup family" : "Not counted"}</span>{/if}
         </div>
         <div class="members">
           {#each family.members as member (member.optionId)}
@@ -196,7 +198,7 @@
   {#if opportunities.unresolved.length > 0}
     <section class="unresolved" aria-labelledby="unresolved-title">
       <h3 id="unresolved-title">Needs a human decision <span>{opportunities.unresolved.length}</span></h3>
-      {#if !reason()}<p class="decision-hint">Enter a reason above to enable these decisions.</p>{/if}
+      {#if !quiet && !reason()}<p class="decision-hint">Enter a reason above to enable these decisions.</p>{/if}
       {#each opportunities.unresolved as item (item.membership.optionId)}
         <article>
           <details class="candidate-detail"><summary>{item.membership.mechanism}</summary><div><p>{item.membership.description}</p><p>{item.membership.reason}</p></div></details>
@@ -266,4 +268,12 @@
   .candidate-detail p:last-child { color:var(--subtle); }
   .unresolved .member-actions { padding:0; }
   @container page (max-width:600px) { .review-controls { grid-template-columns:1fr; }.family-heading { flex-direction:column; }.family-heading > span { align-self:flex-start; } }
+  .quiet { margin:0;border:0;border-radius:0; }
+  .quiet .status { padding:0;border:0;border-radius:0;font-size:13px; }
+  .quiet .review-controls { padding:0;border:0;background:transparent;gap:12px; }
+  .quiet label,.quiet button { font-size:13px; }
+  .quiet .review-button { color:var(--text);background:transparent;border-color:var(--border-strong); }
+  .quiet .family-heading p,.quiet details > p,.quiet summary { font-size:15px;line-height:1.6;color:var(--text); }
+  .quiet .family-heading > span,.quiet summary small { font-size:13px;color:var(--muted); }
+  .quiet .decision-reason { color:var(--muted); }
 </style>

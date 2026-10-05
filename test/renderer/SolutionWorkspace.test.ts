@@ -87,6 +87,23 @@ describe("SolutionListItem risk summary", () => {
 });
 
 describe("SolutionWorkspace groups", () => {
+  test("numbers ideas per problem, separates both saved name formats, and opens the selected row", async () => {
+    const ideas = [
+      { ...solution(), id: "old", description: "History pack. Share approved consumption records." },
+      { ...solution(), id: "new", description: "Weekend log: Record Friday shutdowns." },
+      { ...solution(), id: "other", problemId: "other", description: "Closure rota." },
+    ];
+    const view = render(SolutionWorkspace, { solutions: ideas, busy: false, onExport: vi.fn(), onOpenSource: vi.fn() });
+    const rows = view.getAllByRole("button", { name: /^Open idea:/ });
+    expect(rows.map(row => row.textContent?.trim())).toEqual([
+      "1. History packShare approved consumption records.", "2. Weekend logRecord Friday shutdowns.", "1. Closure rota",
+    ]);
+    await fireEvent.click(rows[0]!);
+    expect(view.getByRole("heading", { level: 1, name: "History pack" })).toBeTruthy();
+    expect(within(view.container.querySelector(".idea-detail") as HTMLElement).getByText("Share approved consumption records.")).toBeTruthy();
+    await fireEvent.click(view.getByRole("button", { name: "Back to ideas" }));
+    expect(view.getAllByRole("button", { name: /^Open idea:/ })).toHaveLength(3);
+  });
   const actions = { busy: false, onExport: vi.fn(), onOpenSource: vi.fn() };
   const savedGroup = (problemId: string, requestedIdeaCount: number, returnedIdeaCount: number): IdeaGroupView => ({
     runId: `run-${problemId}`, problemId, problemStatement: `Problem ${problemId}`, requestedIdeaCount, returnedIdeaCount,
@@ -173,7 +190,7 @@ describe("SolutionWorkspace groups", () => {
 
     expect(view.getByRole("heading", { level: 1, name: "4 ideas" })).toBeTruthy();
     const groups = [...view.container.querySelectorAll("details.problem-group")] as HTMLDetailsElement[];
-    expect(groups.map((group) => [group.querySelector("summary")?.textContent?.trim(), group.open])).toEqual([["Problem a", true], ["Problem b", true]]);
+    expect(groups.map((group) => [group.querySelector("summary")?.textContent?.trim(), group.open])).toEqual([["Problem: Problem a", true], ["Problem: Problem b", true]]);
     expect([...groups[0]!.querySelectorAll(".idea-name")].map((row) => row.textContent)).toEqual(["History access pack", "Savings checker", "Shared checklist"]);
     const weak = within(groups[0]!).getByRole("button", { name: "Open idea: Shared checklist" });
     expect(within(weak).getByText("Weak fit")).toBeTruthy();
@@ -185,14 +202,14 @@ describe("SolutionWorkspace groups", () => {
     await fireEvent.click(weak);
     expect(view.getByRole("heading", { level: 1, name: "Shared checklist" })).toBeTruthy();
     expect(view.getByText('fails "Fits a solo founder": needs a sales team')).toBeTruthy();
-    expect(view.getByText("Ranked 3 for this problem: Reason 3")).toBeTruthy();
+    expect(view.queryByText(/Ranked 3 for/)).toBeNull();
   });
 
   test("an older idea without a short name or rank keeps its saved order and shows its first sentence", () => {
     const first = { ...solution(), id: "first", description: "Pool delivery windows by supplier. Shops then compare them." };
     const second = { ...solution(), id: "second", description: "Call suppliers before quoting." };
     const view = render(SolutionWorkspace, { solutions: [first, second], busy: false, onExport: vi.fn(), onOpenSource: vi.fn() });
-    expect([...view.container.querySelectorAll(".idea-name")].map((row) => row.textContent)).toEqual(["Pool delivery windows by supplier.", "Call suppliers before quoting."]);
+    expect([...view.container.querySelectorAll(".idea-name")].map((row) => row.textContent)).toEqual(["Pool delivery windows by supplier", "Call suppliers before quoting"]);
   });
 
   test("keeps business grouping and exports below the groups", async () => {
@@ -271,18 +288,18 @@ describe("SolutionWorkspace idea conversation", () => {
       onOpenConversation, onCloseConversation, onSelectConversationVersion, onSubmitIdeaTurn,
     };
     const view = render(SolutionWorkspace, props);
-    await fireEvent.click(view.getByRole("button", { name: `Open idea: ${idea.description}` }));
-    const open = view.getByRole("button", { name: `Explore idea: ${idea.description}` });
+    await fireEvent.click(view.getByRole("button", { name: `Open idea: ${idea.description.replace(/[.!?]+$/, "")}` }));
+    const open = view.getByRole("button", { name: "Explore this idea" });
     await fireEvent.click(open);
     expect(onOpenConversation).toHaveBeenCalledWith(idea.id);
     expect(view.getByRole("button", { name: "Back to idea" })).toBeTruthy();
-    expect(view.getByText("Review applies to this version")).toBeTruthy();
-    await fireEvent.click(view.getByRole("button", { name: /v2 Buyer delivery ledger/ }));
+    expect(view.queryByText("Review applies to this version")).toBeNull();
+    await fireEvent.click(view.getByRole("button", { name: /v2 Revised idea/ }));
     expect(onSelectConversationVersion).toHaveBeenCalledWith("solution-2");
-    expect(view.getByText("This version has not been reviewed")).toBeTruthy();
+    expect(view.queryByText("This version has not been reviewed")).toBeNull();
 
     await fireEvent.input(view.getByLabelText("Follow-up message"), { target: { value: "Could this work for buyers?" } });
-    await fireEvent.click(view.getByRole("button", { name: "Send follow-up" }));
+    await fireEvent.click(view.getByRole("button", { name: "Send" }));
     await waitFor(() => expect(onSubmitIdeaTurn).toHaveBeenCalledOnce());
     expect(onSubmitIdeaTurn.mock.calls[0]?.[0]).toMatchObject({ baseSolutionId: "solution-2", text: "Could this work for buyers?" });
     expect(props.solutions).toHaveLength(1);
@@ -296,11 +313,10 @@ describe("SolutionWorkspace idea conversation", () => {
     expect((view.getByLabelText("Follow-up message") as HTMLTextAreaElement).value).toBe("Keep this unsent.");
   });
 
-  test("opens a revised version's full detail and returns to its conversation", async () => {
+  test("keeps revised versions in the conversation and returns through Back", async () => {
     const root = { ...solution(), workflowVersion: 2 as const };
     const revised = { ...root, id: "solution-2", mechanism: "Buyer delivery ledger",
       description: "Revised idea", keyAssumption: "Buyers will share delivery observations." };
-    const onLoadVersionDetail = vi.fn().mockResolvedValue(revised);
     Object.defineProperty(window, "scraply", { configurable: true,
       value: { getIdeaDetail: vi.fn().mockResolvedValue(revised) } });
     const view = render(SolutionWorkspace, {
@@ -308,17 +324,16 @@ describe("SolutionWorkspace idea conversation", () => {
       onExport: vi.fn(), onOpenSource: vi.fn(),
       onSelect: vi.fn(), onSave: vi.fn(),
       onOpenConversation: vi.fn().mockResolvedValue(undefined),
-      onSubmitIdeaTurn: vi.fn().mockResolvedValue(undefined), onLoadVersionDetail,
+      onSubmitIdeaTurn: vi.fn().mockResolvedValue(undefined),
       onSelectConversationVersion: vi.fn().mockResolvedValue(undefined),
     });
-    await fireEvent.click(view.getByRole("button", { name: `Open idea: ${root.description}` }));
-    await fireEvent.click(view.getByRole("button", { name: `Explore idea: ${root.description}` }));
-    await fireEvent.click(view.getByRole("button", { name: /v2 Buyer delivery ledger/ }));
-    await fireEvent.click(view.getByRole("button", { name: "View full idea details" }));
-    expect(onLoadVersionDetail).toHaveBeenCalledWith("solution-2");
-    await waitFor(() => expect(view.getByText("Buyers will share delivery observations.")).toBeTruthy());
-    await fireEvent.click(view.getByRole("button", { name: "Back to conversation" }));
-    expect(view.getByLabelText("Idea versions and conversation")).toBeTruthy();
+    await fireEvent.click(view.getByRole("button", { name: `Open idea: ${root.description.replace(/[.!?]+$/, "")}` }));
+    await fireEvent.click(view.getByRole("button", { name: "Explore this idea" }));
+    await fireEvent.click(view.getByRole("button", { name: /v2 Revised idea/ }));
+    expect(view.queryByRole("button", { name: "View full idea details" })).toBeNull();
+    expect(view.getByRole("heading", { name: "Revised idea" })).toBeTruthy();
+    await fireEvent.click(view.getByRole("button", { name: "Back to idea" }));
+    expect(view.getByRole("heading", { level: 1 })).toBeTruthy();
   });
 
   test("offers a retry when opening a conversation fails", async () => {
@@ -330,8 +345,8 @@ describe("SolutionWorkspace idea conversation", () => {
       onOpenConversation, onSubmitIdeaTurn: vi.fn().mockResolvedValue(undefined),
     });
 
-    await fireEvent.click(view.getByRole("button", { name: `Open idea: ${idea.description}` }));
-    await fireEvent.click(view.getByRole("button", { name: `Explore idea: ${idea.description}` }));
+    await fireEvent.click(view.getByRole("button", { name: `Open idea: ${idea.description.replace(/[.!?]+$/, "")}` }));
+    await fireEvent.click(view.getByRole("button", { name: "Explore this idea" }));
     expect((await view.findByRole("alert")).textContent).toContain("Conversation could not load.");
     await fireEvent.click(view.getByRole("button", { name: "Try again" }));
     await waitFor(() => expect(onOpenConversation).toHaveBeenCalledTimes(2));
@@ -347,8 +362,8 @@ describe("SolutionWorkspace idea conversation", () => {
       onOpenConversation, onSubmitIdeaTurn: vi.fn().mockResolvedValue(undefined),
     });
 
-    await fireEvent.click(view.getByRole("button", { name: `Open idea: ${idea.description}` }));
-    await fireEvent.click(view.getByRole("button", { name: `Explore idea: ${idea.description}` }));
+    await fireEvent.click(view.getByRole("button", { name: `Open idea: ${idea.description.replace(/[.!?]+$/, "")}` }));
+    await fireEvent.click(view.getByRole("button", { name: "Explore this idea" }));
     expect(onOpenConversation).toHaveBeenCalledWith("solution-2");
     expect(view.getByLabelText("Idea versions and conversation").closest("[hidden]")).toBeNull();
     expect(view.queryByText("Conversation is unavailable.")).toBeNull();
@@ -362,7 +377,7 @@ describe("SolutionWorkspace idea conversation", () => {
     });
 
     expect(view.queryByRole("button", { name: /Explore idea:/ })).toBeNull();
-    expect(view.getByText("Pool observed delivery windows by supplier and part category.")).toBeTruthy();
+    expect(view.getByText("Pool observed delivery windows by supplier and part category")).toBeTruthy();
   });
 });
 

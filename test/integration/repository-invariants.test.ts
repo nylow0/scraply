@@ -48,7 +48,7 @@ describe("repository invariants", () => {
     expect(hidden).not.toContain(messaged.id);
     expect(hidden).not.toContain(named.id);
     expect(hidden).not.toContain("started");
-    expect(hidden).toContain(threads.findEmptyDraft()?.id);
+    expect(hidden.includes(threads.findEmptyDraft()?.id ?? "")).toBe(true);
     expect(threads.listThreads()).toHaveLength(9);
     client.close();
   });

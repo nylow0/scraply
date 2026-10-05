@@ -369,7 +369,7 @@ export class ResearchEngine {
       throw new AppError("conflict", "This project already has another active run.");
     }
     this.ledger.settleUncertain(runId, "The app restarted before an operation reached a durable result");
-    this.options.db.db.prepare("UPDATE research_runs SET status = 'running', cancelled = 0, updated_at = ? WHERE id = ?")
+    this.options.db.db.prepare("UPDATE research_runs SET status = 'running', cancelled = 0, awaiting_selection = 0, updated_at = ? WHERE id = ?")
       .run(new Date().toISOString(), runId);
     this.options.db.db.prepare("UPDATE research_runs SET interrupted = 0 WHERE id = ?").run(runId);
     let resumedOpportunityInitialization = false;
@@ -398,11 +398,14 @@ export class ResearchEngine {
     if (!row || row.thread_id !== threadId) throw new AppError("not_found", "Option run does not belong to this project.");
     if (this.activeRuns.has(runId)) return;
     if (!row.awaiting_selection) throw new AppError("conflict", "This run is not awaiting an option selection.");
+    const safety = this.generationAttempts.getResumeSafety(runId);
+    if (!safety.canResume) throw new AppError("conflict", `${safety.resumeBlockedReason} Review this request before explicitly retrying it.`);
     this.assertThreadIdle(threadId, runId);
     const workflow = new WorkflowExecution(this.options.db, runId);
     this.options.db.immediateTransaction(() => {
       workflow.repository.selectSolution(runId, solutionId);
-      this.options.db.db.prepare("UPDATE research_runs SET status = 'running', awaiting_selection = 0, interrupted = 0 WHERE id = ?").run(runId);
+      this.options.db.db.prepare("UPDATE research_runs SET status = 'running', awaiting_selection = 0, interrupted = 0, cancelled = 0, completion_reason = NULL, updated_at = ? WHERE id = ?")
+        .run(new Date().toISOString(), runId);
     });
     this.begin(runId, threadId, row.problem_id, RunConfigSchema.parse(JSON.parse(row.config_json)), true);
   }
@@ -1507,7 +1510,8 @@ export class ResearchEngine {
       this.updateThread(row.thread_id, "solutions-ready");
     } else {
       this.runs.cancel(runId);
-      this.updateThread(row.thread_id, "failed");
+      const analysisStopped = this.runs.reopenInterruptedAnalysis(runId);
+      if (![...this.activeRuns.values()].some(run => run.threadId === row.thread_id)) this.updateThread(row.thread_id, analysisStopped ? "solutions-ready" : "failed");
     }
     const settle = () => {
       // A replacement may already be running while an old initialization unwinds.
@@ -3617,7 +3621,8 @@ export class ResearchEngine {
     const message = error instanceof Error ? error.message : "Research failed";
     this.ledger.settleUncertain(active.runId, message);
     this.runs.finish(active.runId, status ?? (active.abortController.signal.aborted ? "cancelled" : "failed"), message);
-    if (![...this.activeRuns.values()].some((run) => run.threadId === active.threadId)) this.updateThread(active.threadId, "failed");
+    const analysisFailed = this.runs.reopenInterruptedAnalysis(active.runId);
+    if (![...this.activeRuns.values()].some((run) => run.threadId === active.threadId)) this.updateThread(active.threadId, analysisFailed ? "solutions-ready" : "failed");
     this.emit({ type: "run-failed", runId: active.runId, threadId: active.threadId, error: message });
     if (active.problemId && active.config.opportunityExploration && !active.abortController.signal.aborted) {
       const exploration = new OpportunityExplorationRepository(this.options.db);

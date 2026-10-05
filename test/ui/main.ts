@@ -10,11 +10,15 @@ import { CommandWorkflowRequestSchema, PreviewWorkflowRequestSchema, StartWorkfl
 import { ResearchFrameSchema } from "../../src/shared/research-frame";
 import { framedDiscoveryProjection } from "../../src/shared/discovery-projection";
 import { candidateAssessmentProjection } from "../../src/shared/evidence-investigators";
+import { createIdeasFixture, fixtureAnalysis } from "./ideas-fixture";
+import { GetIdeaConversationRequestSchema, SelectIdeaVersionRequestSchema, SubmitIdeaTurnRequestSchema } from "../../src/shared/workflow-contracts";
+import type { ResearchEvent } from "../../src/shared/ipc";
 
 // This standalone renderer has no Electron bridge or network provider. URL parameters
 // select deterministic UI scenarios without touching the user's projects or credentials.
 const params = new URLSearchParams(location.search);
 const fixtureHistory = { actions: [] as WorkflowAction[], launches: [] as WorkflowLaunchContract[], detailReads: [] as string[],
+  turns: [] as ReturnType<typeof SubmitIdeaTurnRequestSchema.parse>[], selections: [] as string[], stops: [] as string[],
   exports: [] as Array<{ kind: "ideas" | "research"; threadId: string; format: "markdown" | "json"; files: Array<{ filename: string; content: string }> }> };
 const count = Math.min(200, Math.max(0, Number(params.get("history") ?? 18)));
 const active = Math.min(count - 1, Math.max(0, Number(params.get("active") ?? 0)));
@@ -197,6 +201,42 @@ if (frameWorkflow) {
   state.threads = state.threads.map(thread => thread.id === state.activeThreadId ? { ...thread, title: state.scope!.title, status: frameScenario === "approved" ? "problems-ready" : "discovery-running" } : thread);
 }
 
+const slice2 = params.has("slice2") ? createIdeasFixture(params, state.activeThreadId ?? "fixture-0") : null;
+let backendListener: ((event: ResearchEvent) => void) | undefined;
+let fixtureRevision = 0;
+function finishFixtureAnalysis(error?: string) {
+  if (!state.latestResearchRun || !slice2) return;
+  const selected = state.solutions.find(idea => idea.selected);
+  state.latestResearchRun = { ...state.latestResearchRun, status: error ? "failed" : "completed", awaitingSelection: !!error, completionReason: error ?? null };
+  state.solutions = state.solutions.map(idea => ({ ...idea, detailRevision: `fixture-${++fixtureRevision}`,
+    ...(idea.id === selected?.id ? { decisionAnalysis: error ? null : fixtureAnalysis, selectable: !!error } : {}) }));
+  state.threads = state.threads.map(thread => thread.id === state.activeThreadId ? { ...thread, status: "solutions-ready" } : thread);
+  backendListener?.(error ? { type: "run-failed", runId: state.latestResearchRun.runId, threadId: state.activeThreadId!, error }
+    : { type: "run-completed", runId: state.latestResearchRun.runId, threadId: state.activeThreadId!, problemId: selected?.problemId ?? null });
+}
+if (slice2) {
+  state.solutions = slice2.solutions;
+  state.scope = { title: "School energy evidence", domain: "School energy conservation", audience: "School operations staff", observations: "", offLimits: [] };
+  state.runConfig = { ...DEFAULT_RUN_CONFIG, workflowVersion: 2 };
+  state.threads = state.threads.map(thread => thread.id === state.activeThreadId ? { ...thread, title: state.scope!.title, status: params.get("analysis") === "running" ? "development-running" : "solutions-ready", isUnstartedDraft: false } : thread);
+  state.ideaGroups = [{ runId: "school-run", problemId: "school", problemStatement: slice2.solutions[0]!.problemStatement, requestedIdeaCount: 8, returnedIdeaCount: 8 },
+    { runId: "closure-run", problemId: "closure", problemStatement: slice2.solutions[8]!.problemStatement, requestedIdeaCount: 3, returnedIdeaCount: 3 }];
+  state.latestResearchRun = { runId: "school-run", problemId: "school", workflowVersion: 2, status: params.get("analysis") === "running" ? "running" : params.get("analysis") === "failed" ? "failed" : "completed",
+    awaitingSelection: params.get("analysis") !== "running" && params.get("analysis") !== "done", codexCalls: 8, searches: 4, projectedCodexCalls: 10, projectedSearches: 4, lastActivity: null,
+    stage: params.get("analysis") === "running" ? "evaluating-risk" : "completed", operationElapsedMs: 83_000, completionReason: params.get("analysis") === "failed" ? "The risk evaluator could not complete its reply." : null };
+  frameWorkflow = params.has("legacy") || params.get("saved") === "v1" ? null : slice2.workflow;
+  state.activeWorkflow = frameWorkflow?.summary ?? null;
+  if (params.has("grouping")) state.opportunityFamilies = { rawOptionCount: 11, reviewedOptionCount: 0, acceptedFamilyCount: 0, families: [], unresolved: [], unreviewedOptionIds: state.solutions.map(idea => idea.id), lastReviewedAt: null, reviewStatus: "not-reviewed", reviewError: null };
+  if (params.get("turns") === "many") {
+    slice2.conversation.branches = [{ branchId: "school-branch", headTurnId: "saved-turn-6", turnCount: 6 }];
+    slice2.conversation.turns = Array.from({ length: 6 }, (_, index) => ({
+      id: `saved-turn-${index + 1}`, branchId: "school-branch", branchSequence: index + 1, parentTurnId: index ? `saved-turn-${index}` : null,
+      baseSolutionId: slice2.conversation.selectedVersionId, intent: "explore-directions", userText: `How should we check conservation period ${index + 1}?`,
+      model: DEFAULT_RUN_CONFIG.model, reasoningEffort: "medium", state: "completed", error: null, createdAt: now, completedAt: now,
+      assistant: { text: "Start with an approved meter export. Identify the period, units and rooms covered.\n\nCompare it only with records that cover the same equipment and season.", assumptions: ["The authorized holder can share the records."], citedEvidenceIds: [], changeSummary: null, generatedSolutionId: null },
+    }));
+  }
+}
 let progressReads = 0;
 // Keep each synthetic project separate when testing navigation and draft reuse.
 if (state.scope) state.threads = state.threads.map(thread => ({ ...thread, isUnstartedDraft: false }));
@@ -223,7 +263,8 @@ const fixtureApi = createScraplyApi({
       case IPC_CHANNELS.GET_WORKSPACE: result = state; break;
       case IPC_CHANNELS.GET_IDEA_DETAIL: {
         const { ideaId } = GetIdeaDetailRequestSchema.parse(payload);
-        const idea = state.solutions.find((saved) => saved.id === ideaId);
+        const version = slice2?.conversation.versions.find(version => version.solutionId === ideaId);
+        const idea = state.solutions.find((saved) => saved.id === ideaId) ?? (version && slice2 ? { ...state.solutions[0]!, id: ideaId, description: version.description, mechanism: version.mechanism, selectable: false } : undefined);
         if (!idea) throw new Error("Idea not found in the offline fixture.");
         fixtureHistory.detailReads.push(ideaId);
         result = SolutionViewSchema.parse({ ...idea, detailsLoaded: true });
@@ -392,6 +433,46 @@ const fixtureApi = createScraplyApi({
         state = { ...state, scope, threads: state.threads.map(thread => thread.id === threadId ? { ...thread, title: scope.title, status: "configuring", isUnstartedDraft: false } : thread) };
         result = state; break;
       }
+      case IPC_CHANNELS.GET_IDEA_CONVERSATION: {
+        GetIdeaConversationRequestSchema.parse(payload);
+        if (!slice2) throw new Error("No conversation in this fixture.");
+        result = { ok: true, data: slice2.conversation }; break;
+      }
+      case IPC_CHANNELS.SELECT_IDEA_VERSION: {
+        const request = SelectIdeaVersionRequestSchema.parse(payload);
+        if (!slice2) throw new Error("No versions in this fixture.");
+        slice2.conversation.selectedVersionId = request.solutionId;
+        result = { ok: true, data: slice2.conversation }; break;
+      }
+      case IPC_CHANNELS.SUBMIT_IDEA_TURN: {
+        const request = SubmitIdeaTurnRequestSchema.parse(payload);
+        if (!slice2) throw new Error("No conversation in this fixture.");
+        fixtureHistory.turns.push(request);
+        const id = `fixture-turn-${slice2.conversation.turns.length + 1}`;
+        const turn = { id, branchId: "school-branch", branchSequence: slice2.conversation.turns.length + 1, parentTurnId: request.parentTurnId,
+          baseSolutionId: request.baseSolutionId, intent: request.intent, userText: request.text, state: "completed" as const,
+          model: request.model, reasoningEffort: request.reasoningEffort, error: null, createdAt: now, completedAt: now,
+          assistant: { text: "This is a shared evidence pack for school staff. It contains copies of approved consumption records and a clear account of where each record came from.\n\nFirst, obtain an export from the authorized record holder. Keep the original file, check its periods and units, then give evaluating staff a read-only comparison.\n\nIt works only if the records cover the question staff are asking. Monthly totals can show broad trends; weekend claims need interval records.", assumptions: ["The school approves sharing the export.", "The meter coverage matches the conservation period."], citedEvidenceIds: [], changeSummary: null, generatedSolutionId: null } };
+        slice2.conversation.turns.push(turn);
+        slice2.conversation.branches = [{ branchId: "school-branch", headTurnId: id, turnCount: slice2.conversation.turns.length }];
+        result = { ok: true, data: { turnId: id, sessionId: "school-turn-session", revision: 1, summary: { ...slice2.workflow.summary, sessionId: "school-turn-session", purpose: "idea-turn" } } }; break;
+      }
+      case IPC_CHANNELS.SELECT_OPTION: {
+        const { solutionId, runId } = payload as { solutionId: string; runId: string };
+        fixtureHistory.selections.push(solutionId);
+        state.solutions = state.solutions.map(idea => ({ ...idea, selected: idea.id === solutionId, selectable: false, detailRevision: `fixture-${++fixtureRevision}` }));
+        state.latestResearchRun = { ...state.latestResearchRun!, runId, status: "running", stage: "evaluating-risk", awaitingSelection: false, completionReason: null, operationElapsedMs: 83_000 };
+        state.threads = state.threads.map(thread => thread.id === state.activeThreadId ? { ...thread, status: "development-running" } : thread);
+        result = state; break;
+      }
+      case IPC_CHANNELS.CANCEL_RESEARCH: {
+        const { runId } = payload as { runId: string };
+        fixtureHistory.stops.push(runId);
+        state.latestResearchRun = { ...state.latestResearchRun!, status: "cancelled", awaitingSelection: true };
+        state.solutions = state.solutions.map(idea => ({ ...idea, selectable: !!idea.selected, detailRevision: `fixture-${++fixtureRevision}` }));
+        state.threads = state.threads.map(thread => thread.id === state.activeThreadId ? { ...thread, status: "solutions-ready" } : thread);
+        result = { workspace: state }; break;
+      }
       case IPC_CHANNELS.SAVE_RUN_CONFIG: state = { ...state, runConfig: SaveRunConfigSchema.parse(payload).config }; result = state; break;
       case IPC_CHANNELS.PREVIEW_WORKFLOW: {
         const request = PreviewWorkflowRequestSchema.parse(payload);
@@ -458,8 +539,8 @@ const fixtureApi = createScraplyApi({
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
   },
-  onBackendEvent: () => () => {},
+  onBackendEvent: listener => { backendListener = listener; return () => { backendListener = undefined; }; },
 });
-Object.assign(window, { scraply: fixtureApi, scraplyFixture: fixtureHistory });
+Object.assign(window, { scraply: fixtureApi, scraplyFixture: { ...fixtureHistory, finishAnalysis: () => finishFixtureAnalysis(), failAnalysis: () => finishFixtureAnalysis("The risk evaluator could not complete its reply.") } });
 const target = document.getElementById("app");
 if (target) mount(App, { target });

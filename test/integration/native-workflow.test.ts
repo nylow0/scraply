@@ -790,7 +790,8 @@ describe("native research workflow through the production backend", () => {
     const { runId } = await item.post("/research/start", { threadId }, z.object({ runId: z.string() }));
     const options = await item.waitFor((state) => state.latestResearchRun?.awaitingSelection === true);
     await item.post("/research/select-option", { threadId, runId, solutionId: options.solutions[0]!.id }, WorkspaceStateSchema);
-    const failed = await item.waitFor((state) => state.threads.find((thread) => thread.id === threadId)?.status === "failed");
+    const failed = await item.waitFor((state) => state.latestResearchRun?.status === "failed");
+    expect(failed.threads.find((thread) => thread.id === threadId)?.status).toBe("solutions-ready");
     expect(failed.solutions).toHaveLength(2);
     expect(item.requests()).toHaveLength(2);
     await item.restart();

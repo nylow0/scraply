@@ -1,7 +1,7 @@
 <script lang="ts">
   import { numericMetricRangeLabel, numericOutcomeLabels, numericInconclusiveLabel, type FocusedExperimentRecord } from "../../shared/focused-experiment";
 
-  let { experiment }: { experiment: FocusedExperimentRecord } = $props();
+  let { experiment, quiet = false }: { experiment: FocusedExperimentRecord; quiet?: boolean } = $props();
   let plan = $derived(experiment.plan);
   let review = $derived(experiment.finalReview ?? experiment.initialReview);
   let metricRange = $derived(plan.outcomeRules.kind === "numeric-threshold"
@@ -21,15 +21,15 @@
   }
 </script>
 
-<section class="focused-experiment" aria-label="Focused experiment">
+<section class="focused-experiment" class:quiet aria-label="Focused experiment">
   <div class="title-row">
     <div>
-      <p class="eyebrow">Focused experiment</p>
+      {#if !quiet}<p class="eyebrow">Focused experiment</p>{/if}
       <h3>{plan.assumption.testableClaim}</h3>
     </div>
-    <span class:approved={experiment.status === "approved"} class="review-status">
+    {#if !quiet}<span class:approved={experiment.status === "approved"} class="review-status">
       {experiment.status === "approved" ? "Reviewed" : "Needs revision"}
-    </span>
+    </span>{/if}
   </div>
   <dl class="assumption-grid">
     <!-- The claim itself is the heading above; the assumption's stored id is an internal key, so only its type is shown. -->
@@ -134,4 +134,10 @@
   ul { margin:0;padding-left:18px;list-style:disc; }
   li + li { margin-top:4px; }
   @container page (max-width:700px) { .assumption-grid,.section-grid { grid-template-columns:1fr; }.title-row { flex-direction:column; }.review-status { align-self:start; } }
+  .quiet { border:0;padding:0;margin:0;background:transparent;max-width:68ch; }
+  .quiet .assumption-grid,.quiet .section-grid { grid-template-columns:1fr;gap:0; }
+  .quiet p,.quiet li,.quiet dd { color:var(--text);font-size:15px;line-height:1.6; }
+  .quiet dt { color:var(--muted);font-size:13px; }.quiet h4 { font-size:16px;margin-top:16px; }
+  .quiet strong { font-size:15px;font-weight:600; }.quiet dl > div { padding:14px 0;border-bottom:1px solid var(--border); }
+  .quiet .category { border:0;padding:0;border-radius:0; }.quiet .rationale { color:var(--muted); }
 </style>

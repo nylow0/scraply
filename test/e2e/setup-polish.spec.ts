@@ -104,7 +104,7 @@ test("setup hierarchy, source preferences, keyboard controls, and sidebar fit in
     await page.getByRole("button", { name: "Save defaults" }).click();
     await expect(page.getByText("Defaults saved", { exact: true })).toBeVisible();
     await page.screenshot({ path: testInfo.outputPath("advanced-search.png") });
-    await page.getByRole("button", { name: "Back", exact: true }).click();
+    await page.getByRole("button", { name: "Back to research", exact: true }).click();
     await page.reload();
     await expect(page.getByLabel("Research depth", { exact: true })).toHaveValue("deep");
 

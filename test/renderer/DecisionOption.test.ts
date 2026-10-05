@@ -26,7 +26,7 @@ describe("DecisionOption interactions", () => {
     installDetailApi(vi.fn().mockResolvedValue(detail(idea, "", "")));
     const view = render(DecisionOption, handlers(idea));
     await fireEvent.click(view.getByRole("button", { name: "Compare observed delivery windows." }));
-    expect(view.getByText("Operators pay for a manual pilot.")).toBeTruthy();
+    expect(view.getByText(/Operators pay for a manual pilot\./)).toBeTruthy();
     expect(view.getByText("250 USD. Pay a refundable deposit.")).toBeTruthy();
     expect(view.queryByText("Legacy summary")).toBeNull();
   });
@@ -45,7 +45,6 @@ describe("DecisionOption interactions", () => {
     const idea = option("focused-plan-view");
     const saved = detail(idea, "", "");
     saved.focusedExperiment = focusedExperiment();
-    saved.decisionAnalysis = null;
     installDetailApi(vi.fn().mockResolvedValue(saved));
     const view = render(DecisionOption, handlers(idea));
     await fireEvent.click(view.getByRole("button", { name: "Compare observed delivery windows." }));
@@ -160,7 +159,7 @@ describe("DecisionOption interactions", () => {
     await fireEvent.click(exhaustedView.getByRole("button", { name: "Compare observed delivery windows." }));
     expect(await exhaustedView.findByText("Three suppliers publish dated arrival records.")).toBeTruthy();
     expect(exhaustedView.getByRole("link", { name: "Supplier delivery study" })).toBeTruthy();
-    expect(exhaustedView.getByText("This option has used its one evidence follow-up.")).toBeTruthy();
+    expect(exhaustedView.queryByText("This option has used its one evidence follow-up.")).toBeNull();
     expect(exhaustedView.queryByRole("button", { name: "Check evidence" })).toBeNull();
     await fireEvent.click(exhaustedView.getByRole("button", { name: "Reassess with new evidence" }));
     expect(onEvidenceReassessment).toHaveBeenCalledWith(exhausted.runId);

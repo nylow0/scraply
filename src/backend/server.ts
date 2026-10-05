@@ -20,7 +20,7 @@ import { OpportunityRepository } from "../db/repositories/opportunities";
 import { OpportunityExplorationRepository } from "../db/repositories/opportunity-exploration";
 import { FocusedExperimentRepository } from "../db/repositories/focused-experiments";
 import { OpportunityCandidateOriginSchema } from "../shared/opportunity-exploration";
-import { ActiveRunConflictError } from "../db/repositories/research-runs";
+import { ActiveRunConflictError, ResearchRunRepository } from "../db/repositories/research-runs";
 import { ThreadRepository } from "../db/repositories/threads";
 import { WorkflowRepository } from "../db/repositories/workflows";
 import { ResearchFrameRepository } from "../db/repositories/research-frames";
@@ -617,7 +617,8 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
         FROM risks WHERE solution_id IN (SELECT id FROM relevant_solutions)
       )
       SELECT s.*, p.statement AS problem_statement, p.verdict AS problem_verdict,
-        rr.workflow_version, rr.status AS run_status, rr.awaiting_selection, rr.updated_at AS run_updated_at,
+        rr.workflow_version, rr.status AS run_status, rr.awaiting_selection, rr.updated_at AS run_updated_at, rr.completion_reason AS run_error,
+        (SELECT selected.id FROM solutions selected WHERE selected.research_run_id = rr.id AND selected.selected_at IS NOT NULL LIMIT 1) AS selected_solution_id,
         ${details ? "da.analysis_json, da.user_decision, da.observed_result, da.experiment_outcome, sc.risk_evaluation_criteria, review.output_json AS risk_evaluation_json, fe.record_json AS focused_experiment_json," : ""} da.updated_at AS decision_updated_at,
         fe.updated_at AS focused_experiment_updated_at,
         fdt.test_json AS focused_demand_test_json,
@@ -680,7 +681,8 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
         outcomeCount: Number(row.outcome_count), riskCount: Number(row.risk_count), projectEndingRiskCount: Number(row.ending_count),
         workflowVersion: Number(row.workflow_version) as 1 | 2,
         runId: String(row.research_run_id), selected: row.selected_at !== null,
-        selectable: Boolean(row.awaiting_selection),
+        selectable: Boolean(row.awaiting_selection) && (row.selected_solution_id === null || row.selected_solution_id === row.id)
+          && (row.selected_at === null || generationAttempts.getResumeSafety(String(row.research_run_id)).canResume),
         ...(row.evidence_follow_up_status === null ? {} : {
           evidenceFollowUpStatus: (row.evidence_follow_up_status === "requested" ? "running" : String(row.evidence_follow_up_status)) as "running" | "completed" | "failed",
         }),
@@ -703,6 +705,8 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
         supportingEvidenceIds: JSON.parse(String(row.supporting_evidence_ids_json ?? "[]")),
         contraryEvidenceIds: JSON.parse(String(row.contrary_evidence_ids_json ?? "[]")),
         ...(details ? {
+          analysisError: row.selected_at !== null && row.run_status === "failed" && row.decision_updated_at === null
+            ? String(row.run_error ?? "The analysis failed.") : null,
           goalSources: [...new Set([...(fitsBySolution.get(String(row.id))?.flatMap(entry => entry.evidenceIds) ?? []), ...(biggerProblemsBySolution.get(String(row.id))?.scaleEvidenceIds ?? [])])]
             .flatMap(id => { const source = goalSourcesById.get(id); return source ? [source] : []; }),
           decisionAnalysis: row.analysis_json ? JSON.parse(String(row.analysis_json)) : null,
@@ -1368,7 +1372,10 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
       SET status = 'cancelled', completion_reason = 'Cancelled by user', cancelled = 1, updated_at = ?
       WHERE id = ?
     `).run(new Date().toISOString(), runId);
-    threads.updateThreadStatus(row.thread_id, "failed");
+    const analysisStopped = new ResearchRunRepository(db).reopenInterruptedAnalysis(runId);
+    if (!db.db.prepare("SELECT 1 FROM research_runs WHERE thread_id = ? AND status IN ('queued', 'running')").get(row.thread_id)) {
+      threads.updateThreadStatus(row.thread_id, analysisStopped ? "solutions-ready" : "failed");
+    }
     emitEvent({ type: "run-cancelled", runId, threadId: row.thread_id });
   }
 

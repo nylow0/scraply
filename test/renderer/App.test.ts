@@ -9,8 +9,55 @@ import { DEFAULT_RUN_CONFIG } from "../../src/shared/schemas";
 import type { WorkflowDetail, WorkflowSummary } from "../../src/shared/workflow-contracts";
 import { ResearchFrameSchema } from "../../src/shared/research-frame";
 import { summarizeRunUsage } from "../../src/backend/run-usage";
+import { createIdeasFixture } from "../ui/ideas-fixture";
 
 describe("App workspace coordination", () => {
+  test.each([false, true])("starts and stops analysis inside the same conversation, workflow=%s", async workflowProject => {
+    const fixture = createIdeasFixture(new URLSearchParams(), "alpha");
+    let state = workspace("alpha");
+    state.scope = { title: "School energy evidence", domain: "Energy", audience: "", observations: "", offLimits: [] };
+    state.threads = [{ ...state.threads[0]!, title: state.scope.title, status: "solutions-ready", isUnstartedDraft: false }];
+    state.solutions = fixture.solutions.map(idea => ({ ...idea, detailRevision: `app-${workflowProject}-idle` }));
+    state.activeWorkflow = workflowProject ? fixture.workflow.summary : null;
+    state.latestResearchRun = { runId: "school-run", status: "completed", workflowVersion: 2, awaitingSelection: true, problemId: "school", codexCalls: 8, searches: 4, projectedCodexCalls: 10, projectedSearches: 4, lastActivity: null };
+    const selectOption = vi.fn(async (request: Parameters<ScraplyApi["selectOption"]>[0]) => {
+      state = { ...state, latestResearchRun: { ...state.latestResearchRun!, status: "running", stage: "evaluating-risk", operationElapsedMs: 3_000 },
+        threads: [{ ...state.threads[0]!, status: "development-running" }],
+        solutions: state.solutions.map(idea => ({ ...idea, selected: idea.id === request.solutionId, selectable: false, detailRevision: `app-${workflowProject}-running` })) };
+      return structuredClone(state);
+    });
+    const cancelResearch = vi.fn(async (runId: string) => {
+      expect(runId).toBe("school-run");
+      state = { ...state, latestResearchRun: { ...state.latestResearchRun!, status: "cancelled", awaitingSelection: true },
+        threads: [{ ...state.threads[0]!, status: "solutions-ready" }],
+        solutions: state.solutions.map(idea => ({ ...idea, selectable: !!idea.selected, detailRevision: `app-${workflowProject}-cancelled` })) };
+      return structuredClone(state);
+    });
+    installApi({ getWorkspace: async () => structuredClone(state), selectOption, cancelResearch,
+      getWorkflow: async () => fixture.workflow, getIdeaConversation: async () => structuredClone(fixture.conversation),
+      getIdeaDetail: async id => structuredClone(state.solutions.find(idea => idea.id === id)!) });
+    const view = render(App);
+    await fireEvent.click(await view.findByRole("button", { name: "Open idea: History access and provenance pack" }));
+    await fireEvent.click(view.getByRole("button", { name: "Explore this idea" }));
+    const input = await view.findByLabelText("Follow-up message");
+    await fireEvent.input(input, { target: { value: "Keep this draft during analysis." } });
+    const analyze = await view.findByRole("button", { name: "Analyze risks" });
+    await waitFor(() => expect((analyze as HTMLButtonElement).disabled).toBe(false));
+    await fireEvent.click(analyze);
+    await waitFor(() => expect(selectOption).toHaveBeenCalledWith({ threadId: "alpha", runId: "school-run", solutionId: fixture.solutions[0]!.id }));
+    expect(await within(view.getByRole("region", { name: "Idea conversation" })).findByText("Reviewing risks")).toBeTruthy();
+    expect(view.getByRole("button", { name: "Running & attention 1" })).toBeTruthy();
+    expect(view.getByLabelText("Follow-up message")).toBe(input);
+    const stop = view.getByRole("button", { name: "Stop" });
+    await waitFor(() => expect((stop as HTMLButtonElement).disabled).toBe(false));
+    await fireEvent.click(stop);
+    await waitFor(() => expect(cancelResearch).toHaveBeenCalledWith("school-run"));
+    await waitFor(() => expect((view.getByRole("button", { name: "Analyze risks" }) as HTMLButtonElement).disabled).toBe(false));
+    expect(view.queryByRole("button", { name: "Stop" })).toBeNull();
+    expect(view.queryByRole("button", { name: "Running & attention 1" })).toBeNull();
+    expect(view.getByLabelText("Follow-up message")).toBe(input);
+    expect((input as HTMLTextAreaElement).value).toBe("Keep this draft during analysis.");
+  });
   test.each([false, true])("reuses a hidden draft until scope is saved, then creates a fresh draft even after launch failure=%s", async (failStart) => {
     let draft = workspace("alpha");
     draft.validation.native = { available: true, connected: true, accounts: [{ providerId: "openai-subscription" }] };
@@ -631,7 +678,7 @@ describe("App workspace coordination", () => {
     installApi({ getWorkspace: vi.fn().mockResolvedValue(state) });
     const view = render(App);
 
-    expect(await view.findByText("Generating the next options.")).toBeTruthy();
+    expect(await view.findByRole("status", { name: "Active idea work" })).toBeTruthy();
     expect(view.getByRole("button", { name: "Open idea: Shared repair status" })).toBeTruthy();
   });
 
@@ -781,7 +828,7 @@ describe("App workspace coordination", () => {
     };
     installApi({ getWorkspace: vi.fn().mockResolvedValue(state) });
     const view = render(App);
-    expect(await view.findByRole("button", { name: "Cancel run" })).toBeTruthy();
+    expect(await view.findByRole("button", { name: status === "development-running" ? "Stop" : "Cancel run" })).toBeTruthy();
     expect(view.queryByRole("button", { name: "Resume attempt" })).toBeNull();
   });
 
@@ -1181,7 +1228,7 @@ describe("App workspace coordination", () => {
     // The prompt waits for Settings to close rather than stacking on top of it.
     await waitFor(() => expect(view.getByText("Connect OpenAI to start research")).toBeTruthy());
     expect(view.queryByRole("dialog", { name: "Welcome back" })).toBeNull();
-    await fireEvent.click(view.getByRole("button", { name: "Back" }));
+    await fireEvent.click(view.getByRole("button", { name: "Back to research" }));
 
     const welcome = await view.findByRole("dialog", { name: "Welcome back" });
     await fireEvent.click(within(welcome).getByRole("button", { name: "Not now" }));
