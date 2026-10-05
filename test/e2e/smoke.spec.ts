@@ -111,7 +111,7 @@ test("the renderer restores the problem-selection step after a restart", async (
     // No name was entered: the title agent named the research.
     await expect(page.locator(".fields .primary strong")).toHaveText("Reducing repair shop delays");
     await page.getByRole("tab", { name: /Solutions/ }).click();
-    await expect(page.getByText("Supplier reliability ledger")).toBeVisible();
+    await expect(page.getByRole("button", { name: "Open idea: Pool observed delivery windows by supplier and part category." })).toBeVisible();
     await page.setViewportSize({ width: 960, height: 640 });
     await expect(page.getByRole("button", { name: "Settings", exact: true })).toBeVisible();
     expect(await page.locator(".main-content").evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true);

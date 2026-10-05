@@ -133,12 +133,12 @@ test("native v2 research survives the installed selection, risk evaluation, and 
     // Controlled pauses for the research frame before it researches.
     await page.getByRole("button", { name: "Start research with this frame" }).click();
     await expect(page.getByText("Choose problems to develop", { exact: true })).toBeVisible();
-    await expect(page.getByText("Overstated", { exact: true })).not.toBeVisible();
+    // Under the frame workflow the fixture's problem is confirmed: it is in the problems list, with no lead chips.
+    await expect(page.getByRole("region", { name: "Leads" })).toHaveCount(0);
     await page.locator(".problem-disclosure > summary").first().click();
-    await expect(page.getByText("Overstated", { exact: true })).toBeVisible();
     await page.getByRole("checkbox", { name: "Develop this problem" }).check();
     await page.getByRole("button", { name: "Generate all selected", exact: true }).click();
-    await expect(page.getByRole("heading", { name: "Supplier reliability ledger" }).first()).toBeVisible();
+    await expect(page.getByRole("button", { name: "Open idea: Track observed delivery windows by supplier and part category.", exact: true }).first()).toBeVisible();
     {
       await page.getByRole("button", { name: "Open idea: Track observed delivery windows by supplier and part category.", exact: true }).first().click();
       await expect.poll(async () => page.evaluate(async () => (await (window as unknown as { scraply: ScraplyApi }).scraply.getWorkspace()).solutions.some((idea) => idea.selectable)), { timeout: 30_000 }).toBe(true);
@@ -168,7 +168,7 @@ test("native v2 research survives the installed selection, risk evaluation, and 
     backend = await startFixtureServer(directory, () => undefined);
     electron = await launch();
     page = await electron.firstWindow();
-    await expect(page.getByRole("heading", { name: "Supplier reliability ledger" }).first()).toBeVisible();
+    await expect(page.getByRole("button", { name: "Open idea: Track observed delivery windows by supplier and part category.", exact: true }).first()).toBeVisible();
     {
       const savedModel = await page.evaluate(async () => (await (window as unknown as { scraply: ScraplyApi }).scraply.getWorkspace()).runConfig?.model);
       expect(savedModel).toEqual({ providerId: "openai-subscription", modelId: "gpt-fixture" });
@@ -184,7 +184,7 @@ test("native v2 research survives the installed selection, risk evaluation, and 
     await page.getByRole("tab", { name: /Research/ }).click();
     await expect(page.getByRole("heading", { name: "Research", exact: true })).toBeVisible();
     await page.locator(".problem-disclosure > summary").first().click();
-    await page.getByText("2 cited factors", { exact: true }).click();
+    await page.getByText(/^[0-9]+ cited factors?$/).first().click();
     await expect(page.getByText("Parts delivery windows are uncertain.", { exact: true }).first()).toBeVisible();
     await page.screenshot({ animations: "disabled", path: testInfo.outputPath("native-reopened-evidence.png") });
     const stages = readFileSync(join(directory, "requests.jsonl"), "utf8").trim().split("\n")

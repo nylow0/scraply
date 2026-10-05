@@ -204,9 +204,11 @@ test(`installed ${mode === "vibe" ? "Vibe" : "Controlled"} workflow previews, ru
     await expect(progress.getByRole("button", { name: "Resume" })).toBeVisible();
     await expect(progress.getByText("Paused after buyer evidence checkpoint")).toBeVisible();
     await progress.getByRole("button", { name: "Resume" }).click();
-    // A finished run leaves the top of the page: Vibe opens its ideas, Controlled keeps the reason on Solutions.
-    if (mode === "vibe") await expect(page.getByRole("button", { name: "Open idea: Track repair quote approvals in one shared view.", exact: true })).toBeVisible();
-    else {
+    // A finished run leaves the top of the page: Vibe's ideas and Controlled's reason are on Solutions.
+    if (mode === "vibe") {
+      await page.getByRole("tab", { name: "Solutions" }).click();
+      await expect(page.getByRole("button", { name: "Open idea: Track repair quote approvals in one shared view.", exact: true })).toBeVisible();
+    } else {
       await page.getByRole("tab", { name: "Solutions" }).click();
       await expect(page.getByRole("tabpanel", { name: "Solutions" })).toContainText("The research found no qualifying buyer problem.");
     }

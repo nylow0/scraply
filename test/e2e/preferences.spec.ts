@@ -53,7 +53,7 @@ test("research defaults persist after reopen while a saved project keeps its cho
     electron = await launch();
     page = await electron.firstWindow();
     await page.getByRole("tab", { name: /Setup/ }).click();
-    await expect(page.locator(".setup .run-settings").getByText("GPT-6 Sol", { exact: true })).toBeVisible();
+    await expect(page.locator(".setup .run-settings").getByText("GPT-6.1 Sol", { exact: true })).toBeVisible();
     await expect(page.locator(".setup .run-settings").getByText("Exa", { exact: true })).toBeVisible();
     await page.getByRole("button", { name: "Settings", exact: true }).click();
     await page.getByRole("button", { name: "Research defaults", exact: true }).click();
