@@ -5,17 +5,20 @@ import { join } from "node:path";
 import { ResearchEngine } from "../../src/core/research-engine";
 import { configurePromptPaths } from "../../src/core/prompts";
 import { WorkflowExecution } from "../../src/core/workflow-execution";
+import { opportunityExpansionContract } from "../../src/core/opportunity-expansion-contract";
 import { DatabaseClient } from "../../src/db/client";
 import { DiscoveryRepository } from "../../src/db/repositories/discovery";
 import { FocusedExperimentRepository } from "../../src/db/repositories/focused-experiments";
 import { OpportunityExplorationRepository } from "../../src/db/repositories/opportunity-exploration";
 import { OpportunityRepository } from "../../src/db/repositories/opportunities";
+import { ResearchFrameRepository } from "../../src/db/repositories/research-frames";
 import { WorkflowRepository } from "../../src/db/repositories/workflows";
 import { ThreadRepository } from "../../src/db/repositories/threads";
 import type { SearchClient } from "../../src/providers/search";
 import type { StructuredModelClient, StructuredStageRequest, StructuredStageResult } from "../../src/providers/structured";
 import type { OpportunityReviewOutput } from "../../src/shared/opportunity-review";
 import type { ResearchEvent } from "../../src/shared/ipc";
+import type { ResearchFrame } from "../../src/shared/research-frame";
 import { RunConfigSchema, type RunConfig } from "../../src/shared/schemas";
 
 const directories: string[] = [];
@@ -67,6 +70,8 @@ async function until(predicate: () => boolean): Promise<void> {
 class ExpansionModel implements StructuredModelClient {
   readonly stages: string[] = [];
 
+  constructor(private readonly frame?: ResearchFrame) {}
+
   async structuredCompletion<T>(request: StructuredStageRequest<T>): Promise<StructuredStageResult<T>> {
     this.stages.push(request.stage);
     request.onDispatched?.();
@@ -98,7 +103,15 @@ class ExpansionModel implements StructuredModelClient {
         options: [
           option("Approval relay", "Repair shops", "Customer receives a revised estimate", "Collect a signed approval and notify the service advisor"),
           option("Bay release exchange", "Vehicle storage operators", "A delayed repair blocks a bay", "Offer temporary vehicle transfer and bay release"),
-        ],
+        ].map(candidate => this.frame ? { ...candidate,
+          biggerProblem: { statement: "Approvals leave repair bays occupied", affected: "Repair shops", scale: "Unknown", scaleKnown: false, scaleEvidenceIds: [] },
+          slice: { description: "One approval workflow", connectionToBiggerProblem: "Resolve one blocked estimate", feasibilityWithinConstraints: "A small paid pilot" },
+          criteriaFit: this.frame.successCriteria.map(criterion => ({ criterionId: criterion.id, criterionName: criterion.name,
+            mustHave: criterion.weight === "must", status: "unknown", evidenceIds: [], note: "Payment remains unverified" })),
+          firstTest: { kind: "demand-test", question: "Will shops pay for an approval pilot?", method: "Offer one paid pilot",
+            cost: "One week", metric: "Paid pilots", sample: 5, observationWindow: "One week", passCriterion: "Two paid pilots",
+            failCriterion: "No paid pilots", inconclusiveCriterion: "Fewer than five offers" },
+        } : candidate),
       };
     } else if (request.stage.startsWith("opportunity-review:")) {
       const inputs = request.workOrder.inputs as {
@@ -741,3 +754,122 @@ test("resume reuses a completed generation checkpoint after persistence was inte
     db.close();
   }
 });
+
+// This is the legacy saved prompt, before expansion inputs gained their revision marker.
+const legacyExpansionInstruction = "Generate one small batch for the named coverage gap. Every option must be a distinct startup opportunity with a paying customer, smallest sellable workflow, and one structured focusedDemandTest for the most decision-relevant demand assumption. Do not repeat accepted families. Preserve weak evidence as uncertainty. Reference only supplied evidence IDs. An evidence-backed new problem must name nonempty problemHypothesis.evidenceIds that directly support the problem. When exploratory mode is used, every evidence-ID list must be empty and the gap assessment must remain a hypothesis.";
+
+function preparedExpansion(kind: "legacy-prepared" | "new-legacy" | "new-goal" | "goal-prepared") {
+  const db = database();
+  const config = projectConfig();
+  const thread = new ThreadRepository(db).createThread("Prepared expansion recovery", config);
+  const root = new DiscoveryRepository(db).createKnownProblemRoot(thread.id, {
+    title: "Repair approval", audience: "Repair shops", domain: "Repair", observations: "", offLimits: [],
+  }, config.knownProblem, config);
+  const now = new Date().toISOString();
+  new DiscoveryRepository(db).persistFactors(root.runId, [{ id: "source-approval", providerSourceId: null,
+    canonicalUrl: "https://example.com/repair-approval", title: "Repair approval delays", retrievedText: "Revised estimates wait for customer approval.",
+    author: null, publishedAt: null, contentHash: "approval", retrievedAt: now }], []);
+  const frame: ResearchFrame | undefined = kind.includes("goal") ? {
+    goal: "Sell an approval workflow", goalKind: "market-opportunity", contextFacts: [],
+    successCriteria: [{ id: "paid", name: "Shops pay", weight: "must", howJudged: "Observe pilot payments", basis: "brief" }],
+    constraints: [], languages: ["en"], areas: [], exclusions: [], openQuestions: [],
+  } : undefined;
+  let frameId: string | undefined;
+  if (frame) {
+    const frames = new ResearchFrameRepository(db);
+    const draft = frames.createDraft({ threadId: thread.id, runId: root.runId, knownProblem: true, frame, sources: [] });
+    frames.approve(draft.id, thread.id, draft.draft);
+    frameId = draft.id;
+  }
+  const repository = new OpportunityExplorationRepository(db);
+  const gap = { id: "prepared-gap", name: "Revised-estimate approvals", description: "Resolve revised-estimate approval delays",
+    dimension: "trigger" as const, evidenceNeeded: null, searchQuery: null, mapExhausted: false,
+    candidateOrigin: "evidence-only" as const, status: "ready" as const, createdAt: now, updatedAt: now };
+  let attemptId: string | undefined;
+  const batch = db.immediateTransaction(() => {
+    repository.create(thread.id, config.opportunityExploration!);
+    repository.saveGap(thread.id, gap);
+    repository.addUsage(thread.id, { expansionRounds: 1 });
+    const batch = repository.planBatch({ threadId: thread.id, coverageGapId: gap.id, requestedCandidates: 2, acceptedFamiliesBefore: 0 });
+    if (kind.endsWith("prepared")) {
+      const contract = opportunityExpansionContract(frame);
+      const attempt = repository.prepareAttempt(thread.id, {
+        stageKey: `gap-generation:${batch.id}`, stageName: "gap-generation",
+        input: { batchId: batch.id, gap, candidateCount: 2, acceptedFamilies: [], evidenceIds: ["source-approval"],
+          ...(frame ? { schemaRevision: 2, frame, frameId } : {}) },
+        model: { ...config.model, reasoningEffort: config.reasoningEffort }, promptVersion: contract.promptVersion,
+        promptText: [legacyExpansionInstruction, contract.instruction].filter(Boolean).join("\n\n"),
+      });
+      if (attempt.kind !== "prepared") throw new Error("Fixture attempt was not prepared");
+      attemptId = attempt.attemptId;
+    }
+    repository.setStatus(thread.id, "paused", "Interrupted before dispatch");
+    return batch;
+  });
+  const model = new ExpansionModel(frame);
+  const engine = new ResearchEngine({ db, modelClients: { fixture: model }, onEvent() {} });
+  return { db, config, thread, root, repository, gap, batch, attemptId, frame, frameId, model, engine };
+}
+
+test.each(["legacy-prepared", "new-legacy", "new-goal", "goal-prepared"] as const)(
+  "public expansion resume preserves its prepared receipt and frozen contract (%s)", async kind => {
+    const f = preparedExpansion(kind);
+    try {
+      const before = f.repository.loadAttempt(f.thread.id, `gap-generation:${f.batch.id}`);
+      expect(before?.status ?? "not-started").toBe(f.attemptId ? "prepared" : "not-started");
+      await f.engine.resumeOpportunityExploration(f.thread.id, f.config.model, f.config.reasoningEffort);
+      await until(() => !f.engine.getOpportunityReviewStatus(f.thread.id).running);
+      expect({ status: f.engine.getOpportunityExploration(f.thread.id)?.status, error: f.engine.getOpportunityReviewStatus(f.thread.id).error })
+        .toEqual({ status: "target-reached", error: null });
+      const attempt = f.repository.loadAttempt(f.thread.id, `gap-generation:${f.batch.id}`)!;
+      expect(attempt.status).toBe("completed");
+      if (before) {
+        expect(attempt.attemptId).toBe(before.attemptId);
+        expect(attempt.input).toEqual(before.input);
+      }
+      expect(attempt.input).toMatchObject(kind === "legacy-prepared" ? { batchId: f.batch.id }
+        : { schemaRevision: f.frame ? 2 : 1 });
+      if (kind === "legacy-prepared") expect(attempt.input).not.toHaveProperty("schemaRevision");
+      if (f.frame) expect(attempt.input).toMatchObject({ frame: f.frame, frameId: f.frameId });
+      const result = attempt.result as { schemaRevision: number; output: { options: unknown[] }; candidateIds: string[] };
+      expect(result.schemaRevision).toBe(f.frame ? 2 : 1);
+      expect(result.output.options).toHaveLength(2);
+      expect(result.candidateIds).toHaveLength(2);
+      expect(f.repository.require(f.thread.id).batches[0]).toMatchObject({ id: f.batch.id, status: "reviewed", savedCandidateIds: result.candidateIds });
+      expect(f.model.stages).toEqual([`gap-generation:${f.batch.id}`, expect.stringMatching(/^opportunity-review:/)]);
+      expect(f.repository.require(f.thread.id).usage).toMatchObject({ modelCalls: 2, searches: 0, rawCandidates: 2 });
+      expect(f.db.db.prepare("SELECT COUNT(*) AS count FROM opportunity_exploration_attempts WHERE stage_name = 'gap-generation'").get())
+        .toEqual({ count: 1 });
+      expect(f.db.db.prepare("SELECT COUNT(*) AS count FROM solutions").get()).toEqual({ count: 2 });
+      // Reading the completed receipt again reuses its result and cannot dispatch a duplicate batch.
+      expect(f.repository.completedAttemptResult(f.thread.id, `gap-generation:${f.batch.id}`)).toEqual(attempt.result);
+      expect(f.db.db.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
+    } finally { await f.engine.shutdown(); f.db.close(); }
+  },
+);
+
+test.each(["gap", "count", "families", "evidence", "model", "prompt"] as const)(
+  "a legacy prepared expansion still rejects a changed %s identity before dispatch", async mismatch => {
+    const f = preparedExpansion("legacy-prepared");
+    try {
+      const attempt = f.repository.loadAttempt(f.thread.id, `gap-generation:${f.batch.id}`)!;
+      if (mismatch === "gap") f.db.immediateTransaction(() => f.repository.saveGap(f.thread.id, { ...f.gap, description: "Changed coverage request" }));
+      if (mismatch === "count") f.db.db.prepare("UPDATE opportunity_exploration_batches SET requested_candidates = 1 WHERE id = ?").run(f.batch.id);
+      if (mismatch === "families") f.db.db.prepare("UPDATE opportunity_exploration_attempts SET input_json = json_set(input_json, '$.acceptedFamilies', json(?)) WHERE id = ?")
+        .run(JSON.stringify([{ id: "previously-accepted-family" }]), attempt.attemptId);
+      if (mismatch === "evidence") f.db.db.prepare("UPDATE sources SET id = 'changed-source' WHERE id = 'source-approval'").run();
+      if (mismatch === "prompt") f.db.db.prepare("UPDATE opportunity_exploration_attempts SET prompt_text = prompt_text || ' Changed prompt' WHERE id = ?").run(attempt.attemptId);
+      const before = f.repository.loadAttempt(f.thread.id, `gap-generation:${f.batch.id}`)!;
+      await f.engine.resumeOpportunityExploration(f.thread.id,
+        mismatch === "model" ? { ...f.config.model, modelId: "changed-model" } : f.config.model, f.config.reasoningEffort);
+      await until(() => !f.engine.getOpportunityReviewStatus(f.thread.id).running);
+      expect(f.engine.getOpportunityReviewStatus(f.thread.id).error).toContain("Opportunity stage checkpoint identity changed");
+      expect(f.engine.getOpportunityExploration(f.thread.id)?.status).toBe("failed");
+      expect(f.repository.loadAttempt(f.thread.id, `gap-generation:${f.batch.id}`)).toEqual(before);
+      expect(f.model.stages).toEqual([]);
+      expect(f.repository.require(f.thread.id).usage.modelCalls).toBe(0);
+      expect(f.db.db.prepare("SELECT COUNT(*) AS count FROM opportunity_exploration_attempts WHERE stage_name = 'gap-generation'").get())
+        .toEqual({ count: 1 });
+    } finally { await f.engine.shutdown(); f.db.close(); }
+  },
+);
