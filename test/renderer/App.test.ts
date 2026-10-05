@@ -82,7 +82,7 @@ describe("App workspace coordination", () => {
     await fireEvent.click(view.getByRole("button", { name: "Explore this idea" }));
     await assertConversation();
     await fireEvent.input(view.getByLabelText("Follow-up message"), { target: { value: "Keep this conversation draft" } });
-    await fireEvent.click(view.getByRole("button", { name: "Go back" }));
+    await fireEvent.keyDown(view.getByLabelText("Follow-up message"), { key: "ArrowLeft", altKey: true });
     await assertIdea();
     await fireEvent.click(view.getByRole("button", { name: "Go back" }));
     await assertList();
@@ -131,6 +131,42 @@ describe("App workspace coordination", () => {
     await view.findByRole("heading", { name: "Conversation" });
     expect(getIdeaConversation).toHaveBeenCalledTimes(2);
     expect(view.queryByText("Could not load saved conversation.")).toBeNull();
+  });
+
+  test("history shortcuts and native commands respect dialogs and composition but allow text fields", async () => {
+    let state = workspace("alpha");
+    let command: Parameters<ScraplyApi["onAppCommand"]>[0] = () => {};
+    installApi({ getWorkspace: async () => structuredClone(state),
+      selectThread: async id => { state = { ...state, activeThreadId: id }; return structuredClone(state); },
+      onAppCommand: listener => { command = listener; return () => {}; } });
+    const view = render(App);
+    await fireEvent.input(await view.findByPlaceholderText("Your topic or idea"), { target: { value: "Alpha draft" } });
+    await fireEvent.click(view.getByRole("button", { name: "Open thread Beta" }));
+    await waitFor(() => expect(view.getByRole("button", { name: "Open thread Beta" }).getAttribute("aria-current")).toBe("true"));
+    await fireEvent.click(view.getByRole("button", { name: "Advanced settings" }));
+    const dialog = view.getByRole("dialog", { name: "Advanced settings" });
+    await fireEvent.keyDown(dialog, { key: "ArrowLeft", altKey: true });
+    command("back");
+    await tick();
+    expect(view.getByRole("dialog", { name: "Advanced settings" })).toBe(dialog);
+    expect(view.getByRole("button", { name: "Open thread Beta" }).getAttribute("aria-current")).toBe("true");
+    await fireEvent.click(view.getByRole("button", { name: "Close advanced settings" }));
+    const input = view.getByPlaceholderText("Your topic or idea");
+    await fireEvent.input(input, { target: { value: "Beta typed draft" } });
+    const prevented = new KeyboardEvent("keydown", { key: "ArrowLeft", altKey: true, bubbles: true, cancelable: true });
+    prevented.preventDefault();
+    input.dispatchEvent(prevented);
+    await fireEvent.keyDown(input, { key: "ArrowLeft", altKey: true, isComposing: true });
+    await fireEvent.compositionStart(input);
+    command("back");
+    await tick();
+    expect(view.getByRole("button", { name: "Open thread Beta" }).getAttribute("aria-current")).toBe("true");
+    await fireEvent.compositionEnd(input);
+    await fireEvent.keyDown(input, { key: "ArrowLeft", altKey: true });
+    await waitFor(() => expect(view.getByRole("button", { name: "Open thread Alpha" }).getAttribute("aria-current")).toBe("true"));
+    await waitFor(() => expect((view.getByRole("button", { name: "Go forward" }) as HTMLButtonElement).disabled).toBe(false));
+    command("forward");
+    await waitFor(() => expect(view.getByRole("button", { name: "Open thread Beta" }).getAttribute("aria-current")).toBe("true"));
   });
 
   test("archiving the current project replaces its entry and keeps earlier project history", async () => {

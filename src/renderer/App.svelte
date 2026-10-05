@@ -256,7 +256,13 @@
       closeMobileNavigation();
     };
     window.addEventListener("keydown", closeDrawerOnEscape, { capture: true });
+    let composing = false;
+    const compositionStart = () => { composing = true; };
+    const compositionEnd = () => { composing = false; };
+    window.addEventListener("compositionstart", compositionStart);
+    window.addEventListener("compositionend", compositionEnd);
     const historyShortcut = (event: KeyboardEvent) => {
+      if (event.defaultPrevented || event.isComposing || composing || document.querySelector("dialog[open]")) return;
       if (!event.altKey || event.ctrlKey || event.metaKey || event.shiftKey || !["ArrowLeft", "ArrowRight"].includes(event.key)) return;
       event.preventDefault();
       event.stopImmediatePropagation();
@@ -272,8 +278,9 @@
     }, 5_000);
     const stopCommands = window.scraply.onAppCommand((command) => {
       if (command === "toggle-sidebar") toggleNavigation();
-      else if (command === "back") void navigateHistory(-1);
-      else if (command === "forward") void navigateHistory(1);
+      else if (command === "back" || command === "forward") {
+        if (!composing && !document.querySelector("dialog[open]")) void navigateHistory(command === "back" ? -1 : 1);
+      }
       else if (command === "settings") void settings?.show();
       else if (command === "new-research") void createThread();
       else if (command === "export-research" && workspace?.activeThreadId) void exportResearch();
@@ -340,7 +347,7 @@
       }
       reconcileSoon();
     });
-    return () => { window.removeEventListener("keydown", historyShortcut, { capture: true }); window.removeEventListener("keydown", closeDrawerOnEscape, { capture: true }); viewport?.removeEventListener("change", resizeNavigation); stopCommands(); dispose(); clearInterval(clock); clearInterval(workflowRefresh); if (reconcileTimer) clearTimeout(reconcileTimer); };
+    return () => { window.removeEventListener("compositionstart", compositionStart); window.removeEventListener("compositionend", compositionEnd); window.removeEventListener("keydown", historyShortcut, { capture: true }); window.removeEventListener("keydown", closeDrawerOnEscape, { capture: true }); viewport?.removeEventListener("change", resizeNavigation); stopCommands(); dispose(); clearInterval(clock); clearInterval(workflowRefresh); if (reconcileTimer) clearTimeout(reconcileTimer); };
   });
 
   async function load() {
