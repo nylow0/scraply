@@ -12,7 +12,7 @@
   <section class="investigator-progress" aria-label="Area investigators">
     <header><h2>Area investigators</h2><p>Counts reflect saved candidate decisions.</p></header>
     <ol class="investigator-lanes">
-      {#each investigators as investigator (investigator.areaId)}
+      {#each investigators as investigator (investigator.taskId)}
         <li aria-label={`${investigator.areaName} investigator`}>
           <div class="lane-work">
             <div class="lane-heading"><h3>{investigator.areaName}</h3><span class="lane-state" class:running={investigator.state === "running"} class:attention={investigator.state === "failed" || investigator.state === "unknown"}>{stateLabels[investigator.state]}</span></div>
