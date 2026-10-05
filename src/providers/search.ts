@@ -32,5 +32,7 @@ export interface SearchClient {
   readonly provider: SearchProvider;
   providerForRoute?(route?: SourceRoute): SearchProvider;
   search(query: string, options?: SearchOptions): Promise<Source[]>;
+  /** Managed receipts and their ledger reservation share the exact physical dispatch ID. */
+  searchWithDispatch?(query: string, options: SearchOptions | undefined, onDispatched: () => void, preparedAttemptId?: string): Promise<Source[]>;
   validateKey(): Promise<ValidationResult>;
 }

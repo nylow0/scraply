@@ -371,6 +371,20 @@ export class WorkflowRepository {
     }
     this.client.db.prepare(`UPDATE workflow_work_items SET state = 'running', error_json = NULL,
       finished_at = NULL WHERE id = ?`).run(taskId);
+    // Reopen unfinished areas only. A saved area outcome, including a known partial failure,
+    // is replayed without starting its investigator again, so its terminal task record must remain intact.
+    this.client.db.prepare(`WITH RECURSIVE descendants(id,area_id) AS (
+      SELECT id, coalesce(json_extract(input_json,'$.area.id'),json_extract(input_json,'$.areaId'))
+        FROM workflow_work_items WHERE parent_item_id = ?
+      UNION SELECT child.id, coalesce(json_extract(child.input_json,'$.area.id'),json_extract(child.input_json,'$.areaId'),parent.area_id)
+        FROM workflow_work_items child JOIN descendants parent ON child.parent_item_id = parent.id
+    ) UPDATE workflow_work_items SET state = 'planned', error_json = NULL, finished_at = NULL
+      WHERE kind IN ('investigate-area','area-research','area-candidates','evidence-check') AND state IN ('failed','unknown','cancelled','skipped')
+        AND EXISTS (SELECT 1 FROM descendants area WHERE area.id = workflow_work_items.id
+          AND NOT EXISTS (SELECT 1 FROM workflow_snapshots snapshot
+            WHERE snapshot.research_run_id = (SELECT json_extract(output_refs_json,'$.runId') FROM workflow_work_items WHERE id = ?)
+              AND snapshot.snapshot_key IN ('frame-scan-failure:' || area.area_id,'area:' || area.area_id || ':investigation-completed')))`)
+      .run(taskId, taskId);
     this.client.db.prepare(`UPDATE workflow_sessions SET state = 'running', outcome = NULL,
       running_since = ?, finished_at = NULL, revision = revision + 1 WHERE id = ? AND revision = ?`)
       .run(new Date().toISOString(), sessionId, expectedRevision);

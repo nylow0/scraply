@@ -15,6 +15,25 @@ export const WorkflowSearchTerminalSchema = z.object({
 }).strict();
 export type WorkflowSearchAttempt = z.infer<typeof WorkflowSearchAttemptSchema>;
 
+/** Historical preparation is conservative physical work; damaged receipts cannot invent ledger linkage. */
+export function workflowSearchDispatches(db: Pick<DatabaseClient, "db">, runId: string): Array<{ id: string | null; unknown: boolean }> {
+  const rows = db.db.prepare(`SELECT snapshot_key, value_json FROM workflow_snapshots
+    WHERE research_run_id = ? AND snapshot_key LIKE 'search-attempt:%' ORDER BY rowid`).all(runId) as
+    Array<{ snapshot_key: string; value_json: string }>;
+  const saved = db.db.prepare("SELECT snapshot_key FROM workflow_snapshots WHERE research_run_id = ?").all(runId) as
+    Array<{ snapshot_key: string }>;
+  const keys = new Set(saved.map(row => row.snapshot_key));
+  return rows.map(row => {
+    try {
+      const parsed = WorkflowSearchAttemptSchema.safeParse(JSON.parse(row.value_json));
+      if (parsed.success && row.snapshot_key === `search-attempt:${parsed.data.key.slice("search:".length)}:${parsed.data.id}`) {
+        return { id: parsed.data.id, unknown: !keys.has(`search-terminal:${parsed.data.id}`) };
+      }
+    } catch { /* Invalid data remains an unknown physical dispatch. */ }
+    return { id: null, unknown: true };
+  });
+}
+
 export class UnknownSearchCompletionError extends Error {
   constructor(readonly attemptId: string) {
     super("A search may have completed before interruption. Acknowledge this request before retrying it.");
