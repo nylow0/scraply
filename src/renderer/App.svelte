@@ -152,7 +152,7 @@
   let nextRequestFrame = $derived(latestApprovedFrame?.approved ?? runFrame?.approved ?? null);
   let reviewingFrame = $derived(workflowDetail?.summary.state === "waiting-for-review" && workflowDetail.summary.reviewKind === "frame" && runFrame?.approved === null);
   let investigators = $derived(workflowDetail?.tasks.flatMap(task => task.kind === "investigate-area" && task.investigator
-    ? [{ ...task.investigator, state: task.state }] : []) ?? []);
+    ? [{ ...task.investigator, taskId: task.id, state: task.state }] : []) ?? []);
   let canRegenerateFrame = $derived(Boolean(workflowDetail && (workflowDetail.summary.limits.enforced === false
     || workflowDetail.summary.budget.modelCalls.limit - workflowDetail.summary.budget.modelCalls.spent
       - workflowDetail.summary.budget.modelCalls.reserved - workflowDetail.summary.budget.modelCalls.uncertain >= 1)));
