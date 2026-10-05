@@ -11,7 +11,7 @@ import { ResearchFrameSchema } from "../../src/shared/research-frame";
 import { summarizeRunUsage } from "../../src/backend/run-usage";
 
 describe("App workspace coordination", () => {
-  test.each([false, true])("retains a hidden draft across navigation and clears it only after a successful launch, failure=%s", async (failStart) => {
+  test.each([false, true])("reuses a hidden draft until scope is saved, then creates a fresh draft even after launch failure=%s", async (failStart) => {
     let draft = workspace("alpha");
     draft.validation.native = { available: true, connected: true, accounts: [{ providerId: "openai-subscription" }] };
     draft.threads[0] = { ...draft.threads[0]!, title: "New research", isUnstartedDraft: true };
@@ -38,6 +38,7 @@ describe("App workspace coordination", () => {
       return { sessionId: current.summary.sessionId, revision: current.summary.revision, summary: current.summary };
     });
     const createThread = vi.fn(async () => {
+      if (draft.threads[0]!.isUnstartedDraft) { state = draft; return { workspace: structuredClone(state) }; }
       const fresh = { ...draft.threads[0]!, id: "fresh", title: "New research", status: "configuring" as const, isUnstartedDraft: true };
       state = { ...draft, activeThreadId: fresh.id, scope: null, runConfig: null, activeWorkflow: null, threads: [...draft.threads, fresh] };
       return { workspace: structuredClone(state) };
@@ -77,7 +78,7 @@ describe("App workspace coordination", () => {
     appCommand("new-research");
     await waitFor(() => expect((view.getByPlaceholderText("Your topic or idea") as HTMLTextAreaElement).value).toBe(brief));
     expect(saveScope).not.toHaveBeenCalled();
-    expect(createThread).not.toHaveBeenCalled();
+    expect(createThread).toHaveBeenCalledTimes(3);
     await waitFor(() => expect((view.getByRole("button", { name: "Start" }) as HTMLButtonElement).disabled).toBe(false));
     await fireEvent.click(view.getByRole("button", { name: "Start" }));
     await waitFor(() => expect(startWorkflow).toHaveBeenCalledOnce());
@@ -86,8 +87,8 @@ describe("App workspace coordination", () => {
     await fireEvent.click(view.getByRole("button", { name: "Open thread Beta" }));
     await waitFor(() => expect(view.getByRole("button", { name: "Open thread Beta" }).getAttribute("aria-current")).toBe("true"));
     appCommand("new-research");
-    await waitFor(() => expect((view.getByPlaceholderText("Your topic or idea") as HTMLTextAreaElement).value).toBe(failStart ? brief : ""));
-    expect(createThread).toHaveBeenCalledTimes(failStart ? 0 : 1);
+    await waitFor(() => expect((view.getByPlaceholderText("Your topic or idea") as HTMLTextAreaElement).value).toBe(""));
+    expect(createThread).toHaveBeenCalledTimes(4);
   });
 
   test("starting another saved project keeps the pending draft", async () => {
@@ -99,7 +100,7 @@ describe("App workspace coordination", () => {
     let state = draft;
     const current = frameWorkflow({ approved: true });
     current.summary = { ...current.summary, threadId: "beta", state: "running", mode: "vibe", outcome: null, finishedAt: null };
-    const createThread = vi.fn(async () => ({ workspace: workspace("alpha") }));
+    const createThread = vi.fn(async () => ({ workspace: structuredClone(draft) }));
     installApi({ getWorkspace: async () => structuredClone(state), createThread,
       selectThread: async id => { state = id === "alpha" ? draft : saved; return structuredClone(state); },
       previewWorkflow: async request => {
@@ -121,7 +122,7 @@ describe("App workspace coordination", () => {
     await waitFor(() => expect((view.getByRole("button", { name: "Create new research thread" }) as HTMLButtonElement).disabled).toBe(false));
     await fireEvent.click(view.getByRole("button", { name: "Create new research thread" }));
     await waitFor(() => expect((view.getByPlaceholderText("Your topic or idea") as HTMLTextAreaElement).value).toBe("Keep this unfinished brief"));
-    expect(createThread).not.toHaveBeenCalled();
+    expect(createThread).toHaveBeenCalledOnce();
   });
 
   test("opens a hidden draft on an empty first launch", async () => {

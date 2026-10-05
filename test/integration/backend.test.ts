@@ -148,6 +148,11 @@ describe("cutover backend", () => {
     expect(reopened.workspace.threads.find(thread => thread.id === first.thread.id)?.isUnstartedDraft).toBe(false);
     expect(reopened.workspace.threads.find(thread => thread.id === named.thread.id)?.isUnstartedDraft).toBe(false);
     expect(reopened.workspace.threads.find(thread => thread.id === next.thread.id)?.isUnstartedDraft).toBe(true);
+    await post("/threads/archive", { threadId: next.thread.id, archived: true });
+    await post("/threads/archive", { threadId: next.thread.id, archived: false });
+    const restored = await post("/threads", {});
+    expect(restored.thread.id).toBe(next.thread.id);
+    expect(restored.workspace.threads.find(thread => thread.id === next.thread.id)?.isUnstartedDraft).toBe(true);
   });
 
   test("defaults a new thread to Perplexity when it is the only connected search provider", async () => {

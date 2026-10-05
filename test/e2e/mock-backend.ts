@@ -33,7 +33,7 @@ export async function startMockBackend(options: { longIdeaTitle?: boolean; perpl
   let workflowSummary: WorkflowSummary | null = null;
   const workspace = () => ({
     validation: providerValidation, threads: threads.map((thread) => ({ ...thread, status,
-      isUnstartedDraft: thread.isUnstartedDraft === true && status === "configuring" && !scope && !thread.archivedAt })), activeThreadId, messages: [], scope,
+      isUnstartedDraft: thread.title === "New research" && status === "configuring" && !scope && !thread.archivedAt })), activeThreadId, messages: [], scope,
     runConfig: activeThreadId ? runConfig : null, models: [DEFAULT_RUN_CONFIG.model, { providerId: "openai-subscription", modelId: "gpt-6-astra" }, { providerId: "openai-subscription", modelId: "gpt-6-luna" }], modelOptions: [{ ...DEFAULT_RUN_CONFIG.model, displayName: "GPT-6 Sol", defaultReasoningEffort: "medium", reasoningEfforts: [{ id: "medium", description: "Balanced reasoning" }] }, { providerId: "openai-subscription", modelId: "gpt-6-astra", displayName: "Astra", defaultReasoningEffort: "medium", reasoningEfforts: [{ id: "medium", description: "Balanced reasoning" }] }, { providerId: "openai-subscription", modelId: "gpt-6-luna", displayName: "Luna", defaultReasoningEffort: "low", reasoningEfforts: [{ id: "low", description: "Fast" }] }], modelCatalog: { models: [DEFAULT_RUN_CONFIG.model], favorites: [] }, presets: [],
     problemCandidates: status !== "configuring" ? [problem] : [], rejectedProblemCandidates: status !== "configuring" ? [rejectedProblem] : [], researchRequests: [], researchFindings: [], solutions: status === "solutions-ready" ? [{ ...solution, discarded, mechanism: options.longIdeaTitle ? "Recruit people who recently encountered the problem and reconstruct the last occurrence, current workflow, consequences, frequency, workarounds, and the value of a shared supplier reliability ledger for independent repair shops." : solution.mechanism }] : [],
     latestResearchRun: status === "configuring" ? null : { runId: "run-1", status: "completed", problemId: status === "solutions-ready" ? "problem-1" : null, codexCalls: 8, searches: 10, projectedCodexCalls: 20, projectedSearches: 20, lastActivity: "Problem verification completed" }, pendingRuns: [],
@@ -53,7 +53,6 @@ export async function startMockBackend(options: { longIdeaTitle?: boolean; perpl
       const input = body as { threadId: string; archived: boolean };
       const thread = threads.find((item) => item.id === input.threadId)!;
       thread.archivedAt = input.archived ? now : null;
-      thread.isUnstartedDraft = false;
       if (input.archived) activeThreadId = null;
       return ok(res, workspace());
     }

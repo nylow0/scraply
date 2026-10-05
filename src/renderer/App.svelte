@@ -411,9 +411,7 @@
   }
   async function createThread() {
     await action(async () => {
-      // Keep the slot reachable even if Start saved the scope before a launch failure.
-      const remembered = workspace?.threads.find((thread) => thread.id === draftThreadId && !thread.archivedAt);
-      const next = remembered ? await window.scraply.selectThread(remembered.id) : (await window.scraply.createThread()).workspace;
+      const next = (await window.scraply.createThread()).workspace;
       setWorkspace(next);
       settingsOpen = false;
       activeStep = "setup";

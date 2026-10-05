@@ -21,7 +21,7 @@ afterEach(() => {
 });
 
 describe("repository invariants", () => {
-  test("reuses and hides only untouched drafts, keeping scope, messages, runs, names and restores visible", () => {
+  test("reuses empty drafts including restores, keeping scope, messages, runs and other titles visible", () => {
     const client = database();
     const threads = new ThreadRepository(client);
     const empty = threads.createThread();
@@ -43,11 +43,12 @@ describe("repository invariants", () => {
     threads.updateThreadStatus(legacy.id, "archived");
     threads.archiveThread(legacy.id, false);
     const hidden = threads.listThreads().filter(thread => thread.isUnstartedDraft).map(thread => thread.id);
-    expect(hidden.sort()).toEqual([empty.id, oldEmpty.id].sort());
+    expect(hidden.sort()).toEqual([empty.id, oldEmpty.id, renamed.id, restored.id, legacy.id].sort());
     expect(hidden).not.toContain(scoped.id);
     expect(hidden).not.toContain(messaged.id);
     expect(hidden).not.toContain(named.id);
-    expect(threads.findEmptyDraft()?.id).toBe(oldEmpty.id);
+    expect(hidden).not.toContain("started");
+    expect(hidden).toContain(threads.findEmptyDraft()?.id);
     expect(threads.listThreads()).toHaveLength(9);
     client.close();
   });
