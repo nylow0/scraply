@@ -13,6 +13,7 @@ use codex_login::{
     DeviceCode, LoginServer, RefreshTokenError, ServerOptions, complete_device_code_login,
     load_auth_dot_json, oauth_client_id, request_device_code, run_login_server, save_auth,
 };
+use codex_protocol::models::{ReasoningItemReasoningSummary, ResponseItem};
 use codex_websocket_client::{WebSocketConnection, WebSocketConnector};
 use futures_util::{SinkExt, StreamExt};
 use http::{HeaderMap, HeaderValue, header::AUTHORIZATION};
@@ -22,6 +23,7 @@ use scraply_agent_core::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::{
     collections::{BTreeMap, HashSet},
@@ -518,15 +520,17 @@ impl OpenAiSubscription {
         let mut output = String::new();
         let mut response_id = None;
         let mut usage = None;
-        let mut seen_summary_parts = HashSet::new();
+        // Full-ID digests keep retained keys bounded even when provider item IDs are large.
+        let mut seen_summary_parts = HashSet::<([u8; 32], i64)>::new();
         while let Some(event) = stream.next().await {
-            match event.map_err(|mut error| {
+            let event = event.map_err(|mut error| {
                 error.request_id = stream
                     .request_id()
                     .and_then(crate::error::safe_diagnostic)
                     .or(error.request_id);
                 error
-            })? {
+            })?;
+            match event.event {
                 ResponseEvent::OutputTextDelta(delta) => {
                     if output.len().saturating_add(delta.len()) > MAX_OUTPUT_BYTES {
                         return Err(ProviderError::new(
@@ -543,7 +547,10 @@ impl OpenAiSubscription {
                     summary_index,
                 } if request.reasoning_summaries => {
                     if seen_summary_parts.len() < 64 {
-                        seen_summary_parts.insert(summary_index);
+                        let item_id =
+                            Sha256::digest(event.summary_item_id.as_deref().unwrap_or_default())
+                                .into();
+                        seen_summary_parts.insert((item_id, summary_index));
                     }
                     control
                         .emit_reasoning_summary(request.attempt, &delta)
@@ -551,13 +558,28 @@ impl OpenAiSubscription {
                 }
                 ResponseEvent::ReasoningSummaryDone {
                     text,
+                    item_id,
                     summary_index,
-                    ..
                 } if request.reasoning_summaries
                     && seen_summary_parts.len() < 64
-                    && seen_summary_parts.insert(summary_index) =>
+                    && seen_summary_parts
+                        .insert((Sha256::digest(&item_id).into(), summary_index)) =>
                 {
                     control.emit_reasoning_summary(request.attempt, &text).await;
+                }
+                ResponseEvent::OutputItemDone(ResponseItem::Reasoning { id, summary, .. })
+                    if request.reasoning_summaries =>
+                {
+                    let item_id = Sha256::digest(id.as_deref().unwrap_or_default()).into();
+                    for (summary_index, ReasoningItemReasoningSummary::SummaryText { text }) in
+                        summary.into_iter().enumerate()
+                    {
+                        if seen_summary_parts.len() < 64
+                            && seen_summary_parts.insert((item_id, summary_index as i64))
+                        {
+                            control.emit_reasoning_summary(request.attempt, &text).await;
+                        }
+                    }
                 }
                 ResponseEvent::ServerModel(model) if model != request.model.model_id => {
                     return Err(ProviderError::new(
@@ -723,7 +745,10 @@ impl OpenAiSubscription {
                 )
                 .await
                 .map_err(map_api_error)?;
-                Ok(SubscriptionStream::Http(stream))
+                Ok(SubscriptionStream::Http {
+                    stream,
+                    reasoning_item_id: None,
+                })
             }
             Err(WebSocketError::Http(response)) => Err(ProviderError::http(
                 OPENAI_SUBSCRIPTION_PROVIDER_ID,
@@ -743,7 +768,10 @@ impl OpenAiSubscription {
 // Own the socket inside the generation future. Cancelling that future drops the connection,
 // including during silent reasoning; upstream's detached Responses pump cannot do this.
 enum SubscriptionStream {
-    Http(codex_api::ResponseStream),
+    Http {
+        stream: codex_api::ResponseStream,
+        reasoning_item_id: Option<String>,
+    },
     Websocket {
         socket: Box<WebSocketConnection>,
         request_id: Option<String>,
@@ -753,21 +781,52 @@ enum SubscriptionStream {
     },
 }
 
+struct SubscriptionResponseEvent {
+    event: ResponseEvent,
+    summary_item_id: Option<String>,
+}
+
 impl SubscriptionStream {
     fn request_id(&self) -> Option<&str> {
         match self {
-            Self::Http(stream) => stream.upstream_request_id.as_deref(),
+            Self::Http { stream, .. } => stream.upstream_request_id.as_deref(),
             Self::Websocket { request_id, .. } => request_id.as_deref(),
         }
     }
 
-    async fn next(&mut self) -> Option<Result<ResponseEvent, ProviderError>> {
+    async fn next(&mut self) -> Option<Result<SubscriptionResponseEvent, ProviderError>> {
         let (socket, request_id, expected_model, heartbeat, activity) = match self {
-            Self::Http(stream) => {
-                return stream
-                    .next()
-                    .await
-                    .map(|event| event.map_err(map_api_error));
+            Self::Http {
+                stream,
+                reasoning_item_id,
+            } => {
+                let event = match stream.next().await? {
+                    Ok(event) => event,
+                    Err(error) => return Some(Err(map_api_error(error))),
+                };
+                // Upstream strips delta item IDs. HTTP item-added/done events
+                // identify the active reasoning item for its summary deltas.
+                match &event {
+                    ResponseEvent::OutputItemAdded(ResponseItem::Reasoning { id, .. }) => {
+                        reasoning_item_id.clone_from(id);
+                    }
+                    ResponseEvent::OutputItemDone(ResponseItem::Reasoning { id, .. })
+                        if reasoning_item_id == id =>
+                    {
+                        *reasoning_item_id = None;
+                    }
+                    _ => {}
+                }
+                let summary_item_id =
+                    if matches!(event, ResponseEvent::ReasoningSummaryDelta { .. }) {
+                        reasoning_item_id.clone()
+                    } else {
+                        None
+                    };
+                return Some(Ok(SubscriptionResponseEvent {
+                    event,
+                    summary_item_id,
+                }));
             }
             Self::Websocket {
                 socket,
@@ -851,9 +910,12 @@ impl SubscriptionStream {
                     return Some(
                         event
                             .delta
-                            .map(|delta| ResponseEvent::ReasoningSummaryDelta {
-                                delta,
-                                summary_index: event.summary_index.unwrap_or(0),
+                            .map(|delta| SubscriptionResponseEvent {
+                                event: ResponseEvent::ReasoningSummaryDelta {
+                                    delta,
+                                    summary_index: event.summary_index.unwrap_or(0),
+                                },
+                                summary_item_id: event.item_id,
                             })
                             .ok_or_else(|| {
                                 map_api_error(ApiError::Stream("invalid summary event".into()))
@@ -864,10 +926,13 @@ impl SubscriptionStream {
                     return Some(
                         event
                             .text
-                            .map(|text| ResponseEvent::ReasoningSummaryDone {
-                                text,
-                                item_id: event.item_id.unwrap_or_default(),
-                                summary_index: event.summary_index.unwrap_or(0),
+                            .map(|text| SubscriptionResponseEvent {
+                                event: ResponseEvent::ReasoningSummaryDone {
+                                    text,
+                                    item_id: event.item_id.unwrap_or_default(),
+                                    summary_index: event.summary_index.unwrap_or(0),
+                                },
+                                summary_item_id: None,
                             })
                             .ok_or_else(|| {
                                 map_api_error(ApiError::Stream("invalid summary event".into()))
@@ -875,13 +940,29 @@ impl SubscriptionStream {
                     );
                 }
                 "response.output_text.delta" => {
-                    return Some(event.delta.map(ResponseEvent::OutputTextDelta).ok_or_else(
-                        || {
-                            map_api_error(ApiError::Stream(
-                                "failed to parse ResponseCompleted:".into(),
-                            ))
-                        },
-                    ));
+                    return Some(
+                        event
+                            .delta
+                            .map(|delta| SubscriptionResponseEvent {
+                                event: ResponseEvent::OutputTextDelta(delta),
+                                summary_item_id: None,
+                            })
+                            .ok_or_else(|| {
+                                map_api_error(ApiError::Stream(
+                                    "failed to parse ResponseCompleted:".into(),
+                                ))
+                            }),
+                    );
+                }
+                "response.output_item.done" => {
+                    if let Some(item) = event.item
+                        && let Ok(item) = serde_json::from_value::<ResponseItem>(item)
+                    {
+                        return Some(Ok(SubscriptionResponseEvent {
+                            event: ResponseEvent::OutputItemDone(item),
+                            summary_item_id: None,
+                        }));
+                    }
                 }
                 "response.completed" => {
                     let Some(response) = event
@@ -892,10 +973,13 @@ impl SubscriptionStream {
                             "failed to parse ResponseCompleted:".into(),
                         ))));
                     };
-                    return Some(Ok(ResponseEvent::Completed {
-                        response_id: response.id.unwrap(),
-                        token_usage: response.usage.map(|usage| usage.into()),
-                        end_turn: None,
+                    return Some(Ok(SubscriptionResponseEvent {
+                        event: ResponseEvent::Completed {
+                            response_id: response.id.unwrap(),
+                            token_usage: response.usage.map(|usage| usage.into()),
+                            end_turn: None,
+                        },
+                        summary_item_id: None,
                     }));
                 }
                 "response.failed" | "response.incomplete" | "error" => {
@@ -950,6 +1034,7 @@ struct SubscriptionEvent {
     delta: Option<String>,
     text: Option<String>,
     item_id: Option<String>,
+    item: Option<Value>,
     summary_index: Option<i64>,
     response: Option<SubscriptionResponse>,
     headers: Option<Value>,
@@ -1733,6 +1818,189 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn websocket_summaries_keep_same_index_parts_from_separate_items() {
+        for (streamed_first, long_ids) in
+            [(false, false), (true, false), (false, true), (true, true)]
+        {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let server = tokio::spawn(async move {
+                let (socket, _) = listener.accept().await.unwrap();
+                let mut socket = tokio_tungstenite::accept_async(socket).await.unwrap();
+                assert!(socket.next().await.unwrap().unwrap().is_text());
+                // Long IDs differ only after a 12 KiB prefix, so truncating IDs would collide.
+                let prefix = if long_ids {
+                    "p".repeat(12 * 1024)
+                } else {
+                    "rs_".to_owned()
+                };
+                let item_a = format!("{prefix}A");
+                let item_b = format!("{prefix}B");
+                let item_c = format!("{prefix}C");
+                let mut events = Vec::new();
+                if streamed_first {
+                    events.push(json!({"type":"response.reasoning_summary_text.delta", "item_id":item_a, "summary_index":0, "delta":"First. "}));
+                }
+                events.extend([
+                    json!({"type":"response.reasoning_summary_text.done", "item_id":item_a, "summary_index":0, "text":"First. "}),
+                    json!({"type":"response.reasoning_summary_text.done", "item_id":item_b, "summary_index":0, "text":"Second. "}),
+                    json!({"type":"response.reasoning_summary_text.done", "item_id":item_b, "summary_index":0, "text":"Second. "}),
+                    json!({"type":"response.reasoning_summary_text.done", "item_id":item_a, "summary_index":1, "text":"Additional. "}),
+                    json!({"type":"response.output_item.done", "item":{"type":"reasoning", "id":item_a, "summary":[{"type":"summary_text", "text":"First. "}, {"type":"summary_text", "text":"Additional. "}]}}),
+                    json!({"type":"response.output_item.done", "item":{"type":"reasoning", "id":item_b, "summary":[{"type":"summary_text", "text":"Second. "}]}}),
+                    json!({"type":"response.output_item.done", "item":{"type":"reasoning", "id":item_c, "summary":[{"type":"summary_text", "text":"Fallback. "}]}}),
+                    json!({"type":"response.output_text.delta", "delta":"{}"}),
+                    json!({"type":"response.completed", "response":{"id":"summary-items-test"}}),
+                ]);
+                for event in events {
+                    socket
+                        .send(Message::Text(event.to_string().into()))
+                        .await
+                        .unwrap();
+                }
+            });
+            let provider = local_test_provider(address).await;
+            let mut request = generation_request("gpt-6-astra");
+            request.reasoning_summaries = true;
+            let (sender, mut deltas) = tokio::sync::mpsc::channel(8);
+            let control =
+                OperationControl::until_cancelled(scraply_agent_core::CancellationToken::new())
+                    .with_summary_sink(sender);
+            let response = tokio::time::timeout(
+                Duration::from_secs(5),
+                provider.generate_request(&request, &control),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+            server.await.unwrap();
+            let mut forwarded = String::new();
+            while let Ok(delta) = deltas.try_recv() {
+                forwarded.push_str(&delta);
+            }
+            assert_eq!(response.output, b"{}");
+            assert!(response.usage.is_none());
+            assert_eq!(forwarded, "First. Second. Additional. Fallback. ");
+            assert_eq!(
+                control
+                    .reasoning_summary(GenerationAttempt::Initial)
+                    .as_deref(),
+                Some(forwarded.as_str())
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn http_summaries_associate_deltas_with_reasoning_items() {
+        use std::io::Write;
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let mut socket = accept_test_http_assignment(&listener);
+            let events = [
+                json!({"type":"response.output_item.added", "item":{"type":"reasoning", "id":"rs_A", "summary":[]}}),
+                json!({"type":"response.reasoning_summary_text.delta", "item_id":"rs_A", "summary_index":0, "delta":"First. "}),
+                json!({"type":"response.reasoning_summary_text.done", "item_id":"rs_A", "summary_index":0, "text":"First. "}),
+                json!({"type":"response.output_item.done", "item":{"type":"reasoning", "id":"rs_A", "summary":[{"type":"summary_text", "text":"First. "}]}}),
+                json!({"type":"response.reasoning_summary_text.done", "item_id":"rs_B", "summary_index":0, "text":"Second. "}),
+                json!({"type":"response.output_item.added", "item":{"type":"reasoning", "id":"rs_C", "summary":[]}}),
+                json!({"type":"response.reasoning_summary_text.delta", "item_id":"rs_C", "summary_index":0, "delta":"Third. "}),
+                json!({"type":"response.reasoning_summary_text.done", "item_id":"rs_C", "summary_index":0, "text":"Third. "}),
+                json!({"type":"response.output_item.done", "item":{"type":"reasoning", "id":"rs_C", "summary":[{"type":"summary_text", "text":"Third. "}]}}),
+                json!({"type":"response.output_item.done", "item":{"type":"reasoning", "id":"rs_D", "summary":[{"type":"summary_text", "text":"Fallback. "}]}}),
+                json!({"type":"response.output_text.delta", "delta":"{}"}),
+                json!({"type":"response.completed", "response":{"id":"summary-http-test"}}),
+            ];
+            let body = events
+                .iter()
+                .map(|event| format!("data: {event}\n\n"))
+                .collect::<String>();
+            write!(socket, "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body).unwrap();
+        });
+        let provider = local_test_provider(address).await;
+        let mut request = generation_request("gpt-6-astra");
+        request.reasoning_summaries = true;
+        let (sender, mut deltas) = tokio::sync::mpsc::channel(8);
+        let control =
+            OperationControl::until_cancelled(scraply_agent_core::CancellationToken::new())
+                .with_summary_sink(sender);
+        let response = tokio::time::timeout(
+            Duration::from_secs(5),
+            provider.generate_request(&request, &control),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        server.join().unwrap();
+        let mut forwarded = String::new();
+        while let Ok(delta) = deltas.try_recv() {
+            forwarded.push_str(&delta);
+        }
+        assert_eq!(response.output, b"{}");
+        assert!(response.usage.is_none());
+        assert_eq!(forwarded, "First. Second. Third. Fallback. ");
+        assert_eq!(
+            control
+                .reasoning_summary(GenerationAttempt::Initial)
+                .as_deref(),
+            Some(forwarded.as_str())
+        );
+    }
+
+    #[tokio::test]
+    async fn websocket_summary_part_limit_does_not_reset_for_new_items() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (socket, _) = listener.accept().await.unwrap();
+            let mut socket = tokio_tungstenite::accept_async(socket).await.unwrap();
+            assert!(socket.next().await.unwrap().unwrap().is_text());
+            for index in 0..70 {
+                let event = json!({"type":"response.output_item.done", "item":{"type":"reasoning", "id":format!("rs_{index}"), "summary":[{"type":"summary_text", "text":"x"}]}});
+                socket
+                    .send(Message::Text(event.to_string().into()))
+                    .await
+                    .unwrap();
+            }
+            for event in [
+                json!({"type":"response.output_text.delta", "delta":"{}"}),
+                json!({"type":"response.completed", "response":{"id":"summary-parts-test"}}),
+            ] {
+                socket
+                    .send(Message::Text(event.to_string().into()))
+                    .await
+                    .unwrap();
+            }
+        });
+        let provider = local_test_provider(address).await;
+        let mut request = generation_request("gpt-6-astra");
+        request.reasoning_summaries = true;
+        let (sender, mut deltas) = tokio::sync::mpsc::channel(128);
+        let control =
+            OperationControl::until_cancelled(scraply_agent_core::CancellationToken::new())
+                .with_summary_sink(sender);
+        let response = tokio::time::timeout(
+            Duration::from_secs(5),
+            provider.generate_request(&request, &control),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        server.await.unwrap();
+        assert_eq!(response.output, b"{}");
+        let mut forwarded = Vec::new();
+        while let Ok(delta) = deltas.try_recv() {
+            forwarded.push(delta);
+        }
+        assert_eq!(forwarded.len(), 64);
+        assert_eq!(forwarded.concat(), "x".repeat(64));
+        assert_eq!(
+            control.reasoning_summary(GenerationAttempt::Initial),
+            Some("x".repeat(64))
+        );
+    }
+
+    #[tokio::test]
     async fn websocket_summaries_are_bounded_and_never_change_structured_output() {
         for enabled in [true, false] {
             let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -1747,11 +2015,12 @@ mod tests {
                     if enabled { json!("auto") } else { Value::Null }
                 );
                 for event in [
-                    json!({"type":"response.reasoning_summary_text.delta", "summary_index":0, "delta":"Checking evidence. é"}),
-                    json!({"type":"response.reasoning_summary_text.done", "summary_index":0, "text":"Checking evidence. é"}),
-                    json!({"type":"response.reasoning_summary_text.done", "summary_index":1, "text":"Done-only part. "}),
+                    json!({"type":"response.reasoning_summary_text.delta", "item_id":"rs_A", "summary_index":0, "delta":"Checking evidence. é"}),
+                    json!({"type":"response.reasoning_summary_text.done", "item_id":"rs_A", "summary_index":0, "text":"Checking evidence. é"}),
+                    json!({"type":"response.reasoning_summary_text.done", "item_id":"rs_B", "summary_index":0, "text":"Done-only part. "}),
                     json!({"type":"response.reasoning_text.delta", "delta":"private raw reasoning must never be forwarded"}),
-                    json!({"type":"response.reasoning_summary_text.delta", "summary_index":2, "delta":"🧩".repeat(10_000)}),
+                    json!({"type":"response.reasoning_summary_text.delta", "item_id":"rs_C", "summary_index":0, "delta":"🧩".repeat(10_000)}),
+                    json!({"type":"response.reasoning_summary_text.done", "item_id":"rs_D", "summary_index":0, "text":"Must not reset the generation byte limit."}),
                     json!({"type":"response.output_text.delta", "delta":"{}"}),
                     json!({"type":"response.completed", "response":{"id":"summary-test"}}),
                 ] {
