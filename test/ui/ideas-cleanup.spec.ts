@@ -101,7 +101,7 @@ test("version history and narrow tabs keep names and real changes", async ({ pag
   await expect(page.locator(".versions li")).toHaveCount(3);
   await expect(page.locator(".change-summary")).toHaveCount(1);
   await page.getByText("Compare with v1", { exact: true }).click();
-  await expect(page.getByRole("heading", { name: "Earlier mechanism" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "How it worked before" })).toBeVisible();
   await page.setViewportSize({ width: 760, height: 900 });
   await expect(page.getByRole("tab", { name: "Conversation", exact: true })).toBeVisible();
   await page.getByRole("tab", { name: "Idea", exact: true }).click();

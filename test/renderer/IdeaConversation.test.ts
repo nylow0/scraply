@@ -3,6 +3,7 @@ import { describe, expect, test, vi } from "vitest";
 import IdeaConversation from "../../src/renderer/components/IdeaConversation.svelte";
 import type { IdeaConversation as ConversationView } from "../../src/shared/workflow-contracts";
 import { pickModel } from "./model-picker";
+import { createIdeasFixture } from "../ui/ideas-fixture";
 import { EXPLAIN_IDEA_PROMPT } from "../../src/renderer/lib/idea-content";
 
 const modelOptions = [{
@@ -33,6 +34,20 @@ function conversation(): ConversationView {
 }
 
 describe("IdeaConversation", () => {
+  test.each(["unselectable", "selected-sibling", "running"] as const)("risk analysis availability respects %s", async (condition) => {
+    const fixture = createIdeasFixture(new URLSearchParams(), "alpha");
+    const idea = { ...fixture.solutions[0]!, id: "version-2", detailRevision: condition, selectable: condition !== "unselectable", detailsLoaded: true };
+    const solutions = [idea, { ...fixture.solutions[1]!, selected: condition === "selected-sibling" }];
+    Object.defineProperty(window, "scraply", { configurable: true, value: { getIdeaDetail: vi.fn().mockResolvedValue(idea) } });
+    const view = render(IdeaConversation, { conversation: conversation(), solutions, modelOptions, onSubmit: vi.fn(), onAnalyze: vi.fn(), analysisBlocked: condition === "running" });
+    await waitFor(() => expect(view.queryByText("Loading saved details")).toBeNull());
+    if (condition === "running") {
+      await waitFor(() => expect((view.getByRole("button", { name: "Analyze risks" }) as HTMLButtonElement).disabled).toBe(true));
+    } else {
+      await waitFor(() => expect(view.queryByRole("button", { name: "Analyze risks" })).toBeNull());
+    }
+  });
+
   test("Explain immediately sends the fixed prompt and displays the action instead of the hidden text", async () => {
     const saved = conversation();
     saved.turns = [];

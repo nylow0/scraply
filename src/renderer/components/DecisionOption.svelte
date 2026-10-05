@@ -1,17 +1,12 @@
 <script lang="ts">
   import type { SolutionView } from "../../shared/ipc";
-  import { untrack } from "svelte";
   import { optionEvidenceReferences } from "../../shared/option-evidence";
   import { loadIdeaDetail } from "../lib/idea-details";
   import FocusedExperiment from "./FocusedExperiment.svelte";
   import IdeaMechanism from "./IdeaMechanism.svelte";
   type ExperimentOutcome = "not-run" | "pass" | "fail" | "inconclusive";
-  let { idea, busy, analysisBlocked = false, initiallyOpen = false, inDetailView = false, onSelect, onSave, onOpenSource, onEvidenceFollowUp, onEvidenceReassessment, onPlanExperiment }: {
+  let { idea, busy, onSave, onOpenSource, onEvidenceFollowUp, onEvidenceReassessment, onPlanExperiment }: {
     idea: SolutionView; busy: boolean;
-    analysisBlocked?: boolean;
-    initiallyOpen?: boolean;
-    inDetailView?: boolean;
-    onSelect: (idea: SolutionView) => Promise<void>;
     onSave: (solutionId: string, decision: string, observed: string, outcome: ExperimentOutcome) => Promise<void>;
     onOpenSource: (url: string) => Promise<void>;
     onEvidenceFollowUp?: ((runId: string, question: string) => Promise<void>) | undefined;
@@ -28,10 +23,8 @@
   let savedExperimentOutcome = $state<ExperimentOutcome>("not-run");
   let saved = $state(false);
   let experimentOutcome = $state<ExperimentOutcome>("not-run");
-  let open = $state(untrack(() => initiallyOpen));
   let revision = "";
   let detailLoadEpoch = 0;
-  let wasOpen = false;
   let analysis = $derived(detail?.decisionAnalysis);
   let focusedExperiment = $derived(detail?.focusedExperiment ?? idea.focusedExperiment);
   let opportunityOrigin = $derived(idea.opportunityOrigin);
@@ -62,14 +55,7 @@
     return enhancedFollowUp?.riskReassessment?.additionalUnknowns.includes(unknown) ?? false;
   }
   $effect(() => {
-    if (open && revision !== `${idea.id}:${idea.detailRevision}`) void loadDetail();
-    if (!open && wasOpen) {
-      detailLoadEpoch += 1;
-      detail = null;
-      revision = "";
-      loading = false;
-    }
-    wasOpen = open;
+    if (revision !== `${idea.id}:${idea.detailRevision}`) void loadDetail();
   });
   async function loadDetail() {
     const key = `${idea.id}:${idea.detailRevision}`;
@@ -82,7 +68,7 @@
     const draftExperimentOutcome = experimentOutcome;
     try {
       const result = await loadIdeaDetail(idea);
-      if (requestEpoch !== detailLoadEpoch || !open || key !== `${idea.id}:${idea.detailRevision}`) return;
+      if (requestEpoch !== detailLoadEpoch || key !== `${idea.id}:${idea.detailRevision}`) return;
       const preserveDraft = formDirty || userDecision !== draftDecision || observedResult !== draftObservedResult || experimentOutcome !== draftExperimentOutcome;
       detail = result;
       const nextExperimentOutcome = result.experimentOutcome ?? "not-run";
@@ -97,7 +83,7 @@
         experimentOutcome = nextExperimentOutcome;
       }
     } catch (cause) {
-      if (requestEpoch === detailLoadEpoch && open && key === `${idea.id}:${idea.detailRevision}`) error = cause instanceof Error ? cause.message : "Could not load this option";
+      if (requestEpoch === detailLoadEpoch && key === `${idea.id}:${idea.detailRevision}`) error = cause instanceof Error ? cause.message : "Could not load this option";
     }
     finally { if (requestEpoch === detailLoadEpoch) loading = false; }
   }
@@ -119,31 +105,21 @@
   }
 </script>
 
-<article class:detail-page={inDetailView}>
-  {#if !inDetailView}<button class="disclosure-title" class:expanded={open} title={idea.description} aria-expanded={open} aria-controls={`option-body-${idea.id}`} onclick={() => open = !open}>
-    <span class="disclosure-label">{idea.description}</span>
-  </button>{/if}
-  {#if open || inDetailView}
+<article class="detail-page">
     <div class="disclosure-content" id={`option-body-${idea.id}`}>
     <IdeaMechanism mechanism={idea.mechanism} />
-    {#if !inDetailView && idea.selectable}<button disabled={busy || analysisBlocked} onclick={() => onSelect(idea)}>Choose and analyze</button>{/if}
     <details class="option-overview"><summary>Problem and fit</summary>
     {#if idea.rankReason}<h3>Why it ranks here</h3><p>{idea.rankReason}</p>{/if}
     {#if opportunityOrigin}<p>{opportunityOrigin.kind === "exploratory-hypothesis" ? opportunityOrigin.disclosure : opportunityOrigin.evidenceGap ?? ""}</p>{/if}
-    {#if idea.criteriaFit?.length}<dl>{#each idea.criteriaFit as entry (entry.criterionId)}
-      <div><dt>{entry.criterionName}{entry.mustHave ? " · must-have" : ""}: {entry.status}</dt><dd>{entry.note}</dd></div>
+    {#if (detail?.criteriaFit ?? idea.criteriaFit)?.length}<dl>{#each detail?.criteriaFit ?? idea.criteriaFit ?? [] as entry (entry.criterionId)}
+      <div><dt>{entry.criterionName}{entry.mustHave ? " · must-have" : ""}: {entry.status}</dt><dd>{entry.note}
+        {#if detail && entry.evidenceIds.length > 0}<div class="criterion-sources">
+          {#each optionEvidenceReferences(detail, entry.evidenceIds) as source (source.id)}
+            {#if source.url}<a href={source.url} onclick={(event) => { event.preventDefault(); void onOpenSource(source.url!); }}>{source.title}</a>{:else}<span>{source.title}</span>{/if}
+          {/each}
+        </div>{/if}
+      </dd></div>
     {/each}</dl>{/if}
-    {#if detail?.criteriaFit?.some(entry => entry.evidenceIds.length > 0)}
-      <section aria-label="Criterion evidence">
-        {#each detail.criteriaFit as entry (entry.criterionId)}
-          {#if entry.evidenceIds.length > 0}<h3>{entry.criterionName}</h3><ul>
-            {#each optionEvidenceReferences(detail, entry.evidenceIds) as source (source.id)}<li>
-              {#if source.url}<a href={source.url} onclick={(event) => { event.preventDefault(); void onOpenSource(source.url!); }}>{source.title}</a>{:else}{source.title}{/if}
-            </li>{/each}
-          </ul>{/if}
-        {/each}
-      </section>
-    {/if}
     {#if idea.biggerProblem}<h3>Wider problem</h3><p>{idea.biggerProblem.statement}</p><p>{idea.biggerProblem.affected}. {idea.biggerProblem.scale}{idea.biggerProblem.scaleKnown ? "" : " · scale unknown"}</p>
       {#if detail && idea.biggerProblem.scaleEvidenceIds.length > 0}<ul aria-label="Problem scale evidence">
         {#each optionEvidenceReferences(detail, idea.biggerProblem.scaleEvidenceIds) as source (source.id)}<li>{#if source.url}<a href={source.url} onclick={(event) => { event.preventDefault(); void onOpenSource(source.url!); }}>{source.title}</a>{:else}{source.title}{/if}</li>{/each}
@@ -208,7 +184,7 @@
         {/if}
         {#if analysis}
           <details class="next-experiment" open><summary>Next experiment</summary>
-          {#if focusedExperiment}<FocusedExperiment experiment={focusedExperiment} quiet={inDetailView} />{:else}<strong>{analysis.experiment.question}</strong><p>{analysis.experiment.method}</p>
+          {#if focusedExperiment}<FocusedExperiment experiment={focusedExperiment} quiet />{:else}<strong>{analysis.experiment.question}</strong><p>{analysis.experiment.method}</p>
             <dl><div><dt>Cost</dt><dd>{analysis.experiment.cost}</dd></div><div><dt>Pass</dt><dd>{analysis.experiment.passCriterion}</dd></div><div><dt>Fail</dt><dd>{analysis.experiment.failCriterion}</dd></div><div><dt>Inconclusive</dt><dd>{"inconclusiveCriterion" in analysis.experiment ? String(analysis.experiment.inconclusiveCriterion) : "The result does not clearly meet the pass or fail criterion."}</dd></div></dl>
           {/if}</details>
           {#if idea.selected && !focusedExperiment && onPlanExperiment}
@@ -217,11 +193,11 @@
           {#if analysis.risks.length || analysis.proposedResponses.length || analysis.unknowns.length}<details class="deep-review"><summary>Risks and responses</summary>
           {#each analysis.risks as risk (risk.riskId)}<div class="finding"><strong>{risk.description}</strong><p>{risk.whyDecisive}</p></div>{/each}
           {#if analysis.proposedResponses.length}<h3>What to try</h3>{/if}
-          {#each analysis.proposedResponses as response, index (index)}<div class="finding"><strong>{response.approach}</strong><p>Addresses: {analysis.risks.filter((risk) => response.riskIds.includes(risk.riskId)).map((risk) => risk.description).join("; ")}</p><p>Cost: {response.cost}</p><p>Fails if: {response.failsIf}</p></div>{/each}
+          {#each analysis.proposedResponses as response, index (index)}<div class="finding response"><strong>{response.approach}</strong><p>Addresses: {analysis.risks.filter((risk) => response.riskIds.includes(risk.riskId)).map((risk) => risk.description).join("; ")}</p><p>Cost: {response.cost}</p><p>Fails if: {response.failsIf}</p></div>{/each}
           {#if analysis.unknowns.length}<h3>Open questions</h3><ul>{#each analysis.unknowns as unknown, index (index)}<li>{unknown}</li>{/each}</ul>{/if}
           </details>{/if}
           {#if analysis.consequences.length}<details class="deep-review"><summary>Possible outcomes</summary>
-          {#each analysis.consequences as consequence, index (index)}<div class="finding"><strong>{consequence.direction}: {consequence.description}</strong><p>Affects {consequence.affects}. {consequence.rationale}</p></div>{/each}
+          {#each analysis.consequences as consequence, index (index)}<div class="finding"><span class="outcome-direction">{consequence.direction.replaceAll("-", " ").replace(/^./, (letter) => letter.toUpperCase())}</span><strong>{consequence.description}</strong><p>Affects {consequence.affects}. {consequence.rationale}</p></div>{/each}
           </details>{/if}
           {#if detail.evidenceFollowUp}
             <section class="follow-up" aria-label="Evidence follow-up result">
@@ -242,13 +218,13 @@
               {#if enhancedFollowUp?.reassessmentAnalysis}
                 <details class="reassessment"><summary>Reassessment with new evidence</summary>
                   <h3>Updated consequences</h3>
-                  {#each enhancedFollowUp.reassessmentAnalysis.consequences as consequence, index (index)}<div class="finding"><strong>{consequence.direction}: {consequence.description}</strong><p>{consequence.rationale}</p></div>{/each}
+                  {#each enhancedFollowUp.reassessmentAnalysis.consequences as consequence, index (index)}<div class="finding"><span class="outcome-direction">{consequence.direction.replaceAll("-", " ").replace(/^./, (letter) => letter.toUpperCase())}</span><strong>{consequence.description}</strong><p>{consequence.rationale}</p></div>{/each}
                   <h3>Reassessed risks</h3>
                   {#each enhancedFollowUp.reassessmentAnalysis.risks as risk (risk.riskId)}
                     <div class="finding"><strong>{reassessedRiskLabel(risk)}</strong><p>{risk.whyDecisive}</p>{#if reassessedRiskChange(risk.riskId)}<p class="status">Evidence change: {reassessedRiskChange(risk.riskId)}</p>{/if}</div>
                   {/each}
                   <h3>Updated proposed responses</h3>
-                  {#each enhancedFollowUp.reassessmentAnalysis.proposedResponses as response, index (index)}<div class="finding"><strong>{response.approach}</strong><p>Cost: {response.cost}</p><p>Fails if: {response.failsIf}</p></div>{/each}
+                  {#each enhancedFollowUp.reassessmentAnalysis.proposedResponses as response, index (index)}<div class="finding response"><strong>{response.approach}</strong><p>Cost: {response.cost}</p><p>Fails if: {response.failsIf}</p></div>{/each}
                   {#if enhancedFollowUp.reassessmentAnalysis.unknowns.length}<h3>Reassessed open questions</h3><ul>{#each enhancedFollowUp.reassessmentAnalysis.unknowns as unknown, index (index)}<li>{#if isNewReassessmentUnknown(unknown)}<strong>New question:</strong> {/if}{unknown}</li>{/each}</ul>{/if}
                   <section class="experiment"><h3>Updated experiment</h3><strong>{enhancedFollowUp.reassessmentAnalysis.experiment.question}</strong><p>{enhancedFollowUp.reassessmentAnalysis.experiment.method}</p><dl><div><dt>Cost</dt><dd>{enhancedFollowUp.reassessmentAnalysis.experiment.cost}</dd></div><div><dt>Pass</dt><dd>{enhancedFollowUp.reassessmentAnalysis.experiment.passCriterion}</dd></div><div><dt>Fail</dt><dd>{enhancedFollowUp.reassessmentAnalysis.experiment.failCriterion}</dd></div><div><dt>Inconclusive</dt><dd>{enhancedFollowUp.reassessmentAnalysis.experiment.inconclusiveCriterion}</dd></div></dl></section>
                 </details>
@@ -272,14 +248,11 @@
         {/if}
       {/if}
     </div>
-  {/if}
 </article>
 
 <style>
-  article { min-width:0;overflow-wrap:anywhere;border:1px solid var(--border);border-radius:12px;background:var(--surface); }
-  article.detail-page { border:0;border-radius:0;background:var(--bg);max-width:900px; }
-  .disclosure-content { background:var(--bg);padding:22px; }
-  .detail-page .disclosure-content { padding:0; }
+  article { min-width:0;overflow-wrap:anywhere;background:var(--bg);max-width:900px; }
+  .detail-page .disclosure-content { padding:0;background:var(--bg); }
   h3 { margin:24px 0 12px;font-size:16px;font-weight:600;line-height:1.4;color:var(--text); }
   p,li { line-height:1.6;font-size:15px;max-width:68ch;color:var(--text); }
   p { margin:12px 0; }ul { list-style:disc;padding-left:22px; }li + li { margin-top:8px; }
@@ -289,10 +262,10 @@
   dl > div { padding:14px 0;border-bottom:1px solid var(--border); }
   dt { color:var(--muted);font-size:13px;margin-bottom:6px;line-height:1.6; }
   dd { margin:0;color:var(--text);font-size:15px;line-height:1.6; }
-  button:not(.disclosure-title) { padding:9px 14px;border:1px solid var(--border-strong);border-radius:7px;background:transparent;color:var(--text);font-size:13px;cursor:pointer; }
+  button { padding:9px 14px;border:1px solid var(--border-strong);border-radius:7px;background:transparent;color:var(--text);font-size:13px;cursor:pointer; }
   button:hover { background:var(--surface-2); }button:disabled { opacity:.5; }
   details { border-top:1px solid var(--border);padding:0 0 0 24px; }
-  summary { position:relative;list-style:none;cursor:pointer;padding:20px 0;font-size:15px;color:var(--text);line-height:1.6; }
+  summary { position:relative;list-style:none;cursor:pointer;padding:20px 0;font-size:15px;font-weight:600;color:var(--text);line-height:1.6; }
   summary::-webkit-details-marker { display:none; }
   summary::before { content:"";position:absolute;left:-22px;top:28px;width:7px;height:7px;border-right:1px solid var(--muted);border-bottom:1px solid var(--muted);transform:rotate(-45deg);transition:transform 120ms; }
   details[open] > summary::before { transform:rotate(45deg); }
@@ -303,6 +276,10 @@
   a { color:var(--text);text-decoration:underline;text-underline-offset:3px; }
   .finding { border-bottom:1px solid var(--border);padding:16px 0;max-width:68ch; }
   .finding strong { font-size:15px;font-weight:600;line-height:1.6; }.finding p { margin-bottom:0; }
+  .outcome-direction { display:block;margin-bottom:6px;font-size:13px;color:var(--muted);line-height:1.6; }
+  .finding strong { color:var(--text); }
+  .response p { font-size:14px;color:var(--muted); }
+  .criterion-sources { display:flex;flex-direction:column;align-items:flex-start;gap:6px;margin-top:8px; }
   .next-experiment > strong { display:block;font-size:16px;line-height:1.6;max-width:68ch; }
   form { padding:24px 0;border-top:1px solid var(--border);margin-top:24px;max-width:68ch; }
   form h3 { margin-top:0; }

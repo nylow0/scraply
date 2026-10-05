@@ -219,8 +219,8 @@
       </div>
       {#if ideaContent(selectedIdea.description).summary}<p class="lead">{ideaContent(selectedIdea.description).summary}</p>{/if}
       {#if selectedIdea.weakFitReason}<p class="rank-note"><span class="weak-fit">Weak fit</span> {selectedIdea.weakFitReason}</p>{/if}
-      {#if selectedIdea.workflowVersion === 2 && onSelect && onSave}
-        <DecisionOption idea={selectedIdea} busy={busy || opportunityReviewRunning} {analysisBlocked} initiallyOpen={true} inDetailView={true} {onSelect} {onSave} {onOpenSource} {onEvidenceFollowUp} {onEvidenceReassessment} {onPlanExperiment} />
+      {#if selectedIdea.workflowVersion === 2 && onSave}
+        <DecisionOption idea={selectedIdea} busy={busy || opportunityReviewRunning} {onSave} {onOpenSource} {onEvidenceFollowUp} {onEvidenceReassessment} {onPlanExperiment} />
       {:else}<SolutionListItem idea={selectedIdea} rank={solutions.findIndex((idea) => idea.id === selectedIdea.id) + 1} initiallyOpen={true} inDetailView={true} {onOpenSource} />{/if}
     {/if}
   </div>

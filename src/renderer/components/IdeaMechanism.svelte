@@ -1,10 +1,10 @@
 <script lang="ts">
   import { mechanismSteps } from "../lib/idea-content";
-  let { mechanism }: { mechanism: string } = $props();
+  let { mechanism, heading = "How it works" }: { mechanism: string; heading?: string } = $props();
   let steps = $derived(mechanismSteps(mechanism));
 </script>
 
-<section class="mechanism"><h3>How it works</h3>
+<section class="mechanism"><h3>{heading}</h3>
   {#if steps}<ol>{#each steps as step, index (index)}<li>{step}</li>{/each}</ol>
   {:else}<p>{mechanism}</p>{/if}
 </section>

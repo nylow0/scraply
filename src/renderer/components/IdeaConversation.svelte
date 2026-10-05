@@ -66,7 +66,8 @@
   let analysisError = $derived(detail?.analysisError ?? (run?.status === "failed" && run.runId === detail?.runId && !detail?.decisionAnalysis ? run.completionReason ?? "The analysis failed." : null));
   let turnBusy = $derived(conversation.turns.some(turn => turn.state === "pending" || turn.state === "running"));
   let controlsBusy = $derived(busy || sending || analysisBlocked || runBusy || turnBusy);
-  let canAnalyze = $derived(!controlsBusy && !loadingDetail && !!detail?.selectable && !!onAnalyze);
+  let analysisAvailable = $derived(!!detail?.selectable && !!onAnalyze && !solutions.some(idea => idea.id !== detail?.id && idea.runId === detail?.runId && idea.selected));
+  let canAnalyze = $derived(analysisAvailable && !controlsBusy && !loadingDetail);
   $effect(() => {
     const key = `${selectedVersionId}:${selectedSummary?.detailRevision ?? ""}`;
     if (selectedVersionId && onAnalyze && key !== activeDetailKey) {
@@ -215,8 +216,8 @@
       </ol>
       {#if parentVersion && selectedVersion}
         <details class="version-comparison"><summary>Compare with v{parentVersion.versionNumber}</summary>
-          {#if changedFields.includes("How it works")}<div><h4>Earlier mechanism</h4><p>{parentVersion.mechanism}</p><h4>Current mechanism</h4><p>{selectedVersion.mechanism}</p></div>{/if}
-          {#if changedFields.includes("Description")}<div><h4>Earlier description</h4><p>{parentVersion.description}</p><h4>Current description</h4><p>{selectedVersion.description}</p></div>{/if}
+          {#if changedFields.includes("How it works")}<div><IdeaMechanism heading="How it worked before" mechanism={parentVersion.mechanism} /><IdeaMechanism heading="How it works now" mechanism={selectedVersion.mechanism} /></div>{/if}
+          {#if changedFields.includes("Description")}<div><h4>Description before</h4><p>{parentVersion.description}</p><h4>Description now</h4><p>{selectedVersion.description}</p></div>{/if}
         </details>
       {/if}
     </section>
@@ -238,7 +239,6 @@
               <div class="message assistant"><p>{turn.assistant.text}</p>
                 {#if turn.assistant.citedEvidenceIds.length}<p class="citations">Evidence: {turn.assistant.citedEvidenceIds.join(", ")}</p>{/if}
                 {#if turn.assistant.assumptions.length}<details><summary>Assumptions</summary><ul>{#each turn.assistant.assumptions as assumption, index (index)}<li>{assumption}</li>{/each}</ul></details>{/if}
-                {#if turn.assistant.generatedSolutionId}<p class="new-version">A new version was saved.</p>{/if}
               </div>
             {:else if turn.state === "pending" || turn.state === "running"}
               <p class="turn-state" role="status">{turn.state === "pending" ? "Waiting to start" : "Preparing a reply"}</p>
@@ -251,10 +251,10 @@
         {:else if detail?.decisionAnalysis}<RiskAnalysis analysis={detail.decisionAnalysis} />{/if}
       </div>
       {#if conversation.nextCursor && onLoadMore}<button class="load-more" onclick={() => onLoadMore?.(conversation.nextCursor!)}>Load more turns</button>{/if}
-      <div class="composer">
+      <div class="composer" class:analysis-running={runBusy && !!onStop}>
         <div class="one-click-actions">
           <button disabled={!canAct} onclick={() => submit(EXPLAIN_IDEA_PROMPT, "explain")}>Explain</button>
-          {#if onAnalyze && !detail?.decisionAnalysis && !analysisError}<button disabled={!canAnalyze} onclick={analyze}>Analyze risks</button>{/if}
+          {#if analysisAvailable && !detail?.decisionAnalysis && !analysisError}<button disabled={!canAnalyze} onclick={analyze}>Analyze risks</button>{/if}
         </div>
         {#if detailError}<div class="error" role="alert">{detailError} <button onclick={() => refreshDetail(selectedVersionId, selectedSummary)}>Retry details</button></div>{/if}
         {#if retryParentTurnId !== undefined}<div class="reply-context">Retrying from before the failed turn <button onclick={() => { retryParentTurnId = undefined; replyToTurnId = null; }}>Use latest</button></div>
@@ -299,17 +299,17 @@
   .version-comparison p { margin:8px 0; }
   .turns { display:grid;gap:24px; }
   .message { padding:18px 20px;border-radius:10px;max-width:68ch; }
-  .message.user { margin:0 0 12px 40px;background:var(--surface-2); }
+  .message.user { width:fit-content;max-width:80%;margin:0 0 12px auto;background:var(--surface-2); }
   .message.assistant { margin:0 32px 0 0;background:var(--surface); }
   .message p { margin:0;font-size:15px;line-height:1.6; }
   .message .citations { margin-top:12px;color:var(--muted);font-size:13px; }
   .message details { margin-top:18px; }.message ul { list-style:disc;padding-left:22px;font-size:15px;line-height:1.6; }
-  .message .new-version { margin-top:16px;color:var(--muted);font-size:13px; }
   .turn-state,.turn-error,.analysis-error { color:var(--muted);font-size:15px;line-height:1.6; }
   .turn-error,.analysis-error { border-left:2px solid var(--danger);padding-left:16px; }
   .reply-here,.load-more,.reply-context button { color:var(--muted);background:transparent;border:0;padding:8px 0;font-size:13px;cursor:pointer; }
   .reply-here:hover,.load-more:hover,.reply-context button:hover { color:var(--text); }
   .composer { border-top:1px solid var(--border);margin-top:28px;padding-top:20px; }
+  .composer.analysis-running { border-top:0; }
   .one-click-actions { display:flex;gap:10px;margin-bottom:16px; }
   button { cursor:pointer; }button:disabled { opacity:.45;cursor:default; }
   .one-click-actions button,.turn-error button,.analysis-error button,.error button { background:transparent;border:1px solid var(--border-strong);border-radius:7px;padding:8px 14px;color:var(--text);font-size:13px; }
