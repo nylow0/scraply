@@ -19,9 +19,10 @@ export const SourceVenueSchema = z.object({
   domain: z.string().trim().min(1).optional(),
   kind: z.enum(["community", "issue-tracker", "social", "official", "publication"]),
 }).strict();
+export type SourceVenue = z.infer<typeof SourceVenueSchema>;
 export interface SourceRoutingContext {
   goalKind?: ResearchGoalKind;
-  venues?: z.infer<typeof SourceVenueSchema>[];
+  venues?: SourceVenue[];
   languages?: string[];
   region?: string;
   /** Social remains opt-in until the evaluation suite demonstrates qualifying yield. */
@@ -98,7 +99,9 @@ export function routeSearchOptions(route: SourceRoute, context: SourceRoutingCon
   });
   const base = route === "community" ? COMMUNITY_DOMAINS : route === "issue-tracker" ? ISSUE_DOMAINS
     : route === "social" ? SOCIAL_DOMAINS : [];
-  const includeDomains = [...new Set([...base, ...venues.filter((venue) => venue.kind === route).map((venue) => venue.domain)])]
+  const selectedVenues = venues.filter((venue) => venue.kind === route
+    || route === "studies-official" && (venue.kind === "official" || venue.kind === "publication"));
+  const includeDomains = [...new Set([...base, ...selectedVenues.map((venue) => venue.domain)])]
     .filter((domain) => !denied.some((blocked) => matchesDomain(domain, blocked)));
   const now = context.now ?? new Date();
   const start = new Date(now);
@@ -107,7 +110,9 @@ export function routeSearchOptions(route: SourceRoute, context: SourceRoutingCon
     route,
     excludeDomains: denied,
     ...(includeDomains.length ? { includeDomains } : {}),
-    ...(route === "studies-official" ? { category: "publication" as const } : route === "contrary" ? { category: "news" as const } : {}),
+    // Publication categories can suppress agency reports, so verified official venues use ordinary web search.
+    ...(route === "studies-official" && !selectedVenues.some(venue => venue.kind === "official") ? { category: "publication" as const }
+      : route === "contrary" ? { category: "news" as const } : {}),
     ...(firsthand || route === "buying" ? { startPublishedDate: start.toISOString() } : {}),
     ...(firsthand || route === "studies-official" ? { languages: routingLanguages(context.languages) } : {}),
     ...(context.region && /^[a-z]{2}$/i.test(context.region) ? { userLocation: context.region.toUpperCase() } : {}),

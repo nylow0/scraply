@@ -149,6 +149,7 @@
   let runFrame = $derived(workflowDetail?.summary.sessionId === activeWorkflow?.sessionId ? workflowDetail?.researchFrame ?? null : null);
   let latestApprovedFrame = $derived(workflowDetail?.summary.sessionId === activeWorkflow?.sessionId
     ? workflowDetail?.latestResearchFrame ?? (runFrame?.approved ? runFrame : null) : null);
+  let nextRequestFrame = $derived(latestApprovedFrame?.approved ?? runFrame?.approved ?? null);
   let reviewingFrame = $derived(workflowDetail?.summary.state === "waiting-for-review" && workflowDetail.summary.reviewKind === "frame" && runFrame?.approved === null);
   let canRegenerateFrame = $derived(Boolean(workflowDetail && (workflowDetail.summary.limits.enforced === false
     || workflowDetail.summary.budget.modelCalls.limit - workflowDetail.summary.budget.modelCalls.spent
@@ -1007,7 +1008,7 @@
       {#if showSetupForm}
         <div id="workflow-panel-setup" role="tabpanel" aria-label="Research setup">
           {#key workspace.activeThreadId}
-            <ScopeForm {workspace} {busy} onSave={saveScope} onStart={startResearch} onPreviewWorkflow={previewWorkflow} onStartWorkflow={startWorkflow} onGenerateTitle={generateResearchTitle} onRetry={retryConnections} onOpenSettings={() => settings?.show()} />
+            <ScopeForm {workspace} {busy} frameLanguages={latestApprovedFrame?.approved?.languages} onSave={saveScope} onStart={startResearch} onPreviewWorkflow={previewWorkflow} onStartWorkflow={startWorkflow} onGenerateTitle={generateResearchTitle} onRetry={retryConnections} onOpenSettings={() => settings?.show()} />
           {/key}
         </div>
       {:else}
@@ -1071,6 +1072,8 @@
             || (activeWorkflow.state === "finished" && !!activeWorkflow.activeSnapshotId))}
           activeSnapshotId={activeWorkflow.activeSnapshotId} modelOptions={workspace.modelOptions}
           researchModel={workspace.runConfig?.model ?? null} researchReasoningEffort={workspace.runConfig?.reasoningEffort ?? "medium"}
+          {...(nextRequestFrame ? { goalKind: nextRequestFrame.goalKind } : {})}
+          languageCount={nextRequestFrame?.languages.length ?? 1} depth="quick"
           {busy} onRequest={requestResearch} onApply={applyResearch} onKeep={keepResearch} onOpenSource={openExternalUrl} />
       {/if}
     {:else if activeThread.status === "development-running" && !activeWorkflow}
