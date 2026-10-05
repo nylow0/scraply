@@ -42,6 +42,8 @@ describe("DecisionOption interactions", () => {
   test("renders the structured plan and its review state instead of the legacy experiment summary", async () => {
     const idea = option("focused-plan-view");
     const saved = detail(idea, "", "");
+    saved.decisionAnalysis = null;
+    saved.riskEvaluation = { risks: [{ riskId: "access", description: "The export may lack access history.", whyDecisive: "The check needs a complete history." }], unknowns: ["Whether older exports include revisions."] };
     saved.focusedExperiment = focusedExperiment();
     installDetailApi(vi.fn().mockResolvedValue(saved));
     const view = render(DecisionOption, handlers(idea));
@@ -50,6 +52,9 @@ describe("DecisionOption interactions", () => {
     expect(within(experiment).getByText("Maintains answer keys").closest("li")).not.toBeNull();
     expect(within(experiment).getByText("Revision access").closest("li")).not.toBeNull();
     expect(view.queryByText("Are estimates accurate?")).toBeNull();
+    expect(view.getByText("Risks").closest("details")).not.toBeNull();
+    expect(view.getByText("The export may lack access history.")).toBeTruthy();
+    expect(view.getByText("Whether older exports include revisions.")).toBeTruthy();
   });
 
   test("links each option's citations separately from the original problem evidence", async () => {

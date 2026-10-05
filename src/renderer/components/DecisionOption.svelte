@@ -182,11 +182,19 @@
         {/each}{/if}
         </details>
         {/if}
-        {#if analysis}
+        {#if !analysis && detail.riskEvaluation}
+          <details class="deep-review"><summary>Risks</summary>
+            {#each detail.riskEvaluation.risks as risk (risk.riskId)}<div class="finding"><strong>{risk.description}</strong><p>{risk.whyDecisive}</p></div>{/each}
+            {#if detail.riskEvaluation.unknowns.length}<h3>Open questions</h3><ul>{#each detail.riskEvaluation.unknowns as unknown, index (index)}<li>{unknown}</li>{/each}</ul>{/if}
+          </details>
+        {/if}
+        {#if analysis || focusedExperiment}
           <details class="next-experiment" open><summary>Next experiment</summary>
-          {#if focusedExperiment}<FocusedExperiment experiment={focusedExperiment} quiet />{:else}<strong>{analysis.experiment.question}</strong><p>{analysis.experiment.method}</p>
+          {#if focusedExperiment}<FocusedExperiment experiment={focusedExperiment} quiet />{:else if analysis}<strong>{analysis.experiment.question}</strong><p>{analysis.experiment.method}</p>
             <dl><div><dt>Cost</dt><dd>{analysis.experiment.cost}</dd></div><div><dt>Pass</dt><dd>{analysis.experiment.passCriterion}</dd></div><div><dt>Fail</dt><dd>{analysis.experiment.failCriterion}</dd></div><div><dt>Inconclusive</dt><dd>{"inconclusiveCriterion" in analysis.experiment ? String(analysis.experiment.inconclusiveCriterion) : "The result does not clearly meet the pass or fail criterion."}</dd></div></dl>
           {/if}</details>
+        {/if}
+        {#if analysis}
           {#if idea.selected && !focusedExperiment && onPlanExperiment}
             <button class="plan-experiment" disabled={busy} onclick={() => onPlanExperiment?.(idea)}>Plan a focused experiment</button>
           {/if}
