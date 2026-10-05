@@ -264,8 +264,8 @@
   .idea-row:hover .row-chevron,.idea-row:focus-visible .row-chevron { color:var(--text);transform:translateX(3px); }
   .weak-fit { flex:none;padding:3px 8px;border:1px solid #b986455c;border-radius:6px;color:#e4b46f;font-size:13px;font-weight:500; }
   .grouping { margin:22px 0 0;border:1px solid var(--border);border-radius:9px;background:var(--surface); }
-  .grouping > summary { display:flex;align-items:center;gap:12px;padding:13px 16px;color:var(--text);font-size:14px;font-weight:600;cursor:pointer; }
-  .grouping > summary span { margin-left:auto;color:var(--muted);font-size:12px;font-weight:400;text-align:right; }
+  .grouping > summary { display:flex;align-items:center;gap:12px;padding:13px 16px;color:var(--text);font-size:15px;font-weight:600;cursor:pointer; }
+  .grouping > summary span { margin-left:auto;color:var(--muted);font-size:13px;font-weight:400;text-align:right; }
   .grouping :global(.opportunity-families) { border:0; }
   .run-footer { margin-top:12px; }
   .export-links { display:flex;flex-wrap:wrap;gap:6px 18px;margin-top:28px; }
