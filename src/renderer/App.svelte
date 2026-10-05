@@ -454,6 +454,8 @@
     navigateTo({ ...route, step });
   }
   async function createThread() {
+    const remembered = workspace?.threads.find((thread) => thread.id === draftThreadId && !thread.archivedAt && thread.isUnstartedDraft);
+    if (remembered) { await selectThread(remembered.id); return; }
     await action(async () => {
       const next = (await window.scraply.createThread()).workspace;
       setWorkspace(next);

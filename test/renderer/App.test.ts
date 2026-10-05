@@ -219,6 +219,8 @@ describe("App workspace coordination", () => {
     draft.validation.native = { available: true, connected: true, accounts: [{ providerId: "openai-subscription" }] };
     draft.threads[0] = { ...draft.threads[0]!, title: "New research", isUnstartedDraft: true };
     let state = draft;
+    // The backend would choose this newer legacy row if New research asked it to create a draft.
+    draft.threads.push({ ...draft.threads[0]!, id: "newer-empty", createdAt: "2099-01-01T00:00:00.000Z" });
     let appCommand: Parameters<ScraplyApi["onAppCommand"]>[0] = () => {};
     const previewWorkflow = vi.fn(async (request: Parameters<ScraplyApi["previewWorkflow"]>[0]) => {
       if (request.type !== "launch") throw new Error("Expected launch");
@@ -241,7 +243,7 @@ describe("App workspace coordination", () => {
       return { sessionId: current.summary.sessionId, revision: current.summary.revision, summary: current.summary };
     });
     const createThread = vi.fn(async () => {
-      if (draft.threads[0]!.isUnstartedDraft) { state = draft; return { workspace: structuredClone(state) }; }
+      if (draft.threads[0]!.isUnstartedDraft) { state = { ...draft, activeThreadId: "newer-empty" }; return { workspace: structuredClone(state) }; }
       const fresh = { ...draft.threads[0]!, id: "fresh", title: "New research", status: "configuring" as const, isUnstartedDraft: true };
       state = { ...draft, activeThreadId: fresh.id, scope: null, runConfig: null, activeWorkflow: null, threads: [...draft.threads, fresh] };
       return { workspace: structuredClone(state) };
@@ -281,7 +283,7 @@ describe("App workspace coordination", () => {
     appCommand("new-research");
     await waitFor(() => expect((view.getByPlaceholderText("Your topic or idea") as HTMLTextAreaElement).value).toBe(brief));
     expect(saveScope).not.toHaveBeenCalled();
-    expect(createThread).toHaveBeenCalledTimes(3);
+    expect(createThread).not.toHaveBeenCalled();
     await waitFor(() => expect((view.getByRole("button", { name: "Start" }) as HTMLButtonElement).disabled).toBe(false));
     await fireEvent.click(view.getByRole("button", { name: "Start" }));
     await waitFor(() => expect(startWorkflow).toHaveBeenCalledOnce());
@@ -291,7 +293,7 @@ describe("App workspace coordination", () => {
     await waitFor(() => expect(view.getByRole("button", { name: "Open thread Beta" }).getAttribute("aria-current")).toBe("true"));
     appCommand("new-research");
     await waitFor(() => expect((view.getByPlaceholderText("Your topic or idea") as HTMLTextAreaElement).value).toBe(""));
-    expect(createThread).toHaveBeenCalledTimes(4);
+    expect(createThread).toHaveBeenCalledOnce();
   });
 
   test("starting another saved project keeps the pending draft", async () => {
@@ -325,7 +327,7 @@ describe("App workspace coordination", () => {
     await waitFor(() => expect((view.getByRole("button", { name: "Create new research thread" }) as HTMLButtonElement).disabled).toBe(false));
     await fireEvent.click(view.getByRole("button", { name: "Create new research thread" }));
     await waitFor(() => expect((view.getByPlaceholderText("Your topic or idea") as HTMLTextAreaElement).value).toBe("Keep this unfinished brief"));
-    expect(createThread).toHaveBeenCalledOnce();
+    expect(createThread).not.toHaveBeenCalled();
   });
 
   test("opens a hidden draft on an empty first launch", async () => {
