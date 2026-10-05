@@ -76,9 +76,11 @@
   let discoveryDepth = $state(initial.scope ? initial.runConfig?.discoveryDepth ?? DEFAULT_RUN_CONFIG.discoveryDepth : defaults.discoveryDepth);
   let searchProvider = $state<SearchProviderChoice>(initial.scope ? initial.runConfig?.searchProvider ?? defaults.searchProvider : defaults.searchProvider);
   let searchProviderTouched = $state(false);
+  // A provider saved in Settings stays chosen while it is connected. Without one, a new project uses both when it can.
+  const savedSearchProvider = untrack(hasSavedResearchDefaults);
   $effect(() => {
     if (initial.scope || searchProviderTouched) return;
-    if (workspace.validation.exa.valid && workspace.validation.perplexity.valid) { searchProvider = "auto"; return; }
+    if (!savedSearchProvider && workspace.validation.exa.valid && workspace.validation.perplexity.valid) { searchProvider = "auto"; return; }
     if (searchProvider === "auto" || workspace.validation[searchProvider].valid) return;
     const available = searchProvider === "exa" ? "perplexity" : "exa";
     if (workspace.validation[available].valid) searchProvider = available;
@@ -318,11 +320,11 @@
     }
   }
 
-  type SettingsSection = "research" | "instructions" | "limits";
+  type SettingsSection = "instructions" | "limits";
   let configuration: HTMLDialogElement;
   let setupForm: HTMLFormElement;
   let configurationTrigger: HTMLElement | null = null;
-  let settingsSection = $state<SettingsSection>("research");
+  let settingsSection = $state<SettingsSection>("limits");
   let instructionStage = $state<"research" | "ideas" | "review">("research");
   let modeHelp = $state<"vibe" | "babysit" | null>(null);
   let advancedSettingsButton: HTMLButtonElement;
@@ -369,8 +371,8 @@
     return null;
   });
 
-  async function showConfiguration(section: SettingsSection = "research", field?: HTMLElement) {
-    settingsSection = section === "research" && researchMode === "known-problem" ? "limits" : section;
+  async function showConfiguration(section: SettingsSection = "limits", field?: HTMLElement) {
+    settingsSection = section;
     if (!configuration.open) {
       configurationTrigger = document.activeElement instanceof HTMLElement ? document.activeElement : null;
       configuration.showModal();
@@ -395,7 +397,7 @@
       field?.focus();
       field?.scrollIntoView?.({ block: "nearest" });
     } else {
-      await showConfiguration(section ?? "research", field ?? (modelChoiceRequired ? setupForm.querySelector<HTMLElement>('[data-field="model"]') ?? undefined : undefined));
+      await showConfiguration(section ?? "limits", field ?? (modelChoiceRequired ? setupForm.querySelector<HTMLElement>('[data-field="model"]') ?? undefined : undefined));
     }
   }
 </script>
@@ -510,23 +512,12 @@
     <dialog bind:this={configuration} class="settings-dialog glass-dense" aria-label="Advanced settings" onclose={restoreConfigurationFocus} onkeydown={(event) => { if (event.key === "Enter" && event.target instanceof HTMLInputElement) event.preventDefault(); }}>
       <header><h2>Advanced settings</h2><button type="button" aria-label="Close advanced settings" onclick={() => configuration.close()}><Icon name="close" /></button></header>
       <nav aria-label="Settings groups">
-        {#if researchMode === "explore-market"}<button type="button" aria-pressed={settingsSection === "research"} onclick={() => settingsSection = "research"}>Search</button>{/if}
         <button type="button" aria-pressed={settingsSection === "limits"} onclick={() => settingsSection = "limits"}>Research scope</button>
         {#if useWorkflow}<button type="button" aria-pressed={settingsSection === "instructions"} onclick={() => settingsSection = "instructions"}>Instructions</button>{/if}
       </nav>
       <div class="settings-content">
         {#each visiblePreviewIssues.filter((issue) => issue.path[0] !== "limits" && issue.path[0] !== "ideas") as issue (issue.path.join(".") + issue.code)}<p class="field-error" role="alert">{issue.message}</p>{/each}
         <div class="settings-panels">
-        <section class="settings-panel" aria-label="Research configuration" inert={settingsSection !== "research"}>
-          <div class="run-settings">
-    </div>
-
-      <div class="output-settings">
-
-      </div>
-
-
-        </section>
         <section class="settings-panel" aria-label="Research scope configuration" inert={settingsSection !== "limits"}>
           {#if useWorkflow && workflowMode === "vibe" && researchMode === "explore-market"}<label><span>Problems to develop</span><input aria-label="Automatic problem cap" data-field="automaticProblemCap" type="number" min="1" max="20" step="1" placeholder="All qualifying" bind:value={automaticProblemCap} aria-invalid={Boolean(errors.automaticProblemCap)} />{#if errors.automaticProblemCap}<small class="field-error">{errors.automaticProblemCap}</small>{/if}</label>{/if}
         </section>
@@ -611,7 +602,7 @@
   button:hover:not(:disabled) { background:var(--surface-2); }
   .text-action { display:inline-flex;align-items:center;justify-content:center;gap:8px;border:0;background:transparent;color:var(--accent-strong);padding:6px 0;min-height:32px;font-size:13px;text-align:left; }
   .text-action:hover:not(:disabled) { background:transparent;text-decoration:underline; }
-  .run-settings,.output-settings,.limits-grid { display:grid;grid-template-columns:1fr 1fr;gap:16px; }
+
   .saved-purpose-note { color:var(--muted);font-size:13px;line-height:1.6;margin:0; }
   .saved-purpose-note button { border:0;padding:0;color:var(--accent);background:none; }
   /* The run panel floats inside the page as its own glass card. */
@@ -648,8 +639,7 @@
   .instruction-stages button[aria-pressed="true"] { color:var(--text);background:rgb(255 255 255 / .1); }
   .filled-dot { width:6px;height:6px;border-radius:50%;background:var(--accent-strong); }
   .model-setting,.search-setting { grid-column:1/-1; }
-  .advanced-body { display:grid;gap:16px; }
-  .output-settings { margin-top:20px;padding-top:20px;border-top:1px solid var(--border); }
+
   .provider-select { position:relative; }
   .provider-select :global(svg) { position:absolute;left:12px;top:50%;transform:translateY(-50%);pointer-events:none; }
   .provider-select select { padding-left:38px; }
@@ -669,7 +659,7 @@
     .launch-row { align-items:stretch;flex-direction:column;gap:10px; }.primary { width:100%; }
   }
   @media(max-width:600px) {
-    .run-settings,.output-settings,.limits-grid { grid-template-columns:1fr; }
+
     .settings-dialog header,.settings-content { padding:16px; }.settings-dialog nav { padding-inline:10px; }.dialog-footer { padding:12px 16px; }
   }
   @media(max-height:600px) { @container page (min-width:841px) { .scope-page,form { height:auto; }.setup-scroll { overflow:visible;flex:none; }.launch-sidebar { position:sticky;top:0;align-self:start;max-height:100dvh; } } }

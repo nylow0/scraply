@@ -63,22 +63,25 @@ test("setup hierarchy, source preferences, keyboard controls, and sidebar fit in
     await expect(count).toHaveValue("3");
     await page.screenshot({ path: testInfo.outputPath("run-controls.png") });
 
+    // Advanced settings opens on the research scope; search sources are chosen by research itself, not here.
     await page.getByRole("button", { name: "Advanced settings" }).click();
-    const coverage = page.getByLabel("Search coverage", { exact: true });
-    await expect(coverage).toHaveValue("web");
-    expect(await coverage.evaluate(el => getComputedStyle(el, "::picker-icon").content)).toBe('""');
-    expect(await coverage.evaluate(el => getComputedStyle(el, "::picker(select)").transitionDuration)).toBe("0s");
-    await coverage.click();
-    await page.screenshot({ path: testInfo.outputPath("source-picker.png") });
-    await page.keyboard.press("ArrowDown");
-    await page.keyboard.press("Enter");
-    await expect(coverage).toHaveValue("communities");
-    await expect(page.getByText("Audience evidence from Reddit and Hacker News. Market research still searches all sites.")).toBeVisible();
-    await coverage.click();
+    const dialog = page.getByRole("dialog", { name: "Advanced settings" });
+    const groups = dialog.getByRole("navigation", { name: "Settings groups" });
+    await expect(groups.getByRole("button")).toHaveText(["Research scope", "Instructions"]);
+    await expect(groups.getByRole("button", { name: "Research scope" })).toHaveAttribute("aria-pressed", "true");
+    await expect(dialog.getByLabel("Automatic problem cap")).toBeVisible();
+    await expect(dialog.getByLabel("Search coverage", { exact: true })).toHaveCount(0);
+    await groups.getByRole("button", { name: "Instructions" }).click();
+    await dialog.getByRole("group", { name: "Instruction stage" }).getByRole("button", { name: "Ideas" }).click();
+    await dialog.getByLabel("Ideas instructions").fill("Prefer tools a solo bookkeeper can run.");
+    await dialog.getByRole("group", { name: "Instruction stage" }).getByRole("button", { name: "Research" }).click();
+    await dialog.getByRole("group", { name: "Instruction stage" }).getByRole("button", { name: "Ideas" }).click();
+    await expect(dialog.getByLabel("Ideas instructions")).toHaveValue("Prefer tools a solo bookkeeper can run.");
+    await page.screenshot({ path: testInfo.outputPath("advanced-settings.png") });
     await page.keyboard.press("Escape");
-    await expect(coverage).toBeFocused();
-    await coverage.selectOption("web");
-    await page.getByRole("button", { name: "Done", exact: true }).click();
+    await expect(dialog).toBeHidden();
+    await expect(page.getByRole("button", { name: "Advanced settings" })).toBeFocused();
+    await expect(page.getByText("1 custom instruction")).toBeVisible();
 
     // Navigation shows at most six recent projects; the rest stay reachable through All research.
     const list = page.getByRole("list", { name: "Research threads" });

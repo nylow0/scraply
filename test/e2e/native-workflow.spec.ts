@@ -130,6 +130,8 @@ test("native v2 research survives the installed selection, risk evaluation, and 
     await page.getByLabel("Research depth", { exact: true }).selectOption("quick");
     await page.getByRole("radio", { name: /^Controlled/ }).check();
     await page.getByRole("button", { name: "Start", exact: true }).click();
+    // Controlled pauses for the research frame before it researches.
+    await page.getByRole("button", { name: "Start research with this frame" }).click();
     await expect(page.getByText("Choose problems to develop", { exact: true })).toBeVisible();
     await expect(page.getByText("Overstated", { exact: true })).not.toBeVisible();
     await page.locator(".problem-disclosure > summary").first().click();

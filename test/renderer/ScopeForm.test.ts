@@ -1,5 +1,5 @@
 import { fireEvent, render, waitFor, within } from "@testing-library/svelte";
-import type { ComponentProps } from "svelte";
+import { tick, type ComponentProps } from "svelte";
 import { describe, expect, test, vi } from "vitest";
 import Settings from "../../src/renderer/components/Settings.svelte";
 import ScopeForm from "../../src/renderer/components/ScopeForm.svelte";
@@ -21,6 +21,24 @@ describe("ScopeForm search provider selection", () => {
     await waitFor(() => expect((view.getByLabelText("Search provider") as HTMLSelectElement).value).toBe("auto"));
     expect(view.queryByLabelText("Search coverage")).toBeNull();
     expect((view.getByRole("button", { name: "Discover problems" }) as HTMLButtonElement).disabled).toBe(false);
+  });
+  test("keeps the search provider saved in Settings even when both providers are connected", async () => {
+    const storageKey = "scraply.research-defaults.v1";
+    const previous = localStorage.getItem(storageKey);
+    try {
+      localStorage.setItem(storageKey, JSON.stringify({ model: DEFAULT_RUN_CONFIG.model, searchProvider: "perplexity" }));
+      const state = workspace();
+      state.scope = null;
+      state.runConfig = null;
+      state.validation.exa = { valid: true };
+      state.validation.perplexity = { valid: true };
+      const view = render(ScopeForm, { workspace: state, busy: false, onSave: vi.fn(), onStart: vi.fn(), onRetry: vi.fn() });
+      await tick();
+      expect((view.getByLabelText("Search provider") as HTMLSelectElement).value).toBe("perplexity");
+    } finally {
+      if (previous === null) localStorage.removeItem(storageKey);
+      else localStorage.setItem(storageKey, previous);
+    }
   });
   test("uses the connected provider for a new setup after Perplexity-only onboarding", async () => {
     const storageKey = "scraply.research-defaults.v1";

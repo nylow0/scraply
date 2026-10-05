@@ -209,7 +209,8 @@
         ? "Finding coverage gaps" : summary.currentStage === "coverage-search" ? "Checking gap evidence"
           : summary.currentStage ? readable(summary.currentStage) : stateLabel(summary.state)}</p>
       {#if researchView}<h2 class="research-heading">{researchHeading}</h2>{:else if researchFollowUp}<h2 class="research-heading">Research follow-up</h2>{:else}<h2 class="research-heading">Writing and ranking ideas</h2>{/if}
-      <p class="current-status">{stateLabel(summary.state)}</p>
+      <!-- Research shows its heading above, so the step it is on goes beside the state. -->
+      <p class="current-status">{stateLabel(summary.state)}{researchView && summary.currentStage ? ` · ${readable(summary.currentStage)}` : ""}</p>
     </div>
   </header>
 
