@@ -31,10 +31,10 @@
   }
 </script>
 
-<form onsubmit={(event) => { event.preventDefault(); void save(); }}>
-  <label class="summary-toggle"><input type="checkbox" bind:checked={reasoningSummaries} disabled={!loaded || loading || saving}
+<form class="settings-cards" onsubmit={(event) => { event.preventDefault(); void save(); }}>
+  <label class="summary-toggle settings-card"><input type="checkbox" bind:checked={reasoningSummaries} disabled={!loaded || loading || saving}
     onchange={() => saved = false} />Show reasoning summaries in the trace</label>
-  <label class="concurrency"><span>Concurrent model calls</span><select bind:value={maxConcurrentModelCalls} disabled={!loaded || loading || saving} onchange={() => saved = false}>
+  <label class="concurrency settings-card"><span>Concurrent model calls</span><select bind:value={maxConcurrentModelCalls} disabled={!loaded || loading || saving} onchange={() => saved = false}>
     {#each [1, 2, 3, 4, 5, 6, 7, 8] as count (count)}<option value={count}>{count}</option>{/each}
   </select></label>
   {#if error}<p class="error" role="alert">{error}</p>{/if}
@@ -43,15 +43,14 @@
 </form>
 
 <style>
-  form { display:flex;flex-direction:column;gap:12px;max-width:560px; }
   label { color:var(--text);font-size:14px; }
-  .summary-toggle { display:flex;align-items:center;gap:10px; }
-  .concurrency { display:flex;align-items:center;justify-content:space-between;gap:16px;margin-top:12px; }
+  .summary-toggle { flex-direction:row;align-items:center;gap:10px; }
+  .concurrency { flex-direction:row;align-items:center;justify-content:space-between;gap:16px; }
   input { accent-color:var(--text); }
   select { padding:8px 12px;border:1px solid var(--glass-edge);border-radius:8px;background:var(--bg);color:var(--text); }
   p { color:var(--muted);font-size:13px;line-height:1.6;margin:0; }
-  .error { color:var(--danger); }
-  footer { display:flex;align-items:center;gap:14px;margin-top:16px; }
+  .error { grid-column:1/-1;color:var(--danger); }
+  footer { grid-column:1/-1;display:flex;align-items:center;gap:14px; }
   button { padding:10px 14px;border:1px solid var(--glass-edge);border-radius:8px;background:var(--bg);color:var(--text); }
   button:disabled { opacity:.5; }
   footer span { color:var(--muted);font-size:13px; }

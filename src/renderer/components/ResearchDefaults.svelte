@@ -63,7 +63,9 @@
     }
   }
 </script>
-<form onsubmit={(event) => { event.preventDefault(); save(); }}>
+<form class="settings-cards" onsubmit={(event) => { event.preventDefault(); save(); }}>
+  <fieldset class="settings-card">
+  <legend>Research</legend>
   <label><span>Default search provider</span><div class="provider-select">{#if searchProvider !== "auto"}<ProviderLogo provider={searchProvider} size={18} />{/if}<select aria-label="Default search provider" bind:value={searchProvider} onchange={() => saved = false}><option value="auto">Automatic</option><option value="exa">Exa</option><option value="perplexity">Perplexity</option></select></div></label>
   <label><span>Default model</span><ModelPicker label="Default model" {options} bind:value={modelKey} missingLabel={missingLabel(modelKey)} disabled={options.length === 0}
     onchange={() => { saved = false; reasoningEffort = catalogEffort(modelKey) ?? ""; }} /></label>
@@ -72,7 +74,8 @@
     {#each researchEfforts as effort (effort.id)}<option value={effort.id}>{effort.id.charAt(0).toUpperCase() + effort.id.slice(1)}</option>{/each}
   </select></label>
   {#if selectedModel && !offered(modelKey) && workspace?.validation.native.connected}<p class="availability" role="status">{modelDisplayName(selectedModel)} isn't in the current model list. Refresh your account or choose another model.</p>{/if}
-  <fieldset>
+  </fieldset>
+  <fieldset class="settings-card">
     <legend>Research titles</legend>
     <label><span>Title model</span><ModelPicker label="Title model" {options} bind:value={titleModelKey} missingLabel={missingLabel(titleModelKey)} disabled={options.length === 0}
       onchange={() => { saved = false; titleReasoningEffort = catalogEffort(titleModelKey) ?? titleEfforts[0]?.id ?? "low"; }} /></label>
@@ -81,7 +84,7 @@
       {#each titleEfforts as effort (effort.id)}<option value={effort.id}>{effort.id.charAt(0).toUpperCase() + effort.id.slice(1)}</option>{/each}
     </select></label>
   </fieldset>
-  <fieldset>
+  <fieldset class="settings-card">
     <legend>Ideas defaults</legend>
     <label><span>Ideas model</span><ModelPicker label="Default ideas model" {options} bind:value={ideasModelKey} missingLabel={missingLabel(ideasModelKey)} disabled={options.length === 0}
       onchange={() => { saved = false; ideasReasoningEffort = catalogEffort(ideasModelKey) ?? ""; }} /></label>
@@ -91,7 +94,7 @@
     </select></label>
     {#if ideasModel && !offered(ideasModelKey) && workspace?.validation.native.connected}<p class="availability" role="status">{modelDisplayName(ideasModel)} isn't in the current model list. Refresh your account or choose another model.</p>{/if}
   </fieldset>
-  <fieldset class="advanced-search">
+  <fieldset class="settings-card">
     <legend>Advanced search defaults</legend>
     <label><span>Research depth</span><select aria-label="Default research depth" bind:value={discoveryDepth} onchange={() => saved = false}><option value="quick">Quick</option><option value="standard">Standard</option><option value="deep">Deep</option></select></label>
   </fieldset>
@@ -99,20 +102,19 @@
   {#if error}<p role="alert">{error}</p>{/if}
 </form>
 <style>
-  fieldset { grid-column:1/-1;margin:0;padding:18px 0 0;border:0;border-top:1px solid var(--border);display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px; }
-  legend { float:left;width:100%;font-size:16px;font-weight:600;margin-bottom:6px; }
-  fieldset p { grid-column:1/-1;font-size:13px;color:var(--muted);margin:0; }
-  form { display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:20px 12px; }
+  /* A floated legend sits inside the card instead of on its border. */
+  legend { float:left;width:100%;padding:0;font-size:15px;font-weight:600; }
+  legend + * { clear:both; }
   label { display:grid;align-content:start;gap:8px;min-width:0;font-size:13px; }
   select { width:100%;min-width:0;background:var(--surface);border:1px solid var(--border-strong);border-radius:9px;color:var(--text);padding:12px;font-size:13px; }
+  /* The model picker matches the selects beside it. */
+  label :global(.model-picker button) { min-height:45px;border-radius:9px;background:var(--surface); }
   .provider-select { position:relative;color:var(--text); }
   .provider-select :global(svg) { position:absolute;top:50%;left:13px;transform:translateY(-50%);pointer-events:none; }
   .provider-select select { padding-left:42px; }
   footer { grid-column:1/-1;display:flex;flex-wrap:wrap;gap:14px;align-items:center; }
   button { padding:11px 16px;border:0;border-radius:8px;background:var(--accent-strong);color:var(--accent-ink);font-size:13px;font-weight:600; }
   footer span { color:var(--success);font-size:13px; }
-  .availability { grid-column:1/-1;padding:12px;border:1px solid var(--border);border-radius:8px;color:var(--muted);font-size:13px;line-height:1.7;margin:0; }
+  .availability { padding:12px;border:1px solid var(--border);border-radius:8px;color:var(--muted);font-size:13px;line-height:1.7;margin:0; }
   [role="alert"] { grid-column:1/-1;color:var(--danger);font-size:13px;margin:0; }
-  @media(max-width:800px) { form { grid-template-columns:repeat(2,minmax(0,1fr)); } }
-  @media(max-width:600px) { form,fieldset { grid-template-columns:1fr; } }
 </style>
