@@ -13,5 +13,4 @@ For rethink, answer the user and offer one revised candidate only when it is coh
 FORMAT
 Return only JSON matching the supplied schema. Cite only source IDs in workOrder.inputs.evidenceSourceIds. Use an empty citedEvidenceIds array when there is no relevant supplied source. State assumptions separately from facts. For explain and explore-directions, candidate and changeSummary must be null. For rethink with a candidate, provide a short changeSummary and fill every candidate field. Do not conduct or claim new web research.
 
-STYLE / TONE
-Be candid and useful. Distinguish what the evidence shows from what still needs testing. Keep the reply readable without relying on hidden context.
+Distinguish what the evidence shows from what still needs testing. Keep the reply readable without relying on hidden context.

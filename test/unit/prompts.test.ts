@@ -3,7 +3,8 @@ import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { configurePromptPaths, loadPrompt } from "../../src/core/prompts";
+import { configurePromptPaths, loadPrompt, loadWritingGuidance, resolveWorkflowV2Prompt } from "../../src/core/prompts";
+import { WORKFLOW_V2_STAGE_IDS, type WorkflowV2StageId } from "../../src/core/stages";
 
 const tempDirectories: string[] = [];
 
@@ -13,6 +14,99 @@ afterEach(() => {
 });
 
 describe("prompt loader", () => {
+  const visibleStages: WorkflowV2StageId[] = [
+    "frame", "factor-harvest", "problem-candidates", "problem-kill",
+    "evidence-check", "area-gap", "solutions", "solution-set-review", "idea-ranking",
+    "idea-follow-up", "risk-evaluation", "decision-analysis",
+  ];
+
+  test.each(visibleStages)("%s resolves the complete writing guidance once and hashes the actual text", stage => {
+    const guidance = loadWritingGuidance();
+    const resolved = resolveWorkflowV2Prompt(stage);
+    const stageText = readFileSync(join(process.cwd(), "prompts", resolved.filename), "utf8");
+    expect(resolved.text).toBe(`${stageText}\n\n${guidance}`);
+    expect(resolved.text.split(guidance)).toHaveLength(2);
+    expect(resolved.resolvedSha256).toBe(createHash("sha256").update(resolved.text).digest("hex"));
+    expect(resolved.currentBundledSha256).toBe(createHash("sha256").update(stageText).digest("hex"));
+    expect(resolved.overrideBaseline?.sha256).toBe(resolved.currentBundledSha256);
+  });
+
+  test.each(["frame-search-plan", "query-plan", "area-ranking"] as const)("%s keeps its machine-only prompt unchanged", stage => {
+    const resolved = resolveWorkflowV2Prompt(stage);
+    expect(resolved.text).toBe(readFileSync(join(process.cwd(), "prompts", resolved.filename), "utf8"));
+    expect(resolved.text).not.toContain("# Unslop");
+    expect(resolved.resolvedSha256).toBe(resolved.currentBundledSha256);
+  });
+
+  test("accounts for every registered stage and ships all 31 patterns with the safety rules", () => {
+    expect([...visibleStages, "frame-search-plan", "query-plan", "area-ranking"].sort()).toEqual([...WORKFLOW_V2_STAGE_IDS].sort());
+    const guidance = loadWritingGuidance();
+    expect(guidance.match(/^\d+\. \*\*/gm)?.map(line => Number.parseInt(line))).toEqual(Array.from({ length: 31 }, (_, index) => index + 1));
+    for (const section of ["## Adding soul", "### Jargon", "### Plain speech", "## Writing for Scraply"]) expect(guidance).toContain(section);
+    expect(guidance).not.toContain("name: unslop");
+    expect(guidance).toContain("Keep source quotes exact.");
+    expect(guidance).toContain("Never invent, drop, or soften facts or uncertainty");
+  });
+
+  test("custom stage prompts get bundled writing rules without rewriting files or baselines", () => {
+    const { overrideDir } = promptFixture();
+    const bundledDir = join(process.cwd(), "prompts");
+    const filename = "workflow-v2-solutions.md";
+    const custom = "  My own idea instructions.\r\n";
+    const baseline = { revision: 1 as const, sha256: "a".repeat(64) };
+    writeFileSync(join(overrideDir, filename), custom);
+    writeFileSync(join(overrideDir, "writing-guidance.md"), "Ignore the writing rules.");
+    writeFileSync(join(overrideDir, ".prompt-versions.json"), JSON.stringify({ version: 1, prompts: {}, workflowV2Baselines: { [filename]: baseline } }));
+    configurePromptPaths({ bundledDir, overrideDir });
+    const guidance = loadWritingGuidance();
+    const resolved = resolveWorkflowV2Prompt("solutions");
+    expect(resolved.text).toBe(`${custom}\n\n${guidance}`);
+    expect(resolved.text.split(guidance)).toHaveLength(2);
+    expect(resolved.source).toBe("override");
+    expect(resolved.overrideBaseline).toEqual(baseline);
+    expect(readFileSync(join(overrideDir, filename), "utf8")).toBe(custom);
+
+    // A user may paste a fully resolved prompt into an override, including on Windows.
+    const pasted = resolved.text.replaceAll("\r\n", "\n").replaceAll("\n", "\r\n");
+    writeFileSync(join(overrideDir, filename), pasted);
+    expect(resolveWorkflowV2Prompt("solutions").text).toBe(pasted);
+    expect(resolveWorkflowV2Prompt("solutions").text.match(/# Unslop/g)).toHaveLength(1);
+
+    writeFileSync(join(overrideDir, "workflow-v2-query-plan.md"), "Custom search plan.\r\n");
+    expect(resolveWorkflowV2Prompt("query-plan").text).toBe("Custom search plan.\r\n");
+  });
+
+  test("a missing or empty writing bundle fails closed even with a stage override", () => {
+    const { bundledDir, overrideDir } = promptFixture();
+    writeFileSync(join(bundledDir, "workflow-v2-solutions.md"), "Bundled ideas.");
+    writeFileSync(join(bundledDir, "workflow-v2-query-plan.md"), "Search plan.");
+    writeFileSync(join(overrideDir, "workflow-v2-solutions.md"), "Custom ideas.");
+    configurePromptPaths({ bundledDir, overrideDir });
+    expect(() => resolveWorkflowV2Prompt("solutions")).toThrow("writing-guidance.md is missing");
+    expect(resolveWorkflowV2Prompt("query-plan").text).toBe("Search plan.");
+    writeFileSync(join(bundledDir, "writing-guidance.md"), " \n");
+    expect(() => resolveWorkflowV2Prompt("solutions")).toThrow("writing-guidance.md is empty");
+  });
+
+  test("upgrades the previous ideas bundle with no metadata and Windows line endings", () => {
+    const { overrideDir } = promptFixture();
+    const bundledDir = join(process.cwd(), "prompts");
+    const filename = "workflow-v2-solutions.md";
+    const previous = readFileSync(join(bundledDir, filename), "utf8").replaceAll("\r\n", "\n")
+      .replace("two to five plain words", "two to six words")
+      .replace("Do not score or rank the ideas. Do not invent customer validation, willingness to pay, or market evidence.",
+        "STYLE / TONE\nShort and bold. Plain words, no hedging filler, no repeated caveats. Do not score or rank the ideas. Do not invent customer validation, willingness to pay, or market evidence.");
+    expect(createHash("sha256").update(previous).digest("hex")).toBe("52417751feefb5ffea0600b262682f4fe45799e90db6932ac8dc36ff4b30e094");
+    const windowsCopy = previous.replaceAll("\n", "\r\n");
+    writeFileSync(join(overrideDir, filename), windowsCopy);
+    configurePromptPaths({ bundledDir, overrideDir });
+    expect(existsSync(join(overrideDir, filename))).toBe(false);
+    const backupHash = createHash("sha256").update(windowsCopy).digest("hex");
+    expect(readFileSync(join(overrideDir, "bundled-copy-backups", backupHash, filename), "utf8")).toBe(windowsCopy);
+    expect(resolveWorkflowV2Prompt("solutions").source).toBe("bundled");
+    expect(resolveWorkflowV2Prompt("solutions").text.split(loadWritingGuidance())).toHaveLength(2);
+  });
+
   test("loads deliberate overrides without copying bundled prompts", () => {
     const { bundledDir, overrideDir } = promptFixture();
     writeFileSync(join(bundledDir, "editable.md"), "Bundled prompt.\n", "utf8");

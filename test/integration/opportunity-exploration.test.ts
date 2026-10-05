@@ -69,11 +69,13 @@ async function until(predicate: () => boolean): Promise<void> {
 
 class ExpansionModel implements StructuredModelClient {
   readonly stages: string[] = [];
+  readonly instructions: string[] = [];
 
   constructor(private readonly frame?: ResearchFrame) {}
 
   async structuredCompletion<T>(request: StructuredStageRequest<T>): Promise<StructuredStageResult<T>> {
     this.stages.push(request.stage);
+    this.instructions.push(request.workOrder.instruction ?? "");
     request.onDispatched?.();
     request.onAccepted?.({ protocolVersion: "test" });
     let output: unknown;
@@ -374,6 +376,7 @@ test("one permitted round maps a named gap, searches, generates, reviews, and re
       expect.stringMatching(/^gap-generation:/),
       expect.stringMatching(/^opportunity-review:/),
     ]);
+    for (const instruction of model.instructions) expect(instruction.match(/# Unslop/g)).toHaveLength(1);
 
     const families = new OpportunityRepository(db).familyView(thread.id);
     expect(families.acceptedFamilyCount).toBe(2);

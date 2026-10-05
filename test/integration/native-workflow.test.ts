@@ -15,7 +15,7 @@ import { GenerationStartPayloadSchema } from "../../src/shared/runtime-protocol"
 import { DEFAULT_RUN_CONFIG } from "../../src/shared/schemas";
 import type { JsonSchema } from "../../src/shared/json-schema";
 import { NATIVE_WORKFLOW_MODEL as model, UNTRUSTED_WORKFLOW_TEXT as untrusted, startNativeWorkflowBackend } from "../fixtures/native-workflow-backend";
-import { resolveWorkflowV2Prompt } from "../../src/core/prompts";
+import { loadWritingGuidance, resolveWorkflowV2Prompt } from "../../src/core/prompts";
 import { WORKFLOW_V2_STAGE_IDS, type WorkflowV2StageId } from "../../src/core/stages";
 import { RESEARCH_CALL_TIME_LIMIT_MS } from "../../src/core/workflow-execution";
 import { WorkflowRepository } from "../../src/db/repositories/workflows";
@@ -561,6 +561,7 @@ describe("native research workflow through the production backend", () => {
     const title = await item.post("/threads/title", { context: statement, model, reasoningEffort: "low" }, z.object({ title: z.string() }));
     expect(title.title).toBe("Reducing repair shop delays");
     const request = item.requests()[0]!;
+    expect(request.workOrder.instruction?.split(loadWritingGuidance())).toHaveLength(2);
     expect(request.model).toEqual(model);
     expect(request.reasoningEffort).toBe("low");
     expect(request.deadlineMs).toBeUndefined();
@@ -611,11 +612,12 @@ describe("native research workflow through the production backend", () => {
     item.assertAccounting(0);
 
     const instruction = `${readFileSync(join(process.cwd(), "prompts", "workflow-v2-solutions.md"), "utf8").trim()}\n\nExplain the maintenance burden of each mechanism.`;
+    const resolvedInstruction = `${instruction}\n\n${loadWritingGuidance()}`;
     writeFileSync(overridePath, instruction);
     const threadId = await item.createThread("known-problem");
     await item.post("/research/start", { threadId }, z.object({ runId: z.string() }));
     await item.waitFor((state) => state.threads.find((thread) => thread.id === threadId)?.status === "solutions-ready");
-    expect(item.requests()[0]?.workOrder.instruction).toBe(instruction);
+    expect(item.requests()[0]?.workOrder.instruction).toBe(resolvedInstruction);
     item.assertAccounting(1);
     await item.restart();
     expect(readFileSync(overridePath, "utf8")).toBe(instruction);
@@ -623,7 +625,7 @@ describe("native research workflow through the production backend", () => {
     const db = new DatabaseClient(item.dbPath);
     try {
       const row = db.db.prepare("SELECT request_json FROM generation_attempts WHERE stage_key = 'solutions'").get() as { request_json: string };
-      expect(z.object({ workOrder: z.object({ instruction: z.string() }) }).parse(JSON.parse(row.request_json)).workOrder.instruction).toBe(instruction);
+      expect(z.object({ workOrder: z.object({ instruction: z.string() }) }).parse(JSON.parse(row.request_json)).workOrder.instruction).toBe(resolvedInstruction);
     } finally { db.close(); }
     expect(item.requests()).toHaveLength(1);
   }, 15_000);
@@ -693,9 +695,10 @@ describe("native research workflow through the production backend", () => {
       expect(request.maxOutputTokens).toBeUndefined();
       if (request.workOrder.stage.startsWith("focused-experiment:")) {
         expect(request.deadlineMs).toBeUndefined();
-        expect(request.workOrder.instruction).toBe(request.workOrder.stage.endsWith("review")
+        const experimentInstruction = request.workOrder.stage.endsWith("review")
           ? FOCUSED_EXPERIMENT_REVIEW_INSTRUCTION
-          : FOCUSED_EXPERIMENT_DRAFT_INSTRUCTION);
+          : FOCUSED_EXPERIMENT_DRAFT_INSTRUCTION;
+        expect(request.workOrder.instruction).toBe(`${experimentInstruction}\n\n${loadWritingGuidance()}`);
       } else {
         const promptName = request.workOrder.stage.split(":")[0]!;
         expect(request.deadlineMs).toBe(RESEARCH_CALL_TIME_LIMIT_MS[promptName as WorkflowV2StageId]);
@@ -932,7 +935,7 @@ describe("native v2 decisions through the production backend", () => {
     expect(item.requests()).toHaveLength(1);
     expect(item.searches).toHaveLength(0);
     const first = options.solutions[0]!;
-    const savedPrompt = readFileSync(join(process.cwd(), "prompts/workflow-v2-decision-analysis.md"), "utf8");
+    const savedPrompt = resolveWorkflowV2Prompt("decision-analysis").text;
     writeFileSync(join(item.directory, "prompts/workflow-v2-decision-analysis.md"), "This changed override must only affect a new run.");
     await item.restart();
     expect((await item.workspace()).solutions).toEqual(options.solutions);

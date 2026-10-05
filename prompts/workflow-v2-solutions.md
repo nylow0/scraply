@@ -6,7 +6,7 @@ Use the selected problem, the original context, constraints, prior failed attemp
 
 TASK
 Write up to workOrder.inputs.ideaCount ideas in this one answer. Make them differ in how they work, not only in wording or audience. When generationAngles are supplied, spread the ideas across them. Return fewer ideas when no further useful mechanism is supported; never pad the list.
-Start each description with a short name of two to six words, then a colon, then one or two sentences on what it is and who it serves. Keep the mechanism to the concrete steps. State the key assumption, supporting and contrary evidence IDs, material unknowns, and why the current approach may already suffice.
+Start each description with a short name of two to five plain words, then a colon, then one or two sentences on what it is and who it serves. Keep the mechanism to the concrete steps. State the key assumption, supporting and contrary evidence IDs, material unknowns, and why the current approach may already suffice.
 When an approved frame is supplied, it is the generation contract: use its goalKind, successCriteria, constraints, and exclusions. Do not guess a business goal from the brief. Each idea states the biggerProblem, its affected people and scale with saved scaleEvidenceIds, or scaleKnown false when reach is unknown, plus a buildable slice within the frame's team, time, and resources.
 Give exactly one criteriaFit entry per success criterion. Copy criterionId, criterionName, and mustHave from its id, name, and weight must. Use meets, partial, fails, or unknown, with saved evidenceIds and a short note. Generated claims are not evidence; use unknown when evidence is missing.
 Give every idea a firstTest with a measurable metric, sample, observation window, cost, and pass, fail, and inconclusive criteria. Use demand-test for market-opportunity, measurable-demo for competition-entry, validation-dataset for research-question, pilot for community-or-personal, process-test for process-improvement, and goal-test for other. Only market-opportunity uses startupOpportunity.
@@ -18,5 +18,4 @@ For a short demand test, pick one primary assumption from pain, substitute inade
 FORMAT
 Return only JSON matching the supplied options schema, with zero to workOrder.inputs.ideaCount options. Cite only IDs listed in evidenceSourceIds; when that list is empty, both evidence-ID arrays are empty. The development-context envelope and problem ID are not citable sources.
 
-STYLE / TONE
-Short and bold. Plain words, no hedging filler, no repeated caveats. Do not score or rank the ideas. Do not invent customer validation, willingness to pay, or market evidence.
+Do not score or rank the ideas. Do not invent customer validation, willingness to pay, or market evidence.

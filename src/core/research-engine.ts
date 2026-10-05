@@ -50,6 +50,7 @@ import { opportunityExpansionContract, parseOpportunityExpansionOutput } from ".
 import { generateResearchFrame } from "./research-frame";
 import { rankScannedAreas, scanResearchArea, type AreaScan } from "./frame-discovery";
 import { runFocusedExperimentFlow } from "./experiment-review";
+import { loadWritingGuidance, withWritingGuidance } from "./prompts";
 import { planOpportunityStep, previewOpportunityBudgetExtension } from "./opportunity-planning";
 import { reviewSavedOpportunities as runOpportunityReview } from "./opportunity-review";
 import { classifySolutionSetReview, prepareSolutionSetReview, reviewSolutionSet, type SolutionSetItem, type SolutionSetReviewOutput } from "./solution-set-review";
@@ -562,6 +563,7 @@ export class ResearchEngine {
           ...(shortDemandTest ? { shortDemandTest } : {}),
         }, {
           repository,
+          writingGuidance: workflow.read<string>("writing-guidance") ?? "",
           modelClient: this.instrumentedModel(active),
           generationModel: config.model,
           reviewModel: config.model,
@@ -836,11 +838,13 @@ export class ResearchEngine {
     const repository = new OpportunityExplorationRepository(this.options.db);
     const view = this.opportunities.familyView(threadId);
     const context = this.opportunityMapContext(threadId);
-    const instruction = "Name only concrete buyer, workflow, trigger, problem, or evidence gaps in the saved startup inventory. New buyers or workflows are allowed only after the supplied map is exhausted. Ask for one bounded search query when evidence is required. Return no gap rather than generic 'more ideas'. Exploratory hypotheses are allowed only when the project flag says so.";
+    const saved = repository.loadAttempt(threadId, stageKey);
+    const writingGuidance = saved ? (saved.input as { writingGuidance?: string }).writingGuidance ?? "" : loadWritingGuidance();
+    const instruction = withWritingGuidance("Name only concrete buyer, workflow, trigger, problem, or evidence gaps in the saved startup inventory. New buyers or workflows are allowed only after the supplied map is exhausted. Ask for one bounded search query when evidence is required. Return no gap rather than generic 'more ideas'. Exploratory hypotheses are allowed only when the project flag says so.", writingGuidance);
     const attempt = this.options.db.immediateTransaction(() => repository.prepareAttempt(threadId, {
       stageKey,
       stageName: "coverage-map",
-      input: { round, view, context, config: repository.require(threadId).config },
+      input: { round, view, context, config: repository.require(threadId).config, ...(writingGuidance ? { writingGuidance } : {}) },
       model: { ...model, reasoningEffort },
       promptVersion: "opportunity-coverage-v1",
       promptText: instruction,
@@ -959,7 +963,7 @@ export class ResearchEngine {
     const saved = repository.completedAttemptResult(threadId, stageKey);
     if (saved) return parseSavedExpansion(saved);
     const existingAttempt = repository.loadAttempt(threadId, stageKey);
-    const frozenInput = existingAttempt?.input as { frame?: ResearchFrame; frameId?: string; schemaRevision?: number } | undefined;
+    const frozenInput = existingAttempt?.input as { frame?: ResearchFrame; frameId?: string; schemaRevision?: number; writingGuidance?: string } | undefined;
     const approved = existingAttempt ? null : new ResearchFrameRepository(this.options.db).latestApproved(threadId);
     const expansionContract = opportunityExpansionContract(frozenInput?.frame ?? approved?.approved ?? undefined);
     // Pre-revision prepared attempts keep their saved identity. New attempts always freeze the revision.
@@ -967,12 +971,14 @@ export class ResearchEngine {
     const frameId = frozenInput?.frameId ?? approved?.id;
     const evidence = this.opportunityExpansionEvidence(threadId, searchedSources);
     const view = this.opportunities.familyView(threadId);
-    const instruction = ["Generate one small batch for the named coverage gap. Every option must be a distinct startup opportunity with a paying customer, smallest sellable workflow, and one structured focusedDemandTest for the most decision-relevant demand assumption. Do not repeat accepted families. Preserve weak evidence as uncertainty. Reference only supplied evidence IDs. An evidence-backed new problem must name nonempty problemHypothesis.evidenceIds that directly support the problem. When exploratory mode is used, every evidence-ID list must be empty and the gap assessment must remain a hypothesis.", expansionContract.instruction].filter(Boolean).join("\n\n");
+    const writingGuidance = existingAttempt ? frozenInput?.writingGuidance ?? "" : loadWritingGuidance();
+    const instruction = withWritingGuidance(["Generate one small batch for the named coverage gap. Every option must be a distinct startup opportunity with a paying customer, smallest sellable workflow, and one structured focusedDemandTest for the most decision-relevant demand assumption. Do not repeat accepted families. Preserve weak evidence as uncertainty. Reference only supplied evidence IDs. An evidence-backed new problem must name nonempty problemHypothesis.evidenceIds that directly support the problem. When exploratory mode is used, every evidence-ID list must be empty and the gap assessment must remain a hypothesis.", expansionContract.instruction].filter(Boolean).join("\n\n"), writingGuidance);
     const attempt = this.options.db.immediateTransaction(() => repository.prepareAttempt(threadId, {
       stageKey,
       stageName: "gap-generation",
       input: { batchId, gap, candidateCount, acceptedFamilies: view.families, evidenceIds: evidence.map((item) => item.sourceId),
         ...(unversionedLegacyAttempt ? {} : { schemaRevision: expansionContract.schemaRevision }),
+        ...(writingGuidance ? { writingGuidance } : {}),
         ...(expansionContract.frame ? { frame: expansionContract.frame, frameId } : {}) },
       model: { ...model, reasoningEffort },
       promptVersion: expansionContract.promptVersion,
@@ -2654,6 +2660,7 @@ export class ResearchEngine {
             ...(shortDemandTest ? { shortDemandTest } : {}),
           }, {
             repository: focusedExperimentRepository,
+            writingGuidance: workflow.read<string>("writing-guidance") ?? "",
             modelClient: this.instrumentedModel(active),
             generationModel: active.config.model,
             reviewModel: active.config.model,

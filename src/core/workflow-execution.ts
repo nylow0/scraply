@@ -15,7 +15,7 @@ import { AssessedWorkflowV2ProblemKillOutputSchema, BoundedWorkflowV2FactorHarve
 import { PROBLEM_AUDIENCE_ASSESSMENT_INSTRUCTION, repairVerdictSourceIds, scopeFactorAssessments } from "./problem-evidence";
 import { LegacyWorkflowV2QueryPlanOutputSchema } from "../shared/structured-output-schemas";
 import type { WorkflowV2DevelopmentContext } from "./development";
-import { resolveWorkflowV2Prompt, type ResolvedWorkflowV2Prompt } from "./prompts";
+import { loadWritingGuidance, resolveWorkflowV2Prompt, type ResolvedWorkflowV2Prompt } from "./prompts";
 import { WORKFLOW_V2_STAGE_IDS, WORKFLOW_V2_STAGE_REGISTRY, type WorkflowV2StageId } from "./stages";
 import { prepareWorkflowSearch, recordWorkflowSearchDispatched, recordWorkflowSearchTerminal, unknownSearchAttempts, UnknownSearchCompletionError } from "./workflow-search-attempts";
 
@@ -58,6 +58,9 @@ export class WorkflowExecution {
     })) as Record<WorkflowV2StageId, ResolvedWorkflowV2Prompt>;
     if (!saved) {
       this.save("prompts", this.prompts);
+      // Inline experiment stages share the same writing rules for the life of this run.
+      // Older runs have no snapshot and keep their original instructions.
+      this.save("writing-guidance", loadWritingGuidance());
       // 96-bit deterministic identifiers are easier for models to copy than full SHA-256 text.
       // Save the format per run: an older run without this marker must still reproduce its IDs.
       this.save("identifier-characters", 24);

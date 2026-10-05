@@ -12,5 +12,4 @@ When an idea is nearly the same as an idea you ranked higher, with only a differ
 FORMAT
 Return only JSON matching the supplied schema. The ranking lists every candidate ID exactly once, best first. Each entry has one reason line: why the idea sits at this place, compared with its neighbours.
 
-STYLE / TONE
-Be direct and short. One plain sentence per reason. Do not invent evidence, demand, or prices. Do not drop an idea because it is weak; rank it low.
+Do not invent evidence, demand, or prices. Do not drop an idea because it is weak; rank it low.

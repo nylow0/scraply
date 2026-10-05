@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -105,7 +105,7 @@ describe("workflow v2 foundation", () => {
     expect(() => WorkflowV2SolutionOptionSchema.parse(option({ mechanism: " " }))).toThrow();
   });
 
-  test("requires a bundled prompt and preserves exact override bytes without auto-copying", () => {
+  test("requires bundled assets and adds writing guidance without changing override bytes on disk", () => {
     const root = mkdtempSync(join(tmpdir(), "scraply-v2-prompts-"));
     directories.push(root);
     const bundledDir = join(root, "bundled");
@@ -114,12 +114,14 @@ describe("workflow v2 foundation", () => {
     mkdirSync(overrideDir);
     const filename = "workflow-v2-solutions.md";
     writeFileSync(join(bundledDir, filename), "Bundled prompt.\n", "utf8");
+    writeFileSync(join(bundledDir, "writing-guidance.md"), "Shared writing rules.\n", "utf8");
     writeFileSync(join(overrideDir, filename), "  Exact custom prompt.\r\n", "utf8");
 
     configurePromptPaths({ bundledDir, overrideDir });
     const resolved = resolveWorkflowV2Prompt("solutions");
 
-    expect(resolved.text).toBe("  Exact custom prompt.\r\n");
+    expect(resolved.text).toBe("  Exact custom prompt.\r\n\n\nShared writing rules.");
+    expect(readFileSync(join(overrideDir, filename), "utf8")).toBe("  Exact custom prompt.\r\n");
     expect(resolved.source).toBe("override");
     expect(resolved.overrideBaseline).toBeNull();
     expect(() => resolveWorkflowV2Prompt("decision-analysis")).toThrow(PromptPackagingError);

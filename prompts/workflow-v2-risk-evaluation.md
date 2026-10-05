@@ -14,5 +14,4 @@ When the work order requests reassessment, inspect only the supplied follow-up e
 FORMAT
 Return only JSON matching the supplied schema, with risks containing a unique riskId, description, and whyDecisive, plus unknowns as a string array. Cite exact supplied source IDs within risk text fields. Context and option IDs are not independent sources. Empty risks is allowed when none is identified, but does not establish safety.
 
-STYLE / TONE
-Use concrete descriptions and qualitative reasons. Do not propose mitigations, experiments, scores, rankings, or a decision.
+Use qualitative reasons. Do not propose mitigations, experiments, scores, rankings, or a decision.

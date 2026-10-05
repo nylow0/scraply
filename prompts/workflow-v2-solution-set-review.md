@@ -13,5 +13,4 @@ When explorationPurpose is auto, use the original project scope and selected pro
 FORMAT
 Return only JSON matching the supplied schema. Include exactly one assessment for every candidate ID and no unknown IDs. For "duplicate" or "variant", matchingSolutionId identifies a supplied existing root, other saved solution, or earlier candidate. Otherwise matchingSolutionId is null. A rejected decision names the exact off-limits or practicality failure. Cite only supplied evidence source IDs. Explain the concrete reason for each decision. Do not claim a candidate is distinct from solutions omitted from the supplied inventory.
 
-STYLE / TONE
-Be direct and skeptical. Preserve useful differences. Do not invent citations, rank the candidates, or approve a duplicate to meet a target count.
+Be skeptical. Preserve useful differences. Do not invent citations, rank the candidates, or approve a duplicate to meet a target count.

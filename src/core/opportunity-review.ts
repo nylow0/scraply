@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { withWritingGuidance } from "./prompts";
 import type { DatabaseClient } from "../db/client";
 import {
   OpportunityRepository,
@@ -226,7 +227,7 @@ async function dispatchOrReuse(
   const preparedIdentity = input.modelClient.preparedIdentity?.() ?? await input.modelClient.prepareIdentity?.() ?? {};
   const requestSnapshot = {
     version: 1,
-    instruction: REVIEW_INSTRUCTION,
+    instruction: withWritingGuidance(REVIEW_INSTRUCTION),
     candidates: chunk.candidates,
     families: chunk.families,
     unresolvedCandidates: chunk.unresolvedCandidates,
@@ -235,6 +236,23 @@ async function dispatchOrReuse(
     correction: correction ? { output: correction.output, errors: correction.errors } : null,
     runtimeIdentity: preparedIdentity,
   };
+  // Resume an answered chunk with its original writing rules. A correction also
+  // keeps the initial call's instructions, even after the bundle changes.
+  const priorRequests = input.db.db.prepare(`SELECT request_json FROM opportunity_review_calls
+    WHERE thread_id = ? AND status IN ('completed', 'failed') ORDER BY rowid DESC`)
+    .all(input.threadId) as Array<{ request_json: string }>;
+  for (const row of priorRequests) {
+    const saved = JSON.parse(row.request_json) as typeof requestSnapshot;
+    if (canonicalJson({ ...saved, instruction: requestSnapshot.instruction }) === canonicalJson(requestSnapshot)) {
+      requestSnapshot.instruction = saved.instruction;
+      break;
+    }
+  }
+  if (correction) {
+    const initial = input.db.db.prepare("SELECT request_json FROM opportunity_review_calls WHERE id = ? AND thread_id = ?")
+      .get(correction.reviewCallId, input.threadId) as { request_json: string } | undefined;
+    if (initial) requestSnapshot.instruction = (JSON.parse(initial.request_json) as typeof requestSnapshot).instruction;
+  }
   const reusable = input.repository.reusableReviewCall(input.threadId, requestSnapshot);
   if (reusable) {
     return {
@@ -271,6 +289,7 @@ async function dispatchOrReuse(
   });
   const stage = `opportunity-review:${batchKey.slice(0, 12)}:${input.chunkIndex}:${correctionNumber}`;
   let dispatched = false;
+  const { instruction, ...comparisonContext } = requestSnapshot;
   const request: StructuredStageRequest<OpportunityReviewOutput> = {
     generationId: randomUUID(),
     stage,
@@ -278,7 +297,7 @@ async function dispatchOrReuse(
     reasoningEffort: input.reasoningEffort,
     workOrder: {
       stage,
-      instruction: REVIEW_INSTRUCTION,
+      instruction,
       goal: "Classify every requested opportunity comparison without accepting incomplete coverage.",
       inputs: {
         expectedAssessmentIds: chunk.expectedAssessmentIds,
@@ -295,7 +314,8 @@ async function dispatchOrReuse(
         "Use uncertain when the supplied record cannot support a clear classification.",
       ],
     },
-    evidence: [{ sourceId: `scraply:${stage}`, content: requestSnapshot }],
+    // New instructions belong in the work order once. Keep the old request shape on resume.
+    evidence: [{ sourceId: `scraply:${stage}`, content: instruction === REVIEW_INSTRUCTION ? requestSnapshot : comparisonContext }],
     schema: OpportunityReviewOutputSchema,
     jsonSchema: deriveJsonSchema(OpportunityReviewOutputSchema),
     // The explicit second call below is the one allowed correction. Keep runtime schema

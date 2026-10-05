@@ -1,11 +1,12 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   loadManagedCoverageGaps, markManagedCoverageGapCovered, runManagedCoverageMap,
 } from "../../src/core/managed-coverage-map";
 import { DatabaseClient } from "../../src/db/client";
+import { configurePromptPaths, loadWritingGuidance } from "../../src/core/prompts";
 import { OpportunityExplorationRepository } from "../../src/db/repositories/opportunity-exploration";
 import { WorkflowRepository } from "../../src/db/repositories/workflows";
 import type { StructuredModelClient } from "../../src/providers/structured";
@@ -13,6 +14,7 @@ import { DEFAULT_OPPORTUNITY_EXPLORATION_CONFIG } from "../../src/shared/opportu
 
 const directories: string[] = [];
 afterEach(() => {
+  configurePromptPaths({ bundledDir: join(import.meta.dir, "../../prompts"), overrideDir: null });
   for (const directory of directories.splice(0)) rmSync(directory, { recursive: true, force: true });
 });
 
@@ -49,6 +51,7 @@ test("managed coverage maps a mechanism gap once and retains user-updated status
       calls += 1;
       expect(request.repairPolicy).toBe("disabled");
       expect(request.workOrder.instruction).toContain("mechanism gap is a workflow gap");
+      expect(request.workOrder.instruction?.split(loadWritingGuidance())).toHaveLength(2);
       request.onDispatched?.();
       const output = request.schema.parse({
         gaps: [{ name: "Approval route", description: "A different signoff mechanism for repair estimates.",
@@ -75,6 +78,10 @@ test("managed coverage maps a mechanism gap once and retains user-updated status
       verdict,verdict_reason,verdict_source_ids_json,created_at)
       VALUES ('later-problem','later-run','Another approval problem','','Shops','','confirmed','','[]',?)`).run(now);
     db.immediateTransaction(() => markManagedCoverageGapCovered(db, "thread", "session", first.gaps[0]!.id));
+    const futureBundle = mkdtempSync(join(tmpdir(), "scraply-future-coverage-writing-"));
+    directories.push(futureBundle);
+    writeFileSync(join(futureBundle, "writing-guidance.md"), "Future writing rules.");
+    configurePromptPaths({ bundledDir: futureBundle, overrideDir: null });
     const replayed = await runManagedCoverageMap({ ...input, onDispatched: () => { dispatches += 1; } });
     expect(replayed).toMatchObject({ attemptId: first.attemptId, replayed: true,
       gaps: [{ id: first.gaps[0]!.id, status: "covered" }] });

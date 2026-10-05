@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { withWritingGuidance } from "./prompts";
 import { z } from "zod";
 import type { FocusedExperimentRepository, FocusedExperimentStageKey } from "../db/repositories/focused-experiments";
 import {
@@ -83,6 +84,8 @@ export interface FocusedExperimentFlowInput {
 }
 
 export interface FocusedExperimentFlowDependencies {
+  /** Frozen with the parent run. Empty for runs created before the writing guidance. */
+  writingGuidance?: string;
   repository: FocusedExperimentRepository;
   modelClient: StructuredModelClient;
   generationModel: ModelRef;
@@ -234,6 +237,7 @@ interface ExecuteStageOptions<T> {
 
 async function executeStage<T>(options: ExecuteStageOptions<T>): Promise<{ output: T; metadata: GenerationMetadata | null }> {
   const providerSchema = options.providerSchema ?? options.schema;
+  const instruction = withWritingGuidance(options.instruction, options.dependencies.writingGuidance);
   const request: StructuredStageRequest<T> = {
     generationId: randomUUID(),
     stage: `focused-experiment:${options.stageKey}`,
@@ -241,7 +245,7 @@ async function executeStage<T>(options: ExecuteStageOptions<T>): Promise<{ outpu
     reasoningEffort: options.reasoningEffort,
     workOrder: {
       stage: `focused-experiment:${options.stageKey}`,
-      instruction: options.instruction,
+      instruction,
       goal: options.goal,
       inputs: options.inputs,
       requiredDecisions: ["Whether the plan isolates one assumption and creates a clear build decision."],
@@ -260,7 +264,7 @@ async function executeStage<T>(options: ExecuteStageOptions<T>): Promise<{ outpu
     options.input.selectedOption.id,
     options.stageKey,
     request,
-    options.instruction,
+    instruction,
     options.schema,
   );
   if (saved) return { output: saved, metadata: null };
@@ -282,7 +286,7 @@ async function executeStage<T>(options: ExecuteStageOptions<T>): Promise<{ outpu
     options.input.researchRunId,
     options.input.selectedOption.id,
     options.stageKey,
-    { request, instruction: options.instruction, output },
+    { request, instruction, output },
   );
   // The instrumented model records its generation attempt before dispatch. Save the
   // validated business checkpoint before honoring a cancellation that arrived while

@@ -104,6 +104,7 @@ const requiredEntries = [
   "/out/preload/index.js",
   "/out/renderer/index.html",
   ...Object.values(WORKFLOW_V2_STAGE_REGISTRY).map((stage) => `/prompts/${stage.promptFilename}`),
+  "/prompts/writing-guidance.md",
   "/package.json",
 ];
 const missingEntries = requiredEntries.filter((path) => !archiveEntries.has(path));

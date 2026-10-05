@@ -19,5 +19,4 @@ Ask useful openQuestions whose answers change the goal, criteria, scope or areas
 FORMAT
 Return only JSON matching the supplied schema, as {"frame": ResearchFrame}. Include version 1. Use null for optional domain, region and answer when absent. Use only supplied source IDs in citations and bases.
 
-STYLE / TONE
-Write concrete, short descriptions. Make uncertainty visible in questions. Use the brief's language for user-facing text when it is clear.
+Use the brief's language for user-facing text when it is clear.

@@ -4,6 +4,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runFocusedExperimentFlow } from "../../src/core/experiment-review";
+import { loadWritingGuidance } from "../../src/core/prompts";
 import { ResearchEngine } from "../../src/core/research-engine";
 import { DatabaseClient } from "../../src/db/client";
 import { FocusedExperimentRepository } from "../../src/db/repositories/focused-experiments";
@@ -107,8 +108,10 @@ describe("focused experiment flow", () => {
       review("approved", null),
     ];
     let calls = 0;
+    const guidance = loadWritingGuidance();
     const modelClient: StructuredModelClient = {
       async structuredCompletion<T>(request: StructuredStageRequest<T>) {
+        expect(request.workOrder.instruction?.split(guidance)).toHaveLength(2);
         const output = outputs[calls++];
         return {
           output: request.schema.parse(output) as T,
@@ -143,6 +146,10 @@ describe("focused experiment flow", () => {
     expect(exported.experiments[0]?.stages.map((stage) => stage.stageKey))
       .toEqual(["draft", "initial-review", "correction", "final-review"]);
     expect(exported.experiments[0]?.stages[0]?.prompt.text).toContain("one decision-focused experiment");
+    for (const stage of exported.experiments[0]!.stages) {
+      expect(stage.prompt.text.split(guidance)).toHaveLength(2);
+      expect(stage.prompt.sha256).toBe(hash(stage.prompt.text));
+    }
 
     const second = await runFocusedExperimentFlow(input, dependencies);
     expect(second.reused).toBe(true);
@@ -157,6 +164,7 @@ describe("focused experiment flow", () => {
     const outputs = [plan(), review("uncertain", null)];
     const modelClient: StructuredModelClient = {
       async structuredCompletion<T>(request: StructuredStageRequest<T>) {
+        expect(request.workOrder.instruction).not.toContain("# Unslop");
         return {
           output: request.schema.parse(outputs[calls++]) as T,
           metadata: { model: request.model, usage: { status: "unknown" }, latencyMs: 1, repairCount: 0, providerRequestIds: [], attempts: [] },
@@ -164,6 +172,7 @@ describe("focused experiment flow", () => {
       },
     };
     const result = await runFocusedExperimentFlow(flowInput(), {
+      writingGuidance: "",
       repository: new FocusedExperimentRepository(client),
       modelClient,
       generationModel: { providerId: "test", modelId: "generator" },
