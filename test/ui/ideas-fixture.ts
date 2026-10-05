@@ -60,10 +60,10 @@ export function createIdeasFixture(params = new URLSearchParams(), threadId = "f
   }));
   if (params.get("analysis") === "done") solutions[0]!.selectable = false;
   const versions: IdeaConversation["versions"] = Array.from({ length: params.get("versions") === "3" ? 3 : 1 }, (_, index) => ({
-    solutionId: index ? `school-version-${index + 1}` : solutions[0]!.id, parentSolutionId: index ? solutions[0]!.id : null,
+    solutionId: index ? `school-version-${index + 1}` : solutions[0]!.id, parentSolutionId: index === 2 ? "school-version-2" : index ? solutions[0]!.id : null,
     versionNumber: index + 1, evidenceSnapshotId: "school-snapshot", changeSummary: index === 1 ? "Limit the pack to one approved meter export and add a coverage check." : null,
     description: index ? `School evidence pack ${index + 1}: Give evaluating staff one approved meter export with visible coverage limits.` : solutions[0]!.description,
-    mechanism: index ? "Obtain one approved meter export. Record missing periods and unit changes. Share a read-only comparison with the staff who evaluate conservation." : HISTORY_MECHANISM,
+    mechanism: index === 2 ? "Request a dated export from the authorized holder. Check that its intervals cover the conservation period. Share the comparison with a visible record of missing periods." : index ? "Obtain one approved meter export. Record missing periods and unit changes. Share a read-only comparison with the staff who evaluate conservation." : HISTORY_MECHANISM,
     reviewFreshness: index ? "unreviewed" : "current", model: DEFAULT_RUN_CONFIG.model, reasoningEffort: "medium",
   }));
   const conversation: IdeaConversation = { rootSolutionId: solutions[0]!.id, selectedVersionId: versions.length > 1 ? versions[1]!.solutionId : versions[0]!.solutionId,

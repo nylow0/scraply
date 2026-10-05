@@ -12,6 +12,153 @@ import { summarizeRunUsage } from "../../src/backend/run-usage";
 import { createIdeasFixture } from "../ui/ideas-fixture";
 
 describe("App workspace coordination", () => {
+  test("history restores list, idea and conversation through arrows, parent Back, projects and Settings", async () => {
+    const fixture = createIdeasFixture(new URLSearchParams(), "alpha");
+    const alpha = workspace("alpha");
+    alpha.scope = { title: "Alpha", domain: "School energy", audience: "", observations: "", offLimits: [] };
+    alpha.threads[0]!.status = "solutions-ready";
+    alpha.solutions = fixture.solutions.map(idea => ({ ...idea, detailRevision: "history-journey" }));
+    alpha.activeWorkflow = fixture.workflow.summary;
+    const beta = { ...workspace("beta"), threads: alpha.threads };
+    let state = alpha;
+    let command: Parameters<ScraplyApi["onAppCommand"]>[0] = () => {};
+    installApi({ getWorkspace: async () => structuredClone(state),
+      selectThread: async id => { state = id === "alpha" ? alpha : beta; return structuredClone(state); },
+      getWorkflow: async () => fixture.workflow,
+      getIdeaDetail: async id => structuredClone(alpha.solutions.find(idea => idea.id === id)!),
+      getIdeaConversation: async () => structuredClone(fixture.conversation),
+      onAppCommand: listener => { command = listener; return () => {}; },
+    });
+    const view = render(App);
+    const ideaName = "History access and provenance pack";
+    const assertIdea = async () => { await view.findByRole("button", { name: "Explore this idea" }); };
+    const assertList = async () => { await view.findByRole("button", { name: "Open idea: " + ideaName }); };
+    const assertConversation = async () => { await view.findByRole("heading", { name: "Conversation" }); };
+    await fireEvent.click(await view.findByRole("button", { name: "Open idea: " + ideaName }));
+    await assertIdea();
+    await fireEvent.click(view.getByRole("button", { name: "Explore this idea" }));
+    await assertConversation();
+    await fireEvent.input(view.getByLabelText("Follow-up message"), { target: { value: "Keep this conversation draft" } });
+    await fireEvent.click(view.getByRole("button", { name: "Go back" }));
+    await assertIdea();
+    await fireEvent.click(view.getByRole("button", { name: "Go back" }));
+    await assertList();
+    await fireEvent.click(view.getByRole("button", { name: "Go forward" }));
+    await assertIdea();
+    await fireEvent.click(view.getByRole("button", { name: "Go forward" }));
+    await assertConversation();
+    expect((view.getByLabelText("Follow-up message") as HTMLTextAreaElement).value).toBe("Keep this conversation draft");
+    await fireEvent.click(view.getByRole("button", { name: "Back to idea" }));
+    await assertIdea();
+    await fireEvent.keyDown(window, { key: "ArrowRight", altKey: true });
+    await assertConversation();
+    await fireEvent.keyDown(window, { key: "Escape" });
+    await assertIdea();
+    await fireEvent.click(view.getByRole("button", { name: "Open thread Beta" }));
+    await waitFor(() => expect(view.getByRole("button", { name: "Open thread Beta" }).getAttribute("aria-current")).toBe("true"));
+    command("back");
+    await assertIdea();
+    await fireEvent.click(view.getByRole("button", { name: "Settings" }));
+    await view.findByRole("region", { name: "Settings" });
+    expect((view.getByRole("button", { name: "Go back" }) as HTMLButtonElement).disabled).toBe(false);
+    await fireEvent.click(view.getByRole("button", { name: "Go back" }));
+    await waitFor(() => expect(view.queryByRole("region", { name: "Settings" })).toBeNull());
+    await assertIdea();
+    await fireEvent.click(view.getByRole("button", { name: "Go forward" }));
+    await view.findByRole("region", { name: "Settings" });
+    await fireEvent.keyDown(window, { key: "Escape" });
+    await assertIdea();
+    expect(view.queryByRole("region", { name: "Settings" })).toBeNull();
+  });
+
+  test("retries a failed conversation load on the App-owned conversation route", async () => {
+    const fixture = createIdeasFixture(new URLSearchParams(), "alpha");
+    const state = workspace("alpha");
+    state.scope = { title: "Alpha", domain: "School", audience: "", observations: "", offLimits: [] };
+    state.threads[0]!.status = "solutions-ready";
+    state.solutions = fixture.solutions;
+    const getIdeaConversation = vi.fn().mockRejectedValueOnce(new Error("Could not load saved conversation.")).mockResolvedValueOnce(fixture.conversation);
+    installApi({ getWorkspace: async () => structuredClone(state), getIdeaConversation,
+      getIdeaDetail: async id => structuredClone(state.solutions.find(idea => idea.id === id)!) });
+    const view = render(App);
+    await fireEvent.click(await view.findByRole("button", { name: "Open idea: History access and provenance pack" }));
+    await fireEvent.click(view.getByRole("button", { name: "Explore this idea" }));
+    await view.findByText("Could not load saved conversation.");
+    await fireEvent.click(view.getByRole("button", { name: "Try again" }));
+    await view.findByRole("heading", { name: "Conversation" });
+    expect(getIdeaConversation).toHaveBeenCalledTimes(2);
+    expect(view.queryByText("Could not load saved conversation.")).toBeNull();
+  });
+
+  test("archiving the current project replaces its entry and keeps earlier project history", async () => {
+    let state = workspace("alpha");
+    state.threads.push({ ...state.threads[0]!, id: "gamma", title: "Gamma" });
+    installApi({ getWorkspace: async () => structuredClone(state),
+      selectThread: async id => { state = { ...state, activeThreadId: id }; return structuredClone(state); },
+      archiveThread: async id => {
+        state = { ...state, activeThreadId: "alpha", threads: state.threads.map(thread => thread.id === id
+          ? { ...thread, archivedAt: "2026-10-05T00:00:00.000Z" } : thread) };
+        return structuredClone(state);
+      } });
+    const view = render(App);
+    await view.findByRole("button", { name: "Open thread Alpha" });
+    for (const title of ["Beta", "Gamma"]) {
+      await fireEvent.click(view.getByRole("button", { name: "Open thread " + title }));
+      await waitFor(() => expect(view.getByRole("button", { name: "Open thread " + title }).getAttribute("aria-current")).toBe("true"));
+    }
+    await fireEvent.click(view.getByRole("button", { name: "Archive research Gamma" }));
+    await waitFor(() => expect(view.queryByRole("button", { name: "Open thread Gamma" })).toBeNull());
+    await fireEvent.click(view.getByRole("button", { name: "Go back" }));
+    await waitFor(() => expect(view.getByRole("button", { name: "Open thread Beta" }).getAttribute("aria-current")).toBe("true"));
+  });
+
+  test("Back drops an idea removed while another project is open", async () => {
+    const fixture = createIdeasFixture(new URLSearchParams(), "alpha");
+    const alpha = workspace("alpha");
+    alpha.scope = { title: "Alpha", domain: "School", audience: "", observations: "", offLimits: [] };
+    alpha.threads[0]!.status = "solutions-ready";
+    alpha.solutions = fixture.solutions;
+    const beta = { ...workspace("beta"), threads: alpha.threads };
+    let state = alpha;
+    installApi({ getWorkspace: async () => structuredClone(state),
+      selectThread: async id => { state = id === "alpha" ? alpha : beta; return structuredClone(state); },
+      getIdeaDetail: async id => structuredClone(alpha.solutions.find(idea => idea.id === id)!),
+    });
+    const view = render(App);
+    await fireEvent.click(await view.findByRole("button", { name: "Open idea: History access and provenance pack" }));
+    await view.findByRole("button", { name: "Explore this idea" });
+    await fireEvent.click(view.getByRole("button", { name: "Open thread Beta" }));
+    await waitFor(() => expect(view.getByRole("button", { name: "Open thread Beta" }).getAttribute("aria-current")).toBe("true"));
+    alpha.solutions = alpha.solutions.filter(idea => idea.id !== fixture.solutions[0]!.id);
+    await fireEvent.click(view.getByRole("button", { name: "Go back" }));
+    await view.findByRole("button", { name: "Open idea: Weekend energy log" });
+    expect(view.queryByRole("button", { name: "Explore this idea" })).toBeNull();
+    expect((view.getByRole("button", { name: "Go back" }) as HTMLButtonElement).disabled).toBe(true);
+    await fireEvent.click(view.getByRole("button", { name: "Go forward" }));
+    await waitFor(() => expect(view.getByRole("button", { name: "Open thread Beta" }).getAttribute("aria-current")).toBe("true"));
+  });
+
+  test("an automatic run-driven tab change replaces the current history entry", async () => {
+    const fixture = createIdeasFixture(new URLSearchParams(), "alpha");
+    const state = workspace("alpha");
+    state.scope = { title: "Alpha", domain: "School", audience: "", observations: "", offLimits: [] };
+    state.threads[0]!.status = "solutions-ready";
+    state.solutions = fixture.solutions;
+    state.activeWorkflow = fixture.workflow.summary;
+    let backendEvent: ((event: ResearchEvent) => void) | undefined;
+    installApi({ getWorkspace: async () => structuredClone(state), getWorkflow: async () => fixture.workflow,
+      onBackendEvent: listener => { backendEvent = listener; return () => {}; } });
+    const view = render(App);
+    await view.findByRole("button", { name: "Open idea: History access and provenance pack" });
+    await fireEvent.click(view.getByRole("tab", { name: "Setup" }));
+    await fireEvent.click(view.getByRole("tab", { name: "Research" }));
+    backendEvent?.({ type: "workflow-progress", threadId: "alpha", sessionId: fixture.workflow.summary.sessionId,
+      state: "finished", revision: 1, outcome: "target-met", changedTaskIds: [], counts: fixture.workflow.summary.counts });
+    await waitFor(() => expect(view.getByRole("tab", { name: "Solutions" }).getAttribute("aria-selected")).toBe("true"));
+    await fireEvent.click(view.getByRole("button", { name: "Go back" }));
+    await waitFor(() => expect(view.getByRole("tab", { name: "Setup" }).getAttribute("aria-selected")).toBe("true"));
+  });
+
   test.each([false, true])("starts and stops analysis inside the same conversation, workflow=%s", async workflowProject => {
     const fixture = createIdeasFixture(new URLSearchParams(), "alpha");
     let state = workspace("alpha");
@@ -48,6 +195,15 @@ describe("App workspace coordination", () => {
     expect(await within(view.getByRole("region", { name: "Idea conversation" })).findByText("Reviewing risks")).toBeTruthy();
     expect(view.getByRole("button", { name: "Running & attention 1" })).toBeTruthy();
     expect(view.getByLabelText("Follow-up message")).toBe(input);
+    const back = view.getByRole("button", { name: "Go back" }) as HTMLButtonElement;
+    expect(back.disabled).toBe(false);
+    await fireEvent.click(back);
+    await view.findByRole("button", { name: "Explore this idea" });
+    const forward = view.getByRole("button", { name: "Go forward" }) as HTMLButtonElement;
+    expect(forward.disabled).toBe(false);
+    await fireEvent.click(forward);
+    await waitFor(() => expect(view.getByLabelText("Follow-up message")).toBe(input));
+    expect((input as HTMLTextAreaElement).value).toBe("Keep this draft during analysis.");
     const stop = view.getByRole("button", { name: "Stop" });
     await waitFor(() => expect((stop as HTMLButtonElement).disabled).toBe(false));
     await fireEvent.click(stop);

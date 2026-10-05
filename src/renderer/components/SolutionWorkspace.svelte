@@ -1,8 +1,9 @@
 <script lang="ts">
-  import { tick, type Snippet } from "svelte";
+  import { tick, untrack, type Snippet } from "svelte";
   import type { IdeaGroupView, SolutionView, WorkspaceState } from "../../shared/ipc";
   import BackLink from "./BackLink.svelte";
   import AnalysisProgress from "./AnalysisProgress.svelte";
+  import type { SolutionsRoute } from "../lib/navigation-history";
   import { ideaContent } from "../lib/idea-content";
   import type { IdeaConversation as ConversationView, SubmitIdeaTurnRequest } from "../../shared/workflow-contracts";
   import SolutionListItem from "./SolutionListItem.svelte";
@@ -14,6 +15,10 @@
 
   let {
     solutions,
+    route = $bindable<SolutionsRoute>({ kind: "list" }),
+    onNavigate,
+    onBack,
+    interactive = true,
     ideaGroups = [],
     busy,
     onExport,
@@ -48,6 +53,10 @@
     footer,
   }: {
     solutions: SolutionView[];
+    route?: SolutionsRoute;
+    onNavigate?: (route: SolutionsRoute) => void;
+    onBack?: (parent: SolutionsRoute) => void;
+    interactive?: boolean;
     ideaGroups?: IdeaGroupView[] | undefined;
     busy: boolean;
     analysisBlocked?: boolean;
@@ -83,8 +92,8 @@
     footer?: Snippet | undefined;
   } = $props();
 
-  let selectedIdeaId = $state<string | null>(null);
-  let activeConversationId = $state<string | null>(null);
+  let selectedIdeaId = $derived(route.kind === "list" ? null : route.ideaId);
+  let activeConversationId = $derived(route.kind === "conversation" ? route.ideaId : null);
   let retainedConversation = $state<ConversationView | null>(null);
   let openingConversation = $state(false);
   let openError = $state<string | null>(null);
@@ -102,14 +111,19 @@
   });
 
   async function openConversation(event: MouseEvent, ideaId: string) {
-    if (!onOpenConversation) return;
+    if (!onOpenConversation && !onNavigate) return;
     if (activeConversationId === null) openingButton = event.currentTarget as HTMLButtonElement;
-    activeConversationId = ideaId;
+    if (onNavigate) {
+      if (activeConversationId === ideaId) await onOpenConversation?.(ideaId);
+      else onNavigate({ kind: "conversation", ideaId });
+      return;
+    }
+    route = { kind: "conversation", ideaId };
     openingConversation = true;
     openError = null;
     const request = ++openRequest;
     try {
-      await onOpenConversation(ideaId);
+      await onOpenConversation?.(ideaId);
     } catch (cause) {
       if (request === openRequest) openError = cause instanceof Error ? cause.message : "Could not open this conversation.";
     } finally {
@@ -119,20 +133,32 @@
 
   function closeConversation() {
     openRequest += 1;
-    activeConversationId = null;
+    if (route.kind !== "conversation") return;
+    const parent: SolutionsRoute = { kind: "idea", ideaId: route.ideaId };
+    if (onBack) onBack(parent); else route = parent;
     openingConversation = false;
     openError = null;
     onCloseConversation?.();
-    void tick().then(() => openingButton?.focus());
+    void tick().then(() => openingButton?.focus({ preventScroll: true }));
   }
   function openIdea(event: MouseEvent, ideaId: string) {
     ideaButton = event.currentTarget as HTMLButtonElement;
-    selectedIdeaId = ideaId;
+    if (onNavigate) onNavigate({ kind: "idea", ideaId }); else route = { kind: "idea", ideaId };
   }
   function closeIdea() {
-    selectedIdeaId = null;
-    void tick().then(() => ideaButton?.focus());
+    if (onBack) onBack({ kind: "list" }); else route = { kind: "list" };
+    void tick().then(() => ideaButton?.focus({ preventScroll: true }));
   }
+  let previousRoute: SolutionsRoute = untrack(() => route);
+  $effect(() => {
+    if (previousRoute.kind === "conversation" && route.kind === "idea") {
+      void tick().then(() => (openingButton ?? document.querySelector<HTMLButtonElement>(".explore-button"))?.focus({ preventScroll: true }));
+    } else if (previousRoute.kind !== "list" && route.kind === "list") {
+      const ideaId = previousRoute.ideaId;
+      void tick().then(() => (ideaButton ?? Array.from(document.querySelectorAll<HTMLButtonElement>(".idea-row")).find(button => button.dataset.ideaId === ideaId))?.focus({ preventScroll: true }));
+    }
+    previousRoute = route;
+  });
   let selectedIdea = $derived(solutions.find((idea) => idea.id === selectedIdeaId) ?? null);
   let runBusy = $derived(!!run && ["queued", "running"].includes(run.status));
   let hasV2 = $derived(workflowVersion === 2 || solutions.some((idea) => idea.workflowVersion === 2));
@@ -156,6 +182,7 @@
 </script>
 
 <svelte:window onkeydown={(event) => {
+  if (!interactive || event.defaultPrevented || document.querySelector("dialog[open]")) return;
   if (activeConversationId && event.key === "Escape") {
     event.preventDefault();
     closeConversation();
@@ -183,7 +210,7 @@
         <ol>
           {#each group.ideas as idea, index (idea.id)}
             {@const content = ideaContent(idea.description)}
-            <li><button class="idea-row" aria-label={`Open idea: ${content.name}`} onclick={(event) => openIdea(event, idea.id)}>
+            <li><button data-idea-id={idea.id} class="idea-row" aria-label={`Open idea: ${content.name}`} onclick={(event) => openIdea(event, idea.id)}>
               <span class="idea-number" aria-hidden="true">{index + 1}.</span>
               <span class="idea-text"><span class="idea-name">{content.name}</span>{#if content.summary}<span class="idea-summary">{content.summary}</span>{/if}</span>
               {#if idea.weakFitReason}<span class="weak-fit">Weak fit</span>{/if}
@@ -215,7 +242,7 @@
       <div class="detail-navigation"><BackLink destination="ideas" onclick={closeIdea} /></div>
       {#if runBusy && run && onStop}<AnalysisProgress {run} {elapsed} stage={runStage} {busy} {onStop} />{/if}
       <div class="detail-heading"><h1>{ideaContent(selectedIdea.description).name}</h1>
-        {#if selectedIdea.workflowVersion === 2 && onOpenConversation}<button class="explore-button" onclick={(event) => openConversation(event, selectedIdea.id)}>Explore this idea</button>{/if}
+        {#if selectedIdea.workflowVersion === 2 && (onOpenConversation || onNavigate)}<button class="explore-button" onclick={(event) => openConversation(event, selectedIdea.id)}>Explore this idea</button>{/if}
       </div>
       {#if ideaContent(selectedIdea.description).summary}<p class="lead">{ideaContent(selectedIdea.description).summary}</p>{/if}
       {#if selectedIdea.weakFitReason}<p class="rank-note"><span class="weak-fit">Weak fit</span> {selectedIdea.weakFitReason}</p>{/if}

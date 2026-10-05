@@ -36,11 +36,16 @@ function conversation(): ConversationView {
 describe("IdeaConversation", () => {
   test.each(["unselectable", "selected-sibling", "running"] as const)("risk analysis availability respects %s", async (condition) => {
     const fixture = createIdeasFixture(new URLSearchParams(), "alpha");
-    const idea = { ...fixture.solutions[0]!, id: "version-2", detailRevision: condition, selectable: condition !== "unselectable", detailsLoaded: true };
-    const solutions = [idea, { ...fixture.solutions[1]!, selected: condition === "selected-sibling" }];
-    Object.defineProperty(window, "scraply", { configurable: true, value: { getIdeaDetail: vi.fn().mockResolvedValue(idea) } });
-    const view = render(IdeaConversation, { conversation: conversation(), solutions, modelOptions, onSubmit: vi.fn(), onAnalyze: vi.fn(), analysisBlocked: condition === "running" });
-    await waitFor(() => expect(view.queryByText("Loading saved details")).toBeNull());
+    const idea = { ...fixture.solutions[0]!, id: "version-2", detailRevision: condition + "-allowed", selectable: true, detailsLoaded: true };
+    const sibling = { ...fixture.solutions[1]!, selected: false };
+    const getIdeaDetail = vi.fn().mockResolvedValue(idea);
+    Object.defineProperty(window, "scraply", { configurable: true, value: { getIdeaDetail } });
+    const props = { conversation: conversation(), solutions: [idea, sibling], modelOptions, onSubmit: vi.fn(), onAnalyze: vi.fn() };
+    const view = render(IdeaConversation, props);
+    await waitFor(() => expect((view.getByRole("button", { name: "Analyze risks" }) as HTMLButtonElement).disabled).toBe(false));
+    const changed = { ...idea, detailRevision: condition, selectable: condition !== "unselectable" };
+    getIdeaDetail.mockResolvedValue(changed);
+    await view.rerender({ ...props, solutions: [changed, { ...sibling, selected: condition === "selected-sibling" }], analysisBlocked: condition === "running" });
     if (condition === "running") {
       await waitFor(() => expect((view.getByRole("button", { name: "Analyze risks" }) as HTMLButtonElement).disabled).toBe(true));
     } else {

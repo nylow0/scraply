@@ -313,6 +313,32 @@ describe("SolutionWorkspace idea conversation", () => {
     expect((view.getByLabelText("Follow-up message") as HTMLTextAreaElement).value).toBe("Keep this unsent.");
   });
 
+  test("renders the App-owned route and retains the conversation draft through parent navigation", async () => {
+    const idea = { ...solution(), workflowVersion: 2 as const };
+    const onNavigate = vi.fn();
+    const onBack = vi.fn();
+    const props = { solutions: [idea], busy: false, modelOptions, conversation: conversation(),
+      onExport: vi.fn(), onOpenSource: vi.fn(), onNavigate, onBack, onSubmitIdeaTurn: vi.fn() };
+    const view = render(SolutionWorkspace, { ...props, route: { kind: "list" } });
+    await fireEvent.click(view.getByRole("button", { name: `Open idea: ${idea.description.replace(/[.!?]+$/, "")}` }));
+    expect(onNavigate).toHaveBeenCalledWith({ kind: "idea", ideaId: idea.id });
+    await view.rerender({ ...props, route: { kind: "idea", ideaId: idea.id } });
+    await fireEvent.click(view.getByRole("button", { name: "Explore this idea" }));
+    expect(onNavigate).toHaveBeenLastCalledWith({ kind: "conversation", ideaId: idea.id });
+    await view.rerender({ ...props, route: { kind: "conversation", ideaId: idea.id } });
+    const input = view.getByLabelText("Follow-up message") as HTMLTextAreaElement;
+    await fireEvent.input(input, { target: { value: "Unsent reply" } });
+    await fireEvent.click(view.getByRole("button", { name: "Back to idea" }));
+    expect(onBack).toHaveBeenCalledWith({ kind: "idea", ideaId: idea.id });
+    await view.rerender({ ...props, route: { kind: "idea", ideaId: idea.id } });
+    await view.rerender({ ...props, route: { kind: "conversation", ideaId: idea.id } });
+    expect(view.getByLabelText("Follow-up message")).toBe(input);
+    expect(input.value).toBe("Unsent reply");
+    await view.rerender({ ...props, route: { kind: "idea", ideaId: idea.id } });
+    await fireEvent.keyDown(window, { key: "Escape" });
+    expect(onBack).toHaveBeenLastCalledWith({ kind: "list" });
+  });
+
   test("keeps revised versions in the conversation and returns through Back", async () => {
     const root = { ...solution(), workflowVersion: 2 as const };
     const revised = { ...root, id: "solution-2", mechanism: "Buyer delivery ledger",

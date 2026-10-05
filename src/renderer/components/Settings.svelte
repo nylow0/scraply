@@ -14,9 +14,10 @@
   import type { NativeLoginStartResult, WorkspaceState } from "../../shared/ipc";
   import type { SearchProvider } from "../../shared/schemas";
 
-  let { workspace, busy, nativeLogin, open = $bindable(false), feedback, onRetry, onConnectNative, onCancelNative, onRefreshNative, onLogoutNative, onSaveSearchKey, onRemoveSearchKey, onOpenUrl, onOpenData, onOpenLogs, onRestore, onDelete }: {
+  let { workspace, busy, nativeLogin, open = $bindable(false), onOpenChange, feedback, onRetry, onConnectNative, onCancelNative, onRefreshNative, onLogoutNative, onSaveSearchKey, onRemoveSearchKey, onOpenUrl, onOpenData, onOpenLogs, onRestore, onDelete }: {
     workspace: WorkspaceState | null;
     open?: boolean;
+    onOpenChange?: (open: boolean) => void;
     // App passes errors and ongoing progress here; confirmations appear as its corner toast.
     feedback?: { text: string; tone: "error" | "info" } | null;
     busy: boolean;
@@ -45,8 +46,9 @@
   let nativeModelOptions = $derived(workspace?.modelOptions.filter((item) => item.providerId === "openai-subscription") ?? []);
 
   // Settings covers the whole window, but the workspace stays mounted underneath so leaving preserves drafts and scroll.
-  export async function show() { section = "accounts"; open = true; await tick(); heading.focus(); }
-  async function back() { open = false; await tick(); document.getElementById("settings-button")?.focus(); }
+  export async function show() { section = "accounts"; if (onOpenChange) onOpenChange(true); else open = true; await tick(); heading.focus(); }
+  export function focusHeading() { heading?.focus(); }
+  async function back() { if (onOpenChange) onOpenChange(false); else open = false; await tick(); document.getElementById("settings-button")?.focus(); }
   // Keep keyboard focus on the full-window screen and leave on Esc when no picker is open.
   function handleSettingsKeydown(event: KeyboardEvent) {
     if (open && event.key === "Tab") {

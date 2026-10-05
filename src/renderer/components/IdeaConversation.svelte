@@ -66,8 +66,8 @@
   let analysisError = $derived(detail?.analysisError ?? (run?.status === "failed" && run.runId === detail?.runId && !detail?.decisionAnalysis ? run.completionReason ?? "The analysis failed." : null));
   let turnBusy = $derived(conversation.turns.some(turn => turn.state === "pending" || turn.state === "running"));
   let controlsBusy = $derived(busy || sending || analysisBlocked || runBusy || turnBusy);
-  let analysisAvailable = $derived(!!detail?.selectable && !!onAnalyze && !solutions.some(idea => idea.id !== detail?.id && idea.runId === detail?.runId && idea.selected));
-  let canAnalyze = $derived(analysisAvailable && !controlsBusy && !loadingDetail);
+  let analysisAvailable = $derived(!loadingDetail && !!detail?.selectable && !!onAnalyze && !solutions.some(idea => idea.id !== detail?.id && idea.runId === detail?.runId && idea.selected));
+  let canAnalyze = $derived(analysisAvailable && !controlsBusy);
   $effect(() => {
     const key = `${selectedVersionId}:${selectedSummary?.detailRevision ?? ""}`;
     if (selectedVersionId && onAnalyze && key !== activeDetailKey) {
