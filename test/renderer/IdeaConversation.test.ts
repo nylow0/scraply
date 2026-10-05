@@ -56,7 +56,7 @@ describe("IdeaConversation", () => {
     expect(view.getByText("The provider was unavailable.")).toBeTruthy();
     await fireEvent.click(view.getByRole("button", { name: "Edit and retry" }));
     expect((view.getByLabelText("Follow-up message") as HTMLTextAreaElement).value).toBe("Why this timing?");
-    expect(view.getByText(/failed turn stays in history/i)).toBeTruthy();
+    expect(view.getByText(/send it as a new turn/i)).toBeTruthy();
     expect(view.getByText("The provider was unavailable.")).toBeTruthy();
     await pickModel(view.getByLabelText("Model"), "test:new-model");
     await fireEvent.click(view.getByRole("button", { name: "Send follow-up" }));

@@ -143,7 +143,7 @@
         {#if inDetailView}<p class="idea-description">{idea.description}</p><h3 class="mechanism-heading">How it works</h3>{/if}
         <p>{idea.mechanism}</p>
         {#if opportunityOrigin}
-          <p class="origin"><span>{opportunityOrigin.kind === "exploratory-hypothesis" ? "Exploratory hypothesis" : "Saved problem origin"}</span>{opportunityOrigin.kind === "exploratory-hypothesis" ? opportunityOrigin.disclosure : opportunityOrigin.evidenceGap ?? "Generated from the saved problem map. Supporting evidence does not establish customer demand."}</p>
+          <p class="origin"><span>{opportunityOrigin.kind === "exploratory-hypothesis" ? "Exploratory hypothesis" : "Saved problem origin"}</span>{opportunityOrigin.kind === "exploratory-hypothesis" ? opportunityOrigin.disclosure : opportunityOrigin.evidenceGap ?? ""}</p>
         {/if}
       </div>
       {#if idea.selectable}<button class="primary" disabled={busy || analysisBlocked} title={analysisBlocked ? "Wait for the current generation batch to finish" : undefined} onclick={() => onSelect(idea)}>Choose and analyze</button>{/if}

@@ -143,7 +143,7 @@
     retryParentTurnId = turn.parentTurnId;
     selectedVersionId = turn.baseSolutionId;
     mobilePane = "conversation";
-    error = edit ? "Edit the message, then send it as a new turn. The failed turn stays in history." : null;
+    error = edit ? "Edit the message, then send it as a new turn." : null;
     document.getElementById("idea-follow-up-draft")?.focus();
   }
 </script>
@@ -187,7 +187,7 @@
         <p class="lineage">Based on v{conversation.versions.find((item) => item.solutionId === selectedVersion?.parentSolutionId)?.versionNumber ?? "?"}. Its earlier review and conversation remain in history.</p>
         {#if parentVersion}
           <details class="version-comparison"><summary>Compare with v{parentVersion.versionNumber}</summary>
-            <p>{selectedVersion.changeSummary ?? "This version changes the saved idea."}</p>
+            {#if selectedVersion.changeSummary}<p>{selectedVersion.changeSummary}</p>{/if}
             <p>{changedFields.length ? `Changed: ${changedFields.join(" and ")}.` : "The explanation is unchanged."}</p>
             {#if changedFields.includes("How it works")}<div><strong>Earlier mechanism</strong><p>{parentVersion.mechanism}</p><strong>Current mechanism</strong><p>{selectedVersion.mechanism}</p></div>{/if}
             {#if changedFields.includes("Description")}<div><strong>Earlier description</strong><p>{parentVersion.description}</p><strong>Current description</strong><p>{selectedVersion.description}</p></div>{/if}
@@ -231,7 +231,7 @@
           <button class:active={intent === "rethink"} aria-pressed={intent === "rethink"} onclick={() => intent = "rethink"}>Rethink</button>
         </div>
         {#if retryParentTurnId !== undefined}<div class="reply-context">Retrying creates a new branch before the failed turn. <button onclick={() => { retryParentTurnId = undefined; replyToTurnId = null; }}>Use latest</button></div>
-        {:else if replyToTurnId}<div class="reply-context">{replyToTurnId !== branch?.headTurnId ? "Replying from an earlier turn creates a branch." : "Replying to the latest turn."} <button onclick={() => replyToTurnId = null}>Use latest</button></div>{/if}
+        {:else if replyToTurnId}<div class="reply-context">{replyToTurnId !== branch?.headTurnId ? "Replying from an earlier turn" : "Replying to the latest turn"} <button onclick={() => replyToTurnId = null}>Use latest</button></div>{/if}
         <label for="idea-follow-up-draft" class="visually-hidden">Follow-up message</label>
         <textarea id="idea-follow-up-draft" bind:value={draft} maxlength="4000" rows="3" placeholder="Write a follow-up…"></textarea>
         {#if newerResearchAvailable}<label class="research-choice"><input type="checkbox" bind:checked={useNewerResearch} /><span><strong>Use newer research</strong></span></label>{/if}

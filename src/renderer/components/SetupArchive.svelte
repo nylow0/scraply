@@ -31,7 +31,7 @@
         <div class="wide"><span>Audience</span><strong>{scope.audience || "Not specified"}</strong></div>
       {/if}
       <div class="wide"><span>{knownProblem ? "Context" : "Anything else to consider"}</span><p>{scope.observations || "No additional context."}</p></div>
-      <div class="wide"><span>Risk priorities</span><p>{scope.riskEvaluationCriteria || "Not specified. Risks are judged against the research goal and boundaries."}</p></div>
+      <div class="wide"><span>Risk priorities</span><p>{scope.riskEvaluationCriteria || "Not specified"}</p></div>
       <div class="wide"><span>Boundaries</span>{#if scope.offLimits.length}<ul>{#each scope.offLimits as item, index (`${item}-${index}`)}<li>{item}</li>{/each}</ul>{:else}<p>No boundaries specified.</p>{/if}</div>
     </div>
     <dl class="run-settings">

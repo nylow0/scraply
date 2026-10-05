@@ -1032,7 +1032,7 @@
               {#if latestApprovedFrame.approved.areas.length}<h2>Research areas</h2><ul>{#each latestApprovedFrame.approved.areas as area (area.id)}<li>{area.name}{area.included ? "" : " (excluded)"}</li>{/each}</ul>{/if}
             </div>
           </details>
-          <p>{runFrame?.version !== latestApprovedFrame.version ? `This run uses version ${runFrame?.version}. New runs use version ${latestApprovedFrame.version}.` : "Changes create a new version for future runs. This run keeps its approved frame."}</p>
+          {#if runFrame?.version !== latestApprovedFrame.version}<p>This run uses version {runFrame?.version}. New runs use version {latestApprovedFrame.version}.</p>{/if}
           <button type="button" disabled={busy || !["finished", "waiting-for-review"].includes(activeWorkflow?.state ?? "")} onclick={() => { editingApprovedFrameId = latestApprovedFrame!.id; activeStep = "research"; }}>Edit approved frame</button>
         </section>
       {/if}
@@ -1069,7 +1069,7 @@
         <ResearchArchive problems={workspace.problemCandidates} rejectedCandidates={workspace.rejectedProblemCandidates} extraLeads={workspace.problemLeads} {busy} onExport={exportResearch} onOpenSource={openExternalUrl}
           {...(activeWorkflow ? { previewCandidateAssessment, onAssessCandidate: assessCandidate } : {})} />
       {:else}
-        <div class="failed" class:after-summary={Boolean(activeWorkflow)} id="workflow-panel-research" role="tabpanel" aria-label="Research" tabindex="0"><p class="eyebrow">{activeWorkflow ? "Research outcome" : "Research unavailable"}</p><h1>{activeWorkflow?.stopReason ?? "No completed research is ready yet."}</h1><p>{activeWorkflow ? "You can inspect the task record above or start a new run from setup." : "Return to setup and start a research run."}</p>{#if activeRun || activeWorkflow}<div class="zero-idea-actions"><button disabled={busy} onclick={exportResearch}>Export research JSON</button></div>{/if}</div>
+        <div class="failed" class:after-summary={Boolean(activeWorkflow)} id="workflow-panel-research" role="tabpanel" aria-label="Research" tabindex="0"><p class="eyebrow">{activeWorkflow ? "Research outcome" : "Research unavailable"}</p><h1>{activeWorkflow?.stopReason ?? "No completed research is ready yet."}</h1>{#if activeRun || activeWorkflow}<div class="zero-idea-actions"><button disabled={busy} onclick={exportResearch}>Export research JSON</button></div>{/if}</div>
       {/if}
       {#if activeWorkflow}
         <ResearchRevisions requests={workspace.researchRequests} findings={workspace.researchFindings}
@@ -1114,7 +1114,7 @@
         {#if runFinished}{@render runPanel()}{/if}
       </div>
     {:else if activeThread.status === "failed"}
-      <div class="failed" id="workflow-panel-ideas" role="tabpanel" aria-label="Solutions" tabindex="0"><p class="eyebrow">No solutions</p><h1>The run stopped before any solutions were generated.</h1><p>{activeRun?.canResume ? "Resume the saved attempt or edit the setup." : "Edit the setup to start a new run."}</p></div>
+      <div class="failed" id="workflow-panel-ideas" role="tabpanel" aria-label="Solutions" tabindex="0"><p class="eyebrow">No solutions</p><h1>The run stopped before any solutions were generated.</h1></div>
     {:else}
       <div class="failed" id="workflow-panel-ideas" role="tabpanel" aria-label="Solutions" tabindex="0"><p class="eyebrow">Solutions not ready</p><h1>Complete the research step first.</h1></div>
     {/if}

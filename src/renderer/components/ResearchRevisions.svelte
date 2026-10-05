@@ -170,7 +170,7 @@
 
 <section class="research-revisions" aria-label="Research revisions">
   <header class="section-header">
-    <div><h2>Research requests</h2><p>{readOnly ? "Follow-up requests saved with this project." : "Ask another question or revisit a finding. Results stay separate until you use them."}</p></div>
+    <div><h2>Research requests</h2></div>
     {#if !readOnly}<button class="add-button" type="button" disabled={busy || submitting} onclick={() => { chooseKind("new-question"); drafting = !drafting; }}>
       {drafting ? "Close request" : "Add research"}
     </button>{/if}
@@ -232,7 +232,6 @@
   {#if requests.length === 0}
     <div class="requests-empty" role="status">
       <strong>No additional research requests</strong>
-      <p>{readOnly ? "This project has no saved follow-up research." : "Add research to ask another question or revisit a finding."}</p>
     </div>
   {:else}
   <div class="revision-layout">
@@ -301,8 +300,6 @@
             <button class="quiet-button" type="button" disabled={busy || keeping} onclick={() => void keepCurrent(selectedRequest!.id)}>{keeping ? "Saving decision…" : "Keep current research"}</button>
           {/if}
         {/if}
-      {:else}
-        <div class="detail-empty"><h3>Compare before you use a result.</h3></div>
       {/if}
     </div>
   </div>
@@ -321,7 +318,7 @@
   .research-revisions{max-width:var(--page-max);margin:0 auto;padding:26px var(--page-inline) 32px;color:var(--text)}
   .section-header{display:flex;align-items:start;justify-content:space-between;gap:24px;margin-bottom:18px}
   h2{margin:0;font-size:22px;font-weight:650;letter-spacing:-.035em}h3{font-size:17px;line-height:1.35;letter-spacing:-.025em}h4{font-size:13px;line-height:1.5}
-  p{line-height:1.6}.section-header p{margin:5px 0 0;color:var(--muted);font-size:13px}
+  p{line-height:1.6}
   button,select,textarea,input{font:inherit}button{cursor:pointer}button:disabled{opacity:.48;cursor:not-allowed}
   .add-button,.quiet-button{min-height:36px;border:1px solid var(--border);border-radius:8px;background:transparent;color:var(--text);padding:8px 12px;font-size:13px;white-space:nowrap}
   .add-button:hover:not(:disabled),.quiet-button:hover:not(:disabled){border-color:var(--border-strong);background:var(--surface-2)}
@@ -342,7 +339,7 @@
   .form-actions{display:flex;align-items:center;justify-content:space-between;gap:14px;color:var(--subtle);font-size:12px;border-top:1px solid var(--border);padding-top:14px}
   .primary{padding:10px 15px;border:0;border-radius:8px;background:var(--accent-strong);color:var(--accent-ink);font-size:13px;font-weight:650;white-space:nowrap}
   .requests-empty{padding:19px 21px;border:1px solid var(--border);border-radius:10px;background:#000}
-  .requests-empty strong{font-size:13px}.requests-empty p{margin:4px 0 0;color:var(--muted);font-size:13px}
+  .requests-empty strong{font-size:13px}
   .revision-layout{display:grid;grid-template-columns:minmax(240px,.7fr) minmax(0,1.3fr);min-height:260px;border:1px solid var(--border-strong);border-radius:12px;overflow:hidden;background:#000}
   .request-list{border-right:1px solid var(--border-strong);background:var(--surface)}.list-heading{display:flex;justify-content:space-between;padding:15px 17px;border-bottom:1px solid var(--border);font-size:12px;color:var(--muted)}
   .request-row{display:flex;align-items:center;gap:6px;border-bottom:1px solid var(--border)}.request-row.active{background:#bdbdbd0d;box-shadow:inset 2px 0 var(--accent)}
@@ -350,7 +347,7 @@
   .request-name{display:block;font-size:13px;font-weight:500;line-height:1.45}.request-meta{display:block;margin-top:5px;font-size:11px;color:var(--muted)}
   .include-toggle{display:grid;justify-items:center;gap:2px;padding:7px 10px 7px 0;color:var(--subtle);font-size:10px;cursor:pointer}.include-toggle input{accent-color:var(--accent)}
   .request-detail{padding:22px;min-width:0}.detail-head{display:flex;align-items:center;gap:8px;color:var(--muted);font-size:11px}.status-dot{width:7px;height:7px;border-radius:50%;background:var(--muted)}.status-dot.complete{background:var(--accent)}
-  .request-detail h3{margin:8px 0 16px}.detail-empty{max-width:45ch;margin:auto;padding:30px 0}.detail-empty h3{margin:0 0 7px}.detail-message{color:var(--muted);font-size:13px;margin:0}
+  .request-detail h3{margin:8px 0 16px}.detail-message{color:var(--muted);font-size:13px;margin:0}
   .comparison{display:grid;grid-template-columns:1fr 1fr;gap:10px}.finding,.new-findings{padding:15px;border:1px solid var(--border);border-radius:9px;background:var(--surface)}.finding.proposed{border-color:#bdbdbd50}
   .finding>span,.new-findings>span{font-size:11px;color:var(--subtle)}.finding h4,.new-findings h4{margin:8px 0}.finding p,.new-findings p{color:var(--muted);font-size:12px;margin:0 0 9px}.finding small{font-size:11px;color:var(--accent)}
   .evidence-detail{border-top:1px solid var(--border);margin-top:16px;padding-top:14px}.evidence-detail summary{font-size:12px;color:var(--muted);cursor:pointer}.evidence-columns{display:grid;grid-template-columns:1fr 1fr;gap:18px;margin-top:14px}

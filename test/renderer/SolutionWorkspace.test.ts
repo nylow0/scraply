@@ -83,7 +83,6 @@ describe("SolutionListItem risk summary", () => {
     await fireEvent.click(view.container.querySelector(".solution-summary") as HTMLElement);
     await fireEvent.click(view.getByText("Evidence behind this problem").closest("summary") as HTMLElement);
     expect(view.getByText("User-asserted problem")).toBeTruthy();
-    expect(view.getByText("This problem was stated directly. Discovery did not gather source-backed factors for it.")).toBeTruthy();
   });
 });
 

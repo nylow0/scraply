@@ -228,7 +228,7 @@
           {/each}
         </ol>
       {:else}
-        <p class="activity-empty">{summary.state === "waiting-for-review" ? summary.reviewKind === "frame" ? "Review the frame before research starts." : "Choose which problems to develop below." : "Preparing the next research step…"}</p>
+        {#if summary.state !== "waiting-for-review"}<p class="activity-empty">Preparing the next research step…</p>{/if}
       {/if}
     </section>
     {#if canPause || canStop || canResume}
