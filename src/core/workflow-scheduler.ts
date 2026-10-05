@@ -1,3 +1,5 @@
+import { ProviderFailure } from "../providers/structured";
+
 interface ScheduledCall {
   projectId: string;
   controller: AbortController;
@@ -68,7 +70,18 @@ export class WorkflowModelScheduler {
             const value = await operation(callSignal);
             finish(callSignal.aborted ? { error: abortError(callSignal) } : { value });
           } catch (error) {
-            finish({ error: callSignal.aborted ? abortError(callSignal) : error });
+            // An active provider's terminal receipt owns usage and completion safety.
+            // Replacing it with the abort reason would discard confirmed cancellation or lost-process metadata.
+            if (error instanceof ProviderFailure) {
+              const reason = callSignal.reason;
+              const deadlineCancellation = callSignal.aborted && reason instanceof ProviderFailure
+                && reason.code === "timeout" && error.code === "cancelled";
+              finish({ error: deadlineCancellation ? new ProviderFailure("timeout", reason.message, reason.retryable, {
+                cause: error,
+                ...(error.attempts ? { attempts: error.attempts } : {}),
+                ...(error.runtimeCode ? { runtimeCode: error.runtimeCode } : {}),
+              }) : error });
+            } else finish({ error: callSignal.aborted ? abortError(callSignal) : error });
           }
         },
         rejectQueued: () => finish({ error: abortError(callSignal) }),
@@ -145,8 +158,8 @@ export class WorkflowModelScheduler {
 }
 
 function validateCapacity(maxActive: number): number {
-  if (!Number.isInteger(maxActive) || maxActive < 1 || maxActive > 3) {
-    throw new Error("Concurrent model calls must be an integer from 1 to 3");
+  if (!Number.isInteger(maxActive) || maxActive < 1 || maxActive > 8) {
+    throw new Error("Concurrent model calls must be an integer from 1 to 8");
   }
   return maxActive;
 }

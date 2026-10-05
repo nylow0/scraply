@@ -1,16 +1,17 @@
 import { createHash, randomUUID } from "node:crypto";
+import { setTimeout as sleep } from "node:timers/promises";
 import type { DatabaseClient } from "../db/client";
 import { DevelopmentRepository } from "../db/repositories/development";
 import { WorkflowV2Repository } from "../db/repositories/workflow-v2";
 import type { SearchClient } from "../providers/search";
-import { isDroppedStream, ProviderFailure, type GenerationMetadata, type StructuredModelClient, type StructuredStageRequest } from "../providers/structured";
+import { isDroppedStream, ProviderFailure, type GenerationMetadata, type StructuredModelClient, type StructuredStageRequest, type StructuredStageResult } from "../providers/structured";
 import { canonicalJson, sha256, workflowSearchKey } from "../shared/content-identity";
 import { EvidenceCheckOutputSchema, LegacyEvidenceCheckOutputSchema } from "../shared/evidence-investigators";
 import { deriveJsonSchema } from "../shared/json-schema";
 import { OpportunityExpansionOutputSchema } from "../shared/opportunity-exploration";
 import { LegacyResearchFrameOutputSchema, ResearchFrameOutputSchema } from "../shared/research-frame";
 import { SourceSchema, type Source } from "../shared/schemas";
-import { AssessedWorkflowV2ProblemKillOutputSchema, BoundedWorkflowV2FactorHarvestOutputSchema, FACTOR_EXPLANATION_CHARACTERS, ClassifiedWorkflowV2ProblemKillOutputSchema, WorkflowV2QueryPlanOutputSchema, WorkflowV2FactorHarvestOutputSchema, WorkflowV2ProblemCandidatesOutputSchema, WorkflowV2ProblemKillOutputSchema, WorkflowV2SolutionsOutputSchema } from "../shared/structured-output-schemas";
+import { AssessedWorkflowV2ProblemKillOutputSchema, BoundedWorkflowV2FactorHarvestOutputSchema, LabeledWorkflowV2FactorHarvestOutputSchema, FACTOR_EXPLANATION_CHARACTERS, ClassifiedWorkflowV2ProblemKillOutputSchema, WorkflowV2QueryPlanOutputSchema, WorkflowV2FactorHarvestOutputSchema, WorkflowV2ProblemCandidatesOutputSchema, WorkflowV2ProblemKillOutputSchema, WorkflowV2SolutionsOutputSchema } from "../shared/structured-output-schemas";
 import { PROBLEM_AUDIENCE_ASSESSMENT_INSTRUCTION, repairVerdictSourceIds, scopeFactorAssessments } from "./problem-evidence";
 import { LegacyWorkflowV2QueryPlanOutputSchema } from "../shared/structured-output-schemas";
 import type { WorkflowV2DevelopmentContext } from "./development";
@@ -27,6 +28,9 @@ export class WorkflowExecution {
   readonly smallHarvestBatches: boolean;
   readonly boundedFollowUpHarvest: boolean;
   readonly parallelResearch: boolean;
+  readonly labeledFactors: boolean;
+  readonly mediumReads: boolean;
+  readonly mediumSynthesis: boolean;
   readonly rankProblemCandidates: boolean;
   private readonly prompts: Record<WorkflowV2StageId, ResolvedWorkflowV2Prompt>;
   private readonly disableRepair: boolean;
@@ -65,12 +69,20 @@ export class WorkflowExecution {
       this.save("query-plan-languages", { version: 1 });
       this.save("bounded-follow-up-harvest", { version: 1 });
       this.save("parallel-research", { version: 1 });
+      this.save("labeled-factors", { version: 1 });
+      this.save("medium-reads", { version: 1 });
+      this.save("medium-synthesis", { version: 1 });
     }
     // Runs without the marker keep their original source groups and checkpoint identities.
     this.smallHarvestBatches = this.read<{ version: number }>("small-harvest-batches")?.version === 1;
     this.boundedFollowUpHarvest = this.read<{ version: number }>("bounded-follow-up-harvest")?.version === 1;
     // Older runs keep their sequential reads, whose factor limits are part of saved request identities.
     this.parallelResearch = this.read<{ version: number }>("parallel-research")?.version === 1;
+    // Older runs keep the read schema their completed reads were requested with.
+    this.labeledFactors = this.read<{ version: number }>("labeled-factors")?.version === 1;
+    // Reasoning effort is part of a saved read request, so older runs keep their configured effort.
+    this.mediumReads = this.read<{ version: number }>("medium-reads")?.version === 1;
+    this.mediumSynthesis = this.read<{ version: number }>("medium-synthesis")?.version === 1;
     if (!this.read("source-route-start")) this.save("source-route-start", new Date().toISOString());
     // Candidate order controls sequential source IDs in completed verdict requests.
     this.rankProblemCandidates = this.read<{ version: number }>("candidate-accounting")?.version === 1;
@@ -226,7 +238,8 @@ export class WorkflowExecution {
         ? this.repository.findStageResult(this.runId, stageId, selectionId)?.schema
           ?? (completedFactor ? (JSON.parse(completedFactor.request_json) as { jsonSchema: unknown }).jsonSchema : undefined)
         : undefined;
-      const factorSchema = savedFactorSchema ? WorkflowV2FactorHarvestOutputSchema : BoundedWorkflowV2FactorHarvestOutputSchema;
+      const factorSchema = savedFactorSchema ? WorkflowV2FactorHarvestOutputSchema
+        : this.labeledFactors ? LabeledWorkflowV2FactorHarvestOutputSchema : BoundedWorkflowV2FactorHarvestOutputSchema;
       const factorLimit = stageId === "factor-harvest"
         ? Number((original.workOrder.inputs as { factorLimit?: unknown }).factorLimit)
         : Number.NaN;
@@ -242,6 +255,8 @@ export class WorkflowExecution {
         : stage.schema;
       const request: StructuredStageRequest<unknown> = {
         ...original,
+        ...((stageId === "factor-harvest" && this.mediumReads) || (MEDIUM_SYNTHESIS_STAGES.has(stageId) && this.mediumSynthesis)
+          ? { reasoningEffort: mediumReasoningEffort(original) } : {}),
         workOrder: { ...original.workOrder, instruction: prompt.text, inputs: { routing: original.workOrder.inputs, workflowVersion: 2 } },
         schema: requestSchema,
         jsonSchema: savedFactorSchema ?? deriveJsonSchema(requestSchema),
@@ -576,31 +591,63 @@ export class WorkflowExecution {
  * reads finished within 54 seconds (the slowest took 115), and a stalled read is started over.
  * Idea stages legitimately run longer and stay unlimited.
  */
+const REASONING_EFFORT_ORDER = ["minimal", "low", "medium", "high", "xhigh", "max", "ultra"];
+
+/**
+ * Single long calls that every area waits on. In a Sol 6.1 high run, area ranking took 2 minutes and each
+ * problem-candidates call 2-3 minutes while other areas sat idle. Verdicts and evidence checks keep the run's effort.
+ */
+const MEDIUM_SYNTHESIS_STAGES = new Set<WorkflowV2StageId>(["area-ranking", "problem-candidates"]);
+
+/**
+ * Caps OpenAI calls at medium effort, never above the effort chosen for the run. Evidence reads quote and label
+ * facts: in Sol 6.1 high runs they were 62% of model time and half of each read's output was reasoning.
+ */
+function mediumReasoningEffort(request: StructuredStageRequest<unknown>): string {
+  const chosen = REASONING_EFFORT_ORDER.indexOf(request.reasoningEffort);
+  return request.model.providerId === "openai-subscription" && chosen > REASONING_EFFORT_ORDER.indexOf("medium")
+    ? "medium" : request.reasoningEffort;
+}
+
 export const RESEARCH_CALL_TIME_LIMIT_MS: Partial<Record<WorkflowV2StageId, number>> = {
   "frame-search-plan": 240_000, "area-ranking": 240_000, "query-plan": 240_000, "factor-harvest": 90_000,
   "evidence-check": 240_000, "area-gap": 240_000, frame: 480_000, "problem-candidates": 480_000, "problem-kill": 480_000,
 };
 
 /**
+ * Pauses before restarting a call whose OpenAI stream dropped. Drops come in bursts: three reads lost
+ * their streams within ten seconds in one run, and an immediate restart dropped again. Tests shorten them.
+ */
+export const streamRestarts = { pausesMs: [15_000, 45_000] as readonly number[] };
+
+/**
  * A timed-out research call is retried once. Evidence reading handles its own timeout restart and split
- * (see discovery.ts). A research call whose OpenAI stream dropped is started over once here:
- * `acknowledgeRestart` records the lost attempt as deliberately replaced, and its result is never used.
- * A second drop is not acknowledged; framed research then ends only that area (see research-engine.ts).
- * Idea stages have no time limit and are never started over.
+ * (see discovery.ts). A research call whose OpenAI stream dropped is started over after a pause, up to
+ * twice: `acknowledgeRestart` records each lost attempt as deliberately replaced, and its result is never
+ * used. A third drop is not acknowledged; framed research then ends only that area (see research-engine.ts).
+ * Idea stages have no time limit and restart in research-engine.ts.
  */
 async function completeWithinTimeLimit<T>(client: StructuredModelClient, request: StructuredStageRequest<T>, stageId: WorkflowV2StageId,
   acknowledgeRestart: (generationId: string) => void) {
   const limit = RESEARCH_CALL_TIME_LIMIT_MS[stageId];
   if (limit === undefined || request.callTimeLimitMs !== undefined) return client.structuredCompletion(request);
   const limited: StructuredStageRequest<T> = { ...request, callTimeLimitMs: limit };
-  try {
-    return await client.structuredCompletion(limited);
-  } catch (error) {
-    if (!(error instanceof ProviderFailure) || request.signal?.aborted) throw error;
-    if (isDroppedStream(error)) acknowledgeRestart(request.generationId);
-    else if (stageId === "factor-harvest" || error.code !== "timeout") throw error;
-    return client.structuredCompletion({ ...limited, generationId: randomUUID() });
-  }
+  const complete = async (current: StructuredStageRequest<T>, pauses: readonly number[]): Promise<StructuredStageResult<T>> => {
+    try {
+      return await client.structuredCompletion(current);
+    } catch (error) {
+      if (!(error instanceof ProviderFailure) || request.signal?.aborted) throw error;
+      const [pause, ...later] = pauses;
+      if (isDroppedStream(error) && pause !== undefined) {
+        acknowledgeRestart(error.failedGenerationId ?? current.generationId);
+        await sleep(pause, undefined, { signal: request.signal });
+        return complete({ ...current, generationId: randomUUID() }, later);
+      }
+      if (stageId === "factor-harvest" || error.code !== "timeout" || current !== limited) throw error;
+      return client.structuredCompletion({ ...limited, generationId: randomUUID() });
+    }
+  };
+  return complete(limited, streamRestarts.pausesMs);
 }
 
 /**

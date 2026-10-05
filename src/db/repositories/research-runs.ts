@@ -21,6 +21,20 @@ export interface ResearchRunWorkflowLink {
 }
 const ACCOUNTING_BUDGET_USD = 1_000;
 
+/**
+ * Returns an active run that keeps this run from starting or resuming, if any. Idea runs of one workflow
+ * session may run side by side; any other run needs the project to itself.
+ */
+export function blockingActiveRun(client: DatabaseClient, threadId: string,
+  run: { id?: string; problemId: string | null; sessionId: string | null }): string | null {
+  const active = client.db.prepare(`SELECT id, problem_id, workflow_session_id FROM research_runs
+    WHERE thread_id = ? AND id != ? AND status IN ('queued', 'running')`)
+    .all(threadId, run.id ?? "") as Array<{ id: string; problem_id: string | null; workflow_session_id: string | null }>;
+  const sideBySide = run.problemId !== null && run.sessionId !== null
+    && active.every((other) => other.problem_id !== null && other.workflow_session_id === run.sessionId);
+  return active[0] && !sideBySide ? active[0].id : null;
+}
+
 export class ResearchRunRepository {
   constructor(private readonly client: DatabaseClient) {}
 
@@ -34,9 +48,8 @@ export class ResearchRunRepository {
         db.exec("COMMIT");
         return { runId: previous.id, created: false };
       }
-      const active = db.prepare(`SELECT id FROM research_runs WHERE thread_id = ? AND status IN ('queued', 'running') LIMIT 1`)
-        .get(threadId) as { id: string } | undefined;
-      if (active) throw new ActiveRunConflictError(active.id);
+      const blocking = blockingActiveRun(this.client, threadId, { problemId, sessionId: workflow?.sessionId ?? null });
+      if (blocking) throw new ActiveRunConflictError(blocking);
       const runId = randomUUID();
       const now = new Date().toISOString();
       db.prepare(`

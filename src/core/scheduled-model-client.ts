@@ -20,11 +20,18 @@ export function scheduledModelClient(
     const callSignal = request.signal
       ? AbortSignal.any([request.signal, deadlineController.signal]) : deadlineController.signal;
     const dispatch = (attemptRequest: StructuredStageRequest<T>) => scheduler.schedule(projectId,
-      (signal) => {
+      async (signal) => {
         if (deadline !== null && Date.now() >= deadline) throw new ProviderFailure("timeout", "Model generation exceeded its saved deadline", false);
-        return client.structuredCompletion({
+        const result = await client.structuredCompletion({
           ...attemptRequest, signal, ...(deadline === null ? {} : { deadlineMs: Math.max(1, deadline - Date.now()) }),
         });
+        // A completion racing Stop remains an accounting receipt; its output must never reach domain writes.
+        if (signal.aborted) {
+          const reason = signal.reason;
+          throw new ProviderFailure(reason instanceof ProviderFailure ? reason.code : "cancelled",
+            reason instanceof Error ? reason.message : "Model call cancelled", false, { attempts: result.metadata.attempts });
+        }
+        return result;
       }, callSignal);
     const firstRequest: StructuredStageRequest<T> = { ...request, repairPolicy: "disabled" };
     try {

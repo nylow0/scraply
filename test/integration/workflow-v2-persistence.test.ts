@@ -283,7 +283,9 @@ describe("workflow v2 persistence", () => {
     const modelClient: StructuredModelClient = { async structuredCompletion(request) {
       const evidence = request.evidence[0]!.content as { sources?: Array<{ id: string }> };
       const factor = { subject: "Students", behavior: "miss deadlines", sourceId: evidence.sources?.[0]?.id,
-        quote: "Students do not submit their assignments on time", modelConfidence: 0.8, uncertainty: "One source" };
+        quote: "Students do not submit their assignments on time", modelConfidence: 0.8, uncertainty: "One source",
+        sourceRole: "firsthand", audienceFit: "intended-buyer", independentSourceKey: "Student forum", supportsDemand: false,
+        demandEvidenceUncertainty: "No purchase described." };
       const output = request.stage.startsWith("query-plan")
         ? { queries: ["one", "two", "three"].map((query, index) => ({ query,
           intent: ["firsthand-experience", "current-alternative", "contrary-evidence"][index],
@@ -597,6 +599,9 @@ describe("workflow v2 persistence", () => {
       }], schema: FactorHarvestOutputSchema,
       jsonSchema: deriveJsonSchema(FactorHarvestOutputSchema), repairPolicy: "one_retry",
     });
+    // This run predates labeled facts, so its reads keep the schema that still accepted unlabeled facts.
+    new WorkflowExecution(client, "run-v2");
+    client.db.prepare("DELETE FROM workflow_snapshots WHERE research_run_id = ? AND snapshot_key = ?").run("run-v2", "labeled-factors");
     try {
       await expect(new WorkflowExecution(client, "run-v2").discoveryClient(provider).structuredCompletion(request("first")))
         .rejects.toThrow("Process ended after recording the provider terminal");

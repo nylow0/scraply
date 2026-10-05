@@ -9,6 +9,51 @@ import { DEFAULT_RUN_CONFIG, RunConfigSchema, modelRefKey } from "../../src/shar
 import type { WorkflowLaunchDraft } from "../../src/shared/workflow-contracts";
 
 describe("ScopeForm search provider selection", () => {
+  test.each(["exa", "perplexity"] as const)("shows only %s and the disabled other provider when one is connected", async (connectedProvider) => {
+    const state = workspace();
+    state.runConfig = { ...DEFAULT_RUN_CONFIG, searchProvider: "auto" };
+    state.validation.exa = { valid: connectedProvider === "exa" };
+    state.validation.perplexity = { valid: connectedProvider === "perplexity" };
+    const props = { workspace: state, busy: false, onSave: vi.fn(), onStart: vi.fn(), onRetry: vi.fn() };
+    const view = render(ScopeForm, props);
+    const select = view.getByLabelText("Search provider") as HTMLSelectElement;
+    const disconnectedProvider = connectedProvider === "exa" ? "perplexity" : "exa";
+    await waitFor(() => expect(select.value).toBe(connectedProvider));
+    expect(Array.from(select.options, (option) => option.value)).toEqual([connectedProvider, disconnectedProvider]);
+    expect(Array.from(select.options).find((option) => option.value === connectedProvider)?.disabled).toBe(false);
+    expect(Array.from(select.options).find((option) => option.value === disconnectedProvider)?.disabled).toBe(true);
+
+    const reconnected = { ...state, validation: { ...state.validation, [disconnectedProvider]: { valid: true } } };
+    await view.rerender({ ...props, workspace: reconnected });
+    await waitFor(() => expect(Array.from(select.options, (option) => option.value)).toEqual([connectedProvider, "auto", disconnectedProvider]));
+    expect(Array.from(select.options).every((option) => !option.disabled)).toBe(true);
+    // A saved provider remains selected after the other provider is connected.
+    expect(select.value).toBe(connectedProvider);
+  });
+
+  test("disables every choice when neither search provider is connected", () => {
+    const state = workspace();
+    state.validation.exa = { valid: false };
+    state.validation.perplexity = { valid: false };
+    const view = render(ScopeForm, { workspace: state, busy: false, onSave: vi.fn(), onStart: vi.fn(), onRetry: vi.fn() });
+    const select = view.getByLabelText("Search provider") as HTMLSelectElement;
+    expect(Array.from(select.options).every((option) => option.disabled)).toBe(true);
+  });
+
+  test("moves the selected provider to the top without changing the saved choice", async () => {
+    const state = workspace();
+    state.validation.exa = { valid: true };
+    state.validation.perplexity = { valid: true };
+    const onSave = vi.fn().mockResolvedValue(undefined);
+    const view = render(ScopeForm, { workspace: state, busy: false, onSave, onStart: vi.fn(), onRetry: vi.fn() });
+    const select = view.getByLabelText("Search provider") as HTMLSelectElement;
+    await fireEvent.change(select, { target: { value: "perplexity" } });
+    expect(select.options[0]?.value).toBe("perplexity");
+    expect(select.value).toBe("perplexity");
+    await fireEvent.click(view.getByRole("button", { name: "Discover problems" }));
+    await waitFor(() => expect(onSave).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ searchProvider: "perplexity" })));
+  });
+
   test("defaults a new setup to automatic when both providers are connected", async () => {
     const state = workspace();
     state.scope = null;
@@ -38,8 +83,10 @@ describe("ScopeForm search provider selection", () => {
       await waitFor(() => expect(provider.value).toBe("perplexity"));
       expect((view.getByRole("button", { name: "Discover problems" }) as HTMLButtonElement).disabled).toBe(false);
 
+      const bothConnected = { ...connected, validation: { ...connected.validation, exa: { valid: true } } };
+      await view.rerender({ ...props, workspace: bothConnected });
       await fireEvent.change(provider, { target: { value: "exa" } });
-      await view.rerender({ ...props, workspace: { ...connected, validation: { ...connected.validation } } });
+      await view.rerender({ ...props, workspace: { ...bothConnected, validation: { ...bothConnected.validation } } });
       expect(provider.value).toBe("exa");
     } finally {
       if (previous === null) localStorage.removeItem(storageKey);
@@ -604,7 +651,7 @@ describe("ScopeForm search provider selection", () => {
     expect(onSave.mock.calls[0]?.[1]).toMatchObject({ model: DEFAULT_RUN_CONFIG.model, reasoningEffort: "high" });
   });
 
-  test("warns for only the selected provider and saves a connected replacement", async () => {
+  test("replaces a disconnected saved provider and saves the connected provider", async () => {
     const onSave = vi.fn().mockResolvedValue(undefined);
     const onStart = vi.fn().mockResolvedValue(undefined);
     const view = render(ScopeForm, {
@@ -615,11 +662,9 @@ describe("ScopeForm search provider selection", () => {
       onRetry: vi.fn().mockResolvedValue(undefined),
     });
 
-    expect(view.getAllByText("Exa unavailable").length).toBeGreaterThan(0);
+    expect(view.queryByText("Exa unavailable")).toBeNull();
     expect(view.queryByText("Perplexity unavailable")).toBeNull();
-    expect((view.getByRole("button", { name: "Discover problems" }) as HTMLButtonElement).disabled).toBe(true);
-
-    await fireEvent.change(view.getByLabelText("Search provider"), { target: { value: "perplexity" } });
+    expect((view.getByLabelText("Search provider") as HTMLSelectElement).value).toBe("perplexity");
     await waitFor(() => expect(view.getByText("Perplexity: Connected")).toBeTruthy());
     const submit = view.getByRole("button", { name: "Discover problems" }) as HTMLButtonElement;
     expect(submit.disabled).toBe(false);
@@ -839,6 +884,7 @@ describe("ScopeForm search provider selection", () => {
       model: { providerId: "legacy-codex-cli", modelId: "gpt-old" },
     };
     state.validation.exa = { valid: false, error: "Exa unavailable" };
+    state.validation.perplexity = { valid: false, error: "Perplexity unavailable" };
     const view = render(ScopeForm, {
       workspace: state, busy: false, onSave: vi.fn(), onStart: vi.fn(), onRetry: vi.fn(),
     });
