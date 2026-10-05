@@ -230,6 +230,10 @@ describe("native account safety", () => {
 });
 
 class FakeRuntime {
+  reasoningSummaries = true;
+  maxConcurrentModelCalls = 1;
+  setReasoningSummaries(enabled: boolean) { this.reasoningSummaries = enabled; }
+  setMaxConcurrentGenerations(limit: number) { this.maxConcurrentModelCalls = limit; }
   loggedIn = false;
   completeCalls = 0;
   cancelCalls = 0;

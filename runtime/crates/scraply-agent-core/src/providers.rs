@@ -25,6 +25,7 @@ pub struct ProviderRequest {
     pub output_schema: Value,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reasoning_effort: Option<ReasoningEffort>,
+    pub reasoning_summaries: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_output_tokens: Option<u32>,
     pub attempt: GenerationAttempt,

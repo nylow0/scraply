@@ -21,6 +21,8 @@ pub struct GenerationMetadata {
     pub latency_ms: u64,
     pub repair_count: u8,
     pub provider_request_ids: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning_summary: Option<String>,
     pub attempts: Vec<GenerationAttemptMetadata>,
 }
 
@@ -74,6 +76,8 @@ pub struct GenerationAttemptMetadata {
     pub latency_ms: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider_request_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_summary: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -174,6 +178,7 @@ where
                     &request.model,
                     &error,
                     first_started,
+                    control,
                 ));
                 return Err(GenerationFailure::new(error, attempts));
             }
@@ -183,6 +188,7 @@ where
             &request.model,
             &first,
             first_started,
+            control,
         ));
         let first_request_id = first
             .request_id
@@ -218,6 +224,7 @@ where
                             &request.model,
                             &error,
                             repair_started,
+                            control,
                         ));
                         return Err(GenerationFailure::new(error, attempts));
                     }
@@ -227,6 +234,7 @@ where
                     &request.model,
                     &repaired,
                     repair_started,
+                    control,
                 ));
                 let repaired_request_id = repaired
                     .request_id
@@ -333,6 +341,7 @@ fn provider_request(
         prompt,
         output_schema: request.output_schema.clone(),
         reasoning_effort: request.reasoning_effort,
+        reasoning_summaries: request.reasoning_summaries,
         max_output_tokens: request.max_output_tokens,
         attempt,
     }
@@ -397,6 +406,13 @@ fn build_result(
             latency_ms: started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64,
             repair_count,
             provider_request_ids,
+            reasoning_summary: {
+                let text: String = attempts
+                    .iter()
+                    .filter_map(|attempt| attempt.reasoning_summary.as_deref())
+                    .collect();
+                (!text.is_empty()).then_some(text)
+            },
             attempts,
         },
     })
@@ -407,6 +423,7 @@ fn completed_attempt(
     model: &QualifiedModel,
     response: &ProviderResponse,
     started: Instant,
+    control: &OperationControl,
 ) -> GenerationAttemptMetadata {
     GenerationAttemptMetadata {
         attempt,
@@ -429,6 +446,7 @@ fn completed_attempt(
             .request_id
             .as_deref()
             .map(sanitize_provider_request_id),
+        reasoning_summary: control.reasoning_summary(attempt),
     }
 }
 
@@ -437,6 +455,7 @@ fn failed_attempt(
     model: &QualifiedModel,
     error: &CoreError,
     started: Instant,
+    control: &OperationControl,
 ) -> GenerationAttemptMetadata {
     let outcome = match error.code() {
         FailureCode::Cancellation => AttemptOutcome::Cancelled,
@@ -463,6 +482,7 @@ fn failed_attempt(
         provider_request_id: error
             .provider_request_id()
             .map(sanitize_provider_request_id),
+        reasoning_summary: control.reasoning_summary(attempt),
     }
 }
 
@@ -586,6 +606,7 @@ mod tests {
                 "additionalProperties": false
             }),
             reasoning_effort: Some(ReasoningEffort::Medium),
+            reasoning_summaries: false,
             max_output_tokens: Some(500),
             repair_policy,
         }

@@ -19,7 +19,7 @@ try {
   for (const size of [262_144, 2_097_152, 8_388_608]) {
     const padding = "x".repeat(size);
     const frame = Buffer.from(JSON.stringify({
-      protocolVersion: "1.1", id: "ignored", operation: "account.list", result: { padding },
+      protocolVersion: "1.2", id: "ignored", operation: "account.list", result: { padding },
     }));
     const chunks: Buffer[] = [];
     for (let offset = 0; offset < frame.length; offset += 8192) chunks.push(frame.subarray(offset, offset + 8192));

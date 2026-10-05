@@ -164,6 +164,7 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
   const workflowModelScheduler = new WorkflowModelScheduler();
   const savedAdvancedSettings = db.getSetting("advanced_settings");
   let advancedSettings = AppSettingsSchema.parse(savedAdvancedSettings ? JSON.parse(savedAdvancedSettings) : {});
+  context.nativeRuntime?.setReasoningSummaries(advancedSettings.reasoningSummaries);
   workflowModelScheduler.setMaxActive(advancedSettings.maxConcurrentModelCalls);
   context.nativeRuntime?.setMaxConcurrentGenerations(advancedSettings.maxConcurrentModelCalls);
   const invalidateProviderCache = () => {
@@ -1387,6 +1388,7 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
       if (route === "/settings/advanced") {
         advancedSettings = AppSettingsSchema.parse(await readBody(req));
         db.setSetting("advanced_settings", JSON.stringify(advancedSettings));
+        context.nativeRuntime?.setReasoningSummaries(advancedSettings.reasoningSummaries);
         workflowModelScheduler.setMaxActive(advancedSettings.maxConcurrentModelCalls);
         context.nativeRuntime?.setMaxConcurrentGenerations(advancedSettings.maxConcurrentModelCalls);
         return sendJson(res, 200, advancedSettings);
