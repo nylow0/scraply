@@ -1,5 +1,6 @@
 import { z } from "zod";
 import type { Source } from "../shared/schemas";
+import type { ResearchGoalKind } from "../shared/research-frame";
 import type { SearchOptions, SearchProvider, SearchProviderChoice } from "./search";
 
 export const SourceRouteSchema = z.enum(["open-web", "community", "issue-tracker", "social", "studies-official", "alternatives", "contrary", "buying"]);
@@ -19,7 +20,7 @@ export const SourceVenueSchema = z.object({
   kind: z.enum(["community", "issue-tracker", "social", "official", "publication"]),
 }).strict();
 export interface SourceRoutingContext {
-  goalKind?: "market-opportunity" | "competition-entry" | "research-question" | "community-or-personal" | "process-improvement" | "other";
+  goalKind?: ResearchGoalKind;
   venues?: z.infer<typeof SourceVenueSchema>[];
   languages?: string[];
   region?: string;
