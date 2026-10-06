@@ -45,6 +45,21 @@ This is my everyday computer, and dev shares parts of my real setup.
 4. **Other servers.** Several checkouts may run dev servers at once. Stop only your own, with `bun run dev:stop` from the checkout that started it. Never kill `bun`, `electron`, or `Scraply.exe` by name.
 5. **Screenshots.** I use this machine while you work. Capture the app with Playwright `page.screenshot()`, never the desktop.
 
+## Keep my data out of everything published
+
+The repository, its pull requests, and every release are public. Whatever reaches GitHub stays readable through old pull requests even after a history rewrite, and only GitHub Support can remove it. This is the most important rule in this file.
+
+My data is anything that comes from me and not from the product: the titles, briefs, and results of my projects, my accounts and keys, my name, email, and Windows user name, and paths on this computer.
+
+Everything you publish is synthetic, invented for the purpose.
+
+- **Fixtures, evaluation cases, and examples.** Write a made-up case. A real project with the details changed, or one named as an example in a prompt, comment, or doc, still points back to me.
+- **Screenshots.** Capture them from `bun run test:ui` or an isolated profile. The sidebar lists project titles, so any screen captured in my real profile exposes them.
+- **Text.** Commit messages, pull request descriptions, docs, and logs call cases by their synthetic names and write local paths with placeholders such as `%APPDATA%`.
+- **Builds.** A release holds only what the package allowlist names, and nothing that identifies the computer that built it.
+
+Before pushing, read your whole diff and look at every image for my data. If you find some already committed or published, stop and tell me before doing anything else.
+
 ## Check every path
 
 A change often works on the path you tested and breaks somewhere else. Before calling work done, go through this list and say which entries applied:
