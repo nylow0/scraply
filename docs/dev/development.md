@@ -111,10 +111,6 @@ Research calls have per-stage time limits defined in [workflow-execution.ts](../
 
 New workflows use Research depth to guide query planning and evidence collection. Call and search counts are estimates, not dispatch limits. Older saved workflows retain their explicit count limits. Search provider is available in the main setup. Exa uses `auto` search; Perplexity uses its Search API with a 2,000-token page extraction limit. Quick, Standard, and Deep are Scraply workflow settings, not interchangeable provider modes. Perplexity's `web`/`fast` search types and `low`/`medium`/`high` extraction settings are documented in its [Search API reference](https://docs.perplexity.ai/api-reference/search-post); Exa's modes are documented in its [Search reference](https://exa.ai/docs/reference/search).
 
-## Usefulness evaluation
-
-The [Phase 3 evaluation procedure](evaluation.md) compares matching discovery runs in a blinded review. Its results are separate from implementation and release verification.
-
 ## Secret checks
 
 Run the local check after staging files and before committing:

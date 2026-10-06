@@ -108,7 +108,7 @@ A change often works on the path you tested and breaks somewhere else. Before ca
 Most code changes need no documentation change.
 
 - `docs/user/` helps users get tasks done: what a feature does, how to start, and anything unintuitive. Keep implementation details and contributor tooling out of it. A UI tweak needs no entry.
-- `docs/dev/` holds development, release, and evaluation procedures.
+- `docs/dev/` holds development and release procedures.
 - `runtime/` keeps its own README, vocabulary, and ADRs.
 - When behavior changes, rewrite or remove the affected text rather than appending to it. Link to source instead of copying it.
 - Leave out file catalogs, field lists, and pull request summaries; the code and tests already record them.
@@ -117,6 +117,8 @@ Most code changes need no documentation change.
 ## Plans and work artifacts
 
 Keep plans, research notes, acceptance transcripts, and scratch files out of the repository: put them under the ignored `build/` directory or outside the checkout. The merged pull request is the implementation record, so acceptance evidence goes in its description.
+
+Markdown files written for local testing and evaluation never go to GitHub: evaluation procedures, acceptance runbooks, and review instructions. Keep them under `build/` as well. Never commit one, and never link one from a tracked doc.
 
 ## How it works
 
