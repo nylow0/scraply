@@ -107,10 +107,29 @@ function Invoke-Checked {
         throw "cargo metadata failed with exit code $LASTEXITCODE."
     }
     $metadata = $metadataJson | ConvertFrom-Json
+
+        # Panic locations and C assertions embed absolute source paths, which would ship
+        # the builder's account name. Rewrite the profile prefix for Rust and trim it for
+        # the C sources. Scoped to the release build so test and clippy caches stay valid.
+        $profilePrefix = $env:USERPROFILE.TrimEnd("\")
+        $priorRustFlags = [Environment]::GetEnvironmentVariable("CARGO_ENCODED_RUSTFLAGS", "Process")
+        $priorCFlags = [Environment]::GetEnvironmentVariable("CFLAGS", "Process")
+        $rustFlags = @($priorRustFlags, "--remap-path-prefix=$profilePrefix=~") |
+            Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+        [Environment]::SetEnvironmentVariable(
+            "CARGO_ENCODED_RUSTFLAGS", ($rustFlags -join [char]0x1f), "Process")
+        [Environment]::SetEnvironmentVariable(
+            "CFLAGS", "$priorCFlags /d1trimfile:$profilePrefix\".Trim(), "Process")
+        try {
         Invoke-Checked $cargo @(
             "+$toolchain", "build", "-p", "scraply-agent", "--release", "--locked",
             "--target", $targetTriple
         ) "locked MSVC release build"
+        }
+        finally {
+            [Environment]::SetEnvironmentVariable("CARGO_ENCODED_RUSTFLAGS", $priorRustFlags, "Process")
+            [Environment]::SetEnvironmentVariable("CFLAGS", $priorCFlags, "Process")
+        }
     }
     finally {
         Pop-Location
@@ -132,6 +151,9 @@ $binaryText = [Text.Encoding]::ASCII.GetString($binaryBytes)
 if ($binaryText.Contains("SCRAPLY_AGENT_TEST_FIXTURE") -or
     $binaryText.Contains("SCRAPLY_AGENT_TEST_BASE_URL")) {
     throw "A debug-only test seam is present in the release binary."
+}
+if ($binaryText.IndexOf("\Users\$env:USERNAME\", [StringComparison]::OrdinalIgnoreCase) -ge 0) {
+    throw "The release binary embeds the builder's user profile path."
 }
 $releaseVersion = & $binaryPath --version
 if ($LASTEXITCODE -ne 0 -or $releaseVersion -ne "scraply-agent $version") {
