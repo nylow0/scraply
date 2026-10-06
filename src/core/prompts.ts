@@ -45,7 +45,11 @@ const RETIRED_PROMPT_FILENAMES = new Set([
 // SHA-256 of LF-normalized workflow-v2 prompt blobs verified with git cat-file across
 // repository history. Only exact bundled copies or recorded baselines may be upgraded.
 const KNOWN_BUNDLED_PROMPT_HASHES: Readonly<Record<string, readonly string[]>> = {
-  "workflow-v2-frame.md": ["3061cf6a392930af3a4498b90d5e8a011e9a52de8366b866b81a547729829a16"],
+  // Installed copies of these two frame prompts predate the current repository history.
+  "workflow-v2-frame.md": [
+    "0beac3932fb8a0246fa3f9699ddde1f9e337439ef8fe496e4f7245f2806a3021",
+    "3061cf6a392930af3a4498b90d5e8a011e9a52de8366b866b81a547729829a16",
+  ],
   "workflow-v2-idea-follow-up.md": ["eae66a0630bc8428c961752c71d5e4bc367f944d89d5e5fd60d0adbe4effd101"],
   "workflow-v2-idea-ranking.md": ["73460388c9cae8bf5498e1ed8dc4fe7d9d6841fdf7eff7f37c9c5bb501a1a16c"],
   "workflow-v2-solution-set-review.md": ["c609d924ee01b1d98b47abd309ba76c9df7b7777e56b14a05d57ddf8b9d75e94"],
