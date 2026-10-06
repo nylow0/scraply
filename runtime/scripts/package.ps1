@@ -174,19 +174,13 @@ if (-not $packageDirectory.StartsWith($safePrefix, [StringComparison]::OrdinalIg
 if (Test-Path -LiteralPath $packageDirectory) {
     Remove-Item -LiteralPath $packageDirectory -Recurse -Force
 }
-$null = New-Item -ItemType Directory -Path (Join-Path $packageDirectory "docs") -Force
-$null = New-Item -ItemType Directory -Path (Join-Path $packageDirectory "docs\adr") -Force
+$null = New-Item -ItemType Directory -Path $packageDirectory -Force
 
 $artifacts = @(
     @{ Source = $binaryPath; Relative = "scraply-agent.exe" },
     @{ Source = (Join-Path $repositoryRoot "LICENSE"); Relative = "LICENSE" },
     @{ Source = (Join-Path $repositoryRoot "vendor\openai-codex\NOTICE"); Relative = "OPENAI-NOTICE" },
-    @{ Source = (Join-Path $repositoryRoot "UPSTREAM.md"); Relative = "UPSTREAM.md" },
-    @{ Source = (Join-Path $repositoryRoot "README.md"); Relative = "README.md" },
-    @{ Source = (Join-Path $repositoryRoot "CONTEXT.md"); Relative = "CONTEXT.md" },
-    @{ Source = (Join-Path $repositoryRoot "docs\adr\0001-custom-runtime.md"); Relative = "docs\adr\0001-custom-runtime.md" },
-    @{ Source = (Join-Path $repositoryRoot "docs\auth-architecture.md"); Relative = "docs\auth-architecture.md" },
-    @{ Source = (Join-Path $repositoryRoot "docs\known-limitations.md"); Relative = "docs\known-limitations.md" }
+    @{ Source = (Join-Path $repositoryRoot "UPSTREAM.md"); Relative = "UPSTREAM.md" }
 )
 
 foreach ($artifact in $artifacts) {

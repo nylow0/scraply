@@ -31,7 +31,7 @@ jobs:
         run: bun run build:installed
         env:
           SCRAPLY_RELEASE_STRICT: "1"
-          # Releases ship unsigned until Scraply has a code-signing certificate; see docs/dev/release.md.
+          # Releases ship unsigned until Scraply has a code-signing certificate.
           SCRAPLY_ALLOW_UNSIGNED: "1"
       - run: bun run test:e2e:portable
       - run: bun run test:e2e:installed

@@ -6,7 +6,7 @@ Describe the user-visible result and why it was needed.
 
 - Affected workflow exercised, including the visible result:
 - Focused checks and `bun run check` result, or why a check does not apply:
-- Installed build and desktop check when required by [development](../docs/dev/development.md#verification-and-handoff):
+- Installed build and desktop check when required:
 - Unverified behavior or remaining limits:
 
 ## Review notes

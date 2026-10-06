@@ -23,22 +23,6 @@ Research exports as JSON. Ideas export as Markdown or JSON.
 - An OpenAI subscription account, connected in the app
 - An Exa or Perplexity API key for web research, pasted in the app (a run that starts from a known problem can skip search)
 
-## Documentation
-
-**Using Scraply**
-
-- [User guide](docs/user/guide.md): projects, run modes, models, research depth, and exploring ideas
-- [Data and privacy](docs/user/data-and-privacy.md): what stays on your computer, what goes to providers, backups
-- [Troubleshooting](docs/user/troubleshooting.md): accounts, partial runs, startup errors
-
-**Working on Scraply**
-
-- [Development](docs/dev/development.md): setup, the dev server, verification
-- [Release](docs/dev/release.md): versions, packaging, signing, rollback
-- [Runtime](runtime/README.md): the native worker that makes model calls
-
-Agents working in this repository start at [AGENTS.md](AGENTS.md).
-
 ## How it's built
 
 - **Electron app** with a Svelte 5 and Tailwind renderer (`src/renderer`). The renderer reaches the main process (`src/main`) only through a narrow preload bridge (`src/preload`).
@@ -48,7 +32,7 @@ Agents working in this repository start at [AGENTS.md](AGENTS.md).
 
 ## Contributing
 
-Bug reports and feature requests are welcome in [issues](https://github.com/nylow0/scraply/issues). For code changes, branch from `master` with a `feat/`, `fix/`, `docs/`, or `chore/` prefix and open a pull request back into `master`. The pull request template lists the verification I expect.
+Bug reports and feature requests are welcome in [issues](https://github.com/nylow0/scraply/issues). For code changes, branch from `master` with a `feat/`, `fix/`, `docs/`, or `chore/` prefix and open a pull request back into `master`. The pull request template lists the verification I expect. Agents working in this repository start at [AGENTS.md](AGENTS.md).
 
 ## Your OpenAI account
 

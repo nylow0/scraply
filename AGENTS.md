@@ -8,11 +8,14 @@ I maintain Scraply alone. What I tell you in the conversation takes priority ove
 
 ## Product rules
 
-- **Evidence.** Every factor traces to a saved source quote. Generated text is never evidence, and model confidence is not calibrated.
+- **Evidence.** Every factor traces to a saved source quote. Generated text is never evidence, and model confidence is not calibrated. A problem is confirmed by two independent firsthand or measured accounts from the people the brief describes, or from people in a close role doing the same task.
 - **Honest results.** A run can finish with a partial set or zero ideas; never pad the count. Unreported usage shows as unknown, not zero. A request whose completion was lost is never replayed automatically, with two exceptions: a research call the app stopped waiting on at its own time limit, and a model call whose stream dropped, which is started over up to twice after a short pause. Their results are never used, and their usage stays unknown. A third drop ends only its research area, or stops the run for review during ideas.
 - **Local and private.** Projects stay on the user's computer, with no telemetry. Credentials are encrypted with Windows `safeStorage`, and the renderer only sees account status and masked key tails. Remote pages never get Electron privileges.
 - **Depth-guided work.** New research uses depth to guide breadth and thoroughness; call and search estimates do not stop it. Idea generations wait for provider completion, failure, or user cancellation. Research calls have per-stage time limits (`src/core/workflow-execution.ts`): a timed-out call is retried once, an evidence read stops after 90 seconds and starts over once before splitting its sources, and a failed model answer, including a call whose stream dropped three times, ends only its own area. Preserve usage accounting and older saved count limits.
 - **Saved work stays readable.** Old projects, including v1 results and older run contracts, still open and export. A saved run resumes with the prompts it started with. Stored values outlive UI renames: Controlled mode is still stored as `babysit`.
+- **Nothing starts or changes silently.** Reopening a project reads saved state and never starts a model or search request. A saved model or reasoning effort that is no longer available stays visible and blocks a new run until the user replaces it; never pick another one for them. Ideas keep pointing to the evidence snapshot they were made from, so applying new research never rewrites them.
+- **Search providers.** Quick, Standard, and Deep are Scraply workflow settings, not provider modes. Exa uses `auto` search, and Perplexity uses its Search API with a 2,000-token page extraction limit. A search key cannot change while research runs, because applying it rebuilds the research engine and would cancel the run. A key set in the launch environment overrides the saved one and cannot be edited in the app.
+- **One worker.** The app runs only the verified worker packaged at `resources/runtime/scraply-agent.exe`. Production never searches `PATH` or substitutes another runtime after a failure, and Scraply never packages or invokes the Codex CLI.
 
 ## Terms
 
@@ -33,14 +36,12 @@ The UI and the code sometimes use different names.
 | family | opportunity | One distinct business. Variants and duplicates join a family and do not count toward the target. |
 | focused experiment | focused experiment | A test of one assumption with a metric, a declared range, and pass/fail thresholds. |
 
-The Rust worker has its own vocabulary in [runtime/CONTEXT.md](runtime/CONTEXT.md).
-
 ## Protect my setup
 
 This is my everyday computer, and dev shares parts of my real setup.
 
 1. **Credentials.** `bun run dev` uses the installed app's encrypted credentials (`%APPDATA%\scraply\secrets.bin`), so signing out or replacing a key in dev changes my real accounts. For account or key tests, use an isolated profile: a temporary `SCRAPLY_DEV_DATA_DIR`, `SCRAPLY_DEV_SHARED_CREDENTIALS=0`, and empty `EXA_API_KEY=` and `PERPLEXITY_API_KEY=` (Bun loads `.env` into every `bun` process). Keep real keys out of logs, output, and messages.
-2. **Money.** Research and generation bill my accounts. Make live provider calls only when the task needs them, with the smallest limits that prove the point. Prefer the offline UI harness, fixtures, and mock backends.
+2. **Money.** Research and generation bill my accounts. Make live provider calls only when the task needs them, with the smallest limits that prove the point. Prefer the offline UI harness, fixtures, and mock backends. `scripts/eval-research.ts` launches paid research on my accounts unless you pass `--verify-transport` (checks the installed app, starts nothing), `--dry-run` (prints the matrix and estimates), or `--report-only` (recalculates from saved data). Its output directory holds a copy of my encrypted credentials, so keep it under `build/` and never publish it.
 3. **Data.** The installed app's projects are my real data. Test on a copy, and open the original read-only. Copy SQLite with the app closed, or snapshot it with `VACUUM INTO`.
 4. **Other servers.** Several checkouts may run dev servers at once. Stop only your own, with `bun run dev:stop` from the checkout that started it. Never kill `bun`, `electron`, or `Scraply.exe` by name.
 5. **Screenshots.** I use this machine while you work. Capture the app with Playwright `page.screenshot()`, never the desktop.
@@ -60,6 +61,14 @@ Everything you publish is synthetic, invented for the purpose.
 
 Before pushing, read your whole diff and look at every image for my data. If you find some already committed or published, stop and tell me before doing anything else.
 
+After staging and before every commit, run the secret scan:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/check-secrets.ps1 -Scope staged
+```
+
+It covers only the staged patch. `-Scope history` audits history, and belongs in a fresh clone holding the refs that could become public.
+
 ## Check every path
 
 A change often works on the path you tested and breaks somewhere else. Before calling work done, go through this list and say which entries applied:
@@ -67,20 +76,42 @@ A change often works on the path you tested and breaks somewhere else. Before ca
 - **Hosts.** Browser dev and the Electron app share handlers, but windows, dialogs, permissions, preload, and window state exist only in Electron. The installed app uses packaged paths and the bundled worker.
 - **Run types.** Vibe and Controlled; discovery and known-problem (which can run without search); research follow-ups and idea conversations.
 - **Search providers.** Exa, Perplexity, and none configured.
-- **Saved work.** v1 projects, older run contracts, and interrupted checkpoints. A change to stored data needs a migration and must still read old rows.
+- **Saved work.** v1 projects, older run contracts, and interrupted checkpoints. A change to stored data needs a migration and must still read old rows. The app saves a checked backup beside the database before it upgrades it; keep that step.
 - **Contracts.** Zod schemas in `src/shared` cross every process boundary. A stage change updates its prompt, schema, and package checks together. Runtime protocol changes follow [runtime/AGENTS.md](runtime/AGENTS.md).
+- **Prompts.** Package verification rejects a missing stage prompt and a superseded one. A user can override a bundled prompt with a same-named file in the data folder's `prompts` directory; on upgrade the app backs up unchanged old copies and retired overrides, and leaves custom overrides of active prompts in place.
 - **Exports.** Research JSON, and ideas as JSON and Markdown.
 - **Undo paths.** Pause needs resume, apply needs keep, archive needs restore, and each state needs to be visible.
-- **Docs.** Whether the change makes a user guide inaccurate (see [Documentation](#documentation)).
+- **Docs.** Whether the change makes `README.md` or this file inaccurate (see [Documentation](#documentation)).
+
+## Setup
+
+Run commands from the checkout you are editing. Scraply is Windows-first. Native builds need Rust's `stable-x86_64-pc-windows-msvc` toolchain with rustfmt and clippy, and the Visual Studio C++ build tools. A new checkout or worktree needs:
+
+```powershell
+bun install --frozen-lockfile
+bunx --no-install install-electron
+git submodule update --init --recursive
+bun run prepare:runtime
+```
+
+- Electron downloads its executable on demand. Run `install-electron` again when dev or a test reports a missing Electron executable.
+- `prepare:runtime` builds, checks, and stages the Rust worker in `build/runtime`. Run it again only when the stage is missing or when native source, Cargo dependencies, the pinned submodule, or runtime build or protocol configuration changes.
+- Every checkout shares one Cargo cache, `%LOCALAPPDATA%\scraply-build\cargo` (about 9 GB; `CARGO_TARGET_DIR` moves it). To preview UI edits in an extra worktree, reuse a prepared worker by setting both `SCRAPLY_AGENT_PATH` and `SCRAPLY_AGENT_LOCK_PATH` before starting dev, and only when its native code and protocol match that checkout.
+- `SCRAPLY_SKIP_RUNTIME_CHECKS=1` before `bun run build:installed` skips the Rust formatting, budget, test, and clippy gates for an implementation-only local build. It gives no test or release evidence, and strict release builds reject it.
+- Removing a worktree that holds the runtime submodule needs `git worktree remove --force`. Confirm `git status` is clean first.
 
 ## Dev servers
 
-- Setup and environment variables are in the [development guide](docs/dev/development.md).
-- `bun run dev` starts a background server and prints its URL. Running it again reuses the server. Leave it running and give me the URL and checkout path at handoff.
-- `bun run test:ui` serves the real renderer on synthetic data at `http://127.0.0.1:5176`, with no providers. It is the fastest way to reach and screenshot UI states; the development guide lists its query parameters.
+- `bun run dev` starts a background server and prints its URL, normally `http://127.0.0.1:5173`. Running it again reuses the server. Leave it running and give me the URL and checkout path at handoff.
+- If the port is taken, startup fails rather than stopping the other process. Set `SCRAPLY_BROWSER_UI_PORT` (1024 to 65535) before starting, and keep it set when you run `dev:stop`.
+- Renderer edits update the browser on save. Main-process and backend edits restart the host, so reload the browser. Restart dev after changing environment variables, startup configuration, or the prepared worker.
+- Dev keeps its projects in `.scraply/browser-dev/` and its log and launch state in `build/browser-dev/`. After an account or key change, restart any other running Scraply instance. Credential writes reject a stale update; restart the instance that reports the conflict.
+- `bun run test:ui` serves the real renderer on synthetic data at `http://127.0.0.1:5176`, with no providers. It is the fastest way to reach and screenshot UI states. Query parameters pick the state, for example `?history=18&long=1`, `history=0`, `progress=guided`, `connection=offline`, `account=signed-out`, and `search=none`; `test/ui/main.ts` reads all of them. Reloading resets the fixture. Its key form accepts any search key except one containing `invalid`.
+- `bun run dev:electron` is the desktop check. Stop browser dev first. It does not find the prepared worker on its own: set `SCRAPLY_AGENT_PATH` to `build/runtime/scraply-agent.exe` and `SCRAPLY_AGENT_LOCK_PATH` to `build/runtime/scraply-agent.lock.json` before starting, or the window opens with no native runtime and sign-in and research fail.
+- `bun run test:e2e` prepares the runtime and packages an app before Playwright runs. It is not a lightweight browser check.
 - Agent hosts often export `ELECTRON_RUN_AS_NODE=1`, which breaks Electron. Unset it for `dev`, `build:installed`, and e2e runs.
 - Run throwaway Playwright scripts with `node`; they hang under `bun`.
-- To debug a run, write its trace with `bun scripts/trace.ts <session ID>` (see the development guide). The session ID is in the app's Run details.
+- To debug a run, write its trace with `bun scripts/trace.ts <session ID>`. The session ID is in the app's Run details. The script opens the database read-only, contacts no provider, and writes `build/trace/<session ID>.json`. It reads the installed app's database by default; pass `--db <path>` for another profile and `--out <directory>` to write elsewhere.
 
 ## Verifying
 
@@ -89,8 +120,12 @@ A change often works on the path you tested and breaks somewhere else. Before ca
 - Run focused tests while working, then `bun run check` before handing off application code.
 - After an application change, stop dev, run `bun run build:installed` from the checkout root, then restart dev. Skip this for documentation-only work and read-only investigation.
 - Changes to Electron windows, preload, permissions, dialogs, or desktop integration also need a `bun run dev:electron` check.
+- After a native runtime change, prepare the runtime again, restart dev, and exercise the real runtime interaction you changed.
+- A change to the installer, packaging, or packaged paths is verified in the app that `bun run build:installed` installs, not in dev.
+- For a persistence change, restart and confirm the saved state.
 - Read the whole Playwright summary. A failing spec can print just above the "passed" line; search the log for `failed` and `flaky`.
 - `bun run build:installed` aborts if `HEAD` moves while it runs. Commit before starting it.
+- Benchmarks live in `test/performance/` and run with `bun`. Do not benchmark during compilation or other CPU-heavy work. Keep an optimization only when it reduces measured work and deterministic comparisons show the same output. Global statement caching, broader research-export batching, and scheduler reordering were already tried and rejected.
 - Report what you exercised, the results, and anything you could not verify.
 
 ## Branches and pull requests
@@ -101,15 +136,26 @@ A change often works on the path you tested and breaks somewhere else. Before ca
 - Commit titles use conventional commits in plain language: `fix: keep the selected idea after reload`.
 - Fill in the pull request template: what changed for the user, and how you verified it.
 - UI changes need screenshots. Push them to the never-merged `pr-screenshots` branch and link them from the description.
-- Read the [release guide](docs/dev/release.md) before touching versions, tags, release workflows, signing, or rollback, and update it in the same pull request when the process changes.
+
+## Releases
+
+Read this whole section before touching versions, tags, release workflows, signing, or rollback, and update it in the same pull request when the process changes. Browser testing and a local `build:installed` do not show that a release package works.
+
+- **No hosted builds.** GitHub Actions CI and Release are manually disabled to save minutes. Keep them disabled unless I say otherwise, and run every gate locally.
+- **Shape.** A release candidate is tagged on a `master` commit, installed, and tested. Production then publishes the accepted candidate's exact files under the final tag without rebuilding. Only one RC tag may point at a commit. If a candidate fails, fix it through a pull request and tag the new `master` commit.
+- **Never.** Move a published tag, force-push `master`, or replace the files of a published release.
+- **Gates.** From a clean checkout at the exact `origin/master` SHA, run `bun install --frozen-lockfile`, `bunx --no-install install-electron`, `bun audit --prod`, and `bun run check`. Then run `bun run build:installed` with `SCRAPLY_RELEASE_STRICT=1`, `SCRAPLY_ALLOW_UNSIGNED=1`, and `GITHUB_REF_NAME=<rc-tag>`, followed by `bun run test:e2e:portable` and `bun run test:e2e:installed`. The manifest records `GITHUB_REF_NAME` as `sourceRef`, and promotion rejects a bundle whose `sourceRef` is not the RC tag. Put the source SHA and the actual results in the release notes.
+- **Bundle.** A release is exactly five files: the installer, the portable executable, `manifest.json`, `SHA256SUMS.txt`, and `scraply-agent.lock.json` (copied from `build/runtime`). Collect them into an empty directory.
+- **Publish the candidate.** Run `bun scripts/check-promotion.ts rc <sha> <rc-tag>` and `bun scripts/verify-promoted-assets.ts <bundle-directory> <sha> <rc-tag> --allow-unsigned`. Tag with `git tag -a <rc-tag> <sha> -m "Scraply <version> RC <n>"`, push `refs/tags/<rc-tag>`, and publish the five files with `gh release create <rc-tag> --verify-tag --prerelease`, naming each file path. Install the published candidate and test the affected workflows before accepting it.
+- **Publish production.** Download the accepted candidate's five files into a new directory. GitHub stores the executables as `Scraply.Setup.<version>.exe` and `Scraply.<version>.exe`; rename them back to the spaced names that `SHA256SUMS.txt` and the manifest record. Run `bun scripts/check-promotion.ts production <sha> <tag>` and `verify-promoted-assets.ts` against the same SHA and RC tag. Tag the same SHA with `git tag -a <tag> <sha> -m "Scraply <version>"`, push `refs/tags/<tag>`, and publish those files with `gh release create <tag> --verify-tag`, which fails unless the tag is already on GitHub.
+- **Signing.** Scraply has no code-signing certificate, so releases ship unsigned and the release notes say Windows SmartScreen warns on first launch. Once a certificate exists, drop `SCRAPLY_ALLOW_UNSIGNED` and `--allow-unsigned`. A broken signature is always rejected.
+- **Clean source.** A release build needs a clean checkout whose app and runtime come from the same commit, so commit runtime and app changes together.
+- **Rollback.** Application: reinstall a previous GitHub Release after checking its published SHA-256 hash, and never swap only `scraply-agent.exe`. Source: revert through a branch and pull request. Data: close Scraply and restore a consistent backup of the whole data directory, including SQLite WAL and SHM files.
 
 ## Documentation
 
-Most code changes need no documentation change.
+The repository has no documentation folder, and you never add one. The only markdown files that belong on GitHub are `README.md`, `AGENTS.md` and `CLAUDE.md` (here and in `runtime/`), the GitHub templates, the bundled prompts in `prompts/`, and `runtime/UPSTREAM.md`, which the build ships as a license notice. Never commit any other markdown file: no guides, procedures, reports, ADRs, or notes.
 
-- `docs/user/` helps users get tasks done: what a feature does, how to start, and anything unintuitive. Keep implementation details and contributor tooling out of it. A UI tweak needs no entry.
-- `docs/dev/` holds development, release, and evaluation procedures.
-- `runtime/` keeps its own README, vocabulary, and ADRs.
 - When behavior changes, rewrite or remove the affected text rather than appending to it. Link to source instead of copying it.
 - Leave out file catalogs, field lists, and pull request summaries; the code and tests already record them.
 - Comments explain how a function or module is used, and move with the code.
@@ -117,6 +163,8 @@ Most code changes need no documentation change.
 ## Plans and work artifacts
 
 Keep plans, research notes, acceptance transcripts, and scratch files out of the repository: put them under the ignored `build/` directory or outside the checkout. The merged pull request is the implementation record, so acceptance evidence goes in its description.
+
+Markdown files written for local testing and evaluation never go to GitHub: evaluation procedures, acceptance runbooks, and review instructions. Keep them under `build/` as well.
 
 ## How it works
 
