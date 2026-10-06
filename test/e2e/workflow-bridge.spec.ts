@@ -207,7 +207,7 @@ test(`installed ${mode === "vibe" ? "Vibe" : "Controlled"} workflow previews, ru
     // A finished run leaves the top of the page: Vibe's ideas and Controlled's reason are on Solutions.
     if (mode === "vibe") {
       await page.getByRole("tab", { name: "Solutions" }).click();
-      await expect(page.getByRole("button", { name: "Open idea: Track repair quote approvals in one shared view.", exact: true })).toBeVisible();
+      await expect(page.getByRole("button", { name: "Open idea: Track repair quote approvals in one shared view", exact: true })).toBeVisible();
     } else {
       await page.getByRole("tab", { name: "Solutions" }).click();
       await expect(page.getByRole("tabpanel", { name: "Solutions" })).toContainText("The research found no qualifying buyer problem.");
@@ -224,14 +224,14 @@ test(`installed ${mode === "vibe" ? "Vibe" : "Controlled"} workflow previews, ru
     if (mode === "vibe") {
       await expect(reopenedPage.getByLabel("Vibe run progress").getByText("Run details")).toBeVisible();
       await expect(reopenedPage.getByRole("tabpanel", { name: "Solutions" })).toBeVisible();
-      await expect(reopenedPage.getByRole("button", { name: "Open idea: Track repair quote approvals in one shared view.", exact: true })).toBeVisible();
+      await expect(reopenedPage.getByRole("button", { name: "Open idea: Track repair quote approvals in one shared view", exact: true })).toBeVisible();
       await reopenedPage.setViewportSize({ width: 1600, height: 1200 });
       await reopenedPage.screenshot({ path: testInfo.outputPath(`${mode}-workflow-finished.png`), animations: "disabled", fullPage: true });
-      const savedIdea = reopenedPage.getByRole("button", { name: "Open idea: Track repair quote approvals in one shared view.", exact: true });
+      const savedIdea = reopenedPage.getByRole("button", { name: "Open idea: Track repair quote approvals in one shared view", exact: true });
       await savedIdea.scrollIntoViewIfNeeded();
       await reopenedPage.screenshot({ path: testInfo.outputPath("vibe-saved-idea.png"), animations: "disabled" });
       await savedIdea.click();
-      await expect(reopenedPage.getByRole("heading", { name: "Track repair quote approvals in one shared view.", exact: true, level: 1 })).toBeVisible();
+      await expect(reopenedPage.getByRole("heading", { name: "Track repair quote approvals in one shared view", exact: true, level: 1 })).toBeVisible();
       await expect(reopenedPage.getByText("Problem and fit")).toBeVisible();
     } else await reopenedPage.screenshot({ path: testInfo.outputPath(`${mode}-workflow-finished.png`), animations: "disabled" });
 

@@ -138,17 +138,19 @@ test("native v2 research survives the installed selection, risk evaluation, and 
     await page.locator(".problem-disclosure > summary").first().click();
     await page.getByRole("checkbox", { name: "Develop this problem" }).check();
     await page.getByRole("button", { name: "Generate all selected", exact: true }).click();
-    await expect(page.getByRole("button", { name: "Open idea: Track observed delivery windows by supplier and part category.", exact: true }).first()).toBeVisible();
+    await expect(page.getByRole("button", { name: "Open idea: Track observed delivery windows by supplier and part category", exact: true }).first()).toBeVisible();
     {
-      await page.getByRole("button", { name: "Open idea: Track observed delivery windows by supplier and part category.", exact: true }).first().click();
+      await page.getByRole("button", { name: "Open idea: Track observed delivery windows by supplier and part category", exact: true }).first().click();
       await expect.poll(async () => page.evaluate(async () => (await (window as unknown as { scraply: ScraplyApi }).scraply.getWorkspace()).solutions.some((idea) => idea.selectable)), { timeout: 30_000 }).toBe(true);
-      await page.getByRole("button", { name: "Choose and analyze", exact: true }).first().click();
-      await expect(page.getByText("Your selected option", { exact: false })).toBeVisible();
+      await page.getByRole("button", { name: "Explore this idea", exact: true }).click();
+      await page.getByRole("button", { name: "Analyze risks", exact: true }).click();
+      await expect(page.getByRole("heading", { name: "Risk analysis" })).toBeVisible({ timeout: 30_000 });
+      await page.getByRole("button", { name: "Back to idea" }).click();
       await expect(page.getByRole("region", { name: "Focused experiment" })).toBeVisible({ timeout: 30_000 });
       await page.getByLabel("Question", { exact: true }).fill("Which suppliers publish arrival histories?");
       await page.getByRole("button", { name: "Check evidence", exact: true }).click();
       const followUp = page.getByRole("region", { name: "Evidence follow-up result" });
-      await expect(followUp.getByText("This option has used its one evidence follow-up.", { exact: true })).toBeVisible();
+      await expect(followUp.getByText("This option has used its one evidence follow-up.", { exact: true })).toHaveCount(0);
       await page.screenshot({ animations: "disabled", path: testInfo.outputPath("native-follow-up.png") });
       await expect(followUp.locator("blockquote").filter({ hasText: "Parts delivery windows are uncertain." })).toHaveCount(2);
       await expect(followUp.getByRole("link", { name: "Synthetic delivery report 0" })).toBeVisible();
@@ -168,13 +170,13 @@ test("native v2 research survives the installed selection, risk evaluation, and 
     backend = await startFixtureServer(directory, () => undefined);
     electron = await launch();
     page = await electron.firstWindow();
-    await expect(page.getByRole("button", { name: "Open idea: Track observed delivery windows by supplier and part category.", exact: true }).first()).toBeVisible();
+    await expect(page.getByRole("button", { name: "Open idea: Track observed delivery windows by supplier and part category", exact: true }).first()).toBeVisible();
     {
       const savedModel = await page.evaluate(async () => (await (window as unknown as { scraply: ScraplyApi }).scraply.getWorkspace()).runConfig?.model);
       expect(savedModel).toEqual({ providerId: "openai-subscription", modelId: "gpt-fixture" });
     }
     {
-      await page.getByRole("button", { name: "Open idea: Track observed delivery windows by supplier and part category.", exact: true }).first().click();
+      await page.getByRole("button", { name: "Open idea: Track observed delivery windows by supplier and part category", exact: true }).first().click();
       await expect(page.getByLabel("Observed test result", { exact: true })).toHaveValue("Nine of ten estimates matched arrivals");
       const reopenedFollowUp = page.getByRole("region", { name: "Evidence follow-up result" });
       await expect(reopenedFollowUp).toContainText("Which suppliers publish arrival histories?");

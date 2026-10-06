@@ -34,7 +34,7 @@ test("compact settings, consistent fields, title defaults, and archive recovery"
     expect(Math.abs(popupBounds!.width - await page.evaluate(() => innerWidth))).toBeLessThanOrEqual(1);
     expect(await page.evaluate(() => document.elementFromPoint(40, innerHeight - 40)?.closest(".settings-screen") !== null)).toBe(true);
     // It mirrors the research layout: Back takes the Settings button's spot, and the title and sections sit in the left panel.
-    const back = page.getByRole("button", { name: "Back", exact: true });
+    const back = page.getByRole("button", { name: "Back to research", exact: true });
     const backBounds = await back.boundingBox();
     expect(Math.abs(backBounds!.x - settingsBounds!.x)).toBeLessThanOrEqual(2);
     expect(Math.abs(backBounds!.y - settingsBounds!.y)).toBeLessThanOrEqual(2);

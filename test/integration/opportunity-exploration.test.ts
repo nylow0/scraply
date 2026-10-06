@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { cpSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ResearchEngine } from "../../src/core/research-engine";
@@ -24,6 +24,7 @@ import { RunConfigSchema, type RunConfig } from "../../src/shared/schemas";
 const directories: string[] = [];
 
 afterEach(() => {
+  configurePromptPaths({ bundledDir: join(import.meta.dir, "../../prompts"), overrideDir: null });
   for (const directory of directories.splice(0)) {
     try { rmSync(directory, { recursive: true, force: true }); }
     catch { /* SQLite can retain a WAL handle briefly on Windows. */ }
@@ -69,11 +70,13 @@ async function until(predicate: () => boolean): Promise<void> {
 
 class ExpansionModel implements StructuredModelClient {
   readonly stages: string[] = [];
+  readonly instructions: string[] = [];
 
   constructor(private readonly frame?: ResearchFrame) {}
 
   async structuredCompletion<T>(request: StructuredStageRequest<T>): Promise<StructuredStageResult<T>> {
     this.stages.push(request.stage);
+    this.instructions.push(request.workOrder.instruction ?? "");
     request.onDispatched?.();
     request.onAccepted?.({ protocolVersion: "test" });
     let output: unknown;
@@ -374,6 +377,10 @@ test("one permitted round maps a named gap, searches, generates, reviews, and re
       expect.stringMatching(/^gap-generation:/),
       expect.stringMatching(/^opportunity-review:/),
     ]);
+    for (const [index, instruction] of model.instructions.entries()) {
+      if (model.stages[index]!.startsWith("opportunity-review:")) expect(instruction).not.toContain("# Unslop");
+      else expect(instruction.match(/# Unslop/g)).toHaveLength(1);
+    }
 
     const families = new OpportunityRepository(db).familyView(thread.id);
     expect(families.acceptedFamilyCount).toBe(2);
@@ -741,6 +748,11 @@ test("resume reuses a completed generation checkpoint after persistence was inte
     expect(model.stages.filter((stage) => stage.startsWith("gap-generation:"))).toHaveLength(1);
 
     db.db.exec("DROP TRIGGER interrupt_opportunity_persistence");
+    const futureBundle = mkdtempSync(join(tmpdir(), "scraply-future-expansion-writing-"));
+    directories.push(futureBundle);
+    cpSync(join(import.meta.dir, "../../prompts"), futureBundle, { recursive: true });
+    writeFileSync(join(futureBundle, "writing-guidance.md"), "Future writing rules.");
+    configurePromptPaths({ bundledDir: futureBundle, overrideDir: null });
     await engine.resumeOpportunityExploration(thread.id, config.model, config.reasoningEffort);
     await until(() => !engine.getOpportunityReviewStatus(thread.id).running);
 
@@ -758,7 +770,7 @@ test("resume reuses a completed generation checkpoint after persistence was inte
 // This is the legacy saved prompt, before expansion inputs gained their revision marker.
 const legacyExpansionInstruction = "Generate one small batch for the named coverage gap. Every option must be a distinct startup opportunity with a paying customer, smallest sellable workflow, and one structured focusedDemandTest for the most decision-relevant demand assumption. Do not repeat accepted families. Preserve weak evidence as uncertainty. Reference only supplied evidence IDs. An evidence-backed new problem must name nonempty problemHypothesis.evidenceIds that directly support the problem. When exploratory mode is used, every evidence-ID list must be empty and the gap assessment must remain a hypothesis.";
 
-function preparedExpansion(kind: "legacy-prepared" | "new-legacy" | "new-goal" | "goal-prepared") {
+function preparedExpansion(kind: "legacy-prepared" | "guided-prepared" | "new-legacy" | "new-goal" | "goal-prepared") {
   const db = database();
   const config = projectConfig();
   const thread = new ThreadRepository(db).createThread("Prepared expansion recovery", config);
@@ -793,12 +805,14 @@ function preparedExpansion(kind: "legacy-prepared" | "new-legacy" | "new-goal" |
     const batch = repository.planBatch({ threadId: thread.id, coverageGapId: gap.id, requestedCandidates: 2, acceptedFamiliesBefore: 0 });
     if (kind.endsWith("prepared")) {
       const contract = opportunityExpansionContract(frame);
+      const writingGuidance = kind === "guided-prepared" ? "Writing rules saved before the bundle changed." : "";
       const attempt = repository.prepareAttempt(thread.id, {
         stageKey: `gap-generation:${batch.id}`, stageName: "gap-generation",
         input: { batchId: batch.id, gap, candidateCount: 2, acceptedFamilies: [], evidenceIds: ["source-approval"],
+          ...(writingGuidance ? { writingGuidance, schemaRevision: 1 } : {}),
           ...(frame ? { schemaRevision: 2, frame, frameId } : {}) },
         model: { ...config.model, reasoningEffort: config.reasoningEffort }, promptVersion: contract.promptVersion,
-        promptText: [legacyExpansionInstruction, contract.instruction].filter(Boolean).join("\n\n"),
+        promptText: [legacyExpansionInstruction, contract.instruction, writingGuidance].filter(Boolean).join("\n\n"),
       });
       if (attempt.kind !== "prepared") throw new Error("Fixture attempt was not prepared");
       attemptId = attempt.attemptId;
@@ -811,7 +825,7 @@ function preparedExpansion(kind: "legacy-prepared" | "new-legacy" | "new-goal" |
   return { db, config, thread, root, repository, gap, batch, attemptId, frame, frameId, model, engine };
 }
 
-test.each(["legacy-prepared", "new-legacy", "new-goal", "goal-prepared"] as const)(
+test.each(["legacy-prepared", "guided-prepared", "new-legacy", "new-goal", "goal-prepared"] as const)(
   "public expansion resume preserves its prepared receipt and frozen contract (%s)", async kind => {
     const f = preparedExpansion(kind);
     try {
@@ -845,6 +859,91 @@ test.each(["legacy-prepared", "new-legacy", "new-goal", "goal-prepared"] as cons
       expect(f.repository.completedAttemptResult(f.thread.id, `gap-generation:${f.batch.id}`)).toEqual(attempt.result);
       expect(f.db.db.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
     } finally { await f.engine.shutdown(); f.db.close(); }
+  },
+);
+
+test.each(["legacy-prepared", "guided-prepared", "goal-prepared"] as const)(
+  "public expansion resume reuses a completed %s generation after a bundle change", async kind => {
+    const f = preparedExpansion(kind);
+    f.db.db.exec(`
+      CREATE TRIGGER interrupt_opportunity_persistence BEFORE INSERT ON solutions
+      BEGIN SELECT RAISE(ABORT, 'simulated persistence interruption'); END;
+    `);
+    try {
+      await f.engine.resumeOpportunityExploration(f.thread.id, f.config.model, f.config.reasoningEffort);
+      await until(() => !f.engine.getOpportunityReviewStatus(f.thread.id).running);
+      expect(f.engine.getOpportunityExploration(f.thread.id)?.status).toBe("failed");
+      const completed = f.repository.loadAttempt(f.thread.id, `gap-generation:${f.batch.id}`)!;
+      expect(completed.status).toBe("completed");
+      expect(f.model.stages).toEqual([`gap-generation:${f.batch.id}`]);
+      f.db.db.exec("DROP TRIGGER interrupt_opportunity_persistence");
+      const futureBundle = mkdtempSync(join(tmpdir(), "scraply-future-saved-generation-"));
+      directories.push(futureBundle);
+      cpSync(join(import.meta.dir, "../../prompts"), futureBundle, { recursive: true });
+      writeFileSync(join(futureBundle, "writing-guidance.md"), "Future writing rules.");
+      configurePromptPaths({ bundledDir: futureBundle, overrideDir: null });
+      await f.engine.resumeOpportunityExploration(f.thread.id, f.config.model, f.config.reasoningEffort);
+      await until(() => !f.engine.getOpportunityReviewStatus(f.thread.id).running);
+      expect({ status: f.engine.getOpportunityExploration(f.thread.id)?.status,
+        error: f.engine.getOpportunityReviewStatus(f.thread.id).error }).toEqual({ status: "target-reached", error: null });
+      expect(f.model.stages).toEqual([`gap-generation:${f.batch.id}`, expect.stringMatching(/^opportunity-review:/)]);
+      expect(f.repository.loadAttempt(f.thread.id, `gap-generation:${f.batch.id}`)).toEqual(completed);
+      expect(f.repository.require(f.thread.id).usage.modelCalls).toBe(2);
+      expect(f.db.db.prepare("SELECT COUNT(*) AS count FROM solutions").get()).toEqual({ count: 2 });
+    } finally { await f.engine.shutdown(); f.db.close(); }
+  },
+);
+
+test.each(["legacy-prepared", "legacy-completed", "guided-prepared", "guided-completed"] as const)(
+  "public coverage resume preserves a saved %s call without repeating completed work", async kind => {
+    const db = database();
+    const config = projectConfig();
+    const thread = new ThreadRepository(db).createThread("Saved coverage recovery", config);
+    const repository = new OpportunityExplorationRepository(db);
+    const writingGuidance = kind.startsWith("guided") ? "Writing rules saved before the bundle changed." : "";
+    const instruction = "Name only concrete buyer, workflow, trigger, problem, or evidence gaps in the saved startup inventory. New buyers or workflows are allowed only after the supplied map is exhausted. Ask for one bounded search query when evidence is required. Return no gap rather than generic 'more ideas'. Exploratory hypotheses are allowed only when the project flag says so."
+      + (writingGuidance ? `\n\n${writingGuidance}` : "");
+    const output = { gaps: [], noUsefulGapReason: "The saved inventory covers the current scope." };
+    const completed = kind.endsWith("completed");
+    const attempt = db.immediateTransaction(() => {
+      repository.create(thread.id, config.opportunityExploration!);
+      const saved = repository.prepareAttempt(thread.id, {
+        stageKey: "coverage-map:1", stageName: "coverage-map",
+        input: { round: 1, view: new OpportunityRepository(db).familyView(thread.id), context: { scope: null, problems: [] },
+          config: repository.require(thread.id).config, ...(writingGuidance ? { writingGuidance } : {}) },
+        model: { ...config.model, reasoningEffort: config.reasoningEffort },
+        promptVersion: "opportunity-coverage-v1", promptText: instruction,
+      });
+      if (saved.kind !== "prepared") throw new Error("Fixture attempt was not prepared");
+      if (completed) {
+        repository.markAttemptDispatched(thread.id, saved.attemptId, "none");
+        repository.completeAttempt(thread.id, saved.attemptId, output);
+      }
+      repository.setStatus(thread.id, "paused", "Interrupted coverage");
+      return saved;
+    });
+    let calls = 0;
+    const model: StructuredModelClient = { async structuredCompletion(request) {
+      calls += 1;
+      if (completed) throw new Error("Completed coverage must not dispatch again");
+      expect(request.stage).toBe("coverage-map:1");
+      expect(request.workOrder.instruction).toBe(instruction);
+      request.onDispatched?.();
+      return { output: request.schema.parse(output), metadata: { model: request.model, usage: { status: "unknown" },
+        latencyMs: 1, repairCount: 0, providerRequestIds: [], attempts: [] } };
+    } };
+    const engine = new ResearchEngine({ db, modelClients: { fixture: model }, onEvent() {} });
+    try {
+      await engine.resumeOpportunityExploration(thread.id, config.model, config.reasoningEffort);
+      await until(() => !engine.getOpportunityReviewStatus(thread.id).running);
+      expect({ status: engine.getOpportunityExploration(thread.id)?.status,
+        error: engine.getOpportunityReviewStatus(thread.id).error }).toEqual({ status: "useful-partial", error: null });
+      expect(calls).toBe(completed ? 0 : 1);
+      expect(repository.require(thread.id).usage.modelCalls).toBe(completed ? 0 : 1);
+      expect(repository.loadAttempt(thread.id, "coverage-map:1")).toMatchObject({
+        attemptId: attempt.attemptId, status: "completed", promptText: instruction, result: output,
+      });
+    } finally { await engine.shutdown(); db.close(); }
   },
 );
 

@@ -29,7 +29,6 @@
 
   <div class="solution-body">
     {#if idea.detailsLoaded === false}<p role="status">{error || "Loading saved analysis…"}</p>{:else}
-    {#if inDetailView}<p class="detail-description">{idea.description}</p>{/if}
     <section class="overview">
         <div>
           <span class="label">How it works</span>
@@ -585,5 +584,4 @@
   }
 
   .expanded-snapshot { display:flex;flex-wrap:wrap;gap:24px;padding:18px 0; }
-  .detail-description { max-width:75ch;margin:0 0 18px;color:var(--text);font-size:15px;line-height:1.65;white-space:pre-wrap; }
 </style>

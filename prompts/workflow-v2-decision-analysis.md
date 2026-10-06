@@ -13,5 +13,4 @@ Propose the cheapest useful experiment for a consequential unresolved assumption
 FORMAT
 Return only JSON matching the supplied schema. Return consequences, proposed responses, one experiment, and additional unknowns. The application owns and joins the independent risk records and their existing unknowns. Do not repeat them. Link responses only to supplied risk IDs.
 
-STYLE / TONE
-Be concrete and qualitative. Do not score, rank, or choose for the user.
+Use qualitative analysis. Do not score, rank, or choose for the user.

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ProviderFailure, type StructuredModelClient, type StructuredStageRequest, type StructuredStageResult } from "../../src/providers/structured";
@@ -14,11 +14,12 @@ import { WorkflowV2Repository } from "../../src/db/repositories/workflow-v2";
 import { WorkflowRepository } from "../../src/db/repositories/workflows";
 import { WorkflowCoordinator } from "../../src/core/workflow-coordinator";
 import type { ResearchEngine } from "../../src/core/research-engine";
-import { resolveWorkflowV2Prompt } from "../../src/core/prompts";
+import { configurePromptPaths, resolveWorkflowV2Prompt } from "../../src/core/prompts";
 
 const directories: string[] = [];
 
 afterEach(() => {
+  configurePromptPaths({ bundledDir: join(import.meta.dir, "../../prompts"), overrideDir: null });
   while (directories.length > 0) {
     try { rmSync(directories.pop()!, { recursive: true, force: true }); } catch { /* SQLite may retain a Windows handle. */ }
   }
@@ -297,12 +298,16 @@ describe("opportunity review", () => {
     expect(result.opportunities.acceptedFamilyCount).toBe(2);
     const exported = new OpportunityRepository(db).exportReview("thread-1");
     expect(exported.reviews.map((review) => review.correctionNumber)).toEqual([0, 1]);
+    for (const review of exported.reviews) {
+      const instruction = (review.request as { instruction: string }).instruction;
+      expect(instruction).not.toContain("# Unslop");
+    }
     expect(exported.coverage.some((entry) => !entry.complete)).toBe(true);
     expect(exported.coverage.some((entry) => entry.complete)).toBe(true);
     db.close();
   });
 
-  test("reuses a completed correction when memberships were not committed", async () => {
+  test("reuses a completed correction after writing rules change when memberships were not committed", async () => {
     const db = database();
     seedOptions(db, ["option-a", "option-b"]);
     await reviewSavedOpportunities({
@@ -316,6 +321,11 @@ describe("opportunity review", () => {
       db.db.prepare("DELETE FROM opportunity_membership_decisions").run();
       db.db.prepare("DELETE FROM opportunity_families").run();
     });
+
+    const futureBundle = mkdtempSync(join(tmpdir(), "scraply-future-writing-"));
+    directories.push(futureBundle);
+    writeFileSync(join(futureBundle, "writing-guidance.md"), "Future writing rules.");
+    configurePromptPaths({ bundledDir: futureBundle, overrideDir: null });
 
     const model = new NoDispatchModel();
     const resumed = await reviewSavedOpportunities({
@@ -427,6 +437,7 @@ class PairwiseModel implements StructuredModelClient {
 
   async structuredCompletion<T>(request: StructuredStageRequest<T>): Promise<StructuredStageResult<T>> {
     this.calls += 1;
+    expect(JSON.stringify(request)).not.toContain("# Unslop");
     request.onDispatched?.();
     request.onAccepted?.({ protocolVersion: "test" });
     const inputs = request.workOrder.inputs as {

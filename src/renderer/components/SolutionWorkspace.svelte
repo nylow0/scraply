@@ -1,6 +1,10 @@
 <script lang="ts">
-  import { tick, type Snippet } from "svelte";
-  import type { IdeaGroupView, SolutionView } from "../../shared/ipc";
+  import { tick, untrack, type Snippet } from "svelte";
+  import type { IdeaGroupView, SolutionView, WorkspaceState } from "../../shared/ipc";
+  import BackLink from "./BackLink.svelte";
+  import AnalysisProgress from "./AnalysisProgress.svelte";
+  import type { SolutionsRoute } from "../lib/navigation-history";
+  import { ideaContent } from "../lib/idea-content";
   import type { IdeaConversation as ConversationView, SubmitIdeaTurnRequest } from "../../shared/workflow-contracts";
   import SolutionListItem from "./SolutionListItem.svelte";
   import DecisionOption from "./DecisionOption.svelte";
@@ -11,11 +15,14 @@
 
   let {
     solutions,
+    route = $bindable<SolutionsRoute>({ kind: "list" }),
+    onNavigate,
+    onBack,
+    interactive = true,
     ideaGroups = [],
     busy,
     onExport,
     onOpenSource,
-    onReview,
     onSelect,
     onSave,
     workflowVersion,
@@ -37,12 +44,19 @@
     onCloseConversation,
     onSubmitIdeaTurn,
     onSelectConversationVersion,
-    onLoadVersionDetail,
+    run = null,
+    elapsed = "",
+    runStage = "Preparing",
+    onStop,
     onLoadMoreConversation,
     onFocusChange,
     footer,
   }: {
     solutions: SolutionView[];
+    route?: SolutionsRoute;
+    onNavigate?: (route: SolutionsRoute) => void;
+    onBack?: (parent: SolutionsRoute) => void;
+    interactive?: boolean;
     ideaGroups?: IdeaGroupView[] | undefined;
     busy: boolean;
     analysisBlocked?: boolean;
@@ -55,7 +69,6 @@
     opportunityReviewRunning?: boolean | undefined;
     onExport: (format: "markdown" | "json") => Promise<void>;
     onOpenSource: (url: string) => Promise<void>;
-    onReview: () => void;
     onSelect?: (idea: SolutionView) => Promise<void>;
     onSave?: (solutionId: string, decision: string, observed: string, outcome: "not-run" | "pass" | "fail" | "inconclusive") => Promise<void>;
     workflowVersion?: 1 | 2 | undefined;
@@ -69,17 +82,18 @@
     onCloseConversation?: () => void;
     onSubmitIdeaTurn?: (draft: Omit<SubmitIdeaTurnRequest, "threadId" | "rootSolutionId">) => Promise<void>;
     onSelectConversationVersion?: (solutionId: string) => Promise<void>;
-    onLoadVersionDetail?: (solutionId: string) => Promise<SolutionView>;
+    run?: WorkspaceState["latestResearchRun"];
+    elapsed?: string;
+    runStage?: string;
+    onStop?: (runId: string) => Promise<void>;
     onLoadMoreConversation?: (cursor: string) => Promise<void>;
     onFocusChange?: (focused: boolean) => void;
     /** Shown under the idea groups, above the export links (the run details panel). */
     footer?: Snippet | undefined;
   } = $props();
 
-  let selectedIdeaId = $state<string | null>(null);
-  let selectedVersionDetail = $state<SolutionView | null>(null);
-  let returnToConversationId = $state<string | null>(null);
-  let activeConversationId = $state<string | null>(null);
+  let selectedIdeaId = $derived(route.kind === "list" ? null : route.ideaId);
+  let activeConversationId = $derived(route.kind === "conversation" ? route.ideaId : null);
   let retainedConversation = $state<ConversationView | null>(null);
   let openingConversation = $state(false);
   let openError = $state<string | null>(null);
@@ -97,14 +111,19 @@
   });
 
   async function openConversation(event: MouseEvent, ideaId: string) {
-    if (!onOpenConversation) return;
+    if (!onOpenConversation && !onNavigate) return;
     if (activeConversationId === null) openingButton = event.currentTarget as HTMLButtonElement;
-    activeConversationId = ideaId;
+    if (onNavigate) {
+      if (activeConversationId === ideaId) await onOpenConversation?.(ideaId);
+      else onNavigate({ kind: "conversation", ideaId });
+      return;
+    }
+    route = { kind: "conversation", ideaId };
     openingConversation = true;
     openError = null;
     const request = ++openRequest;
     try {
-      await onOpenConversation(ideaId);
+      await onOpenConversation?.(ideaId);
     } catch (cause) {
       if (request === openRequest) openError = cause instanceof Error ? cause.message : "Could not open this conversation.";
     } finally {
@@ -114,38 +133,42 @@
 
   function closeConversation() {
     openRequest += 1;
-    activeConversationId = null;
+    if (route.kind !== "conversation") return;
+    const parent: SolutionsRoute = { kind: "idea", ideaId: route.ideaId };
+    if (onBack) onBack(parent); else route = parent;
     openingConversation = false;
     openError = null;
     onCloseConversation?.();
-    void tick().then(() => openingButton?.focus());
+    void tick().then(() => openingButton?.focus({ preventScroll: true }));
   }
   function openIdea(event: MouseEvent, ideaId: string) {
     ideaButton = event.currentTarget as HTMLButtonElement;
-    selectedVersionDetail = null;
-    returnToConversationId = null;
-    selectedIdeaId = ideaId;
+    if (onNavigate) onNavigate({ kind: "idea", ideaId }); else route = { kind: "idea", ideaId };
   }
   function closeIdea() {
-    selectedIdeaId = null;
-    selectedVersionDetail = null;
-    if (returnToConversationId) {
-      activeConversationId = returnToConversationId;
-      returnToConversationId = null;
-    } else void tick().then(() => ideaButton?.focus());
+    if (onBack) onBack({ kind: "list" }); else route = { kind: "list" };
+    void tick().then(() => ideaButton?.focus({ preventScroll: true }));
   }
-  async function viewVersionDetail(solutionId: string) {
-    if (!onLoadVersionDetail || !activeConversationId) return;
-    const conversationId = activeConversationId;
-    const detail = await onLoadVersionDetail(solutionId);
-    if (activeConversationId !== conversationId) return;
-    selectedVersionDetail = detail;
-    returnToConversationId = conversationId;
-    selectedIdeaId = solutionId;
-    activeConversationId = null;
+  let previousRoute: SolutionsRoute = untrack(() => route);
+  $effect(() => {
+    if (previousRoute.kind === "conversation" && route.kind === "idea") {
+      void tick().then(() => (openingButton ?? document.querySelector<HTMLButtonElement>(".explore-button"))?.focus({ preventScroll: true }));
+    } else if (previousRoute.kind !== "list" && route.kind === "list") {
+      const ideaId = previousRoute.ideaId;
+      void tick().then(() => (ideaButton ?? Array.from(document.querySelectorAll<HTMLButtonElement>(".idea-row")).find(button => button.dataset.ideaId === ideaId))?.focus({ preventScroll: true }));
+    }
+    previousRoute = route;
+  });
+  let selectedIdea = $derived(solutions.find((idea) => idea.id === selectedIdeaId) ?? null);
+  let decisionOption = $state<DecisionOption>();
+  export function isReadyForScroll(ideaId: string): boolean {
+    if (selectedIdea?.id !== ideaId) return false;
+    return selectedIdea.workflowVersion !== 2 || !onSave || !!decisionOption?.isReadyForScroll(ideaId);
   }
-  let selectedIdea = $derived(selectedVersionDetail?.id === selectedIdeaId
-    ? selectedVersionDetail : solutions.find((idea) => idea.id === selectedIdeaId) ?? null);
+  let runBusy = $derived(!!run && ["queued", "running"].includes(run.status));
+  // Selection is saved before analysis starts; root summaries retain it even on older runs.
+  let analysisIdea = $derived(solutions.find(idea => idea.runId === run?.runId && idea.selected));
+  let ownConversation = $derived(conversationMatchesSelection && retainedConversation?.selectedVersionId === analysisIdea?.id);
   let hasV2 = $derived(workflowVersion === 2 || solutions.some((idea) => idea.workflowVersion === 2));
   /** One group per problem, in saved order. Ranked ideas come best first; ideas saved before ranking keep their order. */
   let groups = $derived.by(() => {
@@ -164,19 +187,10 @@
     return all.map((group) => ({ ...group,
       ideas: group.ideas.sort((a, b) => (a.rank ?? Number.MAX_SAFE_INTEGER) - (b.rank ?? Number.MAX_SAFE_INTEGER)) }));
   });
-  // The short name is the description's text before its first colon ("History access and provenance pack: ...").
-  // Ideas written without one fall back to the description's first sentence.
-  function ideaName(idea: SolutionView): string {
-    return idea.description.trim().match(/^([^:.!?\n]{2,80}):\s/)?.[1]?.trim() ?? preview(idea.description);
-  }
-  function preview(description: string): string {
-    const firstParagraph = description.trim().split(/\n\s*\n/)[0] ?? "";
-    const firstSentence = firstParagraph.match(/^.*?[.!?](?=\s|$)/s)?.[0];
-    return firstSentence?.trim() || firstParagraph.trim();
-  }
 </script>
 
 <svelte:window onkeydown={(event) => {
+  if (!interactive || event.defaultPrevented || document.querySelector("dialog[open]")) return;
   if (activeConversationId && event.key === "Escape") {
     event.preventDefault();
     closeConversation();
@@ -187,24 +201,28 @@
 }} />
 
 <section class="workspace">
+  {#if runBusy && run && !ownConversation && onStop}<AnalysisProgress {run} ideaName={analysisIdea ? ideaContent(analysisIdea.description).name : ""} {elapsed} stage={runStage} {busy} {onStop} />{/if}
   <div hidden={activeConversationId !== null || selectedIdeaId !== null}>
   <header>
     <h1>{solutions.length} {solutions.length === 1 ? "idea" : "ideas"}</h1>
-    <button class="review-problems" onclick={onReview}>Review problems</button>
   </header>
 
   <div class="groups">
     {#each groups as group (group.problemId)}
       <details class="problem-group" open>
-        <summary>{group.statement}
+        <summary><span class="problem-label">Problem:</span> {group.statement}
           {#each group.returns.filter((result) => result.returnedIdeaCount < result.requestedIdeaCount) as result (result.runId)}
             <span class="return-count">{#if group.returns.length > 1 || group.ideas.some((idea) => idea.runId !== result.runId)}One run returned {result.returnedIdeaCount} of {result.requestedIdeaCount} {result.requestedIdeaCount === 1 ? "idea" : "ideas"}{:else}{result.returnedIdeaCount} of {result.requestedIdeaCount} {result.requestedIdeaCount === 1 ? "idea" : "ideas"} returned{/if}</span>
           {/each}
         </summary>
         <ol>
-          {#each group.ideas as idea (idea.id)}
-            <li><button class="idea-row" aria-label={`Open idea: ${ideaName(idea)}`} onclick={(event) => openIdea(event, idea.id)}>
-              <span class="idea-name">{ideaName(idea)}</span>{#if idea.weakFitReason}<span class="weak-fit">Weak fit</span>{/if}
+          {#each group.ideas as idea, index (idea.id)}
+            {@const content = ideaContent(idea.description)}
+            <li><button data-idea-id={idea.id} class="idea-row" aria-label={`Open idea: ${content.name}`} onclick={(event) => openIdea(event, idea.id)}>
+              <span class="idea-number" aria-hidden="true">{index + 1}.</span>
+              <span class="idea-text"><span class="idea-name">{content.name}</span>{#if content.summary}<span class="idea-summary">{content.summary}</span>{/if}</span>
+              {#if idea.weakFitReason}<span class="weak-fit">Weak fit</span>{/if}
+              <svg class="row-chevron" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" aria-hidden="true"><path d="m6 3 5 5-5 5" /></svg>
             </button></li>
           {/each}
         </ol>
@@ -217,7 +235,7 @@
   <!-- Business families come from the older review; ranked ideas are never grouped into families, so they skip it. -->
   {#if opportunities && onReviewOpportunities && onEditMembership && solutions.some((idea) => idea.rank == null) && (initialConfig?.explorationPurpose === "startup-opportunities" || opportunities.rawOptionCount > 0 || opportunities.families.some((family) => family.active) || opportunities.unresolved.length > 0)}
     <details class="grouping"><summary>Review idea grouping <span>{opportunities.acceptedFamilyCount} accepted families, {opportunities.unreviewedOptionIds.length + opportunities.unresolved.length} need review</span></summary>
-      <OpportunityFamilies {opportunities} {modelOptions} initialConfig={initialConfig ?? null} busy={busy || analysisBlocked || opportunityReviewRunning} onReview={onReviewOpportunities} onEdit={onEditMembership} />
+      <OpportunityFamilies quiet {opportunities} {modelOptions} initialConfig={initialConfig ?? null} busy={busy || analysisBlocked || opportunityReviewRunning} onReview={onReviewOpportunities} onEdit={onEditMembership} />
     </details>
   {/if}
   {#if footer}<div class="run-footer">{@render footer()}</div>{/if}
@@ -229,20 +247,20 @@
 
   <div class="idea-detail" hidden={activeConversationId !== null || selectedIdeaId === null}>
     {#if selectedIdea}
-      <div class="detail-navigation"><button class="back-button" onclick={closeIdea}>{returnToConversationId ? "Back to conversation" : "Back to ideas"}</button><span>Idea details</span></div>
-      <div class="detail-heading"><h1>{ideaName(selectedIdea)}</h1>
-        {#if selectedIdea.workflowVersion === 2 && onOpenConversation && !returnToConversationId}<button class="explore-button" aria-label={`Explore idea: ${selectedIdea.description}`} onclick={(event) => openConversation(event, selectedIdea.id)}>Explore this idea</button>{/if}
+      <div class="detail-navigation"><BackLink destination="ideas" onclick={closeIdea} /></div>
+      <div class="detail-heading"><h1>{ideaContent(selectedIdea.description).name}</h1>
+        {#if selectedIdea.workflowVersion === 2 && (onOpenConversation || onNavigate)}<button class="explore-button" onclick={(event) => openConversation(event, selectedIdea.id)}>Explore this idea</button>{/if}
       </div>
+      {#if ideaContent(selectedIdea.description).summary}<p class="lead">{ideaContent(selectedIdea.description).summary}</p>{/if}
       {#if selectedIdea.weakFitReason}<p class="rank-note"><span class="weak-fit">Weak fit</span> {selectedIdea.weakFitReason}</p>{/if}
-      {#if selectedIdea.rankReason}<p class="rank-note">Ranked {selectedIdea.rank} for this problem: {selectedIdea.rankReason}</p>{/if}
-      {#if selectedIdea.workflowVersion === 2 && onSelect && onSave}
-        <DecisionOption idea={selectedIdea} busy={busy || opportunityReviewRunning} {analysisBlocked} initiallyOpen={true} inDetailView={true} {onSelect} {onSave} {onOpenSource} {onEvidenceFollowUp} {onEvidenceReassessment} {onPlanExperiment} />
+      {#if selectedIdea.workflowVersion === 2 && onSave}
+        <DecisionOption bind:this={decisionOption} idea={selectedIdea} busy={busy || opportunityReviewRunning} {onSave} {onOpenSource} {onEvidenceFollowUp} {onEvidenceReassessment} {onPlanExperiment} />
       {:else}<SolutionListItem idea={selectedIdea} rank={solutions.findIndex((idea) => idea.id === selectedIdea.id) + 1} initiallyOpen={true} inDetailView={true} {onOpenSource} />{/if}
     {/if}
   </div>
 
   <div class="conversation-view" hidden={activeConversationId === null}>
-    <button class="back-button" onclick={closeConversation}>Back to idea</button>
+    <div class="detail-navigation"><BackLink destination="idea" onclick={closeConversation} /></div>
     {#if activeConversationId && (openingConversation || conversationLoading)}
       <p class="conversation-status" role="status">Opening conversation…</p>
     {:else if activeConversationId && (openError || conversationError)}
@@ -253,7 +271,7 @@
     {#if retainedConversation && onSubmitIdeaTurn}
       <div hidden={!conversationMatchesSelection || openingConversation || conversationLoading || !!openError || !!conversationError}>
         {#key retainedConversation.rootSolutionId}
-          <IdeaConversation conversation={retainedConversation} {modelOptions} {activeResearchSnapshotId} busy={busy || analysisBlocked || opportunityReviewRunning} onSubmit={onSubmitIdeaTurn} {...(onSelectConversationVersion ? { onSelectVersion: onSelectConversationVersion } : {})} {...(onLoadVersionDetail ? { onViewVersion: viewVersionDetail } : {})} {...(onLoadMoreConversation ? { onLoadMore: onLoadMoreConversation } : {})} />
+          <IdeaConversation conversation={retainedConversation} {solutions} {modelOptions} {activeResearchSnapshotId} {run} {elapsed} {runStage} {onStop} onAnalyze={onSelect} busy={busy || opportunityReviewRunning} {analysisBlocked} onSubmit={onSubmitIdeaTurn} {...(onSelectConversationVersion ? { onSelectVersion: onSelectConversationVersion } : {})} {...(onLoadMoreConversation ? { onLoadMore: onLoadMoreConversation } : {})} />
         {/key}
       </div>
     {/if}
@@ -262,37 +280,41 @@
 
 <style>
   .workspace { max-width:var(--page-max);margin:0 auto;padding:var(--page-top) var(--page-inline) 80px;min-width:0; }
+  .workspace > :global(.analysis-progress) { margin-bottom:24px; }
   header { display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:16px 24px; }
   h1 { font-size:clamp(27px,3vw,34px);font-weight:650;letter-spacing:-.035em;margin:0;line-height:1.2; }
-  .review-problems { min-height:38px;padding:8px 12px;background:transparent;border:1px solid var(--border);border-radius:8px;color:var(--muted);font-size:13px; }
-  .review-problems:hover { color:var(--text);background:var(--surface-2);border-color:var(--border-strong); }
   .groups { display:grid;gap:12px;margin-top:28px; }
   .problem-group { border:1px solid var(--border);border-radius:12px;background:var(--surface); }
   .problem-group > summary { padding:16px 20px;color:var(--text);font-size:15px;font-weight:600;line-height:1.45;cursor:pointer; }
-  .return-count { display:block;margin-top:4px;color:var(--muted);font-size:12px;font-weight:400; }
+  .problem-label { color:var(--muted);font-weight:500; }
+  .return-count { display:block;margin-top:4px;color:var(--muted);font-size:13px;font-weight:400; }
   .problem-group ol { margin:0;padding:0 8px 8px;list-style:none; }
-  .idea-row { display:flex;align-items:center;gap:12px;width:100%;min-height:46px;padding:10px 12px;border:0;border-radius:8px;background:transparent;color:var(--text);text-align:left;font-size:15px;font-weight:550; }
+  .idea-row { display:flex;align-items:center;gap:14px;width:100%;padding:18px 12px;border:0;border-radius:0;background:transparent;color:var(--text);text-align:left;font-size:15px;cursor:pointer; }
+  li + li { position:relative; }li + li::before { content:"";position:absolute;top:0;left:54px;right:12px;height:1px;background:var(--border); }
+  .idea-number { width:28px;flex:none;color:var(--subtle);font-variant-numeric:tabular-nums;align-self:flex-start;line-height:1.6; }
   .idea-row:hover,.idea-row:focus-visible { background:var(--surface-2); }
-  .idea-name { flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap; }
-  .weak-fit { flex:none;padding:3px 8px;border:1px solid #b986455c;border-radius:6px;color:#e4b46f;font-size:12px;font-weight:500; }
+  .idea-text { flex:1;min-width:0; }.idea-name { display:block;font-weight:600;line-height:1.6; }
+  .idea-summary { display:-webkit-box;-webkit-line-clamp:2;line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;margin-top:5px;max-width:68ch;color:var(--muted);font-size:14px;font-weight:400;line-height:1.6; }
+  .row-chevron { flex:none;color:var(--subtle);transition:transform 120ms,color 120ms; }
+  .idea-row:hover .row-chevron,.idea-row:focus-visible .row-chevron { color:var(--text);transform:translateX(3px); }
+  .weak-fit { flex:none;padding:3px 8px;border:1px solid #b986455c;border-radius:6px;color:#e4b46f;font-size:13px;font-weight:500; }
   .grouping { margin:22px 0 0;border:1px solid var(--border);border-radius:9px;background:var(--surface); }
-  .grouping > summary { display:flex;align-items:center;gap:12px;padding:13px 16px;color:var(--text);font-size:14px;font-weight:600;cursor:pointer; }
-  .grouping > summary span { margin-left:auto;color:var(--muted);font-size:12px;font-weight:400;text-align:right; }
+  .grouping > summary { display:flex;align-items:center;gap:12px;padding:13px 16px;color:var(--text);font-size:15px;font-weight:600;cursor:pointer; }
+  .grouping > summary span { margin-left:auto;color:var(--muted);font-size:13px;font-weight:400;text-align:right; }
   .grouping :global(.opportunity-families) { border:0; }
   .run-footer { margin-top:12px; }
   .export-links { display:flex;flex-wrap:wrap;gap:6px 18px;margin-top:28px; }
   .link-button { padding:0;border:0;background:transparent;color:var(--subtle);font-size:12px; }
   .link-button:hover:not(:disabled) { color:var(--text);text-decoration:underline; }
-  .rank-note { max-width:75ch;margin:0 0 14px;color:var(--muted);font-size:14px;line-height:1.6; }
-  .rank-note .weak-fit { margin-right:6px; }
   .empty { display:grid;justify-items:start;gap:8px;padding:44px 0; }.empty h2 { font-size:18px;margin:0; }
-  .detail-navigation { display:flex;align-items:center;gap:16px;margin-bottom:24px;color:var(--subtle);font-size:13px; }
-  .back-button,.conversation-error button { min-height:38px;padding:8px 12px;border:1px solid var(--border-strong);border-radius:8px;background:#000;color:var(--text);font-size:13px; }
-  .back-button:hover,.conversation-error button:hover { background:var(--surface-2); }
+  .detail-navigation { margin:0 0 24px -12px; }
+  .conversation-error button { min-height:38px;padding:8px 12px;border:1px solid var(--border-strong);border-radius:8px;background:#000;color:var(--text);font-size:13px; }
+  .conversation-error button:hover { background:var(--surface-2); }
   /* The title and its main action share a row; the action wraps under a long title. */
   .detail-heading { display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px 20px;margin-bottom:24px; }
   .conversation-view { min-width:0; }
-  .conversation-view .back-button { margin-bottom:18px; }
+  .lead { max-width:68ch;margin:0 0 24px;color:var(--text);font-size:16px;line-height:1.6; }
+  .idea-detail :global(.analysis-progress) { margin-bottom:24px; }
   .conversation-status,.conversation-error { margin:0 0 18px;padding:18px;border:1px solid var(--border);border-radius:10px;color:var(--muted);font-size:14px; }
   .conversation-error p { margin:0 0 12px; }
   [hidden] { display:none; }
@@ -300,4 +322,5 @@
   .explore-button:hover { background:var(--accent-strong); }
   @container page (max-width:700px) { .workspace { padding:28px 22px 60px; }.problem-group > summary { padding:14px 16px; } }
   @container page (max-width:440px) { .workspace { padding-inline:16px; } }
+  @media (prefers-reduced-motion:reduce) { .row-chevron { transition:none; } }
 </style>

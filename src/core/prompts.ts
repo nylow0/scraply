@@ -4,6 +4,10 @@ import { join } from "node:path";
 import { getWorkflowV2Stage, type WorkflowV2StageId } from "./stages";
 
 const PROMPT_STATE_FILE = ".prompt-versions.json";
+export const WRITING_GUIDANCE_FILENAME = "writing-guidance.md";
+
+// Search plans and area selection feed tools. The other stages author text shown in the UI or exports.
+const MACHINE_ONLY_STAGES = new Set<WorkflowV2StageId>(["frame-search-plan", "query-plan", "area-ranking"]);
 export interface PromptBaseline { revision: 1; sha256: string }
 interface PromptState {
   version: 1;
@@ -41,17 +45,24 @@ const RETIRED_PROMPT_FILENAMES = new Set([
 // SHA-256 of LF-normalized workflow-v2 prompt blobs verified with git cat-file across
 // repository history. Only exact bundled copies or recorded baselines may be upgraded.
 const KNOWN_BUNDLED_PROMPT_HASHES: Readonly<Record<string, readonly string[]>> = {
+  "workflow-v2-frame.md": ["3061cf6a392930af3a4498b90d5e8a011e9a52de8366b866b81a547729829a16"],
+  "workflow-v2-idea-follow-up.md": ["eae66a0630bc8428c961752c71d5e4bc367f944d89d5e5fd60d0adbe4effd101"],
+  "workflow-v2-idea-ranking.md": ["73460388c9cae8bf5498e1ed8dc4fe7d9d6841fdf7eff7f37c9c5bb501a1a16c"],
+  "workflow-v2-solution-set-review.md": ["c609d924ee01b1d98b47abd309ba76c9df7b7777e56b14a05d57ddf8b9d75e94"],
   "workflow-v2-decision-analysis.md": [
+    "a7c7ce65f995d3623afc0c9fd237f9b758004f57468ffee5bbf59c88baa4f809",
     "81c5000a3980c1d62ae39ee8bb903e1912b2c2df9774c159e5cf65edcb1eab14",
     "fa76458e49f6cc06412a074ebf8154d43c47393c7cfca8c00b5adbcae3b5a577",
     "3c91a2bfddfe15ed44c269ac5473baee71e2eff8871a29e49c0a1468a2c5aab6",
   ],
   "workflow-v2-factor-harvest.md": [
+    "efcc053f76651f6e4a1224eb9e8c3fde5aafaa23a82b60fcab1ed0dd2da6aa47",
     "6941720a3a26ac9c1735aee1b199ad59a48b8408cdb9470d6c7b1f3aa3646c69",
     "536c204ec64807fee03fc3081493c5117179b167be7f33628804f83c8c566bde",
     "588f17dd8109b298233d50b8af48df72b70d9008e52c6dbb95ce104100baaf0c",
   ],
   "workflow-v2-problem-candidates.md": [
+    "7a5241bd9267d036cc1eab7e5de1e8e1f254d8f2997269a3876e346ba3789b37",
     "e2b602664164a3e636e9f13e4c30b99448b1d311dcade7c604c4f3a39cfd97a1",
     "00dfb5dc917bcdceb39c2cde49d97272ecead40782db7677719d6fcb5ea3959f",
   ],
@@ -64,9 +75,11 @@ const KNOWN_BUNDLED_PROMPT_HASHES: Readonly<Record<string, readonly string[]>> =
     "7f7bbe7092f2b6fa7673157bf691546a1e400f8ab8590427f761f1623449a752",
   ],
   "workflow-v2-risk-evaluation.md": [
+    "a538f676335d1c03505f33cdd44bcc64ac6c10eed0fb6d5fc3d27388a0b5102a",
     "d7e627e1e869399c477f22270771e7928a624033e41a4f93e5798d5923cb3fa9",
   ],
   "workflow-v2-solutions.md": [
+    "52417751feefb5ffea0600b262682f4fe45799e90db6932ac8dc36ff4b30e094",
     "bb4d7757065eaea489758956b2c7f721004942519df545e47b9ed4c3850b6729",
     "88b1d387578f2f5c016ea4be79b9e04ce3802e56b49ab98337ef896c6f014d45",
     "64878f576f90f8f0330d4d0d9163805a507800117f6b569d860c3e2f13aa21f3",
@@ -177,8 +190,11 @@ export function resolveWorkflowV2Prompt(stageId: WorkflowV2StageId): ResolvedWor
 
   const overridePath = overridePromptDir ? join(overridePromptDir, stage.promptFilename) : null;
   const hasOverride = overridePath !== null && existsSync(overridePath);
-  const text = hasOverride ? readFileSync(overridePath, "utf8") : bundledText;
-  if (!text.trim()) throw new Error(`Prompt override ${stage.promptFilename} is empty`);
+  const stageText = hasOverride ? readFileSync(overridePath, "utf8") : bundledText;
+  if (!stageText.trim()) throw new Error(`Prompt override ${stage.promptFilename} is empty`);
+  // Append after override selection, before the run freezes the text and its hash.
+  // Bundle baselines continue to describe only the editable stage file.
+  const text = MACHINE_ONLY_STAGES.has(stageId) ? stageText : withWritingGuidance(stageText);
   const state = overridePromptDir
     ? readPromptState(join(overridePromptDir, PROMPT_STATE_FILE))
     : null;
@@ -196,6 +212,20 @@ export function resolveWorkflowV2Prompt(stageId: WorkflowV2StageId): ResolvedWor
     resolvedSha256: textHash(text),
     text,
   };
+}
+
+export function loadWritingGuidance(): string {
+  const path = join(bundledPromptDir, WRITING_GUIDANCE_FILENAME);
+  if (!existsSync(path)) throw new PromptPackagingError(WRITING_GUIDANCE_FILENAME, "is missing from the application package");
+  const text = readFileSync(path, "utf8").trim();
+  if (!text) throw new PromptPackagingError(WRITING_GUIDANCE_FILENAME, "is empty in the application package");
+  return text;
+}
+
+/** Inline stages pass their run's saved guidance. An empty string preserves older runs. */
+export function withWritingGuidance(text: string, guidance = loadWritingGuidance()): string {
+  if (!guidance || text.replaceAll("\r\n", "\n").includes(guidance.replaceAll("\r\n", "\n"))) return text;
+  return `${text}\n\n${guidance}`;
 }
 
 export function loadPrompt(name: string): string {

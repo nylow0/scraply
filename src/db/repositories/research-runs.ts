@@ -76,4 +76,16 @@ export class ResearchRunRepository {
   }
 
   cancel(runId: string, reason = "Cancelled by user"): void { this.finish(runId, "cancelled", reason); }
+
+  /** Analysis can be retried against the same selection without losing its saved research or checkpoints. */
+  reopenInterruptedAnalysis(runId: string): boolean {
+    const result = this.client.db.prepare(`
+      UPDATE research_runs SET awaiting_selection = 1
+      WHERE id = ? AND workflow_version = 2 AND status IN ('failed', 'cancelled')
+        AND EXISTS (SELECT 1 FROM solutions s WHERE s.research_run_id = research_runs.id AND s.selected_at IS NOT NULL
+          AND NOT EXISTS (SELECT 1 FROM decision_analyses da WHERE da.solution_id = s.id))
+      RETURNING id
+    `).get(runId);
+    return Boolean(result);
+  }
 }

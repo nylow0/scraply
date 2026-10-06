@@ -32,7 +32,8 @@ export async function startMockBackend(options: { longIdeaTitle?: boolean; perpl
   let discarded = false;
   let workflowSummary: WorkflowSummary | null = null;
   const workspace = () => ({
-    validation: providerValidation, threads: threads.map((thread) => ({ ...thread, status })), activeThreadId, messages: [], scope,
+    validation: providerValidation, threads: threads.map((thread) => ({ ...thread, status,
+      isUnstartedDraft: thread.title === "New research" && status === "configuring" && !scope && !thread.archivedAt })), activeThreadId, messages: [], scope,
     runConfig: activeThreadId ? runConfig : null, models: [DEFAULT_RUN_CONFIG.model, { providerId: "openai-subscription", modelId: "gpt-6-astra" }, { providerId: "openai-subscription", modelId: "gpt-6-luna" }], modelOptions: [{ ...DEFAULT_RUN_CONFIG.model, displayName: "GPT-6 Sol", defaultReasoningEffort: "medium", reasoningEfforts: [{ id: "medium", description: "Balanced reasoning" }] }, { providerId: "openai-subscription", modelId: "gpt-6-astra", displayName: "Astra", defaultReasoningEffort: "medium", reasoningEfforts: [{ id: "medium", description: "Balanced reasoning" }] }, { providerId: "openai-subscription", modelId: "gpt-6-luna", displayName: "Luna", defaultReasoningEffort: "low", reasoningEfforts: [{ id: "low", description: "Fast" }] }], modelCatalog: { models: [DEFAULT_RUN_CONFIG.model], favorites: [] }, presets: [],
     problemCandidates: status !== "configuring" ? [problem] : [], rejectedProblemCandidates: status !== "configuring" ? [rejectedProblem] : [], researchRequests: [], researchFindings: [], solutions: status === "solutions-ready" ? [{ ...solution, discarded, mechanism: options.longIdeaTitle ? "Recruit people who recently encountered the problem and reconstruct the last occurrence, current workflow, consequences, frequency, workarounds, and the value of a shared supplier reliability ledger for independent repair shops." : solution.mechanism }] : [],
     latestResearchRun: status === "configuring" ? null : { runId: "run-1", status: "completed", problemId: status === "solutions-ready" ? "problem-1" : null, codexCalls: 8, searches: 10, projectedCodexCalls: 20, projectedSearches: 20, lastActivity: "Problem verification completed" }, pendingRuns: [],
@@ -45,7 +46,7 @@ export async function startMockBackend(options: { longIdeaTitle?: boolean; perpl
     requests.push({ method: req.method ?? "GET", path: url.pathname, body });
     if (url.pathname === "/validation") return ok(res, providerValidation);
     if (url.pathname === "/workspace") return ok(res, workspace());
-    if (url.pathname === "/threads") { activeThreadId = "thread-1"; if (!threads.some((thread) => thread.id === activeThreadId)) threads.push({ id: activeThreadId, title: "New research", createdAt: now, updatedAt: now }); return ok(res, { thread: { ...threads[0], status }, workspace: workspace() }); }
+    if (url.pathname === "/threads") { activeThreadId = "thread-1"; if (!threads.some((thread) => thread.id === activeThreadId)) threads.push({ id: activeThreadId, title: "New research", isUnstartedDraft: true, createdAt: now, updatedAt: now }); return ok(res, { thread: { ...threads[0], status }, workspace: workspace() }); }
     if (url.pathname === "/threads/select") { activeThreadId = (body as { threadId: string }).threadId; return ok(res, workspace()); }
     if (url.pathname === "/threads/title") return ok(res, { title: "Reducing repair shop delays" });
     if (url.pathname === "/threads/archive") {

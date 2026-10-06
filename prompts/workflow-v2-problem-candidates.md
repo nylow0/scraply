@@ -15,5 +15,4 @@ Use scaleBasisFactorId only when one cited factor directly supports the estimate
 FORMAT
 Return only JSON matching the supplied problems schema. Use exact supplied factor IDs.
 
-STYLE / TONE
-State unmet needs plainly. Keep causal explanations, scale limits, and material unknowns explicit.
+Keep causal explanations, scale limits, and material unknowns explicit.

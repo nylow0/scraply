@@ -963,7 +963,9 @@ describe("settings surfaces preserve launch configuration", () => {
       upperLimits: draft.limits, fieldErrors: [], expiresAt: "2099-01-01T00:00:00.000Z",
     }));
     const onStartWorkflow = vi.fn().mockResolvedValue(undefined);
-    const view = render(ScopeForm, { workspace: state, busy: false, onSave: vi.fn(), onStart: vi.fn(), onRetry: vi.fn(), onPreviewWorkflow, onStartWorkflow });
+    const onRememberDraft = vi.fn<NonNullable<ComponentProps<typeof ScopeForm>["onRememberDraft"]>>();
+    const props = { workspace: state, busy: false, onSave: vi.fn(), onStart: vi.fn(), onRetry: vi.fn(), onPreviewWorkflow, onStartWorkflow, onRememberDraft };
+    let view = render(ScopeForm, props);
     if (researchMode === "known-problem") {
       await fireEvent.click(view.getByRole("radio", { name: "I have a problem to solve" }));
       await fireEvent.input(view.getByPlaceholderText("Describe the problem."), { target: { value: "Approvals take too long" } });
@@ -974,6 +976,9 @@ describe("settings surfaces preserve launch configuration", () => {
     await fireEvent.input(view.getByLabelText("Solutions per problem"), { target: { value: "5" } });
     // Vibe (the default mode) shows the ideas model in the run panel, not in Advanced settings.
     await pickModel(view.getByLabelText("Ideas model"), modelRefKey(ideasModel));
+    await pickModel(view.getByLabelText("Model"), modelRefKey(ideasModel));
+    await fireEvent.input(view.getByLabelText("Audience"), { target: { value: "Repair shop operators" } });
+    await fireEvent.input(view.getByLabelText(researchMode === "explore-market" ? "Anything else to consider" : "Context"), { target: { value: "Keep communication history" } });
     expect(view.getByLabelText("Ideas model").closest("aside")).toBeTruthy();
     if (researchMode === "explore-market") {
       await fireEvent.change(view.getByLabelText("Research depth"), { target: { value: "deep" } });
@@ -998,8 +1003,8 @@ describe("settings surfaces preserve launch configuration", () => {
     await waitFor(() => expect(onPreviewWorkflow.mock.lastCall?.[0]).toMatchObject({
       purpose: researchMode === "known-problem" ? "known-problem" : "discovery", mode,
       brief: researchMode === "known-problem" ? "Approvals take too long" : "Parts sourcing",
-      scope: { title: "Repair shops", audience: "Shops", domain: "Parts sourcing", riskEvaluationCriteria: "Low setup effort", offLimits: ["No hardware", "No migration"] },
-      runConfig: { ...DEFAULT_RUN_CONFIG, ideaCount: 5, maxRunMinutes: DEFAULT_RUN_CONFIG.maxRunMinutes, researchMode, knownProblem: researchMode === "known-problem" ? "Approvals take too long" : "",
+      scope: { title: "Repair shops", audience: "Repair shop operators", domain: "Parts sourcing", observations: "Keep communication history", riskEvaluationCriteria: "Low setup effort", offLimits: ["No hardware", "No migration"] },
+      runConfig: { ...DEFAULT_RUN_CONFIG, model: ideasModel, reasoningEffort: "high", ideaCount: 5, maxRunMinutes: DEFAULT_RUN_CONFIG.maxRunMinutes, researchMode, knownProblem: researchMode === "known-problem" ? "Approvals take too long" : "",
         ...(researchMode === "explore-market" ? { discoveryDepth: "deep", searchProvider: "perplexity" } : {}) },
       limits: { enforced: false },
       instructions: { research: "Research context", ideas: "Generate carefully", review: "Check evidence" },
@@ -1007,6 +1012,12 @@ describe("settings surfaces preserve launch configuration", () => {
     }));
     const expected = structuredClone(onPreviewWorkflow.mock.lastCall![0]);
     if (mode === "babysit") expect(expected.ideas).toBeUndefined();
+    view.unmount();
+    const remembered = onRememberDraft.mock.lastCall?.[1];
+    expect(remembered).toBeTruthy();
+    onPreviewWorkflow.mockClear();
+    view = render(ScopeForm, { ...props, initialDraft: remembered ?? null });
+    await waitFor(() => expect(onPreviewWorkflow.mock.lastCall?.[0]).toMatchObject(expected));
     await fireEvent.click(view.getByRole("button", { name: "Advanced settings" }));
     await fireEvent.click(view.getByRole("button", { name: "Done" }));
     await fireEvent.click(view.getByRole("button", { name: "Start" }));

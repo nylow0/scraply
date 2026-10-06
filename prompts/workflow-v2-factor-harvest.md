@@ -18,5 +18,4 @@ Set supportsDemand true only for firsthand or measured evidence from the intende
 FORMAT
 Return only JSON matching the supplied factors schema.
 
-STYLE / TONE
-Use short, concrete statements. Describe uncertainty without overstating prevalence or interpretation.
+Do not overstate prevalence or interpretation.

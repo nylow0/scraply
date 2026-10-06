@@ -21,6 +21,38 @@ afterEach(() => {
 });
 
 describe("repository invariants", () => {
+  test("reuses empty drafts including restores, keeping scope, messages, runs and other titles visible", () => {
+    const client = database();
+    const threads = new ThreadRepository(client);
+    const empty = threads.createThread();
+    const oldEmpty = threads.createThread();
+    const scoped = threads.createThread();
+    threads.saveScope(scoped.id, { title: "New research", audience: "", domain: "Saved scope", observations: "", offLimits: [] });
+    const messaged = threads.createThread();
+    threads.addMessage(messaged.id, "user", "Saved work");
+    createThreadAndRun(client, "started", "started-run");
+    client.db.prepare("UPDATE threads SET title = 'New research', status = 'configuring' WHERE id = 'started'").run();
+    const named = threads.createThread("Deliberate name");
+    const renamed = threads.createThread();
+    threads.renameThread(renamed.id, "Named project");
+    threads.renameThread(renamed.id, "New research");
+    const restored = threads.createThread();
+    threads.archiveThread(restored.id, true);
+    threads.archiveThread(restored.id, false);
+    const legacy = threads.createThread();
+    threads.updateThreadStatus(legacy.id, "archived");
+    threads.archiveThread(legacy.id, false);
+    const hidden = threads.listThreads().filter(thread => thread.isUnstartedDraft).map(thread => thread.id);
+    expect(hidden.sort()).toEqual([empty.id, oldEmpty.id, renamed.id, restored.id, legacy.id].sort());
+    expect(hidden).not.toContain(scoped.id);
+    expect(hidden).not.toContain(messaged.id);
+    expect(hidden).not.toContain(named.id);
+    expect(hidden).not.toContain("started");
+    expect(hidden.includes(threads.findEmptyDraft()?.id ?? "")).toBe(true);
+    expect(threads.listThreads()).toHaveLength(9);
+    client.close();
+  });
+
   test("rolls back the thread if its default configuration cannot be created", () => {
     const client = database();
     client.db.exec(`

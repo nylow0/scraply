@@ -4,6 +4,7 @@
   import AdvancedSettings from "./AdvancedSettings.svelte";
   import ProviderLogo from "./ProviderLogo.svelte";
   import Icon from "./Icon.svelte";
+  import BackLink from "./BackLink.svelte";
   import OpenAILogo from "./OpenAILogo.svelte";
   import RedactedText from "./RedactedText.svelte";
   import SearchKeyControls from "./SearchKeyControls.svelte";
@@ -13,9 +14,10 @@
   import type { NativeLoginStartResult, WorkspaceState } from "../../shared/ipc";
   import type { SearchProvider } from "../../shared/schemas";
 
-  let { workspace, busy, nativeLogin, open = $bindable(false), feedback, onRetry, onConnectNative, onCancelNative, onRefreshNative, onLogoutNative, onSaveSearchKey, onRemoveSearchKey, onOpenUrl, onOpenData, onOpenLogs, onRestore, onDelete }: {
+  let { workspace, busy, nativeLogin, open = $bindable(false), onOpenChange, feedback, onRetry, onConnectNative, onCancelNative, onRefreshNative, onLogoutNative, onSaveSearchKey, onRemoveSearchKey, onOpenUrl, onOpenData, onOpenLogs, onRestore, onDelete }: {
     workspace: WorkspaceState | null;
     open?: boolean;
+    onOpenChange?: (open: boolean) => void;
     // App passes errors and ongoing progress here; confirmations appear as its corner toast.
     feedback?: { text: string; tone: "error" | "info" } | null;
     busy: boolean;
@@ -44,8 +46,9 @@
   let nativeModelOptions = $derived(workspace?.modelOptions.filter((item) => item.providerId === "openai-subscription") ?? []);
 
   // Settings covers the whole window, but the workspace stays mounted underneath so leaving preserves drafts and scroll.
-  export async function show() { section = "accounts"; open = true; await tick(); heading.focus(); }
-  async function back() { open = false; await tick(); document.getElementById("settings-button")?.focus(); }
+  export async function show() { section = "accounts"; if (onOpenChange) onOpenChange(true); else open = true; await tick(); heading.focus(); }
+  export function focusHeading() { heading?.focus(); }
+  async function back() { if (onOpenChange) onOpenChange(false); else open = false; await tick(); document.getElementById("settings-button")?.focus(); }
   // Keep keyboard focus on the full-window screen and leave on Esc when no picker is open.
   function handleSettingsKeydown(event: KeyboardEvent) {
     if (open && event.key === "Tab") {
@@ -81,7 +84,7 @@
       <button class:active={section === "local"} aria-pressed={section === "local"} onclick={() => section = "local"}><Icon name="folder" size={18} />Local files</button>
       <button class:active={section === "advanced"} aria-pressed={section === "advanced"} onclick={() => section = "advanced"}><Icon name="settings" size={18} />Advanced</button>
     </nav>
-    <div class="footer"><button class="back" onclick={back}><Icon name="back" size={20} />Back</button></div>
+    <div class="footer"><BackLink destination="research" onclick={back} /></div>
   </aside>
     <div class="settings-content">
       <header><div><h2>{section === "accounts" ? "Accounts" : section === "defaults" ? "Research defaults" : section === "archive" ? "Archived research" : section === "advanced" ? "Advanced" : "Local files"}</h2></div></header>
@@ -185,8 +188,6 @@
   nav button.active { background:var(--surface-2);color:var(--text); }
   nav button.active :global(svg) { color:var(--accent); }
   .footer { margin-top:auto;padding-top:18px; }
-  .back { display:flex;align-items:center;gap:10px;width:100%;min-height:38px;padding:9px 12px;border:0;border-radius:7px;background:transparent;color:var(--muted);font-size:13px;text-align:left;transition:background 180ms ease,color 180ms ease; }
-  .back:hover:not(:disabled) { color:var(--text);background:var(--surface-2); }
   /* The column starts on the research page title's left edge and uses its heading type, rather than floating centred. */
   .settings-content { padding:18px 24px 32px;min-width:0;min-height:0;overflow:auto;scrollbar-gutter:stable;border:1px solid var(--glass-edge);border-radius:var(--panel-radius);background:var(--bg);box-shadow:var(--glass-rim); }
   .settings-content > * { max-width:1440px; }

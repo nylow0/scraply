@@ -27,7 +27,7 @@ test("installed UI rejects invalid planning, displays valid strict rules, and pr
     await page.getByRole("button",{name:"Open idea: Inspect the saved payment experiment",exact:true}).click();
     await page.getByRole("button",{name:"Plan a focused experiment",exact:true}).click();
     const plan=page.getByRole("region",{name:"Focused experiment"});
-    await expect(plan.getByText("Reviewed",{exact:true})).toBeVisible();
+    await expect(plan.getByText("Reviewed",{exact:true})).toHaveCount(0);
     await expect(plan.getByText("0 to 100 percent of usable offers",{exact:true})).toBeVisible();
     await expect(plan.getByText("Upfront paid-pilot conversion rate is at least 40 percent of usable offers",{exact:true})).toBeVisible();
     await expect(plan.getByText("Upfront paid-pilot conversion rate is below 1 percent of usable offers",{exact:true})).toBeVisible();

@@ -83,7 +83,7 @@ test("setup hierarchy, source preferences, keyboard controls, and sidebar fit in
     await expect(page.getByRole("button", { name: "Advanced settings" })).toBeFocused();
     await expect(page.getByText("1 custom instruction")).toBeVisible();
 
-    // Navigation shows at most six recent projects; the rest stay reachable through All research.
+    // Navigation shows at most six recent projects; the rest stay reachable through Search.
     const list = page.getByRole("list", { name: "Research threads" });
     await expect(list.getByRole("listitem")).toHaveCount(6);
     await expect(list.getByRole("listitem").last()).toBeInViewport({ ratio: 1 });
@@ -104,7 +104,7 @@ test("setup hierarchy, source preferences, keyboard controls, and sidebar fit in
     await page.getByRole("button", { name: "Save defaults" }).click();
     await expect(page.getByText("Defaults saved", { exact: true })).toBeVisible();
     await page.screenshot({ path: testInfo.outputPath("advanced-search.png") });
-    await page.getByRole("button", { name: "Back", exact: true }).click();
+    await page.getByRole("button", { name: "Back to research", exact: true }).click();
     await page.reload();
     await expect(page.getByLabel("Research depth", { exact: true })).toHaveValue("deep");
 

@@ -11,6 +11,8 @@
   import type { z } from "zod";
   import { readResearchDefaults } from "./lib/research-defaults";
   import { hasSearchKey, SEARCH_PROVIDERS } from "./lib/search-providers";
+  import { findHistoryIndex, parentHistory, pushHistory, replaceHistory, rememberScroll, sameRoute, traverseHistory, reconcileHistory, routeResolver,
+    type NavigationRoute, type NavigationHistory, type SolutionsRoute } from "./lib/navigation-history";
   import DesktopBar from "./components/DesktopBar.svelte";
   import Icon from "./components/Icon.svelte";
   import Settings from "./components/Settings.svelte";
@@ -57,14 +59,26 @@
   let ideaFocused = $state(false);
   let workflowLoadEpoch = 0;
   let conversationLoadEpoch = 0;
-  let reviewSelection = $state(false);
-  let activeStep = $state<WorkflowStep>("setup");
+  let draftThreadId = $state<string | null>(null);
+  let setupDraft = $state<ReturnType<ScopeForm["captureDraft"]> | null>(null);
+  $effect(() => {
+    const thread = workspace?.threads.find((item) => item.id === workspace?.activeThreadId);
+    if (thread?.isUnstartedDraft && draftThreadId !== thread.id) {
+      draftThreadId = thread.id;
+      setupDraft = null;
+    }
+  });
+  function rememberDraft(threadId: string, draft: ReturnType<ScopeForm["captureDraft"]>) {
+    if (threadId === draftThreadId) setupDraft = draft;
+  }
+  let route = $state<NavigationRoute>({ threadId: "", step: "setup", settings: false, solution: { kind: "list" } });
+  let activeStep = $derived(route.step);
   let editingScopeThreadId = $state<string | null>(null);
   let editingApprovedFrameId = $state<string | null>(null);
   let nativeLogin = $state<NativeLoginStartResult | null>(null);
   let nativeLoginEpoch = 0;
   let settings: Settings | undefined;
-  let settingsOpen = $state(false);
+  let settingsOpen = $derived(route.settings);
   // The welcome prompt walks through the accounts research needs: OpenAI sign-in, then a search key.
   // "Not now" hides it until the next launch or the next sign-out.
   let signInDismissed = $state(false);
@@ -94,43 +108,96 @@
     mobileSidebarOpen = false;
     void tick().then(() => document.getElementById("navigation-toggle")?.focus());
   }
-  type NavigationTarget = { threadId: string; step: WorkflowStep; settings: boolean };
-  let navigation = $state<NavigationTarget[]>([]);
-  let navigationIndex = $state(-1);
-  let traversingHistory = false;
-  let backIndex = $derived(findHistoryIndex(-1));
-  let forwardIndex = $derived(findHistoryIndex(1));
+  let history = $state<NavigationHistory>({ entries: [], index: -1 });
+  let knownIdeas = $state<Record<string, string[]>>({});
+  let mainContent: HTMLElement | undefined;
+  let solutionWorkspace = $state<SolutionWorkspace>();
+  let traversingHistory = $state(false);
+  let historyScroll = $state<{ route: NavigationRoute; scrollTop: number } | null>(null);
+  let resolveRoute = $derived(routeResolver(workspace?.threads ?? [], knownIdeas));
+  let backIndex = $derived(findHistoryIndex(history, -1, resolveRoute));
+  let forwardIndex = $derived(findHistoryIndex(history, 1, resolveRoute));
+  // Backend reconciliation and run-driven tab changes replace the current entry.
   $effect(() => {
-    const route = { threadId: workspace?.activeThreadId, step: activeStep, settings: settingsOpen };
-    if (loading || busy || !route.threadId) return;
+    if (loading || busy || traversingHistory || !workspace?.activeThreadId) return;
+    const target = route.threadId === workspace.activeThreadId ? resolveRoute(route)
+      : { threadId: workspace.activeThreadId, step: defaultStep(workspace), settings: route.settings, solution: { kind: "list" as const } };
+    if (!target) return;
     untrack(() => {
-      if (traversingHistory) return;
-      const previous = navigation[navigationIndex];
-      if (previous && previous.threadId === route.threadId && previous.step === route.step && previous.settings === route.settings) return;
-      navigation = [...navigation.slice(0, navigationIndex + 1), { ...route, threadId: route.threadId! }];
-      navigationIndex = navigation.length - 1;
+      if (!sameRoute(route, target)) {
+        if (route.threadId !== target.threadId) history = replaceHistory(history, target);
+        history = reconcileHistory(history, resolveRoute);
+        route = target;
+      }
+      const current = history.entries[history.index];
+      if (!current || !sameRoute(current.route, target)) history = replaceHistory(history, target, mainContent?.scrollTop ?? 0);
     });
   });
-  function findHistoryIndex(direction: -1 | 1): number {
-    // Archived and deleted research can leave gaps in either direction.
-    for (let index = navigationIndex + direction; index >= 0 && index < navigation.length; index += direction) {
-      const route = navigation[index];
-      if (workspace?.threads.some((thread) => thread.id === route?.threadId && !thread.archivedAt)) return index;
-    }
-    return -1;
+  function navigateTo(target: NavigationRoute) {
+    if (traversingHistory || sameRoute(route, target)) return;
+    historyScroll = null;
+    // A run-driven route can change before the history effect reconciles it.
+    history = replaceHistory(history, route, mainContent?.scrollTop ?? 0);
+    const scrollTop = route.threadId === target.threadId && route.step === target.step
+      && sameRoute({ ...route, settings: target.settings }, target) ? mainContent?.scrollTop ?? 0 : 0;
+    history = pushHistory(history, target, scrollTop);
+    route = target;
+    void tick().then(() => { if (mainContent) mainContent.scrollTop = scrollTop; });
   }
-  async function navigateHistory(direction: -1 | 1) {
-    const index = direction === -1 ? backIndex : forwardIndex;
-    const route = navigation[index];
-    if (!route || !workspace || busy || traversingHistory) return;
+  function navigateSolutions(solution: SolutionsRoute, parent = false) {
+    const target = { ...route, solution };
+    if (!parent) { navigateTo(target); return; }
+    history = rememberScroll(history, mainContent?.scrollTop ?? 0);
+    const next = parentHistory(history, target, resolveRoute);
+    void restoreHistory(next);
+  }
+  async function restoreHistory(next: NavigationHistory) {
+    const entry = next.entries[next.index];
+    if (!entry || !workspace || busy || traversingHistory) return;
+    const leavingSettings = route.settings && !entry.route.settings;
     traversingHistory = true;
     try {
-      if (route.threadId !== workspace.activeThreadId) await selectThread(route.threadId);
-      if (workspace?.activeThreadId !== route.threadId) return;
-      activeStep = route.step; settingsOpen = route.settings; navigationIndex = index;
+      if (entry.route.threadId !== workspace.activeThreadId) await selectThread(entry.route.threadId, false);
+      if (workspace?.activeThreadId !== entry.route.threadId) return;
+      const resolved = resolveRoute(entry.route);
+      if (!resolved) return;
+      history = reconcileHistory(next, resolveRoute);
+      route = resolved;
+      const scrollTop = history.entries[history.index]!.scrollTop;
+      historyScroll = { route: resolved, scrollTop };
       await tick();
+      if (route.settings) settings?.focusHeading();
+      else if (leavingSettings) document.getElementById("settings-button")?.focus({ preventScroll: true });
     } finally { traversingHistory = false; }
   }
+  async function navigateHistory(direction: -1 | 1) {
+    if (busy || traversingHistory) return;
+    history = rememberScroll(history, historyScroll && sameRoute(route, historyScroll.route) ? historyScroll.scrollTop : mainContent?.scrollTop ?? 0);
+    await restoreHistory(traverseHistory(history, direction, resolveRoute));
+  }
+  // Saved idea details and conversation reloads change page height. Restore after the matching content renders.
+  $effect(() => {
+    const pending = historyScroll;
+    if (!pending || !sameRoute(route, pending.route)) return;
+    if (route.step === "ideas" && route.solution.kind === "idea"
+      && !solutionWorkspace?.isReadyForScroll(route.solution.ideaId)) return;
+    if (route.step === "ideas" && route.solution.kind === "conversation"
+      && (conversationLoading || conversationIdeaId !== route.solution.ideaId
+        || !conversation?.versions.some(version => version.solutionId === conversationIdeaId))) return;
+    const epoch = conversationLoadEpoch;
+    void tick().then(() => {
+      if (historyScroll !== pending || !sameRoute(route, pending.route) || epoch !== conversationLoadEpoch) return;
+      if (mainContent) mainContent.scrollTop = pending.scrollTop;
+      historyScroll = null;
+    });
+  });
+  $effect(() => {
+    const solution = route.solution;
+    if (busy || traversingHistory || route.threadId !== workspace?.activeThreadId) return;
+    if (route.step === "ideas" && solution.kind === "conversation") {
+      if (conversationIdeaId !== solution.ideaId) void openConversation(solution.ideaId);
+    } else if (conversationIdeaId) closeConversation();
+  });
   let reconcileTimer: ReturnType<typeof setTimeout> | null = null;
   let reconcilePending = false;
   let loadEpoch = 0;
@@ -193,6 +260,19 @@
       closeMobileNavigation();
     };
     window.addEventListener("keydown", closeDrawerOnEscape, { capture: true });
+    let composing = false;
+    const compositionStart = () => { composing = true; };
+    const compositionEnd = () => { composing = false; };
+    window.addEventListener("compositionstart", compositionStart);
+    window.addEventListener("compositionend", compositionEnd);
+    const historyShortcut = (event: KeyboardEvent) => {
+      if (event.defaultPrevented || event.isComposing || composing || document.querySelector("dialog[open]")) return;
+      if (!event.altKey || event.ctrlKey || event.metaKey || event.shiftKey || !["ArrowLeft", "ArrowRight"].includes(event.key)) return;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      void navigateHistory(event.key === "ArrowLeft" ? -1 : 1);
+    };
+    window.addEventListener("keydown", historyShortcut, { capture: true });
     void load();
     const clock = setInterval(() => clockNow = Date.now(), 1_000);
     // A development host restart or a dropped event stream can miss the terminal event.
@@ -202,18 +282,19 @@
     }, 5_000);
     const stopCommands = window.scraply.onAppCommand((command) => {
       if (command === "toggle-sidebar") toggleNavigation();
-      else if (command === "back") void navigateHistory(-1);
-      else if (command === "forward") void navigateHistory(1);
+      else if (command === "back" || command === "forward") {
+        if (!composing && !document.querySelector("dialog[open]")) void navigateHistory(command === "back" ? -1 : 1);
+      }
       else if (command === "settings") void settings?.show();
-      else if (command === "new-research") { settingsOpen = false; void createThread(); }
+      else if (command === "new-research") void createThread();
       else if (command === "export-research" && workspace?.activeThreadId) void exportResearch();
     });
     const dispose = window.scraply.onBackendEvent((event) => {
       if (event.type === "workflow-progress") {
         if (event.threadId === workspace?.activeThreadId) {
           if (event.sessionId === workspace?.activeWorkflow?.sessionId) {
-            if (event.state === "finished" && workspace.activeWorkflow.mode === "vibe") activeStep = "ideas";
-            else if (event.state === "waiting-for-review") activeStep = "research";
+            if (event.state === "finished" && workspace.activeWorkflow.mode === "vibe") route = { ...route, step: "ideas" };
+            else if (event.state === "waiting-for-review") route = { ...route, step: "research" };
           }
           if (conversationIdeaId && event.sessionId !== workspace?.activeWorkflow?.sessionId) void refreshConversation(conversationIdeaId);
         }
@@ -270,7 +351,7 @@
       }
       reconcileSoon();
     });
-    return () => { window.removeEventListener("keydown", closeDrawerOnEscape, { capture: true }); viewport?.removeEventListener("change", resizeNavigation); stopCommands(); dispose(); clearInterval(clock); clearInterval(workflowRefresh); if (reconcileTimer) clearTimeout(reconcileTimer); };
+    return () => { window.removeEventListener("compositionstart", compositionStart); window.removeEventListener("compositionend", compositionEnd); window.removeEventListener("keydown", historyShortcut, { capture: true }); window.removeEventListener("keydown", closeDrawerOnEscape, { capture: true }); viewport?.removeEventListener("change", resizeNavigation); stopCommands(); dispose(); clearInterval(clock); clearInterval(workflowRefresh); if (reconcileTimer) clearTimeout(reconcileTimer); };
   });
 
   async function load() {
@@ -287,6 +368,7 @@
       }
       const changedThread = next.activeThreadId !== workspace?.activeThreadId;
       workspace = next;
+      if (next.activeThreadId) knownIdeas = { ...knownIdeas, [next.activeThreadId]: next.solutions.map(idea => idea.id) };
       if (changedThread) {
         conversationLoadEpoch += 1;
         conversation = null;
@@ -295,7 +377,7 @@
       }
       void refreshWorkflowDetail(next.activeWorkflow?.sessionId ?? null, next.activeWorkflow?.revision ?? null);
       progressReceivedAt = Date.now();
-      if (changedThread) activeStep = defaultStep(next);
+      if (changedThread) route = { threadId: next.activeThreadId ?? "", step: defaultStep(next), settings: route.settings, solution: { kind: "list" } };
       if (feedback?.source === "workspace-load") feedback = null;
       if (validationPending(next)) reconcileSoon(500);
     }
@@ -318,6 +400,7 @@
       conversationError = null;
     }
     workspace = next;
+    if (next.activeThreadId) knownIdeas = { ...knownIdeas, [next.activeThreadId]: next.solutions.map(idea => idea.id) };
     void refreshWorkflowDetail(next.activeWorkflow?.sessionId ?? null, next.activeWorkflow?.revision ?? null);
     progressReceivedAt = Date.now();
     if (validationPending(next)) reconcileSoon(500);
@@ -396,26 +479,25 @@
   function openStep(step: WorkflowStep) {
     if (step === "research" && !researchReady) return;
     if (step === "ideas" && !ideasReady) return;
-    activeStep = step;
-    reviewSelection = false;
+    navigateTo({ ...route, step });
   }
   async function createThread() {
+    const remembered = workspace?.threads.find((thread) => thread.id === draftThreadId && !thread.archivedAt && thread.isUnstartedDraft);
+    if (remembered) { await selectThread(remembered.id); return; }
     await action(async () => {
-      const result: WorkspaceResult = await window.scraply.createThread();
-      setWorkspace(result.workspace);
-      activeStep = "setup";
+      const next = (await window.scraply.createThread()).workspace;
+      setWorkspace(next);
+      navigateTo({ threadId: next.activeThreadId ?? "", step: "setup", settings: false, solution: { kind: "list" } });
       latestEvent = null;
-      reviewSelection = false;
       editingScopeThreadId = null;
     });
   }
-  async function selectThread(id: string) {
+  async function selectThread(id: string, userNavigation = true) {
     await action(async () => {
       const next = await window.scraply.selectThread(id);
       setWorkspace(next);
-      activeStep = defaultStep(next);
+      if (userNavigation) navigateTo({ threadId: id, step: defaultStep(next), settings: false, solution: { kind: "list" } });
       latestEvent = null;
-      reviewSelection = false;
       editingScopeThreadId = null;
     });
   }
@@ -427,9 +509,8 @@
     try {
       const next = await window.scraply.deleteThread(id);
       setWorkspace(next);
-      activeStep = defaultStep(next);
+      route = { ...route, step: defaultStep(next) };
       latestEvent = null;
-      reviewSelection = false;
       editingScopeThreadId = null;
     }
     catch (cause) { feedback = { text: message(cause), tone: "error" }; }
@@ -443,9 +524,8 @@
     await action(async () => {
       const next = await window.scraply.archiveThread(id, archived);
       setWorkspace(next);
-      activeStep = defaultStep(next);
+      route = { ...route, step: defaultStep(next) };
       editingScopeThreadId = null;
-      reviewSelection = false;
     });
   }
   // Research is always named by the title agent. If it cannot answer (for example, the title model is
@@ -487,8 +567,9 @@
     await action(async () => {
       const result: WorkspaceResult = await window.scraply.startResearch(threadId);
       const next = result.workspace;
+      if (threadId === draftThreadId) { draftThreadId = null; setupDraft = null; }
       setWorkspace(next);
-      activeStep = defaultStep(next);
+      route = { ...route, step: defaultStep(next) };
       editingScopeThreadId = null;
     });
   }
@@ -527,9 +608,10 @@
         previewHash: preview.previewHash, capabilityFingerprint: preview.capabilityFingerprint,
         previewExpiresAt: preview.expiresAt,
       });
+      if (threadId === draftThreadId) { draftThreadId = null; setupDraft = null; }
       setWorkspace(await window.scraply.getWorkspace());
       await refreshWorkflowDetail(receipt.sessionId, receipt.revision, true);
-      activeStep = contract.purpose === "known-problem" && contract.mode === "vibe" ? "ideas" : "research";
+      route = { ...route, step: contract.purpose === "known-problem" && contract.mode === "vibe" ? "ideas" : "research" };
       editingScopeThreadId = null;
     } catch (cause) {
       feedback = { text: message(cause), tone: "error" };
@@ -567,7 +649,7 @@
     if (!runFrame) throw new Error("Reload the current research frame before approving it.");
     const knownProblem = runFrame.knownProblem;
     await commandWorkflow({ type: "approve-frame", frameId: runFrame.id, frame });
-    activeStep = knownProblem && activeWorkflow?.mode === "vibe" ? "ideas" : "research";
+    route = { ...route, step: knownProblem && activeWorkflow?.mode === "vibe" ? "ideas" : "research" };
   }
   async function regenerateFrame(frame: ResearchFrame) {
     if (!runFrame) throw new Error("Reload the current research frame before regenerating it.");
@@ -578,13 +660,13 @@
     if (!threadId) return;
     await commandWorkflow({ type: "stop", reason: "Brief reopened for editing." });
     editingScopeThreadId = threadId;
-    activeStep = "setup";
+    navigateTo({ ...route, step: "setup" });
   }
   async function saveApprovedFrame(frame: ResearchFrame) {
     if (!latestApprovedFrame?.approved) throw new Error("Reload the approved frame before editing it.");
     await commandWorkflow({ type: "edit-approved-frame", frameId: latestApprovedFrame.id, frame });
     editingApprovedFrameId = null;
-    activeStep = "setup";
+    route = { ...route, step: "setup" };
     feedback = { text: "New frame version saved for future runs.", tone: "info", lifetime: "confirmation" };
   }
   async function previewCandidateAssessment(candidateId: string): Promise<WorkflowPreview> {
@@ -770,7 +852,7 @@
     await action(async () => {
       const next = await window.scraply.resumeResearch(runId);
       setWorkspace(next);
-      activeStep = defaultStep(next);
+      route = { ...route, step: defaultStep(next) };
     });
   }
   async function cancelResearch(runId: string) {
@@ -796,8 +878,7 @@
         : { kind: "per-problem" as const, count: workspace?.runConfig?.ideaCount ?? 3 };
       await commandWorkflow({ type: "generate-ideas", snapshotId: activeWorkflow.activeSnapshotId, problemIds,
         model, reasoningEffort, target });
-      activeStep = "ideas";
-      reviewSelection = false;
+      route = { ...route, step: "ideas" };
       return;
     }
     await action(async () => {
@@ -805,8 +886,7 @@
         selectProblems(request: { threadId: string; problemIds: string[]; userProblem: string|null; model: ModelRef; reasoningEffort: string; explorationPurpose: ExplorationPurpose }): Promise<WorkspaceState>;
       };
       setWorkspace(await api.selectProblems({ threadId, problemIds: ids, userProblem, model, reasoningEffort, explorationPurpose }));
-      activeStep = "ideas";
-      reviewSelection = false;
+      route = { ...route, step: "ideas" };
     });
   }
   async function selectOption(idea: SolutionView) {
@@ -920,16 +1000,9 @@
     const duration = minutes ? `${minutes}m ${seconds % 60}s` : `${seconds}s`;
     return totalRun ? `Total run: ${duration}` : `${duration} elapsed`;
   }
-  function activeSolutionRunLabel(): string {
-    const activity = runActivity.toLowerCase();
-    if (activity.includes("reassess")) return "Reassessing with new evidence";
-    if (runtimeProgress.stage === "evidence-follow-up") return "Researching follow-up evidence";
-    if (runtimeProgress.stage === "evaluating-risk" || runtimeProgress.stage === "analyzing-option") return "Analyzing the selected option";
-    return stageLabel(runtimeProgress.stage);
-  }
 </script>
 
-<div inert={settingsOpen}><DesktopBar canBack={backIndex !== -1 && !busy} canForward={forwardIndex !== -1 && !busy} onBack={() => navigateHistory(-1)} onForward={() => navigateHistory(1)} onToggle={toggleNavigation} navigationOpen={navigationOpen} compact={compactViewport} /></div>
+<div><DesktopBar canBack={backIndex !== -1} canForward={forwardIndex !== -1} onBack={() => navigateHistory(-1)} onForward={() => navigateHistory(1)} onToggle={toggleNavigation} navigationOpen={navigationOpen} compact={compactViewport} /></div>
 <div class="app-shell" class:sidebar-rail={compactViewport || !sidebarExpanded}>
   {#if compactViewport && mobileSidebarOpen}<button class="sidebar-backdrop" aria-label="Close navigation" inert={settingsOpen} onclick={closeMobileNavigation}></button>{/if}
   <div id="research-navigation" class="sidebar-area" class:drawer={compactViewport && mobileSidebarOpen} inert={settingsOpen}>
@@ -962,7 +1035,7 @@
         onPreviewExtension={previewWorkflowExtension} onApplyExtension={applyWorkflowExtension} />
     {/if}
   {/snippet}
-  <main class="main-content" class:setup-active={activeStep === "setup" && showSetupForm} inert={settingsOpen}>
+  <main bind:this={mainContent} class="main-content" class:setup-active={activeStep === "setup" && showSetupForm} inert={settingsOpen}>
     {#if workspace && activeThread}
       <header class="workspace-header">
       <div class="topbar">
@@ -997,8 +1070,7 @@
               <button disabled={busy} onclick={() => resumeResearch(activeRun.runId)}>Resume attempt</button>
             {/if}
             {#if activeRun && ["queued", "running"].includes(activeRun.status)}<button class="cancel" disabled={busy} onclick={() => cancelResearch(activeRun.runId)}>Cancel run</button>{/if}
-            {#if workspace.problemCandidates.length > 0 || workspace.rejectedProblemCandidates.length > 0}<button disabled={busy} onclick={() => { activeStep = "research"; reviewSelection = true; }}>Review problems</button>{/if}
-            <button disabled={busy} onclick={() => { activeStep = "setup"; editingScopeThreadId = activeThread?.id ?? null; }}>Edit setup</button>
+            <button disabled={busy} onclick={() => { openStep("setup"); editingScopeThreadId = activeThread?.id ?? null; }}>Edit setup</button>
           </div>
         </div>
       {/if}
@@ -1014,7 +1086,7 @@
       {#if showSetupForm}
         <div id="workflow-panel-setup" role="tabpanel" aria-label="Research setup">
           {#key workspace.activeThreadId}
-            <ScopeForm {workspace} {busy} frameLanguages={latestApprovedFrame?.approved?.languages} onSave={saveScope} onStart={startResearch} onPreviewWorkflow={previewWorkflow} onStartWorkflow={startWorkflow} onGenerateTitle={generateResearchTitle} onRetry={retryConnections} onOpenSettings={() => settings?.show()} />
+            <ScopeForm {workspace} {busy} initialDraft={workspace.activeThreadId === draftThreadId ? setupDraft : null} onRememberDraft={rememberDraft} frameLanguages={latestApprovedFrame?.approved?.languages} onSave={saveScope} onStart={startResearch} onPreviewWorkflow={previewWorkflow} onStartWorkflow={startWorkflow} onGenerateTitle={generateResearchTitle} onRetry={retryConnections} onOpenSettings={() => settings?.show()} />
           {/key}
         </div>
       {:else}
@@ -1033,7 +1105,7 @@
             </div>
           </details>
           {#if runFrame?.version !== latestApprovedFrame.version}<p>This run uses version {runFrame?.version}. New runs use version {latestApprovedFrame.version}.</p>{/if}
-          <button type="button" disabled={busy || !["finished", "waiting-for-review"].includes(activeWorkflow?.state ?? "")} onclick={() => { editingApprovedFrameId = latestApprovedFrame!.id; activeStep = "research"; }}>Edit approved frame</button>
+          <button type="button" disabled={busy || !["finished", "waiting-for-review"].includes(activeWorkflow?.state ?? "")} onclick={() => { editingApprovedFrameId = latestApprovedFrame!.id; openStep("research"); }}>Edit approved frame</button>
         </section>
       {/if}
     {:else if activeStep === "research"}
@@ -1058,7 +1130,7 @@
           {#if activeRun}<div class="progress-facts" aria-label="Run progress"><strong>{stageLabel(runtimeProgress.stage)}</strong>{#if runtimeProgress.modelState}<span>{runtimeProgress.modelState === "waiting" ? "Queued for model" : runtimeProgress.modelState === "dispatched" ? "Sent to model" : "Accepted by model"}</span>{/if}{#if elapsedStatus}<span>{elapsedStatus}</span>{/if}{#if runtimeProgress.lastSuccessfulCheckpoint}<span>Last checkpoint: {runtimeProgress.lastSuccessfulCheckpoint}</span>{/if}</div>{/if}
           {#if activeRun}<div class="run-actions"><button class="cancel" disabled={busy} onclick={() => cancelResearch(activeRun.runId)}>Cancel run</button></div>{/if}
         </div>
-      {:else if (activeWorkflow ? activeWorkflow.state === "waiting-for-review" : activeThread.status === "problems-ready" || reviewSelection) && (workspace.problemCandidates.length > 0 || workspace.rejectedProblemCandidates.length > 0)}
+      {:else if (activeWorkflow ? activeWorkflow.state === "waiting-for-review" : activeThread.status === "problems-ready") && (workspace.problemCandidates.length > 0 || workspace.rejectedProblemCandidates.length > 0)}
         <div id="workflow-panel-research" role="tabpanel" aria-label="Research">
           {#key workspace.activeThreadId}
             <ProblemCheckpoint problems={workspace.problemCandidates} rejectedCandidates={workspace.rejectedProblemCandidates} modelOptions={workspace.modelOptions} initialConfig={activeRun?.problemId ? activeRun.runConfig ?? workspace.runConfig : workspace.runConfig} priorDevelopment={Boolean(activeRun?.problemId)} fixedExplorationPurpose={activeWorkflow ? workspace.runConfig?.explorationPurpose ?? "general-solutions" : undefined} workflowVersion={activeRun?.workflowVersion} ideaCount={workspace.runConfig?.ideaCount} {busy} onCommit={selectProblems} onExport={exportResearch} onOpenSource={openExternalUrl}
@@ -1081,45 +1153,25 @@
           languageCount={nextRequestFrame?.languages.length ?? 1} depth="quick"
           {busy} onRequest={requestResearch} onApply={applyResearch} onKeep={keepResearch} onOpenSource={openExternalUrl} />
       {/if}
-    {:else if activeThread.status === "development-running" && !activeWorkflow}
-      <div id="workflow-panel-ideas" role="tabpanel" aria-label="Solutions" tabindex="0">
-      <div class="running development-progress">
-        <div class="activity-symbol"><Icon name="ideas" size={30} /></div><p class="eyebrow">Development in progress</p>
-        <h1>{runtimeProgress.stage === "analyzing-option" || runtimeProgress.stage === "evaluating-risk" ? "Analyzing the selected option." : workspace.solutions.length ? "Generating the next options." : "Turning problems into possibilities."}</h1>
-        <div class="activity"><span></span><p>{runActivity}</p></div>
-        {#if activeRun}<div class="progress-facts" aria-label="Run progress"><strong>{stageLabel(runtimeProgress.stage)}</strong>{#if runtimeProgress.modelState}<span>{runtimeProgress.modelState === "waiting" ? "Queued for model" : runtimeProgress.modelState === "dispatched" ? "Sent to model" : "Accepted by model"}</span>{/if}{#if elapsedStatus}<span>{elapsedStatus}</span>{/if}{#if runtimeProgress.lastSuccessfulCheckpoint}<span>Last checkpoint: {runtimeProgress.lastSuccessfulCheckpoint}</span>{/if}</div>{/if}
-        {#if activeRun}<div class="run-actions"><button class="cancel" disabled={busy} onclick={() => cancelResearch(activeRun.runId)}>Cancel run</button></div>{/if}
-      </div>
-      {#key workspace.activeThreadId}
-      {#if workspace.solutions.length > 0}<SolutionWorkspace solutions={workspace.solutions} ideaGroups={workspace.ideaGroups} {busy} analysisBlocked={true} opportunities={workspace.opportunityFamilies} opportunityReviewRunning={workspace.opportunityReviewStatus?.running} modelOptions={workspace.modelOptions} initialConfig={workspace.runConfig} activeResearchSnapshotId={appliedResearchSnapshotId} onFocusChange={(focused) => ideaFocused = focused} onReviewOpportunities={reviewSavedOpportunities} onEditMembership={editOpportunityMembership} onPlanExperiment={requestFocusedExperiment} workflowVersion={activeRun?.workflowVersion} onSelect={selectOption} onSave={saveDecision} onExport={exportIdeas} onOpenSource={openExternalUrl} onEvidenceFollowUp={requestEvidenceFollowUp} onEvidenceReassessment={requestEvidenceReassessment} onReview={() => { activeStep = "research"; reviewSelection = true; }} {conversation} {conversationLoading} {conversationError} onOpenConversation={openConversation} onCloseConversation={closeConversation} onSubmitIdeaTurn={submitIdeaTurn} onSelectConversationVersion={selectConversationVersion} onLoadVersionDetail={window.scraply.getIdeaDetail} onLoadMoreConversation={(cursor) => refreshConversation(conversationIdeaId ?? "", cursor)} />{/if}
-      {/key}
-      </div>
-    {:else if activeThread.status === "solutions-ready" || workspace.solutions.length > 0 || (workspace.ideaGroups?.length ?? 0) > 0}
+    {:else if activeThread.status === "development-running" || activeThread.status === "solutions-ready" || workspace.solutions.length > 0 || (workspace.ideaGroups?.length ?? 0) > 0}
       <div id="workflow-panel-ideas" role="tabpanel" aria-label="Solutions">
-        {#if activeRun && !activeWorkflow && ["queued", "running"].includes(activeRun.status)}
-          <section class="compact-progress" aria-label="Active solution work">
-            <div><strong>{activeSolutionRunLabel()}</strong><p>{runActivity}</p></div>
-            <div class="progress-facts" aria-label="Run progress">{#if runtimeProgress.modelState}<span>{runtimeProgress.modelState === "waiting" ? "Queued for model" : runtimeProgress.modelState === "dispatched" ? "Sent to model" : "Accepted by model"}</span>{/if}{#if elapsedStatus}<span>{elapsedStatus}</span>{/if}{#if runtimeProgress.lastSuccessfulCheckpoint}<span>Last checkpoint: {runtimeProgress.lastSuccessfulCheckpoint}</span>{/if}</div>
-          </section>
-        {/if}
         {#key workspace.activeThreadId}
-        <SolutionWorkspace footer={runFinished ? runPanel : undefined} solutions={workspace.solutions} ideaGroups={workspace.ideaGroups} {busy} opportunities={workspace.opportunityFamilies} opportunityReviewRunning={workspace.opportunityReviewStatus?.running} modelOptions={workspace.modelOptions} initialConfig={workspace.runConfig} activeResearchSnapshotId={appliedResearchSnapshotId} onFocusChange={(focused) => ideaFocused = focused} onReviewOpportunities={reviewSavedOpportunities} onEditMembership={editOpportunityMembership} onPlanExperiment={requestFocusedExperiment} workflowVersion={activeRun?.workflowVersion} onSelect={selectOption} onSave={saveDecision} onExport={exportIdeas} onOpenSource={openExternalUrl} onEvidenceFollowUp={requestEvidenceFollowUp} onEvidenceReassessment={requestEvidenceReassessment} onReview={() => { activeStep = "research"; reviewSelection = true; }} {conversation} {conversationLoading} {conversationError} onOpenConversation={openConversation} onCloseConversation={closeConversation} onSubmitIdeaTurn={submitIdeaTurn} onSelectConversationVersion={selectConversationVersion} onLoadVersionDetail={window.scraply.getIdeaDetail} onLoadMoreConversation={(cursor) => refreshConversation(conversationIdeaId ?? "", cursor)} />
+        <SolutionWorkspace bind:this={solutionWorkspace} route={route.solution} onNavigate={navigateSolutions} onBack={(parent) => navigateSolutions(parent, true)} interactive={!settingsOpen} footer={runFinished ? runPanel : undefined} solutions={workspace.solutions} ideaGroups={workspace.ideaGroups} {busy} run={activeRun} elapsed={elapsedStatus ?? ""} runStage={stageLabel(runtimeProgress.stage)} onStop={cancelResearch} analysisBlocked={!!activeRun && ["queued", "running"].includes(activeRun.status)} opportunities={workspace.opportunityFamilies} opportunityReviewRunning={workspace.opportunityReviewStatus?.running} modelOptions={workspace.modelOptions} initialConfig={workspace.runConfig} activeResearchSnapshotId={appliedResearchSnapshotId} onFocusChange={(focused) => ideaFocused = focused} onReviewOpportunities={reviewSavedOpportunities} onEditMembership={editOpportunityMembership} onPlanExperiment={requestFocusedExperiment} workflowVersion={activeRun?.workflowVersion} onSelect={selectOption} onSave={saveDecision} onExport={exportIdeas} onOpenSource={openExternalUrl} onEvidenceFollowUp={requestEvidenceFollowUp} onEvidenceReassessment={requestEvidenceReassessment} {conversation} {conversationLoading} {conversationError} onOpenConversation={openConversation} onSubmitIdeaTurn={submitIdeaTurn} onSelectConversationVersion={selectConversationVersion} onLoadMoreConversation={(cursor) => refreshConversation(conversationIdeaId ?? "", cursor)} />
         {/key}
       </div>
     {:else if activeWorkflow}
       <div class="failed" id="workflow-panel-ideas" role="tabpanel" aria-label="Solutions" tabindex="0">
-        <p class="eyebrow">{activeWorkflow.state === "finished" ? "Idea outcome" : "Idea development"}</p>
         <h1>{activeWorkflow.stopReason ?? (activeWorkflow.state === "finished" ? "No qualifying ideas were produced." : "Ideas are being developed.")}</h1>
         {#if activeWorkflow.state === "finished"}<div class="zero-idea-actions"><button disabled={busy} onclick={() => exportIdeas("markdown")}>Export result</button><button disabled={busy} onclick={() => exportIdeas("json")}>Export JSON</button></div>{/if}
         {#if runFinished}{@render runPanel()}{/if}
       </div>
     {:else if activeThread.status === "failed"}
-      <div class="failed" id="workflow-panel-ideas" role="tabpanel" aria-label="Solutions" tabindex="0"><p class="eyebrow">No solutions</p><h1>The run stopped before any solutions were generated.</h1></div>
+      <div class="failed" id="workflow-panel-ideas" role="tabpanel" aria-label="Solutions" tabindex="0"><h1>The run stopped before any solutions were generated.</h1></div>
     {:else}
-      <div class="failed" id="workflow-panel-ideas" role="tabpanel" aria-label="Solutions" tabindex="0"><p class="eyebrow">Solutions not ready</p><h1>Complete the research step first.</h1></div>
+      <div class="failed" id="workflow-panel-ideas" role="tabpanel" aria-label="Solutions" tabindex="0"><h1>Complete the research step first.</h1></div>
     {/if}
   </main>
-  <Settings bind:this={settings} bind:open={settingsOpen} feedback={feedback?.tone === "error" || feedback?.lifetime === "progress" ? feedback : null} {workspace} {busy} {nativeLogin}
+  <Settings bind:this={settings} open={settingsOpen} onOpenChange={(open) => navigateTo({ ...route, settings: open })} feedback={feedback?.tone === "error" || feedback?.lifetime === "progress" ? feedback : null} {workspace} {busy} {nativeLogin}
     onRetry={retryConnections} onConnectNative={connectNativeAccount} onCancelNative={cancelNativeLogin}
     onRefreshNative={refreshNativeAccount} onLogoutNative={logoutNativeAccount}
     onSaveSearchKey={saveSearchKey} onRemoveSearchKey={removeSearchKey} onOpenUrl={(url) => void openExternalUrl(url)}
@@ -1189,11 +1241,6 @@
   .activity p { margin:0;font-size:13px;color:var(--muted); }.activity span { width:7px;height:7px;border-radius:50%;background:var(--accent);flex:none;animation:pulse 1.5s ease infinite alternate; }
   .progress-facts { display:flex;flex-wrap:wrap;gap:8px 18px;color:var(--subtle);font-size:13px; }
   .progress-facts strong { color:var(--text);font-weight:600; }
-  .development-progress { min-height:auto;padding-bottom:32px;border-bottom:1px solid var(--border); }
-  .compact-progress { display:flex;flex-wrap:wrap;justify-content:space-between;gap:12px 20px;padding:16px var(--page-gutter);border-bottom:1px solid var(--border);background:var(--surface); }
-  .compact-progress strong { font-size:13px;color:var(--text); }
-  .compact-progress p { margin:4px 0 0;color:var(--muted);font-size:13px; }
-  .compact-progress .progress-facts { justify-content:flex-end;align-items:center; }
   .run-actions { display:flex;gap:9px; }.run-actions button { border:1px solid var(--border-strong);background:transparent;color:var(--text);padding:10px 14px;border-radius:8px;font-size:13px; }.run-actions .cancel { color:var(--danger); }
   .run-stopped { display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:16px;margin:14px var(--page-gutter) 0;padding:16px;border:1px solid #df92924a;border-radius:12px;background:#df929208; }
   .run-stopped > div:first-child { display:grid;gap:5px; }.run-stopped strong { font-size:13px; }.run-stopped span { color:var(--muted);font-size:13px; }.run-stopped-actions { display:flex;flex-wrap:wrap;gap:8px; }.run-stopped-actions button { border:1px solid var(--border-strong);border-radius:8px;background:transparent;color:var(--text);padding:9px 13px;font-size:13px; }.run-stopped-actions .cancel { color:var(--danger); }

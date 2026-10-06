@@ -67,13 +67,13 @@ test("the renderer restores the problem-selection step after a restart", async (
     await expect(page.getByText("Choose problems to develop")).toBeVisible();
 
     await page.keyboard.press("Control+k");
-    await expect(page.getByRole("dialog", { name: "All research" })).toBeVisible();
+    await expect(page.getByRole("dialog", { name: "Search" })).toBeVisible();
     await page.getByRole("textbox", { name: "Search research", exact: true }).fill("no matching research");
     await expect(page.getByText("No research found.", { exact: false })).toBeVisible();
     await page.getByRole("textbox", { name: "Search research", exact: true }).fill("Repair");
     await page.screenshot({ animations: "disabled", path: testInfo.outputPath("research-finder.png") });
     await page.keyboard.press("Enter");
-    await expect(page.getByRole("dialog", { name: "All research" })).not.toBeVisible();
+    await expect(page.getByRole("dialog", { name: "Search" })).not.toBeVisible();
     await page.getByRole("textbox", { name: "Search problems" }).fill("nothing matches");
     await expect(page.getByText('No problems match "nothing matches".')).toBeVisible();
     await page.getByRole("button", { name: "Clear filter" }).click();
@@ -90,12 +90,12 @@ test("the renderer restores the problem-selection step after a restart", async (
     await expect(page.getByRole("checkbox", { name: "Develop this problem" })).toBeChecked();
     await page.getByRole("button", { name: "Generate all selected" }).click();
     // The idea is a row in its problem's group, named by its short name.
-    await expect(page.getByRole("button", { name: "Open idea: Pool observed delivery windows by supplier and part category." })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Open idea: Pool observed delivery windows by supplier and part category" })).toBeVisible();
     await page.screenshot({ animations: "disabled", path: testInfo.outputPath("ideas.png") });
     await expect(page.getByText(/independently confirmed outcomes/)).toHaveCount(0);
     await expect(page.getByText("Highest risk: likely · project ends")).not.toBeVisible();
-    await page.getByRole("button", { name: "Open idea: Pool observed delivery windows by supplier and part category." }).click();
-    await expect(page.locator(".idea-detail").getByRole("heading", { level: 1, name: "Pool observed delivery windows by supplier and part category." })).toBeVisible();
+    await page.getByRole("button", { name: "Open idea: Pool observed delivery windows by supplier and part category" }).click();
+    await expect(page.locator(".idea-detail").getByRole("heading", { level: 1, name: "Pool observed delivery windows by supplier and part category" })).toBeVisible();
     await expect(page.getByText("Highest risk: likely · project ends")).not.toBeVisible();
     await page.getByText("Review all risks and responses").click();
     await expect(page.getByText("Volume is too sparse")).toBeVisible();
@@ -111,7 +111,9 @@ test("the renderer restores the problem-selection step after a restart", async (
     // No name was entered: the title agent named the research.
     await expect(page.locator(".fields .primary strong")).toHaveText("Reducing repair shop delays");
     await page.getByRole("tab", { name: /Solutions/ }).click();
-    await expect(page.getByRole("button", { name: "Open idea: Pool observed delivery windows by supplier and part category." })).toBeVisible();
+    await expect(page.locator(".idea-detail").getByRole("heading", { level: 1, name: "Pool observed delivery windows by supplier and part category" })).toBeVisible();
+    await page.getByRole("button", { name: "Back to ideas" }).click();
+    await expect(page.getByRole("button", { name: "Open idea: Pool observed delivery windows by supplier and part category" })).toBeVisible();
     await page.setViewportSize({ width: 960, height: 640 });
     await expect(page.getByRole("button", { name: "Settings", exact: true })).toBeVisible();
     expect(await page.locator(".main-content").evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true);

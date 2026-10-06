@@ -17,6 +17,7 @@ import { ResearchFrameRepository } from "../../src/db/repositories/research-fram
 import { ResearchRunRepository } from "../../src/db/repositories/research-runs";
 import { WorkflowRepository } from "../../src/db/repositories/workflows";
 import type { StructuredModelClient, StructuredStageRequest } from "../../src/providers/structured";
+import { ProviderFailure } from "../../src/providers/structured";
 import type { SearchClient, SearchOptions } from "../../src/providers/search";
 import { canonicalJson, sha256 } from "../../src/shared/content-identity";
 import type { ResearchFrame } from "../../src/shared/research-frame";
@@ -222,6 +223,48 @@ async function completedFollowUp(f: ReturnType<typeof fixture>) {
   expect(new EvidenceFollowUpRepository(f.db).find(runId)?.status).toBe("completed");
   return { runId, workflow };
 }
+
+test.each(["cancelled", "failed"] as const)("an interrupted risk analysis preserves the idea and allows its explicit retry: %s", async outcome => {
+  const f = fixture();
+  try {
+    const runId = await f.engine.startKnownProblem("project", scope, "Owners repeat entries", config);
+    await f.wait(runId);
+    f.db.db.prepare("UPDATE workflow_snapshots SET value_json = ? WHERE research_run_id = ? AND snapshot_key = 'focused-experiments'")
+      .run(canonicalJson({ version: 0 }), runId);
+    const selected = f.db.db.prepare("SELECT id FROM solutions WHERE research_run_id = ?").get(runId) as { id: string };
+    const original = f.client.structuredCompletion.bind(f.client);
+    let entered = false;
+    f.client.structuredCompletion = async request => {
+      if (request.stage !== "risk-evaluation") return original(request);
+      entered = true;
+      request.onDispatched?.();
+      request.onAccepted?.({});
+      if (outcome === "failed") throw new ProviderFailure("unavailable", "Synthetic risk failure", false, { attempts: [] });
+      await new Promise<void>((_resolve, reject) => {
+        request.signal?.addEventListener("abort", () => reject(new ProviderFailure("cancelled", "Cancelled by user", false, { attempts: [] })), { once: true });
+      });
+      return original(request);
+    };
+    await f.engine.selectOption("project", runId, selected.id);
+    const deadline = Date.now() + 2_000;
+    while (!entered && Date.now() < deadline) await Bun.sleep(5);
+    expect(entered).toBe(true);
+    if (outcome === "cancelled") {
+      expect(f.db.db.prepare("SELECT status FROM threads WHERE id = 'project'").get()).toEqual({ status: "development-running" });
+      await f.engine.cancelRunAndWait(runId);
+    } else await f.wait(runId);
+    expect(f.db.db.prepare("SELECT status FROM threads WHERE id = 'project'").get()).toEqual({ status: "solutions-ready" });
+    expect(f.db.db.prepare("SELECT status, awaiting_selection FROM research_runs WHERE id = ?").get(runId)).toEqual({ status: outcome, awaiting_selection: 1 });
+    expect(f.db.db.prepare("SELECT selected_at FROM solutions WHERE id = ?").get(selected.id)).not.toEqual({ selected_at: null });
+    f.client.structuredCompletion = original;
+    await f.engine.selectOption("project", runId, selected.id);
+    await f.wait(runId);
+    expect(f.db.db.prepare("SELECT status, awaiting_selection, cancelled FROM research_runs WHERE id = ?").get(runId))
+      .toEqual({ status: "completed", awaiting_selection: 0, cancelled: 0 });
+    expect(f.db.db.prepare("SELECT solution_id FROM decision_analyses WHERE research_run_id = ?").get(runId)).toEqual({ solution_id: selected.id });
+    await expect(f.engine.selectOption("project", runId, selected.id)).rejects.toThrow("not awaiting an option selection");
+  } finally { await f.close(); }
+});
 
 test("risk and decision reassessment use the run's frozen frame and preserve its approved first test", async () => {
   const f = fixture();

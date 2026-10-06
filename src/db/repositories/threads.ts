@@ -7,12 +7,18 @@ import {
 import { AppError } from "../../shared/errors";
 import type { DatabaseClient } from "../client";
 
+// Empty setup projects are reusable drafts, including projects restored from the archive.
+const EMPTY_DRAFT = `t.archived_at IS NULL AND t.status = 'configuring' AND t.title = 'New research'
+  AND NOT EXISTS (SELECT 1 FROM settings s WHERE s.key = 'scope:' || t.id)
+  AND NOT EXISTS (SELECT 1 FROM messages m WHERE m.thread_id = t.id)
+  AND NOT EXISTS (SELECT 1 FROM research_runs r WHERE r.thread_id = t.id)`;
+
 export class ThreadRepository {
   constructor(private readonly db: DatabaseClient) {}
 
   listThreads(): Thread[] {
-    return (this.db.db.prepare("SELECT * FROM threads ORDER BY updated_at DESC").all() as Array<Record<string, unknown>>)
-      .map((row) => ThreadSchema.parse({ id: row.id, title: row.title, status: row.status, archivedAt: row.archived_at ?? null, createdAt: row.created_at, updatedAt: row.updated_at }));
+    return (this.db.db.prepare(`SELECT t.*, (${EMPTY_DRAFT}) AS is_unstarted_draft FROM threads t ORDER BY updated_at DESC`).all() as Array<Record<string, unknown>>)
+      .map((row) => ThreadSchema.parse({ id: row.id, title: row.title, status: row.status, archivedAt: row.archived_at ?? null, isUnstartedDraft: Boolean(row.is_unstarted_draft), createdAt: row.created_at, updatedAt: row.updated_at }));
   }
 
   recoverStaleDevelopmentStatuses(): void {
@@ -104,14 +110,10 @@ export class ThreadRepository {
   }
 
   findEmptyDraft(): Thread | null {
-    // A saved scope, message, run, or deliberate name makes this a separate project. Reuse an
-    // untouched draft without deleting older entries or resetting its model preferences.
+    // A saved scope, message, run, or another title makes this a separate project.
     const row = this.db.db.prepare(`
       SELECT t.* FROM threads t
-      WHERE t.archived_at IS NULL AND t.status = 'configuring' AND t.title = 'New research'
-        AND NOT EXISTS (SELECT 1 FROM settings s WHERE s.key = 'scope:' || t.id)
-        AND NOT EXISTS (SELECT 1 FROM messages m WHERE m.thread_id = t.id)
-        AND NOT EXISTS (SELECT 1 FROM research_runs r WHERE r.thread_id = t.id)
+      WHERE ${EMPTY_DRAFT}
       ORDER BY t.updated_at DESC, t.rowid DESC LIMIT 1
     `).get() as Record<string, unknown> | undefined;
     return row ? ThreadSchema.parse({

@@ -3,6 +3,8 @@ import { describe, expect, test, vi } from "vitest";
 import IdeaConversation from "../../src/renderer/components/IdeaConversation.svelte";
 import type { IdeaConversation as ConversationView } from "../../src/shared/workflow-contracts";
 import { pickModel } from "./model-picker";
+import { createIdeasFixture } from "../ui/ideas-fixture";
+import { EXPLAIN_IDEA_PROMPT } from "../../src/shared/idea-messages";
 
 const modelOptions = [{
   providerId: "test", modelId: "new-model", displayName: "New model", defaultReasoningEffort: "medium",
@@ -32,16 +34,50 @@ function conversation(): ConversationView {
 }
 
 describe("IdeaConversation", () => {
+  test.each(["unselectable", "selected-sibling", "running"] as const)("risk analysis availability respects %s", async (condition) => {
+    const fixture = createIdeasFixture(new URLSearchParams(), "alpha");
+    const idea = { ...fixture.solutions[0]!, id: "version-2", detailRevision: condition + "-allowed", selectable: true, detailsLoaded: true };
+    const sibling = { ...fixture.solutions[1]!, selected: false };
+    const getIdeaDetail = vi.fn().mockResolvedValue(idea);
+    Object.defineProperty(window, "scraply", { configurable: true, value: { getIdeaDetail } });
+    const props = { conversation: conversation(), solutions: [idea, sibling], modelOptions, onSubmit: vi.fn(), onAnalyze: vi.fn() };
+    const view = render(IdeaConversation, props);
+    await waitFor(() => expect((view.getByRole("button", { name: "Analyze risks" }) as HTMLButtonElement).disabled).toBe(false));
+    const changed = { ...idea, detailRevision: condition, selectable: condition !== "unselectable" };
+    getIdeaDetail.mockResolvedValue(changed);
+    await view.rerender({ ...props, solutions: [changed, { ...sibling, selected: condition === "selected-sibling" }], analysisBlocked: condition === "running" });
+    if (condition === "running") {
+      await waitFor(() => expect((view.getByRole("button", { name: "Analyze risks" }) as HTMLButtonElement).disabled).toBe(true));
+    } else {
+      await waitFor(() => expect(view.queryByRole("button", { name: "Analyze risks" })).toBeNull());
+    }
+  });
+
+  test("Explain immediately sends the fixed prompt and displays the action instead of the hidden text", async () => {
+    const saved = conversation();
+    saved.turns = [];
+    saved.versions.forEach(version => { version.model = { providerId: "test", modelId: "new-model" }; });
+    const onSubmit = vi.fn().mockResolvedValue(undefined);
+    const view = render(IdeaConversation, { conversation: saved, modelOptions, onSubmit });
+    await fireEvent.click(view.getByRole("button", { name: "Explain" }));
+    expect(onSubmit).toHaveBeenCalledOnce();
+    expect(onSubmit.mock.calls[0]?.[0]).toMatchObject({ intent: "explain", text: EXPLAIN_IDEA_PROMPT, baseSolutionId: "version-2", model: { providerId: "test", modelId: "new-model" }, reasoningEffort: "medium" });
+    const turn = conversation().turns[0]!;
+    await view.rerender({ conversation: { ...saved, turns: [{ ...turn, intent: "explain", userText: EXPLAIN_IDEA_PROMPT, state: "running", error: null }] }, modelOptions, onSubmit });
+    expect(view.getByText("Explain this idea")).toBeTruthy();
+    expect(view.queryByText(EXPLAIN_IDEA_PROMPT)).toBeNull();
+    for (const caption of ["Selected idea version", "Explore this idea", "Using v1", "Original mechanism", "Assistant", "Uses saved research. Up to two model calls; no new search.", "View full idea details"]) expect(view.queryByText(caption)).toBeNull();
+  });
   test("requires an explicit model change and sends a rethink against the selected version", async () => {
     const onSubmit = vi.fn().mockResolvedValue(undefined);
     const view = render(IdeaConversation, { conversation: conversation(), modelOptions, onSubmit });
-    expect(view.getByText("This version has not been reviewed")).toBeTruthy();
+    expect(view.queryByText("This version has not been reviewed")).toBeNull();
     await fireEvent.click(view.getByRole("button", { name: "Rethink" }));
     await fireEvent.input(view.getByLabelText("Follow-up message"), { target: { value: "Move this into the release checklist." } });
-    expect((view.getByRole("button", { name: "Send follow-up" }) as HTMLButtonElement).disabled).toBe(true);
-    expect(view.getByText(/model used for this version is unavailable/i)).toBeTruthy();
+    expect((view.getByRole("button", { name: "Send" }) as HTMLButtonElement).disabled).toBe(true);
+    expect(view.getByRole("button", { name: "Explain" }).hasAttribute("disabled")).toBe(true);
     await pickModel(view.getByLabelText("Model"), "test:new-model");
-    await fireEvent.click(view.getByRole("button", { name: "Send follow-up" }));
+    await fireEvent.click(view.getByRole("button", { name: "Send" }));
     await waitFor(() => expect(onSubmit).toHaveBeenCalledOnce());
     expect(onSubmit.mock.calls[0]?.[0]).toMatchObject({
       baseSolutionId: "version-2", evidenceSnapshotId: "snapshot-2", intent: "rethink",
@@ -56,13 +92,29 @@ describe("IdeaConversation", () => {
     expect(view.getByText("The provider was unavailable.")).toBeTruthy();
     await fireEvent.click(view.getByRole("button", { name: "Edit and retry" }));
     expect((view.getByLabelText("Follow-up message") as HTMLTextAreaElement).value).toBe("Why this timing?");
-    expect(view.getByText(/send it as a new turn/i)).toBeTruthy();
     expect(view.getByText("The provider was unavailable.")).toBeTruthy();
     await pickModel(view.getByLabelText("Model"), "test:new-model");
-    await fireEvent.click(view.getByRole("button", { name: "Send follow-up" }));
+    await fireEvent.click(view.getByRole("button", { name: "Send" }));
     await waitFor(() => expect(onSubmit).toHaveBeenCalledOnce());
     expect(onSubmit.mock.calls[0]?.[0]).toMatchObject({ parentTurnId: null, expectedHeadTurnId: null });
     expect(onSubmit.mock.calls[0]?.[0].branchId).toBeUndefined();
+  });
+
+  test("keeps the fixed Explain instructions hidden during failed-turn editing and retry", async () => {
+    const saved = conversation();
+    saved.turns[0]!.userText = EXPLAIN_IDEA_PROMPT;
+    const onSubmit = vi.fn().mockResolvedValue(undefined);
+    const view = render(IdeaConversation, { conversation: saved, modelOptions, onSubmit });
+    expect(view.getByText("Explain this idea")).toBeTruthy();
+    await fireEvent.click(view.getByRole("button", { name: "Edit and retry" }));
+    const input = view.getByLabelText("Follow-up message") as HTMLTextAreaElement;
+    expect(input.value).toBe("Explain this idea");
+    expect(view.queryByText(EXPLAIN_IDEA_PROMPT)).toBeNull();
+    await pickModel(view.getByLabelText("Model"), "test:new-model");
+    await fireEvent.click(view.getByRole("button", { name: /^Retry$/ }));
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledOnce());
+    expect(onSubmit.mock.calls[0]?.[0]).toMatchObject({ intent: "explain", text: EXPLAIN_IDEA_PROMPT });
+    expect(input.value).toBe("");
   });
 
   test("keeps saved evidence by default and opts into newer research for a reply", async () => {
@@ -70,16 +122,16 @@ describe("IdeaConversation", () => {
     const view = render(IdeaConversation, {
       conversation: conversation(), modelOptions, onSubmit, activeResearchSnapshotId: "snapshot-3",
     });
-    expect(view.getByText("Changed: How it works and Description.")).toBeTruthy();
+    expect(view.getByText("Compare with v1")).toBeTruthy();
     await pickModel(view.getByLabelText("Model"), "test:new-model");
     await fireEvent.input(view.getByLabelText("Follow-up message"), { target: { value: "Explain the saved evidence." } });
-    await fireEvent.click(view.getByRole("button", { name: "Send follow-up" }));
+    await fireEvent.click(view.getByRole("button", { name: "Send" }));
     await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
     expect(onSubmit.mock.calls[0]?.[0].evidenceSnapshotId).toBe("snapshot-2");
 
     await fireEvent.click(view.getByRole("checkbox", { name: /Use newer research/ }));
     await fireEvent.input(view.getByLabelText("Follow-up message"), { target: { value: "Rethink with the newer evidence." } });
-    await fireEvent.click(view.getByRole("button", { name: "Send follow-up" }));
+    await fireEvent.click(view.getByRole("button", { name: "Send" }));
     await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(2));
     expect(onSubmit.mock.calls[1]?.[0].evidenceSnapshotId).toBe("snapshot-3");
   });

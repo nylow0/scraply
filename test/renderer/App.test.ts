@@ -9,8 +9,439 @@ import { DEFAULT_RUN_CONFIG } from "../../src/shared/schemas";
 import type { WorkflowDetail, WorkflowSummary } from "../../src/shared/workflow-contracts";
 import { ResearchFrameSchema } from "../../src/shared/research-frame";
 import { summarizeRunUsage } from "../../src/backend/run-usage";
+import { createIdeasFixture } from "../ui/ideas-fixture";
 
 describe("App workspace coordination", () => {
+  test("history waits for a delayed conversation render and ignores a later stale response", async () => {
+    const fixture = createIdeasFixture(new URLSearchParams(), "alpha");
+    const state = workspace("alpha");
+    state.scope = { title: "Alpha", domain: "School", audience: "", observations: "", offLimits: [] };
+    state.threads[0]!.status = "solutions-ready";
+    state.solutions = fixture.solutions;
+    const delayed = deferred<typeof fixture.conversation>();
+    const stale = deferred<typeof fixture.conversation>();
+    const getIdeaConversation = vi.fn().mockResolvedValueOnce(fixture.conversation).mockImplementationOnce(() => {
+      // Loading removes tall content and the browser clamps its scroll offset.
+      const main = document.querySelector<HTMLElement>(".main-content")!;
+      main.scrollTop = 0;
+      return delayed.promise;
+    }).mockReturnValueOnce(stale.promise);
+    installApi({ getWorkspace: async () => structuredClone(state), getIdeaConversation,
+      getIdeaDetail: async id => structuredClone(state.solutions.find(idea => idea.id === id)!) });
+    const view = render(App);
+    await fireEvent.click(await view.findByRole("button", { name: "Open idea: History access and provenance pack" }));
+    await fireEvent.click(view.getByRole("button", { name: "Explore this idea" }));
+    await view.findByRole("heading", { name: "Conversation" });
+    const main = view.container.querySelector<HTMLElement>(".main-content")!;
+    main.scrollTop = 900;
+    await fireEvent.click(view.getByRole("button", { name: "Go back" }));
+    await view.findByRole("button", { name: "Explore this idea" });
+    await fireEvent.click(view.getByRole("button", { name: "Go forward" }));
+    await waitFor(() => expect(getIdeaConversation).toHaveBeenCalledTimes(2));
+    expect(main.scrollTop).toBe(0);
+    delayed.resolve(structuredClone(fixture.conversation));
+    await view.findByRole("heading", { name: "Conversation" });
+    await waitFor(() => expect(main.scrollTop).toBe(900));
+    await fireEvent.click(view.getByRole("button", { name: "Go back" }));
+    await view.findByRole("button", { name: "Explore this idea" });
+    await fireEvent.click(view.getByRole("button", { name: "Go forward" }));
+    await waitFor(() => expect(getIdeaConversation).toHaveBeenCalledTimes(3));
+    await fireEvent.click(view.getByRole("button", { name: "Go back" }));
+    await view.findByRole("button", { name: "Explore this idea" });
+    main.scrollTop = 75;
+    stale.resolve(structuredClone(fixture.conversation));
+    await tick(); await tick();
+    expect(main.scrollTop).toBe(75);
+    expect(view.queryByRole("heading", { name: "Conversation" })).toBeNull();
+  });
+
+  test("history restores list, idea and conversation through arrows, parent Back, projects and Settings", async () => {
+    const fixture = createIdeasFixture(new URLSearchParams(), "alpha");
+    const alpha = workspace("alpha");
+    alpha.scope = { title: "Alpha", domain: "School energy", audience: "", observations: "", offLimits: [] };
+    alpha.threads[0]!.status = "solutions-ready";
+    alpha.solutions = fixture.solutions.map(idea => ({ ...idea, detailRevision: "history-journey" }));
+    alpha.activeWorkflow = fixture.workflow.summary;
+    const beta = { ...workspace("beta"), threads: alpha.threads };
+    let state = alpha;
+    let command: Parameters<ScraplyApi["onAppCommand"]>[0] = () => {};
+    installApi({ getWorkspace: async () => structuredClone(state),
+      selectThread: async id => { state = id === "alpha" ? alpha : beta; return structuredClone(state); },
+      getWorkflow: async () => fixture.workflow,
+      getIdeaDetail: async id => structuredClone(alpha.solutions.find(idea => idea.id === id)!),
+      getIdeaConversation: async () => structuredClone(fixture.conversation),
+      onAppCommand: listener => { command = listener; return () => {}; },
+    });
+    const view = render(App);
+    const ideaName = "History access and provenance pack";
+    const assertIdea = async () => { await view.findByRole("button", { name: "Explore this idea" }); };
+    const assertList = async () => { await view.findByRole("button", { name: "Open idea: " + ideaName }); };
+    const assertConversation = async () => { await view.findByRole("heading", { name: "Conversation" }); };
+    await fireEvent.click(await view.findByRole("button", { name: "Open idea: " + ideaName }));
+    await assertIdea();
+    await fireEvent.click(view.getByRole("button", { name: "Explore this idea" }));
+    await assertConversation();
+    await fireEvent.input(view.getByLabelText("Follow-up message"), { target: { value: "Keep this conversation draft" } });
+    await fireEvent.keyDown(view.getByLabelText("Follow-up message"), { key: "ArrowLeft", altKey: true });
+    await assertIdea();
+    await fireEvent.click(view.getByRole("button", { name: "Go back" }));
+    await assertList();
+    await fireEvent.click(view.getByRole("button", { name: "Go forward" }));
+    await assertIdea();
+    await fireEvent.click(view.getByRole("button", { name: "Go forward" }));
+    await assertConversation();
+    expect((view.getByLabelText("Follow-up message") as HTMLTextAreaElement).value).toBe("Keep this conversation draft");
+    await fireEvent.click(view.getByRole("button", { name: "Back to idea" }));
+    await assertIdea();
+    await fireEvent.keyDown(window, { key: "ArrowRight", altKey: true });
+    await assertConversation();
+    await fireEvent.keyDown(window, { key: "Escape" });
+    await assertIdea();
+    await fireEvent.click(view.getByRole("button", { name: "Open thread Beta" }));
+    await waitFor(() => expect(view.getByRole("button", { name: "Open thread Beta" }).getAttribute("aria-current")).toBe("true"));
+    command("back");
+    await assertIdea();
+    await fireEvent.click(view.getByRole("button", { name: "Settings" }));
+    await view.findByRole("region", { name: "Settings" });
+    expect((view.getByRole("button", { name: "Go back" }) as HTMLButtonElement).disabled).toBe(false);
+    await fireEvent.click(view.getByRole("button", { name: "Go back" }));
+    await waitFor(() => expect(view.queryByRole("region", { name: "Settings" })).toBeNull());
+    await assertIdea();
+    await fireEvent.click(view.getByRole("button", { name: "Go forward" }));
+    await view.findByRole("region", { name: "Settings" });
+    await fireEvent.keyDown(window, { key: "Escape" });
+    await assertIdea();
+    expect(view.queryByRole("region", { name: "Settings" })).toBeNull();
+  });
+
+  test("retries a failed conversation load on the App-owned conversation route", async () => {
+    const fixture = createIdeasFixture(new URLSearchParams(), "alpha");
+    const state = workspace("alpha");
+    state.scope = { title: "Alpha", domain: "School", audience: "", observations: "", offLimits: [] };
+    state.threads[0]!.status = "solutions-ready";
+    state.solutions = fixture.solutions;
+    const getIdeaConversation = vi.fn().mockRejectedValueOnce(new Error("Could not load saved conversation.")).mockResolvedValueOnce(fixture.conversation);
+    installApi({ getWorkspace: async () => structuredClone(state), getIdeaConversation,
+      getIdeaDetail: async id => structuredClone(state.solutions.find(idea => idea.id === id)!) });
+    const view = render(App);
+    await fireEvent.click(await view.findByRole("button", { name: "Open idea: History access and provenance pack" }));
+    await fireEvent.click(view.getByRole("button", { name: "Explore this idea" }));
+    await view.findByText("Could not load saved conversation.");
+    await fireEvent.click(view.getByRole("button", { name: "Try again" }));
+    await view.findByRole("heading", { name: "Conversation" });
+    expect(getIdeaConversation).toHaveBeenCalledTimes(2);
+    expect(view.queryByText("Could not load saved conversation.")).toBeNull();
+  });
+
+  test("history shortcuts and native commands respect dialogs and composition but allow text fields", async () => {
+    let state = workspace("alpha");
+    let command: Parameters<ScraplyApi["onAppCommand"]>[0] = () => {};
+    installApi({ getWorkspace: async () => structuredClone(state),
+      selectThread: async id => { state = { ...state, activeThreadId: id }; return structuredClone(state); },
+      onAppCommand: listener => { command = listener; return () => {}; } });
+    const view = render(App);
+    await fireEvent.input(await view.findByPlaceholderText("Your topic or idea"), { target: { value: "Alpha draft" } });
+    await fireEvent.click(view.getByRole("button", { name: "Open thread Beta" }));
+    await waitFor(() => expect(view.getByRole("button", { name: "Open thread Beta" }).getAttribute("aria-current")).toBe("true"));
+    await fireEvent.click(view.getByRole("button", { name: "Advanced settings" }));
+    const dialog = view.getByRole("dialog", { name: "Advanced settings" });
+    await fireEvent.keyDown(dialog, { key: "ArrowLeft", altKey: true });
+    command("back");
+    await tick();
+    expect(view.getByRole("dialog", { name: "Advanced settings" })).toBe(dialog);
+    expect(view.getByRole("button", { name: "Open thread Beta" }).getAttribute("aria-current")).toBe("true");
+    await fireEvent.click(view.getByRole("button", { name: "Close advanced settings" }));
+    const input = view.getByPlaceholderText("Your topic or idea");
+    await fireEvent.input(input, { target: { value: "Beta typed draft" } });
+    const prevented = new KeyboardEvent("keydown", { key: "ArrowLeft", altKey: true, bubbles: true, cancelable: true });
+    prevented.preventDefault();
+    input.dispatchEvent(prevented);
+    await fireEvent.keyDown(input, { key: "ArrowLeft", altKey: true, isComposing: true });
+    await fireEvent.compositionStart(input);
+    command("back");
+    await tick();
+    expect(view.getByRole("button", { name: "Open thread Beta" }).getAttribute("aria-current")).toBe("true");
+    await fireEvent.compositionEnd(input);
+    await fireEvent.keyDown(input, { key: "ArrowLeft", altKey: true });
+    await waitFor(() => expect(view.getByRole("button", { name: "Open thread Alpha" }).getAttribute("aria-current")).toBe("true"));
+    await waitFor(() => expect((view.getByRole("button", { name: "Go forward" }) as HTMLButtonElement).disabled).toBe(false));
+    command("forward");
+    await waitFor(() => expect(view.getByRole("button", { name: "Open thread Beta" }).getAttribute("aria-current")).toBe("true"));
+  });
+
+  test("archiving the current project replaces its entry and keeps earlier project history", async () => {
+    let state = workspace("alpha");
+    state.threads.push({ ...state.threads[0]!, id: "gamma", title: "Gamma" });
+    installApi({ getWorkspace: async () => structuredClone(state),
+      selectThread: async id => { state = { ...state, activeThreadId: id }; return structuredClone(state); },
+      archiveThread: async id => {
+        state = { ...state, activeThreadId: "alpha", threads: state.threads.map(thread => thread.id === id
+          ? { ...thread, archivedAt: "2026-10-05T00:00:00.000Z" } : thread) };
+        return structuredClone(state);
+      } });
+    const view = render(App);
+    await view.findByRole("button", { name: "Open thread Alpha" });
+    for (const title of ["Beta", "Gamma"]) {
+      await fireEvent.click(view.getByRole("button", { name: "Open thread " + title }));
+      await waitFor(() => expect(view.getByRole("button", { name: "Open thread " + title }).getAttribute("aria-current")).toBe("true"));
+    }
+    await fireEvent.click(view.getByRole("button", { name: "Archive research Gamma" }));
+    await waitFor(() => expect(view.queryByRole("button", { name: "Open thread Gamma" })).toBeNull());
+    await fireEvent.click(view.getByRole("button", { name: "Go back" }));
+    await waitFor(() => expect(view.getByRole("button", { name: "Open thread Beta" }).getAttribute("aria-current")).toBe("true"));
+  });
+
+  test("Back drops an idea removed while another project is open", async () => {
+    const fixture = createIdeasFixture(new URLSearchParams(), "alpha");
+    const alpha = workspace("alpha");
+    alpha.scope = { title: "Alpha", domain: "School", audience: "", observations: "", offLimits: [] };
+    alpha.threads[0]!.status = "solutions-ready";
+    alpha.solutions = fixture.solutions;
+    const beta = { ...workspace("beta"), threads: alpha.threads };
+    let state = alpha;
+    installApi({ getWorkspace: async () => structuredClone(state),
+      selectThread: async id => { state = id === "alpha" ? alpha : beta; return structuredClone(state); },
+      getIdeaDetail: async id => structuredClone(alpha.solutions.find(idea => idea.id === id)!),
+    });
+    const view = render(App);
+    await fireEvent.click(await view.findByRole("button", { name: "Open idea: History access and provenance pack" }));
+    await view.findByRole("button", { name: "Explore this idea" });
+    await fireEvent.click(view.getByRole("button", { name: "Open thread Beta" }));
+    await waitFor(() => expect(view.getByRole("button", { name: "Open thread Beta" }).getAttribute("aria-current")).toBe("true"));
+    alpha.solutions = alpha.solutions.filter(idea => idea.id !== fixture.solutions[0]!.id);
+    await fireEvent.click(view.getByRole("button", { name: "Go back" }));
+    await view.findByRole("button", { name: "Open idea: Weekend energy log" });
+    expect(view.queryByRole("button", { name: "Explore this idea" })).toBeNull();
+    expect((view.getByRole("button", { name: "Go back" }) as HTMLButtonElement).disabled).toBe(true);
+    await fireEvent.click(view.getByRole("button", { name: "Go forward" }));
+    await waitFor(() => expect(view.getByRole("button", { name: "Open thread Beta" }).getAttribute("aria-current")).toBe("true"));
+  });
+
+  test("an automatic run-driven tab change replaces the current history entry", async () => {
+    const fixture = createIdeasFixture(new URLSearchParams(), "alpha");
+    const state = workspace("alpha");
+    state.scope = { title: "Alpha", domain: "School", audience: "", observations: "", offLimits: [] };
+    state.threads[0]!.status = "solutions-ready";
+    state.solutions = fixture.solutions;
+    state.activeWorkflow = fixture.workflow.summary;
+    let backendEvent: ((event: ResearchEvent) => void) | undefined;
+    installApi({ getWorkspace: async () => structuredClone(state), getWorkflow: async () => fixture.workflow,
+      onBackendEvent: listener => { backendEvent = listener; return () => {}; } });
+    const view = render(App);
+    await view.findByRole("button", { name: "Open idea: History access and provenance pack" });
+    await fireEvent.click(view.getByRole("tab", { name: "Setup" }));
+    await fireEvent.click(view.getByRole("tab", { name: "Research" }));
+    backendEvent?.({ type: "workflow-progress", threadId: "alpha", sessionId: fixture.workflow.summary.sessionId,
+      state: "finished", revision: 1, outcome: "target-met", changedTaskIds: [], counts: fixture.workflow.summary.counts });
+    await waitFor(() => expect(view.getByRole("tab", { name: "Solutions" }).getAttribute("aria-selected")).toBe("true"));
+    await fireEvent.click(view.getByRole("button", { name: "Go back" }));
+    await waitFor(() => expect(view.getByRole("tab", { name: "Setup" }).getAttribute("aria-selected")).toBe("true"));
+  });
+
+  test.each([false, true])("starts and stops analysis inside the same conversation, workflow=%s", async workflowProject => {
+    const fixture = createIdeasFixture(new URLSearchParams(), "alpha");
+    let state = workspace("alpha");
+    state.scope = { title: "School energy evidence", domain: "Energy", audience: "", observations: "", offLimits: [] };
+    state.threads = [{ ...state.threads[0]!, title: state.scope.title, status: "solutions-ready", isUnstartedDraft: false }];
+    state.solutions = fixture.solutions.map(idea => ({ ...idea, detailRevision: `app-${workflowProject}-idle` }));
+    state.activeWorkflow = workflowProject ? fixture.workflow.summary : null;
+    state.latestResearchRun = { runId: "school-run", status: "completed", workflowVersion: 2, awaitingSelection: true, problemId: "school", codexCalls: 8, searches: 4, projectedCodexCalls: 10, projectedSearches: 4, lastActivity: null };
+    const selectOption = vi.fn(async (request: Parameters<ScraplyApi["selectOption"]>[0]) => {
+      state = { ...state, latestResearchRun: { ...state.latestResearchRun!, status: "running", stage: "evaluating-risk", operationElapsedMs: 3_000 },
+        threads: [{ ...state.threads[0]!, status: "development-running" }],
+        solutions: state.solutions.map(idea => ({ ...idea, selected: idea.id === request.solutionId, selectable: false, detailRevision: `app-${workflowProject}-running` })) };
+      return structuredClone(state);
+    });
+    const cancelResearch = vi.fn(async (runId: string) => {
+      expect(runId).toBe("school-run");
+      state = { ...state, latestResearchRun: { ...state.latestResearchRun!, status: "cancelled", awaitingSelection: true },
+        threads: [{ ...state.threads[0]!, status: "solutions-ready" }],
+        solutions: state.solutions.map(idea => ({ ...idea, selectable: !!idea.selected, detailRevision: `app-${workflowProject}-cancelled` })) };
+      return structuredClone(state);
+    });
+    installApi({ getWorkspace: async () => structuredClone(state), selectOption, cancelResearch,
+      getWorkflow: async () => fixture.workflow, getIdeaConversation: async () => structuredClone(fixture.conversation),
+      getIdeaDetail: async id => structuredClone(state.solutions.find(idea => idea.id === id)!) });
+    const view = render(App);
+    await fireEvent.click(await view.findByRole("button", { name: "Open idea: History access and provenance pack" }));
+    await fireEvent.click(view.getByRole("button", { name: "Explore this idea" }));
+    const input = await view.findByLabelText("Follow-up message");
+    await fireEvent.input(input, { target: { value: "Keep this draft during analysis." } });
+    const analyze = await view.findByRole("button", { name: "Analyze risks" });
+    await waitFor(() => expect((analyze as HTMLButtonElement).disabled).toBe(false));
+    await fireEvent.click(analyze);
+    await waitFor(() => expect(selectOption).toHaveBeenCalledWith({ threadId: "alpha", runId: "school-run", solutionId: fixture.solutions[0]!.id }));
+    expect(await within(view.getByRole("region", { name: "Idea conversation" })).findByText("Reviewing risks")).toBeTruthy();
+    expect(view.getByRole("button", { name: "Running & attention 1" })).toBeTruthy();
+    expect(view.getByLabelText("Follow-up message")).toBe(input);
+    const back = view.getByRole("button", { name: "Go back" }) as HTMLButtonElement;
+    expect(back.disabled).toBe(false);
+    await fireEvent.click(back);
+    await view.findByRole("button", { name: "Explore this idea" });
+    const forward = view.getByRole("button", { name: "Go forward" }) as HTMLButtonElement;
+    expect(forward.disabled).toBe(false);
+    await fireEvent.click(forward);
+    await waitFor(() => expect(view.getByLabelText("Follow-up message")).toBe(input));
+    expect((input as HTMLTextAreaElement).value).toBe("Keep this draft during analysis.");
+    const stop = view.getByRole("button", { name: "Stop" });
+    await waitFor(() => expect((stop as HTMLButtonElement).disabled).toBe(false));
+    await fireEvent.click(stop);
+    await waitFor(() => expect(cancelResearch).toHaveBeenCalledWith("school-run"));
+    await waitFor(() => expect((view.getByRole("button", { name: "Analyze risks" }) as HTMLButtonElement).disabled).toBe(false));
+    expect(view.queryByRole("button", { name: "Stop" })).toBeNull();
+    expect(view.queryByRole("button", { name: "Running & attention 1" })).toBeNull();
+    expect(view.getByLabelText("Follow-up message")).toBe(input);
+    expect((input as HTMLTextAreaElement).value).toBe("Keep this draft during analysis.");
+  });
+  test.each([false, true])("reuses a hidden draft until scope is saved, then creates a fresh draft even after launch failure=%s", async (failStart) => {
+    let draft = workspace("alpha");
+    draft.validation.native = { available: true, connected: true, accounts: [{ providerId: "openai-subscription" }] };
+    draft.threads[0] = { ...draft.threads[0]!, title: "New research", isUnstartedDraft: true };
+    let state = draft;
+    // The backend would choose this newer legacy row if New research asked it to create a draft.
+    draft.threads.push({ ...draft.threads[0]!, id: "newer-empty", createdAt: "2099-01-01T00:00:00.000Z" });
+    let appCommand: Parameters<ScraplyApi["onAppCommand"]>[0] = () => {};
+    const previewWorkflow = vi.fn(async (request: Parameters<ScraplyApi["previewWorkflow"]>[0]) => {
+      if (request.type !== "launch") throw new Error("Expected launch");
+      return { type: "launch" as const, proposal: { ...request.draft,
+        resolvedInstructions: { research: "r", ideas: "i", review: "v" }, instructionHashes: { research: "r", ideas: "i", review: "v" } },
+        previewHash: "draft-preview", capabilityFingerprint: "fixture", minimumWork: { modelCalls: 1, searches: 1 },
+        upperLimits: request.draft.limits, fieldErrors: [], expiresAt: "2099-01-01T00:00:00.000Z" };
+    });
+    const saveScope = vi.fn(async ({ scope }: Parameters<ScraplyApi["saveScope"]>[0]) => {
+      draft = { ...draft, scope, threads: draft.threads.map(thread => thread.id === "alpha" ? { ...thread, title: scope.title, isUnstartedDraft: false } : thread) };
+      state = draft;
+      return structuredClone(state);
+    });
+    const current = frameWorkflow({ approved: true });
+    current.summary = { ...current.summary, state: "running", mode: "vibe", outcome: null, finishedAt: null };
+    const startWorkflow = vi.fn(async () => {
+      if (failStart) throw new Error("Simulated launch failure");
+      draft = { ...draft, activeWorkflow: current.summary };
+      state = draft;
+      return { sessionId: current.summary.sessionId, revision: current.summary.revision, summary: current.summary };
+    });
+    const createThread = vi.fn(async () => {
+      if (draft.threads[0]!.isUnstartedDraft) { state = { ...draft, activeThreadId: "newer-empty" }; return { workspace: structuredClone(state) }; }
+      const fresh = { ...draft.threads[0]!, id: "fresh", title: "New research", status: "configuring" as const, isUnstartedDraft: true };
+      state = { ...draft, activeThreadId: fresh.id, scope: null, runConfig: null, activeWorkflow: null, threads: [...draft.threads, fresh] };
+      return { workspace: structuredClone(state) };
+    });
+    installApi({ getWorkspace: async () => structuredClone(state), createThread,
+      selectThread: async (id) => {
+        state = id === "alpha" ? draft : { ...workspace("beta"), validation: draft.validation, threads: draft.threads };
+        return structuredClone(state);
+      },
+      onAppCommand: listener => { appCommand = listener; return () => {}; },
+      generateTitle: async () => ({ title: "Repair approvals" }),
+      saveScope, saveRunConfig: async ({ config }) => { draft = { ...draft, runConfig: config }; state = draft; return structuredClone(state); },
+      previewWorkflow, startWorkflow, getWorkflow: async () => structuredClone(current),
+    });
+    const view = render(App);
+    const brief = "  Repair shop approvals\nKeep customer consent clear.  ";
+    await fireEvent.input(await view.findByPlaceholderText("Your topic or idea"), { target: { value: brief } });
+    await fireEvent.input(view.getByLabelText("Audience"), { target: { value: "Independent shops" } });
+    expect(view.queryByRole("button", { name: "Open thread New research" })).toBeNull();
+    expect(view.getByRole("button", { name: "Create new research thread" }).getAttribute("aria-current")).toBe("true");
+    await fireEvent.click(view.getByRole("button", { name: "Open thread Beta" }));
+    await waitFor(() => expect(view.getByRole("button", { name: "Open thread Beta" }).getAttribute("aria-current")).toBe("true"));
+    await fireEvent.click(view.getByRole("button", { name: "Go back" }));
+    await waitFor(() => expect((view.getByPlaceholderText("Your topic or idea") as HTMLTextAreaElement).value).toBe(brief));
+    await tick();
+    await fireEvent.click(view.getByRole("button", { name: "Go forward" }));
+    await waitFor(() => expect(view.getByRole("button", { name: "Open thread Beta" }).getAttribute("aria-current")).toBe("true"));
+    await fireEvent.click(view.getByRole("button", { name: "Create new research thread" }));
+    await waitFor(() => expect((view.getByPlaceholderText("Your topic or idea") as HTMLTextAreaElement).value).toBe(brief));
+    await fireEvent.click(view.getByRole("button", { name: "Settings" }));
+    await view.findByRole("region", { name: "Settings" });
+    appCommand("new-research");
+    await waitFor(() => expect(view.queryByRole("region", { name: "Settings" })).toBeNull());
+    expect((view.getByLabelText("Audience") as HTMLInputElement).value).toBe("Independent shops");
+    await fireEvent.click(view.getByRole("button", { name: "Open thread Beta" }));
+    await waitFor(() => expect(view.getByRole("button", { name: "Open thread Beta" }).getAttribute("aria-current")).toBe("true"));
+    appCommand("new-research");
+    await waitFor(() => expect((view.getByPlaceholderText("Your topic or idea") as HTMLTextAreaElement).value).toBe(brief));
+    expect(saveScope).not.toHaveBeenCalled();
+    expect(createThread).not.toHaveBeenCalled();
+    await waitFor(() => expect((view.getByRole("button", { name: "Start" }) as HTMLButtonElement).disabled).toBe(false));
+    await fireEvent.click(view.getByRole("button", { name: "Start" }));
+    await waitFor(() => expect(startWorkflow).toHaveBeenCalledOnce());
+    expect(await view.findByRole("button", { name: "Open thread Repair approvals" })).toBeTruthy();
+    expect(view.getByRole("button", { name: "Create new research thread" }).getAttribute("aria-current")).toBeNull();
+    await fireEvent.click(view.getByRole("button", { name: "Open thread Beta" }));
+    await waitFor(() => expect(view.getByRole("button", { name: "Open thread Beta" }).getAttribute("aria-current")).toBe("true"));
+    appCommand("new-research");
+    await waitFor(() => expect((view.getByPlaceholderText("Your topic or idea") as HTMLTextAreaElement).value).toBe(""));
+    expect(createThread).toHaveBeenCalledOnce();
+  });
+
+  test("starting another saved project keeps the pending draft", async () => {
+    const draft = workspace("alpha");
+    draft.validation.native = { available: true, connected: true, accounts: [{ providerId: "openai-subscription" }] };
+    draft.threads[0] = { ...draft.threads[0]!, title: "New research", isUnstartedDraft: true };
+    const saved = { ...workspace("beta"), validation: draft.validation, threads: draft.threads,
+      scope: { title: "Beta", domain: "Saved beta brief", audience: "", observations: "", offLimits: [] } };
+    let state = draft;
+    const current = frameWorkflow({ approved: true });
+    current.summary = { ...current.summary, threadId: "beta", state: "running", mode: "vibe", outcome: null, finishedAt: null };
+    const createThread = vi.fn(async () => ({ workspace: structuredClone(draft) }));
+    installApi({ getWorkspace: async () => structuredClone(state), createThread,
+      selectThread: async id => { state = id === "alpha" ? draft : saved; return structuredClone(state); },
+      previewWorkflow: async request => {
+        if (request.type !== "launch") throw new Error("Expected launch");
+        return { type: "launch", proposal: { ...request.draft, resolvedInstructions: { research: "r", ideas: "i", review: "v" }, instructionHashes: { research: "r", ideas: "i", review: "v" } },
+          previewHash: "preview", capabilityFingerprint: "fixture", minimumWork: { modelCalls: 1, searches: 1 }, upperLimits: request.draft.limits, fieldErrors: [], expiresAt: "2099-01-01T00:00:00.000Z" };
+      },
+      saveScope: async () => structuredClone(saved), saveRunConfig: async () => structuredClone(saved),
+      startWorkflow: async () => { saved.activeWorkflow = current.summary; return { sessionId: current.summary.sessionId, revision: 1, summary: current.summary }; },
+      getWorkflow: async () => structuredClone(current),
+    });
+    const view = render(App);
+    await fireEvent.input(await view.findByPlaceholderText("Your topic or idea"), { target: { value: "Keep this unfinished brief" } });
+    await fireEvent.click(view.getByRole("button", { name: "Open thread Beta" }));
+    await waitFor(() => expect(view.getByRole("button", { name: "Open thread Beta" }).getAttribute("aria-current")).toBe("true"));
+    await waitFor(() => expect((view.getByRole("button", { name: "Start" }) as HTMLButtonElement).disabled).toBe(false));
+    await fireEvent.click(view.getByRole("button", { name: "Start" }));
+    await waitFor(() => expect(view.queryByRole("button", { name: "Start" })).toBeNull());
+    await waitFor(() => expect((view.getByRole("button", { name: "Create new research thread" }) as HTMLButtonElement).disabled).toBe(false));
+    await fireEvent.click(view.getByRole("button", { name: "Create new research thread" }));
+    await waitFor(() => expect((view.getByPlaceholderText("Your topic or idea") as HTMLTextAreaElement).value).toBe("Keep this unfinished brief"));
+    expect(createThread).not.toHaveBeenCalled();
+  });
+
+  test("opens a hidden draft on an empty first launch", async () => {
+    const empty = { ...workspace("alpha"), threads: [], activeThreadId: null };
+    const draft = workspace("alpha");
+    draft.threads = [{ ...draft.threads[0]!, title: "New research", isUnstartedDraft: true }];
+    const createThread = vi.fn(async () => ({ workspace: draft }));
+    installApi({ getWorkspace: async () => empty, createThread });
+    const view = render(App);
+    expect(await view.findByPlaceholderText("Your topic or idea")).toBeTruthy();
+    expect(view.getByText("No research yet.")).toBeTruthy();
+    expect(view.queryByRole("button", { name: /^Open thread/ })).toBeNull();
+    expect(view.getByRole("button", { name: "Create new research thread" }).getAttribute("aria-current")).toBe("true");
+    expect(createThread).toHaveBeenCalledOnce();
+  });
+
+  test.each(["configuring", "discovery-running", "problems-ready", "development-running", "solutions-ready", "failed"] as const)("keeps the Research tab available for %s without Review problems", async (status) => {
+    const state = workspace("alpha");
+    state.threads[0]!.status = status;
+    state.rejectedProblemCandidates = [{ id: "rejected", statement: "Shops lose approval context", reason: "Needs a second firsthand account" }];
+    installApi({ getWorkspace: async () => state });
+    const view = render(App);
+    const research = await view.findByRole("tab", { name: "Research" });
+    expect(view.queryByRole("button", { name: "Review problems" })).toBeNull();
+    await fireEvent.click(research);
+    if (status === "discovery-running") {
+      expect(view.getByText("Following the evidence.")).toBeTruthy();
+    } else {
+      await fireEvent.click(view.getByRole("button", { name: /^Show \d+ more leads?$/ }));
+      expect(view.getAllByText("Shops lose approval context").length).toBeGreaterThan(0);
+      expect(view.getByRole("button", { name: "Export research JSON" })).toBeTruthy();
+    }
+    expect(view.queryByRole("button", { name: "Review problems" })).toBeNull();
+  });
+
   test("previews a not-assessed candidate from the Controlled checkpoint before starting its assessment", async () => {
     const current = frameWorkflow({ approved: true });
     current.summary = { ...current.summary, state: "waiting-for-review", reviewKind: "research", outcome: null, revision: 4, finishedAt: null };
@@ -226,7 +657,7 @@ describe("App workspace coordination", () => {
       expect(within(navigation).getByRole("button", { name: "Settings" })).toBeTruthy();
 
       await fireEvent.keyDown(window, { key: "k", ctrlKey: true });
-      expect(view.getByRole("dialog", { name: "All research" })).toBeTruthy();
+      expect(view.getByRole("dialog", { name: "Search" })).toBeTruthy();
       expect(document.activeElement).toBe(view.getByRole("textbox", { name: "Search research" }));
       await fireEvent.click(view.getByRole("button", { name: "Close search" }));
 
@@ -337,6 +768,10 @@ describe("App workspace coordination", () => {
     expect(view.getByRole("heading", { name: "Researching your brief" })).toBeTruthy();
     expect(view.queryByText(/distinct ideas/)).toBeNull();
     expect(view.queryByRole("button", { name: "Add research" })).toBeNull();
+    await fireEvent.click(view.getByRole("tab", { name: "Setup" }));
+    await waitFor(() => expect((view.getByRole("button", { name: "Go back" }) as HTMLButtonElement).disabled).toBe(false));
+    await fireEvent.click(view.getByRole("button", { name: "Go back" }));
+    await view.findByRole("heading", { name: "Researching your brief" });
     await fireEvent.click(view.getByText("Run details"));
     await fireEvent.click(view.getByText("Extend work allowance"));
     await fireEvent.input(view.getByLabelText("Additional model calls"), { target: { value: "2" } });
@@ -484,7 +919,7 @@ describe("App workspace coordination", () => {
     installApi({ getWorkspace: vi.fn().mockResolvedValue(state) });
     const view = render(App);
 
-    expect(await view.findByText("Generating the next options.")).toBeTruthy();
+    expect(await view.findByRole("status", { name: "Active idea work" })).toBeTruthy();
     expect(view.getByRole("button", { name: "Open idea: Shared repair status" })).toBeTruthy();
   });
 
@@ -597,6 +1032,22 @@ describe("App workspace coordination", () => {
     await waitFor(() => expect(exportResearch).toHaveBeenCalledWith("alpha"));
   });
 
+  test.each(["finished", "running"] as const)("Solutions fallback keeps its heading and actions without an eyebrow: %s", async status => {
+    const fixture = createIdeasFixture(new URLSearchParams(), "alpha");
+    const state = workspace("alpha");
+    state.scope = { title: "Alpha", domain: "School", audience: "", observations: "", offLimits: [] };
+    state.threads[0]!.status = "problems-ready";
+    state.activeWorkflow = { ...fixture.workflow.summary, state: status, purpose: "known-problem", stopReason: null,
+      outcome: status === "finished" ? "no-qualifying-ideas" : null };
+    installApi({ getWorkspace: async () => structuredClone(state), getWorkflow: async () => ({ ...fixture.workflow, summary: state.activeWorkflow! }) });
+    const view = render(App);
+    await fireEvent.click(await view.findByRole("tab", { name: "Solutions" }));
+    const panel = view.getByRole("tabpanel", { name: "Solutions" });
+    expect(within(panel).getByRole("heading", { name: status === "finished" ? "No qualifying ideas were produced." : "Ideas are being developed." })).toBeTruthy();
+    expect(panel.querySelector(":scope > .eyebrow")).toBeNull();
+    if (status === "finished") expect(within(panel).getByRole("button", { name: "Export result" })).toBeTruthy();
+  });
+
   test("anchors elapsed time when switching to a run after browsing another thread", async () => {
     let now = 1_000;
     const dateNow = vi.spyOn(Date, "now").mockImplementation(() => now);
@@ -634,7 +1085,7 @@ describe("App workspace coordination", () => {
     };
     installApi({ getWorkspace: vi.fn().mockResolvedValue(state) });
     const view = render(App);
-    expect(await view.findByRole("button", { name: "Cancel run" })).toBeTruthy();
+    expect(await view.findByRole("button", { name: status === "development-running" ? "Stop" : "Cancel run" })).toBeTruthy();
     expect(view.queryByRole("button", { name: "Resume attempt" })).toBeNull();
   });
 
@@ -1034,7 +1485,7 @@ describe("App workspace coordination", () => {
     // The prompt waits for Settings to close rather than stacking on top of it.
     await waitFor(() => expect(view.getByText("Connect OpenAI to start research")).toBeTruthy());
     expect(view.queryByRole("dialog", { name: "Welcome back" })).toBeNull();
-    await fireEvent.click(view.getByRole("button", { name: "Back" }));
+    await fireEvent.click(view.getByRole("button", { name: "Back to research" }));
 
     const welcome = await view.findByRole("dialog", { name: "Welcome back" });
     await fireEvent.click(within(welcome).getByRole("button", { name: "Not now" }));

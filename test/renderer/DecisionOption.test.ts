@@ -25,8 +25,7 @@ describe("DecisionOption interactions", () => {
     };
     installDetailApi(vi.fn().mockResolvedValue(detail(idea, "", "")));
     const view = render(DecisionOption, handlers(idea));
-    await fireEvent.click(view.getByRole("button", { name: "Compare observed delivery windows." }));
-    expect(view.getByText("Operators pay for a manual pilot.")).toBeTruthy();
+    expect(view.getByText(/Operators pay for a manual pilot\./)).toBeTruthy();
     expect(view.getByText("250 USD. Pay a refundable deposit.")).toBeTruthy();
     expect(view.queryByText("Legacy summary")).toBeNull();
   });
@@ -36,7 +35,6 @@ describe("DecisionOption interactions", () => {
     installDetailApi(vi.fn().mockResolvedValue(detail(idea, "", "")));
     const onPlanExperiment = vi.fn().mockResolvedValue(undefined);
     const view = render(DecisionOption, { ...handlers(idea), onPlanExperiment });
-    await fireEvent.click(view.getByRole("button", { name: "Compare observed delivery windows." }));
     await fireEvent.click(await view.findByRole("button", { name: "Plan a focused experiment" }));
     expect(onPlanExperiment).toHaveBeenCalledWith(idea);
   });
@@ -44,16 +42,19 @@ describe("DecisionOption interactions", () => {
   test("renders the structured plan and its review state instead of the legacy experiment summary", async () => {
     const idea = option("focused-plan-view");
     const saved = detail(idea, "", "");
-    saved.focusedExperiment = focusedExperiment();
     saved.decisionAnalysis = null;
+    saved.riskEvaluation = { risks: [{ riskId: "access", description: "The export may lack access history.", whyDecisive: "The check needs a complete history." }], unknowns: ["Whether older exports include revisions."] };
+    saved.focusedExperiment = focusedExperiment();
     installDetailApi(vi.fn().mockResolvedValue(saved));
     const view = render(DecisionOption, handlers(idea));
-    await fireEvent.click(view.getByRole("button", { name: "Compare observed delivery windows." }));
     const experiment = await view.findByRole("region", { name: "Focused experiment" });
     expect(view.getByText("additional confirmed contradictions is at least 8 contradictions")).toBeTruthy();
     expect(within(experiment).getByText("Maintains answer keys").closest("li")).not.toBeNull();
     expect(within(experiment).getByText("Revision access").closest("li")).not.toBeNull();
     expect(view.queryByText("Are estimates accurate?")).toBeNull();
+    expect(view.getByText("Risks").closest("details")).not.toBeNull();
+    expect(view.getByText("The export may lack access history.")).toBeTruthy();
+    expect(view.getByText("Whether older exports include revisions.")).toBeTruthy();
   });
 
   test("links each option's citations separately from the original problem evidence", async () => {
@@ -65,7 +66,6 @@ describe("DecisionOption interactions", () => {
     installDetailApi(vi.fn().mockResolvedValue(saved));
     const props = handlers(idea);
     const view = render(DecisionOption, props);
-    await fireEvent.click(view.getByRole("button", { name: "Compare observed delivery windows." }));
     const supporting = await view.findByRole("region", { name: "Sources supporting this option" });
     await fireEvent.click(within(supporting).getByRole("link", { name: "Manual checklist" }));
     expect(props.onOpenSource).toHaveBeenCalledWith("https://example.com/checklist");
@@ -82,7 +82,6 @@ describe("DecisionOption interactions", () => {
     const props = handlers(first);
     const view = render(DecisionOption, props);
 
-    await fireEvent.click(view.getByRole("button", { name: "Compare observed delivery windows." }));
     const decision = await view.findByLabelText("Your decision") as HTMLTextAreaElement;
     const observed = view.getByLabelText("Observed test result") as HTMLTextAreaElement;
     await fireEvent.input(decision, { target: { value: "Draft before refresh" } });
@@ -96,9 +95,6 @@ describe("DecisionOption interactions", () => {
     expect(decision.value).toBe("Draft before refresh");
     expect(observed.value).toBe("Edit during refresh");
 
-    await fireEvent.click(view.getByRole("button", { name: "Compare observed delivery windows." }));
-    await waitFor(() => expect(view.queryByLabelText("Your decision")).toBeNull());
-    await fireEvent.click(view.getByRole("button", { name: "Compare observed delivery windows." }));
     expect((await view.findByLabelText("Your decision") as HTMLTextAreaElement).value).toBe("Draft before refresh");
     expect((view.getByLabelText("Observed test result") as HTMLTextAreaElement).value).toBe("Edit during refresh");
   });
@@ -110,7 +106,6 @@ describe("DecisionOption interactions", () => {
     let saveCompleted = false;
     const onSave = vi.fn().mockImplementation(async () => { await pendingSave.promise; saveCompleted = true; });
     const view = render(DecisionOption, { ...handlers(idea), onSave });
-    await fireEvent.click(view.getByRole("button", { name: "Compare observed delivery windows." }));
     const decision = await view.findByLabelText("Your decision") as HTMLTextAreaElement;
     const outcome = view.getByLabelText("Experiment outcome") as HTMLSelectElement;
     await fireEvent.input(decision, { target: { value: "Submitted draft" } });
@@ -133,7 +128,6 @@ describe("DecisionOption interactions", () => {
     const onEvidenceFollowUp = vi.fn().mockResolvedValue(undefined);
     installDetailApi(vi.fn().mockResolvedValue(detail(available, "", "")));
     const availableView = render(DecisionOption, { ...handlers(available), onEvidenceFollowUp });
-    await fireEvent.click(availableView.getByRole("button", { name: "Compare observed delivery windows." }));
     await fireEvent.input(await availableView.findByLabelText("Question"), { target: { value: "Which suppliers publish arrival histories?" } });
     await fireEvent.click(availableView.getByRole("button", { name: "Check evidence" }));
     expect(onEvidenceFollowUp).toHaveBeenCalledWith(available.runId, "Which suppliers publish arrival histories?");
@@ -157,10 +151,9 @@ describe("DecisionOption interactions", () => {
     installDetailApi(vi.fn().mockResolvedValue(exhaustedDetail));
     const onEvidenceReassessment = vi.fn().mockResolvedValue(undefined);
     const exhaustedView = render(DecisionOption, { ...handlers(exhausted), onEvidenceFollowUp, onEvidenceReassessment });
-    await fireEvent.click(exhaustedView.getByRole("button", { name: "Compare observed delivery windows." }));
     expect(await exhaustedView.findByText("Three suppliers publish dated arrival records.")).toBeTruthy();
     expect(exhaustedView.getByRole("link", { name: "Supplier delivery study" })).toBeTruthy();
-    expect(exhaustedView.getByText("This option has used its one evidence follow-up.")).toBeTruthy();
+    expect(exhaustedView.queryByText("This option has used its one evidence follow-up.")).toBeNull();
     expect(exhaustedView.queryByRole("button", { name: "Check evidence" })).toBeNull();
     await fireEvent.click(exhaustedView.getByRole("button", { name: "Reassess with new evidence" }));
     expect(onEvidenceReassessment).toHaveBeenCalledWith(exhausted.runId);
@@ -201,7 +194,6 @@ describe("DecisionOption interactions", () => {
     installDetailApi(vi.fn().mockResolvedValue(saved));
     const view = render(DecisionOption, handlers(idea));
 
-    await fireEvent.click(view.getByRole("button", { name: "Compare observed delivery windows." }));
     const summary = await view.findByText("Reassessment with new evidence");
     const reassessment = summary.closest("details");
     expect(reassessment).toBeTruthy();
@@ -213,7 +205,7 @@ describe("DecisionOption interactions", () => {
 });
 
 function handlers(idea: SolutionView) {
-  return { idea, busy: false, onSelect: vi.fn(), onSave: vi.fn().mockResolvedValue(undefined), onOpenSource: vi.fn().mockResolvedValue(undefined) };
+  return { idea, busy: false, onSave: vi.fn().mockResolvedValue(undefined), onOpenSource: vi.fn().mockResolvedValue(undefined) };
 }
 
 function installDetailApi(getIdeaDetail: (id: string) => Promise<SolutionView>): void {

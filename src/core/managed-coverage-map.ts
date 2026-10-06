@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { loadWritingGuidance, withWritingGuidance } from "./prompts";
 import { z } from "zod";
 import { OpportunityExplorationRepository } from "../db/repositories/opportunity-exploration";
 import { OpportunityRepository } from "../db/repositories/opportunities";
@@ -21,6 +22,7 @@ const SavedMapInputSchema = z.object({
   round: z.number().int().min(0).max(2),
   explorationConfig: OpportunityExplorationConfigSchema,
   context: z.unknown(),
+  writingGuidance: z.string().optional(),
 }).strict();
 
 export interface ManagedCoverageMapInput {
@@ -52,6 +54,8 @@ export async function runManagedCoverageMap(input: ManagedCoverageMapInput): Pro
   const stageKey = `coverage-map:${input.round}`;
   const saved = repository.loadAttempt(input.threadId, stageKey, input.sessionId);
   const savedMapInput = saved ? SavedMapInputSchema.parse(saved.input) : null;
+  const writingGuidance = saved ? savedMapInput?.writingGuidance ?? "" : loadWritingGuidance();
+  const instruction = withWritingGuidance(INSTRUCTION, writingGuidance);
   if (saved) {
     if (canonicalJson(savedInput(input)) !== canonicalJson({
       round: savedMapInput!.round, explorationConfig: savedMapInput!.explorationConfig,
@@ -60,7 +64,7 @@ export async function runManagedCoverageMap(input: ManagedCoverageMapInput): Pro
       !== canonicalJson({ ...input.model, reasoningEffort: input.reasoningEffort })) {
       throw new Error("Saved coverage map belongs to a different task or model.");
     }
-    if (saved.promptVersion !== PROMPT_VERSION || saved.promptText !== INSTRUCTION) {
+    if (saved.promptVersion !== PROMPT_VERSION || saved.promptText !== instruction) {
       throw new Error("Saved coverage map prompt identity changed.");
     }
     if (saved.status === "completed") {
@@ -76,9 +80,9 @@ export async function runManagedCoverageMap(input: ManagedCoverageMapInput): Pro
   const attempt = saved ? { kind: "prepared" as const, attemptId: saved.attemptId }
     : input.db.immediateTransaction(() => repository.prepareAttempt(input.threadId, {
     stageKey, stageName: "coverage-map",
-    input: { ...savedInput(input), context },
+    input: { ...savedInput(input), context, ...(writingGuidance ? { writingGuidance } : {}) },
     model: { ...input.model, reasoningEffort: input.reasoningEffort },
-    promptVersion: PROMPT_VERSION, promptText: INSTRUCTION, workItemId: input.workItemId,
+    promptVersion: PROMPT_VERSION, promptText: instruction, workItemId: input.workItemId,
   }, input.sessionId));
   if (attempt.kind === "unknown-dispatch") {
     throw new Error("Coverage mapping may have completed before its result was saved. It will not be replayed automatically.");
@@ -93,7 +97,7 @@ export async function runManagedCoverageMap(input: ManagedCoverageMapInput): Pro
       generationId: randomUUID(), stage: stageKey,
       model: input.model, reasoningEffort: input.reasoningEffort,
       workOrder: {
-        stage: stageKey, instruction: INSTRUCTION,
+        stage: stageKey, instruction,
         goal: "Name up to five bounded buyer, workflow, trigger, problem, or evidence gaps, or explain why none remain.",
         inputs: { round: input.round, allowExploratoryProblems: input.explorationConfig.allowExploratoryProblems },
         definitionOfDone: ["Each gap identifies a buyer, workflow, or operating mechanism to investigate.",

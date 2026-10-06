@@ -1,9 +1,10 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runFocusedExperimentFlow } from "../../src/core/experiment-review";
+import { configurePromptPaths, loadWritingGuidance } from "../../src/core/prompts";
 import { ResearchEngine } from "../../src/core/research-engine";
 import { DatabaseClient } from "../../src/db/client";
 import { FocusedExperimentRepository } from "../../src/db/repositories/focused-experiments";
@@ -20,6 +21,7 @@ import { FocusedExperimentRecordSchema } from "../../src/shared/focused-experime
 
 const directories: string[] = [];
 afterEach(() => {
+  configurePromptPaths({ bundledDir: join(import.meta.dir, "../../prompts"), overrideDir: null });
   while (directories.length) {
     try { rmSync(directories.pop()!, { recursive: true, force: true }); } catch { /* SQLite can retain a WAL handle briefly. */ }
   }
@@ -107,8 +109,10 @@ describe("focused experiment flow", () => {
       review("approved", null),
     ];
     let calls = 0;
+    const guidance = loadWritingGuidance();
     const modelClient: StructuredModelClient = {
       async structuredCompletion<T>(request: StructuredStageRequest<T>) {
+        expect(request.workOrder.instruction?.split(guidance)).toHaveLength(2);
         const output = outputs[calls++];
         return {
           output: request.schema.parse(output) as T,
@@ -119,6 +123,7 @@ describe("focused experiment flow", () => {
     const input = flowInput();
     const dependencies = {
       repository,
+      writingGuidance: guidance,
       modelClient,
       generationModel: { providerId: "test", modelId: "generator" },
       reviewModel: { providerId: "test", modelId: "reviewer" },
@@ -143,11 +148,22 @@ describe("focused experiment flow", () => {
     expect(exported.experiments[0]?.stages.map((stage) => stage.stageKey))
       .toEqual(["draft", "initial-review", "correction", "final-review"]);
     expect(exported.experiments[0]?.stages[0]?.prompt.text).toContain("one decision-focused experiment");
+    for (const stage of exported.experiments[0]!.stages) {
+      expect(stage.prompt.text.split(guidance)).toHaveLength(2);
+      expect(stage.prompt.sha256).toBe(hash(stage.prompt.text));
+    }
 
+    // Simulate interruption after all model stages, before the final record commits.
+    client.db.prepare("DELETE FROM focused_experiments").run();
+    const futureBundle = mkdtempSync(join(tmpdir(), "scraply-future-experiment-writing-"));
+    directories.push(futureBundle);
+    writeFileSync(join(futureBundle, "writing-guidance.md"), "Future writing rules.");
+    configurePromptPaths({ bundledDir: futureBundle, overrideDir: null });
     const second = await runFocusedExperimentFlow(input, dependencies);
-    expect(second.reused).toBe(true);
     expect(second.record).toEqual(first.record);
     expect(calls).toBe(4);
+    expect(second.calls).toEqual([]);
+    expect((await runFocusedExperimentFlow(input, dependencies)).reused).toBe(true);
     client.close();
   });
 
@@ -157,6 +173,7 @@ describe("focused experiment flow", () => {
     const outputs = [plan(), review("uncertain", null)];
     const modelClient: StructuredModelClient = {
       async structuredCompletion<T>(request: StructuredStageRequest<T>) {
+        expect(request.workOrder.instruction).not.toContain("# Unslop");
         return {
           output: request.schema.parse(outputs[calls++]) as T,
           metadata: { model: request.model, usage: { status: "unknown" }, latencyMs: 1, repairCount: 0, providerRequestIds: [], attempts: [] },
@@ -164,6 +181,7 @@ describe("focused experiment flow", () => {
       },
     };
     const result = await runFocusedExperimentFlow(flowInput(), {
+      writingGuidance: "",
       repository: new FocusedExperimentRepository(client),
       modelClient,
       generationModel: { providerId: "test", modelId: "generator" },
@@ -177,9 +195,10 @@ describe("focused experiment flow", () => {
     client.close();
   });
 
-  test("checkpoints a validated provider result when cancellation arrives with the response", async () => {
+  test.each(["legacy", "saved-guidance"] as const)("reuses a completed %s experiment draft after cancellation and a bundle change", async kind => {
     const client = setup();
     const repository = new FocusedExperimentRepository(client);
+    const writingGuidance = kind === "legacy" ? "" : "Writing rules saved before the bundle changed.";
     const abortController = new AbortController();
     let firstCalls = 0;
     const interruptedClient: StructuredModelClient = {
@@ -194,6 +213,7 @@ describe("focused experiment flow", () => {
     };
     await expect(runFocusedExperimentFlow(flowInput(), {
       repository,
+      writingGuidance,
       modelClient: interruptedClient,
       generationModel: { providerId: "test", modelId: "generator" },
       reviewModel: { providerId: "test", modelId: "reviewer" },
@@ -204,10 +224,19 @@ describe("focused experiment flow", () => {
     expect(firstCalls).toBe(1);
     expect(client.db.prepare("SELECT stage_key FROM focused_experiment_stage_results").all()).toEqual([{ stage_key: "draft" }]);
 
+    const futureBundle = mkdtempSync(join(tmpdir(), "scraply-future-draft-writing-"));
+    directories.push(futureBundle);
+    writeFileSync(join(futureBundle, "writing-guidance.md"), "Future writing rules.");
+    configurePromptPaths({ bundledDir: futureBundle, overrideDir: null });
+
     let resumedCalls = 0;
     const resumedClient: StructuredModelClient = {
       async structuredCompletion<T>(request: StructuredStageRequest<T>) {
         resumedCalls += 1;
+        expect(request.stage).toBe("focused-experiment:initial-review");
+        expect(request.workOrder.instruction).not.toContain("Future writing rules.");
+        if (writingGuidance) expect(request.workOrder.instruction).toContain(writingGuidance);
+        else expect(request.workOrder.instruction).not.toContain("# Unslop");
         return {
           output: request.schema.parse(review("approved", null)) as T,
           metadata: { model: request.model, usage: { status: "unknown" }, latencyMs: 1, repairCount: 0, providerRequestIds: [], attempts: [] },
@@ -216,6 +245,7 @@ describe("focused experiment flow", () => {
     };
     const resumed = await runFocusedExperimentFlow(flowInput(), {
       repository,
+      writingGuidance,
       modelClient: resumedClient,
       generationModel: { providerId: "test", modelId: "generator" },
       reviewModel: { providerId: "test", modelId: "reviewer" },

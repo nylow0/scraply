@@ -50,7 +50,7 @@ After a Vibe run finishes, open **Research** to ask a separate question or revis
 
 ## Review ideas and explore one
 
-For each selected problem, one call writes all of its ideas so they can differ from each other, and a second call ranks them from best to worst against your brief and success criteria. A problem can end with fewer ideas than you asked for; Scraply never pads the count. The Solutions page shows one group per problem, best idea first. An idea is marked **Weak fit** and moved to the end of its group when it clearly fails a must-have criterion or nearly repeats a higher idea; an unknown criterion never makes an idea weak. Open the idea to read why it is ranked where it is. Projects from earlier versions keep their saved order and review labels.
+For each selected problem, one call writes all of its ideas so they can differ from each other, and a second call ranks them from best to worst against your brief and success criteria. A problem can end with fewer ideas than you asked for; Scraply never pads the count. The Solutions page shows one group per problem, best idea first. An idea is marked **Weak fit** and moved to the end of its group when it clearly fails a must-have criterion or nearly repeats a higher idea; an unknown criterion never makes an idea weak. Open the idea to read why it is ranked where it is. I keep older projects in their saved order, with their review details available in exports.
 
 Open an idea to read its evidence, assumptions, risks, and possible consequences. A source citation means the saved excerpt can be traced, not that the proposed business outcome has happened. The independent risk evaluation is a model judgment. Record your own decision and any real-world test outcome separately.
 

@@ -7,6 +7,7 @@ import { materializeResearchSnapshot } from "../../src/core/research-revisions";
 import { WorkflowCoordinator } from "../../src/core/workflow-coordinator";
 import type { ResearchEngine } from "../../src/core/research-engine";
 import { sha256 } from "../../src/shared/content-identity";
+import { EXPLAIN_IDEA_PROMPT } from "../../src/shared/idea-messages";
 import { DatabaseClient } from "../../src/db/client";
 import { WorkflowRepository } from "../../src/db/repositories/workflows";
 import { ResearchFrameRepository } from "../../src/db/repositories/research-frames";
@@ -716,6 +717,11 @@ test("workspace keeps an earlier root idea after a new evidence snapshot while v
   addSolution.run("root-idea", "Approval inbox", now, "root-run");
   addSolution.run("version-idea", "Approval queue", now, "version-run");
   addSolution.run("board-version-idea", "Approval board", now, "board-version-run");
+  client.db.prepare(`INSERT INTO idea_turns (id, root_solution_id, branch_id, branch_sequence, base_solution_id,
+    session_id, client_message_id, intent, user_text, context_json, context_sha256, state, assistant_json, created_at, completed_at)
+    VALUES ('explain-turn', 'root-idea', 'explain-branch', 1, 'root-idea', ?,
+      'explain-message', 'explain', ?, '{}', ?, 'completed', ?, ?, ?)`).run(session.id, EXPLAIN_IDEA_PROMPT, sha256("{}"),
+        JSON.stringify({ text: "A shared inbox for approvals.", citedEvidenceIds: [], assumptions: [], changeSummary: null, generatedSolutionId: null }), now, now);
   client.db.prepare(`
     INSERT INTO idea_turns (id, root_solution_id, branch_id, branch_sequence, base_solution_id,
       session_id, client_message_id, intent, user_text, context_json, context_sha256,
@@ -818,7 +824,7 @@ test("workspace keeps an earlier root idea after a new evidence snapshot while v
   expect(conversationResponse.status).toBe(200);
   const conversation = IdeaConversationSchema.parse((await conversationResponse.json() as { data: unknown }).data);
   expect(conversation.versions.map((version) => version.solutionId)).toEqual(["root-idea", "version-idea", "board-version-idea"]);
-  expect(conversation.turns).toHaveLength(2);
+  expect(conversation.turns).toHaveLength(3);
 
   const selectResponse = await request("/ideas/select-version", {
     threadId, rootSolutionId: "root-idea", solutionId: "version-idea",
@@ -845,7 +851,7 @@ test("workspace keeps an earlier root idea after a new evidence snapshot while v
   expect(historyFile).toBeDefined();
   const history = JSON.parse(historyFile!.content) as {
     versions: Array<{ solutionId: string; rootSolutionId: string; turnId: string | null; evidenceSnapshotId: string | null }>;
-    turns: Array<{ id: string; branchId: string; generatedSolutionId: string }>;
+    turns: Array<{ id: string; branchId: string; generatedSolutionId: string; userText: string }>;
     evidenceSnapshots: Array<{ id: string; selection: { problemIds: string[] }; originMap: { problems: Record<string, unknown>; sources: Record<string, unknown> } }>;
     workflowOutcomes: Array<{ sessionId: string; purpose: string; state: string; activeSnapshotId: string | null;
       researchApplied?: boolean; targetKind?: string; requested?: number; accepted?: number; missing?: number }>;
@@ -857,7 +863,10 @@ test("workspace keeps an earlier root idea after a new evidence snapshot while v
     expect.objectContaining({ id: "turn-for-version", branchId: "branch-for-version", generatedSolutionId: "version-idea" }),
     expect.objectContaining({ id: "turn-for-board", branchId: "branch-for-board", generatedSolutionId: "board-version-idea" }),
   ]));
-  expect(history.turns).toHaveLength(2);
+  expect(history.turns).toHaveLength(3);
+  expect(history.turns.find(turn => turn.id === "explain-turn")?.userText).toBe("Explain this idea");
+  expect(history.turns.find(turn => turn.id === "turn-for-version")?.userText).toBe("Try a queue");
+  expect(historyFile!.content).not.toContain(EXPLAIN_IDEA_PROMPT);
   expect(history.evidenceSnapshots).toHaveLength(1);
   expect(history.evidenceSnapshots[0]!.selection.problemIds).toHaveLength(1);
   expect(Object.keys(history.evidenceSnapshots[0]!.originMap.problems)).toEqual(history.evidenceSnapshots[0]!.selection.problemIds);
@@ -877,6 +886,11 @@ test("workspace keeps an earlier root idea after a new evidence snapshot while v
   expect(markdownHistory).toContain("# Idea history");
   expect(markdownHistory).toContain("Conversation branch `branch-for-version`");
   expect(markdownHistory).toContain("Use a queue.");
+  expect(markdownHistory).toContain("> Explain this idea");
+  expect(markdownHistory).not.toContain(EXPLAIN_IDEA_PROMPT);
+  const stored = new DatabaseClient(dbPath);
+  expect(stored.db.prepare("SELECT user_text FROM idea_turns WHERE id = 'explain-turn'").get()).toEqual({ user_text: EXPLAIN_IDEA_PROMPT });
+  stored.close();
   expect(markdownHistory).toContain("Conversation branch `branch-for-board`");
   expect(markdownHistory).toContain("Selected findings:");
   expect(markdownHistory).toContain("Research applied: no.");
