@@ -33,8 +33,6 @@ The UI and the code sometimes use different names.
 | family | opportunity | One distinct business. Variants and duplicates join a family and do not count toward the target. |
 | focused experiment | focused experiment | A test of one assumption with a metric, a declared range, and pass/fail thresholds. |
 
-The Rust worker has its own vocabulary in [runtime/CONTEXT.md](runtime/CONTEXT.md).
-
 ## Protect my setup
 
 This is my everyday computer, and dev shares parts of my real setup.
@@ -71,16 +69,15 @@ A change often works on the path you tested and breaks somewhere else. Before ca
 - **Contracts.** Zod schemas in `src/shared` cross every process boundary. A stage change updates its prompt, schema, and package checks together. Runtime protocol changes follow [runtime/AGENTS.md](runtime/AGENTS.md).
 - **Exports.** Research JSON, and ideas as JSON and Markdown.
 - **Undo paths.** Pause needs resume, apply needs keep, archive needs restore, and each state needs to be visible.
-- **Docs.** Whether the change makes a user guide inaccurate (see [Documentation](#documentation)).
+- **Docs.** Whether the change makes `README.md` or this file inaccurate (see [Documentation](#documentation)).
 
 ## Dev servers
 
-- Setup and environment variables are in the [development guide](docs/dev/development.md).
 - `bun run dev` starts a background server and prints its URL. Running it again reuses the server. Leave it running and give me the URL and checkout path at handoff.
-- `bun run test:ui` serves the real renderer on synthetic data at `http://127.0.0.1:5176`, with no providers. It is the fastest way to reach and screenshot UI states; the development guide lists its query parameters.
+- `bun run test:ui` serves the real renderer on synthetic data at `http://127.0.0.1:5176`, with no providers. It is the fastest way to reach and screenshot UI states.
 - Agent hosts often export `ELECTRON_RUN_AS_NODE=1`, which breaks Electron. Unset it for `dev`, `build:installed`, and e2e runs.
 - Run throwaway Playwright scripts with `node`; they hang under `bun`.
-- To debug a run, write its trace with `bun scripts/trace.ts <session ID>` (see the development guide). The session ID is in the app's Run details.
+- To debug a run, write its trace with `bun scripts/trace.ts <session ID>`. The session ID is in the app's Run details.
 
 ## Verifying
 
@@ -101,15 +98,11 @@ A change often works on the path you tested and breaks somewhere else. Before ca
 - Commit titles use conventional commits in plain language: `fix: keep the selected idea after reload`.
 - Fill in the pull request template: what changed for the user, and how you verified it.
 - UI changes need screenshots. Push them to the never-merged `pr-screenshots` branch and link them from the description.
-- Read the [release guide](docs/dev/release.md) before touching versions, tags, release workflows, signing, or rollback, and update it in the same pull request when the process changes.
 
 ## Documentation
 
-Most code changes need no documentation change.
+The repository has no documentation folder, and you never add one. The only markdown files that belong on GitHub are `README.md`, `AGENTS.md` and `CLAUDE.md` (here and in `runtime/`), the GitHub templates, the bundled prompts in `prompts/`, and `runtime/UPSTREAM.md`, which the build ships as a license notice. Never commit any other markdown file: no guides, procedures, reports, ADRs, or notes.
 
-- `docs/user/` helps users get tasks done: what a feature does, how to start, and anything unintuitive. Keep implementation details and contributor tooling out of it. A UI tweak needs no entry.
-- `docs/dev/` holds development and release procedures.
-- `runtime/` keeps its own README, vocabulary, and ADRs.
 - When behavior changes, rewrite or remove the affected text rather than appending to it. Link to source instead of copying it.
 - Leave out file catalogs, field lists, and pull request summaries; the code and tests already record them.
 - Comments explain how a function or module is used, and move with the code.
@@ -118,7 +111,7 @@ Most code changes need no documentation change.
 
 Keep plans, research notes, acceptance transcripts, and scratch files out of the repository: put them under the ignored `build/` directory or outside the checkout. The merged pull request is the implementation record, so acceptance evidence goes in its description.
 
-Markdown files written for local testing and evaluation never go to GitHub: evaluation procedures, acceptance runbooks, and review instructions. Keep them under `build/` as well. Never commit one, and never link one from a tracked doc.
+Markdown files written for local testing and evaluation never go to GitHub: evaluation procedures, acceptance runbooks, and review instructions. Keep them under `build/` as well.
 
 ## How it works
 
