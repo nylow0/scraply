@@ -58,6 +58,14 @@ Everything you publish is synthetic, invented for the purpose.
 
 Before pushing, read your whole diff and look at every image for my data. If you find some already committed or published, stop and tell me before doing anything else.
 
+After staging and before every commit, run the secret scan:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/check-secrets.ps1 -Scope staged
+```
+
+It covers only the staged patch. `-Scope history` audits history, and belongs in a fresh clone holding the refs that could become public.
+
 ## Check every path
 
 A change often works on the path you tested and breaks somewhere else. Before calling work done, go through this list and say which entries applied:
@@ -67,17 +75,40 @@ A change often works on the path you tested and breaks somewhere else. Before ca
 - **Search providers.** Exa, Perplexity, and none configured.
 - **Saved work.** v1 projects, older run contracts, and interrupted checkpoints. A change to stored data needs a migration and must still read old rows.
 - **Contracts.** Zod schemas in `src/shared` cross every process boundary. A stage change updates its prompt, schema, and package checks together. Runtime protocol changes follow [runtime/AGENTS.md](runtime/AGENTS.md).
+- **Prompts.** Package verification rejects a missing stage prompt and a superseded one. A user can override a bundled prompt with a same-named file in the data folder's `prompts` directory; on upgrade the app backs up unchanged old copies and retired overrides, and leaves custom overrides of active prompts in place.
 - **Exports.** Research JSON, and ideas as JSON and Markdown.
 - **Undo paths.** Pause needs resume, apply needs keep, archive needs restore, and each state needs to be visible.
 - **Docs.** Whether the change makes `README.md` or this file inaccurate (see [Documentation](#documentation)).
 
+## Setup
+
+Scraply is Windows-first. Native builds need Rust's `stable-x86_64-pc-windows-msvc` toolchain with rustfmt and clippy, and the Visual Studio C++ build tools. A new checkout or worktree needs:
+
+```powershell
+bun install --frozen-lockfile
+bunx --no-install install-electron
+git submodule update --init --recursive
+bun run prepare:runtime
+```
+
+- Electron downloads its executable on demand. Run `install-electron` again when dev or a test reports a missing Electron executable.
+- `prepare:runtime` builds, checks, and stages the Rust worker in `build/runtime`. Run it again only when the stage is missing or when native source, Cargo dependencies, the pinned submodule, or runtime build or protocol configuration changes.
+- Every checkout shares one Cargo cache, `%LOCALAPPDATA%\scraply-build\cargo` (about 9 GB; `CARGO_TARGET_DIR` moves it). To preview UI edits in an extra worktree, reuse a prepared worker by setting both `SCRAPLY_AGENT_PATH` and `SCRAPLY_AGENT_LOCK_PATH` before starting dev, and only when its native code and protocol match that checkout.
+- `SCRAPLY_SKIP_RUNTIME_CHECKS=1` before `bun run build:installed` skips the Rust formatting, budget, test, and clippy gates for an implementation-only local build. It gives no test or release evidence, and strict release builds reject it.
+- Removing a worktree that holds the runtime submodule needs `git worktree remove --force`. Confirm `git status` is clean first.
+
 ## Dev servers
 
-- `bun run dev` starts a background server and prints its URL. Running it again reuses the server. Leave it running and give me the URL and checkout path at handoff.
-- `bun run test:ui` serves the real renderer on synthetic data at `http://127.0.0.1:5176`, with no providers. It is the fastest way to reach and screenshot UI states.
+- `bun run dev` starts a background server and prints its URL, normally `http://127.0.0.1:5173`. Running it again reuses the server. Leave it running and give me the URL and checkout path at handoff.
+- If the port is taken, startup fails rather than stopping the other process. Set `SCRAPLY_BROWSER_UI_PORT` (1024 to 65535) before starting, and keep it set when you run `dev:stop`.
+- Renderer edits update the browser on save. Main-process and backend edits restart the host, so reload the browser. Restart dev after changing environment variables, startup configuration, or the prepared worker.
+- Dev keeps its projects in `.scraply/browser-dev/` and its log and launch state in `build/browser-dev/`. After an account or key change, restart any other running Scraply instance.
+- `bun run test:ui` serves the real renderer on synthetic data at `http://127.0.0.1:5176`, with no providers. It is the fastest way to reach and screenshot UI states. Query parameters pick the state, for example `?history=18&long=1`, `history=0`, `progress=guided`, `connection=offline`, `account=signed-out`, and `search=none`; `test/ui/main.ts` reads all of them. Reloading resets the fixture.
+- `bun run dev:electron` is the desktop check. Stop browser dev first.
+- `bun run test:e2e` prepares the runtime and packages an app before Playwright runs. It is not a lightweight browser check.
 - Agent hosts often export `ELECTRON_RUN_AS_NODE=1`, which breaks Electron. Unset it for `dev`, `build:installed`, and e2e runs.
 - Run throwaway Playwright scripts with `node`; they hang under `bun`.
-- To debug a run, write its trace with `bun scripts/trace.ts <session ID>`. The session ID is in the app's Run details.
+- To debug a run, write its trace with `bun scripts/trace.ts <session ID>`. The session ID is in the app's Run details. The script opens the database read-only, contacts no provider, and writes `build/trace/<session ID>.json`. It reads the installed app's database by default; pass `--db <path>` for another profile and `--out <directory>` to write elsewhere.
 
 ## Verifying
 
@@ -86,6 +117,9 @@ A change often works on the path you tested and breaks somewhere else. Before ca
 - Run focused tests while working, then `bun run check` before handing off application code.
 - After an application change, stop dev, run `bun run build:installed` from the checkout root, then restart dev. Skip this for documentation-only work and read-only investigation.
 - Changes to Electron windows, preload, permissions, dialogs, or desktop integration also need a `bun run dev:electron` check.
+- After a native runtime change, prepare the runtime again, restart dev, and exercise the real runtime interaction you changed.
+- A change to the installer, packaging, or packaged paths is verified in the app that `bun run build:installed` installs, not in dev.
+- For a persistence change, restart and confirm the saved state.
 - Read the whole Playwright summary. A failing spec can print just above the "passed" line; search the log for `failed` and `flaky`.
 - `bun run build:installed` aborts if `HEAD` moves while it runs. Commit before starting it.
 - Report what you exercised, the results, and anything you could not verify.
@@ -98,6 +132,21 @@ A change often works on the path you tested and breaks somewhere else. Before ca
 - Commit titles use conventional commits in plain language: `fix: keep the selected idea after reload`.
 - Fill in the pull request template: what changed for the user, and how you verified it.
 - UI changes need screenshots. Push them to the never-merged `pr-screenshots` branch and link them from the description.
+
+## Releases
+
+Read this whole section before touching versions, tags, release workflows, signing, or rollback, and update it in the same pull request when the process changes. Browser testing and a local `build:installed` do not show that a release package works.
+
+- **No hosted builds.** GitHub Actions CI and Release are manually disabled to save minutes. Keep them disabled unless I say otherwise, and run every gate locally.
+- **Shape.** A release candidate is tagged on a `master` commit, installed, and tested. Production then publishes the accepted candidate's exact files under the final tag without rebuilding. Only one RC tag may point at a commit. If a candidate fails, fix it through a pull request and tag the new `master` commit.
+- **Never.** Move a published tag, force-push `master`, or replace the files of a published release.
+- **Gates.** From a clean checkout at the exact `origin/master` SHA, run `bun install --frozen-lockfile`, `bunx --no-install install-electron`, `bun audit --prod`, and `bun run check`. Then run `bun run build:installed` with `SCRAPLY_RELEASE_STRICT=1`, `SCRAPLY_ALLOW_UNSIGNED=1`, and `GITHUB_REF_NAME=<rc-tag>`, followed by `bun run test:e2e:portable` and `bun run test:e2e:installed`. The manifest records `GITHUB_REF_NAME` as `sourceRef`, and promotion rejects a bundle whose `sourceRef` is not the RC tag. Put the source SHA and the actual results in the release notes.
+- **Bundle.** A release is exactly five files: the installer, the portable executable, `manifest.json`, `SHA256SUMS.txt`, and `scraply-agent.lock.json` (copied from `build/runtime`). Collect them into an empty directory.
+- **Publish the candidate.** Run `bun scripts/check-promotion.ts rc <sha> <rc-tag>` and `bun scripts/verify-promoted-assets.ts <bundle-directory> <sha> <rc-tag> --allow-unsigned`. Tag with `git tag -a <rc-tag> <sha> -m "Scraply <version> RC <n>"`, push `refs/tags/<rc-tag>`, and publish the five files with `gh release create <rc-tag> --verify-tag --prerelease`, naming each file path. Install the published candidate and test the affected workflows before accepting it.
+- **Publish production.** Download the accepted candidate's five files into a new directory. GitHub stores the executables as `Scraply.Setup.<version>.exe` and `Scraply.<version>.exe`; rename them back to the spaced names that `SHA256SUMS.txt` and the manifest record. Run `bun scripts/check-promotion.ts production <sha> <tag>` and `verify-promoted-assets.ts` against the same SHA and RC tag, tag the same SHA, and publish those files with `gh release create <tag> --verify-tag`.
+- **Signing.** Scraply has no code-signing certificate, so releases ship unsigned and the release notes say Windows SmartScreen warns on first launch. Once a certificate exists, drop `SCRAPLY_ALLOW_UNSIGNED` and `--allow-unsigned`. A broken signature is always rejected.
+- **Clean source.** A release build needs a clean checkout whose app and runtime come from the same commit, so commit runtime and app changes together.
+- **Rollback.** Application: reinstall a previous GitHub Release after checking its published SHA-256 hash, and never swap only `scraply-agent.exe`. Source: revert through a branch and pull request. Data: close Scraply and restore a consistent backup of the whole data directory, including SQLite WAL and SHM files.
 
 ## Documentation
 
