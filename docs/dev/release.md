@@ -59,7 +59,7 @@ Scraply packages one tested `scraply-agent` executable at `resources/runtime/scr
 
 The runtime source lives in `runtime/` in this repository. The separate `nylow0/scraply-agent` repository is legacy. Initialize the pinned public OpenAI Codex submodule with `git submodule update --init --recursive`. Windows builds require Rust's `stable-x86_64-pc-windows-msvc` toolchain (including rustfmt and clippy) and Visual Studio C++ build tools.
 
-`bun run prepare:runtime` runs the runtime's formatting, source budget, locked Rust tests, strict clippy, and release packaging checks. It generates `build/runtime-artifacts/scraply-agent.windows-x64.lock.json`, recording this Scraply commit, the upstream commit, executable, notices, sizes, and hashes. Generated archives and locks are ignored build outputs. The archive contains only:
+`bun run prepare:runtime` runs the runtime's formatting, source budget, locked Rust tests, strict clippy, and release packaging checks. The release build rewrites the builder's user profile path out of the executable, and packaging rejects an executable that still contains it. It generates `build/runtime-artifacts/scraply-agent.windows-x64.lock.json`, recording this Scraply commit, the upstream commit, executable, notices, sizes, and hashes. Generated archives and locks are ignored build outputs. The archive contains only:
 
 - `scraply-agent.exe`
 - `LICENSE`
