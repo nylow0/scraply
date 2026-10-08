@@ -94,6 +94,7 @@ git submodule update --init --recursive
 bun run prepare:runtime
 ```
 
+- Merged pull requests never update `master` in the main checkout (the repository root, outside `.worktrees/`). Before running, reviewing, or branching from it, run `git fetch origin` and `git status -sb`, and `git pull --ff-only` when it reports behind.
 - Electron downloads its executable on demand. Run `install-electron` again when dev or a test reports a missing Electron executable.
 - `prepare:runtime` builds, checks, and stages the Rust worker in `build/runtime`. Run it again only when the stage is missing or when native source, Cargo dependencies, the pinned submodule, or runtime build or protocol configuration changes.
 - Every checkout shares one Cargo cache, `%LOCALAPPDATA%\scraply-build\cargo` (about 9 GB; `CARGO_TARGET_DIR` moves it). To preview UI edits in an extra worktree, reuse a prepared worker by setting both `SCRAPLY_AGENT_PATH` and `SCRAPLY_AGENT_LOCK_PATH` before starting dev, and only when its native code and protocol match that checkout.
