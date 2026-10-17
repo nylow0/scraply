@@ -12,6 +12,70 @@ import { summarizeRunUsage } from "../../src/backend/run-usage";
 import { createIdeasFixture } from "../ui/ideas-fixture";
 
 describe("App workspace coordination", () => {
+  test("updates pristine visible setup fields after another client saves the same project", async () => {
+    let state = workspace("alpha");
+    let backendEvent: ((event: ResearchEvent) => void) | undefined;
+    installApi({ getWorkspace: async () => structuredClone(state),
+      onBackendEvent(listener) { backendEvent = listener; return () => { backendEvent = undefined; }; } });
+    const view = render(App);
+    const brief = await view.findByPlaceholderText("Your topic or idea") as HTMLTextAreaElement;
+    expect(brief.value).toBe("");
+    state = { ...state,
+      scope: { title: "Repair approvals", domain: "Supplier approval delays", audience: "Independent repair shops", observations: "Shared customer inbox", offLimits: [] },
+      runConfig: { ...DEFAULT_RUN_CONFIG, searchProvider: "perplexity", discoveryDepth: "quick", ideaCount: 5 },
+      threads: state.threads.map(thread => thread.id === "alpha" ? { ...thread, title: "Repair approvals" } : thread),
+    };
+    backendEvent?.({ type: "app-state-changed", threadId: "alpha" });
+    await view.findByRole("heading", { name: "Repair approvals" });
+    expect((view.getByPlaceholderText("Your topic or idea") as HTMLTextAreaElement).value).toBe("Supplier approval delays");
+    expect((view.getByLabelText("Audience") as HTMLInputElement).value).toBe("Independent repair shops");
+    expect((view.getByLabelText("Search provider") as HTMLSelectElement).value).toBe("perplexity");
+    expect((within(view.getByRole("tabpanel", { name: "Research setup" })).getByLabelText("Research depth") as HTMLSelectElement).value).toBe("quick");
+    expect((view.getByLabelText("Solutions per problem") as HTMLInputElement).value).toBe("5");
+  });
+
+  test.each([false, true])("external saves preserve edited=%s drafts and never restore a stale pristine cache", async (edited) => {
+    let alpha = workspace("alpha");
+    alpha.threads[0] = { ...alpha.threads[0]!, isUnstartedDraft: true };
+    let state = alpha;
+    let backendEvent: ((event: ResearchEvent) => void) | undefined;
+    installApi({ getWorkspace: async () => structuredClone(state),
+      selectThread: async id => {
+        state = id === "alpha" ? alpha : { ...workspace("beta"), threads: alpha.threads };
+        return structuredClone(state);
+      },
+      onBackendEvent(listener) { backendEvent = listener; return () => { backendEvent = undefined; }; } });
+    const view = render(App);
+    const brief = await view.findByPlaceholderText("Your topic or idea") as HTMLTextAreaElement;
+    const initialProvider = (view.getByLabelText("Search provider") as HTMLSelectElement).value;
+    if (edited) {
+      await fireEvent.input(brief, { target: { value: "  Keep my pending approval brief  " } });
+      await fireEvent.input(view.getByLabelText("Audience"), { target: { value: "My draft audience" } });
+    }
+    alpha = { ...alpha,
+      scope: { title: "Repair approvals", domain: "Saved approval brief", audience: "Saved shop audience", observations: "", offLimits: [] },
+      runConfig: { ...DEFAULT_RUN_CONFIG, searchProvider: "perplexity", discoveryDepth: "quick" },
+      threads: alpha.threads.map(thread => thread.id === "alpha" ? { ...thread, title: "Repair approvals" } : thread),
+    };
+    state = alpha;
+    backendEvent?.({ type: "app-state-changed", threadId: "alpha" });
+    await view.findByRole("heading", { name: "Repair approvals" });
+    expect((view.getByPlaceholderText("Your topic or idea") as HTMLTextAreaElement).value).toBe(edited ? "  Keep my pending approval brief  " : "Saved approval brief");
+    expect((view.getByLabelText("Audience") as HTMLInputElement).value).toBe(edited ? "My draft audience" : "Saved shop audience");
+    expect((view.getByLabelText("Search provider") as HTMLSelectElement).value).toBe(edited ? initialProvider : "perplexity");
+
+    await fireEvent.click(view.getByRole("button", { name: "Open thread Beta" }));
+    await view.findByRole("heading", { name: "Beta" });
+    // Another client saves this project while its form is unmounted.
+    alpha = { ...alpha, scope: { ...alpha.scope!, domain: "Latest saved approval brief", audience: "Latest saved audience" },
+      runConfig: { ...alpha.runConfig!, searchProvider: "auto", discoveryDepth: "deep" } };
+    await fireEvent.click(view.getByRole("button", { name: "Create new research thread" }));
+    await view.findByRole("heading", { name: "Repair approvals" });
+    expect((view.getByPlaceholderText("Your topic or idea") as HTMLTextAreaElement).value).toBe(edited ? "  Keep my pending approval brief  " : "Latest saved approval brief");
+    expect((view.getByLabelText("Audience") as HTMLInputElement).value).toBe(edited ? "My draft audience" : "Latest saved audience");
+    expect((view.getByLabelText("Search provider") as HTMLSelectElement).value).toBe(edited ? initialProvider : "auto");
+  });
+
   test("keeps a configured unverified key usable through passive startup and owner reconciliation", async () => {
     let state = workspace("alpha");
     state.validation.native = { available: true, connected: true, accounts: [{ providerId: "openai-subscription" }] };

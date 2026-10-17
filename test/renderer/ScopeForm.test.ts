@@ -12,6 +12,67 @@ import { listedModels, pickModel } from "./model-picker";
 import { modelDisplayName } from "../../src/renderer/lib/research-defaults";
 
 describe("ScopeForm search provider selection", () => {
+  test("does not cache a pristine form after automatic catalog and provider defaults settle", async () => {
+    const state = workspace();
+    state.scope = null;
+    state.runConfig = null;
+    state.modelOptions = [];
+    const onRememberDraft = vi.fn<NonNullable<ComponentProps<typeof ScopeForm>["onRememberDraft"]>>();
+    const view = render(ScopeForm, { workspace: state, busy: false, onSave: vi.fn(), onStart: vi.fn(), onRetry: vi.fn(), onRememberDraft });
+    const ready = workspace();
+    await view.rerender({ workspace: { ...state, modelOptions: ready.modelOptions } });
+    await tick();
+    view.unmount();
+    expect(onRememberDraft).toHaveBeenLastCalledWith("thread-1", null);
+  });
+
+  test("remembers an unsaved model choice even when no text field changed", async () => {
+    const state = workspace();
+    const model = { providerId: "openai-subscription", modelId: "gpt-6-astra" };
+    state.models.push(model);
+    state.modelOptions.push({ ...model, displayName: "Astra", defaultReasoningEffort: "high", reasoningEfforts: [{ id: "high", description: "Thorough" }] });
+    const onRememberDraft = vi.fn<NonNullable<ComponentProps<typeof ScopeForm>["onRememberDraft"]>>();
+    const view = render(ScopeForm, { workspace: state, busy: false, onSave: vi.fn(), onStart: vi.fn(), onRetry: vi.fn(), onRememberDraft });
+    await pickModel(view.getByLabelText("Model"), modelRefKey(model));
+    view.unmount();
+    expect(onRememberDraft.mock.lastCall?.[1]).toMatchObject({ modelKey: modelRefKey(model), selectedModelRef: model, reasoningEffort: "high" });
+  });
+
+  test("does not remember a committed draft when research cannot start after saving", async () => {
+    const state = workspace();
+    state.validation.exa = { valid: true };
+    const onSave = vi.fn().mockResolvedValue(undefined);
+    const onStart = vi.fn().mockRejectedValue(new Error("Synthetic start failure"));
+    const onRememberDraft = vi.fn<NonNullable<ComponentProps<typeof ScopeForm>["onRememberDraft"]>>();
+    const view = render(ScopeForm, { workspace: state, busy: false, onSave, onStart, onRetry: vi.fn(), onRememberDraft });
+    await fireEvent.input(view.getByLabelText("Audience"), { target: { value: "Updated repair audience" } });
+    await fireEvent.click(view.getByRole("button", { name: "Discover problems" }));
+    await waitFor(() => expect(onStart).toHaveBeenCalledOnce());
+    await tick();
+    view.unmount();
+    expect(onSave).toHaveBeenCalledOnce();
+    expect(onRememberDraft).toHaveBeenLastCalledWith("thread-1", null);
+  });
+
+  test("keeps input typed while a save is pending as an unsaved draft", async () => {
+    const state = workspace();
+    state.validation.exa = { valid: true };
+    let finishSave!: () => void;
+    const pending = new Promise<void>(resolve => { finishSave = resolve; });
+    const onSave = vi.fn().mockReturnValue(pending);
+    const onStart = vi.fn().mockResolvedValue(undefined);
+    const onRememberDraft = vi.fn<NonNullable<ComponentProps<typeof ScopeForm>["onRememberDraft"]>>();
+    const view = render(ScopeForm, { workspace: state, busy: false, onSave, onStart, onRetry: vi.fn(), onRememberDraft });
+    await fireEvent.input(view.getByLabelText("Audience"), { target: { value: "Submitted audience" } });
+    await fireEvent.click(view.getByRole("button", { name: "Discover problems" }));
+    await waitFor(() => expect(onSave).toHaveBeenCalledOnce());
+    await fireEvent.input(view.getByLabelText("Audience"), { target: { value: "Keep this later edit" } });
+    finishSave();
+    await waitFor(() => expect(onStart).toHaveBeenCalledOnce());
+    view.unmount();
+    expect(onRememberDraft.mock.lastCall?.[1]).toMatchObject({ audience: "Keep this later edit" });
+  });
+
   test.each(["exa", "perplexity"] as const)("shows only %s and the disabled other provider when one is connected", async (connectedProvider) => {
     const state = workspace();
     state.runConfig = { ...DEFAULT_RUN_CONFIG, searchProvider: connectedProvider };
@@ -1145,6 +1206,9 @@ describe("settings surfaces preserve launch configuration", () => {
     await fireEvent.click(view.getByRole("button", { name: "Start" }));
     await waitFor(() => expect(onStartWorkflow).toHaveBeenCalledOnce());
     expect(onStartWorkflow.mock.calls[0]?.[0].proposal).toMatchObject(expected);
+    await tick();
+    view.unmount();
+    expect(onRememberDraft).toHaveBeenLastCalledWith("thread-1", null);
   });
 
   test("hides preview errors before Start and exposes retry after a real preview failure", async () => {

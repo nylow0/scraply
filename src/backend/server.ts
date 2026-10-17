@@ -63,7 +63,7 @@ import {
   type IdeaGroupView, type SolutionView, type ValidationState,
 } from "../shared/ipc";
 import {
-  DEFAULT_RUN_CONFIG, HISTORICAL_CODEX_CLI_PROVIDER_ID, ModelCatalogSchema, OPENAI_SUBSCRIPTION_PROVIDER_ID, RunConfigSchema, sameModelRef,
+  DEFAULT_IDEA_COUNT, DEFAULT_RUN_CONFIG, HISTORICAL_CODEX_CLI_PROVIDER_ID, ModelCatalogSchema, OPENAI_SUBSCRIPTION_PROVIDER_ID, RunConfigSchema, sameModelRef,
   type ModelCatalog, type ModelOption, type ModelRef, type RunConfig,
 } from "../shared/schemas";
 import type { LogInput } from "../shared/logging";
@@ -1933,7 +1933,18 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
         const input = SaveRunConfigSchema.parse(body); requireThread(input.threadId);
         assertProjectSettingsEditable(input.threadId);
         engine?.assertOpportunityEditingAllowed(input.threadId);
-        threads.saveRunConfig(input.threadId, { ...input.config, workflowVersion: 2 }, input.presetName);
+        db.immediateTransaction(() => {
+          threads.saveRunConfig(input.threadId, { ...input.config, workflowVersion: 2 }, input.presetName);
+          const key = `launch-settings:${input.threadId}`;
+          const saved = db.getSetting(key);
+          if (saved) {
+            const settings = LaunchSettingsSchema.parse(JSON.parse(saved));
+            // These shared choices come from RunConfig; retain all other explicit launch settings.
+            if (settings.targets) settings.targets.ideaCount = input.config.ideaCount ?? DEFAULT_IDEA_COUNT;
+            settings.limits.maxMinutes = input.config.maxRunMinutes;
+            db.setSetting(key, JSON.stringify(settings));
+          }
+        });
         return sendJson(res, 200, await workspaceState());
       }
       if (route === "/models/favorite") {

@@ -4,7 +4,8 @@ import { CliEnvelopeSchema, configureCliProject, createCliFixture } from "../../
 import { GetProjectResultSchema } from "../../../src/shared/cli-contracts";
 import { LaunchSettingsSchema } from "../../../src/shared/launch-settings";
 import { RunConfigSchema } from "../../../src/shared/schemas";
-import { launchDraftEstimates } from "../../../src/shared/launch-draft";
+import { IPC_CHANNELS, WorkspaceStateSchema } from "../../../src/shared/ipc";
+import { buildWorkflowLaunchDraft, launchDraftEstimates } from "../../../src/shared/launch-draft";
 import { PreviewWorkflowResultSchema, WorkflowLaunchContractSchema } from "../../../src/shared/workflow-contracts";
 
 const fixtures: ReturnType<typeof createCliFixture>[] = [];
@@ -34,6 +35,54 @@ test("run-config JSON updates survive another invocation and control the actual 
   expect(contract.targets.ideaCount).toBe(4);
   expect(contract.limits).toMatchObject({ maxMinutes: 17, ...launchDraftEstimates("known-problem", "standard") });
   expect(fixture.dispatches()).toMatchObject({ models: [], searches: [] });
+}, 30_000);
+
+test.each(["vibe", "babysit"] as const)("app run-config saves update separate CLI previews and preserve explicit %s launch choices", async (mode) => {
+  const fixture = createCliFixture({ mode: "workflow-checkpoint-recovery" });
+  fixtures.push(fixture);
+  await fixture.start();
+  const thread = await configureCliProject(fixture, { title: "Invented supplier credit queue" });
+  const previous = await fixture.json(["project", "show", "--project", thread.id], GetProjectResultSchema);
+  const launchSettings = LaunchSettingsSchema.parse({ ...previous.launchSettings, mode, automaticProblemCap: 2,
+    targets: { kind: "project", ideaCount: 1, distinctBusinessCount: 5, automaticProblemCap: 2 },
+    limits: { enforced: false, maxMinutes: 10, maxModelCalls: 37, maxSearches: 12 },
+    ideas: { model: { providerId: "openai-subscription", modelId: "gpt-fixture" }, reasoningEffort: "xhigh",
+      reviewModel: { providerId: "openai-subscription", modelId: "gpt-fixture" }, reviewReasoningEffort: "medium" },
+    instructions: { research: "Keep the saved quotes", ideas: "Prefer a small pilot", review: "Check the stated risks" },
+  });
+  if (!launchSettings.targets || !launchSettings.ideas) throw new Error("The regression requires explicit targets and ideas choices.");
+  await fixture.json(["config", "set", "--project", thread.id, "--stdin"], z.unknown(), JSON.stringify({ launchSettings }));
+  const beforeSave = await fixture.json(["project", "show", "--project", thread.id], GetProjectResultSchema);
+  expect(beforeSave.launchSettings).toEqual(launchSettings);
+  const config = RunConfigSchema.parse({ ...beforeSave.workspace.runConfig, ideaCount: 4, maxRunMinutes: 17 });
+
+  // App uses this shared handler to save the form's RunConfig, without saving CLI launch settings.
+  const appWorkspace = WorkspaceStateSchema.parse(await (await fixture.owner()).invoke(IPC_CHANNELS.SAVE_RUN_CONFIG, { threadId: thread.id, config }));
+  expect(appWorkspace.runConfig).toEqual(config);
+  const saved = await fixture.json(["project", "show", "--project", thread.id], GetProjectResultSchema);
+  const preview = await fixture.json(["run", "preview", "--project", thread.id], PreviewWorkflowResultSchema);
+  expect(saved.launchSettings).toEqual({ ...launchSettings,
+    targets: { ...launchSettings.targets, ideaCount: 4 }, limits: { ...launchSettings.limits, maxMinutes: 17 },
+  });
+  expect(preview.fieldErrors).toEqual([]);
+  const contract = WorkflowLaunchContractSchema.parse(preview.proposal);
+  expect(contract.targets).toMatchObject({ kind: "project", ideaCount: 4, distinctBusinessCount: 5, automaticProblemCap: 2 });
+  expect(contract.limits).toEqual({ ...launchSettings.limits, maxMinutes: 17 });
+  if (!saved.workspace.scope) throw new Error("The project must retain its saved scope.");
+  const guiDraft = buildWorkflowLaunchDraft(saved.workspace.scope, config, mode === "vibe"
+    ? { mode, ideas: launchSettings.ideas, limits: launchSettings.limits, instructions: launchSettings.instructions }
+    : { mode, limits: launchSettings.limits, instructions: launchSettings.instructions });
+  expect(contract.targets.ideaCount).toBe(guiDraft.targets.ideaCount);
+  expect(contract.limits.maxMinutes).toBe(guiDraft.limits.maxMinutes);
+  expect(contract.mode).toBe(mode);
+  expect(contract.instructions).toEqual(launchSettings.instructions);
+  if (mode === "vibe") expect(contract.ideas).toEqual(launchSettings.ideas);
+  await fixture.stop();
+  await fixture.start();
+  const reopened = await fixture.json(["project", "show", "--project", thread.id], GetProjectResultSchema);
+  expect(reopened.launchSettings).toEqual(saved.launchSettings);
+  expect(reopened.draft).toEqual(saved.draft);
+  expect(fixture.admissions()).toEqual({ models: [], searches: [], providerProbes: [] });
 }, 30_000);
 
 test("contradictory JSON objects are rejected before saving either object", async () => {

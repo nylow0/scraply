@@ -62,6 +62,23 @@
   let conversationLoadEpoch = 0;
   let draftThreadId = $state<string | null>(null);
   let setupDraft = $state<ReturnType<ScopeForm["captureDraft"]> | null>(null);
+  let setupForm = $state<ScopeForm>();
+  let setupRevision = $state(0);
+  let previousSetupThreadId: string | null = null;
+  let previousSavedSetup = "";
+  $effect(() => {
+    const threadId = workspace?.activeThreadId ?? null;
+    const savedSetup = JSON.stringify([workspace?.scope, workspace?.runConfig]);
+    if (busy) return;
+    // Reload persisted fields only while the mounted form has no local draft to protect.
+    if (threadId === previousSetupThreadId && savedSetup !== previousSavedSetup
+      && untrack(() => setupForm && !setupForm.hasUnsavedChanges())) {
+      setupDraft = null;
+      setupRevision = untrack(() => setupRevision) + 1;
+    }
+    previousSetupThreadId = threadId;
+    previousSavedSetup = savedSetup;
+  });
   $effect(() => {
     const thread = workspace?.threads.find((item) => item.id === workspace?.activeThreadId);
     if (thread?.isUnstartedDraft && draftThreadId !== thread.id) {
@@ -69,7 +86,7 @@
       setupDraft = null;
     }
   });
-  function rememberDraft(threadId: string, draft: ReturnType<ScopeForm["captureDraft"]>) {
+  function rememberDraft(threadId: string, draft: ReturnType<ScopeForm["captureDraft"]> | null) {
     if (threadId === draftThreadId) setupDraft = draft;
   }
   let route = $state<NavigationRoute>({ threadId: "", step: "setup", settings: false, solution: { kind: "list" } });
@@ -1091,8 +1108,8 @@
     {:else if activeStep === "setup"}
       {#if showSetupForm}
         <div id="workflow-panel-setup" role="tabpanel" aria-label="Research setup">
-          {#key workspace.activeThreadId}
-            <ScopeForm {workspace} {busy} initialDraft={workspace.activeThreadId === draftThreadId ? setupDraft : null} onRememberDraft={rememberDraft} frameLanguages={latestApprovedFrame?.approved?.languages} onSave={saveScope} onStart={startResearch} onPreviewWorkflow={previewWorkflow} onStartWorkflow={startWorkflow} onGenerateTitle={generateResearchTitle} onRetry={retryConnections} onOpenSettings={() => settings?.show()} />
+          {#key `${workspace.activeThreadId}:${setupRevision}`}
+            <ScopeForm bind:this={setupForm} {workspace} {busy} initialDraft={workspace.activeThreadId === draftThreadId ? setupDraft : null} onRememberDraft={rememberDraft} frameLanguages={latestApprovedFrame?.approved?.languages} onSave={saveScope} onStart={startResearch} onPreviewWorkflow={previewWorkflow} onStartWorkflow={startWorkflow} onGenerateTitle={generateResearchTitle} onRetry={retryConnections} onOpenSettings={() => settings?.show()} />
           {/key}
         </div>
       {:else}

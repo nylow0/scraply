@@ -29,7 +29,7 @@
     workspace: WorkspaceState; busy: boolean;
     frameLanguages?: string[] | undefined;
     initialDraft?: ReturnType<typeof captureDraft> | null;
-    onRememberDraft?: (threadId: string, draft: ReturnType<typeof captureDraft>) => void;
+    onRememberDraft?: (threadId: string, draft: ReturnType<typeof captureDraft> | null) => void;
     // Names a new thread from its brief when Start is clicked; there is no name field.
     onGenerateTitle?: (context: string) => Promise<string>;
     onSave: (scope: NonNullable<WorkspaceState["scope"]>, config: NonNullable<WorkspaceState["runConfig"]>) => Promise<void>;
@@ -125,6 +125,23 @@
       workflowModelLimitTouched, workflowSearchLimitTouched, researchInstruction, ideasInstruction, reviewInstruction };
   }
   const rememberedDraft = untrack(() => initialDraft);
+  let restoredDraftPending = Boolean(rememberedDraft);
+  let draftEdited = $state(false);
+  let pristineDraftFingerprint = "";
+  $effect(() => {
+    const fingerprint = JSON.stringify(captureDraft());
+    // Catalog discovery and automatic new-project defaults are not user edits.
+    if (!draftEdited && !restoredDraftPending) pristineDraftFingerprint = fingerprint;
+  });
+  export function hasUnsavedChanges() {
+    return restoredDraftPending || JSON.stringify(captureDraft()) !== pristineDraftFingerprint;
+  }
+  function acknowledgeSavedDraft(fingerprint: string) {
+    if (JSON.stringify(captureDraft()) !== fingerprint) return;
+    pristineDraftFingerprint = fingerprint;
+    restoredDraftPending = false;
+    draftEdited = false;
+  }
   onMount(() => {
     if (!rememberedDraft) return;
     ({ researchMode, purposeOverride, title, audience, domain, observations, riskEvaluationCriteria,
@@ -134,7 +151,7 @@
       workflowModelLimitTouched, workflowSearchLimitTouched, researchInstruction, ideasInstruction, reviewInstruction } = rememberedDraft);
   });
   onDestroy(() => {
-    if (initial.activeThreadId) onRememberDraft?.(initial.activeThreadId, captureDraft());
+    if (initial.activeThreadId) onRememberDraft?.(initial.activeThreadId, hasUnsavedChanges() ? captureDraft() : null);
   });
   let workflowPreview = $state<WorkflowPreview | null>(null);
   let previewFingerprint = $state<string | null>(null);
@@ -242,12 +259,14 @@
   });
 
   function selectModel(key: string) {
+    draftEdited = true;
     const selected = workspace.modelOptions.find((item) => modelRefKey(item) === key);
     if (selected) selectedModelRef = { providerId: selected.providerId, modelId: selected.modelId };
     reasoningEffort = selected?.defaultReasoningEffort ?? DEFAULT_RUN_CONFIG.reasoningEffort;
   }
 
   function selectIdeaModel(key: string) {
+    draftEdited = true;
     const selected = workspace.modelOptions.find((item) => modelRefKey(item) === key);
     if (selected) selectedIdeasModelRef = { providerId: selected.providerId, modelId: selected.modelId };
     ideaReasoningEffort = selected?.defaultReasoningEffort ?? DEFAULT_RUN_CONFIG.reasoningEffort;
@@ -309,10 +328,13 @@
           previewFingerprint = fingerprint;
         }
         if (preview.type !== "launch" || preview.fieldErrors.length > 0) { await revealBlockingField(); return; }
+        const submittedDraft = JSON.stringify(captureDraft());
         await onStartWorkflow(preview);
+        acknowledgeSavedDraft(submittedDraft);
         return;
       }
       const submittedFingerprint = draftFingerprint;
+      const submittedDraft = JSON.stringify(captureDraft());
       await onSave({
         title: title.trim(), audience: audience.trim(), domain: domain.trim(), observations: observations.trim(),
         riskEvaluationCriteria: riskEvaluationCriteria.trim(),
@@ -323,6 +345,7 @@
         explorationPurpose,
       });
       savedFingerprint = submittedFingerprint;
+      acknowledgeSavedDraft(submittedDraft);
       await onStart();
     } catch {
       // App owns the visible error; keep the submit promise handled locally.
@@ -416,7 +439,7 @@
 <svelte:window onkeydown={dismissModeHelp} />
 
 <section class="scope-page">
-  <form bind:this={setupForm} novalidate onsubmit={(event) => { event.preventDefault(); void saveAndStart(); }}>
+  <form bind:this={setupForm} novalidate oninput={() => draftEdited = true} onchange={() => draftEdited = true} onsubmit={(event) => { event.preventDefault(); void saveAndStart(); }}>
     <div class="setup-scroll">
       <div class="setup-body">
         <fieldset class="choice-group mode-picker">
@@ -440,7 +463,7 @@
               <label><span>Boundaries</span><textarea bind:value={offLimits} rows="2" placeholder="What should solutions avoid? One limit per line."></textarea></label>
         </div>
         {#if explorationPurpose !== "auto"}
-        <p class="saved-purpose-note">This saved project asks for {explorationPurpose === "startup-opportunities" ? "startup opportunities" : "practical solutions"}. <button type="button" onclick={() => purposeOverride = "auto"}>Follow the brief instead</button></p>
+        <p class="saved-purpose-note">This saved project asks for {explorationPurpose === "startup-opportunities" ? "startup opportunities" : "practical solutions"}. <button type="button" onclick={() => { draftEdited = true; purposeOverride = "auto"; }}>Follow the brief instead</button></p>
       {/if}
 
       </div>
