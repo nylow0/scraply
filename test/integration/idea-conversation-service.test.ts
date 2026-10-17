@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, test } from "bun:test";
 import { IdeaConversationService } from "../../src/core/idea-conversation-service";
+import { WorkflowCoordinator } from "../../src/core/workflow-coordinator";
 import { ResearchRequestService } from "../../src/core/research-request-service";
 import { materializeResearchSnapshot } from "../../src/core/research-revisions";
 import { DatabaseClient } from "../../src/db/client";
@@ -94,6 +95,177 @@ async function waitForTurn(db: DatabaseClient, turnId: string): Promise<string> 
   }
   throw new Error("Idea turn did not settle within one second");
 }
+
+async function versionSelectionFixture() {
+  const db = fixture();
+  const service = new IdeaConversationService({ db, modelClient: () => completion({
+    reply: "Put dependency review in the weekly checklist.", citedEvidenceIds: ["source-1"],
+    assumptions: [], changeSummary: "Uses the weekly checklist", candidate: {
+      mechanism: "Review upgrades inside the weekly release checklist",
+      description: "The release owner reviews changed dependencies before approval.",
+      keyAssumption: "Owners can review in time.", whyCurrentApproachMaySuffice: "An existing checklist may suffice.",
+      supportingEvidenceIds: ["source-1"], contraryEvidenceIds: [], unknowns: [],
+      respectsOffLimits: true, respectsOffLimitsWhy: "Uses the existing process.",
+    },
+  }), modelAvailable: () => true, onProgress: () => {} });
+  const admitted = await service.submitTurn({ ...request("selection-rethink"), intent: "rethink" });
+  expect(await waitForTurn(db, admitted.turnId)).toBe("completed");
+  const workflows = new WorkflowRepository(db);
+  const session = workflows.getSession(admitted.sessionId)!;
+  const versionId = service.getConversation({ ideaId: "idea-1" }).versions[1]!.solutionId;
+  const coordinator = new WorkflowCoordinator({ db, ideaService: service,
+    engine: () => { throw new Error("Version selection must not start the engine"); },
+    capabilities: async () => { throw new Error("Version selection must not contact a provider"); },
+    listProblems: () => [], onProgress: () => {},
+  });
+  const command = { threadId: session.threadId, sessionId: session.id,
+    clientCommandId: "select-original", expectedRevision: session.revision,
+    action: { type: "select-version" as const, rootSolutionId: "idea-1", solutionId: "idea-1" } };
+  return { db, service, workflows, coordinator, session, versionId, command };
+}
+
+describe("idea version selection transactions", () => {
+  test("workflow selection commits one revision and receipt, and duplicate commands never select again", async () => {
+    const { db, service, workflows, coordinator, session, versionId, command } = await versionSelectionFixture();
+    db.db.prepare("UPDATE workflow_solution_preferences SET updated_at = '2000-01-01T00:00:00.000Z'").run();
+    const receipt = await coordinator.command(command);
+    expect(receipt.revision).toBe(session.revision + 1);
+    expect(workflows.getSession(session.id)).toEqual({ ...session, revision: receipt.revision });
+    expect(service.getConversation({ ideaId: "idea-1" }).selectedVersionId).toBe("idea-1");
+    expect(workflows.getCommand(session.threadId, command.clientCommandId)?.result).toEqual(receipt);
+    const preference = db.db.prepare("SELECT * FROM workflow_solution_preferences").all();
+    expect(preference).toEqual([expect.objectContaining({ selected_solution_id: "idea-1", updated_at: expect.any(String) })]);
+    expect(preference).not.toEqual([expect.objectContaining({ updated_at: "2000-01-01T00:00:00.000Z" })]);
+    expect((await coordinator.command(command)).revision).toBe(receipt.revision);
+    expect(db.db.prepare("SELECT * FROM workflow_solution_preferences").all()).toEqual(preference);
+    expect(workflows.getSession(session.id)?.revision).toBe(receipt.revision);
+
+    await coordinator.command({ ...command, clientCommandId: "select-rethink", expectedRevision: receipt.revision,
+      action: { ...command.action, solutionId: versionId } });
+    // Replaying an older receipt must not overwrite a later version selection.
+    expect((await coordinator.command(command)).revision).toBe(receipt.revision);
+    expect(workflows.getSelectedVersion("idea-1")).toBe(versionId);
+    expect(workflows.getSession(session.id)?.revision).toBe(session.revision + 2);
+    await expect(coordinator.command({ ...command, action: { ...command.action, solutionId: versionId } }))
+      .rejects.toMatchObject({ code: "IDEMPOTENCY_CONFLICT" });
+    await expect(coordinator.command({ ...command, clientCommandId: "stale-selection" }))
+      .rejects.toMatchObject({ code: "REVISION_CONFLICT" });
+    expect(workflows.getCommand(session.threadId, "stale-selection")).toBeNull();
+    expect(workflows.getSelectedVersion("idea-1")).toBe(versionId);
+  });
+
+  for (const failure of ["revision", "receipt"] as const) {
+    test(`a failed workflow ${failure} rolls back the selected version, revision, and receipt`, async () => {
+      const { db, workflows, coordinator, session, versionId, command } = await versionSelectionFixture();
+      const before = db.db.prepare("SELECT * FROM workflow_solution_preferences").all();
+      // Fire only after the selection changed, so this proves rollback of an actual mutation.
+      db.db.exec(`CREATE TRIGGER fail_version_selection AFTER ${failure === "revision"
+        ? "UPDATE ON workflow_sessions" : "INSERT ON workflow_commands"}
+        WHEN (SELECT selected_solution_id FROM workflow_solution_preferences WHERE root_solution_id = 'idea-1') = 'idea-1'
+        BEGIN SELECT RAISE(ABORT, 'forced ${failure} failure'); END`);
+      await expect(coordinator.command(command)).rejects.toThrow(`forced ${failure} failure`);
+      expect(db.db.prepare("SELECT * FROM workflow_solution_preferences").all()).toEqual(before);
+      expect(workflows.getSelectedVersion("idea-1")).toBe(versionId);
+      expect(workflows.getSession(session.id)).toEqual(session);
+      expect(workflows.getCommand(session.threadId, command.clientCommandId)).toBeNull();
+      db.db.exec("DROP TRIGGER fail_version_selection");
+      expect((await coordinator.command(command)).revision).toBe(session.revision + 1);
+    });
+  }
+
+  test("standalone selection owns its transaction and rolls back a failed preference write", async () => {
+    const { db, service, workflows, session, versionId } = await versionSelectionFixture();
+    const before = db.db.prepare("SELECT * FROM workflow_solution_preferences").all();
+    db.db.exec(`CREATE TRIGGER fail_standalone_selection AFTER UPDATE ON workflow_solution_preferences
+      BEGIN SELECT RAISE(ABORT, 'forced preference failure'); END`);
+    expect(() => service.selectVersion(session.threadId, "idea-1", "idea-1")).toThrow("forced preference failure");
+    expect(db.db.prepare("SELECT * FROM workflow_solution_preferences").all()).toEqual(before);
+    expect(workflows.getSelectedVersion("idea-1")).toBe(versionId);
+    expect(workflows.getSession(session.id)).toEqual(session);
+    db.db.exec("DROP TRIGGER fail_standalone_selection");
+    service.selectVersion(session.threadId, "idea-1", "idea-1");
+    expect(workflows.getSelectedVersion("idea-1")).toBe("idea-1");
+    expect(workflows.getSession(session.id)).toEqual(session);
+  });
+
+  test("caller-owned selection requires a transaction and rolls back with its caller", async () => {
+    const { db, service, workflows, session, versionId } = await versionSelectionFixture();
+    expect(() => service.selectVersion(session.threadId, "idea-1", "idea-1", { transaction: "existing" }))
+      .toThrow("This mutation requires a caller-owned immediate transaction");
+    expect(workflows.getSelectedVersion("idea-1")).toBe(versionId);
+    expect(() => db.immediateTransaction(() => {
+      service.selectVersion(session.threadId, "idea-1", "idea-1", { transaction: "existing" });
+      expect(workflows.getSelectedVersion("idea-1")).toBe("idea-1");
+      throw new Error("caller failed after selection");
+    })).toThrow("caller failed after selection");
+    expect(workflows.getSelectedVersion("idea-1")).toBe(versionId);
+    // Explicit ownership must not weaken the database's global nested-transaction guard.
+    expect(() => db.immediateTransaction(() => service.selectVersion(session.threadId, "idea-1", "idea-1")))
+      .toThrow("Nested immediate transactions are not supported");
+    expect(workflows.getSelectedVersion("idea-1")).toBe(versionId);
+  });
+
+  test("selection also advances an unfinished session without changing its state or timing", async () => {
+    const { db, workflows, coordinator, session, command } = await versionSelectionFixture();
+    db.db.prepare("UPDATE workflow_sessions SET state = 'waiting-for-review', outcome = NULL, finished_at = NULL WHERE id = ?")
+      .run(session.id);
+    const before = workflows.getSession(session.id)!;
+    expect((await coordinator.command(command)).revision).toBe(before.revision + 1);
+    expect(workflows.getSession(session.id)).toEqual({ ...before, revision: before.revision + 1 });
+  });
+
+  test("invalid roots, versions, projects, and session owners leave all selection state unchanged", async () => {
+    const { db, service, workflows, coordinator, session, versionId, command } = await versionSelectionFixture();
+    const now = new Date().toISOString();
+    db.db.prepare("INSERT INTO threads (id, title, status, created_at, updated_at) VALUES ('thread-2', 'Synthetic second project', 'solutions-ready', ?, ?)")
+      .run(now, now);
+    db.db.prepare(`INSERT INTO research_runs (id, thread_id, status, config_json, workflow_version, created_at, updated_at)
+      VALUES ('foreign-run', 'thread-2', 'completed', ?, 2, ?, ?)`).run(JSON.stringify(DEFAULT_RUN_CONFIG), now, now);
+    db.db.prepare(`INSERT INTO problems (id, discovery_run_id, statement, why_it_persists, affected,
+      scale_estimate, verdict, verdict_reason, verdict_source_ids_json, created_at)
+      SELECT 'foreign-problem', 'foreign-run', statement, why_it_persists, affected,
+        scale_estimate, verdict, verdict_reason, verdict_source_ids_json, created_at FROM problems WHERE id = 'problem-1'`).run();
+    db.db.prepare("UPDATE research_runs SET problem_id = 'foreign-problem' WHERE id = 'foreign-run'").run();
+    for (const [id, problemId, runId] of [
+      ["other-idea", "problem-1", "run-v2"], ["foreign-idea", "foreign-problem", "foreign-run"],
+    ] as const) {
+      db.db.prepare(`INSERT INTO solutions (id, problem_id, research_run_id, mechanism, description,
+        respects_off_limits, respects_off_limits_why, created_at)
+        SELECT ?, ?, ?, mechanism, description, respects_off_limits, respects_off_limits_why, created_at
+        FROM solutions WHERE id = 'idea-1'`).run(id, problemId, runId);
+      db.immediateTransaction(() => workflows.createSolutionLineage({ solutionId: id, rootSolutionId: id, changeSummary: "Original idea" }));
+    }
+    const foreignSession = db.immediateTransaction(() => workflows.createSession({ threadId: "thread-2", purpose: "idea-turn",
+      mode: "babysit", contract: {}, remainingMs: 60_000 }));
+    const before = db.db.prepare("SELECT * FROM workflow_solution_preferences").all();
+    const invalidReferences = [
+      { rootSolutionId: "missing-root", solutionId: versionId },
+      { rootSolutionId: "idea-1", solutionId: "missing-version" },
+      { rootSolutionId: "idea-1", solutionId: "other-idea" },
+      { rootSolutionId: "other-idea", solutionId: versionId },
+      { rootSolutionId: "foreign-idea", solutionId: "foreign-idea" },
+      { rootSolutionId: "idea-1", solutionId: "foreign-idea" },
+    ];
+    for (const [index, reference] of invalidReferences.entries()) {
+      expect(() => service.selectVersion(session.threadId, reference.rootSolutionId, reference.solutionId))
+        .toThrow(expect.objectContaining({ code: "INVALID_REFERENCE" }));
+      const clientCommandId = `invalid-selection-${index}`;
+      await expect(coordinator.command({ ...command, clientCommandId, action: { type: "select-version", ...reference } }))
+        .rejects.toMatchObject({ code: "INVALID_REFERENCE" });
+      expect(workflows.getCommand(session.threadId, clientCommandId)).toBeNull();
+    }
+    await expect(coordinator.command({ ...command, sessionId: foreignSession.id }))
+      .rejects.toMatchObject({ code: "INVALID_REFERENCE" });
+    await expect(coordinator.command({ ...command, threadId: "thread-2" }))
+      .rejects.toMatchObject({ code: "INVALID_REFERENCE" });
+    expect(workflows.getCommand(session.threadId, command.clientCommandId)).toBeNull();
+    expect(workflows.getCommand("thread-2", command.clientCommandId)).toBeNull();
+    expect(db.db.prepare("SELECT * FROM workflow_solution_preferences").all()).toEqual(before);
+    expect(workflows.getSession(session.id)).toEqual(session);
+    expect(workflows.getSession(foreignSession.id)).toEqual(foreignSession);
+    expect(db.db.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
+  });
+});
 
 describe("idea conversation service", () => {
   test("a new rethink of an older idea freezes the latest approved frame and saves its goal fit", async () => {

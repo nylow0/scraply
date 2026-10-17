@@ -135,11 +135,23 @@ export class IdeaConversationService {
     });
   }
 
-  selectVersion(threadId: string, rootSolutionId: string, solutionId: string): void {
-    const root = this.solution(rootSolutionId);
-    if (!root || root.thread_id !== threadId) throw new AppError("INVALID_REFERENCE");
+  /** Workflow commands include selection in their revision and receipt transaction. */
+  selectVersion(threadId: string, rootSolutionId: string, solutionId: string, options?: { transaction: "existing" }): void {
+    const mutation = () => {
+      const root = this.solution(rootSolutionId);
+      const selected = this.solution(solutionId);
+      if (!root || !selected || root.thread_id !== threadId || selected.thread_id !== threadId) {
+        throw new AppError("INVALID_REFERENCE");
+      }
+      this.workflows.setSelectedVersion(rootSolutionId, solutionId);
+    };
     try {
-      this.options.db.immediateTransaction(() => this.workflows.setSelectedVersion(rootSolutionId, solutionId));
+      if (options?.transaction === "existing") {
+        this.options.db.requireImmediateTransaction();
+        mutation();
+      } else {
+        this.options.db.immediateTransaction(mutation);
+      }
     } catch (error) {
       if (error instanceof WorkflowConflictError) throw new AppError(error.code, error.message);
       throw error;

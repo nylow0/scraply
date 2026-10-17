@@ -53,7 +53,7 @@ export interface WorkflowCoordinatorOptions {
     getConversation: (input: unknown) => unknown;
     submitTurn: (input: unknown) => Promise<unknown>;
     summary: (sessionId: string) => WorkflowSummary;
-    selectVersion?: (threadId: string, rootSolutionId: string, solutionId: string) => void;
+    selectVersion?: (threadId: string, rootSolutionId: string, solutionId: string, options?: { transaction: "existing" }) => void;
   };
 }
 
@@ -822,8 +822,12 @@ export class WorkflowCoordinator {
         }
         case "select-version": {
           if (!this.options.ideaService?.selectVersion) throw new AppError("conflict", "Idea versions are unavailable.");
-          this.options.ideaService.selectVersion(current.threadId, action.rootSolutionId, action.solutionId);
-          this.repository.updateSession(current.id, current.revision, {});
+          this.options.ideaService.selectVersion(current.threadId, action.rootSolutionId, action.solutionId, { transaction: "existing" });
+          // Selecting saved work also applies to finished sessions. Advance only
+          // the command revision, leaving their terminal state and outcome intact.
+          const updated = this.options.db.db.prepare(`UPDATE workflow_sessions SET revision = revision + 1
+            WHERE id = ? AND thread_id = ? AND revision = ? RETURNING id`).get(current.id, current.threadId, current.revision);
+          if (!updated) throw new AppError("REVISION_CONFLICT");
           break;
         }
       }
