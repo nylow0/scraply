@@ -12,6 +12,7 @@ import { DatabaseClient } from "../../src/db/client";
 import { CostLedgerRepository, type CostReservation } from "../../src/db/repositories/cost-ledger";
 import { OpportunityExplorationRepository } from "../../src/db/repositories/opportunity-exploration";
 import { WorkflowRepository } from "../../src/db/repositories/workflows";
+import { RunRecovery } from "../../src/core/run-recovery";
 import type { SearchClient } from "../../src/providers/search";
 import { configurePromptPaths } from "../../src/core/prompts";
 import { DEFAULT_RUN_CONFIG, type Source } from "../../src/shared/schemas";
@@ -280,7 +281,7 @@ for (const proof of ["mismatched", "malformed"] as const) {
     expect(workflowSearchDispatchUsage(f.db, "run")).toEqual({ attemptCount: 1, unknownCount: 1 });
     expect(f.physicalCount()).toBe(1);
     expect(unknownSearchAttempts(f.db, "run")).toEqual([prepared]);
-    expect(f.workflows.hasUnknownProviderCompletion("run")).toBe(true);
+    expect(new RunRecovery(f.db).hasUnknownCompletion("run")).toBe(true);
     expect(() => prepareWorkflowSearch(f.db, "run", input, [])).toThrow(UnknownSearchCompletionError);
     expect(() => prepareWorkflowSearch(f.db, "run", input, [otherId])).toThrow(UnknownSearchCompletionError);
     await expect(new WorkflowExecution(f.db, "run").search(f.instrumented).search(query, parameters))

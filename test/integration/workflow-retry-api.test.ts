@@ -7,6 +7,7 @@ import { DatabaseClient } from "../../src/db/client";
 import { WorkflowRepository } from "../../src/db/repositories/workflows";
 import { materializeResearchSnapshot } from "../../src/core/research-revisions";
 import { DEFAULT_RUN_CONFIG } from "../../src/shared/schemas";
+import type { ResearchEvent } from "../../src/shared/ipc";
 import {
   PreviewWorkflowResultSchema, WorkflowAdmissionReceiptSchema, WorkflowDetailSchema, WorkflowLaunchContractSchema,
 } from "../../src/shared/workflow-contracts";
@@ -21,7 +22,7 @@ afterEach(async () => {
 
 const errors: string[] = [];
 
-function context(directory: string): BackendContext {
+function context(directory: string, admission: { modelAvailable: boolean }, dispatches: string[]): BackendContext {
   return {
     dataDir: directory,
     dbPath: join(directory, "scraply.db"),
@@ -29,26 +30,33 @@ function context(directory: string): BackendContext {
     promptOverridesDir: join(directory, "prompts"),
     appVersion: "test",
     getSecrets: () => ({ exaApiKey: null }),
+    modelClients: { "openai-subscription": { async structuredCompletion(request) {
+      dispatches.push(request.stage);
+      throw new Error("Unexpected fixture model dispatch");
+    } } },
     log: (entry) => { if (entry.error) errors.push(String(entry.error)); },
     providerValidation: { inspectNative: async () => ({
       available: true, connected: true, accounts: [{ providerId: "openai-subscription" }],
-      models: [{
+      models: admission.modelAvailable ? [{
         providerId: "openai-subscription", modelId: "gpt-6.1-sol", displayName: "Test model",
         defaultReasoningEffort: "medium", reasoningEfforts: [{ id: "medium", description: "Medium" }],
-      }],
+      }] : [],
     }) },
   };
 }
 
 async function openBackend(directory: string) {
-  const handle = await startBackend(context(directory), () => {});
+  const admission = { modelAvailable: true };
+  const dispatches: string[] = [];
+  const events: ResearchEvent[] = [];
+  const handle = await startBackend(context(directory, admission, dispatches), event => { events.push(event); });
   handles.push(handle);
   const request = (path: string, body?: unknown) => fetch(`http://127.0.0.1:${handle.port}${path}`, {
     method: body === undefined ? "GET" : "POST",
     headers: { authorization: `Bearer ${handle.token}`, ...(body === undefined ? {} : { "content-type": "application/json" }) },
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
   });
-  return { handle, request };
+  return { handle, request, admission, dispatches, events };
 }
 
 async function closeBackend(handle: BackendHandle) {
@@ -141,6 +149,12 @@ function saveAttemptFixture(input: {
   return { sessionId: session.id, taskId, attemptId, runId, revision };
 }
 
+function recoveryRows(client: DatabaseClient) {
+  return ["workflow_sessions", "workflow_work_items", "workflow_budget_entries", "workflow_commands", "workflow_snapshots", "evidence_snapshots",
+    "research_runs", "generation_attempts", "cost_ledger", "threads", "scopes", "problems"]
+    .map(table => ({ table, rows: client.db.prepare(`SELECT * FROM ${table} ORDER BY rowid`).all() }));
+}
+
 test.each(["timeout", "output-limit"] as const)("a classified %s failure retries once in a bounded continuation and replays its command", async (errorCode) => {
   const { directory, threadId, contract, request } = await fixture();
   const saved = saveAttemptFixture({ directory, threadId, contract, taskState: "failed", attemptStatus: "failed", errorCode });
@@ -177,6 +191,48 @@ test.each(["timeout", "output-limit"] as const)("a classified %s failure retries
   expect((client.db.prepare("SELECT COUNT(*) AS count FROM workflow_work_items WHERE session_id = ? AND scope_key = ?")
     .get(receipt.sessionId, `retry:${saved.taskId}`) as { count: number }).count).toBe(1);
   client.close();
+});
+
+test.each([
+  ["timeout", "model"], ["timeout", "budget"], ["timeout", "transaction"],
+  ["output-limit", "model"], ["output-limit", "budget"], ["output-limit", "transaction"],
+] as const)("a classified %s continuation rejects %s failure atomically", async (errorCode, rejection) => {
+  const { directory, threadId, contract, request, handle, admission, dispatches, events } = await fixture();
+  const retryContract = WorkflowLaunchContractSchema.parse({ ...contract,
+    limits: { ...contract.limits, enforced: true, maxModelCalls: rejection === "budget" ? 4 : 8 } });
+  const saved = saveAttemptFixture({ directory, threadId, contract: retryContract, taskState: "failed", attemptStatus: "failed", errorCode });
+  const client = new DatabaseClient(join(directory, "scraply.db"));
+  try {
+    const detailResponse = await request(`/workflows/${saved.sessionId}`);
+    expect(detailResponse.status).toBe(200);
+    const detail = WorkflowDetailSchema.parse((await detailResponse.json() as { data: unknown }).data);
+    expect(detail.tasks[0]).toMatchObject({ state: "failed", terminalAttemptId: saved.attemptId, terminalAttemptKind: "model" });
+    if (rejection === "model") {
+      admission.modelAvailable = false;
+      handle.providersChanged();
+    }
+    // Fire only after the continuation session and task exist inside the transaction.
+    if (rejection === "transaction") client.db.exec(`CREATE TRIGGER reject_retry_receipt BEFORE INSERT ON workflow_commands
+      WHEN NEW.client_command_id = 'retry-rejected' AND NEW.session_id <> '${saved.sessionId}'
+        AND EXISTS (SELECT 1 FROM workflow_work_items WHERE session_id = NEW.session_id AND scope_key = 'retry:${saved.taskId}')
+      BEGIN SELECT RAISE(ABORT, 'fixture continuation receipt failure'); END`);
+    const before = recoveryRows(client);
+    const beforeEvents = [...events];
+    const beforeErrors = errors.length;
+    const response = await request("/workflows/command", {
+      threadId, sessionId: saved.sessionId, clientCommandId: "retry-rejected", expectedRevision: saved.revision,
+      action: { type: "retry-task", taskId: saved.taskId, expectedTerminalAttemptId: saved.attemptId },
+    });
+    expect(response.status).toBe(rejection === "transaction" ? 500 : rejection === "model" ? 409 : 400);
+    expect((await response.json() as { error: { code: string } }).error.code)
+      .toBe(rejection === "transaction" ? "internal_error" : rejection === "model" ? "MODEL_UNAVAILABLE" : "BUDGET_TOO_SMALL");
+    if (rejection === "transaction") expect(errors.slice(beforeErrors).some(error => error.includes("fixture continuation receipt failure"))).toBe(true);
+    expect(recoveryRows(client)).toEqual(before);
+    expect(new WorkflowRepository(client).acknowledgedAttemptIds(saved.runId)).toEqual([]);
+    expect(events).toEqual(beforeEvents);
+    expect(dispatches).toEqual([]);
+    expect(handle.hasActiveWork()).toBe(false);
+  } finally { client.close(); }
 });
 
 test("generation retry carries accepted and deferred batches into one target", async () => {

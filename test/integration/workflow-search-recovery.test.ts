@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ResearchEngine } from "../../src/core/research-engine";
 import { WorkflowCoordinator } from "../../src/core/workflow-coordinator";
+import { RunRecovery } from "../../src/core/run-recovery";
 import { prepareWorkflowSearch, unknownSearchAttempts } from "../../src/core/workflow-search-attempts";
 import { DatabaseClient } from "../../src/db/client";
 import { WorkflowRepository } from "../../src/db/repositories/workflows";
@@ -20,18 +21,18 @@ import { randomUUID } from "node:crypto";
 const directories: string[] = [];
 afterEach(() => { for (const directory of directories.splice(0)) rmSync(directory, { recursive: true, force: true }); });
 
-function fixture(searchCount = 1, options: { kind?: "discovery" | "generate-ideas"; enforced?: boolean } = {}) {
+function fixture(searchCount = 1, options: { kind?: "discovery" | "generate-ideas"; enforced?: boolean; maxModelCalls?: number; beforeCapabilities?: () => Promise<void> } = {}) {
   const directory = mkdtempSync(join(tmpdir(), "scraply-search-recovery-")); directories.push(directory);
-  const db = new DatabaseClient(join(directory, "test.db"));
+  let db = new DatabaseClient(join(directory, "test.db"));
   const now = new Date().toISOString();
   db.db.prepare("INSERT INTO threads (id,title,status,created_at,updated_at) VALUES ('project','Search recovery','discovery-running',?,?)").run(now, now);
-  const repository = new WorkflowRepository(db);
+  let repository = new WorkflowRepository(db);
   const scope = { title: "Filing", audience: "Small teams", domain: "Invoices", observations: "Repeated entries", offLimits: [] };
   const model = { providerId: "fixture", modelId: "fixture-model" };
   const config = { ...DEFAULT_RUN_CONFIG, model };
   const session = db.immediateTransaction(() => repository.createSession({ id: "session", threadId: "project", purpose: "discovery", mode: "babysit", remainingMs: 60 * 60_000,
     contract: { contractVersion: 1, purpose: "discovery", mode: "babysit", brief: "Research filing", scope, runConfig: config,
-      targets: { kind: "per-problem", ideaCount: 1 }, limits: { enforced: options.enforced ?? false, maxMinutes: 60, maxModelCalls: 30, maxSearches: 20 }, instructions: {},
+      targets: { kind: "per-problem", ideaCount: 1 }, limits: { enforced: options.enforced ?? false, maxMinutes: 60, maxModelCalls: options.maxModelCalls ?? 30, maxSearches: 20 }, instructions: {},
       resolvedInstructions: { research: "", ideas: "", review: "" }, instructionHashes: { research: "r", ideas: "i", review: "v" } } }));
   db.immediateTransaction(() => {
     db.db.prepare(`INSERT INTO research_runs (id,thread_id,status,config_json,workflow_version,workflow_session_id,purpose,interrupted,created_at,updated_at)
@@ -54,11 +55,58 @@ function fixture(searchCount = 1, options: { kind?: "discovery" | "generate-idea
     dispatches.push({ runId, attemptIds });
     for (const item of inputs) prepareWorkflowSearch(db, runId, item, attemptIds);
   } };
-  const coordinator = new WorkflowCoordinator({ db, engine: () => engine as unknown as ResearchEngine,
-    capabilities: async () => ({ nativeConnected: true, searchReady: { exa: true, perplexity: false },
-      modelOptions: [{ ...model, displayName: "Fixture", defaultReasoningEffort: "medium", reasoningEfforts: [{ id: "medium", description: "Default" }] }] }),
+  const admission = { modelAvailable: true };
+  const createCoordinator = () => new WorkflowCoordinator({ db, engine: () => engine as unknown as ResearchEngine,
+    capabilities: async () => {
+      await options.beforeCapabilities?.();
+      return { nativeConnected: true, searchReady: { exa: true, perplexity: false },
+        modelOptions: admission.modelAvailable ? [{ ...model, displayName: "Fixture", defaultReasoningEffort: "medium", reasoningEfforts: [{ id: "medium", description: "Default" }] }] : [] };
+    },
     listProblems: () => [], onProgress: () => {} });
-  return { db, repository, coordinator, attempt, attempts, dispatches, engine, directory };
+  let coordinator = createCoordinator();
+  return { get db() { return db; }, get repository() { return repository; }, get coordinator() { return coordinator; },
+    attempt, attempts, dispatches, engine, directory, admission,
+    reopen() {
+      db.close();
+      db = new DatabaseClient(join(directory, "test.db"));
+      repository = new WorkflowRepository(db);
+      coordinator = createCoordinator();
+      coordinator.reconcileInterrupted();
+    } };
+}
+
+function lostModel(db: DatabaseClient, stage: string, createdAt: string) {
+  const models = new GenerationAttemptRepository(db);
+  const attempt = models.prepare("run", { generationId: randomUUID(), stage, model: { providerId: "fixture", modelId: "fixture-model" }, reasoningEffort: "medium",
+    workOrder: { stage, instruction: "Read saved sources", goal: "Find observations", inputs: {}, definitionOfDone: [], constraints: [] },
+    evidence: [], schema: z.object({}), jsonSchema: { type: "object" }, repairPolicy: "disabled", signal: new AbortController().signal });
+  models.markDispatched(attempt.id);
+  db.db.prepare("UPDATE generation_attempts SET created_at = ? WHERE id = ?").run(createdAt, attempt.id);
+  return attempt;
+}
+
+function lostInvestigator(f: ReturnType<typeof fixture>, createdAt: string) {
+  return f.db.immediateTransaction(() => {
+    const child = f.repository.createWorkItem({ sessionId: "session", parentItemId: "task", kind: "evidence-check", scopeKey: "handoff", state: "ready", input: {} });
+    const attempts = new OpportunityExplorationRepository(f.db);
+    const attempt = attempts.prepareAttempt("project", { stageKey: "investigator-search:handoff", stageName: "investigator-search", input: {},
+      model: { providerId: "exa", modelId: "search", reasoningEffort: "bounded" }, promptVersion: "1", promptText: "Find a firsthand account", workItemId: child.id }, "session");
+    if (attempt.kind !== "prepared") throw new Error("Expected a prepared investigator search");
+    attempts.markAttemptDispatched("project", attempt.attemptId, "none", "session");
+    f.db.db.prepare("UPDATE opportunity_exploration_attempts SET prepared_at = ? WHERE id = ?").run(createdAt, attempt.attemptId);
+    return attempt.attemptId;
+  });
+}
+
+function retryRequest(f: ReturnType<typeof fixture>, attemptId: string, clientCommandId: string) {
+  return { threadId: "project", sessionId: "session", clientCommandId, expectedRevision: f.coordinator.summary("session").revision,
+    action: { type: "retry-task" as const, taskId: "task", expectedTerminalAttemptId: attemptId, acknowledgeUnknownCompletion: true } };
+}
+
+// Compare the durable rows affected by recovery, including late transaction rollback.
+function recoveryRows(db: DatabaseClient) {
+  return ["workflow_sessions", "workflow_work_items", "workflow_budget_entries", "workflow_commands", "workflow_snapshots", "research_runs", "generation_attempts", "cost_ledger"]
+    .map(table => ({ table, rows: db.db.prepare(`SELECT * FROM ${table} ORDER BY rowid`).all() }));
 }
 
 test("startup stops an uncertain search and exposes its UUID without dispatching", () => {
@@ -70,7 +118,7 @@ test("startup stops an uncertain search and exposes its UUID without dispatching
     expect(detail.summary.budget.searches.uncertain).toBe(10);
     expect(detail.tasks[0]).toMatchObject({ state: "unknown", terminalAttemptId: f.attempt.id, terminalAttemptKind: "search" });
     expect(f.dispatches).toEqual([]);
-    expect(f.repository.hasUnknownProviderCompletion("run")).toBe(true);
+    expect(new RunRecovery(f.db).hasUnknownCompletion("run")).toBe(true);
     expect(f.db.db.prepare("SELECT status FROM research_runs WHERE id = 'run'").get()).toEqual({ status: "failed" });
   } finally { f.db.close(); }
 });
@@ -148,6 +196,150 @@ test("parallel lost model streams are acknowledged individually before any resea
   } finally { f.db.close(); }
 });
 
+test("mixed lost requests remain reviewable across reopen until every exact request is acknowledged", async () => {
+  const f = fixture();
+  try {
+    const timestamp = "2026-01-02T00:00:00.000Z";
+    f.db.db.prepare("UPDATE workflow_snapshots SET value_json = json_set(value_json, '$.createdAt', ?) WHERE snapshot_key LIKE 'search-attempt:%'").run(timestamp);
+    const investigator = lostInvestigator(f, timestamp);
+    const firstModel = lostModel(f.db, "first-area", "2026-01-03T00:00:00.000Z");
+    const secondModel = lostModel(f.db, "second-area", "2026-01-03T00:00:00.000Z");
+    const knownFailure = lostModel(f.db, "known-failure", "2026-01-04T00:00:00.000Z");
+    new GenerationAttemptRepository(f.db).recordTerminal(knownFailure.id, { status: "failed", terminalKind: "failed", errorCode: "unavailable" });
+    f.coordinator.reconcileInterrupted();
+    const originalReceipts = f.db.db.prepare("SELECT * FROM generation_attempts ORDER BY rowid").all();
+    const originalBudget = f.coordinator.summary("session").budget;
+    expect(f.coordinator.get("session").tasks[0]).toMatchObject({ state: "unknown", terminalAttemptId: investigator, terminalAttemptKind: "search" });
+    // One full idle window also covers repeated reconciliation reads without a command.
+    await new Promise(resolve => setTimeout(resolve, 6_000));
+    f.coordinator.reconcileInterrupted();
+    expect(f.dispatches).toEqual([]);
+    const targets = [investigator, f.attempt.id, secondModel.id, firstModel.id];
+    const acknowledged: string[] = [];
+    for (const [index, target] of targets.entries()) {
+      expect(f.coordinator.get("session").tasks[0]?.terminalAttemptId).toBe(target);
+      const command = retryRequest(f, target, `mixed-ack-${index}`);
+      const receipt = await f.coordinator.command(command);
+      acknowledged.push(target);
+      expect(f.repository.acknowledgedAttemptIds("run")).toEqual(acknowledged);
+      const committed = recoveryRows(f.db);
+      expect(await f.coordinator.command(command)).toMatchObject({ sessionId: receipt.sessionId, revision: receipt.revision });
+      expect(recoveryRows(f.db)).toEqual(committed);
+      expect(f.db.db.prepare("SELECT COUNT(*) AS count FROM workflow_commands").get()).toEqual({ count: index + 1 });
+      if (index < targets.length - 1) {
+        expect(receipt.summary).toMatchObject({ state: "finished", outcome: "needs-attention" });
+        expect(f.dispatches).toEqual([]);
+        expect(f.coordinator.summary("session").budget).toEqual(originalBudget);
+        f.reopen();
+        expect(f.repository.acknowledgedAttemptIds("run")).toEqual(acknowledged);
+        expect(await f.coordinator.command(command)).toEqual(receipt);
+        expect(f.dispatches).toEqual([]);
+      }
+    }
+    expect(f.dispatches).toEqual([{ runId: "run", attemptIds: targets }]);
+    expect(f.db.db.prepare("SELECT * FROM generation_attempts ORDER BY rowid").all()).toEqual(originalReceipts);
+    expect(f.db.db.prepare("SELECT COUNT(*) AS count FROM research_runs").get()).toEqual({ count: 1 });
+  } finally { f.db.close(); }
+}, 10_000);
+
+test.each(["unresolved-before-failure", "latest-known-failure", "acknowledged-fallback", "search-timestamp", "search-row-tie"] as const)("review ordering preserves %s", scenario => {
+  const f = fixture(scenario.startsWith("search-") ? 2 : 0);
+  try {
+    const first = lostModel(f.db, "first-model", "2026-01-03T00:00:00.000Z");
+    const second = lostModel(f.db, "second-model", "2026-01-04T00:00:00.000Z");
+    const models = new GenerationAttemptRepository(f.db);
+    models.recordTerminal(second.id, { status: "failed", terminalKind: "failed", errorCode: "unavailable" });
+    if (scenario === "latest-known-failure") models.recordTerminal(first.id, { status: "failed", terminalKind: "failed", errorCode: "timeout" });
+    if (scenario === "acknowledged-fallback") f.db.db.prepare("INSERT INTO workflow_snapshots VALUES ('run', 'acknowledged-retry:fixture', ?)")
+      .run(JSON.stringify({ attemptIds: [first.id, second.id] }));
+    if (scenario.startsWith("search-")) {
+      for (const [index, attempt] of f.attempts.entries()) f.db.db.prepare("UPDATE workflow_snapshots SET value_json = json_set(value_json, '$.createdAt', ?) WHERE value_json LIKE ? AND snapshot_key LIKE 'search-attempt:%'")
+        .run(scenario === "search-timestamp" && index === 0 ? "2026-01-02T00:00:00.000Z" : "2026-01-01T00:00:00.000Z", `%${attempt.id}%`);
+    }
+    f.db.immediateTransaction(() => f.repository.updateWorkItem("task", "failed", { outputRefs: { runId: "run" } }));
+    const expected = scenario === "unresolved-before-failure" ? first.id
+      : scenario === "search-timestamp" ? f.attempts[0]!.id : scenario === "search-row-tie" ? f.attempts[1]!.id : second.id;
+    expect(f.coordinator.get("session").tasks[0]).toMatchObject({ terminalAttemptId: expected,
+      terminalAttemptKind: scenario.startsWith("search-") ? "search" : "model" });
+    expect(f.dispatches).toEqual([]);
+  } finally { f.db.close(); }
+});
+
+test.each(["stale-revision", "foreign-project", "foreign-task", "wrong-attempt", "older-target"] as const)("recovery rejects %s without writing or dispatching", async rejection => {
+  const f = fixture(2);
+  try {
+    f.coordinator.reconcileInterrupted();
+    const request = retryRequest(f, f.attempts[1]!.id, `rejected-${rejection}`);
+    if (rejection === "stale-revision") request.expectedRevision--;
+    if (rejection === "foreign-project") request.threadId = "other-project";
+    if (rejection === "foreign-task") request.action.taskId = "other-task";
+    if (rejection === "wrong-attempt") request.action.expectedTerminalAttemptId = randomUUID();
+    if (rejection === "older-target") request.action.expectedTerminalAttemptId = f.attempt.id;
+    const before = recoveryRows(f.db);
+    await expect(f.coordinator.command(request)).rejects.toMatchObject({ code: rejection === "stale-revision" ? "REVISION_CONFLICT" : "INVALID_REFERENCE" });
+    expect(recoveryRows(f.db)).toEqual(before);
+    expect(f.dispatches).toEqual([]);
+  } finally { f.db.close(); }
+});
+
+test.each(["model", "budget", "transaction"] as const)("final recovery acknowledgment rejects %s failure atomically", async rejection => {
+  const f = fixture(2, { enforced: rejection === "budget", maxModelCalls: rejection === "budget" ? 1 : 30 });
+  try {
+    f.coordinator.reconcileInterrupted();
+    // Intermediate acknowledgments do not require capacity or a currently available model.
+    f.admission.modelAvailable = rejection !== "model";
+    await f.coordinator.command(retryRequest(f, f.attempts[1]!.id, "intermediate-ack"));
+    expect(f.repository.acknowledgedAttemptIds("run")).toEqual([f.attempts[1]!.id]);
+    if (rejection === "transaction") f.db.db.exec(`CREATE TEMP TRIGGER fail_recovery_command BEFORE INSERT ON workflow_commands
+      BEGIN SELECT RAISE(ABORT, 'fixture transaction failure'); END`);
+    const before = recoveryRows(f.db);
+    const final = retryRequest(f, f.attempt.id, "final-ack");
+    if (rejection === "transaction") await expect(f.coordinator.command(final)).rejects.toThrow("fixture transaction failure");
+    else await expect(f.coordinator.command(final)).rejects.toMatchObject({ code: rejection === "model" ? "MODEL_UNAVAILABLE" : "BUDGET_TOO_SMALL" });
+    expect(recoveryRows(f.db)).toEqual(before);
+    expect(f.dispatches).toEqual([]);
+    f.reopen();
+    expect(recoveryRows(f.db)).toEqual(before);
+    expect(f.repository.acknowledgedAttemptIds("run")).toEqual([f.attempts[1]!.id]);
+  } finally { f.db.close(); }
+});
+
+test("final recovery acknowledgment rejects a revision changed during capability admission without writing or dispatching", async () => {
+  let enteredCapabilities!: () => void;
+  let releaseCapabilities!: () => void;
+  const entered = new Promise<void>(resolve => { enteredCapabilities = resolve; });
+  const released = new Promise<void>(resolve => { releaseCapabilities = resolve; });
+  const f = fixture(2, { beforeCapabilities: async () => { enteredCapabilities(); await released; } });
+  let pending: Promise<unknown> | undefined;
+  try {
+    f.coordinator.reconcileInterrupted();
+    await f.coordinator.command(retryRequest(f, f.attempts[1]!.id, "intermediate-ack"));
+    const final = retryRequest(f, f.attempt.id, "final-concurrent-ack");
+    pending = f.coordinator.command(final).then(receipt => receipt, (error: unknown) => error);
+    await entered;
+    expect(f.repository.acknowledgedAttemptIds("run")).toEqual([f.attempts[1]!.id]);
+
+    // Another recovery writer reopens and reconciles the session without changing receipt history.
+    f.db.immediateTransaction(() => f.repository.reopenResearchRecovery("session", final.expectedRevision, "task"));
+    f.coordinator.reconcileInterrupted();
+    expect(f.coordinator.summary("session")).toMatchObject({ state: "finished", outcome: "needs-attention" });
+    expect(f.coordinator.summary("session").revision).toBeGreaterThan(final.expectedRevision);
+    const concurrent = recoveryRows(f.db);
+    releaseCapabilities();
+    expect(await pending).toMatchObject({ code: "REVISION_CONFLICT" });
+    expect(recoveryRows(f.db)).toEqual(concurrent);
+    expect(f.repository.acknowledgedAttemptIds("run")).toEqual([f.attempts[1]!.id]);
+    expect(f.dispatches).toEqual([]);
+    f.reopen();
+    expect(recoveryRows(f.db)).toEqual(concurrent);
+    expect(f.dispatches).toEqual([]);
+  } finally {
+    releaseCapabilities();
+    await pending?.catch(() => undefined);
+    f.db.close();
+  }
+});
+
 test("a bounded novelty search retry preserves its old UUID and charges only replacement work", async () => {
   const f = fixture(0, { kind: "generate-ideas", enforced: true });
   try {
@@ -199,7 +391,7 @@ test("a bounded novelty search retry preserves its old UUID and charges only rep
     expect(new OpportunityExplorationRepository(f.db).loadAttempt("project", "investigator-search:novelty:candidate", "session"))
       .toEqual(original);
     expect(f.repository.countInvestigatorSearches("run")).toBe(2);
-    expect(f.repository.hasUnknownProviderCompletion("run")).toBe(false);
+    expect(new RunRecovery(f.db).hasUnknownCompletion("run")).toBe(false);
     const baseline = f.db.db.prepare("SELECT value_json FROM workflow_snapshots WHERE research_run_id = 'run' AND snapshot_key LIKE 'task-budget-retry-baseline:%'").get() as { value_json: string };
     expect(JSON.parse(baseline.value_json)).toEqual({ modelCalls: 3, searches: 0, searchAttempts: 1 });
     f.coordinator.handleRunEvent({ type: "run-completed", threadId: "project", runId: "run", problemId: null });

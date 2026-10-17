@@ -22,7 +22,8 @@ import { visibleIdeaMessage } from "../shared/idea-messages";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { recoverInterruptedEvidenceFollowUps, ResearchEngine } from "../core/research-engine";
 import { WorkflowCoordinator } from "../core/workflow-coordinator";
-import { unknownSearchAttempts, workflowSearchDispatches, workflowSearchDispatchUsage } from "../core/workflow-search-attempts";
+import { workflowSearchDispatches, workflowSearchDispatchUsage } from "../core/workflow-search-attempts";
+import { RunRecovery } from "../core/run-recovery";
 import { IdeaConversationService } from "../core/idea-conversation-service";
 import { ResearchRequestService } from "../core/research-request-service";
 import { scheduledModelClient } from "../core/scheduled-model-client";
@@ -155,6 +156,7 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
   const token = randomBytes(24).toString("hex");
   const db = new DatabaseClient(context.dbPath);
   const generationAttempts = new GenerationAttemptRepository(db);
+  const recovery = new RunRecovery(db);
   const opportunities = new OpportunityRepository(db);
   const exploration = new OpportunityExplorationRepository(db);
   generationAttempts.interruptInFlight("The backend restarted before the generation reached a durable terminal result");
@@ -712,7 +714,7 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
         workflowVersion: Number(row.workflow_version) as 1 | 2,
         runId: String(row.research_run_id), selected: row.selected_at !== null,
         selectable: Boolean(row.awaiting_selection) && (row.selected_solution_id === null || row.selected_solution_id === row.id)
-          && generationAttempts.getResumeSafety(String(row.research_run_id), workflows.acknowledgedAttemptIds(String(row.research_run_id))).canResume,
+          && recovery.acknowledgedModelReadiness(String(row.research_run_id)).kind === "ready",
         ...(row.evidence_follow_up_status === null ? {} : {
           evidenceFollowUpStatus: (row.evidence_follow_up_status === "requested" ? "running" : String(row.evidence_follow_up_status)) as "running" | "completed" | "failed",
         }),
@@ -1288,10 +1290,7 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
     const projection = row.problem_id ? { modelCalls: row.workflow_version === 2 ? developmentCalls : developmentProjection(runConfig?.ideaCount ?? 5), searches: 0 } : discoveryRunProjection(runConfig?.discoveryDepth ?? "standard");
     const activity = db.db.prepare("SELECT payload_json FROM job_events WHERE run_id = ? AND type = 'run-progress' ORDER BY id DESC LIMIT 1")
       .get(row.id) as { payload_json: string } | undefined;
-    const acknowledged = workflows.acknowledgedAttemptIds(row.id);
-    const resumeSafety = generationAttempts.getResumeSafety(row.id, acknowledged);
-    const unknownSearch = unknownSearchAttempts(db, row.id, acknowledged).length > 0
-      || workflows.unknownInvestigatorSearches(row.id, acknowledged).length > 0;
+    const { model: modelReadiness, unknownSearch } = recovery.runProjectionReadiness(row.id);
     const usage = runUsage(row.id);
     const providerRemoved = !runConfig || runConfig.model.providerId === HISTORICAL_CODEX_CLI_PROVIDER_ID;
     // Match resumeRun: ended legacy runs have no resumable stage checkpoints.
@@ -1307,13 +1306,13 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
       projectedCodexCalls: projection.modelCalls, projectedSearches: projection.searches,
       lastActivity: activity ? String(JSON.parse(activity.payload_json).message ?? "") : null,
       completionReason: row.completion_reason,
-      canResume: row.workflow_version === 2 && resumableStatus && !providerRemoved && resumeSafety.canResume && !unknownSearch,
+      canResume: row.workflow_version === 2 && resumableStatus && !providerRemoved && modelReadiness.kind === "ready" && !unknownSearch,
       ...(row.workflow_version !== 2
         ? { resumeBlockedReason: "Legacy generation has been retired. Start a new run to use the current prompts. Saved results remain readable." }
         : providerRemoved
         ? { resumeBlockedReason: REMOVED_CODEX_CLI_MESSAGE }
         : unknownSearch ? { resumeBlockedReason: "A search may have completed before interruption. Review and acknowledge its saved request before retrying." }
-        : resumeSafety.resumeBlockedReason ? { resumeBlockedReason: resumeSafety.resumeBlockedReason } : {}),
+        : modelReadiness.kind === "unknown-model" ? { resumeBlockedReason: modelReadiness.reason } : {}),
       usage,
       ...runtime,
     };

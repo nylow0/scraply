@@ -13,6 +13,7 @@ import { DiscoveryRepository } from "../../src/db/repositories/discovery";
 import { ResearchFrameRepository } from "../../src/db/repositories/research-frames";
 import { ResearchRunRepository } from "../../src/db/repositories/research-runs";
 import { WorkflowRepository } from "../../src/db/repositories/workflows";
+import { RunRecovery } from "../../src/core/run-recovery";
 import { ProviderFailure, type StructuredModelClient, type StructuredStageRequest } from "../../src/providers/structured";
 import type { SearchClient, SearchOptions, SearchProvider } from "../../src/providers/search";
 import type { ResearchVenueResolver } from "../../src/providers/venue-validation";
@@ -712,7 +713,7 @@ test.each(["timeout", "dropped-stream"] as const)("an exhausted area scan keeps 
     expect(new WorkflowExecution(f.db, runId).read("frame-scan-failure:filing")).toMatchObject({
       partialReason: expect.stringContaining("ended before candidate assessment"),
     });
-    expect(new WorkflowRepository(f.db).hasUnknownProviderCompletion(runId)).toBe(false);
+    expect(new RunRecovery(f.db).hasUnknownCompletion(runId)).toBe(false);
     const calls = f.db.db.prepare(`SELECT status FROM generation_attempts WHERE research_run_id = ?
       AND stage_key LIKE ? ORDER BY created_at,rowid`).all(runId, `query-plan:scan-${hash("filing").slice(0, 12)}%`);
     expect(calls).toHaveLength(failure === "timeout" ? 2 : streamRestarts.pausesMs.length + 1);
@@ -746,7 +747,7 @@ test.each([[false, "timeout"], [true, "timeout"], [true, "dropped-stream"]] as c
       reason: expect.stringContaining(failure === "timeout" ? "model call failed: Verdict call time limit reached"
         : "model call failed: The OpenAI stream ended before completion"),
     });
-    expect(new WorkflowRepository(f.db).hasUnknownProviderCompletion(runId)).toBe(false);
+    expect(new RunRecovery(f.db).hasUnknownCompletion(runId)).toBe(false);
     expect(f.workflows.listWorkItems("session").find(item => item.kind === "investigate-area")!.state).toBe("failed");
     const stagesBefore = f.stages.length;
     const item = f.db.immediateTransaction(() => f.workflows.createWorkItem({ sessionId: "session", kind: "assess-candidate",
@@ -940,7 +941,7 @@ test.each(["timeout", "dropped-stream"] as const)("a failed gap verdict stops th
     expect(new WorkflowExecution(f.db, runId).read("research-target-outcome")).toMatchObject({
       reason: expect.stringContaining(failure === "timeout" ? "Gap verdict exhausted retry" : "The OpenAI stream ended before completion"),
     });
-    expect(new WorkflowRepository(f.db).hasUnknownProviderCompletion(runId)).toBe(false);
+    expect(new RunRecovery(f.db).hasUnknownCompletion(runId)).toBe(false);
     expect(f.workflows.listWorkItems("session").find(item => item.kind === "investigate-area")!.state).toBe("failed");
     expect(f.db.db.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
   } finally { await f.close(); }
@@ -985,7 +986,7 @@ test("a research call whose stream drops is started over after a pause and the r
     expect(calledAt[1]! - calledAt[0]!).toBeGreaterThanOrEqual(75);
     expect(f.db.db.prepare(`SELECT status FROM generation_attempts WHERE research_run_id = ? AND stage_key LIKE 'problem-candidates%'
       ORDER BY created_at, rowid LIMIT 2`).all(runId)).toEqual([{ status: "interrupted" }, { status: "completed" }]);
-    expect(new WorkflowRepository(f.db).hasUnknownProviderCompletion(runId)).toBe(false);
+    expect(new RunRecovery(f.db).hasUnknownCompletion(runId)).toBe(false);
     const confirmed = f.db.db.prepare("SELECT COUNT(*) AS count FROM problems WHERE discovery_run_id = ? AND verdict = 'confirmed'").get(runId) as { count: number };
     expect(confirmed.count).toBeGreaterThan(0);
   } finally { streamRestarts.pausesMs = [1, 1]; await f.close(); }
@@ -1002,7 +1003,7 @@ test("a call that loses its stream three times ends only its own area, and the r
     expect(f.db.db.prepare("SELECT status FROM generation_attempts WHERE research_run_id = ? AND stage_key LIKE 'area-gap%'").all(runId))
       .toEqual([{ status: "interrupted" }, { status: "interrupted" }, { status: "interrupted" }]);
     // Both lost calls are recorded as deliberately abandoned, so the run is not left waiting for review.
-    expect(new WorkflowRepository(f.db).hasUnknownProviderCompletion(runId)).toBe(false);
+    expect(new RunRecovery(f.db).hasUnknownCompletion(runId)).toBe(false);
     const confirmed = f.db.db.prepare("SELECT COUNT(*) AS count FROM problems WHERE discovery_run_id = ? AND verdict = 'confirmed'").get(runId) as { count: number };
     expect(confirmed.count).toBeGreaterThan(0);
     const outcome = f.db.db.prepare("SELECT value_json FROM workflow_snapshots WHERE research_run_id = ? AND snapshot_key = 'research-target-outcome'")
@@ -1054,7 +1055,7 @@ test("an idea call whose stream drops is started over once and its idea is still
     const runId = await f.start("generate-ideas");
     expect(f.errors).toEqual([]);
     expect(f.stages).toEqual(["solutions", "solutions", "solution-set-review"]);
-    expect(new WorkflowRepository(f.db).hasUnknownProviderCompletion(runId)).toBe(false);
+    expect(new RunRecovery(f.db).hasUnknownCompletion(runId)).toBe(false);
     expect(getRunTrace(f.db, runId).metrics).toMatchObject({ acceptedIdeas: 1 });
   } finally { await f.close(); }
 });
