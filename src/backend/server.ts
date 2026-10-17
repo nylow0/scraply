@@ -2059,6 +2059,7 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
           throw error;
         }
         invalidateProviderCache();
+        await inspectNativeCapabilities();
         return sendJson(res, 200, await workspaceState());
       }
       if (route === "/native/logout") {
@@ -2082,6 +2083,7 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
         });
         invalidateProviderCache();
         if (cleanupError) throw cleanupError;
+        await inspectNativeCapabilities();
         return sendJson(res, 200, await workspaceState());
       }
       // Main calls this before it stores a key change. Validating the candidate here leaves the live secrets
@@ -2102,6 +2104,7 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
           catch { throw new AppError("conflict", context.nativeRuntimeStatus?.().error ?? "Native runtime could not be started"); }
           invalidateProviderCache();
         }
+        await inspectNativeCapabilities();
         return sendJson(res, 200, await workspaceState());
       }
       if (route === "/research/start") {
