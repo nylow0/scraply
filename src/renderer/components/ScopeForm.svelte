@@ -454,7 +454,8 @@
 <svelte:window onkeydown={dismissModeHelp} />
 
 <section class="scope-page">
-  <form bind:this={setupForm} novalidate oninput={() => draftEdited = true} onchange={() => draftEdited = true} onsubmit={(event) => { event.preventDefault(); void saveAndStart(); }}>
+  <!-- Mark edits before child bindings can flush the pristine fingerprint effect. -->
+  <form bind:this={setupForm} novalidate oninputcapture={() => draftEdited = true} onchangecapture={() => draftEdited = true} onsubmit={(event) => { event.preventDefault(); void saveAndStart(); }}>
     <div class="setup-scroll">
       <div class="setup-body">
         <fieldset class="choice-group mode-picker">
