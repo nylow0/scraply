@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { onDestroy } from "svelte";
   import type { SolutionView } from "../../shared/ipc";
   import { optionEvidenceReferences } from "../../shared/option-evidence";
   import { loadIdeaDetail } from "../lib/idea-details";
@@ -25,6 +26,8 @@
   let experimentOutcome = $state<ExperimentOutcome>("not-run");
   let revision = "";
   let detailLoadEpoch = 0;
+  // Ignore pending detail responses before reading props from an unmounted view.
+  onDestroy(() => { detailLoadEpoch += 1; });
   let analysis = $derived(detail?.decisionAnalysis);
   let focusedExperiment = $derived(detail?.focusedExperiment ?? idea.focusedExperiment);
   let opportunityOrigin = $derived(idea.opportunityOrigin);
