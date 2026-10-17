@@ -236,6 +236,7 @@ describe("App workspace coordination", () => {
     await fireEvent.click(view.getByRole("button", { name: "Go back" }));
     await waitFor(() => expect(view.queryByRole("region", { name: "Settings" })).toBeNull());
     await assertIdea();
+    expect(document.activeElement).toBe(view.getByRole("button", { name: "Settings" }));
     await fireEvent.click(view.getByRole("button", { name: "Go forward" }));
     await view.findByRole("region", { name: "Settings" });
     await fireEvent.keyDown(window, { key: "Escape" });
@@ -249,7 +250,8 @@ describe("App workspace coordination", () => {
     state.scope = { title: "Alpha", domain: "School", audience: "", observations: "", offLimits: [] };
     state.threads[0]!.status = "solutions-ready";
     state.solutions = fixture.solutions;
-    const getIdeaConversation = vi.fn().mockRejectedValueOnce(new Error("Could not load saved conversation.")).mockResolvedValueOnce(fixture.conversation);
+    const getIdeaConversation = vi.fn().mockRejectedValueOnce(new Error("Could not load saved conversation."))
+      .mockRejectedValueOnce(new Error("Conversation retry is temporarily unavailable.")).mockResolvedValueOnce(fixture.conversation);
     installApi({ getWorkspace: async () => structuredClone(state), getIdeaConversation,
       getIdeaDetail: async id => structuredClone(state.solutions.find(idea => idea.id === id)!) });
     const view = render(App);
@@ -257,9 +259,225 @@ describe("App workspace coordination", () => {
     await fireEvent.click(view.getByRole("button", { name: "Explore this idea" }));
     await view.findByText("Could not load saved conversation.");
     await fireEvent.click(view.getByRole("button", { name: "Try again" }));
-    await view.findByRole("heading", { name: "Conversation" });
+    await view.findByText("Conversation retry is temporarily unavailable.");
     expect(getIdeaConversation).toHaveBeenCalledTimes(2);
     expect(view.queryByText("Could not load saved conversation.")).toBeNull();
+    await fireEvent.click(view.getByRole("button", { name: "Try again" }));
+    await view.findByRole("heading", { name: "Conversation" });
+    expect(getIdeaConversation).toHaveBeenCalledTimes(3);
+    expect(view.queryByText("Could not load saved conversation.")).toBeNull();
+  });
+
+  test("failed sidebar and history selections preserve the destination until a later retry succeeds", async () => {
+    let state = workspace("alpha");
+    let failSelection = true;
+    const selectThread = vi.fn(async (id: string) => {
+      if (failSelection) throw new Error("Project is temporarily unavailable.");
+      state = { ...state, activeThreadId: id };
+      return structuredClone(state);
+    });
+    installApi({ getWorkspace: async () => structuredClone(state), selectThread });
+    const view = render(App);
+    await view.findByRole("button", { name: "Open thread Alpha" });
+    const main = view.container.querySelector<HTMLElement>(".main-content")!;
+    main.scrollTop = 180;
+    await fireEvent.click(view.getByRole("button", { name: "Open thread Beta" }));
+    await view.findAllByText("Project is temporarily unavailable.");
+    expect(view.getByRole("button", { name: "Open thread Alpha" }).getAttribute("aria-current")).toBe("true");
+    expect(main.scrollTop).toBe(180);
+    expect((view.getByRole("button", { name: "Go back" }) as HTMLButtonElement).disabled).toBe(true);
+    expect((view.getByRole("button", { name: "Go forward" }) as HTMLButtonElement).disabled).toBe(true);
+
+    failSelection = false;
+    await fireEvent.click(view.getByRole("button", { name: "Open thread Beta" }));
+    await view.findByRole("heading", { name: "Beta" });
+    await waitFor(() => expect(main.scrollTop).toBe(0));
+    main.scrollTop = 320;
+    for (const direction of ["back", "forward"] as const) {
+      failSelection = true;
+      const activeTitle = direction === "back" ? "Beta" : "Alpha";
+      const savedScroll = main.scrollTop;
+      await fireEvent.click(view.getByRole("button", { name: "Go " + direction }));
+      await view.findAllByText("Project is temporarily unavailable.");
+      expect(view.getByRole("button", { name: "Open thread " + activeTitle }).getAttribute("aria-current")).toBe("true");
+      expect(main.scrollTop).toBe(savedScroll);
+      expect((view.getByRole("button", { name: "Go " + direction }) as HTMLButtonElement).disabled).toBe(false);
+      failSelection = false;
+      await fireEvent.click(view.getByRole("button", { name: "Go " + direction }));
+      await view.findByRole("heading", { name: direction === "back" ? "Alpha" : "Beta" });
+      await waitFor(() => expect(main.scrollTop).toBe(direction === "back" ? 180 : 320));
+    }
+    expect(selectThread).toHaveBeenCalledTimes(6);
+  });
+
+  test.each(["project", "idea"] as const)("ignores a deferred conversation after navigating to a newer %s", async destination => {
+    const fixture = createIdeasFixture(new URLSearchParams(), "alpha");
+    const alpha = workspace("alpha");
+    alpha.scope = { title: "Alpha", domain: "School", audience: "", observations: "", offLimits: [] };
+    alpha.threads[0]!.status = "solutions-ready";
+    alpha.solutions = fixture.solutions.map(idea => ({ ...idea, detailRevision: `deferred-conversation-${destination}` }));
+    let state = alpha;
+    const stale = deferred<typeof fixture.conversation>();
+    const newerIdea = alpha.solutions[6]!;
+    const newerConversation = { ...structuredClone(fixture.conversation), rootSolutionId: newerIdea.id,
+      selectedVersionId: newerIdea.id, versions: [{ ...fixture.conversation.versions[0]!, solutionId: newerIdea.id, description: newerIdea.description }] };
+    const getIdeaConversation = vi.fn().mockReturnValueOnce(stale.promise).mockResolvedValueOnce(newerConversation);
+    installApi({ getWorkspace: async () => structuredClone(state), getIdeaConversation,
+      selectThread: async () => { state = workspace("beta"); return structuredClone(state); },
+      getIdeaDetail: async id => structuredClone(alpha.solutions.find(idea => idea.id === id)!) });
+    const view = render(App);
+    await fireEvent.click(await view.findByRole("button", { name: "Open idea: History access and provenance pack" }));
+    await fireEvent.click(view.getByRole("button", { name: "Explore this idea" }));
+    await waitFor(() => expect(getIdeaConversation).toHaveBeenCalledTimes(1));
+    if (destination === "project") {
+      await fireEvent.click(view.getByRole("button", { name: "Open thread Beta" }));
+      await view.findByRole("heading", { name: "Beta" });
+      await waitFor(() => expect(view.getByRole("tab", { name: "Setup" }).getAttribute("aria-selected")).toBe("true"));
+      await tick();
+    } else {
+      await fireEvent.click(view.getByRole("button", { name: "Go back" }));
+      await fireEvent.click(view.getByRole("button", { name: "Go back" }));
+      await fireEvent.click(await view.findByRole("button", { name: "Open idea: Weekend energy log" }));
+      await fireEvent.click(view.getByRole("button", { name: "Explore this idea" }));
+      await view.findByRole("heading", { name: "Conversation" });
+      expect(getIdeaConversation).toHaveBeenCalledTimes(2);
+    }
+    const main = view.container.querySelector<HTMLElement>(".main-content")!;
+    main.scrollTop = 215;
+    stale.resolve(structuredClone(fixture.conversation));
+    await tick(); await tick();
+    expect(main.scrollTop).toBe(215);
+    if (destination === "project") {
+      expect(view.getByRole("button", { name: "Open thread Beta" }).getAttribute("aria-current")).toBe("true");
+      expect(view.queryByRole("heading", { name: "Conversation" })).toBeNull();
+    } else {
+      expect(view.getByRole("heading", { name: "Conversation" })).toBeTruthy();
+      expect(view.getByRole("heading", { name: "Weekend energy log" })).toBeTruthy();
+    }
+  });
+
+  test("abandoning deferred idea details retains the desired history scroll for a later visit", async () => {
+    const fixture = createIdeasFixture(new URLSearchParams("analysis=done"), "alpha");
+    let state = workspace("alpha");
+    state.scope = { title: "Alpha", domain: "School", audience: "", observations: "", offLimits: [] };
+    state.threads[0]!.status = "solutions-ready";
+    state.solutions = fixture.solutions.map(idea => ({ ...idea, detailRevision: "abandoned-detail-initial" }));
+    const delayed = deferred<WorkspaceState["solutions"][number]>();
+    let backendEvent: ((event: ResearchEvent) => void) | undefined;
+    const getIdeaDetail = vi.fn().mockImplementationOnce(async () => structuredClone(state.solutions[0]!))
+      .mockImplementationOnce(() => {
+        document.querySelector<HTMLElement>(".main-content")!.scrollTop = 0;
+        return delayed.promise;
+      });
+    installApi({ getWorkspace: async () => structuredClone(state), getIdeaDetail,
+      onBackendEvent: listener => { backendEvent = listener; return () => {}; } });
+    const view = render(App);
+    const open = await view.findByRole("button", { name: "Open idea: History access and provenance pack" });
+    const main = view.container.querySelector<HTMLElement>(".main-content")!;
+    main.scrollTop = 140;
+    await fireEvent.click(open);
+    await view.findByLabelText("Your decision");
+    main.scrollTop = 760;
+    await fireEvent.click(view.getByRole("button", { name: "Go back" }));
+    await waitFor(() => expect(main.scrollTop).toBe(140));
+    state = { ...state, solutions: state.solutions.map(idea => ({ ...idea, detailRevision: "abandoned-detail-refreshed" })) };
+    const getWorkspace = vi.spyOn(window.scraply, "getWorkspace");
+    backendEvent?.({ type: "app-state-changed", threadId: "alpha" });
+    await waitFor(() => expect(getWorkspace).toHaveBeenCalledOnce());
+    await fireEvent.click(view.getByRole("button", { name: "Go forward" }));
+    await waitFor(() => expect(getIdeaDetail).toHaveBeenCalledTimes(2));
+    expect(main.scrollTop).toBe(0);
+    await fireEvent.click(view.getByRole("button", { name: "Go back" }));
+    await waitFor(() => expect(main.scrollTop).toBe(140));
+    delayed.resolve(structuredClone(state.solutions[0]!));
+    await tick(); await tick();
+    expect(main.scrollTop).toBe(140);
+    expect(view.queryByRole("button", { name: "Explore this idea" })).toBeNull();
+    await fireEvent.click(view.getByRole("button", { name: "Go forward" }));
+    await view.findByLabelText("Your decision");
+    await waitFor(() => expect(main.scrollTop).toBe(760));
+  });
+
+  test("a new user visit trims Forward and selecting the same project still returns to its default list", async () => {
+    const fixture = createIdeasFixture(new URLSearchParams(), "alpha");
+    const state = workspace("alpha");
+    state.scope = { title: "Alpha", domain: "School", audience: "", observations: "", offLimits: [] };
+    state.threads[0]!.status = "solutions-ready";
+    state.solutions = fixture.solutions.map(idea => ({ ...idea, detailRevision: "forward-trim" }));
+    installApi({ getWorkspace: async () => structuredClone(state), selectThread: async () => structuredClone(state),
+      getIdeaDetail: async id => structuredClone(state.solutions.find(idea => idea.id === id)!) });
+    const view = render(App);
+    await fireEvent.click(await view.findByRole("button", { name: "Open idea: History access and provenance pack" }));
+    await fireEvent.click(view.getByRole("button", { name: "Go back" }));
+    await view.findByRole("button", { name: "Open idea: History access and provenance pack" });
+    expect((view.getByRole("button", { name: "Go forward" }) as HTMLButtonElement).disabled).toBe(false);
+    await fireEvent.click(view.getByRole("tab", { name: "Setup" }));
+    expect((view.getByRole("button", { name: "Go forward" }) as HTMLButtonElement).disabled).toBe(true);
+    await fireEvent.click(view.getByRole("button", { name: "Open thread Alpha" }));
+    await fireEvent.click(await view.findByRole("button", { name: "Open idea: History access and provenance pack" }));
+    await view.findByRole("button", { name: "Explore this idea" });
+    await fireEvent.click(view.getByRole("button", { name: "Open thread Alpha" }));
+    await view.findByRole("button", { name: "Open idea: History access and provenance pack" });
+    await fireEvent.click(view.getByRole("button", { name: "Go back" }));
+    await view.findByRole("button", { name: "Explore this idea" });
+  });
+
+  test("legacy resume replaces the current research visit with its resulting ideas", async () => {
+    const fixture = createIdeasFixture(new URLSearchParams(), "alpha");
+    let state = workspace("alpha");
+    state.scope = { title: "Alpha", domain: "School", audience: "", observations: "", offLimits: [] };
+    state.threads[0]!.status = "failed";
+    state.rejectedProblemCandidates = [{ id: "legacy-lead", statement: "Staff cannot retrieve the meter history.", reason: "Only one account." }];
+    state.latestResearchRun = { runId: "legacy-resume", status: "failed", problemId: null, codexCalls: 2, searches: 1,
+      projectedCodexCalls: 4, projectedSearches: 2, canResume: true, lastActivity: "Paused before idea generation." };
+    const resumeResearch = vi.fn(async () => {
+      state = { ...state, solutions: fixture.solutions, threads: state.threads.map(thread => thread.id === "alpha" ? { ...thread, status: "solutions-ready" } : thread),
+        latestResearchRun: { ...state.latestResearchRun!, status: "completed", canResume: false } };
+      return structuredClone(state);
+    });
+    installApi({ getWorkspace: async () => structuredClone(state), resumeResearch });
+    const view = render(App);
+    await view.findByRole("button", { name: "Resume attempt" });
+    await fireEvent.click(view.getByRole("tab", { name: "Setup" }));
+    await fireEvent.click(view.getByRole("tab", { name: "Research" }));
+    await fireEvent.click(view.getByRole("button", { name: "Resume attempt" }));
+    await view.findByRole("button", { name: "Open idea: History access and provenance pack" });
+    await fireEvent.click(view.getByRole("button", { name: "Go back" }));
+    await waitFor(() => expect(view.getByRole("tab", { name: "Setup" }).getAttribute("aria-selected")).toBe("true"));
+    await fireEvent.click(view.getByRole("button", { name: "Go forward" }));
+    await view.findByRole("button", { name: "Open idea: History access and provenance pack" });
+    expect(resumeResearch).toHaveBeenCalledOnce();
+  });
+
+  test("same-idea conversation navigation and a detail refresh retain dirty decision fields", async () => {
+    const fixture = createIdeasFixture(new URLSearchParams("analysis=done"), "alpha");
+    let state = workspace("alpha");
+    state.scope = { title: "Alpha", domain: "School", audience: "", observations: "", offLimits: [] };
+    state.threads[0]!.status = "solutions-ready";
+    state.solutions = fixture.solutions.map(idea => ({ ...idea, detailRevision: "navigation-dirty-initial" }));
+    let backendEvent: ((event: ResearchEvent) => void) | undefined;
+    const getIdeaDetail = vi.fn(async (id: string) => structuredClone(state.solutions.find(idea => idea.id === id)!));
+    installApi({ getWorkspace: async () => structuredClone(state), getIdeaDetail,
+      getIdeaConversation: async () => structuredClone(fixture.conversation),
+      onBackendEvent: listener => { backendEvent = listener; return () => {}; } });
+    const view = render(App);
+    await fireEvent.click(await view.findByRole("button", { name: "Open idea: History access and provenance pack" }));
+    const decision = await view.findByLabelText("Your decision") as HTMLTextAreaElement;
+    await fireEvent.input(decision, { target: { value: "Keep this unsaved decision." } });
+    await fireEvent.click(view.getByRole("button", { name: "Explore this idea" }));
+    await view.findByRole("heading", { name: "Conversation" });
+    const callsBeforeRefresh = getIdeaDetail.mock.calls.length;
+    state = { ...state, solutions: state.solutions.map(idea => ({ ...idea, detailRevision: "navigation-dirty-refreshed", userDecision: "Saved elsewhere." })) };
+    backendEvent?.({ type: "app-state-changed", threadId: "alpha" });
+    await waitFor(() => expect(getIdeaDetail.mock.calls.length).toBeGreaterThan(callsBeforeRefresh));
+    await fireEvent.click(view.getByRole("button", { name: "Go back" }));
+    expect(await view.findByLabelText("Your decision")).toBe(decision);
+    expect(decision.value).toBe("Keep this unsaved decision.");
+    await fireEvent.click(view.getByRole("button", { name: "Go forward" }));
+    await view.findByRole("heading", { name: "Conversation" });
+    await fireEvent.click(view.getByRole("button", { name: "Back to idea" }));
+    expect(await view.findByLabelText("Your decision")).toBe(decision);
+    expect(decision.value).toBe("Keep this unsaved decision.");
   });
 
   test("history shortcuts and native commands respect dialogs and composition but allow text fields", async () => {
@@ -1235,13 +1453,14 @@ describe("App workspace coordination", () => {
 
   test("ignores a stale reconciliation response after thread selection", async () => {
     const staleLoad = deferred<WorkspaceState>();
+    const historySelection = deferred<WorkspaceState>();
     let backendEvent: ((event: ResearchEvent) => void) | undefined;
     const alpha = workspace("alpha");
     const beta = workspace("beta");
     const getWorkspace = vi.fn()
       .mockResolvedValueOnce(alpha)
       .mockReturnValueOnce(staleLoad.promise);
-    const selectThread = vi.fn().mockResolvedValue(beta);
+    const selectThread = vi.fn().mockResolvedValueOnce(beta).mockReturnValueOnce(historySelection.promise).mockResolvedValueOnce(beta);
     installApi({
       getWorkspace,
       selectThread,
@@ -1252,6 +1471,8 @@ describe("App workspace coordination", () => {
     });
     const view = render(App);
     const betaButton = await view.findByRole("button", { name: "Open thread Beta" });
+    const main = view.container.querySelector<HTMLElement>(".main-content")!;
+    main.scrollTop = 210;
 
     backendEvent?.({
       type: "run-progress",
@@ -1268,6 +1489,20 @@ describe("App workspace coordination", () => {
     staleLoad.resolve(alpha);
     await tick();
     await waitFor(() => expect(betaButton.getAttribute("aria-current")).toBe("true"));
+    await waitFor(() => expect(main.scrollTop).toBe(0));
+    main.scrollTop = 330;
+    await fireEvent.click(view.getByRole("button", { name: "Go back" }));
+    await waitFor(() => expect(selectThread).toHaveBeenCalledTimes(2));
+    expect(betaButton.getAttribute("aria-current")).toBe("true");
+    expect(main.scrollTop).toBe(330);
+    // Project content can clamp the DOM before the destination's saved offset is restored.
+    main.scrollTop = 0;
+    historySelection.resolve(alpha);
+    await view.findByRole("heading", { name: "Alpha" });
+    await waitFor(() => expect(main.scrollTop).toBe(210));
+    await fireEvent.click(view.getByRole("button", { name: "Go forward" }));
+    await view.findByRole("heading", { name: "Beta" });
+    await waitFor(() => expect(main.scrollTop).toBe(330));
   });
 
   test("blocks overlapping thread mutations while a selection is pending", async () => {

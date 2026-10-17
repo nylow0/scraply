@@ -2,11 +2,14 @@ import { fireEvent, render, waitFor, within } from "@testing-library/svelte";
 import { describe, expect, test, vi } from "vitest";
 import SolutionListItem from "../../src/renderer/components/SolutionListItem.svelte";
 import SolutionWorkspace from "../../src/renderer/components/SolutionWorkspace.svelte";
+import SolutionWorkspaceCaller from "./SolutionWorkspaceCaller.svelte";
 import type { IdeaGroupView, SolutionView, WorkspaceState } from "../../src/shared/ipc";
 import { createIdeasFixture } from "../ui/ideas-fixture";
 import type { IdeaConversation as ConversationView } from "../../src/shared/workflow-contracts";
 import type { OpportunityFamiliesView } from "../../src/shared/opportunity-review";
 import { DEFAULT_RUN_CONFIG } from "../../src/shared/schemas";
+
+const listNavigation = { route: { kind: "list" as const }, onNavigate: vi.fn(), onBack: vi.fn() };
 
 describe("SolutionListItem risk summary", () => {
   test("keeps the collapsed title free of risk details and retains the expanded snapshot", () => {
@@ -106,7 +109,7 @@ describe("SolutionWorkspace groups", () => {
     const onStop = vi.fn().mockResolvedValue(undefined);
     const route = destination === "list" ? { kind: "list" as const } : destination === "idea" ? { kind: "idea" as const, ideaId: other.id }
       : { kind: "conversation" as const, ideaId: selectedId };
-    const view = render(SolutionWorkspace, { solutions: fixture.solutions, busy: false, route, conversation: saved,
+    const view = render(SolutionWorkspace, { ...listNavigation, solutions: fixture.solutions, busy: false, route, conversation: saved,
       modelOptions: [], run, onStop, onSelect: vi.fn(), onSubmitIdeaTurn: vi.fn(), onExport: vi.fn(), onOpenSource: vi.fn() });
     const progress = await view.findByRole("status", { name: "Active idea work" });
     expect(view.getAllByRole("status", { name: "Active idea work" })).toHaveLength(1);
@@ -129,7 +132,7 @@ describe("SolutionWorkspace groups", () => {
       { ...solution(), id: "new", description: "Weekend log: Record Friday shutdowns." },
       { ...solution(), id: "other", problemId: "other", description: "Closure rota." },
     ];
-    const view = render(SolutionWorkspace, { solutions: ideas, busy: false, onExport: vi.fn(), onOpenSource: vi.fn() });
+    const view = render(SolutionWorkspaceCaller, { solutions: ideas, busy: false, onExport: vi.fn(), onOpenSource: vi.fn() });
     const rows = view.getAllByRole("button", { name: /^Open idea:/ });
     expect(rows.map(row => row.textContent?.trim())).toEqual([
       "1. History packShare approved consumption records.", "2. Weekend logRecord Friday shutdowns.", "1. Closure rota",
@@ -154,7 +157,7 @@ describe("SolutionWorkspace groups", () => {
     ideas[0]!.reviewStatus = "duplicate";
     const props = { ...actions, solutions: ideas, ideaGroups: [savedGroup("short", 3, 2), savedGroup("complete", 1, 1)],
       initialConfig: { ...DEFAULT_RUN_CONFIG, ideaCount: 5 } };
-    const view = render(SolutionWorkspace, props);
+    const view = render(SolutionWorkspaceCaller, props);
     const short = view.getByText("2 of 3 ideas returned").closest("details") as HTMLDetailsElement;
     expect(short.open).toBe(true);
     expect(short.querySelector("summary")?.textContent).toContain("Problem short");
@@ -172,7 +175,7 @@ describe("SolutionWorkspace groups", () => {
 
   test("retains zero-return groups alongside complete and older saved groups", () => {
     const legacy = { ...solution(), id: "legacy", problemId: "legacy", problemStatement: "Legacy problem", runId: "legacy-run" };
-    const view = render(SolutionWorkspace, { ...actions,
+    const view = render(SolutionWorkspace, { ...listNavigation, ...actions,
       solutions: [rankedIdea("complete", 1), legacy], ideaGroups: [savedGroup("complete", 1, 1), savedGroup("empty", 3, 0)],
       initialConfig: { ...DEFAULT_RUN_CONFIG, ideaCount: 5 },
     });
@@ -186,7 +189,7 @@ describe("SolutionWorkspace groups", () => {
 
   test("keeps a source run's short count separate from other saved runs for the same problem", () => {
     const older = { ...rankedIdea("shared", 3), runId: "older-run" };
-    const view = render(SolutionWorkspace, { ...actions,
+    const view = render(SolutionWorkspace, { ...listNavigation, ...actions,
       solutions: [rankedIdea("shared", 1), rankedIdea("shared", 2), older],
       ideaGroups: [savedGroup("shared", 3, 2), { ...savedGroup("shared", 5, 5), runId: "older-run" }],
     });
@@ -197,7 +200,7 @@ describe("SolutionWorkspace groups", () => {
   });
 
   test("opens an all-zero saved result without inventing ideas", () => {
-    const view = render(SolutionWorkspace, { ...actions, solutions: [], workflowVersion: 2,
+    const view = render(SolutionWorkspace, { ...listNavigation, ...actions, solutions: [], workflowVersion: 2,
       ideaGroups: [savedGroup("empty", 3, 0), savedGroup("another", 1, 0)],
     });
     expect(view.getByText("0 of 3 ideas returned")).toBeTruthy();
@@ -207,7 +210,7 @@ describe("SolutionWorkspace groups", () => {
   });
 
   test("uses saved returned counts for a filtered history and excludes metadata for unseen nonempty runs", () => {
-    const view = render(SolutionWorkspace, { ...actions, solutions: [rankedIdea("complete", 2)],
+    const view = render(SolutionWorkspace, { ...listNavigation, ...actions, solutions: [rankedIdea("complete", 2)],
       ideaGroups: [savedGroup("complete", 3, 3), savedGroup("unseen", 3, 2)],
     });
     expect(view.container.querySelectorAll("details.problem-group")).toHaveLength(1);
@@ -219,7 +222,7 @@ describe("SolutionWorkspace groups", () => {
     const idea = (id: string, problemId: string, rank: number, name: string, weakFitReason: string | null = null) => ({ ...solution(), id, problemId,
       problemStatement: `Problem ${problemId}`, workflowVersion: 2 as const, rank, rankReason: `Reason ${rank}`, weakFitReason,
       mechanism: "Collect exports, then compare them line by line.", description: `${name}: a longer explanation of the idea.` });
-    const view = render(SolutionWorkspace, { solutions: [
+    const view = render(SolutionWorkspaceCaller, { solutions: [
       idea("a3", "a", 3, "Shared checklist", 'fails "Fits a solo founder": needs a sales team'),
       idea("a1", "a", 1, "History access pack"), idea("b1", "b", 1, "Weekend baseline alert"), idea("a2", "a", 2, "Savings checker"),
     ], busy: false, onExport: vi.fn(), onOpenSource: vi.fn() });
@@ -244,7 +247,7 @@ describe("SolutionWorkspace groups", () => {
   test("an older idea without a short name or rank keeps its saved order and shows its first sentence", () => {
     const first = { ...solution(), id: "first", description: "Pool delivery windows by supplier. Shops then compare them." };
     const second = { ...solution(), id: "second", description: "Call suppliers before quoting." };
-    const view = render(SolutionWorkspace, { solutions: [first, second], busy: false, onExport: vi.fn(), onOpenSource: vi.fn() });
+    const view = render(SolutionWorkspace, { ...listNavigation, solutions: [first, second], busy: false, onExport: vi.fn(), onOpenSource: vi.fn() });
     expect([...view.container.querySelectorAll(".idea-name")].map((row) => row.textContent)).toEqual(["Pool delivery windows by supplier", "Call suppliers before quoting"]);
   });
 
@@ -255,7 +258,7 @@ describe("SolutionWorkspace groups", () => {
       lastReviewedAt: null, reviewStatus: "not-reviewed", reviewError: null,
     };
     const onExport = vi.fn();
-    const view = render(SolutionWorkspace, {
+    const view = render(SolutionWorkspace, { ...listNavigation,
       solutions: [{ ...solution(), workflowVersion: 2 as const }], busy: false,
       opportunities, modelOptions: [], initialConfig: DEFAULT_RUN_CONFIG,
       onReviewOpportunities: vi.fn().mockResolvedValue(undefined), onEditMembership: vi.fn().mockResolvedValue(undefined),
@@ -272,7 +275,7 @@ describe("SolutionWorkspace groups", () => {
       rawOptionCount: 1, reviewedOptionCount: 0, acceptedFamilyCount: 0, families: [], unresolved: [], unreviewedOptionIds: ["solution-1"],
       lastReviewedAt: null, reviewStatus: "not-reviewed", reviewError: null,
     };
-    const view = render(SolutionWorkspace, {
+    const view = render(SolutionWorkspace, { ...listNavigation,
       solutions: [{ ...solution(), workflowVersion: 2 as const, rank: 1, rankReason: "Best", weakFitReason: null }], busy: false,
       opportunities, modelOptions: [], initialConfig: { ...DEFAULT_RUN_CONFIG, explorationPurpose: "startup-opportunities" },
       onReviewOpportunities: vi.fn(), onEditMembership: vi.fn(), onExport: vi.fn(), onOpenSource: vi.fn(),
@@ -281,7 +284,7 @@ describe("SolutionWorkspace groups", () => {
   });
 
   test("says when a run returned no ideas", () => {
-    const view = render(SolutionWorkspace, {
+    const view = render(SolutionWorkspace, { ...listNavigation,
       solutions: [], workflowVersion: 2, busy: false,
       onExport: vi.fn(), onOpenSource: vi.fn(),
     });
@@ -315,38 +318,59 @@ describe("SolutionWorkspace idea conversation", () => {
   test("opens a v2 idea, switches versions, sends a follow-up, and keeps an unsent draft after Escape", async () => {
     const idea = { ...solution(), workflowVersion: 2 as const };
     const onOpenConversation = vi.fn().mockResolvedValue(undefined);
-    const onCloseConversation = vi.fn();
+    const onNavigate = vi.fn();
+    const onBack = vi.fn();
+    const onFocusChange = vi.fn();
     const onSelectConversationVersion = vi.fn().mockResolvedValue(undefined);
     const onSubmitIdeaTurn = vi.fn().mockResolvedValue(undefined);
     const props = {
       solutions: [idea], busy: false, modelOptions, conversation: conversation(),
       onExport: vi.fn(), onOpenSource: vi.fn(),
-      onOpenConversation, onCloseConversation, onSelectConversationVersion, onSubmitIdeaTurn,
+      onOpenConversation, onNavigate, onBack, onFocusChange, onSelectConversationVersion, onSubmitIdeaTurn,
     };
-    const view = render(SolutionWorkspace, props);
-    await fireEvent.click(view.getByRole("button", { name: `Open idea: ${idea.description.replace(/[.!?]+$/, "")}` }));
+    const view = render(SolutionWorkspaceCaller, props);
+    expect(onFocusChange).toHaveBeenLastCalledWith(false);
+    const row = view.getByRole("button", { name: `Open idea: ${idea.description.replace(/[.!?]+$/, "")}` });
+    await fireEvent.click(row);
+    expect(onNavigate).toHaveBeenLastCalledWith({ kind: "idea", ideaId: idea.id });
+    expect(onFocusChange).toHaveBeenLastCalledWith(true);
     const open = view.getByRole("button", { name: "Explore this idea" });
     await fireEvent.click(open);
-    expect(onOpenConversation).toHaveBeenCalledWith(idea.id);
+    expect(onNavigate).toHaveBeenLastCalledWith({ kind: "conversation", ideaId: idea.id });
+    expect(onOpenConversation).not.toHaveBeenCalled();
     expect(view.getByRole("button", { name: "Back to idea" })).toBeTruthy();
     expect(view.queryByText("Review applies to this version")).toBeNull();
+    const input = view.getByLabelText("Follow-up message") as HTMLTextAreaElement;
+    await fireEvent.input(input, { target: { value: "Could this work for buyers?" } });
     await fireEvent.click(view.getByRole("button", { name: /v2 Revised idea/ }));
     expect(onSelectConversationVersion).toHaveBeenCalledWith("solution-2");
     expect(view.queryByText("This version has not been reviewed")).toBeNull();
-
-    await fireEvent.input(view.getByLabelText("Follow-up message"), { target: { value: "Could this work for buyers?" } });
+    expect(view.getByLabelText("Follow-up message")).toBe(input);
+    expect(input.value).toBe("Could this work for buyers?");
     await fireEvent.click(view.getByRole("button", { name: "Send" }));
     await waitFor(() => expect(onSubmitIdeaTurn).toHaveBeenCalledOnce());
     expect(onSubmitIdeaTurn.mock.calls[0]?.[0]).toMatchObject({ baseSolutionId: "solution-2", text: "Could this work for buyers?" });
     expect(props.solutions).toHaveLength(1);
 
-    await fireEvent.input(view.getByLabelText("Follow-up message"), { target: { value: "Keep this unsent." } });
+    await fireEvent.input(input, { target: { value: "Keep this unsent." } });
+    const focus = vi.spyOn(open, "focus");
     await fireEvent.keyDown(window, { key: "Escape" });
-    expect(onCloseConversation).toHaveBeenCalledOnce();
+    expect(onBack).toHaveBeenLastCalledWith({ kind: "idea", ideaId: idea.id });
     await waitFor(() => expect(document.activeElement).toBe(open));
+    expect(focus).toHaveBeenCalledWith({ preventScroll: true });
+    expect(input.closest("[hidden]")).not.toBeNull();
     await view.rerender({ ...props, conversation: null });
     await fireEvent.click(open);
-    expect((view.getByLabelText("Follow-up message") as HTMLTextAreaElement).value).toBe("Keep this unsent.");
+    expect(view.getByLabelText("Follow-up message")).toBe(input);
+    expect(input.value).toBe("Keep this unsent.");
+    expect(input.closest("[hidden]")).toBeNull();
+    await fireEvent.keyDown(window, { key: "Escape" });
+    const rowFocus = vi.spyOn(row, "focus");
+    await fireEvent.keyDown(window, { key: "Escape" });
+    expect(onBack).toHaveBeenLastCalledWith({ kind: "list" });
+    await waitFor(() => expect(document.activeElement).toBe(row));
+    expect(rowFocus).toHaveBeenCalledWith({ preventScroll: true });
+    expect(onFocusChange).toHaveBeenLastCalledWith(false);
   });
 
   test("renders the App-owned route and retains the conversation draft through parent navigation", async () => {
@@ -354,6 +378,7 @@ describe("SolutionWorkspace idea conversation", () => {
     const onNavigate = vi.fn();
     const onBack = vi.fn();
     const props = { solutions: [idea], busy: false, modelOptions, conversation: conversation(),
+      interactive: true, conversationLoading: false, conversationError: null,
       onExport: vi.fn(), onOpenSource: vi.fn(), onNavigate, onBack, onSubmitIdeaTurn: vi.fn() };
     const view = render(SolutionWorkspace, { ...props, route: { kind: "list" } });
     await fireEvent.click(view.getByRole("button", { name: `Open idea: ${idea.description.replace(/[.!?]+$/, "")}` }));
@@ -370,9 +395,44 @@ describe("SolutionWorkspace idea conversation", () => {
     await view.rerender({ ...props, route: { kind: "conversation", ideaId: idea.id } });
     expect(view.getByLabelText("Follow-up message")).toBe(input);
     expect(input.value).toBe("Unsent reply");
+    expect(input.closest("[hidden]")).toBeNull();
+
+    await view.rerender({ ...props, route: { kind: "conversation", ideaId: idea.id }, interactive: false });
+    onBack.mockClear();
+    await fireEvent.keyDown(window, { key: "Escape" });
+    expect(onBack).not.toHaveBeenCalled();
+    expect(view.getByLabelText("Follow-up message")).toBe(input);
+    expect(input.value).toBe("Unsent reply");
+
+    await view.rerender({ ...props, route: { kind: "conversation", ideaId: idea.id }, conversation: null, conversationLoading: true });
+    expect(view.getByRole("status").textContent).toContain("Opening conversation");
+    expect(view.getByLabelText("Follow-up message")).toBe(input);
+    expect(input.closest("[hidden]")).not.toBeNull();
+    expect(input.value).toBe("Unsent reply");
+    await view.rerender({ ...props, route: { kind: "conversation", ideaId: idea.id }, conversation: null, conversationError: "Reload failed." });
+    expect(view.getByRole("alert").textContent).toContain("Reload failed.");
+    expect(view.getByLabelText("Follow-up message")).toBe(input);
+    expect(input.closest("[hidden]")).not.toBeNull();
+    expect(input.value).toBe("Unsent reply");
+    await view.rerender({ ...props, route: { kind: "conversation", ideaId: idea.id },
+      conversation: { ...conversation(), selectedVersionId: "solution-2" } });
+    expect(view.queryByRole("status")).toBeNull();
+    expect(view.queryByRole("alert")).toBeNull();
+    expect(view.getByLabelText("Follow-up message")).toBe(input);
+    expect(input.closest("[hidden]")).toBeNull();
+    expect(input.value).toBe("Unsent reply");
     await view.rerender({ ...props, route: { kind: "idea", ideaId: idea.id } });
+    expect(input.closest("[hidden]")).not.toBeNull();
     await fireEvent.keyDown(window, { key: "Escape" });
     expect(onBack).toHaveBeenLastCalledWith({ kind: "list" });
+    await view.rerender({ ...props, route: { kind: "list" } });
+    expect(view.getByRole("button", { name: `Open idea: ${idea.description.replace(/[.!?]+$/, "")}` })).toBeTruthy();
+    expect(view.getByLabelText("Follow-up message")).toBe(input);
+    expect(input.closest("[hidden]")).not.toBeNull();
+    await view.rerender({ ...props, route: { kind: "conversation", ideaId: idea.id } });
+    expect(view.getByLabelText("Follow-up message")).toBe(input);
+    expect(input.closest("[hidden]")).toBeNull();
+    expect(input.value).toBe("Unsent reply");
   });
 
   test("keeps revised versions in the conversation and returns through Back", async () => {
@@ -381,7 +441,7 @@ describe("SolutionWorkspace idea conversation", () => {
       description: "Revised idea", keyAssumption: "Buyers will share delivery observations." };
     Object.defineProperty(window, "scraply", { configurable: true,
       value: { getIdeaDetail: vi.fn().mockResolvedValue(revised) } });
-    const view = render(SolutionWorkspace, {
+    const view = render(SolutionWorkspaceCaller, {
       solutions: [root], busy: false, modelOptions, conversation: conversation(),
       onExport: vi.fn(), onOpenSource: vi.fn(),
       onSelect: vi.fn(), onSave: vi.fn(),
@@ -398,41 +458,82 @@ describe("SolutionWorkspace idea conversation", () => {
     expect(view.getByRole("heading", { level: 1 })).toBeTruthy();
   });
 
-  test("offers a retry when opening a conversation fails", async () => {
+  test("uses the parent loading and error state when retrying a conversation", async () => {
     const idea = { ...solution(), workflowVersion: 2 as const };
-    const onOpenConversation = vi.fn().mockRejectedValueOnce(new Error("Conversation could not load.")).mockResolvedValueOnce(undefined);
-    const view = render(SolutionWorkspace, {
-      solutions: [idea], busy: false, modelOptions, conversation: conversation(),
+    const onNavigate = vi.fn();
+    const onOpenConversation = vi.fn().mockResolvedValue(undefined);
+    const props = {
+      solutions: [idea], busy: false, modelOptions,
       onExport: vi.fn(), onOpenSource: vi.fn(),
-      onOpenConversation, onSubmitIdeaTurn: vi.fn().mockResolvedValue(undefined),
-    });
+      onNavigate, onOpenConversation, onSubmitIdeaTurn: vi.fn().mockResolvedValue(undefined),
+    };
+    const view = render(SolutionWorkspaceCaller, { ...props, conversationLoading: true });
 
     await fireEvent.click(view.getByRole("button", { name: `Open idea: ${idea.description.replace(/[.!?]+$/, "")}` }));
     await fireEvent.click(view.getByRole("button", { name: "Explore this idea" }));
-    expect((await view.findByRole("alert")).textContent).toContain("Conversation could not load.");
+    expect(onNavigate).toHaveBeenLastCalledWith({ kind: "conversation", ideaId: idea.id });
+    expect(onOpenConversation).not.toHaveBeenCalled();
+    expect(view.getByRole("status").textContent).toContain("Opening conversation");
+    expect(view.queryByRole("alert")).toBeNull();
+    await view.rerender({ ...props, conversationLoading: false, conversationError: "Conversation could not load." });
+    expect(view.getByRole("alert").textContent).toContain("Conversation could not load.");
+    onNavigate.mockClear();
     await fireEvent.click(view.getByRole("button", { name: "Try again" }));
-    await waitFor(() => expect(onOpenConversation).toHaveBeenCalledTimes(2));
-    expect(view.getByLabelText("Idea versions and conversation")).toBeTruthy();
+    expect(onOpenConversation).toHaveBeenCalledExactlyOnceWith(idea.id);
+    expect(onNavigate).not.toHaveBeenCalled();
+    // App handles request rejection and supplies the resulting error. This caller does not load or catch.
+    await view.rerender({ ...props, conversationLoading: true, conversationError: null });
+    expect(view.getByRole("status").textContent).toContain("Opening conversation");
+    await view.rerender({ ...props, conversationLoading: false, conversationError: "Retry could not load." });
+    expect(view.getByRole("alert").textContent).toContain("Retry could not load.");
+    await fireEvent.click(view.getByRole("button", { name: "Try again" }));
+    expect(onOpenConversation).toHaveBeenNthCalledWith(2, idea.id);
+    await view.rerender({ ...props, conversationLoading: true, conversationError: null });
+    await view.rerender({ ...props, conversationLoading: false, conversation: conversation() });
+    expect(view.queryByRole("alert")).toBeNull();
+    expect(view.queryByRole("status")).toBeNull();
+    expect(view.getByLabelText("Idea versions and conversation").closest("[hidden]")).toBeNull();
   });
 
   test("opens a descendant version through the root conversation", async () => {
     const idea = { ...solution(), id: "solution-2", workflowVersion: 2 as const };
+    const onNavigate = vi.fn();
     const onOpenConversation = vi.fn().mockResolvedValue(undefined);
-    const view = render(SolutionWorkspace, {
+    const view = render(SolutionWorkspaceCaller, {
       solutions: [idea], busy: false, modelOptions, conversation: conversation(),
       onExport: vi.fn(), onOpenSource: vi.fn(),
-      onOpenConversation, onSubmitIdeaTurn: vi.fn().mockResolvedValue(undefined),
+      onNavigate, onOpenConversation, onSubmitIdeaTurn: vi.fn().mockResolvedValue(undefined),
     });
 
     await fireEvent.click(view.getByRole("button", { name: `Open idea: ${idea.description.replace(/[.!?]+$/, "")}` }));
     await fireEvent.click(view.getByRole("button", { name: "Explore this idea" }));
-    expect(onOpenConversation).toHaveBeenCalledWith("solution-2");
+    expect(onNavigate).toHaveBeenLastCalledWith({ kind: "conversation", ideaId: "solution-2" });
+    expect(onOpenConversation).not.toHaveBeenCalled();
     expect(view.getByLabelText("Idea versions and conversation").closest("[hidden]")).toBeNull();
     expect(view.queryByText("Conversation is unavailable.")).toBeNull();
   });
 
-  test("does not offer new conversation controls for a legacy idea", () => {
-    const view = render(SolutionWorkspace, {
+  test.each(["missing", "unmatched"] as const)("shows an unavailable %s conversation supplied by the caller", async (state) => {
+    const idea = { ...solution(), workflowVersion: 2 as const };
+    const onNavigate = vi.fn();
+    const onOpenConversation = vi.fn();
+    const saved = conversation();
+    saved.versions = saved.versions.filter(version => version.solutionId !== idea.id);
+    const view = render(SolutionWorkspaceCaller, {
+      solutions: [idea], busy: false, modelOptions, conversation: state === "missing" ? null : saved,
+      onExport: vi.fn(), onOpenSource: vi.fn(), onNavigate, onOpenConversation, onSubmitIdeaTurn: vi.fn(),
+    });
+    await fireEvent.click(view.getByRole("button", { name: `Open idea: ${idea.description.replace(/[.!?]+$/, "")}` }));
+    await fireEvent.click(view.getByRole("button", { name: "Explore this idea" }));
+    expect(onNavigate).toHaveBeenLastCalledWith({ kind: "conversation", ideaId: idea.id });
+    expect(onOpenConversation).not.toHaveBeenCalled();
+    expect(view.getByRole("status").textContent).toBe("Conversation is unavailable.");
+    expect(view.queryByRole("heading", { name: "Conversation" })).toBeNull();
+    expect(view.getByRole("button", { name: "Back to idea" })).toBeTruthy();
+  });
+
+  test("does not offer new conversation controls for a legacy idea", async () => {
+    const view = render(SolutionWorkspaceCaller, {
       solutions: [solution()], busy: false,
       onExport: vi.fn(), onOpenSource: vi.fn(),
       onOpenConversation: vi.fn().mockResolvedValue(undefined),
@@ -440,6 +541,8 @@ describe("SolutionWorkspace idea conversation", () => {
 
     expect(view.queryByRole("button", { name: /Explore idea:/ })).toBeNull();
     expect(view.getByText("Pool observed delivery windows by supplier and part category")).toBeTruthy();
+    await fireEvent.click(view.getByRole("button", { name: "Open idea: Pool observed delivery windows by supplier and part category" }));
+    expect(view.queryByRole("button", { name: "Explore this idea" })).toBeNull();
   });
 });
 
