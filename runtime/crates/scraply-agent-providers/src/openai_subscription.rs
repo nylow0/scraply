@@ -10,8 +10,9 @@ use codex_api::{
 use codex_http_client::{HttpClientFactory, OutboundProxyPolicy};
 use codex_login::{
     AuthCredentialsStoreMode, AuthDotJson, AuthKeyringBackendKind, AuthManager, CodexAuth,
-    DeviceCode, LoginServer, RefreshTokenError, ServerOptions, complete_device_code_login,
-    load_auth_dot_json, oauth_client_id, request_device_code, run_login_server, save_auth,
+    DeviceCode, LoginServer, RefreshTokenError, ServerOptions, ShutdownHandle,
+    complete_device_code_login, load_auth_dot_json, oauth_client_id, request_device_code,
+    run_login_server, save_auth,
 };
 use codex_protocol::models::{ReasoningItemReasoningSummary, ResponseItem};
 use codex_websocket_client::{WebSocketConnection, WebSocketConnector};
@@ -290,12 +291,7 @@ impl OpenAiSubscription {
                 "could not start the OpenAI account login callback",
             )
         })?;
-        Ok(BrowserLogin {
-            authorization_url: server.auth_url.clone(),
-            callback_port: server.actual_port,
-            server,
-            auth: Arc::clone(&self.auth),
-        })
+        Ok(BrowserLogin::new(server, Arc::clone(&self.auth)))
     }
 
     pub async fn begin_device_login(&self) -> Result<DeviceLogin, ProviderError> {
@@ -1233,9 +1229,30 @@ pub struct BrowserLogin {
     pub callback_port: u16,
     server: LoginServer,
     auth: Arc<AuthManager>,
+    _shutdown_on_drop: BrowserLoginShutdown,
+}
+
+// Dropping the upstream waiter detaches its server task. Own shutdown before
+// completion is polled, and keep it alive after completion moves the server.
+struct BrowserLoginShutdown(ShutdownHandle);
+
+impl Drop for BrowserLoginShutdown {
+    fn drop(&mut self) {
+        self.0.shutdown();
+    }
 }
 
 impl BrowserLogin {
+    fn new(server: LoginServer, auth: Arc<AuthManager>) -> Self {
+        Self {
+            authorization_url: server.auth_url.clone(),
+            callback_port: server.actual_port,
+            _shutdown_on_drop: BrowserLoginShutdown(server.cancel_handle()),
+            server,
+            auth,
+        }
+    }
+
     pub fn cancel(&self) {
         self.server.cancel();
     }
@@ -1670,6 +1687,131 @@ mod tests {
     use scraply_agent_core::{
         CompiledPrompt, GenerationAttempt, PromptIdentity, ProviderRequest, QualifiedModel,
     };
+
+    async fn private_browser_login() -> (
+        OpenAiSubscription,
+        BrowserLogin,
+        codex_login::ShutdownHandle,
+    ) {
+        let provider = OpenAiSubscription::ephemeral().await.unwrap();
+        let mut options = provider.login_options();
+        // Let the OS allocate our port. The upstream default can cancel another login server.
+        options.port = 0;
+        options.open_browser = false;
+        let server = run_login_server(options).unwrap();
+        let shutdown = server.cancel_handle();
+        let login = BrowserLogin::new(server, Arc::clone(&provider.auth));
+        assert!(
+            tokio::net::TcpListener::bind(("127.0.0.1", login.callback_port))
+                .await
+                .is_err()
+        );
+        (provider, login, shutdown)
+    }
+
+    async fn assert_browser_callback_closed(port: u16, cleanup: codex_login::ShutdownHandle) {
+        let closed = tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if tokio::net::TcpListener::bind(("127.0.0.1", port))
+                    .await
+                    .is_ok()
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await;
+        // Clean up this test's server even when the regression fails.
+        cleanup.shutdown();
+        if closed.is_err() {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert!(
+            closed.is_ok(),
+            "owned browser callback listener stayed open"
+        );
+    }
+
+    #[tokio::test]
+    async fn browser_login_abort_after_first_poll_closes_owned_callback() {
+        let (_provider, login, cleanup) = private_browser_login().await;
+        let port = login.callback_port;
+        let (polled, started) = tokio::sync::oneshot::channel();
+        let completion = tokio::spawn(async move {
+            let completion = login.complete();
+            tokio::pin!(completion);
+            assert!(futures_util::poll!(&mut completion).is_pending());
+            polled.send(()).unwrap();
+            completion.await
+        });
+        started.await.unwrap();
+        completion.abort();
+        assert!(completion.await.unwrap_err().is_cancelled());
+        assert_browser_callback_closed(port, cleanup).await;
+    }
+
+    #[tokio::test]
+    async fn browser_login_abort_before_first_poll_closes_owned_callback() {
+        let (_provider, login, cleanup) = private_browser_login().await;
+        let port = login.callback_port;
+        let (polled, started) = tokio::sync::oneshot::channel();
+        let completion = tokio::spawn(async move {
+            polled.send(()).unwrap();
+            login.complete().await
+        });
+        // This test uses a current-thread runtime, with no yield before abort.
+        completion.abort();
+        assert!(completion.await.unwrap_err().is_cancelled());
+        assert!(started.await.is_err(), "completion was polled before abort");
+        assert_browser_callback_closed(port, cleanup).await;
+    }
+
+    #[tokio::test]
+    async fn browser_login_drop_closes_owned_callback() {
+        let (_provider, login, cleanup) = private_browser_login().await;
+        let port = login.callback_port;
+        drop(login);
+        assert_browser_callback_closed(port, cleanup).await;
+    }
+
+    #[tokio::test]
+    async fn browser_login_completion_keeps_session_credentials() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let (provider, login, cleanup) = private_browser_login().await;
+        let port = login.callback_port;
+        let auth = test_session_credential().deserialize_auth().unwrap();
+        let credential = OpenAiSessionCredential::from_auth(&auth).unwrap();
+        save_auth(
+            &provider.auth_home,
+            &auth,
+            AuthCredentialsStoreMode::Ephemeral,
+            AuthKeyringBackendKind::default(),
+        )
+        .unwrap();
+        let completion = tokio::spawn(async move { login.complete().await });
+        let account = tokio::time::timeout(Duration::from_secs(2), async {
+            let mut callback = tokio::net::TcpStream::connect(("127.0.0.1", port))
+                .await
+                .unwrap();
+            callback
+                .write_all(b"GET /success HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+                .await
+                .unwrap();
+            let mut response = Vec::new();
+            callback.read_to_end(&mut response).await.unwrap();
+            assert!(response.starts_with(b"HTTP/1.1 200"));
+            completion.await.unwrap().unwrap()
+        })
+        .await
+        .expect("synthetic browser callback did not complete");
+        assert_eq!(account.email.as_deref(), Some("person@example.test"));
+        assert_eq!(account.account_id.as_deref(), Some("account-test"));
+        assert_eq!(provider.session_credential().unwrap(), credential);
+        assert!(!provider.auth_home.exists());
+        assert_browser_callback_closed(port, cleanup).await;
+    }
 
     fn generation_request(model_id: &str) -> ProviderRequest {
         ProviderRequest {
