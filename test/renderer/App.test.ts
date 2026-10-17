@@ -1284,11 +1284,14 @@ describe("App workspace coordination", () => {
     expect(view.getByText("No problems yet")).toBeTruthy();
   });
 
-  test("cancels an in-flight device-code poll from the setup UI", async () => {
+  test("keeps sign-in and the draft ready after cancelling an in-flight device-code poll", async () => {
     const state = workspace("alpha");
     state.validation.native = { available: true, connected: false, version: "0.1.0", accounts: [] };
-    const neverCompletes = new Promise<never>(() => undefined);
+    const completion = deferred<Awaited<ReturnType<ScraplyApi["completeNativeLogin"]>>>();
+    const completeNativeLogin = vi.fn().mockReturnValue(completion.promise);
     const cancelNativeLogin = vi.fn().mockResolvedValue(state);
+    const retryConnection = vi.fn();
+    const getValidation = vi.fn();
     installApi({
       getWorkspace: vi.fn().mockResolvedValue(state),
       startNativeLogin: vi.fn().mockResolvedValue({
@@ -1298,13 +1301,15 @@ describe("App workspace coordination", () => {
         verificationUrl: "https://example.test/device",
         userCode: "ABCD-1234",
       }),
-      completeNativeLogin: vi.fn().mockReturnValue(neverCompletes),
-      cancelNativeLogin,
+      completeNativeLogin, cancelNativeLogin, retryConnection, getValidation,
     });
     const view = render(App);
+    const brief = await view.findByPlaceholderText("Your topic or idea") as HTMLTextAreaElement;
+    await fireEvent.input(brief, { target: { value: "Synthetic unsaved account recovery draft" } });
     await fireEvent.click(await view.findByRole("button", { name: "Settings" }));
     await fireEvent.click(await view.findByRole("button", { name: "Use device code" }));
     expect(await view.findByText("ABCD-1234")).toBeTruthy();
+    expect(completeNativeLogin).toHaveBeenCalledOnce();
 
     await fireEvent.click(view.getByRole("button", { name: "Cancel sign-in" }));
     await waitFor(() => expect(cancelNativeLogin).toHaveBeenCalledWith({
@@ -1312,6 +1317,19 @@ describe("App workspace coordination", () => {
       providerId: "openai-subscription",
     }));
     expect(await view.findByText("Native account sign-in cancelled.")).toBeTruthy();
+    const settings = view.getByRole("region", { name: "Settings" });
+    expect((within(settings).getByRole("button", { name: "Sign in with OpenAI" }) as HTMLButtonElement).disabled).toBe(false);
+    expect(view.queryByText("ABCD-1234")).toBeNull();
+    expect(brief.value).toBe("Synthetic unsaved account recovery draft");
+
+    const stale = structuredClone(state);
+    stale.validation.native.connected = true;
+    completion.resolve({ pending: false, workspace: stale });
+    await tick();
+    expect((within(settings).getByRole("button", { name: "Sign in with OpenAI" }) as HTMLButtonElement).disabled).toBe(false);
+    expect(brief.value).toBe("Synthetic unsaved account recovery draft");
+    expect(retryConnection).not.toHaveBeenCalled();
+    expect(getValidation).not.toHaveBeenCalled();
   });
 
   test("replaces a rejected native session through sign-in and restores usable models", async () => {

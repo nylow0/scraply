@@ -1009,6 +1009,36 @@ describe("ScopeForm search provider selection", () => {
     expect(onStart).toHaveBeenCalledTimes(1);
   });
 
+  test.each(["legacy-codex-cli", "openai-subscription"])("keeps an unavailable %s model explicit beside an unverified search key", async (providerId) => {
+    const state = workspace();
+    const savedModel = { providerId, modelId: "gpt-retired" };
+    state.runConfig = { ...DEFAULT_RUN_CONFIG, model: savedModel };
+    state.validation.exa = { valid: false, configured: true, checked: false, checking: false };
+    const onSave = vi.fn();
+    const onStart = vi.fn();
+    const onRetry = vi.fn();
+    const view = render(ScopeForm, { workspace: state, busy: false, onSave, onStart, onRetry });
+    const modelSelect = view.getByRole("combobox", { name: /Model/ }) as HTMLButtonElement;
+    expect(modelSelect.value).toBe(providerId === "legacy-codex-cli" ? "" : modelRefKey(savedModel));
+    expect(view.getAllByText("Exa: Key configured, connection unverified").length).toBeGreaterThan(0);
+    expect((view.getByRole("button", { name: "Retry connections" }) as HTMLButtonElement).disabled).toBe(false);
+    expect((view.getByRole("button", { name: "Discover problems" }) as HTMLButtonElement).disabled).toBe(true);
+    await fireEvent.submit(view.container.querySelector("form")!);
+    expect(onSave).not.toHaveBeenCalled();
+    expect(onStart).not.toHaveBeenCalled();
+    expect(onRetry).not.toHaveBeenCalled();
+    expect(state.runConfig.model).toEqual(savedModel);
+
+    await fireEvent.click(view.getByRole("button", { name: "Choose model" }));
+    expect(document.activeElement).toBe(modelSelect);
+    await pickModel(modelSelect, modelRefKey(DEFAULT_RUN_CONFIG.model));
+    await fireEvent.click(view.getByRole("button", { name: "Discover problems" }));
+    await waitFor(() => expect(onSave).toHaveBeenCalledOnce());
+    expect(onSave.mock.calls[0]?.[1]).toMatchObject({ model: DEFAULT_RUN_CONFIG.model });
+    expect(onStart).toHaveBeenCalledOnce();
+    expect(onRetry).not.toHaveBeenCalled();
+  });
+
   test("treats a retired native model as a selection problem while connections are healthy", async () => {
     const state = workspace();
     state.runConfig = {

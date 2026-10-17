@@ -48,7 +48,7 @@ const ExportFileSchema = z.object({ filename: z.string(), content: z.string() })
 const IdeaExportSchema = z.object({ filename: z.string(), files: z.array(ExportFileSchema) });
 type Invocation = z.output<typeof AppInvocationOptionsSchema>;
 const ACCOUNT_MUTATION_CHANNELS = new Set<string>([
-  IPC_CHANNELS.NATIVE_LOGIN_START, IPC_CHANNELS.NATIVE_LOGIN_COMPLETE, IPC_CHANNELS.NATIVE_LOGIN_CANCEL,
+  IPC_CHANNELS.NATIVE_LOGIN_START, IPC_CHANNELS.NATIVE_LOGIN_COMPLETE,
   IPC_CHANNELS.NATIVE_ACCOUNT_REFRESH, IPC_CHANNELS.NATIVE_LOGOUT,
 ]);
 
@@ -60,7 +60,11 @@ export function createAppService(options: AppServiceOptions) {
   let credentialLoadFailure: string | null = null;
   let automaticSecrets: Partial<BackendSecrets> = {};
   let searchKeyChangeInProgress = false;
-  let credentialActionInProgress = false;
+  let credentialActionsInProgress = 0;
+  let completingNativeLoginId: string | null = null;
+  // Completion can still be in flight after the backend has signed in. Retain
+  // only the latest identity so an obsolete cancel cannot erase its replacement.
+  const currentNativeLogins = new Map<string, string>();
   let credentialWriteTail = Promise.resolve();
   let validateAutomaticSecretsOnStart = true;
   let credentialRevision = 0;
@@ -144,13 +148,18 @@ export function createAppService(options: AppServiceOptions) {
     });
   }
 
-  async function withCredentialAction<T>(operation: () => Promise<T>): Promise<T> {
-    if (searchKeyChangeInProgress || credentialActionInProgress) {
+  async function withCredentialAction<T>(operation: () => Promise<T>, cancelLoginId?: string): Promise<T> {
+    const cancelsActiveLogin = cancelLoginId !== undefined && cancelLoginId === completingNativeLoginId
+      && credentialActionsInProgress === 1;
+    if (searchKeyChangeInProgress || (credentialActionsInProgress > 0 && !cancelsActiveLogin)) {
       throw new AppError("conflict", "Credentials are being updated. Try again in a moment.");
     }
-    credentialActionInProgress = true;
+    // A single matching cancel can interrupt completion. Both retain key exclusion until
+    // they settle, and claiming the interruption prevents a second overlapping cancel.
+    if (cancelsActiveLogin) completingNativeLoginId = null;
+    credentialActionsInProgress += 1;
     try { return await operation(); }
-    finally { credentialActionInProgress = false; }
+    finally { credentialActionsInProgress -= 1; }
   }
 
   async function persistProviderCredential(providerId: string, credential: string): Promise<void> {
@@ -240,7 +249,7 @@ export function createAppService(options: AppServiceOptions) {
   // reaches disk; environment and development .env keys cannot be changed by a caller.
   async function changeSearchKey(provider: SearchProvider, apiKey: string | null, confirmedProbe = false): Promise<WorkspaceState> {
     if (searchKeyChangeInProgress) throw new AppError("conflict", "A search key is being updated. Try again in a moment.");
-    if (credentialActionInProgress) throw new AppError("conflict", "Credentials are being updated. Try again in a moment.");
+    if (credentialActionsInProgress > 0) throw new AppError("conflict", "Credentials are being updated. Try again in a moment.");
     searchKeyChangeInProgress = true;
     try {
       const { field, name, variable } = SEARCH_KEYS[provider];
@@ -306,7 +315,7 @@ export function createAppService(options: AppServiceOptions) {
       }
       if (!key) return;
       if (searchKeyChangeInProgress) throw new AppError("conflict", "A search key is being updated. Try again in a moment.");
-      if (credentialActionInProgress) throw new AppError("conflict", "Credentials are being updated. Try again in a moment.");
+      if (credentialActionsInProgress > 0) throw new AppError("conflict", "Credentials are being updated. Try again in a moment.");
       const { field, name, variable } = SEARCH_KEYS[key.provider];
       if (readAutomaticSecrets()[field]) {
         throw new AppError("conflict", `This ${name} key comes from ${variable} in the environment or .env file. Change it there, then retry connections.`);
@@ -386,6 +395,7 @@ export function createAppService(options: AppServiceOptions) {
     const input = NativeLoginStartSchema.parse(body);
     blockedProviderCredentialWrites.delete(input.providerId);
     const launch = NativeLoginLaunchSchema.parse(await post("/native/login/start", input));
+    currentNativeLogins.set(input.providerId, launch.loginId);
     const authorizationUrl = launch.method === "device" ? launch.verificationUrl : launch.authorizationUrl;
     const url = parseExternalHttpsUrl({ url: authorizationUrl });
     if (!invocation.openBrowser) return launch;
@@ -396,14 +406,31 @@ export function createAppService(options: AppServiceOptions) {
       ...(launch.method === "device" ? { verificationUrl: launch.verificationUrl, userCode: launch.userCode } : {}),
     };
   });
-  handle(IPC_CHANNELS.NATIVE_LOGIN_COMPLETE, (body) => post("/native/login/complete", NativeLoginCompleteSchema.parse(body)));
+  handle(IPC_CHANNELS.NATIVE_LOGIN_COMPLETE, async (body) => {
+    const input = NativeLoginCompleteSchema.parse(body);
+    if (![...currentNativeLogins.values()].includes(input.loginId)) {
+      throw new AppError("conflict", "This native sign-in is no longer active");
+    }
+    completingNativeLoginId = input.loginId;
+    try { return await post("/native/login/complete", input); }
+    finally { completingNativeLoginId = null; }
+  });
   handle(IPC_CHANNELS.NATIVE_LOGIN_CANCEL, async (body) => {
     const input = NativeLoginCancelSchema.parse(body);
-    blockedProviderCredentialWrites.add(input.providerId);
-    return revokeNativeAccount(() => saveCredentialChange(current => {
-      delete current.providerCredentials[input.providerId];
-      return current;
-    }, { retainOnFailure: true }).then(() => undefined), () => post("/native/login/cancel", input));
+    return withCredentialAction(async () => {
+      if (currentNativeLogins.get(input.providerId) !== input.loginId) {
+        return backendRequest<WorkspaceState>("/workspace");
+      }
+      blockedProviderCredentialWrites.add(input.providerId);
+      const workspace = await revokeNativeAccount(() => saveCredentialChange(current => {
+        delete current.providerCredentials[input.providerId];
+        return current;
+      }, { retainOnFailure: true }).then(() => undefined), () => post("/native/login/cancel", input));
+      // A failed removal must remain retryable. The action count excludes duplicate
+      // concurrent cancels, and a replacement login supersedes this retained identity.
+      currentNativeLogins.delete(input.providerId);
+      return workspace;
+    }, input.loginId);
   });
   handle(IPC_CHANNELS.NATIVE_ACCOUNT_REFRESH, (body) => post("/native/account/refresh", NativeProviderSchema.parse(body)));
   handle(IPC_CHANNELS.SAVE_SEARCH_KEY, (body) => workflow(async () => {
@@ -413,6 +440,7 @@ export function createAppService(options: AppServiceOptions) {
   handle(IPC_CHANNELS.REMOVE_SEARCH_KEY, (body) => workflow(() => changeSearchKey(RemoveSearchKeySchema.parse(body).provider, null)));
   handle(IPC_CHANNELS.NATIVE_LOGOUT, async (body) => {
     const input = NativeProviderSchema.parse(body);
+    currentNativeLogins.delete(input.providerId);
     blockedProviderCredentialWrites.add(input.providerId);
     return revokeNativeAccount(() => saveCredentialChange(current => {
       delete current.providerCredentials[input.providerId];

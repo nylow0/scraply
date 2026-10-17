@@ -68,6 +68,57 @@ function harness() {
 }
 
 describe("portable app service", () => {
+  test.each(["complete", "cancel"] as const)("matching sign-in cancellation overlaps completion and holds key exclusion until %s settles last", async last => {
+    const h = harness();
+    let enterComplete!: () => void; let releaseComplete!: () => void;
+    let enterCancel!: () => void; let releaseCancel!: () => void;
+    const completeEntered = new Promise<void>(resolve => { enterComplete = resolve; });
+    const completeWaiting = new Promise<void>(resolve => { releaseComplete = resolve; });
+    const cancelEntered = new Promise<void>(resolve => { enterCancel = resolve; });
+    const cancelWaiting = new Promise<void>(resolve => { releaseCancel = resolve; });
+    h.request(async path => {
+      if (path === "/native/login/start") return launch;
+      if (path === "/native/login/complete") { enterComplete(); await completeWaiting; return { pending: true }; }
+      if (path === "/native/login/cancel") { enterCancel(); await cancelWaiting; return { synthetic: true }; }
+      return path === "/validation" ? validation : { valid: true };
+    });
+    await h.service.invoke(IPC_CHANNELS.NATIVE_LOGIN_START, [{ providerId: launch.providerId, method: "browser" }]);
+    const completing = h.service.invoke(IPC_CHANNELS.NATIVE_LOGIN_COMPLETE, [{ loginId: launch.loginId }]);
+    await completeEntered;
+    await expect(h.service.invoke(IPC_CHANNELS.NATIVE_LOGIN_CANCEL, [{ providerId: launch.providerId, loginId: "different-login" }]))
+      .rejects.toMatchObject({ code: "conflict" });
+    const cancelling = h.service.invoke(IPC_CHANNELS.NATIVE_LOGIN_CANCEL, [{ providerId: launch.providerId, loginId: launch.loginId }]);
+    try {
+      expect(await Promise.race([cancelEntered.then(() => true), cancelling.then(() => false, () => false)])).toBe(true);
+      for (const [channel, payload] of [
+        [IPC_CHANNELS.NATIVE_LOGIN_START, { providerId: launch.providerId, method: "browser" }],
+        [IPC_CHANNELS.NATIVE_LOGIN_COMPLETE, { loginId: launch.loginId }],
+        [IPC_CHANNELS.NATIVE_LOGIN_CANCEL, { providerId: launch.providerId, loginId: launch.loginId }],
+        [IPC_CHANNELS.NATIVE_ACCOUNT_REFRESH, { providerId: launch.providerId }],
+        [IPC_CHANNELS.NATIVE_LOGOUT, { providerId: launch.providerId }],
+        [IPC_CHANNELS.RETRY_CONNECTION, {}],
+      ] as const) {
+        await expect(h.service.invoke(channel, [payload])).rejects.toMatchObject({ code: "conflict" });
+      }
+      expect(await h.service.invoke(IPC_CHANNELS.SAVE_SEARCH_KEY, [{ provider: "exa", apiKey: "synthetic-blocked-key" }]))
+        .toMatchObject({ ok: false, error: { code: "conflict" } });
+      expect(await h.service.invoke(IPC_CHANNELS.REMOVE_SEARCH_KEY, [{ provider: "exa" }]))
+        .toMatchObject({ ok: false, error: { code: "conflict" } });
+      if (last === "complete") { releaseCancel(); await cancelling; }
+      else { releaseComplete(); await completing; }
+      expect(await h.service.invoke(IPC_CHANNELS.SAVE_SEARCH_KEY, [{ provider: "exa", apiKey: "synthetic-still-blocked-key" }]))
+        .toMatchObject({ ok: false, error: { code: "conflict" } });
+      await expect(h.service.invoke(IPC_CHANNELS.NATIVE_LOGIN_CANCEL, [{ providerId: launch.providerId, loginId: launch.loginId }]))
+        .rejects.toMatchObject({ code: "conflict" });
+      expect(h.requests).toEqual(["/native/login/start", "/native/login/complete", "/native/login/cancel"]);
+    } finally {
+      releaseComplete(); releaseCancel();
+      await Promise.allSettled([completing, cancelling]);
+    }
+    expect(await h.service.invoke(IPC_CHANNELS.SAVE_SEARCH_KEY, [{ provider: "exa", apiKey: "synthetic-after-cancel-key" }]))
+      .toMatchObject({ ok: true });
+  });
+
   test("all user account mutations reject during a key probe before disk or revocation changes", async () => {
     const h = harness();
     let entered!: () => void; let release!: () => void;
@@ -269,6 +320,7 @@ describe("portable app service", () => {
 
   test.each([IPC_CHANNELS.NATIVE_LOGOUT, IPC_CHANNELS.NATIVE_LOGIN_CANCEL])("%s revokes runtime access even after persistence failure and blocks late saves", async channel => {
     const h = harness(); h.service.initialize();
+    await h.service.invoke(IPC_CHANNELS.NATIVE_LOGIN_START, [{ providerId: "openai-subscription", method: "browser" }]);
     await h.service.persistProviderCredential("openai-subscription", "synthetic-credential");
     h.failSave(true);
     const input = channel === IPC_CHANNELS.NATIVE_LOGOUT ? { providerId: "openai-subscription" }

@@ -181,6 +181,9 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
   let nativeAuthRevision = 0;
   let nativeAuthTail: Promise<void> = Promise.resolve();
   const pendingNativeLogins = new Map<string, string>();
+  // Keep the current login cancellable after completion, while its response may
+  // still be in flight. A replacement login supersedes this identity.
+  const currentNativeLogins = new Map<string, string>();
   let engine: ResearchEngine | null = null;
   let searchKeyUpdatePending = false;
   let pendingPosts = 0;
@@ -1959,6 +1962,9 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
         if (context.nativeRuntimeStatus?.().ready === false) throw new AppError("conflict", context.nativeRuntimeStatus().error ?? "Native runtime is starting");
         const input = NativeLoginStartSchema.parse(body);
         const login = await runUserNativeAuthOperation(() => context.nativeRuntime!.startLogin(input.providerId, input.method));
+        const previousLoginId = currentNativeLogins.get(input.providerId);
+        if (previousLoginId) pendingNativeLogins.delete(previousLoginId);
+        currentNativeLogins.set(input.providerId, login.loginId);
         pendingNativeLogins.set(login.loginId, input.providerId);
         return sendJson(res, 200, login);
       }
@@ -1991,7 +1997,15 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
         }
         if (!result) return sendJson(res, 200, { pending: true });
         pendingNativeLogins.delete(input.loginId);
+        // Cancellation can win while completion is persisting its credential.
+        // Do not start a newer inspection after that cancellation invalidated it.
+        if (currentNativeLogins.get(providerId) !== input.loginId) {
+          return sendJson(res, 200, { pending: false, workspace: await workspaceState() });
+        }
         invalidateProviderCache();
+        // Workspace reads are passive. Refresh only native capabilities after the
+        // explicit account action so the returned state can settle without search probes.
+        await inspectNativeCapabilities();
         return sendJson(res, 200, { pending: false, workspace: await workspaceState() });
       }
       if (route === "/native/login/cancel") {
@@ -1999,18 +2013,28 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
           throw new AppError("conflict", context.nativeRuntimeStatus?.().error ?? "Native runtime is unavailable");
         }
         const input = NativeLoginCancelSchema.parse(body);
-        if (pendingNativeLogins.get(input.loginId) !== input.providerId) {
+        if (currentNativeLogins.get(input.providerId) !== input.loginId) {
           return sendJson(res, 200, await workspaceState());
         }
+        currentNativeLogins.delete(input.providerId);
         pendingNativeLogins.delete(input.loginId);
+        // An older catalog can finish while logout is waiting on native auth.
+        // Invalidate it as soon as cancellation is accepted, before that wait.
+        invalidateProviderCache();
         await runUserNativeAuthOperation(async () => {
           try { await context.nativeRuntime!.cancelLogin(input.loginId); }
+          catch (error) {
+            // Successful completion consumes the worker's login. Logout must still
+            // succeed before that expected absence can finish cancellation.
+            if (!(error instanceof ProviderFailure) || error.runtimeCode !== "login_not_found") throw error;
+          }
           finally {
             try { await context.nativeRuntime!.logout(input.providerId); }
             finally { context.forgetProviderCredential?.(input.providerId); }
           }
         });
         invalidateProviderCache();
+        await inspectNativeCapabilities();
         return sendJson(res, 200, await workspaceState());
       }
       if (route === "/native/account/refresh") {
@@ -2042,6 +2066,7 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
           throw new AppError("conflict", context.nativeRuntimeStatus?.().error ?? "Native runtime is unavailable");
         }
         const { providerId } = NativeProviderSchema.parse(body);
+        currentNativeLogins.delete(providerId);
         const cleanupError = await runUserNativeAuthOperation(async () => {
           let failure: unknown;
           for (const [loginId, loginProviderId] of pendingNativeLogins) {

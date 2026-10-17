@@ -123,6 +123,55 @@ function gate() {
 }
 
 describe("credential changes during provider probes", () => {
+  test("cancelling an in-flight sign-in revokes real-store credentials before a late completion can persist", async () => {
+    const initial: BackendSecrets = { exaApiKey: "synthetic-exa", perplexityApiKey: "synthetic-perplexity",
+      providerCredentials: { "openai-subscription": "synthetic-original-account" } };
+    const host = await countedService({ initial });
+    const completeEntered = gate(); const completeRelease = gate(); const cancelEntered = gate();
+    const request = host.backend.request;
+    host.backend.request = async (path, init) => {
+      if (path === "/native/login/start") return {
+        loginId: "synthetic-login", providerId: "openai-subscription", method: "browser",
+        authorizationUrl: "https://example.test/login", callbackPort: 3849,
+      };
+      if (path === "/native/login/complete") {
+        completeEntered.release();
+        await completeRelease.waiting;
+        await host.rotateCredential("synthetic-late-completed-account");
+        return { pending: false };
+      }
+      if (path === "/native/login/cancel") {
+        cancelEntered.release();
+        await host.backend.updateSecrets(host.service.getSecrets());
+        return { synthetic: true };
+      }
+      return request(path, init);
+    };
+    await host.service.invoke(IPC_CHANNELS.NATIVE_LOGIN_START, [{ providerId: "openai-subscription", method: "browser" }]);
+    const completing = host.service.invoke(IPC_CHANNELS.NATIVE_LOGIN_COMPLETE, [{ loginId: "synthetic-login" }]);
+    const completed = completing.then(() => ({ ok: true as const }), error => ({ ok: false as const, error: String(error) }));
+    await completeEntered.waiting;
+    const cancelling = host.service.invoke(IPC_CHANNELS.NATIVE_LOGIN_CANCEL, [{ providerId: "openai-subscription", loginId: "synthetic-login" }]);
+    try {
+      expect(await Promise.race([cancelEntered.waiting.then(() => true), cancelling.then(() => false, () => false)])).toBe(true);
+      await cancelling;
+      const expected = { ...initial, providerCredentials: {} };
+      expect(syntheticStore(host.paths).load()).toEqual(expected);
+      expect(host.service.getSecrets()).toEqual(expected);
+      expect(host.backendSecrets()).toEqual(expected);
+      await expect(host.rotateCredential("synthetic-late-background-rotation")).rejects.toThrow("signed out");
+      completeRelease.release();
+      expect(await completed).toMatchObject({ ok: false, error: expect.stringContaining("signed out") });
+      expect(syntheticStore(host.paths).load()).toEqual(expected);
+      expect(host.service.getSecrets()).toEqual(expected);
+      expect(host.backendSecrets()).toEqual(expected);
+      expect(host.probes).toEqual({ exa: 0, perplexity: 0 });
+    } finally {
+      completeRelease.release();
+      await Promise.allSettled([completing, cancelling]);
+    }
+  });
+
   const initial: BackendSecrets = { exaApiKey: "synthetic-original-exa", perplexityApiKey: "synthetic-original-perplexity",
     providerCredentials: { "openai-subscription": "synthetic-original-account" } };
 
