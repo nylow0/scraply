@@ -3,6 +3,8 @@ import { mkdirSync, rmSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { MIGRATIONS } from "./migrations";
 import { openDatabase, type SqlDatabase } from "./sqlite";
+import { AppError } from "../shared/errors";
+import { version as appVersion } from "../../package.json";
 
 export class DatabaseClient {
   readonly db: SqlDatabase;
@@ -30,6 +32,21 @@ export class DatabaseClient {
     const applied = new Set(hasMigrationTable
       ? this.db.prepare("SELECT id FROM schema_migrations").all().map((row) => (row as { id: number }).id)
       : []);
+    const latestKnown = Math.max(...MIGRATIONS.map(migration => migration.id));
+    const latestApplied = Math.max(0, ...applied);
+    if (latestApplied > latestKnown) {
+      // Reject before changing journal mode, creating a backup, or running migrations.
+      // Independently installed clients must never write a schema they cannot read.
+      const recorded = existingTables.some(row => row.name === "app_meta")
+        ? this.db.prepare("SELECT value FROM app_meta WHERE key = 'schema_app_version'").get() as { value: unknown } | undefined
+        : undefined;
+      const requiredVersion = typeof recorded?.value === "string" && /^\d+\.\d+\.\d+(?:-[a-zA-Z0-9.-]+)?$/.test(recorded.value)
+        ? recorded.value : undefined;
+      throw new AppError("conflict",
+        `This database was upgraded by ${requiredVersion ? `Scraply ${requiredVersion}` : "a newer Scraply version"}. Update both Scraply distributions before opening it.`,
+        409, undefined, { action: "update", schemaVersion: latestApplied, ...(requiredVersion ? { version: requiredVersion } : {}) });
+    }
+    const upgradesSchema = MIGRATIONS.some(migration => !applied.has(migration.id));
     const pendingProductMigrations = MIGRATIONS.filter((migration) =>
       migration.id >= 30 && migration.id <= 33 && !applied.has(migration.id));
     if (existingTables.length > 0 && pendingProductMigrations.length > 0) {
@@ -74,6 +91,7 @@ export class DatabaseClient {
     if (this.preMigrationBackupPath) {
       this.setMeta("last_pre_migration_backup_path", this.preMigrationBackupPath);
     }
+    if (upgradesSchema) this.setMeta("schema_app_version", appVersion);
   }
 
   private createPreMigrationBackup(startingVersion: number): string {

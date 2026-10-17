@@ -11,6 +11,7 @@
   import type { z } from "zod";
   import { readResearchDefaults } from "./lib/research-defaults";
   import { hasSearchKey, SEARCH_PROVIDERS } from "./lib/search-providers";
+  import { isSearchProviderChecking } from "../shared/search-provider-status";
   import { findHistoryIndex, parentHistory, pushHistory, replaceHistory, rememberScroll, sameRoute, traverseHistory, reconcileHistory, routeResolver,
     type NavigationRoute, type NavigationHistory, type SolutionsRoute } from "./lib/navigation-history";
   import DesktopBar from "./components/DesktopBar.svelte";
@@ -290,6 +291,10 @@
       else if (command === "export-research" && workspace?.activeThreadId) void exportResearch();
     });
     const dispose = window.scraply.onBackendEvent((event) => {
+      if (event.type === "app-state-changed") {
+        reconcileSoon();
+        return;
+      }
       if (event.type === "workflow-progress") {
         if (event.threadId === workspace?.activeThreadId) {
           if (event.sessionId === workspace?.activeWorkflow?.sessionId) {
@@ -447,8 +452,9 @@
     }, delayMs);
   }
   function validationPending(state: WorkspaceState): boolean {
-    return [state.validation.exa.error, state.validation.perplexity.error, state.validation.native.error]
-      .some((error) => error?.startsWith("Checking ") || error === "Native runtime is starting");
+    const nativeError = state.validation.native.error;
+    return isSearchProviderChecking(state.validation.exa) || isSearchProviderChecking(state.validation.perplexity)
+      || nativeError?.startsWith("Checking ") === true || nativeError === "Native runtime is starting";
   }
   async function action(work: () => Promise<void>) {
     if (busy) return;

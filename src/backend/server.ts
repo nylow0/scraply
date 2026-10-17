@@ -6,11 +6,23 @@ import { ProblemFactorAssessmentSchema, SavedProblemCandidateSchema } from "../s
 import { CriteriaFitSchema, BiggerProblemSchema } from "../shared/solution-goal-fit";
 import { applyProblemFactorAssessments, reliesOnCloseRoles } from "../core/problem-evidence";
 import { randomBytes, randomUUID } from "node:crypto";
+import { readFileSync, readdirSync, existsSync } from "node:fs";
+import { join } from "node:path";
+import { canonicalJson, sha256 } from "../shared/content-identity";
+import { createBillingPreflight } from "../core/billing-preflight";
+import { verifyLaunchPreview } from "../core/workflow-preflight";
+import {
+  ActivitySchema, EntityCandidateSchema, ExecuteOperationRequestSchema, ExecuteOperationResultSchema,
+  GenerateProjectTitleRequestSchema, GenerateProjectTitleResultSchema, ListProjectsResultSchema, ListRunsResultSchema, ProviderStatusResultSchema,
+  OperationRequestSchema, ProjectDetailSchema, ResolveEntityRequestSchema, ResolveEntityResultSchema,
+  operationRegistry, parseOperationResult, type EntityKind, type OperationProposal,
+} from "../shared/cli-contracts";
+import { buildSavedLaunchDraft, defaultLaunchSettings, LaunchSettingsSchema, SaveLaunchSettingsSchema } from "../shared/launch-settings";
 import { visibleIdeaMessage } from "../shared/idea-messages";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { recoverInterruptedEvidenceFollowUps, ResearchEngine } from "../core/research-engine";
 import { WorkflowCoordinator } from "../core/workflow-coordinator";
-import { unknownSearchAttempts, workflowSearchDispatchUsage } from "../core/workflow-search-attempts";
+import { unknownSearchAttempts, workflowSearchDispatches, workflowSearchDispatchUsage } from "../core/workflow-search-attempts";
 import { IdeaConversationService } from "../core/idea-conversation-service";
 import { ResearchRequestService } from "../core/research-request-service";
 import { scheduledModelClient } from "../core/scheduled-model-client";
@@ -34,6 +46,7 @@ import type { SearchClient, SearchProvider, ValidationResult } from "../provider
 import { ProviderFailure, type StructuredModelClient } from "../providers/structured";
 import { RuntimeClient } from "../providers/runtime";
 import { AppSettingsSchema } from "../shared/app-settings";
+import { isSearchProviderReady } from "../shared/search-provider-status";
 import { AppError, toErrorPayload } from "../shared/errors";
 import { developmentProjection } from "../shared/development-projection";
 import {
@@ -45,6 +58,7 @@ import {
   NativeLoginCancelSchema, NativeLoginCompleteSchema, NativeLoginStartSchema, NativeProviderSchema,
   ResumeResearchSchema, SaveFavoriteModelSchema, SaveRunConfigSchema, SaveScopeSchema, SearchKeyPreflightSchema,
   SelectProblemsSchema, SelectOptionSchema, SaveDecisionSchema, SelectThreadRequestSchema, SourceDetailSchema, StartResearchSchema,
+  IPC_CHANNELS, ApiResponseSchema,
   RejectedProblemCandidateSchema, ValidationStateSchema, WorkspaceStateSchema, type FactorView, type ProblemCandidate, type RejectedProblemCandidate, type ResearchEvent,
   type IdeaGroupView, type SolutionView, type ValidationState,
 } from "../shared/ipc";
@@ -70,6 +84,8 @@ export interface BackendContext {
   bundledPromptsDir: string;
   promptOverridesDir: string;
   appVersion: string;
+  /** Service startup policy input. Backend startup itself never probes search keys. */
+  validateAutomaticSecrets?: boolean;
   getSecrets: () => { exaApiKey: string | null; perplexityApiKey?: string | null };
   modelClients?: Partial<Record<string, StructuredModelClient>>;
   searchClients?: Partial<Record<SearchProvider, SearchClient>>;
@@ -89,15 +105,15 @@ export interface BackendContext {
 }
 
 interface SearchValidation {
-  exa: { valid: boolean };
-  perplexity: { valid: boolean };
+  exa: ValidationState["exa"];
+  perplexity: ValidationState["perplexity"];
 }
 
 export function isSetupComplete(
   search: SearchValidation,
   native: { available: boolean; connected: boolean },
 ): boolean {
-  return (search.exa.valid || search.perplexity.valid)
+  return (isSearchProviderReady(search.exa) || isSearchProviderReady(search.perplexity))
     && native.available && native.connected;
 }
 
@@ -118,7 +134,7 @@ export function isResearchModeReady(
   search: SearchValidation,
   native: { available: boolean; connected: boolean },
 ): boolean {
-  const selectedSearchReady = config.searchProvider === "auto" ? search.exa.valid || search.perplexity.valid : search[config.searchProvider].valid;
+  const selectedSearchReady = config.searchProvider === "auto" ? isSearchProviderReady(search.exa) || isSearchProviderReady(search.perplexity) : isSearchProviderReady(search[config.searchProvider]);
   const selectedModelReady = config.model?.providerId === OPENAI_SUBSCRIPTION_PROVIDER_ID
     && native.available && native.connected;
   return selectedModelReady
@@ -158,6 +174,7 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
   let cachedValidation: ValidationState | null = null;
   let cachedNativeValidation: ValidationState["native"] | null = null;
   let validationPromise: Promise<ValidationState> | null = null;
+  let nativeInspectionPromise: Promise<NativeInspectionResult> | null = null;
   let cachedModels: ModelRef[] = [];
   let cachedModelOptions: ModelOption[] = [];
   let validationGeneration = 0;
@@ -176,6 +193,7 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
   const invalidateProviderCache = () => {
     validationGeneration += 1;
     validationPromise = null;
+    nativeInspectionPromise = null;
     cachedValidation = null;
     cachedNativeValidation = null;
     cachedModels = [];
@@ -199,7 +217,7 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
     } catch (error) {
       context.log?.({ level: "error", event: "backend-event-delivery-failed", error });
     }
-    if (event.type !== "workflow-progress") {
+    if (event.type !== "workflow-progress" && event.type !== "app-state-changed") {
       void Promise.resolve().then(() => workflowCoordinator.handleRunEvent(event)).catch((error) => {
         context.log?.({ level: "error", event: "workflow-event-handling-failed", error });
       });
@@ -233,51 +251,58 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
     return (context.providerValidation?.validatePerplexity ?? ((key: string) => new PerplexityClient(key).validateKey()))(apiKey);
   }
 
+  async function inspectNativeCapabilities(): Promise<NativeInspectionResult> {
+    if (nativeInspectionPromise) return nativeInspectionPromise;
+    const generation = validationGeneration;
+    const inspectedAuthRevision = nativeAuthRevision;
+    const pending = (context.providerValidation?.inspectNative
+      ? context.providerValidation.inspectNative()
+      : inspectNativeRuntime(
+        context.nativeRuntime,
+        context.nativeRuntimeError,
+        context.nativeRuntimeStatus?.(),
+        context.persistProviderCredential
+          ? (providerId) => runNativeAuthOperation(async () => {
+            if (nativeAuthRevision !== inspectedAuthRevision) {
+              throw new ProviderFailure("interrupted", "Native account changed while models were loading", true);
+            }
+            try { return await context.nativeRuntime!.refreshAccount(providerId, context.persistProviderCredential!); }
+            catch (error) {
+              if (!(error instanceof ProviderFailure)) {
+                // The runtime rotated its in-memory credential, but the host
+                // could not durably acknowledge it. Keep the old saved copy.
+                await context.nativeRuntime!.logout(providerId);
+              }
+              throw error;
+            }
+          })
+          : undefined,
+        (providerId) => runNativeAuthOperation(async () => {
+          if (nativeAuthRevision !== inspectedAuthRevision) return;
+          await context.nativeRuntime!.logout(providerId);
+          context.forgetProviderCredential?.(providerId);
+        }),
+      ))
+      .then((nativeInspection) => {
+        if (generation === validationGeneration) {
+          const { models: nativeModels, ...native } = nativeInspection;
+          cachedNativeValidation = native;
+          cachedModelOptions = nativeModels;
+          cachedModels = nativeModels.map(({ providerId, modelId }) => ({ providerId, modelId }));
+        }
+        return nativeInspection;
+      });
+    nativeInspectionPromise = pending;
+    try { return await pending; }
+    finally { if (nativeInspectionPromise === pending) nativeInspectionPromise = null; }
+  }
   async function validateProviders(): Promise<ValidationState> {
     if (validationPromise) return validationPromise;
     const generation = validationGeneration;
     const pending = (async () => {
       const secrets = context.getSecrets();
-      const inspectedAuthRevision = nativeAuthRevision;
-      const nativeInspectionPromise = (context.providerValidation?.inspectNative
-        ? context.providerValidation.inspectNative()
-        : inspectNativeRuntime(
-          context.nativeRuntime,
-          context.nativeRuntimeError,
-          context.nativeRuntimeStatus?.(),
-          context.persistProviderCredential
-            ? (providerId) => runNativeAuthOperation(async () => {
-              if (nativeAuthRevision !== inspectedAuthRevision) {
-                throw new ProviderFailure("interrupted", "Native account changed while models were loading", true);
-              }
-              try { return await context.nativeRuntime!.refreshAccount(providerId, context.persistProviderCredential!); }
-              catch (error) {
-                if (!(error instanceof ProviderFailure)) {
-                  // The runtime rotated its in-memory credential, but the host
-                  // could not durably acknowledge it. Keep the old saved copy.
-                  await context.nativeRuntime!.logout(providerId);
-                }
-                throw error;
-              }
-            })
-            : undefined,
-          (providerId) => runNativeAuthOperation(async () => {
-            if (nativeAuthRevision !== inspectedAuthRevision) return;
-            await context.nativeRuntime!.logout(providerId);
-            context.forgetProviderCredential?.(providerId);
-          }),
-        ))
-        .then((nativeInspection) => {
-          if (generation === validationGeneration) {
-            const { models: nativeModels, ...native } = nativeInspection;
-            cachedNativeValidation = native;
-            cachedModelOptions = nativeModels;
-            cachedModels = nativeModels.map(({ providerId, modelId }) => ({ providerId, modelId }));
-          }
-          return nativeInspection;
-        });
       const [nativeInspection, exa, perplexity] = await Promise.all([
-        nativeInspectionPromise,
+        inspectNativeCapabilities(),
         secrets.exaApiKey ? validateSearchKey("exa", secrets.exaApiKey) : Promise.resolve({ valid: false, error: "Exa key missing" }),
         secrets.perplexityApiKey
           ? validateSearchKey("perplexity", secrets.perplexityApiKey)
@@ -285,8 +310,8 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
       ]);
       const { models: nativeModels, ...native } = nativeInspection;
       const value = ValidationStateSchema.parse({
-        exa: { ...exa, maskedKey: maskSearchKey(secrets.exaApiKey) },
-        perplexity: { ...perplexity, maskedKey: maskSearchKey(secrets.perplexityApiKey) },
+        exa: { ...exa, configured: Boolean(secrets.exaApiKey), checked: Boolean(secrets.exaApiKey), checking: false, maskedKey: maskSearchKey(secrets.exaApiKey) },
+        perplexity: { ...perplexity, configured: Boolean(secrets.perplexityApiKey), checked: Boolean(secrets.perplexityApiKey), checking: false, maskedKey: maskSearchKey(secrets.perplexityApiKey) },
         native,
         setupComplete: isSetupComplete({ exa, perplexity }, native),
       });
@@ -319,13 +344,25 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
     finally { if (validationPromise === pending) validationPromise = null; }
   }
   const pendingValidation = () => ValidationStateSchema.parse({
-    exa: { valid: false, error: context.getSecrets().exaApiKey ? "Checking Exa connection" : "Exa key missing",
-      maskedKey: maskSearchKey(context.getSecrets().exaApiKey), checking: Boolean(context.getSecrets().exaApiKey) },
-    perplexity: { valid: false, error: context.getSecrets().perplexityApiKey ? "Checking Perplexity connection" : "Perplexity key missing",
-      maskedKey: maskSearchKey(context.getSecrets().perplexityApiKey), checking: Boolean(context.getSecrets().perplexityApiKey) },
+    exa: { valid: false, error: context.getSecrets().exaApiKey ? validationPromise ? "Checking Exa connection" : "Exa key has not been checked" : "Exa key missing",
+      configured: Boolean(context.getSecrets().exaApiKey), checked: false,
+      maskedKey: maskSearchKey(context.getSecrets().exaApiKey), checking: Boolean(validationPromise && context.getSecrets().exaApiKey) },
+    perplexity: { valid: false, error: context.getSecrets().perplexityApiKey ? validationPromise ? "Checking Perplexity connection" : "Perplexity key has not been checked" : "Perplexity key missing",
+      configured: Boolean(context.getSecrets().perplexityApiKey), checked: false,
+      maskedKey: maskSearchKey(context.getSecrets().perplexityApiKey), checking: Boolean(validationPromise && context.getSecrets().perplexityApiKey) },
     setupComplete: false,
     native: { available: false, connected: false, accounts: [], error: "Checking native runtime" },
   });
+  function providerStatus() {
+    const status = cachedValidation ?? pendingValidation();
+    const native = cachedNativeValidation ?? status.native;
+    const pending = validationPromise ? {
+      exa: { ...status.exa, checking: Boolean(context.getSecrets().exaApiKey) },
+      perplexity: { ...status.perplexity, checking: Boolean(context.getSecrets().perplexityApiKey) },
+    } : {};
+    const current = { ...status, ...pending, native };
+    return ProviderStatusResultSchema.parse({ ...current, setupComplete: isSetupComplete(current, native) });
+  }
 
   const emitWorkflowProgress = (summary: WorkflowSummary, changedTaskIds: string[]) => emitEvent({
     type: "workflow-progress", sessionId: summary.sessionId, threadId: summary.threadId,
@@ -356,14 +393,7 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
   const workflowCoordinator = new WorkflowCoordinator({
     db,
     engine: ensureEngine,
-    capabilities: async () => {
-      const validation = cachedValidation ?? await validateProviders();
-      return {
-        modelOptions: cachedModelOptions,
-        nativeConnected: validation.native.connected,
-        searchReady: { exa: validation.exa.valid, perplexity: validation.perplexity.valid },
-      };
-    },
+    capabilities: operationCapabilities,
     listProblems: (threadId, discoveryRunId) => listProblems(threadId, discoveryRunId),
     onProgress: emitWorkflowProgress,
     onError: (error) => context.log?.({ level: "error", event: "workflow-coordinator-failed", error }),
@@ -372,6 +402,7 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
   });
   ideaService.reconcileInterrupted();
   workflowCoordinator.reconcileInterrupted();
+  threads.recoverStaleDevelopmentStatuses();
 
   function modelCatalog(): ModelCatalog {
     const favorites = readFavoriteModels();
@@ -397,47 +428,39 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
     db.setSetting("favorite_models", JSON.stringify(current));
   }
 
-  async function workspaceState() {
-    if (!cachedValidation) void validateProviders().catch(() => undefined);
-    threads.recoverStaleDevelopmentStatuses();
+  async function workspaceState(projectId?: string) {
     const threadList = threads.listThreads();
-    if (activeThreadId && !threadList.some((thread) => thread.id === activeThreadId && !thread.archivedAt)) activeThreadId = threadList.find((thread) => !thread.archivedAt)?.id ?? null;
-    const runConfig = activeThreadId ? threads.getLatestRunConfig(activeThreadId) : null;
-    const latestResearchRun = activeThreadId ? latestRun(activeThreadId) : null;
-    const activeWorkflow = activeThreadId ? workflowCoordinator.findActiveSummary(activeThreadId) : null;
+    const selectedThreadId = projectId ?? (threadList.some((thread) => thread.id === activeThreadId && !thread.archivedAt)
+      ? activeThreadId : threadList.find((thread) => !thread.archivedAt)?.id ?? null);
+    const runConfig = selectedThreadId ? threads.getLatestRunConfig(selectedThreadId) : null;
+    const latestResearchRun = selectedThreadId ? latestRun(selectedThreadId) : null;
+    const activeWorkflow = selectedThreadId ? workflowCoordinator.findActiveSummary(selectedThreadId) : null;
     const activeSnapshot = activeWorkflow?.activeSnapshotId ? workflows.getSnapshot(activeWorkflow.activeSnapshotId) : null;
-    const snapshotProblems = activeThreadId && activeSnapshot && activeSnapshot.sessionId === activeWorkflow?.sessionId
-      ? listProblems(activeThreadId, activeSnapshot.materializationRunId)
+    const snapshotProblems = selectedThreadId && activeSnapshot && activeSnapshot.sessionId === activeWorkflow?.sessionId
+      ? listProblems(selectedThreadId, activeSnapshot.materializationRunId)
         .filter((problem) => activeSnapshot.selection.problemIds.includes(problem.id))
         .map((problem) => ({ ...problem, selected: true }))
       : null;
-    const pending = pendingValidation();
-    const validation = cachedValidation ?? (cachedNativeValidation
-      ? ValidationStateSchema.parse({
-        ...pending,
-        native: cachedNativeValidation,
-        setupComplete: isSetupComplete(pending, cachedNativeValidation),
-      })
-      : pending);
+    const validation = providerStatus();
     const state = {
       validation,
       threads: threadList,
-      activeThreadId,
-      messages: activeThreadId ? threads.getMessages(activeThreadId) : [],
-      scope: activeThreadId ? threads.getScope(activeThreadId) : null,
+      activeThreadId: selectedThreadId,
+      messages: selectedThreadId ? threads.getMessages(selectedThreadId) : [],
+      scope: selectedThreadId ? threads.getScope(selectedThreadId) : null,
       runConfig,
       models: cachedModels,
       modelOptions: cachedModelOptions,
       modelCatalog: modelCatalog(),
       presets: threads.listPresets(),
-      problemCandidates: snapshotProblems ?? (activeThreadId ? listProblems(activeThreadId) : []),
-      rejectedProblemCandidates: activeThreadId ? listRejectedProblemCandidates(activeThreadId, candidateArchiveRunId(activeSnapshot?.materializationRunId)) : [],
-      problemLeads: activeThreadId && snapshotProblems && activeSnapshot ? listSnapshotLeads(activeThreadId, activeSnapshot) : [],
-      solutions: activeThreadId ? listSolutions(activeThreadId, false) : [],
-      ideaGroups: activeThreadId ? listIdeaGroups(activeThreadId) : [],
-      ...(activeThreadId ? { opportunityFamilies: opportunities.familyView(activeThreadId) } : {}),
-      opportunityExploration: activeThreadId ? exploration.find(activeThreadId) : null,
-      opportunityReviewStatus: activeThreadId && engine ? engine.getOpportunityReviewStatus(activeThreadId) : { running: false, kind: null, error: null },
+      problemCandidates: snapshotProblems ?? (selectedThreadId ? listProblems(selectedThreadId) : []),
+      rejectedProblemCandidates: selectedThreadId ? listRejectedProblemCandidates(selectedThreadId, candidateArchiveRunId(activeSnapshot?.materializationRunId)) : [],
+      problemLeads: selectedThreadId && snapshotProblems && activeSnapshot ? listSnapshotLeads(selectedThreadId, activeSnapshot) : [],
+      solutions: selectedThreadId ? listSolutions(selectedThreadId, false) : [],
+      ideaGroups: selectedThreadId ? listIdeaGroups(selectedThreadId) : [],
+      ...(selectedThreadId ? { opportunityFamilies: opportunities.familyView(selectedThreadId) } : {}),
+      opportunityExploration: selectedThreadId ? exploration.find(selectedThreadId) : null,
+      opportunityReviewStatus: selectedThreadId && engine ? engine.getOpportunityReviewStatus(selectedThreadId) : { running: false, kind: null, error: null },
       activeWorkflow,
       researchRequests: activeWorkflow ? researchService.listRequests(activeWorkflow.sessionId) : [],
       researchFindings: activeWorkflow ? researchService.listActiveFindings(activeWorkflow.sessionId) : [],
@@ -1348,6 +1371,14 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
   function requireThread(threadId: string): void {
     if (!db.db.prepare("SELECT 1 FROM threads WHERE id = ?").get(threadId)) throw new AppError("not_found", "Thread not found.");
   }
+  function assertProjectSettingsEditable(threadId: string): void {
+    if (workflows.getActiveSession(threadId)
+      || db.db.prepare("SELECT 1 FROM research_runs WHERE thread_id = ? AND status IN ('queued','running')").get(threadId)
+      || workflowModelScheduler.activeProjectIds.includes(threadId)
+      || engine?.getOpportunityReviewStatus(threadId).running) {
+      throw new AppError("PROJECT_BUSY", "Stop or finish active work before editing this project's brief or launch settings.");
+    }
+  }
   function requireRunnableRunProvider(runId: string): void {
     const row = db.db.prepare("SELECT config_json FROM research_runs WHERE id = ?").get(runId) as { config_json: string } | undefined;
     if (!row) throw new AppError("not_found", "Research run not found.");
@@ -1381,22 +1412,296 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
     emitEvent({ type: "run-cancelled", runId, threadId: row.thread_id });
   }
 
+  function runIndex(threadId?: string) {
+    const research = db.db.prepare(`SELECT r.*, t.title AS thread_title FROM research_runs r
+      JOIN threads t ON t.id = r.thread_id WHERE (? IS NULL OR r.thread_id = ?) ORDER BY r.created_at, r.id`)
+      .all(threadId ?? null, threadId ?? null) as Array<{
+        id: string; thread_id: string; thread_title: string; workflow_session_id: string | null; purpose: string | null;
+        problem_id: string | null; status: string; interrupted: number; created_at: string; updated_at: string;
+      }>;
+    const sessions = db.db.prepare(`SELECT s.*, t.title AS thread_title FROM workflow_sessions s
+      JOIN threads t ON t.id = s.thread_id WHERE (? IS NULL OR s.thread_id = ?) ORDER BY s.started_at, s.id`)
+      .all(threadId ?? null, threadId ?? null) as Array<{
+        id: string; thread_id: string; thread_title: string; purpose: string; state: string;
+        outcome: string | null; revision: number; started_at: string; finished_at: string | null;
+      }>;
+    return ListRunsResultSchema.parse({ runs: [
+      ...sessions.map((session) => ({
+        kind: "workflow", id: session.id, sessionId: session.id, threadId: session.thread_id, threadTitle: session.thread_title,
+        purpose: session.purpose, state: session.state, outcome: session.outcome, revision: session.revision,
+        researchRunIds: research.filter((run) => run.workflow_session_id === session.id).map((run) => run.id),
+        startedAt: session.started_at, finishedAt: session.finished_at,
+      })),
+      ...research.map((run) => ({
+        kind: "research", id: run.id, runId: run.id, threadId: run.thread_id, threadTitle: run.thread_title,
+        sessionId: run.workflow_session_id, problemId: run.problem_id, purpose: run.purpose ?? "legacy",
+        status: run.status, interrupted: Boolean(run.interrupted), createdAt: run.created_at, updatedAt: run.updated_at,
+      })),
+    ] });
+  }
+
+  function entityCandidates(kind: EntityKind, threadId?: string) {
+    // Each query names an entity's complete history. Filtering and ambiguity checks happen in the owner.
+    const from = {
+      project: "SELECT id, id AS thread_id FROM threads",
+      workflow: "SELECT id, thread_id FROM workflow_sessions",
+      run: "SELECT id, thread_id FROM research_runs",
+      source: "SELECT e.id, r.thread_id FROM sources e JOIN research_runs r ON r.id = e.research_run_id",
+      idea: "SELECT e.id, r.thread_id FROM solutions e JOIN research_runs r ON r.id = e.research_run_id",
+      problem: `SELECT e.id, r.thread_id FROM problems e JOIN research_runs r ON r.id = e.discovery_run_id
+        UNION SELECT e.id, r.thread_id FROM rejected_problem_candidates e JOIN research_runs r ON r.id = e.discovery_run_id`,
+      finding: "SELECT e.id, r.thread_id FROM problems e JOIN research_runs r ON r.id = e.discovery_run_id",
+      family: "SELECT id, thread_id FROM opportunity_families",
+      membership: "SELECT id, thread_id FROM opportunity_membership_decisions",
+      task: "SELECT e.id, s.thread_id FROM workflow_work_items e JOIN workflow_sessions s ON s.id = e.session_id",
+      request: "SELECT e.id, s.thread_id FROM workflow_work_items e JOIN workflow_sessions s ON s.id = e.session_id WHERE e.kind = 'research-request'",
+      snapshot: "SELECT e.id, s.thread_id FROM evidence_snapshots e JOIN workflow_sessions s ON s.id = e.session_id",
+      frame: "SELECT id, thread_id FROM research_frames",
+      turn: "SELECT e.id, s.thread_id FROM idea_turns e JOIN workflow_sessions s ON s.id = e.session_id",
+      branch: "SELECT DISTINCT e.branch_id AS id, s.thread_id FROM idea_turns e JOIN workflow_sessions s ON s.id = e.session_id",
+      attempt: "SELECT e.id, r.thread_id FROM generation_attempts e JOIN research_runs r ON r.id = e.research_run_id",
+    } satisfies Record<EntityKind, string>;
+    const candidates = z.array(EntityCandidateSchema).parse(db.db.prepare(`SELECT e.id, e.thread_id AS threadId,
+      t.title, (t.archived_at IS NOT NULL OR t.status = 'archived') AS archived FROM (${from[kind]}) e
+      JOIN threads t ON t.id = e.thread_id WHERE (? IS NULL OR e.thread_id = ?) ORDER BY e.id`)
+      .all(threadId ?? null, threadId ?? null).map((row) => ({ ...(row as Record<string, unknown>), archived: Boolean((row as { archived: number }).archived) })));
+    if (kind === "attempt") {
+      const runs = db.db.prepare(`SELECT r.id, r.thread_id AS threadId, t.title, t.archived_at AS archivedAt
+        FROM research_runs r JOIN threads t ON t.id = r.thread_id WHERE (? IS NULL OR r.thread_id = ?) ORDER BY r.id`)
+        .all(threadId ?? null, threadId ?? null) as Array<{ id: string; threadId: string; title: string; archivedAt: string | null }>;
+      for (const run of runs) for (const attempt of workflowSearchDispatches(db, run.id)) {
+        if (attempt.id && !candidates.some((candidate) => candidate.id === attempt.id)) candidates.push({
+          id: attempt.id, threadId: run.threadId, title: run.title, archived: Boolean(run.archivedAt),
+        });
+      }
+    }
+    return candidates;
+  }
+
+  function resolveEntity(kind: EntityKind, reference: string, threadId?: string) {
+    const rows = entityCandidates(kind, threadId);
+    const exact = rows.find((row) => row.id === reference);
+    const candidates = exact ? [exact] : rows.filter((row) => row.id.startsWith(reference) || kind === "project" && row.title === reference);
+    if (candidates.length !== 1) throw new AppError(candidates.length ? "conflict" : "not_found",
+      candidates.length ? "The reference matches more than one item. Use a full ID." : "No matching item was found.",
+      undefined, undefined, { kind, reference, candidates });
+    const selected = candidates[0]!;
+    return ResolveEntityResultSchema.parse({ kind, id: selected.id, threadId: selected.threadId, candidates });
+  }
+
+  function launchSettings(threadId: string) {
+    requireThread(threadId);
+    const saved = db.getSetting(`launch-settings:${threadId}`);
+    if (saved) return LaunchSettingsSchema.parse(JSON.parse(saved));
+    const scope = threads.getScope(threadId) ?? { title: "", audience: "", domain: "", observations: "", offLimits: [] };
+    return defaultLaunchSettings(scope, threads.getLatestRunConfig(threadId) ?? DEFAULT_RUN_CONFIG);
+  }
+
+  async function projectDetail(threadId: string) {
+    const thread = threads.listThreads().find((item) => item.id === threadId);
+    if (!thread) throw new AppError("not_found", "Project not found.");
+    const scope = threads.getScope(threadId);
+    const settings = launchSettings(threadId);
+    let draft: ReturnType<typeof buildSavedLaunchDraft> | null = null;
+    if (scope) {
+      try { draft = buildSavedLaunchDraft(scope, threads.getLatestRunConfig(threadId) ?? DEFAULT_RUN_CONFIG, settings); }
+      catch (error) { if (!(error instanceof z.ZodError)) throw error; }
+    }
+    return ProjectDetailSchema.parse({ thread, workspace: await workspaceState(threadId), launchSettings: settings,
+      draft,
+      resumableDevelopment: threads.pendingDevelopmentHandoffs().some((handoff) => handoff.threadId === threadId),
+    });
+  }
+
+  const operationProjectId = (operation: OperationProposal["operation"]): string | null => {
+    const payload = operation.payload as { threadId?: string; runId?: string };
+    if (payload.threadId) { requireThread(payload.threadId); return payload.threadId; }
+    return payload.runId ? resolveEntity("run", payload.runId).threadId : null;
+  };
+  function operationState(operation: OperationProposal["operation"]): string {
+    const threadId = operationProjectId(operation);
+    const projectRows = (table: string) => db.db.prepare(`SELECT * FROM ${table} WHERE thread_id = ? ORDER BY rowid`).all(threadId);
+    const sessionRows = (table: string) => db.db.prepare(`SELECT e.* FROM ${table} e JOIN workflow_sessions s ON s.id = e.session_id
+      WHERE s.thread_id = ? ORDER BY e.rowid`).all(threadId);
+    const runRows = (table: string) => db.db.prepare(`SELECT e.* FROM ${table} e JOIN research_runs r ON r.id = e.research_run_id
+      WHERE r.thread_id = ? ORDER BY e.rowid`).all(threadId);
+    const prompts = [context.bundledPromptsDir, context.promptOverridesDir].map((directory) => existsSync(directory)
+      ? readdirSync(directory).filter((file) => file.endsWith(".md")).sort().map((file) => [file, sha256(readFileSync(join(directory, file), "utf8"))]) : []);
+    return sha256(canonicalJson({ profile: context.dataDir, operation, prompts,
+      advancedSettings,
+      ...(threadId ? {
+        thread: db.db.prepare("SELECT * FROM threads WHERE id = ?").get(threadId),
+        settings: db.db.prepare("SELECT * FROM settings WHERE key IN (?, ?, ?) ORDER BY key")
+          .all(`scope:${threadId}`, `launch-settings:${threadId}`, `discarded-ideas:${threadId}`),
+        config: projectRows("run_configs"), runs: projectRows("research_runs"), sessions: projectRows("workflow_sessions"),
+        snapshots: sessionRows("evidence_snapshots"), tasks: sessionRows("workflow_work_items"),
+        turns: sessionRows("idea_turns"), versions: runRows("solutions"),
+        preferences: db.db.prepare(`SELECT p.* FROM workflow_solution_preferences p JOIN solutions i ON i.id = p.root_solution_id
+          JOIN research_runs r ON r.id = i.research_run_id WHERE r.thread_id = ? ORDER BY p.rowid`).all(threadId),
+        lineage: db.db.prepare(`SELECT p.* FROM solution_lineage p JOIN solutions i ON i.id = p.solution_id
+          JOIN research_runs r ON r.id = i.research_run_id WHERE r.thread_id = ? ORDER BY p.rowid`).all(threadId),
+        frames: projectRows("research_frames"),
+        families: projectRows("opportunity_families"), memberships: projectRows("opportunity_membership_decisions"),
+        exploration: projectRows("opportunity_explorations"),
+      } : {}),
+    }));
+  }
+  async function operationCapabilities() {
+    if (!cachedNativeValidation) await inspectNativeCapabilities();
+    const status = providerStatus();
+    // Readiness permits an unchecked configured key; it never claims the key was validated.
+    return { modelOptions: cachedModelOptions, nativeConnected: cachedNativeValidation?.connected ?? false,
+      searchReady: { exa: isSearchProviderReady(status.exa), perplexity: isSearchProviderReady(status.perplexity) } };
+  }
+  const billing = createBillingPreflight({
+    capabilities: async () => sha256(canonicalJson({ ...await operationCapabilities(), revision: validationGeneration })),
+    state: operationState,
+    validate: async (operation) => {
+      if (operationRegistry[operation.channel]?.owner !== "backend") throw new AppError("validation_error", "This operation requires its owner-service preview and execution handler.");
+      const capabilities = await operationCapabilities();
+      if (!capabilities.nativeConnected) throw new AppError("MODEL_UNAVAILABLE", "Connect a model account before previewing this operation.");
+      const payload = operation.payload as { threadId?: string; runId?: string; sessionId?: string; expectedRevision?: number };
+      const threadId = operationProjectId(operation);
+      if (payload.sessionId) {
+        const session = workflows.getSession(payload.sessionId);
+        if (!session || session.threadId !== threadId) throw new AppError("INVALID_REFERENCE");
+        if (payload.expectedRevision !== undefined && session.revision !== payload.expectedRevision) throw new AppError("PREVIEW_STALE");
+      }
+      const checkChoices = (input: unknown): void => {
+        if (!input || typeof input !== "object") return;
+        if (Array.isArray(input)) { input.forEach(checkChoices); return; }
+        const record = input as Record<string, unknown>;
+        for (const key of ["model", "reviewModel"] as const) {
+          const model = record[key];
+          const effort = record[key === "model" ? "reasoningEffort" : "reviewReasoningEffort"] ?? record.reasoningEffort;
+          if (model && typeof model === "object" && typeof effort === "string") {
+            const ref = model as ModelRef;
+            if (!capabilities.modelOptions.some((option) => sameModelRef(option, ref) && option.reasoningEfforts.some((choice) => choice.id === effort))) {
+              throw new AppError("MODEL_UNAVAILABLE", "The selected model or reasoning effort is unavailable. Replace it explicitly.");
+            }
+          }
+        }
+        Object.values(record).forEach(checkChoices);
+      };
+      checkChoices(operation.payload);
+      // Actions without explicit model choices dispatch from these saved contracts/configs.
+      const explicitActionModel = (operation.payload as { action?: { model?: unknown } }).action?.model;
+      if (payload.sessionId && !explicitActionModel) checkChoices(workflows.getSession(payload.sessionId)?.contract);
+      else if (payload.runId) {
+        const row = db.db.prepare("SELECT config_json FROM research_runs WHERE id = ?").get(payload.runId) as { config_json: string } | undefined;
+        if (row) checkChoices(JSON.parse(row.config_json));
+      } else if (threadId && !(operation.payload as { model?: unknown }).model) checkChoices(threads.getLatestRunConfig(threadId));
+      if (operation.channel === IPC_CHANNELS.START_WORKFLOW && !verifyLaunchPreview(StartWorkflowRequestSchema.parse(operation.payload), capabilities)) {
+        throw new AppError("PREVIEW_STALE");
+      }
+    },
+    describe: (operation) => {
+      const payload = operation.payload as { action?: { type: string }; threadId?: string; model?: ModelRef };
+      const title = threads.listThreads().find((thread) => thread.id === operationProjectId(operation))?.title;
+      return `Approve ${payload.action?.type ?? operation.channel.replace("scraply:", "")} ${title ? `for "${title}"` : "with the supplied inputs"}. This may use paid model or search calls. Usage and cost are unknown until reported.`;
+    },
+  });
+
   const pendingRequests = new Set<Promise<void>>();
-  const hasActiveWork = () => Boolean(engine?.hasActiveWork() || db.db.prepare(
+  let stopping = false;
+  const hasActiveWork = (excludePosts = 0, excludeKeyReservation = false) => Boolean(Math.max(0, pendingPosts - excludePosts) || validationPromise || (!excludeKeyReservation && searchKeyUpdatePending) || workflowModelScheduler.activeCallCount || workflowModelScheduler.pendingCallCount || engine?.hasActiveWork() || db.db.prepare(
     "SELECT 1 FROM workflow_sessions WHERE state IN ('running', 'pause-requested', 'stop-requested') LIMIT 1",
   ).get());
+  function activity(excludePosts = 0) {
+    const sessions = db.db.prepare(`SELECT id AS sessionId, thread_id AS threadId, state FROM workflow_sessions
+      WHERE state IN ('running','pause-requested','stop-requested') ORDER BY id`).all();
+    const posts = Math.max(0, pendingPosts - excludePosts);
+    return ActivitySchema.parse({
+      active: Boolean(posts || validationPromise || searchKeyUpdatePending || sessions.length || engine?.hasActiveWork() || workflowModelScheduler.activeCallCount || workflowModelScheduler.pendingCallCount),
+      engineActive: engine?.hasActiveWork() ?? false, activeRunIds: [...(engine?.getActiveRunIds() ?? [])],
+      workflows: sessions, activeModelCalls: workflowModelScheduler.activeCallCount, pendingModelCalls: workflowModelScheduler.pendingCallCount,
+      activeProjectIds: workflowModelScheduler.activeProjectIds, pendingPosts: posts, stopping,
+      searchKeyUpdatePending,
+      providerValidationPending: Boolean(validationPromise),
+    });
+  }
+  async function stopAll() {
+    if (stopping) throw new AppError("conflict", "The backend is already stopping work.");
+    stopping = true;
+    try {
+      const stopSessions = async () => {
+        const sessions = db.db.prepare("SELECT id FROM workflow_sessions WHERE state NOT IN ('finished','stop-requested') AND purpose != 'idea-turn'").all() as Array<{ id: string }>;
+        for (const { id } of sessions) {
+          const session = workflows.getSession(id);
+          if (!session || session.state === "finished" || session.state === "stop-requested") continue;
+          await workflowCoordinator.command({ threadId: session.threadId, sessionId: id, clientCommandId: randomUUID(),
+            expectedRevision: session.revision, action: { type: "stop" } });
+        }
+      };
+      await stopSessions();
+      for (const thread of threads.listThreads()) {
+        const progress = exploration.find(thread.id);
+        if (progress && ["mapping-coverage", "searching-gap", "generating-batch", "reviewing-batch"].includes(progress.status) && engine) engine.pauseOpportunityExploration(thread.id);
+      }
+      workflowModelScheduler.cancelAll(new Error("Work stopped by the owner"));
+      await engine?.shutdown();
+      for (const run of listPendingRuns()) {
+        const request = db.db.prepare(`SELECT 1 FROM workflow_work_items WHERE kind = 'research-request'
+          AND json_extract(output_refs_json, '$.runId') = ?`).get(run.runId);
+        if (request) await researchService.cancelRequestRun(run.runId);
+        else cancelRun(run.runId);
+      }
+      const deadline = Date.now() + 60_000;
+      while (activity(1).active) {
+        if (Date.now() >= deadline) throw new AppError("conflict", "Work has not settled after stopping. Keep the owner open and inspect activity.");
+        // Admissions already awaiting a provider/runtime response can settle after shutdown began.
+        // Cancel their normal scheduler/engine work too, instead of letting a late admission escape the drain.
+        await stopSessions();
+        workflowModelScheduler.cancelAll(new Error("Work stopped by the owner"));
+        cancelActiveRuns(engine);
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      return { ...activity(1), stopping: false };
+    } finally { stopping = false; }
+  }
+  const dispatchTickets = new Map<string, OperationProposal>();
+  const admissionLocks = new Set<string>();
   const handleRequest = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
     const startedAt = Date.now();
     const method = req.method ?? "GET";
     let route = req.url ?? "/";
+    let notify = false;
+    let mutationThreadId: string | undefined;
+    res.once("finish", () => {
+      if (notify && res.statusCode >= 200 && res.statusCode < 300) emitEvent({ type: "app-state-changed", ...(mutationThreadId ? { threadId: mutationThreadId } : {}) });
+    });
     try {
       if (!authorize(req, token)) return sendError(res, new AppError("unauthorized"));
-      if (method === "POST" && searchKeyUpdatePending) throw new AppError("conflict", "A search key is being updated. Try again in a moment.");
+      if (method === "POST" && searchKeyUpdatePending && req.url !== "/app/stop-all" && req.url !== "/search-keys/validate-reserved") throw new AppError("conflict", "A search key is being updated. Try again in a moment.");
       const url = new URL(req.url ?? "/", "http://127.0.0.1");
       route = url.pathname;
+      if (method === "POST" && stopping && route !== "/app/stop-all") throw new AppError("conflict", "The backend is stopping work. New actions are not being admitted.");
+      if (method === "GET" && route === "/app/projects") {
+        return sendJson(res, 200, ListProjectsResultSchema.parse({
+          projects: threads.listThreads().filter((thread) => url.searchParams.get("archived") === "true" || !thread.archivedAt), activeThreadId,
+        }));
+      }
+      const projectRoute = /^\/app\/projects\/([^/]+)(\/launch-settings)?$/.exec(route);
+      if (method === "GET" && projectRoute) {
+        const threadId = resolveEntity("project", decodeRouteSegment(projectRoute[1]!)).id;
+        return sendJson(res, 200, projectRoute[2] ? launchSettings(threadId) : await projectDetail(threadId));
+      }
+      if (method === "GET" && route === "/app/runs") {
+        const reference = url.searchParams.get("threadId");
+        return sendJson(res, 200, runIndex(reference ? resolveEntity("project", reference).id : undefined));
+      }
+      if (method === "GET" && route === "/app/activity") return sendJson(res, 200, activity());
+      if (method === "GET" && route === "/app/provider-status") return sendJson(res, 200, providerStatus());
       if (method === "GET" && route === "/health") return sendJson(res, 200, HealthResponseSchema.parse({ ok: true, version: context.appVersion, persistenceCheck: db.getMeta("persistence_probe") ?? undefined }));
-      if (method === "GET" && route === "/validation") return sendJson(res, 200, await validateProviders());
-      if (method === "GET" && route === "/workspace") return sendJson(res, 200, await workspaceState());
+      if (method === "GET" && route === "/validation") {
+        if (searchKeyUpdatePending || stopping) throw new AppError("conflict", "Wait for the current update or shutdown before checking connections.");
+        return sendJson(res, 200, await validateProviders());
+      }
+      if (method === "GET" && route === "/workspace") {
+        // Preserve the legacy desktop's free status reconciliation. Scoped app reads remain pure.
+        threads.recoverStaleDevelopmentStatuses();
+        return sendJson(res, 200, await workspaceState());
+      }
       const traceRoute = /^\/runs\/([^/]+)\/trace(?:\/steps\/([^/]+))?$/.exec(route);
       if (method === "GET" && traceRoute) {
         const runId = decodeRouteSegment(traceRoute[1]!);
@@ -1444,6 +1749,8 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
       }
       if (method !== "POST") throw new AppError("not_found", "Route not found.");
       if (route === "/settings/advanced") {
+        if (admissionLocks.size) throw new AppError("PROJECT_BUSY", "Wait for the confirmed operation to finish before changing settings.");
+        notify = true;
         advancedSettings = AppSettingsSchema.parse(await readBody(req));
         db.setSetting("advanced_settings", JSON.stringify(advancedSettings));
         context.nativeRuntime?.setReasoningSummaries(advancedSettings.reasoningSummaries);
@@ -1452,6 +1759,65 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
         return sendJson(res, 200, advancedSettings);
       }
       const body = await readBody(req);
+      const bodyRecord = body && typeof body === "object" ? body as { threadId?: string; runId?: string } : {};
+      mutationThreadId = bodyRecord.threadId;
+      if (!mutationThreadId && bodyRecord.runId) {
+        mutationThreadId = (db.db.prepare("SELECT thread_id FROM research_runs WHERE id = ?").get(bodyRecord.runId) as { thread_id: string } | undefined)?.thread_id;
+      }
+      const definition = Object.values(operationRegistry).find((item) => item.method === "POST" && (() => {
+        try { return item.route(body) === route; } catch { return false; }
+      })());
+      notify = Boolean(definition && !route.includes("preview") && !route.endsWith("/export") && route !== "/app/resolve");
+      const stoppingAction = route === "/app/stop-all" || route === "/research/cancel" || route === "/opportunities/pause"
+        || route === "/workflows/command" && ["pause", "stop"].includes((body as { action?: { type?: string } }).action?.type ?? "");
+      if (notify && !stoppingAction && (admissionLocks.has("*") || (mutationThreadId ? admissionLocks.has(mutationThreadId) : admissionLocks.size > 0))) {
+        throw new AppError("PROJECT_BUSY", "Wait for the confirmed operation to finish before changing its project.");
+      }
+      const ticketId = req.headers["x-scraply-operation-proof"];
+      if (typeof ticketId === "string") {
+        const proposal = dispatchTickets.get(ticketId);
+        dispatchTickets.delete(ticketId);
+        if (!proposal) throw new AppError("PREVIEW_STALE");
+        const target = operationRegistry[proposal.operation.channel]!;
+        if (target.route(proposal.operation.payload) !== route || canonicalJson(target.request.parse(body)) !== canonicalJson(proposal.operation.payload)) throw new AppError("PREVIEW_STALE");
+        const lockKey = operationProjectId(proposal.operation) ?? "*";
+        admissionLocks.add(lockKey);
+        res.once("finish", () => admissionLocks.delete(lockKey));
+        await billing.execute(proposal, async () => undefined);
+      }
+      if (route === "/app/resolve") {
+        const input = ResolveEntityRequestSchema.parse(body);
+        return sendJson(res, 200, resolveEntity(input.kind, input.reference, input.threadId ? resolveEntity("project", input.threadId).id : undefined));
+      }
+      if (route === "/app/launch-settings") {
+        const input = SaveLaunchSettingsSchema.parse(body);
+        requireThread(input.threadId);
+        assertProjectSettingsEditable(input.threadId);
+        db.setSetting(`launch-settings:${input.threadId}`, JSON.stringify(input.settings));
+        return sendJson(res, 200, input.settings);
+      }
+      if (route === "/app/operations/preview") return sendJson(res, 200, await billing.preview(OperationRequestSchema.parse(body)));
+      if (route === "/app/operations/execute") {
+        const { proposal } = ExecuteOperationRequestSchema.parse(body);
+        if (operationRegistry[proposal.operation.channel]?.owner !== "backend") throw new AppError("validation_error", "This operation requires its owner-service execution handler.");
+        await billing.verify(proposal);
+        const target = operationRegistry[proposal.operation.channel]!;
+        const ticket = randomUUID();
+        dispatchTickets.set(ticket, proposal);
+        try {
+          const address = server.address();
+          if (!address || typeof address === "string") throw new AppError("backend_unavailable");
+          const response = await fetch(`http://127.0.0.1:${address.port}${target.route(proposal.operation.payload)}`, {
+            method: "POST", headers: { authorization: `Bearer ${token}`, "content-type": "application/json", "x-scraply-operation-proof": ticket },
+            body: JSON.stringify(proposal.operation.payload),
+          });
+          const result = ApiResponseSchema(z.unknown()).parse(await response.json());
+          if (!result.ok) throw new AppError(result.error.code, result.error.message, undefined, result.error.reference, result.error.recovery);
+          return sendJson(res, 200, ExecuteOperationResultSchema.parse({ channel: proposal.operation.channel,
+            result: parseOperationResult(proposal.operation.channel, result.data) }));
+        } finally { dispatchTickets.delete(ticket); }
+      }
+      if (route === "/app/stop-all") return sendJson(res, 200, await stopAll());
       if (route === "/workflows/preview") {
         return sendJson(res, 200, PreviewWorkflowResultSchema.parse(await workflowCoordinator.preview(PreviewWorkflowRequestSchema.parse(body))));
       }
@@ -1463,7 +1829,7 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
       }
       if (route === "/ideas/turn") {
         const input = SubmitIdeaTurnRequestSchema.parse(body);
-        await validateProviders();
+        await operationCapabilities();
         return sendJson(res, 200, SubmitIdeaTurnResultSchema.parse(await workflowCoordinator.submitTurn(input)));
       }
       if (route === "/ideas/select-version") {
@@ -1473,8 +1839,8 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
       }
       if (route === "/threads") {
         const input = CreateThreadRequestSchema.parse(body);
-        const validation = cachedValidation ?? await validateProviders();
-        const searchProvider = validation.exa.valid && validation.perplexity.valid ? "auto" : validation.exa.valid ? "exa" : validation.perplexity.valid ? "perplexity" : "exa";
+        const capabilities = await operationCapabilities();
+        const searchProvider = capabilities.searchReady.exa && capabilities.searchReady.perplexity ? "auto" : capabilities.searchReady.exa ? "exa" : capabilities.searchReady.perplexity ? "perplexity" : "exa";
         const defaultModel = cachedModels.some((model) => sameModelRef(model, DEFAULT_RUN_CONFIG.model))
           ? DEFAULT_RUN_CONFIG.model
           : cachedModels[0] ?? DEFAULT_RUN_CONFIG.model;
@@ -1483,7 +1849,9 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
         activeThreadId = thread.id; db.setSetting("active_thread_id", thread.id); return sendJson(res, 200, { thread, workspace: await workspaceState() });
       }
       if (route === "/threads/select") {
-        const { threadId } = SelectThreadRequestSchema.parse(body); requireThread(threadId); activeThreadId = threadId;
+        const { threadId } = SelectThreadRequestSchema.parse(body); requireThread(threadId);
+        if (threads.listThreads().find((thread) => thread.id === threadId)?.archivedAt) throw new AppError("conflict", "Restore this project before selecting it.");
+        activeThreadId = threadId;
         db.setSetting("active_thread_id", threadId); return sendJson(res, 200, await workspaceState());
       }
       if (route === "/ideas/discard") {
@@ -1505,16 +1873,21 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
         db.setSetting("active_thread_id", activeThreadId ?? "");
         return sendJson(res, 200, await workspaceState());
       }
-      if (route === "/threads/title") {
-        const input = GenerateTitleRequestSchema.parse(body);
-        const validation = cachedValidation ?? await validateProviders();
-        if (!validation.native.connected || input.model.providerId !== OPENAI_SUBSCRIPTION_PROVIDER_ID
+      if (route === "/threads/title" || route === "/app/projects/title") {
+        const projectInput = route === "/app/projects/title" ? GenerateProjectTitleRequestSchema.parse(body) : null;
+        if (projectInput) requireThread(projectInput.threadId);
+        const input = projectInput ? GenerateTitleRequestSchema.parse({ context: projectInput.context, model: projectInput.model, reasoningEffort: projectInput.reasoningEffort }) : GenerateTitleRequestSchema.parse(body);
+        const capabilities = await operationCapabilities();
+        if (!capabilities.nativeConnected || input.model.providerId !== OPENAI_SUBSCRIPTION_PROVIDER_ID
           || !cachedModels.some((model) => sameModelRef(model, input.model))) {
           throw new AppError("conflict", "The title model is unavailable. Choose a title model in Settings.");
         }
+        if (!cachedModelOptions.some((option) => sameModelRef(option, input.model) && option.reasoningEfforts.some((effort) => effort.id === input.reasoningEffort))) {
+          throw new AppError("MODEL_UNAVAILABLE", "The selected title reasoning effort is unavailable.");
+        }
         const client = context.modelClients?.[input.model.providerId] ?? context.nativeRuntime;
         if (!client) throw new AppError("conflict", "Connect OpenAI to generate research titles.");
-        const result = await client.structuredCompletion({
+        const result = await scheduledModelClient(client, workflowModelScheduler, projectInput?.threadId ?? "project-title").structuredCompletion({
           generationId: randomUUID(), stage: "research-title", model: input.model, reasoningEffort: input.reasoningEffort,
           workOrder: {
             stage: "research-title", goal: "Name this research so it is easy to find in a sidebar.",
@@ -1523,7 +1896,17 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
           }, evidence: [], schema: GenerateTitleResultSchema, jsonSchema: deriveJsonSchema(GenerateTitleResultSchema),
           repairPolicy: "disabled",
         });
-        return sendJson(res, 200, GenerateTitleResultSchema.parse(result.output));
+        const title = GenerateTitleResultSchema.parse(result.output);
+        if (projectInput) {
+          db.immediateTransaction(() => {
+            requireThread(projectInput.threadId);
+            threads.renameThread(projectInput.threadId, title.title);
+            const scope = threads.getScope(projectInput.threadId);
+            if (scope) db.setSetting(`scope:${projectInput.threadId}`, JSON.stringify({ ...scope, title: title.title }));
+          });
+          return sendJson(res, 200, GenerateProjectTitleResultSchema.parse({ ...title, threadId: projectInput.threadId }));
+        }
+        return sendJson(res, 200, title);
       }
       if (route === "/threads/delete") {
         const { threadId } = DeleteThreadRequestSchema.parse(body); requireThread(threadId);
@@ -1541,12 +1924,14 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
       }
       if (route === "/scope") {
         const input = SaveScopeSchema.parse(body); requireThread(input.threadId);
+        assertProjectSettingsEditable(input.threadId);
         engine?.assertOpportunityEditingAllowed(input.threadId);
         threads.saveScope(input.threadId, input.scope);
         return sendJson(res, 200, await workspaceState());
       }
       if (route === "/run-config") {
         const input = SaveRunConfigSchema.parse(body); requireThread(input.threadId);
+        assertProjectSettingsEditable(input.threadId);
         engine?.assertOpportunityEditingAllowed(input.threadId);
         threads.saveRunConfig(input.threadId, { ...input.config, workflowVersion: 2 }, input.presetName);
         return sendJson(res, 200, await workspaceState());
@@ -1666,9 +2051,11 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
       // Main calls this before it stores a key change. Validating the candidate here leaves the live secrets
       // untouched when a key is rejected. Applying a change rebuilds the engine, which cancels its runs, so
       // changes wait until no run is active.
-      if (route === "/search-keys/preflight") {
+      if (route === "/search-keys/preflight" || route === "/search-keys/validate-reserved") {
         const { provider, apiKey } = SearchKeyPreflightSchema.parse(body);
-        if (hasActiveWork()) {
+        const reserved = route === "/search-keys/validate-reserved";
+        if (reserved && !searchKeyUpdatePending) throw new AppError("conflict", "Reserve the search-key update before validating its candidate.");
+        if (hasActiveWork(1, reserved)) {
           throw new AppError("conflict", "Search keys can't change while research is running. Wait for it to finish or cancel it, then try again.");
         }
         return sendJson(res, 200, apiKey ? await validateSearchKey(provider, apiKey) : { valid: true });
@@ -1683,7 +2070,8 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
       }
       if (route === "/research/start") {
         const { threadId } = StartResearchSchema.parse(body); requireThread(threadId);
-        const validation = cachedValidation ?? await validateProviders();
+        await operationCapabilities();
+        const validation = providerStatus();
         const scope = threads.getScope(threadId); if (!scope) throw new AppError("conflict", "Save the research scope first.");
         const config = threads.getLatestRunConfig(threadId) ?? RunConfigSchema.parse(DEFAULT_RUN_CONFIG);
         if (!isResearchModeReady(config, validation, validation.native)) {
@@ -1708,7 +2096,8 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
         const input = SelectProblemsSchema.parse(body); requireThread(input.threadId);
         const runId = latestDiscoveryRun(input.threadId); if (!runId) throw new AppError("conflict", "No completed discovery run is ready for selection.");
         requireRunnableRunProvider(runId);
-        const validation = cachedValidation ?? await validateProviders();
+        await operationCapabilities();
+        const validation = providerStatus();
         const modelOption = cachedModelOptions.find((item) => sameModelRef(item, input.model));
         if (!validation.native.connected || !modelOption) throw new AppError("conflict", "Selected development model is unavailable");
         if (!modelOption.reasoningEfforts.some((effort) => effort.id === input.reasoningEffort)) {
@@ -1792,7 +2181,8 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
       if (route === "/opportunities/review" || route === "/opportunities/start" || route === "/opportunities/resume") {
         const input = ReviewSavedOpportunitiesSchema.parse(body);
         requireThread(input.threadId);
-        const validation = cachedValidation ?? await validateProviders();
+        await operationCapabilities();
+        const validation = providerStatus();
         if (!validation.native.connected || input.model.providerId !== OPENAI_SUBSCRIPTION_PROVIDER_ID
           || !cachedModels.some(model => sameModelRef(model, input.model))) {
           throw new AppError("conflict", "Choose a connected Native OpenAI review model.");
@@ -1940,15 +2330,8 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
   }
   const address = server.address();
   if (!address || typeof address === "string") throw new Error("Backend failed to bind");
-  for (const handoff of threads.pendingDevelopmentHandoffs()) {
-    try {
-      await ensureEngine().startNextSelected(handoff.threadId, handoff.config);
-    } catch (error) {
-      threads.updateThreadStatus(handoff.threadId, "failed");
-      context.log?.({ level: "error", event: "development-handoff-recovery-failed", error });
-    }
-  }
-  void validateProviders().catch(() => undefined);
+  // Recovery above reconciles interruptions, but admitting saved handoffs requires an explicit paid command.
+  void inspectNativeCapabilities().catch(() => undefined);
   return {
     port: address.port, token,
     close: async () => {
@@ -1973,7 +2356,7 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
       cancelActiveRuns(engine);
       engine = null;
       invalidateProviderCache();
-      void validateProviders().catch(() => undefined);
+      void inspectNativeCapabilities().catch(() => undefined);
     },
     hasActiveWork,
     beginSearchKeyUpdate: () => {
@@ -1984,11 +2367,12 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
     finishSearchKeyUpdate: () => {
       const pending = searchKeyUpdatePending;
       searchKeyUpdatePending = false;
+      if (pending) emitEvent({ type: "app-state-changed" });
       return pending;
     },
     providersChanged: () => {
       invalidateProviderCache();
-      void validateProviders().catch(() => undefined);
+      void inspectNativeCapabilities().catch(() => undefined);
     },
   };
 }

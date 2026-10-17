@@ -17,13 +17,8 @@
     { value: "auto" as const, enabled: connected.exa || connected.perplexity, hint: "Connect a search provider in Settings" },
     { value: "exa" as const, enabled: connected.exa, hint: "Connect Exa in Settings" },
     { value: "perplexity" as const, enabled: connected.perplexity, hint: "Connect Perplexity in Settings" },
-  ].filter((choice) => choice.value !== "auto" || connected.exa === connected.perplexity)
+  ].filter((choice) => choice.value !== "auto" || value === "auto" || connected.exa === connected.perplexity)
     .sort((a, b) => Number(b.value === value) - Number(a.value === value) || Number(b.enabled) - Number(a.enabled)));
-
-  $effect(() => {
-    // One connected provider makes Automatic redundant, including for a saved choice.
-    if (connected.exa !== connected.perplexity) value = connected.exa ? "exa" : "perplexity";
-  });
 
   let help: HTMLSpanElement;
   let helpLeft = $state(0);

@@ -10,7 +10,8 @@ import { GenerationAttemptRepository } from "../../src/db/repositories/generatio
 import { ThreadRepository } from "../../src/db/repositories/threads";
 import { PreviewWorkflowResultSchema, WorkflowAdmissionReceiptSchema, WorkflowDetailSchema, WorkflowLaunchContractSchema, WorkflowLaunchDraftSchema } from "../../src/shared/workflow-contracts";
 import { FOCUSED_EXPERIMENT_DRAFT_INSTRUCTION, FOCUSED_EXPERIMENT_REVIEW_INSTRUCTION } from "../../src/core/experiment-review";
-import { WorkspaceStateSchema, SolutionViewSchema, type WorkspaceState, type ResearchEvent } from "../../src/shared/ipc";
+import { IPC_CHANNELS, WorkspaceStateSchema, SolutionViewSchema, type WorkspaceState, type ResearchEvent } from "../../src/shared/ipc";
+import { ProjectDetailSchema, OperationProposalSchema, ExecuteOperationResultSchema } from "../../src/shared/cli-contracts";
 import { GenerationStartPayloadSchema } from "../../src/shared/runtime-protocol";
 import { DEFAULT_RUN_CONFIG } from "../../src/shared/schemas";
 import type { JsonSchema } from "../../src/shared/json-schema";
@@ -558,15 +559,16 @@ describe("native research workflow through the production backend", () => {
   test("generates a title through the runtime and preserves archived research across restart", async () => {
     const item = await fixture({ searchEnabled: false });
     const threadId = await item.createThread("known-problem");
-    const title = await item.post("/threads/title", { context: statement, model, reasoningEffort: "low" }, z.object({ title: z.string() }));
+    const title = await item.post("/threads/title", { context: statement, model, reasoningEffort: "medium" }, z.object({ title: z.string() }));
     expect(title.title).toBe("Reducing repair shop delays");
     const request = item.requests()[0]!;
     expect(request.workOrder.instruction?.split(loadWritingGuidance())).toHaveLength(2);
     expect(request.model).toEqual(model);
-    expect(request.reasoningEffort).toBe("low");
+    expect(request.reasoningEffort).toBe("medium");
     expect(request.deadlineMs).toBeUndefined();
     expect(request.workOrder.inputs).toEqual({ brief: statement });
     expect((await item.raw("/threads/title", { context: statement, model: { ...model, modelId: "unavailable" }, reasoningEffort: "low" })).status).toBe(409);
+    expect((await item.raw("/threads/title", { context: statement, model, reasoningEffort: "low" })).status).toBe(409);
     expect(item.requests()).toHaveLength(1);
     const archived = await item.post("/threads/archive", { threadId, archived: true }, WorkspaceStateSchema);
     expect(archived.activeThreadId).toBeNull();
@@ -1138,6 +1140,20 @@ describe("native v2 decisions through the production backend", () => {
       expect(gap.db.prepare("SELECT status FROM threads WHERE id = ?").get(threadId)).toEqual({ status: "development-running" });
     } finally { gap.close(); }
     await item.restart();
+    // A lost handoff is readable after restart but cannot spend until explicitly confirmed.
+    for (let sample = 0; sample < 5; sample++) {
+      await item.workspace();
+      await Bun.sleep(100);
+      expect(item.requests().filter((request) => request.workOrder.stage === "solutions")).toHaveLength(optionRequestsBeforeRecovery);
+    }
+    const pending = await item.post(`/app/projects/${threadId}`, undefined, ProjectDetailSchema);
+    expect(pending.resumableDevelopment).toBe(true);
+    const proposal = await item.post("/app/operations/preview", {
+      channel: IPC_CHANNELS.SELECT_PROBLEMS,
+      payload: { threadId, problemIds: [discovered.id, removedProblemId], userProblem: null, model, reasoningEffort: "medium" },
+    }, OperationProposalSchema);
+    expect(item.requests().filter((request) => request.workOrder.stage === "solutions")).toHaveLength(optionRequestsBeforeRecovery);
+    await item.post("/app/operations/execute", { proposal }, ExecuteOperationResultSchema);
     completed = await item.waitFor((state) => {
       const optionRuns = new Set(state.solutions.map((solution) => solution.runId));
       return state.threads.find((thread) => thread.id === threadId)?.status === "solutions-ready"
@@ -1240,7 +1256,7 @@ describe("native v2 decisions through the production backend", () => {
     const detail = await item.post(`/ideas/${selected.id}`, undefined, SolutionViewSchema);
     expect(detail.evidenceFollowUp?.reassessmentStatus).toBe("failed");
     expect(detail.canReassessEvidence).toBe(true);
-    expect(item.events.slice(eventCount).map((event) => event.type)).toEqual(["run-cancelled"]);
+    expect(item.events.slice(eventCount).map((event) => event.type)).toEqual(["run-cancelled", "app-state-changed"]);
   }, 20_000);
 
   test("cancels a pending follow-up without losing analysis or reopening its cap", async () => {

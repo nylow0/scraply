@@ -1,100 +1,40 @@
 import { installApplicationMenu } from "./app-menu";
-import { GetRunTraceRequestSchema, GetRunTraceStepRequestSchema, RunTraceSchema, RunTraceStepDetailSchema } from "../shared/run-trace";
 import { app, BrowserWindow, dialog, ipcMain, safeStorage, screen, shell, utilityProcess, type IpcMainInvokeEvent } from "electron";
-import { randomUUID } from "node:crypto";
-import { startBrowserDevHost, type AppRequestHandler } from "./browser-dev";
-import { readFileSync, existsSync, writeFileSync } from "node:fs";
+import { startBrowserDevHost } from "./browser-dev";
+import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { z } from "zod";
-import {
-  ApiErrorResponseSchema,
-  ReviewSavedOpportunitiesSchema, EditOpportunityMembershipSchema, RequestFocusedExperimentSchema,
-  OpportunityExplorationActionSchema, PreviewOpportunityExtensionSchema, ApplyOpportunityExtensionSchema,
-  ApiResponseSchema,
-  CancelResearchSchema,
-  DiscardIdeaRequestSchema, ArchiveThreadRequestSchema, GenerateTitleRequestSchema, GenerateTitleResultSchema,
-  CreateThreadRequestSchema,
-  DeleteThreadRequestSchema,
-  EvidenceFollowUpRequestSchema,
-  EvidenceReassessmentRequestSchema,
-  ExportIdeasRequestSchema,
-  ExportResearchRequestSchema,
-  GetIdeaDetailRequestSchema,
-  GetSourceDetailRequestSchema,
-  IPC_CHANNELS,
-  NativeLoginCancelSchema,
-  NativeLoginCompleteSchema,
-  NativeLoginLaunchSchema,
-  NativeLoginStartSchema,
-  NativeProviderSchema,
-  RemoveSearchKeySchema,
-  ResumeResearchSchema,
-  SaveFavoriteModelSchema,
-  SaveRunConfigSchema,
-  SaveScopeSchema,
-  SaveSearchKeySchema,
-  SearchKeyPreflightResultSchema,
-  SelectProblemsSchema,
-  SelectOptionSchema,
-  SaveDecisionSchema,
-  SelectThreadRequestSchema,
-  StartResearchSchema,
-  type BackendReady,
-  type ValidationState,
-  type WorkspaceState,
-} from "../shared/ipc";
-import type { SearchProvider } from "../providers/search";
-import {
-  PreviewWorkflowRequestSchema, PreviewWorkflowResultSchema, StartWorkflowRequestSchema,
-  WorkflowAdmissionReceiptSchema, GetWorkflowRequestSchema, WorkflowDetailSchema,
-  CommandWorkflowRequestSchema, GetIdeaConversationRequestSchema, SelectIdeaVersionRequestSchema, IdeaConversationSchema,
-  SubmitIdeaTurnRequestSchema, SubmitIdeaTurnResultSchema,
-} from "../shared/workflow-contracts";
-import {
-  BackendToMainMessageSchema,
-  configuredProviderSecretsAreValid,
-  type BackendSecrets,
-} from "../shared/backend-process";
-import { AppError, toErrorPayload } from "../shared/errors";
-import { bundleBrowserIdeaExport } from "../shared/browser-export";
+import { IPC_CHANNELS, type BackendReady } from "../shared/ipc";
+import { BackendToMainMessageSchema } from "../shared/backend-process";
+import { AppError } from "../shared/errors";
 import { resolveRuntimeLaunch } from "../shared/runtime-artifact";
 import { createFileLogger, type FileLogger } from "./logging";
 import { createCredentialStore } from "./credential-store";
-import { configureCredentialProfile } from "./credential-profile";
-import { AppSettingsSchema } from "../shared/app-settings";
-import { revokeNativeAccount } from "./native-account";
-import { isAllowedRendererUrl, parseExternalHttpsUrl, rendererEntryUrl } from "./security";
+import { configureCredentialProfile, selectDesktopProfile } from "./credential-profile";
+import { isAllowedRendererUrl, rendererEntryUrl } from "./security";
 import { readWindowState, saveWindowState } from "./window-state";
+import { createAppService } from "../app/service";
+import { createBackendClient } from "../app/backend-client";
+import type { AppRequestHandler, BackendClientOptions, ExportTargetRequest } from "../app/service-contracts";
+import { createDesktopOwner } from "./desktop-owner";
+import { createRemoteApp } from "./remote-app";
+import { operationRegistry, appControlRegistry } from "../shared/cli-contracts";
 
 const isDev = !app.isPackaged;
 const browserDev = isDev && process.env.SCRAPLY_BROWSER_DEV === "1";
-const { projectProfile, credentialsPath } = configureCredentialProfile(app, process.env);
-const credentialStore = createCredentialStore(credentialsPath, safeStorage);
-const appHandlers = new Map<string, AppRequestHandler>();
+const selectedProfile = selectDesktopProfile(app, process.env, process.argv);
+// This configures paths only. Credential construction/decryption stays inside the owner factory.
+const { projectProfile, credentialsPath } = configureCredentialProfile(app, process.env, { explicitProfile: selectedProfile.explicit });
 let browserDevHost: Awaited<ReturnType<typeof startBrowserDevHost>> | undefined;
 let mainWindow: BrowserWindow | null = null;
-let backendReady: BackendReady | null = null;
 let backendProcess: Electron.UtilityProcess | null = null;
-let backendStartPromise: Promise<BackendReady> | null = null;
 let backendStartupFailure: string | null = null;
-let credentialLoadFailure: string | null = null;
 let logger: FileLogger | null = null;
 let isQuitting = false;
-const blockedProviderCredentialWrites = new Set<string>();
-
-interface PendingSecretUpdate {
-  resolve: () => void;
-  reject: (error: Error) => void;
-  timer: ReturnType<typeof setTimeout>;
-}
-
-const pendingSecretUpdates = new Map<string, PendingSecretUpdate>();
-let secrets: BackendSecrets = { exaApiKey: null, perplexityApiKey: null, providerCredentials: {} };
-
-function secretValues(): string[] {
-  return [secrets.exaApiKey, secrets.perplexityApiKey, ...Object.values(secrets.providerCredentials)]
-    .filter((value): value is string => Boolean(value));
-}
+let quitComplete = false;
+const backendExits = new Map<Electron.UtilityProcess, Promise<void>>();
+const credentialWrites = new Set<Promise<void>>();
+const localRequests = new Set<Promise<unknown>>();
 
 function getPaths() {
   const dataDir = join(projectProfile, "scraply");
@@ -105,30 +45,117 @@ function getPaths() {
   return { dataDir, dbPath, logsDir, bundledPromptsDir, promptOverridesDir };
 }
 
-function readAutomaticSecrets(): Partial<BackendSecrets> {
-  const candidate: Partial<BackendSecrets> = {};
-  const environmentKey = process.env.EXA_API_KEY?.trim();
-  if (environmentKey) candidate.exaApiKey = environmentKey;
-  const perplexityEnvironmentKey = process.env.PERPLEXITY_API_KEY?.trim();
-  if (perplexityEnvironmentKey) candidate.perplexityApiKey = perplexityEnvironmentKey;
-  if (!isDev || process.env.SCRAPLY_E2E === "1") return candidate;
-  const envPath = join(process.cwd(), ".env");
-  if (!existsSync(envPath)) return candidate;
-  const text = readFileSync(envPath, "utf8");
-  for (const line of text.split(/\r?\n/)) {
-    const trimmed = line.trim();
-    if (!trimmed || trimmed.startsWith("#")) continue;
-    const idx = trimmed.indexOf("=");
-    if (idx <= 0) continue;
-    const key = trimmed.slice(0, idx).trim();
-    const value = trimmed.slice(idx + 1).trim();
-    if (key === "EXA_API_KEY" && value) candidate.exaApiKey = value;
-    if (key === "PERPLEXITY_API_KEY" && value) candidate.perplexityApiKey = value;
+const localEffects = {
+  openExternal: (url: string) => shell.openExternal(url),
+  async revealPath(path: string) {
+    const error = await shell.openPath(path);
+    if (error) throw new AppError("validation_error", "The selected folder could not be opened.");
+  },
+  chooseExportTarget,
+};
+
+async function chooseExportTarget(request: ExportTargetRequest) {
+  if (!mainWindow) throw new AppError("backend_unavailable");
+  if (request.kind === "research") {
+    const selection = await dialog.showSaveDialog(mainWindow, {
+      title: "Export research JSON", defaultPath: request.filename,
+      filters: [{ name: "JSON", extensions: ["json"] }],
+    });
+    return selection.canceled ? null : selection.filePath ?? null;
   }
-  return candidate;
+  const selection = await dialog.showOpenDialog(mainWindow, {
+    title: "Export solution files", properties: ["openDirectory", "createDirectory"],
+  });
+  return selection.canceled ? null : selection.filePaths[0] ?? null;
 }
 
-async function startBackendProcess(): Promise<BackendReady> {
+async function stopBackendProcess() {
+  const processHandle = backendProcess;
+  if (processHandle) {
+    // The backend closes its runtime, SQLite and pending credential work before exit.
+    // Keep the handle until exit so retry cannot fork another SQLite owner early.
+    processHandle.postMessage({ type: "shutdown" });
+    await backendExits.get(processHandle);
+  }
+  await Promise.all([...backendExits.values()]);
+  await Promise.allSettled([...credentialWrites]);
+}
+
+const desktopOwner = createDesktopOwner({
+  profileDir: projectProfile, version: app.getVersion(),
+  async createApplication(publishEvent) {
+    await app.whenReady();
+    if (isQuitting) throw new AppError("backend_unavailable", "Scraply is closing.");
+    const backendClient = createBackendClient({
+      launch: startBackendProcess,
+      postMessage(message) {
+        if (!backendProcess) throw new AppError("backend_unavailable");
+        backendProcess.postMessage(message);
+      },
+      hasProcess: () => backendProcess !== null,
+      stop: stopBackendProcess,
+      externalSecretsNoop: Boolean(process.env.SCRAPLY_E2E_BACKEND_URL),
+    });
+    const service = createAppService({
+      paths: getPaths(), appVersion: app.getVersion(),
+      credentialStore: createCredentialStore(credentialsPath, safeStorage), backend: backendClient,
+      automaticSecrets: {
+        environment: process.env,
+        ...(isDev && process.env.SCRAPLY_E2E !== "1" ? { envFile: join(process.cwd(), ".env") } : {}),
+      },
+      ...localEffects, publishEvent,
+    });
+    const handlers = service.createHandlers({ openBrowser: true, revealPaths: true, exportTarget: browserDev ? "download" : "dialog" });
+    // Passive startup restores account/status only. Explicit validation retains its normal checks.
+    const startup = service.start({ validateAutomaticSecrets: false }).catch(error => {
+      logger?.log({ level: "error", component: "main", event: "backend-startup-failed", error });
+    });
+    return {
+      async invoke(channel, payload, interactive) {
+        if (!interactive) return service.invokeRemote(channel, payload);
+        const handler = handlers.get(channel);
+        if (!handler) throw new AppError("not_found", "Unknown app request.");
+        return handler(...(payload === undefined ? [] : [payload]));
+      },
+      secretValues: service.secretValues,
+      async stop() {
+        await Promise.allSettled([...localRequests]);
+        await startup;
+        // The graceful utility shutdown drains model work and credential callbacks.
+        await service.stop();
+      },
+    };
+  },
+  publishEvent(event) {
+    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(IPC_CHANNELS.BACKEND_EVENT, event);
+    browserDevHost?.publish(event);
+  },
+  onDisconnect(error) { logger?.log({ level: "warn", component: "main", event: "owner-disconnected", error }); },
+});
+const remoteApp = createRemoteApp({
+  invoke: (channel, payload) => desktopOwner.invoke(channel, payload, false), browserDev, ...localEffects,
+});
+const appHandlers: ReadonlyMap<string, AppRequestHandler> = new Map([
+  ...Object.keys(operationRegistry), ...Object.keys(appControlRegistry),
+].map(channel => [channel, async (...args: unknown[]) => {
+  if (isQuitting) throw new AppError("backend_unavailable", "Scraply is closing.");
+  if (args.length > 1) throw new AppError("validation_error", "App requests accept at most one argument.");
+  const request = (async () => {
+    if (desktopOwner.kind === "desktop") return desktopOwner.invoke(channel, args[0]);
+    const handler = remoteApp.handlers.get(channel);
+    if (!handler) throw new AppError("not_found", "Unknown app request.");
+    return handler(...args);
+  })();
+  localRequests.add(request);
+  try { return await request; }
+  finally { localRequests.delete(request); }
+}]));
+
+async function startBackendProcess(
+  input: Parameters<BackendClientOptions["launch"]>[0],
+  hooks: Parameters<BackendClientOptions["launch"]>[1],
+): Promise<BackendReady> {
+  if (isQuitting) throw new AppError("backend_unavailable", "Scraply is closing.");
   const e2eBackendUrl = process.env.SCRAPLY_E2E_BACKEND_URL;
   const e2eBackendToken = process.env.SCRAPLY_E2E_BACKEND_TOKEN;
   if (process.env.SCRAPLY_E2E === "1" && e2eBackendUrl && e2eBackendToken) {
@@ -140,7 +167,7 @@ async function startBackendProcess(): Promise<BackendReady> {
     return { port: Number(url.port), token: e2eBackendToken };
   }
 
-  const { dataDir, dbPath, bundledPromptsDir, promptOverridesDir } = getPaths();
+  const { dataDir, dbPath, bundledPromptsDir, promptOverridesDir } = input.paths;
   let runtime: ReturnType<typeof resolveRuntimeLaunch>;
   let runtimeError: string | undefined;
   try {
@@ -154,6 +181,10 @@ async function startBackendProcess(): Promise<BackendReady> {
   logger?.log({ level: "info", component: "main", event: "backend-starting" });
   const processHandle = utilityProcess.fork(backendEntry, [], { serviceName: "scraply-backend" });
   backendProcess = processHandle;
+  let processExited = false;
+  const exited = new Promise<void>(resolve => { processHandle.once("exit", () => { processExited = true; resolve(); }); });
+  backendExits.set(processHandle, exited);
+  void exited.then(() => { backendExits.delete(processHandle); });
 
   return await new Promise((resolve, reject) => {
     let settled = false;
@@ -162,18 +193,11 @@ async function startBackendProcess(): Promise<BackendReady> {
       settled = true;
       const message = "Backend startup timed out";
       backendStartupFailure = message;
-      if (backendProcess === processHandle) backendProcess = null;
       processHandle.kill();
       reject(new Error(message));
     }, 15_000);
 
-    const rejectPendingUpdates = (message: string): void => {
-      for (const [requestId, pending] of pendingSecretUpdates) {
-        clearTimeout(pending.timer);
-        pending.reject(new Error(message));
-        pendingSecretUpdates.delete(requestId);
-      }
-    };
+    const rejectPendingUpdates = hooks.unavailable;
 
     processHandle.on("message", async (rawMessage) => {
       const parsed = BackendToMainMessageSchema.safeParse(rawMessage);
@@ -181,47 +205,26 @@ async function startBackendProcess(): Promise<BackendReady> {
       const message = parsed.data;
 
       if (message.type === "event") {
-        if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(IPC_CHANNELS.BACKEND_EVENT, message.event);
-        browserDevHost?.publish(message.event);
+        input.publishEvent(message.event);
         return;
       }
       if (message.type === "persist-provider-credential") {
-        if (blockedProviderCredentialWrites.has(message.providerId)) {
-          processHandle.postMessage({
-            type: "provider-credential-persisted", requestId: message.requestId, ok: false,
-            error: "The account was signed out before this credential could be saved",
-          });
-          return;
-        }
+        if (processExited) return;
+        const pending = input.persistProviderCredential(message.providerId, message.credential);
+        credentialWrites.add(pending);
         try {
-          const nextSecrets = {
-            ...secrets,
-            providerCredentials: { ...secrets.providerCredentials, [message.providerId]: message.credential },
-          };
-          secrets = await credentialStore.save(nextSecrets, () => {
-            if (blockedProviderCredentialWrites.has(message.providerId)) {
-              throw new Error("The account was signed out before this credential could be saved");
-            }
-          });
-          processHandle.postMessage({ type: "provider-credential-persisted", requestId: message.requestId, ok: true });
+          await pending;
+          if (!processExited) processHandle.postMessage({ type: "provider-credential-persisted", requestId: message.requestId, ok: true });
         } catch (error) {
-          blockedProviderCredentialWrites.add(message.providerId);
-          processHandle.postMessage({
-            type: "provider-credential-persisted",
-            requestId: message.requestId,
-            ok: false,
+          if (!processExited) processHandle.postMessage({
+            type: "provider-credential-persisted", requestId: message.requestId, ok: false,
             error: error instanceof Error ? error.message : "Credential persistence failed",
           });
-        }
+        } finally { credentialWrites.delete(pending); }
         return;
       }
       if (message.type === "secrets-updated") {
-        const pending = pendingSecretUpdates.get(message.requestId);
-        if (!pending) return;
-        clearTimeout(pending.timer);
-        pendingSecretUpdates.delete(message.requestId);
-        if (message.error) pending.reject(new AppError("conflict", message.error));
-        else pending.resolve();
+        hooks.secretsUpdated(message.requestId, message.error);
         return;
       }
       if (message.type === "log") {
@@ -276,7 +279,6 @@ async function startBackendProcess(): Promise<BackendReady> {
       const isCurrentProcess = backendProcess === processHandle;
       if (isCurrentProcess) {
         backendProcess = null;
-        backendReady = null;
         backendStartupFailure = expectedShutdown ? null : message;
       }
       logger?.log({
@@ -299,35 +301,13 @@ async function startBackendProcess(): Promise<BackendReady> {
       dbPath,
       bundledPromptsDir,
       promptOverridesDir,
-      appVersion: app.getVersion(),
-      secrets,
+      appVersion: input.appVersion,
+      secrets: input.secrets,
+      ...(input.validateAutomaticSecrets !== undefined ? { validateAutomaticSecrets: input.validateAutomaticSecrets } : {}),
       ...(runtimeError ? { runtimeError } : {}),
       ...(runtime ? { runtime } : {}),
     });
   });
-}
-
-async function ensureBackend(): Promise<BackendReady> {
-  if (credentialLoadFailure) {
-    backendStartupFailure = credentialLoadFailure;
-    throw new AppError("backend_unavailable", credentialLoadFailure);
-  }
-  if (backendReady) return backendReady;
-  if (!backendStartPromise) {
-    backendStartPromise = startBackendProcess()
-      .then((ready) => {
-        backendReady = ready;
-        return ready;
-      })
-      .catch((error) => {
-        backendStartupFailure = error instanceof Error ? error.message : "The local backend failed to start.";
-        throw error;
-      })
-      .finally(() => {
-        backendStartPromise = null;
-      });
-  }
-  return backendStartPromise;
 }
 
 function createWindow(): void {
@@ -438,160 +418,6 @@ function createWindow(): void {
   }
 }
 
-async function backendRequest<T>(path: string, init?: RequestInit): Promise<T> {
-  let ready = backendReady;
-  if (!ready) {
-    try {
-      ready = await ensureBackend();
-    } catch {
-      throw new AppError("backend_unavailable", backendStartupFailure ?? "The local backend is unavailable.");
-    }
-  }
-  const headers = new Headers(init?.headers);
-  headers.set("authorization", `Bearer ${ready.token}`);
-  headers.set("content-type", "application/json");
-  let response: Response;
-  try {
-    response = await fetch(`http://127.0.0.1:${ready.port}${path}`, { ...init, headers });
-  } catch {
-    throw new AppError("backend_unavailable");
-  }
-
-  const payload: unknown = await response.json().catch(() => null);
-  if (!response.ok) {
-    const parsedError = ApiErrorResponseSchema.safeParse(payload);
-    if (parsedError.success) {
-      const { code, message, reference, recovery } = parsedError.data.error;
-      throw new AppError(
-        code,
-        reference ? `${message} Reference: ${reference}` : message,
-        response.status,
-        reference,
-        recovery,
-      );
-    }
-    throw new AppError("internal_error");
-  }
-
-  const parsed = ApiResponseSchema(z.unknown()).safeParse(payload);
-  if (!parsed.success || !parsed.data.ok) throw new AppError("internal_error");
-  return parsed.data.data as T;
-}
-
-async function updateBackendSecrets(nextSecrets: BackendSecrets, onlyWhenIdle = false): Promise<void> {
-  if (!backendProcess) {
-    if (process.env.SCRAPLY_E2E_BACKEND_URL) return;
-    throw new AppError("backend_unavailable", backendStartupFailure ?? "The local backend is unavailable.");
-  }
-  if (!backendReady) throw new AppError("backend_unavailable", backendStartupFailure ?? "The local backend is unavailable.");
-  const requestId = randomUUID();
-  await new Promise<void>((resolve, reject) => {
-    const timer = setTimeout(() => {
-      pendingSecretUpdates.delete(requestId);
-      reject(new AppError("backend_unavailable", "The local backend did not acknowledge the credential update."));
-    }, 5_000);
-    pendingSecretUpdates.set(requestId, { resolve, reject, timer });
-    backendProcess?.postMessage({ type: "update-secrets", requestId, secrets: nextSecrets, onlyWhenIdle });
-  });
-}
-
-async function finishSearchKeyUpdate(previousSecrets?: BackendSecrets): Promise<void> {
-  if (!backendProcess || !backendReady) throw new AppError("backend_unavailable", "The local backend is unavailable.");
-  const requestId = randomUUID();
-  await new Promise<void>((resolve, reject) => {
-    const timer = setTimeout(() => {
-      pendingSecretUpdates.delete(requestId);
-      reject(new AppError("backend_unavailable", "The local backend did not finish the search key update."));
-    }, 5_000);
-    pendingSecretUpdates.set(requestId, { resolve, reject, timer });
-    backendProcess?.postMessage({ type: "finish-search-key-update", requestId, secrets: previousSecrets });
-  });
-}
-
-async function validateAndPersistSecrets(candidate: BackendSecrets): Promise<ValidationState> {
-  const previous = secrets;
-  await updateBackendSecrets(candidate);
-  try {
-    const validation = await backendRequest<ValidationState>("/validation");
-    if (!validation.setupComplete || !configuredProviderSecretsAreValid(candidate, validation)) {
-      await updateBackendSecrets(previous);
-      return validation;
-    }
-    secrets = await credentialStore.save(candidate);
-    return validation;
-  } catch (error) {
-    await updateBackendSecrets(previous).catch(() => undefined);
-    throw error;
-  }
-}
-
-async function retryAutomaticConnection(): Promise<void> {
-  if (credentialLoadFailure) {
-    secrets = credentialStore.load();
-    credentialLoadFailure = null;
-  }
-  const automaticSecrets = readAutomaticSecrets();
-  const candidate: BackendSecrets = {
-    exaApiKey: automaticSecrets.exaApiKey ?? secrets.exaApiKey,
-    perplexityApiKey: automaticSecrets.perplexityApiKey ?? secrets.perplexityApiKey,
-    providerCredentials: secrets.providerCredentials,
-  };
-
-  if (!backendReady) {
-    const staleProcess = backendProcess;
-    backendProcess = null;
-    staleProcess?.kill();
-    secrets = candidate;
-    await ensureBackend();
-  }
-
-  await validateAndPersistSecrets(candidate);
-  if (backendProcess) await backendRequest("/native/retry", { method: "POST", body: "{}" });
-}
-
-const SEARCH_KEYS = {
-  exa: { field: "exaApiKey", name: "Exa", variable: "EXA_API_KEY" },
-  perplexity: { field: "perplexityApiKey", name: "Perplexity", variable: "PERPLEXITY_API_KEY" },
-} as const satisfies Record<SearchProvider, { field: keyof BackendSecrets; name: string; variable: string }>;
-
-// Saves (apiKey) or removes (null) a search key the user manages in the app. A new key is checked
-// with the provider before it is stored; a rejected key changes nothing. Keys set in the environment
-// or .env override saved keys on every launch, so the app refuses to edit those instead of letting
-// the change silently revert.
-let searchKeyChangeInProgress = false;
-async function changeSearchKey(provider: SearchProvider, apiKey: string | null): Promise<WorkspaceState> {
-  if (searchKeyChangeInProgress) throw new AppError("conflict", "A search key is being updated. Try again in a moment.");
-  searchKeyChangeInProgress = true;
-  try {
-  const { field, name, variable } = SEARCH_KEYS[provider];
-  if (readAutomaticSecrets()[field]) {
-    throw new AppError("conflict", `This ${name} key comes from ${variable} in the environment or .env file. Change it there, then retry connections.`);
-  }
-  const check = SearchKeyPreflightResultSchema.parse(await backendRequest("/search-keys/preflight", {
-    method: "POST", body: JSON.stringify({ provider, apiKey }),
-  }));
-  if (!check.valid) throw new AppError("validation_error", check.error ?? `${name} did not accept this key.`);
-  const previousSecrets = secrets;
-  const candidate = { ...secrets, [field]: apiKey };
-  let persisted = false;
-  try {
-    // The backend reserves an idle moment until the encrypted write finishes. A refused key never reaches disk.
-    await updateBackendSecrets(candidate, true);
-    secrets = await credentialStore.save(candidate);
-    persisted = true;
-    await finishSearchKeyUpdate();
-  } catch (cause) {
-    await finishSearchKeyUpdate(persisted ? undefined : previousSecrets);
-    throw cause;
-  }
-  // Wait for the fresh check so the returned workspace shows the new key's status, not "Checking…".
-  await backendRequest("/validation");
-  return backendRequest<WorkspaceState>("/workspace");
-  } finally {
-    searchKeyChangeInProgress = false;
-  }
-}
-
 function assertTrustedSender(event: IpcMainInvokeEvent): void {
   const senderUrl = event.senderFrame?.url ?? "";
   const expectedRendererUrl = rendererEntryUrl(
@@ -604,189 +430,11 @@ function assertTrustedSender(event: IpcMainInvokeEvent): void {
 }
 
 function registerIpc(): void {
-  const handle = (channel: string, handler: (...args: unknown[]) => unknown): void => {
-    if (browserDev) appHandlers.set(channel, handler);
-    ipcMain.handle(channel, (event, ...args) => {
+  for (const [channel, handler] of appHandlers) {
+    ipcMain.handle(channel, (event, ...args: unknown[]) => {
       assertTrustedSender(event);
       return handler(...args);
     });
-  };
-  const post = <T>(path: string, body: T) => backendRequest(path, { method: "POST", body: JSON.stringify(body) });
-  // Workflow and search-key handlers return an envelope so Electron keeps the typed error payload across IPC.
-  const workflow = async <T>(operation: () => Promise<T>) => {
-    try { return { ok: true as const, data: await operation() }; }
-    catch (error) { return { ok: false as const, error: toErrorPayload(error).error }; }
-  };
-
-  handle(IPC_CHANNELS.PREVIEW_WORKFLOW, (body) => workflow(async () =>
-    PreviewWorkflowResultSchema.parse(await post("/workflows/preview", PreviewWorkflowRequestSchema.parse(body)))));
-  handle(IPC_CHANNELS.START_WORKFLOW, (body) => workflow(async () =>
-    WorkflowAdmissionReceiptSchema.parse(await post("/workflows/start", StartWorkflowRequestSchema.parse(body)))));
-  handle(IPC_CHANNELS.GET_WORKFLOW, (body) => workflow(async () => {
-    const { sessionId, cursor } = GetWorkflowRequestSchema.parse(body);
-    const path = `/workflows/${encodeURIComponent(sessionId)}${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ""}`;
-    return WorkflowDetailSchema.parse(await backendRequest(path));
-  }));
-  handle(IPC_CHANNELS.GET_RUN_TRACE, (body) => workflow(async () => {
-    const { runId } = GetRunTraceRequestSchema.parse(body);
-    return RunTraceSchema.parse(await backendRequest(`/runs/${encodeURIComponent(runId)}/trace`));
-  }));
-  handle(IPC_CHANNELS.GET_RUN_TRACE_STEP, (body) => workflow(async () => {
-    const { runId, stepId } = GetRunTraceStepRequestSchema.parse(body);
-    return RunTraceStepDetailSchema.parse(await backendRequest(`/runs/${encodeURIComponent(runId)}/trace/steps/${encodeURIComponent(stepId)}`));
-  }));
-  handle(IPC_CHANNELS.COMMAND_WORKFLOW, (body) => workflow(async () =>
-    WorkflowAdmissionReceiptSchema.parse(await post("/workflows/command", CommandWorkflowRequestSchema.parse(body)))));
-  handle(IPC_CHANNELS.GET_IDEA_CONVERSATION, (body) => workflow(async () => {
-    const { ideaId, branchId, cursor } = GetIdeaConversationRequestSchema.parse(body);
-    const params = new URLSearchParams();
-    if (branchId) params.set("branchId", branchId);
-    if (cursor) params.set("cursor", cursor);
-    const query = params.size ? `?${params}` : "";
-    return IdeaConversationSchema.parse(await backendRequest(`/ideas/${encodeURIComponent(ideaId)}/conversation${query}`));
-  }));
-  handle(IPC_CHANNELS.SELECT_IDEA_VERSION, (body) => workflow(async () =>
-    IdeaConversationSchema.parse(await post("/ideas/select-version", SelectIdeaVersionRequestSchema.parse(body)))));
-  handle(IPC_CHANNELS.SUBMIT_IDEA_TURN, (body) => workflow(async () =>
-    SubmitIdeaTurnResultSchema.parse(await post("/ideas/turn", SubmitIdeaTurnRequestSchema.parse(body)))));
-
-  handle(IPC_CHANNELS.GET_VALIDATION, () => backendRequest("/validation"));
-  handle(IPC_CHANNELS.RETRY_CONNECTION, retryAutomaticConnection);
-  handle(IPC_CHANNELS.GET_WORKSPACE, () => backendRequest("/workspace"));
-  handle(IPC_CHANNELS.GET_ADVANCED_SETTINGS, () => backendRequest("/settings/advanced"));
-  handle(IPC_CHANNELS.SAVE_ADVANCED_SETTINGS, (body) => post("/settings/advanced", AppSettingsSchema.parse(body)));
-  handle(IPC_CHANNELS.OPEN_DATA_FOLDER, async () => {
-    await shell.openPath(getPaths().dataDir);
-  });
-  handle(IPC_CHANNELS.OPEN_LOGS_FOLDER, async () => {
-    await shell.openPath(getPaths().logsDir);
-  });
-  handle(IPC_CHANNELS.CREATE_THREAD, (body) => post("/threads", CreateThreadRequestSchema.parse(body ?? {})));
-  handle(IPC_CHANNELS.SELECT_THREAD, (body) => post("/threads/select", SelectThreadRequestSchema.parse(body)));
-  handle(IPC_CHANNELS.DISCARD_IDEA, (body) => post("/ideas/discard", DiscardIdeaRequestSchema.parse(body)));
-  handle(IPC_CHANNELS.ARCHIVE_THREAD, (body) => post("/threads/archive", ArchiveThreadRequestSchema.parse(body)));
-  handle(IPC_CHANNELS.GENERATE_TITLE, async (body) => GenerateTitleResultSchema.parse(await post("/threads/title", GenerateTitleRequestSchema.parse(body))));
-  handle(IPC_CHANNELS.DELETE_THREAD, (body) => post("/threads/delete", DeleteThreadRequestSchema.parse(body)));
-  handle(IPC_CHANNELS.SAVE_SCOPE, (body) => post("/scope", SaveScopeSchema.parse(body)));
-  handle(IPC_CHANNELS.SAVE_RUN_CONFIG, (body) => post("/run-config", SaveRunConfigSchema.parse(body)));
-  handle(IPC_CHANNELS.SAVE_FAVORITE_MODEL, (body) => post("/models/favorite", SaveFavoriteModelSchema.parse(body)));
-  handle(IPC_CHANNELS.NATIVE_LOGIN_START, async (body) => {
-    const input = NativeLoginStartSchema.parse(body);
-    blockedProviderCredentialWrites.delete(input.providerId);
-    const launch = NativeLoginLaunchSchema.parse(await post("/native/login/start", input));
-    const authorizationUrl = launch.method === "device" ? launch.verificationUrl : launch.authorizationUrl;
-    await shell.openExternal(parseExternalHttpsUrl({ url: authorizationUrl }));
-    return {
-      loginId: launch.loginId,
-      providerId: launch.providerId,
-      method: launch.method,
-      ...(launch.method === "device" ? { verificationUrl: launch.verificationUrl, userCode: launch.userCode } : {}),
-    };
-  });
-  handle(IPC_CHANNELS.NATIVE_LOGIN_COMPLETE, (body) => post("/native/login/complete", NativeLoginCompleteSchema.parse(body)));
-  handle(IPC_CHANNELS.NATIVE_LOGIN_CANCEL, async (body) => {
-    const input = NativeLoginCancelSchema.parse(body);
-    blockedProviderCredentialWrites.add(input.providerId);
-    const providerCredentials = { ...secrets.providerCredentials };
-    delete providerCredentials[input.providerId];
-    const nextSecrets = { ...secrets, providerCredentials };
-    return revokeNativeAccount(async () => {
-      let persisted = nextSecrets;
-      try { persisted = await credentialStore.save(nextSecrets); }
-      finally { secrets = persisted; }
-    }, () => post("/native/login/cancel", input));
-  });
-  handle(IPC_CHANNELS.NATIVE_ACCOUNT_REFRESH, (body) => post("/native/account/refresh", NativeProviderSchema.parse(body)));
-  handle(IPC_CHANNELS.SAVE_SEARCH_KEY, (body) => workflow(async () => {
-    const { provider, apiKey } = SaveSearchKeySchema.parse(body);
-    return changeSearchKey(provider, apiKey);
-  }));
-  handle(IPC_CHANNELS.REMOVE_SEARCH_KEY, (body) => workflow(() => changeSearchKey(RemoveSearchKeySchema.parse(body).provider, null)));
-  handle(IPC_CHANNELS.NATIVE_LOGOUT, async (body) => {
-    const input = NativeProviderSchema.parse(body);
-    blockedProviderCredentialWrites.add(input.providerId);
-    const providerCredentials = { ...secrets.providerCredentials };
-    delete providerCredentials[input.providerId];
-    const nextSecrets = { ...secrets, providerCredentials };
-    return revokeNativeAccount(async () => {
-      let persisted = nextSecrets;
-      try { persisted = await credentialStore.save(nextSecrets); }
-      finally { secrets = persisted; }
-    }, () => post("/native/logout", input));
-  });
-  handle(IPC_CHANNELS.START_RESEARCH, (body) => post("/research/start", StartResearchSchema.parse(body)));
-  handle(IPC_CHANNELS.CANCEL_RESEARCH, (body) => post("/research/cancel", CancelResearchSchema.parse(body)));
-  handle(IPC_CHANNELS.RESUME_RESEARCH, (body) => post("/research/resume", ResumeResearchSchema.parse(body)));
-  handle(IPC_CHANNELS.SELECT_PROBLEMS, (body) => post("/research/select-problems", SelectProblemsSchema.parse(body)));
-  handle(IPC_CHANNELS.SELECT_OPTION, (body) => post("/research/select-option", SelectOptionSchema.parse(body)));
-  handle(IPC_CHANNELS.SAVE_DECISION, (body) => post("/research/decision", SaveDecisionSchema.parse(body)));
-  handle(IPC_CHANNELS.REVIEW_OPPORTUNITIES, (body) => post("/opportunities/review", ReviewSavedOpportunitiesSchema.parse(body)));
-  handle(IPC_CHANNELS.EDIT_OPPORTUNITY_MEMBERSHIP, (body) => post("/opportunities/membership", EditOpportunityMembershipSchema.parse(body)));
-  handle(IPC_CHANNELS.REQUEST_FOCUSED_EXPERIMENT, (body) => post("/experiments/plan", RequestFocusedExperimentSchema.parse(body)));
-  handle(IPC_CHANNELS.PAUSE_OPPORTUNITY_EXPLORATION, (body) => post("/opportunities/pause", OpportunityExplorationActionSchema.parse(body)));
-  handle(IPC_CHANNELS.START_OPPORTUNITY_EXPLORATION, (body) => post("/opportunities/start", ReviewSavedOpportunitiesSchema.parse(body)));
-  handle(IPC_CHANNELS.RESUME_OPPORTUNITY_EXPLORATION, (body) => post("/opportunities/resume", ReviewSavedOpportunitiesSchema.parse(body)));
-  handle(IPC_CHANNELS.PREVIEW_OPPORTUNITY_EXTENSION, (body) => post("/opportunities/extension-preview", PreviewOpportunityExtensionSchema.parse(body)));
-  handle(IPC_CHANNELS.APPLY_OPPORTUNITY_EXTENSION, (body) => post("/opportunities/extension", ApplyOpportunityExtensionSchema.parse(body)));
-  handle(IPC_CHANNELS.EVIDENCE_FOLLOW_UP, (body) => post("/research/evidence-follow-up", EvidenceFollowUpRequestSchema.parse(body)));
-  handle(IPC_CHANNELS.EVIDENCE_REASSESSMENT, (body) => post("/research/evidence-reassessment", EvidenceReassessmentRequestSchema.parse(body)));
-  handle(IPC_CHANNELS.EXPORT_RESEARCH, async (body) => {
-    const payload = ExportResearchRequestSchema.parse(body);
-    const bundle = await post("/research/export", payload) as { filename: string; content: string };
-    if (browserDev) return { downloads: [bundle] };
-    if (!mainWindow) throw new AppError("backend_unavailable");
-    const filename = bundle.filename.replace(/[^a-zA-Z0-9._-]/g, "-");
-    const selection = await dialog.showSaveDialog(mainWindow, {
-      title: "Export research JSON",
-      defaultPath: filename,
-      filters: [{ name: "JSON", extensions: ["json"] }],
-    });
-    if (selection.canceled || !selection.filePath) return { cancelled: true };
-    writeFileSync(selection.filePath, bundle.content, "utf8");
-    return { cancelled: false, file: selection.filePath };
-  });
-  handle(IPC_CHANNELS.EXPORT_IDEAS, async (body) => {
-    const payload = ExportIdeasRequestSchema.parse(body);
-    const bundle = await post("/ideas/export", payload) as { filename: string; files: Array<{ filename: string; content: string }> };
-    if (browserDev) return { downloads: [bundleBrowserIdeaExport(bundle, payload.format)] };
-    if (!mainWindow) throw new AppError("backend_unavailable");
-    const selection = await dialog.showOpenDialog(mainWindow, {
-      title: "Export solution files",
-      properties: ["openDirectory", "createDirectory"],
-    });
-    if (selection.canceled || !selection.filePaths[0]) return { cancelled: true, files: [] };
-    const directory = selection.filePaths[0];
-    const files = bundle.files.map((file) => {
-      const filename = file.filename.replace(/[^a-zA-Z0-9._-]/g, "-");
-      return writeUniqueExportFile(directory, filename, file.content);
-    });
-    return { cancelled: false, directory, files };
-  });
-  handle(IPC_CHANNELS.GET_SOURCE_DETAIL, (body) => {
-    const { sourceId } = GetSourceDetailRequestSchema.parse(body);
-    return backendRequest(`/sources/${encodeURIComponent(sourceId)}`);
-  });
-  handle(IPC_CHANNELS.GET_IDEA_DETAIL, (body) => {
-    const { ideaId } = GetIdeaDetailRequestSchema.parse(body);
-    return backendRequest(`/ideas/${encodeURIComponent(ideaId)}`);
-  });
-  handle(IPC_CHANNELS.OPEN_EXTERNAL_URL, async (body) => {
-    await shell.openExternal(parseExternalHttpsUrl(body));
-  });
-}
-
-function writeUniqueExportFile(directory: string, filename: string, content: string): string {
-  const dotIndex = filename.lastIndexOf(".");
-  const stem = dotIndex > 0 ? filename.slice(0, dotIndex) : filename;
-  const extension = dotIndex > 0 ? filename.slice(dotIndex) : "";
-  for (let suffix = 0; ; suffix += 1) {
-    const candidate = suffix === 0 ? filename : `${stem}-${suffix + 1}${extension}`;
-    try {
-      writeFileSync(join(directory, candidate), content, { encoding: "utf8", flag: "wx" });
-      return candidate;
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-    }
   }
 }
 
@@ -811,11 +459,14 @@ const gotLock = process.env.SCRAPLY_E2E === "1" || app.requestSingleInstanceLock
 if (!gotLock) {
   app.quit();
 } else {
+  // Start locking before ready. The owner-only factory waits for safeStorage readiness.
+  const ownerStartup = desktopOwner.start();
+  void ownerStartup.catch(() => undefined);
   app.whenReady().then(async () => {
     logger = createFileLogger({
       logsDir: getPaths().logsDir,
       appVersion: app.getVersion(),
-      getSecrets: secretValues,
+      getSecrets: desktopOwner.secretValues,
     });
     logger.log({
       level: "info",
@@ -823,12 +474,8 @@ if (!gotLock) {
       event: "app-startup",
       context: { version: app.getVersion() },
     });
-    try { secrets = credentialStore.load(); }
-    catch (error) {
-      credentialLoadFailure = error instanceof Error ? error.message : "Saved credentials could not be read.";
-    }
-    const automaticSecrets = readAutomaticSecrets();
-    secrets = { ...secrets, ...automaticSecrets };
+    await ownerStartup;
+    if (isQuitting) return;
     registerIpc();
     if (browserDev) {
       browserDevHost = await startBrowserDevHost({
@@ -841,17 +488,16 @@ if (!gotLock) {
     } else {
       createWindow();
     }
-    void ensureBackend()
-      .then(async () => {
-        if (!automaticSecrets.exaApiKey && !automaticSecrets.perplexityApiKey) return;
-        const validation = await backendRequest<ValidationState>("/validation");
-        if (validation.setupComplete && configuredProviderSecretsAreValid(secrets, validation)) {
-          secrets = await credentialStore.save(secrets);
-        }
-      })
-      .catch((error) => {
-        console.error("Backend startup failed", error);
-      });
+  }).catch(error => {
+    if (isQuitting) return;
+    logger?.log({ level: "error", component: "main", event: "owner-startup-failed", error });
+    dialog.showErrorBox("Scraply could not open this profile", error instanceof Error ? error.message : "Close Scraply and try again.");
+    app.quit();
+  });
+
+  app.on("second-instance", () => {
+    if (mainWindow?.isMinimized()) mainWindow.restore();
+    mainWindow?.focus();
   });
 
   app.on("window-all-closed", () => {
@@ -859,13 +505,25 @@ if (!gotLock) {
   });
 
   app.on("activate", () => {
-    if (!browserDev && !mainWindow) createWindow();
+    if (!isQuitting && !browserDev && !mainWindow && desktopOwner.kind !== "disconnected") createWindow();
   });
 
-  app.on("before-quit", () => {
+  app.on("before-quit", event => {
+    if (quitComplete) return;
+    event.preventDefault();
+    if (isQuitting) return;
     isQuitting = true;
-    browserDevHost?.close();
+    const closingBrowserHost = browserDevHost;
+    browserDevHost = undefined;
+    closingBrowserHost?.close();
     logger?.log({ level: "info", component: "main", event: "app-shutdown" });
-    backendProcess?.kill();
+    void Promise.all([desktopOwner.close(), Promise.allSettled([...localRequests])]).then(() => {
+      quitComplete = true;
+      app.quit();
+    }).catch(error => {
+      // Keep ownership if cleanup fails. Another host must not open live SQLite.
+      logger?.log({ level: "error", component: "main", event: "owner-shutdown-failed", error });
+      dialog.showErrorBox("Scraply could not close safely", "The profile is still reserved because shutdown did not finish. Wait for current work to stop before closing Scraply.");
+    });
   });
 }

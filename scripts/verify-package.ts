@@ -9,6 +9,7 @@ import {
 import { join, relative } from "node:path";
 import { listPackage } from "@electron/asar";
 import { WORKFLOW_V2_STAGE_REGISTRY } from "../src/core/stages";
+import { cliArchiveFilename, verifyCliArchive } from "./verify-cli-package";
 import {
   runtimeLockRelativePath,
   verifyStagedRuntime,
@@ -31,10 +32,11 @@ interface ManifestArtifact {
   bytes: number;
   sha256: string;
   executable?: ExecutableMetadata;
+  cli?: { versionOutput: string; signatureStatus: string };
 }
 
 interface ReleaseManifest {
-  schemaVersion: 2;
+  schemaVersion: 3;
   appVersion: string;
   sourceSha: string;
   sourceRef: string;
@@ -78,6 +80,7 @@ const artifactPaths = [
   { name: "portable", path: join(releaseDir, `Scraply ${metadata.version}.exe`), executable: true },
   { name: "unpacked", path: join(releaseDir, "win-unpacked", "Scraply.exe"), executable: true },
   { name: "app-asar", path: join(releaseDir, "win-unpacked", "resources", "app.asar"), executable: false },
+  { name: "cli", path: join(root, "release-cli", cliArchiveFilename(metadata.version)), executable: false },
 ];
 
 const missingArtifacts = artifactPaths.filter((artifact) => !existsSync(artifact.path));
@@ -195,6 +198,11 @@ if (strict && runtimeSignatureStatus === "NotSigned" && !allowUnsigned) {
   throw new Error(`Unsigned runtime is not allowed by the current release policy: ${runtime.executablePath}`);
 }
 
+const cli = await verifyCliArchive(join(root, "release-cli", cliArchiveFilename(metadata.version)), {
+  root, expectedSourceSha: sourceSha, allowUnsigned,
+});
+if (cli.runtimeLockSha256 !== runtime.lockSha256) throw new Error("CLI and desktop runtime locks differ.");
+
 const tagVersion = sourceRef.match(/^v(\d+\.\d+\.\d+)(?:-rc\.\d+)?$/)?.[1];
 if (strict && tagVersion && tagVersion !== metadata.version) {
   throw new Error(`Tag ${sourceRef} does not match package version ${metadata.version}.`);
@@ -221,19 +229,20 @@ const artifacts = artifactPaths.map((artifact): ManifestArtifact => {
     bytes: statSync(artifact.path).size,
     sha256: sha256(artifact.path),
     ...(executable ? { executable } : {}),
+    ...(artifact.name === "cli" ? { cli: { versionOutput: cli.versionOutput, signatureStatus: cli.signatureStatus } } : {}),
   };
 });
 
-const publishedArtifacts = artifacts.filter((artifact) => artifact.name === "installer" || artifact.name === "portable");
+const publishedArtifacts = artifacts.filter((artifact) => ["installer", "portable", "cli"].includes(artifact.name));
 const manifest: ReleaseManifest = {
-  schemaVersion: 2,
+  schemaVersion: 3,
   appVersion: metadata.version,
   sourceSha,
   sourceRef,
   dirty,
   generatedAt: new Date().toISOString(),
   signed: (
-    publishedArtifacts.every((artifact) => artifact.executable?.signatureStatus === "Valid")
+    publishedArtifacts.every((artifact) => (artifact.executable ?? artifact.cli)?.signatureStatus === "Valid")
     && runtimeSignatureStatus === "Valid"
   ),
   signingPolicy: allowUnsigned ? "unsigned" : "signed",

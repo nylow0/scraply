@@ -33,6 +33,11 @@ jobs:
           SCRAPLY_RELEASE_STRICT: "1"
           # Releases ship unsigned until Scraply has a code-signing certificate.
           SCRAPLY_ALLOW_UNSIGNED: "1"
+      - name: Verify the compiled CLI artifact
+        run: bun run test:cli -- --artifact
+        env:
+          SCRAPLY_RELEASE_STRICT: "1"
+          SCRAPLY_ALLOW_UNSIGNED: "1"
       - run: bun run test:e2e:portable
       - run: bun run test:e2e:installed
       - name: Collect the verified bundle
@@ -43,6 +48,7 @@ jobs:
           New-Item -ItemType Directory -Path bundle | Out-Null
           Copy-Item -LiteralPath "release/Scraply Setup $version.exe" -Destination bundle
           Copy-Item -LiteralPath "release/Scraply $version.exe" -Destination bundle
+          Copy-Item -LiteralPath "release-cli/scraply-cli-${version}-win-x64.zip" -Destination bundle
           Copy-Item -LiteralPath "release/manifest.json" -Destination bundle
           Copy-Item -LiteralPath "release/SHA256SUMS.txt" -Destination bundle
           Copy-Item -LiteralPath "build/runtime/scraply-agent.lock.json" -Destination bundle
@@ -96,6 +102,7 @@ jobs:
           gh release create "$GITHUB_REF_NAME" \
             "bundle/Scraply Setup ${version}.exe" \
             "bundle/Scraply ${version}.exe" \
+            "bundle/scraply-cli-${version}-win-x64.zip" \
             "bundle/manifest.json" \
             "bundle/SHA256SUMS.txt" \
             "bundle/scraply-agent.lock.json" \
@@ -197,6 +204,7 @@ jobs:
           gh release create "$GITHUB_REF_NAME" \
             "promoted/Scraply Setup ${version}.exe" \
             "promoted/Scraply ${version}.exe" \
+            "promoted/scraply-cli-${version}-win-x64.zip" \
             "promoted/manifest.json" \
             "promoted/SHA256SUMS.txt" \
             "promoted/scraply-agent.lock.json" \

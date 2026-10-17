@@ -41,7 +41,10 @@ export function ApiResponseSchema<T extends z.ZodTypeAny>(dataSchema: T) {
 
 export const BackendReadySchema = z.object({ port: z.number().int().positive(), token: z.string().min(1) });
 // Search keys are write-only: the renderer sees whether one is saved and its masked tail ("••••a1b2"), never the key.
-const SearchKeyStatusSchema = z.object({ valid: z.boolean(), error: z.string().optional(), maskedKey: z.string().optional(), checking: z.boolean().optional() });
+const SearchKeyStatusSchema = z.object({
+  valid: z.boolean(), error: z.string().optional(), maskedKey: z.string().optional(), checking: z.boolean().optional(),
+  configured: z.boolean().optional(), checked: z.boolean().optional(),
+});
 export const ValidationStateSchema = z.object({
   exa: SearchKeyStatusSchema,
   perplexity: SearchKeyStatusSchema,
@@ -350,6 +353,8 @@ export const WorkspaceStateSchema = z.object({
 });
 
 export const ResearchEventSchema = z.discriminatedUnion("type", [
+  // An attached desktop must also refresh changes made by a different client.
+  z.object({ type: z.literal("app-state-changed"), threadId: EntityIdSchema.optional() }),
   z.object({ type: z.literal("workflow-progress"), sessionId: EntityIdSchema, threadId: EntityIdSchema, revision: z.number().int().nonnegative(), state: WorkflowSummarySchema.shape.state, outcome: WorkflowSummarySchema.shape.outcome, changedTaskIds: z.array(EntityIdSchema), counts: WorkflowSummarySchema.shape.counts }),
   z.object({ type: z.literal("opportunity-progress"), threadId: EntityIdSchema, status: z.union([OpportunityExplorationStatusSchema, z.literal("reviewing-saved"), z.literal("planning-experiment")]), error: z.string().optional() }),
   z.object({ type: z.literal("run-started"), runId: EntityIdSchema, threadId: EntityIdSchema, problemId: EntityIdSchema.nullable() }),

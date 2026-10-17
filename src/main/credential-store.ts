@@ -54,7 +54,12 @@ async function lockStore(path: string): Promise<() => Promise<void>> {
       });
       return () => new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
     } catch (error) {
-      if (!(error instanceof Error) || !("code" in error) || error.code !== "EADDRINUSE") throw error;
+      if (!(error instanceof Error) || !("code" in error)) throw error;
+      // Bun's Windows pipe contention error differs from Node's. Retry only this
+      // exact bind failure, within the same bound; a retry never grants the lock.
+      const bunPipeBusy = process.platform === "win32" && Boolean(process.versions.bun) &&
+        error.code === "ERR_INVALID_ARG_TYPE" && error.message === `Failed to listen at ${endpoint}`;
+      if (error.code !== "EADDRINUSE" && !bunPipeBusy) throw error;
       await delay(20);
     }
   }

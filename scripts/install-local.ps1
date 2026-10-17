@@ -22,8 +22,10 @@ if (-not (Test-Path $manifestPath)) {
 }
 
 $manifest = Get-Content -Raw -LiteralPath $manifestPath | ConvertFrom-Json
-if ($manifest.schemaVersion -ne 2) {
-  throw "Unsupported release manifest schema version: $($manifest.schemaVersion)."
+# Published 0.1.1 keeps its original manifest; later versions include the CLI asset.
+$expectedManifestSchema = if ($package.version -eq "0.1.1") { 2 } else { 3 }
+if ($manifest.schemaVersion -ne $expectedManifestSchema) {
+  throw "Unsupported release manifest schema version: $($manifest.schemaVersion). Scraply $($package.version) requires schema $expectedManifestSchema."
 }
 if ($manifest.appVersion -ne $package.version) {
   throw "Manifest version $($manifest.appVersion) does not match package version $($package.version)."

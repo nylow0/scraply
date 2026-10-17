@@ -12,6 +12,50 @@ import { summarizeRunUsage } from "../../src/backend/run-usage";
 import { createIdeasFixture } from "../ui/ideas-fixture";
 
 describe("App workspace coordination", () => {
+  test("keeps a configured unverified key usable through passive startup and owner reconciliation", async () => {
+    let state = workspace("alpha");
+    state.validation.native = { available: true, connected: true, accounts: [{ providerId: "openai-subscription" }] };
+    state.validation.exa = { valid: false, configured: true, checked: false, checking: false, maskedKey: "••••abcd" };
+    state.validation.perplexity = { valid: true, configured: true, checked: true };
+    state.scope = { title: "Repair approvals", domain: "Repair approval delays", audience: "Repair shops", observations: "", offLimits: [] };
+    let backendEvent: ((event: ResearchEvent) => void) | undefined;
+    const getWorkspace = vi.fn(async () => structuredClone(state));
+    const getValidation = vi.fn();
+    const retryConnection = vi.fn(async () => {
+      state = { ...state, validation: { ...state.validation, exa: { valid: true, configured: true, checked: true, maskedKey: "••••abcd" } } };
+    });
+    installApi({ getWorkspace, getValidation, retryConnection,
+      onBackendEvent(listener) { backendEvent = listener; return () => { backendEvent = undefined; }; } });
+    const view = render(App);
+    const brief = await view.findByPlaceholderText("Your topic or idea") as HTMLTextAreaElement;
+    await fireEvent.input(brief, { target: { value: "Keep this edited approval brief" } });
+    const start = view.getByRole("button", { name: "Start" }) as HTMLButtonElement;
+    expect(start.disabled).toBe(false);
+    expect(view.getAllByText(/Exa: Key configured, connection unverified/).length).toBeGreaterThan(0);
+    expect(view.queryByRole("dialog", { name: "Add web search" })).toBeNull();
+    // More than one old 500 ms polling interval proves a settled key does not poll forever.
+    await new Promise(resolve => setTimeout(resolve, 650));
+    expect(getWorkspace).toHaveBeenCalledOnce();
+    expect(getValidation).not.toHaveBeenCalled();
+    expect(retryConnection).not.toHaveBeenCalled();
+
+    state = { ...state, validation: { ...state.validation,
+      exa: { valid: false, configured: true, checked: true, maskedKey: "••••abcd", error: "Exa key rejected" } } };
+    backendEvent?.({ type: "app-state-changed" });
+    await waitFor(() => expect(start.disabled).toBe(true));
+    expect((view.getByLabelText("Search provider") as HTMLSelectElement).value).toBe("exa");
+    expect(getWorkspace).toHaveBeenCalledTimes(2);
+    expect(getValidation).not.toHaveBeenCalled();
+    expect(retryConnection).not.toHaveBeenCalled();
+
+    await fireEvent.click(view.getByRole("button", { name: "Retry connections" }));
+    await waitFor(() => expect(start.disabled).toBe(false));
+    expect(retryConnection).toHaveBeenCalledOnce();
+    expect(view.getByText("Exa: Connected")).toBeTruthy();
+    expect(brief.value).toBe("Keep this edited approval brief");
+    expect(getValidation).not.toHaveBeenCalled();
+  });
+
   test("history waits for a delayed conversation render and ignores a later stale response", async () => {
     const fixture = createIdeasFixture(new URLSearchParams(), "alpha");
     const state = workspace("alpha");

@@ -11,11 +11,12 @@
     type ResearchMode,
   } from "../../shared/schemas";
   import type { SearchProviderChoice } from "../../providers/search";
+  import { isSearchProviderChecking, isSearchProviderReady } from "../../shared/search-provider-status";
   import { onDestroy, onMount, tick, untrack } from "svelte";
   import { hasSavedResearchDefaults, modelDisplayName, readResearchDefaults } from "../lib/research-defaults";
   import { preferredModel } from "../../shared/latest-models";
   import ModelPicker from "./ModelPicker.svelte";
-  import { framedDiscoveryProjection } from "../../shared/discovery-projection";
+  import { buildWorkflowLaunchDraft, launchDraftEstimates } from "../../shared/launch-draft";
   import type { WorkflowLaunchDraft } from "../../shared/workflow-contracts";
   import type { z } from "zod";
   import { PreviewWorkflowResultSchema } from "../../shared/workflow-contracts";
@@ -78,14 +79,14 @@
   let discoveryDepth = $state(initial.scope ? initial.runConfig?.discoveryDepth ?? DEFAULT_RUN_CONFIG.discoveryDepth : defaults.discoveryDepth);
   let searchProvider = $state<SearchProviderChoice>(initial.scope ? initial.runConfig?.searchProvider ?? defaults.searchProvider : defaults.searchProvider);
   let searchProviderTouched = $state(false);
-  // A provider saved in Settings stays chosen while it is connected. Without one, a new project uses both when it can.
+  // Saved choices stay visible even when unavailable. Only a new setup without a saved default picks a provider.
   const savedSearchProvider = untrack(hasSavedResearchDefaults);
   $effect(() => {
-    if (initial.scope || searchProviderTouched) return;
-    if (!savedSearchProvider && workspace.validation.exa.valid && workspace.validation.perplexity.valid) { searchProvider = "auto"; return; }
-    if (searchProvider === "auto" || workspace.validation[searchProvider].valid) return;
+    if (initial.scope || savedSearchProvider || searchProviderTouched) return;
+    if (isSearchProviderReady(workspace.validation.exa) && isSearchProviderReady(workspace.validation.perplexity)) { searchProvider = "auto"; return; }
+    if (searchProvider !== "auto" && isSearchProviderReady(workspace.validation[searchProvider])) return;
     const available = searchProvider === "exa" ? "perplexity" : "exa";
-    if (workspace.validation[available].valid) searchProvider = available;
+    if (isSearchProviderReady(workspace.validation[available])) searchProvider = available;
   });
   let maxRunMinutes = $state(initial.runConfig?.maxRunMinutes ?? DEFAULT_RUN_CONFIG.maxRunMinutes);
   // "babysit" is the stored identifier of the mode users see as Controlled (see WorkflowModeSchema).
@@ -104,15 +105,12 @@
     ?? "");
   /** Empty means every qualifying problem is developed. */
   let automaticProblemCap = $state<number | null>(null);
-  const initialProjection = untrack(() => framedDiscoveryProjection(discoveryDepth, frameLanguages?.length ?? 3));
-  let workflowModelLimit = $state(initialProjection.modelCalls * 2 + 12);
-  let workflowSearchLimit = $state(initialProjection.searches + 2);
+  const initialEstimates = untrack(() => launchDraftEstimates("explore-market", discoveryDepth, frameLanguages?.length));
+  let workflowModelLimit = $state(initialEstimates.maxModelCalls);
+  let workflowSearchLimit = $state(initialEstimates.maxSearches);
   let workflowModelLimitTouched = $state(false);
   let workflowSearchLimitTouched = $state(false);
-  let discoveryReservation = $derived(researchMode === "known-problem"
-    ? { modelCalls: 2, searches: 0 }
-    : { modelCalls: framedDiscoveryProjection(discoveryDepth, frameLanguages?.length ?? 3).modelCalls * 2,
-      searches: framedDiscoveryProjection(discoveryDepth, frameLanguages?.length ?? 3).searches });
+  let workflowEstimates = $derived(launchDraftEstimates(researchMode, discoveryDepth, frameLanguages?.length));
   let researchInstruction = $state("");
   let ideasInstruction = $state("");
   let reviewInstruction = $state("");
@@ -168,18 +166,21 @@
   let selectedModelAvailable = $derived(Boolean(modelKey) && workspace.models.some((item) => item.providerId === "openai-subscription" && sameModelRef(item, model)));
   let selectedReasoningAvailable = $derived(selectedModelOption?.reasoningEfforts.some((item) => item.id === reasoningEffort) ?? false);
   let selectedSearchValidation = $derived(searchProvider === "auto"
-    ? workspace.validation.perplexity.valid ? workspace.validation.perplexity : workspace.validation.exa
+    ? isSearchProviderReady(workspace.validation.perplexity)
+      || (!isSearchProviderReady(workspace.validation.exa) && isSearchProviderChecking(workspace.validation.perplexity))
+      ? workspace.validation.perplexity : workspace.validation.exa
     : workspace.validation[searchProvider]);
+  let selectedSearchReady = $derived(isSearchProviderReady(selectedSearchValidation));
   let selectedSearchName = $derived(searchProvider === "auto" ? "Exa or Perplexity" : searchProvider === "exa" ? "Exa" : "Perplexity");
   let nativeValidationPending = $derived(isValidationPending(workspace.validation.native.error));
-  let searchValidationPending = $derived(researchMode === "explore-market" && isValidationPending(selectedSearchValidation.error));
+  let searchValidationPending = $derived(researchMode === "explore-market" && isSearchProviderChecking(selectedSearchValidation));
   let connectionsChecking = $derived(nativeValidationPending || searchValidationPending);
-  let providersReady = $derived(selectedModelReady && selectedModelAvailable && selectedReasoningAvailable && (researchMode === "known-problem" || selectedSearchValidation.valid));
+  let providersReady = $derived(selectedModelReady && selectedModelAvailable && selectedReasoningAvailable && (researchMode === "known-problem" || selectedSearchReady));
   let modelChoiceRequired = $derived(selectedModelReady && nativeModelOptions.length > 0 && !selectedModelAvailable);
   let reasoningChoiceRequired = $derived(selectedModelReady && selectedModelAvailable && !selectedReasoningAvailable);
   let connectionNeedsAttention = $derived(!selectedModelReady
     || nativeModelOptions.length === 0
-    || (researchMode === "explore-market" && !selectedSearchValidation.valid));
+    || (researchMode === "explore-market" && (!selectedSearchReady || selectedSearchValidation.checked === false)));
   let modelStatus = $derived(!workspace.validation.native.available
       ? workspace.validation.native.error ?? "Native runtime is unavailable"
       : !workspace.validation.native.connected
@@ -191,7 +192,17 @@
   let errors = $derived(validationAttempted ? missing : {});
   let ideaModelAvailable = $derived(Boolean(ideaModelOption) && workspace.models.some((item) => sameModelRef(item, ideaModel)));
   let ideaReasoningAvailable = $derived(ideaModelOption?.reasoningEfforts.some((item) => item.id === ideaReasoningEffort) ?? false);
-  let workflowDraft = $derived(buildWorkflowDraft());
+  let workflowDraft = $derived(buildWorkflowLaunchDraft({
+    title, audience, domain, observations, riskEvaluationCriteria, offLimits: offLimits.split("\n"),
+  }, {
+    configVersion: 2, workflowVersion, ideaCount: ideaCount ?? DEFAULT_IDEA_COUNT,
+    model, reasoningEffort, discoveryDepth, searchProvider, maxRunMinutes, researchMode, knownProblem, explorationPurpose,
+  }, {
+    ...(workflowMode === "vibe" ? { mode: workflowMode, ideas: { model: ideaModel, reasoningEffort: ideaReasoningEffort } }
+      : { mode: workflowMode }),
+    automaticProblemCap, limits: { maxModelCalls: workflowModelLimit, maxSearches: workflowSearchLimit },
+    instructions: { research: researchInstruction, ideas: ideasInstruction, review: reviewInstruction },
+  }));
   let workflowFingerprint = $derived(JSON.stringify(workflowDraft));
 
   $effect(() => {
@@ -200,8 +211,8 @@
   });
 
   $effect(() => {
-    if (!workflowModelLimitTouched) workflowModelLimit = discoveryReservation.modelCalls + 12;
-    if (!workflowSearchLimitTouched) workflowSearchLimit = discoveryReservation.searches + (researchMode === "known-problem" ? 0 : 2);
+    if (!workflowModelLimitTouched) workflowModelLimit = workflowEstimates.maxModelCalls;
+    if (!workflowSearchLimitTouched) workflowSearchLimit = workflowEstimates.maxSearches;
   });
 
   $effect(() => {
@@ -242,40 +253,16 @@
     ideaReasoningEffort = selected?.defaultReasoningEffort ?? DEFAULT_RUN_CONFIG.reasoningEffort;
   }
 
-  function buildWorkflowDraft(): WorkflowLaunchDraft {
-    const brief = (researchMode === "known-problem" ? knownProblem : domain).trim();
-    const scope = {
-      title: title.trim() || brief.slice(0, 80), audience: audience.trim(), domain: domain.trim(),
-      observations: observations.trim(), riskEvaluationCriteria: riskEvaluationCriteria.trim(),
-      offLimits: offLimits.split("\n").map((item) => item.trim()).filter(Boolean),
-    };
-    const runConfig: NonNullable<WorkspaceState["runConfig"]> = {
-      configVersion: 2, workflowVersion, ideaCount: ideaCount ?? DEFAULT_IDEA_COUNT,
-      model, reasoningEffort, discoveryDepth, searchProvider, maxRunMinutes,
-      researchMode, knownProblem: knownProblem.trim(), explorationPurpose,
-    };
-    return {
-      contractVersion: 1, frameWorkflowVersion: 1, purpose: researchMode === "known-problem" ? "known-problem" : "discovery",
-      mode: workflowMode, brief, scope, runConfig,
-      ...(workflowMode === "vibe" ? { ideas: { model: ideaModel, reasoningEffort: ideaReasoningEffort,
-        reviewModel: ideaModel, reviewReasoningEffort: ideaReasoningEffort } } : {}),
-      targets: {
-        kind: "per-problem",
-        ideaCount: ideaCount ?? DEFAULT_IDEA_COUNT,
-        ...(workflowMode === "vibe" && researchMode === "explore-market" && automaticProblemCap !== null ? { automaticProblemCap } : {}),
-      },
-      limits: { enforced: false, maxMinutes: maxRunMinutes, maxModelCalls: workflowModelLimit, maxSearches: workflowSearchLimit },
-      instructions: { research: researchInstruction.trim(), ideas: ideasInstruction.trim(), review: reviewInstruction.trim() },
-    };
-  }
-
   function isValidationPending(error: string | undefined): boolean {
     return error?.startsWith("Checking ") === true || error === "Native runtime is starting";
   }
 
   // Provider errors usually name the provider already ("Exa key missing"), so the prefix is added only when it would not repeat.
   let searchStatus = $derived.by(() => {
-    const status = selectedSearchValidation.valid ? "Connected" : selectedSearchValidation.error ?? "Connection unavailable";
+    const status = searchValidationPending ? "Checking connection…"
+      : selectedSearchValidation.valid ? "Connected"
+        : selectedSearchReady ? "Key configured, connection unverified"
+          : selectedSearchValidation.error ?? "Connection unavailable";
     return status.startsWith(selectedSearchName) ? status : `${selectedSearchName}: ${status}`;
   });
 
@@ -483,7 +470,7 @@
       {#if researchMode === "explore-market"}
         <label class="run-setting search-setting model-setting">
           <span>Search provider</span>
-          <SearchProviderSelect bind:value={searchProvider} connected={{ exa: workspace.validation.exa.valid, perplexity: workspace.validation.perplexity.valid }} onchange={() => searchProviderTouched = true} />
+          <SearchProviderSelect bind:value={searchProvider} connected={{ exa: isSearchProviderReady(workspace.validation.exa), perplexity: isSearchProviderReady(workspace.validation.perplexity) }} onchange={() => searchProviderTouched = true} />
           <small>{searchStatus}</small>
           {#each visiblePreviewIssues.filter((issue) => issue.path.join(".") === "runConfig.searchProvider") as issue (issue.code)}<small class="field-error" role="alert">{issue.message}</small>{/each}
         </label>
@@ -533,7 +520,7 @@
         {#if connectionNeedsAttention}
           <div class="connection-warning">
             {#if modelStatus}<span>{modelStatus}</span>{/if}
-            {#if researchMode === "explore-market" && !selectedSearchValidation.valid}<span>{searchStatus}</span>{/if}
+            {#if researchMode === "explore-market" && (!selectedSearchReady || selectedSearchValidation.checked === false)}<span>{searchStatus}</span>{/if}
             {#if onOpenSettings}<button type="button" class="text-action" onclick={onOpenSettings}>Open settings</button>{/if}
             <button type="button" class="text-action" disabled={locked || connectionsChecking} onclick={() => onRetry()}>{connectionsChecking ? "Checking…" : "Retry connections"}</button>
           </div>

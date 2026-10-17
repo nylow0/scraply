@@ -1,10 +1,10 @@
 # Scraply
 
-Scraply is a Windows desktop app that finds real problems people have and turns them into business ideas you can check against the evidence.
+Scraply is a Windows desktop app and standalone CLI that find real problems people have and turn them into business ideas you can check against the evidence.
 
 You describe a topic, an audience, or a problem you already know. Scraply searches the web and online communities, extracts candidate problems with quoted sources, and generates ideas for the problems worth solving. A separate pass ranks the ideas for each problem against your approved goal. Everything stays in a local SQLite database, and you decide what to pursue.
 
-**Status:** early development. Download the [latest release](https://github.com/nylow0/scraply/releases/latest): the installer or the portable build. Releases are not code-signed yet, so Windows SmartScreen asks for confirmation on first launch (**More info → Run anyway**).
+**Status:** early development. Download the desktop installer or portable build from the [latest release](https://github.com/nylow0/scraply/releases/latest). The CLI zip is included starting with 0.1.2. Releases are not code-signed yet, so Windows SmartScreen asks for confirmation on first launch (**More info → Run anyway**).
 
 ## How a project works
 
@@ -20,8 +20,16 @@ Research exports as JSON. Ideas export as Markdown or JSON.
 ## What you need
 
 - Windows 10 or 11
-- An OpenAI subscription account, connected in the app
-- An Exa or Perplexity API key for web research, pasted in the app (a run that starts from a known problem can skip search)
+- An OpenAI subscription account, connected in the app or CLI
+- An Exa or Perplexity API key for web research, saved in the app or CLI (a run that starts from a known problem can skip search)
+
+## CLI
+
+Extract `scraply-cli-<version>-win-x64.zip` into a directory you want to keep. Leave `scraply.exe`, `runtime/`, `prompts/`, and the license files together. Run `.\scraply.exe help --json` for the command contract. The executable includes Bun and needs no desktop installation.
+
+Desktop and CLI share projects and encrypted credentials in `%APPDATA%\scraply`. Either can be installed first. Only one host owns a profile; the other connects to it, and both versions must match. Use `--data-dir <directory>` for a separate profile. Commands return JSON when piped, and commands that spend money require `--yes` after reviewing their preview.
+
+`.\scraply.exe setup` optionally adds its directory to your user PATH without administrator access. Open a new terminal, then use `scraply`. Run `scraply setup --remove` before moving or removing that directory. Removing the CLI leaves your projects and credentials in place.
 
 ## How it's built
 
@@ -29,6 +37,7 @@ Research exports as JSON. Ideas export as Markdown or JSON.
 - **TypeScript core** (`src/core`) runs the workflows, research, and budgets. Storage lives in `src/db`, and the search providers in `src/providers`.
 - **Rust worker** (`runtime/`) makes each model call and validates the result against a schema.
 - **Bun** runs the tooling and tests.
+- **Standalone CLI** (`src/cli`) compiles with Bun and uses the same application service, SQLite data, and verified Rust worker as the desktop.
 
 ## Contributing
 

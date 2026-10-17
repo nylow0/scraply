@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { Database } from "bun:sqlite";
@@ -21,6 +21,26 @@ function pathForTest() { const dir = mkdtempSync(join(tmpdir(), "scraply-migrati
 function tableNames(db: Database): string[] {
   return (db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name").all() as Array<{ name: string }>).map((row) => row.name);
 }
+
+describe("independently installed schema versions", () => {
+  for (const recordedVersion of ["99.0.0", null]) {
+    test(`refuses a newer schema without writing it, recorded version ${recordedVersion ?? "unknown"}`, () => {
+      const dbPath = pathForTest();
+      const future = new Database(dbPath);
+      future.exec("CREATE TABLE schema_migrations (id INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)");
+      future.prepare("INSERT INTO schema_migrations VALUES (?, ?)").run(Math.max(...MIGRATIONS.map(item => item.id)) + 1, "2099-01-01T00:00:00.000Z");
+      if (recordedVersion) {
+        future.exec("CREATE TABLE app_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at TEXT NOT NULL)");
+        future.prepare("INSERT INTO app_meta VALUES ('schema_app_version', ?, ?)").run(recordedVersion, "2099-01-01T00:00:00.000Z");
+      }
+      future.close();
+      const before = readFileSync(dbPath);
+      expect(() => new DatabaseClient(dbPath)).toThrow(recordedVersion ? `Scraply ${recordedVersion}` : "a newer Scraply version");
+      expect(readFileSync(dbPath)).toEqual(before);
+      expect(readdirSync(dirname(dbPath))).toEqual(["scraply.db"]);
+    });
+  }
+});
 
 describe("destructive graph cutover", () => {
   test("migration 36 preserves rejected candidates as blocked without inventing their old JSON", () => {

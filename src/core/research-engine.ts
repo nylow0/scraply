@@ -3649,7 +3649,7 @@ export class ResearchEngine {
       .run(status, new Date().toISOString(), threadId);
   }
   private emit(event: ResearchEvent): void {
-    this.logJob("runId" in event ? event.runId : null, event.threadId, event.type, event);
+    this.logJob("runId" in event ? event.runId : null, event.threadId ?? null, event.type, event);
     this.options.onEvent(event);
   }
   private logJob(runId: string | null, threadId: string | null, type: string, payload: Record<string, unknown>): void {

@@ -1,5 +1,5 @@
 export type LogLevel = "info" | "warn" | "error";
-export type LogComponent = "main" | "backend" | "renderer";
+export type LogComponent = "main" | "backend" | "renderer" | "cli";
 
 export interface LogInput {
   level: LogLevel;

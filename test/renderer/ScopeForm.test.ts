@@ -7,13 +7,14 @@ import ProblemCheckpoint from "../../src/renderer/components/ProblemCheckpoint.s
 import type { WorkspaceState } from "../../src/shared/ipc";
 import { DEFAULT_RUN_CONFIG, RunConfigSchema, modelRefKey } from "../../src/shared/schemas";
 import type { WorkflowLaunchDraft } from "../../src/shared/workflow-contracts";
+import { buildWorkflowLaunchDraft } from "../../src/shared/launch-draft";
 import { listedModels, pickModel } from "./model-picker";
 import { modelDisplayName } from "../../src/renderer/lib/research-defaults";
 
 describe("ScopeForm search provider selection", () => {
   test.each(["exa", "perplexity"] as const)("shows only %s and the disabled other provider when one is connected", async (connectedProvider) => {
     const state = workspace();
-    state.runConfig = { ...DEFAULT_RUN_CONFIG, searchProvider: "auto" };
+    state.runConfig = { ...DEFAULT_RUN_CONFIG, searchProvider: connectedProvider };
     state.validation.exa = { valid: connectedProvider === "exa" };
     state.validation.perplexity = { valid: connectedProvider === "perplexity" };
     const props = { workspace: state, busy: false, onSave: vi.fn(), onStart: vi.fn(), onRetry: vi.fn() };
@@ -42,6 +43,19 @@ describe("ScopeForm search provider selection", () => {
     expect(Array.from(select.options).every((option) => option.disabled)).toBe(true);
   });
 
+  test("keeps a saved Automatic choice when only one provider is ready", async () => {
+    const state = workspace();
+    state.runConfig = { ...DEFAULT_RUN_CONFIG, searchProvider: "auto" };
+    const onSave = vi.fn().mockResolvedValue(undefined);
+    const view = render(ScopeForm, { workspace: state, busy: false, onSave, onStart: vi.fn(), onRetry: vi.fn() });
+    const provider = view.getByLabelText("Search provider") as HTMLSelectElement;
+    await tick();
+    expect(provider.value).toBe("auto");
+    expect(Array.from(provider.options).find(option => option.value === "auto")?.disabled).toBe(false);
+    await fireEvent.click(view.getByRole("button", { name: "Discover problems" }));
+    await waitFor(() => expect(onSave).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ searchProvider: "auto" })));
+  });
+
   test("moves the selected provider to the top without changing the saved choice", async () => {
     const state = workspace();
     state.validation.exa = { valid: true };
@@ -67,7 +81,7 @@ describe("ScopeForm search provider selection", () => {
     expect(view.queryByLabelText("Search coverage")).toBeNull();
     expect((view.getByRole("button", { name: "Discover problems" }) as HTMLButtonElement).disabled).toBe(false);
   });
-  test("keeps the search provider saved in Settings even when both providers are connected", async () => {
+  test("keeps the search provider saved in Settings when connections change", async () => {
     const storageKey = "scraply.research-defaults.v1";
     const previous = localStorage.getItem(storageKey);
     try {
@@ -80,6 +94,10 @@ describe("ScopeForm search provider selection", () => {
       const view = render(ScopeForm, { workspace: state, busy: false, onSave: vi.fn(), onStart: vi.fn(), onRetry: vi.fn() });
       await tick();
       expect((view.getByLabelText("Search provider") as HTMLSelectElement).value).toBe("perplexity");
+      await view.rerender({ workspace: { ...state, validation: { ...state.validation,
+        perplexity: { valid: false, configured: true, checked: true } } } });
+      expect((view.getByLabelText("Search provider") as HTMLSelectElement).value).toBe("perplexity");
+      expect((view.getByRole("button", { name: "Discover problems" }) as HTMLButtonElement).disabled).toBe(true);
     } finally {
       if (previous === null) localStorage.removeItem(storageKey);
       else localStorage.setItem(storageKey, previous);
@@ -219,6 +237,7 @@ describe("ScopeForm search provider selection", () => {
     await waitFor(() => expect(onPreviewWorkflow).toHaveBeenCalled());
     const latestDraft = onPreviewWorkflow.mock.lastCall?.[0];
     expect(latestDraft).toMatchObject({ mode: "vibe", ideas: { model: DEFAULT_RUN_CONFIG.model } });
+    expect(latestDraft?.limits).toEqual({ enforced: false, maxMinutes: 90, maxModelCalls: 470, maxSearches: 407 });
     // No cap by default: Vibe develops every qualifying problem. A typed number still limits it.
     expect(latestDraft?.targets.automaticProblemCap).toBeUndefined();
     const cap = view.getByLabelText("Automatic problem cap") as HTMLInputElement;
@@ -233,6 +252,7 @@ describe("ScopeForm search provider selection", () => {
     expect(view.queryByLabelText("Maximum model calls")).toBeNull();
     await fireEvent.change(view.getByLabelText("Research depth"), { target: { value: "deep" } });
     await waitFor(() => expect(onPreviewWorkflow.mock.lastCall?.[0].runConfig.discoveryDepth).toBe("deep"));
+    expect(onPreviewWorkflow.mock.lastCall?.[0].limits).toEqual({ enforced: false, maxMinutes: 90, maxModelCalls: 1214, maxSearches: 798 });
     await waitFor(() => expect((view.getByRole("button", { name: "Start" }) as HTMLButtonElement).disabled).toBe(false));
     await fireEvent.click(view.getByRole("button", { name: "Start" }));
     await waitFor(() => expect(onStartWorkflow).toHaveBeenCalledOnce());
@@ -267,6 +287,41 @@ describe("ScopeForm search provider selection", () => {
     await fireEvent.input(view.getByLabelText("Solutions per problem"), { target: { value: "6" } });
     await fireEvent.click(view.getByRole("button", { name: "Start" }));
     expect(view.getAllByText("Choose a whole number from 1 to 5.").length).toBeGreaterThan(0);
+  });
+
+  test("previews the same draft from a saved older config and multiline boundaries as a shared caller", async () => {
+    const storageKey = "scraply.research-defaults.v1";
+    const previous = localStorage.getItem(storageKey);
+    try {
+      localStorage.removeItem(storageKey);
+      const state = workspace();
+      const scope = { title: " ", audience: " Shop operators ", domain: " Parts sourcing ",
+        observations: " Shared inbox ", offLimits: [" No hardware\n No migration ", " "] };
+      const config = RunConfigSchema.parse({ configVersion: 2, workflowVersion: 1, model: DEFAULT_RUN_CONFIG.model,
+        reasoningEffort: "medium", discoveryDepth: "quick", maxRunMinutes: 30, audienceSourcePolicy: "communities" });
+      state.scope = scope;
+      state.runConfig = config;
+      state.validation.exa = { valid: true };
+      const onPreviewWorkflow = vi.fn<(draft: WorkflowLaunchDraft) => Promise<never>>().mockRejectedValue(new Error("Synthetic preview boundary"));
+      const view = render(ScopeForm, { workspace: state, busy: false, frameLanguages: ["en", "uk"],
+        onSave: vi.fn(), onStart: vi.fn(), onRetry: vi.fn(), onPreviewWorkflow, onStartWorkflow: vi.fn() });
+      await waitFor(() => expect(onPreviewWorkflow).toHaveBeenCalledOnce());
+      const previewed = onPreviewWorkflow.mock.lastCall![0];
+      expect(previewed).toMatchObject({
+        brief: "Parts sourcing", scope: { title: "Parts sourcing", audience: "Shop operators", domain: "Parts sourcing",
+          observations: "Shared inbox", riskEvaluationCriteria: "", offLimits: ["No hardware", "No migration"] },
+        runConfig: { workflowVersion: 2, ideaCount: 3, explorationPurpose: "general-solutions" },
+        limits: { enforced: false, maxMinutes: 30, maxModelCalls: 158, maxSearches: 128 },
+      });
+      expect(previewed.runConfig).not.toHaveProperty("audienceSourcePolicy");
+      expect(JSON.stringify(previewed)).toBe(JSON.stringify(buildWorkflowLaunchDraft(scope, config, {
+        mode: "vibe", ideas: { model: DEFAULT_RUN_CONFIG.model, reasoningEffort: "medium" }, languageCount: 2,
+      })));
+      view.unmount();
+    } finally {
+      if (previous === null) localStorage.removeItem(storageKey);
+      else localStorage.setItem(storageKey, previous);
+    }
   });
 
   test("treats preview estimates as guidance without mandatory limit controls", async () => {
@@ -628,7 +683,7 @@ describe("ScopeForm search provider selection", () => {
     expect(onSave.mock.calls[0]?.[1]).toMatchObject({ model: DEFAULT_RUN_CONFIG.model, reasoningEffort: "high" });
   });
 
-  test("replaces a disconnected saved provider and saves the connected provider", async () => {
+  test("keeps an unavailable saved provider until the user explicitly chooses another", async () => {
     const onSave = vi.fn().mockResolvedValue(undefined);
     const onStart = vi.fn().mockResolvedValue(undefined);
     const view = render(ScopeForm, {
@@ -639,11 +694,15 @@ describe("ScopeForm search provider selection", () => {
       onRetry: vi.fn().mockResolvedValue(undefined),
     });
 
-    expect(view.queryByText("Exa unavailable")).toBeNull();
-    expect(view.queryByText("Perplexity unavailable")).toBeNull();
-    expect((view.getByLabelText("Search provider") as HTMLSelectElement).value).toBe("perplexity");
-    await waitFor(() => expect(view.getByText("Perplexity: Connected")).toBeTruthy());
+    const provider = view.getByLabelText("Search provider") as HTMLSelectElement;
+    expect(provider.value).toBe("exa");
     const submit = view.getByRole("button", { name: "Discover problems" }) as HTMLButtonElement;
+    expect(submit.disabled).toBe(true);
+    expect(onSave).not.toHaveBeenCalled();
+    expect(onStart).not.toHaveBeenCalled();
+    await fireEvent.change(provider, { target: { value: "perplexity" } });
+    expect(provider.value).toBe("perplexity");
+    await waitFor(() => expect(view.getByText("Perplexity: Connected")).toBeTruthy());
     expect(submit.disabled).toBe(false);
     await fireEvent.click(submit);
 
@@ -654,6 +713,59 @@ describe("ScopeForm search provider selection", () => {
       searchProvider: "perplexity",
     });
     expect(onStart).toHaveBeenCalledTimes(1);
+  });
+
+  test.each([
+    ["exa", "vibe"], ["perplexity", "vibe"], ["exa", "babysit"], ["perplexity", "babysit"],
+  ] as const)("previews and starts with the saved unverified %s key in %s mode only on Start", async (provider, mode) => {
+    const state = workspace();
+    state.runConfig = { ...DEFAULT_RUN_CONFIG, searchProvider: provider };
+    state.validation[provider] = { valid: false, configured: true, checked: false, checking: false, maskedKey: "••••abcd" };
+    state.validation[provider === "exa" ? "perplexity" : "exa"] = { valid: false, configured: false, checked: false };
+    const onRetry = vi.fn();
+    const onPreviewWorkflow = vi.fn(async (draft: WorkflowLaunchDraft) => ({
+      type: "launch" as const, proposal: { ...draft,
+        resolvedInstructions: { research: "r", ideas: "i", review: "v" }, instructionHashes: { research: "r", ideas: "i", review: "v" } },
+      previewHash: JSON.stringify(draft), capabilityFingerprint: "fixture", minimumWork: { modelCalls: 1, searches: 1 },
+      upperLimits: draft.limits, fieldErrors: [], expiresAt: "2099-01-01T00:00:00.000Z",
+    }));
+    const onStartWorkflow = vi.fn().mockResolvedValue(undefined);
+    const view = render(ScopeForm, { workspace: state, busy: false, onSave: vi.fn(), onStart: vi.fn(), onRetry, onPreviewWorkflow, onStartWorkflow });
+    if (mode === "babysit") await fireEvent.click(view.getByRole("radio", { name: /Controlled/ }));
+    await waitFor(() => expect(onPreviewWorkflow).toHaveBeenCalled());
+    expect((view.getByLabelText("Search provider") as HTMLSelectElement).value).toBe(provider);
+    expect(view.getAllByText(/Key configured, connection unverified/).length).toBeGreaterThan(0);
+    expect((view.getByRole("button", { name: "Retry connections" }) as HTMLButtonElement).disabled).toBe(false);
+    expect(onRetry).not.toHaveBeenCalled();
+    expect(onStartWorkflow).not.toHaveBeenCalled();
+    const start = view.getByRole("button", { name: "Start" }) as HTMLButtonElement;
+    await waitFor(() => expect(start.disabled).toBe(false));
+    await fireEvent.click(start);
+    await waitFor(() => expect(onStartWorkflow).toHaveBeenCalledOnce());
+    expect(onStartWorkflow.mock.lastCall?.[0].proposal).toMatchObject({ mode, runConfig: { searchProvider: provider } });
+  });
+
+  test.each([
+    { name: "missing", status: { valid: false, configured: false, checked: false }, checking: false },
+    { name: "rejected", status: { valid: false, configured: true, checked: true, error: "Exa key rejected" }, checking: false },
+    { name: "pending", status: { valid: false, configured: true, checked: false, checking: true }, checking: true },
+  ])("blocks the saved $name key without switching to the other ready provider", async ({ status, checking }) => {
+    const state = workspace();
+    state.validation.exa = status;
+    const onPreviewWorkflow = vi.fn();
+    const onRetry = vi.fn().mockResolvedValue(undefined);
+    const view = render(ScopeForm, { workspace: state, busy: false, onSave: vi.fn(), onStart: vi.fn(), onRetry,
+      onPreviewWorkflow, onStartWorkflow: vi.fn() });
+    await tick();
+    expect((view.getByLabelText("Search provider") as HTMLSelectElement).value).toBe("exa");
+    expect((view.getByRole("button", { name: "Start" }) as HTMLButtonElement).disabled).toBe(true);
+    expect(onPreviewWorkflow).not.toHaveBeenCalled();
+    const retry = view.getByRole("button", { name: checking ? "Checking…" : "Retry connections" }) as HTMLButtonElement;
+    expect(retry.disabled).toBe(checking);
+    if (!checking) {
+      await fireEvent.click(retry);
+      expect(onRetry).toHaveBeenCalledOnce();
+    }
   });
 
   test("offers main-owned native account setup and account maintenance", async () => {
@@ -964,7 +1076,7 @@ describe("settings surfaces preserve launch configuration", () => {
     }));
     const onStartWorkflow = vi.fn().mockResolvedValue(undefined);
     const onRememberDraft = vi.fn<NonNullable<ComponentProps<typeof ScopeForm>["onRememberDraft"]>>();
-    const props = { workspace: state, busy: false, onSave: vi.fn(), onStart: vi.fn(), onRetry: vi.fn(), onPreviewWorkflow, onStartWorkflow, onRememberDraft };
+    const props = { workspace: state, busy: false, frameLanguages: ["en", "uk"], onSave: vi.fn(), onStart: vi.fn(), onRetry: vi.fn(), onPreviewWorkflow, onStartWorkflow, onRememberDraft };
     let view = render(ScopeForm, props);
     if (researchMode === "known-problem") {
       await fireEvent.click(view.getByRole("radio", { name: "I have a problem to solve" }));
@@ -1000,24 +1112,34 @@ describe("settings surfaces preserve launch configuration", () => {
     await fireEvent.click(view.getByRole("button", { name: "Done" }));
     expect((view.getByLabelText("Ideas reasoning") as HTMLSelectElement).value).toBe("high");
     if (mode === "babysit") await fireEvent.click(view.getByRole("radio", { name: /Controlled/ }));
-    await waitFor(() => expect(onPreviewWorkflow.mock.lastCall?.[0]).toMatchObject({
+    // Expected values come from the form's behavior, independently of the shared builder.
+    const expected: WorkflowLaunchDraft = {
+      contractVersion: 1, frameWorkflowVersion: 1,
       purpose: researchMode === "known-problem" ? "known-problem" : "discovery", mode,
       brief: researchMode === "known-problem" ? "Approvals take too long" : "Parts sourcing",
       scope: { title: "Repair shops", audience: "Repair shop operators", domain: "Parts sourcing", observations: "Keep communication history", riskEvaluationCriteria: "Low setup effort", offLimits: ["No hardware", "No migration"] },
-      runConfig: { ...DEFAULT_RUN_CONFIG, model: ideasModel, reasoningEffort: "high", ideaCount: 5, maxRunMinutes: DEFAULT_RUN_CONFIG.maxRunMinutes, researchMode, knownProblem: researchMode === "known-problem" ? "Approvals take too long" : "",
-        ...(researchMode === "explore-market" ? { discoveryDepth: "deep", searchProvider: "perplexity" } : {}) },
-      limits: { enforced: false },
-      instructions: { research: "Research context", ideas: "Generate carefully", review: "Check evidence" },
+      runConfig: { configVersion: 2, workflowVersion: 2, ideaCount: 5, model: ideasModel, reasoningEffort: "high",
+        discoveryDepth: researchMode === "explore-market" ? "deep" : "standard", searchProvider: researchMode === "explore-market" ? "perplexity" : "exa",
+        maxRunMinutes: 90, researchMode, knownProblem: researchMode === "known-problem" ? "Approvals take too long" : "", explorationPurpose: "auto" },
       ...(mode === "vibe" ? { ideas: { model: ideasModel, reasoningEffort: "high", reviewModel: ideasModel, reviewReasoningEffort: "high" } } : {}),
-    }));
-    const expected = structuredClone(onPreviewWorkflow.mock.lastCall![0]);
+      targets: { kind: "per-problem", ideaCount: 5 },
+      limits: { enforced: false, maxMinutes: 90, maxModelCalls: researchMode === "explore-market" ? 1214 : 14,
+        maxSearches: researchMode === "explore-market" ? 590 : 0 },
+      instructions: { research: "Research context", ideas: "Generate carefully", review: "Check evidence" },
+    };
+    await waitFor(() => expect(JSON.stringify(onPreviewWorkflow.mock.lastCall?.[0])).toBe(JSON.stringify(expected)));
+    const sharedDraft = buildWorkflowLaunchDraft(expected.scope, expected.runConfig, {
+      ...(mode === "vibe" ? { mode, ideas: { model: ideasModel, reasoningEffort: "high" } } : { mode }),
+      languageCount: 2, instructions: expected.instructions,
+    });
+    expect(JSON.stringify(sharedDraft)).toBe(JSON.stringify(expected));
     if (mode === "babysit") expect(expected.ideas).toBeUndefined();
     view.unmount();
     const remembered = onRememberDraft.mock.lastCall?.[1];
     expect(remembered).toBeTruthy();
     onPreviewWorkflow.mockClear();
     view = render(ScopeForm, { ...props, initialDraft: remembered ?? null });
-    await waitFor(() => expect(onPreviewWorkflow.mock.lastCall?.[0]).toMatchObject(expected));
+    await waitFor(() => expect(JSON.stringify(onPreviewWorkflow.mock.lastCall?.[0])).toBe(JSON.stringify(expected)));
     await fireEvent.click(view.getByRole("button", { name: "Advanced settings" }));
     await fireEvent.click(view.getByRole("button", { name: "Done" }));
     await fireEvent.click(view.getByRole("button", { name: "Start" }));
