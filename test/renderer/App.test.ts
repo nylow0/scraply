@@ -8,10 +8,31 @@ import type { ResearchEvent, WorkspaceState } from "../../src/shared/ipc";
 import { DEFAULT_RUN_CONFIG } from "../../src/shared/schemas";
 import type { WorkflowDetail, WorkflowSummary } from "../../src/shared/workflow-contracts";
 import { ResearchFrameSchema } from "../../src/shared/research-frame";
+import { defaultLaunchSettings } from "../../src/shared/launch-settings";
 import { summarizeRunUsage } from "../../src/backend/run-usage";
 import { createIdeasFixture } from "../ui/ideas-fixture";
 
 describe("App workspace coordination", () => {
+  test.each([false, true])("shared launch updates refresh pristine setup and preserve local edits=%s", async (edited) => {
+    let state = workspace("alpha");
+    let backendEvent: ((event: ResearchEvent) => void) | undefined;
+    installApi({ getWorkspace: async () => structuredClone(state),
+      onBackendEvent(listener) { backendEvent = listener; return () => { backendEvent = undefined; }; } });
+    const view = render(App);
+    await view.findByPlaceholderText("Your topic or idea");
+    if (edited) await fireEvent.input(view.getByLabelText("Audience"), { target: { value: "Keep the pending audience" } });
+    const settings = defaultLaunchSettings({ title: "Synthetic desk", audience: "Repair desks", domain: "Repair scheduling", observations: "", offLimits: [] }, DEFAULT_RUN_CONFIG);
+    state = { ...state, launchSettings: { ...settings, mode: "babysit" } };
+    backendEvent?.({ type: "app-state-changed", threadId: "alpha" });
+    if (edited) {
+      await tick();
+      expect((view.getByRole("radio", { name: "Vibe" }) as HTMLInputElement).checked).toBe(true);
+      expect((view.getByLabelText("Audience") as HTMLInputElement).value).toBe("Keep the pending audience");
+    } else {
+      await waitFor(() => expect((view.getByRole("radio", { name: "Controlled" }) as HTMLInputElement).checked).toBe(true));
+    }
+  });
+
   test("updates pristine visible setup fields after another client saves the same project", async () => {
     let state = workspace("alpha");
     let backendEvent: ((event: ResearchEvent) => void) | undefined;

@@ -1,5 +1,4 @@
 import { writeFileSync } from "node:fs";
-import { join } from "node:path";
 import { z } from "zod";
 import {
   APP_CHANNELS, ExecuteOperationResultSchema, OperationProposalSchema, SearchKeyCredentialReferenceSchema, appControlRegistry,
@@ -12,6 +11,7 @@ import { OwnerTransportError } from "../shared/owner-contracts";
 import { bundleBrowserIdeaExport } from "../shared/browser-export";
 import type { AppRequestHandler, ExportTargetRequest } from "../app/service-contracts";
 import { parseExternalHttpsUrl } from "./security";
+import { writeUniqueExportFile } from "../app/export-file";
 
 const FilesSchema = z.object({ filename: z.string().optional(), files: z.array(z.object({ filename: z.string(), content: z.string() }).strict()) }).strict();
 const PathSchema = z.object({ path: z.string().min(1) }).strict();
@@ -95,7 +95,7 @@ export function createRemoteApp(options: {
         }, format)] };
         const directory = await options.chooseExportTarget({ kind: "ideas" });
         if (!directory) return { cancelled: true, files: [] };
-        const saved = files.map(file => writeUniqueExport(directory, safeFilename(file.filename), file.content));
+        const saved = files.map(file => writeUniqueExportFile(directory, safeFilename(file.filename), file.content));
         return { cancelled: false, directory, files: saved };
       }
       return result;
@@ -131,19 +131,4 @@ export function createRemoteApp(options: {
 function safeFilename(filename: string) {
   const safe = filename.replace(/[^a-zA-Z0-9._-]/g, "-");
   return !safe || /^\.+$/.test(safe) ? "scraply-export" : safe;
-}
-
-function writeUniqueExport(directory: string, filename: string, content: string) {
-  const dot = filename.lastIndexOf(".");
-  const stem = dot > 0 ? filename.slice(0, dot) : filename;
-  const extension = dot > 0 ? filename.slice(dot) : "";
-  for (let suffix = 0; ; suffix++) {
-    const candidate = suffix ? `${stem}-${suffix + 1}${extension}` : filename;
-    try {
-      writeFileSync(join(directory, candidate), content, { encoding: "utf8", flag: "wx" });
-      return candidate;
-    } catch (error) {
-      if (!(error instanceof Error) || !("code" in error) || error.code !== "EEXIST") throw error;
-    }
-  }
 }

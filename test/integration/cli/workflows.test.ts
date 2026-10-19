@@ -102,7 +102,23 @@ describe("standalone CLI workflows through the real service and backend", () => 
   test("Controlled requires frame approval, stops for research review, then generates only selected problems", async () => {
     const item = await fixture();
     const thread = await configureCliProject(item, { title: "Lantern repair review", mode: "controlled" });
-    const receipt = await item.json(["run", "start", "--project", thread.id, "--yes"], WorkflowAdmissionReceiptSchema);
+    // Exercise the desktop's admission path with choices changed only in its preview,
+    // then confirm both clients and a restarted owner restore the admitted settings.
+    const preview = await item.json(["run", "preview", "--project", thread.id], PreviewWorkflowResultSchema);
+    const owner = await item.owner();
+    const savedProject = ProjectDetailSchema.parse(await owner.invoke(APP_CHANNELS.GET_PROJECT, { threadId: thread.id }));
+    const desktopDraft = { ...savedProject.draft!,
+      instructions: { research: "Check the synthetic supplier desk.", ideas: "Prefer a small pilot.", review: "Check firsthand evidence." } };
+    const desktopPreview = z.object({ ok: z.literal(true), data: PreviewWorkflowResultSchema }).parse(await owner.invoke(IPC_CHANNELS.PREVIEW_WORKFLOW, { type: "launch", threadId: thread.id, draft: desktopDraft })).data;
+    expect(preview.fieldErrors).toEqual([]);
+    expect(desktopPreview.fieldErrors).toEqual([]);
+    const proposal = OperationProposalSchema.parse(await owner.invoke(APP_CHANNELS.PREVIEW_OPERATION, {
+      channel: IPC_CHANNELS.START_WORKFLOW, payload: { threadId: thread.id, clientCommandId: "synthetic-desktop-launch",
+        contract: desktopPreview.proposal, previewHash: desktopPreview.previewHash,
+        capabilityFingerprint: desktopPreview.capabilityFingerprint, previewExpiresAt: desktopPreview.expiresAt },
+    }));
+    const executed = z.object({ result: WorkflowAdmissionReceiptSchema }).parse(await owner.invoke(APP_CHANNELS.EXECUTE_OPERATION, { proposal }));
+    const receipt = executed.result;
     const framed = await item.run(["run", "watch", receipt.sessionId]);
     expect(framed.code).toBe(0);
     expect(watchResult(framed.stdout).end.state).toBe("waiting-for-review");
@@ -136,6 +152,12 @@ describe("standalone CLI workflows through the real service and backend", () => 
     const selectedIdeas = await item.json(["idea", "list", "--project", thread.id], z.object({ ideas: z.array(SolutionViewSchema) }));
     expect(selectedIdeas.ideas.every(idea => final.summary.selectedProblemIds.includes(idea.problemId))).toBe(true);
     expect(final.summary.counts.accepted).toBe(1);
+    await item.stop();
+    await item.start();
+    const reopened = await item.json(["project", "show", thread.id], ProjectDetailSchema);
+    expect(reopened.workspace.launchSettings).toMatchObject({ mode: "babysit", instructions: desktopDraft.instructions });
+    expect(reopened.workspace.launchSettings?.ideas).toEqual(savedProject.launchSettings.ideas);
+    expect(reopened.draft?.instructions).toEqual(desktopDraft.instructions);
   }, 60_000);
 
   test("known-problem runs need no search and an explicit saved proposal survives separate CLI invocations", async () => {

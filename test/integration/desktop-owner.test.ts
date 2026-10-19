@@ -12,6 +12,12 @@ import { createOwnerClient, startOwnerTransport } from "../../src/app/owner-tran
 import { connectOwner } from "../../src/cli/connect";
 import { APP_CHANNELS } from "../../src/shared/cli-contracts";
 import { IPC_CHANNELS, type ResearchEvent } from "../../src/shared/ipc";
+import { createAppService } from "../../src/app/service";
+import { requestBackend } from "../../src/app/backend-request";
+import { startBackend, type BackendHandle } from "../../src/backend/server";
+import { DEFAULT_RUN_CONFIG } from "../../src/shared/schemas";
+import { ProviderFailure, type StructuredModelClient } from "../../src/providers/structured";
+import { configurePromptPaths } from "../../src/core/prompts";
 
 const version = "desktop-test";
 const cleanup: Array<() => void | Promise<void>> = [];
@@ -266,4 +272,100 @@ test("close gates reconnect and holds ownership through accepted requests and ap
   const acquired = await acquireOwnerLock(directory);
   expect(acquired).not.toBeNull();
   await acquired?.release();
+}, 15_000);
+
+test.each([false, true])("desktop quit cancels a pending model request before draining remote=%s", async (remote) => {
+  const directory = profile();
+  let invoked = false;
+  let stopped = false;
+  let release!: () => void;
+  const completion = new Promise<void>(resolve => { release = resolve; });
+  const desktop = createDesktopOwner({ profileDir: directory, version, publishEvent() {},
+    async createApplication() { return {
+      async invoke() { invoked = true; await completion; return {}; },
+      async stop() { stopped = true; release(); }, secretValues: () => [],
+    }; },
+  });
+  cleanup.push(() => desktop.close());
+  await desktop.start();
+  const owner = remote ? await client(directory) : desktop;
+  const request = owner.invoke(IPC_CHANNELS.GENERATE_TITLE);
+  await eventually(() => invoked, Boolean);
+  const closing = desktop.close();
+  try {
+    expect(await Promise.race([closing.then(() => true), delay(500).then(() => false)])).toBe(true);
+    expect(stopped).toBe(true);
+  } finally {
+    release();
+    await request;
+    await closing;
+  }
+}, 15_000);
+
+test.each(["generation", "preflight"] as const)("desktop shutdown settles a real title request during %s before releasing SQLite ownership", async phase => {
+  const directory = profile();
+  const paths = { dataDir: join(directory, "scraply"), dbPath: join(directory, "scraply", "scraply.db"),
+    logsDir: join(directory, "logs"), bundledPromptsDir: join(process.cwd(), "prompts"), promptOverridesDir: join(directory, "prompts") };
+  let started = false;
+  let cancelled = false;
+  let release = () => {};
+  let inspecting = false;
+  let releasePreflight!: () => void;
+  const preflight = new Promise<void>(resolve => { releasePreflight = resolve; });
+  let handle: BackendHandle | undefined;
+  const model: StructuredModelClient = { async structuredCompletion(request) {
+    started = true;
+    return new Promise<never>((_resolve, reject) => {
+      release = () => reject(new ProviderFailure("cancelled", "Synthetic title cancelled", false));
+      const cancel = () => { cancelled = true; release(); };
+      if (request.signal?.aborted) cancel();
+      else request.signal?.addEventListener("abort", cancel, { once: true });
+    });
+  } };
+  const desktop = createDesktopOwner({ profileDir: directory, version, publishEvent() {},
+    async createApplication(publishEvent) {
+      const secrets = { exaApiKey: null, perplexityApiKey: null, providerCredentials: {} };
+      const service = createAppService({ paths, appVersion: version, publishEvent,
+        credentialStore: { load: () => secrets, async save(next) { return next; } },
+        automaticSecrets: { environment: { EXA_API_KEY: "", PERPLEXITY_API_KEY: "" } },
+        backend: {
+          async start(input) {
+            if (handle) return;
+            configurePromptPaths({ bundledDir: paths.bundledPromptsDir, overrideDir: paths.promptOverridesDir });
+            handle = await startBackend({ ...paths, appVersion: version, getSecrets: () => secrets,
+              modelClients: { "openai-subscription": model },
+              providerValidation: { inspectNative: async () => {
+                inspecting = true;
+                if (phase === "preflight") await preflight;
+                return { available: true, connected: true, accounts: [],
+                  models: [{ ...DEFAULT_RUN_CONFIG.model, displayName: "Synthetic model", defaultReasoningEffort: "medium",
+                    reasoningEfforts: [{ id: "medium", description: "Balanced" }] }] };
+              } },
+            }, input.publishEvent);
+          },
+          isReady: () => Boolean(handle),
+          request(route, init) { if (!handle) throw new Error("Synthetic backend is not ready"); return requestBackend(handle, route, init); },
+          async updateSecrets() {}, async finishSearchKeyUpdate() {},
+          async stop() { await handle?.close(); handle = undefined; },
+        },
+      });
+      return { invoke: (channel, payload) => service.invoke(channel, [payload]), stop: service.stop, secretValues: service.secretValues };
+    },
+  });
+  cleanup.push(() => desktop.close());
+  await desktop.start();
+  const request = desktop.invoke(IPC_CHANNELS.GENERATE_TITLE, { context: "Synthetic supplier desk", model: DEFAULT_RUN_CONFIG.model, reasoningEffort: "medium" })
+    .then(() => false, () => true);
+  await eventually(() => phase === "preflight" ? inspecting : started, Boolean);
+  const closing = desktop.close();
+  if (phase === "preflight") { await delay(20); releasePreflight(); }
+  try {
+    expect(await Promise.race([closing.then(() => true), delay(2_000).then(() => false)])).toBe(true);
+    expect(started).toBe(phase === "generation");
+    expect(cancelled).toBe(phase === "generation");
+    expect(await request).toBe(true);
+  } finally { releasePreflight(); release(); await closing; }
+  const available = await acquireOwnerLock(directory);
+  expect(available).not.toBeNull();
+  await available?.release();
 }, 15_000);

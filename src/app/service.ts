@@ -1,5 +1,4 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
 import { z } from "zod";
 import {
   ReviewSavedOpportunitiesSchema, EditOpportunityMembershipSchema, RequestFocusedExperimentSchema,
@@ -30,6 +29,7 @@ import {
   ProviderStatusResultSchema, isBillableOperation,
 } from "../shared/cli-contracts";
 import { createAppOperationHandlers } from "./operations";
+import { writeUniqueExportFile } from "./export-file";
 import { createServiceBilling, isServiceBillingChannel } from "./service-billing";
 import { revokeNativeAccount } from "../main/native-account";
 import { parseExternalHttpsUrl } from "../main/security";
@@ -57,6 +57,7 @@ export function createAppService(options: AppServiceOptions) {
   const { backend, credentialStore, paths } = options;
   let secrets: BackendSecrets = { exaApiKey: null, perplexityApiKey: null, providerCredentials: {} };
   let initialized = false;
+  let closing = false;
   let credentialLoadFailure: string | null = null;
   let automaticSecrets: Partial<BackendSecrets> = {};
   let searchKeyChangeInProgress = false;
@@ -181,10 +182,12 @@ export function createAppService(options: AppServiceOptions) {
   }
 
   async function ensureBackend(): Promise<void> {
+    if (closing) throw new AppError("backend_unavailable", "Scraply is closing.");
     initialize();
     if (credentialLoadFailure) throw new AppError("backend_unavailable", credentialLoadFailure);
     await backend.start({ paths, appVersion: options.appVersion, secrets,
       validateAutomaticSecrets: validateAutomaticSecretsOnStart, persistProviderCredential, publishEvent });
+    if (closing) throw new AppError("backend_unavailable", "Scraply is closing.");
   }
 
   async function backendRequest<T = unknown>(path: string, init?: RequestInit): Promise<T> {
@@ -514,6 +517,7 @@ export function createAppService(options: AppServiceOptions) {
   });
 
   async function invoke(channel: string, args: unknown[] = [], invocation: AppInvocationOptions = {}): Promise<unknown> {
+    if (closing) throw new AppError("backend_unavailable", "Scraply is closing.");
     const operation = operations.get(channel);
     if (!operation) throw new AppError("not_found", "Unknown app request.");
     if (args.length > 1) throw new AppError("validation_error", "App requests accept at most one argument.");
@@ -557,21 +561,10 @@ export function createAppService(options: AppServiceOptions) {
         }
       });
     },
-    stop() { serviceBilling.clear(); return backend.stop(); },
+    async stop() {
+      closing = true;
+      serviceBilling.clear();
+      await backend.stop();
+    },
   };
-}
-
-function writeUniqueExportFile(directory: string, filename: string, content: string): string {
-  const dotIndex = filename.lastIndexOf(".");
-  const stem = dotIndex > 0 ? filename.slice(0, dotIndex) : filename;
-  const extension = dotIndex > 0 ? filename.slice(dotIndex) : "";
-  for (let suffix = 0; ; suffix += 1) {
-    const candidate = suffix === 0 ? filename : `${stem}-${suffix + 1}${extension}`;
-    try {
-      writeFileSync(join(directory, candidate), content, { encoding: "utf8", flag: "wx" });
-      return candidate;
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-    }
-  }
 }

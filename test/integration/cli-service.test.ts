@@ -162,6 +162,7 @@ test("launch choices survive backend restart and unavailable saved models remain
   await host.restart();
   const reopened = await host.project(threadId);
   expect(reopened.launchSettings).toEqual(settings);
+  expect(reopened.workspace.launchSettings).toEqual(settings);
   expect(reopened.draft?.ideas).toEqual(settings.ideas);
   expect(reopened.draft?.targets.automaticProblemCap).toBe(2);
   const preview = PreviewWorkflowResultSchema.parse(await host.data("/workflows/preview", { type: "launch", threadId, draft: reopened.draft }));

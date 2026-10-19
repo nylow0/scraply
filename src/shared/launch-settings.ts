@@ -2,7 +2,7 @@ import { z } from "zod";
 import { buildWorkflowLaunchDraft } from "./launch-draft";
 import type { RunConfig } from "./schemas";
 import type { Scope } from "./structured-output-schemas";
-import { WorkflowInstructionsSchema, WorkflowLaunchDraftSchema, WorkflowLimitsSchema, WorkflowModeSchema, WorkflowTargetSchema } from "./workflow-contracts";
+import { WorkflowInstructionsSchema, WorkflowLaunchDraftSchema, WorkflowLimitsSchema, WorkflowModeSchema, WorkflowTargetSchema, type WorkflowLaunchDraft } from "./workflow-contracts";
 
 /** Editable choices only. Saved workflow contracts and their resolved prompts remain immutable. */
 export const LaunchSettingsSchema = z.object({
@@ -30,18 +30,18 @@ export function defaultLaunchSettings(scope: Scope, config: RunConfig): LaunchSe
   });
 }
 
-/** Keep model choices verbatim; preflight reports unavailable choices to the caller. */
-export function buildSavedLaunchDraft(scope: Scope, config: RunConfig, settings: LaunchSettings) {
+/** Editable forms may be incomplete. Validate at preview; retain every saved choice here. */
+export function buildSavedLaunchDraft(scope: Scope, config: RunConfig, settings: LaunchSettings): WorkflowLaunchDraft {
   const ideas = settings.ideas ?? { model: config.model, reasoningEffort: config.reasoningEffort };
   const options = {
     automaticProblemCap: settings.automaticProblemCap, limits: settings.limits, instructions: settings.instructions,
   };
   const draft = buildWorkflowLaunchDraft(scope, config, settings.mode === "vibe"
     ? { ...options, mode: "vibe", ideas } : { ...options, mode: "babysit" });
-  return WorkflowLaunchDraftSchema.parse({
+  return {
     ...draft,
     ...(settings.mode === "vibe" ? { ideas } : {}),
     ...(settings.targets ? { targets: settings.targets } : {}),
     limits: settings.limits,
-  });
+  };
 }

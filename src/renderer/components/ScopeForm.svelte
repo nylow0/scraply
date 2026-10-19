@@ -16,7 +16,8 @@
   import { hasSavedResearchDefaults, modelDisplayName, readResearchDefaults } from "../lib/research-defaults";
   import { preferredModel } from "../../shared/latest-models";
   import ModelPicker from "./ModelPicker.svelte";
-  import { buildWorkflowLaunchDraft, launchDraftEstimates } from "../../shared/launch-draft";
+  import { launchDraftEstimates } from "../../shared/launch-draft";
+  import { buildSavedLaunchDraft } from "../../shared/launch-settings";
   import type { WorkflowLaunchDraft } from "../../shared/workflow-contracts";
   import type { z } from "zod";
   import { PreviewWorkflowResultSchema } from "../../shared/workflow-contracts";
@@ -43,9 +44,10 @@
 
   const initial = untrack(() => workspace);
   const defaults = untrack(readResearchDefaults);
+  const hasSavedSetup = Boolean(initial.scope || initial.launchSettings);
   // A saved project keeps its model, and a new one starts on the default saved in Settings. With neither,
   // it starts on the first latest model the account offers (GPT-6.1 Sol when available).
-  const startingModel = initial.scope ? initial.runConfig?.model
+  const startingModel = hasSavedSetup ? initial.runConfig?.model
     : untrack(hasSavedResearchDefaults) ? defaults.model
     : preferredModel(initial.modelOptions.filter((item) => item.providerId === "openai-subscription")) ?? defaults.model;
   let researchMode = $state<ResearchMode>(initial.runConfig?.researchMode ?? "explore-market");
@@ -73,16 +75,16 @@
   let resolvedModel = $derived(selectedModelOption ?? selectedModelRef);
   let model = $derived<ModelRef>({ providerId: resolvedModel.providerId, modelId: resolvedModel.modelId });
   let initialModelOption = initial.modelOptions.find((item) => sameModelRef(item, initialModel));
-  let reasoningEffort = $state((initial.scope ? initial.runConfig?.reasoningEffort : defaults.reasoningEffort)
+  let reasoningEffort = $state((hasSavedSetup ? initial.runConfig?.reasoningEffort : defaults.reasoningEffort)
     ?? initialModelOption?.defaultReasoningEffort
     ?? "");
-  let discoveryDepth = $state(initial.scope ? initial.runConfig?.discoveryDepth ?? DEFAULT_RUN_CONFIG.discoveryDepth : defaults.discoveryDepth);
-  let searchProvider = $state<SearchProviderChoice>(initial.scope ? initial.runConfig?.searchProvider ?? defaults.searchProvider : defaults.searchProvider);
+  let discoveryDepth = $state(hasSavedSetup ? initial.runConfig?.discoveryDepth ?? DEFAULT_RUN_CONFIG.discoveryDepth : defaults.discoveryDepth);
+  let searchProvider = $state<SearchProviderChoice>(hasSavedSetup ? initial.runConfig?.searchProvider ?? defaults.searchProvider : defaults.searchProvider);
   let searchProviderTouched = $state(false);
   // Saved choices stay visible even when unavailable. Only a new setup without a saved default picks a provider.
   const savedSearchProvider = untrack(hasSavedResearchDefaults);
   $effect(() => {
-    if (initial.scope || savedSearchProvider || searchProviderTouched) return;
+    if (hasSavedSetup || savedSearchProvider || searchProviderTouched) return;
     if (isSearchProviderReady(workspace.validation.exa) && isSearchProviderReady(workspace.validation.perplexity)) { searchProvider = "auto"; return; }
     if (searchProvider !== "auto" && isSearchProviderReady(workspace.validation[searchProvider])) return;
     const available = searchProvider === "exa" ? "perplexity" : "exa";
@@ -90,8 +92,9 @@
   });
   let maxRunMinutes = $state(initial.runConfig?.maxRunMinutes ?? DEFAULT_RUN_CONFIG.maxRunMinutes);
   // "babysit" is the stored identifier of the mode users see as Controlled (see WorkflowModeSchema).
-  let workflowMode = $state<"babysit" | "vibe">("vibe");
-  const initialIdeasModel = defaults.ideasModel ?? initialModel;
+  let workflowMode = $state<"babysit" | "vibe">(initial.launchSettings?.mode ?? "vibe");
+  const savedIdeas = initial.launchSettings?.ideas;
+  const initialIdeasModel = savedIdeas?.model ?? defaults.ideasModel ?? initialModel;
   const initialIdeasModelOption = initial.modelOptions.find((item) => sameModelRef(item, initialIdeasModel));
   let ideaModelKey = $state(modelRefKey(initialIdeasModel));
   let ideaModelOption = $derived(nativeModelOptions.find((item) => modelRefKey(item) === ideaModelKey));
@@ -100,20 +103,26 @@
     providerId: ideaModelOption?.providerId ?? selectedIdeasModelRef.providerId,
     modelId: ideaModelOption?.modelId ?? selectedIdeasModelRef.modelId,
   });
-  let ideaReasoningEffort = $state(defaults.ideasReasoningEffort
+  let ideaReasoningEffort = $state(savedIdeas?.reasoningEffort ?? defaults.ideasReasoningEffort
     ?? initialIdeasModelOption?.defaultReasoningEffort
     ?? "");
+  // Keep a separately saved review choice until the user explicitly replaces it.
+  let reviewChoice = $state<{ model: ModelRef; reasoningEffort: string } | null>(savedIdeas
+    && (!sameModelRef(savedIdeas.reviewModel ?? savedIdeas.model, initialIdeasModel)
+      || savedIdeas.reviewReasoningEffort && savedIdeas.reviewReasoningEffort !== savedIdeas.reasoningEffort)
+    ? { model: savedIdeas.reviewModel ?? savedIdeas.model, reasoningEffort: savedIdeas.reviewReasoningEffort ?? savedIdeas.reasoningEffort } : null);
+  let targets = $state(initial.launchSettings?.targets);
   /** Empty means every qualifying problem is developed. */
-  let automaticProblemCap = $state<number | null>(null);
+  let automaticProblemCap = $state<number | null>(initial.launchSettings?.automaticProblemCap ?? initial.launchSettings?.targets?.automaticProblemCap ?? null);
   const initialEstimates = untrack(() => launchDraftEstimates("explore-market", discoveryDepth, frameLanguages?.length));
-  let workflowModelLimit = $state(initialEstimates.maxModelCalls);
-  let workflowSearchLimit = $state(initialEstimates.maxSearches);
-  let workflowModelLimitTouched = $state(false);
-  let workflowSearchLimitTouched = $state(false);
+  let workflowModelLimit = $state(initial.launchSettings?.limits.maxModelCalls ?? initialEstimates.maxModelCalls);
+  let workflowSearchLimit = $state(initial.launchSettings?.limits.maxSearches ?? initialEstimates.maxSearches);
+  let workflowModelLimitTouched = $state(Boolean(initial.launchSettings));
+  let workflowSearchLimitTouched = $state(Boolean(initial.launchSettings));
   let workflowEstimates = $derived(launchDraftEstimates(researchMode, discoveryDepth, frameLanguages?.length));
-  let researchInstruction = $state("");
-  let ideasInstruction = $state("");
-  let reviewInstruction = $state("");
+  let researchInstruction = $state(initial.launchSettings?.instructions.research ?? "");
+  let ideasInstruction = $state(initial.launchSettings?.instructions.ideas ?? "");
+  let reviewInstruction = $state(initial.launchSettings?.instructions.review ?? "");
 
   // Preserve raw input and choices in App's one in-memory slot, without saving a scope or config.
   // Preview and dialog state are rebuilt on mount; they are not part of the user's draft.
@@ -121,7 +130,7 @@
     return { researchMode, purposeOverride, title, audience, domain, observations, riskEvaluationCriteria,
       ideaCount, offLimits, knownProblem, modelKey, selectedModelRef, reasoningEffort, discoveryDepth,
       searchProvider, searchProviderTouched, maxRunMinutes, workflowMode, ideaModelKey, selectedIdeasModelRef,
-      ideaReasoningEffort, automaticProblemCap, workflowModelLimit, workflowSearchLimit,
+      ideaReasoningEffort, reviewChoice, targets, automaticProblemCap, workflowModelLimit, workflowSearchLimit,
       workflowModelLimitTouched, workflowSearchLimitTouched, researchInstruction, ideasInstruction, reviewInstruction };
   }
   const rememberedDraft = untrack(() => initialDraft);
@@ -147,7 +156,7 @@
     ({ researchMode, purposeOverride, title, audience, domain, observations, riskEvaluationCriteria,
       ideaCount, offLimits, knownProblem, modelKey, selectedModelRef, reasoningEffort, discoveryDepth,
       searchProvider, searchProviderTouched, maxRunMinutes, workflowMode, ideaModelKey, selectedIdeasModelRef,
-      ideaReasoningEffort, automaticProblemCap, workflowModelLimit, workflowSearchLimit,
+      ideaReasoningEffort, reviewChoice, targets, automaticProblemCap, workflowModelLimit, workflowSearchLimit,
       workflowModelLimitTouched, workflowSearchLimitTouched, researchInstruction, ideasInstruction, reviewInstruction } = rememberedDraft);
   });
   onDestroy(() => {
@@ -209,16 +218,21 @@
   let errors = $derived(validationAttempted ? missing : {});
   let ideaModelAvailable = $derived(Boolean(ideaModelOption) && workspace.models.some((item) => sameModelRef(item, ideaModel)));
   let ideaReasoningAvailable = $derived(ideaModelOption?.reasoningEfforts.some((item) => item.id === ideaReasoningEffort) ?? false);
-  let workflowDraft = $derived(buildWorkflowLaunchDraft({
+  let workflowDraft = $derived(buildSavedLaunchDraft({
     title, audience, domain, observations, riskEvaluationCriteria, offLimits: offLimits.split("\n"),
   }, {
     configVersion: 2, workflowVersion, ideaCount: ideaCount ?? DEFAULT_IDEA_COUNT,
     model, reasoningEffort, discoveryDepth, searchProvider, maxRunMinutes, researchMode, knownProblem, explorationPurpose,
   }, {
-    ...(workflowMode === "vibe" ? { mode: workflowMode, ideas: { model: ideaModel, reasoningEffort: ideaReasoningEffort } }
-      : { mode: workflowMode }),
-    automaticProblemCap, limits: { maxModelCalls: workflowModelLimit, maxSearches: workflowSearchLimit },
-    instructions: { research: researchInstruction, ideas: ideasInstruction, review: reviewInstruction },
+    version: 1, mode: workflowMode,
+    ideas: { model: ideaModel, reasoningEffort: ideaReasoningEffort,
+      reviewModel: reviewChoice?.model ?? ideaModel, reviewReasoningEffort: reviewChoice?.reasoningEffort ?? ideaReasoningEffort },
+    automaticProblemCap,
+    ...(targets ? { targets: { ...targets, ideaCount: ideaCount ?? DEFAULT_IDEA_COUNT,
+      automaticProblemCap: workflowMode === "vibe" && researchMode === "explore-market" ? automaticProblemCap ?? undefined : undefined } } : {}),
+    limits: { ...(initial.launchSettings?.limits ?? { enforced: false }), maxMinutes: maxRunMinutes,
+      maxModelCalls: workflowModelLimit, maxSearches: workflowSearchLimit },
+    instructions: { research: researchInstruction.trim(), ideas: ideasInstruction.trim(), review: reviewInstruction.trim() },
   }));
   let workflowFingerprint = $derived(JSON.stringify(workflowDraft));
 
@@ -380,16 +394,17 @@
   }
   const fieldSections: Record<string, SettingsSection | "brief" | "main"> = {
     domain: "brief", knownProblem: "brief", researchMode: "brief",
-    model: "main", reasoning: "main", searchProvider: "main", ideaCount: "main", ideaModel: "main", ideaReasoning: "main",
+    model: "main", reasoning: "main", searchProvider: "main", ideaCount: "main", ideaModel: "main", ideaReasoning: "main", reviewModel: "main",
     maxRunMinutes: "limits", workflowModelLimit: "limits", workflowSearchLimit: "limits", automaticProblemCap: "limits",
   };
-  const previewFields: Record<string, string> = {
+  let previewFields = $derived<Record<string, string>>({
     "runConfig.model": "model", "runConfig.searchProvider": "searchProvider",
     "runConfig.researchMode": "researchMode", "runConfig.knownProblem": "knownProblem", purpose: "researchMode",
-    ideas: "ideaModel", "ideas.model": "ideaModel", "ideas.reviewModel": "ideaModel", "ideas.reasoningEffort": "ideaReasoning",
+    ideas: "ideaModel", "ideas.model": "ideaModel", "ideas.reviewModel": reviewChoice ? "reviewModel" : "ideaModel", "ideas.reasoningEffort": "ideaReasoning",
+    "ideas.reviewReasoningEffort": reviewChoice ? "reviewModel" : "ideaReasoning",
     "limits.maxModelCalls": "workflowModelLimit",
     "limits.maxSearches": "workflowSearchLimit", "limits.maxMinutes": "maxRunMinutes",
-  };
+  });
   let customInstructionCount = $derived([researchInstruction, ideasInstruction, reviewInstruction].filter((value) => value.trim()).length);
   let configurationIssues = $derived(Object.keys(errors).filter((key) => !["domain", "knownProblem"].includes(key)).length
     + visiblePreviewIssues.length + Number(modelChoiceRequired) + Number(reasoningChoiceRequired));
@@ -521,7 +536,10 @@
         </select></label>
         {#if errors.ideaModel || ideasPreviewIssue}<small class="field-error wide" role="alert">{errors.ideaModel ?? ideasPreviewIssue}</small>{/if}
         {#if errors.ideaReasoning}<small class="field-error wide">{errors.ideaReasoning}</small>{/if}
+        {#if reviewChoice}<p class="saved-purpose-note wide">Review uses {modelDisplayName(reviewChoice.model)} with {reviewChoice.reasoningEffort} reasoning. <button type="button" data-field="reviewModel" onclick={() => { draftEdited = true; reviewChoice = null; }}>Use the ideas model for review</button></p>{/if}
       {/if}
+
+        {#if targets?.kind === "project"}<p class="saved-purpose-note wide">This saved launch targets {targets.distinctBusinessCount ?? targets.ideaCount} distinct businesses. <button type="button" onclick={() => { draftEdited = true; targets = undefined; }}>Use solutions per problem</button></p>{/if}
 
         </div>
           {#if modelChoiceRequired}<p class="field-error">{legacyModelNeedsReplacement ? "This project used the removed CLI integration." : "The saved model is unavailable."} Choose an available OpenAI model.</p>{/if}

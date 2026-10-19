@@ -148,9 +148,9 @@ export function createDesktopOwner(options: {
         stream?.close();
         client = undefined;
         await connecting?.catch(() => undefined);
-        await transport?.close();
-        await Promise.allSettled([...pending]);
-        await application?.stop();
+        // Gate transport admission immediately, then cancel backend work while
+        // accepted requests drain. A model request may need stop() to settle.
+        await Promise.all([transport?.close(), application?.stop(), Promise.allSettled([...pending])]);
         listeners.clear();
         await lock?.release();
       })();

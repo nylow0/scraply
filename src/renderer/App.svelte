@@ -68,7 +68,7 @@
   let previousSavedSetup = "";
   $effect(() => {
     const threadId = workspace?.activeThreadId ?? null;
-    const savedSetup = JSON.stringify([workspace?.scope, workspace?.runConfig]);
+    const savedSetup = JSON.stringify([workspace?.scope, workspace?.runConfig, workspace?.launchSettings]);
     if (busy) return;
     // Reload persisted fields only while the mounted form has no local draft to protect.
     if (threadId === previousSetupThreadId && savedSetup !== previousSavedSetup

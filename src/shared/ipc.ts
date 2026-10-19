@@ -17,6 +17,7 @@ import { OpportunityFamiliesViewSchema, OpportunityMembershipCommandSchema } fro
 import { FocusedExperimentRecordSchema, FocusedDemandTestSchema } from "./focused-experiment";
 import { OpportunityExplorationProgressSchema, OpportunityExplorationStatusSchema, OpportunityBudgetExtensionSchema, OpportunityBudgetExtensionPreviewSchema, OpportunityCandidateOriginSchema } from "./opportunity-exploration";
 import { WorkflowSummarySchema } from "./workflow-contracts";
+import { LaunchSettingsSchema } from "./launch-settings";
 import { SearchProviderSchema } from "../providers/search";
 
 const EntityIdSchema = z.string().trim().min(1).max(128);
@@ -336,6 +337,7 @@ export const WorkspaceStateSchema = z.object({
   validation: ValidationStateSchema,
   threads: z.array(ThreadSchema), activeThreadId: z.string().nullable(), messages: z.array(MessageSchema),
   scope: ScopeSchema.nullable(), runConfig: RunConfigSchema.nullable(), models: z.array(ModelRefSchema),
+  launchSettings: LaunchSettingsSchema.nullable().optional(),
   modelOptions: z.array(ModelOptionSchema),
   modelCatalog: ModelCatalogSchema, presets: z.array(z.object({ name: z.string(), config: RunConfigSchema })),
   problemCandidates: z.array(ProblemCandidateSchema), rejectedProblemCandidates: z.array(RejectedProblemCandidateSchema),

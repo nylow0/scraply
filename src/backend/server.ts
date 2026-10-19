@@ -74,7 +74,7 @@ import {
   CommandWorkflowRequestSchema, GetIdeaConversationRequestSchema, GetWorkflowRequestSchema,
   IdeaConversationSchema, PreviewWorkflowRequestSchema, PreviewWorkflowResultSchema,
   SelectIdeaVersionRequestSchema, StartWorkflowRequestSchema, SubmitIdeaTurnRequestSchema, SubmitIdeaTurnResultSchema,
-  WorkflowAdmissionReceiptSchema, WorkflowDetailSchema,
+  WorkflowAdmissionReceiptSchema, WorkflowDetailSchema, WorkflowLaunchDraftSchema,
   type WorkflowSummary,
 } from "../shared/workflow-contracts";
 
@@ -436,6 +436,7 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
     const selectedThreadId = projectId ?? (threadList.some((thread) => thread.id === activeThreadId && !thread.archivedAt)
       ? activeThreadId : threadList.find((thread) => !thread.archivedAt)?.id ?? null);
     const runConfig = selectedThreadId ? threads.getLatestRunConfig(selectedThreadId) : null;
+    const savedLaunchSettings = selectedThreadId ? db.getSetting(`launch-settings:${selectedThreadId}`) : null;
     const latestResearchRun = selectedThreadId ? latestRun(selectedThreadId) : null;
     const activeWorkflow = selectedThreadId ? workflowCoordinator.findActiveSummary(selectedThreadId) : null;
     const activeSnapshot = activeWorkflow?.activeSnapshotId ? workflows.getSnapshot(activeWorkflow.activeSnapshotId) : null;
@@ -452,6 +453,7 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
       messages: selectedThreadId ? threads.getMessages(selectedThreadId) : [],
       scope: selectedThreadId ? threads.getScope(selectedThreadId) : null,
       runConfig,
+      launchSettings: savedLaunchSettings ? LaunchSettingsSchema.parse(JSON.parse(savedLaunchSettings)) : null,
       models: cachedModels,
       modelOptions: cachedModelOptions,
       modelCatalog: modelCatalog(),
@@ -1507,7 +1509,7 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
     const settings = launchSettings(threadId);
     let draft: ReturnType<typeof buildSavedLaunchDraft> | null = null;
     if (scope) {
-      try { draft = buildSavedLaunchDraft(scope, threads.getLatestRunConfig(threadId) ?? DEFAULT_RUN_CONFIG, settings); }
+      try { draft = WorkflowLaunchDraftSchema.parse(buildSavedLaunchDraft(scope, threads.getLatestRunConfig(threadId) ?? DEFAULT_RUN_CONFIG, settings)); }
       catch (error) { if (!(error instanceof z.ZodError)) throw error; }
     }
     return ProjectDetailSchema.parse({ thread, workspace: await workspaceState(threadId), launchSettings: settings,
@@ -2374,6 +2376,10 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
   return {
     port: address.port, token,
     close: async () => {
+      stopping = true;
+      // A handler can be awaiting this model call. Cancel before waiting for
+      // HTTP shutdown, which may itself wait for that handler to finish.
+      workflowModelScheduler.close(new Error("Backend is closing"));
       let closeError: unknown;
       try {
         await new Promise<void>((resolve, reject) => {
@@ -2383,7 +2389,6 @@ export async function startBackend(context: BackendContext, onEvent: (event: Res
       } catch (error) {
         closeError = error;
       } finally {
-        workflowModelScheduler.cancelAll(new Error("Backend is closing"));
         await Promise.allSettled([...pendingRequests]);
         await engine?.shutdown();
         await context.nativeRuntime?.close();

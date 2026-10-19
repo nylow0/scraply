@@ -119,10 +119,10 @@ const desktopOwner = createDesktopOwner({
       },
       secretValues: service.secretValues,
       async stop() {
-        await Promise.allSettled([...localRequests]);
         await startup;
         // The graceful utility shutdown drains model work and credential callbacks.
         await service.stop();
+        await Promise.allSettled([...localRequests]);
       },
     };
   },

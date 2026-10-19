@@ -8,10 +8,35 @@ import type { WorkspaceState } from "../../src/shared/ipc";
 import { DEFAULT_RUN_CONFIG, RunConfigSchema, modelRefKey } from "../../src/shared/schemas";
 import type { WorkflowLaunchDraft } from "../../src/shared/workflow-contracts";
 import { buildWorkflowLaunchDraft } from "../../src/shared/launch-draft";
+import { buildSavedLaunchDraft, defaultLaunchSettings } from "../../src/shared/launch-settings";
 import { listedModels, pickModel } from "./model-picker";
 import { modelDisplayName } from "../../src/renderer/lib/research-defaults";
 
 describe("ScopeForm search provider selection", () => {
+  test.each(["vibe", "babysit"] as const)("restores shared %s launch settings without changing its preview", async (mode) => {
+    const state = workspace();
+    state.validation.exa = { valid: true };
+    const scope = state.scope!;
+    const config = { ...DEFAULT_RUN_CONFIG, reasoningEffort: "medium", ideaCount: 3, explorationPurpose: "startup-opportunities" as const };
+    const reviewModel = { providerId: "openai-subscription", modelId: "gpt-6-astra" };
+    state.models.push(reviewModel);
+    state.modelOptions.push({ ...reviewModel, displayName: "Astra", defaultReasoningEffort: "medium", reasoningEfforts: [{ id: "medium", description: "Balanced" }] });
+    const settings = { ...defaultLaunchSettings(scope, config), mode,
+      ideas: { model: DEFAULT_RUN_CONFIG.model, reasoningEffort: "medium", reviewModel, reviewReasoningEffort: "medium" },
+      targets: { kind: "project" as const, ideaCount: 3, distinctBusinessCount: 2 },
+      instructions: { research: "Check synthetic repair desks.", ideas: "Use existing equipment.", review: "Check the buyer." },
+    };
+    const onPreviewWorkflow = vi.fn<(draft: WorkflowLaunchDraft) => Promise<never>>().mockRejectedValue(new Error("Synthetic preview boundary"));
+    const view = render(ScopeForm, { workspace: { ...state, runConfig: config, launchSettings: settings }, busy: false,
+      onSave: vi.fn(), onStart: vi.fn(), onRetry: vi.fn(), onPreviewWorkflow, onStartWorkflow: vi.fn() });
+    expect((view.getByRole("radio", { name: mode === "vibe" ? "Vibe" : "Controlled" }) as HTMLInputElement).checked).toBe(true);
+    await waitFor(() => expect(onPreviewWorkflow).toHaveBeenCalled());
+    expect(onPreviewWorkflow.mock.lastCall?.[0]).toEqual(buildSavedLaunchDraft(scope, config, settings));
+    await fireEvent.click(view.getByRole("button", { name: "Advanced settings" }));
+    await fireEvent.click(view.getByRole("button", { name: /^Instructions$/ }));
+    expect((view.getByLabelText("Research instructions") as HTMLTextAreaElement).value).toBe(settings.instructions.research);
+  });
+
   test("does not cache a pristine form after automatic catalog and provider defaults settle", async () => {
     const state = workspace();
     state.scope = null;

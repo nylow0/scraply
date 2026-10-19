@@ -6,6 +6,7 @@ import { OpportunityRepository } from "../db/repositories/opportunities";
 import { WorkflowRepository, type WorkflowSession, type WorkflowWorkItem } from "../db/repositories/workflows";
 import { ResearchFrameRepository, type SavedResearchFrame } from "../db/repositories/research-frames";
 import { canonicalJson, sha256 } from "../shared/content-identity";
+import { LaunchSettingsSchema } from "../shared/launch-settings";
 import { SavedProblemCandidateSchema } from "../shared/structured-output-schemas";
 import { candidateAssessmentProjection } from "../shared/evidence-investigators";
 import { copySavedProblemCandidates } from "./saved-candidate-archive";
@@ -281,6 +282,16 @@ export class WorkflowCoordinator {
     const reusableFrame = approved?.knownProblem === (contract.purpose === "known-problem") ? approved : null;
     let initialTaskId = "";
     const receipt = this.options.db.immediateTransaction(() => {
+      // Both hosts restore the choices of the last admitted launch. Replaying an
+      // existing command returns above, so it never overwrites newer saved choices.
+      const settingsKey = `launch-settings:${request.threadId}`;
+      const savedSettings = this.options.db.getSetting(settingsKey);
+      const savedIdeas = savedSettings ? LaunchSettingsSchema.parse(JSON.parse(savedSettings)).ideas : undefined;
+      this.options.db.setSetting(settingsKey, JSON.stringify(LaunchSettingsSchema.parse({
+        version: 1, mode: contract.mode, ideas: contract.ideas ?? savedIdeas,
+        automaticProblemCap: contract.targets.automaticProblemCap ?? null,
+        targets: contract.targets, limits: contract.limits, instructions: contract.instructions,
+      })));
       const session = this.repository.createSession({
         threadId: request.threadId, purpose: contract.purpose, mode: contract.mode,
         contract, remainingMs: contract.limits.maxMinutes * 60_000,
