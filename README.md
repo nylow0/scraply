@@ -29,6 +29,8 @@ Extract `scraply-cli-<version>-win-x64.zip` into a directory you want to keep. L
 
 Desktop and CLI share projects and encrypted credentials in `%APPDATA%\scraply`. Either can be installed first. Only one host owns a profile; the other connects to it, and both versions must match. Use `--data-dir <directory>` for a separate profile. Commands return JSON when piped, and commands that spend money require `--yes` after reviewing their preview.
 
+Update the desktop to 0.1.2 before using the CLI. A 0.1.1 desktop opened while the CLI is running can interrupt its runs.
+
 `.\scraply.exe setup` optionally adds its directory to your user PATH without administrator access. Open a new terminal, then use `scraply`. Run `scraply setup --remove` before moving or removing that directory. Removing the CLI leaves your projects and credentials in place.
 
 ## How it's built
