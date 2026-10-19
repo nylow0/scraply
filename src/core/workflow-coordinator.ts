@@ -1310,7 +1310,7 @@ export class WorkflowCoordinator {
         assessmentCandidateId = mappedCandidateId ?? imported[proposal.candidateId]!;
         assessmentSourceRunId = carried.runId;
         const linked = this.repository.createSnapshot({ sessionId: admitted.id, ...(baseSnapshotId ? { parentSnapshotId: baseSnapshotId } : {}),
-          materializationRunId: carried.runId, selection: { problemIds: carried.problemIds }, originMap: carried.originMap });
+          materializationRunId: carried.runId, selection: { problemIds: carried.problemIds }, originMap: carried.originMap, allowEmpty: true });
         baseSnapshotId = linked.id; baseRunId = carried.runId; baseProblemIds = carried.problemIds;
         admitted = this.repository.updateSession(admitted.id, admitted.revision, { activeSnapshotId: linked.id });
       }
@@ -1358,7 +1358,7 @@ export class WorkflowCoordinator {
         this.options.db.db.prepare(`INSERT OR REPLACE INTO workflow_snapshots (research_run_id,snapshot_key,value_json)
           SELECT ?,snapshot_key,value_json FROM workflow_snapshots WHERE research_run_id = ? AND snapshot_key = 'candidate-assessment-frame'`).run(combined.runId, runId);
         const snapshot = this.repository.createSnapshot({ sessionId: session.id, ...(input.baseSnapshotId ? { parentSnapshotId: input.baseSnapshotId } : {}),
-          materializationRunId: combined.runId, selection: { problemIds: combined.problemIds }, originMap: combined.originMap });
+          materializationRunId: combined.runId, selection: { problemIds: combined.problemIds }, originMap: combined.originMap, allowEmpty: true });
         snapshotId = snapshot.id;
         refs.snapshotId = snapshot.id;
       }
