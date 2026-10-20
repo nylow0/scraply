@@ -8,10 +8,139 @@ import type { ResearchEvent, WorkspaceState } from "../../src/shared/ipc";
 import { DEFAULT_RUN_CONFIG } from "../../src/shared/schemas";
 import type { WorkflowDetail, WorkflowSummary } from "../../src/shared/workflow-contracts";
 import { ResearchFrameSchema } from "../../src/shared/research-frame";
+import { defaultLaunchSettings } from "../../src/shared/launch-settings";
 import { summarizeRunUsage } from "../../src/backend/run-usage";
 import { createIdeasFixture } from "../ui/ideas-fixture";
 
 describe("App workspace coordination", () => {
+  test.each([false, true])("shared launch updates refresh pristine setup and preserve local edits=%s", async (edited) => {
+    let state = workspace("alpha");
+    let backendEvent: ((event: ResearchEvent) => void) | undefined;
+    installApi({ getWorkspace: async () => structuredClone(state),
+      onBackendEvent(listener) { backendEvent = listener; return () => { backendEvent = undefined; }; } });
+    const view = render(App);
+    await view.findByPlaceholderText("Your topic or idea");
+    if (edited) await fireEvent.input(view.getByLabelText("Audience"), { target: { value: "Keep the pending audience" } });
+    const settings = defaultLaunchSettings({ title: "Synthetic desk", audience: "Repair desks", domain: "Repair scheduling", observations: "", offLimits: [] }, DEFAULT_RUN_CONFIG);
+    state = { ...state, launchSettings: { ...settings, mode: "babysit" } };
+    backendEvent?.({ type: "app-state-changed", threadId: "alpha" });
+    if (edited) {
+      await tick();
+      expect((view.getByRole("radio", { name: "Vibe" }) as HTMLInputElement).checked).toBe(true);
+      expect((view.getByLabelText("Audience") as HTMLInputElement).value).toBe("Keep the pending audience");
+    } else {
+      await waitFor(() => expect((view.getByRole("radio", { name: "Controlled" }) as HTMLInputElement).checked).toBe(true));
+    }
+  });
+
+  test("updates pristine visible setup fields after another client saves the same project", async () => {
+    let state = workspace("alpha");
+    let backendEvent: ((event: ResearchEvent) => void) | undefined;
+    installApi({ getWorkspace: async () => structuredClone(state),
+      onBackendEvent(listener) { backendEvent = listener; return () => { backendEvent = undefined; }; } });
+    const view = render(App);
+    const brief = await view.findByPlaceholderText("Your topic or idea") as HTMLTextAreaElement;
+    expect(brief.value).toBe("");
+    state = { ...state,
+      scope: { title: "Repair approvals", domain: "Supplier approval delays", audience: "Independent repair shops", observations: "Shared customer inbox", offLimits: [] },
+      runConfig: { ...DEFAULT_RUN_CONFIG, searchProvider: "perplexity", discoveryDepth: "quick", ideaCount: 5 },
+      threads: state.threads.map(thread => thread.id === "alpha" ? { ...thread, title: "Repair approvals" } : thread),
+    };
+    backendEvent?.({ type: "app-state-changed", threadId: "alpha" });
+    await view.findByRole("heading", { name: "Repair approvals" });
+    expect((view.getByPlaceholderText("Your topic or idea") as HTMLTextAreaElement).value).toBe("Supplier approval delays");
+    expect((view.getByLabelText("Audience") as HTMLInputElement).value).toBe("Independent repair shops");
+    expect((view.getByLabelText("Search provider") as HTMLSelectElement).value).toBe("perplexity");
+    expect((within(view.getByRole("tabpanel", { name: "Research setup" })).getByLabelText("Research depth") as HTMLSelectElement).value).toBe("quick");
+    expect((view.getByLabelText("Solutions per problem") as HTMLInputElement).value).toBe("5");
+  });
+
+  test.each([false, true])("external saves preserve edited=%s drafts and never restore a stale pristine cache", async (edited) => {
+    let alpha = workspace("alpha");
+    alpha.threads[0] = { ...alpha.threads[0]!, isUnstartedDraft: true };
+    let state = alpha;
+    let backendEvent: ((event: ResearchEvent) => void) | undefined;
+    installApi({ getWorkspace: async () => structuredClone(state),
+      selectThread: async id => {
+        state = id === "alpha" ? alpha : { ...workspace("beta"), threads: alpha.threads };
+        return structuredClone(state);
+      },
+      onBackendEvent(listener) { backendEvent = listener; return () => { backendEvent = undefined; }; } });
+    const view = render(App);
+    const brief = await view.findByPlaceholderText("Your topic or idea") as HTMLTextAreaElement;
+    const initialProvider = (view.getByLabelText("Search provider") as HTMLSelectElement).value;
+    if (edited) {
+      await fireEvent.input(brief, { target: { value: "  Keep my pending approval brief  " } });
+      await fireEvent.input(view.getByLabelText("Audience"), { target: { value: "My draft audience" } });
+    }
+    alpha = { ...alpha,
+      scope: { title: "Repair approvals", domain: "Saved approval brief", audience: "Saved shop audience", observations: "", offLimits: [] },
+      runConfig: { ...DEFAULT_RUN_CONFIG, searchProvider: "perplexity", discoveryDepth: "quick" },
+      threads: alpha.threads.map(thread => thread.id === "alpha" ? { ...thread, title: "Repair approvals" } : thread),
+    };
+    state = alpha;
+    backendEvent?.({ type: "app-state-changed", threadId: "alpha" });
+    await view.findByRole("heading", { name: "Repair approvals" });
+    expect((view.getByPlaceholderText("Your topic or idea") as HTMLTextAreaElement).value).toBe(edited ? "  Keep my pending approval brief  " : "Saved approval brief");
+    expect((view.getByLabelText("Audience") as HTMLInputElement).value).toBe(edited ? "My draft audience" : "Saved shop audience");
+    expect((view.getByLabelText("Search provider") as HTMLSelectElement).value).toBe(edited ? initialProvider : "perplexity");
+
+    await fireEvent.click(view.getByRole("button", { name: "Open thread Beta" }));
+    await view.findByRole("heading", { name: "Beta" });
+    // Another client saves this project while its form is unmounted.
+    alpha = { ...alpha, scope: { ...alpha.scope!, domain: "Latest saved approval brief", audience: "Latest saved audience" },
+      runConfig: { ...alpha.runConfig!, searchProvider: "auto", discoveryDepth: "deep" } };
+    await fireEvent.click(view.getByRole("button", { name: "Create new research thread" }));
+    await view.findByRole("heading", { name: "Repair approvals" });
+    expect((view.getByPlaceholderText("Your topic or idea") as HTMLTextAreaElement).value).toBe(edited ? "  Keep my pending approval brief  " : "Latest saved approval brief");
+    expect((view.getByLabelText("Audience") as HTMLInputElement).value).toBe(edited ? "My draft audience" : "Latest saved audience");
+    expect((view.getByLabelText("Search provider") as HTMLSelectElement).value).toBe(edited ? initialProvider : "auto");
+  });
+
+  test("keeps a configured unverified key usable through passive startup and owner reconciliation", async () => {
+    let state = workspace("alpha");
+    state.validation.native = { available: true, connected: true, accounts: [{ providerId: "openai-subscription" }] };
+    state.validation.exa = { valid: false, configured: true, checked: false, checking: false, maskedKey: "••••abcd" };
+    state.validation.perplexity = { valid: true, configured: true, checked: true };
+    state.scope = { title: "Repair approvals", domain: "Repair approval delays", audience: "Repair shops", observations: "", offLimits: [] };
+    let backendEvent: ((event: ResearchEvent) => void) | undefined;
+    const getWorkspace = vi.fn(async () => structuredClone(state));
+    const getValidation = vi.fn();
+    const retryConnection = vi.fn(async () => {
+      state = { ...state, validation: { ...state.validation, exa: { valid: true, configured: true, checked: true, maskedKey: "••••abcd" } } };
+    });
+    installApi({ getWorkspace, getValidation, retryConnection,
+      onBackendEvent(listener) { backendEvent = listener; return () => { backendEvent = undefined; }; } });
+    const view = render(App);
+    const brief = await view.findByPlaceholderText("Your topic or idea") as HTMLTextAreaElement;
+    await fireEvent.input(brief, { target: { value: "Keep this edited approval brief" } });
+    const start = view.getByRole("button", { name: "Start" }) as HTMLButtonElement;
+    expect(start.disabled).toBe(false);
+    expect(view.getAllByText(/Exa: Key configured, connection unverified/).length).toBeGreaterThan(0);
+    expect(view.queryByRole("dialog", { name: "Add web search" })).toBeNull();
+    // More than one old 500 ms polling interval proves a settled key does not poll forever.
+    await new Promise(resolve => setTimeout(resolve, 650));
+    expect(getWorkspace).toHaveBeenCalledOnce();
+    expect(getValidation).not.toHaveBeenCalled();
+    expect(retryConnection).not.toHaveBeenCalled();
+
+    state = { ...state, validation: { ...state.validation,
+      exa: { valid: false, configured: true, checked: true, maskedKey: "••••abcd", error: "Exa key rejected" } } };
+    backendEvent?.({ type: "app-state-changed" });
+    await waitFor(() => expect(start.disabled).toBe(true));
+    expect((view.getByLabelText("Search provider") as HTMLSelectElement).value).toBe("exa");
+    expect(getWorkspace).toHaveBeenCalledTimes(2);
+    expect(getValidation).not.toHaveBeenCalled();
+    expect(retryConnection).not.toHaveBeenCalled();
+
+    await fireEvent.click(view.getByRole("button", { name: "Retry connections" }));
+    await waitFor(() => expect(start.disabled).toBe(false));
+    expect(retryConnection).toHaveBeenCalledOnce();
+    expect(view.getByText("Exa: Connected")).toBeTruthy();
+    expect(brief.value).toBe("Keep this edited approval brief");
+    expect(getValidation).not.toHaveBeenCalled();
+  });
+
   test("history waits for a delayed conversation render and ignores a later stale response", async () => {
     const fixture = createIdeasFixture(new URLSearchParams(), "alpha");
     const state = workspace("alpha");
@@ -1176,11 +1305,14 @@ describe("App workspace coordination", () => {
     expect(view.getByText("No problems yet")).toBeTruthy();
   });
 
-  test("cancels an in-flight device-code poll from the setup UI", async () => {
+  test("keeps sign-in and the draft ready after cancelling an in-flight device-code poll", async () => {
     const state = workspace("alpha");
     state.validation.native = { available: true, connected: false, version: "0.1.0", accounts: [] };
-    const neverCompletes = new Promise<never>(() => undefined);
+    const completion = deferred<Awaited<ReturnType<ScraplyApi["completeNativeLogin"]>>>();
+    const completeNativeLogin = vi.fn().mockReturnValue(completion.promise);
     const cancelNativeLogin = vi.fn().mockResolvedValue(state);
+    const retryConnection = vi.fn();
+    const getValidation = vi.fn();
     installApi({
       getWorkspace: vi.fn().mockResolvedValue(state),
       startNativeLogin: vi.fn().mockResolvedValue({
@@ -1190,13 +1322,15 @@ describe("App workspace coordination", () => {
         verificationUrl: "https://example.test/device",
         userCode: "ABCD-1234",
       }),
-      completeNativeLogin: vi.fn().mockReturnValue(neverCompletes),
-      cancelNativeLogin,
+      completeNativeLogin, cancelNativeLogin, retryConnection, getValidation,
     });
     const view = render(App);
+    const brief = await view.findByPlaceholderText("Your topic or idea") as HTMLTextAreaElement;
+    await fireEvent.input(brief, { target: { value: "Synthetic unsaved account recovery draft" } });
     await fireEvent.click(await view.findByRole("button", { name: "Settings" }));
     await fireEvent.click(await view.findByRole("button", { name: "Use device code" }));
     expect(await view.findByText("ABCD-1234")).toBeTruthy();
+    expect(completeNativeLogin).toHaveBeenCalledOnce();
 
     await fireEvent.click(view.getByRole("button", { name: "Cancel sign-in" }));
     await waitFor(() => expect(cancelNativeLogin).toHaveBeenCalledWith({
@@ -1204,6 +1338,19 @@ describe("App workspace coordination", () => {
       providerId: "openai-subscription",
     }));
     expect(await view.findByText("Native account sign-in cancelled.")).toBeTruthy();
+    const settings = view.getByRole("region", { name: "Settings" });
+    expect((within(settings).getByRole("button", { name: "Sign in with OpenAI" }) as HTMLButtonElement).disabled).toBe(false);
+    expect(view.queryByText("ABCD-1234")).toBeNull();
+    expect(brief.value).toBe("Synthetic unsaved account recovery draft");
+
+    const stale = structuredClone(state);
+    stale.validation.native.connected = true;
+    completion.resolve({ pending: false, workspace: stale });
+    await tick();
+    expect((within(settings).getByRole("button", { name: "Sign in with OpenAI" }) as HTMLButtonElement).disabled).toBe(false);
+    expect(brief.value).toBe("Synthetic unsaved account recovery draft");
+    expect(retryConnection).not.toHaveBeenCalled();
+    expect(getValidation).not.toHaveBeenCalled();
   });
 
   test("replaces a rejected native session through sign-in and restores usable models", async () => {

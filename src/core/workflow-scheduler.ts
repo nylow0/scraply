@@ -17,6 +17,7 @@ export class WorkflowModelScheduler {
   private readonly active = new Set<ScheduledCall>();
   private pumpQueued = false;
   private capacity: number;
+  private closedReason: Error | undefined;
 
   constructor(maxActive = 1) {
     this.capacity = validateCapacity(maxActive);
@@ -49,6 +50,7 @@ export class WorkflowModelScheduler {
   }
 
   schedule<T>(projectId: string, operation: (signal: AbortSignal) => Promise<T>, signal?: AbortSignal): Promise<T> {
+    if (this.closedReason) return Promise.reject(this.closedReason);
     if (!projectId.trim()) throw new Error("A scheduled model call needs a project ID");
     if (signal?.aborted) return Promise.reject(abortError(signal));
     const controller = new AbortController();
@@ -117,6 +119,12 @@ export class WorkflowModelScheduler {
   cancelAll(reason?: Error): void {
     for (const projectId of [...this.pending.keys()]) this.cancelProject(projectId, reason);
     for (const call of this.active) call.controller.abort(reason);
+  }
+
+  /** Final shutdown also rejects calls whose preflight finishes after cancellation. */
+  close(reason: Error): void {
+    this.closedReason = reason;
+    this.cancelAll(reason);
   }
 
   private removeQueued(call: ScheduledCall): void {

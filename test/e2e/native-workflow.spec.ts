@@ -114,7 +114,14 @@ test("native v2 research survives the installed selection, risk evaluation, and 
       });
       await page.reload();
       await expect(page.getByText("This project used the removed CLI integration. Choose an available OpenAI model.", { exact: true })).toBeVisible();
-      await expect(page.getByRole("button", { name: "Retry connections", exact: true })).toHaveCount(0);
+      // Passive startup leaves the saved fixture key usable but unverified. Its
+      // explicit retry stays available alongside the unrelated required model choice.
+      await expect(page.getByText("Exa: Key configured, connection unverified", { exact: true }).first()).toBeVisible();
+      await expect(page.getByRole("button", { name: "Retry connections", exact: true })).toBeEnabled();
+      const saved = await page.evaluate(async () => (await (window as unknown as { scraply: ScraplyApi }).scraply.getWorkspace()));
+      expect(saved.validation.exa).toMatchObject({ valid: false, configured: true, checked: false, checking: false });
+      expect(saved.runConfig?.model).toEqual({ providerId: "legacy-codex-cli", modelId: "gpt-old" });
+      await expect(page.getByRole("button", { name: "Start", exact: true })).toBeDisabled();
       await page.screenshot({ animations: "disabled", path: testInfo.outputPath("legacy-model-choice.png") });
       const modelSelect = page.getByRole("combobox", { name: /Model/ });
       await page.getByRole("button", { name: "Choose model", exact: true }).click();

@@ -55,6 +55,8 @@ export default defineConfig(({ mode }) => ({
       },
     },
     build: {
+      // The desktop CSP permits same-origin font files, not inlined data URLs.
+      assetsInlineLimit: (filePath) => /\.woff2?$/i.test(filePath) ? false : undefined,
       rollupOptions: {
         input: resolve("src/renderer/index.html"),
       },

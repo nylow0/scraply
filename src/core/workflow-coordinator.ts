@@ -6,6 +6,7 @@ import { OpportunityRepository } from "../db/repositories/opportunities";
 import { WorkflowRepository, type WorkflowSession, type WorkflowWorkItem } from "../db/repositories/workflows";
 import { ResearchFrameRepository, type SavedResearchFrame } from "../db/repositories/research-frames";
 import { canonicalJson, sha256 } from "../shared/content-identity";
+import { LaunchSettingsSchema } from "../shared/launch-settings";
 import { SavedProblemCandidateSchema } from "../shared/structured-output-schemas";
 import { candidateAssessmentProjection } from "../shared/evidence-investigators";
 import { copySavedProblemCandidates } from "./saved-candidate-archive";
@@ -53,7 +54,7 @@ export interface WorkflowCoordinatorOptions {
     getConversation: (input: unknown) => unknown;
     submitTurn: (input: unknown) => Promise<unknown>;
     summary: (sessionId: string) => WorkflowSummary;
-    selectVersion?: (threadId: string, rootSolutionId: string, solutionId: string) => void;
+    selectVersion?: (threadId: string, rootSolutionId: string, solutionId: string, options?: { transaction: "existing" }) => void;
   };
 }
 
@@ -281,6 +282,16 @@ export class WorkflowCoordinator {
     const reusableFrame = approved?.knownProblem === (contract.purpose === "known-problem") ? approved : null;
     let initialTaskId = "";
     const receipt = this.options.db.immediateTransaction(() => {
+      // Both hosts restore the choices of the last admitted launch. Replaying an
+      // existing command returns above, so it never overwrites newer saved choices.
+      const settingsKey = `launch-settings:${request.threadId}`;
+      const savedSettings = this.options.db.getSetting(settingsKey);
+      const savedIdeas = savedSettings ? LaunchSettingsSchema.parse(JSON.parse(savedSettings)).ideas : undefined;
+      this.options.db.setSetting(settingsKey, JSON.stringify(LaunchSettingsSchema.parse({
+        version: 1, mode: contract.mode, ideas: contract.ideas ?? savedIdeas,
+        automaticProblemCap: contract.targets.automaticProblemCap ?? null,
+        targets: contract.targets, limits: contract.limits, instructions: contract.instructions,
+      })));
       const session = this.repository.createSession({
         threadId: request.threadId, purpose: contract.purpose, mode: contract.mode,
         contract, remainingMs: contract.limits.maxMinutes * 60_000,
@@ -822,8 +833,12 @@ export class WorkflowCoordinator {
         }
         case "select-version": {
           if (!this.options.ideaService?.selectVersion) throw new AppError("conflict", "Idea versions are unavailable.");
-          this.options.ideaService.selectVersion(current.threadId, action.rootSolutionId, action.solutionId);
-          this.repository.updateSession(current.id, current.revision, {});
+          this.options.ideaService.selectVersion(current.threadId, action.rootSolutionId, action.solutionId, { transaction: "existing" });
+          // Selecting saved work also applies to finished sessions. Advance only
+          // the command revision, leaving their terminal state and outcome intact.
+          const updated = this.options.db.db.prepare(`UPDATE workflow_sessions SET revision = revision + 1
+            WHERE id = ? AND thread_id = ? AND revision = ? RETURNING id`).get(current.id, current.threadId, current.revision);
+          if (!updated) throw new AppError("REVISION_CONFLICT");
           break;
         }
       }
@@ -1295,7 +1310,7 @@ export class WorkflowCoordinator {
         assessmentCandidateId = mappedCandidateId ?? imported[proposal.candidateId]!;
         assessmentSourceRunId = carried.runId;
         const linked = this.repository.createSnapshot({ sessionId: admitted.id, ...(baseSnapshotId ? { parentSnapshotId: baseSnapshotId } : {}),
-          materializationRunId: carried.runId, selection: { problemIds: carried.problemIds }, originMap: carried.originMap });
+          materializationRunId: carried.runId, selection: { problemIds: carried.problemIds }, originMap: carried.originMap, allowEmpty: true });
         baseSnapshotId = linked.id; baseRunId = carried.runId; baseProblemIds = carried.problemIds;
         admitted = this.repository.updateSession(admitted.id, admitted.revision, { activeSnapshotId: linked.id });
       }
@@ -1343,7 +1358,7 @@ export class WorkflowCoordinator {
         this.options.db.db.prepare(`INSERT OR REPLACE INTO workflow_snapshots (research_run_id,snapshot_key,value_json)
           SELECT ?,snapshot_key,value_json FROM workflow_snapshots WHERE research_run_id = ? AND snapshot_key = 'candidate-assessment-frame'`).run(combined.runId, runId);
         const snapshot = this.repository.createSnapshot({ sessionId: session.id, ...(input.baseSnapshotId ? { parentSnapshotId: input.baseSnapshotId } : {}),
-          materializationRunId: combined.runId, selection: { problemIds: combined.problemIds }, originMap: combined.originMap });
+          materializationRunId: combined.runId, selection: { problemIds: combined.problemIds }, originMap: combined.originMap, allowEmpty: true });
         snapshotId = snapshot.id;
         refs.snapshotId = snapshot.id;
       }

@@ -8,6 +8,10 @@ import { createNativeRuntimeStartup } from "./native-runtime-startup";
 let secrets: BackendSecrets = { exaApiKey: null, perplexityApiKey: null, providerCredentials: {} };
 let handle: BackendHandle | null = null;
 let starting = false;
+let shuttingDown = false;
+let startupCompletion = Promise.resolve();
+let nativePreparation = Promise.resolve();
+const credentialOperations = new Set<Promise<void>>();
 const pendingCredentialWrites = new Map<string, { resolve: () => void; reject: (error: Error) => void; timer: ReturnType<typeof setTimeout> }>();
 
 function post(message: BackendToMainMessage): void {
@@ -56,6 +60,28 @@ process.parentPort?.on("message", async (event) => {
     return;
   }
 
+  if (message.type === "shutdown") {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    try {
+      await startupCompletion;
+      await nativePreparation;
+      await handle?.close();
+      await Promise.allSettled([...credentialOperations]);
+      process.exit(0);
+    } catch (error) {
+      postProcessError("backend-shutdown-failed", error);
+      process.exit(1);
+    }
+  }
+
+  if (shuttingDown) {
+    if (message.type === "update-secrets" || message.type === "finish-search-key-update") {
+      post({ type: "secrets-updated", requestId: message.requestId, error: "The local backend is closing." });
+    }
+    return;
+  }
+
   if (message.type === "update-secrets") {
     if (!handle) return;
     // Reserve the idle backend through the disk write; new POSTs receive a conflict until it finishes.
@@ -82,6 +108,8 @@ process.parentPort?.on("message", async (event) => {
 
   if (handle || starting) return;
   starting = true;
+  let finishStartup!: () => void;
+  startupCompletion = new Promise<void>(resolve => { finishStartup = resolve; });
   secrets = message.secrets;
   const nativeRuntime = message.runtime ? new RuntimeClient({
     ...message.runtime,
@@ -94,7 +122,7 @@ process.parentPort?.on("message", async (event) => {
   ) : undefined;
   const persistProviderCredential = async (providerId: string, credential: string): Promise<void> => {
     const requestId = randomUUID();
-    await new Promise<void>((resolve, reject) => {
+    const persistence = new Promise<void>((resolve, reject) => {
       const timer = setTimeout(() => {
         pendingCredentialWrites.delete(requestId);
         reject(new Error("Main process did not acknowledge encrypted credential persistence"));
@@ -102,7 +130,11 @@ process.parentPort?.on("message", async (event) => {
       pendingCredentialWrites.set(requestId, { resolve, reject, timer });
       post({ type: "persist-provider-credential", requestId, providerId, credential });
     });
-    secrets = { ...secrets, providerCredentials: { ...secrets.providerCredentials, [providerId]: credential } };
+    credentialOperations.add(persistence);
+    try {
+      await persistence;
+      secrets = { ...secrets, providerCredentials: { ...secrets.providerCredentials, [providerId]: credential } };
+    } finally { credentialOperations.delete(persistence); }
   };
   const forgetProviderCredential = (providerId: string) => {
     const providerCredentials = { ...secrets.providerCredentials };
@@ -115,6 +147,7 @@ process.parentPort?.on("message", async (event) => {
     bundledPromptsDir: message.bundledPromptsDir,
     promptOverridesDir: message.promptOverridesDir,
     appVersion: message.appVersion,
+    ...(message.validateAutomaticSecrets !== undefined ? { validateAutomaticSecrets: message.validateAutomaticSecrets } : {}),
     getSecrets: () => secrets,
     ...(message.runtimeError ? { nativeRuntimeError: message.runtimeError } : {}),
     ...(nativeRuntime ? {
@@ -145,7 +178,7 @@ process.parentPort?.on("message", async (event) => {
     });
     post({ type: "ready", port: handle.port, token: handle.token });
     if (nativeRuntime) {
-      void nativeStartup!.prepare()
+      nativePreparation = nativeStartup!.prepare()
         .catch((error) => postProcessError("native-runtime-startup-failed", error))
         .finally(() => handle?.providersChanged());
     }
@@ -154,5 +187,6 @@ process.parentPort?.on("message", async (event) => {
     setImmediate(() => process.exit(1));
   } finally {
     starting = false;
+    finishStartup();
   }
 });

@@ -47,12 +47,24 @@ describe("installed evaluation transport", () => {
     writeFileSync(executable, "installed-executable-fixture");
     writeFileSync(join(resources, "app.asar"), "installed-app-fixture");
     writeFileSync(join(resources, "runtime/scraply-agent.exe"), "installed-runtime-fixture");
-    writeFileSync(manifest, JSON.stringify({ schemaVersion: 2, appVersion: "fixture", sourceSha: "frozen-source", dirty: false,
+    const packageManifest = { schemaVersion: 3, appVersion: "0.1.2", sourceSha: "frozen-source", dirty: false,
       artifacts: [{ name: "unpacked", sha256: hash("installed-executable-fixture") }, { name: "app-asar", sha256: hash("installed-app-fixture") }],
-      runtime: { executable: { sha256: hash("installed-runtime-fixture") } } }));
+      runtime: { executable: { sha256: hash("installed-runtime-fixture") } } };
+    writeFileSync(manifest, JSON.stringify(packageManifest));
     try {
-      expect(installedPackageIdentity(executable, manifest)).toMatchObject({ appVersion: "fixture", packageSourceSha: "frozen-source",
+      expect(installedPackageIdentity(executable, manifest)).toMatchObject({ appVersion: "0.1.2", packageSourceSha: "frozen-source",
         executableSha256: hash("installed-executable-fixture"), asarSha256: hash("installed-app-fixture") });
+      writeFileSync(manifest, JSON.stringify({ ...packageManifest, schemaVersion: 2 }));
+      expect(() => installedPackageIdentity(executable, manifest)).toThrow("requires release manifest schema 3");
+      writeFileSync(manifest, JSON.stringify({ ...packageManifest, schemaVersion: 2, appVersion: "0.1.1" }));
+      expect(installedPackageIdentity(executable, manifest).appVersion).toBe("0.1.1");
+      writeFileSync(manifest, JSON.stringify({ ...packageManifest, schemaVersion: 3, appVersion: "0.1.1" }));
+      expect(() => installedPackageIdentity(executable, manifest)).toThrow("requires release manifest schema 2");
+      writeFileSync(manifest, JSON.stringify({ ...packageManifest, schemaVersion: 4 }));
+      expect(() => installedPackageIdentity(executable, manifest)).toThrow();
+      writeFileSync(manifest, JSON.stringify({ ...packageManifest, dirty: true }));
+      expect(() => installedPackageIdentity(executable, manifest)).toThrow();
+      writeFileSync(manifest, JSON.stringify(packageManifest));
       writeFileSync(join(resources, "app.asar"), "different-app-fixture");
       expect(() => installedPackageIdentity(executable, manifest)).toThrow("does not match");
     } finally { rmSync(root, { recursive: true, force: true }); }

@@ -351,6 +351,52 @@ test("a finished project starts a linked assessment and still shows its previous
   } finally { f.db.close(); }
 });
 
+test("a finished archive with only deferred candidates can assess and retain an empty result", async () => {
+  const f = fixture();
+  try {
+    const original = f.repository.getSession("session")!;
+    const empty = f.db.immediateTransaction(() => {
+      f.repository.updateSession(original.id, original.revision, { state: "finished", outcome: "partial" });
+      const session = f.repository.createSession({ threadId: "project", purpose: "discovery", mode: "babysit",
+        contract: original.contract, remainingMs: 60 * 60_000 });
+      const archive = materializeResearchSnapshot(f.db, { threadId: "project", baseRunId: "source",
+        sourceProblemIds: [], sessionId: session.id, allowEmpty: true });
+      const task = f.repository.createWorkItem({ sessionId: session.id, kind: "discovery", scopeKey: "empty-archive", state: "ready", input: {} });
+      f.repository.updateWorkItem(task.id, "running", { outputRefs: { runId: archive.runId } });
+      f.repository.updateWorkItem(task.id, "succeeded", { outputRefs: { runId: archive.runId } });
+      f.repository.updateSession(session.id, session.revision, { state: "finished", outcome: "no-qualifying-ideas" });
+      return { session: f.repository.getSession(session.id)!, archive };
+    });
+    const prior = f.repository.getSession("session");
+    const candidate = f.db.db.prepare("SELECT id FROM rejected_problem_candidates WHERE discovery_run_id = ? ORDER BY rowid LIMIT 1")
+      .get(empty.archive.runId) as { id: string };
+    const preview = await f.coordinator.preview({ type: "candidate-assessment", threadId: "project", sessionId: empty.session.id,
+      expectedRevision: empty.session.revision, candidateId: candidate.id });
+    expect(preview.fieldErrors).toEqual([]);
+    const receipt = await f.coordinator.command({ threadId: "project", sessionId: empty.session.id,
+      expectedRevision: empty.session.revision, clientCommandId: "assess-empty-archive", action: { type: "assess-not-assessed",
+        candidateId: candidate.id, previewHash: preview.previewHash, capabilityFingerprint: preview.capabilityFingerprint,
+        previewExpiresAt: preview.expiresAt } });
+    await f.whenDispatched;
+    const linked = f.repository.getSnapshot(receipt.summary.activeSnapshotId!)!;
+    expect(linked.selection.problemIds).toEqual([]);
+    const runId = f.dispatches[0]!;
+    f.db.db.prepare("UPDATE research_runs SET status = 'completed' WHERE id = ?").run(runId);
+    f.db.db.prepare("INSERT INTO workflow_snapshots VALUES (?, 'candidate-assessment-result', ?)")
+      .run(runId, JSON.stringify({ assessed: true, verdict: "dropped", dropped: true }));
+    f.coordinator.handleRunEvent({ type: "run-completed", threadId: "project", runId, problemId: null });
+    const result = f.repository.getSession(receipt.sessionId)!;
+    expect(result.state).toBe("waiting-for-review");
+    expect(f.repository.getSnapshot(result.activeSnapshotId!)?.selection.problemIds).toEqual([]);
+    expect(result.activeSnapshotId).not.toBe(linked.id);
+    expect(f.repository.getSession("session")).toEqual(prior);
+    expect(f.repository.getSession(empty.session.id)).toEqual(empty.session);
+    expect(f.repository.getSnapshot(f.snapshot.id)).toEqual(f.snapshot);
+    expect(f.errors).toEqual([]);
+    expect(f.db.db.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
+  } finally { f.db.close(); }
+});
+
 test("new follow-up admission freezes the latest approved frame and queued dispatch keeps it after another edit", async () => {
   const f = fixture();
   try {

@@ -20,10 +20,14 @@ export type InstalledIdentity = z.infer<typeof InstalledIdentitySchema>;
 export function installedPackageIdentity(executablePath: string, manifestPath: string): InstalledIdentity {
   const executable = resolve(executablePath);
   const resources = join(dirname(executable), "resources");
-  const manifest = z.object({ schemaVersion: z.literal(2), appVersion: z.string(), sourceSha: z.string(), dirty: z.literal(false),
+  const manifest = z.object({ schemaVersion: z.union([z.literal(2), z.literal(3)]), appVersion: z.string(), sourceSha: z.string(), dirty: z.literal(false),
     artifacts: z.array(z.object({ name: z.string(), sha256: SHA256 })),
     runtime: z.object({ executable: z.object({ sha256: SHA256 }) }),
   }).parse(JSON.parse(readFileSync(manifestPath, "utf8")));
+  const expectedSchema = manifest.appVersion === "0.1.1" ? 2 : 3;
+  if (manifest.schemaVersion !== expectedSchema) {
+    throw new Error(`Scraply ${manifest.appVersion} requires release manifest schema ${expectedSchema}.`);
+  }
   const hash = (path: string) => createHash("sha256").update(readFileSync(path)).digest("hex");
   const identity = InstalledIdentitySchema.parse({ executablePath: executable, executableSha256: hash(executable),
     asarSha256: hash(join(resources, "app.asar")), runtimeSha256: hash(join(resources, "runtime/scraply-agent.exe")),

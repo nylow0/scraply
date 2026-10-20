@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { releaseBundleLayout } from "./verify-promoted-assets";
 
 interface PackageMetadata {
   version: string;
@@ -22,6 +23,9 @@ if (!tag) throw new Error("Promotion validation requires a tag.");
 
 const root = process.cwd();
 const metadata = JSON.parse(readFileSync(join(root, "package.json"), "utf8")) as PackageMetadata;
+if (!releaseBundleLayout(metadata.version).cli) {
+  throw new Error("Published 0.1.1 releases are immutable. New promotions require the six-file CLI release layout.");
+}
 
 function git(args: string[]): string {
   const result = Bun.spawnSync(["git", ...args], { cwd: root, stdout: "pipe", stderr: "pipe" });

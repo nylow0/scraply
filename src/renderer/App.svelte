@@ -11,6 +11,7 @@
   import type { z } from "zod";
   import { readResearchDefaults } from "./lib/research-defaults";
   import { hasSearchKey, SEARCH_PROVIDERS } from "./lib/search-providers";
+  import { isSearchProviderChecking } from "../shared/search-provider-status";
   import { findHistoryIndex, parentHistory, pushHistory, replaceHistory, rememberScroll, sameRoute, traverseHistory, reconcileHistory, routeResolver,
     type NavigationRoute, type NavigationHistory, type SolutionsRoute } from "./lib/navigation-history";
   import DesktopBar from "./components/DesktopBar.svelte";
@@ -61,6 +62,23 @@
   let conversationLoadEpoch = 0;
   let draftThreadId = $state<string | null>(null);
   let setupDraft = $state<ReturnType<ScopeForm["captureDraft"]> | null>(null);
+  let setupForm = $state<ScopeForm>();
+  let setupRevision = $state(0);
+  let previousSetupThreadId: string | null = null;
+  let previousSavedSetup = "";
+  $effect(() => {
+    const threadId = workspace?.activeThreadId ?? null;
+    const savedSetup = JSON.stringify([workspace?.scope, workspace?.runConfig, workspace?.launchSettings]);
+    if (busy) return;
+    // Reload persisted fields only while the mounted form has no local draft to protect.
+    if (threadId === previousSetupThreadId && savedSetup !== previousSavedSetup
+      && untrack(() => setupForm && !setupForm.hasUnsavedChanges())) {
+      setupDraft = null;
+      setupRevision = untrack(() => setupRevision) + 1;
+    }
+    previousSetupThreadId = threadId;
+    previousSavedSetup = savedSetup;
+  });
   $effect(() => {
     const thread = workspace?.threads.find((item) => item.id === workspace?.activeThreadId);
     if (thread?.isUnstartedDraft && draftThreadId !== thread.id) {
@@ -68,7 +86,7 @@
       setupDraft = null;
     }
   });
-  function rememberDraft(threadId: string, draft: ReturnType<ScopeForm["captureDraft"]>) {
+  function rememberDraft(threadId: string, draft: ReturnType<ScopeForm["captureDraft"]> | null) {
     if (threadId === draftThreadId) setupDraft = draft;
   }
   let route = $state<NavigationRoute>({ threadId: "", step: "setup", settings: false, solution: { kind: "list" } });
@@ -290,6 +308,10 @@
       else if (command === "export-research" && workspace?.activeThreadId) void exportResearch();
     });
     const dispose = window.scraply.onBackendEvent((event) => {
+      if (event.type === "app-state-changed") {
+        reconcileSoon();
+        return;
+      }
       if (event.type === "workflow-progress") {
         if (event.threadId === workspace?.activeThreadId) {
           if (event.sessionId === workspace?.activeWorkflow?.sessionId) {
@@ -447,8 +469,9 @@
     }, delayMs);
   }
   function validationPending(state: WorkspaceState): boolean {
-    return [state.validation.exa.error, state.validation.perplexity.error, state.validation.native.error]
-      .some((error) => error?.startsWith("Checking ") || error === "Native runtime is starting");
+    const nativeError = state.validation.native.error;
+    return isSearchProviderChecking(state.validation.exa) || isSearchProviderChecking(state.validation.perplexity)
+      || nativeError?.startsWith("Checking ") === true || nativeError === "Native runtime is starting";
   }
   async function action(work: () => Promise<void>) {
     if (busy) return;
@@ -1085,8 +1108,8 @@
     {:else if activeStep === "setup"}
       {#if showSetupForm}
         <div id="workflow-panel-setup" role="tabpanel" aria-label="Research setup">
-          {#key workspace.activeThreadId}
-            <ScopeForm {workspace} {busy} initialDraft={workspace.activeThreadId === draftThreadId ? setupDraft : null} onRememberDraft={rememberDraft} frameLanguages={latestApprovedFrame?.approved?.languages} onSave={saveScope} onStart={startResearch} onPreviewWorkflow={previewWorkflow} onStartWorkflow={startWorkflow} onGenerateTitle={generateResearchTitle} onRetry={retryConnections} onOpenSettings={() => settings?.show()} />
+          {#key `${workspace.activeThreadId}:${setupRevision}`}
+            <ScopeForm bind:this={setupForm} {workspace} {busy} initialDraft={workspace.activeThreadId === draftThreadId ? setupDraft : null} onRememberDraft={rememberDraft} frameLanguages={latestApprovedFrame?.approved?.languages} onSave={saveScope} onStart={startResearch} onPreviewWorkflow={previewWorkflow} onStartWorkflow={startWorkflow} onGenerateTitle={generateResearchTitle} onRetry={retryConnections} onOpenSettings={() => settings?.show()} />
           {/key}
         </div>
       {:else}

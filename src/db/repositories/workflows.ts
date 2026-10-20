@@ -662,6 +662,8 @@ export class WorkflowRepository {
     id?: string; sessionId: string; parentSnapshotId?: string | null;
     materializationRunId: string; selection: EvidenceSnapshot["selection"];
     originMap: SnapshotOriginMap; createdByCommandId?: string | null;
+    /** Candidate archives can retain evidence without a qualifying problem. */
+    allowEmpty?: boolean;
   }): EvidenceSnapshot {
     this.client.requireImmediateTransaction();
     const session = this.requireSession(input.sessionId);
@@ -685,7 +687,7 @@ export class WorkflowRepository {
         throw new WorkflowConflictError("INVALID_REFERENCE", "Snapshot command belongs to another session");
       }
     }
-    if (!Array.isArray(input.selection.problemIds) || !input.selection.problemIds.length
+    if (!Array.isArray(input.selection.problemIds) || (!input.allowEmpty && !input.selection.problemIds.length)
       || new Set(input.selection.problemIds).size !== input.selection.problemIds.length) {
       throw new Error("Snapshot requires distinct selected problem IDs");
     }

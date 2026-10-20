@@ -205,17 +205,17 @@ describe("cutover backend", () => {
         : { method: "POST", headers: { authorization: `Bearer ${handle.token}`, "content-type": "application/json" }, body: JSON.stringify(body) });
       return { status: response.status, body: await response.json() as { data: T; error?: { code: string; message: string } } };
     };
-    type Validation = { exa: { valid: boolean; maskedKey?: string }; perplexity: { maskedKey?: string } };
+    type Validation = { exa: { valid: boolean; maskedKey?: string; configured?: boolean; checked?: boolean; checking?: boolean }; perplexity: { maskedKey?: string } };
 
     // Saved keys reach the renderer only as a masked tail.
     const validation = (await call<Validation>("/validation")).body.data;
-    expect(validation.exa).toEqual({ valid: true, maskedKey: "••••aaaa" });
+    expect(validation.exa).toEqual({ valid: true, maskedKey: "••••aaaa", configured: true, checked: true, checking: false });
     expect(validation.perplexity.maskedKey).toBeUndefined();
     expect(JSON.stringify((await call("/workspace")).body.data)).not.toContain("exa-saved-key");
 
     const rejected = await call("/search-keys/preflight", { provider: "exa", apiKey: "exa-rejected-key" });
     expect(rejected.body.data).toEqual({ valid: false, error: "Exa API key was rejected" });
-    expect((await call<Validation>("/validation")).body.data.exa).toEqual({ valid: true, maskedKey: "••••aaaa" });
+    expect((await call<Validation>("/validation")).body.data.exa).toEqual({ valid: true, maskedKey: "••••aaaa", configured: true, checked: true, checking: false });
     // The candidate was checked once; routine validation still checks only the saved key.
     expect(checkedKeys.filter((key) => key === "exa-rejected-key")).toHaveLength(1);
     expect(checkedKeys.at(-1)).toBe("exa-saved-key-0000aaaa");
@@ -364,13 +364,14 @@ describe("cutover backend", () => {
   test("publishes native readiness without waiting for a configured search provider", async () => {
     const dir = mkdtempSync(join(tmpdir(), "scraply-validation-independent-native-")); dirs.push(dir);
     let finishExa: ((result: ValidationResult) => void) | undefined;
+    let searchChecks = 0;
     const exaValidation = new Promise<ValidationResult>((resolve) => { finishExa = resolve; });
     const handle = await startBackend({
       dataDir: dir, dbPath: join(dir, "scraply.db"), bundledPromptsDir: join(process.cwd(), "prompts"), promptOverridesDir: join(dir, "prompts"),
       appVersion: "test", getSecrets: () => ({ exaApiKey: "saved-key" }),
       providerValidation: {
         inspectNative: async () => nativeInspection([modelOption("gpt-ready")]),
-        validateExa: async () => exaValidation,
+        validateExa: async () => { searchChecks += 1; return exaValidation; },
       },
     }, () => undefined); handles.push(handle);
 
@@ -384,8 +385,11 @@ describe("cutover backend", () => {
     } };
     expect(workspace.data.validation.native).toMatchObject({ available: true, connected: true });
     expect(workspace.data.validation.native.error).toBeUndefined();
-    expect(workspace.data.validation.exa.error).toBe("Checking Exa connection");
-    expect(workspace.data.validation.exa.checking).toBe(true);
+    expect(workspace.data.validation.exa).toMatchObject({
+      valid: false, configured: true, checked: false, checking: false,
+      error: "Exa key has not been checked",
+    });
+    expect(searchChecks).toBe(0);
     expect(workspace.data.models).toEqual([{ providerId: "openai-subscription", modelId: "gpt-ready" }]);
 
     finishExa?.({ valid: true });
@@ -394,6 +398,7 @@ describe("cutover backend", () => {
     });
     const validation = await validationResponse.json() as { data: { setupComplete: boolean; exa: { valid: boolean } } };
     expect(validation.data).toMatchObject({ setupComplete: true, exa: { valid: true } });
+    expect(searchChecks).toBe(1);
   });
 
   test("blocks research until Native OpenAI is connected", async () => {

@@ -4,6 +4,8 @@ import { MainToBackendMessageSchema, type BackendSecrets, type BackendToMainMess
 
 let secrets: BackendSecrets = { exaApiKey: null, perplexityApiKey: null, providerCredentials: {} };
 let handle: BackendHandle | null = null;
+let stopping = false;
+let startupCompletion = Promise.resolve();
 
 function post(message: BackendToMainMessage): void {
   process.parentPort?.postMessage(message);
@@ -19,6 +21,15 @@ process.parentPort?.on("message", async (event) => {
   const message = parsed.data;
 
   if (message.type === "provider-credential-persisted") return;
+
+  if (message.type === "shutdown") {
+    if (stopping) return;
+    stopping = true;
+    await startupCompletion;
+    await handle?.close();
+    process.exit(0);
+  }
+  if (stopping) return;
 
   if (message.type === "update-secrets") {
     if (!handle) return;
@@ -44,6 +55,8 @@ process.parentPort?.on("message", async (event) => {
   }
 
   if (handle) return;
+  let finishStartup!: () => void;
+  startupCompletion = new Promise<void>(resolve => { finishStartup = resolve; });
   secrets = message.secrets;
   const context: BackendContext = {
     dataDir: message.dataDir,
@@ -51,6 +64,7 @@ process.parentPort?.on("message", async (event) => {
     bundledPromptsDir: message.bundledPromptsDir,
     promptOverridesDir: message.promptOverridesDir,
     appVersion: message.appVersion,
+    ...(message.validateAutomaticSecrets !== undefined ? { validateAutomaticSecrets: message.validateAutomaticSecrets } : {}),
     getSecrets: () => secrets,
     providerValidation: {
       inspectNative: async () => ({
@@ -78,5 +92,7 @@ process.parentPort?.on("message", async (event) => {
   } catch (error) {
     post({ type: "startup-failed", message: failureMessage(error) });
     setImmediate(() => process.exit(1));
+  } finally {
+    finishStartup();
   }
 });

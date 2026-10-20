@@ -19,6 +19,8 @@
     }
   },
   "include": [
+    "src/app/**/*",
+    "src/cli/**/*",
     "src/main/**/*",
     "src/preload/**/*",
     "src/backend/**/*",
