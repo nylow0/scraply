@@ -585,6 +585,56 @@ describe("App workspace coordination", () => {
     await waitFor(() => expect(view.getByRole("tab", { name: "Setup" }).getAttribute("aria-selected")).toBe("true"));
   });
 
+  for (const selectionKind of ["sidebar", "history"] as const) {
+    test.each(["finished", "waiting-for-review"] as const)(`keeps ${selectionKind} navigation when a run changes tabs during project selection, state=%s`, async terminalState => {
+      const sourceId = selectionKind === "sidebar" ? "alpha" : "beta";
+      const destinationId = sourceId === "alpha" ? "beta" : "alpha";
+      const fixture = createIdeasFixture(new URLSearchParams(), sourceId);
+      const source = workspace(sourceId);
+      source.scope = { title: sourceId === "alpha" ? "Alpha" : "Beta", domain: "Parcel labels", audience: "", observations: "", offLimits: [] };
+      source.threads = source.threads.map(thread => thread.id === sourceId ? { ...thread, status: "discovery-running" } : thread);
+      source.solutions = fixture.solutions;
+      source.activeWorkflow = { ...fixture.workflow.summary, purpose: "discovery", mode: terminalState === "finished" ? "vibe" : "babysit",
+        state: "running", selectedProblemIds: terminalState === "finished" ? [] : ["school"] };
+      const destination = { ...workspace(destinationId), threads: source.threads };
+      let state = selectionKind === "sidebar" ? source : destination;
+      const selection = deferred<WorkspaceState>();
+      let selecting = false;
+      let backendEvent: ((event: ResearchEvent) => void) | undefined;
+      const selectThread = vi.fn(async (id: string) => {
+        if (selecting) return selection.promise;
+        state = id === sourceId ? source : destination;
+        return structuredClone(state);
+      });
+      installApi({ getWorkspace: async () => structuredClone(state), selectThread,
+        getWorkflow: async () => ({ ...fixture.workflow, summary: source.activeWorkflow! }),
+        onBackendEvent: listener => { backendEvent = listener; return () => {}; } });
+      const view = render(App);
+      if (selectionKind === "history") {
+        await fireEvent.click(await view.findByRole("button", { name: "Open thread Beta" }));
+      }
+      const initialTab = terminalState === "finished" ? "Research" : "Solutions";
+      await waitFor(() => expect(view.getByRole("tab", { name: initialTab }).getAttribute("aria-selected")).toBe("true"));
+      selecting = true;
+      await fireEvent.click(view.getByRole("button", { name: selectionKind === "sidebar" ? "Open thread Beta" : "Go back" }));
+      expect(selectThread).toHaveBeenLastCalledWith(destinationId);
+      source.activeWorkflow = { ...source.activeWorkflow!, state: terminalState, outcome: terminalState === "finished" ? "target-met" : null };
+      backendEvent?.({ type: "workflow-progress", threadId: sourceId, sessionId: fixture.workflow.summary.sessionId,
+        state: terminalState, revision: 1, outcome: source.activeWorkflow.outcome, changedTaskIds: [], counts: fixture.workflow.summary.counts });
+      await tick();
+      selecting = false;
+      state = destination;
+      selection.resolve(structuredClone(destination));
+      await view.findByRole("heading", { name: destinationId === "alpha" ? "Alpha" : "Beta" });
+      const returnDirection = selectionKind === "sidebar" ? "Go back" : "Go forward";
+      await waitFor(() => expect((view.getByRole("button", { name: returnDirection }) as HTMLButtonElement).disabled).toBe(false));
+      await fireEvent.click(view.getByRole("button", { name: returnDirection }));
+      await waitFor(() => expect(view.getByRole("button", { name: sourceId === "alpha" ? "Open thread Alpha" : "Open thread Beta" }).getAttribute("aria-current")).toBe("true"));
+      await fireEvent.click(view.getByRole("button", { name: selectionKind === "sidebar" ? "Go forward" : "Go back" }));
+      await waitFor(() => expect(view.getByRole("button", { name: destinationId === "alpha" ? "Open thread Alpha" : "Open thread Beta" }).getAttribute("aria-current")).toBe("true"));
+    });
+  }
+
   test.each([false, true])("starts and stops analysis inside the same conversation, workflow=%s", async workflowProject => {
     const fixture = createIdeasFixture(new URLSearchParams(), "alpha");
     let state = workspace("alpha");

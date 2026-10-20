@@ -94,10 +94,10 @@ export function createNavigation(deps: NavigationDependencies) {
   async function selectProject(threadId: string) {
     if (!deps.workspace || deps.busy || traversing) return;
     const outgoingScroll = currentScroll();
-    const outgoingVisit = visit;
     traversing = true;
     try {
-      if (!await deps.selectProject(threadId) || deps.workspace?.activeThreadId !== threadId || outgoingVisit !== visit) return;
+      // Selection is exclusive; a run-driven tab change must not discard its history commit.
+      if (!await deps.selectProject(threadId) || deps.workspace?.activeThreadId !== threadId) return;
       rememberIdeas();
       push({ threadId, step: defaultStep(deps.workspace), settings: false, solution: { kind: "list" } }, outgoingScroll);
     } finally { traversing = false; }
@@ -105,11 +105,10 @@ export function createNavigation(deps: NavigationDependencies) {
   async function restore(next: NavigationHistory) {
     const entry = next.entries[next.index];
     if (!entry || !deps.workspace || deps.busy || traversing) return false;
-    const outgoingVisit = visit;
     traversing = true;
     try {
       if (entry.route.threadId !== deps.workspace.activeThreadId && !await deps.selectProject(entry.route.threadId)) return false;
-      if (deps.workspace?.activeThreadId !== entry.route.threadId || outgoingVisit !== visit) return false;
+      if (deps.workspace?.activeThreadId !== entry.route.threadId) return false;
       // Selection effects may not have run yet. Resolve against the accepted project's IDs now.
       rememberIdeas();
       const resolved = resolveRoute(entry.route);
