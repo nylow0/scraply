@@ -8,13 +8,13 @@ import { join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { z } from "zod";
 import { acquireOwnerLock, canonicalizeDataDir, readOwnerMetadata } from "../../src/app/owner";
-import { startOwnerTransport } from "../../src/app/owner-transport";
+import { createOwnerClient, startOwnerTransport } from "../../src/app/owner-transport";
 import { resolveProfile } from "../../src/app/profile";
 import { createInProcessBackend } from "../../src/app/in-process-backend";
 import { connectOwner, readHostStatus, startDetachedHost, stopHost } from "../../src/cli/connect";
 import { runHost, type HostFactory } from "../../src/cli/host";
 import { OwnerTransportError } from "../../src/shared/owner-contracts";
-import { ValidationStateSchema } from "../../src/shared/ipc";
+import { IPC_CHANNELS, ValidationStateSchema } from "../../src/shared/ipc";
 
 const version = "test-1";
 const fixturePath = resolve(import.meta.dir, "../fixtures/cli-host-child.ts");
@@ -375,7 +375,59 @@ test("desktop mismatch never starts a second host or stops the desktop owner", a
   } finally { await desktop.close(); await lock.release(); }
 });
 
-test("host cleanup stops transport before backend and releases the owner lock last", async () => {
+test.each(["SIGINT", "SIGTERM"] as const)("host %s cancels a pending request and retains ownership until requests and backend drain", async signal => {
+  const directory = profile();
+  let requestStarted!: () => void;
+  const started = new Promise<void>(resolve => { requestStarted = resolve; });
+  let cancelModel!: () => void;
+  const model = new Promise<void>(resolve => { cancelModel = resolve; });
+  let releaseResponse!: () => void;
+  const responseDrain = new Promise<void>(resolve => { releaseResponse = resolve; });
+  let shutdownStarted!: () => void;
+  const stopping = new Promise<void>(resolve => { shutdownStarted = resolve; });
+  let releaseBackend!: () => void;
+  const backendDrain = new Promise<void>(resolve => { releaseBackend = resolve; });
+  let backendStopped = false;
+  const host = await runHost({ profileDir: directory, version, factory: () => ({
+    async start() {},
+    async invoke() { requestStarted(); await model; await responseDrain; return {}; },
+    hasActiveWork: () => true,
+    async requestShutdown() { return false; },
+    async stop() {
+      shutdownStarted();
+      cancelModel();
+      await backendDrain;
+      backendStopped = true;
+    },
+  }) });
+  const client = createOwnerClient(host.metadata, version);
+  const request = client.invoke(IPC_CHANNELS.GENERATE_TITLE).catch(() => undefined);
+  try {
+    await started;
+    process.emit(signal);
+    expect(await Promise.race([stopping.then(() => true), delay(1_000).then(() => false)])).toBe(true);
+    expect(await acquireOwnerLock(directory)).toBeNull();
+    releaseBackend();
+    await eventually(async () => backendStopped ? true : null);
+    // A completed backend must not release ownership while its accepted reply is still draining.
+    expect(await acquireOwnerLock(directory)).toBeNull();
+    releaseResponse();
+    expect(await Promise.race([host.closed.then(() => true), delay(1_000).then(() => false)])).toBe(true);
+    await request;
+    const lock = await acquireOwnerLock(directory);
+    expect(lock).not.toBeNull();
+    await lock?.release();
+  } finally {
+    // Unblock the original serial shutdown too, so a failed regression leaves no owner behind.
+    cancelModel();
+    releaseResponse();
+    releaseBackend();
+    await request;
+    await host.closed;
+  }
+});
+
+test("host cleanup closes admission and releases the owner lock after backend shutdown", async () => {
   const directory = profile();
   let releaseStop!: () => void;
   const stopping = new Promise<void>(resolveStop => { releaseStop = resolveStop; });

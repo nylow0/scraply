@@ -199,9 +199,9 @@ export async function runHost(options: {
       clearInterval(interval);
       process.off("SIGINT", onSignal);
       process.off("SIGTERM", onSignal);
-      // The lock is released only after accepted requests, credentials and SQLite stop.
-      await transport?.close();
-      await application?.stop();
+      // Gate admission first, then cancel backend work while accepted requests drain.
+      // A pending model request may need stop() to settle; retain ownership through both.
+      await Promise.all([transport?.close(), application?.stop()]);
       listeners.clear();
       await lock!.release();
     })();
