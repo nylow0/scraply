@@ -8,11 +8,15 @@ import { materializeResearchSnapshot } from "../../src/core/research-revisions";
 import { ResearchRequestService } from "../../src/core/research-request-service";
 import { WorkflowCoordinator } from "../../src/core/workflow-coordinator";
 import { WorkflowExecution } from "../../src/core/workflow-execution";
+import { RunRecovery } from "../../src/core/run-recovery";
+import { prepareWorkflowSearch } from "../../src/core/workflow-search-attempts";
 import { DatabaseClient } from "../../src/db/client";
 import { DiscoveryRepository } from "../../src/db/repositories/discovery";
+import { GenerationAttemptRepository } from "../../src/db/repositories/generation-attempts";
+import { OpportunityExplorationRepository } from "../../src/db/repositories/opportunity-exploration";
 import { WorkflowRepository } from "../../src/db/repositories/workflows";
 import { ResearchFrameRepository } from "../../src/db/repositories/research-frames";
-import { sha256 } from "../../src/shared/content-identity";
+import { sha256, workflowSearchKey } from "../../src/shared/content-identity";
 import { previewResearchAngles, researchSearchAllocation } from "../../src/shared/research-revisions";
 import { DEFAULT_RUN_CONFIG } from "../../src/shared/schemas";
 import type { ResearchFrame } from "../../src/shared/research-frame";
@@ -793,6 +797,66 @@ describe("research snapshot materialization", () => {
     expect(repository.listSnapshots(before.id)).toHaveLength(1);
     client.close();
   });
+});
+
+test.each(["resume", "terminal-event"] as const)("follow-up %s retains mixed receipt uncertainty after one acknowledgment and reopening", async path => {
+  const directory = mkdtempSync(join(tmpdir(), "scraply-followup-recovery-"));
+  const { client, repository, sessionId, snapshotId } = workflowFixture({}, directory);
+  let db = client;
+  let dispatches = 0;
+  try {
+    const service = new ResearchRequestService({ db, engine: () => ({ resumeRun: async () => { dispatches++; } }),
+      modelClient: () => { throw new Error("No model dispatch expected"); } });
+    const admitted = db.immediateTransaction(() => service.admitRequest(sessionId, repository.getSession(sessionId)!.revision, {
+      type: "request-research", kind: "new-question", question: "Which tray label handoffs are delayed?", baseSnapshotId: snapshotId,
+      model: DEFAULT_RUN_CONFIG.model, reasoningEffort: "medium", allowance: { maxModelCalls: 6, maxSearches: 4, maxMinutes: 10 },
+    }));
+    db.immediateTransaction(() => {
+      repository.updateWorkItem(admitted.workItemId, "running", { outputRefs: { runId: "run-new" } });
+      repository.updateSession(sessionId, repository.getSession(sessionId)!.revision, { state: "running" });
+      db.db.prepare("UPDATE research_runs SET workflow_session_id = ?, purpose = 'research-followup', status = ? WHERE id = 'run-new'")
+        .run(sessionId, path === "resume" ? "running" : "failed");
+    });
+    const models = new GenerationAttemptRepository(db);
+    const saved = ["tray-read", "later-tray-read"].map(stage => {
+      const attempt = models.prepare("run-new", { generationId: stage, stage, model: DEFAULT_RUN_CONFIG.model, reasoningEffort: "medium",
+        workOrder: { stage, instruction: "Read tray handoffs", goal: "Find observations", inputs: {}, definitionOfDone: [], constraints: [] },
+        evidence: [], schema: z.object({}), jsonSchema: { type: "object" }, repairPolicy: "disabled", signal: new AbortController().signal });
+      models.markDispatched(attempt.id);
+      return attempt;
+    });
+    const query = "parcel tray handoff delays";
+    const ordinary = prepareWorkflowSearch(db, "run-new", { key: workflowSearchKey(query, {}), query, parameters: {}, provider: "exa" }, []);
+    const investigator = db.immediateTransaction(() => {
+      const child = repository.createWorkItem({ sessionId, parentItemId: admitted.workItemId, kind: "evidence-check", scopeKey: "tray-delay", state: "ready", input: {} });
+      const attempts = new OpportunityExplorationRepository(db);
+      const attempt = attempts.prepareAttempt("project-1", { stageKey: "investigator-search:tray-delay", stageName: "investigator-search", input: {},
+        model: { providerId: "exa", modelId: "search", reasoningEffort: "bounded" }, promptVersion: "1", promptText: "Find handoff evidence", workItemId: child.id }, sessionId);
+      if (attempt.kind !== "prepared") throw new Error("Expected a prepared investigator search");
+      attempts.markAttemptDispatched("project-1", attempt.attemptId, "none", sessionId);
+      return attempt.attemptId;
+    });
+    const acknowledged = path === "resume" ? ordinary.id : saved[0]!.id;
+    db.db.prepare("INSERT INTO workflow_snapshots VALUES ('run-new', 'acknowledged-retry:one-receipt', ?)")
+      .run(JSON.stringify({ attemptIds: [acknowledged] }));
+    const originalReceipts = db.db.prepare("SELECT * FROM generation_attempts WHERE research_run_id = 'run-new' ORDER BY rowid").all();
+    if (path === "resume") await service.resumeRequest(sessionId, "run-new");
+    else await service.handleRunEvent({ type: "run-failed", threadId: "project-1", runId: "run-new", error: "Fixture result was lost" });
+    db.close();
+    db = new DatabaseClient(join(directory, "scraply.db"));
+    const restored = new WorkflowRepository(db);
+    expect(restored.getSession(sessionId)).toMatchObject({ state: "finished", outcome: "needs-attention" });
+    expect(restored.getWorkItem(admitted.workItemId)).toMatchObject({ state: "unknown", outputRefs: { runId: "run-new" } });
+    expect(restored.acknowledgedAttemptIds("run-new")).toEqual([acknowledged]);
+    expect(new RunRecovery(db).hasUnknownCompletion("run-new")).toBe(true);
+    expect(new GenerationAttemptRepository(db).unresolvedAttemptIds("run-new")).toContain(saved[1]!.id);
+    expect(restored.unknownInvestigatorSearches("run-new")).toContainEqual(expect.objectContaining({ id: investigator }));
+    expect(db.db.prepare("SELECT * FROM generation_attempts WHERE research_run_id = 'run-new' ORDER BY rowid").all()).toEqual(originalReceipts);
+    const budget = restored.listBudgetEntries(sessionId).filter(entry => entry.workItemId === admitted.workItemId);
+    expect(budget).toHaveLength(2);
+    expect(budget.every(entry => entry.state === "uncertain" && entry.settledUnits === entry.reservedUnits)).toBe(true);
+    expect(dispatches).toBe(0);
+  } finally { db.close(); }
 });
 
 test("finished Controlled research command survives backend reopening with linked request history", async () => {

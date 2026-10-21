@@ -15,7 +15,7 @@
 
   let {
     solutions,
-    route = $bindable<SolutionsRoute>({ kind: "list" }),
+    route,
     onNavigate,
     onBack,
     interactive = true,
@@ -41,7 +41,6 @@
     conversationLoading = false,
     conversationError = null,
     onOpenConversation,
-    onCloseConversation,
     onSubmitIdeaTurn,
     onSelectConversationVersion,
     run = null,
@@ -53,9 +52,9 @@
     footer,
   }: {
     solutions: SolutionView[];
-    route?: SolutionsRoute;
-    onNavigate?: (route: SolutionsRoute) => void;
-    onBack?: (parent: SolutionsRoute) => void;
+    route: SolutionsRoute;
+    onNavigate: (route: SolutionsRoute) => void;
+    onBack: (parent: SolutionsRoute) => void;
     interactive?: boolean;
     ideaGroups?: IdeaGroupView[] | undefined;
     busy: boolean;
@@ -79,7 +78,6 @@
     conversationLoading?: boolean;
     conversationError?: string | null;
     onOpenConversation?: (ideaId: string) => Promise<void>;
-    onCloseConversation?: () => void;
     onSubmitIdeaTurn?: (draft: Omit<SubmitIdeaTurnRequest, "threadId" | "rootSolutionId">) => Promise<void>;
     onSelectConversationVersion?: (solutionId: string) => Promise<void>;
     run?: WorkspaceState["latestResearchRun"];
@@ -95,11 +93,8 @@
   let selectedIdeaId = $derived(route.kind === "list" ? null : route.ideaId);
   let activeConversationId = $derived(route.kind === "conversation" ? route.ideaId : null);
   let retainedConversation = $state<ConversationView | null>(null);
-  let openingConversation = $state(false);
-  let openError = $state<string | null>(null);
   let openingButton: HTMLButtonElement | null = null;
   let ideaButton: HTMLButtonElement | null = null;
-  let openRequest = 0;
   let conversationMatchesSelection = $derived(
     !!activeConversationId && !!retainedConversation
       && retainedConversation.versions.some((version) => version.solutionId === activeConversationId),
@@ -111,42 +106,23 @@
   });
 
   async function openConversation(event: MouseEvent, ideaId: string) {
-    if (!onOpenConversation && !onNavigate) return;
     if (activeConversationId === null) openingButton = event.currentTarget as HTMLButtonElement;
-    if (onNavigate) {
-      if (activeConversationId === ideaId) await onOpenConversation?.(ideaId);
-      else onNavigate({ kind: "conversation", ideaId });
-      return;
-    }
-    route = { kind: "conversation", ideaId };
-    openingConversation = true;
-    openError = null;
-    const request = ++openRequest;
-    try {
-      await onOpenConversation?.(ideaId);
-    } catch (cause) {
-      if (request === openRequest) openError = cause instanceof Error ? cause.message : "Could not open this conversation.";
-    } finally {
-      if (request === openRequest) openingConversation = false;
-    }
+    if (activeConversationId === ideaId) await onOpenConversation?.(ideaId);
+    else onNavigate({ kind: "conversation", ideaId });
   }
 
   function closeConversation() {
-    openRequest += 1;
     if (route.kind !== "conversation") return;
     const parent: SolutionsRoute = { kind: "idea", ideaId: route.ideaId };
-    if (onBack) onBack(parent); else route = parent;
-    openingConversation = false;
-    openError = null;
-    onCloseConversation?.();
+    onBack(parent);
     void tick().then(() => openingButton?.focus({ preventScroll: true }));
   }
   function openIdea(event: MouseEvent, ideaId: string) {
     ideaButton = event.currentTarget as HTMLButtonElement;
-    if (onNavigate) onNavigate({ kind: "idea", ideaId }); else route = { kind: "idea", ideaId };
+    onNavigate({ kind: "idea", ideaId });
   }
   function closeIdea() {
-    if (onBack) onBack({ kind: "list" }); else route = { kind: "list" };
+    onBack({ kind: "list" });
     void tick().then(() => ideaButton?.focus({ preventScroll: true }));
   }
   let previousRoute: SolutionsRoute = untrack(() => route);
@@ -249,7 +225,7 @@
     {#if selectedIdea}
       <div class="detail-navigation"><BackLink destination="ideas" onclick={closeIdea} /></div>
       <div class="detail-heading"><h1>{ideaContent(selectedIdea.description).name}</h1>
-        {#if selectedIdea.workflowVersion === 2 && (onOpenConversation || onNavigate)}<button class="explore-button" onclick={(event) => openConversation(event, selectedIdea.id)}>Explore this idea</button>{/if}
+        {#if selectedIdea.workflowVersion === 2}<button class="explore-button" onclick={(event) => openConversation(event, selectedIdea.id)}>Explore this idea</button>{/if}
       </div>
       {#if ideaContent(selectedIdea.description).summary}<p class="lead">{ideaContent(selectedIdea.description).summary}</p>{/if}
       {#if selectedIdea.weakFitReason}<p class="rank-note"><span class="weak-fit">Weak fit</span> {selectedIdea.weakFitReason}</p>{/if}
@@ -261,15 +237,15 @@
 
   <div class="conversation-view" hidden={activeConversationId === null}>
     <div class="detail-navigation"><BackLink destination="idea" onclick={closeConversation} /></div>
-    {#if activeConversationId && (openingConversation || conversationLoading)}
+    {#if activeConversationId && conversationLoading}
       <p class="conversation-status" role="status">Opening conversation…</p>
-    {:else if activeConversationId && (openError || conversationError)}
-      <div class="conversation-error" role="alert"><p>{openError ?? conversationError}</p><button onclick={(event) => openConversation(event, activeConversationId!)}>Try again</button></div>
+    {:else if activeConversationId && conversationError}
+      <div class="conversation-error" role="alert"><p>{conversationError}</p><button onclick={(event) => openConversation(event, activeConversationId!)}>Try again</button></div>
     {:else if activeConversationId && !conversationMatchesSelection}
       <p class="conversation-status" role="status">Conversation is unavailable.</p>
     {/if}
     {#if retainedConversation && onSubmitIdeaTurn}
-      <div hidden={!conversationMatchesSelection || openingConversation || conversationLoading || !!openError || !!conversationError}>
+      <div hidden={!conversationMatchesSelection || conversationLoading || !!conversationError}>
         {#key retainedConversation.rootSolutionId}
           <IdeaConversation conversation={retainedConversation} {solutions} {modelOptions} {activeResearchSnapshotId} {run} {elapsed} {runStage} {onStop} onAnalyze={onSelect} busy={busy || opportunityReviewRunning} {analysisBlocked} onSubmit={onSubmitIdeaTurn} {...(onSelectConversationVersion ? { onSelectVersion: onSelectConversationVersion } : {})} {...(onLoadMoreConversation ? { onLoadMore: onLoadMoreConversation } : {})} />
         {/key}

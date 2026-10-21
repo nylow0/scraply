@@ -58,6 +58,7 @@ import { prepareIdeaRanking, rankIdeas } from "./idea-ranking";
 import { scheduledModelClient } from "./scheduled-model-client";
 import type { WorkflowModelScheduler } from "./workflow-scheduler";
 import { streamRestarts, WorkflowExecution } from "./workflow-execution";
+import { RunRecovery } from "./run-recovery";
 import type { WorkflowV2StageId } from "./stages";
 
 export interface ResearchEngineOptions {
@@ -136,6 +137,7 @@ export class ResearchEngine {
   private readonly runs: ResearchRunRepository;
   private readonly ledger: CostLedgerRepository;
   private readonly generationAttempts: GenerationAttemptRepository;
+  private readonly recovery: RunRecovery;
   private readonly followUps: EvidenceFollowUpRepository;
   private readonly discovery: DiscoveryRepository;
   private readonly opportunities: OpportunityRepository;
@@ -146,6 +148,7 @@ export class ResearchEngine {
     this.runs = new ResearchRunRepository(options.db);
     this.ledger = new CostLedgerRepository(options.db);
     this.generationAttempts = new GenerationAttemptRepository(options.db);
+    this.recovery = new RunRecovery(options.db);
     this.followUps = new EvidenceFollowUpRepository(options.db);
     this.discovery = new DiscoveryRepository(options.db);
     this.opportunities = new OpportunityRepository(options.db);
@@ -355,15 +358,15 @@ export class ResearchEngine {
     if (!row || !config || (!completedAssessment && !["queued", "running", ...(config.workflowVersion === 2 ? ["failed", "cancelled"] : [])].includes(row.status))) {
       throw new AppError("conflict", "This research run has already ended and cannot be resumed.");
     }
-    const acknowledged = [...new Set([...new WorkflowRepository(this.options.db).acknowledgedAttemptIds(runId), ...acknowledgedAttemptIds])];
-    if (new WorkflowRepository(this.options.db).unknownInvestigatorSearches(runId, acknowledged).length) {
+    const readiness = this.recovery.engineResumeReadiness(runId, acknowledgedAttemptIds);
+    const acknowledged = readiness.acknowledgedAttemptIds;
+    if (readiness.kind === "unknown-investigator-search") {
       this.ledger.settleUncertain(runId, "A dispatched investigator search lost its terminal result during restart");
       throw new AppError("conflict", "A previous investigator search may have completed before its result was saved. Review this request before explicitly retrying it.");
     }
-    const resumeSafety = this.generationAttempts.getResumeSafety(runId, acknowledged);
-    if (!resumeSafety.canResume) {
+    if (readiness.kind === "unknown-model") {
       this.ledger.settleUncertain(runId, "A dispatched generation lost its terminal result during restart");
-      throw new AppError("conflict", `${resumeSafety.resumeBlockedReason} Review this request before explicitly retrying it.`);
+      throw new AppError("conflict", `${readiness.reason} Review this request before explicitly retrying it.`);
     }
     // Idea runs that were running side by side resume together.
     if (blockingActiveRun(this.options.db, row.thread_id, { id: runId, problemId: row.problem_id, sessionId: row.workflow_session_id })) {
@@ -399,9 +402,9 @@ export class ResearchEngine {
     if (!row || row.thread_id !== threadId) throw new AppError("not_found", "Option run does not belong to this project.");
     if (this.activeRuns.has(runId)) return;
     if (!row.awaiting_selection) throw new AppError("conflict", "This run is not awaiting an option selection.");
-    const acknowledged = new WorkflowRepository(this.options.db).acknowledgedAttemptIds(runId);
-    const safety = this.generationAttempts.getResumeSafety(runId, acknowledged);
-    if (!safety.canResume) throw new AppError("conflict", `${safety.resumeBlockedReason} Review this request before explicitly retrying it.`);
+    const readiness = this.recovery.acknowledgedModelReadiness(runId);
+    if (readiness.kind === "unknown-model") throw new AppError("conflict", `${readiness.reason} Review this request before explicitly retrying it.`);
+    const acknowledged = readiness.acknowledgedAttemptIds;
     this.assertThreadIdle(threadId, runId);
     const workflow = new WorkflowExecution(this.options.db, runId, acknowledged);
     this.options.db.immediateTransaction(() => {
@@ -2394,7 +2397,7 @@ export class ResearchEngine {
       const owned = new Set([parentId]);
       for (const item of items) if (item.parentItemId && owned.has(item.parentItemId)) owned.add(item.id);
       const state = active.abortController.signal.aborted ? "cancelled"
-        : repository.hasUnknownProviderCompletion(active.runId) ? "unknown" : "failed";
+        : this.recovery.hasUnknownCompletion(active.runId) ? "unknown" : "failed";
       const message = errorMessage(error);
       for (const item of items.filter(item => owned.has(item.id))) {
         if (item.state === "running") repository.updateWorkItem(item.id, state, { outputRefs: item.outputRefs, error: { message } });

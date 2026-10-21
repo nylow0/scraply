@@ -28,6 +28,7 @@ import {
 import { remainingWorkflowMs as remainingMs } from "./workflow-time";
 import { qualifiesAsProblemObservation } from "./discovery";
 import { unknownSearchAttempts } from "./workflow-search-attempts";
+import { RunRecovery } from "./run-recovery";
 
 type ResearchRequestAction = Extract<WorkflowAction, { type: "request-research" }>;
 type ApplyResearchAction = Extract<WorkflowAction, { type: "apply-research" }>;
@@ -49,12 +50,14 @@ export interface ResearchRequestServiceOptions {
 /** Saved requests are independent results. Only applyResearch changes the active snapshot. */
 export class ResearchRequestService {
   private readonly repository: WorkflowRepository;
+  private readonly recovery: RunRecovery;
   private readonly discovery: DiscoveryRepository;
   private readonly dispatching = new Set<string>();
   private readonly reevaluations = new Map<string, AbortController>();
 
   constructor(private readonly options: ResearchRequestServiceOptions) {
     this.repository = new WorkflowRepository(options.db);
+    this.recovery = new RunRecovery(options.db);
     this.discovery = new DiscoveryRepository(options.db);
   }
 
@@ -308,7 +311,7 @@ export class ResearchRequestService {
     if (run.status !== "queued" && run.status !== "running") {
       throw new WorkflowConflictError("INVALID_REFERENCE", "The saved research run has an unsupported state.");
     }
-    if (this.repository.hasUnknownProviderCompletion(runId)) {
+    if (this.recovery.hasUnknownCompletion(runId)) {
       this.markUnknownRequest(session, item, runId);
       return;
     }
@@ -324,7 +327,7 @@ export class ResearchRequestService {
     try {
       await this.options.engine().resumeRun(runId);
     } catch (error) {
-      if (this.repository.hasUnknownProviderCompletion(runId)) this.markUnknownRequest(session, item, runId);
+      if (this.recovery.hasUnknownCompletion(runId)) this.markUnknownRequest(session, item, runId);
       else this.failBeforeDispatch(sessionId, item.id, runId, error);
     }
   }
@@ -428,7 +431,7 @@ export class ResearchRequestService {
     const status = run.status;
     if (status === "running" || status === "queued") return;
     const active = this.repository.getSession(sessionId);
-    if (active && this.repository.hasUnknownProviderCompletion(event.runId)) {
+    if (active && this.recovery.hasUnknownCompletion(event.runId)) {
       this.markUnknownRequest(active, item, event.runId);
       return;
     }
@@ -688,7 +691,7 @@ export class ResearchRequestService {
   private failBeforeDispatch(sessionId: string, workItemId: string, runId: string, error: unknown): void {
     const session = this.repository.getSession(sessionId);
     const item = this.repository.getWorkItem(workItemId);
-    if (session && item?.state === "running" && this.repository.hasUnknownProviderCompletion(runId)) {
+    if (session && item?.state === "running" && this.recovery.hasUnknownCompletion(runId)) {
       this.markUnknownRequest(session, item, runId);
       return;
     }

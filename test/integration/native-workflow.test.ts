@@ -28,6 +28,8 @@ import { discoveryRunProjection } from "../../src/shared/discovery-projection";
 import { sha256 } from "../../src/shared/content-identity";
 import { AppSettingsSchema } from "../../src/shared/app-settings";
 import { streamRestarts } from "../../src/core/workflow-execution";
+import { unknownSearchAttempts } from "../../src/core/workflow-search-attempts";
+import { RunRecovery } from "../../src/core/run-recovery";
 
 const statement = "Repair shops cannot reliably predict parts arrival times.";
 const scope = {
@@ -480,9 +482,9 @@ describe("native research workflow through the production backend", () => {
       db.db.prepare(`UPDATE workflow_sessions SET state = 'running', outcome = NULL, finished_at = NULL,
         active_snapshot_id = NULL, running_since = ?, revision = revision + 1 WHERE id = ?`).run(now, receipt.sessionId);
       const historicalBudget = repository.listBudgetEntries(receipt.sessionId);
-      expect(repository.hasUnknownProviderCompletion(runId)).toBe(freshUnknown);
+      expect(new RunRecovery(db).hasUnknownCompletion(runId)).toBe(freshUnknown);
       await item.restart();
-      expect(repository.hasUnknownProviderCompletion(runId)).toBe(freshUnknown);
+      expect(new RunRecovery(db).hasUnknownCompletion(runId)).toBe(freshUnknown);
       const restored = await item.post(`/workflows/${receipt.sessionId}`, undefined, WorkflowDetailSchema);
       expect(item.requests()).toHaveLength(requestCount);
       expect(item.searches).toHaveLength(searchCount);
@@ -905,11 +907,43 @@ describe("native v2 decisions through the production backend", () => {
       db.db.prepare("UPDATE solutions SET selected_at = ? WHERE id = ?").run(new Date().toISOString(), selected.id);
       db.db.prepare("INSERT INTO workflow_snapshots VALUES (?, 'acknowledged-retry:explicit', ?)")
         .run(selected.runId, JSON.stringify({ attemptIds: [lost.id] }));
+      // Analyze risks only needs model readiness. Damaged unrelated search history still fails whole-run reads.
+      db.db.prepare("INSERT INTO workflow_snapshots VALUES (?, 'search-attempt:malformed', '{}')").run(selected.runId);
+      expect(() => unknownSearchAttempts(db, selected.runId!)).toThrow();
+      expect(new RunRecovery(db).acknowledgedModelReadiness(selected.runId!)).toEqual({ kind: "ready", acknowledgedAttemptIds: [lost.id] });
+      expect(() => new RunRecovery(db).hasUnknownCompletion(selected.runId!)).toThrow();
       expect((await item.post(`/ideas/${selected.id}`, undefined, SolutionViewSchema)).selectable).toBe(true);
-      await item.post("/research/select-option", { threadId, runId: selected.runId, solutionId: selected.id }, WorkspaceStateSchema);
+      const selection = await item.raw("/research/select-option", { threadId, runId: selected.runId, solutionId: selected.id });
+      // Dispatch succeeds, while the route's whole-workspace response retains its malformed-data error.
+      expect(selection.ok).toBe(false);
+      expect(await selection.json()).toMatchObject({ error: { code: "validation_error" } });
+      const deadline = Date.now() + 5_000;
+      while (!(await item.post(`/ideas/${selected.id}`, undefined, SolutionViewSchema)).decisionAnalysis) {
+        if (Date.now() >= deadline) throw new Error("Acknowledged Analyze risks did not finish with malformed search history");
+        await new Promise(resolve => setTimeout(resolve, 20));
+      }
+      expect(() => unknownSearchAttempts(db, selected.runId!)).toThrow();
+      db.db.prepare("DELETE FROM workflow_snapshots WHERE research_run_id = ? AND snapshot_key = 'search-attempt:malformed'").run(selected.runId);
       await item.waitFor(state => state.latestResearchRun?.status === "completed" && !state.latestResearchRun.awaitingSelection);
-      expect((await item.post(`/ideas/${selected.id}`, undefined, SolutionViewSchema)).decisionAnalysis).not.toBeNull();
+      const analysis = await item.post(`/ideas/${selected.id}`, undefined, SolutionViewSchema);
+      expect(analysis.decisionAnalysis).not.toBeNull();
       expect(attempts.getResumeSafety(selected.runId!).canResume).toBe(false);
+      // These actions deliberately retain raw model safety even with a saved acknowledgement.
+      const now = new Date().toISOString();
+      db.db.prepare(`INSERT INTO evidence_follow_ups
+        (research_run_id, solution_id, question, status, requested_at, completed_at, updated_at)
+        VALUES (?, ?, 'Do newer delivery logs change the result?', 'completed', ?, ?, ?)`)
+        .run(selected.runId, selected.id, now, now, now);
+      expect((await item.post(`/ideas/${selected.id}`, undefined, SolutionViewSchema)).canReassessEvidence).toBe(false);
+      const requestCount = item.requests().length;
+      const searchCount = item.searches.length;
+      await expect(item.post("/experiments/plan", { threadId, runId: selected.runId, solutionId: selected.id }, WorkspaceStateSchema))
+        .rejects.toThrow("may have completed");
+      await expect(item.post("/research/evidence-reassessment", { threadId, runId: selected.runId }, WorkspaceStateSchema))
+        .rejects.toThrow("may have completed");
+      expect((await item.post(`/ideas/${selected.id}`, undefined, SolutionViewSchema)).decisionAnalysis).toEqual(analysis.decisionAnalysis);
+      expect(item.requests()).toHaveLength(requestCount);
+      expect(item.searches).toHaveLength(searchCount);
     } finally { db.close(); }
   });
 

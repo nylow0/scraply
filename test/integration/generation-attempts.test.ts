@@ -6,7 +6,7 @@ import { z } from "zod";
 import { DatabaseClient } from "../../src/db/client";
 import { GenerationAttemptRepository } from "../../src/db/repositories/generation-attempts";
 import { ResearchRunRepository } from "../../src/db/repositories/research-runs";
-import { WorkflowRepository } from "../../src/db/repositories/workflows";
+import { RunRecovery } from "../../src/core/run-recovery";
 import type { GenerationAcceptanceMetadata, StructuredStageRequest } from "../../src/providers/structured";
 import type { RunConfig } from "../../src/shared/schemas";
 
@@ -113,11 +113,10 @@ describe("durable generation snapshots", () => {
       repository.recordTerminal(timedOut.id, { status: "failed", terminalKind: "timeout", errorCode: "timeout",
         attemptMetadata: { attempts: [{ providerCompletion: "unknown" }] } });
       expect(repository.getResumeSafety(runId, [lost.id]).canResume).toBe(true);
-      const workflows = new WorkflowRepository(db);
-      expect(workflows.hasUnknownProviderCompletion(runId)).toBe(true);
+      expect(new RunRecovery(db).hasUnknownCompletion(runId)).toBe(true);
       db.db.prepare("INSERT INTO workflow_snapshots VALUES (?, ?, ?)").run(runId, "acknowledged-retry:explicit",
         JSON.stringify({ attemptIds: [lost.id] }));
-      expect(workflows.hasUnknownProviderCompletion(runId)).toBe(false);
+      expect(new RunRecovery(db).hasUnknownCompletion(runId)).toBe(false);
       const freshUnknownRequest = { ...request("generation-unacknowledged"), workOrder: {
         ...request("generation-unacknowledged").workOrder, instruction: "A different unacknowledged request.",
       } };
@@ -125,10 +124,10 @@ describe("durable generation snapshots", () => {
       repository.markDispatched(freshUnknown.id);
       repository.recordTerminal(freshUnknown.id, { status: "interrupted", terminalKind: "interrupted",
         attemptMetadata: { attempts: [{ providerCompletion: "unknown" }] } });
-      expect(workflows.hasUnknownProviderCompletion(runId)).toBe(true);
+      expect(new RunRecovery(db).hasUnknownCompletion(runId)).toBe(true);
       const freshConfirmed = repository.prepare(runId, { ...freshUnknownRequest, generationId: "generation-confirmed-new" }, identity);
       repository.recordTerminal(freshConfirmed.id, { status: "completed", terminalKind: "completed", output: { answer: "confirmed" } });
-      expect(workflows.hasUnknownProviderCompletion(runId)).toBe(false);
+      expect(new RunRecovery(db).hasUnknownCompletion(runId)).toBe(false);
       const changedEvidence = repository.prepare(runId, { ...lostRequest, generationId: "generation-changed",
         evidence: [{ sourceId: "source-1", content: "Changed evidence" }] }, identity);
       repository.recordTerminal(changedEvidence.id, { status: "completed", terminalKind: "completed", output: { answer: "different" } });

@@ -1,7 +1,5 @@
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
-import { GenerationAttemptRepository } from "./generation-attempts";
-import { unknownSearchAttempts } from "../../core/workflow-search-attempts";
 import { canonicalJson, sha256 } from "../../shared/content-identity";
 import type { RunConfig } from "../../shared/schemas";
 import { ProblemFactorAssessmentSchema } from "../../shared/structured-output-schemas";
@@ -581,12 +579,6 @@ export class WorkflowRepository {
     const audits = this.client.db.prepare(`SELECT value_json FROM workflow_snapshots
       WHERE research_run_id = ? AND snapshot_key LIKE 'acknowledged-retry:%'`).all(runId) as Array<{ value_json: string }>;
     return [...new Set(audits.flatMap(row => AcknowledgedRetrySchema.parse(JSON.parse(row.value_json)).attemptIds))];
-  }
-
-  hasUnknownProviderCompletion(runId: string): boolean {
-    if (unknownSearchAttempts(this.client, runId, this.acknowledgedAttemptIds(runId)).length > 0) return true;
-    if (!new GenerationAttemptRepository(this.client).getResumeSafety(runId, this.acknowledgedAttemptIds(runId)).canResume) return true;
-    return this.unknownInvestigatorSearches(runId, this.acknowledgedAttemptIds(runId)).length > 0;
   }
 
   /** A retry acknowledges exact dispatch IDs without rewriting their lost terminal history. */

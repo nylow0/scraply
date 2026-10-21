@@ -9,6 +9,7 @@ import { ResearchRunRepository } from "../../src/db/repositories/research-runs";
 import { GenerationAttemptRepository } from "../../src/db/repositories/generation-attempts";
 import { ResearchFrameRepository } from "../../src/db/repositories/research-frames";
 import { WorkflowRepository } from "../../src/db/repositories/workflows";
+import { RunRecovery } from "../../src/core/run-recovery";
 import { streamRestarts, WorkflowExecution } from "../../src/core/workflow-execution";
 import { UnknownSearchCompletionError, unknownSearchAttempts } from "../../src/core/workflow-search-attempts";
 import type { Source } from "../../src/shared/schemas";
@@ -350,8 +351,8 @@ test.each([{ drops: 1, unrelated: false }, { drops: 1, unrelated: true }, { drop
       expect(new CostLedgerRepository(db).countProviderCalls(runId, "fixture")).toBe(calls.length - 1);
       if (unrelated) {
         expect(workflows.acknowledgedAttemptIds(runId)).not.toContain(unrelatedAttemptId!);
-        expect(workflows.hasUnknownProviderCompletion(runId)).toBe(true);
-      } else expect(workflows.hasUnknownProviderCompletion(runId)).toBe(false);
+        expect(new RunRecovery(db).hasUnknownCompletion(runId)).toBe(true);
+      } else expect(new RunRecovery(db).hasUnknownCompletion(runId)).toBe(false);
       if (drops === 3) {
         expect(audits.flatMap(row => JSON.parse(row.value).attemptIds)).not.toContain(lost[2]!.id);
         // Stopping an area records its abandonment separately from authorizing a stream restart.
