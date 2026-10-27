@@ -41,6 +41,7 @@ async function loopContext(context: CommandContext, args: CommandArguments): Pro
     tools: [`bun ${Bun.version} (TypeScript, fetch built in)`, ...(Bun.which("uv") ? ["uv (Python: uv run --with <packages> script.py)"] : [])],
     trust: args.flags.trust === true,
     skipQuestions: args.flags["skip-questions"] === true,
+    agentFindings: args.flags["agent-findings"] === true,
   };
 }
 
@@ -49,6 +50,7 @@ const loopFlags = [
   projectFlag,
   { name: "trust", type: "boolean", description: "Run model-written experiment scripts without stopping for you to read them first." },
   { name: "skip-questions", type: "boolean", description: "Go on without answering the framing questions." },
+  { name: "agent-findings", type: "boolean", description: "Stop when the pass is finished so you write the findings and variants, instead of Scraply's model." },
 ] as const;
 
 export const loopCommands: readonly Command[] = [
@@ -82,7 +84,8 @@ export const loopCommands: readonly Command[] = [
     run: async (context, args) => {
       const steps = await advanceUntilBlocked(await loopContext(context, args), Math.max(1, Number(stringFlag(args, "max-steps") ?? 40)));
       const last = steps.at(-1)!;
-      return { steps, status: last.status === "continue" ? "paused" : last.status, ...(last.next ? { next: last.next } : {}) };
+      if (last.status === "continue") return { steps, status: "paused", next: "Stopped at --max-steps. Run the same auto command again to go on." };
+      return { steps, status: last.status, ...(last.next ? { next: last.next } : {}) };
     },
   },
   {
@@ -106,7 +109,7 @@ export const loopCommands: readonly Command[] = [
       const note = ledger.show(projectId).notes.find(item => item.id === noteId);
       if (!note || note.kind !== "variant" || note.retracted) throw new CliError("NOT_VARIANT", `${noteId} is not a live variant in P${projectId}.`);
       ledger.logStep(projectId, "accept", noteId, null);
-      return { accepted: noteId, next: `Run: scraply auto --project P${projectId}` };
+      return { accepted: noteId, next: `Run: scraply auto --project P${projectId}, with --agent-findings if you write the findings.` };
     },
   },
 ];

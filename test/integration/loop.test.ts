@@ -3,6 +3,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openLedger, type FetchedSource, type Ledger } from "../../src/cli/ledger";
+import { CliError } from "../../src/cli/output";
 import { runCli } from "../../src/cli/main";
 import { renderReport } from "../../src/cli/report";
 import { advance, advanceUntilBlocked, runPendingScript, type LoopContext } from "../../src/loop/engine";
@@ -48,7 +49,7 @@ const think: Think = async <T>(request: ThinkRequest<T>) => {
 
 function context(overrides: Partial<LoopContext> = {}): LoopContext {
   return {
-    ledger, projectId: 1, think, workDir: join(root, "work"), resultsPerSearch: 5, tools: ["bun"], trust: false, skipQuestions: false, notify: () => undefined,
+    ledger, projectId: 1, think, workDir: join(root, "work"), resultsPerSearch: 5, tools: ["bun"], trust: false, skipQuestions: false, agentFindings: false, notify: () => undefined,
     searchWeb: async query => ({ provider: "exa", sources: PAGES[query] ? [PAGES[query]] : [] }),
     runCommand: async (command, cwd) => {
       runs.push([...command, cwd]);
@@ -101,6 +102,86 @@ describe("the seed-and-kill-test loop", () => {
     answers.split = [{ idea: { title: "Transcription only", pitch: "Per-hive records from dictaphone notes." }, claims: [{ kind: "mechanism", statement: "Speech can be split by hive name.", killIf: "Under half the notes name a hive." }], reuse: ["C1"] }];
     expect(await step()).toMatchObject({ step: "split", did: expect.stringContaining("I2") });
     expect(ledger.show(1).ideas.at(-1)).toMatchObject({ id: "I2", revises: "I1", claims: [{ id: "C1", status: "supported" }, { id: "C2", status: "untested" }] });
+  });
+
+  test("a read the model fails on is retried one page at a time, and a page it still fails on is left unread and named to the verdict", async () => {
+    ledger.createProject("hives", "Beekeepers lose track of what they saw in each hive.");
+    ledger.logStep(1, "frame", null, { surveyQueries: [] });
+    ledger.logStep(1, "survey", null, { skipped: "test" });
+    answers = {
+      split: [{ idea: { title: "Hive voice log", pitch: "Talk while inspecting." }, claims: [{ kind: "need", statement: "Keepers lose per-hive notes.", killIf: "Fewer than two keepers describe it." }], reuse: [] }],
+      design: [{ claim: "C1", why: "Cheapest decisive.", kind: "desk", method: "Read forums.", prediction: "Two keepers describe it.", stopWhen: "One search.", queries: ["hive pages"], cuts: [], sanity: null, control: null, holdout: null, needsOwner: null }],
+      verdict: [{ result: "unclear", quotes: ["Q1"], note: "One keeper describes it; the second page could not be read." }],
+    };
+    const readCalls: string[][] = [];
+    const verdictInputs: unknown[] = [];
+    const flaky: Think = async request => {
+      if (request.step === "verdict") verdictInputs.push(request.inputs);
+      if (request.step !== "read") return think(request);
+      const ids = (request.evidence ?? []).map(item => item.id);
+      readCalls.push(ids);
+      // The whole batch and the second page alone fail the way a runaway answer does; the first page alone reads.
+      if (ids.length > 1 || ids[0] === "S2") throw new CliError("MODEL_FAILED", "The read step's model call failed: OpenAI structured output exceeded the size limit.");
+      return request.schema.parse({ quotes: [{ source: "S1", text: "By the fourth colony I cannot remember what the first one looked like.", speaker: "meadowkeeper", kind: "firsthand", bearing: "for" }] });
+    };
+    const searchWeb: LoopContext["searchWeb"] = async () => ({ provider: "exa", sources: [PAGES["hive record keeping"]!, PAGES["hive apps"]!] });
+    const steps = await advanceUntilBlocked(context({ think: flaky, searchWeb }), 5);
+    expect(steps.map(item => item.step)).toEqual(["split", "design", "gather", "read", "verdict"]);
+    expect(readCalls).toEqual([["S1", "S2"], ["S1"], ["S2"]]);
+    expect(steps[3]).toMatchObject({ did: expect.stringContaining("saved 1 quote(s); could not read S2") });
+    expect(verdictInputs[0]).toMatchObject({ workDone: { sourcesRead: 1, sourcesUnread: ["S2"] } });
+  });
+
+  test("a read that fails on every page stops the step instead of reading nothing", async () => {
+    ledger.createProject("hives", "Beekeepers lose track of what they saw in each hive.");
+    ledger.logStep(1, "frame", null, { surveyQueries: [] });
+    ledger.logStep(1, "survey", null, { skipped: "test" });
+    answers = {
+      split: [{ idea: { title: "Hive voice log", pitch: "Talk while inspecting." }, claims: [{ kind: "need", statement: "Keepers lose per-hive notes.", killIf: "Fewer than two keepers describe it." }], reuse: [] }],
+      design: [{ claim: "C1", why: "Cheapest decisive.", kind: "desk", method: "Read forums.", prediction: "Two keepers describe it.", stopWhen: "One search.", queries: ["hive record keeping"], cuts: [], sanity: null, control: null, holdout: null, needsOwner: null }],
+    };
+    const down: Think = async request => {
+      if (request.step === "read") throw new CliError("MODEL_FAILED", "The read step's model call failed: operation timed out.");
+      return think(request);
+    };
+    await expect(advanceUntilBlocked(context({ think: down }), 5)).rejects.toThrow("operation timed out");
+    // Nothing was logged, so running again retries the read.
+    expect(ledger.steps(1).map(item => item.step)).toEqual(["frame", "survey", "split", "design", "gather"]);
+  });
+
+  test("with agent findings, the model researches and the calling agent writes the findings and variants", async () => {
+    ledger.createProject("hives", "Beekeepers lose track of what they saw in each hive.");
+    ledger.logStep(1, "frame", null, { surveyQueries: [] });
+    ledger.logStep(1, "survey", null, { skipped: "test" });
+    // No scripted findings answer: a model call for findings would throw.
+    answers = {
+      split: [{ idea: { title: "Hive voice log", pitch: "Talk while inspecting." }, claims: [{ kind: "need", statement: "Keepers lose per-hive notes.", killIf: "Fewer than two keepers describe it." }], reuse: [] }],
+      design: [{ claim: "C1", why: "Cheapest decisive.", kind: "desk", method: "Read forums.", prediction: "Two keepers describe it.", stopWhen: "One search.", queries: ["hive record keeping"], cuts: [], sanity: null, control: null, holdout: null, needsOwner: null }],
+      read: [{ quotes: [
+        { source: "S1", text: "By the fourth colony I cannot remember what the first one looked like.", speaker: "meadowkeeper", kind: "firsthand", bearing: "for" },
+        { source: "S1", text: "Typing up my dictaphone notes takes longer than the inspection itself.", speaker: "ridgehives", kind: "firsthand", bearing: "for" },
+      ] }],
+      verdict: [{ result: "provisional", quotes: ["Q1", "Q2"], note: "Two keepers describe losing per-hive detail." }],
+      review: [{ result: "upheld", note: "Both are firsthand and from different keepers." }],
+    };
+    const agentFindings = { agentFindings: true };
+    const steps = await advanceUntilBlocked(context(agentFindings), 20);
+    expect(steps.map(item => item.step)).toEqual(["split", "design", "gather", "read", "verdict", "review", "findings"]);
+    expect(steps.at(-1)).toMatchObject({ status: "needs-you", next: expect.stringContaining("--kind variant") });
+    // Asking again before the agent wrote anything waits without calling the model.
+    expect(await step(agentFindings)).toMatchObject({ step: "findings", status: "needs-you", did: expect.stringContaining("Still waiting") });
+
+    ledger.addNote(1, "finding", "Transcribing is the real chore.", [2]);
+    const variant = ledger.addNote(1, "variant", "Dictaphone to hive records: turn spoken notes into per-hive entries. Why: Q2 says typing them up is the chore.");
+    expect(await step(agentFindings)).toMatchObject({ step: "findings", status: "needs-you", next: expect.stringContaining(`scraply variant accept <${variant.id}>`) });
+    expect(await step(agentFindings)).toMatchObject({ step: "steer", status: "done" });
+
+    // The agent's variant becomes the next idea, as a model-written one would.
+    ledger.logStep(1, "accept", variant.id, null);
+    const splitInputs: unknown[] = [];
+    answers.split = [{ idea: { title: "Dictaphone to hive records", pitch: "Per-hive entries from spoken notes." }, claims: [{ kind: "mechanism", statement: "Speech can be split by hive name.", killIf: "Under half the notes name a hive." }], reuse: ["C1"] }];
+    expect(await step({ ...agentFindings, think: async request => { splitInputs.push(request.inputs); return think(request); } })).toMatchObject({ step: "split", did: expect.stringContaining("I2") });
+    expect(splitInputs[0]).toMatchObject({ variant: { pitch: expect.stringContaining("Dictaphone to hive records") } });
   });
 
   test("an experiment waits for the owner to read its script, then its run output is the evidence", async () => {

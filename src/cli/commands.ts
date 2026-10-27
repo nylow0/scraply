@@ -11,6 +11,7 @@ import { MODEL_PROVIDER, connectedModels, findRuntime, type ModelSession } from 
 import { CliError } from "./output";
 import { fetchDirect, fetchViaExa, search } from "./pages";
 import { loopCommands } from "../loop/commands";
+import { readConfig, type LoopConfig } from "../loop/think";
 import { runExperimentCommand } from "./experiment";
 import { renderReport } from "./report";
 
@@ -50,15 +51,19 @@ const projectFlag = { name: "project", type: "string", required: true, descripti
 const ledgerCommands: readonly Command[] = [
   {
     path: ["status"],
-    description: "Show the ledger folder, which search providers have a key, whether a model account is saved, and whether the model worker and the desktop app's database exist.",
+    description: "Show the ledger folder, which search providers have a key, whether a model account is saved, the chosen model, and whether the model worker and the desktop app's database exist.",
     run: context => {
       let runtime: string;
       try { runtime = findRuntime(context.env)?.executablePath ?? "missing"; }
       catch { runtime = "invalid"; }
+      let model: LoopConfig | null = null;
+      try { model = readConfig(context.dataDir); }
+      catch { /* None chosen yet. */ }
       return {
         dataDir: context.dataDir,
         searchProviders: availableProviders(context.profileDir, context.env),
         modelAccount: openSecrets(context.profileDir).load().providerCredentials[MODEL_PROVIDER] ? "saved" : "signed-out",
+        model,
         runtime,
         desktopDatabase: existsSync(desktopDatabasePath(context.profileDir)),
       };

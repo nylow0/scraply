@@ -1,6 +1,6 @@
 # Scraply
 
-Scraply turns a rough seed (a hunch, a product, a research question, a project idea) into an idea that has survived tests against real evidence. It is a command-line tool that thinks with a model on your OpenAI subscription, searches the web with Exa or Perplexity, writes and runs small experiments on public data once you approve them, and keeps everything in an append-only evidence ledger. A coding agent such as Claude Code or Codex can run it for you, or do the thinking itself, through a skill.
+Scraply turns a rough seed (a hunch, a product, a research question, a project idea) into an idea that has survived tests against real evidence. It is a command-line tool that thinks with a model on your OpenAI subscription, searches the web with Exa or Perplexity, writes and runs small experiments on public data once you approve them, and keeps everything in an append-only evidence ledger. A coding agent such as Claude Code or Codex runs it through a skill: by default Scraply's model does the research and the agent turns what it found into the next ideas, and the agent can also do all the thinking itself.
 
 It is my personal tool. The source is public, but it is built for my machine and my workflow.
 
@@ -29,6 +29,8 @@ scraply config model <id> --effort high
 scraply project new <name> --seed "your seed, in your words"
 scraply auto --project P1             # runs until it needs you, then says what it needs
 ```
+
+`auto --agent-findings` stops at the end of a pass so the calling agent writes the findings and variants instead of the model.
 
 The model worker is built from `runtime/` with `bun run prepare:runtime` (Rust's MSVC toolchain and `git submodule update --init --recursive` first).
 

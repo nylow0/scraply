@@ -13,7 +13,8 @@ import type { Think } from "./think";
  *
  * frame -> survey -> (owner answers questions) -> split -> for each claim:
  *   design -> desk: gather, read | experiment: script, (owner approves), run, read -> verdict -> review
- * -> findings and variants -> the owner accepts a variant, which splits into new claims, and so on.
+ * -> findings and variants (by the model, or by the calling agent with `agentFindings`)
+ * -> the owner accepts a variant, which splits into new claims, and so on.
  *
  * Every write goes through the ledger, so the model is held to the same rules as anyone else:
  * quotes must be verbatim, support needs new evidence, a need needs two speakers, and a verdict
@@ -41,6 +42,8 @@ export interface LoopContext {
   trust: boolean;
   /** Go on even though the owner has not answered the framing questions. */
   skipQuestions: boolean;
+  /** Stop when the pass is finished so the calling agent writes the findings and variants, instead of the model. */
+  agentFindings: boolean;
   notify: (text: string) => void;
 }
 
@@ -62,7 +65,8 @@ const SURVEY_SOURCES = 8;
 /** Uncited sources the test read, shown in full to its reviewer beside the cited ones. */
 const REVIEW_UNCITED_SOURCES = 6;
 
-const QuoteSchema = z.object({ source: z.string(), text: z.string(), speaker: z.string(), kind: z.enum(QUOTE_KINDS) }).strict();
+// A quote is a sentence or two; the ceiling also stops a runaway answer before the worker's output limit does.
+const QuoteSchema = z.object({ source: z.string(), text: z.string().max(1_500), speaker: z.string().max(200), kind: z.enum(QUOTE_KINDS) }).strict();
 const FrameSchema = z.object({
   framing: z.string().min(1), surveyQueries: z.array(z.string().min(1)).max(3),
   questions: z.array(z.object({ question: z.string().min(1), assumption: z.string().min(1) }).strict()).max(3),
@@ -98,14 +102,14 @@ const FindingsSchema = z.object({
 const VariantSchema = z.object({ title: z.string(), pitch: z.string(), why: z.string() });
 const FindingsLogSchema = z.object({ variants: z.array(VariantSchema.extend({ note: z.string() })) });
 
-/** A variant's title, pitch, and reason, from the findings step that proposed it, or from a variant note written by hand. */
+/** A variant's title, pitch, and reason, from the findings step that proposed it, or from a variant note written outside the loop. */
 function variantFrom(context: LoopContext, note: { id: string; text: string }) {
   for (const entry of context.ledger.steps(context.projectId).filter(item => item.step === "findings")) {
     const parsed = FindingsLogSchema.safeParse(entry.detail);
     const found = parsed.success ? parsed.data.variants.find(item => item.note === note.id) : undefined;
     if (found) return found;
   }
-  return { note: note.id, title: note.text.slice(0, 80), pitch: note.text, why: "Written by hand." };
+  return { note: note.id, title: note.text.slice(0, 80), pitch: note.text, why: "Written outside the loop; the pitch gives its reasons." };
 }
 
 /** Steps that ran, by name and target, from the ledger's step log. */
@@ -346,24 +350,49 @@ async function gather(context: LoopContext, test: TestView): Promise<StepResult>
 
 async function read(context: LoopContext, view: View, claim: ClaimView, test: TestView, sourceIds: readonly string[]): Promise<StepResult> {
   const evidence = sourceEvidence(context, sourceIds);
+  const ask = (group: typeof evidence) => context.think({
+    step: "read", goal: `Quote everything in these sources that bears on ${claim.id}, for or against.`, schema: ReadSchema,
+    inputs: { claim: { id: claim.id, kind: claim.kind, statement: claim.statement, killIf: claim.killIf }, test, idea: currentIdea(view) },
+    evidence: group,
+  });
+  // A batch whose call fails is read again one source at a time, so one page the model cannot answer for
+  // never blocks the step; a source that still fails is left unread, and the verdict is told so.
+  const answers: { group: typeof evidence; quotes: z.infer<typeof ReadSchema>["quotes"] }[] = [];
+  const unread: string[] = [];
+  let failure: CliError | undefined;
+  const failed = (group: typeof evidence, error: unknown) => {
+    if (!(error instanceof CliError && error.code === "MODEL_FAILED")) throw error;
+    context.notify(`Reading ${group.map(item => item.id).join(", ")} failed: ${error.message}`);
+    failure = error;
+  };
+  for (const group of batches(evidence)) {
+    try {
+      answers.push({ group, quotes: (await ask(group)).quotes });
+      continue;
+    } catch (error) { failed(group, error); }
+    if (group.length === 1) { unread.push(group[0]!.id); continue; }
+    for (const item of group) {
+      try { answers.push({ group: [item], quotes: (await ask([item])).quotes }); }
+      catch (error) { failed([item], error); unread.push(item.id); }
+    }
+  }
+  if (failure && unread.length === evidence.length) throw failure;
   const saved: string[] = [];
   const bearings: { quote: string; bearing: string }[] = [];
   let dropped = 0;
-  for (const group of batches(evidence)) {
-    const output = await context.think({
-      step: "read", goal: `Quote everything in these sources that bears on ${claim.id}, for or against.`, schema: ReadSchema,
-      inputs: { claim: { id: claim.id, kind: claim.kind, statement: claim.statement, killIf: claim.killIf }, test, idea: currentIdea(view) },
-      evidence: group,
-    });
-    for (const quote of output.quotes) {
-      const result = saveQuotes(context, [quote], new Set(group.map(item => item.id)));
+  for (const answer of answers) {
+    for (const quote of answer.quotes) {
+      const result = saveQuotes(context, [quote], new Set(answer.group.map(item => item.id)));
       saved.push(...result.saved);
       bearings.push(...result.saved.map(id => ({ quote: id, bearing: quote.bearing })));
       dropped += result.dropped;
     }
   }
-  context.ledger.logStep(context.projectId, "read", test.id, { sources: sourceIds, quotes: saved, bearings, dropped });
-  return { step: "read", did: `Read ${sourceIds.length} source(s) for ${test.id}; saved ${saved.length} quote(s)${dropped ? `, dropped ${dropped} not found word for word` : ""}.`, status: "continue" };
+  context.ledger.logStep(context.projectId, "read", test.id, { sources: sourceIds, quotes: saved, bearings, dropped, unread });
+  return {
+    step: "read", status: "continue",
+    did: `Read ${sourceIds.length - unread.length} source(s) for ${test.id}; saved ${saved.length} quote(s)${dropped ? `, dropped ${dropped} not found word for word` : ""}${unread.length ? `; could not read ${unread.join(", ")}` : ""}.`,
+  };
 }
 
 async function script(context: LoopContext, view: View, claim: ClaimView, test: TestView, runs: readonly View["sources"][number][]): Promise<StepResult> {
@@ -431,7 +460,9 @@ async function decide(context: LoopContext, view: View, claim: ClaimView, test: 
   const sources = new Map(view.sources.map(source => [source.id, source]));
   // What this test itself gathered, with each quote's bearing, kept apart from older context.
   const reads = stepLog(context).steps.filter(item => item.step === "read" && item.target === test.id)
-    .map(item => z.object({ sources: z.array(z.string()), bearings: z.array(z.object({ quote: z.string(), bearing: z.string() })).default([]) }).parse(item.detail));
+    .map(item => z.object({
+      sources: z.array(z.string()), bearings: z.array(z.object({ quote: z.string(), bearing: z.string() })).default([]), unread: z.array(z.string()).default([]),
+    }).parse(item.detail));
   const bearing = new Map(reads.flatMap(item => item.bearings).map(item => [item.quote, item.bearing]));
   const describe = (quote: View["quotes"][number]) => {
     const source = sources.get(quote.source)!;
@@ -441,7 +472,12 @@ async function decide(context: LoopContext, view: View, claim: ClaimView, test: 
   const earlierQuotes = live(view.quotes).filter(quote => !bearing.has(quote.id)).map(describe);
   const searches = view.searches.filter(item => item.at > test.predictedAt);
   const runs = view.sources.filter(source => source.test === test.id).map(source => ({ id: source.id, exitCode: source.exitCode }));
-  const work = { searchesRun: searches.length, sourcesRead: new Set(reads.flatMap(item => item.sources)).size, runs: runs.length, quotesSaved: quotes.length };
+  const unread = new Set(reads.flatMap(item => item.unread));
+  const work = {
+    searchesRun: searches.length, sourcesRead: new Set(reads.flatMap(item => item.sources).filter(id => !unread.has(id))).size, runs: runs.length, quotesSaved: quotes.length,
+    // Pages the model failed to read: absence of evidence in them is not evidence of absence.
+    ...(unread.size ? { sourcesUnread: [...unread] } : {}),
+  };
   let refusal: string | undefined;
   for (let attempt = 0; attempt < 2; attempt += 1) {
     const output = await context.think({
@@ -540,9 +576,42 @@ async function findings(context: LoopContext, view: View): Promise<StepResult> {
   context.ledger.logStep(context.projectId, "findings", currentIdea(view)?.id ?? null, { summary: output.summary, variants });
   return {
     step: "findings", did: `${output.summary} Saved ${saved} finding(s) and ${variants.length} variant(s).`, status: "needs-you",
-    next: variants.length
-      ? `Pick a variant with: scraply variant accept <${variants.map(item => item.note).join("|")}> --project ${view.project.id} (read them in: scraply show --project ${view.project.id}), or stop here.`
-      : `Nothing points to a variant. Export the report with: scraply export --project ${view.project.id} --format markdown --out <file>`,
+    next: pickVariant(view.project.id, variants.map(item => item.note)),
+  };
+}
+
+function pickVariant(projectId: string, variantIds: readonly string[]) {
+  return variantIds.length
+    ? `Pick a variant with: scraply variant accept <${variantIds.join("|")}> --project ${projectId} (read them in: scraply show --project ${projectId}), or stop here.`
+    : `Nothing points to a variant. Export the report with: scraply export --project ${projectId} --format markdown --out <file>`;
+}
+
+/**
+ * The findings step when the calling agent writes the ideas (`--agent-findings`). The first call records which notes
+ * exist and asks for finding and variant notes; a later call that sees new ones closes the pass with them.
+ */
+function handOff(context: LoopContext, view: View, lastWorkId: number): StepResult {
+  const projectId = view.project.id;
+  const handoff = stepLog(context).steps.filter(item => item.step === "handoff" && item.id > lastWorkId).at(-1);
+  const ask = {
+    step: "findings", status: "needs-you" as const,
+    next: `Write the findings and variants yourself from the record (scraply show --project ${projectId}, and each run's output with scraply source show S#): `
+      + `scraply note add --project ${projectId} --kind finding --quote Q# --text "...", and up to three variants with `
+      + `scraply note add --project ${projectId} --kind variant --text "<title>: <pitch> Why: <what in the evidence points there>". Then run scraply auto --project ${projectId} --agent-findings again.`,
+  };
+  if (!handoff) {
+    const newest = Math.max(0, ...view.notes.map(note => parseId("note", note.id)));
+    context.ledger.logStep(context.projectId, "handoff", currentIdea(view)?.id ?? null, { notes: newest });
+    return { ...ask, did: "The pass is finished; the findings and variants are yours to write." };
+  }
+  const since = z.object({ notes: z.number() }).parse(handoff.detail).notes;
+  const written = live(view.notes).filter(note => (note.kind === "finding" || note.kind === "variant") && parseId("note", note.id) > since);
+  if (!written.length) return { ...ask, did: "Still waiting for the findings and variants." };
+  const variants = written.filter(note => note.kind === "variant").map(note => note.id);
+  context.ledger.logStep(context.projectId, "findings", currentIdea(view)?.id ?? null, { by: "agent", notes: written.map(note => note.id) });
+  return {
+    step: "findings", status: "needs-you", did: `Saved ${written.length - variants.length} finding(s) and ${variants.length} variant(s) from the calling agent.`,
+    next: pickVariant(projectId, variants),
   };
 }
 
@@ -638,14 +707,14 @@ export async function advance(context: LoopContext): Promise<StepResult> {
   const dead = claims.some(claim => claim.status === "killed" && claim.kind !== "feasibility");
   if (dead || !testable.length) {
     const lastFindings = log.last("findings");
-    const lastWork = log.steps.filter(item => item.step !== "findings").at(-1);
+    const lastWork = log.steps.filter(item => item.step !== "findings" && item.step !== "handoff").at(-1);
     if (lastFindings && (!lastWork || lastFindings.id > lastWork.id)) {
       return {
         step: "steer", status: "done", did: "This pass is finished.",
         next: `Accept a variant with: scraply variant accept <note>, or export: scraply export --project ${projectId} --format markdown --out <file>`,
       };
     }
-    return findings(context, view);
+    return context.agentFindings ? handOff(context, view, lastWork?.id ?? 0) : findings(context, view);
   }
   const blocked = log.last("blocked");
   const newest = Math.max(...live(view.notes).filter(note => note.kind === "constraint").map(note => parseId("note", note.id)), 0);
