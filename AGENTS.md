@@ -1,8 +1,10 @@
 # Scraply
 
-Scraply is my own command-line tool for turning a rough seed into an idea that has survived tests against evidence. `scraply` (`src/cli`) keeps an append-only evidence ledger, searches with Exa or Perplexity, and makes model calls through the Rust worker in `runtime/` on my OpenAI subscription. A coding agent can also drive it step by step through the skill in `skills/scraply/SKILL.md`.
+Scraply is my own command-line tool for turning a rough seed into an idea that has survived tests against evidence. `scraply` (`src/cli`) runs the seed-and-kill-test loop (`src/loop`): it thinks through the Rust worker in `runtime/` on my OpenAI subscription, searches with Exa or Perplexity, writes experiments I approve before they run, and records everything in an append-only evidence ledger. A coding agent can run the loop or do the thinking itself through the skill in `skills/scraply/SKILL.md`.
 
-The desktop GUI is gone. Its backend stays: the worker and its client (`src/providers/runtime.ts`), the search providers, and the research pipeline in `src/core`, `src/db`, and `src/backend`. That pipeline generates and ranks ideas, which is the approach I am replacing with the seed-and-kill-test loop; rework it toward the loop, and retire its stages once the loop covers them.
+The method comes from my own experience, written down in `prompts/loop/method.md`: ideas come from my seed plus kill tests against raw evidence, not from generating and ranking ideas. It must work for any kind of seed: a product, a research question, a competition project, or a tool for myself.
+
+The desktop GUI is gone. The older research pipeline in `src/core`, `src/db`, and `src/backend` generates and ranks ideas; the loop replaces it, and its stages are retired once nothing uses them.
 
 Scraply is my personal project. The source is public, but I am its only user: build for me, not for hypothetical users, customers, or installs on other machines. What I tell you in the conversation takes priority over this file.
 
@@ -12,6 +14,7 @@ Scraply is my personal project. The source is public, but I am its only user: bu
 - **Honest results.** A pass can end with nothing surviving or with an inconclusive result; never pad. Failed fetches and searches stay in the record, and unreported usage is unknown, not zero.
 - **Local and private.** Everything stays on my computer, with no telemetry. Keys and the model-account credential live encrypted in `%APPDATA%\scraply\secrets.bin` and never appear in argv, output, or logs; `scraply key set` reads keys from stdin.
 - **Nothing changes silently.** Reading a project never starts a model or search request. A saved model or effort that is no longer available stays visible and blocks work until I replace it; never pick another one for me.
+- **I steer.** The loop stops for my answers, for every experiment script unless I pass `--trust`, and for my choice of variant. It never runs code I have not seen by default, and never swaps my seed for another idea. Experiments run in their own folder with only the environment variables a program needs to start (`src/cli/experiment.ts`), so my keys and tokens never reach model-written code.
 - **One worker.** Model calls go only through a verified `scraply-agent.exe` whose hash and version match its lock file (`src/cli/model.ts` lists where it is looked for). Never substitute another runtime after a failure, and never invoke the Codex CLI.
 
 ## Protect my setup
@@ -67,7 +70,7 @@ Run commands from the checkout you are editing. Scraply is Windows-first. A new 
 - Write tests that check real workflows and behavior, not ones that mirror the implementation or only assert wiring.
 - Run focused tests while working, then `bun run check` before handing off. A few backend workflow tests are timing-sensitive; rerun a failure alone before treating it as real.
 - For a CLI change, run `test/integration/cli.test.ts`, then drive the real commands in an isolated profile. For a change to model calls, make a live call on a synthetic seed and look at what came back.
-- For a change to the method (the skill or the loop), run it end to end on a synthetic seed, have a fresh agent review the result, and report where it got stuck.
+- For a change to the method (the prompts, the loop, or the skill), run `scraply auto` end to end on synthetic seeds of different kinds, read every experiment before approving it, have a fresh agent judge the ideas and the evidence, and report where the loop got stuck or reasoned badly.
 - Report what you exercised, the results, and anything you could not verify.
 
 ## Branches and pull requests
@@ -98,8 +101,9 @@ Keep plans, research notes, transcripts, and scratch files out of the repository
 ## Where code lives
 
 - `src/cli`: the `scraply` commands, the evidence ledger, credentials, and the model session. `skills/scraply`: the skill agents follow.
+- `src/loop`: the seed-and-kill-test loop and its model calls. `prompts/loop`: the method and one work order per step.
 - `src/providers`: the worker client, Exa, and Perplexity. `runtime/`: the Rust worker; `runtime/vendor/openai-codex` is a read-only pinned submodule.
-- `src/core`, `src/db`, `src/backend`, `prompts/`: the older research pipeline, its SQLite storage, and its HTTP server. Their code says `thread` for project and `option` for idea.
+- `src/core`, `src/db`, `src/backend`, `prompts/workflow-v2-*`: the older research pipeline, its SQLite storage, and its HTTP server. Their code says `thread` for project and `option` for idea.
 - `src/shared`: Zod contracts, including the runtime protocol.
 - `scripts/`: worker build and packaging checks, the secret scan, and tracing. `test/`: `unit` and `integration`.
 

@@ -1,0 +1,13 @@
+# Split the idea into claims that could be false
+
+From the seed, the owner's constraints, the framing, and the prior art, state the idea and the claims it rests on.
+
+- **idea:** a short title, and a pitch of two to four sentences that states the thing itself: the product and who it is for, or the prediction and what it beats. Never "test whether": the pitch is what the owner would build or claim if every test passed. Keep the owner's seed at its core, and make it concrete: a named audience, region, dataset, or measure, using the constraints and assumptions. Unless the owner named a particular place, group, or dataset they can reach, make it about the general case, so its claims can be tested from public evidence or with an experiment. When a variant is given, the idea is that variant.
+- **claims:** two to six claims, each one idea only, together covering everything the idea needs to be true. Each has a kind:
+  - **need:** specific people have this problem now, or the question matters to someone specific. Describe them so a reader can tell from what they write publicly whether they belong, such as "people who coordinate a community garden", not by facts no post would state. When the seed is a tool the owner wants for themselves, the seed already establishes the need: write no need claim at all, about the owner or anyone else, and spend the claims on whether it works and beats what exists.
+  - **gap:** the idea beats the strongest thing that already exists for those people or that question: the field's standard method, or the best free tool. Never a conjunction of features nobody else happens to combine.
+  - **mechanism:** the approach would actually work: the signal exists, the method predicts, the design does what it should.
+  - **feasibility:** it can be built and tested with what the owner has.
+
+  Each claim has a **killIf**: one specific, observable result that would make it false, and that a test of reasonable size could actually find. Not a strawman, and not a condition no search could ever meet. Size it to what the cheapest test can observe: for claims about people, what a few targeted searches of first-hand accounts can find, such as fewer than two of them describing it; interviews and trials belong to later rungs unless the owner offered them. For a mechanism or a gap, name the effect size and its uncertainty, and require the held-out data: for example, killed unless the error is lower by at least a stated amount with an interval that excludes zero, on both the development and the held-out data.
+- **reuse:** when a variant is given, the IDs of earlier claims that still apply to it unchanged. Their evidence carries over; do not restate them as new claims.

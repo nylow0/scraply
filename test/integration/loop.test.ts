@@ -1,0 +1,303 @@
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { openLedger, type FetchedSource, type Ledger } from "../../src/cli/ledger";
+import { runCli } from "../../src/cli/main";
+import { renderReport } from "../../src/cli/report";
+import { advance, advanceUntilBlocked, runPendingScript, type LoopContext } from "../../src/loop/engine";
+import type { Step, Think, ThinkRequest } from "../../src/loop/think";
+
+// Synthetic pages: two keepers describe the problem on one forum, a vendor page shows what exists.
+const PAGES: Record<string, FetchedSource> = {
+  "hive record keeping": {
+    url: "https://forum.example/notes", title: "Record keeping", via: "exa", kind: "page",
+    text: "meadowkeeper: By the fourth colony I cannot remember what the first one looked like.\nridgehives: Typing up my dictaphone notes takes longer than the inspection itself.",
+  },
+  "hive apps": {
+    url: "https://shop.example/hivenote", title: "HiveNote", via: "exa", kind: "page",
+    text: "HiveNote records voice notes per hive and costs four dollars a month.",
+  },
+};
+
+let root: string;
+let ledger: Ledger;
+let answers: Partial<Record<Step, unknown[]>>;
+let runs: string[][];
+
+beforeEach(() => {
+  root = mkdtempSync(join(tmpdir(), "scraply-loop-"));
+  ledger = openLedger(join(root, "ledger"));
+  answers = {};
+  runs = [];
+});
+afterEach(async () => {
+  ledger.close();
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    try { rmSync(root, { recursive: true, force: true }); return; }
+    catch { await new Promise(resolve => setTimeout(resolve, 50 * (attempt + 1))); }
+  }
+});
+
+/** A stand-in for the model: each step returns its next scripted answer, checked by the step's own schema. */
+const think: Think = async <T>(request: ThinkRequest<T>) => {
+  const next = answers[request.step]?.shift();
+  if (next === undefined) throw new Error(`No scripted answer for ${request.step}`);
+  return request.schema.parse(next);
+};
+
+function context(overrides: Partial<LoopContext> = {}): LoopContext {
+  return {
+    ledger, projectId: 1, think, workDir: join(root, "work"), resultsPerSearch: 5, tools: ["bun"], trust: false, skipQuestions: false, notify: () => undefined,
+    searchWeb: async query => ({ provider: "exa", sources: PAGES[query] ? [PAGES[query]] : [] }),
+    runCommand: async (command, cwd) => {
+      runs.push([...command, cwd]);
+      return { command: command.join(" "), exitCode: 0, output: "Sanity check passed: the known swarm is detected with 0.92 recall.\nForecaster AUC 0.71 against baseline 0.58 on held-out years.\n[exit code 0]" };
+    },
+    ...overrides,
+  };
+}
+
+const step = async (overrides: Partial<LoopContext> = {}) => advance(context(overrides));
+
+describe("the seed-and-kill-test loop", () => {
+  test("a desk pass goes from seed to a reviewed verdict, findings, and an accepted variant, with the owner steering", async () => {
+    ledger.createProject("hives", "Beekeepers lose track of what they saw in each hive.");
+    answers = {
+      frame: [{ framing: "An inspector would read club forums first.", surveyQueries: ["hive apps"], questions: [{ question: "How many hours a week do you have?", assumption: "Two evenings a week." }] }],
+      survey: [{ priorArt: "HiveNote (S1) already records voice notes.", quotes: [
+        { source: "S1", text: "HiveNote records voice notes per hive and costs four dollars a month.", speaker: "HiveNote", kind: "vendor" },
+        { source: "S1", text: "This sentence is not on the page at all.", speaker: "HiveNote", kind: "vendor" },
+      ] }],
+      split: [{ idea: { title: "Hive voice log", pitch: "Talk while inspecting." }, claims: [{ kind: "need", statement: "Keepers lose per-hive notes.", killIf: "Fewer than two keepers describe it." }], reuse: [] }],
+      design: [{ claim: "C1", why: "Cheapest decisive.", kind: "desk", method: "Read forums.", prediction: "Two keepers describe it.", stopWhen: "One search.", queries: ["hive record keeping"], cuts: [], sanity: null, control: null, holdout: null, needsOwner: null }],
+      read: [{ quotes: [
+        { source: "S2", text: "By the fourth colony I cannot remember what the first one looked like.", speaker: "meadowkeeper", kind: "firsthand", bearing: "for" },
+        { source: "S2", text: "Typing up my dictaphone notes takes longer than the inspection itself.", speaker: "ridgehives", kind: "firsthand", bearing: "for" },
+      ] }],
+      verdict: [{ result: "provisional", quotes: ["Q2", "Q3"], note: "Two keepers describe losing per-hive detail." }],
+      review: [{ result: "upheld", note: "Both are firsthand and from different keepers." }],
+      findings: [{ summary: "The need held; HiveNote exists.", findings: [{ text: "Transcribing is the real chore.", quotes: ["Q3"] }], variants: [{ title: "Transcription only", pitch: "Turn dictaphone notes into per-hive records.", why: "Q3 names it." }] }],
+    };
+
+    expect(await step()).toMatchObject({ step: "frame", status: "continue" });
+    expect(await step()).toMatchObject({ step: "survey", did: expect.stringContaining("saved 1 quote") });
+    // The owner's answer is needed before claims are split.
+    expect(await step()).toMatchObject({ step: "questions", status: "needs-you" });
+    ledger.addNote(1, "constraint", "Two evenings a week.");
+
+    const steps = await advanceUntilBlocked(context(), 20);
+    expect(steps.map(item => item.step)).toEqual(["split", "design", "gather", "read", "verdict", "review", "findings"]);
+    expect(steps.at(-1)).toMatchObject({ status: "needs-you", next: expect.stringContaining("scraply variant accept") });
+    const view = ledger.show(1);
+    expect(view.claims).toMatchObject([{ id: "C1", status: "supported", verdicts: [{ by: "scraply-author", reviews: [{ by: "scraply-reviewer", result: "upheld" }] }] }]);
+    expect(view.ideas).toMatchObject([{ id: "I1", status: "standing" }]);
+    expect(view.notes.filter(note => note.kind === "finding")).toMatchObject([{ quotes: ["Q3"] }]);
+
+    // Nothing more to do until the owner steers; accepting a variant splits it into a new idea that revises the old one.
+    expect(await step()).toMatchObject({ step: "steer", status: "done" });
+    const variant = view.notes.find(note => note.kind === "variant")!;
+    ledger.logStep(1, "accept", variant.id, null);
+    answers.split = [{ idea: { title: "Transcription only", pitch: "Per-hive records from dictaphone notes." }, claims: [{ kind: "mechanism", statement: "Speech can be split by hive name.", killIf: "Under half the notes name a hive." }], reuse: ["C1"] }];
+    expect(await step()).toMatchObject({ step: "split", did: expect.stringContaining("I2") });
+    expect(ledger.show(1).ideas.at(-1)).toMatchObject({ id: "I2", revises: "I1", claims: [{ id: "C1", status: "supported" }, { id: "C2", status: "untested" }] });
+  });
+
+  test("an experiment waits for the owner to read its script, then its run output is the evidence", async () => {
+    ledger.createProject("quakes", "Quakes cluster, so a tiny forecaster beats a baseline.");
+    ledger.logStep(1, "frame", null, { surveyQueries: [] });
+    ledger.logStep(1, "survey", null, { skipped: "test" });
+    answers = {
+      split: [{ idea: { title: "Swarm forecaster", pitch: "Weekly M4+ odds per region." }, claims: [{ kind: "mechanism", statement: "Recent activity predicts next week.", killIf: "AUC under 0.6 on held-out years." }], reuse: [] }],
+      design: [{ claim: "C1", why: "Free catalog.", kind: "experiment", method: "Fit on 2010-2019.", prediction: "AUC above 0.65.", stopWhen: "One run.", queries: [], cuts: ["by magnitude"], sanity: "Detect a known swarm.", control: "Rate-only baseline.", holdout: "2020-2023.", needsOwner: null }],
+      script: [{ files: [{ name: "forecast.ts", content: "console.log('Forecaster AUC 0.71');" }], command: ["bun", "forecast.ts"], explanation: "First attempt." }],
+      read: [{ quotes: [{ source: "S1", text: "Forecaster AUC 0.71 against baseline 0.58 on held-out years.", speaker: "T1 run 1", kind: "measured", bearing: "for" }] }],
+      verdict: [{ result: "provisional", quotes: ["Q1"], note: "The forecaster beats the baseline on held-out years and the sanity check passed." }],
+      review: [{ result: "upheld", note: "Sanity, control, and holdout are all reported." }],
+      findings: [{ summary: "The forecaster held on held-out years.", findings: [], variants: [{ title: "Benchmark", pitch: "Compare with the published operational forecast.", why: "Next rung." }] }],
+    };
+    const before = await advanceUntilBlocked(context(), 10);
+    expect(before.map(item => item.step)).toEqual(["split", "design", "script"]);
+    expect(before.at(-1)).toMatchObject({ status: "needs-you", next: expect.stringContaining("scraply experiment approve") });
+    expect(ledger.show(1).claims[0]!.tests[0]).toMatchObject({ kind: "experiment", sanity: "Detect a known swarm.", control: "Rate-only baseline.", holdout: "2020-2023." });
+    const scriptPath = join(root, "work", "T1", "attempt-1", "forecast.ts");
+    expect(readFileSync(scriptPath, "utf8")).toContain("Forecaster AUC");
+    expect(await step()).toMatchObject({ step: "approve", status: "needs-you" });
+    expect(runs).toHaveLength(0);
+
+    expect(await runPendingScript(context(), "T1")).toMatchObject({ step: "run", did: expect.stringContaining("S1") });
+    expect(runs[0]!.slice(0, 2)).toEqual(["bun", "forecast.ts"]);
+    const reviewInputs: unknown[] = [];
+    const after = await advanceUntilBlocked(context({ think: async request => { if (request.step === "review") reviewInputs.push(request.inputs); return think(request); } }), 10);
+    expect(after.map(item => item.step)).toEqual(["read", "verdict", "review", "findings"]);
+    // The reviewer sees the program behind the cited run, so a printed constant cannot pass as a measurement.
+    expect(reviewInputs[0]).toMatchObject({ experimentRuns: [{ run: "S1", exitCode: 0, files: [{ name: "forecast.ts", content: expect.stringContaining("Forecaster AUC") }] }] });
+    expect(ledger.show(1).claims[0]).toMatchObject({ status: "supported" });
+    // The report shows what the experiment declared before running, and each run with its command and exit code.
+    const report = renderReport(ledger.exportProject(1));
+    for (const line of ["**T1** (experiment)", "Sanity check: Detect a known swarm.", "Held out: 2020-2023.", "S1 run of T1: `bun forecast.ts`, exit code 0"]) expect(report).toContain(line);
+  });
+
+  test("a run that exits cleanly but fails its sanity check is a failed run: the model sees it and writes a fixed script", async () => {
+    ledger.createProject("quakes", "Anything.");
+    ledger.logStep(1, "frame", null, { surveyQueries: [] });
+    ledger.logStep(1, "survey", null, { skipped: "test" });
+    let attempt = 0;
+    const flaky = context({
+      trust: true,
+      runCommand: async command => {
+        attempt += 1;
+        return attempt === 1
+          ? { command: command.join(" "), exitCode: 0, output: "Sanity check failed: the known swarm was not flagged.\nTypeError: catalog is undefined\n[exit code 0]" }
+          : { command: command.join(" "), exitCode: 0, output: "Sanity check passed and the forecaster scored AUC 0.52, no better than the baseline.\n[exit code 0]" };
+      },
+    });
+    answers = {
+      split: [{ idea: { title: "Forecaster", pitch: "Odds." }, claims: [{ kind: "mechanism", statement: "It beats the baseline.", killIf: "AUC under 0.6." }], reuse: [] }],
+      design: [{ claim: "C1", why: "Free data.", kind: "experiment", method: "Fit.", prediction: "AUC above 0.65.", stopWhen: "One run.", queries: [], cuts: [], sanity: "Known swarm.", control: "Baseline.", holdout: "2020-2023.", needsOwner: null }],
+      script: [
+        { files: [{ name: "a.ts", content: "x" }], command: ["bun", "a.ts"], explanation: "First." },
+        { files: [{ name: "a.ts", content: "y" }], command: ["bun", "a.ts"], explanation: "Load the catalog before using it." },
+      ],
+      read: [{ quotes: [{ source: "S2", text: "Sanity check passed and the forecaster scored AUC 0.52, no better than the baseline.", speaker: "T1 run 2", kind: "measured", bearing: "against" }] }],
+      verdict: [{ result: "killed", quotes: ["Q1"], note: "The held-out score is below the kill threshold." }],
+      review: [{ result: "upheld", note: "The output shows it." }],
+      findings: [{ summary: "Dead.", findings: [], variants: [] }],
+    };
+    const scriptInputs: unknown[] = [];
+    const steps = await advanceUntilBlocked({ ...flaky, think: async request => { if (request.step === "script") scriptInputs.push(request.inputs); return think(request); } }, 20);
+    expect(steps.map(item => item.step)).toEqual(["split", "design", "script", "run", "script", "run", "read", "verdict", "review", "findings"]);
+    // The fix starts from the code that failed and what it printed.
+    expect(scriptInputs[1]).toMatchObject({ earlierAttempts: [{ exitCode: 0, files: [{ name: "a.ts", content: "x" }], outputTail: expect.stringContaining("Sanity check failed") }] });
+    expect(existsSync(join(root, "work", "T1", "attempt-2", "a.ts"))).toBe(true);
+    expect(ledger.show(1)).toMatchObject({ claims: [{ status: "killed" }], ideas: [{ status: "dead" }], sources: [{ exitCode: 0 }, { exitCode: 0 }] });
+    expect(steps.at(-1)).toMatchObject({ status: "needs-you", next: expect.stringContaining("Nothing points to a variant") });
+  });
+
+  test("a verdict the ledger refuses is asked again with the refusal, recorded as unclear, reviewed, and the claim gets one more test", async () => {
+    ledger.createProject("hives", "Anything.");
+    ledger.logStep(1, "frame", null, { surveyQueries: [] });
+    ledger.logStep(1, "survey", null, { skipped: "test" });
+    answers = {
+      split: [{ idea: { title: "Log", pitch: "Notes." }, claims: [{ kind: "need", statement: "Keepers lose notes.", killIf: "Fewer than two say so." }], reuse: [] }],
+      design: [
+        { claim: "C1", why: "Cheap.", kind: "desk", method: "Read.", prediction: "Two say so.", stopWhen: "One search.", queries: ["hive record keeping"], cuts: [], sanity: null, control: null, holdout: null, needsOwner: null },
+        { claim: "C1", why: "Retry with another venue.", kind: "desk", method: "Read club newsletters.", prediction: "Two say so.", stopWhen: "One search.", queries: ["hive apps"], cuts: [], sanity: null, control: null, holdout: null, needsOwner: null },
+      ],
+      read: [{ quotes: [{ source: "S1", text: "By the fourth colony I cannot remember what the first one looked like.", speaker: "meadowkeeper", kind: "firsthand", bearing: "for" }] }],
+      verdict: [
+        { result: "provisional", quotes: ["Q1"], note: "One keeper says so." },
+        { result: "provisional", quotes: ["Q1"], note: "Still one keeper." },
+      ],
+      review: [{ result: "upheld", note: "One keeper is not enough either way." }],
+    };
+    const prompts: unknown[] = [];
+    const watched = context({ think: async request => { if (request.step === "verdict") prompts.push(request.inputs); return think(request); } });
+    const steps = await advanceUntilBlocked(watched, 7);
+    expect(steps.map(item => item.step)).toEqual(["split", "design", "gather", "read", "verdict", "review", "design"]);
+    // The verdict sees what this test gathered, with each quote's bearing, and how much work the test did.
+    expect(prompts[0]).toMatchObject({ workDone: { searchesRun: 1, sourcesRead: 1, quotesSaved: 1 }, quotesFromThisTest: [{ id: "Q1", bearing: "for", newSinceTest: true }], earlierQuotes: [] });
+    expect(prompts[1]).toMatchObject({ previousRefusal: expect.stringContaining("ONE_SPEAKER") });
+    expect(ledger.show(1).claims[0]).toMatchObject({ verdicts: [{ result: "unclear", note: expect.stringContaining("ONE_SPEAKER") }], tests: [{ id: "T1" }, { id: "T2", method: "Read club newsletters." }] });
+  });
+
+  test("skipping the framing questions records the stated assumptions as constraints, so the work never stalls on them", async () => {
+    ledger.createProject("quakes", "Quakes cluster.");
+    answers = {
+      frame: [{ framing: "A seismologist would query the catalog.", surveyQueries: [], questions: [
+        { question: "Which region?", assumption: "California, 2015 to 2024." },
+        { question: "How much time?", assumption: "A few evenings." },
+      ] }],
+    };
+    await step();
+    await step();
+    expect(await step()).toMatchObject({ step: "questions", status: "needs-you", next: expect.stringContaining("--skip-questions") });
+    answers.split = [{ idea: { title: "Forecaster", pitch: "California weekly odds." }, claims: [{ kind: "mechanism", statement: "Clustering predicts.", killIf: "No lift." }], reuse: [] }];
+    expect(await step({ skipQuestions: true })).toMatchObject({ step: "split" });
+    expect(ledger.show(1).notes.filter(note => note.kind === "constraint").map(note => note.text)).toEqual([
+      "Assumed, because the owner went on without answering: California, 2015 to 2024.",
+      "Assumed, because the owner went on without answering: A few evenings.",
+    ]);
+  });
+
+  test("a test that needs the owner stops and asks, waits without calling the model, and resumes once they provide it", async () => {
+    ledger.createProject("gardens", "Gardens struggle to coordinate watering.");
+    ledger.logStep(1, "frame", null, { surveyQueries: [] });
+    ledger.logStep(1, "survey", null, { skipped: "test" });
+    const design = { claim: "C1", why: "Only the garden's own log shows it.", kind: "desk", method: "", prediction: "", stopWhen: "", queries: [], cuts: [], sanity: null, control: null, holdout: null, needsOwner: null };
+    answers = {
+      split: [{ idea: { title: "Rota", pitch: "Shared rota." }, claims: [{ kind: "need", statement: "Holiday handoffs fail.", killIf: "No missed watering in a season." }], reuse: [] }],
+      design: [
+        // A desk test with no queries is refused and asked again; the second answer says what only the owner can give.
+        { ...design, method: "Read.", prediction: "Some.", stopWhen: "One." },
+        { ...design, needsOwner: "Last summer's watering log from a garden you can reach." },
+        { ...design, kind: "desk", method: "Count missed days in the owner's log.", prediction: "At least three.", stopWhen: "One log read.", queries: ["community garden watering rota missed"] },
+      ],
+    };
+    const calls: string[] = [];
+    const counting = context({ think: async request => { calls.push(request.step); return think(request); } });
+    expect((await advanceUntilBlocked(counting, 5)).at(-1)).toMatchObject({ step: "design", status: "needs-you", did: expect.stringContaining("watering log") });
+    expect(calls).toEqual(["split", "design", "design"]);
+    expect(ledger.show(1).claims[0]!.tests).toHaveLength(0);
+
+    expect(await advance(counting)).toMatchObject({ status: "needs-you", did: expect.stringContaining("Still waiting") });
+    expect(calls).toHaveLength(3);
+    ledger.addNote(1, "constraint", "I can get the log from my own garden next week; use public forum posts until then.");
+    expect(await advance(counting)).toMatchObject({ step: "design", status: "continue", did: expect.stringContaining("T1") });
+  });
+
+  test("a claim that still needs the owner after they said they cannot help is set aside, and the loop tests what it can", async () => {
+    ledger.createProject("gardens", "Gardens struggle to coordinate watering.");
+    ledger.logStep(1, "frame", null, { surveyQueries: [] });
+    ledger.logStep(1, "survey", null, { skipped: "test" });
+    const blank = { kind: "desk", method: "", prediction: "", stopWhen: "", queries: [], cuts: [], sanity: null, control: null, holdout: null };
+    answers = {
+      split: [{ idea: { title: "Rota", pitch: "Shared rota." }, claims: [
+        { kind: "need", statement: "Coordinators struggle.", killIf: "Fewer than two describe it." },
+        { kind: "mechanism", statement: "A rota cuts missed turns.", killIf: "No drop in a trial." },
+      ], reuse: [] }],
+      design: [
+        { ...blank, claim: "C2", why: "Decisive.", needsOwner: "A garden willing to trial the rota." },
+        { ...blank, claim: "C2", why: "Still decisive.", needsOwner: "A garden willing to trial the rota." },
+        { ...blank, claim: "C1", why: "Public accounts can test it.", method: "Read forums.", prediction: "Two describe it.", stopWhen: "One search.", queries: ["hive record keeping"], needsOwner: null },
+      ],
+    };
+    expect((await advanceUntilBlocked(context(), 5)).at(-1)).toMatchObject({ status: "needs-you" });
+    ledger.addNote(1, "constraint", "I cannot reach any garden.");
+    const steps = await advanceUntilBlocked(context(), 2);
+    expect(steps).toMatchObject([
+      { step: "design", status: "continue", did: expect.stringContaining("Set C2 aside") },
+      { step: "design", status: "continue", did: expect.stringContaining("T1 for C1") },
+    ]);
+  });
+
+  test("experiment files may live in subfolders but never outside their attempt folder", async () => {
+    ledger.createProject("quakes", "Anything.");
+    ledger.logStep(1, "frame", null, { surveyQueries: [] });
+    ledger.logStep(1, "survey", null, { skipped: "test" });
+    const experiment = { claim: "C1", why: "Data.", kind: "experiment", method: "Fit.", prediction: "Lift.", stopWhen: "One run.", queries: [], cuts: [], sanity: "Known event.", control: "Baseline.", holdout: "Later years.", needsOwner: null };
+    answers = {
+      split: [{ idea: { title: "Forecaster", pitch: "Odds." }, claims: [{ kind: "mechanism", statement: "It beats the baseline.", killIf: "No lift." }], reuse: [] }],
+      design: [experiment],
+      script: [
+        { files: [{ name: "../escape.ts", content: "x" }], command: ["bun", "a.ts"], explanation: "Bad." },
+        { files: [{ name: "lib/data.ts", content: "export {}" }, { name: "a.ts", content: "import './lib/data.ts'" }], command: ["bun", "a.ts"], explanation: "Good." },
+      ],
+    };
+    await advance(context());
+    await advance(context());
+    await expect(advance(context())).rejects.toThrow("outside its folder");
+    expect(existsSync(join(root, "work", "T1", "escape.ts"))).toBe(false);
+    expect(await advance(context())).toMatchObject({ step: "script", status: "needs-you" });
+    expect(existsSync(join(root, "work", "T1", "attempt-1", "lib", "data.ts"))).toBe(true);
+  });
+
+  test("next refuses to run without a chosen model, and never picks one", async () => {
+    let output = "";
+    const env = { APPDATA: join(root, "appdata"), SCRAPLY_DATA_DIR: join(root, "cli") };
+    await runCli(["project", "new", "x", "--seed", "Anything."], { write: () => undefined, notify: () => undefined, isTTY: false, env });
+    const exitCode = await runCli(["next", "--project", "P1"], { write: text => { output += text; }, notify: () => undefined, isTTY: false, env });
+    expect(exitCode).toBe(1);
+    expect(JSON.parse(output)).toMatchObject({ error: { code: "NO_MODEL", message: expect.stringContaining("scraply config model") } });
+  });
+});

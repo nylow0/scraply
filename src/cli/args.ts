@@ -13,6 +13,8 @@ export interface PositionalDefinition {
   name: string;
   description: string;
   required?: boolean;
+  /** The last positional may take every remaining word, such as a command after `--`. */
+  variadic?: boolean;
 }
 
 export interface CommandArguments {
@@ -51,7 +53,7 @@ export function listFlag(args: CommandArguments, name: string): string[] {
 
 export function commandUsage(command: CommandShape): string {
   return ["scraply", ...command.path,
-    ...(command.positionals ?? []).map(arg => arg.required ? `<${arg.name}>` : `[${arg.name}]`),
+    ...(command.positionals ?? []).map(arg => arg.variadic ? `-- <${arg.name}...>` : arg.required ? `<${arg.name}>` : `[${arg.name}]`),
     ...(command.flags ?? []).filter(flag => flag.required).map(flag => `--${flag.name} <${flag.name}>`)].join(" ");
 }
 
@@ -109,7 +111,7 @@ export function parseArguments<T extends CommandShape>(argv: readonly string[], 
   }
   const positionals = path.slice(command!.path.length);
   const expected = command!.positionals ?? [];
-  if (positionals.length > expected.length) throw new CliError("USAGE", `Too many arguments. Usage: ${commandUsage(command!)}`, 2);
+  if (positionals.length > expected.length && !expected.at(-1)?.variadic) throw new CliError("USAGE", `Too many arguments. Usage: ${commandUsage(command!)}`, 2);
   expected.forEach((arg, index) => {
     if (arg.required && !positionals[index]) throw new CliError("USAGE", `Missing ${arg.name}. Usage: ${commandUsage(command!)}`, 2);
   });

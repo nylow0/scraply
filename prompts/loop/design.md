@@ -1,0 +1,22 @@
+# Design the next test
+
+Choose the cheapest decisive claim among the open ones: the claim whose failure would kill the most of the idea for the least work. Then write its test before any evidence for it is gathered.
+
+- **claim:** its ID.
+- **why:** one or two sentences on why this claim, and why this kind of test.
+- **kind:** `desk` reads what people say and what exists. `experiment` runs code: it downloads data, queries an API, runs an existing tool, builds a prototype, or measures. Any test that needs to touch data or a system is an experiment, even for a feasibility claim; reading documentation about a dataset never shows what the dataset actually contains. Use an experiment only when the listed tools can run it and the data or system is reachable from this machine without accounts the owner has not given.
+- **method:** exactly what will be looked at or run, and how. The test must probe the mechanism the claim names, where it should be strongest, not a convenient proxy:
+  - Choose the population, region, horizon, or sample where the claimed effect should be largest, and make sure it contains positive cases. State the expected base rate of the outcome in that sample. A sample that cannot show the effect, such as a region where the event happens almost every week or a list of survivors when the claim is about failures, is a proxy; pick another.
+  - Prefer labelled public data named in the survey or the prior art, such as a published list of known failures to compare against matched successes.
+  - When the mechanism can be tested now, test it, and let its sanity check prove feasibility; a separate feasibility audit is for when the mechanism test cannot run yet.
+  - A gap is tested head-to-head against the strongest thing that already exists: the field's standard method for a research question, the best free tool for a product.
+- **prediction:** what you expect to find, with a number or threshold.
+- **stopWhen:** what ends the test: the number of searches, sources read in full, distinct speakers, or runs. Keep it small, the first rung of the ladder, and within **searchBudget**: a desk test reads at most the results its queries return. The test must finish today (see **today**): use data that already exists, never a forecast or trial that only resolves in the future.
+- **A test must be able to kill.** Write it so that a finished test which finds too little meets the kill condition. A rule that turns a negative result into "inconclusive", such as requiring a minimum number of accounts before anything counts, makes the claim unkillable; leave it out.
+- **For a desk test, queries:** one to five searches, each written as the page you hope to find, aimed at the venues where these people speak first-hand (forums, Reddit, Hacker News, GitHub issues, mailing lists, group posts) or at primary records. Include at least one that looks for evidence against the claim. Keyword strings return vendor pages.
+- **For an experiment, sanity, control, holdout, and cuts:**
+  - **sanity:** a known answer from the domain the setup must reproduce before its result counts, such as a famous event the method must flag or a package everyone knows is dead. Checking that arithmetic or an API agrees with itself only tests the plumbing.
+  - **control:** what the result is compared against: a placebo (the same measurement where the effect should not exist), a baseline, or the existing method.
+  - **holdout:** data kept aside, untouched until the end, to replicate a result before it is believed.
+  - **cuts:** three to six secondary measurements, named now, that the same run reports on the same split. At least one is a strongest-case stratum, such as the effect by trigger size, by time since an event, by region size, or for the most extreme cases; calendar periods alone rarely reveal anything. A surviving signal can only show up in something that was measured.
+- **needsOwner:** null, unless the decisive test needs something only the owner can provide: access to particular people or a particular place, their own records, a survey, or an account. Then say exactly what is needed and why, and leave the rest of the test empty; the loop stops and asks. Before setting it, look for a public stand-in: people in the same role posting first-hand, open records, or an experiment.

@@ -18,7 +18,7 @@ export function renderReport(project: ProjectExport): string {
 
   if (project.notes.length) {
     lines.push("## Notes", "");
-    for (const note of project.notes) lines.push(`- **${note.id}** ${note.kind}: ${note.text}${retractedMark(note)}`);
+    for (const note of project.notes) lines.push(`- **${note.id}** ${note.kind}: ${note.text}${note.quotes ? ` (${note.quotes.join(", ")})` : ""}${retractedMark(note)}`);
     lines.push("");
   }
 
@@ -36,7 +36,8 @@ export function renderReport(project: ProjectExport): string {
   for (const claim of project.claims) {
     lines.push(`### ${claim.id} (${claim.kind}): ${claim.status}${retractedMark(claim)}`, "", claim.statement, "", `**Kill if:** ${claim.killIf}`, "");
     for (const test of claim.tests) {
-      lines.push(`- **${test.id}**, written ${test.predictedAt}${retractedMark(test)}`, `  - Method: ${test.method}`, `  - Prediction: ${test.prediction}`, `  - Stops when: ${test.stopWhen}`);
+      lines.push(`- **${test.id}** (${test.kind}), written ${test.predictedAt}${retractedMark(test)}`, `  - Method: ${test.method}`, `  - Prediction: ${test.prediction}`, `  - Stops when: ${test.stopWhen}`);
+      if (test.kind === "experiment") lines.push(`  - Sanity check: ${test.sanity}`, `  - Control: ${test.control}`, `  - Held out: ${test.holdout}`);
     }
     if (claim.tests.length) lines.push("");
     for (const verdict of claim.verdicts) {
@@ -60,7 +61,9 @@ export function renderReport(project: ProjectExport): string {
   lines.push("", "## Sources", "");
   for (const source of project.sources) {
     const state = source.status === "ok" ? `${source.chars} chars${source.truncated ? ", truncated" : ""}` : `failed: ${source.error}`;
-    lines.push(`- ${source.id} [${source.title ?? source.url}](${source.url}), ${source.kind} via ${source.via}, ${state}`);
+    lines.push(source.command
+      ? `- ${source.id} run of ${source.test}: \`${source.command}\`, exit code ${source.exitCode}, ${state}`
+      : `- ${source.id} [${source.title ?? source.url}](${source.url}), ${source.kind} via ${source.via}, ${state}`);
   }
   return `${lines.join("\n").replace(/\n{3,}/g, "\n\n").trim()}\n`;
 }

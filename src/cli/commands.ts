@@ -3,13 +3,15 @@ import { basename, dirname, join, resolve } from "node:path";
 import { commandUsage, globalFlags, listFlag, requiredFlag, stringFlag, type CommandArguments, type CommandShape } from "./args";
 import { availableProviders, openSecrets, searchKey, type SearchProvider } from "./credentials";
 import {
-  CLAIM_KINDS, FILE_ORIGINS, MAX_SOURCE_CHARS, NOTE_KINDS, QUOTE_KINDS, RETRACTABLE, REVIEW_RESULTS, VERDICT_RESULTS,
+  CLAIM_KINDS, FILE_ORIGINS, MAX_SOURCE_CHARS, NOTE_KINDS, QUOTE_KINDS, RETRACTABLE, REVIEW_RESULTS, TEST_KINDS, VERDICT_RESULTS,
   parseAnyId, parseId, type Ledger,
 } from "./ledger";
 import { desktopDatabasePath, exportDesktopProjects } from "./legacy";
 import { MODEL_PROVIDER, connectedModels, findRuntime, type ModelSession } from "./model";
 import { CliError } from "./output";
 import { fetchDirect, fetchViaExa, search } from "./pages";
+import { loopCommands } from "../loop/commands";
+import { runExperimentCommand } from "./experiment";
 import { renderReport } from "./report";
 
 export interface CommandContext {
@@ -45,7 +47,7 @@ function pick<T extends string>(value: string, choices: readonly T[]): T {
 const project = (args: CommandArguments) => parseId("project", requiredFlag(args, "project"));
 const projectFlag = { name: "project", type: "string", required: true, description: "Project ID." } as const;
 
-export const commands: readonly Command[] = [
+const ledgerCommands: readonly Command[] = [
   {
     path: ["status"],
     description: "Show the ledger folder, which search providers have a key, whether a model account is saved, and whether the model worker and the desktop app's database exist.",
@@ -174,13 +176,16 @@ export const commands: readonly Command[] = [
   },
   {
     path: ["note", "add"],
-    description: "Record a constraint from the user, expert framing, or prior art. Notes are context, never evidence.",
+    description: "Record a note. Notes are context, never evidence; a finding must cite the quotes it rests on.",
     flags: [
       projectFlag,
-      { name: "kind", type: "string", required: true, choices: NOTE_KINDS, description: "constraint (from the user; reviewers see it), framing, or prior-art." },
+      { name: "kind", type: "string", required: true, choices: NOTE_KINDS, description: "constraint (from the user; reviewers see it), framing, prior-art, question (for the user), finding (what the evidence showed; needs --quote), or variant (a proposed next version of the seed)." },
       { name: "text", type: "string", required: true, description: "The note." },
+      { name: "quote", type: "string", multiple: true, description: "A quote ID the note rests on. Repeat for each." },
     ],
-    run: (context, args) => context.ledger().addNote(project(args), pick(requiredFlag(args, "kind"), NOTE_KINDS), requiredFlag(args, "text")),
+    run: (context, args) => context.ledger().addNote(
+      project(args), pick(requiredFlag(args, "kind"), NOTE_KINDS), requiredFlag(args, "text"), listFlag(args, "quote").map(id => parseId("quote", id)),
+    ),
   },
   {
     path: ["search"],
@@ -292,16 +297,42 @@ export const commands: readonly Command[] = [
   },
   {
     path: ["test", "add"],
-    description: "Write down how a claim will be tested, the predicted outcome, and when the test stops, before looking.",
+    description: "Write down how a claim will be tested, the predicted outcome, and when the test stops, before looking. An experiment also declares its sanity check, control, and held-out data.",
     flags: [
       { name: "claim", type: "string", required: true, description: "Claim ID." },
-      { name: "method", type: "string", required: true, description: "What you will look at and how." },
+      { name: "method", type: "string", required: true, description: "What you will look at or run, and how." },
       { name: "prediction", type: "string", required: true, description: "What you expect to find, as a number or threshold where you can." },
-      { name: "stop-when", type: "string", required: true, description: "The sample size or limit that ends the test, such as: 15 threads read or 3 searches." },
+      { name: "stop-when", type: "string", required: true, description: "The sample size or limit that ends the test, such as: 15 threads read, 3 searches, or one run over 200 sites." },
+      { name: "kind", type: "string", choices: TEST_KINDS, description: "desk (default: read what exists and what people say) or experiment (run something and measure)." },
+      { name: "sanity", type: "string", description: "Experiment: a known answer the setup must reproduce before its result counts." },
+      { name: "control", type: "string", description: "Experiment: what the result is compared against: a placebo, a baseline, or the existing method." },
+      { name: "holdout", type: "string", description: "Experiment: data kept aside to replicate a result before it is believed." },
     ],
-    run: (context, args) => context.ledger().addTest(
-      parseId("claim", requiredFlag(args, "claim")), requiredFlag(args, "method"), requiredFlag(args, "prediction"), requiredFlag(args, "stop-when"),
-    ),
+    run: (context, args) => {
+      const optional = (name: string) => { const value = stringFlag(args, name); return value === undefined ? {} : { [name]: value }; };
+      return context.ledger().addTest(parseId("claim", requiredFlag(args, "claim")), {
+        method: requiredFlag(args, "method"), prediction: requiredFlag(args, "prediction"), stopWhen: requiredFlag(args, "stop-when"),
+        kind: pick(stringFlag(args, "kind") ?? "desk", TEST_KINDS), ...optional("sanity"), ...optional("control"), ...optional("holdout"),
+      });
+    },
+  },
+  {
+    path: ["experiment", "run"],
+    description: "Run an experiment's command and save everything it prints as a source tied to the test, so its output can be quoted as evidence.",
+    positionals: [{ name: "command", description: "The command and its arguments, after --.", required: true, variadic: true }],
+    flags: [
+      { name: "test", type: "string", required: true, description: "The experiment test this run answers." },
+      { name: "cwd", type: "string", description: "Folder to run in (default: the current folder)." },
+      { name: "timeout-minutes", type: "number", description: "Stop the command after this long (default 30)." },
+    ],
+    run: async (context, args) => {
+      const testId = parseId("test", requiredFlag(args, "test"));
+      const minutes = Number(stringFlag(args, "timeout-minutes") ?? 30);
+      const run = await runExperimentCommand(args.positionals, {
+        cwd: resolve(stringFlag(args, "cwd") ?? "."), timeoutMs: Math.max(1, minutes) * 60_000, env: context.env, notify: context.notify,
+      });
+      return { ...context.ledger().saveRun(testId, run), next: "Read the output with: scraply source show <id>, then quote what it measured." };
+    },
   },
   {
     path: ["verdict", "add"],
@@ -401,6 +432,9 @@ export const commands: readonly Command[] = [
     run: (context, args) => exportDesktopProjects(context.profileDir, resolve(stringFlag(args, "out") ?? join(context.profileDir, "desktop-export"))),
   },
 ];
+
+/** Every command: the ledger and search commands an agent can drive by hand, and the loop that drives them with the model. */
+export const commands: readonly Command[] = [...ledgerCommands, ...loopCommands];
 
 export function describeCommands(prefix: readonly string[]) {
   return {
