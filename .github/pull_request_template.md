@@ -1,6 +1,6 @@
 ## Change
 
-Describe the user-visible result and why it was needed.
+Describe what changed and why it was needed.
 
 ## Verification
 
@@ -11,4 +11,4 @@ Describe the user-visible result and why it was needed.
 
 ## Review notes
 
-Call out data migrations, provider calls, changed release behavior, or an intentionally separate follow-up. Keep logs and examples redacted.
+Call out data migrations, provider calls, or an intentionally separate follow-up. Keep logs and examples redacted.
