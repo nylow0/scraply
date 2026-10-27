@@ -12,27 +12,25 @@
     "esModuleInterop": true,
     "resolveJsonModule": true,
     "isolatedModules": true,
-    "types": ["bun-types", "node"],
+    "types": [
+      "bun-types",
+      "node"
+    ],
     "baseUrl": ".",
     "paths": {
-      "@shared/*": ["src/shared/*"]
+      "@shared/*": [
+        "src/shared/*"
+      ]
     }
   },
   "include": [
-    "src/main/**/*",
-    "src/preload/**/*",
-    "src/backend/**/*",
-    "src/cli/**/*",
-    "src/core/**/*",
-    "src/db/**/*",
-    "src/providers/**/*",
-    "src/research/**/*",
-    "src/shared/**/*",
+    "src/**/*",
     "test/**/*",
     "scripts/**/*.ts",
-    "runtime/tests/**/*.ts",
-    "electron.vite.config.ts",
-    "vitest.config.ts"
+    "runtime/tests/**/*.ts"
   ],
-  "exclude": ["node_modules", "out", "release", "archive/**/*", "test/renderer/**/*"]
+  "exclude": [
+    "node_modules",
+    "build"
+  ]
 }

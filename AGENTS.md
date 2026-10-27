@@ -1,66 +1,39 @@
 # Scraply
 
-Scraply is my own tool for finding real problems and turning them into business ideas I can check against evidence. It searches the web with Exa or Perplexity, extracts quoted observations, synthesizes candidate problems, generates ideas, and reviews them independently. Everything it makes lives in SQLite on my machine.
+Scraply is my own command-line tool for turning a rough seed into an idea that has survived tests against evidence. `scraply` (`src/cli`) keeps an append-only evidence ledger, searches with Exa or Perplexity, and makes model calls through the Rust worker in `runtime/` on my OpenAI subscription. A coding agent can also drive it step by step through the skill in `skills/scraply/SKILL.md`.
 
-It is an Electron app with a Svelte 5 renderer, a TypeScript backend, and a small Rust worker that makes every model call.
-
-The `scraply` CLI in `src/cli` is replacing the app. An agent calls it through the skill in `skills/scraply/SKILL.md` and does all the thinking itself; the CLI makes no model calls. It searches, saves what it fetched, and keeps an append-only evidence ledger whose rules live in `src/cli/ledger.ts`. The app, its pipeline, and the Rust worker will be removed once the CLI covers my work; `scraply legacy export` (`src/cli/legacy.ts`) runs the app's own exporters over a snapshot of its database so my desktop projects leave with it.
+The desktop GUI is gone. Its backend stays: the worker and its client (`src/providers/runtime.ts`), the search providers, and the research pipeline in `src/core`, `src/db`, and `src/backend`. That pipeline generates and ranks ideas, which is the approach I am replacing with the seed-and-kill-test loop; rework it toward the loop, and retire its stages once the loop covers them.
 
 Scraply is my personal project. The source is public, but I am its only user: build for me, not for hypothetical users, customers, or installs on other machines. What I tell you in the conversation takes priority over this file.
 
 ## Product rules
 
-- **Evidence.** Every factor traces to a saved source quote. Generated text is never evidence, and model confidence is not calibrated. A problem is confirmed by two independent firsthand or measured accounts from the people the brief describes, or from people in a close role doing the same task.
-- **Honest results.** A run can finish with a partial set or zero ideas; never pad the count.
-- **Local and private.** Projects stay on my computer, with no telemetry. Credentials are encrypted with Windows `safeStorage`, and the renderer only sees account status and masked key tails. Remote pages never get Electron privileges.
-- **Depth-guided work.** Depth guides how broad and thorough new research is. Research calls have per-stage time limits in `src/core/workflow-execution.ts`.
-- **My saved work stays readable.** My existing projects keep opening and exporting. Stored values outlive UI renames: Controlled mode is still stored as `babysit`.
-- **Nothing starts or changes silently.** Reopening a project reads saved state and never starts a model or search request. A saved model or reasoning effort that is no longer available stays visible and blocks a new run until I replace it; never pick another one for me. Ideas keep pointing to the evidence snapshot they were made from, so applying new research never rewrites them.
-- **Search providers.** Quick, Standard, and Deep are Scraply workflow settings, not provider modes. Exa uses `auto` search, and Perplexity uses its Search API with a 2,000-token page extraction limit. A search key cannot change while research runs, because applying it rebuilds the research engine and would cancel the run. A key set in the launch environment overrides the saved one and cannot be edited in the app.
-- **One worker.** The app runs only the verified worker packaged at `resources/runtime/scraply-agent.exe`. Production never searches `PATH` or substitutes another runtime after a failure, and Scraply never packages or invokes the Codex CLI.
-
-## Terms
-
-The UI and the code sometimes use different names.
-
-| UI | Code | Meaning |
-| --- | --- | --- |
-| project | `thread` | One research workspace. |
-| brief, scope | `brief`, `scope` | The setup text, audience, boundaries, and risk criteria. |
-| run | workflow session | One launched workflow with a `purpose`, `mode`, `state`, and `outcome` (`src/shared/workflow-contracts.ts`). |
-| Vibe | `vibe` | Runs research, selection, generation, and review on its own. |
-| Controlled | `babysit` | Stops after research for my review. |
-| stage | stage | One model step: a prompt in `prompts/workflow-v2-*.md` and an output schema, registered in `src/core/stages.ts`. |
-| factor | factor | One quoted observation extracted from a source. |
-| problem, finding | problem candidate | A problem synthesized from factors, then kept or killed by an independent review. |
-| evidence snapshot | snapshot | The research generation uses. A follow-up changes it only when I apply the result. |
-| idea | `option` | A proposed solution. A rethink creates a linked version. |
-| family | opportunity | One distinct business. Variants and duplicates join a family and do not count toward the target. |
-| focused experiment | focused experiment | A test of one assumption with a metric, a declared range, and pass/fail thresholds. |
+- **Evidence.** A verdict rests on quotes saved verbatim from pages or outputs Scraply captured. Generated text is never evidence, and model confidence is not calibrated. The ledger's rules live in `src/cli/ledger.ts`; enforce a rule there rather than trusting an instruction.
+- **Honest results.** A pass can end with nothing surviving or with an inconclusive result; never pad. Failed fetches and searches stay in the record, and unreported usage is unknown, not zero.
+- **Local and private.** Everything stays on my computer, with no telemetry. Keys and the model-account credential live encrypted in `%APPDATA%\scraply\secrets.bin` and never appear in argv, output, or logs; `scraply key set` reads keys from stdin.
+- **Nothing changes silently.** Reading a project never starts a model or search request. A saved model or effort that is no longer available stays visible and blocks work until I replace it; never pick another one for me.
+- **One worker.** Model calls go only through a verified `scraply-agent.exe` whose hash and version match its lock file (`src/cli/model.ts` lists where it is looked for). Never substitute another runtime after a failure, and never invoke the Codex CLI.
 
 ## Protect my setup
 
-This is my everyday computer, and dev shares parts of my real setup.
+This is my everyday computer, and the CLI shares my real setup.
 
-1. **Credentials.** `bun run dev` uses the installed app's encrypted credentials (`%APPDATA%\scraply\secrets.bin`), so signing out or replacing a key in dev changes my real accounts. For account or key tests, use an isolated profile: a temporary `SCRAPLY_DEV_DATA_DIR`, `SCRAPLY_DEV_SHARED_CREDENTIALS=0`, and empty `EXA_API_KEY=` and `PERPLEXITY_API_KEY=` (Bun loads `.env` into every `bun` process). Keep real keys out of logs, output, and messages.
-2. **Data.** The installed app's projects and the CLI ledger in `%APPDATA%\scraply\cli` are my real data. Test on a copy, and open the original read-only. Copy SQLite with the app closed, or snapshot it with `VACUUM INTO`. Run the CLI against a throwaway `SCRAPLY_DATA_DIR` under `build/` unless I ask otherwise. It also reads my saved search keys and desktop database through `APPDATA`, read-only: point `APPDATA` at an empty folder under `build/` and set `EXA_API_KEY=` and `PERPLEXITY_API_KEY=` empty unless the task needs live search. `scraply legacy export` output is my real data; write it outside the checkout. `scripts/eval-research.ts` copies my encrypted credentials into its output directory, so keep that directory under `build/` and never publish it.
-3. **Other servers.** Several checkouts may run dev servers at once. Stop only your own, with `bun run dev:stop` from the checkout that started it. Never kill `bun`, `electron`, or `Scraply.exe` by name.
-4. **Screenshots.** I use this machine while you work. Capture the app with Playwright `page.screenshot()`, never the desktop.
+1. **Credentials.** `secrets.bin` holds my real search keys and model account. Signing out, setting a key, or a credential refresh changes them. For tests, point `APPDATA` at an empty folder under `build/` and set `EXA_API_KEY=` and `PERPLEXITY_API_KEY=` empty, unless the task needs live search or the model; then copy `secrets.bin` and `Local State` aside first. Keep real keys out of logs, output, and messages.
+2. **Data.** The ledger in `%APPDATA%\scraply\cli` and the desktop database in `%APPDATA%\scraply\scraply` are my real data. Run the CLI against a throwaway `SCRAPLY_DATA_DIR` under `build/` unless I ask otherwise. Open the desktop database read-only, or copy it with `VACUUM INTO`. Its projects are already exported to `%APPDATA%\scraply\desktop-export`.
+3. **Processes.** Never kill `bun` or `scraply-agent` by name; other checkouts may be running them.
 
 ## Keep my data out of everything published
 
-The repository, its pull requests, and every release are public. Whatever reaches GitHub stays readable through old pull requests even after a history rewrite, and only GitHub Support can remove it. This is the most important rule in this file.
+The repository and its pull requests are public. Whatever reaches GitHub stays readable through old pull requests even after a history rewrite, and only GitHub Support can remove it. This is the most important rule in this file.
 
-My data is anything that comes from me and not from the product: the titles, briefs, and results of my projects, my accounts and keys, my name, email, and Windows user name, and paths on this computer.
+My data is anything that comes from me and not from the product: the titles, seeds, and results of my projects, my accounts and keys, my name, email, and Windows user name, and paths on this computer.
 
 Everything you publish is synthetic, invented for the purpose.
 
 - **Fixtures, evaluation cases, and examples.** Write a made-up case. A real project with the details changed, or one named as an example in a prompt, comment, or doc, still points back to me.
-- **Screenshots.** Capture them from `bun run test:ui` or an isolated profile. The sidebar lists project titles, so any screen captured in my real profile exposes them.
-- **Text.** Commit messages, pull request descriptions, docs, and logs call cases by their synthetic names and write local paths with placeholders such as `%APPDATA%`.
-- **Builds.** A release holds only what the package allowlist names, and nothing that identifies the computer that built it.
+- **Text.** Commit messages, pull request descriptions, docs, and logs call cases by their synthetic names and write local paths with placeholders such as `%APPDATA%`. Account output from the worker (email, plan) stays out of them.
 
-Before pushing, read your whole diff and look at every image for my data. If you find some already committed or published, stop and tell me before doing anything else.
+Before pushing, read your whole diff for my data. If you find some already committed or published, stop and tell me before doing anything else.
 
 After staging and before every commit, run the secret scan:
 
@@ -72,82 +45,47 @@ It covers only the staged patch. `-Scope history` audits history, and belongs in
 
 ## Check every path
 
-A change often works on the path you tested and breaks somewhere else. Before calling work done, go through this list and say which entries applied:
+Before calling work done, go through this list and say which entries applied:
 
-- **Hosts.** Browser dev and the Electron app share handlers, but windows, dialogs, permissions, preload, and window state exist only in Electron. The installed app uses packaged paths and the bundled worker.
-- **Run types.** Vibe and Controlled; discovery and known-problem (which can run without search); research follow-ups and idea conversations.
-- **Search providers.** Exa, Perplexity, and none configured.
-- **Saved work.** My existing projects, including v1 ones, and interrupted checkpoints. A change to stored data needs a migration and must still read old rows. The app saves a checked backup beside the database before it upgrades it; keep that step.
-- **Contracts.** Zod schemas in `src/shared` cross every process boundary. A stage change updates its prompt, schema, and package checks together. Runtime protocol changes follow [runtime/AGENTS.md](runtime/AGENTS.md).
-- **Prompts.** Package verification rejects a missing stage prompt and a superseded one.
-- **Exports.** Research JSON, and ideas as JSON and Markdown.
-- **Undo paths.** Pause needs resume, apply needs keep, archive needs restore, and each state needs to be visible.
-- **Docs.** Whether the change makes `README.md` or this file inaccurate (see [Documentation](#documentation)).
+- **Callers.** Piped output is one JSON envelope on stdout (progress goes to stderr); a terminal gets readable text. An agent following the skill and a person typing commands both work.
+- **Accounts.** Search with Exa, Perplexity, or no key; the model signed in, signed out, or with an expired session; the worker present, missing, or failing verification.
+- **Saved data.** A ledger change needs a schema version and must say what happens to older ledgers. A change to the backend database keeps its checked pre-migration backup.
+- **Contracts.** Zod schemas validate every boundary: CLI input, provider responses, and model output. Runtime protocol changes follow [runtime/AGENTS.md](runtime/AGENTS.md).
+- **Docs.** Whether the change makes `README.md`, this file, or the skill inaccurate.
 
 ## Setup
 
-Run commands from the checkout you are editing. Scraply is Windows-first. Native builds need Rust's `stable-x86_64-pc-windows-msvc` toolchain with rustfmt and clippy, and the Visual Studio C++ build tools. A new checkout or worktree needs:
-
-```powershell
-bun install --frozen-lockfile
-bunx --no-install install-electron
-git submodule update --init --recursive
-bun run prepare:runtime
-```
+Run commands from the checkout you are editing. Scraply is Windows-first. A new checkout or worktree needs `bun install --frozen-lockfile`. Building the worker needs Rust's `stable-x86_64-pc-windows-msvc` toolchain with rustfmt and clippy, the Visual Studio C++ build tools, `git submodule update --init --recursive`, and `bun run prepare:runtime`, which builds, checks, and stages it in `build/runtime`. Without a staged worker, the CLI uses the one the old desktop installer left in `%LOCALAPPDATA%\Programs\scraply\resources\runtime`.
 
 - Merged pull requests never update `master` in the main checkout (the repository root, outside `.worktrees/`). Before running, reviewing, or branching from it, run `git fetch origin` and `git status -sb`, and `git pull --ff-only` when it reports behind.
-- Electron downloads its executable on demand. Run `install-electron` again when dev or a test reports a missing Electron executable.
-- `prepare:runtime` builds, checks, and stages the Rust worker in `build/runtime`. Run it again only when the stage is missing or when native source, Cargo dependencies, the pinned submodule, or runtime build or protocol configuration changes.
-- Every checkout shares one Cargo cache, `%LOCALAPPDATA%\scraply-build\cargo` (about 9 GB; `CARGO_TARGET_DIR` moves it). To preview UI edits in an extra worktree, reuse a prepared worker by setting both `SCRAPLY_AGENT_PATH` and `SCRAPLY_AGENT_LOCK_PATH` before starting dev, and only when its native code and protocol match that checkout.
-- `SCRAPLY_SKIP_RUNTIME_CHECKS=1` before `bun run build:installed` skips the Rust formatting, budget, test, and clippy gates for an implementation-only local build. It gives no test evidence.
+- Every checkout shares one Cargo cache, `%LOCALAPPDATA%\scraply-build\cargo` (about 9 GB; `CARGO_TARGET_DIR` moves it). Run `prepare:runtime` again only when native source, Cargo dependencies, the pinned submodule, or the runtime protocol changes.
 - Removing a worktree that holds the runtime submodule needs `git worktree remove --force`. Confirm `git status` is clean first.
-
-## Dev servers
-
-- `bun run dev` starts a background server and prints its URL, normally `http://127.0.0.1:5173`. Running it again reuses the server. Leave it running and give me the URL and checkout path at handoff.
-- If the port is taken, startup fails rather than stopping the other process. Set `SCRAPLY_BROWSER_UI_PORT` (1024 to 65535) before starting, and keep it set when you run `dev:stop`.
-- Renderer edits update the browser on save. Main-process and backend edits restart the host, so reload the browser. Restart dev after changing environment variables, startup configuration, or the prepared worker.
-- Dev keeps its projects in `.scraply/browser-dev/` and its log and launch state in `build/browser-dev/`. After an account or key change, restart any other running Scraply instance. Credential writes reject a stale update; restart the instance that reports the conflict.
-- `bun run test:ui` serves the real renderer on synthetic data at `http://127.0.0.1:5176`, with no providers. It is the fastest way to reach and screenshot UI states. Query parameters pick the state, for example `?history=18&long=1`, `history=0`, `progress=guided`, `connection=offline`, `account=signed-out`, and `search=none`; `test/ui/main.ts` reads all of them. Reloading resets the fixture. Its key form accepts any search key except one containing `invalid`.
-- `bun run dev:electron` is the desktop check. Stop browser dev first. It does not find the prepared worker on its own: set `SCRAPLY_AGENT_PATH` to `build/runtime/scraply-agent.exe` and `SCRAPLY_AGENT_LOCK_PATH` to `build/runtime/scraply-agent.lock.json` before starting, or the window opens with no native runtime and sign-in and research fail.
-- `bun run test:e2e` prepares the runtime and packages an app before Playwright runs. It is not a lightweight browser check.
-- Agent hosts often export `ELECTRON_RUN_AS_NODE=1`, which breaks Electron. Unset it for `dev`, `build:installed`, and e2e runs.
-- Run throwaway Playwright scripts with `node`; they hang under `bun`.
-- To debug a run, write its trace with `bun scripts/trace.ts <session ID>`. The session ID is in the app's Run details. The script opens the database read-only, contacts no provider, and writes `build/trace/<session ID>.json`. It reads the installed app's database by default; pass `--db <path>` for another profile and `--out <directory>` to write elsewhere.
+- To debug a backend run, `bun scripts/trace.ts <session ID>` writes its trace read-only to `build/trace/`.
 
 ## Verifying
 
-- Exercise the interaction you changed in the browser and look at the result. Compiling and passing unit tests are not UI verification.
 - Write tests that check real workflows and behavior, not ones that mirror the implementation or only assert wiring.
-- Run focused tests while working, then `bun run check` before handing off application code.
-- After an application change, stop dev, run `bun run build:installed` from the checkout root, then restart dev. Skip this for documentation-only work, read-only investigation, and changes only to `src/cli` or `skills/`.
-- For a CLI or skill change, run `test/integration/cli.test.ts`, then drive the real commands in an isolated profile (see [Protect my setup](#protect-my-setup)). For a change to the method, have a fresh agent run the skill on a synthetic seed and report where it got stuck.
-- Changes to Electron windows, preload, permissions, dialogs, or desktop integration also need a `bun run dev:electron` check.
-- After a native runtime change, prepare the runtime again, restart dev, and exercise the real runtime interaction you changed.
-- A change to the installer, packaging, or packaged paths is verified in the app that `bun run build:installed` installs, not in dev.
-- For a persistence change, restart and confirm the saved state.
-- Read the whole Playwright summary. A failing spec can print just above the "passed" line; search the log for `failed` and `flaky`.
-- `bun run build:installed` aborts if `HEAD` moves while it runs. Commit before starting it.
-- Benchmarks live in `test/performance/` and run with `bun`. Do not benchmark during compilation or other CPU-heavy work. Keep an optimization only when it reduces measured work and deterministic comparisons show the same output. Global statement caching, broader research-export batching, and scheduler reordering were already tried and rejected.
+- Run focused tests while working, then `bun run check` before handing off. A few backend workflow tests are timing-sensitive; rerun a failure alone before treating it as real.
+- For a CLI change, run `test/integration/cli.test.ts`, then drive the real commands in an isolated profile. For a change to model calls, make a live call on a synthetic seed and look at what came back.
+- For a change to the method (the skill or the loop), run it end to end on a synthetic seed, have a fresh agent review the result, and report where it got stuck.
 - Report what you exercised, the results, and anything you could not verify.
 
 ## Branches and pull requests
 
-- `master` is the only long-lived branch and the production branch; "main branch" means `master`. Every change goes through a short-lived `feat/`, `fix/`, `docs/`, or `chore/` branch from the latest `master` and a pull request into `master`.
+- `master` is the only long-lived branch. Every change goes through a short-lived `feat/`, `fix/`, `docs/`, or `chore/` branch from the latest `master` and a pull request into `master`.
 - Work in a worktree under `.worktrees/`, and remove it after its pull request merges.
-- When several of my pull requests are open at once, stack them so one installed build contains all of them. Rebase with `git rebase --update-refs`.
+- When several of my pull requests are open at once, stack them. Rebase with `git rebase --update-refs`.
 - Commit titles use conventional commits in plain language: `fix: keep the selected idea after reload`.
 - Fill in the pull request template: what changed, and how you verified it.
-- Never force-push `master` or move a published tag. GitHub Actions CI and Release stay disabled; run every check locally.
-- UI changes need screenshots. Push them to the never-merged `pr-screenshots` branch and link them from the description.
+- Never force-push `master` or move a published tag. There is no hosted CI; run every check locally.
 
 ## Releases
 
-I run Scraply from `bun run build:installed` on my own machine and do not publish releases. Old releases stay on GitHub as they are: never replace their files. The release scripts in `scripts/` are unused; leave them alone unless I ask.
+There are none. I run Scraply from this checkout with `bun link`. Old desktop releases stay on GitHub as they are: never replace their files.
 
 ## Documentation
 
-The repository has no documentation folder, and you never add one. The only markdown files that belong on GitHub are `README.md`, `AGENTS.md` and `CLAUDE.md` (here and in `runtime/`), the GitHub templates, the bundled prompts in `prompts/`, the skills in `skills/*/SKILL.md`, and `runtime/UPSTREAM.md`, which the build ships as a license notice. Never commit any other markdown file: no guides, procedures, reports, ADRs, or notes.
+The only markdown files that belong on GitHub are `README.md`, `AGENTS.md` and `CLAUDE.md` (here and in `runtime/`), the pull request template, the prompts in `prompts/`, the skills in `skills/*/SKILL.md`, and `runtime/UPSTREAM.md`, a license notice. Never commit any other markdown file: no guides, procedures, reports, ADRs, or notes.
 
 - When behavior changes, rewrite or remove the affected text rather than appending to it. Link to source instead of copying it.
 - Leave out file catalogs, field lists, and pull request summaries; the code and tests already record them.
@@ -155,29 +93,15 @@ The repository has no documentation folder, and you never add one. The only mark
 
 ## Plans and work artifacts
 
-Keep plans, research notes, acceptance transcripts, and scratch files out of the repository: put them under the ignored `build/` directory or outside the checkout. The merged pull request is the implementation record, so acceptance evidence goes in its description.
-
-Markdown files written for local testing and evaluation never go to GitHub: evaluation procedures, acceptance runbooks, and review instructions. Keep them under `build/` as well.
-
-## How it works
-
-The renderer talks to the main process only through the preload bridge (`window.scraply`). Main owns windows, credentials, and the security policy, and forks the backend as an Electron utility process. The backend is a local HTTP server (`src/backend`) that runs workflows (`src/core`) over SQLite (`src/db`) and the search providers (`src/providers`).
-
-A run starts as an editable launch draft. A preview turns it into an immutable contract with its limits, models, and resolved prompts. The coordinator schedules its stages, reserves spend before each call, and checkpoints each completed stage so the run can resume. Each model call goes to the Rust worker over JSONL on stdin and stdout, and the worker validates the output against the stage's schema before returning it.
-
-In browser dev, a windowless Electron host serves the same handlers to a browser tab through a local proxy.
+Keep plans, research notes, transcripts, and scratch files out of the repository: put them under the ignored `build/` directory or outside the checkout. The merged pull request is the implementation record, so verification evidence goes in its description.
 
 ## Where code lives
 
-- `src/cli`: the `scraply` CLI and its evidence ledger. `skills/scraply`: the skill agents follow when they call it.
-- `src/renderer`: Svelte 5 UI. `src/preload`: the bridge. `src/main`: Electron shell, credentials, security.
-- `src/backend`: the local server. `src/core`: workflows, stages, scheduling, reviews.
-- `src/db`: SQLite client, migrations, repositories. `src/providers`: Exa, Perplexity, runtime client.
-- `src/shared`: Zod contracts shared across processes.
-- `prompts/`: bundled stage prompts, shipped with the app.
-- `runtime/`: the Rust worker. `runtime/vendor/openai-codex` is a read-only pinned submodule.
-- `scripts/`: dev server, packaging, verification, release checks.
-- `test/`: `unit`, `integration`, `renderer`, `e2e`, and the offline `ui` harness.
+- `src/cli`: the `scraply` commands, the evidence ledger, credentials, and the model session. `skills/scraply`: the skill agents follow.
+- `src/providers`: the worker client, Exa, and Perplexity. `runtime/`: the Rust worker; `runtime/vendor/openai-codex` is a read-only pinned submodule.
+- `src/core`, `src/db`, `src/backend`, `prompts/`: the older research pipeline, its SQLite storage, and its HTTP server. Their code says `thread` for project and `option` for idea.
+- `src/shared`: Zod contracts, including the runtime protocol.
+- `scripts/`: worker build and packaging checks, the secret scan, and tracing. `test/`: `unit` and `integration`.
 
 ## Code style
 
@@ -185,6 +109,4 @@ In browser dev, a windowless Electron host serves the same handlers to a browser
 - Prefer inferred types, and do not use `any`.
 - Call functions directly rather than adding one-line wrappers.
 - Validate with Zod at every boundary, and fail closed.
-- The UI is dark with a pure black background (`--bg: #000000`). Reuse the tokens in `src/renderer/app.css`.
-- `.main-content` in `App.svelte` is the only scroll container. A page with a sticky action bar uses a flex column, not a grid. Tailwind's preflight strips list markers and heading sizes, so restate them where content needs them.
 - If a rule here conflicts with the task, tell me before breaking it.

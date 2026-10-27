@@ -6,7 +6,7 @@ Describe what changed and why it was needed.
 
 - Affected workflow exercised, including the visible result:
 - Focused checks and `bun run check` result, or why a check does not apply:
-- Installed build and desktop check when required:
+- Live model or search run when the change touches them:
 - Unverified behavior or remaining limits:
 
 ## Review notes

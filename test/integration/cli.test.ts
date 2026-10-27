@@ -30,6 +30,7 @@ beforeEach(() => {
   // APPDATA points at an empty folder, so no real saved keys or desktop data can be read.
   env = { APPDATA: join(root, "appdata"), SCRAPLY_DATA_DIR: join(root, "ledger") };
   requests = [];
+  stdin = "";
 });
 // Windows can hold a just-written file for a moment; retry like the backend tests do.
 afterEach(async () => {
@@ -68,9 +69,10 @@ const fakeFetch = (async (input: string | URL | Request, init?: RequestInit) => 
 interface Envelope { exitCode: number; ok: boolean; data?: unknown; error?: { code: string; message: string } }
 
 /** Run one command the way an agent does (piped, so JSON) and return the parsed envelope. */
+let stdin = "";
 async function scraply(...argv: string[]): Promise<Envelope> {
   let output = "";
-  const exitCode = await runCli(argv, { write: text => { output += text; }, isTTY: false, env, fetcher: fakeFetch });
+  const exitCode = await runCli(argv, { write: text => { output += text; }, notify: () => undefined, readStdin: async () => stdin, isTTY: false, env, fetcher: fakeFetch });
   return { exitCode, ...JSON.parse(output) };
 }
 
@@ -354,6 +356,25 @@ describe("scraply CLI", () => {
     await scraply("project", "new", "keys", "--seed", "Anything.");
     await scraply("search", "hive app pricing", "--project", "P1");
     expect(new Headers(requests[0]!.headers).get("x-api-key")).toBe("saved-exa-key");
+  });
+
+  test.skipIf(process.platform !== "win32")("keys piped into key set are saved encrypted and used by search, and models answers signed-out without a worker", async () => {
+    expect(await scraply("status")).toMatchObject({ data: { searchProviders: [], modelAccount: "signed-out" } });
+    expect(await scraply("models")).toMatchObject({ exitCode: 1, error: { code: "SIGNED_OUT" } });
+
+    stdin = "two words\n";
+    expect(await scraply("key", "set", "exa")).toMatchObject({ exitCode: 2, error: { code: "USAGE" } });
+    stdin = "piped-exa-key\n";
+    expect(await scraply("key", "set", "exa")).toMatchObject({ data: { provider: "exa", saved: true } });
+    const saved = readFileSync(join(env.APPDATA!, "scraply", "secrets.bin"));
+    expect(saved.subarray(0, 3).toString()).toBe("v10");
+    expect(saved.toString("latin1")).not.toContain("piped-exa-key");
+
+    await scraply("project", "new", "keys", "--seed", "Anything.");
+    await scraply("search", "hive app pricing", "--project", "P1");
+    expect(new Headers(requests[0]!.headers).get("x-api-key")).toBe("piped-exa-key");
+    expect(await scraply("key", "remove", "exa")).toMatchObject({ data: { saved: false } });
+    expect(await scraply("status")).toMatchObject({ data: { searchProviders: [] } });
   });
 
   test("legacy export writes every desktop project with the app's own exporters and leaves the database untouched", async () => {
