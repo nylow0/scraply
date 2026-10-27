@@ -44,7 +44,7 @@ This is my everyday computer, and dev shares parts of my real setup.
 
 1. **Credentials.** `bun run dev` uses the installed app's encrypted credentials (`%APPDATA%\scraply\secrets.bin`), so signing out or replacing a key in dev changes my real accounts. For account or key tests, use an isolated profile: a temporary `SCRAPLY_DEV_DATA_DIR`, `SCRAPLY_DEV_SHARED_CREDENTIALS=0`, and empty `EXA_API_KEY=` and `PERPLEXITY_API_KEY=` (Bun loads `.env` into every `bun` process). Keep real keys out of logs, output, and messages.
 2. **Data.** The installed app's projects and the CLI ledger in `%APPDATA%\scraply\cli` are my real data. Test on a copy, and open the original read-only. Copy SQLite with the app closed, or snapshot it with `VACUUM INTO`. Run the CLI against a throwaway `SCRAPLY_DATA_DIR` under `build/` unless I ask otherwise. It also reads my saved search keys and desktop database through `APPDATA`, read-only: point `APPDATA` at an empty folder under `build/` and set `EXA_API_KEY=` and `PERPLEXITY_API_KEY=` empty unless the task needs live search. `scraply legacy export` output is my real data; write it outside the checkout. `scripts/eval-research.ts` copies my encrypted credentials into its output directory, so keep that directory under `build/` and never publish it.
-3. **Other servers.** Several checkouts may run dev servers at once. Stop only your own, with `bun run dev:stop` from the checkout that started it. Never kill `bun`, `electron`, or `Scraply.exe` by name.
+3. **Other servers.** Several checkouts may run dev servers at once. You may stop any of them, including ones other agents started, with `bun run dev:stop` from the checkout that started it. Never kill `bun`, `electron`, or `Scraply.exe` by name: the installed app runs under the same names.
 4. **Screenshots.** I use this machine while you work. Capture the app with Playwright `page.screenshot()`, never the desktop.
 
 ## Keep my data out of everything published
@@ -52,6 +52,8 @@ This is my everyday computer, and dev shares parts of my real setup.
 The repository, its pull requests, and every release are public. Whatever reaches GitHub stays readable through old pull requests even after a history rewrite, and only GitHub Support can remove it. This is the most important rule in this file.
 
 My data is anything that comes from me and not from the product: the titles, briefs, and results of my projects, my accounts and keys, my name, email, and Windows user name, and paths on this computer.
+
+Already public, so leave them as they are: `Dany` as the copyright holder in `LICENSE`, the GitHub account `nylow0`, and the commit author email `203015564+nylow0@users.noreply.github.com`.
 
 Everything you publish is synthetic, invented for the purpose.
 
