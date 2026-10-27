@@ -1,13 +1,20 @@
+import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { basename, dirname, join, resolve } from "node:path";
 import { commandUsage, globalFlags, listFlag, requiredFlag, stringFlag, type CommandArguments, type CommandShape } from "./args";
 import { availableProviders, searchKey, type SearchProvider } from "./credentials";
-import { CLAIM_KINDS, NOTE_KINDS, QUOTE_KINDS, REVIEW_RESULTS, VERDICT_RESULTS, parseId, type Ledger } from "./ledger";
+import {
+  CLAIM_KINDS, FILE_ORIGINS, MAX_SOURCE_CHARS, NOTE_KINDS, QUOTE_KINDS, RETRACTABLE, REVIEW_RESULTS, VERDICT_RESULTS,
+  parseAnyId, parseId, type Ledger,
+} from "./ledger";
+import { desktopDatabasePath, exportDesktopProjects } from "./legacy";
 import { CliError } from "./output";
 import { fetchDirect, fetchViaExa, search } from "./pages";
+import { renderReport } from "./report";
 
 export interface CommandContext {
   ledger: () => Ledger;
   dataDir: string;
-  /** The desktop app's profile folder, where saved search keys live. */
+  /** The desktop app's profile folder, where its database and saved search keys live. */
   profileDir: string;
   env: Record<string, string | undefined>;
   fetcher: typeof fetch;
@@ -19,6 +26,8 @@ export interface Command extends CommandShape {
 }
 
 const PREVIEW_CHARS = 300;
+/** A file bigger than this is not a text record an agent should quote from. */
+const MAX_FILE_BYTES = 5 * 1024 * 1024;
 
 function pick<T extends string>(value: string, choices: readonly T[]): T {
   const match = choices.find(choice => choice === value);
@@ -27,12 +36,17 @@ function pick<T extends string>(value: string, choices: readonly T[]): T {
 }
 
 const project = (args: CommandArguments) => parseId("project", requiredFlag(args, "project"));
+const projectFlag = { name: "project", type: "string", required: true, description: "Project ID." } as const;
 
 export const commands: readonly Command[] = [
   {
     path: ["status"],
-    description: "Show the ledger folder and which search providers have a key.",
-    run: context => ({ dataDir: context.dataDir, searchProviders: availableProviders(context.profileDir, context.env) }),
+    description: "Show the ledger folder, which search providers have a key, and whether the desktop app's database exists.",
+    run: context => ({
+      dataDir: context.dataDir,
+      searchProviders: availableProviders(context.profileDir, context.env),
+      desktopDatabase: existsSync(desktopDatabasePath(context.profileDir)),
+    }),
   },
   {
     path: ["project", "new"],
@@ -43,25 +57,38 @@ export const commands: readonly Command[] = [
   },
   {
     path: ["project", "list"],
-    description: "List projects.",
-    run: context => context.ledger().listProjects(),
+    description: "List projects. Archived ones are hidden unless --all.",
+    flags: [{ name: "all", type: "boolean", description: "Include archived projects." }],
+    run: (context, args) => context.ledger().listProjects(args.flags.all === true),
+  },
+  {
+    path: ["project", "archive"],
+    description: "Hide a finished or abandoned project from the list. It stays readable and can be restored.",
+    positionals: [{ name: "project", description: "Project ID.", required: true }],
+    run: (context, args) => context.ledger().setArchived(parseId("project", args.positionals[0]!), true),
+  },
+  {
+    path: ["project", "restore"],
+    description: "Bring an archived project back into the list.",
+    positionals: [{ name: "project", description: "Project ID.", required: true }],
+    run: (context, args) => context.ledger().setArchived(parseId("project", args.positionals[0]!), false),
   },
   {
     path: ["note", "add"],
-    description: "Record a constraint, expert framing, or prior art. Notes are context, never evidence.",
+    description: "Record a constraint from the user, expert framing, or prior art. Notes are context, never evidence.",
     flags: [
-      { name: "project", type: "string", required: true, description: "Project ID." },
-      { name: "kind", type: "string", required: true, choices: NOTE_KINDS, description: "What the note records." },
+      projectFlag,
+      { name: "kind", type: "string", required: true, choices: NOTE_KINDS, description: "constraint (from the user; reviewers see it), framing, or prior-art." },
       { name: "text", type: "string", required: true, description: "The note." },
     ],
     run: (context, args) => context.ledger().addNote(project(args), pick(requiredFlag(args, "kind"), NOTE_KINDS), requiredFlag(args, "text")),
   },
   {
     path: ["search"],
-    description: "Search the web and save every result's full text as a source.",
+    description: "Search the web and save every result as a source. Exa results are pages; Perplexity results are excerpts that must be fetched before quoting. Failed and empty searches are recorded too.",
     positionals: [{ name: "query", description: "The search query.", required: true }],
     flags: [
-      { name: "project", type: "string", required: true, description: "Project ID." },
+      projectFlag,
       { name: "provider", type: "string", choices: ["exa", "perplexity"], description: "Defaults to Exa when it has a key." },
       { name: "results", type: "number", description: "Results to save, 1 to 20 (default 5)." },
     ],
@@ -71,12 +98,23 @@ export const commands: readonly Command[] = [
       const requested = stringFlag(args, "provider");
       const provider: SearchProvider | undefined = requested === "exa" || requested === "perplexity" ? requested : availableProviders(context.profileDir, context.env)[0];
       if (!provider) throw new CliError("NO_KEY", "No search provider has a key. Set EXA_API_KEY or PERPLEXITY_API_KEY.");
+      const key = searchKey(provider, context.profileDir, context.env);
       const results = Math.min(20, Math.max(1, Math.trunc(Number(stringFlag(args, "results") ?? 5))));
-      const found = await search(provider, searchKey(provider, context.profileDir, context.env), args.positionals[0]!, results, context.fetcher);
+      const query = args.positionals[0]!;
+      let found;
+      try {
+        found = await search(provider, key, query, results, context.fetcher);
+      } catch (error) {
+        context.ledger().recordSearch(projectId, provider, query, { error: error instanceof Error ? error.message : "The search failed." });
+        throw error;
+      }
+      const saved = context.ledger().recordSearch(projectId, provider, query, { sources: found });
       return {
-        provider,
-        sources: found.map(item => ({ ...context.ledger().saveSource(projectId, item), preview: item.text?.slice(0, PREVIEW_CHARS) })),
-        next: "Read a source in full with: scraply source show <id>",
+        search: saved.id, provider, status: saved.status,
+        sources: saved.sources.map((source, index) => ({ ...source, preview: found[index]?.text?.slice(0, PREVIEW_CHARS) })),
+        next: provider === "perplexity"
+          ? "These are excerpts. Fetch a page before quoting it: scraply fetch <url> --project <id>"
+          : "Read a source in full with: scraply source show <id>",
       };
     },
   },
@@ -85,7 +123,7 @@ export const commands: readonly Command[] = [
     description: "Fetch one page and save its text as a source. A failed fetch is saved as failed.",
     positionals: [{ name: "url", description: "Page URL.", required: true }],
     flags: [
-      { name: "project", type: "string", required: true, description: "Project ID." },
+      projectFlag,
       { name: "via", type: "string", choices: ["direct", "exa"], description: "direct (default) or exa, which reaches many sites that block scripts." },
     ],
     run: async (context, args) => {
@@ -100,18 +138,42 @@ export const commands: readonly Command[] = [
     },
   },
   {
+    path: ["source", "add"],
+    description: "Save a text file as a source: material the user handed over (interview notes, survey results) or the output of an experiment you ran.",
+    flags: [
+      projectFlag,
+      { name: "file", type: "string", required: true, description: "Path to a UTF-8 text file." },
+      { name: "title", type: "string", required: true, description: "What it is and where it came from, such as: Survey results the user collected, 14 replies." },
+      { name: "origin", type: "string", required: true, choices: FILE_ORIGINS, description: "owner (the user gave it to you) or experiment (output of something you ran; say what in --title)." },
+    ],
+    run: (context, args) => {
+      const projectId = project(args);
+      const path = resolve(requiredFlag(args, "file"));
+      if (!existsSync(path) || !statSync(path).isFile()) throw new CliError("USAGE", `${path} is not a file.`, 2);
+      if (statSync(path).size > MAX_FILE_BYTES) throw new CliError("USAGE", `${path} is larger than ${MAX_FILE_BYTES / 1024 / 1024} MB.`, 2);
+      const text = readFileSync(path, "utf8");
+      const origin = pick(requiredFlag(args, "origin"), FILE_ORIGINS);
+      return context.ledger().saveSource(projectId, {
+        url: `file:${basename(path)}`, title: requiredFlag(args, "title"), via: origin, kind: "file",
+        ...(text.length > MAX_SOURCE_CHARS ? { text: text.slice(0, MAX_SOURCE_CHARS), truncated: true } : { text }),
+        ...(text.trim() ? {} : { error: "The file is empty." }),
+      });
+    },
+  },
+  {
     path: ["source", "show"],
-    description: "Print a source's full saved text. Read it all before judging a claim.",
+    description: "Print a source's saved text. Long sources come in windows: repeat with --offset <nextOffset> until nextOffset is absent.",
     positionals: [{ name: "source", description: "Source ID.", required: true }],
-    run: (context, args) => context.ledger().readSource(parseId("source", args.positionals[0]!)),
+    flags: [{ name: "offset", type: "number", description: "Character offset to start from (default 0)." }],
+    run: (context, args) => context.ledger().readSource(parseId("source", args.positionals[0]!), Number(stringFlag(args, "offset") ?? 0)),
   },
   {
     path: ["quote", "add"],
-    description: "Save a quote. It must appear verbatim in the source's saved text.",
+    description: "Save a quote. It must appear verbatim in a saved page or file; search excerpts cannot be quoted.",
     flags: [
       { name: "source", type: "string", required: true, description: "Source ID." },
-      { name: "speaker", type: "string", required: true, description: "Who said it: their handle or name, or the organization." },
-      { name: "kind", type: "string", required: true, choices: QUOTE_KINDS, description: "firsthand (their own experience), vendor (a seller about its product), or other." },
+      { name: "speaker", type: "string", required: true, description: "Who said or measured it: their handle or name, or the organization. The same person is the same speaker everywhere." },
+      { name: "kind", type: "string", required: true, choices: QUOTE_KINDS, description: "firsthand (their own experience), measured (a count, record, or study result), vendor (a seller about its product), or other." },
       { name: "text", type: "string", required: true, description: "The exact words: a full sentence that stands on its own." },
     ],
     run: (context, args) => context.ledger().addQuote(
@@ -122,7 +184,7 @@ export const commands: readonly Command[] = [
     path: ["claim", "add"],
     description: "Add a claim that could be false, with the condition that kills it.",
     flags: [
-      { name: "project", type: "string", required: true, description: "Project ID." },
+      projectFlag,
       { name: "kind", type: "string", required: true, choices: CLAIM_KINDS, description: "need, gap, mechanism, or feasibility." },
       { name: "statement", type: "string", required: true, description: "The claim." },
       { name: "kill-if", type: "string", required: true, description: "One measurable condition that would kill it." },
@@ -131,51 +193,113 @@ export const commands: readonly Command[] = [
   },
   {
     path: ["test", "add"],
-    description: "Write down how a claim will be tested and the predicted outcome, before looking.",
+    description: "Write down how a claim will be tested, the predicted outcome, and when the test stops, before looking.",
     flags: [
       { name: "claim", type: "string", required: true, description: "Claim ID." },
       { name: "method", type: "string", required: true, description: "What you will look at and how." },
-      { name: "prediction", type: "string", required: true, description: "What you expect to find." },
+      { name: "prediction", type: "string", required: true, description: "What you expect to find, as a number or threshold where you can." },
+      { name: "stop-when", type: "string", required: true, description: "The sample size or limit that ends the test, such as: 15 threads read or 3 searches." },
     ],
-    run: (context, args) => context.ledger().addTest(parseId("claim", requiredFlag(args, "claim")), requiredFlag(args, "method"), requiredFlag(args, "prediction")),
+    run: (context, args) => context.ledger().addTest(
+      parseId("claim", requiredFlag(args, "claim")), requiredFlag(args, "method"), requiredFlag(args, "prediction"), requiredFlag(args, "stop-when"),
+    ),
   },
   {
     path: ["verdict", "add"],
-    description: "Record a verdict. The newest verdict on a claim wins; provisional means waiting for review.",
+    description: "Record a verdict. The newest verdict on a claim wins. Provisional and killed verdicts wait for an independent review.",
     flags: [
       { name: "claim", type: "string", required: true, description: "Claim ID." },
-      { name: "result", type: "string", required: true, choices: VERDICT_RESULTS, description: "killed, unclear, or provisional (supported once a review upholds it)." },
+      { name: "result", type: "string", required: true, choices: VERDICT_RESULTS, description: "killed, unclear, or provisional (needs --test and evidence found after it)." },
       { name: "note", type: "string", required: true, description: "Why, in your words. No quotation marks: cite quotes instead." },
+      { name: "by", type: "string", required: true, description: "Who wrote this verdict, such as: author. Its reviewer must be someone else." },
       { name: "quote", type: "string", multiple: true, description: "A quote ID this verdict rests on. Repeat for each." },
       { name: "test", type: "string", description: "The test this verdict answers." },
     ],
     run: (context, args) => {
       const test = stringFlag(args, "test");
-      return context.ledger().addVerdict(
-        parseId("claim", requiredFlag(args, "claim")), pick(requiredFlag(args, "result"), VERDICT_RESULTS),
-        listFlag(args, "quote").map(id => parseId("quote", id)), requiredFlag(args, "note"),
-        test === undefined ? undefined : parseId("test", test),
-      );
+      return context.ledger().addVerdict({
+        claimId: parseId("claim", requiredFlag(args, "claim")), result: pick(requiredFlag(args, "result"), VERDICT_RESULTS),
+        quoteIds: listFlag(args, "quote").map(id => parseId("quote", id)), note: requiredFlag(args, "note"), author: requiredFlag(args, "by"),
+        ...(test === undefined ? {} : { testId: parseId("test", test) }),
+      });
     },
   },
   {
     path: ["review", "add"],
-    description: "Record an independent review of a provisional or killed verdict. Overturned reopens the claim.",
+    description: "Record an independent review of the newest provisional or killed verdict on a claim. Overturned reopens the claim.",
     flags: [
-      { name: "verdict", type: "string", required: true, description: "Verdict ID." },
+      { name: "verdict", type: "string", required: true, description: "Verdict ID, from toReview in: scraply show --project <id> --for-review" },
       { name: "result", type: "string", required: true, choices: REVIEW_RESULTS, description: "upheld or overturned." },
       { name: "note", type: "string", required: true, description: "What the review checked and found." },
+      { name: "by", type: "string", required: true, description: "Who reviewed, such as: reviewer-1. Must differ from the verdict's author." },
     ],
-    run: (context, args) => context.ledger().addReview(parseId("verdict", requiredFlag(args, "verdict")), pick(requiredFlag(args, "result"), REVIEW_RESULTS), requiredFlag(args, "note")),
+    run: (context, args) => context.ledger().addReview({
+      verdictId: parseId("verdict", requiredFlag(args, "verdict")), result: pick(requiredFlag(args, "result"), REVIEW_RESULTS),
+      note: requiredFlag(args, "note"), reviewer: requiredFlag(args, "by"),
+    }),
+  },
+  {
+    path: ["idea", "add"],
+    description: "Save an idea: a concrete version of the seed and the claims it rests on. It stands when all of them are supported and dies with any of them.",
+    flags: [
+      projectFlag,
+      { name: "title", type: "string", required: true, description: "Short name." },
+      { name: "pitch", type: "string", required: true, description: "Who it is for, what it does, and why now, in a few sentences." },
+      { name: "claim", type: "string", required: true, multiple: true, description: "A claim ID it rests on. Repeat for each." },
+      { name: "revises", type: "string", description: "The idea this one replaces or varies." },
+    ],
+    run: (context, args) => {
+      const revises = stringFlag(args, "revises");
+      return context.ledger().addIdea({
+        projectId: project(args), title: requiredFlag(args, "title"), pitch: requiredFlag(args, "pitch"),
+        claimIds: listFlag(args, "claim").map(id => parseId("claim", id)),
+        ...(revises === undefined ? {} : { revisesId: parseId("idea", revises) }),
+      });
+    },
+  },
+  {
+    path: ["retract"],
+    description: "Withdraw a mistaken note, quote, claim, test, or idea. It stays in the record, marked retracted. Verdicts citing a retracted quote or test become stale.",
+    positionals: [{ name: "id", description: "N, Q, C, T, or I ID.", required: true }],
+    flags: [{ name: "reason", type: "string", required: true, description: "What was wrong, and what replaces it if anything." }],
+    run: (context, args) => {
+      const { entity, id } = parseAnyId(args.positionals[0]!, RETRACTABLE);
+      const target = RETRACTABLE.find(item => item === entity);
+      if (!target) throw new CliError("USAGE", `${args.positionals[0]} cannot be retracted.`, 2);
+      return context.ledger().retract(target, id, requiredFlag(args, "reason"));
+    },
   },
   {
     path: ["show"],
-    description: "Print a whole project: claims with status, tests, verdicts, quotes, and sources.",
+    description: "Print a whole project: ideas, claims with status, tests, verdicts, reviews, quotes, searches, and sources.",
     flags: [
-      { name: "project", type: "string", required: true, description: "Project ID." },
-      { name: "for-review", type: "boolean", description: "Leave out notes, statuses, and reviews, for a fresh reviewer." },
+      projectFlag,
+      { name: "for-review", type: "boolean", description: "What a fresh reviewer sees: constraints, claims, tests, the verdicts to review, quotes, and sources, without the author's notes or statuses." },
     ],
-    run: (context, args) => context.ledger().show(project(args), args.flags["for-review"] === true),
+    run: (context, args) => args.flags["for-review"] === true ? context.ledger().showForReview(project(args)) : context.ledger().show(project(args)),
+  },
+  {
+    path: ["export"],
+    description: "Write a project to a file: JSON with every source's full text, or a Markdown report.",
+    flags: [
+      projectFlag,
+      { name: "out", type: "string", required: true, description: "File to write." },
+      { name: "format", type: "string", choices: ["json", "markdown"], description: "json (default) or markdown." },
+    ],
+    run: (context, args) => {
+      const data = context.ledger().exportProject(project(args));
+      const format = stringFlag(args, "format") ?? "json";
+      const path = resolve(requiredFlag(args, "out"));
+      mkdirSync(dirname(path), { recursive: true });
+      writeFileSync(path, format === "json" ? `${JSON.stringify(data, null, 2)}\n` : renderReport(data));
+      return { path, format, claims: data.claims.length, ideas: data.ideas.length, sources: data.sources.length };
+    },
+  },
+  {
+    path: ["legacy", "export"],
+    description: "Export every project from the desktop app's database once, read-only: a snapshot of the database plus each project's research JSON and ideas as JSON and Markdown.",
+    flags: [{ name: "out", type: "string", description: "An empty or new folder (default %APPDATA%\\scraply\\desktop-export)." }],
+    run: (context, args) => exportDesktopProjects(context.profileDir, resolve(stringFlag(args, "out") ?? join(context.profileDir, "desktop-export"))),
   },
 ];
 

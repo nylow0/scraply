@@ -4,7 +4,7 @@ Scraply is my own tool for finding real problems and turning them into business 
 
 It is an Electron app with a Svelte 5 renderer, a TypeScript backend, and a small Rust worker that makes every model call.
 
-The `scraply` CLI in `src/cli` is replacing the app. An agent calls it through the skill in `skills/scraply/SKILL.md` and does all the thinking itself; the CLI makes no model calls. It searches, saves what it fetched, and keeps an append-only evidence ledger whose rules live in `src/cli/ledger.ts`. The app, its pipeline, and the Rust worker will be removed once the CLI covers my work.
+The `scraply` CLI in `src/cli` is replacing the app. An agent calls it through the skill in `skills/scraply/SKILL.md` and does all the thinking itself; the CLI makes no model calls. It searches, saves what it fetched, and keeps an append-only evidence ledger whose rules live in `src/cli/ledger.ts`. The app, its pipeline, and the Rust worker will be removed once the CLI covers my work; `scraply legacy export` (`src/cli/legacy.ts`) runs the app's own exporters over a snapshot of its database so my desktop projects leave with it.
 
 Scraply is my personal project. The source is public, but I am its only user: build for me, not for hypothetical users, customers, or installs on other machines. What I tell you in the conversation takes priority over this file.
 
@@ -43,7 +43,7 @@ The UI and the code sometimes use different names.
 This is my everyday computer, and dev shares parts of my real setup.
 
 1. **Credentials.** `bun run dev` uses the installed app's encrypted credentials (`%APPDATA%\scraply\secrets.bin`), so signing out or replacing a key in dev changes my real accounts. For account or key tests, use an isolated profile: a temporary `SCRAPLY_DEV_DATA_DIR`, `SCRAPLY_DEV_SHARED_CREDENTIALS=0`, and empty `EXA_API_KEY=` and `PERPLEXITY_API_KEY=` (Bun loads `.env` into every `bun` process). Keep real keys out of logs, output, and messages.
-2. **Data.** The installed app's projects and the CLI ledger in `%APPDATA%\scraply\cli` are my real data. Test on a copy, and open the original read-only. Copy SQLite with the app closed, or snapshot it with `VACUUM INTO`. Run the CLI against a throwaway `SCRAPLY_DATA_DIR` under `build/` unless I ask otherwise; it reads my saved search keys read-only and never writes credentials. `scripts/eval-research.ts` copies my encrypted credentials into its output directory, so keep that directory under `build/` and never publish it.
+2. **Data.** The installed app's projects and the CLI ledger in `%APPDATA%\scraply\cli` are my real data. Test on a copy, and open the original read-only. Copy SQLite with the app closed, or snapshot it with `VACUUM INTO`. Run the CLI against a throwaway `SCRAPLY_DATA_DIR` under `build/` unless I ask otherwise. It also reads my saved search keys and desktop database through `APPDATA`, read-only: point `APPDATA` at an empty folder under `build/` and set `EXA_API_KEY=` and `PERPLEXITY_API_KEY=` empty unless the task needs live search. `scraply legacy export` output is my real data; write it outside the checkout. `scripts/eval-research.ts` copies my encrypted credentials into its output directory, so keep that directory under `build/` and never publish it.
 3. **Other servers.** Several checkouts may run dev servers at once. Stop only your own, with `bun run dev:stop` from the checkout that started it. Never kill `bun`, `electron`, or `Scraply.exe` by name.
 4. **Screenshots.** I use this machine while you work. Capture the app with Playwright `page.screenshot()`, never the desktop.
 
@@ -121,7 +121,7 @@ bun run prepare:runtime
 - Write tests that check real workflows and behavior, not ones that mirror the implementation or only assert wiring.
 - Run focused tests while working, then `bun run check` before handing off application code.
 - After an application change, stop dev, run `bun run build:installed` from the checkout root, then restart dev. Skip this for documentation-only work, read-only investigation, and changes only to `src/cli` or `skills/`.
-- For a CLI or skill change, run `test/integration/cli.test.ts`, then drive the real commands against a throwaway `SCRAPLY_DATA_DIR`. For a change to the method, have a fresh agent run the skill on a synthetic seed and report where it got stuck.
+- For a CLI or skill change, run `test/integration/cli.test.ts`, then drive the real commands in an isolated profile (see [Protect my setup](#protect-my-setup)). For a change to the method, have a fresh agent run the skill on a synthetic seed and report where it got stuck.
 - Changes to Electron windows, preload, permissions, dialogs, or desktop integration also need a `bun run dev:electron` check.
 - After a native runtime change, prepare the runtime again, restart dev, and exercise the real runtime interaction you changed.
 - A change to the installer, packaging, or packaged paths is verified in the app that `bun run build:installed` installs, not in dev.

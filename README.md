@@ -1,46 +1,40 @@
 # Scraply
 
-Scraply is a Windows desktop app that finds real problems people have and turns them into business ideas you can check against the evidence.
+Scraply turns a rough seed (a hunch, a theme, a link) into a business idea that has survived tests against real evidence. It is a command-line tool that a coding agent such as Claude Code or Codex drives through a skill. The agent does the thinking. `scraply` searches the web with Exa or Perplexity, saves what it read, and keeps an append-only evidence ledger that refuses anything the agent cannot back with a quote from a saved page.
 
-You describe a topic, an audience, or a problem you already know. Scraply searches the web and online communities, extracts candidate problems with quoted sources, and generates ideas for the problems worth solving. A separate pass ranks the ideas for each problem against your approved goal. Everything stays in a local SQLite database, and you decide what to pursue.
-
-**Status:** early development. Download the [latest release](https://github.com/nylow0/scraply/releases/latest): the installer or the portable build. Releases are not code-signed yet, so Windows SmartScreen asks for confirmation on first launch (**More info → Run anyway**).
-
-## The CLI
-
-Scraply is becoming a command-line tool that coding agents call through a skill, and the desktop app will be retired. The agent does the thinking; `scraply` searches the web, saves what it fetched, and keeps an append-only evidence ledger that refuses quotes not found in a saved page. Run `bun link` in the checkout to put `scraply` on your PATH, `scraply help` for the commands, and point your agent at [skills/scraply/SKILL.md](skills/scraply/SKILL.md).
+It is my personal tool. The source is public, but it is built for my machine and my workflow.
 
 ## How a project works
 
-1. **Setup.** Write a brief, then choose the model, research depth, and search provider. Depth guides the breadth and thoroughness of new research; call, search, and time estimates do not stop it.
-2. **Research.** Scraply searches with Exa or Perplexity and returns candidate problems. Every claim links to the excerpt and source behind it. You can ask follow-up questions or re-check a finding; a new result only replaces the current evidence when you apply it.
-3. **Ideas.** Choose how many ideas to request for each selected problem. Scraply writes and ranks each problem's ideas against your approved goal, and shows when fewer ideas were returned. It never pads the count. You can pause or stop a run. Older saved runs keep their original risk reviews, business-family grouping, and count limits.
-4. **Develop an idea.** Discuss an idea, rethink it into a new version while the old ones stay readable, or draft a small experiment that tests one assumption with a metric and pass/fail thresholds.
+1. The seed is split into claims that could be false (a need, a gap, a mechanism, feasibility), each with the condition that kills it.
+2. Before looking, the agent writes how it will test a claim, what it predicts, and when the test stops.
+3. It searches, reads pages in full, and saves exact quotes with who said them. A need holds only with firsthand or measured accounts from two different people, and at least one piece of evidence must be new since the prediction.
+4. A separate agent reviews every verdict without seeing the author's reasoning. Nothing is supported or killed until it does.
+5. Ideas are saved with the claims they rest on, and stand or fall with them. You steer the next variant.
 
-There are two run modes. **Vibe** (the default) runs research, problem selection, idea generation, and review in one pass. **Controlled** stops after research so you pick the problems and the ideas model yourself.
+The method is in [skills/scraply/SKILL.md](skills/scraply/SKILL.md); the rules the ledger enforces are in [src/cli/ledger.ts](src/cli/ledger.ts).
 
-Research exports as JSON. Ideas export as Markdown or JSON.
+## Setup
 
-## What you need
+You need Windows and [Bun](https://bun.sh). In the checkout:
 
-- Windows 10 or 11
-- An OpenAI subscription account, connected in the app
-- An Exa or Perplexity API key for web research, pasted in the app (a run that starts from a known problem can skip search)
+```powershell
+bun install --frozen-lockfile
+bun link
+scraply help
+```
 
-## How it's built
+Then make the skill available to your agent, for example by linking `skills/scraply` into `~/.claude/skills/`.
 
-- **Electron app** with a Svelte 5 and Tailwind renderer (`src/renderer`). The renderer reaches the main process (`src/main`) only through a narrow preload bridge (`src/preload`).
-- **TypeScript core** (`src/core`) runs the workflows, research, and budgets. Storage lives in `src/db`, and the search providers in `src/providers`.
-- **Rust worker** (`runtime/`) makes each model call and validates the result against a schema.
-- **Bun** runs the tooling and tests.
+- **Search keys.** Set `EXA_API_KEY` or `PERPLEXITY_API_KEY`. Without them, `scraply` reads the keys saved by the desktop app, read-only. `scraply status` shows which providers have a key.
+- **Data.** The ledger is `%APPDATA%\scraply\cli\ledger.db`. `--data-dir` or `SCRAPLY_DATA_DIR` points it elsewhere.
+- **Exports.** `scraply export --project P1 --out <file>` writes JSON with every source's full text; `--format markdown` writes a readable report.
 
-## Contributing
+## The desktop app (being retired)
 
-Bug reports and feature requests are welcome in [issues](https://github.com/nylow0/scraply/issues). For code changes, branch from `master` with a `feat/`, `fix/`, `docs/`, or `chore/` prefix and open a pull request back into `master`. The pull request template lists the verification I expect. Agents working in this repository start at [AGENTS.md](AGENTS.md).
+The Electron app in this repository came first and will be removed. `scraply legacy export` exports every project from its database once, read-only: a snapshot of the database plus each project's research JSON and its ideas as JSON and Markdown, written by the app's own exporters, in `%APPDATA%\scraply\desktop-export`.
 
-## Your OpenAI account
-
-Scraply is an unofficial project and isn't affiliated with or endorsed by OpenAI. When you connect OpenAI, Scraply signs in through the Codex login and uses your own ChatGPT subscription, so your use is covered by [OpenAI's terms](https://openai.com/policies/row-terms-of-use/). OpenAI doesn't officially support this kind of access for third-party apps. It can stop working at any time, and you use it at your own risk. Scraply is free, and I don't run any service or share accounts: every request goes from your computer to your account.
+The app signs in to an OpenAI subscription through the Codex login. Scraply is an unofficial project and isn't affiliated with or endorsed by OpenAI; that kind of access is not officially supported and can stop working at any time.
 
 ## License
 

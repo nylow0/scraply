@@ -29,7 +29,7 @@ export interface CommandShape {
 
 export const globalFlags: readonly FlagDefinition[] = [
   { name: "json", type: "boolean", description: "Write the JSON envelope even in a terminal. Piped output is always JSON." },
-  { name: "data-dir", type: "string", description: "Use this folder for the ledger instead of %APPDATA%\\scraply\\cli." },
+  { name: "data-dir", type: "string", description: "Use this folder for the ledger instead of SCRAPLY_DATA_DIR or %APPDATA%\\scraply\\cli." },
   { name: "help", type: "boolean", description: "Describe commands instead of running one." },
 ];
 
@@ -86,7 +86,8 @@ export function parseArguments<T extends CommandShape>(argv: readonly string[], 
     .filter(item => item.path.every((part, index) => part === path[index]))
     .sort((a, b) => b.path.length - a.path.length)[0];
   if (!command && !help) throw new CliError("USAGE", `Unknown command "${path.join(" ")}". Run: scraply help`, 2);
-  if (help) return { command, help, helpPath: path, args: { positionals: [], flags: {} } };
+  // `scraply source show S1 --help` describes `source show`, not commands starting with `S1`.
+  if (help) return { command, help, helpPath: command?.path ?? path, args: { positionals: [], flags: {} } };
 
   const allowed = [...globalFlags, ...(command!.flags ?? [])];
   const flags: Record<string, string | boolean | string[]> = {};

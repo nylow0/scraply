@@ -1,11 +1,9 @@
 import { z } from "zod";
 import { ExaClient } from "../providers/exa";
 import { PerplexityClient } from "../providers/perplexity";
-import type { FetchedSource } from "./ledger";
+import { MAX_SOURCE_CHARS, type FetchedSource } from "./ledger";
 import { CliError } from "./output";
 
-/** Enough for a long forum thread; quotes must come from text that was actually saved. */
-export const MAX_SOURCE_CHARS = 30_000;
 const TIMEOUT_MS = 30_000;
 
 type Fetcher = typeof fetch;
@@ -36,23 +34,29 @@ export function htmlToText(html: string): { title?: string; text: string } {
   return { ...(cleanTitle ? { title: cleanTitle } : {}), text: lines.join("\n").replace(/\n{3,}/g, "\n\n").trim() };
 }
 
+/** Keep at most MAX_SOURCE_CHARS, and say when something was cut. */
+function capped(text: string) {
+  return text.length > MAX_SOURCE_CHARS ? { text: text.slice(0, MAX_SOURCE_CHARS), truncated: true } : { text };
+}
+
 /** Read one page directly. Anything but a plain 200 with readable text is a failed source, not an error. */
 export async function fetchDirect(url: string, fetcher: Fetcher = fetch): Promise<FetchedSource> {
+  const failed = (error: string): FetchedSource => ({ url, via: "direct", kind: "page", error });
   try {
     const response = await fetcher(url, {
       headers: { "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) scraply-cli", accept: "text/html,text/plain;q=0.9,*/*;q=0.1" },
       redirect: "follow",
       signal: AbortSignal.timeout(TIMEOUT_MS),
     });
-    if (response.status !== 200) return { url, via: "direct", error: `HTTP ${response.status}. Try: scraply fetch <url> --via exa` };
+    if (response.status !== 200) return failed(`HTTP ${response.status}. Try: scraply fetch <url> --via exa`);
     const type = response.headers.get("content-type") ?? "";
     const body = await response.text();
-    if (type.includes("text/plain")) return { url, via: "direct", text: body.slice(0, MAX_SOURCE_CHARS) };
-    if (!type.includes("html")) return { url, via: "direct", error: `Unsupported content type ${type || "(none)"}.` };
+    if (type.includes("text/plain")) return { url, via: "direct", kind: "page", ...capped(body) };
+    if (!type.includes("html")) return failed(`Unsupported content type ${type || "(none)"}.`);
     const page = htmlToText(body);
-    return { url, via: "direct", ...(page.title ? { title: page.title } : {}), text: page.text.slice(0, MAX_SOURCE_CHARS) };
+    return { url, via: "direct", kind: "page", ...(page.title ? { title: page.title } : {}), ...capped(page.text) };
   } catch (error) {
-    return { url, via: "direct", error: error instanceof Error ? error.message : "The request failed." };
+    return failed(error instanceof Error ? error.message : "The request failed.");
   }
 }
 
@@ -63,6 +67,7 @@ const ExaContentsSchema = z.object({
 
 /** Read one page through Exa's crawler, which reaches many sites that block plain scripts. */
 export async function fetchViaExa(url: string, apiKey: string, fetcher: Fetcher = fetch): Promise<FetchedSource> {
+  const failed = (error: string): FetchedSource => ({ url, via: "exa-contents", kind: "page", error });
   try {
     const response = await fetcher("https://api.exa.ai/contents", {
       method: "POST",
@@ -70,25 +75,35 @@ export async function fetchViaExa(url: string, apiKey: string, fetcher: Fetcher 
       body: JSON.stringify({ urls: [url], text: { maxCharacters: MAX_SOURCE_CHARS }, livecrawl: "fallback" }),
       signal: AbortSignal.timeout(TIMEOUT_MS * 2),
     });
-    if (!response.ok) return { url, via: "exa-contents", error: `Exa contents returned HTTP ${response.status}.` };
+    if (!response.ok) return failed(`Exa contents returned HTTP ${response.status}.`);
     const parsed = ExaContentsSchema.parse(await response.json());
     const result = parsed.results[0];
     if (!result?.text?.trim()) {
       const status = parsed.statuses?.[0];
-      return { url, via: "exa-contents", error: status ? `Exa could not read the page: ${JSON.stringify(status.error ?? status.status)}` : "Exa returned no text." };
+      return failed(status ? `Exa could not read the page: ${JSON.stringify(status.error ?? status.status)}` : "Exa returned no text.");
     }
-    return { url: result.url, via: "exa-contents", ...(result.title ? { title: result.title } : {}), text: result.text };
+    // Exa cuts at maxCharacters without saying so; a full-length answer is treated as cut.
+    return {
+      url: result.url, via: "exa-contents", kind: "page", ...(result.title ? { title: result.title } : {}),
+      text: result.text, ...(result.text.length >= MAX_SOURCE_CHARS ? { truncated: true } : {}),
+    };
   } catch (error) {
-    return { url, via: "exa-contents", error: error instanceof Error ? error.message : "The request failed." };
+    return failed(error instanceof Error ? error.message : "The request failed.");
   }
 }
 
-/** Run one web search. Every result keeps its full returned text so it can be quoted later. */
+/**
+ * Run one web search. Exa returns each page's text, saved as a page. Perplexity returns
+ * extracts, saved as excerpts: they show what a page says but must be fetched before quoting.
+ */
 export async function search(provider: "exa" | "perplexity", apiKey: string, query: string, results: number, fetcher: Fetcher = fetch): Promise<FetchedSource[]> {
   const client = provider === "exa" ? new ExaClient(apiKey, fetcher) : new PerplexityClient(apiKey, fetcher);
   try {
     const sources = await client.search(query, { numResults: results, maxCharacters: MAX_SOURCE_CHARS, timeoutMs: TIMEOUT_MS * 2 });
-    return sources.map(source => ({ url: source.url, title: source.title, via: provider, query, text: source.text }));
+    return sources.map(source => ({
+      url: source.url, title: source.title, via: provider, kind: provider === "exa" ? "page" : "excerpt", text: source.text,
+      ...(provider === "exa" && source.text.length >= MAX_SOURCE_CHARS ? { truncated: true } : {}),
+    }));
   } catch (error) {
     throw new CliError("SEARCH_FAILED", `${provider} search failed: ${error instanceof Error ? error.message : "unknown error"}`);
   }
