@@ -4,6 +4,8 @@ Scraply is my own tool for finding real problems and turning them into business 
 
 It is an Electron app with a Svelte 5 renderer, a TypeScript backend, and a small Rust worker that makes every model call.
 
+The `scraply` CLI in `src/cli` is replacing the app. An agent calls it through the skill in `skills/scraply/SKILL.md` and does all the thinking itself; the CLI makes no model calls. It searches, saves what it fetched, and keeps an append-only evidence ledger whose rules live in `src/cli/ledger.ts`. The app, its pipeline, and the Rust worker will be removed once the CLI covers my work; `scraply legacy export` (`src/cli/legacy.ts`) runs the app's own exporters over a snapshot of its database so my desktop projects leave with it.
+
 Scraply is my personal project. The source is public, but I am its only user: build for me, not for hypothetical users, customers, or installs on other machines. What I tell you in the conversation takes priority over this file.
 
 ## Product rules
@@ -41,7 +43,7 @@ The UI and the code sometimes use different names.
 This is my everyday computer, and dev shares parts of my real setup.
 
 1. **Credentials.** `bun run dev` uses the installed app's encrypted credentials (`%APPDATA%\scraply\secrets.bin`), so signing out or replacing a key in dev changes my real accounts. For account or key tests, use an isolated profile: a temporary `SCRAPLY_DEV_DATA_DIR`, `SCRAPLY_DEV_SHARED_CREDENTIALS=0`, and empty `EXA_API_KEY=` and `PERPLEXITY_API_KEY=` (Bun loads `.env` into every `bun` process). Keep real keys out of logs, output, and messages.
-2. **Data.** The installed app's projects are my real data. Test on a copy, and open the original read-only. Copy SQLite with the app closed, or snapshot it with `VACUUM INTO`. `scripts/eval-research.ts` copies my encrypted credentials into its output directory, so keep that directory under `build/` and never publish it.
+2. **Data.** The installed app's projects and the CLI ledger in `%APPDATA%\scraply\cli` are my real data. Test on a copy, and open the original read-only. Copy SQLite with the app closed, or snapshot it with `VACUUM INTO`. Run the CLI against a throwaway `SCRAPLY_DATA_DIR` under `build/` unless I ask otherwise. It also reads my saved search keys and desktop database through `APPDATA`, read-only: point `APPDATA` at an empty folder under `build/` and set `EXA_API_KEY=` and `PERPLEXITY_API_KEY=` empty unless the task needs live search. `scraply legacy export` output is my real data; write it outside the checkout. `scripts/eval-research.ts` copies my encrypted credentials into its output directory, so keep that directory under `build/` and never publish it.
 3. **Other servers.** Several checkouts may run dev servers at once. Stop only your own, with `bun run dev:stop` from the checkout that started it. Never kill `bun`, `electron`, or `Scraply.exe` by name.
 4. **Screenshots.** I use this machine while you work. Capture the app with Playwright `page.screenshot()`, never the desktop.
 
@@ -118,7 +120,8 @@ bun run prepare:runtime
 - Exercise the interaction you changed in the browser and look at the result. Compiling and passing unit tests are not UI verification.
 - Write tests that check real workflows and behavior, not ones that mirror the implementation or only assert wiring.
 - Run focused tests while working, then `bun run check` before handing off application code.
-- After an application change, stop dev, run `bun run build:installed` from the checkout root, then restart dev. Skip this for documentation-only work and read-only investigation.
+- After an application change, stop dev, run `bun run build:installed` from the checkout root, then restart dev. Skip this for documentation-only work, read-only investigation, and changes only to `src/cli` or `skills/`.
+- For a CLI or skill change, run `test/integration/cli.test.ts`, then drive the real commands in an isolated profile (see [Protect my setup](#protect-my-setup)). For a change to the method, have a fresh agent run the skill on a synthetic seed and report where it got stuck.
 - Changes to Electron windows, preload, permissions, dialogs, or desktop integration also need a `bun run dev:electron` check.
 - After a native runtime change, prepare the runtime again, restart dev, and exercise the real runtime interaction you changed.
 - A change to the installer, packaging, or packaged paths is verified in the app that `bun run build:installed` installs, not in dev.
@@ -144,7 +147,7 @@ I run Scraply from `bun run build:installed` on my own machine and do not publis
 
 ## Documentation
 
-The repository has no documentation folder, and you never add one. The only markdown files that belong on GitHub are `README.md`, `AGENTS.md` and `CLAUDE.md` (here and in `runtime/`), the GitHub templates, the bundled prompts in `prompts/`, and `runtime/UPSTREAM.md`, which the build ships as a license notice. Never commit any other markdown file: no guides, procedures, reports, ADRs, or notes.
+The repository has no documentation folder, and you never add one. The only markdown files that belong on GitHub are `README.md`, `AGENTS.md` and `CLAUDE.md` (here and in `runtime/`), the GitHub templates, the bundled prompts in `prompts/`, the skills in `skills/*/SKILL.md`, and `runtime/UPSTREAM.md`, which the build ships as a license notice. Never commit any other markdown file: no guides, procedures, reports, ADRs, or notes.
 
 - When behavior changes, rewrite or remove the affected text rather than appending to it. Link to source instead of copying it.
 - Leave out file catalogs, field lists, and pull request summaries; the code and tests already record them.
@@ -166,6 +169,7 @@ In browser dev, a windowless Electron host serves the same handlers to a browser
 
 ## Where code lives
 
+- `src/cli`: the `scraply` CLI and its evidence ledger. `skills/scraply`: the skill agents follow when they call it.
 - `src/renderer`: Svelte 5 UI. `src/preload`: the bridge. `src/main`: Electron shell, credentials, security.
 - `src/backend`: the local server. `src/core`: workflows, stages, scheduling, reviews.
 - `src/db`: SQLite client, migrations, repositories. `src/providers`: Exa, Perplexity, runtime client.
