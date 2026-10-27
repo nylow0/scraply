@@ -34,6 +34,9 @@ export function htmlToText(html: string): { title?: string; text: string } {
   return { ...(cleanTitle ? { title: cleanTitle } : {}), text: lines.join("\n").replace(/\n{3,}/g, "\n\n").trim() };
 }
 
+/** Exa is asked for a little more than is kept, so a page it cut still exceeds the cap after trimming. */
+const EXA_REQUEST_CHARS = MAX_SOURCE_CHARS + 1_000;
+
 /** Keep at most MAX_SOURCE_CHARS, and say when something was cut. */
 function capped(text: string) {
   return text.length > MAX_SOURCE_CHARS ? { text: text.slice(0, MAX_SOURCE_CHARS), truncated: true } : { text };
@@ -72,7 +75,7 @@ export async function fetchViaExa(url: string, apiKey: string, fetcher: Fetcher 
     const response = await fetcher("https://api.exa.ai/contents", {
       method: "POST",
       headers: { "content-type": "application/json", "x-api-key": apiKey },
-      body: JSON.stringify({ urls: [url], text: { maxCharacters: MAX_SOURCE_CHARS }, livecrawl: "fallback" }),
+      body: JSON.stringify({ urls: [url], text: { maxCharacters: EXA_REQUEST_CHARS }, livecrawl: "fallback" }),
       signal: AbortSignal.timeout(TIMEOUT_MS * 2),
     });
     if (!response.ok) return failed(`Exa contents returned HTTP ${response.status}.`);
@@ -82,11 +85,7 @@ export async function fetchViaExa(url: string, apiKey: string, fetcher: Fetcher 
       const status = parsed.statuses?.[0];
       return failed(status ? `Exa could not read the page: ${JSON.stringify(status.error ?? status.status)}` : "Exa returned no text.");
     }
-    // Exa cuts at maxCharacters without saying so; a full-length answer is treated as cut.
-    return {
-      url: result.url, via: "exa-contents", kind: "page", ...(result.title ? { title: result.title } : {}),
-      text: result.text, ...(result.text.length >= MAX_SOURCE_CHARS ? { truncated: true } : {}),
-    };
+    return { url: result.url, via: "exa-contents", kind: "page", ...(result.title ? { title: result.title } : {}), ...capped(result.text) };
   } catch (error) {
     return failed(error instanceof Error ? error.message : "The request failed.");
   }
@@ -99,10 +98,9 @@ export async function fetchViaExa(url: string, apiKey: string, fetcher: Fetcher 
 export async function search(provider: "exa" | "perplexity", apiKey: string, query: string, results: number, fetcher: Fetcher = fetch): Promise<FetchedSource[]> {
   const client = provider === "exa" ? new ExaClient(apiKey, fetcher) : new PerplexityClient(apiKey, fetcher);
   try {
-    const sources = await client.search(query, { numResults: results, maxCharacters: MAX_SOURCE_CHARS, timeoutMs: TIMEOUT_MS * 2 });
+    const sources = await client.search(query, { numResults: results, maxCharacters: EXA_REQUEST_CHARS, timeoutMs: TIMEOUT_MS * 2 });
     return sources.map(source => ({
-      url: source.url, title: source.title, via: provider, kind: provider === "exa" ? "page" : "excerpt", text: source.text,
-      ...(provider === "exa" && source.text.length >= MAX_SOURCE_CHARS ? { truncated: true } : {}),
+      url: source.url, title: source.title, via: provider, kind: provider === "exa" ? "page" : "excerpt", ...capped(source.text),
     }));
   } catch (error) {
     throw new CliError("SEARCH_FAILED", `${provider} search failed: ${error instanceof Error ? error.message : "unknown error"}`);

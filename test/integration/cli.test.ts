@@ -55,6 +55,8 @@ const fakeFetch = (async (input: string | URL | Request, init?: RequestInit) => 
     return Response.json({ results: [{ id: "r1", url: "https://shop.example/hive-app", title: "Hive app pricing", text: "Voice notes for every hive. Free for up to five hives, then a small monthly fee." }] });
   }
   if (url === "https://api.exa.ai/contents") {
+    // Exa cuts at the requested length; trailing whitespace is trimmed later and must not hide the cut.
+    if (String(init?.body).includes("long-exa")) return Response.json({ results: [{ url: "https://forum.example/long-exa", text: `${"y".repeat(300_000)}\n${"z".repeat(999)}` }] });
     return Response.json({ results: [{ url: "https://forum.example/thread-2", title: "Record keeping in summer", text: "hivewright: I keep a notebook in my veil but the pages get sticky with propolis and I give up by August." }] });
   }
   if (url === "https://api.perplexity.ai/search") {
@@ -200,6 +202,8 @@ describe("scraply CLI", () => {
     expect(await scraply("show", "--project", "P1")).toMatchObject({
       data: { searches: [{ id: "W1", status: "ok" }, { id: "W2", status: "failed", error: expect.stringContaining("500") }, { id: "W3", status: "empty" }] },
     });
+    // A reviewer judging a kill that rests on finding nothing needs to see where the author looked.
+    expect(await scraply("show", "--project", "P1", "--for-review")).toMatchObject({ data: { searches: [{ query: "hive notes", results: 1 }, { status: "failed", results: 0 }, { status: "empty" }] } });
     expect(JSON.stringify(await scraply("status"))).not.toContain("test-exa-key");
   });
 
@@ -266,6 +270,49 @@ describe("scraply CLI", () => {
     expect(await scraply("project", "list", "--all")).toMatchObject({ data: [{ id: "P1", archived: true }, { id: "P2" }] });
     expect(await scraply("project", "restore", "P1")).toMatchObject({ data: { archived: false } });
     expect(await scraply("project", "restore", "P1")).toMatchObject({ error: { code: "NO_CHANGE" } });
+  });
+
+  test("copies, other projects, and withdrawn tests cannot launder evidence, and a kill can rest on searching that found nothing", async () => {
+    await needClaimWithTest();
+    // The same page saved twice: overlapping quotes from the two copies are one observation.
+    await scraply("fetch", "https://forum.example/thread-2", "--project", "P1");
+    await scraply("fetch", "https://forum.example/thread-2", "--project", "P1");
+    await scraply("quote", "add", "--source", "S2", "--speaker", "observer1", "--kind", "firsthand", "--text", "I keep a notebook in my veil but the pages get sticky with propolis");
+    await scraply("quote", "add", "--source", "S3", "--speaker", "observer2", "--kind", "firsthand", "--text", "the pages get sticky with propolis and I give up by August.");
+    expect(await scraply("verdict", "add", "--claim", "C1", "--result", "provisional", "--test", "T1", "--quote", "Q1", "--quote", "Q2", "--by", "author", "--note", "Two keepers."))
+      .toMatchObject({ error: { code: "DUPLICATE_PASSAGE" } });
+
+    // A page saved in P1 is not new to a test written later in P2.
+    await scraply("project", "new", "second", "--seed", "Anything.");
+    await scraply("claim", "add", "--project", "P2", "--kind", "gap", "--statement", "No keeper app syncs notes.", "--kill-if", "One app syncs notes.");
+    await scraply("test", "add", "--claim", "C2", "--method", "Search app pages.", "--prediction", "None sync.", "--stop-when", "Two searches.");
+    await scraply("fetch", "https://forum.example/thread-2", "--project", "P2");
+    await scraply("quote", "add", "--source", "S4", "--speaker", "HiveNote", "--kind", "vendor", "--text", "HiveNote Pro: voice notes for every hive, synced to the cloud");
+    expect(await scraply("verdict", "add", "--claim", "C2", "--result", "provisional", "--test", "T2", "--quote", "Q3", "--by", "author", "--note", "A vendor page."))
+      .toMatchObject({ error: { code: "NOTHING_NEW" } });
+
+    // A kill with no quote must answer a test whose searching is on record.
+    expect(await scraply("verdict", "add", "--claim", "C2", "--result", "killed", "--by", "author", "--note", "Nothing found."))
+      .toMatchObject({ error: { code: "NO_EVIDENCE" } });
+    await scraply("claim", "add", "--project", "P2", "--kind", "need", "--statement", "Keepers ask for synced notes.", "--kill-if", "No keeper asks for it after two searches.");
+    await scraply("test", "add", "--claim", "C3", "--method", "Two searches.", "--prediction", "Two keepers ask.", "--stop-when", "Two searches.");
+    expect(await scraply("verdict", "add", "--claim", "C3", "--result", "killed", "--test", "T3", "--by", "author", "--note", "Nothing found."))
+      .toMatchObject({ error: { code: "NO_EVIDENCE" } });
+    env.EXA_API_KEY = "test-exa-key";
+    await scraply("search", "nothing here", "--project", "P2");
+    expect(await scraply("verdict", "add", "--claim", "C3", "--result", "killed", "--test", "T3", "--by", "author", "--note", "Two searches found no keeper asking."))
+      .toMatchObject({ data: { status: "kill-pending" } });
+    expect(await scraply("show", "--project", "P2", "--for-review"))
+      .toMatchObject({ data: { toReview: ["V1"], claims: [{}, { id: "C3", verdicts: [{ quotes: [], lookedSincePrediction: { searches: 1, fetches: 0 } }] }] } });
+
+    // A withdrawn test leaves its claim untested, and a withdrawn claim takes no reviews.
+    await scraply("retract", "T2", "--reason", "Wrong method.");
+    await scraply("retract", "C3", "--reason", "Merged into C2.");
+    expect(await scraply("show", "--project", "P2")).toMatchObject({ data: { claims: [{ id: "C2", status: "untested" }, { id: "C3", status: "retracted" }] } });
+    expect(await scraply("review", "add", "--verdict", "V1", "--result", "upheld", "--by", "reviewer-1", "--note", "x")).toMatchObject({ error: { code: "RETRACTED" } });
+
+    // A page Exa cut at the cap stays marked truncated even after trimming.
+    expect(await scraply("fetch", "https://forum.example/long-exa", "--project", "P2", "--via", "exa")).toMatchObject({ data: { chars: 300_000, truncated: true } });
   });
 
   test("the ledger rejects edits and deletions made behind the CLI's back", async () => {

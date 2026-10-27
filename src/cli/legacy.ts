@@ -51,14 +51,20 @@ export async function exportDesktopProjects(profileDir: string, outDir: string) 
 
   const work = mkdtempSync(join(tmpdir(), "scraply-desktop-export-"));
   copyFileSync(snapshot, join(work, "scraply.db"));
-  // Loaded here so ordinary commands never pay for the desktop backend.
+  // Loaded here so ordinary commands never pay for the desktop backend. Its diagnostics, such as the
+  // pre-migration backup notice, go to stderr so stdout stays one JSON envelope.
   const { startBackend } = await import("../backend/server");
+  const [info, log] = [console.info, console.log];
+  console.info = console.log = console.error;
   const backend = await startBackend({
     dataDir: work, dbPath: join(work, "scraply.db"),
     bundledPromptsDir: join(import.meta.dir, "..", "..", "prompts"), promptOverridesDir: join(work, "prompts"),
     appVersion: "cli-desktop-export", getSecrets: () => ({ exaApiKey: null, perplexityApiKey: null }),
     providerValidation: { inspectNative: async () => ({ available: false, connected: false, accounts: [], models: [] }) },
-  }, () => undefined);
+  }, () => undefined).catch((error: unknown) => {
+    [console.info, console.log] = [info, log];
+    throw error;
+  });
   try {
     const call = async (path: string, body?: unknown) => {
       const response = await fetch(`http://127.0.0.1:${backend.port}${path}`, {
@@ -98,6 +104,7 @@ export async function exportDesktopProjects(profileDir: string, outDir: string) 
     writeFileSync(join(outDir, "index.json"), JSON.stringify(index, null, 2));
     return { outDir, snapshot, projects: index.length, withResearch: index.filter(item => item.research).length, index: join(outDir, "index.json") };
   } finally {
+    [console.info, console.log] = [info, log];
     await backend.close();
     rmSync(work, { recursive: true, force: true, maxRetries: 5 });
   }

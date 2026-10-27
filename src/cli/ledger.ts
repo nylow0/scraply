@@ -196,7 +196,7 @@ export function openLedger(dataDir: string, now: () => Date = () => new Date()) 
     })();
   } else if (version !== SCHEMA_VERSION) {
     db.close();
-    throw new CliError("LEDGER_VERSION", `${join(dataDir, "ledger.db")} was made by a different scraply version (${version}, expected ${SCHEMA_VERSION}). Move it aside or pass --data-dir.`);
+    throw new CliError("LEDGER_VERSION", `${join(dataDir, "ledger.db")} uses ledger schema ${version}, and this scraply reads schema ${SCHEMA_VERSION}. Schema 0 came from an unreleased test build and is not read; start a new ledger with --data-dir.`);
   }
   const stamp = () => {
     lastStamp = Math.max(now().getTime(), lastStamp + 1);
@@ -260,7 +260,10 @@ export function openLedger(dataDir: string, now: () => Date = () => new Date()) 
   function claimStatus(claimId: number, asOf = LATEST): ClaimStatus {
     if (retraction("claim", claimId, asOf)) return "retracted";
     const latest = one<VerdictRow>("SELECT * FROM verdicts WHERE claim_id = ? AND created_at <= ? ORDER BY id DESC LIMIT 1", claimId, asOf);
-    if (!latest) return one("SELECT id FROM tests WHERE claim_id = ? AND created_at <= ?", claimId, asOf) ? "testing" : "untested";
+    if (!latest) {
+      const tests = all<{ id: number }>("SELECT id FROM tests WHERE claim_id = ? AND created_at <= ?", claimId, asOf);
+      return tests.some(item => !retraction("test", item.id, asOf)) ? "testing" : "untested";
+    }
     if (verdictStale(latest, asOf)) return "stale";
     if (latest.result === "unclear") return "unclear";
     const reviews = all<ReviewRow>("SELECT * FROM reviews WHERE verdict_id = ? AND created_at <= ?", latest.id, asOf);
@@ -277,11 +280,12 @@ export function openLedger(dataDir: string, now: () => Date = () => new Date()) 
   }
 
   /**
-   * Cited quotes whose passage was in no saved page, file, or excerpt when the test was written.
-   * Content, not URL, decides: a mirror or a `#fragment` alias of a page read earlier is not new.
+   * Cited quotes whose passage was in no saved page, file, or excerpt, in any project, when the test
+   * was written. Content, not URL, decides: a mirror, a `#fragment` alias, or a copy saved into
+   * another project is not new.
    */
-  function newSincePrediction(quotes: readonly QuoteRow[], projectId: number, predictedAt: string) {
-    const seen = all<SourceRow>("SELECT * FROM sources WHERE project_id = ? AND status = 'ok' AND fetched_at < ?", projectId, predictedAt)
+  function newSincePrediction(quotes: readonly QuoteRow[], predictedAt: string) {
+    const seen = all<SourceRow>("SELECT * FROM sources WHERE status = 'ok' AND fetched_at < ?", predictedAt)
       .map(item => fold(item.text ?? "").folded);
     return quotes.filter(item => {
       const passage = fold(item.text).folded;
@@ -289,12 +293,39 @@ export function openLedger(dataDir: string, now: () => Date = () => new Date()) 
     });
   }
 
+  /** Searches run and pages fetched in a project after a test was written: the record behind a kill that found nothing. */
+  function lookedSince(projectId: number, predictedAt: string) {
+    const count = (sql: string) => one<{ count: number }>(sql, projectId, predictedAt)!.count;
+    return {
+      searches: count("SELECT COUNT(*) AS count FROM searches WHERE project_id = ? AND created_at > ?"),
+      fetches: count("SELECT COUNT(*) AS count FROM sources WHERE project_id = ? AND search_id IS NULL AND fetched_at > ?"),
+    };
+  }
+
+  /**
+   * Whether two quotes are one observation: overlapping spans in one source, or overlapping
+   * positions in either quote's own source when it holds both, which catches copies and mirrors.
+   */
+  function samePassage(first: QuoteRow, second: QuoteRow) {
+    if (first.source_id === second.source_id && first.span_start < second.span_end && second.span_start < first.span_end) return true;
+    const overlapsIn = (home: QuoteRow, other: QuoteRow) => {
+      const text = fold(source(home.source_id).text ?? "").folded;
+      const [mine, theirs] = [fold(home.text).folded, fold(other.text).folded];
+      const [at, otherAt] = [text.indexOf(mine), text.indexOf(theirs)];
+      return at >= 0 && otherAt >= 0 && at < otherAt + theirs.length && otherAt < at + mine.length;
+    };
+    return overlapsIn(first, second) || overlapsIn(second, first);
+  }
+
   function verdictView(item: VerdictRow, projectId: number) {
     const cited = all<QuoteRow>("SELECT quotes.* FROM quotes JOIN verdict_quotes ON verdict_quotes.quote_id = quotes.id WHERE verdict_id = ? ORDER BY quotes.id", item.id);
     const answered = item.test_id === null ? null : test(item.test_id);
     return {
       id: formatId("verdict", item.id), result: item.result,
-      ...(answered ? { test: formatId("test", answered.id), quotesNewSincePrediction: newSincePrediction(cited, projectId, answered.created_at).length } : {}),
+      ...(answered ? {
+        test: formatId("test", answered.id), quotesNewSincePrediction: newSincePrediction(cited, answered.created_at).length,
+        lookedSincePrediction: lookedSince(projectId, answered.created_at),
+      } : {}),
       quotes: cited.map(quoteRow => formatId("quote", quoteRow.id)),
       note: item.note, by: item.author, ...(verdictStale(item) ? { stale: true } : {}),
       reviews: all<ReviewRow>("SELECT * FROM reviews WHERE verdict_id = ? ORDER BY id", item.id)
@@ -354,6 +385,7 @@ export function openLedger(dataDir: string, now: () => Date = () => new Date()) 
         })),
       searches: all<SearchRow>("SELECT * FROM searches WHERE project_id = ? ORDER BY id", projectId).map(search => ({
         id: formatId("search", search.id), provider: search.provider, query: search.query, status: search.status,
+        results: one<{ count: number }>("SELECT COUNT(*) AS count FROM sources WHERE search_id = ?", search.id)!.count,
         ...(search.error ? { error: search.error } : {}), at: search.created_at,
       })),
       sources: all<SourceRow>("SELECT * FROM sources WHERE project_id = ? ORDER BY id", projectId).map(sourceView),
@@ -362,7 +394,7 @@ export function openLedger(dataDir: string, now: () => Date = () => new Date()) 
 
   /**
    * What a fresh reviewer sees: the owner's constraints, the live claims, their tests, the verdicts
-   * waiting for review, the quotes, and the sources. It leaves out the author's notes, framing,
+   * waiting for review, the quotes, the searches, and the sources. It leaves out the author's notes, framing,
    * ideas, statuses, and earlier reviews, so the reviewer judges the evidence itself.
    */
   function showForReview(projectId: number) {
@@ -376,10 +408,12 @@ export function openLedger(dataDir: string, now: () => Date = () => new Date()) 
         id: claim.id, kind: claim.kind, statement: claim.statement, killIf: claim.killIf, tests: live(claim.tests),
         verdicts: claim.verdicts.map(verdict => ({
           id: verdict.id, result: verdict.result, quotes: verdict.quotes, decidedAt: verdict.decidedAt,
-          ...(verdict.test ? { test: verdict.test, quotesNewSincePrediction: verdict.quotesNewSincePrediction } : {}),
+          ...(verdict.test ? { test: verdict.test, quotesNewSincePrediction: verdict.quotesNewSincePrediction, lookedSincePrediction: verdict.lookedSincePrediction } : {}),
         })),
       })),
       quotes: live(full.quotes),
+      // Where the author looked, so a reviewer can judge a kill that rests on finding nothing.
+      searches: full.searches,
       sources: full.sources,
     };
   }
@@ -497,18 +531,23 @@ export function openLedger(dataDir: string, now: () => Date = () => new Date()) 
       }
       // One passage is one observation, however many times or under whatever speakers it was saved.
       quotes.forEach((first, index) => quotes.slice(index + 1).forEach(second => {
-        const overlap = first.source_id === second.source_id && first.span_start < second.span_end && second.span_start < first.span_end;
-        const [a, b] = [fold(first.text).folded, fold(second.text).folded];
-        if (overlap || a.includes(b) || b.includes(a)) {
-          throw new CliError("DUPLICATE_PASSAGE", `${formatId("quote", first.id)} and ${formatId("quote", second.id)} are the same passage. Cite it once.`);
+        if (samePassage(first, second)) {
+          throw new CliError("DUPLICATE_PASSAGE", `${formatId("quote", first.id)} and ${formatId("quote", second.id)} share one passage. Cite it once.`);
         }
       }));
-      if (input.result !== "unclear" && !quotes.length) throw new CliError("NO_EVIDENCE", `A ${input.result} verdict must cite at least one quote.`);
+      if (input.result === "provisional" && !quotes.length) throw new CliError("NO_EVIDENCE", "A provisional verdict must cite at least one quote.");
+      // A kill can rest on finding nothing, but only as the answer to a test whose searching is on record.
+      if (input.result === "killed" && !quotes.length) {
+        const looked = answered ? lookedSince(target.project_id, answered.created_at) : null;
+        if (!looked || !(looked.searches + looked.fetches)) {
+          throw new CliError("NO_EVIDENCE", "A kill cites quotes, or answers a test (--test) whose searches or fetches, run after it was written, found nothing. Cite a quote, or search after writing the test.");
+        }
+      }
       if (input.result === "provisional") {
         if (!answered) {
           throw new CliError("NO_TEST", `A provisional verdict answers a test written before looking. Add one with: scraply test add --claim ${claimId} ..., gather new evidence, then cite it with --test.`);
         }
-        if (!newSincePrediction(quotes, target.project_id, answered.created_at).length) {
+        if (!newSincePrediction(quotes, answered.created_at).length) {
           throw new CliError("NOTHING_NEW", `Every cited quote was already in a source saved before ${formatId("test", answered.id)} was written, so none of them could have proved its prediction wrong. Cite evidence found after the test, or record unclear.`);
         }
         const speakers = new Set(quotes.filter(item => NEED_EVIDENCE.includes(item.kind)).map(item => speakerKey(item.speaker)));
@@ -526,6 +565,7 @@ export function openLedger(dataDir: string, now: () => Date = () => new Date()) 
       const item = verdict(input.verdictId);
       const id = formatId("verdict", item.id);
       if (item.result === "unclear") throw new CliError("NOT_REVIEWABLE", `${id} is unclear; only provisional and killed verdicts are reviewed.`);
+      requireActive("claim", item.claim_id);
       const latest = one<{ id: number }>("SELECT id FROM verdicts WHERE claim_id = ? ORDER BY id DESC LIMIT 1", item.claim_id)!;
       if (latest.id !== item.id) throw new CliError("SUPERSEDED", `${id} was replaced by ${formatId("verdict", latest.id)}. Review that one.`);
       if (verdictStale(item)) throw new CliError("STALE", `${id} cites retracted evidence. The author must record a new verdict first.`);
