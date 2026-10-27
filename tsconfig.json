@@ -22,6 +22,7 @@
     "src/main/**/*",
     "src/preload/**/*",
     "src/backend/**/*",
+    "src/cli/**/*",
     "src/core/**/*",
     "src/db/**/*",
     "src/providers/**/*",

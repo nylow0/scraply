@@ -6,6 +6,10 @@ You describe a topic, an audience, or a problem you already know. Scraply search
 
 **Status:** early development. Download the [latest release](https://github.com/nylow0/scraply/releases/latest): the installer or the portable build. Releases are not code-signed yet, so Windows SmartScreen asks for confirmation on first launch (**More info → Run anyway**).
 
+## The CLI
+
+Scraply is becoming a command-line tool that coding agents call through a skill, and the desktop app will be retired. The agent does the thinking; `scraply` searches the web, saves what it fetched, and keeps an append-only evidence ledger that refuses quotes not found in a saved page. Run `bun link` in the checkout to put `scraply` on your PATH, `scraply help` for the commands, and point your agent at [skills/scraply/SKILL.md](skills/scraply/SKILL.md).
+
 ## How a project works
 
 1. **Setup.** Write a brief, then choose the model, research depth, and search provider. Depth guides the breadth and thoroughness of new research; call, search, and time estimates do not stop it.
