@@ -338,10 +338,15 @@ async function design(context: LoopContext, view: View, testable: readonly Claim
         ...(refusal ? { previousRefusal: refusal } : {}),
       },
     });
+    // Whatever the answer is, it is about one of the open claims.
+    const claimId = proposed.claim.trim().toUpperCase();
+    if (!testable.some(item => item.id === claimId)) {
+      refusal = `Name one of the open claims: ${testable.map(item => item.id).join(", ")}.`;
+      continue;
+    }
     if (proposed.setAside) {
       // Only the owner's answer to this claim's own request can set it aside, so a hard claim is never skipped on the model's say-so.
-      const claimId = proposed.claim.trim().toUpperCase();
-      if (testable.some(item => item.id === claimId) && answered(claimId)) {
+      if (answered(claimId)) {
         context.ledger.logStep(context.projectId, "untestable", claimId, { why: proposed.setAside });
         return { step: "design", status: "continue", did: `Set ${claimId} aside: it cannot be tested with what the owner has (${proposed.setAside}).` };
       }
@@ -350,7 +355,7 @@ async function design(context: LoopContext, view: View, testable: readonly Claim
     }
     if (proposed.needsOwner) {
       // The decisive test needs something only the owner can give; say exactly what instead of running a hollow test.
-      context.ledger.logStep(context.projectId, "blocked", proposed.claim, {
+      context.ledger.logStep(context.projectId, "blocked", claimId, {
         needsOwner: proposed.needsOwner,
         notes: Math.max(...live(view.notes).filter(note => note.kind === "constraint").map(note => parseId("note", note.id)), 0),
         files: view.sources.filter(source => source.via === "owner").length,
@@ -361,8 +366,7 @@ async function design(context: LoopContext, view: View, testable: readonly Claim
       };
     }
     const experiment = proposed.kind === "experiment" && proposed.sanity && proposed.control && proposed.holdout;
-    if (!testable.some(item => item.id === proposed.claim.trim().toUpperCase())) refusal = `The test must be for one of the open claims: ${testable.map(item => item.id).join(", ")}.`;
-    else if (!proposed.method.trim() || !proposed.prediction.trim() || !proposed.stopWhen.trim()) refusal = "A test needs a method, a prediction, and a stop condition, or set needsOwner.";
+    if (!proposed.method.trim() || !proposed.prediction.trim() || !proposed.stopWhen.trim()) refusal = "A test needs a method, a prediction, and a stop condition, or set needsOwner.";
     else if (proposed.kind === "experiment" && !experiment) refusal = "An experiment needs sanity, control, and holdout, each filled in.";
     else if (!experiment && !proposed.queries.length) refusal = "A desk test needs at least one search query. Write queries, design an experiment, or set needsOwner.";
     else if (!experiment && !context.searchWeb) refusal = "No web search is available, so the test must be an experiment, or set needsOwner.";
@@ -800,8 +804,9 @@ export async function advance(context: LoopContext): Promise<StepResult> {
   const blocked = log.last("blocked");
   const newest = Math.max(...live(view.notes).filter(note => note.kind === "constraint").map(note => parseId("note", note.id)), 0);
   const ownerFiles = view.sources.filter(source => source.via === "owner").length;
-  // Wait, without a model call, while the owner has added nothing since the last request; once they have, ask the design again.
-  if (blocked && blocked.id === log.steps.at(-1)?.id) {
+  // Wait, without a model call, while the owner has added nothing since the last request and its claim is still open;
+  // once they have, or the claim was settled some other way, ask the design again.
+  if (blocked && blocked.id === log.steps.at(-1)?.id && testable.some(claim => claim.id === blocked.target?.trim().toUpperCase())) {
     const since = z.object({ notes: z.number(), files: z.number() }).safeParse(blocked.detail);
     if (!since.success || (since.data.notes === newest && since.data.files === ownerFiles)) {
       return {

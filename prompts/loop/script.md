@@ -10,6 +10,8 @@ Write a self-contained program that runs the experiment exactly as the test desc
 - Every number and finding the program prints is computed from the data it fetched. Never print a constant, an assumption, or a conclusion as if it were a measurement; when something cannot be measured, print that it was not measured and why.
 - Print plain, labelled sentences that report what was measured, such as "Holdout: error 0.231 against the baseline's 0.238, difference -0.007 (95% interval -0.015 to 0.001)." Later steps quote these lines word for word as evidence, so every result that matters must be printed as a sentence with its numbers.
 - End with one line stating whether the prediction held. That line is a summary for the reader; the numbers above it are the evidence.
+- It runs unattended with no input: never prompt for anything, such as a passphrase or a confirmation.
+- Held-out data stays apart by being left out of every choice the analysis makes, then measured once at the end of this same run. Print the held-out values; never hide, encrypt, or defer them.
 - Never print secrets, never write outside the working folder, and stop with a clear message if data cannot be reached.
 
 When earlier attempts are given, they failed, and each comes with its code and the end of its output. Find the actual cause in that output, change only what it requires, and say what the cause was and what changed in **explanation**. Keep everything that already worked.

@@ -468,6 +468,30 @@ describe("the seed-and-kill-test loop", () => {
     expect(designInputs[1]).toMatchObject({ previousRefusal: expect.stringContaining("open claims: C2") });
   });
 
+  test("a request about a claim that is not open is refused, and a request whose claim was settled by hand stops blocking", async () => {
+    ledger.createProject("hives", "Anything.");
+    ledger.logStep(1, "frame", null, { surveyQueries: [] });
+    ledger.logStep(1, "survey", null, { skipped: "test" });
+    ledger.addClaim(1, "gap", "Nothing sells this.", "A product sells it.");
+    ledger.addClaim(1, "need", "Keepers lose notes.", "Fewer than two describe it.");
+    ledger.addIdea({ projectId: 1, title: "Voice log", pitch: "Talk.", claimIds: [1, 2] });
+    ledger.logStep(1, "untestable", "C1", { why: "Only the owner's club could say." });
+    const blank = { kind: "desk", method: "", prediction: "", stopWhen: "", queries: [], cuts: [], sanity: null, control: null, holdout: null, setAside: null };
+    const desk = { ...blank, method: "Read forums.", prediction: "Two.", stopWhen: "One search.", queries: ["hive notes"], needsOwner: null };
+    answers = { design: [
+      { ...blank, claim: "C1", why: "Needs the club.", needsOwner: "Your club's records." },
+      { ...blank, claim: "C2", why: "Needs your notes.", needsOwner: "Your own inspection notes." },
+      { ...desk, claim: "C3", why: "No longer blocked." },
+    ] };
+    // A request about C1, which is set aside, is refused; the one about C2 stops the loop.
+    expect(await advance(context())).toMatchObject({ step: "design", status: "needs-you", did: expect.stringContaining("inspection notes") });
+    // The agent settles C2 by hand by retracting it; the loop stops waiting on its request and designs again.
+    ledger.retract("claim", 2, "Folded into a sharper claim.");
+    ledger.addClaim(1, "mechanism", "Speech splits by hive.", "Under half the notes name a hive.");
+    ledger.addIdea({ projectId: 1, title: "Voice log 2", pitch: "Talk.", claimIds: [1, 3] });
+    expect(await advance(context())).toMatchObject({ step: "design", status: "continue", did: expect.stringContaining("for C3") });
+  });
+
   test("a verdict answers only the test it names, so a newer test on the claim still runs", async () => {
     ledger.createProject("hives", "Anything.");
     ledger.logStep(1, "frame", null, { surveyQueries: [] });
