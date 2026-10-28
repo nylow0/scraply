@@ -61,6 +61,8 @@ const ATTEMPT_FILE_CHARS = 20_000;
 const MAX_TESTS_PER_CLAIM = 2;
 const READ_SOURCE_CHARS = 25_000;
 const READ_BATCH_CHARS = 75_000;
+/** Each run's output the findings step sees: up to twelve tests stay well under the worker's 2 MiB input. */
+const FINDINGS_RUN_CHARS = 40_000;
 const SURVEY_SOURCES = 8;
 /** Uncited sources the test read, shown in full to its reviewer beside the cited ones. */
 const REVIEW_UNCITED_SOURCES = 6;
@@ -148,6 +150,13 @@ function fullText(context: LoopContext, sourceId: string) {
     offset = window.nextOffset;
   }
   return text;
+}
+
+/** The start and the end of a long text within `max` characters; programs usually print their results last. */
+function headAndTail(text: string, max: number) {
+  if (text.length <= max) return text;
+  const head = Math.floor(max / 4);
+  return `${text.slice(0, head)}\n[... ${text.length - max} characters left out ...]\n${text.slice(text.length - (max - head))}`;
 }
 
 /** A run counts only if it exited cleanly and did not report a failed sanity check or setup. */
@@ -352,7 +361,8 @@ async function design(context: LoopContext, view: View, testable: readonly Claim
       };
     }
     const experiment = proposed.kind === "experiment" && proposed.sanity && proposed.control && proposed.holdout;
-    if (!proposed.method.trim() || !proposed.prediction.trim() || !proposed.stopWhen.trim()) refusal = "A test needs a method, a prediction, and a stop condition, or set needsOwner.";
+    if (!testable.some(item => item.id === proposed.claim.trim().toUpperCase())) refusal = `The test must be for one of the open claims: ${testable.map(item => item.id).join(", ")}.`;
+    else if (!proposed.method.trim() || !proposed.prediction.trim() || !proposed.stopWhen.trim()) refusal = "A test needs a method, a prediction, and a stop condition, or set needsOwner.";
     else if (proposed.kind === "experiment" && !experiment) refusal = "An experiment needs sanity, control, and holdout, each filled in.";
     else if (!experiment && !proposed.queries.length) refusal = "A desk test needs at least one search query. Write queries, design an experiment, or set needsOwner.";
     else if (!experiment && !context.searchWeb) refusal = "No web search is available, so the test must be an experiment, or set needsOwner.";
@@ -362,7 +372,7 @@ async function design(context: LoopContext, view: View, testable: readonly Claim
     if (!context.searchWeb) throw new CliError("NO_KEY", "The next test needs web search, and no search provider has a key. Save one with: scraply key set exa");
     throw new CliError("MODEL_FAILED", `The design step could not produce a runnable test (${refusal}). Run the command again.`);
   }
-  const claim = testable.find(item => item.id === output.claim.trim().toUpperCase()) ?? testable[0]!;
+  const claim = testable.find(item => item.id === output.claim.trim().toUpperCase())!;
   const experiment = output.kind === "experiment" && output.sanity && output.control && output.holdout;
   const test = context.ledger.addTest(parseId("claim", claim.id), {
     method: output.method, prediction: output.prediction, stopWhen: output.stopWhen,
@@ -414,7 +424,8 @@ async function read(context: LoopContext, view: View, claim: ClaimView, test: Te
       catch (error) { failed([item], error); unread.add(item.source); }
     }
   }
-  if (failure && unread.size === new Set(evidence.map(item => item.source)).size) throw failure;
+  // Stop only when nothing could be read; a source with any part unread is reported as unread.
+  if (failure && !answers.length) throw failure;
   const saved: string[] = [];
   const bearings: { quote: string; bearing: string }[] = [];
   let dropped = 0;
@@ -605,8 +616,11 @@ async function findings(context: LoopContext, view: View): Promise<StepResult> {
       }),
       quotes: live(view.quotes).map(quote => ({ id: quote.id, text: quote.text, speaker: quote.speaker, kind: quote.kind })),
       priorArt: live(view.notes).filter(note => note.kind === "prior-art" || note.kind === "framing").map(note => ({ kind: note.kind, text: note.text })),
-      experimentOutput: view.sources.filter(source => source.test && runSucceeded(context, source))
-        .map(source => ({ source: source.id, test: source.test, text: fullText(context, source.id) })),
+      // The newest good run of each of this idea's tests, cut to its start and end so the call stays within the worker's input limit.
+      experimentOutput: claims.flatMap(claim => live(claim.tests)).flatMap(test => {
+        const run = view.sources.filter(source => source.test === test.id && runSucceeded(context, source)).at(-1);
+        return run ? [{ source: run.id, test: test.id, text: headAndTail(fullText(context, run.id), FINDINGS_RUN_CHARS) }] : [];
+      }),
     },
   });
   context.ledger.addNote(context.projectId, "summary", output.summary);

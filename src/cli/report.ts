@@ -6,7 +6,7 @@ const retractedMark = (item: { retracted?: string }) => item.retracted ? ` (retr
 const block = (text: string) => text.split(/\r?\n/).map(line => `> ${line}`).join("\n");
 
 /**
- * A readable Markdown report of a whole project: ideas with the status of every claim they rest on,
+ * A readable Markdown report of a whole project: notes with the quotes they cite, ideas with the status of every claim they rest on,
  * then each claim with its tests, verdicts, the quotes they cite, and their reviews, then every
  * search and source, including the ones that failed. Built from `exportProject`, so it never says
  * more than the JSON export does.
@@ -14,11 +14,21 @@ const block = (text: string) => text.split(/\r?\n/).map(line => `> ${line}`).joi
 export function renderReport(project: ProjectExport): string {
   const quotes = new Map(project.quotes.map(quote => [quote.id, quote]));
   const sources = new Map(project.sources.map(source => [source.id, source]));
+  /** A cited quote in full, with who said it and where, so the claim citing it can be checked from the report. */
+  const cite = (id: string) => {
+    const quote = quotes.get(id);
+    if (!quote) return [];
+    const source = sources.get(quote.source);
+    return [block(quote.text), `> — ${quote.speaker} (${quote.kind}), ${quote.id} from [${source?.title ?? source?.url ?? quote.source}](${source?.url ?? ""})${retractedMark(quote)}`, ""];
+  };
   const lines = [`# ${project.project.name}`, "", `**Seed:** ${project.project.seed}`, "", `Exported ${project.exportedAt}.`, ""];
 
   if (project.notes.length) {
     lines.push("## Notes", "");
-    for (const note of project.notes) lines.push(`- **${note.id}** ${note.kind}: ${note.text}${note.quotes ? ` (${note.quotes.join(", ")})` : ""}${retractedMark(note)}`);
+    for (const note of project.notes) {
+      lines.push(`- **${note.id}** ${note.kind}: ${note.text}${note.quotes ? ` (${note.quotes.join(", ")})` : ""}${retractedMark(note)}`);
+      if (note.quotes?.length) lines.push("", ...note.quotes.flatMap(cite));
+    }
     lines.push("");
   }
 
@@ -43,12 +53,7 @@ export function renderReport(project: ProjectExport): string {
     for (const verdict of claim.verdicts) {
       const tested = verdict.test ? `, answers ${verdict.test} with ${verdict.quotesNewSincePrediction} quote(s) new since the prediction` : "";
       lines.push(`#### ${verdict.id}: ${verdict.result} by ${verdict.by}, ${verdict.decidedAt}${tested}${verdict.stale ? " (stale: cites retracted evidence)" : ""}`, "", verdict.note, "");
-      for (const id of verdict.quotes) {
-        const quote = quotes.get(id);
-        const source = quote ? sources.get(quote.source) : undefined;
-        if (!quote) continue;
-        lines.push(block(quote.text), `> — ${quote.speaker} (${quote.kind}), ${quote.id} from [${source?.title ?? source?.url ?? quote.source}](${source?.url ?? ""})${retractedMark(quote)}`, "");
-      }
+      lines.push(...verdict.quotes.flatMap(cite));
       for (const review of verdict.reviews) lines.push(`- Review ${review.id}: **${review.result}** by ${review.by}. ${review.note}`);
       if (verdict.reviews.length) lines.push("");
       else if (verdict.result !== "unclear") lines.push("- Not reviewed yet.", "");

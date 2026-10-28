@@ -178,6 +178,8 @@ describe("the seed-and-kill-test loop", () => {
     expect(await step(agentFindings)).toMatchObject({ step: "findings", status: "needs-you", did: expect.stringContaining("Still waiting") });
 
     ledger.addNote(1, "finding", "Transcribing is the real chore.", [2]);
+    // The report shows the quote a finding cites, so the finding can be checked from the report alone.
+    expect(renderReport(ledger.exportProject(1))).toMatch(/finding: Transcribing is the real chore\. \(Q2\)\n\n> Typing up my dictaphone notes takes longer than the inspection itself\.\n> — ridgehives \(firsthand\), Q2/);
     const variant = ledger.addNote(1, "variant", "Dictaphone to hive records: turn spoken notes into per-hive entries. Why: Q2 says typing them up is the chore.");
     expect(await step(agentFindings)).toMatchObject({ step: "findings", status: "needs-you", next: expect.stringContaining(`scraply variant accept <${variant.id}>`) });
     expect(await step(agentFindings)).toMatchObject({ step: "steer", status: "done" });
@@ -416,6 +418,54 @@ describe("the seed-and-kill-test loop", () => {
     expect((await advanceUntilBlocked(reviewing, 2)).map(item => item.step)).toEqual(["verdict", "review"]);
     expect(reviewEvidence).toEqual(["S2.1", "S2.2", "S2.3", "S2.4"]);
     expect(ledger.show(1).claims[0]).toMatchObject({ status: "supported" });
+
+    // The findings step gets the good run cut to its start and end, so many long runs still fit in one call.
+    answers.findings = [{ summary: "The forecaster held.", findings: [], variants: [] }];
+    const findingsInputs: { experimentOutput: { source: string; text: string }[] }[] = [];
+    const summing = context({ think: async request => { if (request.step === "findings") findingsInputs.push(request.inputs as typeof findingsInputs[number]); return think(request); } });
+    expect(await advance(summing)).toMatchObject({ step: "findings" });
+    const shown = findingsInputs[0]!.experimentOutput;
+    expect(shown.map(item => item.source)).toEqual(["S2"]);
+    expect(shown[0]!.text.length).toBeLessThan(40_100);
+    expect(shown[0]!.text).toContain("characters left out");
+    expect(shown[0]!.text).toContain("Forecaster AUC 0.71");
+  });
+
+  test("one part of a long run the model cannot read is reported unread, and the parts it read are kept", async () => {
+    ledger.createProject("quakes", "Anything.");
+    ledger.logStep(1, "frame", null, { surveyQueries: [] });
+    ledger.logStep(1, "survey", null, { skipped: "test" });
+    answers = {
+      split: [{ idea: { title: "Forecaster", pitch: "Odds." }, claims: [{ kind: "mechanism", statement: "It beats the baseline.", killIf: "No lift." }], reuse: [] }],
+      design: [{ claim: "C1", why: "Data.", kind: "experiment", method: "Fit.", prediction: "Lift.", stopWhen: "One run.", queries: [], cuts: [], sanity: "Known event.", control: "Baseline.", holdout: "Later years.", needsOwner: null, setAside: null }],
+      script: [{ files: [{ name: "a.ts", content: "console.log('x')" }], command: ["bun", "a.ts"], explanation: "Run." }],
+      read: [{ quotes: [] }, { quotes: [{ source: "S1.3", text: "Forecaster AUC 0.71 against baseline 0.58 on held-out years.", speaker: "T1 run 1", kind: "measured", bearing: "for" }] }],
+    };
+    const output = `${"row of intermediate output\n".repeat(2_500)}Forecaster AUC 0.71 against baseline 0.58 on held-out years.\n[exit code 0]`;
+    const runCommand: LoopContext["runCommand"] = async command => ({ command: command.join(" "), exitCode: 0, output });
+    const flaky: Think = async request => {
+      if (request.step === "read" && (request.evidence ?? []).some(item => item.id === "S1.2")) throw new CliError("MODEL_FAILED", "The read step's model call failed: operation timed out.");
+      return think(request);
+    };
+    const steps = await advanceUntilBlocked(context({ trust: true, runCommand, think: flaky }), 5);
+    expect(steps.map(item => item.step)).toEqual(["split", "design", "script", "run", "read"]);
+    expect(steps.at(-1)).toMatchObject({ did: expect.stringContaining("saved 1 quote(s); could not read S1") });
+  });
+
+  test("a design for a claim that is not open is refused and asked again, never attached to another claim", async () => {
+    ledger.createProject("hives", "Anything.");
+    ledger.logStep(1, "frame", null, { surveyQueries: [] });
+    ledger.logStep(1, "survey", null, { skipped: "test" });
+    ledger.addClaim(1, "gap", "Nothing sells this.", "A product sells it.");
+    ledger.addClaim(1, "need", "Keepers lose notes.", "Fewer than two describe it.");
+    ledger.addIdea({ projectId: 1, title: "Voice log", pitch: "Talk.", claimIds: [1, 2] });
+    ledger.logStep(1, "untestable", "C1", { why: "Only the owner's club could say." });
+    const desk = { kind: "desk", method: "Read forums.", prediction: "Two.", stopWhen: "One search.", queries: ["hive notes"], cuts: [], sanity: null, control: null, holdout: null, needsOwner: null, setAside: null };
+    answers = { design: [{ ...desk, claim: "C1", why: "Price check." }, { ...desk, claim: "C2", why: "Accounts." }] };
+    const designInputs: unknown[] = [];
+    expect(await advance(context({ think: async request => { designInputs.push(request.inputs); return think(request); } })))
+      .toMatchObject({ step: "design", did: expect.stringContaining("T1 for C2") });
+    expect(designInputs[1]).toMatchObject({ previousRefusal: expect.stringContaining("open claims: C2") });
   });
 
   test("a verdict answers only the test it names, so a newer test on the claim still runs", async () => {
