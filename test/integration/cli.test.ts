@@ -390,19 +390,25 @@ describe("scraply CLI", () => {
     expect(openSecrets(join(env.APPDATA!, "scraply")).load()).toMatchObject({ exaApiKey: "kept-exa-key", providerCredentials: {} });
   });
 
-  test.skipIf(process.platform !== "win32")("logout never deletes a sign-in another process saved while it was signing out", async () => {
+  test.skipIf(process.platform !== "win32")("logout never deletes or revokes a sign-in another process saved while it was signing out", async () => {
     const profile = join(env.APPDATA!, "scraply");
     const secrets = openSecrets(profile);
     await secrets.save({ ...secrets.load(), providerCredentials: { [MODEL_PROVIDER]: "account-a" } });
     const other = openSecrets(profile);
-    const session = {
-      client: { logout: async () => { await other.save({ ...other.load(), providerCredentials: { [MODEL_PROVIDER]: "account-b" } }); } },
-      persist: async () => undefined, hasSavedAccount: () => true, close: async () => undefined,
+    let revoked = 0;
+    // Another process signs in to account B while this worker starts, so the worker restores B.
+    const models = async () => {
+      await other.save({ ...other.load(), providerCredentials: { [MODEL_PROVIDER]: "account-b" } });
+      return {
+        client: { logout: async () => { revoked += 1; } }, held: () => "account-b",
+        persist: async () => undefined, hasSavedAccount: () => true, close: async () => undefined,
+      } as unknown as ModelSession;
     };
     let output = "";
-    await runCli(["logout"], { write: text => { output += text; }, notify: () => undefined, isTTY: false, env, models: async () => session as unknown as ModelSession });
+    await runCli(["logout"], { write: text => { output += text; }, notify: () => undefined, isTTY: false, env, models });
     expect(JSON.parse(output)).toMatchObject({ ok: false, error: { code: "CREDENTIALS_CONFLICT" } });
     expect(openSecrets(profile).load().providerCredentials).toEqual({ [MODEL_PROVIDER]: "account-b" });
+    expect(revoked).toBe(0);
   });
 
   test("only a rejected sign-in asks to sign in again; an outage says to try later without refreshing", async () => {
@@ -419,6 +425,17 @@ describe("scraply CLI", () => {
     expect(refreshed).toBe(0);
     expect(await connectedModels(session(new ProviderFailure("auth", "Token expired", false)))).toMatchObject({ models: [] });
     expect(refreshed).toBe(1);
+
+    // A refresh the provider refuses needs a new sign-in, not a later retry.
+    const refused = {
+      client: {
+        listModels: async () => { throw new ProviderFailure("auth", "Token expired", false); },
+        refreshAccount: async () => { throw new ProviderFailure("unavailable", "Sign in again", false, { runtimeCode: "reconnect_required" }); },
+        listAccounts: async () => [],
+      },
+      persist: async () => undefined, hasSavedAccount: () => true, close: async () => undefined,
+    } as unknown as ModelSession;
+    await expect(connectedModels(refused)).rejects.toMatchObject({ code: "SIGNED_OUT" });
   });
 
   test("legacy export writes every desktop project with the app's own exporters and leaves the database untouched", async () => {

@@ -71,7 +71,7 @@ export async function openModelSession(profileDir: string, env: Record<string, s
     await client.close();
     throw new CliError("RUNTIME_FAILED", `The model worker did not start: ${error instanceof Error ? error.message : "unknown error"}`);
   }
-  return { client, persist, hasSavedAccount: () => Boolean(secrets.load().providerCredentials[MODEL_PROVIDER]), close: () => client.close() };
+  return { client, persist, held: (providerId: string) => held[providerId], hasSavedAccount: () => Boolean(secrets.load().providerCredentials[MODEL_PROVIDER]), close: () => client.close() };
 }
 
 /** The account and its runnable models, refreshing the account once if its session expired. */
@@ -79,7 +79,8 @@ export async function connectedModels(session: ModelSession) {
   if (!session.hasSavedAccount()) throw new CliError("SIGNED_OUT", "No model account. Sign in with: scraply login");
   const list = () => session.client.listModels(MODEL_PROVIDER);
   // Only a rejected sign-in means signing in again; an outage or rate limit means trying again later.
-  const failed = (error: unknown) => error instanceof ProviderFailure && error.code === "auth"
+  // A refresh the provider refuses comes back as reconnect_required, which also needs a new sign-in.
+  const failed = (error: unknown) => error instanceof ProviderFailure && (error.code === "auth" || error.runtimeCode === "reconnect_required")
     ? new CliError("SIGNED_OUT", `The saved model account no longer works (${error.message}). Sign in again with: scraply login`)
     : error instanceof CliError ? error
       : new CliError("MODEL_UNREACHABLE", `The model account could not be reached (${error instanceof Error ? error.message : "unknown error"}). Run the command again later.`);
