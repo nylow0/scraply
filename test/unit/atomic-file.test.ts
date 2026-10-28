@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { writeFileAtomically } from "../../src/main/atomic-file";
+import { writeFileAtomically } from "../../src/cli/atomic-file";
 
 describe("atomic encrypted-file replacement", () => {
   test("retains the previous file and removes the encrypted temporary when replacement fails", () => {

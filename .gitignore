@@ -12,7 +12,6 @@ release/
 previous-builds/
 dist/
 build/*
-!build/icon.png
 .scraply/
 .agents/
 .cursor/

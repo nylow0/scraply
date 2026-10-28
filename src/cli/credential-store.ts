@@ -5,34 +5,22 @@ import { dirname, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { setTimeout as delay } from "node:timers/promises";
 import { z } from "zod";
-import type { BackendSecrets } from "../shared/backend-process";
-import { AppError } from "../shared/errors";
 import { writeFileAtomically } from "./atomic-file";
+import { CliError } from "./output";
 
+/**
+ * The encrypted `secrets.bin` that holds search keys and model-account credentials, in the
+ * format the desktop app wrote, so existing keys and sign-ins carry over. Saves merge field by
+ * field under a cross-process lock and refuse to overwrite a value another process changed.
+ */
 const StoredSecretsSchema = z.object({
   exaApiKey: z.string().nullable().default(null),
   perplexityApiKey: z.string().nullable().default(null),
   providerCredentials: z.record(z.string()).default({}),
 });
+export type StoredSecrets = z.infer<typeof StoredSecretsSchema>;
 
-export interface CredentialStoreLocation {
-  credentialsPath: string;
-  sessionDataPath: string | null;
-}
-
-export function resolveCredentialStoreLocation(options: {
-  appData: string; userData: string; development: boolean; e2e: boolean; isolatedDevelopment: boolean;
-}): CredentialStoreLocation {
-  // Keep the installed file and format. Explicit test profiles never share real credentials.
-  const sharesInstalledProfile = options.development && !options.e2e && !options.isolatedDevelopment;
-  const directory = sharesInstalledProfile ? join(options.appData, "scraply") : options.userData;
-  return {
-    credentialsPath: join(directory, "secrets.bin"),
-    sessionDataPath: sharesInstalledProfile ? directory : null,
-  };
-}
-
-interface Encryption {
+export interface Encryption {
   isEncryptionAvailable(): boolean;
   encryptString(value: string): Buffer;
   decryptString(value: Buffer): string;
@@ -54,32 +42,34 @@ async function lockStore(path: string): Promise<() => Promise<void>> {
       });
       return () => new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
     } catch (error) {
-      if (!(error instanceof Error) || !("code" in error) || error.code !== "EADDRINUSE") throw error;
+      // Node reports a held pipe as EADDRINUSE; Bun on Windows reports it as ERR_INVALID_ARG_TYPE.
+      const code = error instanceof Error && "code" in error ? error.code : undefined;
+      if (code !== "EADDRINUSE" && !(process.platform === "win32" && code === "ERR_INVALID_ARG_TYPE")) throw error;
       await delay(20);
     }
   }
-  throw new AppError("internal_error", "Credential storage is busy. Try again.");
+  throw new CliError("CREDENTIALS_BUSY", "Credential storage is busy. Try again.");
 }
 
 export function createCredentialStore(path: string, encryption: Encryption) {
-  let baseline: BackendSecrets | undefined;
+  let baseline: StoredSecrets | undefined;
   let pendingSave: Promise<void> = Promise.resolve();
-  function read(): BackendSecrets {
-    if (!encryption.isEncryptionAvailable()) throw new AppError("secure_storage_unavailable");
+  function read(): StoredSecrets {
+    if (!encryption.isEncryptionAvailable()) throw new CliError("CREDENTIALS_UNAVAILABLE", "Encrypted credential storage is unavailable on this machine.");
     if (!existsSync(path)) return StoredSecretsSchema.parse({});
     try {
       return StoredSecretsSchema.parse(JSON.parse(encryption.decryptString(readFileSync(path))));
     } catch {
-      throw new AppError("internal_error", "Saved credentials could not be read. The encrypted file has been left untouched.");
+      throw new CliError("CREDENTIALS_UNREADABLE", "Saved credentials could not be read. The encrypted file has been left untouched. Set EXA_API_KEY or PERPLEXITY_API_KEY instead.");
     }
   }
 
   return {
-    load(): BackendSecrets {
+    load(): StoredSecrets {
       baseline = read();
       return structuredClone(baseline);
     },
-    async save(next: BackendSecrets, beforeWrite?: () => void): Promise<BackendSecrets> {
+    async save(next: StoredSecrets, beforeWrite?: () => void): Promise<StoredSecrets> {
       if (!baseline) throw new Error("Load credential storage before saving");
       const requestedBaseline = structuredClone(baseline);
       const candidate = StoredSecretsSchema.parse(next);
@@ -94,7 +84,7 @@ export function createCredentialStore(path: string, encryption: Encryption) {
           const current = read();
           let changed = false;
           const conflict = () => {
-            throw new AppError("internal_error", "Credentials changed in another Scraply instance. Restart this instance before changing the account or keys.");
+            throw new CliError("CREDENTIALS_CONFLICT", "Credentials changed in another Scraply process. Run the command again.");
           };
           for (const key of ["exaApiKey", "perplexityApiKey"] as const) {
             if (candidate[key] === requestedBaseline[key]) continue;

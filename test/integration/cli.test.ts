@@ -6,7 +6,10 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { startBackend } from "../../src/backend/server";
+import { openSecrets } from "../../src/cli/credentials";
 import { runCli } from "../../src/cli/main";
+import { MODEL_PROVIDER, connectedModels, credentialsToRestore, type ModelSession } from "../../src/cli/model";
+import { ProviderFailure } from "../../src/providers/structured";
 
 // Synthetic forum threads. The first is read before any prediction; the second only afterwards.
 const THREAD = `<!doctype html><html><head><title>Inspection notes &amp; gloves</title><script>var x = "ignored";</script></head>
@@ -30,6 +33,7 @@ beforeEach(() => {
   // APPDATA points at an empty folder, so no real saved keys or desktop data can be read.
   env = { APPDATA: join(root, "appdata"), SCRAPLY_DATA_DIR: join(root, "ledger") };
   requests = [];
+  stdin = "";
 });
 // Windows can hold a just-written file for a moment; retry like the backend tests do.
 afterEach(async () => {
@@ -68,9 +72,10 @@ const fakeFetch = (async (input: string | URL | Request, init?: RequestInit) => 
 interface Envelope { exitCode: number; ok: boolean; data?: unknown; error?: { code: string; message: string } }
 
 /** Run one command the way an agent does (piped, so JSON) and return the parsed envelope. */
+let stdin = "";
 async function scraply(...argv: string[]): Promise<Envelope> {
   let output = "";
-  const exitCode = await runCli(argv, { write: text => { output += text; }, isTTY: false, env, fetcher: fakeFetch });
+  const exitCode = await runCli(argv, { write: text => { output += text; }, notify: () => undefined, readStdin: async () => stdin, isTTY: false, env, fetcher: fakeFetch });
   return { exitCode, ...JSON.parse(output) };
 }
 
@@ -354,6 +359,106 @@ describe("scraply CLI", () => {
     await scraply("project", "new", "keys", "--seed", "Anything.");
     await scraply("search", "hive app pricing", "--project", "P1");
     expect(new Headers(requests[0]!.headers).get("x-api-key")).toBe("saved-exa-key");
+  });
+
+  test.skipIf(process.platform !== "win32")("keys piped into key set are saved encrypted and used by search, and models answers signed-out without a worker", async () => {
+    expect(await scraply("status")).toMatchObject({ data: { searchProviders: [], modelAccount: "signed-out" } });
+    expect(await scraply("models")).toMatchObject({ exitCode: 1, error: { code: "SIGNED_OUT" } });
+
+    stdin = "two words\n";
+    expect(await scraply("key", "set", "exa")).toMatchObject({ exitCode: 2, error: { code: "USAGE" } });
+    stdin = "piped-exa-key\n";
+    expect(await scraply("key", "set", "exa")).toMatchObject({ data: { provider: "exa", saved: true } });
+    const saved = readFileSync(join(env.APPDATA!, "scraply", "secrets.bin"));
+    expect(saved.subarray(0, 3).toString()).toBe("v10");
+    expect(saved.toString("latin1")).not.toContain("piped-exa-key");
+
+    await scraply("project", "new", "keys", "--seed", "Anything.");
+    await scraply("search", "hive app pricing", "--project", "P1");
+    expect(new Headers(requests[0]!.headers).get("x-api-key")).toBe("piped-exa-key");
+    expect(await scraply("key", "remove", "exa")).toMatchObject({ data: { saved: false } });
+    expect(await scraply("status")).toMatchObject({ data: { searchProviders: [] } });
+  });
+
+  test.skipIf(process.platform !== "win32")("logout deletes the saved account even when the model worker cannot start", async () => {
+    const secrets = openSecrets(join(env.APPDATA!, "scraply"));
+    const current = secrets.load();
+    await secrets.save({ ...current, exaApiKey: "kept-exa-key", providerCredentials: { [MODEL_PROVIDER]: "synthetic-account" } });
+    env.SCRAPLY_AGENT_PATH = join(root, "missing", "scraply-agent.exe");
+    expect(await scraply("status")).toMatchObject({ data: { modelAccount: "saved" } });
+    expect(await scraply("logout")).toMatchObject({ data: { connected: false } });
+    expect(openSecrets(join(env.APPDATA!, "scraply")).load()).toMatchObject({ exaApiKey: "kept-exa-key", providerCredentials: {} });
+  });
+
+  test.skipIf(process.platform !== "win32")("logout never deletes or revokes a sign-in another process saved while it was signing out", async () => {
+    const profile = join(env.APPDATA!, "scraply");
+    const secrets = openSecrets(profile);
+    await secrets.save({ ...secrets.load(), providerCredentials: { [MODEL_PROVIDER]: "account-a" } });
+    const other = openSecrets(profile);
+    let revoked = 0;
+    // Another process signs in to account B while this worker starts, so the worker restores B.
+    const models = async () => {
+      await other.save({ ...other.load(), providerCredentials: { [MODEL_PROVIDER]: "account-b" } });
+      return {
+        client: { logout: async () => { revoked += 1; } }, held: () => "account-b",
+        persist: async () => undefined, hasSavedAccount: () => true, close: async () => undefined,
+      } as unknown as ModelSession;
+    };
+    let output = "";
+    await runCli(["logout"], { write: text => { output += text; }, notify: () => undefined, isTTY: false, env, models });
+    expect(JSON.parse(output)).toMatchObject({ ok: false, error: { code: "CREDENTIALS_CONFLICT" } });
+    expect(openSecrets(profile).load().providerCredentials).toEqual({ [MODEL_PROVIDER]: "account-b" });
+    expect(revoked).toBe(0);
+  });
+
+  test.skipIf(process.platform !== "win32")("logout revokes the account it checked before deleting it", async () => {
+    const profile = join(env.APPDATA!, "scraply");
+    const secrets = openSecrets(profile);
+    await secrets.save({ ...secrets.load(), providerCredentials: { [MODEL_PROVIDER]: "account-a" } });
+    const savedAtRevoke: (string | undefined)[] = [];
+    const session = {
+      client: { logout: async () => { savedAtRevoke.push(openSecrets(profile).load().providerCredentials[MODEL_PROVIDER]); } },
+      held: () => "account-a", persist: async () => undefined, hasSavedAccount: () => true, close: async () => undefined,
+    } as unknown as ModelSession;
+    let output = "";
+    await runCli(["logout"], { write: text => { output += text; }, notify: () => undefined, isTTY: false, env, models: async () => session });
+    expect(JSON.parse(output)).toMatchObject({ ok: true, data: { connected: false } });
+    expect(savedAtRevoke).toEqual(["account-a"]);
+    expect(openSecrets(profile).load().providerCredentials).toEqual({});
+  });
+
+  test("a restarted worker restores only the accounts its process began with", () => {
+    const saved = { [MODEL_PROVIDER]: "account-b", other: "kept" };
+    expect(credentialsToRestore(saved, undefined)).toEqual([[MODEL_PROVIDER, "account-b"], ["other", "kept"]]);
+    // Another process signed in to B while this one held A: the restarted worker leaves B alone.
+    expect(credentialsToRestore(saved, { [MODEL_PROVIDER]: "account-a", other: "kept" })).toEqual([["other", "kept"]]);
+  });
+
+  test("only a rejected sign-in asks to sign in again; an outage says to try later without refreshing", async () => {
+    let refreshed = 0;
+    const session = (failure: ProviderFailure) => ({
+      client: {
+        listModels: async () => { if (!refreshed) throw failure; return []; },
+        refreshAccount: async () => { refreshed += 1; },
+        listAccounts: async () => [],
+      },
+      persist: async () => undefined, hasSavedAccount: () => true, close: async () => undefined,
+    }) as unknown as ModelSession;
+    await expect(connectedModels(session(new ProviderFailure("unavailable", "Service down", true)))).rejects.toMatchObject({ code: "MODEL_UNREACHABLE" });
+    expect(refreshed).toBe(0);
+    expect(await connectedModels(session(new ProviderFailure("auth", "Token expired", false)))).toMatchObject({ models: [] });
+    expect(refreshed).toBe(1);
+
+    // A refresh the provider refuses needs a new sign-in, not a later retry.
+    const refused = {
+      client: {
+        listModels: async () => { throw new ProviderFailure("auth", "Token expired", false); },
+        refreshAccount: async () => { throw new ProviderFailure("unavailable", "Sign in again", false, { runtimeCode: "reconnect_required" }); },
+        listAccounts: async () => [],
+      },
+      persist: async () => undefined, hasSavedAccount: () => true, close: async () => undefined,
+    } as unknown as ModelSession;
+    await expect(connectedModels(refused)).rejects.toMatchObject({ code: "SIGNED_OUT" });
   });
 
   test("legacy export writes every desktop project with the app's own exporters and leaves the database untouched", async () => {

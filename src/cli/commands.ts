@@ -1,23 +1,30 @@
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { commandUsage, globalFlags, listFlag, requiredFlag, stringFlag, type CommandArguments, type CommandShape } from "./args";
-import { availableProviders, searchKey, type SearchProvider } from "./credentials";
+import { availableProviders, openSecrets, searchKey, type SearchProvider } from "./credentials";
 import {
   CLAIM_KINDS, FILE_ORIGINS, MAX_SOURCE_CHARS, NOTE_KINDS, QUOTE_KINDS, RETRACTABLE, REVIEW_RESULTS, VERDICT_RESULTS,
   parseAnyId, parseId, type Ledger,
 } from "./ledger";
 import { desktopDatabasePath, exportDesktopProjects } from "./legacy";
+import { MODEL_PROVIDER, connectedModels, findRuntime, type ModelSession } from "./model";
 import { CliError } from "./output";
 import { fetchDirect, fetchViaExa, search } from "./pages";
 import { renderReport } from "./report";
 
 export interface CommandContext {
   ledger: () => Ledger;
+  /** The model worker with the saved account restored, started on first use. */
+  models: () => Promise<ModelSession>;
   dataDir: string;
-  /** The desktop app's profile folder, where its database and saved search keys live. */
+  /** The Scraply profile folder (%APPDATA%\scraply): encrypted keys and account, and the desktop app's data. */
   profileDir: string;
   env: Record<string, string | undefined>;
   fetcher: typeof fetch;
+  /** Tell the person at the terminal something; never part of the JSON result. */
+  notify: (text: string) => void;
+  readStdin: () => Promise<string>;
+  openUrl: (url: string) => void;
 }
 
 export interface Command extends CommandShape {
@@ -41,12 +48,104 @@ const projectFlag = { name: "project", type: "string", required: true, descripti
 export const commands: readonly Command[] = [
   {
     path: ["status"],
-    description: "Show the ledger folder, which search providers have a key, and whether the desktop app's database exists.",
-    run: context => ({
-      dataDir: context.dataDir,
-      searchProviders: availableProviders(context.profileDir, context.env),
-      desktopDatabase: existsSync(desktopDatabasePath(context.profileDir)),
-    }),
+    description: "Show the ledger folder, which search providers have a key, whether a model account is saved, and whether the model worker and the desktop app's database exist.",
+    run: context => {
+      let runtime: string;
+      try { runtime = findRuntime(context.env)?.executablePath ?? "missing"; }
+      catch { runtime = "invalid"; }
+      return {
+        dataDir: context.dataDir,
+        searchProviders: availableProviders(context.profileDir, context.env),
+        modelAccount: openSecrets(context.profileDir).load().providerCredentials[MODEL_PROVIDER] ? "saved" : "signed-out",
+        runtime,
+        desktopDatabase: existsSync(desktopDatabasePath(context.profileDir)),
+      };
+    },
+  },
+  {
+    path: ["login"],
+    description: "Sign in to the OpenAI subscription account that runs the model. Opens the browser and waits up to five minutes.",
+    flags: [{ name: "method", type: "string", choices: ["browser", "device"], description: "browser (default) or device, which shows a code to enter at a URL." }],
+    run: async (context, args) => {
+      const session = await context.models();
+      const login = await session.client.startLogin(MODEL_PROVIDER, stringFlag(args, "method") === "device" ? "device" : "browser");
+      const url = login.method === "device" ? login.verificationUrl : login.authorizationUrl;
+      context.notify(login.method === "device" ? `Open ${url} and enter the code ${login.userCode}.` : `Finish signing in in the browser: ${url}`);
+      context.openUrl(url);
+      for (let attempt = 0; attempt < 300; attempt += 1) {
+        const result = await session.client.completeLogin(login.loginId, session.persist);
+        if (result) {
+          const { models } = await connectedModels(session);
+          return { connected: true, plan: result.account.plan ?? null, models: models.length };
+        }
+        await new Promise(resolve => setTimeout(resolve, 1_000));
+      }
+      await session.client.cancelLogin(login.loginId).catch(() => undefined);
+      throw new CliError("LOGIN_TIMEOUT", "Sign-in did not finish within five minutes. Run: scraply login");
+    },
+  },
+  {
+    path: ["logout"],
+    description: "Sign out of the model account and delete its saved credential.",
+    run: async context => {
+      // The saved credential goes even when the worker is missing or fails; the account is revoked when the worker starts.
+      // A sign-in another process saves meanwhile is refused as a conflict. The revoke runs right after the check, while
+      // the worker still holds the account read here: the client restarts a stopped worker, which restores whatever is saved then.
+      const secrets = openSecrets(context.profileDir);
+      const current = secrets.load();
+      const session = await context.models().catch(() => undefined);
+      if (session && session.held(MODEL_PROVIDER) !== current.providerCredentials[MODEL_PROVIDER]) {
+        throw new CliError("CREDENTIALS_CONFLICT", "The model account changed in another Scraply process. Run the command again.");
+      }
+      await session?.client.logout(MODEL_PROVIDER).catch(() => undefined);
+      const providerCredentials = { ...current.providerCredentials };
+      delete providerCredentials[MODEL_PROVIDER];
+      await secrets.save({ ...current, providerCredentials });
+      return { connected: false };
+    },
+  },
+  {
+    path: ["models"],
+    description: "List the models the signed-in account can run, with their reasoning efforts.",
+    run: async context => {
+      // Answer a signed-out profile without starting the worker.
+      if (!openSecrets(context.profileDir).load().providerCredentials[MODEL_PROVIDER]) throw new CliError("SIGNED_OUT", "No model account. Sign in with: scraply login");
+      const { account, models } = await connectedModels(await context.models());
+      return {
+        plan: account?.plan ?? null,
+        models: models.map(model => ({
+          id: model.identity.modelId, name: model.displayName,
+          ...(model.supportedReasoningEfforts ? { efforts: model.supportedReasoningEfforts } : {}),
+          ...(model.defaultReasoningEffort ? { defaultEffort: model.defaultReasoningEffort } : {}),
+        })),
+      };
+    },
+  },
+  {
+    path: ["key", "set"],
+    description: "Save a search key, read from stdin so it never appears in the command line or shell history: <key> | scraply key set exa",
+    positionals: [{ name: "provider", description: "exa or perplexity.", required: true }],
+    run: async (context, args) => {
+      const provider = pick(args.positionals[0]!, ["exa", "perplexity"] as const);
+      const key = (await context.readStdin()).trim();
+      if (!key || /\s/.test(key)) throw new CliError("USAGE", "Pipe exactly one key into the command, such as: Get-Clipboard | scraply key set exa", 2);
+      const store = openSecrets(context.profileDir);
+      const current = store.load();
+      await store.save({ ...current, [provider === "exa" ? "exaApiKey" : "perplexityApiKey"]: key });
+      return { provider, saved: true };
+    },
+  },
+  {
+    path: ["key", "remove"],
+    description: "Delete a saved search key.",
+    positionals: [{ name: "provider", description: "exa or perplexity.", required: true }],
+    run: async (context, args) => {
+      const provider = pick(args.positionals[0]!, ["exa", "perplexity"] as const);
+      const store = openSecrets(context.profileDir);
+      const current = store.load();
+      await store.save({ ...current, [provider === "exa" ? "exaApiKey" : "perplexityApiKey"]: null });
+      return { provider, saved: false };
+    },
   },
   {
     path: ["project", "new"],

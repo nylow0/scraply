@@ -3,7 +3,7 @@ import { randomBytes } from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { createCredentialStore, resolveCredentialStoreLocation } from "../../src/main/credential-store";
+import { createCredentialStore } from "../../src/cli/credential-store";
 import { createFixtureEncryption } from "../fixtures/credential-store-encryption";
 
 const directories: string[] = [];
@@ -18,22 +18,6 @@ function fixture() {
   const encryption = createFixtureEncryption(key);
   return { path, key, encryption, open: () => createCredentialStore(path, encryption) };
 }
-
-test("credential store location shares the installed profile only during normal development", () => {
-  const options = { appData: "roaming", userData: "dev-projects", development: true, e2e: false, isolatedDevelopment: false };
-  expect(resolveCredentialStoreLocation(options)).toEqual({
-    credentialsPath: join("roaming", "scraply", "secrets.bin"),
-    sessionDataPath: join("roaming", "scraply"),
-  });
-  expect(resolveCredentialStoreLocation({ ...options, development: false, userData: join("roaming", "scraply") })).toEqual({
-    credentialsPath: join("roaming", "scraply", "secrets.bin"), sessionDataPath: null,
-  });
-  for (const override of [{ e2e: true }, { isolatedDevelopment: true }, { development: false }]) {
-    expect(resolveCredentialStoreLocation({ ...options, ...override })).toEqual({
-      credentialsPath: join("dev-projects", "secrets.bin"), sessionDataPath: null,
-    });
-  }
-});
 
 test("reads the existing installed format and preserves unrelated concurrent key and account changes", async () => {
   const { path, encryption, open } = fixture();
@@ -52,6 +36,16 @@ test("reads the existing installed format and preserves unrelated concurrent key
   await dev.save({ ...newKey, perplexityApiKey: "another-key" });
   expect(open().load()).toEqual({ exaApiKey: "replacement-key", perplexityApiKey: "another-key", providerCredentials: { openai: "rotated-account" } });
   expect(readFileSync(path).includes(Buffer.from("rotated-account"))).toBe(false);
+});
+
+test("simultaneous writers under Bun wait for the lock instead of failing", async () => {
+  const { open } = fixture();
+  const first = open();
+  const second = open();
+  const one = first.load();
+  const two = second.load();
+  await Promise.all([first.save({ ...one, exaApiKey: "exa-key" }), second.save({ ...two, perplexityApiKey: "perplexity-key" })]);
+  expect(open().load()).toMatchObject({ exaApiKey: "exa-key", perplexityApiKey: "perplexity-key" });
 });
 
 test("separate Node processes serialize simultaneous credential writes", async () => {
@@ -120,7 +114,7 @@ test("overlapping saves still reject conflicting changes to the same credential"
   });
   const pendingSecondSave = secondSave;
   if (!pendingSecondSave) throw new Error("The overlapping save did not start");
-  await expect(pendingSecondSave).rejects.toThrow("Restart this instance");
+  await expect(pendingSecondSave).rejects.toThrow("changed in another Scraply process");
   expect(open().load().exaApiKey).toBe("first-key");
 });
 
@@ -133,10 +127,10 @@ test("a stale instance cannot resurrect a logged-out account or replace a newer 
   const current = desktop.load();
   const stale = dev.load();
   await desktop.save({ ...current, providerCredentials: {} });
-  await expect(dev.save({ ...stale, providerCredentials: { openai: "late-refresh" } })).rejects.toThrow("Restart this instance");
+  await expect(dev.save({ ...stale, providerCredentials: { openai: "late-refresh" } })).rejects.toThrow("changed in another Scraply process");
   expect(open().load().providerCredentials).toEqual({});
   await desktop.save({ ...current, providerCredentials: { openai: "different-login" } });
-  await expect(dev.save({ ...stale, providerCredentials: {} })).rejects.toThrow("Restart this instance");
+  await expect(dev.save({ ...stale, providerCredentials: {} })).rejects.toThrow("changed in another Scraply process");
   expect(open().load().providerCredentials).toEqual({ openai: "different-login" });
 });
 

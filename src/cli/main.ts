@@ -1,15 +1,28 @@
 #!/usr/bin/env bun
+import { spawn } from "node:child_process";
 import { join } from "node:path";
 import { parseArguments, stringFlag } from "./args";
 import { commands, describeCommands, type CommandContext } from "./commands";
 import { openLedger, type Ledger } from "./ledger";
+import { openModelSession, type ModelSession } from "./model";
 import { errorResponse, formatResponse, type ExitCode } from "./output";
 
 export interface CliOptions {
   write?: (text: string) => void;
+  /** Progress and instructions for the person at the terminal; stdout stays one JSON envelope. */
+  notify?: (text: string) => void;
+  readStdin?: () => Promise<string>;
+  openUrl?: (url: string) => void;
   isTTY?: boolean;
   env?: Record<string, string | undefined>;
   fetcher?: typeof fetch;
+  /** Replaces the model worker in tests. */
+  models?: () => Promise<ModelSession>;
+}
+
+/** Open a URL in the default browser without passing it through a shell. */
+function openInBrowser(url: string) {
+  spawn("rundll32.exe", ["url.dll,FileProtocolHandler", url], { detached: true, stdio: "ignore", windowsHide: true }).unref();
 }
 
 /**
@@ -21,6 +34,7 @@ export async function runCli(argv: readonly string[], options: CliOptions = {}):
   const env = options.env ?? process.env;
   let json = argv.includes("--json") || !(options.isTTY ?? process.stdout.isTTY);
   let ledger: Ledger | undefined;
+  let session: Promise<ModelSession> | undefined;
   try {
     const parsed = parseArguments(argv, commands);
     if (parsed.help || !parsed.command) {
@@ -33,7 +47,11 @@ export async function runCli(argv: readonly string[], options: CliOptions = {}):
     const dataDir = stringFlag(parsed.args, "data-dir") ?? env.SCRAPLY_DATA_DIR ?? join(profileDir, "cli");
     const context: CommandContext = {
       ledger: () => (ledger ??= openLedger(dataDir)),
+      models: () => (session ??= options.models?.() ?? openModelSession(profileDir, env)),
       dataDir, profileDir, env, fetcher: options.fetcher ?? fetch,
+      notify: options.notify ?? (text => { process.stderr.write(`${text}\n`); }),
+      readStdin: options.readStdin ?? (() => Bun.stdin.text()),
+      openUrl: options.openUrl ?? openInBrowser,
     };
     const data = await parsed.command.run(context, parsed.args);
     write(formatResponse({ ok: true, data }, json));
@@ -44,6 +62,7 @@ export async function runCli(argv: readonly string[], options: CliOptions = {}):
     return exitCode;
   } finally {
     ledger?.close();
+    await session?.then(open => open.close(), () => undefined);
   }
 }
 

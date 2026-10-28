@@ -1,4 +1,4 @@
-import { createCredentialStore } from "../../src/main/credential-store";
+import { createCredentialStore } from "../../src/cli/credential-store";
 import { createFixtureEncryption } from "./credential-store-encryption";
 
 // Only synthetic test credentials are accepted by this worker.
