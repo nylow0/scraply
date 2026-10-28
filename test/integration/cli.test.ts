@@ -8,7 +8,7 @@ import { join } from "node:path";
 import { startBackend } from "../../src/backend/server";
 import { openSecrets } from "../../src/cli/credentials";
 import { runCli } from "../../src/cli/main";
-import { MODEL_PROVIDER, connectedModels, type ModelSession } from "../../src/cli/model";
+import { MODEL_PROVIDER, connectedModels, credentialsToRestore, type ModelSession } from "../../src/cli/model";
 import { ProviderFailure } from "../../src/providers/structured";
 
 // Synthetic forum threads. The first is read before any prediction; the second only afterwards.
@@ -425,6 +425,13 @@ describe("scraply CLI", () => {
     expect(JSON.parse(output)).toMatchObject({ ok: true, data: { connected: false } });
     expect(savedAtRevoke).toEqual(["account-a"]);
     expect(openSecrets(profile).load().providerCredentials).toEqual({});
+  });
+
+  test("a restarted worker restores only the accounts its process began with", () => {
+    const saved = { [MODEL_PROVIDER]: "account-b", other: "kept" };
+    expect(credentialsToRestore(saved, undefined)).toEqual([[MODEL_PROVIDER, "account-b"], ["other", "kept"]]);
+    // Another process signed in to B while this one held A: the restarted worker leaves B alone.
+    expect(credentialsToRestore(saved, { [MODEL_PROVIDER]: "account-a", other: "kept" })).toEqual([["other", "kept"]]);
   });
 
   test("only a rejected sign-in asks to sign in again; an outage says to try later without refreshing", async () => {

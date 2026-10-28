@@ -38,6 +38,15 @@ export function findRuntime(env: Record<string, string | undefined>) {
 
 export type ModelSession = Awaited<ReturnType<typeof openModelSession>>;
 
+/**
+ * The saved credentials a worker restores: all of them when it first starts (`held` absent), and after a
+ * restart only the ones this process began with, so a stopped worker never comes back holding an account
+ * another process signed in to meanwhile, which logout would then revoke.
+ */
+export function credentialsToRestore(saved: Record<string, string>, held: Record<string, string | undefined> | undefined) {
+  return Object.entries(saved).filter(([providerId, credential]) => !held || held[providerId] === credential);
+}
+
 /** Start the worker with the saved account restored. Call `close` when done. */
 export async function openModelSession(profileDir: string, env: Record<string, string | undefined>) {
   let launch;
@@ -48,13 +57,15 @@ export async function openModelSession(profileDir: string, env: Record<string, s
   // The credentials this worker holds. A save is refused when the file no longer has them, so a
   // rotation in a long run never overwrites a sign-in or sign-out made meanwhile in another process.
   const held: Record<string, string | undefined> = {};
+  let started = false;
   const client = new RuntimeClient({ ...launch, appVersion: "scraply-cli", environment: env as NodeJS.ProcessEnv, maxConcurrentGenerations: 4 });
   client.setSessionInitializer(async session => {
-    for (const [providerId, credential] of Object.entries(secrets.load().providerCredentials)) {
+    for (const [providerId, credential] of credentialsToRestore(secrets.load().providerCredentials, started ? held : undefined)) {
       held[providerId] = credential;
       try { await session.restoreCredential(providerId, credential); }
       catch { await session.logout(providerId).catch(() => undefined); }
     }
+    started = true;
   });
   /** Save a credential the worker issued or rotated, before the worker may use it. */
   const persist = async (providerId: string, credential: string) => {
