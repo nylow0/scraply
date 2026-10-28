@@ -89,17 +89,18 @@ export const commands: readonly Command[] = [
     description: "Sign out of the model account and delete its saved credential.",
     run: async context => {
       // The saved credential goes even when the worker is missing or fails; the account is revoked when the worker starts.
-      // A sign-in another process saves meanwhile is refused as a conflict, before anything is deleted or revoked.
+      // A sign-in another process saves meanwhile is refused as a conflict. The revoke runs right after the check, while
+      // the worker still holds the account read here: the client restarts a stopped worker, which restores whatever is saved then.
       const secrets = openSecrets(context.profileDir);
       const current = secrets.load();
       const session = await context.models().catch(() => undefined);
       if (session && session.held(MODEL_PROVIDER) !== current.providerCredentials[MODEL_PROVIDER]) {
         throw new CliError("CREDENTIALS_CONFLICT", "The model account changed in another Scraply process. Run the command again.");
       }
+      await session?.client.logout(MODEL_PROVIDER).catch(() => undefined);
       const providerCredentials = { ...current.providerCredentials };
       delete providerCredentials[MODEL_PROVIDER];
       await secrets.save({ ...current, providerCredentials });
-      await session?.client.logout(MODEL_PROVIDER).catch(() => undefined);
       return { connected: false };
     },
   },

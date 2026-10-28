@@ -411,6 +411,22 @@ describe("scraply CLI", () => {
     expect(revoked).toBe(0);
   });
 
+  test.skipIf(process.platform !== "win32")("logout revokes the account it checked before deleting it", async () => {
+    const profile = join(env.APPDATA!, "scraply");
+    const secrets = openSecrets(profile);
+    await secrets.save({ ...secrets.load(), providerCredentials: { [MODEL_PROVIDER]: "account-a" } });
+    const savedAtRevoke: (string | undefined)[] = [];
+    const session = {
+      client: { logout: async () => { savedAtRevoke.push(openSecrets(profile).load().providerCredentials[MODEL_PROVIDER]); } },
+      held: () => "account-a", persist: async () => undefined, hasSavedAccount: () => true, close: async () => undefined,
+    } as unknown as ModelSession;
+    let output = "";
+    await runCli(["logout"], { write: text => { output += text; }, notify: () => undefined, isTTY: false, env, models: async () => session });
+    expect(JSON.parse(output)).toMatchObject({ ok: true, data: { connected: false } });
+    expect(savedAtRevoke).toEqual(["account-a"]);
+    expect(openSecrets(profile).load().providerCredentials).toEqual({});
+  });
+
   test("only a rejected sign-in asks to sign in again; an outage says to try later without refreshing", async () => {
     let refreshed = 0;
     const session = (failure: ProviderFailure) => ({
