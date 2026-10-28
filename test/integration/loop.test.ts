@@ -618,6 +618,32 @@ describe("the seed-and-kill-test loop", () => {
     expect(await advance(agentFindings)).toMatchObject({ step: "steer", status: "done" });
   });
 
+  test("the findings call stays within the worker's input limit even when verdicts cite many long quotes", async () => {
+    ledger.createProject("hives", "Anything.");
+    ledger.logStep(1, "frame", null, { surveyQueries: [] });
+    ledger.logStep(1, "survey", null, { skipped: "test" });
+    ledger.addClaim(1, "need", "Keepers lose notes.", "Fewer than two describe it.");
+    ledger.addIdea({ projectId: 1, title: "Voice log", pitch: "Talk.", claimIds: [1] });
+    // Two tests, each answered by an unclear verdict citing thirty quotes of 28,000 characters: 1.7 MB cited in all.
+    for (let round = 0; round < 2; round += 1) {
+      const test = ledger.addTest(1, { method: "Read.", prediction: "Two.", stopWhen: "One read." });
+      ledger.logStep(1, "design", test.id, { claim: "C1", why: "Test." });
+      const quoteIds: number[] = [];
+      for (let page = 0; page < 3; page += 1) {
+        const lines = Array.from({ length: 10 }, (_, line) => `Test ${round} page ${page} line ${line}: ${"a long account ".repeat(1_860)}end.`);
+        const source = ledger.saveSource(1, { url: `https://forum.example/${round}/${page}`, title: "Thread", via: "exa", kind: "page", text: lines.join("\n") });
+        for (const line of lines) quoteIds.push(parseId("quote", ledger.addQuote(parseId("source", source.id), line, `keeper-${page}`, "firsthand").id));
+      }
+      const verdict = ledger.addVerdict({ claimId: 1, result: "unclear", quoteIds, note: "Long accounts, none decisive.", author: "agent", testId: parseId("test", test.id) });
+      ledger.addReview({ verdictId: parseId("verdict", verdict.id), result: "upheld", note: "Fair.", reviewer: "second-agent" });
+    }
+    answers = { findings: [{ summary: "Nothing decisive.", findings: [], variants: [] }] };
+    const inputs: { quotes: { id: string }[] }[] = [];
+    expect(await advance(context({ think: async request => { inputs.push(request.inputs as typeof inputs[number]); return think(request); } }))).toMatchObject({ step: "findings" });
+    expect(Buffer.byteLength(JSON.stringify(inputs[0]))).toBeLessThan(1_000_000);
+    expect(inputs[0]!.quotes.length).toBe(60);
+  }, 120_000);
+
   test("retracting evidence after the write-up changes a claim and reopens it", async () => {
     ledger.createProject("hives", "Anything.");
     ledger.logStep(1, "frame", null, { surveyQueries: [] });

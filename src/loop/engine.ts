@@ -63,6 +63,8 @@ const READ_SOURCE_CHARS = 25_000;
 const READ_BATCH_CHARS = 75_000;
 /** Quotes from earlier work a verdict or the findings see beside their own; older ones beyond it are left out. */
 const CONTEXT_QUOTE_BYTES = 500_000;
+/** How much of one quote the findings step sees; it cites quotes by ID, so the text is context. */
+const FINDINGS_QUOTE_CHARS = 2_000;
 /** Each run's output the findings step sees: up to twelve tests stay well under the worker's 2 MiB input. */
 const FINDINGS_RUN_CHARS = 40_000;
 const SURVEY_SOURCES = 8;
@@ -637,11 +639,13 @@ async function findings(context: LoopContext, view: View): Promise<StepResult> {
           verdicts: claim.verdicts.map(verdict => ({ result: verdict.result, note: verdict.note, quotes: verdict.quotes })),
         };
       }),
-      // Every quote a verdict of this pass cites, then the newest others that fit, so a long project stays within one call.
+      // One size budget for every quote, so a long project stays within one call: the ones this pass's verdicts cite
+      // come last and are kept first, then the newest others; a very long quote is cut to its start and end.
       quotes: (() => {
         const cited = new Set(claims.flatMap(claim => claim.verdicts.flatMap(verdict => verdict.quotes)));
-        const brief = (quote: View["quotes"][number]) => ({ id: quote.id, text: quote.text, speaker: quote.speaker, kind: quote.kind });
-        return [...live(view.quotes).filter(quote => cited.has(quote.id)).map(brief), ...newestWithin(live(view.quotes).filter(quote => !cited.has(quote.id)).map(brief), CONTEXT_QUOTE_BYTES)];
+        const brief = (quote: View["quotes"][number]) => ({ id: quote.id, text: headAndTail(quote.text, FINDINGS_QUOTE_CHARS), speaker: quote.speaker, kind: quote.kind });
+        const quotes = live(view.quotes);
+        return newestWithin([...quotes.filter(quote => !cited.has(quote.id)), ...quotes.filter(quote => cited.has(quote.id))].map(brief), CONTEXT_QUOTE_BYTES);
       })(),
       priorArt: live(view.notes).filter(note => note.kind === "prior-art" || note.kind === "framing").map(note => ({ kind: note.kind, text: note.text })),
       // The newest good run of each of this idea's tests, cut to its start and end so the call stays within the worker's input limit.
