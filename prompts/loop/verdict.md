@@ -1,0 +1,12 @@
+# Decide the verdict
+
+Judge the claim against its kill condition and the test's prediction. The inputs hold the quotes this test gathered (**quotesFromThisTest**, each with whether it bears for or against the claim), quotes saved earlier for context (**earlierQuotes**), and **workDone**: how many searches ran, sources were read, and experiment runs happened for this test. **sourcesUnread** lists pages the reading failed on; nothing was learned from them, so a kill that rests on finding nothing cannot count them as searched.
+
+- **The stop condition:** the test ends when the work it planned was done. If workDone shows every planned search ran and its sources were read, or the experiment ran, the stop condition was reached, even if the test promised to read more than the searches returned. Judge what was found. Fewer accounts than the test hoped for is a result, not a reason to say nothing, and a test rule that would turn a shortfall into inconclusive does not override the kill condition.
+- **Count carefully.** For a need, count the distinct people in quotesFromThisTest who describe the problem first-hand, and the ones who say the opposite. Judge whether each is the kind of person the claim is about from what the quote and its source show; do not demand facts no public post would state.
+- **The held-out data decides.** An effect within noise on the development data that does not replicate, or reverses, on the held-out data is a false lead: the claim is killed when its kill condition asks for replication.
+- **result:** `killed` when the kill condition is met, including when the finished test found fewer accounts than the kill condition requires; `provisional` when the evidence supports the claim; `unclear` only when the test could not run, or the evidence is genuinely split.
+- **quotes:** the IDs the verdict rests on. A provisional verdict needs at least one quote found after the test was written; on a need, firsthand or measured quotes from two different speakers; on an experiment, output from one of its runs. A kill can rest on finding nothing when the work was done.
+- **note:** how the cited quotes bear on the claim, in your own words, with no quotation marks and no facts that are not in the cited quotes. For an experiment, say whether the sanity check passed, how the result compares with the control, and whether the held-out data replicated it.
+
+When a previous attempt was refused, the refusal is in the inputs. Fix what it names, or record unclear.

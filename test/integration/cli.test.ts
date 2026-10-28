@@ -7,6 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { startBackend } from "../../src/backend/server";
 import { openSecrets } from "../../src/cli/credentials";
+import { openLedger } from "../../src/cli/ledger";
 import { runCli } from "../../src/cli/main";
 import { MODEL_PROVIDER, connectedModels, credentialsToRestore, type ModelSession } from "../../src/cli/model";
 import { ProviderFailure } from "../../src/providers/structured";
@@ -169,7 +170,8 @@ describe("scraply CLI", () => {
     expect(await scraply("verdict", "add", "--claim", "C1", "--result", "unclear", "--by", "author", "--note", "Not sure the app is live."))
       .toMatchObject({ data: { id: "V2", status: "unclear" } });
     expect(await scraply("review", "add", "--verdict", "V1", "--result", "upheld", "--by", "reviewer-1", "--note", "x")).toMatchObject({ error: { code: "SUPERSEDED" } });
-    expect(await scraply("review", "add", "--verdict", "V2", "--result", "upheld", "--by", "reviewer-1", "--note", "x")).toMatchObject({ error: { code: "NOT_REVIEWABLE" } });
+    // Giving up is reviewed too: an upheld unclear stays unclear.
+    expect(await scraply("review", "add", "--verdict", "V2", "--result", "upheld", "--by", "reviewer-1", "--note", "x")).toMatchObject({ data: { status: "unclear" } });
 
     await scraply("verdict", "add", "--claim", "C1", "--result", "killed", "--quote", "Q1", "--by", "author", "--note", "The app is live.");
     expect(await scraply("review", "add", "--verdict", "V3", "--result", "overturned", "--by", "reviewer-1", "--note", "The page is a pricing teaser, not proof it works."))
@@ -308,7 +310,7 @@ describe("scraply CLI", () => {
     expect(await scraply("verdict", "add", "--claim", "C3", "--result", "killed", "--test", "T3", "--by", "author", "--note", "Two searches found no keeper asking."))
       .toMatchObject({ data: { status: "kill-pending" } });
     expect(await scraply("show", "--project", "P2", "--for-review"))
-      .toMatchObject({ data: { toReview: ["V1"], claims: [{}, { id: "C3", verdicts: [{ quotes: [], lookedSincePrediction: { searches: 1, fetches: 0 } }] }] } });
+      .toMatchObject({ data: { toReview: ["V1"], claims: [{}, { id: "C3", verdicts: [{ quotes: [], lookedSincePrediction: { searches: 1, pagesFromSearches: 0, directSources: 0 } }] }] } });
 
     // A withdrawn test leaves its claim untested, and a withdrawn claim takes no reviews.
     await scraply("retract", "T2", "--reason", "Wrong method.");
@@ -318,6 +320,56 @@ describe("scraply CLI", () => {
 
     // A page Exa cut at the cap stays marked truncated even after trimming.
     expect(await scraply("fetch", "https://forum.example/long-exa", "--project", "P2", "--via", "exa")).toMatchObject({ data: { chars: 300_000, truncated: true } });
+  });
+
+  test("experiment run saves what the command printed, and the command never sees the caller's keys", async () => {
+    await scraply("project", "new", "runs", "--seed", "Anything.");
+    await scraply("claim", "add", "--project", "P1", "--kind", "mechanism", "--statement", "It works.", "--kill-if", "It does not.");
+    await scraply("test", "add", "--claim", "C1", "--kind", "experiment", "--method", "Run it.", "--prediction", "It prints.", "--stop-when", "One run.",
+      "--sanity", "Known answer.", "--control", "Baseline.", "--holdout", "Later data.");
+    env.EXA_API_KEY = "secret-exa-key";
+    env.GITHUB_TOKEN = "secret-token";
+    env.PATH = process.env.PATH ?? "";
+    // Bun would load a .env in the folder it runs in; the run must not bring keys back that way.
+    writeFileSync(join(root, ".env"), "EXA_API_KEY=secret-dotenv-key\n");
+    const program = "console.log('Measured: exa key ' + (process.env.EXA_API_KEY ?? 'absent') + ', token ' + (process.env.GITHUB_TOKEN ?? 'absent') + ', path ' + (process.env.PATH ? 'present' : 'absent') + '.')";
+    expect(await scraply("experiment", "run", "--test", "T1", "--cwd", root, "--", process.execPath, "-e", program))
+      .toMatchObject({ data: { id: "S1", test: "T1", exitCode: 0, status: "ok" } });
+    const output = await scraply("source", "show", "S1");
+    expect(output).toMatchObject({ data: { text: expect.stringContaining("Measured: exa key absent, token absent, path present.") } });
+    expect(JSON.stringify(output)).not.toContain("secret-");
+
+    // A test that does not exist is refused before anything runs.
+    const marker = join(root, "ran.txt");
+    expect(await scraply("experiment", "run", "--test", "T9", "--cwd", root, "--", process.execPath, "-e", `require('fs').writeFileSync(${JSON.stringify(marker)}, 'x')`))
+      .toMatchObject({ exitCode: 1, error: { code: "NOT_FOUND" } });
+    expect(existsSync(marker)).toBe(false);
+
+    // A noisy program keeps the start and the end of its output, where results are usually printed.
+    const noisy = "console.log('FIRST LINE'); for (let i = 0; i < 40000; i++) console.log('noise line ' + i); console.log('Measured: the last line.')";
+    expect(await scraply("experiment", "run", "--test", "T1", "--cwd", root, "--", process.execPath, "-e", noisy)).toMatchObject({ data: { id: "S2", truncated: true } });
+    const ledger = openLedger(env.SCRAPLY_DATA_DIR!);
+    let text = "";
+    for (let offset: number | undefined = 0; offset !== undefined;) {
+      const window = ledger.readSource(2, offset);
+      text += window.text;
+      offset = window.nextOffset;
+    }
+    ledger.close();
+    expect(text.length).toBeLessThanOrEqual(300_000);
+    expect(text).toStartWith("FIRST LINE");
+    expect(text).toContain("characters left out");
+    expect(text).toContain("Measured: the last line.\n");
+    expect(text).toEndWith("[exit code 0]");
+
+    // Flags come before the -- that starts the command.
+    expect(await scraply("help", "experiment", "run")).toMatchObject({ data: { commands: [{ usage: "scraply experiment run --test <test> -- <command...>" }] } });
+  });
+
+  test("status refuses a model choice it cannot read rather than reporting none", async () => {
+    mkdirSync(env.SCRAPLY_DATA_DIR!, { recursive: true });
+    writeFileSync(join(env.SCRAPLY_DATA_DIR!, "config.json"), "{ not json");
+    expect(await scraply("status")).toMatchObject({ exitCode: 1, error: { code: "CONFIG_UNREADABLE" } });
   });
 
   test("the ledger rejects edits and deletions made behind the CLI's back", async () => {

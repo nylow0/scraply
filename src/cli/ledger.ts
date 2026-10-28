@@ -12,7 +12,10 @@ import { CliError } from "./output";
  * - quotes must be verbatim in a saved page or file, never in a search excerpt;
  * - one passage counts once, and speakers are compared by a normalized key;
  * - a need needs firsthand or measured quotes from two speakers;
- * - a provisional verdict answers a test written before at least one of its quotes was readable;
+ * - a provisional verdict answers a test written before at least one of its quotes was readable,
+ *   and a provisional verdict on an experiment cites the output of a run of that experiment;
+ * - an experiment declares its sanity check, control, and held-out data before it runs;
+ * - a finding cites the quotes it rests on;
  * - verdict notes cannot carry their own quotations;
  * - nothing is supported or killed until someone other than the verdict's author reviews it.
  * Who wrote a verdict or review is the caller's claim, recorded so the owner can see it.
@@ -27,22 +30,30 @@ export const CLAIM_KINDS = ["need", "gap", "mechanism", "feasibility"] as const;
 export const QUOTE_KINDS = ["firsthand", "measured", "vendor", "other"] as const;
 export const VERDICT_RESULTS = ["killed", "unclear", "provisional"] as const;
 export const REVIEW_RESULTS = ["upheld", "overturned"] as const;
-export const NOTE_KINDS = ["constraint", "framing", "prior-art"] as const;
-/** owner: material the owner handed over. experiment: output of something the agent ran. */
+/**
+ * constraint: from the owner, shown to reviewers. framing and prior-art: the author's context.
+ * question: something only the owner can answer. finding: an observation the evidence showed,
+ * citing quotes. variant: a proposed next version of the seed, for the owner to accept or not.
+ */
+export const NOTE_KINDS = ["constraint", "framing", "prior-art", "question", "summary", "finding", "variant"] as const;
+/** owner: material the owner handed over. experiment: output of something an agent ran itself. */
 export const FILE_ORIGINS = ["owner", "experiment"] as const;
+/** desk: read what exists and what people say. experiment: run something and measure what happens. */
+export const TEST_KINDS = ["desk", "experiment"] as const;
 export const MIN_QUOTE_LENGTH = 20;
 /** Longest text saved for one source; longer pages are cut and marked truncated. */
 export const MAX_SOURCE_CHARS = 300_000;
 /** `source show` returns a long source in windows of this many characters. */
 export const SOURCE_WINDOW = 40_000;
 const NEED_EVIDENCE: readonly string[] = ["firsthand", "measured"];
-const SCHEMA_VERSION = 1;
+const SCHEMA_VERSION = 2;
 
 type ClaimKind = (typeof CLAIM_KINDS)[number];
 type QuoteKind = (typeof QUOTE_KINDS)[number];
 type VerdictResult = (typeof VERDICT_RESULTS)[number];
 type ReviewResult = (typeof REVIEW_RESULTS)[number];
 type NoteKind = (typeof NOTE_KINDS)[number];
+type TestKind = (typeof TEST_KINDS)[number];
 
 const PREFIX = {
   project: "P", note: "N", search: "W", source: "S", quote: "Q", claim: "C", test: "T", verdict: "V", review: "R", idea: "I", retraction: "X",
@@ -62,11 +73,14 @@ CREATE TABLE sources (
   id INTEGER PRIMARY KEY, project_id INTEGER NOT NULL REFERENCES projects(id), search_id INTEGER REFERENCES searches(id),
   url TEXT NOT NULL, title TEXT, via TEXT NOT NULL, kind TEXT NOT NULL CHECK (kind IN ('page', 'excerpt', 'file')),
   status TEXT NOT NULL CHECK (status IN ('ok', 'failed')), error TEXT, text TEXT, truncated INTEGER NOT NULL,
-  content_hash TEXT, fetched_at TEXT NOT NULL);
+  content_hash TEXT, fetched_at TEXT NOT NULL, test_id INTEGER REFERENCES tests(id), command TEXT, exit_code INTEGER);
 CREATE TABLE quotes (id INTEGER PRIMARY KEY, source_id INTEGER NOT NULL REFERENCES sources(id), text TEXT NOT NULL,
   span_start INTEGER NOT NULL, span_end INTEGER NOT NULL, speaker TEXT NOT NULL, kind TEXT NOT NULL, created_at TEXT NOT NULL);
 CREATE TABLE claims (id INTEGER PRIMARY KEY, project_id INTEGER NOT NULL REFERENCES projects(id), kind TEXT NOT NULL, statement TEXT NOT NULL, kill_if TEXT NOT NULL, created_at TEXT NOT NULL);
-CREATE TABLE tests (id INTEGER PRIMARY KEY, claim_id INTEGER NOT NULL REFERENCES claims(id), method TEXT NOT NULL, prediction TEXT NOT NULL, stop_when TEXT NOT NULL, created_at TEXT NOT NULL);
+CREATE TABLE tests (id INTEGER PRIMARY KEY, claim_id INTEGER NOT NULL REFERENCES claims(id), method TEXT NOT NULL, prediction TEXT NOT NULL, stop_when TEXT NOT NULL, created_at TEXT NOT NULL,
+  kind TEXT NOT NULL DEFAULT 'desk', sanity TEXT, control TEXT, holdout TEXT, plan TEXT);
+CREATE TABLE note_quotes (note_id INTEGER NOT NULL REFERENCES notes(id), quote_id INTEGER NOT NULL REFERENCES quotes(id), PRIMARY KEY (note_id, quote_id));
+CREATE TABLE steps (id INTEGER PRIMARY KEY, project_id INTEGER NOT NULL REFERENCES projects(id), step TEXT NOT NULL, target TEXT, detail TEXT, created_at TEXT NOT NULL);
 CREATE TABLE verdicts (id INTEGER PRIMARY KEY, claim_id INTEGER NOT NULL REFERENCES claims(id), test_id INTEGER REFERENCES tests(id),
   result TEXT NOT NULL, note TEXT NOT NULL, author TEXT NOT NULL, created_at TEXT NOT NULL);
 CREATE TABLE verdict_quotes (verdict_id INTEGER NOT NULL REFERENCES verdicts(id), quote_id INTEGER NOT NULL REFERENCES quotes(id), PRIMARY KEY (verdict_id, quote_id));
@@ -78,7 +92,25 @@ CREATE TABLE retractions (id INTEGER PRIMARY KEY, entity TEXT NOT NULL, target_i
 `;
 const TABLES = [
   "projects", "project_events", "notes", "searches", "sources", "quotes", "claims", "tests", "verdicts", "verdict_quotes", "reviews", "ideas", "idea_claims", "retractions",
+  "note_quotes", "steps",
 ];
+const appendOnly = (table: string) => `CREATE TRIGGER ${table}_no_update BEFORE UPDATE ON ${table} BEGIN SELECT RAISE(ABORT, 'the ledger is append-only'); END;
+  CREATE TRIGGER ${table}_no_delete BEFORE DELETE ON ${table} BEGIN SELECT RAISE(ABORT, 'the ledger is append-only'); END;`;
+/** Schema 1 to 2: experiment tests, captured runs, findings with quotes, and the loop's step log. Adding columns never rewrites a row. */
+const MIGRATE_1_TO_2 = `
+ALTER TABLE tests ADD COLUMN kind TEXT NOT NULL DEFAULT 'desk';
+ALTER TABLE tests ADD COLUMN sanity TEXT;
+ALTER TABLE tests ADD COLUMN control TEXT;
+ALTER TABLE tests ADD COLUMN holdout TEXT;
+ALTER TABLE tests ADD COLUMN plan TEXT;
+ALTER TABLE sources ADD COLUMN test_id INTEGER REFERENCES tests(id);
+ALTER TABLE sources ADD COLUMN command TEXT;
+ALTER TABLE sources ADD COLUMN exit_code INTEGER;
+CREATE TABLE note_quotes (note_id INTEGER NOT NULL REFERENCES notes(id), quote_id INTEGER NOT NULL REFERENCES quotes(id), PRIMARY KEY (note_id, quote_id));
+CREATE TABLE steps (id INTEGER PRIMARY KEY, project_id INTEGER NOT NULL REFERENCES projects(id), step TEXT NOT NULL, target TEXT, detail TEXT, created_at TEXT NOT NULL);
+${appendOnly("note_quotes")}
+${appendOnly("steps")}
+`;
 
 /**
  * Fold text the way a reader compares quotes: ignore case, typographic quote and dash styles,
@@ -152,10 +184,14 @@ interface SearchRow { id: number; project_id: number; provider: string; query: s
 interface SourceRow {
   id: number; project_id: number; search_id: number | null; url: string; title: string | null; via: string; kind: string;
   status: string; error: string | null; text: string | null; truncated: number; content_hash: string | null; fetched_at: string;
+  test_id: number | null; command: string | null; exit_code: number | null;
 }
 interface QuoteRow { id: number; source_id: number; text: string; span_start: number; span_end: number; speaker: string; kind: string; created_at: string }
 interface ClaimRow { id: number; project_id: number; kind: string; statement: string; kill_if: string; created_at: string }
-interface TestRow { id: number; claim_id: number; method: string; prediction: string; stop_when: string; created_at: string }
+interface TestRow {
+  id: number; claim_id: number; method: string; prediction: string; stop_when: string; created_at: string;
+  kind: string; sanity: string | null; control: string | null; holdout: string | null; plan: string | null;
+}
 interface VerdictRow { id: number; claim_id: number; test_id: number | null; result: string; note: string; author: string; created_at: string }
 interface ReviewRow { id: number; verdict_id: number; result: string; note: string; reviewer: string; created_at: string }
 interface IdeaRow { id: number; project_id: number; title: string; pitch: string; revises_id: number | null; created_at: string }
@@ -188,10 +224,12 @@ export function openLedger(dataDir: string, now: () => Date = () => new Date()) 
   if (!db.query("SELECT 1 FROM sqlite_master WHERE type = 'table'").get()) {
     db.transaction(() => {
       db.exec(SCHEMA);
-      for (const table of TABLES) {
-        db.exec(`CREATE TRIGGER ${table}_no_update BEFORE UPDATE ON ${table} BEGIN SELECT RAISE(ABORT, 'the ledger is append-only'); END;
-          CREATE TRIGGER ${table}_no_delete BEFORE DELETE ON ${table} BEGIN SELECT RAISE(ABORT, 'the ledger is append-only'); END;`);
-      }
+      for (const table of TABLES) db.exec(appendOnly(table));
+      db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
+    })();
+  } else if (version === 1) {
+    db.transaction(() => {
+      db.exec(MIGRATE_1_TO_2);
       db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
     })();
   } else if (version !== SCHEMA_VERSION) {
@@ -243,6 +281,16 @@ export function openLedger(dataDir: string, now: () => Date = () => new Date()) 
       id: formatId("source", item.id), url: item.url, title: item.title, kind: item.kind, via: item.via, status: item.status,
       ...(item.error ? { error: item.error } : {}), ...(item.search_id ? { search: formatId("search", item.search_id) } : {}),
       chars: item.text?.length ?? 0, ...(item.truncated ? { truncated: true } : {}), fetchedAt: item.fetched_at,
+      ...(item.test_id ? { test: formatId("test", item.test_id), command: item.command, exitCode: item.exit_code } : {}),
+    };
+  }
+
+  function testView(item: TestRow) {
+    return {
+      id: formatId("test", item.id), kind: item.kind, method: item.method, prediction: item.prediction, stopWhen: item.stop_when,
+      ...(item.kind === "experiment" ? { sanity: item.sanity, control: item.control, holdout: item.holdout } : {}),
+      ...(item.plan ? { plan: JSON.parse(item.plan) as unknown } : {}),
+      predictedAt: item.created_at, ...retractedView("test", item.id),
     };
   }
 
@@ -255,7 +303,8 @@ export function openLedger(dataDir: string, now: () => Date = () => new Date()) 
 
   /**
    * A claim's state at `asOf`, from its newest verdict and that verdict's reviews. Provisional and
-   * killed verdicts wait for review; any overturning review reopens the claim for good.
+   * killed verdicts wait for review; unclear verdicts are reviewed too, so giving up is checked;
+   * any overturning review reopens the claim for good.
    */
   function claimStatus(claimId: number, asOf = LATEST): ClaimStatus {
     if (retraction("claim", claimId, asOf)) return "retracted";
@@ -265,9 +314,9 @@ export function openLedger(dataDir: string, now: () => Date = () => new Date()) 
       return tests.some(item => !retraction("test", item.id, asOf)) ? "testing" : "untested";
     }
     if (verdictStale(latest, asOf)) return "stale";
-    if (latest.result === "unclear") return "unclear";
     const reviews = all<ReviewRow>("SELECT * FROM reviews WHERE verdict_id = ? AND created_at <= ?", latest.id, asOf);
     if (reviews.some(review => review.result === "overturned")) return "overturned";
+    if (latest.result === "unclear") return "unclear";
     if (latest.result === "provisional") return reviews.length ? "supported" : "provisional";
     return reviews.length ? "killed" : "kill-pending";
   }
@@ -293,12 +342,16 @@ export function openLedger(dataDir: string, now: () => Date = () => new Date()) 
     });
   }
 
-  /** Searches run and pages fetched in a project after a test was written: the record behind a kill that found nothing. */
+  /**
+   * What was looked at in a project after a test was written: searches run, pages those searches
+   * saved, and pages, files, or runs saved directly. The record behind a kill that found nothing.
+   */
   function lookedSince(projectId: number, predictedAt: string) {
     const count = (sql: string) => one<{ count: number }>(sql, projectId, predictedAt)!.count;
     return {
       searches: count("SELECT COUNT(*) AS count FROM searches WHERE project_id = ? AND created_at > ?"),
-      fetches: count("SELECT COUNT(*) AS count FROM sources WHERE project_id = ? AND search_id IS NULL AND fetched_at > ?"),
+      pagesFromSearches: count("SELECT COUNT(*) AS count FROM sources WHERE project_id = ? AND search_id IS NOT NULL AND status = 'ok' AND fetched_at > ?"),
+      directSources: count("SELECT COUNT(*) AS count FROM sources WHERE project_id = ? AND search_id IS NULL AND fetched_at > ?"),
     };
   }
 
@@ -339,14 +392,16 @@ export function openLedger(dataDir: string, now: () => Date = () => new Date()) 
     return found ? { retracted: found.reason } : {};
   }
 
-  function saveSource(projectId: number, fetched: FetchedSource, searchId: number | null = null) {
+  function saveSource(projectId: number, fetched: FetchedSource, searchId: number | null = null, run?: { testId: number; command: string; exitCode: number }) {
     const text = fetched.text?.trim() || null;
     const status = text ? "ok" : "failed";
     const id = insert(
-      "INSERT INTO sources (project_id, search_id, url, title, via, kind, status, error, text, truncated, content_hash, fetched_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      `INSERT INTO sources (project_id, search_id, url, title, via, kind, status, error, text, truncated, content_hash, fetched_at, test_id, command, exit_code)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       projectId, searchId, fetched.url, fetched.title ?? null, fetched.via, fetched.kind, status,
       status === "failed" ? fetched.error ?? "No text was returned." : null,
       text, fetched.truncated && text ? 1 : 0, text ? createHash("sha256").update(text).digest("hex") : null, stamp(),
+      run?.testId ?? null, run?.command ?? null, run?.exitCode ?? null,
     );
     return sourceView(source(id));
   }
@@ -356,8 +411,13 @@ export function openLedger(dataDir: string, now: () => Date = () => new Date()) 
     const item = project(projectId);
     return {
       project: { id: formatId("project", item.id), name: item.name, seed: item.seed, createdAt: item.created_at, ...(archived(projectId) ? { archived: true } : {}) },
-      notes: all<NoteRow>("SELECT * FROM notes WHERE project_id = ? ORDER BY id", projectId)
-        .map(note => ({ id: formatId("note", note.id), kind: note.kind, text: note.text, ...retractedView("note", note.id) })),
+      notes: all<NoteRow>("SELECT * FROM notes WHERE project_id = ? ORDER BY id", projectId).map(note => {
+        const quotes = all<{ quote_id: number }>("SELECT quote_id FROM note_quotes WHERE note_id = ? ORDER BY quote_id", note.id);
+        return {
+          id: formatId("note", note.id), kind: note.kind, text: note.text,
+          ...(quotes.length ? { quotes: quotes.map(link => formatId("quote", link.quote_id)) } : {}), ...retractedView("note", note.id),
+        };
+      }),
       ideas: all<IdeaRow>("SELECT * FROM ideas WHERE project_id = ? ORDER BY id", projectId).map(ideaRow => {
         const claimIds = all<{ claim_id: number }>("SELECT claim_id FROM idea_claims WHERE idea_id = ? ORDER BY claim_id", ideaRow.id).map(link => link.claim_id);
         const statuses = claimIds.map(id => claimStatus(id));
@@ -372,10 +432,7 @@ export function openLedger(dataDir: string, now: () => Date = () => new Date()) 
       claims: all<ClaimRow>("SELECT * FROM claims WHERE project_id = ? ORDER BY id", projectId).map(claimRow => ({
         id: formatId("claim", claimRow.id), kind: claimRow.kind, statement: claimRow.statement, killIf: claimRow.kill_if,
         status: claimStatus(claimRow.id), ...retractedView("claim", claimRow.id),
-        tests: all<TestRow>("SELECT * FROM tests WHERE claim_id = ? ORDER BY id", claimRow.id).map(testRow => ({
-          id: formatId("test", testRow.id), method: testRow.method, prediction: testRow.prediction, stopWhen: testRow.stop_when,
-          predictedAt: testRow.created_at, ...retractedView("test", testRow.id),
-        })),
+        tests: all<TestRow>("SELECT * FROM tests WHERE claim_id = ? ORDER BY id", claimRow.id).map(testView),
         verdicts: all<VerdictRow>("SELECT * FROM verdicts WHERE claim_id = ? ORDER BY id", claimRow.id).map(verdictRow => verdictView(verdictRow, projectId)),
       })),
       quotes: all<QuoteRow>("SELECT quotes.* FROM quotes JOIN sources ON sources.id = quotes.source_id WHERE sources.project_id = ? ORDER BY quotes.id", projectId)
@@ -403,7 +460,11 @@ export function openLedger(dataDir: string, now: () => Date = () => new Date()) 
     return {
       project: { id: full.project.id, name: full.project.name, seed: full.project.seed },
       constraints: live(full.notes).filter(note => note.kind === "constraint").map(note => ({ id: note.id, text: note.text })),
-      toReview: full.claims.flatMap(claim => claim.status === "provisional" || claim.status === "kill-pending" ? [claim.verdicts.at(-1)!.id] : []),
+      toReview: full.claims.flatMap(claim => {
+        const latest = claim.verdicts.at(-1);
+        const waiting = claim.status === "provisional" || claim.status === "kill-pending" || (claim.status === "unclear" && latest && !latest.reviews.length);
+        return waiting && latest ? [latest.id] : [];
+      }),
       claims: live(full.claims).map(claim => ({
         id: claim.id, kind: claim.kind, statement: claim.statement, killIf: claim.killIf, tests: live(claim.tests),
         verdicts: claim.verdicts.map(verdict => ({
@@ -444,9 +505,17 @@ export function openLedger(dataDir: string, now: () => Date = () => new Date()) 
       return { id: formatId("project", projectId), archived: archive };
     },
 
-    addNote(projectId: number, kind: NoteKind, text: string) {
+    /** A finding must cite the quotes it rests on; other notes may cite quotes too. */
+    addNote(projectId: number, kind: NoteKind, text: string, quoteIds: readonly number[] = []) {
       project(projectId);
+      const quotes = [...new Set(quoteIds)].map(quote);
+      for (const item of quotes) {
+        if (source(item.source_id).project_id !== projectId) throw new CliError("WRONG_PROJECT", `${formatId("quote", item.id)} belongs to another project.`);
+        requireActive("quote", item.id);
+      }
+      if (kind === "finding" && !quotes.length) throw new CliError("NO_EVIDENCE", "A finding cites the quotes it rests on. Pass --quote for each.");
       const id = insert("INSERT INTO notes (project_id, kind, text, created_at) VALUES (?, ?, ?, ?)", projectId, kind, text, stamp());
+      for (const item of quotes) insert("INSERT INTO note_quotes (note_id, quote_id) VALUES (?, ?)", id, item.id);
       return { id: formatId("note", id), kind };
     },
 
@@ -505,11 +574,44 @@ export function openLedger(dataDir: string, now: () => Date = () => new Date()) 
       return { id: formatId("claim", id), kind, status: "untested" };
     },
 
-    addTest(claimId: number, method: string, prediction: string, stopWhen: string) {
+    /**
+     * Write a test down before looking. An experiment also declares, up front, the known-answer check
+     * that shows its setup works, what it compares against, and the data it holds out for replication.
+     */
+    addTest(claimId: number, input: {
+      method: string; prediction: string; stopWhen: string; kind?: TestKind; sanity?: string; control?: string; holdout?: string; plan?: unknown;
+    }) {
       claim(claimId);
       requireActive("claim", claimId);
-      const id = insert("INSERT INTO tests (claim_id, method, prediction, stop_when, created_at) VALUES (?, ?, ?, ?, ?)", claimId, method, prediction, stopWhen, stamp());
-      return { id: formatId("test", id), claim: formatId("claim", claimId) };
+      const kind = input.kind ?? "desk";
+      if (kind === "experiment" && !(input.sanity?.trim() && input.control?.trim() && input.holdout?.trim())) {
+        throw new CliError("INCOMPLETE_EXPERIMENT", "An experiment declares --sanity (a known answer that proves the setup works), --control (what it is compared against), and --holdout (data kept aside to replicate a result) before it runs.");
+      }
+      const id = insert("INSERT INTO tests (claim_id, method, prediction, stop_when, created_at, kind, sanity, control, holdout, plan) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        claimId, input.method, input.prediction, input.stopWhen, stamp(), kind,
+        kind === "experiment" ? input.sanity!.trim() : null, kind === "experiment" ? input.control!.trim() : null, kind === "experiment" ? input.holdout!.trim() : null,
+        input.plan === undefined ? null : JSON.stringify(input.plan));
+      return { id: formatId("test", id), claim: formatId("claim", claimId), kind };
+    },
+
+    /** The record of one run of an experiment: what ran, its exit code, and everything it printed. */
+    /** The live experiment test a run would answer; check it before running anything. */
+    requireExperiment(testId: number) {
+      const item = test(testId);
+      requireActive("test", testId);
+      if (item.kind !== "experiment") throw new CliError("NOT_EXPERIMENT", `${formatId("test", testId)} is a desk test; only experiments have runs.`);
+      return item;
+    },
+
+    saveRun(testId: number, run: { command: string; exitCode: number; output: string; truncated?: boolean }) {
+      const item = this.requireExperiment(testId);
+      const projectId = claim(item.claim_id).project_id;
+      const runs = one<{ count: number }>("SELECT COUNT(*) AS count FROM sources WHERE test_id = ?", testId)!.count;
+      return saveSource(projectId, {
+        url: `run:${formatId("test", testId)}#${runs + 1}`, title: `${formatId("test", testId)} run ${runs + 1}: ${run.command}`.slice(0, 300), via: "run", kind: "file",
+        text: run.output, ...(run.truncated ? { truncated: true } : {}),
+        ...(run.output.trim() ? {} : { error: `The command printed nothing (exit code ${run.exitCode}).` }),
+      }, null, { testId, command: run.command, exitCode: run.exitCode });
     },
 
     addVerdict(input: { claimId: number; result: VerdictResult; quoteIds: readonly number[]; note: string; author: string; testId?: number }) {
@@ -539,7 +641,7 @@ export function openLedger(dataDir: string, now: () => Date = () => new Date()) 
       // A kill can rest on finding nothing, but only as the answer to a test whose searching is on record.
       if (input.result === "killed" && !quotes.length) {
         const looked = answered ? lookedSince(target.project_id, answered.created_at) : null;
-        if (!looked || !(looked.searches + looked.fetches)) {
+        if (!looked || !(looked.searches + looked.directSources)) {
           throw new CliError("NO_EVIDENCE", "A kill cites quotes, or answers a test (--test) whose searches or fetches, run after it was written, found nothing. Cite a quote, or search after writing the test.");
         }
       }
@@ -549,6 +651,10 @@ export function openLedger(dataDir: string, now: () => Date = () => new Date()) 
         }
         if (!newSincePrediction(quotes, answered.created_at).length) {
           throw new CliError("NOTHING_NEW", `Every cited quote was already in a source saved before ${formatId("test", answered.id)} was written, so none of them could have proved its prediction wrong. Cite evidence found after the test, or record unclear.`);
+        }
+        // An experiment's support comes from what it measured, not from what anyone wrote about it.
+        if (answered.kind === "experiment" && !quotes.some(item => source(item.source_id).test_id === answered.id)) {
+          throw new CliError("NO_RUN", `${formatId("test", answered.id)} is an experiment. Cite output from one of its runs: scraply experiment run --test ${formatId("test", answered.id)} -- <command>`);
         }
         const speakers = new Set(quotes.filter(item => NEED_EVIDENCE.includes(item.kind)).map(item => speakerKey(item.speaker)));
         if (target.kind === "need" && speakers.size < 2) {
@@ -564,7 +670,6 @@ export function openLedger(dataDir: string, now: () => Date = () => new Date()) 
     addReview(input: { verdictId: number; result: ReviewResult; note: string; reviewer: string }) {
       const item = verdict(input.verdictId);
       const id = formatId("verdict", item.id);
-      if (item.result === "unclear") throw new CliError("NOT_REVIEWABLE", `${id} is unclear; only provisional and killed verdicts are reviewed.`);
       requireActive("claim", item.claim_id);
       const latest = one<{ id: number }>("SELECT id FROM verdicts WHERE claim_id = ? ORDER BY id DESC LIMIT 1", item.claim_id)!;
       if (latest.id !== item.id) throw new CliError("SUPERSEDED", `${id} was replaced by ${formatId("verdict", latest.id)}. Review that one.`);
@@ -607,6 +712,16 @@ export function openLedger(dataDir: string, now: () => Date = () => new Date()) 
 
     show,
     showForReview,
+
+    /** The loop's own log: which step ran on what, with its outcome. State is rebuilt from it and the record. */
+    logStep(projectId: number, step: string, target: string | null, detail: unknown) {
+      project(projectId);
+      insert("INSERT INTO steps (project_id, step, target, detail, created_at) VALUES (?, ?, ?, ?, ?)", projectId, step, target, JSON.stringify(detail ?? null), stamp());
+    },
+    steps(projectId: number) {
+      return all<{ id: number; step: string; target: string | null; detail: string; created_at: string }>("SELECT * FROM steps WHERE project_id = ? ORDER BY id", projectId)
+        .map(item => ({ id: item.id, step: item.step, target: item.target, detail: JSON.parse(item.detail) as unknown, at: item.created_at }));
+    },
 
     /**
      * Everything about a project, with each source's full text and hash and each quote's span in

@@ -1,0 +1,7 @@
+# Frame the seed
+
+Read the owner's seed and any constraints they gave. Write how the best expert in this field would approach it:
+
+- **framing:** who knows this field best, what they would look at or measure first, and the rawest material available: first-hand accounts, records, public datasets, product docs and prices, code, or an experiment that could run today. Name concrete places and datasets where you can. A few short paragraphs.
+- **surveyQueries:** one to three web searches that would show what already exists for this seed: products, published studies, open datasets, prior attempts. Prior art comes from search, not memory.
+- **questions:** only questions whose answers would change the plan, such as time available, budget, equipment or data access, people the owner can reach, the exact scope (a region, an audience, a period), and what "worth doing" means to them. Leave out anything you can decide yourself. Never ask more than three. Each comes with an **assumption**: the concrete, reasonable choice the work will use if the owner does not answer, such as "California, 2015 to 2024" or "a few evenings a week and no budget". An assumption must let the work go on without the owner: never assume access to people, places, records, or accounts they have not offered; assume the public stand-in instead, such as people in the same role posting first-hand, or open data. An empty list is fine.
