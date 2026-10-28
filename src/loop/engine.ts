@@ -57,6 +57,7 @@ export interface StepResult {
 const AUTHOR = "scraply-author";
 const REVIEWER = "scraply-reviewer";
 const MAX_RUNS = 4;
+/** How much of one program file a later step sees; a longer file keeps its start and end with a marker between. */
 const ATTEMPT_FILE_CHARS = 20_000;
 const MAX_TESTS_PER_CLAIM = 2;
 const READ_SOURCE_CHARS = 25_000;
@@ -140,7 +141,7 @@ function runCode(context: LoopContext, testId: string) {
     return {
       run: source.success ? source.data.source : null,
       files: written.success ? written.data.files.filter(name => existsSync(`${written.data.dir}/${name}`))
-        .map(name => ({ name, content: readFileSync(`${written.data.dir}/${name}`, "utf8").slice(0, ATTEMPT_FILE_CHARS) })) : [],
+        .map(name => ({ name, content: headAndTail(readFileSync(`${written.data.dir}/${name}`, "utf8"), ATTEMPT_FILE_CHARS) })) : [],
     };
   });
 }
@@ -471,7 +472,7 @@ async function script(context: LoopContext, view: View, claim: ClaimView, test: 
     return {
       command: run.command, exitCode: run.exitCode,
       files: written.success ? written.data.files.filter(name => existsSync(`${written.data.dir}/${name}`))
-        .map(name => ({ name, content: readFileSync(`${written.data.dir}/${name}`, "utf8").slice(0, ATTEMPT_FILE_CHARS) })) : [],
+        .map(name => ({ name, content: headAndTail(readFileSync(`${written.data.dir}/${name}`, "utf8"), ATTEMPT_FILE_CHARS) })) : [],
       outputTail: context.ledger.readSource(parseId("source", run.id), Math.max(0, run.chars - 6_000)).text,
     };
   });
@@ -485,7 +486,7 @@ async function script(context: LoopContext, view: View, claim: ClaimView, test: 
       const scriptStep = stepLog(context).steps.filter(step => step.step === "script" && step.target === item.target).at(-1);
       const written = z.object({ dir: z.string(), files: z.array(z.string()) }).safeParse(scriptStep?.detail);
       return written.success ? written.data.files.filter(name => existsSync(`${written.data.dir}/${name}`))
-        .map(name => ({ test: item.target, name, content: readFileSync(`${written.data.dir}/${name}`, "utf8").slice(0, ATTEMPT_FILE_CHARS) })) : [];
+        .map(name => ({ test: item.target, name, content: headAndTail(readFileSync(`${written.data.dir}/${name}`, "utf8"), ATTEMPT_FILE_CHARS) })) : [];
     });
   const output = await context.think({
     step: "script", goal: `Write the program that runs experiment ${test.id}.`, schema: ScriptSchema,
@@ -809,11 +810,12 @@ export async function advance(context: LoopContext): Promise<StepResult> {
     const lastFindings = log.last("findings");
     let lastWork = log.steps.filter(item => item.step !== "findings" && item.step !== "handoff").at(-1);
     if (lastFindings && (!lastWork || lastFindings.id > lastWork.id)) {
-      // Anything recorded by hand since the write-up that changes a claim, such as a verdict, a review, or a retraction,
-      // makes it stale: reopen it rather than call the pass finished.
+      // A write-up for an earlier idea, or anything recorded by hand since that changes a claim (a verdict, a review,
+      // a retraction), makes it stale: reopen it rather than call the pass finished.
       const written = z.object({ statuses: z.record(z.string()) }).safeParse(lastFindings.detail);
       const now = claimStatuses(view);
-      const changed = (written.success && JSON.stringify(written.data.statuses) !== JSON.stringify(now))
+      const changed = lastFindings.target !== (currentIdea(view)?.id ?? null)
+        || (written.success && JSON.stringify(written.data.statuses) !== JSON.stringify(now))
         || claims.some(claim => claim.verdicts.some(verdict => verdict.decidedAt > lastFindings.at || verdict.reviews.some(review => review.at > lastFindings.at)));
       if (!changed) {
         return {

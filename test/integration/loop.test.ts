@@ -596,6 +596,31 @@ describe("the seed-and-kill-test loop", () => {
     ledger.addNote(1, "summary", "Nothing could be tested with public evidence; the need is still unknown.");
     expect(await advance(agentFindings)).toMatchObject({ step: "findings", did: expect.stringContaining("0 finding(s) and 0 variant(s)"), next: expect.stringContaining("Nothing points to a variant") });
     expect(await advance(agentFindings)).toMatchObject({ step: "steer", status: "done" });
+    // A new idea added by hand on the same settled claims gets its own write-up, not the previous idea's.
+    ledger.addIdea({ projectId: 1, title: "Voice log for clubs", pitch: "Talk, then share.", claimIds: [1] });
+    expect(await advance(agentFindings)).toMatchObject({ step: "findings", status: "needs-you", did: expect.stringContaining("yours to write") });
+  });
+
+  test("the reviewer sees the end of a long program, with a marker where the middle was left out", async () => {
+    ledger.createProject("quakes", "Anything.");
+    ledger.logStep(1, "frame", null, { surveyQueries: [] });
+    ledger.logStep(1, "survey", null, { skipped: "test" });
+    const program = `${"// setup and helpers\n".repeat(1_200)}console.log("Forecaster AUC 0.71 against baseline 0.58 on held-out years.");\n`;
+    answers = {
+      split: [{ idea: { title: "Forecaster", pitch: "Odds." }, claims: [{ kind: "mechanism", statement: "It beats the baseline.", killIf: "No lift." }], reuse: [] }],
+      design: [{ claim: "C1", why: "Data.", kind: "experiment", method: "Fit.", prediction: "Lift.", stopWhen: "One run.", queries: [], cuts: [], sanity: "Known event.", control: "Baseline.", holdout: "Later years.", needsOwner: null, setAside: null }],
+      script: [{ files: [{ name: "forecast.ts", content: program }], command: ["bun", "forecast.ts"], explanation: "Run." }],
+      read: [{ quotes: [{ source: "S1", text: "Forecaster AUC 0.71 against baseline 0.58 on held-out years.", speaker: "T1 run 1", kind: "measured", bearing: "for" }] }],
+      verdict: [{ result: "provisional", quotes: ["Q1"], note: "The forecaster beats the baseline on held-out years." }],
+      review: [{ result: "overturned", note: "The number is printed as a constant at the end of the program." }],
+    };
+    const reviewed: { experimentRuns: { files: { content: string }[] }[] }[] = [];
+    const watching: Think = async request => { if (request.step === "review") reviewed.push(request.inputs as typeof reviewed[number]); return think(request); };
+    const steps = await advanceUntilBlocked(context({ trust: true, think: watching }), 7);
+    expect(steps.map(item => item.step)).toEqual(["split", "design", "script", "run", "read", "verdict", "review"]);
+    const shown = reviewed[0]!.experimentRuns[0]!.files[0]!.content;
+    expect(shown).toContain("characters left out");
+    expect(shown).toContain(`console.log("Forecaster AUC 0.71`);
   });
 
   test("a verdict and review recorded by hand after the write-up reopen it instead of calling the pass finished", async () => {
