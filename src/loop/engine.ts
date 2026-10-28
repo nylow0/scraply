@@ -84,7 +84,7 @@ const DesignSchema = z.object({
   queries: z.array(z.string().min(1)).max(5),
   cuts: z.array(z.string().min(1)).max(6),
   sanity: z.string().nullable(), control: z.string().nullable(), holdout: z.string().nullable(),
-  needsOwner: z.string().nullable(),
+  needsOwner: z.string().nullable(), setAside: z.string().nullable(),
 }).strict();
 const ScriptSchema = z.object({
   files: z.array(z.object({ name: z.string().min(1), content: z.string() }).strict()).min(1).max(8),
@@ -179,8 +179,10 @@ function saveQuotes(context: LoopContext, quotes: readonly z.infer<typeof QuoteS
   let dropped = 0;
   for (const quote of quotes) {
     try {
-      if (!allowed.has(quote.source.trim().toUpperCase())) throw new Error("source not offered");
-      saved.push(context.ledger.addQuote(parseId("source", quote.source), quote.text, quote.speaker, quote.kind).id);
+      // A part of a long run, such as S7.2, is quoted as its run, S7.
+      const source = quote.source.trim().toUpperCase().replace(/\.\d+$/, "");
+      if (!allowed.has(source)) throw new Error("source not offered");
+      saved.push(context.ledger.addQuote(parseId("source", source), quote.text, quote.speaker, quote.kind).id);
     } catch {
       dropped += 1;
     }
@@ -189,17 +191,18 @@ function saveQuotes(context: LoopContext, quotes: readonly z.infer<typeof QuoteS
 }
 
 /**
- * Sources as evidence, each under its own ID. A page is cut to a size one model call can read in full; an
- * experiment run is given whole, in parts of that size, because its measurements are often printed last.
+ * Sources as evidence. A page is cut to a size one model call can read in full; an experiment run is given whole,
+ * in parts of that size, because its measurements are often printed last. Evidence IDs must be unique, so a part
+ * is S7.1, S7.2, and so on; `source` names the saved source either way.
  */
 function sourceEvidence(context: LoopContext, sourceIds: readonly string[]) {
   return sourceIds.flatMap(id => {
     const source = context.ledger.readSource(parseId("source", id), 0);
-    if (!source.command) return [{ id, content: { title: source.title, url: source.url, text: source.text.slice(0, READ_SOURCE_CHARS) } }];
+    if (!source.command) return [{ id, source: id, content: { title: source.title, url: source.url, text: source.text.slice(0, READ_SOURCE_CHARS) } }];
     const text = fullText(context, id);
     const parts = Math.max(1, Math.ceil(text.length / READ_SOURCE_CHARS));
     return Array.from({ length: parts }, (_, index) => ({
-      id, content: {
+      id: parts > 1 ? `${id}.${index + 1}` : id, source: id, content: {
         title: source.title, url: source.url, command: source.command, exitCode: source.exitCode,
         ...(parts > 1 ? { part: `${index + 1} of ${parts}` } : {}), text: text.slice(index * READ_SOURCE_CHARS, (index + 1) * READ_SOURCE_CHARS),
       },
@@ -304,6 +307,12 @@ async function split(context: LoopContext, view: View, variant?: { note: string;
 async function design(context: LoopContext, view: View, testable: readonly ClaimView[]): Promise<StepResult> {
   let refusal: string | undefined;
   let output: z.infer<typeof DesignSchema> | undefined;
+  const blocks = stepLog(context).steps.filter(item => item.step === "blocked");
+  /** What the owner was asked for this claim, and the newest constraint note at the time. */
+  const requests = (claimId: string) => blocks.filter(item => item.target?.trim().toUpperCase() === claimId)
+    .map(item => z.object({ needsOwner: z.string(), notes: z.number() }).parse(item.detail));
+  const answered = (claimId: string) => requests(claimId)
+    .some(request => live(view.notes).some(note => note.kind === "constraint" && parseId("note", note.id) > request.notes));
   for (let attempt = 0; attempt < 2 && !output; attempt += 1) {
     const proposed = await context.think({
       step: "design", goal: "Pick the cheapest decisive open claim and write its test before looking.", schema: DesignSchema,
@@ -315,20 +324,22 @@ async function design(context: LoopContext, view: View, testable: readonly Claim
           id: claim.id, kind: claim.kind, statement: claim.statement, killIf: claim.killIf, status: claim.status, open: testable.some(item => item.id === claim.id),
           earlierTests: claim.tests.map(test => ({ kind: test.kind, method: test.method, prediction: test.prediction })),
           verdicts: claim.verdicts.map(verdict => ({ result: verdict.result, note: verdict.note, reviews: verdict.reviews.map(review => ({ result: review.result, note: review.note })) })),
+          askedOwner: requests(claim.id).map(item => item.needsOwner),
         })),
         ...(refusal ? { previousRefusal: refusal } : {}),
       },
     });
-    if (proposed.needsOwner) {
-      // The owner already answered an earlier request for this claim, and it still needs them: set it
-      // aside as untestable with what they have, and go on with the claims that can be tested.
+    if (proposed.setAside) {
+      // Only the owner's answer to this claim's own request can set it aside, so a hard claim is never skipped on the model's say-so.
       const claimId = proposed.claim.trim().toUpperCase();
-      const answeredBlock = stepLog(context).steps.some(item => item.step === "blocked" && item.target?.trim().toUpperCase() === claimId
-        && live(view.notes).some(note => note.kind === "constraint" && parseId("note", note.id) > z.object({ notes: z.number() }).parse(item.detail).notes));
-      if (answeredBlock && testable.some(item => item.id === claimId)) {
-        context.ledger.logStep(context.projectId, "untestable", claimId, { why: proposed.needsOwner });
-        return { step: "design", status: "continue", did: `Set ${claimId} aside: it cannot be tested with what the owner has (${proposed.needsOwner}).` };
+      if (testable.some(item => item.id === claimId) && answered(claimId)) {
+        context.ledger.logStep(context.projectId, "untestable", claimId, { why: proposed.setAside });
+        return { step: "design", status: "continue", did: `Set ${claimId} aside: it cannot be tested with what the owner has (${proposed.setAside}).` };
       }
+      refusal = "setAside is only for an open claim whose request (askedOwner) the owner has answered by saying they cannot provide it.";
+      continue;
+    }
+    if (proposed.needsOwner) {
       // The decisive test needs something only the owner can give; say exactly what instead of running a hollow test.
       context.ledger.logStep(context.projectId, "blocked", proposed.claim, {
         needsOwner: proposed.needsOwner,
@@ -397,19 +408,19 @@ async function read(context: LoopContext, view: View, claim: ClaimView, test: Te
       answers.push({ group, quotes: (await ask(group)).quotes });
       continue;
     } catch (error) { failed(group, error); }
-    if (group.length === 1) { unread.add(group[0]!.id); continue; }
+    if (group.length === 1) { unread.add(group[0]!.source); continue; }
     for (const item of group) {
       try { answers.push({ group: [item], quotes: (await ask([item])).quotes }); }
-      catch (error) { failed([item], error); unread.add(item.id); }
+      catch (error) { failed([item], error); unread.add(item.source); }
     }
   }
-  if (failure && unread.size === new Set(evidence.map(item => item.id)).size) throw failure;
+  if (failure && unread.size === new Set(evidence.map(item => item.source)).size) throw failure;
   const saved: string[] = [];
   const bearings: { quote: string; bearing: string }[] = [];
   let dropped = 0;
   for (const answer of answers) {
     for (const quote of answer.quotes) {
-      const result = saveQuotes(context, [quote], new Set(answer.group.map(item => item.id)));
+      const result = saveQuotes(context, [quote], new Set(answer.group.map(item => item.source)));
       saved.push(...result.saved);
       bearings.push(...result.saved.map(id => ({ quote: id, bearing: quote.bearing })));
       dropped += result.dropped;
@@ -481,6 +492,8 @@ export async function runPendingScript(context: LoopContext, testId: string): Pr
   const lastRun = stepLog(context).last("run", testId);
   if (lastRun && lastRun.id > pending.id) throw new CliError("ALREADY_RAN", `The newest script for ${testId} already ran. Run: scraply next --project P${context.projectId}`);
   const detail = z.object({ dir: z.string(), command: z.array(z.string()) }).parse(pending.detail);
+  // Refuse a test retracted since its script was written before running anything.
+  context.ledger.requireExperiment(parseId("test", testId));
   context.notify(`Running in ${detail.dir}: ${detail.command.join(" ")}`);
   const run = await context.runCommand(detail.command, detail.dir);
   const source = context.ledger.saveRun(parseId("test", testId), run);
@@ -755,12 +768,18 @@ export async function advance(context: LoopContext): Promise<StepResult> {
   const dead = claims.some(claim => claim.status === "killed" && claim.kind !== "feasibility");
   if (dead || !testable.length) {
     const lastFindings = log.last("findings");
-    const lastWork = log.steps.filter(item => item.step !== "findings" && item.step !== "handoff").at(-1);
+    let lastWork = log.steps.filter(item => item.step !== "findings" && item.step !== "handoff").at(-1);
     if (lastFindings && (!lastWork || lastFindings.id > lastWork.id)) {
-      return {
-        step: "steer", status: "done", did: "This pass is finished.",
-        next: `Accept a variant with: scraply variant accept <note>, or export: scraply export --project ${projectId} --format markdown --out <file>`,
-      };
+      // A verdict or review recorded by hand since the write-up makes it stale: reopen it rather than call the pass finished.
+      const changed = claims.some(claim => claim.verdicts.some(verdict => verdict.decidedAt > lastFindings.at || verdict.reviews.some(review => review.at > lastFindings.at)));
+      if (!changed) {
+        return {
+          step: "steer", status: "done", did: "This pass is finished.",
+          next: `Accept a variant with: scraply variant accept <note>, or export: scraply export --project ${projectId} --format markdown --out <file>`,
+        };
+      }
+      context.ledger.logStep(context.projectId, "reopen", currentIdea(view)?.id ?? null, { after: lastFindings.id });
+      lastWork = stepLog(context).steps.at(-1);
     }
     return context.agentFindings ? handOff(context, view, lastWork?.id ?? 0) : findings(context, view);
   }

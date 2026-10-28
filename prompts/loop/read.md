@@ -1,6 +1,6 @@
 # Read the evidence for the test
 
-The evidence holds sources gathered for this test, each with a source ID such as S7. Read each one in full, and look as hard for evidence against the claim as for evidence in favour.
+The evidence holds sources gathered for this test, each with a source ID such as S7. A long experiment output comes in parts, S7.1, S7.2, and so on; cite any part as S7. Read each one in full, and look as hard for evidence against the claim as for evidence in favour.
 
 Return **quotes**: exact sentences that bear on the claim, its kill condition, or the prediction.
 

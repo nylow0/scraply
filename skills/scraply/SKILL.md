@@ -38,7 +38,7 @@ Read the whole record first: `scraply show --project P1` for every claim, verdic
   - is the bet the best expert in the field would make, where the surviving signal should be strongest, and says which part rests on this pass's quotes and which on expert judgment still to be tested.
 
   Save each with `scraply note add --project P1 --kind variant --text "<title>: <pitch, two to four sentences> Why: <the quotes or cuts, and the judgment>"`. A repeat, audit, or benchmark of the same test is the loop's job, not a variant. If nothing survived and no finding points anywhere, save no variant; the summary says so.
-- Run `scraply auto --project P1 --agent-findings` once your notes are saved; it closes the pass with them and returns the variants to choose from.
+- In the default mode, run `scraply auto --project P1 --agent-findings` once your notes are saved; it closes the pass with them and returns the variants to choose from.
 
 ## Do all the thinking yourself
 
@@ -51,7 +51,7 @@ When the user wants you to reason instead of Scraply's model at every step, driv
 5. **Read in full** with `scraply source show S#` (repeat with `--offset` until `nextOffset` is gone), looking as hard for evidence against as for it, and save exact sentences with `scraply quote add`: the speaker is the person or organization, and the kind is `firsthand`, `measured`, `vendor`, or `other`.
 6. **Verdict:** `scraply verdict add --by author --result killed|unclear|provisional --quote ... --test T# --note ...`. The note uses no quotation marks and no facts beyond the cited quotes.
 7. **Review:** start a fresh subagent that did not do the work. Give it the ledger folder from `scraply status` and this: "Pass `--data-dir <folder>` to every scraply command. Run `scraply show --project P1 --for-review`. For each verdict in `toReview`, read every cited source in full, check each quote's speaker and kind, and try to break the verdict against its claim, kill condition, test, and the constraints; for an experiment, check the sanity check, control, and holdout; for a kill that rests on finding nothing, judge from `searches` whether the author looked in the right places. Record `scraply review add --verdict <id> --result upheld|overturned --by reviewer-1 --note ...`."
-8. **Summary, findings, and variants:** as in [Making the ideas](#making-the-ideas), then let the user choose.
+8. **Summary, findings, and variants:** write and save them as in [Making the ideas](#making-the-ideas), but never run `auto` or `next` in this mode: they start Scraply's model. Present the variants and let the user choose; the chosen one becomes your next idea, split into claims by hand from step 2.
 
 ## Rules
 

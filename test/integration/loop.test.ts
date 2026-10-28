@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { openLedger, type FetchedSource, type Ledger } from "../../src/cli/ledger";
+import { openLedger, parseId, type FetchedSource, type Ledger } from "../../src/cli/ledger";
 import { CliError } from "../../src/cli/output";
 import { runCli } from "../../src/cli/main";
 import { MODEL_PROVIDER, type ModelSession } from "../../src/cli/model";
@@ -41,8 +41,13 @@ afterEach(async () => {
   }
 });
 
-/** A stand-in for the model: each step returns its next scripted answer, checked by the step's own schema. */
+/**
+ * A stand-in for the model: each step returns its next scripted answer, checked by the step's own schema.
+ * Like the worker, it refuses evidence whose IDs repeat.
+ */
 const think: Think = async <T>(request: ThinkRequest<T>) => {
+  const ids = (request.evidence ?? []).map(item => item.id);
+  if (new Set(ids).size !== ids.length) throw new Error(`Evidence IDs must be unique: ${ids.join(", ")}`);
   const next = answers[request.step]?.shift();
   if (next === undefined) throw new Error(`No scripted answer for ${request.step}`);
   return request.schema.parse(next);
@@ -72,7 +77,7 @@ describe("the seed-and-kill-test loop", () => {
         { source: "S1", text: "This sentence is not on the page at all.", speaker: "HiveNote", kind: "vendor" },
       ] }],
       split: [{ idea: { title: "Hive voice log", pitch: "Talk while inspecting." }, claims: [{ kind: "need", statement: "Keepers lose per-hive notes.", killIf: "Fewer than two keepers describe it." }], reuse: [] }],
-      design: [{ claim: "C1", why: "Cheapest decisive.", kind: "desk", method: "Read forums.", prediction: "Two keepers describe it.", stopWhen: "One search.", queries: ["hive record keeping"], cuts: [], sanity: null, control: null, holdout: null, needsOwner: null }],
+      design: [{ claim: "C1", why: "Cheapest decisive.", kind: "desk", method: "Read forums.", prediction: "Two keepers describe it.", stopWhen: "One search.", queries: ["hive record keeping"], cuts: [], sanity: null, control: null, holdout: null, needsOwner: null, setAside: null }],
       read: [{ quotes: [
         { source: "S2", text: "By the fourth colony I cannot remember what the first one looked like.", speaker: "meadowkeeper", kind: "firsthand", bearing: "for" },
         { source: "S2", text: "Typing up my dictaphone notes takes longer than the inspection itself.", speaker: "ridgehives", kind: "firsthand", bearing: "for" },
@@ -111,7 +116,7 @@ describe("the seed-and-kill-test loop", () => {
     ledger.logStep(1, "survey", null, { skipped: "test" });
     answers = {
       split: [{ idea: { title: "Hive voice log", pitch: "Talk while inspecting." }, claims: [{ kind: "need", statement: "Keepers lose per-hive notes.", killIf: "Fewer than two keepers describe it." }], reuse: [] }],
-      design: [{ claim: "C1", why: "Cheapest decisive.", kind: "desk", method: "Read forums.", prediction: "Two keepers describe it.", stopWhen: "One search.", queries: ["hive pages"], cuts: [], sanity: null, control: null, holdout: null, needsOwner: null }],
+      design: [{ claim: "C1", why: "Cheapest decisive.", kind: "desk", method: "Read forums.", prediction: "Two keepers describe it.", stopWhen: "One search.", queries: ["hive pages"], cuts: [], sanity: null, control: null, holdout: null, needsOwner: null, setAside: null }],
       verdict: [{ result: "unclear", quotes: ["Q1"], note: "One keeper describes it; the second page could not be read." }],
     };
     const readCalls: string[][] = [];
@@ -139,7 +144,7 @@ describe("the seed-and-kill-test loop", () => {
     ledger.logStep(1, "survey", null, { skipped: "test" });
     answers = {
       split: [{ idea: { title: "Hive voice log", pitch: "Talk while inspecting." }, claims: [{ kind: "need", statement: "Keepers lose per-hive notes.", killIf: "Fewer than two keepers describe it." }], reuse: [] }],
-      design: [{ claim: "C1", why: "Cheapest decisive.", kind: "desk", method: "Read forums.", prediction: "Two keepers describe it.", stopWhen: "One search.", queries: ["hive record keeping"], cuts: [], sanity: null, control: null, holdout: null, needsOwner: null }],
+      design: [{ claim: "C1", why: "Cheapest decisive.", kind: "desk", method: "Read forums.", prediction: "Two keepers describe it.", stopWhen: "One search.", queries: ["hive record keeping"], cuts: [], sanity: null, control: null, holdout: null, needsOwner: null, setAside: null }],
     };
     const down: Think = async request => {
       if (request.step === "read") throw new CliError("MODEL_FAILED", "The read step's model call failed: operation timed out.");
@@ -157,7 +162,7 @@ describe("the seed-and-kill-test loop", () => {
     // No scripted findings answer: a model call for findings would throw.
     answers = {
       split: [{ idea: { title: "Hive voice log", pitch: "Talk while inspecting." }, claims: [{ kind: "need", statement: "Keepers lose per-hive notes.", killIf: "Fewer than two keepers describe it." }], reuse: [] }],
-      design: [{ claim: "C1", why: "Cheapest decisive.", kind: "desk", method: "Read forums.", prediction: "Two keepers describe it.", stopWhen: "One search.", queries: ["hive record keeping"], cuts: [], sanity: null, control: null, holdout: null, needsOwner: null }],
+      design: [{ claim: "C1", why: "Cheapest decisive.", kind: "desk", method: "Read forums.", prediction: "Two keepers describe it.", stopWhen: "One search.", queries: ["hive record keeping"], cuts: [], sanity: null, control: null, holdout: null, needsOwner: null, setAside: null }],
       read: [{ quotes: [
         { source: "S1", text: "By the fourth colony I cannot remember what the first one looked like.", speaker: "meadowkeeper", kind: "firsthand", bearing: "for" },
         { source: "S1", text: "Typing up my dictaphone notes takes longer than the inspection itself.", speaker: "ridgehives", kind: "firsthand", bearing: "for" },
@@ -191,7 +196,7 @@ describe("the seed-and-kill-test loop", () => {
     ledger.logStep(1, "survey", null, { skipped: "test" });
     answers = {
       split: [{ idea: { title: "Swarm forecaster", pitch: "Weekly M4+ odds per region." }, claims: [{ kind: "mechanism", statement: "Recent activity predicts next week.", killIf: "AUC under 0.6 on held-out years." }], reuse: [] }],
-      design: [{ claim: "C1", why: "Free catalog.", kind: "experiment", method: "Fit on 2010-2019.", prediction: "AUC above 0.65.", stopWhen: "One run.", queries: [], cuts: ["by magnitude"], sanity: "Detect a known swarm.", control: "Rate-only baseline.", holdout: "2020-2023.", needsOwner: null }],
+      design: [{ claim: "C1", why: "Free catalog.", kind: "experiment", method: "Fit on 2010-2019.", prediction: "AUC above 0.65.", stopWhen: "One run.", queries: [], cuts: ["by magnitude"], sanity: "Detect a known swarm.", control: "Rate-only baseline.", holdout: "2020-2023.", needsOwner: null, setAside: null }],
       script: [{ files: [{ name: "forecast.ts", content: "console.log('Forecaster AUC 0.71');" }], command: ["bun", "forecast.ts"], explanation: "First attempt." }],
       read: [{ quotes: [{ source: "S1", text: "Forecaster AUC 0.71 against baseline 0.58 on held-out years.", speaker: "T1 run 1", kind: "measured", bearing: "for" }] }],
       verdict: [{ result: "provisional", quotes: ["Q1"], note: "The forecaster beats the baseline on held-out years and the sanity check passed." }],
@@ -236,7 +241,7 @@ describe("the seed-and-kill-test loop", () => {
     });
     answers = {
       split: [{ idea: { title: "Forecaster", pitch: "Odds." }, claims: [{ kind: "mechanism", statement: "It beats the baseline.", killIf: "AUC under 0.6." }], reuse: [] }],
-      design: [{ claim: "C1", why: "Free data.", kind: "experiment", method: "Fit.", prediction: "AUC above 0.65.", stopWhen: "One run.", queries: [], cuts: [], sanity: "Known swarm.", control: "Baseline.", holdout: "2020-2023.", needsOwner: null }],
+      design: [{ claim: "C1", why: "Free data.", kind: "experiment", method: "Fit.", prediction: "AUC above 0.65.", stopWhen: "One run.", queries: [], cuts: [], sanity: "Known swarm.", control: "Baseline.", holdout: "2020-2023.", needsOwner: null, setAside: null }],
       script: [
         { files: [{ name: "a.ts", content: "x" }], command: ["bun", "a.ts"], explanation: "First." },
         { files: [{ name: "a.ts", content: "y" }], command: ["bun", "a.ts"], explanation: "Load the catalog before using it." },
@@ -263,8 +268,8 @@ describe("the seed-and-kill-test loop", () => {
     answers = {
       split: [{ idea: { title: "Log", pitch: "Notes." }, claims: [{ kind: "need", statement: "Keepers lose notes.", killIf: "Fewer than two say so." }], reuse: [] }],
       design: [
-        { claim: "C1", why: "Cheap.", kind: "desk", method: "Read.", prediction: "Two say so.", stopWhen: "One search.", queries: ["hive record keeping"], cuts: [], sanity: null, control: null, holdout: null, needsOwner: null },
-        { claim: "C1", why: "Retry with another venue.", kind: "desk", method: "Read club newsletters.", prediction: "Two say so.", stopWhen: "One search.", queries: ["hive apps"], cuts: [], sanity: null, control: null, holdout: null, needsOwner: null },
+        { claim: "C1", why: "Cheap.", kind: "desk", method: "Read.", prediction: "Two say so.", stopWhen: "One search.", queries: ["hive record keeping"], cuts: [], sanity: null, control: null, holdout: null, needsOwner: null, setAside: null },
+        { claim: "C1", why: "Retry with another venue.", kind: "desk", method: "Read club newsletters.", prediction: "Two say so.", stopWhen: "One search.", queries: ["hive apps"], cuts: [], sanity: null, control: null, holdout: null, needsOwner: null, setAside: null },
       ],
       read: [{ quotes: [{ source: "S1", text: "By the fourth colony I cannot remember what the first one looked like.", speaker: "meadowkeeper", kind: "firsthand", bearing: "for" }] }],
       verdict: [
@@ -309,13 +314,13 @@ describe("the seed-and-kill-test loop", () => {
     ledger.createProject("gardens", "Gardens struggle to coordinate watering.");
     ledger.logStep(1, "frame", null, { surveyQueries: [] });
     ledger.logStep(1, "survey", null, { skipped: "test" });
-    const design = { claim: "C1", why: "Only the garden's own log shows it.", kind: "desk", method: "", prediction: "", stopWhen: "", queries: [], cuts: [], sanity: null, control: null, holdout: null, needsOwner: null };
+    const design = { claim: "C1", why: "Only the garden's own log shows it.", kind: "desk", method: "", prediction: "", stopWhen: "", queries: [], cuts: [], sanity: null, control: null, holdout: null, needsOwner: null, setAside: null };
     answers = {
       split: [{ idea: { title: "Rota", pitch: "Shared rota." }, claims: [{ kind: "need", statement: "Holiday handoffs fail.", killIf: "No missed watering in a season." }], reuse: [] }],
       design: [
         // A desk test with no queries is refused and asked again; the second answer says what only the owner can give.
         { ...design, method: "Read.", prediction: "Some.", stopWhen: "One." },
-        { ...design, needsOwner: "Last summer's watering log from a garden you can reach." },
+        { ...design, needsOwner: "Last summer's watering log from a garden you can reach.", setAside: null },
         { ...design, kind: "desk", method: "Count missed days in the owner's log.", prediction: "At least three.", stopWhen: "One log read.", queries: ["community garden watering rota missed"] },
       ],
     };
@@ -342,9 +347,9 @@ describe("the seed-and-kill-test loop", () => {
         { kind: "mechanism", statement: "A rota cuts missed turns.", killIf: "No drop in a trial." },
       ], reuse: [] }],
       design: [
-        { ...blank, claim: "C2", why: "Decisive.", needsOwner: "A garden willing to trial the rota." },
-        { ...blank, claim: "C2", why: "Still decisive.", needsOwner: "A garden willing to trial the rota." },
-        { ...blank, claim: "C1", why: "Public accounts can test it.", method: "Read forums.", prediction: "Two describe it.", stopWhen: "One search.", queries: ["hive record keeping"], needsOwner: null },
+        { ...blank, claim: "C2", why: "Decisive.", needsOwner: "A garden willing to trial the rota.", setAside: null },
+        { ...blank, claim: "C2", why: "Still decisive.", needsOwner: null, setAside: "The owner cannot reach a garden for a trial." },
+        { ...blank, claim: "C1", why: "Public accounts can test it.", method: "Read forums.", prediction: "Two describe it.", stopWhen: "One search.", queries: ["hive record keeping"], needsOwner: null, setAside: null },
       ],
     };
     expect((await advanceUntilBlocked(context(), 5)).at(-1)).toMatchObject({ status: "needs-you" });
@@ -360,7 +365,7 @@ describe("the seed-and-kill-test loop", () => {
     ledger.createProject("quakes", "Anything.");
     ledger.logStep(1, "frame", null, { surveyQueries: [] });
     ledger.logStep(1, "survey", null, { skipped: "test" });
-    const experiment = { claim: "C1", why: "Data.", kind: "experiment", method: "Fit.", prediction: "Lift.", stopWhen: "One run.", queries: [], cuts: [], sanity: "Known event.", control: "Baseline.", holdout: "Later years.", needsOwner: null };
+    const experiment = { claim: "C1", why: "Data.", kind: "experiment", method: "Fit.", prediction: "Lift.", stopWhen: "One run.", queries: [], cuts: [], sanity: "Known event.", control: "Baseline.", holdout: "Later years.", needsOwner: null, setAside: null };
     answers = {
       split: [{ idea: { title: "Forecaster", pitch: "Odds." }, claims: [{ kind: "mechanism", statement: "It beats the baseline.", killIf: "No lift." }], reuse: [] }],
       design: [experiment],
@@ -384,9 +389,11 @@ describe("the seed-and-kill-test loop", () => {
     const script = { files: [{ name: "a.ts", content: "console.log('x')" }], command: ["bun", "a.ts"], explanation: "Run." };
     answers = {
       split: [{ idea: { title: "Forecaster", pitch: "Odds." }, claims: [{ kind: "mechanism", statement: "It beats the baseline.", killIf: "No lift." }], reuse: [] }],
-      design: [{ claim: "C1", why: "Data.", kind: "experiment", method: "Fit.", prediction: "Lift.", stopWhen: "One run.", queries: [], cuts: [], sanity: "Known event.", control: "Baseline.", holdout: "Later years.", needsOwner: null }],
+      design: [{ claim: "C1", why: "Data.", kind: "experiment", method: "Fit.", prediction: "Lift.", stopWhen: "One run.", queries: [], cuts: [], sanity: "Known event.", control: "Baseline.", holdout: "Later years.", needsOwner: null, setAside: null }],
       script: [script, script],
-      read: [{ quotes: [] }, { quotes: [{ source: "S2", text: "Forecaster AUC 0.71 against baseline 0.58 on held-out years.", speaker: "T1 run 2", kind: "measured", bearing: "for" }] }],
+      read: [{ quotes: [] }, { quotes: [{ source: "S2.4", text: "Forecaster AUC 0.71 against baseline 0.58 on held-out years.", speaker: "T1 run 2", kind: "measured", bearing: "for" }] }],
+      verdict: [{ result: "provisional", quotes: ["Q1"], note: "The forecaster beats the baseline on held-out years." }],
+      review: [{ result: "upheld", note: "The run reports it." }],
     };
     const noise = "row of intermediate output\n".repeat(3_000);
     const outputs = [`${noise}Sanity check failed: the known event was missed.\n[exit code 0]`, `${noise}Forecaster AUC 0.71 against baseline 0.58 on held-out years.\n[exit code 0]`];
@@ -403,6 +410,12 @@ describe("the seed-and-kill-test loop", () => {
     expect(await advance(trusted)).toMatchObject({ step: "read", did: expect.stringContaining("saved 1 quote") });
     expect(readEvidence.length).toBeGreaterThan(1);
     expect(readEvidence.at(-1)).toContain("Forecaster AUC 0.71");
+    // The review gets every part of the run under its own evidence ID, as the worker requires.
+    const reviewEvidence: string[] = [];
+    const reviewing = context({ trust: true, runCommand, think: async request => { if (request.step === "review") reviewEvidence.push(...(request.evidence ?? []).map(item => item.id)); return think(request); } });
+    expect((await advanceUntilBlocked(reviewing, 2)).map(item => item.step)).toEqual(["verdict", "review"]);
+    expect(reviewEvidence).toEqual(["S2.1", "S2.2", "S2.3", "S2.4"]);
+    expect(ledger.show(1).claims[0]).toMatchObject({ status: "supported" });
   });
 
   test("a verdict answers only the test it names, so a newer test on the claim still runs", async () => {
@@ -434,7 +447,7 @@ describe("the seed-and-kill-test loop", () => {
     ledger.logStep(1, "frame", null, { surveyQueries: [] });
     ledger.logStep(1, "survey", null, { skipped: "test" });
     const log = ledger.saveSource(1, { url: "file:log.csv", title: "Last summer's watering log", via: "owner", kind: "file", text: "date,plot,watered\n2025-07-01,4,no\n" });
-    const desk = { claim: "C1", why: "The log shows it.", kind: "desk", method: "Count missed days.", prediction: "Three.", stopWhen: "One read.", queries: ["garden watering"], cuts: [], sanity: null, control: null, holdout: null, needsOwner: null };
+    const desk = { claim: "C1", why: "The log shows it.", kind: "desk", method: "Count missed days.", prediction: "Three.", stopWhen: "One read.", queries: ["garden watering"], cuts: [], sanity: null, control: null, holdout: null, needsOwner: null, setAside: null };
     answers = {
       split: [{ idea: { title: "Rota", pitch: "Shared rota." }, claims: [
         { kind: "need", statement: "Holiday handoffs fail.", killIf: "No missed days." },
@@ -460,29 +473,39 @@ describe("the seed-and-kill-test loop", () => {
     expect(readFileSync(join(root, "work", "T2", "attempt-1", "owner", `${log.id}.txt`), "utf8")).toContain("2025-07-01,4,no");
   });
 
-  test("an owner's answer to one claim's request never sets a different claim aside", async () => {
+  test("only the owner's answer to a claim's own request sets it aside, and a reply that offers help is asked about again", async () => {
     ledger.createProject("gardens", "Gardens struggle to coordinate watering.");
     ledger.logStep(1, "frame", null, { surveyQueries: [] });
     ledger.logStep(1, "survey", null, { skipped: "test" });
     const blank = { kind: "desk", method: "", prediction: "", stopWhen: "", queries: [], cuts: [], sanity: null, control: null, holdout: null };
+    const emails = { ...blank, claim: "C1", why: "Only their records show it.", needsOwner: "Your own garden's coordination emails.", setAside: null };
     answers = {
       split: [{ idea: { title: "Rota", pitch: "Shared rota." }, claims: [
         { kind: "need", statement: "Coordinators struggle.", killIf: "Fewer than two describe it." },
         { kind: "mechanism", statement: "A rota cuts missed turns.", killIf: "No drop in a trial." },
       ], reuse: [] }],
       design: [
-        { ...blank, claim: "C2", why: "Decisive.", needsOwner: "A garden willing to trial the rota." },
-        { ...blank, claim: "C2", why: "Still decisive.", needsOwner: "A garden willing to trial the rota." },
-        { ...blank, claim: "C1", why: "Only their records show it.", needsOwner: "Your own garden's coordination emails." },
+        { ...blank, claim: "C2", why: "Decisive.", needsOwner: "A garden willing to trial the rota.", setAside: null },
+        { ...blank, claim: "C2", why: "Still decisive.", needsOwner: null, setAside: "The owner cannot reach a garden for a trial." },
+        // C1 was never asked about, so the model cannot set it aside on its own say-so.
+        { ...blank, claim: "C1", why: "Hard to test.", needsOwner: null, setAside: "Probably untestable." },
+        emails,
+        // The owner offers the emails and asks a question; the loop asks again instead of giving up on C1.
+        { ...emails, needsOwner: "The emails as a text export, with names removed." },
       ],
     };
-    await advanceUntilBlocked(context(), 5);
+    const designInputs: unknown[] = [];
+    const watching = context({ think: async request => { if (request.step === "design") designInputs.push(request.inputs); return think(request); } });
+    await advanceUntilBlocked(watching, 5);
     ledger.addNote(1, "constraint", "I cannot reach any garden for a trial.");
-    const steps = await advanceUntilBlocked(context(), 3);
-    expect(steps).toMatchObject([
+    expect(await advanceUntilBlocked(watching, 3)).toMatchObject([
       { step: "design", status: "continue", did: expect.stringContaining("Set C2 aside") },
       { step: "design", status: "needs-you", did: expect.stringContaining("coordination emails") },
     ]);
+    expect(designInputs.at(-1)).toMatchObject({ previousRefusal: expect.stringContaining("setAside is only for") });
+    ledger.addNote(1, "constraint", "I can export them; which format do you want?");
+    expect(await advance(watching)).toMatchObject({ step: "design", status: "needs-you", did: expect.stringContaining("text export") });
+    expect(ledger.steps(1).filter(item => item.step === "untestable").map(item => item.target)).toEqual(["C2"]);
   });
 
   test("with agent findings, a summary alone closes a pass that left nothing to build on", async () => {
@@ -496,6 +519,28 @@ describe("the seed-and-kill-test loop", () => {
     expect(await advance(agentFindings)).toMatchObject({ step: "findings", status: "needs-you", next: expect.stringContaining("--kind summary") });
     ledger.addNote(1, "summary", "Nothing could be tested with public evidence; the need is still unknown.");
     expect(await advance(agentFindings)).toMatchObject({ step: "findings", did: expect.stringContaining("0 finding(s) and 0 variant(s)"), next: expect.stringContaining("Nothing points to a variant") });
+    expect(await advance(agentFindings)).toMatchObject({ step: "steer", status: "done" });
+  });
+
+  test("a verdict and review recorded by hand after the write-up reopen it instead of calling the pass finished", async () => {
+    ledger.createProject("hives", "Anything.");
+    ledger.logStep(1, "frame", null, { surveyQueries: [] });
+    ledger.logStep(1, "survey", null, { skipped: "test" });
+    ledger.addClaim(1, "need", "Keepers lose notes.", "Fewer than two describe it.");
+    ledger.addIdea({ projectId: 1, title: "Voice log", pitch: "Talk.", claimIds: [1] });
+    ledger.logStep(1, "untestable", "C1", { why: "Only the owner's club could say." });
+    const agentFindings = context({ agentFindings: true });
+    await advance(agentFindings);
+    ledger.addNote(1, "summary", "Nothing could be tested.");
+    expect(await advance(agentFindings)).toMatchObject({ step: "findings" });
+    expect(await advance(agentFindings)).toMatchObject({ step: "steer", status: "done" });
+    // The agent then records a verdict and its review by hand; the old write-up no longer describes the record.
+    await new Promise(resolve => setTimeout(resolve, 5));
+    const verdict = ledger.addVerdict({ claimId: 1, result: "unclear", quoteIds: [], note: "The club records could not be reached.", author: "agent" });
+    ledger.addReview({ verdictId: parseId("verdict", verdict.id), result: "upheld", note: "Nothing was found either way.", reviewer: "second-agent" });
+    expect(await advance(agentFindings)).toMatchObject({ step: "findings", status: "needs-you", did: expect.stringContaining("yours to write") });
+    ledger.addNote(1, "summary", "Still unknown; the club records could not be reached.");
+    expect(await advance(agentFindings)).toMatchObject({ step: "findings", did: expect.stringContaining("0 variant(s)") });
     expect(await advance(agentFindings)).toMatchObject({ step: "steer", status: "done" });
   });
 
