@@ -61,6 +61,8 @@ const ATTEMPT_FILE_CHARS = 20_000;
 const MAX_TESTS_PER_CLAIM = 2;
 const READ_SOURCE_CHARS = 25_000;
 const READ_BATCH_CHARS = 75_000;
+/** Quotes from earlier work a verdict or the findings see beside their own; older ones beyond it are left out. */
+const CONTEXT_QUOTE_BYTES = 500_000;
 /** Each run's output the findings step sees: up to twelve tests stay well under the worker's 2 MiB input. */
 const FINDINGS_RUN_CHARS = 40_000;
 const SURVEY_SOURCES = 8;
@@ -238,6 +240,23 @@ async function search(context: LoopContext, query: string) {
   } catch (error) {
     return context.ledger.recordSearch(context.projectId, "web", query, { error: error instanceof Error ? error.message : "The search failed." });
   }
+}
+
+/** The newest items whose JSON fits in `maxBytes`, in their original order; the worker takes at most 2 MiB a call. */
+function newestWithin<T>(items: readonly T[], maxBytes: number) {
+  const kept: T[] = [];
+  let size = 0;
+  for (const item of [...items].reverse()) {
+    size += Buffer.byteLength(JSON.stringify(item));
+    if (size > maxBytes) break;
+    kept.unshift(item);
+  }
+  return kept;
+}
+
+/** Each of the current idea's claims with its status, as a write-up saw them. */
+function claimStatuses(view: View) {
+  return Object.fromEntries(ideaClaims(view).map(claim => [claim.id, claim.status]));
 }
 
 function ownerSources(view: View) {
@@ -529,7 +548,7 @@ async function decide(context: LoopContext, view: View, claim: ClaimView, test: 
     return { id: quote.id, text: quote.text, speaker: quote.speaker, kind: quote.kind, ...(bearing.has(quote.id) ? { bearing: bearing.get(quote.id) } : {}), source: { id: source.id, title: source.title, url: source.url }, newSinceTest: source.fetchedAt > test.predictedAt };
   };
   const quotes = live(view.quotes).filter(quote => bearing.has(quote.id)).map(describe);
-  const earlierQuotes = live(view.quotes).filter(quote => !bearing.has(quote.id)).map(describe);
+  const earlierQuotes = newestWithin(live(view.quotes).filter(quote => !bearing.has(quote.id)).map(describe), CONTEXT_QUOTE_BYTES);
   const searches = view.searches.filter(item => item.at > test.predictedAt);
   const runs = view.sources.filter(source => source.test === test.id).map(source => ({ id: source.id, exitCode: source.exitCode }));
   const unread = new Set(reads.flatMap(item => item.unread));
@@ -618,7 +637,12 @@ async function findings(context: LoopContext, view: View): Promise<StepResult> {
           verdicts: claim.verdicts.map(verdict => ({ result: verdict.result, note: verdict.note, quotes: verdict.quotes })),
         };
       }),
-      quotes: live(view.quotes).map(quote => ({ id: quote.id, text: quote.text, speaker: quote.speaker, kind: quote.kind })),
+      // Every quote a verdict of this pass cites, then the newest others that fit, so a long project stays within one call.
+      quotes: (() => {
+        const cited = new Set(claims.flatMap(claim => claim.verdicts.flatMap(verdict => verdict.quotes)));
+        const brief = (quote: View["quotes"][number]) => ({ id: quote.id, text: quote.text, speaker: quote.speaker, kind: quote.kind });
+        return [...live(view.quotes).filter(quote => cited.has(quote.id)).map(brief), ...newestWithin(live(view.quotes).filter(quote => !cited.has(quote.id)).map(brief), CONTEXT_QUOTE_BYTES)];
+      })(),
       priorArt: live(view.notes).filter(note => note.kind === "prior-art" || note.kind === "framing").map(note => ({ kind: note.kind, text: note.text })),
       // The newest good run of each of this idea's tests, cut to its start and end so the call stays within the worker's input limit.
       experimentOutput: claims.flatMap(claim => live(claim.tests)).flatMap(test => {
@@ -637,7 +661,7 @@ async function findings(context: LoopContext, view: View): Promise<StepResult> {
     saved += 1;
   }
   const variants = output.variants.map(variant => ({ ...variant, note: context.ledger.addNote(context.projectId, "variant", `${variant.title}: ${variant.pitch} Why: ${variant.why}`).id }));
-  context.ledger.logStep(context.projectId, "findings", currentIdea(view)?.id ?? null, { summary: output.summary, variants });
+  context.ledger.logStep(context.projectId, "findings", currentIdea(view)?.id ?? null, { summary: output.summary, variants, statuses: claimStatuses(view) });
   return {
     step: "findings", did: `${output.summary} Saved ${saved} finding(s) and ${variants.length} variant(s).`, status: "needs-you",
     next: pickVariant(view.project.id, variants.map(item => item.note)),
@@ -675,7 +699,7 @@ function handOff(context: LoopContext, view: View, lastWorkId: number): StepResu
   if (!written.length) return { ...ask, did: "Still waiting for the summary, findings, and variants." };
   const variants = written.filter(note => note.kind === "variant").map(note => note.id);
   const findingCount = written.filter(note => note.kind === "finding").length;
-  context.ledger.logStep(context.projectId, "findings", currentIdea(view)?.id ?? null, { by: "agent", notes: written.map(note => note.id) });
+  context.ledger.logStep(context.projectId, "findings", currentIdea(view)?.id ?? null, { by: "agent", notes: written.map(note => note.id), statuses: claimStatuses(view) });
   return {
     step: "findings", status: "needs-you", did: `Saved ${findingCount} finding(s) and ${variants.length} variant(s) from the calling agent.`,
     next: pickVariant(projectId, variants),
@@ -788,8 +812,12 @@ export async function advance(context: LoopContext): Promise<StepResult> {
     const lastFindings = log.last("findings");
     let lastWork = log.steps.filter(item => item.step !== "findings" && item.step !== "handoff").at(-1);
     if (lastFindings && (!lastWork || lastFindings.id > lastWork.id)) {
-      // A verdict or review recorded by hand since the write-up makes it stale: reopen it rather than call the pass finished.
-      const changed = claims.some(claim => claim.verdicts.some(verdict => verdict.decidedAt > lastFindings.at || verdict.reviews.some(review => review.at > lastFindings.at)));
+      // Anything recorded by hand since the write-up that changes a claim, such as a verdict, a review, or a retraction,
+      // makes it stale: reopen it rather than call the pass finished.
+      const written = z.object({ statuses: z.record(z.string()) }).safeParse(lastFindings.detail);
+      const now = claimStatuses(view);
+      const changed = (written.success && JSON.stringify(written.data.statuses) !== JSON.stringify(now))
+        || claims.some(claim => claim.verdicts.some(verdict => verdict.decidedAt > lastFindings.at || verdict.reviews.some(review => review.at > lastFindings.at)));
       if (!changed) {
         return {
           step: "steer", status: "done", did: "This pass is finished.",

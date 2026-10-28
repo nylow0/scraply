@@ -13,6 +13,8 @@ export const RUNTIME_REQUIRED_CAPABILITIES = [
   "reasoning_summary_stream",
 ] as const;
 export const RUNTIME_PROMPT_ID = "scraply.stage-worker.v1" as const;
+/** The reasoning efforts the worker can send; a model may list others it cannot use here. */
+export const REASONING_EFFORTS = ["low", "medium", "high", "xhigh", "max", "ultra"] as const;
 
 export const RuntimeOperationSchema = z.enum([
   "runtime.initialize", "account.list", "account.login.start", "account.login.complete",
@@ -86,7 +88,7 @@ export const GenerationStartPayloadSchema = z.object({
   workOrder: WorkOrderSchema,
   evidence: z.array(EvidenceSourceSchema).optional(),
   outputSchema: z.record(z.unknown()),
-  reasoningEffort: z.enum(["low", "medium", "high", "xhigh", "max", "ultra"]).optional(),
+  reasoningEffort: z.enum(REASONING_EFFORTS).optional(),
   reasoningSummaries: z.boolean().optional(),
   maxOutputTokens: z.number().int().positive().optional(),
   repairPolicy: z.enum(["disabled", "one_retry"]).optional(),

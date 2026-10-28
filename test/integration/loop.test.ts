@@ -618,6 +618,34 @@ describe("the seed-and-kill-test loop", () => {
     expect(await advance(agentFindings)).toMatchObject({ step: "steer", status: "done" });
   });
 
+  test("retracting evidence after the write-up changes a claim and reopens it", async () => {
+    ledger.createProject("hives", "Anything.");
+    ledger.logStep(1, "frame", null, { surveyQueries: [] });
+    ledger.logStep(1, "survey", null, { skipped: "test" });
+    ledger.addClaim(1, "need", "Keepers lose notes.", "Fewer than two describe it.");
+    ledger.addIdea({ projectId: 1, title: "Voice log", pitch: "Talk.", claimIds: [1] });
+    // The claim has used both of its tests, so a stale claim cannot be tested again in this pass.
+    const earlier = ledger.addTest(1, { method: "Search.", prediction: "Two.", stopWhen: "One search." });
+    ledger.addVerdict({ claimId: 1, result: "unclear", quoteIds: [], note: "Nothing either way.", author: "agent", testId: parseId("test", earlier.id) });
+    const test = ledger.addTest(1, { method: "Read.", prediction: "Two.", stopWhen: "One read." });
+    ledger.logStep(1, "design", test.id, { claim: "C1", why: "Test." });
+    await new Promise(resolve => setTimeout(resolve, 5));
+    const page = ledger.saveSource(1, { url: "https://forum.example/notes", title: "Notes", via: "exa", kind: "page", text: "Typing up my notes takes longer than the inspection itself. By the fourth colony I forget the first." });
+    const first = ledger.addQuote(parseId("source", page.id), "Typing up my notes takes longer than the inspection itself.", "ridgehives", "firsthand");
+    const second = ledger.addQuote(parseId("source", page.id), "By the fourth colony I forget the first.", "meadowkeeper", "firsthand");
+    const verdict = ledger.addVerdict({ claimId: 1, result: "provisional", quoteIds: [parseId("quote", first.id), parseId("quote", second.id)], note: "Two keepers describe it.", author: "agent", testId: parseId("test", test.id) });
+    ledger.addReview({ verdictId: parseId("verdict", verdict.id), result: "upheld", note: "Both first-hand.", reviewer: "second-agent" });
+    const agentFindings = context({ agentFindings: true });
+    await advance(agentFindings);
+    ledger.addNote(1, "summary", "The need held.");
+    await advance(agentFindings);
+    expect(await advance(agentFindings)).toMatchObject({ step: "steer", status: "done" });
+    // A quote the verdict rests on is retracted: the claim goes stale, and the old summary no longer holds.
+    ledger.retract("quote", parseId("quote", second.id), "Misattributed.");
+    expect(ledger.show(1).claims[0]!.status).toBe("stale");
+    expect(await advance(agentFindings)).toMatchObject({ step: "findings", status: "needs-you", did: expect.stringContaining("yours to write") });
+  });
+
   test("a saved effort the model no longer offers blocks the loop instead of being sent anyway", async () => {
     let output = "";
     const env = { APPDATA: join(root, "appdata"), SCRAPLY_DATA_DIR: join(root, "cli") };
@@ -631,6 +659,49 @@ describe("the seed-and-kill-test loop", () => {
     expect(exitCode).toBe(1);
     expect(JSON.parse(output)).toMatchObject({ error: { code: "MODEL_UNAVAILABLE", message: expect.stringContaining("effort low") } });
   });
+
+  test("only an effort the model lists and the worker can send is saved or used", async () => {
+    const env = { APPDATA: join(root, "appdata"), SCRAPLY_DATA_DIR: join(root, "cli") };
+    const run = async (argv: string[], efforts?: string[]) => {
+      let output = "";
+      const models = [{ identity: { providerId: MODEL_PROVIDER, modelId: "synthetic-model" }, supportsStructuredOutput: true, ...(efforts ? { supportedReasoningEfforts: efforts } : {}) }];
+      const session = { client: { listModels: async () => models, listAccounts: async () => [] }, persist: async () => undefined, hasSavedAccount: () => true, close: async () => undefined };
+      await runCli(argv, { write: text => { output += text; }, notify: () => undefined, isTTY: false, env, models: async () => session as unknown as ModelSession });
+      return JSON.parse(output);
+    };
+    await run(["project", "new", "x", "--seed", "Anything."]);
+    // A model listing an effort the worker cannot send, or listing none, cannot be configured with it.
+    expect(await run(["config", "model", "synthetic-model", "--effort", "minimal"], ["minimal", "high"])).toMatchObject({ error: { code: "USAGE", message: expect.stringContaining("supports efforts: high") } });
+    expect(await run(["config", "model", "synthetic-model", "--effort", "high"])).toMatchObject({ error: { code: "USAGE" } });
+    expect(await run(["config", "model", "synthetic-model", "--effort", "high"], ["high"])).toMatchObject({ ok: true });
+    // A model that stops listing efforts blocks the saved choice instead of being sent it anyway.
+    expect(await run(["next", "--project", "P1"])).toMatchObject({ error: { code: "MODEL_UNAVAILABLE" } });
+  });
+
+  test("earlier quotes a verdict sees stay within a size budget, newest kept", async () => {
+    ledger.createProject("hives", "Anything.");
+    ledger.logStep(1, "frame", null, { surveyQueries: [] });
+    ledger.logStep(1, "survey", null, { skipped: "test" });
+    // Three long pages with 16 quotes of about 14,000 characters each: more than one call should carry.
+    for (let page = 0; page < 3; page += 1) {
+      const lines = Array.from({ length: 16 }, (_, line) => `Page ${page} line ${line}: ${"a long first-hand account ".repeat(530)}end.`);
+      const source = ledger.saveSource(1, { url: `https://forum.example/${page}`, title: `Thread ${page}`, via: "exa", kind: "page", text: lines.join("\n") });
+      for (const line of lines) ledger.addQuote(parseId("source", source.id), line, `keeper-${page}`, "firsthand");
+    }
+    ledger.addClaim(1, "need", "Keepers lose notes.", "Fewer than two describe it.");
+    ledger.addIdea({ projectId: 1, title: "Voice log", pitch: "Talk.", claimIds: [1] });
+    const test = ledger.addTest(1, { method: "Read.", prediction: "Two.", stopWhen: "One search.", kind: "desk", plan: { queries: ["hive notes"] } });
+    ledger.logStep(1, "design", test.id, { claim: "C1", why: "Test." });
+    ledger.logStep(1, "gather", test.id, { searches: [] });
+    ledger.logStep(1, "read", test.id, { sources: [], quotes: [], bearings: [] });
+    answers = { verdict: [{ result: "unclear", quotes: [], note: "This test found nothing new." }] };
+    const inputs: { earlierQuotes: { text: string }[] }[] = [];
+    expect(await advance(context({ think: async request => { inputs.push(request.inputs as typeof inputs[number]); return think(request); } }))).toMatchObject({ step: "verdict" });
+    const earlier = inputs[0]!.earlierQuotes;
+    expect(Buffer.byteLength(JSON.stringify(earlier))).toBeLessThanOrEqual(500_000);
+    expect(earlier.length).toBeLessThan(48);
+    expect(earlier.at(-1)!.text).toStartWith("Page 2 line 15:");
+  }, 60_000);
 
   test("next refuses to run without a chosen model, and never picks one", async () => {
     let output = "";

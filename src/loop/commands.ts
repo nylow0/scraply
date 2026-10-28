@@ -7,11 +7,17 @@ import { parseId } from "../cli/ledger";
 import { MODEL_PROVIDER, connectedModels } from "../cli/model";
 import { CliError } from "../cli/output";
 import { fetchDirect, search } from "../cli/pages";
+import { REASONING_EFFORTS } from "../shared/runtime-protocol";
 import { advance, advanceUntilBlocked, runPendingScript, type LoopContext } from "./engine";
 import { modelThinker, readConfig, writeConfig } from "./think";
 
 const RESULTS_PER_SEARCH = 5;
 const RUN_TIMEOUT_MS = 30 * 60_000;
+
+/** The efforts a model lists that the worker can send. A model that lists none offers none, so nothing is guessed. */
+function usableEfforts(model: { supportedReasoningEfforts?: readonly string[] | undefined }) {
+  return (model.supportedReasoningEfforts ?? []).filter(effort => (REASONING_EFFORTS as readonly string[]).includes(effort));
+}
 
 /** Everything one loop step needs: the ledger, the chosen model, search, and a place to run experiments. */
 async function loopContext(context: CommandContext, args: CommandArguments): Promise<LoopContext> {
@@ -24,8 +30,8 @@ async function loopContext(context: CommandContext, args: CommandArguments): Pro
   const model = models.find(item => item.identity.modelId === config.model);
   // A saved model that is gone blocks work until the owner picks another; never substitute one.
   if (!model) throw new CliError("MODEL_UNAVAILABLE", `${config.model} is no longer available to this account. Pick another: scraply models, then scraply config model <id> --effort <effort>`);
-  if (model.supportedReasoningEfforts && !model.supportedReasoningEfforts.includes(config.effort)) {
-    throw new CliError("MODEL_UNAVAILABLE", `${config.model} no longer offers effort ${config.effort}; it supports ${model.supportedReasoningEfforts.join(", ")}. Pick one with: scraply config model ${config.model} --effort <effort>`);
+  if (!usableEfforts(model).includes(config.effort)) {
+    throw new CliError("MODEL_UNAVAILABLE", `${config.model} no longer offers effort ${config.effort}; it supports ${usableEfforts(model).join(", ") || "none Scraply can use"}. Pick a model and effort with: scraply config model <id> --effort <effort>`);
   }
   const provider = availableProviders(context.profileDir, context.env)[0];
   return {
@@ -67,8 +73,8 @@ export const loopCommands: readonly Command[] = [
       const model = models.find(item => item.identity.modelId === args.positionals[0]);
       if (!model) throw new CliError("MODEL_UNAVAILABLE", `${args.positionals[0]} is not available to this account. See: scraply models`);
       const effort = requiredFlag(args, "effort");
-      if (model.supportedReasoningEfforts && !model.supportedReasoningEfforts.includes(effort)) {
-        throw new CliError("USAGE", `${model.identity.modelId} supports efforts: ${model.supportedReasoningEfforts.join(", ")}.`, 2);
+      if (!usableEfforts(model).includes(effort)) {
+        throw new CliError("USAGE", `${model.identity.modelId} supports efforts: ${usableEfforts(model).join(", ") || "none Scraply can use"}.`, 2);
       }
       writeConfig(context.dataDir, { model: model.identity.modelId, effort });
       return { model: model.identity.modelId, effort };
