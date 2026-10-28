@@ -44,9 +44,13 @@ export async function openModelSession(profileDir: string, env: Record<string, s
   catch (error) { throw new CliError("RUNTIME_INVALID", `The model worker failed verification: ${error instanceof Error ? error.message : "unknown error"}. Rebuild it with: bun run prepare:runtime`); }
   if (!launch) throw new CliError("NO_RUNTIME", "No model worker found. Build it with: bun run prepare:runtime");
   const secrets = openSecrets(profileDir);
+  // The credentials this worker holds. A save is refused when the file no longer has them, so a
+  // rotation in a long run never overwrites a sign-in or sign-out made meanwhile in another process.
+  const held: Record<string, string | undefined> = {};
   const client = new RuntimeClient({ ...launch, appVersion: "scraply-cli", environment: env as NodeJS.ProcessEnv, maxConcurrentGenerations: 4 });
   client.setSessionInitializer(async session => {
     for (const [providerId, credential] of Object.entries(secrets.load().providerCredentials)) {
+      held[providerId] = credential;
       try { await session.restoreCredential(providerId, credential); }
       catch { await session.logout(providerId).catch(() => undefined); }
     }
@@ -54,13 +58,11 @@ export async function openModelSession(profileDir: string, env: Record<string, s
   /** Save a credential the worker issued or rotated, before the worker may use it. */
   const persist = async (providerId: string, credential: string) => {
     const current = secrets.load();
+    if (current.providerCredentials[providerId] !== held[providerId]) {
+      throw new CliError("CREDENTIALS_CONFLICT", "The model account changed in another Scraply process. Run the command again.");
+    }
     await secrets.save({ ...current, providerCredentials: { ...current.providerCredentials, [providerId]: credential } });
-  };
-  const forget = async (providerId: string) => {
-    const current = secrets.load();
-    const providerCredentials = { ...current.providerCredentials };
-    delete providerCredentials[providerId];
-    await secrets.save({ ...current, providerCredentials });
+    held[providerId] = credential;
   };
   try {
     await client.start();
@@ -68,7 +70,7 @@ export async function openModelSession(profileDir: string, env: Record<string, s
     await client.close();
     throw new CliError("RUNTIME_FAILED", `The model worker did not start: ${error instanceof Error ? error.message : "unknown error"}`);
   }
-  return { client, persist, forget, hasSavedAccount: () => Boolean(secrets.load().providerCredentials[MODEL_PROVIDER]), close: () => client.close() };
+  return { client, persist, hasSavedAccount: () => Boolean(secrets.load().providerCredentials[MODEL_PROVIDER]), close: () => client.close() };
 }
 
 /** The account and its runnable models, refreshing the account once if its session expired. */

@@ -6,7 +6,9 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { startBackend } from "../../src/backend/server";
+import { openSecrets } from "../../src/cli/credentials";
 import { runCli } from "../../src/cli/main";
+import { MODEL_PROVIDER } from "../../src/cli/model";
 
 // Synthetic forum threads. The first is read before any prediction; the second only afterwards.
 const THREAD = `<!doctype html><html><head><title>Inspection notes &amp; gloves</title><script>var x = "ignored";</script></head>
@@ -375,6 +377,16 @@ describe("scraply CLI", () => {
     expect(new Headers(requests[0]!.headers).get("x-api-key")).toBe("piped-exa-key");
     expect(await scraply("key", "remove", "exa")).toMatchObject({ data: { saved: false } });
     expect(await scraply("status")).toMatchObject({ data: { searchProviders: [] } });
+  });
+
+  test.skipIf(process.platform !== "win32")("logout deletes the saved account even when the model worker cannot start", async () => {
+    const secrets = openSecrets(join(env.APPDATA!, "scraply"));
+    const current = secrets.load();
+    await secrets.save({ ...current, exaApiKey: "kept-exa-key", providerCredentials: { [MODEL_PROVIDER]: "synthetic-account" } });
+    env.SCRAPLY_AGENT_PATH = join(root, "missing", "scraply-agent.exe");
+    expect(await scraply("status")).toMatchObject({ data: { modelAccount: "saved" } });
+    expect(await scraply("logout")).toMatchObject({ data: { connected: false } });
+    expect(openSecrets(join(env.APPDATA!, "scraply")).load()).toMatchObject({ exaApiKey: "kept-exa-key", providerCredentials: {} });
   });
 
   test("legacy export writes every desktop project with the app's own exporters and leaves the database untouched", async () => {

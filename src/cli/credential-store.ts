@@ -42,7 +42,9 @@ async function lockStore(path: string): Promise<() => Promise<void>> {
       });
       return () => new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
     } catch (error) {
-      if (!(error instanceof Error) || !("code" in error) || error.code !== "EADDRINUSE") throw error;
+      // Node reports a held pipe as EADDRINUSE; Bun on Windows reports it as ERR_INVALID_ARG_TYPE.
+      const code = error instanceof Error && "code" in error ? error.code : undefined;
+      if (code !== "EADDRINUSE" && !(process.platform === "win32" && code === "ERR_INVALID_ARG_TYPE")) throw error;
       await delay(20);
     }
   }

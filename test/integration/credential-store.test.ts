@@ -38,6 +38,16 @@ test("reads the existing installed format and preserves unrelated concurrent key
   expect(readFileSync(path).includes(Buffer.from("rotated-account"))).toBe(false);
 });
 
+test("simultaneous writers under Bun wait for the lock instead of failing", async () => {
+  const { open } = fixture();
+  const first = open();
+  const second = open();
+  const one = first.load();
+  const two = second.load();
+  await Promise.all([first.save({ ...one, exaApiKey: "exa-key" }), second.save({ ...two, perplexityApiKey: "perplexity-key" })]);
+  expect(open().load()).toMatchObject({ exaApiKey: "exa-key", perplexityApiKey: "perplexity-key" });
+});
+
 test("separate Node processes serialize simultaneous credential writes", async () => {
   const { path, key, open } = fixture();
   const compiled = await Bun.build({

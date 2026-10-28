@@ -88,9 +88,14 @@ export const commands: readonly Command[] = [
     path: ["logout"],
     description: "Sign out of the model account and delete its saved credential.",
     run: async context => {
-      const session = await context.models();
-      await session.client.logout(MODEL_PROVIDER).catch(() => undefined);
-      await session.forget(MODEL_PROVIDER);
+      // The saved credential goes even when the worker is missing or fails; the account is told when the worker starts.
+      const session = await context.models().catch(() => undefined);
+      await session?.client.logout(MODEL_PROVIDER).catch(() => undefined);
+      const secrets = openSecrets(context.profileDir);
+      const current = secrets.load();
+      const providerCredentials = { ...current.providerCredentials };
+      delete providerCredentials[MODEL_PROVIDER];
+      await secrets.save({ ...current, providerCredentials });
       return { connected: false };
     },
   },
