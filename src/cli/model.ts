@@ -1,6 +1,7 @@
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { RuntimeClient } from "../providers/runtime";
+import { ProviderFailure } from "../providers/structured";
 import { resolveRuntimeLaunch } from "../shared/runtime-artifact";
 import { OPENAI_SUBSCRIPTION_PROVIDER_ID } from "../shared/schemas";
 import { openSecrets } from "./credentials";
@@ -77,14 +78,20 @@ export async function openModelSession(profileDir: string, env: Record<string, s
 export async function connectedModels(session: ModelSession) {
   if (!session.hasSavedAccount()) throw new CliError("SIGNED_OUT", "No model account. Sign in with: scraply login");
   const list = () => session.client.listModels(MODEL_PROVIDER);
+  // Only a rejected sign-in means signing in again; an outage or rate limit means trying again later.
+  const failed = (error: unknown) => error instanceof ProviderFailure && error.code === "auth"
+    ? new CliError("SIGNED_OUT", `The saved model account no longer works (${error.message}). Sign in again with: scraply login`)
+    : error instanceof CliError ? error
+      : new CliError("MODEL_UNREACHABLE", `The model account could not be reached (${error instanceof Error ? error.message : "unknown error"}). Run the command again later.`);
   let models;
   try { models = await list(); }
-  catch {
+  catch (error) {
+    if (!(error instanceof ProviderFailure && error.code === "auth")) throw failed(error);
     try {
       await session.client.refreshAccount(MODEL_PROVIDER, session.persist);
       models = await list();
-    } catch (error) {
-      throw new CliError("SIGNED_OUT", `The saved model account no longer works (${error instanceof Error ? error.message : "unknown error"}). Sign in again with: scraply login`);
+    } catch (retryError) {
+      throw failed(retryError);
     }
   }
   const accounts = await session.client.listAccounts();

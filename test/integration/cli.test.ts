@@ -8,7 +8,8 @@ import { join } from "node:path";
 import { startBackend } from "../../src/backend/server";
 import { openSecrets } from "../../src/cli/credentials";
 import { runCli } from "../../src/cli/main";
-import { MODEL_PROVIDER } from "../../src/cli/model";
+import { MODEL_PROVIDER, connectedModels, type ModelSession } from "../../src/cli/model";
+import { ProviderFailure } from "../../src/providers/structured";
 
 // Synthetic forum threads. The first is read before any prediction; the second only afterwards.
 const THREAD = `<!doctype html><html><head><title>Inspection notes &amp; gloves</title><script>var x = "ignored";</script></head>
@@ -387,6 +388,37 @@ describe("scraply CLI", () => {
     expect(await scraply("status")).toMatchObject({ data: { modelAccount: "saved" } });
     expect(await scraply("logout")).toMatchObject({ data: { connected: false } });
     expect(openSecrets(join(env.APPDATA!, "scraply")).load()).toMatchObject({ exaApiKey: "kept-exa-key", providerCredentials: {} });
+  });
+
+  test.skipIf(process.platform !== "win32")("logout never deletes a sign-in another process saved while it was signing out", async () => {
+    const profile = join(env.APPDATA!, "scraply");
+    const secrets = openSecrets(profile);
+    await secrets.save({ ...secrets.load(), providerCredentials: { [MODEL_PROVIDER]: "account-a" } });
+    const other = openSecrets(profile);
+    const session = {
+      client: { logout: async () => { await other.save({ ...other.load(), providerCredentials: { [MODEL_PROVIDER]: "account-b" } }); } },
+      persist: async () => undefined, hasSavedAccount: () => true, close: async () => undefined,
+    };
+    let output = "";
+    await runCli(["logout"], { write: text => { output += text; }, notify: () => undefined, isTTY: false, env, models: async () => session as unknown as ModelSession });
+    expect(JSON.parse(output)).toMatchObject({ ok: false, error: { code: "CREDENTIALS_CONFLICT" } });
+    expect(openSecrets(profile).load().providerCredentials).toEqual({ [MODEL_PROVIDER]: "account-b" });
+  });
+
+  test("only a rejected sign-in asks to sign in again; an outage says to try later without refreshing", async () => {
+    let refreshed = 0;
+    const session = (failure: ProviderFailure) => ({
+      client: {
+        listModels: async () => { if (!refreshed) throw failure; return []; },
+        refreshAccount: async () => { refreshed += 1; },
+        listAccounts: async () => [],
+      },
+      persist: async () => undefined, hasSavedAccount: () => true, close: async () => undefined,
+    }) as unknown as ModelSession;
+    await expect(connectedModels(session(new ProviderFailure("unavailable", "Service down", true)))).rejects.toMatchObject({ code: "MODEL_UNREACHABLE" });
+    expect(refreshed).toBe(0);
+    expect(await connectedModels(session(new ProviderFailure("auth", "Token expired", false)))).toMatchObject({ models: [] });
+    expect(refreshed).toBe(1);
   });
 
   test("legacy export writes every desktop project with the app's own exporters and leaves the database untouched", async () => {
