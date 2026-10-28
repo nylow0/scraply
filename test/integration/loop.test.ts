@@ -8,7 +8,9 @@ import { runCli } from "../../src/cli/main";
 import { MODEL_PROVIDER, type ModelSession } from "../../src/cli/model";
 import { renderReport } from "../../src/cli/report";
 import { advance, advanceUntilBlocked, runPendingScript, type LoopContext } from "../../src/loop/engine";
-import { writeConfig, type Step, type Think, type ThinkRequest } from "../../src/loop/think";
+import { modelThinker, writeConfig, type Step, type Think, type ThinkRequest } from "../../src/loop/think";
+import type { StructuredModelClient } from "../../src/providers/structured";
+import { z } from "zod";
 
 // Synthetic pages: two keepers describe the problem on one forum, a vendor page shows what exists.
 const PAGES: Record<string, FetchedSource> = {
@@ -643,6 +645,24 @@ describe("the seed-and-kill-test loop", () => {
     expect(Buffer.byteLength(JSON.stringify(inputs[0]))).toBeLessThan(1_000_000);
     expect(inputs[0]!.quotes.length).toBe(60);
   }, 120_000);
+
+  test("every model call fits the worker's input limit: long multibyte evidence is cut to its start and end, keeping every source", async () => {
+    // Twenty-five pages of about 24,000 CJK characters, three bytes each in UTF-8: about 1.8 MB of evidence alone.
+    const evidence = Array.from({ length: 25 }, (_, page) => ({ id: `S${page + 1}`, content: { title: `Thread ${page}`, url: `https://forum.example/${page}`, text: `开头 ${page} ${"蜂箱记录".repeat(6_000)} 结尾 ${page}` } }));
+    const inputs = { quotes: Array.from({ length: 150 }, (_, line) => ({ id: `Q${line + 1}`, text: "记录".repeat(600) })) };
+    const sent: { evidence: { sourceId: string; content: { text: string; cut?: boolean } }[]; workOrder: { inputs: unknown; instruction: string } }[] = [];
+    const client = { structuredCompletion: async (request: typeof sent[number]) => { sent.push(request); return { output: { result: "upheld", note: "Checked." } }; } };
+    const thinker = modelThinker(client as unknown as StructuredModelClient, { providerId: MODEL_PROVIDER, modelId: "synthetic-model" }, "high");
+    await thinker({ step: "review", goal: "Try to break it.", inputs, evidence, schema: z.object({ result: z.string(), note: z.string() }) });
+    const request = sent[0]!;
+    expect(Buffer.byteLength(JSON.stringify({ inputs: request.workOrder.inputs, evidence: request.evidence })) + Buffer.byteLength(request.workOrder.instruction)).toBeLessThan(2_097_152);
+    expect(request.evidence.map(item => item.sourceId)).toEqual(evidence.map(item => item.id));
+    expect(request.evidence[0]!.content).toMatchObject({ cut: true });
+    expect(request.evidence[0]!.content.text.startsWith("开头 0")).toBe(true);
+    expect(request.evidence[0]!.content.text.endsWith("结尾 0")).toBe(true);
+    // Inputs too large to fit at all are refused with a clear error rather than sent.
+    await expect(thinker({ step: "review", goal: "Try.", inputs: { text: "记".repeat(700_000) }, evidence, schema: z.object({ result: z.string() }) })).rejects.toMatchObject({ code: "TOO_LARGE" });
+  });
 
   test("retracting evidence after the write-up changes a claim and reopens it", async () => {
     ledger.createProject("hives", "Anything.");

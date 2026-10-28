@@ -3,7 +3,7 @@ import { dirname, join, resolve, sep } from "node:path";
 import { z } from "zod";
 import { CLAIM_KINDS, QUOTE_KINDS, parseId, type FetchedSource, type Ledger } from "../cli/ledger";
 import { CliError } from "../cli/output";
-import type { Think } from "./think";
+import { headAndTail, type Think } from "./think";
 
 /**
  * The seed-and-kill-test loop. `advance` runs exactly one step and returns what it did and what
@@ -154,13 +154,6 @@ function fullText(context: LoopContext, sourceId: string) {
     offset = window.nextOffset;
   }
   return text;
-}
-
-/** The start and the end of a long text within `max` characters; programs usually print their results last. */
-function headAndTail(text: string, max: number) {
-  if (text.length <= max) return text;
-  const head = Math.floor(max / 4);
-  return `${text.slice(0, head)}\n[... ${text.length - max} characters left out ...]\n${text.slice(text.length - (max - head))}`;
 }
 
 /** A run counts only if it exited cleanly and did not report a failed sanity check or setup. */
