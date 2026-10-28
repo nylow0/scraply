@@ -56,7 +56,11 @@ export type LoopConfig = z.infer<typeof ConfigSchema>;
 export function readConfig(dataDir: string): LoopConfig {
   const path = join(dataDir, "config.json");
   if (!existsSync(path)) throw new CliError("NO_MODEL", "No model chosen. List them with: scraply models, then pick one: scraply config model <id> --effort <effort>");
-  return ConfigSchema.parse(JSON.parse(readFileSync(path, "utf8")));
+  try {
+    return ConfigSchema.parse(JSON.parse(readFileSync(path, "utf8")));
+  } catch {
+    throw new CliError("CONFIG_UNREADABLE", `${path} could not be read. Tell the owner; replace it only with their choice: scraply config model <id> --effort <effort>`);
+  }
 }
 
 export function writeConfig(dataDir: string, config: LoopConfig) {

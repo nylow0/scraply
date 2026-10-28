@@ -35,7 +35,7 @@ export const REVIEW_RESULTS = ["upheld", "overturned"] as const;
  * question: something only the owner can answer. finding: an observation the evidence showed,
  * citing quotes. variant: a proposed next version of the seed, for the owner to accept or not.
  */
-export const NOTE_KINDS = ["constraint", "framing", "prior-art", "question", "finding", "variant"] as const;
+export const NOTE_KINDS = ["constraint", "framing", "prior-art", "question", "summary", "finding", "variant"] as const;
 /** owner: material the owner handed over. experiment: output of something an agent ran itself. */
 export const FILE_ORIGINS = ["owner", "experiment"] as const;
 /** desk: read what exists and what people say. experiment: run something and measure what happens. */
@@ -595,10 +595,16 @@ export function openLedger(dataDir: string, now: () => Date = () => new Date()) 
     },
 
     /** The record of one run of an experiment: what ran, its exit code, and everything it printed. */
-    saveRun(testId: number, run: { command: string; exitCode: number; output: string; truncated?: boolean }) {
+    /** The live experiment test a run would answer; check it before running anything. */
+    requireExperiment(testId: number) {
       const item = test(testId);
       requireActive("test", testId);
       if (item.kind !== "experiment") throw new CliError("NOT_EXPERIMENT", `${formatId("test", testId)} is a desk test; only experiments have runs.`);
+      return item;
+    },
+
+    saveRun(testId: number, run: { command: string; exitCode: number; output: string; truncated?: boolean }) {
+      const item = this.requireExperiment(testId);
       const projectId = claim(item.claim_id).project_id;
       const runs = one<{ count: number }>("SELECT COUNT(*) AS count FROM sources WHERE test_id = ?", testId)!.count;
       return saveSource(projectId, {

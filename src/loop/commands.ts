@@ -24,6 +24,9 @@ async function loopContext(context: CommandContext, args: CommandArguments): Pro
   const model = models.find(item => item.identity.modelId === config.model);
   // A saved model that is gone blocks work until the owner picks another; never substitute one.
   if (!model) throw new CliError("MODEL_UNAVAILABLE", `${config.model} is no longer available to this account. Pick another: scraply models, then scraply config model <id> --effort <effort>`);
+  if (model.supportedReasoningEfforts && !model.supportedReasoningEfforts.includes(config.effort)) {
+    throw new CliError("MODEL_UNAVAILABLE", `${config.model} no longer offers effort ${config.effort}; it supports ${model.supportedReasoningEfforts.join(", ")}. Pick one with: scraply config model ${config.model} --effort <effort>`);
+  }
   const provider = availableProviders(context.profileDir, context.env)[0];
   return {
     ledger, projectId, notify: context.notify,

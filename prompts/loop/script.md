@@ -1,6 +1,6 @@
 # Write the experiment
 
-Write a self-contained program that runs the experiment exactly as the test describes, using only the listed tools. It will run in an empty folder on the owner's Windows machine, and the owner reads it before it runs.
+Write a self-contained program that runs the experiment exactly as the test describes, using only the listed tools. It will run in its own folder on the owner's Windows machine, and the owner reads it before it runs. The folder starts empty except for **ownerFiles**: material the owner handed over, at the listed relative paths; read it from there when the test rests on it.
 
 - Use data that exists **today** (see the inputs); never wait on future events.
 - Fetch public data from its source inside the program, and keep downloads small: a sample that answers the question beats a complete archive. Respect the source's documented limits; split a large query into smaller ones. When **workingCodeFromEarlierTests** shows code that already reached the same data, reuse its approach.

@@ -52,9 +52,12 @@ export function listFlag(args: CommandArguments, name: string): string[] {
 }
 
 export function commandUsage(command: CommandShape): string {
+  const positionals = command.positionals ?? [];
+  // Everything after -- belongs to the variadic command, so flags are written before it.
   return ["scraply", ...command.path,
-    ...(command.positionals ?? []).map(arg => arg.variadic ? `-- <${arg.name}...>` : arg.required ? `<${arg.name}>` : `[${arg.name}]`),
-    ...(command.flags ?? []).filter(flag => flag.required).map(flag => `--${flag.name} <${flag.name}>`)].join(" ");
+    ...positionals.filter(arg => !arg.variadic).map(arg => arg.required ? `<${arg.name}>` : `[${arg.name}]`),
+    ...(command.flags ?? []).filter(flag => flag.required).map(flag => `--${flag.name} <${flag.name}>`),
+    ...positionals.filter(arg => arg.variadic).map(arg => `-- <${arg.name}...>`)].join(" ");
 }
 
 /** Match the longest command path, then validate flags and positionals against that command only. */

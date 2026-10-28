@@ -5,9 +5,10 @@ import { join } from "node:path";
 import { openLedger, type FetchedSource, type Ledger } from "../../src/cli/ledger";
 import { CliError } from "../../src/cli/output";
 import { runCli } from "../../src/cli/main";
+import { MODEL_PROVIDER, type ModelSession } from "../../src/cli/model";
 import { renderReport } from "../../src/cli/report";
 import { advance, advanceUntilBlocked, runPendingScript, type LoopContext } from "../../src/loop/engine";
-import type { Step, Think, ThinkRequest } from "../../src/loop/think";
+import { writeConfig, type Step, type Think, type ThinkRequest } from "../../src/loop/think";
 
 // Synthetic pages: two keepers describe the problem on one forum, a vendor page shows what exists.
 const PAGES: Record<string, FetchedSource> = {
@@ -294,7 +295,10 @@ describe("the seed-and-kill-test loop", () => {
     await step();
     expect(await step()).toMatchObject({ step: "questions", status: "needs-you", next: expect.stringContaining("--skip-questions") });
     answers.split = [{ idea: { title: "Forecaster", pitch: "California weekly odds." }, claims: [{ kind: "mechanism", statement: "Clustering predicts.", killIf: "No lift." }], reuse: [] }];
-    expect(await step({ skipQuestions: true })).toMatchObject({ step: "split" });
+    const splitInputs: unknown[] = [];
+    expect(await step({ skipQuestions: true, think: async request => { splitInputs.push(request.inputs); return think(request); } })).toMatchObject({ step: "split" });
+    // The split that runs right after sees the assumptions it must stay within.
+    expect(splitInputs[0]).toMatchObject({ constraints: expect.arrayContaining([expect.stringContaining("California, 2015 to 2024.")]) });
     expect(ledger.show(1).notes.filter(note => note.kind === "constraint").map(note => note.text)).toEqual([
       "Assumed, because the owner went on without answering: California, 2015 to 2024.",
       "Assumed, because the owner went on without answering: A few evenings.",
@@ -371,6 +375,142 @@ describe("the seed-and-kill-test loop", () => {
     expect(existsSync(join(root, "work", "T1", "escape.ts"))).toBe(false);
     expect(await advance(context())).toMatchObject({ step: "script", status: "needs-you" });
     expect(existsSync(join(root, "work", "T1", "attempt-1", "lib", "data.ts"))).toBe(true);
+  });
+
+  test("a long run is read whole: a failed sanity check printed last fails it, and the measurement at the end reaches the reader", async () => {
+    ledger.createProject("quakes", "Anything.");
+    ledger.logStep(1, "frame", null, { surveyQueries: [] });
+    ledger.logStep(1, "survey", null, { skipped: "test" });
+    const script = { files: [{ name: "a.ts", content: "console.log('x')" }], command: ["bun", "a.ts"], explanation: "Run." };
+    answers = {
+      split: [{ idea: { title: "Forecaster", pitch: "Odds." }, claims: [{ kind: "mechanism", statement: "It beats the baseline.", killIf: "No lift." }], reuse: [] }],
+      design: [{ claim: "C1", why: "Data.", kind: "experiment", method: "Fit.", prediction: "Lift.", stopWhen: "One run.", queries: [], cuts: [], sanity: "Known event.", control: "Baseline.", holdout: "Later years.", needsOwner: null }],
+      script: [script, script],
+      read: [{ quotes: [] }, { quotes: [{ source: "S2", text: "Forecaster AUC 0.71 against baseline 0.58 on held-out years.", speaker: "T1 run 2", kind: "measured", bearing: "for" }] }],
+    };
+    const noise = "row of intermediate output\n".repeat(3_000);
+    const outputs = [`${noise}Sanity check failed: the known event was missed.\n[exit code 0]`, `${noise}Forecaster AUC 0.71 against baseline 0.58 on held-out years.\n[exit code 0]`];
+    const runCommand: LoopContext["runCommand"] = async command => ({ command: command.join(" "), exitCode: 0, output: outputs.shift()! });
+    const readEvidence: string[] = [];
+    const reading: Think = async request => {
+      if (request.step === "read") readEvidence.push(...(request.evidence ?? []).map(item => JSON.stringify(item.content)));
+      return think(request);
+    };
+    const trusted = context({ trust: true, runCommand, think: reading });
+    const steps = await advanceUntilBlocked(trusted, 6);
+    // The first run's failure is past the first window, yet it still sends the loop back to write a new script.
+    expect(steps.map(item => item.step)).toEqual(["split", "design", "script", "run", "script", "run"]);
+    expect(await advance(trusted)).toMatchObject({ step: "read", did: expect.stringContaining("saved 1 quote") });
+    expect(readEvidence.length).toBeGreaterThan(1);
+    expect(readEvidence.at(-1)).toContain("Forecaster AUC 0.71");
+  });
+
+  test("a verdict answers only the test it names, so a newer test on the claim still runs", async () => {
+    ledger.createProject("hives", "Anything.");
+    ledger.logStep(1, "frame", null, { surveyQueries: [] });
+    ledger.logStep(1, "survey", null, { skipped: "test" });
+    const claim = ledger.addClaim(1, "need", "Keepers lose notes.", "Fewer than two describe it.");
+    ledger.addIdea({ projectId: 1, title: "Voice log", pitch: "Talk.", claimIds: [1] });
+    for (const query of ["first", "second"]) {
+      const test = ledger.addTest(1, { method: "Read.", prediction: "Two.", stopWhen: "One search.", kind: "desk", plan: { queries: [query] } });
+      ledger.logStep(1, "design", test.id, { claim: claim.id, why: "Test." });
+    }
+    ledger.addVerdict({ claimId: 1, result: "unclear", quoteIds: [], note: "The first search found nothing either way.", author: "someone", testId: 1 });
+    expect(await advance(context())).toMatchObject({ step: "gather", did: expect.stringContaining("T2") });
+  });
+
+  test("a test written by hand is handed back to be finished by hand instead of crashing the loop", async () => {
+    ledger.createProject("hives", "Anything.");
+    ledger.logStep(1, "frame", null, { surveyQueries: [] });
+    ledger.logStep(1, "survey", null, { skipped: "test" });
+    ledger.addClaim(1, "need", "Keepers lose notes.", "Fewer than two describe it.");
+    ledger.addIdea({ projectId: 1, title: "Voice log", pitch: "Talk.", claimIds: [1] });
+    ledger.addTest(1, { method: "Read club forums.", prediction: "Two.", stopWhen: "Two threads." });
+    expect(await advance(context())).toMatchObject({ step: "test", status: "needs-you", next: expect.stringContaining("verdict add --claim C1 --test T1") });
+  });
+
+  test("material the owner hands over reaches the test: a desk test reads it, and an experiment finds it in its folder", async () => {
+    ledger.createProject("gardens", "Anything.");
+    ledger.logStep(1, "frame", null, { surveyQueries: [] });
+    ledger.logStep(1, "survey", null, { skipped: "test" });
+    const log = ledger.saveSource(1, { url: "file:log.csv", title: "Last summer's watering log", via: "owner", kind: "file", text: "date,plot,watered\n2025-07-01,4,no\n" });
+    const desk = { claim: "C1", why: "The log shows it.", kind: "desk", method: "Count missed days.", prediction: "Three.", stopWhen: "One read.", queries: ["garden watering"], cuts: [], sanity: null, control: null, holdout: null, needsOwner: null };
+    answers = {
+      split: [{ idea: { title: "Rota", pitch: "Shared rota." }, claims: [
+        { kind: "need", statement: "Holiday handoffs fail.", killIf: "No missed days." },
+        { kind: "mechanism", statement: "Missed days cluster in August.", killIf: "No clustering." },
+      ], reuse: [] }],
+      design: [desk, { ...desk, claim: "C2", kind: "experiment", sanity: "A known missed day.", control: "Other months.", holdout: "Second half of the log.", queries: [] }],
+      read: [{ quotes: [] }],
+      verdict: [{ result: "unclear", quotes: [], note: "The log has one row." }],
+      review: [{ result: "upheld", note: "Too little data." }],
+      script: [{ files: [{ name: "count.ts", content: "console.log('x')" }], command: ["bun", "count.ts"], explanation: "Count." }],
+    };
+    const evidence: string[][] = [];
+    const scriptInputs: unknown[] = [];
+    const watching: Think = async request => {
+      if (request.step === "read") evidence.push((request.evidence ?? []).map(item => item.id));
+      if (request.step === "script") scriptInputs.push(request.inputs);
+      return think(request);
+    };
+    const steps = await advanceUntilBlocked(context({ think: watching }), 10);
+    expect(steps.map(item => item.step)).toEqual(["split", "design", "gather", "read", "verdict", "review", "design", "script"]);
+    expect(evidence[0]![0]).toBe(log.id);
+    expect(scriptInputs[0]).toMatchObject({ ownerFiles: [{ path: `owner/${log.id}.txt`, title: "Last summer's watering log" }] });
+    expect(readFileSync(join(root, "work", "T2", "attempt-1", "owner", `${log.id}.txt`), "utf8")).toContain("2025-07-01,4,no");
+  });
+
+  test("an owner's answer to one claim's request never sets a different claim aside", async () => {
+    ledger.createProject("gardens", "Gardens struggle to coordinate watering.");
+    ledger.logStep(1, "frame", null, { surveyQueries: [] });
+    ledger.logStep(1, "survey", null, { skipped: "test" });
+    const blank = { kind: "desk", method: "", prediction: "", stopWhen: "", queries: [], cuts: [], sanity: null, control: null, holdout: null };
+    answers = {
+      split: [{ idea: { title: "Rota", pitch: "Shared rota." }, claims: [
+        { kind: "need", statement: "Coordinators struggle.", killIf: "Fewer than two describe it." },
+        { kind: "mechanism", statement: "A rota cuts missed turns.", killIf: "No drop in a trial." },
+      ], reuse: [] }],
+      design: [
+        { ...blank, claim: "C2", why: "Decisive.", needsOwner: "A garden willing to trial the rota." },
+        { ...blank, claim: "C2", why: "Still decisive.", needsOwner: "A garden willing to trial the rota." },
+        { ...blank, claim: "C1", why: "Only their records show it.", needsOwner: "Your own garden's coordination emails." },
+      ],
+    };
+    await advanceUntilBlocked(context(), 5);
+    ledger.addNote(1, "constraint", "I cannot reach any garden for a trial.");
+    const steps = await advanceUntilBlocked(context(), 3);
+    expect(steps).toMatchObject([
+      { step: "design", status: "continue", did: expect.stringContaining("Set C2 aside") },
+      { step: "design", status: "needs-you", did: expect.stringContaining("coordination emails") },
+    ]);
+  });
+
+  test("with agent findings, a summary alone closes a pass that left nothing to build on", async () => {
+    ledger.createProject("hives", "Anything.");
+    ledger.logStep(1, "frame", null, { surveyQueries: [] });
+    ledger.logStep(1, "survey", null, { skipped: "test" });
+    ledger.addClaim(1, "need", "Keepers lose notes.", "Fewer than two describe it.");
+    ledger.addIdea({ projectId: 1, title: "Voice log", pitch: "Talk.", claimIds: [1] });
+    ledger.logStep(1, "untestable", "C1", { why: "Only the owner's club could say." });
+    const agentFindings = context({ agentFindings: true });
+    expect(await advance(agentFindings)).toMatchObject({ step: "findings", status: "needs-you", next: expect.stringContaining("--kind summary") });
+    ledger.addNote(1, "summary", "Nothing could be tested with public evidence; the need is still unknown.");
+    expect(await advance(agentFindings)).toMatchObject({ step: "findings", did: expect.stringContaining("0 finding(s) and 0 variant(s)"), next: expect.stringContaining("Nothing points to a variant") });
+    expect(await advance(agentFindings)).toMatchObject({ step: "steer", status: "done" });
+  });
+
+  test("a saved effort the model no longer offers blocks the loop instead of being sent anyway", async () => {
+    let output = "";
+    const env = { APPDATA: join(root, "appdata"), SCRAPLY_DATA_DIR: join(root, "cli") };
+    await runCli(["project", "new", "x", "--seed", "Anything."], { write: () => undefined, notify: () => undefined, isTTY: false, env });
+    writeConfig(env.SCRAPLY_DATA_DIR, { model: "synthetic-model", effort: "low" });
+    const models = [{ identity: { providerId: MODEL_PROVIDER, modelId: "synthetic-model" }, supportsStructuredOutput: true, supportedReasoningEfforts: ["high"] }];
+    const session = { client: { listModels: async () => models, listAccounts: async () => [] }, persist: async () => undefined, hasSavedAccount: () => true, close: async () => undefined };
+    const exitCode = await runCli(["next", "--project", "P1"], {
+      write: text => { output += text; }, notify: () => undefined, isTTY: false, env, models: async () => session as unknown as ModelSession,
+    });
+    expect(exitCode).toBe(1);
+    expect(JSON.parse(output)).toMatchObject({ error: { code: "MODEL_UNAVAILABLE", message: expect.stringContaining("effort low") } });
   });
 
   test("next refuses to run without a chosen model, and never picks one", async () => {

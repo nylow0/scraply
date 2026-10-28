@@ -58,7 +58,7 @@ const ledgerCommands: readonly Command[] = [
       catch { runtime = "invalid"; }
       let model: LoopConfig | null = null;
       try { model = readConfig(context.dataDir); }
-      catch { /* None chosen yet. */ }
+      catch (error) { if (!(error instanceof CliError && error.code === "NO_MODEL")) throw error; }
       return {
         dataDir: context.dataDir,
         searchProviders: availableProviders(context.profileDir, context.env),
@@ -184,7 +184,7 @@ const ledgerCommands: readonly Command[] = [
     description: "Record a note. Notes are context, never evidence; a finding must cite the quotes it rests on.",
     flags: [
       projectFlag,
-      { name: "kind", type: "string", required: true, choices: NOTE_KINDS, description: "constraint (from the user; reviewers see it), framing, prior-art, question (for the user), finding (what the evidence showed; needs --quote), or variant (a proposed next version of the seed)." },
+      { name: "kind", type: "string", required: true, choices: NOTE_KINDS, description: "constraint (from the user; reviewers see it), framing, prior-art, question (for the user), summary (what a pass showed overall), finding (what the evidence showed; needs --quote), or variant (a proposed next version of the seed)." },
       { name: "text", type: "string", required: true, description: "The note." },
       { name: "quote", type: "string", multiple: true, description: "A quote ID the note rests on. Repeat for each." },
     ],
@@ -333,6 +333,8 @@ const ledgerCommands: readonly Command[] = [
     run: async (context, args) => {
       const testId = parseId("test", requiredFlag(args, "test"));
       const minutes = Number(stringFlag(args, "timeout-minutes") ?? 30);
+      // Refuse a missing, retracted, or desk test before running anything.
+      context.ledger().requireExperiment(testId);
       const run = await runExperimentCommand(args.positionals, {
         cwd: resolve(stringFlag(args, "cwd") ?? "."), timeoutMs: Math.max(1, minutes) * 60_000, env: context.env, notify: context.notify,
       });
