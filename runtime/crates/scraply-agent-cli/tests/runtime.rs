@@ -288,6 +288,32 @@ fn installed_runtime_routes_openai_session_credentials_to_the_openai_provider() 
 }
 
 #[test]
+fn installed_runtime_rejects_every_request_for_a_provider_it_does_not_ship() {
+    let mut runtime = RuntimeProcess::start(0);
+    runtime.initialize();
+    let requests = [
+        (
+            "credential.session.set",
+            json!({"providerId": "openrouter", "credential": "sk-or-fake"}),
+        ),
+        (
+            "account.login.start",
+            json!({"providerId": "openrouter", "method": "pkce"}),
+        ),
+        ("model.list", json!({"providerId": "openrouter"})),
+        ("account.refresh", json!({"providerId": "openrouter"})),
+    ];
+    for (id, (method, payload)) in (2..).zip(requests) {
+        runtime.request(id, method, payload);
+        let response = runtime.read();
+        assert_eq!(response["id"], id, "{method}");
+        assert_eq!(response["error"]["code"], "invalid_payload", "{method}");
+    }
+
+    runtime.shutdown(6);
+}
+
+#[test]
 fn installed_runtime_cancels_an_active_generation() {
     let mut runtime = RuntimeProcess::start(5_000);
     runtime.initialize();

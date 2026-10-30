@@ -8,9 +8,8 @@ use scraply_agent_core::{
     MAX_TIMEOUT, OperationControl, PromptCompiler, ProviderRequest, ProviderResponse, Runtime,
 };
 use scraply_agent_providers::{
-    ModelMetadata, ModelProvider, OPENAI_SUBSCRIPTION_PROVIDER_ID, OPENROUTER_PROVIDER_ID,
-    OpenAiSessionCredential, OpenAiSubscription, OpenRouter, OpenRouterPkce, OpenRouterSession,
-    PendingPkce, ProviderAccount, ProviderError, ProviderErrorCode,
+    ModelMetadata, ModelProvider, OPENAI_SUBSCRIPTION_PROVIDER_ID, OpenAiSessionCredential,
+    OpenAiSubscription, ProviderAccount, ProviderError, ProviderErrorCode,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -35,7 +34,6 @@ macro_rules! decode_payload {
 
 pub struct RuntimeHost {
     openai: OpenAiSubscription,
-    openrouter: Option<OpenRouter>,
     pending_logins: HashMap<String, PendingLogin>,
     next_login_id: u64,
     pending_persistence: HashMap<String, PersistenceMarker>,
@@ -73,13 +71,8 @@ impl ModelProvider for RuntimeProvider {
     }
 }
 
-enum PendingLogin {
-    OpenAi(
-        tokio::task::JoinHandle<Result<(ProviderAccount, OpenAiSessionCredential), ProviderError>>,
-    ),
-    Router(PendingPkce),
-    RouterCompleting(tokio::task::JoinHandle<Result<OpenRouterSession, ProviderError>>),
-}
+type PendingLogin =
+    tokio::task::JoinHandle<Result<(ProviderAccount, OpenAiSessionCredential), ProviderError>>;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -93,7 +86,6 @@ impl RuntimeHost {
     pub async fn new() -> Result<Self, ProviderError> {
         Ok(Self {
             openai: OpenAiSubscription::ephemeral().await?,
-            openrouter: None,
             pending_logins: HashMap::new(),
             next_login_id: 1,
             pending_persistence: HashMap::new(),
@@ -115,14 +107,6 @@ impl RuntimeHost {
                 Err(error) => return provider_failure(error),
             }
         }
-        if self.openrouter.is_some() && !self.disabled_providers.contains(OPENROUTER_PROVIDER_ID) {
-            accounts.push(ProviderAccount {
-                provider_id: OPENROUTER_PROVIDER_ID.into(),
-                email: None,
-                account_id: None,
-                plan: None,
-            });
-        }
         HandlerOutcome::Success(json!({ "accounts": accounts }))
     }
 
@@ -130,7 +114,7 @@ impl RuntimeHost {
         let payload: LoginStartPayload = decode_payload!(payload);
         let login_id = format!("login-{}", self.next_login_id);
         self.next_login_id = self.next_login_id.saturating_add(1);
-        let (pending, result) = match (payload.provider_id.as_str(), payload.method.as_str()) {
+        let (completion, result) = match (payload.provider_id.as_str(), payload.method.as_str()) {
             (OPENAI_SUBSCRIPTION_PROVIDER_ID, "browser") => {
                 let login = match self.openai.begin_browser_login(false) {
                     Ok(login) => login,
@@ -149,7 +133,7 @@ impl RuntimeHost {
                     let credential = provider.session_credential()?;
                     Ok((account, credential))
                 });
-                (PendingLogin::OpenAi(completion), result)
+                (completion, result)
             }
             (OPENAI_SUBSCRIPTION_PROVIDER_ID, "device") => {
                 let login = match self.openai.begin_device_login().await {
@@ -169,107 +153,44 @@ impl RuntimeHost {
                     let credential = provider.session_credential()?;
                     Ok((account, credential))
                 });
-                (PendingLogin::OpenAi(completion), result)
-            }
-            (OPENROUTER_PROVIDER_ID, "pkce") => {
-                let Some(callback_url) = payload.callback_url else {
-                    return invalid_payload("OpenRouter PKCE requires callbackUrl");
-                };
-                let login = match OpenRouterPkce::default().begin(&callback_url) {
-                    Ok(login) => login,
-                    Err(error) => return provider_failure(error),
-                };
-                let result = json!({
-                    "loginId": login_id,
-                    "providerId": OPENROUTER_PROVIDER_ID,
-                    "method": "pkce",
-                    "authorizationUrl": login.authorization_url.as_str(),
-                });
-                (PendingLogin::Router(login), result)
+                (completion, result)
             }
             _ => return invalid_payload("provider login method is unsupported"),
         };
-        self.pending_logins.insert(login_id, pending);
+        self.pending_logins.insert(login_id, completion);
         HandlerOutcome::Success(result)
     }
 
     async fn login_complete(&mut self, context: &RuntimeContext, payload: Value) -> HandlerOutcome {
-        let payload: LoginCompletePayload = decode_payload!(payload);
-        let Some(pending) = self.pending_logins.remove(&payload.login_id) else {
+        let payload: LoginIdPayload = decode_payload!(payload);
+        let Some(completion) = self.pending_logins.remove(&payload.login_id) else {
             return failure(ErrorCode::LoginNotFound, "login operation was not found");
         };
-        match pending {
-            PendingLogin::OpenAi(completion) if !completion.is_finished() => {
-                self.pending_logins
-                    .insert(payload.login_id, PendingLogin::OpenAi(completion));
-                retryable_failure(
-                    ErrorCode::OperationUnavailable,
-                    "provider login is still pending",
-                )
-            }
-            PendingLogin::OpenAi(completion) => match completion.await {
-                Ok(Ok((account, credential))) => self.credential_result(
-                    context,
-                    OPENAI_SUBSCRIPTION_PROVIDER_ID,
-                    account,
-                    credential.into_host_credential(),
-                ),
-                Ok(Err(error)) => provider_failure(error),
-                Err(_) => failure(ErrorCode::Cancelled, "provider login was cancelled"),
-            },
-            PendingLogin::Router(login) => {
-                let Some(code) = payload.code else {
-                    return invalid_payload("OpenRouter login completion requires code");
-                };
-                let completion = tokio::spawn(async move { login.complete(&code).await });
-                self.pending_logins
-                    .insert(payload.login_id, PendingLogin::RouterCompleting(completion));
-                retryable_failure(
-                    ErrorCode::OperationUnavailable,
-                    "provider login is still pending",
-                )
-            }
-            PendingLogin::RouterCompleting(completion) if !completion.is_finished() => {
-                self.pending_logins
-                    .insert(payload.login_id, PendingLogin::RouterCompleting(completion));
-                retryable_failure(
-                    ErrorCode::OperationUnavailable,
-                    "provider login is still pending",
-                )
-            }
-            PendingLogin::RouterCompleting(completion) => match completion.await {
-                Ok(Ok(session)) => {
-                    let credential = session.clone().into_host_credential();
-                    self.openrouter = Some(OpenRouter::new(session));
-                    self.credential_result(
-                        context,
-                        OPENROUTER_PROVIDER_ID,
-                        ProviderAccount {
-                            provider_id: OPENROUTER_PROVIDER_ID.into(),
-                            email: None,
-                            account_id: None,
-                            plan: None,
-                        },
-                        credential,
-                    )
-                }
-                Ok(Err(error)) => provider_failure(error),
-                Err(_) => failure(ErrorCode::Cancelled, "provider login was cancelled"),
-            },
+        if !completion.is_finished() {
+            self.pending_logins.insert(payload.login_id, completion);
+            return retryable_failure(
+                ErrorCode::OperationUnavailable,
+                "provider login is still pending",
+            );
+        }
+        match completion.await {
+            Ok(Ok((account, credential))) => self.credential_result(
+                context,
+                OPENAI_SUBSCRIPTION_PROVIDER_ID,
+                account,
+                credential.into_host_credential(),
+            ),
+            Ok(Err(error)) => provider_failure(error),
+            Err(_) => failure(ErrorCode::Cancelled, "provider login was cancelled"),
         }
     }
 
     fn login_cancel(&mut self, payload: Value) -> HandlerOutcome {
         let payload: LoginIdPayload = decode_payload!(payload);
-        let Some(pending) = self.pending_logins.remove(&payload.login_id) else {
+        let Some(completion) = self.pending_logins.remove(&payload.login_id) else {
             return failure(ErrorCode::LoginNotFound, "login operation was not found");
         };
-        match &pending {
-            PendingLogin::OpenAi(completion) => completion.abort(),
-            PendingLogin::RouterCompleting(completion) => completion.abort(),
-            PendingLogin::Router(_) => {}
-        }
-        drop(pending);
+        completion.abort();
         HandlerOutcome::Success(json!({ "cancelled": true }))
     }
 
@@ -290,10 +211,6 @@ impl RuntimeHost {
                 Ok(logged_out) => HandlerOutcome::Success(json!({ "loggedOut": logged_out })),
                 Err(error) => provider_failure(error),
             },
-            OPENROUTER_PROVIDER_ID => {
-                let logged_out = self.openrouter.take().is_some();
-                HandlerOutcome::Success(json!({ "loggedOut": logged_out }))
-            }
             _ => invalid_payload("provider is unsupported"),
         }
     }
@@ -318,16 +235,6 @@ impl RuntimeHost {
                     }
                     Err(error) => provider_failure(error),
                 }
-            }
-            OPENROUTER_PROVIDER_ID => {
-                let session = match OpenRouterSession::manual(payload.credential) {
-                    Ok(session) => session,
-                    Err(error) => return provider_failure(error),
-                };
-                self.openrouter = Some(OpenRouter::new(session));
-                self.pending_persistence.remove(OPENROUTER_PROVIDER_ID);
-                self.disabled_providers.remove(OPENROUTER_PROVIDER_ID);
-                HandlerOutcome::Success(json!({ "providerId": OPENROUTER_PROVIDER_ID }))
             }
             _ => invalid_payload("provider does not accept session credentials"),
         }
@@ -365,14 +272,6 @@ impl RuntimeHost {
                     provider_failure(error)
                 }
             },
-            OPENROUTER_PROVIDER_ID => {
-                self.disabled_providers
-                    .insert(OPENROUTER_PROVIDER_ID.to_owned());
-                failure(
-                    ErrorCode::ReconnectRequired,
-                    "provider account must be reconnected before generation can continue",
-                )
-            }
             _ => invalid_payload("provider does not support credential refresh"),
         }
     }
@@ -441,12 +340,8 @@ impl RuntimeHost {
     }
 
     fn shutdown(&mut self) -> HandlerOutcome {
-        for (_, pending) in self.pending_logins.drain() {
-            match pending {
-                PendingLogin::OpenAi(completion) => completion.abort(),
-                PendingLogin::RouterCompleting(completion) => completion.abort(),
-                PendingLogin::Router(_) => {}
-            }
+        for (_, completion) in self.pending_logins.drain() {
+            completion.abort();
         }
         for cancellation in self
             .generations
@@ -496,16 +391,6 @@ impl RuntimeHost {
         }
         match provider_id {
             OPENAI_SUBSCRIPTION_PROVIDER_ID => Ok(RuntimeProvider(Arc::new(self.openai.clone()))),
-            OPENROUTER_PROVIDER_ID => self
-                .openrouter
-                .clone()
-                .map(|provider| RuntimeProvider(Arc::new(provider)))
-                .ok_or_else(|| {
-                    failure(
-                        ErrorCode::AuthenticationFailed,
-                        "OpenRouter credential session is not connected",
-                    )
-                }),
             _ => Err(invalid_payload(unsupported_detail)),
         }
     }
@@ -814,16 +699,6 @@ struct CredentialPayload {
 struct LoginStartPayload {
     provider_id: String,
     method: String,
-    #[serde(default)]
-    callback_url: Option<String>,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct LoginCompletePayload {
-    login_id: String,
-    #[serde(default)]
-    code: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -865,7 +740,7 @@ mod tests {
     fn provider_error_mapping_preserves_only_safe_request_id() {
         let error = ProviderError {
             code: ProviderErrorCode::RateLimited,
-            provider_id: OPENROUTER_PROVIDER_ID.into(),
+            provider_id: OPENAI_SUBSCRIPTION_PROVIDER_ID.into(),
             retryable: true,
             status: Some(429),
             request_id: Some("request-safe_1".into()),
@@ -887,7 +762,7 @@ mod tests {
     fn output_limits_remain_distinct_from_schema_failures_on_the_wire() {
         let provider = runtime_failure_from_provider(ProviderError {
             code: ProviderErrorCode::OutputLimit,
-            provider_id: OPENROUTER_PROVIDER_ID.into(),
+            provider_id: OPENAI_SUBSCRIPTION_PROVIDER_ID.into(),
             retryable: false,
             status: None,
             request_id: None,

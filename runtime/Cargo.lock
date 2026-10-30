@@ -6881,7 +6881,6 @@ dependencies = [
  "codex-protocol",
  "codex-websocket-client",
  "futures-util",
- "getrandom 0.3.4",
  "http",
  "reqwest",
  "scraply-agent-core",
