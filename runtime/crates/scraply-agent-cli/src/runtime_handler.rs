@@ -162,7 +162,7 @@ impl RuntimeHost {
     }
 
     async fn login_complete(&mut self, context: &RuntimeContext, payload: Value) -> HandlerOutcome {
-        let payload: LoginIdPayload = decode_payload!(payload);
+        let payload: LoginCompletePayload = decode_payload!(payload);
         let Some(completion) = self.pending_logins.remove(&payload.login_id) else {
             return failure(ErrorCode::LoginNotFound, "login operation was not found");
         };
@@ -196,6 +196,10 @@ impl RuntimeHost {
 
     async fn account_logout(&mut self, payload: Value) -> HandlerOutcome {
         let payload: ProviderPayload = decode_payload!(payload);
+        // Reject an unsupported provider before touching state, so it cannot cancel live generations.
+        if payload.provider_id != OPENAI_SUBSCRIPTION_PROVIDER_ID {
+            return invalid_payload("provider is unsupported");
+        }
         self.pending_persistence.remove(&payload.provider_id);
         self.disabled_providers.insert(payload.provider_id.clone());
         for cancellation in self
@@ -206,12 +210,9 @@ impl RuntimeHost {
         {
             cancellation.cancel();
         }
-        match payload.provider_id.as_str() {
-            OPENAI_SUBSCRIPTION_PROVIDER_ID => match self.openai.logout().await {
-                Ok(logged_out) => HandlerOutcome::Success(json!({ "loggedOut": logged_out })),
-                Err(error) => provider_failure(error),
-            },
-            _ => invalid_payload("provider is unsupported"),
+        match self.openai.logout().await {
+            Ok(logged_out) => HandlerOutcome::Success(json!({ "loggedOut": logged_out })),
+            Err(error) => provider_failure(error),
         }
     }
 
@@ -699,6 +700,18 @@ struct CredentialPayload {
 struct LoginStartPayload {
     provider_id: String,
     method: String,
+    /// Part of the provider-neutral v1.2 contract; no provider the worker ships uses it.
+    #[serde(default, rename = "callbackUrl")]
+    _callback_url: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct LoginCompletePayload {
+    login_id: String,
+    /// Part of the provider-neutral v1.2 contract; no provider the worker ships uses it.
+    #[serde(default, rename = "code")]
+    _code: Option<String>,
 }
 
 #[derive(Deserialize)]
