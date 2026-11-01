@@ -1,5 +1,5 @@
 use crate::{ProviderError, ProviderErrorCode};
-use scraply_agent_core::{CoreError, FailureCode, FinishReason, OperationControl, ProviderRequest};
+use scraply_agent_core::{CoreError, FailureCode, OperationControl, ProviderRequest};
 use std::future::Future;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -76,14 +76,5 @@ where
             "provider request timed out",
         )),
         result = future => Ok(result),
-    }
-}
-
-pub(crate) fn finish_reason(value: Option<&str>) -> FinishReason {
-    match value {
-        Some("stop" | "completed") | None => FinishReason::Stop,
-        Some("length" | "max_tokens") => FinishReason::Length,
-        Some("content_filter") => FinishReason::ContentFilter,
-        Some(other) => FinishReason::Other(other.to_owned()),
     }
 }

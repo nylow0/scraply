@@ -288,6 +288,85 @@ fn installed_runtime_routes_openai_session_credentials_to_the_openai_provider() 
 }
 
 #[test]
+fn installed_runtime_rejects_every_request_for_a_provider_it_does_not_ship() {
+    let mut runtime = RuntimeProcess::start(0);
+    runtime.initialize();
+    let requests = [
+        (
+            "credential.session.set",
+            json!({"providerId": "openrouter", "credential": "sk-or-fake"}),
+        ),
+        (
+            "account.login.start",
+            json!({"providerId": "openrouter", "method": "pkce"}),
+        ),
+        ("model.list", json!({"providerId": "openrouter"})),
+        ("account.refresh", json!({"providerId": "openrouter"})),
+    ];
+    for (id, (method, payload)) in (2..).zip(requests) {
+        runtime.request(id, method, payload);
+        let response = runtime.read();
+        assert_eq!(response["id"], id, "{method}");
+        assert_eq!(response["error"]["code"], "invalid_payload", "{method}");
+    }
+
+    runtime.shutdown(6);
+}
+
+#[test]
+fn logging_out_of_an_unsupported_provider_leaves_active_generations_running() {
+    let mut runtime = RuntimeProcess::start(300);
+    runtime.initialize();
+    runtime.start_generation(2, "generation-survives");
+    runtime.request(3, "account.logout", json!({"providerId": "openrouter"}));
+
+    let mut logout = None;
+    let mut terminal = None;
+    while logout.is_none() || terminal.is_none() {
+        let message = runtime.read();
+        if message["id"] == 3 {
+            logout = Some(message);
+        } else if message["event"]["kind"] != "generation.started" {
+            terminal = Some(message);
+        }
+    }
+    assert_eq!(logout.unwrap()["error"]["code"], "invalid_payload");
+    assert_eq!(terminal.unwrap()["event"]["kind"], "generation.completed");
+
+    // The rejected logout must not leave the unsupported id looking like a logged-out account.
+    runtime.request(4, "model.list", json!({"providerId": "openrouter"}));
+    assert_eq!(runtime.read()["error"]["code"], "invalid_payload");
+    runtime.shutdown(5);
+}
+
+#[test]
+fn login_requests_accept_every_optional_field_of_the_v1_2_contract() {
+    let mut runtime = RuntimeProcess::start(0);
+    runtime.initialize();
+    // callbackUrl and code are provider-neutral contract fields; OpenAI logins ignore them.
+    runtime.request(
+        2,
+        "account.login.start",
+        json!({
+            "providerId": "openai-subscription",
+            "method": "browser",
+            "callbackUrl": "http://127.0.0.1:1/callback"
+        }),
+    );
+    let started = runtime.read();
+    let login_id = started["result"]["loginId"].as_str().unwrap().to_owned();
+    runtime.request(
+        3,
+        "account.login.complete",
+        json!({"loginId": login_id, "code": "unused"}),
+    );
+    assert_eq!(runtime.read()["error"]["code"], "operation_unavailable");
+    runtime.request(4, "account.login.cancel", json!({"loginId": login_id}));
+    assert_eq!(runtime.read()["result"]["cancelled"], true);
+    runtime.shutdown(5);
+}
+
+#[test]
 fn installed_runtime_cancels_an_active_generation() {
     let mut runtime = RuntimeProcess::start(5_000);
     runtime.initialize();
