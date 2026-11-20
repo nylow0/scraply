@@ -28,8 +28,10 @@ function lockProject(dataDir: string, projectId: number) {
   const db = new Database(join(dataDir, "locks", `P${projectId}.db`));
   try {
     db.exec("PRAGMA busy_timeout = 0; BEGIN EXCLUSIVE;");
-  } catch {
+  } catch (error) {
     db.close();
+    // Only contention means another command holds the project; any other failure is reported as it is.
+    if (!(error instanceof Error && "code" in error && error.code === "SQLITE_BUSY")) throw error;
     throw new CliError("BUSY", `Another scraply command is working on P${projectId}. Wait for it to finish, then run the command again.`);
   }
   return () => { db.exec("COMMIT"); db.close(); };

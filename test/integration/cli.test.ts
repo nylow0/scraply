@@ -488,6 +488,11 @@ describe("scraply CLI", () => {
       await holder.exited;
     }
     expect(await scraply("next", "--project", "P1")).toMatchObject({ ok: true, data: { status: "think" } });
+    // A damaged lock file is reported as it is, not as another command at work.
+    writeFileSync(lockFile, "not a database, just text that fills the header and more");
+    const damaged = await scraply("next", "--project", "P1");
+    expect(damaged).toMatchObject({ ok: false });
+    expect(damaged.error?.code).not.toBe("BUSY");
   });
 
   test("the ledger rejects edits and deletions made behind the CLI's back", async () => {

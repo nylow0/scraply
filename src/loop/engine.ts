@@ -492,7 +492,9 @@ export async function runPendingScript(context: LoopContext, testId: string): Pr
     if (!(error instanceof CliError && error.code === "RUN_FAILED")) throw error;
     // A program that cannot even start is a failed attempt, so the next step writes a repaired script instead of
     // waiting for approval of this one again. Nothing ran, so nothing is saved as evidence.
-    context.ledger.logStep(context.projectId, "run", testId, { launchFailed: error.message });
+    // runsBefore orders runs saved later by hand against this failure without trusting clocks.
+    const runsBefore = context.ledger.show(context.projectId).sources.filter(source => source.test === testId).length;
+    context.ledger.logStep(context.projectId, "run", testId, { launchFailed: error.message, runsBefore });
     return { step: "run", did: `${testId} could not start: ${error.message}`, status: "continue" };
   }
   const source = context.ledger.saveRun(parseId("test", testId), run);
@@ -706,7 +708,11 @@ export async function advance(context: LoopContext): Promise<StepResult> {
     const lastRun = log.last("run", test.id);
     // The newest saved run decides, including one run by hand, unless a launch failed after it; retries count attempts.
     const newestRun = runs.at(-1);
-    const launchFailedLast = attempts.at(-1)?.launchFailed !== undefined && (!newestRun || newestRun.fetchedAt <= lastRun!.at);
+    // A launch failure is the latest attempt unless a run was saved after it; failures logged before runsBefore
+    // existed fall back to timestamps.
+    const failedBefore = z.object({ launchFailed: z.string(), runsBefore: z.number() }).safeParse(lastRun?.detail);
+    const launchFailedLast = attempts.at(-1)?.launchFailed !== undefined
+      && (failedBefore.success ? runs.length <= failedBefore.data.runsBefore : !newestRun || newestRun.fetchedAt <= lastRun!.at);
     const lastFailed = launchFailedLast || (newestRun !== undefined && !runSucceeded(context, newestRun));
     // A good run saved after the newest script, such as one run by hand, makes that script unnecessary.
     // Scripts logged before runsBefore existed fall back to timestamps.
