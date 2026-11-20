@@ -46,7 +46,7 @@ export const MAX_SOURCE_CHARS = 300_000;
 /** `source show` returns a long source in windows of this many characters. */
 export const SOURCE_WINDOW = 40_000;
 const NEED_EVIDENCE: readonly string[] = ["firsthand", "measured"];
-const SCHEMA_VERSION = 2;
+export const SCHEMA_VERSION = 2;
 
 type ClaimKind = (typeof CLAIM_KINDS)[number];
 type QuoteKind = (typeof QUOTE_KINDS)[number];

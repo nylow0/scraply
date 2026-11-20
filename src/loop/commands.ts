@@ -1,11 +1,11 @@
 import { Database } from "bun:sqlite";
-import { mkdirSync } from "node:fs";
+import { existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { requiredFlag, stringFlag, type CommandArguments } from "../cli/args";
 import type { Command, CommandContext } from "../cli/commands";
 import { availableProviders, searchKey } from "../cli/credentials";
 import { runExperimentCommand } from "../cli/experiment";
-import { parseId } from "../cli/ledger";
+import { SCHEMA_VERSION, parseId } from "../cli/ledger";
 import { CliError } from "../cli/output";
 import { fetchDirect, search } from "../cli/pages";
 import { advance, runPendingScript, type LoopContext, type StepResult } from "./engine";
@@ -143,7 +143,17 @@ export const loopCommands: readonly Command[] = [
       let value: unknown;
       try { value = JSON.parse(text); }
       catch { throw new CliError("BAD_ANSWER", "The answer is not valid JSON.", 2); }
-      return drive(context, args, { order: requiredFlag(args, "order"), value });
+      // An answer belongs to a ledger `next` already set up. Refuse one sent anywhere else before opening it, which
+      // would create or upgrade a ledger for an order that never came from it.
+      const path = join(context.dataDir, "ledger.db");
+      let version: number | undefined;
+      if (existsSync(path)) {
+        using db = new Database(path, { readonly: true });
+        version = (db.query("PRAGMA user_version").get() as { user_version: number }).user_version;
+      }
+      const order = requiredFlag(args, "order");
+      if (version !== SCHEMA_VERSION) throw new CliError("STALE_ORDER", `${order} did not come from the ledger in ${context.dataDir}: it has no current ledger. Run: scraply next --project ${requiredFlag(args, "project")}`);
+      return drive(context, args, { order, value });
     },
   },
   {

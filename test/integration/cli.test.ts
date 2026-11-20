@@ -407,14 +407,20 @@ describe("scraply CLI", () => {
     expect(await scraply("show", "--project", "P1")).toMatchObject({ data: { quotes: [{ id: "Q1", source: "S1", speaker: "Hive app" }], notes: [{ kind: "framing" }, { kind: "prior-art", quotes: ["Q1"] }] } });
 
     // A same-numbered project in another ledger issues a different order, so an answer cannot cross ledgers.
-    const elsewhere = { ...env, SCRAPLY_DATA_DIR: join(root, "other-ledger") };
-    const otherLedger = async (...argv: string[]) => {
+    const inLedger = async (folder: string, ...argv: string[]) => {
       let output = "";
-      await runCli(argv, { write: text => { output += text; }, notify: () => undefined, readStdin: async () => "", isTTY: false, env: elsewhere, fetcher: fakeFetch });
+      await runCli(argv, { write: text => { output += text; }, notify: () => undefined, readStdin: async () => "", isTTY: false, env: { ...env, SCRAPLY_DATA_DIR: join(root, folder) }, fetcher: fakeFetch });
       return JSON.parse(output) as { data: { workOrder: { order: string } } };
     };
+    const otherLedger = (...argv: string[]) => inLedger("other-ledger", ...argv);
     await otherLedger("project", "new", "hive-notes", "--seed", "Beekeepers lose track of what they saw in each hive.");
     expect((await otherLedger("next", "--project", "P1")).data.workOrder.order).not.toBe(frame);
+    // Sent to a folder with no ledger, or with one `next` has not upgraded yet, it is refused without creating or upgrading one.
+    expect(await inLedger("empty-ledger", "submit", "--project", "P1", "--order", frame, "--answer", "{}")).toMatchObject({ error: { code: "STALE_ORDER" } });
+    expect(existsSync(join(root, "empty-ledger"))).toBe(false);
+    { using db = new Database(join(root, "other-ledger", "ledger.db")); db.exec("PRAGMA user_version = 1"); }
+    expect(await otherLedger("submit", "--project", "P1", "--order", frame, "--answer", "{}")).toMatchObject({ error: { code: "STALE_ORDER" } });
+    { using db = new Database(join(root, "other-ledger", "ledger.db")); expect(db.query("PRAGMA user_version").get()).toEqual({ user_version: 1 }); }
 
     // An answer to an order already answered, or one written for another project, is refused before anything runs.
     stdin = JSON.stringify(framing);
