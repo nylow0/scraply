@@ -7,10 +7,12 @@ import { parseId } from "../cli/ledger";
 import { CliError } from "../cli/output";
 import { fetchDirect, search } from "../cli/pages";
 import { advance, runPendingScript, type LoopContext, type StepResult } from "./engine";
-import { ThinkNeeded, agentThinker, headStep, workOrder, type ThinkRequest } from "./think";
+import { ThinkNeeded, agentThinker, headStep, workOrder } from "./think";
 
 const RESULTS_PER_SEARCH = 5;
 const RUN_TIMEOUT_MS = 30 * 60_000;
+/** Ledger methods that write; `submit` holds them until its answer is applied. */
+const LEDGER_WRITES = new Set(["createProject", "setArchived", "addNote", "recordSearch", "saveSource", "addQuote", "addClaim", "addTest", "saveRun", "addVerdict", "addReview", "addIdea", "retract", "logStep"]);
 /** Mechanical steps one `next` or `submit` may run before it hands back; a pass has far fewer. */
 const MAX_STEPS = 40;
 
@@ -49,18 +51,23 @@ async function drive(context: CommandContext, args: CommandArguments, answer?: {
   const stale = () => new CliError("STALE_ORDER", `${answer!.order} is not the work order P${loop.projectId} is waiting on; the project moved on, or the order is from another project. Run: scraply next --project P${loop.projectId}`);
   // An order names the step log's head when it was issued; refuse a stale one before any search or run happens.
   if (answer && answer.order.split("-")[1] !== String(headStep(loop.ledger, loop.projectId))) throw stale();
-  // Until the answer is applied, nothing runs a script on --trust: an order that matches the head but no open step
-  // would otherwise run a waiting experiment before being refused. Trust returns the moment the answer is taken, so
-  // the step that took it (such as a script) already sees it.
-  const trust = loop.trust;
+  // Until the answer is applied, the loop may only read. A step that needs thinking asks before it writes, so a write,
+  // search, or run first means the loop is not at the step the order was for: refuse it before anything happens.
   if (answer) {
-    loop.trust = false;
-    const take = loop.think;
-    loop.think = async <T,>(request: ThinkRequest<T>) => {
-      const value = await take(request);
-      loop.trust = trust;
-      return value;
-    };
+    const ledger = loop.ledger;
+    loop.ledger = new Proxy(ledger, {
+      get: (target, key) => {
+        const value: unknown = Reflect.get(target, key);
+        if (typeof value !== "function" || !LEDGER_WRITES.has(String(key))) return value;
+        return (...args: unknown[]): unknown => {
+          if (!state.used) throw stale();
+          return Reflect.apply(value, target, args);
+        };
+      },
+    });
+    const { searchWeb, runCommand } = loop;
+    if (searchWeb) loop.searchWeb = query => { if (!state.used) throw stale(); return searchWeb(query); };
+    loop.runCommand = (command, cwd) => { if (!state.used) throw stale(); return runCommand(command, cwd); };
   }
   const steps: StepResult[] = [];
   const stop = (result: Record<string, unknown>) => {

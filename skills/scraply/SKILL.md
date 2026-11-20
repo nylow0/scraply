@@ -28,7 +28,7 @@ A work order with `independent` set (every review) must not be answered by you i
 
 ## Writing findings and variants
 
-The findings work order closes a pass. Hold yourself to its instructions: untested is not survived; each finding cites the quotes it rests on; each variant keeps the seed's core output, names the closest existing product or method and how it would beat it, and says which part rests on this pass's quotes and which on expert judgment still to be tested. When a finding rests on a page the loop fetched but never quoted, save the exact sentences first with `quote add` so it can cite them.
+The findings work order closes a pass. Hold yourself to its instructions: untested is not survived; each finding cites the quotes it rests on; each variant keeps the seed's core output, names the closest existing product or method and how it would beat it, and says which part rests on this pass's quotes and which on expert judgment still to be tested. When a finding rests on a page the loop fetched but never quoted, save the exact sentences first with `quote add` so it can cite them, then run `next` for the updated work order: new quotes change its order ID.
 
 ## By hand
 

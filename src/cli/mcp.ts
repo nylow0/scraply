@@ -66,12 +66,16 @@ function toolFor(command: Command) {
 /** Zod for one tool's arguments, built from the same definitions as its JSON Schema. */
 function argumentSchema(command: Command) {
   const optional = <T extends z.ZodTypeAny>(schema: T, required: boolean | undefined) => required ? schema : schema.optional();
-  const text = (choices?: readonly string[]) => choices ? z.enum(choices as [string, ...string[]]) : z.string();
+  // Text must say something, as on the command line.
+  const filled = z.string().refine(value => value.trim().length > 0, "needs a nonempty value");
+  const text = (choices?: readonly string[]) => choices ? z.enum(choices as [string, ...string[]]) : filled;
   const shape: z.ZodRawShape = {};
-  for (const item of command.positionals ?? []) shape[item.name] = optional(item.variadic ? z.array(z.string()).min(1) : z.string(), item.required);
+  // A variadic command keeps its arguments verbatim, as on the command line; only the program name must be filled.
+  const variadic = z.array(z.string()).refine(words => (words[0] ?? "").trim().length > 0, "needs a program name first");
+  for (const item of command.positionals ?? []) shape[item.name] = optional(item.variadic ? variadic : filled, item.required);
   for (const item of command.flags ?? []) {
     // Some clients send a nested object as JSON text; take either.
-    const value = JSON_FLAGS.has(item.name) ? z.union([z.string(), z.record(z.unknown()), z.array(z.unknown())]).transform(json => typeof json === "string" ? json : JSON.stringify(json))
+    const value = JSON_FLAGS.has(item.name) ? z.union([filled, z.record(z.unknown()), z.array(z.unknown())]).transform(json => typeof json === "string" ? json : JSON.stringify(json))
       : item.type === "boolean" ? z.boolean()
         : item.type === "number" ? z.number().transform(String)
           : item.multiple ? z.array(text(item.choices)) : text(item.choices);

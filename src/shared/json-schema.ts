@@ -6,7 +6,9 @@ export type JsonSchema = {
   required?: string[];
   additionalProperties?: false;
   items?: JsonSchema;
+  minItems?: number;
   maxItems?: number;
+  minLength?: number;
   maxLength?: number;
   enum?: Array<string | number | boolean>;
   anyOf?: JsonSchema[];
@@ -27,13 +29,14 @@ export function deriveJsonSchema(schema: z.ZodTypeAny): JsonSchema {
       return {
         type: "array",
         items: deriveJsonSchema(definition.type),
+        ...(definition.minLength ? { minItems: definition.minLength.value } : {}),
         // Preserve zero: a schema may cap a list at no items.
         ...(definition.maxLength ? { maxItems: definition.maxLength.value } : {}),
       };
     case z.ZodFirstPartyTypeKind.ZodString: {
-      const maxLength = (schema as z.ZodString).maxLength;
-      // Send text ceilings to the provider, rather than only rejecting oversized output afterward.
-      return { type: "string", ...(maxLength !== null ? { maxLength } : {}) };
+      const { minLength, maxLength } = schema as z.ZodString;
+      // Advertise the same bounds the answer is checked against.
+      return { type: "string", ...(minLength ? { minLength } : {}), ...(maxLength !== null ? { maxLength } : {}) };
     }
     case z.ZodFirstPartyTypeKind.ZodNumber: {
       const isInteger = definition.checks.some((check: { kind: string }) => check.kind === "int");

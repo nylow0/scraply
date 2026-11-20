@@ -34,6 +34,12 @@ test("a model drives a project through MCP tools: work orders out, typed answers
     call(6, "quote_add", { source: "S9", speaker: "nobody", kind: "other", text: "Not a saved source at all." }),
     call(7, "key_set", { provider: "exa" }),
     call(8, "project_new", { name: "gardens", seed: "x", stray: true }),
+    // Blank text is refused, as on the command line, so it cannot pass for the owner's answer.
+    call(9, "note_add", { project: "P1", kind: "constraint", text: "   " }),
+    // A command keeps empty arguments, as on the command line, but needs a program name.
+    call(10, "experiment_run", { test: "T1", command: ["  ", "x"] }),
+    call(11, "experiment_run", { test: "T1", command: ["bun", "-e", ""] }),
+    call(12, "experiment_run", { test: "T1", command: [] }),
   ]);
   expect(replies.get(1)?.result).toMatchObject({ protocolVersion: "2025-06-18", instructions: expect.stringContaining("work order") });
 
@@ -55,6 +61,12 @@ test("a model drives a project through MCP tools: work orders out, typed answers
   // An unknown tool is a protocol error, as MCP asks.
   expect(replies.get(7)).toMatchObject({ error: { code: -32602, message: "No tool named key_set." } });
   expect(replies.get(8)!.result).toMatchObject({ isError: true });
+  expect(replies.get(9)!.result).toMatchObject({ isError: true });
+  expect(data(replies.get(9))).toMatchObject({ message: expect.stringContaining("nonempty") });
+  expect(data(replies.get(10))).toMatchObject({ code: "USAGE", message: expect.stringContaining("program name") });
+  // The empty argument passes validation and reaches the command, which refuses the missing test instead.
+  expect(data(replies.get(11))).not.toMatchObject({ code: "USAGE" });
+  expect(data(replies.get(12))).toMatchObject({ code: "USAGE", message: expect.stringContaining("program name") });
 });
 
 test("a submitted answer object is checked against the work order's schema and moves the loop on", async () => {

@@ -404,14 +404,27 @@ async function read(context: LoopContext, view: View, claim: ClaimView, test: Te
   };
 }
 
-async function script(context: LoopContext, view: View, claim: ClaimView, test: TestView, runs: readonly View["sources"][number][]): Promise<StepResult> {
+/**
+ * Each time one of a test's scripts was run, in order: the run's saved output, or why the program could not start.
+ * A program that never started saved no source, so it is never evidence.
+ */
+function runAttempts(context: LoopContext, view: View, testId: string) {
+  return stepLog(context).steps.filter(item => item.step === "run" && item.target === testId).map(item => {
+    const detail = z.object({ source: z.string(), launchFailed: z.string() }).partial().parse(item.detail);
+    return { source: view.sources.find(source => source.id === detail.source), launchFailed: detail.launchFailed };
+  });
+}
+
+async function script(context: LoopContext, view: View, claim: ClaimView, test: TestView, attempts: ReturnType<typeof runAttempts>): Promise<StepResult> {
   const scripts = stepLog(context).steps.filter(item => item.step === "script" && item.target === test.id);
   const attempt = scripts.length + 1;
   // Each earlier attempt with its own code and what it printed, so a fix starts from the code that failed.
-  const earlierAttempts = runs.map((run, index) => ({
-    run: run.id, command: run.command, exitCode: run.exitCode, files: scriptFiles(scripts[index]?.detail),
-    outputTail: context.ledger.readSource(parseId("source", run.id), Math.max(0, run.chars - ATTEMPT_OUTPUT_CHARS)).text,
-  }));
+  const earlierAttempts = attempts.map(({ source, launchFailed }, index) => source
+    ? {
+      run: source.id, command: source.command, exitCode: source.exitCode, files: scriptFiles(scripts[index]?.detail),
+      outputTail: context.ledger.readSource(parseId("source", source.id), Math.max(0, source.chars - ATTEMPT_OUTPUT_CHARS)).text,
+    }
+    : { couldNotStart: launchFailed ?? "The run saved no output.", files: scriptFiles(scripts[index]?.detail) });
   // Code that already worked for earlier experiments in this project, so data access is not rediscovered. Files are
   // given by path; the agent reads them from disk.
   const workingCode = stepLog(context).steps.filter(item => item.step === "run" && item.target !== test.id)
@@ -460,7 +473,16 @@ export async function runPendingScript(context: LoopContext, testId: string): Pr
   // Refuse a test retracted since its script was written before running anything.
   context.ledger.requireExperiment(parseId("test", testId));
   context.notify(`Running in ${detail.dir}: ${detail.command.join(" ")}`);
-  const run = await context.runCommand(detail.command, detail.dir);
+  let run;
+  try {
+    run = await context.runCommand(detail.command, detail.dir);
+  } catch (error) {
+    if (!(error instanceof CliError && error.code === "RUN_FAILED")) throw error;
+    // A program that cannot even start is a failed attempt, so the next step writes a repaired script instead of
+    // waiting for approval of this one again. Nothing ran, so nothing is saved as evidence.
+    context.ledger.logStep(context.projectId, "run", testId, { launchFailed: error.message });
+    return { step: "run", did: `${testId} could not start: ${error.message}`, status: "continue" };
+  }
   const source = context.ledger.saveRun(parseId("test", testId), run);
   context.ledger.logStep(context.projectId, "run", testId, { source: source.id, exitCode: run.exitCode });
   return { step: "run", did: `Ran ${testId} (exit code ${run.exitCode}); output saved as ${source.id}.`, status: "continue" };
@@ -575,7 +597,7 @@ async function findings(context: LoopContext, view: View): Promise<StepResult> {
   const cited = output.findings.map(finding => ({ text: finding.text, quotes: finding.quotes.map(id => id.trim().toUpperCase()) }));
   const unknown = [...new Set(cited.flatMap(finding => finding.quotes.filter(id => !known.has(id))))];
   if (unknown.length || cited.some(finding => !finding.quotes.length)) {
-    throw new CliError("BAD_ANSWER", `Every finding must cite at least one live quote${unknown.length ? `; these are not live quotes in this project: ${unknown.join(", ")}` : ""}. Save the exact sentences first with scraply quote add if needed, then submit again.`, 2);
+    throw new CliError("BAD_ANSWER", `Every finding must cite at least one live quote${unknown.length ? `; these are not live quotes in this project: ${unknown.join(", ")}` : ""}. Fix the citations and submit again, or save the exact sentences with scraply quote add and then run scraply next for the updated work order.`, 2);
   }
   context.ledger.addNote(context.projectId, "summary", output.summary);
   for (const finding of cited) context.ledger.addNote(context.projectId, "finding", finding.text, finding.quotes.map(id => parseId("quote", id)));
@@ -666,11 +688,15 @@ export async function advance(context: LoopContext): Promise<StepResult> {
       return decide(context, view, claim, test);
     }
     const runs = view.sources.filter(source => source.test === test.id);
+    const attempts = runAttempts(context, view, test.id);
     const lastScript = log.last("script", test.id);
     const lastRun = log.last("run", test.id);
-    const lastFailed = runs.length > 0 && !runSucceeded(context, runs.at(-1)!);
-    if (!lastScript || (lastRun && lastRun.id > lastScript.id && lastFailed && runs.length < MAX_RUNS)) {
-      return script(context, view, claim, test, runs);
+    // The newest saved run decides, including one run by hand, unless a launch failed after it; retries count attempts.
+    const newestRun = runs.at(-1);
+    const launchFailedLast = attempts.at(-1)?.launchFailed !== undefined && (!newestRun || newestRun.fetchedAt <= lastRun!.at);
+    const lastFailed = launchFailedLast || (newestRun !== undefined && !runSucceeded(context, newestRun));
+    if (!lastScript || (lastRun && lastRun.id > lastScript.id && lastFailed && attempts.length < MAX_RUNS)) {
+      return script(context, view, claim, test, attempts);
     }
     if (!lastRun || lastRun.id < lastScript.id) {
       if (!context.trust) {

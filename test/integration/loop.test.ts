@@ -3,6 +3,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openLedger, parseId, type FetchedSource, type Ledger } from "../../src/cli/ledger";
+import { CliError } from "../../src/cli/output";
 import { renderReport } from "../../src/cli/report";
 import { advance, runPendingScript, type LoopContext, type StepResult } from "../../src/loop/engine";
 import type { Step, Think, ThinkRequest } from "../../src/loop/think";
@@ -287,6 +288,50 @@ describe("the seed-and-kill-test loop", () => {
       { step: "design", status: "continue", did: expect.stringContaining("Set C2 aside") },
       { step: "design", status: "continue", did: expect.stringContaining("T1 for C1") },
     ]);
+  });
+
+  test("a script whose program cannot start is a failed run, so the loop asks for a repaired script instead of approval again", async () => {
+    ledger.createProject("quakes", "Anything.");
+    ledger.logStep(1, "frame", null, { surveyQueries: [] });
+    ledger.logStep(1, "survey", null, { skipped: "test" });
+    const script = (command: string) => ({ files: [{ name: "a.py", content: "print(1)" }], command: [command, "a.py"], explanation: "Run." });
+    answers = {
+      split: [{ idea: { title: "Forecaster", pitch: "Odds." }, claims: [{ kind: "mechanism", statement: "It beats the baseline.", killIf: "No lift." }], reuse: [] }],
+      design: [{ claim: "C1", why: "Data.", kind: "experiment", method: "Fit.", prediction: "Lift.", stopWhen: "One run.", queries: [], cuts: [], sanity: "Known event.", control: "Baseline.", holdout: "Later years.", needsOwner: null, setAside: null }],
+      script: [script("python-missing"), script("uv")],
+    };
+    const runCommand: LoopContext["runCommand"] = async command => {
+      if (command[0] === "python-missing") throw new CliError("RUN_FAILED", "Could not start python-missing: not found. Check that it is installed and on PATH.");
+      return { command: command.join(" "), exitCode: 0, output: "Sanity check passed.\n[exit code 0]" };
+    };
+    const scriptInputs: unknown[] = [];
+    const watching: Think = async request => { if (request.step === "script") scriptInputs.push(request.inputs); return think(request); };
+    const trusted = context({ trust: true, runCommand, think: watching });
+    expect((await advanceUntilBlocked(trusted, 4)).map(item => item.step)).toEqual(["split", "design", "script", "run"]);
+    // Nothing ran, so nothing was saved, and a kill cannot rest on it.
+    expect(ledger.show(1).sources).toHaveLength(0);
+    expect(() => ledger.addVerdict({ claimId: 1, result: "killed", quoteIds: [], note: "It never ran.", author: "agent", testId: 1 })).toThrow("A kill cites quotes");
+    expect((await advanceUntilBlocked(trusted, 2)).map(item => item.step)).toEqual(["script", "run"]);
+    expect(ledger.show(1).sources).toMatchObject([{ exitCode: 0 }]);
+    expect(scriptInputs[1]).toMatchObject({ earlierAttempts: [{ couldNotStart: expect.stringContaining("Could not start python-missing") }] });
+  });
+
+  test("a successful run by hand after a failed script is read instead of asking for another script", async () => {
+    ledger.createProject("quakes", "Anything.");
+    ledger.logStep(1, "frame", null, { surveyQueries: [] });
+    ledger.logStep(1, "survey", null, { skipped: "test" });
+    answers = {
+      split: [{ idea: { title: "Forecaster", pitch: "Odds." }, claims: [{ kind: "mechanism", statement: "It beats the baseline.", killIf: "No lift." }], reuse: [] }],
+      design: [{ claim: "C1", why: "Data.", kind: "experiment", method: "Fit.", prediction: "Lift.", stopWhen: "One run.", queries: [], cuts: [], sanity: "Known event.", control: "Baseline.", holdout: "Later years.", needsOwner: null, setAside: null }],
+      script: [{ files: [{ name: "a.ts", content: "x" }], command: ["bun", "a.ts"], explanation: "Run." }],
+    };
+    const runCommand: LoopContext["runCommand"] = async command => ({ command: command.join(" "), exitCode: 1, output: "TypeError: catalog is undefined\n[exit code 1]" });
+    expect((await advanceUntilBlocked(context({ trust: true, runCommand }), 4)).map(item => item.step)).toEqual(["split", "design", "script", "run"]);
+    // The agent fixes it by hand with scraply experiment run, which saves a run without a loop step.
+    await new Promise(resolve => setTimeout(resolve, 5));
+    ledger.saveRun(1, { command: "bun fixed.ts", exitCode: 0, output: "Sanity check passed. Lift 0.12 on held-out years.\n[exit code 0]" });
+    answers.read = [{ quotes: [] }];
+    expect(await step()).toMatchObject({ step: "read", did: expect.stringContaining("Read 1 source") });
   });
 
   test("experiment files may live in subfolders but never outside their attempt folder", async () => {

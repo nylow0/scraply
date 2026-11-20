@@ -371,7 +371,7 @@ describe("scraply CLI", () => {
     expect(first).toMatchObject({ ok: true, data: { status: "think", workOrder: {
       step: "frame", order: expect.stringMatching(/^frame-0-[0-9a-f]{8}$/), method: expect.stringContaining("How Scraply works"),
       inputs: { seed: "Beekeepers lose track of what they saw in each hive." }, sources: [],
-      answerSchema: { type: "object", required: ["framing", "surveyQueries", "questions"] },
+      answerSchema: { type: "object", required: ["framing", "surveyQueries", "questions"], properties: { framing: { type: "string", minLength: 1 } } },
     } } });
     const framing = { framing: "A keeper would read club forums first.", surveyQueries: ["hive app pricing"], questions: [] };
 
@@ -444,8 +444,19 @@ describe("scraply CLI", () => {
     expect(await scraply("submit", "--project", "P1", "--order", forged, "--trust")).toMatchObject({ error: { code: "STALE_ORDER" } });
     expect(((await scraply("show", "--project", "P1")).data as { sources: unknown[] }).sources).toHaveLength(head.sources.length);
 
+    // At a stop that waits on the owner, an order naming the current head is refused before --skip-questions writes its assumptions.
+    await scraply("project", "new", "gardens", "--seed", "Gardens struggle to coordinate watering.");
+    const gardens = ((await scraply("next", "--project", "P2")).data as { workOrder: { order: string } }).workOrder.order;
+    stdin = JSON.stringify({ framing: "A coordinator would read club forums.", surveyQueries: [], questions: [{ question: "Which city?", assumption: "Any city." }] });
+    expect(await scraply("submit", "--project", "P2", "--order", gardens)).toMatchObject({ data: { status: "needs-you", steps: expect.arrayContaining([{ step: "questions", status: "needs-you", did: expect.any(String), next: expect.any(String) }]) } });
+    const waiting = openLedger(env.SCRAPLY_DATA_DIR!);
+    const waitingHead = waiting.steps(2).at(-1)!.id;
+    waiting.close();
+    expect(await scraply("submit", "--project", "P2", "--order", `split-${waitingHead}-00000000`, "--skip-questions", "--answer", "{}")).toMatchObject({ error: { code: "STALE_ORDER" } });
+    expect(((await scraply("show", "--project", "P2")).data as { notes: { kind: string }[] }).notes.filter(note => note.kind === "constraint")).toHaveLength(0);
+
     // A matching script answer sent with --trust runs right away, as the owner asked. Claim IDs count across projects.
-    const trusted = await upToScript("P2", "C2");
+    const trusted = await upToScript("P3", "C2");
     env.PATH = process.env.PATH ?? "";
     expect(await submit(trusted, { files: [{ name: "run.ts", content: "console.log('Sanity check passed. Lift 0.12 on held-out years.')" }], command: ["bun", "run.ts"], explanation: "First." }, "--trust"))
       .toMatchObject({ data: { steps: [{ step: "script" }, { step: "run", did: expect.stringContaining("exit code 0") }], status: "think", workOrder: { step: "read" } } });
